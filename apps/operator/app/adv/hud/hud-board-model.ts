@@ -117,6 +117,13 @@ export interface HudRosterEntry {
    *  instead of throwing — federation and a mid-deploy SSE push both produce one. */
   modes: Array<HudMode | string>;
   pidAlive: boolean | null;
+  /**
+   * WI-6821: this launch is OBSERVED dead — the terminal process is gone and it
+   * never registered a session. Only the `starting` tier sets it. Optional so a
+   * payload from an older operator (or a mid-deploy SSE push) still renders;
+   * absent means "not a failed launch", never "unknown".
+   */
+  launchFailed?: boolean;
   claims: Array<{ id?: string; planSlug?: string | null; status?: string | null }>;
   declaredUnclaimed: boolean;
   currentPlanSlug: string | null;

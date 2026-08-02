@@ -24,7 +24,7 @@ import { describe, expect, it } from 'vitest';
 // immediately following it, so wrapping it across lines makes the directive
 // "unused" AND leaves the module specifier line unsuppressed — two errors, not zero.
 // eslint-disable-next-line prettier/prettier
-import { coverageOf, declaredSubmodules, describeUnscanned, listTrackedFiles } from '../../../scripts/lib/tracked-files.mjs';
+import { coverageOf, declaredSubmodules, describeUnscanned, listFilesIncludingUntracked, listTrackedFiles } from '../../../scripts/lib/tracked-files.mjs';
 
 describe('tracked-files helper (WI-6730)', () => {
   const scan = listTrackedFiles() as {
@@ -143,6 +143,46 @@ describe('tracked-files helper (WI-6730)', () => {
     expect(empty.unscanned.length).toBeGreaterThan(30);
   });
 
+  it('listFilesIncludingUntracked keeps BOTH untracked coverage and submodule recursion', () => {
+    // WI-6730. git refuses to combine the two properties the identity guards need:
+    //     $ git ls-files --recurse-submodules --others
+    //     fatal: ls-files --recurse-submodules unsupported mode
+    // so a guard adopting plain `--recurse-submodules` would silently trade its
+    // untracked coverage (load-bearing — a brand-NEW file is exactly where a fresh
+    // identity leak sits) for submodule coverage. This seam buys both by running the
+    // untracked-inclusive flags inside each submodule. Both halves are asserted
+    // because losing either one is silent: the scan just gets smaller.
+    const scan = listFilesIncludingUntracked() as {
+      files: string[];
+      declared: string[];
+      scanned: string[];
+      unscanned: string[];
+    };
+
+    // Half 1 — recursion actually happened, keyed off the coverage split rather than
+    // a hard-coded submodule, so this holds in a release-shaped checkout too.
+    for (const path of scan.scanned) {
+      expect(
+        scan.files.some((f) => f.startsWith(`${path}/`)),
+        `${path} reported scanned but contributed no files`,
+      ).toBe(true);
+    }
+
+    // Half 2 — it is a SUPERSET of the tracked-only enumeration. If someone
+    // "simplifies" this back to --recurse-submodules, untracked files vanish and
+    // this fails instead of quietly narrowing every identity guard.
+    const trackedOnly = listTrackedFiles() as { files: string[] };
+    expect(scan.files.length).toBeGreaterThanOrEqual(trackedOnly.files.length);
+
+    // Paths are superproject-relative and correctly prefixed — a double-prefix or a
+    // bare submodule-relative path would make every readFileSync miss, which reads
+    // as "no violations found" rather than as an error.
+    expect(scan.files.some((f) => f.includes('//'))).toBe(false);
+    for (const path of scan.scanned) {
+      expect(scan.files.some((f) => f.startsWith(`${path}/${path}/`))).toBe(false);
+    }
+  });
+
   it('splits unscanned into present-on-disk vs absent, so an alarm can key on the serious one', () => {
     // WI-6776. The two gaps are not equally serious and a caller that ACTS on coverage
     // must tell them apart. `unscannedPresent` means git failed to read files that are
@@ -204,8 +244,30 @@ describe('recursing guards must report coverage (WI-6776 ratchet)', () => {
           : [],
     );
 
+  /**
+   * Strip comment lines before asking "does this script recurse?".
+   *
+   * WI-6730: the detector used to test the raw file text, so a guard that
+   * DELIBERATELY does not recurse — and says so in a comment naming
+   * `--recurse-submodules` to explain why — was classified as recursing and then
+   * failed for not reporting coverage it has no business reporting. That is the
+   * same prose-vs-code confusion this repo already hit in
+   * check-no-retired-imports.mjs, whose `from` pattern matched an English sentence
+   * about `_retired/`.
+   *
+   * Routing such a guard to ALLOW would be worse than the false positive: ALLOW
+   * means "recurses but legitimately needs no coverage line", and for these scripts
+   * that is simply untrue. Classify on CODE, and the question stops arising.
+   */
+  const recursesInCode = (text: string): boolean =>
+    text
+      .split('\n')
+      .filter((line) => !/^\s*(?:\/\/|\*|\/\*)/.test(line))
+      .join('\n')
+      .includes('recurse-submodules');
+
   const recursing = listMjs(scriptsDir).filter((f) =>
-    readFileSync(join(scriptsDir, f), 'utf8').includes('recurse-submodules'),
+    recursesInCode(readFileSync(join(scriptsDir, f), 'utf8')),
   );
 
   it('finds the recursing scripts at all (a zero here would make this suite vacuous)', () => {

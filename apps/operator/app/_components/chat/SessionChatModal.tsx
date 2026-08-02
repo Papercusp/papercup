@@ -37,8 +37,8 @@
  * `OtherDetail`'s own action path unmodified, so it is byte-identical to
  * answering from the inbox (P-006's resolve/reply routing + provenance stamp).
  */
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
-import { useQueryState, parseAsBoolean } from 'nuqs';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useQueryState, parseAsBoolean, parseAsStringLiteral } from 'nuqs';
 import { useSyncQuery } from '@papercusp/sync';
 import { Modal } from '../../harness/Modal';
 import { OperatorChat } from '../OperatorChat';
@@ -640,6 +640,14 @@ export default function SessionChatModal({
     pendingLaunch != null && sessionOwnerId != null && pendingLaunch.ownerId === sessionOwnerId;
   const startingUp = !resolved && !actionRosterEntry && (launchedByThisView || startingEntry != null);
 
+  // WI-6821: the server OBSERVED this launch die (terminal process gone, never
+  // registered) rather than inferring it from elapsed time. Server-derived on
+  // purpose — `launchedByThisView` alone can be true for a launch this client
+  // fired seconds ago, and only the operator can see the process. It therefore
+  // stays false until the roster says otherwise, so the honest "starting up"
+  // copy still leads for a launch that is genuinely still booting.
+  const launchFailed = startingEntry?.launchFailed === true;
+
   // When the boot window started, for the did-not-come-online fallback below.
   // The caller's launch moment wins when we have it (it is the earlier and more
   // precise of the two); otherwise fall back to the launch record's own
@@ -792,11 +800,17 @@ export default function SessionChatModal({
           // transcript yet — the same shape as one that ended long ago. Say
           // which it is, in the present tense, instead of the gone-away copy.
           <div style={BANNER_STYLE} data-testid="session-chat-starting-up">
-            {startupTimedOut
-              ? rosterUnreadable
-                ? "Can't reach the operator to check on this session — this looks like a connection problem, not a failed launch. Relaunching won't help until it's back."
-                : "This session hasn't come online. The launch may have failed — try launching it again."
-              : 'Starting up — waiting for this session to come online…'}
+            {launchFailed
+              ? // WI-6821: not a timeout — the operator OBSERVED this launch die
+                // (its terminal process is gone and it never registered). That is
+                // evidence, so this is stated flatly and immediately, with no
+                // "may have" hedge and no 60s wait for a timer to guess it.
+                'This session’s launch failed — its terminal closed before the session came online. Try launching it again.'
+              : startupTimedOut
+                ? rosterUnreadable
+                  ? "Can't reach the operator to check on this session — this looks like a connection problem, not a failed launch. Relaunching won't help until it's back."
+                  : "This session hasn't come online. The launch may have failed — try launching it again."
+                : 'Starting up — waiting for this session to come online…'}
           </div>
         ) : !resolved ? (
           <div style={BANNER_STYLE}>No recent Claude session found for this agent.</div>
@@ -842,6 +856,9 @@ export default function SessionChatModal({
               // above — without it the rail says "no longer in the live roster"
               // about a session that has not started yet.
               startingUp={startingUp}
+              // WI-6821: and the rail must not keep saying "starting up" about a
+              // launch the banner beside it already reports as dead.
+              launchFailed={launchFailed}
               onClose={() => void setDossierOpen(false)}
             />
           </div>

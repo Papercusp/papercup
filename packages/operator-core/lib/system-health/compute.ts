@@ -1014,6 +1014,30 @@ export function computeAccountsAvailable(
   return { accountsTotal, accountsAvailable, accountsPaused: accountsTotal - accountsAvailable };
 }
 
+/**
+ * How long since the gateway landed ANY usage-window write, i.e. the age of the FRESHEST
+ * `rate.utilizationAt` in the pool (EI-19303809952284205). null when no account has ever been
+ * observed — a fresh pool is not a fault.
+ *
+ * FRESHEST, not oldest, and that choice is the whole point. Per-account staleness is normal and
+ * benign: an account whose egress proxy is transport-failing simply receives no traffic, so its
+ * reading ages while the write path is perfectly healthy (observed live 2026-08-01 — aviynw10 sat
+ * on an 18:26Z reading for exactly that reason). Taking the max would alarm on that every time.
+ * What is NOT normal is nothing anywhere moving: that is the write path itself being dead, which is
+ * the condition this exists to catch.
+ *
+ * Pure — same testable-helper shape as `computeAccountsAvailable` above.
+ */
+export function computeProjectionFreshestAgeMs(accounts: readonly ClaudeAccount[], now: number): number | null {
+  let freshest: number | null = null;
+  for (const a of accounts) {
+    const at = a.rate?.utilizationAt;
+    if (typeof at !== 'number') continue;
+    if (freshest === null || at > freshest) freshest = at;
+  }
+  return freshest === null ? null : Math.max(0, now - freshest);
+}
+
 async function collectTokens(ctx: HealthCtx): Promise<HealthPanel<TokensHealth>> {
   return panelSafe<TokensHealth>('tokens', async () => {
     const { buildFleetRateStatus } = await import('../fleet-rate-status');
@@ -1049,12 +1073,29 @@ async function collectTokens(ctx: HealthCtx): Promise<HealthPanel<TokensHealth>>
       } catch { /* /stats unreadable — leave gateway null (greyed), panel still renders */ }
     }
     let accountsTotal = 0, accountsAvailable = 0, accountsPaused = 0;
+    let poolProjectionFreshestAgeMs: number | null = null;
     try {
       const { loadAccountPool } = await import('../deployment/account-pool-store');
       const pool = await loadAccountPool(ctx.ws);
       ({ accountsTotal, accountsAvailable, accountsPaused } =
         computeAccountsAvailable(pool.accounts, gatewayStatsRaw, ctx.now));
+      // EI-19303809952284205: the independent leg — how long since the gateway landed ANY
+      // usage-window write. Read here because we already have the pool in hand.
+      poolProjectionFreshestAgeMs = computeProjectionFreshestAgeMs(pool.accounts, ctx.now);
     } catch { /* no account pool configured — single bound credential */ }
+    // EI-19303809952284205: the gateway's own durable-path verdict. `undefined` on a gateway build
+    // that predates the field stays null = UNKNOWN, never healthy.
+    const rawDb = gatewayStatsRaw?.db;
+    const gatewayDb: TokensHealth['gatewayDb'] =
+      rawDb && typeof rawDb.ok === 'boolean'
+        ? {
+            ok: rawDb.ok,
+            connectionLevel: rawDb.connectionLevel === true,
+            failingOps: rawDb.failingOps ?? [],
+            unhealthyForMs: rawDb.unhealthyForMs ?? null,
+            lastError: rawDb.lastError ?? null,
+          }
+        : null;
     const data: TokensHealth = {
       gatewayEnabled: ctx.gatewayEnabled,
       gatewayReachable: ctx.gatewayReachable,
@@ -1063,6 +1104,8 @@ async function collectTokens(ctx: HealthCtx): Promise<HealthPanel<TokensHealth>>
       spendUsd: rate.usage.spendUsd, windowMs: rate.usage.windowMs,
       accountsTotal, accountsAvailable, accountsPaused,
       gateway,
+      gatewayDb,
+      poolProjectionFreshestAgeMs,
     };
     const status = tokensStatus(data);
     const spend = `$${data.spendUsd.toFixed(2)}`;

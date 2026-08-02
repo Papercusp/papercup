@@ -60,6 +60,17 @@ const SR_ONLY_STYLE: CSSProperties = {
  * `overlayStyle` to tweak backdrop (e.g., higher z-index/partial scrim).
  * `closeOnOverlayClick` can keep a scrim dismissible even when
  * `closeOnOutsideClick={false}` preserves live persistent chrome.
+ *
+ * `wrapStyle` overrides the CENTERING WRAP, not the content — the one thing
+ * `contentStyle` cannot reach. The wrap insets every modal by 2rem on all
+ * sides, which is right for a centered dialog and wrong for a
+ * fill-the-window one: a `width: 100vw` content still lands 2rem short on
+ * each edge and centered, so it reads as "nearly maximized", which looks like
+ * a layout bug rather than a mode. Pass `{ padding: 0 }` to opt out. Kept as
+ * a style override rather than a `fullBleed` boolean because the wrap is a
+ * plain flex box — alignment and padding are the only things anyone needs
+ * from it, and a boolean would have to grow a case per future caller.
+ * (session-chat-popup-direction-d-2026-08-02 P-001.)
  */
 export function Modal({
   open,
@@ -71,6 +82,7 @@ export function Modal({
   contentStyle,
   contentClassName,
   overlayStyle,
+  wrapStyle,
   zIndex,
   closeOnEscape = true,
   closeOnOutsideClick = true,
@@ -87,6 +99,8 @@ export function Modal({
   contentStyle?: CSSProperties;
   contentClassName?: string;
   overlayStyle?: CSSProperties;
+  /** Overrides the centering wrap (padding/alignment) — see the docblock. */
+  wrapStyle?: CSSProperties;
   zIndex?: number;
   closeOnEscape?: boolean;
   closeOnOutsideClick?: boolean;
@@ -102,7 +116,7 @@ export function Modal({
   // Default to 100 so modals render above the persistent OracleDock (z:80).
   const z = zIndex ?? 100;
   const overlay = { ...OVERLAY_STYLE, zIndex: z, ...overlayStyle };
-  const wrap = { ...CONTENT_WRAP_STYLE, zIndex: z + 1 };
+  const wrap = { ...CONTENT_WRAP_STYLE, zIndex: z + 1, ...wrapStyle };
   const content = { ...CONTENT_STYLE, ...contentStyle };
   const keepAllowedOutsideInteractionOpen = (event: {
     target: EventTarget | null;

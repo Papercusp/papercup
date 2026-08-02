@@ -56,21 +56,23 @@ vi.mock('../../coordination/presence', async (importOriginal) => ({
   setPresenceFleet: vi.fn(async () => undefined),
 }));
 
+// Contract-shaped on purpose. The real readPlanBySlug resolves
+// `{ parsed, archived, row: PlanRow } | null` — `row` is NOT optional. The P-006
+// start gate reads row.templateData / row.template / row.inputSchema, so a stub
+// without `row` throws a TypeError; this stub predated the gate and did exactly
+// that, failing 40 tests at once (EI-19310192267009629).
+// template/inputSchema null => planSchemaSource 'none' => the start gate passes.
+// Individual tests override with mockResolvedValueOnce.
+const readPlanBySlugMock = vi.fn(async (..._args: unknown[]): Promise<any> => ({
+  slug: 'my-plan',
+  parsed: { items: [] },
+  archived: false,
+  row: { planSlug: 'my-plan', template: null, inputSchema: null, templateData: null },
+}));
+
 vi.mock('../../plans/source', () => ({
   resolveHarnessPlansDir: vi.fn(async (slug: string) => ({ harnessSlug: slug, workspaceId: 'ws-1' })),
-  // Contract-shaped on purpose. The real readPlanBySlug resolves
-  // `{ parsed, archived, row: PlanRow } | null` — `row` is NOT optional. The
-  // P-006 start gate reads row.templateData / row.template / row.inputSchema,
-  // so a stub without `row` throws a TypeError that the handler's surrounding
-  // catch disguises as "Could not resolve plan ..." — which then fails
-  // JSON.parse in every assertion here rather than pointing at the real cause.
-  // template/inputSchema null => planSchemaSource 'none' => start gate ready.
-  readPlanBySlug: vi.fn(async () => ({
-    slug: 'my-plan',
-    parsed: { items: [] },
-    archived: false,
-    row: { planSlug: 'my-plan', template: null, inputSchema: null, templateData: null },
-  })),
+  readPlanBySlug: (...args: unknown[]) => readPlanBySlugMock(...args),
 }));
 
 vi.mock('../_shared', () => ({
@@ -775,6 +777,75 @@ describe('prompt-bloat budget (P-013)', () => {
 
   it('each leader standing-job entry carries NO leading number (numbering is render-applied)', () => {
     for (const p of LEADER_STANDING_JOB) expect(p).not.toMatch(/^\s*\d+\./);
+  });
+});
+
+// P-006 start gate (EI-19310192267009629). The gate shipped with NO test exercising
+// its refusal path, which is exactly why a defect in it went unnoticed until it red
+// the release gate. These two pin the behaviour that was missing:
+//   1. an under-specified plan is REFUSED before any terminal opens, and
+//   2. that refusal is reported AS a start-gate refusal — not relabelled
+//      "Could not resolve plan", which is what happened while the gate ran inside
+//      the resolution try/catch and is what sent readers after the database.
+describe('fleet:launch-on-plan handler — P-006 start gate', () => {
+  beforeEach(() => {
+    spawnConsoleMock.mockReset();
+    fetchGatewayHeadroomMock.mockReset();
+    fetchGatewayHeadroomMock.mockResolvedValue({ reachable: false });
+  });
+
+  it('refuses an under-specified plan, names the missing input, and opens NO member terminal', async () => {
+    spawnConsoleMock.mockReturnValue({ status: 'ok', terminal: 'term-1', pid: 123 });
+    readPlanBySlugMock.mockResolvedValueOnce({
+      slug: 'my-plan',
+      parsed: { items: [] },
+      archived: false,
+      row: {
+        planSlug: 'my-plan',
+        template: null,
+        inputSchema: { type: 'object', required: ['target'], properties: { target: { type: 'string' } } },
+        templateData: null,
+      },
+    });
+
+    const res = await tool.handler(
+      { name: 'Alpha Fleet', plan: 'my-plan', harness: 'papercusp', count: 2 } as never,
+      {} as never,
+    );
+    // Refusals from this handler are plain text via err(), not JSON via json().
+    expect((res as any).isError).toBe(true);
+    const text = (res as any).content[0].text as string;
+    expect(text).toMatch(/cannot start/);
+    expect(text).toMatch(/target/);
+    // The whole point of gating HERE is that no member is launched onto a plan
+    // that has no target — N dead sessions for one missing argument.
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
+  });
+
+  it('blames the START GATE when the gate itself throws — never "Could not resolve plan"', async () => {
+    spawnConsoleMock.mockReturnValue({ status: 'ok', terminal: 'term-1', pid: 123 });
+    // A row shape the gate cannot process: template must be a string, so
+    // planSchemaSource's `template?.trim()` throws a TypeError. This is the
+    // exact shape of the original defect — a row field the gate assumed.
+    readPlanBySlugMock.mockResolvedValueOnce({
+      slug: 'my-plan',
+      parsed: { items: [] },
+      archived: false,
+      row: { planSlug: 'my-plan', template: 42, inputSchema: null, templateData: null },
+    });
+
+    const res = await tool.handler(
+      { name: 'Alpha Fleet', plan: 'my-plan', harness: 'papercusp', count: 2 } as never,
+      {} as never,
+    );
+    const text = (res as any).content[0].text as string;
+    expect((res as any).isError).toBe(true);
+    // The regression: while the gate ran inside the resolution try/catch, this
+    // TypeError was relabelled "Could not resolve plan ..." — a false claim
+    // about the plan store that sends every reader after the database.
+    expect(text).not.toMatch(/Could not resolve/);
+    expect(text).toMatch(/start gate/i);
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
   });
 });
 

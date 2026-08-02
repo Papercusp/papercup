@@ -96,12 +96,24 @@ export async function computeFlakiness(opts: FlakinessOpts = {}): Promise<Flakin
   // rows. Same fix, same reasoning: a NULL harness_slug row belongs to no
   // harness, so it can't leak another harness's data and is always safe to
   // include alongside this harness's own explicitly-tagged rows.
+  // EI-19307211919650123: EXCLUDE the release gate's own rows (`source='ci'`).
+  // They record the SAME repo-relative file paths as an agent's local run, but from
+  // a different environment: the checkpoint worktree, under the gate's capped fork
+  // concurrency and GREEN_CHECKPOINT skip-set. Folding both populations into one
+  // flip-rate would make a genuine gate-ONLY failure — the most important signal
+  // there is, a test that fails on committed code and passes for everyone locally —
+  // read as ordinary flakiness and get nominated for quarantine. Gate-vs-local
+  // divergence is a real and valuable question; it is just a DIFFERENT one, and
+  // answering it needs the two populations kept apart. Note this filter must stay
+  // ahead of the NULL-tolerant harness/workspace predicates below: gate rows carry
+  // (harness_slug, workspace_id) = (NULL, NULL), so those deliberately admit them.
   const rows = (await sql`
     SELECT file_path, status, finished_at
       FROM harness_shared.test_runs
      WHERE finished_at IS NOT NULL
        AND finished_at > now() - make_interval(days => ${lookbackDays})
        AND status IN ('pass', 'fail', 'error')
+       AND source <> 'ci'
        AND file_path NOT LIKE ${RESTORED_CHECKOUT_PREFIX + '%'}
        AND ${opts.harnessSlug ? sql`(harness_slug = ${opts.harnessSlug} OR harness_slug IS NULL)` : sql`TRUE`}
        AND ${!opts.harnessSlug && opts.workspaceId ? sql`(workspace_id = ${opts.workspaceId} OR workspace_id IS NULL)` : sql`TRUE`}

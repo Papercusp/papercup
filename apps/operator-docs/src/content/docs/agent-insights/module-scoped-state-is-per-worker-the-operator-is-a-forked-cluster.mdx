@@ -7,6 +7,7 @@ status: active
 documents:
   - packages/operator-core/lib/carry-respawn-marker.ts
   - packages/operator-core/lib/agent-tools/activity/report.ts
+  - packages/operator-core/lib/agent-tools/capability/bash-jobs.ts
   - packages/operator-core/lib/cluster-fork.ts
   - apps/operator/bin/hono-host.ts
 ---
@@ -40,6 +41,31 @@ SessionEnd POST was accepted by worker B, which saw nothing and released everyth
 The damage was quiet in the worst way: `releaseAllWorkItemLeasesForOwner` stamps
 `last_released_by` with **the owner itself**, so downstream the loss reads as a deliberate,
 voluntary release by the agent. A live agent keeps working items a peer is now free to claim.
+
+## The second confirmed instance — and why it matters to *you*, today
+
+`capability:bash`'s job registry is a module-scoped `Map` (`bash-jobs.ts:99`). You start a
+background job with one call and read it with a *different* call, so `capability:bash_output`
+can land on a worker that has never heard of your `bash_id`.
+
+The trap is not the miss — it is the **explanation you get back**. The tool decides between
+`stranded_by_operator_restart` and `job_process_gone` by comparing **operator uptime to the log's
+age**, a test that cannot tell a cross-worker miss from a restart. So on a 16-worker host it will
+tell you, confidently, that some other agent restarted the operator — for a job that is running
+fine on a sibling worker. The file's own comment names only the restart cause, which is how the
+cluster half stayed invisible.
+
+**What to do about it right now:** treat that verdict as a *hypothesis*, and settle it against the
+OS, which has no worker-affinity problem:
+
+```bash
+ps -eo args | grep -F '<a literal fragment of your command>'   # grep -F, exact
+```
+
+A hit means the job is alive and the verdict was wrong. No hit means it really is gone. The log
+tail you get back is trustworthy either way — it comes from a deterministic on-disk path, not from
+the `Map` — and P-008's durable `taskId` + cgroup scope are the other half of the rescue. It is the
+*verdict* that is unsound, not the whole tool.
 
 ## Why it survived review *and* a green unit suite
 
@@ -129,3 +155,6 @@ If you are debugging anything that "works about one time in sixteen", check for 
   legs, two signals — neither one covers the other.
 - `agent-state-stamp-cluster.ts` — an earlier case where cross-worker state had to be solved
   explicitly.
+- **WI-6818** — the class sweep: the "did it happen anywhere else" pass over
+  `packages/operator-core/lib/**`, with the triage rules and the known candidates. Two instances are
+  confirmed so far (`carry-respawn-marker`, fixed; `bash-jobs`, outstanding); the rest is unswept.

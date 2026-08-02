@@ -73,6 +73,22 @@ import {
 } from './lib/identity-leak-patterns.mjs';
 
 const lits = resolveIdentityLiterals();
+/**
+ * ⚠ SUPERPROJECT-ONLY, DELIBERATELY — do NOT convert this to a submodule-recursing
+ * enumerator. WI-6730 swept most scripts/check-*.mjs guards onto
+ * scripts/lib/tracked-files.mjs; the three identity guards are a documented
+ * EXCEPTION, measured rather than assumed: 29 submodule files carry this box's
+ * identity literals, and every one of them is neutralised BY DESIGN at tar time by
+ * bin/stage-source-tree.sh (WI-4419 durable /
+ * desktop-v0-0-12-release-tri-platform#D-004), which redacts identity literals in a
+ * COPY of each must-ship file. The produced bundle carries no real identity, so
+ * enforcing here would red the gate on 29 non-leaks and start exactly the per-file
+ * "treadmill" D-004 rejects in as many words.
+ *
+ * Full rationale + the evidence: the scope note at the top of
+ * scripts/check-no-owner-name-tags.mjs. The enumerator seam exists if policy ever
+ * changes (`listFilesIncludingUntracked()`); the blocker is D-004, not tooling.
+ */
 const entries = Object.entries(lits);
 if (entries.length === 0) {
   console.log('✓ no build-box identity resolved on this host (nothing to hunt) — no-op on a bare/CI box, by design');

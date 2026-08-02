@@ -52,6 +52,14 @@ const ROUTINES = [
   // justify it: one grouped assignments read plus two batched lookups, and it
   // emits only on a CROSSING, so a quiet fleet costs nothing downstream.
   { name: 'fleet-transition-sweep', target: 'system:fleet-transition-sweep', cron: '0 * * * * *', payload: {} },
+  // context-injection-audit-2026-07-28 P-039 / D-012: the commitment-scoped
+  // presence emitter. EVERY MINUTE, and offset to :30 so it does not contend the
+  // same tick as fleet-transition-sweep above — the two read the same assignments
+  // pipeline, and firing them together doubles that read's concurrency for no
+  // latency gain. Its interval IS the detection latency for an agent blocked on a
+  // peer that just died. Cheap when quiet by construction: a sweep with no
+  // liveness CROSSING stops before it reads a single commitment.
+  { name: 'presence-transition-sweep', target: 'system:presence-transition-sweep', cron: '30 * * * * *', payload: {} },
 ] as const;
 
 async function main(): Promise<void> {

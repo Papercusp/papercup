@@ -363,6 +363,7 @@ import './coord-invariant-actions';
 // (member-dead + context-critical), so a leader parks on an event instead of
 // polling leader-brief on a 60s loop.
 import './fleet-transition-sweep-action';
+import './presence-transition-sweep-action';
 import './cross-hive-drain-action';
 import './human-queue-digest-action';
 // platform-ops-batch-2026-07-09 P-001: the daily 09:00 UTC unclaimed-work digest —

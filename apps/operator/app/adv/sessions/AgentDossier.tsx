@@ -111,6 +111,7 @@ export default function AgentDossier({
   entry,
   onClose,
   startingUp = false,
+  launchFailed = false,
 }: {
   ownerId: string;
   entry: RosterEntry | null;
@@ -120,6 +121,10 @@ export default function AgentDossier({
    *  `entry: null`, so without this the rail tells the owner their brand-new
    *  session is "no longer in the live roster". */
   startingUp?: boolean;
+  /** WI-6821: the launch was OBSERVED to die (terminal gone, never registered).
+   *  Without this the rail keeps saying "starting up" about a corpse — the same
+   *  lie as the banner, in the surface right next to it. */
+  launchFailed?: boolean;
 }): React.JSX.Element {
   const lex = useLexicon();
   const { detail, error, loading } = useAgentDetail(ownerId);
@@ -173,6 +178,8 @@ export default function AgentDossier({
 
       {entry ? (
         <div className="pc-dossier__intent">{entry.intent || '(no declared intent)'}</div>
+      ) : launchFailed ? (
+        <div className="pc-dossier__note">This session's launch failed — it never came online.</div>
       ) : startingUp ? (
         <div className="pc-dossier__note">Starting up — this agent hasn't registered yet.</div>
       ) : (

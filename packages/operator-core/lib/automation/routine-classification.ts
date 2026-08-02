@@ -302,6 +302,19 @@ export const TARGET_ROLE_SPEND: Readonly<Record<string, SpendEntry>> = {
     // dispatch, and no DB writes — a pure observer, so a fire cannot bill turns.
     why: 'Reads fleet assignments + wakeability to detect member transitions — observer only, no wake/spawn/dispatch',
   },
+  'system:presence-transition-sweep': {
+    spend: 'none',
+    // Verified against presence-transition-sweep-action.ts before classifying: it
+    // reads the same assignments + wakeability pipeline fleet:assignments uses,
+    // diffs it against the previous snapshot, and on a crossing writes coord
+    // messages to the agents already blocked on the crosser. No spawn and no
+    // dispatch, so a fire cannot bill turns. It DOES write (unlike its
+    // fleet-transition sibling, which only emits awaitable events), and a written
+    // coord line can satisfy a recipient's always-armed inbox-wake — but only for
+    // an agent whose OWN commitment just became void, which is precisely the
+    // moment waking them is correct rather than costly.
+    why: 'Reads presence + resolves blocked-peer commitments, then writes one coord line per blocked agent — no spawn/dispatch',
+  },
   'system:gate-canary-sweep': { spend: 'none', why: 'Sweeps stale gate canaries' },
   'system:autoloop-release-readiness-monitor': { spend: 'none', why: 'Reads release-readiness state' },
   'system:doc-anchor-reconcile': { spend: 'none', why: 'Reconciles doc anchors against HEAD (sha compare)' },

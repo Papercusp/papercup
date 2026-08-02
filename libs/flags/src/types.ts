@@ -667,6 +667,17 @@ export const FLAGS = {
   // (2s), and fail-open. OFF = the clean kill-switch — the block returns to
   // its mem0-only form byte-identically.
   MEMORY_CORPUS_RECALL: "papercusp-memory-corpus-recall",
+  // context-injection-audit-2026-07-28 P-039 / D-012: the presence-transition
+  // emitter — the missing FEEDER for the mid-turn coord rail. Automatic
+  // injection carried zero liveness, and every coord_event_log writer was an
+  // explicit agent action, so a peer dying emitted nothing to the agent blocked
+  // on them. Writes ONE commitment-scoped line (never a roster broadcast) to
+  // each agent whose own awaited reply / lock / held item just became void.
+  // Default ON (derived FLAG_DEFAULTS — not in DARK_FLAGS): additive,
+  // self-budgeting (silent unless a crossing intersects a real commitment) and
+  // fail-soft on every leg. OFF = the clean kill-switch — the rail carries no
+  // presence lines, exactly as before it landed.
+  COORD_PRESENCE_TRANSITION_ALERTS: "papercusp-coord-presence-transition-alerts",
   // self-learning-frontier-2026-06-12 (P-031 / FB-20): Red Queen vaccination —
   // `system:red-queen-drill` plants origin=drill synthetic frictions in the
   // SANDBOX workspace ('red-queen-sandbox'), detects them with a real watchdog

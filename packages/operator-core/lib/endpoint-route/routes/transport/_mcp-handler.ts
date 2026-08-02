@@ -1957,6 +1957,77 @@ const handler = createMcpHandler(
           const dispatchSpawnCtx =
             effectiveWs === spawnRes.ctx.workspaceId ? spawnRes.ctx : { ...spawnRes.ctx, workspaceId: effectiveWs };
           const baseCtx = await buildMcpToolContext(dispatchSpawnCtx, progressToken, sendNotification, projected.pluginName, requestedFormat, requestedStructured, requestedDelta);
+          // Replay lookup (P-046 / EI-68) — a call carrying an idempotencyKey whose
+          // outcome is already stored is answered from the store WITHOUT re-running
+          // the tool. Best-effort: a store outage degrades to normal execution,
+          // never an error.
+          //
+          // Placement (WI-6792): after the profile/hive gates — so a replay grants
+          // nothing a fresh call wouldn't — AND after `baseCtx`, which is the whole
+          // reason it sits here rather than ~30 lines earlier. Returning before
+          // dispatch means the dispatcher's own recordTelemetry never fires, so a
+          // replayed call used to land in NO tool_invocations row at all: it was
+          // indistinguishable from a call that never happened. During the WI-6752
+          // window the mcp-proxy re-sent already-dispatched POSTs, a large share of
+          // traffic was served from replay, and the resulting hole read as a
+          // 13-minute fleet-wide WRITE GAP — several agents chased writes that were
+          // never lost. Recording the row needs a UnifiedToolContext, and building
+          // it here (rather than synthesizing a stub) is what makes the replay row
+          // carry the SAME attribution — role, run/spawn, harness, coord owner,
+          // transport — a fresh call would have written, so the two are directly
+          // comparable in one query. Nothing between the old position and here has
+          // a side effect: effectiveDispatchWorkspace is pure and
+          // buildMcpToolContext is construction plus one registry-backed path read.
+          if (idempotencyKey && !skipReplayForReadOnly) {
+            try {
+              const stored = await lookupStoredMcpResult(replayOwnerKey, idempotencyKey);
+              if (stored) {
+                // Telemetry gets its OWN try/catch, deliberately not the outer one:
+                // a throw caught outside would fall through to normal execution and
+                // RE-RUN the tool — double-applying the very write this branch
+                // exists to protect. A telemetry failure must cost a row, never a
+                // duplicated mutation.
+                try {
+                  // Same window the dispatcher would have resolved (initExecution),
+                  // so a replay row groups with the real calls it accompanies.
+                  const roleQuota = baseCtx.role ? projected.rolesQuota?.[baseCtx.role] : undefined;
+                  await PROJECTED_DEPS.recordInvocation?.({
+                    toolName,
+                    pluginName: projected.pluginName,
+                    ctx: baseCtx,
+                    windowKey:
+                      PROJECTED_DEPS.computeQuotaWindow?.(baseCtx, roleQuota, toolName).key ?? '',
+                    durationMs: Date.now() - callStartedAt,
+                    // NOT 'ok' — quota counts `status='ok'` rows, and a replay does
+                    // no work, so 'ok' would charge the caller for a call that never
+                    // ran. See the RecordInvocationInput['status'] note.
+                    status: 'replayed',
+                    args: dispatchArgs,
+                    // The retry key, so a storm is groupable by the key being
+                    // re-sent — the one field the row cannot otherwise recover.
+                    metadataJson: { replayIdempotencyKey: idempotencyKey },
+                  });
+                } catch (err) {
+                  console.warn(
+                    `[mcp-replay] telemetry failed for ${toolName} (key=${idempotencyKey}): ` +
+                      (err instanceof Error ? err.message : String(err)),
+                  );
+                }
+                return stored as {
+                  content: Array<{ type: 'text'; text: string } | Record<string, unknown>>;
+                  isError?: boolean;
+                  _meta?: Record<string, unknown>;
+                  structuredContent?: unknown;
+                };
+              }
+            } catch (err) {
+
+              console.warn(
+                `[mcp-replay] lookup failed for ${toolName} (key=${idempotencyKey}): ` +
+                  (err instanceof Error ? err.message : String(err)),
+              );
+            }
+          }
           // Legacy first-party tools (defineTool with default
           // requirePrincipal=true) hard-require ctx.principal + ctx.tx
           // in their projected wrapper (see registerLegacyAsProjected

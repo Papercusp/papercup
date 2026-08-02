@@ -35,7 +35,9 @@ import {
   type EmbedFn,
   type GemmaEmbedKind,
 } from '@papercusp/memory';
+import { buildSidecarFirstReranker, type RerankScoreFn } from '@papercusp/rerank';
 import { ensureEmbedSidecar } from './embed-sidecar-spawn';
+import type { RerankSidecarModel } from './embed-sidecar-server';
 
 /** Injectable seams (tests swap the env read + the spawn side effect). */
 export interface SidecarWiringDeps {
@@ -88,4 +90,28 @@ export async function buildSidecarAwareEmbedder(
           ? () => buildHarrierEmbedder({ kind })
           : () => buildLocalEmbedder(),
   });
+}
+
+/**
+ * Build a cross-encoder reranker served by the shared sidecar when one is
+ * configured/spawnable, and in-process otherwise — the reranker analog of
+ * buildSidecarAwareEmbedder, resolving the sidecar URL through the SAME seam
+ * (one sidecar process serves both /embed and /rerank, so a host that already
+ * runs one gets reranking through it for free).
+ *
+ * The contract is deliberately identical: with a sidecar the sidecar is
+ * REQUIRED (brief retries, then throw — no silent in-process failover that
+ * would duplicate a ~150M-param model per process and hide sidecar sickness);
+ * the in-process engine is the sole engine only when none is configured.
+ *
+ * That throw is not a hazard to search: @papercusp/rerank's single fail-safe
+ * seam converts it into "keep retrieval order" at the ranking layer, so an
+ * outage degrades instead of erroring — it just stops being invisible.
+ */
+export async function buildSidecarAwareReranker(
+  model: RerankSidecarModel = 'rerank',
+  deps: SidecarWiringDeps = defaultDeps,
+): Promise<RerankScoreFn> {
+  const url = await resolveProcessSidecarUrl(deps);
+  return buildSidecarFirstReranker({ model, url });
 }

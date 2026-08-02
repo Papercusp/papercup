@@ -20,6 +20,12 @@ vi.mock('../../work-items', () => ({ getWorkItem: (...a: unknown[]) => getWorkIt
 vi.mock('../../work-item-dispatch-states', () => ({
   ISSUE_TERMINAL_STATES: ['resolved', 'closed', 'deprecated', 'done'],
 }));
+// The SQL-backed probes' deps, mocked so the anti-escape pin below can prove BOTH
+// concurrent legs resolved the MOCKED module rather than the real one.
+const sql = vi.fn(async () => [{ plan_exists: true, decision_exists: true }]);
+const getOrgPg = vi.fn(() => ({ sql }));
+vi.mock('@papercusp/db-org', () => ({ getOrgPg: (...a: unknown[]) => getOrgPg(...a) }));
+vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
 
 beforeEach(() => {
   getMessageById.mockReset();
@@ -169,6 +175,33 @@ describe('a BARE work-item premise asserts existence — never completion (D-026
     const [stamp] = await resolvePremiseStamps(['WI-6650'], probes);
     expect(stamp!.status).toBe('unresolvable');
     expect(stamp!.ref).toBe('WI-6650');
+  });
+});
+
+// THE SIBLING ANTI-ESCAPE PIN — the half the original fix missed.
+//
+// The work-item probe was hardened by sharing ONE memoized import promise, because
+// two concurrently-resolved refs that each opened their own `import()` could land on
+// different module instances and one would escape `vi.mock` into the real database.
+// `workspaceScopedSql` — used by planDecision, planItem AND fact — kept the unshared
+// shape for another day, one function below the comment explaining why it must not.
+//
+// The failure mode is the reason this pin asserts a CALL COUNT rather than a verdict:
+// an escaping leg reads a real row that usually looks plausible, so the verdict stays
+// green until production data happens to disagree, and the red then lands on whoever
+// is unlucky rather than on whoever caused it.
+describe('the SQL-backed probes share one import — a concurrent leg cannot escape to the real DB', () => {
+  it('resolves two plan-decision refs concurrently with BOTH legs on the mocked store', async () => {
+    const [a, b] = await resolvePremiseStamps(
+      ['some-plan#D-001', 'some-plan#D-002'],
+      premiseProbes({ workspaceId: 'ws-test' }),
+    );
+    // One getOrgPg call per probe. A leg that resolved an unmocked module instance
+    // would drop this to 1 while still returning a plausible-looking stamp.
+    expect(getOrgPg).toHaveBeenCalledTimes(2);
+    expect(sql).toHaveBeenCalledTimes(2);
+    expect(a!.status).toBe('holds');
+    expect(b!.status).toBe('holds');
   });
 });
 

@@ -196,10 +196,7 @@ export function premiseProbes(scope: PremiseProbeScope = {}): PremiseProbes {
     sql: <T = unknown>(s: TemplateStringsArray, ...v: unknown[]) => Promise<T>;
     ws: string;
   }> {
-    const [{ getOrgPg }, { activeWorkspaceId }] = await Promise.all([
-      import('@papercusp/db-org'),
-      import('../../workspace-registry'),
-    ]);
+    const { getOrgPg, activeWorkspaceId } = await loadSqlDeps();
     const { sql } = getOrgPg();
     return {
       sql: sql as unknown as <T = unknown>(s: TemplateStringsArray, ...v: unknown[]) => Promise<T>,

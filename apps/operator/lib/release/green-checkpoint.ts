@@ -1745,11 +1745,36 @@ export function sanitizeForkNodeOptions(
 export function buildGreenCheckpointEnv(
   base: string | null,
   source: NodeJS.ProcessEnv = process.env,
+  /** EI-19307211919650123: this gate run's own id, stamped onto every test_runs row
+   *  it produces (`run_group_id`) so one run's per-file outcomes are queryable as a
+   *  unit. Optional — omitted ⇒ rows still record as `source='ci'`, just ungrouped. */
+  runId?: string,
 ): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...source };
   for (const k of Object.keys(env)) {
     if (k.startsWith('PAPERCUSP_') || HOST_ENV_STRIP.includes(k)) delete env[k];
   }
+  // EI-19307211919650123 — MUST be set AFTER the strip above (these are the gate
+  // declaring its OWN identity, which is exactly what the strip is protecting; cf.
+  // GREEN_CHECKPOINT / PC_HEAVY_RELEASE_GATE below).
+  //
+  // The vitest reporter that writes harness_shared.test_runs is auto-wired into
+  // every workspace by defineVitestConfig, so it ALREADY runs under the gate — its
+  // rows were simply indistinguishable from an agent's local run, and in fact were
+  // dropped outright (see classifyGitEntry in libs/test-config). Stamping the source
+  // is what makes a gate red retrospectively auditable: "which files failed in run X,
+  // and did the same ones fail in X-1" becomes a query instead of archaeology over
+  // ~55min-old logs. `commit_sha` needs no stamp — the reporter resolves it with
+  // `git rev-parse HEAD` in the checkout it ran in, which for the gate IS the judged
+  // candidate.
+  //
+  // Deliberately NOT stamping PAPERCUSP_TEST_RUN_HARNESS / PAPERCUSP_WORKSPACE_ID:
+  // the Tests-tab history query requires both to be non-NULL, so leaving them unset
+  // keeps gate rows out of the per-harness tab (they are about the checkpoint tree,
+  // not a hive's own suite) while `test_runs_source_idx (source, finished_at DESC)`
+  // still indexes exactly the "recent gate runs" read this exists to serve.
+  env.PAPERCUSP_TEST_RUN_SOURCE = 'ci';
+  if (runId) env.PAPERCUSP_TEST_RUN_GROUP = runId;
   // The bg-host's 128 GiB `--max-old-space-size` must NOT ride into the test forks
   // (8 × 128 GiB → no GC → ENOMEM under fleet load). Pin a sane per-fork heap.
   env.NODE_OPTIONS = sanitizeForkNodeOptions(env.NODE_OPTIONS);
@@ -3393,7 +3418,8 @@ export function realCheckpointDeps(
       // host's identity (all PAPERCUSP_* + HOST_ENV_STRIP), pins AFFECTED_BASE to the
       // last green, caps vitest parallelism + retries once to absorb load-flakes, and
       // marks GREEN_CHECKPOINT=1 (its doc records the incidents behind each rule).
-      const env = buildGreenCheckpointEnv(base);
+      // EI-19307211919650123: `runId` groups every test_runs row this run writes.
+      const env = buildGreenCheckpointEnv(base, process.env, runId);
       // EI-78 `heavy`: the single biggest CPU consumer on this box outside the fleet itself
       // (measured 274s-2773s per run over 19 runs on 2026-07-26).
       const r = await exec(cmd, args, { cwd: treeDir, env, allowNonZero: true, heavy: true });

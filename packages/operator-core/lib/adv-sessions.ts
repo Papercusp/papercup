@@ -300,19 +300,141 @@ export const DISPLAY_TERMINAL_LAUNCH = 'terminal';
 export const STARTING_LAUNCH_WINDOW_SEC = 15 * 60;
 
 /**
- * Terminal-spawned psu launches that have not ended, within the boot window
- * (WI-6376 / owner ask 2026-07-25: "I want the sessions to show up there whether
- * or not they are launched with the new session button or if they are launched
- * with the psu utility").
+ * Is `pid` a live OS process? Signal 0 = existence check; EPERM = alive-not-ours.
+ * Deliberately a local copy of adv-roster's identical helper rather than a shared
+ * import: adv-roster imports THIS module, so importing it back closes a cycle.
+ */
+function isPidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return (e as NodeJS.ErrnoException)?.code === 'EPERM';
+  }
+}
+
+/**
+ * A terminal launch we can PROVE never made it: its window process is gone and
+ * it never registered a session. This is the OBSERVATION that WI-6821 was
+ * missing — until it existed, a dead launch and a still-booting one were
+ * indistinguishable, so the roster advertised the corpse as `starting` for the
+ * whole window and the only thing that ever corrected the copy was a 60s
+ * client-side timer (a guess, not evidence).
+ *
+ * `gnome-terminal --wait` is what makes this sound: the recorded pid is a
+ * liveness handle for the terminal WINDOW's lifetime, so its absence is real
+ * evidence rather than an inference from elapsed time.
+ *
+ * Both wrong answers are avoided deliberately:
+ *  - `sessionId != null` ⇒ it registered, so it booted; never call that failed.
+ *  - `pid == null` ⇒ no handle, hence NO EVIDENCE — leave it alone rather than
+ *    guess (the status quo is a spinner; a false failure is a fabricated
+ *    diagnosis, which is the very bug class this item is about).
+ *  - a RECYCLED pid can only read alive, never gone — so pid-wrap (≈daily on
+ *    this box under fleet load) can only make us miss a dead launch, never
+ *    declare a live one dead. The error direction is the safe one.
+ *
+ * Host-safety: a pid is only meaningful on its own host, and `adv_sessions` has
+ * no host column — but a `display='terminal'` row is LOCAL BY CONSTRUCTION
+ * (`spawnInTerminal` spawns on the operator's own box), so the probe is sound
+ * without one. If terminal launches ever become remote, this invariant breaks
+ * and the row needs a host before it can be probed.
+ *
+ * Pure + injected `pidAlive` (the local idiom — see release-checkpoint-launch)
+ * so the decision is unit-testable without real processes.
+ */
+export function isDeadTerminalLaunch(
+  row: AdvSessionRow,
+  pidAlive: (pid: number) => boolean = isPidAlive,
+): boolean {
+  if (row.display !== DISPLAY_TERMINAL_LAUNCH) return false;
+  if (row.endedAt != null) return false; // already reconciled
+  if (row.sessionId != null) return false; // it registered — it booted
+  if (row.pid == null) return false; // no handle → no evidence
+  return !pidAlive(row.pid);
+}
+
+/**
+ * Does PERSISTED state say this launch failed? Pure — no probe. A terminal row
+ * that has ended while never having registered a session is, by definition, a
+ * launch that died before coming online.
+ *
+ * Derived rather than carried as a transient flag on purpose: "failed" then has
+ * exactly ONE definition, shared by the reconciler that writes it and every
+ * reader that renders it, and it survives a reload because it is a fact about
+ * the row rather than about one process's memory.
+ */
+export function isFailedTerminalLaunch(row: AdvSessionRow): boolean {
+  return (
+    row.display === DISPLAY_TERMINAL_LAUNCH && row.endedAt != null && row.sessionId == null
+  );
+}
+
+/**
+ * Stamp the launches we can prove are dead, and reflect the stamp in the rows we
+ * return so the caller renders the truth on THIS poll rather than the next one.
+ *
+ * ⚠ `exit_code` is deliberately left NULL. We never reap this process — it is not
+ * our child — so we never observe a status, and inventing a sentinel would be the
+ * same fabrication this item exists to remove. The durable marker for "died before
+ * registering" is `session_id IS NULL` (see isFailedTerminalLaunch), which is a
+ * thing we actually know.
+ *
+ * The write is best-effort and the returned rows are corrected in memory first,
+ * so a failed stamp degrades to "re-detected on the next poll", never to a wrong
+ * answer.
+ */
+async function reconcileDeadTerminalLaunches(
+  rows: AdvSessionRow[],
+  pidAlive: (pid: number) => boolean = isPidAlive,
+): Promise<AdvSessionRow[]> {
+  const dead = rows.filter((r) => isDeadTerminalLaunch(r, pidAlive));
+  if (dead.length === 0) return rows;
+  const endedAt = new Date().toISOString();
+  for (const r of dead) r.endedAt = endedAt;
+  try {
+    const { sql } = getOrgPg();
+    await sql`
+      UPDATE harness_shared.adv_sessions
+         SET ended_at = now()
+       WHERE id = ANY(${dead.map((r) => r.id)}::bigint[])
+         AND ended_at IS NULL
+         AND session_id IS NULL
+    `;
+  } catch (e) {
+    warnUnlessMissingTable(e, 'reconcileDeadTerminalLaunches');
+  }
+  return rows;
+}
+
+/**
+ * Terminal-spawned psu launches inside the boot window (WI-6376 / owner ask
+ * 2026-07-25: "I want the sessions to show up there whether or not they are
+ * launched with the new session button or if they are launched with the psu
+ * utility").
  *
  * Between the spawn and psu's own coord-presence registration there is no
  * presence row, so the presence-primary roster cannot see the session at all —
  * the board showed it NOWHERE. This is the durable representation that covers
  * that window; the caller drops any row whose owner has since come online, so a
  * booted session is rendered once, from presence, not twice.
+ *
+ * Ended rows are included when they NEVER REGISTERED (WI-6821). A launch that
+ * booted and later ended has a session_id and belongs in the `ended` list; one
+ * that ended having never registered is a FAILED LAUNCH, and dropping it here
+ * would leave the modal to fall through to "No recent Claude session found for
+ * this agent" — replacing a spinner with a shrug. Keeping it in the tier, marked
+ * failed, is what finally delivers the intent STARTING_LAUNCH_WINDOW_SEC was
+ * written for: "a launch which never booted is VISIBLE as a failure rather than
+ * silently absent".
  */
 export async function listStartingTerminalLaunches(
-  opts: { workspaceId?: string | null; limit?: number; withinSec?: number } = {},
+  opts: {
+    workspaceId?: string | null;
+    limit?: number;
+    withinSec?: number;
+    pidAlive?: (pid: number) => boolean;
+  } = {},
 ): Promise<AdvSessionRow[]> {
   const limit = opts.limit ?? 50;
   const withinSec = opts.withinSec ?? STARTING_LAUNCH_WINDOW_SEC;
@@ -325,13 +447,13 @@ export async function listStartingTerminalLaunches(
              display, launch_argv, launched_at, started_at, ended_at, exit_code
         FROM harness_shared.adv_sessions
        WHERE display = ${DISPLAY_TERMINAL_LAUNCH}
-         AND ended_at IS NULL
+         AND (ended_at IS NULL OR session_id IS NULL)
          AND started_at > now() - (${withinSec}::int * interval '1 second')
          AND (${ws}::text IS NULL OR workspace_id = ${ws})
        ORDER BY started_at DESC
        LIMIT ${limit}
     `;
-    return rows.map(mapAdvSessionRow);
+    return await reconcileDeadTerminalLaunches(rows.map(mapAdvSessionRow), opts.pidAlive);
   } catch (e) {
     warnUnlessMissingTable(e, 'listStartingTerminalLaunches');
     return [];

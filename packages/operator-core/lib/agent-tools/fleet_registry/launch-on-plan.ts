@@ -1084,7 +1084,18 @@ export default defineTool({
     // `found.row` undefined, and the resulting TypeError was reported as a
     // resolution failure in 40 tests at once (EI-19310192267009629).
     if (planSlug && planRow) {
-      const gate = startVerdictForRow(planRow, planSlug);
+      let gate: ReturnType<typeof startVerdictForRow>;
+      try {
+        gate = startVerdictForRow(planRow, planSlug);
+      } catch (e: any) {
+        // Name the component that actually failed. Anything thrown here is a
+        // defect in the start gate itself, NOT a plan-resolution problem — say
+        // so, so the reader looks at the gate instead of at the plan store.
+        return err(
+          `Plan start gate failed for \`${planSlug}\` — this is a defect in the start gate, ` +
+            `not a plan-resolution problem: ${e?.message ?? e}`,
+        );
+      }
       if (!gate.ok) {
         return err(
           `Plan \`${planSlug}\` cannot start: ${gate.refusal.hint}` +

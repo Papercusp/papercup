@@ -83,6 +83,25 @@ const h = vi.hoisted(() => {
     txEvents: [] as string[],
     /** Replay receipts the handler asked to persist. */
     replayStores: [] as Array<{ idempotencyKey: string; result: unknown }>,
+    /**
+     * WI-6792 seam: the stored outcome `lookupStoredMcpResult` finds, or null for
+     * "no stored result" (the default — every other case in this file must keep
+     * executing its tool normally).
+     */
+    storedReplay: null as { content: Array<Record<string, unknown>>; _meta?: Record<string, unknown> } | null,
+    /**
+     * WI-6792: every telemetry row the handler/dispatcher recorded. A replayed
+     * call returns before dispatch, so this is the ONLY place its row can come
+     * from — an empty log for a replay is exactly the invisible-replay bug.
+     */
+    invocations: [] as Array<{
+      toolName: string;
+      status: string;
+      windowKey: string;
+      ctx: { role?: string; runId?: string | null; spawnId?: string; harnessSlug?: string };
+      args?: unknown;
+      metadataJson?: Record<string, unknown> | null;
+    }>,
     handlers: new Map<string, (req: unknown, extra: unknown) => Promise<unknown>>(),
     verifySpawnParams: vi.fn(
       async (_u: unknown): Promise<{ ok: boolean; reason?: string }> => ({ ok: true }),
@@ -150,10 +169,32 @@ vi.mock('../routes/transport/_mcp-result-replay', async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
   return {
     ...actual,
-    lookupStoredMcpResult: async (): Promise<null> => null,
+    // WI-6792: `null` unless a case arms h.storedReplay — the real lookup tags
+    // the envelope `_meta.replayed`, so mirror that here.
+    lookupStoredMcpResult: async (): Promise<Record<string, unknown> | null> =>
+      h.storedReplay
+        ? { ...h.storedReplay, _meta: { ...(h.storedReplay._meta ?? {}), replayed: true } }
+        : null,
     storeMcpResult: async (a: { idempotencyKey: string; result: unknown }): Promise<void> => {
       h.txEvents.push('store');
       h.replayStores.push({ idempotencyKey: a.idempotencyKey, result: a.result });
+    },
+  };
+});
+// WI-6792: observe the telemetry rows without a live PG. Spread the real deps so
+// quota windowing / envelope / override behavior stays REAL — only the terminal
+// write is captured. A plain function (not vi.fn()) so the suite-wide
+// vi.resetAllMocks() cannot strip it out from under the assertions.
+vi.mock('../../projected-tool-deps', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  const realDeps = actual.PROJECTED_DEPS as Record<string, unknown>;
+  return {
+    ...actual,
+    PROJECTED_DEPS: {
+      ...realDeps,
+      recordInvocation: async (input: (typeof h.invocations)[number]): Promise<void> => {
+        h.invocations.push(input);
+      },
     },
   };
 });
@@ -393,6 +434,8 @@ beforeEach(() => {
   h.commitFailure = null;
   h.txEvents.length = 0;
   h.replayStores.length = 0;
+  h.storedReplay = null;
+  h.invocations.length = 0;
   h.scopedClampFlag.value = false;
   delete process.env.PAPERCUSP_REQUIRE_SPAWN_SIG;
   _resetVerifiedSpawns(); // every case reuses spawn='spawn-1' — isolate the real verified-spawn tracker per test

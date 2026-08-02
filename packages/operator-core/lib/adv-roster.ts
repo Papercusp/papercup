@@ -22,7 +22,7 @@ import { listFederatedPresence } from './agent-tools/coordination/federated-pres
 import { machineFingerprint } from './identity/device-keychain-id';
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
-import { advSessionsByCoordOwner, type AdvSessionRow } from './adv-sessions';
+import { advSessionsByCoordOwner, isFailedTerminalLaunch, type AdvSessionRow } from './adv-sessions';
 import { deriveLiveness, LIVE_MS, type Liveness } from './liveness';
 import { resolveSessionStates } from './agent-tools/coordination/liveness-oracle';
 import type { SessionState } from './agent-tools/coordination/presence-wakeability';
@@ -204,6 +204,17 @@ export interface RosterEntry {
   declaredUnclaimed: boolean;
   // ── adv_sessions enrichment (null when no joinable launch row) ──
   hasLaunchRecord: boolean;
+  /**
+   * WI-6821: this launch is OBSERVED dead — its terminal process is gone and it
+   * never registered a session. Only the `starting` tier ever sets it, and only
+   * from persisted state (isFailedTerminalLaunch), so it survives a reload.
+   *
+   * Optional on purpose: every other RosterEntry producer describes a session
+   * that was never a pending launch, and making it required would strand every
+   * fixture that builds an entry. Absent/undefined means "not a failed launch",
+   * never "unknown" — a reader may treat falsy as fine.
+   */
+  launchFailed?: boolean;
   advSessionId: number | null;
   /** Live plan (presence) preferred; falls back to the launch-time plan. */
   currentPlanSlug: string | null;
@@ -777,13 +788,20 @@ export function startingLaunchesToRosterEntries(
       launch: launchHintFromArgv(r.launchArgv),
       ownerId: r.coordOwnerId,
     });
+    // WI-6821: a launch whose terminal died before it ever registered. Read from
+    // PERSISTED state, so it is the same verdict after a reload and identical for
+    // every surface — the board, the modal and the pui cannot disagree about it.
+    const failed = isFailedTerminalLaunch(r);
     return {
       // Fall back to a synthetic id only for a pre-WI-6363 row that carries no
       // pre-pinned owner; such a row can still be SEEN, it just cannot be opened.
       ownerId: r.coordOwnerId ?? `starting:adv:${r.id}`,
       label: r.label ?? `${r.agent ?? 'session'}${r.planSlug ? ` · ${r.planSlug}` : ''}`,
       source: r.agent ?? '',
-      intent: 'starting up',
+      // Present tense for a live boot; past tense once we have OBSERVED the
+      // death. Saying "starting up" about a corpse is the lie WI-6821 filed.
+      intent: failed ? 'launch failed' : 'starting up',
+      launchFailed: failed,
       currentFiles: [],
       host: localHost,
       pid: r.pid,

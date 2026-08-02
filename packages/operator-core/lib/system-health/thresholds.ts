@@ -253,8 +253,41 @@ export function tokensStatus(d: TokensHealth): PanelStatus {
   // signal that PRECEDES the wedge it would otherwise silently ride to (the wedge itself stays crit above).
   if (d.gateway?.saturated || d.gateway?.sustainedThrottle || d.gateway?.slotLeak) return 'warn';
   if (d.gateway?.admissionStarvationRisk) return 'warn';
+  // Early warn on the same projection-stall signal, well before the crit floor — the fast leg
+  // (`gatewayDb`) normally catches this within minutes, so reaching even the warn floor means the
+  // gateway is not self-reporting and something is genuinely wrong with the write path.
+  if (projectionWriteStalled(d, POOL_PROJECTION_STALE_WARN_MS)) return 'warn';
   if (d.pausedBuckets > 0 || d.accountsPaused > 0) return 'warn';
   return 'ok';
+}
+
+/**
+ * Warn floor for "the gateway has landed no usage-window write in this long, despite fleet spend".
+ * Comfortably past `DRAIN_UTIL_STALE_MS` (10min, where the drain selector already discounts a
+ * reading) so the two signals don't fire on top of each other.
+ */
+export const POOL_PROJECTION_STALE_WARN_MS = 30 * 60_000;
+/**
+ * Crit floor for the same. Deliberately conservative: the projector only writes on a ≥0.03
+ * utilization move or a window-reset roll, so under genuinely light traffic a legitimate gap can run
+ * to tens of minutes and a tighter floor would cry wolf. The FAST leg (`gatewayDb.ok === false`,
+ * ~3min) is what turns this class into a minute-one signal; this one is the backstop for a gateway
+ * that cannot speak for itself, where being right matters more than being early.
+ */
+export const POOL_PROJECTION_STALE_CRIT_MS = 2 * 60 * 60_000;
+
+/**
+ * Has the usage-window write path stalled past `floorMs`? Pure, and shared by both the warn and crit
+ * branches so the two can never drift apart.
+ *
+ * Requires `spendUsd > 0`: with no fleet LLM traffic in the lookback window there are no upstream
+ * responses to observe, so an aged projection is CORRECT idleness, not a fault. Alarming on a quiet
+ * box is how a detector teaches its reader to ignore it.
+ */
+export function projectionWriteStalled(d: TokensHealth, floorMs: number): boolean {
+  if (d.poolProjectionFreshestAgeMs === null) return false; // nothing ever observed — a fresh pool
+  if (d.spendUsd <= 0) return false; // no traffic to have produced a write
+  return d.poolProjectionFreshestAgeMs >= floorMs;
 }
 
 /** Watchdog. warn = firing repeatedly (a prompt bug to fix); the watchdog firing
