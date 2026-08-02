@@ -1,0 +1,295 @@
+/**
+ * claim-spec-delta.test.ts — agent-epistemics-2026-08-02 P-005.
+ *
+ * `scheduler:preview_spec_delta` answers "which items would this spec revision drop or pick
+ * up". Two properties make that answer trustworthy, and both are invisible to a DB-backed
+ * integration test against a quiescent table — which is exactly why they are pinned here:
+ *
+ *  1. ONE SNAPSHOT. Both sides must be observed in a single REPEATABLE READ transaction. Read
+ *     separately, a peer's claim landing between them appears as a row present in the first
+ *     read and absent from the second — indistinguishable from "your proposed spec excludes
+ *     this item". A preview whose purpose is deciding whether to narrow a lane must not invent
+ *     narrowing the FLEET caused. (This is the sibling of WI-5947, which was that same bug in
+ *     work_items:claimable, where it produced `claimableCount:1, returned:0` and got an
+ *     innocent claim path reported as broken.)
+ *
+ *  2. ONE FLOOR PASS. The ~13 claim floors do not depend on the filter — only `spec_match`
+ *     does — so the population is materialized ONCE and decorated with two match columns.
+ *     Materializing twice would be correct but double the cost of the expensive part, and the
+ *     measured cost of one such pass against a real wide spec is ~6.2s (EI-18802055183255275),
+ *     i.e. two would sit at the per-statement timeout. A regression here is a timeout, not a
+ *     wrong answer, so nothing else would catch it.
+ *
+ * Plus the pure attribution + warning judgments, which are what a reader ACTS on.
+ *
+ * Run: cd packages/operator-core && npx vitest run lib/scheduler/claim-spec-delta.test.ts
+ */
+import { describe, expect, it } from 'vitest';
+import { readClaimSpecDelta, projectDeltaRow, type ClaimSpecDeltaSqlRow } from './get-next';
+import { deriveSpecDeltaWarnings } from '../agent-tools/scheduler/preview_spec_delta';
+import { DEFAULT_CLAIM_SPEC } from './claim-spec';
+
+type Log = string[];
+
+/** postgres-js-shaped fake (same shape as claimability-snapshot.test.ts): a tagged template
+ *  and `.unsafe`/`.json`. Awaiting records the statement and yields no rows; INTERPOLATING a
+ *  fragment records nothing — so the log is exactly the set of statements really executed. */
+function makeHandle(log: Log, opts: { failAtQuery?: number } = {}) {
+  let queries = 0;
+  const handle = ((strings: TemplateStringsArray) => {
+    const text = strings.join('?').replace(/\s+/g, ' ').trim();
+    return {
+      then(resolve: (rows: unknown[]) => void, reject: (err: unknown) => void) {
+        queries += 1;
+        log.push(`QUERY:${text}`);
+        if (opts.failAtQuery === queries) {
+          reject(new Error('delta read failed'));
+          return;
+        }
+        resolve([]);
+      },
+    };
+  }) as unknown as Record<string, unknown> & ((s: TemplateStringsArray) => unknown);
+  handle.unsafe = (text: string) => ({
+    then(resolve: (rows: unknown[]) => void) {
+      log.push(`EXEC:${text}`);
+      resolve([]);
+    },
+  });
+  handle.json = (v: unknown) => ({ __json: v });
+  return handle;
+}
+
+function makePool(opts: { failAtQuery?: number } = {}) {
+  const poolLog: Log = [];
+  const txLog: Log = [];
+  let beginCalls = 0;
+  const pool = makeHandle(poolLog) as unknown as Record<string, unknown>;
+  pool.begin = async (fn: (tx: unknown) => Promise<unknown>) => {
+    beginCalls += 1;
+    return fn(makeHandle(txLog, opts));
+  };
+  return {
+    client: pool as never,
+    poolLog,
+    txLog,
+    get beginCalls() {
+      return beginCalls;
+    },
+    get queries() {
+      return txLog.filter((l) => l.startsWith('QUERY:'));
+    },
+  };
+}
+
+const CURRENT = { filter: { field: 'kind', op: '=', value: 'bug' } } as const;
+const PROPOSED = { filter: { field: 'kind', op: '=', value: 'change' } } as const;
+const OPTS = { harness: 'papercup', assignee: 'probe' };
+const READ = { limit: 25 };
+
+describe('readClaimSpecDelta — both sides in ONE snapshot (P-005)', () => {
+  it('opens exactly one transaction and issues every statement on it', async () => {
+    const pool = makePool();
+    await readClaimSpecDelta(CURRENT, PROPOSED, { ...OPTS, client: pool.client }, READ);
+    expect(pool.beginCalls).toBe(1);
+    // Nothing may leak onto a fresh pool checkout: a statement issued there observes its own
+    // snapshot, which is the entire defect this transaction removes.
+    expect(pool.poolLog).toEqual([]);
+    expect(pool.txLog.length).toBeGreaterThan(0);
+  });
+
+  it('sets REPEATABLE READ before the first data statement', async () => {
+    const pool = makePool();
+    await readClaimSpecDelta(CURRENT, PROPOSED, { ...OPTS, client: pool.client }, READ);
+    // PG rejects SET TRANSACTION once a query has run — and rejects it SILENTLY as far as the
+    // caller is concerned, leaving the reads on READ COMMITTED. Order is the whole guarantee.
+    const firstQuery = pool.txLog.findIndex((l) => l.startsWith('QUERY:'));
+    const isolation = pool.txLog.findIndex((l) => l.includes('REPEATABLE READ'));
+    expect(isolation).toBeGreaterThanOrEqual(0);
+    expect(isolation).toBeLessThan(firstQuery);
+    expect(pool.txLog.some((l) => l.startsWith('EXEC:SET LOCAL statement_timeout'))).toBe(true);
+  });
+
+  it('materializes the floor population ONCE, not once per side', async () => {
+    const pool = makePool();
+    await readClaimSpecDelta(CURRENT, PROPOSED, { ...OPTS, client: pool.client }, READ);
+    const creates = pool.queries.filter((q) => q.includes('CREATE TEMP TABLE'));
+    expect(creates).toHaveLength(1);
+    // ON COMMIT DROP: a pooled connection must not carry the snapshot into its next checkout.
+    expect(creates[0]).toContain('ON COMMIT DROP');
+  });
+
+  it('reads counts and BOTH row lists off that one materialization', async () => {
+    const pool = makePool();
+    await readClaimSpecDelta(CURRENT, PROPOSED, { ...OPTS, client: pool.client }, READ);
+    // 1 CREATE + counts + excluded rows + admitted rows.
+    expect(pool.queries).toHaveLength(4);
+    const [, counts, excluded, admitted] = pool.queries;
+    expect(counts).toContain('FILTER (WHERE in_current AND NOT in_proposed)');
+    expect(counts).toContain('FILTER (WHERE in_proposed AND NOT in_current)');
+    expect(excluded).toContain('WHERE in_current AND NOT in_proposed');
+    expect(admitted).toContain('WHERE in_proposed AND NOT in_current');
+  });
+
+  it('THROWS on a failed read rather than reporting a zero delta', async () => {
+    // A synthesised "no change" is the single most dangerous degraded answer this tool could
+    // give: it waves through exactly the starving revision it exists to catch.
+    await expect(
+      readClaimSpecDelta(CURRENT, PROPOSED, { ...OPTS, client: makePool({ failAtQuery: 2 }).client }, READ),
+    ).rejects.toThrow(/delta read failed/);
+  });
+
+  it('reports an empty reading as all-zero rather than undefined', async () => {
+    const reading = await readClaimSpecDelta(CURRENT, PROPOSED, { ...OPTS, client: makePool().client }, READ);
+    expect(reading).toMatchObject({
+      currentClaimable: 0,
+      proposedClaimable: 0,
+      retained: 0,
+      newlyExcludedCount: 0,
+      newlyAdmittedCount: 0,
+      newlyExcluded: [],
+      newlyAdmitted: [],
+      truncated: { newlyExcluded: false, newlyAdmitted: false },
+    });
+  });
+
+  it('scopes the candidate population to the UNION of both sides\' states', async () => {
+    // A revision that changes ONLY `states` must be a first-class delta. Materializing under
+    // one side's states alone would make the other side's rows structurally invisible and
+    // report "no change" for the single most common starvation cause.
+    const pool = makePool();
+    await readClaimSpecDelta(
+      { ...CURRENT, states: ['open'] },
+      { ...PROPOSED, states: ['failing'] },
+      { ...OPTS, client: pool.client },
+      READ,
+    );
+    const create = pool.queries.find((q) => q.includes('CREATE TEMP TABLE'));
+    expect(create).toBeDefined();
+    // Per-side membership is then tested inside the derived projection, not in the WHERE.
+    const counts = pool.queries[1];
+    expect(counts).toContain('in_current');
+    expect(counts).toContain('in_proposed');
+  });
+
+  it('orders each side by its OWN spec, so the head of each list is what get_next would serve first', async () => {
+    const pool = makePool();
+    await readClaimSpecDelta(
+      { ...CURRENT, spec: DEFAULT_CLAIM_SPEC },
+      { ...PROPOSED, spec: DEFAULT_CLAIM_SPEC },
+      { ...OPTS, client: pool.client },
+      READ,
+    );
+    const [, , excluded, admitted] = pool.queries;
+    expect(excluded).toContain('ORDER BY');
+    expect(admitted).toContain('ORDER BY');
+  });
+});
+
+describe('projectDeltaRow — attributing a moved row to filter vs states', () => {
+  const base: ClaimSpecDeltaSqlRow = {
+    id: 'WI-1',
+    kind: 'bug',
+    title: 't',
+    status: 'open',
+    severity: 'major',
+    plan: null,
+    feature_order: '3',
+    created_ts: '1700000000000',
+    spec_match: true,
+    proposed_match: true,
+    status_in_current: true,
+    status_in_proposed: true,
+  };
+
+  it('blames the filter when only the filter disagrees', () => {
+    expect(projectDeltaRow({ ...base, proposed_match: false }, 'excluded').cause).toBe('filter');
+    expect(projectDeltaRow({ ...base, spec_match: false }, 'admitted').cause).toBe('filter');
+  });
+
+  it('blames states when only the claimable-status floor moved', () => {
+    expect(projectDeltaRow({ ...base, status_in_proposed: false }, 'excluded').cause).toBe('states');
+    expect(projectDeltaRow({ ...base, status_in_current: false }, 'admitted').cause).toBe('states');
+  });
+
+  it('reports both when the revision changed both dimensions', () => {
+    expect(
+      projectDeltaRow({ ...base, proposed_match: false, status_in_proposed: false }, 'excluded').cause,
+    ).toBe('both');
+  });
+
+  it('normalizes the numeric ordering keys postgres returns as strings', () => {
+    // feature_order/created_ts arrive as strings from postgres-js; a caller sorting or
+    // comparing them as-is gets lexical order, which is the documented severity/risk_tier
+    // footgun in a different costume.
+    const row = projectDeltaRow({ ...base, proposed_match: false }, 'excluded');
+    expect(row.featureOrder).toBe(3);
+    expect(row.createdTs).toBe(1700000000000);
+    expect(projectDeltaRow({ ...base, proposed_match: false, feature_order: null, created_ts: null }, 'excluded'))
+      .toMatchObject({ featureOrder: null, createdTs: null });
+  });
+});
+
+describe('deriveSpecDeltaWarnings — the judgments a leader must not miss', () => {
+  const reading = (over: Partial<Parameters<typeof deriveSpecDeltaWarnings>[0]>) =>
+    ({
+      currentClaimable: 100,
+      proposedClaimable: 100,
+      retained: 100,
+      newlyExcludedCount: 0,
+      newlyAdmittedCount: 0,
+      newlyExcluded: [],
+      newlyAdmitted: [],
+      truncated: { newlyExcluded: false, newlyAdmitted: false },
+      ...over,
+    }) as Parameters<typeof deriveSpecDeltaWarnings>[0];
+
+  it('is silent on a no-op revision', () => {
+    expect(deriveSpecDeltaWarnings(reading({}))).toEqual([]);
+  });
+
+  it('shouts STARVATION when the proposal empties a nonempty lane', () => {
+    const w = deriveSpecDeltaWarnings(reading({ proposedClaimable: 0, newlyExcludedCount: 100 }));
+    expect(w.join(' ')).toMatch(/STARVATION/);
+  });
+
+  it('does NOT cry starvation when the lane was already empty', () => {
+    // Nothing was lost — the spec is not the reason the lane is empty, and a false alarm here
+    // trains the reader to skip the warning that matters.
+    expect(deriveSpecDeltaWarnings(reading({ currentClaimable: 0, proposedClaimable: 0 }))).toEqual([]);
+  });
+
+  it('flags a collapse short of zero exactly once (never alongside STARVATION)', () => {
+    const w = deriveSpecDeltaWarnings(reading({ proposedClaimable: 10, newlyExcludedCount: 90 }));
+    expect(w).toHaveLength(1);
+    expect(w[0]).toMatch(/COLLAPSE/);
+    expect(w[0]).toMatch(/90%/);
+  });
+
+  it('does not flag a modest narrowing', () => {
+    expect(deriveSpecDeltaWarnings(reading({ proposedClaimable: 80, newlyExcludedCount: 20 }))).toEqual([]);
+  });
+
+  it('names the issue-family states trap when every drop is a states drop', () => {
+    const row = { cause: 'states' as const } as never;
+    const w = deriveSpecDeltaWarnings(
+      reading({ proposedClaimable: 99, newlyExcludedCount: 1, newlyExcluded: [row] }),
+    );
+    expect(w.join(' ')).toMatch(/never 'todo'/);
+  });
+
+  it('stays silent about the states trap when the row list was truncated', () => {
+    // The claim is "EVERY drop is a states drop" — a capped list cannot support it, and
+    // overclaiming from a sample is the failure mode this whole plan is about.
+    const row = { cause: 'states' as const } as never;
+    const w = deriveSpecDeltaWarnings(
+      reading({
+        proposedClaimable: 99,
+        newlyExcludedCount: 500,
+        newlyExcluded: [row],
+        truncated: { newlyExcluded: true, newlyAdmitted: false },
+      }),
+    );
+    expect(w.join(' ')).not.toMatch(/never 'todo'/);
+  });
+});

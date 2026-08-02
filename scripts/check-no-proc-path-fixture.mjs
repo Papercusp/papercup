@@ -88,17 +88,13 @@ export function classifyProcSegment(segment) {
   return 'made-up';
 }
 
-/**
- * Find every made-up `/proc/...` literal in a source text.
- * @returns array of { segment, literal } — empty when the file is clean.
- */
-export function findProcFixtureOffenders(text) {
+function scanText(text) {
   const offenders = [];
   // Anchored on the opening quote: only a literal that BEGINS with /proc/ counts,
   // so '/no/such/proc/root' (a mid-path occurrence) is correctly ignored.
   const re = /(['"`])\/proc\/([^/'"`\n]*)/g;
   let m;
-  while ((m = re.exec(stripComments(text))) !== null) {
+  while ((m = re.exec(text)) !== null) {
     const segment = m[2];
     if (classifyProcSegment(segment) === 'made-up') {
       offenders.push({ segment, literal: `/proc/${segment}` });
@@ -107,8 +103,26 @@ export function findProcFixtureOffenders(text) {
   return offenders;
 }
 
+/**
+ * Find every made-up `/proc/...` literal in a source text.
+ * @returns array of { segment, literal } — empty when the file is clean.
+ *
+ * Two passes, because `stripComments` copies the whole file and is the dominant
+ * cost on a big one: scan the RAW text first and bail when it is clean. That is
+ * exact, not an approximation — stripping comments can only REMOVE matches, never
+ * introduce one, so "no match in raw" implies "no match in stripped". Only a file
+ * that already looks like an offender pays for the strip + rescan.
+ */
+export function findProcFixtureOffenders(text) {
+  if (scanText(text).length === 0) return [];
+  return scanText(stripComments(text));
+}
+
 const SCANNED_EXT = /\.(ts|tsx|mjs|cjs|js|jsx)$/;
-const SKIP_DIR = /(^|\/)(node_modules|dist|build|\.next|coverage|_retired)\//;
+// `env-sidecars/` holds checked-in esbuild BUNDLES (one is 44MB). Linting a generated
+// artifact for a source-level idiom is meaningless — the source it was built from is
+// scanned already — and reading/regexing it dominated the whole scan.
+const SKIP_DIR = /(^|\/)(node_modules|dist|build|\.next|coverage|_retired|env-sidecars)\//;
 
 /**
  * Candidate pre-filter: a file with no `/proc/` substring at all cannot contain an

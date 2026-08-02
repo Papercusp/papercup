@@ -1708,7 +1708,7 @@ export async function readClaimSpecDelta(
   })) as ClaimSpecDeltaReading;
 }
 
-interface ClaimSpecDeltaSqlRow {
+export interface ClaimSpecDeltaSqlRow {
   id: string;
   kind: string;
   title: string | null;
@@ -1730,8 +1730,11 @@ interface ClaimSpecDeltaSqlRow {
  *
  * A row is only ever passed here when it moved, so its floors passed on the side it was on;
  * the move therefore decomposes exactly into the two spec-settable dimensions.
+ *
+ * Exported for the unit test: the attribution is the part of this feature a reader ACTS on
+ * (a `states` cause and a `filter` cause have entirely different fixes), and it is pure.
  */
-function projectDeltaRow(r: ClaimSpecDeltaSqlRow, side: 'excluded' | 'admitted'): ClaimSpecDeltaRow {
+export function projectDeltaRow(r: ClaimSpecDeltaSqlRow, side: 'excluded' | 'admitted'): ClaimSpecDeltaRow {
   const byFilter = side === 'excluded' ? r.spec_match && !r.proposed_match : r.proposed_match && !r.spec_match;
   const byStates =
     side === 'excluded'

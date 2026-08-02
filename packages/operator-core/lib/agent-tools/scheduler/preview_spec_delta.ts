@@ -27,7 +27,50 @@ import {
   fleetSpecBeeKey,
 } from '../../scheduler/claim-spec-store';
 import { validateClaimSpec } from '../../scheduler/claim-spec';
-import { readClaimSpecDelta } from '../../scheduler/get-next';
+import { readClaimSpecDelta, type ClaimSpecDeltaReading } from '../../scheduler/get-next';
+
+/**
+ * The prominent warnings a delta earns — pure, so the judgment is unit-testable without a DB
+ * (mirrors set_claim_spec's own exported `claimSpecInertWarning` / `claimSpecWakeabilityWarning`).
+ *
+ * These are the two shapes a leader must not miss in a wall of counts. STARVATION is the one
+ * that has actually bitten this fleet: a lane re-steered to 0 is indistinguishable from a
+ * drained one, so members go idle beside real work and the leader reads it as "nothing left
+ * to do". COLLAPSE is the softer form of the same thing. The third is diagnostic rather than
+ * a hazard — when EVERY listed drop is caused by `states`, the author almost certainly hit
+ * the issue-family token trap rather than writing the filter they meant.
+ */
+export function deriveSpecDeltaWarnings(reading: ClaimSpecDeltaReading): string[] {
+  const warnings: string[] = [];
+  const starves = reading.proposedClaimable === 0 && reading.currentClaimable > 0;
+  if (starves) {
+    warnings.push(
+      `STARVATION: this revision takes the lane from ${reading.currentClaimable} claimable to 0. ` +
+        'A starved lane is indistinguishable from a drained one — members go idle beside real work. ' +
+        'set_claim_spec will refuse this write without confirmCollapse:true.',
+    );
+  } else if (reading.currentClaimable > 0 && reading.proposedClaimable < reading.currentClaimable / 4) {
+    warnings.push(
+      `COLLAPSE: claimable drops ${reading.currentClaimable} → ${reading.proposedClaimable} (losing ${Math.round(
+        (1 - reading.proposedClaimable / reading.currentClaimable) * 100,
+      )}% of the lane). Confirm the narrowing is intended before writing it.`,
+    );
+  }
+  // Only assertable over the rows we actually listed — a truncated list cannot speak for the
+  // rows it did not return, so this stays silent rather than overclaiming.
+  if (
+    reading.newlyExcluded.length > 0 &&
+    !reading.truncated.newlyExcluded &&
+    reading.newlyExcluded.every((r) => r.cause === 'states')
+  ) {
+    warnings.push(
+      'Every excluded item is caused by `states`, not by the filter — the classic issue-family trap: ' +
+        "bug/change/task rows are status 'open', never 'todo', so a spec carrying the feature-family " +
+        'token matches ~nothing while still validating cleanly.',
+    );
+  }
+  return warnings;
+}
 
 export default defineTool({
   name: 'scheduler:preview_spec_delta',
@@ -132,39 +175,7 @@ export default defineTool({
 
     const net = reading.proposedClaimable - reading.currentClaimable;
     const unchanged = reading.newlyExcludedCount === 0 && reading.newlyAdmittedCount === 0;
-    // The two shapes worth shouting about. STARVATION is the one that has actually bitten
-    // this fleet (a lane re-steered to 0 looks exactly like a drained queue, and the members
-    // go idle beside real work); a collapse short of 0 is the softer form of the same thing.
-    const starves = reading.proposedClaimable === 0 && reading.currentClaimable > 0;
-    const collapses =
-      !starves && reading.currentClaimable > 0 && reading.proposedClaimable < reading.currentClaimable / 4;
-    const statesOnly =
-      reading.newlyExcludedCount > 0 &&
-      reading.newlyExcluded.length > 0 &&
-      reading.newlyExcluded.every((r) => r.cause === 'states');
-
-    const warnings: string[] = [];
-    if (starves) {
-      warnings.push(
-        `STARVATION: this revision takes the lane from ${reading.currentClaimable} claimable to 0. ` +
-          'A starved lane is indistinguishable from a drained one — members go idle beside real work. ' +
-          'set_claim_spec will refuse this write without confirmCollapse:true.',
-      );
-    }
-    if (collapses) {
-      warnings.push(
-        `COLLAPSE: claimable drops ${reading.currentClaimable} → ${reading.proposedClaimable} (${Math.round(
-          (1 - reading.proposedClaimable / reading.currentClaimable) * 100,
-        )}% of the lane). Confirm the narrowing is intended before writing it.`,
-      );
-    }
-    if (statesOnly) {
-      warnings.push(
-        'Every listed exclusion is caused by `states`, not by the filter — the classic issue-family ' +
-          "trap: bug/change/task rows are status 'open', never 'todo', so a spec carrying the " +
-          'feature-family token matches ~nothing while still validating cleanly.',
-      );
-    }
+    const warnings = deriveSpecDeltaWarnings(reading);
 
     return {
       data: {
