@@ -7,11 +7,10 @@
  * same discipline `no-raw-spawn-guard.test.ts` applies to its own predicate.
  */
 import { describe, it, expect } from 'vitest';
-// @ts-expect-error — .mjs guard script, no type declarations
 import { isUnenrolledDetachedSpawn, ALLOWLIST } from '../../../../scripts/check-no-unenrolled-detached-spawn.mjs';
 
-const check = isUnenrolledDetachedSpawn as (rel: string, src: string) => boolean;
-const allow = ALLOWLIST as Map<string, string>;
+const check = isUnenrolledDetachedSpawn;
+const allow = ALLOWLIST;
 
 const RAW = `
 import { spawn } from 'node:child_process';

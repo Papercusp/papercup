@@ -17,7 +17,7 @@
  */
 
 import { execSync, execFileSync } from 'node:child_process';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 /**
@@ -832,12 +832,43 @@ export function runTscBaselineGate({
 
   let tscOutput = '';
   let tscThrew = false;
+  // WI-7017 — throttle + coalesce the COMPILE, not the whole gate.
+  //
+  // `--files` is a GATE-scoping flag that never reaches tsc (`tscCommand` is a
+  // per-project constant; see lint-tsc.mjs's TSC_COMMAND). But the npm scripts used to
+  // wrap the whole CLI in pc-heavy, so `--files=a.ts` and `--files=b.ts` presented
+  // DIFFERENT argv and pc-heavy's (cwd, argv, tree-token) coalescing key never matched.
+  // N agents each paid for a byte-identical ~104s compile while the semaphore queued 49
+  // deep (measured 2026-08-02: load1 186, three concurrent identical compiles).
+  //
+  // Wrapping only the compile makes argv IDENTICAL across callers, so concurrent runs
+  // coalesce onto ONE compile. Each caller still filters the RAW diagnostics by its own
+  // `--files` and computes its OWN exit code below, so a caller-specific VERDICT is never
+  // shared — that sharing is what made naive coalescing-key widening unsafe (a red for
+  // file A is a green for a caller who named only file B).
+  //
+  // pc-heavy's own stderr is deliberately kept OUT of the captured stream (only tsc's own
+  // `2>&1` is captured, inside the wrapped child). If pc-heavy's chatter were captured, a
+  // pc-heavy failure BEFORE tsc ever ran would leave `tscOutput` non-empty with zero
+  // parseable diagnostics — which reads as "0 errors" and, under `--update`, would ratchet
+  // every file's baseline to 0 and mask everything. The `!tscOutput` toolchain-failure
+  // guard below is what catches that, and it only works if the stream stays clean.
+  //
+  // Fail-open (matching pc-heavy's own contract): no wrapper on disk ⇒ run tsc directly.
+  // Admission control must never be the reason a legitimate typecheck cannot start.
+  const pcHeavyPath = resolve(root, 'scripts', 'pc-heavy.sh');
   try {
-    tscOutput = execSync(`${tscCommand} 2>&1`, {
-      cwd: root,
-      encoding: 'utf-8',
-      maxBuffer: 64 * 1024 * 1024,
-    });
+    tscOutput = existsSync(pcHeavyPath)
+      ? execFileSync('bash', [pcHeavyPath, 'sh', '-c', `${tscCommand} 2>&1`], {
+          cwd: root,
+          encoding: 'utf-8',
+          maxBuffer: 64 * 1024 * 1024,
+        })
+      : execSync(`${tscCommand} 2>&1`, {
+          cwd: root,
+          encoding: 'utf-8',
+          maxBuffer: 64 * 1024 * 1024,
+        });
   } catch (e) {
     tscThrew = true;
     tscOutput = e.stdout || '';

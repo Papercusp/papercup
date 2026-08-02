@@ -12,6 +12,7 @@ import {
   dropReplicationLogState,
   dropReplicationLiveness,
   setReplicationStallRecoveryReporterForTests,
+  setOpenStallEiProbeForTests,
   setReplicationRepairHandler,
   setDhtUniverseAssertion,
   _resetReplicationLivenessForTests,
@@ -1296,5 +1297,194 @@ describe('WI-3684 repair-on-detect: the per-harness repair-handler seam', () => 
     dropReplicationLiveness(WS, HS); // handle closed — handler must die with it
     driveZombieEpisode(on); // fresh state re-alarms after grace
     expect(repairs).toHaveLength(0);
+  });
+});
+
+/**
+ * WI-7011 — a recovery path gated on IN-PROCESS state cannot resolve a DURABLE
+ * artifact filed by a PREVIOUS process.
+ *
+ * Every test above drives an alarm and a recovery inside ONE process, so the
+ * `alarmedX` flag is always set when recovery arrives. The bug lives in the case
+ * those tests structurally cannot express: the alarm was raised by a process that
+ * has since EXITED. A fresh process starts with `alarmedX = false`, so the log
+ * recovering reports nothing and the durable EI stays open forever. Measured
+ * 2026-08-02: 43 of 47 open non-drain EIs had been silent 5.7–27.5 days, 36 of
+ * them on the two most-RESTARTED harnesses.
+ *
+ * A restart is simulated exactly as the module itself defines one — a cleared
+ * registry (`_resetReplicationLivenessForTests`, which is what `afterEach` does)
+ * — so "fresh process" here means the same thing it means in production.
+ */
+describe('WI-7011: durable-EI rehydration across a process restart', () => {
+  function collectRecovery(): {
+    recoveries: ReplicationStallEpisode[];
+    onRecovery: (e: ReplicationStallEpisode) => void;
+  } {
+    const recoveries: ReplicationStallEpisode[] = [];
+    return { recoveries, onRecovery: (e) => recoveries.push(e) };
+  }
+
+  /** The probe is fire-and-forget; let its microtask chain settle. */
+  const settle = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
+
+  /** Records what the probe was asked, so we can assert the read is BOUNDED. */
+  function stubProbe(isOpen: boolean): { asked: string[] } {
+    const asked: string[] = [];
+    setOpenStallEiProbeForTests(async (e) => {
+      asked.push(`${e.kind}:${e.logKeyHex.slice(0, 4)}`);
+      return isOpen;
+    });
+    return { asked };
+  }
+
+  it('no_replicator: a healthy log with an EI left open by a PREVIOUS process reports the recovery this process never saw', async () => {
+    const { recoveries, onRecovery } = collectRecovery();
+    const { asked } = stubProbe(true);
+
+    // Fresh process (empty registry), first-ever sample, log is perfectly healthy.
+    // There is NO alarm→recovered transition here — that is the entire point.
+    sampleReplicationLiveness(
+      WS,
+      HS,
+      { keyHex: KEY, knownLength: 5, mergedPosition: 5, peersCount: 1 },
+      { graceMs: GRACE, nowMs: 1_000_000, onStallEpisode: () => {}, onRecovery },
+    );
+    await settle();
+
+    // All THREE axes are probed on a healthy first sight, by design: a restart
+    // could have orphaned an EI on any of them, and this log reads healthy on
+    // all three. Assert this axis specifically rather than the whole set.
+    expect(asked).toContain('no_replicator:aaaa');
+    const noRepl = recoveries.filter((r) => r.kind === 'no_replicator');
+    expect(noRepl).toHaveLength(1);
+    // The stall began in a process that is gone, so its duration is genuinely
+    // unknown — report 0 rather than inventing one from this process's clock.
+    expect(noRepl[0]!.stalledForMs).toBe(0);
+    expect(noRepl[0]!.detail).toContain('previous process');
+  });
+
+  it('reports NOTHING when no EI is open — the overwhelmingly common case must stay silent', async () => {
+    const { recoveries, onRecovery } = collectRecovery();
+    stubProbe(false);
+
+    sampleReplicationLiveness(
+      WS,
+      HS,
+      { keyHex: KEY, knownLength: 5, mergedPosition: 5, peersCount: 1 },
+      { graceMs: GRACE, nowMs: 1_000_000, onStallEpisode: () => {}, onRecovery },
+    );
+    await settle();
+
+    expect(recoveries).toHaveLength(0);
+  });
+
+  it('probes at most ONCE per (log, axis) per process however many passes run — the merge pass is hot', async () => {
+    const { onRecovery } = collectRecovery();
+    const { asked } = stubProbe(false);
+
+    // 25 passes of a steadily healthy log. Gating the probe on "healthy &&
+    // !alarmed" ALONE (with no latch) would read PG on every one of them —
+    // that regression is what this asserts against, and it is why the latch
+    // exists rather than just the flag check.
+    for (let i = 0; i < 25; i++) {
+      sampleReplicationLiveness(
+        WS,
+        HS,
+        { keyHex: KEY, knownLength: 5, mergedPosition: 5, peersCount: 1 },
+        { graceMs: GRACE, nowMs: 1_000_000 + i * 1_000, onStallEpisode: () => {}, onRecovery },
+      );
+    }
+    await settle();
+
+    // One read per axis, not per pass: no_replicator + connected_never + frozen.
+    expect(asked.filter((a) => a.startsWith('no_replicator'))).toHaveLength(1);
+    expect(asked.filter((a) => a.startsWith('connected_never'))).toHaveLength(1);
+    expect(asked.filter((a) => a.startsWith('frozen'))).toHaveLength(1);
+  });
+
+  it('connected_never_replicated rehydrates even though its recovery BRANCH is unreachable in a fresh process', async () => {
+    const { recoveries, onRecovery } = collectRecovery();
+    stubProbe(true);
+
+    // The in-process recovery branch for this axis requires
+    // `connectedNeverReplSinceMs !== null` — a zombie window THIS process opened.
+    // A fresh process has it null, so that branch can never run after a restart
+    // and the orphaned EI could never clear through it. The probe must not ride
+    // that branch; this test fails if it does.
+    sampleReplicationLiveness(
+      WS,
+      HS,
+      { keyHex: KEY, knownLength: 5, mergedPosition: 5, peersCount: 1, swarmConnections: 2 },
+      { graceMs: GRACE, nowMs: 1_000_000, onStallEpisode: () => {}, onRecovery },
+    );
+    await settle();
+
+    expect(recoveries.map((r) => r.kind)).toContain('connected_never_replicated');
+  });
+
+  it('frozen rehydrates when ingest is healthy', async () => {
+    const { recoveries, onRecovery } = collectRecovery();
+    stubProbe(true);
+
+    sampleReplicationLiveness(
+      WS,
+      HS,
+      { keyHex: KEY, knownLength: 5, mergedPosition: 5, peersCount: 1 },
+      { graceMs: GRACE, nowMs: 1_000_000, onStallEpisode: () => {}, onRecovery },
+    );
+    await settle();
+
+    expect(recoveries.map((r) => r.kind)).toContain('frozen');
+  });
+
+  it('does NOT probe an axis this process alarmed and resolved itself — no wasted read, and no duplicate report racing the async resolve', async () => {
+    const { recoveries, onRecovery } = collectRecovery();
+    const { asked } = stubProbe(true);
+    let now = 1_000_000;
+    const sample = (peers: number) =>
+      sampleReplicationLiveness(
+        WS,
+        HS,
+        { keyHex: KEY, knownLength: 5, mergedPosition: 5, peersCount: peers },
+        { graceMs: GRACE, nowMs: now, onStallEpisode: () => {}, onRecovery },
+      );
+
+    sample(1); // healthy first sight — probes (finds an open EI, reports once)
+    await settle();
+    const afterFirst = recoveries.filter((r) => r.kind === 'no_replicator').length;
+
+    now += 1_000;
+    sample(0); // detached
+    now += GRACE + 1;
+    sample(0); // alarms in-process
+    now += 1_000;
+    sample(1); // genuine in-process recovery — first-hand knowledge
+    await settle();
+
+    // Exactly ONE more no_replicator recovery (the genuine one), and no second
+    // probe: this process watched the whole episode, so there is nothing to
+    // rehydrate, and a probe racing the in-flight resolve would still read the
+    // EI as open and report it twice.
+    expect(recoveries.filter((r) => r.kind === 'no_replicator')).toHaveLength(afterFirst + 1);
+    expect(asked.filter((a) => a.startsWith('no_replicator'))).toHaveLength(1);
+  });
+
+  it('a probe that REJECTS never breaks the merge pass — the sampler must stay total', async () => {
+    const { recoveries, onRecovery } = collectRecovery();
+    setOpenStallEiProbeForTests(() => Promise.reject(new Error('pg down')));
+
+    expect(() =>
+      sampleReplicationLiveness(
+        WS,
+        HS,
+        { keyHex: KEY, knownLength: 5, mergedPosition: 5, peersCount: 1 },
+        { graceMs: GRACE, nowMs: 1_000_000, onStallEpisode: () => {}, onRecovery },
+      ),
+    ).not.toThrow();
+    await settle();
+
+    // Degrades to exactly the pre-fix behavior: the EI is left for manual triage.
+    expect(recoveries).toHaveLength(0);
   });
 });

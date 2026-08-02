@@ -96,6 +96,10 @@ const ENROLMENT_IMPORTS = [
  *
  * Exported for the unit test — the guard's own correctness is a property that must
  * be verified, not assumed from a green run on a tree that happens to be clean.
+ *
+ * @param {string} relPath - Repo-relative path, as it appears in ALLOWLIST.
+ * @param {string} source - The file's full source text.
+ * @returns {boolean}
  */
 export function isUnenrolledDetachedSpawn(relPath, source) {
   if (!/detached:\s*true/.test(source)) return false;

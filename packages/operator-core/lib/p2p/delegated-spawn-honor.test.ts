@@ -25,7 +25,9 @@ import {
 } from './delegated-spawn-honor';
 import {
   honorAccountRoutingMode,
-  localClaudeLoginPresent,
+  probeLocalClaudeLogin,
+  loginEvidenceWasProbed,
+  classifyHonorSpawnFailure,
   resolveHonorAccount,
 } from './honor-account-resolution';
 import { seatOfferId } from './offer-store-publish';
@@ -326,6 +328,46 @@ describe('honorSpawnRequestFromProjection', () => {
         action: 'delegated-seat:spawn',
         offerId: 'spawnreq-0123456789abcdef',
         refusal: expect.objectContaining({ code: 'spawn_failed' }),
+      }),
+    );
+  });
+
+  it('a member that BOOTS and dies on auth ⇒ refused:account_unfulfillable, not spawn_failed (EI-19331694139523035)', async () => {
+    // The live rig failure end-to-end: the pool is empty, honor substitutes the
+    // local login, the member launches, joins, then dies on auth. Before this the
+    // requester was told `honored (1 member(s) opened)`; now the honoring host
+    // refuses with the code that names WHICH knob to turn.
+    const resolveHonorAccount = vi.fn(async () => ({
+      ok: true as const,
+      account: 'default',
+      downgradedFrom: 'auto' as const,
+      loginEvidence: 'credentials-file' as const,
+      note: 'downgraded --account=auto → default',
+    }));
+    const { d, setDisposition, emitReceipt } = deps({
+      resolveHonorAccount,
+      spawnMembers: vi.fn(async () => ({
+        opened: 0,
+        failed: 2,
+        firstError:
+          'headless member launched but its agent command died at boot (exit 1) — log tail: ' +
+          'Failed to authenticate: OAuth session expired and could not be refreshed',
+      })),
+    });
+    expect(await honorSpawnRequestFromProjection(ARGS, d)).toEqual({
+      outcome: 'refused',
+      code: 'account_unfulfillable',
+    });
+    expect(setDisposition).toHaveBeenLastCalledWith(
+      WS, HOME, UID_A, 'spawnreq-0123456789abcdef', 'refused:account_unfulfillable', { expect: 'honoring' }, undefined,
+    );
+    expect(emitReceipt).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'refusal',
+        refusal: expect.objectContaining({
+          code: 'account_unfulfillable',
+          detail: expect.stringContaining('SUBSTITUTED its local system login'),
+        }),
       }),
     );
   });
@@ -747,36 +789,113 @@ describe('honorAccountRoutingMode (WI-5316, pure — mirrors psu accountRoutingM
   });
 });
 
-describe('localClaudeLoginPresent (WI-5316)', () => {
-  it('darwin ⇒ assumed present (Keychain login, not the disk bundle)', () => {
-    expect(localClaudeLoginPresent({ platform: 'darwin', fileExists: () => false })).toBe(true);
+describe('probeLocalClaudeLogin (WI-5316 + EI-19331694139523035)', () => {
+  const home = '/home/x';
+  const CRED = '/home/x/.claude/.credentials.json';
+  const NOW = 1_785_662_000_000;
+  const bundle = (o: Record<string, unknown>) => JSON.stringify({ claudeAiOauth: o });
+
+  it('darwin ⇒ usable, but the evidence SAYS it was assumed rather than probed', () => {
+    const r = probeLocalClaudeLogin({ platform: 'darwin', fileExists: () => false });
+    expect(r.usable).toBe(true);
+    expect(r.evidence).toBe('assumed-darwin-keychain');
+    expect(loginEvidenceWasProbed(r.evidence)).toBe(false);
+    expect(r.detail).toMatch(/ASSUMED, not verified/);
   });
-  it('linux/wsl ⇒ true iff ~/.claude/.credentials.json exists', () => {
-    const home = '/home/x';
-    expect(
-      localClaudeLoginPresent({ platform: 'linux', home, fileExists: (p) => p === '/home/x/.claude/.credentials.json' }),
-    ).toBe(true);
-    expect(localClaudeLoginPresent({ platform: 'linux', home, fileExists: () => false })).toBe(false);
-    expect(localClaudeLoginPresent({ platform: 'win32', home, fileExists: () => false })).toBe(false);
+
+  it('linux/wsl with no bundle ⇒ absent (a probed negative)', () => {
+    const r = probeLocalClaudeLogin({ platform: 'linux', home, fileExists: () => false });
+    expect(r).toMatchObject({ usable: false, evidence: 'absent' });
+    expect(loginEvidenceWasProbed(r.evidence)).toBe(true);
+    expect(probeLocalClaudeLogin({ platform: 'win32', home, fileExists: () => false }).usable).toBe(false);
+  });
+
+  it('an UNEXPIRED bundle ⇒ usable, and the detail refuses to overclaim', () => {
+    const r = probeLocalClaudeLogin({
+      platform: 'linux',
+      home,
+      nowMs: NOW,
+      fileExists: (p) => p === CRED,
+      readFile: () => bundle({ expiresAt: NOW + 45 * 60_000, refreshToken: 'rt', subscriptionType: 'max' }),
+    });
+    expect(r).toMatchObject({ usable: true, evidence: 'credentials-file' });
+    expect(r.detail).toMatch(/does NOT prove it authenticates/);
+  });
+
+  it('EXPIRED with NO refresh token ⇒ definitively dead, so NOT usable (refuse rather than spawn a doomed member)', () => {
+    const r = probeLocalClaudeLogin({
+      platform: 'linux',
+      home,
+      nowMs: NOW,
+      fileExists: (p) => p === CRED,
+      readFile: () => bundle({ expiresAt: NOW - 90 * 60_000 }),
+    });
+    expect(r).toMatchObject({ usable: false, evidence: 'expired-unrefreshable' });
+    expect(r.detail).toMatch(/expired 90 min ago/);
+  });
+
+  it('EXPIRED but holding a refresh token ⇒ still usable (a refresh may succeed — never call it dead)', () => {
+    const r = probeLocalClaudeLogin({
+      platform: 'linux',
+      home,
+      nowMs: NOW,
+      fileExists: (p) => p === CRED,
+      readFile: () => bundle({ expiresAt: NOW - 90 * 60_000, refreshToken: 'rt' }),
+    });
+    expect(r).toMatchObject({ usable: true, evidence: 'credentials-file' });
+  });
+
+  it('unreadable / unparseable / no expiry ⇒ UNKNOWN, never "dead" (fails toward attempting the spawn)', () => {
+    const unreadable = probeLocalClaudeLogin({
+      platform: 'linux',
+      home,
+      fileExists: (p) => p === CRED,
+      readFile: () => { throw new Error('EACCES'); },
+    });
+    expect(unreadable).toMatchObject({ usable: true, evidence: 'credentials-file-unverifiable' });
+    const garbage = probeLocalClaudeLogin({ platform: 'linux', home, fileExists: (p) => p === CRED, readFile: () => 'not json' });
+    expect(garbage).toMatchObject({ usable: true, evidence: 'credentials-file-unverifiable' });
+    const noExpiry = probeLocalClaudeLogin({ platform: 'linux', home, fileExists: (p) => p === CRED, readFile: () => bundle({ accessToken: 'x' }) });
+    expect(noExpiry).toMatchObject({ usable: true, evidence: 'credentials-file-unverifiable' });
+  });
+
+  it('THE WIN RIG CASE: a present, unexpired bundle probes usable — proving no static check can predict a working login', () => {
+    // Measured 2026-08-02: expiresAt 1785661012884 (08:56:52Z), member died 08:11:25Z
+    // with "OAuth session expired and could not be refreshed" — i.e. INSIDE its
+    // validity window. The probe is therefore permitted to say "usable" here; it is
+    // classifyHonorSpawnFailure's job to make the resulting death attributable.
+    const r = probeLocalClaudeLogin({
+      platform: 'linux',
+      home,
+      nowMs: 1_785_658_285_108, // the real spawn time, 08:11:25Z
+      fileExists: (p) => p === CRED,
+      readFile: () => bundle({ expiresAt: 1_785_661_012_884, refreshToken: 'rt', subscriptionType: 'max' }),
+    });
+    expect(r.usable).toBe(true);
   });
 });
 
 describe('resolveHonorAccount (WI-5316, pure core)', () => {
   const withPool = (ids: string[], login = true) => ({
     listPoolAccountIds: async () => ids,
-    localLoginPresent: () => login,
+    probeLocalLogin: () => (login
+      ? { usable: true, evidence: 'credentials-file' as const, detail: 'bundle present' }
+      : { usable: false, evidence: 'absent' as const, detail: 'no claude credentials bundle' }),
   });
 
   it('default route is always fulfillable (no pool needed)', async () => {
     const listPoolAccountIds = vi.fn(async () => [] as string[]);
-    expect(await resolveHonorAccount('default', { listPoolAccountIds, localLoginPresent: () => true })).toEqual({
+    const probeLocalLogin = vi.fn(() => ({ usable: true, evidence: 'credentials-file' as const, detail: 'bundle present' }));
+    expect(await resolveHonorAccount('default', { listPoolAccountIds, probeLocalLogin })).toEqual({
       ok: true,
       account: 'default',
     });
-    expect(await resolveHonorAccount('', { listPoolAccountIds, localLoginPresent: () => false })).toEqual({
+    expect(await resolveHonorAccount('', { listPoolAccountIds, probeLocalLogin })).toEqual({
       ok: true,
       account: 'default',
     });
+    // never even probes the login — the default route does not depend on it
+    expect(probeLocalLogin).not.toHaveBeenCalled();
     // never even looks at the pool
     expect(listPoolAccountIds).not.toHaveBeenCalled();
   });
@@ -785,10 +904,27 @@ describe('resolveHonorAccount (WI-5316, pure core)', () => {
     expect(await resolveHonorAccount('auto', withPool(['acct-1']))).toEqual({ ok: true, account: 'auto' });
   });
 
-  it('auto with an empty pool + a local login ⇒ DOWNGRADES to default (the live-proven fix)', async () => {
+  it('auto with an empty pool + a local login ⇒ DOWNGRADES to default, CARRYING the login evidence', async () => {
     const r = await resolveHonorAccount('auto', withPool([], true));
-    expect(r).toMatchObject({ ok: true, account: 'default', downgradedFrom: 'auto' });
+    // EI-19331694139523035: the evidence rides on the resolution so a later boot
+    // failure can name the substitution instead of reporting a bare spawn_failed.
+    expect(r).toMatchObject({ ok: true, account: 'default', downgradedFrom: 'auto', loginEvidence: 'credentials-file' });
     expect((r as { note: string }).note).toContain('auto');
+    expect((r as { note: string }).note).toContain('bundle present');
+  });
+
+  it('a DEFINITIVELY DEAD credential ⇒ refuses up front rather than downgrading onto it (EI-19331694139523035)', async () => {
+    const r = await resolveHonorAccount('auto', {
+      listPoolAccountIds: async () => [],
+      probeLocalLogin: () => ({
+        usable: false,
+        evidence: 'expired-unrefreshable' as const,
+        detail: 'expired 90 min ago with no refresh token',
+      }),
+    });
+    expect(r).toMatchObject({ ok: false, code: 'account_unfulfillable' });
+    // the refusal explains WHAT was checked, not just that it failed
+    expect((r as { detail: string }).detail).toContain('expired 90 min ago with no refresh token');
   });
 
   it('auto with an empty pool + NO local login ⇒ refuses account_unfulfillable', async () => {
@@ -803,6 +939,76 @@ describe('resolveHonorAccount (WI-5316, pure core)', () => {
     expect(r).toMatchObject({ ok: false, code: 'account_unfulfillable' });
     // a pin is NOT downgraded to default even though a login exists
     expect((r as { detail: string }).detail).toContain('acct-9');
+  });
+});
+
+// ── EI-19331694139523035: attributing a zero-member spawn ────────────────────
+
+describe('classifyHonorSpawnFailure (EI-19331694139523035, pure)', () => {
+  const downgraded = { account: 'default', downgradedFrom: 'auto' as const, loginEvidence: 'credentials-file' as const };
+
+  it('THE WIN RIG FAILURE ⇒ account_unfulfillable, not a bare spawn_failed', () => {
+    const r = classifyHonorSpawnFailure({
+      count: 1,
+      firstError:
+        'headless member launched but its agent command died at boot (exit 1) — log tail: ' +
+        'Failed to authenticate: OAuth session expired and could not be refreshed',
+      resolved: downgraded,
+    });
+    expect(r.code).toBe('account_unfulfillable');
+    expect(r.detail).toContain('could not AUTHENTICATE');
+    // names the substitution AND the remedy the requester can act on
+    expect(r.detail).toContain('SUBSTITUTED its local system login');
+    expect(r.detail).toMatch(/accounts:link-start|accounts:register/);
+  });
+
+  it('THE MAC RIG FAILURE ⇒ account_unfulfillable', () => {
+    const r = classifyHonorSpawnFailure({
+      count: 1,
+      firstError: 'Your organization has disabled Claude subscription access for Claude Code',
+      resolved: { account: 'default', downgradedFrom: 'auto', loginEvidence: 'assumed-darwin-keychain' },
+    });
+    expect(r.code).toBe('account_unfulfillable');
+    // says out loud that the substitution rested on an UNPROBED assumption
+    expect(r.detail).toContain('ASSUMED rather than verified');
+  });
+
+  it("psu's own gateway refusal ⇒ account_unfulfillable", () => {
+    const r = classifyHonorSpawnFailure({
+      count: 2,
+      firstError: '--account auto could not be honored: no registered pool account',
+      resolved: { account: 'auto' },
+    });
+    expect(r.code).toBe('account_unfulfillable');
+  });
+
+  it('HONESTY RULE: a boot death that merely FOLLOWED a substitution is NOT reported as an account failure', () => {
+    const r = classifyHonorSpawnFailure({
+      count: 1,
+      firstError: 'headless psu died at boot (signal SIGKILL) within 1200ms',
+      resolved: downgraded,
+    });
+    // no auth signature ⇒ we do not manufacture a cause we did not observe
+    expect(r.code).toBe('spawn_failed');
+    // ...but the substitution is still surfaced, as a suspect and not a verdict
+    expect(r.detail).toContain('prime suspect but was NOT confirmed');
+  });
+
+  it('an ordinary failure with no substitution ⇒ plain spawn_failed, no account noise', () => {
+    const r = classifyHonorSpawnFailure({
+      count: 3,
+      firstError: 'no terminal emulator found',
+      resolved: { account: 'default' },
+    });
+    expect(r.code).toBe('spawn_failed');
+    expect(r.detail).toBe('all 3 member spawn(s) failed on the honoring host: no terminal emulator found');
+  });
+
+  it('a missing error string never crashes the classifier', () => {
+    expect(classifyHonorSpawnFailure({ count: 1, firstError: null, resolved: { account: 'default' } })).toEqual({
+      code: 'spawn_failed',
+      detail: 'all 1 member spawn(s) failed on the honoring host',
+    });
   });
 });
 

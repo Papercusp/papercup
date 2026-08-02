@@ -17,6 +17,8 @@
  * reads at a glance.
  */
 
+import { useCallback, useMemo } from 'react';
+import { useQueryState, parseAsString } from 'nuqs';
 import { formatRelativeUpdated } from '@papercusp/operator-core/lib/format/relative-time';
 import { LivenessDot } from '@/app/coord/presence-ui';
 import { useLexicon } from '@/lib/useLexicon';
@@ -55,6 +57,84 @@ function MetaRow({ label, value }: { label: string; value: React.ReactNode }): R
       <span className="pc-dossier__meta-key">{label}</span>
       <span className="pc-dossier__meta-val">{value}</span>
     </div>
+  );
+}
+
+/** Rail R1 (session-chat-popup-direction-d-2026-08-02 P-008): every section
+ *  previews at most this many rows before it drills in. This is what makes the
+ *  rail a fixed height BY CONSTRUCTION — no agent's state can grow a section
+ *  past three rows, so no agent can make the rail 2,000px tall. */
+const DOSSIER_ROW_CAP = 3;
+
+/** How the expanded sub-list is bounded. Expanding must not re-create the very
+ *  problem the cap solves, so an opened section scrolls WITHIN the rail rather
+ *  than pushing it taller — the deck's R1 plate left "Open all 32 needs
+ *  somewhere to go" as its one open cost, and expand-in-place is the answer. */
+function railExpandKeys(raw: string | null): Set<string> {
+  return new Set((raw ?? '').split(',').filter(Boolean));
+}
+
+/**
+ * One capped section body: previews `DOSSIER_ROW_CAP` rows, then a drill-in
+ * that expands IN PLACE to a scrolling sub-list.
+ *
+ * `totalCount` is the SERVER-side total when it exceeds what we were actually
+ * sent. Expanding cannot conjure rows the operator never delivered, so the
+ * expanded view states what it holds instead of implying it has all of them.
+ * That distinction is the whole point here — [owner 2026-07-28, verbatim] "it
+ * says in the COORD section 38 unread, but I only see 2 messages" was exactly
+ * a count naming rows the section could not show. A cap re-introduces that
+ * failure unless the drill-in genuinely reaches the rest and says so when it
+ * cannot, which is why the cap and this control landed in the same change.
+ */
+function CappedRows({
+  rows,
+  totalCount,
+  noun,
+  open,
+  onToggle,
+  testId,
+}: {
+  rows: React.ReactNode[];
+  totalCount?: number;
+  noun: string;
+  open: boolean;
+  onToggle: () => void;
+  testId?: string;
+}): React.JSX.Element | null {
+  const held = rows.length;
+  if (held === 0) return null;
+  const total = Math.max(totalCount ?? held, held);
+  const overflows = held > DOSSIER_ROW_CAP || total > held;
+  const visible = !overflows || open ? rows : rows.slice(0, DOSSIER_ROW_CAP);
+  const hiddenLocally = held - DOSSIER_ROW_CAP;
+  return (
+    <>
+      <div className="pc-dossier__capped" data-open={open ? '' : undefined} data-testid={testId}>
+        {visible}
+      </div>
+      {overflows ? (
+        <>
+          <button
+            type="button"
+            className="pc-dossier__drillin"
+            onClick={onToggle}
+            aria-expanded={open}
+          >
+            {open
+              ? 'Show fewer ‹'
+              : total > held
+                ? `Open all ${total} ${noun} ›`
+                : `Show ${hiddenLocally} more ${noun} ›`}
+          </button>
+          {open && total > held ? (
+            <div className="pc-dossier__empty-line">
+              Showing the {held} most recent of {total}.
+            </div>
+          ) : null}
+        </>
+      ) : null}
+    </>
   );
 }
 
@@ -151,6 +231,25 @@ export default function AgentDossier({
 
   const client = entry?.agent ?? shortSource(entry?.source ?? '');
 
+  // Rail R1 P-008 — which capped sections are currently expanded, as ONE nuqs
+  // scalar (a comma list of section keys) rather than five separate booleans.
+  // Per the repo's nuqs rule this is user-meaningful state, so it belongs in the
+  // URL where the agent→UI control surface (ui:get_state / ui:dispatch) can read
+  // and drive it; `useState` would be invisible to that surface. A short scalar
+  // rather than parseAsJson for the same reason the rule gives — keep the URL
+  // readable.
+  const [railOpenRaw, setRailOpenRaw] = useQueryState('railOpen', parseAsString);
+  const railOpen = useMemo(() => railExpandKeys(railOpenRaw), [railOpenRaw]);
+  const toggleRail = useCallback(
+    (key: string) => {
+      const next = railExpandKeys(railOpenRaw);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      void setRailOpenRaw(next.size > 0 ? [...next].join(',') : null);
+    },
+    [railOpenRaw, setRailOpenRaw],
+  );
+
   return (
     <aside className="pc-dossier" aria-label="Agent detail">
       <header className="pc-dossier__head">
@@ -186,24 +285,13 @@ export default function AgentDossier({
         <div className="pc-dossier__note">This agent is no longer in the live roster.</div>
       )}
 
-      {/* ── Tier-1/2 meta (from the roster entry) ── */}
-      {entry ? (
-        <section className="pc-dossier__section">
-          <MetaRow
-            label="liveness"
-            value={`${entry.liveness} · active ${formatRelativeUpdated(entry.heartbeatAt)}`}
-          />
-          <MetaRow label="plan" value={entry.currentPlanSlug} />
-          <MetaRow label="started" value={formatRelativeUpdated(entry.startedAt)} />
-          <MetaRow label="host" value={entry.host} />
-          <MetaRow label="pid" value={entry.pid != null ? String(entry.pid) : null} />
-          <MetaRow label="mode" value={entry.mode} />
-          <MetaRow label="cwd" value={entry.cwd} />
-          <MetaRow label="window" value={entry.windowId} />
-          <MetaRow label="omp thread" value={entry.ompThreadId} />
-          <MetaRow label="user" value={entry.userId} />
-        </section>
-      ) : null}
+      {/* Rail R1 P-008 — the ten Tier-1/2 reference rows used to sit HERE, above
+          everything operational. They now live in the Reference section at the
+          bottom, previewed three-at-a-time behind one drill-in: [deck R1]
+          "Ten reference rows (host, pid, cwd, window, thread, user) collapse to
+          one link. Nobody reads those while watching a conversation." The
+          sections below are ordered by operational urgency instead of
+          declaration order. */}
 
       {/* ── Health signals (hud-first-nav-and-dossier-2026-07-26 P-005):
           "is this agent healthy and will it keep going?", in priority order —

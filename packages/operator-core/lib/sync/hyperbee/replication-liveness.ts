@@ -1524,5 +1524,9 @@ export function _resetReplicationLivenessForTests(): void {
   dhtUniverseState.clear();
   episodeReporter = null;
   episodeRecoveredReporter = null;
+  // WI-7011: a stubbed probe MUST NOT leak into the next test — left set, it would
+  // silently answer for suites that never opted into it (and a stub returning true
+  // would manufacture phantom recoveries).
+  openStallEiProbe = null;
   repairHandlers.clear();
 }

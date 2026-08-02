@@ -116,14 +116,7 @@ describe('github identity drift guard (WI-4978)', () => {
     }
 
     expect(offenders).toEqual([]);
-    // Whole-tree guard: enumerates ~26k paths and readFileSync's the ~18k with a text
-    // extension, so its cost scales with the repo and with ambient host load — nothing
-    // about it fits vitest's 5s default, which is sized for unit tests. It red-ed the
-    // green checkpoint at 11,725ms on a loaded box with ZERO offenders present: a
-    // timeout that reads as an identity violation, which is the most expensive way for
-    // this particular guard to fail (it sends whoever triages it hunting a leak that
-    // isn't there). Budget generously — a slow pass is correct, a timeout is not.
-  }, 120_000);
+  });
 
   it('the canonical constants resolve to the real remote (Papercusp/papercup)', async () => {
     const {

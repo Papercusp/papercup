@@ -77,7 +77,8 @@ import { seatOfferId } from './offer-store-publish';
 import { emitP2pReceipt } from './receipts';
 import {
   resolveHonorAccount as resolveHonorAccountCore,
-  localClaudeLoginPresent,
+  probeLocalClaudeLogin,
+  classifyHonorSpawnFailure,
   type HonorAccountResolution,
 } from './honor-account-resolution';
 import type { OrgSql } from '../work-items';
@@ -415,7 +416,7 @@ async function defaultResolveHonorAccount(
   const ids = poolIds;
   return resolveHonorAccountCore(requestedAccount, {
     listPoolAccountIds: async () => ids,
-    localLoginPresent: () => localClaudeLoginPresent(),
+    probeLocalLogin: () => probeLocalClaudeLogin(),
   });
 }
 
@@ -729,12 +730,24 @@ export async function honorSpawnRequestFromProjection(
   }
 
   if (spawn.opened === 0) {
+    // EI-19331694139523035: ATTRIBUTE the failure instead of reporting a bare
+    // `spawn_failed`. When the member's own boot log carries an auth signature
+    // (the boot-receipt scan folds it into firstError), this is an ACCOUNT
+    // failure — refuse with the code the requester can act on, and name the
+    // auto→default substitution when one was made. A boot death that merely
+    // FOLLOWED a substitution is not reported as an account failure; it stays
+    // spawn_failed with the substitution named as the prime suspect.
+    const failure = classifyHonorSpawnFailure({
+      count: payload.count,
+      firstError: spawn.firstError,
+      resolved: acct,
+    });
     await setDisposition(
       args.workspaceId,
       args.potHomeSlug,
       publisher,
       args.row.offer_id,
-      'refused:spawn_failed',
+      `refused:${failure.code}`,
       { expect: 'honoring' },
       args.sql,
     );
@@ -745,15 +758,15 @@ export async function honorSpawnRequestFromProjection(
       offerId: args.row.offer_id,
       action: 'delegated-seat:spawn',
       refusal: {
-        code: 'spawn_failed',
-        detail: `all ${payload.count} member spawn(s) failed on the honoring host${spawn.firstError ? `: ${spawn.firstError}` : ''}`,
+        code: failure.code,
+        detail: failure.detail,
       },
       requester: { kind: 'session', ref: payload.requesterOwnerId, githubUserId: publisher },
       responderGithubUserId: actor.githubUserId,
       responderDevicePubkey: devicePubkey,
       actor: 'delegated-spawn-honor',
     });
-    return { outcome: 'refused', code: 'spawn_failed' };
+    return { outcome: 'refused', code: failure.code };
   }
 
   await setDisposition(

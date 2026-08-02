@@ -171,12 +171,37 @@ export interface ActiveCheckpointCheck {
   active: boolean;
   unit: string;
   /** Best-effort candidate sha the live run is judging. For the manual-unit case, parsed
-   *  from its log's first "checkpointing candidate <sha>" line (null if the log isn't
+   *  from its log's LAST "checkpointing candidate <sha>" line (null if the log isn't
    *  readable yet/at all). For the `held_externally` case (see below), resolved instead
    *  from the isolated checkpoint checkout's own HEAD — null only if THAT tree doesn't
    *  exist or isn't readable. Either way: the sha this field reports IS what the live run
-   *  is judging, never a hypothetical "if launched now" value (see `current_candidate`). */
+   *  is judging, never a hypothetical "if launched now" value (see `current_candidate`).
+   *
+   * EI-19327704778173646 — why LAST, not first. A single run can legitimately change the
+   * candidate it judges: on a stale red, `green-checkpoint.ts` recurses into
+   * `runGreenCheckpoint({ candidate: tip, refireAttempts: +1 })` IN-PROCESS (L2649 test-file
+   * rescue, L2693 lint/typecheck sibling) and the recursion re-enters `setupTree(candidate)`,
+   * re-pinning the isolated checkout. `pid`/`started_at` belong to the outer frame and never
+   * move, so **a candidate newer than `started_at` is the expected signature of a healthy
+   * auto-refire, NOT corruption** — do not "sanity-check" this field by comparing commit dates
+   * to `started_at` and do not fire a manual run on the strength of that comparison (it
+   * discards the in-flight rescue and costs a full ~55min suite).
+   *
+   * Reading the FIRST match — what this did before — reported the ABANDONED sha for the rest
+   * of the run, while the surrounding prose told callers to verify their fix against it. That
+   * is the false-negative that produced several public retractions on 2026-08-02. */
   candidate?: string | null;
+  /** EI-19327704778173646. The FIRST candidate this run judged, when it is known to differ
+   *  from `candidate` — i.e. the run auto-refired onto a newer tip and this is the sha it
+   *  started on and has since discarded. `null` when no refire was observed (the common case)
+   *  or when the log could not be read. Never verify a fix against this sha; it is provenance,
+   *  offered so a `candidate` that legitimately MOVED is self-describing rather than looking
+   *  like a corrupt/unstable field to a caller who reads the status twice. */
+  initial_candidate?: string | null;
+  /** EI-19327704778173646. True when this run demonstrably re-candidated mid-flight (≥2
+   *  distinct `checkpointing candidate` lines in its log). A `false` is NOT proof no refire
+   *  happened — only that none was visible in the bytes read. */
+  refire_observed?: boolean;
   /** Current integration checkout HEAD at status-read time. */
   current_head?: string | null;
   /** Current quiet-cut-eligible candidate at status-read time. May differ from `candidate`
