@@ -332,10 +332,34 @@ restarts a ~55min suite clock. This cost ~2h of the 2026-07-27 fleet-wide `facts
 outage (EI-18797292094433710): two wakes re-fired the gate while *every* candidate already
 carried the fix.
 
-**Settle it with the ancestry + blob check. That is the only test that is sound both ways:**
+⚠⚠ **STEP 0 FIRST — establish WHICH sha is actually being judged. Skipping this is the
+expensive mistake, and no amount of care in the steps below can recover from it.** The
+`candidate` field DRIFTS: it is re-read from a moving HEAD, so a single continuous run reports
+different candidates over its lifetime. Observed 2026-08-02: one run with an unchanged
+`started_at` of 07:15:17Z (elapsed climbing 1138 → 2887s, so provably not a new run) reported
+`1ee32228` and later `4a9b218ba0`. Every agent watching read that drift as "the old run
+finished, a new one started carrying our fix." It had not.
+
+**The check is one line and needs no tooling — compare commit dates to the run's `started_at`:**
 
 ```bash
-C=<candidate sha>; F=<your path>; S='<a string your change INTRODUCED>'
+git show -s --format=%cI <reported candidate>   # newer than started_at? -> the field is BOGUS
+git show -s --format=%cI <your fix commit>      # newer than started_at? -> it CANNOT be in the run
+```
+
+A run cannot judge a commit that did not exist when it started. In the case above,
+`4a9b218ba0` was created 21 min *after* the run began and the fix 9 min after — both provably
+outside it. This costs nothing, requires no marker/blob/ancestry, and catches the error
+instantly in both directions.
+
+Do **not** try to settle step 0 by reading `papercup-checkpoint`: despite its name it is a
+stale worktree (HEAD dated 2026-07-02, `.git` mtime June 5), not the tree the gate runs.
+
+**Then — and only then — settle containment with ancestry + blob against THAT sha. Step 1
+without step 0 proves the right thing about the wrong object:**
+
+```bash
+C=<the candidate you confirmed in step 0>; F=<your path>; S='<a string your change INTRODUCED>'
 git log --oneline -S"$S" -- "$F" | tail -1     # OLDEST count-changing commit = the INTRODUCING one
 git merge-base --is-ancestor <that commit> $C && echo IN || echo NOT-IN
 git show $C:"$F" | grep -c "$S"                # blob-level confirmation
@@ -399,6 +423,22 @@ own fix is committed and demonstrably inside the candidate. Observed 2026-08-02 
 a different agent working an unrelated resolver change in the same file. On a hot shared file
 this reason is near-permanently true and says nothing about you. `absent` is the honest miss;
 `uncommitted` is not.
+
+⚠ **`reason: 'newer-commit'` is the SECOND face of that same bug — and unlike `uncommitted` it
+fires on a fully-committed change.** Observed 2026-08-02 08:00Z (EI-19326775809436764): the check
+appears to compare the path's *current* content (or its latest touching commit) rather than
+asking whether the commit that INTRODUCED your edit is an ancestor of the candidate. So on any
+file the fleet edits, a peer's commit landing after yours flips your file to `missing … reason:
+'newer-commit'` and *stays* there — the tip is always newer than the quiet-cut candidate. Two
+ways it actively misleads: `excludedCommitsTouchingYourFiles` names that **peer's** commit as
+the one "carrying your file", and the warning prescribes *"wait out the quiet window (~4 min)
+and re-fire"* — a fresh ~55min gate clock for a candidate that already contains your fix.
+Measured: `sync-resolver/index.ts` came back `missing`/`newer-commit` citing a peer's unrelated
+`readOutbox` change, while `git merge-base --is-ancestor 07d759d576 4a9b218b` said IN and a blob
+grep counted the fix present. Three agents had built a re-fire plan on that verdict before it was
+caught. **Neither reason code is evidence about your change — settle it with ancestry+blob above,
+and treat every containment field (`marker`, `changeInCandidate`, `callerEditsInCandidate`) as a
+hint that fails in the direction of arguing for a wasteful re-fire.**
 
 When a run is in flight, its own log line (`checkpointing candidate <sha>`) can be fresher
 than `judgingSha`, which lags — but ⚠ **do not glob `/tmp/papercup-green-checkpoint-manual-*.log`

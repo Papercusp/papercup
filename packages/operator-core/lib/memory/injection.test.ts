@@ -104,6 +104,59 @@ describe('push path requests a relevance-gated ceiling (P-032 / F-B)', () => {
     ]);
   });
 
+  /**
+   * P-046's GUARD, at the seam it actually has to hold (P-044 / F-L).
+   *
+   * `recall-query.test.ts` pins that `lexicalQueryText` COMPOSES a query
+   * carrying the signals. That is necessary and not sufficient: a refactor
+   * could keep that function perfect while this file quietly stopped passing
+   * `lexicalQuery` to the backend, and every test in both files would still be
+   * green while retrieval silently reverted to user-text-only on both legs.
+   * That is exactly the failure mode P-046 exists to catch — "every existing
+   * test asserts on what retrieval RETURNS, none on what it ASKS".
+   *
+   * Note what is asserted about the COSINE query: it stays byte-identical to
+   * the human's words. Under P-044 that is the design, not the bug (D-041
+   * measured identifiers diluting that vector), so the divergence P-046 wants
+   * lives on the lexical leg.
+   */
+  it('ISSUES the signal-bearing query to the lexical leg — not just composes it', async () => {
+    const backend = mockBackend([{ id: 'm1', text: 'alpha' }]);
+    useBackend(backend);
+    await buildMemoryContextBlock({
+      userId: 'u1',
+      workspaceId: 'ws',
+      queryContext: {
+        userText: 'continue where you left off',
+        agentSignals: {
+          workItem: { id: 'WI-6512' },
+          trajectory: { paths: ['apps/operator-vite/src/components/HistoryDropdown.tsx'] },
+        },
+      },
+      harnessSlugs: ['papercusp'],
+      hiveSlugs: [],
+    });
+    const [query, opts] = backend.search.mock.calls[0]! as [string, { lexicalQuery?: string }];
+    expect(query).toBe('continue where you left off');
+    expect(opts.lexicalQuery).toBe('continue where you left off WI-6512 HistoryDropdown');
+    expect(opts.lexicalQuery).not.toBe(query);
+  });
+
+  it('omits lexicalQuery entirely with no signals, so both legs share one query', async () => {
+    // The no-signals turn must stay byte-identical to pre-P-044 — that is what
+    // keeps the P-041 baseline comparable across the change.
+    const backend = mockBackend([{ id: 'm1', text: 'alpha' }]);
+    useBackend(backend);
+    await buildMemoryContextBlock({
+      userId: 'u1',
+      workspaceId: 'ws',
+      queryContext: 'why is the recall empty',
+      harnessSlugs: ['papercusp'],
+      hiveSlugs: [],
+    });
+    expect(backend.search.mock.calls[0]![1]).not.toHaveProperty('lexicalQuery');
+  });
+
   // The floor is NOT the fix and must not be quietly retuned as if it were: the
   // saturating hits never came through the cosine leg (D-008), so moving 0.45
   // changes which cosine hits survive, not how many results come back.

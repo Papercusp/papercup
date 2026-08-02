@@ -1200,13 +1200,26 @@ export function stripAnsi(s) {
 
 /** A launch seed must not reach a TUI before its editor exists. Most backends
  * are ready for the existing quiet-window check after their first output byte,
- * but OMP emits terminal capability probes before it paints any UI. Its stable
- * `omp vN` banner is the earliest backend-owned proof that startup reached the
- * dashboard; the ordinary output-quiescence gate still runs after this marker.
- * Pure and exported so backend readiness cannot regress into timing folklore. */
+ * but OMP emits terminal capability probes before it paints any UI, and Codex
+ * animates a multi-second character-by-character "Tip: ..." onboarding line
+ * (plus, occasionally, an MCP-startup warning typed the same way) before its
+ * composer ever paints — a mid-animation pause can look "quiet at a prompt"
+ * to the ordinary quiescence gate even though the real editable prompt has not
+ * installed yet (WI-4943: a live Claude→Codex port wrote its managed seed
+ * during this animation, the submit CR landed as inert paste text, and native
+ * persistence correctly failed). OMP's stable `omp vN` banner is the earliest
+ * backend-owned proof that startup reached the dashboard; Codex's own stable
+ * proof is its composer footer's live context-budget readout ("NN% context
+ * left"), which is chrome the TUI only paints once the input line is
+ * installed — verified against the shipped `codex` binary's embedded UI
+ * strings (`@openai/codex-linux-x64`). The ordinary output-quiescence gate
+ * still runs after either marker. Pure and exported so backend readiness
+ * cannot regress into timing folklore. */
 export function startupOutputReady(agent, output) {
   const visible = stripAnsi(output);
-  if (String(agent ?? '').toLowerCase() === 'omp') return /\bomp\s+v\d/i.test(visible);
+  const normalized = String(agent ?? '').toLowerCase();
+  if (normalized === 'omp') return /\bomp\s+v\d/i.test(visible);
+  if (normalized === 'codex') return /\d{1,3}%\s*context left/i.test(visible);
   return String(output ?? '').length > 0;
 }
 

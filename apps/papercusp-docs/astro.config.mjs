@@ -22,8 +22,11 @@ export default defineConfig({
       description: 'Public documentation for the Papercusp platform.',
       pagefind: true,
       customCss: ['./src/styles/blue-frost.css'],
+      // The canonical repo lives under the `Papercusp` GitHub Organization —
+      // `papercupai` is the maintainer's personal GitHub User login, not an
+      // org, and does not own the product repos (WI-4978).
       social: [
-        { icon: 'github', label: 'GitHub', href: 'https://github.com/papercupai' },
+        { icon: 'github', label: 'GitHub', href: 'https://github.com/Papercusp/papercup' },
       ],
       sidebar: [
         { label: 'Welcome', link: '/docs/' },

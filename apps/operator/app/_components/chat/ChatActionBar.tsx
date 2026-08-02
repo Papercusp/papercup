@@ -12,7 +12,7 @@
  * `confirm` step (no payload) reuses the same plumbing via a synthetic
  * single-option card; declining (Skip) cancels the run.
  */
-import { useMemo, useState, type CSSProperties, type ReactNode } from 'react';
+import { useMemo, useState, type ReactNode } from 'react';
 import { z } from 'zod';
 import { askUserLocal } from '@/lib/chat-cards/ask-user-local';
 // Import the BARREL, not `chat-actions/registry` directly: the barrel's
@@ -22,8 +22,8 @@ import { askUserLocal } from '@/lib/chat-cards/ask-user-local';
 // whole action bar was invisible in the app, while unit tests stayed green
 // because they import the action modules directly. Keep this pointed at the
 // barrel; the shorter-looking `/registry` path is the bug.
-import { listChatActions } from '@/lib/chat-actions';
-import type { ChatAction, ChatActionContext } from '@/lib/chat-actions/types';
+import { listChatActions, listChatModeActions } from '@/lib/chat-actions';
+import type { ChatAction, ChatActionContext, ChatModeAction } from '@/lib/chat-actions/types';
 
 /**
  * WI-6552: ceiling on a `params()` option-load before the bar gives up.
@@ -133,13 +133,51 @@ function groupActions(actions: ChatAction[]): GroupedActions[] {
 
 export function ChatActionBar({ ctx }: { ctx: ChatActionContext }): ReactNode {
   const actions = useMemo(() => listChatActions(ctx), [ctx]);
+  /** P-005: the mode axes, rendered as pills ahead of the verbs. */
+  const modes = useMemo(() => listChatModeActions(ctx), [ctx]);
   const [runningId, setRunningId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   /** WI-6552: last action that completed successfully — the success half of
    *  the feedback pair below. Cleared whenever another action starts. */
   const [done, setDone] = useState<string | null>(null);
 
-  if (actions.length === 0) return null;
+  if (actions.length === 0 && modes.length === 0) return null;
+
+  /**
+   * A mode pill's click opens its chooser, then writes the pick. Deliberately
+   * the SAME askUserLocal/LocalCardHost plumbing an action's `params()` uses —
+   * there is no second card vocabulary (plan D-001), so a mode chooser looks
+   * and behaves exactly like every other chooser on the surface.
+   */
+  const invokeMode = async (mode: ChatModeAction): Promise<void> => {
+    setError(null);
+    setDone(null);
+    setRunningId(mode.id);
+    try {
+      const options = mode.options(ctx);
+      const r = await askUserLocal({
+        prompt: `Set ${mode.cap}`,
+        // z.string() rather than z.enum: the option set is supplied by the
+        // descriptor at click time, so it is not a compile-time constant.
+        dataSchema: z.object({ picks: z.tuple([z.string()]) }),
+        presentation: {
+          kind: 'radio',
+          options: options.map((o) => ({ id: o.id, label: o.label, hint: o.hint })),
+        },
+        allowDecline: true,
+      });
+      if (r.action !== 'submit') return;
+      const [choice] = (r.payload as { picks: [string] }).picks;
+      await mode.set(ctx, choice);
+      setDone(`${mode.cap} → ${options.find((o) => o.id === choice)?.label ?? choice}`);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+      // eslint-disable-next-line no-console
+      console.warn(`[chat-action-bar] mode ${mode.id} failed`, e);
+    } finally {
+      setRunningId(null);
+    }
+  };
 
   const invoke = async (action: ChatAction): Promise<void> => {
     setError(null);
@@ -183,22 +221,60 @@ export function ChatActionBar({ ctx }: { ctx: ChatActionContext }): ReactNode {
   };
 
   return (
-    <div className="chat-action-bar" role="toolbar" aria-label="Chat actions" data-testid="chat-action-bar" style={BAR_STYLE}>
+    <div
+      className="chat-action-bar pc-ctl-band pc-ctl-band--do"
+      role="toolbar"
+      aria-label="Chat actions"
+      data-testid="chat-action-bar"
+    >
+      {/* Modes first: they say what the agent IS, and the verbs below act on
+          it. Reading order follows that dependency. */}
+      {modes.map((mode) => {
+        const state = mode.current(ctx);
+        return (
+          <button
+            key={mode.id}
+            type="button"
+            className={`pc-ctl-mode${state.on ? '' : ' pc-ctl-mode--off'}`}
+            data-testid={`chat-mode-${mode.id}`}
+            data-on={state.on ? 'true' : 'false'}
+            onClick={() => void invokeMode(mode)}
+            disabled={runningId !== null}
+            aria-busy={runningId === mode.id}
+            /* aria-label, not `title`: design-primitives forbids a title-only
+               tooltip on a button, and this is the text a screen reader needs
+               anyway — the visible pill is deliberately only two short words. */
+            aria-label={`${mode.cap} is ${state.value}${state.title ? ` — ${state.title}` : ''}. Change it.`}
+          >
+            <span className="pc-ctl-mode__inner">
+              <span className="pc-ctl-mode__cap">{mode.cap}</span>
+              <span className="pc-ctl-mode__value">
+                {state.value}
+                <span aria-hidden="true">▾</span>
+              </span>
+            </span>
+          </button>
+        );
+      })}
+      {modes.length > 0 && actions.length > 0 ? (
+        <span className="pc-ctl-band__sep" aria-hidden="true" />
+      ) : null}
       {groupActions(actions).map(({ group, actions: groupItems }) => (
-        <div className="chat-action-bar-group" key={group || '_'} data-group={group || undefined} style={GROUP_STYLE}>
+        <div className="chat-action-bar-group" key={group || '_'} data-group={group || undefined}>
           {groupItems.map((action) => (
             <button
               key={action.id}
               type="button"
-              className="chat-action-bar-button"
+              className="chat-action-bar-button pc-ctl-act"
               data-testid={`chat-action-${action.id}`}
               onClick={() => void invoke(action)}
               disabled={runningId !== null}
               aria-busy={runningId === action.id}
-              style={{ ...BUTTON_STYLE, cursor: runningId !== null ? 'default' : 'pointer' }}
             >
-              {action.icon}
-              <span>{action.label}</span>
+              <span className="pc-ctl-act__inner">
+                {action.icon ? <span className="pc-ctl-act__icon">{action.icon}</span> : null}
+                <span>{action.label}</span>
+              </span>
             </button>
           ))}
         </div>

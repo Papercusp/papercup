@@ -30,6 +30,13 @@ const baseEnv = (extra: Record<string, string> = {}): Record<string, string> => 
   PATH: process.env.PATH ?? '',
   PC_HEAVY_DIR: dir,
   PC_HEAVY_IONICE: '', // skip ionice in tests (nice still applies)
+  // Point the release-gate reserve (EI-19315056231449472) at an empty per-test
+  // dir. Without this the suite reads the REAL ~/.papercusp/checkpoint-logs, so
+  // every slot-count assertion below would silently depend on whether this box
+  // happens to be running a green-checkpoint at the time — passing at 03:00 and
+  // failing mid-gate. Same hermeticity reasoning as `cwd: dir` for the git probe.
+  // Tests that WANT the clamp plant a lock dir under here explicitly.
+  PAPERCUSP_CHECKPOINT_LOG_DIR: join(dir, 'checkpoint-logs'),
   ...extra,
 });
 
@@ -509,7 +516,7 @@ describe('pc-heavy.sh — load-adaptive slot count (EI-19313096203661357)', () =
     expect(slotsLine(r.stderr)).toContain('slots=4');
   });
 
-  it('the computed (not env) slot count actually gates admission', async () => {
+  it('the computed (not env) slot count actually gates admission [adaptive]', async () => {
     // 64 fake cores at load 64 → computed floor of 2. Three 0.4s sleepers must
     // never overlap more than 2 at a time — same interval-sweep as the cap test.
     const jobs = 3;
@@ -538,5 +545,160 @@ describe('pc-heavy.sh — load-adaptive slot count (EI-19313096203661357)', () =
     let max = 0;
     for (const [, d] of evts) { cur += d; max = Math.max(max, cur); }
     expect(max).toBe(2);
+  });
+});
+
+// ── Release-gate reserve (EI-19315056231449472) ─────────────────────────────
+// While green-checkpoint is judging, the steady-state slot target is the wrong
+// target: the gate's quiet cut is exactly when the box looks idle, so the
+// load-adaptive count is at its most generous precisely when the gate's
+// isolation re-run (which decides load-flake vs real break, and so decides the
+// VERDICT) most needs headroom. These assert the clamp and — more importantly —
+// every fail-open path, because a clamp that misfires wedges the whole fleet's
+// heavy runs, which is strictly worse than the false red it prevents.
+describe('pc-heavy.sh — release-gate reserve (EI-19315056231449472)', () => {
+  const fakeNprocPath = (cores: number): string => {
+    const bin = join(dir, 'fakebin');
+    mkdirSync(bin, { recursive: true });
+    writeFileSync(join(bin, 'nproc'), `#!/usr/bin/env bash\necho ${cores}\n`, { mode: 0o755 });
+    return `${bin}:${process.env.PATH ?? ''}`;
+  };
+  const slotsLine = (stderr: string) =>
+    stderr.split('\n').find((l) => l.includes('[pc-heavy] slots=')) ?? '';
+  const probe = (cores: number, extra: Record<string, string> = {}) =>
+    runSync(['true'], { PC_HEAVY_DEBUG: '1', PC_HEAVY_COALESCE: '0', PATH: fakeNprocPath(cores), ...extra });
+
+  /** Publish a run-lock in the same shape green-checkpoint's checkpointRunLockDir does:
+   *  a `.green-checkpoint-run-<hash>.lock/` DIRECTORY holding owner.json with the run pid. */
+  const plantLock = (owner: string | object, name = 'aaa111'): string => {
+    const lock = join(dir, 'checkpoint-logs', `.green-checkpoint-run-${name}.lock`);
+    mkdirSync(lock, { recursive: true });
+    writeFileSync(join(lock, 'owner.json'), typeof owner === 'string' ? owner : JSON.stringify(owner));
+    return lock;
+  };
+  const liveOwner = () => ({ pid: process.pid, startedAt: new Date().toISOString(), token: 'tok' });
+  // pid_max is documented as ONE GREATER than the maximum allocatable pid, so it
+  // is never a live process — deterministic, unlike reusing a just-reaped pid on
+  // a box where PID wrap happens ~daily under fleet load.
+  const deadPid = (() => {
+    try { return Number(readFileSync('/proc/sys/kernel/pid_max', 'utf8').trim()); } catch { return 0x7ffffff0; }
+  })();
+
+  it('clamps the effective slot count to a quarter while a run is LIVE', () => {
+    expect(slotsLine(probe(128, { PC_HEAVY_LOAD1_OVERRIDE: '0' }).stderr)).toContain('slots=12');
+    plantLock(liveOwner());
+    const r = probe(128, { PC_HEAVY_LOAD1_OVERRIDE: '0' });
+    expect(r.status).toBe(0);
+    expect(slotsLine(r.stderr)).toContain('slots=3 fixed=0');
+    expect(slotsLine(r.stderr)).toContain('gate=1');
+  });
+
+  it('never clamps below 1 — a saturated box at the floor goes to 1, not 0', () => {
+    plantLock(liveOwner());
+    // floor is 4 on a 128-core box; 4/4 = 1. A 16-core box floors at 2 → also 1.
+    expect(slotsLine(probe(128, { PC_HEAVY_LOAD1_OVERRIDE: '128' }).stderr)).toContain('slots=1 ');
+    expect(slotsLine(probe(16, { PC_HEAVY_LOAD1_OVERRIDE: '99' }).stderr)).toContain('slots=1 ');
+  });
+
+  it('announces the clamp on stderr even without PC_HEAVY_DEBUG, so a slow run explains itself', () => {
+    plantLock(liveOwner());
+    const r = runSync(['true'], { PC_HEAVY_COALESCE: '0' });
+    expect(r.status).toBe(0);
+    expect(r.stderr).toContain('release gate is JUDGING');
+    expect(r.stderr).toContain('PC_HEAVY_GATE_RESERVE=0');
+  });
+
+  // ── Fail-open paths. Each of these leaving the clamp ON would wedge every
+  // heavy run on the box into 1 slot indefinitely.
+  it("FAILS OPEN when the lock is stale — a crashed run's leftover lock has a DEAD pid", () => {
+    plantLock({ pid: deadPid, startedAt: new Date().toISOString(), token: 'tok' });
+    const r = probe(128, { PC_HEAVY_LOAD1_OVERRIDE: '0' });
+    expect(slotsLine(r.stderr)).toContain('slots=12');
+    expect(slotsLine(r.stderr)).toContain('gate=0');
+    expect(r.stderr).not.toContain('release gate is JUDGING');
+  });
+
+  it('FAILS OPEN on an unparseable / pid-less / empty owner.json', () => {
+    for (const body of ['not json at all', '{}', '', '{"pid":"banana"}', '{"pid":null}']) {
+      rmSync(join(dir, 'checkpoint-logs'), { recursive: true, force: true });
+      plantLock(body);
+      expect(slotsLine(probe(128, { PC_HEAVY_LOAD1_OVERRIDE: '0' }).stderr)).toContain('slots=12');
+    }
+  });
+
+  it('FAILS OPEN when the checkpoint log dir is absent, or present but holds no lock', () => {
+    expect(slotsLine(probe(128, { PC_HEAVY_LOAD1_OVERRIDE: '0' }).stderr)).toContain('slots=12');
+    mkdirSync(join(dir, 'checkpoint-logs'), { recursive: true });
+    expect(slotsLine(probe(128, { PC_HEAVY_LOAD1_OVERRIDE: '0' }).stderr)).toContain('slots=12');
+    // A lock DIRECTORY with no owner.json yet (the run is mid-publish) is also not a clamp.
+    mkdirSync(join(dir, 'checkpoint-logs', '.green-checkpoint-run-bbb.lock'), { recursive: true });
+    expect(slotsLine(probe(128, { PC_HEAVY_LOAD1_OVERRIDE: '0' }).stderr)).toContain('slots=12');
+  });
+
+  it('PC_HEAVY_GATE_RESERVE=0 escapes the clamp entirely', () => {
+    plantLock(liveOwner());
+    for (const off of ['0', 'off', 'false', 'no']) {
+      const r = probe(128, { PC_HEAVY_LOAD1_OVERRIDE: '0', PC_HEAVY_GATE_RESERVE: off });
+      expect(slotsLine(r.stderr)).toContain('slots=12');
+      expect(r.stderr).not.toContain('release gate is JUDGING');
+    }
+  });
+
+  it('scans ALL per-root lock dirs — one live run among several dead ones still clamps', () => {
+    plantLock({ pid: deadPid }, 'dead1');
+    plantLock({ pid: deadPid }, 'dead2');
+    plantLock(liveOwner(), 'live1');
+    expect(slotsLine(probe(128, { PC_HEAVY_LOAD1_OVERRIDE: '0' }).stderr)).toContain('slots=3');
+  });
+
+  it('clamps an explicit PC_HEAVY_SLOTS too — it is a safety reserve, not load adaptation', () => {
+    plantLock(liveOwner());
+    const r = probe(128, { PC_HEAVY_LOAD1_OVERRIDE: '0', PC_HEAVY_SLOTS: '8' });
+    expect(slotsLine(r.stderr)).toContain('slots=2 fixed=1');
+  });
+
+  // The ordering property: the exemption at the top of the script returns before
+  // any of this, so the gate's OWN suite (and its isolation re-runs, which
+  // inherit the env) can never clamp itself down to 1 slot.
+  it("never clamps the release gate's own suite (PC_HEAVY_RELEASE_GATE=1)", () => {
+    plantLock(liveOwner());
+    const marker = join(dir, 'gate-ran');
+    const r = runSync(['bash', '-c', `echo "$PC_HEAVY_BYPASS" > "${marker}"`], { PC_HEAVY_RELEASE_GATE: '1' });
+    expect(r.status).toBe(0);
+    expect(readFileSync(marker, 'utf8').trim()).toBe('1');
+    expect(r.stderr).not.toContain('release gate is JUDGING');
+    // exempt = no slot machinery touched at all
+    expect(existsSync(join(dir, 'slot.0'))).toBe(false);
+  });
+
+  it('the clamp actually GATES ADMISSION, not just the reported number', async () => {
+    // 128 fake cores at load1 128 → base 4, clamped to 1 by the live lock.
+    // Three 0.4s sleepers must therefore never overlap.
+    plantLock(liveOwner());
+    const jobs = 3;
+    const path = fakeNprocPath(128);
+    await Promise.all(
+      Array.from({ length: jobs }, (_, i) =>
+        new Promise<void>((res) => {
+          const f = join(dir, `gate.${i}.out`);
+          const p = spawn(
+            'bash',
+            [PC_HEAVY, 'bash', '-c', `s=$(date +%s%3N); sleep 0.4; e=$(date +%s%3N); echo "$s $e" > "${f}"`],
+            { env: baseEnv({ PC_HEAVY_LOAD1_OVERRIDE: '128', PC_HEAVY_COALESCE: '0', PATH: path }), cwd: dir },
+          );
+          p.on('exit', () => res());
+        }),
+      ),
+    );
+    const evts: Array<[number, number]> = [];
+    for (let i = 0; i < jobs; i++) {
+      const [s, e] = readFileSync(join(dir, `gate.${i}.out`), 'utf8').trim().split(/\s+/).map(Number);
+      evts.push([s, 1], [e, -1]);
+    }
+    evts.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+    let cur = 0;
+    let max = 0;
+    for (const [, d] of evts) { cur += d; max = Math.max(max, cur); }
+    expect(max).toBe(1);
   });
 });

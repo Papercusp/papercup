@@ -94,6 +94,14 @@
   border-top: 1px solid var(--border);
 }
 
+/** Actions sharing a `group` cluster together inside the band (ChatActionBar).
+ *  A <div>, not a <button>, so flex is safe here. */
+.chat-action-bar-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
 /* ═══ ① State — a fact. Read-only. Changes on its own. ═══════════════════════ */
 
 .pc-ctl-state {

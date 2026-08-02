@@ -1091,6 +1091,11 @@ export default function SessionChatModal({
             sessionId: resolved?.session_id ?? null,
             advSessionId: actionRosterEntry?.advSessionId ?? null,
             windowId: actionRosterEntry?.windowId ?? null,
+            // P-005: the mode pills read their CURRENT value from here. Same
+            // roster row the status band renders, so the pill and the rest of
+            // the surface cannot disagree about what is set — and it costs no
+            // fetch, which is what lets `current()` stay pure and synchronous.
+            modes: actionRosterEntry?.modes ?? [],
           }
         : null,
     [sessionOwnerId, ownerLabel, actionRosterEntry, resolved],

@@ -99,7 +99,17 @@ export default defineTool({
           // raw args JSON is the string the caller was already keyed by upstream.
           viewKey: `${name}:${argsJson}`,
         });
-        const meta = { mode: neg.mode, cursor: neg.cursor, checksum: neg.checksum, itemKeyField: neg.itemKeyField };
+        // `fullReason` rides along so a client that keeps getting `full` can tell a recoverable
+        // miss (`digest_expired` — next poll deltas) from a structural one (`no_digest` — this
+        // view will never delta as wired). Omitting it is how a silent full-forever regression
+        // hides: this route served 933 rows / ~822 KB on every warm poll and said nothing.
+        const meta = {
+          mode: neg.mode,
+          cursor: neg.cursor,
+          checksum: neg.checksum,
+          itemKeyField: neg.itemKeyField,
+          ...(neg.fullReason ? { fullReason: neg.fullReason } : {}),
+        };
         if (neg.mode === 'delta') {
           responseValue = { changes: neg.changes, version: String(Date.now()), delta: meta };
           itemCount = neg.changes?.length ?? 0;

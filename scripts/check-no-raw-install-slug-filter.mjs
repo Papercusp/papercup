@@ -48,6 +48,30 @@ export const ALLOWLIST = new Set([
   // This guard itself: its prose contains the very pattern it bans (same reason
   // check-no-raw-setinterval allowlists its own definition site).
   'scripts/check-no-raw-install-slug-filter.mjs',
+
+  // WI-6978, relation audited 2026-08-02: harness_shared.harness_escalations is NOT a
+  // re-homed relation, so a raw-installSlug filter on it is CORRECT and must not be
+  // "fixed" into routineStorageSlug() — that would rewrite the read away from the rows
+  // the writes actually produce.
+  //
+  // Settled on the RELATION, three independent ways, not on the call-site pattern:
+  //  1. TRIGGERS — harness_escalations carries only capture_git_export_outbox,
+  //     emit_change_notify and a tsv-update trigger. No trigger rewrites harness_slug,
+  //     and no re-home trigger exists on ANY of the candidate tables: re-homing here is
+  //     purely application-level (routineStorageSlug → resolveWorkItemPot), never a DB
+  //     rewrite. So "check pg_trigger" alone cannot settle a relation — checking the
+  //     WRITE PATHS is what does.
+  //  2. WRITE PATHS — all ~19 writers to harness_escalations insert a RAW slug
+  //     (`${row.install_slug}` / `${harnessSlug}`); not one calls routineStorageSlug.
+  //     Reads and writes therefore agree, which is the property that matters.
+  //  3. LIVE DATA — rows are stored under real harness slugs (papercusp 61 rows incl. a
+  //     release-trigger row, newest 2026-08-02T07:42Z; papercup, oddsmith, quartermaster,
+  //     per-instance slugs). Nothing is collapsed under the platform Pot, which is the
+  //     signature the re-homing bug leaves behind.
+  //
+  // Covers all 4 sites in this file (the RELEASE_TRIGGER_FREEZE / FIRE_STALE escalation
+  // reads). Re-audit if a writer ever starts resolving the slug for this table.
+  'packages/operator-core/lib/release/green-stall-watchdog.ts',
 ]);
 
 /**
@@ -65,7 +89,9 @@ export const ALLOWLIST = new Set([
  * A NEW file here is a hard guard failure, not a BASELINE addition — that is the ratchet.
  */
 export const BASELINE = new Set([
-  'packages/operator-core/lib/release/green-stall-watchdog.ts',
+  // green-stall-watchdog.ts GRADUATED to ALLOWLIST 2026-08-02 (WI-6978): its relation
+  // (harness_escalations) was audited and is genuinely NOT re-homed — see the reason
+  // recorded at the ALLOWLIST entry above. 9 → 8 files pending audit.
   'packages/operator-core/lib/harness/routines/plan-run-action.ts',
   'packages/operator-core/lib/pr-host/poll-daemon.ts',
   'packages/operator-core/lib/release-deploy-staleness-watchdog.ts',

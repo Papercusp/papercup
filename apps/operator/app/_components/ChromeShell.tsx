@@ -8,6 +8,7 @@ import { useReducedMotion } from 'motion/react';
 import { reconcileVisualEffectsMode, useFancyEffectsEnabled } from '@/lib/visual-effects';
 import { reconcileActiveTheme } from '@/lib/theme';
 import { reconcileShortcutOverrides } from '@papercusp/operator-core/lib/shortcut-registry';
+import { GITHUB_REPO_URL } from '@papercusp/operator-core/lib/canonical-github-identity';
 import { BrainMark, ResMark } from './ChromeNavMarks';
 import { AriaLiveRegions } from './voice/AriaLiveRegions';
 import { VoiceLeaderBootstrap } from './voice/VoiceLeaderBootstrap';
@@ -320,7 +321,7 @@ export default function ChromeShell({ chatFaces }: { chatFaces?: readonly OpChat
             return <RouteLink href="/dev" {...p} className={`${p.className} is-dev`}>DEV</RouteLink>;
           })()}
           <RouteLink href="/cupboard" {...navLinkProps('/cupboard')}>{t('cupboard')}</RouteLink>
-          <a href="https://github.com/papercupai" target="_blank" rel="noopener noreferrer" className="pc-header-nav-link">GitHub</a>
+          <a href={GITHUB_REPO_URL} target="_blank" rel="noopener noreferrer" className="pc-header-nav-link">GitHub</a>
           <UpdateChip />
           <NotificationCenter />
           <RecentActionsCenter />

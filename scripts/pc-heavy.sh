@@ -37,6 +37,16 @@
 #   PC_HEAVY_LOAD1_OVERRIDE  inject load1 for the adaptive default (tests — same
 #                         convention as pretooluse-bash-resource-gate.sh); non-numeric
 #                         or unreadable load fails conservative, to the floor.
+#   PC_HEAVY_GATE_RESERVE "1"(default)/"0" — while a green-checkpoint run is in
+#                         flight, clamp the effective slot count to a quarter of
+#                         the steady-state target (min 1) so the gate's isolation
+#                         re-run keeps host headroom (EI-19315056231449472; see
+#                         the block by _gate_reserve_active). off/false/no also
+#                         disable. Applies to a FIXED PC_HEAVY_SLOTS too.
+#   PAPERCUSP_CHECKPOINT_LOG_DIR  where green-checkpoint publishes its run lock
+#                         (default ~/.papercusp/checkpoint-logs) — the SAME var
+#                         release-config.ts resolves it from, so an alternate
+#                         lineage or a test lines up without a second knob.
 #   PC_HEAVY_DEBUG        "1" → print the computed slot count + inputs to stderr.
 #   PC_HEAVY_TIMEOUT_SEC  max seconds to WAIT for a slot before running anyway
 #                         (default 900). Running-anyway (never blocking forever)
@@ -149,14 +159,98 @@ _calc_slots() {
   echo "$n"
 }
 
-_slots="${PC_HEAVY_SLOTS:-}"
+# ── Release-gate reserve (EI-19315056231449472) ─────────────────────────────
+# The slot count above is a STEADY-STATE target: the floor deliberately models
+# every admitted job as a 32-worker sweep so full occupancy is ~1x the box, and
+# the load-adaptive widening opens that up to cores/8 when the box looks idle.
+# Both are correct — except while the release gate is JUDGING, when they are
+# actively harmful, and for a reason that makes the two compound:
+#
+#   The gate's quiet cut is EXACTLY when the box looks idle, so at the moment a
+#   run starts `_calc_slots` is at its most generous and the fleet can pile on
+#   up to `ceil` concurrent sweeps — by design. Measured live 2026-08-02 07:47Z
+#   while a run was judging: >= 6 heavy runs admitted, 16 vitest processes,
+#   load1 125.6 on 128 cores.
+#
+# What that costs is NOT merely a slow gate. The gate re-runs each originally-
+# failing file in ISOLATION at single concurrency to decide load-flake vs real
+# break (load-flake-isolation-2026-06-23), and ABSORBS the ones that pass. Host
+# contention during that phase therefore corrupts the gate's CLASSIFIER in both
+# directions — a starved re-run fails a good file (false red on code that is
+# fine, EI-18793581783459047; the same run's re-runs were starved to 209.7s and
+# the gate itself blamed "ambient host load"), and the same pressure shapes
+# which files get absorbed as flakes. The gate's flake/real discrimination
+# becomes a function of who else is on the box.
+#
+# So: while a run is live, clamp the EFFECTIVE slot count to a quarter of the
+# steady-state target (min 1). A /2 clamp is not enough — with adaptive slots
+# reaching 16 here it still admits 8. The advisory for this already exists
+# (dev:pipeline_position warns a human/agent who happens to call it); this is
+# the ENFORCEMENT, at the one chokepoint every heavy run already passes through.
+#
+# Detection is pure shell — no daemon, no DB, no tool call (this runs before
+# EVERY heavy command). green-checkpoint publishes a per-root run-lock DIRECTORY
+# `<logDir>/.green-checkpoint-run-<hash>.lock/` containing `owner.json` with the
+# run's pid, so liveness is a plain `kill -0`. That is what makes the clamp
+# safe: a crashed gate run's leftover lock is self-evidently dead and IGNORED,
+# so it can never wedge the fleet into permanent 1-slot mode. Same env var the
+# TypeScript side resolves the dir from (release-config.ts), so a test/alternate
+# lineage lines up automatically.
+#
+# Fail-open on EVERY unexpected input: no dir, no lock, unparseable json,
+# non-numeric pid, dead pid, no `kill` → behave exactly as if no gate were
+# running. Worst case degrades to today's behavior.
+# Escape hatch: PC_HEAVY_GATE_RESERVE=0.
+_gate_reserve_active() {
+  case "${PC_HEAVY_GATE_RESERVE:-1}" in
+    0|off|OFF|false|FALSE|no|NO) return 1 ;;
+  esac
+  local _logdir="${PAPERCUSP_CHECKPOINT_LOG_DIR:-${HOME:-}/.papercusp/checkpoint-logs}"
+  [ -d "$_logdir" ] || return 1
+  local _owner _pid
+  # No nullglob: a non-matching glob yields the literal pattern, which the
+  # -f test below rejects — that IS the no-gate-running path.
+  for _owner in "$_logdir"/.green-checkpoint-run-*.lock/owner.json; do
+    [ -f "$_owner" ] || continue
+    _pid=$(head -c 4096 "$_owner" 2>/dev/null | tr -d ' \n' \
+            | sed -n 's/.*"pid":\([0-9][0-9]*\).*/\1/p' | head -1)
+    case "$_pid" in ''|*[!0-9]*) continue ;; esac
+    # A dead pid means the run crashed and left its lock behind — ignore it.
+    kill -0 "$_pid" 2>/dev/null && return 0
+  done
+  return 1
+}
+
+# Effective slot count: the steady-state target (fixed or load-adaptive), then
+# the gate clamp. The clamp applies to an explicit PC_HEAVY_SLOTS too — it is a
+# safety reserve, not load adaptation, and it has its own dedicated override.
+_effective_slots() {
+  local _n
+  if [ "$_slots_fixed" = 1 ]; then _n="$_slots_base"; else _n="$(_calc_slots)"; fi
+  case "$_n" in ''|*[!0-9]*) _n="$_floor" ;; esac
+  if _gate_reserve_active; then
+    local _clamped=$(( _n / 4 ))
+    [ "$_clamped" -lt 1 ] && _clamped=1
+    [ "$_clamped" -lt "$_n" ] && _n="$_clamped"
+  fi
+  echo "$_n"
+}
+
+_slots_base="${PC_HEAVY_SLOTS:-}"
 _slots_fixed=1
-if [ -z "$_slots" ]; then
+if [ -z "$_slots_base" ]; then
   _slots_fixed=0
-  _slots="$(_calc_slots)"
+fi
+_gate_active=0
+_gate_reserve_active && _gate_active=1
+_slots="$(_effective_slots)"
+if [ "$_gate_active" = 1 ]; then
+  echo "[pc-heavy] release gate is JUDGING — heavy slots clamped to $_slots to keep" \
+       "headroom for its isolation re-run (EI-19315056231449472)." \
+       "Override with PC_HEAVY_GATE_RESERVE=0." >&2
 fi
 if [ "${PC_HEAVY_DEBUG:-}" = "1" ]; then
-  echo "[pc-heavy] slots=$_slots fixed=$_slots_fixed cores=$_cores floor=$_floor ceil=$_ceil" >&2
+  echo "[pc-heavy] slots=$_slots fixed=$_slots_fixed cores=$_cores floor=$_floor ceil=$_ceil gate=$_gate_active" >&2
 fi
 _dir="${PC_HEAVY_DIR:-${XDG_RUNTIME_DIR:-/tmp}/pc-heavy-slots}"
 _timeout="${PC_HEAVY_TIMEOUT_SEC:-900}"
@@ -335,10 +429,14 @@ done
 if [ -z "$_held" ]; then
   _fallback_deadline=$(( $(date +%s) + _timeout ))
   while :; do
-    # Adaptive default: re-read load each sweep so a waiter's admitted count
-    # tracks the box — load dropping widens the probe set mid-wait, rising
-    # load narrows it back toward the floor (held slots are never revoked).
-    [ "$_slots_fixed" = 0 ] && _slots="$(_calc_slots)"
+    # Re-resolve each sweep so a waiter's admitted count tracks the box: load
+    # dropping widens the probe set mid-wait, rising load narrows it back
+    # toward the floor (held slots are never revoked). This also re-checks the
+    # release-gate clamp, so a gate run STARTING mid-wait narrows the set and
+    # one FINISHING re-widens it — a waiter that queued before the gate began
+    # must not walk into the run it is about to starve. Unlike load adaptation
+    # this applies to a FIXED PC_HEAVY_SLOTS too (see _effective_slots).
+    _slots="$(_effective_slots)"
     for _i in $(seq 0 $(( _slots - 1 ))); do
       if { exec {_fd}>"$_dir/slot.$_i"; } 2>/dev/null; then
         if flock -n "$_fd"; then _held=1; break 2; fi
