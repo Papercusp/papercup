@@ -5359,7 +5359,15 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       // exist `enough` stays false and it pages on to exhaustion.
       const [inboxAll, outboxAll] = await Promise.all([
         readInbox(owner, {}, { enough: (entries) => entries.length >= TAIL }),
-        readOutbox(owner, {}),
+        // EI-19323045109346905: the same stopping rule on the outbox half. This
+        // is a SMALLER win than the inbox one and the asymmetry is the point:
+        // the outbox predicate (`from = owner`) is genuinely selective, where
+        // the inbox predicate matched ~99.8% broadcasts that had nothing to do
+        // with this owner. So bounding here fixes a read-to-use RATIO — pulling
+        // a sender's entire history to render tail(50) — not a whole-table scan.
+        // It is also the LAST unbounded read of the pair, so leaving it would
+        // keep this resolver's cost tied to how much the owner has ever sent.
+        readOutbox(owner, {}, { enough: (entries) => entries.length >= TAIL }),
       ]);
       const tail = <T>(arr: T[]) => (arr.length > TAIL ? arr.slice(arr.length - TAIL) : arr);
       return [{ owner, inbox: tail(inboxAll), outbox: tail(outboxAll) }];

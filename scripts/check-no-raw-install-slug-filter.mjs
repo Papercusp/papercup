@@ -106,11 +106,55 @@ export function usesRawInstallSlugFilter(text) {
   return /harness_slug\s*=\s*\$\{\s*installSlug\s*\}/.test(stripComments(text));
 }
 
+/**
+ * The CLEAN-path verdict line. Pure (counts → string) so the property that matters —
+ * an incomplete corpus NEVER renders as a clean bill of health — is unit-testable
+ * rather than green-on-a-clean-tree only.
+ *
+ * EI-19298378364087215. This guard establishes a NEGATIVE ("no file filters
+ * harness_slug by a raw installSlug"), and an incomplete enumeration cannot establish
+ * a negative at all. In an archive-extracted release/checkpoint checkout,
+ * `git ls-files --recurse-submodules` cannot descend into ANY submodule (no `.git` to
+ * descend into) — measured 2026-08-02: `git -C papercup-checkpoint submodule status`
+ * prints the uninitialised `-` prefix for every one of the 39. The scan then silently
+ * covers the superproject alone and a "✓ no NEW offenders" line would be asserting a
+ * repo-wide absence from ~79% of the repo.
+ *
+ * Keyed on `unscannedPresent`, NOT on bare `unscanned`, for the reason
+ * check-vacuous-negative-assertions.mjs documents at its own call site: this repo
+ * permanently carries one deliberately-absent submodule (libs/zero-harness, retired
+ * and uninitialised on purpose), so an alarm keyed on `unscanned` fires on every run
+ * in a perfectly healthy tree and is trained away — worthless exactly when it matters.
+ *
+ * Deliberately does NOT change the exit code. An archive-extracted checkout is BY
+ * DESIGN, so failing there would red the gate permanently and get this guard
+ * allowlisted out of existence. What is wrong in that tree is the CLAIM, not the
+ * build: so the verdict is downgraded and the reader is told it is not a pass.
+ */
+export function formatCleanVerdict({ scanned, grandfathered, unscannedPresent }) {
+  if (unscannedPresent > 0) {
+    return (
+      `⚠ INCOMPLETE — cannot establish "no NEW raw-installSlug harness_slug filters". ` +
+      `${scanned} file(s) read, but ${unscannedPresent} submodule(s) whose files are ON DISK ` +
+      `were never enumerated, so an offender inside them is reported exactly like an absent one. ` +
+      `Treat this as UNKNOWN, not as a pass; re-run where the enumeration is whole ` +
+      `(${grandfathered} grandfathered pending per-relation audit).`
+    );
+  }
+  return (
+    `✓ no NEW raw-installSlug harness_slug filters (${scanned} files scanned; ` +
+    `${grandfathered} grandfathered pending per-relation audit).`
+  );
+}
+
 function main() {
-  const { files: tracked, unscanned } = listTrackedFiles(ROOT);
+  const scan = listTrackedFiles(ROOT);
+  const { files: tracked, unscannedPresent } = scan;
   const files = tracked.filter((f) => !isExcluded(f) && !ALLOWLIST.has(f));
   const offenders = [];
   const baselineStillDirty = new Set();
+  /** Files this run actually READ — the only ones it can conclude anything about. */
+  const evaluated = new Set();
 
   for (const f of files) {
     let text;
@@ -119,6 +163,7 @@ function main() {
     } catch {
       continue; // deleted between enumeration and read
     }
+    evaluated.add(f);
     if (!usesRawInstallSlugFilter(text)) continue;
     if (BASELINE.has(f)) baselineStillDirty.add(f);
     else offenders.push(f);
@@ -127,12 +172,33 @@ function main() {
   // A BASELINE entry that is now CLEAN should be removed, or the ratchet silently
   // loosens: a stale grandfather keeps protecting a file that no longer needs it, so a
   // regression in that same file would be admitted without failing.
-  const staleBaseline = [...BASELINE].filter((f) => !baselineStillDirty.has(f));
+  //
+  // ⚠ Gated on `evaluated`, not on mere absence from baselineStillDirty. A file this run
+  // never READ is UNKNOWN, not clean — and an absence-ratchet that treats the two alike
+  // demands you delete a grandfather that is still dirty, which ADMITS the very
+  // regression the entry exists to catch. That is not hypothetical: it is the same
+  // defect that made child-output-guard's ratchet emit `fixed — DELETE this key` against
+  // an archive-extracted checkout (EI-19298378364087215). Every BASELINE path is in the
+  // superproject today, so no submodule blindness reaches this line yet; keying it on
+  // what was actually read means a future entry under libs/* cannot reintroduce it.
+  const staleBaseline = [...BASELINE].filter((f) => evaluated.has(f) && !baselineStillDirty.has(f));
+  const unverifiableBaseline = [...BASELINE].filter((f) => !evaluated.has(f));
+
+  if (unverifiableBaseline.length) {
+    console.error(
+      `\n  ⚠ ${unverifiableBaseline.length} BASELINE entr(ies) were never read this run — ` +
+        `NOT judged clean, and deliberately not reported as stale:\n` +
+        unverifiableBaseline.map((f) => '    ' + f).join('\n'),
+    );
+  }
 
   if (!offenders.length && !staleBaseline.length) {
     console.log(
-      `✓ no NEW raw-installSlug harness_slug filters (${files.length} files scanned; ` +
-        `${baselineStillDirty.size} grandfathered pending per-relation audit).${describeUnscanned(unscanned)}`,
+      formatCleanVerdict({
+        scanned: evaluated.size,
+        grandfathered: baselineStillDirty.size,
+        unscannedPresent: unscannedPresent.length,
+      }) + describeUnscanned(scan),
     );
     return;
   }

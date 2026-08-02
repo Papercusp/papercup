@@ -27,6 +27,7 @@
  * Run: cd packages/operator-core && npx vitest run --config vitest.integration.config.ts lib/agent-tools/coordination/delivery-ladder-sweep.integration.test.ts
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import type postgres from 'postgres';
 import { setupBaselineCoordFixture, type BaselineCoordFixture } from '../../_baseline-coord-fixture';
 import {
   findLadderCandidates,
@@ -72,7 +73,7 @@ async function insertRow(opts: {
   };
   await fx.admin`
     INSERT INTO harness_shared.coord_event_log (surface, msg_id, body, ts, workspace_id, origin)
-    VALUES ('messages', ${msgId}, ${fx.admin.json(body)}, ${new Date(colTsMs)}, 'default', 'local')
+    VALUES ('messages', ${msgId}, ${fx.admin.json(body as postgres.JSONValue)}, ${new Date(colTsMs)}, 'default', 'local')
   `;
 }
 

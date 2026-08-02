@@ -296,10 +296,17 @@ async function defaultEscalateDeadLoop(info: DeadLoopInfo): Promise<void> {
   });
 }
 
-/** Re-arm backoff is never longer than this (mirrors loop-turn-outcome.ts's identical cap for
- *  the resume-headless channel — kept as a local constant rather than importing across the
- *  fire/reconcile seam, since the two moved independently before EI-13818 unified their intent). */
-const LIFECYCLE_DEATH_REARM_CAP_MS = 3_600_000;
+/** Re-arm backoff is never longer than this — a SANITY ceiling on a bogus parse, NOT a normal
+ *  bound (mirrors loop-turn-outcome.ts's identical cap for the resume-headless channel — kept as
+ *  a local constant rather than importing across the fire/reconcile seam, since the two moved
+ *  independently before EI-13818 unified their intent).
+ *
+ *  WI-6852: this was 1h, which BOUND in practice rather than acting as a sanity rail — measured
+ *  2026-08-02, 13 of 15 lifecycle-death re-arms landed on EXACTLY 60m, i.e. `resetAt - now`
+ *  exceeded the cap every time and each re-arm was clipped and therefore UNDER-waited. Provider
+ *  walls here commonly run ~3-5h (observed: a "resets 9am" wall active from 10:17Z to 13:00Z).
+ *  6h clears a real wall while still refusing to park a loop for a day on a mis-parse. */
+const LIFECYCLE_DEATH_REARM_CAP_MS = 6 * 3_600_000;
 
 /** Reasons a `classifySessionEnd` verdict on a LIFECYCLE-COMPLETED loop turn's own text means
  *  the 'ended' marker was a KILL, not a success (EI-13818 — see module header point 5). */
@@ -662,9 +669,21 @@ export async function reconcileLoopRoutines(
                AND a.kind = 'lifecycle'
                AND a.summary = ${SESSION_END_MARKER}
                AND a.created_at > r.last_fired_at) AS lifecycle_completed_at,
-           -- WI-6069: the Stop hook's per-turn journal write (P-012) fires at the end of
-           -- EVERY ordinary turn, restart or not, across every CLI — see the layer-1.5
-           -- module-header note. Cheap: indexed on (owner_id, created_at DESC).
+           -- WI-6069: the Stop hook's journal write (P-012) — see the layer-1.5 module-header
+           -- note. Cheap: indexed on (owner_id, created_at DESC).
+           --
+           -- ⚠ EI-19316779460752535 — WI-6069's stated premise, that this write "fires at the
+           -- end of EVERY ordinary turn, restart or not, across every CLI", is FALSE.
+           -- The journal:record-turn tool writes a row ONLY when extractJournalFromAssistantText()
+           -- finds an extractable note in the turn text; otherwise it returns no_note and
+           -- writes nothing. Measured 2026-08-02 over 24h: 17 rows vs 750 ingested assistant
+           -- turns for one owner (2.3%); 746 rows / 61 owners fleet-wide, 100% flagged=true.
+           -- Consequence for THIS file: the layer-1.5 'turn-journal' completion signal — added
+           -- precisely so a warm push-wake session settles promptly instead of degrading to the
+           -- weaker layer-2 fallback — fires for a small minority of turns, so most loop settles
+           -- still go through presence-quiescence (which is why WI-6852's ingest-watermark
+           -- deferral had to be added THERE). Do not treat a missing journal row as evidence
+           -- that no turn completed.
            (SELECT max(j.created_at)
               FROM harness_shared.session_turn_journal j
              WHERE j.owner_id = r.target_owner_id
@@ -957,6 +976,18 @@ export async function reconcileLoopRoutines(
       // (EI-2549). A string + cast binds cleanly on BOTH that connection and a direct one.
       const reArmIso = new Date(completedAt + rearmMs).toISOString();
 
+      // WI-6852: a USAGE-LIMIT death is the one case that must be allowed to push next_fire_at
+      // LATER. The general statement below is never-later BY CONSTRUCTION (LEAST, plus a WHERE
+      // that only matches 'infinity' or a next_fire_at already beyond X), which SILENTLY DROPPED
+      // the reset-aware re-arm whenever a blind re-arm had already won the ingest race and set
+      // next_fire_at = completedAt + interval: infinity? no; (now+300s) > (now+3h)? no; zero rows
+      // updated. The loop then kept its bare-interval cadence and hammered the still-active wall
+      // — measured 295 wasted fires across 58 owners in 10 days, each one a killed respawn, with
+      // one owner re-firing 30x over 2h40m and stopping only when the wall itself lifted.
+      // Gated on a reset-aware verdict (rearmMs > intervalMs proves an instant was actually
+      // parsed from the turn's own text), so no other path can push a loop's cadence out.
+      const deferPastWall = turnDeath?.reason === 'usage_limit' && rearmMs > intervalMs;
+
       // ONE statement for BOTH kinds (d5a84's LEAST tip):
       //   pure loop parked  → next_fire_at='infinity' matches → LEAST(infinity, X) = X (re-arm)
       //   cron+loop (armed) → guarded by next_fire_at > X → LEAST(cron-next, X) = X (fold sooner)
@@ -964,7 +995,26 @@ export async function reconcileLoopRoutines(
       // the first disjunct (=infinity) no longer matches and the second (next_fire_at > X) is
       // false, so a re-pass is a no-op. A cron fire that is already sooner than X is left
       // untouched (the WHERE never matches), so a cron's cadence is never delayed.
-      const updated = await db<{ id: string }[]>`
+      // The wall branch is the MIRROR of that statement (WI-6852): same shape, inverted
+      // direction. GREATEST + (next_fire_at < X) only ever moves the next fire OUT to X, and a
+      // parked loop still re-arms from 'infinity'. Idempotent for the same reason: after it runs
+      // next_fire_at = X, so neither disjunct matches on a re-pass. A wall already scheduled
+      // FURTHER out than X is left untouched, so the longest known wall always wins.
+      const updated = deferPastWall
+        ? await db<{ id: string }[]>`
+            UPDATE harness_shared.routines
+               SET next_fire_at = CASE
+                     WHEN next_fire_at = 'infinity'::timestamptz THEN ${reArmIso}::timestamptz
+                     ELSE GREATEST(next_fire_at, ${reArmIso}::timestamptz)
+                   END,
+                   updated_at = now()
+             WHERE id = ${row.id}
+               AND reschedule_interval_sec IS NOT NULL
+               AND ( next_fire_at = 'infinity'::timestamptz
+                     OR next_fire_at < ${reArmIso}::timestamptz )
+            RETURNING id
+          `
+        : await db<{ id: string }[]>`
         UPDATE harness_shared.routines
            SET next_fire_at = LEAST(next_fire_at, ${reArmIso}::timestamptz), updated_at = now()
          WHERE id = ${row.id}

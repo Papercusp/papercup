@@ -1,0 +1,347 @@
+/**
+ * chat-controls — the session popup's control VOCABULARY
+ * (session-chat-popup-direction-d-2026-08-02 P-003, deck change #1).
+ *
+ * The owner's complaint was not that the controls looked bad; it was that
+ * "the difference between whats a label, whats a button, and whats a mode etc,
+ * is confusing". So this file fixes the GRAMMAR before any layout moves: every
+ * element in the popup is one of five kinds, and each kind gets a form you can
+ * identify WITHOUT reading the label — shape, border, corner radius and case all
+ * carry the distinction, so it survives a greyscale screenshot and a colour-blind
+ * operator.
+ *
+ *   State          a fact, read-only, changes on its own   full-round pill, no border, tinted fill
+ *   Mode           a state you can change                  pill with a filled cap + caret
+ *   Action         happens the instant you click           rectangle, 4px radius, 1px border
+ *   Action→picker  opens a chooser first                   same rectangle + a trailing "…"
+ *   Alert          a state that is ALSO a link to detail   warn-tinted pill + a trailing "›"
+ *   Field          part of a form, nothing fires yet       recessed well + a caption above
+ *
+ * Two rules fall out of that table and do most of the work:
+ *   ① ROUNDED = the system is telling you something.
+ *     RECTANGULAR = you are telling the system something.
+ *   ② A trailing "…" means a chooser opens; no ellipsis means it fires now.
+ *     (`Focus window` acts; `Grade session…` asks first — that one character
+ *     removes the "I clicked Grade and nothing happened" class of confusion.)
+ *
+ * ── Two repo rails this file is deliberately shaped around ──
+ *
+ * 1. NO `letter-spacing` ANYWHERE. The deck's specimens used .06–.13em tracking
+ *    on the uppercase micro-labels, but `lint:design-primitives` ENFORCES
+ *    letter-spacing: 0 across app UI (it is `expectNoUnexpected`, not warn-only),
+ *    and a nonzero value here would red the fleet's gate. Weight + size + case
+ *    carry the label/■control distinction instead, which is what AgentOrders.css
+ *    already does.
+ *
+ * 2. NO `display:flex` ON A `<button>` SELECTOR. WebKitGTK — the Tauri desktop
+ *    webview, i.e. the ONLY shipping target — ignores flex/grid set on the
+ *    <button> element itself and falls back to block, stacking the icon on top of
+ *    the label (EI-18135716653974462 / WI-5581; owner-screenshotted when the HUD
+ *    board shipped it "verified" in chromium). Every button-backed shape below is
+ *    therefore `display: block` with an inner `__inner`/`__cap`-bearing span doing
+ *    the layout. The fleet-wide lint is only warn-level, but this is a real
+ *    rendering bug in the real target, not a style preference.
+ *
+ * Colour comes from the operator's semantic token scale (app/_semantic.css) —
+ * no literal hexes, no brand primitives.
+ */
+
+/* ═══ the band that holds them ═══════════════════════════════════════════════ */
+
+.pc-ctl-band {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 11px;
+  min-width: 0;
+}
+
+/** Pushes everything after it to the far edge — used to separate the controls
+ *  that act on THIS session from the one that does not (the fleet launcher). */
+.pc-ctl-band__spacer {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.pc-ctl-band__sep {
+  flex: none;
+  width: 1px;
+  height: 17px;
+  margin: 0 3px;
+  background: var(--border);
+}
+
+/** A group caption ("FLEET", "SESSION"). Uppercase + weight, never tracking. */
+.pc-ctl-band__label {
+  flex: none;
+  font-size: 9px;
+  font-weight: 660;
+  text-transform: uppercase;
+  color: var(--fg-mute);
+}
+
+/* The status band sits ABOVE the transcript (facts); the do band BELOW it
+   (verbs). That spatial rule is Direction C's, and it is why nothing in the
+   do band is inert and nothing in the status band is clickable-to-change. */
+.pc-ctl-band--status {
+  background: color-mix(in oklab, transparent, black 16%);
+  border-top: 1px solid var(--border);
+}
+
+.pc-ctl-band--do {
+  background: var(--bg-2);
+  border-top: 1px solid var(--border);
+}
+
+/* ═══ ① State — a fact. Read-only. Changes on its own. ═══════════════════════ */
+
+.pc-ctl-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: none;
+  padding: 4px 9px 4px 7px;
+  border: 0;
+  border-radius: 999px;
+  background: color-mix(in oklab, transparent, white 6%);
+  color: var(--fg-dim);
+  font-size: 10.5px;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.pc-ctl-state__dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--good);
+}
+
+/* Tone is a VERDICT, not decoration — so it also shifts the text colour, and the
+   dot keeps its own shape, so the reading survives greyscale. */
+.pc-ctl-state--good {
+  background: color-mix(in oklab, transparent, var(--good) 13%);
+  color: color-mix(in oklab, var(--good), white 34%);
+}
+.pc-ctl-state--warn {
+  background: color-mix(in oklab, transparent, var(--warn) 13%);
+  color: color-mix(in oklab, var(--warn), white 34%);
+}
+.pc-ctl-state--bad {
+  background: color-mix(in oklab, transparent, var(--bad) 14%);
+  color: color-mix(in oklab, var(--bad), white 34%);
+}
+.pc-ctl-state--warn .pc-ctl-state__dot { background: var(--warn); }
+.pc-ctl-state--bad .pc-ctl-state__dot { background: var(--bad); }
+
+/* ═══ ② Mode — a state you can change. A switch that is currently on. ════════ */
+
+/* The <button> itself is display:block (see the WebKitGTK note above); the inner
+   span is the flex row. `overflow:hidden` + the pill radius are what make the
+   filled cap read as one object with its value rather than two adjacent chips —
+   which is the whole point of the shape: a mode and the control that sets it are
+   ONE thing. That is what kills the AUTO/Autonomy and GRADE/Grade duplicate
+   pairs the owner was complaining about. */
+.pc-ctl-mode {
+  display: block;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  min-height: 0;
+  background: color-mix(in oklab, transparent, var(--accent) 14%);
+  color: var(--accent-soft);
+  font: inherit;
+  font-size: 10.5px;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.pc-ctl-mode__inner {
+  display: flex;
+  align-items: stretch;
+  border-radius: inherit;
+  overflow: hidden;
+}
+
+.pc-ctl-mode__cap {
+  display: flex;
+  align-items: center;
+  padding: 4px 8px;
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.pc-ctl-mode__value {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px 4px 7px;
+}
+
+/* Off is not merely "dimmer" — the cap loses its fill entirely, so on/off is a
+   difference in FORM (filled vs hollow), legible without colour. */
+.pc-ctl-mode--off {
+  background: color-mix(in oklab, transparent, white 6%);
+  color: var(--fg-mute);
+}
+/* --fg-dim, not --fg-mute: the cap is a LABEL on a raised fill, and the muted
+   pair cleared only 92% of the WCAG AA ratio (caught by lint:contrast). The
+   off-state still reads as off through FORM — the cap loses its accent fill —
+   so nothing is lost by keeping the text itself legible. */
+.pc-ctl-mode--off .pc-ctl-mode__cap {
+  background: var(--bg-raised-high);
+  color: var(--fg-dim);
+}
+
+.pc-ctl-mode:hover {
+  background: color-mix(in oklab, transparent, var(--accent) 22%);
+}
+.pc-ctl-mode--off:hover {
+  background: color-mix(in oklab, transparent, white 11%);
+}
+
+/* ═══ ③/④ Action, and Action → picker ═══════════════════════════════════════ */
+
+.pc-ctl-act {
+  display: block;
+  padding: 6px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  /* Declared explicitly because globals.css's zero-specificity
+     `:where(button, .pc-btn) { min-height: 26px }` baseline otherwise wins over
+     the intended padded height and produces an off-by-a-few-px "egg"
+     (EI-18690913356156250). 26px IS the intended height here, so state it. */
+  min-height: 26px;
+  background: var(--bg-raised);
+  color: var(--fg);
+  font: inherit;
+  font-size: 11.5px;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease-out);
+}
+
+.pc-ctl-act__inner {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
+.pc-ctl-act:hover { background: var(--bg-raised-high); }
+.pc-ctl-act[disabled] { cursor: default; opacity: 0.55; }
+
+.pc-ctl-act__icon {
+  display: flex;
+  flex: none;
+  align-items: center;
+  color: var(--accent);
+}
+
+.pc-ctl-act--ghost {
+  background: transparent;
+  border-color: var(--border);
+  color: var(--fg-dim);
+}
+.pc-ctl-act--ghost:hover { background: color-mix(in oklab, transparent, white 6%); }
+
+.pc-ctl-act--primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-ink);
+  font-weight: 640;
+}
+.pc-ctl-act--primary:hover { background: var(--accent-strong); }
+.pc-ctl-act--primary .pc-ctl-act__icon { color: var(--accent-ink); }
+
+/* ═══ ⑤ Alert — a state that is ALSO a link to its detail. ═══════════════════ */
+
+.pc-ctl-alert {
+  display: block;
+  padding: 4px 7px 4px 8px;
+  border: 0;
+  border-radius: 999px;
+  min-height: 0;
+  background: color-mix(in oklab, transparent, var(--warn) 14%);
+  color: color-mix(in oklab, var(--warn), white 34%);
+  font: inherit;
+  font-size: 10.5px;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.pc-ctl-alert__inner {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.pc-ctl-alert:hover { background: color-mix(in oklab, transparent, var(--warn) 22%); }
+
+/** The trailing "›". Its job is to say "this opens something" — the one thing
+ *  that distinguishes an Alert from a State, since both are rounded. */
+.pc-ctl-alert__chevron { opacity: 0.65; }
+
+/* ═══ ⑥ Field — part of a form. Nothing happens until you submit. ═══════════ */
+
+/* The recessed well is the point: it is the only shape here that looks like
+   something is MISSING from it, which is what a form control should look like.
+   The caption above it is non-negotiable — the fleet row's seven controls
+   carried no visible captions at all (their names existed only in aria-label),
+   which is exactly why the owner's paste read "Plan the fleet works" and
+   "Account routing for every fleet member". */
+.pc-ctl-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.pc-ctl-field__cap {
+  font-size: 9px;
+  font-weight: 620;
+  text-transform: uppercase;
+  color: var(--fg-mute);
+}
+
+.pc-ctl-field__well,
+.pc-ctl-field select,
+.pc-ctl-field input {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 5px 9px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: color-mix(in oklab, transparent, black 28%);
+  box-shadow: inset 0 1px 2px color-mix(in oklab, transparent, black 35%);
+  color: var(--fg);
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+
+.pc-ctl-field__well--empty { color: var(--fg-mute); }
+
+.pc-ctl-field__chevron {
+  flex: none;
+  color: var(--fg-mute);
+  font-size: 9px;
+}
+
+/* ═══ shared focus treatment ════════════════════════════════════════════════ */
+
+.pc-ctl-mode:focus-visible,
+.pc-ctl-act:focus-visible,
+.pc-ctl-alert:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}

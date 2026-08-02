@@ -173,9 +173,22 @@ const READ_TOOLS: ReadonlySet<string> = new Set(['read', 'notebookread']);
  *  substring inside a longer identifier is not harvested. */
 const ID_RE = /\b(?:WI|EI)-\d{1,24}\b|\bP-\d{3,}\b/g;
 
-/** A path-shaped token inside a command line: at least one `/` and a file
- *  extension, which excludes bare words and most prose. */
-const PATH_TOKEN_RE = /(?:[\w.@-]+\/)+[\w.@-]+\.[A-Za-z][\w]{0,5}\b/g;
+/**
+ * A path-shaped token inside a command line: at least one `/` and a file
+ * extension, which excludes bare words and most prose.
+ *
+ * ⚠ THE LEADING `/` IS PART OF THE MATCH, and it is not cosmetic. Without it
+ * this regex silently STRIPPED the character that makes the non-repo exclusion
+ * work: `/tmp/claude-1000/…/out.log` matched as `tmp/claude-1000/…/out.log`,
+ * which `relativizeRepoPath` then read as an ordinary REPO-RELATIVE path — so
+ * `NON_REPO_ABS_RE` never saw an absolute path to reject and every scratch
+ * file, log tail and /proc read an agent had grepped was harvested as if it
+ * were repo work. Measured live 2026-08-02 before the fix: 3 of the 4
+ * most-recent paths for a real session were /tmp scratch files. Harmless while
+ * nothing consumed the trajectory; not harmless once P-044 spends a 4-path
+ * query budget on them.
+ */
+const PATH_TOKEN_RE = /\/?(?:[\w.@-]+\/)+[\w.@-]+\.[A-Za-z][\w]{0,5}\b/g;
 
 /** A plausible code symbol: identifier chars only, ≥3 long, not all-lowercase
  *  prose like "true". Deliberately strict — a false symbol is pure query noise. */

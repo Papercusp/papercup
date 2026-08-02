@@ -24,6 +24,7 @@ import {
   checkActiveCheckpointRun,
   isCheckpointRunLockHeldCheap,
   stopActiveCheckpointUnit,
+  recordCheckpointDisplacement,
   CHECKPOINT_UNIT,
   checkpointUnitForRoot,
   CHECKPOINT_MAX_RUNTIME_SEC,
@@ -917,6 +918,98 @@ describe('launchDetachedCheckpoint replaceStale (EI-9672: force alone could not 
     await launchDetachedCheckpoint({ root: '/tree', replaceStale: true }, spawnFn as never, execFn, readLogHead, cancelStaleAwaits);
 
     expect(cancelStaleAwaits).not.toHaveBeenCalled();
+  });
+
+  // EI-19323010647367612: a run stopped via replaceStale (or any other out-of-band
+  // `systemctl stop`) left no trace of WHY it died — the transient unit has no journal, and the
+  // stable log symlink is about to be repointed at the fresh run. recordDisplacement writes a
+  // marker into the STALE run's own log BEFORE the SIGTERM so the forensic trail survives.
+  it('EI-19323010647367612: a successfully-stopped stale run gets a displacement marker written into its OWN log BEFORE the stop', async () => {
+    const child = fakeChild();
+    const spawnFn = vi.fn(() => child);
+    const execFn = staleActiveExecFn(0, 45);
+    const readLogHead = vi.fn(() => '[green-checkpoint] checkpointing candidate 11111111 (base def)\n');
+    const cancelStaleAwaits = vi.fn(async () => ({ cancelled: 0 }));
+    const calls: string[] = [];
+    const recordDisplacement = vi.fn((logPath: string, info: { candidate?: string | null }) => {
+      calls.push('record');
+      expect(logPath).toBe(checkpointLatestLogPath(checkpointUnitForRoot('/tree')));
+      expect(info.candidate).toBe('11111111');
+    });
+    execFn.mockImplementation((cmd: string, args: string[]) => {
+      if (cmd === 'systemctl' && args[1] === 'stop') {
+        calls.push('stop');
+        return { status: 0, stdout: '', stderr: '' };
+      }
+      return staleActiveExecFn(0, 45)(cmd, args);
+    });
+
+    const p = launchDetachedCheckpoint(
+      { root: '/tree', replaceStale: true },
+      spawnFn as never,
+      execFn,
+      readLogHead,
+      cancelStaleAwaits,
+      recordDisplacement,
+    );
+    child.emit('close', 0);
+    const r = await p;
+
+    expect(recordDisplacement).toHaveBeenCalledTimes(1);
+    // Written before the SIGTERM, not after — the marker must survive even if the stop's own
+    // systemd bookkeeping (or a crash right after) loses everything else.
+    expect(calls).toEqual(['record', 'stop']);
+    expect(r.launched).toBe(true);
+  });
+
+  it('EI-19323010647367612: a REFUSED replace (young/not-stale/failed-stop) never calls recordDisplacement — nothing is actually being stopped', async () => {
+    const spawnFn = vi.fn();
+    const execFn = staleActiveExecFn(0, 5); // young — refused before any stop attempt
+    const readLogHead = vi.fn(() => '[green-checkpoint] checkpointing candidate 11111111 (base def)\n');
+    const cancelStaleAwaits = vi.fn(async () => ({ cancelled: 0 }));
+    const recordDisplacement = vi.fn();
+
+    await launchDetachedCheckpoint(
+      { root: '/tree', replaceStale: true },
+      spawnFn as never,
+      execFn,
+      readLogHead,
+      cancelStaleAwaits,
+      recordDisplacement,
+    );
+
+    expect(recordDisplacement).not.toHaveBeenCalled();
+  });
+
+  it('EI-19323010647367612: recordCheckpointDisplacement is fail-soft — a write error never throws or blocks the caller', () => {
+    const throwingAppend = vi.fn(() => {
+      throw new Error('ENOSPC: no space left on device');
+    });
+    expect(() =>
+      recordCheckpointDisplacement(
+        '/tmp/some-unit.log',
+        { candidate: 'abc123def456', current_candidate: 'fed654cba321', elapsed_sec: 300, started_at: '2026-08-02T05:15:07Z' },
+        throwingAppend,
+      ),
+    ).not.toThrow();
+    expect(throwingAppend).toHaveBeenCalledTimes(1);
+  });
+
+  it('EI-19323010647367612: recordCheckpointDisplacement writes a human-readable marker naming both the stopped and superseding candidates', () => {
+    const appendFn = vi.fn();
+    recordCheckpointDisplacement(
+      '/tmp/some-unit.log',
+      { candidate: 'abc123def456', current_candidate: 'fed654cba321', elapsed_sec: 300, started_at: '2026-08-02T05:15:07.000Z' },
+      appendFn,
+    );
+    expect(appendFn).toHaveBeenCalledTimes(1);
+    const [path, line] = appendFn.mock.calls[0] as [string, string];
+    expect(path).toBe('/tmp/some-unit.log');
+    expect(line).toContain('displaced');
+    expect(line).toContain('abc123def456'.slice(0, 12));
+    expect(line).toContain('fed654cba321'.slice(0, 12));
+    expect(line).toContain('2026-08-02T05:15:07.000Z');
+    expect(line).toContain('300s elapsed');
   });
 });
 

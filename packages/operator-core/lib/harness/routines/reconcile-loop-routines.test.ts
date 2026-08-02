@@ -430,8 +430,32 @@ describe('classifyLoopLifecycleTurn — pure classifier (EI-13818)', () => {
     // Cross-check against the SAME reset parser the verdict reuses — no independent TZ math.
     const expectedReset = parseUsageResetMs(text, NOW);
     expect(expectedReset).toBeDefined();
-    expect(verdict?.rearmDelayMs).toBe(Math.min(Math.max(expectedReset! - NOW, 60_000), 3_600_000));
+    expect(verdict?.rearmDelayMs).toBe(Math.min(Math.max(expectedReset! - NOW, 60_000), 6 * 3_600_000));
     expect(verdict?.rearmDelayMs).toBeGreaterThan(60_000); // strictly more than the bare interval
+  });
+
+  // WI-6852: the cap was 1h, which BOUND on every real wall instead of acting as a sanity rail
+  // (measured: 13 of 15 lifecycle-death re-arms landed on exactly 60m, i.e. every one was clipped
+  // and under-waited, then re-fired into the still-active wall). Relative-duration text is used
+  // here deliberately: it pins the expected value with no timezone math to get wrong.
+  it('does NOT clip a multi-hour wall to the old 1h cap (WI-6852)', () => {
+    const verdict = classifyLoopLifecycleTurn(
+      "You've hit your session limit · resets in 3 hours",
+      60_000,
+      NOW,
+    );
+    expect(verdict?.reason).toBe('usage_limit');
+    expect(verdict?.rearmDelayMs).toBe(3 * 3_600_000);
+    expect(verdict?.rearmDelayMs).toBeGreaterThan(3_600_000); // the old cap would have clipped it
+  });
+
+  it('still applies a sanity ceiling so a bogus parse cannot park a loop for a day', () => {
+    const verdict = classifyLoopLifecycleTurn(
+      "You've hit your session limit · resets in 30 hours",
+      60_000,
+      NOW,
+    );
+    expect(verdict?.rearmDelayMs).toBe(6 * 3_600_000);
   });
 
   it('classifies an auth_wall death with the plain-interval rearm (no reset time to parse)', () => {

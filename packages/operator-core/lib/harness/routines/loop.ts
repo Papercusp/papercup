@@ -575,8 +575,10 @@ export interface LoopStatus {
    *  completed a turn (or the row predates lifecycle tracking). Compare against
    *  `lastFiredAt` to see whether fires are outpacing genuine turn production. */
   lastTurnAt: string | null;
-  /** WI-6951: ISO of the most recent GENUINE turn completion — `session_turn_journal` ONLY,
-   *  with the lifecycle session-end marker deliberately EXCLUDED. `lastTurnAt` above unions
+  /** WI-6951: ISO of the most recent GENUINE turn completion — the lifecycle session-end
+   *  marker deliberately EXCLUDED (EI-19316779460752535 widened the SOURCE from the
+   *  journal alone to journal ∪ session_turns assistant turns, because the journal covers
+   *  only ~2.3% of turns; the exclusion WI-6951 cares about is unchanged). `lastTurnAt` above unions
    *  that marker in as a defensive fallback (WI-6069, so a lifecycle-only read cannot go
    *  perpetually stale), which is right for the liveness question it answers — "is this loop
    *  producing turns at all?" — because there any evidence of activity is better than none.
@@ -807,10 +809,18 @@ export async function getLoopStatuses(
            -- lifecycle-report.sh is wired only to SessionStart/SessionEnd, so that marker only
            -- ever lands at a genuine session restart, making lastTurnAt read as perpetually
            -- stale (and turnsStalled fire) for any healthy session driven entirely by push
-           -- wakes. UNION in session_turn_journal (P-012's per-CLI Stop-hook journal write,
-           -- which DOES fire every ordinary turn) so this reads the real most-recent turn
+           -- wakes. UNION in session_turn_journal so this reads the real most-recent turn
            -- regardless of which signal happened to land. MAX ignores NULLs, so either source
            -- being empty for this owner is harmless.
+           --
+           -- ⚠ EI-19316779460752535 — WI-6069's premise for that union, "P-012's per-CLI
+           -- Stop-hook journal write DOES fire every ordinary turn", is FALSE and is repeated
+           -- verbatim in reconcile-loop-routines.ts. The journal:record-turn tool writes a row
+           -- only when the turn text carries an extractable note (no_note ⇒ no row): measured
+           -- 2026-08-02 over 24h, 17 rows against 750 assistant turns for one owner (2.3%) and
+           -- 746 rows / 61 owners fleet-wide, 100% flagged=true. This union still WORKS (the
+           -- lifecycle leg carries it, and MAX tolerates the sparse leg), but do NOT reach for
+           -- the journal as a standalone "a turn happened" signal — see last_real_turn_at below.
            (SELECT max(ts) FROM (
               SELECT ag.created_at AS ts FROM harness_shared.agent_activity ag
                WHERE ag.owner_id = r.target_owner_id AND ag.kind = 'lifecycle'
@@ -827,8 +837,32 @@ export async function getLoopStatuses(
            -- A caller asking "did a turn complete after instant X?" must use THIS one: the
            -- marker means the session DIED, and a cold reset kills its predecessor, so it
            -- always postdates the final loop:checkpoint and reads as phantom post-note work.
-           (SELECT max(j.created_at) FROM harness_shared.session_turn_journal j
-             WHERE j.owner_id = r.target_owner_id)                        AS last_real_turn_at,
+           --
+           -- EI-19316779460752535: the journal ALONE is not a usable "a turn happened" source —
+           -- it is not a per-turn journal at all. The journal:record-turn tool (agent-tools/
+           -- journal/record-turn.ts) writes a row ONLY when extractJournalFromAssistantText()
+           -- finds an extractable note in the turn text; every other turn returns no_note and
+           -- writes NOTHING. Measured 2026-08-02 over 24h: 17 journal rows against 750 ingested
+           -- assistant turns for one owner (2.3%), and 746 rows / 61 owners fleet-wide, of which
+           -- 746 (100%) are flagged=true. So a journal-only read is silent for ~98% of turns and
+           -- its consumer (the cold-wake staleness hint, wake-executor.ts) degrades from WI-6951's
+           -- false POSITIVE to a systematic false NEGATIVE. UNION in session_turns' assistant
+           -- turns — the COMPLETE transcript-ingest source — which restores coverage WITHOUT
+           -- reintroducing the WI-6951 bug: session_turns carries real assistant turns only and
+           -- never the '■ session ended' lifecycle marker (that lives in agent_activity, which is
+           -- exactly what stays excluded here). The ingest lags (p50 65s / p90 115s over 6h), and
+           -- that lag can only make this read OLDER — i.e. it can only withhold the hint, never
+           -- manufacture a phantom turn — so the failure direction stays the safe one.
+           -- Index-backed both sides: session_turn_journal_owner_ts_idx (owner_id, created_at
+           -- DESC) and session_turns_owner_ts_idx (owner, ts).
+           (SELECT max(ts) FROM (
+              SELECT j.created_at AS ts FROM harness_shared.session_turn_journal j
+               WHERE j.owner_id = r.target_owner_id
+              UNION ALL
+              SELECT st3.ts AS ts FROM harness_shared.session_turns st3
+               WHERE st3.owner = r.target_owner_id
+                 AND st3.speaker = 'assistant'
+            ) real_turn_sources)                                          AS last_real_turn_at,
            (SELECT max(p.last_active_at) FROM harness_shared.coord_presence p
              WHERE p.owner_id = r.target_owner_id) AS presence_last_active_at,
            lw.channel                                                    AS last_wake_channel,

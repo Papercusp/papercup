@@ -535,6 +535,47 @@ const staleClaimSweepCheck: PeriodicCheck = {
           /* best-effort — the console.warn above is the floor */
         }
       }
+      // EI-18676518990229124: notify the FORMER HOLDER directly, for every reclaimed
+      // row (not just dead-letters) — the console.warn above lands only in the server
+      // log, which no agent reads. Without this, a claim can be reclaimed out from
+      // under a holder (a false-positive DEAD verdict, or a genuinely-dead session that
+      // later resumes from a checkpoint) with zero signal to the one party who most
+      // needs to know: the reporter's own repro showed a holder re-claiming the same
+      // item three times across 45 minutes with no idea its claim kept vanishing. A
+      // dead holder simply never reads this (harmless no-op); a live-but-falsely-reaped
+      // holder sees it on its next inbox check and can re-claim deliberately instead of
+      // discovering the loss by chance re-read. Best-effort per-row so one bad ownerId
+      // never blocks the rest of the sweep.
+      try {
+        const { sendMessage } = await import('../agent-tools/coordination/messages');
+        for (const c of r.released) {
+          if (!c.former_taken_by) continue;
+          try {
+            await sendMessage(
+              {
+                ownerId: 'stale-claim-sweep',
+                ownerLabel: 'system · stale-claim-sweep',
+                source: 'signed-spawn',
+                workspaceId: null,
+                userId: null,
+              },
+              {
+                to: [c.former_taken_by],
+                harnessSlug: c.harness_slug,
+                summary:
+                  `Your claim on ${c.feature_id} was reclaimed (reason: ${c.reason}, ` +
+                  `${c.former_status}->${c.new_status}). If you are still actively working it, ` +
+                  `re-claim it now — this can be a false positive if your recent activity was ` +
+                  `mostly native tool calls the liveness sweep didn't see.`,
+              },
+            );
+          } catch {
+            /* best-effort — one bad recipient must never block the others */
+          }
+        }
+      } catch {
+        /* best-effort — notification is never load-bearing for the sweep itself */
+      }
     }
 
     // WI-6039: the GENERAL backstop for a work_items row ALREADY stuck at
@@ -620,6 +661,38 @@ const staleClaimSweepCheck: PeriodicCheck = {
           `(returned to the open pool): ` +
           ir.released.map((c) => `${c.issue_id}[${c.kind}]<-${c.former_assignee}`).join(', '),
       );
+      // EI-18676518990229124: same per-former-holder notification as the feature-family
+      // reaper above — this leg previously notified NOBODY (console.warn only), so a
+      // holder whose bug/change assignment was reclaimed had zero signal it happened.
+      try {
+        const { sendMessage } = await import('../agent-tools/coordination/messages');
+        for (const c of ir.released) {
+          if (!c.former_assignee) continue;
+          try {
+            await sendMessage(
+              {
+                ownerId: 'stale-claim-sweep',
+                ownerLabel: 'system · stale-claim-sweep',
+                source: 'signed-spawn',
+                workspaceId: null,
+                userId: null,
+              },
+              {
+                to: [c.former_assignee],
+                summary:
+                  `Your assignment on ${c.issue_id} [${c.kind}] was reclaimed as a dead-holder ` +
+                  `stale claim and returned to the open pool. If you are still actively working ` +
+                  `it, re-claim it now — this can be a false positive if your recent activity was ` +
+                  `mostly native tool calls the liveness sweep didn't see.`,
+              },
+            );
+          } catch {
+            /* best-effort — one bad recipient must never block the others */
+          }
+        }
+      } catch {
+        /* best-effort — notification is never load-bearing for the sweep itself */
+      }
     }
     // EI-6480: the sweep also cleared orphaned per-Hive claim leases (stale leases surviving a
     // taken_by-clear that made an unclaimed issue fail lease arbitration for every new claimer).

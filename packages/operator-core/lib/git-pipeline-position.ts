@@ -1175,10 +1175,19 @@ export function evaluateChangeInCandidate(args: {
        * computed — a judged count BELOW the tip count is positive proof the judged tree
        * is missing occurrences the change added. Say so instead of exonerating.
        */
-      if (which === 'judged' && markerPartialAgainst(m, markerNext)) {
+      // `count` is `number | null` (null = unmeasured), so narrow ONCE here rather than
+      // asserting: a null count must never render as "null×" or drive arithmetic.
+      const judgedCount = m.count;
+      const tipCount = markerNext?.count ?? null;
+      if (
+        which === 'judged' &&
+        markerPartialAgainst(m, markerNext) &&
+        judgedCount !== null &&
+        tipCount !== null
+      ) {
         return (
           `The gate's judged candidate (${at}) carries the marker ${times}, but tip has it ` +
-          `${markerNext?.count}× — so the judged tree is MISSING ${(markerNext?.count ?? 0) - m.count} ` +
+          `${tipCount}× — so the judged tree is MISSING ${tipCount - judgedCount} ` +
           `occurrence(s) your change added. It carries only PART of the change. Treat a RED from ` +
           `it as UNPROVEN, not as a verdict on your code. Note the marker cannot settle this on ` +
           `its own: it is a substring test, so a marker that already existed in the file reads as ` +
@@ -1191,7 +1200,7 @@ export function evaluateChangeInCandidate(args: {
         ? `The gate's judged candidate (${at}) DOES carry your change — the marker occurs ${times} in its version of this file. ` +
             `That verdict IS a real verdict on your code, so a RED there is about your change, not about a missing one. ` +
             `Do NOT re-fire to "get a run that includes it" — you already have one.` +
-            (m.count > 1
+            (judgedCount !== null && judgedCount > 1
               ? ` (Caveat: the marker occurs ${times}, so it is not unique to your change — if it is a common identifier ` +
                 `rather than a string your edit introduced, confirm with release:checkpoint-run { paths: [...] }.)`
               : '')

@@ -12,6 +12,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
 import { createOrgTestDb, type OrgTestDb } from '../../../test/_org-test-db';
+import { SESSION_END_MARKER } from '../../agent-tools/activity/lifecycle-markers';
 import {
   materializeLoop,
   getLoopStatus,
@@ -119,6 +120,60 @@ describe('loop surface round-trip (real PG)', () => {
     expect(status!.nextFireAt).toBe(new Date(now.getTime() + 300_000).toISOString());
 
     expect(await getLoopStatus('su-nobody', { sql })).toBeNull();
+  });
+
+  it('EI-19316779460752535: lastRealTurnAt sees an ordinary assistant turn with NO journal row — and still excludes the session-end marker (WI-6951)', async () => {
+    // WHY THIS EXISTS: `last_real_turn_at` was sourced from session_turn_journal ALONE, on
+    // WI-6069's premise that the Stop hook journals EVERY ordinary turn. It does not —
+    // `journal:record-turn` writes only when the turn text carries an extractable note
+    // (measured 2026-08-02: 17 rows vs 750 assistant turns for one owner, 2.3%). So the
+    // field — and the cold-wake staleness hint that is its only consumer — was silent for
+    // the ~98% of turns that produce no journal row. The fix unions in session_turns'
+    // assistant turns; this test pins BOTH halves: the new coverage, and the WI-6951
+    // exclusion it must not undo.
+    await sql`TRUNCATE harness_shared.session_turns`;
+    await sql`TRUNCATE harness_shared.session_turn_journal`;
+    await sql`DELETE FROM harness_shared.agent_activity WHERE owner_id = ${OWNER}`;
+    await materializeLoop({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      ownerId: OWNER,
+      intervalSec: 60,
+      kickoff: 'k',
+      sql,
+    });
+
+    // No journal row anywhere — the ~98% case. Only an ordinary ingested assistant turn.
+    const realTurn = new Date('2026-06-20T00:05:00.000Z');
+    await sql`
+      INSERT INTO harness_shared.session_turns
+        (workspace_id, source_kind, session_id, turn_idx, ts, owner, harness_slug, speaker, text)
+      VALUES (${WS}, 'claude', 'sess-1', 1, ${realTurn.toISOString()}::timestamptz,
+              ${OWNER}, ${HARNESS}, 'assistant', 'ordinary turn, no journal note')`;
+
+    expect((await getLoopStatus(OWNER, { sql }))!.lastRealTurnAt).toBe(realTurn.toISOString());
+
+    // A LATER user turn is a wake injection, not a completed turn — it must not advance it.
+    await sql`
+      INSERT INTO harness_shared.session_turns
+        (workspace_id, source_kind, session_id, turn_idx, ts, owner, harness_slug, speaker, text)
+      VALUES (${WS}, 'claude', 'sess-1', 2, ${'2026-06-20T00:09:00.000Z'}::timestamptz,
+              ${OWNER}, ${HARNESS}, 'user', '❄️ COLD LOOP WAKE (fire #59)')`;
+
+    expect((await getLoopStatus(OWNER, { sql }))!.lastRealTurnAt).toBe(realTurn.toISOString());
+
+    // WI-6951's whole point: the '■ session ended' lifecycle marker is a session DEATH, not a
+    // turn. A cold reset kills its predecessor, so the marker lands AFTER the final
+    // loop:checkpoint — reporting it as a completed turn is what made the staleness hint
+    // advertise phantom post-note work. Widening the source must not resurrect that.
+    await sql`
+      INSERT INTO harness_shared.agent_activity (workspace_id, owner_id, kind, summary, created_at)
+      VALUES (${WS}, ${OWNER}, 'lifecycle', ${SESSION_END_MARKER},
+              ${'2026-06-20T00:35:00.000Z'}::timestamptz)`;
+
+    const afterDeath = await getLoopStatus(OWNER, { sql });
+    expect(afterDeath!.lastRealTurnAt).toBe(realTurn.toISOString()); // marker EXCLUDED
+    expect(afterDeath!.lastTurnAt).toBe(new Date('2026-06-20T00:35:00.000Z').toISOString()); // union INCLUDES it
   });
 
   it('getLoopStatus surfaces carry:"cold" for a cold-armed loop (su-cold-auto P-008 observability)', async () => {

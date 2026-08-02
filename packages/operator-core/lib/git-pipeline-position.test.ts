@@ -2344,8 +2344,10 @@ describe('changeInCandidate (P-004)', () => {
         // It must say what is actually true, and point at the check that IS definitive.
         expect(res.changeInCandidate.detail).toMatch(/PART of the change/);
         expect(res.changeInCandidate.detail).toMatch(/callerEditsInCandidate|release:checkpoint-run/);
-        // …and it must render as a WARNING, never behind the reassuring ✓.
-        expect(res.summary).not.toMatch(/✓ .*carries the marker/);
+        // …and the marker note itself must carry the WARNING glyph, never the reassuring
+        // ✓ (the position ticks legitimately use ✓, so this pins the note's own prefix).
+        expect(res.summary).toMatch(/⚠ The gate's judged candidate/);
+        expect(res.summary).not.toMatch(/✓ The gate's judged candidate/);
       });
 
       it('an EQUAL count still confirms — this must not fire on the honest case', async () => {

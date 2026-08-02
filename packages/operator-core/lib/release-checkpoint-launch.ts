@@ -968,6 +968,45 @@ export function stopActiveCheckpointUnit(
   return { stopped: false, reason: r.stderr.trim().slice(0, 300) || `systemctl stop exited ${r.status}` };
 }
 
+/** The subset of `ActiveCheckpointCheck` a displacement marker needs to describe. */
+export type CheckpointDisplacementInfo = Pick<
+  ActiveCheckpointCheck,
+  'candidate' | 'current_candidate' | 'elapsed_sec' | 'started_at'
+>;
+
+/**
+ * EI-19323010647367612: write a forensic marker into the STALE run's own log, BEFORE it is
+ * SIGTERMed, naming what superseded it. Without this, a run stopped by `replaceStale` (or any
+ * other out-of-band `systemctl --user stop`) leaves no trace of WHY it died: the transient unit
+ * itself has no journal (`journalctl --user -u <unit>` returns "No entries" for a systemd-run
+ * unit whose stdout is redirected to a file, per WI-6962/EI-9672's own notes), and the stable
+ * `checkpointLatestLogPath` symlink this writes to is about to be repointed at the FRESH run's
+ * own timestamped log the moment it launches. So this call is the ONLY place the stopped run's
+ * displacement is ever recorded for whoever later reads its now-orphaned timestamped log file
+ * wondering why it ends mid-suite with no verdict.
+ *
+ * Best-effort/fail-soft: a write failure is logged and swallowed, never blocks the stop or the
+ * fresh launch that follows it (mirrors every other best-effort helper in this module).
+ */
+export function recordCheckpointDisplacement(
+  logPath: string,
+  info: CheckpointDisplacementInfo,
+  appendFn: (path: string, data: string) => void = (p, d) => appendFileSync(p, d, 'utf8'),
+): void {
+  try {
+    const line =
+      `\n[displaced ${new Date().toISOString()}] this run is being STOPPED via replaceStale before producing a verdict — ` +
+      `was judging ${info.candidate ? info.candidate.slice(0, 12) : 'an unresolved candidate'}` +
+      `${info.started_at ? ` (started ${info.started_at}${info.elapsed_sec != null ? `, ~${info.elapsed_sec}s elapsed` : ''})` : ''}, ` +
+      `superseded by ${info.current_candidate ? info.current_candidate.slice(0, 12) : 'current staging'}.\n`;
+    appendFn(logPath, line);
+  } catch (e) {
+    console.error(
+      `[release-checkpoint-launch] displacement log write failed (non-fatal — the stop/relaunch still proceeds): ${e instanceof Error ? e.message : e}`,
+    );
+  }
+}
+
 /** WI-4957: local mirror of green-checkpoint.ts's `pipelineName` — this operator-core module
  *  must not depend on apps/operator (wrong dependency direction; apps/operator depends on
  *  operator-core, not the reverse), so the tiny pure sanitizer is duplicated here exactly like
@@ -1035,7 +1074,8 @@ export async function cancelStaleCheckpointAwaits(
  *
  * `spawnFn`/`execFn`/`readLogHead` are injectable so the tool handler is unit-testable without
  * launching anything or shelling out to systemctl. `cancelStaleAwaits` (WI-4957) is likewise
- * injectable so the replaceStale path's await-cancellation is testable without a real DB.
+ * injectable so the replaceStale path's await-cancellation is testable without a real DB, and
+ * `recordDisplacement` (EI-19323010647367612) the same for the pre-stop log marker.
  */
 export function launchDetachedCheckpoint(
   opts: LaunchCheckpointOpts = {},
@@ -1043,6 +1083,7 @@ export function launchDetachedCheckpoint(
   execFn: ExecSyncLike = defaultExecSync,
   readLogHead: (logPath: string) => string | null = defaultReadLogHead,
   cancelStaleAwaits: (root: string, staleCandidateSha: string) => Promise<{ cancelled: number }> = cancelStaleCheckpointAwaits,
+  recordDisplacement: (logPath: string, info: CheckpointDisplacementInfo) => void = recordCheckpointDisplacement,
 ): Promise<LaunchCheckpointResult> {
   const root = opts.root ?? integrationRoot();
   const unit = checkpointUnitForRoot(root);
@@ -1094,6 +1135,9 @@ export function launchDetachedCheckpoint(
             },
           });
         }
+        // EI-19323010647367612: record WHY this run is dying into its own log, before the
+        // SIGTERM — the only forensic trail that survives a transient unit with no journal.
+        recordDisplacement(logPath, active);
         const stop = stopActiveCheckpointUnit(unit, execFn);
         if (stop.stopped) {
           // Re-check right before launching — a race where the run finished/advanced

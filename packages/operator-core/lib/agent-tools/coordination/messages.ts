@@ -10,6 +10,7 @@
  * agent-coordination-architecture-v2 §6.4 (#6).
  */
 
+import type postgres from 'postgres';
 import {
   newMsgId,
   filterInbox,
@@ -578,8 +579,14 @@ export interface CoordWindowResult {
  * itself, because only the caller knows what "visible" means for its direction.
  */
 async function pageCoordEventLogDesc(params: {
-  /** Direction-specific row match, e.g. recipient-pushdown or `from = owner`. */
-  match: (sql: ReturnType<typeof coordSql>) => unknown;
+  /** Direction-specific row match, e.g. recipient-pushdown or `from = owner`.
+   *  Returns a postgres FRAGMENT (`postgres.Fragment` = `PendingQuery<any>`), not
+   *  `unknown`: the result is interpolated straight into the tagged template below,
+   *  whose parameters are typed `ParameterOrFragment<…>`. Typing it `unknown` did
+   *  compile at the definition but broke the CALL SITE with a TS2345, and cascaded
+   *  into a confusing TS1320 ("await operand must be a valid promise") on the query
+   *  itself — which reads like a bug in the await, not in this annotation. */
+  match: (sql: ReturnType<typeof coordSql>) => postgres.Fragment;
   /** Skew-padded lower bound, or null for no bound. */
   sinceBound: string | null;
   /** Caller's stopping rule over the accumulated raw rows. */

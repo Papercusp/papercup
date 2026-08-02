@@ -203,6 +203,36 @@ describe('extractTrajectory', () => {
     expect(blob).not.toContain('run the memory tests');
   });
 
+  it('DROPS a non-repo absolute path scanned out of a command line', () => {
+    // The leading `/` used to fall outside PATH_TOKEN_RE's match, so a scratch
+    // file came back as the "repo-relative" path `tmp/claude-1000/…/out.log`
+    // and NON_REPO_ABS_RE never saw an absolute path to reject. Measured live
+    // 2026-08-02: 3 of the 4 most-recent paths for a real session were /tmp
+    // scratch files — which under P-044 would spend most of a 4-path query
+    // budget on log tails.
+    const out = extractTrajectory(
+      [
+        report('Bash', {
+          command:
+            'wc -c /tmp/claude-1000/abc/tasks/bk7xouxii.output && cat /proc/self/status.txt && rg foo packages/operator-core/lib/x.ts',
+        }),
+      ],
+      { repoRoot: REPO },
+    );
+    expect(out.trajectory?.paths).toEqual(['packages/operator-core/lib/x.ts']);
+    expect(JSON.stringify(out)).not.toContain('tmp/claude-1000');
+    expect(JSON.stringify(out)).not.toContain('proc/self');
+  });
+
+  it('still relativizes an IN-repo absolute path scanned out of a command line', () => {
+    // The same change must not throw away the paths that ARE repo work.
+    const out = extractTrajectory(
+      [report('Bash', { command: `rg -n foo ${REPO}/packages/operator-core/lib/y.ts` })],
+      { repoRoot: REPO },
+    );
+    expect(out.trajectory?.paths).toEqual(['packages/operator-core/lib/y.ts']);
+  });
+
   it('does not treat a command-line path as the active file', () => {
     // A grep or a test run mentions a file; it does not make it the file the
     // agent is working in.

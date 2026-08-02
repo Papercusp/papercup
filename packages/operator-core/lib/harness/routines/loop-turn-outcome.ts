@@ -63,8 +63,12 @@ export function loopRoutineIdFromSource(source: string | null | undefined): stri
   return id || null;
 }
 
-/** Re-arm backoff is never longer than this (also the autoloop circuit cap). */
-const REARM_BACKOFF_CAP_MS = 3_600_000;
+/** Re-arm backoff is never longer than this — a SANITY ceiling on a bogus parse, not a normal
+ *  bound. WI-6852: was 1h, which clipped every real usage-limit wall (measured: 13 of 15
+ *  lifecycle-death re-arms landed on exactly the 60m cap, so each under-waited and re-fired into
+ *  a still-active wall). Provider walls here commonly run ~3-5h. Kept in step with
+ *  reconcile-loop-routines.ts's LIFECYCLE_DEATH_REARM_CAP_MS. */
+const REARM_BACKOFF_CAP_MS = 6 * 3_600_000;
 
 /**
  * The re-arm delay (ms from now) for a DEAD loop turn (P1a). A rate-limit / usage-cap death
