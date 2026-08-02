@@ -381,6 +381,74 @@ export function parseHighlight(raw: string): HudHighlightSegment[] {
   return out;
 }
 
+/**
+ * The text a transcript modal should scroll to, derived from a search hit.
+ *
+ * ── Why TEXT and not `turnIdx` ──────────────────────────────────────────────
+ * `HudSearchHit.turnIdx` is an index into `harness_shared.session_turns` — the
+ * Postgres table the search engine indexes. The modal renders a DIFFERENT
+ * store: `/api/adv/session/thinking` streams the on-disk transcript, which
+ * `sessionTimelineToChatMessages` then groups into turns and FILTERS
+ * (tool_result and status entries are dropped, a text-and-tool-less turn
+ * produces no message at all). Nothing establishes the two numberings are the
+ * same, and the filtering guarantees they diverge whenever a session has a
+ * status-only turn. Scrolling to `turnIdx` would therefore land confidently on
+ * the wrong message — a worse failure than not scrolling, because it looks
+ * like it worked.
+ *
+ * Matched TEXT survives the store boundary: whatever the row numbering, the
+ * words are the same words. So the anchor is a literal substring of the
+ * matched turn, and `turnIdx` is kept only as a last-resort tiebreak when two
+ * messages contain it.
+ *
+ * ── Which substring ─────────────────────────────────────────────────────────
+ * `highlight` is PG `ts_headline` output over the turn text, so stripping its
+ * `<mark>` tags yields exact contiguous runs of the source — but it is capped
+ * at `MaxWords=18` per fragment and glues up to 2 fragments with `" … "`, so
+ * the WHOLE string is not contiguous. Split on that delimiter and take the
+ * longest piece.
+ *
+ * `excerpt` is `"[speaker owner ts] " + first 200 chars of the turn` — also
+ * exact, but it carries a synthetic bracket prefix that appears nowhere in the
+ * transcript, so it is only usable with that prefix stripped, and only as a
+ * fallback (a headline fragment sits ON the match; an excerpt prefix may be
+ * hundreds of chars above it).
+ *
+ * Returns null when nothing usable survives — the caller then opens the modal
+ * at the tail exactly as before, which is the honest degradation.
+ */
+export function searchHitAnchor(hit: HudSearchHit | null | undefined): string | null {
+  if (!hit) return null;
+
+  // Longest contiguous headline fragment. parseHighlight already decodes
+  // entities and condenses whitespace, which is exactly the normalization the
+  // consumer applies to message text before matching.
+  if (hit.highlight) {
+    const joined = parseHighlight(hit.highlight)
+      .map((s) => s.text)
+      .join('');
+    const best = joined
+      .split(/\s+…\s+/)
+      .map((s) => s.trim())
+      .sort((a, b) => b.length - a.length)[0];
+    // Under ~8 chars an anchor stops discriminating: a 3-letter run matches
+    // half the transcript, and the FIRST such match is almost never the hit.
+    if (best && best.length >= MIN_ANCHOR_CHARS) return best;
+  }
+
+  // Fallback: the excerpt, minus the synthetic `[speaker owner ts]` prefix the
+  // search source prepends (it is not in the transcript, so leaving it on
+  // guarantees a miss). Cap the length — the excerpt runs to 200 chars and
+  // may end mid-word or be truncated with `…`, and a long tail only adds ways
+  // for it not to match.
+  const bare = hit.excerpt.replace(/^\[[^\]]*\]\s*/, '').replace(/…$/, '');
+  const condensed = bare.replace(/\s+/g, ' ').trim().slice(0, 120).trim();
+  return condensed.length >= MIN_ANCHOR_CHARS ? condensed : null;
+}
+
+/** Below this an anchor matches too much to be the match. */
+const MIN_ANCHOR_CHARS = 8;
+
 export interface HudSession {
   ownerId: string;
   /** Short display handle, e.g. `su-92bacd`. */

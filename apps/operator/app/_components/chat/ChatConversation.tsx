@@ -373,6 +373,83 @@ export interface ChatConversationProps {
   onLoadEarlier?: () => void;
   hasMoreEarlier?: boolean;
   loadingEarlier?: boolean;
+
+  /**
+   * Open the transcript ON a specific message instead of at the tail: a
+   * literal run of text from the message to scroll to (HUD search → the
+   * matched turn, owner ask 2026-08-02). See `findAnchoredMessageIndex` for
+   * why this is TEXT and not an index.
+   *
+   * Changing it re-focuses; clearing it hands the transcript back to the
+   * normal follow-the-tail behavior on the next message change. An anchor
+   * that matches nothing is a no-op — the chat opens at the tail, which is
+   * the honest degradation.
+   */
+  focusAnchor?: string | null;
+}
+
+/**
+ * Normalize for anchor matching: decode nothing (both sides are already plain
+ * text), condense every whitespace run to one space, and case-fold.
+ *
+ * Condensing is load-bearing rather than cosmetic. The anchor comes from PG
+ * `ts_headline`, which reflows the source text — a hard newline in the
+ * transcript arrives as a single space in the headline — so a byte-exact
+ * comparison against the transcript fails on any message containing a line
+ * break, i.e. most agent output.
+ */
+function normalizeForAnchor(s: string): string {
+  return s.replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
+/**
+ * Which message a `focusAnchor` refers to, or -1.
+ *
+ * TEXT, not an index, because the two stores disagree: the anchor originates
+ * in `harness_shared.session_turns` (what search indexes) and is resolved
+ * against the on-disk transcript the modal renders, which has been grouped
+ * and filtered on the way in. Their row numbering is not the same numbering.
+ * Matching on the words is immune to that — the words survive both stores.
+ *
+ * Progressive shortening, not all-or-nothing: an 18-word headline fragment
+ * can straddle a boundary the mapper introduced (a tool chip lifted out of
+ * the text, a `…` truncation), so a full-length miss is common and does NOT
+ * mean the match is absent. Halving down to a floor recovers those; below the
+ * floor an anchor stops discriminating between messages, so we stop rather
+ * than return a confident wrong answer.
+ *
+ * Ties break toward `turnIdxHint` when one is supplied — the hint is not
+ * trustworthy enough to select a message on its own (different store), but it
+ * is a perfectly good tiebreak among messages that all genuinely contain the
+ * matched text.
+ */
+export function findAnchoredMessageIndex(
+  messages: readonly { content: string }[],
+  anchor: string | null | undefined,
+  turnIdxHint?: number,
+): number {
+  if (!anchor) return -1;
+  const needleFull = normalizeForAnchor(anchor);
+  if (needleFull.length < 8) return -1;
+
+  const hay = messages.map((m) => normalizeForAnchor(m.content ?? ''));
+  for (let len = needleFull.length; len >= 12; len = Math.floor(len / 2)) {
+    const needle = needleFull.slice(0, len).trim();
+    if (needle.length < 8) break;
+    const found: number[] = [];
+    for (let i = 0; i < hay.length; i += 1) if (hay[i].includes(needle)) found.push(i);
+    if (found.length === 1) return found[0];
+    if (found.length > 1) {
+      if (typeof turnIdxHint === 'number' && turnIdxHint >= 0) {
+        // Nearest to the hint — a tiebreak, never a selector.
+        return found.reduce((a, b) =>
+          Math.abs(b - turnIdxHint) < Math.abs(a - turnIdxHint) ? b : a,
+        );
+      }
+      return found[0];
+    }
+  }
+  return -1;
 }
 
 type ChatMessageRowProps = {
@@ -396,6 +473,12 @@ type ChatMessageRowProps = {
    *  Only meaningful to the empty-turn notice below: an assistant row that is
    *  legitimately mid-flight has no text yet and must not be called a failure. */
   pending?: boolean;
+  /** This is the message a `focusAnchor` resolved to. Marks it visually — a
+   *  transcript scrolled to an arbitrary mid-list position, with nothing
+   *  saying which row is the answer, reads as a scroll bug rather than a
+   *  result. A stable boolean, false for every row but one, so the memo above
+   *  still holds across a keystroke. */
+  focused?: boolean;
 };
 
 /**
@@ -461,6 +544,7 @@ const ChatMessageRow = memo(function ChatMessageRow({
   harnessSlug,
   onWorkRefActivate,
   pending,
+  focused,
 }: ChatMessageRowProps) {
   // WI-4731: a message stamped with the speaking agent gets that
   // agent's canonical mark (the LeftSidebar tab iconography:
@@ -493,8 +577,9 @@ const ChatMessageRow = memo(function ChatMessageRow({
     <div
       data-index={index}
       data-message-index={index}
+      data-focus-match={focused ? 'true' : undefined}
       ref={measureElement}
-      className={`oracle-msg oracle-msg-${m.role}`}
+      className={`oracle-msg oracle-msg-${m.role}${focused ? ' oracle-msg--focus-match' : ''}`}
       style={{
         position: 'absolute',
         top: 0,
@@ -602,6 +687,7 @@ export function ChatConversation(props: ChatConversationProps) {
     onLoadEarlier,
     hasMoreEarlier,
     loadingEarlier,
+    focusAnchor,
   } = props;
 
   const endRef = useRef<HTMLDivElement | null>(null);
@@ -784,6 +870,61 @@ export function ChatConversation(props: ChatConversationProps) {
     el.addEventListener('scroll', onScroll, { passive: true });
     return () => el.removeEventListener('scroll', onScroll);
   }, []);
+
+  // ── Focus scroll: open ON a message instead of at the tail ─────────────
+  // HUD search, owner ask 2026-08-02: clicking a search result must land on
+  // the turn that matched.
+  //
+  // Three things make this more than one scrollToIndex call, and all three are
+  // the SAME problems the tail pin above already solved — so this deliberately
+  // reuses its shape rather than inventing a second scrolling idiom:
+  //
+  //  1. The target does not exist yet. The modal mounts with zero messages and
+  //     the transcript streams in over the following second, so the anchor
+  //     resolves on a LATER commit. Hence: attempt on every messages change
+  //     until it lands, then stop (`focusedForRef`).
+  //  2. Rows are estimated at 64px and measure ~2x, so one scroll lands short
+  //     and the target drifts as rows above it measure. Hence the same bounded
+  //     rAF re-assert loop, but re-asserting an INDEX rather than the bottom.
+  //  3. The tail pin would immediately undo it: it re-pins on every message
+  //     change while `followRef` is true, and a live session streams. Turning
+  //     follow OFF is what suspends it — the same switch a user scrolling away
+  //     flips — so this effect must be declared ABOVE it to win the commit
+  //     where both fire.
+  //
+  // Re-focusing is keyed on the anchor STRING: a second search hit in the same
+  // session re-scrolls, an unchanged anchor never re-steals the user's scroll.
+  const [focusIndex, setFocusIndex] = useState(-1);
+  const focusedForRef = useRef<string | null>(null);
+  const focusFramesRef = useRef(0);
+  const focusLoopActiveRef = useRef(false);
+  useEffect(() => {
+    if (!focusAnchor) {
+      focusedForRef.current = null;
+      setFocusIndex(-1);
+      return;
+    }
+    if (focusedForRef.current === focusAnchor) return;
+    if (messages.length === 0) return;
+    const idx = findAnchoredMessageIndex(messages, focusAnchor);
+    if (idx < 0) return; // transcript may still be streaming — try again next commit
+    focusedForRef.current = focusAnchor;
+    setFocusIndex(idx);
+    followRef.current = false; // suspend the tail pin (see 3 above)
+    focusFramesRef.current = 45; // same ~750ms convergence budget as pinToBottom
+    if (focusLoopActiveRef.current) return;
+    focusLoopActiveRef.current = true;
+    const step = () => {
+      if (!scrollerRef.current || focusFramesRef.current <= 0 || followRef.current) {
+        focusLoopActiveRef.current = false;
+        return;
+      }
+      focusFramesRef.current -= 1;
+      virtualizer.scrollToIndex(idx, { align: 'start' });
+      requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+  }, [focusAnchor, messages, virtualizer]);
 
   useEffect(() => {
     const el = scrollerRef.current;

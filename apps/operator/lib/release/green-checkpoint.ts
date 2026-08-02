@@ -150,6 +150,35 @@ export interface CheckpointDeps {
    *  `info.fromCandidate` is being re-verified RIGHT NOW instead of dispatching someone at tests
    *  this very run may be about to disprove. Optional / best-effort: existing test stubs need not
    *  provide it; realCheckpointDeps wires it to release/in-flight-retriage.ts's merge write. */
+  /**
+   * Publish WHICH SHA THIS RUN IS JUDGING, at candidate-FINAL time, on EVERY invocation
+   * (including each recursive auto-refire — see the call site's sibling `writeCheckpointRunPhase`
+   * comment for why "every invocation" is the rule at that exact spot).
+   *
+   * Closes the gap WI-4494 left open one level up. That work item made the PRODUCER record its
+   * VERDICT, on the owner's ruling that inference layers over a knowable value are bandaids
+   * ("lets just make sure its right the first time so that it doesn't need to get 're-verified'
+   * to begin with"). But the IN-FLIGHT candidate was still published only to stdout — which a
+   * MANUAL run redirects to /tmp and a SCHEDULER-fired run does not write at all. So the
+   * commonest question asked of this gate ("is it judging my fix?") had no observation behind it
+   * on the common path, only proxies that fail in different directions; checkpoint-run.ts's own
+   * `already_running` reply says so outright ("its candidate is genuinely undetermined here").
+   * Optional / best-effort: existing test stubs need not provide it; realCheckpointDeps wires it
+   * to release/in-flight-candidate.ts.
+   */
+  recordInFlightCandidate?(info: {
+    candidate: string;
+    base: string | null;
+    selectedAtMs: number;
+    quietCutApplied: boolean;
+    tipAtSelection: string | null;
+    refireDepth: number;
+    pid: number;
+  }): Promise<void>;
+  /** Terminal-state twin of {@link CheckpointDeps.recordInFlightCandidate}: clear the marker once
+   *  a verdict is reached, so a finished run never reads as live. The 3h freshness bound cannot
+   *  do this job — it is deliberately generous enough for a ~55min suite plus refires. */
+  clearInFlightCandidate?(): Promise<void>;
   recordInFlightRetriage?(info: {
     fromCandidate: string;
     refiringCandidate: string;
@@ -2902,6 +2931,12 @@ export async function runGreenCheckpoint(
   // more tick to land its other half before being judged. Only applies when the caller
   // didn't pin an explicit candidate; opt out with PAPERCUSP_QUIET_CUT=0, tune with
   // PAPERCUSP_QUIET_CUT_SEC (default 240s ≈ 1.5 ticks).
+  // The tip as it stood BEFORE the quiet cut may step back off it. Captured here so the run can
+  // PUBLISH the excluded window (see recordInFlightCandidate below) instead of leaving every
+  // reader to reconstruct it from git timestamps by hand — arithmetic over mixed-offset dates
+  // that is silently wrong rather than erroring when you get it subtly right-looking.
+  const candidateBeforeQuietCut = candidate;
+  let quietCutApplied = false;
   if (!opts.candidate && quietCutSecFromEnv() > 0) {
     try {
       const quietSec = quietCutSecFromEnv();
@@ -2917,6 +2952,7 @@ export async function runGreenCheckpoint(
               `judging ${aged.slice(0, 8)} instead (the newest ≥${quietSec}s-old state); the tip gets the next run`,
           );
           candidate = aged;
+          quietCutApplied = true;
         }
       }
     } catch (e) {
@@ -2959,6 +2995,34 @@ export async function runGreenCheckpoint(
    * different question that rule cannot: WHERE that age came from.
    */
   const candidateSelectedAtMs = Date.now();
+  /**
+   * PUBLISH the candidate — the run's own answer to "which sha are you judging?".
+   *
+   * Placed here deliberately: this is the point where the candidate is FINAL (quiet cut applied,
+   * fast-forward checked), and — like the phase write immediately below — it is reached on EVERY
+   * invocation including each recursive auto-refire, so the marker always names the sha actually
+   * under judgement rather than the one the run started with. That is what makes a MOVING
+   * candidate readable as healthy: a refire advances it while pid/started_at stay fixed, which
+   * has repeatedly been misread as a corrupt field.
+   *
+   * Not awaited: a diagnostic must never add latency to (or fail) the run it describes. The
+   * writer swallows its own errors, and the `void` makes the fire-and-forget deliberate rather
+   * than an unhandled-rejection accident.
+   */
+  void deps.recordInFlightCandidate?.({
+    candidate,
+    base: lastReady ?? null,
+    selectedAtMs: candidateSelectedAtMs,
+    quietCutApplied,
+    tipAtSelection: quietCutApplied ? candidateBeforeQuietCut : null,
+    // totalRefires, NOT refireAttempts. Per EI-19343532231631821 `refireAttempts` counts only
+    // CHARGED refires (ones whose failures overlap the set already being rescued), so a run five
+    // SUCCESSFUL rescues deep holds it at 0 — indistinguishable from "never refired", which is
+    // precisely the misreading that field has already caused once. Same fallback idiom the
+    // charged/total bookkeeping above uses.
+    refireDepth: opts.totalRefires ?? opts.refireAttempts ?? 0,
+    pid: process.pid,
+  });
   // EI-18757156963245979: (re)enter the SUITE phase. This must be written at the top of EVERY
   // invocation, not just the first, because a stale-red auto-refire RE-ENTERS this function
   // recursively in the SAME process — without this reset the marker would still read
@@ -4706,6 +4770,32 @@ export function realCheckpointDeps(
         /* best-effort diagnostic — never let this break the checkpoint run */
       }
     },
+    // Same env-resolved record target and the same best-effort contract as the retriage marker
+    // above: an un-stamped run (old-CLI/new-routine skew, or a manual run with no target) simply
+    // publishes nothing, exactly as it does today. A reader therefore treats an ABSENT marker as
+    // "unknown", never as "no run in flight".
+    async recordInFlightCandidate(info) {
+      try {
+        const { gateVerdictTargetFromEnv } = await import('@papercusp/operator-core/lib/release/gate-verdict-target');
+        const target = gateVerdictTargetFromEnv();
+        if (!target) return;
+        const { recordInFlightCandidate: write } = await import('@papercusp/operator-core/lib/release/in-flight-candidate');
+        await write(target, info);
+      } catch {
+        /* best-effort diagnostic — never let this break the checkpoint run */
+      }
+    },
+    async clearInFlightCandidate() {
+      try {
+        const { gateVerdictTargetFromEnv } = await import('@papercusp/operator-core/lib/release/gate-verdict-target');
+        const target = gateVerdictTargetFromEnv();
+        if (!target) return;
+        const { clearInFlightCandidate: clear } = await import('@papercusp/operator-core/lib/release/in-flight-candidate');
+        await clear(target);
+      } catch {
+        /* best-effort diagnostic — never let this break the checkpoint run */
+      }
+    },
     // EI-19326481022404981: real wiring — reuse the SAME helper WI-4957's `replaceStale`
     // path uses (cancelStaleCheckpointAwaits), so a sha-bound `checkpoint:await` is
     // retired identically whether its candidate died via an external kill-and-relaunch
@@ -5471,6 +5561,24 @@ if (require.main === module) {
     // immediately after calling it (releaseAndExit / process.exit) — the exact EI-10800
     // class of bug where an un-awaited emit races process teardown and never fires.
     if (r.green === null) await emitInconclusiveVerdict(r);
+    // Retire the in-flight-candidate marker here because EVERY terminal path funnels through
+    // this function — verdict, crash, and inconclusive alike. Clearing at the happy-path return
+    // instead would leave a CRASHED run advertising itself as live until the 3h freshness bound
+    // expired, which is the same "a stale artifact reads exactly like a fresh one" failure the
+    // marker exists to eliminate. Resolved directly from env rather than through
+    // `realCheckpointDeps` (same shape as recordOwnVerdict below) so a terminal path never
+    // constructs a whole deps object just to drop one row. AWAITED for the EI-10800 reason
+    // above: the process exits immediately after this returns.
+    try {
+      const { gateVerdictTargetFromEnv } = await import('@papercusp/operator-core/lib/release/gate-verdict-target');
+      const target = gateVerdictTargetFromEnv();
+      if (target) {
+        const { clearInFlightCandidate } = await import('@papercusp/operator-core/lib/release/in-flight-candidate');
+        await clearInFlightCandidate(target);
+      }
+    } catch {
+      /* best-effort — a marker we failed to clear ages out on its own freshness bound */
+    }
   };
 
   /**

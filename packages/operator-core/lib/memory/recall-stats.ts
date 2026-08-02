@@ -32,6 +32,15 @@ export const RRF_SCORE_CEILING = 2 / 61;
 /**
  * Lowest score an admitted COSINE hit can carry: the relevance floor applied on
  * admission. Observed minimum on the live table is 0.50.
+ *
+ * ⚠ DELIBERATELY NOT `MEMORY_INJECTION_COSINE_FLOOR`, and it must NOT be "fixed"
+ * to track it. That constant is the LIVE admission contract and moved 0.45 → 0.58
+ * on 2026-08-02 (P-050 / D-058). This one is a CLASSIFIER BOUNDARY over HISTORICAL
+ * rows — it separates the RRF scale (bounded by 2/61) from the cosine scale for
+ * rows written before migration 705 recorded `score_scale` explicitly. Those rows
+ * were admitted under the OLD 0.45 floor, so raising this to 0.58 would classify
+ * every legacy cosine hit in [0.45, 0.58) as 'unknown' and silently drop it from
+ * comparisons. The two values describe different times and are expected to diverge.
  */
 export const COSINE_ADMISSION_FLOOR = 0.45;
 

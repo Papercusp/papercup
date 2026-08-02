@@ -9,7 +9,7 @@
  */
 
 import { z } from 'zod';
-import { defineTool } from '@papercusp/agent-mcp';
+import { defineTool, readJsonResult, type SeeAlsoEntry } from '@papercusp/agent-mcp';
 import { gitPipelinePosition } from '../../git-pipeline-position';
 import { buildKey } from '../../events/await/catalog';
 
@@ -29,11 +29,71 @@ export default defineTool({
     when: 'After leaving an edit in the tree (git-sync owns commit/push): to confirm it reached staging/main/:3070, to see WHY it is stuck (gate red/stalled) — or, whenever the code you touched might not be operator code, to find out whether a deploy or a RESTART is what activates it. Pass `path`, not `sha`: the sha cannot tell you which host runs the code.',
     notWhen: 'To PAUSE sync (use locks:acquire_resource on git-sync:<slug>). For the whole-pipeline dashboard use the /admin Git tab; this is the targeted per-path/sha probe.',
     chaining: 'Edit → dev:pipeline_position{path} → if `activation` is present, dev:restart{target} (a deploy would be a no-op); else deploy:await / release:deploy.',
-    seeAlso: [
-      'dev:restart (loads an edit into gateway / bg-host / embed-sidecar / :3170 — what `activation` points at)',
-      'dev:build_status (deploy / build status)',
-      'release:deploy (force or inspect the deploy)',
-    ],
+    /**
+     * state-plane-adoption-2026-08-02 P-002: route this incumbent door at the state
+     * plane. Deliberately a `seeAlso` and NOT a `chaining` line, for two independent
+     * reasons — the second is the real one:
+     *
+     *  1. WEIGHT. `chaining` is prompt-resident, and this tool projects at 1411 against
+     *     the 1500 budget — 89 chars of headroom. Its siblings are worse (dev:restart
+     *     1491, release:deploy 1472). The prompt-time route is effectively closed across
+     *     this whole family, so "add a pointer to the guidance" does not scale here.
+     *  2. TIMING. The plane's entire claim is "RE-READ this value at the moment you ACT
+     *     on it, don't transcribe it" (CLAUDE.md). The moment to say that is when the
+     *     value is in the caller's hand — not at catalog-selection time, minutes earlier.
+     *     A result-time pointer also self-gates, so it names the ONE cell that re-answers
+     *     the question this caller demonstrably already has.
+     */
+    seeAlso: (result) => {
+      const j = readJsonResult<{ blockedOn?: string | null }>(result);
+      // seeAlso runs on the SERIALIZED result — on the MCP transport the {data} envelope
+      // may be TOON, so readJsonResult returns undefined and a JSON-only gate would
+      // silently never fire. Same regex fallback coord:presence uses; fail open.
+      const text = result.content?.find((c) => c.type === 'text')?.text ?? '';
+      const raw = j?.blockedOn ?? /\bblockedOn\b["']?\s*:\s*["']?([a-z]+)/i.exec(text)?.[1] ?? null;
+      // Validate against the real StageName union — this also rejects a rendered
+      // `blockedOn: null` (the change is live), which a bare [a-z]+ would capture.
+      const blockedOn =
+        raw && ['committed', 'pushed', 'gate', 'main', 'deployed', 'serving'].includes(raw)
+          ? raw
+          : null;
+
+      const out: SeeAlsoEntry[] = [
+        'dev:restart (loads an edit into gateway / bg-host / embed-sidecar / :3170 — what `activation` points at)',
+        'dev:build_status (deploy / build status)',
+        'release:deploy (force or inspect the deploy)',
+      ];
+
+      const cell =
+        blockedOn === 'gate'
+          ? 'gate.greenCheckpoint.verdict'
+          : blockedOn === 'main'
+            ? 'git.mainBehindStaging'
+            : blockedOn === 'deployed' || blockedOn === 'serving'
+              ? 'deploy.3070.sha'
+              : 'git.pipelinePosition';
+      out.push({
+        tool: 'state:read',
+        selector: `{ cell: '${cell}' }`,
+        reason:
+          'these values drift mid-turn — re-read before you ACT on one or quote it into a plan/message, never transcribe it',
+      });
+
+      // Only where it is not a SECOND door for a wait that already has one: the deploy
+      // leg already gets `awaitable`/deploy:await from the handler below, and shipping
+      // both is the "two contradictory instructions in one payload" failure this file
+      // warns about. The gate is the genuine gap — blockedOn:'gate' with nextAction null
+      // is this tool's own documented "waiting is correct, and there is NO lever" verdict,
+      // which is exactly the case that cost a live session ~26min of silence (WI-6595).
+      if (blockedOn === 'gate') {
+        out.push({
+          tool: 'state:subscribe',
+          selector: `{ cell: 'gate.greenCheckpoint.verdict' }`,
+          reason: 'wait for the verdict to CHANGE instead of re-polling this tool',
+        });
+      }
+      return out;
+    },
   },
   requirePrincipal: false,
   // Read-only (intel:read) "where is my change + is the gate stalled" probe. Available to
