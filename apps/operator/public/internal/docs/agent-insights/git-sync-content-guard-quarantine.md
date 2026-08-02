@@ -18,8 +18,8 @@ file is checked by a registered content detector, and a file that **fails** is
 reaches `staging`. (Before this, git-sync auto-committed the broken file first, and the
 break only surfaced hours later when CI rejected the whole docs build — EI-438.)
 
-Two detectors ship today (the same ones CI's `lint:mdx` / `lint:smart-quotes` run, so
-the guard and CI can never disagree):
+Five detectors ship today (each wrapping the same pure implementation its CI lint
+calls, so the guard and CI can never disagree):
 
 * **`mdx`** — an `.mdx` under `apps/operator-docs/src/content/docs/` that won't compile
   with the MDX core. The classic cause is a bare `<word>` placeholder written in prose
@@ -29,15 +29,37 @@ the guard and CI can never disagree):
 * **`smart-quotes`** — a curly quote (`' ' " "`) used where a straight code delimiter
   belongs in a `.ts`/`.tsx` file (a copy-paste through a smart-quoting surface), which
   is a hard esbuild/tsc parse failure.
+* **`ts-parse`** — a `.ts`/`.tsx` file that does not **parse at all** (WI-6683). The
+  general form of the class `smart-quotes` catches one narrow instance of: a stray
+  backtick, an unterminated string or template, a truncated file from a concurrent-edit
+  interleave. This is checked with a pure `ts.createSourceFile` parse, so it is
+  **syntactic only** — it can never quarantine your file over a type error, an
+  unresolved import, or a missing dependency. It is quarantined harder than a type
+  error deserves *because a parse break is not local*: every consumer of the package
+  fails to resolve anything through the broken module, so one typo hard-fails the whole
+  fleet's typecheck and reds the green-checkpoint for people who never touched it.
+* **`shell-syntax`** — a `.sh` script that fails a real `bash -n` parse (EI-13192) —
+  typically a concurrent-edit interleave that duplicated or truncated a block.
+* **`conflict-markers`** — a committed git conflict marker (`<<<<<<<`, `>>>>>>>`,
+  `|||||||` at line start) in **any** tracked file (EI-1836): a language-agnostic hard
+  build breaker that froze the whole fleet's builds twice.
 
 ## How to tell + fix
 
 1. **Run the matching lint locally** — it names the exact file + position:
 
    ```bash
-   npm run lint:mdx            # for an .mdx
-   npm run lint:smart-quotes   # for a .ts/.tsx
+   npm run lint:mdx                  # for an .mdx
+   npm run lint:smart-quotes         # for a .ts/.tsx curly quote
+   npm run lint:no-conflict-markers  # for a committed conflict marker
+   bash -n path/to/script.sh         # for a .sh
    ```
+
+   For **`ts-parse`** there is no whole-tree lint to run — the quarantine message
+   already carries the exact `line:col` and the TypeScript diagnostic code, and
+   `npm run lint:tsc -- --files=<your file>` shows it in context. A parse error is
+   always the FIRST error reported for the file; fix that one and the cascade of
+   downstream nonsense errors disappears with it.
 
 2. **Or read the escalation.** git-sync writes a `git-sync-content-error` escalation on
    the phase `git-sync-content` (its own row — it never clobbers a merge-conflict

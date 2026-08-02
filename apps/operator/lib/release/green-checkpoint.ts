@@ -3103,7 +3103,7 @@ export async function runPostSuiteLegs(
   // diff-INVISIBLE. Gating it here is the whole point of P-020 ("a producer that stops writing
   // reds the gate instead of going quiet").
   //
-  // ⛔ `lint:cell-matrix` is DELIBERATELY EXCLUDED — it is the fifth plane lint and it must
+  // ⛔ `lint:cell-matrix` is DELIBERATELY EXCLUDED — it is the one plane lint that must
   // never join this list. check-cell-live-matrix.ts's own header says so ("THIS MUST NOT BE
   // ADDED TO THE CI LINT JOB"): it drives real reads against RUNNING operators on :3170 and
   // :3070, which the isolated checkpoint tree does not have, so every read would fail and
@@ -3122,6 +3122,13 @@ export async function runPostSuiteLegs(
       { script: 'lint:declared-consumed', label: 'DECLARED-VS-CONSUMED SWEEP' },
       { script: 'lint:no-bespoke-state-read', label: 'BESPOKE STATE-READ' },
       { script: 'lint:plane-ratchet', label: 'PLANE RATCHET' },
+      // WI-6768: the ADOPTION probe — the third PG-backed member. Same premise as the
+      // two above (the checkpoint tree has a reachable PG), and the same
+      // vacuous-pass discipline: it establishes tool_invocations had traffic in the
+      // window before letting a zero mean "unused". It is report-only until a
+      // surface's D-047 review date arrives, precisely so landing it cannot red-pin
+      // main for a condition no commit caused.
+      { script: 'lint:plane-adoption', label: 'ADOPTION PROBE' },
       { script: 'lint:plane-guards', label: 'PLANE GUARD MUTATION TESTS' },
     ];
     const planeFailures: string[] = [];
@@ -3146,7 +3153,7 @@ export async function runPostSuiteLegs(
     legs.lintPlane = planeFailures.length > 0
       ? { status: 'failed' }
       : planeRan === 0
-        ? { status: 'skipped', skipReason: 'candidate provides none of the 5 agent-state-plane lint scripts' }
+        ? { status: 'skipped', skipReason: 'candidate provides none of the 6 agent-state-plane lint scripts' }
         : { status: 'passed' };
     if (planeFailures.length) {
       haltedBy = 'agent-state-plane lints failed';

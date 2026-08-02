@@ -1990,10 +1990,20 @@ const handler = createMcpHandler(
           // tooldef-mcp returns an SDK-neutral McpToolCallResult; cast it to the
           // mutable shape the MCP SDK's setRequestHandler accepts (same shape the
           // legacy branch below returns) at this host boundary.
+          // EI-19301511582594101: the tool's REAL outcome, captured so the replay
+          // receipt can be persisted AFTER its transaction commits. Deliberately the
+          // execute() promise and never the value dispatchWithSynthesizedTx returns:
+          // on a P2-5 deadline those differ, and persisting the raced timeout envelope
+          // would make every retry replay the timeout instead of the real outcome.
+          let toolOutcome: Promise<McpCallResult> | null = null;
+          // Set when the deadline branch wins the race — the caller has already been
+          // answered, so the receipt must be persisted in the BACKGROUND rather than
+          // blocking the response on a tool that is still running server-side.
+          let deadlineFired = false;
           const runDispatch = async (ctx: UnifiedToolContext): Promise<McpCallResult> => {
-            // The tool execution + idempotent persistence as ONE promise, so the P2-5
-            // deadline can return a clean client error WITHOUT cancelling it: it
-            // completes server-side + persists (P-046/EI-68), so a retry with the same
+            // The tool execution as ONE promise, so the P2-5 deadline can return a
+            // clean client error WITHOUT cancelling it: it completes server-side and
+            // its outcome is still persisted (P-046/EI-68), so a retry with the same
             // idempotencyKey replays the outcome instead of re-running.
             const execute = async (): Promise<McpCallResult> => {
               // P-006 leg C: cap this model-facing result at the resultEach door
@@ -2033,26 +2043,16 @@ const handler = createMcpHandler(
                   })(),
                 },
               );
-              // Persist the outcome BEFORE the response hits the (possibly
-              // already-closed) stream — the whole point of P-046/EI-68: the
-              // result must survive the transport. Best-effort.
-              if (idempotencyKey && !skipReplayForReadOnly) {
-                try {
-                  await storeMcpResult({
-                    ownerKey: replayOwnerKey,
-                    idempotencyKey,
-                    toolName,
-                    workspaceId: dispatchSpawnCtx.workspaceId,
-                    result: result as StoredMcpResult,
-                  });
-                } catch (err) {
-                   
-                  console.warn(
-                    `[mcp-replay] store failed for ${toolName} (key=${idempotencyKey}): ` +
-                      (err instanceof Error ? err.message : String(err)),
-                  );
-                }
-              }
+              // EI-19301511582594101: the replay receipt is NOT persisted here.
+              // It used to be, and that inverted the write order: `storeMcpResult`
+              // commits on its OWN connection (getOrgPg()), while a needsTx tool's
+              // writes are still UNCOMMITTED inside the `withWorkspace` transaction
+              // that wraps this whole handler — so the success receipt became durable
+              // BEFORE the work it attests to. If that final COMMIT then failed, a
+              // `created:true` + real-id envelope outlived a row that never landed and
+              // replayed for its full TTL. The store now happens after
+              // dispatchWithSynthesizedTx resolves (tx committed), still before the
+              // response is returned — see persistReplayReceipt below.
               // code-run batch nudge (code-run-token-frugality, owner directive 2026-06-23):
               // catch the eager same-tool-N× pattern at the decision point + steer the caller to
               // bundle the calls into one code:run. In-process, one-shot per (session, tool),
@@ -2224,15 +2224,22 @@ const handler = createMcpHandler(
             // `timeoutSec` (e.g. chat:ask_choice / other human-interaction tools at
             // 600s) — effectiveMcpDeadlineMs honors the tool's own budget instead.
             const deadlineMs = effectiveMcpDeadlineMs(projected.timeoutSec);
-            return raceDeadline<McpCallResult>(deadlineMs, execute, () => ({
-              isError: true,
-              content: [{
-                type: 'text' as const,
-                text: idempotencyKey
-                  ? `request_timeout: tool "${toolName}" exceeded ${deadlineMs}ms (still running server-side; retry with the same _meta.idempotencyKey to replay its result once it completes).`
-                  : `request_timeout: tool "${toolName}" exceeded ${deadlineMs}ms (still running server-side — this call had no idempotencyKey, so a blind retry now risks double-applying a mutation that may already have landed. Do NOT retry yet: first re-read the current state via the matching *:get/*:list to confirm whether it landed before deciding your next step. For future calls, pass _meta.idempotencyKey up front so a timeout-retry can safely replay instead of re-executing).`,
-              }],
-            }));
+            return raceDeadline<McpCallResult>(deadlineMs, () => {
+              const outcome = execute();
+              toolOutcome = outcome;
+              return outcome;
+            }, () => {
+              deadlineFired = true;
+              return {
+                isError: true,
+                content: [{
+                  type: 'text' as const,
+                  text: idempotencyKey
+                    ? `request_timeout: tool "${toolName}" exceeded ${deadlineMs}ms (still running server-side; retry with the same _meta.idempotencyKey to replay its result once it completes).`
+                    : `request_timeout: tool "${toolName}" exceeded ${deadlineMs}ms (still running server-side — this call had no idempotencyKey, so a blind retry now risks double-applying a mutation that may already have landed. Do NOT retry yet: first re-read the current state via the matching *:get/*:list to confirm whether it landed before deciding your next step. For future calls, pass _meta.idempotencyKey up front so a timeout-retry can safely replay instead of re-executing).`,
+                }],
+              };
+            });
           };
           // Establish the request-scoped workspace ALS for the duration of the
           // tool call (P-022) so handlers that resolve via `activeWorkspaceId()`
@@ -2245,7 +2252,40 @@ const handler = createMcpHandler(
           // (EI-6982). See dispatchWithSynthesizedTx for the P-062 crossWorkspace
           // rationale (admin handle, checked before needsTx, covers the '*'
           // discovery case).
-          return await dispatchWithSynthesizedTx(projected, dispatchSpawnCtx, baseCtx, runDispatch);
+          const dispatched = await dispatchWithSynthesizedTx(projected, dispatchSpawnCtx, baseCtx, runDispatch);
+          // EI-19301511582594101: persist the replay receipt HERE — after
+          // dispatchWithSynthesizedTx has resolved, which is after the tool's
+          // `withWorkspace` transaction has COMMITTED, and still before this result is
+          // returned to the transport. That ordering is the whole fix: a receipt can no
+          // longer be durable for a write that never committed.
+          // Always keyed off `toolOutcome` (the tool's real result), never `dispatched`
+          // — on a deadline those differ, and storing the timeout envelope would make
+          // every subsequent retry replay the timeout forever.
+          if (idempotencyKey && !skipReplayForReadOnly && toolOutcome) {
+            const persist = toolOutcome
+              .then((result) => storeMcpResult({
+                ownerKey: replayOwnerKey,
+                idempotencyKey,
+                toolName,
+                workspaceId: dispatchSpawnCtx.workspaceId,
+                result: result as StoredMcpResult,
+              }))
+              .catch((err: unknown) => {
+                // Best-effort by contract: a store outage (or a tool that rejected, in
+                // which case there is no outcome worth replaying) degrades to normal
+                // execution, never an error to the caller.
+                console.warn(
+                  `[mcp-replay] store failed for ${toolName} (key=${idempotencyKey}): ` +
+                    (err instanceof Error ? err.message : String(err)),
+                );
+              });
+            // Normal path: the tool has already settled, so this resolves immediately
+            // and the receipt is durable before we answer. Deadline path: the caller
+            // was answered already — let it persist in the background rather than
+            // re-blocking the response we just raced to send.
+            if (!deadlineFired) await persist;
+          }
+          return dispatched;
         }
 
         // Legacy bearer-only fallback (no spawn ctx supplied).

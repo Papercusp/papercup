@@ -140,6 +140,50 @@ any one of which would have caught it:
 "I looked and it wasn't there" is a claim about your instrument as much as about the world.
 State which instrument, and why it was capable of seeing the thing.
 
+#### Recurrence, 2026-08-01: the same trap, with the verdict CACHED across a compaction
+
+Identical shape, new instrument — `tsc` output instead of `ls` — and one extra twist that
+made it considerably more dangerous. Verifying a change to `apps/operator/lib/mcp-proxy/proxy.ts`
+(the connect path for every agent on the box), with `build:typecheck` timing out under fleet
+load, I fell back to:
+
+```bash
+npx tsc -p apps/operator/tsconfig.json --noEmit | head -25
+```
+
+`apps/operator` carries a large pre-existing error backlog, and **tsc emits path-ordered**.
+`__tests__/` and `app/_components/` consumed the entire 25-line budget; `lib/mcp-proxy/` sorts
+*after* `app/_components/`, so my file could not physically have appeared. Whether the verdict
+was trustworthy depended on **alphabetical position relative to an unrelated error backlog** —
+which nobody reasons about.
+
+The twist: that truncated observation was then written into a self-authored marker —
+
+```
+---TYPECHECK_DONE (no 'mcp-proxy/proxy' lines above = my files are clean)---
+```
+
+— which outlived the session that wrote it. A successor (me, post-carry-respawn) inherited
+*four* independent "looks fine" signals: a completed run, a DONE marker, a non-empty log, and a
+zero-hit grep. Every one of them was worthless, and none of them looked it. A cached bad
+inference is worse than a bad observation, because the reasoning that would expose it is gone —
+only the conclusion survives.
+
+Note this is the **sibling** of the TS5057 zero-file case the repo already warns about: there,
+tsc never ran; here it ran, genuinely checked the file, and genuinely said nothing about it.
+The "refuses a zero-file run" guard cannot fire, because the run was not zero-file.
+
+What actually settled it was this section's own last bullet — **give the negative a positive
+control**. A scoped `tsc` over the file's own import graph, plus `--listFiles` to prove the
+instrument saw the subject: *199 files loaded, `proxy.ts` among them, 67 `@types/node`
+resolved*, exit 0. Only then does "no errors" mean anything. (A first attempt at that scoped
+config produced 27 errors that were pure artifact — `@types` resolving relative to a config
+placed in `/tmp` — a reminder that a *positive* result needs its instrument audited too.)
+
+Tooling gap filed as EI-19297428004790873: `build:typecheck` failing under load is what forced
+the hand-rolled pipeline in the first place, and a scoped `{ files: [...] }` mode with a
+built-in `--listFiles` assertion would remove the temptation entirely.
+
 ## The fix
 
 1. **One function, one trigger.** All five legs hoisted into `runPostSuiteLegs()`, invoked
