@@ -4869,8 +4869,34 @@ export async function observeWorkItem(
   // federated (origin='remote') issue-family row is never locally claimable (its
   // authoring peer's core owns it, EI-7833/mig-521), so `available` must say so here
   // too, not just report unclaimed and let the real claim bounce with not_claimable.
+  //
+  // EI-19340398119001086 (WI-7096 follow-up): the bare isIssueLocallyClaimable(origin)
+  // check above is own-node UNAWARE — it treats a row THIS workspace authored, which
+  // simply round-tripped federation (origin='remote' but carrying one of OUR OWN
+  // author_pubkeys), the same as a true peer-owned row. Every other implementation of
+  // this floor already has the own-node escape hatch (isIssueLocallyClaimableWhereSql,
+  // used by claim_next/scheduler:get_next/work_items:claimable; and, since migration
+  // 728, the claim-by-id DB trigger itself) — this JS-level diagnostic was the one
+  // chokepoint left behind, so `work_items:observe`/`work_items:get` reported
+  // available:false/gated:true for ~3,800 open rows (measured 2026-08-02) that a real
+  // claim-by-id would actually succeed on. Cheap path first: only a remote row needs
+  // the extra DB round-trip, and a DB error fails SAFE (still reported gated).
   if (unclaimed && wi.family === 'issue' && !isIssueLocallyClaimable(wi.origin)) {
-    return { item: wi, available: false, claimedBy: wi.assignee, gated: true };
+    let ownNodeClaimable = false;
+    if (wi.origin === 'remote') {
+      try {
+        const { sql } = getOrgPg();
+        const ws = issuesScopeWorkspace();
+        const rows = await sql<{ ok: number }[]>`
+          SELECT 1 AS ok FROM harness_shared.work_items wi
+           WHERE wi.workspace_id = ${ws} AND wi.feature_id = ${id}
+             AND ${isIssueLocallyClaimableWhereSql(sql, ws)}`;
+        ownNodeClaimable = rows.length > 0;
+      } catch {
+        ownNodeClaimable = false;
+      }
+    }
+    if (!ownNodeClaimable) return { item: wi, available: false, claimedBy: wi.assignee, gated: true };
   }
   // WI-5343 (secondary ask): an unclaimed row can still carry a durable WI-2797
   // claim-hold (payload._claimHold) — the same floor claimFloorsWhereSql /

@@ -349,7 +349,7 @@ describe('derived-reads producers: P-005 (releaseReadiness, observations)', () =
   });
 });
 
-// ── plans.lint summary projection (WI-7210) ──────────────────────────────────
+// ── plans.lint summary projection (WI-7221) ──────────────────────────────────
 //
 // The stored snapshot is a SUMMARY, not the full lint dump: 561,007 B / 913
 // rows measured live on :3170, 2.24x the 250,000 B default sync-read ceiling.
@@ -385,7 +385,8 @@ describe('summarizePlanLintReport (plans.lint list projection)', () => {
     const { summarizePlanLintReport } = await import('./producers');
     const errors = [{ code: 'missing_now_section', level: 'error', message: 'No `## Now` section ...' }];
     const out = summarizePlanLintReport({ slug: 'b', errors } as never);
-    expect(out.errors).toEqual(errors);
+    // errorCount + inlined errors mirrors LintSummaryPlan (plans/lint.ts).
+    expect(out).toEqual({ slug: 'b', errorCount: 1, errors });
   });
 
   it('omits archived/exempt/legacy when false (D-025) but round-trips a true', async () => {
@@ -409,7 +410,7 @@ describe('summarizePlanLintReport (plans.lint list projection)', () => {
     });
   });
 
-  it('the producer is registered at producerVersion 3 so the old shape is not served', async () => {
+  it('the producer is registered at producerVersion 4 so the old shape is not served', async () => {
     // registry.ts:204 treats a snapshot from an older producerVersion as ABSENT
     // rather than serving a superseded shape. Bumping this is what makes the
     // projection safe to deploy against already-stored 561KB snapshots.
@@ -418,6 +419,6 @@ describe('summarizePlanLintReport (plans.lint list projection)', () => {
     registry.__clearDerivedReadRegistryForTest();
     await import('./producers');
     const producer = registry.listDerivedReadProducers().find((p) => p.key === 'plans.lint');
-    expect(producer?.producerVersion).toBe(3);
+    expect(producer?.producerVersion).toBe(4);
   });
 });

@@ -20,7 +20,8 @@ import * as os from 'node:os';
 import * as crypto from 'node:crypto';
 import * as TOML from '@iarna/toml';
 import { fileURLToPath } from 'node:url';
-import { spliceAtMarker, spliceToolingOverlay, spliceGeneratedSection, WIRE_SCHEMAS_MARKER, COORD_LEGEND_MARKER, WORKSPACE_MAP_MARKER, PROMOTION_MODEL_MARKER, PROJECT_GUIDE_MARKER, AUTO_MODE_MARKER, COMPACTION_MARKER, COMPACTION_CLIENT_OVERLAY_MARKER } from './splice-tooling-overlay';
+import { spliceAtMarker, spliceToolingOverlay, spliceGeneratedSection, WIRE_SCHEMAS_MARKER, COORD_LEGEND_MARKER, WORKSPACE_MAP_MARKER, PROMOTION_MODEL_MARKER, PROJECT_GUIDE_MARKER, AUTO_MODE_MARKER, COMPACTION_MARKER, COMPACTION_CLIENT_OVERLAY_MARKER, RESULT_DOOR_MARKER } from './splice-tooling-overlay';
+import { renderResultDoorSection } from '../result-door-prompt';
 import { renderModesPolicy } from '../operating-modes-policy';
 import { renderDeployPipelineNote } from '../deploy-pipeline-policy';
 import { renderWaitLoopNote } from '../wait-loop-policy';
@@ -435,6 +436,9 @@ async function writeSplicedPlaybook(baseSrc: string, dst: string): Promise<boole
   // invent-vs-patch switch and the AUTO×IDEATE composition table) — profile-agnostic, so both
   // engineer + power get the one canonical clause spliced here at the (still-named) AUTO marker.
   out = spliceGeneratedSection(out, AUTO_MODE_MARKER, renderModesPolicy());
+  // agent-context-firewall P-015: the per-result door cap + the `projection` knob,
+  // sourced from computeTurnDoors so the taught number cannot drift from the enforced one.
+  out = spliceGeneratedSection(out, RESULT_DOOR_MARKER, renderResultDoorSection());
   // agent-managed-compaction: the agent self-management compaction protocol (client-neutral).
   out = spliceGeneratedSection(out, COMPACTION_MARKER, await readCompactionProtocol(baseSrc));
   out = injectSharedBaseNotes(out);
@@ -2047,9 +2051,14 @@ export async function renderSuPlaybook(input: RenderSuPlaybookInput): Promise<Re
   // every interactive su surface), so splice them BEFORE the engineer-only shared-base notes —
   // both engineer + power carry the marker and get the one canonical clause.
   const withAuto = spliceGeneratedSection(withPromo, AUTO_MODE_MARKER, renderModesPolicy(tier));
+  // agent-context-firewall P-015: the per-result door cap + the `projection` knob. Rendered
+  // from computeTurnDoors (the SAME function applyResultDoor enforces with) so the number the
+  // agent is taught cannot drift from the number it is held to. Both tiers get it — a fleet
+  // member pays the door exactly like a full session does.
+  const withDoor = spliceGeneratedSection(withAuto, RESULT_DOOR_MARKER, renderResultDoorSection());
   // agent-managed-compaction: the agent self-management compaction protocol (client-neutral).
   const withCompaction = spliceGeneratedSection(
-    withAuto,
+    withDoor,
     COMPACTION_MARKER,
     await readCompactionProtocol(baseSource, input.overlayDir),
   );

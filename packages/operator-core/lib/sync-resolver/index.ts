@@ -3222,7 +3222,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     // makes. An explicit ARGS-bearing call (an agent drilling into one plan) is
     // rare, off the panel path, and still computed live so it stays exact.
     //
-    // ⚠ LIST/DETAIL SPLIT (WI-7210). The two branches return DIFFERENT shapes,
+    // ⚠ LIST/DETAIL SPLIT (WI-7221). The two branches return DIFFERENT shapes,
     // deliberately:
     //   • nullary  → a SUMMARY row per plan: { slug, errors?, warningCount?,
     //     warningCodes? } — warnings are tallied by code, not carried as prose,
@@ -3243,7 +3243,20 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       const { callPlansRead } = await import('../agent-tools/plans/read-dispatch');
       const r = (await callPlansRead('lint', args as Record<string, unknown>)) as {
         reports?: unknown[];
+        results?: { ok?: boolean; report?: unknown }[];
       };
+      // ⚠ WI-7221: `plans:lint { slug }` is a BULK tool — a single-slug read goes
+      // through runBulk and returns `{ results:[{ ok, slug, report }], counts }`,
+      // NOT a top-level `reports` array (lint.ts:823-848 → bulkContent). So the
+      // old `r?.reports ?? []` unwrap made this branch return [] for EVERY
+      // args-bearing call, silently, forever — the exact defect this file's
+      // `plans.get` sibling already documents and fixes the same way, and the
+      // second instance of the shape-mismatch class the producer comment
+      // describes for the nullary branch. `reports` is still honored because
+      // that IS the shape of the all-plans `full: true` call.
+      if (Array.isArray(r?.results)) {
+        return r.results.flatMap((x) => (x?.ok && x.report != null ? [x.report] : []));
+      }
       return Array.isArray(r?.reports) ? r.reports : [];
     },
   },

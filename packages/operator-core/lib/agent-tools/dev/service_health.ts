@@ -14,6 +14,7 @@ import { substrateSidecarSupervisionStatus, type SidecarSupervisionStatus } from
 import { spawnerSidecarSupervisionStatus } from "../../fleet/spawner-sidecar-spawn";
 import { runtimeDiagnostic, type RuntimeDiagnostic } from "../../runtime-diagnostic";
 import { probeServiceStart, probeUnitStates, type ServiceStartInfo } from "./systemd-service-probe";
+import { readRecentProxyFailures } from "../../mcp-proxy-failure-summary";
 
 function sidecarFlapState(s: SidecarSupervisionStatus): SupervisionFlapState {
   return s.gaveUp ? "gave-up" : s.respawnAttemptsInWindow > 0 ? "damping" : "ok";
@@ -302,6 +303,22 @@ export default defineTool({
             ok: true,
             services,
             telemetry: getTelemetryHealth(),
+            // P-007 / D-004 (outage-must-not-be-silent-2026-08-02): DELIVERY, not detection.
+            // The mcp-proxy has recorded every forwarded failure, retry and recovery to
+            // ~/.papercusp/mcp-proxy-failures.jsonl since W8 of backend-reliability-100pct,
+            // explicitly so "a health collector can ingest" it — and nothing ever did. During
+            // the 2026-08-02 outage that file held the highest-value evidence available
+            // (:3070 recovering 7x in 20 minutes) and it took manual tail+jq to find, hours in.
+            //
+            // A `recovered` record is a fault that HAPPENED and was survived, never a sign of
+            // health — the summary says so in its own headline, because WI-6740 lost three
+            // weeks to exactly that misreading. Bounded tail read (256KB of a 27MB file), and
+            // the field is omitted entirely when there is nothing to report so a quiet result
+            // never trains the reader to skip it.
+            ...(() => {
+              const proxy = readRecentProxyFailures({ windowMinutes: 20 });
+              return proxy.headline ? { mcpProxyRecentFailures: proxy } : {};
+            })(),
             // P-004/P-006 (critical-process-supervisor-2026-07-04): additive block, existing
             // fields above are UNCHANGED — the systemd-user layer is sourced from the P-002
             // reconciler's own flap state, the node-child sidecars from THEIR OWN respawn

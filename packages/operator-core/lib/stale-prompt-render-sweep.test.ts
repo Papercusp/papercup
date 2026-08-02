@@ -26,6 +26,13 @@ import { join } from 'node:path';
 const STALE_RENDER = 'use the `Task` (Agent) tool to fan out parallel or context-isolated work.';
 const CLEAN_RENDER = '⛔ `Task` / `Workflow` are DENIED — never reach for them; use a fleet.';
 
+/** The args a spy was first called with. `vi.fn(async () => x)` infers a ZERO-length
+ *  parameter tuple, so indexing `mock.calls[0]` directly is a TS2493 ("no element at
+ *  index 0") even though the call really did carry arguments. */
+function firstCallArgs(spy: unknown): unknown[] {
+  return ((spy as { mock: { calls: unknown[][] } }).mock.calls[0] ?? []) as unknown[];
+}
+
 function session(over: Partial<LiveSessionRender> = {}): LiveSessionRender {
   return {
     ownerId: 'su-aaa',
@@ -56,7 +63,7 @@ describe('stalePromptRenderSweep', () => {
       expect.objectContaining({ ownerId: 'su-aaa', outcome: 'notified' }),
     ]);
     expect(d.sendMessage).toHaveBeenCalledTimes(1);
-    const [, opts] = (d.sendMessage as ReturnType<typeof vi.fn>).mock.calls[0];
+    const opts = firstCallArgs(d.sendMessage)[1] as { to: string[]; summary: string; body: string };
     expect(opts.to).toEqual(['su-aaa']);
     expect(opts.summary).toContain('Task');
     expect(opts.body).toContain('/tmp/session-1.md');
@@ -88,7 +95,10 @@ describe('stalePromptRenderSweep', () => {
   it('embeds the scope key VERBATIM in the fire reason (the LIKE contract)', async () => {
     const d = deps();
     await stalePromptRenderSweep(d);
-    const [{ scopeKey, reason }] = (d.claimWatchdogFire as ReturnType<typeof vi.fn>).mock.calls[0];
+    const { scopeKey, reason } = firstCallArgs(d.claimWatchdogFire)[0] as {
+      scopeKey: string;
+      reason: string;
+    };
     // recentWatchdogFires matches `reason LIKE '%scopeKey%'` — a reason that does not
     // contain the key makes the debounce structurally dead, which is exactly how the
     // sibling sweep paged 113 times in 37 minutes (EI-18824142520274965).
@@ -174,7 +184,7 @@ describe('stalePromptRenderSweep', () => {
         readCurrentPersonaSources: read as never,
       }),
     );
-    expect(read.mock.calls[0][0]).toEqual({
+    expect(firstCallArgs(read)[0]).toEqual({
       scopes: [
         { workspaceId: 'papercusp-workspace', harnessSlug: 'papercusp' },
         { workspaceId: 'papercusp-workspace', harnessSlug: 'other' },

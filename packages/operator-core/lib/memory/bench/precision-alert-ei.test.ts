@@ -24,6 +24,7 @@ const EVAL_DROP: RecallDropEvaluation = {
   baseline: 0.82,
   latest: 0.1,
   delta: 0.72,
+  comparablePriors: 5,
 };
 
 const EVAL_OK: RecallDropEvaluation = {
@@ -32,6 +33,7 @@ const EVAL_OK: RecallDropEvaluation = {
   baseline: 0.82,
   latest: 0.8,
   delta: 0.02,
+  comparablePriors: 5,
 };
 
 function episode(over: Partial<RecallAlertEpisode> = {}): RecallAlertEpisode {

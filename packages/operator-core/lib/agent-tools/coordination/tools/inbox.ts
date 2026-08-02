@@ -10,7 +10,7 @@ import { z } from "zod";
 import { defineTool } from "@papercusp/agent-mcp";
 import { resolveAgentIdentity } from "../identity";
 import { resolveActorIdentity, actorMailboxKeys } from "../actor-identity";
-import { readInbox, drainAndDeliverUserMailbox } from "../messages";
+import { readInbox, drainAndDeliverUserMailbox, getSupersededMap } from "../messages";
 import { heartbeatPresence, getPresence } from "../presence";
 import { createPresenceBeatThrottle } from "../presence-beat-throttle";
 import { readWatermark, writeWatermark } from "../watermarks";
@@ -202,6 +202,39 @@ export function annotateResolvedConditions<T extends Record<string, unknown>>(
   });
 }
 
+/** WI-7222 (plan agent-epistemics-2026-08-02, P-004's read side): mark entries whose
+ *  ORIGINAL SENDER has superseded them (`coord:supersede`, migration 732) with
+ *  `superseded_by` + `superseded_at`, so a reader does not act on a claim its author
+ *  has already retracted.
+ *
+ *  MARKS, never suppresses — the opposite of `coord:retract` above, and migration 732
+ *  says why: "a retraction that does not say what REPLACES it strands the reader." The
+ *  forward pointer is the whole value; hiding the row would leave a reader who
+ *  half-remembers it unable to find out what happened.
+ *
+ *  NON-MUTATING by construction, and that is load-bearing here rather than stylistic:
+ *  readCoordFeed builds spread COPIES of each envelope, but `readInbox`'s slow path
+ *  returns objects straight from `coordLog.readLines('messages')`, which an in-memory
+ *  log hands back BY REFERENCE. Annotating in place there would write the marker into
+ *  the log's own objects. Same shape as annotateResolvedConditions: map to a new object
+ *  only for the entries that change, return the rest untouched.
+ *
+ *  Pure — the caller does the (batched, fail-soft) lookup and passes the map in, so this
+ *  is unit-testable with no Postgres. */
+export function annotateSuperseded<T extends Record<string, unknown>>(
+  entries: readonly T[],
+  marks: ReadonlyMap<string, { supersededBy: string; supersededAt: string | null }>,
+): Array<Record<string, unknown>> {
+  if (marks.size === 0) return entries as unknown as Array<Record<string, unknown>>;
+  return entries.map((e) => {
+    const id = e["msg_id"];
+    if (typeof id !== "string") return e;
+    const mark = marks.get(id);
+    if (!mark) return e;
+    return { ...e, superseded_by: mark.supersededBy, superseded_at: mark.supersededAt };
+  });
+}
+
 /** EI-7018 sender filter: keep only entries SENT BY `from` (from === this ownerId). A
  *  nullish/empty `from` is a no-op (returns the input as-is). Extracted as a pure, exported
  *  helper — mirroring readCoordFeed's strict `from` filter — so the honored-not-silently-ignored
@@ -264,7 +297,7 @@ export function classifyInboxFromFilter(
 export default defineTool({
   name: "coord:inbox",
   description:
-    "Read your coordination inbox — messages, acks, handoffs etc. addressed to you (or broadcast). Returns a summary header (counts by kind) + the most-recent `limit` entries (default 50). Ambient system broadcasts (service-health, rate-limit pauses, doc-freshness RE-VERIFY digests) are excluded by default — include_ambient shows them. Repeated system broadcasts collapse to one row (`repeat_count`, `first_seen_ts`); a stale alarm whose condition later cleared carries `resolved:true` — do not investigate it. `since_ts` filters strictly later than the given ISO timestamp; `kinds` narrows to specific entry kinds. `unanswered_only` narrows to the directed messages fleet:assignments'/leader-brief's `unanswered_directed` counter flagged (same primitive — can't disagree). CAUTION (WI-1600 since_ts gap): in a tail-poll, never seed since_ts to wall-clock now/poll-start — anything that landed earlier stays invisible to every later poll. Read once unfiltered, then advance the cursor to that read's `summary.newest_ts`; or skip polling via the push-based `coord:await-inbox`.",
+    "Read your coordination inbox — messages, acks, handoffs etc. addressed to you (or broadcast). Returns a summary header (counts by kind) + the most-recent `limit` entries (default 50). Ambient system broadcasts (service-health, rate-limit pauses, doc-freshness RE-VERIFY digests) are excluded by default — include_ambient shows them. Repeated system broadcasts collapse to one row (`repeat_count`, `first_seen_ts`); a stale alarm whose condition later cleared carries `resolved:true` — do not investigate it. An entry with `superseded_by` was corrected by its sender — follow that msg_id. `since_ts` filters strictly later than the given ISO timestamp; `kinds` narrows to specific entry kinds. `unanswered_only` narrows to the directed messages fleet:assignments'/leader-brief's `unanswered_directed` counter flagged (same primitive — can't disagree). CAUTION (WI-1600 since_ts gap): in a tail-poll, never seed since_ts to wall-clock now/poll-start — anything that landed earlier stays invisible to every later poll. Read once unfiltered, then advance the cursor to that read's `summary.newest_ts`; or skip polling via the push-based `coord:await-inbox`.",
   guidance: {
     when: "At turn start (the OMP hook will do this for you once it ships); whenever you suspect another agent contacted you.",
     notWhen:
@@ -806,6 +839,21 @@ export default defineTool({
       return authored ? { ...entry, authored } : entry;
     });
 
+    // WI-7222: mark messages the sender has SUPERSEDED. Done last, over the bounded
+    // page only, so the lookup is one keyed query over at most `limit` ids rather
+    // than the full pre-limit read. Fail-soft and non-mutating — see
+    // annotateSuperseded: losing the marker must never cost the caller their inbox,
+    // and these entries can be live references into an in-memory coord log.
+    let entriesOut: Array<Record<string, unknown>> = boundEntries as Array<Record<string, unknown>>;
+    try {
+      const ids = entriesOut
+        .map((e) => e["msg_id"])
+        .filter((id): id is string => typeof id === "string");
+      if (ids.length > 0) entriesOut = annotateSuperseded(entriesOut, await getSupersededMap(ids));
+    } catch {
+      // Unmarked, but complete.
+    }
+
     return {
       content: [
         {
@@ -813,12 +861,12 @@ export default defineTool({
           text: JSON.stringify({
             owner_id: identity.ownerId,
             summary,
-            entries: boundEntries,
+            entries: entriesOut,
             // EI-18667514339699744: coord:orient folds this SAME array under `recent`
             // (its own key name for "the most-recent bounded entries"). Alias it here
             // too so a caller who reads either tool's key name off THIS result gets
             // real rows instead of a silent [] on a cross-surface accessor mismatch.
-            recent: boundEntries,
+            recent: entriesOut,
             injection,
             // P-015: the ≥80% loud gauge, exposed OUT of `injection` so the PostToolUse
             // hook can inject it even when there are no new entries (empty-inbox turns).

@@ -31,6 +31,42 @@
   --pc-orders-surface: color-mix(in oklab, transparent, white 4.5%);
   --pc-orders-warn-bg: color-mix(in oklab, transparent, var(--warn) 10%);
   --pc-orders-warn-bg-soft: color-mix(in oklab, transparent, var(--warn) 6%);
+
+  /* ── section-cap plate ────────────────────────────────────────────────────
+     The section caps used to paint `var(--accent)` / `var(--warn)` at FULL
+     saturation — six stacked full-strength plates down a narrow rail, and the
+     brightest surface anywhere in the popup [owner 2026-08-02, "the bars are
+     too bright"]. They are also what the eye lands on first, so making
+     them shout costs more than any other element here.
+
+     Same treatment, and the same measured numbers, as the zone caps in
+     chat-controls.css: INVERT the pairing rather than merely dimming it — a
+     22% plate over the popover ground carrying LIGHT text, instead of a bright
+     plate carrying dark ink. Dimming alone would have made these ILLEGIBLE:
+     dark ink on the dimmed plate measures 4.05:1, under the 4.5:1 AA floor.
+     At 22% the plate is oklab L 0.345 (39% less luminous) and carries sky-200
+     at 8.66:1 — quieter AND legible, not a trade of one for the other.
+
+     Restated as file-local tokens because the css-tokens lint only resolves a
+     component-local token inside the file that DEFINES it, so naming
+     chat-controls.css's `--pc-zone-fill` here would fail the lint (and, worse,
+     compute to unset — an invisible cap rather than a loud failure). */
+  --pc-orders-cap-fill: color-mix(in oklab, var(--accent-strong) 22%, var(--bg-popover));
+  /* Derived from the theme's accent, not pinned to a sky-blue primitive: four
+     themes ship, and `black` (monochrome, --accent-strong #ffffff) and
+     `honeycomb` (honey) would both read as off-palette with a fixed blue.
+     Under `frost` this resolves to ~#bee9fd, so the 8.66:1 above still holds. */
+  --pc-orders-cap-label: color-mix(in oklab, var(--accent-strong), white 50%);
+  --pc-orders-cap-fill-warn: color-mix(in oklab, var(--warn) 22%, var(--bg-popover));
+  /* `--warn` itself, not a lighter amber step: `--amber-200` does NOT exist in
+     _brand-primitives.css (only --amber-400 does) and an undefined var()
+     computes to unset — an invisible label. --warn measures 6.85:1 here. */
+  --pc-orders-cap-label-warn: var(--warn);
+  /* Badges ride ON the cap. A BLACK veil (the old rgba(0,0,0,0.2)) was legible
+     only because the plate behind it was bright; on the dark plate it is
+     near-invisible, so the veil flips to white with the plate. */
+  --pc-orders-cap-veil: color-mix(in oklab, transparent, white 12%);
+  --pc-orders-cap-veil-hot: color-mix(in oklab, transparent, white 18%);
   display: flex;
   flex-direction: column;
   height: 100%;
@@ -120,12 +156,12 @@
   font-size: 9px;
   text-transform: uppercase;
   font-weight: 700;
-  background: var(--accent);
-  color: var(--accent-ink);
+  background: var(--pc-orders-cap-fill);
+  color: var(--pc-orders-cap-label);
 }
 .pc-orders__sec[data-attn='true'] > .pc-orders__h {
-  background: var(--warn);
-  color: var(--accent-ink);
+  background: var(--pc-orders-cap-fill-warn);
+  color: var(--pc-orders-cap-label-warn);
 }
 /* ① Collapsed: everything but the cap folds away. The COUNT lives inside the
    cap, so folding Coord/Walls away never hides that there is something in it. */
@@ -148,12 +184,12 @@
   font-weight: 700;
   padding: 0 5px;
   border-radius: 999px;
-  background: rgba(0, 0, 0, 0.2);
-  color: var(--accent-ink);
+  background: var(--pc-orders-cap-veil);
+  color: var(--pc-orders-cap-label);
 }
 .pc-orders__n--hot {
-  background: rgba(0, 0, 0, 0.28);
-  color: var(--accent-ink);
+  background: var(--pc-orders-cap-veil-hot);
+  color: var(--pc-orders-cap-label-warn);
 }
 
 /* ── key/value rows ───────────────────────────────────────────────────────── */

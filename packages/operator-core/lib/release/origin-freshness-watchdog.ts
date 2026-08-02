@@ -337,7 +337,7 @@ export async function checkOriginFreshness(
           of_publish_refused_sweeps: number | null;
           of_publish_backlog_sweeps: number | null;
           publish_refused: string | null;
-          publish_drained: string | null;
+          publish_backlog_remains: string | null;
           publish_published_sha: string | null;
           publish_head_sha: string | null;
           egress_head: string | null;
@@ -351,7 +351,7 @@ export async function checkOriginFreshness(
                COALESCE((metadata->>'of_publish_refused_sweeps')::int, 0) AS of_publish_refused_sweeps,
                COALESCE((metadata->>'of_publish_backlog_sweeps')::int, 0) AS of_publish_backlog_sweeps,
                metadata->'own_head_publish'->>'refused' AS publish_refused,
-               metadata->'own_head_publish'->>'drained' AS publish_drained,
+               metadata->'own_head_publish'->>'backlogRemains' AS publish_backlog_remains,
                metadata->'own_head_publish'->>'publishedSha' AS publish_published_sha,
                metadata->'own_head_publish'->>'sha' AS publish_head_sha,
                metadata->'github_bridge'->>'egress_head' AS egress_head
@@ -438,12 +438,13 @@ export async function checkOriginFreshness(
       // failure the two inferred signals are structurally blind to (canonical frozen ⇒
       // canonical === origin ⇒ aheadCount exactly 0 ⇒ early-return ok on every sweep).
       //
-      // ⚠ POLARITY: `drained` is assigned `!resolution.complete`, so the string 'true'
-      // means BACKLOG REMAINS, not "has been drained". Reading the name instead of the
-      // value inverts this detector into one that fires only when the plane is healthy.
-      // A hard refusal / CAS failure records `false` here, which is correct: those are
-      // the refusal signal's job, not this one's, so the two never double-count.
-      const publishHasBacklog = row?.publish_drained === 'true';
+      // EI-19341709637436070: this field used to be persisted as `drained`, assigned
+      // `!resolution.complete` — a name that reads as "has been drained" (healthy) while
+      // meaning the opposite (backlog remains). Renamed to `backlogRemains` at the source
+      // (own-head-publish.ts) and here, so the value now agrees with its name. A hard
+      // refusal / CAS failure records `false` here, which is correct: those are the
+      // refusal signal's job, not this one's, so the two never double-count.
+      const publishHasBacklog = row?.publish_backlog_remains === 'true';
       const prevBacklogSweeps = row?.of_publish_backlog_sweeps ?? 0;
       const publishBacklogSweeps = publishHasBacklog ? prevBacklogSweeps + 1 : 0;
       if (publishBacklogSweeps !== prevBacklogSweeps) {

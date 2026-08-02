@@ -21,6 +21,49 @@ describe('parseProjection', () => {
     expect(parseProjection({})).toMatchObject({ ok: false, error: expect.stringContaining('at least one') });
   });
 
+  // `projection` is reserved at the dispatch layer and therefore absent from every
+  // tool's advertised inputSchema. A client that types its args from that schema
+  // (Claude Code) has no type for it and sends a STRING — so refusing strings made
+  // the knob unreachable from that client entirely, while the result-door footer
+  // went on advertising it. Measured 2026-08-02: object form applied, identical
+  // spec as a string refused. These assert the string is held to the SAME rules.
+  describe('JSON-string form (a schema-driven client cannot type an undeclared arg)', () => {
+    it('accepts a JSON-encoded spec and yields the SAME spec as the object form', () => {
+      const obj = { pick: ['results[].id'] };
+      expect(parseProjection(JSON.stringify(obj))).toEqual(parseProjection(obj));
+
+      const piped = { pipe: [{ op: 'head', n: 20 }] };
+      expect(parseProjection(JSON.stringify(piped))).toEqual(parseProjection(piped));
+    });
+
+    it('a JSON string is NOT a bypass — it gets the same validation as an object', () => {
+      // The POSIX guard is the load-bearing one: it must survive the string path,
+      // or the coercion would become a hole around the single check that exists
+      // because its failure is INVISIBLE in the output.
+      expect(parseProjection(JSON.stringify({ pipe: [{ op: 'grep', pattern: '[[:digit:]]' }] }))).toMatchObject({
+        ok: false,
+      });
+      expect(parseProjection(JSON.stringify({}))).toMatchObject({ ok: false });
+      expect(parseProjection(JSON.stringify({ pipe: [{ op: 'nope' }] }))).toMatchObject({ ok: false });
+    });
+
+    it('a string that is not JSON fails closed, and says so specifically', () => {
+      const r = parseProjection('{not json');
+      expect(r).toMatchObject({ ok: false, error: expect.stringContaining('not valid JSON') });
+    });
+
+    it('an empty string is treated as absent, not as a malformed spec', () => {
+      expect(parseProjection('')).toEqual({ ok: true, spec: null });
+      expect(parseProjection('   ')).toEqual({ ok: true, spec: null });
+    });
+
+    it('a JSON string encoding a non-object is still rejected', () => {
+      expect(parseProjection('42')).toMatchObject({ ok: false });
+      expect(parseProjection('[1,2]')).toMatchObject({ ok: false });
+      expect(parseProjection('"nested"')).toMatchObject({ ok: false });
+    });
+  });
+
   describe('grep', () => {
     it('accepts a plain regex and records nothing extra', () => {
       const r = parseProjection({ pipe: [{ op: 'grep', pattern: 'err(or)?' }] });

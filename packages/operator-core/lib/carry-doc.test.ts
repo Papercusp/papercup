@@ -221,6 +221,22 @@ describe('renderBuiltAtStamp (EI-18697157970421032, pure)', () => {
     expect(stamp).toContain('may have kept working');
     expect(stamp).toMatch(/check the filesystem/);
   });
+
+  it('warns that a RETRACTED CLAIM can ride the same blind window (EI-19340500312449463)', () => {
+    // A pre-respawn session can report a finding, catch it overstated the
+    // claim, and retract it (coord:send correction / work-item comment /
+    // loop:checkpoint) — all AFTER this document was assembled but before it
+    // actually died. Without an explicit warning, a successor reads the
+    // already-frozen (and since-withdrawn) claim as this system-injected
+    // document's own framing — MORE apparent authority than the peer-authored
+    // correction it superseded. The stamp must name this explicitly (not just
+    // "artifacts/experiments") and point at coord:feed / the work-item's
+    // comments as the authority instead.
+    const stamp = renderBuiltAtStamp(NOW);
+    expect(stamp).toMatch(/RETRACTED CLAIMS/);
+    expect(stamp).toContain('coord:feed');
+    expect(stamp).toMatch(/more apparent authority/i);
+  });
 });
 
 describe('renderCarryDoc (pure)', () => {

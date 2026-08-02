@@ -171,7 +171,12 @@
  * calmer and far more legible. Measured for the values below:
  *
  *   fill  #223c52  (22% accent)  oklab L 0.345 — 39% less luminous than before
- *   text  --sky-200 on that fill  8.66:1  (was 4.05:1) — AAA, not just AA
+ *   text  ~#bee9fd on that fill   8.66:1  (was 4.05:1) — AAA, not just AA
+ *
+ * (The text is DERIVED from the theme accent, not pinned to a sky-blue
+ * primitive — under `frost` it resolves to the value measured above, and under
+ * the `black`/`honeycomb` themes it follows their palette instead of importing
+ * a blue those themes never use. See --pc-zone-label below.)
  *
  * The 1px zone STROKE stays brighter than the fill on purpose: D-001 of
  * `session-popup-compaction-and-contrast-2026-08-02` measured that on this
@@ -206,8 +211,16 @@
   /* Text ON that plate. NOT --accent-ink: that token means "dark ink for a
      BRIGHT accent fill", and this plate is deliberately no longer bright — dark
      ink on it measured 4.05:1 (sub-AA), which is the defect described above.
-     sky-200 on the new plate is 8.66:1. */
-  --pc-zone-label: var(--sky-200);
+     The light label on the new plate is 8.66:1.
+
+     DERIVED from the accent rather than pinned to `--sky-200`: the operator
+     ships four themes, and a hardcoded sky-blue is off-palette in two of them
+     (`black` sets --accent-strong #ffffff and is deliberately monochrome;
+     `honeycomb` sets it to honey #d6a64a). Mixing the theme's own strong accent
+     50% toward white lands on ~#bee9fd under `frost` — i.e. sky-200 to within a
+     couple of levels, so the measurement above still holds — while following
+     the other themes instead of fighting them. */
+  --pc-zone-label: color-mix(in oklab, var(--accent-strong), white 50%);
 
   /* The amber/attention variant of the plate. Mixing amber toward this navy
      ground desaturates it into olive, so the amber identity is carried by the

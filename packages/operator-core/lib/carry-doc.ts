@@ -654,11 +654,28 @@ function cap(s: string, max: number): string {
  * artifact directory, the work-item's own comments/checkpoint via
  * work_items:get). The filesystem and the work-item are the authority on what
  * was actually done; this document is not.
+ *
+ * EI-19340500312449463 (a RETRACTED CLAIM riding the blind window): the same
+ * gap above also lets a WITHDRAWN claim ride back in. A pre-respawn session
+ * can report a finding to a peer/leader (coord:send), catch that it overstated
+ * it, and retract it — all AFTER this document was assembled but BEFORE it
+ * actually died. The retraction lives in coord messages / a work-item comment
+ * / a loop:checkpoint the successor's own predecessor wrote; none of that
+ * un-writes text already frozen into this document. Concretely observed: the
+ * retracted claim came back as this system-injected snapshot's own framing,
+ * which reads with MORE apparent authority than the peer-authored correction
+ * it superseded — an agent that trusts its brief over reconciling first would
+ * re-broadcast a claim it (as its own predecessor) had already withdrawn,
+ * citing this document as the source. The mitigation is the same one BLIND
+ * WINDOW already prescribes for unfinished work — check for evidence newer
+ * than this stamp before acting — stated explicitly for CLAIMS so it is not
+ * read as scoped to artifacts/experiments alone.
  */
 export function renderBuiltAtStamp(now: number): string {
   return (
     `> Carry document built at ${new Date(now).toISOString()} — if it is now meaningfully later than that, treat any "currently working on / waiting on" claim below as UNVERIFIED until coord:orient reconciles it (a queued carry-respawn can deliver up to 30 minutes after it was built).\n` +
-    `> ⚠ BLIND WINDOW: this document is a snapshot of what was known AT BUILD TIME, not of everything the pre-respawn session actually did — it may have kept working (and completing real artifacts) after this stamp, right up until it died. Before starting or re-doing anything below, check the filesystem / work-item for evidence newer than this stamp; do not assume this document is complete.`
+    `> ⚠ BLIND WINDOW: this document is a snapshot of what was known AT BUILD TIME, not of everything the pre-respawn session actually did — it may have kept working (and completing real artifacts) after this stamp, right up until it died. Before starting or re-doing anything below, check the filesystem / work-item for evidence newer than this stamp; do not assume this document is complete.\n` +
+    `> ⚠ RETRACTED CLAIMS RIDE THE SAME WINDOW: a finding/framing below may have been corrected or WITHDRAWN by your predecessor (a coord:send correction, a work-item comment, a loop:checkpoint) after this stamp — this document cannot know that and will restate the ORIGINAL claim with more apparent authority than the correction had. Before repeating, re-broadcasting, or resuming work on ANY finding described below, check coord:feed / the relevant work-item's comments for a correction newer than this stamp; do not treat this document as the authority on what you last concluded.`
   );
 }
 

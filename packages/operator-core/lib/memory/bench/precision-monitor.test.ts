@@ -140,7 +140,11 @@ describe('runMemoryPrecisionMonitor', () => {
           flag: async () => true,
           runBench: async () => METRICS, // rAt10 = 0.82
           record: async () => 5,
-          history: async () => [0.8, 0.81, 0.83, 0.82, 0.8],
+          // WI-7215: priors carry the admission shape they were measured under.
+          // METRICS/crashed both have notes:null, so these priors are tagged
+          // null to stay COMPARABLE — that is what keeps this case a real
+          // baseline-drop test rather than an insufficient-history one.
+          history: async () => [0.8, 0.81, 0.83, 0.82, 0.8].map((rAt10) => ({ rAt10, shape: null })),
           escalateRecall: async (workspaceId, backend, rowId, evaluation) => {
             seen = { workspaceId, backend, rowId, evaluation };
           },
@@ -165,7 +169,11 @@ describe('runMemoryPrecisionMonitor', () => {
           flag: async () => true,
           runBench: async () => crashed,
           record: async () => 6,
-          history: async () => [0.8, 0.81, 0.83, 0.82, 0.8],
+          // WI-7215: priors carry the admission shape they were measured under.
+          // METRICS/crashed both have notes:null, so these priors are tagged
+          // null to stay COMPARABLE — that is what keeps this case a real
+          // baseline-drop test rather than an insufficient-history one.
+          history: async () => [0.8, 0.81, 0.83, 0.82, 0.8].map((rAt10) => ({ rAt10, shape: null })),
           escalateRecall: async (_ws, _b, _row, evaluation) => {
             seen = evaluation;
           },

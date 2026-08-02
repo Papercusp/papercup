@@ -98,6 +98,17 @@ export const AUTO_MODE_MARKER = '<!-- PAPERCUSP-SU:AUTO-MODE -->';
 export const COMPACTION_MARKER = '<!-- PAPERCUSP-SU:COMPACTION -->';
 
 /**
+ * Marker for the generated per-result DOOR section (agent-context-firewall P-015) —
+ * the effective `resultEach` cap and the `projection` knob, taught ONCE in standing
+ * context instead of in ~550 tool descriptions (which the P-011 prompt-weight budget
+ * would red on). Rendered by `renderResultDoorSection()` from `computeTurnDoors`, the
+ * SAME function `applyResultDoor` enforces with, so the number in the prompt cannot
+ * drift from the number in the door. Same splice contract as the others: an absent
+ * marker leaves the section out; an empty section removes the marker.
+ */
+export const RESULT_DOOR_MARKER = '<!-- PAPERCUSP-SU:RESULT-DOOR -->';
+
+/**
  * Marker in papercusp-compaction.base.md where the per-client compaction overlay
  * (papercusp-compaction.<client>.md) splices — the SUMMARIZER-instruction analog of
  * CLIENT_TOOLING_OVERLAY_MARKER. Consumed by renderCompactionStrategy (the Claude

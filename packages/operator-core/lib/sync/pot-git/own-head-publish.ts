@@ -113,8 +113,14 @@ export interface OwnHeadPublishTickOutcome {
   blockedAtCommit?: string | null;
   /** WI-5738: true when the publish advanced but did NOT reach the worktree
    *  head — a volume cap split the range and the remainder drains on
-   *  following ticks. Not an error; a healthy partial publish. */
-  drained?: boolean;
+   *  following ticks. Not an error; a healthy partial publish.
+   *
+   *  EI-19341709637436070: named `backlogRemains` (not `drained`) DELIBERATELY —
+   *  the prior name `drained` read as "has been drained" (healthy) while this is
+   *  assigned `!resolution.complete`, i.e. it means the OPPOSITE: backlog still
+   *  remains. Two separate agents had to leave "read the value, never the name"
+   *  warning comments at the consumers before the field itself got renamed. */
+  backlogRemains?: boolean;
   /** WI-5738: a single commit that alone exceeds the volume caps and so cannot
    *  be split. It IS published (refusing it forever is the outage this
    *  replaces); named here so the health layer can raise it. */
@@ -265,7 +271,7 @@ export async function runOwnHeadPublishTick(
   };
   // No forward progress at all — a hard refusal, reported exactly as before.
   if (!publishSha || publishSha === priorSha) {
-    return { ...base, changed: false, drained: false, publishedSha: null, refused: guard };
+    return { ...base, changed: false, backlogRemains: false, publishedSha: null, refused: guard };
   }
 
   try {
@@ -279,7 +285,7 @@ export async function runOwnHeadPublishTick(
     );
   } catch (e) {
     errors.push(`namespace ref CAS write failed: ${e instanceof Error ? e.message : e}`);
-    return { ...base, changed: false, drained: false, publishedSha: null, refused: null };
+    return { ...base, changed: false, backlogRemains: false, publishedSha: null, refused: null };
   }
 
   // The integrator gates member heads at the canonical WORK_REF, not the
@@ -308,7 +314,7 @@ export async function runOwnHeadPublishTick(
   return {
     ...base,
     changed: true,
-    drained: !resolution.complete,
+    backlogRemains: !resolution.complete,
     publishedSha: publishSha,
     refused: guard,
   };

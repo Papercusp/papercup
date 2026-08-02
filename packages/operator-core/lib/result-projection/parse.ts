@@ -167,8 +167,44 @@ function parseStage(raw: unknown, i: number): { ok: true; stage: ProjectionStage
  * Validate the caller's `projection` arg. Returns `{ ok:true, spec:null }` when
  * absent — the overwhelmingly common path, and deliberately not an error.
  */
-export function parseProjection(raw: unknown): ProjectionParseResult {
-  if (raw === undefined || raw === null) return { ok: true, spec: null };
+export function parseProjection(rawInput: unknown): ProjectionParseResult {
+  if (rawInput === undefined || rawInput === null) return { ok: true, spec: null };
+  let raw: unknown = rawInput;
+
+  // A JSON STRING is accepted and parsed here, and that is not leniency for its
+  // own sake — without it the knob is UNREACHABLE from an entire class of client.
+  //
+  // `projection` is reserved at the DISPATCH layer, so it is deliberately absent
+  // from every tool's advertised inputSchema (declaring it on ~550 tools is the
+  // expensive form this design exists to avoid). But a client that types its
+  // outgoing args FROM that schema has no type for an undeclared key, so it sends
+  // the value as a STRING. Claude Code does exactly this — measured 2026-08-02,
+  // both from a direct tool call and over raw HTTP: the object form applied
+  // correctly while the identical spec sent as a string was refused with
+  // "projection must be an object". The caller cannot fix that from their side;
+  // the arg is undeclared precisely so it stays cheap.
+  //
+  // So the string is not a malformed spec — it is a well-formed spec that a
+  // schema-driven client had no way to send as anything else. Refusing it means
+  // the result-door footer advertises a remedy those callers can never take,
+  // which is worse than silence: it teaches a knob and then rejects its use.
+  // Parse it, then hold it to exactly the same validation as an object; a string
+  // that is not JSON is still a real caller bug and still fails closed below.
+  if (typeof raw === 'string') {
+    const trimmed = raw.trim();
+    if (trimmed === '') return { ok: true, spec: null };
+    try {
+      raw = JSON.parse(trimmed);
+    } catch {
+      return {
+        ok: false,
+        error:
+          'projection was sent as a string that is not valid JSON. Send the object ' +
+          '{ pick?: string[], pipe?: [{ op, ... }] }, or a JSON-encoded string of it.',
+      };
+    }
+  }
+
   if (!isPlainObject(raw)) {
     return { ok: false, error: 'projection must be an object: { pick?: string[], pipe?: [{ op, ... }] }' };
   }

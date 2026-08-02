@@ -167,13 +167,41 @@ interface OpStateCacheEntry {
   value: unknown;
   at: number;
 }
-const opStateCache = new Map<string, OpStateCacheEntry>();
+// globalThis-backed (WI-7032), NOT a plain module-level `Map` — this module is
+// dependency-of-everything (loaded by both the HTTP route tree and the DBOS
+// bootstrap/orchestrator tree), so under the tsx-direct boot entrypoint it hits
+// the SAME double-module-load trap already fixed for orchestrator-workflow.ts's
+// InjectedPipelineHooks (WI-3830/WI-4015): two instances of this module can
+// coexist in one process, each with its OWN plain-`Map` cache. A registration
+// write on instance A calls `invalidateOperatorStateCache`, which only clears
+// instance A's Map — instance B's cache (if it had already warmed a pre-write,
+// project-less read for the same (table, workspace) key, e.g. an early
+// `loadHarnessRegistry` probe) stays stale for up to the TTL, so a `resolveProject`
+// running on instance B sees NULL for a harness that just committed on instance A.
+// This reproduced as "resolveProject NULL — unknown harness slug=gymbaseline…"
+// for freshly-registered gym throwaway harnesses even though the registration
+// HTTP call had already returned 200 — the write and the read were both correct,
+// same-process same-workspace, just on two different in-memory Map instances.
+// Storing the cache on globalThis (the same hot-reload-safe-singleton idiom
+// idempotent-register-workflow.ts and orchestrator-workflow.ts's pipelineHooks()
+// already use) makes every module instance in the process share ONE cache, so a
+// same-process write-then-read is never stale regardless of which specifier
+// space either side loaded through. Genuine CROSS-process staleness (a
+// different OS process entirely, e.g. WI-1378's substrate-sidecar case) is
+// unaffected — that still needs `{ fresh: true }`, unchanged by this fix.
+const __opStateCacheKey = Symbol.for('papercusp.opStateCache');
+type OpStateCacheGlobals = typeof globalThis & { [__opStateCacheKey]?: Map<string, OpStateCacheEntry> };
+function opStateCacheMap(): Map<string, OpStateCacheEntry> {
+  const g = globalThis as OpStateCacheGlobals;
+  if (!g[__opStateCacheKey]) g[__opStateCacheKey] = new Map<string, OpStateCacheEntry>();
+  return g[__opStateCacheKey]!;
+}
 const opStateCacheKey = (table: StateTable, ws: string): string => `${table}\x00${ws}`;
 
 /** Invalidate a cached (table, ws) entry — called by every write path so the
  *  writing process never reads its own stale value. Exported for tests. */
 export function invalidateOperatorStateCache(table: StateTable, ws: string): void {
-  opStateCache.delete(opStateCacheKey(table, ws));
+  opStateCacheMap().delete(opStateCacheKey(table, ws));
 }
 
 /**
@@ -257,7 +285,7 @@ export async function readOperatorState<T>(
   // RPC). The hot loadHarnessRegistry path does NOT pass fresh, so its cache win stands.
   const ttl = CACHEABLE_STATE_TABLES.has(table) ? opStateCacheTtlMs() : 0;
   if (ttl > 0 && !opts?.fresh) {
-    const hit = opStateCache.get(opStateCacheKey(table, ws));
+    const hit = opStateCacheMap().get(opStateCacheKey(table, ws));
     if (hit && Date.now() - hit.at < ttl) return hit.value as T | null;
   }
 
@@ -283,7 +311,7 @@ export async function readOperatorState<T>(
     result = rows.length > 0 ? rows[0].payload : null;
   }
 
-  if (ttl > 0) opStateCache.set(opStateCacheKey(table, ws), { value: result, at: Date.now() });
+  if (ttl > 0) opStateCacheMap().set(opStateCacheKey(table, ws), { value: result, at: Date.now() });
   return result;
 }
 

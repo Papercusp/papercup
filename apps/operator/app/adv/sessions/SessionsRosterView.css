@@ -657,6 +657,31 @@
    already frames it, so it stays exactly as it was. */
 .pc-zone--activity .pc-dossier {
   --pc-dossier-edge: color-mix(in oklab, var(--accent), var(--bg-popover) 62%);
+  /* ── section-cap plate ────────────────────────────────────────────────────
+     The Activity rail's caps had the same defect as the Orders rail's (see the
+     long note in AgentOrders.css): `var(--accent)` / `var(--warn)` at full
+     saturation, stacked down a narrow column [owner 2026-08-02, "the bars are
+     too bright"]. Fixed the same way, deliberately — two rails flanking the
+     same popup must not calm down differently, or the asymmetry reads as one
+     of them being broken.
+
+     INVERTED, not merely dimmed: dark ink on a dimmed plate measures 4.05:1
+     (below the 4.5:1 AA floor), so dimming alone trades loud for illegible.
+     A 22% plate (oklab L 0.345, 39% less luminous) carries sky-200 at 8.66:1.
+
+     File-local because the css-tokens lint only resolves a component token
+     inside its DEFINING file — chat-controls.css's `--pc-zone-fill` named here
+     would compute to unset, i.e. an invisible cap rather than a loud fail. */
+  --pc-dossier-cap-fill: color-mix(in oklab, var(--accent-strong) 22%, var(--bg-popover));
+  /* Derived from the theme's accent (see AgentOrders.css) — a pinned sky-blue
+     is off-palette under the `black` and `honeycomb` themes. */
+  --pc-dossier-cap-label: color-mix(in oklab, var(--accent-strong), white 50%);
+  --pc-dossier-cap-fill-warn: color-mix(in oklab, var(--warn) 22%, var(--bg-popover));
+  /* `--warn` itself: `--amber-200` does not exist in _brand-primitives.css. */
+  --pc-dossier-cap-label-warn: var(--warn);
+  /* Badges/notes ride ON the cap, so their veil flips with the plate — a black
+     veil read only against the old BRIGHT fill. */
+  --pc-dossier-cap-veil: color-mix(in oklab, transparent, white 12%);
   padding: 0 0 12px;
   gap: 6px;
 }
@@ -700,23 +725,23 @@
   margin: 0 -8px;
   padding: 3px 8px;
   font-size: 9px;
-  background: var(--accent);
-  color: var(--accent-ink);
+  background: var(--pc-dossier-cap-fill);
+  color: var(--pc-dossier-cap-label);
 }
 .pc-zone--activity .pc-dossier__section[data-attn='true'] > .pc-dossier__h {
-  background: var(--warn);
-  color: var(--accent-ink);
+  background: var(--pc-dossier-cap-fill-warn);
+  color: var(--pc-dossier-cap-label-warn);
 }
 /* Badges and notes ride ON the filled cap, so they take the cap's ink rather
    than the rail ground's — the contrast pairing the lint requires. */
 .pc-zone--activity .pc-dossier__h .pc-dossier__badge-count {
-  background: rgba(0, 0, 0, 0.2);
-  color: var(--accent-ink);
+  background: var(--pc-dossier-cap-veil);
+  color: var(--pc-dossier-cap-label);
   font-size: 8.5px;
 }
 .pc-zone--activity .pc-dossier__h .pc-dossier__h-note,
 .pc-zone--activity .pc-dossier__h .pc-dossier__h-note--err {
-  color: var(--accent-ink);
+  color: var(--pc-dossier-cap-label);
   opacity: 0.72;
 }
 .pc-dossier__badge-count {

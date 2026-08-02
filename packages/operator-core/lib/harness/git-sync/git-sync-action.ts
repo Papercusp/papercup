@@ -1625,7 +1625,10 @@ async function runOwnHeadPublishLeg(slug: string, workspaceId: string, branch: s
         // (`oversizedCommit`'s own doc-comment says it is named "so the health
         // layer can raise it" — the health layer was never given it).
         publishedSha: outcome.publishedSha ?? null,
-        drained: outcome.drained ?? false,
+        // EI-19341709637436070: persisted key renamed drained -> backlogRemains (was
+        // named backwards — see OwnHeadPublishTickOutcome.backlogRemains's doc comment).
+        // Alpha, no users: migrate the key outright rather than aliasing it.
+        backlogRemains: outcome.backlogRemains ?? false,
         blockedAtCommit: outcome.blockedAtCommit ?? null,
         oversizedCommit: outcome.oversizedCommit ?? null,
         refused: outcome.refused?.refusalCode ?? null,

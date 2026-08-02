@@ -1533,6 +1533,28 @@ export function runTscBaselineGate({
         if (standing.length > 0) {
           for (const line of formatStandingRedFooter()) console.log(line);
         }
+        // EI-19340930095511759 — this branch is the `ok-peer-drift` twin of `fail-new-file`, and
+        // until now it was missing the LANDING-RACE caveat that branch already has (WI-6767). A
+        // file this gate calls "COMMITTED" here can still be a half-landed, self-healing red: this
+        // gate's OWN compile can be served from a coalesced/replayed tsc run up to
+        // PC_HEAVY_COALESCE_SEC (420s) old for any file OUTSIDE the caller's own --files set (see
+        // coalesceWatermarkFor's freshness guarantee above — it only covers the caller's OWN
+        // files), so a peer's fix can already be committed by the time this prints while the count
+        // above still reflects the pre-fix compile. Confidently asserting "COMMITTED … WILL red the
+        // fleet" with no caveat is exactly what invited a duplicate fix that collided with the
+        // peer who wrote it (the filing that prompted this fix). Never move the verdict — this only
+        // adds the same "wait a moment, then verify" caveat `fail-new-file` already prints.
+        const { recent } = partitionStandingByCommitRecency(
+          standing,
+          lastCommitTimes(
+            root,
+            standing.map((r) => r.file),
+          ),
+          Math.floor(Date.now() / 1000),
+        );
+        for (const line of formatLandingRaceCaveat({ recentCount: recent.length })) {
+          console.log(line);
+        }
         // EI-19342686127995790 — this is the exact line the fleet computes ~9x/hour and discards.
         // Remember it so a red that OUTLIVES its author can be found later; the sweeper (never this
         // hot path) decides whether it has persisted long enough to deserve an owner. Local append

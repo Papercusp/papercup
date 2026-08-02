@@ -86,6 +86,34 @@ describe('plans.* resolvers — verb dispatch + envelope unwrap', () => {
     expect(await resolveNamedQueryV2('plans.lint', { slug: 'a' })).toEqual([{ slug: 'a', errors: [] }]);
   });
 
+  // WI-7221. The assertion above mocks a `{ reports }` shape that `plans:lint`
+  // NEVER returns for a slug — which is exactly why this stayed hidden. A
+  // single-slug lint is a BULK call: runBulk → `{ results:[{ ok, slug, report }] }`.
+  // Against the real envelope the old `r?.reports ?? []` unwrap returned [] for
+  // every args-bearing call, so the DETAIL half of the list/detail split was dead.
+  it('plans.lint unwraps the real single-slug BULK envelope, not just { reports }', async () => {
+    const report = {
+      slug: 'a',
+      errors: [{ code: 'missing_now_section', level: 'error', message: 'No `## Now` section ...' }],
+      warnings: [{ code: 'unphased_item', level: 'warning', message: 'full prose kept on the DETAIL read' }],
+    };
+    callPlansRead.mockResolvedValueOnce({
+      results: [{ ok: true, slug: 'a', report, totalErrors: 1, totalWarnings: 1, exempt: 0 }],
+      counts: { ok: 1, failed: 0 },
+    });
+    // The full report, warning prose included — this is what makes the summary
+    // projection on the nullary read a SPLIT rather than a loss.
+    expect(await resolveNamedQueryV2('plans.lint', { slug: 'a' })).toEqual([report]);
+  });
+
+  it('plans.lint drops a not_found row from the bulk envelope instead of emitting it', async () => {
+    callPlansRead.mockResolvedValueOnce({
+      results: [{ ok: false, slug: 'nope', error: 'not_found' }],
+      counts: { ok: 0, failed: 1 },
+    });
+    expect(await resolveNamedQueryV2('plans.lint', { slug: 'nope' })).toEqual([]);
+  });
+
   it('returns [] when the expected envelope field is missing', async () => {
     callPlansRead.mockResolvedValue({});
     expect(await resolveNamedQueryV2('plans.list', {})).toEqual([]);

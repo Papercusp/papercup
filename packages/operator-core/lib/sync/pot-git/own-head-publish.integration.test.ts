@@ -280,7 +280,7 @@ describe('own-head publish (G-2a: worktree head → own namespace, guarded)', ()
       const first = await tick();
       // The old contract was `changed: false` forever. Now the ref MOVES.
       expect(first.changed).toBe(true);
-      expect(first.drained).toBe(true);
+      expect(first.backlogRemains).toBe(true);
       expect(first.publishedSha).not.toBe(head); // partial — not the whole history
       const afterFirst = await readNamespaceRef(repoPath, dev2, `refs/heads/${BRANCH}`);
       expect(afterFirst).toBe(first.publishedSha);

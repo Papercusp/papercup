@@ -46,8 +46,12 @@ registerDerivedRead({
 //
 // The resolver has always done `Array.isArray(r?.reports) ? r.reports : []`. But
 // the lint tool's ALL-PLANS default branch returns `summarizeLintReports(reports)`
-// — a bounded summary object with NO `reports` field (`reports` exists only on the
-// `full: true` branch, and on the per-slug bulk envelope). So the nullary
+// — a bounded summary object with NO `reports` field. (⚠ CORRECTION, WI-7221:
+// this comment used to add "and on the per-slug bulk envelope". That is WRONG —
+// the per-slug path returns `{ results:[{ ok, slug, report }] }`, so `reports`
+// exists ONLY on the `full: true` branch. That wrong clause is precisely what
+// hid the fact that the resolver's ARGS-BEARING branch was returning [] too;
+// it is fixed in sync-resolver/index.ts.) So the nullary
 // `plans.lint` sync query has ALWAYS returned `[]`: it linted the entire corpus
 // and threw the result away. The backfill made it obvious — 158.8s of compute
 // producing a 5-byte payload.
@@ -70,7 +74,7 @@ registerDerivedRead({
 // itself incremental (lint only plans whose updated_at moved), not to shorten
 // this ttl — see WI-5460.
 //
-// ── WI-7210: the stored shape is a SUMMARY, not the full dump ────────────────
+// ── WI-7221: the stored shape is a SUMMARY, not the full dump ────────────────
 //
 // `full: true` (above) is what the RESOLVER needs to see a `reports` array at
 // all, but storing those reports verbatim measured 561,007 B over 913 rows —
@@ -102,6 +106,22 @@ registerDerivedRead({
 // ⚠ producerVersion MUST stay ahead of any change to this shape: the registry
 // treats a snapshot from an older version as absent rather than serving a
 // superseded shape (registry.ts:204).
+//
+// ── Why not just reuse `summarizeLintReports` (plans/lint.ts)? ───────────────
+// It is the canonical summarizer and its per-plan `LintSummaryPlan` shape is
+// deliberately mirrored here (errorCount/warningCount, errors inlined, the
+// booleans omitted when false). But it returns ONE `LintSummary` OBJECT with a
+// `plans[]` inside, and storing that would make this snapshot a single fat row.
+// The sync layer delta-hashes ROWS: at 922 rows one plan's lint change re-sends
+// ~146 B, whereas a 1-row aggregate re-sends the entire ~130KB blob on any
+// change. That 1-row-fat-aggregate shape is a known payload anti-pattern in
+// this tree (learning.improvements is 317,455 B in ONE row), so row-per-plan is
+// the deliberate choice, not an oversight.
+//
+// The other deliberate difference: `summarizeLintReports` DROPS plans with zero
+// findings entirely; this keeps them as a slug-only row (246 of 922). A sync
+// read is a materialized list — a consumer needs to know a plan was linted and
+// came back clean, which absence cannot express.
 type PlanLintReport = {
   slug?: unknown;
   errors?: unknown[];
@@ -115,7 +135,10 @@ export function summarizePlanLintReport(report: PlanLintReport): Record<string, 
   const out: Record<string, unknown> = { slug: report.slug };
   const errors = Array.isArray(report.errors) ? report.errors : [];
   const warnings = Array.isArray(report.warnings) ? report.warnings : [];
-  if (errors.length > 0) out.errors = errors;
+  if (errors.length > 0) {
+    out.errorCount = errors.length;
+    out.errors = errors;
+  }
   if (warnings.length > 0) {
     const byCode: Record<string, number> = {};
     for (const w of warnings) {
@@ -136,7 +159,10 @@ export function summarizePlanLintReport(report: PlanLintReport): Record<string, 
 registerDerivedRead({
   key: 'plans.lint',
   ttlMs: 6 * 60 * 60_000,
-  producerVersion: 3,
+  // 2 -> 3: the summary projection. 3 -> 4: `errorCount` added to mirror
+  // LintSummaryPlan. A v3 snapshot was already stored on :3170 by then, and
+  // with a 6h ttl it would have been served in the old shape until it expired.
+  producerVersion: 4,
   scope: 'workspace',
   compute: async () => {
     const { callPlansRead } = await import('../agent-tools/plans/read-dispatch');
