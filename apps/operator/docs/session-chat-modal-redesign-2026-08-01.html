@@ -1,0 +1,330 @@
+<title>Session chat popup — redesign directions</title>
+
+<style>
+/* ═══════════════════════════════════════════════════════════════════════
+   Two visual layers, deliberately kept apart:
+
+   1. THE REVIEW  — quiet neutral ground, serif critique voice, one bold
+                    spend: a clay-coral used ONLY for review markup.
+   2. THE WORK    — the operator's own DTCG tokens, verbatim from
+                    design/tokens/base.json. Fixed dark in BOTH page
+                    themes, because the app itself is dark-only. Showing
+                    it light would be a lie about the product.
+   ═══════════════════════════════════════════════════════════════════════ */
+
+:root {
+  --paper:   #FAFAF9;
+  --plate:   #FFFFFF;
+  --ink:     #16181D;
+  --ink-2:   #4A515C;
+  --ink-3:   #828B99;
+  --rule:    rgba(20, 24, 32, 0.11);
+  --rule-2:  rgba(20, 24, 32, 0.055);
+  --mark:    #C4523A;
+  --mark-bg: rgba(196, 82, 58, 0.085);
+  --ok:      #2E7D5B;
+  --shadow:  0 1px 2px rgba(16,20,28,.05), 0 12px 32px -14px rgba(16,20,28,.22);
+
+  --serif: "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua", Georgia, serif;
+  --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+
+  /* ── the operator's palette (design/tokens/base.json) ── */
+  --op-page:#07101D;      --op-panel:#0B1220;     --op-popover:#0D1829;
+  --op-surface:rgba(255,255,255,.045);
+  --op-hover:rgba(255,255,255,.075);
+  --op-raised:rgba(255,255,255,.12);
+  --op-solid:#112235;     --op-solid-hi:#143049;
+  --op-fg:#E7F7FF;        --op-fg2:#B9D4E8;       --op-mute:#7F9BB4;
+  --op-border:rgba(125,211,252,.15);
+  --op-border-s:rgba(125,211,252,.32);
+  --op-accent:#38BDF8;    --op-accent-soft:#BAE6FD; --op-accent-ink:#051827;
+  --op-accent-deep:#0EA5E9;
+  --op-good:#34D399;      --op-warn:#FBBF24;      --op-bad:#F87171;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --paper:   #0A0C10;
+    --plate:   #10131A;
+    --ink:     #E4E8EF;
+    --ink-2:   #A8B1BF;
+    --ink-3:   #6E7887;
+    --rule:    rgba(190, 205, 225, 0.14);
+    --rule-2:  rgba(190, 205, 225, 0.07);
+    --mark:    #FF8163;
+    --mark-bg: rgba(255, 129, 99, 0.10);
+    --ok:      #5DD3A0;
+    --shadow:  0 1px 2px rgba(0,0,0,.4), 0 16px 40px -16px rgba(0,0,0,.7);
+  }
+}
+:root[data-theme="dark"] {
+  --paper:#0A0C10; --plate:#10131A; --ink:#E4E8EF; --ink-2:#A8B1BF; --ink-3:#6E7887;
+  --rule:rgba(190,205,225,.14); --rule-2:rgba(190,205,225,.07);
+  --mark:#FF8163; --mark-bg:rgba(255,129,99,.10); --ok:#5DD3A0;
+  --shadow:0 1px 2px rgba(0,0,0,.4), 0 16px 40px -16px rgba(0,0,0,.7);
+}
+:root[data-theme="light"] {
+  --paper:#FAFAF9; --plate:#FFFFFF; --ink:#16181D; --ink-2:#4A515C; --ink-3:#828B99;
+  --rule:rgba(20,24,32,.11); --rule-2:rgba(20,24,32,.055);
+  --mark:#C4523A; --mark-bg:rgba(196,82,58,.085); --ok:#2E7D5B;
+  --shadow:0 1px 2px rgba(16,20,28,.05), 0 12px 32px -14px rgba(16,20,28,.22);
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: 16px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+
+.wrap { max-width: 1140px; margin: 0 auto; padding: 0 28px 120px; }
+
+/* ── review voice ───────────────────────────────────────────────────── */
+.eyebrow {
+  font-size: 11px; font-weight: 620; letter-spacing: .14em;
+  text-transform: uppercase; color: var(--mark); margin: 0 0 10px;
+}
+h1 {
+  font-family: var(--serif); font-weight: 400;
+  font-size: clamp(34px, 5.2vw, 56px); line-height: 1.05;
+  letter-spacing: -.015em; text-wrap: balance; margin: 0 0 18px;
+}
+h2 {
+  font-family: var(--serif); font-weight: 400;
+  font-size: clamp(25px, 3vw, 33px); line-height: 1.15;
+  letter-spacing: -.01em; text-wrap: balance; margin: 0 0 6px;
+}
+h3 {
+  font-size: 15px; font-weight: 640; letter-spacing: -.005em;
+  margin: 0 0 8px; color: var(--ink);
+}
+p { margin: 0 0 14px; max-width: 68ch; color: var(--ink-2); }
+p.lead { font-size: 18.5px; line-height: 1.55; color: var(--ink-2); max-width: 62ch; }
+strong { color: var(--ink); font-weight: 620; }
+code {
+  font-family: var(--mono); font-size: .87em;
+  background: var(--rule-2); padding: 1px 5px; border-radius: 3px;
+  color: var(--ink);
+}
+a { color: var(--mark); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+a:focus-visible, button:focus-visible { outline: 2px solid var(--mark); outline-offset: 2px; }
+
+/* ── masthead ───────────────────────────────────────────────────────── */
+.masthead { padding: 76px 0 40px; border-bottom: 1px solid var(--rule); }
+.meta {
+  display: flex; flex-wrap: wrap; gap: 8px 22px; margin-top: 26px;
+  font-size: 12.5px; color: var(--ink-3); font-family: var(--mono);
+}
+.meta span { white-space: nowrap; }
+
+/* ── section rhythm ─────────────────────────────────────────────────── */
+section { padding-top: 74px; scroll-margin-top: 20px; }
+.sec-head { margin-bottom: 26px; }
+.sec-head p { margin-bottom: 0; }
+
+/* ── jump nav ───────────────────────────────────────────────────────── */
+.jump {
+  display: flex; flex-wrap: wrap; gap: 6px;
+  padding: 16px 0 0; margin-bottom: -30px;
+}
+.jump a {
+  font-size: 12px; font-family: var(--mono); text-decoration: none;
+  color: var(--ink-3); border: 1px solid var(--rule);
+  padding: 4px 10px; border-radius: 3px; transition: color .15s, border-color .15s;
+}
+.jump a:hover { color: var(--mark); border-color: var(--mark); }
+
+/* ── plate: the frame a mockup sits in ──────────────────────────────── */
+.plate {
+  background: var(--plate); border: 1px solid var(--rule);
+  border-radius: 4px; box-shadow: var(--shadow); overflow: hidden;
+}
+.plate-cap {
+  display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap;
+  padding: 13px 18px; border-bottom: 1px solid var(--rule);
+  font-size: 12px; font-family: var(--mono); color: var(--ink-3);
+}
+.plate-cap b { color: var(--ink); font-weight: 640; letter-spacing: .01em; }
+.plate-body { padding: 26px 22px; background: var(--rule-2); overflow-x: auto; }
+
+/* ── two-column rationale ───────────────────────────────────────────── */
+.cols {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(268px, 1fr));
+  gap: 30px; margin-top: 26px;
+}
+.cols h3 {
+  font-size: 11px; letter-spacing: .13em; text-transform: uppercase;
+  color: var(--ink-3); font-weight: 640; padding-bottom: 7px;
+  border-bottom: 1px solid var(--rule); margin-bottom: 12px;
+}
+.cols ul { margin: 0; padding-left: 17px; }
+.cols li { margin-bottom: 9px; font-size: 14.5px; color: var(--ink-2); line-height: 1.5; }
+.cols li::marker { color: var(--ink-3); }
+
+/* ── review markup: numbered callouts ───────────────────────────────── */
+.pin {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 19px; height: 19px; flex: none;
+  border-radius: 50%; background: var(--mark); color: #fff;
+  font-size: 11px; font-weight: 700; font-family: var(--sans);
+  line-height: 1; letter-spacing: 0;
+}
+.notes { margin-top: 22px; display: flex; flex-direction: column; gap: 11px; }
+.note {
+  display: flex; gap: 11px; align-items: flex-start;
+  font-size: 14.5px; line-height: 1.5; color: var(--ink-2);
+  max-width: 80ch;
+}
+.note .pin { margin-top: 2px; }
+</style>
+
+<style>
+/* ═══ THE WORK — operator surfaces, rendered in the app's own tokens ═══ */
+
+.op {
+  background: var(--op-page); color: var(--op-fg);
+  font-family: var(--sans); font-size: 12px; line-height: 1.5;
+  border: 1px solid var(--op-border-s); border-radius: 7px;
+  overflow: hidden; min-width: 620px;
+}
+.op-title {
+  display: flex; align-items: center; gap: 9px;
+  padding: 9px 12px; background: var(--op-panel);
+  border-bottom: 1px solid var(--op-border);
+  font-size: 12.5px; color: var(--op-fg2);
+}
+.op-title .x { margin-left: auto; color: var(--op-mute); font-size: 13px; }
+
+/* faded transcript stub — context, never the subject */
+.op-tx { padding: 15px 14px; display: flex; flex-direction: column; gap: 10px; }
+.op-tx .ln { height: 7px; border-radius: 3px; background: var(--op-surface); }
+.op-tx .ln.a { width: 78%; } .op-tx .ln.b { width: 54%; }
+.op-tx .ln.c { width: 88%; background: rgba(56,189,248,.10); }
+.op-tx .ln.d { width: 41%; background: rgba(56,189,248,.10); }
+.op-composer {
+  margin: 4px 10px 9px; padding: 7px 10px; border-radius: 6px;
+  border: 1px solid var(--op-border); background: var(--op-surface);
+  color: var(--op-mute); font-size: 11.5px;
+}
+
+/* ── CURRENT vocabulary (what's shipping today) ── */
+.cur-footer {
+  display: flex; flex-direction: column; gap: 4px;
+  padding: 6px 10px 8px; border-top: 1px solid var(--op-border);
+  background: rgba(0,0,0,.10); font-size: 11px;
+}
+.cur-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.cur-chip {
+  display: inline-flex; align-items: center; font-size: 9.5px; line-height: 1.6;
+  padding: 1px 5px; border-radius: 3px; border: 1px solid var(--op-border);
+  color: var(--op-mute); white-space: nowrap;
+}
+.cur-btn {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: 11px; line-height: 1.4; padding: 2px 8px; border-radius: 5px;
+  border: 1px solid var(--op-border); background: var(--op-surface);
+  color: var(--op-fg); white-space: nowrap;
+}
+.cur-bar {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 6px 8px;
+}
+.cur-fleet {
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  padding: 6px 8px 9px; border-top: 1px solid var(--op-border);
+}
+.cur-fleet .lbl { font-size: 11px; color: var(--op-mute); }
+.cur-inp {
+  font-size: 11px; padding: 2px 7px; border-radius: 5px;
+  border: 1px solid var(--op-border); background: var(--op-surface);
+  color: var(--op-mute); white-space: nowrap;
+}
+.cur-go {
+  font-size: 11px; padding: 2px 9px; border-radius: 5px;
+  background: var(--op-accent); color: var(--op-accent-ink); font-weight: 600;
+}
+
+/* ── PROPOSED vocabulary — five shapes, one meaning each ── */
+.v-state {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 10.5px; line-height: 1; padding: 4px 9px 4px 7px;
+  border-radius: 999px; border: 0;
+  background: var(--op-surface); color: var(--op-fg2);
+  font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+.v-state .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--op-good); flex: none; }
+.v-state.good { background: rgba(52,211,153,.13); color: #9EEBC9; }
+.v-state.warn { background: rgba(251,191,36,.13); color: #FBD97D; }
+.v-state.bad  { background: rgba(248,113,113,.14); color: #FCA5A5; }
+
+.v-mode {
+  display: inline-flex; align-items: stretch; gap: 0;
+  border-radius: 999px; overflow: hidden; border: 0;
+  background: rgba(56,189,248,.14); color: var(--op-accent-soft);
+  font-size: 10.5px; line-height: 1; white-space: nowrap; cursor: pointer;
+}
+.v-mode .cap {
+  background: var(--op-accent); color: var(--op-accent-ink);
+  padding: 4px 8px; font-weight: 700; letter-spacing: .06em;
+}
+.v-mode .car { padding: 4px 8px 4px 7px; display: flex; align-items: center; gap: 4px; }
+.v-mode.off { background: var(--op-surface); color: var(--op-mute); }
+.v-mode.off .cap { background: var(--op-raised); color: var(--op-mute); }
+
+.v-act {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 11.5px; line-height: 1; padding: 6px 10px;
+  border-radius: 4px; border: 1px solid var(--op-border-s);
+  background: var(--op-solid); color: var(--op-fg);
+  white-space: nowrap; cursor: pointer; font-family: var(--sans);
+}
+.v-act:hover { background: var(--op-solid-hi); }
+.v-act .ic { color: var(--op-accent); font-size: 12px; line-height: 1; }
+.v-act.ghost { background: transparent; border-color: var(--op-border); color: var(--op-fg2); }
+.v-act.primary {
+  background: var(--op-accent); border-color: var(--op-accent);
+  color: var(--op-accent-ink); font-weight: 640;
+}
+.v-act.primary .ic { color: var(--op-accent-ink); }
+
+.v-alert {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 10.5px; line-height: 1; padding: 4px 7px 4px 8px;
+  border-radius: 999px; border: 0; cursor: pointer;
+  background: rgba(251,191,36,.14); color: #FBD97D; white-space: nowrap;
+}
+.v-alert .car { opacity: .65; }
+
+.v-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.v-field .cap {
+  font-size: 9px; letter-spacing: .1em; text-transform: uppercase;
+  color: var(--op-mute); font-weight: 620;
+}
+.v-field .well {
+  font-size: 11.5px; padding: 5px 9px; border-radius: 4px;
+  background: rgba(0,0,0,.28); border: 1px solid var(--op-border);
+  box-shadow: inset 0 1px 2px rgba(0,0,0,.35);
+  color: var(--op-fg); white-space: nowrap;
+  display: flex; align-items: center; gap: 8px; justify-content: space-between;
+}
+.v-field .well .car { color: var(--op-mute); font-size: 9px; }
+.v-field .well.empty { color: var(--op-mute); }
+
+/* group separators inside a control band */
+.band {
+  display: flex; align-items: center; gap: 7px; flex-wrap: wrap;
+  padding: 8px 11px;
+}
+.band .sep { width: 1px; height: 17px; background: var(--op-border); margin: 0 3px; }
+.band .glabel {
+  font-size: 9px; letter-spacing: .11em; text-transform: uppercase;
+  color: var(--op-mute); font-weight: 620; margin-right: 1px;
+}
+.band--status { background: rgba(0,0,0,.16); border-top: 1px solid var(--op-border); }
+.band--do { background: var(--op-panel); border-top: 1px solid var(--op-border); }
+</style>

@@ -21,18 +21,16 @@
  * companion "no NEW raw agent-CLI spawn" guard lives with the spawn
  * chokepoint work (unify-agent-spawn-chokepoint-2026-06-06 P-008).
  */
-import { execSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
+import { describeUnscanned, listTrackedFiles } from './lib/tracked-files.mjs';
 
 const ROOT = new URL('..', import.meta.url).pathname;
 
-const tracked = execSync('git ls-files', {
-  cwd: ROOT,
-  encoding: 'utf8',
-  maxBuffer: 256 * 1024 * 1024,
-})
-  .split('\n')
-  .filter(Boolean);
+// WI-6730: enumerate via the shared helper, which recurses into submodules. A bare
+// `git ls-files` does not — it emits one gitlink entry per submodule — so this
+// retirement guard never checked inside any of the 39, including libs/papercusp,
+// which is precisely where the legacy orchestrator run-loop it polices lives.
+const { files: tracked, unscanned } = listTrackedFiles(ROOT);
 
 const isExcluded = (f) =>
   f.startsWith('_retired/') ||
@@ -65,6 +63,15 @@ for (const f of tracked) {
     continue;
   }
   text.split('\n').forEach((line, i) => {
+    // WI-6730: skip comment lines. `RETIRED_IMPORT` keys on the word `from`, so
+    // ordinary PROSE about this very policy — "a read from `_retired/` is a read
+    // by something deliberately not deployed" — matches it. That is a comment,
+    // not an import. The pre-existing `f === 'scripts/check-no-retired-imports.mjs'`
+    // self-exclusion below is the same bug papered over one file at a time; this
+    // closes the class instead, so the next doc that discusses the retirement
+    // boundary does not red the build. Same idiom as
+    // check-no-unenrolled-detached-spawn.mjs, which strips comments before matching.
+    if (/^\s*(?:\/\/|\*|\/\*)/.test(line)) return;
     if (RETIRED_IMPORT.test(line)) {
       offenders.push(`${f}:${i + 1}  [imports a _retired/ module]  ${line.trim().slice(0, 100)}`);
     }
@@ -75,7 +82,9 @@ for (const f of tracked) {
 }
 
 if (offenders.length === 0) {
-  console.log('✓ no live imports of _retired/ modules and no retired orchestrator-spawn fetch.');
+  console.log(
+    `✓ no live imports of _retired/ modules and no retired orchestrator-spawn fetch.${describeUnscanned(unscanned)}`,
+  );
   process.exit(0);
 }
 

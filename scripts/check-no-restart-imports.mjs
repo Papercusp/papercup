@@ -42,7 +42,13 @@ const isExcluded = (f) =>
   f.startsWith('apps/operator/public/internal/docs/') ||
   f === 'package-lock.json' ||
   f.endsWith('/package-lock.json') ||
-  f === 'scripts/check-no-restart-imports.mjs';
+  f === 'scripts/check-no-restart-imports.mjs' ||
+  // WI-6730: PROSE fixtures, not code. corpus.v1.json is the memory-benchmark text
+  // corpus — its documents legitimately *discuss* the Restart codebase ("In the shared
+  // Restart checkout…"), and rewriting a benchmark corpus to satisfy an import guard
+  // would corrupt the benchmark. Same rationale as the docs/plans + internal/docs
+  // exclusions above: this guard polices IMPORTS, and these files contain none.
+  /\/(fixtures|__fixtures__)\//.test(f);
 
 // Any @restart/<pkg> reference (imports, deps, tsconfig paths, config strings).
 const RE = /@restart\/[a-z0-9-]+/;
