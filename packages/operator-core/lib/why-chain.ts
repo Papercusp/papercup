@@ -272,6 +272,42 @@ export function verifyGateFailingFiles(failingFiles: string[], ledgerFiles: stri
 }
 
 /**
+ * WI-6529 — PER-FILE reconciliation of a checkpoint's named file-shaped failures against
+ * first-hand ledger evidence for the SAME commit, correcting BOTH directions at once:
+ *
+ *  - DROPS any named file the ledger does NOT confirm failed (a false positive — the
+ *    checkpoint named a file that in fact passed).
+ *  - ADDS any file the ledger shows really failed but the checkpoint never named (a false
+ *    negative — an entire failing file/workspace silently missing from the recorded
+ *    signature).
+ *
+ * `verifyGateFailingFiles` above answers a coarser question ("does the named list overlap
+ * the ledger AT ALL") and — by design — treats ANY overlap as fully 'confirmed', leaving the
+ * whole list untouched. That is exactly how a REAL live verdict shipped both defects at once
+ * (2026-07-27, filed as WI-6529): `failingTests` named one file that had already gone green
+ * (false positive) alongside one file that was genuinely red (the overlap that made the old
+ * check call it "confirmed"), while omitting an entirely different, also genuinely-red file in
+ * another workspace (false negative) — an any-overlap check cannot see either defect once the
+ * two co-occur with a shared true positive.
+ *
+ * `ledgerFiles` empty ⇒ no first-hand evidence for this commit at all ⇒ returns `failingFiles`
+ * unchanged (`corrected: false`) — absence of ledger evidence is not evidence the record is
+ * wrong (same "unverifiable" principle `verifyGateFailingFiles` already applies).
+ */
+export function reconcileFailingFiles(
+  failingFiles: string[],
+  ledgerFiles: string[],
+): { files: string[]; corrected: boolean } {
+  if (ledgerFiles.length === 0) return { files: failingFiles, corrected: false };
+  const ledgerSet = new Set(ledgerFiles);
+  const confirmed = failingFiles.filter((f) => ledgerSet.has(f));
+  const missing = ledgerFiles.filter((f) => !failingFiles.includes(f));
+  const corrected = confirmed.length !== failingFiles.length || missing.length > 0;
+  if (!corrected) return { files: failingFiles, corrected: false };
+  return { files: [...confirmed, ...missing].sort(), corrected: true };
+}
+
+/**
  * EI-17603 (WI-4533 follow-up) — cross-check the gate's own named `failingTests` against the
  * test-run ledger for the EXACT commit under verdict, before any consumer trusts it as "the
  * tests to go fix". Observed live 2026-07-25: a real verdict named 6 "failures" (4 test files —
@@ -291,15 +327,26 @@ export async function verifyGateVerdict(
   deps: WhyChainDeps = {},
 ): Promise<{ snap: GitPipelineSnapshot; disjoint: boolean; ledgerFiles: string[] }> {
   if (snap.gate.verdictStale) return { snap, disjoint: false, ledgerFiles: [] };
-  const { failingFiles } = splitFailingSignature(snap.gate.failingTests ?? []);
+  const { failingFiles, failingSteps } = splitFailingSignature(snap.gate.failingTests ?? []);
   if (failingFiles.length === 0 || !snap.gate.observedCandidate) {
     return { snap, disjoint: false, ledgerFiles: [] };
   }
   const ledgerFiles = await ledgerFilesForCandidate(snap.gate.observedCandidate, deps);
-  if (verifyGateFailingFiles(failingFiles, ledgerFiles) !== 'disjoint') {
+  // WI-6529: reconcile PER FILE (drops false positives, adds false negatives) rather than the
+  // coarse any-overlap check — see reconcileFailingFiles for why any-overlap alone misses the
+  // two-defects-at-once case. Package/step sentinels (failingSteps) have no ledger row to check
+  // against (the ledger only ever records real test FILES), so they always ride back through
+  // untouched — they were never part of what this cross-check verifies.
+  const { files: reconciledFiles, corrected } = reconcileFailingFiles(failingFiles, ledgerFiles);
+  if (!corrected) {
     return { snap, disjoint: false, ledgerFiles };
   }
-  return { snap: { ...snap, gate: { ...snap.gate, failingTests: [] } }, disjoint: true, ledgerFiles };
+  const reconciledSignature = [...failingSteps, ...reconciledFiles];
+  return {
+    snap: { ...snap, gate: { ...snap.gate, failingTests: reconciledSignature } },
+    disjoint: true,
+    ledgerFiles,
+  };
 }
 
 function gateStage(snap: GitPipelineSnapshot, failingFiles: string[]): WhyChainStage {
@@ -609,7 +656,8 @@ function withDisjointNote(stage: WhyChainStage, disjoint: boolean): WhyChainStag
     reason:
       `${stage.reason} [the checkpoint's OWN failingTests record for this commit was ` +
       `CONTRADICTED by the test ledger (harness_shared.test_runs) — the file(s) named above are ` +
-      `ledger-derived, not the checkpoint's (wrong) list; see EI-17603]`,
+      `RECONCILED against the ledger (false positive(s) dropped, any missing failing file(s) ` +
+      `added), not the checkpoint's raw (wrong) list; see EI-17603/WI-6529]`,
   };
 }
 
@@ -696,15 +744,24 @@ export async function computeWhyChain(deps: WhyChainDeps = {}): Promise<WhyChain
   // EI-17603: same cross-check as computePipelineHealth, applied here too so `dev:why` and
   // `coord:orient` can never drift into disagreeing about which files are actually red.
   const { snap, disjoint, ledgerFiles } = await verifyGateVerdict(rawSnap, deps);
-  const failingFiles = disjoint ? ledgerFiles : broadProxyFiles;
+  // Fed to gateStage as the FALLBACK proxy when `snap.gate.failingTests` is empty — `snap` is
+  // already reconciled by verifyGateVerdict when the ledger corrected it, so this branch only
+  // matters for a blob that named nothing file-shaped to begin with.
+  const proxyFiles = disjoint ? ledgerFiles : broadProxyFiles;
 
   const stages: WhyChainStage[] = [
-    withDisjointNote(gateStage(snap, failingFiles), disjoint),
+    withDisjointNote(gateStage(snap, proxyFiles), disjoint),
     deployStage(snap),
     admissionStage(admission),
     poolStage(accounts),
   ];
   const rootCause = stages.find((s) => s.status !== 'ok') ?? null;
+  // WI-6529: the top-level `recentFailingFiles` field MUST name exactly what the gate stage's
+  // own `reason` text names — it is the same `namedFailures` precedence (the reconciled
+  // first-hand record beats the proxy) computeWhyChain's stage above already applies. Returning
+  // the raw proxy here instead (the pre-fix bug) is how a real verdict shipped `reason` text
+  // naming two failing files while this field reported `[]` in the SAME response.
+  const failingFiles = namedFailures(snap, proxyFiles);
 
   const chainLine = stages.map((s) => `${s.stage.toUpperCase()}: ${s.status} (${s.reason})`).join(' → ');
   const summary = rootCause
