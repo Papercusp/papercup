@@ -221,66 +221,104 @@ if (!apply) {
 const tmp = join(tmpdir(), 'papercusp-autotune.conf');
 writeFileSync(tmp, content, 'utf8');
 
-const rollback = () => {
-  console.error('rolling back the drop-in and restarting on the prior config…');
+// Restore the file we found (not `rm`, which would ALSO drop every setting the
+// previous drop-in was correctly applying) and put the server back on it.
+const rollback = (viaRestart: boolean) => {
+  console.error('rolling back the drop-in to its prior content…');
   try {
-    sudo('rm', '-f', dropIn);
+    if (fileOnDisk === null) {
+      sudo('rm', '-f', dropIn);
+    } else {
+      const prev = join(tmpdir(), 'papercusp-autotune.prev.conf');
+      writeFileSync(prev, fileOnDisk, 'utf8');
+      sudo('cp', prev, dropIn);
+      sudo('chown', 'postgres:postgres', dropIn);
+      sudo('chmod', '644', dropIn);
+    }
   } catch {
     /* ignore */
   }
   try {
-    sudo('systemctl', 'restart', service);
+    if (viaRestart) sudo('systemctl', 'restart', service);
+    else psql('select pg_reload_conf()');
   } catch {
     /* ignore */
   }
 };
+
+// Restart ONLY when a postmaster-context setting actually changed — asked of the
+// live server (pg_settings.context), not assumed. `--restart` forces it; an
+// unreachable server can't be asked, so it is the one case we fall back to a
+// restart, which is also the only thing that can revive a wedged postmaster.
+const restartNames = drift?.restartRequired ?? [];
+const needsRestart = forceRestart || !drift || restartNames.length > 0;
 
 console.log(`\nwriting ${dropIn}`);
 sudo('cp', tmp, dropIn);
 sudo('chown', 'postgres:postgres', dropIn);
 sudo('chmod', '644', dropIn);
 
-console.log(`restarting ${service} (brief connection drop)…`);
-try {
-  sudo('systemctl', 'restart', service);
-} catch (e) {
-  console.error(`restart command failed: ${(e as Error).message}`);
-  rollback();
-  process.exit(1);
-}
-
-// Verify PG accepts connections again with the new config.
-let up = false;
-for (let i = 0; i < 30; i++) {
-  if (psql('select 1') === '1') {
-    up = true;
-    break;
+if (needsRestart) {
+  const why = forceRestart
+    ? '--restart forced'
+    : !drift
+      ? 'live settings unreadable — cannot prove a reload is enough'
+      : `postmaster-context change: ${restartNames.join(', ')}`;
+  console.log(`restarting ${service} (brief connection drop; ${why})…`);
+  try {
+    sudo('systemctl', 'restart', service);
+  } catch (e) {
+    console.error(`restart command failed: ${(e as Error).message}`);
+    rollback(true);
+    process.exit(1);
   }
-  sleep(1000);
+
+  // Verify PG accepts connections again with the new config.
+  let up = false;
+  for (let i = 0; i < 30; i++) {
+    if (psql('select 1') === '1') {
+      up = true;
+      break;
+    }
+    sleep(1000);
+  }
+  if (!up) {
+    console.error('PG did not accept connections within 30s after restart.');
+    rollback(true);
+    process.exit(1);
+  }
+} else {
+  console.log('reloading config (SIGHUP — no connection drop; nothing postmaster-level changed)…');
+  if (psql('select pg_reload_conf()') !== 't') {
+    console.error('pg_reload_conf() did not return true.');
+    rollback(false);
+    process.exit(1);
+  }
+  sleep(500); // the postmaster re-reads and signals backends asynchronously
 }
-if (!up) {
-  console.error('PG did not accept connections within 30s after restart.');
-  rollback();
+
+// Verify against the SAME target we diffed, rather than spot-checking two knobs
+// by hand — a bespoke check per setting is how the two unapplied ones stayed
+// invisible. Anything still divergent means something else wins (a later conf.d
+// file, an ALTER SYSTEM override, or a value PG silently clamped).
+const after = readLiveSettings(Object.keys(target));
+const residual = after ? diffPgSettings(target, after) : null;
+if (!residual) {
+  console.error('\n✗ applied, but the live settings are unreadable — verify by hand.');
   process.exit(1);
 }
-
-const newMax = psql('show max_connections');
-const newSb = psql('show shared_buffers');
-console.log(`\n✓ applied. now live:  max_connections=${newMax}  shared_buffers=${newSb}`);
-if (newMax !== settings.max_connections) {
-  console.error(
-    `WARNING: live max_connections=${newMax} != target ${settings.max_connections} ` +
-      `(another conf.d file or an ALTER SYSTEM override may win).`,
-  );
-}
-
-const newPreload = psql('show shared_preload_libraries') ?? '';
-if (newPreload.includes('pg_stat_statements')) {
-  console.log(`✓ shared_preload_libraries now live: ${newPreload}`);
+if (residual.inSync) {
+  console.log(`\n✓ applied${needsRestart ? ' (restart)' : ' (reload, no downtime)'}. ` +
+    `All ${Object.keys(target).length} derived settings are live.`);
 } else {
+  console.error(`\n✗ applied, but ${residual.diverged.length} setting(s) did NOT take effect:`);
+  for (const d of residual.diverged) {
+    console.error(`    ${d.name}: live=${d.live} target=${d.target}` +
+      (d.restartOnly ? '  (needs a restart — re-run with --restart)' : ''));
+  }
   console.error(
-    `WARNING: shared_preload_libraries=${newPreload || '<empty>'} does not include ` +
-      `pg_stat_statements — query telemetry will not be collected (a later conf.d ` +
-      `file or ALTER SYSTEM may override the drop-in).`,
+    '  A later conf.d file or an ALTER SYSTEM override may win. The drop-in was ' +
+      'left in place; nothing was rolled back.',
   );
+  process.exit(1);
 }

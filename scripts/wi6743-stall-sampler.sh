@@ -58,7 +58,15 @@ sched() {
   done
 ) &
 PROBE_PID=$!
-trap 'kill $PROBE_PID 2>/dev/null' EXIT INT TERM
+# NOTE: a bash trap handler RESUMES the script unless it exits explicitly, so the
+# `exit` here is load-bearing -- without it SIGTERM kills only the probe child and
+# the metrics loop runs on forever (observed).
+trap 'kill $PROBE_PID 2>/dev/null; exit 0' INT TERM
+trap 'kill $PROBE_PID 2>/dev/null' EXIT
+
+# Self-limiting: never outlive the investigation window that launched it.
+MAX_SEC=${MAX_SEC:-21600}
+START=$SECONDS
 
 # ---------- metrics loop (1s cadence, pure /proc reads)
 PROXY=$(resolve_proxy)

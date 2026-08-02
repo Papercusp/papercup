@@ -277,12 +277,31 @@ for _i in $(seq 0 $(( _slots - 1 ))); do
   fi
 done
 
-# All slots busy → block on slot 0 with a timeout; run anyway if it elapses so a
-# stuck holder can't wedge the fleet (its slot frees on death regardless).
+# All slots busy → poll round-robin across ALL slots (non-blocking) until one
+# frees or the timeout elapses; run anyway once it elapses so a stuck holder
+# can't wedge the fleet (its slot frees on death regardless).
+#
+# (EI: pc-heavy slot-0 convoy) The original fallback blocked on slot.0
+# SPECIFICALLY (`flock -w "$_timeout" "$_fd"` against slot.0's fd alone), so
+# every waiter that missed the initial non-blocking sweep funneled onto ONE
+# mutex even when other slots (1..N-1) were completely idle — observed live:
+# ~20 waiters queued on slot.0's flock while slot.2 and slot.3 had zero
+# holders, on a 4-slot host. A blocking wait on a single slot can never
+# notice a DIFFERENT slot freeing. Poll round-robin instead so whichever slot
+# frees first is grabbed by whichever waiter next polls it — no single slot
+# becomes a convoy point while siblings sit unused.
 if [ -z "$_held" ]; then
-  if { exec {_fd}>"$_dir/slot.0"; } 2>/dev/null && flock -w "$_timeout" "$_fd"; then
-    _held=1
-  fi
+  _fallback_deadline=$(( $(date +%s) + _timeout ))
+  while :; do
+    for _i in $(seq 0 $(( _slots - 1 ))); do
+      if { exec {_fd}>"$_dir/slot.$_i"; } 2>/dev/null; then
+        if flock -n "$_fd"; then _held=1; break 2; fi
+        eval "exec ${_fd}>&-" 2>/dev/null || true   # not ours — close it
+      fi
+    done
+    [ "$(date +%s)" -ge "$_fallback_deadline" ] && break
+    sleep 0.5
+  done
 fi
 
 # The child self-limits via the slot it now (or effectively) holds — tell the

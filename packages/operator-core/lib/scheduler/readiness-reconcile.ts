@@ -81,7 +81,11 @@ export async function reconcileReadiness(sql: Sql = getOrgPg().sql): Promise<Rea
       SELECT f.workspace_id, f.harness_slug, f.feature_id
         FROM harness_shared.work_items f
        WHERE f.item_kind <> ALL (ARRAY['bug','change','task'])
-         AND harness_shared.work_item_is_blocked(f.harness_slug, f.feature_id)
+         -- Migration 719: the workspace is a REQUIRED argument. A blocker ref resolves
+         -- within the blocked item's OWN workspace — the 2-arg form was deleted because
+         -- (harness_slug, feature_id) is not unique across workspaces, so it had no
+         -- correct answer to give (EI-19313459163394127).
+         AND harness_shared.work_item_is_blocked(f.harness_slug, f.feature_id, f.workspace_id)
     ),
     sidecar AS (
       SELECT wb.workspace_id, wb.harness_slug, wb.feature_id

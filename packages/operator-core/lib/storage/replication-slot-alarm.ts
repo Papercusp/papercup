@@ -11,9 +11,9 @@
  *   - the autossh pg-tunnel is a platform systemd service (it already auto-respawns)
  *     for intermittent Hetzner federation/deployment access, not a standing replica.
  *
- * The REAL, currently-unguarded danger is the classic logical-replication footgun:
- * an INACTIVE replication slot pins WAL, and with `max_slot_wal_keep_size = -1`
- * (verified live) Postgres never invalidates it — so the retained WAL grows
+ * The REAL danger is the classic logical-replication footgun: an INACTIVE
+ * replication slot pins WAL, and under `max_slot_wal_keep_size = -1` (PG's
+ * default) Postgres never invalidates it — so the retained WAL grows
  * UNBOUNDED → the data volume silently fills → the whole cluster goes down. A
  * dropped federation subscriber or a stuck retired-Zero slot leaves exactly such a
  * slot. This is the missing guard: a periodic READ-ONLY check that warns when a slot
@@ -100,7 +100,7 @@ function fmtGb(bytes: number): string {
 
 const REASON_LABEL: Record<SlotBreachReason, string> = {
   'wal-at-risk': 'WAL AT RISK — Postgres is recycling WAL this slot still needs; the subscriber will break',
-  'inactive-retaining': 'inactive slot pinning WAL — silent disk-fill risk (max_slot_wal_keep_size is unbounded)',
+  'inactive-retaining': 'inactive slot pinning WAL — silent disk-fill risk if max_slot_wal_keep_size is unbounded',
   'active-lagging': 'active subscriber lagging far behind',
 };
 
@@ -124,8 +124,9 @@ export function formatSlotBreachToast(breaches: SlotBreach[]): {
     level: atRisk ? 'error' : 'warning',
     message: `Replication-slot WAL alarm — ${breaches.length} slot(s) retaining unsafe WAL`,
     description:
-      `These Postgres replication slots are pinning WAL dangerously (the silent disk-fill SPOF — ` +
-      `max_slot_wal_keep_size=-1 means PG will not cap it):\n${lines}\n\n` +
+      `These Postgres replication slots are pinning WAL dangerously (the silent disk-fill SPOF; ` +
+      `under max_slot_wal_keep_size=-1 PG will not cap it at all — see pg-tuning-drift, which ` +
+      `alarms when that bound is not applied):\n${lines}\n\n` +
       `An abandoned slot (a dropped federation subscriber, or a stale retired-Zero slot) keeps WAL forever → ` +
       `the data volume fills → the whole cluster goes down. Drop the dead slot ` +
       `(SELECT pg_drop_replication_slot('<name>')) or reconnect its subscriber. Tune ceilings via ` +

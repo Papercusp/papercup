@@ -110,7 +110,7 @@ async function sidecarSaysBlocked(id: string): Promise<boolean> {
  *  NOT EXISTS). The maintained sidecar must AGREE with it at every step. */
 async function oracleSaysBlocked(id: string): Promise<boolean> {
   const rows = (await db.sql`
-    SELECT harness_shared.work_item_is_blocked(${H}, ${id}) AS blocked`) as Array<{ blocked: boolean }>;
+    SELECT harness_shared.work_item_is_blocked(${H}, ${id}, 'default') AS blocked`) as Array<{ blocked: boolean }>;
   return rows[0]!.blocked === true;
 }
 
@@ -183,6 +183,8 @@ beforeAll(async () => {
   // cross-check the sidecar (the indexed read the flag will switch to) against the inline
   // predicate the claim uses today.
   await db.sql.unsafe(readMigration('379-maintained-ready-column.sql')).simple();
+  // 719: workspace-scoped oracle (required 3rd arg). See EI-19313459163394127.
+  await db.sql.unsafe(readMigration('719-fix-work-item-is-blocked-workspace-scope.sql')).simple();
 }, 180_000);
 afterAll(async () => {
   await db.cleanup();

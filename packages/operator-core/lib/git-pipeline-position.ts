@@ -982,7 +982,18 @@ export function evaluateServing(args: {
  * never `false` (and never a silent `true`).
  */
 export interface ChangeInCandidate {
-  /** The commit an in-flight gate run is judging, if one is active. */
+  /**
+   * The commit an in-flight gate run is judging, if one is active.
+   *
+   * ⚠ EI-19311755730915969 — NOT A LIVENESS SIGNAL. This answers WHICH commit, not
+   * WHETHER a run is alive: the "if one is active" half is a convention applied by one
+   * production resolver, unenforced by this type and by the pure evaluator, so a value
+   * that outlives the run it described reads exactly like a live one. Branching on its
+   * non-nullness to mean "a verdict is coming, so wait" reported `nextAction: null` on a
+   * gate that had been red for ~6.7h holding main for the whole fleet. For run liveness
+   * use `gate.checkpointRunInFlight.active`, which is measured and has an explicit
+   * UNKNOWN state.
+   */
   judgingSha: string | null;
   /** Does that candidate carry this path's WORKING-TREE content? null = not comparable. */
   judgingContainsPath: boolean | null;
@@ -1063,20 +1074,28 @@ export function evaluateChangeInCandidate(args: {
    * content-identity branches and returns outright; letting those run first would
    * re-emit the ambiguity the marker just resolved.
    */
-  const markerVerdict = (m: MarkerContainment, sha: string | null, which: 'in flight' | 'next'): string | null => {
+  /**
+   * EI-19311755730915969: this says "the gate's JUDGED candidate", never "the run IN
+   * FLIGHT". `judgingSha` names WHICH commit was judged; it cannot support a claim about
+   * a run being alive right now, and phrasing it as liveness is what let a reader
+   * conclude "someone else has this, wait" from a completed run. Run liveness has its own
+   * measured field (`gate.checkpointRunInFlight.active`) and its own three states,
+   * including UNKNOWN — see the gate stage's lever.
+   */
+  const markerVerdict = (m: MarkerContainment, sha: string | null, which: 'judged' | 'next'): string | null => {
     const at = sha?.slice(0, 12);
     if (m.present === true) {
       const times = m.count === 1 ? 'once' : `${m.count}×`;
-      return which === 'in flight'
-        ? `The gate run IN FLIGHT (${at}) DOES carry your change — the marker occurs ${times} in its version of this file. ` +
-            `Its verdict IS a real verdict on your code, so a RED there is about your change, not about a missing one. ` +
-            `Do NOT re-fire: you already have the run you would be asking for.`
+      return which === 'judged'
+        ? `The gate's judged candidate (${at}) DOES carry your change — the marker occurs ${times} in its version of this file. ` +
+            `That verdict IS a real verdict on your code, so a RED there is about your change, not about a missing one. ` +
+            `Do NOT re-fire to "get a run that includes it" — you already have one.`
         : `A checkpoint fired now would judge ${at}, which DOES carry your change (marker occurs ${times}).`;
     }
     if (m.present === false) {
       const why = m.pathPresent === false ? ' (that commit has no such file at all)' : '';
-      return which === 'in flight'
-        ? `The gate run IN FLIGHT (${at}) does NOT carry your change — the marker is absent from its version of this file${why}. ` +
+      return which === 'judged'
+        ? `The gate's judged candidate (${at}) does NOT carry your change — the marker is absent from its version of this file${why}. ` +
             `A RED from it is NOT evidence your change failed; it is testing code without it.`
         : `A checkpoint fired now would judge ${at}, which does NOT carry your change (marker absent${why}).`;
     }
@@ -1084,7 +1103,7 @@ export function evaluateChangeInCandidate(args: {
   };
 
   if (markerJudging && markerJudging.present !== null) {
-    return { ...base, detail: markerVerdict(markerJudging, candidates.judgingSha, 'in flight') };
+    return { ...base, detail: markerVerdict(markerJudging, candidates.judgingSha, 'judged') };
   }
   if (markerNext && markerNext.present !== null && !candidates.judgingSha) {
     return { ...base, detail: markerVerdict(markerNext, candidates.nextCandidateSha, 'next') };
@@ -1130,22 +1149,25 @@ export function evaluateChangeInCandidate(args: {
       return {
         ...base,
         detail:
-          `The gate run IN FLIGHT is judging ${base.judgingSha?.slice(0, 12)}, which carries an EARLIER version of this file. ` +
+          `The gate's judged candidate (${base.judgingSha?.slice(0, 12)}) carries an EARLIER version of this file. ` +
           `Whether YOUR change is in it is UNRESOLVED from the path alone. ${lever(base.missingReason)} ` +
-          `A verdict is already coming from this run — do not re-fire on the strength of this line alone.`,
+          // EI-19311755730915969: this used to end "a verdict is already coming from this
+          // run" — a liveness claim `judgingSha` cannot make. The advice that survives is
+          // the one this line is actually for: do not re-fire on an unresolved reading.
+          `Do not re-fire on the strength of this line alone.`,
       };
     }
     return {
       ...base,
       detail:
-        `The gate run IN FLIGHT is judging ${base.judgingSha?.slice(0, 12)}, which does NOT contain this file's current content. ` +
+        `The gate's judged candidate (${base.judgingSha?.slice(0, 12)}) does NOT contain this file's current content. ` +
         `A RED from that run is NOT evidence your change failed — it is testing code without it. ${lever(base.missingReason)}`,
     };
   }
   if (base.judgingContainsPath === true) {
     return {
       ...base,
-      detail: `The gate run in flight (${base.judgingSha?.slice(0, 12)}) DOES carry this file's current content, so its verdict is a real verdict on your change.`,
+      detail: `The gate's judged candidate (${base.judgingSha?.slice(0, 12)}) DOES carry this file's current content, so its verdict is a real verdict on your change.`,
     };
   }
   if (base.nextContainsPath === false) {
@@ -1531,27 +1553,76 @@ export function computeStages(
       !markerSaysPresent && (cic.judgingContainsPath === false || cic.nextContainsPath === false);
     /** The judged run demonstrably covers this change — by identity OR by marker. */
     const judgedRunCoversChange = cic.judgingContainsPath === true || markerSaysPresent;
+    /**
+     * EI-19311755730915969 — LIVENESS IS `gate.checkpointRunInFlight.active`, NEVER
+     * `cic.judgingSha`.
+     *
+     * Both "a verdict is coming, so wait" arms in the lever below used to key off
+     * `judgingSha` being non-null. That value names WHICH commit the gate judged; only
+     * its production resolver gates it on a live probe, and nothing in the type or the
+     * pure evaluator enforces that — so a reading that outlives the run it described
+     * renders as a live one. On 2026-08-02 that produced the exact false all-clear this
+     * surface exists to prevent: a gate red ~6.7h with the reds already fixed in the
+     * tree reported `lever: null` -> `nextAction: null` -> "nothing to do — this leg is
+     * advancing on its own", while main was held for the entire fleet.
+     *
+     * THREE STATES, and folding the third into either of the others IS the bug:
+     *   active === true   a suite really is running — a verdict IS coming.
+     *   active === false  MEASURED idle — nothing is coming on its own.
+     *   absent / null     UNKNOWN. The cache had no snapshot (cold DB, first routine
+     *                     tick, failed read) — and it was absent from the very payload
+     *                     that misled the filer, 14 min before the same call returned
+     *                     `{ active: false }`. It must NEVER read as "in flight":
+     *                     defaulting to the reassuring answer is precisely how this
+     *                     failed silently, and an unknown is not evidence of an absence.
+     *
+     * EI-18797292094433710 is PRESERVED by this, not weakened: a genuinely in-flight run
+     * still suppresses the re-fire, because `active === true` is exactly the condition
+     * that fix was reaching for when it reached for `judgingSha`.
+     */
+    const runInFlight = g.checkpointRunInFlight?.active === true;
+    const runInFlightUnknown = g.checkpointRunInFlight == null;
+    const gateBlocked = gateHealth === 'stalled' || gateHealth === 'broken';
+    /**
+     * A BLOCKED gate is where "is a verdict coming?" decides what the caller does next,
+     * so the answer — INCLUDING "we do not know" — belongs in the sentence rather than
+     * being inferred from a lever's absence. Inferring it is what went wrong: the caller
+     * read a null lever as "someone else has this", which is a claim no absent value can
+     * make.
+     */
+    const livenessNote = !gateBlocked
+      ? ''
+      : runInFlight
+        ? ` A gate run IS in flight${
+            g.checkpointRunInFlight?.elapsedSec != null
+              ? ` (running ~${Math.max(1, Math.round(g.checkpointRunInFlight.elapsedSec / 60))}m)`
+              : ''
+          } — its verdict is coming, so do NOT fire a second one: the gate is a singleton, a second fire is REFUSED, and escalating to replaceStale is the EI-11667 replace-storm that starved the gate for 2h.`
+        : runInFlightUnknown
+          ? ' Whether a gate run is in flight is UNKNOWN on this call (the run-liveness cache held no snapshot) — that is NOT evidence none is running, and it is NOT a reason to wait for a verdict.'
+          : ' NO gate run is in flight (measured) — no verdict is coming on its own, so waiting cannot clear this.';
+    const gateDetail = notInCandidate
+      ? `${cic.detail}${
+          gateHealth === 'stalled'
+            ? cic.missingReason === 'newer-commit'
+              ? // EI-18797292094433710: do NOT hand out the exoneration here. The file
+                // only moved since the cut, so the red may be a REAL red on this
+                // change; telling the caller to disregard it is how a genuine
+                // regression gets waved through as "stale candidate".
+                ` (The gate is also RED — ${g.consecutiveReds} consecutive. Resolve the ancestor check above BEFORE deciding whether that red is yours — it may well be.)`
+              : ` (The gate is also RED — ${g.consecutiveReds} consecutive — but do NOT read that red as your change failing until a run that CONTAINS it completes.)`
+            : ''
+        }`
+      : g.fireStale
+        ? `The green-checkpoint is NOT FIRING${g.fireStaleReason ? ` (${g.fireStaleReason})` : ''} — no verdict is coming until that is fixed. Waiting will not help; fire one with release:checkpoint-run.`
+        : gateHealth === 'stalled'
+          ? `Gate is RED (${g.consecutiveReds} consecutive) — main is held for everyone until it greens. The reds are yours to fix, not a queue to wait in.`
+          : null;
     stages.push({
       name: 'gate',
       position: p.positions.inMain ? 'past' : 'pending',
       health: gateHealth,
-      detail: notInCandidate
-        ? `${cic.detail}${
-            gateHealth === 'stalled'
-              ? cic.missingReason === 'newer-commit'
-                ? // EI-18797292094433710: do NOT hand out the exoneration here. The file
-                  // only moved since the cut, so the red may be a REAL red on this
-                  // change; telling the caller to disregard it is how a genuine
-                  // regression gets waved through as "stale candidate".
-                  ` (The gate is also RED — ${g.consecutiveReds} consecutive. Resolve the ancestor check above BEFORE deciding whether that red is yours — it may well be.)`
-                : ` (The gate is also RED — ${g.consecutiveReds} consecutive — but do NOT read that red as your change failing until a run that CONTAINS it completes.)`
-              : ''
-          }`
-        : g.fireStale
-          ? `The green-checkpoint is NOT FIRING${g.fireStaleReason ? ` (${g.fireStaleReason})` : ''} — no verdict is coming until that is fixed. Waiting will not help; fire one with release:checkpoint-run.`
-          : gateHealth === 'stalled'
-            ? `Gate is RED (${g.consecutiveReds} consecutive) — main is held for everyone until it greens. The reds are yours to fix, not a queue to wait in.`
-            : null,
+      detail: gateDetail === null ? null : `${gateDetail}${livenessNote}`,
       // Containment outranks the gate's own health: firing a verdict on a candidate that
       // cannot see your change buys nothing, so fixing THAT comes before greening reds.
       lever: !p.positions.inMain
@@ -1565,7 +1636,13 @@ export function computeStages(
               // landing to start a fresh ~55min clock (done twice during a 3h+ outage
               // whose fix was in every candidate). Same reasoning as the
               // judgingContainsPath===true arm below: a verdict is coming, so wait.
-              cic.judgingSha
+              //
+              // EI-19311755730915969: "is one in flight" is `checkpointRunInFlight.active`,
+              // not `cic.judgingSha` — see the three-state note above. An UNKNOWN reading
+              // falls through to the lever deliberately: the caller is told the truth by
+              // `livenessNote`, and `release:checkpoint-run` REFUSES a second fire anyway,
+              // so a needless fire attempt is cheap while a false "wait" costs hours.
+              runInFlight
               ? null
               : 'wait out the quiet-cut window (~4 min), then release:checkpoint-run — the judged candidate predates your commit'
           : // A run is ALREADY IN FLIGHT judging a candidate that carries this change: a
@@ -1575,7 +1652,10 @@ export function computeStages(
             // reaching for replaceStale to "unstick" it is the EI-11667 replace-storm that
             // starved the gate of every verdict for 2h. Found by dogfooding this surface on
             // a live stale red whose in-flight run already carried the fix.
-            cic.judgingSha && judgedRunCoversChange
+            //
+            // EI-19311755730915969: same re-key as above. This arm is the one that reported
+            // "nothing to do" on a gate that had been red for 6.7h with NOTHING running.
+            runInFlight && judgedRunCoversChange
             ? null
             : g.fireStale
               ? 'release:checkpoint-run (the green-checkpoint is not firing — no verdict is coming on its own)'
@@ -1591,8 +1671,8 @@ export function computeStages(
     // that actually determines whether main is stuck: the gate's own health (main only
     // advances as a consequence of a green verdict, per the `lever: null` note below),
     // or — when the gate itself reads clean — a buffer that has genuinely outlived the
-    // pipeline's normal cadence (mainBufferIsStale).
-    const gateBlocked = gateHealth === 'stalled' || gateHealth === 'broken';
+    // pipeline's normal cadence (mainBufferIsStale). `gateBlocked` is hoisted above the
+    // gate stage (EI-19311755730915969) — the gate's own liveness note needs it too.
     const mainBufferStale = mainBufferIsStale(g, p.verdictProvenance.mainFastForwarded);
     stages.push({
       name: 'main',

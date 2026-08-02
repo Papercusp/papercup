@@ -89,7 +89,7 @@ async function oracleBlocked(ids: string[]): Promise<Set<string>> {
   const blocked = new Set<string>();
   for (const id of ids) {
     const [{ b }] = await db.sql<Array<{ b: boolean }>>`
-      SELECT harness_shared.work_item_is_blocked(${H}, ${id}) AS b`;
+      SELECT harness_shared.work_item_is_blocked(${H}, ${id}, 'default') AS b`;
     if (b) blocked.add(id);
   }
   return blocked;
@@ -106,6 +106,8 @@ beforeAll(async () => {
   // triggers + the work_item_is_blocked() oracle + the backfill. `.simple()` because it
   // is a multi-statement DDL script.
   await db.sql.unsafe(readMigration('379-maintained-ready-column.sql')).simple();
+  // 719: workspace-scoped oracle (required 3rd arg). See EI-19313459163394127.
+  await db.sql.unsafe(readMigration('719-fix-work-item-is-blocked-workspace-scope.sql')).simple();
 }, 90_000);
 
 afterAll(async () => {

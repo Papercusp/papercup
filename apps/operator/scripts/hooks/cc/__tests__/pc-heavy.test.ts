@@ -204,6 +204,52 @@ describe('pc-heavy.sh — flock counting semaphore (WI-3821)', () => {
     expect(waited).toBeLessThan(5000); // got the freed slot, not blocked to the timeout
   });
 
+  it('a waiter grabs a DIFFERENT slot that frees, instead of convoying on slot 0 alone (regression: pc-heavy slot-0 convoy)', async () => {
+    // 2 slots. Holder A takes slot 0 (the natural first pick with no
+    // contention) and sleeps long (30s). The ORIGINAL fallback blocked an
+    // all-slots-busy waiter specifically on slot 0's flock
+    // (`flock -w "$_timeout" "$_fd"` against slot.0 alone), so it would sit
+    // stuck behind A for up to the full PC_HEAVY_TIMEOUT_SEC even while
+    // slot 1 sat completely free — observed live: ~20 waiters queued on
+    // slot 0 while slots 2/3 had zero holders on a 4-slot host. Holder B
+    // takes slot 1 (naturally, since slot 0 is busy) and finishes quickly.
+    // A third caller arriving while BOTH slots are busy must grab slot 1
+    // promptly once B releases it, not wait out the (much longer) timeout.
+    const slots = 2;
+    const holderA = spawn('bash', [PC_HEAVY, 'sleep', '30'], {
+      env: baseEnv({ PC_HEAVY_SLOTS: String(slots) }),
+      cwd: dir,
+      detached: true,
+    });
+    await new Promise((r) => setTimeout(r, 500)); // let A grab slot 0
+
+    const holderB = spawn('bash', [PC_HEAVY, 'sleep', '2'], {
+      env: baseEnv({ PC_HEAVY_SLOTS: String(slots) }),
+      cwd: dir,
+      detached: true,
+    });
+    await new Promise((r) => setTimeout(r, 500)); // let B grab slot 1 (slot 0 is busy)
+
+    const t0 = Date.now();
+    const r = runSync(['bash', '-c', 'echo got-a-free-slot'], {
+      PC_HEAVY_SLOTS: String(slots),
+      PC_HEAVY_TIMEOUT_SEC: '25', // much longer than B's remaining ~1s sleep
+    });
+    const waited = Date.now() - t0;
+
+    try {
+      expect(r.status).toBe(0);
+      expect(r.stdout.trim()).toBe('got-a-free-slot');
+      // Got slot 1 promptly after B released it, not the full 25s timeout
+      // the old slot-0-only fallback would have waited out (A holds slot 0
+      // for 30s, well past the timeout).
+      expect(waited).toBeLessThan(10_000);
+    } finally {
+      process.kill(-(holderA.pid as number), 'SIGKILL');
+      try { process.kill(-(holderB.pid as number), 'SIGKILL'); } catch { /* likely already exited */ }
+    }
+  });
+
   it('propagates the real child\'s stderr on the uncontested (first-try slot) path', () => {
     // Regression test (EI-18685262961418231 investigation): `exec {fd}>file
     // 2>/dev/null` with NO command applies ALL its redirections PERSISTENTLY

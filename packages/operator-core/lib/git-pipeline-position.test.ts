@@ -1934,15 +1934,19 @@ describe('changeInCandidate (P-004)', () => {
       expect(r.detail).not.toMatch(/git-sync:run/);
     });
 
-    it('the IN-FLIGHT run outranks the hypothetical next candidate — its verdict is the one landing', () => {
+    it('the JUDGED candidate outranks the hypothetical next one — its verdict is the one that exists', () => {
       const r = evaluateChangeInCandidate({
         relPath: 'a.ts',
         candidates: { judgingSha: 'inflight123456', nextCandidateSha: 'nextcand123456' },
         judging: { path: 'a.ts', inCandidate: false, reason: 'newer-commit', unknownReason: null },
         next: { path: 'a.ts', inCandidate: true, reason: null, unknownReason: null },
       });
-      expect(r.detail).toMatch(/IN FLIGHT/);
+      expect(r.detail).toMatch(/judged candidate/);
       expect(r.detail).toMatch(/inflight1234/);
+      // EI-19311755730915969: `judgingSha` says WHICH commit was judged, never that a run
+      // is alive. Phrasing it as liveness is what let a completed run read as "a verdict
+      // is coming, so wait" — so no verdict string derived from it may claim in-flight-ness.
+      expect(r.detail).not.toMatch(/IN FLIGHT/i);
     });
 
     it('EI-18797292094433710: a newer-commit miss states the AMBIGUITY and the marker lever — it never exonerates the red', () => {
@@ -2415,31 +2419,55 @@ describe('deriveBlocker (P-005)', () => {
 
 describe('stage levers (P-005)', () => {
   type StageInput = Parameters<typeof computeStages>[0];
+  const BASELINE: StageInput = {
+    dirtyUncommitted: false,
+    positions: { committedLocal: true, onStaging: true, inMain: true, deployed: true },
+    gate: { stalled: false, consecutiveReds: 0, lastGreenAtMs: 1, fireStale: false, fireStaleReason: null },
+    verdictProvenance: {
+      lastGreenSha: 'g',
+      lastGreenShortSha: 'g',
+      lastGreenAgeMs: 1,
+      mainFastForwarded: true,
+      deployedBehindGreenPin: 0,
+      deployOrigin: 'gate-green',
+    },
+    gitSyncLastStatus: 'synced',
+    gitSync: HEALTHY_GIT_SYNC,
+    serving: HEALTHY_SERVING,
+    changeInCandidate: NO_CANDIDATE,
+    sweepExposure: NO_SWEEP,
+    runtime: classifyRuntimeOwner('packages/operator-core/lib/x.ts'),
+  };
+  const stagesFor = (over: Partial<StageInput>): StageState[] => computeStages({ ...BASELINE, ...over });
   const lever = (name: StageName, over: Partial<StageInput>): string | null => {
-    const stages = computeStages({
-      dirtyUncommitted: false,
-      positions: { committedLocal: true, onStaging: true, inMain: true, deployed: true },
-      gate: { stalled: false, consecutiveReds: 0, lastGreenAtMs: 1, fireStale: false, fireStaleReason: null },
-      verdictProvenance: {
-        lastGreenSha: 'g',
-        lastGreenShortSha: 'g',
-        lastGreenAgeMs: 1,
-        mainFastForwarded: true,
-        deployedBehindGreenPin: 0,
-        deployOrigin: 'gate-green',
-      },
-      gitSyncLastStatus: 'synced',
-      gitSync: HEALTHY_GIT_SYNC,
-      serving: HEALTHY_SERVING,
-      changeInCandidate: NO_CANDIDATE,
-      sweepExposure: NO_SWEEP,
-      runtime: classifyRuntimeOwner('packages/operator-core/lib/x.ts'),
-      ...over,
-    });
-    const s = stages.find((x) => x.name === name);
+    const s = stagesFor(over).find((x) => x.name === name);
     if (!s) throw new Error(`no stage ${name}`);
     return s.lever;
   };
+
+  /* EI-19311755730915969 fixtures — the gate state where "nothing to do" is a LIE, and
+   * the three possible readings of "is a run in flight". `judgingSha` is deliberately
+   * NOT one of them: it names which commit was judged, not whether anything is running. */
+  const RED_GATE: StageInput['gate'] = {
+    stalled: true,
+    consecutiveReds: 5,
+    lastGreenAtMs: 1,
+    fireStale: false,
+    fireStaleReason: null,
+  };
+  /** A suite really is running — the EI-18797292094433710 state, where waiting IS the lever. */
+  const IN_FLIGHT = {
+    active: true,
+    candidate: 'inflight123456',
+    startedAtMs: 1,
+    elapsedSec: 600,
+    asOfAgeMs: 5_000,
+  };
+  /** MEASURED idle: the last run COMPLETED. Nothing is coming on its own. */
+  const IDLE = { active: false, candidate: null, startedAtMs: null, elapsedSec: null, asOfAgeMs: 5_000 };
+  const NOT_IN_MAIN = { committedLocal: true, onStaging: true, inMain: false, deployed: false };
+  /** A candidate that demonstrably carries the change — the arm that reported "nothing to do". */
+  const COVERED = { ...NO_CANDIDATE, judgingSha: 'lastjudged12', judgingContainsPath: true };
 
   it('uncommitted work routes to git-sync:run', () => {
     expect(lever('committed', { dirtyUncommitted: true })).toMatch(/git-sync:run/);
@@ -2501,7 +2529,10 @@ describe('stage levers (P-005)', () => {
   it('an IN-FLIGHT run that carries the change ⇒ no lever, even with the gate red', () => {
     const l = lever('gate', {
       positions: { committedLocal: true, onStaging: true, inMain: false, deployed: false },
-      gate: { stalled: true, consecutiveReds: 5, lastGreenAtMs: 1, fireStale: false, fireStaleReason: null },
+      // EI-19311755730915969: the in-flight-ness now comes from the field that MEASURES
+      // it. This fixture used to carry only `judgingSha` and pass, which is precisely the
+      // conflation that made "a verdict is coming" unfalsifiable.
+      gate: { ...RED_GATE, checkpointRunInFlight: IN_FLIGHT },
       changeInCandidate: { ...NO_CANDIDATE, judgingSha: 'inflight123456', judgingContainsPath: true },
     });
     expect(l).toBeNull();
@@ -2518,7 +2549,8 @@ describe('stage levers (P-005)', () => {
     // candidate the whole time. A run is in flight ⇒ a verdict is coming ⇒ wait.
     const l = lever('gate', {
       positions: { committedLocal: true, onStaging: true, inMain: false, deployed: false },
-      gate: { stalled: true, consecutiveReds: 5, lastGreenAtMs: 1, fireStale: false, fireStaleReason: null },
+      // EI-19311755730915969: keyed to the MEASURED in-flight field — see the sibling test.
+      gate: { ...RED_GATE, checkpointRunInFlight: IN_FLIGHT },
       changeInCandidate: {
         ...NO_CANDIDATE,
         judgingSha: 'inflight123456',
@@ -2527,6 +2559,113 @@ describe('stage levers (P-005)', () => {
       },
     });
     expect(l).toBeNull();
+  });
+
+  /* -------------------------------------------------------------------------
+   * EI-19311755730915969 / P-002 — the false all-clear.
+   *
+   * The two tests above are the state where a null lever is CORRECT: a suite is
+   * measurably running, so a verdict really is coming. Everything below is the state
+   * where the same null is a LIE — and until this fix both were reachable from the
+   * identical fixture, because "in flight" was inferred from `judgingSha` (which commit
+   * was judged) rather than from `checkpointRunInFlight.active` (whether anything is
+   * running). On 2026-08-02 that reported `nextAction: null` — rendered "nothing to do —
+   * this leg is advancing on its own" — on a gate that had been red ~6.7h with nothing
+   * running and the reds already fixed in the tree, holding main for the whole fleet.
+   * ------------------------------------------------------------------------- */
+  it('EI-19311755730915969: a red gate whose run has COMPLETED offers the real lever, not "nothing to do"', () => {
+    const l = lever('gate', {
+      positions: NOT_IN_MAIN,
+      // Same fixture as the in-flight test above in every respect EXCEPT the one field
+      // that actually measures liveness. That is the whole bug in one diff.
+      gate: { ...RED_GATE, checkpointRunInFlight: IDLE },
+      changeInCandidate: COVERED,
+    });
+    expect(l).toMatch(/fix the reds/);
+  });
+
+  it('EI-19311755730915969: a CACHE-COLD in-flight reading is UNKNOWN — never silently "in flight"', () => {
+    // `checkpointRunInFlight` was ABSENT from the very payload that misled the filer
+    // (it is cache-backed; a cold DB / first routine tick / failed read all produce
+    // this), and appeared as `{ active: false }` 14 min later. Defaulting an absence to
+    // the reassuring answer is exactly how this fails silently, so UNKNOWN must route to
+    // the lever — the caller is told the reading was unavailable via `detail`.
+    const l = lever('gate', { positions: NOT_IN_MAIN, gate: RED_GATE, changeInCandidate: COVERED });
+    expect(l).toMatch(/fix the reds/);
+  });
+
+  it('EI-19311755730915969: the newer-commit arm re-fires once the run it was waiting on has COMPLETED', () => {
+    // The EI-18797292094433710 suppression is about not discarding a verdict that is
+    // genuinely minutes from landing. Once that run has finished, there is no verdict to
+    // discard and suppressing the lever just strands the caller.
+    const l = lever('gate', {
+      positions: NOT_IN_MAIN,
+      gate: { ...RED_GATE, checkpointRunInFlight: IDLE },
+      changeInCandidate: {
+        ...NO_CANDIDATE,
+        judgingSha: 'lastjudged12',
+        judgingContainsPath: false,
+        missingReason: 'newer-commit',
+      },
+    });
+    expect(l).toMatch(/quiet-cut/);
+  });
+
+  /**
+   * Assert the SHAPE that IS the bug, not one lever string: a `stalled` gate carrying
+   * `lever: null` is what `deriveBlocker` turns into `nextAction: null` and the renderer
+   * turns into "nothing to do". That sentence is only ever true when a verdict is really
+   * coming, so it must be reachable ONLY from a MEASURED in-flight run — from no other
+   * reading, and through none of the containment arms.
+   */
+  it('P-002: a STALLED gate goes lever-null ONLY for a measured in-flight run — nextAction stays real otherwise', () => {
+    const readings: [string, StageInput['gate']['checkpointRunInFlight']][] = [
+      ['measured idle (run completed)', IDLE],
+      ['cache-cold — UNKNOWN', undefined],
+      ['explicit null — UNKNOWN', null],
+    ];
+    const candidates: [string, StageInput['changeInCandidate']][] = [
+      ['judged candidate carries the change', COVERED],
+      [
+        'judged candidate merely predates it',
+        { ...NO_CANDIDATE, judgingSha: 'lastjudged12', judgingContainsPath: false, missingReason: 'newer-commit' },
+      ],
+      ['containment not measured at all', NO_CANDIDATE],
+    ];
+    for (const [reading, checkpointRunInFlight] of readings) {
+      for (const [shape, changeInCandidate] of candidates) {
+        const where = `${reading} / ${shape}`;
+        const stages = stagesFor({
+          positions: NOT_IN_MAIN,
+          gate: { ...RED_GATE, checkpointRunInFlight },
+          changeInCandidate,
+        });
+        const gate = stages.find((s) => s.name === 'gate');
+        expect(gate?.health, where).toBe('stalled');
+        expect(gate?.lever, where).not.toBeNull();
+        // …and end-to-end: the caller must not be told the pipeline has this covered.
+        expect(deriveBlocker(stages).nextAction, where).not.toBeNull();
+      }
+    }
+  });
+
+  it('P-002: a blocked gate SAYS which of the three liveness readings it got', () => {
+    const detailFor = (checkpointRunInFlight: StageInput['gate']['checkpointRunInFlight']) =>
+      stagesFor({
+        positions: NOT_IN_MAIN,
+        gate: { ...RED_GATE, checkpointRunInFlight },
+        changeInCandidate: COVERED,
+      }).find((s) => s.name === 'gate')?.detail;
+
+    // The wait is justified with live evidence rather than left to be inferred from a
+    // missing lever — "nothing to do" was read as "someone else has this".
+    expect(detailFor(IN_FLIGHT)).toMatch(/A gate run IS in flight \(running ~10m\)/);
+    expect(detailFor(IN_FLIGHT)).toMatch(/do NOT fire a second one/);
+    expect(detailFor(IDLE)).toMatch(/NO gate run is in flight \(measured\)/);
+    // The unknown must read as unknown — and must not be mistakable for the idle answer.
+    expect(detailFor(undefined)).toMatch(/UNKNOWN on this call/);
+    expect(detailFor(undefined)).toMatch(/NOT evidence none is running/);
+    expect(detailFor(undefined)).not.toMatch(/NO gate run is in flight/);
   });
 
   it('…but with NO run in flight, a next-candidate that predates the commit still routes to the quiet-cut lever', () => {

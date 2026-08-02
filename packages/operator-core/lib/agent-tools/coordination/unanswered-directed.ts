@@ -204,7 +204,49 @@ export async function fetchUnansweredDirected(
   const sql = coordSql();
   const workspaceId = coordWorkspaceId();
   const rows = await sql<UnansweredDirectedRow[]>`
-    WITH directed AS (
+    -- WI-6853 / P-017 — the LOOSE-REPLY set, materialized ONCE.
+    --
+    -- \`unanswered\` below needs, per open ask, "how many un-threaded replies did this
+    -- recipient send back to that sender after the ask". Expressed as a correlated
+    -- subquery over coord_event_log it was re-evaluated per open_ask row, and because
+    -- PostgreSQL has NO STATISTICS for jsonb expressions it estimated 1 row for a filter
+    -- that actually discards ~75k. Measured on the live workspace: 14 loops x 75,192 rows
+    -- removed = ~1.05M rows examined, 129ms per loop, 76% of the statement's total runtime.
+    --
+    -- Indexes cannot fix that: two purpose-built partial indexes on (workspace_id,
+    -- (body->>'from'), ts) and on the expectsReply predicate were trialled and the planner
+    -- ignored both, because it already believed the scan returned one row. The estimate is
+    -- the bug, so the fix is to remove the per-row correlation rather than to re-index.
+    --
+    -- Pre-filtering on \`from = ANY(recipientIds)\` is what makes this cheap — the reply must
+    -- be authored BY one of the recipients we are asking about, which is highly selective —
+    -- and the lookback bounds it further. AS MATERIALIZED is REQUIRED: with a single
+    -- reference PG would inline the CTE and re-scan it per loop, reinstating the exact cost
+    -- being removed.
+    --
+    -- DISTINCT on e3.id is a semantic guard, not a tidy-up. The predicate it replaces is
+    -- \`body->'to' @> to_jsonb(ARRAY[o.from_id])\` — a per-MESSAGE containment test, so a
+    -- message whose 'to' array lists the same id twice counts ONCE. Unnesting with LATERAL
+    -- would count it twice and could silently clear an ask that is still open.
+    --
+    -- Verified equivalent against live data before landing: both EXCEPT directions empty,
+    -- 8/8 recipients, 10/10 total count. 2,545ms -> 985ms on the real workspace.
+    WITH loose_replies AS MATERIALIZED (
+      SELECT DISTINCT e3.id,
+             e3.workspace_id,
+             e3.body->>'from' AS from_id,
+             rt AS to_id,
+             (extract(epoch FROM (e3.body->>'ts')::timestamptz) * 1000)::bigint AS ts_ms
+        FROM harness_shared.coord_event_log e3
+        CROSS JOIN LATERAL jsonb_array_elements_text(e3.body->'to') AS rt
+       WHERE e3.workspace_id = ${workspaceId}
+         AND e3.surface = 'messages'
+         AND NOT (e3.body ? 'related_msg_id')
+         AND jsonb_typeof(e3.body->'to') = 'array'
+         AND e3.body->>'from' = ANY(${recipientIds}::text[])
+         AND (e3.body->>'ts')::timestamptz >= to_timestamp(${sinceMs}::double precision / 1000)
+    ),
+    directed AS (
       SELECT
         e.workspace_id,
         e.body->>'msg_id' AS msg_id,
@@ -296,16 +338,17 @@ export async function fetchUnansweredDirected(
       -- silently and permanently. It cannot re-introduce EI-13819's stuck-at-1
       -- either: continued correspondence always converges (m loose replies
       -- clear the m newest open asks), so a live exchange never sticks.
+      -- Reads from the pre-materialized \`loose_replies\` above rather than re-scanning
+      -- coord_event_log per row (WI-6853). The predicate set is unchanged — same author,
+      -- same addressee, same "after the ask" bound, same one-reply-clears-one-ask pairing
+      -- against ask_rank.
       SELECT o.* FROM open_asks o
        WHERE (
-         SELECT count(*) FROM harness_shared.coord_event_log e3
-          WHERE e3.workspace_id = o.workspace_id
-            AND e3.surface = 'messages'
-            AND e3.body->>'from' = o.recipient
-            AND NOT (e3.body ? 'related_msg_id')
-            AND jsonb_typeof(e3.body->'to') = 'array'
-            AND e3.body->'to' @> to_jsonb(ARRAY[o.from_id])
-            AND (e3.body->>'ts')::timestamptz >= to_timestamp(o.ts_ms::double precision / 1000)
+         SELECT count(*) FROM loose_replies lr
+          WHERE lr.workspace_id = o.workspace_id
+            AND lr.from_id = o.recipient
+            AND lr.to_id = o.from_id
+            AND lr.ts_ms >= o.ts_ms
        ) < o.ask_rank
     )
     SELECT recipient,

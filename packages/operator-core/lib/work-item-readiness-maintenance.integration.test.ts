@@ -48,18 +48,30 @@ const readMigration = (f: string): string =>
 let db: FreshPgDb;
 const sql = () => db.sql;
 
-/** A feature-family work_items row (item_kind defaults to 'feature' in the fixture). */
-async function insertFeature(harness: string, feature: string, status = 'todo'): Promise<void> {
+/** A feature-family work_items row (item_kind defaults to 'feature' in the fixture).
+ *  `workspace` defaults to 'default' so the pre-existing cases are unchanged; the
+ *  cross-workspace regression case (g) passes a real one. */
+async function insertFeature(
+  harness: string,
+  feature: string,
+  status = 'todo',
+  workspace = 'default',
+): Promise<void> {
   await db.sql`
-    INSERT INTO harness_shared.work_items (harness_slug, feature_id, title, status, item_kind)
-    VALUES (${harness}, ${feature}, ${`${harness}#${feature}`}, ${status}, 'feature')`;
+    INSERT INTO harness_shared.work_items (workspace_id, harness_slug, feature_id, title, status, item_kind)
+    VALUES (${workspace}, ${harness}, ${feature}, ${`${harness}#${feature}`}, ${status}, 'feature')`;
 }
 
 /** An issue-family work_items row (item_kind in bug/change/task). ref = bare feature_id. */
-async function insertIssue(feature: string, status = 'open', kind = 'bug'): Promise<void> {
+async function insertIssue(
+  feature: string,
+  status = 'open',
+  kind = 'bug',
+  workspace = 'default',
+): Promise<void> {
   await db.sql`
-    INSERT INTO harness_shared.work_items (harness_slug, feature_id, title, status, item_kind)
-    VALUES ('', ${feature}, ${feature}, ${status}, ${kind})`;
+    INSERT INTO harness_shared.work_items (workspace_id, harness_slug, feature_id, title, status, item_kind)
+    VALUES (${workspace}, '', ${feature}, ${feature}, ${status}, ${kind})`;
 }
 
 /** A blocks-edge: blocked_ref is blocked until blocker_ref is terminal. */
@@ -89,13 +101,13 @@ async function oracleBlockedSet(): Promise<string[]> {
     SELECT f.harness_slug || '#' || f.feature_id AS ref
       FROM harness_shared.work_items f
      WHERE f.item_kind <> ALL (ARRAY['bug','change','task'])
-       AND harness_shared.work_item_is_blocked(f.harness_slug, f.feature_id)`;
+       AND harness_shared.work_item_is_blocked(f.harness_slug, f.feature_id, f.workspace_id)`;
   return rows.map((r) => r.ref).sort();
 }
 
-async function isBlocked(harness: string, feature: string): Promise<boolean> {
+async function isBlocked(harness: string, feature: string, workspace = 'default'): Promise<boolean> {
   const [{ b }] = await db.sql<{ b: boolean }[]>`
-    SELECT harness_shared.work_item_is_blocked(${harness}, ${feature}) AS b`;
+    SELECT harness_shared.work_item_is_blocked(${harness}, ${feature}, ${workspace}) AS b`;
   return b;
 }
 
@@ -107,6 +119,10 @@ beforeAll(async () => {
   // The SHIPPED migration under test — creates work_item_blocked + work_item_is_blocked
   // + sync_work_item_blocked + the wir_* triggers, and backfills (over the empty graph).
   await db.sql.unsafe(readMigration('379-maintained-ready-column.sql'));
+  // 719: the oracle takes the blocked item's workspace as a REQUIRED third argument and
+  // resolves both blocker legs within it. Applied here so this suite exercises the CURRENT
+  // predicate — the 379-only chain is precisely what let EI-19313459163394127 survive.
+  await db.sql.unsafe(readMigration('719-fix-work-item-is-blocked-workspace-scope.sql')).simple();
 });
 
 afterAll(async () => {
@@ -168,6 +184,51 @@ describe('migration 379 — maintained readiness sidecar (work_item_blocked)', (
 
     expect(await isBlocked('h', 'F1')).toBe(false);
     expect(await blockedSet()).toEqual([]);
+  });
+
+  // ── (g) THE REGRESSION (EI-19313459163394127) ──────────────────────────────
+  // The oracle used to resolve an ISSUE-family blocker with `workspace_id = 'default'`
+  // hardcoded, while real issues live in 'papercusp-workspace'. The blocker was never
+  // found, "an absent blocker never blocks" applied, and the item was served. Measured
+  // on live data before the fix: 32 of 32 issue-family blocking edges inert, 10 with a
+  // live non-terminal blocker.
+  //
+  // Every pre-existing case above seeds into 'default', which is EXACTLY why this
+  // survived — the bug is invisible unless the fixture uses a non-default workspace.
+  // Both directions are asserted: the blocker must be FOUND in its own workspace, and
+  // must NOT leak across workspaces.
+  it('(g) an ISSUE blocker in a NON-default workspace blocks, and does not leak across workspaces', async () => {
+    const WS = 'papercusp-workspace';
+
+    await insertFeature('h', 'F1', 'todo', WS);
+    await insertIssue('BUG-WS', 'open', 'bug', WS);
+    await addBlocksEdge('h#F1', 'BUG-WS', 'feature', 'issue');
+
+    // Pre-719 this returned FALSE: the blocker was looked up in 'default' and missed.
+    expect(await isBlocked('h', 'F1', WS)).toBe(true);
+
+    // Terminal in its own workspace still unblocks (the fix must not over-block).
+    await db.sql`UPDATE harness_shared.work_items SET status = 'resolved'
+                  WHERE workspace_id = ${WS} AND harness_slug = '' AND feature_id = 'BUG-WS'`;
+    expect(await isBlocked('h', 'F1', WS)).toBe(false);
+  });
+
+  it('(g2) a same-id blocker in a DIFFERENT workspace does not block', async () => {
+    const WS = 'papercusp-workspace';
+
+    // The blocked feature lives in WS; an OPEN issue with the SAME id lives in
+    // 'default'. Resolution is workspace-scoped, so the foreign row must be ignored —
+    // (harness_slug, feature_id) is not unique across workspaces (44 real collisions),
+    // which is why the 2-arg oracle had no correct answer and was removed.
+    await insertFeature('h', 'F1', 'todo', WS);
+    await insertIssue('BUG-DUP', 'open', 'bug', 'default');
+    await addBlocksEdge('h#F1', 'BUG-DUP', 'feature', 'issue');
+
+    expect(await isBlocked('h', 'F1', WS)).toBe(false);
+
+    // Same id, now present and OPEN in WS too → blocks, on the strength of the WS row.
+    await insertIssue('BUG-DUP', 'open', 'bug', WS);
+    expect(await isBlocked('h', 'F1', WS)).toBe(true);
   });
 
   it('(e) DELETE the blocked feature → its work_item_blocked row is gone', async () => {

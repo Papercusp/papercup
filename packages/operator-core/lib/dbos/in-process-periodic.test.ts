@@ -200,6 +200,7 @@ describe('buildDefaultChecks (the converted EI-1622 set)', () => {
         'harness-status-sweep',
         'pot-epoch-key-reconcile',
         'learning-infra-health',
+        'pg-tuning-drift',
         'poll-suspect-scan',
         'release-request-sweep',
         'scorecard-emission-pulse',
@@ -229,6 +230,7 @@ describe('buildDefaultChecks (the converted EI-1622 set)', () => {
     expect(byName.get('pot-epoch-key-reconcile')!.intervalMs).toBe(600_000);
     expect(byName.get('shared-presence-reaper')!.intervalMs).toBe(300_000);
     expect(byName.get('scorecard-emission-pulse')!.intervalMs).toBe(600_000);
+    expect(byName.get('pg-tuning-drift')!.intervalMs).toBe(30 * 60_000);
     expect(byName.get('poll-suspect-scan')!.intervalMs).toBe(3600_000);
     expect(byName.get('timer-registration-scan')!.intervalMs).toBe(600_000);
   });
@@ -253,6 +255,7 @@ describe('buildDefaultChecks (the converted EI-1622 set)', () => {
       'service-health',
       'completion-ref-verify',
       'learning-infra-health',
+      'pg-tuning-drift', // a conf.d edit + SIGHUP happens entirely outside this process
       'steering-churn-sweep', // borderline (D-008), kept must-sample not violation
       'poll-suspect-scan', // borderline (D-008), kept must-sample not violation
       'timer-registration-scan', // same shape as poll-suspect-scan

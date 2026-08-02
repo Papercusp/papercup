@@ -390,7 +390,13 @@ export const WORK_ITEM_DEPS_DDL = `
       updated_at   timestamptz NOT NULL DEFAULT now(),
       PRIMARY KEY (workspace_id, harness_slug, feature_id)
   );
-  CREATE OR REPLACE FUNCTION harness_shared.work_item_is_blocked(p_harness text, p_feature text)
+  -- Migration 719: the workspace is a REQUIRED third argument, and BOTH blocker legs
+  -- resolve within the blocked item's own workspace. The 2-arg form is dropped first
+  -- because a 3-arg overload alongside it makes every 2-arg call ambiguous.
+  -- (EI-19313459163394127 — the issue leg used to hardcode 'default', where almost no
+  -- issue lives, so every issue-family blocking edge silently did nothing.)
+  DROP FUNCTION IF EXISTS harness_shared.work_item_is_blocked(text, text);
+  CREATE OR REPLACE FUNCTION harness_shared.work_item_is_blocked(p_harness text, p_feature text, p_workspace text)
       RETURNS boolean LANGUAGE sql STABLE AS $WIB$
       SELECT EXISTS (
           SELECT 1 FROM harness_shared.work_item_deps d
@@ -398,18 +404,19 @@ export const WORK_ITEM_DEPS_DDL = `
              AND d.blocked_ref = p_harness || '#' || p_feature
              AND ( EXISTS (SELECT 1 FROM harness_shared.work_items bf
                             WHERE bf.item_kind <> ALL (ARRAY['bug','change','task'])
+                              AND bf.workspace_id = p_workspace
                               AND (bf.harness_slug || '#' || bf.feature_id) = d.blocker_ref
                               AND bf.status NOT IN ('passed','deprecated'))
                    OR EXISTS (SELECT 1 FROM harness_shared.work_items bi
                             WHERE bi.item_kind = ANY (ARRAY['bug','change','task'])
-                              AND bi.workspace_id = 'default' AND bi.feature_id = d.blocker_ref
+                              AND bi.workspace_id = p_workspace AND bi.feature_id = d.blocker_ref
                               AND bi.status NOT IN ('resolved','closed')) )
       );
   $WIB$;
   CREATE OR REPLACE FUNCTION harness_shared.sync_work_item_blocked(p_ws text, p_harness text, p_feature text)
       RETURNS void LANGUAGE plpgsql AS $SWB$
   BEGIN
-      IF harness_shared.work_item_is_blocked(p_harness, p_feature) THEN
+      IF harness_shared.work_item_is_blocked(p_harness, p_feature, p_ws) THEN
           INSERT INTO harness_shared.work_item_blocked (workspace_id, harness_slug, feature_id, updated_at)
           VALUES (p_ws, p_harness, p_feature, now())
           ON CONFLICT (workspace_id, harness_slug, feature_id) DO UPDATE SET updated_at = now();

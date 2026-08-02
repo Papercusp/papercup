@@ -239,6 +239,31 @@ const connectionPressureCheck: PeriodicCheck = {
   },
 };
 
+// Every 30 min: does the live Postgres actually run the settings we derive?
+// (EI-19314331871893219.) A GUC added to databaseTuningToSettings() reaches a
+// NATIVE cluster only when someone runs `pg-autotune --apply`, and until this
+// check existed nothing verified that they had — `max_slot_wal_keep_size` (the
+// disk-fill-SPOF defense) and `shared_preload_libraries` were both found
+// unapplied for weeks while the source and its tests said otherwise.
+//
+// Cheap (one pg_settings read) and slow-moving: the answer only changes when
+// someone edits the config, so half-hourly is ample and the cost is noise.
+const pgTuningDriftCheck: PeriodicCheck = {
+  name: 'pg-tuning-drift',
+  intervalMs: 30 * 60_000,
+  // Fire on arm too: the drift this catches is a STANDING condition, not an
+  // event — waiting 30 min to notice a cluster that has been misconfigured for
+  // weeks would be a strange way to report it.
+  fireOnArm: true,
+  // D-004 (P-011): the live server's applied configuration has no change-event
+  // source — a conf.d edit + SIGHUP happens entirely outside this process.
+  classification: 'must-sample',
+  tick: async () => {
+    const { runPgTuningDriftCheckOnce } = await import('../storage/pg-tuning-drift');
+    await runPgTuningDriftCheckOnce();
+  },
+};
+
 // Every 60s: probe the dev endpoints + broadcast on each up/down TRANSITION
 // (fleet-coordination-painpoints Phase 3b). External liveness has no event source,
 // so this is the one irreducible poll; transition-only, never a per-tick firehose.
@@ -1084,6 +1109,7 @@ export function buildDefaultChecks(): PeriodicCheck[] {
     systemHealthCheck,
     harnessStatusSweepCheck,
     connectionPressureCheck,
+    pgTuningDriftCheck,
     serviceHealthCheck,
     completionRefVerifyCheck,
     spawnReclaimSweepCheck,

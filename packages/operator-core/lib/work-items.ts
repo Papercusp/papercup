@@ -1739,6 +1739,42 @@ async function appendCompletionAttestation(
        AND workspace_id IN (${issuesScopeWorkspace()}, ${activeWorkspaceId()})`;
 }
 
+/**
+ * EI-19313515375179600 (WI-6822 follow-up) — self-heal a locally-authored issue-family row
+ * whose `origin` incorrectly flipped to 'remote' after creation (root cause not yet found;
+ * candidates include a federation/replay-provenance defect around the substrate's own
+ * capture-log echo — see the work-item's own body for what has and hasn't been established).
+ *
+ * Resets `origin` back to 'local' directly on the BASE table (`harness_shared.work_items`) —
+ * bypassing the `engineer_issues` view's INSTEAD OF trigger entirely, since that trigger
+ * (migration 655, `engineer_issues_view_dml()`) is exactly what would otherwise block this
+ * reset: it unconditionally no-ops any UPDATE while `origin='remote'`, with no identity
+ * check of its own. This function IS the identity check the trigger cannot perform —
+ * scoped tight in its own WHERE clause so it can only ever heal a row whose OWN recorded
+ * `created_by` matches the caller (never a row genuinely owned by a different peer):
+ * a caller who is NOT the recorded author gets zero rows affected, a no-op.
+ *
+ * Callers MUST re-verify identity (`createdBy === callerOwnerId`) themselves before calling
+ * this — it is a narrow, mechanical reset, not a policy decision — and should update their
+ * in-memory `origin` to 'local' on a truthy return so subsequent logic in the same call
+ * sees the healed state without an extra round-trip.
+ *
+ * Returns true iff a row was actually healed (false: not remote, not this caller's row, or
+ * the id doesn't resolve to an issue-family row in the base table).
+ */
+export async function selfHealAuthorOriginIfStranded(id: string, callerOwnerId: string): Promise<boolean> {
+  if (!id || !callerOwnerId) return false;
+  const { sql } = getOrgPg();
+  const rows = await sql<{ feature_id: string }[]>`
+    UPDATE harness_shared.work_items
+       SET origin = 'local'
+     WHERE feature_id = ${id}
+       AND origin = 'remote'
+       AND payload #>> '{_ei,created_by}' = ${callerOwnerId}
+    RETURNING feature_id`;
+  return rows.length > 0;
+}
+
 /** Lifecycle.setState — feature → status; issue → state. The requested state is
  *  normalized onto the family's native vocabulary first (EI-24); an unmappable
  *  state throws a typed error naming the valid set.
@@ -2068,11 +2104,23 @@ export async function setWorkItemState(
     // creation (an unresolved federation/replay-provenance defect, still under investigation —
     // see the work-item's own body). Trusting `origin` ALONE here strands the true author: they
     // wrote the item, `origin` later mislabels it 'remote', and the refusal below sends them to
-    // "their authoring peer" — which IS them, on the only node they have. Check IDENTITY first:
-    // if the caller (`opts.by`) is the item's recorded author (`createdBy`), they genuinely ARE
-    // the authoring peer regardless of what `origin` currently reads — permit the mutation.
-    const callerIsAuthor = !!opts.by && !!wi.createdBy && opts.by === wi.createdBy;
-    if (wi.origin === 'remote' && !callerIsAuthor) {
+    // "their authoring peer" — which IS them, on the only node they have.
+    //
+    // A bare app-level bypass here is NOT enough: `setIssueState` below writes through the
+    // `engineer_issues` VIEW, whose INSTEAD OF UPDATE trigger (migration 655,
+    // `harness_shared.engineer_issues_view_dml()`) unconditionally no-ops ANY write while the
+    // BASE TABLE's `origin='remote'` — it has no identity check at all. Skipping only this
+    // app-level guard would silently swap a clear, honest error for a confusing "not found"
+    // (the trigger returns 0 rows / NULL). So when the caller IS the recorded author
+    // (`createdBy` === `opts.by`), self-heal the base-table `origin` back to 'local' FIRST
+    // (scoped tight: only ever touches a row whose OWN recorded author matches the caller —
+    // never a row genuinely owned by a different peer) — this un-blocks the trigger for the
+    // write that follows.
+    if (wi.origin === 'remote' && opts.by && wi.createdBy && opts.by === wi.createdBy) {
+      const healed = await selfHealAuthorOriginIfStranded(id, opts.by);
+      if (healed) wi.origin = 'local';
+    }
+    if (wi.origin === 'remote') {
       throw new Error(
         `work_item '${id}' is remote-authored and cannot be mutated locally; ` +
           `its authoring peer must claim/resolve it, and this node will receive the ` +
