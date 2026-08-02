@@ -69,6 +69,15 @@ interface CacheEntry {
 }
 const cache = new Map<string, CacheEntry>();
 
+interface RoutineSetCacheEntry {
+  value: readonly string[];
+  atMs: number;
+}
+const routineSetCache = new Map<string, RoutineSetCacheEntry>();
+
+/** Shared frozen empty result — "no active routines here". */
+const NO_ROUTINES: readonly string[] = Object.freeze([]);
+
 /** Injectable seams (tests; production uses the live defaults). */
 export interface CadenceRunnerCapabilityDeps {
   now?: () => number;
@@ -144,7 +153,114 @@ export async function nodeRunsCadenceLoops(
   return value;
 }
 
+/** Injectable seams for {@link nodeActiveRoutines} (tests; production uses defaults). */
+export interface ActiveRoutinesDeps {
+  now?: () => number;
+  /** Does THIS process launch the scheduled-routine host? Default: dbosLaunchesHere. */
+  dbosLaunches?: () => boolean;
+  /** Read the ACTIVE routine names for this harness on this node. */
+  activeRoutineNames?: (workspaceId: string, harnessSlug: string) => Promise<string[]>;
+  /** Cache window; 0 disables caching (tests). Default {@link DEFAULT_TTL_MS}. */
+  ttlMs?: number;
+}
+
+async function defaultActiveRoutineNames(
+  workspaceId: string,
+  harnessSlug: string,
+): Promise<string[]> {
+  const { sql } = getOrgPg();
+  const rows = (await sql`
+    SELECT DISTINCT name
+    FROM harness_shared.routines
+    WHERE workspace_id = ${workspaceId}
+      AND install_slug = ${harnessSlug}
+      AND active = true
+    ORDER BY name
+  `) as unknown as ReadonlyArray<{ name?: unknown }>;
+  return rows
+    .map((r) => r.name)
+    .filter((n): n is string => typeof n === 'string' && n.length > 0);
+}
+
+/**
+ * The ACTIVE routine names this node runs for `harnessSlug` — the value published
+ * as `shared_presence.active_routines` (mig 724).
+ *
+ * # Why publish the SET when {@link nodeRunsCadenceLoops} already exists
+ *
+ * `runs_routines` answers ONE question ("does this node fire the cadence loops"),
+ * and WI-6996 then pointed a SECOND, different election at it: the git-sync
+ * INTEGRATOR election (`LockAuthorityDeps.routineHostsOnly` at
+ * git-sync-action.ts). That election asks "does this node integrate THIS repo".
+ * The mismatch is measured, not theoretical (EI-19330771435294981): on papercusp
+ * 2026-08-02 gym-cycle was inactive and scout-cycle did not exist, so the bit was
+ * NULL on every live presence row, the narrowing resolved to ∅, and integrator
+ * peer arbitration was turned OFF rather than tightened.
+ *
+ * The fix is NOT to widen the boolean — the module header above already measured
+ * and rejected that ("has any active routine" is satisfied by the wrongly-elected
+ * peer's own `git-sync` routine, shipping a no-op). That argument is against
+ * widening a SHARED predicate; it is not an argument against publishing the
+ * underlying facts and letting each caller ask its OWN question. So both
+ * predicates derive from one column:
+ *
+ *     cadence-runner election  ⇒  set ∩ CADENCE_RUNNER_ROUTINES ≠ ∅   (P-004)
+ *     git-sync integrator      ⇒  'git-sync' ∈ set                    (P-005)
+ *
+ * # Both legs, for the same reason the boolean needs both
+ *
+ * Gated on `dbosLaunches()` exactly like {@link nodeRunsCadenceLoops}: an armed
+ * routine on a request-only host NEVER FIRES, so reporting it would advertise a
+ * capability this node does not have. This gating is what makes the P-004
+ * derivation semantics-preserving — `set ∩ CADENCE_RUNNER_ROUTINES ≠ ∅` is
+ * exactly today's `dbosLaunches() && ∃ active cadence routine`.
+ *
+ * Cached for {@link DEFAULT_TTL_MS}, and the TTL is the point rather than an
+ * optimisation — same argument as the boolean's: resolving ONCE at wire time
+ * would let a node that later DISARMS a routine keep advertising it, keep winning
+ * elections, and re-create the bug. A 60s re-read self-heals well inside the 90s
+ * authority staleness window.
+ *
+ * Deterministic: deduped and sorted regardless of what the reader returns, so an
+ * unchanged routine set produces byte-identical SIGNED presence frames
+ * (`presenceFrameSigningBytes`) instead of churning them on row ordering.
+ *
+ * Never throws: any failure resolves to `[]`, i.e. "no advertised capability".
+ * That is the conservative direction for BOTH consumers — a node that
+ * under-reports is skipped by PEERS, but every selector re-adds SELF
+ * unconditionally after the exclusion filter, so it still does its own work. An
+ * empty set can never make an election go dark; it can at worst cost a duplicate.
+ */
+export async function nodeActiveRoutines(
+  workspaceId: string,
+  harnessSlug: string,
+  deps: ActiveRoutinesDeps = {},
+): Promise<readonly string[]> {
+  const now = deps.now ?? Date.now;
+  const ttlMs = deps.ttlMs ?? DEFAULT_TTL_MS;
+  const key = `${workspaceId}::${harnessSlug}`;
+  const nowMs = now();
+  if (ttlMs > 0) {
+    const hit = routineSetCache.get(key);
+    if (hit && nowMs - hit.atMs < ttlMs) return hit.value;
+  }
+  let value: readonly string[] = NO_ROUTINES;
+  try {
+    const dbosLaunches = deps.dbosLaunches ?? dbosLaunchesHere;
+    if (dbosLaunches()) {
+      const read = deps.activeRoutineNames ?? defaultActiveRoutineNames;
+      const names = await read(workspaceId, harnessSlug);
+      value = Object.freeze([...new Set(names)].sort());
+    }
+  } catch {
+    value = NO_ROUTINES; // see the doc above — under-reporting is the safe direction
+  }
+  if (ttlMs > 0) routineSetCache.set(key, { value, atMs: nowMs });
+  return value;
+}
+
 /** Test seam: drop every cached answer. */
 export function _resetCadenceRunnerCapabilityCache(): void {
   cache.clear();
+  routineSetCache.clear();
 }

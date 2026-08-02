@@ -3218,6 +3218,10 @@ describe('mapCheckpointRunInFlight — pure mapper (EI-18793581783459047)', () =
     expect(out).toEqual({
       active: true,
       candidate: 'abcdef1234567890',
+      // WI-7035: no marker supplied, so the candidate came from probing the run — which on a
+      // cron-fired run is the checkpoint checkout's live HEAD, an inference rather than an
+      // observation. Labelled so a reader can weigh it.
+      candidateSource: 'run-probe',
       startedAtMs: NOW - 5 * 60_000,
       elapsedSec: 300,
       asOfAgeMs: 4_000,
@@ -3249,11 +3253,72 @@ describe('mapCheckpointRunInFlight — pure mapper (EI-18793581783459047)', () =
     expect(out).toEqual({
       active: true,
       candidate: '4961cfb8',
+      candidateSource: 'run-probe',
       initialCandidate: '14fb28da',
       refireObserved: true,
       startedAtMs: NOW - 45 * 60_000,
       elapsedSec: 2700,
       asOfAgeMs: 1_000,
+    });
+  });
+
+  /**
+   * WI-7035 — THE RECURRENCE GUARD. The log-derived provenance above only exists for a
+   * MANUALLY-fired run: `checkActiveCheckpointRun` parses `/tmp/<unit>.log`, and a CRON-fired
+   * run never writes one. It takes the `held_externally` branch, returns before the log parse,
+   * and reports the checkpoint checkout's live HEAD as `candidate`. So on the ordinary hourly
+   * gate the fields above are structurally unreachable, and CLAUDE.md's 🚨 "never fire a manual
+   * run inside the re-triage window" rule was unenforceable from the tool agents are pointed at.
+   *
+   * Measured live 2026-08-02 11:43Z: the marker held refireAttempt 1/2 with
+   * fromCandidate 6f4181447486 → refiringCandidate 16dbb52a7849, and this leg emitted NEITHER.
+   *
+   * The marker is what the running process published about ITSELF, so it outranks anything
+   * inferred about it from outside.
+   */
+  describe('WI-7035: the inFlightRetriage marker is authoritative over the probed candidate', () => {
+    const MARKER = {
+      fromCandidate: '6f4181447486a33e4b471b82dee3ed0893c3efa6',
+      refiringCandidate: '16dbb52a7849320e27832500bf2157f00b1db1c3',
+      refireAttempt: 1,
+      maxRefires: 2,
+    };
+    // The cron shape: active, a candidate that came from the checkout HEAD, and NO log-derived
+    // refire provenance — exactly what the live tool returned before this fix.
+    const cronRun = {
+      activeRun: { active: true, candidate: 'stale-worktree-head', startedAtMs: NOW - 30 * 60_000, elapsedSec: 1800 },
+      computedAtMs: NOW,
+    };
+
+    it('reports the MARKER candidate, not the probed one, when the two disagree', () => {
+      const out = mapCheckpointRunInFlight(cronRun, NOW, MARKER);
+      expect(out?.candidate).toBe(MARKER.refiringCandidate);
+      expect(out?.candidateSource).toBe('retriage-marker');
+      // The discarded candidate is preserved: a red still being diagnosed may belong to it.
+      expect(out?.fromCandidate).toBe(MARKER.fromCandidate);
+    });
+
+    it('makes the re-triage window readable on a run with NO log-derived provenance (the cron path)', () => {
+      const out = mapCheckpointRunInFlight(cronRun, NOW, MARKER);
+      expect(out?.inRetriageWindow).toBe(true);
+      expect(out?.refireAttempt).toBe(1);
+      expect(out?.maxRefires).toBe(2);
+      // A refire IS a re-candidation — this must hold even though the /tmp log said nothing.
+      expect(out?.refireObserved).toBe(true);
+    });
+
+    it('does NOT attach a marker to an IDLE probe — that would assert a refire for a finished run', () => {
+      const idle = { activeRun: { active: false, candidate: null, startedAtMs: null, elapsedSec: null }, computedAtMs: NOW };
+      const out = mapCheckpointRunInFlight(idle, NOW, MARKER);
+      expect(out?.inRetriageWindow).toBeUndefined();
+      expect(out?.candidate).toBeNull();
+    });
+
+    it('absent marker means NO refire in flight, and leaves the pre-existing shape untouched', () => {
+      const out = mapCheckpointRunInFlight(cronRun, NOW, null);
+      expect(out?.inRetriageWindow).toBeUndefined();
+      expect(out?.candidate).toBe('stale-worktree-head');
+      expect(out?.candidateSource).toBe('run-probe');
     });
   });
 

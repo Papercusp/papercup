@@ -644,12 +644,39 @@ export interface PipelinePosition {
        * `initialCandidate`/`refireObserved` below say so explicitly instead of leaving you to
        * infer it from two reads. */
       candidate: string | null;
+      /** WI-7035: WHERE `candidate` came from, because the two sources have different trust.
+       *
+       *  - `'retriage-marker'` — the run's OWN published `inFlightRetriage` marker in Postgres.
+       *    An authoritative observation of what this run is judging.
+       *  - `'run-probe'` — derived by probing the run. On a MANUAL run that is its `/tmp` unit
+       *    log (an observation); on a CRON run the manual unit is inactive and the probe falls
+       *    back to the checkpoint checkout's live HEAD, which is an INFERENCE that can change
+       *    between two reads and is only right while that checkout is pinned to the candidate.
+       *
+       *  Prefer a `'retriage-marker'` reading; treat `'run-probe'` as a hint. */
+      candidateSource?: 'retriage-marker' | 'run-probe';
       /** EI-19327704778173646: the candidate this run STARTED on, present only once it has
        *  re-candidated. Provenance only — never verify a fix against this sha. */
       initialCandidate?: string | null;
       /** EI-19327704778173646: true when the run demonstrably re-candidated mid-flight.
-       *  Absent/false is NOT proof no refire happened, only that none was visible. */
+       *  Absent/false is NOT proof no refire happened, only that none was visible.
+       *  ⚠ Before WI-7035 this could NEVER be true for a cron-fired run: it was derived
+       *  purely from the `/tmp` unit log, which only MANUAL runs write. Prefer
+       *  `inRetriageWindow`, which is marker-backed and works on both paths. */
       refireObserved?: boolean;
+      /** WI-7035: an auto-refire is running RIGHT NOW for this run — i.e. you are inside the
+       *  re-triage window CLAUDE.md tells you never to fire a manual `release:checkpoint-run`
+       *  into (doing so discards the rescue and costs a full suite). Marker-backed, so unlike
+       *  `refireObserved` it is readable on a cron-fired run. Absent when no marker is in
+       *  flight — which means "no refire in flight", NOT "unknown". */
+      inRetriageWindow?: true;
+      /** WI-7035: the candidate this refire MOVED OFF (marker `fromCandidate`). A red you are
+       *  still reasoning about may belong to this sha, which the run has already discarded. */
+      fromCandidate?: string | null;
+      /** WI-7035: how much rescue budget is left — `refireAttempt` of `maxRefires` used. At the
+       *  cap the next red STICKS, which is the point at which a human lever starts to matter. */
+      refireAttempt?: number;
+      maxRefires?: number;
       startedAtMs: number | null;
       elapsedSec: number | null;
       /** How stale this reading is: ms since the cache was last computed. `null`
@@ -2019,6 +2046,21 @@ const realReadCheckpointRunSnapshot = async (): Promise<{
 export function mapCheckpointRunInFlight(
   cached: { activeRun: GitPipelineSnapshot['activeRun']; computedAtMs: number | null } | null,
   nowMs: number = Date.now(),
+  /**
+   * WI-7035: the run's OWN published re-triage marker (`gate_health.inFlightRetriage`, already
+   * freshness-checked by `parseInFlightRetriage`). AUTHORITATIVE when present — it is what the
+   * running process published about itself, not something inferred about it from outside.
+   *
+   * Why this argument has to exist: the refire provenance carried on `activeRun`
+   * (`refireObserved`/`initialCandidate`) is parsed from `/tmp/<unit>.log`, and ONLY manually-fired
+   * runs write that log. A cron-fired run takes the `held_externally` branch of
+   * `checkActiveCheckpointRun`, which returns before the log parse and reports the checkpoint
+   * checkout's live HEAD instead. So on the cron path — the ordinary hourly gate — the tool could
+   * never report a refire at all, which made CLAUDE.md's 🚨 "never fire a manual run inside the
+   * re-triage window" rule unenforceable from the very tool agents are pointed at. Measured live
+   * 2026-08-02: marker said `refireAttempt 1/2`, this leg emitted neither field.
+   */
+  retriage?: { fromCandidate: string; refiringCandidate: string; refireAttempt: number; maxRefires: number } | null,
 ): PipelinePosition['gate']['checkpointRunInFlight'] {
   if (!cached || !cached.activeRun) return null;
   const { active, candidate, startedAtMs, elapsedSec } = cached.activeRun;
@@ -2027,10 +2069,32 @@ export function mapCheckpointRunInFlight(
   // the marker never reached a caller before. Emitted only on an actual refire, so the
   // common (no-refire) shape is unchanged.
   const refireObserved = cached.activeRun.refireObserved === true;
+  // The marker only describes a LIVE run; attaching it to an idle probe would assert a refire
+  // is in flight for a run that has already finished.
+  const marker = active && retriage ? retriage : null;
   return {
     active,
-    candidate,
-    ...(refireObserved ? { initialCandidate: cached.activeRun.initialCandidate ?? null, refireObserved: true } : {}),
+    // The marker is an observation the run published about ITSELF; `candidate` here is at best a
+    // log read and at worst (cron) a live-worktree inference. Prefer the observation.
+    candidate: marker ? marker.refiringCandidate : candidate,
+    ...(marker
+      ? {
+          candidateSource: 'retriage-marker' as const,
+          inRetriageWindow: true as const,
+          fromCandidate: marker.fromCandidate,
+          refireAttempt: marker.refireAttempt,
+          maxRefires: marker.maxRefires,
+          // A refire IS a re-candidation, so this stays true on the cron path too — where the
+          // log-derived flag below can never fire.
+          refireObserved: true as const,
+          initialCandidate: marker.fromCandidate,
+        }
+      : {
+          ...(candidate != null ? { candidateSource: 'run-probe' as const } : {}),
+          ...(refireObserved
+            ? { initialCandidate: cached.activeRun.initialCandidate ?? null, refireObserved: true as const }
+            : {}),
+        }),
     startedAtMs,
     elapsedSec,
     asOfAgeMs: cached.computedAtMs !== null ? Math.max(0, nowMs - cached.computedAtMs) : null,
@@ -2603,7 +2667,11 @@ export async function gitPipelinePosition(
 
   const snap = await loadSnapshot();
   const checkpointRunCached = await (deps.readCheckpointRunSnapshot ?? realReadCheckpointRunSnapshot)();
-  const checkpointRunInFlight = mapCheckpointRunInFlight(checkpointRunCached);
+  // WI-7035: `snap.gate.inFlightRetriage` is already loaded and freshness-checked by
+  // git-pipeline-stats (parseInFlightRetriage) — it was simply never consulted here, so the
+  // authoritative answer sat one field away from the inferred one. Passing it makes the
+  // re-triage window visible on the CRON path, where the log-derived provenance cannot reach.
+  const checkpointRunInFlight = mapCheckpointRunInFlight(checkpointRunCached, Date.now(), snap.gate.inFlightRetriage);
   const gate = {
     stalled: snap.gate.stalled,
     consecutiveReds: snap.gate.consecutiveReds,
@@ -2626,6 +2694,27 @@ export async function gitPipelinePosition(
         `CPU/memory and can starve its isolation re-run phase into a false red on code that is actually fine (EI-18793581783459047). ` +
         `Consider waiting for it to finish, or scoping your own re-verify to just the files you changed.`,
     );
+    // WI-7035: the re-triage window, stated in words. `inRetriageWindow` is marker-backed, so
+    // unlike the log-derived `refireObserved` it is readable on a cron-fired run — which is the
+    // path the hourly gate actually takes, and the path on which several agents spent 2026-08-02
+    // reasoning about a candidate the run had already discarded.
+    if (checkpointRunInFlight.inRetriageWindow) {
+      notes.push(
+        `GATE IS MID-RESCUE — do NOT fire a manual release:checkpoint-run. This run hit a red, ` +
+          `re-tested at tip, and AUTO-REFIRED onto ${(checkpointRunInFlight.candidate ?? '?').slice(0, 12)} ` +
+          `(attempt ${checkpointRunInFlight.refireAttempt}/${checkpointRunInFlight.maxRefires}), abandoning ` +
+          `${(checkpointRunInFlight.fromCandidate ?? '?').slice(0, 12)}. Firing a manual run now DISCARDS that ` +
+          `rescue and costs a full suite. Two consequences worth reading twice: (1) a red you are still ` +
+          `diagnosing may belong to the ABANDONED candidate, so re-check it against the one above before ` +
+          `spending anything on it; (2) pid/started_at stay FIXED across a refire, so an advancing candidate ` +
+          `under an unchanged start time is the healthy signature — not corruption.` +
+          (checkpointRunInFlight.refireAttempt != null &&
+          checkpointRunInFlight.maxRefires != null &&
+          checkpointRunInFlight.refireAttempt >= checkpointRunInFlight.maxRefires
+            ? ` ⚠ This is the LAST refire — at the cap the next red STICKS and a human lever starts to matter.`
+            : ''),
+      );
+    }
   }
 
   // EI-7846: verdict provenance, derived from the snapshot's already-loaded deploy

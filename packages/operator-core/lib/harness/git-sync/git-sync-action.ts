@@ -71,6 +71,11 @@ import {
 } from '../../sync/pot-git/convergence-probe';
 import { readSigrefs } from '../../sync/pot-git/sigrefs';
 import { STAGING_ADVANCE_EVENT_KEY, isSignedStagingAdvance, type SignedStagingAdvance, type EpochSeq } from '../../sync/pot-git/staging-advance';
+// EI-19332963201820362: the ONLY sanctioned way to build a `worktree_bridge`
+// metadata value. patchRoutineMetadata is a top-level jsonb merge, so writing
+// that key REPLACES it wholesale — constructing it here means a writer cannot
+// omit (i.e. silently DELETE) a field. Read that module's header before adding one.
+import { nextWorktreeBridgeState, shouldWarnAcceptFree } from './worktree-bridge-state';
 import {
   defaultRunGit,
   deviceNamespaceKey,
@@ -3058,13 +3063,23 @@ async function runWorktreeBridgeLeg(slug: string, workspaceId: string): Promise<
     if (pending.length === 0) {
       // Rows existed (e.g. a malformed payload) but nothing usable — still
       // advance the cursor past them so a bad row can't loop forever.
+      // EI-19332963201820362: this write once omitted the accept-free census,
+      // and because patchRoutineMetadata is a TOP-LEVEL jsonb merge that DELETED
+      // it — one malformed row mid-freeze restarted the streak, so the detector
+      // built to catch a stalled bridge went quiet during the stall. Building
+      // the value through nextWorktreeBridgeState is what makes that omission
+      // impossible rather than merely discouraged. Nothing was BRIDGED here
+      // (consumed: 0), so the streak is CARRIED — not incremented, not reset.
       await patchRoutineMetadata(slug, workspaceId, {
-        worktree_bridge: {
+        worktree_bridge: nextWorktreeBridgeState(priorState, {
           lastEventId: maxRowId,
           epochSeq: priorWatermark.epochSeq,
           stagingSha: priorWatermark.stagingSha,
-          at: Date.now(),
-        },
+          consumed: 0,
+          accepted: 0,
+          rejectedTerminal: {},
+          nowMs: Date.now(),
+        }),
       });
       return;
     }
@@ -3156,45 +3171,39 @@ async function runWorktreeBridgeLeg(slug: string, workspaceId: string): Promise<
     // ('non-fast-forward' for every announcement, because the namespace head
     // trailed the accepted watermark) skip-and-continue and logged NOTHING,
     // so no surface anywhere could distinguish it from a healthy idle bridge.
-    const consumed = outcome.results.length;
-    const consumedNoneAccepted = consumed > 0 && outcome.acceptedCount === 0;
-    const priorAcceptFree = priorState?.acceptFreeTicks ?? 0;
-    const acceptFreeTicks = consumedNoneAccepted ? priorAcceptFree + 1 : 0;
-    const acceptFreeSince = consumedNoneAccepted
-      ? (priorState?.acceptFreeSince ?? Date.now())
-      : null;
-
-    await patchRoutineMetadata(slug, workspaceId, {
-      worktree_bridge: {
-        lastEventId: newCursor,
-        epochSeq: outcome.watermark.epochSeq,
-        stagingSha: outcome.watermark.stagingSha,
-        at: Date.now(),
-        // EI-19332963201820362: the census a health check reads. `consumed`
-        // and `accepted` together answer "is this bridge idle, or starving?"
-        // — a question no persisted field could answer before.
-        consumed,
-        accepted: outcome.acceptedCount,
-        rejectedTerminal: outcome.terminalRejections,
-        acceptFreeTicks,
-        acceptFreeSince,
-      },
+    // EI-19332963201820362: the census a health check reads. `consumed` and
+    // `accepted` together answer "is this bridge idle, or starving?" — a
+    // question no persisted field could answer before, and whose absence hid a
+    // ~6h canonical-staging freeze behind `last_status: 'synced'`.
+    //
+    // The streak arithmetic lives in the helper because it is a THREE-way
+    // decision (carry / increment / reset) that read as a two-way ternary here;
+    // the collapsed case silently let a quiet tick erase an in-progress freeze
+    // signal. See worktree-bridge-state.ts + its unit tests.
+    const bridgeState = nextWorktreeBridgeState(priorState, {
+      lastEventId: newCursor,
+      epochSeq: outcome.watermark.epochSeq,
+      stagingSha: outcome.watermark.stagingSha,
+      consumed: outcome.results.length,
+      accepted: outcome.acceptedCount,
+      rejectedTerminal: outcome.terminalRejections,
+      nowMs: Date.now(),
     });
+    await patchRoutineMetadata(slug, workspaceId, { worktree_bridge: bridgeState });
 
     // Warn on the STREAK, not on a single accept-free tick — one stale envelope
     // is not a fault and warning on it would train readers to ignore this line.
     // Re-warn periodically (not every tick) so a persistent freeze keeps a live
     // signal without flooding the log across hours.
-    const ACCEPT_FREE_WARN_AFTER = 3;
-    if (acceptFreeTicks >= ACCEPT_FREE_WARN_AFTER && (acceptFreeTicks - ACCEPT_FREE_WARN_AFTER) % 10 === 0) {
-      const stuckForMs = acceptFreeSince === null ? null : Date.now() - acceptFreeSince;
+    if (shouldWarnAcceptFree(bridgeState.acceptFreeTicks)) {
+      const stuckForMs = bridgeState.acceptFreeSince === null ? null : Date.now() - bridgeState.acceptFreeSince;
       const byReason = Object.entries(outcome.terminalRejections)
         .map(([reason, n]) => `${reason}=${n}`)
         .join(',');
       console.warn(
-        `[git-sync] ${slug}: worktree-bridge has accepted NOTHING for ${acceptFreeTicks} consecutive ticks` +
+        `[git-sync] ${slug}: worktree-bridge has accepted NOTHING for ${bridgeState.acceptFreeTicks} consecutive ticks` +
           (stuckForMs === null ? '' : ` (~${Math.round(stuckForMs / 60_000)}m)`) +
-          ` while consuming announcements (this tick: ${consumed} consumed, 0 accepted` +
+          ` while consuming announcements (this tick: ${bridgeState.consumed} consumed, 0 accepted` +
           (byReason ? `, terminal rejections ${byReason}` : '') +
           `). The watermark is standing still at ` +
           `epoch=${outcome.watermark.epochSeq?.epoch ?? 'null'},seq=${outcome.watermark.epochSeq?.seq ?? 'null'} — ` +
