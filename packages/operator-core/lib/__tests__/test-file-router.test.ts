@@ -1,5 +1,7 @@
-import { describe, expect, it } from 'vitest';
-import { resolve } from 'node:path';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 // The production entrypoint deliberately stays executable by plain Node.
 import {
   aggregateGroupResults,
@@ -10,6 +12,7 @@ import {
   looksLikeMidInstallCorruption,
   looksLikeSilentCollectionFailure,
   perGroupVitestArgs,
+  warnIfInstallInFlight,
   withoutOutputFileArg,
   REPO_ROOT,
   // The .mjs CLI has no declaration file; the diagnostic lands on the `from`
@@ -19,6 +22,8 @@ import {
   // is not recognized by tsc).
   // @ts-expect-error
 } from '../../../../scripts/test-files.mjs';
+// @ts-expect-error — same plain-Node .mjs CLI, no declaration file.
+import { repoLockName } from '../../../../scripts/npm-install-safe.mjs';
 
 describe('test-files router', () => {
   it('discovers the package cwd/config and rewrites the file relative to that cwd', () => {
@@ -356,5 +361,63 @@ Error [ERR_MODULE_NOT_FOUND]: Cannot find module '/repo/node_modules/vitest/node
       Tests  1 failed (1)
 `;
     expect(looksLikeMidInstallCorruption(withAssertionDetail)).toBe(false);
+  });
+});
+
+// EI-19304880034803985: the mid-install hint above only ever fires on the
+// FAILURE signature — but the dominant real symptom is a HANG (vitest blocks
+// indefinitely while node_modules is rewritten out from under it), so this
+// script never reaches the code that would print a hint at all. Widened the
+// trigger by peeking the SAME fs-mutex `install:safe` holds, immediately
+// before each vitest spawn point, and printing up front when it's held.
+describe('warnIfInstallInFlight (EI-19304880034803985 — the HANG-path hint)', () => {
+  let tmpLockRootDir: string;
+  let priorLockDirEnv: string | undefined;
+  let errorSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    priorLockDirEnv = process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR;
+    tmpLockRootDir = mkdtempSync(join(tmpdir(), 'fs-mutex-peek-test-'));
+    process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = tmpLockRootDir;
+    errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    errorSpy.mockRestore();
+    if (priorLockDirEnv === undefined) delete process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR;
+    else process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = priorLockDirEnv;
+    rmSync(tmpLockRootDir, { recursive: true, force: true });
+  });
+
+  it('prints nothing when no install mutex is held', () => {
+    warnIfInstallInFlight('`vitest run` (group cwd=x)');
+    expect(errorSpy).not.toHaveBeenCalled();
+  });
+
+  it('prints the TEST_FILE_MID_INSTALL_SUSPECTED hint, naming the pid and the caller label, when the mutex IS held', () => {
+    // Mirror withFsMutex's own on-disk shape exactly (mkdir + owner.json) —
+    // repoLockName()'s digest is already alnum+hyphen, so no safeName() rewrite applies.
+    const lockDir = join(tmpLockRootDir, `${repoLockName()}.lock`);
+    mkdirSync(lockDir, { recursive: true });
+    writeFileSync(
+      join(lockDir, 'owner.json'),
+      JSON.stringify({ pid: 424242, host: 'test-host', startedAt: '2026-08-02T00:00:00.000Z' }),
+    );
+
+    warnIfInstallInFlight('`vitest list` (group cwd=y)');
+
+    expect(errorSpy).toHaveBeenCalledTimes(1);
+    const [msg] = errorSpy.mock.calls[0] as [string];
+    expect(msg).toContain('TEST_FILE_MID_INSTALL_SUSPECTED');
+    expect(msg).toContain('pid 424242');
+    expect(msg).toContain('`vitest list` (group cwd=y)');
+    expect(msg).toMatch(/may HANG \(not fail\)/);
+  });
+
+  it('never throws even if the peek itself would be inconclusive (fail-open, per peekFsMutexSync)', () => {
+    // No lock dir AND no fs-mutex root created at all — the coldest possible path.
+    rmSync(tmpLockRootDir, { recursive: true, force: true });
+    expect(() => warnIfInstallInFlight('cold path')).not.toThrow();
+    expect(errorSpy).not.toHaveBeenCalled();
   });
 });

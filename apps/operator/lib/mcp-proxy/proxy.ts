@@ -59,12 +59,26 @@ import { dirname, join } from 'node:path';
  * this proxy, so this was a prime source of the "transient tool errors under load".
  *
  * FIX: a fresh socket per forward eliminates the reuse race entirely. This proxy fronts a localhost
- * upstream, so the extra connect is microseconds. (A future scale refinement for thousands of
- * agents: a BOUNDED keep-alive agent with keepAliveMsecs well under the server's 61s timeout +
- * an explicit retry-once on a stale-socket reset — tracked in the plan. keepAlive:false is the
- * correct, safe fix now.)
+ * upstream, so the extra connect is microseconds. keepAlive:false is the correct, safe fix for the
+ * reuse race; it does NOT bound concurrency, which is `maxSockets` below.
+ *
+ * EI-19305299022434394 — `maxSockets` was `Infinity` here, which is the OTHER half of the same
+ * congestion-collapse bug this comment already describes for keep-alive: when :3070 accepts
+ * connections but stalls, an unbounded agent keeps opening brand-new concurrent sockets for every
+ * arriving request instead of queuing them — the more the upstream struggles, the more simultaneous
+ * work the proxy piles onto it. Measured 2026-08-01: 3,450 requests held open simultaneously in one
+ * second when :3070 stopped responding, with proxy elapsed times of 32-89 minutes. A finite
+ * `maxSockets` makes Node's own `http.Agent` queue excess forwards internally instead of amplifying
+ * them; `createMcpProxy`'s own `maxInFlight` admission control (below) then sheds with 429 once even
+ * that queue backs up past a threshold, so the proxy never silently holds an unbounded number of
+ * requests. Both bounds are env-overridable so a box that legitimately needs more headroom can raise
+ * them without a code change.
  */
-const UPSTREAM_AGENT = new http.Agent({ keepAlive: false, maxSockets: Infinity });
+const DEFAULT_MAX_UPSTREAM_SOCKETS = Number(process.env.PAPERCUSP_MCP_PROXY_MAX_SOCKETS ?? 64);
+const UPSTREAM_AGENT = new http.Agent({
+  keepAlive: false,
+  maxSockets: DEFAULT_MAX_UPSTREAM_SOCKETS > 0 ? DEFAULT_MAX_UPSTREAM_SOCKETS : Infinity,
+});
 
 /**
  * W8 (backend-reliability-100pct-2026-07-03) — make the proxy's forwarded FAILURES VISIBLE.
@@ -104,6 +118,31 @@ export interface McpProxyOptions {
   handshakeTimeoutMs?: number;
   /** Delay between retries while the upstream is refusing connections. */
   retryBackoffMs?: number;
+  /**
+   * EI-19305299022434394 — the admission-control ceiling: shed a NEW request with 429 +
+   * Retry-After the instant this many forwards are already in flight, BEFORE it ever opens an
+   * upstream socket. Defaults to `DEFAULT_MAX_IN_FLIGHT` (env `PAPERCUSP_MCP_PROXY_MAX_IN_FLIGHT`).
+   * Injectable so tests can drive shedding without spinning up hundreds of real connections.
+   */
+  maxInFlight?: number;
+  /**
+   * EI-19305299022434394 — the absolute ceiling (ms) on how long a NON-idempotent forward
+   * (a real tools/call: 'keyed' or 'opaque') may hold its upstream socket waiting for response
+   * headers, distinct from `handshakeTimeoutMs` (which bounds only the write-free control-plane
+   * batch). Generous by design — well above any legitimate tool's real runtime (`build:typecheck`
+   * ~160s) — purely to stop the 32-89 minute silent parks a stalled-but-connected upstream can
+   * otherwise hold a socket for. 0/undefined at the option level falls back to
+   * `DEFAULT_MAX_HOLD_MS` (env `PAPERCUSP_MCP_PROXY_MAX_HOLD_MS`); pass `0` explicitly to disable.
+   */
+  maxHoldMs?: number;
+  /**
+   * EI-19305299022434394 — how often (ms) to log/record an in-flight heartbeat while at least
+   * one forward is outstanding, so a stalled proxy is LOUD instead of silent (the proxy previously
+   * logged only on completion/error, so total upstream silence produced total proxy silence too —
+   * 106 minutes with zero log lines during the measured outage). Defaults to
+   * `DEFAULT_HEARTBEAT_INTERVAL_MS` (env `PAPERCUSP_MCP_PROXY_HEARTBEAT_MS`); `0` disables.
+   */
+  heartbeatIntervalMs?: number;
   log?: (s: string) => void;
 }
 
@@ -511,6 +550,35 @@ export function effectiveRetryWindowMs(url: string, windowMs: number): number {
   return isCheapRepeatingBeat(url) ? Math.min(CHEAP_REPEATING_BEAT_RETRY_WINDOW_MS, windowMs) : windowMs;
 }
 
+/**
+ * EI-19305299022434394 — the admission-control ceiling on TOTAL concurrent forwards this proxy
+ * instance will hold at once, independent of `DEFAULT_MAX_UPSTREAM_SOCKETS` (which bounds
+ * upstream TCP connections). Deliberately well ABOVE the socket bound so ordinary agent-count
+ * queuing behind a busy-but-healthy upstream is never shed — this ceiling exists to catch the
+ * genuinely runaway case (thousands held open) that the socket bound alone would still allow to
+ * pile up in the agent's internal pending-request queue rather than being surfaced to a caller
+ * at all.
+ */
+export const DEFAULT_MAX_IN_FLIGHT = Number(process.env.PAPERCUSP_MCP_PROXY_MAX_IN_FLIGHT ?? 200);
+/**
+ * EI-19305299022434394 — see `McpProxyOptions.maxHoldMs`. 10 minutes is comfortably above any
+ * legitimate tool's real runtime (`build:typecheck` ~160s, `capability:bash` ~120s) while still
+ * cutting off the 32-89 minute silent parks the report measured.
+ */
+export const DEFAULT_MAX_HOLD_MS = Number(process.env.PAPERCUSP_MCP_PROXY_MAX_HOLD_MS ?? 10 * 60_000);
+/** EI-19305299022434394 — see `McpProxyOptions.heartbeatIntervalMs`. */
+export const DEFAULT_HEARTBEAT_INTERVAL_MS = Number(process.env.PAPERCUSP_MCP_PROXY_HEARTBEAT_MS ?? 30_000);
+
+/**
+ * Whether a NEW request should be shed (429, before opening any upstream socket) given how many
+ * forwards are already in flight. PURE + unit-tested. `maxInFlight <= 0` disables shedding
+ * entirely (unbounded, the pre-fix behavior) — an explicit opt-out, never the default.
+ */
+export function shouldShedForInFlight(currentInFlight: number, maxInFlight: number): boolean {
+  if (maxInFlight <= 0) return false;
+  return currentInFlight >= maxInFlight;
+}
+
 /** Build the proxy HTTP server (does NOT listen — caller invokes .listen, or use
  *  startMcpProxy). Exposed for tests (drive it against a stub upstream). */
 export function createMcpProxy(opts: McpProxyOptions): http.Server {
@@ -531,7 +599,37 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
     recordProxyFailure({ pid: process.pid, listenPort: opts.listenPort, target, ...rec });
   };
 
-  return http.createServer((req, res) => {
+  // EI-19305299022434394 — admission control + visibility state for THIS proxy instance.
+  // `inFlightStarts` maps a per-request sequence id to its start time so the heartbeat can
+  // report how long the OLDEST outstanding forward has been held, not just a bare count.
+  const maxInFlight = opts.maxInFlight ?? DEFAULT_MAX_IN_FLIGHT;
+  const maxHoldMs = opts.maxHoldMs ?? DEFAULT_MAX_HOLD_MS;
+  const inFlightStarts = new Map<number, number>();
+  let nextInFlightId = 0;
+
+  // Half 2 of EI-19305299022434394: the proxy previously logged ONLY on completion/error, so a
+  // stalled upstream that never completes anything produced total silence (106 minutes with zero
+  // log lines during the measured outage) — indistinguishable from an idle proxy. Emit a periodic
+  // beat whenever at least one forward is outstanding.
+  const heartbeatIntervalMs = opts.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS;
+  let heartbeatTimer: NodeJS.Timeout | undefined;
+  if (heartbeatIntervalMs > 0) {
+    heartbeatTimer = setInterval(() => {
+      const count = inFlightStarts.size;
+      if (count <= 0) return;
+      const now = Date.now();
+      let oldestStartedAt = now;
+      for (const startedAt of inFlightStarts.values()) {
+        if (startedAt < oldestStartedAt) oldestStartedAt = startedAt;
+      }
+      const oldestAgeMs = now - oldestStartedAt;
+      log(`heartbeat: ${count} request(s) in flight, oldest held ${Math.round(oldestAgeMs / 1000)}s`);
+      record({ kind: 'heartbeat', inFlight: count, oldestAgeMs, maxInFlight });
+    }, heartbeatIntervalMs);
+    heartbeatTimer.unref?.();
+  }
+
+  const server = http.createServer((req, res) => {
     if (req.method === 'GET' && req.url === MCP_PROXY_LOCAL_HEALTH_PATH) {
       let target: McpProxyTarget | null = null;
       try {

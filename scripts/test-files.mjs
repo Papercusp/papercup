@@ -311,7 +311,7 @@ const MID_INSTALL_HINT =
  * (possibly-hanging) spawnSync call begins, so it survives even if the outer
  * caller kills this process on its own timeout.
  */
-function warnIfInstallInFlight(label) {
+export function warnIfInstallInFlight(label) {
   let peek;
   try {
     peek = peekFsMutexSync(repoLockName());

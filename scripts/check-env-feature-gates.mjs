@@ -104,6 +104,11 @@ const ALLOW = new Set([
   // verified to actually run.
   'PAPERCUSP_MEMORY_CONFLICT_CHECK', // default ON (memory:remember conflict-check); =off kill-switch
   'PAPERCUSP_SU_MEMORY_INJECTION', // default ON (P-050 su-session memory prelude); =off kill-switch
+  // EI-19305813023320659 (2026-08-02): default-ON, fail-open, STRICTLY ADVISORY
+  // work_items:create dedup guard (never blocks a create, only surfaces a
+  // "this looks already filed" hint) — same shape as the two entries just
+  // above, not a pending "should this be on?" capability decision.
+  'PAPERCUSP_WI_FULLTEXT_DUPE', // default ON (work_items:create fulltext-lexical dupe hint); =off kill-switch
   // ── EI-2390 (2026-07-18 audit): 61 boolean PAPERCUSP_ gates newly classified — every one
   //    is an internal ops/dev/tuning toggle (watchdog kill-switch, sidecar boot-mode select,
   //    or an internal-algorithm dial), never a user-facing capability a human would flip via
