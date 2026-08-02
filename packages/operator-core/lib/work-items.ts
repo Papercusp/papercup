@@ -3496,21 +3496,95 @@ export function depsBlockedExclusionSql(sql: OrgSql) {
      WHERE d.workspace_id = 'default'
        AND d.dep_type = 'blocks'
        AND d.blocked_ref = wi.feature_id
-       AND (
-         EXISTS (
-           SELECT 1 FROM harness_shared.harness_features_consolidated bf
-            WHERE bf.workspace_id = wi.workspace_id
-              AND (bf.harness_slug || '#' || bf.feature_id) = d.blocker_ref
-              AND bf.status NOT IN ('passed', 'deprecated', 'done', 'dropped')
-         )
-         OR EXISTS (
-           SELECT 1 FROM harness_shared.engineer_issues bi
-            WHERE bi.workspace_id = wi.workspace_id
-              AND bi.issue_id = d.blocker_ref
-              AND bi.state NOT IN ('resolved', 'closed', 'done', 'dropped')
-         )
-       )
+       AND ${unsatisfiedBlockerSql(sql)}
   )`;
+}
+
+/**
+ * "This blocker is UNSATISFIED" — the inner leg of the blocking floor above, as ONE fragment.
+ * Assumes a `work_item_deps` row aliased `d` and the blocked candidate aliased `wi`.
+ *
+ * A blocker is SATISFIED iff TERMINAL or ABSENT, in its own family's vocabulary (feature =
+ * passed/deprecated/done/dropped; issue = resolved/closed/done/dropped), resolved within the
+ * BLOCKED item's own workspace (migration 719 — see the floor's header).
+ *
+ * Extracted for P-013, and for exactly the reason D-007 existed: `readUnresolvedDepBlockers`
+ * below has to NAME the blockers the claim path considers blocking, so it must not carry its
+ * own copy of "is this blocker done?". With two copies, the warning drifts from the floor and
+ * starts naming blockers the queue does not gate on (or stays silent on ones it does) — which
+ * is worse than no warning, because a warning that disagrees with the floor teaches the reader
+ * to distrust both. Note the split this deliberately does NOT touch: the BLOCKED-side ref form
+ * stays per-family (bare for issues, harness-qualified for features) — unifying that would
+ * over-gate the feature family (D-007's retraction). Only the BLOCKER side is shared.
+ */
+function unsatisfiedBlockerSql(sql: OrgSql) {
+  return sql`(
+    EXISTS (
+      SELECT 1 FROM harness_shared.harness_features_consolidated bf
+       WHERE bf.workspace_id = wi.workspace_id
+         AND (bf.harness_slug || '#' || bf.feature_id) = d.blocker_ref
+         AND bf.status NOT IN ('passed', 'deprecated', 'done', 'dropped')
+    )
+    OR EXISTS (
+      SELECT 1 FROM harness_shared.engineer_issues bi
+       WHERE bi.workspace_id = wi.workspace_id
+         AND bi.issue_id = d.blocker_ref
+         AND bi.state NOT IN ('resolved', 'closed', 'done', 'dropped')
+    )
+  )`;
+}
+
+/** One unresolved blocker of a work-item, as stored on the `work_item_deps` edge. */
+export interface UnresolvedDepBlocker {
+  /** The blocker's ref AS STORED on the edge: bare for an issue, harness-qualified for a feature. */
+  ref: string;
+  /** The edge's own `blocker_kind` ('issue' | 'feature') — read off the edge, never re-derived. */
+  kind: string;
+}
+
+/**
+ * NAME the unresolved blockers of ONE work-item (P-013) — the read behind
+ * `blockedClaimWarning` in work_items:claim.
+ *
+ * This is a REPORTING read, not a floor: per D-008 the dependency-blocking floor gates
+ * SELF-SELECT only, and the by-id claim is the deliberate operator override (taking a blocked
+ * item by name is how you take ownership in order to unblock it). So this never refuses
+ * anything — it exists so the claim can SUCCEED and still tell the claimer what it walked into,
+ * which is the WI-5826 remedy shape (the defect there was a missing SIGNAL, not a missing floor).
+ *
+ * The blocked-side ref form is chosen PER FAMILY, matching the two floors exactly: issue-family
+ * rows are keyed by their BARE feature_id (`depsBlockedExclusionSql`), feature-family rows by
+ * `<harness>#<feature_id>` (`harness_shared.work_item_is_blocked`). The CASE picks exactly one
+ * form per row, so this never matches both and never over-reports.
+ *
+ * Fail-soft is the CALLER's contract, not this function's: it throws like any other read, and
+ * `claim.ts` degrades to no-warning. That direction is deliberate — an advisory that fires
+ * spuriously during a PG blip would be worse than silence. It differs from WI-6737's checkpoint
+ * case for a concrete reason: that warning ASSERTED "no checkpoint was ever written", so its
+ * swallowed error became a false positive claim; this one asserts nothing when it says nothing.
+ */
+export async function readUnresolvedDepBlockers(
+  id: string,
+  harness?: string,
+): Promise<UnresolvedDepBlocker[]> {
+  const { sql } = getOrgPg();
+  const rows = await sql<{ blocker_ref: string; blocker_kind: string }[]>`
+    SELECT DISTINCT d.blocker_ref, d.blocker_kind
+      FROM harness_shared.work_items wi
+      JOIN harness_shared.work_item_deps d
+        ON d.workspace_id = 'default'
+       AND d.dep_type = 'blocks'
+       AND d.blocked_ref = CASE
+             WHEN wi.item_kind IN ('bug', 'change', 'task') THEN wi.feature_id
+             ELSE wi.harness_slug || '#' || wi.feature_id
+           END
+     WHERE wi.feature_id = ${id}
+       AND wi.workspace_id = ${activeWorkspaceId()}
+       AND ${harness ? sql`wi.harness_slug = ${harness}` : sql`TRUE`}
+       AND ${unsatisfiedBlockerSql(sql)}
+     ORDER BY d.blocker_ref
+     LIMIT 25`;
+  return rows.map((r) => ({ ref: r.blocker_ref, kind: r.blocker_kind }));
 }
 
 /**

@@ -106,6 +106,10 @@ beforeAll(async () => {
     // edit as the migration, which is the discipline the 498/505/664 drift
     // comment above exists to enforce.
     '693-agent-facts-federation-stamp-regime.sql',
+    // WI-6935 (b): `evicted_at` — stamped alongside `retracted_at` by the per-scope
+    // cap so a machine eviction stops being indistinguishable from a deliberate
+    // retract. Same discipline again: added in the SAME edit as the migration.
+    '722-agent-facts-evicted-at.sql',
   ];
   // EI-18808675015292160: applies the list (EI-6887 strip semantics unchanged)
   // but AUDITS it first against the real sql/ dir — so the "list DRIFTED from the

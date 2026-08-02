@@ -274,6 +274,52 @@ describe('events:await wrapper defaults', () => {
   });
 });
 
+describe('P-004/D-002 — the ZERO-PARAM-FAMILY-WITH-A-SUFFIX guard', () => {
+  // keyMatchesCatalog answers true for any `<family-prefix>:<anything>`, and the EI-10870
+  // guard above consumes that as PROOF an emitter exists. For a family declaring NO params
+  // nothing ever fires a suffixed form, so the orphan guard stayed silent on a structurally
+  // dead key: 42 awaits from 6 agents, 100% timeout, ZERO real fires ever.
+  it('WARNS on a suffixed key for a no-param family — and still REGISTERS it (warn, never reject)', async () => {
+    const out = await call({ event: 'work-item:claimable:p2p-release-verify-lane' });
+
+    expect(out.zero_param_family_suffix).toBe(true);
+    expect(out.zero_param_family_suffix_advice).toMatch(/declares NO key params/);
+    expect(out.zero_param_family_suffix_advice).toMatch(/can only TIME OUT/);
+    // This family IS payloadFiltered, so the advice must name the ACTUAL fix — scope in
+    // the payload, not the key. That is the mistake these six agents made.
+    expect(out.zero_param_family_suffix_advice).toMatch(/payload_filter/);
+
+    expect(out.ok).toBe(true);
+    expect(registerAwait).toHaveBeenCalledTimes(1);
+  });
+
+  it('WARNS on the PATTERN form too — the case EVERY other registration guard skips', async () => {
+    // requiredParamPrefixMismatch / the orphan probe / the announced-gate probe / the
+    // done-latch are all gated on `!patternAwait`, so for a glob the ABSENCE of a warning
+    // was never evidence of anything. This one is decidable from the literal head.
+    const out = await call({ event: 'work-item:claimable:*' });
+    expect(out.zero_param_family_suffix).toBe(true);
+    expect(out.ok).toBe(true);
+    expect(registerAwait).toHaveBeenCalledTimes(1);
+  });
+
+  it('stays SILENT on the canonical bare key (1913 awaits / 1221 real fires — the healthy path)', async () => {
+    const out = await call({ event: 'work-item:claimable' });
+    expect(out.zero_param_family_suffix).toBeUndefined();
+    expect(out.zero_param_family_suffix_advice).toBeUndefined();
+  });
+
+  it('stays SILENT on an OPTIONAL-param family suffix — release:green:<pipeline> is a real key', async () => {
+    // The plan item assumed the wildcard was itself the defect; it is not. This family
+    // genuinely emits a scoped form, so neither the concrete nor the glob key is dead.
+    for (const event of ['release:green:papercusp', 'release:green:*']) {
+      vi.clearAllMocks();
+      const out = await call({ event });
+      expect(out.zero_param_family_suffix, event).toBeUndefined();
+    }
+  });
+});
+
 describe('EI-10870 — the ORPHAN-AWAIT guard (a key nothing emits can only ever time out)', () => {
   it('WARNS on a key with no registered emitter — and still REGISTERS it (warn, never reject)', async () => {
     // The real orphan: 14 settled awaits, 0 fires ever, appears nowhere in the tree.

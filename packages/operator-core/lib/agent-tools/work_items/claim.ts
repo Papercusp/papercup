@@ -23,7 +23,9 @@ import {
   claimWorkItem,
   classifyClaimFailure,
   getWorkItem,
+  readUnresolvedDepBlockers,
   readWorkItemClaimHoldProvenance,
+  type UnresolvedDepBlocker,
 } from '../../work-items';
 import { lookupWorkItem } from './_lookup';
 import { runBulk, bulkContent, type BulkItemResult } from '../_bulk';
@@ -109,6 +111,45 @@ export function terminalClaimWarning(
     'ownership / attach follow-up) — but this is NOT fresh work. Do NOT rebuild it: read the ' +
     'completion first and verify against the tree. If you wanted new work, release this and use ' +
     'scheduler:get_next instead.'
+  );
+}
+
+/**
+ * P-013 (work-item-dependency-edges-2026-08-02): the warning a by-id claim MUST carry when the
+ * claimed row has UNRESOLVED BLOCKERS. The exact parallel of `terminalClaimWarning` above, for
+ * the same reason and with the same contract.
+ *
+ * D-008 settled that dependency-blocking is a READINESS floor, so it gates SELF-SELECT only and
+ * the by-id claim stays the deliberate operator override: naming a blocked item is how you take
+ * ownership OF it in order to unblock it, and adding a floor here would break EI-8972's tested
+ * escape hatch and make blocked work unreopenable by name. But the by-id claimer was then told
+ * NOTHING — `scheduler:get_next` will not serve this item, and the claim returned a bare ok:true
+ * that is indistinguishable from claiming ready work. That is the WI-5826 defect class exactly:
+ * not a missing floor, a missing SIGNAL, fixed in the claim TOOL's response rather than in the
+ * UPDATE.
+ *
+ * Pure + exported so both halves of the guarantee are directly testable — the claim must keep
+ * SUCCEEDING (D-008) AND keep WARNING (this) — and so a future edit cannot silently drop one.
+ * Takes the already-read blockers rather than reading them itself, which is what keeps it pure;
+ * `readUnresolvedDepBlockers` is the read, shared with the floor's own predicate so this can
+ * never name a blocker the queue does not gate on.
+ */
+export function blockedClaimWarning(
+  blockers: readonly UnresolvedDepBlocker[] | null | undefined,
+): string | null {
+  if (!blockers || blockers.length === 0) return null;
+  const named = blockers.map((b) => b.ref).filter((r) => r.trim() !== '');
+  if (named.length === 0) return null;
+  const shown = named.slice(0, 8);
+  const more = named.length - shown.length;
+  return (
+    `⚠ THIS ITEM IS BLOCKED by ${named.length} unresolved ${named.length === 1 ? 'dependency' : 'dependencies'}: ` +
+    `${shown.join(', ')}${more > 0 ? `, +${more} more` : ''}. ` +
+    'The claim SUCCEEDED — a by-id claim deliberately overrides readiness floors, which is how you ' +
+    'take ownership of blocked work in order to unblock it (D-008) — but scheduler:get_next will ' +
+    'NOT serve this item, so do not read the successful claim as "ready to build". Either work the ' +
+    'blockers first, or — if the edge is stale — drop it with work_items:link { id:<blocker>, ' +
+    'rel:"blocks", target_id:<this item>, remove:true } (the BLOCKER is the source of a blocks edge).'
   );
 }
 

@@ -938,6 +938,20 @@ export function runTscBaselineGate({
     console.log(`✓ ${why}: baseline → ${sumValues(byFile)} errors across ${Object.keys(byFile).length} file(s)`);
   };
 
+  // EI-19321179234197157: a TS1xxx-broken file OUTSIDE the caller's own --mine/--files set never
+  // gates the verdict (see decidePerFile), but it is still surfaced here — unconditionally, ahead
+  // of the verdict switch, so it is never lost whichever branch below returns. tsc's diagnostics
+  // for OTHER files can be incomplete while a file fails to parse, so this doubles as a caveat on
+  // how much to trust an 'ok' verdict alongside it.
+  if (result.unattributedBrokenFiles && result.unattributedBrokenFiles.length > 0) {
+    console.error(
+      `   ⚠ ${result.unattributedBrokenFiles.length} file(s) fail to COMPILE (TS1xxx parse errors) but are NOT in ` +
+        `the set you named — not gating this run (a peer is likely mid-edit on this shared checkout), but tsc's ` +
+        `counts for other files may be incomplete while these stay broken:`,
+    );
+    for (const f of result.unattributedBrokenFiles) console.error(`     - ${f}`);
+  }
+
   switch (result.verdict) {
     case 'fail-syntax':
       console.error(`❌ ${result.brokenFiles.length} file(s) fail to COMPILE (TS1xxx parse errors) — hard fail regardless of baseline:`);
