@@ -32,6 +32,27 @@ describe('queryNamesForTriggerEvent', () => {
     expect(queryNamesForTriggerEvent('')).toEqual([]);
   });
 
+  // WI-6796 — "the accounts tab stopped updating". The Accounts tab (and the /adv
+  // Overview Spend tile) subscribe to `accounts.pool`, which resolves off
+  // operator_account_pool. The table's dominant writer is the inference GATEWAY, a
+  // SEPARATE process, so the operator's in-process notify can never be the only
+  // route — the mig-715 row trigger plus this bridge entry is what carries a
+  // gateway-side usage write through to an open tab. Its sibling
+  // operator_account_override was mapped from the start; the pool was not, so
+  // continuous usage updates were invisible to a tab left open.
+  it('maps operator_account_pool → accounts.pool (WI-6796: the tab live-updates on a gateway usage write)', () => {
+    expect(queryNamesForTriggerEvent('harness_shared.operator_account_pool.changed')).toEqual([
+      'accounts.pool',
+    ]);
+  });
+
+  it('maps operator_account_override → accounts.pool too — the sibling override table (both feed the same tab)', () => {
+    expect(queryNamesForTriggerEvent('harness_shared.operator_account_override.changed')).toEqual([
+      'accounts.sessionOverride',
+      'accounts.pool',
+    ]);
+  });
+
   it('handles userActions which contributes three names from one table', () => {
     expect(queryNamesForTriggerEvent('harness_shared.user_actions.changed')).toEqual(
       expect.arrayContaining(['userActions.byHarness', 'userActions.byKind', 'userActions.recent']),

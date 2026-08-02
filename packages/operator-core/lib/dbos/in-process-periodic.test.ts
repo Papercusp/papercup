@@ -13,6 +13,7 @@ import {
   armInProcessPeriodicChecks,
   buildDefaultChecks,
   disarmInProcessPeriodicChecks,
+  checkRunsInThisProcess,
   inProcessPeriodicChecksArmed,
   runPeriodicCheck,
   type PeriodicCheck,
@@ -130,6 +131,59 @@ describe('armInProcessPeriodicChecks', () => {
     await vi.advanceTimersByTimeAsync(0);
     await vi.advanceTimersByTimeAsync(1000); // fire 3 → runs again
     expect(entered).toBe(2);
+  });
+});
+
+describe('cluster scope — only the primary runs host-scoped sweeps (P-018)', () => {
+  // The defect this pins: host-bootstrap arms this suite under `backgroundWorkers`, whose
+  // comment claims it prevents "a naive interval running N× across :3070 cluster request
+  // workers". It never did — backgroundWorkersEnabled() reads only env, and a forked
+  // worker inherits it. Measured on the 16-worker release cluster: >=7 distinct worker
+  // pids each ran the system-health tick's wide engineer_issues read within one 75s sample.
+  const mk = (name: string, scope?: 'host' | 'process'): PeriodicCheck =>
+    ({ name, intervalMs: 1000, classification: 'must-sample', tick: () => {}, ...(scope ? { scope } : {}) });
+
+  it('defaults to host scope — an unmarked check does NOT run in a cluster worker', () => {
+    expect(checkRunsInThisProcess(mk('system-health'), false)).toBe(false);
+    expect(checkRunsInThisProcess(mk('system-health'), true)).toBe(true);
+  });
+
+  it('runs a process-scoped check in workers AND the primary', () => {
+    expect(checkRunsInThisProcess(mk('connection-pressure', 'process'), false)).toBe(true);
+    expect(checkRunsInThisProcess(mk('connection-pressure', 'process'), true)).toBe(true);
+  });
+
+  it('arms only the process-scoped checks in a worker', () => {
+    const ticks: string[] = [];
+    const checks: PeriodicCheck[] = [
+      { ...mk('host-one'), tick: () => { ticks.push('host-one'); } },
+      { ...mk('per-process', 'process'), tick: () => { ticks.push('per-process'); } },
+    ];
+    armInProcessPeriodicChecks({ checks, isPrimary: false });
+    expect(inProcessPeriodicChecksArmed()).toBe(true);
+    disarmInProcessPeriodicChecks();
+    // and the primary arms both
+    armInProcessPeriodicChecks({ checks, isPrimary: true });
+    expect(inProcessPeriodicChecksArmed()).toBe(true);
+  });
+
+  it('a non-clustered host is UNAFFECTED — isPrimary is true off-cluster, so everything still runs', () => {
+    // The safety property: single-process hosts (dev/staging trees, the desktop's own
+    // operator) must keep every check. node:cluster reports isPrimary true when unforked.
+    for (const c of buildDefaultChecks()) expect(checkRunsInThisProcess(c, true)).toBe(true);
+  });
+
+  it('connection-pressure is the ONLY process-scoped check (it feeds an in-process governor)', () => {
+    // If a future check is marked 'process', that is a deliberate decision and this test
+    // should be updated WITH the reason — not silently widened.
+    const perProcess = buildDefaultChecks().filter((c) => c.scope === 'process').map((c) => c.name);
+    expect(perProcess).toEqual(['connection-pressure']);
+  });
+
+  it('every heavy (shed:true) check is host-scoped — those are the ones that were costing 17x', () => {
+    for (const c of buildDefaultChecks().filter((c) => c.shed)) {
+      expect(checkRunsInThisProcess(c, false)).toBe(false);
+    }
   });
 });
 

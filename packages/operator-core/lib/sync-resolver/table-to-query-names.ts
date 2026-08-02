@@ -269,7 +269,7 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
   // WI-6796 — the pool table itself. This is the CROSS-PROCESS half of the fix:
   // the writer that matters here is the inference GATEWAY, a separate process, so
   // its saveAccountPool can never reach the operator's in-process
-  // notifyOperatorStateSync. Migration 731 attaches emit_change_notify to the
+  // notifyOperatorStateSync. Migration 715 attaches emit_change_notify to the
   // table so the write emits `harness_shared.operator_account_pool.changed`, and
   // this bridge turns that into the camelCase `accounts.pool` the AccountsTab +
   // AdvOverviewTab Spend tile actually subscribe to. Full-bust (bare string) is

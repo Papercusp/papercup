@@ -12,21 +12,32 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 const readOperatorState = vi.fn();
 const writeOperatorState = vi.fn();
+// WI-6793: capture the cross-process announce (pg_notify) the set() path fires.
+const pgNotifyCalls: Array<{ values: unknown[] }> = [];
 
 vi.mock('./operator-state-pg', () => ({
   readOperatorState: (...a: unknown[]) => readOperatorState(...a),
   writeOperatorState: (...a: unknown[]) => writeOperatorState(...a),
 }));
 vi.mock('./workspace-registry', () => ({ activeWorkspaceId: () => 'ws-under-test' }));
+vi.mock('@papercusp/db-org', () => ({
+  getOrgPg: () => ({
+    sql: (_strings: TemplateStringsArray, ...values: unknown[]) => {
+      pgNotifyCalls.push({ values });
+      return Promise.resolve([]);
+    },
+  }),
+}));
 
 import { initFlagOverrideStore, isOverrideStoreConfigured, getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
-import { installFlagOverrideStore, FLAG_OVERRIDES_STATE_KEY } from './flag-override-store';
+import { installFlagOverrideStore, FLAG_OVERRIDES_STATE_KEY, FLAG_CHANGE_CHANNEL } from './flag-override-store';
 
 describe('installFlagOverrideStore', () => {
   beforeEach(() => {
     readOperatorState.mockReset();
     writeOperatorState.mockReset();
+    pgNotifyCalls.length = 0;
     initFlagOverrideStore(null); // start from "no store", the buggy state
   });
   afterEach(() => {
@@ -70,6 +81,22 @@ describe('installFlagOverrideStore', () => {
     expect(isOverrideStoreConfigured()).toBe(true);
     await expect(getFlag(FLAGS.CODEX_GATEWAY_OAUTH_PROXY, 'system')).resolves.toBe(true);
   });
+
+  it('set() announces the write cross-process via pg_notify — the WI-6793 propagation seam', async () => {
+    // WITHOUT this announce, a flags:set converges in other processes only via the
+    // ~5s cache TTL, and sticky onFlagChange subscribers (workspace-brain-scope's
+    // keying latch) hold the pre-flip value until their process restarts.
+    readOperatorState.mockResolvedValue({});
+    writeOperatorState.mockResolvedValue(undefined);
+    installFlagOverrideStore();
+    const { setFlagOverride } = await import('@papercusp/flags/server');
+    await setFlagOverride(FLAGS.CODEX_GATEWAY_OAUTH_PROXY, true);
+    // The announce is fire-and-forget AFTER the awaited write — let it flush.
+    await vi.waitFor(() => expect(pgNotifyCalls.length).toBe(1));
+    const [channel, payload] = pgNotifyCalls[0].values as [string, string];
+    expect(channel).toBe(FLAG_CHANGE_CHANNEL);
+    expect(JSON.parse(payload)).toEqual({ workspaceId: 'ws-under-test', key: FLAGS.CODEX_GATEWAY_OAUTH_PROXY });
+  });
 });
 
 /**
@@ -107,5 +134,31 @@ describe('every standalone sidecar installs the override store (the actual regre
     expect(install, `${what} must install the flag override store`).toBeGreaterThan(-1);
     expect(start, `${what} must reach its start marker (${startMarker})`).toBeGreaterThan(-1);
     expect(install, `${what}: install must run BEFORE any flag can be resolved`).toBeLessThan(start);
+  });
+
+  it.each(ENTRYPOINTS)('$what also LISTENs for cross-process flag flips (WI-6793)', async ({ file, what }) => {
+    // The store makes overrides READABLE; the listener makes runtime FLIPS land. A sidecar
+    // with only the store converges via the ~5s cache TTL — and any sticky onFlagChange
+    // subscriber there holds the pre-flip value until restart (the bg-host scout-key bug).
+    const { readFileSync } = await import('node:fs');
+    const { join } = await import('node:path');
+    const raw = readFileSync(join(__dirname, ...file), 'utf8');
+    const src = raw.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+    expect(src.indexOf('ensureFlagChangeListener()'), `${what} must install the flag-change listener`).toBeGreaterThan(-1);
+  });
+
+  it('hono-host wires the listener in BOTH process roles — request workers AND the cluster primary', async () => {
+    // The clustered primary runs the background machinery (DBOS, routines, scout) but never
+    // startRequestServers — a single worker-path call would miss exactly the process whose
+    // sticky keying latch caused the observed bug.
+    const { readFileSync } = await import('node:fs');
+    const { join } = await import('node:path');
+    const raw = readFileSync(
+      join(__dirname, '..', '..', '..', 'apps', 'operator', 'bin', 'hono-host.ts'),
+      'utf8',
+    );
+    const src = raw.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+    const calls = src.split('ensureFlagChangeListener()').length - 1;
+    expect(calls, 'hono-host needs the listener on the worker path AND in onPrimary').toBeGreaterThanOrEqual(2);
   });
 });

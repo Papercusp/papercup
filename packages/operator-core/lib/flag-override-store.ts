@@ -35,6 +35,43 @@ import { activeWorkspaceId } from './workspace-registry';
 export const FLAG_OVERRIDES_STATE_KEY = 'operator_flag_overrides';
 
 /**
+ * PG NOTIFY channel announcing an override write to EVERY listening process
+ * (WI-6793). `publishFlagChange` (flag-bus.ts) is an in-process dispatch, so
+ * before this channel existed a runtime `flags:set` was invisible to every
+ * OTHER long-running host: sticky `onFlagChange` subscribers (e.g.
+ * workspace-brain-scope's keying latch) held the pre-flip value until their
+ * process restarted — observed live as bg-host writing legacy '@singleton'
+ * scout-tick keys 17+ min after WORKSPACE_COORDINATION flipped ON. The
+ * listener side is flag-change-listener.ts (ensureFlagChangeListener).
+ */
+export const FLAG_CHANGE_CHANNEL = 'flag_override_changed';
+
+let warnedNotifyFailed = false;
+
+/**
+ * Best-effort cross-process announce, AFTER the write committed. Never fails
+ * the write: a NOTIFY miss degrades to the pre-WI-6793 behavior (peers converge
+ * via the override cache TTL; sticky latches wait for a restart), which is
+ * strictly no worse than not announcing at all. Loud once per process so a
+ * standing failure is one greppable line, not silence.
+ */
+async function notifyFlagChange(key: FlagKey): Promise<void> {
+  try {
+    const { getOrgPg } = await import('@papercusp/db-org');
+    const payload = JSON.stringify({ workspaceId: activeWorkspaceId(), key });
+    await getOrgPg().sql`SELECT pg_notify(${FLAG_CHANGE_CHANNEL}, ${payload})`;
+  } catch (err) {
+    if (warnedNotifyFailed || process.env.NODE_ENV === 'test' || process.env.VITEST) return;
+    warnedNotifyFailed = true;
+    console.warn(
+      `[flags] pg_notify(${FLAG_CHANGE_CHANNEL}) failed — other processes will not see this ` +
+        'override until their cache TTL expires (or restart, for sticky subscribers):',
+      err,
+    );
+  }
+}
+
+/**
  * Install the PG-backed runtime override store into the flags lib for THIS process.
  *
  * Registered unconditionally — independent of the PostHog opt-in — so a dev box with no
@@ -57,6 +94,9 @@ export function installFlagOverrideStore(): void {
       if (enabled === null) delete current[key];
       else current[key] = enabled;
       await writeOperatorState(FLAG_OVERRIDES_STATE_KEY, current);
+      // WI-6793: announce cross-process AFTER the write lands. Fire-and-forget —
+      // the write's success must never hinge on the announce.
+      void notifyFlagChange(key);
     },
   });
 }

@@ -753,9 +753,20 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       await one({ id: 'WI-7', checkpoint: 'first', checks: [{ claim: 'X holds', recheck: 'probe X', verified: 'saw X' }] });
       const prior = await lastStored();
 
-      getWorkItemCheckpoint.mockResolvedValue(prior);
+      // Two DIFFERENT reads happen on the append path and they must not be conflated:
+      // the pre-read that fetches the prior to join onto, then the P-003 verify-read
+      // that must see what was just STORED. Pinning both to `prior` fails the
+      // verify-read and the handler returns its error shape instead.
+      let reads = 0;
+      getWorkItemCheckpoint.mockImplementation(async () => {
+        reads += 1;
+        if (reads === 1) return prior;
+        const last = setWorkItemCheckpointWithPrior.mock.results.at(-1);
+        return last ? ((await last.value) as { stored: string | null }).stored : null;
+      });
       withPrior(prior);
       const r = await one({ id: 'WI-7', checkpoint: 'an addendum', append: true });
+      expect(r.ok).toBe(true);
       const stored = await lastStored();
       expect(stored!.match(/## Checks/g) ?? []).toHaveLength(1);
       expect(stored).toContain('first');

@@ -25,6 +25,7 @@ import { appendFileSync, mkdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { installFlagOverrideStore } from '../flag-override-store';
+import { ensureFlagChangeListener } from '../flag-change-listener';
 import { startGatewayService, DEFAULT_GATEWAY_PORT } from './launch';
 import { reportRuntimeVintageOnBoot } from '../runtime-vintage';
 
@@ -79,6 +80,11 @@ export async function runGatewaySidecarMain(): Promise<void> {
   // MUST run BEFORE startGatewayService(), which resolves its flags (e.g. CODEX_GATEWAY_OAUTH_PROXY)
   // at boot. Fail-soft: a store fault degrades to defaults exactly as before, never blocks boot.
   installFlagOverrideStore();
+  // WI-6793: also LISTEN for peer processes' flags:set writes — the store above
+  // makes overrides READABLE here, but without this a flip only converges via the
+  // ~5s cache TTL, and any sticky onFlagChange subscriber would hold the pre-flip
+  // value until restart. Fire-and-forget; bounded retry + fail-soft inside.
+  void ensureFlagChangeListener();
   const svc = await startGatewayService({
     port: Number(process.env.PAPERCUSP_GATEWAY_PORT) || DEFAULT_GATEWAY_PORT,
     workspace: process.env.PAPERCUSP_WORKSPACE || undefined,

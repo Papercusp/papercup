@@ -124,11 +124,11 @@ describe('a BARE work-item premise asserts existence — never completion (D-026
   it('holds on an OPEN item, where the same item cited #completion is broken', async () => {
     getWorkItem.mockResolvedValue({ state: 'open' });
     const probes = premiseProbes();
-    // DIAG A: sequential — warm the module graph one ref at a time.
-    const seqA = await resolvePremiseStamps(['WI-6560'], probes);
-    const seqB = await resolvePremiseStamps(['WI-6560#completion'], probes);
+    // DIAG: a NONEXISTENT id. The mock says {state:'open'} for everything, so
+    // any 'unresolvable' can ONLY have come from the real store.
+    const ghost = await resolvePremiseStamps(['WI-99999999', 'WI-99999999#completion'], probes);
     // eslint-disable-next-line no-console
-    console.log('DIAG seq mockCalls=', getWorkItem.mock.calls.length, 'seq=', JSON.stringify([seqA[0], seqB[0]]));
+    console.log('DIAG ghost mockCalls=', getWorkItem.mock.calls.length, 'ghost=', JSON.stringify(ghost));
     const [bare, completion] = await resolvePremiseStamps(['WI-6560', 'WI-6560#completion'], probes);
     // eslint-disable-next-line no-console
     console.log('DIAG total mockCalls=', getWorkItem.mock.calls.length, 'stamps=', JSON.stringify([bare, completion]));

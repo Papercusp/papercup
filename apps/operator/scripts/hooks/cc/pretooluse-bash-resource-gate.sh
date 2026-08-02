@@ -461,24 +461,47 @@ def _scan_strip_written_heredocs(cmd):
         _repl, cmd, flags=re.M)
 
 
+# Shell metacharacters neutralized when a MULTI-WORD quoted span is unwrapped.
+# Blanking them keeps the span's words visible to a guard while guaranteeing the
+# unwrap can never manufacture a separator/redirect that wasn't there.
+_SCAN_INERT_METACHARS = re.compile(r'[;&|<>()`{}\n]')
+
+
+def _scan_unquote_span(inner):
+    """The scannable text for a quoted span.
+
+    qm collapses a multi-word span to `""` — correct for qm, whose rules are
+    UNANCHORED substrings, so the payload is recovered on its own line anyway.
+    Here it LOSES information a guard needs: `pkill -f "npm run test"` became
+    `pkill -f ""` and the pkill guard (which matches on the pattern ARGUMENT)
+    stopped firing — a real regression caught by the existing suite.
+
+    So keep the content and neutralize the metacharacters instead. The words stay
+    matchable; `echo "done; ok" && crontab -e` cannot gain a fake `;` separator.
+    Guards stay anchored (`re.match`), so surfacing inner words does NOT create
+    false positives: `git commit -m "explain git reset --hard"` still starts its
+    segment with `git commit`, which no destructive-git pattern matches."""
+    word = _scan_bare_word(inner)
+    if word is not None:
+        return word
+    return _SCAN_INERT_METACHARS.sub(' ', inner)
+
+
 def _scan_dequote(cmd):
-    """Unquote single-word quoted spans, decode $'...', unescape backslashes.
+    """Unquote quoted spans, decode $'...', unescape backslashes.
     A quoted span containing a command substitution keeps the substitution."""
     def _dq(m):
         span = m.group(0)
         subs = re.findall(r'\$\([^)]*\)|`[^`]*`', span)
         if subs:
             return ' '.join(subs)
-        word = _scan_bare_word(span[1:-1])
-        return word if word is not None else '""'
+        return _scan_unquote_span(span[1:-1])
 
     def _ansi(m):
-        word = _scan_bare_word(_scan_decode_ansi_c(m.group(1)))
-        return word if word is not None else "''"
+        return _scan_unquote_span(_scan_decode_ansi_c(m.group(1)))
 
     def _sq(m):
-        word = _scan_bare_word(m.group(0)[1:-1])
-        return word if word is not None else "''"
+        return _scan_unquote_span(m.group(0)[1:-1])
 
     out = re.sub(r'"(?:[^"\\]|\\.)*"', _dq, cmd)
     out = re.sub(r"\$'((?:[^'\\]|\\.)*)'", _ansi, out)

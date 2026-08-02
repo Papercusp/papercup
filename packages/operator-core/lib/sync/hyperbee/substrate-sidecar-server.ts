@@ -26,6 +26,7 @@ import {
   type SubstrateSidecarHost,
 } from './substrate-sidecar-host';
 import { installFlagOverrideStore } from '../../flag-override-store';
+import { ensureFlagChangeListener } from '../../flag-change-listener';
 import { resolveSubstrateSocketPath, reapOrphanedSubstrateSockets } from './substrate-socket-path';
 import {
   startEventLoopLagMonitor,
@@ -170,6 +171,13 @@ export function runSubstrateSidecarServer(): void {
   // no PG connection is opened until the first flag read — so the hermetic guarantee is preserved.
   // Idempotent + fail-soft: a store fault degrades to defaults exactly as before, never blocks boot.
   installFlagOverrideStore();
+  // WI-6793: LISTEN for peer processes' flags:set writes (cross-process
+  // invalidation — see flag-change-listener.ts). SERVER MAIN only, like the
+  // store install above: bootHarnessSubstrate() stays PG-free + hermetic. This
+  // one call does open a PG LISTEN connection eagerly (with bounded retry,
+  // fail-soft) — acceptable here because the server main is the live process
+  // entry, never a merge-test import.
+  void ensureFlagChangeListener();
   const host = createSubstrateSidecarHost();
   // P-005: give the sidecar its OWN leak/saturation instrumentation. The substrate
   // (and thus the +1GB/min leak) runs in THIS process under the sidecar flag, so

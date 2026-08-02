@@ -34,6 +34,7 @@ import * as net from 'node:net';
 import { StringDecoder } from 'node:string_decoder';
 import { spawnInvokeOnce, type SpawnInvokeOnceResult } from '../dbos/orchestrator-runner';
 import { installFlagOverrideStore } from '../flag-override-store';
+import { ensureFlagChangeListener } from '../flag-change-listener';
 import { resolveSpawnerSocketPath } from './spawner-socket-path';
 import { execProcess, type ExecParams } from './sidecar-exec-process';
 
@@ -77,6 +78,10 @@ export function runSpawnerSidecarServer(): void {
   // via orchestrator-runner. Installed HERE, in the server main, so BOTH entry routes inherit it.
   // Idempotent + fail-soft: a store fault degrades to defaults exactly as before, never blocks boot.
   installFlagOverrideStore();
+  // WI-6793: LISTEN for peer processes' flags:set writes (cross-process
+  // invalidation — see flag-change-listener.ts). Fire-and-forget; bounded
+  // retry + fail-soft inside.
+  void ensureFlagChangeListener();
   const socketPath = resolveSpawnerSocketPath();
   const socketDir = path.dirname(socketPath);
 

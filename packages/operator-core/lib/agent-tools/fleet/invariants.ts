@@ -32,8 +32,14 @@
  */
 import { randomUUID } from 'node:crypto';
 import { getOrgPg } from '@papercusp/db-org';
-import type { OrgSql } from '@papercusp/db-org';
 import { pgReadQuery } from '../../pg-read-query';
+
+// `@papercusp/db-org` does not export an `OrgSql` type — importing one from there is a hard
+// TS2305 that reds the fleet's typecheck gate. Derive it from getOrgPg (already imported above),
+// which is exactly what pg-read-query.ts does. Deliberately NOT imported from
+// operator-core/lib/work-items (which does export it): that would pull this leaf module into a
+// heavy sibling for a type that is one line to restate.
+type OrgSql = ReturnType<typeof getOrgPg>['sql'];
 
 /**
  * Per-invariant caps, deliberately tighter than pgReadQuery's own defaults

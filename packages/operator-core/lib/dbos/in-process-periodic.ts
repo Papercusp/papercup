@@ -27,6 +27,7 @@
  */
 import { shouldShedHeavyTick } from './tick-load-shed';
 import { createConnectionPressureGovernor } from '../connection-pressure-governor';
+import nodeCluster from 'node:cluster';
 import { managedSetInterval, type ManagedHandle, type TimerClassification } from '@papercusp/scheduled-registry';
 
 /** One in-process periodic check. The tick must be idempotent — a throw is
@@ -50,7 +51,39 @@ export interface PeriodicCheck {
    *  for a check here to go unclassified. Threaded into `armInProcessPeriodicChecks`'s
    *  `managedSetInterval` call so it also surfaces in schedule:inventory. */
   classification: TimerClassification;
+  /**
+   * Who runs this check when the host is a node CLUSTER (P-018,
+   * db-performance-remediation-2026-07-26).
+   *
+   * `'host'` (DEFAULT) — the cluster PRIMARY only. Correct for every sweep that reads or
+   * reconciles SHARED state: running it in each request worker just multiplies identical
+   * work against one database.
+   *
+   * `'process'` — every process, primary and workers. ONLY for a check that maintains
+   * PER-PROCESS state, where skipping a worker would leave that worker's own state unfed.
+   *
+   * ── Why this field exists ────────────────────────────────────────────────────
+   * host-bootstrap arms this suite under `backgroundWorkers && !utilityHost`, and its
+   * comment claims that gate stops "a naive interval running N× across :3070 cluster
+   * request workers". It does NOT: `backgroundWorkersEnabled()` reads only env
+   * (PAPERCUSP_BACKGROUND_WORKERS / PAPERCUSP_HONO_PORT), and a forked cluster worker
+   * INHERITS its parent's env, so it returns true in every worker. Measured 2026-08-01
+   * on the 16-worker :3070 release cluster: ≥7 distinct worker pids each independently
+   * ran the system-health tick's wide `engineer_issues` read inside one 75s sample, and
+   * the fleet-wide rate implied ~22.6 concurrent tickers. The same file already uses
+   * `cluster.isPrimary` for exactly this class (the credential-sync watcher, EI-3385) and
+   * cross-references it as the right gate — this check suite simply never got it.
+   *
+   * On a NON-clustered host `cluster.isPrimary` is true, so single-process hosts (the
+   * dev/staging trees, the desktop's own operator) are unaffected.
+   */
+  scope?: 'host' | 'process';
   tick: () => Promise<void> | void;
+}
+
+/** Whether `check` should run in THIS process. Exported pure for the unit test. */
+export function checkRunsInThisProcess(check: PeriodicCheck, isPrimary: boolean): boolean {
+  return isPrimary || check.scope === 'process';
 }
 
 export interface RunCheckDeps {
@@ -147,6 +180,14 @@ const connectionPressureCheck: PeriodicCheck = {
   intervalMs: 30_000,
   // D-004 (P-011): live server-wide PG connection saturation has no change-event source.
   classification: 'must-sample',
+  // P-018: the ONE check that stays per-process. The READING is server-wide, but it feeds
+  // `connectionPressureGovernor` — an IN-PROCESS AIMD governor that sheds THIS process's
+  // agent concurrency. Primary-only would leave every worker's governor unfed and silently
+  // disable its backpressure, which is a much worse failure than 16 extra cheap pgHealth()
+  // probes. Cost asymmetry decides it: this is one light query (classification
+  // 'must-sample', shed:false by design), whereas the host-scoped checks it sits beside
+  // cost hundreds of ms of DB work each.
+  scope: 'process',
   tick: async () => {
     const { pgHealth } = await import('../dev-data');
     const h = await pgHealth().catch(() => null);
@@ -1069,10 +1110,16 @@ let armed: ArmedCheck[] | null = null;
  * checks are shed-eligible.
  */
 export function armInProcessPeriodicChecks(
-  opts: { checks?: PeriodicCheck[]; deps?: RunCheckDeps } = {},
+  opts: { checks?: PeriodicCheck[]; deps?: RunCheckDeps; isPrimary?: boolean } = {},
 ): { stop: () => void } {
   if (armed) return { stop: disarmInProcessPeriodicChecks };
-  const checks = opts.checks ?? buildDefaultChecks();
+  const all = opts.checks ?? buildDefaultChecks();
+  // P-018: in a node cluster, only the PRIMARY runs the host-scoped sweeps — see
+  // PeriodicCheck.scope for why `backgroundWorkersEnabled()` never actually provided this.
+  // `isPrimary` is injectable so the test can exercise the worker branch without forking.
+  const isPrimary = opts.isPrimary ?? nodeCluster.isPrimary;
+  const checks = all.filter((c) => checkRunsInThisProcess(c, isPrimary));
+  const skipped = all.length - checks.length;
   armed = checks.map((check) => ({
     name: check.name,
     // Return the tick's PROMISE to the registry — `() => void runPeriodicCheck(...)` discarded it, which
@@ -1087,7 +1134,9 @@ export function armInProcessPeriodicChecks(
     }),
   }));
   console.log(
-    `[in-process-periodic] armed ${checks.length} in-process check(s): ${checks.map((c) => c.name).join(', ')}`,
+    `[in-process-periodic] armed ${checks.length} in-process check(s)` +
+      `${isPrimary ? '' : ` (cluster WORKER — ${skipped} host-scoped check(s) left to the primary, P-018)`}` +
+      `: ${checks.map((c) => c.name).join(', ')}`,
   );
   return { stop: disarmInProcessPeriodicChecks };
 }

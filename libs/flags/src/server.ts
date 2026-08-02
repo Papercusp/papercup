@@ -128,6 +128,19 @@ export function isOverrideStoreConfigured(): boolean {
   return storeSlot().store !== null;
 }
 
+/**
+ * Drop the override read-cache (one scope, or every scope) so the next
+ * `getFlag()` re-reads the store. The cross-process invalidation hook: a
+ * process that learns of a peer's `setFlagOverride()` (e.g. via PG NOTIFY)
+ * must bust this cache BEFORE re-emitting `emitFlagChange`, or sticky
+ * subscribers re-resolving on the change event can re-read the ≤TTL-stale
+ * map and re-latch the OLD value.
+ */
+export function bustOverrideReadCache(scope?: string): void {
+  if (scope !== undefined) overrideCache.delete(scope);
+  else overrideCache.clear();
+}
+
 let warnedNoOverrideStore = false;
 
 /** Test seam: re-arm the one-time latch without swapping the store. */

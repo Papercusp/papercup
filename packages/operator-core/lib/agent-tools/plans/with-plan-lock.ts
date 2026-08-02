@@ -65,6 +65,15 @@ async function capturePlanPartsForWrite(
 export interface PlanWriteMeta {
   version: number;
   contentHash: string;
+  /**
+   * The plan's live structured columns, read INSIDE the lock (P-004). A mutator that
+   * must validate against the plan's declared schema needs the schema as of this
+   * write, not as of some earlier unlocked read — otherwise a concurrent
+   * plans:set-input-schema could land between the two and the data would be checked
+   * against a schema that is no longer the plan's.
+   */
+  templateData: unknown;
+  inputSchema: unknown;
 }
 
 /**
@@ -245,9 +254,15 @@ export async function withPlanLock<T>(
     }
 
     const rows = await tx<
-      { content: string; version: string | number; content_hash: string }[]
+      {
+        content: string;
+        version: string | number;
+        content_hash: string;
+        template_data: unknown;
+        input_schema: unknown;
+      }[]
     >`
-      SELECT content, version, content_hash
+      SELECT content, version, content_hash, template_data, input_schema
         FROM harness_shared.harness_plans
        WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
          AND plan_slug = ${slug}
@@ -255,7 +270,12 @@ export async function withPlanLock<T>(
     const cur = rows[0] ?? null;
     const curVersion = cur ? Number(cur.version) : 0;
     const meta: PlanWriteMeta | null = cur
-      ? { version: curVersion, contentHash: cur.content_hash }
+      ? {
+          version: curVersion,
+          contentHash: cur.content_hash,
+          templateData: cur.template_data ?? null,
+          inputSchema: cur.input_schema ?? null,
+        }
       : null;
 
     const { newBody, value, templateData, inputSchema } = await mutator(cur?.content ?? null, meta);

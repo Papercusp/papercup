@@ -3,6 +3,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 // Map keyed by `<table>:<workspace_id>` → row payload (JSONB-equivalent).
 const store = new Map<string, unknown>();
 
+// WI-6796 — capture the sync invalidations a write fans out. notifyOperatorStateSync
+// lazily `await import('./sync-sse')`s inside a try/catch, so without this mock the
+// whole notify leg is silently swallowed and untestable.
+const notified: { name: string; args: unknown }[] = [];
+vi.mock('./sync-sse', () => ({
+  notifySyncInvalidate: (name: string, args: unknown) => {
+    notified.push({ name, args });
+    return Promise.resolve();
+  },
+}));
+
 vi.mock('./workspace-registry', () => ({ activeWorkspaceId: () => 'test-ws' }));
 vi.mock('./db-encryption', () => ({
   ENCRYPTED_TABLES: new Set<string>(), // tests cover the unencrypted path only
@@ -61,8 +72,14 @@ vi.mock('@papercusp/db-org', () => {
 
 import { readOperatorState, writeOperatorState } from './operator-state-pg';
 
-beforeEach(() => store.clear());
-afterEach(() => store.clear());
+beforeEach(() => {
+  store.clear();
+  notified.length = 0;
+});
+afterEach(() => {
+  store.clear();
+  notified.length = 0;
+});
 
 describe('readOperatorState / writeOperatorState (unencrypted path)', () => {
   it('returns null when no row exists', async () => {
@@ -95,5 +112,37 @@ describe('readOperatorState / writeOperatorState (unencrypted path)', () => {
     store.set('operator_first_run:other-ws', { override: true });
     const got = await readOperatorState<{ override?: boolean }>('operator_first_run', 'other-ws');
     expect(got?.override).toBe(true);
+  });
+});
+
+/**
+ * WI-6796 — the owner reported "the accounts tab stopped updating".
+ *
+ * The Accounts tab subscribes to the `accounts.pool` sync query, which resolves
+ * accountStatus() straight off harness_shared.operator_account_pool. That table is
+ * rewritten continuously by the inference gateway's window projector as it observes
+ * each response's anthropic-ratelimit-unified-* headers — that stream IS the tab's
+ * live data. But operator_account_pool was absent from OPERATOR_STATE_SYNC_NAMES, so
+ * notifyOperatorStateSync early-returned on EVERY pool write and a left-open tab was
+ * never told the numbers moved. It refreshed only on the handful of explicit
+ * notifySyncInvalidate('accounts.pool') action callsites, or on remount.
+ *
+ * These tests pin the fan-out, in BOTH directions: the pool must notify, and a table
+ * with no UI consumer must stay silent (the map is an allow-list, not a default-on).
+ */
+describe('writeOperatorState → sync invalidation fan-out (WI-6796)', () => {
+  it('a pool write invalidates accounts.pool — the Accounts tab live-updates on a gateway usage write', async () => {
+    await writeOperatorState('operator_account_pool', { accounts: [{ id: 'acct-1' }] });
+    expect(notified.map((n) => n.name)).toEqual(['accounts.pool']);
+  });
+
+  it('the sibling override write still invalidates BOTH its queries (unchanged by this fix)', async () => {
+    await writeOperatorState('operator_account_override', { forcedAccounts: ['acct-1'] });
+    expect(notified.map((n) => n.name)).toEqual(['accounts.sessionOverride', 'accounts.pool']);
+  });
+
+  it('an UNMAPPED table notifies nothing — the map stays an allow-list, not default-on', async () => {
+    await writeOperatorState('operator_first_run', { shownAt: '2026-08-02' });
+    expect(notified).toEqual([]);
   });
 });

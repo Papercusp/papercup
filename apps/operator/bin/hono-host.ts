@@ -70,6 +70,7 @@ import nodeCluster from 'node:cluster';
 import { startSinglePrimaryGuard } from '@papercusp/operator-core/lib/system-health/single-primary-check';
 import { startPtyWsServer } from '@papercusp/operator-core/lib/pty-ws';
 import { ensureInvalidationListener } from '@papercusp/operator-core/lib/sync-sse';
+import { ensureFlagChangeListener } from '@papercusp/operator-core/lib/flag-change-listener';
 import {
   startCluster,
   resolveClusterWorkers,
@@ -210,6 +211,13 @@ function startRequestServers(): void {
   // workers on :3070, exactly ONE holding the LISTEN). Fire-and-forget; the
   // helper retries with backoff and is loud on exhaustion.
   void ensureInvalidationListener();
+
+  // WI-6793: subscribe THIS process to cross-process runtime flag flips
+  // (pg_notify from flag-override-store.set). Without it, a `flags:set`
+  // executed in a peer process never reaches this one's sticky onFlagChange
+  // subscribers (workspace-brain-scope's keying latch held a pre-flip value
+  // in bg-host until restart). Fire-and-forget; bounded retry inside.
+  void ensureFlagChangeListener();
 
   // EI-79 observability: a standing event-loop-lag gauge. Silent on a healthy
   // host; logs a single structured warning when p95 loop delay over a 10s window
@@ -569,7 +577,14 @@ const clusterHandle = sidecarMode ? null : startCluster({
     PAPERCUSP_EXPECTED_OPERATOR_PROCS: String(expectedOperatorProcs),
     ...substrateSocketWorkerEnv,
   },
-  onPrimary: () => runBootstrap(), // background machinery (single process in cluster mode)
+  onPrimary: () => {
+    // WI-6793: the clustered PRIMARY runs the background machinery (DBOS,
+    // routines, scout) but never startRequestServers — install the flag-change
+    // LISTEN here too, or exactly the process holding the scout's keying latch
+    // misses runtime flips. Idempotent with the worker-path call in single mode.
+    void ensureFlagChangeListener();
+    return runBootstrap(); // background machinery (single process in cluster mode)
+  },
   onWorker: () => {
     // A worker is request-only: runBootstrap with background gated off (fork env),
     // then start the HTTP/loop servers. In single mode this is the same process as

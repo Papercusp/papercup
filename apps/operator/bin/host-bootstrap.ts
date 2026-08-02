@@ -1452,10 +1452,24 @@ export function runBootstrap(): void {
   // These ephemeral, idempotent probes were durable DBOS scheduled workflows that
   // each persisted a dbos.workflow_status row every 30–60s (~200k/day) → executor
   // starvation → routinesTick stall → Queen freeze. As plain unref'd intervals they
-  // write ZERO workflow_status rows (the source fix). Gated on backgroundWorkers (like
-  // the sentinel above) so a naive interval never runs N× across :3070 cluster request
-  // workers (DBOS dedup'd by workflow-id, in-process does not); skipped on a utility
-  // host (gym-operator) just as the former dbosPeriodicTimersActive did.
+  // write ZERO workflow_status rows (the source fix). Skipped on a utility host
+  // (gym-operator) just as the former dbosPeriodicTimersActive did.
+  //
+  // ⚠ CORRECTED 2026-08-02 (P-018, db-performance-remediation-2026-07-26). This comment
+  // used to claim `backgroundWorkers` was what stopped "a naive interval running N×
+  // across :3070 cluster request workers". IT NEVER DID: backgroundWorkersEnabled() reads
+  // only env (PAPERCUSP_BACKGROUND_WORKERS / PAPERCUSP_HONO_PORT) and a forked cluster
+  // worker INHERITS its parent's env, so it is true in every worker. Measured on the
+  // 16-worker :3070 release cluster: ≥7 distinct worker pids each independently ran the
+  // system-health tick's wide engineer_issues read within one 75s sample.
+  // The N× guard now lives where the checks are (PeriodicCheck.scope, default 'host' =
+  // cluster primary only), so it cannot be lost again by an edit here.
+  //
+  // ⚠ STILL N× IN WORKERS: `reconcileSpawnAdmissionOnBoot` below is NOT covered by that
+  // fix — it runs once per worker at boot, and with SPAWN_RECLAIM_RELAUNCH on that means
+  // concurrent relaunch attempts for the same reclaimed row. Filed separately rather than
+  // folded into a perf change, because it is a double-spawn correctness risk in another
+  // subsystem and needs its own verification. See EI (spawn-reclaim boot reconcile).
   if (backgroundWorkers && !utilityHost) {
     void (async () => {
       try {
