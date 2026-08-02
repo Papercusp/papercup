@@ -115,7 +115,7 @@ const SUGGEST_PRUNE = new Set(['node_modules', 'dist', 'build', 'coverage', '.gi
  * path under `libs/papercusp/**` at all, and reasonably read that as "this tree
  * cannot be typechecked" rather than "the suggester cannot see this far down".
  */
-const SUGGEST_MAX_DEPTH = 3;
+const SUGGEST_MAX_DEPTH = 1;
 
 interface FoundProject {
   /** repo-relative path to the tsconfig.json */

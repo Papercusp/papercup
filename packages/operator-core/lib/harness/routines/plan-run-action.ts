@@ -75,15 +75,34 @@ export async function runScheduledPlanFire(
     templateSlug: string;
     /** What kind of fire this is (plan_runs.trigger). Default 'scheduled'; run-now passes 'manual'. */
     trigger?: 'scheduled' | 'manual' | 'event';
+    /**
+     * The RESOLVED inputs this run executes with (plan-structured-inputs P-010/P-011)
+     * — the template's stored values with any per-invocation override already merged
+     * and VALIDATED by the caller's start-gate check. Passed in rather than re-merged
+     * here so the values persisted are exactly the ones the gate approved. Omitted by
+     * a scheduled fire, which uses the template's stored values (guaranteed complete
+     * at arm time by P-008) — the gate below still re-checks, because arm-time
+     * validity can go stale if the schema or values change afterwards.
+     */
+    inputs?: unknown;
   },
 ): Promise<ScheduledPlanFireResult | null> {
   const { installSlug, workspaceId, templateSlug, trigger = 'scheduled' } = opts;
 
   // 1. The template plan.
   const tpl = await sql<
-    Array<{ content: string; content_hash: string; title: string | null; items: unknown; schedule: { executorKind?: string } | null }>
+    Array<{
+      content: string;
+      content_hash: string;
+      title: string | null;
+      items: unknown;
+      schedule: { executorKind?: string } | null;
+      template: string | null;
+      template_data: unknown;
+      input_schema: unknown;
+    }>
   >`
-    SELECT content, content_hash, title, items, schedule
+    SELECT content, content_hash, title, items, schedule, template, template_data, input_schema
       FROM harness_shared.harness_plans
      WHERE workspace_id = ${workspaceId} AND harness_slug = ${installSlug}
        AND plan_slug = ${templateSlug}
@@ -93,6 +112,25 @@ export async function runScheduledPlanFire(
     return null;
   }
   const template = tpl[0];
+
+  // P-006 start gate on the SCHEDULED fire path. P-008 already refused to arm a plan
+  // whose required inputs were unset, but that verdict can go stale: the schema or the
+  // values can change while the schedule stays armed. Re-checking here costs nothing
+  // and is the difference between a refused fire and a run that executes with no
+  // arguments. Refusing returns null — the same "did not mint" contract the missing-
+  // template case above uses, so the routine wrapper needs no new failure mode.
+  const runInputs = opts.inputs !== undefined ? opts.inputs : (template.template_data ?? null);
+  const readiness = evaluatePlanStartReadiness(
+    { template: template.template, inputSchema: template.input_schema },
+    runInputs,
+  );
+  if (!readiness.ready) {
+    console.warn(
+      `[plan-run] template '${templateSlug}' in ${installSlug} is not startable ` +
+        `(${readiness.code}${readiness.missing.length > 0 ? `: missing ${readiness.missing.join(', ')}` : ''}) — skip. ${readiness.hint}`,
+    );
+    return null;
+  }
   // Executor kind (D-006/P-009): authored on schedule.executorKind; validated against
   // the feature-family kinds (feature|chunk). An invalid or removed kind (e.g. the
   // retired research-task) falls back to the coding-spine 'feature' default.
