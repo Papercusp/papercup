@@ -655,11 +655,52 @@ export async function composeOrient(
 
   // work_items:list returns the bare array (its `result` schema), but be defensive
   // about the wrapped shapes the unwrap may yield.
-  const claimable = Array.isArray(list)
+  const claimableRaw = Array.isArray(list)
     ? list
     : ((list as { data?: unknown[]; items?: unknown[] } | null)?.data ??
       (list as { data?: unknown[]; items?: unknown[] } | null)?.items ??
       []);
+
+  // WI-5343: work_items:list({admissibleOnly:true}) above only applies the G2/
+  // origin structural gates — it does NOT consult a durable claim-hold (WI-2797),
+  // an assignee already on the row, or a linked plan-item's effective/live-claim
+  // status, so a row that would bounce with not_claimable / claim_hold_blocked /
+  // a silent plan-lane retry on a REAL claim attempt still surfaced here as bare
+  // "claimable" — the exact double-placement trap on a heavily-parallel fleet
+  // (evidence: WI-321 under a claim-hold, WI-4998 carrying an assignee, WI-5137's
+  // linked plan item live-claimed by a different session, WI-3509/WI-3506
+  // effectively blocked via their plan item — all four surfaced with zero gating
+  // annotation). Batch-observe the fetched rows through the SAME floors
+  // work_items:observe already applies (claim-hold / G2-origin / plan-item
+  // effectiveStatus+live-claim — work-items.ts's observeWorkItem) and drop
+  // anything that isn't really available. Best-effort: an observe failure (or a
+  // row missing/renamed by the time it's checked) degrades to keeping that row
+  // rather than breaking orientation — this list was always advisory (see the
+  // `claimable` doc comment), never a live guarantee.
+  let claimable = claimableRaw;
+  if (!monitor && claimableRaw.length > 0) {
+    try {
+      const ids = claimableRaw
+        .map((row) => (row as { id?: unknown } | null)?.id)
+        .filter((id): id is string => typeof id === 'string' && id.length > 0);
+      if (ids.length > 0) {
+        const obs = (await call('work_items:observe', {
+          ids,
+          ...(args.harness ? { harness: args.harness } : {}),
+        })) as { results?: Array<{ id: string; ok?: boolean; available?: boolean }> } | undefined;
+        const gatedIds = new Set(
+          (obs?.results ?? [])
+            .filter((r) => r && r.ok !== false && r.available === false)
+            .map((r) => r.id),
+        );
+        if (gatedIds.size > 0) {
+          claimable = claimableRaw.filter((row) => !gatedIds.has((row as { id?: unknown } | null)?.id as string));
+        }
+      }
+    } catch {
+      /* fail-open: keep the unfiltered list rather than break orientation */
+    }
+  }
 
   const result: OrientResult = {
     ok: true,

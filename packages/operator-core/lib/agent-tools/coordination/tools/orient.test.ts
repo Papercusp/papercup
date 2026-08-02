@@ -69,6 +69,15 @@ function fakeCall(handlers: Record<string, (args: Record<string, unknown>) => un
 const CORE = {
   'fleet:assignments': () => ({ ok: true, summary: { agents: 1 }, agents: [{ ownerId: 'me' }] }),
   'work_items:list': () => [{ id: 'WI-1', state: 'todo' }, { id: 'WI-2', state: 'todo' }],
+  // WI-5343: orient batch-observes its fetched claimable rows through the same
+  // floors work_items:observe applies (claim-hold / plan-item block / live-claim)
+  // and drops anything reported available:false. Default: every row passes
+  // through unchanged (nothing gated) — tests asserting a specific gated row
+  // override this locally.
+  'work_items:observe': (a: Record<string, unknown>) => ({
+    ok: true,
+    results: (a.ids as string[]).map((id) => ({ id, ok: true, available: true })),
+  }),
   'coord:inbox': () => ({ summary: { total: 3 }, entries: [{ msg_id: 'm1' }] }),
   'coord:plan-events': () => ({ events: [{ kind: 'item_status_changed', plan: 'p1' }], total: 1, truncated: false }),
   'coord:whoami': () => ({ fleetSlug: null }),
