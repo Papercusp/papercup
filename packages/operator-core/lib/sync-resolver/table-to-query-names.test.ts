@@ -412,37 +412,37 @@ describe('TABLE_TO_QUERY_NAMES vs v2 registry consistency', () => {
   // false-liveness shape (accounts.pool / WI-6796) — it looks wired while pushing
   // nothing.
   //
-  // THIS GUARD IS NOW ARMED. It was written to tolerate an interim state in which
-  // WI-6964 deliberately kept the resolver entry alive (declared AND wired) so the
-  // shrink-only ratchet stayed green while the deletion waited. That interim ran ~12h
-  // longer than anyone tracked: D-018 recorded the deletion as DONE on 2026-08-02
-  // while all three sites survived, so during that window this test passed
-  // VACUOUSLY — its `stillRegistered` gate held open by the very entry it exists to
-  // catch. EI-19372323793235963 removed the entry, the mapping and the audit fixture,
-  // so the gate is closed and re-adding either half now fails here.
-  // EI-19372846096817075 — this assertion is now TOTAL rather than gated.
+  // WHY THIS IS A TOTAL ASSERTION AND NOT A GATED ONE (EI-19372846096817075).
   //
-  // It used to read `if (!stillRegistered) { expect(mapped).toBe(false); }`, which
-  // made the gate depend on the very entry the guard exists to catch: while that
-  // entry survived, the test executed ZERO assertions and reported a green tick
-  // indistinguishable from a real pass. That is how it ran for ~12h while D-018
-  // recorded the deletion as done — two agents read "guard green + decision says
-  // removed" and concluded it had landed. It had not.
+  // It was written to tolerate an interim in which WI-6964 deliberately kept the
+  // resolver entry alive (declared AND wired) so the shrink-only ratchet stayed
+  // green while the deletion waited, as `if (!stillRegistered) { expect(mapped)
+  // .toBe(false); }`. That made the gate depend on the very entry the guard exists
+  // to catch: while the entry survived, the test executed ZERO assertions and
+  // reported a green tick indistinguishable from a real pass. The interim then ran
+  // ~12h longer than anyone tracked — D-018 recorded the deletion as DONE on
+  // 2026-08-02 while all three sites survived — and two agents read "guard green +
+  // decision says removed" and concluded it had landed. It had not.
   //
-  // The fix is not to pin `stillRegistered` absolutely (that would red the fleet's
-  // gate for any legitimate future interim, which is how the interim arose in the
-  // first place). It is to state the invariant the guard actually holds, which is
-  // an IMPLICATION and is therefore always assertable:
+  // The fix is NOT to pin `stillRegistered` absolutely: that would red the fleet's
+  // gate for any legitimate future interim, which is how this interim arose in the
+  // first place. It is to state the invariant the guard actually holds, which is an
+  // IMPLICATION and is therefore assertable on every input:
   //
   //     mapped  =>  some resolver serves the name
   //
-  // Both-present (the tolerated interim) passes; mapped-with-no-resolver fails.
-  // There is no input for which this asserts nothing, so it cannot go vacuous —
-  // the dormant state that needed reporting simply no longer exists.
+  // Both-present (a tolerated interim) passes; mapped-with-no-resolver fails as
+  // dead wiring. No input makes it assert nothing, so it cannot go vacuous again —
+  // the dormant state that needed reporting no longer exists to report.
   //
-  // Where an invariant genuinely CANNOT be stated totally — a guard landed ahead
-  // of the cleanup it enforces — use `expectArmed` from lib/testing-armed-guard.ts
-  // instead of an `if`, so the dormant run reports as a skip and expires loudly.
+  // EI-19372323793235963 has since removed the entry, the mapping and the audit
+  // fixture, so today both sides are absent and the implication holds trivially —
+  // but it is now holding *because it was checked*, which is the whole difference.
+  //
+  // Where an invariant genuinely CANNOT be made total — a guard landed ahead of the
+  // cleanup it enforces — use `expectArmed` from lib/testing-armed-guard.ts rather
+  // than a bare `if`, so a dormant run reports as a SKIP with its arming condition
+  // and starts failing once its `armBy` date passes.
   it('never maps operatorTurns.byConversation unless a resolver actually serves it', () => {
     const stillRegistered = knownQueryNamesV2().includes('operatorTurns.byConversation');
     for (const [table, names] of Object.entries(TABLE_TO_QUERY_NAMES)) {

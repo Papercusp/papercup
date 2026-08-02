@@ -17,8 +17,11 @@ import { workspaceBackupFor } from '../../backup';
 const forM = vi.mocked(workspaceBackupFor);
 const tool = (await import('./settings_get')).default;
 
-type Out = { content: { text: string }[] };
-const body = (o: Out) => JSON.parse(o.content[0]!.text);
+// Accepts BOTH ToolResponse shapes — the canonical { data } and the legacy
+// inline-JSON { content:[{ text }] } — so migrating a tool to { data } never
+// requires repointing this helper again (2026-07-26 batch's pattern).
+type Out = { data: unknown } | { content: { text: string }[] };
+const body = (o: Out) => ('data' in o ? o.data : JSON.parse(o.content[0]!.text));
 
 beforeEach(() => {
   vi.clearAllMocks();

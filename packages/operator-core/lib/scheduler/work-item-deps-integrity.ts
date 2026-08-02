@@ -58,6 +58,20 @@ export interface DepEndpointDefect {
    * Null for a dangling endpoint — it resolves to nothing, so there is no right answer.
    */
   expected_kind: string | null;
+  /**
+   * DANGLING ONLY — the harness slug(s) where the endpoint's BARE id actually does exist,
+   * comma-separated, or null if the id exists nowhere.
+   *
+   * This distinction decides the REPAIR, so it is not cosmetic. A dangling endpoint has two
+   * very different causes that look identical without it:
+   *   • id exists nowhere      → a genuinely stale ref (deleted / never-created item) ⇒ DELETE the edge.
+   *   • id exists in harness Y → the edge's harness QUALIFIER is wrong ⇒ RE-POINT it; the
+   *     dependency is real and deleting it would silently discard a live constraint.
+   * Measured live 2026-08-02: 8 edges referenced `papercusp-public-site#WI-54xx` while every
+   * one of those items exists under `papercusp-public-site-pot`. Reported as a bare
+   * "resolves to nothing" that reads as stale data, it invites exactly the wrong repair.
+   */
+  bare_id_found_in: string | null;
 }
 
 export interface WorkItemDepsIntegrityResult {
@@ -74,8 +88,9 @@ export interface WorkItemDepsIntegrityResult {
    * because they are not the same defect and must not be repaired the same way: the writer
    * deliberately tolerates an absent blocker (`resolveDepEndpoint` falls back to the feature
    * form so an edge naming a not-yet-created item stays writable). A dangling endpoint is
-   * therefore a data-hygiene finding — a stale ref to a deleted/never-created item — not
-   * proof of a writer bug. Repair by deleting the edge, never by rewriting its kind.
+   * therefore a data-hygiene finding, not proof of a writer bug — and never repaired by
+   * rewriting its kind. Check each one's `bare_id_found_in` before repairing: it separates a
+   * genuinely stale ref (delete the edge) from a wrong harness qualifier (re-point it).
    */
   dangling: DepEndpointDefect[];
 }
@@ -103,6 +118,7 @@ export async function reconcileWorkItemDepEndpoints(
       declared_kind: string;
       ref: string;
       expected_kind: string | null;
+      bare_id_found_in: string | null;
     }>
   >`
     WITH endpoints AS (
@@ -157,13 +173,20 @@ export async function reconcileWorkItemDepEndpoints(
         FROM resolved r
     )
     SELECT
-      CASE WHEN expected_kind IS NULL THEN 'dangling' ELSE 'mismatched' END AS defect,
-      id::text AS edge_id, workspace_id, side, declared_kind, ref, expected_kind
-      FROM judged
-     WHERE expected_kind IS NULL
-        OR declared_kind IS DISTINCT FROM expected_kind
-        OR NOT form_ok
-     ORDER BY defect, workspace_id, ref, side
+      CASE WHEN j.expected_kind IS NULL THEN 'dangling' ELSE 'mismatched' END AS defect,
+      j.id::text AS edge_id, j.workspace_id, j.side, j.declared_kind, j.ref, j.expected_kind,
+      -- Only computed for a dangling endpoint (the correlated scan is pointless otherwise,
+      -- and this keeps the common all-clean case a single pass over the edges).
+      CASE WHEN j.expected_kind IS NULL THEN (
+        SELECT string_agg(DISTINCT w.harness_slug, ',' ORDER BY w.harness_slug)
+          FROM harness_shared.work_items w
+         WHERE w.feature_id = j.bare_id
+      ) END AS bare_id_found_in
+      FROM judged j
+     WHERE j.expected_kind IS NULL
+        OR j.declared_kind IS DISTINCT FROM j.expected_kind
+        OR NOT j.form_ok
+     ORDER BY defect, j.workspace_id, j.ref, j.side
   `;
 
   const mismatched: DepEndpointDefect[] = [];
@@ -176,6 +199,7 @@ export async function reconcileWorkItemDepEndpoints(
       declared_kind: r.declared_kind,
       ref: r.ref,
       expected_kind: r.expected_kind,
+      bare_id_found_in: r.bare_id_found_in ?? null,
     };
     if (r.defect === 'mismatched') mismatched.push(defect);
     else dangling.push(defect);

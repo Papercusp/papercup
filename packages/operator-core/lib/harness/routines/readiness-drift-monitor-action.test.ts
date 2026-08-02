@@ -14,7 +14,7 @@
  * kept printing a reassuring green line. That is precisely the failure mode this whole plan
  * exists to prevent: a detector nobody runs is not a safety net, it is a comment.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 const reconcileReadinessMock = vi.fn();
 const reconcileEndpointsMock = vi.fn();
@@ -45,10 +45,24 @@ const run = async (payloadTemplate: Record<string, unknown> | null = null) => {
   await action!(ctx(payloadTemplate));
 };
 
+// This action's whole output surface is the operator log, so every tick writes to
+// console. The repo fails a test on unexpected console output (vitest-fail-on-console),
+// so the spies are installed for ALL tests — and the defect test reads its assertions
+// off `warnSpy` rather than installing a second, competing spy.
+let warnSpy: ReturnType<typeof vi.spyOn>;
+let logSpy: ReturnType<typeof vi.spyOn>;
+
 beforeEach(() => {
   vi.clearAllMocks();
+  warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
   reconcileReadinessMock.mockResolvedValue(CLEAN_READINESS);
   reconcileEndpointsMock.mockResolvedValue(CLEAN_ENDPOINTS);
+});
+
+afterEach(() => {
+  warnSpy.mockRestore();
+  logSpy.mockRestore();
 });
 
 describe('system:readiness-drift-monitor — sweep wiring', () => {
@@ -88,35 +102,30 @@ describe('system:readiness-drift-monitor — sweep wiring', () => {
   });
 
   it('reports endpoint defects without attempting any repair of them', async () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    try {
-      reconcileEndpointsMock.mockResolvedValue({
-        defects: 1,
-        mismatched: [
-          {
-            edge_id: '42',
-            workspace_id: 'default',
-            side: 'blocked',
-            declared_kind: 'feature',
-            ref: 'papercup#WI-1',
-            expected_kind: 'issue',
-          },
-        ],
-        dangling: [],
-      });
-      await run();
+    reconcileEndpointsMock.mockResolvedValue({
+      defects: 1,
+      mismatched: [
+        {
+          edge_id: '42',
+          workspace_id: 'default',
+          side: 'blocked',
+          declared_kind: 'feature',
+          ref: 'papercup#WI-1',
+          expected_kind: 'issue',
+        },
+      ],
+      dangling: [],
+    });
+    await run();
 
-      const logged = warn.mock.calls.map((c) => String(c[0])).join('\n');
-      expect(logged).toContain('ENDPOINT DEFECTS');
-      expect(logged).toContain('edge#42'); // repairable, not merely countable
-      // The finding must say a mismatch means the WRITE SEAM was bypassed — that is the
-      // whole diagnostic value, and the reason this sweep does not self-repair.
-      expect(logged).toMatch(/bypass/i);
-      // And it must be detected exactly once, with no second "did it converge" pass —
-      // that pattern belongs to the readiness sweep, which owns repair.
-      expect(reconcileEndpointsMock).toHaveBeenCalledTimes(1);
-    } finally {
-      warn.mockRestore();
-    }
+    const logged = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(logged).toContain('ENDPOINT DEFECTS');
+    expect(logged).toContain('edge#42'); // repairable, not merely countable
+    // The finding must say a mismatch means the WRITE SEAM was bypassed — that is the
+    // whole diagnostic value, and the reason this sweep does not self-repair.
+    expect(logged).toMatch(/bypass/i);
+    // And it must be detected exactly once, with no second "did it converge" pass —
+    // that pattern belongs to the readiness sweep, which owns repair.
+    expect(reconcileEndpointsMock).toHaveBeenCalledTimes(1);
   });
 });

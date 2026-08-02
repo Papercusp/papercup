@@ -22,8 +22,6 @@ export default defineTool({
   }),
   async handler(args) {
     const next = await mergeSetupWizardState({ update_channel: args.channel });
-    return {
-      content: [{ type: 'text', text: JSON.stringify({ update_channel: next.update_channel }) }],
-    };
+    return { data: { update_channel: next.update_channel } };
   },
 });

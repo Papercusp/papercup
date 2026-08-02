@@ -27,6 +27,6 @@ export default defineTool({
   args: z.object({}),
   async handler() {
     const state = await readTriggerState();
-    return { content: [{ type: 'text', text: JSON.stringify({ fingerprint: fingerprint(state), state }) }] };
+    return { data: { fingerprint: fingerprint(state), state } };
   },
 });

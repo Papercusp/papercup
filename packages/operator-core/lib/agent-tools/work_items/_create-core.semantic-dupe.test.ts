@@ -21,6 +21,7 @@ vi.mock('../../work-items', () => ({
   getWorkItem: vi.fn(async () => null),
   linkWorkItem: vi.fn(async () => {}),
   isWorkItemKind: (k: string) => ['feature', 'chunk', 'bug', 'change', 'task'].includes(k),
+  familyOf: (k: string) => (['bug', 'change', 'task'].includes(k) ? 'issue' : 'feature'),
   ensureClaimHoldAttribution: (payload: unknown) => payload,
 }));
 vi.mock('./mirror-guard', () => ({ findMirroredOpenItem: vi.fn(async () => null) }));

@@ -1,0 +1,124 @@
+/**
+ * _create-core.fulltext-dupe.test — EI-19298062354262754's fulltext-lexical-dupe-guard
+ * wire-in contract on createOneWorkItem: NEVER blocks (advisory-only, like the
+ * recent-lexical guard); merges into `similarOpen` alongside anything the other
+ * guards already found, deduped by id; skipped entirely under force:true; skipped
+ * for feature-family kinds (feature/chunk — engineer_issues has no rows for
+ * them); a null verdict (fail-open) leaves similarOpen untouched. The guard's own
+ * scoring logic is covered by fulltext-lexical-dupe-guard.test.ts.
+ */
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+vi.mock('@papercusp/flags/server', () => ({ getFlag: vi.fn(async () => false) }));
+vi.mock('../../work-items', () => ({
+  createWorkItem: vi.fn(async (input: { kind: string; title: string }) => ({
+    id: 'WI-NEW',
+    kind: input.kind,
+    title: input.title,
+  })),
+  getWorkItem: vi.fn(async () => null),
+  linkWorkItem: vi.fn(async () => {}),
+  isWorkItemKind: (k: string) => ['feature', 'chunk', 'bug', 'change', 'task'].includes(k),
+  familyOf: (k: string) => (['bug', 'change', 'task'].includes(k) ? 'issue' : 'feature'),
+  ensureClaimHoldAttribution: (payload: unknown) => payload,
+}));
+vi.mock('./mirror-guard', () => ({ findMirroredOpenItem: vi.fn(async () => null) }));
+vi.mock('../_hive-scope', () => ({
+  resolveHiveScope: vi.fn(async () => ({ kind: 'hive', slug: 'papercusp' })),
+  HIVE_REQUIRED_DETAIL: 'hive required',
+}));
+vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: {} }) }));
+vi.mock('../../datatype-registry-store', () => ({ getGenericKindDatatype: vi.fn(async () => null) }));
+vi.mock('../../datatype-payload-validation', () => ({ validateDatatypePayload: () => ({ ok: true as const }) }));
+vi.mock('../../routing-gate-hints', () => ({ matchRoutingGateHint: () => null }));
+vi.mock('../../issue-blocks-merge', () => ({ planItemRef: (s: string, i: string) => `${s}#${i}`, PLAN_ITEM_KIND: 'plan_item' }));
+vi.mock('./semantic-dupe-guard', () => ({ findSemanticDupes: vi.fn(async () => null) }));
+vi.mock('./recent-lexical-dupe-guard', () => ({ findRecentLexicalDupes: vi.fn(async () => null) }));
+vi.mock('./fulltext-lexical-dupe-guard', () => ({ findFulltextLexicalDupes: vi.fn(async () => null) }));
+
+import { createOneWorkItem } from './_create-core';
+import { findSemanticDupes } from './semantic-dupe-guard';
+import { findFulltextLexicalDupes } from './fulltext-lexical-dupe-guard';
+import type { SemanticDupeCandidate } from './semantic-dupe-guard';
+
+const semanticM = vi.mocked(findSemanticDupes);
+const fulltextM = vi.mocked(findFulltextLexicalDupes);
+const ctx = { ownerId: 'me', workspaceId: 'default', harnessSlug: 'papercusp' };
+
+const fulltextCand = (id: string, similarity = 0.7): SemanticDupeCandidate => ({
+  id,
+  title: `fulltext dupe ${id}`,
+  state: 'open',
+  harness: 'papercusp',
+  similarity,
+  source: 'lexical-fulltext',
+});
+
+beforeEach(() => {
+  semanticM.mockReset();
+  fulltextM.mockReset();
+  semanticM.mockResolvedValue(null);
+  fulltextM.mockResolvedValue([]);
+});
+
+describe('createOneWorkItem × fulltext-lexical dupe guard (EI-19298062354262754)', () => {
+  it('NEVER blocks — a fulltext match still creates the item (advisory only)', async () => {
+    fulltextM.mockResolvedValue([fulltextCand('EI-100')]);
+    const r = await createOneWorkItem({ kind: 'bug', title: 'a paraphrased refile' }, ctx);
+    expect(r.ok).toBe(true);
+    if (!r.ok) throw new Error('unreachable');
+    expect(r.workItem.id).toBe('WI-NEW');
+    expect(r.similarOpen?.map((c) => c.id)).toEqual(['EI-100']);
+    expect(r.similarOpen?.[0].source).toBe('lexical-fulltext');
+  });
+
+  it("merges with the semantic guard's soft matches, deduped by id", async () => {
+    semanticM.mockResolvedValue({
+      hard: [],
+      soft: [{ id: 'WI-10', title: 'semantic soft dupe', state: 'todo', harness: 'papercusp', similarity: 0.87 }],
+      thresholds: { hard: 0.93, soft: 0.85 },
+    });
+    // WI-10 also shows up in the fulltext pass (same id) — must not duplicate;
+    // EI-11 is a genuinely new fulltext-only match and must be appended.
+    fulltextM.mockResolvedValue([fulltextCand('WI-10'), fulltextCand('EI-11')]);
+    const r = await createOneWorkItem({ kind: 'bug', title: 't' }, ctx);
+    expect(r.ok).toBe(true);
+    if (!r.ok) throw new Error('unreachable');
+    expect(r.similarOpen?.map((c) => c.id)).toEqual(['WI-10', 'EI-11']);
+    expect(r.similarOpen?.[0].source).toBeUndefined();
+  });
+
+  it('force:true skips the fulltext prescreen entirely too', async () => {
+    fulltextM.mockResolvedValue([fulltextCand('EI-9')]);
+    const r = await createOneWorkItem({ kind: 'bug', title: 't', force: true }, ctx);
+    expect(r.ok).toBe(true);
+    expect(fulltextM).not.toHaveBeenCalled();
+  });
+
+  it('null verdict (fail-open) leaves similarOpen untouched (no advisory key)', async () => {
+    fulltextM.mockResolvedValue(null);
+    const r = await createOneWorkItem({ kind: 'bug', title: 't' }, ctx);
+    expect(r.ok).toBe(true);
+    if (!r.ok) throw new Error('unreachable');
+    expect('similarOpen' in r).toBe(false);
+  });
+
+  it('runs for every issue-family kind (bug, change, task)', async () => {
+    for (const kind of ['bug', 'change', 'task']) {
+      fulltextM.mockClear();
+      await createOneWorkItem({ kind, title: 't' }, ctx);
+      expect(fulltextM).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it('is SKIPPED for feature-family kinds (feature, chunk) — engineer_issues has no rows for them', async () => {
+    fulltextM.mockClear();
+    await createOneWorkItem({ kind: 'feature', title: 't', harness: 'papercusp' }, ctx);
+    expect(fulltextM).not.toHaveBeenCalled();
+  });
+
+  it('passes just the title through (no harness — capture-core.ts scopes it the same way)', async () => {
+    await createOneWorkItem({ kind: 'bug', title: 't' }, ctx);
+    expect(fulltextM).toHaveBeenCalledWith({ title: 't' });
+  });
+});

@@ -35,7 +35,13 @@ afterEach(() => {
   vi.doUnmock('../../../workspace-registry');
 });
 
-function parsePayload(result: { content: Array<{ text: string }> }): Record<string, unknown> {
+// Accepts BOTH ToolResponse shapes — the canonical { data } and the legacy
+// inline-JSON { content:[{ text }] } — so migrating a tool to { data } never
+// requires repointing this helper again (2026-07-26 batch's pattern).
+function parsePayload(
+  result: { data: unknown } | { content: Array<{ text: string }> },
+): Record<string, unknown> {
+  if ('data' in result) return result.data as Record<string, unknown>;
   return JSON.parse(result.content[0].text);
 }
 

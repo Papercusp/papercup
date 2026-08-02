@@ -28,6 +28,6 @@ export default defineTool({
   args: z.object({}),
   async handler() {
     const result = await pgHealth();
-    return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    return { data: result };
   },
 });

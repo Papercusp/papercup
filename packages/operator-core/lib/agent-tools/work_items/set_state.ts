@@ -24,6 +24,7 @@ import {
   resolveDeclaredAssumptions,
   ASSUMPTIONS_REQUIRED_MESSAGE,
 } from './_assumptions';
+import { nonAssumptionKindAdvisory } from '../../agent-facts/assumptions';
 import {
   TERMINAL_INPUT_STATES,
   NON_TERMINAL_INPUT_STATES,
@@ -218,6 +219,12 @@ export default defineTool({
               harnessSlug: harness,
             })
           : undefined;
+        // EI-19298742806956600: WARN-ONLY — see nonAssumptionKindAdvisory's header.
+        // Never refuses; mirrors the planeRatchetWarning pattern below.
+        const assumptionKindWarning =
+          assumptions && Array.isArray(assumptions.declared)
+            ? nonAssumptionKindAdvisory(assumptions.declared)
+            : undefined;
         // EI-18850142725126359 fix #4 — the SAME plane-ratchet pre-flight
         // work_items:complete runs. Wired here too because this verb is the other
         // way to make a row terminal: a guard that lives on only one of the two
@@ -254,6 +261,9 @@ export default defineTool({
               // will not cause.
               ...(planeRatchetWarning && isTerminalStateInput(String(appliedState ?? ''))
                 ? { planeRatchetWarning }
+                : {}),
+              ...(assumptionKindWarning && isTerminalStateInput(String(appliedState ?? ''))
+                ? { assumptionKindWarning }
                 : {}),
               workItem,
               aliased,

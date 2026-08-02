@@ -57,10 +57,12 @@ import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../workspace-registry';
 import {
+  FACT_CONFIDENCE_LEVELS,
   FACT_KINDS,
   FACT_PROVENANCE_QUOTE_CHARS,
   factCitationRef,
   isAssumptionFact,
+  type FactConfidence,
   type FactKind,
   type FactScope,
   type FactSelector,
@@ -68,6 +70,12 @@ import {
 
 function parseKindColumn(raw: string | null): FactKind | null {
   return raw != null && (FACT_KINDS as readonly string[]).includes(raw) ? (raw as FactKind) : null;
+}
+
+function parseConfidenceColumn(raw: string | null): FactConfidence | null {
+  return raw != null && (FACT_CONFIDENCE_LEVELS as readonly string[]).includes(raw)
+    ? (raw as FactConfidence)
+    : null;
 }
 
 /**
@@ -200,7 +208,7 @@ export interface ResolvedAssumption {
   /** The resolved fact's `confidence` at resolution time; feeds the SAME legacy
    *  assumption test {@link isAssumptionFact} uses (`kind` absent, confidence
    *  `'suspected'`) — see `isAssumption` below. */
-  confidence: string | null;
+  confidence: FactConfidence | null;
   /**
    * Was this citation actually an ASSUMPTION (the unverified premise the field
    * exists to capture), per {@link isAssumptionFact}? `null` when there is no
@@ -371,7 +379,7 @@ function malformedOrDangling(declared: string, parsed: ParsedAssumptionRef | nul
  *  agrees with the ledger's canonical predicate. */
 function assumptionFieldsOf(row: RawRow): Pick<ResolvedAssumption, 'kind' | 'confidence' | 'isAssumption'> {
   const kind = parseKindColumn(row.kind);
-  const confidence = row.confidence ?? null;
+  const confidence = parseConfidenceColumn(row.confidence);
   return { kind, confidence, isAssumption: isAssumptionFact({ kind, confidence }) };
 }
 
@@ -414,6 +422,7 @@ function resolveOne(
           versionId: Number(current.id),
           condition: 'superseded',
           excerpt: excerptOf(current.body),
+          ...assumptionFieldsOf(current),
         };
       }
       return {
@@ -425,6 +434,7 @@ function resolveOne(
         versionId: Number(pinned.id),
         condition: conditionOfRow(pinned),
         excerpt: excerptOf(pinned.body),
+        ...assumptionFieldsOf(pinned),
       };
     }
 
@@ -438,6 +448,7 @@ function resolveOne(
       versionId: Number(current.id),
       condition: conditionOfRow(current),
       excerpt: excerptOf(current.body),
+      ...assumptionFieldsOf(current),
     };
   }
 
@@ -464,6 +475,7 @@ function resolveOne(
     versionId: Number(chosen.id),
     condition: conditionOfRow(chosen),
     excerpt: excerptOf(chosen.body),
+    ...assumptionFieldsOf(chosen),
     ...(hitScopes > 1 ? { ambiguous: true } : {}),
   };
 }
@@ -600,5 +612,37 @@ export function danglingAssumptionsMessage(
     '`fact:<scope>:<ref>:<key>` ref if it lives outside your own scopes, or pass "none" if this close ' +
     'rests on nothing you recorded. An EXPIRED or RETRACTED key still resolves — only a key that never ' +
     'existed is refused.'
+  );
+}
+
+/**
+ * WARN-ONLY advisory (EI-19298742806956600) for a declaration that RESOLVES —
+ * so `danglingAssumptionsMessage` never fires for it — but cites a fact that was
+ * never asserted as an assumption. Never refuses: see this repo's own finding for
+ * why tightening this into a refusal today would be strictly worse than doing
+ * nothing (a producer population of 3 assumption-kind facts fleet-wide, against
+ * 45 commitment-class closes that cited a real key in the sampled window — a hard
+ * `kind:'assumption'` requirement would turn every one of those into a `"none"`
+ * declarer, the opposite of the behaviour D-050 wants to encourage). This is
+ * candidate fix (1) from that finding: measure + nudge, don't refuse yet.
+ *
+ * Only fires for entries that actually resolved to a fact (`isAssumption` is a
+ * real `false`, not `null` — a dangling/unresolved entry has nothing to judge and
+ * is `danglingAssumptionsMessage`'s problem, not this one's).
+ */
+export function nonAssumptionKindAdvisory(resolved: readonly ResolvedAssumption[]): string | undefined {
+  const cited = resolved.filter((r) => r.isAssumption === false);
+  if (cited.length === 0) return undefined;
+  const names = cited
+    .map((r) => `"${r.declared}" (kind:${r.kind ?? 'none'}${r.confidence ? `, confidence:${r.confidence}` : ''})`)
+    .join(', ');
+  return (
+    `assumptions cites ${names} — that resolves fine, but the fact itself was never asserted as an ` +
+    `assumption (kind:"assumption", or the legacy confidence:"suspected" form). An assumption is the ` +
+    'UNVERIFIED premise that would invalidate this close if it turned out wrong; citing an already-verified ' +
+    'conclusion here carries none of that risk and will not auto-invalidate if the ground moves later. If ' +
+    'this really is a premise you have not independently verified, consider re-asserting it with ' +
+    'facts:assert { kind:"assumption", dependsOn:[...] } and citing that instead. This is advisory only — ' +
+    'the close is not blocked.'
   );
 }

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { mkdtemp, mkdir, rm, writeFile, utimes } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { resolveSelfSession } from './self-session';
+import { resolveSelfSession, resolveOwnerIsolatedSessionByPrefix } from './self-session';
 
 const SID = '019f4fa9-4a09-78c0-8a35-d7e3382d1f8f';
 const roots: string[] = [];
@@ -97,6 +97,48 @@ describe('resolveSelfSession — claude cold-carry respawn chain (WI-5644)', () 
     // Pre-fix this returned null → the "could not be pinned to a live transcript"
     // degrade. It must now resolve to the surviving current transcript.
     expect(resolved).toEqual({ sourceKind: 'claude', sessionId: CURRENT, filePath: join(proj, `${CURRENT}.jsonl`) });
+  });
+
+  // EI-19297300002186512: resolveSelfSession only ever returns the newest
+  // transcript — resolveOwnerIsolatedSessionByPrefix is what lets a
+  // [turn:…] ref anchored to an OLDER session in the same owner's chain
+  // resolve at all.
+  describe('resolveOwnerIsolatedSessionByPrefix (EI-19297300002186512)', () => {
+    it('finds an OLDER session in the same owner isolation dir by id prefix', async () => {
+      const home = await mkdtemp(join(tmpdir(), 'self-session-'));
+      roots.push(home);
+      const owner = 'su-carry-chain';
+      const proj = await seedIsolationDir(home, owner, [
+        { id: ORIGINAL, mtime: 1_600_000_000_000 },
+        { id: CURRENT, mtime: 1_600_000_600_000 },
+      ]);
+
+      const resolved = await resolveOwnerIsolatedSessionByPrefix(owner, ORIGINAL.slice(0, 8), { home });
+
+      expect(resolved).toEqual({ sourceKind: 'claude', sessionId: ORIGINAL, filePath: join(proj, `${ORIGINAL}.jsonl`) });
+    });
+
+    it('returns null for a prefix with no matching session in this owner chain', async () => {
+      const home = await mkdtemp(join(tmpdir(), 'self-session-'));
+      roots.push(home);
+      const owner = 'su-carry-chain-2';
+      await seedIsolationDir(home, owner, [{ id: CURRENT, mtime: 1_600_000_600_000 }]);
+
+      const resolved = await resolveOwnerIsolatedSessionByPrefix(owner, 'deadbeef', { home });
+
+      expect(resolved).toBeNull();
+    });
+
+    it('never crosses owners — a matching prefix under a DIFFERENT owner dir is invisible', async () => {
+      const home = await mkdtemp(join(tmpdir(), 'self-session-'));
+      roots.push(home);
+      // The session lives under a different owner's isolation dir.
+      await seedIsolationDir(home, 'su-owner-a', [{ id: ORIGINAL, mtime: 1_600_000_000_000 }]);
+
+      const resolved = await resolveOwnerIsolatedSessionByPrefix('su-owner-b', ORIGINAL.slice(0, 8), { home });
+
+      expect(resolved).toBeNull();
+    });
   });
 });
 

@@ -25,6 +25,6 @@ export default defineTool({
   async handler(args) {
     const wb = workspaceBackupFor(activeWorkspaceId());
     const snapshots = await wb.list(args.limit);
-    return { content: [{ type: 'text' as const, text: JSON.stringify({ snapshots }) }] };
+    return { data: { snapshots } };
   },
 });

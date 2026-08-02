@@ -21,6 +21,6 @@ export default defineTool({
   rolesQuota: { architect: { perRun: 100 }, operator: { perRun: 400 } },
   args: z.object({}),
   async handler() {
-    return { content: [{ type: 'text', text: JSON.stringify({ ok: true, status: voiceStatus() }) }] };
+    return { data: { ok: true, status: voiceStatus() } };
   },
 });

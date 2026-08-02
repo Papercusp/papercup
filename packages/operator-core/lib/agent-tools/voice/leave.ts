@@ -22,6 +22,6 @@ export default defineTool({
   args: z.object({}),
   async handler() {
     const status = await leaveVoiceChannel();
-    return { content: [{ type: 'text', text: JSON.stringify({ ok: true, status }) }] };
+    return { data: { ok: true, status } };
   },
 });

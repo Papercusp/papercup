@@ -169,6 +169,29 @@ describe('reconcileWorkItemDepEndpoints — the D-017 endpoint-integrity detecto
       side: 'blocker',
       ref: `${H}#F-does-not-exist`,
       expected_kind: null,
+      bare_id_found_in: null, // exists nowhere ⇒ genuinely stale ⇒ delete the edge
+    });
+  });
+
+  it('distinguishes a WRONG HARNESS QUALIFIER from a genuinely stale ref — the repair depends on it', async () => {
+    // The live 2026-08-02 shape: 8 edges referenced `papercusp-public-site#WI-54xx` while
+    // every one of those items existed under `papercusp-public-site-pot`. Both cases surface
+    // as "does not resolve", but the repairs are OPPOSITE — delete the edge vs. re-point it —
+    // so reporting them identically invites silently discarding a live dependency.
+    await db.sql`
+      INSERT INTO harness_shared.work_items
+        (harness_slug, feature_id, title, status, item_kind, workspace_id, created_ts, updated_ts)
+      VALUES ('other-pot', 'F-elsewhere', 'lives in another harness', 'open', 'feature', ${WS}, 0, 0)`;
+    await seedFeature('F-1');
+    await edge('feature', `${H}#F-1`, 'feature', `${H}#F-elsewhere`);
+
+    const res = await reconcileWorkItemDepEndpoints(db.sql);
+    expect(res.defects).toBe(1);
+    expect(res.dangling[0]).toMatchObject({
+      side: 'blocker',
+      ref: `${H}#F-elsewhere`,
+      expected_kind: null,
+      bare_id_found_in: 'other-pot', // ⇒ the qualifier is wrong; re-point, do not delete
     });
   });
 

@@ -21,8 +21,6 @@ export default defineTool({
   async handler() {
     const wb = workspaceBackupFor(activeWorkspaceId());
     const [settings, stats] = await Promise.all([wb.getSettings(), wb.stats()]);
-    return {
-      content: [{ type: 'text', text: JSON.stringify({ settings, stats }) }],
-    };
+    return { data: { settings, stats } };
   },
 });

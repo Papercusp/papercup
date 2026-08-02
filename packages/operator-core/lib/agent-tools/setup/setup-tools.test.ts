@@ -67,8 +67,11 @@ const saveIntegrationKey = (await import('./save_integration_key')).default;
 const status = (await import('./status')).default;
 const setProgress = (await import('./set_tutorial_progress')).default;
 
-type Out = { content: { text: string }[] };
-const body = (o: Out) => JSON.parse(o.content[0]!.text);
+// Accepts BOTH ToolResponse shapes — the canonical { data } and the legacy
+// inline-JSON { content:[{ text }] } — so migrating a tool to { data } never
+// requires repointing this helper again (2026-07-26 batch's pattern).
+type Out = { data: unknown } | { content: { text: string }[] };
+const body = (o: Out) => ('data' in o ? o.data : JSON.parse(o.content[0]!.text));
 const call = (
   tool: { handler: (a: never, c: never) => unknown },
   args: Record<string, unknown> = {},

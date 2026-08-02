@@ -1,6 +1,7 @@
 /** Turn refs (deterministic-context-carry P-014) — ref format/parse, recorded-
  *  turn owner-vs-agent classification, and transcript verification. */
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdir, mkdtemp, rm, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -257,5 +258,107 @@ describe('verifyTurnRefs / resolveCurrentTurnStamp (tmp transcript)', () => {
       [userLine('hi', '2026-07-14T09:00:00Z'), userLine('⟦turn-origin:wake-pump nonce:aabbccdd00112233⟧\nwake', '2026-07-14T09:05:00Z')].join('\n'),
     );
     expect(turns).toHaveLength(2);
+  });
+});
+
+// EI-19297300002186512: a checkpoint's [turn:…] ref was reported found:false
+// for a GENUINE owner anchor because it lived in an OLDER session of the same
+// owner's carry-respawn chain — verifyTurnRefs only ever loaded the
+// current/newest transcript (resolveSelfSession's return). These reproduce
+// the reported scenario end-to-end with no `opts.filePath` pin, so the
+// resolution actually exercises the owner-isolation-dir fallback.
+describe('verifyTurnRefs — cross-session (owner carry-respawn chain, EI-19297300002186512)', () => {
+  // The exact session ids from the live report: ORIGINAL is where the owner
+  // turn was actually spoken; CURRENT is the session the checkpoint write
+  // happened FROM, after a cold carry-respawn.
+  const ORIGINAL = '413a34fe-4e7c-4ca2-8e32-8135f52090b6';
+  const CURRENT = 'e6fd19e9-1234-4abc-9def-012345678901';
+  const OWNER = 'su-07374fbd-e848-4204-a92a-bb86a31e5a92';
+
+  let home: string;
+  afterEach(async () => {
+    if (home) await rm(home, { recursive: true, force: true });
+  });
+
+  async function seedOwnerIsolationDir(
+    sessions: Array<{ id: string; lines: string[]; mtime: number }>,
+  ): Promise<void> {
+    home = await mkdtemp(join(tmpdir(), 'papercusp-turn-ref-crosssession-'));
+    const proj = join(home, '.papercusp', 'session-claude', OWNER, 'projects', '-home-testuser-proj');
+    await mkdir(proj, { recursive: true });
+    for (const s of sessions) {
+      const p = join(proj, `${s.id}.jsonl`);
+      await writeFile(p, `${s.lines.join('\n')}\n`);
+      await utimes(p, new Date(s.mtime), new Date(s.mtime));
+    }
+  }
+
+  it('resolves a ref anchored to an OLDER session in the same owner chain — not just the current one', async () => {
+    await seedOwnerIsolationDir([
+      {
+        id: ORIGINAL,
+        mtime: 1_600_000_000_000,
+        lines: [
+          userLine(
+            'this was to help agents have a theory of mind for eachother, I dont want to drop it',
+            '2026-08-01T20:01:45.283Z',
+          ),
+        ],
+      },
+      {
+        id: CURRENT,
+        mtime: 1_600_000_600_000, // newer — this is the transcript resolveSelfSession alone would pick
+        lines: [userLine('continue', '2026-08-02T16:07:00.000Z')],
+      },
+    ]);
+
+    const refs = parseTurnRefs(formatTurnRef(ORIGINAL, '2026-08-01T20:01:45.283Z'));
+    const [v] = await verifyTurnRefs(OWNER, refs, { home, loadActiveSessions: async () => [] });
+
+    // Pre-fix: found:false — the ref's session prefix never matched CURRENT
+    // (the only transcript ever checked), even though the cited turn is real.
+    expect(v.found).toBe(true);
+    expect(v.checked).toBe(true);
+    expect(v.verdict).toBe('owner-typed');
+    expect(v.snippet).toContain('theory of mind');
+  });
+
+  it('a ref for the CURRENT session still resolves without the fallback (no regression)', async () => {
+    await seedOwnerIsolationDir([
+      { id: CURRENT, mtime: 1_600_000_600_000, lines: [userLine('ship it', '2026-08-02T16:07:00.000Z')] },
+    ]);
+
+    const refs = parseTurnRefs(formatTurnRef(CURRENT, '2026-08-02T16:07:00.000Z'));
+    const [v] = await verifyTurnRefs(OWNER, refs, { home, loadActiveSessions: async () => [] });
+
+    expect(v.found).toBe(true);
+    expect(v.checked).toBe(true);
+  });
+
+  it('a ref for a session outside this owner\'s known chain reports checked:false — unresolvable, not verified-absent', async () => {
+    await seedOwnerIsolationDir([
+      { id: CURRENT, mtime: 1_600_000_600_000, lines: [userLine('continue', '2026-08-02T16:07:00.000Z')] },
+    ]);
+
+    const refs = parseTurnRefs('[turn:deadbeef@2026-08-01T20:01:45.283Z]');
+    const [v] = await verifyTurnRefs(OWNER, refs, { home, loadActiveSessions: async () => [] });
+
+    expect(v.found).toBe(false);
+    // Distinguishes "we never located a transcript to search" from a genuine
+    // verified-absent (searched the right transcript, turn wasn't in it).
+    expect(v.checked).toBe(false);
+  });
+
+  it('a timestamp genuinely absent from a correctly-resolved OLDER session reports checked:true, found:false', async () => {
+    await seedOwnerIsolationDir([
+      { id: ORIGINAL, mtime: 1_600_000_000_000, lines: [userLine('ship the release', '2026-08-01T20:01:45.283Z')] },
+      { id: CURRENT, mtime: 1_600_000_600_000, lines: [userLine('continue', '2026-08-02T16:07:00.000Z')] },
+    ]);
+
+    const refs = parseTurnRefs(formatTurnRef(ORIGINAL, '2026-08-01T23:59:59.000Z')); // wrong ts, right session
+    const [v] = await verifyTurnRefs(OWNER, refs, { home, loadActiveSessions: async () => [] });
+
+    expect(v.found).toBe(false);
+    expect(v.checked).toBe(true); // the OLDER session WAS located and searched
   });
 });

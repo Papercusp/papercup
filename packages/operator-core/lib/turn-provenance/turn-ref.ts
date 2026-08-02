@@ -403,7 +403,9 @@ export async function verifyTurnRefs(
       // transcript, same as pre-fix behavior; or the prefix matches it.
       path = currentFilePath;
     } else if (allowOwnerChainFallback) {
-      const resolved = await resolveOwnerIsolatedSessionByPrefix(ownerId, sessionPrefix).catch(() => null);
+      const resolved = await resolveOwnerIsolatedSessionByPrefix(ownerId, sessionPrefix, { home: opts.home }).catch(
+        () => null,
+      );
       path = resolved?.filePath ?? null;
     }
     if (!path) {

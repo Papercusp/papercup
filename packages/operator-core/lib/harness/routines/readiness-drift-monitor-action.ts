@@ -99,7 +99,12 @@ const fmtEndpoint = (defects: readonly DepEndpointDefect[]): string =>
     .map(
       (d) =>
         `edge#${d.edge_id} ${d.side}=${d.ref} declared=${d.declared_kind}` +
-        (d.expected_kind ? ` expected=${d.expected_kind}` : ' (resolves to nothing)'),
+        (d.expected_kind
+          ? ` expected=${d.expected_kind}`
+          : d.bare_id_found_in
+            ? // The repair-deciding distinction: the item EXISTS, the qualifier is wrong.
+              ` (unresolved here — that id exists in harness: ${d.bare_id_found_in} ⇒ RE-POINT the ref, do not delete)`
+            : ' (resolves to nothing anywhere ⇒ stale ref, delete the edge)'),
     )
     .join(', ') + (defects.length > SAMPLE ? ` …+${defects.length - SAMPLE} more` : '');
 

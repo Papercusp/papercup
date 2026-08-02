@@ -222,6 +222,21 @@ export async function createOneWorkItem(
         if (fresh.length > 0) similarOpen = [...(similarOpen ?? []), ...fresh];
       }
     }
+    // EI-19298062354262754: the improvements:capture-parity prescreen — the SAME
+    // full-text search-first dedup (searchIssuesForDedup + titleSimilarity /
+    // DUP_THRESHOLD) capture-core.ts already uses, reused here rather than a second
+    // divergent implementation. Advisory-only, merged into the same `similarOpen`
+    // field, deduped against anything the guards above already found. Issue-family
+    // kinds only — engineer_issues (what searchIssuesForDedup queries) has no
+    // feature/chunk rows.
+    if (!args.force && familyOf(args.kind) === 'issue') {
+      const fulltextDupes = await findFulltextLexicalDupes({ title: args.title });
+      if (fulltextDupes && fulltextDupes.length > 0) {
+        const seen = new Set((similarOpen ?? []).map((c) => c.id));
+        const fresh = fulltextDupes.filter((c) => !seen.has(c.id));
+        if (fresh.length > 0) similarOpen = [...(similarOpen ?? []), ...fresh];
+      }
+    }
     // EI-728: route the write to the request's workspace. Precedence: explicit
     // `workspace` arg → the request's concrete workspace (ctx.workspaceId) →
     // undefined (keep the trigger-derived default). '*' (unscoped SU) ⇒ "no workspace".

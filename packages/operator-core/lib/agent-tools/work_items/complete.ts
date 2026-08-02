@@ -34,6 +34,7 @@ import {
   resolveDeclaredAssumptions,
   ASSUMPTIONS_REQUIRED_MESSAGE,
 } from './_assumptions';
+import { nonAssumptionKindAdvisory } from '../../agent-facts/assumptions';
 import type { StoredAssumptionDeclaration } from '../../coord-lifecycle/records';
 import { defineTool, type UnifiedToolContext } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
@@ -569,6 +570,14 @@ async function completeOne(
   } catch (e) {
     assumptionsError = e instanceof Error ? e.message : String(e);
   }
+  // EI-19298742806956600: WARN-ONLY — a cited key that resolves fine but was never
+  // asserted as an assumption (kind:'assumption' or legacy confidence:'suspected').
+  // Never refuses (see nonAssumptionKindAdvisory's own header for why); surfaced the
+  // same way planeRatchetWarning is, below.
+  const assumptionKindWarning =
+    resolvedAssumptions && Array.isArray(resolvedAssumptions.declared)
+      ? nonAssumptionKindAdvisory(resolvedAssumptions.declared)
+      : undefined;
 
   if (assumptionsError) {
     stateError = `REJECTED — ${assumptionsError}`;
@@ -859,6 +868,7 @@ async function completeOne(
     // channel would earn the skim it must not get. Ordered with the other LOUD
     // signals, ahead of the bulky echo, for the EI-15982 reason above.
     ...(planeRatchetWarning && closeLanded && !stateError ? { planeRatchetWarning } : {}),
+    ...(assumptionKindWarning && closeLanded && !stateError ? { assumptionKindWarning } : {}),
     ...(nulBytesStripped
       ? {
           nulBytesStrippedWarning: `completion for ${it.id} contained one or more raw NUL bytes (invisible in most editors/terminals — renders as nothing or a plain space) — they were silently removed before recording, because Postgres cannot store a NUL in a text/jsonb column ("unsupported Unicode escape sequence") and an unremoved one would have failed the state write while leaving the completion recorded (EI-18764241942332131). If the NUL was meaningful (e.g. you were quoting a literal NUL byte as evidence), describe it in prose instead (e.g. "a raw NUL / 0x00 byte") rather than embedding the literal character.`,

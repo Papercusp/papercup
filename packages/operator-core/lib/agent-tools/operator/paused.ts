@@ -29,6 +29,6 @@ export default defineTool({
   args: z.object({}),
   async handler() {
     const paused = await isPaused();
-    return { content: [{ type: 'text', text: JSON.stringify({ paused }) }] };
+    return { data: { paused } };
   },
 });

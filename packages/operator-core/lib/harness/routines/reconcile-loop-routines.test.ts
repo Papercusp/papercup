@@ -409,6 +409,104 @@ describe('reconcileLoopRoutines — circuit feed (loop-wake-rate-limit-robustnes
   });
 });
 
+describe('reconcileLoopRoutines — stuck-backstop (no-signal) death reclassification (EI-19295537569038753)', () => {
+  const T0 = 1_782_000_000_000;
+  const pgString = (ms: number) => new Date(ms).toISOString().replace('T', ' ').replace('Z', '+00');
+
+  it("a wedged session that never produces a completion SIGNAL (no lifecycle marker, no presence bump) still gets its captured text reclassified — reset-aware rearm past the bare interval, not the blind stuck-backstop interval", async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {}); // expected diagnostic logs
+    const updates: unknown[][] = [];
+    const recordFire = vi.fn(async () => {});
+    const escalateLifecycleDeath = vi.fn(async () => {});
+    const sql = fakeSql(
+      [
+        {
+          id: 'rt-wedged',
+          target_owner_id: 'su-wedged',
+          interval_sec: 60,
+          parked: true,
+          install_slug: 'papercusp',
+          name: 'loop-su-wedged',
+          routine_workspace_id: 'ws-papercusp',
+          last_fired_at: pgString(T0),
+          lifecycle_completed_at: null, // no Stop-hook 'ended' — the process never cleanly exits
+          presence_last_active_at: null, // no post-fire activity AT ALL (signal === null: see completionSignal)
+          // The turn's own final text DID capture the wall — a text-only reply with no tool
+          // call, so presence never bumped and neither lifecycle/turn-journal/presence-quiescence
+          // ever produces a `signal`. Before this fix, this field was fetched and then never read
+          // on this branch.
+          last_assistant_text_after_fire: "You've hit your session limit · resets 5:40am (America/New_York)",
+        },
+      ],
+      updates,
+    );
+    // Past the classic stuck-park dwell (>=30min) so the backstop actually fires.
+    const res = await reconcileLoopRoutines({
+      sql,
+      nowMs: T0 + 31 * 60_000,
+      recordFire,
+      readFireState: NO_PRIOR_ERRORS,
+      checkUnreachableTerminalGuard: NEVER_BREACH_GUARD,
+      escalateLifecycleDeath,
+    });
+    expect(res.rearmed).toBe(1);
+    expect(res.loops[0].via).toBe('stuck-backstop'); // the signal classification itself is unchanged
+    // The whole point: this must NOT be the bare lastFiredMs+interval a blind stuck-backstop uses.
+    expect(res.loops[0].nextFireAt).toBeGreaterThan(T0 + 60_000);
+    expect(recordFire).toHaveBeenCalledWith(
+      'papercusp',
+      'loop-su-wedged',
+      expect.stringContaining('lifecycle-death:usage_limit'), // not the bare 'loop-stuck-backstop' detail
+      'error', // stuck-backstop always recorded 'error' — unchanged, just now correctly reset-aware
+    );
+    expect(escalateLifecycleDeath).toHaveBeenCalledWith(
+      expect.objectContaining({
+        routineId: 'rt-wedged',
+        targetOwnerId: 'su-wedged',
+        verdict: expect.objectContaining({ reason: 'usage_limit' }),
+      }),
+    );
+  });
+
+  it('a stuck-backstop row with ORDINARY (or absent) captured text is unaffected — still the plain bare-interval backstop rearm (no regression)', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const updates: unknown[][] = [];
+    const recordFire = vi.fn(async () => {});
+    const escalateLifecycleDeath = vi.fn(async () => {});
+    const sql = fakeSql(
+      [
+        {
+          id: 'rt-dead',
+          target_owner_id: 'su-dead',
+          interval_sec: 120,
+          parked: true,
+          install_slug: 'papercusp',
+          name: 'loop-su-dead',
+          routine_workspace_id: 'ws-papercusp',
+          last_fired_at: pgString(T0),
+          lifecycle_completed_at: null,
+          presence_last_active_at: null,
+          last_assistant_text_after_fire: null, // never delivered / no text at all — the common case
+        },
+      ],
+      updates,
+    );
+    const res = await reconcileLoopRoutines({
+      sql,
+      nowMs: T0 + 31 * 60_000,
+      recordFire,
+      readFireState: NO_PRIOR_ERRORS,
+      checkUnreachableTerminalGuard: NEVER_BREACH_GUARD,
+      escalateLifecycleDeath,
+    });
+    expect(res.rearmed).toBe(1);
+    expect(res.loops[0].via).toBe('stuck-backstop');
+    expect(res.loops[0].nextFireAt).toBe(T0 + 120_000); // byte-identical to the pre-fix math
+    expect(recordFire).toHaveBeenCalledWith('papercusp', 'loop-su-dead', expect.stringContaining('stuck-backstop'), 'error');
+    expect(escalateLifecycleDeath).not.toHaveBeenCalled();
+  });
+});
+
 describe('classifyLoopLifecycleTurn — pure classifier (EI-13818)', () => {
   const NOW = 1_782_000_000_000;
 
