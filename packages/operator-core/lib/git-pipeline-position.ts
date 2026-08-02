@@ -1576,6 +1576,15 @@ export function computeStages(
     | 'changeInCandidate'
     | 'sweepExposure'
   >,
+  /**
+   * WI-6525: set when there is genuinely nothing to measure a position for — no
+   * commit ever touched the path (and it is not merely a brand-new dirty file), an
+   * explicit sha failed to resolve, or neither a path nor a sha was supplied. When
+   * set, the `committed` stage (first in stage order) reports this directly with
+   * its own lever, so `deriveBlocker` never falls through to the `gate` stage's
+   * "fix the reds" lever for a change that was never resolvable in the first place.
+   */
+  targetUnresolvedDetail: string | null = null,
 ): StageState[] {
   // A path whose runtime does NOT go through the release pipeline (bg-host, gateway,
   // embed-sidecar) is never carried by staging->main->:3070 at all: reporting those
@@ -1614,16 +1623,18 @@ export function computeStages(
   stages.push({
     name: 'committed',
     position: p.positions.committedLocal && !p.dirtyUncommitted ? 'past' : 'pending',
-    health: p.dirtyUncommitted ? 'stalled' : 'advancing',
+    health: p.dirtyUncommitted ? 'stalled' : targetUnresolvedDetail ? 'stalled' : 'advancing',
     detail: p.dirtyUncommitted
       ? 'Uncommitted edits in the working tree. The release gate checks out a COMMITTED candidate and cannot see the tree, so this change is invisible to it until git-sync commits. Force it now: git-sync:run.' +
         (sweep.detail ? ` ${sweep.detail}` : '')
-      : null,
+      : targetUnresolvedDetail,
     lever: p.dirtyUncommitted
       ? multiFileSweep
         ? `git-sync:run (commit the working tree — the gate cannot see it) — ⚠ this sweeps ALL ${sweep.dirtyPathCount} dirty paths in the tree, not just yours; only fire it once the set is complete`
         : 'git-sync:run (commit the working tree — the gate cannot see it)'
-      : null,
+      : targetUnresolvedDetail
+        ? 'verify the path/sha is correct and re-call — there is nothing here for git-sync or the release gate to advance, so neither firing a sync nor greening the gate will resolve this'
+        : null,
   });
 
   // pushed — P-002. The push leg fails INDEPENDENTLY of the commit leg, and its
@@ -2567,6 +2578,21 @@ export async function gitPipelinePosition(
   // and hoisting it would make the hoist noisy for exactly that common case. So the
   // hoist applies to every `!targetSha` case EXCEPT this one.
   const noCommitButDirtyPath = !inp.sha && !!relPath && dirtyUncommitted;
+  // WI-6525: when there is genuinely NOTHING TO MEASURE (this same condition below),
+  // the `gate` stage's "fix the reds" lever was previously unreachable to
+  // distinguish from a real, measured red — a typo'd path (no commit, not dirty)
+  // read identically to "committed, sitting behind a red gate" and sent the caller
+  // to green a gate that has nothing to do with their file. Capture WHY nothing
+  // resolved here, in-band, so the `committed` stage (which sits before `gate` in
+  // stage order) can report the true blocker directly instead of falling through.
+  const targetUnresolvedDetail: string | null =
+    !targetSha && !noCommitButDirtyPath
+      ? inp.sha
+        ? `SHA '${inp.sha}' did not resolve in ${submodule ?? 'the superproject'} — check it is a full/valid commit hash in this repo. This is not a git-sync or release-gate issue; a bad/typo'd sha has nothing for either to act on.`
+        : relPath
+          ? `No commit has ever touched '${relPath}', and it does not exist (dirty or committed) in the working tree either — this usually means a typo, a renamed/moved file, or the wrong path/submodule. This is NOT a git-sync or release-gate issue: waiting will not resolve it, and greening the gate will not either. Double-check the path and re-call.`
+          : 'Neither a path nor a sha was supplied, so there is no commit to resolve a position for.'
+      : null;
   if (!targetSha && !noCommitButDirtyPath) {
     positionsUnknown.push('committedLocal', 'onStaging', 'inMain', 'deployed');
   }
@@ -3109,7 +3135,7 @@ export async function gitPipelinePosition(
     sweepExposure,
     notes,
   };
-  const stages = computeStages(preStages);
+  const stages = computeStages(preStages, targetUnresolvedDetail);
   // `actionOwner` is consumed by the summary's lead clause (which re-finds it from
   // `stages`), so it is not part of the public position shape.
   const { blockedOn, nextAction } = deriveBlocker(stages);
