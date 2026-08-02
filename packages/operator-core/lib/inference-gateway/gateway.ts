@@ -44,6 +44,7 @@ import { accountLoadKey, ACCOUNT_INFLIGHT_LOAD_WEIGHT } from './account-failover
 import { selectAffectedOwners } from './affected-owners';
 import { withOAuthBeta, scrubSecrets } from './credential-store';
 import { classifyCredential401Streak, DEFAULT_CREDENTIAL_401_DEAD_THRESHOLD } from './credential-health';
+import { dbHealthSnapshot, type DbHealthSnapshot } from './db-health';
 import { evaluateSelfHeal, pickReclaimTarget, classifySlotReconcile } from './gateway-self-heal';
 import { probeEgress } from './egress-probe';
 import { recordGatewayStall } from './gateway-stall-store';
@@ -1096,6 +1097,20 @@ export interface GatewayStats {
     hitRate: number;
     byAccount: Record<string, { read: number; create: number; hits: number; misses: number; failoverMisses: number; hitRate: number }>;
   };
+  /** DURABLE-PATH health (EI-19303809952284205). The gateway's DB-touching side-paths (usage-window
+   *  projection, pool reload, rate hints, scale observer) are all fire-and-forget by design, so when
+   *  Postgres went away on 2026-08-01 the gateway kept serving traffic and reporting `ok: true` while
+   *  three durable subsystems sat completely inert for hours — the account pool could not load at all,
+   *  so it collapsed to a single synthetic `local` credential with `healthyAccounts: 0`, and the only
+   *  evidence anywhere was the gateway's own journal.
+   *
+   *  `db.ok === false` is the machine-readable form of that condition: it degrades `/healthz` to a 503
+   *  (so every existing prober sees it) and drives the operator's system-health `tokens` panel. See
+   *  db-health.ts for the streak/sustain rule — it is deliberately NOT "one write failed".
+   *
+   *  OPTIONAL for deploy-skew readers (`/admin/stats` is parsed off a REMOTE gateway process that may
+   *  predate this field). Absence means UNKNOWN, never healthy. */
+  db?: DbHealthSnapshot;
 }
 
 /** Rough token estimate for admission (refined once the account exposes real headroom). */
@@ -2317,6 +2332,9 @@ export function createInferenceGateway(deps: GatewayDeps) {
       inFlight: admission.running,
       queueDepth: admission.queued,
       healthyAccounts,
+      // EI-19303809952284205: the durable side-paths' health. Computed fresh on every read (pure), so
+      // /healthz, /stats and /admin/stats can never disagree about whether the gateway still has a DB.
+      db: dbHealthSnapshot(now),
       admission,
       codexAdmission,
       ...(priorityTiers ? { priorityTiers } : {}),
@@ -4529,7 +4547,13 @@ export function createInferenceGateway(deps: GatewayDeps) {
     const url = req.url ?? '/';
     if (req.method === 'GET' && url === '/healthz') {
       const s = stats();
-      sendJson(res, s.pausedUntil > Date.now() ? 503 : 200, { ok: true, ...s });
+      // EI-19303809952284205: `ok` used to be a HARDCODED literal `true` — it described only whether
+      // the process was answering, so a gateway whose Postgres had been unreachable for hours (account
+      // pool unloadable, every usage-window write dropped, healthyAccounts: 0) still reported green to
+      // every prober. A sustained durable-path failure is a REAL not-ready condition: report it as one,
+      // and 503 so the existing load-balancer/watchdog semantics apply with no new plumbing.
+      const dbDown = s.db?.ok === false;
+      sendJson(res, s.pausedUntil > Date.now() || dbDown ? 503 : 200, { ok: !dbDown, ...s });
       return;
     }
     if (req.method === 'GET' && (url === '/stats' || url === '/admin/stats')) {

@@ -443,6 +443,13 @@ export interface ScaleObserverDeps {
    *  round-trip to the per-pause callback — that latency (not the policy value) is what
    *  broke account-pool-store.test.ts's 5ms-flush observer test. Default = real readScalePolicy. */
   readScalePolicy: () => Promise<ScalePolicy>;
+  /** EI-19303809952284205: report the DB outcome of the penalty read-modify-write so a caller (the
+   *  inference gateway) can detect that this durable path has gone inert. Scoped DELIBERATELY to the
+   *  `updatePool` round-trip and nothing else: the rest of the callback can fail for reasons that are
+   *  not DB faults (no fresh account to scale to, owner steering off), and folding those in would
+   *  fabricate a database alarm out of normal operation. Default = no-op, so a non-gateway caller of
+   *  this observer is unaffected. */
+  onDbOutcome: (ok: boolean, err?: unknown) => void;
   log: (level: LogLevel, msg: string) => void;
 }
 
@@ -479,6 +486,7 @@ export function initAccountScaleObserver(deps: Partial<ScaleObserverDeps> = {}):
   const workspaceId = deps.workspaceId ?? (() => activeWorkspaceId());
   const now = deps.now ?? (() => Date.now());
   const log = deps.log ?? ((lvl, m) => console.warn(`[accounts:${lvl}] ${m}`));
+  const onDbOutcome = deps.onDbOutcome ?? (() => {});
   const updatePool = deps.updatePool ?? updateAccountPool;
   const scaleOut = deps.scaleOut ?? ((id, ws) => handleAccountExhausted(id, ws, defaultScaleOutDeps(log)));
   const emitExhausted = deps.emitExhausted ?? defaultEmitExhausted;
@@ -512,10 +520,16 @@ export function initAccountScaleObserver(deps: Partial<ScaleObserverDeps> = {}):
     const t = now();
     void (async () => {
       try {
-        const pool = await updatePool(
-          (p) => recordAccountPenalty(p, accountId, t, { pausedUntil: ev.pausedUntil }),
-          ws,
-        );
+        // EI-19303809952284205: report THIS round-trip's outcome (and only this one) so the gateway
+        // can see the durable path go inert. Everything after it can fail for non-DB reasons.
+        let pool: AccountPool;
+        try {
+          pool = await updatePool((p) => recordAccountPenalty(p, accountId, t, { pausedUntil: ev.pausedUntil }), ws);
+          onDbOutcome(true);
+        } catch (e) {
+          onDbOutcome(false, e);
+          throw e;
+        }
         const acct = getAccount(pool, accountId);
         if (!acct || !isSustainedlyLimited(acct, t, await resolveScalePolicy())) return; // not exhausted (yet) — just pausing
         emitExhausted(accountId, ev.pausedUntil); // observability fires regardless of the toggle

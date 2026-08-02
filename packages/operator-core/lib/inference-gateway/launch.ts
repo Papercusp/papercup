@@ -14,6 +14,7 @@ import { resolveAccountPool, type ResolvedAccount } from './account-resolver';
 import { CODEX_CLI_REF_PREFIX, parseCodexCliRef, type CodexCliAccount } from './codex-cli-bridge';
 import { makeBearerCredentialResolver, makeCredentialResolver, type CredentialResolver } from './credential-store';
 import { createFailoverPool, type FailoverPoolOptions } from './account-failover';
+import { recordDbOutcome, setDbHealthTransitionHandler, type DbHealthSnapshot } from './db-health';
 import {
   formatAtRiskAlertSuffix,
   buildSelfDrainWake,
@@ -123,6 +124,10 @@ function defaultObservePool(_accountId: string, ws: string | undefined, log: Gat
         workspaceId: ws ? () => ws : undefined,
         scaleOut: async () => ({ scaledOut: false as const, reason: 'no-fresh-account' as const }),
         log: log ? (lvl, m) => log(lvl, m) : undefined,
+        // EI-19303809952284205: report ONLY the penalty read-modify-write's DB outcome, not the whole
+        // observer's. A scale-out that declines (no fresh account, policy off) is not a DB fault, and
+        // attributing it to one would fabricate a gateway-DB alarm out of normal operation.
+        onDbOutcome: (ok, err) => recordDbOutcome('scale-observer', ok, err),
       });
     })
     .catch((e) => log?.('warn', `pool-feed observer not wired: ${(e as Error).message}`));
@@ -188,7 +193,14 @@ function makeWindowProjector(
           ),
         ),
       )
-      .catch((e) => log('warn', `account window projection write failed for '${accountId}': ${(e as Error).message}`));
+      // EI-19303809952284205: this write IS the Accounts tab's live data, and its failure was silent
+      // for hours. Record BOTH outcomes — the success is what clears a streak, so recording only
+      // failures would latch the alarm on after a single transient blip.
+      .then(() => recordDbOutcome('window-projection', true))
+      .catch((e) => {
+        recordDbOutcome('window-projection', false, e);
+        log('warn', `account window projection write failed for '${accountId}': ${(e as Error).message}`);
+      });
   };
 }
 
@@ -752,7 +764,16 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
   let reloadTimer: ReturnType<typeof setInterval> | undefined;
   if (reloadMs > 0 && pool.reload) {
     reloadTimer = setInterval(() => {
-      void reloadPool().catch((e) => log('warn', `pool reload poll failed: ${(e as Error).message}`));
+      // EI-19303809952284205: the 60s poll is the gateway's only CONTINUOUS durable-path heartbeat —
+      // it runs whether or not traffic is flowing, so it is what advances the failure streak on an
+      // idle gateway. When this fails the pool cannot load at all and the gateway silently collapses
+      // to a single synthetic `local` credential (healthyAccounts: 0, every account pin ignored).
+      void reloadPool()
+        .then(() => recordDbOutcome('pool-reload', true))
+        .catch((e) => {
+          recordDbOutcome('pool-reload', false, e);
+          log('warn', `pool reload poll failed: ${(e as Error).message}`);
+        });
     }, reloadMs);
     reloadTimer.unref?.();
   }
@@ -780,7 +801,11 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
           windowResetAt7d: a.rate?.windowResetAt7d,
         })),
       );
+      recordDbOutcome('rate-hints', true);
     } catch (e) {
+      // EI-19303809952284205: a failure here means the drain selector is running on cold-start
+      // defaults — a known-dead account is no longer disqualified. Silent before this.
+      recordDbOutcome('rate-hints', false, e);
       log('warn', `inference-gateway: rate-hint refresh failed: ${(e as Error).message}`);
     }
     // OWNER PINS (durable dynamic pins) — from operator_owner_pins (migration 416). Fail-soft until that
