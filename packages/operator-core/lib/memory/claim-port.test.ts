@@ -92,20 +92,31 @@ describe('buildClaimRecallBlock', () => {
   // EI-18893248175645463: the 'user' pool was recorded on EVERY claim recall
   // with an unconditionally empty scope list (buildLaunchMemoryBlock never
   // received a userId), a guaranteed 100% zero-hit rather than "nothing
-  // relevant". Defaults to sessionId — the SAME claimer identity every real
-  // call site already passes.
-  it('defaults userId to sessionId, so the personal-scope pool is queried', async () => {
+  // relevant".
+  //
+  // WI-6933 follow-up: the ORIGINAL fix for that (defaulting userId to
+  // sessionId) was itself wrong — sessionId is the per-agent coord ownerId
+  // (epoch-dedup identity), NOT the canonical harness_shared.users.id every
+  // memory:remember write and every OTHER buildLaunchMemoryBlock caller
+  // (compact-reprime, turn-start) scopes the 'user' pool by. That produced a
+  // non-empty but PERMANENTLY WRONG scope — measured 1161/1161 (100%)
+  // zero-hit on claim/create recalls asked WITH a real scope. The correct
+  // default resolves the SAME canonical id turn-start uses.
+  it('defaults userId to the canonical session-user id (getSessionUserOrDefault), NOT sessionId', async () => {
     vi.mocked(buildLaunchMemoryBlock).mockResolvedValue(null);
     await buildClaimRecallBlock({
-      sessionId: 'su-claimer-1',
+      sessionId: 'su-claimer-1', // the epoch-dedup identity — must NOT leak into userId
       workspaceId: 'ws-9',
       items: [{ id: 'WI-1', title: 'Wire prelude', harness: 'papercusp' }],
     });
     const arg = vi.mocked(buildLaunchMemoryBlock).mock.calls[0]?.[0];
-    expect(arg?.userId).toBe('su-claimer-1');
+    expect(arg?.userId).toBe('canonical-default-user-id');
+    expect(arg?.userId).not.toBe('su-claimer-1');
+    // sessionId still threads through unchanged for its OWN (epoch-dedup) purpose.
+    expect(arg?.session).toEqual({ sessionId: 'su-claimer-1', port: 'claim' });
   });
 
-  it('an explicit userId overrides the sessionId default', async () => {
+  it('an explicit userId overrides the canonical-user default (and skips the lookup)', async () => {
     vi.mocked(buildLaunchMemoryBlock).mockResolvedValue(null);
     await buildClaimRecallBlock({
       sessionId: 'sid-1',
@@ -115,6 +126,19 @@ describe('buildClaimRecallBlock', () => {
     });
     const arg = vi.mocked(buildLaunchMemoryBlock).mock.calls[0]?.[0];
     expect(arg?.userId).toBe('distinct-user-id');
+    expect(getSessionUserOrDefault).not.toHaveBeenCalled();
+  });
+
+  it('canonical-user lookup failure degrades to no userId, never fails or falls back to sessionId', async () => {
+    vi.mocked(getSessionUserOrDefault).mockRejectedValue(new Error('pg down'));
+    vi.mocked(buildLaunchMemoryBlock).mockResolvedValue(null);
+    await buildClaimRecallBlock({
+      sessionId: 'su-claimer-1',
+      workspaceId: 'ws-9',
+      items: [{ id: 'WI-1', title: 'Wire prelude', harness: 'papercusp' }],
+    });
+    const arg = vi.mocked(buildLaunchMemoryBlock).mock.calls[0]?.[0];
+    expect(arg?.userId).toBeNull();
   });
 
   it('un-stamped (no sessionId) still recalls, without a session block', async () => {

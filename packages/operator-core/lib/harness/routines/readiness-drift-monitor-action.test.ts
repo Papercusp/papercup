@@ -106,7 +106,8 @@ describe('system:readiness-drift-monitor — sweep wiring', () => {
       defects: 1,
       mismatched: [
         {
-          edge_id: '42',
+          relation: 'work_item_deps',
+          row_id: '42',
           workspace_id: 'default',
           side: 'blocked',
           declared_kind: 'feature',
@@ -127,7 +128,10 @@ describe('system:readiness-drift-monitor — sweep wiring', () => {
     // this forces the String() conversion the assertion already performs.
     const logged = warnSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('\n');
     expect(logged).toContain('ENDPOINT DEFECTS');
-    expect(logged).toContain('edge#42'); // repairable, not merely countable
+    // Repairable, not merely countable — and the RELATION is part of being repairable:
+    // work_item_deps is the mirror (re-run the writer), coord_links is the source (correct
+    // the row itself), so a finding that omitted it would name the wrong repair.
+    expect(logged).toContain('work_item_deps#42');
     // The finding must say a mismatch means the WRITE SEAM was bypassed — that is the
     // whole diagnostic value, and the reason this sweep does not self-repair.
     expect(logged).toMatch(/bypass/i);
