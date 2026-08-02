@@ -244,19 +244,21 @@ function useIsNarrowViewport(query: string): boolean {
  * is the transcript, the composer and the one-line status footer — the dossier
  * rail, the control band and the fleet row are out.
  *
- * D-003 (2026-08-02): `screen` needs TWO mechanisms, because "the display" is
- * reached differently in the two hosts we ship into, and the wrong one silently
- * degrades into `window`:
- *   - BROWSER — `requestFullscreen()` on the conversation region. The UA takes
- *     the OS window fullscreen and paints that element on it.
- *   - DESKTOP (Tauri) — the webview is a widget inside a window WE own, and a
- *     DOM fullscreen request does not escape it: the element grows to fill the
- *     webview, which is pixel-for-pixel what `window` mode already gives. So
- *     the desktop path drives the WINDOW (`setFullscreen`) and lets the same
- *     maximized layout fill it.
+ * D-003 (2026-08-02): `screen` needs TWO mechanisms.
  * [owner 2026-08-02, verbatim] "both fullscreen buttons do the same thing. one
  * of them is supposed to full screen on the full desktop display not just the
- * window" — that was the desktop taking the browser path.
+ * window."
+ *   - BROWSER — `requestFullscreen()` on the conversation region. The UA takes
+ *     the OS window fullscreen and paints that element on it.
+ *   - DESKTOP (Tauri) — drive the WINDOW (`setFullscreen`) and let the same
+ *     maximized layout fill it.
+ * The desktop split is NOT because the webview swallows a DOM request — it was
+ * measured doing the opposite (see desktop-window-fullscreen.ts's header for the
+ * numbers). It is because that call is conditional on transient activation, and
+ * EVERY way it can fail lands on `setChatMax('window')` — the other button's
+ * behavior. A control that degrades into its neighbour reads as a duplicate,
+ * which is what was reported. The window path has no gesture requirement, so a
+ * deep link and an agent-driven `ui:dispatch` reach the display too.
  *
  * D-002: the excluded set is defined STRUCTURALLY, by the DOM, and never as a
  * list of things to hide. `screen` calls requestFullscreen() on the
@@ -1109,12 +1111,10 @@ export default function SessionChatModal({
       void exitScreen().then(() => setChatMax(null));
       return;
     }
-    /* D-003 — DESKTOP: drive the WINDOW, not the document. A DOM fullscreen
-       request inside the Tauri webview only grows the element to the webview,
-       which is the same rectangle `window` mode already gives — which is
-       exactly the bug ("both fullscreen buttons do the same thing"). Taking the
-       OS window to the display and letting the maximized layout fill it is the
-       only path that reaches the pixels the owner asked for. */
+    /* D-003 — DESKTOP: drive the WINDOW, not the document. The DOM request
+       below needs transient activation, and every way it can fail falls through
+       to `window` — the other button's mode, which is the reported bug. Moving
+       the OS window is unconditional, and readable back afterwards. */
     if (isDesktopShell()) {
       void enterDesktopWindowFullscreen().then(({ active, owned }) => {
         windowScreen.current = active ? (owned ? 'owned' : 'adopted') : null;

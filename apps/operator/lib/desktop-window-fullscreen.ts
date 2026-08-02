@@ -5,24 +5,40 @@
  *
  * WHY THIS EXISTS
  * ---------------
- * The DOM Fullscreen API (`element.requestFullscreen()`) is the right answer in
- * a BROWSER: the UA takes the OS window fullscreen and paints that element on
- * it. Inside the Tauri desktop shell it is NOT — the webview is a widget inside
- * a window we own, and the embedder decides whether a fullscreen request
- * escapes to the window manager. In practice it does not: the element grows to
- * fill the WEBVIEW, which is exactly the same pixels a "fill the app window"
- * layout mode already produces.
+ * [owner 2026-08-02] "both fullscreen buttons do the same thing. one of them is
+ * supposed to full screen on the full desktop display not just the window."
  *
- * That is the bug this module fixes. [owner 2026-08-02] "both fullscreen
- * buttons do the same thing. one of them is supposed to full screen on the full
- * desktop display not just the window" — the full-screen control was landing on
- * the same rectangle as the full-window control because the only mechanism it
- * had was the DOM API, which cannot leave the window here.
+ * The chat popup's full-screen control had exactly one mechanism — the DOM
+ * Fullscreen API on the conversation element — and every way that call can fail
+ * lands on `chatMax='window'`, i.e. the OTHER button's behavior. A control that
+ * degrades into its neighbour is indistinguishable from a duplicate.
  *
- * The desktop answer is to drive the WINDOW: `getCurrentWindow().setFullscreen`
- * puts the OS window on the whole display, and the caller's own maximized
- * layout then fills it. Two mechanisms, one meaning — see `SessionChatModal`'s
- * `toggleScreen`, which picks between them on `isDesktopShell()`.
+ * ⚠ MEASURED, because the obvious explanation is WRONG and cost a wrong comment
+ * here before it was checked (2026-08-02, papercusp-desktop debug build,
+ * WebKitGTK on X11, driven under Xvfb+openbox):
+ *   - `requestFullscreen()` on the conversation region, from a GENUINE click on
+ *     the real button inside the Radix dialog, DOES escape the webview: the OS
+ *     window went 1280x800 -> 1920x1080 and `document.fullscreenElement` became
+ *     that region. So "the webview swallows it" is NOT true on this platform.
+ *   - The same call WITHOUT transient activation rejects outright —
+ *     "Cannot request fullscreen without transient activation" — and the old
+ *     handler's `.catch` turned that into full-WINDOW.
+ *
+ * So the DOM path is not broken; it is CONDITIONAL, on something the caller
+ * cannot inspect or guarantee. Driving the window instead is what makes the
+ * control deterministic:
+ *   1. no user-gesture requirement — a deep link (`?chatMax=screen`), a restored
+ *      URL, or an agent driving the UI through `ui:dispatch` reaches the display
+ *      too, where the DOM path silently gives them the smaller mode instead;
+ *   2. no reliance on the embedder honoring a web request — WKWebView and
+ *      WebView2 are not WebKitGTK, and this is the shipping desktop app;
+ *   3. it cannot degrade into the neighbouring mode: `setFullscreen` either
+ *      moves the window (we can READ that back and confirm) or it does not.
+ *
+ * `getCurrentWindow().setFullscreen` puts the OS window on the whole display and
+ * the caller's own maximized layout fills it — verified live at 1920x1080 for
+ * both the window and the conversation region. See `SessionChatModal`'s
+ * `toggleScreen`, which picks between the two mechanisms on `isDesktopShell()`.
  *
  * OWNERSHIP (why `owned` is in the return type)
  * ---------------------------------------------

@@ -1709,12 +1709,12 @@ describe('SessionChatModal', () => {
      * one of them is supposed to full screen on the full desktop display not
      * just the window".
      *
-     * Inside the Tauri webview `requestFullscreen()` cannot reach the window
-     * manager: the element grows to fill the WEBVIEW, which is pixel-for-pixel
-     * what `window` mode already produces — so the two controls converged. The
-     * assertion that actually guards the fix is therefore about WHICH MECHANISM
-     * is reached for, because a test that only checked `chatMax === 'screen'`
-     * passes against the broken build (it set that too, over identical pixels).
+     * The DOM Fullscreen API is conditional on transient activation, and every
+     * way it can fail falls through to `setChatMax('window')` — the OTHER
+     * button's mode. A control that degrades into its neighbour reads as a
+     * duplicate. The assertion that guards the fix is therefore about WHICH
+     * MECHANISM is reached for: a test that only checked `chatMax === 'screen'`
+     * passes against a build that never left the window.
      */
     describe('D-003 desktop: full screen must leave the webview', () => {
       /** Give jsdom a Fullscreen API so "the DOM path was NOT taken" is a real
@@ -1737,8 +1737,8 @@ describe('SessionChatModal', () => {
           fireEvent.click(screen.getByTestId('session-chat-full-screen'));
 
           await waitFor(() => expect(desktopFs.enterDesktopWindowFullscreen).toHaveBeenCalled());
-          // The whole fix: on the desktop the DOM API is not merely redundant,
-          // it is the thing that made this control a duplicate of full-window.
+          // The whole fix: on the desktop this must not go through the DOM API,
+          // whose failure modes all land on full-window.
           expect(requestFullscreen).not.toHaveBeenCalled();
           await waitFor(() => expect(nuqsSetters.chatMax).toHaveBeenCalledWith('screen'));
         });

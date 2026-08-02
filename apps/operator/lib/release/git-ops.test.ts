@@ -308,12 +308,45 @@ describe('changedFilesRecursive — gitlink expansion', () => {
   });
 
   it('expands EVERY moved submodule, not just the first', async () => {
-    const a = await bumpSubmodule('libs/generic/memory', 'src/a.test.ts');
-    const b = await bumpSubmodule('libs/test-config', 'src/b.test.ts');
+    // Both submodules must exist BEFORE the range opens, or the second one is an
+    // ADDITION rather than a move — a different case, covered by the test below.
+    await createSubmodule('libs/generic/memory');
+    await createSubmodule('libs/test-config');
+    const before = await revParse(repo, 'HEAD');
+    await bumpPin('libs/generic/memory', 'src/a.test.ts');
+    await bumpPin('libs/test-config', 'src/b.test.ts');
+    const after = await revParse(repo, 'HEAD');
 
-    const { files } = await changedFilesRecursive(repo, a.before, b.after);
+    const { files } = await changedFilesRecursive(repo, before, after);
     expect(files).toContain('libs/generic/memory/src/a.test.ts');
     expect(files).toContain('libs/test-config/src/b.test.ts');
+  });
+
+  it('treats a submodule ADDED in range as fully changed, not as absent', async () => {
+    // Caught by the multi-submodule test above during development: the moved-pin filter
+    // originally required the path to exist at `from`, so a newly-vendored submodule was
+    // skipped entirely — putting its tests straight back in the blind spot this item is
+    // about, reported as "not modified in range" i.e. presumptively a real red.
+    await createSubmodule('libs/generic/memory');
+    const before = await revParse(repo, 'HEAD');
+    await createSubmodule('libs/test-config');
+    await bumpPin('libs/test-config', 'src/brand-new.test.ts');
+    const after = await revParse(repo, 'HEAD');
+
+    const { files, unexpandedSubmodules } = await changedFilesRecursive(repo, before, after);
+    expect(files).toContain('libs/test-config/src/brand-new.test.ts');
+    expect(unexpandedSubmodules).toEqual([]);
+  });
+
+  it('ignores a submodule REMOVED in range (its files cannot exist at tip)', async () => {
+    const { after: before } = await bumpSubmodule('libs/generic/memory', 'src/a.test.ts');
+    await git(repo, ['rm', '-q', '--cached', 'libs/generic/memory']);
+    await git(repo, ['commit', '--no-verify', '-q', '-m', 'drop submodule']);
+    const after = await revParse(repo, 'HEAD');
+
+    const { unexpandedSubmodules } = await changedFilesRecursive(repo, before, after);
+    // Not an error and not "undetermined" — a test there cannot be failing at tip.
+    expect(unexpandedSubmodules).toEqual([]);
   });
 
   it('changedFilesInSubmodule THROWS on an undiffable submodule instead of returning []', async () => {

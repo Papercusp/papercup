@@ -20,6 +20,19 @@
 import { PorcupineWorker, BuiltInKeyword } from '@picovoice/porcupine-web';
 import { WebVoiceProcessor } from '@picovoice/web-voice-processor';
 
+/**
+ * Where the wake-word model is served from.
+ *
+ * cdn-egress-fixes-2026-08-02 P-003. This used to be
+ * `https://raw.githubusercontent.com/Picovoice/porcupine/master/lib/common/porcupine_params.pv`
+ * — a ~961KB runtime fetch from a rate-limited SOURCE host, off a MOVING ref, on
+ * a path where a 404 silently disables wake-word. The model is now vendored into
+ * the publicDir at setup time by apps/operator/scripts/setup-porcupine-runtime.sh
+ * (pinned by commit sha and checksum-verified), so nothing is fetched from the
+ * internet at runtime.
+ */
+export const PORCUPINE_MODEL_PATH = '/porcupine/porcupine_params.pv';
+
 export interface WakeWordOptions {
   accessKey: string;
   /** Built-in Porcupine keyword. For custom keywords, swap to a .ppn URL. */
@@ -45,7 +58,7 @@ export async function startWakeWordDetection(opts: WakeWordOptions): Promise<Wak
     [{ builtin: keyword, sensitivity: 0.6 }],
     () => opts.onWake(),
     {
-      publicPath: 'https://raw.githubusercontent.com/Picovoice/porcupine/master/lib/common/porcupine_params.pv',
+      publicPath: PORCUPINE_MODEL_PATH,
       forceWrite: true,
     },
   );

@@ -813,6 +813,52 @@ describe('runGreenCheckpoint', () => {
       expect(line).toContain('src/b.test.ts');
     });
 
+    // EI-19365565179927273. "presumptively a real red" is a claim about the WHOLE range,
+    // so it may only be made when the whole range was readable. A moved-but-undiffable
+    // submodule makes part of it unknown — and an agent acting on a false "real red" goes
+    // and "fixes" already-correct files (6 embedder tests, on the 18:02:15Z verdict).
+    it('formatGateLineageLine: an unexpandable submodule downgrades "real red" to UNDETERMINED', () => {
+      const lineage: GateLineage = {
+        candidate: 'c'.repeat(40),
+        tip: 't'.repeat(40),
+        commitsBehind: 4,
+        failingFilesChangedInRange: [],
+        submodulesUnexpanded: ['libs/generic/memory'],
+      };
+      const line = formatGateLineageLine(lineage);
+      expect(line).toContain('skew UNDETERMINED');
+      expect(line).toContain('libs/generic/memory');
+      // The false-confidence phrasing must be GONE, not merely accompanied by a caveat.
+      expect(line).not.toContain('presumptively a real red');
+    });
+
+    it('formatGateLineageLine: an empty submodulesUnexpanded still reads as a real red', () => {
+      const lineage: GateLineage = {
+        candidate: 'c'.repeat(40),
+        tip: 't'.repeat(40),
+        commitsBehind: 4,
+        failingFilesChangedInRange: [],
+        submodulesUnexpanded: [],
+      };
+      expect(formatGateLineageLine(lineage)).toContain('presumptively a real red');
+    });
+
+    it('formatGateLineageLine: a matched file still wins, but an unreadable submodule is disclosed', () => {
+      // STALE is the actionable verdict and must not be suppressed — but the reader is
+      // still told part of the range was unreadable, so "only one file matched" is not
+      // mistaken for a complete accounting.
+      const lineage: GateLineage = {
+        candidate: 'c'.repeat(40),
+        tip: 't'.repeat(40),
+        commitsBehind: 4,
+        failingFilesChangedInRange: ['src/a.test.ts'],
+        submodulesUnexpanded: ['libs/test-config'],
+      };
+      const line = formatGateLineageLine(lineage);
+      expect(line).toContain('presumptively STALE');
+      expect(line).toContain('also unreadable: libs/test-config');
+    });
+
     it('computeGateLineage: counts commits behind tip and names failing files touched in range', async () => {
       const c1 = await commit('a', '1', 'c1');
       await git(repo, ['branch', 'ready', c1]);

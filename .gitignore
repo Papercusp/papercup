@@ -175,6 +175,10 @@ apps/operator/public/monaco/
 # an incomplete mirror here does not 404 — it silently resumes fetching from the
 # internet. Never trim it; verify at runtime.
 apps/operator/public/excalidraw/
+# Vendored Porcupine wake-word model (cdn-egress-fixes-2026-08-02 P-003) —
+# fetched ONCE at setup time by scripts/setup-porcupine-runtime.sh, pinned by
+# commit sha + checksum-verified. ~961KB, regenerated on install, not committed.
+apps/operator/public/porcupine/
 # Stale duplicate docs backup trees under the served internal docs.
 apps/operator/public/internal/docs.old.*/
 
