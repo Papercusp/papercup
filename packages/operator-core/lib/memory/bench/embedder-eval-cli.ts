@@ -468,10 +468,49 @@ async function main(): Promise<void> {
   // than left for a reader to eyeball two class means — which cannot answer
   // "is this outside noise?" at all, and invites reporting a null as
   // equivalence.
-  const scoredLegs = Object.entries(results).filter(
-    (e): e is [string, { perQuery: PerQueryRow[] }] =>
-      typeof e[1] === 'object' && e[1] !== null && Array.isArray((e[1] as { perQuery?: unknown }).perQuery),
+  const hasPerQuery = (v: unknown): v is { perQuery: PerQueryRow[] } =>
+    typeof v === 'object' && v !== null && Array.isArray((v as { perQuery?: unknown }).perQuery);
+  const scoredLegs = Object.entries(results).filter((e): e is [string, { perQuery: PerQueryRow[] }] =>
+    hasPerQuery(e[1]),
   );
+
+  // `--compare-with <prior.json>` folds a PREVIOUS run's legs in as extra
+  // comparison candidates. Two uses, both real: comparing a new model against
+  // a frozen baseline without paying to re-embed it (P-003 measures granite /
+  // Qwen against exactly the gemma numbers recorded here), and comparing the
+  // SAME width across runtimes — in-process vs the production sidecar — which
+  // is the only way to check that a bench verdict transfers to what actually
+  // ships.
+  const compareWith = argValue('--compare-with');
+  if (compareWith) {
+    const prior = JSON.parse(fs.readFileSync(compareWith, 'utf8')) as {
+      corpusVersion?: string;
+      goldSetVersion?: string;
+      corpus?: string;
+      results?: Record<string, unknown>;
+    };
+    // A cross-run comparison is only meaningful on the SAME queries and the
+    // same corpus. Mismatched fixtures would still produce a confident-looking
+    // CI over queries that are not the same queries — refuse instead.
+    const mismatch =
+      prior.corpus !== corpusChoice || prior.corpusVersion !== corpusVersion || prior.goldSetVersion !== gold.version;
+    if (mismatch) {
+      console.error(
+        `--compare-with REFUSED: fixture mismatch. this run = ${corpusChoice}/${corpusVersion} gold ${gold.version}; ` +
+          `${compareWith} = ${prior.corpus}/${prior.corpusVersion} gold ${prior.goldSetVersion}. ` +
+          `Comparing legs scored on different queries is not a comparison.`,
+      );
+      process.exit(1);
+    }
+    const label = path.basename(compareWith).replace(/\.json$/, '');
+    for (const [name, leg] of Object.entries(prior.results ?? {})) {
+      if (!hasPerQuery(leg)) continue;
+      const merged = `${label}:${name}`;
+      results[merged] = { ...(leg as object), fromRun: compareWith };
+      scoredLegs.push([merged, leg]);
+    }
+    console.log(`\nfolded ${scoredLegs.length} total legs (incl. prior run ${compareWith})`);
+  }
   const baselineName = argValue('--baseline') ?? scoredLegs[0]?.[0];
   const comparisons: Record<string, unknown> = {};
   const baseline = scoredLegs.find(([n]) => n === baselineName);

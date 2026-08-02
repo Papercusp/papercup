@@ -1141,6 +1141,18 @@ export function startOutboxDrain(
       const sizeBreached = backlogSizeStallThreshold > 0 && undrainedCount >= backlogSizeStallThreshold;
 
       if (!ageBreached && !sizeBreached) {
+        // WI-6997: BOTH legs recovered. Before, this only re-armed the latch and
+        // left the durable EI open forever; now the escalated->recovered edge also
+        // resolves it.
+        if (backlogAgeEscalated) {
+          recoverStall(
+            'drain_backlog_aged',
+            `outbox backlog recovered: ${undrainedCount} undrained row(s), oldest ` +
+              `${Math.round(oldestAgeMs / 60000)}min old — both the age (${Math.round(
+                backlogAgeStallMs / 60000,
+              )}min) and size (${backlogSizeStallThreshold}) thresholds are clear`,
+          );
+        }
         backlogAgeEscalated = false; // recovered on both legs — a later re-breach re-escalates
         return;
       }
@@ -1297,8 +1309,26 @@ export function startOutboxDrain(
         // WI-2009 leg 3: a drained row is forward progress — reset the
         // no-progress clock + clear the escalation latch (recovered).
         if (drainedThisPass > 0) {
+          // WI-6997: a drained row is forward progress, so it is the recovery edge
+          // for BOTH progress-based escalations. Previously this cleared the latches
+          // and nothing else, stranding the durable EIs open indefinitely.
+          if (backlogStallEscalated) {
+            recoverStall(
+              'drain_backlog_stalled',
+              `outbox drain resumed forward progress: drained ${drainedThisPass} row(s) ` +
+                `for ${wantPayload} after a no-progress episode`,
+            );
+          }
+          if (drainHangEscalated) {
+            recoverStall(
+              'drain_stalled',
+              `outbox drain pass completed normally for ${wantPayload} (drained ` +
+                `${drainedThisPass} row(s)) after a hung-pass episode — the wedge cleared`,
+            );
+          }
           lastProgressAt = Date.now();
           backlogStallEscalated = false;
+          drainHangEscalated = false;
           anyProgress = true;
         }
       } while (runAgain && !stopped);
@@ -1309,6 +1339,8 @@ export function startOutboxDrain(
         e instanceof Error ? e.message : String(e),
       );
       if (e instanceof DrainPassTimeoutError) {
+        // WI-6997: latch it so the next successful pass has an edge to resolve on.
+        drainHangEscalated = true;
         escalateStall(
           'drain_stalled',
           `outbox-drain pass for ${wantPayload} exceeded ${passTimeoutMs}ms (hung await — ` +

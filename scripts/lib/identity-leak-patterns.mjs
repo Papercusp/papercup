@@ -213,6 +213,22 @@ export const GENERIC_USERS = new Set([
   // "no /home/<user>/ in source" fires on the one place a fake home path is the
   // entire point. These name no person; they are the John-Doe set.
   'jdoe', 'alice', 'bob', 'buildbot', 'otheruser', 'someuser',
+  // ⚠ THE SCRUBBER'S OWN OUTPUT VOCABULARY (WI-6992). These are the values
+  // REDACTION_BY_KEY in papercusp-desktop/bin/audit-release-bundle.py substitutes
+  // FOR this box's identity — `build-user-name` -> `builduser`,
+  // `build-hostname` -> `buildhost`. They are redactions, not people.
+  //
+  // Omitting them was a live false-RED, not a theoretical gap: on 2026-08-02 a
+  // 2.94 MB bench fixture was scrubbed using exactly this sanctioned vocabulary,
+  // and this rule then flagged the REDACTED file — 10 hits on `-home-builduser-`
+  // — which red-pinned the green gate and held `main` for the whole fleet. The
+  // scrub was correct; the guard disagreed with the scrubber. The module header
+  // says these two halves "MUST agree or it's a false-green"; this is the same
+  // drift in the false-red direction, and it costs exactly as much.
+  //
+  // Adding them is NOT an exception to make a build pass: a value the release
+  // scrubber EMITS can never be a leak, by construction.
+  'builduser', 'buildhost',
   // WI-4776: illustrative placeholder SEGMENTS used in docs to show the SHAPE of
   // a path (e.g. `/absolute/home/path` in a tool-arg example) — the word after
   // /home/ there is not a username at all, just prose continuing the sentence.
@@ -428,4 +444,122 @@ export const IDENTITY_LITERAL_EXTRA_SKIP = [
 /** True when `file` is outside the shipped-source set the CLASS-3 rule polices. */
 export function isSkippedPathForIdentityLiterals(file) {
   return isSkippedPath(file) || IDENTITY_LITERAL_EXTRA_SKIP.some((re) => re.test(file));
+}
+
+/* ════════════════════════════════════════════════════════════════════════════════════════════
+ * THE REDACTOR — the INVERSE of the three matchers above (WI-6992)
+ *
+ * WHY IT LIVES HERE, NEXT TO THE DETECTORS
+ * Some shipped source is GENERATED from live workspace prose — doc sections, session turns,
+ * plans — which legitimately contains real names, home paths and this box's identity. The
+ * generator cannot simply refuse that input (it IS the data), so it must SCRUB it. That makes
+ * redaction the exact inverse of detection, and the two must agree by construction or the
+ * generator emits a file the gate then rejects. Hosting the redactor beside the matchers means
+ * it reuses THE SAME regexes and THE SAME exclusion sets — GENERIC_USERS, PLACEHOLDER_NAMES,
+ * literalPattern(), needsWordBoundary() — rather than a second opinion about what a leak is.
+ *
+ * This is the same reasoning that put the gate lint and the edit-time hook on one detector, and
+ * it was learned the same way: on 2026-08-02 a 2.94 MB bench fixture
+ * (packages/operator-core/lib/memory/bench/fixtures/prose-corpus.v1.json) was committed carrying
+ * 26 named provenance tags, 113 bare box literals and 24 home paths, because its generator had
+ * no redaction whatsoever. All three identity lints red-pinned the green gate and held `main`
+ * for the whole fleet ~6.8h. The artifact was scrubbed by hand; this function is so that the
+ * NEXT regeneration cannot re-arm the trap.
+ *
+ * THE INVARIANT, which the test suite pins:
+ *     findOwnerNameLeaks(redactIdentityLeaks(s))   === []
+ *     findBoxIdentityPaths(redactIdentityLeaks(s)) === []
+ *     findIdentityLiterals(redactIdentityLeaks(s, e), e) === []
+ * for any string `s`. A change to any matcher that breaks it fails that suite immediately,
+ * which is the drift alarm.
+ * ════════════════════════════════════════════════════════════════════════════════════════════ */
+
+/**
+ * What each resolved identity literal is replaced BY.
+ *
+ * Mirrors REDACTION_BY_KEY in papercusp-desktop/bin/audit-release-bundle.py — the release
+ * scrubber's own vocabulary — so a file scrubbed at GENERATION time and the same file scrubbed
+ * at TAR time come out reading the same way. Every value here is also accepted by the matchers
+ * above (see the GENERIC_USERS entries for `builduser` / `buildhost`), which is the property
+ * that makes a redacted file lint clean.
+ */
+export const IDENTITY_REDACTIONS = {
+  'build-user-name': 'builduser',
+  'build-hostname': 'buildhost',
+  'build-git-email': 'owner@example.invalid',
+  'build-git-name': 'owner',
+};
+
+/** Fallback for a literal with no explicit mapping — mirrors the audit's own default. */
+export const IDENTITY_REDACTION_FALLBACK = 'redacted';
+
+/** The stand-in for a home-directory owner, e.g. `/home/jdoe/x` -> `/home/builduser/x`. */
+export const REDACTED_HOME_USER = 'builduser';
+
+/** Class-1 redaction forms. Same anchors as the matchers, but they CONSUME the attribution
+ *  separator so `OWNER RULE (Jane, 2026-07-13)` collapses to `OWNER RULE (2026-07-13)`
+ *  rather than leaving a dangling comma. */
+const BRACKET_TAG_REDACT = /\[owner:\s*([A-Za-z][A-Za-z0-9._'-]*)/gi;
+const PAREN_TAG_REDACT =
+  /(\bowner\s+(?:mandate|rule|ask|directive|decision|request|order|instruction|say|says|said|wants?)\b\s*\(\s*)([A-Za-z][A-Za-z'.-]*)(?:\s*,\s*|\s+(?=\d)|(?=\)))/gi;
+
+/** Resolved lazily and cached: resolveIdentityLiterals() shells out to git, and a caller
+ *  scrubbing thousands of rows must not pay that per row. */
+let _defaultIdentityEntries;
+
+/**
+ * Strip every identity-leak class this module detects, returning source-safe text.
+ *
+ * Order is deliberate: class 1 first (so a name inside a provenance tag is removed as a TAG,
+ * yielding `[owner <date>]`, not turned into `[owner:owner <date>]` by the literal pass), then
+ * class 3 (this box's exact literals — the most specific), then class 2 (the shape-based
+ * catch-all, which also covers OTHER boxes' home paths that class 3 cannot know about).
+ *
+ * @param {string} text the prose to scrub
+ * @param {[string,string][]} [entries] `Object.entries(resolveIdentityLiterals())`; omitted =
+ *   resolved once and cached. Pass explicitly to scrub against SYNTHETIC literals in a test —
+ *   this module is tracked source, so a fixture may not spell a real box identity.
+ * @returns {string} text with no class-1/2/3 leak remaining
+ */
+export function redactIdentityLeaks(text, entries) {
+  if (typeof text !== 'string' || text === '') return text;
+  const ents = entries ?? (_defaultIdentityEntries ??= Object.entries(resolveIdentityLiterals()));
+  let out = text;
+
+  // CLASS 1 — strip the NAME, keep the tier and the date (the sanctioned FIX_HINT form).
+  if (FAST_REJECT.test(out)) {
+    out = out.replace(BRACKET_TAG_REDACT, (m, name) =>
+      isPlaceholder(name) || isSessionId(name) || isDateLike(name) ? m : '[owner',
+    );
+    out = out.replace(PAREN_TAG_REDACT, (m, head, name) =>
+      isPlaceholder(name) || isSessionId(name) || isDateLike(name) || !looksLikePersonName(name)
+        ? m
+        : head,
+    );
+  }
+
+  // CLASS 3 — this box's own literals, matched EXACTLY as the guard matches them (same
+  // word-boundary + case rule via literalPattern), so nothing is over- or under-replaced.
+  for (const [key, lit] of ents) {
+    if (!lit) continue;
+    out = out.replace(
+      new RegExp(literalPattern(lit).source, 'g'),
+      IDENTITY_REDACTIONS[key] ?? IDENTITY_REDACTION_FALLBACK,
+    );
+  }
+
+  // CLASS 2 — home paths by SHAPE, including the slash-munged form.
+  if (BOX_IDENTITY_FAST_REJECT.test(out)) {
+    out = out.replace(HOME_PATH, (m, root, rawUser) => {
+      const user = stripTrailingDots(rawUser);
+      if (GENERIC_USERS.has(user) || isRedactedUser(user) || isFileInHome(user)) return m;
+      // Keep whatever punctuation stripTrailingDots() removed — it is sentence text, not path.
+      return `/${root}/${REDACTED_HOME_USER}${rawUser.slice(user.length)}`;
+    });
+    out = out.replace(MUNGED_HOME, (m, pre, root, user) =>
+      GENERIC_USERS.has(user) || isRedactedUser(user) ? m : `${pre}-${root}-${REDACTED_HOME_USER}`,
+    );
+  }
+
+  return out;
 }

@@ -313,6 +313,35 @@ test('computeMugWakeBrief — drains stable @role:mug parked nudges into the inb
   assert.equal((drainSlotMessages.mock.calls[0]?.[1] as DrainSlotInput | undefined)?.workspaceId, 'ws-1');
 });
 
+test('computeMugWakeBrief — the inbox floor is a BOUNDED read whose stopping rule counts POST-filter entries', async () => {
+  surveyPot.mockResolvedValue({ frontier: [], plans: [], frontierBlocked: 0 });
+  getPotCarryJournal.mockResolvedValue([]);
+  resolveMugOwner.mockResolvedValue('s-mug-1');
+  readInbox.mockResolvedValue([]);
+  drainSlotMessages.mockResolvedValue([]);
+
+  await computeMugWakeBrief('ws-1', 'papercup');
+
+  // EI-19323045109346905: opt into the bounded window (3rd arg) instead of the
+  // unbounded ~20k-row scan — only the newest `limit` entries reach the floor.
+  const window = readInbox.mock.calls[0]?.[2] as
+    | { enough: (entries: Array<Record<string, unknown>>) => boolean }
+    | undefined;
+  assert.ok(window?.enough, 'readInbox must receive a CoordWindowSpec');
+
+  const ambient = (n: number) =>
+    Array.from({ length: n }, () => ({ kind: 'notify', category: 'service-health' }));
+  const real = (n: number) => Array.from({ length: n }, () => ({ kind: 'message' }));
+
+  // THE REGRESSION THIS PINS: `enough` sees every VISIBLE entry, but gatherInbox
+  // then drops every `category` row. A raw `entries.length >= limit` rule is
+  // satisfied by a page of pure ambient broadcasts — which arrive in long runs —
+  // and the floor renders empty.
+  assert.equal(window!.enough(ambient(500)), false);
+  assert.equal(window!.enough([...ambient(500), ...real(9)]), false); // one short of limit=10
+  assert.equal(window!.enough([...ambient(500), ...real(10)]), true);
+});
+
 // memory-delivery-unification-2026-07-12 P-004 (D-005): the L1d recall fold is
 // resolver-driven — one targeted query per top frontier candidate (the most
 // specific work statement the Mug has this wake), never the old blended
