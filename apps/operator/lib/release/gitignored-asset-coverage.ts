@@ -328,7 +328,12 @@ export function scanRequiredIgnoredAssets(opts: {
   const isCovered = (p: string) =>
     opts.coveredRoots.some((r) => p === r || p.startsWith(r.replace(/\/+$/, '') + '/'));
 
-  const required = sites.filter((s) => verdicts.get(s.path) === true);
+  // One requirement can yield several nested candidates (`.../dist` and
+  // `.../dist/index.js` both come from one resolve()). Report only the most
+  // specific path per site: listing both says nothing extra and makes the
+  // failure read like two problems, which is how a guard's output starts being
+  // skimmed instead of read.
+  const required = dropNestedDuplicates(sites.filter((s) => verdicts.get(s.path) === true));
   return {
     required,
     covered: required.filter((s) => isCovered(s.path)),

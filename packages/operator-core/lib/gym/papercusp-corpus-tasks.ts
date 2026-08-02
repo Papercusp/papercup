@@ -148,6 +148,49 @@ export async function materialisePapercuspSubstrate(input: MaterialiseSubstrateI
     if (!existsSync(link)) symlinkSync(target, link);
   }
 
-  const tasks = await materialisePapercuspCorpus(corpus.descriptors, input.destDir, execGitCommand);
-  return { pinCommit: corpus.pinCommit, tasks };
+  const baseCommit = await commitHarnessConfig(input.destDir, corpus.pinCommit);
+  const tasks = await materialisePapercuspCorpus(corpus.descriptors, input.destDir, execGitCommand, baseCommit);
+  return { pinCommit: corpus.pinCommit, baseCommit, tasks };
+}
+
+/**
+ * Commit `.papercusp/*` on top of the pin and return the new commit.
+ *
+ * `add -f` is required, not incidental: the real repo GITIGNORES these paths,
+ * so a plain `add` silently no-ops and the commit would carry nothing — which
+ * is the exact silent failure this function exists to prevent. Verified by
+ * reading the resulting tree back rather than trusting the exit code.
+ */
+async function commitHarnessConfig(destDir: string, pinCommit: string): Promise<string> {
+  for (const f of GYM_HARNESS_FILES) {
+    const abs = join(destDir, f.path);
+    mkdirSync(dirname(abs), { recursive: true });
+    writeFileSync(abs, f.content);
+  }
+  const git = (...rest: string[]): GitCommand => ({
+    argv: ['git', '-C', destDir, ...rest],
+    env: {
+      GIT_AUTHOR_NAME: 'papercusp-gym',
+      GIT_AUTHOR_EMAIL: 'gym@papercusp.local',
+      GIT_COMMITTER_NAME: 'papercusp-gym',
+      GIT_COMMITTER_EMAIL: 'gym@papercusp.local',
+      GIT_AUTHOR_DATE: '2000-01-01T00:00:00Z',
+      GIT_COMMITTER_DATE: '2000-01-01T00:00:00Z',
+    },
+  });
+
+  await execGitCommand(git('add', '-f', ...GYM_HARNESS_FILES.map((f) => f.path)));
+  await execGitCommand(git('commit', '-q', '-m', 'gym: harness config (blueprint pin + L1 gate)'));
+  const baseCommit = await execGitCommand(git('rev-parse', 'HEAD'));
+
+  for (const f of GYM_HARNESS_FILES) {
+    // Prove the file is in the COMMITTED TREE, not just on disk. A gitignore
+    // rule, a stale index, or a future `add` without -f would otherwise leave
+    // the gym booting blueprint-less and silently optimizing the retired spine.
+    await execGitCommand(git('cat-file', '-e', `${baseCommit}:${f.path}`));
+  }
+  if (baseCommit === pinCommit) {
+    throw new Error(`papercusp substrate: harness-config commit is identical to the pin — ${GYM_HARNESS_FILES.map((f) => f.path).join(', ')} did not land`);
+  }
+  return baseCommit;
 }

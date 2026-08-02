@@ -527,9 +527,16 @@ export interface RecallPoolHealth {
  */
 export async function readRecallHealthByPool(
   sql: Sql,
-  opts: { days?: number; surface?: string } = {},
+  opts: { days?: number; hours?: number; surface?: string } = {},
 ): Promise<RecallPoolHealth[]> {
-  const days = Number.isFinite(opts.days) && (opts.days as number) > 0 ? Math.floor(opts.days as number) : 7;
+  // `hours` (EI-<gate-3-recency>) is the finer-grained sibling of `days` — a
+  // caller that wants a RECENT sub-window (hours) rather than the default
+  // trailing week passes it directly; days is still floored/×24'd for the
+  // existing callers so their numeric window is byte-identical to before.
+  const hours =
+    Number.isFinite(opts.hours) && (opts.hours as number) > 0
+      ? (opts.hours as number)
+      : (Number.isFinite(opts.days) && (opts.days as number) > 0 ? Math.floor(opts.days as number) : 7) * 24;
   // Parameterized, not a conditional sql`` fragment — see readRecallQueryHealth
   // for why: the `${cond ? sql`…` : sql``}` idiom invokes the tagged template in
   // BOTH branches, issuing a phantom call that a call-counting test double
@@ -564,7 +571,7 @@ export async function readRecallHealthByPool(
       FROM harness_shared.memory_recall_stats s
       CROSS JOIN LATERAL jsonb_each(s.pools) AS p(key, value)
       WHERE s.pools IS NOT NULL
-        AND s.created_at >= now() - make_interval(days => ${days}::int)
+        AND s.created_at >= now() - make_interval(hours => ${hours}::int)
         AND (${poolSurfaceFilter}::text IS NULL OR s.surface = ${poolSurfaceFilter}::text)
     )
     SELECT

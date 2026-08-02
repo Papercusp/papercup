@@ -176,6 +176,20 @@ export const LEARNING_SLO_DEFAULTS = {
    * while catching every case of this class observed on this box.
    */
   recallPoolMaxEmptyScopeRate: 0.25,
+  /**
+   * recall-pool SLO (gate-3, WI-6932): the RECENT sub-window (hours) checked
+   * alongside the `recallPoolWindowDays` trailing rate before gate-3 fires.
+   *
+   * WHY: a flat 7d trailing RATE cannot express "this was broken, and no
+   * longer is" — a sharp step-function fix (D-035 landed 2026-08-02 02:00Z,
+   * empty-scope rate 0.495 → 0.000 in one hour, held at 0.000 for 4h straight
+   * across 4,434 recalls) still reads as a 0.27–0.37 breach for the full 7
+   * days it takes the pre-fix rows to age out of the window — a false
+   * critical against already-shipped work, refiled every tick until then.
+   * Mirrors `memoryZeroHitRecentHours`'s established recent-vs-baseline
+   * pattern (same 24h default) rather than inventing a second convention.
+   */
+  recallPoolEmptyScopeRecentHours: 24,
 } as const;
 
 /** Per-tick overrides for the SLO tunables (CollectOptions extends this). */
@@ -202,6 +216,7 @@ export interface LearningSloOptions {
   recallPoolMaxZeroHitRate?: number;
   recallPoolMaxSaturationRate?: number;
   recallPoolMaxEmptyScopeRate?: number;
+  recallPoolEmptyScopeRecentHours?: number;
 }
 
 /** Injectable IO seam (unit tests run without PG / flags). */
