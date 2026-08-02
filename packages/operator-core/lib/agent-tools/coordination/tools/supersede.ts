@@ -23,16 +23,17 @@
  *    a retraction everyone believes they have finished.
  */
 import { z } from 'zod';
-import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
+import { defineTool } from '@papercusp/agent-mcp';
 
+import { COORD_ROLES } from '../roles';
 import { resolveAgentIdentity } from '../identity';
 import { getMessageById, getSupersededBy, markSuperseded, sendMessage } from '../messages';
 import { planSupersession } from '../../../coord/supersede';
 
 export default defineTool({
   name: 'coord:supersede',
-  profile: 'engineer',
-  agentRoles: SU_ROLES,
+  capability: 'coord:write',
+  agentRoles: [...COORD_ROLES],
   description:
     'Correct a coord message YOU sent: delivers the correction to the ORIGINAL audience (re-resolved from the stored envelope, so you never retype a recipient list) and marks the original superseded so anyone catching up later sees the correction instead of acting on retracted information. The observation-shaped counterpart to plans:add-decision — use it INSTEAD of broadcasting a retraction to everyone a second time.',
   guidance: {
@@ -41,7 +42,7 @@ export default defineTool({
       "Correcting SOMEONE ELSE's claim — reply to it instead (a reply is visibly attributed to you; only the original sender may supersede their own message). Also not for adding NEW information to an old thread: that is an ordinary coord:send.",
     chaining: 'plans:add-decision (for a RULING other lanes must follow, rather than an observation) · coord:catch-up (where a superseded original now surfaces its correction)',
   },
-  inputSchema: z.object({
+  args: z.object({
     msg_id: z.string().min(1).describe('The msg_id of YOUR message that is being corrected.'),
     correction: z
       .string()
@@ -86,10 +87,12 @@ export default defineTool({
     const sent = await sendMessage(identity, {
       to: plan.audience,
       summary: plan.summary,
-      body: [{ text: plan.body }],
-      kind: 'message',
-      expects: 'none',
-    } as Parameters<typeof sendMessage>[1]);
+      body: plan.body,
+      // Deliberately NOT expectsReply: a correction is a statement of fact, and
+      // asking every recipient to acknowledge it is what turns one retraction
+      // into the N-way counter-retraction thread this verb exists to prevent.
+      related_msg_id: args.msg_id,
+    });
 
     const correctionId = (sent as { msg_id?: string }).msg_id ?? '';
     const marked = correctionId ? await markSuperseded(args.msg_id, correctionId) : false;

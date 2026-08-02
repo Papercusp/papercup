@@ -109,7 +109,10 @@ export default function AgentOrders({
     <aside className="pc-orders" aria-label="Agent orders" data-testid="agent-orders">
       <header className="pc-orders__tag">
         <span className="pc-orders__tag-name">Orders</span>
-        <span className="pc-orders__tag-sub">— what it was told</span>
+        {/* "they", not "it" [owner 2026-08-02]: an agent is referred to as a
+            person throughout this UI, and the singular they keeps that voice
+            without gendering a session. */}
+        <span className="pc-orders__tag-sub">— what they were told</span>
         {onClose ? (
           <button
             type="button"

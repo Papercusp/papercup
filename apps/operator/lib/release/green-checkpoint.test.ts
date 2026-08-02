@@ -46,6 +46,7 @@ import {
   ISOLATION_MAX_FILES,
   ISOLATION_RETRY_MAX,
   ISOLATION_LOAD_STARVATION_MIN_MS,
+  ISOLATION_LOAD_STARVATION_MIN_LOAD_PER_CORE,
   acquireCheckpointRunLock,
   checkpointRunLockDir,
   createTerminationSignalHandler,

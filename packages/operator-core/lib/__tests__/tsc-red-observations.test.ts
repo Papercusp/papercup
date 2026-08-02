@@ -88,9 +88,15 @@ describe('recordStandingReds — the hot path', () => {
   it('NEVER THROWS on an unwritable path — the gate verdict must not depend on it', () => {
     // The whole design rests on this: tsc-baseline-gate.mjs is shared hot infrastructure,
     // and TSC_EXIT / "✓ tsc-clean" must keep meaning exactly what they mean today.
+    // ⚠ The path MUST fail fast. `/proc/<anything>/reds.jsonl` — the obvious choice, and
+    // what this test used first — makes `mkdirSync(dirname, { recursive: true })` HANG
+    // FOREVER on this kernel rather than returning EACCES. That wedged the whole file
+    // before vitest printed a single line, so it read as queue contention / infra flake
+    // rather than a test bug, and cost two full re-runs to localize. `/dev/null/...`
+    // throws ENOTDIR in 0ms because the first path component is not a directory.
     const r = recordStandingReds({
       entries: [{ file: 'a.ts', current: 1 }],
-      path: '/proc/definitely/not/writable/reds.jsonl',
+      path: '/dev/null/definitely-not-writable/reds.jsonl',
       nowMs: NOW,
     });
     expect(r.ok).toBe(false);

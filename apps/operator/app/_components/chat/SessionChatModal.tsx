@@ -65,7 +65,7 @@ import type { RosterEntry } from '../../adv/sessions/SessionsRosterView';
 import { LivenessDot } from '@/app/coord/presence-ui';
 import { useAgentDetail } from '../../adv/sessions/use-agent-detail';
 import type { ChatActionContext } from '@/lib/chat-actions/types';
-import { Maximize, Maximize2, Minimize, Minimize2, Terminal, X } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Maximize, Maximize2, Minimize, Minimize2, Terminal, X } from 'lucide-react';
 import { AGENT_MARKS, type ChatMessage } from './ChatConversation';
 import {
   contextPct,
@@ -285,6 +285,34 @@ const CHAT_TOOLBAR_STYLE: React.CSSProperties = {
   gap: 4,
   alignItems: 'center',
 };
+
+/** The Orders toggle's own cluster, pinned to the conversation's LEFT edge
+ *  [owner 2026-08-02: "Move the orders show/hide button to the left side"].
+ *
+ *  Each panel toggle now sits on the side its panel opens from — Orders left,
+ *  Activity right — so the control points at the thing it moves instead of both
+ *  living in one right-hand pile where the left panel's button read as belonging
+ *  to the right one. Same absolute-positioning contract as the right cluster
+ *  (both are children of the conversation region, so both are inside what
+ *  maximize paints — which is why both are gated on `!maximized`). */
+const CHAT_TOOLBAR_LEFT_STYLE: React.CSSProperties = {
+  position: 'absolute',
+  top: 8,
+  left: 8,
+  zIndex: 6,
+  display: 'flex',
+  gap: 4,
+  alignItems: 'center',
+};
+
+/** The panel-toggle chevron. Sized + weighted deliberately
+ *  [owner 2026-08-02: "just make the open/close arrow more visible"]: the old
+ *  control drew a typographic "‹"/"›" at the button's 11px font size, which all
+ *  but disappeared next to the label. A real icon at 14px with a heavier stroke
+ *  is the visible affordance, and it inherits the button's colour so it still
+ *  reads as one control rather than a decoration beside one. */
+const PANEL_CHEVRON_SIZE = 14;
+const PANEL_CHEVRON_STROKE = 2.75;
 
 const CHAT_TOOLBAR_BUTTON_STYLE: React.CSSProperties = {
   fontSize: 11,
@@ -1340,6 +1368,43 @@ export default function SessionChatModal({
               : null),
           }}
         >
+        {/* ── the LEFT toolbar: the Orders toggle, and only ever that ─────────
+            [owner 2026-08-02: "Move the orders show/hide button to the left
+            side"]. It is its own absolutely-positioned cluster rather than a
+            flex item at the head of the right-hand toolbar, because the right
+            toolbar is pinned to `right: 8` and grows leftward — anything put at
+            its head still lands in the top-RIGHT corner. Pinning to `left: 8` is
+            the only placement that actually reaches the left edge.
+
+            Gated on `!maximized` for the same structural reason as the Activity
+            toggle: maximize paints the conversation element's subtree (D-002)
+            and both panels are siblings OUTSIDE it, so neither can be shown
+            while it is maximized and neither toggle should offer to. */}
+        {open && !maximized ? (
+          <div style={CHAT_TOOLBAR_LEFT_STYLE} data-testid="session-chat-toolbar-left">
+            <button
+              type="button"
+              className="pc-button"
+              onClick={() => void setOrdersOpen(!ordersOpen)}
+              aria-pressed={ordersOpen}
+              aria-label={ordersOpen ? 'Hide agent orders' : 'Show agent orders'}
+              data-testid="session-chat-orders-toggle"
+              style={CHAT_TOOLBAR_BUTTON_STYLE}
+            >
+              {/* Mirror of the Activity chevron: this panel lives on the LEFT,
+                  so open ⇒ its inner edge travels LEFT to close (chevron leads,
+                  pointing left) and closed ⇒ it expands rightward (chevron
+                  trails, pointing right). */}
+              {ordersOpen ? (
+                <ChevronLeft size={PANEL_CHEVRON_SIZE} strokeWidth={PANEL_CHEVRON_STROKE} aria-hidden="true" />
+              ) : null}
+              Orders
+              {ordersOpen ? null : (
+                <ChevronRight size={PANEL_CHEVRON_SIZE} strokeWidth={PANEL_CHEVRON_STROKE} aria-hidden="true" />
+              )}
+            </button>
+          </div>
+        ) : null}
         {open ? (
           <div style={CHAT_TOOLBAR_STYLE} data-testid="session-chat-toolbar">
             {/* Tooltip, not a `title=` attribute: these are ICON-ONLY buttons, so
@@ -1381,36 +1446,37 @@ export default function SessionChatModal({
                 {screenActive ? <Minimize size={12} aria-hidden="true" /> : <Maximize size={12} aria-hidden="true" />}
               </button>
             </Tooltip>
-            {/* P-015: same gate as the detail toggle below, same reason — both
-                panels are siblings of the conversation region, so neither can
-                be shown while it is maximized. Ordered LEFT-toggle first to
-                match the panels' own left-to-right order. */}
-            {!maximized ? (
-              <button
-                type="button"
-                className="pc-button"
-                onClick={() => void setOrdersOpen(!ordersOpen)}
-                aria-pressed={ordersOpen}
-                aria-label={ordersOpen ? 'Hide agent orders' : 'Show agent orders'}
-                data-testid="session-chat-orders-toggle"
-                style={CHAT_TOOLBAR_BUTTON_STYLE}
-              >
-                {ordersOpen ? '‹ Orders' : 'Orders ›'}
-              </button>
-            ) : null}
-            {/* The detail toggle only makes sense while the rail can be shown;
-                maximized deliberately has no rail (D-002). */}
+            {/* The Activity toggle only makes sense while the rail can be shown;
+                maximized deliberately has no rail (D-002).
+
+                The LABEL IS CONSTANT — "Activity", never "Hide activity"
+                [owner 2026-08-02: "dont add the hide when its expanded just make
+                the open/close arror more visible"]. The button names the PANEL
+                and the chevron carries the verb, so the hit target stops
+                changing width as it is pressed. `aria-pressed` + `aria-label`
+                still spell the action out for a screen reader, which cannot see
+                a chevron point. */}
             {!maximized ? (
               <button
                 type="button"
                 className="pc-button"
                 onClick={() => void setDossierOpen(!dossierOpen)}
                 aria-pressed={dossierOpen}
-                aria-label={dossierOpen ? 'Hide agent detail' : 'Show agent detail'}
+                aria-label={dossierOpen ? 'Hide agent activity' : 'Show agent activity'}
                 data-testid="session-chat-dossier-toggle"
                 style={CHAT_TOOLBAR_BUTTON_STYLE}
               >
-                {dossierOpen ? 'Hide detail ›' : '‹ Detail'}
+                {/* Open ⇒ the panel's inner edge travels RIGHT to close, so the
+                    chevron trails the label pointing that way; closed ⇒ it
+                    arrives from the right, so the chevron leads pointing left.
+                    The glyph tracks the motion, not the state. */}
+                {dossierOpen ? null : (
+                  <ChevronLeft size={PANEL_CHEVRON_SIZE} strokeWidth={PANEL_CHEVRON_STROKE} aria-hidden="true" />
+                )}
+                Activity
+                {dossierOpen ? (
+                  <ChevronRight size={PANEL_CHEVRON_SIZE} strokeWidth={PANEL_CHEVRON_STROKE} aria-hidden="true" />
+                ) : null}
               </button>
             ) : null}
             {/* Maximized covers the backdrop, and in fullscreen Esc is spoken

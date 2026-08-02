@@ -347,6 +347,31 @@
 
 /* ═══ the fleet launcher's captioned form (P-007) ═══════════════════════════ */
 
+/* THE CONTAINER. Owns `display` explicitly (WI-7110) — this is the rule whose
+   absence produced [owner 2026-08-02] "the display of the bottom panel is all
+   messed up". P-007 turned this component into three STACKED bands (caption /
+   field grid / submit) but styled only the inner two, leaving hud.css's
+   pre-P-007 `flex-direction: row` to lay the three bands out SIDE BY SIDE:
+   caption squeezed into a left column, the grid collapsed to one 148px column,
+   and the submit band's `border-top` stranded mid-panel as a floating rule.
+   hud.css's copy is deleted; a component's layout lives beside its form, in one
+   file, so the two halves can never disagree again.
+
+   `column` is load-bearing, not cosmetic: the field grid's `auto-fit` can only
+   spread into columns if the container hands it the FULL popup width, which a
+   row-direction parent never does. */
+.pc-fleet-launch-row {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  border-top: 1px solid var(--border);
+  background: var(--bg-2);
+  /* Fixed chrome inside a flex-column modal: never let the transcript's growth
+     squeeze the launcher out of view — always visible is the whole ask
+     (WI-6505, owner ask 2026-07-27 (ii)). */
+  flex: none;
+}
+
 /* Two classes, so this reliably beats `.pc-new-session-launcher`'s own single-
    class `display` on the same element rather than depending on stylesheet
    order. The element keeps that class because the CONTROLS inside it are still
@@ -360,8 +385,20 @@
   align-items: start;
 }
 
+/* The caption band names the form; it must not also reserve the row's height,
+   so it sheds the band's default vertical padding. */
+.pc-fleet-launch-row > .pc-ctl-band:first-child {
+  padding-bottom: 0;
+}
+
 .pc-fleet-launch-row .pc-fleet-launch-row__submit {
   border-top: 1px solid var(--border);
+}
+
+/* A member count is at most two digits — sizing it to the shared input width
+   would leave a mostly-empty box next to the launch button. */
+.pc-fleet-launch-row .pc-fleet-launch-row__count {
+  max-width: 56px;
 }
 
 /* ═══ shared focus treatment ════════════════════════════════════════════════ */
