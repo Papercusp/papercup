@@ -25,6 +25,8 @@ function atomsOf(command: string, sid = 's1'): CensusAtom[] {
     pipedInto: part.pipedInto,
     upstream: part.upstream,
     upstreamHead: part.upstream?.split(/\s+/)[0].split('/').pop() ?? null,
+    pipelineRoot: part.pipelineRoot,
+    pipelineRootHead: part.pipelineRoot?.split(/\s+/)[0].split('/').pop() ?? null,
   }));
 }
 

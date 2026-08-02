@@ -402,6 +402,7 @@ export const INBOX_FAST_PATH_ROW_CAP = 25_000;
 export async function readInbox(
   ownerId: string,
   opts: InboxOptions = {},
+  window?: InboxWindowSpec,
 ): Promise<CoordEnvelope[]> {
   // Recipient-pushdown fast path (fleet-concurrency-first P-003, round4 D-005):
   // readInbox is the dominant `coord_event_log` call — every agent fires it every
@@ -453,6 +454,13 @@ export async function readInbox(
   // keeps using readLines, since coordSql() would otherwise read getOrgPg() and miss
   // the swapped store. Any query error falls through to the authoritative full read.
   if (coordHasPgFastPath()) {
+    // WI-6939: a caller that only needs the most RECENT slice passes `window`, and
+    // gets a bounded keyset-paged read instead of the 25k-row cap. Deliberately an
+    // OPTION on this function rather than a second exported entry point: readInbox
+    // is the seam every caller imports and every test mocks, and a parallel export
+    // would force each of those mocks to stub two functions that must agree — a
+    // divergence trap. One seam, one mock, same behaviour when `window` is absent.
+    if (window) return (await readInboxWindow(ownerId, opts, window.enough)).entries;
     try {
       const sql = coordSql();
       const sinceBound = opts.since_ts
@@ -495,6 +503,14 @@ export const INBOX_PAGE_ROWS = 1_000;
  *  INBOX_PAGE_ROWS * INBOX_MAX_PAGES is deliberately >= INBOX_FAST_PATH_ROW_CAP,
  *  so a bounded read can never reach LESS history than the capped full read. */
 export const INBOX_MAX_PAGES = 25;
+
+/** Opt a `readInbox` call into the bounded keyset-paged read (WI-6939). */
+export interface InboxWindowSpec {
+  /** The CALLER's stopping rule, over the envelopes visible so far. Paging stops
+   *  when this returns true or history is exhausted. It lives with the caller
+   *  because the selective filters do (see {@link readInboxWindow}). */
+  enough: (entries: CoordEnvelope[]) => boolean;
+}
 
 export interface InboxWindowResult {
   /** Filtered + retraction-suppressed envelopes, ascending by (ts, msg_id). */
@@ -562,7 +578,11 @@ export async function readInboxWindow(
   try {
     const sql = coordSql();
     while (pages < INBOX_MAX_PAGES) {
-      const rows = await sql<{ id: string | number; body: unknown }[]>`
+      // Explicit annotation: `beforeId` is assigned FROM `rows` and then read back
+      // into the next iteration's query, which TS otherwise flags as circular (TS7022).
+      const rows: { id: string | number; body: unknown }[] = await sql<
+        { id: string | number; body: unknown }[]
+      >`
         SELECT id, body
           FROM harness_shared.coord_event_log
          WHERE workspace_id = ${coordWorkspaceId()}

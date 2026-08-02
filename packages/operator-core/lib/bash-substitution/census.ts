@@ -53,8 +53,17 @@ export type Disposition =
 export type PipeFilterPolicy =
   /** (a) Rule pipe-filters irreducible — they have no operand a tool could take. */
   | 'irreducible'
-  /** (b) A caller-specified projection stage (D-041 / P-020) absorbs them. */
-  | 'projection';
+  /** (b) A caller-specified projection stage (D-041 / P-020) absorbs them all. */
+  | 'projection'
+  /**
+   * (c) A pipe filter is reachable exactly when its PRODUCER has a tool form —
+   * because the projection stage attaches to a tool call, and there is nothing
+   * to attach it to when the thing on the left of the pipe is `some-script.sh`.
+   *
+   * Not one of the two options P-006 was written with; it is what the measurement
+   * produced, and it is the one that survives contact with the corpus.
+   */
+  | 'producer-aware';
 
 /** One corpus atom with the pipeline context classification depends on. */
 export interface CensusAtom {
@@ -72,6 +81,10 @@ export interface CensusAtom {
   upstream: string | null;
   /** That upstream's command word. */
   upstreamHead: string | null;
+  /** The atom that STARTS the pipeline — the producer a projection attaches to. */
+  pipelineRoot: string | null;
+  /** That producer's command word. */
+  pipelineRootHead: string | null;
 }
 
 /** A classification verdict for one atom. */
@@ -179,6 +192,35 @@ const NEEDS_TOOL: Record<string, string> = {
   jq: 'JSON projection over a file operand (the piped form is the P-006 population)',
 };
 
+/**
+ * Classify the PRODUCER at the head of this atom's pipeline, on its own terms.
+ *
+ * Always evaluated under the `irreducible` policy, which both terminates the
+ * recursion in one step and is correct: a pipeline root is by construction not
+ * piped into, so no pipe-filter rule can fire for it anyway.
+ *
+ * The root is the NORMALISED atom, so a `sudo …` producer loses its elevation
+ * marker here and is judged on its verb. That errs optimistic for a handful of
+ * atoms; it is called out rather than silently absorbed.
+ */
+function classifyPipelineRoot(entry: CensusAtom, pairs?: SubstitutionPair[]): AtomClassification | null {
+  if (entry.pipelineRoot === null || entry.pipelineRootHead === null) return null;
+  return classifyAtom(
+    {
+      ...entry,
+      atom: entry.pipelineRoot,
+      raw: entry.pipelineRoot,
+      head: entry.pipelineRootHead,
+      pipedInto: false,
+      upstream: null,
+      upstreamHead: null,
+      pipelineRoot: null,
+      pipelineRootHead: null,
+    },
+    { pipeFilterPolicy: 'irreducible', pairs },
+  );
+}
+
 /** Registry pairs whose recorded verdict means a match is NOT coverage. */
 function servesItsMatch(pair: SubstitutionPair): boolean {
   return pair.expectedVerdict === 'equivalent';
@@ -265,9 +307,16 @@ export function classifyAtom(
   }
 
   if (entry.pipedInto && FILTER_HEADS.has(head)) {
-    return options.pipeFilterPolicy === 'projection'
-      ? { disposition: 'needs-tool', reason: 'pipe filter — reachable only via the D-041 projection stage (P-020)', rule: 'pipe-filter:projection' }
-      : { disposition: 'irreducible', reason: 'pipe filter — no operand for any file-taking tool to read', rule: 'pipe-filter:irreducible' };
+    if (options.pipeFilterPolicy === 'projection') {
+      return { disposition: 'needs-tool', reason: 'pipe filter — reachable via the D-041 projection stage (P-020)', rule: 'pipe-filter:projection' };
+    }
+    if (options.pipeFilterPolicy === 'irreducible') {
+      return { disposition: 'irreducible', reason: 'pipe filter — no operand for any file-taking tool to read', rule: 'pipe-filter:irreducible' };
+    }
+    const producer = classifyPipelineRoot(entry, options.pairs);
+    return producer === null || producer.disposition === 'irreducible' || producer.disposition === 'should-not-happen'
+      ? { disposition: 'irreducible', reason: `pipe filter whose producer is ${producer?.disposition ?? 'absent'} — a projection has no tool call to attach to`, rule: 'pipe-filter:no-producer' }
+      : { disposition: 'needs-tool', reason: `pipe filter over a ${producer.disposition} producer — the D-041 projection stage (P-020) attaches to it`, rule: 'pipe-filter:absorbable' };
   }
 
   const pair = matchingPair(entry.atom, pairs);
@@ -372,15 +421,17 @@ export interface PipeFilterAnalysis {
   atoms: number;
   sessions: number;
   pct: number;
-  /** Ranked producers feeding the filters, with whether the producer is itself reachable. */
+  /** Ranked pipeline PRODUCERS, with whether each is itself reachable. */
   upstreams: Array<{ head: string; atoms: number; upstreamDisposition: Disposition }>;
   /**
-   * Share of pipe-filter atoms whose UPSTREAM is already covered or reachable.
+   * Share of pipe-filter atoms whose PRODUCER has (or could have) a tool form.
    *
-   * This is the number the decision turns on: a projection stage can only absorb
-   * `producer | filter` when the producer itself has a tool form to hang the
-   * projection off. Where the producer is irreducible, the projection stage buys
-   * nothing and the filter stays irreducible whatever policy is chosen.
+   * This is the number P-006 turns on: a projection stage can only absorb
+   * `producer | filter` when the producer itself is a tool call to hang the
+   * projection off. Where the producer is irreducible — `some-script.sh | head`
+   * — the projection buys nothing and the filter stays irreducible under every
+   * policy. Blanket (a) and blanket (b) are therefore both wrong, in opposite
+   * directions, by exactly the complement of this figure.
    */
   absorbableByProjectionPct: number;
 }
@@ -411,6 +462,8 @@ export function loadCensusAtoms(jsonlPath: string): { atoms: CensusAtom[]; calls
         pipedInto: part.pipedInto,
         upstream: part.upstream,
         upstreamHead: part.upstream === null ? null : atomHead(part.upstream),
+        pipelineRoot: part.pipelineRoot,
+        pipelineRootHead: part.pipelineRoot === null ? null : atomHead(part.pipelineRoot),
       });
     }
   }
@@ -531,21 +584,17 @@ function analysePipeFilters(
 
   for (const entry of filters) {
     sessions.add(entry.sid);
-    const upstreamHead = entry.upstreamHead ?? '(none)';
-    // Classify the PRODUCER on its own terms. Its own pipe policy is irrelevant —
-    // what matters is whether it has a tool form to hang a projection off.
-    const upstreamClass = entry.upstream === null
-      ? { disposition: 'irreducible' as Disposition }
-      : classifyAtom(
-          { ...entry, atom: entry.upstream, raw: entry.upstream, head: upstreamHead, pipedInto: false, upstream: null, upstreamHead: null },
-          { pipeFilterPolicy: 'irreducible', pairs: options.pairs },
-        );
-    const reachable = upstreamClass.disposition === 'covered' || upstreamClass.disposition === 'tool-exists';
-    if (reachable) absorbable += 1;
+    const rootHead = entry.pipelineRootHead ?? '(none)';
+    const producer = classifyPipelineRoot(entry, options.pairs);
+    const disposition = producer?.disposition ?? 'irreducible';
+    // Reachable means "there is a tool call to attach a projection to" — which
+    // includes a producer whose tool has yet to be BUILT (`needs-tool`), because
+    // the ceiling measures what is reachable in principle, not what ships today.
+    if (disposition !== 'irreducible' && disposition !== 'should-not-happen') absorbable += 1;
 
-    const row = byUpstream.get(upstreamHead);
+    const row = byUpstream.get(rootHead);
     if (row) row.atoms += 1;
-    else byUpstream.set(upstreamHead, { atoms: 1, disposition: upstreamClass.disposition });
+    else byUpstream.set(rootHead, { atoms: 1, disposition });
   }
 
   return {

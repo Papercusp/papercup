@@ -70,6 +70,7 @@ import {
   needsHumanExclusionSql,
   observationLaneExclusionSql,
   externalBlockersExclusionSql,
+  depsBlockedExclusionSql,
   reservedPlanLaneExclusionSql,
   federationDetectorExclusionSql,
   loopIterationNoiseExclusionSql,
@@ -829,25 +830,15 @@ export function issueClaimCandidateSubquery(
       -- own author key) — previously absent from this shared subquery entirely, so a
       -- true-remote-origin row read as claimable here while the real claim refused it.
       (${isIssueLocallyClaimableWhereSql(sql, issueWs)})                AS ok_origin,
-      (NOT EXISTS (
-          SELECT 1 FROM harness_shared.work_item_deps d
-           WHERE d.workspace_id = 'default'
-             AND d.dep_type = 'blocks'
-             AND d.blocked_ref = wi.feature_id
-             AND (
-               EXISTS (
-                 SELECT 1 FROM harness_shared.harness_features_consolidated bf
-                  WHERE (bf.harness_slug || '#' || bf.feature_id) = d.blocker_ref
-                    AND bf.status NOT IN ('passed', 'deprecated', 'done', 'dropped')
-               )
-               OR EXISTS (
-                 SELECT 1 FROM harness_shared.engineer_issues bi
-                  WHERE bi.workspace_id = 'default'
-                    AND bi.issue_id = d.blocker_ref
-                    AND bi.state NOT IN ('resolved', 'closed', 'done', 'dropped')
-               )
-             )
-      ))                                                                AS ok_no_blocker,
+      -- D-007: was the ONLY floor here that did not call a shared helper, and it drifted —
+      -- it kept bi.workspace_id = 'default' (the hardcode migration 719 removed from every
+      -- other reader) and left the feature leg unscoped entirely, while the real claim path
+      -- scoped both legs to the blocked row's own workspace. Measured live: across the 10 open
+      -- issue-family papercusp-workspace items carrying an edge, this copy reported 0 blocked
+      -- against the claim path's 5 — so work_items:claimable advertised 5 items the claim door
+      -- refuses, burning an agent wake each. Now the SAME fragment claimNextIssueWorkItem
+      -- enforces, so the preview and the claim can no longer disagree.
+      (${depsBlockedExclusionSql(sql)})                                 AS ok_no_blocker,
       (${
         cooldown > 0
           ? sql`(wi.last_released_by IS NULL

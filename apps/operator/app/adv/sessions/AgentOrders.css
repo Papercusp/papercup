@@ -19,14 +19,18 @@
   --pc-orders-dim: color-mix(in oklab, var(--fg-dim), white 22%);
   --pc-orders-mute: color-mix(in oklab, var(--fg-mute), white 26%);
   --pc-orders-rule: color-mix(in oklab, var(--border), white 18%);
-  /* Were `var(--bg-surface, …)` / `var(--status-warn-bg, …)` — two tokens the
-     operator vocabulary does not define, so the css-tokens lint failed the green
-     checkpoint on them. Only the inline FALLBACKS were ever rendering, which is
-     why nothing looked broken. Restated here as local tokens derived from the
-     real scale (this file's own convention, and its "no literal hexes" rule),
-     preserving the exact prior appearance: a 4.5% white veil and a 10% warn tint. */
+  /* These three replace two tokens the operator vocabulary does not define
+     (a "bg surface" and a "status warn bg"), which failed the css-tokens lint and
+     red-pinned the green checkpoint. Only their inline FALLBACKS were ever
+     rendering, which is why nothing looked broken. Restated as local tokens
+     derived from the real scale — this file's own convention and its "no literal
+     hexes" rule — preserving the exact prior appearance: a 4.5% white veil, and a
+     warn tint at the two strengths the file actually used (10% and 6%).
+     NB: do not name the old tokens in `var(...)` form anywhere here, comments
+     included — the lint scans raw source text and counts that as a reference. */
   --pc-orders-surface: color-mix(in oklab, transparent, white 4.5%);
   --pc-orders-warn-bg: color-mix(in oklab, transparent, var(--warn) 10%);
+  --pc-orders-warn-bg-soft: color-mix(in oklab, transparent, var(--warn) 6%);
   display: flex;
   flex-direction: column;
   height: 100%;
@@ -284,7 +288,7 @@
   margin: 6px 0;
   padding: 5px 0 5px 8px;
   border-left: 2px solid var(--warn);
-  background: var(--status-warn-bg, rgba(251, 191, 36, 0.06));
+  background: var(--pc-orders-warn-bg-soft);
 }
 .pc-orders__wall-ask {
   display: block;

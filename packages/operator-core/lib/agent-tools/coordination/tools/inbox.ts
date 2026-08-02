@@ -10,7 +10,7 @@ import { z } from "zod";
 import { defineTool } from "@papercusp/agent-mcp";
 import { resolveAgentIdentity } from "../identity";
 import { resolveActorIdentity, actorMailboxKeys } from "../actor-identity";
-import { readInbox, readInboxWindow, drainAndDeliverUserMailbox } from "../messages";
+import { readInbox, drainAndDeliverUserMailbox } from "../messages";
 import { heartbeatPresence, getPresence } from "../presence";
 import { createPresenceBeatThrottle } from "../presence-beat-throttle";
 import { readWatermark, writeWatermark } from "../watermarks";
@@ -415,27 +415,26 @@ export default defineTool({
           // Resolutions stay correct for the same reason retraction markers do: a
           // resolution is always NEWER than its alarm, so a newest-first window
           // containing the alarm also contains the resolution.
-          !resolvedFrom && !args.unanswered_only
-            ? readInboxWindow(
-                identity.ownerId,
-                { since_ts: args.since_ts, kinds: args.kinds },
-                (entries) => {
-                  const afterAmbient = args.include_ambient
-                    ? entries
-                    : entries.filter(
-                        (e) => !isAmbientBroadcast(e as unknown as Record<string, unknown>),
-                      );
-                  const { kept } = excludeIntentDeclares(
-                    afterAmbient as unknown as Array<Record<string, unknown>>,
-                    { includeIntents: args.include_intents, from: resolvedFrom },
-                  ) as unknown as { kept: Array<Record<string, unknown>> };
-                  return coalesceRepeatedBroadcasts(kept).length >= limit;
-                },
-              ).then((r) => r.entries)
-            : readInbox(identity.ownerId, {
-                since_ts: args.since_ts,
-                kinds: args.kinds,
-              }),
+          readInbox(
+            identity.ownerId,
+            { since_ts: args.since_ts, kinds: args.kinds },
+            !resolvedFrom && !args.unanswered_only
+              ? {
+                  enough: (entries) => {
+                    const afterAmbient = args.include_ambient
+                      ? entries
+                      : entries.filter(
+                          (e) => !isAmbientBroadcast(e as unknown as Record<string, unknown>),
+                        );
+                    const { kept } = excludeIntentDeclares(
+                      afterAmbient as unknown as Array<Record<string, unknown>>,
+                      { includeIntents: args.include_intents, from: resolvedFrom },
+                    ) as unknown as { kept: Array<Record<string, unknown>> };
+                    return coalesceRepeatedBroadcasts(kept).length >= limit;
+                  },
+                }
+              : undefined,
+          ),
       ),
       readWatermark(identity.ownerId).catch(() => emptyWatermark()),
     ]);

@@ -350,6 +350,17 @@ export interface PipelineAtom {
    * depends entirely on what is feeding it.
    */
   upstream: string | null;
+  /**
+   * The atom that STARTS this pipeline — the original producer, however many
+   * filter stages sit between.
+   *
+   * `upstream` alone answers the wrong question for a chain: in
+   * `grep x f | sort | head -5`, `head`'s upstream is `sort`, which is itself a
+   * filter with no operand, so a producer test that stopped at one level would
+   * call the whole chain unreachable. The chain is one tool call plus a
+   * projection, so what decides it is the ROOT.
+   */
+  pipelineRoot: string | null;
 }
 
 /**
@@ -371,6 +382,13 @@ export function atomizePipeline(command: string): PipelineAtom[] {
   const parts = splitAtCommandDepthDetailed(joinLineContinuations(command))
     .map((part) => ({ atom: normalizeAtom(part.text), raw: part.text.trim(), sepBefore: part.sepBefore }));
 
+  // Resolve each atom's pipeline root in one forward pass: an atom that is piped
+  // into inherits the root of the atom before it, otherwise it starts a pipeline.
+  const roots: Array<string | null> = [];
+  parts.forEach((part, index) => {
+    roots[index] = part.sepBefore === '|' ? (roots[index - 1] ?? parts[index - 1]?.atom ?? null) : null;
+  });
+
   return parts
     .map((part, index) => ({
       atom: part.atom,
@@ -378,6 +396,7 @@ export function atomizePipeline(command: string): PipelineAtom[] {
       sepBefore: part.sepBefore,
       pipedInto: part.sepBefore === '|',
       upstream: part.sepBefore === '|' ? (parts[index - 1]?.atom ?? null) || null : null,
+      pipelineRoot: roots[index] || null,
     }))
     .filter((part) => part.atom.length > 0 && !isShellSyntaxAtom(part.atom));
 }

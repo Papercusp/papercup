@@ -1210,7 +1210,19 @@ async function injectPsuHostWake(
         // getLoopStatus) instead of calling the direct import — the direct call
         // was unmockable and opened a real Postgres connection in unit tests.
         const st = await (deps.getLoopStatusFn ?? getLoopStatus)(d.subscriberId);
-        lastTurnAtMs = st?.lastTurnAt ? new Date(st.lastTurnAt).getTime() : null;
+        // WI-6951: `lastRealTurnAt` (session_turn_journal only), NOT `lastTurnAt` — and
+        // deliberately with NO `?? st.lastTurnAt` fallback, which would reintroduce the bug
+        // on exactly the sessions that trip it. lastTurnAt unions in the '■ session ended'
+        // lifecycle marker, which is a session DEATH; a cold reset kills its predecessor, so
+        // that marker lands after the final loop:checkpoint and this check reported the kill
+        // instant as "you completed a turn at …". Live on this very path (su-7854d874 fire
+        // #12): note written 05:29:48Z, real last turn 05:30:24Z (36s later, inside the
+        // floor), session-end marker 06:00:23Z — the successor was told it had 31m of
+        // un-checkpointed work and spent its opening turn recovering work that never existed.
+        // A null here correctly yields NO banner: absent a journal row we cannot show a turn
+        // happened, and this is a HINT — silence beats a false alarm that trains readers to
+        // skip the one case (a dead session's finished work still advertised) it exists for.
+        lastTurnAtMs = st?.lastRealTurnAt ? new Date(st.lastRealTurnAt).getTime() : null;
         if (lastTurnAtMs != null && !Number.isFinite(lastTurnAtMs)) lastTurnAtMs = null;
       } catch (e) {
         console.warn('[wake-executor] cold last-turn read failed (staleness hint omitted):', e as Error);

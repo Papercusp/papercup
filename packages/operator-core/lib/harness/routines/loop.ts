@@ -575,6 +575,19 @@ export interface LoopStatus {
    *  completed a turn (or the row predates lifecycle tracking). Compare against
    *  `lastFiredAt` to see whether fires are outpacing genuine turn production. */
   lastTurnAt: string | null;
+  /** WI-6951: ISO of the most recent GENUINE turn completion — `session_turn_journal` ONLY,
+   *  with the lifecycle session-end marker deliberately EXCLUDED. `lastTurnAt` above unions
+   *  that marker in as a defensive fallback (WI-6069, so a lifecycle-only read cannot go
+   *  perpetually stale), which is right for the liveness question it answers — "is this loop
+   *  producing turns at all?" — because there any evidence of activity is better than none.
+   *  It is WRONG for the stricter question "did a turn complete AFTER instant X?": '■ session
+   *  ended' is a session DEATH, not a turn, and a cold reset kills its predecessor, so that
+   *  marker lands at kill-time — by construction after the last loop:checkpoint write. Feeding
+   *  it to the cold-wake staleness check reported the kill instant as "you completed a turn at
+   *  …". Measured 2026-08-02 over 7d: 525 of 1,351 markers (38.9%, 118 owners) sat further than
+   *  the check's 5-min floor from that owner's last real turn. Use THIS field for any
+   *  "was a turn produced after T" test; never fall back to `lastTurnAt` for it. */
+  lastRealTurnAt: string | null;
   /** EI-18712914572668391: true when this loop keeps getting re-armed (fireCount climbing,
    *  `stalled` reading false because it isn't currently PARKED) while `lastTurnAt` has not
    *  kept pace — i.e. fires are being ATTEMPTED without turns actually being PRODUCED. This
@@ -738,6 +751,7 @@ function loopStatusFromRow(r: any, fallbackOwnerId: string): LoopStatus {
     lastWakeAt: r.last_wake_at ? new Date(r.last_wake_at).toISOString() : null,
     lastWakeError: r.last_wake_error ?? null,
     lastTurnAt: r.last_turn_at ? new Date(r.last_turn_at).toISOString() : null,
+    lastRealTurnAt: r.last_real_turn_at ? new Date(r.last_real_turn_at).toISOString() : null,
     turnsStalled,
   };
 }
@@ -805,6 +819,16 @@ export async function getLoopStatuses(
               SELECT j.created_at AS ts FROM harness_shared.session_turn_journal j
                WHERE j.owner_id = r.target_owner_id
             ) last_turn_sources) AS last_turn_at,
+           -- WI-6951: the STRICT turn-completion signal — the journal alone, WITHOUT the
+           -- lifecycle session-end marker unioned in above. Kept as a separate column rather
+           -- than narrowing last_turn_at, because the two answer different questions and the
+           -- union is correct for its own consumer (computeTurnsStalled: "producing turns at
+           -- all?", where the marker is a deliberate WI-6069 fallback against a stale read).
+           -- A caller asking "did a turn complete after instant X?" must use THIS one: the
+           -- marker means the session DIED, and a cold reset kills its predecessor, so it
+           -- always postdates the final loop:checkpoint and reads as phantom post-note work.
+           (SELECT max(j.created_at) FROM harness_shared.session_turn_journal j
+             WHERE j.owner_id = r.target_owner_id)                        AS last_real_turn_at,
            (SELECT max(p.last_active_at) FROM harness_shared.coord_presence p
              WHERE p.owner_id = r.target_owner_id) AS presence_last_active_at,
            lw.channel                                                    AS last_wake_channel,

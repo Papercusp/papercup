@@ -3460,6 +3460,60 @@ export function externalBlockersExclusionSql(sql: OrgSql) {
 }
 
 /**
+ * The `work_item_deps` BLOCKING floor for ISSUE-family SELF-SELECT, as ONE shared
+ * fragment. Assumes the candidate row is aliased `wi` (feature_id / workspace_id in
+ * scope), like every sibling floor helper here.
+ *
+ * ISSUE-family only, and the ref form is load-bearing: an issue's `blocked_ref` is its
+ * BARE feature_id (issues:link), whereas the FEATURE family stores a harness-qualified
+ * ref and is gated by `harness_shared.work_item_is_blocked()` + the maintained
+ * `work_item_blocked` sidecar instead (the wir_* triggers don't track issues, so the
+ * sidecar would report a blocked issue as ready). Do NOT "unify" the two by matching
+ * both ref forms here — that would over-gate the feature family (D-007).
+ *
+ * SELF-SELECT only, by design: dependency-blocking is a READINESS floor, and per D-008
+ * readiness floors gate self-select while the by-id claim (`claimWorkItem`/`claimIssue`)
+ * is the deliberate operator override — taking a blocked item by name is how you take
+ * ownership in order to unblock it. Security/admission floors (autoPickableWhereSql)
+ * are the ones that hold at every door.
+ *
+ * Extracted for D-007. This predicate had drifted into a SIXTH inline copy in
+ * scheduler/get-next.ts, and it was the ONLY floor in that subquery not calling into
+ * this file — so while every sibling floor stayed in sync, that copy silently kept the
+ * `bi.workspace_id = 'default'` hardcode migration 719 removed everywhere else.
+ * Measured live before this extraction: across the 10 open issue-family
+ * papercusp-workspace items carrying an edge, the get-next copy reported 0 blocked
+ * while this predicate reported 5 — so `work_items:claimable` advertised 5 items the
+ * real claim path refuses, and an agent burned a wake on each.
+ *
+ * `d.workspace_id` stays pinned to the coordination workspace 'default' — that is where
+ * the edge table itself is keyed, NOT a blocker scope; scoping it to the item's own
+ * workspace would match zero edges and disable blocking entirely.
+ */
+export function depsBlockedExclusionSql(sql: OrgSql) {
+  return sql`NOT EXISTS (
+    SELECT 1 FROM harness_shared.work_item_deps d
+     WHERE d.workspace_id = 'default'
+       AND d.dep_type = 'blocks'
+       AND d.blocked_ref = wi.feature_id
+       AND (
+         EXISTS (
+           SELECT 1 FROM harness_shared.harness_features_consolidated bf
+            WHERE bf.workspace_id = wi.workspace_id
+              AND (bf.harness_slug || '#' || bf.feature_id) = d.blocker_ref
+              AND bf.status NOT IN ('passed', 'deprecated', 'done', 'dropped')
+         )
+         OR EXISTS (
+           SELECT 1 FROM harness_shared.engineer_issues bi
+            WHERE bi.workspace_id = wi.workspace_id
+              AND bi.issue_id = d.blocker_ref
+              AND bi.state NOT IN ('resolved', 'closed', 'done', 'dropped')
+         )
+       )
+  )`;
+}
+
+/**
  * The FEDERATION-DETECTOR self-select EXCLUSION floor for issue-family claims (WI-2633). The
  * replication-liveness detector (replication-stall-ei.ts, P-004/WI-1840) auto-files durable EIs
  * for connected-but-dead peers (no_replicator / frozen / connected_never_replicated /
@@ -4450,36 +4504,18 @@ export async function claimNextIssueWorkItem(
           -- P-014: skip high-stakes (redundancy>1) items under the redundancy flag.
           AND ${filter.excludeRedundant ? tx`(wi.redundancy IS NULL OR wi.redundancy <= 1)` : tx`TRUE`}
           -- Readiness (P-005/P-007): never self-select a row with a PRESENT, NON-TERMINAL blocker.
-          -- The issue's blocked_ref is its BARE feature_id (issues:link). The issue-claim path ALWAYS
-          -- uses the INLINE predicate over work_item_deps + cross-family blocker statuses — NOT the
-          -- maintained work_item_blocked sidecar, which is FEATURE-FAMILY ONLY (the wir_* triggers
-          -- don't track issues, so the sidecar would report a blocked issue as ready). The issue-claim
-          -- is the secondary feature-miss path, so the inline read (not the indexed sidecar) is fine.
-          AND NOT EXISTS (
-              SELECT 1 FROM harness_shared.work_item_deps d
-               -- d.workspace_id is the COORDINATION workspace the edge table is keyed in;
-               -- the BLOCKER legs scope to the blocked item's OWN workspace (wi.workspace_id)
-               -- — migration 719 / EI-19313459163394127. Before that the issue leg was pinned
-               -- to 'default' and never matched, so this floor — the one this very comment
-               -- block promises "ALWAYS uses the INLINE predicate" — passed everything.
-               WHERE d.workspace_id = 'default'
-                 AND d.dep_type = 'blocks'
-                 AND d.blocked_ref = wi.feature_id
-                 AND (
-                   EXISTS (
-                     SELECT 1 FROM harness_shared.harness_features_consolidated bf
-                      WHERE bf.workspace_id = wi.workspace_id
-                        AND (bf.harness_slug || '#' || bf.feature_id) = d.blocker_ref
-                        AND bf.status NOT IN ('passed', 'deprecated', 'done', 'dropped')
-                   )
-                   OR EXISTS (
-                     SELECT 1 FROM harness_shared.engineer_issues bi
-                      WHERE bi.workspace_id = wi.workspace_id
-                        AND bi.issue_id = d.blocker_ref
-                        AND bi.state NOT IN ('resolved', 'closed', 'done', 'dropped')
-                   )
-                 )
-          )
+          -- The issue's blocked_ref is its BARE feature_id (issues:link), and both blocker legs
+          -- scope to the blocked item's OWN workspace (migration 719 / EI-19313459163394127 —
+          -- before that the issue leg was pinned to 'default' and never matched, so this floor
+          -- passed everything). Deliberately NOT the maintained work_item_blocked sidecar, which
+          -- is FEATURE-FAMILY ONLY (the wir_* triggers don't track issues, so the sidecar would
+          -- report a blocked issue as ready).
+          --
+          -- D-007: this predicate now lives in ONE place, depsBlockedExclusionSql, and the
+          -- claimability PREVIEW (scheduler/get-next.ts) calls the same helper. It was previously
+          -- inlined at both sites, and the copy in get-next.ts silently kept the pre-719 'default'
+          -- hardcode — so the preview advertised as claimable 5 items this path refuses.
+          AND ${depsBlockedExclusionSql(tx)}
           -- WI-2118 (P-009 leak): never self-select an item reserved by another active plan lane.
           AND ${reservedPlanLaneExclusionSql(tx, filter.assignee)}
           -- WI-2796: never self-select a cross-machine-rig-gated item unless the caller

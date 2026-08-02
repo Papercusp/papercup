@@ -942,6 +942,20 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
   // P-008 (a): the cap counts CURRENT versions only. Counting the superseded
   // tail would make the cap a function of how often facts were CORRECTED rather
   // than how many exist — a heavily-revised fact would evict its own neighbours.
+  //
+  // WI-6935: the typed SAFETY slots are EXEMPT from cap eviction, and are excluded
+  // from the ranking entirely so they neither evict nor count toward the offset.
+  // Eviction writes `retracted_at` — the SAME field a deliberate facts:retract
+  // writes — so an evicted fact is indistinguishable from one somebody decided no
+  // longer applies, and listLapsedWallFacts (which filters `retracted_at IS NULL`)
+  // can never see it again. For a `wall:` fact that is precisely the failure the
+  // slot exists to prevent: absence must never read as "the wall cleared". Ranking
+  // by `updated_at DESC` alone made this certain rather than unlikely — a wall is
+  // asserted once and then, by design, never touched again, so it sinks to the
+  // bottom of the very ordering used to choose victims. Measured 2026-08-02: 11
+  // facts evicted from harness:papercusp in 25 minutes, including still-valid ones
+  // with TTLs months out. These two prefixes are ~8 live rows across ALL scopes, so
+  // exempting them cannot meaningfully weaken the cap.
   await sql`
     UPDATE harness_shared.agent_facts SET retracted_at = now()
      WHERE source_hive IS NULL
@@ -954,6 +968,8 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
           AND source_hive IS NULL
           AND superseded_at IS NULL
           AND retracted_at IS NULL AND expires_at > now()
+          AND key NOT LIKE ${`${WALL_KEY_PREFIX}%`}
+          AND key NOT LIKE ${`${DEAD_END_KEY_PREFIX}%`}
         ORDER BY updated_at DESC
        OFFSET ${FACTS_PER_SCOPE_CAP})`;
   return rowToFact(rows[0]);

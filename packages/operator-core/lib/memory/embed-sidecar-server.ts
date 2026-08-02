@@ -12,7 +12,8 @@
  *   POST /rerank  { model?, query: string, texts: string[] }
  *              →  { scores: number[], runtime, modelRev }
  *   GET  /healthz →  { ok, pid, uptimeMs, capabilities: string[],
- *                      models: { '<model>:<kind>': state } }
+ *                      models: { '<model>:<kind>': state },
+ *                      rerankExecution: { device, dtype, why } }
  *
  * `capabilities` lists every route THIS BUILD serves ("POST /rerank", ...),
  * derived from the route table itself. A sidecar outlives the code that talks
@@ -69,7 +70,13 @@ import {
   SIDECAR_MAX_TEXT_CHARS,
   type GemmaEmbedKind,
 } from '@papercusp/memory';
-import { FAST_RERANKER_MODEL, LOCAL_RERANKER_MODEL, loadCrossEncoder, scoreCrossEncoder } from '@papercusp/rerank';
+import {
+  FAST_RERANKER_MODEL,
+  LOCAL_RERANKER_MODEL,
+  activeExecutionTarget,
+  loadCrossEncoder,
+  scoreCrossEncoder,
+} from '@papercusp/rerank';
 
 export const EMBED_SIDECAR_DEFAULT_PORT = 3384; // mnemonic: the 384-dim space it serves
 export const EMBED_SIDECAR_PORT_ENV = 'PAPERCUSP_EMBED_SIDECAR_PORT';
@@ -652,6 +659,12 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
         // capabilities against this before adopting the process.
         capabilities,
         models: { ...warm },
+        // The (device, dtype) pair reranking is ACTUALLY running on — not the
+        // one requested. A GPU host whose CUDA provider failed to load is
+        // demoted to cpu/q8 silently as far as search is concerned (the engine
+        // is fail-safe by design), so this is where that shows up. Before the
+        // first load it reports the host's resolved target. See plan D-006.
+        rerankExecution: activeExecutionTarget(),
         cache: { hits: cacheHits, misses: cacheMisses, size: vecCache.size },
         concurrency,
       });
