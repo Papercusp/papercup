@@ -933,12 +933,10 @@ export default defineTool({
   description:
     "A leader's ONE-call health brief for ONE fleet (yours by default). Per member: " +
     'sessionState, `verdict` (booted|joined|first-turn-done|speaking|stalled|dead), wakeMode, ' +
-    'lastToolCallAgeMs, claims (doing/workItemIds/queuedCount/load), loop state ' +
-    '(monitoring|waiting|parked-awaiting-capability)+nextFireAt, stalled, unanswered, ' +
-    'contextPressure (ok|high|critical), parkedOn + parkedOnResolved (a composed await is ONE ' +
-    'entry carrying its ROOT deadline + any/all mode, never loose leaves), benchSuggestion ' +
-    '(check `kind`), `dormant`, unownedCriticals + abandonedUnclaimed (started then ABANDONED — ' +
-    'assignee IS NULL, so CLAIM it).',
+    'lastToolCallAgeMs, claims (doing/workItemIds/queuedCount/load), loop state+nextFireAt, ' +
+    'stalled, unanswered, contextPressure (ok|high|critical), parkedOn + parkedOnResolved ' +
+    '(a composed await is ONE entry w/ its ROOT deadline + any/all mode), benchSuggestion ' +
+    '(check `kind`), `dormant`, unownedCriticals + abandonedUnclaimed (assignee IS NULL — CLAIM it).',
   guidance: {
     when:
       'AFTER something wakes you: "who is working / stuck / unanswered / about to compact across MY fleet". ' +

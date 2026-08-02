@@ -229,8 +229,29 @@ describe('chunk-split UTF-8 corruption guard (WI-6728)', () => {
   it('the baseline is not looser than reality (a fixed site must lower its number)', () => {
     // Without this the ratchet only half works: a file fixed down to 0 could
     // silently regress back to its old baseline and stay green.
+    //
+    // ⚠ THIS IS THE ONE ASSERTION IN THIS FILE THAT REASONS FROM ABSENCE, and
+    // absence is exactly what a silently-truncated enumeration manufactures
+    // (EI-19298378364087215). The two assertions above are safe under partial
+    // coverage — they only ever fire on a file that WAS read. This one turns
+    // "not scanned" into "fixed", and its remedy text says DELETE THE KEY. In
+    // the checkpoint tree that fired for all 12 submodule entries at once,
+    // every one of which is a live unsafe site: chat-stream.ts still has 2 raw
+    // `on('data')` accumulators, worker-chunk-loop.ts 1, gitnexus-bridge 1, and
+    // none of them route through collectChildOutput. Following that advice
+    // would have retired the guard over ~21% of the repo — the same blind spot
+    // that let a raw NUL byte ship in libs/generic/sync/src/query-fetcher.ts.
+    //
+    // So a "fixed" verdict is UNREACHABLE for a file we could not open. The
+    // skip is reported, never silent: an unverifiable ratchet is a stated gap,
+    // which is the whole contract of the enumerator's scanned/unscanned split.
     const stale: string[] = [];
+    const unverifiable: string[] = [];
     for (const [file, expected] of Object.entries(BASELINE)) {
+      if (wasNotScanned(file)) {
+        unverifiable.push(file);
+        continue;
+      }
       const actual = found.get(file)?.length ?? 0;
       if (actual < expected) {
         stale.push(
@@ -240,9 +261,35 @@ describe('chunk-split UTF-8 corruption guard (WI-6728)', () => {
         );
       }
     }
+    if (unverifiable.length > 0) {
+      console.warn(
+        `[child-output-guard] ratchet NOT verified for ${unverifiable.length} baselined file(s) — ` +
+          `their submodule was not scanned by the enumerator, so "0 sites found" means "never opened", ` +
+          `not "fixed". This is a coverage gap, not a pass:\n  ${unverifiable.join('\n  ')}`,
+      );
+    }
     expect(stale, `BASELINE is looser than the tree. Tighten it:\n\n${stale.join('\n')}`).toEqual(
       [],
     );
+  });
+
+  it('never concludes "fixed" for a file the enumerator could not open', () => {
+    // The recurrence guard for the CLASS (EI-19298378364087215), not the
+    // instance. The bug was not "12 baseline keys looked stale" — it was that a
+    // ratchet built on absence could reach a destructive conclusion from an
+    // enumeration that silently returned nothing. This pins the invariant that
+    // makes that unreachable, so it fails if someone re-derives `actual` for an
+    // unscanned path.
+    for (const sub of unscanned) {
+      for (const file of Object.keys(BASELINE)) {
+        if (!file.startsWith(`${sub}/`)) continue;
+        expect(
+          wasNotScanned(file),
+          `${file} is under unscanned submodule ${sub} but is not excluded from the ratchet — ` +
+            `it would be reported as "fixed — DELETE this key" over a site nobody read`,
+        ).toBe(true);
+      }
+    }
   });
 
   it('the sites converted under WI-6728 have zero raw accumulators', () => {

@@ -670,6 +670,7 @@ describe('heavy-command admission control (WI-3821)', () => {
     ['npm run lint:tsc', 'npm run lint:tsc'],
     ['npm run typecheck', 'npm run typecheck'],
     ['cd-prefixed test:file', 'cd /some/dir && npm run test:file -- lib/x.test.ts'],
+    ['timeout-wrapped test:affected (the peel must reach the allow-list)', 'timeout 90 npm run test:affected'],
   ])('allows the self-throttled root entrypoint %s even OVER the threshold', (_label, command) => {
     expectAllow(runGate(bashCmd(command), { ...AGENT, ...OVER }));
   });
@@ -739,7 +740,7 @@ describe('heavy-command admission control (WI-3821)', () => {
     // the instant it hits a REAL command and never reaches pc-heavy.sh.
     ['a raw heavy leading a pc-heavy chain', 'vitest run a.test.ts && scripts/pc-heavy.sh -- vitest run b.test.ts'],
     ['a raw heavy leading a pc-heavy chain, behind a cd (EI-10001 guard)', 'cd packages/operator-core && npm test && scripts/pc-heavy.sh -- vitest run b.test.ts'],
-    ['timeout-wrapped raw heavy remains gated (EI-10439 guard)', 'timeout 90 npm run test:affected'],
+    ['timeout-wrapped raw heavy remains gated (EI-10439 guard)', 'timeout 90 vitest run x.test.ts'],
     ['PC_HEAVY_BYPASS with the wrong value does not bypass', 'env PC_HEAVY_BYPASS=0 vitest run x.test.ts'],
     // The `set` peel must not become a free pass either: it strips the option-setting
     // builtin, then stops dead at the first REAL command.
@@ -796,16 +797,19 @@ describe('heavy-command admission control (WI-3821)', () => {
     expectHeavyDeny(runGate(bashCmd(command), { ...AGENT, ...OVER }));
   });
 
+  // These scoping tests probe with a RAW heavy (vitest) — `npm run test:affected`
+  // is allow-listed as self-throttling (EI-19296434833105508), so it can no longer
+  // discriminate whether the marker/tree scoping fired.
   it('never throttles the owner (no agent marker, outside the canonical tree)', () => {
-    expectAllow(runGate(bashCmd('npm run test:affected', { cwd: '/tmp/not-canonical' }), { ...CANON_ENV, ...OVER }));
+    expectAllow(runGate(bashCmd('vitest run x.test.ts', { cwd: '/tmp/not-canonical' }), { ...CANON_ENV, ...OVER }));
   });
 
   it('fires WITHOUT the agent marker inside the canonical tree (EI-7872 tree-keyed parity)', () => {
-    expectHeavyDeny(runGate(bashCmd('npm run test:affected', { cwd: CANON }), { ...CANON_ENV, ...OVER }));
+    expectHeavyDeny(runGate(bashCmd('vitest run x.test.ts', { cwd: CANON }), { ...CANON_ENV, ...OVER }));
   });
 
   it('honors the codex shell tool name (exec_command) — same wire contract', () => {
-    expectHeavyDeny(runGate(bashCmd('npm run test:affected', { tool: 'exec_command' }), { ...AGENT, ...OVER }));
+    expectHeavyDeny(runGate(bashCmd('vitest run x.test.ts', { tool: 'exec_command' }), { ...AGENT, ...OVER }));
   });
 
   it('fails open (allows) when load cannot be read', () => {
@@ -837,16 +841,19 @@ describe('compound `cd <canonical> && …` coverage (WI-3853 — marker-less fle
     expectAllow(runGate(bashCmd('cd /some/other/repo && git reset --hard', { cwd: OUTSIDE }), CANON_ENV));
   });
 
-  it('admission gate denies `cd <canonical> && npm run test:affected` (marker-less, over threshold)', () => {
-    expectHeavyDeny(runGate(bashCmd(`cd ${CANON} && npm run test:affected`, { cwd: OUTSIDE }), { ...CANON_ENV, ...OVER }));
+  // Raw-vitest probes here for the same reason as the scoping tests above:
+  // `npm run test:affected` is allow-listed as self-throttling, so only a raw
+  // heavy can show whether the tree check followed the leading cd.
+  it('admission gate denies `cd <canonical> && <raw heavy>` (marker-less, over threshold)', () => {
+    expectHeavyDeny(runGate(bashCmd(`cd ${CANON} && vitest run x.test.ts`, { cwd: OUTSIDE }), { ...CANON_ENV, ...OVER }));
   });
 
   it('admission gate does NOT gate a heavy command that cds into a DIFFERENT tree', () => {
-    expectAllow(runGate(bashCmd('cd /some/other/repo && npm run test:affected', { cwd: OUTSIDE }), { ...CANON_ENV, ...OVER }));
+    expectAllow(runGate(bashCmd('cd /some/other/repo && vitest run x.test.ts', { cwd: OUTSIDE }), { ...CANON_ENV, ...OVER }));
   });
 
   it('a bare `cd` with no path does not throw / falls through to allow', () => {
-    expectAllow(runGate(bashCmd('cd && npm run test:affected', { cwd: OUTSIDE }), { ...CANON_ENV, ...OVER }));
+    expectAllow(runGate(bashCmd('cd && vitest run x.test.ts', { cwd: OUTSIDE }), { ...CANON_ENV, ...OVER }));
   });
 });
 

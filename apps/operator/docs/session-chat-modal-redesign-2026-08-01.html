@@ -536,6 +536,9 @@ section { padding-top: 74px; scroll-margin-top: 20px; }
   <a href="#d" style="color:var(--mark);border-color:var(--mark)">D · chosen</a>
   <a href="#rails">rail R1–R3</a>
   <a href="#add" style="color:var(--mark);border-color:var(--mark)">what to add</a>
+  <a href="#coord" style="color:var(--mark);border-color:var(--mark)">rest of coord</a>
+  <a href="#carry" style="color:var(--mark);border-color:var(--mark)">carry brief</a>
+  <a href="#panel2" style="color:var(--mark);border-color:var(--mark)">two panels</a>
   <a href="#pick">the build</a>
 </nav>
 
@@ -1943,8 +1946,18 @@ next: confirm fleet-launcher move w/ owner</div>
           <tr><td>4</td><td>Resume/Fork fold into <code>Session…</code>; Focus stays out</td><td>ChatActionBar · SessionActions</td><td class="yes">Low</td></tr>
           <tr><td>5</td><td>Fleet launcher moves to the Sessions board <em>(needs your sign-off — overrides WI-6505)</em></td><td>FleetLaunchRow · the board's launch row</td><td>Medium — moves a surface</td></tr>
           <tr><td>6</td><td>Rail: cap every section, reorder by urgency, drill-in links</td><td>AgentDossier · SessionsRosterView.css</td><td class="yes">Low</td></tr>
-          <tr><td>7</td><td>Rail: Standing orders · Lane · available-gates</td><td>adv-agent-detail (new legs) + AgentDossier</td><td>Medium — new reads</td></tr>
-          <tr><td>8</td><td><code>claim</code> gains progressing/stalled; fleet wind-down banner</td><td>adv-agent-detail · AgentDossier</td><td class="yes">Low</td></tr>
+          <tr><td>7</td><td>Rail: Lane · available-gates · <code>claim</code> gains progressing/stalled · fleet wind-down banner</td><td>adv-agent-detail (new legs) + AgentDossier</td><td>Medium — new reads</td></tr>
+          <tr><td>8</td><td><strong>Wake-mode correctness</strong> — show manual/auto in the header; composer says “Staged”, not “Sent”</td><td>SessionChatModal · coord:wake-mode read</td><td class="yes">Low — but it is a <em>bug</em></td></tr>
+        </tbody>
+      </table>
+      <p style="margin:22px 0 8px;font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--ink-3);font-weight:640">Phase 2 — the second panel</p>
+      <table class="matrix" style="min-width:640px">
+        <thead><tr><th>#</th><th>Change</th><th>Where</th><th>Risk</th></tr></thead>
+        <tbody>
+          <tr><td>9</td><td>Three-column shell; both panels <code>nuqs</code>-toggled, left collapses first</td><td>SessionChatModal</td><td class="yes">Low</td></tr>
+          <tr><td>10</td><td><strong>Orders panel</strong> — mission · authority · suppressed rules · modes+why · owner directives · standing facts</td><td>new AgentOrders component + precedence/facts/modes legs</td><td>Medium</td></tr>
+          <tr><td>11</td><td><strong>Walls</strong> — verbatim asks, wait age, alive vs <em>stranded</em></td><td>coord:walls leg</td><td class="yes">Low</td></tr>
+          <tr><td>12</td><td><strong>Carry</strong> — carry-note, checkpoint, cited-ref drift, post-note mail, all age-stamped; severity keyed to warm/cold</td><td>carry-brief leg</td><td>Medium — the staleness rules are the design</td></tr>
         </tbody>
       </table>
     </div>
