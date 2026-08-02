@@ -2195,6 +2195,49 @@ describe('shell-write file-target guard (EI-18664655909328670)', () => {
       expect(reason).toContain('foo.ts');
     });
   });
+
+  /**
+   * EI-18899608047558048 — a fully-quoted redirect target crossing into the
+   * NEXT STATEMENT was misread as that statement's first token.
+   *
+   * `_strip_shell_quotes` replaces an ENTIRE quoted span with a single blank
+   * space, with no marker that anything was ever there. So `: > "$OUT"`
+   * leaves nothing after the `>` but trailing whitespace on that line, and
+   * the old `\s*` gap between the operator and its target happily crossed
+   * the following newline to grab the first token of the NEXT statement —
+   * `URL=` from an unrelated assignment, or `done` closing a loop — and named
+   * it, with full confidence, as a write resolving inside the shared tree.
+   * Both filed shapes reproduced live against the pre-fix guard.
+   */
+  describe('cross-line redirect-target misattribution (EI-18899608047558048)', () => {
+    it('allows the exact filed Shape A repro: a quoted $VAR redirect target followed by an unrelated assignment', () => {
+      const command = 'OUT=/tmp/wi6569-cold.jsonl; : > "$OUT"\n' + "URL='http://127.0.0.1:33700/adv?x=1'";
+      expectAllow(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
+    });
+
+    it('allows the exact filed Shape B repro: an append inside a loop, target on the line before `done`', () => {
+      const command = 'for x in 1; do\n' + 'printf x >> "$OUT"\n' + 'done';
+      expectAllow(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
+    });
+
+    it('does not cross a `;`-separated statement on the SAME line either', () => {
+      const command = ': > "$OUT"; URL=http://example.com';
+      expectAllow(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
+    });
+
+    it('a genuine same-line unquoted in-tree redirect still denies (the fix does not weaken same-line detection)', () => {
+      const reason = expectShellWriteDeny(
+        runGate(bashCmd('echo hi > apps/operator/generated.ts', { cwd: CANON }), CANON_ENV),
+      );
+      expect(reason).toContain('apps/operator/generated.ts');
+    });
+
+    it('a genuine same-line unquoted in-tree redirect immediately followed by another statement still denies', () => {
+      const command = 'echo hi > apps/operator/generated.ts\ntrue';
+      const reason = expectShellWriteDeny(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
+      expect(reason).toContain('apps/operator/generated.ts');
+    });
+  });
 });
 
 /**

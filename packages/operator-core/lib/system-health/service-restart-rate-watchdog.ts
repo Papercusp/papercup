@@ -302,6 +302,13 @@ export function startServiceRestartRateWatchdog(opts: { intervalMs?: number } = 
           sweeping = false;
         });
     },
-    { category: 'watchdog' },
+    {
+      category: 'watchdog',
+      // D-004 (stop-discarded-dedup-and-audit-server-polling-2026-07-26, P-011): each
+      // tick reads systemd restart counts via journalctl (readStarts) — no event source
+      // exists for "a unit's restart count changed", matching the same shape as this
+      // file's 'service-health' sibling in in-process-periodic.ts.
+      classification: 'must-sample',
+    },
   );
 }

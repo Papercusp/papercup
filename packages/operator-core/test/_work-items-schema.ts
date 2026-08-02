@@ -197,6 +197,20 @@ export const HARNESS_FEATURES_CONSOLIDATED_DDL = `
       -- Queen-steered priority round-trips through work_items:get/list instead of
       -- being silently hardcoded null on read even after a successful write.
       feature_order,
+      -- migration 646 (reexpose-terminal-reason-engineer-issues-view) / 688. Live
+      -- orders this column BEFORE authority, and ordinal position is load-bearing
+      -- (NOTE: no backticks anywhere in this comment on purpose — it lives inside a
+      -- TS template literal, where a backtick closes the template and breaks parsing;
+      -- see lint:no-sql-comment-backtick)
+      -- here, not cosmetic: migration 721 re-declares this view with a literal
+      -- CREATE OR REPLACE, and CREATE OR REPLACE VIEW may only APPEND columns — it
+      -- cannot reorder or rename existing ones. With terminal_reason missing, 721
+      -- fails against this fixture with the genuinely baffling
+      -- 'cannot change name of view column "authority" to "terminal_reason"',
+      -- which names neither the fixture nor the missing column as the cause.
+      -- Found while adding the migration-726 guard (WI-7057); the same omission is
+      -- why work-items-closed-ts.integration.test.ts could not apply 721 either.
+      terminal_reason,
       -- agent-protocol-authority-semantics-2026-07-26 P-003 (migration 677). The
       -- feature-family view above is SELECT * and picks the column up for free; this
       -- one is an explicit list, so it has to be named here or every integration test

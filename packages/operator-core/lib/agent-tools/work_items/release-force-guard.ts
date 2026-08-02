@@ -27,8 +27,14 @@
  * this guard is tool-layer only.
  */
 import { PRESENCE_STALE_MS } from '@papercusp/coordination/presence';
+import type { LivenessVerdict } from '../coordination/liveness-oracle';
 
-export type ForceReleaseBasis = 'holder-not-live' | 'holder-warm-idle' | 'queen' | 'leads-holder-fleet';
+export type ForceReleaseBasis =
+  | 'holder-not-live'
+  | 'holder-warm-idle'
+  | 'holder-session-ended'
+  | 'queen'
+  | 'leads-holder-fleet';
 
 /**
  * EI-18712366018708650: a fresh heartbeat is process keepalive, NOT evidence of real
@@ -46,6 +52,39 @@ export type ForceReleaseBasis = 'holder-not-live' | 'holder-warm-idle' | 'queen'
  */
 export const WARM_IDLE_ACTIVITY_STALE_MS = 3 * PRESENCE_STALE_MS;
 
+/**
+ * EI-18907586326157984: this guard's own heartbeat/lastActiveAt/itemLastProgressAt
+ * comparison is a SEPARATE, hand-rolled liveness computation from the ONE shared
+ * `sessionState` oracle (`liveness-oracle.ts` / `deriveSessionState`) every other
+ * surface — coord:presence, fleet:status, fleet:assignments, coord:roster,
+ * fleet:leader-brief, and coord:wake/coord:send's miss path — already routes
+ * through (presence-derivation-unification-2026-07-17 P-001). The two can disagree
+ * on the SAME holder: a cleanly-ended session's heartbeat row lingers "fresh" for
+ * up to PRESENCE_STALE_MS after the process exits (heartbeat is process keepalive,
+ * not a liveness proof — the module doc above already says this about
+ * lastActiveAt/itemLastProgressAt, and it is equally true of heartbeatAt itself),
+ * while the oracle's `wakeable` (a live `coord:inbox-wake:<id>` await — the SAME
+ * mechanism coord:wake delivers through) + `liveTurn` (recent real agent_activity)
+ * legs detect the clean end in SECONDS, not up to PRESENCE_STALE_MS/PRESENCE_DEAD_MS
+ * later. Live repro: coord:wake reported `recipient_dead` (sessionState=ended, no
+ * live inbox-wake await, no recent activity) for a holder whose heartbeat was still
+ * only ~4.8min old — well under this guard's own staleness windows — so
+ * `work_items:release{force:true}` refused `force_unauthorized` on a holder the
+ * platform's own authoritative wake path had already proven dead, and
+ * `fleet:assignments` simultaneously called the SAME row `verdict:'orphan',
+ * action:'reclaim'` — an instruction the platform then refused to let anyone act on.
+ *
+ * The fix is ADDITIVE, not a replacement: `assessForceRelease` now ALSO consults
+ * the shared oracle (`oracleSessionState`) for the holder, and treats an oracle
+ * verdict of `ended` or `suspect` (pid-confirmed-dead / 30-min hard-stale — see
+ * `isHardStale`/`PRESENCE_DEAD_MS`) as an independent reaper path
+ * (`holder-session-ended`), alongside — never instead of — the existing
+ * heartbeat/warm-idle check above (which catches a DIFFERENT case: a session that
+ * IS still alive and taking turns, but has abandoned THIS SPECIFIC item — an
+ * axis the session-level oracle has no visibility into at all). Either signal
+ * alone is now sufficient to authorize a reclaim; both must say "live" to require
+ * authority.
+ */
 export interface HolderLiveness {
   presenceFound: boolean;
   /** Positive lifecycle evidence: the holder's newest recorded session has ended. */
@@ -60,6 +99,12 @@ export interface HolderLiveness {
    *  process-keepalive-only signal, never inferred from missing data (EI-18712366018708650).
    *  When true, `live` is false (warm-idle counts as the reaper case). */
   warmIdle: boolean;
+  /** EI-18907586326157984: the SAME sessionState verdict coord:wake / coord:presence /
+   *  fleet:assignments already trust for this holder (null when the oracle lookup
+   *  failed/degraded — never treated as evidence either way). `'ended'`/`'suspect'`
+   *  independently authorizes a reclaim (`holder-session-ended`), regardless of how
+   *  fresh the raw heartbeat above still looks. */
+  oracleSessionState: LivenessVerdict['sessionState'] | null;
   live: boolean;
 }
 
@@ -79,6 +124,13 @@ export interface ForceReleaseDeps {
   ) => Promise<{ fleetSlug: string | null; fleetRole: string | null } | null>;
   getFleet?: (workspaceId: string, fleetSlug: string) => Promise<{ leaderOwnerId: string | null } | null>;
   endedRecordedOwnerIds?: (ownerIds: string[]) => Promise<Set<string>>;
+  /** EI-18907586326157984: the SAME shared liveness oracle coord:wake/coord:presence
+   *  already use, resolving ONE holder by id (hydrated from its own presence row).
+   *  Defaults to the real `resolveSessionStates([{ ownerId }], { hydratePerId: true })`.
+   *  A lookup failure degrades to `null` (oracle signal absent) — never throws, never
+   *  makes the guard STRICTER than before this fix (only ever additionally permissive
+   *  when the oracle affirmatively says `ended`/`suspect`). */
+  resolveHolderSessionState?: (ownerId: string) => Promise<LivenessVerdict['sessionState'] | null>;
   now?: () => number;
 }
 

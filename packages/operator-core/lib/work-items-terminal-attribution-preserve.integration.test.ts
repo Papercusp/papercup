@@ -76,7 +76,6 @@ describe('work_items terminal attribution preservation (migration 726)', () => {
     await applyMigrationsForTest(
       sql,
       [
-        '698-work-items-closed-ts.sql',
         '721-work-items-lane-generated-column.sql',
         '725-payload-object-shape-guard-and-plan-item-stamp-index.sql',
         '726-preserve-terminal-attribution-on-federated-write.sql',

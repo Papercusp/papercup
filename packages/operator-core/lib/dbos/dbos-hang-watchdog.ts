@@ -304,5 +304,14 @@ export function startDbosHangWatchdog(
 
   run(); // boot check
   if (watchdogTimer) watchdogTimer.stop();
-  watchdogTimer = managedSetInterval('dbos-hang-watchdog', intervalMs, run, { category: 'watchdog' });
+  // D-004 (stop-discarded-dedup-and-audit-server-polling-2026-07-26, P-011): this sweep
+  // detects a workflow re-recovered without progress by comparing recovery_attempts /
+  // operation_outputs across successive periodic samples — the same "has enough time
+  // passed without an expected transition" shape as this file's siblings
+  // spawn-reclaim-sweep / stale-claim-sweep (in-process-periodic.ts), both classified
+  // 'timeout-reaper'.
+  watchdogTimer = managedSetInterval('dbos-hang-watchdog', intervalMs, run, {
+    category: 'watchdog',
+    classification: 'timeout-reaper',
+  });
 }
