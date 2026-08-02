@@ -61,6 +61,8 @@ import { heartbeatPresence, setPresenceFleet, PRESENCE_STALE_MS } from '../coord
 import { resolveHarnessPlansDir, readPlanBySlug, resolvePlanHarnessSlug } from '../plans/source';
 import { startVerdictForRow } from '../plans/plan-start-gate';
 import { fleetRoleFor, json, recolorCallerTerminal, resolveFleetCaller } from './_shared';
+import { extractWorkItemIds, TERMINAL_WORK_ITEM_STATES } from '../work_items/mirror-guard';
+import { itemMatchesRawClaimSpec } from '../../scheduler/fleet-scope-admission';
 import { reseedLeaderCompactionLimit } from './take-leadership-core';
 import { resolveSeatLaunch, seatAvailabilityForFleet } from '../../fleet/seat-accounting';
 import {
@@ -742,6 +744,23 @@ function err(text: string) {
   return { content: [{ type: 'text' as const, text }], isError: true };
 }
 
+/**
+ * EI-18862608742257943: extract every WI-/EI- id referenced across the composed
+ * kickoff brief text(s) a launch is about to hand its members — reusing the SAME
+ * id-extraction the work_items:create mirror-guard uses (WI-<n> / EI-<n>,
+ * case-insensitive, deduped) rather than inventing a second regex. Pure + exported
+ * for a unit test. `null`/`undefined`/blank entries are ignored (a member with no
+ * distinct brief falls back to the shared one, or to none at all).
+ */
+export function extractKickoffWorkItemIds(texts: readonly (string | null | undefined)[]): string[] {
+  const ids = new Set<string>();
+  for (const t of texts) {
+    if (!t) continue;
+    for (const id of extractWorkItemIds(t)) ids.add(id);
+  }
+  return [...ids];
+}
+
 export default defineTool({
   name: 'fleet:launch-on-plan',
   description:
@@ -949,6 +968,12 @@ export default defineTool({
       .optional()
       .describe(
         "P-010 pool-collapse override: a `claimKinds` fleet is REFUSED at launch (BEFORE any terminal opens) when its kind-scoped claim spec matches 0 rows of a nonempty claimable pool — the silent bug-drain starvation shape (WI-5212/EI-11300). Pass true ONLY after reading the refusal's reported counts and confirming the empty lane is intended (e.g. a pre-staged fleet whose items are not promoted yet). Ignored when no `claimKinds` is given.",
+      ),
+    confirmKickoffMismatch: z
+      .boolean()
+      .optional()
+      .describe(
+        'EI-18862608742257943 override: the launch is REFUSED (BEFORE any terminal opens, LOCAL placement only) when a WI-/EI- id referenced in `launchContext` / `perMemberLaunchContext` / `members[].brief` does not match the fleet claim spec this launch is about to apply — a member kicked off with "your only job is WI-xxxx" that cannot then claim WI-xxxx (assignee stays NULL, presence shows it holding nothing, the death-resilience net never engages). Pass true to launch anyway (e.g. the brief only MENTIONS the id for context, or you will widen the spec by hand right after); otherwise fix the claimKinds/plan scope or drop the id from the brief.',
       ),
   }),
   async handler(args, ctx) {
@@ -1881,6 +1906,12 @@ export default defineTool({
     const perMemberLaunchContextPaths: (string | null)[] | null = perMemberComposeActive ? [] : null;
     const perMemberReadErrors: string[] = [];
     let memberLaunchContextPathForIndex: (i: number) => string | undefined = () => effectiveLaunchContext;
+    // EI-18862608742257943: every brief text a member actually receives, collected so the
+    // kickoff-vs-claim-spec check below (after this block) can scan ALL of them for a named
+    // WI-/EI- id — the shared brief always counts; each member's OWN resolved brief (inline
+    // `members[i].brief`, a `perMemberLaunchContext[i]` file, or the shared fallback) is added
+    // per iteration when a per-member compose is active.
+    const kickoffBriefTexts: (string | null)[] = [sharedBriefText];
     if (perMemberComposeActive) {
       const ctxDir = join(papercuspPathForWorkspace(workspaceId), 'launch-context');
       try {

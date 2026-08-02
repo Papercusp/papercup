@@ -117,6 +117,35 @@ async function itemMatchesScope(item: WorkItem, scope: FleetScopeContext): Promi
   return matchesWorkItemClaimSpec(item, scope.record.spec);
 }
 
+/**
+ * EI-18862608742257943: the same feature/issue-family branch as {@link itemMatchesScope},
+ * but against a RAW `ClaimSpec` rather than a live {@link FleetScopeContext} — usable
+ * BEFORE any bee has joined a fleet, when there is no membership row for
+ * `resolveFleetScopeContext` to resolve. Reused by `fleet:launch-on-plan`'s pre-launch
+ * check: does the claim spec this launch is ABOUT TO APPLY actually admit the
+ * work-item(s) the leader's own kickoff brief names? (The bug this closes: a member
+ * launched with a kickoff naming ONE work-item as "your only job" could not claim it —
+ * the free-text brief and the enforced claim spec were authored independently and
+ * nothing reconciled them, so the member did the work unclaimed: `assignee` stayed
+ * NULL, `fleet:assignments` showed it holding nothing, and the death-resilience net
+ * never engaged.) A minimal stub `ClaimSpecRecord` is built inline — only `.spec` is
+ * ever read by `featureMatchesRecord`, so the other fields are placeholders.
+ */
+export async function itemMatchesRawClaimSpec(
+  item: WorkItem,
+  spec: ClaimSpecRecord['spec'],
+  workspaceId: string,
+): Promise<boolean> {
+  if (item.family === 'feature') {
+    return featureMatchesRecord(
+      item,
+      { source: 'fleet', spec, revision: null, updatedBy: null, updatedAt: null },
+      workspaceId,
+    );
+  }
+  return matchesWorkItemClaimSpec(item, spec);
+}
+
 function denyMissing(scope: FleetScopeContext): FleetScopeAdmission {
   return {
     allowed: false,

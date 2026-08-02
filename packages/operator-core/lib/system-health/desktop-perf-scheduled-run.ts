@@ -37,6 +37,7 @@ import * as path from 'node:path';
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { REPO_ROOT } from '../agent-tools/docs/_repo-paths';
+import { collectChildOutput } from '../child-output.js';
 
 const WDIO_DIR = path.join(REPO_ROOT, 'tools', 'perf-test', 'wdio');
 
@@ -93,8 +94,11 @@ export async function runDesktopPerfScheduledRun(
       env: process.env,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
-    let stdout = '';
-    let stderr = '';
+    // Chunk-boundary-safe accumulation (WI-6728) — a raw `stdout += d.toString()`
+    // decodes each 'data' chunk in isolation, so a multi-byte UTF-8 character
+    // split across two chunks silently corrupts to replacement characters. The
+    // shared collector holds a StringDecoder per stream instead.
+    const { stdout, stderr } = collectChildOutput(child);
     let settled = false;
     const timer = setTimeout(() => {
       if (settled) return;
@@ -102,18 +106,10 @@ export async function runDesktopPerfScheduledRun(
       child.kill('SIGKILL');
       console.warn(
         `[desktop-perf-scheduled-run] timed out after ${RUN_TIMEOUT_MS}ms — killed. ` +
-          `stdout tail:\n${stdout.slice(-LOG_TAIL_CHARS)}\nstderr tail:\n${stderr.slice(-LOG_TAIL_CHARS)}`,
+          `stdout tail:\n${stdout.text().slice(-LOG_TAIL_CHARS)}\nstderr tail:\n${stderr.text().slice(-LOG_TAIL_CHARS)}`,
       );
       resolve({ ran: true, timedOut: true, durationMs: Date.now() - startedAt });
     }, RUN_TIMEOUT_MS);
-    child.stdout?.on('data', (d: Buffer) => {
-      stdout += d.toString();
-      if (stdout.length > 200_000) stdout = stdout.slice(-200_000);
-    });
-    child.stderr?.on('data', (d: Buffer) => {
-      stderr += d.toString();
-      if (stderr.length > 200_000) stderr = stderr.slice(-200_000);
-    });
     child.on('error', (err) => {
       if (settled) return;
       settled = true;
@@ -134,7 +130,7 @@ export async function runDesktopPerfScheduledRun(
         console.warn(
           `[desktop-perf-scheduled-run] wdio exited ${code} after ${durationMs}ms ` +
             `(measures already posted via onComplete regardless of exit code) — tail:\n` +
-            `${stdout.slice(-LOG_TAIL_CHARS)}\n${stderr.slice(-LOG_TAIL_CHARS)}`,
+            `${stdout.text().slice(-LOG_TAIL_CHARS)}\n${stderr.text().slice(-LOG_TAIL_CHARS)}`,
         );
       }
       resolve({ ran: true, exitCode: code, durationMs });
