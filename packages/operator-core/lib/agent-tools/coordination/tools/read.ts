@@ -52,12 +52,17 @@ export default defineTool({
     // ambiguous one says so with candidates; only a genuine miss is found:false.
     const resolution = await resolveMessageRef(args.msg_id);
     const message = resolution.status === 'found' ? resolution.message : null;
-    // P-033 (e): the authored fields ride `extra` (sections / premisesClassified /
-    // why / blocking / fieldProvenance) and the `body` a reader sees is a FLATTENED
-    // projection of them — so on this surface, whose whole job is "show me this
-    // message in full", the structure the sender authored was invisible. Surface it
-    // as `authored`; absent entirely for a message that carries nothing.
-    const authored = message ? projectAuthoredFields((message as { extra?: unknown }).extra) : undefined;
+    // P-033 (e): the authored fields (sections / premisesClassified / why / blocking /
+    // fieldProvenance) ride the ENVELOPE — the send path flattens them onto it — and the
+    // `body` a reader sees is a FLATTENED text projection of them. So on this surface,
+    // whose whole job is "show me this message in full", the structure the sender
+    // authored was invisible. Surface it as `authored`; absent for a message that
+    // carries nothing.
+    //
+    // ⚠ Pass the envelope, NOT `.extra` — there is no `extra` key on a stored envelope
+    // (see projectAuthoredFields). This call read `.extra` until 2026-08-02 and so
+    // returned `undefined` for every message ever fetched here.
+    const authored = message ? projectAuthoredFields(message) : undefined;
     return {
       content: [
         {

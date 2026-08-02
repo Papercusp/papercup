@@ -6,11 +6,75 @@
  * exercised live by the ~30s tick + the sync-resolver dispatch test.
  */
 import { describe, it, expect, vi } from 'vitest';
-import { panelSafe, computeEscalationsHealth, probeGatewayHealthz, observationRole, overwatchScorecardSkipped, scoutHealthVerdict, suIdeateVerdict, crossesProvenanceDivergenceThreshold, PROVENANCE_DIVERGENCE_WARN_THRESHOLD, splitAutoEligibleStuck, tallyPlans, toolEfficiencyStatus, countStuckFrontier, isLiveRigOnlyFrontierTitle, computeAccountsAvailable, computeStalePausedRoutines, deadRoutineOverdueMsForCiWindow, mergeHealthPanels, type EscalationAgingInput, type StalePausedRoutineInput } from './compute';
+import { makeOpenImprovementsReader, panelSafe, computeEscalationsHealth, probeGatewayHealthz, observationRole, overwatchScorecardSkipped, scoutHealthVerdict, suIdeateVerdict, crossesProvenanceDivergenceThreshold, PROVENANCE_DIVERGENCE_WARN_THRESHOLD, splitAutoEligibleStuck, tallyPlans, toolEfficiencyStatus, countStuckFrontier, isLiveRigOnlyFrontierTitle, computeAccountsAvailable, computeStalePausedRoutines, deadRoutineOverdueMsForCiWindow, mergeHealthPanels, type EscalationAgingInput, type StalePausedRoutineInput } from './compute';
 import { queenPlacementStalled, countLeadingZeroTokenWakes } from './thresholds';
 import { PANEL_LABELS, PANEL_ORDER } from './types';
 import type { ClaudeAccount } from '../deployment/account-pool';
 import type { HealthPanel, PanelKey, PanelStatus, SystemHealth, SystemHealthPanels } from './types';
+
+describe('makeOpenImprovementsReader — one open-improvements read per tick (P-008)', () => {
+  // Why this is pinned: collectWorkFeed (auto-eligible-stuck) and collectImprovements
+  // BOTH need readImprovementItems({state:'open',limit:1000}), and they run concurrently
+  // in the tick's Promise.all. Measured 2026-08-01 that read is the tick's most expensive
+  // statement (~160ms, ~997 rows), and with ~22 hosts ticking every 30s the duplicate
+  // alone cost ~0.12 DB-cores continuously. A future collector calling the reader
+  // directly instead of ctx.openImprovements() silently re-opens that — these tests are
+  // the tripwire.
+  it('issues the underlying read exactly once no matter how many collectors ask', async () => {
+    let calls = 0;
+    const reader = makeOpenImprovementsReader(async () => { calls += 1; return []; });
+    await Promise.all([reader(), reader(), reader()]);
+    await reader();
+    expect(calls).toBe(1);
+  });
+
+  it('memoises the PROMISE, so concurrent callers share one in-flight read', async () => {
+    // A value-memo would let both collectors fire before either resolved — the exact
+    // duplicate this exists to remove, since they start in the same Promise.all.
+    let calls = 0;
+    let release!: (v: ImprovementCandidateLike[]) => void;
+    const reader = makeOpenImprovementsReader(() => {
+      calls += 1;
+      return new Promise<ImprovementCandidateLike[]>((res) => { release = res; });
+    });
+    const a = reader();
+    const b = reader(); // starts BEFORE the first resolves
+    expect(calls).toBe(1);
+    release([{ id: 'EI-1' }]);
+    expect(await a).toBe(await b); // same array instance — one read, shared rows
+  });
+
+  it('gives every caller the same rows (the two panels can never disagree)', async () => {
+    const rows = [{ id: 'EI-1' }, { id: 'EI-2' }];
+    const reader = makeOpenImprovementsReader(async () => rows);
+    expect(await reader()).toBe(rows);
+    expect(await reader()).toBe(rows);
+  });
+
+  it('memoises a REJECTION rather than retrying per collector', async () => {
+    // Both callers issue the identical query in the same tick, so a failure hits both
+    // anyway; retrying would turn one failing tick into two failing queries. Each
+    // collector keeps its own fail-soft handling.
+    let calls = 0;
+    const reader = makeOpenImprovementsReader(async () => { calls += 1; throw new Error('pg down'); });
+    await expect(reader()).rejects.toThrow('pg down');
+    await expect(reader()).rejects.toThrow('pg down');
+    expect(calls).toBe(1);
+  });
+
+  it('separate ticks do NOT share a memo (a fresh ctx reads fresh rows)', async () => {
+    // refreshHealthPanel builds its own ctx; two refreshes minutes apart must not
+    // serve the older one's rows.
+    let calls = 0;
+    const read = async () => { calls += 1; return []; };
+    await makeOpenImprovementsReader(read)();
+    await makeOpenImprovementsReader(read)();
+    expect(calls).toBe(2);
+  });
+});
+
+/** Minimal structural stand-in — these tests care about identity//call-count, not shape. */
+type ImprovementCandidateLike = { id: string };
 
 describe('splitAutoEligibleStuck — keyed dispatcher-stuck vs keyless human-review backlog (EI-14223)', () => {
   it('counts only KEYED, attempts:0 items as autoEligibleStuck', () => {

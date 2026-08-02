@@ -69,6 +69,20 @@ const h = vi.hoisted(() => {
     ),
     /** Every workspace id the (mocked) withWorkspace opened a tx for. */
     withWorkspaceCalls: [] as string[],
+    /**
+     * EI-19301511582594101 seam. postgres-js `sql.begin` COMMITs when its callback
+     * resolves, so a failing COMMIT surfaces as a rejection from withWorkspace
+     * AFTER the tool already produced its result. Set this to make the mocked
+     * transaction fail exactly there.
+     */
+    commitFailure: null as Error | null,
+    /**
+     * Ordered log of the two durability events that must not invert:
+     * 'commit' (the tool's tx) then 'store' (the replay receipt).
+     */
+    txEvents: [] as string[],
+    /** Replay receipts the handler asked to persist. */
+    replayStores: [] as Array<{ idempotencyKey: string; result: unknown }>,
     handlers: new Map<string, (req: unknown, extra: unknown) => Promise<unknown>>(),
     verifySpawnParams: vi.fn(
       async (_u: unknown): Promise<{ ok: boolean; reason?: string }> => ({ ok: true }),
@@ -119,7 +133,27 @@ vi.mock('@papercusp/db-org', async (importOriginal) => {
     getOrgPg: () => ({ sql: h.fakeSql }),
     withWorkspace: async <T>(ws: string, fn: (tx: unknown) => Promise<T>): Promise<T> => {
       h.withWorkspaceCalls.push(ws);
-      return fn(h.fakeTx);
+      const out = await fn(h.fakeTx);
+      // The COMMIT happens HERE — after the callback resolves — which is why a
+      // receipt persisted inside the callback could outlive a write that never
+      // landed (EI-19301511582594101).
+      if (h.commitFailure) throw h.commitFailure;
+      h.txEvents.push('commit');
+      return out;
+    },
+  };
+});
+// EI-19301511582594101: observe replay-receipt persistence without a live PG.
+// Plain functions, not vi.fn(), so the suite-wide vi.resetAllMocks() in beforeEach
+// cannot strip these implementations out from under the ordering assertions.
+vi.mock('../routes/transport/_mcp-result-replay', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  return {
+    ...actual,
+    lookupStoredMcpResult: async (): Promise<null> => null,
+    storeMcpResult: async (a: { idempotencyKey: string; result: unknown }): Promise<void> => {
+      h.txEvents.push('store');
+      h.replayStores.push({ idempotencyKey: a.idempotencyKey, result: a.result });
     },
   };
 });
@@ -356,9 +390,49 @@ beforeEach(() => {
   seen.length = 0;
   deltaRequested.length = 0;
   h.withWorkspaceCalls.length = 0;
+  h.commitFailure = null;
+  h.txEvents.length = 0;
+  h.replayStores.length = 0;
   h.scopedClampFlag.value = false;
   delete process.env.PAPERCUSP_REQUIRE_SPAWN_SIG;
   _resetVerifiedSpawns(); // every case reuses spawn='spawn-1' — isolate the real verified-spawn tracker per test
+});
+
+/* ─── replay receipt durability ordering (EI-19301511582594101) ─────────── */
+
+describe('replay receipt is persisted only AFTER the tool transaction commits', () => {
+  const scoped = (ws: string) => superuserExtra(`&workspace=${ws}`);
+
+  it('persists the receipt AFTER the commit, never before', async () => {
+    const res = await callTool('gatingtest:scoped', {}, scoped('ws-test'), {
+      idempotencyKey: 'idem-ordering-1',
+    });
+    expect(res.isError).not.toBe(true);
+    // The tool really did take the needsTx branch — otherwise this test proves nothing.
+    expect(h.withWorkspaceCalls).toEqual(['ws-test']);
+    expect(h.replayStores.map((s) => s.idempotencyKey)).toEqual(['idem-ordering-1']);
+    // The whole fix in one assertion: commit first, receipt second. Reversing these
+    // two lines is exactly the durable-false-success bug.
+    expect(h.txEvents).toEqual(['commit', 'store']);
+  });
+
+  it('persists NO receipt when the tool transaction fails to COMMIT', async () => {
+    h.commitFailure = new Error('COMMIT failed: connection closed unexpectedly');
+    // Whether the handler rethrows or converts to an isError envelope is not the
+    // point under test — that a receipt is never written for a rolled-back write is.
+    await callTool('gatingtest:scoped', {}, scoped('ws-test'), {
+      idempotencyKey: 'idem-rolled-back-1',
+    }).catch(() => undefined);
+    expect(h.replayStores).toEqual([]);
+    expect(h.txEvents).not.toContain('store');
+  });
+
+  it('writes no receipt at all when the caller supplied no idempotencyKey', async () => {
+    const res = await callTool('gatingtest:scoped', {}, scoped('ws-test'));
+    expect(res.isError).not.toBe(true);
+    expect(h.replayStores).toEqual([]);
+    expect(h.txEvents).toEqual(['commit']);
+  });
 });
 
 /* ─── caller backend/model stamping (fleet-launch-agent-inheritance-2026-07-03) ─── */

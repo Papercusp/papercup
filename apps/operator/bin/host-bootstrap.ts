@@ -41,6 +41,11 @@ import { validateHomeHarnessResolution, homeHarnessValidationFatal, isLikelyFres
 import { applyToProcessEnv, readAgentConfig, agentCmdBootWarning } from '@papercusp/operator-core/lib/agent-config';
 import { reportRuntimeVintageOnBoot } from '@papercusp/operator-core/lib/runtime-vintage';
 import { isSidecarEnabledFromEnv } from '@papercusp/operator-core/lib/process-supervision/sidecar-spawn-shared';
+// The proxy's retry window, defined ONCE (WI-6738) and shared with psu-launcher.mjs, which
+// must not give up while the proxy is still retrying on its behalf. Static (unlike the lazy
+// proxy import below, which defers a heavy module used only in a fallback branch): this one
+// is dependency-free and side-effect-free apart from reading env.
+import { MCP_PROXY_RETRY_WINDOW_MS } from '../lib/mcp-proxy/budgets.mjs';
 
 const GUARD_KEY = '__papercuspBootstrapRan__';
 
@@ -61,14 +66,6 @@ function startPackagedMcpProxy(): void {
   const port = Number(process.env.PAPERCUSP_MCP_PROXY_PORT || 9071);
   void (async () => {
     if (await packagedMcpProxyAlive(port)) return;
-    // The proxy's retry window, defined ONCE (WI-6738) and shared with psu-launcher.mjs,
-    // which must not give up while the proxy is still retrying on its behalf. Imported
-    // dynamically, matching the sibling proxy import below: a STATIC import of this .mjs
-    // flips this file's module-resolution mode, which changes how NodeJS.ProcessEnv
-    // resolves and breaks an unrelated agentCmdBootWarning(process.env) call ~70 lines
-    // down with a TS2559 weak-type error. Dynamic import keeps the shared constant
-    // without disturbing the file's resolution.
-    const { MCP_PROXY_RETRY_WINDOW_MS } = await import('../lib/mcp-proxy/budgets.mjs');
     const sidecarDir = dirname(process.argv[1] || '');
     const proxyEntry = join(sidecarDir, 'mcp-proxy.mjs');
     if (!existsSync(proxyEntry)) {

@@ -374,6 +374,590 @@ def _strip_shell_quotes(s):
             i += 1
     return ''.join(out)
 
+# ══ SCANNABLE COMMAND — the shared normalizer every DENY guard matches through ══
+#
+# EI-19294800751120438. Before this existed, every deny-guard in this file
+# re-implemented its own matching on RAW text: split on [;&|\n], peel a
+# hand-maintained wrapper NAME-list (_WRAP_STRIP), re.match an anchored pattern.
+# Measured 4 DENY / 14 probes on the shared-tree git guard — `bash -c "..."`,
+# `sh -c`, `eval`, `git "reset" "--hard"`, `$(echo git) reset --hard`,
+# `x=git; $x reset --hard`, `echo "..." | bash`, `env -S "..."` and
+# `timeout 60 ...` ALL sailed through, and the same held for the pkill,
+# systemctl-exit and crontab guards. The wrapper name-list is what rotted:
+# the 2026-07-06 `rtk git reset --hard` bypass was fixed by ADDING `rtk` to the
+# list, which left `timeout` (and every future wrapper) open.
+#
+# The fix is structural, ported from yc-software/qm's src/policy/command-policy.ts
+# (`scannableCommand`), which scored 13/14 on the same probes running OUR rules:
+#
+#   scannable = dequote(strip_written_heredocs(cmd))
+#               + "\n" + scannable(each executed-shell payload)   [recursive]
+#
+# Two properties make it drop-in for the existing guards:
+#   1. Payloads are joined with NEWLINES, and every guard already splits on
+#      [;&|\n] — so a `bash -c "git reset --hard"` payload arrives as its own
+#      segment for free, with no change to any guard's patterns.
+#   2. Quoted spans that are a single BARE WORD are unquoted in place (catching
+#      `git "reset" "--hard"`), while quoted spans holding a whole command
+#      collapse to "" in the base and are recovered as a separate payload line.
+#
+# Wrapper handling is STRUCTURAL (parse the argv, find the real command word)
+# rather than a name-list, so `timeout`/`nice`/`sudo`/`env -S` cannot rot again.
+#
+# Guards keep their own patterns; only the TEXT they match against changes.
+# Regression table: __tests__/bash-resource-gate.test.ts.
+
+_SCAN_BARE_WORD_RE = re.compile(r'^[\w@%+=:,./-]*$')
+_SCAN_MAX_DEPTH = 8
+_SCAN_SHELLS = ('bash', 'sh', 'dash', 'zsh', 'ksh')
+
+
+def _scan_bare_word(inner):
+    """qm's unquoteBareWord: the quoted span's content, iff it is one safe word."""
+    return inner if _SCAN_BARE_WORD_RE.match(inner) else None
+
+
+def _scan_decode_ansi_c(value):
+    """Decode a $'...' ANSI-C span so \\x67\\x69\\x74 cannot hide a keyword."""
+    def _hex(m):
+        return chr(int(m.group(1), 16))
+
+    def _octal(m):
+        return chr(int(m.group(1), 8))
+
+    simple = {'a': '\a', 'b': '\b', 'e': '\x1b', 'f': '\f',
+              'n': '\n', 'r': '\r', 't': '\t', 'v': '\v'}
+    value = re.sub(r'\\x([0-9a-fA-F]{1,2})', _hex, value)
+    value = re.sub(r'\\u([0-9a-fA-F]{4})', _hex, value)
+    value = re.sub(r'\\U([0-9a-fA-F]{8})', _hex, value)
+    value = re.sub(r'\\([0-7]{1,3})', _octal, value)
+    return re.sub(r'\\([\\\'"abefnrtv])',
+                  lambda m: simple.get(m.group(1), m.group(1)), value)
+
+
+def _scan_heredoc_runs_shell(command_line):
+    """True when the heredoc on this line is PIPED INTO a shell (so its body is
+    executed and must be scanned) rather than merely written to a file."""
+    for m in re.finditer(r'(?:^|[|;&]\s*)(?:\S*/)?(?:ba|da|k|z)?sh((?:\s+[^|;&]*)?)',
+                         command_line):
+        if not re.search(r'(?:^|\s)-[^-\s]*c(?:\s|$)', m.group(1) or ''):
+            return True
+    return False
+
+
+def _scan_strip_written_heredocs(cmd):
+    """Drop heredoc BODIES that are only written to a file — their content is
+    inert data (`cat <<EOF > notes.txt` describing a dangerous command is not
+    running it). Bodies fed to a shell are KEPT so they stay scannable."""
+    def _repl(m):
+        pre, post = m.group(1), m.group(4)
+        line = pre + post
+        if '>' in line and not _scan_heredoc_runs_shell(line):
+            return ''
+        return m.group(0)
+
+    return re.sub(
+        r'^([^\n]*)<<-?\s*(["\']?)([A-Za-z_]\w*)\2([^\n]*)\n([\s\S]*?)^\s*\3\s*$',
+        _repl, cmd, flags=re.M)
+
+
+def _scan_dequote(cmd):
+    """Unquote single-word quoted spans, decode $'...', unescape backslashes.
+    A quoted span containing a command substitution keeps the substitution."""
+    def _dq(m):
+        span = m.group(0)
+        subs = re.findall(r'\$\([^)]*\)|`[^`]*`', span)
+        if subs:
+            return ' '.join(subs)
+        word = _scan_bare_word(span[1:-1])
+        return word if word is not None else '""'
+
+    def _ansi(m):
+        word = _scan_bare_word(_scan_decode_ansi_c(m.group(1)))
+        return word if word is not None else "''"
+
+    def _sq(m):
+        word = _scan_bare_word(m.group(0)[1:-1])
+        return word if word is not None else "''"
+
+    out = re.sub(r'"(?:[^"\\]|\\.)*"', _dq, cmd)
+    out = re.sub(r"\$'((?:[^'\\]|\\.)*)'", _ansi, out)
+    out = re.sub(r"'[^']*'", _sq, out)
+    return re.sub(r'\\([\w@%+=:,./-])', r'\1', out)
+
+
+def _scan_command_substitution(text, start):
+    """Body + end offset of the $( ... ) beginning at `start`, honouring nesting
+    and quotes. None when unterminated."""
+    depth, quote, j = 1, '', start + 2
+    while j < len(text):
+        c = text[j]
+        if c == '\\':
+            j += 2
+            continue
+        if quote:
+            if c == quote:
+                quote = ''
+            j += 1
+            continue
+        if c in ('"', "'"):
+            quote = c
+        elif c == '$' and j + 1 < len(text) and text[j + 1] == '(':
+            depth += 1
+            j += 1
+        elif c == ')':
+            depth -= 1
+            if depth == 0:
+                return text[start + 2:j], j + 1
+        j += 1
+    return None
+
+
+def _scan_shell(text):
+    """Tokenize into command word-lists (split on shell operators/newlines) and
+    collect the bodies of every $( ) / backtick substitution as `nested`."""
+    commands, nested, words = [], [], []
+    i, n = 0, len(text)
+
+    def _flush():
+        if words:
+            commands.append(list(words))
+            del words[:]
+
+    while i < n:
+        c = text[i]
+        if c.isspace():
+            if c == '\n':
+                _flush()
+            i += 1
+            continue
+        if c == '#' and not words:
+            while i < n and text[i] != '\n':
+                i += 1
+            continue
+        if c in ';|&(){}':
+            _flush()
+            while i < n and text[i] in ';|&(){}':
+                i += 1
+            continue
+        word, started = '', False
+        while i < n and not text[i].isspace() and (
+                text[i] not in ';|&(){}' or (text[i] == '&' and word.endswith(('<', '>')))):
+            c = text[i]
+            if c == '\\':
+                if i + 1 < n and text[i + 1] == '\n':
+                    i += 2
+                elif i + 1 < n:
+                    started = True
+                    word += text[i + 1]
+                    i += 2
+                else:
+                    i += 1
+                continue
+            if c == "'":
+                started = True
+                end = text.find("'", i + 1)
+                if end < 0:
+                    word += text[i + 1:]
+                    i = n
+                else:
+                    word += text[i + 1:end]
+                    i = end + 1
+                continue
+            if c == '"':
+                started = True
+                i += 1
+                while i < n and text[i] != '"':
+                    if text[i] == '\\':
+                        if i + 1 < n:
+                            word += text[i + 1]
+                            i += 2
+                        else:
+                            i += 1
+                        continue
+                    if text[i] == '$' and i + 1 < n and text[i + 1] == '(':
+                        sub = _scan_command_substitution(text, i)
+                        if sub is None:
+                            word += text[i]
+                            i += 1
+                        else:
+                            nested.append(sub[0])
+                            i = sub[1]
+                        continue
+                    if text[i] == '`':
+                        end = text.find('`', i + 1)
+                        if end < 0:
+                            i += 1
+                        else:
+                            nested.append(text[i + 1:end])
+                            i = end + 1
+                        continue
+                    word += text[i]
+                    i += 1
+                if i < n and text[i] == '"':
+                    i += 1
+                continue
+            if c == '$' and i + 1 < n and text[i + 1] == '(':
+                started = True
+                sub = _scan_command_substitution(text, i)
+                if sub is None:
+                    word += text[i]
+                    i += 1
+                else:
+                    nested.append(sub[0])
+                    i = sub[1]
+                continue
+            if c == '`':
+                started = True
+                end = text.find('`', i + 1)
+                if end < 0:
+                    i += 1
+                else:
+                    nested.append(text[i + 1:end])
+                    i = end + 1
+                continue
+            word += c
+            started = True
+            i += 1
+        if started or word:
+            words.append(word)
+    _flush()
+    return commands, nested
+
+
+def _scan_command_start(words):
+    """Index of the real command word, skipping VAR=val assignments, shell
+    keywords and redirections."""
+    i = 0
+    while i < len(words):
+        w = words[i]
+        if re.match(r'^[A-Za-z_]\w*=', w) or re.match(r'^(?:if|then|elif|else|while|until|do|!)$', w):
+            i += 1
+        elif re.match(r'^\d*(?:>>?|<<?|<>|>&|<&)$', w):
+            i += 2
+        elif re.match(r'^\d*(?:>>?|<<?|<>|>&|<&).+', w):
+            i += 1
+        else:
+            break
+    return i
+
+
+def _scan_option_end(words, start, value_options):
+    """Index just past a wrapper's own options — where its wrapped command begins."""
+    i = start
+    while i < len(words):
+        w = words[i]
+        if w == '--':
+            return i + 1
+        if not w.startswith('-') or w == '-':
+            return i
+        if w.split('=')[0] in value_options and '=' not in w:
+            i += 1
+        i += 1
+    return i
+
+
+def _scan_env_split_words(args):
+    """`env -S 'cmd args'` / `env --split-string=...` — the payload is a shell string."""
+    idx = -1
+    for i, a in enumerate(args):
+        if a == '-S' or a.startswith('-S') or a == '--split-string' or a.startswith('--split-string='):
+            idx = i
+            break
+    if idx < 0:
+        return None
+    arg = args[idx]
+    compact = arg.startswith('-S') and len(arg) > 2
+    if '=' in arg:
+        value = arg.split('=', 1)[1]
+    elif compact:
+        value = arg[2:]
+    else:
+        value = args[idx + 1] if idx + 1 < len(args) else None
+    rest = args[idx + (1 if ('=' in arg or compact) else 2):]
+    if value is None:
+        return []
+    cmds, _ = _scan_shell(' '.join([value] + rest))
+    return cmds[0] if cmds else []
+
+
+def _scan_unwrapped(inner):
+    """Emit a structural wrapper's INNER command line as its own payload, then
+    keep descending.
+
+    This is the one place papercusp deliberately diverges from qm. qm's rules are
+    UNANCHORED substring patterns, so `timeout 60 git reset --hard` matches their
+    base text directly and peeling is only needed for nesting. Every guard here
+    uses an ANCHORED `re.match` (stricter — far fewer false positives on prose
+    like `rg -n 'pkill'`), which means the segment must actually START with the
+    real command word. So the wrapper has to be stripped into its own line, or an
+    anchored guard can never see it."""
+    if not inner:
+        return []
+    return [' '.join(inner)] + _scan_segment_payloads(inner)
+
+
+def _scan_segment_payloads(words):
+    """Shell payloads executed BY this command: a `-c` script, or the wrapped
+    command of a structural wrapper. Recurses so `timeout 60 sudo bash -c X`
+    yields X. This replaces the hand-maintained wrapper NAME-list."""
+    start = _scan_command_start(words)
+    if start >= len(words):
+        return []
+    exe = words[start].split('/')[-1]
+    args = words[start + 1:]
+
+    if exe in _SCAN_SHELLS:
+        for i, a in enumerate(args):
+            if re.match(r'^-[^-]*c', a):
+                # `-c` script is the next word (or glued, e.g. `-xc`).
+                return [args[i + 1]] if i + 1 < len(args) else []
+        return []
+    if exe == 'eval':
+        return [' '.join(args)] if args else []
+    if exe == 'env':
+        split = _scan_env_split_words(args)
+        if split is not None:
+            return _scan_unwrapped(split)
+        nxt = _scan_option_end(args, 0, {'-u', '--unset', '-C', '--chdir', '-S', '--split-string'})
+        while nxt < len(args) and re.match(r'^[A-Za-z_]\w*=', args[nxt]):
+            nxt += 1
+        return _scan_unwrapped(args[nxt:])
+    if exe == 'sudo':
+        nxt = _scan_option_end(args, 0, {
+            '-u', '--user', '-g', '--group', '-h', '--host', '-p', '--prompt',
+            '-C', '--chdir', '-T', '--command-timeout', '-R', '--chroot', '-t', '--type'})
+        return _scan_unwrapped(args[nxt:])
+    if exe == 'timeout':
+        nxt = _scan_option_end(args, 0, {'-s', '--signal', '-k', '--kill-after'})
+        return _scan_unwrapped(args[nxt + 1:])
+    if exe == 'nice':
+        return _scan_unwrapped(args[_scan_option_end(args, 0, {'-n', '--adjustment'}):])
+    if exe == 'ionice':
+        return _scan_unwrapped(args[_scan_option_end(args, 0, {'-c', '-n', '-p'}):])
+    if exe == 'time':
+        return _scan_unwrapped(args[_scan_option_end(args, 0, {'-o', '--output', '-f', '--format'}):])
+    if exe == 'xargs':
+        nxt = _scan_option_end(args, 0, {
+            '-a', '--arg-file', '-d', '--delimiter', '-E', '--eof', '-I', '--replace',
+            '-L', '--max-lines', '-n', '--max-args', '-P', '--max-procs', '-s', '--max-chars'})
+        return _scan_unwrapped(args[nxt:])
+    if exe in ('command', 'exec', 'nohup', 'setsid', 'stdbuf', 'nocache', 'nocorrect', 'rtk', 'doas', 'coproc'):
+        value_opts = {'-a'} if exe == 'exec' else ({'-i', '-o', '-e'} if exe == 'stdbuf' else set())
+        return _scan_unwrapped(args[_scan_option_end(args, 0, value_opts):])
+    return []
+
+
+def _scan_segment_consumes_stdin(words):
+    """True when this pipeline stage feeds its STDIN to a shell (so the upstream
+    `echo "..."` is executed): `| bash`, `| sh -s`, `| sudo bash`, …"""
+    start = _scan_command_start(words)
+    if start >= len(words):
+        return False
+    exe = words[start].split('/')[-1]
+    args = words[start + 1:]
+    if exe in _SCAN_SHELLS:
+        stdin_scripts = {'-', '/dev/stdin', '/dev/fd/0', '/proc/self/fd/0'}
+        i = 0
+        while i < len(args):
+            a = args[i]
+            if re.match(r'^-[^-]*c', a):
+                return False
+            if a == '-s':
+                return True
+            if a in ('-O', '-o', '--rcfile', '--init-file'):
+                i += 2
+                continue
+            if a == '--':
+                return i + 1 >= len(args) or args[i + 1] in stdin_scripts
+            if not a.startswith('-') or a == '-':
+                return a in stdin_scripts
+            i += 1
+        return True
+    if exe == 'env':
+        split = _scan_env_split_words(args)
+        if split is not None:
+            return _scan_segment_consumes_stdin(split)
+        nxt = _scan_option_end(args, 0, {'-u', '--unset', '-C', '--chdir', '-S', '--split-string'})
+        while nxt < len(args) and re.match(r'^[A-Za-z_]\w*=', args[nxt]):
+            nxt += 1
+        return _scan_segment_consumes_stdin(args[nxt:])
+    if exe in ('sudo', 'command', 'exec', 'nohup', 'setsid', 'rtk', 'doas', 'nice', 'timeout'):
+        return _scan_segment_consumes_stdin(args[_scan_option_end(args, 0, set()):])
+    return False
+
+
+def _scan_pipelines(text):
+    """Split into pipelines of segments so `echo X | bash` can be recognized."""
+    pipelines, pipeline, start, quote = [], [], 0, ''
+
+    def _finish_segment(end):
+        seg = text[start:end].strip()
+        if seg:
+            pipeline.append(seg)
+
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        if ch == '\\':
+            i += 2
+            continue
+        if quote:
+            if ch == quote:
+                quote = ''
+            i += 1
+            continue
+        if ch in ('"', "'", '`'):
+            quote = ch
+            i += 1
+            continue
+        if ch in '|&' and i + 1 < len(text) and text[i + 1] == ch:
+            _finish_segment(i)
+            if len(pipeline) > 1:
+                pipelines.append(list(pipeline))
+            del pipeline[:]
+            i += 2
+            start = i
+            continue
+        if ch == '|':
+            _finish_segment(i)
+            i += 2 if (i + 1 < len(text) and text[i + 1] == '&') else 1
+            start = i
+            continue
+        if ch in ';\n&':
+            _finish_segment(i)
+            if len(pipeline) > 1:
+                pipelines.append(list(pipeline))
+            del pipeline[:]
+            i += 1
+            start = i
+            continue
+        i += 1
+    _finish_segment(len(text))
+    if len(pipeline) > 1:
+        pipelines.append(list(pipeline))
+    return pipelines
+
+
+def _scan_piped_payloads(text):
+    """`echo "git reset --hard" | bash` — the upstream literal is executed."""
+    out = []
+    for pipeline in _scan_pipelines(text):
+        for idx in range(1, len(pipeline)):
+            cmds, _ = _scan_shell(pipeline[idx])
+            if not cmds or not _scan_segment_consumes_stdin(cmds[0]):
+                continue
+            upstream = pipeline[idx - 1]
+            up_cmds, _ = _scan_shell(upstream)
+            if not up_cmds:
+                continue
+            words = up_cmds[0]
+            s = _scan_command_start(words)
+            if s < len(words) and words[s].split('/')[-1] in ('echo', 'printf', 'cat'):
+                out.append(' '.join(words[s + 1:]))
+            else:
+                out.append(upstream)
+    return out
+
+
+def _scan_here_string_payloads(text):
+    """`bash <<< "git reset --hard"` — the here-string body is executed. Strip the
+    ENCLOSING quotes before emitting: left on, the recursive dequote would see a
+    multi-word quoted span, reject it as a non-bare-word and collapse it to ""."""
+    out = []
+    for m in re.finditer(r'<<<\s*(.+)', text):
+        body = m.group(1).strip()
+        if len(body) >= 2 and body[0] == body[-1] and body[0] in ('"', "'"):
+            body = body[1:-1]
+        if body:
+            out.append(body)
+    return out
+
+
+_SCAN_SUBST_RE = re.compile(r'\$\(([^()]*)\)|`([^`]*)`')
+
+
+def _scan_inlined_substitutions(text):
+    """Emit a variant with simple command substitutions INLINED in place.
+
+    `$(echo git) reset --hard` must produce a line that literally STARTS with
+    `git`, because every guard anchors with re.match. Appending the substitution
+    body as its own segment (which _scan_shell already does) is not enough — that
+    segment is `echo git`, which no guard matches. So substitute the value in:
+    `echo|printf <word>` contributes <word>; anything else collapses to nothing
+    (never to its own text, which would re-introduce the wrapper word)."""
+    def _inline(m):
+        body = (m.group(1) if m.group(1) is not None else m.group(2) or '').strip()
+        words = body.split()
+        if len(words) >= 2 and words[0].split('/')[-1] in ('echo', 'printf'):
+            return ' '.join(w for w in words[1:] if not w.startswith('-'))
+        return ''
+
+    if not _SCAN_SUBST_RE.search(text):
+        return []
+    out = _SCAN_SUBST_RE.sub(_inline, text)
+    out = re.sub(r'\s+', ' ', out).strip()
+    return [out] if out and out != text.strip() else []
+
+
+def _scan_variable_payloads(text):
+    """`x=git; $x reset --hard` — substitute simple literal assignments so the
+    keyword is visible. Only plain `name=word` at a command position."""
+    assigns = dict(re.findall(r'(?:^|[;&|\n]\s*)([A-Za-z_]\w*)=([\w@%+=:,./-]+)', text))
+    if not assigns:
+        return []
+    def _sub(m):
+        return assigns.get(m.group(1) or m.group(2), m.group(0))
+    out = re.sub(r'\$\{(\w+)\}|\$(\w+)', _sub, text)
+    return [out] if out != text else []
+
+
+def _scan_executed_payloads(text):
+    cmds, nested = _scan_shell(text)
+    out = list(nested)
+    for words in cmds:
+        out.extend(_scan_segment_payloads(words))
+    out.extend(_scan_piped_payloads(text))
+    out.extend(_scan_here_string_payloads(text))
+    out.extend(_scan_variable_payloads(text))
+    out.extend(_scan_inlined_substitutions(text))
+    return [p for p in out if p and p.strip()]
+
+
+def _scannable_command(cmd, _depth=0):
+    """The text every DENY guard should match against. Newline-joined so guards
+    that already split on [;&|\\n] pick up nested payloads as free segments."""
+    try:
+        stripped = _scan_strip_written_heredocs(cmd)
+        base = _scan_dequote(stripped)
+        if _depth >= _SCAN_MAX_DEPTH:
+            return base
+        payloads = _scan_executed_payloads(stripped)
+        if not payloads:
+            return base
+        seen, parts = set(), [base]
+        for p in payloads:
+            if p in seen:
+                continue
+            seen.add(p)
+            parts.append(_scannable_command(p, _depth + 1))
+        return '\n'.join(parts)
+    except Exception:
+        # A normalizer fault must never wedge every Bash call, and must never
+        # make a guard MORE permissive than it was before: fall back to raw.
+        return cmd
+
+
+_SCANNABLE_CACHE = {}
+
+
+def _scannable():
+    """Memoized scannable form of THIS invocation's command. Lazy so a call that
+    exits early on an advisory never pays for the normalization."""
+    if 'v' not in _SCANNABLE_CACHE:
+        _SCANNABLE_CACHE['v'] = _scannable_command(command)
+    return _SCANNABLE_CACHE['v']
+
 # ── Piped background exit-code trap advisory (EI-8871/EI-14065) ────────────
 # `cmd | tail -N` (or `| head` / `| grep`) run in the background reports the
 # harness's completion notification with the PIPE's LAST STAGE exit code, not
@@ -716,10 +1300,14 @@ def _is_agent_or_fleet_session():
     return bool((os.environ.get('PAPERCUSP_FLEET_SLUG') or '').strip())
 
 
+# EI-19294800751120438: scan the SCANNABLE form (so `bash -c "crontab -e"` and
+# `$(echo crontab) -e` are caught), still wrapped in _strip_shell_quotes so
+# EI-9937's false-positive fix survives — a quoted `grep -E "at|batch"` span is
+# not a bare word, so it collapses rather than reading as a separator + keyword.
 if _is_agent_or_fleet_session() and re.search(
         r'(?:^|[;&|\n]\s*|\bsudo\s+)(?:crontab|batch|systemd-run)\b'
         r'|(?:^|[;&|\n]\s*|\bsudo\s+)at\s+(?:now|midnight|noon|teatime|\+?\d)',
-        _strip_shell_quotes(command)):
+        _strip_shell_quotes(_scannable())):
     deny(_os_scheduler_deny_reason(command))
 
 # ── systemd user-manager exit/kill guard (EI-13135, 2026-07-17) ─────────────
@@ -752,7 +1340,9 @@ _EXIT_GUARD_DENY = (
     'legitimate agent reason to do this — if you mean to restart one specific '
     'papercusp service, use the blessed wrapper (dev:restart) instead.'
 )
-for _seg in re.split(r'[;&|\n]', command):
+# EI-19294800751120438: iterate the SCANNABLE form, so a `bash -c "systemctl
+# --user exit"` payload arrives as its own newline-separated segment here.
+for _seg in re.split(r'[;&|\n]', _scannable()):
     _es = _strip_shell_quotes(_seg.strip())
     # Peel the same benign leading wrappers the git-guard peels (sudo/env/nice/
     # ionice/xargs/rtk/time/command/nohup/exec/setsid/…), defined fresh here so
@@ -825,7 +1415,9 @@ _PKILL_DENY = (
     'scope it to your own process tree first (e.g. list children of $$ / your '
     'own shell PID) rather than a host-wide substring.'
 )
-for _seg in re.split(r'[;&|\n]', command):
+# EI-19294800751120438: iterate the SCANNABLE form — `bash -c "pkill -f node"`
+# and `eval "killall node"` were both ALLOWED while matching raw text.
+for _seg in re.split(r'[;&|\n]', _scannable()):
     _pk = _seg.strip()
     for _ in range(8):
         _pk_next = re.sub(
@@ -966,9 +1558,13 @@ def _tauri_target_deny_reason(sub, bridges, mutating):
     )
 
 
-_tat_sub = _tat_subcommand(_strip_shell_quotes(command))
+# EI-19294800751120438: subcommand detection AND the --target check both read the
+# SCANNABLE form. They must use the SAME text — reading the subcommand from a
+# nested payload while checking --target on the raw string would manufacture a
+# false deny for a wrapped command that DID aim explicitly.
+_tat_sub = _tat_subcommand(_strip_shell_quotes(_scannable()))
 if _tat_sub in TAT_MUTATING or _tat_sub in TAT_BRIDGE_READ:
-    _stripped_cmd = _strip_shell_quotes(command)
+    _stripped_cmd = _strip_shell_quotes(_scannable())
     if not _tat_has_explicit_target(_stripped_cmd):
         _mutating = _tat_sub in TAT_MUTATING
         _bridges = _tat_live_bridges()
@@ -1103,6 +1699,12 @@ if os.environ.get('PAPERCUSP_AGENT_SESSION') == '1' or _cmd_in_canonical_tree():
     # `rtk git reset --hard` (rtk = the token-killer output filter, which rewrites
     # `git …`→`rtk git …`). `time`/`env`/`nice`/`command`/`nohup`/`sudo` were the
     # same latent class. Bounded loop peels nested wrappers (`time rtk git …`).
+    #
+    # EI-19294800751120438: this NAME-LIST is exactly what rotted — the 2026-07-06
+    # fix added `rtk` and left `timeout` open, which measured as an ALLOW on
+    # `timeout 60 git reset --hard`. The structural descent in _scannable() is now
+    # the real defense (it parses the argv rather than matching wrapper names);
+    # the list is kept as a cheap belt-and-braces for the base segment.
     _WRAP_STRIP = re.compile(
         r'^\s*(?:'
         r'sudo(?:\s+(?:-[ugpUrCht]\s+\S+|-[A-Za-z]+|--[\w-]+(?:=\S*)?))*'
@@ -1122,7 +1724,7 @@ if os.environ.get('PAPERCUSP_AGENT_SESSION') == '1' or _cmd_in_canonical_tree():
             _x = _y
         return _x
 
-    for _seg in re.split(r'[;&|\n]', command):
+    for _seg in re.split(r'[;&|\n]', _scannable()):
         _s = _unwrap(_seg.strip())
         if re.match(_GIT + r'reset\b.*--hard\b', _s):
             deny(_git_deny.format(op='git reset --hard'))

@@ -54,12 +54,15 @@ export default defineTool({
       };
     }
     const entries = await readThread(resolution.msgId);
-    // P-033 (e): same reason as coord:read — the authored structure rides `extra`
-    // and the rendered `body` is a flattened projection of it. A thread is where a
+    // P-033 (e): same reason as coord:read — the authored structure rides the ENVELOPE
+    // and the rendered `body` is a flattened text projection of it. A thread is where a
     // disagreement gets re-read, so it is the surface where "what did the sender say
     // this rested on" matters most. Attached per entry; absent when nothing authored.
+    //
+    // ⚠ Pass the entry, NOT `.extra` — see projectAuthoredFields. This read `.extra`
+    // until 2026-08-02, so it attached `authored` to exactly zero entries.
     const withAuthored = entries.map((entry) => {
-      const authored = projectAuthoredFields((entry as { extra?: unknown }).extra);
+      const authored = projectAuthoredFields(entry);
       return authored ? { ...entry, authored } : entry;
     });
     return {

@@ -727,8 +727,25 @@ export function assertEnvelopeSectionSplit(sections: unknown[]): void {
  * (it marks a question OPEN rather than answered).
  */
 export function renderAuthoredFieldsSuffix(env: Record<string, unknown>): string {
+  const parts = authoredFieldParts(env);
+  return parts.length ? ` ⟨${parts.join(' · ')}⟩` : '';
+}
+
+/**
+ * The compact parts, unwrapped — so the terse marker has exactly ONE derivation.
+ *
+ * The `[coord+N]` injection wraps these in `⟨…⟩` ({@link renderAuthoredFieldsSuffix});
+ * the LIST reader surfaces (coord:inbox / coord:catch-up / coord:feed) join them into a
+ * one-line `authored` field per row. Those surfaces deliberately do NOT carry the full
+ * {@link projectAuthoredFields} projection: each already budgets its rows hard (~15KB of
+ * body across an inbox read, per-row body/summary excerpting on the feed), and attaching
+ * a full per-section block to every row is how a list surface starts overflowing the
+ * agent result cap. The compact marker says WHAT a message carries; `coord:read <msg_id>`
+ * (or coord:thread) is the surface that shows it in full.
+ */
+export function authoredFieldParts(env: Record<string, unknown>): string[] {
   const raw = env.sections;
-  if (!Array.isArray(raw) || raw.length === 0) return '';
+  if (!Array.isArray(raw) || raw.length === 0) return [];
   const derived = (env.fieldProvenance ?? {}) as Record<string, unknown>;
   const sections = raw as MessageSection[];
 
@@ -772,7 +789,19 @@ export function renderAuthoredFieldsSuffix(env: Record<string, unknown>): string
     );
   }
 
-  return parts.length ? ` ⟨${parts.join(' · ')}⟩` : '';
+  return parts;
+}
+
+/**
+ * The one-line `authored` marker a LIST row carries, or `undefined` when the message
+ * authored nothing (so an ordinary send grows no new field). See
+ * {@link authoredFieldParts} for why the list surfaces take the marker rather than the
+ * full projection.
+ */
+export function authoredFieldsMarker(envelope: unknown): string | undefined {
+  if (!envelope || typeof envelope !== 'object') return undefined;
+  const parts = authoredFieldParts(envelope as Record<string, unknown>);
+  return parts.length ? parts.join(' · ') : undefined;
 }
 
 /**
@@ -824,10 +853,26 @@ export interface AuthoredFieldsProjection {
  *
  * Returns `undefined` when the message carries nothing authored, so a plain-string
  * message renders exactly as it does today.
+ *
+ * ⚠ PASS THE ENVELOPE ITSELF — **NOT** `envelope.extra`. There is no `extra` key on a
+ * stored envelope and there never was: `sendCoordMessage` FLATTENS the caller's `extra`
+ * onto the envelope (`env[k] = v`, messages.ts), so the authored fields land at the TOP
+ * LEVEL of `coord_event_log.body` (`body->'sections'`, not `body->'extra'->'sections'`).
+ * Measured 2026-08-02: of 14,705 messages in 7d, 88 carry top-level `sections` and
+ * **0 carry an `extra` key at all**.
+ *
+ * This parameter was previously NAMED `extra`, and that name alone was enough to sink
+ * the whole feature: all three call sites wired for P-033 (e) — coord:read, coord:thread
+ * and the pui sync-resolver — dutifully passed `.extra`, i.e. `undefined`, so every one
+ * of them returned `undefined` on every message and the authored structure was invisible
+ * at every surface built to show it. The unit tests passed throughout, because they feed
+ * `stampMessageFields(...)` output directly (the correct flattened shape) — so the
+ * function was right, the tests were right, and only the argument was wrong. Renamed to
+ * `envelope` so the next caller cannot make the same reading.
  */
-export function projectAuthoredFields(extra: unknown): AuthoredFieldsProjection | undefined {
-  if (!extra || typeof extra !== 'object') return undefined;
-  const e = extra as Record<string, unknown>;
+export function projectAuthoredFields(envelope: unknown): AuthoredFieldsProjection | undefined {
+  if (!envelope || typeof envelope !== 'object') return undefined;
+  const e = envelope as Record<string, unknown>;
 
   const rawSections = Array.isArray(e.sections) ? (e.sections as MessageSection[]) : undefined;
   // Aligned BY INDEX with `sections` (that is how the send path stamps it).

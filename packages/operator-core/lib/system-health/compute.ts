@@ -248,21 +248,27 @@ interface HealthCtx {
   openImprovements: () => Promise<ImprovementCandidate[]>;
 }
 
+/** The open-improvements window both collectors read. One place, so the two panels can
+ *  never drift into reading different slices of the corpus. */
+const OPEN_IMPROVEMENTS_READ = { state: 'open', limit: 1000 } as const;
+
 /**
  * Build the per-tick memo backing {@link HealthCtx.openImprovements}. Deliberately
  * memoises the promise INCLUDING a rejection: both callers issue the identical query in
  * the same tick, so a failure would hit both anyway, and each keeps its own fail-soft
  * handling (collectWorkFeed leaves 0s, collectImprovements degrades via panelSafe).
+ *
+ * `read` is injected for the unit test (compute.test.ts is deliberately DB-free); the
+ * default resolves the real reader lazily, matching every other collector's dynamic import.
  */
-function makeOpenImprovementsReader(): () => Promise<ImprovementCandidate[]> {
+export function makeOpenImprovementsReader(
+  read: () => Promise<ImprovementCandidate[]> = async () => {
+    const { readImprovementItems } = await import('../harness/improvements/read-items');
+    return readImprovementItems({ ...OPEN_IMPROVEMENTS_READ });
+  },
+): () => Promise<ImprovementCandidate[]> {
   let inFlight: Promise<ImprovementCandidate[]> | undefined;
-  return () => {
-    inFlight ??= (async () => {
-      const { readImprovementItems } = await import('../harness/improvements/read-items');
-      return readImprovementItems({ state: 'open', limit: 1000 });
-    })();
-    return inFlight;
-  };
+  return () => (inFlight ??= read());
 }
 
 /** Run a collector, degrading its own failure to an `unknown` (greyed) panel —

@@ -23,6 +23,7 @@ import {
   MAX_FEED_LIMIT,
 } from '../feed';
 import { boundRowField } from '../../_bound-output';
+import { authoredFieldsMarker } from '../message-fields';
 
 // EI-1597: the agent-facing default is lower than the UI's DEFAULT_FEED_LIMIT (100)
 // because each feed row is a full envelope (body + summary + metadata) — at 100 rows
@@ -113,6 +114,15 @@ export default defineTool({
     // so bounding here is display-only; full envelopes via the UI feed or a narrower query.
     let boundedRows = boundRowField(rows, 'body', FEED_BODY_CAP, FEED_BODY_BUDGET);
     boundedRows = boundRowField(boundedRows, 'summary', FEED_SUMMARY_CAP, FEED_SUMMARY_BUDGET);
+    // P-033 (e): mark which rows carry AUTHORED structure (premises / forYouBecause /
+    // youMayNotKnow / couldNotDetermine / clarify). The compact marker, not the full
+    // projection — this is the firehose, whose rows are already excerpted precisely
+    // because a full envelope per row threatens the result cap. `coord:read <msg_id>`
+    // shows the structure in full. Absent on a row that authored nothing.
+    boundedRows = boundedRows.map((row) => {
+      const authored = authoredFieldsMarker(row);
+      return authored ? { ...row, authored } : row;
+    });
     return {
       content: [
         {

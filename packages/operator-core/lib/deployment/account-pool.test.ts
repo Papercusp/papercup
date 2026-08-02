@@ -16,6 +16,7 @@ import {
   recordAccountPenalty,
   recordAccountReset,
   recordAccountWindow,
+  recordProbeFailure,
   isAvailable,
   isSustainedlyLimited,
   normalizeAccount,
@@ -420,6 +421,29 @@ describe('recordAccountWindow (D-003 unified-5h projection)', () => {
   it('is a no-op for an unknown id', () => {
     const p = recordAccountWindow(poolOf('a'), 'nope', { utilization: 0.9 }, T0);
     expect(getAccount(p, 'a')!.rate.utilization).toBeUndefined();
+  });
+
+  it('clears a prior lastProbeFailedAt marker once a real observation lands', () => {
+    let p = recordProbeFailure(poolOf('a'), 'a', T0);
+    expect(getAccount(p, 'a')!.rate.lastProbeFailedAt).toBe(T0);
+    p = recordAccountWindow(p, 'a', { utilization: 0.5 }, T0 + MIN);
+    expect(getAccount(p, 'a')!.rate.lastProbeFailedAt).toBeUndefined();
+  });
+});
+
+describe('recordProbeFailure (EI-18809949582687481: no-reading marker)', () => {
+  it('stamps lastProbeFailedAt without touching any other rate field', () => {
+    let p = recordAccountWindow(poolOf('a'), 'a', { utilization: 0.3 }, T0);
+    p = recordProbeFailure(p, 'a', T0 + MIN);
+    const r = getAccount(p, 'a')!.rate;
+    expect(r.lastProbeFailedAt).toBe(T0 + MIN);
+    expect(r.utilization).toBe(0.3); // untouched — a failed probe must not erase the last real reading
+    expect(r.utilizationAt).toBe(T0);
+  });
+
+  it('is a no-op for an unknown id', () => {
+    const p = recordProbeFailure(poolOf('a'), 'nope', T0);
+    expect(getAccount(p, 'a')!.rate.lastProbeFailedAt).toBeUndefined();
   });
 });
 

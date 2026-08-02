@@ -333,7 +333,21 @@ export async function buildMemoryContextBlock(
   const marks: Array<[string, number]> = [];
   const t0 = Date.now();
   try {
-    return await buildBlockInner(input, (label, ms) => marks.push([label, ms]));
+    // P-008 / D-037 — the SECOND retrieval leg (session transcripts +
+    // work-items). Started HERE, before the mem0 leg is awaited, so the two
+    // run CONCURRENTLY: they read different stores under different budgets and
+    // share nothing, so the corpus leg adds no latency to the critical path
+    // unless it is the slower of the two (and it carries its own 2s bound).
+    //
+    // It is composed at the END rather than merged into the mem0 ranking on
+    // purpose. The corpora sit in incompatible vector spaces (memory =
+    // harrier@1024, prose surfaces = gemma@384), so their scores can never
+    // join the one comparable ranking F-C/D-011 built — merging them could
+    // only be done by a fixed priority, which D-011 names "a quota under
+    // another name". See ./corpus-recall.
+    const corpusP = startCorpusLeg(input);
+    const memoryBlock = await buildBlockInner(input, (label, ms) => marks.push([label, ms]));
+    return await composeWithCorpus(memoryBlock, corpusP);
   } finally {
     const totalMs = Date.now() - t0;
     if (totalMs > SLOW_INJECTION_LOG_MS) {
@@ -345,6 +359,125 @@ export async function buildMemoryContextBlock(
       );
     }
   }
+}
+
+/** What the corpus leg hands back to the composer. */
+interface CorpusLegResult {
+  heading: string;
+  lines: string[];
+  refs: string[];
+}
+
+/**
+ * Kick off the P-008 corpus leg. Everything it touches is behind a DYNAMIC
+ * import on purpose: `corpus-recall-io` pulls `@papercusp/search` and the
+ * search-source registry, and this module is loaded in tests against a partial
+ * `@papercusp/db-org` stub (see the EPHEMERAL_SLUG_RE note at the top) — a
+ * static import would drag that whole graph into every injection test.
+ *
+ * Never throws and never rejects: a corpus fault degrades to "no pointer
+ * section", exactly like every other best-effort leg on this path.
+ */
+function startCorpusLeg(input: MemoryInjectionInput): Promise<CorpusLegResult | null> {
+  return (async (): Promise<CorpusLegResult | null> => {
+    try {
+      const query = toRecallQuery(input.queryContext);
+      const queryText = retrievalQueryText(query);
+      if (!queryText.trim()) return null;
+
+      const { recallCorpusContext } = await import('./corpus-recall-io');
+      const { CORPUS_BLOCK_HEADING } = await import('./corpus-recall');
+
+      // Cross-moment dedup (migration 712): a warm session must not be handed
+      // the same pointer every turn. The compaction `epoch` is resolved here
+      // and shared with the mem0 ledger's meaning, so one epoch bump re-primes
+      // memories AND pointers together.
+      const sessionId = input.session?.sessionId ?? null;
+      let epoch = 0;
+      if (sessionId) {
+        try {
+          const { sql } = getOrgPg();
+          epoch = input.session?.epoch ?? (await currentSessionEpoch(sql, sessionId));
+        } catch {
+          /* no epoch ⇒ no dedup, never a blocked leg */
+        }
+      }
+
+      const res = await recallCorpusContext({
+        queryText,
+        workspaceId: input.workspaceId,
+        harnessSlugs: input.harnessSlugs ?? [],
+        excludeSessionId: sessionId,
+      });
+      if (res.lines.length === 0) return null;
+
+      // Suppression runs POST-selection: a handle ref only exists once the
+      // candidates are ranked and collapsed, so the alternative would be a
+      // second search. The cost of this ordering is at most an under-full
+      // section, never a wrong one.
+      let lines = res.lines;
+      if (sessionId) {
+        try {
+          const { sql } = getOrgPg();
+          const { alreadySurfacedRefs, stampSurfacedRefs } = await import(
+            './corpus-surfaced-ledger'
+          );
+          const seen = await alreadySurfacedRefs(
+            sql,
+            sessionId,
+            epoch,
+            lines.map((l) => l.handle.ref),
+          );
+          if (seen.size > 0) lines = lines.filter((l) => !seen.has(l.handle.ref));
+          if (lines.length > 0) {
+            void stampSurfacedRefs(
+              sql,
+              sessionId,
+              epoch,
+              lines.map((l) => l.handle.ref),
+              input.session?.port ?? 'injection',
+            ).catch(() => undefined);
+          }
+        } catch {
+          /* dedup is hygiene — a failure delivers a duplicate, never nothing */
+        }
+      }
+      if (lines.length === 0) return null;
+
+      return {
+        heading: CORPUS_BLOCK_HEADING,
+        lines: lines.map((l) => l.line),
+        refs: lines.map((l) => l.handle.ref),
+      };
+    } catch {
+      return null;
+    }
+  })();
+}
+
+/**
+ * Compose the mem0 block with the corpus pointer section.
+ *
+ * Three cases, and the third is the one that matters: the corpus leg can have
+ * something to say when the mem0 leg has NOTHING — a turn about a work-item
+ * nobody wrote a memory for is precisely P-008's motivating case — so a null
+ * memory block must not swallow it. With the flag off (or no pointers) the
+ * return value is byte-identical to the pre-P-008 block.
+ */
+async function composeWithCorpus(
+  memoryBlock: string | null,
+  corpusP: Promise<CorpusLegResult | null>,
+): Promise<string | null> {
+  let corpus: CorpusLegResult | null = null;
+  try {
+    corpus = await corpusP;
+  } catch {
+    corpus = null;
+  }
+  if (!corpus || corpus.lines.length === 0) return memoryBlock;
+  const body = corpus.lines.join('\n');
+  if (!memoryBlock) return `## ${corpus.heading}\n\n${body}`;
+  return `${memoryBlock}\n\n### ${corpus.heading}\n\n${body}`;
 }
 
 async function buildBlockInner(

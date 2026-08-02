@@ -172,11 +172,14 @@ function toAgentMessageRow(row: Record<string, unknown>): Record<string, unknown
   const body = (row.body ?? {}) as CoordEnvelopeBody;
   const to = asStrArray(body.to);
   // P-033 (e): this projection is a WHITELIST, so the authored message fields — which
-  // ride the envelope's `extra` — were dropped before the pui pane ever saw them.
-  // `body` here is the FLATTENED string, so the pane could not have re-derived them
-  // either. Projected server-side (never raw `extra`) for the reason stated above: a
-  // client that unpacks the envelope itself is a second place D-064's split can drift.
-  const authored = projectAuthoredFields(body.extra);
+  // ride the ENVELOPE (the send path flattens them onto it) — were dropped before the
+  // pui pane ever saw them. `body.body` here is the FLATTENED text, so the pane could
+  // not have re-derived them either. Projected server-side for the reason stated above:
+  // a client that unpacks the envelope itself is a second place D-064's split can drift.
+  //
+  // ⚠ Pass the envelope (`body`), NOT `body.extra` — see projectAuthoredFields. This
+  // read `body.extra` until 2026-08-02 and so never surfaced a single authored field.
+  const authored = projectAuthoredFields(body);
   return {
     msg_id: row.msg_id as string,
     kind: asStr(body.kind) ?? '',
