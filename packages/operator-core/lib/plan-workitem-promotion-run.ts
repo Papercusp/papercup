@@ -13,7 +13,9 @@
  * (EI-14024), so the dependency structure the plan described existed nowhere the scheduler
  * could query. The pass split is load-bearing: a plan-item id only becomes a work-item id at
  * mint time, so a single pass silently drops every forward reference. See
- * `writePromotedDependencyEdges` for which writer to use — D-010, and it is not the obvious one.
+ * `writePromotedDependencyEdges` for which writer to use — D-010, and it is not the obvious one —
+ * and for P-008/D-012's cycle policy: PRE-FLIGHT AND REJECT at edge granularity (refuse the edges
+ * a cyclic plan graph implies, still mint the nodes, which the lane gate already parks).
  *
  * Coherent with convert-at-pickup (plan-items/convert.ts): promotion reuses the
  * SAME idempotency truth (the `implements` coord_links edge via
@@ -56,21 +58,42 @@ export interface PromotePlanResult {
    */
   edgesWritten: number;
   /**
-   * P-006: minted items whose edge write was refused or failed (the commonest cause being
-   * the acyclicity guard). Non-fatal by design — see the pass-2 comment; the final policy
-   * is P-008's to rule on.
+   * P-006: edge writes that FAILED at the writer — after P-008's pre-flight this is the
+   * exceptional path, not the expected one: a cross-plan cycle the plan-level pre-flight
+   * cannot see (an edge from an already-promoted item back into this plan), or genuine I/O.
+   * A plan-internal cycle no longer reaches the writer; it is counted in `edgesRejectedCyclic`.
    */
   edgeFailures: number;
   /**
-   * P-006: `blockedBy` refs that are still OPEN yet resolved to no work-item — i.e. a real
-   * anomaly (a dangling ref, or a promotion that should have happened and didn't), NOT the
-   * ordinary done/dropped blocker, which is deliberately not counted here.
+   * P-008: edges REFUSED by the pre-flight because the plan's own `blockedBy` graph is cyclic
+   * (either side of the edge is in a cycle). Counts EDGES, like `edgesWritten`. These items are
+   * still minted and still gated — `resolveEffectiveStatusForItems` resolves every cycle member
+   * to `blocked`, so pass 1's lane gate parks them; what is withheld is only the edge.
+   */
+  edgesRejectedCyclic: number;
+  /**
+   * P-008: `blockedBy` refs naming a plan item that DOES NOT EXIST in the plan — an authoring
+   * error `plans:lint` already reports, split out from `blockersUnresolved` because the two
+   * demand different responses (fix the plan text vs. investigate a promotion that should have
+   * happened). Previously conflated into `blockersUnresolved`.
+   */
+  blockersDangling: number;
+  /**
+   * P-006: `blockedBy` refs naming a REAL, still-open plan item that nonetheless resolved to no
+   * work-item — i.e. a promotion that should have happened and didn't, NOT the ordinary
+   * done/dropped blocker (deliberately uncounted) and no longer the dangling ref (see above).
    */
   blockersUnresolved: number;
 }
 
 /** The zero-edge result shape shared by every early return (nothing minted ⇒ nothing to link). */
-const NO_EDGES = { edgesWritten: 0, edgeFailures: 0, blockersUnresolved: 0 } as const;
+const NO_EDGES = {
+  edgesWritten: 0,
+  edgeFailures: 0,
+  edgesRejectedCyclic: 0,
+  blockersDangling: 0,
+  blockersUnresolved: 0,
+} as const;
 
 function isOpenStatus(status: string | null): boolean {
   return status !== 'done' && status !== 'dropped';
@@ -136,8 +159,13 @@ export async function promotePlanItems(opts: {
     lineNumber: 0,
     rawLine: '',
   }));
-  const { items: resolvedItems } = resolveEffectiveStatusForItems(planItemsForResolve);
+  // P-008: the SAME resolve also returns `cycleMembers` — the pre-flight the edge write needs,
+  // computed here for free, over the FULL item set, BEFORE anything is minted. Promotion used to
+  // destructure only `{ items }` and discard it, which is why cycle handling could only ever be
+  // post-hoc (catch the writer's throw). See `writePromotedDependencyEdges` for the policy.
+  const { items: resolvedItems, cycleMembers } = resolveEffectiveStatusForItems(planItemsForResolve);
   const effectiveById = new Map(resolvedItems.map((i) => [i.id, i]));
+  const cyclicPlanItemIds = new Set(cycleMembers);
 
   // Idempotency: an item already CONVERTED (has an `implements` edge — the same
   // truth convert-at-pickup uses) is never re-promoted.
@@ -214,15 +242,17 @@ export async function promotePlanItems(opts: {
     promoted++;
   }
 
-  const { edgesWritten, edgeFailures, blockersUnresolved } = await writePromotedDependencyEdges({
+  const edgeCounts = await writePromotedDependencyEdges({
     planSlug: opts.planSlug,
     harnessSlug: opts.harnessSlug,
     mintedByPlanItem,
     blockedByById: new Map(rawItems.map((i) => [i.id, i.blockedBy])),
     statusById: new Map(rawItems.map((i) => [i.id, i.status])),
+    cyclicPlanItemIds,
+    knownPlanItemIds: new Set(rawItems.map((i) => i.id)),
   });
 
-  return { promoted, skipped: openItems.length - promoted, edgesWritten, edgeFailures, blockersUnresolved };
+  return { promoted, skipped: openItems.length - promoted, ...edgeCounts };
 }
 
 /**
@@ -244,6 +274,36 @@ export async function promotePlanItems(opts: {
  * Endpoint form follows D-009 rule 1: promoted items are FEATURE-family (computePromotions
  * hardcodes `kind: 'feature'`), so `featureRef()`'s harness-qualified `<harness>#<id>` is the
  * correct form on both sides — the form a feature-family floor can actually see.
+ *
+ * ⚠ CYCLES + UNRESOLVABLE REFS — P-008's ruling, replacing P-006's interim (D-012).
+ * PRE-FLIGHT AND REJECT, at EDGE granularity: an edge is refused BEFORE the write when either
+ * side is in a plan-level `blockedBy` cycle. This matches the house convention set by
+ * `POST /features/import` (validate the union graph, refuse before writing — D-011) and by
+ * `syncFeatureBlockEdges` itself, which rejects a cycle-closing set at the authoritative writer.
+ *
+ * REJECT THE EDGES, NOT THE PROMOTION — the one place this deliberately departs from features.ts,
+ * which 400s the whole batch. Three reasons: (1) promotion's stated purpose is that a started plan
+ * never sits at zero work-items, so refusing 20 healthy items over one cyclic pair defeats the
+ * runner; (2) plans:start calls this fire-and-forget under `.catch()`, so a throw is swallowed
+ * invisibly — an aborted promotion would be indistinguishable from a disabled one; (3) refusing
+ * the edge costs no safety, because a cycle member is ALREADY gated: it resolves to
+ * effectiveStatus `blocked`, so pass 1's lane gate parks it. features.ts has no such fallback —
+ * its batch IS edges, so rejecting the request and rejecting the edges are the same act.
+ *
+ * Withholding the edge is also the RECOVERABLE choice. A cycle is a plan-authoring error that
+ * `plans:lint` already reports; once the plan is fixed the periodic lane sweep re-derives the
+ * item's status and un-gates it. Had we written the cyclic edges instead, fixing the plan would
+ * NOT clear them — nothing rewrites promoted edges after the fact — leaving a permanent frontier
+ * deadlock in the graph.
+ *
+ * Pre-flighting also makes the outcome ORDER-INDEPENDENT, which the interim was not: catching the
+ * writer's throw per item meant that for a 2-cycle the FIRST write succeeded and only the second
+ * was refused, persisting one arbitrary arrow of the cycle. Which arrow survived depended on mint
+ * order. The pre-flight sees the whole set at once and refuses all of it.
+ *
+ * The writer's own guard is KEPT as the backstop, and now means something specific: a cross-plan
+ * cycle the plan-level graph cannot see (an existing edge from an earlier-promoted item back into
+ * this plan) or genuine I/O — counted in `edgeFailures`, no longer the expected path.
  */
 async function writePromotedDependencyEdges(args: {
   planSlug: string;
@@ -252,10 +312,32 @@ async function writePromotedDependencyEdges(args: {
   mintedByPlanItem: ReadonlyMap<string, string>;
   blockedByById: ReadonlyMap<string, string[]>;
   statusById: ReadonlyMap<string, string | null>;
-}): Promise<{ edgesWritten: number; edgeFailures: number; blockersUnresolved: number }> {
+  /** P-008 pre-flight: plan items in a `blockedBy` cycle (from resolveEffectiveStatusForItems). */
+  cyclicPlanItemIds: ReadonlySet<string>;
+  /** Every plan item id, so a `blockedBy` ref naming no item is distinguishable from an unpromoted one. */
+  knownPlanItemIds: ReadonlySet<string>;
+}): Promise<{
+  edgesWritten: number;
+  edgeFailures: number;
+  edgesRejectedCyclic: number;
+  blockersDangling: number;
+  blockersUnresolved: number;
+}> {
   let edgesWritten = 0;
   let edgeFailures = 0;
+  let edgesRejectedCyclic = 0;
+  let blockersDangling = 0;
   let blockersUnresolved = 0;
+
+  if (args.cyclicPlanItemIds.size > 0) {
+    // Loud, once per plan: the plan cannot express a valid ordering for these items, so their
+    // edges are withheld until a human fixes the plan (plans:lint reports the same cycle).
+    console.warn(
+      `[plan-workitem-promotion] plan '${args.planSlug}' has a blocked-by CYCLE among ` +
+        `[${[...args.cyclicPlanItemIds].join(', ')}] — dependency edges touching these items are ` +
+        `REFUSED (they stay gated via their blocked lane); fix the plan's blocked-by graph`,
+    );
+  }
 
   // A blocker may have been promoted by an EARLIER run (this call only mints newly-open
   // items), so the map alone is not enough: without the stamp lookup, incremental promotion
@@ -277,17 +359,31 @@ async function writePromotedDependencyEdges(args: {
     const blockers = args.blockedByById.get(planItemId) ?? [];
     if (blockers.length === 0) continue;
 
+    const blockedSideCyclic = args.cyclicPlanItemIds.has(planItemId);
     const blockerWorkItemIds: string[] = [];
     for (const blockerPlanItemId of blockers) {
       // A done/dropped blocker is SATISFIED, not missing — it never promoted (openItems
       // filters it out) and must not gate anything. Skipped silently, and deliberately NOT
       // counted as unresolved: counting it would make every healthy plan look anomalous.
       if (!isOpenStatus(args.statusById.get(blockerPlanItemId) ?? null)) continue;
+      // P-008 PRE-FLIGHT: refuse the edge if EITHER side sits in a cycle. Both directions
+      // matter — a cyclic blocker is permanently non-terminating, so gating an otherwise
+      // healthy item on it would propagate the deadlock outward from the cycle.
+      if (blockedSideCyclic || args.cyclicPlanItemIds.has(blockerPlanItemId)) {
+        edgesRejectedCyclic++;
+        continue;
+      }
+      if (!args.knownPlanItemIds.has(blockerPlanItemId)) {
+        // A `blockedBy` naming no plan item at all — an authoring error, not a promotion gap.
+        // Checked before the stamp lookup: there is nothing for it to find.
+        blockersDangling++;
+        continue;
+      }
       const resolved = await resolveBlocker(blockerPlanItemId);
       if (!resolved) {
-        // An OPEN blocker with no work-item: a dangling `blockedBy` ref, or a promotion that
-        // should have happened and didn't. Surfaced in the result rather than dropped on the
-        // floor — a silently-missing edge is precisely this plan's bug class.
+        // A REAL, still-open blocker that resolved to no work-item: a promotion that should
+        // have happened and didn't. Surfaced in the result rather than dropped on the floor —
+        // a silently-missing edge is precisely this plan's bug class.
         blockersUnresolved++;
         continue;
       }
@@ -301,12 +397,13 @@ async function writePromotedDependencyEdges(args: {
       await syncFeatureBlockEdges(args.harnessSlug, workItemId, blockerWorkItemIds);
       edgesWritten += blockerWorkItemIds.length;
     } catch (err) {
-      // INTERIM, pending P-008's ruling on cycle behaviour at promotion. Drop-the-edge-and-
-      // warn is the safe holding position, not a settled decision: the items are already
-      // minted (there is no rollback), and plans:start calls promotePlanItems fire-and-forget
-      // under .catch(), so letting this throw would abort the remaining items' edges AND be
-      // swallowed invisibly — strictly worse than recording the failure. The count is on the
-      // result so a caller can see it rather than infer it from a log line.
+      // BACKSTOP (P-008/D-012), no longer the expected path: the plan-level pre-flight above
+      // has already refused every edge the plan's OWN graph makes cyclic, so reaching here means
+      // a cycle only the LIVE graph shows — an existing edge from an earlier-promoted item back
+      // into this plan, which no plan-level check can see — or genuine I/O. Still non-fatal for
+      // the same reason the pre-flight refuses edges rather than the promotion: the items are
+      // already minted, and plans:start's `.catch()` would swallow a throw invisibly. Counted on
+      // the result so a caller can see it rather than infer it from a log line.
       edgeFailures++;
       console.warn(
         `[plan-workitem-promotion] blocks-edge write failed for ${args.harnessSlug}#${workItemId} ` +
@@ -316,5 +413,5 @@ async function writePromotedDependencyEdges(args: {
     }
   }
 
-  return { edgesWritten, edgeFailures, blockersUnresolved };
+  return { edgesWritten, edgeFailures, edgesRejectedCyclic, blockersDangling, blockersUnresolved };
 }

@@ -32,6 +32,7 @@
  * "admission is closed"; that second number is diagnostic only and decides
  * nothing on its own (flipping the push path re-opens D-010).
  */
+import { lexicalTokens } from '@papercusp/memory';
 import type { CorpusEntry, GoldQuery } from '@papercusp/memory/bench';
 
 import {
@@ -261,3 +262,83 @@ export function injectionCoverage(pair: ArmPair): { withSignals: number; total: 
     total: pair.candidate.queries.length,
   };
 }
+
+export interface TermSurvival {
+  /** Candidate queries that carry a composed lexical query. */
+  withSignals: number;
+  /** Of those, how many had EVERY appended term survive the tokenizer's cap. */
+  fullySurvived: number;
+  /** Of those, how many had NO appended term survive at all. */
+  fullyDropped: number;
+  /** Mean fraction of appended terms that survived. */
+  meanSurvivingFraction: number;
+  /** Queries whose USER TEXT alone already fills the 32-token cap. */
+  userTextAtCap: number;
+  /** Largest tokenized lexical query seen — the headroom against the cap. */
+  maxTokens: number;
+  /** Median tokenized lexical query length. */
+  medianTokens: number;
+}
+
+/**
+ * How much of the injected signal actually reaches the scorer.
+ *
+ * ⚠ THIS IS NOT BOOKKEEPING — it is the one place the composer's caps can fail
+ * silently. `lexicalQueryText` appends the agent's terms AFTER the user text,
+ * and `lexicalTokens` keeps the HEAD of the token list, so a long user utterance
+ * evicts the identifiers from the tail — the very tokens the split exists to
+ * add, dropped first, with no error and no change to any rank metric's shape.
+ * `recall-query`'s own caps (4/4/2) bound how many terms are OFFERED; only this
+ * measures how many are HEARD.
+ *
+ * Uses the real `lexicalTokens`, not a restatement of it.
+ */
+export function lexicalTermSurvival(pair: ArmPair): TermSurvival {
+  let withSignals = 0;
+  let fullySurvived = 0;
+  let fullyDropped = 0;
+  let userTextAtCap = 0;
+  let fractionSum = 0;
+  const tokenCounts: number[] = [];
+
+  pair.candidate.queries.forEach((q, i) => {
+    const lex = q.lexicalQuery;
+    if (!lex) return;
+    const userText = pair.baseline.queries[i].query;
+    const appended = lex.startsWith(userText) ? lex.slice(userText.length).trim() : lex;
+    const terms = appended.split(/\s+/).filter(Boolean);
+    if (terms.length === 0) return;
+    withSignals += 1;
+
+    const keptTokens = lexicalTokens(lex);
+    tokenCounts.push(keptTokens.length);
+    const kept = new Set(keptTokens);
+    // A term counts as heard if ANY token it contributes survived the cap —
+    // the scorer matches on tokens, so one surviving whole token still scores.
+    const survived = terms.filter((t) => lexicalTokens(t).some((tok) => kept.has(tok))).length;
+    fractionSum += survived / terms.length;
+    if (survived === terms.length) fullySurvived += 1;
+    if (survived === 0) fullyDropped += 1;
+    if (lexicalTokens(userText).length >= LEXICAL_TOKEN_CAP) userTextAtCap += 1;
+  });
+
+  const sorted = [...tokenCounts].sort((a, b) => a - b);
+  return {
+    withSignals,
+    fullySurvived,
+    fullyDropped,
+    meanSurvivingFraction: withSignals === 0 ? 0 : fractionSum / withSignals,
+    userTextAtCap,
+    maxTokens: sorted.length ? sorted[sorted.length - 1] : 0,
+    medianTokens: sorted.length ? sorted[Math.floor(sorted.length / 2)] : 0,
+  };
+}
+
+/**
+ * `canonical-store`'s LEXICAL_MAX_TOKENS. Not importable (it is a private
+ * constant there) and deliberately NOT re-derived — this is only used to
+ * report "the user text alone already fills the cap", and `lexicalTokens`
+ * itself enforces the real value, so a drift here mis-labels one diagnostic
+ * counter and cannot change a measurement.
+ */
+const LEXICAL_TOKEN_CAP = 32;
