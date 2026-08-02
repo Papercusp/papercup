@@ -116,6 +116,17 @@ describe('suggestProjects — a refusal has to be actionable', () => {
     writeFileSync(join(root, 'libs', 'flags', 'tsconfig.json'), '{}');
     // A directory with no tsconfig must never be suggested.
     mkdirSync(join(root, 'apps', 'no-config'), { recursive: true });
+    // EI-19302566985147894: a NESTED workspace (the real one is the
+    // `libs/papercusp` git submodule, which carries its own libs/*). Its
+    // projects sit at depth 3 and were invisible to the old one-level scan.
+    mkdirSync(join(root, 'libs', 'submodule', 'libs', 'db'), { recursive: true });
+    writeFileSync(join(root, 'libs', 'submodule', 'libs', 'db', 'tsconfig.json'), '{}');
+    // Retired trees and dependency dirs must stay pruned even though they DO
+    // contain a real tsconfig.json — suggesting them sends agents at dead code.
+    mkdirSync(join(root, 'libs', 'submodule', '_retired', 'apps-web'), { recursive: true });
+    writeFileSync(join(root, 'libs', 'submodule', '_retired', 'apps-web', 'tsconfig.json'), '{}');
+    mkdirSync(join(root, 'libs', 'submodule', 'node_modules', 'dep'), { recursive: true });
+    writeFileSync(join(root, 'libs', 'submodule', 'node_modules', 'dep', 'tsconfig.json'), '{}');
   });
 
   afterAll(() => rmSync(root, { recursive: true, force: true }));
@@ -136,6 +147,27 @@ describe('suggestProjects — a refusal has to be actionable', () => {
   it('suggests only directories that really contain a tsconfig.json', () => {
     expect(suggestProjects(root)).not.toContain('apps/no-config/tsconfig.json');
     for (const s of suggestProjects(root)) expect(s.endsWith('tsconfig.json')).toBe(true);
+  });
+
+  it('finds projects inside a NESTED workspace, not just one level down (EI-19302566985147894)', () => {
+    // The old scan read only `libs/<entry>/tsconfig.json`, so every project in
+    // the libs/papercusp submodule was permanently unsuggestable and an agent
+    // hitting project_not_found was handed a list that implied none existed.
+    expect(suggestProjects(root)).toContain('libs/submodule/libs/db/tsconfig.json');
+  });
+
+  it('still prunes node_modules and _retired even though they contain real tsconfigs', () => {
+    const suggestions = suggestProjects(root);
+    expect(suggestions.some((s) => s.includes('node_modules'))).toBe(false);
+    expect(suggestions.some((s) => s.includes('_retired'))).toBe(false);
+  });
+
+  it('ranks shallower projects first, so widening the scan cannot demote a top-level project', () => {
+    const suggestions = suggestProjects(root);
+    const flags = suggestions.indexOf('libs/flags/tsconfig.json');
+    const nested = suggestions.indexOf('libs/submodule/libs/db/tsconfig.json');
+    expect(flags).toBeGreaterThanOrEqual(0);
+    expect(nested).toBeGreaterThan(flags);
   });
 
   it('returns an empty list rather than throwing when no bucket exists', () => {

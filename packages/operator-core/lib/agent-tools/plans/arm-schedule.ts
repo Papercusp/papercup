@@ -17,6 +17,7 @@ import { ctxToPlanSourceOpts } from './_ctx-opts';
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { getPlanRow } from './source';
+import { startVerdictForRow } from './plan-start-gate';
 import { armPlanSchedule } from '../../harness/routines/arm-plan-schedule';
 import { bulkContent, mergeIds, runBulk } from '../_bulk';
 
@@ -70,6 +71,11 @@ export default defineTool({
         if (!plan.schedule && !plan.scheduledAt) {
           return { ok: false as const, slug, error: 'not_scheduled', detail: 'author a schedule with plans:set-schedule first' };
         }
+        // P-006/P-008 start gate. Arming runs nothing itself, which is exactly why it
+        // is checked here: an armed plan whose required inputs are unset would fail in
+        // an unattended 03:00 routine instead of in front of whoever armed it.
+        const gate = startVerdictForRow(plan, slug);
+        if (!gate.ok) return { ok: false as const, slug, ...gate.refusal };
         const res = await armPlanSchedule({
           workspaceId: plan.workspaceId,
           harnessSlug: plan.harnessSlug,

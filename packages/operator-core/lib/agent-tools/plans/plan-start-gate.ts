@@ -1,0 +1,144 @@
+/**
+ * plan-start-gate — the ONE place a start door asks "may this plan run?"
+ * (plan-structured-inputs-2026-08-01 P-006).
+ *
+ * There are six ways to set a plan running, and they share nothing else: a status
+ * flip, an interactive agent launch, a manual fire, a scheduled fire, arming a
+ * schedule, and a fleet launch. Six independent implementations of "is it ready"
+ * would become six subtly different answers within a release — so they all call
+ * `checkPlanStartable`, which loads the row and defers to the single pure oracle in
+ * plan-input-validation.ts. `PLAN_START_DOORS` names them, and P-007's guard test
+ * fails the build if a listed door stops consulting this module.
+ *
+ * WHY ARM IS A DOOR. Arming does not run anything itself — it makes the plan fire
+ * later, unattended. Checking there means a plan whose required inputs are unset is
+ * refused at 14:00 by the human who armed it, instead of failing at 03:00 in a
+ * routine nobody is watching. That is the entire argument for gating a verb that
+ * technically starts nothing.
+ *
+ * WHY A MISSING PLAN IS NOT THIS MODULE'S PROBLEM. Every door already has its own
+ * not_found handling with its own error shape; the gate returning "ready" for an
+ * absent plan keeps it from inventing a second, competing way to say the same thing.
+ */
+
+import { getPlanRow, type PlanRow, type PlanSourceOpts } from './source';
+import { evaluatePlanStartReadiness, type PlanStartReadiness } from './plan-input-validation';
+
+/**
+ * Every verb that can set a plan running. The P-007 guard test asserts each of these
+ * still reaches this module — add a door here AND wire it, or the build fails. The
+ * list is the contract; the test is what keeps it true.
+ */
+export const PLAN_START_DOORS = [
+  'plans:start',
+  'plans:launch',
+  'plans:run-now',
+  'plans:arm-schedule',
+  'fleet:launch-on-plan',
+  'runScheduledPlanFire',
+] as const;
+
+export type PlanStartDoor = (typeof PLAN_START_DOORS)[number];
+
+/** The refusal payload a door returns verbatim. Shaped so the caller never has to
+ *  re-derive anything: what is missing, why, and what to do about it. */
+export interface PlanStartRefusal {
+  error: 'plan_inputs_not_ready';
+  code: Exclude<PlanStartReadiness, { ready: true }>['code'];
+  slug: string;
+  /** Declared-required fields that were not supplied. */
+  missing: string[];
+  /** Schema-violation detail, when the failure is malformed rather than absent. */
+  issues: string[];
+  /** Which schema source governs this plan. */
+  source: string;
+  template?: string;
+  /** One-line, actionable — surface this to the caller as-is. */
+  hint: string;
+}
+
+export type PlanStartGateResult =
+  | { ok: true; row: PlanRow | null; inputs: unknown }
+  | { ok: false; refusal: PlanStartRefusal; row: PlanRow };
+
+/**
+ * Shallow-merge per-invocation overrides over the plan's stored values (D-008 Q2).
+ *
+ * Deliberately SHALLOW — a top-level key present in `overrides` replaces the stored
+ * one outright. Deep-merging arbitrary JSON Schema shapes has no single obviously
+ * correct semantics for arrays (append? replace? merge by index?), and silently
+ * picking one would surprise a caller who passed `paths: ['x']` and got the stored
+ * three entries plus theirs. An explicit `undefined` in overrides is ignored rather
+ * than treated as an unset, so a partially-populated override object cannot
+ * accidentally blank a stored value.
+ */
+export function mergePlanInputs(stored: unknown, overrides: unknown): unknown {
+  const base = stored && typeof stored === 'object' && !Array.isArray(stored) ? stored : {};
+  if (!overrides || typeof overrides !== 'object' || Array.isArray(overrides)) return stored;
+  const out: Record<string, unknown> = { ...(base as Record<string, unknown>) };
+  for (const [k, v] of Object.entries(overrides as Record<string, unknown>)) {
+    if (v !== undefined) out[k] = v;
+  }
+  return out;
+}
+
+/**
+ * Load the plan and decide whether it may start, optionally with per-invocation
+ * input overrides merged over its stored values first (P-011).
+ *
+ * Returns the resolved `inputs` on success so the caller can persist exactly what it
+ * validated — never a second, separately-computed merge that could differ from the
+ * one the gate approved.
+ */
+export async function checkPlanStartable(
+  slug: string,
+  opts: PlanSourceOpts = {},
+  overrides?: Record<string, unknown> | null,
+): Promise<PlanStartGateResult> {
+  const row = await getPlanRow(slug, opts);
+  // Absent plan: not this gate's error to report (see the module header).
+  if (!row) return { ok: true, row: null, inputs: overrides ?? null };
+  return startVerdictForRow(row, slug, overrides);
+}
+
+/**
+ * The same verdict for a row the caller ALREADY loaded — several doors read the plan
+ * for their own reasons first (arm-schedule needs the schedule, run-now needs the
+ * scope), and making them re-read it just to be gated would double the query for no
+ * added safety. Synchronous, so the gate stays a pure decision over a row.
+ */
+export function startVerdictForRow(
+  row: PlanRow,
+  slug: string,
+  overrides?: Record<string, unknown> | null,
+): PlanStartGateResult {
+  const inputs = mergePlanInputs(row.templateData, overrides ?? null);
+  const verdict = evaluatePlanStartReadiness(
+    { template: row.template, inputSchema: row.inputSchema },
+    inputs,
+  );
+  if (verdict.ready) return { ok: true, row, inputs };
+
+  return {
+    ok: false,
+    row,
+    refusal: {
+      error: 'plan_inputs_not_ready',
+      code: verdict.code,
+      slug,
+      missing: verdict.missing,
+      issues: verdict.issues,
+      source: verdict.source,
+      ...(verdict.template ? { template: verdict.template } : {}),
+      hint: verdict.hint,
+    },
+  };
+}
+
+/** The refusal as an MCP tool error result — the shape the plans:* verbs return. */
+export function planStartRefusalContent(refusal: PlanStartRefusal) {
+  return {
+    content: [{ type: 'text' as const, text: JSON.stringify(refusal) }],
+    isError: true as const,
+  };
+}

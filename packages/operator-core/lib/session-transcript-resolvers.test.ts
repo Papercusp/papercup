@@ -5,7 +5,7 @@
  */
 
 import { afterEach, describe, expect, it } from 'vitest';
-import { promises as fs, readFileSync } from 'node:fs';
+import { promises as fs } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
@@ -168,14 +168,13 @@ describe('WI-6794: a cached resolution never leaks across roots', () => {
   });
 });
 
-describe('the resolver source file is clean text', () => {
-  // A NUL byte from a mistyped template-literal separator landed in this exact
-  // module while fixing WI-6794. It is invisible in an editor AND it silently
-  // turns every grep/rg over the file into "binary file matches" — the file
-  // stops being searchable by every agent on this box, with no error anywhere
-  // and no test that would notice.
-  it('session-transcript-resolvers.ts contains no NUL bytes', () => {
-    const raw = readFileSync(join(__dirname, 'session-transcript-resolvers.ts'));
-    expect(raw.indexOf(0)).toBe(-1);
-  });
-});
+// NOTE (WI-6794): a NUL byte from a mistyped template-literal separator landed
+// in this exact module while fixing the cache key, and it is invisible in an
+// editor while silently making grep/rg report "binary file matches". I started
+// to add a per-file NUL assertion here — and then found the class is ALREADY
+// guarded tree-wide by `npm run lint:no-control-bytes`
+// (scripts/check-no-control-bytes.mjs, EI-7432, the identical incident), which
+// scans every tracked source file and runs in CI. A per-file copy of an
+// existing repo-wide guard is the duplication this repo's reuse-first rule
+// exists to prevent, so there is deliberately no assertion here. To diagnose
+// the symptom by hand: `tr -dc '\000' < FILE | wc -c`.

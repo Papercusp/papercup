@@ -49,6 +49,7 @@
 import { z } from 'zod';
 import { spawn } from 'node:child_process';
 import { existsSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import type { Dirent } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join, relative, resolve } from 'node:path';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
@@ -96,6 +97,58 @@ const DEFAULT_MAX_ERRORS = 50;
 /** Depth-bounded scan for real tsconfigs, used only to make a refusal actionable. */
 const SUGGEST_ROOTS = ['packages', 'apps', 'libs'];
 const MAX_SUGGESTIONS = 12;
+
+/** Never descend into these when hunting for projects. */
+const SUGGEST_PRUNE = new Set(['node_modules', 'dist', 'build', 'coverage', '.git', '_retired']);
+
+/**
+ * How far BELOW a bucket root to hunt.
+ *
+ * EI-19302566985147894: this scan used to be exactly one level deep
+ * (`libs/<entry>/tsconfig.json`), which silently made every project inside a
+ * nested workspace UNSUGGESTABLE — `libs/papercusp` is a git submodule with its
+ * own `apps/*`/`packages/*`/`libs/*`, so its projects live at depth 3
+ * (`libs/papercusp/libs/db`). The user-visible failure was not a missing
+ * suggestion but a WRONG conclusion: an agent told to run
+ * `build:typecheck { project: "<workspace>" }` for the package it had just
+ * edited got `project_not_found` plus an `availableProjects` list containing no
+ * path under `libs/papercusp/**` at all, and reasonably read that as "this tree
+ * cannot be typechecked" rather than "the suggester cannot see this far down".
+ */
+const SUGGEST_MAX_DEPTH = 3;
+
+interface FoundProject {
+  /** repo-relative path to the tsconfig.json */
+  path: string;
+  /** levels below the bucket root — shallower projects are suggested first */
+  depth: number;
+}
+
+/**
+ * Walk one bucket, collecting directories that really contain a tsconfig.json.
+ * Descent stops AT a project: a project's own subdirectories are not separate
+ * projects worth suggesting, and letting one package recurse freely would flood
+ * the cap with its internals.
+ */
+function collectProjects(root: string, dir: string, depth: number, out: FoundProject[]): void {
+  if (depth > SUGGEST_MAX_DEPTH) return;
+  let entries: Dirent[];
+  try {
+    entries = readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const entry of [...entries].sort((a, b) => a.name.localeCompare(b.name))) {
+    if (!entry.isDirectory() || SUGGEST_PRUNE.has(entry.name)) continue;
+    const child = join(dir, entry.name);
+    const candidate = join(child, 'tsconfig.json');
+    if (existsSync(candidate)) {
+      out.push({ path: relative(root, candidate), depth });
+      continue;
+    }
+    collectProjects(root, child, depth + 1, out);
+  }
+}
 
 interface TscOutcome {
   code: number | null;
@@ -179,14 +232,15 @@ export function suggestProjects(root: string): string[] {
   for (const bucket of SUGGEST_ROOTS) {
     const dir = resolve(root, bucket);
     if (!existsSync(dir)) continue;
-    let entries: string[];
-    try { entries = readdirSync(dir); } catch { continue; }
-    const found: string[] = [];
-    for (const entry of entries.sort()) {
-      const candidate = join(dir, entry, 'tsconfig.json');
-      if (existsSync(candidate)) found.push(relative(root, candidate));
-    }
-    if (found.length > 0) byBucket.push(found);
+    const found: FoundProject[] = [];
+    collectProjects(root, dir, 1, found);
+    if (found.length === 0) continue;
+    // Shallowest first, then alphabetical: a top-level `libs/flags` still
+    // outranks a submodule's `libs/papercusp/libs/db` for the same cap slot,
+    // so widening the scan cannot demote the suggestions that were there
+    // before — it only fills slots the old one-level scan left empty.
+    found.sort((a, b) => a.depth - b.depth || a.path.localeCompare(b.path));
+    byBucket.push(found.map((f) => f.path));
   }
 
   const interleaved: string[] = [];
