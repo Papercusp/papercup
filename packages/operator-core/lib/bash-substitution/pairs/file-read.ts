@@ -311,7 +311,9 @@ export const sedRangeRead: SubstitutionPair = {
   bashPattern: readPattern(String.raw`sed\s+-n\s+['"]?\s*\d+\s*,\s*\d+\s*p['"]?\s+${SINGLE_FILE_OPERAND}`),
   toolName: 'capability:read',
   advisoryText:
-    "capability:read { file_path, offset, limit } reads a line range directly — `sed -n 'N,Mp' FILE` is offset=N, limit=M-N+1.",
+    "capability:read { file_path, offset, limit } reads a line range directly — sed -n 'N,Mp' FILE is offset=N, limit=M-N+1. " +
+    'capability:read is a DEFERRED MCP tool (ToolSearch select:mcp__papercusp-su__capability_read first if not already loaded) ' +
+    "— but a Claude Code (psu) session's ambient Read tool takes the SAME { file_path, offset, limit } shape directly, no ToolSearch needed there.",
   routing: {
     want: 'a line RANGE of one file',
     use: '`capability:read { file_path, offset, limit }`',
@@ -367,7 +369,9 @@ export const catFileRead: SubstitutionPair = {
   bashPattern: readPattern(String.raw`cat\s+(?:(?:-n|--number)\s+)?${SINGLE_FILE_OPERAND}`),
   toolName: 'capability:read',
   advisoryText:
-    'capability:read { file_path } returns the file with line numbers, paged at 2000 lines — no shell round-trip.',
+    'capability:read { file_path } returns the file with line numbers, paged at 2000 lines — no shell round-trip. ' +
+    'capability:read is a DEFERRED MCP tool (ToolSearch select:mcp__papercusp-su__capability_read first if not already loaded) ' +
+    "— but a Claude Code (psu) session's ambient Read tool reads the whole file the same way with no args (it just does not number lines).",
   routing: {
     want: 'the WHOLE of one file',
     use: '`capability:read { file_path }`',

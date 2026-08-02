@@ -4919,6 +4919,13 @@ if (require.main === module) {
     }
   };
 
+  const candidateArg = arg('--candidate');
+  // WI-4957: ONE runId for this whole process, shared by the normal verdict path
+  // (realCheckpointDeps below) AND the self-watchdog emergency-red path (which builds its
+  // own event payload independently) — so every event this process could possibly emit
+  // carries the SAME run identity.
+  const runId = randomUUID();
+
   /**
    * EI-18850448565330905 — GUARANTEE a marker on every terminal path, including a thrown
    * exception. Before this, the `.catch` below `console.error`'d and exited WITHOUT ever
@@ -4952,12 +4959,6 @@ if (require.main === module) {
     });
   };
 
-  const candidateArg = arg('--candidate');
-  // WI-4957: ONE runId for this whole process, shared by the normal verdict path
-  // (realCheckpointDeps below) AND the self-watchdog emergency-red path (which builds its
-  // own event payload independently) — so every event this process could possibly emit
-  // carries the SAME run identity.
-  const runId = randomUUID();
   const lock = acquireCheckpointRunLock(checkpointRunLockDir(cfg.checkpointLogDir, cfg.integrationRoot));
   if (!lock.acquired) {
     Promise.all([
@@ -4982,8 +4983,9 @@ if (require.main === module) {
         });
         process.exit(0);
       })
-      .catch((e) => {
+      .catch(async (e) => {
         console.error('[green-checkpoint] FAILED:', e instanceof Error ? e.message : e);
+        await emitCrashResult(e);
         process.exit(1);
       });
   } else {
@@ -5089,10 +5091,14 @@ if (require.main === module) {
         emitResult(recorded ? { ...r, recorded: true } : r);
         releaseAndExit(0);
       })
-      .catch((e) => {
+      .catch(async (e) => {
         watchdog.cancel();
-        lock.release();
         console.error('[green-checkpoint] FAILED:', e instanceof Error ? e.message : e);
+        // EI-18850448565330905: emit a crash verdict BEFORE releasing the lock / exiting —
+        // this is exactly the path that used to leave NO __GREEN_CHECKPOINT_RESULT__ marker
+        // at all when a non-test leg threw instead of reporting through allowNonZero/haltedBy.
+        await emitCrashResult(e);
+        lock.release();
         process.exit(1);
       });
   }
