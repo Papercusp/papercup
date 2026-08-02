@@ -55,6 +55,7 @@ import {
   type FleetMemberDefaults,
   type MemberSpec,
 } from '../../agent-launch-core';
+import { describeSessionEndTime } from '../../adv-sessions';
 import type { ColorScheme } from '../../console-color-schemes';
 
 /** Launching more than this many agents in one call is almost certainly a mistake
@@ -274,12 +275,7 @@ export default defineTool({
       // P-015: `endedAt` is an END TIME only when the session reported its own exit.
       // Otherwise a sweeper stamped it on noticing the process was already gone, so
       // stating it as "ended <ts>" asserts something we do not know (WI-7126).
-      const endedPhrase =
-        target.endedAt == null
-          ? 'end time unknown'
-          : target.endedBy === 'self'
-            ? `ended ${target.endedAt}`
-            : `last recorded ${target.endedAt} — that is when ${target.endedBy ?? 'an unrecorded writer'} NOTICED it was gone, not when it ended`;
+      const endedPhrase = describeSessionEndTime(target);
       notes.push(
         fork
           ? `Forking session ${target.sessionId} (${target.agent ?? 'agent'}, ${target.live ? 'live' : endedPhrase}) — the fork mints a NEW coord id; find it in coord:presence.`

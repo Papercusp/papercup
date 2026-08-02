@@ -850,3 +850,75 @@ describe('unattributedAsks (hud-consolidation-2026-07-26 P-002)', () => {
     expect(unattributedAsks([ask({ ownerAgentId: 'su-aaaaaaaa-1' })])).toEqual([]);
   });
 });
+
+/* The INSTANT half of the sessions search (owner ask 2026-08-02). The reported
+   symptom was "it doesn't automatically run the search, I have to press enter";
+   the cause was that the ONLY pass was a 0.4–4.9s round-trip, so typing produced
+   no visible change for seconds. This pass runs on the keystroke, over data the
+   board already holds, exactly like the Work-items pane's filter. */
+describe('matchesSessionText', () => {
+  it('matches the fields a human can actually see on the card', () => {
+    const e = entry({
+      ownerId: 'su-abcd1234-0000-0000-0000-000000000000',
+      label: 'su · gym-gate',
+      intent: 'Greening the release gate',
+      fleetSlug: 'backlog-drain',
+      currentPlanSlug: 'hud-search-2026-08-02',
+      harnessSlug: 'papercusp',
+      role: 'engineer',
+    });
+    for (const q of [
+      'gym', // label
+      'greening', // intent
+      'backlog', // fleet
+      'hud-search', // plan
+      'papercusp', // harness
+      'engineer', // role
+      'abcd1234', // the short handle, which is what the card actually renders
+    ]) {
+      expect(matchesSessionText(e, q), `expected a hit for ${q}`).toBe(true);
+    }
+  });
+
+  it('is case-insensitive and substring, like the Work-items pane it mirrors', () => {
+    const e = entry({ intent: 'Greening the release gate' });
+    expect(matchesSessionText(e, 'RELEASE')).toBe(true);
+    expect(matchesSessionText(e, 'eleas')).toBe(true);
+  });
+
+  // An empty query means "not filtering", NOT "matches nothing" — getting this
+  // backwards blanks the board the moment the box is cleared.
+  it('treats an empty or whitespace query as no filter at all', () => {
+    const e = entry({ intent: 'anything' });
+    expect(matchesSessionText(e, '')).toBe(true);
+    expect(matchesSessionText(e, '   ')).toBe(true);
+  });
+
+  it('misses when nothing on the card matches, without throwing on null fields', () => {
+    const e = entry({
+      label: 'su · quiet',
+      intent: '',
+      fleetSlug: null,
+      currentPlanSlug: null,
+      harnessSlug: null,
+      role: null,
+      agent: null,
+      fleetRole: null,
+    });
+    expect(matchesSessionText(e, 'zzzz-no-such-thing')).toBe(false);
+  });
+
+  // A one-character query is BELOW the transcript search's 2-char floor, so it
+  // is served entirely by this pass — it has to work, or the first keystroke
+  // still looks like it did nothing.
+  it('filters from the very first character', () => {
+    expect(matchesSessionText(entry({ label: 'su · gym' }), 'g')).toBe(true);
+    expect(matchesSessionText(entry({ label: 'su · quiet' }), 'z')).toBe(false);
+  });
+
+  it('finds a session by a work-item id it has claimed', () => {
+    const e = entry({ claims: [{ id: 'WI-7159', planSlug: 'hud-search-2026-08-02' }] });
+    expect(matchesSessionText(e, 'WI-7159')).toBe(true);
+    expect(matchesSessionText(e, 'wi-7159')).toBe(true);
+  });
+});

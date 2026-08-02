@@ -57,7 +57,7 @@ vi.mock('../../authority/file-lock-authority-ops', () => ({
 }));
 vi.mock('../../authority/lock-event-stream', () => ({ recordLockEvent: vi.fn() }));
 
-import { normalizePaths, tryInsertWaiter } from './su-lock-store';
+import { normalizePaths, tryInsertWaiter, readWaiterStatus, pokeWorkspace, expireWaiter, tryAcquire } from './su-lock-store';
 import { WorkspaceContendedError } from './in-workspace-txn';
 import { routeFileLockOp } from '../../authority/file-lock-routing';
 import { recordLockEvent } from '../../authority/lock-event-stream';
@@ -65,7 +65,15 @@ const normM = vi.mocked(normalizePaths);
 const insertM = vi.mocked(tryInsertWaiter);
 const routeM = vi.mocked(routeFileLockOp);
 const recordEventM = vi.mocked(recordLockEvent);
+const statusM = vi.mocked(readWaiterStatus);
+const pokeM = vi.mocked(pokeWorkspace);
+const expireM = vi.mocked(expireWaiter);
+const tryAcquireM = vi.mocked(tryAcquire);
 const tool = (await import('./acquire')).default;
+
+/** postgres-js's own shape for a connection drop mid-query (EI-19324204900062056). */
+const connectionClosedError = () =>
+  Object.assign(new Error('write CONNECTION_CLOSED 127.0.0.1:6432'), { code: 'CONNECTION_CLOSED' });
 
 type Out = { content: { text: string }[] };
 const call = (args: Record<string, unknown>) =>
@@ -202,6 +210,66 @@ describe('locks:acquire — outcome branches', () => {
     insertM.mockResolvedValue({ ok: false, reason: 'waiter_cap_exceeded' } as never);
     const b = body(await call({ wake_on_grant: true }));
     expect(b).toMatchObject({ ok: false, reason: 'waiter_cap_exceeded' });
+  });
+});
+
+describe('locks:acquire — EI-19324204900062056 blocking-wait connection resilience', () => {
+  // Contention path so the tool proceeds past the fast-path to the wait
+  // subsystem (LISTEN + INSERT waiter + poll loop).
+  beforeEach(() => {
+    routeM.mockResolvedValue({ value: { ok: false, busy: [{ path: 'a.ts', owner: 'o2' }] } } as never);
+  });
+
+  it('a transient CONNECTION_CLOSED error while polling status mid-wait is swallowed — the wait continues instead of crashing the call', async () => {
+    // wait_until is far enough in the future that the loop is entered (and
+    // the ceiling setTimeout below fires) at least once, but short enough
+    // that a single real ~50ms tick carries it past waitUntilMs — avoids
+    // fake-timer choreography of the internal ceiling Promise/setTimeout
+    // while keeping the test's wall-clock cost negligible.
+    insertM.mockResolvedValue({ ok: true, ticket_id: 'T-A', wait_until: new Date(Date.now() + 50) } as never);
+    // Pre-loop immediate re-check: not yet granted, so the loop is entered.
+    statusM.mockResolvedValueOnce({ status: 'waiting' } as never);
+    // Inside the loop: poking the workspace hits the transient connection drop.
+    pokeM.mockRejectedValueOnce(connectionClosedError());
+    // Step 6 (after the loop exits on wait_until elapsing): both calls
+    // succeed normally on the reconnected pool — proves the mid-loop error
+    // didn't abort the call, it was swallowed and control reached here.
+    expireM.mockResolvedValueOnce(undefined as never);
+    tryAcquireM.mockResolvedValueOnce({ ok: false, busy: [{ path: 'a.ts', owner: 'o2' }] } as never);
+
+    const b = body(await call({ wait: { max_sec: 1 } }));
+
+    // A normal timeout/busy result — NOT a thrown error, NOT wait_connection_unstable.
+    expect(b).toMatchObject({ ok: false, ticket_id: 'T-A', busy: [{ path: 'a.ts', owner: 'o2' }] });
+    expect(b.reason).not.toBe('wait_connection_unstable');
+    expect(pokeM).toHaveBeenCalled();
+  });
+
+  it('a transient CONNECTION_CLOSED error at the tail (step 6 expireWaiter) degrades to a structured wait_connection_unstable — never a raw thrown/MCP-fatal error', async () => {
+    insertM.mockResolvedValue({ ok: true, ticket_id: 'T-B', wait_until: new Date(Date.now() - 1000) } as never); // already elapsed → 0 loop iterations
+    statusM.mockResolvedValueOnce({ status: 'waiting' } as never);
+    expireM.mockRejectedValueOnce(connectionClosedError());
+
+    const b = body(await call({ wait: { max_sec: 1 } }));
+
+    expect(b).toMatchObject({
+      ok: false,
+      reason: 'wait_connection_unstable',
+      transient: true,
+      ticket_id: 'T-B',
+      busy: [],
+    });
+    expect(String(b.advice)).toMatch(/wake_on_grant/);
+    // Never reached tryAcquire — expireWaiter's failure short-circuited to the degrade.
+    expect(tryAcquireM).not.toHaveBeenCalled();
+  });
+
+  it('a NON-transient error mid-wait still propagates (this fix must not mask genuine bugs)', async () => {
+    insertM.mockResolvedValue({ ok: true, ticket_id: 'T-C', wait_until: new Date(Date.now() + 50) } as never);
+    statusM.mockResolvedValueOnce({ status: 'waiting' } as never);
+    pokeM.mockRejectedValueOnce(new Error('boom: not a connection error'));
+
+    await expect(call({ wait: { max_sec: 1 } })).rejects.toThrow('boom: not a connection error');
   });
 });
 

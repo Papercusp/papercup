@@ -622,6 +622,24 @@ export function advSessionEndedAtCaveat(
 }
 
 /**
+ * The one phrase every PROSE surface should use to describe when a session ended.
+ *
+ * Prose is where this goes wrong most quietly: a structured field can carry a caveat
+ * beside it, but `ended ${endedAt}` states a time as fact with nowhere to put the doubt.
+ * Three outcomes, and only the first is an actual end time:
+ *
+ *   'ended 2026-08-02T18:26:03Z'                     — self-reported, a real observation
+ *   'last recorded … — that is when the reaper NOTICED it was gone, not when it ended'
+ *   'end time unknown'                               — never ended, or no timestamp
+ */
+export function describeSessionEndTime(row: Pick<AdvSessionRow, 'endedAt' | 'endedBy'>): string {
+  if (row.endedAt == null) return 'end time unknown';
+  if (row.endedBy === 'self') return `ended ${row.endedAt}`;
+  const who = row.endedBy ?? 'an unrecorded writer';
+  return `last recorded ${row.endedAt} — that is when ${who} NOTICED it was gone, not when it ended`;
+}
+
+/**
  * Mark a session ended.
  *
  * `endedBy` is REQUIRED on purpose: a row that cannot say who ended it cannot say whether

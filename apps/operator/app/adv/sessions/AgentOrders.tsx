@@ -274,15 +274,28 @@ export default function AgentOrders({
           </section>
 
           {/* ── Owner directives, verbatim ── */}
-          <section className="pc-orders__sec" id="pc-orders-directives">
-            <h4 className="pc-orders__h">
-              Owner directives
+          <section
+            className="pc-orders__sec"
+            id="pc-orders-directives"
+            data-collapsed={rail.closed('o-directives') ? 'true' : 'false'}
+            /* An open owner directive is the one thing in this rail that is
+               waiting on a HUMAN, so the card is toned like the Walls card
+               rather than sitting in the same grey as the rest. */
+            data-attn={(orders.directivesTotalOpen ?? 0) > 0 ? 'true' : undefined}
+          >
+            <RailSectionHead
+              sectionId="o-directives"
+              label="Owner directives"
+              className="pc-orders__h"
+              closed={rail.closed('o-directives')}
+              onToggle={() => rail.toggle('o-directives')}
+            >
               {(orders.directivesTotalOpen ?? 0) > 0 ? (
                 <span className="pc-orders__n pc-orders__n--hot">
                   {orders.directivesTotalOpen}
                 </span>
               ) : null}
-            </h4>
+            </RailSectionHead>
             {(orders.directives ?? []).length > 0 ? (
               <>
                 {(orders.directives ?? []).map((d) => (

@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
-import { advSessionEndedAtCaveat, isObserverEndedSession, type AdvSessionRow } from './adv-sessions';
+import {
+  advSessionEndedAtCaveat,
+  describeSessionEndTime,
+  isObserverEndedSession,
+  type AdvSessionRow,
+} from './adv-sessions';
 import { withFieldReliability } from './field-reliability';
 
 type EndFields = Pick<AdvSessionRow, 'endedAt' | 'endedBy'>;
@@ -69,6 +74,33 @@ describe('adv_session ended_at provenance (P-015, silent-wrong-answers-2026-08-0
     expect(out._fieldReliabilityWarning).toContain('INFERRED');
     expect(out._fieldReliabilityWarning).toContain('when did this session actually end?');
     expect(out._fieldReliabilityWarning).toContain('coord_presence.last_active_at');
+  });
+
+  describe('describeSessionEndTime — the prose form, where doubt has nowhere else to go', () => {
+    it('states a real end time ONLY for a self-reported exit', () => {
+      expect(describeSessionEndTime({ endedAt: ENDED, endedBy: 'self' })).toBe(`ended ${ENDED}`);
+    });
+
+    it.each(['reaper', 'reconciler', 'cleanup'] as const)(
+      'never says "ended <ts>" for a %s-written stamp',
+      (endedBy) => {
+        const s = describeSessionEndTime({ endedAt: ENDED, endedBy });
+        expect(s).not.toMatch(/^ended /);
+        expect(s).toContain('NOTICED it was gone, not when it ended');
+        expect(s).toContain(endedBy);
+      },
+    );
+
+    it('names an unrecorded writer rather than implying a clean exit, for a legacy row', () => {
+      const s = describeSessionEndTime({ endedAt: ENDED, endedBy: null });
+      expect(s).not.toMatch(/^ended /);
+      expect(s).toContain('an unrecorded writer');
+    });
+
+    it('says the end time is unknown when the session has not ended', () => {
+      expect(describeSessionEndTime({ endedAt: null, endedBy: null })).toBe('end time unknown');
+      expect(describeSessionEndTime({ endedAt: null, endedBy: 'self' })).toBe('end time unknown');
+    });
   });
 
   it('supports a caller-supplied field name for nested results', () => {
