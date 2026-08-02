@@ -21,7 +21,7 @@
  * The spec runs against a loopback baseURL, so proxy.ts's loopback gate
  * permits every request.
  */
-import { test, expect } from '@playwright/test';
+import { test, expect } from './_egress';
 
 const baseURL = process.env.OPERATOR_E2E_BASE_URL ?? 'http://127.0.0.1:3055';
 

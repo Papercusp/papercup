@@ -171,6 +171,109 @@ export function buildTaskSetupCommands(desc: PapercuspTaskDescriptor, destDir: s
   ];
 }
 
+/**
+ * ── THE REWIND MUST BE A COMMIT, NOT A WORKING-TREE EDIT (D-007) ─────────────
+ *
+ * `buildTaskSetupCommands` above rewinds a file in a working tree, which is the
+ * right shape for the local discrimination PROBE (it runs the test in place).
+ * It is the WRONG shape for a gym task, and the difference is not cosmetic:
+ *
+ *   buildAbDeps.runPipeline (ab-runner-real.ts) hands the runner only
+ *   `{ id, source, commit, spec, intent }`, and cloneSubstrate does
+ *   `git clone <source>` + `git checkout --detach <commit>` — a fresh clone
+ *   from the OBJECT STORE. No post-clone setup hook exists anywhere on the path.
+ *
+ * So a task whose `repoCommit` is `pinCommit` hands the agent the SHIPPED file
+ * and its test passes on turn zero: a task that cannot fail, scoring every
+ * variant identically and perfectly, while carrying `corpus:'real'` — i.e.
+ * laundering pure noise as exactly the evidence the `fitness-signal-is-real`
+ * gate looks for. That is this plan's own failure shape one level down.
+ *
+ * A second, independent leg forces the same answer: `collectAndDistill` diffs
+ * the agent's work against `baseCommit: task.repoCommit`. If that were
+ * `pinCommit` while the tree started rewound, the agent's correct work would
+ * read as a REVERT of the rewind.
+ *
+ * Hence: each task gets its OWN commit whose tree is `pinCommit`'s tree with
+ * `implPath` replaced by its `revertToCommit` version, reachable from a real
+ * branch (a default `git clone` fetches `refs/heads/*`, so the runner's
+ * `checkout --detach <sha>` then resolves). The oracle and every other file
+ * stay at `pinCommit` — precisely the surgical revert D-006 settled.
+ *
+ * Built with plumbing against a TEMP INDEX so the shared substrate's working
+ * tree is never touched: tasks can be prepared in any order, concurrently, and
+ * a half-finished preparation cannot leave a rewound file lying around for the
+ * next task to inherit.
+ */
+export interface TaskCommitPlan {
+  /** Branch made to point at the task commit — what makes it clone-reachable. */
+  branchName: string;
+  /** Throwaway index path; never the substrate's real `.git/index`. */
+  indexFile: string;
+  /** 1. Read the pinned tree into the temp index. */
+  readTree: GitCommand;
+  /** 2. Capture the rewound file's `<mode> blob <sha>\tpath` line. */
+  readRewoundEntry: GitCommand;
+  /** 3. Splice that entry into the temp index (stdin = step 2's stdout verbatim). */
+  spliceEntry: (lsTreeStdout: string) => GitCommand;
+  /** 4. Write the temp index out as a tree; capture stdout. */
+  writeTree: GitCommand;
+  /** 5. Commit that tree with `pinCommit` as parent; capture stdout. */
+  commitTree: (treeSha: string) => GitCommand;
+  /** 6. Point the branch at the new commit — now clone-reachable. */
+  setBranch: (commitSha: string) => GitCommand;
+}
+
+/**
+ * Deterministic identity: the same descriptor against the same substrate always
+ * produces the same commit SHA, so a corpus is reproducible and a task id can be
+ * diffed across runs. Never inherits the box's git config (which may be unset).
+ */
+const TASK_COMMIT_ENV: Readonly<Record<string, string>> = Object.freeze({
+  GIT_AUTHOR_NAME: 'papercusp-gym',
+  GIT_AUTHOR_EMAIL: 'gym@papercusp.local',
+  GIT_COMMITTER_NAME: 'papercusp-gym',
+  GIT_COMMITTER_EMAIL: 'gym@papercusp.local',
+  GIT_AUTHOR_DATE: '2000-01-01T00:00:00Z',
+  GIT_COMMITTER_DATE: '2000-01-01T00:00:00Z',
+});
+
+/** Branch namespace for generated task commits — never collides with real refs. */
+export const TASK_BRANCH_PREFIX = 'refs/heads/gym-task/';
+
+export function buildTaskCommitPlan(desc: PapercuspTaskDescriptor, substrateDir: string): TaskCommitPlan {
+  assertDescriptorPins(desc);
+  const branchName = `${TASK_BRANCH_PREFIX}${desc.taskId}`;
+  const indexFile = `${substrateDir}/.git/gym-task-index-${desc.taskId}`;
+  const idxEnv = { ...TASK_COMMIT_ENV, GIT_INDEX_FILE: indexFile };
+  const git = (...rest: string[]): string[] => ['git', '-C', substrateDir, ...rest];
+
+  return {
+    branchName,
+    indexFile,
+    readTree: { argv: git('read-tree', desc.pinCommit), env: idxEnv },
+    // `ls-tree` carries the FILE MODE as well as the blob sha, and feeding its
+    // output straight back to `update-index --index-info` means the mode is
+    // never parsed — so an executable-bit change can't be silently dropped.
+    readRewoundEntry: { argv: git('ls-tree', desc.revertToCommit, '--', desc.implPath) },
+    spliceEntry: (lsTreeStdout: string) => {
+      if (!lsTreeStdout.trim()) {
+        throw new Error(
+          `papercusp task ${desc.taskId}: ${desc.implPath} does not exist at revertToCommit ${desc.revertToCommit} — ` +
+            `the rewind would DELETE the file rather than revert it, which is a different (and much easier) task than the real one`,
+        );
+      }
+      return { argv: git('update-index', '--index-info'), env: idxEnv, stdin: lsTreeStdout };
+    },
+    writeTree: { argv: git('write-tree'), env: idxEnv },
+    commitTree: (treeSha: string) => ({
+      argv: git('commit-tree', treeSha, '-p', desc.pinCommit, '-m', `gym task ${desc.taskId}: rewind ${desc.implPath} to ${desc.revertToCommit.slice(0, 12)}`),
+      env: TASK_COMMIT_ENV,
+    }),
+    setBranch: (commitSha: string) => ({ argv: git('update-ref', branchName, commitSha) }),
+  };
+}
+
 /** Restore the reference solution — the real file as shipped at `pinCommit`. */
 export function buildReferenceSolutionCommands(desc: PapercuspTaskDescriptor, destDir: string): GitCommand[] {
   assertDescriptorPins(desc);
@@ -258,6 +361,14 @@ export function admitValidatedTasks(
 export function papercuspTaskToGymTask(
   desc: PapercuspTaskDescriptor,
   repoUrl: string,
+  /**
+   * The per-task commit from `buildTaskCommitPlan` — the one whose tree ALREADY
+   * carries the rewound `implPath`. D-007: passing `pinCommit` here is the
+   * defect this parameter exists to make unrepresentable, so it is REFUSED
+   * below rather than documented. It is required, not defaulted: a default
+   * would silently reinstate exactly the bug.
+   */
+  taskCommit: string,
 ): {
   taskId: string;
   pool: GymTaskPool;
@@ -269,18 +380,29 @@ export function papercuspTaskToGymTask(
   repoCommit: string;
 } {
   assertDescriptorPins(desc);
+  if (!isPinnedCommit(taskCommit)) {
+    throw new Error(`papercusp task ${desc.taskId}: taskCommit must be a pinned hex SHA, got: ${JSON.stringify(taskCommit)}`);
+  }
+  if (taskCommit === desc.pinCommit) {
+    throw new Error(
+      `papercusp task ${desc.taskId}: taskCommit equals pinCommit — the runner clones ${desc.implPath} at its SHIPPED state, ` +
+        `so the task starts already solved and its oracle passes on turn zero (D-007). Use buildTaskCommitPlan's commit, ` +
+        `whose tree carries the rewound file.`,
+    );
+  }
   return {
     taskId: desc.taskId,
     pool: desc.pool,
     spec: desc.spec,
     intent: desc.intent,
     projectContext:
-      `The REAL Papercusp monorepo at commit ${desc.pinCommit.slice(0, 12)}. Implement ${desc.implPath}; ` +
+      `The REAL Papercusp monorepo at commit ${desc.pinCommit.slice(0, 12)}, with ${desc.implPath} rewound to an earlier version. ` +
+      `Implement ${desc.implPath}; ` +
       `${desc.testPath} is the REAL test that shipped with this change and is the oracle — do not edit it. ` +
       `Run it with \`npm run test:file -- ${desc.testPath}\`; the observed test result is the score. ` +
       `Provenance: ${desc.sourceRef}.`,
     corpus: 'real' as const,
     repoUrl,
-    repoCommit: desc.pinCommit,
+    repoCommit: taskCommit,
   };
 }

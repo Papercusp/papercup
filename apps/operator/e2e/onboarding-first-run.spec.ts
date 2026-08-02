@@ -18,7 +18,7 @@
  * contract. The real pty console renders only inside the Tauri shell
  * (verified per /internal/docs/testing/agent-e2e).
  */
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Page } from './_egress';
 
 const FLAG_KEY = 'papercusp-onboarding-agent-first';
 

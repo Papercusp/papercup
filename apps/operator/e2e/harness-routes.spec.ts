@@ -4,7 +4,7 @@
  * These specs verify the shape contracts the harness UI depends on. They
  * are read-only and don't mutate harness state.
  */
-import { test, expect } from '@playwright/test';
+import { test, expect } from './_egress';
 
 const baseURL = process.env.OPERATOR_E2E_BASE_URL ?? 'http://127.0.0.1:3055';
 

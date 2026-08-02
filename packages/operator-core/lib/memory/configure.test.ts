@@ -32,6 +32,9 @@ import {
   __setEmbedExhaustionNotifierForTest,
 } from './embed-exhaustion-alert';
 import { EmbedBudgetExhaustedError } from './embed-admission';
+// The per-mode declared widths — the emitting side of the dims contract. The
+// mock above spreads `...actual`, so this is the real spec table.
+import { EMBEDDER_DIM_SPECS } from '@papercusp/memory';
 
 // EI-7596: the 'memory' lane's admission acquire() is what THROWS the daily-spend-cap error —
 // stub it directly (rather than driving the real governor through 5M real tokens) so the test
@@ -72,7 +75,16 @@ const STUB_OPENAI_EMBED = async () => [1, 2, 3];
 const STUB_LOCAL_EMBED = async () => [4, 5, 6];
 const STUB_GEMMA_EMBED = async () => [7, 8, 9];
 const STUB_HARRIER_EMBED = async () => [10, 11, 12];
-const EMBEDDER_DIM = 384;
+/**
+ * A resolved embedder's `dims` is its MODE'S declared target width, and those
+ * now differ per mode (local 384, gemma/openai 768, harrier 1024). This used to
+ * be a single `EMBEDDER_DIM = 384` shared by every assertion below, which was
+ * only ever correct while every mode happened to agree — the 384→768 move broke
+ * six assertions at once. Asserting each mode against its OWN declared spec is
+ * both the real contract and immune to the next width change.
+ */
+const declaredDims = (mode: string): number =>
+  EMBEDDER_DIM_SPECS[mode as keyof typeof EMBEDDER_DIM_SPECS].targetDims;
 
 /** Build a deps object; each seam defaults to a recorded spy so a test can
  *  assert which legs were/weren't consulted. */
@@ -312,8 +324,8 @@ describe('resolveEmbedderWith — the openai → local → disabled cascade (GAP
         expect((res as { reason?: string }).reason).toBe(row.expectReason);
       }
       if (res.mode !== 'disabled') {
-        // a resolved embedder always carries the 384-dim metadata + an embed fn
-        expect(res.dims).toBe(EMBEDDER_DIM);
+        // a resolved embedder always carries ITS MODE's declared width + an embed fn
+        expect(res.dims).toBe(declaredDims(res.mode));
         expect(typeof res.embed).toBe('function');
       }
     });
@@ -372,14 +384,14 @@ describe('resolveEmbedderWith — the openai → local → disabled cascade (GAP
     expect(buildOpenAi).not.toHaveBeenCalled();
   });
 
-  it('gemma-forced resolves EmbeddingGemma (mode gemma, dims 384) via the local package', async () => {
+  it('gemma-forced resolves EmbeddingGemma (mode gemma, at its declared native width) via the local package', async () => {
     const { deps, buildGemma, buildLocal, buildOpenAi, resolveKey } = makeDeps({
       readPreference: async () => 'gemma',
       resolveKey: async () => 'sk-present',
       localInstalled: async () => true, // shares the @huggingface/transformers package
     });
     const res = await resolveEmbedderWith(deps);
-    expect(res).toMatchObject({ mode: 'gemma', dims: EMBEDDER_DIM });
+    expect(res).toMatchObject({ mode: 'gemma', dims: declaredDims('gemma') });
     expect(buildGemma).toHaveBeenCalledOnce();
     // gemma is its OWN model — never the BGE ('local') or OpenAI builder
     expect(buildLocal).not.toHaveBeenCalled();
@@ -411,7 +423,7 @@ describe('resolveEmbedderWith — the openai → local → disabled cascade (GAP
       localInstalled: async () => true,
     });
     const res = await resolveEmbedderWith(deps);
-    expect(res).toMatchObject({ mode: 'local', dims: EMBEDDER_DIM });
+    expect(res).toMatchObject({ mode: 'local', dims: declaredDims('local') });
     expect(buildLocal).toHaveBeenCalledOnce();
     expect(buildOpenAi).not.toHaveBeenCalled();
   });
@@ -570,11 +582,19 @@ describe('localAvailable — must not report "not installed" for a VM-realm impo
 });
 
 describe('proseSurfacePreference — P-015 harrier is memory-side only', () => {
-  it('maps harrier → gemma (prose/search surfaces stay in the vector(384) gemma space)', () => {
+  it('maps harrier → gemma (prose/search surfaces stay in the gemma space)', () => {
     expect(proseSurfacePreference('harrier')).toBe('gemma');
   });
 
-  for (const v of EMBEDDER_PREFERENCES.filter((p) => p !== 'harrier')) {
+  // `local` joined harrier as a re-mapped mode when the prose columns moved to
+  // gemma's native 768: bge-small is natively 384 with mrl:'none', so it CANNOT
+  // emit the column width and is no longer prose-eligible at all. Left in the
+  // pass-through set below it asserted the exact opposite of the contract.
+  it('maps local → gemma (bge-small@384 cannot emit the prose column width)', () => {
+    expect(proseSurfacePreference('local')).toBe('gemma');
+  });
+
+  for (const v of EMBEDDER_PREFERENCES.filter((p) => p !== 'harrier' && p !== 'local')) {
     it(`passes '${v}' through unchanged`, () => {
       expect(proseSurfacePreference(v)).toBe(v);
     });

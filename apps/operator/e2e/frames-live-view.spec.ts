@@ -12,7 +12,7 @@
  * needed): the roster returns one Latitude frame and the SSE stream emits a
  * status + one 1×1-JPEG thumb event.
  */
-import { test, expect, type Page } from '@playwright/test';
+import { test, expect, type Page } from './_egress';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { FRAME_THUMB_TESTSRC, FRAME_THUMB_SMPTE, FRAME_THUMB_RGB } from './__fixtures__/frame-thumbs';

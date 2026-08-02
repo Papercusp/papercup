@@ -13,7 +13,7 @@
  * These live in infra and need their own test surfaces. This spec exercises
  * only what the operator binary itself owns.
  */
-import { test, expect } from '@playwright/test';
+import { test, expect } from './_egress';
 
 const baseURL = process.env.OPERATOR_E2E_BASE_URL ?? 'http://127.0.0.1:3055';
 

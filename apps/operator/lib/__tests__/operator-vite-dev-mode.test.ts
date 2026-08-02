@@ -80,9 +80,21 @@ describe('operator-vite desktop no-HMR mode', () => {
       expect(desktopPkg.scripts?.dev).toBe('bin/desktop-dev-nohmr');
       expect(desktopPkg.scripts?.['dev:nohmr']).toBe('bin/desktop-dev-nohmr');
       expect(desktopPkg.scripts?.['dev:preview']).toBe('bin/desktop-preview-prod');
-      // dev:hmr is the HMR opt-in (tauri dev against the :3055 Vite server); it
-      // carries a --config override now, so assert the tauri-dev path, not an exact string.
-      expect(desktopPkg.scripts?.['dev:hmr']).toContain('tauri dev');
+      // dev:hmr is the HMR opt-in: a tauri `dev` run pointed at the :3055 Vite
+      // server, vs dev/dev:nohmr above which run the static no-HMR script.
+      //
+      // Match the SUBCOMMAND, not a spelling. This assertion used to read
+      // toContain('tauri dev') and broke when dev:hmr was correctly rerouted
+      // through the guarded `npm run tauri` chokepoint (bin/tauri-guarded,
+      // EI-19369470572700441) — npm's `--` separator lands mid-phrase, so a
+      // literal-substring check reds on a change that preserved every property
+      // this test cares about. The chokepoint ROUTING invariant is owned by
+      // papercusp-desktop/test/tauri-dev-slot-chokepoint.test.js (which checks
+      // dev:hmr by name); duplicating it here with a worse failure message
+      // would just send the next reader to the wrong red.
+      expect(desktopPkg.scripts?.['dev:hmr']).toMatch(/\btauri\b(?:\s+--)?\s+dev\b/);
+      // The devUrl override is what actually makes this the HMR variant.
+      expect(desktopPkg.scripts?.['dev:hmr']).toContain('localhost:3055');
     }
   });
 });

@@ -49,7 +49,7 @@
  * is the shell header's "New" button (title 'Create or add a new harness'),
  * which is what this spec drives.
  */
-import { test, expect, type Page, type Locator } from '@playwright/test';
+import { test, expect, type Page, type Locator } from './_egress';
 
 const baseURL = process.env.OPERATOR_E2E_BASE_URL ?? 'http://127.0.0.1:3055';
 

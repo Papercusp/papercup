@@ -8,7 +8,7 @@
  *  - /api/user/memory (auth gate)
  *  - /api/user/search (auth gate)
  */
-import { test, expect } from '@playwright/test';
+import { test, expect } from './_egress';
 
 const baseURL = process.env.OPERATOR_E2E_BASE_URL ?? 'http://127.0.0.1:3055';
 

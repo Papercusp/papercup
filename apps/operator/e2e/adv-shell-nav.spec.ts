@@ -47,7 +47,7 @@
  * tests skip rather than fail (the config's own webServer boots an
  * HMR-enabled Vite, where everything renders).
  */
-import { test, expect, type Page } from '@playwright/test';
+import { test, expect, type Page } from './_egress';
 
 const baseURL = process.env.OPERATOR_E2E_BASE_URL ?? 'http://127.0.0.1:3055';
 

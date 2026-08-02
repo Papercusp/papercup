@@ -26,7 +26,7 @@
  * HarnessesDock.tsx makes the layout engine-agnostic, so the panel renders in
  * both; pixel-identical WebKitGTK capture is out of scope here.
  */
-import { test, expect, type Page } from '@playwright/test';
+import { test, expect, type Page } from './_egress';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 

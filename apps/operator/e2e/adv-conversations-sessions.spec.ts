@@ -15,7 +15,7 @@
  * fulfilled by /api/admin/comms stubs, and ChatPanel's per-harness fallback REST
  * route is stubbed so no live substrate or model call is needed.
  */
-import { test, expect, type Page, type Route } from '@playwright/test';
+import { test, expect, type Page, type Route } from './_egress';
 
 const baseURL = process.env.OPERATOR_E2E_BASE_URL ?? 'http://127.0.0.1:3055';
 const SLUG = process.env.ADV_CONV_SESSIONS_E2E_SLUG ?? 'e2e-adv-conv-sessions-pot';

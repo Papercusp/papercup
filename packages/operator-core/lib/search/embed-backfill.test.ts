@@ -58,7 +58,7 @@ function resetSweepState(): void {
   }
 }
 
-const VEC = Array.from({ length: 384 }, () => 0.1);
+const VEC = Array.from({ length: PROSE_VECTOR_DIMS }, () => 0.1);
 
 beforeEach(() => {
   unsafeCalls.length = 0;

@@ -18,7 +18,7 @@
  * Not covered (would mutate state): running a build command, pruning executed
  * actions, rotating tokens, executing a destructive admin action.
  */
-import { test, expect } from '@playwright/test';
+import { test, expect } from './_egress';
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';

@@ -34,7 +34,7 @@
  * adv-shell-nav.spec.ts (a stale HMR-disabled :3055 serves a blank #root —
  * skip, don't fail; the config's own webServer boots an HMR-enabled Vite).
  */
-import { test, expect, type Page } from '@playwright/test';
+import { test, expect, type Page } from './_egress';
 
 const baseURL = process.env.OPERATOR_E2E_BASE_URL ?? 'http://127.0.0.1:3055';
 

@@ -1,7 +1,7 @@
 /**
  * Admin pages — render-without-crash smoke for the operator's admin surface.
  */
-import { test, expect } from '@playwright/test';
+import { test, expect } from './_egress';
 
 const baseURL = process.env.OPERATOR_E2E_BASE_URL ?? 'http://127.0.0.1:3055';
 

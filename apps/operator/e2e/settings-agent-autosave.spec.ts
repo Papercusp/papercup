@@ -24,7 +24,7 @@
  * stamp the SAME header or the fixture reads/writes a different workspace's
  * config than the page (the dock.spec.ts workspace-resolution lesson).
  */
-import { test, expect, type APIRequestContext, type Page } from '@playwright/test';
+import { test, expect, type APIRequestContext, type Page } from './_egress';
 
 const baseURL =
   process.env.OPERATOR_E2E_BASE_URL ??

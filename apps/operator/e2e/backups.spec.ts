@@ -18,7 +18,7 @@
  * The flow tests confirm the routes exist, validate their input,
  * and either succeed or fail-gracefully when kopia isn't bootstrapped.
  */
-import { test, expect } from '@playwright/test';
+import { test, expect } from './_egress';
 
 const baseURL = process.env.OPERATOR_E2E_BASE_URL ?? 'http://127.0.0.1:3055';
 

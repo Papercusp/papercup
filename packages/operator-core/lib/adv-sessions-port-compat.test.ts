@@ -9,13 +9,31 @@ describe('adv_sessions port-column rollout compatibility (WI-4936)', () => {
 
   function installSql(result: unknown[] = []) {
     const sql = vi.fn(async () => result);
+    // `getAdvSession` runs its read inside `boundedOrgTxn`, which calls
+    // `sql.begin(fn)`. A bare tag function has no `.begin`, so without this the
+    // read throws "sql.begin is not a function", the surface swallows it via
+    // warnUnlessMissingTable, and the assertions below see an EMPTY query — a
+    // failure that reads like "the SQL lost its to_jsonb() guard" rather than
+    // "the mock is missing a method". Re-entering the SAME mock keeps every
+    // query recorded on one call list.
+    (sql as unknown as { begin: (fn: (tx: unknown) => unknown) => unknown }).begin = async (
+      fn: (tx: unknown) => unknown,
+    ) => fn(sql);
     vi.doMock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql }) }));
     vi.doMock('./workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
     return sql;
   }
 
-  const textOf = (sql: ReturnType<typeof vi.fn>, call = 0) =>
-    (sql.mock.calls[call]?.[0] as TemplateStringsArray | undefined)?.join('?') ?? '';
+  /** Recorded query texts, EXCLUDING the `set_config` statements boundedOrgTxn
+   *  issues to arm SET LOCAL statement_timeout/lock_timeout. Those are txn
+   *  plumbing, not read surfaces under test — counting them would shift every
+   *  positional assertion below by two the moment a surface adopts the txn. */
+  const queriesOf = (sql: ReturnType<typeof vi.fn>): string[] =>
+    sql.mock.calls
+      .map((c) => (c?.[0] as TemplateStringsArray | undefined)?.join('?') ?? '')
+      .filter((q) => !q.includes('set_config'));
+
+  const textOf = (sql: ReturnType<typeof vi.fn>, call = 0) => queriesOf(sql)[call] ?? '';
 
   it('ordinary recordAdvSession keeps the legacy INSERT while migration 611 is pending', async () => {
     const sql = installSql([{ id: 7 }]);

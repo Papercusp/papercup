@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test';
+import { expect, test } from './_egress';
 
 /**
  * Auth surface e2e — covers the user-visible flows shipped this arc:

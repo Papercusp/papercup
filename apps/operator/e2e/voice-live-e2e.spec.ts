@@ -3,7 +3,7 @@ import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { expect, test } from '@playwright/test';
+import { expect, test } from './_egress';
 
 /**
  * LIVE voice E2E through a real browser (voice-thorough-test-2026-07-09, WI-3527).

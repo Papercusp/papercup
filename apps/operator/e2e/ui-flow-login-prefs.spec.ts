@@ -9,7 +9,7 @@
  *
  * Username pattern (from app/login/page.tsx:210): [a-z0-9_-]{2,32}
  */
-import { test, expect } from '@playwright/test';
+import { test, expect } from './_egress';
 
 const baseURL = process.env.OPERATOR_E2E_BASE_URL ?? 'http://127.0.0.1:3055';
 

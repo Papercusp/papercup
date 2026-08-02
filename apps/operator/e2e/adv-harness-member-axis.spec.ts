@@ -34,7 +34,7 @@
  * shell confirmation per D-007 is a separate agent-driven run (tauri-agent-
  * tools, isolated Xvfb), recorded as plan evidence.
  */
-import { test, expect, type Page } from '@playwright/test';
+import { test, expect, type Page } from './_egress';
 
 const baseURL = process.env.OPERATOR_E2E_BASE_URL ?? 'http://127.0.0.1:3055';
 

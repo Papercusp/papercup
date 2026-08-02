@@ -29,7 +29,7 @@
  * NB: drives the operator-vite SPA — a stale HMR-disabled :3055 serves a
  * blank #root, so tests skip rather than fail when the shell never mounts.
  */
-import { test, expect, type Page } from '@playwright/test';
+import { test, expect, type Page } from './_egress';
 
 // Mirror playwright.config.ts's BASE_URL derivation — honoring
 // OPERATOR_E2E_PORT keeps this spec on the SAME server the config's

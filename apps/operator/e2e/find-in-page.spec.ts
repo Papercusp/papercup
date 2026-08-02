@@ -13,7 +13,7 @@
  * spec isn't coupled to specific copy. Override the route with
  * OPERATOR_E2E_FIND_ROUTE if `/` is gated in your environment.
  */
-import { test, expect, type Page } from '@playwright/test';
+import { test, expect, type Page } from './_egress';
 
 const baseURL = process.env.OPERATOR_E2E_BASE_URL ?? 'http://127.0.0.1:3055';
 // Default to `/support` — a static, auth-free SPA page with reliable text in

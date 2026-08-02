@@ -30,7 +30,7 @@
  *   - tests SKIP rather than fail when the SPA serves a blank #root
  *     (stale HMR-disabled :3055) or when the workspace has no projects.
  */
-import { test, expect, type Page } from '@playwright/test';
+import { test, expect, type Page } from './_egress';
 
 // Mirror playwright.config.ts's BASE_URL derivation — honoring
 // OPERATOR_E2E_PORT keeps this spec on the SAME server the config's

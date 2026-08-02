@@ -9,7 +9,7 @@
  * will fail (or stall). They auto-skip when the fake seam isn't active to avoid
  * polluting CI before the feature flag flips.
  */
-import { test, expect } from '@playwright/test';
+import { test, expect } from './_egress';
 
 const baseURL = process.env.OPERATOR_E2E_BASE_URL ?? 'http://127.0.0.1:3055';
 

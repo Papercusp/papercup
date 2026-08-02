@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test';
+import { expect, test } from './_egress';
 import { expectNoA11yViolations } from './_axe';
 
 /**

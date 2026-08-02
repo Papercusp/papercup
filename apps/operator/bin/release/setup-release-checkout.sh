@@ -589,6 +589,52 @@ rebuild_stale_native_addons() {
 }
 rebuild_stale_native_addons
 
+# 3b. Gitignored RUNTIME ASSETS under apps/operator/public --------------------
+# EI-19373176486666620. Step 1's `clean -fdqx -e node_modules` is deliberately
+# total (WI-5366: a stale gitignored cache from a PRIOR checkout at a DIFFERENT
+# sha is a correctness risk), but it cannot tell a stale CACHE from a required
+# RUNTIME ASSET — and `apps/operator/public/` is full of the latter: vditor,
+# porcupine, excalidraw, monaco and the ort-wasm-* blobs are ALL gitignored,
+# provisioned by apps/operator/scripts/setup-*-runtime.sh via postinstall.
+#
+# So the gate's tree never had them, and a test that asserts one can NEVER pass
+# here however many times it is re-fired. Observed live 2026-08-02: candidate
+# 38ae7faf went red on `vditor mirror missing at .../public/vditor/dist/js/lute/
+# lute.min.js` (vditor-cdn.test.ts, WI-7088) — a permanent red-pin on main for
+# the whole fleet, not a flake. porcupine-cdn.test.ts asserts the same shape.
+#
+# Same treatment node_modules already gets in step 3, and for the same stated
+# reason ("untracked by design"): provision from the integration tree rather
+# than re-download. Hardlink first — lute.min.js alone is ~3.9MB and the gate
+# host is not reliably networked, so re-running the setup scripts here would
+# trade a deterministic red for a flaky one.
+#
+# ONLY fills entries MISSING from the release tree, so anything tracked at
+# TARGET_SHA always wins; every failure is non-fatal (a missing asset must
+# surface as the owning test's red, never as an aborted tree setup).
+PUBLIC_ASSET_REL="apps/operator/public"
+if [ -d "$INTEGRATION_ROOT/$PUBLIC_ASSET_REL" ]; then
+  _provisioned_assets=0
+  while IFS= read -r _ignored_entry; do
+    [ -n "$_ignored_entry" ] || continue
+    _asset_src="$INTEGRATION_ROOT/$_ignored_entry"
+    _asset_dst="$RELEASE_ROOT/$_ignored_entry"
+    [ -e "$_asset_src" ] || continue
+    [ -e "$_asset_dst" ] && continue
+    mkdir -p "$(dirname "$_asset_dst")" 2>/dev/null || true
+    if cp -al "$_asset_src" "$_asset_dst" 2>/dev/null ||
+      cp -a "$_asset_src" "$_asset_dst" 2>/dev/null; then
+      _provisioned_assets=$((_provisioned_assets + 1))
+    else
+      log "WARN could not provision gitignored runtime asset $_ignored_entry"
+    fi
+  done <<EOF
+$(git -C "$INTEGRATION_ROOT" status --porcelain --ignored -- "$PUBLIC_ASSET_REL" 2>/dev/null |
+    sed -n 's|^!! ||p' | sed 's|/$||')
+EOF
+  log "provisioned $_provisioned_assets gitignored runtime asset(s) under $PUBLIC_ASSET_REL"
+fi
+
 # 4. SPA dist (deploys only) -------------------------------------------------
 # operator-vite/dist is UNTRACKED, so a fresh swap serves whatever dist was
 # last built in this tree — found 25h STALE on 2026-06-06 (the /admin/git tab

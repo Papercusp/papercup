@@ -171,3 +171,37 @@ describe('no server-only module leaks into the SPA browser-eager graph', () => {
     ).toBe(0);
   });
 });
+
+// Guards the SCANNER above. The graph walk is only as honest as its statement
+// parser, and a parser bug here is invisible in the worst way: it reports a leak
+// that does not exist (red-pinning the gate on a type-only import the bundler
+// erases) while simultaneously hiding the edges it ran past. Both directions are
+// pinned below, so neither can regress silently.
+describe('import-graph scanner', () => {
+  const specs = (src: string) => [...specsIn(src, true)].sort();
+
+  it('a side-effect import does not swallow the statements after it', () => {
+    // The 2026-08-02 regression: `[\s\S]*?` let `import './x.css';` run past its own
+    // statement to the next `from`, mis-reporting a type-only re-export as a runtime
+    // edge — a false leak that red-pinned the fleet gate.
+    expect(specs("import './x.css';\n\n/** doc */\nexport type {\n  A,\n} from '@srv/mod';\n")).toEqual(['./x.css']);
+    // ...and every statement it jumped over kept its edge (the under-walk half).
+    expect(specs("import './x.css';\nimport { a } from 'p';\nimport { b } from 'q';\n")).toEqual([
+      './x.css',
+      'p',
+      'q',
+    ]);
+  });
+
+  it('still records real value edges — including behind a side-effect import', () => {
+    expect(specs("import './x.css';\nimport { realThing } from '@srv/mod';\n")).toEqual(['./x.css', '@srv/mod']);
+    expect(specs("import { a } from '@srv/mod';\n")).toEqual(['@srv/mod']);
+    expect(specs("export * from './b';\n")).toEqual(['./b']);
+    expect(specs("import('./lazy')\n")).toEqual(['./lazy']);
+  });
+
+  it('erases type-only statements, which the bundler drops', () => {
+    expect(specs("import type { a } from '@srv/mod';\n")).toEqual([]);
+    expect(specs("export type {\n  A,\n  B,\n} from '@srv/mod';\n")).toEqual([]);
+  });
+});

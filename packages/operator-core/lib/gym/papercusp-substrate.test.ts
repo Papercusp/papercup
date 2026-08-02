@@ -12,6 +12,7 @@ import {
   admitValidatedTasks,
   buildPinnedSubstratePlan,
   buildReferenceSolutionCommands,
+  buildTaskCommitPlan,
   buildTaskSetupCommands,
   judgeDiscrimination,
   papercuspTaskToGymTask,
@@ -167,21 +168,87 @@ describe('admitValidatedTasks', () => {
   });
 });
 
+describe('buildTaskCommitPlan (D-007: the rewind must be a COMMIT, not a worktree edit)', () => {
+  const plan = () => buildTaskCommitPlan(TASK, '/scratch/sub');
+
+  it('never touches the substrate working tree — every index write goes to a throwaway GIT_INDEX_FILE', () => {
+    const p = plan();
+    expect(p.indexFile).not.toMatch(/\.git\/index$/);
+    for (const cmd of [p.readTree, p.spliceEntry('100644 blob abc\tx.ts'), p.writeTree]) {
+      expect(cmd.env?.GIT_INDEX_FILE).toBe(p.indexFile);
+    }
+    // Nothing in the plan may be a checkout/reset: those move the real worktree.
+    const everyArgv = [p.readTree, p.readRewoundEntry, p.writeTree, p.commitTree('t'), p.setBranch('c')].map((c) => c.argv.join(' '));
+    for (const a of everyArgv) expect(a).not.toMatch(/\b(checkout|reset|switch)\b/);
+  });
+
+  it('takes the tree from pinCommit and splices in ONLY the rewound file', () => {
+    const p = plan();
+    expect(p.readTree.argv).toEqual(['git', '-C', '/scratch/sub', 'read-tree', PIN]);
+    expect(p.readRewoundEntry.argv).toEqual(['git', '-C', '/scratch/sub', 'ls-tree', OLD, '--', TASK.implPath]);
+  });
+
+  it('feeds ls-tree output back verbatim, so the file MODE is carried rather than parsed', () => {
+    const line = `100755 blob 1234567890abcdef1234567890abcdef12345678\t${TASK.implPath}\n`;
+    expect(plan().spliceEntry(line).stdin).toBe(line);
+  });
+
+  it('refuses a rewind point where the file does not exist — that is a DELETE, a different and easier task', () => {
+    expect(() => plan().spliceEntry('   \n')).toThrow(/would DELETE the file/);
+  });
+
+  it('parents the task commit on pinCommit and publishes it under a branch a clone will fetch', () => {
+    const p = plan();
+    expect(p.commitTree('tree123').argv).toContain('-p');
+    expect(p.commitTree('tree123').argv).toContain(PIN);
+    expect(p.branchName).toBe(`refs/heads/gym-task/${TASK.taskId}`);
+    expect(p.setBranch('commit456').argv).toEqual(['git', '-C', '/scratch/sub', 'update-ref', p.branchName, 'commit456']);
+  });
+
+  it('pins the commit identity and dates, so the same descriptor always yields the same SHA', () => {
+    const env = plan().commitTree('t').env ?? {};
+    expect(env.GIT_AUTHOR_DATE).toBe(env.GIT_COMMITTER_DATE);
+    expect(env.GIT_AUTHOR_NAME).toBe('papercusp-gym');
+  });
+});
+
 describe('papercuspTaskToGymTask', () => {
+  const TASK_COMMIT = 'c0ffee0011111111111111111111111111111111';
+
   it("claims corpus:'real' — the label P-011's release bar reads", () => {
-    const row = papercuspTaskToGymTask(TASK, '/scratch/sub');
+    const row = papercuspTaskToGymTask(TASK, '/scratch/sub', TASK_COMMIT);
     expect(row.corpus).toBe('real');
-    expect(row.repoCommit).toBe(PIN);
+  });
+
+  /**
+   * D-007. The runner clones `repoCommit` from the object store with NO setup
+   * hook, so `repoCommit: pinCommit` hands the agent the SHIPPED file — the
+   * oracle passes on turn zero. That scores every variant perfectly while
+   * carrying corpus:'real', i.e. it would GREEN the very gate P-011 keeps red.
+   * The previous version of this test asserted `repoCommit === PIN`, which is
+   * how the defect survived: the test encoded the bug as the expectation.
+   */
+  it('uses the REWOUND task commit as repoCommit — never the pin', () => {
+    expect(papercuspTaskToGymTask(TASK, '/scratch/sub', TASK_COMMIT).repoCommit).toBe(TASK_COMMIT);
+  });
+
+  it('refuses pinCommit as the task commit — a task that starts solved is unrepresentable, not merely discouraged', () => {
+    expect(() => papercuspTaskToGymTask(TASK, '/scratch/sub', PIN)).toThrow(/starts already solved/);
+  });
+
+  it('refuses an unpinned task commit', () => {
+    expect(() => papercuspTaskToGymTask(TASK, '/scratch/sub', 'HEAD')).toThrow(/pinned hex SHA/);
   });
 
   it('tells the agent the oracle is off-limits and names the real gate command', () => {
-    const ctx = papercuspTaskToGymTask(TASK, '/scratch/sub').projectContext;
+    const ctx = papercuspTaskToGymTask(TASK, '/scratch/sub', TASK_COMMIT).projectContext;
     expect(ctx).toContain('do not edit it');
     expect(ctx).toContain(`npm run test:file -- ${TASK.testPath}`);
     expect(ctx).toContain(TASK.sourceRef);
+    expect(ctx).toContain('rewound');
   });
 
   it('carries the same pin guards, so an unvalidated descriptor cannot mint a real-corpus row', () => {
-    expect(() => papercuspTaskToGymTask({ ...TASK, pinCommit: 'HEAD' }, '/s')).toThrow(/pinned hex SHA/);
+    expect(() => papercuspTaskToGymTask({ ...TASK, pinCommit: 'HEAD' }, '/s', TASK_COMMIT)).toThrow(/pinned hex SHA/);
   });
 });

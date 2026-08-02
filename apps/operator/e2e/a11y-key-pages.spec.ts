@@ -11,7 +11,7 @@
  * Other settings pages can be added if axe surfaces issues there;
  * this spec covers the most-trafficked entry points.
  */
-import { test } from '@playwright/test';
+import { test } from './_egress';
 import { expectNoA11yViolations } from './_axe';
 
 const baseURL = process.env.OPERATOR_E2E_BASE_URL ?? 'http://127.0.0.1:3055';

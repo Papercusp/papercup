@@ -10,7 +10,7 @@
  *     yield a fresh 200 stream, NOT a 4xx/5xx)
  *   - POST returns 405
  */
-import { test, expect } from '@playwright/test';
+import { test, expect } from './_egress';
 
 const baseURL = process.env.OPERATOR_E2E_BASE_URL ?? 'http://127.0.0.1:3055';
 

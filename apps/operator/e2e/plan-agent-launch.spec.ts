@@ -26,7 +26,7 @@
  *      a second pair of turns appears.
  *   8. /admin/plans page renders without 500 (smoke).
  */
-import { test, expect, type APIRequestContext } from '@playwright/test';
+import { test, expect, type APIRequestContext } from './_egress';
 
 const baseURL = process.env.OPERATOR_E2E_BASE_URL ?? 'http://127.0.0.1:3055';
 

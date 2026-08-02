@@ -4,7 +4,7 @@
  * /settings/* hosts ~20 pages. This spec verifies each renders (HTTP 200 or
  * auth-redirect 30x). It does NOT click through forms — those are layer-2 work.
  */
-import { test, expect } from '@playwright/test';
+import { test, expect } from './_egress';
 
 const baseURL = process.env.OPERATOR_E2E_BASE_URL ?? 'http://127.0.0.1:3055';
 

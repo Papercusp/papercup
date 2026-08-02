@@ -13,7 +13,7 @@
  *   - Wrong Accept header is rejected
  *   - GET on the same path serves the SSE stream (different transport mode)
  */
-import { test, expect } from '@playwright/test';
+import { test, expect } from './_egress';
 
 const baseURL = process.env.OPERATOR_E2E_BASE_URL ?? 'http://127.0.0.1:3055';
 

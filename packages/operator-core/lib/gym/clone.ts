@@ -13,6 +13,14 @@
 
 export interface GitCommand {
   argv: string[];
+  /**
+   * Extra environment for THIS command only (e.g. `GIT_INDEX_FILE` to build a
+   * tree without touching the working tree, or a pinned author identity so a
+   * generated commit is reproducible). Merged over the executor's own env.
+   */
+  env?: Record<string, string>;
+  /** Bytes to write to the command's stdin (e.g. `update-index --index-info`). */
+  stdin?: string;
 }
 
 export interface CloneSubstratePlan {
