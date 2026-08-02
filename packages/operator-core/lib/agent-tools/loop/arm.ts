@@ -253,7 +253,9 @@ export default defineTool({
       .int()
       .positive()
       .optional()
-      .describe('Dead-man guard: auto-pause the loop after this many total wake fires (a bound on a runaway loop).'),
+      .describe(
+        'Dead-man guard: auto-pause the loop after this many wake fires SINCE THIS ARM (a bound on a runaway loop). Arm-relative, like maxDurationSec — a re-arm resets the count to 0, so `maxFires: 4` always means "4 more fires from now", never a lifetime total (EI-19339729634604096: this used to compare against the loop\'s cumulative lifetime fire count, so re-arming a session that had already fired more times than the new bound auto-paused it on the very first post-re-arm fire).',
+      ),
     maxDurationSec: z
       .number()
       .int()

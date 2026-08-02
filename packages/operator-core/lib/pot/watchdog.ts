@@ -253,6 +253,12 @@ export type WatchdogSource =
   // backstop — a debounced Mug-triage nudge when su-originated filings sit ungraded
   // past SU_IDEATE_UNGRADED_STALE_SEC (D-013: epoch-floored + batch-capped).
   | 'su-ideate-ungraded'
+  // stale-prompt-render-in-live-sessions-2026-08-02 P-004: the live-render material
+  // drift notice's per-(owner, drift-fingerprint) debounce. A render cannot change
+  // under a running session, so the same finding can only ever recur as noise —
+  // hence a long window, scoped by the drift itself so a session stale in two
+  // distinct ways still hears about both.
+  | 'stale-prompt-render'
   // scorecard-blender-pipeline-fixes-2026-07-11 P-001 (WI-4274): the Scout cycle
   // error-streak pager — N consecutive ERROR ticks fire one debounced @role:mug
   // escalation (the circuit gate backs off but pages nobody).

@@ -152,11 +152,33 @@
  * INSIDE the band's existing row, at its leading edge, in the same
  * accent-on-ink as the rails' titles. Same vocabulary, zero added height.
  *
- * Colour: `--accent-ink` is THE token for text on a filled accent surface (the
- * contrast lint's blessed pairing — see app/_lints/contrast.test.ts). The zone
- * fill is a muted accent so the zone NAMES never outshout the section caps
- * inside them: measured 4.6:1 for the cap's own text, and 4.5:1 for the rule
- * against the rail ground.
+ * Colour [owner 2026-08-02 verbatim: "the light blue and yellow header bars
+ * are good but they are too bright. Make them less bright."]. That ask exposed a
+ * real defect, so read this before changing these values back:
+ *
+ *   The bars USED to be a bright accent fill (58% --accent-strong) carrying
+ *   --accent-ink, and the comment here claimed "4.6:1 for the cap's own text".
+ *   That number was wrong. Recomputed properly (oklab color-mix -> WCAG, the
+ *   implementation self-tested against white/black = 21.00 and #767676/#fff =
+ *   4.54), the real ratio was 4.05:1 — BELOW the 4.5:1 AA floor. Nothing caught
+ *   it because the contrast lint SKIPS any pair whose background is a
+ *   color-mix() (contrast.test.ts:214, `not statically resolvable`), and this
+ *   fill is exactly that. Filed as EI-19386265666375541.
+ *
+ * So "less bright" could not be a smaller mix percentage: darkening a fill that
+ * carries DARK ink drives contrast further down (52% -> 3.46:1, 40% -> 2.51:1).
+ * The pairing had to INVERT — a dark surface carrying LIGHT text, which is both
+ * calmer and far more legible. Measured for the values below:
+ *
+ *   fill  #223c52  (22% accent)  oklab L 0.345 — 39% less luminous than before
+ *   text  --sky-200 on that fill  8.66:1  (was 4.05:1) — AAA, not just AA
+ *
+ * The 1px zone STROKE stays brighter than the fill on purpose: D-001 of
+ * `session-popup-compaction-and-contrast-2026-08-02` measured that on this
+ * ground section separation has to come from the stroke, because fill lightness
+ * tops out around 1.6:1. Hence TWO tokens below where there used to be one —
+ * the boundary and the label plate want opposite treatments, and a single token
+ * could only ever satisfy one of them.
  */
 .pc-ctl-band,
 .pc-fleet-launch-row,
@@ -168,7 +190,35 @@
      strip is not a `.pc-ctl-band`, so leaving it out would resolve its cap's
      fill to nothing — an invalid var() computes to unset, i.e. an invisible
      cap, not a loud failure. */
-  --pc-zone-rule: color-mix(in oklab, var(--accent-strong) 58%, var(--bg-popover));
+  /* The 1px BOUNDARY between zones. Stays the brighter of the two: it is a
+     hairline, so it needs luminance to read at all, and D-001 established that
+     section separation on this ground has to come from the stroke. Lowered
+     58% -> 48% so it calms with the rest without dissolving into the ground. */
+  --pc-zone-rule: color-mix(in oklab, var(--accent-strong) 48%, var(--bg-popover));
+
+  /* The LABEL PLATE behind a zone's name. A broad filled area rather than a
+     hairline, so the same luminance that makes the stroke legible makes this
+     shout — which is what the owner was reacting to. 22% measures oklab L 0.345
+     (39% less luminous than the old 58% plate) while carrying light text at
+     8.66:1. */
+  --pc-zone-fill: color-mix(in oklab, var(--accent-strong) 22%, var(--bg-popover));
+
+  /* Text ON that plate. NOT --accent-ink: that token means "dark ink for a
+     BRIGHT accent fill", and this plate is deliberately no longer bright — dark
+     ink on it measured 4.05:1 (sub-AA), which is the defect described above.
+     sky-200 on the new plate is 8.66:1. */
+  --pc-zone-label: var(--sky-200);
+
+  /* The amber/attention variant of the plate. Mixing amber toward this navy
+     ground desaturates it into olive, so the amber identity is carried by the
+     TEXT and the stroke rather than by the plate's own hue. */
+  --pc-zone-fill-warn: color-mix(in oklab, var(--warn) 22%, var(--bg-popover));
+  /* `--warn` itself, not a lighter amber ramp step: --amber-200 does NOT exist
+     in _brand-primitives.css (only --amber-400 does), and an undefined var()
+     computes to unset — an INVISIBLE label rather than a loud failure, which is
+     the exact trap this file warns about a few lines up. --warn measures 6.85:1
+     on the warn plate. */
+  --pc-zone-label-warn: var(--warn);
 }
 
 /** The two vertical zones' own boundary. In CSS rather than in the rails'
@@ -190,8 +240,8 @@
   align-self: center;
   padding: 2px 6px;
   border-radius: 3px;
-  background: var(--pc-zone-rule);
-  color: var(--accent-ink);
+  background: var(--pc-zone-fill);
+  color: var(--pc-zone-label);
   font-size: 9px;
   font-weight: 700;
   text-transform: uppercase;
@@ -210,8 +260,11 @@
   flex: none;
   margin: 0;
   padding: 3px 8px;
-  background: var(--pc-zone-rule);
-  color: var(--accent-ink);
+  background: var(--pc-zone-fill);
+  color: var(--pc-zone-label);
+  /* The plate is now close in luminance to the rail it sits on, so it needs an
+     explicit lower edge to still read as a bar rather than as tinted rail. */
+  border-bottom: 1px solid var(--pc-zone-rule);
   font-size: 9px;
   font-weight: 700;
   text-transform: uppercase;
@@ -232,14 +285,16 @@
   padding: 0 2px;
   font-size: 11px;
   line-height: 1;
-  color: var(--accent-ink);
+  /* Follows the plate, not --accent-ink: the plate is now DARK, so dark ink
+     would render this close affordance invisible on it. */
+  color: var(--pc-zone-label);
   opacity: 0.7;
 }
 .pc-zone-title__close:hover {
   opacity: 1;
 }
 .pc-zone-title__close:focus-visible {
-  outline: 2px solid var(--accent-ink);
+  outline: 2px solid var(--pc-zone-label);
   outline-offset: 1px;
 }
 

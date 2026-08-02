@@ -30,49 +30,17 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { NO_SUBAGENT_TOOLS_DENY } from '@papercusp/orchestrator/no-subagent-deny';
+// The detector itself moved to operator-core (stale-prompt-render-in-live-sessions-2026-08-02
+// P-004) so the LIVE drift sweep and this build-time guard cannot drift apart: the sweep asks
+// "does a RUNNING session's render recommend a denied tool", this asks "does a SOURCE", and a
+// second copy of the rule would let one of those two answers quietly go wrong. Its default
+// `denied` set is still NO_SUBAGENT_TOOLS_DENY, so this guard stays driven by the deny list.
+import { findDeniedToolRecommendations } from '@papercusp/operator-core/lib/prompt-material-signals';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = join(HERE, '..', '..', '..');
 const PROMPTS = join(HERE, '..', 'prompts');
 const BLUEPRINTS = join(REPO, 'libs/papercusp/packages/harness/blueprints');
-
-/** Every tool name currently denied to agents. Extend the SOURCE (no-subagent-deny.ts), not this. */
-const DENIED = new Set<string>(NO_SUBAGENT_TOOLS_DENY);
-
-/**
- * Markers that make a paragraph a PROHIBITION rather than a recommendation. Kept generous on
- * purpose: the guard's job is to catch "use the `Task` tool", not to police phrasing.
- */
-const PROHIBITION_MARKERS = [
-  'denied',
-  'deny',
-  'do not',
-  "don't",
-  'never',
-  '⛔',
-  'disallow',
-  'not in your toolset',
-  'instead of',
-  'not available',
-  'forbidden',
-  'retired',
-  'absent',
-];
-
-/** Deny-listed names mentioned as a code span in a paragraph with no prohibition marker. */
-export function findDeniedToolRecommendations(md: string): string[] {
-  const found = new Set<string>();
-  for (const para of md.split(/\n\s*\n/)) {
-    const spans = [...para.matchAll(/`([^`\n]{1,40})`/g)].map((m) => m[1]);
-    const hits = spans.filter((s) => DENIED.has(s));
-    if (hits.length === 0) continue;
-    const low = para.toLowerCase();
-    if (PROHIBITION_MARKERS.some((p) => low.includes(p))) continue;
-    for (const h of hits) found.add(h);
-  }
-  return [...found].sort();
-}
 
 function markdownFilesUnder(root: string): string[] {
   if (!existsSync(root)) return [];

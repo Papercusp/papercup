@@ -24,7 +24,12 @@ vi.mock('../harness-registry', () => ({
   loadHarnessRegistry: vi.fn(async () => ({ projects: registryProjects })),
 }));
 
-import { buildMemoryContextBlock, lastUserContext } from './injection';
+import {
+  buildMemoryContextBlock,
+  lastUserContext,
+  MEMORY_INJECTION_COSINE_FLOOR,
+  MEMORY_INJECTION_LEX_FLOOR,
+} from './injection';
 import { getMemoryBackend } from './backend';
 import { _resetForTests } from './bump-last-surfaced';
 
@@ -157,10 +162,20 @@ describe('push path requests a relevance-gated ceiling (P-032 / F-B)', () => {
     expect(backend.search.mock.calls[0]![1]).not.toHaveProperty('lexicalQuery');
   });
 
-  // The floor is NOT the fix and must not be quietly retuned as if it were: the
-  // saturating hits never came through the cosine leg (D-008), so moving 0.45
-  // changes which cosine hits survive, not how many results come back.
-  it('still passes the 0.45 cosine floor unchanged — the mode is the fix, not the floor', async () => {
+  // The floor is NOT the fix for the saturation bug and must not be quietly
+  // retuned as if it were: the saturating hits never came through the cosine leg
+  // (D-008), so moving the floor changes which cosine hits survive, not how many
+  // results come back.
+  //
+  // ⚠ Asserted against the EXPORTED constant, never a copied literal. This test
+  // used to hard-code 0.45 and was stranded the moment D-058 recalibrated the
+  // floor to 0.58 — the exact "copied magic number" failure the export exists to
+  // prevent (see MEMORY_INJECTION_COSINE_FLOOR's doc-comment). What this pins is
+  // the WIRING — that the push path forwards the calibrated floor to the backend
+  // unchanged — which still fails loudly if minScore goes missing, gets swapped
+  // for the lexical bar, or is hardcoded in the request path. The VALUE itself is
+  // governed by the calibration sweep + D-058, not by this assertion.
+  it('forwards the calibrated cosine floor unchanged — the mode is the fix, not the floor', async () => {
     const backend = mockBackend([{ id: 'm1', text: 'alpha' }]);
     useBackend(backend);
     await buildMemoryContextBlock({
@@ -170,7 +185,7 @@ describe('push path requests a relevance-gated ceiling (P-032 / F-B)', () => {
       harnessSlugs: ['papercusp'],
       hiveSlugs: [],
     });
-    expect(optsOf(backend, 0).minScore).toBe(0.45);
+    expect(optsOf(backend, 0).minScore).toBe(MEMORY_INJECTION_COSINE_FLOOR);
   });
 
   // F-D (P-034, D-014). Only the REQUEST is asserted here, for the same reason
@@ -672,8 +687,8 @@ describe('buildMemoryContextBlock', () => {
     });
     // ONE search over the UNION of the pools (F-C / P-033, D-011) — never a
     // `workspace:*` scope. It carries the inject relevance floor
-    // (injectMinScore() 0.45) + the hybrid push lexical bar (injectMinLexScore()
-    // 0.40) — the no-LLM-in-the-loop precision gate (P-031 / D-003) — and
+    // (injectMinScore()) + the hybrid push lexical bar (injectMinLexScore())
+    // — the no-LLM-in-the-loop precision gate (P-031 / D-003) — and
     // fusionMode 'cosine-gated', which makes the limit a CEILING rather than a
     // target (P-032 / F-B, D-010). `limit` is now the TOTAL across all pools,
     // replacing the old per-pool quotas (user 6 + harness 3 + hive 3 = 12).
@@ -685,8 +700,8 @@ describe('buildMemoryContextBlock', () => {
         {
           scope: ['u-123', 'harness:papercup'],
           limit: 12,
-          minScore: 0.45,
-          minLexScore: 0.4,
+          minScore: MEMORY_INJECTION_COSINE_FLOOR,
+          minLexScore: MEMORY_INJECTION_LEX_FLOOR,
           fusionMode: 'cosine-gated',
           diversify: { lambda: 0.7 },
         },
@@ -763,8 +778,8 @@ describe('buildMemoryContextBlock', () => {
         {
           scope: ['harness:member-a', 'hive:my-hive'],
           limit: 12,
-          minScore: 0.45,
-          minLexScore: 0.4,
+          minScore: MEMORY_INJECTION_COSINE_FLOOR,
+          minLexScore: MEMORY_INJECTION_LEX_FLOOR,
           fusionMode: 'cosine-gated',
           diversify: { lambda: 0.7 },
         },

@@ -40,7 +40,7 @@ const FEED_SUMMARY_BUDGET = 10_000;
 export default defineTool({
   name: 'coord:feed',
   description:
-    'Read the COMPLETE coordination stream across every agent and channel — messages, acks, notifies, broadcasts, handoffs, escalations, resolutions, plan events — newest-first with a next-page cursor. Filter by kinds, owner (matches sender OR recipient; broadcasts match any owner), plan_slug, free-text `q` (over summary/body/from/to), and a since_ts/before_ts time window. before_ts is the pagination cursor (pass back the returned `nextCursor`). Returns `{ count, total, by_kind, next_cursor, rows }`; each row is the raw envelope plus `surface` (messages|escalations|handoffs|plan-events) and a derived `broadcast` flag.',
+    'Read the COMPLETE coordination stream across every agent and channel — messages, acks, notifies, broadcasts, handoffs, escalations, resolutions, plan events — newest-first with a next-page cursor. Filter by kinds, owner (matches sender OR recipient; broadcasts match any owner), plan_slug, free-text `q` (over summary/body/from/to), and a since_ts/before_ts time window. before_ts is the pagination cursor (pass back the returned `nextCursor`). Returns `{ count, total, by_kind, next_cursor, rows }`; each row is the raw envelope plus `surface` (messages|escalations|handoffs|plan-events) and a derived `broadcast` flag. A row carrying `superseded_by` was CORRECTED by its own sender — follow that msg_id to the current claim before acting on the row.',
   guidance: {
     when:
       'You need the full fleet-wide coordination timeline — auditing what agents said to each other, tracing a broadcast/handoff/escalation chain, or backing an observer UI. The all-traffic counterpart to the per-owner coord:inbox.',

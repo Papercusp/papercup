@@ -29,7 +29,7 @@ import { loadCorpusFixture } from './corpus';
 import { loadGoldSetFixture } from './gold-set';
 import { BENCH_SCOPE, makeBackendCtx } from './run-bench';
 import { recordMemoryPrecisionRun, readMemoryPrecision, type MemoryPrecisionMetrics } from './precision-read';
-import { evaluateRecallDrop, BASELINE_HISTORY_WINDOW, type RecallDropEvaluation } from './precision-alert';
+import { evaluateRecallDrop, BASELINE_HISTORY_WINDOW, type PriorRun, type RecallDropEvaluation } from './precision-alert';
 import { fileRecallDropEi, resolveRecallDropEi } from './precision-alert-ei';
 
 /** Test/seam injection — swap the bench, the DB write, the flag, the invalidation. */
@@ -41,8 +41,12 @@ export interface MemoryPrecisionBenchDeps {
   record?: (workspaceId: string, m: MemoryPrecisionMetrics) => Promise<number>;
   /** Override the sync invalidation (tests assert it fired). */
   invalidate?: () => void;
-  /** Override the prior-r@10-history read the recall-drop baseline is built from (EI-10047). */
-  history?: (workspaceId: string) => Promise<Array<number | null>>;
+  /**
+   * Override the prior-history read the recall-drop baseline is built from
+   * (EI-10047). Each prior carries the admission shape it was measured under —
+   * WI-7215; a bare r@10 list cannot express which runs are comparable.
+   */
+  history?: (workspaceId: string) => Promise<PriorRun[]>;
   /** Override the recall-drop escalation (file on alert / resolve on recovery). Tests capture without PG. */
   escalateRecall?: (workspaceId: string, backend: string, rowId: number, evaluation: RecallDropEvaluation) => Promise<void>;
   log?: (m: string) => void;
@@ -198,14 +202,18 @@ export async function runMemoryPrecisionMonitor(
   // the just-recorded number never contaminates the history it's judged
   // against. Best-effort — a history-read failure degrades to
   // 'insufficient-history' (never alerts), it never wedges the record path.
-  let priorRAt10: Array<number | null> = [];
+  // WI-7215: priors carry the admission shape they were measured under, so the
+  // classifier can drop the incomparable ones. `metrics.notes` is the shape THIS
+  // run was measured under — the same string written to the row above — so the
+  // comparison can never silently span two measurement regimes.
+  let priors: PriorRun[] = [];
   try {
     if (deps.history) {
-      priorRAt10 = await deps.history(input.workspaceId);
+      priors = await deps.history(input.workspaceId);
     } else {
       const { getOrgPg } = await import('@papercusp/db-org');
       const snap = await readMemoryPrecision(getOrgPg().sql, input.workspaceId, BASELINE_HISTORY_WINDOW);
-      priorRAt10 = snap.trend.map((r) => r.rAt10);
+      priors = snap.trend.map((r) => ({ rAt10: r.rAt10, shape: r.notes ?? null }));
     }
   } catch (e) {
     log(`recall-baseline history read failed (non-fatal, treated as no history): ${e instanceof Error ? e.message : e}`);
@@ -237,7 +245,7 @@ export async function runMemoryPrecisionMonitor(
   // routine FIRED, not whether what it measured is any good. Best-effort:
   // an escalation failure must never turn a good bench run into a 'failed'
   // outcome, and must never re-throw into the routine tick.
-  const evaluation = evaluateRecallDrop(priorRAt10, metrics.rAt10);
+  const evaluation = evaluateRecallDrop(priors, metrics.rAt10, metrics.notes ?? null);
   try {
     if (deps.escalateRecall) {
       await deps.escalateRecall(input.workspaceId, metrics.backend, rowId, evaluation);

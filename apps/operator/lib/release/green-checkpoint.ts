@@ -61,6 +61,7 @@ import {
   stripVitestAnsi,
   vitestSummaryFailRow,
   vitestSuiteFailRow,
+  VITEST_TEST_FILE_SOURCE,
 } from '../../../../scripts/lib/vitest-summary.mjs';
 
 export interface CheckpointDeps {
@@ -932,6 +933,51 @@ export function extractFailingTests(out: string): string[] {
   for (const m of clean.matchAll(/^\s*❯\s+(\S+)\s+\(\d+\s+tests?[^)]*\|\s*\d+\s+failed\)/gm)) set.add(m[1]);
   for (const m of clean.matchAll(/>>>\s+(\S+)\s+FAILED\b/g)) set.add(m[1]);
   return [...set].sort().slice(0, 50);
+}
+
+/** A `failingTests` entry that plausibly names a vitest test FILE (matches the shared
+ *  `VITEST_TEST_FILE_SOURCE` shape — `.test.`/`.spec.`), as opposed to a workspace name
+ *  (`@scope/pkg`, the build-break sentinel `checkpointFailureSignature` pushes) or a
+ *  non-test GATE id (a `NON_TEST_GATE_SCRIPTS` key, e.g. `lint:tsc`) — neither of which
+ *  is a path, so neither can be (or needs to be) filesystem-validated. Anchored (`^…$`)
+ *  because a real entry is the WHOLE string, never a substring match. */
+const FAILING_TEST_FILE_SHAPE = new RegExp(`^${VITEST_TEST_FILE_SOURCE}$`);
+
+export interface FailingTestsValidation {
+  kept: string[];
+  dropped: string[];
+}
+
+/** EI-19340004308033958: on malformed/wrapped raw suite output (a captured control
+ *  sequence, a displaced epilogue row, …) `extractFailingTests`'s regexes can capture a
+ *  MANGLED path — a plausible-looking SUFFIX of a real path (e.g. `lib/y.test.ts`) that
+ *  resolves to nothing in the judged candidate. A wrong path is worse than none: it
+ *  sends a triager to open a file that does not exist, reading as "the tree is
+ *  inconsistent" rather than "the field is wrong" (see the EI for the live incident).
+ *
+ *  Filesystem-validates every FILE-shaped `failingTests` entry against the candidate
+ *  tree that was actually judged (`treeDir` — the same tree `resolveCandidateSha` reads),
+ *  and reports which ones do not resolve so the caller can drop them rather than persist
+ *  a silently-wrong path. Non-file entries (workspace names, gate ids) pass straight
+ *  through as `kept` — untouched, because there is nothing to validate.
+ *
+ *  `exists` is injectable (defaults to `existsSync`) so this is unit-testable without a
+ *  real tree on disk. */
+export function validateFailingTestPaths(
+  failingTests: string[],
+  treeDir: string,
+  exists: (p: string) => boolean = existsSync,
+): FailingTestsValidation {
+  const kept: string[] = [];
+  const dropped: string[] = [];
+  for (const entry of failingTests) {
+    if (!FAILING_TEST_FILE_SHAPE.test(entry) || exists(path.join(treeDir, entry))) {
+      kept.push(entry);
+    } else {
+      dropped.push(entry);
+    }
+  }
+  return { kept, dropped };
 }
 
 /** The individual failing CASE names (`× renders the …`), for humans reading a verdict.
@@ -5023,6 +5069,20 @@ export function realCheckpointDeps(
       let failingTests = checkpointFailureSignature(signatureOutput, green, buildOk);
       for (const sig of legs.failingSignatures) if (!failingTests.includes(sig)) failingTests.push(sig);
       let summary = summarizeSuiteOutput(fullOutput);
+      // EI-19340004308033958: drop any FILE-shaped failingTests entry that does not
+      // resolve to a real path in the judged candidate BEFORE quarantine tries to match
+      // against it — a mangled/truncated path is worse than no field (it sends a
+      // triager after a file that doesn't exist), so surface the loss loudly instead of
+      // persisting it silently.
+      if (!green && failingTests.length) {
+        const validated = validateFailingTestPaths(failingTests, treeDir);
+        if (validated.dropped.length) {
+          failingTests = validated.kept;
+          const note = `\n\nDropped unresolvable failingTests entr${validated.dropped.length === 1 ? 'y' : 'ies'} (did not exist in the judged candidate — read the log body for the real failure): ${validated.dropped.join(', ')}`;
+          summary = `${summary}${note}`.slice(-2000);
+          log(`[green-checkpoint] dropped ${validated.dropped.length} unresolvable failingTests entr${validated.dropped.length === 1 ? 'y' : 'ies'} (not a real path in the candidate tree): ${validated.dropped.join(', ')}`);
+        }
+      }
       if (!green && buildOk && failingTests.length) {
         try {
           const quarantinePath = path.join(treeDir, 'quarantine.txt');

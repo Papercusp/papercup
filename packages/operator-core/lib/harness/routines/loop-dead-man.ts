@@ -23,6 +23,21 @@
  * had not actually elapsed since the re-arm. `stampLoopArmedAt` records the true latest-arm
  * instant in `metadata.armed_at` (mirrors the `fire_count` seam — no migration); the dead-man
  * read below prefers it, falling back to `created_at` for a loop armed before this fix ran.
+ *
+ * EI-19339729634604096 — `maxFires` gets the SAME re-arm fix as `maxDurationSec`, for the
+ * identical reason: `metadata.fire_count` is a LIFETIME counter (bumped by every fire since the
+ * routine row was first created, never reset by a re-arm), so comparing it directly to a
+ * freshly-armed `maxFires` silently auto-paused a loop on its very first post-re-arm fire
+ * whenever the session had already fired more times, ever, than the new bound — exactly the
+ * dead-on-arrival failure EI-7613 fixed for duration, just left unfixed for fires. `maxFires` is
+ * documented (and every sibling dead-man bound behaves) as "since this arm", so the lifetime
+ * counter was never the right comparison. `stampLoopArmedAt` now ALSO snapshots the fire count
+ * AT arm time into `metadata.fire_count_at_arm` (fresh arm and re-arm alike, same UPDATE, same
+ * no-migration jsonb seam), and the dead-man read below compares `fire_count - fire_count_at_arm`
+ * (fires SINCE this arm) against `maxFires` — never the raw lifetime total. A loop armed before
+ * this fix ran has no `fire_count_at_arm` yet and falls back to 0 (baseline = "no fires yet
+ * since an unknown arm"), which is the safe direction: it may undercount fires-since-arm by the
+ * ones that happened before the first stamp, never overcount into a spurious breach.
  */
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
@@ -30,8 +45,11 @@ import { autoPauseLoopRoutine } from './loop-cost-cap';
 
 /**
  * Pure dead-man decision. Duration is checked first (a forgotten loop is the headline case).
- * A null / non-positive bound is "no bound". `fireCount` is the count of PRIOR fires, so
- * `>= maxFires` withholds the (maxFires+1)-th — exactly `maxFires` fires occur.
+ * A null / non-positive bound is "no bound". `fireCount` is the count of PRIOR fires SINCE THIS
+ * LOOP'S MOST RECENT ARM (the caller is responsible for subtracting the arm-time baseline —
+ * see `checkLoopDeadMan` — EI-19339729634604096; this pure function has no notion of "arm" at
+ * all, it just compares whatever count it is given), so `>= maxFires` withholds the
+ * (maxFires+1)-th SINCE-ARM fire — exactly `maxFires` fires occur per arm.
  */
 export function evaluateDeadManGuard(input: {
   armedAtMs: number;
@@ -45,7 +63,7 @@ export function evaluateDeadManGuard(input: {
     return { breach: true, reason: `max-duration ${Math.round((nowMs - armedAtMs) / 1000)}s > ${maxDurationSec}s (since arm)` };
   }
   if (maxFires != null && maxFires > 0 && fireCount >= maxFires) {
-    return { breach: true, reason: `max-fires ${fireCount} >= ${maxFires}` };
+    return { breach: true, reason: `max-fires ${fireCount} >= ${maxFires} (since arm)` };
   }
   return { breach: false };
 }
@@ -71,13 +89,22 @@ export async function checkLoopDeadMan(
   const autoPause = deps.autoPause ?? autoPauseLoopRoutine;
   const nowMs = input.nowMs ?? Date.now();
 
-  const rows = await db<Array<{ armed_ms: string | number | null; fire_count: string | number | null }>>`
+  const rows = await db<
+    Array<{ armed_ms: string | number | null; fire_count: string | number | null; fire_count_at_arm: string | number | null }>
+  >`
     SELECT (EXTRACT(EPOCH FROM COALESCE((metadata->>'armed_at')::timestamptz, created_at)) * 1000)::bigint AS armed_ms,
-           COALESCE((metadata->>'fire_count')::int, 0)    AS fire_count
+           COALESCE((metadata->>'fire_count')::int, 0)         AS fire_count,
+           COALESCE((metadata->>'fire_count_at_arm')::int, 0)  AS fire_count_at_arm
       FROM harness_shared.routines
      WHERE id = ${input.routineId}`;
   const armedAtMs = Number(rows[0]?.armed_ms ?? nowMs);
-  const fireCount = Number(rows[0]?.fire_count ?? 0);
+  const fireCountTotal = Number(rows[0]?.fire_count ?? 0);
+  const fireCountAtArm = Number(rows[0]?.fire_count_at_arm ?? 0);
+  // EI-19339729634604096 — fires SINCE THIS ARM, not the lifetime total. Clamp at 0: a loop
+  // armed before the fire_count_at_arm stamp existed reads baseline 0, and if its lifetime
+  // count somehow undershoots that (should not happen, but never let a negative delta subtract
+  // fires) the max() keeps the guard from ever going negative.
+  const fireCount = Math.max(0, fireCountTotal - fireCountAtArm);
 
   const verdict = evaluateDeadManGuard({
     armedAtMs,
@@ -117,13 +144,25 @@ export async function readLoopFireCount(sql: Sql | undefined, routineId: string)
  * `maxDurationSec` could breach instantly on the loop's very first post-re-arm fire. Mirrors
  * the `fire_count` seam (no migration, no new column). Best-effort: a stamp failure must
  * never fail the arm itself (the caller awaits this after the upsert has already succeeded).
+ *
+ * EI-19339729634604096 — ALSO snapshots `metadata.fire_count_at_arm` = the routine's lifetime
+ * `fire_count` AS OF THIS ARM, in the SAME statement (the RHS `jsonb_build_object` reads the
+ * pre-UPDATE `metadata` — a single-statement read-then-write, so there is no read/write race
+ * with a concurrent `incrementLoopFireCount`). This is the `maxFires` sibling of `armed_at`:
+ * `fire_count` itself is a lifetime counter that a re-arm never resets, so a fresh `maxFires`
+ * bound must be compared against fires SINCE THIS BASELINE, not the lifetime total — exactly
+ * the class of bug EI-7613 already fixed for `maxDurationSec`, left unfixed for `maxFires`
+ * until now. `checkLoopDeadMan` reads this back and subtracts it from the live `fire_count`.
  */
 export async function stampLoopArmedAt(sql: Sql | undefined, routineId: string, atMs?: number): Promise<void> {
   const db = sql ?? getOrgPg().sql;
   const iso = new Date(atMs ?? Date.now()).toISOString();
   await db`
     UPDATE harness_shared.routines
-       SET metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object('armed_at', ${iso}::text)
+       SET metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object(
+             'armed_at', ${iso}::text,
+             'fire_count_at_arm', COALESCE((metadata->>'fire_count')::int, 0)
+           )
      WHERE id = ${routineId}`;
 }
 

@@ -18,7 +18,7 @@
 // re-export them from the server module for existing callers, and point the
 // client import at the shared file. See knowledge-packs/candidates-shared.ts.
 import { describe, expect, it } from 'vitest';
-import { existsSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 
 const OPERATOR_VITE = resolve(__dirname, '../..'); // apps/operator-vite
@@ -177,6 +177,73 @@ describe('no server-only module leaks into the SPA browser-eager graph', () => {
 // that does not exist (red-pinning the gate on a type-only import the bundler
 // erases) while simultaneously hiding the edges it ran past. Both directions are
 // pinned below, so neither can regress silently.
+// Guard: `process.env.NODE_ENV` must never gate behavior directly in the
+// client-graph source trees (WI-7002 recurrence guard).
+//
+// `vite build` pins `process.env.NODE_ENV` to `'production'` regardless of
+// `--mode`, and the bundler constant-folds any `process.env.NODE_ENV`
+// comparison at BUILD time. Under the default desktop dev shell (`vite build
+// --watch --mode development`), that silently and permanently disables every
+// `process.env.NODE_ENV === 'development'` / `!== 'production'` dev gate in
+// the bundle — with no error, no type failure, and no failing test, because
+// the code still typechecks and the guarded branch simply never runs. This
+// exact class hit three real sites (AdvShell's unreachable-tab self-check,
+// DevReloadGate, lazy-with-retry's chunk-failure auto-reload) before all
+// three were fixed to use `import.meta.env.MODE`, which correctly reflects
+// `--mode` in every build (dev shell, HMR dev server, and the packaged
+// production build) — see
+// /internal/docs/agent-insights/dev-only-ui-gating-mode-not-dev.
+//
+// Scope is deliberately the two client-graph roots this repo's SPA bundles
+// through Vite (`apps/operator-vite/src`, `apps/operator/app`) — NOT
+// `libs/generic/*`. A domain-free library correctly defaults to
+// `process.env.NODE_ENV !== 'production'` (the standard Node/bundler
+// convention, e.g. `lazy-with-retry.ts`'s `defaultReloadOnFail`) and lets the
+// ONE bundler context where that default is wrong correct it through an
+// explicit `configure*()` seam call from a client-graph gate file
+// (`lazy-reload-gate.ts`, `query-health-gate.ts`) — banning the pattern
+// inside the library itself would break that (intentional, tested) design.
+describe('no process.env.NODE_ENV gates in the client-graph source trees', () => {
+  const CLIENT_GRAPH_ROOTS = [resolve(OPERATOR_VITE, 'src'), resolve(OPERATOR_ROOT, 'app')];
+
+  function listFiles(dir: string, out: string[]): string[] {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if (entry.name === 'node_modules' || entry.name.startsWith('.')) continue;
+      const p = join(dir, entry.name);
+      if (entry.isDirectory()) listFiles(p, out);
+      else if (/\.(ts|tsx)$/.test(entry.name) && !/\.test\.(ts|tsx)$/.test(entry.name)) out.push(p);
+    }
+    return out;
+  }
+
+  /** Strip comments so a mention in prose (e.g. explaining WHY this guard
+   *  exists, or referencing the fixed pattern) is never mistaken for a live
+   *  gate. Block comments first, then line comments — mirrors the approach
+   *  already used by the scanner above. */
+  function stripComments(src: string): string {
+    return src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1');
+  }
+
+  it('no client-graph file references process.env.NODE_ENV outside a comment', () => {
+    const offenders: string[] = [];
+    for (const root of CLIENT_GRAPH_ROOTS) {
+      for (const file of listFiles(root, [])) {
+        const src = readFileSync(file, 'utf8');
+        if (/process\.env\.NODE_ENV/.test(stripComments(src))) {
+          offenders.push(file.replace(REPO_ROOT + '/', ''));
+        }
+      }
+    }
+    expect(
+      offenders.length,
+      `process.env.NODE_ENV is constant-folded to 'production' by \`vite build\` regardless of ` +
+        `--mode, so a dev/prod gate written against it is silently dead code under this repo's ` +
+        `dev shell (WI-7002). Use \`import.meta.env.MODE !== 'production'\` instead.\n` +
+        `Offenders:\n${offenders.map((f) => `  ${f}`).join('\n')}\n`,
+    ).toBe(0);
+  });
+});
+
 describe('import-graph scanner', () => {
   const specs = (src: string) => [...specsIn(src, true)].sort();
 

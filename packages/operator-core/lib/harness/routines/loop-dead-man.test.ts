@@ -162,3 +162,76 @@ describe('EI-7613 regression — a re-arm resets the dead-man clock (armed_at wi
     expect(autoPause).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('EI-19339729634604096 regression — maxFires is counted SINCE THE MOST RECENT ARM, not lifetime', () => {
+  /** Same shape as fakeRoutineStore above, but also tracks fire_count (bumped externally,
+   *  the way incrementLoopFireCount would) and fire_count_at_arm (only stampLoopArmedAt writes
+   *  it). Models the real single-statement `metadata->>'fire_count'` snapshot exactly. */
+  function fakeRoutineStoreWithFires(initialFireCount: number) {
+    let fireCount = initialFireCount;
+    let fireCountAtArm = 0;
+    let armedAtIso: string | null = null;
+    const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+      const text = strings.join('?');
+      if (/UPDATE harness_shared\.routines/.test(text)) {
+        // The real UPDATE snapshots fire_count_at_arm = fire_count-as-of-now, in the same
+        // statement that writes armed_at — model that read-then-write here.
+        armedAtIso = values.find((v) => typeof v === 'string' && v.includes('T')) as string;
+        fireCountAtArm = fireCount;
+        return Promise.resolve([]);
+      }
+      return Promise.resolve([{ armed_ms: armedAtIso ? Date.parse(armedAtIso) : Date.now(), fire_count: fireCount, fire_count_at_arm: fireCountAtArm }]);
+    }) as never;
+    return {
+      sql,
+      bumpFireCount: (n = 1) => {
+        fireCount += n;
+      },
+    };
+  }
+
+  it('a session that already fired 7 times, then re-armed with maxFires:4, gets 4 MORE fires before breaching', async () => {
+    const { sql, bumpFireCount } = fakeRoutineStoreWithFires(7); // the exact repro numbers from the filed bug
+    await stampLoopArmedAt(sql, 'rt_x', 1_000_000); // re-arm: snapshots fire_count_at_arm = 7
+
+    const autoPause = vi.fn(async () => {});
+    // First post-re-arm fire (fires-since-arm = 1) must NOT breach — this is the bug: before
+    // the fix, checkLoopDeadMan compared the LIFETIME 7 >= 4 and paused instantly.
+    bumpFireCount(1);
+    let res = await checkLoopDeadMan({ sql, routineId: 'rt_x', maxFires: 4, nowMs: 1_100_000 }, { autoPause });
+    expect(res.breach).toBe(false);
+    expect(autoPause).not.toHaveBeenCalled();
+
+    // Fires 2 and 3 since arm: still under the bound.
+    bumpFireCount(1);
+    res = await checkLoopDeadMan({ sql, routineId: 'rt_x', maxFires: 4, nowMs: 1_200_000 }, { autoPause });
+    expect(res.breach).toBe(false);
+    bumpFireCount(1);
+    res = await checkLoopDeadMan({ sql, routineId: 'rt_x', maxFires: 4, nowMs: 1_300_000 }, { autoPause });
+    expect(res.breach).toBe(false);
+
+    // The 4th fire since arm reaches the bound exactly — breaches now, not before.
+    bumpFireCount(1);
+    res = await checkLoopDeadMan({ sql, routineId: 'rt_x', maxFires: 4, nowMs: 1_400_000 }, { autoPause });
+    expect(res.breach).toBe(true);
+    expect(res.reason).toContain('max-fires');
+    expect(autoPause).toHaveBeenCalledTimes(1);
+  });
+
+  it('a loop armed before this fix (no fire_count_at_arm stamp) falls back to baseline 0 — never over-counts into a spurious breach', async () => {
+    // No stampLoopArmedAt call at all: fire_count_at_arm stays unset (COALESCE -> 0 in the
+    // real SQL). A brand-new loop with maxFires:4 and 2 real fires must not breach.
+    let fireCount = 2;
+    const sql = ((strings: TemplateStringsArray) => {
+      const text = strings.join('?');
+      if (/UPDATE/.test(text)) return Promise.resolve([]);
+      return Promise.resolve([{ armed_ms: Date.now(), fire_count: fireCount, fire_count_at_arm: undefined }]);
+    }) as never;
+    void fireCount;
+
+    const autoPause = vi.fn(async () => {});
+    const res = await checkLoopDeadMan({ sql, routineId: 'rt_x', maxFires: 4, nowMs: Date.now() }, { autoPause });
+    expect(res.breach).toBe(false);
+    expect(autoPause).not.toHaveBeenCalled();
+  });
+});

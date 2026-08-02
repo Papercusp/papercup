@@ -30,6 +30,16 @@ export interface MemoryPrecisionRun {
   corpusN: number;
   goldN: number;
   latencyP50Ms: number | null;
+  /**
+   * WI-7215: the ADMISSION SHAPE this run was measured under, verbatim from the
+   * row's `notes` (e.g. `"fusionMode:cosine-gated"`). Optional because it is
+   * additive to a shape this snapshot's other consumers already construct.
+   *
+   * `null` is meaningful, not missing: every row recorded before WI-7179 is
+   * untagged and was measured under `floored-union`. r@10 is only comparable
+   * across runs sharing this value — see `evaluateRecallDrop`.
+   */
+  notes?: string | null;
 }
 
 /** The Learning-tab snapshot: the latest run + a short trend + the headline delta. */
@@ -89,6 +99,9 @@ function mapRow(r: Record<string, unknown>): MemoryPrecisionRun {
     corpusN: Number(r.corpus_n ?? 0),
     goldN: Number(r.gold_n ?? 0),
     latencyP50Ms: num(r.latency_p50_ms),
+    // Normalize absent/empty to null so an untagged legacy row and a row whose
+    // tag was never written compare EQUAL as one shape (both are floored-union).
+    notes: r.notes == null || String(r.notes) === '' ? null : String(r.notes),
   };
 }
 
@@ -104,7 +117,7 @@ export async function readMemoryPrecision(
 ): Promise<MemoryPrecisionSnapshot> {
   const rows = (await sql`
     SELECT ran_at, backend, fp_at_5, r_at_10, p_at_5, mrr, median_top_score,
-           floor_cosine, floor_lex, corpus_n, gold_n, latency_p50_ms
+           floor_cosine, floor_lex, corpus_n, gold_n, latency_p50_ms, notes
       FROM harness_shared.memory_precision_bench
      WHERE workspace_id = ${workspaceId}
      ORDER BY ran_at DESC

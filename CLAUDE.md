@@ -1054,6 +1054,22 @@ on the PID instead (`tail --pid=<pid> -f /dev/null`, or `kill -0 <pid>` in the
 loop) — or, if you genuinely must pattern-poll, bracket the first character so
 the pattern cannot match its own argv: `pgrep -f '[l]int-tsc'`.
 
+⚠ **Waiting on the right PID isn't enough for an `npm run <target>` you
+launched detached — the PID you can grab immediately is usually the WRAPPER,
+not the real work, and a wrapper-PID wait returns exit 0 while the job is
+still running** (EI-19340089056227272). `npm run build` here is a chain
+(`build` → `docs-build-singleflight` → `build:inner` → `astro build`, and
+similarly for other package scripts); `pgrep -f 'npm run <target>'` matches
+the outer `npm` process, which forks the leaf and can exit/return well before
+the leaf finishes. A `tail --pid=<that PID> -f /dev/null` wait then comes back
+in seconds while the build is still printing its first few lines — reading
+exactly like "the job finished successfully," which is worse than an obvious
+failure because nothing looks wrong. Resolve the **leaf** process before
+waiting (e.g. `pgrep -f '[a]stro build'` for an Astro target — bracket the
+first character per the self-match rule above), or don't rely on wait-exit
+alone: also grep the job's own log for a terminal marker (`Complete!`, `EXIT=`)
+before concluding it's done. Treat wait-exit as necessary but not sufficient.
+
 Do not sit in a `sleep`/poll loop waiting on work you did not launch either —
 prefer the push path (`events:await`, a completion event) over polling; see the
 "never wait for a calm window" and force-the-deploy rules above.

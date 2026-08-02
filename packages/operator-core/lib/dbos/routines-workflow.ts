@@ -925,6 +925,47 @@ async function routinesTickImpl(): Promise<void> {
     { name: 'intent-action-divergence-sweep' },
   );
 
+  // stale-prompt-render-in-live-sessions-2026-08-02 P-004: tell a RUNNING session
+  // that its own system-prompt render has materially drifted from current sources.
+  //
+  // A sweep, and specifically a PUSH, because the condition is unreachable any
+  // other way: `--system-prompt-file` is read once at exec, so a session serving a
+  // 14-day-old render cannot re-read it, cannot detect it, and (per D-003) is not
+  // reached by P-002's respawn re-render if its adv row predates migration 738.
+  // Nobody but the agent itself can act on this, so there is no leader escalation.
+  //
+  // Quietness is the design (the plan: chatter "gets ignored, which is worse than
+  // silence"): only deny-list recommendations and retired route mechanisms count,
+  // and each (owner, drift) is delivered once per 24h.
+  await DBOS.runStep(
+    async () => {
+      try {
+        const { stalePromptRenderSweep } = await import('../stale-prompt-render-sweep');
+        const res = await stalePromptRenderSweep();
+        const notified = res.outcomes.filter((o) => o.outcome === 'notified').length;
+        for (const o of res.outcomes) {
+          if (o.outcome === 'error') console.warn(`[stale-prompt-render] error: ${o.ownerId} — ${o.reason}`);
+        }
+        // Logged only when it did something OR when it deliberately stood a family
+        // down — a silent no-op is the normal, healthy case and does not need a line.
+        if (notified > 0 || res.routeFamilySuppressed) {
+          console.info(
+            `[stale-prompt-render] examined ${res.examined} live session(s), notified ${notified}` +
+              // WHY a quiet sweep was quiet. Without this, a suppressed route family
+              // and a genuinely clean fleet are indistinguishable in the log — the
+              // shape that let the sibling sweep's dead debounce hide for months.
+              (res.routeFamilySuppressed
+                ? ` — route family SUPPRESSED (${res.suppressionReason ?? 'incomplete source union'})`
+                : ''),
+          );
+        }
+      } catch (e) {
+        console.warn(`[stale-prompt-render] sweep failed: ${e instanceof Error ? e.message : e}`);
+      }
+    },
+    { name: 'stale-prompt-render-sweep' },
+  );
+
   // unified-agent-state-plane-2026-07-27 P-015: the plane's baseline + standing
   // measurement. A sweep for the same reason P-010 is one (D-046 refuses another
   // pull read over `tool_invocations`; D-091 §1 records the verdict as computed
