@@ -466,11 +466,31 @@ export function wakeTurnText(d: DeliveryWork): string {
  * carry-note store. Fail-soft end to end: any read/render error falls back to
  * the original text unmodified — a rehydration hiccup must never block or alter
  * a delivery that would otherwise have succeeded.
+ *
+ * EI-18825117783927950: the walls/checks re-read above fixes the CONTENT going
+ * stale between fire and delivery, but not the loop's OWN lifecycle going stale
+ * the same way — `loop:end` (or a re-arm) only stops *future* fires; a fire
+ * already created and sitting gate-waited/queued when the owner ends (or
+ * re-arms with a new goal) the loop still lands, carrying a FROZEN goal and the
+ * imperative "this is the authority for what to do this wake" framing for a
+ * loop that, by delivery time, no longer means that. Observed live: a session
+ * called `loop:end`, was told "no further wakes will fire", and ~10min later
+ * received exactly such a stale fire — avoided only by the receiving agent's
+ * own suspicion. Since this function already runs at the true "about to
+ * deliver" moment for every channel (live psu-socket inject, plan-run resume,
+ * adv-session inject), it is the natural single choke point to ALSO re-check
+ * the loop's current `active`/`armedAt` state and, if superseded, append an
+ * unmissable banner stripping the stale imperative framing — same
+ * annotate-don't-drop posture as the walls/checks re-check (a wake is never
+ * silently swallowed; the agent is told plainly not to trust it).
  */
 export async function rehydrateLoopWakeText(
   d: DeliveryWork,
   baseText: string,
-  deps: { getLoopCarryNoteWithMetaFn?: typeof defaultGetLoopCarryNoteWithMeta } = {},
+  deps: {
+    getLoopCarryNoteWithMetaFn?: typeof defaultGetLoopCarryNoteWithMeta;
+    getLoopStatusFn?: typeof getLoopStatus;
+  } = {},
 ): Promise<string> {
   try {
     const marker = readColdLoopMarker(d.payload);
@@ -490,6 +510,34 @@ export async function rehydrateLoopWakeText(
     const checksNow = renderLoopChecksBlock(checks);
     const ageMs = meta.updatedAtMs != null ? Date.now() - meta.updatedAtMs : null;
     const ageStr = ageMs != null ? `${Math.max(0, Math.round(ageMs / 1000))}s` : 'unknown';
+
+    // EI-18825117783927950: best-effort, SEPARATELY caught so a status-read hiccup
+    // degrades only this banner, never the walls/checks rehydration above it.
+    let supersededNote = '';
+    try {
+      const getStatus = deps.getLoopStatusFn ?? getLoopStatus;
+      const status = await getStatus(d.subscriberId);
+      if (!status || status.active === false) {
+        supersededNote =
+          `\n\n🛑 THIS LOOP WAS ENDED (loop:end) before this wake was actually delivered — it was queued while ` +
+          `the loop was still active and only reached you afterward. The goal/checkpoint text above is FROZEN ` +
+          `from before the end and is NOT authoritative: do not resume, re-open, or re-do work off it. Call ` +
+          `loop:status to confirm before acting; if the loop's goal was already achieved, take no further ` +
+          `action on it this turn.`;
+      } else if (
+        status.armedAt != null &&
+        typeof d.createdAt === 'string' &&
+        new Date(status.armedAt).getTime() > new Date(d.createdAt).getTime()
+      ) {
+        supersededNote =
+          `\n\n🛑 THIS LOOP WAS RE-ARMED (loop:arm) after this wake was queued but before it was delivered — the ` +
+          `goal/checkpoint text above is from the PRIOR arm and may no longer reflect the current goal. Call ` +
+          `loop:status / coord:orient to read the CURRENT goal before treating the text above as authoritative.`;
+      }
+    } catch {
+      /* best-effort — never blocks or alters the walls/checks rehydration above */
+    }
+
     return (
       `${baseText}\n\n` +
       `🔄 LIVE RE-CHECK at actual delivery time (EI-10935 — this delivery may have been queued/staged, so the ` +
@@ -498,7 +546,8 @@ export async function rehydrateLoopWakeText(
       (checksNow ? `${checksNow}\n` : '') +
       `If this disagrees with the text above (esp. a wall shown open above that is NOT listed here), TRUST THIS ` +
       `BLOCK — it is the live re-read: do not re-execute an irreversible action or re-ask the owner about a wall ` +
-      `not listed here.`
+      `not listed here.` +
+      supersededNote
     );
   } catch {
     return baseText; // fail-soft — never let a rehydration hiccup block delivery

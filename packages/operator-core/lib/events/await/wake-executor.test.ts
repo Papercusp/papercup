@@ -386,6 +386,133 @@ describe('rehydrateLoopWakeText (EI-10935: delivery-time carry-note re-check)', 
   });
 });
 
+describe('rehydrateLoopWakeText — EI-18825117783927950 (loop:end / re-arm does not drain an already-queued fire)', () => {
+  const FROZEN_TEXT =
+    "Loop wake. Continue working plan foo. Current loop:checkpoint — this is the authority for what to do this wake.";
+  const noWalls = async () => ({ note: null, updatedAtMs: Date.now() - 2_000 });
+
+  function loopStatus(over: Partial<import('../../harness/routines/loop').LoopStatus> = {}) {
+    return {
+      name: 'loop_su-loop',
+      ownerId: 'su-loop-1',
+      harnessSlug: 'papercusp',
+      active: true,
+      intervalSec: 60,
+      carry: 'warm' as const,
+      continuation: 'settle' as const,
+      mode: 'work' as const,
+      fireCount: 3,
+      parked: false,
+      nextFireAt: null,
+      lastFiredAt: null,
+      armedAt: new Date(Date.now() - 100_000).toISOString(),
+      costCapCents: null,
+      maxFires: null,
+      maxDurationSec: null,
+      stalled: false,
+      stalledSinceMs: null,
+      lastDeliveryOutcome: null,
+      consecutiveErrors: 0,
+      lastWakeChannel: null,
+      lastWakeStatus: null,
+      lastWakeAt: null,
+      lastWakeError: null,
+      lastTurnAt: null,
+      lastRealTurnAt: null,
+      turnsStalled: false,
+      ...over,
+    };
+  }
+
+  it('a fire queued while active, delivered after loop:end (active:false), is banner-flagged as SUPERSEDED', async () => {
+    const getLoopStatusFn = vi.fn(async () => loopStatus({ active: false }));
+    const d = work({
+      payload: { harness: 'papercusp', wakeCount: 12 },
+      subscriberId: 'su-loop-1',
+      createdAt: new Date(Date.now() - 600_000).toISOString(),
+    });
+    const out = await rehydrateLoopWakeText(d, FROZEN_TEXT, {
+      getLoopCarryNoteWithMetaFn: noWalls,
+      getLoopStatusFn,
+    });
+    expect(getLoopStatusFn).toHaveBeenCalledWith('su-loop-1');
+    // The frozen text is preserved, never mutated/removed...
+    expect(out).toContain(FROZEN_TEXT);
+    // ...but a loud, unmissable banner tells the receiving agent it is stale.
+    expect(out).toMatch(/THIS LOOP WAS ENDED/);
+    expect(out).toMatch(/NOT authoritative/);
+    expect(out).toMatch(/do not resume, re-open, or re-do work/);
+  });
+
+  it('no loop routine row at all for this owner (status null) is ALSO treated as ended/superseded', async () => {
+    const getLoopStatusFn = vi.fn(async () => null);
+    const d = work({ payload: { harness: 'papercusp', wakeCount: 1 }, subscriberId: 'su-loop-1' });
+    const out = await rehydrateLoopWakeText(d, FROZEN_TEXT, {
+      getLoopCarryNoteWithMetaFn: noWalls,
+      getLoopStatusFn,
+    });
+    expect(out).toMatch(/THIS LOOP WAS ENDED/);
+  });
+
+  it('a fire queued before a RE-ARM (armedAt newer than the delivery\'s createdAt) is banner-flagged as superseded, even though active is still true', async () => {
+    const getLoopStatusFn = vi.fn(async () =>
+      loopStatus({ active: true, armedAt: new Date(Date.now() - 5_000).toISOString() }),
+    );
+    const d = work({
+      payload: { harness: 'papercusp', wakeCount: 4 },
+      subscriberId: 'su-loop-1',
+      createdAt: new Date(Date.now() - 600_000).toISOString(), // long before the re-arm above
+    });
+    const out = await rehydrateLoopWakeText(d, FROZEN_TEXT, {
+      getLoopCarryNoteWithMetaFn: noWalls,
+      getLoopStatusFn,
+    });
+    expect(out).toMatch(/THIS LOOP WAS RE-ARMED/);
+    expect(out).toMatch(/PRIOR arm/);
+  });
+
+  it('a fire queued AFTER the current arm (the normal case) carries NO superseded banner', async () => {
+    const armedAtMs = Date.now() - 600_000;
+    const getLoopStatusFn = vi.fn(async () => loopStatus({ active: true, armedAt: new Date(armedAtMs).toISOString() }));
+    const d = work({
+      payload: { harness: 'papercusp', wakeCount: 4 },
+      subscriberId: 'su-loop-1',
+      createdAt: new Date(armedAtMs + 60_000).toISOString(), // created well after the arm
+    });
+    const out = await rehydrateLoopWakeText(d, FROZEN_TEXT, {
+      getLoopCarryNoteWithMetaFn: noWalls,
+      getLoopStatusFn,
+    });
+    expect(out).not.toMatch(/THIS LOOP WAS ENDED/);
+    expect(out).not.toMatch(/THIS LOOP WAS RE-ARMED/);
+  });
+
+  it('fails soft — a getLoopStatusFn throw degrades only the superseded banner, never the walls/checks rehydration', async () => {
+    const getLoopStatusFn = vi.fn(async () => {
+      throw new Error('pg unreachable');
+    });
+    const d = work({ payload: { harness: 'papercusp', wakeCount: 1 }, subscriberId: 'su-loop-1' });
+    const out = await rehydrateLoopWakeText(d, FROZEN_TEXT, {
+      getLoopCarryNoteWithMetaFn: noWalls,
+      getLoopStatusFn,
+    });
+    // Still gets the base EI-10935 live re-check block...
+    expect(out).toMatch(/LIVE RE-CHECK/);
+    // ...but no superseded banner (the status read failed, so it says nothing rather
+    // than guessing).
+    expect(out).not.toMatch(/THIS LOOP WAS ENDED/);
+    expect(out).not.toMatch(/THIS LOOP WAS RE-ARMED/);
+  });
+
+  it('a NON-loop wake never calls getLoopStatusFn at all (no marker ⇒ early return, byte-identical)', async () => {
+    const getLoopStatusFn = vi.fn(async () => loopStatus({ active: false }));
+    const d = work({ payload: null });
+    const out = await rehydrateLoopWakeText(d, FROZEN_TEXT, { getLoopStatusFn });
+    expect(out).toBe(FROZEN_TEXT);
+    expect(getLoopStatusFn).not.toHaveBeenCalled();
+  });
+});
+
 describe('resumeCommandFor', () => {
   it('claude: exact-session resume with the prompt as positional arg', () => {
     const r = resumeCommandFor({ agent: 'claude', sessionId: 'sid-1', ompThreadId: null }, 'WAKE');
