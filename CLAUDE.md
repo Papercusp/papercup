@@ -440,7 +440,9 @@ fooled that way, and needs no unique string at all.
 - **`INCONCLUSIVE` → NOT "absent".** It means only that the file differs somehow —
   and on a file the fleet is editing, a peer's later commit makes it differ almost
   always. Fall back to the ancestry form above (`git log -S… | tail -1` +
-  `--is-ancestor`), which isolates *your* introducing commit.
+  `--is-ancestor`), which isolates *your* introducing commit — but read BOTH caveats
+  below first (`tail -1` not `-1`, and `-G` not `-S` when searching by a name), because
+  that fallback is where both false-negative traps live.
 
 Treating `INCONCLUSIVE` as "my change is missing" would re-create the `marker` bug
 with the sign flipped, and send you to re-fire a gate that already carries your work.

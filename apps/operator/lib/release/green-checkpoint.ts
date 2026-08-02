@@ -111,8 +111,11 @@ export interface CheckpointDeps {
   }>;
   /** Fast-forward `ready` to `candidate` (advanceReady). */
   advance(candidate: string): Promise<AdvanceResult>;
-  /** Publish `ready` to origin. */
-  push(ref: string): Promise<void>;
+  /** Publish `ready` to origin. `baseSha` (WI-7013) — the sha `ref` advanced FROM
+   *  (typically `AdvanceResult.from`) — is threaded through to the CI dispatch as the
+   *  affected-test diff base, so the remote gate's `workflow_dispatch` run judges what
+   *  this promotion actually changed instead of comparing the pushed tip to itself. */
+  push(ref: string, baseSha?: string | null): Promise<void>;
   broadcast(summary: string, body?: string): Promise<void>;
   /** Resolve the CURRENT tip of the integration branch (may be newer than `candidate`,
    *  which the quiet-cut deliberately holds back). Optional: absent ⇒ no re-triage. */

@@ -47,6 +47,7 @@ import { listStartedPots } from '../pot/started';
 import { resolveMugOwner, wakeMug } from '../pot/placement-watchdog';
 import { claimWatchdogFire, recentWatchdogFires } from '../pot/watchdog';
 import { promotePlanItems } from '../plan-workitem-promotion-run';
+import { routineStorageSlug } from '../pot-membership';
 
 // ── tunables ──────────────────────────────────────────────────────────────────
 
@@ -87,11 +88,18 @@ interface ReadyRow {
 
 /** Read this hive's ratified-but-never-started scout plans. Same scoping rules as
  *  readScoutDraftCandidates: the hive's OWN workspaceId; scout-origin read from the
- *  plan's own frontmatter. */
+ *  plan's own frontmatter.
+ *
+ *  ⚠ `planStorageSlug` is the slug plans are STORED under, NOT a routine's raw
+ *  `installSlug` (WI-6978). harness_plans is Hive-scoped: the write path collapses a
+ *  member harness to its Hive home (resolvePlanScope → potHomeSlugForHarness), so a
+ *  member's raw slug matches zero rows here — silently, since "no ready plans" is
+ *  also the healthy answer. The sweep resolves it once via routineStorageSlug and
+ *  passes the result in; keep it that way rather than re-deriving from installSlug. */
 export async function readScoutReadyCandidates(
   sql: Sql,
   planWorkspaceId: string,
-  installSlug: string,
+  planStorageSlug: string,
   opts: { limit?: number } = {},
 ): Promise<ScoutReadyCandidate[]> {
   const limit = opts.limit ?? 20;
@@ -103,7 +111,7 @@ export async function readScoutReadyCandidates(
            (content ~ ('- [*][*]P-[0-9]+[*][*] ' || chr(96) || '(todo|wip)' || chr(96))) AS has_open_items
       FROM harness_shared.harness_plans
      WHERE workspace_id = ${planWorkspaceId}
-       AND harness_slug = ${installSlug}
+       AND harness_slug = ${planStorageSlug}
        AND status = 'ready'
        AND archived = false
        AND (op_status IS NULL OR op_status <> 'started')
@@ -123,7 +131,7 @@ export async function readScoutReadyCandidates(
  *  workspace-correct for scout plans (see module header). */
 export async function startReadyScoutPlan(
   sql: Sql,
-  args: { workspaceId: string; installSlug: string; planSlug: string },
+  args: { workspaceId: string; planStorageSlug: string; planSlug: string },
 ): Promise<{ transitioned: boolean; promoted: number; flagOff: boolean }> {
   const now = new Date().toISOString();
   const rows = await sql<{ prev_op_status: string | null }[]>`
@@ -135,19 +143,19 @@ export async function startReadyScoutPlan(
         SELECT plan_slug, op_status AS prev_op_status
           FROM harness_shared.harness_plans
          WHERE workspace_id = ${args.workspaceId}
-           AND harness_slug = ${args.installSlug}
+           AND harness_slug = ${args.planStorageSlug}
            AND plan_slug    = ${args.planSlug}
            FOR UPDATE
       ) prev
      WHERE p.workspace_id = ${args.workspaceId}
-       AND p.harness_slug = ${args.installSlug}
+       AND p.harness_slug = ${args.planStorageSlug}
        AND p.plan_slug    = prev.plan_slug
     RETURNING prev.prev_op_status`;
   const transitioned = rows.length > 0 && rows[0].prev_op_status !== 'started';
   if (!transitioned) return { transitioned: false, promoted: 0, flagOff: false };
   const result = await promotePlanItems({
     workspaceId: args.workspaceId,
-    harnessSlug: args.installSlug,
+    harnessSlug: args.planStorageSlug,
     planSlug: args.planSlug,
     createdBy: 'scout-ready-autostart',
   });
@@ -207,12 +215,19 @@ export async function scoutReadyAutostartSweep(): Promise<ScoutReadyAutostartRes
     const { sql } = getOrgPg();
     for (const { workspaceId, installSlug } of started) {
       try {
-        const candidates = await readScoutReadyCandidates(sql, workspaceId, installSlug);
+        // WI-6978: plans are stored under the Pot/Hive HOME, not a member harness's
+        // own slug — resolve once here rather than in each helper, so the read and the
+        // op_status UPDATE below can never drift onto different rows. Fails open to
+        // the literal slug, so a resolver hiccup degrades to today's behaviour rather
+        // than silently disabling the sweep. `installSlug` stays the right value for
+        // the watchdog keys + log lines further down (stable alarm identity).
+        const planStorageSlug = await routineStorageSlug(installSlug, workspaceId);
+        const candidates = await readScoutReadyCandidates(sql, workspaceId, planStorageSlug);
         if (candidates.length === 0) continue;
         const { startable, itemless } = partitionReadyCandidates(candidates);
         for (const plan of startable) {
           try {
-            const r = await startReadyScoutPlan(sql, { workspaceId, installSlug, planSlug: plan.planSlug });
+            const r = await startReadyScoutPlan(sql, { workspaceId, planStorageSlug, planSlug: plan.planSlug });
             results.push({
               workspaceId,
               installSlug,

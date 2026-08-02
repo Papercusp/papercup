@@ -38,10 +38,12 @@ vi.mock('nuqs', () => ({
 }));
 
 import TasksRosterPanel, {
+  exemptByReason,
   fmtAge,
   fmtBytes,
   groupByClass,
   shortCmd,
+  splitUnowned,
   unaccountedGroups,
 } from './TasksRosterPanel';
 
@@ -279,5 +281,112 @@ describe('<TasksRosterPanel>', () => {
     });
     render(<TasksRosterPanel active />);
     expect(screen.getByTestId('tasks-roster').textContent).toContain('Scan capped');
+  });
+});
+
+/**
+ * The two pure projections behind the exempt/unaccounted split (EI-19325095302441792).
+ *
+ * These carry the whole point of that change: the pane used to render every
+ * `owned:false` row as "UNENROLLED — the visible gap", which presented 643 of 655
+ * processes on this box as escapees and produced a false 98% coverage-hole report.
+ * The grouping is what makes the alarm mean something, so it is worth pinning
+ * directly rather than only through the rendered pane.
+ */
+describe('splitUnowned', () => {
+  // scope/exemptReason are REQUIRED on LiveProcessRow, but a payload from an
+  // operator that predates them arrives without either — which is precisely the
+  // case the absent-discriminant rule exists for. Cast so we can construct it.
+  const row = (p: Partial<Parameters<typeof splitUnowned>[0][number]>) =>
+    ({ pid: 1, cmdline: 'x', cgroupPath: '/c', owned: false, ...p }) as Parameters<
+      typeof splitUnowned
+    >[0][number];
+
+  it('drops owned rows from BOTH groups — they are already in the ledger', () => {
+    // Listing an enrolled process again in an unenrolled group would double-count
+    // it and invent a gap that is not there.
+    const { unaccounted, exempt } = splitUnowned([
+      row({ pid: 1, owned: true, scope: 'owned', exemptReason: null }),
+      row({ pid: 2, owned: false, scope: 'unaccounted', exemptReason: null }),
+    ]);
+    expect(unaccounted.map((r) => r.pid)).toEqual([2]);
+    expect(exempt).toEqual([]);
+  });
+
+  it('never lets an exempt CLASSIFICATION override ownership', () => {
+    // owned short-circuits upstream in classifyScope; if that ever regressed, a
+    // process of ours sitting in a .service leaf would vanish from the pane.
+    const { unaccounted, exempt } = splitUnowned([
+      row({ pid: 3, owned: true, scope: 'exempt', exemptReason: 'systemd-unit' }),
+    ]);
+    expect(unaccounted).toEqual([]);
+    expect(exempt).toEqual([]);
+  });
+
+  it('routes an ABSENT discriminant to unaccounted, not exempt', () => {
+    // THE load-bearing case. A stale operator that predates `scope` must not
+    // silently downgrade a real escape into "nothing to see" — over-reporting is
+    // the safe direction for an alarm, under-reporting is how WI-6844 happened.
+    const { unaccounted, exempt } = splitUnowned([row({ pid: 4 })]);
+    expect(unaccounted.map((r) => r.pid)).toEqual([4]);
+    expect(exempt).toEqual([]);
+  });
+
+  it('separates the two populations a reader must not confuse', () => {
+    const { unaccounted, exempt } = splitUnowned([
+      row({ pid: 5, scope: 'exempt', exemptReason: 'human-terminal' }),
+      row({ pid: 6, scope: 'unaccounted', exemptReason: null }),
+      row({ pid: 7, scope: 'exempt', exemptReason: 'systemd-unit' }),
+    ]);
+    expect(exempt.map((r) => r.pid)).toEqual([5, 7]);
+    expect(unaccounted.map((r) => r.pid)).toEqual([6]);
+  });
+});
+
+describe('exemptByReason', () => {
+  const row = (reason: string | null, pid: number) =>
+    ({
+      pid,
+      cmdline: 'x',
+      cgroupPath: '/c',
+      owned: false,
+      scope: 'exempt',
+      exemptReason: reason,
+    }) as Parameters<typeof exemptByReason>[0][number];
+
+  it('counts by reason, biggest group first', () => {
+    expect(
+      exemptByReason([
+        row('systemd-unit', 1),
+        row('human-terminal', 2),
+        row('human-terminal', 3),
+        row('human-terminal', 4),
+      ]),
+    ).toEqual([
+      { reason: 'human-terminal', count: 3 },
+      { reason: 'systemd-unit', count: 1 },
+    ]);
+  });
+
+  it('files a missing reason under `other` rather than dropping the row', () => {
+    // A row that is exempt without saying why still has to be COUNTED, or the
+    // collapsed summary silently under-reports the group it is summarising.
+    expect(exemptByReason([row(null, 1), row('systemd-unit', 2)])).toEqual([
+      { reason: 'other', count: 1 },
+      { reason: 'systemd-unit', count: 1 },
+    ]);
+  });
+
+  it('breaks ties alphabetically so the summary does not reorder between renders', () => {
+    // Equal counts must not depend on Map insertion order — a summary line that
+    // reshuffles on every poll reads as churn and trains the reader to ignore it.
+    const forward = exemptByReason([row('systemd-unit', 1), row('human-terminal', 2)]);
+    const reverse = exemptByReason([row('human-terminal', 2), row('systemd-unit', 1)]);
+    expect(forward).toEqual(reverse);
+    expect(forward.map((r) => r.reason)).toEqual(['human-terminal', 'systemd-unit']);
+  });
+
+  it('returns an empty summary for no exempt rows, not a zero-count row', () => {
+    expect(exemptByReason([])).toEqual([]);
   });
 });

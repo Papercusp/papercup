@@ -1715,12 +1715,20 @@ async function resolveHiveGitTopicHex(
  * cross-device repo identity (WI-5168, repo-identity.ts's `canonicalRepoKey`
  * — NOT the local install slug, which can differ per device for the same
  * repo; see the openHiveGitDuplexToDevice call below).
+ *
+ * SHARED BY BOTH DIALING LEGS. `runRefAnnounceLeg` consults and arms the same
+ * map (see its `openStream`): it is the same store on the same peer, so a
+ * refusal learned on either leg is evidence for both — and the ref-announce leg
+ * is the one that actually storms, because it re-drives every held announcement
+ * on every tick rather than returning early on a seeded store. Wiring it here
+ * only was itself the bug for ~5.9 days on the live tower (2026-08-02).
  */
 const NO_SUCH_REPO_BACKOFF_MS = 30 * 60 * 1000; // 30 min ≈ 6 ticks at the ~5-min cadence
 const noSuchRepoBackoffUntil = new Map<string, number>();
 const noSuchRepoBackoffKey = (slug: string, peerDevicePubkeyBase64: string): string =>
   `${slug}:${peerDevicePubkeyBase64}`;
-/** Test-only: clear all backoff state so tests don't leak it across cases. */
+/** Test-only: clear all backoff state so tests don't leak it across cases.
+ *  Covers BOTH legs (the map is shared) despite the historical name. */
 export function __resetBootstrapDialBackoffForTest(): void {
   noSuchRepoBackoffUntil.clear();
 }
@@ -2480,6 +2488,29 @@ async function runRefAnnounceLeg(slug: string, workspaceId: string): Promise<voi
       return;
     }
 
+    // A duplex that is already dead when the receive tick gets it: the tick
+    // renders that as a `fetch-failed` carrying `message` as its stderr, which
+    // is how a "we did not even dial, and here is why" outcome reaches the
+    // operator log without inventing a second result shape.
+    const destroyedStub = (message: string): Duplex => {
+      const stub = new Duplex({
+        read() {},
+        write(_chunk, _enc, cb) {
+          cb();
+        },
+      });
+      // Same unhandled-'error' footgun as runBootstrapLeg's stub above —
+      // attach the no-op listener BEFORE destroy(err) or the host dies
+      // on an uncaughtException next tick.
+      stub.on('error', () => {});
+      stub.destroy(new Error(message));
+      return stub;
+    };
+    // EI-15333, SECOND LEG. Which devices this tick genuinely put on the wire —
+    // the arming gate below reads it. See that comment for why a bare stderr
+    // test is not sufficient.
+    const dialedThisTick = new Set<string>();
+
     const receiveOutcome = await runRefAnnounceReceiveTick({
       repoPath,
       pending: pending.map((p) => p.announcement),
@@ -2487,6 +2518,44 @@ async function runRefAnnounceLeg(slug: string, workspaceId: string): Promise<voi
       allowedDevices: memberDevicePubkeysBase64,
       budgetStates: priorBudgetStates,
       openStream: async (device) => {
+        // EI-15333 — THE SAME REPAIR, ON THE LEG THAT ACTUALLY KEEPS DIALING.
+        //
+        // `no-such-repo` is serve-wiring's `pathExists(join(repoPath,'HEAD'))`
+        // verdict: the peer does not have this store on disk. That is not a
+        // transient dial failure, so re-dialing on the tick cadence cannot
+        // change it — which is exactly why EI-15333 armed a bounded backoff on
+        // the BOOTSTRAP leg. It was never wired here, and this is the leg that
+        // hurts: the bootstrap leg returns early on an already-seeded store,
+        // while this one re-drives EVERY pending announcement EVERY tick and so
+        // re-dials the impossible pair forever. Structurally identical to the
+        // WI-6364 (fix C) miss below — a repair the stuck machine cannot reach
+        // is not a repair.
+        //
+        // Live-caught 2026-08-02 on the tower: `hello-world-3-pot` held its
+        // fed-event cursor at 7431042 and re-dialed NINE announcements from
+        // Lm1ABoMRKVoo on every tick, each refused `no-such-repo`, for 8470
+        // minutes (~5.9 days) without local progress — the re-dial storm behind
+        // WI-6189's superseded/aborted serves. The pending set grows without
+        // bound while the cursor is pinned, so the per-tick cost grows with the
+        // age of the stall.
+        //
+        // Backoff rather than cursor-advance is deliberate: advancing past the
+        // announcement would silently drop a namespace that was never mirrored,
+        // which is precisely what EI-15335's cursor hold exists to prevent. The
+        // hold is correct; re-dialing INSIDE the hold is what was wrong. One
+        // dial per 30 min still self-heals the moment the peer gains the store.
+        //
+        // Shares the bootstrap leg's `(repoKey, device)` key space on purpose: it
+        // is the same store on the same peer, so a refusal learned on either leg
+        // is evidence for both.
+        const backoffKey = noSuchRepoBackoffKey(repoKey, device);
+        const backoffUntil = noSuchRepoBackoffUntil.get(backoffKey);
+        if (backoffUntil !== undefined && backoffUntil > Date.now()) {
+          return destroyedStub(
+            `no-such-repo backoff: ${device.slice(0, 8)} definitively refused ${repoKey}; ` +
+              `next dial in ${Math.ceil((backoffUntil - Date.now()) / 1000)}s`,
+          );
+        }
         // DIAL-REGISTRY (WI-3583) — see module doc above. Real per-device
         // dial once this harness has a live swarm topic; falls back to the
         // same pre-WI-3583 destroyed stub when it doesn't (private/local-only
@@ -2499,19 +2568,9 @@ async function runRefAnnounceLeg(slug: string, workspaceId: string): Promise<voi
         // when a fetch is actually attempted, never at module-init time.
         const topicHex = await resolveHiveGitTopicHex(workspaceId, potHomeSlug);
         if (!topicHex) {
-          const stub = new Duplex({
-            read() {},
-            write(_chunk, _enc, cb) {
-              cb();
-            },
-          });
-          // Same unhandled-'error' footgun as runBootstrapLeg's stub above —
-          // attach the no-op listener BEFORE destroy(err) or the host dies
-          // on an uncaughtException next tick.
-          stub.on('error', () => {});
-          stub.destroy(new Error('hive-git: no live swarm join for this harness yet'));
-          return stub;
+          return destroyedStub('hive-git: no live swarm join for this harness yet');
         }
+        dialedThisTick.add(device);
         return openHiveGitDuplexToDevice(Buffer.from(topicHex, 'hex'), device, {
           repoKey,
           peerGithubUserId: actor.githubUserId,
@@ -2541,9 +2600,33 @@ async function runRefAnnounceLeg(slug: string, workspaceId: string): Promise<voi
       },
     });
 
+    // EI-15333 (second leg): arm the backoff for a pair that was ACTUALLY
+    // DIALED this tick and came back with a definitive `no-such-repo`.
+    //
+    // Gating on `dialedThisTick` is load-bearing, not defensive. A backoff SKIP
+    // also lands in `fetchFailed`, and its stderr NAMES `no-such-repo` (it has
+    // to — that is the diagnosis the operator needs). So arming off the stderr
+    // alone would push the deadline `NOW + 30min` forward on every single tick
+    // and the window would never expire: a bounded backoff silently becomes
+    // permanent suppression, and the pair would never be retried even once the
+    // peer gains the store. The dial set is the only evidence that separates
+    // "the peer just told us" from "we are quoting ourselves".
+    for (const f of cursorDecision.fetchFailed) {
+      if (!dialedThisTick.has(f.device)) continue;
+      if (!f.stderr.includes('no-such-repo')) continue;
+      noSuchRepoBackoffUntil.set(noSuchRepoBackoffKey(repoKey, f.device), Date.now() + NO_SUCH_REPO_BACKOFF_MS);
+    }
     // Log fetch failures LOUDLY (the bootstrap leg already does) — otherwise a
     // missed receive is invisible: no operator signal distinguishes "nothing
     // to receive" from "receive failed".
+    //
+    // COLLAPSED per (device, reason): the cursor holds BELOW the oldest failed
+    // row, so a stalled pair re-reads its whole held backlog every tick and
+    // emitted one identical line per announcement per tick — nine lines every
+    // ~5 min on the live tower stall above, growing with the age of the stall,
+    // which is what buried the one line that actually distinguished the cause.
+    // One line per distinct failure, carrying the event span it stands for.
+    const failureGroups = new Map<string, { device: string; reason: string; detail: string; rowIds: number[] }>();
     for (const f of cursorDecision.fetchFailed) {
       // WI-6277: this line used to end in `${f.stderr}` and nothing else, which
       // on the ceiling path is the EMPTY STRING — a SIGKILLed git writes no
@@ -2560,16 +2643,30 @@ async function runRefAnnounceLeg(slug: string, workspaceId: string): Promise<voi
       // why a mid-stream truncation kept reading as a transport seam bug.
       // Non-empty stderr is positive proof a process ran, so only claim otherwise
       // when there is genuinely nothing to show.
+      const detail = f.stderr.trim();
       const reason = f.timedOut
         ? `TIMED OUT (git SIGKILLed at the fetch ceiling)`
         : f.code === -1
-          ? f.stderr.trim()
+          ? detail
             ? `git died without an exit status (killed by a signal, or the stream closed under it)`
             : `no git process ran`
           : `git exited ${f.code}`;
-      const detail = f.stderr.trim();
+      const groupKey = `${f.device}\x00${reason}\x00${detail}`;
+      const group = failureGroups.get(groupKey);
+      if (group) group.rowIds.push(f.rowId);
+      else failureGroups.set(groupKey, { device: f.device, reason, detail, rowIds: [f.rowId] });
+    }
+    for (const { device, reason, detail, rowIds } of failureGroups.values()) {
+      // Name the SPAN, not just the first row: "9 announcements, events
+      // 7431043..7646648" is the fact that says this is a held backlog rather
+      // than a one-off miss, and it is the number that grows while the stall
+      // persists.
+      const span =
+        rowIds.length === 1
+          ? `event ${rowIds[0]}`
+          : `${rowIds.length} announcements, events ${rowIds[0]}..${rowIds[rowIds.length - 1]}`;
       console.warn(
-        `[git-sync] ${slug}: ref-announce receive fetch FAILED for ${f.device.slice(0, 12)} (event ${f.rowId}); ` +
+        `[git-sync] ${slug}: ref-announce receive fetch FAILED for ${device.slice(0, 12)} (${span}); ` +
           `holding cursor at ${cursorDecision.cursor} to re-dial next tick: ${reason}` +
           (detail ? `: ${detail}` : ` (no stderr)`),
       );

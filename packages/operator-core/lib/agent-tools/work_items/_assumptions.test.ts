@@ -108,3 +108,79 @@ describe('resolveDeclaredAssumptions — harness scope derivation (EI-1880639316
     expect(selectorsFor).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * EI-19339908198998425 — `["none"]` is the sentinel in a container, and used to be
+ * resolved as a fact KEY literally named "none", which of course dangled.
+ *
+ * Why that was worth fixing rather than filing as caller error: the refusal it
+ * produced came from `danglingAssumptionsMessage`, whose remediation is "...or pass
+ * \"none\" if this close rests on nothing you recorded" — a description of what the
+ * caller had just passed. It names the VALUE and is silent on the CONTAINER, which
+ * was the only thing wrong. So the two natural next moves were to re-send the
+ * identical call, or to assert a junk fact keyed `none` to satisfy the resolver —
+ * i.e. the guard's own error text steered callers into exactly the ledger
+ * laundering D-050/D-079 exists to prevent.
+ */
+describe('resolveDeclaredAssumptions — the ["none"] container fumble (EI-19339908198998425)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    selectorsFor.mockReturnValue([{ scope: 'workspace', scopeRef: null }]);
+  });
+
+  it('treats ["none"] as the sentinel, not as a fact key named "none"', async () => {
+    const out = await resolveDeclaredAssumptions({
+      declared: ['none'],
+      workItemId: 'EI-1',
+      ownerId: 'su-1',
+    });
+
+    expect(out.declared).toBe('none');
+    // Same observable behaviour as the bare sentinel: no ledger read at all, so it
+    // cannot dangle. Before the fix this reached resolveAssumptions with ['none'].
+    expect(workItem).not.toHaveBeenCalled();
+    expect(selectorsFor).not.toHaveBeenCalled();
+  });
+
+  it('tolerates surrounding whitespace, since the fumble is a hand-built payload', async () => {
+    const out = await resolveDeclaredAssumptions({
+      declared: ['  none  '],
+      workItemId: 'EI-1',
+      ownerId: 'su-1',
+    });
+
+    expect(out.declared).toBe('none');
+    expect(selectorsFor).not.toHaveBeenCalled();
+  });
+
+  /**
+   * THE CONTROL. The two assertions above are NEGATIVE (`not.toHaveBeenCalled`),
+   * and a negative passes just as happily when the call under test never does
+   * anything at all. This case differs from them in exactly one character —
+   * the key — and asserts the POSITIVE, so the negatives above carry weight.
+   */
+  it('CONTROL: an ordinary key array still resolves through the ledger', async () => {
+    const out = await resolveDeclaredAssumptions({
+      declared: ['nonexistent-but-real-key'],
+      workItemId: 'EI-1',
+      ownerId: 'su-1',
+    });
+
+    expect(out.declared).not.toBe('none');
+    expect(selectorsFor).toHaveBeenCalled();
+  });
+
+  it('REFUSES the sentinel mixed with real keys — that is a contradiction, not a fumble', async () => {
+    // "none" asserts the close rests on NOTHING recorded; a key asserts it rests on
+    // that fact. Silently picking either reading would discard a real declaration.
+    await expect(
+      resolveDeclaredAssumptions({
+        declared: ['none', 'gate-red-is-flake-not-regression'],
+        workItemId: 'EI-1',
+        ownerId: 'su-1',
+      }),
+    ).rejects.toThrow(/contradictory/i);
+
+    expect(selectorsFor).not.toHaveBeenCalled();
+  });
+});

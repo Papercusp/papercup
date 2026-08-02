@@ -126,6 +126,67 @@ export const ALLOWLIST = new Set([
   // value they filter on is the same raw-shaped slug the writes use.
   'packages/operator-core/lib/system-health/liveness-alarm.ts',
   'packages/operator-core/lib/overwatch/snapshot.ts',
+
+  // Same autoloop_state verdict. This file was INVISIBLE to the guard until the
+  // predicate was widened to member expressions (it spells the filter
+  // `${args.installSlug}`) — see usesRawInstallSlugFilter's note. Audited on
+  // discovery rather than grandfathered: the single site at :87 reads
+  // autoloop_state.consecutive_errors, the relation settled above.
+  'packages/operator-core/lib/pot/mug-warm-session.ts',
+
+  // ── RELATION VERDICT: harness_shared.scout_routed_ideas is NOT re-homed ──────────
+  // WI-6978, audited 2026-08-02. Four independent legs:
+  //  1. LIVE DATA, definitive in BOTH directions — the strongest evidence of any
+  //     relation in this audit. 865 rows sit under harness_slug='@singleton', a member
+  //     of WORKSPACE_GLOBAL_LABELS, i.e. exactly a label re-homing collapses; stored
+  //     verbatim, so no re-home ran. And the MEMBER slug 'oddsmith' survives with 16
+  //     rows, where the re-homed harness_plans holds 21 under 'oddsmith-hive' and ZERO
+  //     under 'oddsmith'. Same workspace, opposite storage shape.
+  //  2. WRITE PATH — routed-ledger.ts:213 writes `harness_slug = ${input.harnessSlug}`
+  //     RAW. ⚠ That file DOES call potHomeSlugForHarness (:195), but it feeds a
+  //     DIFFERENT COLUMN (`source_hive`, the D-003 tag). A file-level resolver grep
+  //     therefore returns a FALSE POSITIVE here — always confirm which column the
+  //     resolved value lands in before reading a hit as "re-homed".
+  //  3. THE READER'S OWN DOC says so independently: ungraded-filings-watchdog.ts:152
+  //     — "the ledger row carries the pot's REAL workspace_id + harness_slug (the
+  //     capture bridge stamps both)".
+  //  4. REGISTRY — falls to DEFAULT (slug-shared, sync:'none'); not federated.
+  'packages/operator-core/lib/scout/ungraded-filings-watchdog.ts',
+
+  // ── RELATION VERDICT: harness_shared.plan_runs is NOT re-homed ───────────────────
+  // WI-6978, audited 2026-08-02. Note this file is a MIXED case and the mix is the
+  // whole point: its harness_plans sites (:108/:162 and the instance-plan INSERT) WERE
+  // converted to routineStorageSlug, because that relation IS re-homed. What remains
+  // raw are the two plan_runs ledger reads, which are correct:
+  //  • WRITE PATHS — every writer stores the raw slug: this file's own ledger INSERT
+  //    (`${installSlug}`) and agent-tools/plans/runs.ts:90 insertPlanRun
+  //    (`args.harnessSlug?.trim() || operatorHomeHarnessSlug()`). No writer calls any
+  //    of the five re-homing resolvers.
+  //  • READ PATHS agree — plan_runs is elsewhere addressed self-referentially (runs.ts
+  //    :446 mirrors the parent run's own harness_slug) or by a caller-supplied slug;
+  //    nothing reads it under a Pot home.
+  //  • REGISTRY — WORKSPACE_OWNED_EXPLICIT, sync:'none', "§7.4 LOCAL Plans =
+  //    workspace-scoped" (harness-state/table-registry.ts:336).
+  // Resolving these two would move the ledger READS off the rows the ledger WRITES —
+  // the mirror image of the bug this guard exists to catch.
+  'packages/operator-core/lib/harness/routines/plan-run-action.ts',
+
+  // ── RELATION VERDICTS: pr_reviewer_settings + trusted_authors are NOT re-homed ────
+  // WI-6978, audited 2026-08-02. Also a MIXED file: its harness_features_consolidated
+  // read (:595, upsertFeaturePr) WAS converted — that relation IS re-homed via
+  // work-items.ts:1316 resolveWorkItemPot. The two that stay raw:
+  //  • pr_reviewer_settings (:527) — sole writer
+  //    endpoint-route/routes/harness/pr-reviewer-settings.ts:622 inserts the raw slug,
+  //    and the read directly above it in that same function filters the same raw slug,
+  //    so read/write agree by construction. Registry: WORKSPACE_OWNED_EXPLICIT
+  //    ("per-install/per-workspace"), sync:'none'.
+  //  • trusted_authors (:546) — SECURITY-classed (table-registry.ts:371): sync forced
+  //    to 'none', never crosses machines. No writer anywhere resolves the slug.
+  // ⚠ Both relations DO co-occur with potHomeSlugForHarness in sync-resolver/index.ts,
+  // which is a FALSE POSITIVE: that call (:2447) belongs to `hiveRoster.byHarness`.
+  // These two reach the resolver through `prReviewerSettings.byHarness`, which passes
+  // the harness slug through untouched.
+  'packages/operator-core/lib/pr-host/poll-daemon.ts',
 ]);
 
 /**
@@ -143,6 +204,76 @@ export const ALLOWLIST = new Set([
  * A NEW file here is a hard guard failure, not a BASELINE addition — that is the ratchet.
  */
 /*
+ * ✅ THE AUDIT IS COMPLETE — BASELINE IS EMPTY (WI-6978, closed 2026-08-02). Every
+ * relation below is settled and every file has either been CONVERTED or earned an
+ * ALLOWLIST entry stating why its raw filter is correct. A new file here is a hard
+ * guard failure; nothing may be added back.
+ *
+ * THE FINAL VERDICT TABLE — the durable output of the audit, kept because the next
+ * person to touch any of these relations needs it and re-deriving it costs days:
+ *
+ *   RE-HOMED  (a raw-installSlug filter IS a bug — convert to routineStorageSlug)
+ *     harness_plans                   write: resolvePlanScope → potHomeSlugForHarness
+ *                                     (agent-tools/plans/source.ts:429; plans are
+ *                                     Hive-scoped). Converted: plan-run-action ·
+ *                                     ready-plan-autostart · draft-review-watchdog ·
+ *                                     harness/routines/claim.
+ *     harness_features_consolidated   write: work-items.ts:1316 resolveWorkItemPot,
+ *                                     under FLAGS.POT_MEMBERSHIP_ENFORCEMENT (default
+ *                                     ON). Converted: pr-host/poll-daemon:595.
+ *
+ *   NOT RE-HOMED  (a raw filter is CORRECT — do not "fix" these)
+ *     harness_escalations · autoloop_state · scout_routed_ideas · plan_runs ·
+ *     pr_reviewer_settings · trusted_authors
+ *
+ * LATENT, NOT LIVE-BROKEN when this landed: every affected routine in this workspace
+ * runs with install_slug='papercusp', which IS the platform Pot home, so the re-home is
+ * an identity there and the reads happened to work. That is exactly why it survived —
+ * the bug arms itself the moment one of these routines is installed under a member
+ * harness or a workspace-global label, and then fails SILENTLY.
+ *
+ * ── THE METHOD, and the two ways it lies to you ────────────────────────────────────
+ * Kept in full because both failure modes produced a CONFIDENT WRONG VERDICT during
+ * this audit, in OPPOSITE directions, and neither announced itself as uncertain.
+ *
+ *   (a) Resolve the RELATION at each flagged site (nearest enclosing
+ *       FROM/INTO/UPDATE/JOIN). One file can touch several — poll-daemon touches three,
+ *       plan-run-action two — and a mixed file needs every one settled before it moves.
+ *   (b) Grep every writer for ALL FIVE re-homing resolvers: `routineStorageSlug`,
+ *       `resolveWorkItemPot`, `canonicalPotSlug`, `potHomeSlugForHarness`,
+ *       `PLATFORM_POT_SLUG`. Ignore apps/operator/dist-host/hono-host.mjs (a whole-app
+ *       BUILD BUNDLE — it co-occurs with everything).
+ *       ⚠ FALSE NEGATIVE: grepping only `routineStorageSlug` returns CLEAN on
+ *         harness_plans, which re-homes via `potHomeSlugForHarness`. Caught one step
+ *         before it graduated three genuinely-broken files.
+ *       ⚠ FALSE POSITIVE: a resolver hit is NOT evidence until you open the INSERT and
+ *         confirm the resolved value lands in `harness_slug` SPECIFICALLY. Twice here it
+ *         did not: routed-ledger.ts:195 resolves into a different COLUMN (`source_hive`)
+ *         while harness_slug stays raw at :213; sync-resolver/index.ts:2447 resolves for
+ *         an unrelated QUERY (`hiveRoster.byHarness`). Reading either as "re-homed"
+ *         yields a wrong "convert this" verdict.
+ *   (c) LIVE DATA — the discriminator, proven both ways in one workspace: does a MEMBER
+ *       slug survive, or only its Hive home? autoloop_state keeps 'oddsmith';
+ *       harness_plans holds 21 rows under 'oddsmith-hive' and ZERO under 'oddsmith'.
+ *       Cleanest single tell: rows under a workspace-global label ('*', '@singleton')
+ *       CANNOT survive a re-homed relation — those labels are exactly what re-homing
+ *       collapses. Finding the trigger itself surviving beats any amount of code reading.
+ *       ⚠ STRUCTURALLY BLIND for the home harness: PLATFORM_POT_SLUG === 'papercusp' ===
+ *         the operator home slug, so "collapsed to the platform Pot" and "correctly
+ *         stored" are the SAME OBSERVATION there. Only NON-home slugs carry signal; a
+ *         verdict resting on papercusp rows alone is vacuous.
+ *       ⚠ NEVER pg_trigger — it is empty for every table here (re-homing is purely
+ *         application-level), which reads exactly like a clean bill of health.
+ *   (d) Check where the site's installSlug COMES FROM: one derived from
+ *       operatorHomeHarnessSlug() is a concrete hive slug and can never trigger
+ *       re-homing regardless of the relation.
+ *
+ * And the meta-lesson worth more than the table: "audit by relation" tells you what to
+ * test TOGETHER, never what the answer IS. Two relations settled in the same session
+ * came out opposite. Grouping the files by relation was right and cheap — but never let
+ * the tidiness of a group imply its verdict.
+ *
+ * ── historical: the mid-audit state this replaced ──────────────────────────────────
  * ⚠ AUDIT BY RELATION, NOT BY FILE. The remaining entries cover 7 DISTINCT relations,
  * and the verdict is a property of the relation — so auditing one can clear several
  * files at once, and a file touching two relations needs BOTH settled before it moves.
@@ -196,20 +327,30 @@ export const ALLOWLIST = new Set([
  * member slug 'oddsmith', which is the collapse made visible.
  */
 export const BASELINE = new Set([
-  // GRADUATED to ALLOWLIST 2026-08-02 (WI-6978): green-stall-watchdog.ts and
-  // release-deploy-staleness-watchdog.ts on the harness_escalations verdict, then
-  // liveness-alarm.ts and overwatch/snapshot.ts on the autoloop_state verdict.
-  // 9 → 5 files pending audit.
+  // ✅ EMPTY as of 2026-08-02 (WI-6978). The grandfathered set went 9 → 5 → 0.
   //
-  // ⚠ THE REMAINING 5 WILL NOT ALL GRADUATE. harness_plans is AUDITED AND *IS* RE-HOMED
-  // (see the relation map above), so plan-run-action.ts, ready-plan-autostart.ts and
-  // draft-review-watchdog.ts need the actual CONVERSION to routineStorageSlug — they do
-  // NOT earn an ALLOWLIST entry. Do not assume a graduation is the expected outcome.
-  'packages/operator-core/lib/harness/routines/plan-run-action.ts',
-  'packages/operator-core/lib/pr-host/poll-daemon.ts',
-  'packages/operator-core/lib/scout/ungraded-filings-watchdog.ts',
-  'packages/operator-core/lib/scout/ready-plan-autostart.ts',
-  'packages/operator-core/lib/scout/draft-review-watchdog.ts',
+  // Disposition of all nine, so nobody re-litigates one:
+  //   CONVERTED to routineStorageSlug (their relation IS re-homed)
+  //     scout/ready-plan-autostart.ts        harness_plans (3 sites — see below)
+  //     scout/draft-review-watchdog.ts       harness_plans
+  //     harness/routines/plan-run-action.ts  harness_plans (2 reads + the instance
+  //                                          INSERT; its plan_runs sites stay raw)
+  //     harness/routines/claim.ts            harness_plans (3 sites — see below)
+  //     pr-host/poll-daemon.ts               harness_features_consolidated (1 of its 3)
+  //   ALLOWLISTED with a stated relation verdict (their relation is NOT re-homed)
+  //     release/green-stall-watchdog.ts · release-deploy-staleness-watchdog.ts
+  //     system-health/liveness-alarm.ts · overwatch/snapshot.ts
+  //     scout/ungraded-filings-watchdog.ts · pot/mug-warm-session.ts
+  //     (+ the mixed files plan-run-action.ts and poll-daemon.ts, which are BOTH
+  //      converted and allowlisted — one entry each, covering their remaining relations)
+  //
+  // ⚠ claim.ts and two of ready-plan-autostart's three sites were NEVER IN THIS SET:
+  // they spell the filter `${routine.installSlug}` / `${args.installSlug}` and the old
+  // predicate matched only the bare identifier, so the guard could not see them. They
+  // surfaced only when usesRawInstallSlugFilter was widened
+  // (EI-19340006901835339). Which is the standing lesson: an empty BASELINE means
+  // "nothing the predicate can see", never "nothing exists". If you find a new spelling
+  // of an unresolved install slug, WIDEN THE PREDICATE — do not re-open this set.
 ]);
 
 export const isExcluded = (f) =>
@@ -233,13 +374,36 @@ export function stripComments(text) {
 }
 
 /**
- * The tell: a SQL filter comparing `harness_slug` to the raw `${installSlug}`
- * interpolation. Deliberately NARROW — it matches the un-resolved identifier only, so
- * `harness_slug = ${storageSlug}` / `${await routineStorageSlug(...)}` (the fix) does
- * NOT match. Comments are stripped first. Pure (text → boolean) so it unit-tests.
+ * The tell: a SQL filter comparing `harness_slug` to an UNRESOLVED install slug —
+ * either the bare `${installSlug}` identifier or any member expression ending in it
+ * (`${args.installSlug}`, `${routine.installSlug}`, `${opts.ctx.installSlug}`).
+ *
+ * It stays narrow in the direction that matters: `harness_slug = ${storageSlug}` /
+ * `${planStorageSlug}` / `${await routineStorageSlug(...)}` — the FIX — does not match,
+ * because the final path segment must literally be `installSlug`. Comments are stripped
+ * first. Pure (text → boolean) so it unit-tests.
+ *
+ * ⚠ THE MEMBER-EXPRESSION ARM IS NOT A REFINEMENT — it closed a hole that made this
+ * guard's headline claim vacuous (EI-19340006901835339, WI-6978). The original pattern
+ * matched the BARE identifier only, so `${args.installSlug}` and `${routine.installSlug}`
+ * were invisible, and the guard printed "✓ no NEW offenders" over a corpus it had never
+ * examined. That is precisely the absence-rendering-as-a-clean-verdict shape this file
+ * exists to catch — the same reasoning the `unscannedPresent` logic below applies to the
+ * FILE SET, applied to the PATTERN. Measured when widened: 6 previously-unseen sites in
+ * 3 files, 5 of them genuine latent bugs on the re-homed `harness_plans` relation
+ * (harness/routines/claim.ts ×3, scout/ready-plan-autostart.ts ×2).
+ *
+ * The sharpest case was scout/ready-plan-autostart.ts, which was ALREADY grandfathered
+ * for its bare-identifier site: an auditor could have fixed that one site, watched the
+ * guard go green, and shipped with two more broken filters in the very same file.
+ *
+ * So: if you ever find a NEW way to spell an unresolved install slug, widen this
+ * predicate — do not add the file to a baseline.
  */
 export function usesRawInstallSlugFilter(text) {
-  return /harness_slug\s*=\s*\$\{\s*installSlug\s*\}/.test(stripComments(text));
+  return /harness_slug\s*=\s*\$\{\s*(?:[A-Za-z_$][A-Za-z0-9_$]*\s*\.\s*)*installSlug\s*\}/.test(
+    stripComments(text),
+  );
 }
 
 /**

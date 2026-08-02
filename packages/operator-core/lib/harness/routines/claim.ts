@@ -30,6 +30,25 @@
 import type { Sql } from 'postgres';
 import type { RoutineRow } from '@papercusp/db-org';
 import { computeNextFire } from './schedule-next';
+import { routineStorageSlug } from '../../pot-membership';
+
+/**
+ * WI-6978 — the slug `harness_plans` rows are actually STORED under for this routine.
+ *
+ * harness_plans is Hive-scoped: the plans:* write path collapses a member harness to
+ * its Hive home (resolvePlanScope → potHomeSlugForHarness), so filtering by the
+ * routine's RAW `installSlug` matches ZERO ROWS whenever the routine is installed
+ * under a member harness or a workspace-global label. Here that silence is
+ * particularly bad: every use below is an UPDATE un-arming `schedule_active`, so the
+ * miss leaves a plan reading "armed" forever behind a routine that is already dead —
+ * exactly the EI-1371 symptom those writes exist to prevent.
+ *
+ * Resolved LAZILY (only inside the two plan-schedule branches) because claimDueRoutine
+ * is the hot per-tick path and the overwhelming majority of routines are not
+ * plan-schedules. Fails open to the literal slug.
+ */
+const planSlugFor = (routine: RoutineRow): Promise<string> =>
+  routineStorageSlug(routine.installSlug, routine.workspaceId);
 
 export async function claimDueRoutine(sql: Sql, routine: RoutineRow): Promise<boolean> {
   const cfg = routine.triggerConfig;
@@ -84,7 +103,7 @@ export async function claimDueRoutine(sql: Sql, routine: RoutineRow): Promise<bo
         UPDATE harness_shared.harness_plans
            SET schedule_active = FALSE, updated_at = now()
          WHERE workspace_id = ${routine.workspaceId}
-           AND harness_slug = ${routine.installSlug}
+           AND harness_slug = ${await planSlugFor(routine)}
            AND plan_slug = ${templateSlug}
       `;
     }
@@ -102,10 +121,11 @@ export async function claimDueRoutine(sql: Sql, routine: RoutineRow): Promise<bo
   // owning plan / expiry concept and falls straight through to the normal advance below.
   if (routine.targetRole === 'system:plan-run' && routine.name.startsWith('plan-schedule-')) {
     const templateSlug = routine.name.slice('plan-schedule-'.length);
+    const planStorageSlug = await planSlugFor(routine);
     const [planRow] = await sql<{ expires_at: Date | null }[]>`
       SELECT expires_at FROM harness_shared.harness_plans
        WHERE workspace_id = ${routine.workspaceId}
-         AND harness_slug = ${routine.installSlug}
+         AND harness_slug = ${planStorageSlug}
          AND plan_slug = ${templateSlug}
     `;
     if (planRow?.expires_at && planRow.expires_at.getTime() <= Date.now()) {
@@ -123,7 +143,7 @@ export async function claimDueRoutine(sql: Sql, routine: RoutineRow): Promise<bo
         UPDATE harness_shared.harness_plans
            SET schedule_active = FALSE, updated_at = now()
          WHERE workspace_id = ${routine.workspaceId}
-           AND harness_slug = ${routine.installSlug}
+           AND harness_slug = ${planStorageSlug}
            AND plan_slug = ${templateSlug}
       `;
       return false;

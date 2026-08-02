@@ -43,6 +43,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { listStartedPots } from '../pot/started';
 import { resolveMugOwner, wakeMug } from '../pot/placement-watchdog';
 import { claimWatchdogFire } from '../pot/watchdog';
+import { routineStorageSlug } from '../pot-membership';
 
 // ── tunable (env-overridable, like the liveness-watchdog floor) ───────────────
 
@@ -119,7 +120,12 @@ interface DraftRow {
 export async function readScoutDraftCandidates(
   sql: Sql,
   planWorkspaceId: string,
-  installSlug: string,
+  /** ⚠ The slug plans are STORED under, NOT a routine's raw `installSlug` (WI-6978).
+   *  harness_plans is Hive-scoped — the write path collapses a member harness to its
+   *  Hive home (resolvePlanScope → potHomeSlugForHarness), so a member's raw slug
+   *  matches zero rows here, silently: "no stale drafts" is also the healthy answer.
+   *  The sweep resolves it once via routineStorageSlug and passes the result in. */
+  planStorageSlug: string,
   opts: { limit?: number } = {},
 ): Promise<ScoutDraftCandidate[]> {
   const limit = opts.limit ?? 50;
@@ -128,7 +134,7 @@ export async function readScoutDraftCandidates(
            (extract(epoch FROM updated_at) * 1000)::bigint AS updated_at_ms
       FROM harness_shared.harness_plans
      WHERE workspace_id = ${planWorkspaceId}
-       AND harness_slug = ${installSlug}
+       AND harness_slug = ${planStorageSlug}
        AND status = 'draft'
        AND archived = false
        AND content LIKE ${'%\norigin: scout\n%'}
@@ -242,7 +248,12 @@ export async function scoutDraftReviewSweep(opts: { now?: number } = {}): Promis
     const windowHours = Math.max(1, Math.round(staleSec / 3_600));
     for (const { workspaceId, installSlug } of started) {
       try {
-        const candidates = await readScoutDraftCandidates(sql, workspaceId, installSlug);
+        // WI-6978: plans live under the Pot/Hive HOME, not a member harness's own
+        // slug. Fails open to the literal slug, so a resolver hiccup degrades to
+        // today's behaviour instead of silently disabling the watchdog. `installSlug`
+        // stays correct for the watchdog key + log lines below (alarm identity).
+        const planStorageSlug = await routineStorageSlug(installSlug, workspaceId);
+        const candidates = await readScoutDraftCandidates(sql, workspaceId, planStorageSlug);
         const stale = selectStaleDrafts(candidates, { now, thresholdMs });
         if (stale.length === 0) continue;
         

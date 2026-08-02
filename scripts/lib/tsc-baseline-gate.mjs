@@ -857,27 +857,41 @@ export function runTscBaselineGate({
   // Fail-open (matching pc-heavy's own contract): no wrapper on disk ⇒ run tsc directly.
   // Admission control must never be the reason a legitimate typecheck cannot start.
   //
-  // COALESCING WINDOW — identical argv is necessary but NOT sufficient. pc-heavy's follower
-  // loop polls for the leader's result until `now + PC_HEAVY_COALESCE_SEC` (default 90s) and
-  // then GIVES UP and runs its own copy (`pc-heavy.sh:423,452`). A full operator-core compile
-  // is ~104s, i.e. LONGER than that window — so with the default a concurrent follower always
-  // times out just before the leader finishes and compiles anyway. Measured 2026-08-02 09:50Z:
-  // FOUR byte-identical operator-core compiles queued simultaneously, none coalesced.
+  // COALESCING WINDOW — the window is raised for THIS invocation only (env on the child, not a
+  // global default), because pc-heavy's follower loop gives up at `now + PC_HEAVY_COALESCE_SEC`
+  // (default 90s, `pc-heavy.sh:423,452`) and a full operator-core compile is ~150s: with the
+  // default a follower always times out just BEFORE the leader finishes and compiles anyway.
   //
-  // So the window is raised for THIS invocation only (env on the child, not a global default),
-  // sized to comfortably exceed a cold compile plus queue wait. No other pc-heavy caller is
-  // affected.
+  // ⚠⚠ DO NOT READ THIS AS "COALESCING NOW WORKS". IT DOES NOT, AND CANNOT HERE — MEASURED.
+  // An earlier revision of this comment claimed the 420s window made concurrent callers share
+  // one compile, on the strength of a 09:23Z sample showing the tree token stable (0 changes in
+  // 60s). That sample caught a quiet window mid-incident and generalised. Re-measured
+  // 2026-08-02 11:18:19-11:21:29Z: **11 distinct tree tokens in 199s — one change every ~18s**
+  // (shortest gap 4s; 2 were git-sync commits moving branch.oid, the rest peers' saves). The
+  // key is sha1(cwd + argv + tree-token), so during ONE ~150s compile the token moves ~8 times
+  // and two callers arriving seconds apart compute DIFFERENT keys. Observed at the same moment:
+  // 5 byte-identical `sh -c npx tsc -p .../operator-core/tsconfig.json ...` wrappers live, each
+  // holding its OWN .lock in the coalesce dir. Zero coalescing; N full compiles. See fact
+  // `pc-heavy-tree-token-churns-faster-than-a-compile` and WI-7017.
   //
-  // Why a longer window is SAFE here: staleness is NOT bounded by the TTL, it is bounded by the
-  // KEY. The key already folds in a tree-state token (cwd + argv + `git status --porcelain=v2`),
-  // so a replay can only ever serve a caller whose tracked tree is byte-identical to the
-  // leader's — exactly when re-running would reproduce the same diagnostics.
+  // And the tree token is NOT the thing to remove: it is what makes the gate's answer TRUE. The
+  // dominant caller is an agent typechecking a file it JUST edited. If a follower replayed a
+  // leader whose compile started before that edit, the shared raw diagnostics would not contain
+  // it and the agent would get a clean verdict on a file it had just broken — a silent,
+  // confirmatory-looking wrong answer, which is precisely the bug EI-18688348461605365 added the
+  // token to prevent. Dropping it to buy coalescing trades a fleet-wide correctness hole for a
+  // throughput win. Don't.
   //
-  // ⚠ Residual hole, unchanged in KIND but widened in DURATION: the tree token uses
-  // `--untracked-files=no`, so a NEW UNTRACKED .ts picked up by the tsconfig does not bust the
-  // key. That hole exists at 90s too; this widens its window. Accepted because the gate's own
-  // verdict is per-file against a committed baseline, and an untracked file has no baseline
-  // entry. Revisit if that ever stops being true.
+  // What IS kept by wrapping only the compile: pc-heavy no longer holds a slot for the whole
+  // gate CLI, and argv is identical across callers so coalescing is at least POSSIBLE whenever
+  // the tree does go quiet. The real fix for "N agents each pay 150s" is at another layer —
+  // make the per-file check cheap (the warm server-side `build:typecheck` answers a leaf file in
+  // ~1.8s) rather than deduplicating an expensive one. Tracked separately; see WI-7017's close.
+  //
+  // ⚠ Residual hole in the token, unchanged in KIND but widened in DURATION by the 420s window:
+  // it uses `--untracked-files=no`, so a NEW UNTRACKED .ts picked up by the tsconfig does not
+  // bust the key. Accepted because the gate's verdict is per-file against a committed baseline,
+  // and an untracked file has no baseline entry. Revisit if that ever stops being true.
   const pcHeavyPath = resolve(root, 'scripts', 'pc-heavy.sh');
   try {
     tscOutput = existsSync(pcHeavyPath)

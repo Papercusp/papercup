@@ -28,6 +28,7 @@ import { registerSystemAction, type SystemActionCtx } from './system-actions';
 import { planScheduleRoutineName } from './materialize-plan-schedule';
 import { FEATURE_FAMILY_KINDS } from '../../work-items';
 import { evaluatePlanStartReadiness } from '../../agent-tools/plans/plan-input-validation';
+import { routineStorageSlug } from '../../pot-membership';
 
 /** launched_by label for a scheduled run's plan_runs row. */
 const PLAN_RUN_LAUNCHER = 'system:plan-run';
@@ -90,6 +91,26 @@ export async function runScheduledPlanFire(
 ): Promise<ScheduledPlanFireResult | null> {
   const { installSlug, workspaceId, templateSlug, trigger = 'scheduled' } = opts;
 
+  // WI-6978 — `harness_plans` IS re-homed, `plan_runs` is NOT. Two relations, two
+  // slugs, in one function; the difference is load-bearing.
+  //
+  // The plans:* WRITE path resolves a member harness to its Hive home
+  // (resolvePlanScope → potHomeSlugForHarness, agent-tools/plans/source.ts:429 —
+  // plans are Hive-scoped). A read filtering this routine's RAW `installSlug`
+  // therefore matches ZERO ROWS whenever the routine is installed under a member
+  // harness or a workspace-global label — and the failure is silent: step 1 below
+  // logs "template not found — skip" and the schedule simply never fires again.
+  // `routineStorageSlug` reproduces the same resolution (pot-membership.ts:199,
+  // pgPotLookup.resolveRealPot collapses member → Pot home) and fails open to the
+  // literal slug, so the reads here, this function's OWN instance-plan INSERT, and
+  // the plans:* tool path all address the same rows by construction.
+  //
+  // ⚠ The `plan_runs` sites below deliberately keep the raw `installSlug`: that
+  // relation is per-install/workspace-scoped and NOT re-homed (audited WI-6978 —
+  // every writer, including this file's own ledger INSERT, stores the raw slug).
+  // Resolving it here would move the ledger reads off the rows the ledger writes.
+  const planStorageSlug = await routineStorageSlug(installSlug, workspaceId);
+
   // 1. The template plan.
   const tpl = await sql<
     Array<{
@@ -105,7 +126,7 @@ export async function runScheduledPlanFire(
   >`
     SELECT content, content_hash, title, items, schedule, template, template_data, input_schema
       FROM harness_shared.harness_plans
-     WHERE workspace_id = ${workspaceId} AND harness_slug = ${installSlug}
+     WHERE workspace_id = ${workspaceId} AND harness_slug = ${planStorageSlug}
        AND plan_slug = ${templateSlug}
   `;
   if (!tpl[0]) {
@@ -159,7 +180,7 @@ export async function runScheduledPlanFire(
   // 3. Idempotency: the instance already existing ⇒ this is a replay ⇒ no-op.
   const existing = await sql<Array<{ run_seq: number | null }>>`
     SELECT run_seq FROM harness_shared.harness_plans
-     WHERE workspace_id = ${workspaceId} AND harness_slug = ${installSlug}
+     WHERE workspace_id = ${workspaceId} AND harness_slug = ${planStorageSlug}
        AND plan_slug = ${instanceSlug}
   `;
   if (existing[0]) {
@@ -217,7 +238,7 @@ export async function runScheduledPlanFire(
     INSERT INTO harness_shared.harness_plans
       (workspace_id, harness_slug, plan_slug, title, status, content, content_hash,
        template_slug, run_seq, origin, template, template_data, input_schema)
-    VALUES (${workspaceId}, ${installSlug}, ${instanceSlug}, ${template.title}, 'active',
+    VALUES (${workspaceId}, ${planStorageSlug}, ${instanceSlug}, ${template.title}, 'active',
             ${template.content}, ${template.content_hash}, ${templateSlug}, ${runSeq}, 'local',
             ${template.template}, ${runInputsJson}::text::jsonb, ${inputSchemaJson}::text::jsonb)
     ON CONFLICT (workspace_id, harness_slug, plan_slug) DO NOTHING

@@ -76,6 +76,7 @@ import {
 } from './pr-check-status-cache-types';
 import { reportGatesAutoApprove } from './pr-review-report-types';
 import { PR_POLL_TARGET } from './pr-poll-routine';
+import { routineStorageSlug } from '../pot-membership';
 
 /** The event key PR-2's agent-reviewer launch blueprint declares as its trigger. */
 export const PR_REVIEW_EVENT = 'pr:review';
@@ -588,11 +589,24 @@ export function makeSqlStore(sql: Sql): PollStore {
 
     async upsertFeaturePr({ workspaceId, installSlug, pr }) {
       try {
+        // WI-6978 — the ONE re-homed relation this daemon touches. The feature-family
+        // WRITE path resolves a member harness to its Pot home (work-items.ts:1316
+        // resolveWorkItemPot, under FLAGS.POT_MEMBERSHIP_ENFORCEMENT, default ON), so
+        // a raw-`installSlug` filter here matches ZERO ROWS for any member harness and
+        // this function silently returns without ever linking a PR to its feature.
+        // `routineStorageSlug` calls the SAME resolver the write path uses, so read and
+        // write agree by construction; it fails open to the literal slug.
+        //
+        // ⚠ The pr_reviewer_settings and trusted_authors reads above deliberately keep
+        // the RAW `installSlug` — both are per-install/workspace-scoped and NOT
+        // re-homed (audited WI-6978; trusted_authors is SECURITY-classed and never
+        // leaves the machine). Do not "fix" them to match this one.
+        const featureStorageSlug = await routineStorageSlug(installSlug, workspaceId);
         const feat = await sql<Array<{ feature_id: string }>>`
           SELECT feature_id
             FROM harness_shared.harness_features_consolidated
            WHERE workspace_id = ${workspaceId}
-             AND harness_slug = ${installSlug}
+             AND harness_slug = ${featureStorageSlug}
              AND (completion_ref->>'pr_url') = ${pr.url}
            LIMIT 1
         `;
