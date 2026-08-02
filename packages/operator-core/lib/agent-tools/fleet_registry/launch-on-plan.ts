@@ -1306,6 +1306,21 @@ export default defineTool({
               applyWarning = applyWarning ? `${applyWarning}\n${verdict.warning}` : verdict.warning;
             }
 
+            // EI-19276371141300541: a NONZERO but LOW match count evades the zero-match refuse
+            // above yet is the exact starvation shape a caller otherwise cannot see — the
+            // reported incident matched exactly 1 row for a 10-member fleet (matched !== 0, so
+            // `zeroMatch` never fires). Surface it as a loud warning — never a refusal, since a
+            // real backlog genuinely smaller than the requested headcount is legitimate and
+            // members simply idle until more work lands — whenever the matched pool can't feed
+            // every requested member.
+            if (!verdict.refuse && poolEffect.matched > 0 && poolEffect.matched < count) {
+              const lowMatchWarning =
+                `⚠ claim-lane pool-effect: this spec matches only ${poolEffect.matched} of ${poolEffect.pool} ` +
+                `claimable row(s) under states=[${poolEffect.states.join(',')}]${poolEffect.harness ? ` in \`${poolEffect.harness}\`` : ''} ` +
+                `— for a ${count}-member fleet. At least ${count - poolEffect.matched} member(s) will find nothing to claim under this lane.`;
+              applyWarning = applyWarning ? `${applyWarning}\n${lowMatchWarning}` : lowMatchWarning;
+            }
+
             // WI-6673 — THE DUAL OF THE COLLAPSE GUARD. Above refuses a lane matching TOO
             // FEW rows (starvation). This warns about the opposite and equally real failure:
             // a lane matching PLENTY of rows that are not work. On 2026-08-01 a bug-drain
@@ -1374,19 +1389,25 @@ export default defineTool({
       claimSpecApplied = { ok: false, errors: [e?.message ?? String(e)] };
     }
 
-    // P-010: a refused claimKinds guard aborts the launch cleanly — the launch slot is claimed
+    // P-010: a refused claim-lane guard aborts the launch cleanly — the launch slot is claimed
     // further below, so NO terminals were opened and NO members land on an empty lane. The
-    // leader reads the counts and either fixes the backlog/kinds or re-sends confirmClaimCollapse.
+    // leader reads the counts and either fixes the backlog/kinds/plan or re-sends
+    // confirmClaimCollapse. EI-19276371141300541: this now also fires for a fresh plan-only
+    // lane (no claimKinds given), so the lane description below must not assume claimKinds is
+    // set.
     if (claimCollapseRefusal) {
       const pe = claimCollapseRefusal.poolEffect;
+      const laneDesc = args.claimKinds?.length
+        ? `claimKinds=[${args.claimKinds.join(',')}]`
+        : `plan=\`${planSlug}\``;
       return err(
         `${claimCollapseRefusal.errors.join('\n')}\n` +
           (pe
-            ? `claimKinds=[${args.claimKinds!.join(',')}] matched ${pe.matched} of ${pe.pool} claimable row(s) under states=[${pe.states.join(
+            ? `${laneDesc} matched ${pe.matched} of ${pe.pool} claimable row(s) under states=[${pe.states.join(
                 ',',
               )}]${pe.harness ? ` in harness \`${pe.harness}\`` : ''}. `
             : '') +
-          'NO members were opened. Re-send with confirmClaimCollapse:true to launch anyway (a pre-staged lane whose items are not promoted yet), or fix the claimKinds / backlog first.',
+          'NO members were opened. Re-send with confirmClaimCollapse:true to launch anyway (a pre-staged lane whose items are not promoted yet), or fix the claimKinds / plan / backlog first.',
       );
     }
 
@@ -2224,12 +2245,17 @@ export default defineTool({
         );
       }
     }
-    // P-010: surface the claimKinds pool-effect so the leader sees the lane is actually fed
+    // P-010: surface the pool-effect so the leader sees whether the lane is actually fed
     // (matched > 0) — the counter-signal to the silent-starvation shape the guard refuses.
+    // EI-19276371141300541: this now also fires for a fresh plan-only lane (no claimKinds), so
+    // describe the lane generically rather than assuming claimKinds is set, and don't assert
+    // "IS fed" when matched is merely nonzero but too low to cover the fleet.
     if (claimSpecApplied?.poolEffect) {
       const pe = claimSpecApplied.poolEffect;
+      const laneDesc = args.claimKinds?.length ? `claimKinds=[${args.claimKinds.join(',')}]` : `plan=\`${planSlug}\``;
+      const fedNote = pe.matched >= count ? 'this lane IS fed' : `⚠ this lane may NOT cover all ${count} member(s)`;
       lines.push(
-        `  ↳ claim-lane pool-effect (P-010): claimKinds=[${(args.claimKinds ?? []).join(',')}] matches ${pe.matched} of ${pe.pool} claimable row(s) under states=[${pe.states.join(',')}]${pe.harness ? ` in \`${pe.harness}\`` : ''} — this lane IS fed.`,
+        `  ↳ claim-lane pool-effect (P-010): ${laneDesc} matches ${pe.matched} of ${pe.pool} claimable row(s) under states=[${pe.states.join(',')}]${pe.harness ? ` in \`${pe.harness}\`` : ''} — ${fedNote}.`,
       );
     }
     const carryMode: 'warm' | 'cold' = args.carry ?? 'warm';

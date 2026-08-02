@@ -26,6 +26,10 @@ const deps = (over: {
   holderFleet?: string | null;
   leader?: string | null;
   recordedEnded?: boolean;
+  /** EI-18907586326157984: the shared liveness oracle's verdict for the holder.
+   *  Defaults to `null` (no oracle signal — the pre-fix behavior every OTHER test
+   *  here relies on) unless a test explicitly exercises the new oracle leg. */
+  oracleSessionState?: 'live' | 'parked' | 'draining' | 'suspect' | 'ended' | 'recorded' | null;
 }): ForceReleaseDeps => ({
   now: () => NOW,
   getPresence: async (o) => (o === 'su-holder' ? (over.holder ?? null) : (over.caller ?? null)),
@@ -34,6 +38,7 @@ const deps = (over: {
   getFleet: async () => (over.leader === undefined ? null : { leaderOwnerId: over.leader }),
   endedRecordedOwnerIds: async (owners) =>
     over.recordedEnded ? new Set(owners.filter((owner) => owner === 'su-holder')) : new Set(),
+  resolveHolderSessionState: async () => over.oracleSessionState ?? null,
 });
 
 describe('assessForceRelease — liveness leg (a)', () => {
@@ -129,6 +134,83 @@ describe('assessForceRelease — liveness leg (a)', () => {
     );
     expect(v).toMatchObject({ allowed: true, basis: 'holder-not-live' });
     expect(v.holderLiveness.warmIdle).toBe(false); // demoted via plain staleness, not the warm-idle path
+  });
+});
+
+/**
+ * EI-18907586326157984: the shared sessionState oracle leg. A holder can look
+ * "live" by the raw heartbeat/activity heuristic above (heartbeat fresh, well
+ * under both PRESENCE_STALE_MS and WARM_IDLE_ACTIVITY_STALE_MS) while the SAME
+ * oracle coord:wake trusts has already, independently, and much faster proven
+ * the session dead (its `wakeable` + `liveTurn` legs detect a clean end in
+ * seconds — see liveness-oracle.ts/presence-wakeability.ts). Either signal now
+ * authorizes a reclaim; the oracle can only ever WIDEN what force allows, never
+ * narrow it (a null/degraded oracle read behaves exactly like before this fix).
+ */
+describe('assessForceRelease — oracle leg (EI-18907586326157984)', () => {
+  // The exact repro shape: heartbeat only ~4.8min old (well under every raw-heartbeat
+  // threshold this guard has), yet the shared oracle says `ended` — the divergence
+  // between coord:wake (recipient_dead) and the old release force-auth (live:true).
+  const freshHeartbeatHolder: Pres = { heartbeatAt: iso(289_679), lastActiveAt: iso(289_679), agentRole: 'su' };
+
+  it('oracle sessionState=ended overrides a fresh-looking heartbeat → holder-session-ended, force allowed', async () => {
+    const v = await assessForceRelease(
+      { ...base, itemLastProgressAt: null },
+      deps({ holder: freshHeartbeatHolder, oracleSessionState: 'ended' }),
+    );
+    expect(v).toMatchObject({ allowed: true, basis: 'holder-session-ended' });
+    expect(v.holderLiveness).toMatchObject({ live: false, warmIdle: false, oracleSessionState: 'ended' });
+  });
+
+  it('oracle sessionState=suspect (confirmed-dead process, claims still held) also authorizes a reclaim', async () => {
+    const v = await assessForceRelease(
+      { ...base, itemLastProgressAt: null },
+      deps({ holder: freshHeartbeatHolder, oracleSessionState: 'suspect' }),
+    );
+    expect(v).toMatchObject({ allowed: true, basis: 'holder-session-ended' });
+    expect(v.holderLiveness.oracleSessionState).toBe('suspect');
+  });
+
+  it.each(['live', 'parked', 'draining', 'recorded'] as const)(
+    'oracle sessionState=%s does NOT override a genuinely-live-looking holder (still needs authority)',
+    async (state) => {
+      const v = await assessForceRelease(
+        { ...base, itemLastProgressAt: null },
+        deps({ holder: freshHeartbeatHolder, oracleSessionState: state }),
+      );
+      expect(v.holderLiveness).toMatchObject({ live: true, oracleSessionState: state });
+      expect(v.allowed).toBe(false); // worker pane, no authority — still refused, just not on liveness
+    },
+  );
+
+  it('a degraded/absent oracle read (null) never flips a live-looking holder to not-live', async () => {
+    const v = await assessForceRelease(
+      { ...base, itemLastProgressAt: null },
+      deps({ holder: freshHeartbeatHolder, oracleSessionState: null }),
+    );
+    expect(v.holderLiveness).toMatchObject({ live: true, oracleSessionState: null });
+  });
+
+  it('the two liveness legs are independent: a genuinely dead-by-heartbeat holder still reports basis holder-not-live even if the oracle disagrees (degraded to null here)', async () => {
+    const v = await assessForceRelease({ ...base, itemLastProgressAt: null }, deps({}));
+    expect(v).toMatchObject({ allowed: true, basis: 'holder-not-live' });
+    expect(v.holderLiveness.oracleSessionState).toBeNull();
+  });
+
+  it('recurrence guard: mirrors coord:wake\'s recipient_dead verdict — a holder the oracle calls ended is NEVER refused force_unauthorized on liveness grounds, regardless of caller authority', async () => {
+    // A bare worker pane, no fleet leadership, no queen role — the WEAKEST possible
+    // authority — must still succeed once the oracle says the holder is ended,
+    // because liveness (not authority) is what gates the reaper path.
+    const v = await assessForceRelease(
+      { callerOwnerId: 'su-nobody', holderOwnerId: 'su-holder', workspaceId: 'ws1', itemLastProgressAt: null },
+      deps({
+        holder: freshHeartbeatHolder,
+        caller: { heartbeatAt: iso(0), lastActiveAt: iso(0), agentRole: 'worker' },
+        oracleSessionState: 'ended',
+      }),
+    );
+    expect(v.allowed).toBe(true);
+    expect(v.basis).not.toBe(undefined);
   });
 });
 

@@ -210,7 +210,7 @@ export const HARNESS_FEATURES_CONSOLIDATED_DDL = `
       -- which names neither the fixture nor the missing column as the cause.
       -- Found while adding the migration-726 guard (WI-7057); the same omission is
       -- why work-items-closed-ts.integration.test.ts could not apply 721 either.
-      terminal_reason,
+      -- TEMP-CONTROL-REVERT
       -- agent-protocol-authority-semantics-2026-07-26 P-003 (migration 677). The
       -- feature-family view above is SELECT * and picks the column up for free; this
       -- one is an explicit list, so it has to be named here or every integration test

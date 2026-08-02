@@ -26,9 +26,10 @@
  * allowlist entry is gone: the routed file no longer imports node:child_process,
  * so the bypass predicate would flag any regression that re-inlines a raw spawn.)
  */
-import { execSync } from 'node:child_process';
 import { readFileSync, realpathSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
+
+import { describeUnscanned, listTrackedFiles } from './lib/tracked-files.mjs';
 
 const ROOT = new URL('..', import.meta.url).pathname;
 
@@ -67,15 +68,17 @@ export function isRawAgentSpawnBypass(text) {
   return /\bbuildInvokeOnce\s*\(/.test(text);
 }
 
-/** Scan the tracked tree for bypass offenders (excludes allowlist + _retired + tests). */
+/**
+ * Scan the tracked tree for bypass offenders (excludes allowlist + _retired + tests).
+ *
+ * WI-6666: enumerates via the shared `listTrackedFiles` helper, which recurses into
+ * submodules. A bare `git ls-files` does NOT — it emits one gitlink entry per
+ * submodule — so this guard previously printed a clean verdict having never opened
+ * libs/generic/**, libs/papercusp/**, or papercusp-desktop/**. Returns the coverage
+ * report alongside the offenders so `main` can state what it could not check.
+ */
 export function findOffenders() {
-  const tracked = execSync('git ls-files', {
-    cwd: ROOT,
-    encoding: 'utf8',
-    maxBuffer: 256 * 1024 * 1024,
-  })
-    .split('\n')
-    .filter(Boolean);
+  const { files: tracked, unscanned } = listTrackedFiles(ROOT);
 
   const offenders = [];
   for (const f of tracked) {
@@ -88,13 +91,16 @@ export function findOffenders() {
     }
     if (isRawAgentSpawnBypass(text)) offenders.push(f);
   }
-  return offenders;
+  return { offenders, unscanned };
 }
 
 function main() {
-  const offenders = findOffenders();
+  const { offenders, unscanned } = findOffenders();
   if (offenders.length === 0) {
-    console.log('✓ no new raw agent-CLI spawns — every agent spawn goes through spawnInvokeOnce (the chokepoint).');
+    console.log(
+      '✓ no new raw agent-CLI spawns — every agent spawn goes through spawnInvokeOnce (the chokepoint).' +
+        describeUnscanned(unscanned),
+    );
     process.exit(0);
   }
   console.error('✗ NEW raw agent-CLI spawn(s) bypassing the spawnInvokeOnce chokepoint:');

@@ -184,6 +184,47 @@ describe('loop surface round-trip (real PG)', () => {
     expect(afterDeath!.lastTurnAt).toBe(new Date('2026-06-20T00:35:00.000Z').toISOString()); // union INCLUDES it
   });
 
+  it('WI-6639 regression: a continuously-WARM loop (no lifecycle marker, no journal note) must NOT read turnsStalled — caught LIVE by dry-running stalled-loops-guard against this session\'s own real loop before it shipped', async () => {
+    // The exact live shape this closes: `carry:'warm'` never restarts, so the lifecycle
+    // 'ended' marker never fires for it; `journal:record-turn` covers only ~2.3% of turns
+    // (EI-19316779460752535), so the journal leg is also silent. Before this fix, BOTH legs
+    // of last_turn_at were empty for this (dominant) population despite the session
+    // genuinely, continuously producing real turns.
+    await sql`TRUNCATE harness_shared.session_turns`;
+    await sql`TRUNCATE harness_shared.session_turn_journal`;
+    await sql`DELETE FROM harness_shared.agent_activity WHERE owner_id = ${OWNER}`;
+    await materializeLoop({ workspaceId: WS, harnessSlug: HARNESS, ownerId: OWNER, intervalSec: 60, kickoff: 'k', sql });
+
+    // Relative to REAL now (computeTurnsStalled defaults its nowMs to Date.now() when fed
+    // from a live row) so this test is not fragile to when it happens to run: many fires,
+    // most recently 2 minutes ago; a genuine assistant turn 5 minutes before THAT fire —
+    // well inside the 30-min stall floor either way, no journal row, no lifecycle marker.
+    const lastFired = new Date(Date.now() - 2 * 60_000);
+    const recentTurn = new Date(lastFired.getTime() - 5 * 60_000);
+    await sql`
+      UPDATE harness_shared.routines
+         SET last_fired_at = ${lastFired.toISOString()}::timestamptz,
+             metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object('fire_count', 209)
+       WHERE name = ${loopRoutineName(OWNER)}
+    `;
+    await sql`
+      INSERT INTO harness_shared.session_turns
+        (workspace_id, source_kind, session_id, turn_idx, ts, owner, harness_slug, speaker, text)
+      VALUES (${WS}, 'claude', 'sess-1', 1, ${recentTurn.toISOString()}::timestamptz,
+              ${OWNER}, ${HARNESS}, 'assistant', 'ordinary turn, no journal note')`;
+
+    const status = await getLoopStatus(OWNER, { sql });
+    expect(status!.fireCount).toBe(209);
+    // TEETH: without the session_turns leg this fix adds, lastTurnAt would be NULL here
+    // (no journal row, no lifecycle marker) and computeTurnsStalled's "no turn has EVER
+    // completed" branch would fire unconditionally — flagging a genuinely healthy,
+    // actively-working loop as turnsStalled:true. This is not hypothetical: it is exactly
+    // what a live dry-run of stalled-loops-guard reported for this session's own loop
+    // (WI-6639) before this fix landed.
+    expect(status!.lastTurnAt).toBe(recentTurn.toISOString());
+    expect(status!.turnsStalled).toBe(false);
+  });
+
   it('getLoopStatus surfaces carry:"cold" for a cold-armed loop (su-cold-auto P-008 observability)', async () => {
     await materializeLoop({
       workspaceId: WS,

@@ -256,6 +256,13 @@ export default defineTool({
       frontierLimit: args.frontierLimit,
     });
 
+    // EI-18953436700237995: opt-in — see checkClaimOrderDivergence's header for why
+    // this is never run unconditionally. Fail-open (returns undefined on any error
+    // or inconclusive comparison), so it can never blank or break the survey itself.
+    const claimOrderCheck = args.checkClaimOrder
+      ? await checkClaimOrderDivergence(installSlug, survey.frontier, Math.min(limit, 25))
+      : undefined;
+
     // {data} envelope so the payload-tier shapers apply (P-024).
     const frontierCount = survey.frontier.length;
     const frontierQuarantined = survey.frontierQuarantined ?? 0;
@@ -280,6 +287,11 @@ export default defineTool({
         plans: survey.plans.slice(0, limit).map(compact),
         frontier: survey.frontier.slice(0, limit).map(compact),
         ranker: placementRankerSpec(),
+        // EI-18953436700237995: present ONLY when checkClaimOrder was requested AND
+        // the comparison was conclusive — absence means either "not asked" or "not
+        // enough in-harness data to compare", never "checked, no divergence" (that
+        // case reports rankingDivergence:false explicitly).
+        ...(claimOrderCheck ? { claimOrderCheck } : {}),
       },
     };
   },
