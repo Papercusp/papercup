@@ -20,20 +20,27 @@ const h = vi.hoisted(() => ({ sql: null as unknown }));
 // getOrgPg for the reads; withWorkspace for the re-pointed proposeRubric write path
 // (withPlanLock → withWorkspace, P-007). The advisory xact-lock needs a real
 // transaction — `.begin` provides one against the migrated throwaway DB's admin client.
-vi.mock('@papercusp/db-org', () => ({
-  getOrgPg: () => ({ sql: h.sql }),
-  withWorkspace: async <T>(ws: string, cb: (tx: postgres.Sql) => Promise<T> | T): Promise<T> =>
-    (h.sql as postgres.Sql).begin(async (tx) => {
-      await tx`SELECT set_config('app.workspace_id', ${ws}, true)`;
-      return cb(tx as unknown as postgres.Sql);
-    }) as Promise<T>,
-  // agent-tools/locks/configure.ts calls this at module top-level (WI-832) and this
-  // test's import graph reaches it transitively (rubrics.ts -> withPlanLock -> a locks
-  // shim) — a partial vi.mock omitting it throws "No … export is defined on the mock"
-  // at collection time (vitest throws on ANY access to a missing mock export). No-op is
-  // correct here: this test never exercises the admin-pool statement_timeout seam.
-  setAdminPoolStatementTimeoutProvider: () => {},
-}));
+//
+// Spread the ACTUAL module (vi.importActual) rather than hand-listing every export:
+// this test's import graph reaches multiple other db-org consumers transitively
+// (agent-tools/locks/configure.ts calls setAdminPoolStatementTimeoutProvider at module
+// top-level — WI-832; @papercusp/agent-mcp's bootstrap reads the `generated` schema
+// namespace) and vitest throws on ANY access to an export missing from a partial mock.
+// Those extra exports are pure (drizzle schema defs / a config-seam setter), so
+// importing them for real has no I/O side effect — only getOrgPg/withWorkspace need
+// faking to re-point reads/writes at the migrated throwaway test DB.
+vi.mock('@papercusp/db-org', async () => {
+  const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
+  return {
+    ...actual,
+    getOrgPg: () => ({ sql: h.sql }),
+    withWorkspace: async <T>(ws: string, cb: (tx: postgres.Sql) => Promise<T> | T): Promise<T> =>
+      (h.sql as postgres.Sql).begin(async (tx) => {
+        await tx`SELECT set_config('app.workspace_id', ${ws}, true)`;
+        return cb(tx as unknown as postgres.Sql);
+      }) as Promise<T>,
+  };
+});
 
 const { builtInCriterionKeysForRubric, listScorecards, scorecardTrend } = await import('./scorecards');
 const { createIssue } = await import('./issues-engineer');
