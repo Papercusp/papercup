@@ -5,6 +5,7 @@ import {
   rmSync,
   writeFileSync,
   existsSync,
+  statSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -245,8 +246,23 @@ describe('walkHarnessTree — integration against papercup`s real libs/', () => 
   // .gitmodules but extract submodule SOURCE via `git archive` (no .git), so
   // walkHarnessTree correctly sees plain dirs there — skip these
   // integration-against-the-real-tree assertions in such trees.
+  // Gate on a property that does NOT depend on submodule materialization timing:
+  // the canonical dev checkout is a real clone, so its superproject `.git` is a
+  // DIRECTORY, while the release gate's papercusp-checkpoint tree is a git
+  // worktree, so its `.git` is a FILE.
+  //
+  // Why this matters: the previous guard sampled ONE submodule
+  // (libs/papercusp/.git) as a proxy for "submodules are materialized here", and
+  // that extraction is NOT atomic. The checkpoint tree re-extracts submodule
+  // source progressively (measured 0/39 materialized at 02:05Z and 38/39 at
+  // 02:21Z on 2026-08-02), so a gate run landing mid-rebuild saw libs/papercusp
+  // already present while its siblings were not, flipped this guard TRUE, and
+  // then failed the hardcoded counts below — red-pinning the SHARED green gate on
+  // a false alarm that never reproduces on a dev box (EI-19313251155452361; the
+  // underlying archive-extraction cause is EI-19298378364087215).
   const isPapercupCheckout =
     existsSync(join(papercupRoot, '.gitmodules')) &&
+    statSync(join(papercupRoot, '.git'), { throwIfNoEntry: false })?.isDirectory() === true &&
     existsSync(join(papercupRoot, 'libs', 'papercusp', '.git'));
 
   it.skipIf(!isPapercupCheckout)(

@@ -8,12 +8,12 @@
  * Schema lives in libs/papercusp/libs/db/sql/073-llm-testing.sql.
  */
 
+// `postgres` stays imported for the JSONValueCompat type below — NOT for building a pool.
 import postgres from 'postgres';
-import { longLivedPoolConnectionOptions, poolIdleTimeoutSec } from '@papercusp/db-org';
 import { sharedUtilityPoolMax } from '../resource-profile';
 import { zstdCompressSync, zstdDecompressSync } from 'node:zlib';
 
-import { getHarnessAdminUrl } from '../embedded-pg-discovery';
+import { getLongLivedAdminPool } from '../long-lived-admin-pool';
 
 import type { RunReport, SingleRunReport } from '@papercusp/testing-shell/llm';
 
@@ -28,19 +28,13 @@ import type { RunReport, SingleRunReport } from '@papercusp/testing-shell/llm';
  */
 type JSONValueCompat = Parameters<ReturnType<typeof postgres>['json']>[0];
 
-let pool: ReturnType<typeof postgres> | null = null;
-function db() {
-  if (!pool) {
-    pool = postgres(getHarnessAdminUrl(), {
-      ...longLivedPoolConnectionOptions('llm-testing-storage'),
-      max: sharedUtilityPoolMax(),
-      // Transactional pool — drain idle backends (see poolIdleTimeoutSec).
-      idle_timeout: poolIdleTimeoutSec(),
-      prepare: false,
-    });
-  }
-  return pool;
-}
+// Transactional pool — re-resolves the admin URL on every use and rebinds if the endpoint
+// moved (EI-19306394439939264). Still a DEDICATED pool rather than getOrgPg, so the EI-9319
+// `sql.json()` reasoning above is unchanged by this migration.
+const db = () => getLongLivedAdminPool('llm-testing-storage', {
+  max: sharedUtilityPoolMax(),
+  prepare: false,
+});
 
 export async function persistRunReport(report: RunReport, rubricVersion: string, scenarioHash: string): Promise<void> {
   const sql = db();

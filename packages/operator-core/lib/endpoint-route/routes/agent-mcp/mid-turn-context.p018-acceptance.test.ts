@@ -129,7 +129,7 @@ const tokens = (s: string): string[] =>
 const weight = (t: string): number => (/\d/.test(t) ? 3 : 1);
 
 /**
- * Weighted token overlap, length-normalised into [0,1]. Deterministic and
+ * Weighted token overlap, normalised by the query into [0,1]. Deterministic and
  * content-only: it cannot see ids, scopes, or the fixture's intent.
  */
 function relevance(query: string, text: string): number {
@@ -144,6 +144,23 @@ function relevance(query: string, text: string): number {
   }
   return total === 0 ? 0 : hit / total;
 }
+
+/**
+ * The admission floor, IN THIS SCORER'S OWN UNITS.
+ *
+ * ⚠ Deliberately NOT production's 0.45. That is an EMBEDDING-cosine floor;
+ * `relevance()` is term overlap — a different scale entirely — and asserting
+ * against 0.45 here would be asserting a number this file cannot mean. (Measured
+ * while writing this: batch one's derived query scores 0.36 against the answer,
+ * which says nothing whatsoever about what the real cosine leg would score.)
+ *
+ * What the tests actually pin is the SEPARATION, not the constant: the recorded
+ * answer clears this floor and every decoy scores ZERO against the same query.
+ * Any value strictly between the two selects the identical set, so this number
+ * is not load-bearing — and `separation()` below asserts the gap directly rather
+ * than trusting it.
+ */
+const FAKE_FLOOR = 0.15;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // The seeded store: one already-recorded answer, three plausible neighbours
@@ -196,27 +213,36 @@ const CORPUS: SeedRow[] = [
   },
 ];
 
-/** The floor the push path asks for (injection.ts passes minScore 0.45). */
-const scoreRows = (query: string, scopes: readonly string[], minScore: number, limit: number) =>
+/** Rank one query against the seeded corpus, applying the fake's own floor. */
+const scoreRows = (query: string, scopes: readonly string[], limit: number) =>
   CORPUS.filter((r) => scopes.includes(r.scope))
     .map((r) => ({ id: r.id, text: r.text, kind: r.kind, scope: r.scope, score: relevance(query, r.text) }))
-    .filter((r) => r.score >= minScore)
+    .filter((r) => r.score >= FAKE_FLOOR)
     .sort((a, b) => b.score - a.score || a.id.localeCompare(b.id))
     .slice(0, limit);
 
+/**
+ * The full ranking (floor NOT applied) plus the gap between the best and second
+ * — the scale-free form of "the derived query discriminates".
+ */
+const separation = (query: string): { ranked: Array<{ id: string; score: number }>; gap: number } => {
+  const ranked = CORPUS.map((r) => ({ id: r.id, score: relevance(query, r.text) })).sort(
+    (a, b) => b.score - a.score,
+  );
+  return { ranked, gap: (ranked[0]?.score ?? 0) - (ranked[1]?.score ?? 0) };
+};
+
 const backend = {
   name: 'p018-fake',
-  scoreScale: 'cosine' as const,
+  // Honest about what this scorer is — injection.ts stamps this onto the recall
+  // telemetry, and mislabelling a lexical overlap as a cosine is exactly the
+  // scale conflation D-001/F-F was filed about.
+  scoreScale: 'lexical' as const,
   available: async () => ({ ok: true }),
-  search: vi.fn(
-    async (
-      query: string,
-      opts: { scope: string | readonly string[]; limit?: number; minScore?: number },
-    ) => {
-      const scopes = typeof opts.scope === 'string' ? [opts.scope] : [...opts.scope];
-      return scoreRows(query, scopes, opts.minScore ?? 0, opts.limit ?? 12);
-    },
-  ),
+  search: vi.fn(async (query: string, opts: { scope: string | readonly string[]; limit?: number }) => {
+    const scopes = typeof opts.scope === 'string' ? [opts.scope] : [...opts.scope];
+    return scoreRows(query, scopes, opts.limit ?? 12);
+  }),
 };
 
 /**
@@ -395,7 +421,7 @@ beforeEach(() => {
   getMemoryBackendMock.mockReset().mockReturnValue(backend);
   recallCorpusContextMock.mockReset().mockImplementation(async ({ queryText }: { queryText: string }) => {
     const score = relevance(queryText, CORPUS_POINTER_TEXT);
-    return score >= 0.45
+    return score >= FAKE_FLOOR
       ? {
           lines: [
             {
@@ -428,24 +454,32 @@ describe('P-018 acceptance — replaying the WI-6512 investigation', () => {
 
   it('out-ranks the plausible neighbours — the derived query is doing the work', async () => {
     // The scorer is blind; the discrimination has to come from deriveBatchQuery.
-    const q = deriveBatchQuery(REPLAY[0]!.calls);
-    const scored = CORPUS.map((r) => ({ id: r.id, score: relevance(q, r.text) })).sort(
-      (a, b) => b.score - a.score,
-    );
-    expect(scored[0]!.id).toBe(ANSWER_ID);
-    // And it is the ONLY record that clears the push path's 0.45 cosine floor,
-    // so the teaser is one line rather than a briefing.
-    expect(scored.filter((s) => s.score >= 0.45).map((s) => s.id)).toEqual([ANSWER_ID]);
+    const { ranked, gap } = separation(deriveBatchQuery(REPLAY[0]!.calls));
+    expect(ranked[0]!.id).toBe(ANSWER_ID);
+    // Scale-free form of the claim: the answer is not merely first, it is
+    // SEPARATED — the runner-up scores nothing at all against the same query.
+    // That gap, not the floor constant, is what makes the floor safe to set.
+    expect(ranked[1]!.score).toBe(0);
+    expect(gap).toBe(ranked[0]!.score);
+    // Which the floor then converts into "exactly one record is admitted".
+    expect(ranked.filter((s) => s.score >= FAKE_FLOOR).map((s) => s.id)).toEqual([ANSWER_ID]);
   });
 
   it('reaches the WORK-ITEM through the P-008 corpus leg, not only a memory about it', async () => {
-    // The mem0 leg can only ever return a memory; WI-6512 itself is reachable
-    // only because D-037 added the second retrieval leg. Both fired on batch one.
-    const pushes = await replay(newOwner());
-    expect(recallCorpusContextMock).toHaveBeenCalled();
-    const firstCallQuery = (recallCorpusContextMock.mock.calls[0]![0] as { queryText: string }).queryText;
-    expect(relevance(firstCallQuery, CORPUS_POINTER_TEXT)).toBeGreaterThanOrEqual(0.45);
-    expect(pushes[0]).toContain('WI-6512');
+    // The mem0 leg can only ever return a memory ABOUT the finding; WI-6512
+    // itself is reachable only because D-037 added the second retrieval leg —
+    // the exact structural gap WI-6771 recorded. Prove it carries the push on
+    // its own, with the mem0 corpus emptied so nothing else can be the source.
+    const saved = CORPUS.splice(0, CORPUS.length);
+    try {
+      const pushes = await replay(newOwner());
+      expect(recallCorpusContextMock).toHaveBeenCalled();
+      const asked = (recallCorpusContextMock.mock.calls[0]![0] as { queryText: string }).queryText;
+      expect(relevance(asked, CORPUS_POINTER_TEXT)).toBeGreaterThanOrEqual(FAKE_FLOOR);
+      expect(pushes[0]).toContain('WI-6512');
+    } finally {
+      CORPUS.push(...saved);
+    }
   });
 });
 

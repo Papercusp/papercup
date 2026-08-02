@@ -18,7 +18,7 @@
  * native-session-id-roundtrip.test.ts), but `shellEscape` is the REAL one so the
  * asserted command line is the one that would actually be executed.
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RouteContext } from '../../define-route';
 
 // Both mocks DECLARE their parameter so `.mock.calls[0][0]` is typed — that call
@@ -179,5 +179,53 @@ describe('launch-su — headless routes to spawnHeadless, headed to spawnInTermi
     const cmd = headlessOneliner();
     expect(cmd).toContain('--fleet=my-fleet');
     expect(cmd).toContain('--headless');
+  });
+});
+
+describe('launch-su — the terminal child gets a RE-DERIVED operator base, never the inherited one (WI-6821 DEFECT A)', () => {
+  const ORIGINAL = process.env.PAPERCUSP_OPERATOR_URL;
+  afterEach(() => {
+    if (ORIGINAL === undefined) delete process.env.PAPERCUSP_OPERATOR_URL;
+    else process.env.PAPERCUSP_OPERATOR_URL = ORIGINAL;
+  });
+
+  /** The env the route actually handed the terminal. */
+  const headedEnv = (): NodeJS.ProcessEnv => spawnInTerminalMock.mock.calls[0]![0].env;
+
+  it('does NOT leak an /api/mcp-suffixed PAPERCUSP_OPERATOR_URL into the spawned terminal', async () => {
+    // The exact shape the desktop sidecar was observed carrying. Inherited
+    // verbatim it makes psu request …/api/mcp/api/… → 404 → `not_found` → exit 1
+    // in ~0.4s; since the oneliner is `exec <psu …>`, that exit closes the window
+    // and the launch dies silently, leaving the adv_sessions row stuck on
+    // "Starting up — waiting for this session to come online…".
+    process.env.PAPERCUSP_OPERATOR_URL = 'http://localhost:3070/api/mcp';
+    await launch({ headless: false });
+
+    expect(spawnInTerminalMock).toHaveBeenCalledTimes(1);
+    const passed = headedEnv().PAPERCUSP_OPERATOR_URL;
+    // The assertion that matters is the ABSENCE of the suffix — asserting only
+    // the mocked value would still pass if the route stopped setting it at all.
+    expect(passed).not.toMatch(/\/api\/mcp/);
+    expect(passed).toBe('http://localhost:3070'); // from resolveSpawnHostOperatorBaseUrl
+  });
+
+  it('re-derives the base even when the operator carries NO pin of its own', async () => {
+    delete process.env.PAPERCUSP_OPERATOR_URL;
+    await launch({ headless: false });
+    // Re-derived, not merely passed through: a child left with no pin would fall
+    // back to its own resolution order and could reach a DIFFERENT operator than
+    // the one that just pre-minted its coord owner and adv_sessions row.
+    expect(headedEnv().PAPERCUSP_OPERATOR_URL).toBe('http://localhost:3070');
+  });
+
+  it('leaves the rest of the operator env intact — this is a targeted override, not a scrub', async () => {
+    process.env.PAPERCUSP_OPERATOR_URL = 'http://localhost:3070/api/mcp';
+    process.env.WI6821_CANARY = 'keep-me';
+    try {
+      await launch({ headless: false });
+      expect(headedEnv().WI6821_CANARY).toBe('keep-me');
+    } finally {
+      delete process.env.WI6821_CANARY;
+    }
   });
 });

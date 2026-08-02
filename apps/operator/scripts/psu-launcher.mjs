@@ -116,6 +116,61 @@ export function defaultMcpProxyProbe(port) {
  * operator.json in steady state, so each environment lands on the right branch
  * with no cross-contamination. Exported for tests; `probe`/`warn` injectable.
  */
+/**
+ * WI-6821 DEFECT A — `PAPERCUSP_OPERATOR_URL` is contractually a BARE BASE: every
+ * caller appends the path itself (`${base}/api/mcp?…`, `${base}/api/admin/…`).
+ * A value that ALREADY ends in `/api/mcp` therefore builds `…/api/mcp/api/…`,
+ * which 404s — and psu died on that with a bare `not_found` and exit 1 about
+ * 0.4s in. That is not a cosmetic failure: `launch-su.ts` runs psu as
+ * `exec <psu …>` inside `gnome-terminal --wait`, so psu exiting IS the window
+ * closing. The terminal flashed open and shut, the recorded pid died, the
+ * session never registered, and its adv_sessions row sat at `session_id NULL`
+ * advertising "Starting up — waiting for this session to come online…" for the
+ * whole 15-minute window (the owner-reported symptom, 2026-08-02).
+ *
+ * Reproduced with a one-variable control: `http://127.0.0.1:3070` launched
+ * cleanly (exit 0), `http://127.0.0.1:3070/api/mcp` died in 0.4s. Nothing else
+ * differed.
+ *
+ * The launcher that leaked it is fixed at its own source, but this is the choke
+ * point EVERY psu launch passes through and psu can be started by any parent (a
+ * human shell with a stale export, another tool), so normalize here too rather
+ * than leaving the trap armed for the next caller. Every OTHER branch of
+ * resolveOperatorTarget already returns a bare base — this env branch was the
+ * only one that could return a path-suffixed url.
+ *
+ * A base can never legitimately END in the path about to be appended to it, so
+ * stripping is unambiguous, not a guess. Anything unparseable is returned
+ * untouched — the connection path reports that far better than a silent rewrite.
+ * Exported for tests; `warn` injectable.
+ */
+export function normalizeOperatorBaseUrl(raw, { warn = (m) => console.warn(m) } = {}) {
+  if (typeof raw !== 'string') return raw;
+  const trimmed = raw.trim();
+  if (!trimmed) return trimmed;
+  let u;
+  try {
+    u = new URL(trimmed);
+  } catch {
+    return trimmed;
+  }
+  if (!/\/api\/mcp\/?$/i.test(u.pathname)) return trimmed.replace(/\/+$/, '');
+  u.pathname = u.pathname.replace(/\/api\/mcp\/?$/i, '');
+  // The suffixed form is the agent MCP url, which carries the session's signed
+  // query (`?sid=…`). Those params address /api/mcp specifically and are
+  // meaningless — and misleading — on a base, so drop them with the path.
+  u.search = '';
+  u.hash = '';
+  const fixed = u.toString().replace(/\/+$/, '');
+  warn(
+    `psu: PAPERCUSP_OPERATOR_URL is "${trimmed}", but it must be a BARE BASE — the /api/mcp path is appended per call, ` +
+      `so this pin would request …/api/mcp/api/… and EVERY operator call would 404 (psu would exit "not_found" in well ` +
+      `under a second, closing its terminal window immediately). Using "${fixed}" instead — fix whatever exports the ` +
+      `suffixed value (WI-6821).`,
+  );
+  return fixed;
+}
+
 export function resolveOperatorTarget({
   env = process.env,
   home = homedir(),
@@ -125,15 +180,16 @@ export function resolveOperatorTarget({
   const proxyOptedOut = env.PAPERCUSP_MCP_PROXY === '0';
   const proxyPort = Number(env.PAPERCUSP_MCP_PROXY_PORT) > 0 ? Number(env.PAPERCUSP_MCP_PROXY_PORT) : 9071;
   if (env.PAPERCUSP_OPERATOR_URL) {
+    const pinned = normalizeOperatorBaseUrl(env.PAPERCUSP_OPERATOR_URL, { warn });
     // WI-1457: an explicit :3070 pin while the proxy is alive is exactly the
     // active-but-unrouted regression — honor the override, but say so loudly.
-    if (!proxyOptedOut && /:3070\b/.test(env.PAPERCUSP_OPERATOR_URL) && probe(proxyPort)) {
+    if (!proxyOptedOut && /:3070\b/.test(pinned) && probe(proxyPort)) {
       warn(
-        `psu: PAPERCUSP_OPERATOR_URL pins ${env.PAPERCUSP_OPERATOR_URL} but the resilient MCP proxy is ACTIVE on :${proxyPort} — ` +
+        `psu: PAPERCUSP_OPERATOR_URL pins ${pinned} but the resilient MCP proxy is ACTIVE on :${proxyPort} — ` +
           `this session bypasses deploy-restart resilience (WI-1457). Unset the override (or point it at :${proxyPort}) to ride the proxy.`,
       );
     }
-    return { url: env.PAPERCUSP_OPERATOR_URL, source: 'env', startedAt: null };
+    return { url: pinned, source: 'env', startedAt: null };
   }
   // WI-3247: prefer the stable proxy over desktop operator.json when present.
   // operator.json carries a per-boot dynamic port; exporting it into a long-lived

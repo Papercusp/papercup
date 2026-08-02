@@ -21,24 +21,11 @@
 
 import { hostname } from 'node:os';
 
-import postgres from 'postgres';
-import { longLivedPoolConnectionOptions, poolIdleTimeoutSec } from '@papercusp/db-org';
+import { getLongLivedAdminPool } from '../long-lived-admin-pool';
 
-import { getHarnessAdminUrl } from '../embedded-pg-discovery';
-
-let pool: ReturnType<typeof postgres> | null = null;
-function db() {
-  if (!pool) {
-    pool = postgres(getHarnessAdminUrl(), {
-      ...longLivedPoolConnectionOptions('llm-testing-ledger'),
-      max: 2,
-      // Transactional pool — drain idle backends (see poolIdleTimeoutSec).
-      idle_timeout: poolIdleTimeoutSec(),
-      prepare: false,
-    });
-  }
-  return pool;
-}
+// Transactional pool — re-resolves the admin URL on every use and rebinds if the endpoint
+// moved (EI-19306394439939264). Shared connection options + idle policy come with it.
+const db = () => getLongLivedAdminPool('llm-testing-ledger', { max: 2, prepare: false });
 
 const DEFAULT_TTL_SEC = 600; // 10 min — covers a slow 6-turn scenario
 

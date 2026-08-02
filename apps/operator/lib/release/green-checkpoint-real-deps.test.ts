@@ -83,6 +83,21 @@ writeFileSync(
 );
 afterAll(() => rmSync(typecheckTree, { recursive: true, force: true }));
 
+// WI-6841: a candidate tree that provides `lint:tsc:papercusp-libs` but not `lint:tsc` —
+// isolates the libs/papercusp typecheck leg's wiring (position in the sequence, env, failure
+// signature) from the operator-core typecheck leg's, the same way typecheckTree isolates that
+// one from cpTree's no-optional-legs baseline. The eight libs/papercusp gates were executed by
+// NOTHING before this leg existed; these tests are what stop it silently un-gating again.
+const libsTypecheckTree = mkdtempSync(join(tmpdir(), 'green-cp-libs-typecheck-tree-'));
+writeFileSync(
+  join(libsTypecheckTree, 'package.json'),
+  JSON.stringify({
+    name: 'cp-libs-typecheck-fixture',
+    scripts: { 'lint:tsc:papercusp-libs': 'node scripts/lint-tsc-papercusp-libs.mjs' },
+  }),
+);
+afterAll(() => rmSync(libsTypecheckTree, { recursive: true, force: true }));
+
 // EI-485: a candidate tree that provides `lint:migrations` but not `lint:tsc` — isolates
 // the migrations-lint leg's wiring (position in the sequence, env, failure signature)
 // from the typecheck leg's, the same way typecheckTree isolates typecheck from cpTree's
@@ -176,6 +191,74 @@ describe('realCheckpointDeps.runGreen — real-path wiring (gap #10)', () => {
     expect(r.failingTests).toContain('lint:tsc');
     expect(r.summary).toContain('TYPECHECK FAILED');
     expect(calls).toHaveLength(2);
+  });
+
+  // WI-6841: `lint:tsc` resolves to packages/operator-core alone, so the EIGHT typecheck
+  // gates libs/papercusp packages had earned (libs/db, file-claim, blueprint-distribution,
+  // harness, harness/docs-viewer, locks, gitnexus-bridge at a strict zero + orchestrator on a
+  // per-file baseline) ran under NO automation — they existed, passed by hand, and gated
+  // nothing. Mirrors the lint:tsc wiring tests above; these are the teeth.
+  it('detects the optional lint:tsc:papercusp-libs script without requiring it from subject hives', () => {
+    expect(hasNpmScript(cpTree, 'lint:tsc:papercusp-libs')).toBe(false);
+    expect(hasNpmScript(libsTypecheckTree, 'lint:tsc:papercusp-libs')).toBe(true);
+  });
+
+  it('runs the libs/papercusp typecheck leg before the SPA build when the candidate provides it', async () => {
+    // suite green → libs typecheck green → marker grep clean → SPA build green.
+    const { exec, calls } = makeExec([{ code: 0 }, { code: 0 }, { code: 1 }, { code: 0 }]);
+    const r = await realCheckpointDeps(cfg, exec).runGreen(libsTypecheckTree, 'base-sha');
+
+    expect(r.green).toBe(true);
+    expect(calls).toHaveLength(4);
+    expect(calls[1].cmd).toBe('npm');
+    expect(calls[1].args).toEqual(['run', 'lint:tsc:papercusp-libs']);
+    expect(calls[1].opts?.cwd).toBe(libsTypecheckTree);
+    expect(calls[1].opts?.env?.GREEN_CHECKPOINT).toBe('1');
+    expect(calls[2].cmd).toBe('git');
+    expect(calls[3].args).toContain('build');
+  });
+
+  it('holds the candidate when a libs/papercusp package regresses and skips the SPA build', async () => {
+    const { exec, calls } = makeExec([
+      { code: 0 },
+      { code: 1, stdout: '✗ libs/papercusp/packages/locks\nsrc/claim.ts(12,3): error TS2322: Type mismatch' },
+    ]);
+    const r = await realCheckpointDeps(cfg, exec).runGreen(libsTypecheckTree, null);
+
+    expect(r.green).toBe(false);
+    expect(r.failingTests).toContain('lint:tsc:papercusp-libs');
+    expect(r.summary).toContain('LIBS/PAPERCUSP TYPECHECK FAILED');
+    // The package that regressed must be NAMED in the held verdict — a gate that says only
+    // "typecheck failed" across 8 packages costs the reader the diagnosis.
+    expect(r.summary).toContain('libs/papercusp/packages/locks');
+    // Short-circuits: no marker grep, no SPA build.
+    expect(calls).toHaveLength(2);
+  });
+
+  it('runs the libs/papercusp typecheck leg AFTER operator-core lint:tsc when a candidate provides both', async () => {
+    // Both legs present: the order is asserted, not incidental — operator-core imports
+    // libs/papercusp, so its red is the more diagnostic one to surface first.
+    const bothTree = mkdtempSync(join(tmpdir(), 'green-cp-both-typecheck-tree-'));
+    writeFileSync(
+      join(bothTree, 'package.json'),
+      JSON.stringify({
+        name: 'cp-both-typecheck-fixture',
+        scripts: {
+          'lint:tsc': 'node scripts/lint-tsc.mjs',
+          'lint:tsc:papercusp-libs': 'node scripts/lint-tsc-papercusp-libs.mjs',
+        },
+      }),
+    );
+    try {
+      const { exec, calls } = makeExec([{ code: 0 }, { code: 0 }, { code: 0 }, { code: 1 }, { code: 0 }]);
+      const r = await realCheckpointDeps(cfg, exec).runGreen(bothTree, null);
+
+      expect(r.green).toBe(true);
+      expect(calls[1].args).toEqual(['run', 'lint:tsc']);
+      expect(calls[2].args).toEqual(['run', 'lint:tsc:papercusp-libs']);
+    } finally {
+      rmSync(bothTree, { recursive: true, force: true });
+    }
   });
 
   // EI-485: lint:migrations' PG-backed unreserved-number check was never wired into any

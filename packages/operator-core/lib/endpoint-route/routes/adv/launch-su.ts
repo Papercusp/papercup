@@ -366,7 +366,27 @@ const launchSu = defineTool({
         spawned = { ok: false, error: `headless launch failed: ${e?.message ?? e}` };
       }
     } else {
-      const r = await spawnInTerminal({ oneliner, env: process.env });
+      // WI-6821 DEFECT A: the child must NOT inherit this operator's own
+      // `PAPERCUSP_OPERATOR_URL` verbatim. That variable is contractually a BARE
+      // BASE (every caller appends the path itself — `${base}/api/mcp?…`), but a
+      // launching operator can carry the already-suffixed MCP url; psu then builds
+      // `…/api/mcp/api/…`, 404s, prints a bare `not_found` and exits 1 in ~0.4s.
+      // Because the oneliner above is `exec <psu …>`, that exit IS the window
+      // closing — the terminal flashes open and shut, the recorded pid dies, psu
+      // never registers, and the adv_sessions row written below keeps
+      // `session_id NULL` for its whole window. That is exactly the "Starting up
+      // — waiting for this session to come online…" the owner reported (reproduced
+      // 2026-08-02: bare base → launches; same url + `/api/mcp` → dead in 0.4s).
+      // Re-derive it from THIS operator — the one that just pre-minted the coord
+      // owner and is about to write the row — using the same helper the headless
+      // branch already uses (it prefers PAPERCUSP_HONO_PORT and strips the
+      // suffix). Mirrors psu-launcher's rule for PAPERCUSP_TTY: a launch's
+      // operator identity is ALWAYS RE-DERIVED, NEVER INHERITED.
+      const { resolveSpawnHostOperatorBaseUrl } = await import('../../../mcp-base-url');
+      const r = await spawnInTerminal({
+        oneliner,
+        env: { ...process.env, PAPERCUSP_OPERATOR_URL: resolveSpawnHostOperatorBaseUrl() },
+      });
       spawned = r.ok ? r : { ok: false, error: r.error };
     }
     if (!spawned.ok) {

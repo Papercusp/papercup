@@ -2072,6 +2072,30 @@ export const FLAGS = {
   // a flip takes effect without a restart. OFF ⇒ the monitor still logs the lag
   // histogram, it just captures no profile (today's behavior).
   LOOP_STALL_PROFILER: "papercusp-loop-stall-profiler",
+  // local-reranker-gte-modernbert-2026-08-02 (P-008): Stage-B prose reranking by
+  // a LOCAL ONNX cross-encoder (gte-reranker-modernbert-base, ~150M) — served by
+  // the shared embed sidecar when the host runs one (`/rerank` beside `/embed`,
+  // one warm model for the whole box), in-process where none is configured.
+  //
+  // WHAT IT GATES, precisely: the LOCAL engine only — not reranking as a whole.
+  // OFF restores the pre-P-007 behavior byte-identically: a configured
+  // ZeroEntropy key still reranks via the hosted API, and with no key the fused
+  // RRF order passes through untouched. That is why the gate sits here rather
+  // than around the whole rerank — OFF returns to a state we shipped and ran for
+  // months, not to a third path nobody has exercised.
+  //
+  // DEFAULT ON (not in DARK_FLAGS). This is finished, tested work: 18/18 unit
+  // tests, plus an end-to-end run against a real sidecar over real HTTP
+  // including the sidecar-killed path. Before it, the rerank seam was DARK for
+  // everyone without a ZeroEntropy key — i.e. every desktop install — so Stage B
+  // never ran at all; shipping the replacement off would just preserve that.
+  //
+  // Safety here is structural rather than promised: every failure path (no
+  // sidecar, sick sidecar, missing ONNX runtime, a scorer that throws) funnels
+  // through @papercusp/rerank's single fail-safe seam and degrades to retrieval
+  // order. So the honest risk of ON is a slower search, not a broken one — and
+  // the latency ceiling is bounded separately by RERANK_MAX_CANDIDATES.
+  LOCAL_RERANK: "papercusp-local-rerank",
 } as const;
 
 export type FlagKey = (typeof FLAGS)[keyof typeof FLAGS];

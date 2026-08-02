@@ -6,6 +6,7 @@ import type { SearchHit } from '@papercusp/search';
 vi.mock('../../credentials', () => ({ readCredentials: vi.fn() }));
 vi.mock('@papercusp/search-core', () => ({ rankWithReranker: vi.fn() }));
 vi.mock('../../memory/embed-sidecar-wiring', () => ({ buildSidecarAwareReranker: vi.fn() }));
+vi.mock('@papercusp/flags/server', () => ({ getFlag: vi.fn() }));
 
 import {
   RERANK_MAX_CANDIDATES,
@@ -18,6 +19,7 @@ import {
 import { readCredentials } from '../../credentials';
 import { rankWithReranker } from '@papercusp/search-core';
 import { buildSidecarAwareReranker } from '../../memory/embed-sidecar-wiring';
+import { getFlag } from '@papercusp/flags/server';
 
 const hit = (source_id: string, score: number, excerpt = `body-${source_id}`): SearchHit => ({
   source: 'escalations',
@@ -41,6 +43,7 @@ beforeEach(() => {
   delete process.env.ZEROENTROPY_API_KEY;
   vi.mocked(readCredentials).mockResolvedValue({});
   vi.mocked(buildSidecarAwareReranker).mockResolvedValue(scorer);
+  vi.mocked(getFlag).mockResolvedValue(true); // FLAGS.LOCAL_RERANK default ON
 });
 afterEach(() => {
   if (savedEnv === undefined) delete process.env.ZEROENTROPY_API_KEY;
@@ -109,6 +112,42 @@ describe('rerankProseHits — engine selection', () => {
     expect(opts.engine).toBeUndefined();
     expect(opts.scorer).toBeUndefined();
     expect(buildSidecarAwareReranker).not.toHaveBeenCalled();
+  });
+
+  it('FLAGS.LOCAL_RERANK off + no key → the pre-P-007 dark seam, byte-identically', async () => {
+    // The kill-switch contract: OFF must return to a state we shipped and ran
+    // for months (RRF passthrough), not to some third path.
+    vi.mocked(getFlag).mockResolvedValue(false);
+    const out = await rerankProseHits('q', HITS, 2);
+    expect(out).toEqual(HITS.slice(0, 2));
+    expect(rankWithReranker).not.toHaveBeenCalled();
+    expect(buildSidecarAwareReranker).not.toHaveBeenCalled();
+  });
+
+  it('FLAGS.LOCAL_RERANK off does NOT disable the hosted engine — it gates the local one only', async () => {
+    vi.mocked(getFlag).mockResolvedValue(false);
+    vi.mocked(readCredentials).mockResolvedValue({ zeroentropy_api_key: 'ze_test' });
+    vi.mocked(rankWithReranker).mockResolvedValue(HITS);
+    await rerankProseHits('q', HITS, 5);
+    expect(vi.mocked(rankWithReranker).mock.calls[0][2].rerankApiKey).toBe('ze_test');
+  });
+
+  it('flag backend throwing FAILS OPEN — an outage must not silently switch reranking off fleet-wide', async () => {
+    // Failing closed would look exactly like the reranker being broken, across
+    // every worker at once, with nothing pointing at the flag backend.
+    vi.mocked(getFlag).mockRejectedValue(new Error('posthog unreachable'));
+    vi.mocked(rankWithReranker).mockResolvedValue(HITS);
+    await rerankProseHits('q', HITS, 5);
+    expect(vi.mocked(rankWithReranker).mock.calls[0][2].engine).toBe('local');
+  });
+
+  it('reads the flag PER QUERY so an /admin/features flip needs no restart', async () => {
+    vi.mocked(rankWithReranker).mockResolvedValue(HITS);
+    await rerankProseHits('q', HITS, 5);
+    vi.mocked(getFlag).mockResolvedValue(false);
+    const out = await rerankProseHits('q2', HITS, 5);
+    expect(out).toEqual(HITS); // second query saw the flip
+    expect(rankWithReranker).toHaveBeenCalledTimes(1);
   });
 
   it('builds the local scorer ONCE per process, not per query', async () => {

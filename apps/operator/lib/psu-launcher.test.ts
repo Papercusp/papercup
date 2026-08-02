@@ -121,6 +121,7 @@ import {
   resolveFallbackOperatorTargets,
   resolveOperatorUrl,
   resolveOperatorTarget,
+  normalizeOperatorBaseUrl,
   readToken,
   claudeOAuthTokenPath,
   readStoredClaudeOAuthToken,
@@ -195,6 +196,71 @@ import { applyRoleModel } from '@papercusp/operator-core/lib/harness-invoke-once
 // inlined copy because it is a plain node script with no TS imports. The drift
 // guard below keeps the OMP seed exactly aligned with every other trimmed client.
 import { CORE_MCP_TOOL_NAMES } from '@papercusp/orchestrator';
+
+describe('normalizeOperatorBaseUrl (WI-6821 DEFECT A — a suffixed pin killed psu in 0.4s)', () => {
+  const noWarn = { warn: () => {} };
+
+  it('strips a trailing /api/mcp — the shape that made every operator call 404', () => {
+    // Reproduced with a one-variable control: the bare base launched cleanly
+    // (exit 0), this value died `not_found` in 0.4s, closing its terminal window.
+    expect(normalizeOperatorBaseUrl('http://127.0.0.1:3070/api/mcp', noWarn)).toBe('http://127.0.0.1:3070');
+    expect(normalizeOperatorBaseUrl('http://localhost:3070/api/mcp/', noWarn)).toBe('http://localhost:3070');
+  });
+
+  it('drops the signed query that rides on the agent MCP url', () => {
+    // The suffixed form in the wild is the agent MCP url, whose ?sid=… addresses
+    // /api/mcp specifically — carrying it onto a base is misleading, not merely
+    // redundant.
+    expect(normalizeOperatorBaseUrl('http://127.0.0.1:9071/api/mcp?sid=abc&x=1', noWarn)).toBe('http://127.0.0.1:9071');
+  });
+
+  it('WARNS when it rewrites, naming the variable and both urls', () => {
+    // A silent rewrite would hide the misconfiguration from whoever must fix the
+    // exporting environment — the rewrite keeps psu alive, the warning fixes the cause.
+    const warnings: string[] = [];
+    normalizeOperatorBaseUrl('http://localhost:3070/api/mcp', { warn: (m: string) => warnings.push(m) });
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain('PAPERCUSP_OPERATOR_URL');
+    expect(warnings[0]).toContain('http://localhost:3070/api/mcp');
+    expect(warnings[0]).toContain('BARE BASE');
+  });
+
+  it('leaves an already-correct base alone, silently', () => {
+    const warnings: string[] = [];
+    const w = { warn: (m: string) => warnings.push(m) };
+    expect(normalizeOperatorBaseUrl('http://127.0.0.1:9071', w)).toBe('http://127.0.0.1:9071');
+    expect(normalizeOperatorBaseUrl('http://localhost:3070/', w)).toBe('http://localhost:3070');
+    expect(warnings).toEqual([]);
+  });
+
+  it('does NOT strip a path that merely CONTAINS api/mcp', () => {
+    // Only a TRAILING segment is unambiguous — a base can never legitimately end
+    // in the path about to be appended. Anything else is a real path, not a mistake.
+    expect(normalizeOperatorBaseUrl('http://host/api/mcp/proxy', noWarn)).toBe('http://host/api/mcp/proxy');
+    expect(normalizeOperatorBaseUrl('http://host/mcp', noWarn)).toBe('http://host/mcp');
+  });
+
+  it('returns junk untouched rather than silently inventing a url', () => {
+    // The connection path reports an unusable value far better than a rewrite that
+    // guesses — and a non-string must not throw here.
+    expect(normalizeOperatorBaseUrl('not a url', noWarn)).toBe('not a url');
+    expect(normalizeOperatorBaseUrl('', noWarn)).toBe('');
+    expect(normalizeOperatorBaseUrl(undefined as any, noWarn)).toBe(undefined);
+  });
+
+  it('resolveOperatorTarget applies it to the env override branch', () => {
+    // The env branch was the ONLY one that could return a path-suffixed url; every
+    // other branch already returns a bare base.
+    const t = resolveOperatorTarget({
+      env: { PAPERCUSP_OPERATOR_URL: 'http://localhost:3070/api/mcp', PAPERCUSP_MCP_PROXY: '0' },
+      home: '/nonexistent-home-for-this-test',
+      probe: () => false,
+      warn: () => {},
+    });
+    expect(t.url).toBe('http://localhost:3070');
+    expect(t.source).toBe('env');
+  });
+});
 
 describe('backend-not-installed helpers (owner req 2026-07-06 — psu prompt-to-install)', () => {
   it('AGENT_LABELS names all three backends', () => {

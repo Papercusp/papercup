@@ -20,6 +20,11 @@
  * self-hosted zerank-2 (Apache-2.0, 4B) on the GPU host later is one more
  * branch there, not another rewrite of `rerankProseHits`.
  *
+ * FLAGS.LOCAL_RERANK (default ON) gates the LOCAL engine only — turning it off
+ * restores the pre-P-007 behavior exactly: hosted when a key is configured, RRF
+ * passthrough otherwise. It is read per query, not latched at import, so a flip
+ * in /admin/features takes effect without restarting the operator.
+ *
  * Fail-safe by construction — a rerank outage degrades to retrieval (RRF)
  * order, it never breaks search. Note the two halves are deliberately not in
  * tension: the sidecar client THROWS when a configured sidecar is sick (so the
@@ -148,17 +153,42 @@ export function _resetLocalRerankScorerForTests(): void {
  * Which engine scores this query, and what it needs to run.
  *
  * The ONE place engine selection lives — see the header note. Hosted wins when
- * a key is configured; otherwise the local cross-encoder, which is always
- * available (no credential), so there is no longer a "reranking is off" state
- * to fall into silently.
+ * a key is configured; otherwise the local cross-encoder, which needs no
+ * credential.
+ *
+ * `null` means "score nothing, keep the RRF order" — reachable only when
+ * FLAGS.LOCAL_RERANK is OFF and no hosted key is configured, which is exactly
+ * the pre-P-007 dark seam this flag can restore.
  */
 type ResolvedRerankEngine =
   | { engine: 'zeroentropy'; apiKey: string }
   | { engine: 'local'; scorer: RerankScoreFn };
 
-async function resolveProseRerankEngine(): Promise<ResolvedRerankEngine> {
+/**
+ * Is the local engine allowed? Read per query, never latched at module load:
+ * a flag flipped in /admin/features must take effect without restarting the
+ * operator, and latching at import time would pin whatever was true at boot.
+ *
+ * Fails OPEN (the flag's default) rather than closed: a flag-backend outage
+ * must not silently switch reranking off across the fleet, which would look
+ * exactly like the reranker being broken.
+ */
+async function localRerankEnabled(): Promise<boolean> {
+  try {
+    const [{ FLAGS }, { getFlag }] = await Promise.all([
+      import('@papercusp/flags'),
+      import('@papercusp/flags/server'),
+    ]);
+    return await getFlag(FLAGS.LOCAL_RERANK, 'system:search-rerank');
+  } catch {
+    return true;
+  }
+}
+
+async function resolveProseRerankEngine(): Promise<ResolvedRerankEngine | null> {
   const apiKey = await rerankApiKey();
   if (apiKey) return { engine: 'zeroentropy', apiKey };
+  if (!(await localRerankEnabled())) return null;
   return { engine: 'local', scorer: await localRerankScorer() };
 }
 
@@ -182,6 +212,8 @@ export async function rerankProseHits(
 
   try {
     const resolved = await resolveProseRerankEngine();
+    // Local engine flagged off and no hosted key → the pre-P-007 dark seam.
+    if (!resolved) return hits.slice(0, limit);
     const { rankWithReranker } = await import('@papercusp/search-core');
     return await rankWithReranker<SearchHit>(
       query,

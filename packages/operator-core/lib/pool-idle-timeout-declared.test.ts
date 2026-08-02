@@ -392,10 +392,6 @@ const LISTEN_EXEMPT: Record<string, string> = {
 /** Transactional pools not yet migrated. This map must only ever SHRINK. */
 const PENDING_MIGRATION: Record<string, string> = {
   'packages/operator-core/lib/dock-layouts.ts': 'transactional — migrate to getLongLivedAdminPool',
-  'packages/operator-core/lib/llm-testing/telemetry.ts': 'transactional — migrate',
-  'packages/operator-core/lib/llm-testing/ledger.ts': 'transactional — migrate',
-  'packages/operator-core/lib/llm-testing/replay.ts': 'transactional — migrate',
-  'packages/operator-core/lib/llm-testing/storage.ts': 'transactional — migrate',
   'packages/operator-core/lib/llm-testing/promotion/promote.ts': 'transactional — migrate',
   'packages/operator-core/lib/llm-testing/promotion/candidates.ts': 'transactional — migrate',
   'packages/operator-core/lib/system-health/desktop-perf-runs.ts': 'transactional — migrate',

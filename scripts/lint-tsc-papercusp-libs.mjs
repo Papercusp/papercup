@@ -36,7 +36,7 @@
 
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, relative, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { spawnSync } from 'node:child_process';
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -46,8 +46,10 @@ const SKIP_DIRS = new Set(['node_modules', '_retired', 'dist', 'build', '.git', 
  *  loop or a stray vendored tree can never turn discovery into an unbounded walk. */
 const MAX_DEPTH = 5;
 
-/** Every package.json under libs/papercusp that declares a `typecheck` script. */
-function discover(dir, depth = 0) {
+/** Every package.json under `dir` that declares a `typecheck` script. `relativeTo` only
+ *  shapes the human-readable `rel` label (the repo root in production, a fixture root in
+ *  tests) — discovery itself is driven entirely by `dir`. */
+export function discover(dir, depth = 0, relativeTo = REPO_ROOT) {
   if (depth > MAX_DEPTH) return [];
   const found = [];
   const pkgPath = join(dir, 'package.json');
@@ -59,11 +61,11 @@ function discover(dir, depth = 0) {
       // A package.json that exists but will not parse is NOT "this package opts out"
       // (WI-6056's discipline, one level down): report it as a hard failure rather than
       // letting a corrupt/partial file silently shrink the gated set.
-      found.push({ dir, name: relative(REPO_ROOT, dir), unreadable: String(err?.message ?? err) });
+      found.push({ dir, rel: relative(relativeTo, dir), unreadable: String(err?.message ?? err) });
       return found;
     }
     if (pkg?.scripts?.typecheck) {
-      found.push({ dir, name: pkg.name ?? relative(REPO_ROOT, dir), rel: relative(REPO_ROOT, dir) });
+      found.push({ dir, name: pkg.name ?? relative(relativeTo, dir), rel: relative(relativeTo, dir) });
     }
   }
   let entries;
@@ -81,7 +83,7 @@ function discover(dir, depth = 0) {
     } catch {
       continue;
     }
-    found.push(...discover(child, depth + 1));
+    found.push(...discover(child, depth + 1, relativeTo));
   }
   return found;
 }
@@ -89,21 +91,30 @@ function discover(dir, depth = 0) {
 /** tsc under fleet load gets OOM-killed; that is an INFRASTRUCTURE outcome, never a verdict
  *  about the code (EI-18667028218882894). Detect it so we retry-then-skip instead of reddening
  *  the release gate for a condition no commit caused. */
-function looksOom(res) {
+export function looksOom(res) {
   if (res.signal === 'SIGKILL' || res.signal === 'SIGABRT') return true;
   if (res.status === 134 || res.status === 137) return true;
   const text = `${res.stdout ?? ''}${res.stderr ?? ''}`;
   return /JavaScript heap out of memory|FATAL ERROR:.*heap|Killed process|Cannot allocate memory/i.test(text);
 }
 
-function runOne(pkg) {
-  const opts = { cwd: pkg.dir, encoding: 'utf8', env: process.env, maxBuffer: 32 * 1024 * 1024 };
-  let res = spawnSync('npm', ['run', 'typecheck'], opts);
+/** The real spawn seam — replaced in tests so the aggregation logic is asserted without
+ *  running eight real tsc projects. */
+const realSpawn = (pkg) =>
+  spawnSync('npm', ['run', 'typecheck'], {
+    cwd: pkg.dir,
+    encoding: 'utf8',
+    env: process.env,
+    maxBuffer: 32 * 1024 * 1024,
+  });
+
+export function runOne(pkg, spawn = realSpawn, warn = console.warn) {
+  let res = spawn(pkg);
   if (looksOom(res)) {
-    console.warn(`⚠ ${pkg.rel}: typecheck looks OOM-killed under load — retrying once`);
-    res = spawnSync('npm', ['run', 'typecheck'], opts);
+    warn(`⚠ ${pkg.rel}: typecheck looks OOM-killed under load — retrying once`);
+    res = spawn(pkg);
     if (looksOom(res)) {
-      console.warn(
+      warn(
         `⚠ ${pkg.rel}: OOM-killed again — SKIPPING this package rather than reddening the gate ` +
           `for a load condition no commit caused (EI-18667028218882894). It is NOT verified this run.`,
       );
@@ -127,26 +138,32 @@ function runOne(pkg) {
   };
 }
 
-function main() {
-  const listOnly = process.argv.includes('--list');
-
+export function main({
+  libsRoot = LIBS_ROOT,
+  relativeTo = REPO_ROOT,
+  listOnly = process.argv.includes('--list'),
+  spawn = realSpawn,
+  log = console.log,
+  warn = console.warn,
+  error = console.error,
+} = {}) {
   // The submodule genuinely absent (a subject hive, an uninitialised checkout) is a legitimate
   // opt-out — there is nothing to gate. Distinct from "present but gating nothing" below.
-  if (!existsSync(join(LIBS_ROOT, 'package.json'))) {
-    console.log('libs/papercusp not present in this tree — nothing to typecheck.');
+  if (!existsSync(join(libsRoot, 'package.json'))) {
+    log('libs/papercusp not present in this tree — nothing to typecheck.');
     return 0;
   }
 
-  const discovered = discover(LIBS_ROOT);
+  const discovered = discover(libsRoot, 0, relativeTo);
   const unreadable = discovered.filter((p) => p.unreadable);
   const packages = discovered.filter((p) => !p.unreadable).sort((a, b) => a.rel.localeCompare(b.rel));
 
   for (const p of unreadable) {
-    console.error(`✗ ${p.name}: package.json exists but could not be parsed — ${p.unreadable}`);
+    error(`✗ ${p.rel}: package.json exists but could not be parsed — ${p.unreadable}`);
   }
 
-  console.log(`libs/papercusp typecheck fan-out — ${packages.length} package(s) declare a typecheck script:`);
-  for (const p of packages) console.log(`  · ${p.rel}`);
+  log(`libs/papercusp typecheck fan-out — ${packages.length} package(s) declare a typecheck script:`);
+  for (const p of packages) log(`  · ${p.rel}`);
 
   if (listOnly) return unreadable.length > 0 ? 1 : 0;
 
@@ -154,7 +171,7 @@ function main() {
   // same reasoning as `lint:design-primitives` pinning its files through a router that
   // hard-fails a zero match. Fail LOUDLY instead of reporting a vacuous green.
   if (packages.length === 0) {
-    console.error(
+    error(
       '\n✗ libs/papercusp is present but NO package declares a `typecheck` script.\n' +
         '  This gate has lost its subjects — either the scripts were removed (restore them) or\n' +
         '  they moved (update discovery in scripts/lint-tsc-papercusp-libs.mjs). Refusing to\n' +
