@@ -27,6 +27,12 @@ vi.mock('@papercusp/db-org', () => ({
       await tx`SELECT set_config('app.workspace_id', ${ws}, true)`;
       return cb(tx as unknown as postgres.Sql);
     }) as Promise<T>,
+  // agent-tools/locks/configure.ts calls this at module top-level (WI-832) and this
+  // test's import graph reaches it transitively (rubrics.ts -> withPlanLock -> a locks
+  // shim) — a partial vi.mock omitting it throws "No … export is defined on the mock"
+  // at collection time (vitest throws on ANY access to a missing mock export). No-op is
+  // correct here: this test never exercises the admin-pool statement_timeout seam.
+  setAdminPoolStatementTimeoutProvider: () => {},
 }));
 
 const { builtInCriterionKeysForRubric, listScorecards, scorecardTrend } = await import('./scorecards');

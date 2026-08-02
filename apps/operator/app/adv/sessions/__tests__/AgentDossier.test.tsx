@@ -28,6 +28,27 @@ vi.mock('@papercusp/sync', () => ({
   },
 }));
 
+// Rail R1 P-008: the section drill-ins are nuqs-backed, so the suite needs a
+// nuqs stub. Backing it with a REAL useState (rather than a frozen null) is the
+// point — a stub that cannot change state would let every "expands to reveal the
+// rest" assertion below pass against a component whose toggle does nothing.
+vi.mock('nuqs', async () => {
+  const React = await import('react');
+  return {
+    parseAsString: null,
+    useQueryState: (_key: string) => React.useState<string | null>(null),
+  };
+});
+
+/** Click a capped section's drill-in. Returns false when the section has no
+ *  drill-in, so a test can assert that a short section stays uncapped. */
+function expandSection(container: HTMLElement, sectionId: string): boolean {
+  const btn = container.querySelector<HTMLButtonElement>(`#${sectionId} .pc-dossier__drillin`);
+  if (!btn) return false;
+  fireEvent.click(btn);
+  return true;
+}
+
 function entry(over: Partial<RosterEntry> = {}): RosterEntry {
   return {
     ownerId: 'su-1',

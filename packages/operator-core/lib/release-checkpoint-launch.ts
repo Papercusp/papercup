@@ -291,12 +291,16 @@ function defaultReadLogHead(logPath: string): string | null {
     // (`[green-checkpoint] checkpointing candidate …`); a small head-read is enough to
     // recover it and stays cheap even for a large/rotating log.
     //
-    // EI-19327704778173646: this read can only ever see the run's FIRST candidate. An
-    // auto-refire emits a SECOND `checkpointing candidate` line after a whole suite has
-    // run — tens of thousands of lines later, far outside this 4KB window — so a refire is
-    // not merely likely to be missed here, it is structurally unobservable. That is what
-    // `readLogTail` below exists to recover; do not "fix" this by widening the slice (the
-    // point of a head-read is that it is O(1) on a multi-MB log).
+    // EI-19327704778173646: a head-read is not by itself the bug — MEASURED on this box
+    // 2026-08-02, the live run's two `checkpointing candidate` lines sat at byte offsets 177
+    // and 2281, both comfortably inside this window. The bug was that the caller took the
+    // FIRST regex match, which is wrong after an auto-refire at ANY log size.
+    //
+    // The window still matters at the margin, so `readLogTail` is not redundant: those two
+    // candidates were ~2.1KB apart, and the refire cap is 2 (`autoRefireCapFromEnv`), so a
+    // run that uses its full budget puts the THIRD candidate line near ~4.4KB — just past
+    // this slice. Do not "fix" that by widening the slice; the point of a head-read is that
+    // it is O(1) on a log that can grow to multi-MB.
     return readFileSync(logPath, { encoding: 'utf8' }).slice(0, 4096);
   } catch {
     return null;

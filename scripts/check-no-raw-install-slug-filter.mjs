@@ -135,12 +135,29 @@ export const ALLOWLIST = new Set([
  *                                   filter can silently read ANOTHER TENANT's row
  *
  * The settled method (pg_trigger CANNOT do this — it returns empty for every table here,
- * which reads exactly like a clean bill of health): (a) resolve the RELATION at each
- * flagged site; (b) grep every writer to it and check whether ANY resolves the slug via
- * routineStorageSlug; (c) confirm against live data — rows under real harness slugs mean
- * NOT re-homed, rows collapsed under the platform Pot mean re-homed. Also check (d)
- * where the site's `installSlug` COMES FROM: one derived from operatorHomeHarnessSlug()
- * is a concrete hive slug and can never trigger re-homing regardless of the relation.
+ * which reads exactly like a clean bill of health):
+ *   (a) resolve the RELATION at each flagged site;
+ *   (b) grep every writer to it for ALL FIVE re-homing resolvers — `routineStorageSlug`,
+ *       `resolveWorkItemPot`, `canonicalPotSlug`, `potHomeSlugForHarness`,
+ *       `PLATFORM_POT_SLUG`;
+ *   (c) confirm against live data — rows under real harness slugs mean NOT re-homed,
+ *       rows collapsed under the Pot home mean re-homed;
+ *   (d) check where the site's `installSlug` COMES FROM: one derived from
+ *       operatorHomeHarnessSlug() is a concrete hive slug and can never trigger
+ *       re-homing regardless of the relation.
+ *
+ * ⚠ (b) MUST grep all five, not just `routineStorageSlug`. That narrow grep produces a
+ * confident WRONG "not re-homed" verdict: harness_plans re-homes via
+ * `potHomeSlugForHarness` (resolvePlanScope, agent-tools/plans/source.ts:429 — plans are
+ * HIVE-scoped, so a member harness collapses to its Hive home), which the narrow grep
+ * misses entirely. Caught 2026-08-02 one step before it graduated 3 files that are in
+ * fact genuinely broken.
+ *
+ * ⚠ (c) is BLIND for the home harness: PLATFORM_POT_SLUG === 'papercusp' === the operator
+ * home slug, so "collapsed to the platform Pot" and "correctly stored under the real
+ * slug" are indistinguishable there. The discriminator is whether NON-papercusp slugs
+ * SURVIVE — e.g. harness_plans holds 21 rows under 'oddsmith-hive' and ZERO under the
+ * member slug 'oddsmith', which is the collapse made visible.
  */
 export const BASELINE = new Set([
   // GRADUATED to ALLOWLIST 2026-08-02 (WI-6978), both on the audited harness_escalations

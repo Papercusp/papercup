@@ -212,10 +212,15 @@ describe('checkActiveCheckpointRun (WI-1562 refuse-when-active detection)', () =
    * A single green-checkpoint run can legitimately change the candidate it judges: on a stale
    * red it recurses into `runGreenCheckpoint({ candidate: tip, refireAttempts: +1 })` IN-PROCESS
    * and re-enters `setupTree`, so the run emits a SECOND `checkpointing candidate` line while
-   * pid/started_at never move. Parsing the FIRST match — and reading only the log's first 4KB,
-   * where the second line structurally cannot appear — reported the ABANDONED sha for the rest
-   * of the run, while the tool's own prose told callers to verify their fix against it. That
-   * false negative produced several public retractions on 2026-08-02.
+   * pid/started_at never move. Parsing the FIRST match therefore reported the ABANDONED sha for
+   * the rest of the run, while the tool's own prose told callers to verify their fix against
+   * it. That false negative produced several public retractions on 2026-08-02.
+   *
+   * The fixture below mirrors a REAL log measured on this box that day
+   * (`papercup-green-checkpoint-manual-1fxzuva-2026-08-02T08-37-45-565Z.log`): candidate
+   * `14fb28da` at byte 177, `auto-refiring (attempt 1/2)`, then `4961cfb8` at byte 2281.
+   * Both were inside the 4KB head window — i.e. the defect is the first-match parse, NOT the
+   * window size, and it bites at any log size.
    *
    * Asserted against a synthetic log on purpose: the whole point of the bug is that LIVE
    * observation of this field is what misled five agents, so a live gate run cannot verify it.
@@ -232,21 +237,21 @@ describe('checkActiveCheckpointRun (WI-1562 refuse-when-active detection)', () =
 
   it('reports the LAST candidate, not the abandoned first, when a run auto-refired mid-flight', () => {
     const startedAt = new Date(Date.now() - 45 * 60_000).toISOString();
-    // The head holds only the run's FIRST candidate — the refire line lands a whole suite later.
-    const head = '[green-checkpoint] checkpointing candidate 1ee32228 (base 94b17b25)\n';
+    // Shas are the ones actually observed in the 2026-08-02 08:37Z run log.
+    const head = '[green-checkpoint] checkpointing candidate 14fb28da (base 94b17b25)\n';
     const tail = [
-      '[green-checkpoint] red at 1ee32228; re-running 1 non-test gate(s) at tip 4a9b218b: lint:tsc',
+      '[green-checkpoint] red at 14fb28da; re-running 1 non-test gate(s) at tip 4961cfb8: lint:tsc',
       '[green-checkpoint] re-triage: stale — gate passes at tip; auto-refiring (attempt 1/2)',
-      '[green-checkpoint] checkpointing candidate 4a9b218b (base 94b17b25)',
+      '[green-checkpoint] checkpointing candidate 4961cfb8 (base 94b17b25)',
     ].join('\n');
 
     const r = checkActiveCheckpointRun('/tree', refireSetup(startedAt), () => head, undefined, undefined, undefined, () => tail);
 
     // The sha actually being judged now — NOT the one the run started on and discarded.
-    expect(r.candidate).toBe('4a9b218b');
+    expect(r.candidate).toBe('4961cfb8');
     // Provenance, so a caller reading the status twice sees a documented move rather than
     // concluding the field is corrupt and firing a manual run over it.
-    expect(r.initial_candidate).toBe('1ee32228');
+    expect(r.initial_candidate).toBe('14fb28da');
     expect(r.refire_observed).toBe(true);
   });
 

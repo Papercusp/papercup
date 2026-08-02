@@ -930,3 +930,105 @@ describe('WI-6068: the checkpoint log identifies the CANDIDATE it judged', () =>
     expect(readFileSync(join(tmpLogDir, written[0]), 'utf8')).toContain('candidate=unresolved');
   });
 });
+
+// ── EI-19332206710686203 ──────────────────────────────────────────────────────
+// Every RESCUE re-run must pass vitest an explicit, generous per-test deadline.
+//
+// The defect these guard: vitest's default testTimeout is 5s and nothing in this repo's
+// config chain raises it, so each re-run below inherited 5s. That is self-defeating — a
+// rescue re-run exists to decide "box, or code?", and at loadavg 130+ the dominant flake
+// shape is a test that is merely SLOW. On a 5s deadline the re-run re-observes the very
+// symptom it was launched to discriminate, and votes to keep the red. Measured 2026-08-02:
+// github-identity-drift.test.ts timed out at 11,725ms with ZERO real offenders and
+// red-pinned the fleet's gate.
+//
+// These are argv-level guards on purpose: the flag IS the entire fix, it is invisible to
+// any behavioural assertion (an injected exec never runs vitest), and dropping it would
+// silently restore the 5s default with every other test in this file still green.
+describe('EI-19332206710686203: rescue re-runs carry an explicit per-test timeout', () => {
+  const TIMEOUT_FLAG = `--testTimeout=${RESCUE_TEST_TIMEOUT_MS}`;
+
+  // Generous vs the 5s default, yet well inside every outer wall-clock cap — so raising it
+  // can delay a red (the subprocess cap still fires on a real hang), never invent a green.
+  it('the deadline is generous vs vitest 5s, yet stays inside every outer subprocess cap', () => {
+    expect(RESCUE_TEST_TIMEOUT_MS).toBeGreaterThan(5_000);
+    expect(RESCUE_TEST_TIMEOUT_MS).toBeLessThan(ISOLATION_RUN_TIMEOUT_MS);
+    expect(RESCUE_TEST_TIMEOUT_MS).toBeLessThan(CONCURRENT_CONFIRM_TIMEOUT_MS);
+    expect(RESCUE_TEST_TIMEOUT_MS).toBeLessThan(WORKSPACE_RERUN_TIMEOUT_MS);
+  });
+
+  const RED_TWO_FILES =
+    '>>> @papercusp/operator-core :: npm run test\n' +
+    ' FAIL  lib/a.test.ts > alpha\n' +
+    ' FAIL  lib/b.test.ts > beta\n' +
+    '2 non-quarantined task(s) failed.';
+
+  it('the per-file isolation re-run passes it — and still AFTER the `--` npm separator', async () => {
+    // calls: 0 red suite, 1+2 the two isolation re-runs, 3 the confirming co-execution run.
+    const { exec, calls } = makeExec([{ code: 1, stdout: RED_TWO_FILES }, { code: 0 }, { code: 0 }, { code: 0 }]);
+    await realCheckpointDeps(cfg, exec).runGreen(cpTree, 'base-sha');
+
+    for (const c of calls.slice(1, 3)) {
+      expect(c.cmd).toBe('npm');
+      expect(c.args).toContain(TIMEOUT_FLAG);
+      // npm forwards only what FOLLOWS `--` to the script; a flag placed before it is
+      // swallowed by npm and never reaches vitest — a failure mode with no runtime symptom.
+      expect(c.args.indexOf(TIMEOUT_FLAG)).toBeGreaterThan(c.args.indexOf('--'));
+      // ...and it must not have displaced the single-concurrency isolation contract.
+      expect(c.args).toContain('--no-file-parallelism');
+      expect(c.opts?.env?.VITEST_MAX_FORKS).toBe('1');
+    }
+  });
+
+  // The counterintuitive one. Absorption requires BOTH every file to pass alone AND this
+  // confirming run to come back clean — so leaving THIS on the 5s default would have kept
+  // the isolation fix inert: under the same load a slow test re-times-out here and is
+  // scored `reproduced`. The room does not blunt the experiment, because what this run
+  // measures is whether the failure is CORRECTNESS-dependent on co-execution (which still
+  // fails at 60s); being merely slower when co-executed is what contention IS, not a defect.
+  it('the confirming co-execution re-run passes it too — otherwise the isolation fix is inert', async () => {
+    const { exec, calls } = makeExec([{ code: 1, stdout: RED_TWO_FILES }, { code: 0 }, { code: 0 }, { code: 0 }]);
+    await realCheckpointDeps(cfg, exec).runGreen(cpTree, 'base-sha');
+
+    const confirming = calls[3];
+    expect(confirming.cmd).toBe('npm');
+    expect(confirming.args).toContain(TIMEOUT_FLAG);
+    expect(confirming.args.indexOf(TIMEOUT_FLAG)).toBeGreaterThan(confirming.args.indexOf('--'));
+    // ...without becoming an isolation run: co-execution is the variable it exists to test.
+    expect(confirming.args).not.toContain('--no-file-parallelism');
+    expect(confirming.opts?.env?.VITEST_MAX_FORKS).not.toBe('1');
+    // both originally-failing files still run TOGETHER in the one invocation
+    expect(confirming.args).toContain('lib/a.test.ts');
+    expect(confirming.args).toContain('lib/b.test.ts');
+  });
+
+  it('the worker-pool-crash workspace re-run passes it', async () => {
+    const crash =
+      '>>> @papercusp/operator-core :: npm run test\n' +
+      'Error: [vitest-pool]: Worker forks emitted error.\n' +
+      'Caused by: Error: Worker exited unexpectedly\n' +
+      '1 non-quarantined task(s) failed.';
+    const { exec, calls } = makeExec([{ code: 1, stdout: crash }, { code: 0 }]);
+    await realCheckpointDeps(cfg, exec).runGreen(cpTree, 'base-sha');
+
+    const rerun = calls[1];
+    expect(rerun.cmd).toBe('npm');
+    expect(rerun.args).toContain(TIMEOUT_FLAG);
+    expect(rerun.args.indexOf(TIMEOUT_FLAG)).toBeGreaterThan(rerun.args.indexOf('--'));
+    expect(rerun.opts?.env?.VITEST_MAX_FORKS).toBe('1'); // still the reduced-concurrency re-run
+  });
+
+  it('the stale-candidate tip re-run passes it', async () => {
+    // runTestsAtRef is the "is this red already fixed at tip?" rescue: a false pass:false
+    // there reports a genuinely-fixed tip as still broken and keeps `main` frozen.
+    const { exec, calls } = makeExec([]);
+    const deps = realCheckpointDeps(cfg, exec);
+    await deps.runTestsAtRef?.('deadbeef', [{ workspace: '@papercusp/operator-core', file: 'lib/a.test.ts' }]);
+
+    const testRun = calls.find((c) => c.cmd === 'npm' && c.args.includes('test'));
+    expect(testRun).toBeDefined();
+    expect(testRun!.args).toContain(TIMEOUT_FLAG);
+    expect(testRun!.args.indexOf(TIMEOUT_FLAG)).toBeGreaterThan(testRun!.args.indexOf('--'));
+    expect(testRun!.args).toContain('lib/a.test.ts');
+  });
+});

@@ -60,6 +60,11 @@ function MetaRow({ label, value }: { label: string; value: React.ReactNode }): R
   );
 }
 
+/** Sort key for the capped Files list: contended before held before quiet. */
+function fileRank(mark: 'held' | 'waiting' | null): number {
+  return mark === 'waiting' ? 0 : mark === 'held' ? 1 : 2;
+}
+
 /** Build MetaRows from label/value pairs, DROPPING the ones that would render
  *  nothing. MetaRow itself returns null for an empty value, so handing a capped
  *  list the unfiltered set would make it promise "Show 6 more" and then reveal
@@ -331,6 +336,58 @@ export default function AgentDossier({
 
   const ctxPct = signals ? contextPct(signals.contextTokens, signals.compactionLimit) : null;
 
+  // Rail R1 P-008 — the Coord section's four stacked lists flattened into ONE,
+  // in urgency order. With a three-row preview the ORDER is what decides whether
+  // you see "a peer is escalating at this agent" or the tail of a chat log.
+  const coordRows = useMemo((): React.ReactNode[] => {
+    if (!coord) return [];
+    return [
+      ...coord.openEscalations.map((e) => (
+        <div key={`esc:${e.msgId}`} className="pc-dossier__coord-line">
+          <span className="pc-dossier__dir pc-dossier__dir--esc" data-sev={e.severity}>
+            {e.severity}
+          </span>
+          <span className="pc-dossier__coord-text">{e.summary || '(escalation)'}</span>
+          <span className="pc-dossier__coord-ts">{formatRelativeUpdated(e.ts)}</span>
+        </div>
+      )),
+      ...coord.openHandoffs.map((h) => (
+        <div key={`ho:${h.msgId}`} className="pc-dossier__coord-line">
+          <span className="pc-dossier__dir" data-dir={h.direction}>
+            {h.direction === 'outbound' ? 'handoff →' : 'handoff ←'}
+          </span>
+          <span className="pc-dossier__coord-text">{h.summary || '(handoff)'}</span>
+          <span className="pc-dossier__coord-ts">{h.accepted ? 'accepted' : 'open'}</span>
+        </div>
+      )),
+      ...(coord.lastMessage
+        ? [
+            <div key="last" className="pc-dossier__coord-line">
+              <span className="pc-dossier__dir" data-dir={coord.lastMessage.direction}>
+                {coord.lastMessage.direction === 'outbound' ? '→' : '←'}
+              </span>
+              <span className="pc-dossier__coord-text">{coord.lastMessage.summary || '(no summary)'}</span>
+              <span className="pc-dossier__coord-ts">{formatRelativeUpdated(coord.lastMessage.ts)}</span>
+            </div>,
+          ]
+        : []),
+      ...unreadRows.map((m) => (
+        <div key={`un:${m.msgId}`} className="pc-dossier__coord-line" data-testid="dossier-coord-unread-row">
+          <span className="pc-dossier__dir" data-dir={m.direction}>
+            {m.direction === 'outbound' ? '→' : '←'}
+          </span>
+          <span className="pc-dossier__coord-from">{m.from}</span>
+          <span className="pc-dossier__coord-text">{m.summary || '(no summary)'}</span>
+          <span className="pc-dossier__coord-ts">{formatRelativeUpdated(m.ts)}</span>
+        </div>
+      )),
+    ];
+  }, [coord, unreadRows]);
+
+  /** Unread the operator COUNTED but did not send us. Expanding cannot reveal
+   *  these, so CappedRows names the gap instead of pretending it closed it. */
+  const coordUnsentCount = coord ? Math.max(0, coord.unreadCount - unreadRows.length) : 0;
+
   // Files this agent holds / waits on — to cross-mark the file list.
   const heldPaths = new Set(locks?.held.map((l) => l.path) ?? []);
   const waitPaths = new Set(locks?.waiting.flatMap((w) => w.paths) ?? []);
@@ -577,6 +634,9 @@ export default function AgentDossier({
       <section className="pc-dossier__section" id="pc-dossier-locks">
         <h4 className="pc-dossier__h">
           Locks
+          {locks && locks.held.length + locks.waiting.length > 0 ? (
+            <span className="pc-dossier__badge-count">{locks.held.length + locks.waiting.length}</span>
+          ) : null}
           {loading && !detail ? <span className="pc-dossier__h-note"> · loading…</span> : null}
           {locks?.error ? <span className="pc-dossier__h-note pc-dossier__h-note--err"> · {locks.error}</span> : null}
         </h4>
@@ -631,77 +691,80 @@ export default function AgentDossier({
           {coord?.error ? <span className="pc-dossier__h-note pc-dossier__h-note--err"> · {coord.error}</span> : null}
         </h4>
         {coord ? (
-          <>
-            {coord.lastMessage ? (
-              <div className="pc-dossier__coord-line">
-                <span className="pc-dossier__dir" data-dir={coord.lastMessage.direction}>
-                  {coord.lastMessage.direction === 'outbound' ? '→' : '←'}
-                </span>
-                <span className="pc-dossier__coord-text">{coord.lastMessage.summary || '(no summary)'}</span>
-                <span className="pc-dossier__coord-ts">{formatRelativeUpdated(coord.lastMessage.ts)}</span>
-              </div>
-            ) : (
-              <div className="pc-dossier__empty-line">No recent messages.</div>
-            )}
-            {/* The messages the "N unread" badge above counts. Without this the
-                badge named a number the section could not show: `lastMessage`
-                renders exactly ONE line, so a badge of 38 sat beside 1-2 rows
-                with no list, no scroll and no way to reach the rest
-                ([owner 2026-07-28] "it says in the COORD section 38 unread, but
-                I only see 2 messages"). Rendered from the same array the count
-                is the length of, so the two cannot disagree. */}
-            {/* `?? []`, and it is NOT defensive noise — it is the wire contract.
-                `unread` is a NEW field: a client bundle carrying it can be served
-                by an operator that predates it (the SPA rebuilds on the vite
-                hot path, the sidecar only on restart), and then `coord.unread`
-                is genuinely `undefined`. Reading `.length` off it threw
-                "undefined is not an object (evaluating 'u.unread.length')" and
-                took down the WHOLE hud tab — an error boundary away from the
-                entire surface, over one optional list. A new field must never be
-                load-bearing for a render that can be served older data. */}
-            {unreadRows.length > 0 ? (
-              <div className="pc-dossier__coord-unread" data-testid="dossier-coord-unread">
-                <div className="pc-dossier__coord-unread-h">
-                  Unread
-                  {coord.unreadCount > unreadRows.length
-                    ? ` · showing ${unreadRows.length} of ${coord.unreadCount}`
-                    : null}
-                </div>
-                {unreadRows.map((m) => (
-                  <div key={m.msgId} className="pc-dossier__coord-line" data-testid="dossier-coord-unread-row">
-                    <span className="pc-dossier__dir" data-dir={m.direction}>
-                      {m.direction === 'outbound' ? '→' : '←'}
-                    </span>
-                    <span className="pc-dossier__coord-from">{m.from}</span>
-                    <span className="pc-dossier__coord-text">{m.summary || '(no summary)'}</span>
-                    <span className="pc-dossier__coord-ts">{formatRelativeUpdated(m.ts)}</span>
-                  </div>
-                ))}
-              </div>
-            ) : null}
-            {coord.openHandoffs.map((h) => (
-              <div key={h.msgId} className="pc-dossier__coord-line">
-                <span className="pc-dossier__dir" data-dir={h.direction}>
-                  {h.direction === 'outbound' ? 'handoff →' : 'handoff ←'}
-                </span>
-                <span className="pc-dossier__coord-text">{h.summary || '(handoff)'}</span>
-                <span className="pc-dossier__coord-ts">{h.accepted ? 'accepted' : 'open'}</span>
-              </div>
-            ))}
-            {coord.openEscalations.map((e) => (
-              <div key={e.msgId} className="pc-dossier__coord-line">
-                <span className="pc-dossier__dir pc-dossier__dir--esc" data-sev={e.severity}>
-                  {e.severity}
-                </span>
-                <span className="pc-dossier__coord-text">{e.summary || '(escalation)'}</span>
-                <span className="pc-dossier__coord-ts">{formatRelativeUpdated(e.ts)}</span>
-              </div>
-            ))}
-          </>
+          coordRows.length > 0 ? (
+            /* Rail R1 P-008: ONE capped list rather than four stacked ones, in
+               urgency order — escalations, open handoffs, the latest message,
+               then the unread backlog. With a 3-row preview the ORDER decides
+               what you see, so the rows that mean "someone needs something from
+               this agent" have to come first.
+
+               `totalCount` is what makes the cap safe here. The operator sends a
+               BOUNDED slice of unread while `unreadCount` is the true total, so
+               the drill-in says "Showing the N most recent of M" rather than
+               implying it reached them all. That distinction is the whole reason
+               this list exists: [owner 2026-07-28] "it says in the COORD section
+               38 unread, but I only see 2 messages" was a count naming rows the
+               section could not show, and a cap re-creates that bug exactly
+               unless the control both expands AND stays honest about the gap.
+
+               (`unread` itself is read as `?? []` where it is derived, and that
+               is the wire contract rather than defensive noise: it is a NEW
+               field, the SPA rebuilds on the vite hot path while the sidecar
+               only rebuilds on restart, so a fresh bundle can genuinely be
+               served a `subscriptions`/`unread`-less payload. Reading `.length`
+               off it threw "undefined is not an object" and took down the WHOLE
+               hud tab — an error boundary away from the entire surface, over one
+               optional list.) */
+            <CappedRows
+              noun="messages"
+              open={railOpen.has('coord')}
+              onToggle={() => toggleRail('coord')}
+              testId="dossier-coord-list"
+              totalCount={coordRows.length + coordUnsentCount}
+              rows={coordRows}
+            />
+          ) : (
+            <div className="pc-dossier__empty-line">No recent messages.</div>
+          )
         ) : (
           <div className="pc-dossier__empty-line">{error ? `Couldn’t load coord: ${error}` : '—'}</div>
         )}
       </section>
+
+      {/* ── Files in play (cross-marked with this agent's lock state) ── */}
+      {entry && entry.currentFiles.length > 0 ? (
+        <section className="pc-dossier__section" id="pc-dossier-files">
+          <h4 className="pc-dossier__h">
+            Files
+            <span className="pc-dossier__badge-count">{entry.currentFiles.length}</span>
+          </h4>
+          <CappedRows
+            noun="files"
+            open={railOpen.has('files')}
+            onToggle={() => toggleRail('files')}
+            testId="dossier-files-list"
+            rows={entry.currentFiles
+              // Contended files first: with a 3-row preview, "which file is this
+              // agent BLOCKED on" must survive the cap. Held next, then quiet.
+              .slice()
+              .sort((a, b) => fileRank(fileMark(a)) - fileRank(fileMark(b)))
+              .map((f) => {
+                const mark = fileMark(f);
+                return (
+                  <div key={f} className="pc-dossier__file" title={f}>
+                    <span className="pc-dossier__file-path">{f}</span>
+                    {mark === 'held' ? (
+                      <span className="pc-dossier__lockmark pc-dossier__lockmark--held">L</span>
+                    ) : null}
+                    {mark === 'waiting' ? (
+                      <span className="pc-dossier__lockmark pc-dossier__lockmark--wait">W</span>
+                    ) : null}
+                  </div>
+                );
+              })}
+          />
+        </section>
+      ) : null}
 
       {/* ── Reference (Rail R1 P-008) ──
           The ten Tier-1/2 rows that used to head the rail. Three previewed,

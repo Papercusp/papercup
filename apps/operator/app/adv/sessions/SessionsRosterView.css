@@ -771,6 +771,50 @@
   color: var(--pc-dossier-mute);
 }
 
+/* ── Rail R1: capped sections (session-chat-popup-direction-d-2026-08-02 P-008) ──
+   Every section previews DOSSIER_ROW_CAP rows and drills in. The rail's height
+   is bounded BY CONSTRUCTION rather than by hoping no agent holds 32 locks. */
+.pc-dossier__capped {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+/* Expanding must not undo the cap: an opened section scrolls WITHIN the rail
+   instead of pushing it taller. This is the deck's one open R1 cost — "Open all
+   32 needs somewhere to go" — answered in place, so the drill-in needs no
+   separate destination surface. */
+.pc-dossier__capped[data-open] {
+  max-height: 240px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-right: 4px;
+  border-left: 2px solid var(--pc-dossier-rule);
+  padding-left: 8px;
+  margin-left: -2px;
+}
+.pc-dossier__drillin {
+  align-self: flex-start;
+  appearance: none;
+  background: none;
+  border: 0;
+  padding: 2px 0;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  color: color-mix(in oklab, var(--accent), var(--fg) 25%);
+  cursor: pointer;
+  border-radius: 4px;
+}
+.pc-dossier__drillin:hover {
+  color: var(--accent);
+  text-decoration: underline;
+}
+.pc-dossier__drillin:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
 /* ── Health signals (hud-first-nav-and-dossier-2026-07-26 P-005) ── */
 .pc-dossier__ctxbar-row {
   display: flex;
