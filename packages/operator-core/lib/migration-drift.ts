@@ -16,6 +16,7 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { createHash } from 'node:crypto';
 import { getOrgPg } from '@papercusp/db-org';
 
 /** Mirror of migration-runner.js's skip(): per-harness template + MANUAL_ONLY. */
@@ -198,6 +199,98 @@ export interface MigrationDrift {
    *  (not "unknown") when `canonicalStagingSqlDir` is null: there is nothing
    *  to report from an unresolvable tree, same convention as `missing` itself. */
   missingCanonical: string[];
+  /** EI-19365742982915607: applied migrations whose on-disk bytes no longer
+   *  match the sha256 recorded when they ran — i.e. the file was edited AFTER
+   *  it was applied, so the edit never executed and never will. NOT benign,
+   *  and not self-healing: no restart or deploy re-runs an already-recorded
+   *  migration. The repair is a NEW migration re-applying the intended state.
+   *
+   *  Deliberately does NOT flip `inSync`. `extra` was once wired that way and
+   *  made in_sync permanently false, masking real `missing` drift (infra
+   *  round-3 F14, see `extra` above) — and content drift has the same
+   *  always-non-empty risk from historical comment-only edits. Surfaced as its
+   *  own loud field instead, so it can never suppress the actionable signal. */
+  contentDrift: MigrationContentDrift[];
+  /** The tree whose bytes `contentDrift` compared against — the canonical
+   *  staging tree when resolvable (agents edit THERE, so drift shows up there
+   *  first), else whichever tree served this call. Null when neither resolves,
+   *  in which case `contentDrift` is empty for lack of anything to compare. */
+  contentDriftSqlDir: string | null;
+}
+
+/**
+ * EI-19365742982915607: an APPLIED migration whose bytes on disk no longer
+ * match the sha256 recorded when it actually ran.
+ *
+ * This is the "half-landed migration" hazard, and it is silent by construction:
+ * the runner records `sha256` at INSERT and NOTHING ever read it back, so
+ * editing an already-applied file was a permanent no-op that left the file on
+ * disk describing a live schema it does not have. Proven case: mig 708 ran at
+ * 2026-08-01T19:15:49Z against a blob with zero `closed_ts`; the file gained a
+ * PART 2 hunk 9 minutes later. PART 1 was live, PART 2 never executed, and
+ * every reader who grepped the .sql concluded closed_ts federation shipped.
+ *
+ * Note the guard that could NOT catch this: the federated-column-completeness
+ * suite applies sql/ to a FRESH testcontainer, so it validates the FILES and
+ * passes green no matter how far the live DB has diverged from them.
+ */
+export interface MigrationContentDrift {
+  filename: string;
+  /** sha256 recorded in schema_migrations when the migration actually ran. */
+  recordedSha256: string;
+  /** sha256 of the file as it exists on disk now. */
+  diskSha256: string;
+}
+
+/**
+ * Pure core of the content-drift detection — exported for tests.
+ *
+ * Skips, deliberately and each for a different reason:
+ *  - non-runner files (templates / manual-only) — never applied by the runner;
+ *  - rows with no recorded sha256 — legacy rows predating the column; absence
+ *    of evidence is not drift, so they are unjudgeable, not clean;
+ *  - files absent from disk — that is exactly what `extra` reports; double
+ *    reporting it here would just make both fields noisier.
+ */
+export function computeContentDrift(
+  appliedRows: ReadonlyArray<{ filename: string; sha256: string | null }>,
+  diskSha: ReadonlyMap<string, string>,
+): MigrationContentDrift[] {
+  const drifted: MigrationContentDrift[] = [];
+  for (const row of appliedRows) {
+    if (!isRunnerMigration(row.filename)) continue;
+    const recorded = row.sha256?.trim();
+    if (!recorded) continue;
+    const disk = diskSha.get(row.filename);
+    if (disk === undefined) continue;
+    if (disk !== recorded) {
+      drifted.push({ filename: row.filename, recordedSha256: recorded, diskSha256: disk });
+    }
+  }
+  return drifted.sort((a, b) => a.filename.localeCompare(b.filename));
+}
+
+/**
+ * Hash the on-disk copy of each named migration the SAME way the runner does —
+ * `createHash('sha256').update(<raw utf8 file text>)`
+ * (embedded-postgres-server/src/migration-runner.js: it hashes `ddlRaw`, the
+ * raw text, deliberately BEFORE stripping psql metacommands, so that changing
+ * the stripper never re-applies files). Any divergence here would make every
+ * file look drifted, so keep these two in lockstep. Unreadable files are
+ * skipped rather than reported — see computeContentDrift's third skip.
+ */
+function hashMigrationsOnDisk(sqlDir: string | null, filenames: Iterable<string>): Map<string, string> {
+  const hashes = new Map<string, string>();
+  if (!sqlDir) return hashes;
+  for (const f of filenames) {
+    try {
+      const text = fs.readFileSync(path.join(sqlDir, f), 'utf8');
+      hashes.set(f, createHash('sha256').update(text).digest('hex'));
+    } catch {
+      // absent/unreadable → leave unset; `extra` owns the file-gone case.
+    }
+  }
+  return hashes;
 }
 
 /** Numeric NNN prefix of a migration filename, or null (template/manual files). */
@@ -232,12 +325,15 @@ export async function checkMigrationDrift(): Promise<MigrationDrift> {
     : [];
 
   let applied: string[] = [];
+  let appliedRows: Array<{ filename: string; sha256: string | null }> = [];
   try {
     const { sql } = getOrgPg();
-    const rows = await sql<Array<{ filename: string }>>`
-      SELECT filename FROM harness_shared.schema_migrations ORDER BY filename
+    // `sha256` rides along for the content-drift check — it is recorded on every
+    // apply but was never read back until EI-19365742982915607.
+    appliedRows = await sql<Array<{ filename: string; sha256: string | null }>>`
+      SELECT filename, sha256 FROM harness_shared.schema_migrations ORDER BY filename
     `;
-    applied = rows.map((r) => r.filename);
+    applied = appliedRows.map((r) => r.filename);
   } catch {
     // tracker absent / unreachable → report all on-disk as missing (loud, not silent).
   }
@@ -278,6 +374,19 @@ export async function checkMigrationDrift(): Promise<MigrationDrift> {
         .filter((f) => !appliedSet.has(f))
         .sort()
     : [];
+
+  // EI-19365742982915607: compare the bytes of every APPLIED migration against
+  // the sha256 recorded when it ran. Prefer the canonical staging tree — that
+  // is where agents edit, so an edit-after-apply is observable there first (and
+  // often ONLY there, until the next deploy carries it into the release tree).
+  const contentDriftSqlDir = canonicalStagingSqlDir ?? sqlDir;
+  const contentDrift = computeContentDrift(
+    appliedRows,
+    hashMigrationsOnDisk(
+      contentDriftSqlDir,
+      appliedRows.map((r) => r.filename).filter(isRunnerMigration),
+    ),
+  );
 
   return {
     sqlDir,

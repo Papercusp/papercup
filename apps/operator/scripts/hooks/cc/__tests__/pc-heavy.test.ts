@@ -564,7 +564,14 @@ describe('pc-heavy.sh — coalescing (EI-18685262961418231)', () => {
 // A leader publishes its output by RENAME, never by writing the live cache files,
 // so a replay can never observe a half-written (or freshly truncated) entry.
 describe('pc-heavy.sh — atomic result publish (EI-19368312145172418)', () => {
-  const cmd = 'sleep 3; echo REAL-OUTPUT-LINE';
+  // Built per-test (`dir` is assigned in beforeEach). Every REAL execution appends
+  // a line to the marker; a REPLAY does not — that is the positive control below.
+  const cmdWithMarker = () => `echo ran >> ${join(dir, 'runs.txt')}; sleep 3; echo REAL-OUTPUT-LINE`;
+  const realRunCount = (): number => {
+    const f = join(dir, 'runs.txt');
+    if (!existsSync(f)) return 0;
+    return readFileSync(f, 'utf8').split('\n').filter(Boolean).length;
+  };
   const coalesceFileByExt = (ext: string): string | null => {
     const coalesceDir = join(dir, 'coalesce');
     if (!existsSync(coalesceDir)) return null;
@@ -582,14 +589,22 @@ describe('pc-heavy.sh — atomic result publish (EI-19368312145172418)', () => {
     //
     // Two callers disagreeing about freshness is all it takes, and that is
     // routine: PC_HEAVY_COALESCE_SEC is per-caller (default 90, this suite 30).
+    const cmd = cmdWithMarker();
     const first = runSync(['bash', '-c', cmd], { PC_HEAVY_SLOTS: '4', PC_HEAVY_COALESCE_SEC: '90' });
     expect(first.stdout).toContain('REAL-OUTPUT-LINE');
+    expect(realRunCount()).toBe(1);
     const outFile = coalesceFileByExt('.out');
     expect(outFile).not.toBeNull();
     const populatedSize = statSync(outFile as string).size;
     expect(populatedSize).toBeGreaterThan(0);
 
-    await new Promise((r) => setTimeout(r, 1600)); // age the entry past the short window below
+    // Age the entry to ~3s. `_age` is computed in INTEGER seconds, so a 1.6s wait
+    // can floor to age=1 and read as fresh against a 1s TTL — the second caller
+    // would then COALESCE instead of leading, nothing would truncate, and this
+    // test would pass while asserting nothing at all. (Caught exactly that way:
+    // the first draft of this test was vacuous.) The positive control below is
+    // what makes the vacuity detectable rather than silent.
+    await new Promise((r) => setTimeout(r, 3000));
 
     // A caller with a 1s window sees that entry as STALE, so it runs for real —
     // becoming a second leader while the entry is still fresh to a 90s caller.
@@ -600,6 +615,11 @@ describe('pc-heavy.sh — atomic result publish (EI-19368312145172418)', () => {
     });
     try {
       await new Promise((r) => setTimeout(r, 1200)); // second leader is mid-run
+
+      // POSITIVE CONTROL — the whole test is meaningless unless a SECOND real
+      // execution is actually in flight right now. If this reads 1, the second
+      // caller coalesced instead of leading and the invariant below is vacuous.
+      expect(realRunCount()).toBe(2);
 
       // THE INVARIANT: the published entry is still intact while it runs.
       expect(statSync(outFile as string).size).toBe(populatedSize);
