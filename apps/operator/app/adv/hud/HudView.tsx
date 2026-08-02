@@ -32,6 +32,8 @@ import SessionChatModal from '@/app/_components/chat/SessionChatModal';
 import PlanPopupModal from '@/app/_components/plans/PlanPopupModal';
 import WorkItemPopupModal from '@/app/_components/work-items/WorkItemPopupModal';
 import { scopeInboxItems, useInboxAttention } from '@/app/_components/inbox/use-inbox-pending';
+import { Modal } from '@/app/harness/Modal';
+import { OtherDetail } from '@/app/admin/plans/PlanOtherList';
 import NewSessionLauncher from '@/app/adv/sessions/NewSessionLauncher';
 import { usePlanList } from '@/app/admin/plans/plans-api';
 import { useResolvedHarnessSlug } from '@/app/adv/create/use-create-data';
@@ -210,6 +212,10 @@ export default function HudView({ workspaceId = null }: { workspaceId?: string |
         itemRef: i.itemRef,
         planSlug: i.planSlug,
         harnessSlug: i.harnessSlug,
+        // WI-6742: the STRUCTURED destination. Carried through the slimming
+        // (ui-read-projection drops only `actions` and clips `body`), so
+        // routing needs no extra fetch.
+        ref: (i as { ref?: { kind: string; slug?: string | null } | null }).ref ?? null,
       }));
   }, [attention.items]);
 
@@ -459,6 +465,11 @@ export default function HudView({ workspaceId = null }: { workspaceId?: string |
      uniqueness here mechanically instead of by eye. */
   const [openPlanSlug, setOpenPlanSlug] = useQueryState('hudplanpop', parseAsString);
   const [openItemId, setOpenItemId] = useQueryState('hudwi', parseAsString);
+  /* WI-6742: the third destination — the ask itself, for the asks that are not
+     ABOUT a work item or plan (improvement triage, standing approval, dark-flag
+     ratification). nuqs, not useState, like every other popup here; the key is
+     asserted unique by app/_lints/nuqs-key-collisions.test.ts. */
+  const [openAskId, setOpenAskId] = useQueryState('hudask', parseAsString);
 
   /* PlanDetail is harness-scoped — scoping plans:get to the wrong harness is
      the "Server: not_found" trap PlanPopupModal's own docblock names. The plan
@@ -484,16 +495,44 @@ export default function HudView({ workspaceId = null }: { workspaceId?: string |
     return hit?.harnessSlug ?? null;
   }, [asks, openItemId]);
 
+  /* The ask behind `hudask`. Read from the SAME scoped feed the cards are built
+     from, so a card that is on screen always resolves — and an id that no
+     longer matches (the ask was resolved elsewhere, or the URL was pasted into
+     a differently-scoped board) yields null and the modal simply stays shut
+     rather than opening empty. */
+  const openAsk = useMemo(
+    () => (openAskId ? (attention.items ?? []).find((i) => i.id === openAskId) ?? null : null),
+    [attention.items, openAskId],
+  );
+
   const onOpenPlanCard = useCallback(
     (card: HudEntityCard) => void setOpenPlanSlug(card.id),
     [setOpenPlanSlug],
   );
+  /* WI-6742 [owner-reported]: clicking a "Needs you" card did nothing, while
+     every other column opened a popup.
+
+     This handler used to RE-DERIVE a destination by pattern-matching the card's
+     `id`/`ref`. That fails for the ask cards folded into needs-you — and only
+     for them, which is why exactly one column was dead: an ask's `ref` is a
+     KIND LABEL ("Improvement triage"), so it matched no work-item id and the
+     handler returned early. `HudEntityColumns` still rendered the card as a
+     `<button>` (board-wide, keyed off `onOpenCard` being supplied, not
+     per-card), producing the dead button its own docblock warns about.
+
+     The board now DECLARES the destination on every card it builds, so there is
+     nothing to re-derive and no early return to fall through. `card.open` is a
+     total function (see HudAskTarget) — an unmapped ref opens the ask itself
+     rather than nothing, so a future adapter cannot reintroduce this. */
   const onOpenItemCard = useCallback(
     (card: HudEntityCard) => {
-      const id = workItemIdForCard(card);
-      if (id) void setOpenItemId(id);
+      const target = card.open;
+      if (!target) return;
+      if (target.kind === 'work-item') void setOpenItemId(target.id);
+      else if (target.kind === 'plan') void setOpenPlanSlug(target.slug);
+      else void setOpenAskId(target.askId);
     },
-    [setOpenItemId],
+    [setOpenItemId, setOpenPlanSlug, setOpenAskId],
   );
 
   /* WI-6560 — this MUST stay a stable reference, and it is load-bearing in a way
@@ -641,6 +680,31 @@ export default function HudView({ workspaceId = null }: { workspaceId?: string |
         onSelect={(id) => void setOpenItemId(id)}
         onClose={() => void setOpenItemId(null)}
       />
+      {/* WI-6742: the ask's own popup, for asks that are not ABOUT a work item
+          or plan. `OtherDetail` is the SAME component the Plans queue and
+          SessionChatModal already render — never a second renderer — so these
+          cards get the real approve/resolve/discuss actions rather than a
+          read-only echo. It re-fetches the full item itself (the list feed is
+          slimmed), which is why passing the slimmed row is correct here. */}
+      <Modal
+        open={openAsk != null}
+        onOpenChange={(o) => {
+          if (!o) void setOpenAskId(null);
+        }}
+        title={openAsk?.title ?? 'Ask'}
+        srOnlyTitle
+      >
+        {openAsk ? (
+          <OtherDetail
+            key={openAsk.id}
+            item={openAsk}
+            onResolved={() => {
+              attention.refresh();
+              void setOpenAskId(null);
+            }}
+          />
+        ) : null}
+      </Modal>
     </>
   );
 }

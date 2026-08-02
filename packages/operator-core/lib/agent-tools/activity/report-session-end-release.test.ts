@@ -17,6 +17,7 @@ const h = vi.hoisted(() => ({
   cancel: vi.fn(),
   heal: vi.fn(),
   release: vi.fn(),
+  resetWake: vi.fn(),
 }));
 
 vi.mock('@papercusp/activity-bridge', () => ({ recordActivity: vi.fn(async () => ({ id: 42 })) }));
@@ -27,6 +28,10 @@ vi.mock('../../events/await/inbox-wake-arm', () => ({
   ensureInboxWakeArmedForActiveSession: h.heal,
 }));
 vi.mock('../../work-item-lease-release', () => ({ releaseAllWorkItemLeasesForOwner: h.release }));
+// WI-6756: this seam READS PG. Leaving it un-stubbed would not merely touch the DB —
+// the read never settles, so it hangs PAST the handler's try/catch (which only catches
+// throws) until the suite timeout. Stub it in every test in this file.
+vi.mock('../../session-reset-continuation', () => ({ recentContextResetWake: h.resetWake }));
 
 const tool = (await import('./report')).default;
 const ctx = { principal: { workspaceId: '*' } } as unknown as Parameters<typeof tool.handler>[1];
@@ -38,6 +43,8 @@ beforeEach(() => {
   h.cancel.mockReset().mockResolvedValue(1);
   h.heal.mockReset().mockResolvedValue(false);
   h.release.mockReset().mockResolvedValue({ releasedIds: [], claimsCleared: 0 });
+  // Default: no context-reset wake in the window ⇒ an ordinary death, release runs.
+  h.resetWake.mockReset().mockResolvedValue(null);
   __resetRespawnExpectedMarkers();
 });
 
@@ -118,5 +125,54 @@ describe('activity:report SessionEnd → carry-respawn marker suppresses the P-0
     await run({ owner: 'su-y', kind: 'lifecycle', summary: '■ session ended' });
     expect(h.release).toHaveBeenCalledTimes(1);
     expect(h.release).toHaveBeenCalledWith('su-y');
+  });
+});
+
+/**
+ * WI-6756: the SAME exemption for the OTHER trigger that ends a session under
+ * the same ownerId — a COLD loop wake delivered over psu-socket-reset/recycle,
+ * which re-execs the CLI child. The in-memory carry-respawn marker structurally
+ * cannot cover this one (the wake is injected from papercup-bg-host, this report
+ * is handled by papercup-dev-api — different processes), so the guard reads the
+ * durable wake ledger instead. Measured before the fix: 5 consecutive wakes each
+ * force-released the leader's claims ~412ms after the wake landed.
+ */
+describe('activity:report SessionEnd → a recent context-reset wake suppresses the P-002 release (WI-6756)', () => {
+  it('a psu-socket-reset wake in the window → release SKIPPED, inbox-wake cancel still fires', async () => {
+    h.resetWake.mockResolvedValueOnce({ channel: 'psu-socket-reset', at: new Date(), ageMs: 412 });
+    const res = await run({ owner: 'su-cold-loop', kind: 'lifecycle', summary: '■ session ended' });
+    expect(h.release).not.toHaveBeenCalled();
+    expect(h.cancel).toHaveBeenCalledTimes(1);
+    expect(JSON.parse((res as { content: { text: string }[] }).content[0].text)).toMatchObject({ ok: true });
+  });
+
+  it('a psu-socket-recycle wake is treated the same (it also re-execs the child)', async () => {
+    h.resetWake.mockResolvedValueOnce({ channel: 'psu-socket-recycle', at: new Date(), ageMs: 900 });
+    await run({ owner: 'su-cold-loop', kind: 'lifecycle', summary: '■ session ended' });
+    expect(h.release).not.toHaveBeenCalled();
+  });
+
+  it('NO reset wake in the window → the normal force-release still runs (a real death is unaffected)', async () => {
+    h.resetWake.mockResolvedValueOnce(null);
+    h.release.mockResolvedValueOnce({ releasedIds: ['WI-7'], claimsCleared: 1 });
+    await run({ owner: 'su-really-dead', kind: 'lifecycle', summary: '■ session ended' });
+    expect(h.release).toHaveBeenCalledTimes(1);
+    expect(h.release).toHaveBeenCalledWith('su-really-dead');
+  });
+
+  it('FAILS OPEN: a ledger read error must not strand claims — it falls through to the release', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    h.resetWake.mockRejectedValueOnce(new Error('pg down'));
+    await run({ owner: 'su-unknown', kind: 'lifecycle', summary: '■ session ended' });
+    expect(h.release).toHaveBeenCalledTimes(1);
+    expect(h.release).toHaveBeenCalledWith('su-unknown');
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it('the ledger is only consulted on the END transition, never on SessionStart', async () => {
+    await run({ owner: 'su-abc', kind: 'lifecycle', summary: '▶ session started' });
+    expect(h.resetWake).not.toHaveBeenCalled();
+    expect(h.release).not.toHaveBeenCalled();
   });
 });

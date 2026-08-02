@@ -383,6 +383,12 @@ describe('workspace-registry — a corrupt registry is not an empty one (WI-6734
     expect(readRegistry()).toEqual({ workspaces: [] });
   });
 
+  // The ENOENT race (registry vanishes between the exists-check and the read) is
+  // covered by lib/endpoint-route/__tests__/launch-su.test.ts, which mocks node:fs
+  // into exactly that state — it is what caught this branch being wrong. Not
+  // duplicated here, because reproducing it needs namespace-wide fs mocking that
+  // ESM live bindings make unreliable.
+
   it('writeRegistry is atomic — a reader never observes a torn file, and leaves no tmp behind', () => {
     const reg = { current: 'papercusp-workspace', workspaces: [{ id: 'papercusp-workspace', name: 'P', createdAt: 1 }] };
     writeRegistry(reg);

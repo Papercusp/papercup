@@ -512,6 +512,89 @@ describe('true per-column totals (P-004)', () => {
     });
   });
 
+  /* WI-6742 [owner-reported]: clicking a card in "Needs you" did nothing while
+     every other column opened a popup. The cause was a destination that could
+     come back NULL for the ask cards folded into that column, while the card
+     still rendered as a <button>. So the property under test is TOTALITY —
+     every card the board builds carries somewhere to go — not merely that the
+     happy path routes correctly. */
+  describe('WI-6742 — every Work-items card declares a destination', () => {
+    const ask = (over: Partial<HudAsk> = {}): HudAsk => ({
+      ownerAgentId: null,
+      title: 'an ask',
+      occurredAt: new Date().toISOString(),
+      id: 'improvement-triage:1234',
+      kind: 'improvement',
+      itemRef: null,
+      planSlug: null,
+      harnessSlug: null,
+      ...over,
+    });
+
+    it('routes an ask that IS about a work item to that item, carrying its harness', () => {
+      // The live shapes: the id ends in the item, the ref is only a kind label.
+      expect(askTargetFor(ask({ id: 'work-item-needs-human:WI-1142', kind: 'work-item-needs-human', harnessSlug: 'papercusp' })))
+        .toEqual({ kind: 'work-item', id: 'WI-1142', harnessSlug: 'papercusp' });
+      // …and the harness-qualified curator ref form.
+      expect(askTargetFor(ask({ itemRef: 'papercusp#WI-7' })))
+        .toEqual({ kind: 'work-item', id: 'WI-7', harnessSlug: null });
+    });
+
+    it('routes a plan-item ask to the plan', () => {
+      expect(askTargetFor(ask({ kind: 'plan-item', ref: { kind: 'plan-item', slug: 'my-plan', itemId: 'P-003' } })))
+        .toEqual({ kind: 'plan', slug: 'my-plan' });
+    });
+
+    // THE REGRESSION. These are the exact cards the owner clicked: asks with no
+    // work item behind them, whose `ref` is a kind label. Before the fix they
+    // resolved to null and the click was a silent no-op.
+    it('routes an ask with NO entity behind it to the ask itself — never nothing', () => {
+      expect(askTargetFor(ask({ id: 'improvement-triage:1234', kind: 'improvement' })))
+        .toEqual({ kind: 'ask', askId: 'improvement-triage:1234' });
+      expect(askTargetFor(ask({ id: 'standing-approval:cap:h', kind: 'standing-approval' })))
+        .toEqual({ kind: 'ask', askId: 'standing-approval:cap:h' });
+      expect(askTargetFor(ask({ id: 'dark-flag-ratification:x', kind: 'dark-flag-ratification' })))
+        .toEqual({ kind: 'ask', askId: 'dark-flag-ratification:x' });
+    });
+
+    // Ordering is load-bearing: an ask carrying BOTH must open the ENTITY, not
+    // the plan it merely happens to be filed under.
+    it('prefers the work item when the ask also carries plan context', () => {
+      expect(
+        askTargetFor(ask({
+          id: 'work-item-needs-human:WI-99',
+          planSlug: 'some-plan',
+          ref: { kind: 'plan-item', slug: 'some-plan' },
+        })),
+      ).toEqual({ kind: 'work-item', id: 'WI-99', harnessSlug: null });
+    });
+
+    it('an UNKNOWN ref kind still opens the ask, so a new adapter cannot revive the dead button', () => {
+      expect(askTargetFor(ask({ ref: { kind: 'some-future-adapter' } })))
+        .toEqual({ kind: 'ask', askId: 'improvement-triage:1234' });
+    });
+
+    // The end-to-end property, asserted on the BOARD rather than the helper —
+    // this is what the click handler actually reads.
+    it('every card buildWorkItemBoard emits has a non-null `open`', () => {
+      const board = buildWorkItemBoard(
+        [
+          { id: 'WI-1', title: 'a', state: 'needs-human', kind: 'bug', severity: null, assignee: null, planSlug: null, updatedAt: null },
+        ] as unknown as Parameters<typeof buildWorkItemBoard>[0],
+        [
+          ask({ id: 'improvement-triage:1', kind: 'improvement' }),
+          ask({ id: 'standing-approval:2', kind: 'standing-approval' }),
+          ask({ id: 'work-item-needs-human:WI-500', kind: 'work-item-needs-human' }),
+        ],
+        { nowMs: Date.now() } as Parameters<typeof buildWorkItemBoard>[2],
+      );
+      const cards = board.columns.flatMap((c) => c.cards);
+      expect(cards.length).toBeGreaterThan(1);
+      // A single `open: undefined` here is the bug re-appearing.
+      expect(cards.filter((c) => c.open == null)).toEqual([]);
+    });
+  });
+
   it('the fetch-state list covers every branch workItemColumn maps', () => {
     // A status the board fetches must land somewhere real, and every column the
     // board renders must be reachable from the list — otherwise a column

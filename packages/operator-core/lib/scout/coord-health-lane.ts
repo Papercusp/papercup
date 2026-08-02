@@ -32,6 +32,8 @@
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../workspace-registry';
 import type { MetaPattern } from './types';
+import type { PremiseRefKind } from '../agent-tools/coordination/message-fields';
+import type { PremiseStatus } from '../agent-tools/coordination/premise-resolve';
 
 /** One re-mounting escalation signature over the window (the pure builder input). */
 export interface CoordEscalationStorm {

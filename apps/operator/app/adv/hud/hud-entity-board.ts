@@ -533,6 +533,12 @@ export function toWorkItemCard(item: HudWorkItemInput, nowMs: number): HudEntity
     badges,
     sinceSec: ageSec(item.updatedAt, nowMs),
     sortKey: sortKeyFor(column, item.updatedAt),
+    // Set here too, not just on asks: `open` is the ONE thing the click handler
+    // reads, so a card without it is a dead button by construction. A real work
+    // item is its own destination — `harnessSlug` stays null so the popup falls
+    // back to the board's active harness, which is correct for these (unlike an
+    // ask, they only ever render under a resolved harness).
+    open: { kind: 'work-item', id: item.id, harnessSlug: null },
   };
 }
 
@@ -584,6 +590,45 @@ export function workItemIdForCard(card: Pick<HudEntityCard, 'id' | 'ref'>): stri
   return null;
 }
 
+/**
+ * WHERE a click on a Work-items card lands (WI-6742, owner-reported: a card in
+ * the "Needs you" column did nothing while every other column opened a popup).
+ *
+ * There is deliberately no "nothing" member. The bug was that a destination
+ * could come back null while `HudEntityColumns` still rendered the card as a
+ * `<button>` — board-wide, because the board supplies `onOpenCard`, not
+ * per-card. A total function is what makes that unrepresentable: every card
+ * carries somewhere to go, so a card that LOOKS activatable is.
+ */
+export type HudAskTarget =
+  | { kind: 'work-item'; id: string; harnessSlug: string | null }
+  | { kind: 'plan'; slug: string }
+  | { kind: 'ask'; askId: string };
+
+/**
+ * The ask → destination rule, in the owner's chosen order (2026-07-28: "entity
+ * if there is one, else the ask").
+ *
+ * ⚠ The order is load-bearing and the work-item check MUST come first. An ask
+ * frequently carries BOTH a work item and a `planSlug` — the latter as mere
+ * context (`askToCard` renders it in the `context` slot for exactly that
+ * reason) — so routing on the plan first would send every work-item-needs-human
+ * ask to a plan popup instead of the item the human asked about.
+ *
+ * The `ask` case is a real destination, not a give-up: an improvement-triage or
+ * standing-approval ask IS the thing to act on, and it carries its own
+ * approve/resolve actions. That is also why an unmapped `ref.kind` degrades
+ * here rather than to null — a new adapter can never reintroduce a dead button.
+ */
+export function askTargetFor(ask: HudAsk): HudAskTarget {
+  const itemId = trailingWorkItemId(ask.itemRef) ?? trailingWorkItemId(ask.id);
+  if (itemId) return { kind: 'work-item', id: itemId, harnessSlug: ask.harnessSlug ?? null };
+  if (ask.ref?.kind === 'plan-item' && ask.ref.slug) {
+    return { kind: 'plan', slug: ask.ref.slug };
+  }
+  return { kind: 'ask', askId: ask.id };
+}
+
 export function askToCard(ask: HudAsk, nowMs: number): HudEntityCard {
   const kindLabel = HUD_ASK_KIND_LABEL[ask.kind] ?? ask.kind;
   return {
@@ -596,6 +641,7 @@ export function askToCard(ask: HudAsk, nowMs: number): HudEntityCard {
     badges: [{ id: `${ask.id}:kind`, label: kindLabel, tone: 'warn' }],
     sinceSec: ageSec(ask.occurredAt, nowMs),
     sortKey: sortKeyFor('needs-you', ask.occurredAt),
+    open: askTargetFor(ask),
   };
 }
 

@@ -265,6 +265,23 @@ const ALLOWLIST: Record<string, Classification> = {
       "fleet/plan/harness slug (or null for scopeKind='global'), never a current-holder claim a presence-tied " +
       'reaper/reader keys on — no rebind needed.',
   },
+  'event_awaits_effective.subscriber_id': {
+    status: 'covered',
+    surface: 'awaits',
+    // P-016 (migration 710): a VIEW defined as `SELECT a.*, <derived deadline
+    // columns> FROM harness_shared.event_awaits a` — subscriber_id is projected
+    // straight through, unmodified, not an independently-stored copy. The base
+    // table's 'awaits' rebind therefore already covers it; the view adds only
+    // effective_*/root_* deadline columns. Same shape as work_items_claimable.taken_by.
+  },
+  'event_awaits_effective.scope_ref': {
+    status: 'exempt',
+    reason:
+      "the same DISCOVERY-scope slug as event_awaits.scope_ref, reaching this view unmodified through its " +
+      "`SELECT a.*` projection (migration 710) — a fleet/plan/harness slug gating who SEES an announced row, " +
+      "never an ownerId/sid a presence-tied reaper keys on. Identity-shaped by column name only; see the " +
+      'event_awaits.scope_ref entry above for the full argument. No rebind needed, for the same reason.',
+  },
   'session_turn_journal.owner_id': {
     status: 'exempt',
     reason:

@@ -191,6 +191,28 @@ export interface HudAsk {
   itemRef: string | null;
   planSlug: string | null;
   harnessSlug: string | null;
+  /** The source `AttentionItem.ref` — the STRUCTURED destination, kept because
+   *  it is the only field that says what an ask is ABOUT rather than what it
+   *  looks like (WI-6742). `itemRef`/`planSlug` cannot stand in for it:
+   *  `planSlug` is set as CONTEXT on asks that are not plan items at all, so
+   *  routing on it would send an improvement-triage ask to a plan popup.
+   *
+   *  Declared structurally rather than importing `AttentionItem['ref']` for the
+   *  same reason as every other field here — the real type is a discriminated
+   *  union across ~10 adapters and importing it drags the admin/plans module
+   *  into this pure, PG-free file. Widening to the fields we route on keeps the
+   *  real union assignable to it. */
+  ref?: HudAskRef | null;
+}
+
+/** The subset of `AttentionItem['ref']` the HUD routes on: the discriminant,
+ *  plus the plan-item coordinates. Every other member of the real union has a
+ *  `kind` and no `slug`, so it lands on the ask itself — which is the correct
+ *  destination for it, not a fallback. */
+export interface HudAskRef {
+  kind: string;
+  slug?: string | null;
+  itemId?: string | null;
 }
 
 /** Human label for an unattributed ask's kind badge. Deliberately covers only

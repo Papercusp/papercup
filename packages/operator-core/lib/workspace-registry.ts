@@ -56,7 +56,7 @@ export class WorkspaceRegistryUnreadableError extends Error {
     readonly cause: unknown,
   ) {
     super(
-      `workspace registry at ${path} exists but could not be parsed — refusing to report it as EMPTY, ` +
+      `workspace registry at ${path} is present but could not be read or parsed — refusing to report it as EMPTY, ` +
         `because an empty registry resolves activeWorkspaceId() to the legacy '${DEFAULT_WORKSPACE_ID}' ` +
         `partition and every scoped read then answers a confident false NOT-FOUND (WI-6734). ` +
         `Cause: ${String(cause)}`,
@@ -89,15 +89,33 @@ export class WorkspaceRegistryUnreadableError extends Error {
 export function readRegistry(): WorkspaceRegistry {
   const p = registryPath();
   if (!existsSync(p)) return { workspaces: [] };
-  let lastErr: unknown;
-  for (let attempt = 0; attempt < 2; attempt++) {
+
+  let raw: string;
+  try {
+    raw = readFileSync(p, 'utf8');
+  } catch (err) {
+    // ABSENT is not CORRUPT. The file can vanish between the existsSync check
+    // and this read (a workspace switch racing us, a torn-down temp root in
+    // tests) — that is the legitimately-empty case, same as never having had a
+    // registry. Only a file we cannot read *while it is there* (EACCES, EIO) is
+    // the dangerous one, because then we genuinely do not know what it says.
+    if ((err as NodeJS.ErrnoException | null)?.code === 'ENOENT') return { workspaces: [] };
+    throw new WorkspaceRegistryUnreadableError(p, err);
+  }
+
+  try {
+    return JSON.parse(raw) as WorkspaceRegistry;
+  } catch (firstErr) {
+    // A torn read: we got bytes, but not a whole document. `writeRegistry`
+    // below makes that impossible for OUR writes, but the Rust shell also owns
+    // this file, so retry once against a settled file before declaring it
+    // corrupt.
     try {
       return JSON.parse(readFileSync(p, 'utf8')) as WorkspaceRegistry;
-    } catch (err) {
-      lastErr = err;
+    } catch {
+      throw new WorkspaceRegistryUnreadableError(p, firstErr);
     }
   }
-  throw new WorkspaceRegistryUnreadableError(p, lastErr);
 }
 
 /**

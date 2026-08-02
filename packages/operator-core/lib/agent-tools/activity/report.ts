@@ -35,6 +35,7 @@ import { writeWatermark } from '../coordination/watermarks';
 import { isWorkspaceContended } from '../locks/contention-retry';
 import { releaseAllWorkItemLeasesForOwner } from '../../work-item-lease-release';
 import { consumeRespawnExpected } from '../../carry-respawn-marker';
+import { recentContextResetWake } from '../../session-reset-continuation';
 import { buildActivityHookBundle } from './hook-bundle';
 import { SESSION_START_MARKER, SESSION_END_MARKER } from './lifecycle-markers';
 
@@ -223,9 +224,30 @@ export default defineTool({
         // respawn that never actually lands still frees the owner's claims
         // via the P-001 scheduled backstop (the marker's short TTL), so
         // skipping here trades nothing away for the real-death case.
+        // WI-6756: the SAME "same-owner continuation, not a death" exemption, for
+        // the OTHER trigger that re-execs the CLI child — a COLD loop wake
+        // delivered over psu-socket-reset/recycle. The in-memory marker above
+        // cannot cover it: that wake is injected from papercup-bg-host while THIS
+        // report is handled by papercup-dev-api, so the mark is written in a
+        // different process than the one that would read it. The wake ledger
+        // crosses that boundary; see session-reset-continuation.ts for the full
+        // incident + why no new table/write path was introduced. Fail-open on a
+        // read error (fall through to the release = today's behavior) so this
+        // guard can never strand a claim by failing.
+        const resetWake = await recentContextResetWake(owner).catch((e) => {
+          console.warn(
+            `[activity:report] reset-continuation check for ${owner} failed, treating as a real session end: ${e instanceof Error ? e.message : e}`,
+          );
+          return null;
+        });
         if (consumeRespawnExpected(owner)) {
           console.log(
             `[activity:report] session-end lease release SKIPPED for ${owner}: a carry-respawn is expected (same-owner continuation, not a death)`,
+          );
+        } else if (resetWake) {
+          console.log(
+            `[activity:report] session-end lease release SKIPPED for ${owner}: a ${resetWake.channel} wake landed ${resetWake.ageMs}ms ago ` +
+              `(context reset, same-owner continuation, not a death) — claims stay held; a reset that never lands is freed by the scheduled lease reap`,
           );
         } else {
           // session-death-claim-release-2026-07-11 P-002 (the FAST PATH): the

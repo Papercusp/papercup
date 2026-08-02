@@ -24,7 +24,7 @@
  *   node scripts/check-no-self-referential-export.mjs
  *   node scripts/check-no-self-referential-export.mjs --self-test
  */
-import { execFileSync } from 'node:child_process';
+import { describeUnscanned, listTrackedFiles } from './lib/tracked-files.mjs';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -62,13 +62,14 @@ function isScannedPath(file) {
   return SOURCE_EXTENSIONS.has(extensionOf(file)) && !file.endsWith('.d.ts');
 }
 
+// WI-6730: enumerate via the shared helper, which recurses into submodules. The
+// previous `git ls-files -z` did not — it emits one gitlink entry per submodule —
+// so this guard never scanned a single source file inside any of the 39.
+let unscannedSubmodules = [];
 function trackedSourceFiles() {
-  const out = execFileSync('git', ['ls-files', '-z'], {
-    cwd: ROOT,
-    encoding: 'buffer',
-    maxBuffer: 256 * 1024 * 1024,
-  });
-  return out.toString('utf8').split('\0').filter(Boolean).filter(isScannedPath);
+  const { files, unscanned } = listTrackedFiles(ROOT);
+  unscannedSubmodules = unscanned;
+  return files.filter(isScannedPath);
 }
 
 function scanTree() {
@@ -118,7 +119,9 @@ function main() {
   }
   const offenders = scanTree();
   if (offenders.length === 0) {
-    console.log('check-no-self-referential-export: clean — no `export const X = X;` shims in tracked source files');
+    console.log(
+      `check-no-self-referential-export: clean — no \`export const X = X;\` shims in tracked source files${describeUnscanned(unscannedSubmodules)}`,
+    );
     return;
   }
   console.error(
