@@ -135,5 +135,7 @@ describe('PUT /harness/:slug/discord', () => {
     expect(H.saveProjectFiles).toHaveBeenCalledTimes(1);
     const [, files] = H.saveProjectFiles.mock.calls[0];
     expect(JSON.parse((files as { config: string }).config).discord).toEqual({ guildId: '12345', inviteUrl: 'https://discord.gg/y' });
+    // Sync-cache invalidation fired (mocked — see the sync-sse vi.mock above).
+    expect(H.notifySyncInvalidate).toHaveBeenCalledWith('discordConfig.byHarness', [{ harnessSlug: 'shared-harness' }]);
   });
 });

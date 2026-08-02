@@ -136,6 +136,7 @@ describe('fleet scope assignment admission (P-016)', () => {
       takenAt: null,
       lastProgressAt: null,
       assignedBy: null,
+      createdBy: null,
       severity: 'major',
       parent: null,
       payload: {

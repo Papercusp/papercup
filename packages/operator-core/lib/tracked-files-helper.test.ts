@@ -18,11 +18,10 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
-// @ts-expect-error — .mjs guard helper, no type declarations (same import shape
-// as the other guard tests, e.g. dbos/no-raw-setinterval-guard.test.ts).
-// ⚠ Keep this import on ONE line: `@ts-expect-error` suppresses only the line
-// immediately following it, so wrapping it across lines makes the directive
-// "unused" AND leaves the module specifier line unsuppressed — two errors, not zero.
+// Typed via scripts/lib/tracked-files.d.mts — the former `@ts-expect-error` here became
+// UNUSED (TS2578) the moment those declarations landed, so it is deliberately gone. The
+// prettier disable below stays: it governs this import's line WIDTH, independent of the
+// removed directive.
 // eslint-disable-next-line prettier/prettier
 import { coverageOf, declaredSubmodules, describeUnscanned, listFilesIncludingUntracked, listTrackedFiles } from '../../../scripts/lib/tracked-files.mjs';
 

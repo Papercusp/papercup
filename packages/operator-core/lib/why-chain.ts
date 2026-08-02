@@ -197,6 +197,23 @@ export function splitFailingSignature(entries: string[]): { failingFiles: string
  *  already named something file-shaped, so this never adds IO to a green (or unattributed)
  *  gate. Fail-soft: any error degrades to `[]` (unable to verify), never a throw.
  *
+ *  WI-6825: requires `source = 'ci'`. This is the load-bearing filter, not a refinement.
+ *  `test_runs` is dominated by `source='local'` rows — every agent's own dev runs — and they
+ *  are stamped with whatever sha the SHARED TREE sat at, so a peer running tests while the
+ *  gate judges commit X produces local rows stamped X that were never the gate's evidence.
+ *  Without this predicate the "ledger" for a candidate is mostly peers' local runs, and a
+ *  DISJOINT verdict below then clears the gate's real failing list in favour of them —
+ *  telling the agent to go fix files the gate never named. Measured 2026-08-02 on candidate
+ *  c3966f7316f9: 3,578 ci rows AND 3,938 local rows for the same sha.
+ *
+ *  This also retires the founding evidence for the disjoint check itself. It was justified by
+ *  a 2026-07-25 incident where `test_runs` held "3 DIFFERENT actually-failing files" for a
+ *  commit whose gate verdict named 4 passing ones — but on that date the table held 236 rows,
+ *  100% `source='local'` (zero gate rows existed until EI-19307211919650123 landed a ci
+ *  writer ~2026-08-02T04:00Z). Those 3 files were local dev runs, so the gate was never shown
+ *  to be misdirecting. The cross-check is sound going forward precisely BECAUSE ci rows now
+ *  exist; before them it could only ever have compared the gate against unrelated local runs.
+ *
  *  EI-18795303393201472: excludes `worktree_dirty = true` rows. This function is used as
  *  FIRST-HAND evidence for a SPECIFIC commit sha (verifyGateVerdict below can clear the
  *  gate's own named failures when the ledger disagrees) — a row from a run that executed
@@ -226,6 +243,7 @@ export async function ledgerFilesForCandidate(candidateShort: string | null, dep
         FROM harness_shared.test_runs
        WHERE commit_sha LIKE ${candidateShort + '%'}
          AND status IN ('fail', 'error')
+         AND source = 'ci'
          AND file_path NOT LIKE ${RESTORED_CHECKOUT_PREFIX + '%'}
          AND worktree_dirty = false
          AND (${harnessFilter}::text IS NULL OR harness_slug = ${harnessFilter})

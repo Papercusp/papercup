@@ -29,8 +29,8 @@ import { readFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { scanSource, enclosingTopLevelSymbol, type ChunkUnsafeSite } from './child-output-scan.js';
-// @ts-expect-error — .mjs guard helper, no type declarations (same import shape
-// as tracked-files-helper.test.ts and the other guard tests).
+// Typed via scripts/lib/tracked-files.d.mts — the former `@ts-expect-error` here became
+// UNUSED (TS2578) the moment those declarations landed, so it is deliberately gone.
 import { listTrackedFiles } from '../../../scripts/lib/tracked-files.mjs';
 
 const REPO_ROOT = execFileSync('git', ['rev-parse', '--show-toplevel'], {

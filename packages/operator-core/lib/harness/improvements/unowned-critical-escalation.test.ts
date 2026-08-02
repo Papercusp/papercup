@@ -28,6 +28,7 @@ function item(overrides: Partial<WorkItem> = {}): WorkItem {
     takenAt: null,
     lastProgressAt: null,
     assignedBy: null,
+    createdBy: null,
     severity: 'critical',
     parent: null,
     payload: null,

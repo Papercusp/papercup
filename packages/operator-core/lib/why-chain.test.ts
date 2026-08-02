@@ -595,6 +595,27 @@ describe('EI-17603 — ledgerFilesForCandidate: the commit-scoped ledger read', 
     });
     expect(capturedSql).toContain('worktree_dirty = false');
   });
+
+  it("WI-6825: requires source = 'ci' — a local dev run is NOT gate evidence", async () => {
+    // The load-bearing filter. `test_runs` is dominated by source='local' rows (every
+    // agent's own dev runs), and they are stamped with whatever sha the SHARED TREE sat
+    // at — so a peer testing while the gate judges commit X writes local rows stamped X
+    // that were never the gate's evidence. Without this predicate the "ledger" for a
+    // candidate is mostly peers' local runs, and verifyGateVerdict's DISJOINT branch then
+    // clears the gate's REAL failing list in favour of them, sending the agent to fix
+    // files the gate never named. Measured 2026-08-02 on candidate c3966f7316f9: 3,578 ci
+    // rows and 3,938 local rows for the SAME sha — so this is the majority case, not an
+    // edge case. Assert the generated SQL carries it; a canned-row mock cannot catch a
+    // dropped WHERE clause.
+    let capturedSql = '';
+    await ledgerFilesForCandidate('deadbee1234', {
+      sql: (async (strings: TemplateStringsArray) => {
+        capturedSql = strings.join('');
+        return [];
+      }) as unknown as WhyChainDeps['sql'],
+    });
+    expect(capturedSql).toContain("source = 'ci'");
+  });
 });
 
 describe('EI-17603 — verifyGateVerdict: distrust the gate\'s own record when the ledger contradicts it', () => {

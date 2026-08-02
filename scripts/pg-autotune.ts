@@ -15,27 +15,47 @@
  * RAM, so the same command does the right thing on a laptop and on a 128-core
  * server.
  *
- *   npx tsx scripts/pg-autotune.ts            # --print: show derived settings, change nothing
- *   npx tsx scripts/pg-autotune.ts --apply    # write the drop-in + restart PG + verify
+ *   npx tsx scripts/pg-autotune.ts            # --print: derived settings + live drift, change nothing
+ *   npx tsx scripts/pg-autotune.ts --check    # exit 1 if the live cluster or the drop-in has drifted
+ *   npx tsx scripts/pg-autotune.ts --apply    # write the drop-in + RELOAD (restart only if forced to)
  *
  * Flags:
- *   --apply                 actually write + restart (default is print-only)
+ *   --apply                 actually write + apply (default is print-only)
+ *   --check                 report drift and exit non-zero on any; writes nothing
+ *   --restart               force a full restart even when a reload would do
  *   --confd   <dir>         conf.d directory (default /etc/postgresql/18/main/conf.d)
  *   --service <unit>        systemd unit to restart (default postgresql@18-main.service)
  *   --port    <n>           port to verify against (default 5432)
  *
- * Requires passwordless sudo for the write + restart (writes a postgres-owned
- * file and restarts a system service). A restart briefly drops all connections;
- * pooled clients reconnect.
+ * ── Why --apply RELOADS by default (EI-19314331871893219) ────────────────────
+ * This script used to restart PostgreSQL unconditionally. On a shared box with a
+ * whole fleet connected, that is disruptive enough that nobody runs it — so the
+ * next agent needing a knob HAND-APPENDS it to the managed drop-in instead, the
+ * live config forks from `databaseTuningToSettings()`, and every setting added
+ * since the last real --apply is dropped with no error anywhere. That is not
+ * hypothetical: `max_slot_wal_keep_size` (the WAL disk-fill-SPOF defense, WI-347)
+ * and `shared_preload_libraries` (P-020) both sat unapplied for weeks exactly
+ * that way, while the source, its tests and its comments all said otherwise.
+ *
+ * Most of what we emit is SIGHUP-reloadable, so the honest default is: write the
+ * file, reload, and restart ONLY when a postmaster-context setting actually
+ * changed (asked of the live server, not assumed). Hand-editing then has no
+ * reason to happen — and --check makes a fork loud if it does.
+ *
+ * Requires passwordless sudo for the write + reload/restart (writes a
+ * postgres-owned file and signals a system service). A restart briefly drops all
+ * connections; pooled clients reconnect. A reload drops nothing.
  */
 import { execFileSync } from 'node:child_process';
-import { writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   databaseTuningToSettings,
   deriveDatabaseTuning,
   detectResourceSignals,
+  diffPgSettings,
+  type PgLiveSetting,
 } from '@papercusp/resource-profile';
 
 const args = process.argv.slice(2);
@@ -46,6 +66,8 @@ const opt = (f: string, d: string) => {
 };
 
 const apply = has('--apply');
+const check = has('--check');
+const forceRestart = has('--restart');
 const confDir = opt('--confd', '/etc/postgresql/18/main/conf.d');
 const service = opt('--service', 'postgresql@18-main.service');
 const port = opt('--port', '5432');
@@ -76,6 +98,24 @@ const psql = (q: string): string | null => {
   }
 };
 
+/** The live server's own view of the GUCs we intend to set. null ⇒ unreachable. */
+const readLiveSettings = (names: readonly string[]): PgLiveSetting[] | null => {
+  const list = names.map((n) => `'${n.replace(/'/g, "''")}'`).join(',');
+  const out = psql(
+    `SELECT name || E'\\t' || setting || E'\\t' || coalesce(unit,'') || E'\\t' || context ` +
+      `FROM pg_settings WHERE name IN (${list})`,
+  );
+  if (out === null) return null;
+  return out
+    .split('\n')
+    .map((l) => l.trim())
+    .filter(Boolean)
+    .map((l) => {
+      const [name, setting, unit, context] = l.split('\t');
+      return { name, setting, unit: unit || null, context: context || null };
+    });
+};
+
 console.log(`host: ${signals.cores} cores, ${gib} GiB RAM — tuning NATIVE PG (dedicated)`);
 const liveMax = psql('show max_connections');
 const liveSb = psql('show shared_buffers');
@@ -97,14 +137,14 @@ const preloadLibs = Array.from(
 );
 const preloadValue = `'${preloadLibs.join(',')}'`;
 
-console.log('derived (target):');
-for (const [k, v] of Object.entries(settings)) console.log(`  ${k} = ${v}`);
-console.log(`  shared_preload_libraries = ${preloadValue}`);
+/** Everything we intend the cluster to be running — the map plus the applier's own knob. */
+const target: Record<string, string> = {
+  ...settings,
+  shared_preload_libraries: preloadValue,
+};
 
-if (!apply) {
-  console.log('\n--print only. Re-run with --apply to write the drop-in and restart PG.');
-  process.exit(0);
-}
+console.log('derived (target):');
+for (const [k, v] of Object.entries(target)) console.log(`  ${k} = ${v}`);
 
 const content =
   [
@@ -114,11 +154,69 @@ const content =
     `# Host: ${signals.cores} cores, ${gib} GiB RAM.`,
     '',
   ].join('\n') +
-  [
-    ...Object.entries(settings).map(([k, v]) => `${k} = ${v}`),
-    `shared_preload_libraries = ${preloadValue}`,
-  ].join('\n') +
+  Object.entries(target)
+    .map(([k, v]) => `${k} = ${v}`)
+    .join('\n') +
   '\n';
+
+/* ── Drift report ─────────────────────────────────────────────────────────────
+ * Two independent questions, because they fail independently:
+ *   1. is the LIVE SERVER running what we derive?  (pg_settings vs target)
+ *   2. is the DROP-IN ON DISK the file we generate? (bytes vs bytes)
+ * (2) catches a hand-edit even when it happens to leave (1) clean — which is the
+ * shape that hid two unapplied settings for weeks. Neither alone is sufficient.
+ */
+const live = readLiveSettings(Object.keys(target));
+const drift = live ? diffPgSettings(target, live) : null;
+
+let fileOnDisk: string | null = null;
+try {
+  fileOnDisk = readFileSync(dropIn, 'utf8');
+} catch {
+  fileOnDisk = null; // not written yet
+}
+const fileDrift = fileOnDisk !== content;
+
+console.log('\ndrift:');
+if (!drift) {
+  console.log('  live cluster: <unreachable — PG is wedged or down; cannot compare>');
+} else if (drift.inSync) {
+  console.log('  live cluster: ✓ every derived setting matches');
+} else {
+  for (const d of drift.diverged) {
+    console.log(`  live cluster: ✗ ${d.name}: live=${d.live} target=${d.target}` +
+      `${d.restartOnly ? '  [restart-only]' : '  [reloadable]'}`);
+  }
+}
+if (drift?.unknown.length) {
+  console.log(`  not present on this server (ignored): ${drift.unknown.join(', ')}`);
+}
+if (fileOnDisk === null) {
+  console.log(`  drop-in:      ✗ ${dropIn} does not exist`);
+} else if (fileDrift) {
+  console.log(`  drop-in:      ✗ ${dropIn} differs from the generated content ` +
+    `(hand-edited, or written by an older revision)`);
+} else {
+  console.log('  drop-in:      ✓ byte-identical to the generated content');
+}
+
+if (check) {
+  const bad = fileDrift || (drift ? !drift.inSync : true);
+  if (bad) {
+    console.error(
+      '\n✗ DRIFT. The live cluster and/or the managed drop-in do not match the tuning ' +
+        'source of truth (databaseTuningToSettings). Re-run with --apply.',
+    );
+    process.exit(1);
+  }
+  console.log('\n✓ no drift.');
+  process.exit(0);
+}
+
+if (!apply) {
+  console.log('\n--print only. Re-run with --apply to write the drop-in and apply it.');
+  process.exit(0);
+}
 
 const tmp = join(tmpdir(), 'papercusp-autotune.conf');
 writeFileSync(tmp, content, 'utf8');

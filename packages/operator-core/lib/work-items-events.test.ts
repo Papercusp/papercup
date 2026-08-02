@@ -20,6 +20,7 @@ const wi = (over: Partial<WorkItem> = {}): WorkItem => ({
   takenAt: null,
   lastProgressAt: null,
   assignedBy: 'su-parent',
+  createdBy: null,
   // work-item-completion-integrity-2026-07-01 WI-1403: required on WorkItem.
   terminalOwner: null,
   terminalCompletionRef: null,

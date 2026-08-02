@@ -42,6 +42,7 @@ function item(overrides: Partial<WorkItem>): WorkItem {
     takenAt: null,
     lastProgressAt: null,
     assignedBy: null,
+    createdBy: null,
     severity: 'minor',
     parent: null,
     payload: null,

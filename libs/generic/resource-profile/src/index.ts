@@ -429,6 +429,198 @@ export function databaseTuningToSettings(t: DatabaseTuning): Record<string, stri
   };
 }
 
+/* ------------------------------------------------------------------ *
+ * Applying the derived settings to a LIVE server, and detecting drift.
+ *
+ * Emitting the right numbers is only half the job: they have to reach the
+ * cluster, and STAY reached. The failure this section exists to prevent is a
+ * silent one — an applier whose only path is write-then-RESTART is one nobody
+ * dares run on a shared box, so a later setting gets hand-appended to the
+ * managed file instead, the live config forks from this source of truth, and
+ * every setting added in between is dropped without a single error. Measured:
+ * `max_slot_wal_keep_size` (the disk-fill-SPOF defense above) and
+ * `shared_preload_libraries` both sat unapplied for weeks that way, while the
+ * source, its tests and its comments all said the defense was in place.
+ *
+ * So two pure helpers: decide reload-vs-restart (most of what we emit is
+ * SIGHUP-reloadable, so hand-editing is never necessary), and diff target
+ * against live (so a fork is detectable instead of invisible).
+ * ------------------------------------------------------------------ */
+
+/**
+ * GUCs emitted by {@link databaseTuningToSettings} — plus `shared_preload_libraries`,
+ * which appliers add alongside it — that PostgreSQL can only apply at postmaster
+ * start. Everything else we emit is SIGHUP-reloadable.
+ *
+ * This is a FALLBACK, not the authority: {@link pgSettingRequiresRestart} prefers
+ * the live server's own `pg_settings.context` when the caller can supply it, so a
+ * PostgreSQL version that reclassifies a GUC can never be wrong here. The static
+ * set only answers when the server can't be asked (a --print/offline run).
+ */
+export const PG_RESTART_ONLY_SETTINGS: ReadonlySet<string> = new Set([
+  'max_connections',
+  'superuser_reserved_connections',
+  'shared_buffers',
+  'wal_buffers',
+  'max_worker_processes',
+  'shared_preload_libraries',
+]);
+
+/** One row of the live server's own view of a setting (`pg_settings`). */
+export interface PgLiveSetting {
+  name: string;
+  /** Raw value, expressed in `unit` when the GUC has one. */
+  setting: string;
+  /** e.g. `8kB`, `MB`, `ms`, or null/empty for unitless GUCs. */
+  unit?: string | null;
+  /** `postmaster` | `sighup` | `superuser` | `user` | … */
+  context?: string | null;
+}
+
+/** A target setting whose live value does not match. */
+export interface PgSettingDivergence {
+  name: string;
+  /** Live value, rendered with its unit so it reads like the target does. */
+  live: string;
+  target: string;
+  /** True when applying this one needs a full restart, not a reload. */
+  restartOnly: boolean;
+}
+
+export interface PgSettingsDrift {
+  diverged: PgSettingDivergence[];
+  /** Target settings the live server does not report at all (typo, or a GUC this PG build lacks). */
+  unknown: string[];
+  /** Names among `diverged` that cannot be applied by SIGHUP alone. */
+  restartRequired: string[];
+  /** True when there IS drift and a reload is enough to close all of it. */
+  reloadSuffices: boolean;
+  /** True when live already matches target on every name. */
+  inSync: boolean;
+}
+
+/**
+ * Whether applying `name` needs a postmaster restart. Prefers the live server's
+ * own `context` (authoritative); falls back to {@link PG_RESTART_ONLY_SETTINGS}
+ * when no context is available.
+ */
+export function pgSettingRequiresRestart(name: string, liveContext?: string | null): boolean {
+  if (liveContext) return liveContext === 'postmaster' || liveContext === 'internal';
+  return PG_RESTART_ONLY_SETTINGS.has(name);
+}
+
+const SIZE_UNIT_BYTES: Record<string, number> = {
+  B: 1,
+  kB: 1024,
+  MB: 1024 ** 2,
+  GB: 1024 ** 3,
+  TB: 1024 ** 4,
+};
+
+/**
+ * Parse a PostgreSQL size unit as used in `pg_settings.unit` — a bare unit
+ * (`MB`) or a multiplier + unit (`8kB`, the block-size form). Returns bytes per
+ * unit, or null when `unit` is not a size unit (`ms`, `s`, '' …).
+ */
+function sizeUnitToBytes(unit: string | null | undefined): number | null {
+  if (!unit) return null;
+  const m = /^(\d*)(B|kB|MB|GB|TB)$/.exec(unit.trim());
+  if (!m) return null;
+  const mult = m[1] ? Number(m[1]) : 1;
+  return mult * SIZE_UNIT_BYTES[m[2]];
+}
+
+/**
+ * Parse a size-valued GUC written the way a config file writes it (`32GB`,
+ * `64392MB`, `8192`, `-1`) into bytes. A bare number is interpreted in
+ * `defaultUnitBytes`. Returns null when the value is not a size.
+ *
+ * `-1` and `0` are returned as-is (they are sentinels — "unlimited" / "off" —
+ * not quantities), which is what makes `-1` vs `32GB` compare as a difference
+ * rather than as an unparseable pair.
+ */
+export function parsePgSizeToBytes(value: string, defaultUnitBytes = 1): number | null {
+  const v = value.trim();
+  const m = /^(-?\d+(?:\.\d+)?)\s*(B|kB|MB|GB|TB)?$/.exec(v);
+  if (!m) return null;
+  const n = Number(m[1]);
+  if (!Number.isFinite(n)) return null;
+  if (!m[2]) return n * defaultUnitBytes;
+  return n * SIZE_UNIT_BYTES[m[2]];
+}
+
+/** `'a,b'` / `a, b` → a normalized set-comparable key, so list GUCs ignore order + quoting. */
+function normalizeListValue(value: string): string {
+  return value
+    .trim()
+    .replace(/^'(.*)'$/s, '$1')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .sort()
+    .join(',');
+}
+
+/** True when a live value and a target value mean the same thing to PostgreSQL. */
+function pgValuesEqual(target: string, live: PgLiveSetting): boolean {
+  const unitBytes = sizeUnitToBytes(live.unit);
+  if (unitBytes != null) {
+    const t = parsePgSizeToBytes(target, unitBytes);
+    const l = parsePgSizeToBytes(live.setting, unitBytes);
+    if (t != null && l != null) return t === l;
+  }
+  const tNum = Number(target.trim());
+  const lNum = Number(live.setting.trim());
+  if (Number.isFinite(tNum) && Number.isFinite(lNum)) return tNum === lNum;
+  return normalizeListValue(target) === normalizeListValue(live.setting);
+}
+
+/** Render a live value with its unit, so it reads like the config-file form. */
+function renderLive(live: PgLiveSetting): string {
+  const unit = (live.unit ?? '').trim();
+  return unit ? `${live.setting}${unit}` : live.setting;
+}
+
+/**
+ * Diff the settings we intend to apply against what the server is actually
+ * running. This is the drift detector: it answers "has the live cluster silently
+ * forked from the tuning source?" and, when it has, "can a reload close it?".
+ *
+ * Pure — the caller supplies the `pg_settings` rows.
+ */
+export function diffPgSettings(
+  target: Record<string, string>,
+  live: readonly PgLiveSetting[],
+): PgSettingsDrift {
+  const byName = new Map(live.map((r) => [r.name, r]));
+  const diverged: PgSettingDivergence[] = [];
+  const unknown: string[] = [];
+
+  for (const [name, want] of Object.entries(target)) {
+    const row = byName.get(name);
+    if (!row) {
+      unknown.push(name);
+      continue;
+    }
+    if (pgValuesEqual(want, row)) continue;
+    diverged.push({
+      name,
+      live: renderLive(row),
+      target: want,
+      restartOnly: pgSettingRequiresRestart(name, row.context),
+    });
+  }
+
+  const restartRequired = diverged.filter((d) => d.restartOnly).map((d) => d.name);
+  return {
+    diverged,
+    unknown,
+    restartRequired,
+    reloadSuffices: diverged.length > 0 && restartRequired.length === 0,
+    inSync: diverged.length === 0,
+  };
+}
+
 /**
  * Pure cap derivation from raw signals. Each cap is `clamp(formula, FLOOR, CEIL)`.
  *

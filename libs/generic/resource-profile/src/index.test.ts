@@ -5,8 +5,13 @@ import {
   databaseTuningToSettings,
   deriveDatabaseTuning,
   deriveResourceProfile,
+  diffPgSettings,
   getResourceProfile,
+  parsePgSizeToBytes,
+  pgSettingRequiresRestart,
+  PG_RESTART_ONLY_SETTINGS,
   resetResourceProfile,
+  type PgLiveSetting,
   type ResourceSignals,
 } from './index';
 
@@ -571,6 +576,143 @@ describe('databaseTuningToSettings — renders GUC strings with units', () => {
     );
     expect(small.jit_inline_above_cost).toBe(big.jit_inline_above_cost);
     expect(small.jit_optimize_above_cost).toBe(big.jit_optimize_above_cost);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Applying the settings to a live server, and detecting drift.
+//
+// The bug these guard against was silent for weeks: the managed conf.d drop-in
+// was hand-appended to (because the only applier path RESTARTS PG, which nobody
+// dares do on a shared box), so the live cluster forked from this source of
+// truth and BOTH `max_slot_wal_keep_size` and `shared_preload_libraries` were
+// dropped without an error anywhere. Reload-vs-restart makes hand-editing
+// unnecessary; the diff makes a fork detectable.
+// ---------------------------------------------------------------------------
+
+function liveRow(over: Partial<PgLiveSetting> & { name: string }): PgLiveSetting {
+  return { setting: '0', unit: null, context: 'sighup', ...over };
+}
+
+describe('pgSettingRequiresRestart — the live context wins over the static set', () => {
+  it('trusts the server-reported context when given one', () => {
+    expect(pgSettingRequiresRestart('max_slot_wal_keep_size', 'sighup')).toBe(false);
+    expect(pgSettingRequiresRestart('shared_buffers', 'postmaster')).toBe(true);
+  });
+
+  it('a GUC our static set calls restart-only is still reloadable if PG says so', () => {
+    // The whole point of preferring the live context: a PostgreSQL version that
+    // reclassifies a GUC must not leave us restarting the cluster for nothing.
+    expect(PG_RESTART_ONLY_SETTINGS.has('max_connections')).toBe(true);
+    expect(pgSettingRequiresRestart('max_connections', 'sighup')).toBe(false);
+  });
+
+  it('falls back to the static set when no context is available (offline/--print)', () => {
+    expect(pgSettingRequiresRestart('shared_buffers')).toBe(true);
+    expect(pgSettingRequiresRestart('max_slot_wal_keep_size')).toBe(false);
+    expect(pgSettingRequiresRestart('shared_preload_libraries')).toBe(true);
+  });
+
+  it('every GUC in the static set is one we actually emit', () => {
+    // A stale name in the set would silently mean "restart for a knob we never
+    // set" — cheap to assert, and it keeps the set honest as the map changes.
+    const emitted = new Set(
+      Object.keys(
+        databaseTuningToSettings(
+          deriveDatabaseTuning(signals({ cores: 128, embeddedPg: false, totalMemBytes: 256 * GIB })),
+        ),
+      ),
+    );
+    emitted.add('shared_preload_libraries'); // added by the applier, not the map
+    for (const name of PG_RESTART_ONLY_SETTINGS) expect(emitted.has(name)).toBe(true);
+  });
+});
+
+describe('parsePgSizeToBytes', () => {
+  it('parses config-file size forms', () => {
+    expect(parsePgSizeToBytes('32GB')).toBe(32 * 1024 ** 3);
+    expect(parsePgSizeToBytes('64392MB')).toBe(64392 * 1024 ** 2);
+    expect(parsePgSizeToBytes('1kB')).toBe(1024);
+  });
+
+  it('interprets a bare number in the supplied default unit (the 8kB block form)', () => {
+    expect(parsePgSizeToBytes('8', 8 * 1024)).toBe(65536);
+  });
+
+  it('keeps -1 and 0 as sentinels rather than quantities', () => {
+    // `-1` is "unlimited", not "minus one byte" — it must compare UNEQUAL to any
+    // real bound, which is exactly the max_slot_wal_keep_size case.
+    expect(parsePgSizeToBytes('-1')).toBe(-1);
+    expect(parsePgSizeToBytes('0')).toBe(0);
+    expect(parsePgSizeToBytes('-1', 1024)).toBe(-1024);
+  });
+
+  it('returns null for non-sizes', () => {
+    expect(parsePgSizeToBytes('pg_stat_statements')).toBeNull();
+    expect(parsePgSizeToBytes('')).toBeNull();
+  });
+});
+
+describe('diffPgSettings — the drift detector', () => {
+  it('reports nothing when live already matches, across units', () => {
+    // shared_buffers comes back from pg_settings in 8kB BLOCKS; the target is
+    // written in MB. A naive string compare would call this permanent drift.
+    const d = diffPgSettings(
+      { shared_buffers: '64392MB', work_mem: '64MB', max_parallel_workers: '128' },
+      [
+        liveRow({ name: 'shared_buffers', setting: String((64392 * 1024 ** 2) / (8 * 1024)), unit: '8kB', context: 'postmaster' }),
+        liveRow({ name: 'work_mem', setting: '65536', unit: 'kB', context: 'user' }),
+        liveRow({ name: 'max_parallel_workers', setting: '128' }),
+      ],
+    );
+    expect(d.inSync).toBe(true);
+    expect(d.diverged).toEqual([]);
+    expect(d.reloadSuffices).toBe(false); // no drift ⇒ nothing to reload FOR
+  });
+
+  it('catches the real regression: max_slot_wal_keep_size unapplied at PG default -1', () => {
+    const d = diffPgSettings({ max_slot_wal_keep_size: '32GB' }, [
+      liveRow({ name: 'max_slot_wal_keep_size', setting: '-1', unit: 'MB', context: 'sighup' }),
+    ]);
+    expect(d.inSync).toBe(false);
+    expect(d.diverged).toEqual([
+      { name: 'max_slot_wal_keep_size', live: '-1MB', target: '32GB', restartOnly: false },
+    ]);
+    expect(d.reloadSuffices).toBe(true);
+    expect(d.restartRequired).toEqual([]);
+  });
+
+  it('a postmaster-context divergence forces a restart, and says which one', () => {
+    const d = diffPgSettings({ shared_buffers: '64392MB', work_mem: '64MB' }, [
+      liveRow({ name: 'shared_buffers', setting: '1024', unit: '8kB', context: 'postmaster' }),
+      liveRow({ name: 'work_mem', setting: '4096', unit: 'kB', context: 'user' }),
+    ]);
+    expect(d.reloadSuffices).toBe(false);
+    expect(d.restartRequired).toEqual(['shared_buffers']);
+    expect(d.diverged.map((x) => x.name).sort()).toEqual(['shared_buffers', 'work_mem']);
+  });
+
+  it('compares list GUCs as a set, so order and quoting are not drift', () => {
+    const d = diffPgSettings({ shared_preload_libraries: "'pg_stat_statements,auto_explain'" }, [
+      liveRow({ name: 'shared_preload_libraries', setting: 'auto_explain, pg_stat_statements', context: 'postmaster' }),
+    ]);
+    expect(d.inSync).toBe(true);
+  });
+
+  it('a list GUC that genuinely lost a library IS drift', () => {
+    const d = diffPgSettings({ shared_preload_libraries: "'pg_stat_statements'" }, [
+      liveRow({ name: 'shared_preload_libraries', setting: '', context: 'postmaster' }),
+    ]);
+    expect(d.restartRequired).toEqual(['shared_preload_libraries']);
+  });
+
+  it('separates "unknown to this server" from "diverged" instead of reporting a false diff', () => {
+    const d = diffPgSettings({ work_mem: '64MB', not_a_guc: '1' }, [
+      liveRow({ name: 'work_mem', setting: '65536', unit: 'kB', context: 'user' }),
+    ]);
+    expect(d.unknown).toEqual(['not_a_guc']);
+    expect(d.diverged).toEqual([]);
+    expect(d.inSync).toBe(true); // unknown ≠ drift; it's a different report
   });
 });
 
