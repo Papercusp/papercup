@@ -30,4 +30,5 @@ import { exportedTypeNames } from './lib/tsc-baseline-gate.mjs';
 import { filesReferencingTypeNames } from './lib/tsc-baseline-gate.mjs';
 import { formatAttributionHeadline } from './lib/tsc-baseline-gate.mjs';
 import { formatNewFileGuidance } from './lib/tsc-baseline-gate.mjs';
-export { parseTscErrors, syntaxBrokenFiles, countByFile, gitChangedFiles, parseExplicitFiles, decidePerFile, effectiveBaselineByFile, exportedTypeNames, filesReferencingTypeNames, formatAttributionHeadline, formatNewFileGuidance };
+import { partitionNewFilesByLiveEdit } from './lib/tsc-baseline-gate.mjs';
+export { parseTscErrors, syntaxBrokenFiles, countByFile, gitChangedFiles, parseExplicitFiles, decidePerFile, effectiveBaselineByFile, exportedTypeNames, filesReferencingTypeNames, formatAttributionHeadline, formatNewFileGuidance, partitionNewFilesByLiveEdit };

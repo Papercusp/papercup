@@ -4644,6 +4644,20 @@ export async function releaseWorkItem(
       void import('./work-items-events')
         .then((m) => m.emitClaimReleasedEvent(released, { announceClaimable: opts.announceClaimable }))
         .catch(() => {});
+      // P-009 / D-008: the FLEET-scoped counterpart. `claim:released:<id>` above is
+      // id-scoped, so it only serves someone already waiting on THIS id — a leader
+      // does not know which of its fleet's items will free next. This fires
+      // `fleet:claim-released:<slug>` for the PRIOR holder's fleet so the leader can
+      // sleep instead of polling fleet:assignments for a claim that dropped.
+      // `priorHolder` is the pre-release assignee read above (never re-read: the
+      // released row no longer carries it). Suppressed for the same internal
+      // claim-then-immediate-release round-trip the broad co-fire skips — it exposes
+      // no real change, so it is not a transition a leader should be woken for.
+      if (opts.announceClaimable !== false) {
+        void import('./fleet-transition-events')
+          .then((m) => m.announceFleetClaimReleased(priorHolder, released))
+          .catch(() => {});
+      }
       // EI-18734870651452334: a released claim with NO agent-written checkpoint
       // is indistinguishable from never-started work — the fast SessionEnd
       // force-release path (P-002) and the stale-claim reaper backstop (P-001)

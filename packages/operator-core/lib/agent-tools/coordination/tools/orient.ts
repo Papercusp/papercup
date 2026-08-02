@@ -347,7 +347,8 @@ export interface OrientResult {
    *  against the (owner, 'fleet:monitor') read cursor — the caller carries nothing.
    *  `baseline:true` ⇒ first read (or cursor reset): `me` carries the FULL roster
    *  this once. Otherwise `me.agents` is slimmed to the caller's own row
-   *  (`agentsElided` says how many peers were withheld) and `changes` carries the
+   *  (`peerRowsElidedFromScope` says how many peers were withheld — WI-6762: relative
+   *  to the already scope-filtered set, NOT to the fleet) and `changes` carries the
    *  member transitions ({change:added|updated|removed, id, from, to} — v=verdict,
    *  s=sessionState, d=doing, c=claims). At-least-once: a wake that dies mid-turn
    *  re-receives the same delta next call. Absent in full mode / flag off. */

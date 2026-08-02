@@ -769,6 +769,20 @@ mug-memory-hybrid L1b).
     a successor knows exactly which to re-run; a body section's `premises` names
     what the claim rests on, and `couldNotDetermine` records what you TRIED to
     establish and failed to — silence there reads as confidence you do not have.
+    ⚠ Every one of those is SESSION-LOCAL — none writes a fact, so none outlives
+    you. The durable producer is
+    **`facts:assert { kind:'assumption', dependsOn:[…] }`**, and it is the ONLY
+    one the assumption plane has. Assert it for the UNVERIFIED premise the work
+    rests on — the thing that INVALIDATES your result if it turns out wrong —
+    never for a conclusion you already checked. `dependsOn` is what makes it
+    self-invalidate (a later reader is told mechanically that the cell you relied
+    on moved); without it an assumption is a conclusion with a weaker badge.
+    ⛔ MEASURED 2026-08-02 (WI-6633): 3 assumption facts exist in 2,359, and every
+    key cited at a terminal close was a VERIFIED CONCLUSION — citing what you
+    confirmed passes the gate while telling the next reader nothing, because the
+    resolver checks that a key RESOLVES, not that it was ever in doubt.
+    `work_items:complete { assumptions }` is asking for these keys; `"none"` is an
+    honest answer only when you genuinely recorded none, not the cheap default.
   - **Why this is not paperwork.** Certainty and attribution are the first
     metadata to rot: each re-read resolves ambiguity toward the higher-authority
     reading, so "I think X" becomes "X" becomes "the owner said X" (WI-3532

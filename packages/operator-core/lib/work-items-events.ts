@@ -729,6 +729,20 @@ export async function emitWorkItemSettledEvents(wi: WorkItem, deps: SettledEvent
     failSoft(`settled done-event for ${wi.id}`, e);
   }
 
+  // ── fleet:item-completed — the FLEET-scoped counterpart (P-009 / D-008) ──
+  // `work-item:done:<id>` above is id-scoped: it serves a delegator awaiting a
+  // SPECIFIC child, but a leader does not know which of its fleet's items will
+  // finish next, so it had to poll leader-brief for burn-down. This fires
+  // `fleet:item-completed:<slug>` for the settling holder's fleet. Its own
+  // fail-soft scope (the P-008 durability split above): a fleet-notify failure
+  // must never drop the sibling done / unblocked emits.
+  try {
+    const { announceFleetItemCompleted } = await import('./fleet-transition-events');
+    announceFleetItemCompleted(wi);
+  } catch (e) {
+    failSoft(`settled fleet-completed for ${wi.id}`, e);
+  }
+
   // ── work-item:unblocked — dependents whose LAST live blocker cleared ──
   try {
     const ref = workItemObjectRef(wi);

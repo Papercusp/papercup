@@ -133,9 +133,18 @@ describe('slimAssignmentsForDelta', () => {
       { agentId: 'su-b' },
       { agentId: 'su-c' },
     ]);
-    const slim = slimAssignmentsForDelta(me) as { agents: unknown[]; agentsElided: number; summary: unknown };
+    const slim = slimAssignmentsForDelta(me) as {
+      agents: unknown[];
+      peerRowsElidedFromScope: number;
+      elidedIsScopeRelative: boolean;
+      summary: unknown;
+    };
     expect(slim.agents).toEqual([{ agentId: 'su-a', isSelf: true, verdict: 'speaking' }]);
-    expect(slim.agentsElided).toBe(2);
+    expect(slim.peerRowsElidedFromScope).toBe(2);
+    // WI-6762: the count is relative to the (already scope-filtered) input array, and
+    // must say so — a bare 0 here read as "the whole fleet is one agent" twice on
+    // 2026-08-01. Never emit the elision count without this qualifier.
+    expect(slim.elidedIsScopeRelative).toBe(true);
     expect(slim.summary).toEqual({ agents: 3 });
   });
 

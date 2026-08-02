@@ -2895,6 +2895,17 @@ export async function defaultPapercuspCollectors(
       name: 'papercusp-memory-recall-pool',
       collect: () => import('./learning-slo').then((m) => m.recallPoolCollector(opts)),
     },
+    // P-037 (F-G) gate-5: the SCORE-side sibling of the two above. Separate
+    // sensor for the same reason they are separate from the blended one — those
+    // ask whether a pool's COUNTS are healthy, this asks whether the score
+    // SCALE label every scale-aware reader trusts is telling the truth. A
+    // contradiction there silently reinstates the D-001 mixing bug for all of
+    // them, so it is a different failure with a different fix. One aggregate
+    // pass; quiet by construction (it reads 0 across every surface today):
+    {
+      name: 'papercusp-memory-recall-scale',
+      collect: () => import('./learning-slo').then((m) => m.recallScaleCollector(opts)),
+    },
     // P-014 (D-025): the "shipped but not engaged" detector. Compares the IPC
     // bridge's LIFETIME accept count against live HTTP SSE stream clients — i.e.
     // installed-ness against utilisation, the comparison whose absence let

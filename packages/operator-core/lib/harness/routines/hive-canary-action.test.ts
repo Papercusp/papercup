@@ -290,3 +290,47 @@ describe('planCanarySlaCheck (EI-18170: fast completion-SLA sweep)', () => {
     expect(unpaused.suppressed).toEqual([]);
   });
 });
+
+/**
+ * EI-19298246923137692 — the canary detectors' READ slug must agree with the slug
+ * their rows actually REST at.
+ *
+ * `hive-canary` is a WORKSPACE_GLOBAL_LABEL, so Pot-membership enforcement re-homes
+ * every canary row to the platform Pot. For ~12 days both detectors filtered on the
+ * literal `installSlug` and therefore matched ZERO rows — silently, with no error:
+ * 6 canaries (F-CANARY-20260722..27) sat open, never stamped, while the 15-min SLA
+ * sweep reported nothing on every tick. A detector that cannot see its subject is
+ * indistinguishable from a healthy system, which is what made this expensive.
+ */
+describe('canary storage-slug agreement (EI-19298246923137692)', () => {
+  it('re-homes a workspace-global install slug to the platform Pot', async () => {
+    const { resolveWorkItemPot, PLATFORM_POT_SLUG } = await import('../../pot-membership');
+    const lookup = {
+      resolveRealPot: async (s: string) => (s === PLATFORM_POT_SLUG ? PLATFORM_POT_SLUG : null),
+      platformPot: async () => PLATFORM_POT_SLUG,
+    };
+    // The canary's own install slug is the regression case.
+    expect(
+      await resolveWorkItemPot({ rawSlug: 'hive-canary', workspaceId: 'ws', lookup }),
+    ).toBe(PLATFORM_POT_SLUG);
+    expect(
+      await resolveWorkItemPot({ rawSlug: 'hive-canary', workspaceId: 'ws', lookup }),
+    ).not.toBe('hive-canary');
+  });
+
+  it('never filters canary rows by the raw installSlug', async () => {
+    // Structural guard: re-introducing `harness_slug = ${installSlug}` restores the
+    // exact blindness above, and no unit test of the pure planners can catch it —
+    // the bug lived entirely in the SQL row addressing.
+    const { readFile } = await import('node:fs/promises');
+    const src = await readFile(new URL('./hive-canary-action.ts', import.meta.url), 'utf8');
+    const offenders = src
+      .split('\n')
+      .map((line, i) => ({ line: line.trim(), no: i + 1 }))
+      .filter((l) => /harness_slug\s*=\s*\$\{installSlug\}/.test(l.line));
+    expect(
+      offenders,
+      'canary DB row addressing must use the resolved storageSlug, not installSlug',
+    ).toEqual([]);
+  });
+});

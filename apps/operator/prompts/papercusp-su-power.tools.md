@@ -627,7 +627,19 @@ renders a claim carrying `verified` evidence as ✓ and one without it as
 PREDICTED, so a successor knows which to re-run; a body section's `premises`
 names what the claim rests on, and `couldNotDetermine` records what you TRIED
 to establish and failed to — silence there reads as confidence you do not
-have. **This is not paperwork:** certainty and attribution are the first
+have. ⚠ All of those are SESSION-LOCAL — none writes a fact, so none
+outlives you. The durable producer is `facts:assert { kind:'assumption',
+dependsOn:[…] }`, and it is the ONLY one the assumption plane has: assert it
+for the UNVERIFIED premise the work rests on — the thing that INVALIDATES
+your result if it turns out wrong — never for a conclusion you already
+checked, and pair it with `dependsOn` so it self-invalidates when what you
+relied on moves. ⛔ MEASURED 2026-08-02 (WI-6633): 3 assumption facts exist
+in 2,359, and every key cited at a terminal close was a VERIFIED CONCLUSION
+— citing what you confirmed passes the gate while telling the next reader
+nothing, because the resolver checks that a key RESOLVES, not that it was
+ever in doubt. `work_items:complete { assumptions }` is asking for these
+keys; `"none"` is honest only when you genuinely recorded none.
+**This is not paperwork:** certainty and attribution are the first
 metadata to rot, and each re-read resolves ambiguity toward the
 higher-authority reading, so "I think X" becomes "X" becomes "the owner said
 X" (WI-3532 traced exactly that, ending with an agent telling the owner they

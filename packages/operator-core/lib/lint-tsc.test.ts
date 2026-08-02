@@ -754,6 +754,17 @@ describe('new files: a peer mid-edit is not the caller’s regression (EI-192782
     expect(text).not.toMatch(/mid-edit/i);
   });
 
+  it('with NO split supplied, falls back to the full standing text (unknown ⇒ loud)', () => {
+    // Caught by the pre-existing EI-18802204276510164 tests when this split was first added: with
+    // both counts defaulting to 0 the guidance collapsed to a single line, silently dropping the
+    // "outside the --files set" explanation and the tell-the-author remedy. Same rule as
+    // partitionNewFilesByLiveEdit — absence of evidence is never evidence of a live edit.
+    const text = formatNewFileGuidance({ explicit: true }).join('\n');
+    expect(text).toMatch(/set you named|outside the .*--files.* set/i);
+    expect(text).toMatch(/author/i);
+    expect(text).not.toMatch(/mid-edit/i);
+  });
+
   it('keeps the EI-18802204276510164 fix: never re-prescribes --files to a --files caller', () => {
     for (const opts of [
       { explicit: true, liveEditCount: 1, standingCount: 0 },

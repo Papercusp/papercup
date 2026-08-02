@@ -234,13 +234,16 @@ export default defineTool({
         // incident + why no new table/write path was introduced. Fail-open on a
         // read error (fall through to the release = today's behavior) so this
         // guard can never strand a claim by failing.
-        const resetWake = await recentContextResetWake(owner).catch((e) => {
-          console.warn(
-            `[activity:report] reset-continuation check for ${owner} failed, treating as a real session end: ${e instanceof Error ? e.message : e}`,
-          );
-          return null;
-        });
-        if (consumeRespawnExpected(owner)) {
+        const respawnExpected = consumeRespawnExpected(owner);
+        const resetWake = respawnExpected
+          ? null
+          : await recentContextResetWake(owner).catch((e) => {
+              console.warn(
+                `[activity:report] reset-continuation check for ${owner} failed, treating as a real session end: ${e instanceof Error ? e.message : e}`,
+              );
+              return null;
+            });
+        if (respawnExpected) {
           console.log(
             `[activity:report] session-end lease release SKIPPED for ${owner}: a carry-respawn is expected (same-owner continuation, not a death)`,
           );

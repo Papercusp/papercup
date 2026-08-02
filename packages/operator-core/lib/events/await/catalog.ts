@@ -288,6 +288,71 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
     exists: true, // WI-1830: set-status fires `fleet:drained:<slug>` on the plan-drain edge
     sugar: 'fleet:await-drained',
   },
+  // ── Fleet transitions a LEADER reacts to (P-009 / D-008 of
+  //    fleet-leadership-continuity-and-actuation-2026-08-01).
+  //
+  //    These exist so leading is PUSH-based. `fleet:leader-brief` already derives
+  //    every one of them, but nothing published them, so a leader had no key to
+  //    park on and fell back to `loop:arm` on a short interval — the measured run
+  //    behind that plan burned ~14 wakes, mostly near-noops, and still took up to
+  //    3 minutes to notice a released claim.
+  //
+  //    Slug LAST (`fleet:<transition>:<slug>`), uniform with `fleet:drained:<slug>`
+  //    above and NOT the `fleet:<slug>:<transition>` the plan text sketched:
+  //    familyKeyPrefix truncates a template at its first placeholder, so a
+  //    slug-first template would register the prefix `fleet:` and match EVERY
+  //    `fleet:*` key — including typos — silently disarming the EI-10870 orphan
+  //    guard for the whole namespace.
+  //
+  //    P-009's fifth transition, `idle-with-claimable`, is deliberately ABSENT: the
+  //    existing global `work-item:claimable` family already serves it and is
+  //    genuinely payload-filtered, so a leader parks on it with
+  //    `payload_filter: { plan: { eq: '<slug>' } }`. A fleet-scoped twin would
+  //    duplicate an emission that already fires.
+  {
+    family: 'fleet-member-dead',
+    keyTemplate: 'fleet:member-dead:<slug>',
+    params: [{ name: 'slug', required: true, describe: 'the fleet slug' }],
+    describe:
+      "A member of this fleet reached a CONFIRMED-dead liveness verdict (sessionState 'ended') — the leader can reclaim its claims and relaunch it. Fires on the CROSSING only: never on a first sighting, never again while the member stays dead, and never for the unconfirmed 'draining'/'suspect' verdicts (WI-4400 requires a wake confirmation before assuming death).",
+    emitter:
+      'fleet-transition-events (packages/operator-core/lib/fleet-transition-events.ts) — detected by the periodic fleet-transition sweep against the previous roster snapshot',
+    exists: true,
+    replacesPoll: 'polling fleet:leader-brief / fleet:assignments for member liveness',
+  },
+  {
+    family: 'fleet-context-critical',
+    keyTemplate: 'fleet:context-critical:<slug>',
+    params: [{ name: 'slug', required: true, describe: 'the fleet slug' }],
+    describe:
+      "A member of this fleet crossed INTO critical context pressure — compaction is imminent, so the leader can force a checkpoint (fleet:require-checkpoint) before state is at risk. Crossing-only, like fleet:member-dead.",
+    emitter:
+      'fleet-transition-events (packages/operator-core/lib/fleet-transition-events.ts) — detected by the periodic fleet-transition sweep against the previous roster snapshot',
+    exists: true,
+    replacesPoll: 'polling fleet:leader-brief for each member contextPressure bucket',
+  },
+  {
+    family: 'fleet-claim-released',
+    keyTemplate: 'fleet:claim-released:<slug>',
+    params: [{ name: 'slug', required: true, describe: 'the fleet slug' }],
+    describe:
+      "A member of this fleet released a work-item claim — work is back in the pool for the leader to re-place. The fleet-scoped counterpart of the id-scoped `claim:released:<id>`: use THIS one when you do not know which item will free next (a leader), and that one when you are waiting on a SPECIFIC item (a delegator).",
+    emitter:
+      'fleet-transition-events, co-fired from releaseWorkItem alongside claim:released:<id> (packages/operator-core/lib/work-items.ts)',
+    exists: true,
+    replacesPoll: 'polling fleet:assignments for a claim that dropped',
+  },
+  {
+    family: 'fleet-item-completed',
+    keyTemplate: 'fleet:item-completed:<slug>',
+    params: [{ name: 'slug', required: true, describe: 'the fleet slug' }],
+    describe:
+      "A member of this fleet settled a work-item — the leader can feed it more work or re-judge burn-down. The fleet-scoped counterpart of the id-scoped `work-item:done:<id>`: use THIS one when you do not know which item will finish next (a leader), and that one when awaiting a SPECIFIC child (a delegator).",
+    emitter:
+      'fleet-transition-events, co-fired from emitWorkItemSettledEvents alongside work-item:done:<id> (packages/operator-core/lib/work-items-events.ts)',
+    exists: true,
+    replacesPoll: 'polling fleet:leader-brief for burn-down delta',
+  },
   // ── Spawn admission (D-004: over-ceiling queue + await, never silent-drop) ──
   {
     family: 'spawn-slot',

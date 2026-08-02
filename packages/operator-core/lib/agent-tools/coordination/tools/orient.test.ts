@@ -1434,9 +1434,9 @@ describe("mode:'monitor' fleet delta (P-004 server-side cursor)", () => {
     ]);
     expect(r.fleetDelta?.unchanged).toBe(2);
     expect(r.fleetDelta?.stalled).toEqual({ from: 0, to: 1 });
-    const me = r.me as { agents: Array<{ agentId: string }>; agentsElided: number };
+    const me = r.me as { agents: Array<{ agentId: string }>; peerRowsElidedFromScope: number };
     expect(me.agents).toEqual([expect.objectContaining({ agentId: 'su-lead', isSelf: true })]);
-    expect(me.agentsElided).toBe(2);
+    expect(me.peerRowsElidedFromScope).toBe(2);
   });
 
   it('FAIL-OPEN: a throwing cursor keeps the full roster fold and omits fleetDelta', async () => {

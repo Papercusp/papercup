@@ -457,10 +457,12 @@ registerSystemAction('hive-canary-sla', async (ctx: SystemActionCtx) => {
   }
 
   const { sql } = getOrgPg();
+  // Address rows where they are actually STORED, not where the routine is installed.
+  const storageSlug = await canaryStorageSlug(installSlug, workspaceId);
   const rows = await sql<CanaryFeatureRow[]>`
     SELECT feature_id, status, created_ts, payload
       FROM harness_shared.harness_features_consolidated
-     WHERE workspace_id = ${workspaceId} AND harness_slug = ${installSlug}
+     WHERE workspace_id = ${workspaceId} AND harness_slug = ${storageSlug}
        AND item_kind = 'feature' AND payload IS NOT NULL AND payload->>'canary' = 'true'
      ORDER BY created_ts DESC LIMIT 30`;
 
@@ -510,7 +512,7 @@ registerSystemAction('hive-canary-sla', async (ctx: SystemActionCtx) => {
                ELSE payload || '{"canary_sla_reported": true}'::jsonb
              END,
              updated_ts = ${Date.now()}
-       WHERE workspace_id = ${workspaceId} AND harness_slug = ${installSlug} AND feature_id = ${fid}
+       WHERE workspace_id = ${workspaceId} AND harness_slug = ${storageSlug} AND feature_id = ${fid}
        RETURNING feature_id`;
     if (updateResult.length === 0) {
       console.warn(`[hive-canary-sla] ${installSlug}/${fid} stamp UPDATE failed — row not found`);

@@ -74,8 +74,10 @@ import {
   COSINE_ADMISSION_FLOOR,
   readRecallHealthByPool,
   readRecallHealthBySurface,
+  readRecallScaleContradictions,
   type RecallPoolHealth,
   type RecallSurfaceHealth,
+  type RecallScaleContradiction,
 } from '../../memory/recall-stats';
 
 // ── SLO thresholds (exported tunables — FB-21's "SLO thresholds as exported
@@ -150,6 +152,20 @@ export const LEARNING_SLO_DEFAULTS = {
    * the test stays correct across constant retunes (P-026).
    */
   recallPoolMaxSaturationRate: 0.8,
+  /**
+   * recall-pool SLO (gate-3, D-035): a pool ASKED under an EMPTY scope list on at
+   * least this share of its recalls.
+   *
+   * Deliberately far below the 0.85 zero-hit gate, and that asymmetry is the
+   * point: an empty scope is a CALLER defect, not a corpus outcome, so there is
+   * no "healthy" rate to leave headroom for — a correctly-wired pool measures
+   * 0.0. The offenders that motivated it sit at 68.8% (turn-start/harness) and
+   * 45.3% (mid-turn/harness), both UNDER the zero-hit gate and therefore
+   * invisible to gate-2 for the entire window they were broken. 0.25 keeps a
+   * genuinely mixed-mode surface (some calls legitimately unscoped) from firing
+   * while catching every case of this class observed on this box.
+   */
+  recallPoolMaxEmptyScopeRate: 0.25,
 } as const;
 
 /** Per-tick overrides for the SLO tunables (CollectOptions extends this). */
@@ -175,6 +191,7 @@ export interface LearningSloOptions {
   recallPoolMinRecalls?: number;
   recallPoolMaxZeroHitRate?: number;
   recallPoolMaxSaturationRate?: number;
+  recallPoolMaxEmptyScopeRate?: number;
 }
 
 /** Injectable IO seam (unit tests run without PG / flags). */
@@ -851,6 +868,7 @@ export function recallPoolSignalsFromHealth(
   const minRecalls = opts.recallPoolMinRecalls ?? LEARNING_SLO_DEFAULTS.recallPoolMinRecalls;
   const maxZero = opts.recallPoolMaxZeroHitRate ?? LEARNING_SLO_DEFAULTS.recallPoolMaxZeroHitRate;
   const maxSat = opts.recallPoolMaxSaturationRate ?? LEARNING_SLO_DEFAULTS.recallPoolMaxSaturationRate;
+  const maxEmptyScope = opts.recallPoolMaxEmptyScopeRate ?? LEARNING_SLO_DEFAULTS.recallPoolMaxEmptyScopeRate;
   const windowDays = opts.recallPoolWindowDays ?? LEARNING_SLO_DEFAULTS.recallPoolWindowDays;
 
   // Underpowered slices are not evidence. No scale filter — see the module note.
@@ -877,8 +895,21 @@ export function recallPoolSignalsFromHealth(
           ? ''
           : ` — while the BLENDED ${p.surface} surface reads ${ratePct(blended)} zero-hit`;
       const scopes = p.scopes.length > 0 ? ` scopes=[${p.scopes.slice(0, 4).join(', ')}]` : '';
+      // D-035: name the REMEDY, not just the symptom. A starved pool that was
+      // also asked under an empty scope was never queried at all (fix the
+      // caller); one starved at 0% empty-scope was asked correctly and still
+      // returned nothing (fix the scope key or the corpus). Reporting the
+      // zero-hit rate alone leaves the reader to guess between two opposite
+      // fixes — which is exactly how this class stayed open across three ships.
+      const asked =
+        p.emptyScopeRate >= 0.5
+          ? ` ⚠ but ${ratePct(p.emptyScopeRate)} of those recalls asked it under an EMPTY scope — ` +
+            `it was largely never queried; fix the CALLER, not the corpus.`
+          : p.emptyScope === 0
+            ? ` (asked under a real scope every time — this is a genuine miss, not an unscoped call.)`
+            : ` (${ratePct(p.emptyScopeRate)} of these asked under an empty scope.)`;
       return `  • ${poolLabel(p)}: returned nothing on ${p.zeroHit}/${p.recalls} recalls ` +
-        `(${ratePct(p.zeroHitRate)})${contrast}.${scopes}`;
+        `(${ratePct(p.zeroHitRate)})${contrast}.${scopes}${asked}`;
     });
     signals.push({
       source: 'memory-recall-pool',
@@ -902,6 +933,47 @@ export function recallPoolSignalsFromHealth(
       kind: 'bug',
       findingClass: 'learning-slo:recall-degradation',
       paths: ['packages/operator-core/lib/memory/recall-stats.ts', 'packages/operator-core/lib/memory/injection.ts'],
+    });
+  }
+
+  // gate-3 (D-035): asked under NO scope. Reported SEPARATELY from starvation
+  // even where both fire on the same pool — they are different defects with
+  // opposite remedies, and collapsing them is what made this class survive
+  // three ships. Crucially it also fires where gate-2 CANNOT: a pool asked
+  // unscoped 69% of the time has a 69% zero-hit rate, comfortably under the
+  // 0.85 starvation gate, so nothing in this file could see it before.
+  const unscoped = eligible
+    .filter((p) => p.emptyScopeRate >= maxEmptyScope)
+    .sort((a, b) => b.emptyScopeRate - a.emptyScopeRate || b.recalls - a.recalls);
+  if (unscoped.length > 0) {
+    const lines = unscoped.slice(0, RECALL_POOL_BODY_SAMPLES).map((p) => {
+      const alsoStarved = p.zeroHitRate >= maxZero ? '' : ` — and its ${ratePct(p.zeroHitRate)} zero-hit rate is ` +
+        `UNDER the ${ratePct(maxZero)} starvation gate, so gate-2 cannot see this`;
+      return `  • ${poolLabel(p)}: asked under an EMPTY scope on ${p.emptyScope}/${p.recalls} recalls ` +
+        `(${ratePct(p.emptyScopeRate)})${alsoStarved}.`;
+    });
+    signals.push({
+      source: 'memory-recall-pool',
+      key: 'recall-pool-empty-scope',
+      title: 'Memory recall: an injection pool is being queried with no scope at all',
+      body:
+        `Watchdog signal (memory-recall-pool, gate-3): over the last ${windowDays}d, ` +
+        `${unscoped.length} injection pool(s) with at least ${minRecalls} recalls were asked under an ` +
+        `EMPTY scope list on at least ${ratePct(maxEmptyScope)} of the recalls they took part in:\n` +
+        lines.join('\n') +
+        (unscoped.length > RECALL_POOL_BODY_SAMPLES
+          ? `\n  … and ${unscoped.length - RECALL_POOL_BODY_SAMPLES} more.`
+          : '') +
+        `\n\nAn empty scope means the pool was never actually QUERIED — the caller reached the recall ` +
+        `without resolving the scope it should have asked under, so the pool contributes nothing and ` +
+        `its siblings silently fill the budget. This is a CALLER defect, and it is invisible to every ` +
+        `hit-count aggregate: "returned nothing because it was asked for nothing" and "was asked ` +
+        `correctly and genuinely held nothing" are the same number in hit_count, with opposite fixes. ` +
+        `Trace the surface's scope resolution before touching the corpus or the scope keys.`,
+      severity: 'major',
+      kind: 'bug',
+      findingClass: 'learning-slo:recall-degradation',
+      paths: ['packages/operator-core/lib/memory/injection.ts', 'packages/operator-core/lib/memory/recall-stats.ts'],
     });
   }
 
@@ -982,4 +1054,86 @@ export async function recallPoolCollector(
   const dark = await darkOrNull(deps);
   if (dark) return dark;
   return { signals: await collectRecallPoolSignals(deps.sql(), opts) };
+}
+
+// ── memory recall SCORE-SCALE integrity ──────────────────────────────────────
+// context-injection-audit-2026-07-28 P-037 (F-G), gate-5.
+//
+// The score-side alarm P-037 asks for, in the only form that is sound. Its
+// design rationale — and why the two tempting alternatives (an absolute
+// threshold; an "unlabelled rate") are the D-001 error and a measured
+// false-positive respectively — lives on `readRecallScaleContradictions`.
+//
+// This is the F-F discriminator being ENFORCED rather than merely recorded.
+// Every scale-aware reader in this file and in recall-stats.ts trusts
+// `score_scale` to mean what it says; nothing has ever checked that it does.
+
+/** Pure: contradiction rows → at most one signal. */
+export function recallScaleSignalsFromContradictions(
+  contradictions: readonly RecallScaleContradiction[],
+  opts: LearningSloOptions = {},
+): WatchdogSignal[] {
+  const windowDays = opts.recallPoolWindowDays ?? LEARNING_SLO_DEFAULTS.recallPoolWindowDays;
+  // No rate threshold and no minimum sample, deliberately: unlike the rate SLOs
+  // above, a single contradicting row is not noise that needs a floor to
+  // suppress — it is arithmetically impossible for the scale it claims, so it
+  // is either a writer bug or a constant retune nobody propagated. Both need a
+  // human. The reader already returns only surfaces with at least one.
+  if (contradictions.length === 0) return [];
+  const lines = contradictions.slice(0, RECALL_POOL_BODY_SAMPLES).map((c) => {
+    const bound =
+      c.declaredScale === 'rrf'
+        ? `above the rrf ceiling ${RRF_SCORE_CEILING.toFixed(6)}`
+        : `below the cosine admission floor ${COSINE_ADMISSION_FLOOR}`;
+    const range =
+      c.minOffending === null || c.maxOffending === null
+        ? ''
+        : ` (offending values ${c.minOffending.toFixed(6)}…${c.maxOffending.toFixed(6)})`;
+    return `  • ${c.surface} declared '${c.declaredScale}': ${c.contradicting}/${c.rows} rows ` +
+      `(${ratePct(c.contradictionRate)}) sit ${bound}${range}.`;
+  });
+  return [{
+    source: 'memory-recall-scale',
+    key: 'recall-scale-contradiction',
+    title: 'Memory recall: a score_scale label contradicts the score it labels',
+    body:
+      `Watchdog signal (memory-recall-scale, gate-5): over the last ${windowDays}d, rows were recorded ` +
+      `whose declared score_scale is arithmetically impossible for their own top_score:\n` +
+      lines.join('\n') +
+      (contradictions.length > RECALL_POOL_BODY_SAMPLES
+        ? `\n  … and ${contradictions.length - RECALL_POOL_BODY_SAMPLES} more.`
+        : '') +
+      `\n\nrrf is bounded above by (1+lexWeight)/(k+1) and cosine is floored below on admission, so ` +
+      `neither range is reachable by the scale claiming it. This is not a retrieval-quality finding — ` +
+      `it says the DISCRIMINATOR is wrong, which is worse: every scale-aware reader (the zero-hit ` +
+      `score-collapse guard, the per-pool medians, the health card) silently pools mismatched scales ` +
+      `and reproduces the exact unit error D-001 had to retract. Check the backend's declared ` +
+      `scoreScale against the leg that actually produced the hits, and whether DEFAULT_RRF_K or ` +
+      `lexWeight was retuned without updating RRF_SCORE_CEILING.`,
+    severity: 'major',
+    kind: 'bug',
+    findingClass: 'learning-slo:recall-degradation',
+    paths: [
+      'packages/operator-core/lib/memory/recall-stats.ts',
+      'libs/generic/memory/src/hybrid-fusion.ts',
+    ],
+  }];
+}
+
+/** recall-scale: one aggregate pass. Box-global, like its siblings. */
+export async function collectRecallScaleSignals(
+  sql: Sql,
+  opts: LearningSloOptions = {},
+): Promise<WatchdogSignal[]> {
+  const days = opts.recallPoolWindowDays ?? LEARNING_SLO_DEFAULTS.recallPoolWindowDays;
+  return recallScaleSignalsFromContradictions(await readRecallScaleContradictions(sql, { days }), opts);
+}
+
+export async function recallScaleCollector(
+  opts: LearningSloOptions = {},
+  deps: LearningSloDeps = defaultDeps,
+): Promise<CollectorResult> {
+  const dark = await darkOrNull(deps);
+  if (dark) return dark;
+  return { signals: await collectRecallScaleSignals(deps.sql(), opts) };
 }

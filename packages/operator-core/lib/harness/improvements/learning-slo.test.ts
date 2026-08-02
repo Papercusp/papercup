@@ -21,6 +21,7 @@ import {
   mttshSignalsFromWindows,
   normalizedTriageEntropy,
   recallPoolSignalsFromHealth,
+  recallScaleSignalsFromContradictions,
   trimStatisticalOutliers,
   triageEntropyCollector,
   triageEntropySignalsFromRows,
@@ -417,6 +418,8 @@ describe('recallPoolSignalsFromHealth (P-013)', () => {
     hitsP50: 4,
     topScoreP50: 0.03,
     scopes: ['harness:papercusp'],
+    emptyScope: 0,
+    emptyScopeRate: 0,
     ...over,
   });
   const surface = (over: Partial<RecallSurfaceHealth> = {}): RecallSurfaceHealth => ({
@@ -545,5 +548,121 @@ describe('recallPoolSignalsFromHealth (P-013)', () => {
     // The defaults are the ones the collector ships with.
     expect(LEARNING_SLO_DEFAULTS.recallPoolMaxZeroHitRate).toBe(0.85);
     expect(LEARNING_SLO_DEFAULTS.recallPoolMinRecalls).toBe(20);
+  });
+});
+
+/*
+ * recall-pool gate-3 + recall-scale gate-5 (context-injection-audit-2026-07-28
+ * P-037 / F-G, D-035).
+ *
+ * Same posture as the P-013 block above: these are the traps, not arithmetic
+ * coverage. The load-bearing case is the FIRST — the entire reason gate-3
+ * exists is that the offending pools sit UNDER the gate-2 threshold, so a test
+ * that only proved "empty scope fires" while the pool was ALSO starved would
+ * pass against a detector that added nothing.
+ */
+describe('recall empty-scope + scale-contradiction (P-037)', () => {
+  const pool = (over: Partial<RecallPoolHealth> = {}): RecallPoolHealth => ({
+    surface: 'turn-start',
+    pool: 'harness',
+    scoreScale: 'rrf',
+    recalls: 40,
+    zeroHit: 0,
+    zeroHitRate: 0,
+    saturated: 0,
+    saturationRate: 0,
+    hitsP50: 4,
+    topScoreP50: 0.03,
+    scopes: ['harness:papercusp'],
+    emptyScope: 0,
+    emptyScopeRate: 0,
+    ...over,
+  });
+
+  it('fires BELOW the gate-2 starvation threshold — the case nothing could see before', () => {
+    // The live 2026-08-01 shape: turn-start/harness asked unscoped on 68.8% of
+    // recalls, zero-hit 73.6% — under the 0.85 starvation gate.
+    const out = recallPoolSignalsFromHealth([
+      pool({ recalls: 455, zeroHit: 335, zeroHitRate: 0.736, emptyScope: 313, emptyScopeRate: 0.688 }),
+    ]);
+    const keys = out.map((s) => s.key);
+    expect(keys).toContain('recall-pool-empty-scope');
+    // The proof the new gate is load-bearing: gate-2 stays silent on this row.
+    expect(keys).not.toContain('recall-pool-starved');
+    expect(out[0]?.body).toContain('UNDER the 85% starvation gate');
+  });
+
+  it('does NOT fire on a pool asked under a real scope every time', () => {
+    // initialize/harness, live: 98.8% zero-hit but 0% empty-scope. gate-2's
+    // business, emphatically not gate-3's — the opposite remedy.
+    const out = recallPoolSignalsFromHealth([
+      pool({ surface: 'initialize', recalls: 82, zeroHit: 81, zeroHitRate: 0.988 }),
+    ]);
+    const keys = out.map((s) => s.key);
+    expect(keys).toContain('recall-pool-starved');
+    expect(keys).not.toContain('recall-pool-empty-scope');
+    // The starvation body must NAME the distinction, so the reader is not left
+    // guessing between "fix the caller" and "fix the corpus".
+    expect(out[0]?.body).toContain('genuine miss, not an unscoped call');
+  });
+
+  it('reports both gates separately when a pool trips both, and names the caller as the fix', () => {
+    // claim/user, live: 100% empty-scope AND 100% zero-hit.
+    const out = recallPoolSignalsFromHealth([
+      pool({
+        surface: 'claim', pool: 'user', recalls: 193,
+        zeroHit: 193, zeroHitRate: 1, emptyScope: 193, emptyScopeRate: 1,
+      }),
+    ]);
+    expect(out.map((s) => s.key).sort()).toEqual(['recall-pool-empty-scope', 'recall-pool-starved']);
+    expect(out.find((s) => s.key === 'recall-pool-starved')?.body).toContain('fix the CALLER, not the corpus');
+  });
+
+  it('stays silent on a healthy pool', () => {
+    expect(recallPoolSignalsFromHealth([pool()])).toEqual([]);
+  });
+
+  it('respects the min-recalls floor — an underpowered slice is not evidence', () => {
+    expect(recallPoolSignalsFromHealth([pool({ recalls: 5, emptyScope: 5, emptyScopeRate: 1 })])).toEqual([]);
+  });
+
+  it('honours the empty-scope tunable rather than hardcoding it', () => {
+    const rows = [pool({ recalls: 40, emptyScope: 16, emptyScopeRate: 0.4 })];
+    expect(recallPoolSignalsFromHealth(rows, [], { recallPoolMaxEmptyScopeRate: 0.5 })).toEqual([]);
+    expect(recallPoolSignalsFromHealth(rows, [], { recallPoolMaxEmptyScopeRate: 0.3 })).toHaveLength(1);
+    expect(LEARNING_SLO_DEFAULTS.recallPoolMaxEmptyScopeRate).toBe(0.25);
+  });
+
+  it('flags an rrf row above the rrf ceiling', () => {
+    const out = recallScaleSignalsFromContradictions([{
+      surface: 'turn-start', declaredScale: 'rrf', rows: 100,
+      contradicting: 4, contradictionRate: 0.04, minOffending: 0.61, maxOffending: 0.9,
+    }]);
+    expect(out).toHaveLength(1);
+    expect(out[0]?.key).toBe('recall-scale-contradiction');
+    expect(out[0]?.body).toContain('above the rrf ceiling');
+    expect(out[0]?.body).toContain('0.610000');
+  });
+
+  it('flags a cosine row below the admission floor', () => {
+    const out = recallScaleSignalsFromContradictions([{
+      surface: 'search', declaredScale: 'cosine', rows: 50,
+      contradicting: 1, contradictionRate: 0.02, minOffending: 0.016, maxOffending: 0.016,
+    }]);
+    expect(out[0]?.body).toContain('below the cosine admission floor 0.45');
+  });
+
+  it('fires on a SINGLE contradicting row — no rate floor, unlike the count SLOs', () => {
+    // Deliberate asymmetry with gates 2/3/4: a contradiction is arithmetically
+    // impossible rather than merely unusual, so there is no noise to suppress.
+    const out = recallScaleSignalsFromContradictions([{
+      surface: 'orient', declaredScale: 'rrf', rows: 10_000,
+      contradicting: 1, contradictionRate: 0.0001, minOffending: 0.7, maxOffending: 0.7,
+    }]);
+    expect(out).toHaveLength(1);
+  });
+
+  it('stays silent when nothing contradicts — the live state today', () => {
+    expect(recallScaleSignalsFromContradictions([])).toEqual([]);
   });
 });

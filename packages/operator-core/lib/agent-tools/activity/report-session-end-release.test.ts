@@ -100,6 +100,8 @@ describe('activity:report SessionEnd → carry-respawn marker suppresses the P-0
     markRespawnExpected('su-resuming');
     const res = await run({ owner: 'su-resuming', kind: 'lifecycle', summary: '■ session ended' });
     expect(h.release).not.toHaveBeenCalled();
+    // The in-memory marker short-circuits: no wake-ledger round-trip is spent when it already answers.
+    expect(h.resetWake).not.toHaveBeenCalled();
     expect(h.cancel).toHaveBeenCalledTimes(1);
     expect(JSON.parse((res as { content: { text: string }[] }).content[0].text)).toMatchObject({ ok: true });
   });

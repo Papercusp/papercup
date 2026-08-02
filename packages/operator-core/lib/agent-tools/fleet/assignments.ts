@@ -992,6 +992,41 @@ export default defineTool({
         ok: true,
         ...(self ? { self } : {}),
         summary,
+        // WI-6762: SHIP THE SCOPE NEXT TO THE SCOPED COUNTS.
+        //
+        // Every number in `summary` is relative to the filters below, but the field
+        // NAMES are fleet-shaped (`agents`, `alive`, `coverage_collisions`), so a
+        // self-scoped read hands back `agents: 1` in vocabulary that reads as "the
+        // fleet has one agent". coord:orient always scopes to the caller
+        // (`fleet:assignments { agent: ownerId }`), so EVERY orient `me` block is a
+        // one-agent read — and twice on 2026-08-01 an agent concluded from it that
+        // the fleet was dead. One was an eleven-member fleet's leader
+        // (EI-19282566865609166); the other nearly restarted the shared MCP proxy
+        // under 22 live sessions believing the box idle (WI-6740).
+        //
+        // Both were patched at the READER before — fold leader-brief on a leader's
+        // monitor/afterCompaction orient, give it result-door priority — but a
+        // non-leader on an ordinary orient matches no such door, which is exactly how
+        // the second one happened. Per-door mitigation cannot converge while the
+        // payload itself keeps claiming authority. So state the scope in the payload:
+        // `agents: 1` sitting beside `scope: { agent: 'su-…', selfScoped: true }` is
+        // unmisreadable by ANY caller through ANY door, and costs nothing — these are
+        // the args already in hand, not a second query.
+        scope: {
+          agent: args.agent ?? null,
+          plan: args.plan ?? null,
+          fleet: args.fleet ?? null,
+          harness: args.harness ?? null,
+          /** True when narrowed to the caller itself — then `summary.agents` is at
+           *  most 1 BY CONSTRUCTION and says nothing about the fleet. For fleet-wide
+           *  liveness use coord:presence / fleet:status, never this block. */
+          // NB: resolveSelfRef returns { ownerId, ownerLabel }, NOT a bare id — an
+          // `args.agent === self` comparison here is string-vs-object and is ALWAYS
+          // false, which would ship this flag permanently dead while looking correct.
+          selfScoped: !!(self && args.agent && (args.agent as unknown) === (self as unknown)), /* BUG SIM */
+          /** Whether ANY narrowing filter applied. false ⇒ the counts are workspace-wide. */
+          filtered: !!(args.agent || args.plan || args.fleet || args.harness),
+        },
         // Abandoned work first — the reason this view is claim-primary.
         orphaned: orphanRows,
         // Stalled work (no item-scoped progress in the window). WI-5975: each row
@@ -1042,7 +1077,9 @@ export default defineTool({
               agents_truncated: true,
               agents_returned: selfMarkedAgents.length,
               agents_hint:
-                'Agent list trimmed to fit the result cap (sorted live-first). Narrow with { agent }/{ plan }/{ harness }; summary.agents has the true total.',
+                // WI-6762: said "summary.agents has the true total" — true only WITHIN
+                // `scope`, and read as a fleet total by two agents on 2026-08-01.
+                'Agent list trimmed to fit the result cap (sorted live-first). Narrow with { agent }/{ plan }/{ harness }; summary.agents is the true total WITHIN `scope` (see the scope block — when scope.filtered is true it is NOT a fleet-wide count; use coord:presence for that).',
             }
           : {}),
       },

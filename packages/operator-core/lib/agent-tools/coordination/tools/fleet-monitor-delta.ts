@@ -141,9 +141,19 @@ export function slimAssignmentsForDelta(me: unknown): unknown {
   const m = me as Record<string, unknown> | null | undefined;
   if (!m || !Array.isArray(m.agents)) return me;
   const selfRow = (m.agents as Array<{ isSelf?: unknown }>).find((a) => a?.isSelf === true);
+  const elided = (m.agents as unknown[]).length - (selfRow ? 1 : 0);
   return {
     ...m,
     agents: selfRow ? [selfRow] : [],
-    agentsElided: (m.agents as unknown[]).length - (selfRow ? 1 : 0),
+    // WI-6762: this counts rows dropped from the array we were HANDED, which is
+    // already scope-filtered upstream (coord:orient calls fleet:assignments with
+    // { agent: ownerId }). So a self-scoped input yields `agentsElided: 0` — a true
+    // statement about the wrong denominator that reads as "nothing was withheld,
+    // this is the whole fleet". Two agents misread exactly that on 2026-08-01
+    // (EI-19282566865609166, WI-6740). The name now says which denominator it is,
+    // and `elidedIsScopeRelative` blocks the global reading outright; the peer count
+    // this does NOT speak for lives in the sibling `scope` block.
+    peerRowsElidedFromScope: elided,
+    elidedIsScopeRelative: true,
   };
 }

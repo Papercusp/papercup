@@ -553,7 +553,14 @@ export async function readRecallHealthByPool(
           WHEN s.top_score >= ${COSINE_ADMISSION_FLOOR} THEN 'cosine'
           ELSE 'unknown'
         END                                     AS scale,
-        p.value -> 'scopes'                     AS scopes
+        p.value -> 'scopes'                     AS scopes,
+        -- D-035 / gate-3: was this pool asked under NO scope at all? Counted
+        -- per ROW here because the scope_keys aggregate below cannot express
+        -- it — see RecallPoolHealth.emptyScope. A missing scopes key and an
+        -- explicit [] are the same condition (asked for nothing), so coalesce
+        -- rather than letting NULL fall out of the count.
+        jsonb_array_length(coalesce(p.value -> 'scopes', '[]'::jsonb)) = 0
+                                                AS empty_scope
       FROM harness_shared.memory_recall_stats s
       CROSS JOIN LATERAL jsonb_each(s.pools) AS p(key, value)
       WHERE s.pools IS NOT NULL
@@ -567,6 +574,7 @@ export async function readRecallHealthByPool(
       count(*)::int                                          AS recalls,
       count(*) FILTER (WHERE hits = 0)::int                  AS zero_hits,
       count(*) FILTER (WHERE budget > 0 AND hits >= budget)::int AS saturated,
+      count(*) FILTER (WHERE empty_scope)::int                AS empty_scope,
       percentile_cont(0.5) WITHIN GROUP (ORDER BY hits)      AS hits_p50,
       percentile_cont(0.5) WITHIN GROUP (ORDER BY top)
         FILTER (WHERE top IS NOT NULL)                       AS top_p50,
@@ -583,6 +591,7 @@ export async function readRecallHealthByPool(
     const recalls = Number(r.recalls ?? 0);
     const zeroHit = Number(r.zero_hits ?? 0);
     const saturated = Number(r.saturated ?? 0);
+    const emptyScope = Number(r.empty_scope ?? 0);
     return {
       surface: String(r.surface ?? 'unknown'),
       pool: String(r.pool ?? 'unknown'),
@@ -595,6 +604,103 @@ export async function readRecallHealthByPool(
       hitsP50: r.hits_p50 == null ? null : Number(r.hits_p50),
       topScoreP50: r.top_p50 == null ? null : Number(r.top_p50),
       scopes: Array.isArray(r.scope_keys) ? (r.scope_keys as unknown[]).map(String) : [],
+      emptyScope,
+      emptyScopeRate: recalls > 0 ? emptyScope / recalls : 0,
+    };
+  });
+}
+
+/** A surface's rows whose DECLARED scale disagrees with their own values. */
+export interface RecallScaleContradiction {
+  surface: string;
+  /** The scale the writer stamped on the row (`score_scale`). */
+  declaredScale: string;
+  /** Labelled, scored rows for this surface+scale in the window. */
+  rows: number;
+  /** Of those, how many sit in a range that scale cannot produce. */
+  contradicting: number;
+  /** contradicting / rows. */
+  contradictionRate: number;
+  /** Range of the offending values, for the finding body. */
+  minOffending: number | null;
+  maxOffending: number | null;
+}
+
+/**
+ * Rows whose `score_scale` LABEL contradicts the value it labels (P-037 gate-5).
+ *
+ * WHY THIS IS THE RIGHT SCORE-SIDE ALARM, and the two obvious alternatives are
+ * not. P-037 asks for "per-surface score distribution against the correct
+ * scale". The tempting readings both fail:
+ *
+ *   • An absolute threshold on `top_score` is the D-001 error itself — 0.03 is
+ *     broken retrieval on the cosine scale and a perfect rank-1 hit on rrf.
+ *     That comparison is what this whole audit had to retract.
+ *   • An "unlabelled rate" alarm looks appealing (migration 705 gave every
+ *     writer a label) but MEASURED FALSE on 2026-08-01: `search` sat at 96.8%
+ *     unlabelled purely because `Mem0Backend.scoreScale` was committed and NOT
+ *     yet deployed — the release checkout carried an older submodule pin. An
+ *     alarm on that fires a critical at every pending pin, which is precisely
+ *     the false-positive class this plan exists to stop. Those rows are also
+ *     not even uninterpretable: `classifyLegacyScoreScale` resolves them by
+ *     range.
+ *
+ * A CONTRADICTION, by contrast, cannot be explained by deploy lag, by workload
+ * mix, or by a legacy row: it means the discriminator that every downstream
+ * reader trusts is lying, silently re-enabling the D-001 mixing bug for all of
+ * them. It reads 0 across every surface today, so it is quiet by construction
+ * and fires only on a genuine regression.
+ *
+ * Only LABELLED, SCORED rows participate — an unlabelled row has nothing to
+ * contradict, and including it would smuggle the rejected alarm back in.
+ * 'lexical' and 'unknown' are excluded as declared scales: lexical is ordering-
+ * only with no defined admissible band, and 'unknown' is the absence of a claim.
+ */
+export async function readRecallScaleContradictions(
+  sql: Sql,
+  opts: { days?: number } = {},
+): Promise<RecallScaleContradiction[]> {
+  const days = Number.isFinite(opts.days) && (opts.days as number) > 0 ? Math.floor(opts.days as number) : 7;
+  const rows = (await sql`
+    WITH labelled AS (
+      SELECT surface,
+             score_scale,
+             top_score,
+             -- rrf is bounded ABOVE by (1+lexWeight)/(k+1); cosine is floored
+             -- BELOW on admission. A value on the wrong side of its own
+             -- label's bound is arithmetically impossible for that scale.
+             CASE
+               WHEN score_scale = 'rrf'    AND top_score > ${RRF_SCORE_CEILING}      THEN true
+               WHEN score_scale = 'cosine' AND top_score < ${COSINE_ADMISSION_FLOOR} THEN true
+               ELSE false
+             END AS contradicts
+        FROM harness_shared.memory_recall_stats
+       WHERE created_at >= now() - make_interval(days => ${days}::int)
+         AND score_scale IN ('rrf', 'cosine')
+         AND top_score IS NOT NULL
+    )
+    SELECT surface,
+           score_scale,
+           count(*)::int                                    AS rows_n,
+           count(*) FILTER (WHERE contradicts)::int         AS contradicting,
+           min(top_score) FILTER (WHERE contradicts)        AS min_offending,
+           max(top_score) FILTER (WHERE contradicts)        AS max_offending
+      FROM labelled
+     GROUP BY surface, score_scale
+    HAVING count(*) FILTER (WHERE contradicts) > 0
+     ORDER BY count(*) FILTER (WHERE contradicts) DESC
+  `) as Array<Record<string, unknown>>;
+  return rows.map((r) => {
+    const total = Number(r.rows_n ?? 0);
+    const contradicting = Number(r.contradicting ?? 0);
+    return {
+      surface: String(r.surface ?? 'unknown'),
+      declaredScale: String(r.score_scale ?? 'unknown'),
+      rows: total,
+      contradicting,
+      contradictionRate: total > 0 ? contradicting / total : 0,
+      minOffending: r.min_offending == null ? null : Number(r.min_offending),
+      maxOffending: r.max_offending == null ? null : Number(r.max_offending),
     };
   });
 }

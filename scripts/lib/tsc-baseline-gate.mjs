@@ -552,7 +552,11 @@ export function formatNewFileGuidance({ explicit, liveEditCount = 0, standingCou
         `   re-run this check shortly, or confirm with: git status --porcelain <path>`,
       );
     }
-    if (standingCount > 0) {
+    // `standingCount === 0 && liveEditCount === 0` is a caller that did not supply the split at
+    // all. Fall back to the full standing text — the same "unknown is never an exoneration" rule
+    // partitionNewFilesByLiveEdit applies, and it keeps this function's no-arg behaviour identical
+    // to before the split existed.
+    if (standingCount > 0 || liveEditCount === 0) {
       lines.push(
         `   ${standingCount} of them is/are COMMITTED — a standing red that WILL red the fleet at the next bare run.`,
         `   They are OUTSIDE the --files set you named and reported anyway BECAUSE they are new:`,

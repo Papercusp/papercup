@@ -17,6 +17,10 @@
  * @property {number} baseline
  * @property {number} current
  * @property {number} delta - `current - baseline`; positive is a regression.
+ * @property {boolean} [dirty] - Set only on `newFiles`, and only when the dirty set could be read:
+ *   the file is uncommitted in the shared working tree, i.e. a peer is very likely mid-edit
+ *   (EI-19278299775574199). `undefined` means UNKNOWN, never "clean" — see
+ *   `partitionNewFilesByLiveEdit`.
  */
 /**
  * A baseline owned by ANOTHER package, whose recorded counts this gate inherits for
@@ -258,16 +262,18 @@ export function effectiveBaselineByFile({ baselineByFile, currentByFile, foreign
  *   updateFlag?: boolean,
  *   changedFiles?: Set<string> | null,
  *   typeReferencedFiles?: Set<string> | null,
+ *   dirtyFiles?: Set<string> | null,
  * }} args
  * @returns {PerFileGateResult}
  */
-export function decidePerFile({ currentByFile, baselineByFile, brokenFiles, updateFlag, changedFiles, typeReferencedFiles, }: {
+export function decidePerFile({ currentByFile, baselineByFile, brokenFiles, updateFlag, changedFiles, typeReferencedFiles, dirtyFiles, }: {
     currentByFile: Record<string, number>;
     baselineByFile: Record<string, number>;
     brokenFiles: string[];
     updateFlag?: boolean;
     changedFiles?: Set<string> | null;
     typeReferencedFiles?: Set<string> | null;
+    dirtyFiles?: Set<string> | null;
 }): PerFileGateResult;
 /**
  * The headline for an ATTRIBUTED failure, worded per how the changed-set was derived.
@@ -307,9 +313,31 @@ export function formatAttributionHeadline({ count, explicit }: {
  *   the caller) rather than `--mine` (inferred from `git status`).
  * @returns {string[]} console lines, already indented.
  */
-export function formatNewFileGuidance({ explicit }: {
+export function formatNewFileGuidance({ explicit, liveEditCount, standingCount }: {
     explicit: boolean;
 }): string[];
+/**
+ * Split `newFiles` into a peer's LIVE EDITS and STANDING reds — the two populations the
+ * `fail-new-file` report used to conflate (EI-19278299775574199).
+ *
+ * The asymmetry that makes this safe. EI-18766822535373909 established that the verdict can never
+ * move, because `changedFiles` cannot prove a file is not yours: git-sync commits this tree every
+ * few minutes, so your own new file stops being dirty and drops out of the changed set. That
+ * argument is about a file being CLEAN — and it is exactly right. It says nothing about a file that
+ * is DIRTY *right now*, which is the opposite evidence: under `--files` the caller enumerated their
+ * own files, so a dirty file they did not name has a live editor who is not them.
+ *
+ * `dirty === undefined` (dirty set unreadable, or `--mine`, where a dirty file is already
+ * `attributed` and can never reach here) is deliberately treated as STANDING. Unknown must never
+ * buy an exoneration — that would be the fail-open shape this gate's whole design avoids.
+ *
+ * @param {PerFileGateEntry[]} newFiles
+ * @returns {{liveEdits: PerFileGateEntry[], standing: PerFileGateEntry[]}}
+ */
+export function partitionNewFilesByLiveEdit(newFiles: PerFileGateEntry[]): {
+    liveEdits: PerFileGateEntry[];
+    standing: PerFileGateEntry[];
+};
 /**
  * Run the full CLI gate for one project and `process.exit(...)` with its verdict — the shared
  * `main()` every per-project CLI (lint-tsc.mjs, lint-tsc-operator-vite.mjs, …) delegates to.
@@ -341,6 +369,13 @@ export type PerFileGateEntry = {
      * - `current - baseline`; positive is a regression.
      */
     delta: number;
+    /**
+     * - Set only on `newFiles`, and only when the dirty set could be read:
+     * the file is uncommitted in the shared working tree, i.e. a peer is very likely mid-edit
+     * (EI-19278299775574199). `undefined` means UNKNOWN, never "clean" — see
+     * `partitionNewFilesByLiveEdit`.
+     */
+    dirty?: boolean | undefined;
 };
 /**
  * A baseline owned by ANOTHER package, whose recorded counts this gate inherits for

@@ -35,9 +35,11 @@ vi.mock('../coordination/identity', () => ({
     userId: null,
   }),
 }));
+// vi.fn (not arrow literals) so WI-6762's selfScoped TRUE-path can re-point
+// resolveSelfRef for a single test — the false-path here needs it to stay null.
 vi.mock('../coordination/self-marker', () => ({
-  resolveSelfRef: () => null,
-  markSelfRows: (rows: unknown[]) => rows,
+  resolveSelfRef: vi.fn(() => null),
+  markSelfRows: vi.fn((rows: unknown[]) => rows),
 }));
 // Real resolveConcreteWorkspaceId (already unit-tested for '*' at WI-892/EI-3409) —
 // not mocked at all. Its internal fallback to activeWorkspaceId() is a same-module
@@ -141,6 +143,7 @@ vi.mock('../../fleet/assignments', async (importOriginal) => ({
 }));
 
 import fleetAssignmentsTool from './assignments';
+import { resolveSelfRef } from '../coordination/self-marker';
 
 const ctx = { workspaceId: '*' } as unknown as Parameters<typeof fleetAssignmentsTool.handler>[1];
 
@@ -171,5 +174,84 @@ describe('fleet:assignments — EI-13820 workspace-scope regression', () => {
   it('an explicit { workspace } still wins over the sentinel', async () => {
     await fleetAssignmentsTool.handler({ workspace: 'ws-explicit' } as never, ctx);
     expect(capturedWorkspaceId).toBe('ws-explicit');
+  });
+});
+
+/**
+ * WI-6762 — a scoped read must SHIP ITS SCOPE.
+ *
+ * The suites above assert the COUNTS are right, and they always were: `agents: 1` is
+ * the correct answer to "how many agents match { agent: me }". The defect was that
+ * nothing in the payload said the question had been narrowed, while three things
+ * implied it had not — fleet-shaped field names, an `agents_hint` claiming
+ * "summary.agents has the true total", and `agentsElided: 0`. coord:orient always
+ * calls this tool with { agent: ownerId }, so EVERY orient `me` block is a one-agent
+ * read; on 2026-08-01 two agents concluded from one that the fleet was dead
+ * (EI-19282566865609166; and WI-6740, where it nearly caused a 22-session outage).
+ *
+ * A count-based test can never catch this — which is why it reached production twice.
+ * Assert the SELF-DESCRIPTION instead.
+ */
+describe('fleet:assignments — WI-6762: scoped counts carry their scope', () => {
+  it('echoes the narrowing filters and flags the read as filtered', async () => {
+    const res = (await fleetAssignmentsTool.handler({ agent: 'su-leader' } as never, ctx)) as {
+      data: { summary: { agents: number }; scope: Record<string, unknown> };
+    };
+    // The number that reads as "the fleet has one agent"…
+    expect(res.data.summary.agents).toBe(1);
+    // …must arrive next to the reason it is 1.
+    expect(res.data.scope).toBeDefined();
+    expect(res.data.scope.agent).toBe('su-leader');
+    expect(res.data.scope.filtered).toBe(true);
+  });
+
+  it('an UNFILTERED read says so — `filtered:false` is what licenses a fleet-wide reading', async () => {
+    const res = (await fleetAssignmentsTool.handler({} as never, ctx)) as {
+      data: { scope: Record<string, unknown> };
+    };
+    expect(res.data.scope.filtered).toBe(false);
+    expect(res.data.scope.agent).toBeNull();
+    expect(res.data.scope.plan).toBeNull();
+    expect(res.data.scope.fleet).toBeNull();
+  });
+
+  it('`selfScoped` requires a RESOLVABLE self — false, not true, when identity is unknown', async () => {
+    // Fail-safe direction: an unattributable caller must never be TOLD the read was
+    // self-scoped when we cannot show that it was. A flag defaulting TRUE would
+    // recreate the very over-claim this fixes.
+    const res = (await fleetAssignmentsTool.handler({ agent: 'su-leader' } as never, ctx)) as {
+      data: { scope: { selfScoped: boolean } };
+    };
+    expect(res.data.scope.selfScoped).toBe(false);
+  });
+
+  it('`selfScoped` is TRUE when a RESOLVED self matches { agent } — the coord:orient `me` shape', async () => {
+    // The true-path, and the only assertion that catches how this flag first shipped:
+    // resolveSelfRef returns { ownerId, ownerLabel }, NOT a bare id, so the original
+    // `args.agent === self` compared a string to an OBJECT and was ALWAYS false. That
+    // version passed every false-path test above (they expect false anyway) while
+    // never firing in production — a flag that looks fixed and defends nothing.
+    vi.mocked(resolveSelfRef).mockReturnValueOnce({
+      ownerId: 'su-leader',
+      ownerLabel: 'l',
+    } as unknown as ReturnType<typeof resolveSelfRef>);
+    const res = (await fleetAssignmentsTool.handler({ agent: 'su-leader' } as never, ctx)) as {
+      data: { scope: { selfScoped: boolean; filtered: boolean } };
+    };
+    expect(res.data.scope.selfScoped).toBe(true);
+    expect(res.data.scope.filtered).toBe(true);
+  });
+
+  it('`selfScoped` is FALSE when scoped to a DIFFERENT agent — narrowed, but not to me', async () => {
+    vi.mocked(resolveSelfRef).mockReturnValueOnce({
+      ownerId: 'su-leader',
+      ownerLabel: 'l',
+    } as unknown as ReturnType<typeof resolveSelfRef>);
+    const res = (await fleetAssignmentsTool.handler({ agent: 'su-someone-else' } as never, ctx)) as {
+      data: { scope: { selfScoped: boolean; filtered: boolean } };
+    };
+    expect(res.data.scope.selfScoped).toBe(false);
+    // Still filtered — the counts stay scope-relative and must not read as fleet-wide.
+    expect(res.data.scope.filtered).toBe(true);
   });
 });
