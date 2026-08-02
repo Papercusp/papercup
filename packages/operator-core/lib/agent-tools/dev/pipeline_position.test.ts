@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import tool from './pipeline_position';
 import { gitPipelinePosition, type PipelinePosition } from '../../git-pipeline-position';
+import { resolveSeeAlso } from '@papercusp/agent-mcp';
 
 vi.mock('../../git-pipeline-position', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../git-pipeline-position')>();
@@ -179,4 +180,73 @@ describe('dev:pipeline_position awaitable defers to nextAction (P-005)', () => {
       expect(out.data.awaitable).toBeUndefined();
     });
   }
+});
+
+/**
+ * state-plane-adoption-2026-08-02 P-002 — this tool is the door agents already use
+ * (626 calls/7d), so it is where the state plane gets discovered. The pointer is a
+ * result-time `seeAlso` rather than a prompt-time `chaining` line: this tool projects
+ * at 1411 against the 1500 prompt-weight budget (dev:restart 1491, release:deploy 1472),
+ * so the prompt-time route is effectively closed across the family — and a re-read is
+ * advice that only makes sense at the moment the value is in the caller's hand.
+ */
+describe('dev:pipeline_position routes to the state plane (P-002)', () => {
+  const ptrs = (data: unknown) =>
+    resolveSeeAlso(
+      tool.guidance?.seeAlso,
+      { content: [{ type: 'text' as const, text: JSON.stringify(data) }] } as never,
+      {},
+      {},
+    );
+
+  it('always points at state:read for a re-read at the moment of acting', () => {
+    const read = ptrs({ blockedOn: null }).find((x) => x.tool === 'state:read');
+    expect(read).toBeDefined();
+    expect(read?.reason).toMatch(/re-read|transcribe/i);
+  });
+
+  /** The pointer must name the ONE cell that re-answers the question the caller has. */
+  const cases = [
+    ['gate', 'gate.greenCheckpoint.verdict'],
+    ['main', 'git.mainBehindStaging'],
+    ['deployed', 'deploy.3070.sha'],
+    ['serving', 'deploy.3070.sha'],
+    ['committed', 'git.pipelinePosition'],
+    [null, 'git.pipelinePosition'],
+  ] as const;
+  for (const [blockedOn, cell] of cases) {
+    it(`names ${cell} when blocked at "${blockedOn}"`, () => {
+      expect(ptrs({ blockedOn }).find((x) => x.tool === 'state:read')?.selector).toContain(cell);
+    });
+  }
+
+  /**
+   * The gate is the one leg with no lever and no existing await advice (the handler
+   * deliberately suppresses `awaitable` there — WI-6595). Everywhere else, offering
+   * state:subscribe would be a SECOND door for a wait deploy:await already owns.
+   */
+  it('offers state:subscribe ONLY on the gate leg, never as a second door for the deploy', () => {
+    expect(ptrs({ blockedOn: 'gate' }).some((x) => x.tool === 'state:subscribe')).toBe(true);
+    for (const blockedOn of ['deployed', 'serving', 'committed', 'pushed', 'main', null]) {
+      expect(ptrs({ blockedOn }).some((x) => x.tool === 'state:subscribe')).toBe(false);
+    }
+  });
+
+  /**
+   * THE REGRESSION THAT WOULD MAKE THIS A SILENT NO-OP. seeAlso runs on the SERIALIZED
+   * result, and on the MCP transport the {data} envelope may be TOON — readJsonResult
+   * returns undefined and a JSON-only gate never fires, on the exact transport agents
+   * actually use. The regex fallback must keep the gating alive.
+   */
+  it('still gates correctly when the envelope is TOON, not JSON', () => {
+    const toon = { content: [{ type: 'text' as const, text: 'blockedOn: gate\ndeployed: false' }] };
+    const p = resolveSeeAlso(tool.guidance?.seeAlso, toon as never, {}, {});
+    expect(p.find((x) => x.tool === 'state:read')?.selector).toContain('gate.greenCheckpoint.verdict');
+    expect(p.some((x) => x.tool === 'state:subscribe')).toBe(true);
+  });
+
+  it('keeps the pre-existing activation/deploy pointers', () => {
+    const tools = ptrs({ blockedOn: 'deployed' }).map((x) => x.tool);
+    expect(tools).toEqual(expect.arrayContaining(['dev:restart', 'dev:build_status', 'release:deploy']));
+  });
 });

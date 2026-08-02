@@ -41,6 +41,7 @@ vi.mock('@papercusp/sync', () => ({
 
 import {
   ChatConversation,
+  findAnchoredMessageIndex,
   lastUserMessageText,
   type ChatConversationProps,
   type ChatMessage,
@@ -324,5 +325,79 @@ describe('ChatConversation', () => {
     cleanup();
     renderChat({ messages: [{ role: 'user', content: 'hi' }], onLoadEarlier: () => {}, hasMoreEarlier: true, loadingEarlier: true });
     expect(screen.getByText('Loading earlier…')).toBeTruthy();
+  });
+});
+
+/**
+ * The focus anchor's whole reason to be text rather than an index: the search
+ * index (`harness_shared.session_turns`) and the transcript this component
+ * renders (`/api/adv/session/thinking`, grouped and tool-filtered on the way
+ * in) are DIFFERENT stores whose row numbering nothing keeps in step. These
+ * cases pin the properties that survive that boundary.
+ */
+describe('findAnchoredMessageIndex', () => {
+  const msgs = (...contents: string[]) => contents.map((content) => ({ content }));
+
+  it('finds the message containing the anchor', () => {
+    expect(
+      findAnchoredMessageIndex(msgs('hello there', 'the deploy wedged on a lock timeout', 'bye'),
+        'wedged on a lock timeout'),
+    ).toBe(1);
+  });
+
+  it('matches across a newline the headline reflowed into a space', () => {
+    // This is the case that makes a byte-exact comparison useless: ts_headline
+    // returns the turn's text with its hard newlines collapsed, so any
+    // multi-line agent message fails a strict compare.
+    expect(
+      findAnchoredMessageIndex(msgs('intro', 'the deploy wedged\n\n  on a lock timeout'),
+        'the deploy wedged on a lock timeout'),
+    ).toBe(1);
+  });
+
+  it('is case-insensitive', () => {
+    expect(findAnchoredMessageIndex(msgs('The Deploy Wedged Here'), 'the deploy wedged here')).toBe(0);
+  });
+
+  it('shortens progressively when the full anchor straddles a mapper boundary', () => {
+    // The mapper lifts tool calls out of the text, so an 18-word headline
+    // fragment can span text that is no longer contiguous in the message. A
+    // full-length miss must not be read as "absent".
+    expect(
+      findAnchoredMessageIndex(
+        msgs('unrelated', 'the deploy wedged on a lock timeout and then it was'),
+        'the deploy wedged on a lock timeout and then it was RESTARTED BY HAND at noon',
+      ),
+    ).toBe(1);
+  });
+
+  it('returns -1 rather than guessing when the anchor is nowhere', () => {
+    expect(findAnchoredMessageIndex(msgs('a', 'b'), 'nothing like this at all here')).toBe(-1);
+  });
+
+  it('declines an anchor too short to discriminate', () => {
+    // Under the floor a match says nothing about WHICH message is the hit.
+    expect(findAnchoredMessageIndex(msgs('aaa bbb', 'aaa bbb'), 'aaa')).toBe(-1);
+    expect(findAnchoredMessageIndex(msgs('x'), null)).toBe(-1);
+    expect(findAnchoredMessageIndex(msgs('x'), undefined)).toBe(-1);
+  });
+
+  it('breaks a genuine tie toward the turnIdx hint — a tiebreak, never a selector', () => {
+    const dupes = msgs('the deploy wedged here', 'filler', 'the deploy wedged here');
+    expect(findAnchoredMessageIndex(dupes, 'the deploy wedged here', 2)).toBe(2);
+    expect(findAnchoredMessageIndex(dupes, 'the deploy wedged here', 0)).toBe(0);
+  });
+
+  it('IGNORES the hint when it points at a message that does NOT contain the text', () => {
+    // The hint comes from the other store. If it ever outranked the text this
+    // whole design would collapse back into the bug it exists to avoid.
+    expect(
+      findAnchoredMessageIndex(msgs('nope', 'the deploy wedged here', 'also nope'),
+        'the deploy wedged here', 0),
+    ).toBe(1);
+  });
+
+  it('survives an empty transcript (the modal mounts before the stream arrives)', () => {
+    expect(findAnchoredMessageIndex([], 'the deploy wedged here')).toBe(-1);
   });
 });

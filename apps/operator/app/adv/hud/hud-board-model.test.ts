@@ -30,6 +30,7 @@ import {
   unattributedAsks,
   type HudAsk,
   type HudRosterEntry,
+  type HudSearchHit,
 } from './hud-board-model';
 
 const NOW = Date.parse('2026-07-25T12:00:00.000Z');

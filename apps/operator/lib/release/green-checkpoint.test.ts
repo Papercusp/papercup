@@ -1169,6 +1169,60 @@ describe('runGreenCheckpoint', () => {
       expect(r.candidate).toBe(c3); // advanced to the TIP, not held on the stale red
     });
 
+    // EI-19326481022404981: a caller may have armed `checkpoint:await { candidateSha: c2 }`
+    // right after c2 was committed — before learning the gate's quiet-cut would immediately
+    // re-triage it away onto a newer tip. Without cancelling that stale registration, the
+    // caller's sha-bound wait has no way to learn THIS run moved on: its eventual verdict
+    // fires keyed to c3 (never matching a `startsWith: c2` payload filter), so the caller
+    // sleeps to its own multi-hour timeout, indistinguishable the whole time from "still
+    // judging". This pins the fix — green-checkpoint.ts calling deps.cancelStaleAwaits /
+    // deps.recordInFlightRetriage right before the recursive re-fire onto the new candidate.
+    it('a STALE red that REFIRES cancels any checkpoint:await bound to the ABANDONED candidate, and records the transition', async () => {
+      const c1 = await commit('a', '1', 'c1');
+      await git(repo, ['branch', 'ready', c1]);
+      const c2 = await commit('a', '2', 'c2'); // the candidate about to be ABANDONED
+      const c3 = await commit('src/failing.test.ts', 'fixed', 'c3 — the fix'); // the newer tip
+      const { deps, calls } = bothPathsWired({ passesAtTip: true });
+      let run = 0;
+      deps.runGreen = async () => {
+        calls.push('runGreen');
+        run += 1;
+        return run === 1
+          ? {
+              green: false,
+              summary: '1 failed',
+              failingTests: ['@papercusp/web'],
+              failingFiles: [{ file: 'src/failing.test.ts', workspace: '@papercusp/web' }],
+            }
+          : { green: true, summary: 'all pass' };
+      };
+      const cancelledFor: string[] = [];
+      const retriageMarkers: Array<{ fromCandidate: string; refiringCandidate: string }> = [];
+      deps.cancelStaleAwaits = async (fromCandidate) => {
+        calls.push('cancelStaleAwaits');
+        cancelledFor.push(fromCandidate);
+      };
+      deps.recordInFlightRetriage = async (info) => {
+        calls.push('recordInFlightRetriage');
+        retriageMarkers.push({ fromCandidate: info.fromCandidate, refiringCandidate: info.refiringCandidate });
+      };
+
+      const r = await runGreenCheckpoint(cfg(), deps, { candidate: c2, noPush: true });
+
+      expect(r.advanced).toBe(true);
+      expect(r.candidate).toBe(c3);
+      // The abandoned candidate (c2) — NEVER the new tip (c3), which has a real verdict coming
+      // and must not be cancelled.
+      expect(cancelledFor).toEqual([c2]);
+      expect(retriageMarkers).toEqual([{ fromCandidate: c2, refiringCandidate: c3 }]);
+      // Both the marker write and the cancellation happen on the FIRST (failing) pass, before
+      // the recursive re-run's own runGreen call — never left dangling after the recursion.
+      const secondRunGreen = calls.lastIndexOf('runGreen');
+      expect(calls.indexOf('recordInFlightRetriage')).toBeGreaterThanOrEqual(0);
+      expect(calls.indexOf('recordInFlightRetriage')).toBeLessThan(secondRunGreen);
+      expect(calls.indexOf('cancelStaleAwaits')).toBeLessThan(secondRunGreen);
+    });
+
     it('the cheap tip re-triage runs BEFORE any prefix-salvage work', async () => {
       const c1 = await commit('a', '1', 'c1');
       await git(repo, ['branch', 'ready', c1]);

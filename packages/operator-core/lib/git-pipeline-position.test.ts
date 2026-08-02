@@ -471,6 +471,64 @@ describe('gitPipelinePosition (P-002)', () => {
       expect(res.notes.join('\n')).toMatch(/confirmed NOT present/);
     });
 
+    /**
+     * EI-19325915429897280 — the bug this whole baseline mechanism exists to fix.
+     * A marker that already occurred in the file BEFORE the change (same count at
+     * the baseline as at the ref) proves nothing: presence alone used to
+     * unconditionally exonerate the leg, which is exactly how a non-unique marker
+     * (a pre-existing identifier, a common symbol) made `dev:pipeline_position`
+     * report an undeployed change as live.
+     */
+    it('EI-19325915429897280: a marker NOT unique to the change (same count as the baseline) does not correct the leg, and still falls through to the newer-commit explanation', async () => {
+      const git = fakeGit({
+        pathCommit: PEER,
+        contains: { HEAD: [PEER], 'origin/staging': [PEER], 'origin/main': [], deployedsha0: [] },
+        newestInRef: { 'origin/main': MINE },
+        // The marker occurs in main's version — but it ALREADY occurred the SAME
+        // number of times before the change, so its presence in `origin/main`
+        // proves nothing about whether the change itself reached main.
+        blobAtRef: { 'origin/main': 'function looksDeadOrStuck() {}\n// looksDeadOrStuck again\n' },
+        parentBlobAtTarget: 'function looksDeadOrStuck() {}\n// looksDeadOrStuck again\n',
+      });
+      const res = await gitPipelinePosition(
+        { path: P, marker: 'looksDeadOrStuck' },
+        { git, loadDeploy: async () => deploy(), loadSnapshot: async () => snap() },
+      );
+      // NOT corrected — a non-discriminating marker must never upgrade the leg.
+      expect(res.positions.inMain).toBe(false);
+      expect(res.positionsMarker?.inMain?.present).toBe(true);
+      expect(res.positionsMarker?.inMain?.count).toBe(2);
+      expect(res.notes.join('\n')).toMatch(/not unique to your change/);
+      // Unsettled by the marker → still falls through to the newer-commit
+      // explanation, same as if no marker had been supplied at all.
+      expect(res.positionsNewerCommit).toContain('inMain');
+    });
+
+    /**
+     * EI-19325915429897280, the second failure mode the fix guards: the baseline
+     * commit itself is unresolvable (e.g. a shallow clone, or a `~1` that predates
+     * history the checkout has). Presence in the ref is then genuinely
+     * uninformative — it must be reported as UNMEASURED, never silently treated
+     * as either a correction or a confirmed miss.
+     */
+    it('EI-19325915429897280: a marker present but an UNRESOLVABLE baseline is reported as unmeasured, never as a correction', async () => {
+      const git = fakeGit({
+        pathCommit: PEER,
+        contains: { HEAD: [PEER], 'origin/staging': [PEER], 'origin/main': [], deployedsha0: [] },
+        newestInRef: { 'origin/main': MINE },
+        blobAtRef: { 'origin/main': 'function looksDeadOrStuck() {}\n' },
+        // No `parentBlobAtTarget` — the baseline commit does not resolve.
+      });
+      const res = await gitPipelinePosition(
+        { path: P, marker: 'looksDeadOrStuck' },
+        { git, loadDeploy: async () => deploy(), loadSnapshot: async () => snap() },
+      );
+      expect(res.positions.inMain).toBe(false);
+      expect(res.positionsMarker?.inMain?.present).toBe(true);
+      expect(res.notes.join('\n')).toMatch(/baseline .* could not be measured/);
+      expect(res.positionsNewerCommit).toContain('inMain');
+    });
+
     it('does NOT cry newer-commit when the file has genuinely never landed in the ref', async () => {
       const git = fakeGit({
         pathCommit: PEER,
