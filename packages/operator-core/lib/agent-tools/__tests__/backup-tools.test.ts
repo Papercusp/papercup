@@ -52,7 +52,11 @@ describe('backup:snapshot_create', () => {
     const { default: tool } = await import('../backup/snapshot_create');
     const result = (await tool.handler({ reason: 'pre_destructive', note: 'Before migration' }, MAKE_CTX())) as any;
 
-    expect(wb.snapshot).toHaveBeenCalledWith('pre_destructive', { note: 'Before migration' });
+    // EI-18875467740392530 added a third argument: snapshot() now takes an
+    // `onStarted` callback so the deadline-loses branch can still hand back a real
+    // snapshotId. Pinned (rather than relaxed to objectContaining) so this suite
+    // keeps asserting the full call shape.
+    expect(wb.snapshot).toHaveBeenCalledWith('pre_destructive', { note: 'Before migration' }, { onStarted: expect.any(Function) });
     const data = JSON.parse(result.content[0].text);
     expect(data.snapshotId).toBe('snap-abc');
   });
@@ -65,7 +69,7 @@ describe('backup:snapshot_create', () => {
     const { default: tool } = await import('../backup/snapshot_create');
     await tool.handler({ reason: 'manual' }, MAKE_CTX());
 
-    expect(wb.snapshot).toHaveBeenCalledWith('manual', undefined);
+    expect(wb.snapshot).toHaveBeenCalledWith('manual', undefined, { onStarted: expect.any(Function) });
   });
 
   it('defaults reason to pre_destructive when not specified', async () => {
@@ -76,7 +80,7 @@ describe('backup:snapshot_create', () => {
     const { default: tool } = await import('../backup/snapshot_create');
     // Pass the default explicitly (calling .handler bypasses zod defaults).
     await tool.handler({ reason: 'pre_destructive' }, MAKE_CTX());
-    expect(wb.snapshot).toHaveBeenCalledWith('pre_destructive', undefined);
+    expect(wb.snapshot).toHaveBeenCalledWith('pre_destructive', undefined, { onStarted: expect.any(Function) });
   });
 
   it('uses activeWorkspaceId to scope the backup client', async () => {

@@ -12,6 +12,20 @@
  * It surveys every MEMBER harness (registry `hive_slug`), not the Mug's home
  * seat — the P-012 fix for the 2026-06-11 home-slug-only miss; membership not
  * wired ⇒ a workspace-wide survey, so the home-only blind spot can't recur.
+ *
+ * EI-18953436700237995: the placement ranker (this file) and the claim-serving
+ * order (`scheduler:get_next` / `work_items:claimable`) are TWO DIFFERENT
+ * rankers over the same work — the Mug places off this survey's `frontier`,
+ * but a cup pulls via its claim spec, which does not consult this ranking at
+ * all. With `checkClaimOrder:true` the tool cross-checks its own frontier head
+ * against the SAME oracle `work_items:claimable` uses (the harness's DEFAULT
+ * claim-serving order) and flags `rankingDivergence` when the two heads share
+ * NOTHING — the "Mug says place X, cups will actually pull Y" case, made
+ * visible instead of silent. Opt-in (NOT run by default): it re-runs the full
+ * floor computation over the harness's issue-family backlog, which is a real
+ * cost on a large pool (~6s measured against a ~14k-row population) — too
+ * expensive to pay on every placement wake, so a caller (or a periodic
+ * Mug self-check) asks for it explicitly instead of it being silently free.
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
@@ -22,8 +36,77 @@ import { surveyPot, surveyWorkspace } from '../../pot/survey';
 import { placementRankerSpec } from '../../pot/placement-ranker';
 import { isWorkspaceCoordinationOn } from '../../workspace-brain-scope';
 import { shapePotSurvey } from './survey-shape';
+import { readIssueClaimability } from '../../scheduler/get-next';
+import { DEFAULT_CLAIM_SPEC, formatSpecRef } from '../../scheduler/claim-spec';
 import type { Ranked } from '../../queue-ranker';
 import type { PlacementCandidate } from '../../pot/placement-ranker';
+
+/**
+ * Cross-check the survey's own work-item frontier head against the harness's
+ * actual claim-serving order (the DEFAULT spec — the same oracle
+ * `work_items:claimable` reports when no fleet spec narrows it). Fail-open:
+ * a read error or an inconclusive comparison (either side empty) returns
+ * `undefined` rather than ever breaking or blanking the placement survey —
+ * this is a diagnostic overlay, not a floor the survey depends on.
+ */
+async function checkClaimOrderDivergence(
+  installSlug: string,
+  frontier: readonly Ranked<PlacementCandidate>[],
+  headSize: number,
+): Promise<
+  | {
+      rankingDivergence: boolean;
+      claimSpec: string;
+      surveyHead: string[];
+      claimOrderHead: string[];
+      note: string;
+    }
+  | undefined
+> {
+  // Only work-item candidates IN THIS harness are comparable — the served
+  // head below is scoped to this one harness, while the frontier can span
+  // every member harness the Mug surveys.
+  const surveyHead = frontier
+    .filter((c) => c.view === 'work-item' && c.harness === installSlug)
+    .slice(0, headSize)
+    .map((c) => c.id);
+  if (surveyHead.length === 0) return undefined; // nothing IN-HARNESS to compare against
+
+  let claimOrderHead: string[];
+  try {
+    const reading = await readIssueClaimability(
+      undefined, // no spec filter — the DEFAULT claim-serving order, unsteered
+      { harness: installSlug },
+      { limit: headSize },
+    );
+    claimOrderHead = reading.rows.map((r) => r.id);
+  } catch (err) {
+    console.warn(
+      '[pot-survey] checkClaimOrder comparison failed — skipping (fail-open):',
+      err instanceof Error ? err.message : err,
+    );
+    return undefined;
+  }
+  if (claimOrderHead.length === 0) return undefined; // nothing served — no divergence to report
+
+  const surveySet = new Set(surveyHead);
+  const overlap = claimOrderHead.filter((id) => surveySet.has(id));
+  const rankingDivergence = overlap.length === 0;
+  const specRef = formatSpecRef(DEFAULT_CLAIM_SPEC.specId, DEFAULT_CLAIM_SPEC.revision);
+  return {
+    rankingDivergence,
+    claimSpec: specRef,
+    surveyHead: surveyHead.slice(0, 10),
+    claimOrderHead: claimOrderHead.slice(0, 10),
+    note: rankingDivergence
+      ? `RANKING DIVERGENCE: none of this survey's top ${surveyHead.length} in-harness frontier items appear in the ` +
+        `top ${claimOrderHead.length} rows a cup would actually be served under ${specRef} (no fleet claim spec ` +
+        `narrows it). Placement judgment here is not reaching the cups pulling this harness's default lane — ` +
+        `see EI-18953436700237995.`
+      : `${overlap.length}/${surveyHead.length} of this survey's top in-harness frontier items also appear in the ` +
+        `top rows served under ${specRef} — no divergence detected.`,
+  };
+}
 
 /** Compact a ranked candidate for the Mug — id, score, top reasons, signals.
  *  The `hive` tag is surfaced ONLY when present (the cross-pot workspace survey
@@ -82,6 +165,17 @@ export default defineTool({
       .max(100)
       .optional()
       .describe('Max ranked rows returned per view (default 20).'),
+    checkClaimOrder: z
+      .boolean()
+      .optional()
+      .describe(
+        'EI-18953436700237995: cross-check this survey\'s frontier head against the harness\'s ACTUAL claim-serving ' +
+          'order (the same oracle work_items:claimable reports) and flag `rankingDivergence` when they share no ' +
+          'items — the "placement says X, cups pull Y" trap, made visible instead of silent. Default false: it ' +
+          're-runs the full claim-floor computation over the harness\'s issue-family backlog (a real cost on a large ' +
+          'pool), so it is opt-in rather than paid on every placement wake. Single-pot survey only (ignored under ' +
+          'the cross-pot workspace scope).',
+      ),
   }),
   // context-trimming-tiers P-024: trimmed/standard sessions get capped ranked
   // rows (top-reason why, clipped titles) and — trimmed — the static ranker

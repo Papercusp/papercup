@@ -1254,13 +1254,26 @@ export default defineTool({
       }
 
       // P-010 (WI-5212 pool-collapse guard): run the SAME write-time pool-effect count +
-      // collapse verdict scheduler:set_claim_spec runs, but ONLY on the claimKinds path —
-      // refuse a kind scope matching 0 rows of a nonempty pool (or a cratered authored lane)
-      // BEFORE any terminal opens, and surface poolEffect.matched. The pure plan lane is left
-      // untouched (plan-promoted items vary in status; guarding it risks a false refusal).
-      // FAILS OPEN: a preview/count error never blocks the launch (safety net, not a new SPOF).
+      // collapse verdict scheduler:set_claim_spec runs — refuse a scope matching 0 rows of a
+      // nonempty pool (or a cratered authored lane) BEFORE any terminal opens, and surface
+      // poolEffect.matched.
+      //
+      // EI-19276371141300541: this guard used to run ONLY on the claimKinds path — a FRESH
+      // plan-only spec (buildFleetPlanClaimSpec, `plan = <slug>`) got neither the zero-match
+      // refuse NOR a surfaced poolEffect, on the theory that "plan-promoted items vary in
+      // status; guarding it risks a false refusal". That theory doesn't hold: the promotion
+      // failsafe above already ran BEFORE this block, so a legitimately-fed plan lane already
+      // has its items promoted (states=['open'] by construction) by the time we count here — a
+      // freshly-generated plan lane is exactly as measurable as a freshly-generated kind lane.
+      // Skipping the check for it is precisely how a 10-member fleet launched onto a plan whose
+      // own tracking items (not the backlog being drained) matched exactly ONE row, while
+      // `claimSpecApplied` reported `ok:true` with nothing to say a starvation had occurred.
+      // Now run for every FRESHLY-BUILT spec (kind-only, plan-only, or their merge into an
+      // authored lane) — never for a preserved authored no-claimKinds spec (nothing changed
+      // there to measure). FAILS OPEN: a preview/count error never blocks the launch (safety
+      // net, not a new SPOF).
       let poolEffect: SpecPoolEffect | null = null;
-      if (specToApply && args.claimKinds?.length) {
+      if (specToApply) {
         try {
           const validated = validateClaimSpec(specToApply);
           if (validated.ok && validated.spec) {

@@ -10,6 +10,8 @@
  *     already_fired (no await registered); an unfired one annotates the response.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 
 vi.mock('@papercusp/agent-mcp', () => ({
   defineTool: (def: unknown) => def,
@@ -81,6 +83,14 @@ vi.mock('../../events/await/store', () => ({
     fires: 0,
     lastFiredAt: null,
   })),
+  // EI-19332682533219755: a PATTERN registration discloses which concrete keys its
+  // glob really covers. Defaults to "no observed keys" ⇒ no advisory, so every
+  // pre-existing pattern test below is unaffected (mirrors await.test.ts).
+  probePatternMatchScope: vi.fn(async () => ({ prefix: '', matchedKeys: [], truncated: false })),
+  // await.ts imports this on the announced-gate cancel path. It was absent from this
+  // factory too — latent, because no test here had walked that branch yet. The
+  // coverage guard at the bottom of this file is what surfaced it.
+  cancelAwaitsForSubscribersOnKeys: vi.fn(async () => 0),
 }));
 
 import emit from './emit';
@@ -88,6 +98,9 @@ import awaitTool from './await';
 import { buildAnnouncedKey, defaultAnnounceScope, announcementVisibleTo, normalizeEventKey } from '../../events/await/announce-key';
 import { emitAwaitedEvent } from '../../events/await/engine';
 import { registerAnnouncement, registerAwait, findAnnouncementsForKey, findNearMissKeys } from '../../events/await/store';
+// Namespace view of the SAME mocked module — the coverage guard at the bottom of
+// this file checks its key set against production's import list.
+import * as storeMock from '../../events/await/store';
 
 const emitHandler = (emit as unknown as { handler: (a: unknown, c: unknown) => Promise<{ content: Array<{ text: string }> }> }).handler;
 const awaitHandler = (awaitTool as unknown as { handler: (a: unknown, c: unknown) => Promise<{ content: Array<{ text: string }> }> }).handler;
@@ -278,5 +291,49 @@ describe('events:await — near-miss advisory (P-005)', () => {
   it('skips the scan for pattern awaits', async () => {
     await awaitHandler({ event: 'work-item:done:*' }, {});
     expect(findNearMissKeys).not.toHaveBeenCalled();
+  });
+});
+
+// ─── mock-coverage recurrence guard (EI-19360393379790366) ────────────────────
+// This suite drives the REAL await.ts / emit.ts handlers against a hand-written
+// PARTIAL mock of events/await/store (partial on purpose — the real module pulls
+// db-org, so a full importOriginal spread would cost this suite its hermeticity).
+// The cost of that choice is that every time production adds a store import, the
+// factory silently goes stale and the suite reds with "No <x> export is defined on
+// the mock" — and only if some test happens to walk the new branch. That has now
+// happened three times (EI-17276 PRESENCE_STALE_MS, EI-18676056143796303
+// probeKeyFireEvidence, EI-19332682533219755 probePatternMatchScope), each caught
+// downstream rather than here; cancelAwaitsForSubscribersOnKeys was missing too and
+// had NOT yet been hit by any test.
+//
+// This asserts the factory covers the import list STATICALLY, so the next addition
+// fails right here, naming the missing export, instead of as an opaque mock error
+// in whichever unrelated test first walks that code path.
+describe('events/await/store mock coverage', () => {
+  const storeImportsOf = (relSourcePath: string): string[] => {
+    const src = readFileSync(fileURLToPath(new URL(relSourcePath, import.meta.url)), 'utf8');
+    const names: string[] = [];
+    // `[^}]*` spans newlines, so this matches both the multi-line import block in
+    // await.ts and the single-line one in emit.ts.
+    for (const m of src.matchAll(/import\s*\{([^}]*)\}\s*from\s*'[^']*events\/await\/store'/g)) {
+      for (const raw of (m[1] ?? '').split(',')) {
+        const spec = raw.trim();
+        if (!spec || spec.startsWith('type ')) continue; // type-only imports are erased
+        const name = (spec.split(/\s+as\s+/)[0] ?? '').trim();
+        if (name) names.push(name);
+      }
+    }
+    return names;
+  };
+
+  it('mocks every store export the handlers under test import', () => {
+    const required = [...new Set([...storeImportsOf('./await.ts'), ...storeImportsOf('./emit.ts')])];
+    // Fail loudly if the regex ever stops matching: a guard that silently finds
+    // nothing to check would pass forever and is worse than no guard at all.
+    expect(required.length).toBeGreaterThan(0);
+    expect(required).toContain('probePatternMatchScope');
+
+    const missing = required.filter((name) => !(name in storeMock));
+    expect(missing).toEqual([]);
   });
 });

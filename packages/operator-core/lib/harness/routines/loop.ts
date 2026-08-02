@@ -818,9 +818,29 @@ export async function getLoopStatuses(
            -- verbatim in reconcile-loop-routines.ts. The journal:record-turn tool writes a row
            -- only when the turn text carries an extractable note (no_note ⇒ no row): measured
            -- 2026-08-02 over 24h, 17 rows against 750 assistant turns for one owner (2.3%) and
-           -- 746 rows / 61 owners fleet-wide, 100% flagged=true. This union still WORKS (the
-           -- lifecycle leg carries it, and MAX tolerates the sparse leg), but do NOT reach for
-           -- the journal as a standalone "a turn happened" signal — see last_real_turn_at below.
+           -- 746 rows / 61 owners fleet-wide, 100% flagged=true.
+           --
+           -- ⚠⚠ WI-6639 FOLLOW-UP — "this union still WORKS (the lifecycle leg carries it)" was
+           -- ALSO FALSE, and this is not a hypothetical: it was caught live by turning
+           -- computeTurnsStalled's consumer from read-only (loop:status) into an ACTOR
+           -- (stalled-loops-guard.ts) and dry-running it against the real fleet. A continuously
+           -- WARM loop (carry:'warm', never restarted — the common case, not the exception) never
+           -- writes the lifecycle 'ended' marker at all, so for that (dominant) population the
+           -- lifecycle leg contributes NOTHING and last_turn_at rested on the sparse 2.3% journal
+           -- leg alone. Measured live 2026-08-02 on a demonstrably-active owner (dozens of real
+           -- turns in the prior hour, confirmed via last_real_turn_at below): last_turn_at read
+           -- 38m54s STALE relative to last_fired_at — enough to cross computeTurnsStalled's 30-min
+           -- floor and flag a genuinely healthy, actively-working loop as turnsStalled:true. Had
+           -- the dry-run not been run first, this would have auto-disarmed it.
+           --
+           -- THE FIX: add the SAME session_turns (assistant-turn) leg last_real_turn_at already
+           -- carries below — full coverage (100% of real turns, not 2.3%), so last_turn_at can
+           -- no longer go stale for any session that is genuinely producing turns. Do NOT reach
+           -- for the journal alone as a standalone "a turn happened" signal — see last_real_turn_at
+           -- below for the STRICT, journal+session_turns-only sibling this column still differs
+           -- from (last_turn_at additionally carries the lifecycle 'ended' marker, which a strict
+           -- "did a turn complete after instant X" caller must NOT see — that marker fires at
+           -- session DEATH, after the fact, not at a turn's completion).
            (SELECT max(ts) FROM (
               SELECT ag.created_at AS ts FROM harness_shared.agent_activity ag
                WHERE ag.owner_id = r.target_owner_id AND ag.kind = 'lifecycle'
@@ -828,6 +848,10 @@ export async function getLoopStatuses(
               UNION ALL
               SELECT j.created_at AS ts FROM harness_shared.session_turn_journal j
                WHERE j.owner_id = r.target_owner_id
+              UNION ALL
+              SELECT st2.ts AS ts FROM harness_shared.session_turns st2
+               WHERE st2.owner = r.target_owner_id
+                 AND st2.speaker = 'assistant'
             ) last_turn_sources) AS last_turn_at,
            -- WI-6951: the STRICT turn-completion signal — the journal alone, WITHOUT the
            -- lifecycle session-end marker unioned in above. Kept as a separate column rather

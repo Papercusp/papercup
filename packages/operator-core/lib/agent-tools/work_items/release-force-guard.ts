@@ -165,11 +165,29 @@ export async function assessForceRelease(
   const endedOwnersOf =
     deps.endedRecordedOwnerIds ??
     (async (ownerIds: string[]) => (await import('../../adv-sessions')).endedRecordedOwnerIds(ownerIds));
-  const [holderPres, endedOwners] = await Promise.all([
+  // EI-18907586326157984: the SAME oracle coord:wake trusts, resolved in parallel
+  // with the two lookups above — never gates on it (a hiccup degrades to `null`,
+  // i.e. no oracle signal either way, same fail-soft posture as every other leg
+  // here).
+  const resolveHolderSessionState =
+    deps.resolveHolderSessionState ??
+    (async (ownerId: string) => {
+      const { resolveSessionStates } = await import('../coordination/liveness-oracle');
+      const map = await resolveSessionStates([{ ownerId }], { hydratePerId: true });
+      return map.get(ownerId)?.sessionState ?? null;
+    });
+  const [holderPres, endedOwners, oracleSessionState] = await Promise.all([
     getPresence(input.holderOwnerId).catch(() => null),
     endedOwnersOf([input.holderOwnerId]).catch(() => new Set<string>()),
+    resolveHolderSessionState(input.holderOwnerId).catch(() => null),
   ]);
   const recordedEnded = endedOwners.has(input.holderOwnerId);
+  // 'suspect' = the oracle CONFIRMED the process is gone (pid-probed ESRCH or
+  // 30-min hard-stale) but is withholding a flat `ended` verdict only because
+  // claims are still held — exactly the state a force-reclaim is FOR, so it
+  // authorizes here just as `ended` does (the oracle's own caution about claim
+  // CLEANUP order does not apply to the release call that IS the cleanup).
+  const oracleNotLive = oracleSessionState === 'ended' || oracleSessionState === 'suspect';
 
   const heartbeatTs = holderPres ? parseTs(holderPres.heartbeatAt) : NaN;
   const lastActiveTs = holderPres ? parseTs(holderPres.lastActiveAt) : NaN;
@@ -193,7 +211,12 @@ export async function assessForceRelease(
     now - lastActiveTs >= WARM_IDLE_ACTIVITY_STALE_MS &&
     now - itemProgressTs >= WARM_IDLE_ACTIVITY_STALE_MS;
   const warmIdle = presenceLive && heartbeatFresh && bothActivitySignalsStale;
-  const live = presenceLive && !warmIdle;
+  // EI-18907586326157984: EITHER signal is now sufficient to declare the holder not
+  // live — the raw heartbeat/activity heuristic (unchanged), OR the shared oracle
+  // affirmatively saying the session is `ended`/`suspect`. Only when BOTH say "live"
+  // does authority get required; this can only make the guard MORE permissive than
+  // before (a null/degraded oracle read never flips `live` to false on its own).
+  const live = presenceLive && !warmIdle && !oracleNotLive;
 
   const holderLiveness: HolderLiveness = {
     presenceFound: holderPres != null,
@@ -203,13 +226,22 @@ export async function assessForceRelease(
     itemLastProgressAt: input.itemLastProgressAt == null ? null : String(input.itemLastProgressAt),
     freshestAgeMs: freshest == null ? null : now - freshest,
     warmIdle,
+    oracleSessionState,
     live,
   };
 
   // (a) reaper case: no live session and no recent progress — the claim is abandoned.
-  // A warm-idle holder (fresh heartbeat, hours-stale real activity) counts as the
-  // same case, just distinguished in `basis` for a clearer audit trail + notification.
-  if (!live) return { allowed: true, basis: warmIdle ? 'holder-warm-idle' : 'holder-not-live', holderLiveness };
+  // A warm-idle holder (fresh heartbeat, hours-stale real activity) or one the
+  // shared oracle independently proved `ended`/`suspect` (EI-18907586326157984 — the
+  // exact case a fresh-looking heartbeat can lag behind) counts as the same case,
+  // just distinguished in `basis` for a clearer audit trail + notification.
+  if (!live) {
+    return {
+      allowed: true,
+      basis: !presenceLive ? 'holder-not-live' : warmIdle ? 'holder-warm-idle' : 'holder-session-ended',
+      holderLiveness,
+    };
+  }
 
   // Holder is LIVE — authority required. Classify the caller against the
   // HOLDER's fleet (control-core's classifier, per coord-authority-hardening).
@@ -248,8 +280,9 @@ export async function assessForceRelease(
 /** The refusal names what WOULD authorize — so the caller coordinates instead of retrying blind. */
 export function forceRefusalHint(holder: string): string {
   return (
-    `${holder} holds a LIVE claim (fresh presence/progress) and you have no authority over it — force refused (WI-4198). ` +
-    `What authorizes a force here: the holder's session going stale OR warm-idle — a fresh heartbeat with no real lastActiveAt/item-progress movement for ${Math.round(WARM_IDLE_ACTIVITY_STALE_MS / 60_000)}+ min (both reaper cases), queen/hive authority, or leading ${holder}'s OWN fleet. ` +
+    `${holder} holds a LIVE claim (fresh presence/progress, and the shared sessionState oracle also reads it live) ` +
+    `and you have no authority over it — force refused (WI-4198). ` +
+    `What authorizes a force here: the holder's session going stale OR warm-idle — a fresh heartbeat with no real lastActiveAt/item-progress movement for ${Math.round(WARM_IDLE_ACTIVITY_STALE_MS / 60_000)}+ min (both reaper cases) — OR the shared liveness oracle (the same one coord:wake trusts) independently reporting the session \`ended\`/\`suspect\` (EI-18907586326157984), queen/hive authority, or leading ${holder}'s OWN fleet. ` +
     `Otherwise coordinate with the holder (coord:send) — or with their fleet leader — instead of forcing.`
   );
 }
