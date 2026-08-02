@@ -86,6 +86,18 @@ export default defineTool({
           itemKey: (r) => String((r as Record<string, unknown>)[field]),
           itemKeyField: field,
           schemaVersion: dcfg.schemaVersion,
+          // no-http-anywhere-2026-07-28 P-024. Identity of THIS view, which unlocks the
+          // large-view path: above DELTA_MAX_DIGEST_ENTRIES the row digest cannot ride
+          // the cursor, so it is parked server-side under this key and only an id
+          // travels. Without it `plans.list` (933 rows) could never delta and re-sent
+          // the full ~822 KB on EVERY warm poll (~52 MB/hour per open window) while
+          // `plans.attention` (165 rows) got 83x on this same code path.
+          //
+          // It must include the ARGS, not just the name: two callers of the same query
+          // with different args are different views, and the key is what stops one from
+          // reading back the other's digest (diffFromDigest reports `removed` ids). The
+          // raw args JSON is the string the caller was already keyed by upstream.
+          viewKey: `${name}:${argsJson}`,
         });
         const meta = { mode: neg.mode, cursor: neg.cursor, checksum: neg.checksum, itemKeyField: neg.itemKeyField };
         if (neg.mode === 'delta') {

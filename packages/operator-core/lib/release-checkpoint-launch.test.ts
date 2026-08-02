@@ -927,21 +927,18 @@ describe('launchDetachedCheckpoint replaceStale (EI-9672: force alone could not 
   it('EI-19323010647367612: a successfully-stopped stale run gets a displacement marker written into its OWN log BEFORE the stop', async () => {
     const child = fakeChild();
     const spawnFn = vi.fn(() => child);
-    const execFn = staleActiveExecFn(0, 45);
+    const calls: string[] = [];
+    const baseExecFn = staleActiveExecFn(0, 45);
+    const execFn = vi.fn((cmd: string, args: string[]) => {
+      if (cmd === 'systemctl' && args[1] === 'stop') calls.push('stop');
+      return baseExecFn(cmd, args);
+    });
     const readLogHead = vi.fn(() => '[green-checkpoint] checkpointing candidate 11111111 (base def)\n');
     const cancelStaleAwaits = vi.fn(async () => ({ cancelled: 0 }));
-    const calls: string[] = [];
     const recordDisplacement = vi.fn((logPath: string, info: { candidate?: string | null }) => {
       calls.push('record');
       expect(logPath).toBe(checkpointLatestLogPath(checkpointUnitForRoot('/tree')));
       expect(info.candidate).toBe('11111111');
-    });
-    execFn.mockImplementation((cmd: string, args: string[]) => {
-      if (cmd === 'systemctl' && args[1] === 'stop') {
-        calls.push('stop');
-        return { status: 0, stdout: '', stderr: '' };
-      }
-      return staleActiveExecFn(0, 45)(cmd, args);
     });
 
     const p = launchDetachedCheckpoint(
@@ -982,6 +979,7 @@ describe('launchDetachedCheckpoint replaceStale (EI-9672: force alone could not 
   });
 
   it('EI-19323010647367612: recordCheckpointDisplacement is fail-soft — a write error never throws or blocks the caller', () => {
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     const throwingAppend = vi.fn(() => {
       throw new Error('ENOSPC: no space left on device');
     });
@@ -993,6 +991,8 @@ describe('launchDetachedCheckpoint replaceStale (EI-9672: force alone could not 
       ),
     ).not.toThrow();
     expect(throwingAppend).toHaveBeenCalledTimes(1);
+    expect(consoleErrorSpy).toHaveBeenCalledTimes(1);
+    consoleErrorSpy.mockRestore();
   });
 
   it('EI-19323010647367612: recordCheckpointDisplacement writes a human-readable marker naming both the stopped and superseding candidates', () => {

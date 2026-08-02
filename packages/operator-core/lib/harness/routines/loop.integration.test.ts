@@ -153,6 +153,14 @@ describe('loop surface round-trip (real PG)', () => {
 
     expect((await getLoopStatus(OWNER, { sql }))!.lastRealTurnAt).toBe(realTurn.toISOString());
 
+    // TEETH, pinned rather than argued: the expression this REPLACED, run against the very
+    // same rows. It returns NULL — so the assertion above genuinely fails without the fix,
+    // and this stays true for anyone who later narrows the source back to the journal.
+    const journalOnly = await sql<Array<{ ts: Date | null }>>`
+      SELECT max(j.created_at) AS ts FROM harness_shared.session_turn_journal j
+       WHERE j.owner_id = ${OWNER}`;
+    expect(journalOnly[0]?.ts ?? null).toBeNull();
+
     // A LATER user turn is a wake injection, not a completed turn — it must not advance it.
     await sql`
       INSERT INTO harness_shared.session_turns

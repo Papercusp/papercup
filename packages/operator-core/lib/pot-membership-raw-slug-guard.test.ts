@@ -19,7 +19,7 @@ import { describe, it, expect } from 'vitest';
 // ONE line: @ts-ignore suppresses only the FOLLOWING line, and tsc reports an untyped-
 // module error on the `from '...'` specifier, so a multi-line import escapes it.
 // prettier-ignore
-import { BASELINE, stripComments, usesRawInstallSlugFilter } from '../../../scripts/check-no-raw-install-slug-filter.mjs';
+import { BASELINE, formatCleanVerdict, stripComments, usesRawInstallSlugFilter } from '../../../scripts/check-no-raw-install-slug-filter.mjs';
 
 describe('raw-installSlug guard predicate (EI-19298972043721870)', () => {
   it('FLAGS a harness_slug filter on the raw installSlug', () => {
@@ -89,5 +89,47 @@ describe('raw-installSlug guard predicate (EI-19298972043721870)', () => {
     // one way it can rot is by growing the grandfather set instead of fixing sites.
     // 9 files / 18 sites were pre-existing when the guard landed.
     expect(BASELINE.size).toBeLessThanOrEqual(9);
+  });
+});
+
+/**
+ * EI-19298378364087215. The guard asserts a repo-wide NEGATIVE, which an incomplete
+ * enumeration cannot establish. In an archive-extracted release/checkpoint checkout
+ * `git ls-files --recurse-submodules` descends into NO submodule, so the scan covers
+ * the superproject alone — and the old clean line reported that as "✓ no NEW offenders".
+ *
+ * This is the bug class where "I could not tell" renders identically to "no": the
+ * reader cannot distinguish a verified absence from an unasked question, and acts on
+ * the failure as though it were the answer.
+ */
+describe('clean-path verdict never claims a pass it could not establish', () => {
+  const whole = { scanned: 5664, grandfathered: 9, unscannedPresent: 0 };
+
+  it('claims a clean pass ONLY when the enumeration was whole', () => {
+    const line = formatCleanVerdict(whole);
+    expect(line.startsWith('✓')).toBe(true);
+    expect(line).toContain('5664 files scanned');
+  });
+
+  it('DOWNGRADES the verdict when submodules with files on disk went unread', () => {
+    const line = formatCleanVerdict({ ...whole, unscannedPresent: 39 });
+    // The load-bearing property: it must not read as a clean bill of health.
+    expect(line.startsWith('✓')).toBe(false);
+    expect(line).toContain('cannot establish');
+    expect(line).toContain('39 submodule(s)');
+  });
+
+  it('says UNKNOWN in words, not merely by omitting the tick', () => {
+    // A reader skimming for a verdict must be told, not left to infer it from a
+    // missing character — that inference is exactly what nobody makes under load.
+    const line = formatCleanVerdict({ ...whole, unscannedPresent: 39 });
+    expect(line).toMatch(/UNKNOWN, not as a pass/);
+  });
+
+  it('keys on unscannedPresent, so the permanently-absent submodule cannot trip it', () => {
+    // libs/zero-harness is retired and deliberately uninitialised, so it sits in
+    // `unscanned` on EVERY run of a healthy tree. An alarm keyed on that fires always
+    // and is trained away; this one must stay silent when the tree is fine.
+    expect(formatCleanVerdict(whole).startsWith('✓')).toBe(true);
   });
 });

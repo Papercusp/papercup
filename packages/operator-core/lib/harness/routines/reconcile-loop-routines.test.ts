@@ -1415,3 +1415,87 @@ describe('reconcileLoopRoutines — presence-quiescence defers behind the sessio
     expect(res.loops[0].via).toBe('stuck-backstop');
   });
 });
+
+describe('reconcileLoopRoutines — a usage-limit re-arm may push next_fire_at LATER (WI-6852)', () => {
+  const T0 = 1_782_000_000_000;
+  const pgString = (ms: number) => new Date(ms).toISOString().replace('T', ' ').replace('Z', '+00');
+
+  /** Like `fakeSql`, but records the STATEMENT TEXT. That is the only way to tell the two re-arm
+   *  branches apart: they differ in SQL SHAPE (GREATEST + a `next_fire_at <` guard vs LEAST + a
+   *  `next_fire_at >` one), not in their bind values, so the shared `updates` capture cannot see it. */
+  function fakeSqlCapturingText(rows: Record<string, unknown>[], statements: string[]): Sql {
+    return ((strings: TemplateStringsArray, ..._vals: unknown[]) => {
+      const q = strings.join(' ? ');
+      if (/^\s*UPDATE/i.test(q)) {
+        statements.push(q);
+        return Promise.resolve([{ id: 'rt-1' }]);
+      }
+      return Promise.resolve(rows);
+    }) as unknown as Sql;
+  }
+
+  const walledRow = (text: string, intervalSec: number) => ({
+    id: 'rt-1',
+    target_owner_id: 'su-walled',
+    interval_sec: intervalSec,
+    parked: true,
+    install_slug: 'papercusp',
+    name: 'loop-su-walled',
+    routine_workspace_id: 'ws-papercusp',
+    last_fired_at: pgString(T0),
+    lifecycle_completed_at: pgString(T0 + 5_000),
+    presence_last_active_at: null,
+    last_assistant_text_after_fire: text,
+  });
+
+  const run = async (text: string, intervalSec: number) => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {}); // expected diagnostic log
+    const statements: string[] = [];
+    const sql = fakeSqlCapturingText([walledRow(text, intervalSec)], statements);
+    const res = await reconcileLoopRoutines({
+      sql,
+      nowMs: T0 + 10_000,
+      recordFire: vi.fn(async () => {}),
+      readFireState: NO_PRIOR_ERRORS,
+      checkUnreachableTerminalGuard: NEVER_BREACH_GUARD,
+      escalateLifecycleDeath: vi.fn(async () => {}),
+    });
+    const armStmt = statements.find((s) => /UPDATE\s+harness_shared\.routines/i.test(s));
+    return { res, armStmt };
+  };
+
+  it('uses the never-EARLIER (GREATEST) statement for a reset-aware usage_limit death', async () => {
+    const { res, armStmt } = await run("You've hit your session limit · resets in 3 hours", 180);
+    expect(res.rearmed).toBe(1);
+    expect(armStmt).toBeDefined();
+    // The whole defect: the ordinary statement is never-later BY CONSTRUCTION, so a blind re-arm
+    // that had already set next_fire_at = now+interval made this wall-aware re-arm a silent no-op.
+    expect(armStmt).toContain('GREATEST');
+    expect(armStmt).toContain('next_fire_at < ');
+    expect(armStmt).not.toContain('LEAST');
+    // ...and the deferral must be the real multi-hour wall, not the bare interval.
+    expect(res.loops[0].nextFireAt).toBe(T0 + 5_000 + 3 * 3_600_000);
+  });
+
+  it('keeps the ordinary never-LATER (LEAST) statement for a NON-usage_limit death', async () => {
+    // The control that gives the assertion above its meaning: an auth_wall is still a lifecycle
+    // DEATH (same code path, same escalation) — only usage_limit carries a reset instant worth
+    // deferring to, so only usage_limit may push a loop's cadence out.
+    const { res, armStmt } = await run(
+      'Your organization has disabled Claude subscription access for Claude Code.',
+      180,
+    );
+    expect(res.rearmed).toBe(1);
+    expect(armStmt).toContain('LEAST');
+    expect(armStmt).not.toContain('GREATEST');
+  });
+
+  it('keeps the ordinary statement when the parsed reset adds nothing beyond the interval', async () => {
+    // interval 6h vs a 3h wall ⇒ rearmMs === intervalMs, so no reset-aware information survives
+    // the interval floor and there is nothing to defer past.
+    const { res, armStmt } = await run("You've hit your session limit · resets in 3 hours", 6 * 3600);
+    expect(res.rearmed).toBe(1);
+    expect(armStmt).toContain('LEAST');
+    expect(armStmt).not.toContain('GREATEST');
+  });
+});

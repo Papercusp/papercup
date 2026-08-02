@@ -369,21 +369,26 @@ export async function sendToSessionOwner(ownerId: string, body: string): Promise
   }
 }
 
-/** Same tone→class mapping HudBoard.tsx uses for its badge chips (P-007) —
- *  duplicated rather than imported: HudBoard.tsx is a page-level component,
- *  not a shared chip-rendering module, and the mapping is 4 lines. */
-const FOOTER_CHIP_TONE_CLASS: Record<HudBadge['tone'], string> = {
+/**
+ * Badge tone → the P-003 vocabulary's State-pill tone class.
+ *
+ * Replaces the old `hud__chip--*` mapping: Direction D renders these as the
+ * vocabulary's STATE shape (full-round, borderless, tinted) so a fact can never
+ * be mistaken for a control. `accent` collapses to the neutral pill on purpose —
+ * accent was carrying the MODE chips, and modes are no longer facts on this
+ * surface: they are controls in the band below (P-005).
+ */
+const STATE_TONE_CLASS: Record<HudBadge['tone'], string> = {
   neutral: '',
-  accent: 'hud__chip--accent',
-  good: 'hud__chip--good',
-  warn: 'hud__chip--warn',
-  bad: 'hud__chip--bad',
+  accent: '',
+  good: 'pc-ctl-state--good',
+  warn: 'pc-ctl-state--warn',
+  bad: 'pc-ctl-state--bad',
 };
 
-function footerChipClass(b: HudBadge): string {
-  const tone = FOOTER_CHIP_TONE_CLASS[b.tone];
-  if (b.kind !== 'mode') return `hud__chip ${tone}`;
-  return `hud__chip ${tone} hud__chip--mode${b.ownerDirected ? ' hud__chip--mode-owner' : ''}`;
+function stateChipClass(b: HudBadge): string {
+  const tone = STATE_TONE_CLASS[b.tone];
+  return tone ? `pc-ctl-state ${tone}` : 'pc-ctl-state';
 }
 
 /**
@@ -406,13 +411,13 @@ function footerChipClass(b: HudBadge): string {
  * title bar. Fleet role/slug stay: the panel never showed them, so they are
  * not a duplicate to remove.
  */
-function SessionFooter({
+function SessionStateHeader({
   entry,
   onOpenDetail,
 }: {
   entry: HudRosterEntry;
-  /** D-002's ONE deliberate duplicate: the footer's "⚠ N locks / M unread"
-   *  chip opens (if collapsed) and scrolls the dossier rail to the named
+  /** D-002's ONE deliberate duplicate: the "⚠ N locks / M unread" alert
+   *  opens (if collapsed) and scrolls the dossier rail to the named
    *  section — "the glance stays in the reading path, the detail moves." */
   onOpenDetail?: (section: 'locks' | 'coord') => void;
 }) {
@@ -438,8 +443,44 @@ function SessionFooter({
       claims: entry.claims ?? [],
       currentFiles: entry.currentFiles ?? [],
     };
-    return deriveBadges(normalized, { nowMs, thresholds: HUD_DEFAULT_THRESHOLDS }).filter((b) => b.id !== 'ctx');
+    return deriveBadges(normalized, { nowMs, thresholds: HUD_DEFAULT_THRESHOLDS }).filter(
+      // 'ctx' and 'claims' are rendered as their own pills below (unconditionally,
+      // and with the claim's identity rather than a bare done/total), so the
+      // derived duplicates are dropped rather than double-rendered.
+      //
+      // kind:'mode' is dropped for a DIFFERENT and more important reason: a mode
+      // is no longer a fact on this surface. Direction D makes it a control in
+      // the band below (P-005), and that is precisely what kills the duplicate
+      // pairs the owner reported — an `AUTO` chip up here beside an `Autonomy`
+      // button down there was the same concept wearing two costumes.
+      (b) => b.kind !== 'mode' && b.id !== 'ctx' && b.id !== 'claims',
+    );
   }, [entry, nowMs]);
+
+  /** Seconds since this session last did anything. `lastActiveAt` is the only
+   *  timestamp the roster row carries for it; an absent/unparseable one yields
+   *  null and the pill simply omits the age rather than inventing one. */
+  const ageSec = useMemo(() => {
+    if (!entry.lastActiveAt) return null;
+    const t = Date.parse(entry.lastActiveAt);
+    return Number.isNaN(t) ? null : Math.max(0, Math.round((nowMs - t) / 1000));
+  }, [entry.lastActiveAt, nowMs]);
+
+  /**
+   * The held claim — deck change #2 calls it "the single most useful thing about
+   * a working agent", and today it lives only in the rail.
+   *
+   * The deck drew it as `WI-6747 · 18m`. The AGE is deliberately absent: the
+   * roster row's claims are `{ id, planSlug, status }` with NO timestamp on
+   * them, and the nearest available field (`intentDeclaredAt`) dates the
+   * INTENT, not the claim. Rendering that as "claimed 18m ago" would put a
+   * confident, wrong number in the most-read pill on the surface. The id alone
+   * is honest and still the useful half.
+   */
+  const claimIds = useMemo(
+    () => (entry.claims ?? []).map((c) => c.id).filter((id): id is string => Boolean(id)),
+    [entry.claims],
+  );
   const awaitText =
     entry.openAwait && !isInfrastructureAwait(entry.openAwait)
       ? entry.openAwait.note?.trim() || `Waiting on ${entry.openAwait.eventKey}`
@@ -470,43 +511,85 @@ function SessionFooter({
       : 'Open the agent detail panel to this section';
 
   return (
-    <div className="oracle-session-footer" data-testid="session-chat-footer">
-      <div className="oracle-session-footer-row">
-        <LivenessDot liveness={entry.liveness} />
-        <span className="oracle-session-footer-liveness">{entry.liveness}</span>
-        {pct != null ? (
-          <span
-            className="oracle-session-footer-ctx"
-            title={`${entry.contextTokens ?? '?'} / ${entry.compactionLimit ?? '?'} tokens`}
-          >
-            ctx {pct}%
-          </span>
-        ) : null}
-        {detailChipLabel ? (
+    <div className="pc-ctl-band pc-ctl-band--status" data-testid="session-chat-state-header">
+      <span className="pc-ctl-state" title={`Liveness: ${entry.liveness}`}>
+        {/* The shared presence dot, not a local one — liveness colour stays
+            single-sourced with /coord and the HUD board. */}
+        <LivenessDot liveness={entry.liveness} size={6} />
+        {entry.liveness}
+        {ageSec != null ? ` · ${formatAge(ageSec)}` : ''}
+      </span>
+      {pct != null ? (
+        <span
+          className="pc-ctl-state"
+          title={`${entry.contextTokens ?? '?'} / ${entry.compactionLimit ?? '?'} tokens`}
+        >
+          ctx {pct}%
+        </span>
+      ) : null}
+      {claimIds.length > 0 ? (
+        <span
+          className="pc-ctl-state"
+          data-testid="session-chat-state-claim"
+          title={
+            claimIds.length === 1
+              ? `Holds ${claimIds[0]}`
+              : `Holds ${claimIds.length} items: ${claimIds.join(', ')}`
+          }
+        >
+          {claimIds[0]}
+          {claimIds.length > 1 ? ` +${claimIds.length - 1}` : ''}
+        </span>
+      ) : null}
+      {awaitText ? (
+        <span className="pc-ctl-state pc-ctl-state--warn" title={entry.openAwait?.eventKey}>
+          ⏳ {awaitText}
+        </span>
+      ) : null}
+      {badges.map((b) => (
+        <span key={b.id} className={stateChipClass(b)} title={b.title}>
+          {b.label}
+        </span>
+      ))}
+      {/* Alerts sit at the FAR edge, away from the plain facts: they are the
+          only things in this band you can click, and the one-way trip they make
+          (band → rail) is easier to learn when it always starts in one place. */}
+      <span className="pc-ctl-band__spacer" />
+      {locksCount > 0 ? (
+        <Tooltip label="Open the agent detail panel to its Locks section" side="bottom">
           <button
             type="button"
-            className="oracle-session-footer-detail-chip"
-            onClick={() => onOpenDetail?.(locksCount > 0 ? 'locks' : 'coord')}
-            title={detailChipTitle}
-            data-testid="session-chat-footer-detail-chip"
+            className="pc-ctl-alert"
+            onClick={() => onOpenDetail?.('locks')}
+            data-testid="session-chat-alert-locks"
+            aria-label={`${locksCount} lock${locksCount === 1 ? '' : 's'} — open the detail panel`}
           >
-            ⚠ {detailChipLabel}
+            <span className="pc-ctl-alert__inner">
+              ⚠ {locksCount} lock{locksCount === 1 ? '' : 's'}
+              <span className="pc-ctl-alert__chevron" aria-hidden="true">
+                ›
+              </span>
+            </span>
           </button>
-        ) : null}
-      </div>
-      {badges.length > 0 || awaitText ? (
-        <div className="hud__chips">
-          {awaitText ? (
-            <span className="hud__chip hud__chip--warn" title={entry.openAwait?.eventKey}>
-              ⏳ {awaitText}
+        </Tooltip>
+      ) : null}
+      {unreadCount > 0 ? (
+        <Tooltip label={detailChipTitle} side="bottom">
+          <button
+            type="button"
+            className="pc-ctl-alert"
+            onClick={() => onOpenDetail?.('coord')}
+            data-testid="session-chat-alert-coord"
+            aria-label={`${unreadCount} unread coord message${unreadCount === 1 ? '' : 's'} — open the detail panel`}
+          >
+            <span className="pc-ctl-alert__inner">
+              {unreadCount} coord unread
+              <span className="pc-ctl-alert__chevron" aria-hidden="true">
+                ›
+              </span>
             </span>
-          ) : null}
-          {badges.map((b) => (
-            <span key={b.id} className={footerChipClass(b)} title={b.title}>
-              {b.label}
-            </span>
-          ))}
-        </div>
+          </button>
+        </Tooltip>
       ) : null}
     </div>
   );

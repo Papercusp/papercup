@@ -330,17 +330,52 @@ file after you, it flips false and stays false: the tip is always newer than the
 candidate. Following the re-fire lever it used to emit can therefore never succeed — it just
 restarts a ~55min suite clock. This cost ~2h of the 2026-07-27 fleet-wide `facts:assert`
 outage (EI-18797292094433710): two wakes re-fired the gate while *every* candidate already
-carried the fix. **Settle it in the tool, not by hand: re-call with
-`dev:pipeline_position { path, marker: '<a distinctive literal string from YOUR change>' }`.**
-The marker verdict is definitive both ways — it reports the occurrence count in the judged
-commit, suppresses the false "does not contain" alarm when your change IS there, and still
-warns loudly when it genuinely is not. Supply a real fragment of your own edit (a new
-function name, an added error message, an id); a blank/whitespace marker is refused rather
-than matched against every line of indentation. Why a marker rather than the commit: **git-sync
-commits the whole shared tree under one identity**, so no commit is identifiably "yours" and
-`--is-ancestor` has nothing sound to test — which is why this could not simply be inferred.
-`uncommitted` / `absent` are the honest misses where the tool's exoneration does hold. And
-when a run is in flight, trust its own log line (`checkpointing candidate <sha>` in
+carried the fix.
+
+**Settle it with the ancestry + blob check. That is the only test that is sound both ways:**
+
+```bash
+C=<candidate sha>; F=<your path>
+git log --oneline -1 -S'<a string your change INTRODUCED>' -- "$F"   # -> the commit that added it
+git merge-base --is-ancestor <that commit> $C && echo IN || echo NOT-IN
+git show $C:"$F" | grep -c '<that same string>'                      # blob-level confirmation
+```
+
+⚠ **This corrects two claims this section used to make.** Both were wrong, and together they
+pushed the fleet onto the unreliable path — three agents independently hit the resulting
+false verdict inside ten minutes on 2026-08-02 (EI-19325709344484737, EI-19325915429897280):
+
+- ~~"`--is-ancestor` has nothing sound to test"~~ — **false.** It is true that git-sync commits
+  the whole tree under one identity, so no commit is identifiably yours *by author*. But
+  `git log -S'<a string your change introduced>'` finds the commit that INTRODUCED your change
+  regardless of who authored it, and `--is-ancestor` on **that** commit is exact. Authorship
+  being unusable does not make ancestry unusable.
+- ~~"The marker verdict is definitive both ways"~~ — **false.** `marker` is a substring/count
+  test with no notion of attribution, so a marker that is not unique to your edit returns
+  `present: true` and, worse, flips the `onStaging`/`inMain`/`deployed` legs from a correct
+  `false` to a wrong `true` with prose explaining the correct answer away as a newer-commit
+  artifact. Measured: marker `operator_turns` (already present 1× in the unmodified file)
+  reported a change as on staging, in main AND deployed when it was in none of the three.
+  **Count-1 is the most dangerous shape**, not a high count — count-1 is exactly what a
+  genuine one-line addition looks like, so nothing on the surface looks wrong.
+
+`marker` is still useful as a *quick* check, but only if the string is one the change
+**INTRODUCED** and that the file never contained before — never a bare identifier, table name,
+or type name the file already used. Treat a marker result as a hint; treat ancestry+blob as
+the verdict.
+
+⚠ **`callerEditsInCandidate.missing` with `reason: 'uncommitted'` is NOT evidence about YOUR
+committed change on this shared tree.** `release:checkpoint-run { paths }` compares the
+**working tree**, and every agent's edits sit unstaged until the next git-sync tick — so any
+peer's dirty edit in a file you name reports that file as `uncommitted`/missing even when your
+own fix is committed and demonstrably inside the candidate. Observed 2026-08-02 07:47Z:
+`sync-resolver/index.ts` came back `missing … reason: 'uncommitted'` while
+`--is-ancestor` + a blob grep proved the fix was in the candidate — the dirty edit belonged to
+a different agent working an unrelated resolver change in the same file. On a hot shared file
+this reason is near-permanently true and says nothing about you. `absent` is the honest miss;
+`uncommitted` is not.
+
+When a run is in flight, trust its own log line (`checkpointing candidate <sha>` in
 `/tmp/papercup-green-checkpoint-manual-*.log`) over `judgingSha`, which can lag it.
 
 ## Server-side edits and the two-port model — no hot-reload

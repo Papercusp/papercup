@@ -60,6 +60,19 @@ interface Leg {
   name: string;
   doc: EmbedFn;
   query: EmbedFn;
+  /**
+   * Set on legs that are MRL truncations of a shared base pass. Legs sharing a
+   * `family` are embedded ONCE at the family's widest `dims` and the narrower
+   * members are derived by re-truncation (`mrlTruncate` is transitive — asserted
+   * by gemma-embedder.test.ts "is TRANSITIVE").
+   *
+   * This is not just a speed-up, though it is a 4x one (one ~16-min prose pass
+   * instead of four). Deriving every width from the SAME forward pass removes
+   * run-to-run inference variance from the comparison entirely, so a measured
+   * delta between two widths cannot be anything BUT the width — which is the
+   * only reading a paired statistic (D-002) is entitled to make.
+   */
+  mrl?: { family: string; dims: number };
 }
 
 const K_VALUES = [1, 3, 5] as const;

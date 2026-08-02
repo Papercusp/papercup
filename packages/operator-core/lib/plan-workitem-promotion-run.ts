@@ -25,7 +25,13 @@ import { systemDistinctId } from './flag-distinct-id';
 import { readPlanBySlug } from './agent-tools/plans/source';
 import { createWorkItem, linkWorkItem } from './work-items';
 import { PLAN_ITEM_KIND, planItemRef } from './issue-blocks-merge';
-import { IMPLEMENTS_REL, listConvertedPlanItemRefs, type PlanItemStamp } from './plan-items/convert';
+import {
+  findConvertedWorkItemByStamp,
+  IMPLEMENTS_REL,
+  listConvertedPlanItemRefs,
+  type PlanItemStamp,
+} from './plan-items/convert';
+import { syncFeatureBlockEdges } from './dbos/feature-blockers-edges';
 import { syncLinkedWorkItemsToPlanLane, type PlanLaneSyncStatus } from './plan-items/reconcile-linked-work-items';
 import { computePromotions, type OpenPlanItem } from './plan-workitem-promotion';
 
@@ -36,7 +42,27 @@ export interface PromotePlanResult {
   skipped: number;
   /** true when the flag is OFF — promotion was a no-op */
   flagOff?: boolean;
+  /**
+   * P-006: feature→feature `blocks` edges written from the plan's `blockedBy` this call.
+   * Counts EDGES, not items — one item with two blockers contributes two.
+   */
+  edgesWritten: number;
+  /**
+   * P-006: minted items whose edge write was refused or failed (the commonest cause being
+   * the acyclicity guard). Non-fatal by design — see the pass-2 comment; the final policy
+   * is P-008's to rule on.
+   */
+  edgeFailures: number;
+  /**
+   * P-006: `blockedBy` refs that are still OPEN yet resolved to no work-item — i.e. a real
+   * anomaly (a dangling ref, or a promotion that should have happened and didn't), NOT the
+   * ordinary done/dropped blocker, which is deliberately not counted here.
+   */
+  blockersUnresolved: number;
 }
+
+/** The zero-edge result shape shared by every early return (nothing minted ⇒ nothing to link). */
+const NO_EDGES = { edgesWritten: 0, edgeFailures: 0, blockersUnresolved: 0 } as const;
 
 function isOpenStatus(status: string | null): boolean {
   return status !== 'done' && status !== 'dropped';
@@ -54,13 +80,13 @@ export async function promotePlanItems(opts: {
   createdBy: string;
 }): Promise<PromotePlanResult> {
   const enabled = await getFlag(FLAGS.PLAN_WORKITEM_PROMOTION, systemDistinctId());
-  if (!enabled) return { promoted: 0, skipped: 0, flagOff: true };
+  if (!enabled) return { promoted: 0, skipped: 0, flagOff: true, ...NO_EDGES };
 
   const read = await readPlanBySlug(opts.planSlug, {
     harnessSlug: opts.harnessSlug,
     workspaceId: opts.workspaceId,
   });
-  if (!read) return { promoted: 0, skipped: 0 };
+  if (!read) return { promoted: 0, skipped: 0, ...NO_EDGES };
 
   // Mirror convertPlanItem's item read: prefer the PG-canonical row.items, fall
   // back to the parsed markdown items. blockedBy is carried through too (EI-14024)
@@ -84,7 +110,7 @@ export async function promotePlanItems(opts: {
   const openItems: OpenPlanItem[] = rawItems
     .filter((i) => isOpenStatus(i.status))
     .map((i) => ({ id: i.id, text: i.text }));
-  if (openItems.length === 0) return { promoted: 0, skipped: 0 };
+  if (openItems.length === 0) return { promoted: 0, skipped: 0, ...NO_EDGES };
 
   // EI-14024: resolve each item's EFFECTIVE status (blocked-by graph aware, same
   // algorithm scheduler/plan-item-lane-guard.ts checks post-claim) over the FULL
@@ -121,6 +147,17 @@ export async function promotePlanItems(opts: {
 
   const textById = new Map(openItems.map((i) => [i.id, i.text]));
   let promoted = 0;
+  /**
+   * P-006 PASS 1 — mint every item first, recording `planItemId → workItemId`.
+   *
+   * The two-pass split is the whole point: a plan item's `blockedBy` names a PLAN-item id
+   * (`P-004`), and the work-item id it becomes (`WI-6923`) is not known until that item is
+   * minted. A single pass can only translate blockers that happen to appear EARLIER in the
+   * list, so any forward reference — an item blocked by one declared below it — would be
+   * silently dropped. Minting first makes the whole map available before any edge is written,
+   * so translation is order-independent.
+   */
+  const mintedByPlanItem = new Map<string, string>();
   for (const spec of specs) {
     const itemId = spec.sourcePlanItemIds[0];
     const stamp: PlanItemStamp = {
@@ -165,7 +202,111 @@ export async function promotePlanItems(opts: {
         // backstop that eventually parks it if this inline gate fails.
       });
     }
+    mintedByPlanItem.set(itemId, wi.id);
     promoted++;
   }
-  return { promoted, skipped: openItems.length - promoted };
+
+  const { edgesWritten, edgeFailures, blockersUnresolved } = await writePromotedDependencyEdges({
+    planSlug: opts.planSlug,
+    harnessSlug: opts.harnessSlug,
+    mintedByPlanItem,
+    blockedByById: new Map(rawItems.map((i) => [i.id, i.blockedBy])),
+    statusById: new Map(rawItems.map((i) => [i.id, i.status])),
+  });
+
+  return { promoted, skipped: openItems.length - promoted, edgesWritten, edgeFailures, blockersUnresolved };
+}
+
+/**
+ * P-006 PASS 2 — translate each newly-minted item's plan-level `blockedBy` into real
+ * `blocks` edges, so a promoted plan carries its DAG into the scheduler instead of only its
+ * nodes. Until now promotion read `blockedBy` solely to pick a lane (EI-14024's gate), which
+ * parks an item as `blocked` but records no edge — so nothing ever un-gated it from the
+ * dependency side, and the graph the plan described existed nowhere queryable.
+ *
+ * ⚠ WHICH WRITER — this is the part that is easy to get wrong and impossible to notice.
+ * Per D-010, edges go through `syncFeatureBlockEdges` (coord_links), **not** the
+ * `work_item_deps` store directly. Reads flipped to `work_item_deps` in the P-004 cutover, so
+ * a direct write there is read back correctly and its tests pass — but `syncFeatureBlockEdges`
+ * REBUILDS that table's feature-family edges for a blocked ref from coord_links (delete, then
+ * insert), so the next unrelated blocker sync for the same item would silently erase every
+ * edge promotion wrote. Writing through the authoritative seam keeps both stores consistent
+ * and cannot be clobbered.
+ *
+ * Endpoint form follows D-009 rule 1: promoted items are FEATURE-family (computePromotions
+ * hardcodes `kind: 'feature'`), so `featureRef()`'s harness-qualified `<harness>#<id>` is the
+ * correct form on both sides — the form a feature-family floor can actually see.
+ */
+async function writePromotedDependencyEdges(args: {
+  planSlug: string;
+  harnessSlug: string;
+  /** planItemId → workItemId for the items minted THIS call. */
+  mintedByPlanItem: ReadonlyMap<string, string>;
+  blockedByById: ReadonlyMap<string, string[]>;
+  statusById: ReadonlyMap<string, string | null>;
+}): Promise<{ edgesWritten: number; edgeFailures: number; blockersUnresolved: number }> {
+  let edgesWritten = 0;
+  let edgeFailures = 0;
+  let blockersUnresolved = 0;
+
+  // A blocker may have been promoted by an EARLIER run (this call only mints newly-open
+  // items), so the map alone is not enough: without the stamp lookup, incremental promotion
+  // — the common case, an item added to a plan that already started — would drop exactly the
+  // edges pointing back at the plan's existing work. Cached: one lookup per distinct blocker.
+  const resolvedByStamp = new Map<string, string | null>();
+  const resolveBlocker = async (planItemId: string): Promise<string | null> => {
+    const minted = args.mintedByPlanItem.get(planItemId);
+    if (minted) return minted;
+    const cached = resolvedByStamp.get(planItemId);
+    if (cached !== undefined) return cached;
+    const wi = await findConvertedWorkItemByStamp(args.planSlug, planItemId, args.harnessSlug);
+    const id = wi?.id ?? null;
+    resolvedByStamp.set(planItemId, id);
+    return id;
+  };
+
+  for (const [planItemId, workItemId] of args.mintedByPlanItem) {
+    const blockers = args.blockedByById.get(planItemId) ?? [];
+    if (blockers.length === 0) continue;
+
+    const blockerWorkItemIds: string[] = [];
+    for (const blockerPlanItemId of blockers) {
+      // A done/dropped blocker is SATISFIED, not missing — it never promoted (openItems
+      // filters it out) and must not gate anything. Skipped silently, and deliberately NOT
+      // counted as unresolved: counting it would make every healthy plan look anomalous.
+      if (!isOpenStatus(args.statusById.get(blockerPlanItemId) ?? null)) continue;
+      const resolved = await resolveBlocker(blockerPlanItemId);
+      if (!resolved) {
+        // An OPEN blocker with no work-item: a dangling `blockedBy` ref, or a promotion that
+        // should have happened and didn't. Surfaced in the result rather than dropped on the
+        // floor — a silently-missing edge is precisely this plan's bug class.
+        blockersUnresolved++;
+        continue;
+      }
+      if (resolved !== workItemId) blockerWorkItemIds.push(resolved);
+    }
+    // Nothing to write. Note we do NOT call the sync with an empty set: it has REPLACE
+    // semantics, so an empty call would clear edges rather than leave them alone.
+    if (blockerWorkItemIds.length === 0) continue;
+
+    try {
+      await syncFeatureBlockEdges(args.harnessSlug, workItemId, blockerWorkItemIds);
+      edgesWritten += blockerWorkItemIds.length;
+    } catch (err) {
+      // INTERIM, pending P-008's ruling on cycle behaviour at promotion. Drop-the-edge-and-
+      // warn is the safe holding position, not a settled decision: the items are already
+      // minted (there is no rollback), and plans:start calls promotePlanItems fire-and-forget
+      // under .catch(), so letting this throw would abort the remaining items' edges AND be
+      // swallowed invisibly — strictly worse than recording the failure. The count is on the
+      // result so a caller can see it rather than infer it from a log line.
+      edgeFailures++;
+      console.warn(
+        `[plan-workitem-promotion] blocks-edge write failed for ${args.harnessSlug}#${workItemId} ` +
+          `(plan ${args.planSlug} item ${planItemId}, blockers [${blockerWorkItemIds.join(', ')}]):`,
+        err,
+      );
+    }
+  }
+
+  return { edgesWritten, edgeFailures, blockersUnresolved };
 }

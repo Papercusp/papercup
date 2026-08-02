@@ -529,8 +529,7 @@ export interface CoordWindowResult {
 }
 
 /**
- * Bounded, keyset-paged inbox read — the cheap alternative to `readInbox` for a
- * caller that only needs the most RECENT slice.
+ * READ_INBOX_WINDOW_DOC — moved to `readInboxWindow` below.
  *
  * WHY (WI-6939). `readInbox`'s fast path is one `LIMIT 25000` query, and for a
  * typical owner it matches ~20.4k rows of which **99.8% are broadcasts** (`to`
