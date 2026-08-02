@@ -33,6 +33,7 @@ import { planSupersession } from '../../../coord/supersede';
 export default defineTool({
   name: 'coord:supersede',
   capability: 'coord:write',
+  requirePrincipal: false,
   agentRoles: [...COORD_ROLES],
   description:
     'Correct a coord message YOU sent: delivers the correction to the ORIGINAL audience (re-resolved from the stored envelope, so you never retype a recipient list) and marks the original superseded so anyone catching up later sees the correction instead of acting on retracted information. The observation-shaped counterpart to plans:add-decision — use it INSTEAD of broadcasting a retraction to everyone a second time.',
@@ -54,7 +55,7 @@ export default defineTool({
     summary: z.string().min(1).max(200).optional().describe('One-line headline for the correction (defaults to naming the superseded id).'),
   }),
   async handler(args, ctx) {
-    const identity = await resolveAgentIdentity(ctx);
+    const identity = resolveAgentIdentity(ctx);
     const original = await getMessageById(args.msg_id);
     const supersededBy = original ? await getSupersededBy(args.msg_id) : null;
 

@@ -258,4 +258,24 @@ describe('AgentOrders', () => {
       expect(queryByTestId('orders-wake-mode')).toBeNull();
     });
   });
+
+  describe('an agent is a "they", not an "it" (WI-7110)', () => {
+    it('subtitles the panel "what they were told"', () => {
+      setOrders({});
+      const { getByTestId } = render(<AgentOrders ownerId="su-1" />);
+      const header = getByTestId('agent-orders').querySelector('.pc-orders__tag');
+      expect(header?.textContent).toContain('what they were told');
+    });
+
+    it('never refers to the agent as "it"', () => {
+      // [owner 2026-08-02] asked for exactly this one word. Asserting the
+      // ABSENCE of the old copy as well as the presence of the new is what
+      // makes it a guard: a rewrite that reintroduces "what it was told"
+      // alongside the new string would still pass the assertion above.
+      setOrders({});
+      const { getByTestId } = render(<AgentOrders ownerId="su-1" />);
+      const header = getByTestId('agent-orders').querySelector('.pc-orders__tag');
+      expect(header?.textContent).not.toContain('what it was told');
+    });
+  });
 });

@@ -563,7 +563,17 @@ function SessionStateHeader({
       : 'Open the agent detail panel to this section';
 
   return (
-    <div className="pc-ctl-band pc-ctl-band--status" data-testid="session-chat-state-header">
+    /* `--with-toolbars`: the two toolbar clusters are absolutely positioned over
+       this band's row (they must be, to stay inside the conversation region that
+       D-002 maximizes), so the band reserves the gutters they occupy instead of
+       letting the first chip render UNDERNEATH the Orders button. Before the
+       Orders toggle moved left [owner 2026-08-02] only the right gutter was
+       needed, and it was free — the chips are left-aligned and never reached
+       that far. The left gutter is not free, so it is now declared. */
+    <div
+      className="pc-ctl-band pc-ctl-band--status pc-ctl-band--with-toolbars"
+      data-testid="session-chat-state-header"
+    >
       <span className="pc-ctl-state" title={`Liveness: ${entry.liveness}`}>
         {/* The shared presence dot, not a local one — liveness colour stays
             single-sourced with /coord and the HUD board. */}

@@ -94,6 +94,24 @@
   border-top: 1px solid var(--border);
 }
 
+/** The status band shares its row with the chat popup's two floating toolbar
+ *  clusters (WI-7110). They are absolutely positioned because they must live
+ *  INSIDE the conversation region that maximize paints (D-002), which means they
+ *  overlay this band rather than displacing it — so the band declares the two
+ *  gutters they sit in and keeps its chips clear of both.
+ *
+ *  Measured against the rendered controls, not guessed: left = `left: 8` + the
+ *  Orders button (7px padding + label + 4px gap + a 14px chevron + 7px padding);
+ *  right = `right: 8` + two icon buttons, the Activity button and their gaps.
+ *  Both carry slack so a font-size bump narrows the clearance instead of
+ *  reintroducing the overlap. `flex-wrap` on the base band means an unusually
+ *  long claim chip drops to a second line inside the padding rather than sliding
+ *  under a button. */
+.pc-ctl-band--with-toolbars {
+  padding-left: 92px;
+  padding-right: 156px;
+}
+
 /** Actions sharing a `group` cluster together inside the band (ChatActionBar).
  *  A <div>, not a <button>, so flex is safe here. */
 .chat-action-bar-group {

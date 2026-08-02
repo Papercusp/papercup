@@ -18,6 +18,8 @@
  *     toast "launched" for a fleet that does not exist.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { NuqsTestingAdapter } from 'nuqs/adapters/testing';
 
@@ -433,5 +435,58 @@ describe('FleetLaunchRow — launching', () => {
     await waitFor(() => expect(onLaunched).toHaveBeenCalledWith('my-fleet'));
     expect(suLaunchRefresh).toHaveBeenCalled();
     expect(toastCalls[0].kind).toBe('success');
+  });
+});
+
+/* ── WI-7110: ONE stylesheet owns this component's layout ────────────────────
+   [owner 2026-08-02] "The display of the bottom panel is all messed up."
+
+   The cause was not a wrong value — it was a SPLIT owner. P-007 restructured
+   this component into three stacked bands and styled the inner two in
+   chat-controls.css, while hud.css kept a pre-P-007 `flex-direction: row` on the
+   CONTAINER. The three bands then laid out side by side: the caption became a
+   left-hand column, the field grid shrank until `auto-fit` collapsed to a single
+   148px column, and the submit band's own `border-top` floated mid-panel as a
+   stray rule above an orphaned button.
+
+   Nothing caught it because the two rules lived in different files, so no reader
+   and no test ever saw them together — and a jsdom render cannot catch it either
+   (no stylesheet is applied, which is exactly why every behavioural test above
+   stayed green through the whole regression). The guard therefore has to be a
+   SOURCE assertion: it is the only kind that can observe the disagreement.
+
+   This locks the invariant, not the value: change the layout freely, but change
+   it in one place. ── */
+describe('WI-7110: the fleet row’s container layout has exactly one owner', () => {
+  const chatControlsCss = readFileSync(join(__dirname, 'chat-controls.css'), 'utf8');
+  const hudCss = readFileSync(join(__dirname, '../../adv/hud/hud.css'), 'utf8');
+
+  /** Rule bodies for a selector whose LAST simple selector is `.pc-fleet-launch-row`
+   *  — i.e. rules that style the CONTAINER itself, not a descendant of it. */
+  function containerRuleBodies(css: string): string[] {
+    return [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
+      .filter(([, selector]) =>
+        selector
+          .split(',')
+          .some((s) => s.trim().replace(/::?[a-z-]+(\([^)]*\))?$/i, '').trim().endsWith('.pc-fleet-launch-row')),
+      )
+      .map(([, , body]) => body);
+  }
+
+  it('chat-controls.css sets the container to a COLUMN — the grid needs the full width to spread', () => {
+    const bodies = containerRuleBodies(chatControlsCss).join('\n');
+    expect(bodies).toMatch(/flex-direction:\s*column/);
+  });
+
+  it('hud.css does not style the container at all — it is not this component’s stylesheet', () => {
+    // A `.pc-fleet-launch-row {...}` block reappearing here is the exact shape
+    // of the original bug, whatever it declares.
+    expect(containerRuleBodies(hudCss)).toEqual([]);
+  });
+
+  it('no stylesheet lays the container out as a ROW', () => {
+    for (const css of [chatControlsCss, hudCss]) {
+      expect(containerRuleBodies(css).join('\n')).not.toMatch(/flex-direction:\s*row/);
+    }
   });
 });

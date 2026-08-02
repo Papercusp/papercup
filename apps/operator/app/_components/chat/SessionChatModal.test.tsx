@@ -1069,6 +1069,72 @@ describe('SessionChatModal', () => {
       expect(screen.getByTestId('session-chat-dossier-rail')).toBeTruthy();
     });
 
+    /* ── WI-7110: the owner's own words about these two controls ─────────────
+       Every assertion below was un-covered when the owner filed it, which is
+       why each was silently wrong in shipped UI. They are asserted on the
+       VISIBLE text and the CONTAINER, not on a testid, because a testid is
+       exactly what a well-meaning rewrite keeps while changing the thing the
+       owner actually looks at. Same reason FleetLaunchRow.test.tsx's
+       "renders unconditionally" test exists: it already caught one revert of a
+       verbatim owner ask on this very surface (P-007). ── */
+    it('WI-7110: the Activity toggle is labelled "Activity" in BOTH states, and never says "Hide"', async () => {
+      seedRoster([{ ownerId: 'su-live-1' }]);
+      mockFetchOnce(200, { sessions: [{ source_kind: 'claude', session_id: 'claude-abc', last_ts: null }] });
+      const { rerender } = render(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
+      await waitFor(() => expect(screen.getByTestId('session-chat-dossier-rail')).toBeTruthy());
+
+      // Open: the label is the panel's NAME only — [owner 2026-08-02] "dont add
+      // the hide when its expanded".
+      const openLabel = screen.getByTestId('session-chat-dossier-toggle').textContent ?? '';
+      expect(openLabel.trim()).toBe('Activity');
+      expect(openLabel.toLowerCase()).not.toContain('hide');
+      expect(openLabel.toLowerCase()).not.toContain('detail');
+
+      // Collapsed: same word, so the hit target never changes width as it is
+      // pressed. Only the chevron's direction differs.
+      fireEvent.click(screen.getByTestId('session-chat-dossier-toggle'));
+      rerender(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
+      const closedLabel = screen.getByTestId('session-chat-dossier-toggle').textContent ?? '';
+      expect(closedLabel.trim()).toBe('Activity');
+      expect(closedLabel.toLowerCase()).not.toContain('hide');
+    });
+
+    it('WI-7110: each toggle carries a rendered chevron ICON, not a typographic ‹ ›', async () => {
+      seedRoster([{ ownerId: 'su-live-1' }]);
+      mockFetchOnce(200, { sessions: [{ source_kind: 'claude', session_id: 'claude-abc', last_ts: null }] });
+      render(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
+      await waitFor(() => expect(screen.getByTestId('session-chat-dossier-rail')).toBeTruthy());
+
+      // [owner 2026-08-02] "just make the open/close arror more visible". The
+      // old control drew "‹"/"›" as TEXT at the button's 11px font size; an
+      // <svg> is the thing that is actually visible, so assert the element
+      // rather than a size that a stylesheet could quietly drop.
+      for (const testid of ['session-chat-dossier-toggle', 'session-chat-orders-toggle']) {
+        const btn = screen.getByTestId(testid);
+        expect(btn.querySelector('svg')).toBeTruthy();
+        expect(btn.textContent ?? '').not.toMatch(/[‹›]/);
+      }
+    });
+
+    it('WI-7110: the Orders toggle sits in the LEFT toolbar cluster, not the right one', async () => {
+      seedRoster([{ ownerId: 'su-live-1' }]);
+      mockFetchOnce(200, { sessions: [{ source_kind: 'claude', session_id: 'claude-abc', last_ts: null }] });
+      render(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
+      await waitFor(() => expect(screen.getByTestId('session-chat-dossier-rail')).toBeTruthy());
+
+      // [owner 2026-08-02] "Move the orders show/hide button to the left side".
+      // Containment is the assertion: the right cluster is pinned to `right: 8`
+      // and grows leftward, so merely being FIRST among its children still
+      // renders in the top-right corner — the bug this replaced.
+      const left = screen.getByTestId('session-chat-toolbar-left');
+      const right = screen.getByTestId('session-chat-toolbar');
+      expect(within(left).getByTestId('session-chat-orders-toggle')).toBeTruthy();
+      expect(within(right).queryByTestId('session-chat-orders-toggle')).toBeNull();
+      // The Activity toggle stays on the right, beside the maximize controls —
+      // each toggle on the side its own panel opens from.
+      expect(within(right).getByTestId('session-chat-dossier-toggle')).toBeTruthy();
+    });
+
     it('honors an explicit chatDossier=false (deep link) by hiding the rail even though the default is open', async () => {
       nuqs.chatDossier = false;
       seedRoster([{ ownerId: 'su-live-1' }]);
