@@ -27,6 +27,7 @@ import { FLAGS } from '@papercusp/flags';
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
 import { planScheduleRoutineName } from './materialize-plan-schedule';
 import { FEATURE_FAMILY_KINDS } from '../../work-items';
+import { evaluatePlanStartReadiness } from '../../agent-tools/plans/plan-input-validation';
 
 /** launched_by label for a scheduled run's plan_runs row. */
 const PLAN_RUN_LAUNCHER = 'system:plan-run';
@@ -203,12 +204,22 @@ export async function runScheduledPlanFire(
   const now = Date.now();
 
   // 5. The instance plan — a copy of the template, pinned to it via template_slug.
+  //    P-010: the copy now carries the run's ARGUMENTS too (template/template_data/
+  //    input_schema). Without them the instance was a plan whose text said "audit each
+  //    path in `paths`" while the row itself held no `paths` — the executor could read
+  //    the instructions and not the inputs, which is exactly the inertness this plan
+  //    exists to fix. `template_data` holds the RESOLVED inputs (overrides merged), so
+  //    the instance records what this run actually ran with, not the template default.
+  const runInputsJson = runInputs === null || runInputs === undefined ? null : JSON.stringify(runInputs);
+  const inputSchemaJson =
+    template.input_schema == null ? null : JSON.stringify(template.input_schema);
   await sql`
     INSERT INTO harness_shared.harness_plans
       (workspace_id, harness_slug, plan_slug, title, status, content, content_hash,
-       template_slug, run_seq, origin)
+       template_slug, run_seq, origin, template, template_data, input_schema)
     VALUES (${workspaceId}, ${installSlug}, ${instanceSlug}, ${template.title}, 'active',
-            ${template.content}, ${template.content_hash}, ${templateSlug}, ${runSeq}, 'local')
+            ${template.content}, ${template.content_hash}, ${templateSlug}, ${runSeq}, 'local',
+            ${template.template}, ${runInputsJson}::text::jsonb, ${inputSchemaJson}::text::jsonb)
     ON CONFLICT (workspace_id, harness_slug, plan_slug) DO NOTHING
   `;
 
@@ -217,10 +228,10 @@ export async function runScheduledPlanFire(
   const runRows = await sql<Array<{ id: number }>>`
     INSERT INTO harness_shared.plan_runs
       (workspace_id, harness_slug, plan_slug, plan_content_hash, session_id, launched_by, launched_at,
-       status, title, updated_at, run_type, trigger, instance_plan_slug, run_seq)
+       status, title, updated_at, run_type, trigger, instance_plan_slug, run_seq, inputs)
     VALUES (${workspaceId}, ${installSlug}, ${templateSlug}, ${template.content_hash}, ${'sched:' + instanceSlug},
             ${PLAN_RUN_LAUNCHER}, ${now}, 'running', ${template.title}, ${now},
-            'scheduled', ${trigger}, ${instanceSlug}, ${runSeq})
+            'scheduled', ${trigger}, ${instanceSlug}, ${runSeq}, ${runInputsJson}::text::jsonb)
     RETURNING id
   `;
   const runId = Number(runRows[0].id);
@@ -234,8 +245,18 @@ export async function runScheduledPlanFire(
     if (!it?.id || it.status === 'done' || it.status === 'dropped') continue;
     const featureId = `PR-${runId}-${it.id}`;
     const title = (it.text ?? it.id).replace(/\s+/g, ' ').trim().slice(0, 140);
+    // P-010: the run's inputs ride the work-item payload. The worker that eventually
+    // claims this item via scheduler:get_next is a DIFFERENT agent in a different
+    // process from whatever fired the run — without the arguments on the payload it
+    // inherits the plan text and nothing to run it against.
     const payload = JSON.stringify({
-      plan_run: { runId, runSeq, instancePlanSlug: instanceSlug, templateSlug },
+      plan_run: {
+        runId,
+        runSeq,
+        instancePlanSlug: instanceSlug,
+        templateSlug,
+        ...(runInputs === null || runInputs === undefined ? {} : { inputs: runInputs }),
+      },
       plan_item: { plan_slug: instanceSlug, item_id: it.id, harness_slug: installSlug },
     });
     await sql.unsafe(

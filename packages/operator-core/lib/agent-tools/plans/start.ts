@@ -25,6 +25,7 @@ import { withPlanLock, bumpUpdatedDate } from './with-plan-lock';
 import { flipPlanFrontmatterStatus } from './set-plan-status';
 import { readPlanBySlug } from './source';
 import { isTerminalPlanStatus } from './plan-start-state';
+import { checkPlanStartable } from './plan-start-gate';
 import { bulkContent, mergeIds, runBulk } from '../_bulk';
 
 const argsSchema = z.object({
@@ -109,6 +110,17 @@ export default defineTool({
             status: lifecycle,
             message: `Plan is ${lifecycle}; reopen it (set status back to ready/draft) before starting.`,
           };
+        }
+
+        // P-006 start gate. `start` is gated even though it only flips status
+        // (D-008 Q1): a started plan is one the orchestrator may pick promoted
+        // features from, so it IS an execution signal. Gating the earliest door means
+        // a plan missing its arguments is caught here rather than by whichever
+        // downstream thing eventually tries to run it.
+        const gate = await checkPlanStartable(slug, await ctxToPlanSourceOpts(sctx));
+        if (!gate.ok) {
+          ctxAny.metadata?.({ slug, harnessSlug, refused: gate.refusal.code });
+          return { ok: false as const, slug, harnessSlug, ...gate.refusal };
         }
 
         const rows = await withWorkspace(startWorkspaceId, async (tx) => {

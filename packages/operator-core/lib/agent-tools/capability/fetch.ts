@@ -11,6 +11,7 @@ import { join } from 'node:path';
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { INLINE_OUTPUT_CAP, scratchDir } from './bash-jobs';
+import { heuristicScreener, labelExternalContent } from '../../external-content';
 
 const DEFAULT_MAX_BYTES = 100_000;
 const HARD_MAX_BYTES = 10 * 1024 * 1024;
@@ -66,6 +67,32 @@ export default defineTool({
       }
       const headers: Record<string, string> = {};
       res.headers.forEach((v, k) => { headers[k] = v; });
+
+      // qm-borrowed-ideas-2026-08-01 P-008: this body is remote text entering agent
+      // context. LABEL it (source + untrusted notice + a screen verdict) so the
+      // reader knows what it is looking at. The body itself is returned VERBATIM —
+      // sanitizing it would corrupt a JSON/CSV payload the caller intends to parse
+      // (D-004). Provenance is metadata; quarantining is for prose destined for a
+      // prompt, which is a different entry point on the same module.
+      let host = 'unknown-host';
+      try { host = new URL(args.url).host; } catch { /* keep the fallback */ }
+      const provenance = labelExternalContent({ kind: 'fetch', host });
+      let screened;
+      try {
+        screened = await heuristicScreener.screen({
+          content: bodyOut,
+          source: { kind: 'fetch', host },
+          signal: ac.signal,
+        });
+      } catch (e: unknown) {
+        // A screener fault must never fail the fetch — but it must be VISIBLE,
+        // never a silent fail-open (qm's unscreened-notice rule).
+        screened = {
+          decision: 'unavailable' as const,
+          reason: e instanceof Error ? e.message : 'screener error',
+        };
+      }
+
       return {
         content: [
           {
@@ -77,6 +104,7 @@ export default defineTool({
               headers,
               truncated,
               ...(logPath ? { log_path: logPath } : {}),
+              provenance: { ...provenance, screened },
               body: bodyOut,
             }),
           },

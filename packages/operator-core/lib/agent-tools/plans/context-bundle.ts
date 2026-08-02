@@ -75,6 +75,13 @@ export interface PlanBundleInput {
   /** Revision rationales newest-first; only revisions that recorded
    *  one (rationale-less revisions are omitted, not shown as blanks). */
   rationales: PlanBundleRationale[];
+  /** The RESOLVED inputs this run executes with (plan-structured-inputs P-009).
+   *  Omitted/null for a plan that declares none — the block is then absent entirely
+   *  rather than rendered empty, so an un-parameterized plan's seed is unchanged. */
+  inputs?: unknown;
+  /** The plan's declared JSON Schema, used ONLY to label each input with its
+   *  `description` and to mark which are required. Never rendered itself. */
+  inputSchema?: unknown;
 }
 
 /** The assembled bundle plus the launch metadata `plans:launch` needs. */
@@ -111,6 +118,64 @@ function formatRationaleEntry(r: PlanBundleRationale): string {
 }
 
 /**
+ * Render the INPUTS block (plan-structured-inputs P-009) — the arguments this run was
+ * started with, or '' when the plan declares none.
+ *
+ * This block is the whole reason the feature is not inert. Before it, a launched plan
+ * agent received the plan markdown and the revision digest and nothing else, so a plan
+ * whose text said "audit each path in `paths`" gave the agent no `paths`.
+ *
+ * Each value is JSON-encoded (not prose-formatted) so the agent can tell a string from
+ * a one-element array, and each carries its schema `description` when one exists —
+ * that description is the only place a plan author can explain what an argument MEANS,
+ * so dropping it would leave the agent guessing at intent it was told.
+ *
+ * Values are delivered HERE, structurally, and never interpolated into the plan prose
+ * (D-005): the moment `{{ inputs.x }}` renders inside plan markdown this becomes a
+ * template language, and it grows conditionals within a month.
+ */
+export function renderInputsBlock(inputs: unknown, inputSchema: unknown): string {
+  if (!inputs || typeof inputs !== 'object' || Array.isArray(inputs)) return '';
+  const entries = Object.entries(inputs as Record<string, unknown>);
+  if (entries.length === 0) return '';
+
+  const schema =
+    inputSchema && typeof inputSchema === 'object' && !Array.isArray(inputSchema)
+      ? (inputSchema as { properties?: Record<string, { description?: unknown }>; required?: unknown })
+      : null;
+  const required = new Set(
+    Array.isArray(schema?.required) ? schema!.required.filter((r): r is string => typeof r === 'string') : [],
+  );
+  const pad = Math.max(...entries.map(([k]) => k.length));
+
+  const lines = entries.map(([k, v]) => {
+    const desc = schema?.properties?.[k]?.description;
+    const note = [
+      required.has(k) ? 'required' : null,
+      typeof desc === 'string' && desc.trim() ? desc.trim() : null,
+    ]
+      .filter(Boolean)
+      .join(' — ');
+    let rendered: string;
+    try {
+      rendered = JSON.stringify(v) ?? String(v);
+    } catch {
+      rendered = String(v);
+    }
+    return `${k.padEnd(pad)} = ${rendered}${note ? `   (${note})` : ''}`;
+  });
+
+  return [
+    SECTION_RULE,
+    'INPUTS — the arguments this run was started with',
+    SECTION_RULE,
+    '',
+    ...lines,
+    '',
+  ].join('\n');
+}
+
+/**
  * Assemble the seed text. Pure — no IO — so the assembly is unit
  * testable without the FS or the embedded PG; `buildPlanContextBundle`
  * does the reads and calls this.
@@ -132,6 +197,10 @@ export function assemblePlanContextBundleText(input: PlanBundleInput): string {
       ? input.rationales.map(formatRationaleEntry).join('\n\n')
       : 'No revision rationales have been recorded for this plan yet.';
 
+  // The INPUTS block sits BETWEEN the header and the plan body: the agent should know
+  // what it was given before it reads instructions that refer to those arguments.
+  const inputsBlock = renderInputsBlock(input.inputs, input.inputSchema);
+
   return [
     LAUNCH_PREAMBLE,
     '',
@@ -139,6 +208,7 @@ export function assemblePlanContextBundleText(input: PlanBundleInput): string {
     headerLines.join('\n'),
     SECTION_RULE,
     '',
+    ...(inputsBlock ? [inputsBlock] : []),
     input.planMarkdown.trimEnd(),
     '',
     SECTION_RULE,
