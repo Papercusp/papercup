@@ -36,7 +36,12 @@ import {
   stampSurfaced,
 } from './session-epoch-ledger';
 import { hiveScopeKey, hiveSlugFromScope, resolveHiveSlugsForHarnesses } from './hive-scope';
-import { retrievalQueryText, toRecallQuery, type RecallQueryInput } from './recall-query';
+import {
+  lexicalQueryText,
+  retrievalQueryText,
+  toRecallQuery,
+  type RecallQueryInput,
+} from './recall-query';
 import { memoryTierOf } from './two-tier';
 import {
   MEMORY_INJECT_TIMEOUT_MS,
@@ -485,9 +490,12 @@ async function buildBlockInner(
   mark: (label: string, ms: number) => void,
 ): Promise<string | null> {
   // P-042 (F-J): normalize the accepted forms ONCE, here, so the three readers
-  // below share one query object. `queryText` is what actually goes to the index
-  // — today the user text alone; see retrievalQueryText() for why signals are
-  // carried but not yet issued.
+  // below share one query object. P-044 (F-L) then splits what is ISSUED into
+  // two texts, one per fusion leg: `queryText` (the user text) is embedded by
+  // the cosine leg, and `lexText` (user text + the agent's identifiers) is
+  // token-matched by the lexical leg. `lexText` is undefined when there are no
+  // signals, which makes this path byte-identical to pre-P-044 for every caller
+  // that carries none.
   //
   // The emptiness gate deliberately tests the EFFECTIVE retrieval text rather
   // than `userText` directly: today they are the same string (so this is
@@ -497,6 +505,7 @@ async function buildBlockInner(
   // which is precisely the machine-injected turn Phase 11 exists to fix.
   const query = toRecallQuery(input.queryContext);
   const queryText = retrievalQueryText(query);
+  const lexText = lexicalQueryText(query);
   if (!queryText.trim()) return null;
   if (isMemoryDegraded()) return null;
 
@@ -619,6 +628,10 @@ async function buildBlockInner(
             minScore,
             minLexScore,
             fusionMode,
+            // P-044 (F-L): the identifier-bearing text goes to the LEXICAL leg
+            // only. Omitted when there are no agent signals, so the two legs
+            // then share one query exactly as before.
+            ...(lexText !== undefined ? { lexicalQuery: lexText } : {}),
             ...(diversityLambda !== undefined ? { diversify: { lambda: diversityLambda } } : {}),
           });
 

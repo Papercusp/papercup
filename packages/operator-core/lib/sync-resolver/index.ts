@@ -1110,14 +1110,15 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     // rather than on a real orders change. Liveness reaches the UI through the
     // presence-backed queries instead. If the panel ever needs presence-driven
     // pushes, add it knowingly — this omission is a decision, not an oversight.
-    backingTables: [
-      'harness_shared.work_items',
-      'harness_shared.session_briefs',
-      'harness_shared.plan_item_claims',
-      'harness_shared.carry_notes',
-      'harness_shared.agent_modes',
-      'harness_shared.agent_mode_changes',
-    ],
+    //
+    // ONLY work_items is declared, though the chain also reads session_briefs,
+    // plan_item_claims, carry_notes, agent_modes and agent_mode_changes. Those five
+    // have NO entry in table-to-query-names.ts, so declaring them would assert a
+    // push-liveness that does not exist — the panel would LOOK live and refresh on
+    // remount only, which is the accounts.pool defect (WI-6796) this file's second
+    // guard was written to catch. Declaring less than you read is safe; declaring
+    // more than is WIRED is the bug. Wiring the other five is WI-6969.
+    backingTables: ['harness_shared.work_items'],
     argsSchema: z.object({ ownerId: z.string().min(1) }),
     resolve: async (args) => {
       const { ownerId } = args as { ownerId: string };
@@ -5405,17 +5406,15 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
   'operatorTurns.byConversation': {
-    // WI-6964. listTurnsRecent reads operator_conversations + operator_turns, but only
-    // the latter changes the ROWS this query returns — resolving the conversation does
-    // not alter its turn list, so listing operator_conversations would push turns on
-    // unrelated conversation-row writes.
-    //
-    // NB: su-37bf2 is deleting this entry under P-025 (no-http-anywhere-2026-07-28 D-016)
-    // — merged away into operatorTurns.page, 12 invalidation sites already repointed.
-    // This declaration is here so the shrink-only backingTables ratchet is satisfied in
-    // the interim rather than leaving the gate red on an unknown schedule; it is expected
-    // to be removed WITH the entry, and is correct if the merge is ever reconsidered.
-    backingTables: ['harness_shared.operator_turns'],
+    // WI-6964: deliberately left UNDECLARED. Its correct declaration is
+    // ['harness_shared.operator_turns'], but the second guard below then requires a
+    // matching entry in table-to-query-names.ts, and declaring without wiring is the
+    // false-liveness bug (WI-6796). su-37bf2 is DELETING this entry under P-025
+    // (no-http-anywhere-2026-07-28 D-016) — merged into operatorTurns.page, 12
+    // invalidation sites already repointed — so that deletion, not a declaration, is
+    // what satisfies the shrink-only ratchet here. If the merge is ever reconsidered,
+    // declare the table above AND add this query name to the operator_turns array in
+    // table-to-query-names.ts in the same change. See WI-6969.
     argsSchema: z.object({ conversationId: z.string().min(1), limit: clampedLimit(500, 200) }),
     resolve: async (args) => {
       const { conversationId, limit } = args as { conversationId: string; limit: number };

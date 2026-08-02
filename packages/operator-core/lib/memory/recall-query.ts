@@ -10,14 +10,32 @@
  * "continue") the human part is boilerplate or absent, so retrieval is asked a
  * question nobody actually asked.
  *
- * WHAT THIS ITEM DELIBERATELY DOES NOT DO. P-042 is the SEAM ONLY — no retrieval
- * behavior changes here, so it lands and stays revertable on its own.
- * `retrievalQueryText()` still returns the user text alone; P-043 populates the
- * signals and P-044 routes them to the lexical leg. If you are here because you
- * want signals to affect retrieval, the edit belongs in `retrievalQueryText()`
- * — and per D-014 it must ADD to a leg's QUERY, never re-rank or reorder a
- * leg's OUTPUT (reordering a fusion leg rewrites the fusion INPUT, the exact
- * trap F-D caught).
+ * THE TWO TEXTS THIS MODULE PRODUCES (P-044 / F-L landed the second one):
+ *
+ *   `retrievalQueryText()`  → the COSINE leg's query. The user text ALONE, and
+ *                             that is now a positive design commitment rather
+ *                             than a not-yet: the cosine leg embeds its query as
+ *                             ONE vector, so every identifier token in it drags
+ *                             that vector off-topic (measured, D-041).
+ *   `lexicalQueryText()`    → the LEXICAL leg's query. The user text PLUS a
+ *                             bounded set of the agent's identifiers, which is
+ *                             the leg that wins on exactly those.
+ *
+ * Both are QUERY composition. Per D-014 nothing here re-ranks or reorders a
+ * leg's OUTPUT — reordering a fusion leg rewrites the fusion INPUT, the exact
+ * trap F-D caught.
+ *
+ * ⚠ WHAT ROUTING SIGNALS TO THE LEXICAL LEG CAN AND CANNOT DO, because the
+ * answer differs per caller and the optimistic reading is the wrong one on the
+ * path that matters most. In `floored-union` fusion the lexical leg is a
+ * co-equal RECALL source: a strong identifier match is ADMITTED even when the
+ * cosine leg missed the row entirely. In `cosine-gated` it is a RE-RANKER only
+ * — the candidate set is the cosine hits, so the lexical leg can promote the
+ * on-topic record within them but can never rescue one the cosine leg dropped.
+ * The operator's push path (`injectFusionMode()`) is cosine-gated. So on
+ * turn-start / mid-turn injection these signals reorder the admitted set; the
+ * lever that decides ADMISSION there is the cosine query, which is why P-044's
+ * larger half is keeping identifiers OUT of it.
  */
 
 /**
@@ -101,21 +119,128 @@ export function toRecallQuery(input: RecallQueryInput): RecallQuery {
 }
 
 /**
- * The ONE place that decides what text is issued to the index — and therefore
- * the single edit site for P-044.
+ * The COSINE leg's query text.
  *
- * ⚠ IT IGNORES `agentSignals` ON PURPOSE, and a test pins that. P-042 is the
- * seam only: signals may be CARRIED through the seam but must not yet reach
- * retrieval, so the P-041 baseline being measured right now is not contaminated
- * by a fix it is meant to judge. When P-044 changes this, that test should fail
- * — it is the tripwire, not an obstacle; update it deliberately and say so.
+ * ⚠ IT IGNORES `agentSignals`, and after P-044 that is the POINT rather than a
+ * placeholder — do not "finish the job" by folding signals in here. The cosine
+ * leg embeds this string as one vector; identifiers in it were measured
+ * DILUTING that vector (D-041), which is the defect P-044 removes. Signals go to
+ * `lexicalQueryText()` below.
  *
- * ⚠ DO NOT route signals into retrieval by concatenating them into `userText` at
- * a call site. That would send agent identifiers into the COSINE leg, which is
- * exactly what P-044 forbids (identifiers are the lexical leg's job; cosine is
- * worst at them, and it would also corrupt P-041's query-shape telemetry, which
- * records what was asked).
+ * ⚠ DO NOT concatenate signals into `userText` at a call site either — same
+ * effect by the back door, and it would additionally corrupt P-041's
+ * query-shape telemetry, which records what was asked.
  */
 export function retrievalQueryText(query: RecallQuery): string {
   return query.userText;
+}
+
+// ─────────────────── the lexical leg's query (P-044 / F-L) ───────────────────
+
+/**
+ * How many of each identifier class reach the lexical query.
+ *
+ * ⚠ THESE ARE FAR TIGHTER THAN `agent-signals.ts`'s OWN CAPS (12 paths / 8 ids /
+ * 8 symbols) AND THAT IS DELIBERATE — the two caps bound different things. The
+ * resolver's caps bound how much SIGNAL it carries; these bound how much of it
+ * may enter a SCORED QUERY, and the scoring makes a long query actively harmful
+ * rather than merely wasteful:
+ *
+ *  - `canonical-store.lexicalSearch` scores a row `Σ(per-token field weight) /
+ *    (tokens × 3)`. The denominator is the QUERY's token count, so each extra
+ *    token lowers every hit's normalized score. `minLexScore` (0.40 on the push
+ *    path) is an absolute bar on that number and genuine exact-identifier
+ *    matches already run 0.33–0.96, so an unbounded identifier dump does not
+ *    "add signal" — it pushes real matches UNDER the admission bar and removes
+ *    the hits it was meant to rescue.
+ *  - `lexicalTokens` caps at LEXICAL_MAX_TOKENS = 32 and slices the TAIL, so an
+ *    over-long query silently discards its own end.
+ *
+ * A single repo path is worth ~6-8 tokens on its own (`packages/operator-core/
+ * lib/memory/injection.ts` → 6 whole + 2 sub), which is why paths contribute
+ * their BASENAME here rather than the whole path: the basename is the
+ * discriminative part, and it is also how the corpus tends to name a file in
+ * prose. These numbers are a bounded starting point, not a tuned one — P-045 is
+ * where they get measured, and D-008's lesson applies before reaching for them.
+ */
+export const LEXICAL_MAX_PATHS = 4;
+export const LEXICAL_MAX_IDS = 4;
+export const LEXICAL_MAX_SYMBOLS = 2;
+
+/** Strip a directory prefix and one trailing extension: `a/b/injection.ts` → `injection`. */
+function pathStem(p: string): string {
+  const base = p.slice(p.lastIndexOf('/') + 1);
+  const dot = base.lastIndexOf('.');
+  return dot > 0 ? base.slice(0, dot) : base;
+}
+
+function pushCapped(into: string[], seen: Set<string>, value: string, cap: number): void {
+  const v = value.trim();
+  if (!v || seen.has(v.toLowerCase())) return;
+  if (into.length >= cap) return;
+  seen.add(v.toLowerCase());
+  into.push(v);
+}
+
+/**
+ * The identifier terms a `RecallQuery`'s signals contribute to the lexical leg,
+ * most-recent-first within each class (the resolver hands them over in that
+ * order and the caps keep the head).
+ *
+ * Ordered ids → activeFile → paths → symbols: an id is the single most
+ * discriminative token this system has, and the ordering decides who survives
+ * `lexicalTokens`' 32-token cap if the user text is long.
+ *
+ * ⚠ The work-item's TITLE and BODY are deliberately NOT included. They are
+ * authored prose — the same class the lexical query's token normalization
+ * punishes hardest — and `workItem.body` alone is capped at 1,200 chars
+ * upstream, which would swamp both the token cap and every real hit's score.
+ * Only its ID is an identifier. (Whether agent-adjacent PROSE belongs in
+ * retrieval at all is P-047's question, to be settled on bench evidence.)
+ */
+export function agentSignalTerms(signals: AgentSignals | undefined): string[] {
+  if (!signals) return [];
+  const terms: string[] = [];
+  const seen = new Set<string>();
+
+  const idCap = LEXICAL_MAX_IDS;
+  const wiId = signals.workItem?.id?.trim();
+  if (wiId) pushCapped(terms, seen, wiId, idCap);
+  for (const id of signals.trajectory?.ids ?? []) pushCapped(terms, seen, id, idCap);
+
+  const paths: string[] = [];
+  const pathSeen = new Set<string>();
+  if (signals.activeFile) pushCapped(paths, pathSeen, pathStem(signals.activeFile), LEXICAL_MAX_PATHS);
+  for (const p of signals.trajectory?.paths ?? []) {
+    pushCapped(paths, pathSeen, pathStem(p), LEXICAL_MAX_PATHS);
+  }
+  terms.push(...paths);
+
+  const symbols: string[] = [];
+  const symSeen = new Set<string>();
+  for (const s of signals.trajectory?.symbols ?? []) {
+    pushCapped(symbols, symSeen, s, LEXICAL_MAX_SYMBOLS);
+  }
+  terms.push(...symbols);
+
+  return terms;
+}
+
+/**
+ * The LEXICAL leg's query text — `SearchOptions.lexicalQuery`.
+ *
+ * Returns `undefined` when there is nothing to add, so the caller passes no
+ * override and the backend gives both legs the same string: with no agent
+ * signals this path is byte-identical to pre-P-044 behaviour, which is what
+ * keeps the change measurable against the P-041 baseline.
+ *
+ * The user text is KEPT, not replaced. A human who types a literal `WI-6512` is
+ * the exact-identifier case this leg exists for, and dropping their words to
+ * make room for the agent's would trade a real signal for a speculative one.
+ */
+export function lexicalQueryText(query: RecallQuery): string | undefined {
+  const terms = agentSignalTerms(query.agentSignals);
+  if (terms.length === 0) return undefined;
+  const user = query.userText.trim();
+  return user ? `${user} ${terms.join(' ')}` : terms.join(' ');
 }

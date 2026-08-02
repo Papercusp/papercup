@@ -281,3 +281,40 @@ describe('the missing link, end to end (P-003)', () => {
     await vi.waitFor(() => expect(launches()).toBe(2), { timeout: 5_000 });
   });
 });
+
+describe('restart recovery (WI-4890): a host reboot must not silently strand the Mug\'s event wakes', () => {
+  it('registerPotWakeRules re-projects PERSISTED subscriptions after the in-memory registry is wiped, and the re-projected rule still fires a REAL launch through the real dispatcher', async () => {
+    // Sanity: the subscriptions armed in beforeAll are still live from the prior
+    // tests in this file.
+    const before = listReactionRules().filter((r) => r.id.startsWith(`pot-wake:${WS}#`));
+    expect(before.length).toBeGreaterThan(0);
+
+    // Simulate the crash/restart: the reaction registry is process-local memory
+    // (per wake.ts's module doc: "Re-registered at boot ... since the rule registry
+    // is in-memory") — a host restart wipes it while Postgres still holds whatever
+    // a prior (now-dead) process persisted. This is the EXACT WI-4890 incident shape:
+    // "time.active=false/liveRuleIds=[] despite persisted started=true and three
+    // subscription specs."
+    _resetReactionsForTests();
+    expect(listReactionRules().filter((r) => r.id.startsWith(`pot-wake:${WS}#`))).toHaveLength(0);
+
+    // This is exactly what index.ts's boot wiring runs for every
+    // backgroundWorkspaceIds() entry on every host start (the WI-4890 fix) —
+    // re-project the persisted pot_wake subscriptions into the live registry.
+    const { registerPotWakeRules } = await import('./wake');
+    const n = await registerPotWakeRules(WS);
+    expect(n).toBe(before.length);
+    expect(listReactionRules().filter((r) => r.id.startsWith(`pot-wake:${WS}#`))).toHaveLength(before.length);
+
+    // Prove the re-projected rule is not merely REGISTERED but genuinely LIVE:
+    // clear the floor debounce (as the earlier "fresh start" test does) then fire
+    // a real plans:start through the real dispatcher — the "subsequent autonomous
+    // wake" the bug asked to verify.
+    await rootSql`UPDATE harness_shared.pot_wake SET payload = payload - 'lastWakeAt' WHERE workspace_id = ${WS}`;
+    await insertPlan('plan-restart-recovery');
+    const launchesBefore = launches();
+    const out = await dispatch('plans:start', { slug: 'plan-restart-recovery', harness: 'papercup' });
+    expect(out.transitioned).toBe(true);
+    await vi.waitFor(() => expect(launches()).toBe(launchesBefore + 1), { timeout: 5_000 });
+  });
+});
