@@ -208,21 +208,30 @@ describe("Packaged Papercusp desktop — broader real interactions (P-006)", () 
     // when the instrumentation was fine and the TARGET was wrong. /workbench
     // mounts <HarnessDock layoutName="workbench" slug={harness}/> unconditionally
     // (apps/operator-vite/src/routes/workbench.tsx), so it is the honest target.
-    // NB: SPA-navigate via pushState+popstate, the same way the palette test
-    // does — NOT location.assign(). A full document reload inside the Tauri
-    // webview tears down the WebDriver session mid-test ("Could not parse script
-    // result" then "invalid session id"), so the measure could never be read
-    // back even when the dock did mount.
+    // NB: SPA-navigate via spaNavigate() (pushState only) — NOT
+    // pushState+popstate, and NOT location.assign(). A full document reload
+    // inside the Tauri webview tears down the WebDriver session mid-test
+    // ("Could not parse script result" then "invalid session id"), so the
+    // measure could never be read back even when the dock did mount. The
+    // synthetic popstate this used to also dispatch is worse than redundant —
+    // see spaNavigate's doc comment: it desyncs TanStack Router's history
+    // index and stalls the ACTUAL route transition 10-40+s, well past this
+    // test's whole budget, independent of the dock itself (WI-6543).
+    //
+    // Deliberately NOT `await waitForAppMount(browser)` after this navigate:
+    // that helper's mount marker is `.pc-advshell`/`[data-testid="operator-
+    // shell"]` (AdvShell, the /adv shell) — /workbench never renders it (see
+    // apps/operator-vite/src/routes/workbench.tsx), so that call can only
+    // ever time out here. The `latestMeasure` wait below is this route's own,
+    // honest readiness check.
     await browser.execute((name) => {
       try {
         if (performance.clearMeasures) performance.clearMeasures(name);
       } catch {
         /* ignore */
       }
-      history.pushState({}, "", "/workbench?harness=papercusp");
-      window.dispatchEvent(new PopStateEvent("popstate"));
     }, NAME);
-    await waitForAppMount(browser);
+    await spaNavigate("/workbench?harness=papercusp");
 
     await browser.waitUntil(async () => (await latestMeasure(NAME)) !== null, {
       timeout: 20_000,
@@ -246,17 +255,19 @@ describe("Packaged Papercusp desktop — broader real interactions (P-006)", () 
     // split (WorkItemsPanel + DetailPanel). Same route the Playwright e2e
     // (apps/operator/e2e/adv-work-item-detail-chat.spec.ts) drives; here against
     // the REAL papercusp harness rather than a stubbed slug, so we discover a
-    // row instead of deep-linking a fixed id. SPA-navigate via pushState —
-    // location.assign() tears down the WebDriver session (see the note above).
-    await browser.execute(() => {
+    // row instead of deep-linking a fixed id. SPA-navigate via spaNavigate() —
+    // location.assign() tears down the WebDriver session (see the note above),
+    // and pushState+popstate stalls a cross-route transition 10-40+s (see
+    // spaNavigate's doc comment, WI-6543).
+    const harnessesUrl = await browser.execute(() => {
       const u = new URL(location.href);
       u.searchParams.set("tab", "harnesses");
       u.searchParams.set("slug", "papercusp");
       u.searchParams.set("scope", "self");
       u.searchParams.set("welcome", "0");
-      history.pushState({}, "", u.pathname + u.search + u.hash);
-      window.dispatchEvent(new PopStateEvent("popstate"));
+      return u.pathname + u.search + u.hash;
     });
+    await spaNavigate(harnessesUrl);
     await waitForAppMount(browser);
 
     // Wait for at least one row in the Work items grid. RichGrid (grid-core)
