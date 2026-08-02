@@ -475,6 +475,11 @@ export function isBackedLiveDroveUiClaim(evidence: CompletionVerificationEvidenc
   if (citesScreenshotArtifact(evidence.testsRun)) return true;
   if (citesScreenshotArtifact(evidence.testResult)) return true;
   if (evidence.filesChanged?.some((f) => citesScreenshotArtifact(f))) return true;
+  // EI-18855312333744373: a deployed URL + HTTP status (e.g. `https://x.com/about ->
+  // 200`) is just as real a citation as a screenshot path — a web-deploy verification
+  // naturally has no image file to name at all. citesWebProbeEvidence is defined below
+  // in this module as a `function` declaration, so it is hoisted and safe to call here.
+  if (citesWebProbeEvidence(evidence)) return true;
   return false;
 }
 
@@ -543,7 +548,7 @@ export interface LiveDroveUiArtifactVerdict {
   /** May this close land? */
   ok: boolean;
   /** What carried it (or would have): a falsifiable assertion, or a real image. */
-  basis: 'not-applicable' | 'assertion' | 'image' | 'none';
+  basis: 'not-applicable' | 'assertion' | 'url' | 'image' | 'none';
   /** Populated only when `ok` is false — the rejection text, ready to show. */
   reason?: string;
   artifacts: CitedArtifact[];
@@ -562,13 +567,46 @@ const ASSERTION_BEARING_PATTERN = /\btauri-agent-tools\b[^\n]{0,80}\bcheck\b/i;
 
 const IMAGE_PATH_PATTERN = /[\w./~-]*[\w~-]\.(?:png|jpe?g|webp|gif)\b/gi;
 
+/** An HTTP status code immediately following a citation, e.g. `-> 200` or `200 OK`. */
+const HTTP_STATUS_AFTER_PATTERN = /^\s*(?:->|→)?\s*\d{3}\b/;
+
+/**
+ * EI-18855312333744373 — is this citation a URL PATH from an HTTP probe transcript,
+ * rather than a filesystem path? `/me.jpg -> 200 (121,060 B)` is exactly what a
+ * `verdict`/curl probe against a deployed site prints, and it is honest, real
+ * `live-drove-ui` evidence — but read as a bare token it looks identical to a
+ * filesystem citation, and stat()ing it locally will always report "does not exist"
+ * because it was never a local path.
+ *
+ * Deliberately narrow (adjacency, not "the whole line/field mentions a URL somewhere"
+ * — that reading is too coarse: `"...reference shot at https://example.com/x.png and
+ * /tmp/real.png"` cites a URL and a genuine local path in the SAME line, and a
+ * whole-line heuristic would wrongly launder the local one too). Two signals, either
+ * is enough, both scoped to right where the citation itself sits:
+ *  - the match itself begins at the `//` of a URL scheme (pre-existing check: catches
+ *    `https://x.com/a.png` resolving as `x.com/a.png`);
+ *  - the citation is immediately followed by an HTTP status code (`-> 200`, `200 OK`)
+ *    — the signature of a probe RESULT line, e.g. `` `/me.jpg` -> 200 (121,060 B) ``.
+ */
+function isUrlProbeCitation(source: string, matchText: string, matchIndex: number): boolean {
+  // `/` is a path character, so a URL match STARTS at the `//` of its scheme rather
+  // than after it — hence both checks (pre-existing: catches `https://x.com/a.png`).
+  const before = source.slice(Math.max(0, matchIndex - 3), matchIndex);
+  if (matchText.startsWith('//') || before.includes('//')) return true;
+
+  const after = source.slice(matchIndex + matchText.length, matchIndex + matchText.length + 12);
+  return HTTP_STATUS_AFTER_PATTERN.test(after);
+}
+
 /**
  * Every image path cited anywhere in the evidence, de-duplicated, order preserved.
  *
- * A URL is skipped rather than resolved: `https://example.com/a.png` would otherwise
- * match as `example.com/a.png`, resolve to a local path that is obviously not there,
- * and be reported as a confidently-missing artifact. It is not missing — it was never
- * local. Same principle as everywhere else here: only condemn what we can actually judge.
+ * A URL — or a bare path that is part of the same HTTP-probe transcript as one — is
+ * skipped rather than resolved: `https://example.com/a.png` would otherwise match as
+ * `example.com/a.png`, resolve to a local path that is obviously not there, and be
+ * reported as a confidently-missing artifact. It is not missing — it was never local.
+ * Same principle as everywhere else here: only condemn what we can actually judge.
+ * See {@link isUrlProbeCitation}.
  */
 export function citedImagePaths(evidence: CompletionVerificationEvidence | null | undefined): string[] {
   if (!evidence) return [];
@@ -577,10 +615,8 @@ export function citedImagePaths(evidence: CompletionVerificationEvidence | null 
   for (const source of sources) {
     if (!source) continue;
     for (const match of source.matchAll(IMAGE_PATH_PATTERN)) {
-      // `/` is a path character, so a URL match STARTS at the `//` of its scheme rather
-      // than after it — hence both checks.
-      const before = match.index === undefined ? '' : source.slice(Math.max(0, match.index - 3), match.index);
-      if (match[0].startsWith('//') || before.includes('//')) continue;
+      const index = match.index ?? 0;
+      if (isUrlProbeCitation(source, match[0], index)) continue;
       found.add(match[0]);
     }
   }
@@ -592,6 +628,28 @@ export function citesAssertionBearingRun(evidence: CompletionVerificationEvidenc
   if (!evidence) return false;
   return [evidence.testsRun, evidence.testResult, ...(evidence.filesChanged ?? [])].some(
     (text) => !!text && ASSERTION_BEARING_PATTERN.test(text),
+  );
+}
+
+/**
+ * A deployed URL paired with an HTTP status code — e.g. `` https://papercusp.com/about
+ * -> 200 `` or `` `/me.jpg` -> 200 (121,060 B) `` — is falsifiable live-UI evidence in
+ * its own right: the status could have come back 404/500, so citing it proves a real
+ * request against the running deployment returned something, not merely that a
+ * command ran. This is the web-deploy equivalent of {@link citesAssertionBearingRun}
+ * (EI-18855312333744373).
+ *
+ * Scoped to text that names an actual `http(s)://` URL somewhere — a bare
+ * `/me.jpg -> 200` with no URL anywhere in the evidence is ambiguous enough (it could
+ * be an unrelated status-shaped number) that it is left to the image-path checks below
+ * instead of being accepted outright here.
+ */
+const WEB_PROBE_STATUS_PATTERN = /(?:https?:\/\/\S+|`?[\w./~-]+\.\w+`?)\s*(?:->|→)?\s*\b[1-5]\d{2}\b/i;
+
+export function citesWebProbeEvidence(evidence: CompletionVerificationEvidence | null | undefined): boolean {
+  if (!evidence) return false;
+  return [evidence.testsRun, evidence.testResult, ...(evidence.filesChanged ?? [])].some(
+    (text) => !!text && /https?:\/\//i.test(text) && WEB_PROBE_STATUS_PATTERN.test(text),
   );
 }
 
@@ -717,6 +775,8 @@ export async function verifyLiveDroveUiArtifacts(
   }
   // A falsifiable run stands on its own: it had to assert something to exit 0.
   if (citesAssertionBearingRun(evidence)) return { ok: true, basis: 'assertion', artifacts: [] };
+  // Same logic, web-deploy shaped: a URL + HTTP status is falsifiable too (EI-18855312333744373).
+  if (citesWebProbeEvidence(evidence)) return { ok: true, basis: 'url', artifacts: [] };
 
   const paths = citedImagePaths(evidence);
   if (paths.length === 0) {

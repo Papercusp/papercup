@@ -418,7 +418,10 @@ export const headFileRead: SubstitutionPair = {
   intentLabel: 'file-head-read',
   bashPattern: readPattern(String.raw`head\s+(?:-n\s*\d+\s+|-\d+\s+)?${SINGLE_FILE_OPERAND}`),
   toolName: 'capability:read',
-  advisoryText: 'capability:read { file_path, limit: N } returns the first N lines — the `head -n N FILE` equivalent.',
+  advisoryText:
+    'capability:read { file_path, limit: N } returns the first N lines — the head -n N FILE equivalent. ' +
+    'capability:read is a DEFERRED MCP tool (ToolSearch select:mcp__papercusp-su__capability_read first if not already loaded) ' +
+    "— but a Claude Code (psu) session's ambient Read tool takes the same limit: N directly, no ToolSearch needed there.",
   routing: {
     want: 'the FIRST N lines of a file',
     use: '`capability:read { file_path, limit: N }`',
@@ -476,7 +479,11 @@ export const tailFileRead: SubstitutionPair = {
     String.raw`tail\s+(?!-f\b)(?!--follow\b)(?!-c\b)(?:-n\s*\d+\s+|-\d+\s+)?${SINGLE_FILE_OPERAND}`,
   ),
   toolName: 'capability:read',
-  advisoryText: 'capability:read { file_path, tail: N } returns the last N lines — the `tail -n N FILE` equivalent.',
+  advisoryText:
+    'capability:read { file_path, tail: N } returns the last N lines — the tail -n N FILE equivalent. ' +
+    'capability:read is a DEFERRED MCP tool — ToolSearch select:mcp__papercusp-su__capability_read before calling it. ' +
+    "A Claude Code (psu) session's ambient Read tool has NO tail param (offset/limit only, counted from the START) — " +
+    'passing tail to Read fails with InputValidationError (EI-18856178945306155); you need the deferred capability:read tool here, not the ambient one.',
   routing: {
     want: 'the LAST N lines of a file (a build / gate log tail)',
     use: '`capability:read { file_path, tail: N }`',

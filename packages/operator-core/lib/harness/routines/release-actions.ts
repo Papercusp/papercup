@@ -293,6 +293,12 @@ export interface CheckpointVerdict {
     commitsBehind: number;
     failingFilesChangedInRange: string[];
   };
+  /** EI-18850448565330905: structural mirror of green-checkpoint.ts's `CheckpointResult.crashed`
+   *  — this verdict was synthesized by the CLI's own crash handler because the normal run
+   *  THREW instead of resolving a leg-reported red (e.g. a non-test member like a PG-backed
+   *  plane lint). `summary` carries the thrown error; treat this as "the process crashed", not
+   *  as a leg-scoped verdict — the specific failing leg is not always recoverable here. */
+  crashed?: boolean;
 }
 
 /** The pipeline-event `detail` blob for a checkpoint verdict. Shared by BOTH recorders (the CLI's
