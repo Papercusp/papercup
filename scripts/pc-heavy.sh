@@ -64,6 +64,15 @@
 #                         how long an ALREADY-FINISHED result may be replayed.
 #                         This is NOT how long a follower waits for a running
 #                         leader; see below.
+#   PC_HEAVY_FRESH_AFTER  epoch-seconds watermark. Replay a cached run only if
+#                         it STARTED at/after this instant, and drop the
+#                         tree-state token from the coalescing key. For a caller
+#                         that knows WHICH files it is asking about: it answers
+#                         the freshness question exactly (per file) where the
+#                         token answers it conservatively (whole tree), which on
+#                         a fleet-edited tree is the difference between
+#                         coalescing always and never. See the long note at the
+#                         barrier below. Opt-in; unset ⇒ unchanged behaviour.
 #   PC_HEAVY_COALESCE_MAX_WAIT_SEC
 #                         hard cap on how long a follower waits for a LIVE
 #                         leader (default 1800). Leader liveness is OBSERVED
@@ -676,10 +685,16 @@ if [ "$_do_cache_write" = 1 ]; then
   # stdout/stderr genuinely separate for OUR OWN caller (process substitution
   # runs the command in the foreground — $? below is the real command's exit
   # status, not tee's).
+  # Stamped HERE, not when the lock was won: winning the lock can precede the
+  # actual start by however long the slot sweep below had to wait, and the
+  # barrier's guarantee is about when the command began READING the tree.
+  # (Stamping the earlier instant would still be sound — it only ever makes the
+  # stamp smaller, i.e. the check stricter — but it needlessly rejects replays.)
+  _started_at=$(date +%s)
   "${_runner[@]}" "$@" > >(tee "$_c_out") 2> >(tee "$_c_err" >&2)
   _rc=$?
   wait 2>/dev/null || true   # let both tee subshells flush before we publish the result
-  echo "$_rc" > "$_c_exit" 2>/dev/null
+  printf '%s %s\n' "$_rc" "$_started_at" > "$_c_exit" 2>/dev/null
   rm -rf "$_c_lockdir" 2>/dev/null
   trap - EXIT
   exit "$_rc"

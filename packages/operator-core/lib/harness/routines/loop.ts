@@ -662,6 +662,17 @@ export const TURNS_STALLED_MIN_FIRE_COUNT = 3;
  * turn exceeds a generous multiple of the interval — the same "give it several real cycles"
  * floor `stuckParkMs`/`quickRetryParkMs` already use elsewhere in this system.
  */
+/**
+ * The "give it several real cycles" floor the turns-stalled verdict measures gaps against.
+ * EXPORTED because `stalled-loops-guard.ts` — the ACTOR that disarms loops on this verdict —
+ * sizes its own recent-real-turn veto window from the SAME floor. Two parties must agree on
+ * this number, so it exists in exactly one place: a guard whose veto window silently drifted
+ * from the verdict's floor would start disarming the very loops the veto exists to protect.
+ */
+export function turnsStalledFloorMs(intervalSec: number | null | undefined): number {
+  return Math.max(30 * 60_000, (intervalSec ?? 60) * 4 * 1000);
+}
+
 export function computeTurnsStalled(input: {
   active: boolean;
   fireCount: number;
@@ -677,7 +688,7 @@ export function computeTurnsStalled(input: {
   if (!input.active) return false;
   if (input.fireCount < TURNS_STALLED_MIN_FIRE_COUNT) return false;
   if (input.lastFiredAtMs == null) return false;
-  const floorMs = Math.max(30 * 60_000, (input.intervalSec ?? 60) * 4 * 1000);
+  const floorMs = turnsStalledFloorMs(input.intervalSec);
   const now = input.nowMs ?? Date.now();
   // No turn has EVER completed for this owner, yet several fires have landed — the
   // strongest form of the signal (never masked by a stale-but-present lastTurnAt).

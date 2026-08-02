@@ -79,6 +79,7 @@ import {
   partitionFilesByCoverage,
   suggestTypecheckGate,
   formatUncoveredFilesBanner,
+  coalesceWatermarkFor,
   runTscBaselineGate,
 } from './lib/tsc-baseline-gate.mjs';
 
@@ -103,6 +104,7 @@ export {
   partitionFilesByCoverage,
   suggestTypecheckGate,
   formatUncoveredFilesBanner,
+  coalesceWatermarkFor,
 };
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');

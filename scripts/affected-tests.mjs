@@ -261,6 +261,37 @@ const root = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'));
 // them (`test:rust` -> scripts/report-cargo-tests.mjs). The gap was only the JS/shell side.
 const STANDALONE_PACKAGE_DIRS = ['papercusp-desktop'];
 
+// EI-19346163916263067 — NON-WORKSPACE SOURCE DIRECTORIES.
+//
+// The mapping in affectedWorkspaces() below matches a changed path against each
+// WORKSPACE DIRECTORY. Root `scripts/` is not an npm workspace and holds no
+// package.json, so EVERY path under it mapped to NOTHING: it contributed zero to
+// the affected set. That directory is the repo's own gate machinery —
+// affected-tests.mjs itself, lint-tsc*.mjs, gen-declarations.ts, next-migration.mjs,
+// and the 53 `check-*.mjs` guards — i.e. the tooling that decides what gets tested
+// was the one thing that tooling could not select tests for.
+//
+// The tests DO exist: 56 test files in packages/operator-core exercise root
+// `scripts/` directly (every `check-*.mjs` guard test, lint-tsc.test.ts,
+// generated-declarations.test.ts, typecheck-script.test.ts, the affected-tests-*
+// guards). They were simply unreachable from the edit that needs them.
+//
+// MEASURED incidence before this fix (last 600 commits of staging): 106 commits
+// touched `scripts/`; for 7 of them (6.6%) the computed affected set did NOT
+// include operator-core, so those ~56 suites never ran — and one (33edac17e5)
+// selected ZERO workspaces and reported `status=passed tasks=0` having run nothing.
+// It is rare rather than never because git-sync sweeps the whole tree, so a commit
+// is almost never scripts-only; that also means the hole is invisible until the
+// one sweep where it isn't.
+//
+// Routed into `directlyChanged` (not appended after the walk) deliberately: these
+// paths then behave exactly like a change to the owning workspace, reverse-deps
+// included. Splitting the semantics would add a second selection rule whose
+// divergence from the first nobody would notice.
+const NON_WORKSPACE_PATH_ROUTES = [
+  { prefix: 'scripts/', workspace: '@papercusp/operator-core' },
+];
+
 const workspaces = [
   ...expandWorkspaces(root.workspaces),
   ...STANDALONE_PACKAGE_DIRS.filter((d) => existsSync(join(ROOT, d, 'package.json'))),
@@ -388,6 +419,13 @@ function affectedWorkspaces() {
       if (file === ws.dir || file === `${ws.dir}/package.json` || file.startsWith(`${ws.dir}/`)) {
         directlyChanged.add(ws.name);
       }
+    }
+    // Paths in a non-workspace source directory (see NON_WORKSPACE_PATH_ROUTES).
+    // Only reached when the loop above matched nothing — a route must never
+    // override a genuine workspace that owns the path.
+    for (const route of NON_WORKSPACE_PATH_ROUTES) {
+      if (!file.startsWith(route.prefix)) continue;
+      if (wsByName.has(route.workspace)) directlyChanged.add(route.workspace);
     }
   }
 

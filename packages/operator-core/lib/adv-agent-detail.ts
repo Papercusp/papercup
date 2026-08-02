@@ -1008,7 +1008,74 @@ const EMPTY_SIGNALS: AgentSignals = {
   unavailableSignals: ALL_AGENT_SIGNAL_KEYS,
 };
 
-/** Read one agent's P-005 health signals (loop/claim/context/checkpoint/unanswered/last-tool-call). */
+// ─────────── P-009 IO seams (thin; every shaping decision is pure above) ─────
+// Dynamically imported so adv-agent-detail's STATIC module graph is unchanged —
+// the plans tree and the events store are both large, and the dossier is on the
+// operator's cold path. Same pattern orient.ts uses for its own fleet legs.
+
+/** Leg (a): the agent's declared plan, shaped into the lane section. */
+async function readAgentLane(
+  planSlug: string | null,
+  harnessSlug: string | null,
+  workspaceId: string | null,
+): Promise<AgentLane | null> {
+  if (!planSlug) return null;
+  const [{ readPlanBySlug }, { resolveEffectiveStatus }] = await Promise.all([
+    import('./agent-tools/plans/source'),
+    import('@papercusp/plan-parser'),
+  ]);
+  const res = await readPlanBySlug(planSlug, {
+    ...(harnessSlug ? { harnessSlug } : {}),
+    ...(workspaceId && workspaceId !== '*' ? { workspaceId } : {}),
+  });
+  if (!res) return null;
+  return deriveLane(planSlug, res.parsed.now, resolveEffectiveStatus(res.parsed).items);
+}
+
+/** Leg (b): gates visible in this agent's scopes, split awaited / not-awaited. */
+async function readAnnouncedGatesFor(
+  owner: string,
+  reader: { fleetSlug: string | null; planSlug: string | null; harnessSlug: string | null },
+): Promise<AgentAnnouncedGate[]> {
+  const [{ listActiveAnnouncements, listActiveAwaits }, { announcementVisibleTo }] =
+    await Promise.all([import('./events/await/store'), import('./events/await/announce-key')]);
+  // The awaits read duplicates getAgentSubscriptions' (both run concurrently
+  // under getAgentDetail, so it costs no latency) — deliberately, so
+  // getAgentSignals stays correct when called standalone. A signal whose
+  // correctness depends on its CALLER having fetched something else is the kind
+  // of coupling that breaks silently the first time someone reuses it.
+  const [anns, awaits] = await Promise.all([
+    listActiveAnnouncements({ unfiredOnly: true, limit: 50 }),
+    listActiveAwaits(owner),
+  ]);
+  const visible = anns.filter((a) => announcementVisibleTo(a, reader)).slice(0, GATE_FOLD_LIMIT);
+  return deriveAnnouncedGates(visible, awaits.map((w) => w.eventKey));
+}
+
+/** Leg (d): the fleet's control state — null unless it is NOT plain 'active'. */
+async function readFleetControlFor(
+  workspaceId: string | null,
+  fleetSlug: string | null,
+): Promise<AgentFleetControl | null> {
+  if (!fleetSlug || !workspaceId || workspaceId === '*') return null;
+  const { getFleet } = await import('./agent-fleets-store');
+  const fleet = await getFleet(workspaceId, fleetSlug);
+  if (!fleet || fleet.controlState === 'active') return null;
+  return {
+    fleet: fleetSlug,
+    state: fleet.controlState,
+    reason: fleet.controlReason,
+    by: fleet.controlBy,
+    since: fleet.controlAt,
+  };
+}
+
+/** Matches orient's own announced-gate fold: a discovery aid, not a full list. */
+const GATE_FOLD_LIMIT = 8;
+
+/** Read one agent's dossier health signals — the P-005 six (loop / claim /
+ *  context / checkpoint / unanswered / last-tool-call) plus the P-009 three
+ *  (lane / announced gates / fleet control). */
 export async function getAgentSignals(owner: string): Promise<AgentSignals> {
   const unavailable: AgentSignalKey[] = [];
   // EI-18694403367371331: a signal's underlying read failing must be VISIBLE

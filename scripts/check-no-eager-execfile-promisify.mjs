@@ -41,9 +41,10 @@
  * or adopt a shared lazy helper). NEW files may NOT be added here — a fresh eager
  * promisify(execFile) is a hard guard failure, not a BASELINE addition.
  */
-import { execSync } from 'node:child_process';
 import { readFileSync, realpathSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
+
+import { describeUnscanned, listTrackedFiles } from './lib/tracked-files.mjs';
 
 const ROOT = new URL('..', import.meta.url).pathname;
 
@@ -137,15 +138,17 @@ export const BASELINE = new Set([
   'packages/operator-core/lib/windows-desktop-windows.ts',
 ]);
 
-/** Scan the tracked tree for offenders (excludes vendored/tests/non-source + BASELINE). */
+/**
+ * Scan the tracked tree for offenders (excludes vendored/tests/non-source + BASELINE).
+ *
+ * WI-6666: enumerates via the shared `listTrackedFiles` helper, which recurses into
+ * submodules. A bare `git ls-files` does NOT — it emits one gitlink entry per
+ * submodule — so this guard previously never opened libs/generic/**, libs/papercusp/**,
+ * or papercusp-desktop/**. Returns the coverage report so `main` can state what it
+ * could not check.
+ */
 export function findOffenders() {
-  const tracked = execSync('git ls-files', {
-    cwd: ROOT,
-    encoding: 'utf8',
-    maxBuffer: 256 * 1024 * 1024,
-  })
-    .split('\n')
-    .filter(Boolean);
+  const { files: tracked, unscanned } = listTrackedFiles(ROOT);
 
   const offenders = [];
   for (const f of tracked) {
@@ -159,14 +162,14 @@ export function findOffenders() {
     }
     if (usesEagerExecFilePromisify(text)) offenders.push(f);
   }
-  return offenders;
+  return { offenders, unscanned };
 }
 
 function main() {
-  const offenders = findOffenders();
+  const { offenders, unscanned } = findOffenders();
   if (offenders.length === 0) {
     const note = BASELINE.size > 0 ? ` (${BASELINE.size} file(s) still in the shrink-to-empty BASELINE — EI-10161)` : '';
-    console.log(`✓ no NEW eager module-scope promisify(execFile...)${note}.`);
+    console.log(`✓ no NEW eager module-scope promisify(execFile...)${note}.` + describeUnscanned(unscanned));
     process.exit(0);
   }
   console.error('✗ NEW eager module-scope promisify(execFile...) call(s):');

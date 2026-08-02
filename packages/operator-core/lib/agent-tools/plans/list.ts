@@ -17,6 +17,7 @@ import {
   listPlanIndexRowsForWorkspace,
   getPlanContentsBySlugs,
   resolveHarnessPlansDir,
+  resolvePlanScope,
   type PlanIndexRow,
 } from "./source";
 import { activeWorkspaceId } from "../../workspace-registry";
@@ -438,10 +439,30 @@ export default defineTool({
           if (!trimmed || seen.has(trimmed)) continue;
           seen.add(trimmed);
           try {
+            // Validate the slug is registered (throws for an unknown one) …
             const r = await resolveHarnessPlansDir(trimmed);
-            if (!perHarness.includes(r.harnessSlug))
-              perHarness.push(r.harnessSlug);
+            // … then dedupe on the PLAN SCOPE, not the requested slug. Plans are
+            // HIVE-scoped: resolvePlanScope collapses a member harness onto its Hive
+            // HOME, and listPlanIndexRows below does that collapse internally. Deduping
+            // on the requested slug therefore let N members of one hive each read the
+            // SAME home plan set — N identical copies, distinguishable only by the
+            // `harness` stamp this loop puts on them, which the per-batch
+            // `harnessSlug:slug` dedupe key downstream cannot see (WI-7083).
+            //
+            // Measured on plans.byHive (papercusp hive, members [papercusp,
+            // hive-canary]): 1,820 rows / 1,249,676 B, of which 910 rows / ~50% were a
+            // fabricated second copy stamped `harness: 'hive-canary'` — a harness with
+            // ZERO rows of its own in harness_plans. It also made the rollup UI show
+            // every plan twice and drill to the wrong member.
+            const scope = await resolvePlanScope({ harnessSlug: r.harnessSlug });
+            if (!perHarness.includes(scope.harnessSlug))
+              perHarness.push(scope.harnessSlug);
           } catch {
+            // Unchanged contract for this loop: an unresolvable slug is a warning
+            // entry, never a throw (the caller may be holding a stale registry
+            // snapshot). resolvePlanScope's "not a Hive home" refusal lands here too
+            // and means the same thing the batch loop below means by it — that
+            // harness has no plan scope to read, so it contributes no rows.
             unknownHarnesses.push(trimmed);
           }
         }

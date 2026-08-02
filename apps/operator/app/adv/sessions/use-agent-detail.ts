@@ -125,10 +125,19 @@ export interface AgentDossierLoopStatus {
   parked: boolean;
   stalled: boolean;
 }
+/** Mirrors the server-side `ClaimProgress` — `unknown` is a real third state
+ *  (the holder has no recorded activity yet), never a pessimistic default. */
+export type ClaimProgress = 'progressing' | 'stalled' | 'unknown';
+
 export interface AgentDossierClaim {
   id: string;
   title: string | null;
   harness: string | null;
+  /** Is the holder actually moving this claim? A claim id renders identically
+   *  whether it was taken 30s or 2h ago — this is what disambiguates it. */
+  progress: ClaimProgress;
+  /** Seconds idle, for "stalled 40m". null ⇔ progress === 'unknown'. */
+  idleSec: number | null;
 }
 export interface AgentDossierCheckpoint {
   text: string;
@@ -137,7 +146,46 @@ export interface AgentDossierCheckpoint {
 // EI-18694403367371331: keys whose underlying read THREW this call rather
 // than returning genuinely empty data — see the server-side AgentSignals
 // docstring (adv-agent-detail.ts) for the full rationale.
-export type AgentSignalKey = 'loop' | 'currentClaim' | 'context' | 'unanswered' | 'lastToolCall';
+export type AgentSignalKey =
+  | 'loop'
+  | 'currentClaim'
+  | 'context'
+  | 'unanswered'
+  | 'lastToolCall'
+  | 'lane'
+  | 'announcedGates'
+  | 'fleetControl';
+
+/** Mirrors the server-side `AgentLane` — the plan this agent declared and where
+ *  that plan says the work stands. See adv-agent-detail.ts for field meaning. */
+export interface AgentLane {
+  planSlug: string;
+  nowState: string | null;
+  nowNext: string | null;
+  nextActionable: { id: string; title: string; phase: string | null } | null;
+  claimableCount: number;
+}
+
+/** Mirrors the server-side `AgentAnnouncedGate`. `awaited:false` = declared and
+ *  visible to this agent, but it is NOT listening — rendered as the second half
+ *  of "Waiting on", because neither half is diagnostic without the other. */
+export interface AgentAnnouncedGate {
+  event: string;
+  note: string | null;
+  scope: string;
+  announcedBy: string;
+  awaited: boolean;
+}
+
+/** Mirrors the server-side `AgentFleetControl`. Non-null ONLY when the fleet is
+ *  not plain `active` — its presence is itself the news. */
+export interface AgentFleetControl {
+  fleet: string;
+  state: string;
+  reason: string | null;
+  by: string | null;
+  since: number | null;
+}
 
 export interface AgentSignals {
   loop: AgentDossierLoopStatus | null;
@@ -147,6 +195,9 @@ export interface AgentSignals {
   lastCheckpoint: AgentDossierCheckpoint | null;
   unansweredDirectedCount: number;
   lastToolCallAt: string | null;
+  lane: AgentLane | null;
+  announcedGates: AgentAnnouncedGate[];
+  fleetControl: AgentFleetControl | null;
   unavailableSignals: AgentSignalKey[];
 }
 

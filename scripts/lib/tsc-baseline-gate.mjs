@@ -17,7 +17,7 @@
  */
 
 import { execSync, execFileSync } from 'node:child_process';
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 /**
@@ -948,6 +948,68 @@ export function formatUncoveredFilesBanner({ label, uncovered, suggestions, fata
  *
  * @param {RunTscBaselineGateOptions} options
  */
+/**
+ * The freshness watermark this run may safely replay a COALESCED compile from
+ * (epoch seconds), or `null` to opt out of sharing entirely.
+ *
+ * ## Why a watermark makes sharing safe where a tree token could not
+ *
+ * A full compile that STARTED at S read every file as of S. So its diagnostics are a
+ * true answer about file F iff F has not changed since S. The dominant caller here is
+ * an agent that edited F and immediately asked "did I break it?" — for that caller the
+ * only thing that can invalidate a shared result is a change to *its own* files, never
+ * a peer's edit somewhere else in the tree.
+ *
+ * pc-heavy's tree-state token asks the whole-tree question instead, which is sound but
+ * far stricter, and on this repo strictly worse than useless: the token moves ~every 18s
+ * against a ~170s compile, so two callers seconds apart never share a key and every one
+ * of them pays a full compile (measured 2026-08-02; 3-5 byte-identical operator-core
+ * compiles observed running at once, three separate times that day). Passing the
+ * watermark lets pc-heavy drop the token and answer the narrower question exactly.
+ *
+ * ## The two opt-outs, and why each is a correctness requirement
+ *
+ * - **Unscoped run** (no `--files`): a bare `npm run lint:tsc` (CI, green-checkpoint)
+ *   renders a verdict over EVERY file, so its watermark would have to be "no file in the
+ *   project has changed since S" — which is the tree-token question again, and would be
+ *   wrong to approximate with anything narrower. Return null: run fresh, share nothing.
+ * - **`--update`**: the ratchet WRITES `.tsc-baseline.json`, lowering a file's recorded
+ *   count. Ratcheting off a replayed compile would persist a number nobody re-measured
+ *   from this tree state, and a too-low baseline is the failure mode the whole gate
+ *   exists to prevent (EI-487 / WI-4488: an under-report that ratchets in reads as clean
+ *   for days). A run that WRITES the baseline measures it itself.
+ *
+ * @param {{ root: string, files: Set<string> | null, updateFlag: boolean }} args
+ * @returns {number | null} epoch seconds, or null to disable coalescing for this run
+ */
+export function coalesceWatermarkFor({ root, files, updateFlag }) {
+  if (updateFlag) return null;
+  if (files === null || files.size === 0) return null;
+
+  let newestMs = 0;
+  for (const rel of files) {
+    let st;
+    try {
+      st = statSync(resolve(root, rel));
+    } catch {
+      // A named file we cannot stat (deleted, or a path typo) is not evidence that
+      // nothing changed. Fail CLOSED — give up on sharing rather than compute a
+      // watermark from an incomplete view of what the caller asked about.
+      return null;
+    }
+    if (st.mtimeMs > newestMs) newestMs = st.mtimeMs;
+  }
+  if (newestMs <= 0) return null;
+
+  // +1 and floor, deliberately: mtime carries sub-second precision and pc-heavy stamps
+  // whole seconds. A file written at t.900 floors to t, so a compile that started at
+  // t.100 — BEFORE the edit — would also stamp t and compare equal, replaying a
+  // pre-edit answer as if it were fresh. Rounding the watermark UP past the whole
+  // second the edit falls in makes the comparison sound at one-second granularity, at
+  // the cost of rejecting a replay in the <1s window where it might just have been ok.
+  return Math.floor(newestMs / 1000) + 1;
+}
+
 export function runTscBaselineGate({
   root,
   tscCommand,
@@ -1030,44 +1092,66 @@ export function runTscBaselineGate({
   // (default 90s, `pc-heavy.sh:423,452`) and a full operator-core compile is ~150s: with the
   // default a follower always times out just BEFORE the leader finishes and compiles anyway.
   //
-  // ⚠⚠ DO NOT READ THIS AS "COALESCING NOW WORKS". IT DOES NOT, AND CANNOT HERE — MEASURED.
-  // An earlier revision of this comment claimed the 420s window made concurrent callers share
-  // one compile, on the strength of a 09:23Z sample showing the tree token stable (0 changes in
-  // 60s). That sample caught a quiet window mid-incident and generalised. Re-measured
-  // 2026-08-02 11:18:19-11:21:29Z: **11 distinct tree tokens in 199s — one change every ~18s**
-  // (shortest gap 4s; 2 were git-sync commits moving branch.oid, the rest peers' saves). The
-  // key is sha1(cwd + argv + tree-token), so during ONE ~150s compile the token moves ~8 times
-  // and two callers arriving seconds apart compute DIFFERENT keys. Observed at the same moment:
-  // 5 byte-identical `sh -c npx tsc -p .../operator-core/tsconfig.json ...` wrappers live, each
-  // holding its OWN .lock in the coalesce dir. Zero coalescing; N full compiles. See fact
-  // `pc-heavy-tree-token-churns-faster-than-a-compile` and WI-7017.
+  // ⚠ THE WINDOW ALONE NEVER MADE THIS COALESCE — the KEY did, and it took two corrections.
   //
-  // And the tree token is NOT the thing to remove: it is what makes the gate's answer TRUE. The
-  // dominant caller is an agent typechecking a file it JUST edited. If a follower replayed a
-  // leader whose compile started before that edit, the shared raw diagnostics would not contain
-  // it and the agent would get a clean verdict on a file it had just broken — a silent,
-  // confirmatory-looking wrong answer, which is precisely the bug EI-18688348461605365 added the
-  // token to prevent. Dropping it to buy coalescing trades a fleet-wide correctness hole for a
-  // throughput win. Don't.
+  // (1) An early revision claimed the 420s window made concurrent callers share one compile, on
+  // the strength of a 09:23Z sample showing the tree token stable (0 changes in 60s). That
+  // sample caught a quiet window mid-incident and generalised from it. Re-measured 2026-08-02
+  // 11:18:19-11:21:29Z: **11 distinct tree tokens in 199s — one change every ~18s** (shortest gap
+  // 4s; 2 were git-sync commits moving branch.oid, the rest peers' saves). The key was
+  // sha1(cwd + argv + tree-token), so during ONE ~150s compile the token moved ~8 times and two
+  // callers arriving seconds apart computed DIFFERENT keys — they could not even see each other's
+  // lock. Zero coalescing; N full compiles. Fact `pc-heavy-tree-token-churns-faster-than-a-compile`.
   //
-  // What IS kept by wrapping only the compile: pc-heavy no longer holds a slot for the whole
-  // gate CLI, and argv is identical across callers so coalescing is at least POSSIBLE whenever
-  // the tree does go quiet. The real fix for "N agents each pay 150s" is at another layer —
-  // make the per-file check cheap (the warm server-side `build:typecheck` answers a leaf file in
-  // ~1.8s) rather than deduplicating an expensive one. Tracked separately; see WI-7017's close.
+  // (2) The correction to THAT then over-corrected, concluding the token could not be removed
+  // because it is "what makes the gate's answer TRUE", and that the only remaining lever was to
+  // make the per-file check cheap elsewhere. The first half is right about the HAZARD and wrong
+  // about the REMEDY, and the distinction is the whole fix: the token is a *proxy*, and a very
+  // loose one. The hazard (EI-18688348461605365) is replaying a compile that started BEFORE the
+  // caller's edit, handing back a clean verdict on a file they just broke. But that is a
+  // per-caller, per-FILE question —
+  //
+  //     a run that started at S is a valid answer for file F  iff  mtime(F) < S
+  //
+  // — whereas the token asks the whole-tree question "did ANYTHING change?". On a fleet-edited
+  // tree those differ by ~9 orders of churn per compile: my answer is invalidated only by edits
+  // to MY files, and the token throws it away for every peer's save as well.
+  //
+  // So the token is not dropped, it is REPLACED, by something exact: `coalesceWatermarkFor`
+  // computes max(mtime) over the files this run was actually asked about and passes it as
+  // PC_HEAVY_FRESH_AFTER, which lets pc-heavy skip the token and admit a replay only from a run
+  // that started after it. Correctness is preserved file-by-file instead of approximated
+  // tree-wide, and callers with no scoped file set (bare CI runs) or `--update` opt out entirely
+  // and still run fresh — see that function for why each opt-out is required rather than
+  // cautious.
+  //
+  // The win is not only cache hits: it makes the coalescer SERIALIZE. A follower whose watermark
+  // the running leader cannot satisfy no longer races off to start its own compile — it waits the
+  // leader out, becomes the next leader, and the peers queued behind it replay ITS run. N
+  // concurrent compiles collapse to one at a time with arrivals batched behind it, which is the
+  // pathology this whole thread started from (2026-08-02: 5, then 3, then 4 byte-identical
+  // operator-core compiles live at once, load1 120-186).
+  //
+  // Also kept by wrapping only the compile: pc-heavy no longer holds a slot for the whole gate
+  // CLI, and argv is identical across callers so the key can match at all.
   //
   // ⚠ Residual hole in the token, unchanged in KIND but widened in DURATION by the 420s window:
   // it uses `--untracked-files=no`, so a NEW UNTRACKED .ts picked up by the tsconfig does not
   // bust the key. Accepted because the gate's verdict is per-file against a committed baseline,
   // and an untracked file has no baseline entry. Revisit if that ever stops being true.
   const pcHeavyPath = resolve(root, 'scripts', 'pc-heavy.sh');
+  const freshAfter = coalesceWatermarkFor({ root, files: explicitFiles, updateFlag });
   try {
     tscOutput = existsSync(pcHeavyPath)
       ? execFileSync('bash', [pcHeavyPath, 'sh', '-c', `${tscCommand} 2>&1`], {
           cwd: root,
           encoding: 'utf-8',
           maxBuffer: 64 * 1024 * 1024,
-          env: { ...process.env, PC_HEAVY_COALESCE_SEC: process.env.PC_HEAVY_COALESCE_SEC ?? '420' },
+          env: {
+            ...process.env,
+            PC_HEAVY_COALESCE_SEC: process.env.PC_HEAVY_COALESCE_SEC ?? '420',
+            ...(freshAfter === null ? {} : { PC_HEAVY_FRESH_AFTER: String(freshAfter) }),
+          },
         })
       : execSync(`${tscCommand} 2>&1`, {
           cwd: root,

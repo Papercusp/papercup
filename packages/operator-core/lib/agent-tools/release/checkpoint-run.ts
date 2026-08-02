@@ -152,6 +152,21 @@ export default defineTool({
       // could not bear the weight. REFUSE rather than return a plausible number — a refusal that
       // names the authoritative source costs one query; a plausible wrong verdict costs a morning.
       const candidateIsInferred = !liveRetriage && (a.held_externally ?? false);
+      // `candidate` is still RETURNED when inferred — annotating is not censoring, and it remains
+      // the only hint available. What changes is that it can no longer be read as an observation.
+      const candidateCaveats =
+        candidateIsInferred && a.candidate
+          ? [
+              caveat({
+                field: 'candidate',
+                reliability: 'inferred',
+                cannotAnswer: 'Which sha is this run judging?',
+                insteadRead: "in_flight_retriage.refiring_candidate, or gate_health->'inFlightRetriage' in harness_shared.routines",
+                because:
+                  "read from the checkpoint checkout's live HEAD at release-checkpoint-launch.ts:686, not from the running process",
+              }),
+            ]
+          : [];
       const containment = candidateIsInferred
         ? refuseAnswer({
             question: 'Does the in-flight run judge a candidate that contains your change?',
@@ -193,6 +208,9 @@ export default defineTool({
               already_running: true,
               unit: a.unit,
               candidate: a.candidate ?? null,
+              // Spreads to NOTHING when the candidate is observed, so a healthy reply gains no
+              // noise; adds `_fieldReliability` + `_fieldReliabilityWarning` only when it matters.
+              ...withFieldReliability({}, candidateCaveats),
               current_head: a.current_head ?? null,
               current_candidate: a.current_candidate ?? null,
               candidate_stale: a.candidate_stale ?? false,
@@ -214,7 +232,9 @@ export default defineTool({
               callerEditsInCandidate: containment,
               // Lead with it: the caller's next move differs entirely depending on whether
               // the run it is being told to wait for can even see the change.
-              containment_warning: containment.warning,
+              // A REFUSAL renders as its own line rather than collapsing to `undefined` — an
+              // absent warning reads as "no problem found", which is the opposite of the truth.
+              containment_warning: isRefusedAnswer(containment) ? describeRefusal(containment) : containment.warning,
               /** EI-19343516395023183: the run's OWN published rescue state, or null when no
                *  refire is in flight (null means "no refire", NOT "unknown"). `candidate` above
                *  is the checkout/log reading; when this is present its `refiring_candidate` is
@@ -271,7 +291,7 @@ export default defineTool({
                   // straight from the isolated checkpoint checkout's own HEAD — trust IT for "what is this
                   // run testing", never `current_candidate`/`candidate_stale` below, which describe a
                   // HYPOTHETICAL run started fresh right now, not the one actually in flight.
-                  `A checkpoint run for this root is already in flight, held by a DIFFERENT process than the manual unit (almost certainly the hourly cron tick — it runs as a plain child process, not this unit, so this tool cannot see or control it directly). ${a.candidate ? `The in-flight run is judging candidate ${a.candidate.slice(0, 12)} (read from the isolated checkpoint checkout's HEAD) — verify your fix against THAT sha, not current_candidate below.` : "This run's exact candidate could not be resolved (the checkpoint checkout wasn't readable) — do not assume it matches current_candidate below, which is only what a NEW run would pick if launched now."} force:true and replaceStale CANNOT free this slot — a forced launch would just spawn a second process that loses the identical run-lock race a moment later and silently produces no verdict (the exact failure this check exists to prevent). Wait for it instead: checkpoint:await (omit candidateSha to wake on this run\'s verdict regardless of exact sha, then release:trace to confirm your commit is included).`
+                  `A checkpoint run for this root is already in flight, held by a DIFFERENT process than the manual unit (almost certainly the hourly cron tick — it runs as a plain child process, not this unit, so this tool cannot see or control it directly). ${a.candidate ? `The checkpoint checkout's HEAD currently reads ${a.candidate.slice(0, 12)} — that is an INFERENCE about which sha this run is judging, NOT an observation of it: the checkout can move between two reads, and an in-process auto-refire advances the candidate while pid/started_at stay fixed. This run published no in-flight-retriage marker, so its candidate is genuinely undetermined here. Do NOT verify your fix against that sha on this basis alone — read gate_health->'inFlightRetriage' in harness_shared.routines (what the running process publishes about ITSELF, scoping BOTH install_slug and workspace_id), or wait for the verdict, which names its own candidate. It is certainly not current_candidate below.` : "This run's exact candidate could not be resolved (the checkpoint checkout wasn't readable) — do not assume it matches current_candidate below, which is only what a NEW run would pick if launched now."} force:true and replaceStale CANNOT free this slot — a forced launch would just spawn a second process that loses the identical run-lock race a moment later and silently produces no verdict (the exact failure this check exists to prevent). Wait for it instead: checkpoint:await (omit candidateSha to wake on this run\'s verdict regardless of exact sha, then release:trace to confirm your commit is included).`
                 : replaceDecision.replace
                   ? 'A checkpoint run for this root is already in flight, judging an older candidate than current staging; it is OLD enough that it should have verdicted by now AND it has not published the `delivering` phase (EI-9672: the genuine wedged-salvage case). Pass replaceStale:true to stop it and launch a fresh run for the current candidate — force:true alone will NOT help (systemd still refuses the collision).'
                   : replaceDecision.reason === 'delivering'

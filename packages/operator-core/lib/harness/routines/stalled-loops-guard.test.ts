@@ -55,7 +55,7 @@ describe('sweepStalledLoops (WI-6639 — act on turnsStalled instead of leaving 
     const autoPause = vi.fn(async () => {});
     const broadcast = vi.fn<BroadcastFn>(async () => true);
     const res = await sweepStalledLoops({ sql, workspaceId: 'ws' }, { getStatuses, autoPause, broadcast });
-    expect(res).toEqual({ checked: 0, paused: 0, sample: [], dryRun: false });
+    expect(res).toEqual({ checked: 0, paused: 0, sample: [], vetoedByRecentTurn: [], dryRun: false });
     expect(getStatuses).not.toHaveBeenCalled();
     expect(autoPause).not.toHaveBeenCalled();
     expect(broadcast).not.toHaveBeenCalled();

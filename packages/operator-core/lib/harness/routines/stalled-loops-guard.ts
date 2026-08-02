@@ -33,11 +33,25 @@
  * a generous multiple-of-interval floor, exempt whenever the session shows real
  * presence activity). This module adds no new judgement of its own; it only acts on
  * a verdict that was already being computed and silently ignored.
+ *
+ * SECOND-SOURCE VETO (EI-19362678179163398). The paragraph above was true when this module
+ * only READ a verdict; it is not sufficient now that the module ACTS on one. `turnsStalled`
+ * rests on a single column, `last_turn_at`, which has under-reported TWICE — WI-6069 (the
+ * lifecycle 'ended' marker is never written by a warm loop) and its follow-up (the journal
+ * leg covers ~2.3% of real turns) — and both times the failure direction was a healthy,
+ * actively-working agent reading as stalled. Measured 2026-08-02 against the live fleet on
+ * the pre-fix column: 7 owners would have been disarmed while each had produced a real
+ * assistant turn within the previous ~5 minutes. So this module now cross-checks the
+ * INDEPENDENT strict signal (`lastRealTurnAt`) before every disarm and refuses when a real
+ * turn landed inside the verdict's own floor, surfacing the refusals as
+ * `vetoedByRecentTurn`. The data bug is fixed; the rail exists because the NEXT regression
+ * in that column would otherwise mass-disarm the fleet, and a disarmed agent cannot
+ * re-arm itself.
  */
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../../workspace-registry';
-import { getLoopStatuses, type LoopStatus } from './loop';
+import { getLoopStatuses, turnsStalledFloorMs, type LoopStatus } from './loop';
 import { autoPauseLoopRoutine } from './loop-cost-cap';
 import { broadcastSevereEvent } from '../../severe-event-broadcast';
 
@@ -57,6 +71,13 @@ export interface StalledLoopsSweepResult {
   paused: number;
   /** A sample of the disarmed ownerIds, for the log line / broadcast. */
   sample: string[];
+  /**
+   * EI-19362678179163398: owners whose verdict was `turnsStalled:true` but which this
+   * module REFUSED to disarm because they had produced a real assistant turn inside the
+   * veto window. A non-zero count here is a live signal that the verdict's `last_turn_at`
+   * source is under-reporting again — it should normally be 0.
+   */
+  vetoedByRecentTurn: string[];
   dryRun: boolean;
 }
 
@@ -90,7 +111,7 @@ export async function sweepStalledLoops(
        AND target_owner_id IS NOT NULL
        AND active = true
   `;
-  if (rows.length === 0) return { checked: 0, paused: 0, sample: [], dryRun };
+  if (rows.length === 0) return { checked: 0, paused: 0, sample: [], vetoedByRecentTurn: [], dryRun };
 
   // Latest routine id per owner (an owner should carry exactly one active loop row,
   // but guard against a duplicate the same way materializeLoop's own overwrite logic
@@ -101,9 +122,39 @@ export async function sweepStalledLoops(
   const statuses: Map<string, LoopStatus> = await getStatuses([...routineIdByOwner.keys()], { sql });
 
   const stalledOwners: string[] = [];
+  const vetoedByRecentTurn: string[] = [];
+  const nowMs = Date.now();
   for (const [ownerId, routineId] of routineIdByOwner) {
     const status = statuses.get(ownerId);
     if (!status?.turnsStalled) continue;
+
+    // EI-19362678179163398 — SECOND-SOURCE VETO. Disarming a loop is an automated write
+    // against a live agent, and the verdict above rests on ONE column (`last_turn_at`)
+    // that has now under-reported twice: WI-6069 (lifecycle marker only — never written
+    // by a warm loop) and its follow-up (the journal leg covers ~2.3% of real turns). Each
+    // time, the failure direction was "a healthy, actively-working agent reads as stalled".
+    // So before acting, cross-check the INDEPENDENT strict signal: `lastRealTurnAt`
+    // (session_turn_journal + session_turns assistant rows, no lifecycle marker). An owner
+    // that produced a real assistant turn inside the verdict's own floor is demonstrably
+    // producing turns and must never be disarmed, whatever `last_turn_at` claims.
+    //
+    // This CANNOT mask the case the guard exists for: a comatose/dead session emits no
+    // session_turns rows at all, so its `lastRealTurnAt` is null or ancient and the veto
+    // never engages. Deliberately NOT keyed on presence/heartbeat — that is process
+    // keepalive, not evidence of work (EI-18712366018708650), and gating on it would
+    // exempt exactly the comatose-host population WI-6639 targets.
+    const realTurnMs = status.lastRealTurnAt ? Date.parse(status.lastRealTurnAt) : NaN;
+    if (Number.isFinite(realTurnMs) && nowMs - realTurnMs < turnsStalledFloorMs(status.intervalSec)) {
+      vetoedByRecentTurn.push(ownerId);
+      console.warn(
+        `[stalled-loops-guard] VETO ${ownerId}: turnsStalled:true but a real turn landed ` +
+          `${Math.round((nowMs - realTurnMs) / 1000)}s ago (lastTurnAt=${status.lastTurnAt ?? 'never'}, ` +
+          `lastRealTurnAt=${status.lastRealTurnAt}) — refusing to disarm. ` +
+          `A non-zero veto count means last_turn_at is under-reporting (EI-19362678179163398).`,
+      );
+      continue;
+    }
+
     stalledOwners.push(ownerId);
     if (dryRun) continue;
     const reason =
@@ -129,5 +180,11 @@ export async function sweepStalledLoops(
     });
   }
 
-  return { checked: rows.length, paused: stalledOwners.length, sample: stalledOwners.slice(0, 5), dryRun };
+  return {
+    checked: rows.length,
+    paused: stalledOwners.length,
+    sample: stalledOwners.slice(0, 5),
+    vetoedByRecentTurn,
+    dryRun,
+  };
 }
