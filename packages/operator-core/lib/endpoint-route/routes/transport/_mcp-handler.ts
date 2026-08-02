@@ -74,6 +74,8 @@ import {
 } from '@papercusp/tooldef-mcp';
 import { getOrgPg, withWorkspace } from '@papercusp/db-org';
 import { applyResultDoor } from '../../../result-door';
+import { PROJECTION_ARG, applyResultProjection, parseProjection } from '../../../result-projection';
+import type { ProjectionSpec } from '../../../result-projection';
 import { resolveAgentIdentity } from '../../../agent-tools/coordination/identity';
 import { canonicalCoordRole } from '../../../agent-tools/coordination/roles';
 import { dispatchNeedsTx, effectiveDispatchWorkspace, synthesizeDispatchPrincipal } from './role-principal-caps';
@@ -1937,6 +1939,40 @@ const handler = createMcpHandler(
           // nothing stopped a fourth. Clamp on the ARG NAME, not on a tool list.
           const WORKSPACE_TARGET_ARGS = ['workspace', 'workspaceId'] as const;
           let dispatchArgs = args;
+
+          // P-020 / D-041: the caller-specified PROJECTION stage — the reduction
+          // operators bash gets from pipes, available on EVERY tool rather than
+          // as a per-tool param. Reserved at the DISPATCH layer, so `projection`
+          // is stripped before the tool's own schema validation sees it (tool
+          // schemas are additionalProperties:false; an unstripped key would be
+          // rejected as unknown by every tool in the catalog).
+          //
+          // Validated HERE, before dispatch, and fail-CLOSED: a malformed spec
+          // is the caller's bug, it is knowable without running anything, and a
+          // caller who asked for `head 20` must never be silently handed 4,000
+          // lines they did not agree to pay for. A spec that is well-formed but
+          // does not FIT the result fails open instead — see applyResultProjection.
+          let projectionSpec: ProjectionSpec | null = null;
+          if (dispatchArgs && typeof dispatchArgs === 'object' && PROJECTION_ARG in (dispatchArgs as Record<string, unknown>)) {
+            const raw = (dispatchArgs as Record<string, unknown>)[PROJECTION_ARG];
+            const parsed = parseProjection(raw);
+            if (!parsed.ok) {
+              return {
+                isError: true,
+                content: [{
+                  type: 'text' as const,
+                  text:
+                    `projection_invalid: ${parsed.error}\n` +
+                    `The \`projection\` argument reduces ANY tool result: ` +
+                    `{ pick?: ["results[].id"], pipe?: [{ op:"grep", pattern:"..." }, { op:"head", n:20 }] }. ` +
+                    `Operators: grep (fixed/ignoreCase/invert/before/after/context), head, tail, sort, uniq, cut, count.`,
+                }],
+              };
+            }
+            projectionSpec = parsed.spec;
+            const { [PROJECTION_ARG]: _stripped, ...rest } = dispatchArgs as Record<string, unknown>;
+            dispatchArgs = rest;
+          }
           if ((spawnRes.ctx.isPowerUser || scopedSuperuserClamp) && args && typeof args === 'object') {
             for (const key of WORKSPACE_TARGET_ARGS) {
               if (key in (args as Record<string, unknown>)) {
@@ -2086,8 +2122,13 @@ const handler = createMcpHandler(
               // client-parsed JSON), and the proxy's internal full-body state
               // must stay undoored. BEFORE persistence, so a replay serves the
               // same doored bytes the client saw.
+              // P-020 / D-041: the caller's projection runs BEFORE the door, so a
+              // caller who asked for 20 lines gets 20 lines — not a door-truncated
+              // slice of 4,000 plus a spill file to go page. Reduction the caller
+              // ASKED for should pre-empt the door's fixed policy, never race it.
               const result = applyResultDoor(
-                await maybeRunWithDeltaProxy({
+                applyResultProjection(
+                  await maybeRunWithDeltaProxy({
                   sessionKey: replayOwnerKey,
                   toolName,
                   args: dispatchArgs,
@@ -2101,7 +2142,10 @@ const handler = createMcpHandler(
                     overrideDelta ? { ...ctx, requestedDelta: autoRequestedDelta } : ctx,
                     PROJECTED_DEPS,
                   )) as McpCallResult,
-                }),
+                  }),
+                  projectionSpec,
+                  { toolName },
+                ),
                 {
                   toolName,
                   workspaceId: dispatchSpawnCtx.workspaceId,

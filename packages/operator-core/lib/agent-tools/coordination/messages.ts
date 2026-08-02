@@ -761,22 +761,111 @@ export async function repliedMsgIdsBatch(subscriberId: string, msgIds: readonly 
   return replied;
 }
 
+/** Hard backstop on rows scanned per `readOutbox` PG-fast-path call, applied
+ *  even with NO `since_ts` (a full-history read) — the one bound that is
+ *  correct regardless of any ts/id skew question. Sized generously above the
+ *  live-observed busiest single sender (11,739 rows on 2026-08-02, against a
+ *  173-row p99) so a normal read is never truncated; only a pathological
+ *  backlog is capped, and then loudly. Mirrors INBOX_FAST_PATH_ROW_CAP. */
+export const OUTBOX_FAST_PATH_ROW_CAP = 25_000;
+
+/**
+ * The authoritative outbox filter + sort. Deliberately shared by BOTH read
+ * paths below so the bounded PG pre-filter can never drift from the fallback:
+ * the SQL only chooses which rows are FETCHED, this decides what is RETURNED.
+ *
+ * `!sinceMs` covers 0 (no `since_ts`) AND NaN (an unparseable one) — an invalid
+ * timestamp degrades to "no lower bound", which is the pre-existing behaviour.
+ */
+function filterOutbox(
+  lines: readonly CoordEnvelope[],
+  ownerId: string,
+  sinceMs: number,
+): CoordEnvelope[] {
+  return lines
+    .filter((l) => l.from === ownerId)
+    .filter((l) => !sinceMs || new Date(l.ts).getTime() > sinceMs)
+    .sort((a, b) => a.ts.localeCompare(b.ts) || a.msg_id.localeCompare(b.msg_id));
+}
+
 /**
  * Read everything `ownerId` SENT — every envelope whose `from === ownerId`,
  * across the whole message log. The outbox half of the per-bee mail view
  * (pui-bee-dossier-pane-2026-06-06). Sorted by ts ascending; `since_ts` filters
  * strictly later than the given ISO timestamp.
+ *
+ * SENDER-PUSHDOWN FAST PATH (EI-19323734935411369). This was the last PRIMARY
+ * (non-catch-fallback) caller of the unbounded `coordLog.readLines('messages')`
+ * — it loaded the ENTIRE messages surface and filtered in JS, which on
+ * 2026-08-02 measured **76,209 rows / 63 MB of JSONB bodies transferred and
+ * JSON-parsed on the operator's single event loop, per call**. Across the
+ * 349,842 logged calls that unbounded shape returned 9.7 BILLION rows and
+ * absorbed ~55h of DB time on a 59 MB table — a top contributor to the
+ * saturation behind the WI-6739 data-plane stalls.
+ *
+ * Both bounds mirror `readInbox` exactly:
+ *   (a) `since_ts` (which every routine caller already passes, only to apply it
+ *       in JS afterwards) becomes a SKEW-PADDED `ts >= …` lower bound the
+ *       coord_event_log_messages_ts_idx (migration 545) seeks on;
+ *   (b) a LIMIT always caps rows scanned, so the one caller that passes no
+ *       `since_ts` (sync-resolver's cupMail fold) is bounded too.
+ *
+ * Measured after: 438ms/76,209 rows/63 MB → 82ms/48 rows/51 KB without
+ * `since_ts`, 3ms/8 rows/3.4 KB with it. Deliberately NO new index: the
+ * worst case (an owner who has sent nothing, so the LIMIT never fills) still
+ * lands at 76ms, and the caught stalls showed ZERO lock contention — the cost
+ * was row volume, not seek time, so bounding rows is the fix and an index
+ * would only add write amplification to a hot append-only table.
+ *
+ * ⚠ THE CAP'S ORDER MUST BE `id DESC` (EI-19314819320465915, learned on the
+ * inbox side): `ORDER BY id ASC LIMIT n` keeps the n OLDEST rows and silently
+ * discards the newest, freezing the view once a sender exceeds the cap. `DESC`
+ * degrades by forgetting history instead. Safe because the SQL order is NOT the
+ * output order — `filterOutbox` re-sorts ascending by (ts, msg_id) regardless.
  */
 export async function readOutbox(
   ownerId: string,
   opts: { since_ts?: string } = {},
 ): Promise<CoordEnvelope[]> {
-  const lines = await coordLog.readLines('messages');
   const sinceMs = opts.since_ts ? new Date(opts.since_ts).getTime() : 0;
-  return lines
-    .filter((l) => l.from === ownerId)
-    .filter((l) => !sinceMs || new Date(l.ts).getTime() > sinceMs)
-    .sort((a, b) => a.ts.localeCompare(b.ts) || a.msg_id.localeCompare(b.msg_id));
+  // Gated on a true PG backend: an in-memory/fs seam (tests) keeps using
+  // readLines, since coordSql() would otherwise read getOrgPg() and miss the
+  // swapped store. Any query error falls through to the authoritative read.
+  if (coordHasPgFastPath()) {
+    try {
+      const sql = coordSql();
+      // Only pad a FINITE, positive cutoff — new Date(NaN).toISOString() throws.
+      const sinceBound =
+        Number.isFinite(sinceMs) && sinceMs > 0
+          ? new Date(sinceMs - INBOX_SINCE_TS_SKEW_PAD_MS).toISOString()
+          : null;
+      const rows = await sql<{ body: unknown }[]>`
+        SELECT body
+          FROM harness_shared.coord_event_log
+         WHERE workspace_id = ${coordWorkspaceId()}
+           AND surface = 'messages'
+           ${sinceBound ? sql`AND ts >= ${sinceBound}` : sql``}
+           AND body->>'from' = ${ownerId}
+         ORDER BY id DESC
+         LIMIT ${OUTBOX_FAST_PATH_ROW_CAP}
+      `;
+      if (rows.length >= OUTBOX_FAST_PATH_ROW_CAP) {
+        console.warn(
+          `[readOutbox] fast-path row cap (${OUTBOX_FAST_PATH_ROW_CAP}) hit for owner=${ownerId} ` +
+            `since_ts=${opts.since_ts ?? '(none)'} — the OLDEST matching rows beyond the cap were NOT ` +
+            'returned; a caller doing a genuine full-history backfill should page via since_ts.',
+        );
+      }
+      const lines = rows.map(
+        (r) => (typeof r.body === 'string' ? JSON.parse(r.body) : r.body) as CoordEnvelope,
+      );
+      return filterOutbox(lines, ownerId, sinceMs);
+    } catch {
+      // Fall through to the authoritative full-surface read below.
+    }
+  }
+  const lines = await coordLog.readLines('messages');
+  return filterOutbox(lines, ownerId, sinceMs);
 }
 
 /**

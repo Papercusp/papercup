@@ -370,6 +370,7 @@ async function claimOne(
             'A PRIOR holder left an in-flight checkpoint on this item — it may already be DONE or partly done. Read it before building: verify against the tree/tests first, do not assume greenfield (EI-529).',
           ...(bgJobWarning.detected ? { checkpointBgJobWarning: bgJobWarning.reason } : {}),
           ...(terminalWarning ? { terminalWarning } : {}),
+          ...(blockedWarning ? { blockedWarning, blockedBy: unresolvedBlockers } : {}),
           ...(priorWorkWarn ? { priorWork, priorWorkWarning: priorWorkWarn } : {}),
           ...(laneCollision ? { planItemClaimCollision: laneCollision } : {}),
         }

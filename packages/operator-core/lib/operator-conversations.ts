@@ -452,6 +452,29 @@ function rowToConversation(r: Record<string, unknown>): ConversationRow {
   };
 }
 
+/**
+ * WI-4949: normalize a persisted turn's tool-call names at the READ boundary
+ * rather than mass-UPDATE-ing historical operator_turns rows. Some already-
+ * persisted rows carry the Claude-sanitized form (`chat_ask_choice`) because
+ * ingest didn't always restore the canonical `chat:ask_choice` colon name —
+ * every consumer (the card registry, the ask_choice gates, turn-answer) is
+ * keyed on the canonical name, so an unnormalized row's card silently never
+ * rendered. Applying `canonicalToolName` here, at the single choke point
+ * every reader of operator_turns rows goes through, fixes BOTH already-dead
+ * historical rows (no risky backfill migration needed — this makes the
+ * owner's old "Pick one." message clickable again on next read) AND any
+ * future write-path regression that forgets to canonicalize at ingest.
+ * Idempotent: already-canonical names pass through unchanged.
+ */
+function normalizeTurnTools(tools: unknown): TurnToolCall[] | null {
+  if (!Array.isArray(tools)) return null;
+  return tools.map((t) =>
+    t && typeof t === 'object' && typeof (t as { name?: unknown }).name === 'string'
+      ? { ...(t as TurnToolCall), name: canonicalToolName((t as TurnToolCall).name) }
+      : (t as TurnToolCall),
+  );
+}
+
 function rowToTurn(r: Record<string, unknown>): TurnRow {
   return {
     id: String(r.id),
@@ -463,7 +486,7 @@ function rowToTurn(r: Record<string, unknown>): TurnRow {
     elConvId: r.el_conv_id == null ? null : String(r.el_conv_id),
     audioUrl: r.audio_url == null ? null : String(r.audio_url),
     createdAt: Number(r.created_at),
-    tools: Array.isArray(r.tools) ? (r.tools as TurnToolCall[]) : null,
+    tools: normalizeTurnTools(r.tools),
     report:
       r.report && typeof r.report === 'object' && !Array.isArray(r.report)
         ? (r.report as ParsedReport)

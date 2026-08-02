@@ -71,7 +71,7 @@ vi.mock('../blueprint/launch-blueprint', async () => {
 
 // Import order matters: ../events installs the dispatcher's postInvoke handler;
 // the tool modules register themselves with the projected registry at load.
-const { _resetReactionsForTests } = await import('../events');
+const { _resetReactionsForTests, listReactionRules } = await import('../events');
 await import('../agent-tools/plans/start');
 await import('../agent-tools/pot/wake');
 const { armDefaultPotWakeSubscriptions } = await import('./wake-defaults');

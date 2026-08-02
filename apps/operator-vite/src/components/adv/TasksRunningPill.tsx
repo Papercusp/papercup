@@ -9,23 +9,21 @@
  * not accreted a roster, a search box and a bulk-action bar, and this pill's job
  * is only to open the panel.
  *
- * ── Why the pill says "tasks" and the panel says "processes" ──
- * These are two different numbers and the wording is deliberate, because making
- * them LOOK like one number is the actual trap here (compare AdvOverviewTab's
- * note about the Agents tile never being allowed to disagree with the agents
- * pill — that only works because both read one query).
+ * ── The pill and the panel report the SAME number ──
+ * Both read the live SCAN: every process actually running, enrolled or not
+ * (WI-6475 added the scan precisely because the pane showed an empty table beside
+ * "400 process(es) scanned", which reads as broken). The pill and the panel it
+ * opens can therefore never disagree — the trap AdvOverviewTab warns about with
+ * the Agents tile, avoided the same way: one query, one number.
  *
- *   pill  → `summary.total`, the LEDGER: tasks the three enrolling seams
- *           registered. Cheap; no kernel scan.
- *   panel → `liveProcesses`, the SCAN: every process actually running, enrolled
- *           or not (WI-6475 added this precisely because the pane showed an empty
- *           table beside "400 process(es) scanned", which reads as broken).
- *
- * The ledger count is strictly smaller until P-009 enrols the remaining sidecar
- * spawners, so labelling both "processes" would present a known undercount as a
- * process total. Two words, two numbers, no false agreement. Follow-up WI tracks
- * giving the resolver a cheap counts-only live arm so the pill can show the true
- * process total without a kernel scan on every tab.
+ * This is NOT how it originally shipped, and the difference is the whole point of
+ * WI-6844's second half. The pill used to render `summary.total` — the LEDGER —
+ * because a kernel scan was thought too expensive for something mounted on every
+ * tab. That read "3 tasks" on a box running 131 agents. The counts-only live arm
+ * (`{ live: true, countsOnly: true }`) plus the resolver's 5s shared scan memo is
+ * what retired that trade-off: one walk per TTL for the whole app, so the honest
+ * number became affordable and the cheap-but-wrong one is gone. See
+ * `countProcesses` below for the ledger fallback that survives, and why.
  *
  * The panel is lazy: it is the thing that carries the scan, and it must not run
  * for a popover nobody has opened.
