@@ -64,7 +64,11 @@ export async function cleanupExpiredSessionPorts(input: {
         });
         // 'cleanup', not 'self': nothing observed this session exit — it never ran. The
         // stamp is the administrative close time, so it cannot answer "when did it end".
-        await endTarget(row.targetAdvSessionId, 1, 'cleanup');
+        // exitCode NULL, not 1, for the same reason adv-sessions.ts refuses a sentinel in
+        // reconcileDeadTerminalLaunches: we never reaped this process, so we never observed
+        // a status, and a fabricated 1 is indistinguishable from an observed failure. The
+        // failure itself is already recorded by updateTarget(status 'failed') above.
+        await endTarget(row.targetAdvSessionId, null, 'cleanup');
         if (targetComplete) out.targetsFailed += 1;
         else out.errors += 1;
       } catch {

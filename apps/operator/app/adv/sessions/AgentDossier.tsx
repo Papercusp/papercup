@@ -42,6 +42,7 @@ import { agentDisplayLabel, agentRoleLabel } from '@/app/harness/agent-display';
 import { contextPct } from '../hud/hud-board-model';
 import type { NativeSessionHandle, RosterEntry } from './SessionsRosterView';
 import { useAgentDetail, type AgentDetail } from './use-agent-detail';
+import { RailSectionHead, useRailCollapse } from './rail-sections';
 // hud-first-nav-and-dossier-2026-07-26 P-004: the DTO + the `agentDetail.byOwner`
 // fetch hook now live in use-agent-detail.ts so the chat footer's "N locks / M
 // unread" summary chip can share the SAME useSyncQuery cache entry (no new
@@ -321,6 +322,7 @@ export default function AgentDossier({
   onClose,
   startingUp = false,
   launchFailed = false,
+  zoneTitle = false,
 }: {
   ownerId: string;
   entry: RosterEntry | null;
@@ -334,6 +336,13 @@ export default function AgentDossier({
    *  Without this the rail keeps saying "starting up" about a corpse — the same
    *  lie as the banner, in the surface right next to it. */
   launchFailed?: boolean;
+  /** Renders the rail's ZONE title bar — "Activity — what they're doing" — the
+   *  vertical half of the Framed vocabulary [owner-approved 2026-08-02, artifact
+   *  6379bb65]. A PROP rather than always-on, because this component has two
+   *  homes: inside the session popup it is one of six named zones and needs its
+   *  name; in the /adv two-pane it is the detail pane of a board that already
+   *  says what it is, where a second title bar is noise. */
+  zoneTitle?: boolean;
 }): React.JSX.Element {
   const lex = useLexicon();
   const { detail, error, loading } = useAgentDetail(ownerId);
@@ -431,6 +440,12 @@ export default function AgentDossier({
   // readable.
   const [railOpenRaw, setRailOpenRaw] = useQueryState('railOpen', parseAsString);
   const railOpen = useMemo(() => railExpandKeys(railOpenRaw), [railOpenRaw]);
+  /* A DIFFERENT axis from `railOpen` above, and deliberately a separate param:
+     that one expands a capped LIST inside a section ("show all 12 locks"), this
+     one folds the whole SECTION away [owner 2026-08-02: "make sure the sections
+     that get big have a good way to collapse and expand them"]. Shared with the
+     Orders rail — see rail-sections.tsx. */
+  const rail = useRailCollapse();
   const toggleRail = useCallback(
     (key: string) => {
       const next = railExpandKeys(railOpenRaw);
@@ -443,6 +458,16 @@ export default function AgentDossier({
 
   return (
     <aside className="pc-dossier" aria-label="Agent detail">
+      {/* The mirror of the Orders rail's title bar on the opposite edge, so the
+          two columns read as a pair: told on the left, doing on the right. */}
+      {zoneTitle ? (
+        <header className="pc-zone-title" data-testid="dossier-zone-title">
+          <span>Activity</span>
+          {/* "they", not "it" — the same voice the Orders rail uses [owner
+              2026-08-02]. */}
+          <span className="pc-zone-title__sub">— what they’re doing</span>
+        </header>
+      ) : null}
       <header className="pc-dossier__head">
         <div className="pc-dossier__head-main">
           {entry ? <LivenessDot liveness={entry.liveness} /> : null}
@@ -517,11 +542,20 @@ export default function AgentDossier({
           directed, last tool call. Each field is sourced from an existing
           roster/sync primitive; see adv-agent-detail.ts's AgentSignals doc. ── */}
       {entry ? (
-        <section className="pc-dossier__section" id="pc-dossier-signals">
-          <h4 className="pc-dossier__h">
-            Health
+        <section
+          className="pc-dossier__section"
+          id="pc-dossier-signals"
+          data-collapsed={rail.closed('a-signals') ? 'true' : 'false'}
+        >
+          <RailSectionHead
+            sectionId="a-signals"
+            label="Health"
+            className="pc-dossier__h"
+            closed={rail.closed('a-signals')}
+            onToggle={() => rail.toggle('a-signals')}
+          >
             {loading && !detail ? <span className="pc-dossier__h-note"> · loading…</span> : null}
-          </h4>
+          </RailSectionHead>
           <MetaRow
             label="loop"
             value={
@@ -647,8 +681,18 @@ export default function AgentDossier({
           has nothing pickable" is a real, distinct state that a lone "next up"
           row cannot express (it would simply be absent, which reads as no data). */}
       {signals?.lane || signals?.unavailableSignals.includes('lane') ? (
-        <section className="pc-dossier__section" id="pc-dossier-lane">
-          <h4 className="pc-dossier__h">Lane</h4>
+        <section
+          className="pc-dossier__section"
+          id="pc-dossier-lane"
+          data-collapsed={rail.closed('a-lane') ? 'true' : 'false'}
+        >
+          <RailSectionHead
+            sectionId="a-lane"
+            label="Lane"
+            className="pc-dossier__h"
+            closed={rail.closed('a-lane')}
+            onToggle={() => rail.toggle('a-lane')}
+          />
           {signals?.lane ? (
             <>
               {metaRows([
@@ -698,17 +742,26 @@ export default function AgentDossier({
           rebuilds on restart, so a fresh bundle can genuinely be served a
           `subscriptions`-less payload. Reading `.length` off it there would take
           down the whole HUD tab over one optional list. */}
-      <section className="pc-dossier__section" id="pc-dossier-events">
-        <h4 className="pc-dossier__h">
-          Waiting on
-          {subs && subs.count > 0 ? (
-            <span className="pc-dossier__badge-count">{subs.count} subscribed</span>
-          ) : null}
+      <section
+        className="pc-dossier__section"
+        id="pc-dossier-events"
+        data-collapsed={rail.closed('a-events') ? 'true' : 'false'}
+      >
+        <RailSectionHead
+          sectionId="a-events"
+          label="Waiting on"
+          className="pc-dossier__h"
+          closed={rail.closed('a-events')}
+          onToggle={() => rail.toggle('a-events')}
+        >
           {loading && !detail ? <span className="pc-dossier__h-note"> · loading…</span> : null}
           {subs?.error ? (
             <span className="pc-dossier__h-note pc-dossier__h-note--err"> · {subs.error}</span>
           ) : null}
-        </h4>
+          {subs && subs.count > 0 ? (
+            <span className="pc-dossier__badge-count">{subs.count} subscribed</span>
+          ) : null}
+        </RailSectionHead>
         {subRows.length > 0 ? (
           <CappedRows
             noun="events"
@@ -786,15 +839,24 @@ export default function AgentDossier({
       {/* hud-first-nav-and-dossier-2026-07-26 P-004: id is the scroll target
           for the footer's "⚠ N locks / M unread" summary chip (D-002's one
           deliberate duplicate) — clicking it opens this rail + scrolls here. */}
-      <section className="pc-dossier__section" id="pc-dossier-locks">
-        <h4 className="pc-dossier__h">
-          Locks
+      <section
+        className="pc-dossier__section"
+        id="pc-dossier-locks"
+        data-collapsed={rail.closed('a-locks') ? 'true' : 'false'}
+      >
+        <RailSectionHead
+          sectionId="a-locks"
+          label="Locks"
+          className="pc-dossier__h"
+          closed={rail.closed('a-locks')}
+          onToggle={() => rail.toggle('a-locks')}
+        >
+          {loading && !detail ? <span className="pc-dossier__h-note"> · loading…</span> : null}
+          {locks?.error ? <span className="pc-dossier__h-note pc-dossier__h-note--err"> · {locks.error}</span> : null}
           {locks && locks.held.length + locks.waiting.length > 0 ? (
             <span className="pc-dossier__badge-count">{locks.held.length + locks.waiting.length}</span>
           ) : null}
-          {loading && !detail ? <span className="pc-dossier__h-note"> · loading…</span> : null}
-          {locks?.error ? <span className="pc-dossier__h-note pc-dossier__h-note--err"> · {locks.error}</span> : null}
-        </h4>
+        </RailSectionHead>
         {locks && (locks.held.length > 0 || locks.waiting.length > 0) ? (
           <CappedRows
             noun="locks"
@@ -837,14 +899,27 @@ export default function AgentDossier({
       {/* ── Coord ── */}
       {/* hud-first-nav-and-dossier-2026-07-26 P-004: scroll target for the
           footer's summary chip, same rationale as #pc-dossier-locks above. */}
-      <section className="pc-dossier__section" id="pc-dossier-coord">
-        <h4 className="pc-dossier__h">
-          Coord
+      <section
+        className="pc-dossier__section"
+        id="pc-dossier-coord"
+        data-collapsed={rail.closed('a-coord') ? 'true' : 'false'}
+        /* THE section the whole redesign started from [owner 2026-08-01: "the
+           coord section and others take up huge vertical space if its a long
+           list, thats bad"] — unread traffic is what makes this rail tall. */
+        data-attn={coord && coord.unreadCount > 0 ? 'true' : undefined}
+      >
+        <RailSectionHead
+          sectionId="a-coord"
+          label="Coord"
+          className="pc-dossier__h"
+          closed={rail.closed('a-coord')}
+          onToggle={() => rail.toggle('a-coord')}
+        >
+          {coord?.error ? <span className="pc-dossier__h-note pc-dossier__h-note--err"> · {coord.error}</span> : null}
           {coord && coord.unreadCount > 0 ? (
             <span className="pc-dossier__badge-count">{coord.unreadCount} unread</span>
           ) : null}
-          {coord?.error ? <span className="pc-dossier__h-note pc-dossier__h-note--err"> · {coord.error}</span> : null}
-        </h4>
+        </RailSectionHead>
         {coord ? (
           coordRows.length > 0 ? (
             /* Rail R1 P-008: ONE capped list rather than four stacked ones, in
@@ -888,11 +963,20 @@ export default function AgentDossier({
 
       {/* ── Files in play (cross-marked with this agent's lock state) ── */}
       {entry && entry.currentFiles.length > 0 ? (
-        <section className="pc-dossier__section" id="pc-dossier-files">
-          <h4 className="pc-dossier__h">
-            Files
+        <section
+          className="pc-dossier__section"
+          id="pc-dossier-files"
+          data-collapsed={rail.closed('a-files') ? 'true' : 'false'}
+        >
+          <RailSectionHead
+            sectionId="a-files"
+            label="Files"
+            className="pc-dossier__h"
+            closed={rail.closed('a-files')}
+            onToggle={() => rail.toggle('a-files')}
+          >
             <span className="pc-dossier__badge-count">{entry.currentFiles.length}</span>
-          </h4>
+          </RailSectionHead>
           <CappedRows
             noun="files"
             open={railOpen.has('files')}
@@ -926,8 +1010,18 @@ export default function AgentDossier({
           the rest one click away: [deck R1] "Nobody reads those while watching
           a conversation." */}
       {entry ? (
-        <section className="pc-dossier__section" id="pc-dossier-reference">
-          <h4 className="pc-dossier__h">Reference</h4>
+        <section
+          className="pc-dossier__section"
+          id="pc-dossier-reference"
+          data-collapsed={rail.closed('a-reference') ? 'true' : 'false'}
+        >
+          <RailSectionHead
+            sectionId="a-reference"
+            label="Reference"
+            className="pc-dossier__h"
+            closed={rail.closed('a-reference')}
+            onToggle={() => rail.toggle('a-reference')}
+          />
           <CappedRows
             noun="detail rows"
             open={railOpen.has('reference')}

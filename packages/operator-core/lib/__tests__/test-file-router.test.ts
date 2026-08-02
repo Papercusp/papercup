@@ -9,6 +9,7 @@ import {
   evaluateMatch,
   groupRoutes,
   listedFiles,
+  main,
   looksLikeMidInstallCorruption,
   looksLikeSilentCollectionFailure,
   perGroupVitestArgs,
@@ -419,5 +420,53 @@ describe('warnIfInstallInFlight (EI-19304880034803985 — the HANG-path hint)', 
     rmSync(tmpLockRootDir, { recursive: true, force: true });
     expect(() => warnIfInstallInFlight('cold path')).not.toThrow();
     expect(errorSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe('TEST_FILE_RESULT presence is a verdict, so a run that executed nothing must not print it (EI-19376339983058011)', () => {
+  // WHY THIS IS PINNED. A measurement harness guarded its runs with
+  // `if ! grep -q 'TEST_FILE_RESULT'; then UNMEASURED; fi` — a presence test, which is the
+  // natural way to ask "did this actually run?". A dry run satisfied it: same marker, executed=0,
+  // exit 0, and zero parseable FAIL lines, which the harness recorded as "this candidate passes".
+  // Four corpus rows were written that way in ~37s each. The false reading is indistinguishable
+  // from a true one AND argues for the wrong conclusion (drop the candidate), so it is the
+  // expensive direction. `--dry` is chosen here deliberately: it is the one path that reaches the
+  // reporting branch WITHOUT spawning vitest, so this stays a fast unit test of the real main().
+  let logSpy: ReturnType<typeof vi.spyOn>;
+  let errSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+  afterEach(() => {
+    logSpy.mockRestore();
+    errSpy.mockRestore();
+  });
+
+  const linesFrom = (spy: ReturnType<typeof vi.spyOn>) =>
+    spy.mock.calls.map((c: unknown[]) => String(c[0])).join('\n');
+
+  it('a dry run does NOT print TEST_FILE_RESULT', () => {
+    const code = main(['--dry', 'packages/operator-core/lib/__tests__/test-file-router.test.ts']);
+    expect(code).toBe(0);
+    expect(linesFrom(logSpy)).not.toContain('TEST_FILE_RESULT');
+  });
+
+  it('a dry run still reports machine-readably, under its own marker', () => {
+    main(['--dry', 'packages/operator-core/lib/__tests__/test-file-router.test.ts']);
+    const out = linesFrom(logSpy);
+    expect(out).toContain('TEST_FILE_DRYRUN');
+    expect(out).toMatch(/TEST_FILE_DRYRUN .*executed=0 .*status=dry-run/);
+  });
+
+  // Non-vacuousness: the assertions above would also pass if main() silently printed nothing at
+  // all, or if the file never matched. Pin that the run genuinely resolved a real test file —
+  // otherwise this suite would keep passing after a regression that breaks routing entirely.
+  it('the dry run really matched the requested file (guards against a vacuous pass)', () => {
+    main(['--dry', 'packages/operator-core/lib/__tests__/test-file-router.test.ts']);
+    const out = linesFrom(logSpy);
+    expect(out).toMatch(/TEST_FILE_DRYRUN requested=1 .*matched=1/);
+    expect(out).toContain('matched lib/__tests__/test-file-router.test.ts');
   });
 });

@@ -41,82 +41,106 @@
   background: var(--bg-popover, #0d1829);
 }
 
-/* ── panel identity strip ─────────────────────────────────────────────────── */
+/* ── panel identity strip — the ZONE title ────────────────────────────────── */
+/* The filled bar itself is `.pc-zone-title` (chat-controls.css), shared with the
+   Activity rail so both columns are named in one vocabulary. Only the parts that
+   are this panel's own live here; anything that would fight the shared bar (its
+   own background, padding, ink) is deliberately NOT restated, because the two
+   files are single-class selectors and their load order is not guaranteed. */
 .pc-orders__tag {
-  display: flex;
-  align-items: center;
   gap: 6px;
-  flex: none;
-  padding: 8px 12px;
-  border-bottom: 1px solid var(--pc-orders-rule);
-  background: var(--pc-orders-surface);
 }
 .pc-orders__tag-name {
   font-size: 9px;
   text-transform: uppercase;
-  font-weight: 660;
-  color: var(--pc-orders-dim);
+  font-weight: 700;
 }
 .pc-orders__tag-sub {
-  font-size: 10px;
-  color: var(--pc-orders-mute);
+  font-size: 9px;
 }
 .pc-orders__close {
-  margin-left: auto;
-  border: 0;
-  background: none;
   cursor: pointer;
-  font-size: 12px;
-  line-height: 1;
-  padding: 2px 4px;
-  border-radius: 3px;
-  color: var(--pc-orders-mute);
-}
-.pc-orders__close:hover {
-  color: var(--pc-orders-text);
-}
-.pc-orders__close:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
 }
 
-/* ── sections ─────────────────────────────────────────────────────────────── */
+/* ── sections — framed cards ──────────────────────────────────────────────── */
+/* Each section is its own bordered card rather than a slab separated by a
+   hairline. That is the Framed look's whole claim: a boundary you can SEE is
+   what stops six stacked sections reading as one wall of text. */
 .pc-orders__sec {
-  padding: 9px 12px;
-  border-top: 1px solid var(--pc-orders-rule);
-}
-.pc-orders__sec:first-of-type {
-  border-top: 0;
+  --pc-orders-edge: color-mix(in oklab, var(--accent), var(--bg-popover) 62%);
+  margin: 6px 8px;
+  border: 1px solid var(--pc-orders-edge);
+  border-radius: 4px;
+  background: color-mix(in oklab, transparent, white 3.5%);
+  padding: 0 8px 6px;
+  overflow: hidden;
+  /* ② of the two collapse mechanisms (rail-sections.tsx): an OPEN section still
+     cannot run away with the column. Its body scrolls inside its own card with
+     the cap pinned, so a 40-message Coord list costs the same vertical space as
+     a 2-message one — the fix for the reader who never clicks anything.
+     `44vh` rather than a pixel ceiling: on a short window two open sections
+     still both fit, which a fixed px cannot promise. */
+  max-height: 44vh;
+  overflow-y: auto;
 }
 /* Mission is tinted because it is the only section that EXPLAINS the others —
    the reader should land on it first without having to be told to. */
 .pc-orders__sec--mission {
-  background: color-mix(in srgb, var(--accent), transparent 94%);
+  background: color-mix(in srgb, var(--accent), transparent 92%);
 }
+/* A card whose contents are waiting on the READER (walls, open directives). */
+.pc-orders__sec[data-attn='true'] {
+  border-color: var(--warn);
+}
+
+/* The section CAP: a filled bar, full-bleed across the card's padding, pinned so
+   it stays legible while the body under it scrolls. */
 .pc-orders__h {
+  position: sticky;
+  top: 0;
+  z-index: 2;
   display: flex;
   align-items: center;
   gap: 6px;
-  margin: 0 0 6px;
-  font-size: 9.5px;
+  margin: 0 -8px 6px;
+  padding: 3px 8px;
+  font-size: 9px;
   text-transform: uppercase;
-  font-weight: 640;
-  color: var(--pc-orders-dim);
+  font-weight: 700;
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+.pc-orders__sec[data-attn='true'] > .pc-orders__h {
+  background: var(--warn);
+  color: var(--accent-ink);
+}
+/* ① Collapsed: everything but the cap folds away. The COUNT lives inside the
+   cap, so folding Coord/Walls away never hides that there is something in it. */
+.pc-orders__sec[data-collapsed='true'] {
+  max-height: none;
+  padding-bottom: 0;
+}
+.pc-orders__sec[data-collapsed='true'] > *:not(.pc-orders__h) {
+  display: none;
+}
+.pc-orders__sec[data-collapsed='true'] > .pc-orders__h {
+  margin-bottom: 0;
 }
 .pc-orders__n {
+  margin-left: auto;
   font-family: var(--font-mono, ui-monospace, monospace);
   letter-spacing: 0;
   text-transform: none;
-  font-size: 9.5px;
-  font-weight: 500;
-  padding: 1px 5px;
+  font-size: 8.5px;
+  font-weight: 700;
+  padding: 0 5px;
   border-radius: 999px;
-  background: var(--pc-orders-surface);
-  color: var(--pc-orders-text);
+  background: rgba(0, 0, 0, 0.2);
+  color: var(--accent-ink);
 }
 .pc-orders__n--hot {
-  background: var(--pc-orders-warn-bg);
-  color: var(--warn);
+  background: rgba(0, 0, 0, 0.28);
+  color: var(--accent-ink);
 }
 
 /* ── key/value rows ───────────────────────────────────────────────────────── */

@@ -98,6 +98,10 @@ import RubricsPanel from "@/app/_components/RubricsPanel";
 import RubricDetailPanel from "@/app/_components/RubricDetailPanel";
 import ObservationsPanel from "@/app/adv/create/ObservationsPanel";
 import {
+  beginInteraction,
+  PERF_INTERACTIONS,
+} from "@/app/_components/perf/perf-marks";
+import {
   LearningComparisonBars,
   LearningDisclosure,
   LearningEvidenceRail,
@@ -548,6 +552,29 @@ export default function LearningTab() {
   useEffect(() => {
     if (lviewRaw != null && lviewRaw !== view) void setLviewRaw(view);
   }, [lviewRaw, setLviewRaw, view]);
+
+  // Perf: begin the learning-view-switch interaction on a view CHANGE — the
+  // "expanding the sections" gesture the owner reported as taking several
+  // seconds (EI-19375505819043214). The matching endInteraction fires in the
+  // selected panel when its primary read resolves.
+  //
+  // Keyed off `view` (the view actually rendered), not `lview`/`lviewRaw`: a
+  // flag-hidden or retired id degrades to the default above, and timing a
+  // switch to a pane nobody is looking at would measure the wrong render.
+  //
+  // The FIRST mount is deliberately skipped. Mount cost is a different
+  // interaction with a different cause (it is harness-dock-open's territory),
+  // and folding it in here would blend two populations under one budget — the
+  // exact conflation that made command-palette-open report a 7.6x regression
+  // that did not exist (WI-6543).
+  const perfPrevViewRef = useRef<LView | null>(null);
+  useEffect(() => {
+    const prev = perfPrevViewRef.current;
+    perfPrevViewRef.current = view;
+    if (prev !== null && prev !== view) {
+      beginInteraction(PERF_INTERACTIONS.learningViewSwitch);
+    }
+  }, [view]);
 
   // Pot lens INHERITED from the top-bar pot selector (owner directive
   // 2026-07-26: "the pot should be inherited by the currently selected pot" —

@@ -28,6 +28,10 @@ import type {
   AnalyzeCycleSummary,
 } from "@papercusp/operator-core/lib/sync-resolver/learning-analyze-read";
 import { CardStack } from "@papercusp/card-stack";
+import {
+  endInteraction,
+  PERF_INTERACTIONS,
+} from "@/app/_components/perf/perf-marks";
 import { Tooltip } from "@/app/harness/Tooltip";
 import { CATEGORICAL } from "@/app/harness/theme";
 import { useLexicon } from "@/lib/useLexicon";
@@ -89,6 +93,24 @@ export function AnalyzePanel({
   useEffect(() => {
     onStatus?.(status);
   }, [onStatus, status]);
+
+  // Perf settle point for PERF_INTERACTIONS.learningViewSwitch — the interaction
+  // LearningTab begins when the view changes (EI-19375505819043214: the owner
+  // named THIS view as taking several seconds to expand).
+  //
+  // The settle is "the loading artifacts are gone", not "the data is good": we
+  // end once the read is no longer in flight and the panel is showing its final
+  // content — a resolved snapshot OR a fault. Ending only on success would
+  // leave a failed read's start mark dangling until STALE_START_MS discarded
+  // it, so a slow FAILING view — exactly what the owner saw — would silently
+  // measure nothing.
+  //
+  // endInteraction is measure-once and no-ops without a matching begin, so this
+  // is inert on a first mount or any render that did not follow a view switch.
+  const settled = !sync.loading && (snap !== undefined || Boolean(fault));
+  useEffect(() => {
+    if (settled) endInteraction(PERF_INTERACTIONS.learningViewSwitch);
+  }, [settled]);
 
   return (
     <section

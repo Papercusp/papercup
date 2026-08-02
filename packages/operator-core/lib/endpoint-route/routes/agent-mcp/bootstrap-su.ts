@@ -2038,7 +2038,11 @@ const post = defineTool({
           protocolVersion: sessionPortContext.row.protocolVersion,
         });
       } catch (error) {
-        await markAdvSessionEnded(sessionId, 1, 'self').catch(() => undefined);
+        // NOT 'self', and NOT exit 1: this is the OPERATOR closing the row because its own
+        // handler threw — nothing observed the session's exit, so a fabricated status would
+        // be indistinguishable from an observed failure (the fabrication adv-sessions.ts
+        // refuses in reconcileDeadTerminalLaunches). The error is reported in the response.
+        await markAdvSessionEnded(sessionId, null, 'cleanup').catch(() => undefined);
         return jsonRes({
           status: 'error',
           error: `session-port target claim raced or failed: ${error instanceof Error ? error.message : String(error)}`,

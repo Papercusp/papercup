@@ -159,10 +159,15 @@
  * against the rail ground.
  */
 .pc-ctl-band,
+.pc-fleet-launch-row,
 .pc-zone {
-  /* Defined on both roots rather than :root — the bands and the rails are the
-     only things that draw zones, and a popup-local vocabulary should not leak
-     into every surface in the app. */
+  /* Defined on the zone ROOTS rather than :root — the three bands and the two
+     rails are the only things that draw zones, and a popup-local vocabulary
+     should not leak into every surface in the app. Every element that either
+     DRAWS a zone rule or CONTAINS a zone cap has to be in this list: the fleet
+     strip is not a `.pc-ctl-band`, so leaving it out would resolve its cap's
+     fill to nothing — an invalid var() computes to unset, i.e. an invisible
+     cap, not a loud failure. */
   --pc-zone-rule: color-mix(in oklab, var(--accent-strong) 58%, var(--bg-popover));
 }
 

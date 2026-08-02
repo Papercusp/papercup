@@ -887,6 +887,7 @@ def _grant(granted):
                 json.dump(repo_relative, f)
         except Exception:
             pass
+    _clear_transient_streak()
     allow()
 
 
@@ -898,6 +899,90 @@ def _is_transient(res):
     EMPTY busy list — treat that shape as transient too, never as a foreign hold."""
     return res.get('reason') == 'workspace_contended' or (
         not res.get('reason') and not (res.get('busy') or []))
+
+
+# EI-19324697909459657: "transient" and "one-off" are NOT the same claim, and
+# the pre-fix message conflated them — it told the agent to "Simply RETRY"
+# even after the SAME owner had already retried (both in-hook backoffs above
+# AND the server's own acquireWithContentionRetry) and failed repeatedly. A
+# genuine parallel-edit race self-heals in 1-2 attempts (see the 'heals on
+# retry' test below); a run of consecutive failures for one owner instead
+# points at something that does not clear on its own — most often a starved
+# PG connection pool (measured: 83.2% saturation, no blocking query) — where
+# "just retry" burns a full agent turn per attempt for no benefit. Track a
+# per-owner streak across separate hook invocations (each Edit call is a
+# fresh subprocess, so in-process state can't see across attempts) and, once
+# it crosses a threshold, stop suggesting blind retry and say what is
+# actually true: check pool health before continuing to hammer the acquire.
+TRANSIENT_STREAK_ESCALATE_AT = 3
+
+
+def _transient_streak_file():
+    return os.path.join(cache_dir, owner_marker_name('transient-streak'))
+
+
+def _read_transient_streak():
+    try:
+        with open(_transient_streak_file()) as f:
+            v = json.load(f)
+        c = v.get('count') if isinstance(v, dict) else None
+        if isinstance(c, int) and c >= 0:
+            return c
+    except Exception:
+        pass
+    return 0
+
+
+def _bump_transient_streak():
+    count = _read_transient_streak() + 1
+    write_marker(owner_marker_name('transient-streak'), {'count': count, 'ts': now_iso()})
+    return count
+
+
+def _clear_transient_streak():
+    try:
+        os.remove(_transient_streak_file())
+    except Exception:
+        pass
+
+
+def _pg_health_snapshot():
+    """Best-effort `dev:pg_health` read for the escalated message ONLY — never
+    on the hot/common path. A cheap read-only query (dev-data.ts: connection
+    counts off pg_stat_activity), but still an extra round-trip, so this is
+    called only once we already know we're about to deny with a turn-costing
+    message; any failure here must never block or delay the deny itself."""
+    try:
+        body = json.dumps({
+            'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
+            'params': {'name': 'dev:pg_health', 'arguments': {}},
+        }).encode()
+        req2 = urllib.request.Request(
+            operator_url.rstrip('/') + '/api/mcp?superuser=1&format=json&client='
+            + urllib.parse.quote(owner, safe=''),
+            data=body,
+            headers={'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json',
+                     'Accept': 'application/json, text/event-stream'},
+            method='POST',
+        )
+        resp = _opener.open(req2, timeout=4)
+        raw = resp.read().decode('utf-8', errors='replace')
+        for line in raw.splitlines():
+            line = line.strip()
+            if line.startswith('data:'):
+                line = line[5:].strip()
+            if not line or line.startswith('event:'):
+                continue
+            cand = json.loads(line)
+            if isinstance(cand, dict) and 'result' in cand:
+                for item in (cand['result'].get('content') or []):
+                    if item.get('type') == 'text':
+                        data = json.loads(item['text']).get('data')
+                        if isinstance(data, dict):
+                            return data
+    except Exception:
+        pass
+    return None
 
 
 inner = _locks_acquire_once()
@@ -921,6 +1006,29 @@ if _is_transient(inner):
             break
 
 if _is_transient(inner):
+    _streak = _bump_transient_streak()
+    if _streak >= TRANSIENT_STREAK_ESCALATE_AT:
+        _health = _pg_health_snapshot()
+        if _health:
+            _health_line = (
+                f"Live PG health: {_health.get('serverWideConnections')}/"
+                f"{_health.get('maxConnections')} connections "
+                f"({_health.get('saturationPct')}% saturated)."
+            )
+        else:
+            _health_line = 'PG health could not be read just now.'
+        deny(
+            f'locks: PERSISTENT transient contention — attempt #{_streak} in a row for '
+            'this session with NO holder ever named. A genuine race with your own '
+            'parallel edit normally self-heals within 1-2 attempts; this many '
+            'consecutive failures instead points at something that will not clear on '
+            'its own — most often a starved PG connection pool, not lock contention. '
+            f'{_health_line} Retrying THIS instant is unlikely to help — if the pool is '
+            'saturated, pivot to non-DB work for a bit (or check dev:pg_health / '
+            'dev:pg_active_queries yourself) before retrying, rather than spending '
+            'another turn on an immediate re-attempt. Still no holder to wait for, so '
+            'do NOT queue wake_on_grant.'
+        )
     deny(
         'locks: transient contention — the lock service could not serialize this '
         'acquire in time (per-workspace advisory-lock timeout; commonly concurrent '

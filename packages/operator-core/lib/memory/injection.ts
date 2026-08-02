@@ -953,11 +953,27 @@ async function buildBlockInner(
   const lines: string[] = [];
   const surfacedIds: string[] = [];
   const admit = (line: string, id?: string): boolean => {
-    // WI-6870: no more "let the first entry through no matter its size" exemption —
-    // MAX_ENTRY_CHARS above already keeps any single line well under a normal budget,
-    // so strict enforcement here can no longer starve every OTHER candidate the way the
-    // exemption used to (measured: one 4,901-char memory against a 4,000 budget).
-    if (spent + line.length > budget) return false;
+    // The `&& lines.length > 0` is the ALWAYS-EMIT-ONE-ROW contract, and it is
+    // load-bearing across modules — do not "tighten" it again without reading
+    // mid-turn-context.ts:174-190, which documents this exact clause and depends on it:
+    // a caller with a small budget must get SOMETHING rather than null.
+    //
+    // WI-6870 removed it, reasoning that MAX_ENTRY_CHARS (above) already keeps any single
+    // line well under a normal budget so strict enforcement could no longer starve the
+    // other candidates (measured: one 4,901-char memory against a 4,000 budget). That is
+    // true for a NORMAL budget and false for a small one: the mid-turn endpoint passes
+    // MID_TURN_BUDGET_CHARS = 350, so a line clamped to 900 STILL overflows and the first
+    // row was rejected — buildMemoryContextBlock returned nothing and mid-turn context
+    // injection silently delivered NOTHING (WI-7163; caught by the P-018 acceptance
+    // replay, which red-pinned the green gate).
+    //
+    // MAX_ENTRY_CHARS is the real fix for WI-6870's starvation case and is retained; this
+    // exemption is bounded by it, so the 4,901-char scenario cannot recur through here.
+    // Small-budget callers clamp themselves — see mid-turn-context.ts `clampToBudget()`,
+    // which truncates keeping the HEAD precisely so scope + id + lede survive.
+    // NOTE: the corpus leg (corpus-recall.ts) is deliberately STRICT and stays that way —
+    // its no-first-entry-exemption behavior is pinned by corpus-recall.test.ts (WI-6870).
+    if (spent + line.length > budget && lines.length > 0) return false;
     lines.push(line);
     spent += line.length;
     if (id) surfacedIds.push(id);

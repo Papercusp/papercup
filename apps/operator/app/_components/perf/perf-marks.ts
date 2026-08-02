@@ -38,6 +38,23 @@ export const PERF_INTERACTIONS = {
   /** Harness dock (/adv, /workbench): mount → the dockview API binds after the
    *  PG layout hydrates and panels are created. Guards the dock-hydration cost. */
   harnessDockOpen: 'harness-dock-open',
+  /** Learning tab: a VIEW SWITCH (`?lview=` changes) → the newly-selected
+   *  panel's primary read resolves and its content first renders.
+   *
+   *  WHY THIS EXISTS (EI-19375505819043214): the owner reported "the learning
+   *  analyze took several seconds expanding the sections and just displayed
+   *  loading artifacts". Every learning.* resolver measures <500ms on the live
+   *  operator (the two behind this view, learning.analyze / learning.analyzeCycle,
+   *  are ~25ms each), so the multi-second cost is CLIENT-side — and nothing
+   *  measured it: this tab had no instrumented interaction at all, which is why
+   *  the regression reached a human instead of reddening a check.
+   *
+   *  Deliberately ONE name for all learning views rather than one per view:
+   *  endInteraction is measure-once and no-ops without a matching begin, so each
+   *  panel can end the shared interaction on its own settle point and a view
+   *  whose panel is not yet wired simply emits nothing (its stale start is
+   *  discarded past STALE_START_MS) — never a garbage measure. */
+  learningViewSwitch: 'learning-view-switch',
 } as const;
 
 export type PerfInteractionName =

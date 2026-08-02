@@ -33,6 +33,10 @@ import { CardStack } from "@papercusp/card-stack";
 import { useItemPlanFilter } from "./use-create-data";
 import { OBSERVATION_KIND_COLOR } from "@/app/harness/theme";
 import { Tooltip } from "@/app/harness/Tooltip";
+import {
+  endInteraction,
+  PERF_INTERACTIONS,
+} from "@/app/_components/perf/perf-marks";
 
 interface ObservationRow {
   id: string;
@@ -246,6 +250,23 @@ export default function ObservationsPanel({
       query.error ? "bad" : scopedRows.length > 0 ? "good" : "neutral",
     );
   }, [onStatus, query.error, scopedRows.length]);
+
+  // Perf settle point for PERF_INTERACTIONS.learningViewSwitch — LearningTab
+  // renders this panel as its "observations" view and begins the interaction on
+  // the view change (EI-19375505819043214).
+  //
+  // Gated on the OBSERVATIONS read only, deliberately NOT on countsQuery: the
+  // counts are a secondary read for the signal chips, and on the live operator
+  // learning.observations.counts currently 500s on every call, so waiting for
+  // it would never settle and this interaction would measure nothing on the one
+  // surface it was added to watch.
+  //
+  // endInteraction is measure-once and no-ops without a matching begin, so this
+  // stays inert when the panel mounts outside a Learning-tab view switch.
+  const settled = !query.loading && (query.data !== undefined || query.error);
+  useEffect(() => {
+    if (settled) endInteraction(PERF_INTERACTIONS.learningViewSwitch);
+  }, [settled]);
   const loadMore = useCallback(
     () => setLimit((current) => current + OBSERVATIONS_PAGE),
     [],

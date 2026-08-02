@@ -639,6 +639,81 @@
 .pc-dossier__h-note--err {
   color: color-mix(in oklab, var(--bad), white 20%);
 }
+
+/* ── section collapse (adv/sessions/rail-sections.tsx) ─────────────────────── */
+/* Unscoped on purpose: the cap is a toggle wherever this rail renders — the
+   session popup AND the /adv two-pane — because "this section is enormous" is
+   not a popup-only problem. Only the FRAMED look below is popup-scoped.
+   Everything but the cap folds away; the cap keeps the count, so folding Coord
+   never hides that 19 messages arrived. */
+.pc-dossier__section[data-collapsed='true'] > *:not(.pc-dossier__h) {
+  display: none;
+}
+
+/* ── the session popup's Framed zone (owner-approved artifact 6379bb65) ─────
+   Scoped to `.pc-zone--activity`, the wrapper SessionChatModal puts on this
+   rail. In the popup this column is one of six named zones and its sections are
+   framed cards; in the /adv two-pane it is the detail pane of a board that
+   already frames it, so it stays exactly as it was. */
+.pc-zone--activity .pc-dossier {
+  --pc-dossier-edge: color-mix(in oklab, var(--accent), var(--bg-popover) 62%);
+  padding: 0 0 12px;
+  gap: 6px;
+}
+/* The chrome that is not a section keeps the padding the rail used to own. */
+.pc-zone--activity .pc-dossier > *:not(.pc-dossier__section):not(.pc-zone-title) {
+  padding-left: 10px;
+  padding-right: 10px;
+}
+.pc-zone--activity .pc-dossier__head {
+  padding-top: 8px;
+}
+.pc-zone--activity .pc-dossier__section {
+  margin: 0 8px;
+  padding: 0 8px 6px;
+  border: 1px solid var(--pc-dossier-edge);
+  border-radius: 4px;
+  background: color-mix(in oklab, transparent, white 3.5%);
+  /* An open section still cannot run away with the column: its body scrolls
+     inside its own card with the cap pinned. This is the half of the owner's
+     "sections that get big" ask that works for a reader who never clicks. */
+  max-height: 44vh;
+  overflow-y: auto;
+}
+.pc-zone--activity .pc-dossier__section[data-attn='true'] {
+  border-color: var(--warn);
+}
+.pc-zone--activity .pc-dossier__section[data-collapsed='true'] {
+  max-height: none;
+  padding-bottom: 0;
+}
+/* The section CAP — filled, full-bleed across the card's padding, pinned. */
+.pc-zone--activity .pc-dossier__h {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  margin: 0 -8px;
+  padding: 3px 8px;
+  font-size: 9px;
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+.pc-zone--activity .pc-dossier__section[data-attn='true'] > .pc-dossier__h {
+  background: var(--warn);
+  color: var(--accent-ink);
+}
+/* Badges and notes ride ON the filled cap, so they take the cap's ink rather
+   than the rail ground's — the contrast pairing the lint requires. */
+.pc-zone--activity .pc-dossier__h .pc-dossier__badge-count {
+  background: rgba(0, 0, 0, 0.2);
+  color: var(--accent-ink);
+  font-size: 8.5px;
+}
+.pc-zone--activity .pc-dossier__h .pc-dossier__h-note,
+.pc-zone--activity .pc-dossier__h .pc-dossier__h-note--err {
+  color: var(--accent-ink);
+  opacity: 0.72;
+}
 .pc-dossier__badge-count {
   margin-left: auto;
   font-size: 10.5px;

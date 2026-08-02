@@ -3093,6 +3093,77 @@ describe('substitution verdict handling', () => {
     expect(hook.permissionDecisionReason).toContain('tools:invoke');
   });
 
+  /**
+   * P-009 — the executable advisory, through the REAL shell hook.
+   *
+   * `invokeLine` is rendered server-side so this Python block and the OMP hook's
+   * TypeScript cannot format the same envelope two ways; what is asserted here
+   * is that the shell path places it and applies the same suppression rule.
+   */
+  const INVOKE_LINE =
+    'tools:invoke { name: "capability:read", args: {"file_path":"packages/operator-core/lib/foo.ts"} }';
+  const SUB_WITH_INVOKE = { ...SUB, invokeLine: INVOKE_LINE };
+
+  it('renders the executable call, labelled run:, on the advise path', () => {
+    setReply({
+      decision: 'allow',
+      matched: [],
+      substitutions: [SUB_WITH_INVOKE],
+      substitutionTier: 'advise',
+    });
+    const hook = JSON.parse(run().stdout).hookSpecificOutput;
+    expect(hook.permissionDecision).toBe('allow'); // still advisory only
+    expect(hook.additionalContext).toContain(`run: ${INVOKE_LINE}`);
+  });
+
+  it('renders the executable call on the deny path too', () => {
+    // A block that says "re-run using the tool above" is exactly where handing
+    // over the finished call matters most.
+    setReply({
+      decision: 'allow',
+      matched: [],
+      substitutions: [{ ...SUB_WITH_INVOKE, tier: 'deny' }],
+      substitutionTier: 'deny',
+    });
+    const hook = JSON.parse(run().stdout).hookSpecificOutput;
+    expect(hook.permissionDecision).toBe('deny');
+    expect(hook.permissionDecisionReason).toContain(`run: ${INVOKE_LINE}`);
+  });
+
+  it('SUPPRESSES the generic tools:invoke hint once a concrete call is present', () => {
+    setReply({
+      decision: 'allow',
+      matched: [],
+      substitutions: [SUB_WITH_INVOKE],
+      substitutionTier: 'advise',
+    });
+    const ctx = JSON.parse(run().stdout).hookSpecificOutput.additionalContext;
+    expect(ctx).toContain('tools:invoke'); // the concrete one
+    expect(ctx).not.toContain('Not in your loaded tool set?'); // not the generic one
+  });
+
+  it('keeps the generic hint when the server derived no call (the majority case)', () => {
+    setReply({ decision: 'allow', matched: [], substitutions: [SUB], substitutionTier: 'advise' });
+    const ctx = JSON.parse(run().stdout).hookSpecificOutput.additionalContext;
+    expect(ctx).toContain('Not in your loaded tool set?');
+    expect(ctx).not.toContain('run: tools:invoke');
+  });
+
+  it('degrades to prose when invokeLine is malformed rather than wedging the command', () => {
+    // Fail-open is the contract for this whole block: a bad payload field must
+    // cost an envelope, never a command.
+    setReply({
+      decision: 'allow',
+      matched: [],
+      substitutions: [{ ...SUB, invokeLine: null }],
+      substitutionTier: 'advise',
+    });
+    const hook = JSON.parse(run().stdout).hookSpecificOutput;
+    expect(hook.permissionDecision).toBe('allow');
+    expect(hook.additionalContext).toContain('capability:read');
+    expect(hook.additionalContext).not.toContain('run:');
+  });
+
   it('an in-flight RESOURCE hold outranks a substitution advisory', () => {
     // A lock collision is happening right now; tool-choice guidance is not.
     // Burying the urgent message under the educational one is the failure.

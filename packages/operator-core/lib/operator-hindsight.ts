@@ -13,8 +13,9 @@
  * owner so it never suppresses the message from the operator's own curation view).
  * A re-drain excludes already-acked notifies.
  */
-import { coordLog } from './agent-tools/coordination/log';
+import { coordLog, coordSql, coordWorkspaceId, coordHasPgFastPath } from './agent-tools/coordination/log';
 import { readInbox, readAckedMsgIds, appendAck } from './agent-tools/coordination/messages';
+import { collectRetractedIds, suppressRetracted } from './agent-tools/coordination/retraction';
 import { OPERATOR_COORD_OWNER } from './delegated-tasks';
 import { newMsgId, type CoordEnvelope } from '@papercusp/coordination/core';
 import type { AgentIdentity } from './agent-tools/coordination/identity';

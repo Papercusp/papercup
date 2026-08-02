@@ -60,6 +60,14 @@ export const DESKTOP_PERF_BUDGETS: DesktopPerfBudgets = {
     'conversation-thread-load': 1500,
     // Harness dock hydration: PG layout load + dockview mount + panel creation.
     'harness-dock-open': 1500,
+    // Learning tab view switch → the selected panel's read resolves + renders.
+    // A network+render load path like conversation-thread-load, so the same
+    // route-scale ceiling. Sized to CATCH the reported symptom rather than to
+    // describe today's cost: the owner called several seconds unacceptable for
+    // something that "should be instant" (EI-19375505819043214), and the server
+    // legs behind it are ~25ms, so anything approaching 1.5s is client-side
+    // regression worth failing on.
+    'learning-view-switch': 1500,
   },
 };
 

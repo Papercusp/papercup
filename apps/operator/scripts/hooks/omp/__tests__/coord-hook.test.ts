@@ -150,6 +150,7 @@ import {
   resourcePrefilterHit,
   checkCommandVerdict,
   formatSubstitutionLines,
+  hasInvokeEnvelope,
   substitutionDenyReason,
   substitutionAdvisoryText,
   TOOLS_INVOKE_FALLBACK_HINT,
@@ -5523,6 +5524,77 @@ describe('substitution message formatting', () => {
   it('both messages name the tools:invoke fallback for a tool the caller cannot load', () => {
     expect(substitutionAdvisoryText([sub()])).toContain('tools:invoke');
     expect(substitutionDenyReason([sub({ tier: 'deny' })])).toContain('tools:invoke');
+  });
+
+  /**
+   * P-009 — the executable advisory. `invokeLine` is rendered SERVER-SIDE (see
+   * bash-substitution/invoke-envelope.ts); this hook's whole job is to place it,
+   * so these pin placement and the suppression rule, not the formatting.
+   */
+  describe('executable envelope (invokeLine)', () => {
+    const withInvoke = (over: Record<string, unknown> = {}) =>
+      sub({
+        atom: 'tail -n 25 /tmp/x.log',
+        invokeLine:
+          'tools:invoke { name: "capability:read", args: {"file_path":"/tmp/x.log","tail":25} }',
+        ...over,
+      });
+
+    it('renders the call under the advisory, labelled as something to run', () => {
+      const lines = formatSubstitutionLines([withInvoke()]).split('\n');
+      expect(lines[0]).toContain('`tail -n 25 /tmp/x.log` → capability:read');
+      // LAST, after the prose: the advisory explains why, the envelope is what
+      // to type — and the thing to type should be the last thing read.
+      expect(lines[lines.length - 1].trim()).toBe(
+        'run: tools:invoke { name: "capability:read", args: {"file_path":"/tmp/x.log","tail":25} }',
+      );
+    });
+
+    it('omits the run: line entirely when the server derived no envelope', () => {
+      expect(formatSubstitutionLines([sub()])).not.toContain('run:');
+    });
+
+    it('SUPPRESSES the generic tools:invoke hint once a concrete call is present', () => {
+      // The generic hint teaches the convention. A rendered envelope IS a
+      // tools:invoke call, so repeating the generic form under it explains the
+      // mechanism the agent is already looking at and pushes the one executable
+      // line further from the eye. P-009 only pays while that line is the
+      // shortest path in the message.
+      const advisory = substitutionAdvisoryText([withInvoke()]);
+      expect(advisory).toContain('run: tools:invoke');
+      expect(advisory).not.toContain('Not in your loaded tool set?');
+
+      const deny = substitutionDenyReason([withInvoke({ tier: 'deny' })]);
+      expect(deny).toContain('run: tools:invoke');
+      expect(deny).not.toContain('Not in your loaded tool set?');
+    });
+
+    it('keeps the generic hint when NO match carried a call (mixed batch)', () => {
+      // One row with an envelope is enough to suppress; none must not.
+      expect(substitutionAdvisoryText([sub(), sub()])).toContain('Not in your loaded tool set?');
+      expect(substitutionAdvisoryText([sub(), withInvoke()])).not.toContain(
+        'Not in your loaded tool set?',
+      );
+    });
+
+    it('hasInvokeEnvelope ignores blank and missing lines', () => {
+      expect(hasInvokeEnvelope([sub()])).toBe(false);
+      expect(hasInvokeEnvelope([sub({ invokeLine: '   ' })])).toBe(false);
+      expect(hasInvokeEnvelope([withInvoke()])).toBe(true);
+    });
+
+    it('leaves the pre-P-009 messages byte-identical when no envelope is present', () => {
+      // The suppression refactor rebuilt these strings. A drift here would
+      // change what every non-envelope advisory on the box says, which is still
+      // the majority of them.
+      expect(substitutionAdvisoryText([sub()])).toBe(
+        'bash→tool advisory: a tool already answers this question directly.\n\n' +
+          formatSubstitutionLines([sub()]) +
+          '\n\nThe tool call is cheaper (no shell round-trip, structured result) and is ' +
+          'what the routing table points at. Advisory only; this command proceeded as issued.\n' +
+          TOOLS_INVOKE_FALLBACK_HINT,
+      );
+    });
   });
 
   it('the resource refusal names the held resources', () => {

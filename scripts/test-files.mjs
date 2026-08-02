@@ -517,11 +517,38 @@ export function main(argv = process.argv.slice(2)) {
     return 1;
   }
 
-  const status = dry ? 'dry-run' : summary.anyFailed ? 'failed' : 'passed';
+  // EI-19376339983058011 — THE MARKER'S PRESENCE MUST IMPLY THAT TESTS RAN.
+  // A dry run executes nothing, yet used to print the same `TEST_FILE_RESULT` line callers read
+  // as a verdict. The reported measurement harness guarded exactly this way —
+  // `if ! grep -q 'TEST_FILE_RESULT'; then UNMEASURED; fi` — so a dry run satisfied the guard
+  // with executed=0 and exit 0, and its zero parsed FAIL lines were recorded as "this candidate
+  // passes". Four corpus rows were written that way, each in ~37s, far too fast to have run a
+  // suite. Emitting a DISTINCT marker makes the presence test the caller already writes correct
+  // by construction, instead of requiring every caller to also parse `status=`.
+  if (dry) {
+    console.log(
+      `TEST_FILE_DRYRUN requested=${summary.requested} executed=0 matched=${summary.matched} status=dry-run`,
+    );
+    return 0;
+  }
+
+  // The invariant the line below now carries. Unreachable today — a zero/partial match is refused
+  // per-group above, and `executed` is derived from that matched set — which is precisely why it
+  // is ASSERTED rather than assumed: if a future edit ever makes executed=0 reachable here, this
+  // refuses loudly instead of printing a verdict for a run that tested nothing.
+  if (summary.executed < 1) {
+    console.error(
+      `TEST_FILE_ROUTE_ERROR requested=${summary.requested} matched=${summary.matched} executed=0; ` +
+        `refusing to report a verdict for a run that executed no tests`,
+    );
+    return 1;
+  }
+
+  const status = summary.anyFailed ? 'failed' : 'passed';
   console.log(
-    `TEST_FILE_RESULT requested=${summary.requested} executed=${dry ? 0 : summary.executed} matched=${summary.matched} status=${status}`,
+    `TEST_FILE_RESULT requested=${summary.requested} executed=${summary.executed} matched=${summary.matched} status=${status}`,
   );
-  return dry ? 0 : summary.anyFailed ? 1 : 0;
+  return summary.anyFailed ? 1 : 0;
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

@@ -148,7 +148,7 @@ const DOSSIER_RAIL_SIDE_STYLE: React.CSSProperties = {
   width: 300,
   minWidth: 0,
   minHeight: 0,
-  borderLeft: '1px solid var(--border)',
+  borderLeft: '1px solid var(--pc-zone-rule)',
   overflowY: 'auto',
 };
 
@@ -159,7 +159,7 @@ const DOSSIER_RAIL_OVERLAY_STYLE: React.CSSProperties = {
   right: 0,
   width: 'min(320px, 88vw)',
   background: 'var(--bg-popover, #0d1829)',
-  borderLeft: '1px solid var(--border)',
+  borderLeft: '1px solid var(--pc-zone-rule)',
   boxShadow: '-8px 0 24px rgba(0,0,0,0.35)',
   overflowY: 'auto',
   zIndex: 5,
@@ -191,7 +191,7 @@ const ORDERS_RAIL_SIDE_STYLE: React.CSSProperties = {
   width: 272,
   minWidth: 0,
   minHeight: 0,
-  borderRight: '1px solid var(--border)',
+  borderRight: '1px solid var(--pc-zone-rule)',
   overflowY: 'auto',
 };
 
@@ -212,7 +212,7 @@ const ORDERS_RAIL_OVERLAY_STYLE: React.CSSProperties = {
   left: 0,
   width: 'min(300px, 88vw)',
   background: 'var(--bg-popover, #0d1829)',
-  borderRight: '1px solid var(--border)',
+  borderRight: '1px solid var(--pc-zone-rule)',
   boxShadow: '8px 0 24px rgba(0,0,0,0.35)',
   overflowY: 'auto',
   zIndex: 5,
@@ -1355,6 +1355,11 @@ export default function SessionChatModal({
             hide-list to keep in sync. ── */}
         {ordersVisible ? (
           <div
+            /* `pc-zone` is what carries the Framed vocabulary into the rail: it
+               defines --pc-zone-rule (used by this element's own border, above)
+               and scopes the framed-card treatment to the POPUP, so the same
+               AgentDossier rendered in the /adv two-pane is untouched. */
+            className="pc-zone pc-zone--orders"
             data-testid="session-chat-orders-rail"
             style={isOrdersNarrow ? ORDERS_RAIL_OVERLAY_STYLE : ORDERS_RAIL_SIDE_STYLE}
           >
@@ -1644,12 +1649,17 @@ export default function SessionChatModal({
             half of the same rule, not a second hide-list. */}
         {open && dossierOpen && !maximized ? (
           <div
+            className="pc-zone pc-zone--activity"
             data-testid="session-chat-dossier-rail"
             style={isNarrow ? DOSSIER_RAIL_OVERLAY_STYLE : DOSSIER_RAIL_SIDE_STYLE}
           >
             <AgentDossier
               ownerId={sessionOwnerId ?? ''}
               entry={dossierEntry}
+              /* Only here: in the popup this rail is one of six named zones, so
+                 it wears its name. In the /adv two-pane it is the detail pane of
+                 a board that already says what it is. */
+              zoneTitle
               // WI-6367: same never-started-vs-ended distinction as the banner
               // above — without it the rail says "no longer in the live roster"
               // about a session that has not started yet.

@@ -124,10 +124,15 @@ describe("checkpoint:await sugar", () => {
     expect(devDeployState).toHaveBeenCalledTimes(1);
     expect(
       vi.mocked(registerAwait).mock.calls.map((call) => call[0].eventKey),
-    ).toEqual(["release:green:papercusp", "green-checkpoint:red:papercusp"]);
+    ).toEqual([
+      "release:green:papercusp",
+      "green-checkpoint:red:papercusp",
+      "green-checkpoint:inconclusive:papercusp",
+    ]);
     expect(out.events).toEqual([
       "release:green:papercusp",
       "green-checkpoint:red:papercusp",
+      "green-checkpoint:inconclusive:papercusp",
     ]);
     expect(out.advice).toContain("End your turn");
   });
@@ -138,7 +143,11 @@ describe("checkpoint:await sugar", () => {
     expect(devDeployState).not.toHaveBeenCalled();
     expect(
       vi.mocked(registerAwait).mock.calls.map((call) => call[0].eventKey),
-    ).toEqual(["release:green:papercup", "green-checkpoint:red:papercup"]);
+    ).toEqual([
+      "release:green:papercup",
+      "green-checkpoint:red:papercup",
+      "green-checkpoint:inconclusive:papercup",
+    ]);
   });
 
   it("keeps an explicit global escape hatch for cross-pipeline monitors", async () => {
@@ -147,7 +156,24 @@ describe("checkpoint:await sugar", () => {
     expect(devDeployState).not.toHaveBeenCalled();
     expect(
       vi.mocked(registerAwait).mock.calls.map((call) => call[0].eventKey),
-    ).toEqual(["release:green", "green-checkpoint:red"]);
+    ).toEqual([
+      "release:green",
+      "green-checkpoint:red",
+      "green-checkpoint:inconclusive",
+    ]);
+  });
+
+  // EI-19320479870270699: the third, non-judging outcome must be armed alongside the
+  // other two so "await the decision" genuinely covers every way the gate run can end —
+  // an inconclusive run (migrations-pending / skipped-locked / …) used to leave every
+  // parked awaiter asleep straight through to its full timeout with no signal at all.
+  it("EI-19320479870270699: arms the inconclusive key alongside green/red so a non-judging run still wakes the awaiter", async () => {
+    const out = await call({ pipeline: "papercup" });
+
+    expect(
+      vi.mocked(registerAwait).mock.calls.map((c) => c[0].eventKey),
+    ).toContain("green-checkpoint:inconclusive:papercup");
+    expect(out.events).toContain("green-checkpoint:inconclusive:papercup");
   });
 
   it("sanitizes pipeline names the same way checkpoint emitters do", () => {
@@ -170,6 +196,7 @@ describe("checkpoint:await sugar", () => {
     expect(out.events).toEqual([
       "release:green:papercusp",
       "green-checkpoint:red:papercusp",
+      "green-checkpoint:inconclusive:papercusp",
     ]);
   });
 
@@ -192,6 +219,7 @@ describe("checkpoint:await sugar", () => {
     expect(out.events).toEqual([
       "release:green:papercusp",
       "green-checkpoint:red:papercusp",
+      "green-checkpoint:inconclusive:papercusp",
     ]);
   });
 
@@ -228,7 +256,11 @@ describe("checkpoint:await sugar", () => {
 
     expect(cancelAwaitsForSubscribersOnKeys).toHaveBeenCalledWith(
       ["su-awaiter"],
-      ["release:green:papercusp", "green-checkpoint:red:papercusp"],
+      [
+        "release:green:papercusp",
+        "green-checkpoint:red:papercusp",
+        "green-checkpoint:inconclusive:papercusp",
+      ],
     );
     expect(callOrder[0]).toBe("supersede");
     expect(callOrder).toContain("register");
@@ -264,7 +296,7 @@ describe("checkpoint:await sugar", () => {
     const timeouts = vi
       .mocked(registerAwait)
       .mock.calls.map((c) => c[0].timeoutSec);
-    expect(timeouts).toEqual([60, 60]);
+    expect(timeouts).toEqual([60, 60, 60]);
   });
 });
 
@@ -397,7 +429,11 @@ describe("checkpoint:await already-judged latch (EI-18676650746298156 — deploy
     expect(out.already_judged).toBeUndefined();
     expect(
       vi.mocked(registerAwait).mock.calls.map((c) => c[0].eventKey),
-    ).toEqual(["release:green:papercusp", "green-checkpoint:red:papercusp"]);
+    ).toEqual([
+      "release:green:papercusp",
+      "green-checkpoint:red:papercusp",
+      "green-checkpoint:inconclusive:papercusp",
+    ]);
   });
 
   it("omitting candidateSha entirely skips the probe and registers the pipeline keys as before", async () => {
@@ -407,7 +443,11 @@ describe("checkpoint:await already-judged latch (EI-18676650746298156 — deploy
     expect(out.already_judged).toBeUndefined();
     expect(
       vi.mocked(registerAwait).mock.calls.map((c) => c[0].eventKey),
-    ).toEqual(["release:green:papercusp", "green-checkpoint:red:papercusp"]);
+    ).toEqual([
+      "release:green:papercusp",
+      "green-checkpoint:red:papercusp",
+      "green-checkpoint:inconclusive:papercusp",
+    ]);
   });
 
   it("global:true probes across ALL pipelines (installSlug null) rather than the current pipeline", async () => {
@@ -449,7 +489,7 @@ describe("checkpoint:await already-judged latch (EI-18676650746298156 — deploy
     const out = await call({ candidateSha: "94c1234567890abcdef" });
 
     expect(out.already_judged).toBeUndefined();
-    expect(registerAwait).toHaveBeenCalledTimes(2);
+    expect(registerAwait).toHaveBeenCalledTimes(3);
     warnSpy.mockRestore();
   });
 
@@ -463,7 +503,7 @@ describe("checkpoint:await already-judged latch (EI-18676650746298156 — deploy
     const out = await call({ candidateSha: "94c1234567890abcdef" });
 
     expect(out.already_judged).toBeUndefined();
-    expect(registerAwait).toHaveBeenCalledTimes(2);
+    expect(registerAwait).toHaveBeenCalledTimes(3);
   });
 });
 
