@@ -158,6 +158,22 @@ describe('work_items:complete (keyed-array)', () => {
     expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
   });
 
+  // EI-19285045282744205: a DB-connection fault reading the item must surface as a
+  // connection error, NEVER as the crafted "not found" text — the two are different
+  // facts (unreachable vs authoritative absence) with different correct responses.
+  // completeOne calls getWorkItem with no `.catch()` (unlike the swallowed sibling
+  // sites WI-6746 fixed elsewhere — claim.ts/checkpoint.ts/hold_open.ts/etc.), so the
+  // real `runBulk` (unmocked here) catches the throw and reports `error.message` — this
+  // pins that the current code already does NOT collapse "could not ask" into "not found".
+  it('EI-19285045282744205: a getWorkItem CONNECTION FAULT surfaces its own message, never "not found"', async () => {
+    getWorkItem.mockRejectedValue(new Error('connect ECONNREFUSED 127.0.0.1:19715'));
+    const out = await env({ id: 'WI-6731', completion: { summary: 'x' } });
+    expect(out).toMatchObject({ ok: false, counts: { ok: 0, failed: 1 } });
+    expect(out.results[0].error).toBe('connect ECONNREFUSED 127.0.0.1:19715');
+    expect(out.results[0].error).not.toMatch(/not found/);
+    expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+  });
+
   it('EI-14676: single-item envelope-level `ok` mirrors the item outcome (false when the state write did not land)', async () => {
     getWorkItem.mockResolvedValue({ ...item, id: 'WI-9', kind: 'task', family: 'issue' });
     setWorkItemStateWithAliasInfo.mockRejectedValue(new Error('boom'));

@@ -23,6 +23,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { dbosLaunchesHere } from '../../../background-workers';
 import { dbosStarted } from '../../../dbos/bootstrap';
 import { getMemoryBackend } from '../../../memory/backend';
+import { currentLoopLag, loopPressure } from '../../../event-loop-lag-monitor';
 
 export type ProbeStatus = 'ok' | 'disabled' | 'down';
 

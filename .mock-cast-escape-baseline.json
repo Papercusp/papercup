@@ -1,4 +1,4 @@
 {
-  "count": 1065,
-  "_comment": "RATCHET-ONLY-DOWN (see scripts/check-mock-cast-escape.mjs). Raising this is a deliberate hand-edit with a justification, never an automatic write. Regenerate with --update on a quiet tree."
+  "count": 1076,
+  "_comment": "RATCHET-ONLY-DOWN (see scripts/check-mock-cast-escape.mjs). Raising this is a deliberate hand-edit with a justification, never an automatic write. Regenerate with --update on a quiet tree. JUSTIFIED RAISE 1065 -> 1076 (WI-6730): the scan switched from a bare `git ls-files` pathspec (which does not recurse into submodules) to the shared listTrackedFiles() helper, which does — surfacing 11 pre-existing occurrences in libs/generic/**, libs/papercusp/**, and papercusp-desktop/** that were always there but previously invisible to this guard. Not a new escape hatch; a coverage fix."
 }

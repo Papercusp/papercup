@@ -338,7 +338,8 @@ function main() {
       if (!json) {
         console.log(
           `✓ ${decision.belowBy} under baseline (${count} < ${baselineCount}) — NOT locked in. Run ` +
-            '`node scripts/check-mock-cast-escape.mjs --update` on a quiet tree to lower it deliberately.',
+            '`node scripts/check-mock-cast-escape.mjs --update` on a quiet tree to lower it deliberately.' +
+            describeUnscanned(unscanned),
         );
       }
       process.exit(0);
@@ -346,7 +347,7 @@ function main() {
     default:
       if (!json) {
         if (updateFlag) console.log('✓ --update: count equals baseline — nothing to lower.');
-        console.log(`✓ mock-cast-escape count is at baseline (${count})`);
+        console.log(`✓ mock-cast-escape count is at baseline (${count})` + describeUnscanned(unscanned));
       }
       process.exit(0);
   }
