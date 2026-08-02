@@ -106,13 +106,32 @@ const PAIRS_BY_INTENT = new Map<string, SubstitutionPair>(
  * does not gain a wrong one.
  */
 export function deriveInvokeEnvelope(intentLabel: string, atom: string): InvokeEnvelope | null {
+  const pair = PAIRS_BY_INTENT.get(intentLabel);
+  return pair ? envelopeFromPair(pair, atom) : null;
+}
+
+/**
+ * {@link deriveInvokeEnvelope} for a pair you already hold — and the seam the
+ * fail-open contract is tested through.
+ *
+ * Exported because the alternative is testing "a throwing `rewrite()` costs an
+ * envelope, not a command" by adding a deliberately-broken pair to `ALL_PAIRS`,
+ * where it would also reach the equivalence harness, the registry seed and the
+ * routing generator. A guarantee this module makes on every shell command on the
+ * box should be provable without shipping a landmine to five other consumers.
+ */
+export function envelopeFromPair(pair: SubstitutionPair, atom: string): InvokeEnvelope | null {
   try {
-    const pair = PAIRS_BY_INTENT.get(intentLabel);
-    if (!pair?.rewrite) return null;
+    if (!pair.rewrite) return null;
 
     const call = pair.rewrite(atom);
     if (!call) return null;
-    if (!call.toolName || typeof call.args !== 'object' || call.args === null) return null;
+    // A rewrite is free-form code in a pair module; the shape it promises is not
+    // enforced at runtime anywhere else, and a malformed one would otherwise
+    // render as `tools:invoke { name: "undefined", … }` — an advisory that is
+    // worse than the prose it replaced, because it looks runnable.
+    if (typeof call.toolName !== 'string' || call.toolName === '') return null;
+    if (typeof call.args !== 'object' || call.args === null || Array.isArray(call.args)) return null;
 
     return { name: call.toolName, args: call.args };
   } catch {
@@ -146,24 +165,41 @@ export interface WithInvokeEnvelope {
   intentLabel: string;
   atom: string;
   invoke?: InvokeEnvelope;
+  invokeLine?: string;
 }
 
 /**
- * Attach an envelope to every match that can carry one.
+ * Attach an envelope — structured AND rendered — to every match that can carry one.
  *
- * Done SERVER-SIDE, in `locks:check_command`, for two reasons. The derivation
- * needs `ALL_PAIRS` — live code, with each pair's real parser — and a PreToolUse
- * hook has only the wire payload, so a hook-side derivation would mean shipping
- * a second, drifting copy of every pair's argument mapping into two hooks (one
- * of which is Python inside a shell script). And computing it once on the server
- * means both hooks render the SAME envelope by construction, which is the same
- * reason `match.ts` is the single matcher rather than one per consumer.
+ * Done SERVER-SIDE, in `locks:check_command`, and it ships the RENDERED STRING
+ * rather than leaving each gate to format the args itself. Both decisions are
+ * about the same hazard.
+ *
+ * The derivation needs `ALL_PAIRS` — live code, with each pair's real parser —
+ * which a PreToolUse hook does not have: it sees only the wire payload. The omp
+ * hook imports nothing but node builtins on purpose, and the cc hook is Python
+ * inside a shell script. So a hook-side derivation would mean THREE copies of
+ * every pair's argument mapping, in two languages, and this file's own header
+ * records what that costs: the two gates' messages "already state the same
+ * routing twice, and the pair has drifted before".
+ *
+ * Shipping `invokeLine` reduces both gates to printing a string they cannot
+ * disagree about — the same reason `match.ts` is the single matcher rather than
+ * one per consumer. `invoke` is carried alongside it for a programmatic caller
+ * that wants the args rather than the paste, and the two cannot diverge because
+ * the line is rendered from the object.
  */
 export function attachInvokeEnvelopes<T extends { intentLabel: string; atom: string }>(
   matches: T[],
-): (T & { invoke?: InvokeEnvelope })[] {
+): (T & { invoke?: InvokeEnvelope; invokeLine?: string })[] {
   return matches.map((match) => {
     const invoke = deriveInvokeEnvelope(match.intentLabel, match.atom);
-    return invoke ? { ...match, invoke } : { ...match };
+    if (!invoke) return { ...match };
+
+    // An envelope too large to render is dropped WHOLE, structured form
+    // included. Returning `invoke` without `invokeLine` would hand the gates
+    // exactly the formatting job this function exists to keep away from them.
+    const invokeLine = renderInvokeEnvelope(invoke);
+    return invokeLine ? { ...match, invoke, invokeLine } : { ...match };
   });
 }

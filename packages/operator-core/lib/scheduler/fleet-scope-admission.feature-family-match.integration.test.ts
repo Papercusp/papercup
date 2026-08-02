@@ -1,0 +1,206 @@
+/**
+ * fleet-scope-admission.feature-family-match.integration.test.ts — WI-7151 (EI-19318364531323846):
+ * recurrence guard for `diagnoseFleetScopeFeatureFamilyMatch` against REAL Postgres.
+ *
+ * THE BUG this closes: `diagnoseFleetScopeIssueFloorMiss` (WI-5561, backed by
+ * `aggregateIssueClaimExclusions`) is STRUCTURALLY scoped to `item_kind IN
+ * ('bug','change','task')` — it was built for issue-family kind-scoped drain fleets. A
+ * PLAN-scoped fleet claim spec with no `kind` narrowing (`buildFleetPlanClaimSpec`, the shape
+ * `fleet:launch-on-plan` authors when `claimKinds` is omitted) admits BOTH families, and every
+ * plan-promoted item is feature-family by construction (D-009). So a plan whose items are ALL
+ * feature-family made the issue-family breakdown report a confident `matchedByFilter: 0`, and
+ * `fleetScopedMiss` certified that as `reason: 'spec_matches_nothing'` + `windDown: true` even
+ * while the real tier-1 (feature-family) pool had open, unclaimed, spec-matching rows sitting
+ * right there. Live incident 2026-08-02: an opencode-omp-research fleet member read exactly
+ * this false verdict on its first wake.
+ *
+ * `diagnoseFleetScopeFeatureFamilyMatch` is the fix's DB-backed half: it runs the SAME
+ * floors + filter compiler `getNextWorkItem`'s tier-1 attempt uses (claimFloorsWhereSql +
+ * compileFilter over harness_features_consolidated), so a nonzero result here PROVES the
+ * issue-family `matchedByFilter: 0` cannot be read as "the spec matches nothing". The pure
+ * suppression logic in `fleetScopedMiss` is unit-tested (mocked `sql`) in
+ * fleet-scope-admission.test.ts; this file is the "seed the exact row shapes against a real
+ * DB" counterpart, following the same pattern as fleet-scope-admission.cooldown-diagnosis
+ * .integration.test.ts.
+ *
+ * Run:
+ *   cd packages/operator-core && npx vitest run --config vitest.integration.config.ts \
+ *     lib/scheduler/fleet-scope-admission.feature-family-match.integration.test.ts
+ */
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import type postgres from 'postgres';
+import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
+import { HARNESS_FEATURES_CONSOLIDATED_DDL, USER_TRUST_LIST_DDL, WORK_ITEM_DEPS_DDL } from '../../test/_work-items-schema';
+import { ensureCoordCapabilityTables } from '@papercusp/coordination/capabilities';
+import type { ClaimSpecRecord } from './claim-spec-store';
+import type { FleetScopeContext } from './fleet-scope-admission';
+
+const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
+vi.mock('@papercusp/db-org', async () => {
+  const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
+  return { ...actual, getOrgPg: () => ({ sql: h.sql }) };
+});
+
+const { diagnoseFleetScopeFeatureFamilyMatch } = await import('./fleet-scope-admission');
+
+const H = 'papercusp';
+const WS = 'default';
+const PLAN = 'opencode-omp-token-reduction-research-2026-08-02';
+let db: FreshPgDb;
+
+async function seedItem(
+  id: string,
+  opts: {
+    itemKind?: string;
+    status?: string;
+    takenBy?: string | null;
+    sourcePlanSlug?: string | null;
+    harness?: string;
+    workspaceId?: string;
+  } = {},
+) {
+  await db.sql`
+    INSERT INTO harness_shared.work_items
+      (harness_slug, feature_id, item_kind, title, status, taken_by, workspace_id, source_plan_slug, created_ts, updated_ts)
+    VALUES (
+      ${opts.harness ?? H}, ${id}, ${opts.itemKind ?? 'feature'}, ${`title ${id}`},
+      ${opts.status ?? 'open'}, ${opts.takenBy ?? null}, ${opts.workspaceId ?? WS},
+      ${opts.sourcePlanSlug ?? null}, 0, 0
+    )`;
+}
+
+function planScopeFor(ownerId: string): FleetScopeContext {
+  const spec: ClaimSpecRecord['spec'] = {
+    specVersion: '1.0',
+    specId: 'fleet-launch-opencode-omp-research-plan',
+    revision: 1,
+    view: { filter: { field: 'plan', op: '=', value: PLAN } },
+    rank: { mode: 'lexicographic', terms: [{ expr: 'age', dir: 'asc' }] },
+  };
+  return {
+    ownerId,
+    fleetSlug: 'opencode-omp-research',
+    fleetRole: 'member',
+    workspaceId: WS,
+    record: { source: 'fleet', spec, revision: 1, updatedBy: 'su-leader', updatedAt: 'now' },
+  };
+}
+
+beforeAll(async () => {
+  db = await createFreshPgDb('fsa-feature-family-match');
+  h.sql = db.sql;
+  await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
+  await db.sql.unsafe(USER_TRUST_LIST_DDL);
+  await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple();
+  await ensureCoordCapabilityTables(db.sql);
+}, 180_000);
+afterAll(async () => {
+  await db.cleanup();
+});
+beforeEach(async () => {
+  await db.sql`TRUNCATE harness_shared.work_items, harness_shared.work_item_deps`;
+});
+afterEach(() => {
+  delete process.env.PAPERCUSP_RELEASE_COOLDOWN_SEC;
+});
+
+describe('diagnoseFleetScopeFeatureFamilyMatch against real Postgres (WI-7151)', () => {
+  it('the exact live-incident shape: a plan-scoped spec finds its feature-family promoted items', async () => {
+    await seedItem('WI-plan-1', { sourcePlanSlug: PLAN });
+    await seedItem('WI-plan-2', { sourcePlanSlug: PLAN });
+
+    const cnt = await diagnoseFleetScopeFeatureFamilyMatch({
+      scope: planScopeFor('su-member'),
+      harness: H,
+      workspaceId: WS,
+    });
+
+    expect(cnt).toBe(2);
+  });
+
+  it('returns 0 (not null) for a plan with no promoted items at all — a genuine drain, not a diagnosis failure', async () => {
+    const cnt = await diagnoseFleetScopeFeatureFamilyMatch({
+      scope: planScopeFor('su-member'),
+      harness: H,
+      workspaceId: WS,
+    });
+
+    expect(cnt).toBe(0);
+  });
+
+  it('excludes an issue-family (bug/change/task) row even when it carries the SAME source_plan_slug — the view boundary', async () => {
+    // harness_features_consolidated excludes item_kind IN (bug,change,task) by definition
+    // (migration 677) — a bug/change/task row promoted onto the same plan must not inflate
+    // the tier-1 count this function reports.
+    await seedItem('WI-plan-bug', { itemKind: 'bug', sourcePlanSlug: PLAN });
+
+    const cnt = await diagnoseFleetScopeFeatureFamilyMatch({
+      scope: planScopeFor('su-member'),
+      harness: H,
+      workspaceId: WS,
+    });
+
+    expect(cnt).toBe(0);
+  });
+
+  it('excludes an already-CLAIMED feature-family row (taken_by set) — same taken_by-IS-NULL floor tier-1 applies', async () => {
+    await seedItem('WI-plan-taken', { sourcePlanSlug: PLAN, takenBy: 'su-other' });
+
+    const cnt = await diagnoseFleetScopeFeatureFamilyMatch({
+      scope: planScopeFor('su-member'),
+      harness: H,
+      workspaceId: WS,
+    });
+
+    expect(cnt).toBe(0);
+  });
+
+  it('excludes a row outside the claimable states floor (e.g. status=failing, default states=[open])', async () => {
+    await seedItem('WI-plan-failing', { sourcePlanSlug: PLAN, status: 'failing' });
+
+    const cnt = await diagnoseFleetScopeFeatureFamilyMatch({
+      scope: planScopeFor('su-member'),
+      harness: H,
+      workspaceId: WS,
+    });
+
+    expect(cnt).toBe(0);
+  });
+
+  it('excludes a DIFFERENT plan\'s feature-family item — the spec filter itself must narrow correctly', async () => {
+    await seedItem('WI-other-plan', { sourcePlanSlug: 'some-unrelated-plan' });
+
+    const cnt = await diagnoseFleetScopeFeatureFamilyMatch({
+      scope: planScopeFor('su-member'),
+      harness: H,
+      workspaceId: WS,
+    });
+
+    expect(cnt).toBe(0);
+  });
+
+  it('excludes a row in a DIFFERENT workspace even with a matching plan slug', async () => {
+    await seedItem('WI-other-ws', { sourcePlanSlug: PLAN, workspaceId: 'other-workspace' });
+
+    const cnt = await diagnoseFleetScopeFeatureFamilyMatch({
+      scope: planScopeFor('su-member'),
+      harness: H,
+      workspaceId: WS,
+    });
+
+    expect(cnt).toBe(0);
+  });
+
+  it('returns null (fails soft) for a spec with no filter at all — nothing to compile, never throws', async () => {
+    const scope = planScopeFor('su-member');
+    scope.record.spec = { ...scope.record.spec, view: {} };
+
+    const cnt = await diagnoseFleetScopeFeatureFamilyMatch({
+      scope,
+      harness: H,
+      workspaceId: WS,
+    });
+
+    expect(cnt).toBeNull();
+  });
+});

@@ -145,6 +145,87 @@ describe('block 3b coverage — no test may hard-require a gitignored path 3b do
   });
 });
 
+describe('real-fidelity control — the red path, using the REAL oracle and REAL provisioned roots', () => {
+  /**
+   * Every other negative control below substitutes a FAKE ignore oracle and
+   * hand-written roots. This one changes nothing except the corpus: the real
+   * `git check-ignore` oracle, the real roots parsed from the shipped script,
+   * and a violating file whose SOURCE is injected through the scanner's
+   * `readFile` seam. It is therefore the only in-suite proof that the exact
+   * configuration THE GUARD runs in can still go red.
+   *
+   * The violating file is injected rather than written to disk on purpose.
+   * During this guard's development the same control WAS done on disk, and
+   * git-sync auto-committed the deliberately-broken file to shared staging
+   * within 38 seconds (EI-19378575598384065) — briefly placing into history
+   * exactly the permanent, fleet-wide red-pin this guard exists to prevent. A
+   * cleanup trap does not help: git-sync's tick is independent of the process
+   * that created the file. Never write a deliberately-broken file into this
+   * tree, not even briefly.
+   */
+  const CONTROL_PATH = 'apps/operator-vite/dist/index.js';
+  const CONTROL_FILE = 'apps/operator/lib/release/__injected_control__.test.ts';
+  const CONTROL_SRC = `
+    import { existsSync } from 'node:fs';
+    import { resolve } from 'node:path';
+    const BUNDLE = resolve(REPO_ROOT, 'apps/operator-vite/dist', 'index.js');
+    it('requires the SPA bundle to exist', () => {
+      expect(existsSync(BUNDLE)).toBe(true);
+    });
+  `;
+
+  it('precondition: the control path is really gitignored and really outside the provisioned roots', () => {
+    // Asserted explicitly so that if .gitignore or block 3b ever changes, this
+    // control fails with a message that explains itself, instead of quietly
+    // passing while proving nothing.
+    expect(
+      ORACLE(CONTROL_PATH),
+      `${CONTROL_PATH} is no longer gitignored, so it can no longer stand in for a wiped runtime ` +
+        'asset. Pick another gitignored path outside the provisioned roots for this control.',
+    ).toBe(true);
+    expect(
+      PROVISIONED_ROOTS.some((r) => CONTROL_PATH.startsWith(r.replace(/\/+$/, '') + '/')),
+      `block 3b now provisions ${CONTROL_PATH}, so it is covered and cannot serve as a violation. ` +
+        'Pick another gitignored path outside the provisioned roots for this control.',
+    ).toBe(false);
+  });
+
+  it('reds on an injected violation without writing anything to the shared tree', () => {
+    const result = scanRequiredIgnoredAssets({
+      repoRoot: REPO_ROOT,
+      testFiles: [CONTROL_FILE],
+      coveredRoots: PROVISIONED_ROOTS,
+      isIgnored: ORACLE,
+      readFile: (abs) => (abs.endsWith('__injected_control__.test.ts')
+        ? CONTROL_SRC
+        : readFileSync(abs, 'utf8')),
+    });
+
+    expect(
+      result.violations.map((v) => v.path),
+      'THE GUARD can no longer detect a violation under its real production configuration. ' +
+        'Every other control here uses a fake oracle, so this is the one that would catch the ' +
+        'scanner losing its teeth while still reporting a confident green.',
+    ).toContain(CONTROL_PATH);
+    expect(result.violations[0].file).toBe(CONTROL_FILE);
+  });
+
+  it('and the same corpus is CLEAN once that root is provisioned (the green came from coverage)', () => {
+    const result = scanRequiredIgnoredAssets({
+      repoRoot: REPO_ROOT,
+      testFiles: [CONTROL_FILE],
+      coveredRoots: [...PROVISIONED_ROOTS, 'apps/operator-vite/dist'],
+      isIgnored: ORACLE,
+      readFile: (abs) => (abs.endsWith('__injected_control__.test.ts')
+        ? CONTROL_SRC
+        : readFileSync(abs, 'utf8')),
+    });
+    expect(result.violations).toEqual([]);
+    // Still SEEN, just covered — proving the green is coverage, not blindness.
+    expect(result.covered.map((v) => v.path)).toContain(CONTROL_PATH);
+  });
+});
+
 describe('teeth — the scanner detects the real instances that motivated it', () => {
   // With coverage removed, the two known real cases MUST surface. Both compose
   // their paths dynamically across resolve() arguments, which is precisely what

@@ -46,7 +46,7 @@ async function substitutionVerdict(
   workspaceId: string,
   ownerId: string | null,
 ): Promise<{
-  substitutions: (SubstitutionMatch & { invoke?: InvokeEnvelope })[];
+  substitutions: (SubstitutionMatch & { invoke?: InvokeEnvelope; invokeLine?: string })[];
   substitutionTier: string | null;
 }> {
   try {

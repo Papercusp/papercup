@@ -3279,24 +3279,46 @@ try:
         # is the whole point of the registry — a tier that fires without it
         # teaches nothing, which is the dev:processes outcome migration 665's
         # CHECK constraint exists to prevent.
+        # P-009: `invokeLine` is the EXECUTABLE form of the same advice — the
+        # tool call with args already derived from THIS command, rendered
+        # server-side. It is rendered there, not here, precisely so this Python
+        # block and the OMP hook's TypeScript cannot format the same envelope
+        # two different ways; both just print the string they were handed.
+        #
+        # It goes last in the block, after the prose: the advisory says why the
+        # tool is better, `run:` says what to type.
         _lines = []
+        _has_invoke = False
         for _s in _subs:
             _tool = _s.get('toolName') or '?'
             _text = (_s.get('advisoryText') or '').strip()
             _atom = (_s.get('atom') or '').strip()
-            _lines.append(
+            _invoke = (_s.get('invokeLine') or '').strip()
+            _block = (
                 '  • `%s` → %s\n    %s' % (_atom[:160], _tool, _text) if _text
                 else '  • `%s` → %s' % (_atom[:160], _tool)
             )
+            if _invoke:
+                _has_invoke = True
+                _block = '%s\n    run: %s' % (_block, _invoke)
+            _lines.append(_block)
         _body = '\n'.join(_lines)
+
+        # The generic hint teaches the `tools:invoke` convention. A rendered
+        # envelope IS a tools:invoke call, so printing the generic form under it
+        # explains the mechanism the agent is already reading — and pushes the
+        # one executable line further down. Suppress it exactly when a concrete
+        # `run:` line is present (mirrors invokeFallbackSuffix in the OMP hook).
+        _hint_deny = '' if _has_invoke else '\n\n%s' % _INVOKE_HINT
+        _hint_advise = '' if _has_invoke else '\n%s' % _INVOKE_HINT
 
         if _stier == 'deny':
             deny(
                 'substitution-gate: this command has a tool form that must be used '
                 'instead.\n\n%s\n\nRe-run using the tool above. (This rule reached '
                 '`deny` only by proving equivalence against real sampled commands, '
-                'or because the prohibition already existed independently.)\n\n%s'
-                % (_body, _INVOKE_HINT)
+                'or because the prohibition already existed independently.)%s'
+                % (_body, _hint_deny)
             )
         elif not ADVISORY:
             # SOFT: rides out as additionalContext on an explicit allow. The
@@ -3305,8 +3327,8 @@ try:
                 'bash→tool advisory: a tool already answers this question '
                 'directly.\n\n%s\n\nThe tool call is cheaper (no shell round-trip, '
                 'structured result) and is what the routing table points at. '
-                'Advisory only; this command is proceeding as issued.\n%s'
-                % (_body, _INVOKE_HINT)
+                'Advisory only; this command is proceeding as issued.%s'
+                % (_body, _hint_advise)
             )
 except Exception:
     pass  # advisory must never wedge a command

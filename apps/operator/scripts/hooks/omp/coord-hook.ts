@@ -1444,6 +1444,14 @@ export interface SubstitutionWire {
    * design; see `formatSubstitutionLines` for what its absence means.
    */
   invoke?: { name?: string; args?: unknown };
+  /**
+   * P-009 — that same envelope, already RENDERED as a paste-ready
+   * `tools:invoke { … }` line. Rendered on the server so this hook, the cc
+   * shell hook and any other consumer print a string they cannot disagree
+   * about; see `bash-substitution/invoke-envelope.ts` for why the formatting
+   * deliberately does not live here.
+   */
+  invokeLine?: string;
 }
 
 /** The `locks:check_command` verdict, narrowed to what this hook consumes. */
@@ -1507,16 +1515,48 @@ export const TOOLS_INVOKE_FALLBACK_HINT =
   'Not in your loaded tool set? `tools:invoke { name, args }` dispatches any ' +
   'catalog tool server-side — a ToolSearch miss is not a dead end.';
 
-/** `  • \`<atom>\` → <tool>` + the row's authored advisory, one block per match. */
+/**
+ * `  • \`<atom>\` → <tool>` + the row's authored advisory, one block per match,
+ * plus the EXECUTABLE call when the server derived one (P-009).
+ *
+ * The envelope goes LAST in the block, after the prose, because it is the line
+ * the agent acts on: the advisory explains WHY the tool is better, the envelope
+ * is what to type. `run:` labels it as a command rather than more explanation —
+ * an unlabelled `tools:invoke {…}` reads as one more sentence about tools in a
+ * block that is already made of sentences about tools.
+ */
 export function formatSubstitutionLines(subs: SubstitutionWire[]): string {
   return subs
     .map((s) => {
       const tool = s.toolName || '?';
       const atom = (s.atom || '').trim().slice(0, 160);
       const text = (s.advisoryText || '').trim();
-      return text ? `  • \`${atom}\` → ${tool}\n    ${text}` : `  • \`${atom}\` → ${tool}`;
+      const invoke = (s.invokeLine || '').trim();
+      const head = text ? `  • \`${atom}\` → ${tool}\n    ${text}` : `  • \`${atom}\` → ${tool}`;
+      return invoke ? `${head}\n    run: ${invoke}` : head;
     })
     .join('\n');
+}
+
+/** True when at least one match carried an executable envelope. */
+export function hasInvokeEnvelope(subs: SubstitutionWire[]): boolean {
+  return subs.some((s) => (s.invokeLine || '').trim().length > 0);
+}
+
+/**
+ * The generic routing hint, but ONLY when no block already carries a concrete
+ * `run:` line (P-009).
+ *
+ * {@link TOOLS_INVOKE_FALLBACK_HINT} exists to tell an agent that a named tool
+ * missing from its surface is not a dead end. A rendered envelope IS a
+ * `tools:invoke` call, so repeating the generic form underneath it explains the
+ * mechanism the agent is already looking at — and pushes the one executable line
+ * further from the eye with a paragraph that no longer applies. Suppressing it
+ * is not a cosmetic trim: the whole premise of P-009 is that the executable form
+ * outcompetes prose only while it is the SHORTEST path in the message.
+ */
+function invokeFallbackSuffix(subs: SubstitutionWire[]): string {
+  return hasInvokeEnvelope(subs) ? '' : `\n${TOOLS_INVOKE_FALLBACK_HINT}`;
 }
 
 /** Refusal for tier `deny` — mirrors the shell hook's message so both paths teach the same thing. */
@@ -1526,8 +1566,8 @@ export function substitutionDenyReason(subs: SubstitutionWire[]): string {
     `${formatSubstitutionLines(subs)}\n\n` +
     'Re-run using the tool above. (This rule reached `deny` only by proving ' +
     'equivalence against real sampled commands, or because the prohibition ' +
-    'already existed independently.)\n\n' +
-    TOOLS_INVOKE_FALLBACK_HINT
+    'already existed independently.)\n' +
+    invokeFallbackSuffix(subs)
   );
 }
 
@@ -1537,8 +1577,8 @@ export function substitutionAdvisoryText(subs: SubstitutionWire[]): string {
     'bash→tool advisory: a tool already answers this question directly.\n\n' +
     `${formatSubstitutionLines(subs)}\n\n` +
     'The tool call is cheaper (no shell round-trip, structured result) and is ' +
-    'what the routing table points at. Advisory only; this command proceeded as issued.\n' +
-    TOOLS_INVOKE_FALLBACK_HINT
+    'what the routing table points at. Advisory only; this command proceeded as issued.' +
+    invokeFallbackSuffix(subs)
   );
 }
 
