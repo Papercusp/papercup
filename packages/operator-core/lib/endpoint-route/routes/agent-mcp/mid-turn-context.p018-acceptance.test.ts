@@ -525,11 +525,17 @@ describe('P-018 TRANSPORT half — firing early stays CHEAP across the whole rep
   // This assertion counts admissions by the mem0-rendered ` (id=<uuid>)` marker
   // (injection.ts:929 emits it only for a hit that carries an id). Measured at tip
   // 2026-08-02T21:35Z: it now counts ZERO, while both retrieval-side siblings above
-  // still pass — the answer's TEXT is delivered on batch 0, but through the P-008
-  // corpus leg, which renders a pointer and no uuid. So the record is no longer
-  // admitted via the mem0/cosine leg at all.
+  // still pass — so the answer's TEXT is still delivered on batch 0; only the uuid
+  // is missing.
   //
-  // That makes this test RETRIEVAL-dependent, contradicting this describe block's
+  // WHY the uuid is missing is NOT established. Do not assume it is a scoring or
+  // floor problem: FAKE_FLOOR here is 0.15, relevance() normalises by query tokens,
+  // and the sibling at ~line 490 (still GREEN) asserts the floor admits exactly
+  // [ANSWER_ID] on the derived query — so the answer does clear the floor. The
+  // remaining candidates are the render path, the budget clamp, and scope filtering
+  // in scoreRows (ANSWER's scope is 'harness:papercusp'). Measure before you fix.
+  //
+  // Either way this test is RETRIEVAL-dependent, contradicting this describe block's
   // "corpus-independent" framing — it cannot pass while WI-6857 stands (the plan's
   // own exit check: "the WI-6512 replay surfaces the answer on 0 of 7 batches").
   // Per this file's header, a test that cannot pass until a fix lands belongs on
@@ -537,9 +543,9 @@ describe('P-018 TRANSPORT half — firing early stays CHEAP across the whole rep
   // green-checkpoint (main stuck at 1e0ddc58 from ~15:32Z through 5 consecutive
   // reds; the other 3 files the gate named all passed at tip).
   //
-  // UN-SKIP as part of WI-6857. Still open there: whether splitLegQueries
-  // (65d3434c74, landed ~3h AFTER this file) is what stopped the cosine leg
-  // admitting the record — if so, the fix belongs in the impl, not here.
+  // UN-SKIP as part of WI-6857. Also open there, and likewise unestablished:
+  // whether splitLegQueries (65d3434c74, landed ~3h AFTER this file) is involved
+  // at all — if it is, the fix belongs in the impl, not here.
   it.skip('pays for the answer ONCE, not on all thirteen calls (D-006 epoch dedup)', async () => {
     const pushes = await replay(newOwner());
     const carrying = pushes.filter((p) => p.includes(ANSWER_ID));

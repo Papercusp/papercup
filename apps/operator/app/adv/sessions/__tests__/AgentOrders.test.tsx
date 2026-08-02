@@ -26,6 +26,23 @@ import { cleanup, render, within } from '@testing-library/react';
 import AgentOrders from '../AgentOrders';
 import { carryStaleness, formatAgeShort, type AgentOrders as AgentOrdersDTO } from '../use-agent-orders';
 
+/* The rail's section collapse is nuqs-backed (rail-sections.tsx) — user-
+   meaningful state belongs in the URL, so this suite needs a nuqs stub. Backed
+   by a REAL useState rather than a frozen value, for the same reason
+   AgentDossier.test.tsx gives: a stub that cannot change state would let a
+   "clicking the cap collapses it" assertion pass against a dead toggle. The
+   parser exports come from the shared mock so this suite can never red on a
+   parser IT does not use (EI-8821). */
+vi.mock('nuqs', async () => {
+  const React = await import('react');
+  const { nuqsParsers } = await import('@papercusp/test-config/nuqs-mock');
+  return {
+    ...nuqsParsers,
+    useQueryState: (_key: string, parser?: { defaultValue?: unknown }) =>
+      React.useState<string | null>((parser?.defaultValue as string | undefined) ?? null),
+  };
+});
+
 const syncState = vi.hoisted(() => ({
   orders: null as AgentOrdersDTO | null,
 }));

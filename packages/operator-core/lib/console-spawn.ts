@@ -1649,7 +1649,7 @@ export function buildHeadlessSpawnCommand(
    * a critical path; it is the same `systemd-run` call, addressed.
    */
   taskScope?: { unit: string; slice: string } | null,
-): { bin: string; args: string[] } {
+): { bin: string; args: string[]; scopeUnit: string | null } {
   const platform = probes.platform ?? process.platform;
   const hasSystemdRun = probes.hasSystemdRun ?? (() => isOnPath('systemd-run'));
   if (platform === 'linux' && hasSystemdRun()) {
@@ -1677,6 +1677,19 @@ export function buildHeadlessSpawnCommand(
     // it and a slice-level sweep can stop it even with no ledger row to look it up by.
     const sliceName = taskScope?.slice ?? sliceForClass('agent-session');
     return {
+      // EI-19366263067183489 (second half): RETURN the unit name, don't just bake it into
+      // argv. The slice fix above made the fallback scope REAPABLE; this makes it FINDABLE.
+      //
+      // `spawnHeadless` already ledgers the unconfined path — `managed-spawn.ts` states the
+      // intent as "run UNCONFINED but still ledgered" — but it recorded
+      // `scopeUnit: taskScope?.unit ?? null`, i.e. NULL, while this function had just placed
+      // the process in a real named scope. The ledger said "no scope"; the kernel said
+      // "scope papercup-headless-X". Nothing could join the two, so the row could never be
+      // matched to its process and the reconciler classified it `unaccounted` forever.
+      //
+      // The name was computed here and discarded here — the caller could not record what it
+      // was never told. Returning it costs nothing and closes the join.
+      scopeUnit: unitName,
       bin: 'systemd-run',
       args: [
         '--user',
@@ -1692,7 +1705,10 @@ export function buildHeadlessSpawnCommand(
       ],
     };
   }
-  return { bin: 'bash', args: ['-lc', oneliner] };
+  // No systemd-run: there is no scope at all, so there is genuinely no unit to record.
+  // `null` here is the honest answer, not a fallback — distinct from the case above where a
+  // scope exists and we simply used to forget its name.
+  return { bin: 'bash', args: ['-lc', oneliner], scopeUnit: null };
 }
 
 /**
@@ -1746,7 +1762,12 @@ export async function spawnHeadless(opts: SpawnHeadlessOpts): Promise<SpawnConso
     const taskScope = enrolment.confined
       ? { unit: scopeUnitForTask(enrolment.taskId, label), slice: sliceForClass('agent-session') }
       : null;
-    const { bin, args } = buildHeadlessSpawnCommand(oneliner, label, opts.spawnCommandProbes, taskScope);
+    const { bin, args, scopeUnit } = buildHeadlessSpawnCommand(
+      oneliner,
+      label,
+      opts.spawnCommandProbes,
+      taskScope,
+    );
     const child = spawn(bin, args, {
       detached: true,
       stdio: ['ignore', logFd ?? 'ignore', logFd ?? 'ignore'],
@@ -1755,7 +1776,11 @@ export async function spawnHeadless(opts: SpawnHeadlessOpts): Promise<SpawnConso
     });
     child.unref();
     completeSyncEnrolment(
-      { ...enrolment, scopeUnit: taskScope?.unit ?? null },
+      // EI-19366263067183489: record the unit the spawn ACTUALLY used, not just the enrolled
+      // one. This was `taskScope?.unit ?? null`, so every unconfined-but-ledgered spawn wrote
+      // a row with no scope to join on even though its process was sitting in a named scope.
+      // `scopeUnit` is null only when there is genuinely no scope (no systemd-run).
+      { ...enrolment, scopeUnit },
       {
         class: 'agent-session',
         title: `headless member: ${label}`,

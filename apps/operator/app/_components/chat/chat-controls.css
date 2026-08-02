@@ -171,6 +171,19 @@
   --pc-zone-rule: color-mix(in oklab, var(--accent-strong) 58%, var(--bg-popover));
 }
 
+/** The two vertical zones' own boundary. In CSS rather than in the rails'
+ *  inline style objects on purpose: `--pc-zone-rule` is a popup-local token, and
+ *  the css-tokens lint only resolves a component-local token INSIDE the file
+ *  that defines it — a `var(--pc-zone-rule)` in the .tsx would read as an
+ *  undefined token and red the lint. Same rule in both the side-by-side and the
+ *  narrow-overlay layouts, so it belongs on the shared class either way. */
+.pc-zone--orders {
+  border-right: 1px solid var(--pc-zone-rule);
+}
+.pc-zone--activity {
+  border-left: 1px solid var(--pc-zone-rule);
+}
+
 /** A HORIZONTAL zone's name: an inline cap sharing the band's own row. */
 .pc-zone-cap {
   flex: none;

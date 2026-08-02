@@ -148,7 +148,6 @@ const DOSSIER_RAIL_SIDE_STYLE: React.CSSProperties = {
   width: 300,
   minWidth: 0,
   minHeight: 0,
-  borderLeft: '1px solid var(--pc-zone-rule)',
   overflowY: 'auto',
 };
 
@@ -159,7 +158,6 @@ const DOSSIER_RAIL_OVERLAY_STYLE: React.CSSProperties = {
   right: 0,
   width: 'min(320px, 88vw)',
   background: 'var(--bg-popover, #0d1829)',
-  borderLeft: '1px solid var(--pc-zone-rule)',
   boxShadow: '-8px 0 24px rgba(0,0,0,0.35)',
   overflowY: 'auto',
   zIndex: 5,
@@ -191,7 +189,6 @@ const ORDERS_RAIL_SIDE_STYLE: React.CSSProperties = {
   width: 272,
   minWidth: 0,
   minHeight: 0,
-  borderRight: '1px solid var(--pc-zone-rule)',
   overflowY: 'auto',
 };
 
@@ -212,7 +209,6 @@ const ORDERS_RAIL_OVERLAY_STYLE: React.CSSProperties = {
   left: 0,
   width: 'min(300px, 88vw)',
   background: 'var(--bg-popover, #0d1829)',
-  borderRight: '1px solid var(--pc-zone-rule)',
   boxShadow: '8px 0 24px rgba(0,0,0,0.35)',
   overflowY: 'auto',
   zIndex: 5,

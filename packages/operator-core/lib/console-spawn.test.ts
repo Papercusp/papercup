@@ -472,6 +472,86 @@ describe('buildHeadlessSpawnCommand — the scope is never created outside our s
   });
 });
 
+describe('buildHeadlessSpawnCommand — the scope NAME is returned, so the ledger row can join on it (EI-19366263067183489)', () => {
+  // SIBLING of the slice guard above, and the other half of the same defect.
+  //
+  // The slice fix made the un-enrolled fallback scope REAPABLE (it lands inside
+  // `papercusp.slice`, so a slice-level sweep reaches it). It did not make it FINDABLE.
+  // `spawnHeadless` ledgers the unconfined path on purpose — `managed-spawn.ts` states the
+  // intent as "run UNCONFINED but still ledgered" — but it recorded
+  // `scopeUnit: taskScope?.unit ?? null`, i.e. NULL, while this builder had just put the
+  // process into a real named scope. The ledger said "no scope"; the kernel said "scope
+  // papercup-headless-X". Nothing could join the two, so the row never matched its process
+  // and the reconciler classified it `unaccounted` forever.
+  //
+  // The root of it: the name was computed inside the builder and discarded inside the
+  // builder. The caller could not record what it was never told.
+
+  it('returns the unit name it used on the UN-ENROLLED fallback', () => {
+    const { bin, args, scopeUnit } = buildHeadlessSpawnCommand('exec claude', 'hl', {
+      platform: 'linux',
+      hasSystemdRun: () => true,
+    }); // taskScope omitted => the fallback, the path whose name used to be unrecoverable
+    expect(bin).toBe('systemd-run');
+    expect(scopeUnit).toBeTruthy();
+    expect(scopeUnit).toMatch(/^papercup-headless-/);
+    // The returned name must be THE name in argv — a plausible-looking but different string
+    // would re-create the same unjoinable row while passing a weaker assertion.
+    expect(args).toContain(`--unit=${scopeUnit}`);
+  });
+
+  it('returns the caller-supplied unit when enrolment DID succeed', () => {
+    const { scopeUnit, args } = buildHeadlessSpawnCommand(
+      'exec claude',
+      'hl',
+      { platform: 'linux', hasSystemdRun: () => true },
+      { unit: 'pc-task-abc.scope', slice: 'papercusp-agent-session.slice' },
+    );
+    expect(scopeUnit).toBe('pc-task-abc.scope');
+    expect(args).toContain('--unit=pc-task-abc.scope');
+  });
+
+  it('returns null where there is genuinely no scope (no systemd-run)', () => {
+    // null must mean "no scope exists", never "a scope exists and we forgot its name" —
+    // that conflation is the original bug, and it is why this asserts the bin too.
+    for (const probes of [
+      { platform: 'linux' as const, hasSystemdRun: () => false },
+      { platform: 'darwin' as const, hasSystemdRun: () => true },
+    ]) {
+      const { bin, scopeUnit } = buildHeadlessSpawnCommand('exec claude', 'hl', probes);
+      expect(bin).toBe('bash');
+      expect(scopeUnit).toBeNull();
+    }
+  });
+
+  it('STRUCTURAL: a returned scopeUnit and the --unit= argv can never disagree', () => {
+    // The recurrence guard, matching the slice block's structural test. Enumerate every
+    // taskScope shape: if we chose systemd-run there is a scope, so scopeUnit must be
+    // non-null AND must be exactly what argv asks systemd for. A future branch that adds a
+    // third code path and forgets to surface its name fails here rather than silently
+    // writing another unjoinable ledger row.
+    const scopes = [
+      undefined,
+      null,
+      { unit: 'pc-task-1.scope', slice: 'papercusp-agent-session.slice' },
+      { unit: 'pc-task-2.scope', slice: 'papercusp.slice' },
+    ];
+    for (const taskScope of scopes) {
+      const { bin, args, scopeUnit } = buildHeadlessSpawnCommand(
+        'exec claude',
+        'hl',
+        { platform: 'linux', hasSystemdRun: () => true },
+        taskScope,
+      );
+      expect(bin).toBe('systemd-run');
+      expect(scopeUnit).toBeTruthy();
+      const unitArgs = args.filter((a) => a.startsWith('--unit='));
+      expect(unitArgs).toHaveLength(1);
+      expect(unitArgs[0]).toBe(`--unit=${scopeUnit}`);
+    }
+  });
+});
+
 describe('wrapHeadlessSigtermDiagnostic (EI-9748)', () => {
   it('prepends a TERM trap that logs + exits 143, then runs the original oneliner unmodified', () => {
     const out = wrapHeadlessSigtermDiagnostic("cd '/proj' ; (eval 'psu --headless')");

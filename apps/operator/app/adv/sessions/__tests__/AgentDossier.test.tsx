@@ -34,9 +34,17 @@ vi.mock('@papercusp/sync', () => ({
 // rest" assertion below pass against a component whose toggle does nothing.
 vi.mock('nuqs', async () => {
   const React = await import('react');
+  /* Parsers from the SHARED mock rather than a hand-rolled `parseAsString: null`
+     (EI-8821): the rail now also runs `parseAsString.withDefault('')` for
+     section collapse, and a stub that answers `null` there crashes every test in
+     this file over a call site none of them are about. `defaultValue` is what
+     the shared parsers name their default, so the useState seed below honours
+     it. */
+  const { nuqsParsers } = await import('@papercusp/test-config/nuqs-mock');
   return {
-    parseAsString: null,
-    useQueryState: (_key: string) => React.useState<string | null>(null),
+    ...nuqsParsers,
+    useQueryState: (_key: string, parser?: { defaultValue?: unknown }) =>
+      React.useState<string | null>((parser?.defaultValue as string | undefined) ?? null),
   };
 });
 

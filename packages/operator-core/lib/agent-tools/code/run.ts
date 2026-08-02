@@ -95,7 +95,8 @@ export default defineTool({
         .describe(
           'JS/TS body. Call tools via `await tools.ns.verb(args)`; `return` a compact summary. ' +
             'No setTimeout or setInterval usage -- neither is ambient in this sandbox -- use `await sleep(ms)` for a ' +
-            'short bounded delay (e.g. write-then-reverify) instead.',
+            'short bounded delay (e.g. write-then-reverify) instead. sleep() caps at 10s and returns the ' +
+            'actual ms waited -- use that (not ms) when measuring a window, e.g. a rate over a delta.',
         ),
       title: z
         .string()
@@ -216,6 +217,20 @@ export default defineTool({
         ].join('\n')
       : undefined;
 
+    // EI-19324793244855883: sleep(ms) silently clamped a requested delay to the sandbox cap, so a
+    // script measuring a rate/share over a requested window divided by the number it ASKED for,
+    // not the number it got — a wrong denominator with no error. Surface every clamp loudly here,
+    // the same "correction, not a dump" shape as fieldMissHelp above.
+    const sleepCapHelp = result.sleepCaps?.length
+      ? [
+          `⚠ ${result.sleepCaps.length} sleep() call(s) asked for longer than this sandbox's cap and were silently ` +
+            `shortened — if you're measuring a window (a rate, a share, a delta), you divided by the REQUESTED ` +
+            `ms, not the ACTUAL ms you got. sleep() now resolves with the actual ms waited — use ` +
+            `\`const actual = await sleep(n)\` to self-correct next time:`,
+          ...result.sleepCaps.map((s) => `  • requested ${s.requestedMs}ms, actually waited ${s.actualMs}ms`),
+        ].join('\n')
+      : undefined;
+
     // WI-1377: keep the full plannedMutations echo ONLY under dryRun (the mutation preview the
     // agent inspects before committing). On a REAL run the writes already executed, so echoing
     // every call's full args back is pure waste that overflows the 100k result cap on a large
@@ -228,12 +243,13 @@ export default defineTool({
     const shownResult = shapeCodeRunLogs(annotateChildFailureWarning(shapeMutationEcho(result)));
 
     const payload =
-      similarRecipes.length > 0 || facadeHelp || fieldMissHelp
+      similarRecipes.length > 0 || facadeHelp || fieldMissHelp || sleepCapHelp
         ? {
             ...shownResult,
             ...(similarRecipes.length > 0 ? { similarRecipes } : {}),
             ...(facadeHelp ? { facadeHelp } : {}),
             ...(fieldMissHelp ? { fieldMissHelp } : {}),
+            ...(sleepCapHelp ? { sleepCapHelp } : {}),
           }
         : shownResult;
 
