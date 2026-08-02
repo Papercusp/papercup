@@ -1,6 +1,5 @@
 import { describe, it, vi } from 'vitest';
 import { premiseProbes } from './premise-probes';
-import { resolvePremiseStamps } from './premise-resolve';
 
 const getWorkItem = vi.fn();
 vi.mock('./messages', () => ({ getMessageById: vi.fn() }));
@@ -10,12 +9,20 @@ vi.mock('../../work-item-dispatch-states', () => ({
 }));
 
 describe('debug', () => {
-  it('shows what the probe actually returns', async () => {
+  it('sequential calls', async () => {
     getWorkItem.mockResolvedValue({ state: 'open' });
-    const probes = premiseProbes();
-    console.log('PROBE RESULT:', JSON.stringify(await probes.workItem!('WI-6560')));
-    console.log('getWorkItem calls:', JSON.stringify(getWorkItem.mock.calls));
-    const stamps = await resolvePremiseStamps(['WI-6560', 'WI-6560#completion'], probes);
-    console.log('STAMPS:', JSON.stringify(stamps));
+    const p = premiseProbes();
+    console.log('SEQ1:', JSON.stringify(await p.workItem!('WI-6560')));
+    console.log('SEQ2:', JSON.stringify(await p.workItem!('WI-6560')));
+    console.log('SEQ3:', JSON.stringify(await p.workItem!('WI-6560')));
+    console.log('SEQ mock calls:', getWorkItem.mock.calls.length);
+  });
+
+  it('concurrent calls', async () => {
+    getWorkItem.mockResolvedValue({ state: 'open' });
+    const p = premiseProbes();
+    const r = await Promise.all([p.workItem!('WI-6560'), p.workItem!('WI-6560')]);
+    console.log('CONC:', JSON.stringify(r));
+    console.log('CONC mock calls:', getWorkItem.mock.calls.length);
   });
 });

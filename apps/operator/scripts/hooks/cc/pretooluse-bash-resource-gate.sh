@@ -1864,7 +1864,17 @@ def _heavy_admission():
     for _ in range(8):
         _next = re.sub(
             r'^(?:'
-            r'cd\s+([\'"]?)[^&|;<>\s\'"]+\1\s*(?:&&|;)\s*'  # cd <dir> && / ;
+            # cd <dir> && / ; / NEWLINE. The newline arm matters as much as the
+            # other two (EI-19300297240416558): a `cd` on its own line is one of
+            # the most common shapes an agent writes, and without it the peel
+            # stops at `cd`, the (a)/(a2) skip-checks below never match (both are
+            # start-anchored), and the command falls through to heavy-detection —
+            # which IS newline-anchored. That asymmetry denied the blessed
+            # `npm run test:file` under exactly the load it exists to queue for.
+            # Written `[ \t]*(?:&&|;|\n)` rather than `\s*(?:&&|;|\n)` so the
+            # separator match cannot depend on backtracking a greedy `\s*` that
+            # already swallowed the newline.
+            r'cd\s+([\'"]?)[^&|;<>\s\'"]+\1[ \t]*(?:&&|;|\n)\s*'
             # `set -o pipefail && …` / `set -euo pipefail; …`. A `set` builtin only
             # flips shell options — it runs NO command — so peeling it can't hide a
             # heavy command, and NOT peeling it made this gate deny the very remedy its
@@ -1873,7 +1883,7 @@ def _heavy_admission():
             # and got denied as a raw `vitest`. Same "the remedy doesn't work" trap
             # EI-9634 fixed for `cd`/subshell — and it punished exactly the right habit,
             # since pipefail is what stops `… | tail` from masking a real exit code.
-            r'|set\s+(?:-o\s+[\w-]+|\+o\s+[\w-]+|[-+][A-Za-z]+)(?:\s+(?:-o\s+[\w-]+|\+o\s+[\w-]+|[-+][A-Za-z]+))*\s*(?:&&|;)\s*'
+            r'|set\s+(?:-o\s+[\w-]+|\+o\s+[\w-]+|[-+][A-Za-z]+)(?:\s+(?:-o\s+[\w-]+|\+o\s+[\w-]+|[-+][A-Za-z]+))*[ \t]*(?:&&|;|\n)\s*'
             r'|\(\s*'  # one subshell open: ( scripts/pc-heavy.sh … ) &
             r'|sudo(?:\s+(?:-[ugpUrCht]\s+\S+|-[A-Za-z]+|--[\w-]+(?:=\S*)?))*\s+'
             r'|env(?:\s+[A-Za-z_]\w*=\S*)*\s+'
@@ -1906,7 +1916,7 @@ def _heavy_admission():
     #       `PC_HEAVY_BYPASS=1 <cmd>` remedy and the `env`-prefixed heavy form
     #       the anchor already recognizes. Same `cd <dir> &&` allowance as (a).
     _bypass_lead = re.sub(
-        r'^cd\s+([\'"]?)[^&|;<>\s\'"]+\1\s*(?:&&|;)\s*', '', _lead, count=1)
+        r'^cd\s+([\'"]?)[^&|;<>\s\'"]+\1[ \t]*(?:&&|;|\n)\s*', '', _lead, count=1)
     if re.match(r'(?:env\s+)?(?:[A-Za-z_]\w*=\S*\s+)*PC_HEAVY_BYPASS=1(?:\s|$)', _bypass_lead):
         return
     #   (c) a leading `PC_HEAVY_ADMISSION=off` env-assignment prefix (EI-10913):
