@@ -101,6 +101,22 @@ describe('classifyAtom — the pessimistic rules fire before any claim of covera
     expect(classifyAtom(entry, { ...IRREDUCIBLE_ONLY, pairs }).disposition).toBe('covered');
   });
 
+  it('does not mistake noise suppression for a file write', () => {
+    // Regression: counting `2>/dev/null` as a write moved `find` (2,973 atoms)
+    // and `cat` (2,507) into `irreducible` on the strength of a trailing
+    // redirect that produces no file — a 3.9pt error in the pessimistic direction.
+    for (const command of ['find . -name "*.ts" 2>/dev/null', 'ls -la /tmp &>/dev/null', 'cat a.ts 2>/dev/null']) {
+      expect(classifyAtom(atomsOf(command)[0], IRREDUCIBLE_ONLY).rule, command).not.toBe('output-redirect');
+    }
+  });
+
+  it('still counts a real file write', () => {
+    for (const command of ['cat a.ts > b.ts', 'git log >> /tmp/out.log', 'echo hi > /tmp/x']) {
+      expect(classifyAtom(atomsOf(command)[0], IRREDUCIBLE_ONLY).disposition, command).toBe('irreducible');
+    }
+    expect(classifyAtom(atomsOf('cat a.ts > b.ts')[0], IRREDUCIBLE_ONLY).rule).toBe('output-redirect');
+  });
+
   it('rules an elevated command irreducible', () => {
     expect(classifyAtom(atomsOf('sudo systemctl restart x')[0], IRREDUCIBLE_ONLY).rule).toBe('elevated');
   });
@@ -187,6 +203,23 @@ describe('runCensus', () => {
     const report = runCensus(corpus, { pipeFilterPolicy: 'projection' });
     expect(report.pipeFilter.atoms).toBe(1);
     expect(report.pipeFilter.upstreams[0]).toMatchObject({ head: 'cat' });
+  });
+
+  it('reports a SPLIT head as a mix rather than labelling it with one atom', () => {
+    // `grep` is the largest head in the corpus and it is not one thing: piped it
+    // is the P-006 population, unpiped it is a code search over a path. Reporting
+    // whichever atom happened to be seen first is how a census hides a split.
+    const split = [
+      ...atomsOf('cat a.ts | grep foo', 's1'),
+      ...atomsOf('grep -rn foo packages/', 's1'),
+      ...atomsOf('grep -rn bar packages/', 's2'),
+    ];
+    const [row] = runCensus(split, IRREDUCIBLE_ONLY).rows.filter((r) => r.head === 'grep');
+    expect(row.atoms).toBe(3);
+    expect(row.mix.map((m) => m.rule).sort()).toEqual(['code-search-partial', 'pipe-filter:irreducible']);
+    // Plurality wins the headline; the minority is still visible in the mix.
+    expect(row.disposition).toBe('tool-exists');
+    expect(row.mix.reduce((sum, m) => sum + m.atoms, 0)).toBe(row.atoms);
   });
 
   it('ranks by atoms x sessions, not atoms alone', () => {

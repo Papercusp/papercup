@@ -102,6 +102,11 @@ const SHELL_PLUMBING = new Set([
   'trap', 'shift', 'local', 'readonly', 'declare', 'typeset', 'alias', 'unalias',
   'pushd', 'popd', 'umask', 'ulimit', 'exit', 'return', 'wait', 'jobs', 'bg', 'fg',
   'read', 'true', 'false', ':', '[', '[[', 'test', 'let', 'hash', 'getopts', 'shopt',
+  'break', 'continue', 'disown', 'env', 'flock', '#',
+  // Path and shell INTROSPECTION. Each answers a question about the shell's own
+  // position or about how a name resolves on this box; none has, or could
+  // sensibly have, a tool form.
+  'pwd', 'which', 'type', 'command', 'dirname', 'basename', 'realpath', 'readlink', 'stat',
 ]);
 
 /**
@@ -275,7 +280,7 @@ export function classifyAtom(
     return { disposition: 'needs-tool', reason: `registry row ${pair.id} matches but its audited verdict is '${pair.expectedVerdict}' — not coverage`, rule: 'registry-negative' };
   }
 
-  if (SCRIPT_RUNNERS.has(head)) {
+  if (SCRIPT_RUNNERS.has(head) || head.endsWith('.sh') || head.endsWith('.mjs')) {
     return { disposition: 'irreducible', reason: 'runs a program — code:run substitutes only the tool-orchestration subset', rule: 'script-runner' };
   }
   if (head in TOOL_EXISTS) {
@@ -283,6 +288,41 @@ export function classifyAtom(
   }
   if (head in NEEDS_TOOL) {
     return { disposition: 'needs-tool', reason: NEEDS_TOOL[head], rule: 'needs-tool' };
+  }
+
+  // --- Verbs the registry claims only PARTIALLY -------------------------------
+  // Each of these has a row that matches one shape and lets every other shape of
+  // the same verb fall through. Left unclassified they were the bulk of a 15.2%
+  // tail, and a tail that large makes a published ceiling unfalsifiable.
+
+  if (head === 'grep' || head === 'rg' || head === 'ack') {
+    // Not piped, so it has a path operand: this is CODE SEARCH, and a tool for it
+    // exists. Its registry row is pinned at `observe` (WI-6445) because gitnexus
+    // has not indexed this repo — a data problem, not a capability one, so the
+    // disposition is (ii) and the reason carries the caveat rather than hiding it.
+    return { disposition: 'tool-exists', reason: 'code search over a path — gitnexus.query / Grep exist; the registry row is pinned at observe while the index is empty (WI-6445)', rule: 'code-search-partial' };
+  }
+  if (head === 'wc' || head === 'awk' || head === 'cut' || head === 'uniq' || head === 'sort' || head === 'jq') {
+    return { disposition: 'needs-tool', reason: 'projection over a file operand — the D-041 count/sort/cut operators (P-020) would express it', rule: 'projection-over-operand' };
+  }
+  if (head === 'psql') {
+    // The routing table is explicit that `dev:pg_query` covers the OPERATOR
+    // database only; a `$VAR` connection or another database is out of envelope,
+    // and the plan's own definition of (iv) names non-operator DBs.
+    return { disposition: 'irreducible', reason: 'psql outside the operator database (or an interactive/meta-command form) — dev:pg_query is operator-DB only, by design', rule: 'psql-non-operator' };
+  }
+  if (head === 'systemctl') {
+    return { disposition: 'tool-exists', reason: 'dev:restart covers the two dev services and dev:service_health covers unit state; only these shapes lack a row', rule: 'systemctl-partial' };
+  }
+  if (head === 'npx' || head === 'npm' || head === 'pnpm' || head === 'yarn') {
+    return { disposition: 'irreducible', reason: 'package-runner invocation outside the audited test/typecheck shapes — it runs a program', rule: 'script-runner' };
+  }
+  if (head.startsWith('-')) {
+    // An atom whose first token is a FLAG is not a command: it is the tail of a
+    // quoted or substituted construct the atomizer could not keep whole. Counted
+    // and named rather than folded into the tail, because it measures residual
+    // atomizer error and P-001 owns driving it to zero.
+    return { disposition: 'irreducible', reason: 'atomizer residue — a flag in command position is a fragment, not a command', rule: 'atomizer-residue' };
   }
 
   return { disposition: 'needs-tool', reason: 'unclassified long tail — counted as reachable, which is the OPTIMISTIC reading', rule: 'unclassified' };
@@ -295,7 +335,18 @@ export interface CensusRow {
   sessions: number;
   /** Share of all classified atoms. */
   pct: number;
+  /** The disposition holding the PLURALITY of this head's atoms. */
   disposition: Disposition;
+  /**
+   * Every rule that fired for this head, with counts.
+   *
+   * A head is routinely SPLIT — 38% of `grep` is a pipe filter and the rest is a
+   * code search over a path; `tail` splits three ways (piped, bounded-with-file,
+   * `-f` follow). An earlier version recorded the classification of the first
+   * atom seen and labelled the whole row with it, which reported `grep` as
+   * uniformly one thing and hid precisely the split P-006 exists to decide.
+   */
+  mix: Array<{ rule: string; disposition: Disposition; atoms: number; reason: string }>;
   reason: string;
   rule: string;
   /** How much of this head's volume was the right-hand side of a pipe. */
@@ -385,7 +436,12 @@ export function runCensus(
   options: { pipeFilterPolicy: PipeFilterPolicy; totalCalls?: number; pairs?: SubstitutionPair[] },
 ): CensusReport {
   const tally = EMPTY_TALLY();
-  const byHead = new Map<string, { atoms: number; piped: number; sessions: Set<string>; classification: AtomClassification }>();
+  const byHead = new Map<string, {
+    atoms: number;
+    piped: number;
+    sessions: Set<string>;
+    byRule: Map<string, { disposition: Disposition; atoms: number; reason: string }>;
+  }>();
   const sessions = new Set<string>();
   let unclassified = 0;
 
@@ -399,19 +455,17 @@ export function runCensus(
     if (classification.rule === 'unclassified') unclassified += 1;
     if (classification.rule.startsWith('pipe-filter:')) pipeFilterAtoms.push(entry);
 
-    const row = byHead.get(entry.head);
-    if (row) {
-      row.atoms += 1;
-      if (entry.pipedInto) row.piped += 1;
-      row.sessions.add(entry.sid);
-    } else {
-      byHead.set(entry.head, {
-        atoms: 1,
-        piped: entry.pipedInto ? 1 : 0,
-        sessions: new Set([entry.sid]),
-        classification,
-      });
+    let row = byHead.get(entry.head);
+    if (!row) {
+      row = { atoms: 0, piped: 0, sessions: new Set(), byRule: new Map() };
+      byHead.set(entry.head, row);
     }
+    row.atoms += 1;
+    if (entry.pipedInto) row.piped += 1;
+    row.sessions.add(entry.sid);
+    const ruleTally = row.byRule.get(classification.rule);
+    if (ruleTally) ruleTally.atoms += 1;
+    else row.byRule.set(classification.rule, { disposition: classification.disposition, atoms: 1, reason: classification.reason });
   }
 
   const total = atoms.length || 1;
@@ -425,16 +479,22 @@ export function runCensus(
   ) as CensusReport['byDisposition'];
 
   const rows: CensusRow[] = [...byHead.entries()]
-    .map(([head, value]) => ({
-      head,
-      atoms: value.atoms,
-      sessions: value.sessions.size,
-      pct: pct(value.atoms),
-      disposition: value.classification.disposition,
-      reason: value.classification.reason,
-      rule: value.classification.rule,
-      pipedPct: Math.round((value.piped / value.atoms) * 1000) / 10,
-    }))
+    .map(([head, value]) => {
+      const mix = [...value.byRule.entries()]
+        .map(([rule, tallied]) => ({ rule, disposition: tallied.disposition, atoms: tallied.atoms, reason: tallied.reason }))
+        .sort((a, b) => b.atoms - a.atoms);
+      return {
+        head,
+        atoms: value.atoms,
+        sessions: value.sessions.size,
+        pct: pct(value.atoms),
+        disposition: mix[0].disposition,
+        mix,
+        reason: mix[0].reason,
+        rule: mix[0].rule,
+        pipedPct: Math.round((value.piped / value.atoms) * 1000) / 10,
+      };
+    })
     // Rank by atoms x sessions, as P-004 specified: a 900-atom habit of one agent
     // is not the same finding as a 900-atom habit of sixty.
     .sort((a, b) => b.atoms * b.sessions - a.atoms * a.sessions);

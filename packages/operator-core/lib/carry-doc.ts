@@ -666,10 +666,19 @@ function renderSessionMode(sm: CarryDocSessionMode): string {
   } else {
     lines.push('- no active modes');
   }
+  // WI-6949 — the AUTO×no-loop combination is an ALARM, not a neutral fact, and it must not
+  // read like one. The prior wording ("ending the turn halts the session unless an owner is
+  // present") stated the hazard as a subordinate clause with a get-out at the end, so a
+  // successor reading it while an owner WAS present correctly resolved it to "fine" — and then
+  // silently inherited the halt when the owner walked away. State the consequence first, in
+  // the imperative, and only soften it when there is genuinely a loop.
+  const autonomyOn = sm.modes.some((m) => m.mode === 'auto' || m.mode === 'cold-auto' || m.mode === 'drain');
   lines.push(
     sm.loopActive
       ? `- loop: ARMED${sm.loopIntervalSec != null ? ` (every ${sm.loopIntervalSec}s)` : ''} — verify loop:status.active before ending the turn`
-      : '- loop: not armed — ending the turn halts the session unless an owner is present',
+      : autonomyOn
+        ? '- loop: ⚠ NOT ARMED, AND AN AUTONOMY MODE IS ON. You have NO wake source. If you end a turn without loop:arm, this session HALTS and nothing re-wakes it — the mode grants you authorization to keep working, not the means. Arm it (loop:arm { intervalSec, goal, workItem }) as your FIRST act unless you will finish inside this turn.'
+        : '- loop: not armed — your only wake source is the owner speaking. If they stop, ending a turn halts this session for good; arm a loop before you go autonomous.',
   );
   return `## Session mode\n${lines.join('\n')}`;
 }

@@ -627,6 +627,26 @@ describe('isDeadlockFailure / isSerializationFailure / isRetryableLockFailure �
     expect(isRetryableLockFailure('ERROR: syntax error at or near "FOO"')).toBe(false);
     expect(isRetryableLockFailure('')).toBe(false);
   });
+
+  // EI-19320461261471579 — the ANTI-DRIFT guard, and the one that would have
+  // caught the original bug. There are TWO paths that apply migrations: this
+  // tool (an agent applying one by hand) and db-boot-migrate (operator boot +
+  // the green-checkpoint gate's migration preflight). The deadlock retry was
+  // added HERE and never reached the gate, so a deadlocked migration aborted
+  // the gate run as INCONCLUSIVE and held main for the whole fleet.
+  //
+  // Identity — not just equal behaviour — is the assertion, because that is
+  // exactly what a re-fork breaks: someone copying the regexes into a second
+  // site would still pass a behavioural test today, and drift the moment one
+  // copy is updated. If this fails, do not "fix" it by relaxing it to a
+  // behavioural check; make both paths import lib/pg-retryable-failure again.
+  it('exposes the SAME predicate object the boot/gate migration path uses — one definition, no second copy', async () => {
+    const shared = await import('../../pg-retryable-failure');
+    expect(isRetryableLockFailure).toBe(shared.isRetryableLockFailure);
+    expect(isDeadlockFailure).toBe(shared.isDeadlockFailure);
+    expect(isLockTimeoutFailure).toBe(shared.isLockTimeoutFailure);
+    expect(isSerializationFailure).toBe(shared.isSerializationFailure);
+  });
 });
 
 describe('db:migrate — connection-drop retry around guardResource (EI-18159491440495603)', () => {

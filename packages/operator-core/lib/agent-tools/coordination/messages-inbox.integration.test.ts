@@ -26,7 +26,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import { setupBaselineCoordFixture, type BaselineCoordFixture } from '../../_baseline-coord-fixture';
 import { filterInbox, type CoordEnvelope, type InboxOptions } from '@papercusp/coordination/core';
 import { coordLog, coordWorkspaceId } from './log';
-import { readInbox, INBOX_FAST_PATH_ROW_CAP } from './messages';
+import { readInbox, readInboxWindow, INBOX_FAST_PATH_ROW_CAP, INBOX_PAGE_ROWS } from './messages';
 
 let fx: BaselineCoordFixture;
 
@@ -227,6 +227,117 @@ describe('readInbox recipient-pushdown (P-003 / D-005 SQL path)', () => {
       expect(tsValues).toEqual(ascending);
       // filterInbox re-sorts, so flipping the SQL to DESC must not reverse the output.
       expect(new Date(got[0]!.ts).getTime()).toBeLessThan(new Date(got[got.length - 1]!.ts).getTime());
+    });
+  });
+
+  /**
+   * WI-6939. `readInbox`'s single unbounded query matches ~99.8% broadcast rows for a
+   * real owner (~20k rows / ~10MB per call, 30.1 cumulative HOURS of DB time across
+   * 491,954 calls). `readInboxWindow` reads a bounded newest-first window instead,
+   * paging backwards only while the CALLER's own filters say it needs more.
+   *
+   * The two properties that make that sound, and that these tests pin:
+   *   (1) it must actually STOP early when the caller is satisfied — otherwise it is
+   *       just the old read with extra round-trips;
+   *   (2) it must never UNDER-DELIVER — a caller that is never satisfied has to end up
+   *       with exactly what the authoritative `readInbox` would have returned.
+   */
+  describe('readInboxWindow — bounded keyset-paged read (WI-6939)', () => {
+    const TOTAL = INBOX_PAGE_ROWS * 2 + 500; // spans 3 pages
+
+    async function seedPages(count: number = TOTAL): Promise<void> {
+      await fx.admin`
+        INSERT INTO harness_shared.coord_event_log (surface, msg_id, body, ts, workspace_id)
+        SELECT 'messages',
+               'pg-' || n,
+               jsonb_build_object(
+                 'msg_id', 'pg-' || n,
+                 'kind',   'message',
+                 'from',   'bulk-sender',
+                 'to',     jsonb_build_array('*'),
+                 'summary','bulk',
+                 'ts',     to_char(TIMESTAMP '2026-01-01 00:00:00' + (n * interval '1 second'),
+                                   'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')
+               ),
+               TIMESTAMP '2026-01-01 00:00:00' + (n * interval '1 second'),
+               ${coordWorkspaceId()}
+          FROM generate_series(1, ${count}) AS n
+      `;
+    }
+
+    it('STOPS at the first page when the caller is already satisfied', async () => {
+      await seedPages();
+      const got = await readInboxWindow('alice', {}, (entries) => entries.length >= 5);
+
+      // The whole point: one page, not the 2,500 rows that exist.
+      expect(got.pages).toBe(1);
+      expect(got.rowsScanned).toBe(INBOX_PAGE_ROWS);
+      expect(got.exhausted).toBe(false);
+      expect(got.entries.length).toBe(INBOX_PAGE_ROWS);
+
+      // ...and the page it kept is the NEWEST one, not the oldest.
+      const seen = new Set(ids(got.entries));
+      expect(seen.has(`pg-${TOTAL}`)).toBe(true);
+      expect(seen.has('pg-1')).toBe(false);
+    });
+
+    it('PAGES to exhaustion when the caller is never satisfied, matching readInbox exactly', async () => {
+      await seedPages();
+      const windowed = await readInboxWindow('alice', {}, () => false);
+      const authoritative = await readInbox('alice');
+
+      expect(windowed.exhausted).toBe(true);
+      expect(windowed.pages).toBe(3);
+      expect(windowed.rowsScanned).toBe(TOTAL);
+      // No under-delivery: byte-identical to the unbounded read it replaces.
+      expect(ids(windowed.entries)).toEqual(ids(authoritative));
+    });
+
+    it('keeps paging past a page whose rows the caller filters away — the under-fill hazard', async () => {
+      await seedPages();
+      // A caller whose own filters reject everything in the bulk pages and only
+      // accept a marker that lives in the OLDEST page. A bare `LIMIT` would have
+      // returned a full page of rows that all filter out, yielding nothing.
+      const got = await readInboxWindow('alice', {}, (entries) =>
+        entries.some((e) => e.msg_id === 'pg-1'),
+      );
+      expect(got.entries.some((e) => e.msg_id === 'pg-1')).toBe(true);
+      expect(got.pages).toBeGreaterThan(1);
+    });
+
+    it('suppresses a retraction whose NOTICE and TARGET land on different pages', async () => {
+      // The invariant the design leans on: a notice is always NEWER than its target
+      // and shares its audience, so a newest-first window containing the target also
+      // contains the notice. Here the notice is on page 1 and the victim on page 3 —
+      // markers must accumulate ACROSS pages, not be collected per-page and dropped.
+      await seedPages();
+      await seed({ msg_id: 'victim', ts: '2026-01-01T00:00:00.500Z', from: 'bob', to: ['*'] });
+      await seed({
+        msg_id: 'notice',
+        ts: '2026-06-01T00:00:00.000Z',
+        from: 'bob',
+        to: ['*'],
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        ...({ retracts: 'victim' } as any),
+      });
+
+      const got = await readInboxWindow('alice', {}, () => false);
+      const seen = new Set(ids(got.entries));
+      expect(got.pages).toBeGreaterThan(1);
+      // The notice survives (the audience keeps the "disregard that" line)...
+      expect(seen.has('notice')).toBe(true);
+      // ...while the retracted message is gone, exactly as the unbounded path does.
+      expect(seen.has('victim')).toBe(false);
+      expect(ids(got.entries)).toEqual(ids(await readInbox('alice')));
+    });
+
+    it('honours since_ts, and a short first page reports exhausted', async () => {
+      await seedPages(10);
+      const got = await readInboxWindow('alice', {}, () => false);
+      expect(got.exhausted).toBe(true);
+      expect(got.pages).toBe(1);
+      expect(got.rowsScanned).toBe(10);
+      expect(ids(got.entries)).toEqual(ids(await readInbox('alice')));
     });
   });
 });

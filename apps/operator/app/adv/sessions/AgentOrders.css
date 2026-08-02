@@ -19,6 +19,14 @@
   --pc-orders-dim: color-mix(in oklab, var(--fg-dim), white 22%);
   --pc-orders-mute: color-mix(in oklab, var(--fg-mute), white 26%);
   --pc-orders-rule: color-mix(in oklab, var(--border), white 18%);
+  /* Were `var(--bg-surface, …)` / `var(--status-warn-bg, …)` — two tokens the
+     operator vocabulary does not define, so the css-tokens lint failed the green
+     checkpoint on them. Only the inline FALLBACKS were ever rendering, which is
+     why nothing looked broken. Restated here as local tokens derived from the
+     real scale (this file's own convention, and its "no literal hexes" rule),
+     preserving the exact prior appearance: a 4.5% white veil and a 10% warn tint. */
+  --pc-orders-surface: color-mix(in oklab, transparent, white 4.5%);
+  --pc-orders-warn-bg: color-mix(in oklab, transparent, var(--warn) 10%);
   display: flex;
   flex-direction: column;
   height: 100%;
@@ -37,7 +45,7 @@
   flex: none;
   padding: 8px 12px;
   border-bottom: 1px solid var(--pc-orders-rule);
-  background: var(--bg-surface, rgba(255, 255, 255, 0.045));
+  background: var(--pc-orders-surface);
 }
 .pc-orders__tag-name {
   font-size: 9px;
@@ -99,11 +107,11 @@
   font-weight: 500;
   padding: 1px 5px;
   border-radius: 999px;
-  background: var(--bg-surface, rgba(255, 255, 255, 0.045));
+  background: var(--pc-orders-surface);
   color: var(--pc-orders-text);
 }
 .pc-orders__n--hot {
-  background: var(--status-warn-bg, rgba(251, 191, 36, 0.1));
+  background: var(--pc-orders-warn-bg);
   color: var(--warn);
 }
 
@@ -188,11 +196,11 @@
   vertical-align: 1px;
 }
 .pc-orders__badge--self {
-  background: var(--bg-surface, rgba(255, 255, 255, 0.045));
+  background: var(--pc-orders-surface);
   color: var(--pc-orders-mute);
 }
 .pc-orders__badge--warn {
-  background: var(--status-warn-bg, rgba(251, 191, 36, 0.1));
+  background: var(--pc-orders-warn-bg);
   color: var(--warn);
 }
 
@@ -258,7 +266,7 @@
   color: var(--good);
 }
 .pc-orders__age--aging {
-  background: var(--status-warn-bg, rgba(251, 191, 36, 0.1));
+  background: var(--pc-orders-warn-bg);
   color: var(--warn);
 }
 .pc-orders__age--stale {
@@ -266,7 +274,7 @@
   color: var(--bad);
 }
 .pc-orders__age--unknown {
-  background: var(--bg-surface, rgba(255, 255, 255, 0.045));
+  background: var(--pc-orders-surface);
   color: var(--pc-orders-mute);
 }
 
@@ -296,7 +304,7 @@
   margin-top: 6px;
   padding: 5px 7px;
   border-radius: 3px;
-  background: var(--status-warn-bg, rgba(251, 191, 36, 0.1));
+  background: var(--pc-orders-warn-bg);
   color: var(--warn);
   font-size: 10px;
   line-height: 1.45;

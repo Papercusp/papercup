@@ -27,8 +27,55 @@ import { sendMessage } from '../coordination/messages';
 import { modeById, MODES } from '../../modes/registry';
 import { setMode } from '../../modes/store';
 import { refreshControlAnchorAfterMutation } from '../coordination/control-anchor';
+import { getLoopStatus } from '../../harness/routines/loop';
 
 const MODE_IDS = MODES.map((m) => m.id);
+
+/**
+ * WI-6949 — the wake-source guard, fired at the ACTION-POINT that creates the hazard.
+ *
+ * An autonomy mode is an AUTHORIZATION posture ("act, don't ask"); it is NOT a wake
+ * source. The engine loop is. An agent that registers AUTO while an interactive owner is
+ * present is safe only for as long as the owner keeps replying — the moment they walk
+ * away, that agent's only wake source silently disappears and the next turn it ends is
+ * its last. A carry-respawn does NOT rescue it: a respawn restores CONTEXT, not a TURN.
+ *
+ * The playbook already carries a well-written "end-of-turn test" for exactly this
+ * (operating-modes-policy.ts), and it did not prevent the 2026-08-02 incident, for two
+ * structural reasons worth recording here because they generalize:
+ *
+ *   1. That rule is anchored to a CESSATION, not an action. Every other rule in the
+ *      playbook hangs off something you DO, so something prompts the check. Nothing
+ *      prompts you at "about to end the turn" — there is no tool call there.
+ *   2. The hazard is created at a TRANSITION nothing marks (owner-present →
+ *      owner-absent), but the rule is evaluated at the turn boundary — by which point
+ *      dozens of correctly-ended interactive turns have established the opposite prior.
+ *
+ * So the check belongs HERE: `mode:set` IS the transition. This returns a warning rather
+ * than refusing, because a genuinely one-shot AUTO task ("do this now, finish it this
+ * turn") needs no loop and must not be blocked.
+ */
+export function wakeSourceWarning(opts: {
+  modeId: string;
+  axis: string;
+  enabled: boolean;
+  loopActive: boolean;
+}): string | null {
+  if (!opts.enabled) return null;
+  // `drain` is an overlay that IMPLIES auto; the autonomy axis covers auto + cold-auto.
+  const impliesAutonomy = opts.axis === 'autonomy' || opts.modeId === 'drain';
+  if (!impliesAutonomy || opts.loopActive) return null;
+  return (
+    `⚠ NO WAKE SOURCE. '${opts.modeId}' is an AUTHORIZATION posture — it does not make you run. ` +
+    'The engine loop is the recurrence mechanism, and you have none armed, so an interactive owner ' +
+    'is currently your ONLY wake source. The moment they stop replying, the next turn you end is ' +
+    'your last: nothing re-wakes you, and a carry-respawn restores CONTEXT, not a TURN. ' +
+    'If this mode is meant to outlive the owner sitting there — which is what "keep going" / ' +
+    '"do this from start to finish" / any open-ended directive means — arm the recurrence NOW: ' +
+    'loop:arm { intervalSec: 60, goal, workItem }. Ignore this ONLY if you will genuinely finish ' +
+    'inside this turn.'
+  );
+}
 
 export default defineTool({
   name: 'mode:set',
@@ -103,6 +150,23 @@ export default defineTool({
         })
       : null;
 
+    // WI-6949: an applied autonomy mode with no armed loop leaves the TARGET with no
+    // wake source. Read the target's loop (not the caller's) so a peer-set warns about
+    // the agent that will actually go inert. Fail-soft — a loop-read hiccup must never
+    // fail an applied mode change, so a read error simply suppresses the advisory.
+    let wakeWarning: string | null = null;
+    if (res.ok && !res.noop && enabled) {
+      try {
+        const loop = await getLoopStatus(target);
+        wakeWarning = wakeSourceWarning({
+          modeId: def.id,
+          axis: def.axis,
+          enabled,
+          loopActive: loop?.active === true,
+        });
+      } catch { /* fail-soft */ }
+    }
+
     // Peer-set: deliver the why (+ contract on enable) — or the downgraded
     // REQUEST when the owner-sticky guard refused the write. Fail-soft: a
     // delivery hiccup never rolls back an applied mode change.
@@ -115,7 +179,8 @@ export default defineTool({
           body:
             `${ident.ownerId} ${verb} mode '${def.id}' (${def.axis} axis).\nReason: ${args.reason}` +
             (res.ok && res.switchedFrom ? `\nAuto-switched from same-axis mode '${res.switchedFrom}'.` : '') +
-            (res.ok && enabled ? `\nEffective from your NEXT turn. Binding contract:\n\n${def.contract}` : ''),
+            (res.ok && enabled ? `\nEffective from your NEXT turn. Binding contract:\n\n${def.contract}` : '') +
+            (wakeWarning ? `\n\n${wakeWarning}` : ''),
           extra: { mode_change: { mode: def.id, enabled, applied: res.ok === true, stickyConflict: res.stickyConflict === true, by: ident.ownerId } },
         });
       } catch { /* fail-soft */ }
@@ -132,6 +197,7 @@ export default defineTool({
       stickyConflict: res.stickyConflict ?? false,
       ...(res.stickyConflict ? { note: 'incumbent is owner-directed; your reason was delivered as a REQUEST — do not retry' } : {}),
       ...(res.ok && enabled && isSelf ? { contract: def.contract } : {}),
+      ...(wakeWarning ? { wakeSource: 'owner-only', wakeSourceWarning: wakeWarning } : {}),
       ...(control ? { controlGeneration: control.generation } : {}),
       ...(res.error ? { error: res.error } : {}),
     };

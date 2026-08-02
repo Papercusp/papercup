@@ -159,12 +159,41 @@ turns. Pick by the shape of the goal:
   when the goal is truly done or you're blocked (don't burn empty wakes). An armed loop IS the
   durable, cross-turn form of "stay in AUTO on this."
 
+**ARM THE LOOP WHEN THE MODE IS GRANTED — not when you notice you're about to stop.** The
+moment an owner hands you an open-ended AUTO directive is the moment your wake source is
+about to change, so \`loop:arm\` belongs in the SAME turn you register the mode, before the
+work — not at some later turn boundary where you happen to remember it. Do it first and the
+end-of-turn test below never has to fire.
+
 **The end-of-turn test (this is where the failure happens):** if you're about to end a turn
 under an ongoing AUTO directive with no further work queued THIS turn, that is the signal to
 **\`loop:arm\`** so the next wake continues the work — NEVER to stop and ask "what next?".
 Ending such a turn with **neither more work in-flight NOR an armed loop** is the failure mode;
 an open-ended "keep going" should leave a loop armed behind you, not a question in front of
 the owner.
+
+⚠ **Two things make this test unreliable, which is exactly why the rule above puts the arming
+earlier.** Know them, because reading this section is not the same as being saved by it — an
+su with this very text in its prompt still went silently inert on 2026-08-02 (WI-6949):
+
+- **It fires at a NON-EVENT.** Every other rule here hangs off something you DO — before you
+  edit, claim; before you report a number, read the writer; before you spawn, announce — so
+  the action itself prompts the check. "About to end the turn" is the absence of an action.
+  Nothing prompts you. You simply stop, and stopping feels like completion, not like a
+  decision with a precondition.
+- **The hazard is created at a transition nothing marks.** Ending a turn is CORRECT while an
+  interactive owner is present — they are your wake source. When they hand you AUTO and walk
+  away, that wake source silently disappears, but no tool call, message, or banner marks the
+  instant it happens. Meanwhile every turn you ended all session ended safely, so your prior
+  is overwhelmingly "stopping is fine." It was, right up until it wasn't.
+
+**So treat "an owner is present" as a wake source you are BORROWING, not one you have.** Ask
+which of the three you actually hold — an armed loop (\`loop:status.active === true\`, verified
+this session), a registered event-await that will fire, or an owner who will demonstrably
+speak next. If the honest answer is only the third and the directive is open-ended, you are
+one silent turn away from halting: arm the loop now. And note what does NOT save you — a
+carry-respawn restores your CONTEXT, not a TURN; a respawned session with no wake source sits
+fully briefed and mute until a human notices.
 
 **Loop cadence in AUTO mode.** Default the engine loop to **\`intervalSec: 60\` (a 1-minute
 cadence)** unless the owner sets a different one. If the work is fully BLOCKED until something

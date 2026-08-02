@@ -1462,6 +1462,91 @@ describe('background-pipe exit-code trap advisory (EI-8871/EI-14065)', () => {
 });
 
 /**
+ * WI-6944 — the `;`-chain half of the same exit-code trap. The advisory above
+ * only matches a PIPE; a `;`-chain masks identically but through a separate
+ * TRAILING command:
+ *
+ *     cmd > /tmp/out.txt 2>&1; echo "===EXIT:$?==="
+ *
+ * A `;`-chain exits with its LAST command's status, so the trailing `echo`
+ * (always 0) replaces the real command's and the completion notification
+ * reports "completed (exit code 0)" for a run that FAILED.
+ *
+ * Proven end-to-end 2026-08-02 (job bnmntj9o4): `sleep 2; false; echo
+ * "===PROOF_EXIT:$?==="` produced artifact `===PROOF_EXIT:1===` under a
+ * notification reading "completed (exit code 0)". Three real `lint:tsc` runs
+ * the same night all ended `===TSC_EXIT:1===` with "1 NEW file(s) have type
+ * errors" and were nearly accepted as a green gate check on the strength of
+ * their notifications.
+ *
+ * The irony this guard exists for: the trailing command is almost always an
+ * exit MARKER added so the log would carry a trustworthy verdict — i.e. the
+ * diagnostic you reach for when you care most is what erases the failure.
+ */
+describe('background `;`-chain trailing-reporter exit-code advisory (WI-6944)', () => {
+  const bashWithInput = (tool_input: Record<string, unknown>, tool = 'Bash') => ({
+    tool_name: tool,
+    tool_input,
+    session_id: 's-test',
+  });
+
+  const expectChainAdvisory = (out: { stdout: string; status: number | null }) => {
+    expect(out.status).toBe(0);
+    const hso = JSON.parse(out.stdout).hookSpecificOutput;
+    expect(hso.permissionDecision).toBe('allow'); // soft — command proceeds
+    expect(hso.additionalContext).toContain('background `;`-chain exit-code advisory');
+    expect(hso.additionalContext).toContain('exit "$rc"');
+  };
+
+  it('fires on the exact idiom that produced the false green (exit marker echo)', () => {
+    expectChainAdvisory(
+      runGate(
+        bashWithInput({
+          command: 'npm run lint:tsc -- --files=a.ts > /tmp/o.txt 2>&1; echo "===TSC_EXIT:$?==="',
+          run_in_background: true,
+        }),
+      ),
+    );
+  });
+
+  it.each([
+    ['echo confirming completion', 'npm test > /tmp/o 2>&1; echo done'],
+    ['ls to confirm the artifact', 'npm test > /tmp/o 2>&1; ls -la /tmp/o'],
+    ['date stamp after the run', 'npm test > /tmp/o 2>&1; date'],
+    ['wc counting the output', 'npm test > /tmp/o 2>&1; wc -l /tmp/o'],
+    ['newline-separated, not semicolon', 'npm test > /tmp/o 2>&1\necho "===EXIT:$?==="'],
+    ['|| fallback also masks (runs only on failure, exits 0)', 'npm test > /tmp/o 2>&1 || echo failed'],
+  ])('fires on a trailing reporter: %s', (_label, command) => {
+    expectChainAdvisory(runGate(bashWithInput({ command, run_in_background: true })));
+  });
+
+  // The correct pattern must stay SILENT, or the advisory punishes the fix.
+  it.each([
+    ['exit "$rc" restores the code', 'npm test > /tmp/o 2>&1; rc=$?; echo "===EXIT:$rc===" >> /tmp/o; exit "$rc"'],
+    ['unquoted exit $rc', 'npm test > /tmp/o 2>&1; rc=$?; echo "EXIT:$rc"; exit $rc'],
+    ['exit $? directly', 'npm test > /tmp/o 2>&1; echo marker; exit $?'],
+  ])('silent when the exit code is restored: %s', (_label, command) => {
+    expectAllow(runGate(bashWithInput({ command, run_in_background: true })));
+  });
+
+  it('silent on `&&` — it short-circuits, so a failure still propagates', () => {
+    expectAllow(runGate(bashWithInput({ command: 'npm test > /tmp/o 2>&1 && echo passed', run_in_background: true })));
+  });
+
+  it('silent when NOT backgrounded (no completion notification to mislead)', () => {
+    expectAllow(runGate(bashWithInput({ command: 'npm test > /tmp/o 2>&1; echo "===EXIT:$?==="' })));
+  });
+
+  it('silent on a lone reporter — one command masks nothing', () => {
+    expectAllow(runGate(bashWithInput({ command: 'echo hello', run_in_background: true })));
+  });
+
+  it('silent when the real command is LAST (nothing trailing it)', () => {
+    expectAllow(runGate(bashWithInput({ command: 'cd packages/operator-core; npm test', run_in_background: true })));
+  });
+});
+
+/**
  * EI-18787618439028592 — foreground `| head` SIGPIPE-kill advisory: distinct
  * from the background-pipe exit-code trap above. `head` exits after N lines
  * and SIGPIPEs the upstream writer, killing it mid-run — a hazard that exists
