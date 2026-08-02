@@ -96,6 +96,23 @@ vi.mock('../../adv/sessions/AgentDossier', () => ({
   },
 }));
 
+// session-chat-popup-direction-d-2026-08-02 P-015: AgentOrders' own behavior is
+// covered by AgentOrders.test.tsx — stubbed here for the same reason as the
+// dossier above, and for one more: the real panel runs the `agentOrders.byOwner`
+// carry-brief gather on mount, so leaving it live would make this file's
+// structural assertions depend on that query's fixture.
+let lastAgentOrdersProps: Record<string, any> | null = null;
+vi.mock('../../adv/sessions/AgentOrders', () => ({
+  default: (props: Record<string, any>) => {
+    lastAgentOrdersProps = props;
+    return (
+      <div data-testid="agent-orders-stub" data-owner={props.ownerId}>
+        <button type="button" data-testid="orders-stub-close" onClick={props.onClose} />
+      </div>
+    );
+  },
+}));
+
 // jsdom-vs-virtualization seam (same as ChatConversation.test.tsx): the real
 // @tanstack/react-virtual renders nothing without real layout, and the
 // scroll-to-bottom / load-earlier effects need stand-ins for APIs jsdom lacks.
@@ -216,6 +233,7 @@ beforeEach(() => {
   lastWorkItemPopupProps = {};
   lastPlanPopupProps = null;
   lastAgentDossierProps = null;
+  lastAgentOrdersProps = null;
   for (const k of Object.keys(nuqs)) delete nuqs[k];
 });
 afterEach(() => {
@@ -1155,6 +1173,157 @@ describe('SessionChatModal', () => {
       fireEvent.click(screen.getByTestId('dossier-stub-close'));
       rerender(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
       expect(screen.queryByTestId('session-chat-dossier-rail')).toBeNull();
+    });
+  });
+
+  /* ── P-015: the Orders panel, the LEFT column of the three-column shell ─────
+     The rail itself (`session-chat-orders-rail`) had NO coverage at all until
+     this suite — only its toolbar BUTTON did, via the WI-7110 cases above. That
+     is the dangerous half to leave untested, because P-015's load-bearing
+     promise is not "a panel appears": it is that the panel is a SIBLING of the
+     conversation region rather than a child of it.
+
+     D-002 makes that element's DOM subtree the literal definition of what
+     maximize paints — `requestFullscreen()` is called on it — so a future edit
+     that nests Orders INSIDE the conversation would silently break both
+     maximize modes at once, with every existing test still green (the rail
+     renders either way, and no hide-list exists to fail). The containment
+     assertion below is the recurrence guard for exactly that. ── */
+  describe('P-015 Orders panel (three-column shell)', () => {
+    function seedRoster(entries: Array<Record<string, unknown>>) {
+      H.results['advRoster.list'] = {
+        data: [{ active: entries, pending: [] }],
+        loading: false,
+        fetching: false,
+        error: null,
+        invalidate: vi.fn(),
+      };
+    }
+
+    async function renderResolved() {
+      seedRoster([{ ownerId: 'su-live-1' }]);
+      mockFetchOnce(200, { sessions: [{ source_kind: 'claude', session_id: 'claude-abc', last_ts: null }] });
+      const r = render(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
+      await waitFor(() => expect(captured).not.toBeNull());
+      return r;
+    }
+
+    const rerenderOpen = (rerender: (ui: React.ReactElement) => void) =>
+      rerender(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
+
+    it('is CLOSED by default — the toggle is offered, but the panel (and its gather) is not mounted', async () => {
+      await renderResolved();
+      // Opposite default to the dossier on purpose: `enabled` gates the
+      // agentOrders.byOwner carry-brief gather, so a panel nobody opened must
+      // cost nothing. Asserting the stub (not just the wrapper) is what makes
+      // this a claim about the FETCH and not merely about layout.
+      expect(screen.queryByTestId('session-chat-orders-rail')).toBeNull();
+      expect(screen.queryByTestId('agent-orders-stub')).toBeNull();
+      expect(lastAgentOrdersProps).toBeNull();
+      expect(screen.getByTestId('session-chat-orders-toggle')).toBeTruthy();
+    });
+
+    it('the toggle mounts the panel via the chatOrders nuqs key, scoped to the session owner', async () => {
+      const { rerender } = await renderResolved();
+
+      fireEvent.click(screen.getByTestId('session-chat-orders-toggle'));
+      expect(nuqsSetters.chatOrders).toHaveBeenCalledWith(true);
+      // The mocked setter mutates the shared store synchronously but does not
+      // itself re-render — force one, same as the dossier suite above.
+      rerenderOpen(rerender);
+
+      const rail = screen.getByTestId('session-chat-orders-rail');
+      expect(within(rail).getByTestId('agent-orders-stub')).toBeTruthy();
+      expect(lastAgentOrdersProps?.ownerId).toBe('su-live-1');
+      expect(lastAgentOrdersProps?.enabled).toBe(true);
+    });
+
+    it('D-002: the panel is a SIBLING of the conversation region, never inside it', async () => {
+      nuqs.chatOrders = true;
+      await renderResolved();
+
+      const conversation = screen.getByTestId('session-chat-conversation');
+      // Present in the document…
+      expect(screen.getByTestId('session-chat-orders-rail')).toBeTruthy();
+      // …and NOT within the subtree the browser paints in full screen. This is
+      // the assertion that survives a refactor: nesting it would keep every
+      // other test in this file green while making full screen show a panel the
+      // owner asked to leave out.
+      expect(within(conversation).queryByTestId('session-chat-orders-rail')).toBeNull();
+      expect(within(conversation).queryByTestId('agent-orders-stub')).toBeNull();
+    });
+
+    it('full window drops the panel AND its toggle, even with chatOrders still true', async () => {
+      nuqs.chatOrders = true;
+      const { rerender } = await renderResolved();
+      // Baseline, so the absence below is caused by the mode and not the fixture.
+      expect(screen.getByTestId('session-chat-orders-rail')).toBeTruthy();
+
+      nuqs.chatMax = 'window';
+      rerenderOpen(rerender);
+      expect(screen.queryByTestId('session-chat-orders-rail')).toBeNull();
+      expect(screen.queryByTestId('agent-orders-stub')).toBeNull();
+      // The toggle goes too: offering to open a panel that maximize structurally
+      // excludes is a button that cannot do what it says.
+      expect(screen.queryByTestId('session-chat-orders-toggle')).toBeNull();
+      expect(screen.queryByTestId('session-chat-toolbar-left')).toBeNull();
+      // The carve-out the owner named by hand is untouched by any of this.
+      expect(screen.getByPlaceholderText(/Type to wake/)).toBeTruthy();
+    });
+
+    it('full SCREEN excludes it on the same rule — the mode, not the mechanism, is what hides it', async () => {
+      nuqs.chatOrders = true;
+      nuqs.chatMax = 'screen';
+      await renderResolved();
+      expect(screen.queryByTestId('session-chat-orders-rail')).toBeNull();
+      expect(screen.queryByTestId('session-chat-orders-toggle')).toBeNull();
+    });
+
+    it('restores the panel when maximize is exited — the open state is remembered, not cleared', async () => {
+      nuqs.chatOrders = true;
+      nuqs.chatMax = 'window';
+      const { rerender } = await renderResolved();
+      expect(screen.queryByTestId('session-chat-orders-rail')).toBeNull();
+
+      nuqs.chatMax = null;
+      rerenderOpen(rerender);
+      expect(screen.getByTestId('session-chat-orders-rail')).toBeTruthy();
+      expect(screen.getByTestId('session-chat-orders-toggle')).toBeTruthy();
+    });
+
+    it('closing the panel from its own onClose collapses it (chatOrders flips false)', async () => {
+      nuqs.chatOrders = true;
+      const { rerender } = await renderResolved();
+
+      fireEvent.click(screen.getByTestId('orders-stub-close'));
+      expect(nuqsSetters.chatOrders).toHaveBeenCalledWith(false);
+      rerenderOpen(rerender);
+      expect(screen.queryByTestId('session-chat-orders-rail')).toBeNull();
+    });
+
+    it('renders neither the panel nor its toggle while the modal is closed', () => {
+      nuqs.chatOrders = true;
+      render(<SessionChatModal sessionOwnerId={null} onClose={vi.fn()} />);
+      expect(screen.queryByTestId('session-chat-orders-rail')).toBeNull();
+      expect(screen.queryByTestId('session-chat-orders-toggle')).toBeNull();
+    });
+
+    it('both panels can be open at once — Orders left, Activity right, conversation between', async () => {
+      nuqs.chatOrders = true;
+      await renderResolved();
+      // The DOM order IS the reading order the layout promises (told →
+      // conversation → did), so assert the sequence rather than mere presence.
+      const modal = screen.getByTestId('session-chat-modal');
+      const order = Array.from(
+        modal.querySelectorAll<HTMLElement>(
+          '[data-testid="session-chat-orders-rail"],[data-testid="session-chat-conversation"],[data-testid="session-chat-dossier-rail"]',
+        ),
+      ).map((el) => el.dataset.testid);
+      expect(order).toEqual([
+        'session-chat-orders-rail',
+        'session-chat-conversation',
+        'session-chat-dossier-rail',
+      ]);
     });
   });
 

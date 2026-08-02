@@ -30,7 +30,8 @@ vi.mock('../workspace-registry', async () => {
   return { ...actual, activeWorkspaceId: () => 'default' };
 });
 
-const { aggregateIssueClaimExclusions, listIssueClaimableRows, readIssueClaimability } = await import('./get-next');
+const { aggregateIssueClaimExclusions, listIssueClaimableRows, readIssueClaimability, readClaimSpecDelta } =
+  await import('./get-next');
 
 const H = 'papercup';
 const WS = 'default';
