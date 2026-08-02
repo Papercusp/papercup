@@ -18,7 +18,11 @@
  *   - "expects reply": the sender explicitly sets `expectsReply:true`, or
  *     uses the coord:send ergonomic `wake:'required'` + `replyDeadlineSec`
  *     combination (which stamps the same field). FYI/status reports are
- *     intentionally absent from this aggregate.
+ *     intentionally absent from this aggregate. EI-19315474516256070: an
+ *     explicit `expects:'none'` (D-048's REQUIRED coord:send field, or the
+ *     write-time machine-emitter stamp in messages.ts) OVERRIDES a stale/
+ *     inconsistent `expectsReply:true` — the two fields are independently
+ *     settable on a raw sendMessage() call and can diverge; see the SQL below.
  *   - "answered": a sibling row carrying `related_msg_id = <this msg_id>`
  *     AUTHORED BY the recipient — an explicit ack (kind='ack') or a genuine
  *     reply both satisfy it (mirrors reply-deadline-sweep's own NOT EXISTS
@@ -309,6 +313,21 @@ export async function fetchUnansweredDirected(
          -- WI-4553: only the SENDER can distinguish a question from an FYI.
          -- Missing/false is the backwards-compatible non-obligation default.
          AND (e.body->>'expectsReply') = 'true'
+         -- EI-19315474516256070: \`expects\` (string, D-048's REQUIRED coord:send field) and
+         -- \`expectsReply\` (legacy boolean, independently settable by any RAW sendMessage()
+         -- caller via \`opts.expectsReply\`) are two DIFFERENT envelope keys that can diverge —
+         -- the coord:send TOOL keeps them in lockstep (\`expectsReply = expects !== 'none'\`),
+         -- but a raw sendMessage() caller can pass BOTH \`expectsReply:true\` AND
+         -- \`extra:{ expects:'none' }\` (or have \`expects\` overwritten to 'none' by the
+         -- write-time machine-emitter stamp in messages.ts AFTER expectsReply was already set),
+         -- leaving a row that says "no reply wanted" and "reply wanted" at once. Measured live
+         -- 2026-08-02: exactly one such row in papercusp-workspace
+         -- (work_items/request_release.ts's release-request send, whose \`auto:true\` triggers the
+         -- write-time \`expects:'none'\` stamp even though it also passes \`expectsReply:true\`).
+         -- When the sender EXPLICITLY declared \`expects:'none'\`, that is the more specific,
+         -- more recent signal (D-048 supersedes the legacy field) and wins — a sender who said
+         -- "no reply needed" cannot be overridden by a stale/inconsistent boolean.
+         AND (e.body->>'expects') IS DISTINCT FROM 'none'
          -- WI-4537 (a): machine LIFECYCLE chatter is not an obligation. sendMessage now
          -- auto-stamps this for every machine sender (messages.ts), so it is reliable going
          -- forward.

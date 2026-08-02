@@ -50,6 +50,7 @@ describe('diagnoseFromLedger (EI-18759519171684432)', () => {
       state: 'exited',
       exitCode: 1,
       exitReason: null,
+      confined: true,
     });
   });
 
@@ -61,8 +62,20 @@ describe('diagnoseFromLedger (EI-18759519171684432)', () => {
         state,
         exitCode: null,
         exitReason: `test-${state}`,
+        confined: true,
       });
     }
+  });
+
+  it('reports confined:false on a stranded UNCONFINED row — EI-19315479997523199 (this is what lets the handler tell "routine operator restart" apart from "a confined job died unexpectedly")', () => {
+    const row = fakeRow({ state: 'stranded', confined: false, exitReason: 'process identity linux:boot-x:1 is gone from the kernel' });
+    expect(diagnoseFromLedger(row)).toEqual({
+      kind: 'confirmed_dead',
+      state: 'stranded',
+      exitCode: null,
+      exitReason: 'process identity linux:boot-x:1 is gone from the kernel',
+      confined: false,
+    });
   });
 
   it('reports confirmed_alive when the ledger is non-terminal AND the pid re-probe matches the recorded identity — THE live-repro regression', () => {

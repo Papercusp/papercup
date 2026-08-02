@@ -1022,13 +1022,13 @@ export default defineTool({
     "A leader's ONE-call health brief for ONE fleet (yours by default). Per member: " +
     'sessionState, `verdict` (booted|joined|first-turn-done|speaking|stalled|dead), wakeMode, ' +
     'lastToolCallAgeMs, claims (doing/workItemIds/queuedCount/load), loop state+nextFireAt, ' +
-    'stalled, unanswered, contextPressure, parkedOn + parkedOnResolved (a composed await is ONE ' +
-    'entry: ROOT deadline + any/all mode), benchSuggestion, `dormant`, `spinning` (no real progress), ' +
-    'unownedCriticals + unownedCriticalsFederated (remote, unclaimable) + abandonedUnclaimed.',
+    'stalled, unanswered, contextPressure, parkedOn + parkedOnResolved (ROOT deadline + any/all, ' +
+    'one entry), benchSuggestion, `dormant`, `spinning` (no real progress), ' +
+    'unownedCriticals + unownedCriticalsFederated + abandonedUnclaimed.',
   guidance: {
     when:
       'AFTER a wake: "who is working / stuck / unanswered / about to compact across MY fleet". ' +
-      'How you SEE the fleet, NOT how you watch it — PARK, do not poll: events:await the ' +
+      'PARK, do not poll: events:await the ' +
       'fleet:*:<slug> transition keys (see events:catalog) + work-item:claimable. ' +
       "loop:arm is then a LONG fallback heartbeat (15m+), never the monitor. Folded into " +
       "coord:orient { mode:'monitor' }. Spec: agent-insights/leading-a-fleet-without-polling.",
@@ -1040,7 +1040,7 @@ export default defineTool({
       '`unanswered` → coord:send a follow-up or coord:catch-up. `benchSuggestion` set → ' +
       'fleet:bench onto the blocked-on gate; `dormant:true` → wake, never bench. ' +
       '`spinning:true` → coord:send{wake:"required"}. ' +
-      'Nonzero `unownedCriticals`/`abandonedUnclaimed` → CLAIM it (release is a no-op, WI-6678). ' +
+      'Nonzero `unownedCriticals`/`abandonedUnclaimed` → CLAIM it (release=no-op, WI-6678). ' +
       '`unownedCriticalsFederated` is remote, unclaimable (WI-6846). ' +
       '`idleWithClaimableAlert` → wake those members; never bench (the queue is NOT empty).',
   },

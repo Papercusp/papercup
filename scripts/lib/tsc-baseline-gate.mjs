@@ -1200,6 +1200,46 @@ export function runTscBaselineGate({
   }
   const ownBaselineByFile = baseline.files ?? {};
 
+  // --seed: one-time initialization for a BRAND-NEW project's baseline. `--update` cannot do this
+  // (by design — decidePerFile always treats a file absent from the baseline as a REGRESSION, per
+  // EI-18766822535373909, so a truly empty baseline can never self-populate via the normal ratchet
+  // path: `regressions.length > 0` short-circuits before the `updateFlag` improvements branch is
+  // ever reached). Discovered live seeding apps/operator's first baseline (EI-19312097806511163) —
+  // `--update` against an empty `files: {}` reported every file as a `fail-regressed` hard error
+  // instead of seeding anything. --seed bypasses the regression gate entirely and writes the
+  // CURRENT per-file counts as the starting baseline — a debt SNAPSHOT, not a clean bill of health.
+  // Refuses when the baseline already has entries, so it can never be used to silently wipe out a
+  // real, populated ratchet (that would erase tracked debt/regressions) — use --update for every
+  // subsequent run once a project has a real baseline. Still hard-fails on a TS1xxx parse error,
+  // same as every other path, so a broken file can never be seeded in as "0 errors elsewhere, ignore
+  // me" debt.
+  if (argv.includes('--seed')) {
+    if (Object.keys(ownBaselineByFile).length > 0) {
+      console.error(
+        `❌ --seed refused: ${baselineFile} already has ${Object.keys(ownBaselineByFile).length} file(s) recorded. ` +
+          `--seed is ONLY for a brand-new, empty baseline (files: {}) — use --update to ratchet an existing one.`,
+      );
+      process.exit(1);
+      return;
+    }
+    if (brokenFiles.length > 0) {
+      console.error(
+        `❌ ${brokenFiles.length} file(s) fail to COMPILE (TS1xxx parse errors) — fix these before seeding a baseline:`,
+      );
+      for (const f of brokenFiles) console.error(`   - ${f}`);
+      process.exit(1);
+      return;
+    }
+    baseline.files = Object.fromEntries(Object.entries(currentByFile).sort(([a], [b]) => a.localeCompare(b)));
+    baseline[countField] = sumValues(currentByFile);
+    baseline.updatedAt = new Date().toISOString();
+    writeFileSync(baselineFile, JSON.stringify(baseline, null, 2) + '\n');
+    console.log(
+      `✓ seeded: baseline → ${sumValues(currentByFile)} errors across ${Object.keys(currentByFile).length} file(s) (${baselineFile})`,
+    );
+    return;
+  }
+
   // Load each owning package's baseline for the cross-package files this gate measures but does not
   // own. Fail-SOFT per source: an unreadable foreign baseline degrades to the old absent⇒0 behaviour
   // (a possible false red we WARN about) rather than crashing the gate or silently passing.

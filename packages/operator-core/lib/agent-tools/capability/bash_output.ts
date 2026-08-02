@@ -121,7 +121,18 @@ export function diagnoseStrandedCause(opts: {
  */
 export type LedgerLivenessVerdict =
   | { kind: 'confirmed_alive'; pid: number; scopeUnit: string | null; taskId: string }
-  | { kind: 'confirmed_dead'; state: string; exitCode: number | null; exitReason: string | null }
+  | {
+      kind: 'confirmed_dead';
+      state: string;
+      exitCode: number | null;
+      exitReason: string | null;
+      /** Was this job's process running inside its own systemd scope (task-manager
+       *  confined) or as a direct, unconfined child of the operator process? See
+       *  the advice-building note at the `job_process_gone` handler branch below —
+       *  this is what lets the advice explain a `stranded` verdict instead of
+       *  reporting it as an unattributed mystery (EI-19315479997523199). */
+      confined: boolean;
+    }
   | { kind: 'no_ledger_row' }
   | { kind: 'ledger_inconclusive' };
 
@@ -136,6 +147,7 @@ export function diagnoseFromLedger(
       state: row.state,
       exitCode: row.exitCode ?? null,
       exitReason: row.exitReason ?? null,
+      confined: row.confined,
     };
   }
   // pending/running/unaccounted/foreign: the ledger THINKS a process is alive.
@@ -269,6 +281,37 @@ export default defineTool({
           const exitDetail =
             (ledgerVerdict.exitCode !== null ? ` exit code ${ledgerVerdict.exitCode}` : '') +
             (ledgerVerdict.exitReason ? `: ${ledgerVerdict.exitReason}` : '');
+          // EI-19315479997523199 — a `stranded` verdict (the ledger observed the
+          // scope/pid vanish from the kernel with no exit code ever seen) used to
+          // report the SAME generic "CONFIRMED it actually ended" advice as a clean
+          // exit, leaving a job that silently evaporated mid-wait just as
+          // unattributed as it was before the ledger existed. `confined` is the
+          // one signal that tells the two `stranded` shapes apart:
+          //   - UNCONFINED (task-manager was off at spawn time, or its probe
+          //     failed): this job lived as a direct child of the operator
+          //     process, so the far more likely explanation is the routine,
+          //     documented one — a peer restarted :3070/:3170 mid-job (repo-
+          //     conventions § two-port model) and took every unconfined
+          //     in-flight background job down with it. Not a bug in the command.
+          //   - CONFINED (its own systemd scope, a sibling of the operator's own
+          //     unit — task-manager-no-escape-2026-07-27): that scope should
+          //     survive an operator restart, so a confined job still going
+          //     stranded is the SURPRISING case — worth a second look (OOM via
+          //     `dmesg`/`journalctl -k`, a manual `processes:kill`, or a genuine
+          //     task-manager gap) rather than shrugging it off as routine.
+          const strandedAdvice =
+            ledgerVerdict.state !== 'stranded'
+              ? null
+              : ledgerVerdict.confined
+                ? ' This job was CONFINED in its own systemd scope (task-manager), which should survive a routine ' +
+                  'operator restart — so this is the SURPRISING case, not the routine one. Worth checking `dmesg`/' +
+                  '`journalctl -k` for an OOM kill around when it died, or whether someone ran `processes:kill` on ' +
+                  'it, before assuming this was just an operator restart.'
+                : ' This job was UNCONFINED (task-manager confinement was off, or its probe failed, at the moment ' +
+                  'it spawned), so it ran as a direct child of the operator process — the far more likely ' +
+                  'explanation is the routine, documented one: a peer restarted :3070/:3170 mid-job (repo-' +
+                  'conventions § two-port model) and every OTHER unconfined in-flight background job died with it. ' +
+                  'Not a bug in your command.';
           return {
             content: [
               {
@@ -278,8 +321,8 @@ export default defineTool({
                   reason: 'job_process_gone',
                   advice:
                     "This job's in-memory tracking is gone, and the durable task ledger CONFIRMS it actually ended " +
-                    `(state=${ledgerVerdict.state}${exitDetail}) — not a guess. Re-run capability:bash if you still ` +
-                    'need the result; check output_tail below for how far it got.',
+                    `(state=${ledgerVerdict.state}${exitDetail}) — not a guess.${strandedAdvice ?? ''} Re-run ` +
+                    'capability:bash if you still need the result; check output_tail below for how far it got.',
                   log_path: stranded.logPath,
                   total_bytes_written: stranded.sizeBytes,
                   output_tail: stranded.tail,

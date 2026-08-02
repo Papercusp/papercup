@@ -298,6 +298,116 @@ describe('psu-pty-host mode:turn CR-submit via the real discovery handshake (C2)
   );
 });
 
+// EI-19311270129974785: "a single wake delivery is re-attempted 4x and injects 3
+// duplicate agent turns". Root cause: the client's ack-wait can time out (or the
+// host's ack write-back can fail) even though the host is ALREADY unstoppably
+// committed to delivering — so a client retry with the SAME delivery id, arriving
+// AFTER the ORIGINAL attempt already completed (the turnCoalescer's fold-while-
+// pending mechanism does not help here — its waiter slot was already claimed and
+// cleared by the first delivery, so a later retry reads as a brand-new, unrelated
+// request), must be recognized and short-circuited by the host — never re-injected
+// as a second real duplicate turn.
+describe('psu-pty-host delivery-id dedup: a retry of an ALREADY-DELIVERED wake never double-injects (EI-19311270129974785)', () => {
+  it(
+    'the SAME deliveryId injected twice (second arriving after the first already landed) produces exactly ONE echoed turn',
+    async () => {
+      const ownerId = uniqueOwner('DEDUP-SEQ');
+      const sock = socketPathFor(ownerId);
+      const meta = metaPathFor(ownerId);
+      const { captured, io } = fakeIo();
+
+      let exitCode: number | null = null;
+      const done = hostThroughPty({
+        command: execPath,
+        args: ['-e', echoChildCode(3500)],
+        cwd: '/tmp',
+        env: { ...hermeticEnv(), PAPERCUSP_SID: ownerId, TERM: 'xterm-256color' },
+        ownerId,
+        io,
+        bridgeTty: false,
+        onExit: (c: number) => {
+          exitCode = c;
+        },
+      });
+
+      await waitForHost(ownerId);
+
+      // Original attempt: delivered and echoed — this is the wake the client's OWN
+      // ack-wait then (in the real bug) times out on, or whose ack write-back fails,
+      // despite it having already landed.
+      const ok1 = await injectIntoHost(sock, { mode: 'turn', data: 'dup-wake', deliveryId: 'dedup-seq-1' });
+      expect(ok1).toBe(true);
+      expect(await waitForOutput(captured, 'ECHO:dup-wake')).toBe(true);
+
+      // The client's retry: SAME deliveryId, arriving well after the original's
+      // coalescer waiter slot was already claimed+cleared (so, pre-fix, this reads
+      // as an unrelated fresh request and injects a second real turn).
+      const ok2 = await injectIntoHost(sock, { mode: 'turn', data: 'dup-wake', deliveryId: 'dedup-seq-1' });
+      expect(ok2).toBe(true); // the client still sees success — just deduped, not re-run
+
+      await sleep(500);
+      const echoCount = (captured().match(/ECHO:dup-wake/g) ?? []).length;
+      expect(echoCount).toBe(1); // NOT 2 — the retry never reached the pty a second time
+
+      await injectIntoHost(sock, { mode: 'raw', data: 'QUIT\n' });
+      const code = await done;
+      expect(code).toBe(0);
+      expect(exitCode).toBe(0);
+      expect(existsSync(sock)).toBe(false);
+      expect(existsSync(meta)).toBe(false);
+    },
+    20_000,
+  );
+
+  it(
+    'a DIFFERENT deliveryId with the SAME text is a genuinely new delivery — not deduped',
+    async () => {
+      // Guards against an over-broad fix: dedup must key off the delivery ID, never
+      // the text, or a loop legitimately firing the same reminder twice would be
+      // wrongly suppressed on its second, genuinely distinct delivery.
+      const ownerId = uniqueOwner('DEDUP-DISTINCT');
+      const sock = socketPathFor(ownerId);
+      const meta = metaPathFor(ownerId);
+      const { captured, io } = fakeIo();
+
+      let exitCode: number | null = null;
+      const done = hostThroughPty({
+        command: execPath,
+        args: ['-e', echoChildCode(3500)],
+        cwd: '/tmp',
+        env: { ...hermeticEnv(), PAPERCUSP_SID: ownerId, TERM: 'xterm-256color' },
+        ownerId,
+        io,
+        bridgeTty: false,
+        onExit: (c: number) => {
+          exitCode = c;
+        },
+      });
+
+      await waitForHost(ownerId);
+
+      const ok1 = await injectIntoHost(sock, { mode: 'turn', data: 'same-text', deliveryId: 'distinct-1' });
+      expect(ok1).toBe(true);
+      expect(await waitForOutput(captured, 'ECHO:same-text')).toBe(true);
+
+      const ok2 = await injectIntoHost(sock, { mode: 'turn', data: 'same-text', deliveryId: 'distinct-2' });
+      expect(ok2).toBe(true);
+
+      await sleep(500);
+      const echoCount = (captured().match(/ECHO:same-text/g) ?? []).length;
+      expect(echoCount).toBe(2); // a genuinely distinct delivery id is NOT deduped
+
+      await injectIntoHost(sock, { mode: 'raw', data: 'QUIT\n' });
+      const code = await done;
+      expect(code).toBe(0);
+      expect(exitCode).toBe(0);
+      expect(existsSync(sock)).toBe(false);
+      expect(existsSync(meta)).toBe(false);
+    },
+    20_000,
+  );
+});
+
 describe('psu-pty-host idle gate defers a turn while busy, submits once idle (C2 / P-013)', () => {
   it(
     'a turn injected during a keystroke burst does NOT land until typing stops + the idle window elapses',

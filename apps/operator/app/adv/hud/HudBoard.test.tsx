@@ -144,6 +144,26 @@ describe('HudBoard — sessions transcript search', () => {
     expect(onSessionQuery).toHaveBeenCalledWith('gym gate');
   });
 
+  // Owner ask 2026-08-02: it LEADS the control row and is deliberately loud.
+  // It spent its first life LAST in that row — past the plan filter, the agent
+  // toggle and every count chip, i.e. the far right of a wide board — wearing
+  // the same quiet chrome as the entity tabs' filter boxes, which is precisely
+  // what the ask reverses. So pin the POSITION and the treatment, not just the
+  // presence: a later row reshuffle that quietly drops it back to the end (or
+  // strips the modifier back to the shared base) is invisible to every other
+  // assertion in this file.
+  it('renders the search box FIRST in the control row, wearing the loud --hero treatment', () => {
+    const { container, getByTestId } = renderBoard([entry()], {
+      onSessionQuery: vi.fn(),
+      sessionQuery: '',
+    });
+    const top = container.querySelector('.hud__top');
+    expect(top).toBeTruthy();
+    const box = getByTestId('hud-session-search');
+    expect(top!.firstElementChild!.contains(box)).toBe(true);
+    expect(box.className).toContain('hud__search--hero');
+  });
+
   // The regression that matters: a search matching nothing must not render as an
   // empty roster, or you go hunting for a launch bug instead of clearing the box.
   it('an empty board under an ACTIVE search says the search matched nothing, not that no sessions run', () => {

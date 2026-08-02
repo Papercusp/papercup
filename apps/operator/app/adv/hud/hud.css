@@ -207,6 +207,67 @@
 .hud__search::placeholder { color: var(--fg-mute); }
 .hud__search:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 
+/* ── the sessions transcript search, loud on purpose ──────────────────────── */
+/* Owner ask 2026-08-02: "move the search sessions input to the left side instead
+   of the right and highlight it so that it's very hard to miss." It used to sit
+   LAST in .hud__top wearing the quiet base above — far right on a wide board and
+   visually indistinguishable from the count chips around it.
+
+   --hero is a SESSIONS-only modifier so HudEntityColumns' "Filter plans…" boxes
+   keep the quiet base: this one box searches every session's whole transcript,
+   the others filter a list already on screen, and they should not look alike.
+
+   Salience is carried in FORM as well as colour (the file-header rule) — a
+   magnifier glyph, a 2px ring and a well the row has nowhere else — so it stays
+   the obvious control in a greyscale screenshot or for a colour-blind operator.
+   The fill is a TRANSLUCENT accent, the same device as .hud__count[aria-pressed]
+   above, rather than --accent-soft: that token is a LIGHT tint (sky-200) and
+   would fight --fg on every dark theme. */
+.hud__searchwrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+  /* No grow: a box that ate the leftover width would push the count chips onto
+     their own line on a wide board. 300px is already the widest control here. */
+  flex: 0 1 300px;
+  min-width: 200px;
+}
+
+.hud__search-icon {
+  position: absolute;
+  left: 9px;
+  width: 13px;
+  height: 13px;
+  color: var(--accent);
+  /* Clicks belong to the input underneath, which spans the full wrapper. */
+  pointer-events: none;
+}
+
+/* Overrides the base's min/max-width — equal specificity, so this must stay
+   BELOW .hud__search in the file. */
+.hud__search--hero {
+  width: 100%;
+  min-width: 0;
+  max-width: none;
+  padding: 5px 10px 5px 28px;
+  font-size: 12px;
+  border: 2px solid var(--accent);
+  border-radius: 6px;
+  background: rgb(from var(--accent) r g b / 0.1);
+  box-shadow: 0 0 0 3px rgb(from var(--accent) r g b / 0.16);
+}
+
+.hud__search--hero::placeholder {
+  color: var(--accent);
+  opacity: 1;
+  font-weight: 600;
+}
+
+.hud__search--hero:focus-visible {
+  outline: 2px solid var(--accent-strong);
+  outline-offset: 2px;
+}
+
 /* The pointer left on the sessions board when unattributed asks exist — they
    render on the Work items tab now, and a count you cannot reach is worse than
    no count at all. */

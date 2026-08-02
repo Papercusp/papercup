@@ -16,6 +16,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { boundedOrgTxn } from './pg-bounded-txn';
 import { activeWorkspaceId } from './workspace-registry';
 import type { SuAgent } from './su-agents';
+import { caveat, type FieldCaveat } from './field-reliability';
 
 /**
  * Log a best-effort read/write failure UNLESS it's PG's undefined_table
@@ -32,6 +33,17 @@ function warnUnlessMissingTable(e: unknown, label: string): void {
   if ((e as { code?: string } | undefined)?.code === '42P01') return;
   console.warn(`[adv-sessions] ${label} failed:`, (e as Error).message);
 }
+
+/**
+ * Who wrote a row's `ended_at` (migration 735).
+ *
+ * - `'self'`       — the session's own exit was observed and reported. `ended_at` IS the end time.
+ * - `'reaper'`     — idle-session-reaper noticed a process that was already gone.
+ * - `'reconciler'` — reconcileDeadTerminalLaunches noticed a dead terminal launch.
+ *
+ * For everything except `'self'`, `ended_at` is the NOTICE time, not the end time.
+ */
+export type AdvSessionEndedBy = 'self' | 'reaper' | 'reconciler';
 
 export interface AdvSessionRow {
   id: number;
@@ -71,8 +83,21 @@ export interface AdvSessionRow {
    *  endedAt IS NULL`; once set the row drops out of the pending roster tier. */
   launchedAt: string | null;
   startedAt: string;
+  /**
+   * When this row was marked ended — WHICH IS NOT NECESSARILY WHEN THE SESSION ENDED.
+   *
+   * Read `endedBy` before reasoning from this. Only `endedBy === 'self'` makes this an
+   * observation; every other value (including `null`) means a sweeper stamped `now()` on
+   * noticing a process that was ALREADY gone, so the true end time is unknown and the gap
+   * is of arbitrary length. See {@link advSessionEndedAtCaveat}.
+   */
   endedAt: string | null;
   exitCode: number | null;
+  /**
+   * Who wrote {@link endedAt}. `null` = legacy row (migration 735) — provenance UNKNOWN,
+   * which is NOT the same as 'self' and must not be read as it.
+   */
+  endedBy: AdvSessionEndedBy | null;
   /** Cross-backend session-port lineage. A port target remains hidden from
    * resumable surfaces until portStatus='delivered'. */
   portId?: string | null;
@@ -172,6 +197,7 @@ export function mapAdvSessionRow(r: {
     startedAt: toIsoTimestamp(r.started_at)!,
     endedAt: toIsoTimestamp(r.ended_at),
     exitCode: r.exit_code,
+    endedBy: (r.ended_by as AdvSessionEndedBy | null) ?? null,
     portId: r.port_id ?? null,
     portSourceAdvSessionId: r.port_source_adv_session_id == null ? null : Number(r.port_source_adv_session_id),
     portStatus: r.port_status ?? null,
@@ -392,12 +418,17 @@ async function reconcileDeadTerminalLaunches(
   const dead = rows.filter((r) => isDeadTerminalLaunch(r, pidAlive));
   if (dead.length === 0) return rows;
   const endedAt = new Date().toISOString();
-  for (const r of dead) r.endedAt = endedAt;
+  for (const r of dead) {
+    r.endedAt = endedAt;
+    // Keep the in-memory correction consistent with the write below: this stamp is a
+    // NOTICE time, and a caller reading the corrected row must be able to tell.
+    r.endedBy = 'reconciler';
+  }
   try {
     const { sql } = getOrgPg();
     await sql`
       UPDATE harness_shared.adv_sessions
-         SET ended_at = now()
+         SET ended_at = now(), ended_by = 'reconciler'
        WHERE id = ANY(${dead.map((r) => r.id)}::bigint[])
          AND ended_at IS NULL
          AND session_id IS NULL
@@ -544,12 +575,65 @@ export async function setAdvSessionOmpThreadId(id: number, ompThreadId: string):
   }
 }
 
-export async function markAdvSessionEnded(id: number, exitCode: number | null): Promise<void> {
+/**
+ * Is this row's `endedAt` an OBSERVATION of the session ending, or the moment a sweeper
+ * NOTICED it was already gone?
+ *
+ * ⚠ Do NOT try to infer this from `exitCode`. The obvious shortcut — "exitCode == null
+ * means a sweeper wrote it" — is WRONG: `harness/spawn.ts` passes `r.exitCode ?? null`,
+ * so a genuine self-report also writes NULL. That inference over-fires on real
+ * self-reports, which is the same confident-wrong-answer this function exists to prevent.
+ *
+ * `endedBy == null` (a legacy row) is UNKNOWN provenance and is treated as un-attributed,
+ * NOT as 'self' — absence of attribution is not evidence of a clean exit.
+ */
+export function isObserverEndedSession(row: Pick<AdvSessionRow, 'endedAt' | 'endedBy'>): boolean {
+  return row.endedAt != null && row.endedBy !== 'self';
+}
+
+/**
+ * The field-reliability caveat for a row whose `endedAt` a sweeper wrote — or `null` when
+ * the row's end time is a real observation and the result needs no caveat.
+ *
+ * Pass the result through {@link withFieldReliability}; it returns the object unchanged
+ * when the caveat list is empty, so callers need no conditional.
+ */
+export function advSessionEndedAtCaveat(
+  row: Pick<AdvSessionRow, 'endedAt' | 'endedBy'>,
+  field = 'endedAt',
+): FieldCaveat | null {
+  if (!isObserverEndedSession(row)) return null;
+  const who =
+    row.endedBy == null
+      ? 'a row predating migration 735, so its writer is unknown'
+      : `the ${row.endedBy}, which stamps now() on NOTICING a process that had already gone`;
+  return caveat({
+    field,
+    reliability: 'inferred',
+    cannotAnswer: 'when did this session actually end?',
+    insteadRead: 'coord_presence.last_active_at for this session\'s owner — the last turn it actually took',
+    because: `written by ${who}. Measured 2026-08-02 (WI-7126): one sweep stamped 9 rows within 13ms, one of them gone since 20 July — an artificial cluster that read as a simultaneous mass kill.`,
+  });
+}
+
+/**
+ * Mark a session ended.
+ *
+ * `endedBy` is REQUIRED on purpose: a row that cannot say who ended it cannot say whether
+ * its `ended_at` is an observation, and that ambiguity is what made a sweep look like a
+ * mass kill (WI-7126). Pass `'self'` ONLY when this process actually observed the
+ * session's own exit.
+ */
+export async function markAdvSessionEnded(
+  id: number,
+  exitCode: number | null,
+  endedBy: AdvSessionEndedBy,
+): Promise<void> {
   try {
     const { sql } = getOrgPg();
     const r = await sql`
       UPDATE harness_shared.adv_sessions
-         SET ended_at = now(), exit_code = ${exitCode}
+         SET ended_at = now(), exit_code = ${exitCode}, ended_by = ${endedBy}
        WHERE id = ${id} AND ended_at IS NULL
        RETURNING id
     `;

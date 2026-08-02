@@ -417,7 +417,7 @@ export async function runIdleSessionReap(
     if (!dryRun) {
       // markAdvSessionEnded re-checks `ended_at IS NULL`, so a row that ended
       // (or was reaped by a racing sweep) between the read and here is left alone.
-      for (const s of plan.reap) await markAdvSessionEnded(s.id, null);
+      for (const s of plan.reap) await markAdvSessionEnded(s.id, null, 'reaper');
     }
     const onDesktopOwners = onDesktop?.owners ?? new Set<string>();
     const keptOnDesktop = sessions.filter(
@@ -889,7 +889,7 @@ const defaultTerminateDeps: TerminateDeps = {
       return false;
     }
   },
-  markEnded: (advSessionId) => markAdvSessionEnded(advSessionId, null),
+  markEnded: (advSessionId) => markAdvSessionEnded(advSessionId, null, 'reaper'),
   wait: (ms) => new Promise((r) => setTimeout(r, ms)),
 };
 

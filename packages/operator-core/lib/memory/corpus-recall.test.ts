@@ -201,11 +201,35 @@ describe('selectCorpusLines', () => {
     expect(dropped.filter((d) => d.reason === 'cap-exhausted')).toHaveLength(2);
   });
 
-  it('enforces its own char budget and always admits at least one line', () => {
+  it('enforces its own char budget, admitting exactly what fits in rank order', () => {
     const hits = [wi({ sourceId: 'WI-101' }), wi({ sourceId: 'WI-102' })];
-    const { lines, dropped } = selectCorpusLines({ hits, queryText: QUERY, budgetChars: 10 });
+    // Both hits render to (near-)identical line lengths (same shape, different ref) —
+    // derive the real one-line length rather than hardcoding it, so this doesn't drift
+    // if the render format changes.
+    const { lines: oneHitLines } = selectCorpusLines({ hits: [hits[0]], queryText: QUERY });
+    const oneLineLen = oneHitLines[0]!.line.length;
+    const { lines, dropped } = selectCorpusLines({
+      hits,
+      queryText: QUERY,
+      budgetChars: oneLineLen + 5, // room for exactly one line, not two
+    });
     expect(lines).toHaveLength(1);
     expect(dropped).toContainEqual({ ref: 'WI-102', reason: 'budget-exhausted' });
+  });
+
+  // WI-6870: the admission loop used to let the FIRST entry through no matter its
+  // size ("lines.length > 0" exemption) — measured live as one 4,901-char memory
+  // blowing an entire 4,000-char budget by itself, starving every other candidate.
+  // That exemption is gone: a budget too small for even one line now admits NOTHING,
+  // rather than force-admitting an oversized first entry.
+  it('admits nothing, and drops every hit as budget-exhausted, when even one line cannot fit (WI-6870 — no first-entry exemption)', () => {
+    const hits = [wi({ sourceId: 'WI-101' }), wi({ sourceId: 'WI-102' })];
+    const { lines, dropped } = selectCorpusLines({ hits, queryText: QUERY, budgetChars: 10 });
+    expect(lines).toHaveLength(0);
+    expect(dropped).toEqual([
+      { ref: 'WI-101', reason: 'budget-exhausted' },
+      { ref: 'WI-102', reason: 'budget-exhausted' },
+    ]);
   });
 
   it('prefers a hit BOTH rankers found — the one scale-free quality signal', () => {
