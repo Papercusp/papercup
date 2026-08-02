@@ -18,8 +18,11 @@ import { describe, expect, it } from 'vitest';
 // eslint-disable-next-line import/no-relative-packages
 import {
   driftFragment,
+  extractDocLiterals,
   extractNegativeLiterals,
+  judgeDocFile,
   judgeFile,
+  looksLikeEmittedOutput,
   proseShaped,
   regexSourceToLiteral,
 } from '../../../scripts/check-vacuous-negative-assertions.mjs';
@@ -202,5 +205,83 @@ describe('judgeFile — suppression', () => {
       `});`,
     ].join('\n');
     expect(judge(text, corpus)).toHaveLength(1);
+  });
+});
+
+/**
+ * Front-end 2 (EI-18773280958875269): the prompt-doc counterpart of `judgeFile` above,
+ * scanning a blueprint prompt's OWN quoted literals against the code corpus instead of
+ * a test file's negative assertions. The motivating instance is the same commit history:
+ * `release-fixer.md` telling agents to grep for a banner `checkpoint-run.ts` no longer
+ * emits.
+ */
+describe('looksLikeEmittedOutput — narrowed to the banner-marker signal', () => {
+  it('accepts a banner-marked phrase regardless of length or digits', () => {
+    expect(looksLikeEmittedOutput('⚠ quiet-cut EXCLUDED')).toBe(true);
+    expect(looksLikeEmittedOutput('⚠ PREDICTED exclusion: N commit(s) …')).toBe(true);
+    expect(looksLikeEmittedOutput('✓ done')).toBe(true);
+  });
+
+  it('rejects plain prose and CLI/URL examples with no banner marker', () => {
+    // The real false-positive class from the first pass over this repo's prompt corpus:
+    // usage-example commands, not quoted emitted output.
+    expect(looksLikeEmittedOutput('harness-features list <your-slug>')).toBe(false);
+    expect(looksLikeEmittedOutput('curl http://localhost:3070/api/harness')).toBe(false);
+    expect(looksLikeEmittedOutput('the old deflecting note')).toBe(false);
+  });
+
+  it('rejects anything too short to judge', () => {
+    expect(looksLikeEmittedOutput('⚠')).toBe(false);
+  });
+});
+
+describe('extractDocLiterals', () => {
+  it('extracts single-backtick inline-code spans with their line number', () => {
+    const text = ['line one', 'has a `quoted span` here', 'and another `one here too`'].join('\n');
+    expect(extractDocLiterals(text)).toEqual([
+      { line: 2, lit: 'quoted span' },
+      { line: 3, lit: 'one here too' },
+    ]);
+  });
+
+  it('ignores backticks inside a fenced code block', () => {
+    const text = ['before', '```', 'const x = `templated`;', '```', 'after `real span`'].join('\n');
+    expect(extractDocLiterals(text).map((d) => d.lit)).toEqual(['real span']);
+  });
+});
+
+describe('judgeDocFile — the motivating instance', () => {
+  const docJudge = (text: string, corpus: string) =>
+    judgeDocFile({ file: 'release-fixer.md', text, includes: (s: string) => corpus.includes(s) }).findings;
+
+  it('flags a banner the code no longer emits', () => {
+    const text = 'Grep the reply for an inline `⚠ quiet-cut EXCLUDED …` warning.';
+    const found = docJudge(text, 'const note = `⚠ PREDICTED exclusion: ${n} commit(s) …`;');
+    expect(found).toHaveLength(1);
+    expect(found[0]).toMatchObject({ line: 1, lit: '⚠ quiet-cut EXCLUDED …' });
+  });
+
+  it('stays silent once the prompt is re-pointed at the current wording', () => {
+    const text = 'surfaced inline as `⚠ PREDICTED exclusion:` when commits are excluded.';
+    expect(docJudge(text, 'const note = `⚠ PREDICTED exclusion: ${n} commit(s)`;')).toEqual([]);
+  });
+
+  it('trims a trailing "…" before matching — the doc-truncation false positive', () => {
+    const text = 'the note reads `⚠ PREDICTION ONLY — probably PESSIMISTIC …` in that case.';
+    const corpus = 'note = `⚠ PREDICTION ONLY — probably PESSIMISTIC: ${n} of ${m} commit(s) …`;';
+    expect(docJudge(text, corpus)).toEqual([]);
+  });
+
+  it('never flags a CLI-usage example (no banner marker)', () => {
+    const text = 'Run `harness-features list <your-slug>` to see the queue.';
+    expect(docJudge(text, 'completely unrelated code')).toEqual([]);
+  });
+
+  it('honours the pragma on the line above', () => {
+    const text = [
+      '<!-- vacuous-negative-ok: known placeholder mismatch, see EI-18773280958875269 -->',
+      'inline as `⚠ totally absent banner …`.',
+    ].join('\n');
+    expect(docJudge(text, 'unrelated corpus')).toEqual([]);
   });
 });

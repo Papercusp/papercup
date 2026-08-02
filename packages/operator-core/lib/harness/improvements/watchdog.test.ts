@@ -13,6 +13,7 @@ import {
   isEphemeralSignal,
   rollupWatchdogTicks,
   collectMigrationDriftSignals,
+  collectSchemaAheadSignals,
   routineFailureSignalsFromRows,
   loopStalledSignalsFromRows,
   staleProtectiveHoldSignalsFromCandidates,
@@ -465,6 +466,34 @@ describe('P-010 blind-source collectors (watchdog-robustness)', () => {
     expect(drift[0].severity).toBe('critical');
     expect(drift[0].body).toContain('670-add-facts-confidence.sql');
     expect(drift[0].body).not.toContain('671-add-agent-facts-confidence.sql');
+  });
+
+  it('schema-ahead-of-code: fires critical when the DB has migrations this tree does not ship, silent when in sync', async () => {
+    expect(await collectSchemaAheadSignals(async () => ({ schemaAhead: [] }))).toEqual([]);
+    const drift = await collectSchemaAheadSignals(async () => ({
+      schemaAhead: ['689-agent-facts-append-versioning.sql'],
+    }));
+    expect(drift).toHaveLength(1);
+    expect(drift[0].source).toBe('schema-ahead-of-code');
+    expect(drift[0].severity).toBe('critical');
+    expect(drift[0].body).toContain('689-agent-facts-append-versioning.sql');
+    expect(drift[0].body).toContain('EI-18787755090726525');
+    // sqlDir is optional — a check that omits it must not emit a dangling dir line.
+    expect(drift[0].body).not.toContain("This tree's sql dir:");
+  });
+
+  it("schema-ahead-of-code: names THIS tree's sql dir when the check provides one", async () => {
+    const [signal] = await collectSchemaAheadSignals(async () => ({
+      schemaAhead: ['690-foo.sql'],
+      sqlDir: '/home/dev/papercupai-workspace/papercusp/libs/papercusp/libs/db/sql',
+    }));
+    expect(signal.body).toContain(
+      "This tree's sql dir: /home/dev/papercupai-workspace/papercusp/libs/papercusp/libs/db/sql",
+    );
+  });
+
+  it('schema-ahead-of-code: a thrown check degrades to no signal (never aborts the tick)', async () => {
+    expect(await collectSchemaAheadSignals(async () => { throw new Error('pg down'); })).toEqual([]);
   });
 
   it('routine-failure: only routines with a non-empty last_error become signals (e.g. a wedged git-sync)', () => {

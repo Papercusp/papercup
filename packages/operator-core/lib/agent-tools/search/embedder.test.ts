@@ -26,6 +26,18 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 // mocks below intercept those too (same shape rerank.test.ts uses).
 vi.mock('../../credentials', () => ({ readCredentials: vi.fn() }));
 vi.mock('../../voice-prefs', () => ({ loadVoicePrefs: vi.fn() }));
+// EI-19347189538723471: `@huggingface/transformers` is a real declared+installed
+// dependency (packages/operator-core/package.json), so `localAvailable()` (the
+// resolveEmbedderWith cascade's `localInstalled` seam, memory/configure.ts)
+// genuinely resolves true in this test env — it no longer simulates "local
+// unavailable" the way the local/null-fallback tests below need. Mock the
+// actual pipeline BUILD seam instead (rejects → mirrors a real pipeline load
+// failure: sidecar down, model fetch failed, …) so those tests stay hermetic
+// regardless of what's installed on disk, rather than depending on package
+// presence like the previous (now-stale) dynamic-import assumption did.
+vi.mock('../../memory/embed-sidecar-wiring', () => ({
+  buildSidecarAwareEmbedder: vi.fn().mockRejectedValue(new Error('local pipeline unavailable (mocked)')),
+}));
 
 import { buildQueryEmbedder, withAcquireBudget, _clearQueryEmbedCacheForTests } from './embedder';
 import { readCredentials } from '../../credentials';
@@ -124,10 +136,9 @@ describe('buildQueryEmbedder — OpenAI path', () => {
 });
 
 describe('buildQueryEmbedder — local / null fallback', () => {
-  // The local branch dynamic-imports '@huggingface/transformers' via
-  // `new Function('s','return import(s)')`, which vi.mock cannot intercept (it is
-  // not a static specifier). In this test environment the package is not
-  // installed, so the import rejects → the local branch returns null. That is
+  // The local branch delegates to `buildSidecarAwareEmbedder` (memory/embed-sidecar-wiring,
+  // mocked above to always reject) — simulating a local pipeline that is selected but fails
+  // to build (sidecar down, model fetch failed, package genuinely missing, …). That is
   // exactly the (b)/(d)/(f) contract: when local is selected but unavailable,
   // buildQueryEmbedder yields null and the engine degrades to BM25-only.
 
