@@ -2551,10 +2551,21 @@ async function runRefAnnounceLeg(slug: string, workspaceId: string): Promise<voi
       // whose operator line literally ended in a bare colon, with a timeout, a
       // transient dial miss and a real git error all printing identically.
       // Lead with the discriminator the transport already knew.
+      // WI-6189: `code === -1` is an OVERLOADED sentinel (see TransportResult.code)
+      // — a git that RAN and was then killed by a signal reports `close(null)`,
+      // which `code ?? -1` folds onto the same value as a spawn that never
+      // happened. Labelling every -1 "no git process ran" produced the live
+      // self-contradiction `no git process ran: fatal: early EOF` on the tower —
+      // git's own stderr inside the clause denying git ran — and that mislabel is
+      // why a mid-stream truncation kept reading as a transport seam bug.
+      // Non-empty stderr is positive proof a process ran, so only claim otherwise
+      // when there is genuinely nothing to show.
       const reason = f.timedOut
         ? `TIMED OUT (git SIGKILLed at the fetch ceiling)`
         : f.code === -1
-          ? `no git process ran`
+          ? f.stderr.trim()
+            ? `git died without an exit status (killed by a signal, or the stream closed under it)`
+            : `no git process ran`
           : `git exited ${f.code}`;
       const detail = f.stderr.trim();
       console.warn(

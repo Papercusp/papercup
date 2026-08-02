@@ -131,7 +131,14 @@ describe('worktree-bridge-tick (P-204: batch of pending staging-advance announce
       stoppedOnFetchFailure: false,
       unprocessedFromIndex: null,
       errors: [],
+      acceptedCount: 0,
+      terminalRejections: {},
     });
+    // EI-19332963201820362: an empty batch consumed NOTHING, so it must NOT
+    // read as the accept-free fault. `consumed === 0` (results empty) is the
+    // discriminator between a healthy idle bridge and a starving one; without
+    // it, "accepted 0" alone would fire on every quiet tick.
+    expect(out.results).toHaveLength(0);
   });
 
   it('processes a batch of announcements in order, threading the watermark forward', async () => {
@@ -339,8 +346,85 @@ describe('worktree-bridge-tick (P-204: batch of pending staging-advance announce
       });
       expect(out.ran).toBe(true);
       expect(out.results[0].bridge).toEqual({ outcome: 'rejected', reason: 'non-fast-forward', preFetch: false });
+      // EI-19332963201820362: the rejection is now COUNTED, not merely skipped.
+      expect(out.acceptedCount).toBe(0);
+      expect(out.terminalRejections).toEqual({ 'non-fast-forward': 1 });
     } finally {
       warn.mockRestore();
     }
+  });
+
+  // EI-19332963201820362 — the regression guard for the 2026-08-02 freeze.
+  //
+  // For ~6h, canonical staging did not advance while the worktree accumulated
+  // 85 commits with no off-box copy, and EVERY health surface read green:
+  // last_status 'synced', last_error null, worktree_bridge.at advancing every
+  // tick. The bridge was consuming announcements and terminally rejecting all
+  // of them ('non-fast-forward', because our published namespace head trailed
+  // the accepted watermark), and a terminal rejection skipped-and-continued
+  // emitting NOTHING — no error, no counter, no log line.
+  //
+  // The defect was never in the SKIPPING (that is correct — one bad envelope
+  // must not starve the batch). It was in the SILENCE. This asserts the tick
+  // now makes "consumed N, accepted 0" observable, which is the single fact
+  // that separates a starving bridge from a healthy idle one.
+  it('EI-19332963201820362: a tick that consumes announcements and accepts NONE is observable in the outcome', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      // Three rewinds to already-superseded shas — every one terminally
+      // rejects non-fast-forward, exactly as in the incident.
+      const priorWatermark = { epochSeq: { epoch: 2, seq: 2 }, stagingSha: s3 };
+      const out = await runWorktreeBridgeTick({
+        bareRepoPath: localMirror,
+        worktreePath: wt,
+        pending: [await announce(2, 3, s1), await announce(2, 4, s2), await announce(2, 5, s1)],
+        prior: priorWatermark,
+        accept: { expectedDevice: integrator.pubkeyBase64, maxGrantedEpoch: 2 },
+        openDuplex,
+      });
+
+      // The pre-existing contract is UNCHANGED: skip-and-continue, cursor
+      // consumes the whole batch, watermark stands still. Nothing here is a
+      // new behaviour — the batch is processed exactly as before.
+      expect(out.ran).toBe(true);
+      expect(out.unprocessedFromIndex).toBe(null);
+      expect(out.results).toHaveLength(3);
+      expect(out.watermark).toEqual(priorWatermark);
+
+      // What is NEW: the tick is no longer silent about it.
+      expect(out.acceptedCount).toBe(0);
+      expect(out.terminalRejections).toEqual({ 'non-fast-forward': 3 });
+
+      // The detector's exact predicate — consumed >= 1 AND accepted 0. This is
+      // the condition that was structurally unobservable before, and the whole
+      // point of the change: `errors` stays EMPTY here (terminal rejections are
+      // deliberately not errors), so a health layer watching `errors` alone
+      // still sees nothing. The census is the only thing that can see it.
+      expect(out.results.length).toBeGreaterThan(0);
+      expect(out.errors).toEqual([]);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('EI-19332963201820362: a tick that accepts something reports a census that CLEARS the fault', async () => {
+    // The negative control. A detector that cannot go back to green is a
+    // detector that will be ignored — this pins the reset edge, which is what
+    // the caller uses to zero its consecutive accept-free streak.
+    await publishToPeer(s4, s3);
+    const out = await runWorktreeBridgeTick({
+      bareRepoPath: localMirror,
+      worktreePath: wt,
+      pending: [await announce(2, 6, s1), await announce(2, 7, s4)],
+      prior: { epochSeq: { epoch: 2, seq: 2 }, stagingSha: s3 },
+      accept: { expectedDevice: integrator.pubkeyBase64, maxGrantedEpoch: 2 },
+      openDuplex,
+    });
+    expect(out.results).toHaveLength(2);
+    expect(out.acceptedCount).toBe(1);
+    expect(out.terminalRejections).toEqual({ 'non-fast-forward': 1 });
+    // Mixed tick: something was accepted, so this is NOT the fault condition
+    // even though a terminal rejection also occurred.
+    expect(out.watermark).toEqual({ epochSeq: { epoch: 2, seq: 7 }, stagingSha: s4 });
   });
 });
