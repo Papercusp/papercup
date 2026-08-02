@@ -80,8 +80,17 @@ describe('buildPlanItemAttention', () => {
     expect(a.needsHuman).toBe(false);
   });
 
-  it('normalizes a missing harnessSlug to null', () => {
+  // `undefined`, NOT `null`. plans-api's wire `AttentionItem` declares its
+  // absent-able fields `?: T` rather than `T | null` on purpose (see the
+  // contract note directly above `interface AttentionItem` in plans-api.ts):
+  // `?: T` makes an `item.harnessSlug === null` comparison a TS2367 no-overlap
+  // error instead of something that compiles and is silently always-false.
+  // The mapper was corrected to `?? undefined` accordingly (WI-7039/D-025);
+  // this assertion was left behind on the pre-migration `?? null` shape and
+  // red-pinned the green gate. Do not "fix" it by re-adding `| null` to the
+  // wire type — that is the exact move the plans-api note forbids.
+  it('normalizes a missing harnessSlug to undefined (wire type is `?: string`, not `| null`)', () => {
     const a = buildPlanItemAttention({ planSlug: 'p', itemId: 'P-001', selected: undefined });
-    expect(a.harnessSlug).toBeNull();
+    expect(a.harnessSlug).toBeUndefined();
   });
 });

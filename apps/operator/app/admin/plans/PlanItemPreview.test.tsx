@@ -45,7 +45,11 @@ describe('buildPlanItemAttention', () => {
     const a = buildPlanItemAttention({ planSlug: 'p1', itemId: 'P-2', selected: { id: 'P-2', text: 'X', storedStatus: 'todo' } as never });
     expect(a.needsHuman).toBe(false);
     expect(a.actions.map((x) => x.id)).toEqual(['chat']);
-    expect(a.harnessSlug).toBeNull();
+    // `undefined`, NOT `null` — plans-api's wire `AttentionItem` declares
+    // absent-able fields `?: T` so `=== null` is a TS2367 error rather than
+    // silently always-false (WI-7039/D-025). Same rationale as the sibling
+    // assertion in PlanItemPreview.test.ts; don't revert to toBeNull().
+    expect(a.harnessSlug).toBeUndefined();
   });
   it('falls back to the itemId title + empty body when nothing is selected', () => {
     const a = buildPlanItemAttention({ planSlug: 'p1', itemId: 'P-3', selected: undefined });

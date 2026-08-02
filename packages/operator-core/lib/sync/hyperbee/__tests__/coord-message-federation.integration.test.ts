@@ -585,6 +585,7 @@ describe('coord_event_log federation (real PG)', () => {
         woken: 1,
         notified: ['su-watcher'],
         msgId: null,
+        waiters: 1,
       }));
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
       try {
@@ -605,6 +606,7 @@ describe('coord_event_log federation (real PG)', () => {
           woken: 0,
           notified: [],
           msgId: null,
+          waiters: 0,
         }));
         delete process.env.PAPERCUSP_FED_WAKE_MAX_PER_HOUR;
         delete process.env.PAPERCUSP_FED_WAKE_DIRECTED_RESERVE;
