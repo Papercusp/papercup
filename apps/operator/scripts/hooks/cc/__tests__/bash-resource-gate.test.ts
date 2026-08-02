@@ -816,6 +816,63 @@ describe('heavy-command admission control (WI-3821)', () => {
     // A non-numeric override forces the load-read to throw → fail-open allow.
     expectAllow(runGate(bashCmd('npm run test:affected'), { ...AGENT, PC_HEAVY_MAX_LOAD1: '100', PC_HEAVY_LOAD1_OVERRIDE: 'not-a-number' }));
   });
+
+  /**
+   * EI-19300297240416558 — every ADVERTISED remedy must survive every command
+   * SEPARATOR, not just the one whoever last touched the peel happened to test.
+   *
+   * This gate has now denied its own prescribed escape FOUR times: EI-9634 (cd /
+   * subshell), the `set -o pipefail` peel, EI-10913 (`PC_HEAVY_ADMISSION=off`),
+   * and this one. Every fix taught the peel ONE more prefix shape, so the next
+   * shape silently re-opened the hole. Here the peel accepted `cd <dir> &&` and
+   * `cd <dir>;` but NOT `cd <dir>` + NEWLINE — while heavy-DETECTION was
+   * newline-anchored the whole time. That asymmetry (detection knows a newline
+   * starts a command, the allowance does not) denied the blessed
+   * `npm run test:file` under exactly the load the wrapper exists to queue for,
+   * and the message blamed load, so the natural next move was to re-run it and
+   * be denied again — or reach for the kill-switch, which was broken the same way.
+   *
+   * Note the suite already tests newline-separated forms for the crontab,
+   * git-stash, systemctl and pkill guards; the admission gate's REMEDY path was
+   * simply never given that treatment.
+   *
+   * The cross-product is the point: adding a remedy or a separator forces a
+   * decision here instead of leaving a silent gap.
+   */
+  describe('advertised remedies survive EVERY separator (EI-19300297240416558)', () => {
+    const REMEDIES: [string, string][] = [
+      ['self-throttling npm entrypoint', 'npm run test:file -- lib/x.test.ts'],
+      ['pc-heavy.sh wrapper', 'bash scripts/pc-heavy.sh -- vitest run lib/x.test.ts'],
+      ['PC_HEAVY_BYPASS=1 prefix', 'PC_HEAVY_BYPASS=1 vitest run lib/x.test.ts'],
+      ['PC_HEAVY_ADMISSION=off kill-switch', 'PC_HEAVY_ADMISSION=off vitest run lib/x.test.ts'],
+    ];
+    // The separator between `cd <dir>` and the remedy. '\n' is the regression.
+    const SEPARATORS: [string, string][] = [
+      ['&&', ' && '],
+      [';', ' ; '],
+      ['a newline', '\n'],
+    ];
+
+    for (const [remedyLabel, remedy] of REMEDIES) {
+      for (const [sepLabel, sep] of SEPARATORS) {
+        it(`allows ${remedyLabel} after \`cd <dir>\` joined by ${sepLabel}`, () => {
+          expectAllow(runGate(bashCmd(`cd ${CANON}${sep}${remedy}`, { cwd: CANON }), { ...AGENT, ...OVER }));
+        });
+      }
+    }
+
+    // The other half of the contract. Widening the peel must NOT let a raw heavy
+    // command through in the same shape — otherwise the matrix above could be
+    // "satisfied" by quietly disabling the gate, which is the failure mode a
+    // permissive fix to a guard always risks.
+    it.each([
+      ['raw vitest', 'vitest run lib/x.test.ts'],
+      ['raw npx tsc', 'npx tsc --noEmit -p tsconfig.json'],
+      ['bare `npm test` (a workspace cwd resolves its own vitest, not the wrapper)', 'npm test'],
+    ])('still DENIES %s after `cd <dir>` + a newline', (_label, command) => {
+      expectHeavyDeny(runGate(bashCmd(`cd ${CANON}\n${command}`, { cwd: CANON }), { ...AGENT, ...OVER }));
+    });
+  });
 });
 
 describe('compound `cd <canonical> && …` coverage (WI-3853 — marker-less fleet sessions)', () => {

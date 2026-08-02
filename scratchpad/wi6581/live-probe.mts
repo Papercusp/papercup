@@ -10,18 +10,20 @@ delete (process.env as Record<string, string | undefined>).VITEST;
 
 import { mkdtempSync, rmSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const LIB = '/home/marsh-office/papercupai-workspace/papercusp/packages/operator-core/lib';
+// Derived, never hardcoded: this file sits at <repo>/scratchpad/wi6581/.
+const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
+const LIB = join(REPO, 'packages/operator-core/lib');
 
 const { rematerializeTranscript } = await import(`${LIB}/session-transcript-remat.ts`);
-const { findCodexRolloutPath, findCodexRolloutPathByUuid } = await import(
-  `${LIB}/session-transcript-resolvers.ts`
-);
+const { findCodexRolloutPath, findCodexRolloutPathByUuid, __resetTranscriptResolverCaches } =
+  await import(`${LIB}/session-transcript-resolvers.ts`);
 const { findArchivedSessionIdForAdv } = await import(`${LIB}/session-archive.ts`);
-const { getOrgPg } = await import(`${LIB}/org-pg.ts`);
+const { getOrgPg } = await import('@papercusp/db-org');
 const { codexHomeForSessionKey } = await import(
-  '/home/marsh-office/papercupai-workspace/papercusp/libs/papercusp/packages/orchestrator/src/session-launch-dirs.ts'
+  join(REPO, 'libs/papercusp/packages/orchestrator/src/session-launch-dirs.ts'),
 );
 
 const { sql } = getOrgPg();
@@ -69,6 +71,19 @@ check(
   mapped === victim.session_id,
   `findArchivedSessionIdForAdv(${victim.adv_session_id}) => ${mapped}`,
 );
+
+// ── 2b) The trap this bug turned on — checked BEFORE any restore, because the
+//        resolver memoises by uuid and a homeOverride hit would poison it ─────
+__resetTranscriptResolverCaches();
+const globalHit = await findCodexRolloutPathByUuid(victim.session_id);
+const keyHit = await findCodexRolloutPath(String(victim.adv_session_id));
+check(
+  'neither resolver DEFAULT can see the rollout — it exists only in the archive',
+  globalHit === null && keyHit === null,
+  `byUuid(global ~/.codex) => ${globalHit}; bySessionKey(natural home) => ${keyHit}` +
+    ' — so the re-resolve MUST be pointed at the root the restore wrote to',
+);
+__resetTranscriptResolverCaches();
 
 // ── 3) The full codex-session-key leg, restoring into a scratch root ─────────
 const tmpA = mkdtempSync(join(tmpdir(), 'wi6581-key-'));

@@ -93,9 +93,15 @@ export function isMachineAuthoredSender(from: string | null | undefined): boolea
  * that added the `expects` gate — the most direct evidence available that a
  * per-emitter convention rots, and the reason this is a seam rule rather than six
  * more hand-patched call sites.
+ *
+ * ⚠ `green-checkpoint` is anchored with `$` while `coord-probe-` / `release-deploy:`
+ * are open PREFIXES, and the difference is deliberate: the latter two mint ids with a
+ * variable suffix (`coord-probe-canary-a`, `release-deploy:<pid>:<uuid>`) so they must
+ * match open, whereas an unanchored `green-checkpoint` also swallowed `green-checkpoints`
+ * — caught by this module's own "NEVER stamps a human" test rather than in review.
  */
 export const MACHINE_EMITTER_STAMP_PATTERN =
-  '-(announce|integrator|reconciler|detector)$|^(green-checkpoint|coord-probe-|release-deploy:)';
+  '-(announce|integrator|reconciler|detector)$|^green-checkpoint$|^(coord-probe-|release-deploy:)';
 
 const MACHINE_EMITTER_STAMP_RE = new RegExp(MACHINE_EMITTER_STAMP_PATTERN);
 
