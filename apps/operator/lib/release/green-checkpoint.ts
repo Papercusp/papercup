@@ -5242,7 +5242,36 @@ if (require.main === module) {
     const i = process.argv.indexOf(f);
     return i >= 0 ? process.argv[i + 1] : undefined;
   };
-  const emitResult = (r: CheckpointResult): void => {
+  /**
+   * EI-19320479870270699 — the THIRD verdict event. `green: null` is the type's own
+   * name for "no verdict rendered" (up-to-date / not-fast-forward / migrations-pending /
+   * skipped-locked / …) — every one of those used to return/exit having emitted NEITHER
+   * `release:green` nor `green-checkpoint:red`, so an agent parked on `checkpoint:await`
+   * (which arms exactly those two keys) slept straight through to its multi-hour deadline
+   * with no signal at all, on the run that most needed one: an INCONCLUSIVE run means the
+   * gate is WEDGED, not merely red. Fire a dedicated `green-checkpoint:inconclusive`
+   * event (global + pipeline-scoped, matching every other verdict key's shape) so
+   * `checkpoint:await` can arm it alongside the other two and "await the decision" covers
+   * every way the decision can end. Deliberately NOT `cancelSiblingKeysFor` — an
+   * inconclusive tick says nothing about whether THIS candidate will eventually resolve
+   * green or red, so any still-pending green/red await for it must stay armed.
+   */
+  const emitInconclusiveVerdict = async (r: CheckpointResult): Promise<void> => {
+    try {
+      const pipeline = pipelineName(cfg.integrationRoot);
+      const summary = `[${pipeline}] green-checkpoint: ${r.candidate.slice(0, 8)} INCONCLUSIVE (${r.reason}) — no verdict rendered${r.summary ? `: ${r.summary}` : ''}`;
+      const payload = { sha: r.candidate, from: r.from, pipeline, reason: r.reason, summary: r.summary ?? null, runId: r.runId ?? null };
+      const { emitAwaitedEvent } = await import('@papercusp/operator-core/lib/events/await/engine');
+      await emitAwaitedEvent({ key: 'green-checkpoint:inconclusive', summary, payload, source: 'green-checkpoint' });
+      await emitAwaitedEvent({ key: `green-checkpoint:inconclusive:${pipeline}`, summary, payload, source: 'green-checkpoint' });
+    } catch (e) {
+      console.error(
+        `[green-checkpoint] green-checkpoint:inconclusive emit FAILED (awaiters will fall back to their timeout): ${e instanceof Error ? e.message : e}`,
+      );
+    }
+  };
+
+  const emitResult = async (r: CheckpointResult): Promise<void> => {
     // The pretty result goes to STDERR (human-readable); STDOUT carries ONLY the
     // single marker line. CRITICAL for cross-version compat: the routine that invokes
     // this CLI runs from the integration tree, so a DEPLOYED (older) green-checkpoint
@@ -5253,6 +5282,10 @@ if (require.main === module) {
     // parse both working.
     console.error(JSON.stringify(r, null, 2));
     console.log(`${GREEN_CHECKPOINT_RESULT_MARKER} ${JSON.stringify(r)}`);
+    // AWAITED (not fire-and-forget): every caller of emitResult exits the process
+    // immediately after calling it (releaseAndExit / process.exit) — the exact EI-10800
+    // class of bug where an un-awaited emit races process teardown and never fires.
+    if (r.green === null) await emitInconclusiveVerdict(r);
   };
 
   /**
@@ -5314,7 +5347,7 @@ if (require.main === module) {
     } catch {
       /* best-effort — keep the fallback candidate above */
     }
-    emitResult(buildCrashCheckpointResult({ candidate, error: e, runId }));
+    await emitResult(buildCrashCheckpointResult({ candidate, error: e, runId }));
   };
 
   const lock = acquireCheckpointRunLock(checkpointRunLockDir(cfg.checkpointLogDir, cfg.integrationRoot));
@@ -5325,8 +5358,8 @@ if (require.main === module) {
         .then((ok) => (ok ? revParse(cfg.integrationRoot, cfg.releaseRef) : null))
         .catch(() => null),
     ])
-      .then(([candidate, from]) => {
-        emitResult({
+      .then(async ([candidate, from]) => {
+        await emitResult({
           advanced: false,
           candidate,
           from,
@@ -5370,7 +5403,7 @@ if (require.main === module) {
             `checkpoint run likely lost its supervising parent; run-lock released and process group is being terminated.`,
           runId,
         };
-        emitResult(red);
+        await emitResult(red);
         const pipeline = pipelineName(cfg.integrationRoot);
         // WI-4957: no failing-test signature exists for a watchdog timeout (the suite never
         // finished) — carry an explicit empty array rather than omitting the field, so a
@@ -5446,7 +5479,7 @@ if (require.main === module) {
         // would kill an un-awaited write. The marker then carries `recorded` so the routine knows
         // not to record this same verdict a second time (double-counting the red streak).
         const recorded = await recordOwnVerdict(r);
-        emitResult(recorded ? { ...r, recorded: true } : r);
+        await emitResult(recorded ? { ...r, recorded: true } : r);
         releaseAndExit(0);
       })
       .catch(async (e) => {

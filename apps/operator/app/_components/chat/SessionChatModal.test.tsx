@@ -11,6 +11,8 @@
  * (parity behavior is the Queue suites' job; this file only asserts the right
  * item is selected + hosted).
  */
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import type { AttentionItem } from '@/app/admin/plans/plans-api';
@@ -617,6 +619,67 @@ describe('SessionChatModal', () => {
 
       const band = await waitFor(() => screen.getByTestId('session-chat-state-header'));
       expect(band.textContent).toContain('waiting for review');
+    });
+
+    /* [owner 2026-08-02, screenshotted] `openAwait.note` is agent-authored free
+       text with no length bound — a real one was a 400-character carry-note. The
+       chip is `white-space: nowrap`, so it grew to the width of the whole string
+       and ran off the right edge of the popup, pushing the chips after it onto a
+       second row. Both halves of the fix are pinned here: the text must be
+       CLIPPABLE, and clipping must not LOSE it. */
+    it('clips a long await note to one line and keeps the full text in the tooltip', async () => {
+      const longNote =
+        'RE-ARM #3. Shipping EI-19361771982678588. STATE 20:50Z: gate is HEALTHY again ' +
+        '(verdicts ~19min apart: 20:02Z, 20:21Z, 20:40Z) — my earlier "wedged" conclusion ' +
+        'is CORRECTED and superseded. My change is IN the judged candidates and GREEN there.';
+      seedRoster([
+        {
+          ownerId: 'su-live-1',
+          modes: [],
+          claims: [],
+          currentFiles: [],
+          openAwait: {
+            eventKey: 'some:real:gate',
+            note: longNote,
+            sinceIso: new Date().toISOString(),
+            expiresIso: null,
+          },
+        },
+      ]);
+      mockFetchOnce(200, { sessions: [{ source_kind: 'claude', session_id: 'claude-abc', last_ts: null }] });
+      render(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
+      await waitFor(() => expect(captured).not.toBeNull());
+      act(() => {
+        captured!.handlers.backfill!(JSON.stringify([{ kind: 'text', text: 'hi' }]));
+      });
+
+      const chip = await waitFor(() => screen.getByTestId('session-chat-state-await'));
+      // The variable-length text sits in its own clipping element. Without this
+      // element `text-overflow: ellipsis` is inert on an inline-flex chip, so
+      // the string would clip with no ellipsis — or not clip at all.
+      const clip = chip.querySelector('.pc-ctl-state__clip');
+      expect(clip).toBeTruthy();
+      expect(clip!.textContent).toBe(longNote);
+      // Nothing is lost to the clip: the tooltip carries the event key AND the
+      // whole note. The key comes first because that is what you search for.
+      const title = chip.getAttribute('title') ?? '';
+      expect(title).toContain('some:real:gate');
+      expect(title).toContain('CORRECTED and superseded');
+    });
+
+    it('the state chip declares a width ceiling, so no free-text chip can overflow the band', () => {
+      // Guards the CSS half. `white-space: nowrap` without a max-width is the
+      // exact combination that produced the overflow, and it is easy to
+      // reintroduce by "tidying" the base class.
+      const css = readFileSync(
+        resolve(__dirname, 'chat-controls.css'),
+        'utf8',
+      );
+      const base = css.split('}').find((b) => b.includes('.pc-ctl-state {'));
+      expect(base).toMatch(/max-width:\s*\d/);
+      const clip = css.split('}').find((b) => b.includes('.pc-ctl-state__clip'));
+      expect(clip).toMatch(/text-overflow:\s*ellipsis/);
+      expect(clip).toMatch(/overflow:\s*hidden/);
     });
 
     it('omits the band entirely when there is no matching roster row (same fallback as the identity chip)', async () => {

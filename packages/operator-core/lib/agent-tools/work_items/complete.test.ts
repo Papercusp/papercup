@@ -727,12 +727,15 @@ describe('work_items:complete (keyed-array)', () => {
         // the AUTHORITY JUDGEMENT instead. This evidence is sufficient (verifiedHow plus
         // testsRun/testResult), so it lands `committed`.
         completionAuthority: 'committed',
+        // EI-19319623239777505: `summary` now rides alongside the structured fields
+        // (previously silently dropped — see the dedicated tests below).
         completionEvidence: {
           filesChanged: ['packages/operator-core/lib/agent-tools/work_items/complete.ts'],
           testsRun: 'pnpm vitest complete.test.ts --run',
           testResult: '1/1 green',
           verifiedHow: 'unit',
           addedTests: true,
+          summary: 'shipped',
         },
       }),
     );

@@ -130,11 +130,32 @@ function workspaceFor(file) {
  * Measured 2026-08-02: this printed a green for a change that HAD added required
  * field `ServeProgress.bytesIn`, purely because git-sync had already swept it.
  */
-export function formatNoFindings(changedFileCount, base) {
-  if (changedFileCount > 0) {
-    // Naming the count is what makes a green unfalsifiable: a reader can see at a
-    // glance whether the check actually looked at anything.
-    return `✓ no required fields added to exported types (${changedFileCount} changed file(s) examined vs ${base})`;
+export function formatNoFindings(examinedFiles, base, { declared = false } = {}) {
+  const files = Array.isArray(examinedFiles) ? examinedFiles : [];
+  if (files.length > 0) {
+    // Naming the COUNT was not enough. A count is unfalsifiable by the one person who
+    // could catch the mistake — the author, who knows which file carries their change.
+    // Listing the files lets them see in one glance that theirs is not among them.
+    const lines = [
+      `✓ no required fields added to exported types (${files.length} file(s) examined vs ${base})`,
+      ...files.map((f) => `    ${f}`),
+    ];
+    if (!declared) {
+      // The failure this exists to prevent (EI-19377892307939503): the set is INFERRED
+      // from `git diff`, which on this shared tree is every agent's uncommitted edits.
+      // git-sync commits YOUR file within minutes — dropping it out of the diff — while
+      // peers' churn keeps the count non-zero, so the zero-files guard below never fires
+      // and the green is a true statement about three files you have never opened.
+      lines.push(
+        '  ⚠ That set is INFERRED from `git diff` — on this shared tree it is EVERY agent’s',
+        '    uncommitted edits, not necessarily yours. If the file carrying your change is',
+        '    not listed above, this green says NOTHING about it (git-sync commits your edit',
+        '    within minutes, which drops it out of this diff).',
+        '    Scope it to what you actually changed:',
+        '      node scripts/check-required-field-strands.mjs --files=<your,files>',
+      );
+    }
+    return lines.join('\n');
   }
   return [
     `⚠ NOT CHECKED — nothing differs from '${base}', so ZERO files were examined.`,
@@ -156,20 +177,44 @@ function main() {
   const baseIdx = argv.indexOf('--base');
   const base = baseIdx >= 0 ? argv[baseIdx + 1] : 'HEAD';
 
-  // Changed .ts/.tsx files vs the base. A file with no base version is skipped: a brand-new
-  // exported interface has no pre-existing construction sites, so it cannot strand anything.
-  const nameStatus = git(['diff', '--name-status', base, '--', '*.ts', '*.tsx'], { allowFail: true });
-  if (nameStatus === null) {
-    console.error(`check-required-field-strands: cannot diff against '${base}'`);
-    process.exit(0);
+  // `--files=a,b,c` DECLARES the set instead of inferring it. Mirrors lint:tsc, which
+  // learned the same lesson: on a tree the whole fleet edits, an inferred "changed set"
+  // is everyone's, so only a declared one carries trustworthy attribution.
+  const filesArg = argv.find((a) => a.startsWith('--files='));
+  const declaredFiles = filesArg
+    ? filesArg
+        .slice('--files='.length)
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean)
+    : null;
+
+  let candidates;
+  if (declaredFiles) {
+    candidates = declaredFiles.map((file) => ({ status: 'M', file }));
+  } else {
+    // Changed .ts/.tsx files vs the base. A file with no base version is skipped: a brand-new
+    // exported interface has no pre-existing construction sites, so it cannot strand anything.
+    const nameStatus = git(['diff', '--name-status', base, '--', '*.ts', '*.tsx'], { allowFail: true });
+    if (nameStatus === null) {
+      console.error(`check-required-field-strands: cannot diff against '${base}'`);
+      process.exit(0);
+    }
+    candidates = nameStatus
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => {
+        const [status, ...rest] = line.split('\t');
+        return { status, file: rest[rest.length - 1] };
+      });
   }
 
-  const changedFiles = nameStatus.split('\n').filter(Boolean);
-
   const findings = [];
-  for (const line of changedFiles) {
-    const [status, ...rest] = line.split('\t');
-    const file = rest[rest.length - 1];
+  // The files genuinely COMPARED — not merely listed as candidates. A candidate can be
+  // skipped (added/deleted, .d.ts, no base version, gone from the tree), and counting
+  // those as "examined" is the same overstatement this check exists to stop.
+  const examinedFiles = [];
+  for (const { status, file } of candidates) {
     if (!file || status.startsWith('A') || status.startsWith('D')) continue;
     if (file.endsWith('.d.ts')) continue;
 
@@ -179,14 +224,15 @@ function main() {
     if (!existsSync(abs)) continue;
     const afterText = readFileSync(abs, 'utf8');
 
+    examinedFiles.push(file);
     const added = diffRequiredAdditions(beforeText, afterText, file);
     if (added.length) findings.push({ file, added });
   }
 
-  if (json) console.log(JSON.stringify({ base, findings }, null, 2));
+  if (json) console.log(JSON.stringify({ base, examined: examinedFiles, findings }, null, 2));
 
   if (!findings.length) {
-    if (!json) console.log(formatNoFindings(changedFiles.length, base));
+    if (!json) console.log(formatNoFindings(examinedFiles, base, { declared: Boolean(declaredFiles) }));
     process.exit(0);
   }
 

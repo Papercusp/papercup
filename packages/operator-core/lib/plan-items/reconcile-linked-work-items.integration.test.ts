@@ -462,9 +462,13 @@ describe('reconcileLinkedWorkItemsForPlanItem — cites plan decisions in comple
         completionRef: expect.stringContaining('evidence recorded on plan decision(s) D-002'),
       }),
     );
-    // The unrelated decision (no itemRefs match) must NOT be cited.
-    const call = setWorkItemState.mock.calls.find(([id]) => id === 'WI-evidenced');
-    expect(call?.[2].completionRef).not.toContain('D-001');
+    // The unrelated decision (no itemRefs match) must NOT be cited. (The mock's
+    // declared arity is [id, state] — cast to the real 3-arg call shape to index
+    // into the options object vitest still records at runtime.)
+    const call = setWorkItemState.mock.calls.find(([id]) => id === 'WI-evidenced') as unknown as
+      | [string, string, { completionRef?: string }]
+      | undefined;
+    expect(call?.[2]?.completionRef).not.toContain('D-001');
   });
 
   it('cites off `knownDecisions` too — the periodic sweep never re-fetches the row', async () => {

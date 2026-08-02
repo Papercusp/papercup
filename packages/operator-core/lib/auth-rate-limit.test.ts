@@ -1,47 +1,54 @@
 /**
- * Integration tests for the two-bucket auth rate limit.
- * Soft-skipped when embedded-pg isn't reachable (auth.test.ts pattern).
+ * Unit-tier tests for the two-bucket auth rate limit, against a REAL but
+ * ISOLATED Postgres — a throwaway, fully-migrated database cloned per run
+ * from a cached testcontainers template (see `createOrgTestDb`,
+ * `../test/_org-test-db.ts`), dropped in `afterAll`.
+ *
+ * EI-19318128948371877 (decision B, same fix as `auth.test.ts` — WI-6877
+ * named this file as the sibling of that pattern): this file used to run its
+ * queries directly against the shared LIVE dev embedded-pg (a raw `pg.Client`
+ * probe + `delete process.env.PAPERCUSP_FORBID_REAL_PG` opt-out), hitting
+ * `harness_shared.auth_rate_limit` on the box every concurrent fleet agent
+ * shares. It now stands up its OWN throwaway database per run and drops it
+ * afterward — see `auth.test.ts` for the full rationale (this file mirrors it
+ * exactly).
  *
  * Step E (Tier-2 follow-up arc).
  */
 
-import { describe, it, expect, beforeAll, afterEach } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { randomBytes } from 'node:crypto';
+import type { OrgTestDb } from '../test/_org-test-db';
 
-let pgReachable = false;
+const h = vi.hoisted(() => ({ sql: null as any }));
+
+// Mirrors auth.test.ts / user-preferences.integration.test.ts's mock shape —
+// auth-rate-limit.ts only ever destructures `{ sql }` from getOrgPg() (grep
+// confirms 5/5 call sites), so this is a faithful stand-in.
+vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: h.sql }) }));
+
+let db: OrgTestDb | null = null;
+let dbReady = false;
 let mod: typeof import('./auth-rate-limit') | null = null;
 
 beforeAll(async () => {
-  // EI-19311807188719573 / WI-6877: the unit layer sets PAPERCUSP_FORBID_REAL_PG=1, which makes
-  // buildClient() throw on any real pool. Like the sibling this file names in its docstring
-  // (auth.test.ts), the code under test is end-to-end SQL with no separable pure path, so it
-  // takes the documented per-file opt-out from libs/test-config/src/setup-no-real-pg.ts: delete
-  // the var in our own beforeAll, which runs AFTER that module-level set and therefore wins.
-  //
-  // The pgReachable probe below CANNOT absorb this on its own: it opens a raw `pg` Client, which
-  // the rail does not guard (it guards buildClient, the shared-pool choke point). So the probe
-  // succeeds, pgReachable stays true, and the rail then throws inside auth-rate-limit.ts. A
-  // reachability probe that does not travel the same path as the code under test cannot gate it.
-  delete process.env.PAPERCUSP_FORBID_REAL_PG;
+  const { createOrgTestDb } = await import('../test/_org-test-db');
   try {
-    const { pgClientFields } = await import('./memory/mem0-connection');
-    const fields = await pgClientFields();
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { Client } = require('pg') as typeof import('pg');
-    const c = new Client(fields);
-    await c.connect();
-    await c.query("SELECT 1 FROM harness_shared.auth_rate_limit LIMIT 1");
-    await c.end();
-    pgReachable = true;
+    db = await createOrgTestDb();
   } catch {
-    pgReachable = false;
+    // Soft-skip, mirroring this file's previous "no PG reachable" contract —
+    // now "no Docker/testcontainer reachable". See auth.test.ts for detail.
+    dbReady = false;
+    return;
   }
-  if (pgReachable) {
-    mod = await import('./auth-rate-limit');
-    try { await mod.checkSoftPerIp('warmup'); } catch { /* ok */ }
-    try { await mod._clearAllForKeyPrefix('ip:warmup'); } catch { /* */ }
-  }
-});
+  h.sql = db.adminSql;
+  dbReady = true;
+  mod = await import('./auth-rate-limit');
+  try { await mod.checkSoftPerIp('warmup'); } catch { /* ok */ }
+  try { await mod._clearAllForKeyPrefix('ip:warmup'); } catch { /* */ }
+  // 180s: see auth.test.ts — a cold template build comfortably exceeds the
+  // unit layer's 60s default hookTimeout; every later run clones it near-instant.
+}, 180_000);
 
 afterEach(async () => {
   if (mod) {
@@ -50,9 +57,13 @@ afterEach(async () => {
   }
 });
 
+afterAll(async () => {
+  await db?.cleanup();
+});
+
 const itPg = (name: string, fn: () => Promise<void> | void) => {
   it(name, async () => {
-    if (!pgReachable || !mod) return;
+    if (!dbReady || !mod) return;
     await fn();
   });
 };

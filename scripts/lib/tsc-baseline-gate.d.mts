@@ -234,6 +234,20 @@ export function formatNewFileGuidance({ explicit, liveEditCount, standingCount }
     standingCount?: number;
 }): string[];
 /**
+ * The closing lines of the SCOPED (`--files`) new-file report, for the COMMITTED population.
+ *
+ * WI-7153 — says the finding is ALREADY RECORDED and that tsc-red-sweep decides ownership after
+ * `dwellSec`, instead of the old "…need an owner", which read as an instruction to file and
+ * contradicted `recordStandingReds()` a few lines later.
+ *
+ * @param {{ dwellSec?: number }} [opts] - dwell before a red counts as ownerless; defaults to
+ *   DWELL_SEC so the printed text cannot drift from the policy it describes.
+ * @returns {string[]} console lines, already indented.
+ */
+export function formatStandingRedFooter(opts?: {
+    dwellSec?: number;
+}): string[];
+/**
  * Split `newFiles` into a peer's LIVE EDITS and STANDING reds — the two populations the
  * `fail-new-file` report used to conflate (EI-19278299775574199).
  *

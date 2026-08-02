@@ -115,6 +115,22 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
     exists: true,
     payloadFiltered: true,
   },
+  {
+    // EI-19320479870270699: the THIRD terminal outcome — a run that ended WITHOUT a
+    // verdict at all (payload.reason: up-to-date / not-fast-forward / migrations-pending /
+    // skipped-locked / …, i.e. `CheckpointResult.green === null`). Before this existed, a
+    // waiter armed on ONLY `checkpoint`/`checkpoint-red` (both mutually-exclusive REAL
+    // verdicts) slept through an inconclusive run to its full timeout — the run that most
+    // needs a human/agent to look, because it means the gate is WEDGED, not merely red.
+    family: 'checkpoint-inconclusive',
+    keyTemplate: 'green-checkpoint:inconclusive:<pipeline>',
+    params: [{ name: 'pipeline', required: false, describe: "the pipeline's repo basename (e.g. 'papercusp'); omit to wake on ANY pipeline's inconclusive tick (global key)" }],
+    describe: 'The green-checkpoint run ended with NO verdict (payload.reason names why, e.g. migrations-pending/skipped-locked) — not green, not red; just try again once the cause clears.',
+    emitter: 'green-checkpoint (apps/operator/lib/release/green-checkpoint.ts)',
+    exists: true,
+    sugar: 'checkpoint:await',
+    payloadFiltered: true,
+  },
   // ── Locks / plan runs ─────────────────────────────────────────────────────
   {
     family: 'lock',

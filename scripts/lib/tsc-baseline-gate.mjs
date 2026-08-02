@@ -684,6 +684,37 @@ export function partitionNewFilesByLiveEdit(newFiles) {
 }
 
 /**
+ * Split unattributed TS1xxx-broken files (outside the caller's `--mine`/`--files` set — see
+ * `decidePerFile`'s `unattributedBrokenFiles`) into a peer's LIVE EDIT (uncommitted right now)
+ * vs a COMMITTED standing red — the parse-error analog of `partitionNewFilesByLiveEdit` above
+ * (EI-19321397364088260).
+ *
+ * Before this split, every unattributed broken file was reported with one blanket "a peer is
+ * likely mid-edit" line — true for a genuinely dirty file, but false reassurance for a file that
+ * is actually COMMITTED and will red the fleet at the next bare run: a reader could dismiss a
+ * real standing defect as transient noise. Both the bug that added the underlying scoping
+ * (EI-19321179234197157) and the near-duplicate that re-found the gap (EI-19321397364088260)
+ * asked for exactly this split.
+ *
+ * `dirtyFiles === null` covers two cases, and both correctly route every entry to `standing`:
+ * under `--mine`, `changedFiles` IS the dirty set, so anything reaching this function (outside
+ * `changedFiles`) is by construction already committed; an unreadable git state (see
+ * `gitChangedFiles`'s fail-soft) must never manufacture an exoneration either — "unknown is
+ * never an exoneration", the same rule `partitionNewFilesByLiveEdit` applies.
+ *
+ * @param {string[]} unattributedBrokenFiles
+ * @param {Set<string> | null} dirtyFiles
+ * @returns {{liveEdits: string[], standing: string[]}}
+ */
+export function partitionBrokenFilesByLiveEdit(unattributedBrokenFiles, dirtyFiles) {
+  if (!dirtyFiles) return { liveEdits: [], standing: [...unattributedBrokenFiles] };
+  const liveEdits = unattributedBrokenFiles.filter((f) => dirtyFiles.has(f));
+  const liveSet = new Set(liveEdits);
+  const standing = unattributedBrokenFiles.filter((f) => !liveSet.has(f));
+  return { liveEdits, standing };
+}
+
+/**
  * The COMPILER LINES behind a new file's `+N` — the WHAT the count alone withholds (WI-6767).
  *
  * The gate holds the full tsc output and, until now, reported only `file: 0 → 1 (+1)`. Recovering
@@ -1346,13 +1377,37 @@ export function runTscBaselineGate({
   // of the verdict switch, so it is never lost whichever branch below returns. tsc's diagnostics
   // for OTHER files can be incomplete while a file fails to parse, so this doubles as a caveat on
   // how much to trust an 'ok' verdict alongside it.
+  //
+  // EI-19321397364088260 — split into a peer's LIVE EDIT (uncommitted right now) vs a COMMITTED
+  // standing red, the same split `newFiles`/`fail-new-file` already give unattributed type-error
+  // regressions (EI-19278299775574199) and the same split BOTH bug reports for this path asked
+  // for. Before this, every unattributed broken file was reported with one blanket "a peer is
+  // likely mid-edit" line — true for a genuinely dirty file, but false reassurance for a file
+  // that is actually COMMITTED and will red the fleet at the next bare run: a reader could
+  // dismiss a real standing defect as transient noise.
+  //
+  // `dirtyFiles` is only populated under `--files` (see above) — under `--mine`, `changedFiles`
+  // IS the dirty set, so by construction anything outside it (i.e. everything reaching this
+  // branch) is already committed; no live-edit population is possible there, and `dirtyFiles`
+  // being `null` correctly routes every entry to `standing` rather than fabricating an
+  // exoneration out of an unknown (the same "unknown is never an exoneration" rule this file
+  // applies everywhere else).
   if (result.unattributedBrokenFiles && result.unattributedBrokenFiles.length > 0) {
+    const { liveEdits: brokenLiveEdits, standing: brokenStanding } = partitionBrokenFilesByLiveEdit(
+      result.unattributedBrokenFiles,
+      dirtyFiles,
+    );
     console.error(
       `   ⚠ ${result.unattributedBrokenFiles.length} file(s) fail to COMPILE (TS1xxx parse errors) but are NOT in ` +
-        `the set you named — not gating this run (a peer is likely mid-edit on this shared checkout), but tsc's ` +
-        `counts for other files may be incomplete while these stay broken:`,
+        `the set you named — not gating this run, but tsc's counts for other files may be incomplete while these ` +
+        `stay broken:`,
     );
-    for (const f of result.unattributedBrokenFiles) console.error(`     - ${f}`);
+    for (const f of brokenLiveEdits) {
+      console.error(`     - ${f}  ← uncommitted, a peer is likely mid-edit`);
+    }
+    for (const f of brokenStanding) {
+      console.error(`     - ${f}  ← COMMITTED: a standing red that WILL red the fleet at the next bare run`);
+    }
   }
 
   switch (result.verdict) {

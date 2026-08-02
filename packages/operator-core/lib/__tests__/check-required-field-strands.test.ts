@@ -138,7 +138,7 @@ describe('diffRequiredAdditions', () => {
  */
 describe('formatNoFindings — "examined nothing" must never read as "clean"', () => {
   it('does NOT claim a clean bill when zero files were examined', () => {
-    const msg = formatNoFindings(0, 'HEAD');
+    const msg = formatNoFindings([], 'HEAD');
     expect(msg).toContain('NOT CHECKED');
     expect(msg).toContain('ZERO files');
     // The specific misreading this exists to prevent.
@@ -146,21 +146,51 @@ describe('formatNoFindings — "examined nothing" must never read as "clean"', (
   });
 
   it('names git-sync as the likely cause and gives a runnable recovery', () => {
-    const msg = formatNoFindings(0, 'HEAD');
+    const msg = formatNoFindings([], 'HEAD');
     expect(msg).toContain('git-sync');
     expect(msg).toContain('--base');
   });
 
   it('passes cleanly when files WERE examined, and says how many', () => {
-    const msg = formatNoFindings(3, 'HEAD~1');
+    const msg = formatNoFindings(['a.ts', 'b.ts', 'c.ts'], 'HEAD~1');
     expect(msg).toMatch(/^✓/);
-    // Naming the count is what makes the green falsifiable at a glance.
-    expect(msg).toContain('3 changed file(s) examined');
+    expect(msg).toContain('3 file(s) examined');
     expect(msg).toContain('HEAD~1');
     expect(msg).not.toContain('NOT CHECKED');
   });
 
   it('reports the base it actually used, so a wrong --base is visible in the verdict', () => {
-    expect(formatNoFindings(2, 'abc123^')).toContain('abc123^');
+    expect(formatNoFindings(['a.ts', 'b.ts'], 'abc123^')).toContain('abc123^');
+  });
+
+  /**
+   * EI-19377892307939503. The zero-file branch above is real but UNREACHABLE on this
+   * tree: `git diff` returns every agent's uncommitted edits, so peers keep the count
+   * non-zero indefinitely while git-sync quietly drops YOUR file out of the diff within
+   * minutes. Measured live — the check reported "3 changed file(s) examined" for a run
+   * whose three files (checkpoint-run.ts, checkpoint-run.test.ts, fleet-scope-admission.
+   * test.ts) belonged to a peer, while the file carrying the required-field addition had
+   * already been committed. A count alone cannot expose that; the file list can.
+   */
+  it('NAMES the files examined, so an author sees their own file is absent', () => {
+    const msg = formatNoFindings(['peer/one.ts', 'peer/two.ts'], 'HEAD');
+    expect(msg).toContain('peer/one.ts');
+    expect(msg).toContain('peer/two.ts');
+  });
+
+  it('warns that an INFERRED set is the whole fleet’s edits, not yours', () => {
+    const msg = formatNoFindings(['peer/one.ts'], 'HEAD');
+    expect(msg).toContain('INFERRED');
+    // The actionable escape: declare the set instead of inferring it.
+    expect(msg).toContain('--files=');
+  });
+
+  it('drops that warning for a DECLARED set, whose attribution IS trustworthy', () => {
+    // A declared set is exactly what the caveat tells you to switch to, so repeating it
+    // there would train readers to ignore it.
+    const msg = formatNoFindings(['mine.ts'], 'HEAD', { declared: true });
+    expect(msg).toMatch(/^✓/);
+    expect(msg).toContain('mine.ts');
+    expect(msg).not.toContain('INFERRED');
   });
 });
