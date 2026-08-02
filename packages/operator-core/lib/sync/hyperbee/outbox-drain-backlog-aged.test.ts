@@ -247,3 +247,119 @@ describe('outbox-drain backlog-age/size detector (WI-5147 / EI-13571)', () => {
     expect(DRAIN_BACKLOG_AGE_CHECK_INTERVAL_MS).toBe(10 * 60 * 1000);
   });
 });
+
+/**
+ * WI-6997 — the durable-EI RECOVERY leg this module never had.
+ *
+ * Note what the pre-existing "recovers (clears the latch)" test above does and does
+ * NOT prove: it asserts that NO NEW escalation fires after recovery. That passed
+ * for the whole life of the bug, because clearing the in-process latch was all the
+ * code ever did. The durable EI stayed open forever and no test could see it —
+ * there was no recovery seam to observe. Measured 2026-08-02: `terminal_owner =
+ * 'system:replication-liveness'` on 33 EIs across the three kinds replication-
+ * liveness.ts owns, and on ZERO drain_* EIs, while ~102 drain_* EIs were closed by
+ * hand. These tests assert the resolve leg itself, not the absence of a re-page.
+ */
+describe('outbox-drain durable-EI auto-resolve on recovery (WI-6997)', () => {
+  it('fires a drain_backlog_aged RECOVERY on the escalated->recovered edge', async () => {
+    vi.useFakeTimers();
+    try {
+      const episodes: Array<{ detail: string; kind?: string }> = [];
+      const recoveries: Array<{ detail: string; kind?: string }> = [];
+      let breached = true;
+      const pg = fakePg(() =>
+        breached ? { undrained_count: 5000, oldest_ts: Date.now() } : { undrained_count: 1, oldest_ts: Date.now() },
+      );
+      const drain = startOutboxDrain(fakeHandle(), pg, {
+        pollMs: 1000,
+        _passTimeoutMs: 0,
+        _backlogStallMs: 0,
+        _backlogAgeStallMs: 0,
+        _backlogSizeStallThreshold: 2000,
+        _backlogAgeCheckIntervalMs: 1000,
+        _onStallEpisode: (detail, kind) => episodes.push({ detail, kind }),
+        _onStallRecovery: (detail, kind) => recoveries.push({ detail, kind }),
+      });
+
+      await vi.advanceTimersByTimeAsync(50);
+      expect(episodes.filter((e) => e.kind === 'drain_backlog_aged')).toHaveLength(1);
+      expect(recoveries).toHaveLength(0); // still breached — nothing to resolve
+
+      // The edge: backlog drops below BOTH thresholds.
+      breached = false;
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(recoveries.filter((r) => r.kind === 'drain_backlog_aged')).toHaveLength(1);
+      expect(recoveries[0]?.detail).toMatch(/recovered/i);
+
+      await drain.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('is EDGE-triggered: a healthy backlog that never escalated never files a false all-clear', async () => {
+    vi.useFakeTimers();
+    try {
+      const recoveries: Array<{ detail: string; kind?: string }> = [];
+      // Permanently healthy: 1 undrained row, well under a 2000-row threshold.
+      const pg = fakePg(() => ({ undrained_count: 1, oldest_ts: Date.now() }));
+      const drain = startOutboxDrain(fakeHandle(), pg, {
+        pollMs: 1000,
+        _passTimeoutMs: 0,
+        _backlogStallMs: 0,
+        _backlogAgeStallMs: 0,
+        _backlogSizeStallThreshold: 2000,
+        _backlogAgeCheckIntervalMs: 1000,
+        _onStallRecovery: (detail, kind) => recoveries.push({ detail, kind }),
+      });
+
+      // Many healthy probes. Each one takes the !breached branch; none may resolve.
+      // This is the guard against a PG round-trip on every 5s poll in production.
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(recoveries).toHaveLength(0);
+
+      await drain.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('re-arms: a breach -> recover -> re-breach -> recover cycle resolves BOTH times', async () => {
+    vi.useFakeTimers();
+    try {
+      const episodes: Array<{ detail: string; kind?: string }> = [];
+      const recoveries: Array<{ detail: string; kind?: string }> = [];
+      let breached = true;
+      const pg = fakePg(() =>
+        breached ? { undrained_count: 5000, oldest_ts: Date.now() } : { undrained_count: 1, oldest_ts: Date.now() },
+      );
+      const drain = startOutboxDrain(fakeHandle(), pg, {
+        pollMs: 1000,
+        _passTimeoutMs: 0,
+        _backlogStallMs: 0,
+        _backlogAgeStallMs: 0,
+        _backlogSizeStallThreshold: 2000,
+        _backlogAgeCheckIntervalMs: 1000,
+        _onStallEpisode: (detail, kind) => episodes.push({ detail, kind }),
+        _onStallRecovery: (detail, kind) => recoveries.push({ detail, kind }),
+      });
+
+      await vi.advanceTimersByTimeAsync(50);
+      breached = false;
+      await vi.advanceTimersByTimeAsync(1000);
+      breached = true;
+      await vi.advanceTimersByTimeAsync(1000);
+      breached = false;
+      await vi.advanceTimersByTimeAsync(1000);
+
+      // A second episode AND a second resolve — escalate/resolve stay paired, so a
+      // later genuine stall is never silently swallowed by a stuck latch.
+      expect(episodes.filter((e) => e.kind === 'drain_backlog_aged')).toHaveLength(2);
+      expect(recoveries.filter((r) => r.kind === 'drain_backlog_aged')).toHaveLength(2);
+
+      await drain.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

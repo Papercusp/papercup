@@ -190,13 +190,23 @@ export function loadProseCorpusFixtureMeta(
  * and a leak in one is a loud throw: it needs a deliberate decision (re-key the entry, or
  * regenerate both fixtures together), not a quiet rewrite.
  */
-export function redactProseCorpusFixture(fixture: ProseCorpusFixture): ProseCorpusFixture {
+export function redactProseCorpusFixture(
+  fixture: ProseCorpusFixture,
+  /**
+   * Resolved identity literals, defaulting to this box's. Injectable for the same reason
+   * `redactIdentityLeaks` takes them: a test is tracked source and may not spell a real box
+   * identity, so it must be able to scrub against SYNTHETIC literals.
+   */
+  literals?: [string, string][],
+): ProseCorpusFixture {
   const offendingKeys: string[] = [];
   const entries = fixture.entries.map((e) => {
-    if (redactIdentityLeaks(e.key) !== e.key) offendingKeys.push(e.key);
-    const text = redactIdentityLeaks(e.text);
+    if (redactIdentityLeaks(e.key, literals) !== e.key) offendingKeys.push(e.key);
+    const text = redactIdentityLeaks(e.text, literals);
     const description =
-      typeof e.description === 'string' ? redactIdentityLeaks(e.description) : e.description;
+      typeof e.description === 'string'
+        ? redactIdentityLeaks(e.description, literals)
+        : e.description;
     return { ...e, text, ...(description !== undefined ? { description } : {}) };
   });
 
@@ -208,7 +218,7 @@ export function redactProseCorpusFixture(fixture: ProseCorpusFixture): ProseCorp
     );
   }
 
-  return { ...fixture, note: redactIdentityLeaks(fixture.note), entries };
+  return { ...fixture, note: redactIdentityLeaks(fixture.note, literals), entries };
 }
 
 /**

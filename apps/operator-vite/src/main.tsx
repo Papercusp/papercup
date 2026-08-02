@@ -7,6 +7,7 @@ import './buffer-polyfill';
 // Inject Papercup's grid palette before any grid renders (grid-core went
 // brand-agnostic; see grid-colors.ts).
 import './grid-colors';
+import './query-health-gate';
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { RouterProvider, createRouter } from '@tanstack/react-router';

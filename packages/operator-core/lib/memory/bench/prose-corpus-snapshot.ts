@@ -13,9 +13,6 @@
  * time: the gold set's expected keys bind to a corpus VERSION, and a corpus
  * that shifts under the gold set silently invalidates every stored score.
  */
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
-
 import postgres from 'postgres';
 import { getHarnessAdminUrl } from '../../embedded-pg-discovery';
 import type { CorpusEntry } from '@papercusp/memory/bench';
@@ -29,63 +26,10 @@ import {
   type ClusterCandidate,
   type ProseCorpusFixture,
 } from './prose-corpus';
-import {
-  DEFAULT_IDENTITY_PLACEHOLDER,
-  IDENTITY_LITERAL_PLACEHOLDER,
-  scrubProseIdentity,
-  type IdentityLiteralRule,
-} from './prose-identity-scrub';
 
 /** Same 2000-char cap the live embed-backfill sweep submits (EI-12967). */
 const EMBED_CHAR_CAP = 2000;
 const cap = (s: string): string => (s.length > EMBED_CHAR_CAP ? s.slice(0, EMBED_CHAR_CAP) : s);
-
-/**
- * The identity detectors the gate lints run, imported at RUNTIME (WI-6994).
- *
- * A dynamic specifier keeps this repo-root `.mjs` out of the package's build
- * graph while still giving the scrub the detector's OWN match rule for class-3
- * literals — the same idiom `pretooluse-content-lint-identity.test.ts` uses to
- * bind a TS consumer to these detectors instead of copying their regexes.
- */
-const DETECTOR = join(
-  dirname(fileURLToPath(import.meta.url)),
-  '../../../../../scripts/lib/identity-leak-patterns.mjs',
-);
-
-interface IdentityDetector {
-  resolveIdentityLiterals(): Record<string, string>;
-  literalPattern(lit: string): RegExp;
-}
-
-/**
- * Build the class-3 rewrites for THIS box.
- *
- * Resolves nothing itself: the account/hostname/git identity comes from the
- * detector, so the scrub hunts exactly what the lint hunts. On a bare/CI box
- * this resolves to `{}` and the scrub degrades to a no-op for this class —
- * expected, not a bug (the box that matters is the one that generates a corpus).
- */
-async function buildLiteralRules(): Promise<IdentityLiteralRule[]> {
-  try {
-    const detector = (await import(DETECTOR)) as IdentityDetector;
-    return Object.entries(detector.resolveIdentityLiterals()).map(([key, lit]) => ({
-      key,
-      // The detector's pattern is single-match; a scrub must rewrite EVERY
-      // occurrence, so re-emit it with the global flag and nothing else changed.
-      rx: new RegExp(detector.literalPattern(lit).source, `${detector.literalPattern(lit).flags}g`),
-      replacement: IDENTITY_LITERAL_PLACEHOLDER[key] ?? DEFAULT_IDENTITY_PLACEHOLDER,
-    }));
-  } catch (e) {
-    // Fail LOUD: silently skipping the scrub is how the leak shipped in the first
-    // place. Home-path + owner-tag scrubbing still applies; this class does not.
-    console.error(
-      `[scrub] WARNING: could not load identity detectors at ${DETECTOR} — ` +
-        `class-3 box literals will NOT be scrubbed: ${e instanceof Error ? e.message : String(e)}`,
-    );
-    return [];
-  }
-}
 
 function argValue(flag: string): string | undefined {
   const i = process.argv.indexOf(flag);
@@ -111,21 +55,6 @@ async function main(): Promise<void> {
   const entries: CorpusEntry[] = [];
   const bySurface: Record<string, number> = {};
   const clustersBySurface: Record<string, number> = {};
-
-  // WI-6994. Every surface below is a CARRY surface, where `[owner:<Name>]` and
-  // absolute home paths are correct — and this fixture is COMMITTED to shipped
-  // source, where they are the WI-4776 leak that red-pinned the gate on
-  // 2026-08-02. Scrub applies to `text`/`description` only: the gold set binds to
-  // KEYS, so rewriting one would silently invalidate every stored score.
-  const literalRules = await buildLiteralRules();
-  console.log(
-    `[scrub] identity scrub active (home paths + owner-name tags + ` +
-      `${literalRules.length} box literal(s): ${literalRules.map((r) => r.key).join(', ') || 'none'})`,
-  );
-  // Applied AFTER `cap`, mirroring buildFixture's "scrub after sampling" rule:
-  // selection stays a pure function of the raw surface, and the scrub only
-  // rewrites the bytes that actually get committed.
-  const scrub = (s: string): string => scrubProseIdentity(s, { literalRules });
 
   const quotaFor = (s: 'doc' | 'turn' | 'plan') => {
     const q = PROSE_CORPUS_QUOTAS.find((x) => x.surface === s);
@@ -169,9 +98,9 @@ async function main(): Promise<void> {
       perCluster.set(ckey, n + 1);
       entries.push({
         key: proseCorpusKey('doc', [r.source_key, r.slug, r.anchor]),
-        text: scrub(cap(`${r.title ?? ''}\n${r.content}`)),
+        text: cap(`${r.title ?? ''}\n${r.content}`),
         kind: 'doc',
-        ...(r.title ? { description: scrub(r.title) } : {}),
+        ...(r.title ? { description: r.title } : {}),
         metadata: { surface: 'doc_sections', cluster: ckey },
       });
     }
@@ -216,7 +145,7 @@ async function main(): Promise<void> {
       for (const r of rows) {
         entries.push({
           key: proseCorpusKey('turn', [r.source_kind, r.session_id, String(r.turn_idx)]),
-          text: scrub(cap(r.text)),
+          text: cap(r.text),
           kind: 'turn',
           description: `${r.speaker} turn ${r.turn_idx}`,
           metadata: { surface: 'session_turns', cluster: ckey, speaker: r.speaker },
@@ -257,9 +186,9 @@ async function main(): Promise<void> {
       if (!chosen.has(ckey)) continue;
       entries.push({
         key: proseCorpusKey('plan', [r.workspace_id, r.harness_slug, r.plan_slug]),
-        text: scrub(cap(`${r.title ?? ''}\n${r.content}`)),
+        text: cap(`${r.title ?? ''}\n${r.content}`),
         kind: 'plan',
-        ...(r.title ? { description: scrub(r.title) } : {}),
+        ...(r.title ? { description: r.title } : {}),
         metadata: { surface: 'harness_plans', cluster: ckey },
       });
     }

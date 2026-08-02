@@ -228,7 +228,12 @@ export const GENERIC_USERS = new Set([
   //
   // Adding them is NOT an exception to make a build pass: a value the release
   // scrubber EMITS can never be a leak, by construction.
-  'builduser', 'buildhost',
+  //
+  // `macuser` / `maclogin` are the same class (REDACTION_BY_KEY's
+  // `known-sensitive:mac-vm-user` / `mac-vm-login`) and were found by the drift
+  // test added with this fix, not by hand — which is the point of pinning the
+  // agreement rather than patching the one value that happened to bite.
+  'builduser', 'buildhost', 'macuser', 'maclogin',
   // WI-4776: illustrative placeholder SEGMENTS used in docs to show the SHAPE of
   // a path (e.g. `/absolute/home/path` in a tool-arg example) — the word after
   // /home/ there is not a username at all, just prose continuing the sentence.

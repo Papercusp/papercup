@@ -446,7 +446,31 @@ function startJanitor(): void {
  * host-side (deferred mid-turn, P-006). Resolves true on a clean write, false on
  * connect error / timeout. Mirrors psu-pty-host.mjs's v1 envelope.
  */
-export function injectIntoHost(
+/**
+ * WHY a `true` happened — the distinction `injectIntoHost`'s bare boolean throws away (WI-6862).
+ *
+ * `'acked'` is the only value that means the HOST confirmed it. `'assumed-close'` is the
+ * optimistic pre-WI-5872 fallback below: the connection closed without any ack, which covers
+ * BOTH an old host that never sends one AND a host that crashed or was killed mid-delivery
+ * after accepting the connection. Both resolve `ok: true`, so a caller reading only the boolean
+ * cannot tell a confirmed delivery from a host that died on the wire — which is how a cold
+ * context-reset that never re-execed gets booked `status='delivered'` in event_wake_deliveries
+ * and then reads back as a clean success to whoever is diagnosing it.
+ */
+export type InjectConfirmation = 'acked' | 'assumed-close' | 'timeout' | 'error' | 'oversize';
+
+export interface InjectHostResult {
+  ok: boolean;
+  confirmation: InjectConfirmation;
+}
+
+/**
+ * The confirmation-carrying form of `injectIntoHost`. Identical wire behavior — same envelope,
+ * same timeouts, same optimistic close fallback — it simply reports WHICH signal produced the
+ * verdict. Prefer it wherever booking a durable delivery record; `injectIntoHost` remains the
+ * boolean-returning wrapper for the ~100 call sites that only branch on success.
+ */
+export function injectIntoHostWithConfirmation(
   sock: string,
   msg: {
     mode: 'turn' | 'raw' | 'osc' | 'compact' | 'reset' | 'recycle' | 'carry-respawn' | 'mcp-reconnect';
@@ -483,7 +507,7 @@ export function injectIntoHost(
     ownerId?: string;
   },
   timeoutMs = 2000,
-): Promise<boolean> {
+): Promise<InjectHostResult> {
   const envelope: {
     v: 1;
     mode: string;
@@ -508,9 +532,10 @@ export function injectIntoHost(
   if (msg.routineId !== undefined) envelope.routineId = msg.routineId;
   if (msg.ownerId !== undefined) envelope.ownerId = msg.ownerId;
   const payload = JSON.stringify(envelope);
-  if (Buffer.byteLength(payload, 'utf8') > MAX_CONTROL_PAYLOAD_BYTES) return Promise.resolve(false);
+  if (Buffer.byteLength(payload, 'utf8') > MAX_CONTROL_PAYLOAD_BYTES)
+    return Promise.resolve({ ok: false, confirmation: 'oversize' as const });
 
-  return new Promise((resolve) => {
+  return new Promise<InjectHostResult>((resolve) => {
     let settled = false;
     // EI-18676244363359331 / WI-5872: true delivery confirmation, when the host
     // sends one (see psu-pty-host.mjs's conn.on('end', ...) — it now writes a
@@ -520,10 +545,10 @@ export function injectIntoHost(
     // authoritative and settles this promise on its own `ok` value.
     let ackReceived = false;
     let ackBuf = '';
-    const finish = (ok: boolean) => {
+    const finish = (ok: boolean, confirmation: InjectConfirmation) => {
       if (settled) return;
       settled = true;
-      resolve(ok);
+      resolve({ ok, confirmation });
     };
     const c = net.connect(sock, () => {
       // `focus` rides the envelope only for mode:'compact' (WI-1804) — the host uses it
@@ -549,13 +574,13 @@ export function injectIntoHost(
           typeof (parsed as { ok?: unknown }).ok === 'boolean'
         ) {
           ackReceived = true;
-          finish((parsed as { ok: boolean }).ok);
+          finish((parsed as { ok: boolean }).ok, 'acked');
         }
       } catch {
         /* malformed ack line — ignore, the close/timeout fallback still applies */
       }
     });
-    c.on('error', () => finish(false));
+    c.on('error', () => finish(false, 'error'));
     c.on('close', () => {
       // No ack ever arrived — either an old host (pre-WI-5872, never sends
       // one: preserve today's optimistic behavior so this client-side change
@@ -564,7 +589,7 @@ export function injectIntoHost(
       // before writing back. Either way this is the EXACT pre-fix fallback:
       // bare close alone still resolves true. Once a real ack DID arrive,
       // `finish` already ran above and this is a no-op (the `settled` guard).
-      if (!ackReceived) finish(true);
+      if (!ackReceived) finish(true, 'assumed-close');
     });
     const t = setTimeout(() => {
       try {
@@ -572,10 +597,24 @@ export function injectIntoHost(
       } catch {
         /* ignore */
       }
-      finish(false);
+      finish(false, 'timeout');
     }, timeoutMs);
     if (typeof t.unref === 'function') t.unref();
   });
+}
+
+/**
+ * Boolean-returning wrapper over `injectIntoHostWithConfirmation` — the long-standing signature
+ * every existing caller uses. Behavior is byte-identical to before WI-6862; callers that need to
+ * know whether a `true` was ACKED by the host or merely ASSUMED from a bare socket close (see
+ * `InjectConfirmation`) should call the confirmation-carrying form directly.
+ */
+export function injectIntoHost(
+  sock: string,
+  msg: Parameters<typeof injectIntoHostWithConfirmation>[1],
+  timeoutMs = 2000,
+): Promise<boolean> {
+  return injectIntoHostWithConfirmation(sock, msg, timeoutMs).then((r) => r.ok);
 }
 
 /**

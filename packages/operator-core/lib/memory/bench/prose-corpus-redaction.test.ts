@@ -137,7 +137,7 @@ describe('redactProseCorpusFixture', () => {
       },
     ] as unknown as ProseCorpusFixture['entries']);
 
-    const out = redactProseCorpusFixture(fx);
+    const out = redactProseCorpusFixture(fx, ENTRIES);
     expect(out.entries[0].key).toBe('doc:page#anchor');
     expect(out.entries[0].text).not.toContain(NAME);
     expect(out.entries[0].description).not.toContain(ENTRIES[1][1]);
@@ -157,7 +157,7 @@ describe('redactProseCorpusFixture', () => {
       },
     ] as unknown as ProseCorpusFixture['entries']);
 
-    expect(() => redactProseCorpusFixture(fx)).toThrow(/entry KEY\(s\) carry an identity leak/);
+    expect(() => redactProseCorpusFixture(fx, ENTRIES)).toThrow(/entry KEY\(s\) carry an identity leak/);
   });
 });
 

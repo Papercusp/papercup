@@ -87,6 +87,51 @@ export type ReplayVerdict =
   /** This pair cannot be replayed at all (no `rewrite` declared). */
   | 'replay-unavailable';
 
+/**
+ * Whether substituting this pair actually COSTS LESS — the economy question,
+ * which is separate from the correctness question above (P-022, D-057).
+ *
+ * D-057 exists because a whole plan item was specified, defended, and nearly
+ * built on an economy claim that no test could have failed. Pipe-filter pushdown
+ * (`journalctl … | grep x | head -20` -> `journalctl --grep=x -n 20 …`) returns a
+ * byte-identical answer, so every replay case would have come back a clean
+ * `match` — and the rewrite would still have saved the agent NOTHING, because the
+ * agent's own `| head -20` had already bounded the output. Correctness was never
+ * the thing in doubt; value was, and nothing measured it.
+ *
+ * So this axis is deliberately NOT a refinement of {@link ReplayVerdict}. A pair
+ * can be perfectly `replay-clean` and still `inflates` — that is precisely the
+ * measured state of the read family, which costs 3.4x what the bash it replaces
+ * costs — and collapsing the two axes would let a correct-but-wasteful rewrite
+ * inherit the reassurance of the correctness verdict.
+ */
+export type SavingsVerdict =
+  /** The rewritten side returns materially fewer bytes. Substitution pays. */
+  | 'reduces'
+  /** Within the noise band — same answer, same cost. Substitution buys nothing. */
+  | 'neutral'
+  /** The rewritten side returns materially MORE bytes. Substitution costs. */
+  | 'inflates'
+  /** Nothing was measured. NOT a synonym for `neutral` — see {@link deriveSavings}. */
+  | 'unmeasured';
+
+/** What one pair's substitution actually costs, in bytes crossing into context. */
+export interface PairSavings {
+  verdict: SavingsVerdict;
+  /** Why, in one line. Always populated. */
+  reason: string;
+  /** Total RAW bytes the original bash returned, summed over measured cases. */
+  bashBytes: number;
+  /** Total RAW bytes the rewritten side returned, summed over measured cases. */
+  rewrittenBytes: number;
+  /** `rewrittenBytes - bashBytes`. Negative is a saving. */
+  deltaBytes: number;
+  /** `rewrittenBytes / bashBytes`. 1.0 is break-even; 3.4 is the read family today. */
+  ratio: number | null;
+  /** How many cases carried a measurement. Zero forces `unmeasured`. */
+  measuredCases: number;
+}
+
 /** One replayed command and what it showed. */
 export interface ReplayCase {
   /** The original corpus atom, before retargeting. */
@@ -103,6 +148,22 @@ export interface ReplayCase {
   /** The two normalized answers, capped for storage. Present when both sides ran. */
   bashAnswer?: string[];
   toolAnswer?: string[];
+  /**
+   * RAW bytes each side returned, BEFORE normalization. Present when both sides ran.
+   *
+   * Raw rather than normalized is the whole point, and it is the one place this
+   * harness deliberately measures something other than what it compares. The
+   * normalizer strips framing — headers, line-number prefixes, pagination notices —
+   * so that two answers can be compared as answers. But that framing is not free:
+   * it is transported, and it lands in the agent's context, and it is paid for.
+   * Measuring economy on the normalized text would silently exempt every tool from
+   * the cost of its own wrapper, which is exactly the cost that makes
+   * `capability:read` more expensive than the `sed` it replaces.
+   *
+   * Equivalence is measured on the answer; economy is measured on the bytes.
+   */
+  bashBytes?: number;
+  toolBytes?: number;
 }
 
 /** The replay result for one pair. */

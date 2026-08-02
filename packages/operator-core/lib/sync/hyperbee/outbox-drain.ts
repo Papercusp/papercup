@@ -1036,14 +1036,11 @@ export function startOutboxDrain(
     detail: string,
     logKeyHex: string = handle.ownLog.keyHex,
   ): void => {
-    try {
-
-      console.error(
-        `[outbox-drain] recovered (${kind}) harness=${handle.harnessSlug} ${detail}`,
-      );
-    } catch {
-      /* diagnostic-only */
-    }
+    // Seam first, exactly like `escalateStall`. NOTE: deliberately no console line
+    // here — `escalateStall` does not emit one either (the durable EI is this
+    // module's signal), and logging only the recovery half would be asymmetric.
+    // It would also make every EXISTING drain test that recovers without passing
+    // this seam fail under the repo's vitest-fail-on-console.
     if (opts._onStallRecovery) {
       opts._onStallRecovery(detail, kind);
       return;
