@@ -319,3 +319,94 @@ describe('applyResultProjection — safety contracts', () => {
     expect(reportOf(out)).toMatchObject({ linesIn: 0, linesOut: 0 });
   });
 });
+
+/**
+ * EI-19361771982678588 — a filter must be honest about what it was ALLOWED to search.
+ *
+ * This stage runs after the tool's own payload-tier bounding, and the result-door's
+ * upstream-truncation warning is only reached when the result still exceeds the door
+ * budget (result-door.ts:160). So a projection that shrinks the body under that budget
+ * suppresses the sole notice that the corpus was partial — and a zero-hit grep then
+ * reads as "no such value exists". Live cost: a `grep` over a facts:list trimmed from
+ * 40 rows to 4 reported `0 of 3 lines`; four matching rows existed.
+ */
+describe('applyResultProjection — upstream truncation is disclosed (EI-19361771982678588)', () => {
+  const truncated = (text: string, omittedCount = 69) => ({
+    content: [{ type: 'text' as const, text }],
+    _meta: { payloadProjection: { truncated: true, tier: 'trimmed', omittedCount } },
+  });
+
+  it('a ZERO-hit filter over a truncated corpus says it is NOT evidence of absence', () => {
+    const out = applyResultProjection(
+      truncated('alpha\nbeta\ngamma'),
+      spec({ pipe: [{ op: 'grep', pattern: 'p011' }] }),
+      { toolName: 'facts:list' },
+    );
+    const footer = footerOf(out);
+    // The footer is the copy the agent reads — _meta alone would not have stopped this.
+    expect(footer).toContain('NOT evidence of absence');
+    expect(footer).toContain('ALREADY TRUNCATED');
+    expect(footer).toContain('69');
+    expect(footer).toContain('tier=trimmed');
+    expect(footer).toContain("payloadTier:'full'");
+    expect(footer).toContain('facts:list');
+    expect(reportOf(out).linesOut).toBe(0);
+  });
+
+  it('a NON-empty projection over a truncated corpus still warns, but more weakly', () => {
+    const out = applyResultProjection(
+      truncated('alpha\nbeta p011\ngamma'),
+      spec({ pipe: [{ op: 'grep', pattern: 'p011' }] }),
+      { toolName: 'facts:list' },
+    );
+    const footer = footerOf(out);
+    expect(footer).toContain('RETAINED portion only');
+    expect(footer).toContain('ALREADY TRUNCATED');
+    // The strong absence claim belongs ONLY to the zero-hit case.
+    expect(footer).not.toContain('NOT evidence of absence');
+  });
+
+  it('the warning fires for ANY projection, not just grep — head hides the tail the same way', () => {
+    const out = applyResultProjection(
+      truncated('a\nb\nc\nd'),
+      spec({ pipe: [{ op: 'head', n: 1 }] }),
+      { toolName: 'work_items:list' },
+    );
+    expect(footerOf(out)).toContain('ALREADY TRUNCATED');
+  });
+
+  it('NO warning when the payload was never tier-truncated (no crying wolf)', () => {
+    const out = applyResultProjection(
+      textResult('alpha\nbeta'),
+      spec({ pipe: [{ op: 'grep', pattern: 'nope' }] }),
+      { toolName: 'facts:list' },
+    );
+    expect(footerOf(out)).not.toContain('ALREADY TRUNCATED');
+    expect(reportOf(out).notes).toEqual([]);
+  });
+
+  it('NO warning when the marker is present but truncated is falsy', () => {
+    const out = applyResultProjection(
+      {
+        content: [{ type: 'text' as const, text: 'alpha\nbeta' }],
+        _meta: { payloadProjection: { truncated: false, tier: 'full', omittedCount: 0 } },
+      },
+      spec({ pipe: [{ op: 'grep', pattern: 'nope' }] }),
+      { toolName: 'facts:list' },
+    );
+    expect(footerOf(out)).not.toContain('ALREADY TRUNCATED');
+  });
+
+  it('degrades gracefully when the marker omits its optional fields', () => {
+    const out = applyResultProjection(
+      { content: [{ type: 'text' as const, text: 'a' }], _meta: { payloadProjection: { truncated: true } } },
+      spec({ pipe: [{ op: 'grep', pattern: 'zzz' }] }),
+      {},
+    );
+    const footer = footerOf(out);
+    expect(footer).toContain('NOT evidence of absence');
+    expect(footer).toContain('tier=unknown');
+    // No toolName supplied — the advice must still be actionable, never "undefined".
+    expect(footer).not.toContain('undefined');
+  });
+});

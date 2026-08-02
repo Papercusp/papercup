@@ -156,11 +156,17 @@ describe('pot:survey tool — checkClaimOrder (EI-18953436700237995)', () => {
       frontierBlocked: 0,
     });
     h.readIssueClaimability.mockRejectedValue(new Error('statement timeout'));
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
     const out = body(await tool.handler({ harness: 'papercusp', checkClaimOrder: true } as never, ctx));
 
     expect(out.ok).toBe(true);
     expect(out.claimOrderCheck).toBeUndefined();
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('[pot-survey] checkClaimOrder comparison failed'),
+      expect.anything(),
+    );
+    warnSpy.mockRestore();
   });
 
   it('requested but the served claim order is empty ⇒ field absent (nothing to compare against)', async () => {

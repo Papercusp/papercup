@@ -371,6 +371,46 @@ export function applyResultProjection<T extends ProjectableResult>(
       );
     }
 
+    // EI-19361771982678588: this stage runs AFTER the tool's own payload-tier
+    // bounding, so `original` may already be a PARTIAL corpus. The result-door
+    // does carry an upstream-truncation warning — but only on the path where it
+    // ALSO spills, because it returns early when the result already fits the
+    // door budget (result-door.ts:160). A projection that shrinks the body under
+    // that budget therefore SUPPRESSES the only notice saying the corpus was
+    // incomplete, and this footer replaces it with a confident "N of M lines".
+    //
+    // The failure that motivated this: a `grep` over a 40-row facts:list that
+    // had been tier-trimmed to 4 rows reported `0 of 3 lines` with no caveat,
+    // which reads as "no such fact exists". Four matching rows existed. That is
+    // the D-042 misattribution this file already guards against, reached from
+    // the opposite direction — not "the tool returned everything", but "the
+    // corpus I searched was everything". A filter is only honest about a MISS if
+    // it is honest about what it was allowed to search.
+    const upstream = (
+      result._meta as
+        | { payloadProjection?: { truncated?: boolean; tier?: string; omittedCount?: number } }
+        | undefined
+    )?.payloadProjection;
+    if (upstream?.truncated) {
+      const omitted = upstream.omittedCount ?? 0;
+      const scope =
+        `payload tier=${String(upstream.tier ?? 'unknown')}` +
+        (omitted > 0 ? `, ${omitted.toLocaleString()} field(s)/row(s) omitted upstream` : '');
+      const reCall = opts.toolName
+        ? `re-call ${opts.toolName} with payloadTier:'full' (or narrower args)`
+        : `re-call the tool with payloadTier:'full' (or narrower args)`;
+      notes.push(
+        linesOut === 0
+          ? `ZERO lines survived this projection, and the corpus it searched was ALREADY TRUNCATED ` +
+              `before this stage ran (${scope}) — that omitted content was never serialized, so it was ` +
+              `never searched. This empty result is NOT evidence of absence: ${reCall} before ` +
+              `concluding the value does not exist.`
+          : `the corpus this projection filtered was ALREADY TRUNCATED before this stage ran ` +
+              `(${scope}) — matches shown come from the RETAINED portion only, and absence from them ` +
+              `is not evidence of absence. For an exhaustive answer, ${reCall}.`,
+      );
+    }
+
     const report: ProjectionReport = {
       applied: true,
       spec,
