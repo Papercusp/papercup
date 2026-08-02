@@ -396,7 +396,16 @@ export async function clearVanishedUnaccounted(
 ): Promise<number> {
   const sql = sqlOf(inject);
   const ws = opts.workspaceId ?? activeWorkspaceId();
-  const keep = stillPresent.length ? (stillPresent as string[]) : ['\x00none'];
+  // EI-18824358724907941: `stillPresent` is empty on every tick with zero current
+  // unaccounted residue — the common/healthy case, not an edge case. This used to plug an
+  // actual NUL byte ('\x00none') in as a sentinel to keep `<> ALL(...)` from being handed an
+  // empty array; postgres rejects any string parameter containing 0x00 outright ("invalid
+  // byte sequence for encoding \"UTF8\": 0x00"), so it failed EVERY such tick. `x <> ALL(arr)`
+  // is vacuously TRUE for an empty `arr` (there is no element x fails to differ from) — i.e.
+  // exactly the semantics we want ("nothing is present, so close everything previously
+  // unaccounted") — so the clause is simply omitted when there's nothing to keep, matching
+  // the same conditional-clause pattern already used a few lines up in this file (filter.states
+  // / filter.classes) rather than routing an empty array through `sql.array`.
   const rows = await sql`
     UPDATE harness_shared.task_ledger
        SET state = 'stranded',
@@ -406,7 +415,7 @@ export async function clearVanishedUnaccounted(
      WHERE workspace_id = ${ws}
        AND state = 'unaccounted'
        AND ended_at IS NULL
-       AND task_id <> ALL(${sql.array(keep)})
+       ${stillPresent.length ? sql`AND task_id <> ALL(${sql.array(stillPresent as string[])})` : sql``}
     RETURNING task_id
   `;
   return rows.length;

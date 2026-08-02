@@ -133,6 +133,42 @@ describe('completion-audit predicates (EI-10867)', () => {
       const aliased = frag(auditPredicateSqlFor(recordingSql(), 'no-completion-record-suspicious', 'ei'));
       expect(aliased.text.replace(/ei\./g, '')).toBe(plain.text);
     });
+
+    // EI-18821460229478708: a federated (origin='remote') row's bare shape is not
+    // evidence about THIS install's write paths — it reflects federation transport, or
+    // the ORIGIN pot's own completion integrity. Scoping to origin='local' is what makes
+    // the bucket's own "structurally impossible for a gated caller" claim true again;
+    // measured live, 82% of the pre-fix bucket was exactly this false signal.
+    it("is scoped to origin = 'local' — a federated row never counts as suspicious here", () => {
+      const f = frag(auditPredicateSql(recordingSql(), 'no-completion-record-suspicious'));
+      expect(f.text).toContain("origin = 'local'");
+    });
+  });
+
+  // EI-18821460229478708: the non-actionable federated sibling of `-suspicious` — same
+  // bare shape, but origin='remote'. Keeps the count VISIBLE (never silently dropped)
+  // while making it un-actionable against this install.
+  describe("'no-completion-record-federated' (EI-18821460229478708)", () => {
+    it("requires the SAME bare shape as -suspicious, but origin = 'remote'", () => {
+      const f = frag(auditPredicateSql(recordingSql(), 'no-completion-record-federated'));
+      expect(f.text).toContain('terminal_completion_ref IS NULL');
+      expect(f.text).toContain('authority IS NULL');
+      expect(f.text).toContain("origin = 'remote'");
+      expect(f.params).toEqual([KNOWN_SYSTEM_COMPLETION_BYPASS_IDENTITIES]);
+    });
+
+    it('is disjoint from no-completion-record-suspicious (local vs remote are mutually exclusive)', () => {
+      const suspicious = frag(auditPredicateSql(recordingSql(), 'no-completion-record-suspicious'));
+      const federated = frag(auditPredicateSql(recordingSql(), 'no-completion-record-federated'));
+      expect(suspicious.text).toContain("origin = 'local'");
+      expect(federated.text).toContain("origin = 'remote'");
+    });
+
+    it('the aliased form matches its unaliased twin', () => {
+      const plain = frag(auditPredicateSql(recordingSql(), 'no-completion-record-federated'));
+      const aliased = frag(auditPredicateSqlFor(recordingSql(), 'no-completion-record-federated', 'ei'));
+      expect(aliased.text.replace(/ei\./g, '')).toBe(plain.text);
+    });
   });
 
   /**

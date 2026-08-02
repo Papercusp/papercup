@@ -161,6 +161,7 @@ type OrgSql = ReturnType<typeof getOrgPg>['sql'];
 export const COMPLETION_AUDITS = [
   'no-completion-record',
   'no-completion-record-suspicious',
+  'no-completion-record-federated',
   'geometry-unverified',
   'intermittent-underevidenced',
   'reconciler-sourced',
@@ -356,7 +357,13 @@ export const COMPLETION_AUTHORITY_FILTERS = [
 export function auditPredicateSql(sql: OrgSql, audit: CompletionAudit) {
   if (audit === 'no-completion-record') return sql`terminal_completion_ref IS NULL AND authority IS NULL`;
   if (audit === 'no-completion-record-suspicious') {
-    return sql`terminal_completion_ref IS NULL AND authority IS NULL AND (terminal_owner IS NULL OR NOT (terminal_owner = ANY(${KNOWN_SYSTEM_COMPLETION_BYPASS_IDENTITIES as string[]})))`;
+    // EI-18821460229478708: origin='local' ONLY — see this bucket's module-header doc for
+    // why a federated row's bare shape is never evidence about THIS install's write paths.
+    return sql`terminal_completion_ref IS NULL AND authority IS NULL AND origin = 'local' AND (terminal_owner IS NULL OR NOT (terminal_owner = ANY(${KNOWN_SYSTEM_COMPLETION_BYPASS_IDENTITIES as string[]})))`;
+  }
+  if (audit === 'no-completion-record-federated') {
+    // EI-18821460229478708: the non-actionable federated sibling — same shape, origin='remote'.
+    return sql`terminal_completion_ref IS NULL AND authority IS NULL AND origin = 'remote' AND (terminal_owner IS NULL OR NOT (terminal_owner = ANY(${KNOWN_SYSTEM_COMPLETION_BYPASS_IDENTITIES as string[]})))`;
   }
   if (audit === 'geometry-unverified') {
     return geometryUnverifiedWhereSql(
@@ -386,9 +393,14 @@ export function auditPredicateSqlFor(sql: OrgSql, audit: CompletionAudit, alias:
   const ref = sql.unsafe(`${alias}.terminal_completion_ref`);
   const owner = sql.unsafe(`${alias}.terminal_owner`);
   const authority = sql.unsafe(`${alias}.authority`);
+  const origin = sql.unsafe(`${alias}.origin`);
   if (audit === 'no-completion-record') return sql`${ref} IS NULL AND ${authority} IS NULL`;
   if (audit === 'no-completion-record-suspicious') {
-    return sql`${ref} IS NULL AND ${authority} IS NULL AND (${owner} IS NULL OR NOT (${owner} = ANY(${KNOWN_SYSTEM_COMPLETION_BYPASS_IDENTITIES as string[]})))`;
+    // EI-18821460229478708: origin='local' ONLY — see auditPredicateSql's sibling branch.
+    return sql`${ref} IS NULL AND ${authority} IS NULL AND ${origin} = 'local' AND (${owner} IS NULL OR NOT (${owner} = ANY(${KNOWN_SYSTEM_COMPLETION_BYPASS_IDENTITIES as string[]})))`;
+  }
+  if (audit === 'no-completion-record-federated') {
+    return sql`${ref} IS NULL AND ${authority} IS NULL AND ${origin} = 'remote' AND (${owner} IS NULL OR NOT (${owner} = ANY(${KNOWN_SYSTEM_COMPLETION_BYPASS_IDENTITIES as string[]})))`;
   }
   if (audit === 'geometry-unverified') {
     return geometryUnverifiedWhereSql(
