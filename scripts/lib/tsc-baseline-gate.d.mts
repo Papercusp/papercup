@@ -173,10 +173,11 @@ export function effectiveBaselineByFile({ baselineByFile, currentByFile, foreign
  *   changedFiles?: Set<string> | null,
  *   typeReferencedFiles?: Set<string> | null,
  *   dirtyFiles?: Set<string> | null,
+ *   attributionDeclared?: boolean,
  * }} args
  * @returns {PerFileGateResult}
  */
-export function decidePerFile({ currentByFile, baselineByFile, brokenFiles, updateFlag, changedFiles, typeReferencedFiles, dirtyFiles, }: {
+export function decidePerFile({ currentByFile, baselineByFile, brokenFiles, updateFlag, changedFiles, typeReferencedFiles, dirtyFiles, attributionDeclared, }: {
     currentByFile: Record<string, number>;
     baselineByFile: Record<string, number>;
     brokenFiles: string[];
@@ -184,6 +185,7 @@ export function decidePerFile({ currentByFile, baselineByFile, brokenFiles, upda
     changedFiles?: Set<string> | null;
     typeReferencedFiles?: Set<string> | null;
     dirtyFiles?: Set<string> | null;
+    attributionDeclared?: boolean;
 }): PerFileGateResult;
 /**
  * The headline for an ATTRIBUTED failure, worded per how the changed-set was derived.

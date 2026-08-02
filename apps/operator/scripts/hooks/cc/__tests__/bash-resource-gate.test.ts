@@ -179,6 +179,49 @@ function expectGitDeny(out: { stdout: string; stderr?: string; status: number | 
   expect(decision.hookSpecificOutput.permissionDecisionReason).toContain('shared-tree guard');
 }
 
+describe('the fail-open shape is self-diagnosing, not a bare SyntaxError (EI-18829641916212203)', () => {
+  it('names stderr and both credential files when the hook exits 0 with empty stdout', () => {
+    let err: Error | null = null;
+    try {
+      parseDecision({ stdout: '   ', stderr: 'hook error: token unreadable', status: 0 });
+    } catch (e) {
+      err = e as Error;
+    }
+    expect(err).toBeTruthy();
+    const msg = err!.message;
+    // The regression this guards: the old bare JSON.parse produced
+    // "SyntaxError: Unexpected end of JSON input" — which names neither the cause
+    // nor where to look, and lands on deny-expecting tests where it is
+    // indistinguishable from a real regression in a SAFETY rail.
+    expect(msg).not.toMatch(/Unexpected end of JSON input/);
+    expect(msg).toContain('FAIL-OPENED');
+    expect(msg).toContain('EI-18829641916212203');
+    expect(msg).toContain('hook error: token unreadable'); // stderr surfaced
+    expect(msg).toContain('superuser-token'); // both credential files reported
+    expect(msg).toContain('su-agent-id');
+    expect(msg).toContain(fakeHome);
+  });
+
+  it('leaves a real decision payload untouched', () => {
+    const decision = parseDecision({
+      stdout: JSON.stringify({
+        hookSpecificOutput: { permissionDecision: 'deny', permissionDecisionReason: 'nope' },
+      }),
+      status: 0,
+    });
+    expect(decision.hookSpecificOutput.permissionDecision).toBe('deny');
+    expect(decision.hookSpecificOutput.permissionDecisionReason).toBe('nope');
+  });
+
+  it('ensureGateCredentials restores a credential file that went missing mid-run', () => {
+    const { token } = credPaths();
+    rmSync(token, { force: true });
+    expect(existsSync(token)).toBe(false);
+    ensureGateCredentials();
+    expect(statSync(token).size).toBeGreaterThan(0);
+  });
+});
+
 const AGENT = { PAPERCUSP_AGENT_SESSION: '1' };
 // A fleet-member session that never got PAPERCUSP_AGENT_SESSION (EI-7872-class
 // gap) but does carry the fleet slug the server stamps independently.
