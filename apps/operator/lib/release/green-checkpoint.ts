@@ -357,6 +357,30 @@ export function pipelineName(integrationRoot: string): string {
   return (base.replace(/[^a-zA-Z0-9_-]/g, '-') || 'default').slice(0, 64);
 }
 
+/**
+ * EI-18850448565330905 — build the crash verdict the CLI entrypoint emits when
+ * `runGreenCheckpoint` REJECTS instead of resolving a normal CheckpointResult (a non-test
+ * leg, or anything else, throwing rather than reporting through the usual
+ * allowNonZero/haltedBy path). Pulled out as a pure function (candidate resolution is the
+ * caller's job — it needs `revParse`, which touches the filesystem) so the SHAPE of the
+ * crash verdict is unit-testable without exercising the `require.main === module` CLI block.
+ * See CheckpointResult.crashed's doc comment for why this exists.
+ */
+export function buildCrashCheckpointResult(opts: { candidate: string; error: unknown; runId: string }): CheckpointResult {
+  const { candidate, error, runId } = opts;
+  const message = error instanceof Error ? (error.stack ?? error.message) : String(error);
+  return {
+    advanced: false,
+    candidate,
+    from: null,
+    green: false,
+    reason: 'not-green',
+    crashed: true,
+    runId,
+    summary: `green-checkpoint crashed before producing a normal verdict: ${message}`,
+  };
+}
+
 function defaultPidAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
@@ -4946,17 +4970,7 @@ if (require.main === module) {
     } catch {
       /* best-effort — keep the fallback candidate above */
     }
-    const message = e instanceof Error ? (e.stack ?? e.message) : String(e);
-    emitResult({
-      advanced: false,
-      candidate,
-      from: null,
-      green: false,
-      reason: 'not-green',
-      crashed: true,
-      runId,
-      summary: `green-checkpoint crashed before producing a normal verdict: ${message}`,
-    });
+    emitResult(buildCrashCheckpointResult({ candidate, error: e, runId }));
   };
 
   const lock = acquireCheckpointRunLock(checkpointRunLockDir(cfg.checkpointLogDir, cfg.integrationRoot));

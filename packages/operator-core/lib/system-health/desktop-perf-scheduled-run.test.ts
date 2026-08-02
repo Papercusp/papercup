@@ -69,6 +69,13 @@ describe('runDesktopPerfScheduledRun', () => {
   it('resolves ran:false with a reason on a spawn error (never throws)', async () => {
     const { io: fakeIo, child } = io();
     const p = runDesktopPerfScheduledRun(fakeIo);
+    // `runDesktopPerfScheduledRun` awaits `io.readEnabled()` before it calls
+    // `io.spawnFn` and wires up `child.on('error', ...)` — even a synchronously
+    // resolved promise still defers that wiring by one microtask tick. Emitting
+    // 'error' before that tick finds NO listener attached, and Node's default
+    // behaviour for an unheard 'error' event is to throw. Flush the microtask
+    // queue first so the handler is attached before we emit.
+    await Promise.resolve();
     child.emit('error', new Error('ENOENT: npm not found'));
     const r = await p;
     expect(r.ran).toBe(false);
@@ -78,6 +85,11 @@ describe('runDesktopPerfScheduledRun', () => {
 
   it('kills the child and resolves timedOut:true after the bound (fake timers)', async () => {
     vi.useFakeTimers();
+    // Expected: the timeout path deliberately logs a warning (with a log tail)
+    // when it kills a hung child — that is the point of the log, not a defect.
+    // vitest-fail-on-console treats any unmocked console.warn as a test failure,
+    // so assert on it explicitly instead of leaving it unmocked.
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
       const { io: fakeIo, child } = io();
       const kill = vi.fn();
@@ -88,8 +100,10 @@ describe('runDesktopPerfScheduledRun', () => {
       expect(r.ran).toBe(true);
       expect(r.timedOut).toBe(true);
       expect(kill).toHaveBeenCalledWith('SIGKILL');
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('timed out after'));
     } finally {
       vi.useRealTimers();
+      warnSpy.mockRestore();
     }
   });
 });

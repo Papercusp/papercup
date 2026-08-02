@@ -26,6 +26,7 @@ import {
   citedImagePaths,
   citesAssertionBearingRun,
   citesScreenshotArtifact,
+  citesWebProbeEvidence,
   completionAuthorityPredicateSql,
   COMPLETION_AUDITS,
   COMPLETION_AUTHORITY_FILTERS,
@@ -597,6 +598,48 @@ describe('verifyLiveDroveUiArtifacts (EI-18797014705631713)', () => {
       expect(verdict.reason).not.toContain('looked under');
     });
   });
+
+  // EI-18855312333744373 — the artifact extractor treated URL PATHS from an HTTP probe
+  // transcript as local filesystem citations, so any web-deploy `live-drove-ui`
+  // verification was rejected as fabricated.
+  describe('accepts a deployed-URL + status-code pair as evidence, not a filesystem citation (EI-18855312333744373)', () => {
+    it('ACCEPTS the exact repro: a URL and a bare path, both paired with an HTTP status', async () => {
+      const verdict = await verifyLiveDroveUiArtifacts({
+        verifiedHow: 'live-drove-ui',
+        testResult: 'https://example.com/about -> 200; /me.jpg -> 200',
+      });
+      expect(verdict.ok).toBe(true);
+      expect(verdict.basis).toBe('url');
+      expect(verdict.artifacts).toHaveLength(0);
+    });
+
+    it('ACCEPTS the real WI-6553 shape: several probed paths, none of them on disk', async () => {
+      const verdict = await verifyLiveDroveUiArtifacts({
+        verifiedHow: 'live-drove-ui',
+        testResult:
+          'deployed and verified live:\n' +
+          'https://papercusp.com/about -> 200 (5,214 B)\n' +
+          '/me.jpg -> 200 (121,060 B)\n' +
+          '/shots/shot-oddsmith.png -> 200 (89,004 B)',
+      });
+      expect(verdict.ok).toBe(true);
+      expect(verdict.basis).toBe('url');
+    });
+
+    it('is NOT satisfied by a bare status-shaped number with no URL anywhere in the evidence', async () => {
+      // Ambiguous on purpose: nothing here proves an HTTP request happened at all.
+      expect(citesWebProbeEvidence({ testResult: '/tmp/notes.png -> 200 lines changed' })).toBe(false);
+    });
+
+    it('still REJECTS a genuinely missing LOCAL artifact cited on its own line, unrelated to any URL', async () => {
+      const verdict = await verifyLiveDroveUiArtifacts({
+        verifiedHow: 'live-drove-ui',
+        testResult: `verified live, see ${dir}/never-taken.png`,
+      });
+      expect(verdict.ok).toBe(false);
+      expect(verdict.basis).toBe('image');
+    });
+  });
 });
 
 describe('citedImagePaths / citesAssertionBearingRun (EI-18797014705631713)', () => {
@@ -615,6 +658,28 @@ describe('citedImagePaths / citesAssertionBearingRun (EI-18797014705631713)', ()
     // These two exit 0 whether or not anything painted, which is the entire bug.
     expect(citesAssertionBearingRun({ testsRun: 'tauri-agent-tools screenshot --output /tmp/a.png' })).toBe(false);
     expect(citesAssertionBearingRun({ testsRun: 'tauri-agent-tools capture --out /tmp/a.png' })).toBe(false);
+  });
+
+  // EI-18855312333744373
+  it('excludes an image-extensioned path immediately followed by an HTTP status — a probe result, not a file', () => {
+    expect(
+      citedImagePaths({ testResult: 'https://example.com/about -> 200; /me.jpg -> 200 (121,060 B)' }),
+    ).toEqual([]);
+  });
+
+  it('still keeps a genuine local citation that merely SHARES a line with an unrelated URL', () => {
+    // The narrow-adjacency rule matters here: a whole-line "mentions a URL somewhere"
+    // heuristic would wrongly launder /tmp/real.png too.
+    expect(
+      citedImagePaths({
+        testsRun: 'reference shot at https://example.com/expected.png and /tmp/real.png',
+      }),
+    ).toEqual(['/tmp/real.png']);
+  });
+
+  it('citesWebProbeEvidence requires an actual URL scheme, not just a status-shaped number', () => {
+    expect(citesWebProbeEvidence({ testResult: 'https://papercusp.com/about -> 200' })).toBe(true);
+    expect(citesWebProbeEvidence({ testResult: '/me.jpg -> 200, no scheme mentioned anywhere' })).toBe(false);
   });
 });
 
