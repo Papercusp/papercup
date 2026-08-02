@@ -36,6 +36,10 @@ import { resolve } from 'node:path';
  * @property {number} baseline
  * @property {number} current
  * @property {number} delta - `current - baseline`; positive is a regression.
+ * @property {boolean} [dirty] - Set only on `newFiles`, and only when the dirty set could be read:
+ *   the file is uncommitted in the shared working tree, i.e. a peer is very likely mid-edit
+ *   (EI-19278299775574199). `undefined` means UNKNOWN, never "clean" — see
+ *   `partitionNewFilesByLiveEdit`.
  */
 
 /**
@@ -384,6 +388,7 @@ export function effectiveBaselineByFile({ baselineByFile, currentByFile, foreign
  *   updateFlag?: boolean,
  *   changedFiles?: Set<string> | null,
  *   typeReferencedFiles?: Set<string> | null,
+ *   dirtyFiles?: Set<string> | null,
  * }} args
  * @returns {PerFileGateResult}
  */
@@ -394,6 +399,7 @@ export function decidePerFile({
   updateFlag = false,
   changedFiles = null,
   typeReferencedFiles = null,
+  dirtyFiles = null,
 }) {
   const total = sumValues(currentByFile);
   const baselineTotal = sumValues(baselineByFile);
@@ -448,7 +454,16 @@ export function decidePerFile({
       // '(unattributed)' (errors tsc did not pin to a file) is deliberately LEFT in peerDrift: it
       // is not a new file, and it is genuinely unattributable, so gating on it would red callers
       // for something they cannot act on.
-      const newFiles = unattributed.filter((r) => r.file !== '(unattributed)' && !(r.file in baselineByFile));
+      // EI-19278299775574199 — ANNOTATE (never re-classify) each new file with whether it is
+      // uncommitted in the shared tree right now. Under `--files` the caller enumerated their own
+      // files, so a new file outside that set which is ALSO dirty is a peer's live buffer: transient,
+      // not yet pushed, and not yet a fleet-gate red. It still fails (the verdict below is
+      // untouched) — but the reporter must not invite the caller to edit a file another agent is
+      // actively writing. `dirty` is left UNDEFINED when the dirty set is unavailable, so an
+      // unreadable git state can never be mistaken for "clean" (see partitionNewFilesByLiveEdit).
+      const newFiles = unattributed
+        .filter((r) => r.file !== '(unattributed)' && !(r.file in baselineByFile))
+        .map((r) => (dirtyFiles ? { ...r, dirty: dirtyFiles.has(r.file) } : r));
       const peerDrift = unattributed.filter((r) => r.file === '(unattributed)' || r.file in baselineByFile);
       // Under --mine the gate fails when a regression lands in a file you changed, OR in a file so
       // new the baseline has never seen it. Drift in KNOWN files you did not touch stays reported
@@ -518,20 +533,35 @@ export function formatAttributionHeadline({ count, explicit }) {
  *   the caller) rather than `--mine` (inferred from `git status`).
  * @returns {string[]} console lines, already indented.
  */
-export function formatNewFileGuidance({ explicit }) {
+export function formatNewFileGuidance({ explicit, liveEditCount = 0, standingCount = 0 }) {
   const NO_BASELINE =
     `   These files are new, so every error in them is new — the baseline has no known-good state to drift from.`;
   const TELL_THE_AUTHOR =
     `   If a file here really isn't yours, its author needs to know — a bare run of this gate reds the fleet on it.`;
 
   if (explicit) {
-    return [
-      NO_BASELINE,
-      `   They are OUTSIDE the --files set you named, and are reported anyway BECAUSE they are new:`,
-      `   scoping only exonerates a file the baseline already knows, and these have no baseline at all.`,
-      `   So this is not a bad invocation — naming them would not clear them either. If one is yours, fix it.`,
-      TELL_THE_AUTHOR,
-    ];
+    // EI-19278299775574199 — when every new file is a peer's uncommitted live edit, the old closing
+    // line ("If one is yours, fix it") prescribed exactly the wrong action: it invited the caller to
+    // hand-edit a file another agent had open. Say what is actually true instead.
+    const lines = [NO_BASELINE];
+    if (liveEditCount > 0) {
+      lines.push(
+        `   ${liveEditCount} of them is/are UNCOMMITTED in this shared tree — a peer is very likely mid-edit right now.`,
+        `   Those are NOT attributed to you and are NOT yours to fix: do not edit them, or you stomp a live peer.`,
+        `   They are transient (nothing has reached origin yet) and usually clear on their own within a few minutes —`,
+        `   re-run this check shortly, or confirm with: git status --porcelain <path>`,
+      );
+    }
+    if (standingCount > 0) {
+      lines.push(
+        `   ${standingCount} of them is/are COMMITTED — a standing red that WILL red the fleet at the next bare run.`,
+        `   They are OUTSIDE the --files set you named and reported anyway BECAUSE they are new:`,
+        `   scoping only exonerates a file the baseline already knows, and these have no baseline at all.`,
+        `   So this is not a bad invocation — naming them would not clear them either. If one is yours, fix it.`,
+        TELL_THE_AUTHOR,
+      );
+    }
+    return lines;
   }
   return [
     NO_BASELINE,
@@ -540,6 +570,31 @@ export function formatNewFileGuidance({ explicit }) {
     TELL_THE_AUTHOR,
     `   To scope this check to exactly the files you touched, re-run with --files=<comma-separated paths>.`,
   ];
+}
+
+/**
+ * Split `newFiles` into a peer's LIVE EDITS and STANDING reds — the two populations the
+ * `fail-new-file` report used to conflate (EI-19278299775574199).
+ *
+ * The asymmetry that makes this safe. EI-18766822535373909 established that the verdict can never
+ * move, because `changedFiles` cannot prove a file is not yours: git-sync commits this tree every
+ * few minutes, so your own new file stops being dirty and drops out of the changed set. That
+ * argument is about a file being CLEAN — and it is exactly right. It says nothing about a file that
+ * is DIRTY *right now*, which is the opposite evidence: under `--files` the caller enumerated their
+ * own files, so a dirty file they did not name has a live editor who is not them.
+ *
+ * `dirty === undefined` (dirty set unreadable, or `--mine`, where a dirty file is already
+ * `attributed` and can never reach here) is deliberately treated as STANDING. Unknown must never
+ * buy an exoneration — that would be the fail-open shape this gate's whole design avoids.
+ *
+ * @param {PerFileGateEntry[]} newFiles
+ * @returns {{liveEdits: PerFileGateEntry[], standing: PerFileGateEntry[]}}
+ */
+export function partitionNewFilesByLiveEdit(newFiles) {
+  return {
+    liveEdits: newFiles.filter((r) => r.dirty === true),
+    standing: newFiles.filter((r) => r.dirty !== true),
+  };
 }
 
 /**
@@ -632,7 +687,13 @@ export function runTscBaselineGate({
       )
     : null;
 
-  const result = decidePerFile({ currentByFile, baselineByFile, brokenFiles, updateFlag, changedFiles, typeReferencedFiles });
+  // EI-19278299775574199 — only meaningful under `--files`: there `changedFiles` is the caller's
+  // OWN enumeration, so the working-tree dirt is a separate, independent signal ("someone has this
+  // open"). Under `--mine` the two sets are the same query, so a dirty file is already `attributed`
+  // and can never reach `newFiles` — computing it there would cost a git call to learn nothing.
+  const dirtyFiles = explicitFiles !== null ? gitChangedFiles(root) : null;
+
+  const result = decidePerFile({ currentByFile, baselineByFile, brokenFiles, updateFlag, changedFiles, typeReferencedFiles, dirtyFiles });
   console.log(
     `TSC ${label}: ${result.total} type errors across ${Object.keys(currentByFile).length} file(s) ` +
       `(baseline total ${result.baselineTotal})${explicitFiles ? ' [--files]' : mineFlag ? ' [--mine]' : ''}`,
@@ -686,19 +747,38 @@ export function runTscBaselineGate({
       }
       process.exit(1);
       break;
-    case 'fail-new-file':
+    case 'fail-new-file': {
       // EI-18766822535373909: these are files the baseline has NEVER seen. Absence from the
       // changed set does not clear you — git-sync commits the tree every few minutes, so your own
       // new file is dirty for only a short window. Never greenwash this one.
-      console.error(`❌ ${result.newFiles.length} NEW file(s) (not in the baseline) have type errors:`);
-      for (const r of result.newFiles) console.error(formatRow(r));
+      //
+      // EI-19278299775574199 splits the LISTING (never the verdict) so the two populations that
+      // need opposite actions stop looking identical: a peer's uncommitted live buffer must not be
+      // edited, a committed standing red must be.
+      const { liveEdits, standing } = partitionNewFilesByLiveEdit(result.newFiles);
+      if (liveEdits.length > 0) {
+        console.error(
+          `❌ ${result.newFiles.length} NEW file(s) (not in the baseline) have type errors — ` +
+            `${liveEdits.length} of them uncommitted (a peer is likely mid-edit; NOT yours):`,
+        );
+        for (const r of liveEdits) console.error(`${formatRow(r)}  ← uncommitted, not attributed to you`);
+        for (const r of standing) console.error(formatRow(r));
+      } else {
+        console.error(`❌ ${result.newFiles.length} NEW file(s) (not in the baseline) have type errors:`);
+        for (const r of result.newFiles) console.error(formatRow(r));
+      }
       // EI-18802204276510164 — the remedy is worded per how the changed-set was derived, so a
       // caller who already passed --files is never told to pass --files.
-      for (const line of formatNewFileGuidance({ explicit: explicitFiles !== null })) {
+      for (const line of formatNewFileGuidance({
+        explicit: explicitFiles !== null,
+        liveEditCount: liveEdits.length,
+        standingCount: standing.length,
+      })) {
         console.error(line);
       }
       process.exit(1);
       break;
+    }
     case 'ok-peer-drift':
       console.log(`✓ Your changed files are tsc-clean. ${result.peerDrift.length} file(s) already in the baseline regressed but are not in your changed set:`);
       for (const r of result.peerDrift) console.log(formatRow(r));

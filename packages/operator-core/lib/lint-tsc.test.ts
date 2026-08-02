@@ -25,6 +25,7 @@ import {
   filesReferencingTypeNames,
   formatAttributionHeadline,
   formatNewFileGuidance,
+  partitionNewFilesByLiveEdit,
   TSC_COMMAND,
 } from '../../../scripts/lint-tsc.mjs';
 // eslint-disable-next-line import/no-relative-packages
@@ -659,5 +660,107 @@ describe('decidePerFile + typeReferencedFiles — the required-field-on-a-shared
     expect(r.verdict).toBe('fail-attributed');
     expect(r.attributed!.map((x: { file: string }) => x.file)).toEqual(['a.ts']);
     expect(r.typeAttributed).toEqual([]); // changedFiles wins; not double-counted as type-attributed
+  });
+});
+
+describe('new files: a peer mid-edit is not the caller’s regression (EI-19278299775574199)', () => {
+  // WHY THIS EXISTS. Under `--files` the caller ENUMERATED their own files, so a new-to-the-baseline
+  // file outside that set is by definition not one they named. Every such file used to be printed
+  // the same way — "If one is yours, fix it" — whether it was a peer's uncommitted, actively-changing
+  // buffer or a committed standing red. Those need OPPOSITE actions, and the gate conflated them:
+  //
+  //   - DIRTY (uncommitted right now): someone else has it open. It is transient, it has not reached
+  //     origin, and it is NOT yet a fleet-gate red. Editing it stomps a live peer — the filed report
+  //     nearly hand-edited a 3,188-line file another agent was writing to at that moment.
+  //   - CLEAN (committed): a standing red that WILL red the fleet at the next bare run. Loud is right.
+  //
+  // The VERDICT deliberately does not move (EI-18766822535373909 — a file with no baseline has no
+  // known-good state to drift from, and git-sync commits the tree every few minutes, so *absence*
+  // from the changed set can never exonerate). Only the ATTRIBUTION and the remedy change. Note the
+  // distinction is reachable only under `--files`: under `--mine` the changed set IS the dirty set,
+  // so a dirty file is already `attributed` and can never land in `newFiles`.
+  const brokenFree: string[] = [];
+
+  it('annotates a new file as dirty when it is uncommitted in the shared tree', () => {
+    const r = decidePerFile({
+      currentByFile: { 'mine.ts': 0, 'peer-new.ts': 5 },
+      baselineByFile: { 'mine.ts': 0 },
+      brokenFiles: brokenFree,
+      changedFiles: new Set(['mine.ts']),
+      dirtyFiles: new Set(['peer-new.ts']),
+    });
+    expect(r.verdict).toBe('fail-new-file');
+    expect(r.newFiles!.map((x: { file: string; dirty?: boolean }) => [x.file, x.dirty])).toEqual([
+      ['peer-new.ts', true],
+    ]);
+  });
+
+  it('annotates a COMMITTED new file as not-dirty (a standing red, not a live edit)', () => {
+    const r = decidePerFile({
+      currentByFile: { 'mine.ts': 0, 'landed-new.ts': 2 },
+      baselineByFile: { 'mine.ts': 0 },
+      brokenFiles: brokenFree,
+      changedFiles: new Set(['mine.ts']),
+      dirtyFiles: new Set(), // nothing uncommitted — it has landed
+    });
+    expect(r.newFiles!.map((x: { file: string; dirty?: boolean }) => [x.file, x.dirty])).toEqual([
+      ['landed-new.ts', false],
+    ]);
+  });
+
+  it('NEVER greenwashes: a dirty peer new-file still fails the run', () => {
+    // The one invariant this change must not break (tsc-baseline-gate.mjs: "Never greenwash this
+    // one"). Attribution softens; the verdict does not.
+    const r = decidePerFile({
+      currentByFile: { 'peer-new.ts': 5 },
+      baselineByFile: {},
+      brokenFiles: brokenFree,
+      changedFiles: new Set(['mine.ts']),
+      dirtyFiles: new Set(['peer-new.ts']),
+    });
+    expect(r.verdict).toBe('fail-new-file');
+  });
+
+  it('splits new files into live peer edits vs standing reds', () => {
+    const { liveEdits, standing } = partitionNewFilesByLiveEdit([
+      { file: 'peer-new.ts', baseline: 0, current: 5, delta: 5, dirty: true },
+      { file: 'landed-new.ts', baseline: 0, current: 2, delta: 2, dirty: false },
+    ]);
+    expect(liveEdits.map((x: { file: string }) => x.file)).toEqual(['peer-new.ts']);
+    expect(standing.map((x: { file: string }) => x.file)).toEqual(['landed-new.ts']);
+  });
+
+  it('treats an unknown dirty state as standing — never invents an exoneration', () => {
+    // dirtyFiles was unavailable (git failed, or --mine): `dirty` is undefined. The safe reading is
+    // "cannot show it is a live edit", so it stays in the loud bucket.
+    const { liveEdits, standing } = partitionNewFilesByLiveEdit([
+      { file: 'unknown.ts', baseline: 0, current: 1, delta: 1 },
+    ]);
+    expect(liveEdits).toEqual([]);
+    expect(standing.map((x: { file: string }) => x.file)).toEqual(['unknown.ts']);
+  });
+
+  it('guidance tells the caller a live edit is NOT theirs and not to edit it', () => {
+    const text = formatNewFileGuidance({ explicit: true, liveEditCount: 1, standingCount: 0 }).join('\n');
+    expect(text).toMatch(/uncommitted|mid-edit/i);
+    expect(text).toMatch(/not attributed to you|isn’t yours|not yours/i);
+    // The actively harmful instruction the old text gave for this case.
+    expect(text).not.toMatch(/If one is yours, fix it/i);
+  });
+
+  it('guidance still says "fix it" when the new file is a committed standing red', () => {
+    const text = formatNewFileGuidance({ explicit: true, liveEditCount: 0, standingCount: 1 }).join('\n');
+    expect(text).toMatch(/fix/i);
+    expect(text).not.toMatch(/mid-edit/i);
+  });
+
+  it('keeps the EI-18802204276510164 fix: never re-prescribes --files to a --files caller', () => {
+    for (const opts of [
+      { explicit: true, liveEditCount: 1, standingCount: 0 },
+      { explicit: true, liveEditCount: 0, standingCount: 1 },
+      { explicit: true, liveEditCount: 1, standingCount: 1 },
+    ]) {
+      expect(formatNewFileGuidance(opts).join('\n')).not.toMatch(/re-run with --files/i);
+    }
   });
 });
