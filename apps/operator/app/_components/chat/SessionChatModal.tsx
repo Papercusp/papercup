@@ -604,8 +604,23 @@ function SessionStateHeader({
         </span>
       ) : null}
       {awaitText ? (
-        <span className="pc-ctl-state pc-ctl-state--warn" title={entry.openAwait?.eventKey}>
-          ⏳ {awaitText}
+        /* The note is agent-authored free text and can be a paragraph, so the
+           visible chip clips to one line (.pc-ctl-state__clip) and the FULL
+           text moves into the tooltip. The title used to carry only the event
+           key, which would have made the clip lossy — you would see a truncated
+           sentence and have no way to read the rest. Key first, then the note,
+           because the key is what you search for. */
+        <span
+          className="pc-ctl-state pc-ctl-state--warn"
+          data-testid="session-chat-state-await"
+          title={
+            entry.openAwait?.eventKey && entry.openAwait.eventKey !== awaitText
+              ? `${entry.openAwait.eventKey}\n\n${awaitText}`
+              : awaitText
+          }
+        >
+          <span aria-hidden="true">⏳</span>
+          <span className="pc-ctl-state__clip">{awaitText}</span>
         </span>
       ) : null}
       {badges.map((b) => (

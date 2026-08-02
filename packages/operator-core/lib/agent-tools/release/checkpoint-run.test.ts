@@ -9,6 +9,15 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+// WI-6946: the handler now preflights pending migrations (applyPendingMigrationsNow) BEFORE
+// launching, so every test needs this mocked or it would open a REAL Postgres connection.
+// Default: nothing pending, matching what every pre-existing test in this file assumes.
+// Hoisted (vi.mock, not vi.doMock) so it applies to every test unless a specific test
+// overrides it with its own vi.doMock after vi.resetModules().
+vi.mock('../../db-boot-migrate', () => ({
+  applyPendingMigrationsNow: vi.fn(async () => ({ applied: 0, failed: [] })),
+}));
+
 const MAKE_CTX = (role = 'operator') =>
   ({ log: vi.fn(), signal: new AbortController().signal, progress: vi.fn(), role } as never);
 
@@ -45,6 +54,7 @@ beforeEach(() => {
 afterEach(() => {
   vi.doUnmock('../../release-checkpoint-launch');
   vi.doUnmock('../../release/in-flight-retriage');
+  vi.doUnmock('../../db-boot-migrate');
 });
 
 /**
@@ -167,6 +177,63 @@ describe('EI-19343516395023183: an in-flight auto-refire is surfaced on the alre
     expect(b.in_flight_retriage).toBeNull();
     expect(String(b.note)).toMatch(/DIFFERENT process/);
     expect(String(b.note)).not.toMatch(/AUTO-REFIRE/);
+  });
+});
+
+/**
+ * WI-6946: "release:checkpoint-run reports ok:true + launched:true + a ~55min ETA for a run
+ * that aborts INCONCLUSIVE ('migrations-pending') seconds later — the caller waits out a
+ * suite that is not running." Fix: preflight applyPendingMigrationsNow() BEFORE ever calling
+ * launchDetachedCheckpoint, so a migration that fails to apply refuses immediately instead of
+ * spawning a detached unit that will self-abort ~60s later with no way for the caller to know.
+ */
+describe('WI-6946: pending-migration preflight refuses BEFORE launching, not after', () => {
+  it('a migration that fails to apply refuses immediately — launchDetachedCheckpoint is never called', async () => {
+    vi.doMock('../../db-boot-migrate', () => ({
+      applyPendingMigrationsNow: vi.fn(async () => ({
+        applied: 0,
+        failed: [{ file: '723-some-migration.sql', error: 'relation "x" does not exist' }],
+      })),
+    }));
+    const launchSpy = vi.fn(async () => ({ launched: true, unit: 'x', argv: [], logPath: '/tmp/x.log' }));
+    vi.doMock('../../release-checkpoint-launch', async (orig) => ({
+      ...(await orig()),
+      launchDetachedCheckpoint: launchSpy,
+      checkpointCandidateContainment: NO_CONTAINMENT,
+    }));
+
+    const { default: tool } = await import('./checkpoint-run');
+    const b = parse((await tool.handler({}, MAKE_CTX())) as never);
+
+    expect(launchSpy).not.toHaveBeenCalled(); // never even attempted the launch
+    expect(b).toMatchObject({
+      ok: false,
+      launched: false,
+      reason: 'migrations-pending',
+      pending: [{ file: '723-some-migration.sql', error: 'relation "x" does not exist' }],
+    });
+    expect(String(b.note)).toMatch(/NOT launched/);
+    expect(String(b.note)).toContain('723-some-migration.sql');
+    expect(String(b.note)).toMatch(/WI-6946/);
+    // The reply must never claim a launch/ETA it didn't deliver — the exact defect this closes.
+    expect(String(b.note)).not.toMatch(/~55 min/);
+  });
+
+  it('nothing pending (the common case, incl. a transient contention failure already retried inside applyPendingMigrationsNow) → launches normally', async () => {
+    // Uses the file-level default mock (applied: 0, failed: []) — no override needed, proving
+    // the ordinary path is unaffected by this preflight.
+    const launchSpy = vi.fn(async () => ({ launched: true, unit: 'x', argv: [], logPath: '/tmp/x.log' }));
+    vi.doMock('../../release-checkpoint-launch', async (orig) => ({
+      ...(await orig()),
+      launchDetachedCheckpoint: launchSpy,
+      checkpointCandidateContainment: NO_CONTAINMENT,
+    }));
+
+    const { default: tool } = await import('./checkpoint-run');
+    const b = parse((await tool.handler({}, MAKE_CTX())) as never);
+
+    expect(launchSpy).toHaveBeenCalledTimes(1);
+    expect(b).toMatchObject({ ok: true, launched: true });
   });
 });
 

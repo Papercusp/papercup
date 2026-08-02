@@ -145,6 +145,31 @@
   line-height: 1;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
+  /* [owner 2026-08-02, screenshotted] A state chip whose text is FREE-FORM
+     (the ⏳ await chip renders `openAwait.note`, an agent-authored sentence)
+     grew to the full width of its string and ran off the right edge of the
+     popup, shoving the chips after it onto a second row. `white-space: nowrap`
+     above is correct — a fact chip must not wrap mid-phrase — but with no
+     ceiling it means "never wrap AND never stop".
+     This is the ceiling. It is on the BASE class, not on the await chip,
+     because every chip here is one unvalidated string away from the same
+     defect: the claim chip renders a work-item id, the badges render
+     `b.label`, and none of those lengths is bounded by anything. */
+  max-width: 340px;
+  min-width: 0;
+}
+
+/** The clipping surface for a chip's variable-length text.
+ *  Needed as its own element: `text-overflow: ellipsis` acts on a block
+ *  container's own inline content, so putting it on the inline-FLEX chip above
+ *  would do nothing at all — the text would clip with no ellipsis and no hint
+ *  that anything was cut. `min-width: 0` is what actually lets this shrink
+ *  inside the flex row. */
+.pc-ctl-state__clip {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .pc-ctl-state__dot {

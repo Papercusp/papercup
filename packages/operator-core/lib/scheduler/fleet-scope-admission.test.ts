@@ -870,6 +870,106 @@ describe('fleet scope assignment admission (P-016)', () => {
     });
   });
 
+  // WI-7151 (EI-19318364531323846): a plan-scoped spec whose promoted items are feature-family
+  // (D-009 — every plans:start promotion mints one) made the issue-family-only breakdown above
+  // report a confident `matchedByFilter: 0` and therefore `reason: 'spec_matches_nothing'` +
+  // `windDown: true` even when real, unclaimed, spec-matching feature-family rows exist. These
+  // pin the fix: a positive `featureFamilyMatched` suppresses `specEmpty` entirely and reports
+  // the honest, non-drain, non-spec-authoring verdict instead.
+  describe('WI-7151: featureFamilyMatched suppresses a false specEmpty (issue-family diagnosis blind spot)', () => {
+    const planScope = {
+      ownerId: 'su-member',
+      fleetSlug: 'opencode-omp-research',
+      fleetRole: 'member' as const,
+      workspaceId: 'papercusp-workspace',
+      record: {
+        source: 'fleet' as const,
+        spec: {
+          specVersion: '1.0',
+          specId: 'fleet-launch-opencode-omp-research-plan',
+          revision: 1,
+          view: { filter: { field: 'plan', op: '=' as const, value: 'opencode-omp-token-reduction-research-2026-08-02' } },
+          rank: { mode: 'lexicographic' as const, terms: [{ expr: 'age', dir: 'asc' as const }] },
+        },
+        revision: 1,
+        updatedBy: 'su-leader',
+        updatedAt: 'now',
+      },
+    };
+
+    const zeroIssueFamilyBreakdown = {
+      matchedByFilter: 0,
+      claimable: 0,
+      excluded: {
+        taken: 0,
+        claimHold: 0,
+        needsHuman: 0,
+        observationLane: 0,
+        externalBlocker: 0,
+        planLaneReserved: 0,
+        federationDetector: 0,
+        loopNoise: 0,
+        alreadyCompleted: 0,
+        crossMachineRig: 0,
+        blockedDep: 0,
+        cooldown: 0,
+        remoteOrigin: 0,
+      },
+    };
+
+    it('suppresses specEmpty/spec_matches_nothing when a tier-1 (feature-family) match exists', () => {
+      const miss = fleetScopedMiss(planScope, [], {
+        issueBreakdown: zeroIssueFamilyBreakdown,
+        featureFamilyMatched: 8,
+      });
+      expect(miss.reason).not.toBe('spec_matches_nothing');
+      expect(miss.reason).toBe('issue_family_diagnosis_blind_spot');
+      expect((miss as { featureFamilyMatched?: number }).featureFamilyMatched).toBe(8);
+      expect(miss.error).toMatch(/ISSUE-FAMILY DIAGNOSIS BLIND SPOT/);
+      expect(miss.error).not.toMatch(/SPEC-AUTHORING problem/);
+      // A real candidate exists — the member must NOT stand down.
+      expect(miss.windDown).toBe(false);
+      expect(miss.advice).toMatch(/PULL AGAIN/);
+      expect(miss.advice).not.toMatch(/ESCALATE to your fleet leader NOW \(EI-18663622382734446\)/);
+      expect(miss.excludedBreakdownSummary).toMatch(/8 FEATURE-family row/);
+    });
+
+    it('falls back to the pre-existing specEmpty/spec_matches_nothing verdict when featureFamilyMatched is null/0/undefined (no behavior change)', () => {
+      for (const fam of [null, 0, undefined] as const) {
+        const miss = fleetScopedMiss(planScope, [], {
+          issueBreakdown: zeroIssueFamilyBreakdown,
+          featureFamilyMatched: fam,
+        });
+        expect(miss.reason).toBe('spec_matches_nothing');
+        expect(miss.windDown).toBe(true);
+        expect(miss.error).toMatch(/SPEC MATCHES NOTHING/);
+      }
+    });
+
+    it('a paused miss suppresses the feature-family verdict too, same as every other breakdown-derived signal', () => {
+      const miss = fleetScopedMiss(planScope, [], {
+        pausedReason: 'owner pause',
+        issueBreakdown: zeroIssueFamilyBreakdown,
+        featureFamilyMatched: 8,
+      });
+      expect(miss.paused).toBe(true);
+      expect(miss.reason).toBeUndefined();
+    });
+
+    it('has no effect on a non-zero issueBreakdown.matchedByFilter (only relevant to the matchedByFilter===0 case)', () => {
+      // A caller should never pass featureFamilyMatched alongside a nonzero matchedByFilter in
+      // practice (get_next.ts only computes it when matchedByFilter===0) — but the guard itself
+      // must still be inert here rather than accidentally suppressing an unrelated floorGated verdict.
+      const floorGatedBreakdown = { ...zeroIssueFamilyBreakdown, matchedByFilter: 5, claimable: 0 };
+      const miss = fleetScopedMiss(planScope, [], {
+        issueBreakdown: floorGatedBreakdown,
+        featureFamilyMatched: 8,
+      });
+      expect(miss.reason).toBe('all_matches_gated');
+      expect(miss.reason).not.toBe('issue_family_diagnosis_blind_spot');
+    });
+  });
+
   // EI-18666093519248020: the INVARIANT behind the four recurrences of the claim-path/read-path
   // divergence class (EI-10062 -> WI-4309 -> WI-5275 -> WI-5822). Each was a different way for the
   // claim path's narrowing to diverge from the spec filter; each surfaced to members as

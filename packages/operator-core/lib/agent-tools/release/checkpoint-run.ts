@@ -34,6 +34,7 @@ import {
 } from '../../release-checkpoint-launch';
 import { attributeRetriageToRun, describeRefireBudget, readInFlightRetriage } from '../../release/in-flight-retriage';
 import { caveat, describeRefusal, isRefusedAnswer, refuseAnswer, withFieldReliability } from '../../field-reliability';
+import { applyPendingMigrationsNow } from '../../db-boot-migrate';
 
 export default defineTool({
   name: 'release:checkpoint-run',
@@ -88,6 +89,52 @@ export default defineTool({
     // No in-handler role gate: firing the verdict is verification-only + self-locked (see the
     // agentRoles note above). Access control is the invoke allowlist; any invoke-allowed red-fixer
     // may fire a fresh green verdict.
+    //
+    // WI-6946: preflight pending migrations BEFORE spawning the detached suite, not after. The
+    // detached run's OWN internal preflight (green-checkpoint.ts, EI-18757975681519069) already
+    // fails CLOSED — aborting as `green: null, reason: 'migrations-pending'` — the moment it finds
+    // a migration it cannot apply, rather than judging staging against a schema known to be behind
+    // it (a red made of missing-column failures reading as unrelated flakes, not a real verdict).
+    // That is the RIGHT call. The defect this closes is entirely on the CALLER side of that: this
+    // tool used to report `launched:true` + "up to ~55 min" — and, with `paths`, the reassuring
+    // "✓ the judged candidate carries all N file(s) you named" — for a run that then aborted
+    // INCONCLUSIVE ~60s later, with nothing telling the caller short of `cat`-ing a `/tmp` log the
+    // tool's own note never mentions. Measured 2026-08-02: an agent read the ~55min ETA at face
+    // value and waited ~18 minutes for a verdict from a run that had already exited at minute one.
+    // Reusing applyPendingMigrationsNow() HERE — the exact same idempotent, retry-on-contention
+    // function (EI-19320461261471579: 3 attempts, 400ms→2s backoff, closing the transient
+    // lock_timeout case this bug was first measured against) the detached run itself calls as its
+    // own preflight — means: (a) a transient contention failure is very likely already resolved by
+    // the time this returns, so the common case now just launches normally with nothing pending
+    // left for the detached run to trip over; (b) a genuinely-broken migration is caught HERE,
+    // before the systemd unit is even created, so the caller gets an immediate, honest
+    // `{ok:false, reason:'migrations-pending', pending:[...]}` instead of a misleading launch
+    // receipt for a run about to self-abort.
+    const migrationPreflight = await applyPendingMigrationsNow();
+    if (migrationPreflight && migrationPreflight.failed.length > 0) {
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({
+              ok: false,
+              launched: false,
+              reason: 'migrations-pending',
+              pending: migrationPreflight.failed,
+              note:
+                `NOT launched: ${migrationPreflight.failed.length} migration(s) failed to apply to the dev PG ` +
+                '(left pending). Launching the suite now would judge staging against a schema known to be behind ' +
+                'it — a red made of missing-column failures that reads as unrelated flakes, not a real verdict on ' +
+                'your code — so this refuses rather than repeat the WI-6946 defect (launched:true + a ~55min ETA ' +
+                'for a run that then aborts INCONCLUSIVE ~60s later with no way for the caller to know). A ' +
+                'transient lock_timeout is ALREADY retried automatically inside this same call (3 attempts, ' +
+                'backoff to 2s) — if you are seeing this, the failure(s) below are not that. Fix the migration ' +
+                `and call this again. Pending: ${migrationPreflight.failed.map((f) => `${f.file}: ${f.error}`).join('; ')}`,
+            }),
+          },
+        ],
+      };
+    }
     const result = await launchDetachedCheckpoint({ force: args.force, replaceStale: args.replaceStale });
     // WI-6962: the host could not be asked whether a run is in flight, so we refused rather
     // than gambled. This is a DIFFERENT answer from already_running and needs a different
