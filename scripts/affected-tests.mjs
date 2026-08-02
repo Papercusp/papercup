@@ -29,7 +29,7 @@ import { fileURLToPath } from 'node:url';
 import { loadavg, availableParallelism } from 'node:os';
 import { randomBytes } from 'node:crypto';
 import { parseQuarantineWorkspaces } from './lib/quarantine.mjs';
-import { parseSummaryFailedCounts, parseFailedTestFiles } from './lib/vitest-summary.mjs';
+import { parseSummaryFailedCounts, parseFailedTestFiles, countTimeoutSignatures } from './lib/vitest-summary.mjs';
 import { emptySuiteGuardArgs } from './lib/empty-suite-guard.mjs';
 import { applyWorkerCapEnv } from './lib/worker-cap.mjs';
 // EI-10542: this runner interleaves its own header/status lines (fd 1/2) with

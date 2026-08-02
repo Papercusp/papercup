@@ -248,6 +248,28 @@ export interface SyncReadAuditReport {
   skipped: string[]; // fixture === null (unmeasurable generically)
   budgetBytes: number;
   budgetMs: number;
+  /**
+   * Host conditions the `ms` column was measured under — WITHOUT these the
+   * latency axis is uninterpretable, and silently so.
+   *
+   * Measured 2026-08-02 on a box at load 129 (16 cores): `plans.attentionCounts`
+   * returned **103 bytes in 442ms** and `dev.toolFormatAdoption` 121 B in 268ms,
+   * reproducibly. A 103-byte response cannot be slow for payload reasons — that
+   * is queue time, not a regression. On the same run THREE of the four
+   * `ratchetRegressions` were flagged on latency alone, which would have sent a
+   * reader chasing ghosts.
+   *
+   * `bytes` is load-INDEPENDENT and stays trustworthy under any load; `ms` is not.
+   * Rule of thumb: treat the ms axis as advisory whenever `loadPerCore` is above
+   * ~1, and re-measure a latency finding on a quiet box before acting on it.
+   */
+  host: {
+    loadAvg1Start: number;
+    loadAvg1End: number;
+    cores: number;
+    /** loadAvg1End / cores — above ~1 means the box is oversubscribed. */
+    loadPerCore: number;
+  };
 }
 
 /** True when the query's argsSchema REQUIRES a non-empty args object (i.e. it
@@ -372,6 +394,9 @@ export async function measureSyncReadPayloadsViaRest(opts: {
   const doFetch = opts.fetchImpl ?? fetch;
   const measured: SyncReadMeasurement[] = [];
   const skipped: string[] = [];
+  const os = await import('node:os');
+  const cores = os.cpus().length || 1;
+  const loadAvg1Start = os.loadavg()[0];
 
   for (const [name, fixture] of Object.entries(opts.fixtures)) {
     if (fixture === null) {
@@ -433,6 +458,7 @@ export async function measureSyncReadPayloadsViaRest(opts: {
   // of them instead of an allowlisted one landing in neither.
   const violations = measured.filter((m) => m.overBudget && !m.allowlisted);
   const ratchetRegressions = measured.filter((m) => m.overBudget && m.allowlisted);
+  const loadAvg1End = os.loadavg()[0];
   return {
     measured,
     violations,
@@ -440,5 +466,6 @@ export async function measureSyncReadPayloadsViaRest(opts: {
     skipped,
     budgetBytes: PAYLOAD_BUDGET_BYTES,
     budgetMs: LATENCY_BUDGET_MS,
+    host: { loadAvg1Start, loadAvg1End, cores, loadPerCore: loadAvg1End / cores },
   };
 }

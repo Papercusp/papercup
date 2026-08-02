@@ -246,6 +246,31 @@ describe('sync-read audit — measureSyncReadPayloadsViaRest (harness logic, fak
     });
     expect(report.measured[0].error).toBe('HTTP 500');
     expect(report.violations).toEqual([]);
+    expect(report.ratchetRegressions).toEqual([]);
+  });
+
+  /**
+   * The `ms` column is uninterpretable without the conditions it was taken under,
+   * and silently so. Measured 2026-08-02 at load 129 on 16 cores:
+   * plans.attentionCounts returned 103 BYTES in 442ms, reproducibly. A 103-byte
+   * response cannot be slow for payload reasons — and on that same run three of
+   * the four ratchetRegressions were flagged on latency ALONE.
+   *
+   * bytes is load-independent; ms is not. Recording the load is what lets a
+   * reader discount the ms axis instead of chasing a ghost.
+   */
+  it('reports the host load the ms column was measured under', async () => {
+    const fakeFetch = (async () => ({ ok: true, status: 200, text: async () => '{"rows":[]}' }) as Response) as unknown as typeof fetch;
+    const report = await measureSyncReadPayloadsViaRest({
+      baseUrl: 'http://x',
+      token: 't',
+      fixtures: { 'workItems.stats': { harnessSlug: 'papercusp' } },
+      fetchImpl: fakeFetch,
+    });
+    expect(report.host.cores).toBeGreaterThan(0);
+    expect(report.host.loadAvg1Start).toBeGreaterThanOrEqual(0);
+    expect(report.host.loadAvg1End).toBeGreaterThanOrEqual(0);
+    expect(report.host.loadPerCore).toBeCloseTo(report.host.loadAvg1End / report.host.cores);
   });
 
   it('buildLiveFixtureMap resolves the whole registry with no unresolved arg-requiring query', () => {

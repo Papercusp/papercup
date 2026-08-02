@@ -60,7 +60,7 @@ import { listFilesIncludingUntracked, describeUnscanned } from '../../../scripts
 const { doorConstantsMock } = vi.hoisted(() => ({ doorConstantsMock: vi.fn() }));
 vi.mock('./context-doors-config', () => ({ getDoorConstantsSync: doorConstantsMock }));
 
-import { applyResultDoor, RESULT_DOOR_TOKENS } from './result-door';
+import { applyResultDoor, RESULT_DOOR_TOKENS, type DoorableResult } from './result-door';
 
 const REPO_ROOT = execFileSync('git', ['rev-parse', '--show-toplevel'], {
   encoding: 'utf8',
@@ -374,10 +374,8 @@ describe('truncation honesty — the result door stamps its marker at runtime', 
   });
 
   it('stamps a machine-readable _meta.resultDoor on a truncated result', () => {
-    const out = applyResultDoor(
-      { content: [{ type: 'text', text: 'x'.repeat(BUDGET_CHARS * 3) }] },
-      { toolName: 'demo:tool', workspaceId: 'ws' },
-    );
+    const input: DoorableResult = { content: [{ type: 'text', text: 'x'.repeat(BUDGET_CHARS * 3) }] };
+    const out = applyResultDoor(input, { toolName: 'demo:tool', workspaceId: 'ws' });
     const marker = (out._meta as { resultDoor?: Record<string, unknown> } | undefined)?.resultDoor;
     // The point of the whole plan item: a reader learns this from a FIELD, not
     // by string-matching the English footer beside it.
@@ -389,10 +387,8 @@ describe('truncation honesty — the result door stamps its marker at runtime', 
   });
 
   it('does not stamp the marker on a result that fits (no false truncation signal)', () => {
-    const out = applyResultDoor(
-      { content: [{ type: 'text', text: 'small' }] },
-      { toolName: 'demo:tool', workspaceId: 'ws' },
-    );
+    const input: DoorableResult = { content: [{ type: 'text', text: 'small' }] };
+    const out = applyResultDoor(input, { toolName: 'demo:tool', workspaceId: 'ws' });
     expect((out._meta as { resultDoor?: unknown } | undefined)?.resultDoor).toBeUndefined();
   });
 });

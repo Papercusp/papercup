@@ -612,6 +612,14 @@ async function defaultSpawnMembers(req: SpawnMembersRequest): Promise<SpawnMembe
         label: `${req.fleetSlug} · delegated ${i + 1}/${req.count} (${req.requestOfferId})`,
         writeMcpJson: false,
         scheme: null,
+        // EI-19330040718883562: this ok/error verdict is CONSUMED (spawn.opened
+        // is what makes honorSpawnRequestFromProjection write
+        // local_disposition='honored', consuming a delegated seat) — unlike the
+        // human-facing "+"/resume callers, a phantom ok here silently strands a
+        // seat. Runs under the Promise.all above, so the added latency (up to
+        // HEADLESS_BOOT_RECEIPT_MS) is paid once per batch, not once per member —
+        // the same tradeoff spawnHeadless below already accepts.
+        verifyBootReceipt: true,
       }),
     ),
   );
