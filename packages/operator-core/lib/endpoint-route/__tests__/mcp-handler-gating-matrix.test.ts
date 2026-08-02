@@ -515,8 +515,11 @@ describe('a replayed call records a tool_invocation row', () => {
   it('attributes the row exactly as a fresh call would — the point of building ctx first', async () => {
     // The SIGNED driver, deliberately: it pins run/spawn, so "same attribution"
     // is a real comparison. (A superuser call synthesizes a fresh run id per
-    // request, which no placement of the lookup could make match.)
-    const signed = extraFor(signedUrl({ role: 'scoper' }));
+    // request, which no placement of the lookup could make match.) Its OWN spawn
+    // id, because the code:run batch-nudge counter is process-global and keyed by
+    // session — two calls on the shared 'spawn-1' would push a later case over
+    // the threshold and append a `[batch-hint]` to its result.
+    const signed = extraFor(signedUrl({ role: 'scoper', spawn: 'spawn-replay-attrib' }));
 
     // Baseline: what the SAME call records when it really dispatches.
     const fresh = await callTool('gatingtest:scoped', {}, signed, {

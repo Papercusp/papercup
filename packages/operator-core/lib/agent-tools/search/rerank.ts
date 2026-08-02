@@ -1,19 +1,33 @@
 /**
  * Stage-B rerank — the operator's reranker seam over `@papercusp/search`'s
  * RRF-fused output. `@papercusp/search` does Stage A (BM25 + pgvector → RRF)
- * and stops there; this adds a cross-encoder relevance reorder (zerank-2 via
+ * and stops there; this adds a cross-encoder relevance reorder (via
  * `@papercusp/search-core` → `@papercusp/rerank`) so the most relevant hits
  * rise to the top of the page. Adopted from Restart's search-core
  * (search-core-papercup-adoption-2026-05-30).
  *
+ * ENGINE (plan local-reranker-gte-modernbert-2026-08-02, P-007). This seam used
+ * to be dark: with no ZeroEntropy key — the common case, and the only case on a
+ * desktop install — it returned the RRF order untouched, so Stage B never ran
+ * for anyone. It now defaults to the LOCAL cross-encoder
+ * (gte-reranker-modernbert-base, ~150M), which needs no credential and no
+ * network: served by the shared embed sidecar when the host runs one (one warm
+ * model for the whole box, `/rerank` beside `/embed`), in-process where none is
+ * configured. A configured ZeroEntropy key still wins — adding a credential is
+ * an explicit act and hosted zerank-2 is the stronger model.
+ *
+ * Engine selection lives in `resolveProseRerankEngine` alone, so adding the
+ * self-hosted zerank-2 (Apache-2.0, 4B) on the GPU host later is one more
+ * branch there, not another rewrite of `rerankProseHits`.
+ *
  * Fail-safe by construction — a rerank outage degrades to retrieval (RRF)
- * order, it never breaks search:
- *  - No ZeroEntropy key in `operator_credentials` (the common case) → we skip
- *    the rerank import entirely and return the RRF order unchanged. This is
- *    the adoption-safety property: the wiring lands now and the rerank "turns
- *    on" the day a key is added, with zero risk of regressing today's order.
- *  - Key present but the rerank lib / its `zeroentropy` dep fails to import or
- *    throws → caught, RRF order returned.
+ * order, it never breaks search. Note the two halves are deliberately not in
+ * tension: the sidecar client THROWS when a configured sidecar is sick (so the
+ * sickness is visible rather than silently absorbed by loading a duplicate
+ * model per process), and `@papercusp/rerank`'s single fail-safe seam converts
+ * that throw into "keep retrieval order" one layer up. Anything else that can
+ * go wrong here — the lib failing to import, the credential read throwing,
+ * the sidecar refusing to spawn — lands in the same passthrough below.
  *
  * Domain note: search-core's instruction / LLM-category-match / query-rewrite
  * stages default to e-commerce (Restart sells laptops) and do NOT transfer to
@@ -23,6 +37,7 @@
  * our OWN agent-memory prompts (never search-core's e-commerce defaults).
  */
 
+import type { RerankScoreFn } from '@papercusp/rerank';
 import type { SearchHit } from '@papercusp/search';
 
 /**
@@ -97,10 +112,60 @@ async function rerankApiKey(): Promise<string | undefined> {
   return process.env.ZEROENTROPY_API_KEY || undefined;
 }
 
+let localScorerPromise: Promise<RerankScoreFn> | null = null;
+
+/**
+ * The local cross-encoder scorer, built ONCE per process.
+ *
+ * Memoized rather than rebuilt per query for two reasons, only the first of
+ * which is cost: building it resolves — and on an opted-in host may SPAWN —
+ * the shared sidecar; and the client it returns carries the sidecar's up/down
+ * transition state, so a fresh client per query would report every outage as
+ * brand new and could never report the recovery.
+ *
+ * A FAILED build is never cached (same rule as the query-embed cache): a
+ * transient spawn failure must not disable reranking for the life of the
+ * process.
+ */
+function localRerankScorer(): Promise<RerankScoreFn> {
+  if (!localScorerPromise) {
+    localScorerPromise = import('../../memory/embed-sidecar-wiring')
+      .then((m) => m.buildSidecarAwareReranker())
+      .catch((err) => {
+        localScorerPromise = null;
+        throw err;
+      });
+  }
+  return localScorerPromise;
+}
+
+/** Test seam: drop the memoized scorer so a test can rebuild it. */
+export function _resetLocalRerankScorerForTests(): void {
+  localScorerPromise = null;
+}
+
+/**
+ * Which engine scores this query, and what it needs to run.
+ *
+ * The ONE place engine selection lives — see the header note. Hosted wins when
+ * a key is configured; otherwise the local cross-encoder, which is always
+ * available (no credential), so there is no longer a "reranking is off" state
+ * to fall into silently.
+ */
+type ResolvedRerankEngine =
+  | { engine: 'zeroentropy'; apiKey: string }
+  | { engine: 'local'; scorer: RerankScoreFn };
+
+async function resolveProseRerankEngine(): Promise<ResolvedRerankEngine> {
+  const apiKey = await rerankApiKey();
+  if (apiKey) return { engine: 'zeroentropy', apiKey };
+  return { engine: 'local', scorer: await localRerankScorer() };
+}
+
 /**
  * Rerank fused prose hits with the cross-encoder, returning them in the new
- * relevance order, sliced to `limit`. Pure passthrough when no key is
- * configured (the RRF order, sliced to `limit`).
+ * relevance order, sliced to `limit`. Degrades to the RRF order (sliced to
+ * `limit`) whenever the engine can't score.
  *
  * `hits` is the OVER-FETCHED candidate pool from `@papercusp/search` — size the
  * retrieval call with `rerankCandidateCount(limit)`, not `limit`. This reorders
@@ -112,12 +177,11 @@ export async function rerankProseHits(
   hits: SearchHit[],
   limit: number,
 ): Promise<SearchHit[]> {
-  // Nothing to reorder, or no key anywhere → RRF order, no rerank import.
+  // Nothing to reorder → no engine resolution, no rerank import.
   if (hits.length <= 1) return hits.slice(0, limit);
-  const apiKey = await rerankApiKey();
-  if (!apiKey) return hits.slice(0, limit);
 
   try {
+    const resolved = await resolveProseRerankEngine();
     const { rankWithReranker } = await import('@papercusp/search-core');
     return await rankWithReranker<SearchHit>(
       query,
@@ -128,14 +192,17 @@ export async function rerankProseHits(
       })),
       {
         limit,
-        rerankApiKey: apiKey,
+        ...(resolved.engine === 'zeroentropy'
+          ? { rerankApiKey: resolved.apiKey }
+          : { engine: 'local' as const, scorer: resolved.scorer }),
         // Generic relevance rerank: no e-commerce instruction / LLM pass.
         // Within a rerank-score bucket, keep the higher RRF/BM25 hit first.
         qualityScore: (hit) => hit.score,
       },
     );
   } catch {
-    // Rerank lib/dep unavailable or threw → RRF passthrough.
+    // Engine unresolvable, lib/dep unavailable, or a throw that got past the
+    // lib's own fail-safe seam → RRF passthrough. Search never breaks here.
     return hits.slice(0, limit);
   }
 }

@@ -169,7 +169,16 @@ export function invalidateOperatorStateCache(table: StateTable, ws: string): voi
   opStateCache.delete(opStateCacheKey(table, ws));
 }
 
-const OPERATOR_STATE_SYNC_NAMES: Partial<Record<StateTable, readonly string[]>> = {
+/**
+ * Which sync query names each operator-state table's writes must invalidate.
+ *
+ * EXPORTED (EI-19304902443341820) so `sync-resolver/__tests__/resolver-backing-table-coverage.test.ts`
+ * can check the resolver → table → invalidation chain end to end. This map is the SECOND of the two
+ * invalidation surfaces (the other being `TABLE_TO_QUERY_NAMES`), and a resolver whose backing table
+ * appeared in NEITHER used to be invisible to every guard — which is how `accounts.pool` sat un-live
+ * for ~7 weeks. Keys are bare table names; TABLE_TO_QUERY_NAMES keys are `harness_shared.<table>`.
+ */
+export const OPERATOR_STATE_SYNC_NAMES: Partial<Record<StateTable, readonly string[]>> = {
   operator_prompt_user: ['operatorConfig.byWorkspace'],
   operator_preferences: ['operatorConfig.byWorkspace', 'operatorPreferences.byWorkspace'],
   operator_voice_prefs: ['voicePrefs.effective', 'voicePrefs.workspace'],

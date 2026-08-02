@@ -47,6 +47,7 @@
     "@papercusp/rrf": "*",
     "@papercusp/rules": "*",
     "@papercusp/scheduled-registry": "*",
+    "@papercusp/search-core": "*",
     "@papercusp/seed-bundle": "*",
     "@papercusp/step-program": "*",
     "@papercusp/structured-concurrency": "*",

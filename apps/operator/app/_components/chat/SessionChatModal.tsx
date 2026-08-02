@@ -816,12 +816,21 @@ export default function SessionChatModal({
       void setChatMax(null);
       return;
     }
-    // Coming from `screen`: leave the browser's fullscreen first, then land in
-    // window mode. Without the explicit set, the fullscreenchange handler
-    // above would clear the mode entirely and the click would read as "exit
-    // maximize" rather than "switch to full window".
-    void exitScreen().then(() => setChatMax('window'));
-  }, [chatMax, exitScreen, setChatMax]);
+    if (screenActive) {
+      // Coming from `screen`: leave the browser's fullscreen FIRST, then land
+      // in window mode. The explicit set has to come after, because the
+      // fullscreenchange handler above clears the mode on the way out — without
+      // it this click would read as "exit maximize" rather than "switch to
+      // full window".
+      void exitScreen().then(() => setChatMax('window'));
+      return;
+    }
+    // The ordinary path stays SYNCHRONOUS. Routing it through the same promise
+    // as the fullscreen exit cost a microtask for nothing and made the mode
+    // land a tick after the click — a visible flash of the old layout, and a
+    // click whose effect a caller could not observe in the same turn.
+    void setChatMax('window');
+  }, [chatMax, screenActive, exitScreen, setChatMax]);
 
   const toggleScreen = useCallback(() => {
     if (screenActive) {

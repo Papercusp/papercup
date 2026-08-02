@@ -263,15 +263,22 @@ export default function TasksClient(): ReactElement {
     return Array.isArray(u) ? (u as { cgroupPath: string; pids: number[]; sample: string }[]) : [];
   }, [live]);
 
+  // The task manager ships ON as of WI-6844 (owner-directed: "we'll make it part of
+  // our standard release"), so this is no longer the "not ready yet" state it was
+  // under WI-6499 — it is the kill-switch having been pulled deliberately. The flag
+  // survives precisely because this subsystem intercepts every spawn seam on the box,
+  // so the copy says what is CURRENTLY not happening rather than what is unfinished.
   if (data && !data.enabled) {
     return (
       <div style={{ padding: 24, ...mono, maxWidth: 620, lineHeight: 1.5 }}>
-        <strong>Task manager is off.</strong> It is behind <code>papercusp-task-manager</code>, which defaults off while
-        the subsystem is still being tested (WI-6499).
+        <strong>Task manager is switched off.</strong> Someone flipped{' '}
+        <code>papercusp-task-manager</code> off at <a href="/admin/features">/admin/features</a>; it ships on by
+        default.
         <br />
         <br />
-        Nothing is being confined or ledgered — spawns run exactly as they did before the feature existed, and the 30s
-        reconciler is not running. Turn it on for testing at <a href="/admin/features">/admin/features</a>.
+        While it is off nothing is being confined or ledgered — spawns run exactly as they did before the feature
+        existed, and the 30s reconciler is not running. Processes started while it is off can never be adopted
+        retroactively, because enrolment binds at spawn.
       </div>
     );
   }

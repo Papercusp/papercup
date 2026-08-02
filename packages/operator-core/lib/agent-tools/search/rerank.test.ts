@@ -1,20 +1,23 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { SearchHit } from '@papercusp/search';
 
-// Both deps are pulled in via dynamic import() inside rerankProseHits, so the
-// mocks below intercept those too.
+// All three deps are pulled in via dynamic import() inside rerankProseHits, so
+// the mocks below intercept those too.
 vi.mock('../../credentials', () => ({ readCredentials: vi.fn() }));
 vi.mock('@papercusp/search-core', () => ({ rankWithReranker: vi.fn() }));
+vi.mock('../../memory/embed-sidecar-wiring', () => ({ buildSidecarAwareReranker: vi.fn() }));
 
 import {
   RERANK_MAX_CANDIDATES,
   RERANK_OVERFETCH,
+  _resetLocalRerankScorerForTests,
   rerankCandidateCount,
   rerankProseHits,
   rerankText,
 } from './rerank';
 import { readCredentials } from '../../credentials';
 import { rankWithReranker } from '@papercusp/search-core';
+import { buildSidecarAwareReranker } from '../../memory/embed-sidecar-wiring';
 
 const hit = (source_id: string, score: number, excerpt = `body-${source_id}`): SearchHit => ({
   source: 'escalations',
@@ -28,11 +31,16 @@ const hit = (source_id: string, score: number, excerpt = `body-${source_id}`): S
 // RRF order: a (0.9) > b (0.5) > c (0.1).
 const HITS = [hit('a', 0.9), hit('b', 0.5), hit('c', 0.1)];
 
+/** A local scorer that scores by position, so a reorder is observable. */
+const scorer = vi.fn(async (_q: string, texts: string[]) => texts.map((_t, i) => i / 10));
+
 const savedEnv = process.env.ZEROENTROPY_API_KEY;
 beforeEach(() => {
   vi.clearAllMocks();
+  _resetLocalRerankScorerForTests();
   delete process.env.ZEROENTROPY_API_KEY;
   vi.mocked(readCredentials).mockResolvedValue({});
+  vi.mocked(buildSidecarAwareReranker).mockResolvedValue(scorer);
 });
 afterEach(() => {
   if (savedEnv === undefined) delete process.env.ZEROENTROPY_API_KEY;
@@ -40,22 +48,11 @@ afterEach(() => {
 });
 
 describe('rerankProseHits — fail-safe', () => {
-  it('no key anywhere → returns RRF order unchanged, never imports the reranker', async () => {
-    const out = await rerankProseHits('q', HITS, 5);
-    expect(out).toEqual(HITS);
-    expect(rankWithReranker).not.toHaveBeenCalled();
-  });
-
-  it('no key → still slices to limit (RRF top-N)', async () => {
-    const out = await rerankProseHits('q', HITS, 2);
-    expect(out.map((h) => h.source_id)).toEqual(['a', 'b']);
-    expect(rankWithReranker).not.toHaveBeenCalled();
-  });
-
-  it('≤1 hit → passthrough without reading credentials', async () => {
+  it('≤1 hit → passthrough without resolving an engine at all', async () => {
     expect(await rerankProseHits('q', [HITS[0]], 5)).toEqual([HITS[0]]);
     expect(await rerankProseHits('q', [], 5)).toEqual([]);
     expect(readCredentials).not.toHaveBeenCalled();
+    expect(buildSidecarAwareReranker).not.toHaveBeenCalled();
     expect(rankWithReranker).not.toHaveBeenCalled();
   });
 
@@ -64,6 +61,64 @@ describe('rerankProseHits — fail-safe', () => {
     vi.mocked(rankWithReranker).mockRejectedValue(new Error('rerank api down'));
     const out = await rerankProseHits('q', HITS, 5);
     expect(out).toEqual(HITS);
+  });
+
+  it('local scorer unbuildable (no sidecar, no runtime) → RRF passthrough, sliced', async () => {
+    // The local engine is the DEFAULT path now, so its build failure is the
+    // one most likely to be hit in the field — it must degrade, not throw.
+    vi.mocked(buildSidecarAwareReranker).mockRejectedValue(new Error('no sidecar'));
+    expect(await rerankProseHits('q', HITS, 2)).toEqual(HITS.slice(0, 2));
+    expect(rankWithReranker).not.toHaveBeenCalled();
+  });
+
+  it('a failed scorer build is NOT cached — the next query retries it', async () => {
+    // A transient spawn failure must not disable reranking for the life of the
+    // process, which is exactly what memoizing the rejected promise would do.
+    vi.mocked(buildSidecarAwareReranker).mockRejectedValueOnce(new Error('spawn raced'));
+    await rerankProseHits('q', HITS, 5);
+    vi.mocked(rankWithReranker).mockResolvedValue(HITS);
+    await rerankProseHits('q', HITS, 5);
+    expect(buildSidecarAwareReranker).toHaveBeenCalledTimes(2);
+    expect(rankWithReranker).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('rerankProseHits — engine selection', () => {
+  it('no key anywhere → LOCAL engine with the sidecar-aware scorer (the seam is no longer dark)', async () => {
+    vi.mocked(rankWithReranker).mockImplementation(async (_q, docs) =>
+      docs.map((d) => d.row as SearchHit).reverse(),
+    );
+
+    const out = await rerankProseHits('q', HITS, 5);
+    expect(out.map((h) => h.source_id)).toEqual(['c', 'b', 'a']);
+
+    const opts = vi.mocked(rankWithReranker).mock.calls[0][2];
+    expect(opts.engine).toBe('local');
+    expect(opts.scorer).toBe(scorer);
+    // No credential is involved on the local path.
+    expect(opts.rerankApiKey).toBeUndefined();
+  });
+
+  it('a configured key still wins — hosted, with no local scorer built', async () => {
+    vi.mocked(readCredentials).mockResolvedValue({ zeroentropy_api_key: 'ze_test' });
+    vi.mocked(rankWithReranker).mockResolvedValue(HITS);
+
+    await rerankProseHits('q', HITS, 5);
+    const opts = vi.mocked(rankWithReranker).mock.calls[0][2];
+    expect(opts.rerankApiKey).toBe('ze_test');
+    expect(opts.engine).toBeUndefined();
+    expect(opts.scorer).toBeUndefined();
+    expect(buildSidecarAwareReranker).not.toHaveBeenCalled();
+  });
+
+  it('builds the local scorer ONCE per process, not per query', async () => {
+    // Rebuilding per query would re-resolve (and possibly re-spawn) the sidecar
+    // and reset the client's up/down transition state every single search.
+    vi.mocked(rankWithReranker).mockResolvedValue(HITS);
+    await rerankProseHits('q', HITS, 5);
+    await rerankProseHits('q2', HITS, 5);
+    expect(buildSidecarAwareReranker).toHaveBeenCalledTimes(1);
+    expect(rankWithReranker).toHaveBeenCalledTimes(2);
   });
 });
 

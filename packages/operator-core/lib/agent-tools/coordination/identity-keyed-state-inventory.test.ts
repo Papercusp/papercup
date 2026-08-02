@@ -125,6 +125,11 @@ const ALLOWLIST: Record<string, Classification> = {
     status: 'exempt',
     reason: "the session's own carry-brief snapshot, written by and read back by the SAME id at each of its own turns — a rebind moves the loop carry-note (a separate surface) which is what a cold successor actually reads.",
   },
+  'session_respawn_expected.owner_id': {
+    status: 'exempt',
+    reason:
+      'a single-use, short-TTL marker that only ever SUPPRESSES a release — never grants or holds a resource. A rebind stranding the row cannot lose a claim: a consume that misses simply runs the ordinary session-end lease release (the pre-existing behavior), and the orphaned row is deleted by its own TTL on the next consume. Fail-safe by construction (WI-6756 leg 2, migration 716).',
+  },
   'owner_directives.owner_id': {
     status: 'covered',
     surface: 'owner-directives',
