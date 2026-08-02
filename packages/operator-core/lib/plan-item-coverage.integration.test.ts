@@ -7,9 +7,11 @@
  *    is a `payload.plan_item` stamp (no coord_links edge) still surfaces in
  *    coverage — the exact gap EI-13721 reports (WI-5150-shaped: an assignee, a
  *    stamp, zero coverage/workers). Both families (feature via
- *    harness_features_consolidated, issue via engineer_issues) and both jsonb
- *    payload shapes (real object vs postgres-js's string-scalar binding quirk —
- *    convert.integration.test.ts's documented gotcha) are covered.
+ *    harness_features_consolidated, issue via engineer_issues) are covered.
+ *    Payloads are OBJECT-shaped only: migration 725's
+ *    work_items_payload_is_object_ck makes a non-object payload unstorable, and
+ *    the read-side string-scalar unwrap this file used to assert was DELETED
+ *    with it (WI-6993 — see the negative guard on P-005/P-006 below).
  *  - dedup: a work-item that carries BOTH a coord_links edge AND a stamp is
  *    counted ONCE, not twice.
  *  - the stamp leg still joins live fleet activity (signal 2) correctly.
@@ -185,12 +187,40 @@ describe('getAllPlanItemCoverage — stamp-based coverage (PG, EI-13721)', () =>
     expect(cov.get(planItemRef('p1', 'P-003b'))!.level).toBe('complete');
   });
 
-  it('unwraps a jsonb STRING-SCALAR payload (postgres-js binding quirk) for both families', async () => {
+  // WI-6993 / migration 725 — this assertion is INVERTED on purpose, and the
+  // inversion is the point. It used to assert that the stamp query UNWRAPS a jsonb
+  // string-scalar payload (`CASE WHEN jsonb_typeof(payload)='string' THEN ... END`),
+  // a defensive mitigation for the postgres-js ::jsonb binding quirk. That wrap can
+  // never match an index on `payload->'plan_item'->>'plan_slug'`, so it silently
+  // forced a FULL SEQUENTIAL SCAN on the single largest consumer of DB time in the
+  // system: measured 142 calls/min x 134ms to return ONE row = ~7.6 HOURS of database
+  // time PER DAY. It was deleted, and 725 made the shape it defended against
+  // structurally impossible (work_items_payload_is_object_ck) rather than merely
+  // absent — after the write path had already been fixed twice
+  // (restoreRawJsonbSerializer EI-18698602043482898, migration 641's view normalize).
+  //
+  // So DO NOT "fix" this test by re-adding the unwrap to plan-item-coverage.ts —
+  // that re-opens the regression. A string-scalar payload contributing NO coverage
+  // is the correct, load-bearing behaviour, and this test fails if the wrap returns.
+  // The fixture reaches this shape only because the test DDL deliberately omits
+  // CHECK constraints (see _work-items-schema.ts) so fixtures can insert odd rows;
+  // 725's constraint itself is pinned by payload-object-shape-guard.test.ts.
+  it('does NOT unwrap a jsonb STRING-SCALAR payload — the index-defeating wrap is deliberately gone (WI-6993)', async () => {
     await insertIssue({ id: 'WI-scalar', state: 'open', plan: 'p1', item: 'P-005', asStringScalar: true });
     await insertFeature({ id: 'F-scalar', status: 'todo', plan: 'p1', item: 'P-006', asStringScalar: true });
     const cov = await getAllPlanItemCoverage();
-    expect(cov.get(planItemRef('p1', 'P-005'))?.links.map((l) => l.workItemId)).toEqual(['WI-scalar']);
-    expect(cov.get(planItemRef('p1', 'P-006'))?.links.map((l) => l.workItemId)).toEqual(['F-scalar']);
+    expect(cov.get(planItemRef('p1', 'P-005'))).toBeUndefined();
+    expect(cov.get(planItemRef('p1', 'P-006'))).toBeUndefined();
+  });
+
+  // The positive half of the same contract: an OBJECT-shaped payload — the only
+  // shape 725 permits on the real table — is read by the index-compatible query.
+  it('DOES read an object-shaped stamp payload for both families (the shape 725 guarantees)', async () => {
+    await insertIssue({ id: 'WI-obj', state: 'open', plan: 'p1', item: 'P-005b' });
+    await insertFeature({ id: 'F-obj', status: 'todo', plan: 'p1', item: 'P-006b' });
+    const cov = await getAllPlanItemCoverage();
+    expect(cov.get(planItemRef('p1', 'P-005b'))?.links.map((l) => l.workItemId)).toEqual(['WI-obj']);
+    expect(cov.get(planItemRef('p1', 'P-006b'))?.links.map((l) => l.workItemId)).toEqual(['F-obj']);
   });
 
   it('dedups: a work-item with BOTH a coord_links edge AND a payload stamp counts once, keeping the edge rel', async () => {

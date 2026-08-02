@@ -22,6 +22,7 @@ import {
   MAX_FILES_PER_TICK,
   DEBOUNCE_HOURS,
   type DwelledRed,
+  type TscRedSweepDeps,
 } from './tsc-red-sweep';
 
 const NOW = 1_800_000_000_000;
@@ -39,25 +40,28 @@ function red(over: Partial<DwelledRed> = {}): DwelledRed {
   };
 }
 
-/** All seams stubbed to the "would file" configuration; each test flips exactly one. */
-function deps(over: Record<string, unknown> = {}) {
-  const captureFn = vi.fn(async () => ({ id: 'EI-1' }));
-  const claimFireFn = vi.fn(async () => true);
-  const recentFiresFn = vi.fn(async () => 0);
-  const pruneObservationsFn = vi.fn(() => ({ ok: true, kept: 0 }));
-  const readObservationsFn = vi.fn(() => [{ ts: nowSec - 60, file: 'x', count: 1, project: '' }]);
-  const selectDwelledRedsFn = vi.fn(() => [red()]);
-  return {
+/**
+ * All seams stubbed to the "would file" configuration; each test flips exactly one.
+ *
+ * The return is deliberately NOT cast to `never`/`any`. An escape hatch there types every
+ * `d.captureFn` access as `never`, which compiles locally and then lands 18 type errors on
+ * the shared gate — and worse, it would let a seam RENAME pass this file silently while the
+ * sweep quietly fell back to its real implementation. The single cast below is confined to
+ * reconciling the mock signatures with the real ones.
+ */
+function deps(over: Partial<TscRedSweepDeps> = {}) {
+  const base = {
     nowMs: NOW,
-    captureFn,
-    claimFireFn,
-    recentFiresFn,
-    pruneObservationsFn,
-    readObservationsFn,
-    selectDwelledRedsFn,
+    captureFn: vi.fn(async (_input: unknown) => ({ id: 'EI-1' })),
+    claimFireFn: vi.fn(async (_opts: unknown) => true),
+    recentFiresFn: vi.fn(async (_ws: string, _slug: string, _h?: number, _s?: unknown) => 0),
+    pruneObservationsFn: vi.fn(() => ({ ok: true, kept: 0 })),
+    readObservationsFn: vi.fn(() => [{ ts: nowSec - 60, file: 'x', count: 1, project: '' }]),
+    selectDwelledRedsFn: vi.fn((): DwelledRed[] => [red()]),
     workspaceIdFn: () => 'ws-test',
-    ...over,
-  } as never;
+  };
+  const merged = { ...base, ...over };
+  return merged as typeof base & TscRedSweepDeps;
 }
 
 describe('buildRedCapture', () => {
@@ -119,7 +123,7 @@ describe('tscRedSweep — files a dwelled red', () => {
   it('files it as a major bug, unassigned, with open-scoped dedup', async () => {
     const d = deps();
     await tscRedSweep(d);
-    const arg = d.captureFn.mock.calls[0][0];
+    const arg = d.captureFn.mock.calls[0][0] as Record<string, unknown>;
     expect(arg.kind).toBe('bug');
     // A committed non-baselined red reds the SHARED gate — it blocks everyone, not just
     // the author. Downgrading this to 'minor' is how it gets ignored.
@@ -178,7 +182,7 @@ describe('tscRedSweep — debounce', () => {
     // suppress every other red for 24h.
     const d = deps();
     await tscRedSweep(d);
-    const claim = d.claimFireFn.mock.calls[0][0];
+    const claim = d.claimFireFn.mock.calls[0][0] as Record<string, unknown>;
     expect(claim.reason).toContain(red().file);
     expect(claim.source).toBe('tsc-new-file-red');
     expect(claim.windowHours).toBe(DEBOUNCE_HOURS);
@@ -207,7 +211,7 @@ describe('tscRedSweep — blast radius', () => {
     const d = deps({ selectDwelledRedsFn: () => many, maxFiles: 2 });
     const out = await tscRedSweep(d);
     expect(d.captureFn).toHaveBeenCalledTimes(2);
-    expect(d.captureFn.mock.calls[0][0].title).toContain('f0.ts');
+    expect((d.captureFn.mock.calls[0][0] as Record<string, unknown>).title).toContain('f0.ts');
     expect(out.filter((r) => r.outcome === 'capped')).toHaveLength(5);
     // CONTROL: the identical fixture with the cap raised files all 7, so the assertion
     // above is measuring the CAP and not some unrelated failure to file.

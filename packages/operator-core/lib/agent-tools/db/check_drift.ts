@@ -16,7 +16,7 @@ import { checkMigrationDrift } from '../../migration-drift';
 export default defineTool({
   name: 'db:check_drift',
   description:
-    'Report DB migration drift — sql/*.sql files not yet applied (per harness_shared.schema_migrations). Detection only. Checks BOTH the tree serving this call AND the canonical staging tree agents author migrations in (EI-18757486483124756) — `in_sync` is false if EITHER lags. `missing`/`missing_canonical` = added since the last operator boot; restart the operator (boot auto-applies) or use db:migrate. `extra` = applied but file gone (investigate).',
+    'Report DB migration drift — sql/*.sql files not yet applied (per harness_shared.schema_migrations). Detection only. Checks BOTH the tree serving this call AND the canonical staging tree agents author migrations in (EI-18757486483124756) — `in_sync` is false if EITHER lags. `missing`/`missing_canonical` = added since the last operator boot; restart the operator (boot auto-applies) or use db:migrate. `extra` = applied but file gone (investigate). `content_drift` = applied migrations whose bytes CHANGED after they ran (EI-19365742982915607) — the edit never executed and no restart will run it; repair with a NEW migration. `schema_ahead` = the DB was migrated by a newer tree than this one.',
   guidance: {
     when: 'After adding a migration, or when a runtime "missing column/relation" error suggests the live DB lags the sql/ dir.',
     notWhen: 'Applying a migration — that is the boot auto-apply (restart) or db:migrate for a one-off.',
@@ -56,6 +56,18 @@ export default defineTool({
             // unapplied there, regardless of which tree served this call.
             canonical_sql_dir: d.canonicalStagingSqlDir,
             missing_canonical: d.missingCanonical,
+            // EI-19365742982915607: applied migrations edited AFTER they ran.
+            // Never self-heals — no restart re-runs a recorded migration — so
+            // the file on disk silently misdescribes the live schema until a
+            // NEW migration re-applies it. Deliberately does not gate
+            // `in_sync` (see MigrationDrift.contentDrift).
+            content_drift: d.contentDrift,
+            content_drift_sql_dir: d.contentDriftSqlDir,
+            // WI-5050: applied migrations numbered beyond this tree's max —
+            // the shared DB was migrated by a NEWER tree, so this tree's
+            // queries can hit "relation does not exist". Computed since
+            // WI-5050 but never surfaced until now.
+            schema_ahead: d.schemaAhead,
           }),
         },
       ],

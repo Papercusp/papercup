@@ -410,5 +410,7 @@ export async function checkMigrationDrift(): Promise<MigrationDrift> {
     missingPendingDeploy,
     canonicalStagingSqlDir,
     missingCanonical,
+    contentDrift,
+    contentDriftSqlDir,
   };
 }

@@ -5,10 +5,99 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import {
   computeSchemaAhead,
   classifyMissingByDeployedTree,
+  computeContentDrift,
   resolveDeployedSqlDir,
   resolveSqlDir,
   resolveCanonicalStagingSqlDir,
 } from './migration-drift';
+
+/**
+ * EI-19365742982915607: an applied migration edited AFTER it ran. The edit
+ * never executes (the runner skips anything already recorded), so the file on
+ * disk silently misdescribes the live schema — forever.
+ *
+ * The real case this reproduces: mig 708 ran at 2026-08-01T19:15:49Z against a
+ * blob containing zero `closed_ts`; a PART 2 hunk was committed 9 minutes
+ * later. PART 1 was live, PART 2 never was, and every reader who grepped the
+ * .sql concluded closed_ts federation had shipped.
+ */
+describe('computeContentDrift', () => {
+  const rows = (...pairs: Array<[string, string | null]>) =>
+    pairs.map(([filename, sha256]) => ({ filename, sha256 }));
+
+  it('flags an applied migration whose bytes changed after it ran', () => {
+    expect(
+      computeContentDrift(
+        rows(['708-federate.sql', 'recorded-sha'], ['707-fine.sql', 'same']),
+        new Map([
+          ['708-federate.sql', 'edited-sha'],
+          ['707-fine.sql', 'same'],
+        ]),
+      ),
+    ).toEqual([
+      {
+        filename: '708-federate.sql',
+        recordedSha256: 'recorded-sha',
+        diskSha256: 'edited-sha',
+      },
+    ]);
+  });
+
+  it('is empty when every applied file still matches its recorded hash', () => {
+    expect(
+      computeContentDrift(
+        rows(['001-a.sql', 'aaa'], ['002-b.sql', 'bbb']),
+        new Map([
+          ['001-a.sql', 'aaa'],
+          ['002-b.sql', 'bbb'],
+        ]),
+      ),
+    ).toEqual([]);
+  });
+
+  it('a legacy row with no recorded sha256 is UNJUDGEABLE, never reported as drift', () => {
+    // Absence of evidence is not evidence of drift — reporting these would
+    // bury the real signal under every pre-sha256 migration in history.
+    expect(
+      computeContentDrift(
+        rows(['001-legacy.sql', null], ['002-blank.sql', '  ']),
+        new Map([
+          ['001-legacy.sql', 'whatever'],
+          ['002-blank.sql', 'whatever'],
+        ]),
+      ),
+    ).toEqual([]);
+  });
+
+  it('a file gone from disk is `extra`, not content drift (no double reporting)', () => {
+    expect(computeContentDrift(rows(['600-squashed.sql', 'sha']), new Map())).toEqual([]);
+  });
+
+  it('ignores runner-ineligible rows (templates / manual-only)', () => {
+    expect(
+      computeContentDrift(
+        rows(['999-per-harness-template.sql', 'sha'], ['040-plugin-configs-backfill.sql', 'sha']),
+        new Map([
+          ['999-per-harness-template.sql', 'different'],
+          ['040-plugin-configs-backfill.sql', 'different'],
+        ]),
+      ),
+    ).toEqual([]);
+  });
+
+  it('reports every drifted file, sorted by filename', () => {
+    expect(
+      computeContentDrift(
+        rows(['710-c.sql', 'r3'], ['700-a.sql', 'r1'], ['705-b.sql', 'r2']),
+        new Map([
+          ['710-c.sql', 'd3'],
+          ['700-a.sql', 'd1'],
+          ['705-b.sql', 'd2'],
+        ]),
+      ).map((d) => d.filename),
+    ).toEqual(['700-a.sql', '705-b.sql', '710-c.sql']);
+  });
+});
 
 /**
  * WI-5050 (WI-4070 class): `schemaAhead` flags applied migrations numbered

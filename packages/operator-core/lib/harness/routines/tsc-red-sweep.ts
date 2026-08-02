@@ -43,6 +43,11 @@
  */
 import { recentWatchdogFires, claimWatchdogFire } from '../../pot/watchdog';
 import { activeWorkspaceId } from '../../workspace-registry';
+// Type-only: erased at runtime, so this does NOT eagerly pull capture-core (and its
+// embedding/rubric dependency tree) into the routines tick. The real import stays lazy
+// below. Typing the seam is what makes a wrong capture field a COMPILE error rather than
+// a silently-ignored key at 3am — `improvements:capture` rejects undeclared args (EI-10883).
+import type { CaptureImprovementInput } from '../improvements/capture-core';
 import {
   readObservations,
   selectDwelledReds,
@@ -143,7 +148,7 @@ export interface TscRedSweepDeps {
   pruneObservationsFn?: typeof pruneObservations;
   recentFiresFn?: typeof recentWatchdogFires;
   claimFireFn?: typeof claimWatchdogFire;
-  captureFn?: (input: Record<string, unknown>) => Promise<unknown>;
+  captureFn?: (input: CaptureImprovementInput) => Promise<unknown>;
   workspaceIdFn?: () => string;
 }
 
@@ -243,7 +248,7 @@ export async function tscRedSweep(deps: TscRedSweepDeps = {}): Promise<TscRedSwe
           foundDuring: 'tsc-red sweep (routines tick)',
           // Omit scope: a repo-wide gate concern, not one harness's — auto-homes to the
           // workspace platform Pot (capture-core.ts CaptureImprovementInput.scope).
-        } as Record<string, unknown>);
+        });
         results.push({
           file: red.file,
           outcome: 'filed',
