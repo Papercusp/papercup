@@ -2119,6 +2119,78 @@ describe('interpreter inline-code write guard (EI-18691482279179647)', () => {
 });
 
 /**
+ * EI-18814109122347052 — a print() LABEL containing a slash was resolved as a
+ * path.
+ *
+ * Sixth in the not-a-path-resolved-as-one family, and the first fixed by
+ * narrowing WHERE the scan looks rather than what a candidate token is
+ * allowed to look like. `print("postings/comments pulled:", ...)` is a
+ * literal like any other: it contains a `/`, carries no quote character
+ * inside it, and so cleared every prior filter (paired quotes, whitespace
+ * tokenizing, quote-char + path-shape exclusion) — even though the body's
+ * only real write target was an unrelated `open('/tmp/hiring-blob.txt',
+ * 'w')` a line away. Hit live 2026-07-27, twice in one session.
+ *
+ * The fix (`_write_call_arg_spans`): only scan literals that are ARGUMENTS TO
+ * a recognized write-shaped/file-construct call (open(...), Path(...),
+ * write_text(...)/write_bytes(...), writeFileSync(...), etc.), found by
+ * balanced-paren matching from the call site — real (if coarse) argument
+ * parsing, not a full interpreter parse. A literal sitting anywhere else in
+ * the body — a print() label, a docstring, a bare variable assignment — is
+ * no longer a candidate at all.
+ */
+describe('interpreter literal scan — only WRITE-CALL ARGUMENTS are candidates (EI-18814109122347052)', () => {
+  const expectInterpDeny = (out: { stdout: string; status: number | null }) => {
+    const reason = denyReason(out);
+    expect(reason).toContain('EI-18691482279179647');
+    expect(reason).toMatch(/Edit or Write/);
+    return reason;
+  };
+
+  it('allows the exact repro: a print() label containing a slash, alongside a real write to an absolute /tmp path', () => {
+    const command =
+      "python3 - <<'PY'\n" +
+      "import urllib.request\n" +
+      "texts=['a']\n" +
+      "blob='x'\n" +
+      'print("postings/comments pulled:", len(texts), "| chars:", len(blob))\n' +
+      "open('/tmp/hiring-blob.txt','w').write(blob)\n" +
+      'PY';
+    expectAllow(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
+  });
+
+  it('allows other everyday slash-bearing prose labels next to an out-of-tree write (read/write, input/output, pub/sub)', () => {
+    const command =
+      "python3 - <<'PY'\n" +
+      "open('/tmp/x.log','w').write('x')\n" +
+      "print('read/write mode, input/output pair, pub/sub channel')\n" +
+      'PY';
+    expectAllow(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
+  });
+
+  it('still denies a real in-tree write via open(...,\'w\') — the recurrence guard for the fix itself', () => {
+    const command = `python3 -c "open('apps/operator/generated.ts', 'w').write('x')"`;
+    expectInterpDeny(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
+  });
+
+  it('masking control: still denies a real in-tree write in a script that ALSO prints a slash-bearing label', () => {
+    const command =
+      "python3 - <<'PY'\n" +
+      'print("postings/comments pulled:", 3)\n' +
+      "open('apps/operator/generated.ts','w').write('x')\n" +
+      'PY';
+    const reason = expectInterpDeny(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
+    expect(reason).toContain('apps/operator/generated.ts');
+    expect(reason).not.toContain('postings/comments');
+  });
+
+  it('still denies when the in-tree literal is itself the write-call argument, not merely nearby prose', () => {
+    const command = `node -e "require('fs').writeFileSync('packages/operator-core/lib/foo.ts', 'x')"`;
+    expectInterpDeny(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
+  });
+});
+
+/**
  * EI-18828567391761902 — a PROSE WORD carrying a period was resolved as a path.
  *
  * Fifth in the not-a-path-resolved-as-one family. The predecessor
