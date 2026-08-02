@@ -289,10 +289,15 @@ export function ChatActionBar({ ctx }: { ctx: ChatActionContext }): ReactNode {
               onClick={() => void invoke(action)}
               disabled={runningId !== null}
               aria-busy={runningId === action.id}
+              /* The FULL label stays the accessible name and the tooltip even
+                 when the button renders the short one, so compaction costs
+                 pixels and nothing else. */
+              aria-label={action.label}
+              title={action.label}
             >
               <span className="pc-ctl-act__inner">
                 {action.icon ? <span className="pc-ctl-act__icon">{action.icon}</span> : null}
-                <span>{action.label}</span>
+                <span>{action.shortLabel ?? action.label}</span>
               </span>
             </button>
           ))}

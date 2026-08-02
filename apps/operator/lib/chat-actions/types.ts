@@ -52,6 +52,22 @@ export interface ChatAction {
   /** Stable id — React key, and the confirm/params card's rough identity. */
   id: string;
   label: string;
+  /**
+   * A compact rendering of `label` for space-constrained surfaces.
+   *
+   * `label` stays the action's ONE true name — AgentInspectorModal renders it
+   * verbatim, and the owner's 2026-07-27 ask was that the chat popup offer
+   * "the same ones that show up in the turn history in the agents running
+   * dropdown", so renaming the label itself would break the parity that ask
+   * created. This is the narrow escape hatch instead: the chat action bar is
+   * a single dense row that must also hold four mode pills, and
+   * "Resume in new terminal" spends 22 characters saying what "Resume" plus
+   * the ↻ icon already say in six.
+   *
+   * A surface using this MUST keep the full `label` as the accessible name,
+   * so nothing is lost to a screen reader or a tooltip — only pixels.
+   */
+  shortLabel?: string;
   /** Optional icon element, rendered at whatever size the bar's CSS sets. */
   icon?: ReactNode;
   /** Actions sharing a `group` render as one cluster, in first-seen order. */

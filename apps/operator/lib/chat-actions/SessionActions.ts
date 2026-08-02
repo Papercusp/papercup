@@ -124,6 +124,7 @@ export async function focusWindow(ctx: SessionActionCtx): Promise<void> {
 registerChatAction({
   id: 'session-resume',
   label: 'Resume in new terminal',
+  shortLabel: 'Resume',
   icon: '↻',
   group: 'session',
   available: (ctx) => {
@@ -136,6 +137,7 @@ registerChatAction({
 registerChatAction({
   id: 'session-fork',
   label: 'Fork in new terminal',
+  shortLabel: 'Fork',
   icon: '⑂',
   group: 'session',
   available: (ctx) => {

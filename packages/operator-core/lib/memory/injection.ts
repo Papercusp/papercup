@@ -363,6 +363,20 @@ function injectBudgetChars(): number {
 }
 
 /**
+ * Per-entry ceiling on a rendered memory line's TEXT (WI-6870). Before this, the
+ * admission loop's `lines.length > 0` first-entry exemption let ONE oversized memory
+ * (measured 4,901 chars against a 4,000 budget) consume the ENTIRE budget by itself —
+ * every other candidate then starved and the turn got a single memory plus a "learnings
+ * withheld" notice. Clamping each entry here makes that exemption harmless: no single
+ * line can ever be large enough to blow a normal budget on its own, so budget admission
+ * can now be enforced strictly (see `admit` below) without a "let the first one through
+ * no matter what" escape hatch. Mirrors the corpus leg's `CORPUS_TEASER_MAX_CHARS`
+ * (corpus-recall.ts), sized larger because this pool renders full sentences rather than
+ * resolve-on-demand pointers.
+ */
+const MAX_ENTRY_CHARS = 900;
+
+/**
  * Phase telemetry (EI-12962): the injection measured ~10.7s of a ~11s prompt
  * build on a COLD operator process (available() ~5s + first-embed ~4s) vs
  * ~1.5s warm (probe 2026-07-16, hybrid-pg, 7-scope fan-out). Log the per-phase
@@ -939,7 +953,11 @@ async function buildBlockInner(
   const lines: string[] = [];
   const surfacedIds: string[] = [];
   const admit = (line: string, id?: string): boolean => {
-    if (spent + line.length > budget && lines.length > 0) return false;
+    // WI-6870: no more "let the first entry through no matter its size" exemption —
+    // MAX_ENTRY_CHARS above already keeps any single line well under a normal budget,
+    // so strict enforcement here can no longer starve every OTHER candidate the way the
+    // exemption used to (measured: one 4,901-char memory against a 4,000 budget).
+    if (spent + line.length > budget) return false;
     lines.push(line);
     spent += line.length;
     if (id) surfacedIds.push(id);
@@ -956,11 +974,22 @@ async function buildBlockInner(
   const mainRows: Array<{ line: string; id?: string; text: string }> = [];
   const packRows: Array<{ line: string; id?: string; text: string }> = [];
   for (const hit of ranked) {
-    const row = (label?: string): { line: string; id?: string; text: string } => ({
-      line: `- ${fmtScope(hit, label)}${fmtId(hit)} ${hit.text}`,
-      id: hit.id,
-      text: hit.text ?? '',
-    });
+    const row = (label?: string): { line: string; id?: string; text: string } => {
+      const fullText = hit.text ?? '';
+      // WI-6870: clamp the RENDERED text to MAX_ENTRY_CHARS so a single oversized memory
+      // can't blow the whole budget by itself. Dedup below still compares the FULL text
+      // (not this clamped copy), so two distinct long entries that happen to share a
+      // >900-char prefix are never mistaken for near-duplicates.
+      const displayText =
+        fullText.length > MAX_ENTRY_CHARS
+          ? `${fullText.slice(0, MAX_ENTRY_CHARS)}… (truncated — memory:search for the rest)`
+          : fullText;
+      return {
+        line: `- ${fmtScope(hit, label)}${fmtId(hit)} ${displayText}`,
+        id: hit.id,
+        text: fullText,
+      };
+    };
     if (survivingHive.has(hit)) {
       const slug = survivingHive.get(hit)!;
       (isPackHit(hit) ? packRows : mainRows).push(row(`hive:${slug}`));
@@ -978,9 +1007,15 @@ async function buildBlockInner(
   const { kept: dedupedRendered } = collapseNearDuplicates(rendered, (r) => r.text);
   let truncated = false;
   for (const { line, id } of dedupedRendered) {
+    // WI-6870: skip-and-continue instead of a hard break. A `break` here discarded every
+    // remaining (lower-ranked but possibly SMALLER) entry once ONE entry didn't fit —
+    // measured mean 849 chars (21%) of the budget left on the table per turn, worst case
+    // 2,675 (67%). The result stays in relevance order (admitted entries are pushed in
+    // `dedupedRendered`'s rank order); this only lets a later, smaller entry fill space a
+    // single earlier oversized one would otherwise have wasted.
     if (!admit(line, id)) {
       truncated = true;
-      break;
+      continue;
     }
   }
   if (lines.length === 0) return null;

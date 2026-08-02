@@ -391,7 +391,13 @@ export function selectCorpusLines(input: SelectCorpusInput): SelectCorpusResult 
     const label = kind === 'work-item' ? `work-item ${ref}` : `session ${ref}`;
     const teaser = oneLine(hitText(hit)).slice(0, CORPUS_TEASER_MAX_CHARS);
     const line = `- [${label}${dateLabel(hit.ts)}] ${teaser} → ${handle.resolve}`;
-    if (spent + line.length > budget && lines.length > 0) {
+    // WI-6870: no first-entry exemption — the teaser already caps hitText, but the
+    // label/date/resolve wrapper around it can still push a single line over budget
+    // (measured 945 chars against a 900 budget); the exemption let that first entry
+    // through unconditionally instead of being size-checked like every other one.
+    // This already `continue`s (not `break`s), so later, smaller entries still get a
+    // chance to fill the space this one couldn't use.
+    if (spent + line.length > budget) {
       dropped.push({ ref, reason: 'budget-exhausted' });
       continue;
     }

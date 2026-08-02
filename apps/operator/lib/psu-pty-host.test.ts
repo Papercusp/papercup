@@ -302,6 +302,114 @@ describe('control wire protocol (v1)', () => {
   });
 });
 
+// EI-19311270129974785: `deliveryId` (the sender's durable event_wake_deliveries.id)
+// rides the envelope for every mode that can go through the gated pipeline (a delivery
+// row exists) — turn/reset/recycle/carry-respawn — so the host can dedup a retry of an
+// already-accepted delivery. Round-trip through encode/decode for each of those modes,
+// mirroring the ownerId coverage above (raw/osc/compact/mcp-reconnect are one-shot,
+// non-delivery calls and deliberately do not carry it).
+describe('decodeDeliveryId (EI-19311270129974785)', () => {
+  it('turn envelope round-trips deliveryId', () => {
+    const d = decodeControl(encodeControl({ mode: 'turn', data: 'hello', deliveryId: '35092' }));
+    expect(d).toEqual({ mode: 'turn', data: 'hello', gated: true, deliveryId: '35092' });
+  });
+  it('reset/recycle/carry-respawn envelopes round-trip deliveryId', () => {
+    expect(decodeControl(encodeControl({ mode: 'reset', data: 'note', deliveryId: '1' }))).toEqual({
+      mode: 'reset', data: 'note', gated: true, deliveryId: '1',
+    });
+    expect(decodeControl(encodeControl({ mode: 'recycle', data: 'note', deliveryId: '2' }))).toEqual({
+      mode: 'recycle', data: 'note', gated: true, deliveryId: '2',
+    });
+    expect(
+      decodeControl(
+        JSON.stringify({ v: 1, mode: 'carry-respawn', data: 'p', systemPromptAddendum: 'c', deliveryId: '3' }),
+      ),
+    ).toEqual({
+      mode: 'carry-respawn', data: 'p', systemPromptAddendum: 'c', drillId: '', sessionClass: '',
+      gated: true, deliveryId: '3',
+    });
+  });
+  it('a pre-fix sender (no deliveryId) decodes with the field unset — no regression', () => {
+    const d = decodeControl(encodeControl({ mode: 'turn', data: 'hello' }));
+    expect('deliveryId' in d).toBe(false);
+  });
+  it('a malformed deliveryId (wrong type, empty string) is dropped, not passed through', () => {
+    const d = decodeControl(JSON.stringify({ v: 1, mode: 'turn', data: 'x', deliveryId: '' }));
+    expect('deliveryId' in d).toBe(false);
+    const d2 = decodeControl(JSON.stringify({ v: 1, mode: 'turn', data: 'x', deliveryId: 42 }));
+    expect('deliveryId' in d2).toBe(false);
+  });
+  it('one-shot raw/osc/mcp-reconnect calls never carry a deliveryId (no delivery row to dedup)', () => {
+    expect('deliveryId' in decodeControl(encodeControl({ mode: 'raw', data: '\x03', deliveryId: 'x' }))).toBe(false);
+    expect('deliveryId' in decodeControl(encodeControl({ mode: 'osc', data: '\x1b]11;#000\x07', deliveryId: 'x' }))).toBe(
+      false,
+    );
+    expect(
+      'deliveryId' in decodeControl(encodeControl({ mode: 'mcp-reconnect', data: 'papercusp-su', deliveryId: 'x' })),
+    ).toBe(false);
+  });
+});
+
+/**
+ * makeDeliveryDedup (EI-19311270129974785): the "a single wake delivery is
+ * re-attempted 4x and injects 3 duplicate agent turns" bug. Root cause: the host's
+ * own ack-write-back to the client is best-effort (a slow/errored write, or the
+ * client's own ack-wait timing out, both look identical to "the host never got it"),
+ * but the host is ALREADY unstoppably committed to running the gated delivery once
+ * it decided to accept — so a client retry with the SAME delivery id must be
+ * recognized and short-circuited, never re-run as a fresh, unrelated request.
+ */
+describe('makeDeliveryDedup (EI-19311270129974785)', () => {
+  it('a fresh id is not a duplicate; marking it accepted makes the NEXT check a duplicate', () => {
+    const d = makeDeliveryDedup();
+    expect(d.isDuplicate('35092')).toBe(false);
+    d.markAccepted('35092');
+    expect(d.isDuplicate('35092')).toBe(true);
+    // Re-checking (the sweep path) does not itself clear the entry.
+    expect(d.isDuplicate('35092')).toBe(true);
+  });
+  it('an absent/empty id is never a duplicate and marking it is a no-op — callers never need to branch', () => {
+    const d = makeDeliveryDedup();
+    expect(d.isDuplicate(undefined)).toBe(false);
+    expect(d.isDuplicate('')).toBe(false);
+    d.markAccepted(undefined);
+    d.markAccepted('');
+    expect(d.size()).toBe(0);
+  });
+  it('different ids are tracked independently', () => {
+    const d = makeDeliveryDedup();
+    d.markAccepted('a');
+    expect(d.isDuplicate('a')).toBe(true);
+    expect(d.isDuplicate('b')).toBe(false);
+  });
+  it('an accepted id expires after its TTL — a genuinely new delivery reusing an old id (in practice never happens; ids are monotonic) is not wedged forever', () => {
+    let t = 1_000_000;
+    const d = makeDeliveryDedup({ ttlMs: 1000, now: () => t });
+    d.markAccepted('x');
+    expect(d.isDuplicate('x')).toBe(true);
+    t += 999;
+    expect(d.isDuplicate('x')).toBe(true); // still within TTL
+    t += 2;
+    expect(d.isDuplicate('x')).toBe(false); // expired
+  });
+  it('the sweep is opportunistic: an expired entry is evicted (size drops) on the next isDuplicate call', () => {
+    let t = 0;
+    const d = makeDeliveryDedup({ ttlMs: 100, now: () => t });
+    d.markAccepted('a');
+    d.markAccepted('b');
+    expect(d.size()).toBe(2);
+    t = 200; // both now expired
+    d.isDuplicate('anything'); // triggers the sweep as a side effect
+    expect(d.size()).toBe(0);
+  });
+  it('DELIVERY_DEDUP_TTL_MS is comfortably longer than the client retry envelope it must outlive', () => {
+    // markDeliveryFailed's backoff caps at 10min (store.ts backoffMs: min(5s*2^attempts, 10min));
+    // this TTL must exceed any realistic total retry-storm duration so a legitimate late
+    // retry is always still deduped, while staying bounded so the map doesn't grow forever.
+    expect(DELIVERY_DEDUP_TTL_MS).toBeGreaterThanOrEqual(10 * 60_000);
+  });
+});
+
 describe('makeStaleFireGuard (WI-5510 — delivery-side dead-man switch against a superseded fire)', () => {
   it('admits + commits a fresh (routineId, fireNumber) pair, then drops an equal or older one for the same routine', () => {
     const g = makeStaleFireGuard();
