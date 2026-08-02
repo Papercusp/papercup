@@ -152,6 +152,12 @@ export const SYNC_READ_ALLOWLIST: Record<string, SyncReadAllowlistEntry> = {
       'Bounded feature list. P-007 dropped the heavy per-row summary at the sync boundary (detail on demand); the residual ~466KB is 1181 rows × ~11 light rendered fields. Row count, not per-row waste.',
     reviewBy: '2026-09-01',
   },
+  'plans.attention': {
+    maxBytes: 950_000,
+    reason:
+      'The whole owner-attention feed (173 groups / ~1114 items). P-003 already split it list/detail (actions dropped, body clipped 609KB -> ~256KB); P-028/D-025 then removed the null-valued keys, measured 1,062,144 -> ~907,000 B (-14.6%) live. Still far over the 250KB budget and honestly so: the residual is item COUNT x rendered fields, and the feed is unscoped by design (the sidebar badge counts decisions workspace-wide). The next real cut is fewer items on the wire, not fewer bytes per item — the aggregate half already left via plans.attentionCounts, so what remains is paginating/windowing the list itself.',
+    reviewBy: '2026-09-01',
+  },
   'workItems.byHarness': {
     maxBytes: 300_000,
     reason:

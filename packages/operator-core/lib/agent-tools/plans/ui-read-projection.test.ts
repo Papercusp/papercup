@@ -201,6 +201,96 @@ describe('projectPlansReadForUi — attention list/detail split', () => {
   });
 });
 
+/**
+ * Null-key omission (no-http-anywhere-2026-07-28 D-025 / WI-7039) — 154,971 B of
+ * a live 1,062,144 B payload (14.6%). The invariant that matters is the SHAPE of
+ * the contract change: a null key becomes ABSENT (⇒ `undefined`), never a
+ * falsy-but-present value, and nothing non-null is touched.
+ */
+describe('projectPlansReadForUi — attention omits null-valued keys', () => {
+  const nullyFixture = () => ({
+    groups: [
+      {
+        key: 'g1',
+        kind: 'alerts',
+        planSlug: null,
+        harnessSlug: null,
+        title: 'Alerts',
+        maxImportance: 'high',
+        items: [
+          {
+            id: 'a1',
+            title: 't',
+            body: 'short',
+            status: 'open',
+            needsHuman: false,
+            triageNote: null,
+            triagedBy: null,
+            triagedAt: null,
+            ownerAgentId: null,
+            ownerLabel: null,
+            harnessSlug: null,
+            authorizer: null,
+            whyGated: null,
+            planSlug: null,
+            itemRef: null,
+            category: null,
+            ref: { kind: 'owner-wall', wallOwnerId: null, wallRef: null },
+          },
+        ],
+      },
+    ],
+  });
+
+  const firstItem = (out: unknown) =>
+    (out as { groups: Array<{ items: Array<Record<string, unknown>> }> }).groups[0].items[0];
+
+  it('drops every null-valued key on an item', () => {
+    const item = firstItem(projectPlansReadForUi('attention', nullyFixture()));
+    for (const k of [
+      'triageNote', 'triagedBy', 'triagedAt', 'ownerAgentId', 'ownerLabel',
+      'harnessSlug', 'authorizer', 'whyGated', 'planSlug', 'itemRef', 'category',
+    ]) {
+      expect(item, `${k} should be absent, not null`).not.toHaveProperty(k);
+    }
+  });
+
+  it('drops null-valued keys on the GROUP too, without losing items', () => {
+    const g = (projectPlansReadForUi('attention', nullyFixture()) as {
+      groups: Array<Record<string, unknown>>;
+    }).groups[0];
+    expect(g).not.toHaveProperty('planSlug');
+    expect(g).not.toHaveProperty('harnessSlug');
+    expect(g.key).toBe('g1');
+    expect(g.title).toBe('Alerts');
+    expect(g.items).toHaveLength(1);
+  });
+
+  it('keeps non-null values, INCLUDING falsy ones (false / 0 / "") — only null goes', () => {
+    const att = nullyFixture();
+    Object.assign(att.groups[0].items[0], { needsHuman: false, count: 0, note: '' });
+    const item = firstItem(projectPlansReadForUi('attention', att));
+    expect(item.needsHuman).toBe(false);
+    expect(item.count).toBe(0);
+    expect(item.note).toBe('');
+    expect(item.id).toBe('a1');
+    expect(item.status).toBe('open');
+  });
+
+  it('does NOT recurse into `ref` — a discriminated union consumers narrow structurally', () => {
+    const item = firstItem(projectPlansReadForUi('attention', nullyFixture()));
+    expect(item.ref).toEqual({ kind: 'owner-wall', wallOwnerId: null, wallRef: null });
+  });
+
+  it('drops group nulls even when the group carries no items array', () => {
+    const out = projectPlansReadForUi('attention', {
+      groups: [{ key: 'g', planSlug: null, title: 'x' }],
+    }) as { groups: Array<Record<string, unknown>> };
+    expect(out.groups[0]).not.toHaveProperty('planSlug');
+    expect(out.groups[0].title).toBe('x');
+  });
+});
+
 describe('projectPlansReadForUi — passthrough verbs (plans:get stays full fidelity)', () => {
   it('leaves plans:get byte-identical — it is the full-fidelity detail read', () => {
     const plan = { slug: 'p', raw: long(5000), items: [{ id: 'P-1', text: long(1000) }] };

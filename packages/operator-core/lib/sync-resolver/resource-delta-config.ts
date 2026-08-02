@@ -26,7 +26,10 @@ export interface ResourceDeltaConfig {
 const CONFIG: Readonly<Record<string, ResourceDeltaConfig>> = {
   // plans.attention resolves to AttentionGroup[] (one group per plan + an alerts group);
   // keyed by `key`. A single-plan write changes only that group's content-hash → re-send 1 of N.
-  'plans.attention': { itemKeyField: 'key', schemaVersion: 'plans-attention-v1' },
+  // v2 (WI-7039 / D-025): the UI projection now omits null-valued keys, which
+  // changes every row's content hash. The bump makes in-flight cursors take ONE
+  // clean full instead of reporting the whole view as `updated`.
+  'plans.attention': { itemKeyField: 'key', schemaVersion: 'plans-attention-v2' },
   // plans.list resolves to the plan rows, keyed by `slug` (same key the plans:list tool uses).
   'plans.list': { itemKeyField: 'slug', schemaVersion: 'plans-list-v1' },
 };
