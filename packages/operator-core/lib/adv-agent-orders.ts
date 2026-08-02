@@ -297,7 +297,10 @@ export async function getAgentOrders(owner: string): Promise<AgentOrders> {
   if (controlState) {
     try {
       const trace = buildInstructionPrecedenceTrace({
-        source: 'adv:agent-orders',
+        // The trace's `source` is a closed union of the surfaces that build one.
+        // We derive ours from the SAME control-anchor state that surface uses,
+        // so we declare it honestly rather than widening the union for a reader.
+        source: 'control-anchor',
         ownerId: owner,
         modes: controlState.modes,
         route: controlState.route,
@@ -376,11 +379,17 @@ export async function getAgentOrders(owner: string): Promise<AgentOrders> {
       dispositionStatus: d.dispositionStatus ?? null,
     })),
     directivesTotalOpen: carryBrief?.directivesTotalOpen ?? 0,
-    facts: (carryBrief?.facts ?? []).map((f, i) => ({
+    // Matched BY KEY, not by index: `factsStaleness` only carries entries for
+    // facts that qualify for an embedding comparison, so it is routinely SHORTER
+    // than `facts` and positionally misaligned. Indexing it would attach one
+    // fact's staleness verdict to a different fact — a wrong answer that looks
+    // perfectly well-formed.
+    facts: (carryBrief?.facts ?? []).map((f) => ({
       key: f.key,
       body: f.body,
       sourceRef: f.sourceRef ?? null,
-      possiblyStale: carryBrief?.factsStaleness?.[i]?.verdict === 'possibly-stale',
+      possiblyStale:
+        carryBrief?.factsStaleness?.find((s) => s.key === f.key)?.verdict === 'possibly-stale',
     })),
     carry,
     unavailable,

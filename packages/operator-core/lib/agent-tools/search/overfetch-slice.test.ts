@@ -148,12 +148,18 @@ beforeEach(() => {
 // =============================================================================
 describe('search:fulltext — over-fetches a pool, returns exactly `limit`', () => {
   it('retrieves rerankCandidateCount(5)=20 but the page is 5 (rerank healthy)', async () => {
+    // Favor a buried hit so the assertion below can only pass on a HEALTHY
+    // rerank: a bare length check would also pass on the degraded passthrough
+    // (which returns `limit` rows too), making "healthy" untestable.
+    scorer.mockImplementation(scorerFavoring('h18'));
     const tool = (await import('./fulltext')).default;
     const res = await tool.handler({ query: 'q', limit: 5 } as never, CTX() as never);
 
     expect(ftCalls[0].ctx.limit).toBe(rerankCandidateCount(5));
     expect(ftCalls[0].ctx.limit).toBe(20);
-    expect(idsOf(res as never)).toHaveLength(5);
+    const ids = idsOf(res as never);
+    expect(ids).toHaveLength(5);
+    expect(ids[0]).toBe('h18'); // proves the rerank actually ran
   });
 
   it('still returns exactly 5 when the reranker is DOWN — the pool never leaks', async () => {
@@ -171,11 +177,14 @@ describe('search:fulltext — over-fetches a pool, returns exactly `limit`', () 
 
 describe('search:semantic — over-fetches a pool, returns exactly `limit`', () => {
   it('retrieves 20 but the page is 5 (rerank healthy)', async () => {
+    scorer.mockImplementation(scorerFavoring('h18'));
     const tool = (await import('./semantic')).default;
     const res = await tool.handler({ query: 'q', limit: 5 } as never, CTX() as never);
 
     expect(hybridCalls[0].ctx.limit).toBe(20);
-    expect(idsOf(res as never)).toHaveLength(5);
+    const ids = idsOf(res as never);
+    expect(ids).toHaveLength(5);
+    expect(ids[0]).toBe('h18'); // proves the rerank actually ran
   });
 
   it('still returns exactly 5 when the reranker is DOWN', async () => {
@@ -205,12 +214,16 @@ describe('/api/user/search — the site where the candidate CAP binds', () => {
     // multiplier) is what bounds retrieval here — the one call site where the
     // difference is observable.
     pool = poolOf(RERANK_MAX_CANDIDATES);
+    // h22 sits beyond the 20-row page, so it can only reach it via the 4 extra
+    // candidates the cap still allows — and its presence proves the rerank ran.
+    scorer.mockImplementation(scorerFavoring('h22'));
     const body = await callRoute('?q=hello&limit=20');
 
     expect(ftCalls[0].ctx.limit).toBe(RERANK_MAX_CANDIDATES);
     expect(ftCalls[0].ctx.limit).toBe(24);
     expect(ftCalls[0].ctx.limit).toBeLessThan(20 * 4);
     expect(body.prose).toHaveLength(20);
+    expect(body.prose[0].source_id).toBe('h22');
   });
 
   it('returns exactly `limit` when the reranker is DOWN', async () => {

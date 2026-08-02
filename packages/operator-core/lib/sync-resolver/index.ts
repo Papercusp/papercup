@@ -1087,6 +1087,26 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
+  // agentOrders.byOwner — the ORDERS half of the session popup's two-panel
+  // dossier (session-chat-popup-direction-d-2026-08-02 P-011): what the agent
+  // was TOLD, as opposed to agentDetail.byOwner's what-it-is-DOING.
+  //
+  // Deliberately a SEPARATE named query rather than another leg on
+  // agentDetail.byOwner: the orders gather runs buildCarryBrief (several
+  // queries — directives, walls, checkpoints, cited-ref hydration), while the
+  // Orders panel is independently toggleable and defaults CLOSED on a narrow
+  // viewport. Folding it in would make every chat popup pay that cost even when
+  // the panel is never shown, and agentDetail is already read by the footer's
+  // summary chip on every open.
+  'agentOrders.byOwner': {
+    argsSchema: z.object({ ownerId: z.string().min(1) }),
+    resolve: async (args) => {
+      const { ownerId } = args as { ownerId: string };
+      const { getAgentOrders } = await import('../adv-agent-orders');
+      return [await getAgentOrders(ownerId)];
+    },
+  },
+
   // advRoster.list — shared Sessions roster context, formerly a 4s
   // `/api/adv/roster` poll. Shape matches the route payload.
   'advRoster.list': {

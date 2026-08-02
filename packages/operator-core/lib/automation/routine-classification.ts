@@ -349,6 +349,10 @@ export const TARGET_ROLE_SPEND: Readonly<Record<string, SpendEntry>> = {
   'system:coord-probe-canary': { spend: 'none', why: 'Runs a verb-cycle probe pair' },
   'system:plan-item-orphan-reconcile': { spend: 'none', why: 'Reconciles orphaned plan items' },
   'system:supervision-reconcile': { spend: 'none', why: 'Reconciles supervision rows' },
+  'system:readiness-drift-monitor': {
+    spend: 'none',
+    why: 'Reconciles the work_item_blocked readiness sidecar against its SQL oracle and repairs drift',
+  },
   'system:fleet-headcount-governor': { spend: 'none', why: 'Caps fleet headcount — throttles spend, never causes it' },
   'system:autonomy-trust-scan': { spend: 'none', why: 'Scores autonomy trust from recorded dispositions' },
   'system:hive-canary-sla': { spend: 'none', why: 'Checks yesterday’s canaries against their deadline' },

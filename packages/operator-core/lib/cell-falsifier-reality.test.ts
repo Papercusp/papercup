@@ -40,10 +40,45 @@
  * Every check below therefore drives the TOOL's payload assembly.
  */
 
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest';
 import type { CellSpec } from './cell-registry';
 import { BUILTIN_CELLS } from './cell-registrations';
 import { gitPipelinePosition } from './git-pipeline-position';
+
+/**
+ * EI-19316737896654304 — this file takes the no-real-PG rail's DOCUMENTED opt-out
+ * (EI-19311807188719573, `libs/test-config/src/setup-no-real-pg.ts`), which reads:
+ * "A unit test that genuinely needs a live pool can delete the var in its own
+ * beforeAll/test body — that runs AFTER this module-level set and so still wins."
+ *
+ * ⚠ THE OPT-OUT, NOT THE AUTHOR'S PREFERRED RENAME, AND THE REASON MATTERS. That note
+ * prefers renaming such a file to `*.integration.test.ts`, and for almost every other
+ * file caught by the rail that IS the right move. It is the wrong one here: the
+ * integration layer builds against a THROWAWAY TESTCONTAINER, and this suite's entire
+ * premise (see the file header, and the "Mutating the returned payload would prove
+ * NOTHING" note below) is that a cell's declared paths are walked against a payload
+ * this box's LIVE resolver actually produced. An empty testcontainer would answer with
+ * a differently-shaped payload assembled from no gate/deploy state, so the rename would
+ * not preserve this suite — it would silently convert a reality check into a fixture
+ * check, which is precisely the class of guard this file was written to replace.
+ *
+ * This is NOT the accident the rail exists to catch. The rail was built for a leg that
+ * escaped `vi.mock` and read a live WI row, staying green until that row was closed —
+ * i.e. a test asserting live DATA by accident. Everything here asserts payload SHAPE
+ * (own-key presence) and pivots off values it reads from the same live run rather than
+ * hardcoding them, so no live row's contents can make it pass or fail.
+ *
+ * Restored in afterAll so the exemption cannot leak to another file sharing this worker.
+ */
+let forbidRealPgBefore: string | undefined;
+beforeAll(() => {
+  forbidRealPgBefore = process.env.PAPERCUSP_FORBID_REAL_PG;
+  delete process.env.PAPERCUSP_FORBID_REAL_PG;
+});
+afterAll(() => {
+  if (forbidRealPgBefore === undefined) delete process.env.PAPERCUSP_FORBID_REAL_PG;
+  else process.env.PAPERCUSP_FORBID_REAL_PG = forbidRealPgBefore;
+});
 
 /**
  * Own-key path walk. Returns whether every SEGMENT is present in the object graph,

@@ -48,6 +48,10 @@ vi.mock('./plans-api', () => ({
   promoteToHarness: vi.fn(async () => ({ ok: true, features_created: 1 })),
   startPlan: (s: string) => startMock(s as never),
   pausePlan: (s: string) => pauseMock(s as never),
+  // P-013: the real predicate, not a stub — the whole point of the refusal branch
+  // is that it discriminates on the wire shape, so a stub would test nothing.
+  isPlanStartRefusal: (r: unknown) =>
+    !!r && typeof r === 'object' && (r as { error?: unknown }).error === 'plan_inputs_not_ready',
   IMPORTANCE_LEVELS: ['urgent', 'high', 'normal', 'low'],
 }));
 

@@ -796,22 +796,52 @@ export function classifyEarlyExit(
   return { failed: false, why: null };
 }
 
-/** Watch a spawned child for an early exit; resolves null when it outlives the probe. */
+/**
+ * Watch a spawned child for an early exit OR a spawn-level failure; resolves
+ * null only when it genuinely outlives the probe.
+ *
+ * ⚠ EI-19311623077693508 (second half): this used to listen for `'exit'` ALONE,
+ * which made every caller blind to the failure mode where the child never
+ * started at all. Node reports THAT as an `'error'` event (ENOENT/EACCES/EPERM
+ * from the exec itself) and — for ENOENT — emits NO `'exit'`, so the promise ran
+ * out its full `probeMs` and resolved null. Both call sites read null as
+ * "outlived the probe ⇒ healthy" and fail OPEN, so a launch that never happened
+ * was reported as a live window: `honored (1 member(s) opened)`, zero processes,
+ * no error anywhere. Measured on the headless rig mac 2026-08-02 — the honor
+ * path's two log lines were 1.516s apart, i.e. the full 1200ms probe plus
+ * overhead, and NOT one of `no window opened` / `-10810` / `headless-fallback`
+ * appeared, proving the ok-branch was taken.
+ *
+ * A spawn `'error'` is the LEAST ambiguous failure there is — the process does
+ * not exist — so it must never reach the fail-open branch. It is surfaced as a
+ * distinct `error` field rather than a synthetic exit code so callers can say
+ * what actually happened instead of inventing an exit status.
+ */
 function watchEarlyExit(
   child: ChildProcess,
   probeMs: number,
-): Promise<{ code: number | null; signal: string | null } | null> {
+): Promise<{ code: number | null; signal: string | null; error?: Error } | null> {
   return new Promise((resolvePromise) => {
-    const timer = setTimeout(() => {
+    const cleanup = () => {
+      clearTimeout(timer);
       child.removeListener('exit', onExit);
+      child.removeListener('error', onError);
+    };
+    const timer = setTimeout(() => {
+      cleanup();
       resolvePromise(null);
     }, probeMs);
     timer.unref?.();
     const onExit = (code: number | null, signal: NodeJS.Signals | null) => {
-      clearTimeout(timer);
+      cleanup();
       resolvePromise({ code, signal });
     };
+    const onError = (error: Error) => {
+      cleanup();
+      resolvePromise({ code: null, signal: null, error });
+    };
     child.once('exit', onExit);
+    child.once('error', onError);
   });
 }
 
@@ -1156,6 +1186,21 @@ export async function spawnConsole(opts: SpawnConsoleOpts): Promise<SpawnConsole
     } catch {
       stderrText = '';
     }
+    if (earlyExit?.error) {
+      // The emulator binary never started (ENOENT/EACCES). classifyEarlyExit
+      // cannot express this — it reasons about exit codes — so it is answered
+      // here rather than smuggled in as a synthetic code.
+      try {
+        unlinkSync(stderrPath);
+      } catch { /* best-effort */ }
+      return {
+        status: 'error',
+        error:
+          `spawn ${term.bin} failed: ${earlyExit.error.message} — no window opened` +
+          `${stderrText ? `: ${stderrText}` : ''} (the emulator binary never ran)`,
+        code: 502,
+      };
+    }
     if (earlyExit) {
       const verdict = classifyEarlyExit(term.args, earlyExit.code, earlyExit.signal);
       if (verdict.failed) {
@@ -1255,6 +1300,22 @@ async function spawnMacConsole(envelope: ConsoleEnvelope, oneliner: string): Pro
     }
 
     const earlyExit = await watchEarlyExit(child, EARLY_EXIT_PROBE_MS);
+    // `open` never STARTED (ENOENT/EACCES on the launcher itself). This must be
+    // checked before the exit-code branch and must never fall through to the
+    // fail-open path below: on macOS a normal exit is uninformative, so an
+    // unstarted launcher would otherwise be counted as a live window.
+    if (earlyExit?.error) {
+      try { unlinkSync(stderrPath); } catch { /* best-effort */ }
+      stderrPath = null;
+      return {
+        status: 'error',
+        error:
+          `spawn open failed: ${earlyExit.error.message} — no window opened` +
+          ' (EI-19311623077693508: the launcher itself never ran, so nothing was opened;' +
+          ' a headless spawn is the working path on a host with no GUI session)',
+        code: 502,
+      };
+    }
     if (earlyExit && (earlyExit.signal != null || (earlyExit.code ?? 0) !== 0)) {
       let stderrText = '';
       try {
@@ -1573,6 +1634,19 @@ export async function spawnHeadless(opts: SpawnHeadlessOpts): Promise<SpawnConso
     // a false ok. A healthy session BLOCKS here (the agent runs), so the probe
     // times out and we report ok.
     const earlyExit = await watchEarlyExit(child, EARLY_EXIT_PROBE_MS);
+    // The headless binary never started at all (missing psu/agent CLI on PATH is
+    // the live case on the rig mac, where `claude` sits in ~/.local/bin outside
+    // the sidecar's ssh-launched PATH). Without this, the fail-open branch below
+    // reports a member that does not exist — the same phantom the visible path had.
+    if (earlyExit?.error) {
+      return {
+        status: 'error',
+        error:
+          `headless spawn failed to start: ${earlyExit.error.message}` +
+          ` — the binary never ran (is the agent CLI on the operator's PATH?); see ${logPath}`,
+        code: 502,
+      };
+    }
     if (earlyExit && (earlyExit.signal != null || (earlyExit.code ?? 0) !== 0)) {
       let logTail = '';
       try {
