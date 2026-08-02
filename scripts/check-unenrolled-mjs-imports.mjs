@@ -43,6 +43,49 @@ const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const CONFIG = 'tsconfig.declarations.json';
 
 /**
+ * BASELINE (TEMPORARY — must shrink to EMPTY; NEW entries may NOT be added).
+ *
+ * Every entry is in `apps/operator` (`@papercusp/web`), which is `allowJs: false`
+ * + strict and so genuinely has TS7016 on each of these — but which NO tsc gate
+ * compiles. The four per-project gates are operator-core, operator-VITE
+ * (`apps/operator-vite/`, a different directory), orchestrator and papercusp-libs;
+ * `apps/operator` has no `typecheck` script of its own either. So these are real
+ * but latent: they red nothing today, and failing on them would make this guard
+ * unadoptable without fixing 13 unrelated imports first.
+ *
+ * Keyed by `file -> target`, deliberately NOT by line, so ordinary edits don't
+ * churn it while a NEW module imported into an already-listed file still fires.
+ * Fix one by giving it a `@ts-ignore` or enrolling it, then delete its line.
+ *
+ * @type {Set<string>}
+ */
+export const BASELINE = new Set([
+  'apps/operator/lib/operator-discovery.test.ts -> apps/operator/scripts/operator-discovery.mjs',
+  'apps/operator/lib/psu-launcher-fork.integration.test.ts -> apps/operator/scripts/psu-launcher.mjs',
+  'apps/operator/lib/psu-launcher.test.ts -> apps/operator/scripts/psu-launcher.mjs',
+  'apps/operator/lib/psu-pty-host-turn.integration.test.ts -> apps/operator/scripts/psu-pty-host.mjs',
+  'apps/operator/lib/psu-pty-host.integration.test.ts -> apps/operator/scripts/psu-pty-host.mjs',
+  'apps/operator/lib/psu-pty-host.test.ts -> apps/operator/scripts/psu-pty-host.mjs',
+  'apps/operator/lib/ptool.test.ts -> apps/operator/scripts/ptool.mjs',
+  'apps/operator/lib/tty-title-target.test.ts -> apps/operator/scripts/psu-launcher.mjs',
+  'apps/operator/scripts/__tests__/bghost-watchdog.test.ts -> apps/operator/scripts/bghost-watchdog.mjs',
+  'apps/operator/scripts/__tests__/psu-supervisor-beat.test.ts -> apps/operator/scripts/psu-launcher.mjs',
+  'apps/operator/scripts/__tests__/tutorial-runner.test.ts -> apps/operator/scripts/tutorial-runner.mjs',
+  'apps/operator/scripts/check-vitest-mock-paths.test.ts -> apps/operator/scripts/check-vitest-mock-paths.mjs',
+  'apps/operator/scripts/psu-launcher-env-sanitize.test.ts -> apps/operator/scripts/psu-launcher.mjs',
+]);
+
+/**
+ * The baseline key for an offender — `file -> target`, no line number.
+ *
+ * @param {{ file: string, target: string }} o
+ * @returns {string}
+ */
+export function baselineKey(o) {
+  return `${o.file} -> ${o.target}`;
+}
+
+/**
  * The `.mjs` modules enrolled for declaration generation, as absolute paths.
  * Read from `tsconfig.declarations.json` (JSONC — tsc accepts `//` comments)
  * so this guard and `gen-declarations.ts` can never disagree about the set.
@@ -239,22 +282,42 @@ export function scan(root = ROOT) {
 }
 
 function main() {
-  const offenders = scan();
+  const all = scan();
+  const offenders = all.filter((o) => !BASELINE.has(baselineKey(o)));
+
   // Report coverage honestly rather than inferring it from an exit code — a
   // submodule git cannot descend into contributes no files and would otherwise
   // read as "clean" (the shared coverage contract in scripts/lib/tracked-files.mjs).
   const unscanned = describeUnscanned(listFilesIncludingUntracked(ROOT));
   if (unscanned) console.error(unscanned);
+
+  // A baseline entry that no longer offends has been FIXED — say so loudly so the
+  // ratchet actually shrinks, but do NOT fail on it: this runs on a tree the whole
+  // fleet edits concurrently, and failing a peer's build the moment they improve
+  // something is how a guard gets disabled rather than obeyed.
+  const live = new Set(all.map(baselineKey));
+  const stale = [...BASELINE].filter((k) => !live.has(k));
+  if (stale.length) {
+    console.error(`\n⚠ ${stale.length} BASELINE entr(y/ies) no longer offend — delete them from BASELINE`);
+    console.error('  in scripts/check-unenrolled-mjs-imports.mjs so the ratchet cannot rot:\n');
+    for (const k of stale) console.error(`    ${k}`);
+  }
+
   if (offenders.length === 0) {
-    console.log('✓ check-unenrolled-mjs-imports: every .mjs imported from TS is enrolled or suppressed');
+    console.log(
+      `✓ check-unenrolled-mjs-imports: every .mjs imported from TS is enrolled or suppressed (${BASELINE.size} baselined)`,
+    );
     return;
   }
   console.error('\n✗ .mjs imported from TypeScript with no declaration and no suppression.');
-  console.error('  operator-core is `allowJs: false` + strict, so this is TS7016 at the green gate.\n');
+  console.error('  These projects are `allowJs: false` + strict, so each one is TS7016 —');
+  console.error('  which vitest cannot see and the tsc baseline cannot absorb (new file, new error).\n');
   for (const o of offenders) console.error(`    ${o.file}:${o.line}  ->  ${o.target}`);
   console.error('\n  Fix with EITHER:');
   console.error(`    1. add the module to ${CONFIG} and run \`npm run gen:declarations\` (typed), or`);
   console.error('    2. prefix the import with `// @ts-ignore — pure JS script, no .d.ts` (untyped).');
+  console.error('\n  For a MULTI-LINE import the directive must go immediately above the `} from ...`');
+  console.error('  line — that is where tsc lands the diagnostic — not above the `import` keyword.');
   console.error(`\n  ${offenders.length} offender(s).`);
   process.exit(1);
 }

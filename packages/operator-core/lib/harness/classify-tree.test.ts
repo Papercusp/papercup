@@ -286,7 +286,7 @@ describe('walkHarnessTree — integration against papercup`s real libs/', () => 
   // from the very oracle it guards would silently SKIP if someone genuinely broke
   // submodule classification, converting a real regression into a green run. The
   // guard checks the ENVIRONMENT; the assertions check the CLASSIFIER.
-  const declaredLibsSubmodules = (() => {
+  const readDeclaredLibsSubmodules = (): string[] => {
     const gitmodules = join(papercupRoot, '.gitmodules');
     if (!existsSync(gitmodules)) return [];
     // `path = libs/<name>` entries only — nested (libs/generic/*) are not direct
@@ -294,7 +294,7 @@ describe('walkHarnessTree — integration against papercup`s real libs/', () => 
     return [...readFileSync(gitmodules, 'utf-8').matchAll(/^\s*path\s*=\s*(libs\/[^/\s]+)\s*$/gm)].map(
       (m) => m[1] as string,
     );
-  })();
+  };
 
   const isGitlinkSubmodule = (relPath: string): boolean => {
     const gitPath = join(papercupRoot, relPath, '.git');
@@ -315,16 +315,47 @@ describe('walkHarnessTree — integration against papercup`s real libs/', () => 
   const isAcceptableShape = (relPath: string): boolean =>
     !existsSync(join(papercupRoot, relPath)) || isGitlinkSubmodule(relPath);
 
-  const isPapercupCheckout =
-    existsSync(join(papercupRoot, '.gitmodules')) &&
-    statSync(join(papercupRoot, '.git'), { throwIfNoEntry: false })?.isDirectory() === true &&
-    declaredLibsSubmodules.length > 0 &&
-    declaredLibsSubmodules.some(isGitlinkSubmodule) &&
-    declaredLibsSubmodules.every(isAcceptableShape);
+  // WI-7047 / EI-19343787099658433 — hole #3, and the reason the two hardenings
+  // above did not stop the false reds: this predicate was a `const` evaluated in
+  // the DESCRIBE BODY, i.e. at COLLECTION time, while the assertions it guards run
+  // at EXECUTION time. Those are different instants, and the comment at the top of
+  // this block records that the gate's tree materializes PROGRESSIVELY across
+  // exactly such a window (0/39 submodules at 02:05Z, 38/39 at 02:21Z). So a run
+  // could evaluate the guard while the tree still qualified, then assert after a
+  // concurrent reset/extraction had de-materialized it — reporting `subs: 0` and
+  // red-pinning the SHARED gate on a false alarm. Measured 2026-08-02: this file
+  // was SELECTED in all 14 of the day's red verdicts but FAILED in only 5 of them,
+  // and all 14 tests pass at HEAD (119/119 across this file + the two other
+  // recurring "blockers") — the signature of an environment race, not a defect.
+  //
+  // Fix: keep the collection-time check as a fast path, but RE-EVALUATE the same
+  // predicate inside each test immediately before asserting. This can only turn a
+  // would-be FALSE RED into a skip; it can never mask a real classifier regression,
+  // because on a genuine dev checkout the predicate stays true and the assertions
+  // still run (verified: 14/14 here, no skips).
+  const evaluateIsPapercupCheckout = (): boolean => {
+    const declared = readDeclaredLibsSubmodules();
+    return (
+      existsSync(join(papercupRoot, '.gitmodules')) &&
+      statSync(join(papercupRoot, '.git'), { throwIfNoEntry: false })?.isDirectory() === true &&
+      declared.length > 0 &&
+      declared.some(isGitlinkSubmodule) &&
+      declared.every(isAcceptableShape)
+    );
+  };
+
+  const isPapercupCheckout = evaluateIsPapercupCheckout();
 
   it.skipIf(!isPapercupCheckout)(
     'matches the libs/ layout: 6 submodules + 6 plain (borrowable submodules regrouped under libs/generic/)',
-    () => {
+    (ctx) => {
+      // The skipIf above sampled the environment at COLLECTION time. Re-sample it
+      // HERE, at execution time, so a tree that de-materialized in between skips
+      // instead of red-pinning the shared gate (see the guard comment above).
+      if (!evaluateIsPapercupCheckout()) {
+        ctx.skip();
+        return;
+      }
       // Walk just libs/ — not the whole repo — to keep the test fast and
       // scoped to the documented assertion.
       const libsRoot = join(papercupRoot, 'libs');
@@ -366,7 +397,12 @@ describe('walkHarnessTree — integration against papercup`s real libs/', () => 
 
   it.skipIf(!isPapercupCheckout)(
     'every expected libs/* submodule (from .gitmodules) is present',
-    () => {
+    (ctx) => {
+      // Execution-time re-sample — see the guard comment above (WI-7047).
+      if (!evaluateIsPapercupCheckout()) {
+        ctx.skip();
+        return;
+      }
       const libsRoot = join(papercupRoot, 'libs');
       const nodes = walkHarnessTree(libsRoot, {
         parentSlug: 'papercup',

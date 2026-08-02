@@ -727,6 +727,69 @@ export function defangCapturedResultMarkers(output: string): string {
   return output.split(GREEN_CHECKPOINT_RESULT_MARKER).join(CAPTURED_RESULT_MARKER_PLACEHOLDER);
 }
 
+/** EI-19346606967082413 — the orchestrator's OWN log lines, teed into a buffer so the
+ *  PERSISTED checkpoint log records what a run actually DID, not merely what its suite printed.
+ *
+ *  Why this exists: a MANUAL run redirects process stdout to /tmp, so its `quiet-cut:` /
+ *  `checkpointing candidate <sha>` / `auto-refiring` lines survive there. A SCHEDULER-fired run
+ *  redirects nowhere, so for the majority of runs those lines went to a stdout nobody keeps —
+ *  leaving the persisted log (the ONLY artifact a cron run produces) unable to answer "which
+ *  candidate(s) did this run judge?". The header names the FINAL pass's candidate alone, and the
+ *  in-process auto-refire means one run legitimately judges several.
+ *
+ *  Measured 2026-08-02: 0 of the 6 newest persisted logs contained ANY of the three lines, while
+ *  the /tmp manual log for the same pipeline contained all three (including a real refire
+ *  14fb28da -> 4961cfb8). That gap is why "which sha is being judged" repeatedly produced
+ *  contradictory answers across agents, and why the `inFlightRetriage` routines marker had to be
+ *  invented to recover state the log should have carried in the first place.
+ *
+ *  Bounded so a pathological run cannot grow it without limit. On overflow the MIDDLE is dropped,
+ *  never the head: the earliest `checkpointing candidate` line is the one a reader most needs, so
+ *  head-trimming (the obvious ring-buffer default) would discard exactly the evidence this buffer
+ *  exists to preserve. */
+const ORCHESTRATOR_LOG_MAX_LINES = 600;
+const ORCHESTRATOR_LOG_HEAD_LINES = 200;
+let orchestratorLogLines: string[] = [];
+let orchestratorLinesElided = 0;
+
+export function recordOrchestratorLine(line: string): void {
+  orchestratorLogLines.push(`${new Date().toISOString()} ${line}`);
+  if (orchestratorLogLines.length > ORCHESTRATOR_LOG_MAX_LINES) {
+    // Drop from just AFTER the head so the run's opening lines always survive.
+    orchestratorLogLines.splice(ORCHESTRATOR_LOG_HEAD_LINES, 1);
+    orchestratorLinesElided++;
+  }
+}
+
+/** Start a fresh transcript. Called once per RUN (the outermost pass) and NEVER per pass: the
+ *  auto-refire recurses in-process, and its later candidates are exactly what the transcript
+ *  needs to show. */
+export function resetOrchestratorLog(): void {
+  orchestratorLogLines = [];
+  orchestratorLinesElided = 0;
+}
+
+export function readOrchestratorLog(): string[] {
+  if (orchestratorLinesElided === 0) return orchestratorLogLines.slice();
+  return [
+    ...orchestratorLogLines.slice(0, ORCHESTRATOR_LOG_HEAD_LINES),
+    `… ${orchestratorLinesElided} orchestrator line(s) elided to bound this transcript …`,
+    ...orchestratorLogLines.slice(ORCHESTRATOR_LOG_HEAD_LINES),
+  ];
+}
+
+/** The transcript block written into the persisted log, fenced so it is greppable and cannot be
+ *  confused with suite output. Empty string when nothing was recorded, so a run that logged
+ *  nothing does not gain an empty header. */
+export function renderOrchestratorTranscript(lines: string[] = readOrchestratorLog()): string {
+  if (lines.length === 0) return '';
+  return (
+    `--- orchestrator transcript (${lines.length} line(s)) ---\n` +
+    `${lines.join('\n')}\n` +
+    `--- end orchestrator transcript ---\n`
+  );
+}
+
 /** Strip SGR colour codes. The suite runs under a pty-less pipe but vitest still
  *  colourizes (FORCE_COLOR in the fleet env), and EVERY line-anchored matcher below
  *  would otherwise see `\x1b[41m FAIL \x1b[0m …` and miss: a red verdict on
@@ -2579,6 +2642,11 @@ export async function runGreenCheckpoint(
   // refiring straight past the suite timeout, be killed mid-suite, and record NO verdict at all.
   const passStartedAtMs = Date.now();
   const runStartedAtMs = opts.runStartedAtMs ?? passStartedAtMs;
+  // EI-19346606967082413: `opts.runStartedAtMs` is threaded ONLY by nextRefireOpts, so it is
+  // undefined exactly on the OUTERMOST pass — i.e. this is the once-per-RUN seam. Resetting the
+  // transcript here (rather than per pass) is what makes it span every auto-refire instead of
+  // being truncated to whichever candidate happened to be judged last.
+  if (opts.runStartedAtMs === undefined) resetOrchestratorLog();
   let candidate = opts.candidate
     ? await revParse(cfg.integrationRoot, opts.candidate)
     : await revParse(cfg.integrationRoot, cfg.integrationBranch);
@@ -3936,7 +4004,13 @@ export function realCheckpointDeps(
    *  failing file once, so ran a real 5s setTimeout on every invocation). */
   flakeAbsorptionOpts?: Parameters<typeof attemptFlakeAbsorption>[3],
 ): CheckpointDeps {
-  const log = (s: string) => console.log(`[green-checkpoint] ${s}`);
+  // EI-19346606967082413: tee every orchestrator line into the run transcript as well as stdout.
+  // stdout is durable only for a MANUAL run (redirected to /tmp); the buffer is what gets the
+  // same lines into the persisted log for a scheduler-fired one.
+  const log = (s: string) => {
+    recordOrchestratorLine(s);
+    console.log(`[green-checkpoint] ${s}`);
+  };
   // load-flake-isolation-2026-06-23: re-run ONE originally-failing file in isolation —
   // a fresh `vitest run <file>` scoped to its workspace, at SINGLE concurrency
   // (VITEST_MAX_FORKS/THREADS=1) so the 8-fork load contention that caused the flake is

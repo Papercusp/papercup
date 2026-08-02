@@ -42,7 +42,133 @@ beforeEach(() => {
   vi.resetModules();
   NO_CONTAINMENT.mockClear();
 });
-afterEach(() => vi.doUnmock('../../release-checkpoint-launch'));
+afterEach(() => {
+  vi.doUnmock('../../release-checkpoint-launch');
+  vi.doUnmock('../../release/in-flight-retriage');
+});
+
+/**
+ * EI-19343516395023183 — the cron-held in-flight shape these refire cases share. A run that
+ * auto-refires keeps this EXACT envelope (`started_at`/pid belong to the outer frame and never
+ * move across the in-process recursion), which is precisely why the reply needs the marker: the
+ * refusal payload alone cannot distinguish "wedged" from "mid-rescue".
+ */
+const CRON_HELD_RUN = {
+  active: true,
+  unit: 'papercup-green-checkpoint-manual-1fxzuva (idle — a DIFFERENT process holds the shared run-lock, likely the hourly cron)',
+  candidate: 'stale00checkout00head',
+  current_head: 'aaaaaa77fd79af9dfee00076a1c6e90445d268af',
+  current_candidate: 'aaaaaa77fd79af9dfee00076a1c6e90445d268af',
+  candidate_stale: false,
+  started_at: new Date(Date.now() - 30 * 60_000).toISOString(),
+  elapsed_sec: 1800,
+  eta_sec: 1500,
+  held_externally: true,
+};
+
+/** Stub ONLY the PG read; `describeRefireBudget`/`attributeRetriageToRun` stay real, so these
+ *  cases exercise the genuine budget + attribution logic rather than a restatement of it. */
+async function mockRefire(marker: Record<string, unknown> | null, alreadyRunning: Record<string, unknown> = CRON_HELD_RUN) {
+  vi.doMock('../../release/in-flight-retriage', async (orig) => ({
+    ...(await orig()),
+    readInFlightRetriage: vi.fn(async () => marker),
+  }));
+  vi.doMock('../../release-checkpoint-launch', async (orig) => ({
+    ...(await orig()),
+    checkpointCandidateContainment: NO_CONTAINMENT,
+    launchDetachedCheckpoint: vi.fn(async () => ({
+      launched: false,
+      unit: 'papercup-green-checkpoint-manual-1fxzuva',
+      argv: [],
+      logPath: '/tmp/papercup-green-checkpoint-manual-1fxzuva.log',
+      reason: 'already_running',
+      alreadyRunning,
+    })),
+  }));
+  const { default: tool } = await import('./checkpoint-run');
+  return parse((await tool.handler({}, MAKE_CTX())) as never);
+}
+
+/**
+ * EI-19343516395023183. The gate publishes `gate_health.inFlightRetriage` the instant it decides to
+ * auto-refire, and every OTHER agent-facing surface already read it — coord:orient, dev:pipeline_position,
+ * /admin/git. Not this one: the single verb whose misuse does damage, because firing it inside the
+ * re-triage window DISCARDS the rescue and costs a full ~55min suite (green-checkpoint.ts:2566).
+ * On 2026-08-02 that gap cost three agents a morning and produced a near-miss recommendation to
+ * fire exactly this verb into a live rescue.
+ */
+describe('EI-19343516395023183: an in-flight auto-refire is surfaced on the already_running refusal', () => {
+  const MARKER = {
+    fromCandidate: '6f4181447486a33e4b471b82dee3ed0893c3efa6',
+    refiringCandidate: '16dbb52a7849320e27832500bf2157f00b1db1c3',
+    refireAttempt: 1,
+    maxRefires: 2,
+    failingFiles: ['hygiene.test.ts', 'release-actions.test.ts'],
+    observedAtMs: Date.now() - 60_000, // after CRON_HELD_RUN started ⇒ attributable to it
+    charged: true,
+    totalRefires: 1,
+    absoluteCeiling: 6,
+  };
+
+  it('⭐ leads the note with a STAND DOWN and names both candidates', async () => {
+    const b = await mockRefire(MARKER);
+    expect(String(b.note)).toMatch(/^🚨 AUTO-REFIRE IN FLIGHT — STAND DOWN/);
+    expect(String(b.note)).toContain('16dbb52a7849'); // the sha being judged NOW
+    expect(String(b.note)).toContain('6f4181447486'); // the one already discarded
+    expect(String(b.note)).toMatch(/Do NOT fire a manual run/);
+    expect(b).toMatchObject({
+      in_flight_retriage: {
+        from_candidate: '6f4181447486',
+        refiring_candidate: '16dbb52a7849',
+        at_cap: false,
+        belongs_to_this_run: true,
+        charged: true,
+      },
+    });
+  });
+
+  it('⭐ tells the caller not to go fix the files the abandoned red named — they already passed at tip', async () => {
+    const b = await mockRefire(MARKER);
+    expect(String(b.note)).toMatch(/already PASSED at tip — do not go fix them/);
+    expect(String(b.note)).toContain('hygiene.test.ts');
+  });
+
+  /** The marker is the run's own published observation; `candidate` on the cron path is the
+   *  checkpoint checkout's live HEAD — an inference that changes between reads. */
+  it('⭐ containment is checked against the MARKER candidate, not the probed checkout HEAD', async () => {
+    await mockRefire(MARKER);
+    expect(NO_CONTAINMENT).toHaveBeenCalledWith(expect.objectContaining({ candidateSha: MARKER.refiringCandidate }));
+  });
+
+  it('warns that a red will STICK once the absolute ceiling is reached, even with the charged budget untouched', async () => {
+    const b = await mockRefire({ ...MARKER, refireAttempt: 0, charged: false, totalRefires: 6 });
+    expect(String(b.note)).toMatch(/LAST refire/);
+    expect((b.in_flight_retriage as Record<string, unknown>).at_cap).toBe(true);
+  });
+
+  /** The run-lock is a singleton, so a marker predating this run's start is an EARLIER run's.
+   *  Reporting it would silence a genuinely new red with a stale rescue. */
+  it('⭐ does NOT stand the caller down on a marker written BEFORE this run started', async () => {
+    const b = await mockRefire({ ...MARKER, observedAtMs: Date.parse(CRON_HELD_RUN.started_at) - 60_000 });
+    expect(b.in_flight_retriage).toBeNull();
+    expect(String(b.note)).not.toMatch(/STAND DOWN/);
+    expect(String(b.note)).toMatch(/DIFFERENT process/); // falls through to the pre-existing branch
+  });
+
+  it('says so plainly when attribution is UNCONFIRMED rather than asserting the marker is this run\'s', async () => {
+    const b = await mockRefire(MARKER, { ...CRON_HELD_RUN, started_at: null });
+    expect(String(b.note)).toMatch(/STAND DOWN/);
+    expect(String(b.note)).toMatch(/Attribution UNCONFIRMED/);
+    expect((b.in_flight_retriage as Record<string, unknown>).belongs_to_this_run).toBeNull();
+  });
+
+  it('no marker ⇒ the pre-existing refusal is untouched (null means "no refire", not "unknown")', async () => {
+    const b = await mockRefire(null);
+    expect(b.in_flight_retriage).toBeNull();
+    expect(String(b.note)).toMatch(/DIFFERENT process/);
+    expect(String(b.note)).not.toMatch(/AUTO-REFIRE/);
+  });
+});
 
 describe('release:checkpoint-run', () => {
   it('launches the detached checkpoint and reports it (operator role)', async () => {

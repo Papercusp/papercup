@@ -3378,6 +3378,24 @@ describe('mapCheckpointRunInFlight — pure mapper (EI-18793581783459047)', () =
       expect(out?.candidate).toBe('stale-worktree-head');
       expect(out?.candidateSource).toBe('run-probe');
     });
+
+    /**
+     * EI-19343516395023183. `refireAttempt` is the CHARGED counter — it advances only on a FAILED
+     * rescue — so the pair above cannot express "5 of 6 refires performed, next red sticks". Both
+     * fields were already in Postgres and dropped by `parseInFlightRetriage`; this leg's
+     * exact-field destructure would have dropped them a second time.
+     */
+    it('⭐ carries the ABSOLUTE-CEILING counters through, so a caller can see the bound refireAttempt cannot express', () => {
+      const out = mapCheckpointRunInFlight(cronRun, NOW, { ...MARKER, refireAttempt: 0, totalRefires: 5, absoluteCeiling: 6 });
+      expect(out?.totalRefires).toBe(5);
+      expect(out?.absoluteCeiling).toBe(6);
+    });
+
+    it('omits them for a pre-EI-19343532231631821 marker rather than reporting an invented 0', () => {
+      const out = mapCheckpointRunInFlight(cronRun, NOW, MARKER);
+      expect(out).not.toHaveProperty('totalRefires');
+      expect(out).not.toHaveProperty('absoluteCeiling');
+    });
   });
 
   it('an idle probe result ({ active: false }) is NOT collapsed to null — it is the genuine "gate is idle" reading', () => {

@@ -187,6 +187,32 @@ describe('evaluateGateVerdictFreshness', () => {
       expect(v.reasonCode).toBe('refire-in-flight');
     });
 
+    /**
+     * EI-19343516395023183. "A fresh verdict is imminent, stand down" is correct advice right up
+     * until the LAST refire, where the imminent verdict is the FINAL one and a red STICKS. The
+     * reader could not tell those apart: it was handed only the CHARGED counter, which does not
+     * advance on a successful rescue, so a run at the absolute ceiling read as `attempt 0/2`.
+     */
+    it('⭐ warns that this is the LAST refire when the ABSOLUTE CEILING is reached, not just when the charged budget is', () => {
+      const v = evaluateGateVerdictFreshness({
+        ...LIVE_INCIDENT,
+        observedAtMs: LAST_FIRE - 60_000,
+        inFlightRetriage: inFlight({ refireAttempt: 0, totalRefires: 6, absoluteCeiling: 6 }),
+      });
+      expect(v.reasonCode).toBe('refire-in-flight');
+      expect(v.reason).toMatch(/refire 6\/6 performed, charged budget 0\/2 spent/);
+      expect(v.reason).toMatch(/LAST refire/);
+    });
+
+    it('does NOT cry "last refire" while budget genuinely remains', () => {
+      const v = evaluateGateVerdictFreshness({
+        ...LIVE_INCIDENT,
+        observedAtMs: LAST_FIRE - 60_000,
+        inFlightRetriage: inFlight({ refireAttempt: 0, totalRefires: 2, absoluteCeiling: 6 }),
+      });
+      expect(v.reason).not.toMatch(/LAST refire/);
+    });
+
     it('does not flag a red when the marker names a DIFFERENT candidate (an earlier, superseded red)', () => {
       const v = evaluateGateVerdictFreshness({
         ...LIVE_INCIDENT,
