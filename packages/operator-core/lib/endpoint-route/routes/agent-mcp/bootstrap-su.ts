@@ -32,7 +32,17 @@ import {
   reanchorAdvSessionNativeId,
   reanchorAdvSessionNativeIdByOwner,
   recordAdvSession,
+  recordSuLaunchSpec,
 } from '../../../adv-sessions';
+// stale-prompt-render-in-live-sessions-2026-08-02 P-002/D-001: the prompt-assembly
+// steps this route shares with the carry-respawn persona refresh. Both paths must
+// call THESE — a second, drifting assembly is the failure mode the fix introduces.
+import {
+  applySuPromptOverlays,
+  buildSuInstructionRuntime,
+  resolveSuPlanContext,
+  type SuLaunchSpecRecord,
+} from '../../../su-persona-render';
 import { getOrgPg } from '@papercusp/db-org';
 import { isSuAgent, type SuAgent } from '../../../su-agents';
 import { launchContextDir, launchContextPathFor } from '../../../su-launch-context';
@@ -882,6 +892,31 @@ export const CONTEXT_DISCIPLINE_DIRECTIVE =
   'only when you genuinely need the unshaped result.';
 
 /**
+ * The AUTO/DRAIN section a launch appends to the assembled system prompt — '' when
+ * the session is neither. Shared with the carry-respawn persona refresh
+ * (stale-prompt-render-in-live-sessions-2026-08-02 P-002) so a re-rendered prompt
+ * carries byte-identical mode prose; it lives HERE, next to the directives it
+ * composes and the kickoff that shares them, rather than in `su-persona-render`.
+ *
+ * drain-mode P-003: the DRAIN section REPLACES the plain AUTO one — the DRAIN
+ * directive carries the act-don't-ask posture itself (DRAIN implies AUTO), so
+ * baking both would just double-print the activation.
+ */
+export function composeModePromptSection(opts: {
+  autoMode: boolean;
+  drainMode: boolean;
+  loopArmed: boolean;
+}): string {
+  if (opts.drainMode) {
+    return `---\n## DRAIN mode\n\n${DRAIN_MODE_DIRECTIVE}\n\n${CONTEXT_DISCIPLINE_DIRECTIVE}\n`;
+  }
+  if (opts.autoMode) {
+    return `---\n## AUTO mode\n\n${autoModeDirective(opts.loopArmed)}\n\n${CONTEXT_DISCIPLINE_DIRECTIVE}\n`;
+  }
+  return '';
+}
+
+/**
  * launch-path-argv-reconstruction (WI-1343): normalize a caller-supplied
  * `launch_argv` (the literal `psu …` invocation the launcher built) into the
  * string[] recorded on `adv_sessions.launch_argv`. Defensive: only strings,
@@ -1278,31 +1313,14 @@ const post = defineTool({
     const cwd = resolveSuLaunchCwd({ harnessSlug, callerCwd, envelopeCwd: envelope.cwd });
 
     // Fetch the bound plan's `## Now` + title for the launch-context addendum
-    // (best-effort — buildLaunchSpec composes the addendum from these).
-    let planNow: { state: string; next: string } | null = null;
-    let planTitle: string | null = null;
-    if (planSlug && harnessSlug) {
-      try {
-        const { resolveHarnessPlansDir, readPlanBySlug } = await import('../../../agent-tools/plans/source');
-        const resolved = await resolveHarnessPlansDir(harnessSlug, { workspaceId: workspace });
-        const found = await readPlanBySlug(planSlug, {
-          harnessSlug: resolved.harnessSlug,
-          workspaceId: resolved.workspaceId,
-        });
-        if (found) {
-          // WI-1442 fix (a): decorate any su-* agent-id mention in the launch-
-          // context Now echo with its CURRENT coord:presence session state —
-          // this snapshot is baked into the launch prompt once, so a stale
-          // "actively worked by su-X" claim must self-disclose right here or
-          // it silently misleads the whole session it launches. Best-effort.
-          const { decoratePlanNowBlock } = await import('../../../agent-tools/plans/liveness-decoration');
-          planNow = await decoratePlanNowBlock(found.parsed.now);
-          planTitle = found.parsed.frontmatter?.title ?? null;
-        }
-      } catch {
-        // plan context is optional — proceed without it
-      }
-    }
+    // (best-effort — buildLaunchSpec composes the addendum from these). Lives in
+    // su-persona-render so the carry-respawn refresh resolves plan context through
+    // the SAME code, including the WI-1442 liveness decoration of su-* mentions.
+    const { planNow, planTitle } = await resolveSuPlanContext({
+      planSlug,
+      harnessSlug,
+      workspaceId: workspace,
+    });
 
     // Build the su launch spec: engineer playbook + per-launch scope/plan
     // addendum (promptText) + the superuser MCP url (codex consumes it). The
@@ -1682,28 +1700,14 @@ const post = defineTool({
       );
     }
     const launchedBy = launchedByRaw;
-    let promptText = spec.promptText;
-    if (agent === 'codex' && launchContextPath) {
-      // @ts-expect-error Plain ESM is shared with the raw-node psu launcher.
-      const budgetModule = await import('../../../model-context-budget.mjs');
-      promptText = budgetModule.appendCodexLaunchContextPrompt(promptText, launchContextText);
-    }
 
-    // solo-launch-provenance: bake WHO launched this session into the assembled
-    // system prompt (promptText is the single source for all three backends), so
-    // the agent can always answer "who launched you / who supervises this mission"
-    // — across compaction AND cold-loop resets. Found 2026-07-03: su-8ab32510
-    // described its launcher as "an observer who doesn't assign or supervise my
-    // work" because NOTHING in the system recorded the relationship.
+    // The prompt OVERLAYS (codex launch-context, launcher provenance, AUTO/DRAIN
+    // activation, instruction precedence) are applied together further down, once
+    // the loop auto-arm outcome is known — see applySuPromptOverlays, which the
+    // carry-respawn persona refresh calls too. What stays HERE is the provenance
+    // SIDE EFFECT, which a re-render must never repeat.
     if (launchedBy) {
-      promptText =
-        `${promptText.replace(/\n+$/, '')}\n\n---\n## Provenance — who launched this session\n\n` +
-        `You were launched by **${launchedBy}**, the agent that chose this mission and its launch ` +
-        `brief. They are your LAUNCHER/SUPERVISOR: report milestones, blockers, and anomalies to ` +
-        `them (coord:send), answer their messages before your own next step, and treat their ` +
-        `directives as steering. If asked who launched you or whose work this is, the answer is ` +
-        `${launchedBy}.\n`;
-      // ALSO assert the provenance as an owner-scoped STANDING FACT — coord:orient
+      // Assert the provenance as an owner-scoped STANDING FACT — coord:orient
       // folds owner-scope facts VERBATIM at every orient, so the agent re-learns its
       // launcher on every wake (a cold loop re-orients from nothing each wake).
       // Best-effort: a facts outage must never block a launch.
@@ -1754,54 +1758,46 @@ const post = defineTool({
       }
     }
 
-    // fleet-auto-mode (WI-1356): bake the durable AUTO directive into the assembled
-    // system prompt so it survives compaction. promptText is the single source for
-    // every backend's launch context (claude/omp launch-context file + codex AGENTS.md),
-    // so injecting here covers all three. P-004: the AUTO variant reflects the
-    // auto-arm outcome — an armed loop swaps the "MUST ARM" clause for the
-    // one-line "already armed" notice.
-    if (drainMode) {
-      // drain-mode P-003: the DRAIN section REPLACES the plain AUTO one — the DRAIN
-      // directive carries the act-don't-ask posture itself (DRAIN implies AUTO), so
-      // baking both would just double-print the activation.
-      promptText = `${promptText.replace(/\n+$/, '')}\n\n---\n## DRAIN mode\n\n${DRAIN_MODE_DIRECTIVE}\n\n${CONTEXT_DISCIPLINE_DIRECTIVE}\n`;
-    } else if (autoMode) {
-      promptText = `${promptText.replace(/\n+$/, '')}\n\n---\n## AUTO mode\n\n${autoModeDirective(loopAutoArm?.armed === true)}\n\n${CONTEXT_DISCIPLINE_DIRECTIVE}\n`;
-    }
+    // fleet-auto-mode (WI-1356): the durable AUTO/DRAIN directive baked into the
+    // assembled system prompt so it survives compaction. promptText is the single
+    // source for every backend's launch context (claude/omp launch-context file +
+    // codex AGENTS.md), so injecting here covers all three. P-004: the AUTO variant
+    // reflects the auto-arm outcome — an armed loop swaps the "MUST ARM" clause for
+    // the one-line "already armed" notice.
+    const loopArmed = loopAutoArm?.armed === true;
+    const modeSection = composeModePromptSection({ autoMode, drainMode, loopArmed });
 
     // P-022: compile the ACTUAL launch-time mode/route/scope precedence into a
     // machine-readable trace. This does not delete the generic conditional
     // playbook clauses (a later mode transition may need them); it explicitly
     // marks the rules that are suppressed NOW and tells the agent how to full-
     // resync on any watermark/control change.
-    const instructionRuntime: InstructionRuntimeContext = {
-      source: 'bootstrap-su',
+    const instructionRuntime: InstructionRuntimeContext = buildSuInstructionRuntime({
       ownerId: sid,
-      modes: drainMode ? ['auto', 'drain'] : autoMode || fleetPin.fleetSlug ? ['auto'] : [],
-      route: fleetPin.fleetSlug
-        ? {
-            kind: 'fleet',
-            fleet: fleetPin.fleetSlug,
-            role: fleetPin.fleetRole,
-          }
-        : { kind: 'self' },
-      scope: {
-        workspace,
-        harness: harnessSlug,
-        plan: planSlug,
-        items: [],
-      },
-    };
-    const launchPrecedence = buildInstructionPrecedenceTrace(instructionRuntime);
-    promptText =
-      `${promptText.replace(/\n+$/, '')}\n\n---\n## Effective instruction precedence\n\n` +
-      `${renderInstructionPrecedenceContext(launchPrecedence)}\n`;
+      autoMode,
+      drainMode,
+      fleet: fleetPin.fleetSlug ? { slug: fleetPin.fleetSlug, role: fleetPin.fleetRole } : null,
+      workspaceId: workspace,
+      harnessSlug,
+      planSlug,
+    });
 
-    // Audit the ACTUAL final prompt after launch-context/provenance/mode overlays,
-    // not merely the base launch spec. Findings are observable in the bootstrap
-    // response; launch stays fail-open because duplicate prose is a cleanup signal,
-    // while generated-rule conflicts are already explicit in the report.
-    let instructionLint = lintInstructionText(promptText, 20, instructionRuntime);
+    // Apply every per-launch overlay in the ONE canonical order, and audit the
+    // ACTUAL final prompt rather than the base launch spec — the overlays are
+    // exactly where generated-rule conflicts get introduced. Launch stays fail-open
+    // because duplicate prose is a cleanup signal, while blocking conflicts are
+    // refused below. The carry-respawn persona refresh calls this same function, so
+    // a re-rendered prompt cannot drift from a freshly-launched one.
+    const overlaid = await applySuPromptOverlays({
+      basePromptText: spec.promptText,
+      agent,
+      launchContextText: launchContextPath ? launchContextText : '',
+      launchedBy,
+      modeSection,
+      instructionRuntime,
+    });
+    let promptText = overlaid.promptText;
+    let instructionLint = overlaid.instructionLint;
     if (instructionLint.conflicts.length > 0 || instructionLint.staleRules.length > 0) {
       process.stderr.write(
         `[bootstrap-su] instruction lint: ${instructionLint.conflicts.length} conflict(s), ` +
@@ -2056,6 +2052,35 @@ const post = defineTool({
       await armInboxWake({ ownerId: sid, workspaceId: workspace });
     } catch (e: any) {
       process.stderr.write(`[bootstrap-su] inbox-wake arm failed (non-fatal): ${e?.message}\n`);
+    }
+
+    // stale-prompt-render-in-live-sessions-2026-08-02 P-002: persist the RESOLVED
+    // render inputs beside launch_argv so a carry-respawn can re-render this
+    // session's persona from CURRENT prompt sources. Without it a respawn inherits
+    // the predecessor's already-rendered file and the base persona stays pinned to
+    // launch #1 forever (27 of 53 live sessions were up to 14 days stale when this
+    // was measured). Written after the row exists on BOTH paths — an ordinary
+    // launch records it above, a session-port target only after its claim.
+    // Best-effort: a launch must never fail on this bookkeeping, and a session
+    // without it simply keeps today's inherit-the-old-render behaviour.
+    {
+      const launchSpecRecord: SuLaunchSpecRecord = {
+        v: 1,
+        agent,
+        workspaceId: workspace,
+        harnessSlug,
+        profile,
+        contextSize,
+        personaTier,
+        model,
+        planSlug,
+        launchedBy,
+        autoMode,
+        drainMode,
+        loopArmed,
+        fleet: fleetPin.fleetSlug ? { slug: fleetPin.fleetSlug, role: fleetPin.fleetRole } : null,
+      };
+      void recordSuLaunchSpec(sessionId, sid, launchSpecRecord).catch(() => false);
     }
 
     const envelopeEnv: Record<string, string> = {

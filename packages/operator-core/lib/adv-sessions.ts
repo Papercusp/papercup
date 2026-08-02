@@ -819,6 +819,84 @@ export async function reanchorAdvSessionNativeIdByOwner(
   }
 }
 
+/**
+ * Persist the RESOLVED su persona render inputs on the session's row (migration
+ * 738), so a carry-respawn can re-render the launch context from current prompt
+ * sources instead of inheriting the predecessor's already-rendered file
+ * (stale-prompt-render-in-live-sessions-2026-08-02 P-002).
+ *
+ * Best-effort and never throws: a launch must not fail because this bookkeeping
+ * did. The cost of it missing is bounded and known — that session's respawns keep
+ * the inherited render, i.e. exactly today's behaviour.
+ */
+export async function recordSuLaunchSpec(
+  advSessionId: number | null,
+  coordOwnerId: string | null,
+  launchSpec: unknown,
+): Promise<boolean> {
+  if (!launchSpec) return false;
+  if ((advSessionId == null || advSessionId <= 0) && !coordOwnerId) return false;
+  try {
+    const { sql } = getOrgPg();
+    const payload = JSON.stringify(launchSpec);
+    // Prefer the exact row id; fall back to the owner's NEWEST row for the
+    // interactive cohort, which never carries PAPERCUSP_ADV_SESSION_ID (the same
+    // keying reanchorAdvSessionNativeIdByOwner uses, so the two agree by
+    // construction).
+    const rows =
+      advSessionId != null && advSessionId > 0
+        ? await sql<{ id: number }[]>`
+            UPDATE harness_shared.adv_sessions
+               SET launch_spec = ${payload}::jsonb
+             WHERE id = ${advSessionId}
+            RETURNING id
+          `
+        : await sql<{ id: number }[]>`
+            UPDATE harness_shared.adv_sessions
+               SET launch_spec = ${payload}::jsonb
+             WHERE id = (
+               SELECT id FROM harness_shared.adv_sessions
+                WHERE coord_owner_id = ${coordOwnerId}
+                ORDER BY started_at DESC
+                LIMIT 1
+             )
+            RETURNING id
+          `;
+    return rows.length > 0;
+  } catch (e) {
+    warnUnlessMissingTable(e, 'recordSuLaunchSpec');
+    return false;
+  }
+}
+
+/**
+ * Read back the persona render inputs for a coord owner — the respawn key, which
+ * is stable across every respawn by design (mintRecycleArgs rotates only the
+ * NATIVE claude session id; PAPERCUSP_SID is deliberately untouched).
+ *
+ * Reads the NEWEST row for the owner, matching `reanchorAdvSessionNativeIdByOwner`
+ * and `resolveSessionRef`. Returns null (never throws) when there is no row, no
+ * spec, or the store is unavailable — every one of which fail-softs the caller to
+ * the inherited render.
+ */
+export async function readSuLaunchSpecByOwner(coordOwnerId: string): Promise<unknown | null> {
+  if (!coordOwnerId) return null;
+  try {
+    const { sql } = getOrgPg();
+    const rows = await sql<{ launch_spec: unknown }[]>`
+      SELECT launch_spec
+        FROM harness_shared.adv_sessions
+       WHERE coord_owner_id = ${coordOwnerId}
+       ORDER BY started_at DESC
+       LIMIT 1
+    `;
+    return rows[0]?.launch_spec ?? null;
+  } catch (e) {
+    warnUnlessMissingTable(e, 'readSuLaunchSpecByOwner');
+    return null;
+  }
+}
+
 export async function listAdvSessions(limit = 100): Promise<AdvSessionRow[]> {
   try {
     const { sql } = getOrgPg();

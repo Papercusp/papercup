@@ -2285,6 +2285,64 @@ describe('interpreter inline-code write guard (EI-18691482279179647)', () => {
     expectInterpDeny(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
   });
 
+  /**
+   * EI-19327302389409134 — the guard denied `sed -i` on a tree file, then MINUTES
+   * LATER allowed (only advised, non-blocking) the semantically identical hazard
+   * spelled as `p = 'tree/path'; open(p, 'w')` — the path assigned to a variable
+   * one line above the write call, instead of written inline as a literal
+   * argument. Being refused for one spelling and waved through for the other
+   * reads as positive confirmation that the variable form is the sanctioned
+   * workaround — exactly backwards from what the refusal is meant to teach.
+   */
+  describe('interpreter write via a variable holding a literal tree path (EI-19327302389409134)', () => {
+    it('denies the exact repro: `p = "path"` then `open(p, "w")` in a heredoc', () => {
+      const command =
+        "python3 - <<'PY'\n" +
+        "p='apps/operator/app/_components/chat/SessionChatModal.test.tsx'\n" +
+        "s=open(p).read()\n" +
+        "open(p,'w').write(s)\n" +
+        'PY';
+      const reason = expectInterpDeny(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
+      expect(reason).toContain('apps/operator/app/_components/chat/SessionChatModal.test.tsx');
+      expect(reason).toContain('python3');
+    });
+
+    it('denies the same shape via `python3 -c "..."` (single-line assignment then write)', () => {
+      const command = `python3 -c "p='apps/operator/generated.ts'\nopen(p,'w').write('x')"`;
+      expectInterpDeny(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
+    });
+
+    it('allows the variable form when the assigned literal resolves OUTSIDE the tree', () => {
+      const command = `python3 -c "p='/tmp/scratch.txt'\nopen(p,'w').write('x')"`;
+      expectAllow(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
+    });
+
+    it('allows a variable assigned an in-tree literal that is only ever READ, never written', () => {
+      const command = `python3 -c "p='apps/operator/generated.ts'\nprint(open(p).read())"`;
+      expectAllow(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
+    });
+
+    it('does not treat a dict-key assignment (`d[\'x\'] = \'path\'`) as a tracked variable — stays in the existing computed-path handling, no false DENY', () => {
+      const command = `python3 -c "d={}\nd['x']='apps/operator/generated.ts'\nopen(d['x'],'w').write('z')"`;
+      const out = runGate(bashCmd(command, { cwd: CANON }), CANON_ENV);
+      // Must not be THIS guard's deny — `d['x']` is not a bare identifier, so the
+      // variable-indirection leg does not fire (matches the pre-existing behavior
+      // for any non-bare-identifier first argument).
+      if (out.stdout.trim()) {
+        expect(denyReason(out)).not.toContain('EI-19327302389409134');
+      }
+    });
+
+    it('still only ADVISES (never denies) a genuinely computed path that never touched a literal assignment', () => {
+      const command = `python3 -c "open(sys.argv[1], 'w')" "$SOME_PATH"`;
+      const out = runGate(bashCmd(command, { cwd: CANON }), CANON_ENV);
+      expect(out.status).toBe(0);
+      const hso = JSON.parse(out.stdout).hookSpecificOutput;
+      expect(hso.permissionDecision).toBe('allow');
+      expect(hso.additionalContext).toContain('EI-18828866497684686');
+    });
+  });
+
   it('denies `node -e "..."` with fs.writeFileSync targeting a literal tree path', () => {
     const command = `node -e "require('fs').writeFileSync('apps/operator/generated.ts', data)"`;
     const reason = expectInterpDeny(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));

@@ -3,7 +3,14 @@
  * Each stage composes the existing sync-backed panels; `?lview=` remains the
  * canonical deep-link state and `?lhive=` scopes the hive-aware views.
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   useQueryState,
   useQueryStates,
@@ -99,6 +106,7 @@ import RubricDetailPanel from "@/app/_components/RubricDetailPanel";
 import ObservationsPanel from "@/app/adv/create/ObservationsPanel";
 import {
   beginInteraction,
+  endInteraction,
   PERF_INTERACTIONS,
 } from "@/app/_components/perf/perf-marks";
 import {
@@ -567,8 +575,39 @@ export default function LearningTab() {
   // and folding it in here would blend two populations under one budget — the
   // exact conflation that made command-palette-open report a 7.6x regression
   // that did not exist (WI-6543).
+  //
+  // ⚠ useLayoutEffect, NOT useEffect — this is a CORRECTNESS requirement, not a
+  // style choice, and getting it wrong silently corrupts every measure this
+  // instrument emits (EI-19375505819043214, measured 2026-08-02).
+  //
+  // React runs effects in phases, and within a phase CHILD BEFORE PARENT. The
+  // settle points live in the child panels (AnalyzePanel, ObservationsPanel,
+  // ImprovementsView) as passive `useEffect`s. So with a passive begin HERE,
+  // the order on a view switch is:
+  //
+  //     child endInteraction  →  parent beginInteraction        (WRONG)
+  //
+  // A panel whose data is already cached settles ON MOUNT, so its
+  // endInteraction runs FIRST and consumes whatever start mark is lying
+  // around — the PREVIOUS view's dangling start (dangling because that view
+  // has no settle point, or settled before its own begin). The emitted measure
+  // then spans "time the user spent on the previous view", which is unbounded
+  // and has nothing to do with render cost. Observed: a headless run that
+  // dwelt 14s per view emitted a single 15,289ms measure — 14s of dwell plus
+  // ~1.3s of actual settle — against a 1500ms budget. STALE_START_MS (30s)
+  // does not save us: 15s is well inside it, so the garbage measure passes
+  // through looking like a real 10x budget breach.
+  //
+  // ALL layout effects run before ANY passive effect, so a layout begin here
+  // precedes every child settle regardless of the child-before-parent rule:
+  //
+  //     parent beginInteraction  →  child endInteraction        (correct)
+  //
+  // This holds only while the settle points stay PASSIVE. A panel that ever
+  // settles in a layout effect re-opens the bug; the ordering contract is
+  // pinned by LearningTab.perf-begin-order.test.tsx.
   const perfPrevViewRef = useRef<LView | null>(null);
-  useEffect(() => {
+  useLayoutEffect(() => {
     const prev = perfPrevViewRef.current;
     perfPrevViewRef.current = view;
     if (prev !== null && prev !== view) {
@@ -1199,6 +1238,38 @@ function ImprovementsView({
     enabled: hiveReady,
   });
   const digest = sync.data?.[0];
+  // Perf settle point for PERF_INTERACTIONS.learningViewSwitch — LearningTab
+  // begins the interaction on the view change (EI-19375505819043214).
+  //
+  // WHY THIS VIEW MATTERS MOST: `improvements` is both the tab's DEFAULT
+  // landing view and its heaviest read (learning.improvements measured
+  // 320,607B on the live operator, ~98.6% of it a 454-row humanQueue). It is
+  // therefore the view the owner most plausibly meant by "expanding the
+  // sections took several seconds" — and until now it had no settle point at
+  // all, so the instrument added to answer that report was structurally
+  // incapable of measuring it. A per-view experiment run against the real
+  // desktop reported nothing for this view for exactly this reason.
+  //
+  // Gated on the PRIMARY read only (learning.improvements), deliberately not
+  // on the scout / drafts legs: those are secondary sections, and waiting on
+  // them would attribute their cost to this interaction. Same rule as the
+  // sibling settle points in AnalyzePanel and ObservationsPanel.
+  //
+  // Settles on a FAULT too, not just success — a slow FAILING view is exactly
+  // what the owner described, and ending only on success would leave the start
+  // mark dangling until STALE_START_MS discarded it, measuring nothing.
+  //
+  // Note `enabled: hiveReady` above: while the pot lens is unresolved the read
+  // is disabled (loading false, data undefined, no error), so `settled` stays
+  // false and the interaction correctly spans the lens resolution the user is
+  // actually waiting through.
+  const improvementsSettled =
+    !sync.loading && (sync.data !== undefined || Boolean(sync.error));
+  useEffect(() => {
+    if (improvementsSettled) {
+      endInteraction(PERF_INTERACTIONS.learningViewSwitch);
+    }
+  }, [improvementsSettled]);
   // The idea half of the same population (absorbed from the retired Ideas
   // view): lens, rail, grounding trace, grade and outcome, plus the cycle
   // engine's own instruments. Same hive lens, same readiness gate.

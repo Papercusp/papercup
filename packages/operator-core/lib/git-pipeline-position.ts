@@ -2117,6 +2117,15 @@ export interface PipelinePositionDeps {
     activeRun: GitPipelineSnapshot['activeRun'];
     computedAtMs: number | null;
   } | null>;
+  /**
+   * EI-19327418148563597: raw bytes of a repo-relative file, for the release-content-drift
+   * check (does the RELEASE checkout :3070 serves differ from the tree the caller is
+   * reading?). Injected by TESTS only — the default really reads the filesystem, for the
+   * same reason `fileMtimeMs` does: a null-by-default dep would ship the check dark while
+   * looking implemented. Returns `null` (never throws) on any read failure — a missing file
+   * is UNKNOWN, not evidence of a match or a mismatch.
+   */
+  readFileBytes?: (absPath: string) => Promise<Buffer | null>;
 }
 
 /**
@@ -2277,6 +2286,37 @@ const realFileMtimeMs = async (absPath: string): Promise<number | null> => {
     return null;
   }
 };
+
+/** Default file-bytes reader (EI-19327418148563597). Fail-soft: an unreadable path is
+ *  UNKNOWN (null), never an empty buffer — an empty buffer would read as a real, matching
+ *  0-byte file rather than "could not read this". */
+const realReadFileBytes = async (absPath: string): Promise<Buffer | null> => {
+  try {
+    const { readFile } = await import('node:fs/promises');
+    return await readFile(absPath);
+  } catch {
+    return null;
+  }
+};
+
+/**
+ * EI-19327418148563597: while a red gate blocks deploys, `:3070`'s release checkout can
+ * lag the staging tree by HOURS, not the usual ~15 minutes — long enough that profiling
+ * the live box measures pre-fix code while the fix already sits, verified, in the tree
+ * open in front of you (three separate targets turned out to be exactly this on
+ * 2026-08-02, one of them ~90% of live DB time). Pure byte comparison: `differs: true`
+ * means whatever `:3070` served for this path when read is NOT what the working tree
+ * holds for it. `differs: null` means one or both reads failed/were skipped — never
+ * reported as a match, since an unreadable release copy is not evidence it is identical.
+ */
+export function evaluateReleaseContentDrift(args: {
+  workingBytes: Buffer | null;
+  releaseBytes: Buffer | null;
+}): { differs: boolean | null } {
+  const { workingBytes, releaseBytes } = args;
+  if (workingBytes === null || releaseBytes === null) return { differs: null };
+  return { differs: !workingBytes.equals(releaseBytes) };
+}
 
 /**
  * EI-18715870370005934: resolve the GITLINK a superproject commit pins for a
@@ -3100,6 +3140,25 @@ export async function gitPipelinePosition(
     notes.push(
       `SERVING STALE CODE: ${serving.unit} (pid ${serving.pid}) started ~${serving.behindMin}m before the code it runs last changed. A git-derived "deployed" does not mean this process is running your change — ${serving.restartLever}`,
     );
+  }
+
+  // EI-19327418148563597: for a release-pipeline path, also check whether what :3070
+  // actually SERVES for this file differs from the tree the caller is reading — a
+  // red-gate deploy freeze can leave that gap open for hours, and a caller profiling
+  // the live box off it would otherwise measure code the diff below never shows them.
+  if (runtime?.releasePipelineApplies && inp.path && deploy.releaseRoot) {
+    const relForRead = inp.path.replace(/^\.?\//, '');
+    const readBytes = deps.readFileBytes ?? realReadFileBytes;
+    const [workingBytes, releaseBytes] = await Promise.all([
+      readBytes(path.join(root, relForRead)),
+      readBytes(path.join(deploy.releaseRoot, relForRead)),
+    ]);
+    const releaseContentDrift = evaluateReleaseContentDrift({ workingBytes, releaseBytes });
+    if (releaseContentDrift.differs === true) {
+      notes.push(
+        `LIVE CODE DIFFERS FROM SOURCE: :3070 is serving a DIFFERENT version of ${inp.path} than the tree you are reading (release checkout: ${deploy.releaseRoot}). Any profiling or live measurement taken against :3070 for this path reflects that OTHER version — diff the two before designing a fix from what you measured. This gap widens the longer the gate stays red and deploys stay blocked.`,
+      );
+    }
   }
 
   // P-004: is the commit the gate judges even this file's code? Scoped to a
