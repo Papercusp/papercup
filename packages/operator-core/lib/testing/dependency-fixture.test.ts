@@ -108,8 +108,23 @@ describe('projectItemRows', () => {
     const rows = projectItemRows(s);
     expect(rows).toHaveLength(5);
     expect(rows.every((r) => r.workspace_id === 'ws-x' && r.harness_slug === 'h-x')).toBe(true);
-    expect(rows.find((r) => r.feature_id === 'EI-blocked')!.item_kind).toBe('issue');
+    // item_kind must be a REAL kind the engine can classify, NOT the family name.
+    // This assertion previously expected 'issue' and passed while the seeded rows were
+    // misclassified by every family-conditional query in the system, which read
+    // `item_kind IN ('bug','change','task')` and saw 'issue' as a FEATURE. Corrected
+    // under P-006 after the live oracle disagreed with the factory.
+    expect(rows.find((r) => r.feature_id === 'EI-blocked')!.item_kind).toBe('bug');
     expect(rows.find((r) => r.feature_id === 'F-blocked')!.item_kind).toBe('feature');
+  });
+
+  it('never emits a family NAME as item_kind — the classification trap', () => {
+    const rows = projectItemRows(standardScenario());
+    for (const r of rows) expect(['issue', 'feature-family']).not.toContain(r.item_kind);
+    // And the issue-family rows must land in the set the engine actually tests for.
+    const issueKinds = rows
+      .filter((r) => ['EI-blocked', 'EI-open-blocker'].includes(r.feature_id))
+      .map((r) => r.item_kind);
+    for (const k of issueKinds) expect(['bug', 'change', 'task']).toContain(k);
   });
 });
 

@@ -26,11 +26,16 @@ const H = vi.hoisted(() => {
     isPrimary: boolean;
     requestOnly: boolean;
     cachedRemote: { handles: Array<{ workspaceId: string; harnessSlug: string }>; receivedAt: number } | null;
+    // EI-19327550671915579: the cross-SERVICE PG fallback leg — the one that actually
+    // reaches a request-only host under the dedicated-bg-host topology, where
+    // node:cluster IPC (cachedRemote above) can never apply at all.
+    pgFallback: { handles: Array<{ workspaceId: string; harnessSlug: string }>; receivedAt: number } | null;
   } = {
     booted: [],
     isPrimary: true,
     requestOnly: false,
     cachedRemote: null,
+    pgFallback: null,
   };
   return {
     state,
@@ -41,6 +46,7 @@ const H = vi.hoisted(() => {
     // the mock stays behaviorally equivalent to the real background-workers export.
     isSubstrateOwnerProcess: () => state.isPrimary && !state.requestOnly,
     getCachedRemoteBootedHandles: () => state.cachedRemote,
+    getPgBootedHandlesSnapshotFallback: vi.fn(async () => state.pgFallback),
   };
 });
 
@@ -53,6 +59,9 @@ vi.mock('../../../../background-workers', () => ({
 }));
 vi.mock('../../../../sync/hyperbee/cluster-booted-handles-sync', () => ({
   getCachedRemoteBootedHandles: H.getCachedRemoteBootedHandles,
+}));
+vi.mock('../../../../sync/hyperbee/substrate-booted-handles-pg', () => ({
+  getPgBootedHandlesSnapshotFallback: H.getPgBootedHandlesSnapshotFallback,
 }));
 vi.mock('node:cluster', () => ({
   default: {
@@ -82,6 +91,8 @@ beforeEach(() => {
   H.state.isPrimary = true;
   H.state.requestOnly = false;
   H.state.cachedRemote = null;
+  H.state.pgFallback = null;
+  H.getPgBootedHandlesSnapshotFallback.mockClear();
 });
 
 describe('dogfood-substrate-status route metadata', () => {
@@ -171,6 +182,49 @@ describe('GET /admin/dogfood-substrate-status handler', () => {
       const body = await (await route[0].handler(req(), ctx())).json();
       expect(body.reachedSubstrateOwner).toBe(false);
       expect(body.booted).toEqual([]);
+    });
+  });
+
+  // EI-19327550671915579: node:cluster IPC (cachedRemote) can never reach a request-only
+  // host under the dedicated-bg-host topology at all (bg-host is a separate systemd
+  // service, not a forked child) — this is the leg that closes that permanent blind spot.
+  describe('cross-SERVICE PG fallback (EI-19327550671915579, dedicated-bg-host topology)', () => {
+    it('request-only, no cached broadcast, but a FRESH PG row → reachedSubstrateOwner:true, uses the PG handles', async () => {
+      H.state.requestOnly = true;
+      H.state.cachedRemote = null;
+      H.state.pgFallback = { handles: [{ workspaceId: 'ws1', harnessSlug: 'papercup' }], receivedAt: Date.now() };
+      const body = await (await route[0].handler(req(), ctx())).json();
+      expect(body.reachedSubstrateOwner).toBe(true);
+      expect(body.booted).toEqual([{ workspaceId: 'ws1', harnessSlug: 'papercup' }]);
+      expect(body.bootedCount).toBe(1);
+      expect(H.getPgBootedHandlesSnapshotFallback).toHaveBeenCalledTimes(1);
+    });
+
+    it('request-only, no cached broadcast, PG row also absent → stays reachedSubstrateOwner:false (still a blind spot, not silently trusted)', async () => {
+      H.state.requestOnly = true;
+      H.state.cachedRemote = null;
+      H.state.pgFallback = null;
+      const body = await (await route[0].handler(req(), ctx())).json();
+      expect(body.reachedSubstrateOwner).toBe(false);
+      expect(body.booted).toEqual([]);
+      expect(H.getPgBootedHandlesSnapshotFallback).toHaveBeenCalledTimes(1);
+    });
+
+    it('the cluster-IPC cached broadcast wins over PG when BOTH are fresh — PG is a fallback, never consulted when the fast path already reached the owner', async () => {
+      H.state.requestOnly = true;
+      H.state.cachedRemote = { handles: [{ workspaceId: 'ws1', harnessSlug: 'from-cluster-ipc' }], receivedAt: Date.now() };
+      H.state.pgFallback = { handles: [{ workspaceId: 'ws1', harnessSlug: 'from-pg' }], receivedAt: Date.now() };
+      const body = await (await route[0].handler(req(), ctx())).json();
+      expect(body.reachedSubstrateOwner).toBe(true);
+      expect(body.booted).toEqual([{ workspaceId: 'ws1', harnessSlug: 'from-cluster-ipc' }]);
+      expect(H.getPgBootedHandlesSnapshotFallback).not.toHaveBeenCalled();
+    });
+
+    it('ordinary primary/single-process host (already reachedSubstrateOwner:true) → PG fallback never consulted', async () => {
+      H.state.booted = [{ workspaceId: 'ws1', harnessSlug: 'papercup' }];
+      const body = await (await route[0].handler(req(), ctx())).json();
+      expect(body.reachedSubstrateOwner).toBe(true);
+      expect(H.getPgBootedHandlesSnapshotFallback).not.toHaveBeenCalled();
     });
   });
 });

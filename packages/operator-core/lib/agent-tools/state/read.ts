@@ -47,7 +47,21 @@ export default defineTool({
   // names no single cell), so the exemption is the correct declaration, not a dodge.
   capability: 'coord:read',
   requirePrincipal: false,
-  agentRoles: [...SU_ROLES],
+  // state-plane-adoption-2026-08-02 P-003 / D-005. All five registered cells are
+  // release-pipeline cells, and `release-fixer` — the role whose entire job is repairing
+  // a red gate — could not read any of them. Verified before widening (the item required
+  // it): the CAPABILITY gate does not bite (release-fixer makes 229 successful coord:*
+  // calls, incl. coord:declare-intent/emit/send which are all `coord:write`), so the
+  // agentRoles gate was the sole blocker.
+  //
+  // Widened HERE, at the use site, and deliberately NOT by adding release-fixer to
+  // SU_ROLES: capability/cutover-role-parity.test.ts asserts FLEET_CAPABILITY_ROLES ≡
+  // SU_ROLES ∪ {cup}, so SU_ROLES membership DEFINES the fleet capability-cutover set —
+  // joining it would confine this role's native file-read/edit/git to the capability:*
+  // tools. role-config.ts holds `doc-steward` out of SU_ROLES for exactly this reason.
+  // Safe to widen: this tool audience-filters per reader, so a wider allowlist exposes
+  // no cell a role may not see.
+  agentRoles: [...SU_ROLES, 'release-fixer'],
   args: z.object({
     cell: z
       .string()

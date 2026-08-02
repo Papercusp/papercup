@@ -372,7 +372,7 @@ export interface DelegatedSpawnHonorDeps {
    * (`isWindowsDesktopHost()`)? Default resolves the real check. Injected so tests can
    * force either branch without faking `/proc/version`.
    */
-  isWindowsHost?: () => boolean;
+  isWindowsHost?: () => Promise<boolean>;
   /**
    * EI-19328706303827921: best-effort LOCAL liveness verification, run ONLY on a
    * Windows desktop-bridge honor (see {@link defaultVerifyLocalMemberBoot}'s doc for
@@ -671,6 +671,8 @@ export async function honorSpawnRequestFromProjection(
   const isTrustedUser = deps.isTrustedUser ?? defaultIsTrustedUser;
   const isPotMember = deps.isPotMember ?? defaultIsPotMember;
   const nowMs = deps.nowMs ?? Date.now;
+  const isWindowsHost = deps.isWindowsHost ?? defaultIsWindowsHost;
+  const verifyLocalMemberBoot = deps.verifyLocalMemberBoot ?? defaultVerifyLocalMemberBoot;
 
   const record = parseWorkOfferRecordJson(args.row.record_json);
   if (!record) return { outcome: 'skipped', reason: 'unparseable_record' };
@@ -827,6 +829,11 @@ export async function honorSpawnRequestFromProjection(
   );
   if (!claimed) return { outcome: 'already_claimed' };
 
+  // EI-19328706303827921: snapshot BEFORE spawning — the local boot-verify check
+  // below (Windows desktop-bridge honors only) needs a "since" cutoff so a
+  // pre-existing fleet member can never be mistaken for the one we just spawned.
+  const honorStartedAtMs = nowMs();
+
   let spawn: SpawnMembersResult;
   try {
     spawn = await spawnMembers({
@@ -885,6 +892,24 @@ export async function honorSpawnRequestFromProjection(
     return { outcome: 'refused', code: failure.code };
   }
 
+  // EI-19328706303827921: on a Windows desktop-bridge host, `spawn.opened > 0`
+  // proves only that the Tauri `console_launch` IPC round-trip succeeded — unlike
+  // the Linux/macOS/headless paths (which each run their own boot-death probe
+  // inside spawnConsole/spawnHeadless before returning 'ok'), the bridge has NO
+  // such check. Best-effort verify locally so the receipt can be honest about
+  // whether a member actually booted, rather than the same boilerplate caveat
+  // regardless of outcome. Never changes `local_disposition` or the outcome — a
+  // legitimately slow boot must never be downgraded to a false refusal — and is
+  // skipped entirely on the other platforms, which already verified this inside
+  // the spawn call and would only pay pure redundant latency here.
+  const bootVerify = (await isWindowsHost())
+    ? await verifyLocalMemberBoot({
+        workspaceId: args.workspaceId,
+        fleetSlug: args.row.fleet_slug,
+        sinceMs: honorStartedAtMs,
+      })
+    : null;
+
   await setDisposition(
     args.workspaceId,
     args.potHomeSlug,
@@ -907,6 +932,19 @@ export async function honorSpawnRequestFromProjection(
   // account?" is the first question asked when the member then dies at boot —
   // and answering it currently requires shelling into the honoring host.
   const partial = spawn.failed > 0 ? `, ${spawn.failed} FAILED to open` : '';
+  // EI-19328706303827921: sharpen the boilerplate boot caveat with what the local
+  // verify actually found, when it ran (Windows desktop-bridge honors only — see
+  // above). `bootVerify === null` (every other platform) keeps the original
+  // wording verbatim, unchanged from before this fix.
+  const bootNote =
+    bootVerify === null
+      ? '. NOTE: this receipt attests the member PROCESS was launched, not that it ' +
+        'booted successfully — a member can still die at boot (e.g. auth failure).'
+      : bootVerify.observed
+        ? `. Local liveness check CONFIRMED a member booted (${bootVerify.detail}).`
+        : `. ⚠ Local liveness check found NO member locally (${bootVerify.detail}) — ` +
+          'this may be a PHANTOM HONOR (the desktop-bridge window may never have opened, ' +
+          'or the agent CLI died before registering presence); check the honoring host directly.';
   await emitReceipt({
     workspaceId: args.workspaceId,
     potSlug: args.potHomeSlug,
@@ -917,8 +955,7 @@ export async function honorSpawnRequestFromProjection(
       `honored: opened ${spawn.opened}/${payload.count} member(s)${partial} for fleet ` +
       `'${args.row.fleet_slug}' on seat '${slot.ref}' with account='${acct.account}'` +
       (acct.note ? ` (${acct.note})` : '') +
-      '. NOTE: this receipt attests the member PROCESS was launched, not that it ' +
-      'booted successfully — a member can still die at boot (e.g. auth failure).',
+      bootNote,
     requester: { kind: 'session', ref: payload.requesterOwnerId, githubUserId: publisher },
     responderGithubUserId: actor.githubUserId,
     responderDevicePubkey: devicePubkey,

@@ -368,6 +368,76 @@ describe('honorSpawnRequestFromProjection', () => {
     expect(emitted.detail).toMatch(/not that it booted successfully/i);
   });
 
+  // EI-19328706303827921: the Windows desktop-bridge honor path (console-spawn.ts's
+  // isWindowsDesktopHost branch) reports `spawn.opened > 0` purely from the Tauri IPC
+  // round-trip succeeding — no boot-death probe exists there, unlike every other
+  // platform. These tests cover the local best-effort verification added to close
+  // that gap: it must run ONLY on a Windows host, must NEVER change the outcome or
+  // disposition (fail-open — a slow boot is not a refusal), and must sharpen the
+  // receipt's honesty with whatever it actually found.
+  describe('Windows desktop-bridge local boot verification (EI-19328706303827921)', () => {
+    it('non-Windows host (the default): verifyLocalMemberBoot is never called, receipt unchanged', async () => {
+      const verifyLocalMemberBoot = vi.fn(async () => ({ observed: true, detail: 'unused' }));
+      const { d, emitReceipt } = deps({
+        isWindowsHost: vi.fn(async () => false),
+        verifyLocalMemberBoot,
+      });
+      expect(await honorSpawnRequestFromProjection(ARGS, d)).toEqual({ outcome: 'honored', opened: 2, failed: 0 });
+      expect(verifyLocalMemberBoot).not.toHaveBeenCalled();
+      const emitted = emitReceipt.mock.calls[0]![0] as { detail: string };
+      expect(emitted.detail).toMatch(/not that it booted successfully/i);
+      expect(emitted.detail).not.toMatch(/PHANTOM|CONFIRMED/);
+    });
+
+    it('Windows host, member CONFIRMED locally: outcome/disposition unchanged, receipt says so', async () => {
+      const verifyLocalMemberBoot = vi.fn(async () => ({
+        observed: true,
+        detail: "a member (owner su-abc) joined 'wi3746-verify-fleet' locally",
+      }));
+      const { d, setDisposition, emitReceipt } = deps({
+        isWindowsHost: vi.fn(async () => true),
+        verifyLocalMemberBoot,
+      });
+      expect(await honorSpawnRequestFromProjection(ARGS, d)).toEqual({ outcome: 'honored', opened: 2, failed: 0 });
+      expect(verifyLocalMemberBoot).toHaveBeenCalledWith(
+        expect.objectContaining({ workspaceId: WS, fleetSlug: row().fleet_slug, sinceMs: NOW }),
+      );
+      expect(setDisposition).toHaveBeenLastCalledWith(WS, HOME, UID_A, row().offer_id, 'honored', { expect: 'honoring' }, undefined);
+      const emitted = emitReceipt.mock.calls[0]![0] as { detail: string };
+      expect(emitted.detail).toMatch(/CONFIRMED a member booted/i);
+      expect(emitted.detail).not.toMatch(/PHANTOM/i);
+    });
+
+    it('Windows host, NO member observed: still honored (fail-open, never a false refusal), receipt WARNS phantom', async () => {
+      const verifyLocalMemberBoot = vi.fn(async () => ({
+        observed: false,
+        detail: "no member joined 'wi3746-verify-fleet' locally within 8s of honoring",
+      }));
+      const { d, setDisposition, emitReceipt } = deps({
+        isWindowsHost: vi.fn(async () => true),
+        verifyLocalMemberBoot,
+      });
+      // Outcome + disposition are UNCHANGED — a miss must never be downgraded to a
+      // refusal (same fail-open philosophy as the runtime/account preflights).
+      expect(await honorSpawnRequestFromProjection(ARGS, d)).toEqual({ outcome: 'honored', opened: 2, failed: 0 });
+      expect(setDisposition).toHaveBeenLastCalledWith(WS, HOME, UID_A, row().offer_id, 'honored', { expect: 'honoring' }, undefined);
+      const emitted = emitReceipt.mock.calls[0]![0] as { detail: string };
+      expect(emitted.detail).toMatch(/PHANTOM HONOR/i);
+      expect(emitted.detail).toContain("no member joined 'wi3746-verify-fleet' locally within 8s of honoring");
+    });
+
+    it('an all-fail spawn on a Windows host never even calls verifyLocalMemberBoot (refusal path is unaffected)', async () => {
+      const verifyLocalMemberBoot = vi.fn(async () => ({ observed: true, detail: 'unused' }));
+      const { d } = deps({
+        isWindowsHost: vi.fn(async () => true),
+        verifyLocalMemberBoot,
+        spawnMembers: vi.fn(async () => ({ opened: 0, failed: 2, firstError: 'no display' })),
+      });
+      expect(await honorSpawnRequestFromProjection(ARGS, d)).toEqual({ outcome: 'refused', code: 'spawn_failed' });
+      expect(verifyLocalMemberBoot).not.toHaveBeenCalled();
+    });
+  });
+
   it('a lost claim race ⇒ already_claimed, no spawn (double-apply cannot double-spawn)', async () => {
     const { d, spawnMembers } = deps({ setDisposition: vi.fn(async () => false) });
     expect(await honorSpawnRequestFromProjection(ARGS, d)).toEqual({ outcome: 'already_claimed' });

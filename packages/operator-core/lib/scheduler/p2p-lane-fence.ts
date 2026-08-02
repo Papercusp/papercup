@@ -67,6 +67,27 @@ export const P2P_LANE_EXCLUSION_TERMS = [
   // improvement with an unrelated remote issue") leaked through this exact gap
   // into fleet nonp2p-bug-drain-0801's lane.
   'federated',
+  // WI-7184: the VERB inflections. EI-13285 diagnosed this exact class ("the
+  // `word` op matches EXACT words, not stems") and then stopped one inflection
+  // short — so the same gap re-opened for "federate", and EI-19328707367010003
+  // ("Remote work-offers FEDERATE with HOURS of latency", paths under
+  // packages/operator-core/lib/p2p/) was served to single-box fleet
+  // nonp2p-bug-drain-0801 on 2026-08-02. Measured against the live papercusp
+  // backlog with the `word` op's own boundary semantics (`_` is a BOUNDARY, not
+  // a word char — see the underscore test): 37 items carry federate/federates/
+  // federating, 23 of them caught by NO existing term, and reading all 23 titles
+  // there is not one homonym — seat-offer delegation, outbox drain, membership
+  // teardown, cross-machine content writes, delegated-spawn receipts. "Federate"
+  // has exactly one meaning in this pot.
+  //
+  // All three remaining inflections land together ON PURPOSE: federation +
+  // federated + federate + federates + federating is EVERY English inflection of
+  // this stem, so the stem is CLOSED here rather than extended a fourth time by
+  // whoever meets the next one. A term family this unambiguous should never need
+  // another incremental widening.
+  'federate',
+  'federates',
+  'federating',
   'holepunch',
   'steering lease',
   // Replication subsystem. In this pot "replication" IS the p2p transport surface
@@ -127,11 +148,21 @@ export const P2P_LANE_EXCLUSION_TERMS = [
  *   above covers the p2p sense without the collateral.
  * - `dial` (5) — every live hit already carries `pot-git`, so it is redundant, and
  *   "dial" is ordinary enough English to be a homonym risk for no gain.
+ * - `hive` (WI-7184) — the most tempting proposal on this list, and the one that
+ *   would do the most damage. This pot runs a LOCAL coding hive as well as the
+ *   federated shared-hive, and the word is load-bearing for both: EI-1443
+ *   ("generic-hive bee completes + posts a completion but never calls
+ *   work_items:complete") is a local bee-lifecycle bug, and WI-7154
+ *   ("harness-scoped memories are systematically outranked by hive+user") is a
+ *   mem0 recall-scope bug — both squarely executable on one box, both hidden by a
+ *   bare `hive` term. `shared-hive` above already carries the federated sense.
+ *   Measured while fixing WI-7184: of 9 in-lane critical/major hits for
+ *   hive|seat|offer|delegated, 4 were non-p2p homonyms.
  *
  * A term belongs above only if a whole-word title match implies work a single-box
  * member CANNOT execute. If it merely CORRELATES with p2p, it belongs here instead.
  */
-export const P2P_LANE_REJECTED_ANTI_TERMS = ['rig', 'tower', 'announce', 'dial'] as const;
+export const P2P_LANE_REJECTED_ANTI_TERMS = ['rig', 'tower', 'announce', 'dial', 'hive'] as const;
 
 /**
  * Build the `not: { any: [...] } }` FilterNode excluding every

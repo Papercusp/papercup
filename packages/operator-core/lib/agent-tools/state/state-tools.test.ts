@@ -59,6 +59,7 @@ vi.mock('../coordination/identity', async (importOriginal) => {
 
 import readTool from './read';
 import subscribeTool from './subscribe';
+import { SU_ROLES } from '@papercusp/agent-mcp';
 import { registerCell, __resetCellRegistryForTests, type CellSpec } from '../../cell-registry';
 
 const CTX = { role: 'su', harnessSlug: 'papercusp', workspaceId: 'default' };
@@ -334,5 +335,30 @@ describe('P-021 — state:subscribe never applies materiality silently', () => {
     expect(String(b.error)).toContain('no materiality');
     expect(b.watchedPath).toBe('positions.deployed');
     expect(watchHandler).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * state-plane-adoption-2026-08-02 P-003 / D-005. Every registered cell is a
+ * release-pipeline cell, so the role that repairs a red gate must be able to read them
+ * and to wait on them. This guards a silent re-narrowing (the same guard
+ * dev:pipeline_position keeps over its own allowlist) AND the specific wrong fix:
+ * granting reach by adding release-fixer to SU_ROLES would redefine the fleet
+ * capability-cutover set (cutover-role-parity.test.ts asserts FLEET_CAPABILITY_ROLES ≡
+ * SU_ROLES ∪ {cup}) and confine the role's native file-read/edit/git.
+ */
+describe('state plane reach — release-fixer (P-003)', () => {
+  it('can reach BOTH state tools; reading a cell you cannot wait on is a half-open door', () => {
+    expect(new Set(readTool.agentRoles ?? []).has('release-fixer')).toBe(true);
+    expect(new Set(subscribeTool.agentRoles ?? []).has('release-fixer')).toBe(true);
+  });
+
+  it('is granted at the USE SITE, never by widening SU_ROLES', () => {
+    expect((SU_ROLES as readonly string[]).includes('release-fixer')).toBe(false);
+  });
+
+  /** The allowlists must not drift apart — that is what produced the half-open door. */
+  it('keeps the two allowlists identical', () => {
+    expect(new Set(readTool.agentRoles ?? [])).toEqual(new Set(subscribeTool.agentRoles ?? []));
   });
 });

@@ -23,6 +23,10 @@ const H = vi.hoisted(() => {
     // WI-5307: is THIS process a declared request-only secondary (dedicated-bg-host
     // topology) — independent of node:cluster.isPrimary.
     requestOnly: boolean;
+    // EI-19327550671915579: the cross-SERVICE PG fallback leg — the one that actually
+    // reaches a request-only host under the dedicated-bg-host topology, where
+    // node:cluster IPC (cachedRemote above) can never apply at all.
+    pgFallback: { handles: Array<{ workspaceId: string; harnessSlug: string }>; receivedAt: number } | null;
   } = {
     booted: [],
     progress: [],
@@ -32,6 +36,7 @@ const H = vi.hoisted(() => {
     isPrimary: true,
     cachedRemote: null,
     requestOnly: false,
+    pgFallback: null,
   };
   return {
     state,
@@ -47,6 +52,7 @@ const H = vi.hoisted(() => {
     // computing `isPrimary && !requestOnly` inline — mirror that same logic here so
     // the mock stays behaviorally equivalent to the real background-workers export.
     isSubstrateOwnerProcess: () => state.isPrimary && !state.requestOnly,
+    getPgBootedHandlesSnapshotFallback: vi.fn(async () => state.pgFallback),
   };
 });
 
@@ -58,6 +64,9 @@ vi.mock('../../../../sync/hyperbee/health', () => ({ assessHarnessSubstrateHealt
 vi.mock('../../../../sync/hyperbee/summary', () => ({ summariseWorkspaceSubstrate: H.summariseWorkspaceSubstrate }));
 vi.mock('../../../../sync/hyperbee/cluster-booted-handles-sync', () => ({
   getCachedRemoteBootedHandles: H.getCachedRemoteBootedHandles,
+}));
+vi.mock('../../../../sync/hyperbee/substrate-booted-handles-pg', () => ({
+  getPgBootedHandlesSnapshotFallback: H.getPgBootedHandlesSnapshotFallback,
 }));
 vi.mock('../../../../background-workers', () => ({
   requestOnlyHost: H.requestOnlyHost,
@@ -94,9 +103,11 @@ beforeEach(() => {
   H.state.isPrimary = true;
   H.state.cachedRemote = null;
   H.state.requestOnly = false;
+  H.state.pgFallback = null;
   H.loadSubstrateDrainStats.mockClear();
   H.loadClaimAttemptStats.mockClear();
   H.assessHarnessSubstrateHealth.mockClear();
+  H.getPgBootedHandlesSnapshotFallback.mockClear();
 });
 
 describe('dogfood-substrate-health route metadata', () => {
@@ -231,6 +242,41 @@ describe('GET /admin/dogfood-substrate-health handler', () => {
       const body = await (await route[0].handler(req(), ctx())).json();
       expect(body.reachedSubstrateOwner).toBe(true);
       expect(body.harnesses).toHaveLength(1);
+    });
+  });
+
+  // EI-19327550671915579: node:cluster IPC (cachedRemote) can never reach a request-only
+  // host under the dedicated-bg-host topology at all (bg-host is a separate systemd
+  // service, not a forked child) — this is the leg that closes that permanent blind spot.
+  describe('cross-SERVICE PG fallback (EI-19327550671915579, dedicated-bg-host topology)', () => {
+    it('request-only, no cached broadcast, but a FRESH PG row → reachedSubstrateOwner:true, uses the PG handles', async () => {
+      H.state.isPrimary = true;
+      H.state.requestOnly = true;
+      H.state.cachedRemote = null;
+      H.state.pgFallback = { handles: [{ workspaceId: 'ws1', harnessSlug: 'papercup' }], receivedAt: Date.now() };
+      const body = await (await route[0].handler(req(), ctx())).json();
+      expect(body.reachedSubstrateOwner).toBe(true);
+      expect(body.harnesses).toHaveLength(1);
+      expect(body.harnesses[0]).toMatchObject({ workspaceId: 'ws1', harnessSlug: 'papercup' });
+      expect(H.getPgBootedHandlesSnapshotFallback).toHaveBeenCalledTimes(1);
+    });
+
+    it('request-only, no cached broadcast, PG row also absent → stays reachedSubstrateOwner:false (still a blind spot)', async () => {
+      H.state.isPrimary = true;
+      H.state.requestOnly = true;
+      H.state.cachedRemote = null;
+      H.state.pgFallback = null;
+      const body = await (await route[0].handler(req(), ctx())).json();
+      expect(body.reachedSubstrateOwner).toBe(false);
+      expect(body.harnesses).toEqual([]);
+      expect(H.getPgBootedHandlesSnapshotFallback).toHaveBeenCalledTimes(1);
+    });
+
+    it('ordinary primary/single-process host (already reachedSubstrateOwner:true) → PG fallback never consulted', async () => {
+      H.state.booted = [{ workspaceId: 'ws1', harnessSlug: 'papercup' }];
+      const body = await (await route[0].handler(req(), ctx())).json();
+      expect(body.reachedSubstrateOwner).toBe(true);
+      expect(H.getPgBootedHandlesSnapshotFallback).not.toHaveBeenCalled();
     });
   });
 });

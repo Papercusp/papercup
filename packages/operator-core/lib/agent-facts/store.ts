@@ -1130,15 +1130,16 @@ export interface FactElsewhereMatch {
  * workspace, so the caller can retract there instead of concluding absence.
  */
 export async function findFactKeyElsewhere(
-  args: { scope: FactScope; scopeRef: string; key: string; workspaceId: string },
+  args: { scope: FactScope; scopeRef: string; key: string; workspaceId?: string },
   inject?: Sql,
 ): Promise<FactElsewhereMatch[]> {
   const sql = sqlOf(inject);
+  const ws = args.workspaceId ?? activeWorkspaceId();
   const ref = args.scope === 'workspace' ? '' : args.scopeRef.trim();
   const rows = await sql<{ id: string | number; scope: FactScope; scope_ref: string | null; expires_at: string }[]>`
     SELECT id, scope, scope_ref, expires_at::text
       FROM harness_shared.agent_facts
-     WHERE workspace_id = ${args.workspaceId} AND key = ${args.key.trim()}
+     WHERE workspace_id = ${ws} AND key = ${args.key.trim()}
        AND source_hive IS NULL
        AND superseded_at IS NULL
        AND retracted_at IS NULL

@@ -130,6 +130,14 @@ describe('WI-5268 — buildP2pLaneFence excludes every representative p2p/federa
         // federation-lane work, so this is a widening of the SAME term rather
         // than a new homonym risk (contrast the anti-terms below).
         'federated',
+        // WI-7184 — the verb inflections. EI-13285 named this class and stopped
+        // one inflection short, so it re-opened for "federate" and leaked
+        // EI-19328707367010003 into a single-box drain fleet. All three land
+        // together so the federat- stem is CLOSED, not widened a fourth time;
+        // pinning each individually means a partial revert fails loudly.
+        'federate',
+        'federates',
+        'federating',
         'holepunch',
         'steering lease',
         'replication',
@@ -166,6 +174,10 @@ describe('WI-5268 — buildP2pLaneFence excludes every representative p2p/federa
     ['tower — the local box, the most on-lane subject there is', 'Tower load rising unbounded (142→190→240 on 112 cores) — heavy-command admission now rejecting agents'],
     ['announce — publish-guard, not the p2p announce leg', "publish-guard's G-10 secrets scan is unbounded in memory AND spawns one git per blob"],
     ['announce — identity resolution, not the wire', 'A transient identity-resolution failure permanently disables presence announce for the whole process'],
+    // WI-7184 — `hive` is the most tempting anti-term and the most damaging: this
+    // pot runs a LOCAL coding hive as well as the federated shared-hive.
+    ['hive — the local coding hive, not the federated one', 'generic-hive bee completes + posts a completion but never calls work_items:complete'],
+    ['hive — a mem0 recall scope, not the wire', 'initialize/harness recall pool: harness-scoped memories are systematically outranked by hive+user memories'],
   ];
 
   it.each(mustStayAdmitted)('does NOT over-fence (%s)', (_why, title) => {
@@ -190,6 +202,21 @@ describe('WI-5268 — buildP2pLaneFence excludes every representative p2p/federa
       title: 'replication_soak: WI-183-class zombie-connection recovery still misses 90s SLA',
     });
     expect(matchesWorkItemClaimSpec(leaked, specWithFence())).toBe(false); // excluded
+  });
+
+  // WI-7184 — the real leaked titles, verbatim. The `word` op matches exact words
+  // and NOT stems, so each inflection of a stem is a separate hole: `federation`
+  // did not cover "Federated" (EI-13285) and neither covered "federate", which is
+  // how EI-19328707367010003 reached single-box fleet nonp2p-bug-drain-0801. These
+  // pin the stem CLOSED — a partial revert of any one inflection fails here with
+  // the title that actually leaked, not an abstract assertion.
+  it.each([
+    ['federate (EI-19328707367010003, the reported leak)', 'Remote work-offers federate with HOURS of latency and arrive in bursts, so they are DOA against the 60-minute spawn-request honor window'],
+    ['federate (WI-5631)', 'Rig frames federate the REAL papercusp home-harness backlog → frame-internal event-loop starvation'],
+    ['federates (EI-19333624101736074)', "A delegated spawn's SUCCESS never federates — local_disposition is host-local and no receipt is emitted"],
+    ['federating (WI-183)', 'Hive peer silently stops federating after restart: swarm re-peers but state diverges'],
+  ])('fences the %s inflection', (_why, title) => {
+    expect(matchesWorkItemClaimSpec(issueItem({ id: 'WI-fed', title }), specWithFence())).toBe(false);
   });
 
   it('validateClaimSpec accepts a spec built with buildP2pLaneFence()', async () => {

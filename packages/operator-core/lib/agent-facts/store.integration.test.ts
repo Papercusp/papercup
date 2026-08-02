@@ -22,6 +22,7 @@ import { createFreshPgDb, applyMigrationsForTest, type FreshPgDb } from '../../t
 import {
   assertFact,
   retractFact,
+  findFactKeyElsewhere,
   foldFacts,
   factVersions,
   FACTS_PER_SCOPE_CAP,
@@ -472,6 +473,60 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
     // …and only the machine-chosen one is stamped evicted.
     expect(byKey.get('ordinary-0')?.evicted).toBe(true);
     expect(byKey.get('deliberate')?.evicted).toBe(false);
+  });
+});
+
+// EI-19328780288425209: a retractFact miss is ambiguous — "never existed" vs "exists at a
+// DIFFERENT scope" — the latter left a WRONG fact live and believed-retracted for 5h+ while
+// the author had already told six agents it was gone. findFactKeyElsewhere is the disambiguator
+// retract.ts calls on a miss, before reporting bare `retracted:false`.
+describe('findFactKeyElsewhere (EI-19328780288425209 — the retract-scope-miss disambiguator)', () => {
+  it('finds the SAME key live at a DIFFERENT scope/scopeRef', async () => {
+    await assertFact(
+      { scope: 'harness', scopeRef: 'papercusp', key: 'elsewhere-1', body: 'b', createdBy: 'su-int', workspaceId: WS },
+      db.sql,
+    );
+    const hits = await findFactKeyElsewhere(
+      { scope: 'workspace', scopeRef: '', key: 'elsewhere-1', workspaceId: WS },
+      db.sql,
+    );
+    expect(hits).toHaveLength(1);
+    expect(hits[0]!.scope).toBe('harness');
+    expect(hits[0]!.scopeRef).toBe('papercusp');
+    expect(typeof hits[0]!.id).toBe('number');
+  });
+
+  it('is empty when the key truly does not exist anywhere', async () => {
+    const hits = await findFactKeyElsewhere(
+      { scope: 'workspace', scopeRef: '', key: 'genuinely-never-asserted-xyz', workspaceId: WS },
+      db.sql,
+    );
+    expect(hits).toEqual([]);
+  });
+
+  it('excludes the scope actually searched — a hit there means retractFact should not have missed', async () => {
+    await assertFact(
+      { scope: 'owner', scopeRef: 'su-elsewhere', key: 'elsewhere-2', body: 'b', createdBy: 'su-int', workspaceId: WS },
+      db.sql,
+    );
+    const hits = await findFactKeyElsewhere(
+      { scope: 'owner', scopeRef: 'su-elsewhere', key: 'elsewhere-2', workspaceId: WS },
+      db.sql,
+    );
+    expect(hits).toEqual([]);
+  });
+
+  it('excludes a RETRACTED copy at another scope — retraction is not a live "elsewhere" hit', async () => {
+    await assertFact(
+      { scope: 'harness', scopeRef: 'papercusp', key: 'elsewhere-3', body: 'b', createdBy: 'su-int', workspaceId: WS },
+      db.sql,
+    );
+    await retractFact({ scope: 'harness', scopeRef: 'papercusp', key: 'elsewhere-3', workspaceId: WS }, db.sql);
+    const hits = await findFactKeyElsewhere(
+      { scope: 'workspace', scopeRef: '', key: 'elsewhere-3', workspaceId: WS },
+      db.sql,
+    );
+    expect(hits).toEqual([]);
   });
 });
 

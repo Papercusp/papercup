@@ -51,7 +51,16 @@ export default defineTool({
   },
   capability: 'coord:write',
   requirePrincipal: false,
-  agentRoles: [...SU_ROLES],
+  // state-plane-adoption-2026-08-02 P-003 / D-005 — kept in lockstep with state:read's
+  // allowlist: reading a cell you cannot then wait on is a half-open door, and the gate
+  // verdict is the value a red-gate repairer most needs to wait on rather than re-poll.
+  // release-fixer holds `coord:write` (verified: 82 coord:emit + 26 coord:declare-intent
+  // + 4 coord:send successes, all `coord:write`), so the capability gate does not bite.
+  // Widened at the use site, NOT via SU_ROLES — that set defines the fleet
+  // capability-cutover (see the fuller note on state:read). Audience filtering still
+  // applies per this tool's own contract: a cell outside your audience is absent, not
+  // subscribable.
+  agentRoles: [...SU_ROLES, 'release-fixer'],
   args: z.object({
     cell: z.string().min(1).max(120).describe('Dotted cell id to watch, e.g. "git.pipelinePosition". state:read (no args) lists the ones you may read.'),
     on: z

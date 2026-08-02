@@ -3342,15 +3342,34 @@ export function hostThroughPty(o) {
       // bug this fixes.
       let personaFile = null;
       let personaRefreshReason = null;
-      try {
-        const refreshed = await refreshPersonaFile();
-        personaFile = refreshed?.promptFile ?? null;
-        personaRefreshReason = personaFile ? null : (refreshed?.reason ?? 'no-file');
-      } catch (e) {
-        personaFile = null;
-        personaRefreshReason = `threw: ${e?.message ?? String(e)}`;
+      // Only claude has a `--system-prompt-file` to swap (codex carries its
+      // instructions in CODEX_HOME/AGENTS.md, omp in its own launch-context env), so
+      // skip the round-trip for a backend that could not use the answer. Skipped only
+      // on an EXPLICIT non-claude value — an unset PAPERCUSP_AGENT still attempts the
+      // refresh, because silently not refreshing is the failure mode being fixed.
+      const agentHint = String(env.PAPERCUSP_AGENT ?? '').trim().toLowerCase();
+      if (agentHint && agentHint !== 'claude') {
+        personaRefreshReason = `unsupported-agent:${agentHint}`;
+      } else {
+        try {
+          const refreshed = await refreshPersonaFile();
+          personaFile = refreshed?.promptFile ?? null;
+          personaRefreshReason = personaFile ? null : (refreshed?.reason ?? 'no-file');
+        } catch (e) {
+          personaFile = null;
+          personaRefreshReason = `threw: ${e?.message ?? String(e)}`;
+        }
       }
-      if (!personaFile && personaRefreshReason && personaRefreshReason !== 'not-wired') {
+      // Record a refresh that did not happen, so a persistently-failing one is visible
+      // rather than looking exactly like the staleness bug. The two EXPECTED skips
+      // (a host with no refresh wired, a backend that has no prompt file to swap) are
+      // not events — per-respawn noise for a known condition just buries real ones.
+      if (
+        !personaFile &&
+        personaRefreshReason &&
+        personaRefreshReason !== 'not-wired' &&
+        !personaRefreshReason.startsWith('unsupported-agent')
+      ) {
         appendHostEvent(ownerId, 'persona-refresh-skipped', {
           mode: respawnMode,
           reason: personaRefreshReason,

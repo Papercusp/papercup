@@ -6,6 +6,16 @@
  * workspace::slug. Pins: the empty-harness short-circuit (no PG load), and that the real
  * stats reach the second-pass resolveClaimStats (the verdict reflects real error rates).
  *
+ * Also covers (EI-19327550671915579): `withPgBootedHandlesFallback` — the cross-SERVICE
+ * PG leg consulted only when the fast in-process/cluster-IPC path reported
+ * `reachedSubstrateOwner: false` (the dedicated-bg-host blind spot; see
+ * substrate-booted-handles-pg.ts's file header). Before this, no test anywhere exercised
+ * this helper's actual recompute-on-fallback-hit behavior — every existing test mocked
+ * `getInProcessSubstrateStatus` wholesale (never setting `reachedSubstrateOwner`, so the
+ * helper always took the "not reached" branch) while leaving the real
+ * `getPgBootedHandlesSnapshotFallback` unmocked, silently relying on it failing/returning
+ * null in this environment rather than deliberately asserting the fallback contract.
+ *
  * In-tree (operator-core, tab-visible).
  * Run: cd packages/operator-core && npx vitest run lib/agent-tools/dev/dogfood_substrate_status.test.ts
  */
@@ -13,6 +23,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../sync/hyperbee/in-process-status', () => ({ getInProcessSubstrateStatus: vi.fn() }));
 vi.mock('../../orchestrator/load-claim-attempts', () => ({ loadClaimAttemptStats: vi.fn() }));
+vi.mock('../../sync/hyperbee/substrate-booted-handles-pg', () => ({ getPgBootedHandlesSnapshotFallback: vi.fn() }));
 vi.mock('@papercusp/db-org', async (orig) => ({
   ...(await orig<typeof import('@papercusp/db-org')>()),
   getOrgPg: vi.fn(() => ({ sql: { unsafe: vi.fn(async () => []) } })),
@@ -20,15 +31,20 @@ vi.mock('@papercusp/db-org', async (orig) => ({
 
 import { getInProcessSubstrateStatus } from '../../sync/hyperbee/in-process-status';
 import { loadClaimAttemptStats } from '../../orchestrator/load-claim-attempts';
+import { getPgBootedHandlesSnapshotFallback } from '../../sync/hyperbee/substrate-booted-handles-pg';
 const statusM = vi.mocked(getInProcessSubstrateStatus);
 const statsM = vi.mocked(loadClaimAttemptStats);
+const pgM = vi.mocked(getPgBootedHandlesSnapshotFallback);
 const tool = (await import('./dogfood_substrate_status')).default;
 
 type Out = { content: { text: string }[] };
 const body = (o: Out) => JSON.parse(o.content[0]!.text);
 const run = () => tool.handler({} as never, {} as never) as Promise<Out>;
 
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => {
+  vi.clearAllMocks();
+  pgM.mockResolvedValue(null); // default: no cross-service row (the common case)
+});
 
 describe('dev:dogfood_substrate_status handler', () => {
   it('short-circuits when no harness booted (no PG claim-stat load)', async () => {
@@ -62,5 +78,46 @@ describe('dev:dogfood_substrate_status handler', () => {
     statsM.mockRejectedValue(new Error('pg down'));
     const b = body(await run());
     expect(b.probe).toMatchObject({ total: 0, won: 0, lost: 0, error: 0 });
+  });
+});
+
+describe('dev:dogfood_substrate_status — cross-SERVICE PG fallback (EI-19327550671915579)', () => {
+  it('never consults the PG fallback when the fast path already reached the owner', async () => {
+    statusM.mockReturnValue({ harnesses: [], summary: {}, reachedSubstrateOwner: true } as never);
+    const b = body(await run());
+    expect(b).toMatchObject({ reachedSubstrateOwner: true });
+    expect(pgM).not.toHaveBeenCalled();
+  });
+
+  it('stays reachedSubstrateOwner:false when the fast path missed AND the PG row is absent/stale', async () => {
+    statusM.mockReturnValue({ harnesses: [], summary: {}, reachedSubstrateOwner: false } as never);
+    pgM.mockResolvedValue(null); // no row yet / stale — getPgBootedHandlesSnapshotFallback's own contract
+    const b = body(await run());
+    expect(pgM).toHaveBeenCalledTimes(1);
+    expect(b).toMatchObject({ reachedSubstrateOwner: false });
+  });
+
+  it('recomputes via the PG snapshot when the fast path missed — this is the dedicated-bg-host blind spot the EI reports', async () => {
+    // Pass 1: the in-process/cluster-IPC leg reports the blind spot (this is what a
+    // request-only host under the dedicated-bg-host topology sees permanently, per the
+    // EI). Recompute (pass 1b) is handed a `resolveRemoteBootedHandles` that returns the
+    // PG-derived snapshot — assert it actually reaches that recompute call, and that the
+    // recomputed (not the original) status is what the tool returns.
+    let sawResolvedRemote: unknown;
+    statusM.mockImplementation((opts: { resolveRemoteBootedHandles?: () => unknown }) => {
+      const remote = opts.resolveRemoteBootedHandles?.();
+      if (remote) {
+        sawResolvedRemote = remote;
+        return { harnesses: [], summary: {}, reachedSubstrateOwner: true, booted: (remote as { handles: unknown }).handles } as never;
+      }
+      return { harnesses: [], summary: {}, reachedSubstrateOwner: false } as never;
+    });
+    const pgSnapshot = { handles: [{ workspaceId: 'ws1', harnessSlug: 'papercup' }], receivedAt: 12_345 };
+    pgM.mockResolvedValue(pgSnapshot);
+
+    const b = body(await run());
+    expect(pgM).toHaveBeenCalledTimes(1);
+    expect(sawResolvedRemote).toEqual(pgSnapshot);
+    expect(b).toMatchObject({ reachedSubstrateOwner: true, booted: [{ workspaceId: 'ws1', harnessSlug: 'papercup' }] });
   });
 });
