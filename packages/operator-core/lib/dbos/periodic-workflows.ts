@@ -51,6 +51,7 @@ import { runTestDesktopReaperOnce } from '../test-desktop-reaper';
 import { runDiskSpaceAlarmOnce } from '../storage/disk-space-alarm';
 import { runWalCheckpointSweep } from '../storage/localstorage-wal-guard';
 import { runMemoryAnchorAuditOnce } from '../memory/audit-memory-anchors';
+import { runDesktopPerfScheduledRun } from '../system-health/desktop-perf-scheduled-run';
 // EI-1622: the high-frequency EPHEMERAL periodic checks (systemHealth,
 // harnessStatusSweep, connectionPressure, serviceHealth, completionRefVerify,
 // spawnReclaimSweep, staleClaimSweep, learningInfraHealth, steeringChurnSweep) were
@@ -1090,3 +1091,45 @@ const dbIndexBloatReindexWorkflow = idempotentRegisterWorkflow('dbIndexBloatRein
   }),
 );
 DBOS.registerScheduled(dbIndexBloatReindexWorkflow, { name: 'dbIndexBloatReindex', crontab: '0 50 4 * * *' });
+
+// 3x/day (02:40, 10:40, 18:40 UTC — off the :00 backup tick and the 04:xx GC
+// cluster): the desktop-perf release gate's missing PRODUCER (WI-6538).
+// `harness_shared.desktop_perf_runs` was written ONLY by a human clicking Run
+// in the admin testing UI and nobody ever had, so the gate's `maxAgeMs` (24h)
+// freshness window never had a run to evaluate — every deploy cleared it
+// without measuring anything. Three runs/day gives ~2x margin inside that
+// window even if one run fails outright. `shouldShedHeavyTick` applies here
+// too (this is one of the heaviest ticks in this file — a real packaged
+// desktop boot under Xvfb) so it backs off exactly like the other heavy
+// ticks under event-loop pressure / power-save. Never throws: an infra miss
+// (spawn failure) is logged, not raised, mirroring the other best-effort
+// ticks in this file — retrying via DBOS's `maxRecoveryAttempts` would only
+// re-run the whole 10-minute suite, which is not what an infra hiccup needs.
+async function desktopPerfScheduledRunTick(): Promise<void> {
+  await DBOS.runStep(async () => {
+    if (shouldShedHeavyTick('desktop-perf-scheduled-run')) return;
+    try {
+      const r = await runDesktopPerfScheduledRun();
+      if (!r.ran) {
+        console.log(`[desktop-perf-scheduled-run] skipped: ${r.skippedReason}`);
+      } else if (r.timedOut) {
+        console.warn(`[desktop-perf-scheduled-run] timed out after ${r.durationMs}ms`);
+      } else {
+        console.log(
+          `[desktop-perf-scheduled-run] ran in ${r.durationMs}ms, wdio exit ${r.exitCode}`,
+        );
+      }
+    } catch (err) {
+      console.warn(`[desktop-perf-scheduled-run] run skipped (non-fatal): ${(err as Error).message}`);
+    }
+  }, { name: 'desktop-perf-scheduled-run' });
+}
+const desktopPerfScheduledRunWorkflow = idempotentRegisterWorkflow('desktopPerfScheduledRun', () =>
+  DBOS.registerWorkflow(desktopPerfScheduledRunTick, {
+    name: 'desktopPerfScheduledRun', maxRecoveryAttempts: 3,
+  }),
+);
+DBOS.registerScheduled(desktopPerfScheduledRunWorkflow, {
+  name: 'desktopPerfScheduledRun',
+  crontab: '0 40 2,10,18 * * *',
+});

@@ -2072,6 +2072,21 @@ export const FLAGS = {
   // armed gate can flag a deploy but never hold one. OFF ⇒ reads nothing, passes
   // (kill-switch). Same posture as its desktop sibling.
   HOST_PERF_GATE: "papercusp-host-perf-gate",
+  // WI-6538 (the remaining half of the same item): the SCHEDULED PRODUCER for
+  // DESKTOP_PERF_GATE above. Runs the packaged-binary wdio suite
+  // (tools/perf-test/wdio, system-health/desktop-perf-scheduled-run.ts) on a
+  // background cadence so `harness_shared.desktop_perf_runs` is never more
+  // than DESKTOP_PERF_GATE's 24h freshness window stale — before this, the
+  // table was written ONLY by a human clicking Run in the admin testing UI,
+  // and nobody ever had, so the gate had passed every deploy since the suite
+  // landed without measuring anything.
+  // Default ON (derived FLAG_DEFAULTS — not in DARK_FLAGS): the tick is
+  // read-mostly UI interaction against a throwaway isolated Xvfb display and
+  // never throws on a test-finding failure (see that file's module doc) — a
+  // regression it finds is exactly the observation the gate exists to catch.
+  // OFF ⇒ the kill-switch if the scheduled run ever misbehaves on the shared
+  // dev box (contends for CPU/Xvfb with concurrent agent verification runs).
+  DESKTOP_PERF_SCHEDULED_RUN: "papercusp-desktop-perf-scheduled-run",
   // WI-5820: the lag-triggered CPU profiler in event-loop-lag-monitor.ts. When a
   // 10s window's p95 loop delay crosses the critical threshold, capture a short V8
   // `.cpuprofile` to ~/.papercusp/loop-profiles — the histogram says "the loop is
