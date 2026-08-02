@@ -3575,6 +3575,62 @@ describe('mintRecycleArgs (WI-1980 — a cold-loop RECYCLE respawn gets a FRESH 
   });
 });
 
+describe('mintRecycleArgs — personaFile swap (stale-prompt-render-in-live-sessions-2026-08-02 P-002)', () => {
+  const UUID = '0123abcd-1234-5678-9abc-def012345678';
+  const FRESH = 'ffffabcd-1234-5678-9abc-def012345678';
+  const mintId = () => FRESH;
+  const OLD_RENDER = '/home/u/.papercusp/launch-context/session-14416.md';
+  const NEW_RENDER = '/home/u/.papercusp/launch-context/session-refresh-su-abc.md';
+
+  it('REPLACES the inherited --system-prompt-file with the freshly re-rendered one', () => {
+    // THE bug: the copy loop's bare `out.push(a)` carried the PREDECESSOR's render
+    // through every respawn, pinning a session's base persona to launch #1 forever.
+    // 27 of 53 live claude sessions were up to 14 days stale when measured.
+    const { args } = mintRecycleArgs(
+      ['claude', '--session-id', UUID, '--system-prompt-file', OLD_RENDER, '--foo'],
+      { mintId, personaFile: NEW_RENDER },
+    );
+    expect(args).toEqual(['claude', '--session-id', FRESH, '--system-prompt-file', NEW_RENDER, '--foo']);
+    // Replaced, not appended — exactly one occurrence, and the stale path is gone.
+    expect(args.filter((a) => a === '--system-prompt-file')).toHaveLength(1);
+    expect(args).not.toContain(OLD_RENDER);
+  });
+
+  it('replaces the --system-prompt-file=<path> form too', () => {
+    const { args } = mintRecycleArgs(
+      ['claude', '--session-id', UUID, `--system-prompt-file=${OLD_RENDER}`],
+      { mintId, personaFile: NEW_RENDER },
+    );
+    expect(args).toEqual(['claude', '--session-id', FRESH, `--system-prompt-file=${NEW_RENDER}`]);
+  });
+
+  it('KEEPS the inherited render when no personaFile is supplied (the fail-soft path)', () => {
+    // A refresh that failed or was unavailable must never cost the session its
+    // respawn — a stale prompt beats a dead session. This is also the pre-fix
+    // behaviour, so it is the invariant a future change must not break.
+    for (const persona of [null, undefined, '', '   ']) {
+      const { args } = mintRecycleArgs(
+        ['claude', '--session-id', UUID, '--system-prompt-file', OLD_RENDER],
+        { mintId, personaFile: persona },
+      );
+      expect(args).toEqual(['claude', '--session-id', FRESH, '--system-prompt-file', OLD_RENDER]);
+    }
+  });
+
+  it('never ADDS --system-prompt-file to an argv that has none, and never touches --append-system-prompt-file', () => {
+    // omp/codex do not take --system-prompt-file; injecting one would be a new flag
+    // on a backend that never asked for it. And the APPEND flag carries the carry
+    // document + the launch brief — swapping that would drop the session's mission.
+    const carry = '/home/u/.papercusp/launch-context/carry-su-abc.md';
+    const { args } = mintRecycleArgs(
+      ['claude', '--session-id', UUID, '--append-system-prompt-file', carry],
+      { mintId, personaFile: NEW_RENDER },
+    );
+    expect(args).toEqual(['claude', '--session-id', FRESH, '--append-system-prompt-file', carry]);
+    expect(args).not.toContain(NEW_RENDER);
+  });
+});
+
 describe('mintCarryRespawnArgs (P-018 deterministic successor launch context)', () => {
   const UUID = '0123abcd-1234-5678-9abc-def012345678';
   const FRESH = 'ffffabcd-1234-5678-9abc-def012345678';
@@ -3597,6 +3653,31 @@ describe('mintCarryRespawnArgs (P-018 deterministic successor launch context)', 
     ]);
     expect(readFileSync(out.launchContextPath, 'utf8')).toBe('deterministic carry body\n');
     expect(statSync(out.launchContextPath).mode & 0o777).toBe(0o600);
+  });
+
+  it('threads personaFile through to the base-prompt swap while still layering the carry (P-002)', () => {
+    // The two prompt files answer different questions and must BOTH be right on a
+    // carry-respawn: --system-prompt-file is the base persona (which went stale) and
+    // --append-system-prompt-file is this cut's carry document (which never did).
+    // Fixing one by clobbering the other would trade a stale prompt for a lost
+    // hand-off, so assert them together.
+    const stale = join(home, '.papercusp', 'launch-context', 'session-14416.md');
+    const fresh = join(home, '.papercusp', 'launch-context', 'session-refresh-su_test_owner.md');
+    const out = mintCarryRespawnArgs(
+      ['claude', '--session-id', UUID, '--system-prompt-file', stale],
+      {
+        systemPromptAddendum: 'carry body',
+        ownerId: 'su/test owner',
+        mintId: () => FRESH,
+        home,
+        personaFile: fresh,
+      },
+    );
+    expect(out.args).toEqual([
+      'claude', '--session-id', FRESH, '--system-prompt-file', fresh,
+      '--append-system-prompt-file', out.launchContextPath,
+    ]);
+    expect(out.args).not.toContain(stale);
   });
 
   it('fails before any respawn when the carry is empty or the agent is not claude', () => {

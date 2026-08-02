@@ -24,6 +24,7 @@ import {
 import { summariseWorkspaceSubstrate } from '../../../sync/hyperbee/summary';
 import { resolveEffectiveBootedHandles } from '../../../sync/hyperbee/in-process-status';
 import { getCachedRemoteBootedHandles } from '../../../sync/hyperbee/cluster-booted-handles-sync';
+import { getPgBootedHandlesSnapshotFallback } from '../../../sync/hyperbee/substrate-booted-handles-pg';
 
 interface HarnessHealthRow {
   workspaceId: string;
@@ -58,10 +59,20 @@ const get = defineTool({
     // EI-18735338283879820: use the SHARED predicate (background-workers.ts) rather than
     // an inline copy — two copies of one rule is exactly what let the read/write halves
     // of this fix drift apart the first time.
-    const { booted, reachedSubstrateOwner } = resolveEffectiveBootedHandles(listBootedHandles(), {
+    let { booted, reachedSubstrateOwner } = resolveEffectiveBootedHandles(listBootedHandles(), {
       isSubstrateOwnerProcess: isSubstrateOwnerProcess(),
       resolveRemote: getCachedRemoteBootedHandles,
     });
+    // EI-19327550671915579: see dogfood-substrate-status.ts's identical comment —
+    // node:cluster IPC can't cross the dedicated-bg-host service boundary, so fall
+    // back to the cross-SERVICE PG snapshot only when the fast path found nothing.
+    if (!reachedSubstrateOwner) {
+      const pg = await getPgBootedHandlesSnapshotFallback();
+      if (pg) {
+        booted = pg.handles;
+        reachedSubstrateOwner = true;
+      }
+    }
     const progress = listBootstrapProgress();
     const progressByKey = new Map<
       string,

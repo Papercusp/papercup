@@ -4929,6 +4929,18 @@ function LearningsView({
     enabled: hiveReady,
     staleTime: 30_000,
   });
+  // Perf settle point for PERF_INTERACTIONS.learningViewSwitch — same contract
+  // as the improvements view above (EI-19375505819043214): gated on the PRIMARY
+  // read only, settles on a fault as well as success. learning.hive measured
+  // 230,147B on the live operator, the second-heaviest read on this tab, so
+  // leaving it unmeasured left the payload-cost question unanswerable for it.
+  const learningsSettled =
+    !sync.loading && (sync.data !== undefined || Boolean(sync.error));
+  useEffect(() => {
+    if (learningsSettled) {
+      endInteraction(PERF_INTERACTIONS.learningViewSwitch);
+    }
+  }, [learningsSettled]);
   // The rest of what the colony keeps (WI-5412, owner ask: lens weights,
   // rubric changes, insight docs, and recipes are retained learning too) +
   // the banked-this-week strip counts. One slim read; every leg degrades

@@ -107,6 +107,21 @@ writeFileSync(
 );
 afterAll(() => rmSync(libsTypecheckTree, { recursive: true, force: true }));
 
+// WI-7155 / EI-19376779013716004: a candidate tree that provides `lint:tsc:workspaces` but no
+// other typecheck script — isolates the superproject fan-out leg's wiring from its two siblings,
+// exactly as libsTypecheckTree isolates the libs/papercusp one. apps/*, packages/* and
+// libs/generic/* were typechecked by NOTHING before this leg; these tests are what stop that
+// silently returning.
+const workspacesTypecheckTree = mkdtempSync(join(tmpdir(), 'green-cp-workspaces-typecheck-tree-'));
+writeFileSync(
+  join(workspacesTypecheckTree, 'package.json'),
+  JSON.stringify({
+    name: 'cp-workspaces-typecheck-fixture',
+    scripts: { 'lint:tsc:workspaces': 'node scripts/lint-tsc-workspaces.mjs' },
+  }),
+);
+afterAll(() => rmSync(workspacesTypecheckTree, { recursive: true, force: true }));
+
 // EI-485: a candidate tree that provides `lint:migrations` but not `lint:tsc` — isolates
 // the migrations-lint leg's wiring (position in the sequence, env, failure signature)
 // from the typecheck leg's, the same way typecheckTree isolates typecheck from cpTree's
@@ -267,6 +282,78 @@ describe('realCheckpointDeps.runGreen — real-path wiring (gap #10)', () => {
       expect(calls[2].args).toEqual(['run', 'lint:tsc:papercusp-libs']);
     } finally {
       rmSync(bothTree, { recursive: true, force: true });
+    }
+  });
+
+  // WI-7155 / EI-19376779013716004: the same phantom-gate shape a THIRD time, generalized.
+  // `lint:tsc` covers operator-core and the leg above covers the libs/papercusp submodule,
+  // which left the SUPERPROJECT roots (apps/*, packages/*, libs/generic/*) typechecked by
+  // NOTHING — `test:affected` is type-blind by design, so a regression there sat committed
+  // indefinitely. Unlike its two siblings this leg DISCOVERS its packages, so the next one to
+  // land is gated without anyone remembering. These are its teeth.
+  it('detects the optional lint:tsc:workspaces script without requiring it from subject hives', () => {
+    expect(hasNpmScript(cpTree, 'lint:tsc:workspaces')).toBe(false);
+    expect(hasNpmScript(workspacesTypecheckTree, 'lint:tsc:workspaces')).toBe(true);
+  });
+
+  it('runs the workspaces typecheck leg before the SPA build when the candidate provides it', async () => {
+    // suite green → workspaces typecheck green → marker grep clean → SPA build green.
+    const { exec, calls } = makeExec([{ code: 0 }, { code: 0 }, { code: 1 }, { code: 0 }]);
+    const r = await realCheckpointDeps(cfg, exec).runGreen(workspacesTypecheckTree, 'base-sha');
+
+    expect(r.green).toBe(true);
+    expect(calls).toHaveLength(4);
+    expect(calls[1].cmd).toBe('npm');
+    expect(calls[1].args).toEqual(['run', 'lint:tsc:workspaces']);
+    expect(calls[1].opts?.cwd).toBe(workspacesTypecheckTree);
+    expect(calls[1].opts?.env?.GREEN_CHECKPOINT).toBe('1');
+    expect(calls[2].cmd).toBe('git');
+    expect(calls[3].args).toContain('build');
+  });
+
+  it('holds the candidate when a workspace package regresses and skips the SPA build', async () => {
+    const { exec, calls } = makeExec([
+      { code: 0 },
+      { code: 1, stdout: '✗ libs/generic/search-core\nsrc/rank.ts(9,1): error TS2345: Argument type mismatch' },
+    ]);
+    const r = await realCheckpointDeps(cfg, exec).runGreen(workspacesTypecheckTree, null);
+
+    expect(r.green).toBe(false);
+    expect(r.failingTests).toContain('lint:tsc:workspaces');
+    expect(r.summary).toContain('WORKSPACE TYPECHECK FAILED');
+    // The package that regressed must be NAMED in the held verdict — a gate that says only
+    // "typecheck failed" across 8 packages costs the reader the diagnosis.
+    expect(r.summary).toContain('libs/generic/search-core');
+    // Short-circuits: no marker grep, no SPA build.
+    expect(calls).toHaveLength(2);
+  });
+
+  it('runs the three typecheck legs in order: operator-core, then libs/papercusp, then workspaces', async () => {
+    // Order is asserted, not incidental. operator-core imports libs/papercusp, so its red is
+    // the more diagnostic one to surface first; the workspaces fan-out is the widest and
+    // cheapest-to-diagnose, so it goes last of the three.
+    const allTree = mkdtempSync(join(tmpdir(), 'green-cp-all-typecheck-tree-'));
+    writeFileSync(
+      join(allTree, 'package.json'),
+      JSON.stringify({
+        name: 'cp-all-typecheck-fixture',
+        scripts: {
+          'lint:tsc': 'node scripts/lint-tsc.mjs',
+          'lint:tsc:papercusp-libs': 'node scripts/lint-tsc-papercusp-libs.mjs',
+          'lint:tsc:workspaces': 'node scripts/lint-tsc-workspaces.mjs',
+        },
+      }),
+    );
+    try {
+      const { exec, calls } = makeExec([{ code: 0 }, { code: 0 }, { code: 0 }, { code: 0 }, { code: 1 }, { code: 0 }]);
+      const r = await realCheckpointDeps(cfg, exec).runGreen(allTree, null);
+
+      expect(r.green).toBe(true);
+      expect(calls[1].args).toEqual(['run', 'lint:tsc']);
+      expect(calls[2].args).toEqual(['run', 'lint:tsc:papercusp-libs']);
+      expect(calls[3].args).toEqual(['run', 'lint:tsc:workspaces']);
+    } finally {
+      rmSync(allTree, { recursive: true, force: true });
     }
   });
 

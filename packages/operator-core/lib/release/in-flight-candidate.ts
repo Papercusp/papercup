@@ -1,0 +1,189 @@
+/**
+ * The green-checkpoint run's OWN published answer to "which sha are you judging RIGHT NOW?".
+ *
+ * WHY THIS EXISTS — it is the same bug WI-4494 already fixed one level down, still open here.
+ *
+ * WI-4494 made the PRODUCER record its VERDICT, because everything else was
+ * "reconciliation layers over a value that can be wrong". The owner's ruling on it
+ * [owner 2026-07-11]: "this looks like just a bandaid, lets just make sure its right the
+ * first time so that it doesn't need to get 're-verified' to begin with."
+ *
+ * That fixed the TERMINAL state. The IN-FLIGHT state was left exactly as it was: a run
+ * publishes its candidate to stdout (`checkpointing candidate <sha>`) and nowhere else. For a
+ * MANUAL run that stdout is redirected to /tmp and survives; a SCHEDULER-fired run writes no
+ * such log at all, so on its first candidate it publishes its candidate NOWHERE. Until this
+ * module, `gate_health.inFlightRetriage` was the only in-flight marker — and it only exists
+ * once a REFIRE has happened, which is the uncommon case.
+ *
+ * So the commonest question asked of this gate ("is it judging my fix?") had no observation
+ * behind it, only inference. Our own tooling says so out loud — checkpoint-run.ts's
+ * `already_running` reply tells the caller the checkout-HEAD reading "is an INFERENCE about
+ * which sha this run is judging, NOT an observation of it ... its candidate is genuinely
+ * undetermined here". The documented fallbacks are all proxies that fail in DIFFERENT
+ * directions, which is why careful readers reach contradictory conclusions from the same box:
+ *
+ *   - the checkpoint checkout's live HEAD   — moves between two reads; right only while pinned
+ *   - `ls -t /tmp/...-manual-*.log`         — cron-blind, and happily returns an hours-old log
+ *   - reconstructing the quiet-cut by hand  — arithmetic over mixed-offset git timestamps
+ *   - comparing commit dates to started_at  — WRONG by construction: an in-process auto-refire
+ *                                             advances the candidate while pid/started_at stay
+ *                                             fixed, so "newer than started_at" is the healthy
+ *                                             signature of a rescue, not corruption
+ *
+ * Measured cost of having only those: ~2h of fleet time and four contradictory conclusions on
+ * 2026-08-02 (WI-7069's own header records the same archaeology, and the same day a verdict
+ * that had already re-candidated was read as corrupt). This module removes the inference
+ * instead of adding a fifth proxy to arbitrate between the other four.
+ *
+ * DIAGNOSTIC ONLY. Like `recordInFlightRetriage`, every write here is best-effort and swallows
+ * its own errors: it rides alongside the real run and must never break or slow it.
+ */
+import { mergeGateHealth } from './gate-health-merge';
+import type { GateVerdictTarget } from './gate-verdict-target';
+
+/** Bounded by green-checkpoint.ts's `SELF_WATCHDOG_MS` (3h), matching
+ *  {@link import('./in-flight-retriage').IN_FLIGHT_RETRIAGE_MAX_AGE_MS}: a run that hangs past
+ *  that self-kills and writes a real verdict, so an older marker is an abandoned run's residue,
+ *  never a genuinely long one. */
+export const IN_FLIGHT_CANDIDATE_MAX_AGE_MS = 3 * 60 * 60_000;
+
+/** What a running green-checkpoint publishes about the candidate it is judging. */
+export interface InFlightCandidateInfo {
+  /** The sha being judged, full length. THE field this module exists to publish. */
+  candidate: string;
+  /** The green pin this candidate would advance from (`lastReady`), or null on a first run. */
+  base: string | null;
+  /** WI-7069's stamp: the instant the candidate became FINAL. Everything after it (setupTree,
+   *  preflights, the ~40-55min suite) runs with the candidate PINNED, so `now - selectedAtMs`
+   *  separates "the candidate was already old when chosen" from "age accumulated while judging"
+   *  — the exact question that cost ~2h of hand-archaeology. */
+  selectedAtMs: number;
+  /** True when the 240s quiet cut stepped BACK from the tip. The single most misread thing about
+   *  this gate: a fresh commit is deliberately NOT judged, so "my commit is missing" is usually
+   *  the quiet cut working, not a fault. Publishing it kills the hand-reconstruction. */
+  quietCutApplied: boolean;
+  /** The tip at selection time — what `candidate` would have been without the quiet cut. Lets a
+   *  reader see the excluded window directly instead of recomputing it from git timestamps. */
+  tipAtSelection: string | null;
+  /**
+   * 0 for a run's first candidate; N for the Nth in-process auto-refire.
+   *
+   * This is what makes a MOVING candidate readable as healthy. A refire re-enters
+   * `runGreenCheckpoint` recursively in the SAME process, so pid and started_at stay FIXED while
+   * the candidate advances — the signature that has repeatedly been mistaken for a corrupt field.
+   * A reader seeing `refireDepth > 0` knows the movement is a rescue in progress.
+   */
+  refireDepth: number;
+  /** The OS pid of the run, so a reader can confirm the marker belongs to a process that is
+   *  still alive rather than trusting the age bound alone. */
+  pid: number;
+}
+
+/** The persisted shape — {@link InFlightCandidateInfo} plus the write-time stamp a reader needs
+ *  to judge freshness. */
+export interface StoredInFlightCandidate extends InFlightCandidateInfo {
+  observedAtMs: number;
+}
+
+/**
+ * Publish the candidate this run is judging into `gate_health.inFlightCandidate`.
+ *
+ * Called at candidate-FINAL time on EVERY invocation — including each recursive auto-refire, so
+ * the field always names the sha actually under judgement rather than the one the run started
+ * with. Best-effort: never throws.
+ */
+export async function recordInFlightCandidate(target: GateVerdictTarget, info: InFlightCandidateInfo): Promise<void> {
+  const stored: StoredInFlightCandidate = { ...info, observedAtMs: Date.now() };
+  await mergeGateHealth(target, { inFlightCandidate: stored });
+}
+
+/**
+ * Clear the marker once the run reaches a terminal verdict, so a completed run never looks live.
+ *
+ * Freshness alone cannot do this job: the 3h bound is deliberately generous (a real run can
+ * legitimately take ~55min and refire twice), so without an explicit clear a finished run's
+ * marker would read as in-flight for hours — the precise failure mode that makes a stale
+ * `/tmp` log dangerous. Best-effort: never throws.
+ */
+export async function clearInFlightCandidate(target: GateVerdictTarget): Promise<void> {
+  await mergeGateHealth(target, { inFlightCandidate: null });
+}
+
+/**
+ * PURE: interpret the raw `gate_health.inFlightCandidate` value. Returns null for anything not
+ * trustworthy right now — missing, malformed, or older than
+ * {@link IN_FLIGHT_CANDIDATE_MAX_AGE_MS}. Unit-testable without PG.
+ *
+ * ⚠ Like `parseInFlightRetriage`, this returns an EXPLICIT object literal, so a field added to
+ * {@link InFlightCandidateInfo} is silently DROPPED unless it is also carried here. That exact
+ * omission is what left `charged`/`totalRefires`/`absoluteCeiling` persisted-but-unread on the
+ * sibling marker (EI-19343516395023183), so every consumer rendered a budget it could not see
+ * the ceiling of. Add a field to the interface ⇒ add it here.
+ */
+export function parseInFlightCandidate(raw: unknown, nowMs: number = Date.now()): StoredInFlightCandidate | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const r = raw as Record<string, unknown>;
+  const candidate = typeof r.candidate === 'string' && r.candidate ? r.candidate : null;
+  const selectedAtMs = typeof r.selectedAtMs === 'number' ? r.selectedAtMs : null;
+  const observedAtMs = typeof r.observedAtMs === 'number' ? r.observedAtMs : null;
+  if (!candidate || selectedAtMs == null || observedAtMs == null) return null;
+  if (nowMs - observedAtMs > IN_FLIGHT_CANDIDATE_MAX_AGE_MS) return null; // abandoned — see doc above.
+  return {
+    candidate,
+    base: typeof r.base === 'string' ? r.base : null,
+    selectedAtMs,
+    quietCutApplied: r.quietCutApplied === true,
+    tipAtSelection: typeof r.tipAtSelection === 'string' ? r.tipAtSelection : null,
+    refireDepth: typeof r.refireDepth === 'number' ? r.refireDepth : 0,
+    pid: typeof r.pid === 'number' ? r.pid : 0,
+    observedAtMs,
+  };
+}
+
+/**
+ * Human/agent-readable one-liner for a live marker — the sentence a reader would otherwise
+ * assemble by hand from four proxies. Pure.
+ */
+export function describeInFlightCandidate(marker: StoredInFlightCandidate, nowMs: number = Date.now()): string {
+  const age = Math.max(0, Math.round((nowMs - marker.selectedAtMs) / 1000));
+  const refire = marker.refireDepth > 0 ? ` (auto-refire #${marker.refireDepth} — the candidate MOVED in-process, pid/started_at did not)` : '';
+  const quiet =
+    marker.quietCutApplied && marker.tipAtSelection
+      ? ` — quiet cut stepped back from tip ${marker.tipAtSelection.slice(0, 8)}, so commits newer than this candidate are deliberately NOT judged`
+      : '';
+  return `judging ${marker.candidate.slice(0, 12)}, selected ${age}s ago${refire}${quiet}`;
+}
+
+/**
+ * The READ twin. Scopes BOTH `install_slug` AND `workspace_id` — `harness_shared.routines` is
+ * multi-tenant and an unscoped read returns some other harness's gate: well-formed, confident,
+ * wrong (measured 2026-08-02, when `papercusp` was not even in the top five rows by
+ * `last_fired_at`).
+ */
+export async function readInFlightCandidate(
+  installSlug: string,
+  workspaceId?: string,
+): Promise<StoredInFlightCandidate | null> {
+  try {
+    const { getOrgPg } = await import('@papercusp/db-org');
+    const { sql } = getOrgPg();
+    const rows = workspaceId
+      ? await sql.unsafe(
+          `SELECT metadata->'gate_health'->'inFlightCandidate' AS marker
+             FROM harness_shared.routines
+            WHERE install_slug = $1 AND workspace_id = $2 AND target_role = 'system:green-checkpoint'
+            LIMIT 1`,
+          [installSlug, workspaceId],
+        )
+      : await sql.unsafe(
+          `SELECT metadata->'gate_health'->'inFlightCandidate' AS marker
+             FROM harness_shared.routines
+            WHERE install_slug = $1 AND target_role = 'system:green-checkpoint'
+            LIMIT 1`,
+          [installSlug],
+        );
+    return parseInFlightCandidate((rows as Array<{ marker?: unknown }>)[0]?.marker ?? null);
+  } catch {
+    return null; // best-effort diagnostic read — never surface an infra error as a gate fact
+  }
+}

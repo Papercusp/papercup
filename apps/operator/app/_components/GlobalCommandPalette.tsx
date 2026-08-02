@@ -21,7 +21,7 @@
  * first time the user opens it, keeping it off the first-paint path of
  * every page.
  */
-import { Component, Suspense, useEffect, useMemo, useRef, type ReactNode } from 'react';
+import { Component, Suspense, useEffect, useLayoutEffect, useMemo, useRef, type ReactNode } from 'react';
 import { parseAsBoolean, useQueryState } from 'nuqs';
 import { useSearchParams } from '@/lib/router-compat/navigation';
 import { toast } from 'sonner';
@@ -68,8 +68,24 @@ export default function GlobalCommandPalette() {
   // the lazy CommandPalette chunk mounts, so the measure spans the dynamic-import
   // + first-render cost. Single source (not the toggle handler) so it can't
   // double-fire and reset the start mark.
+  //
+  // useLayoutEffect, not useEffect — the begin/end pair here spans TWO
+  // components, and React runs effects child-before-parent within a phase. The
+  // end lives in the lazy CommandPalette's mount effect, so if that chunk is
+  // already resolved and mounts in the SAME commit as this open transition, a
+  // passive begin runs AFTER the child's end: the end no-ops (no start yet),
+  // the start is then written and never consumed, and this interaction
+  // silently measures NOTHING. Today the dynamic import usually forces a later
+  // commit and hides that, which makes it a latent trap rather than a safe
+  // pattern. All layout effects run before ANY passive effect, so beginning
+  // here is ordered against every child settle regardless.
+  //
+  // Same defect class as the learning-view-switch begin, where it was not
+  // latent: it emitted a 15,289ms measure against a 1500ms budget
+  // (EI-19375505819043214). Ordering rationale + the general contract live in
+  // perf-marks.ts.
   const prevOpenRef = useRef(false);
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (open && !prevOpenRef.current) beginInteraction(PERF_INTERACTIONS.commandPaletteOpen);
     prevOpenRef.current = open;
   }, [open]);

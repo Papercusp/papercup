@@ -352,6 +352,13 @@ describe('AgentOrders', () => {
       const rule = css.split('}').find((b) => b.includes('.pc-orders__sec {'));
       expect(rule).toMatch(/max-height:\s*\d/);
       expect(rule).toMatch(/overflow-y:\s*auto/);
+      // `flex: none` is PART OF the bound, not a tidy-up: the rail is a flex
+      // column, so a card left shrinkable gets squeezed when the rail overflows
+      // — and squeezed + `overflow-y: auto` means CLIPPED, with no scrollbar to
+      // admit it. Measured in the live webview: Mission rendered 83px against
+      // 173px of content, silently losing a row. Dropping this line restores
+      // that bug in a form no render test can see.
+      expect(rule).toMatch(/flex:\s*none/);
       // The cap stays put while the body scrolls under it — a section you have
       // scrolled into is otherwise a list with no title.
       const cap = css.split('}').find((b) => b.includes('.pc-orders__h {'));

@@ -521,6 +521,22 @@ describe('buildTenantScopeAdvisory — corpus-namespaced tables (WI-6847)', () =
     expect(advisory).toContain('harness_plans');
     expect(advisory).not.toContain('event_awaits');
   });
+
+  // EI-19324633485547042's second confirmed instance (su-1a0a0a1a, 2026-08-02): the advisory
+  // suggested workspace_id = 'papercusp-workspace' for event_key_fires and returned 0 rows
+  // against a real, existing fire — every row is written under the DDL default 'default'
+  // (measured: 16,935 of 16,935 rows, and the table has no harness_slug column at all).
+  it('is silent for event_key_fires the same way', async () => {
+    const { sql } = stubClient([
+      { table_schema: 'harness_shared', table_name: 'event_key_fires', column_name: 'workspace_id' },
+      { table_schema: 'harness_shared', table_name: 'event_key_fires', column_name: 'event_key' },
+    ]);
+    const advisory = await buildTenantScopeAdvisory(
+      "SELECT * FROM harness_shared.event_key_fires WHERE event_key = 'green-checkpoint:red:papercusp'",
+      { client: sql, workspaceId: 'papercusp-workspace', harnessSlug: 'papercusp' },
+    );
+    expect(advisory).toBeNull();
+  });
 });
 
 describe('buildDerivedColumnRedirect (EI-18801042715296007 — the derived-verdict dead end)', () => {

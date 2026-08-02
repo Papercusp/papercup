@@ -27,6 +27,7 @@ import { isSubstrateOwnerProcess } from '../../../background-workers';
 import { listBootedHandles } from '../../../sync/hyperbee/boot-all';
 import { resolveEffectiveBootedHandles } from '../../../sync/hyperbee/in-process-status';
 import { getCachedRemoteBootedHandles } from '../../../sync/hyperbee/cluster-booted-handles-sync';
+import { getPgBootedHandlesSnapshotFallback } from '../../../sync/hyperbee/substrate-booted-handles-pg';
 
 const get = defineTool({
   method: 'GET',
@@ -46,10 +47,24 @@ const get = defineTool({
     // rather than an inline `nodeCluster.isPrimary && !requestOnlyHost()` copy —
     // two copies of one rule is exactly what let the read/write halves of this
     // fix drift apart the first time.
-    const { booted, reachedSubstrateOwner } = resolveEffectiveBootedHandles(listBootedHandles(), {
+    let { booted, reachedSubstrateOwner } = resolveEffectiveBootedHandles(listBootedHandles(), {
       isSubstrateOwnerProcess: isSubstrateOwnerProcess(),
       resolveRemote: getCachedRemoteBootedHandles,
     });
+    // EI-19327550671915579: the node:cluster IPC leg above only ever reaches a
+    // forked WORKER of the substrate owner's own process tree — under the
+    // dedicated-bg-host topology (:3070/:3270, a separate systemd service from
+    // papercup-bg-host) it can never succeed, so `reachedSubstrateOwner` was
+    // permanently false there. Fall back to the cross-SERVICE PG snapshot ONLY
+    // when the fast in-process/cluster-IPC path came up empty — this keeps the
+    // common (true-cluster) case a pure sync read with no PG round-trip.
+    if (!reachedSubstrateOwner) {
+      const pg = await getPgBootedHandlesSnapshotFallback();
+      if (pg) {
+        booted = pg.handles;
+        reachedSubstrateOwner = true;
+      }
+    }
     return Response.json({
       // Stage 4d: the substrate always boots (the opt-in gate was removed).
       enabled: true,

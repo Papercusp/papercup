@@ -104,7 +104,7 @@ export function buildSuInstructionRuntime(opts: {
       plan: opts.planSlug,
       items: [],
     },
-  } as InstructionRuntimeContext;
+  };
 }
 
 /**
@@ -182,7 +182,11 @@ export interface SuLaunchSpecRecord {
   agent: string;
   workspaceId: string;
   harnessSlug: string | null;
-  profile: 'engineer' | 'power' | 'generic';
+  /** Loose on purpose, matching `BuildSuLaunchSpecInput.profile`: the playbook
+   *  profile is validated at the HTTP boundary and narrowed inside
+   *  `buildSuLaunchSpec` (any unrecognised value falls back to 'engineer'). Making
+   *  it a union HERE would be stricter than the value's own source. */
+  profile: string;
   contextSize: 'full' | 'trimmed' | null;
   personaTier: 'full' | 'fleet' | null;
   model: string | null;
@@ -209,7 +213,7 @@ export function parseSuLaunchSpecRecord(raw: unknown): SuLaunchSpecRecord | null
     agent: r.agent,
     workspaceId: r.workspaceId,
     harnessSlug: str(r.harnessSlug),
-    profile: (str(r.profile) as SuLaunchSpecRecord['profile']) ?? 'engineer',
+    profile: str(r.profile) ?? 'engineer',
     contextSize: str(r.contextSize) as SuLaunchSpecRecord['contextSize'],
     personaTier: str(r.personaTier) as SuLaunchSpecRecord['personaTier'],
     model: str(r.model),

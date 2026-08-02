@@ -2312,9 +2312,18 @@ describe('interpreter inline-code write guard (EI-18691482279179647)', () => {
       expectInterpDeny(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
     });
 
-    it('allows the variable form when the assigned literal resolves OUTSIDE the tree', () => {
+    it('never DENIES the variable form when the assigned literal resolves OUTSIDE the tree — falls back to the existing computed-path advisory, same as any other bare-identifier write argument', () => {
+      // The write call's own first argument is still a bare identifier (`p`), so
+      // the PRE-EXISTING computed-path advisory (EI-18828866497684686) still fires
+      // regardless of what the new variable-indirection resolution found — this
+      // leg only ever ADDS a deny for a proven in-tree hit, it never SILENCES the
+      // advisory that already covers "I can't fully verify this argument".
       const command = `python3 -c "p='/tmp/scratch.txt'\nopen(p,'w').write('x')"`;
-      expectAllow(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
+      const out = runGate(bashCmd(command, { cwd: CANON }), CANON_ENV);
+      expect(out.status).toBe(0);
+      const hso = JSON.parse(out.stdout).hookSpecificOutput;
+      expect(hso.permissionDecision).toBe('allow');
+      expect(hso.additionalContext).toContain('EI-18828866497684686');
     });
 
     it('allows a variable assigned an in-tree literal that is only ever READ, never written', () => {

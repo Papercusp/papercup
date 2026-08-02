@@ -669,6 +669,11 @@
   padding-top: 8px;
 }
 .pc-zone--activity .pc-dossier__section {
+  /* Same measured trap as the Orders rail's cards (see AgentOrders.css):
+     `.pc-dossier` is a flex column, so a card left at the default
+     `flex-shrink: 1` gets squeezed once the rail overflows — and with
+     `overflow-y: auto` below, squeezed means CLIPPED, silently. */
+  flex: none;
   margin: 0 8px;
   padding: 0 8px 6px;
   border: 1px solid var(--pc-dossier-edge);

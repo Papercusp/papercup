@@ -779,7 +779,10 @@
   line-height: 1.4;
   color: var(--fg-mute);
   text-transform: uppercase;
-  letter-spacing: 0.04em;
+  /* No tracking: `lint:design-primitives` ENFORCES letter-spacing:0 across app
+     UI, so 0.04em here reds the fleet's gate (caught 2026-08-02, minutes after
+     it landed). Case + size + weight carry the micro-label distinction instead —
+     the same rule chat-controls.css and AgentOrders.css follow. */
 }
 
 .hud__hit-more {

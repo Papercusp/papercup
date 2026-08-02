@@ -281,9 +281,13 @@ const TENANT_SCOPE_OVERRIDES: Record<string, TenantScopeOverride> = {
  * `event_awaits`/`event_wake_deliveries` the column simply defaults to
  * `'default'` at the DDL level — libs/papercusp/libs/db/sql/163-await-event-
  * subscriptions.sql — and, per WI-6847, is measurably 100% `'default'` in
- * practice too) — NOT a tenant discriminator. The generic workspace_id/
- * harness_slug heuristic below is actively wrong for these tables in two
- * ways at once (EI-18749676091756794, WI-6847):
+ * practice too; `event_key_fires` is the same DDL-default pattern —
+ * libs/papercusp/libs/db/sql/632-event-key-fire-latch.sql — confirmed
+ * 100% `'default'` across 16,935 rows and no `harness_slug` column at all,
+ * per the second confirmed instance in EI-19324633485547042) — NOT a tenant
+ * discriminator. The generic workspace_id/harness_slug heuristic below is
+ * actively wrong for these tables in two ways at once
+ * (EI-18749676091756794, WI-6847, EI-19324633485547042):
  *
  *   1. `harness_slug` does not exist as a column on these tables at all, so
  *      the generic "actionable" suggestion named a column PG then rejects
@@ -314,6 +318,7 @@ const CORPUS_NAMESPACED_TABLES = new Set([
   'session_turns',
   'event_awaits',
   'event_wake_deliveries',
+  'event_key_fires',
 ]);
 
 /**

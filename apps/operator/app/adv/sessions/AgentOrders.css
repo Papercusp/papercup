@@ -68,6 +68,16 @@
    what stops six stacked sections reading as one wall of text. */
 .pc-orders__sec {
   --pc-orders-edge: color-mix(in oklab, var(--accent), var(--bg-popover) 62%);
+  /* MEASURED, not defensive (live Tauri webview, 2026-08-02): `.pc-orders` is a
+     flex COLUMN, so every card is a flex item with the default `flex-shrink: 1`.
+     Once the cards' natural heights exceed the rail, the browser shrinks them
+     ALL proportionally — and because each card now has `overflow-y: auto`, that
+     shrink CLIPS content instead of overflowing visibly: Mission rendered 83px
+     tall against 173px of content, losing its `route` row and its explanation
+     with no scrollbar to say so. `flex: none` puts the scrolling back where it
+     belongs — the RAIL scrolls, each card keeps its natural height (bounded by
+     max-height below), and only a genuinely huge section scrolls internally. */
+  flex: none;
   margin: 6px 8px;
   border: 1px solid var(--pc-orders-edge);
   border-radius: 4px;

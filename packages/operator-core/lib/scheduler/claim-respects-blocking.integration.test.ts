@@ -294,6 +294,131 @@ describe('scheduler claim respects blocking — NEVER hands out a blocked item (
   });
 });
 
+// @covers INV-09 INV-05
+// TRANSITIVE BLOCKING (P-005). Every other behavioural case in this file seeds a depth-1
+// chain: one blocked item, one blocker. EI-9108 was a DEEP-chain leak — WI-3503/P-401 served
+// with a 7-deep blockedBy chain still open — so the invariant with a real incident behind it
+// was the one nothing here re-proved. These cases seed chains and walk them to release.
+//
+// Note the release is deliberately STEPWISE, and asserting that is the point: satisfying the
+// tail does NOT free the head. F-top is blocked by F-mid, and F-mid is non-terminal whether
+// or not F-mid is itself blocked — so F-top stays withheld until F-mid actually COMPLETES.
+// A "fix" that released the whole chain when its tail went terminal would serve work whose
+// real prerequisite had not been done, and would look like a generous bug rather than a leak.
+describe('blocking is TRANSITIVE — a chain never leaks, and releases one link at a time (P-005)', () => {
+  it('a 3-deep chain withholds every non-terminal link, then releases head-last', async () => {
+    await seedFeature('F-tail', { status: 'wip', createdTs: 1 }); // the root prerequisite
+    await seedFeature('F-mid', { status: 'open', createdTs: 2 });
+    await seedFeature('F-top', { status: 'open', createdTs: 3 });
+    await blockByFeature('F-mid', 'F-tail');
+    await blockByFeature('F-top', 'F-mid');
+
+    // Nothing is claimable: F-mid waits on F-tail, F-top waits on F-mid, F-tail is 'wip'.
+    expect(await oracleSaysBlocked('F-mid')).toBe(true);
+    expect(await oracleSaysBlocked('F-top')).toBe(true);
+    expect(await sidecarSaysBlocked('F-mid')).toBe(true);
+    expect(await sidecarSaysBlocked('F-top')).toBe(true);
+    expect(await claimViaBothPaths('t1')).toEqual({ legacy: null, spec: null });
+
+    // Satisfy the TAIL. F-mid frees; F-top must NOT — its own blocker is still open.
+    await db.sql`UPDATE harness_shared.harness_features_consolidated SET status='passed' WHERE feature_id='F-tail'`;
+    expect(await oracleSaysBlocked('F-mid')).toBe(false);
+    expect(await oracleSaysBlocked('F-top')).toBe(true);
+    expect(await sidecarSaysBlocked('F-mid')).toBe(false);
+    expect(await sidecarSaysBlocked('F-top')).toBe(true);
+    // Both doors hand out F-mid and ONLY F-mid — F-top is older-ranked but still withheld.
+    expect(await claimViaBothPaths('t2')).toEqual({ legacy: 'F-mid', spec: 'F-mid' });
+
+    // Satisfy the MIDDLE. Only now is the head claimable.
+    await db.sql`UPDATE harness_shared.harness_features_consolidated SET status='passed' WHERE feature_id='F-mid'`;
+    expect(await oracleSaysBlocked('F-top')).toBe(false);
+    expect(await sidecarSaysBlocked('F-top')).toBe(false);
+    expect(await claimViaBothPaths('t3')).toEqual({ legacy: 'F-top', spec: 'F-top' });
+  });
+
+  it('holds to ARBITRARY depth: a 6-deep chain leaks nothing through EITHER door', async () => {
+    // ⚠ WHAT THIS DOES NOT DISTINGUISH. A one-hop-only implementation passes this case, and
+    // saying otherwise would be the same over-claim this plan exists to stop. Every
+    // intermediate link here is 'open' — i.e. non-terminal — so "blocked by a non-terminal
+    // blocker" already withholds the entire chain without consulting anything transitively.
+    // Depth cannot discriminate one-hop from transitive while the intermediates are open.
+    //
+    // What it DOES prove, and what no other case in this file covers: the sidecar's triggers
+    // stay exact at depth (wir_status_sync_dependents_trg fires on DIRECT dependents, so a
+    // long chain is where a missed cascade would surface), and the release frontier advances
+    // by exactly one link per completion rather than collapsing. The discriminating case for
+    // transitivity itself is the next test.
+    const chain = ['F-l0', 'F-l1', 'F-l2', 'F-l3', 'F-l4', 'F-l5'];
+    await seedFeature(chain[0], { status: 'wip', createdTs: 1 }); // root, non-terminal
+    for (let i = 1; i < chain.length; i += 1) {
+      await seedFeature(chain[i], { status: 'open', createdTs: 1 + i });
+      await blockByFeature(chain[i], chain[i - 1]);
+    }
+
+    for (let i = 1; i < chain.length; i += 1) {
+      expect(await oracleSaysBlocked(chain[i]), `${chain[i]} must be blocked`).toBe(true);
+      expect(await sidecarSaysBlocked(chain[i]), `${chain[i]} sidecar must agree`).toBe(true);
+    }
+    // The deepest link is the one a one-hop implementation leaks first.
+    expect(await claimViaBothPaths('t4')).toEqual({ legacy: null, spec: null });
+
+    // Walk the chain to release, asserting the frontier advances by exactly one link.
+    for (let i = 0; i < chain.length - 1; i += 1) {
+      await db.sql`UPDATE harness_shared.harness_features_consolidated SET status='passed' WHERE feature_id=${chain[i]}`;
+      const next = chain[i + 1];
+      expect(await oracleSaysBlocked(next), `${next} frees when ${chain[i]} completes`).toBe(false);
+      if (i + 2 < chain.length) {
+        const after = chain[i + 2];
+        expect(await oracleSaysBlocked(after), `${after} must NOT free early`).toBe(true);
+      }
+      expect(await claimViaBothPaths(`t5-${i}`)).toEqual({ legacy: next, spec: next });
+    }
+  });
+
+  it('THE DISCRIMINATING CASE: a TERMINAL intermediate releases its dependent, even with its own blocker still open', async () => {
+    // This is the only shape in which "one-hop with terminality" and "fully transitive"
+    // disagree, so it is the only case that pins down which semantics the system has.
+    //
+    //   F-root ('wip', unfinished)  <-- F-mid ('passed', DONE)  <-- F-head ('open')
+    //
+    // One-hop: F-mid is terminal, so F-head is free.  Transitive: F-root is unfinished, so
+    // F-mid is "really" still blocked and F-head must wait.
+    //
+    // The system is one-hop, and that is the CORRECT reading rather than a leak: terminal
+    // means the work is done. If F-mid was completed, F-head's prerequisite is satisfied
+    // whatever the state of F-root — and F-root's own dependents are still gated by F-root.
+    // A fully-transitive rule would deadlock any item whose completed prerequisite happened
+    // to sit downstream of an abandoned or long-running root.
+    //
+    // Recorded because INV-09's phrasing ("an item with a blocked blocker is itself
+    // withheld") reads as if it demands the transitive answer. It does not — see the
+    // registry note on INV-09, corrected under this plan.
+    await seedFeature('F-root', { status: 'wip', createdTs: 1 });
+    await seedFeature('F-mid', { status: 'passed', createdTs: 2 });
+    await seedFeature('F-head', { status: 'open', createdTs: 3 });
+    await blockByFeature('F-mid', 'F-root');
+    await blockByFeature('F-head', 'F-mid');
+
+    expect(await oracleSaysBlocked('F-head')).toBe(false);
+    expect(await sidecarSaysBlocked('F-head')).toBe(false);
+    const { legacy, spec } = await claimViaBothPaths('t7');
+    expect(legacy).toBe('F-head');
+    expect(spec).toBe('F-head');
+  });
+
+  it('a chain whose ROOT is already terminal blocks nothing — the clean control', async () => {
+    // The silent-on-clean half. Without it, an implementation that reports EVERY chained
+    // item as blocked would pass every case above and deadlock the queue in production.
+    await seedFeature('F-tail', { status: 'passed', createdTs: 1 });
+    await seedFeature('F-mid', { status: 'open', createdTs: 2 });
+    await blockByFeature('F-mid', 'F-tail');
+
+    expect(await oracleSaysBlocked('F-mid')).toBe(false);
+    expect(await sidecarSaysBlocked('F-mid')).toBe(false);
+    expect(await claimViaBothPaths('t6')).toEqual({ legacy: 'F-mid', spec: 'F-mid' });
+  });
+});
+
 // @covers INV-15
 describe('maintained readiness sidecar tracks the inline oracle through the lifecycle (379)', () => {
   it('add-edge → blocked, terminal-blocker → ready, drop-edge → ready: sidecar mirrors the oracle at every step', async () => {

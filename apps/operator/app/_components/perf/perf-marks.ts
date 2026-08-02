@@ -18,6 +18,43 @@
  * Part of desktop-performance-suite-2026-07-20 (P-001). Dependency-free +
  * SSR-safe + never-throws: a begin/end on the real UI path must never break
  * the interaction it is timing.
+ *
+ * ─────────────────────────────────────────────────────────────────────────
+ * WHERE TO PUT THE BEGIN — the one rule that makes or breaks a measure
+ * ─────────────────────────────────────────────────────────────────────────
+ * When begin and end live in DIFFERENT components (the usual shape: a parent
+ * starts the interaction, the panel/child that loads ends it), the begin must
+ * NOT go in a passive `useEffect`.
+ *
+ * React runs effects in phases, and within a phase CHILD BEFORE PARENT. A
+ * child that settles on mount — the normal case when its data is already
+ * cached — therefore runs its `endInteraction` BEFORE a passive parent begin.
+ * Two failure modes follow, and both look like a working instrument:
+ *
+ *   1. GARBAGE MEASURE. The child consumes a start mark left dangling by an
+ *      EARLIER interaction, so the measure spans however long the user sat on
+ *      the previous view. Measured for real: a 15,289ms learning-view-switch
+ *      against a 1500ms budget, where the true settle was ~1.3s
+ *      (EI-19375505819043214). STALE_START_MS does not catch this — any dwell
+ *      under 30s produces a plausible-looking breach.
+ *   2. SILENT ZERO. With no start yet written, the child's end no-ops, then
+ *      the begin writes a start nothing will ever consume — the interaction
+ *      emits nothing at all, which reads as "never regressed".
+ *
+ * In preference order, begin from:
+ *   - the EVENT HANDLER that triggers the interaction (a click). Best: it runs
+ *     before any render, and it measures what the user actually waited for.
+ *     See PlansPane's planPopupOpen.
+ *   - `useLayoutEffect`, when the trigger is a state/URL change with no single
+ *     handler. ALL layout effects run before ANY passive effect, so this is
+ *     ordered against every child settle. See LearningTab's learningViewSwitch.
+ *   - a passive `useEffect` ONLY when begin and end are in the SAME component,
+ *     where declaration order governs and the trap cannot arise. See
+ *     ChatPanel's conversationThreadLoad.
+ *
+ * The corollary binds settle points too: keep them PASSIVE. A panel that ends
+ * an interaction in a layout effect re-opens the race against a layout begin.
+ * LearningTab.perf-begin-order.test.tsx pins the ordering contract.
  */
 
 /** The curated set of named interactions we budget + measure. Keep this small

@@ -15,8 +15,28 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { getInProcessSubstrateStatus } from '../../sync/hyperbee/in-process-status';
 import { getCachedRemoteBootedHandles } from '../../sync/hyperbee/cluster-booted-handles-sync';
+import { getPgBootedHandlesSnapshotFallback } from '../../sync/hyperbee/substrate-booted-handles-pg';
 import { loadClaimAttemptStats } from '../../orchestrator/load-claim-attempts';
 import { getOrgPg } from '@papercusp/db-org';
+
+/**
+ * EI-19327550671915579: when the cheap sync path (this process's own boot map,
+ * or the node:cluster IPC cache) didn't reach the substrate owner, fall back to
+ * the cross-SERVICE PG snapshot — the leg that actually reaches a request-only
+ * host under the dedicated-bg-host topology, where node:cluster IPC can never
+ * apply at all (bg-host is a separate systemd service). Re-runs the pure sync
+ * composer with the PG-derived snapshot handed in as a plain closure, so
+ * `getInProcessSubstrateStatus` itself never has to become async.
+ */
+async function withPgBootedHandlesFallback(
+  status: ReturnType<typeof getInProcessSubstrateStatus>,
+  recompute: (resolveRemoteBootedHandles: () => ReturnType<typeof getCachedRemoteBootedHandles>) => ReturnType<typeof getInProcessSubstrateStatus>,
+): Promise<ReturnType<typeof getInProcessSubstrateStatus>> {
+  if (status.reachedSubstrateOwner) return status;
+  const pg = await getPgBootedHandlesSnapshotFallback();
+  if (!pg) return status;
+  return recompute(() => pg);
+}
 
 export default defineTool({
   name: 'dev:dogfood_substrate_status',
@@ -34,13 +54,19 @@ export default defineTool({
   args: z.object({}),
   async handler() {
     const { sql } = getOrgPg();
-    const status = await Promise.resolve(
+    let status = await Promise.resolve(
       getInProcessSubstrateStatus({
         resolveClaimStats: () => ({ total: 0, won: 0, lost: 0, error: 0 }),
         // EI-8816: on a request-only cluster worker, listBootedHandles() is always
         // empty (the substrate boots only on the primary) — fall back to the
         // primary's cached broadcast rather than silently reporting bootedCount:0.
         resolveRemoteBootedHandles: getCachedRemoteBootedHandles,
+      }),
+    );
+    status = await withPgBootedHandlesFallback(status, (resolveRemoteBootedHandles) =>
+      getInProcessSubstrateStatus({
+        resolveClaimStats: () => ({ total: 0, won: 0, lost: 0, error: 0 }),
+        resolveRemoteBootedHandles,
       }),
     );
     // Second pass: for any booted harness, refresh the stats with the
@@ -64,7 +90,7 @@ export default defineTool({
         })),
       );
       const statsByKey = new Map(realStats.map((s) => [s.key, s.stats]));
-      const refreshed = getInProcessSubstrateStatus({
+      let refreshed = getInProcessSubstrateStatus({
         resolveClaimStats: (wsId, slug) =>
           statsByKey.get(`${wsId}::${slug}`) ?? {
             total: 0,
@@ -74,6 +100,18 @@ export default defineTool({
           },
         resolveRemoteBootedHandles: getCachedRemoteBootedHandles,
       });
+      refreshed = await withPgBootedHandlesFallback(refreshed, (resolveRemoteBootedHandles) =>
+        getInProcessSubstrateStatus({
+          resolveClaimStats: (wsId, slug) =>
+            statsByKey.get(`${wsId}::${slug}`) ?? {
+              total: 0,
+              won: 0,
+              lost: 0,
+              error: 0,
+            },
+          resolveRemoteBootedHandles,
+        }),
+      );
       return {
         content: [{ type: 'text', text: JSON.stringify(refreshed) }],
       };

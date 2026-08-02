@@ -34,6 +34,7 @@
  * mode that final write can't cover — a run that crashes mid-refire and never reaches it — so an
  * abandoned marker cannot wedge every future read into "still refiring" forever.
  */
+import { mergeGateHealth } from './gate-health-merge';
 import type { GateVerdictTarget } from './gate-verdict-target';
 
 /** Bounded by green-checkpoint.ts's `SELF_WATCHDOG_MS` (3h): a run that hangs past that self-kills
@@ -84,25 +85,8 @@ export interface StoredInFlightRetriage extends InFlightRetriageInfo {
  * checkpoint run — a write failure here must never break (or even slow) the run itself.
  */
 export async function recordInFlightRetriage(target: GateVerdictTarget, info: InFlightRetriageInfo): Promise<void> {
-  try {
-    const { getOrgPg } = await import('@papercusp/db-org');
-    const { sql } = getOrgPg();
-    const stored: StoredInFlightRetriage = { ...info, observedAtMs: Date.now() };
-    await sql.unsafe(
-      `UPDATE harness_shared.routines
-          SET metadata = jsonb_set(
-                COALESCE(metadata, '{}'::jsonb),
-                '{gate_health}',
-                COALESCE(metadata->'gate_health', '{}'::jsonb) || $2::jsonb,
-                true
-              ),
-              updated_at = now()
-        WHERE install_slug = $1 AND target_role = 'system:green-checkpoint'`,
-      [target.installSlug, JSON.stringify({ inFlightRetriage: stored })],
-    );
-  } catch {
-    /* best-effort diagnostic — never let this break the checkpoint run it rides alongside */
-  }
+  const stored: StoredInFlightRetriage = { ...info, observedAtMs: Date.now() };
+  await mergeGateHealth(target, { inFlightRetriage: stored });
 }
 
 /**

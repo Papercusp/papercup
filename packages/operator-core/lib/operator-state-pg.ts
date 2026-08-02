@@ -133,7 +133,14 @@ type StateTable =
   | 'operator_liveness_flap_state'
   // Migration 639 — knowledge-pack loop settings (cadence presets, adoption
   // policy, hygiene/delivery knobs; knowledge-pack-settings-2026-07-19 P-001):
-  | 'knowledge_pack_config';
+  | 'knowledge_pack_config'
+  // Migration 739 — cross-SERVICE booted-handles snapshot (EI-19327550671915579,
+  // part 2 of EI-18735338283879820): the substrate owner process publishes its
+  // listBootedHandles() snapshot here so a request-only host under the
+  // dedicated-bg-host topology (:3070/:3270, a SEPARATE systemd service from
+  // papercup-bg-host — node:cluster IPC cannot cross that boundary) can read it.
+  // See sync/hyperbee/substrate-booted-handles-pg.ts.
+  | 'substrate_booted_handles_status';
 
 // ── operator-state read cache (infra-perf-robustness-audit-2026-06-18 P-004) ────
 //

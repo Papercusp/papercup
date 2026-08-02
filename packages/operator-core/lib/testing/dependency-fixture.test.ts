@@ -2,7 +2,14 @@
  * dependency-fixture.test.ts — the factory's own tests.
  *
  * Plan: dependency-subsystem-thorough-testing-2026-08-02 (P-002).
- * @covers INV-01 INV-02 INV-03
+ *
+ * NO `@covers` CITATION, DELIBERATELY. An earlier revision of this header claimed
+ * INV-01/02/03, and that claim was false in the way this whole plan is about: these tests
+ * prove the FACTORY agrees with `canonicalRef`, which encodes INV-01 — a pure function
+ * agreeing with itself. The citation would have registered as subsystem coverage while
+ * proving nothing about the subsystem, and it would have stayed green with the production
+ * dependency code deleted. The real proofs of INV-01/02/03 live in
+ * dbos/work-item-deps-store.test.ts and scheduler/work-item-deps-integrity.integration.test.ts.
  *
  * This is the ONE place where asserting against `canonicalRef` is legitimate: the
  * factory is the subject here, not the production subsystem. Everywhere else, see

@@ -61,6 +61,7 @@ import {
   startBootedHandlesBroadcaster,
   startWorkerBootedHandlesCache,
 } from '@papercusp/operator-core/lib/sync/hyperbee/cluster-booted-handles-sync';
+import { startBootedHandlesPgPublisher } from '@papercusp/operator-core/lib/sync/hyperbee/substrate-booted-handles-pg';
 import {
   startWorkerStampPublisher,
   startWorkerStampReceiver,
@@ -615,6 +616,15 @@ const clusterHandle = sidecarMode ? null : startCluster({
       // map is always empty). ALWAYS-ON when true-clustered — a correctness fix, not an
       // opt-in perf feature (unlike the lag watchdog above).
       if (clusterWorkers > 1) startWorkerBootedHandlesCache();
+      // EI-19327550671915579 (part 2 of EI-18735338283879820): also publish to the
+      // cross-SERVICE PG fallback, unconditionally (no clusterWorkers gate) — this is
+      // the leg that reaches a request-only host under the dedicated-bg-host topology
+      // (:3070/:3270, each a SEPARATE systemd service from papercup-bg-host, where
+      // node:cluster IPC can never apply at all). Runs in every single-process host
+      // (this closure executes inline here too — see the file-header comment above),
+      // and self-gates per-beat on isSubstrateOwnerProcess(), so a request-only host
+      // simply never writes.
+      startBootedHandlesPgPublisher({});
       // WI-6594: publish this worker's P-009 stamp declarations to the primary and
       // apply the ones it relays back from peers. Without this, an agent's
       // coord:declare-intent and its work_items:claim land on DIFFERENT workers and
@@ -678,6 +688,13 @@ if (clusterHandle && clusterHandle.role === 'primary' && clusterWorkers > 1) {
   const bootedHandlesBroadcaster = clusterHandle.broadcast
     ? startBootedHandlesBroadcaster({ broadcast: clusterHandle.broadcast })
     : undefined;
+  // EI-19327550671915579: also publish to the cross-SERVICE PG fallback from the
+  // true-cluster primary — it never runs the onWorker closure above (only its forked
+  // children do), so without this a true-clustered substrate owner would only ever
+  // reach its OWN workers over cluster IPC, never a foreign process/host. Self-gates
+  // the same way; a request-only primary under the dedicated-bg-host topology stays
+  // silent here too.
+  const bootedHandlesPgPublisher = startBootedHandlesPgPublisher({});
   // WI-6594: relay each worker's P-009 stamp declarations to every other worker.
   // The primary is the hub because only it holds a handle to every worker; it also
   // applies each patch locally, since it runs the background machinery whose own
@@ -697,6 +714,7 @@ if (clusterHandle && clusterHandle.role === 'primary' && clusterWorkers > 1) {
     console.log(`[cluster] ${sig} — draining ${clusterHandle.workerCount} worker(s) + exiting primary`);
     watchdog?.stop(); // stop watching first so it doesn't fight the graceful drain
     bootedHandlesBroadcaster?.stop();
+    bootedHandlesPgPublisher.stop();
     stampRelay?.stop();
     clusterHandle.drain?.(sig);
     // WI-3849: the primary loads the same native modules as workers. Calling

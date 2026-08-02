@@ -40,6 +40,21 @@ const CORE = resolve(__dirname, '..');
  * The dependency-subsystem test corpus. Repo-relative to packages/operator-core/lib.
  *
  * Adding a dependency test? Add it here, or its citations do not count.
+ *
+ * ⚠ THE TWO META FILES ARE EXCLUDED ON PURPOSE, and the reason is the whole point of this
+ * plan. They test the TOOLING (the registry's extractor, the fixture factory), not the
+ * subsystem, and including them corrupts the measurement in BOTH directions:
+ *
+ *  - `scheduler/dependency-invariants.test.ts` contains synthetic citations as FIXTURES —
+ *    literal `@covers INV-04`, `INV-01, INV-02`, `INV-06 INV-07` passed as test inputs, plus
+ *    a deliberate `INV-77` typo control. Scanned as corpus, its test DATA registers as
+ *    coverage for five real invariants that it proves nothing about, and its typo control
+ *    reports as a corpus defect. Both were observed live when this file first ran.
+ *  - `testing/dependency-fixture.test.ts` asserts the factory agrees with `canonicalRef`,
+ *    which encodes INV-01 — a pure function agreeing with itself. Its citation was removed
+ *    for that reason; see the note in its header.
+ *
+ * A citation only counts when it sits on a test that exercises production code.
  */
 const CORPUS = [
   'scheduler/claim-respects-blocking.integration.test.ts',
@@ -47,11 +62,9 @@ const CORPUS = [
   'scheduler/get-next-for-bee-plan-lane-guard.test.ts',
   'scheduler/readiness-reconcile.integration.test.ts',
   'scheduler/blocking-floor-single-source.test.ts',
-  'scheduler/dependency-invariants.test.ts',
   'dbos/work-item-deps-store.test.ts',
   'dbos/feature-blockers-edges.integration.test.ts',
   'dbos/feature-blockers-acyclicity.test.ts',
-  'testing/dependency-fixture.test.ts',
 ] as const;
 
 /**
@@ -62,10 +75,13 @@ const CORPUS = [
  * silently either: dropping a citation makes the actual set larger than this one and fails.
  */
 const KNOWN_UNCOVERED: Record<string, string> = {
-  // The EI-9108 escape was a deep-chain leak, and every behavioural blocking test in the
-  // corpus seeds depth-1 (one blocked item, one blocker). The invariant with a real
-  // incident behind it is the one with no regression guard. P-005 closes this.
-  'INV-09': 'transitive blocking to arbitrary depth — corpus only ever seeds depth-1 chains',
+  // INV-09 (transitive blocking) was here until P-005 closed it: the corpus seeded only
+  // depth-1 chains, so the one invariant with a documented incident behind it (EI-9108, a
+  // 7-deep chain served) had no regression guard. claim-respects-blocking.integration.test.ts
+  // now walks 3-deep and 6-deep chains through both doors. Left as a comment because the
+  // gap is more instructive than the fix: it was invisible for as long as coverage was
+  // counted in lines, and obvious the moment it was counted in propositions.
+  //
   // syncFeatureBlockEdges is the PROMOTION path, where replace-semantics is correct and is
   // what its test asserts ("writes/replaces/clears"). No test covers the BACKFILL path's
   // obligation to UNION, so "a backfill silently deletes hand-authored edges" is unguarded.

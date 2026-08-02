@@ -4019,6 +4019,62 @@ export async function runPostSuiteLegs(
     }
   }
 
+  // WI-7155 / EI-19376779013716004: the same phantom-gate shape a THIRD time, now generalized.
+  // `lint:tsc` covers packages/operator-core and the leg above covers the libs/papercusp
+  // submodule — which left the SUPERPROJECT roots (apps/*, packages/*, libs/generic/*) checked
+  // by nothing at all. `test:affected` is type-blind by design, so a type-only regression there
+  // sat committed indefinitely; that is WI-7155's complaint, and EI-19376779013716004's point
+  // that coverage is OPT-IN per package, so a package is silently unguarded BY DEFAULT.
+  //
+  // The fix is DISCOVERY, not another hardcoded leg: `lint:tsc:workspaces` fans out over every
+  // package under those roots that declares a `typecheck` script, so the NEXT such package is
+  // gated the moment it lands instead of waiting for someone to remember. Adding a fourth
+  // hand-wired entry here would have reproduced the very defect, one package over — which is
+  // exactly what the previous two legs did.
+  //
+  // SAFE TO GATE ON, measured before wiring (the prerequisite WI-7140 set for itself below):
+  //   - 8 of the 9 newly-covered packages are at a STRICT ZERO (all six libs/generic/*,
+  //     apps/operator-public, packages/omp-plugin) — no baseline to drift into.
+  //   - Those zeros are NOT vacuous: `tsc --listFiles` loads 78 real in-package files across
+  //     them. A "0 errors" line reads identically whether it checked 78 files or none.
+  //   - The CHECKPOINT TREE contains sources AND node_modules for every gated package, so this
+  //     leg cannot pass vacuously there (verified against papercusp-checkpoint 2026-08-02).
+  //   - The 9th, apps/papercusp-publish (14 committed errors), is EXEMPTED in the script with
+  //     its filed id WI-7166, printed on every run and asserted by a test so it cannot go quiet.
+  //
+  // Cost: ≈13s for 8 packages, against a ~55min suite. Placed with the other typecheck legs so
+  // a shared-type change that breaks several packages reports as ONE coherent failure block.
+  const workspacesTypecheckCheck = haltedBy ? null : checkNpmScript(treeDir, 'lint:tsc:workspaces');
+  if (haltedBy) {
+    legs.typecheckWorkspaces = { status: 'skipped', skipReason: haltedBy };
+  } else if (workspacesTypecheckCheck === 'unreadable') {
+    legs.typecheckWorkspaces = { status: 'failed' };
+    haltedBy = 'package.json unreadable (checking for lint:tsc:workspaces)';
+    failingSignatures.push('package.json-unreadable');
+    outputs.push(
+      `\n\n=== PACKAGE.JSON UNREADABLE (WI-6056) — could not read/parse package.json in ${treeDir} while checking for lint:tsc:workspaces ===\n`,
+    );
+  } else if (workspacesTypecheckCheck === 'absent') {
+    legs.typecheckWorkspaces = { status: 'skipped', skipReason: 'candidate provides no lint:tsc:workspaces script' };
+  } else {
+    const workspacesTypecheck = await exec('npm', ['run', 'lint:tsc:workspaces'], {
+      cwd: treeDir,
+      env,
+      allowNonZero: true,
+      heavy: true,
+    });
+    legs.typecheckWorkspaces = { status: workspacesTypecheck.code === 0 ? 'passed' : 'failed' };
+    if (workspacesTypecheck.code !== 0) {
+      haltedBy = 'lint:tsc:workspaces failed';
+      failingSignatures.push('lint:tsc:workspaces');
+      outputs.push(
+        '\n\n=== WORKSPACE TYPECHECK FAILED (npm run lint:tsc:workspaces) — a type regression in an apps/*, packages/* or libs/generic/* package blocks the release ===\n' +
+          workspacesTypecheck.stdout +
+          workspacesTypecheck.stderr,
+      );
+    }
+  }
+
   // WI-7140: libs/papercusp/packages/orchestrator. Same phantom-gate shape as the leg
   // above, one package over: `lint:tsc:orchestrator` existed as a working, baseline-
   // ratcheted script that NOTHING invoked — no CI step, no gate leg, no aggregate. Its
@@ -4435,6 +4491,7 @@ export async function runPostSuiteLegs(
   legs.ok = ![
     legs.typecheck,
     legs.typecheckPapercuspLibs,
+    legs.typecheckWorkspaces,
     legs.typecheckOrchestrator,
     legs.lintMigrations,
     legs.lintMigrationForwardCompat,

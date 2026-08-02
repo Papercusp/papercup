@@ -52,6 +52,16 @@ export interface DependencyInvariant {
   readonly binds: readonly string[];
   /** Incident/decision refs that motivated it, for anyone tempted to relax it. */
   readonly provenance: readonly string[];
+  /**
+   * Set when an invariant has been CORRECTED — what it used to say, why that was wrong, and
+   * how the correct statement was established.
+   *
+   * An invariant is a claim about the system, so it can be wrong, and a silently-edited one
+   * is worse than a wrong one: the next reader sees a confident proposition with no trace of
+   * the reasoning that moved it, and the natural next edit moves it back. Provenance covers
+   * "why does this exist"; this covers "why does it say THIS and not the obvious thing".
+   */
+  readonly note?: string;
 }
 
 /**
@@ -173,11 +183,13 @@ export const DEPENDENCY_INVARIANTS: readonly DependencyInvariant[] = [
     id: 'INV-09',
     area: 'graph-shape',
     statement:
-      'Blocking is transitive: an item with a blocked blocker is itself withheld, to arbitrary chain depth.',
+      'An item is withheld while ANY DIRECT blocker is non-terminal. Chains of unfinished work are therefore withheld to arbitrary depth (a blocked item is itself non-terminal), and the release frontier advances ONE link per completion — but a blocker that has REACHED a terminal state releases its dependent regardless of that blocker\'s own upstream.',
     violationLooksLike:
-      'Only the direct blocker is consulted, so depth-2+ chains leak and the deepest work is served first — the exact shape of the EI-9108 escape.',
+      "Either direction is a bug, and they are opposite. Too weak: the frontier collapses — satisfying a chain's ROOT frees the whole chain at once, serving work whose immediate prerequisite was never done. Too strong: a genuinely FULLY-transitive rule, which deadlocks any item whose completed prerequisite happens to sit downstream of an abandoned root, and which no correct implementation should have.",
     binds: ['libs/papercusp/libs/db/sql (work_item_is_blocked)', 'packages/operator-core/lib/work-items.ts'],
-    provenance: ['EI-9108'],
+    provenance: ['dependency-subsystem-thorough-testing-2026-08-02#D-001'],
+    note:
+      "CORRECTED 2026-08-02 (P-005). This invariant was first written as 'blocking is transitive: an item with a BLOCKED blocker is itself withheld', citing EI-9108. Both halves were wrong. (1) The system is one-hop-with-terminality, and that is CORRECT, not a leak — 'terminal' means the work is done, so a completed prerequisite satisfies its dependent whatever sits behind it; the transitive reading would deadlock legitimate work. Verified live: claim-respects-blocking.integration.test.ts, 'THE DISCRIMINATING CASE'. (2) EI-9108 was never a depth leak in the oracle — it was the lane guard's retry-budget exhaustion failing OPEN, which is INV-07. The mis-citation mattered: as written, INV-09 was unfalsifiable by depth alone (every intermediate in an unfinished chain is non-terminal, so one-hop and transitive agree on every chain anyone would naturally seed), so a test could look like it proved it while proving nothing.",
   },
   {
     id: 'INV-10',

@@ -1,0 +1,201 @@
+/**
+ * Unit tests for the shared su persona RENDER
+ * (stale-prompt-render-in-live-sessions-2026-08-02 P-002).
+ *
+ * These cover the pure half — overlay composition, launch-spec narrowing, and the
+ * refresh path's separation from the launch render. The point of the module is that
+ * ONE assembly serves both the launch and the respawn, so what is asserted here is
+ * the contract both paths depend on.
+ */
+import { describe, expect, it } from 'vitest';
+import { join } from 'node:path';
+import {
+  applySuPromptOverlays,
+  buildSuInstructionRuntime,
+  parseSuLaunchSpecRecord,
+  suPersonaRefreshPathFor,
+  type SuLaunchSpecRecord,
+} from './su-persona-render';
+import { launchContextDir, launchContextPathFor } from './su-launch-context';
+
+const runtime = buildSuInstructionRuntime({
+  ownerId: 'su-test',
+  autoMode: false,
+  drainMode: false,
+  fleet: null,
+  workspaceId: 'ws',
+  harnessSlug: 'papercusp',
+  planSlug: null,
+});
+
+describe('applySuPromptOverlays — the one canonical overlay order', () => {
+  it('appends provenance, then the mode section, then instruction precedence', async () => {
+    const { promptText } = await applySuPromptOverlays({
+      basePromptText: '# BASE PLAYBOOK\n',
+      agent: 'claude',
+      launchedBy: 'su-launcher-1',
+      modeSection: '---\n## AUTO mode\n\nACT DO NOT ASK\n',
+      instructionRuntime: runtime,
+    });
+    const iBase = promptText.indexOf('# BASE PLAYBOOK');
+    const iProv = promptText.indexOf('## Provenance — who launched this session');
+    const iMode = promptText.indexOf('## AUTO mode');
+    const iPrec = promptText.indexOf('## Effective instruction precedence');
+    for (const i of [iBase, iProv, iMode, iPrec]) expect(i).toBeGreaterThanOrEqual(0);
+    // Order is load-bearing: it is exactly what a refreshed render must reproduce,
+    // so a reordering here is a silent divergence between launch and respawn.
+    expect(iBase).toBeLessThan(iProv);
+    expect(iProv).toBeLessThan(iMode);
+    expect(iMode).toBeLessThan(iPrec);
+    expect(promptText).toContain('su-launcher-1');
+  });
+
+  it('omits provenance and the mode section when the session has neither', async () => {
+    const { promptText } = await applySuPromptOverlays({
+      basePromptText: '# BASE\n',
+      agent: 'claude',
+      launchedBy: null,
+      modeSection: '',
+      instructionRuntime: runtime,
+    });
+    expect(promptText).not.toContain('## Provenance');
+    expect(promptText).not.toContain('## AUTO mode');
+    // The precedence trace is unconditional — it is how an agent learns which
+    // generic playbook clauses are suppressed RIGHT NOW.
+    expect(promptText).toContain('## Effective instruction precedence');
+  });
+
+  it('is deterministic — the same inputs render byte-identical text', async () => {
+    // The P-003 recurrence guard rests on this: "a respawn's render equals a fresh
+    // render" is only checkable while the assembly has no hidden per-call variance.
+    const args = {
+      basePromptText: '# BASE\n',
+      agent: 'claude',
+      launchedBy: 'su-x',
+      modeSection: '---\n## DRAIN mode\n\nDRAIN\n',
+      instructionRuntime: runtime,
+    } as const;
+    const a = await applySuPromptOverlays({ ...args });
+    const b = await applySuPromptOverlays({ ...args });
+    expect(a.promptText).toBe(b.promptText);
+  });
+
+  it('lints the FINAL text, not the base playbook', async () => {
+    // The overlays are exactly where generated-rule conflicts get introduced, so a
+    // lint over spec.promptText alone would look clean while the shipped prompt is
+    // not. Assert the report describes the composed document.
+    const { instructionLint } = await applySuPromptOverlays({
+      basePromptText: '# BASE\n',
+      agent: 'claude',
+      launchedBy: null,
+      modeSection: '',
+      instructionRuntime: runtime,
+    });
+    expect(instructionLint).toBeTruthy();
+    expect(Array.isArray(instructionLint.conflicts)).toBe(true);
+  });
+});
+
+describe('buildSuInstructionRuntime', () => {
+  it('routes to the fleet and carries both AUTO and DRAIN when draining', () => {
+    const r = buildSuInstructionRuntime({
+      ownerId: 'su-1',
+      autoMode: true,
+      drainMode: true,
+      fleet: { slug: 'ops', role: 'leader' },
+      workspaceId: 'ws',
+      harnessSlug: 'papercusp',
+      planSlug: 'p',
+    });
+    expect(r.modes).toEqual(['auto', 'drain']);
+    expect(r.route).toEqual({ kind: 'fleet', fleet: 'ops', role: 'leader' });
+    expect(r.scope).toEqual({ workspace: 'ws', harness: 'papercusp', plan: 'p', items: [] });
+  });
+
+  it('treats fleet membership itself as AUTO, and a solo non-auto launch as neither', () => {
+    // A fleet member has no human at its keyboard — that is why membership alone
+    // implies AUTO, independent of the --auto flag.
+    expect(
+      buildSuInstructionRuntime({
+        ownerId: 'su-1', autoMode: false, drainMode: false,
+        fleet: { slug: 'ops', role: 'member' },
+        workspaceId: 'ws', harnessSlug: null, planSlug: null,
+      }).modes,
+    ).toEqual(['auto']);
+    const solo = buildSuInstructionRuntime({
+      ownerId: 'su-1', autoMode: false, drainMode: false, fleet: null,
+      workspaceId: 'ws', harnessSlug: null, planSlug: null,
+    });
+    expect(solo.modes).toEqual([]);
+    expect(solo.route).toEqual({ kind: 'self' });
+  });
+});
+
+describe('parseSuLaunchSpecRecord', () => {
+  const good: SuLaunchSpecRecord = {
+    v: 1,
+    agent: 'claude',
+    workspaceId: 'ws',
+    harnessSlug: 'papercusp',
+    profile: 'engineer',
+    contextSize: null,
+    personaTier: 'full',
+    model: null,
+    planSlug: 'plan-x',
+    launchedBy: null,
+    autoMode: true,
+    drainMode: false,
+    loopArmed: true,
+    fleet: { slug: 'ops', role: 'member' },
+  };
+
+  it('round-trips a well-formed record through JSON (how it actually arrives)', () => {
+    expect(parseSuLaunchSpecRecord(JSON.parse(JSON.stringify(good)))).toEqual(good);
+  });
+
+  it('refuses anything it cannot vouch for rather than half-reading it', () => {
+    // Every rejection below fail-softs the caller to the inherited render — the
+    // right outcome. Guessing at an unrecognised shape would ship a prompt built
+    // from misread inputs into a live session, which is worse than staleness.
+    expect(parseSuLaunchSpecRecord(null)).toBeNull();
+    expect(parseSuLaunchSpecRecord('nope')).toBeNull();
+    expect(parseSuLaunchSpecRecord({})).toBeNull();
+    expect(parseSuLaunchSpecRecord({ ...good, v: 2 })).toBeNull();
+    expect(parseSuLaunchSpecRecord({ ...good, agent: '' })).toBeNull();
+    expect(parseSuLaunchSpecRecord({ ...good, workspaceId: undefined })).toBeNull();
+  });
+
+  it('defaults the booleans to FALSE rather than truthy, and profile to engineer', () => {
+    // A missing autoMode must not accidentally bake an AUTO directive into a
+    // session that never asked for one.
+    const bare = parseSuLaunchSpecRecord({ v: 1, agent: 'claude', workspaceId: 'ws' });
+    expect(bare).toMatchObject({
+      autoMode: false, drainMode: false, loopArmed: false,
+      profile: 'engineer', fleet: null, planSlug: null, harnessSlug: null,
+    });
+  });
+});
+
+describe('suPersonaRefreshPathFor', () => {
+  it('is NEVER the launch render path — the fail-soft fallback must stay intact', () => {
+    // This is the structural reason the refresh writes somewhere new: on any
+    // failure the respawn keeps the inherited --system-prompt-file, so that file
+    // has to remain known-good. Rewriting it in place would destroy the fallback at
+    // exactly the moment a bad render made the fallback necessary.
+    const owner = 'su-0228816f-1d81-45fd-8832-71c771fecc99';
+    expect(suPersonaRefreshPathFor(owner)).not.toBe(launchContextPathFor(owner));
+    expect(suPersonaRefreshPathFor(owner)).not.toBe(launchContextPathFor('14416'));
+  });
+
+  it('is deterministic per owner, so respawns overwrite instead of accumulating files', () => {
+    const owner = 'su-abc';
+    expect(suPersonaRefreshPathFor(owner)).toBe(suPersonaRefreshPathFor(owner));
+    expect(suPersonaRefreshPathFor(owner)).toBe(join(launchContextDir(), 'session-refresh-su-abc.md'));
+  });
+
+  it('sanitizes an owner id into a safe single filename', () => {
+    const p = suPersonaRefreshPathFor('su/../../etc/passwd');
+    expect(p.startsWith(launchContextDir())).toBe(true);
+    expect(p).toBe(join(launchContextDir(), 'session-refresh-su_.._.._etc_passwd.md'));
+  });
+});
