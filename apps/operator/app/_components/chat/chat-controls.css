@@ -92,6 +92,15 @@
 .pc-ctl-band--do {
   background: var(--bg-2);
   border-top: 1px solid var(--border);
+  /* [owner 2026-08-02] compaction: the do band carries four mode pills AND
+     four action buttons, which at the popup's usual width wrapped to two
+     lines. A tighter gap + the action padding below buy back ~70px, enough to
+     land all eight on one line at the width the owner actually runs. It still
+     WRAPS rather than overflows if the popup is narrower than that or an
+     action's label grows — degrading to two lines is correct here; clipping a
+     button is not. */
+  gap: 5px;
+  padding: 6px 11px;
 }
 
 /** The status band shares its row with the chat popup's two floating toolbar
@@ -232,22 +241,64 @@
   background: color-mix(in oklab, transparent, white 11%);
 }
 
+/* The pill is now the TRIGGER of a design-system Select (P-002), which means
+   it is still a <button> and still bound by the WebKitGTK note above — the
+   `__inner` span keeps doing the layout. Radix stamps these two attributes on
+   an open trigger; both get the hover fill so the pill visibly stays "held"
+   while its menu is up, which is what tells you WHICH pill the floating menu
+   belongs to. */
+.pc-ctl-mode[data-state='open'] {
+  background: color-mix(in oklab, transparent, var(--accent) 22%);
+}
+.pc-ctl-mode--off[data-state='open'] {
+  background: color-mix(in oklab, transparent, white 11%);
+}
+.pc-ctl-mode[disabled] {
+  cursor: default;
+  opacity: 0.55;
+}
+
+/* A mode option in that menu: label over its one-line explanation. The hint is
+   the descriptor's `hint`, which the old card rendered as a second line under
+   the label — keeping it means the dropdown lost the card's chrome without
+   losing any of its INFORMATION. */
+.pc-ctl-mode-opt {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  max-width: 320px;
+}
+
+.pc-ctl-mode-opt__label {
+  font-weight: 600;
+}
+
+.pc-ctl-mode-opt__hint {
+  color: var(--fg-mute);
+  font-size: 10.5px;
+  line-height: 1.35;
+  white-space: normal;
+}
+
 /* ═══ ③/④ Action, and Action → picker ═══════════════════════════════════════ */
 
 .pc-ctl-act {
   display: block;
-  padding: 6px 10px;
+  padding: 5px 8px;
   border: 1px solid var(--border-strong);
   border-radius: 4px;
   /* Declared explicitly because globals.css's zero-specificity
      `:where(button, .pc-btn) { min-height: 26px }` baseline otherwise wins over
      the intended padded height and produces an off-by-a-few-px "egg"
-     (EI-18690913356156250). 26px IS the intended height here, so state it. */
-  min-height: 26px;
+     (EI-18690913356156250). Stating it is what keeps that baseline out; the
+     value moved 26 → 24 with the 2026-08-02 compaction, which is exactly why
+     it must stay declared — inheriting the baseline would silently undo it. */
+  min-height: 24px;
   background: var(--bg-raised);
   color: var(--fg);
   font: inherit;
-  font-size: 11.5px;
+  font-size: 11px;
   line-height: 1;
   white-space: nowrap;
   cursor: pointer;
@@ -393,30 +444,92 @@
 /* Two classes, so this reliably beats `.pc-new-session-launcher`'s own single-
    class `display` on the same element rather than depending on stylesheet
    order. The element keeps that class because the CONTROLS inside it are still
-   the new-session launcher's controls — only their arrangement changes: a
-   caption above each one turns a row of anonymous widgets into a form. */
+   the new-session launcher's controls — only their arrangement changes.
+
+   [owner 2026-08-02] "make it more compact you should be able to fit all the
+   things on 1 or 2 lines." This was a GRID of six cells, each a caption
+   STACKED above its control, plus a caption band above and a submit band
+   below — four stacked bands, ~200px, five rendered lines for seven controls.
+
+   It is now ONE wrapping flex strip. Three things had to change together, and
+   dropping any one of them puts a line back:
+     · the per-field caption goes from ABOVE the control to BESIDE it
+       (`--inline` below), which is what actually removes a line per row;
+     · the "FLEET" caption joins the strip as its first item instead of
+       owning a band;
+     · the submit joins the strip and floats right on `margin-left:auto`
+       instead of owning a band with a border-top.
+
+   `flex-wrap` (not a fixed column count) is what keeps the owner's "1 or 2":
+   wide popup ⇒ one line, narrow ⇒ two, never a hard-coded break that is wrong
+   at both widths. */
 .pc-fleet-launch-row .pc-fleet-launch-row__fields {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(148px, 1fr));
-  gap: 11px;
-  padding: 12px;
-  align-items: start;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  padding: 7px 11px;
+  min-width: 0;
 }
 
-/* The caption band names the form; it must not also reserve the row's height,
-   so it sheds the band's default vertical padding. */
-.pc-fleet-launch-row > .pc-ctl-band:first-child {
-  padding-bottom: 0;
+/* The strip's own leading caption. Shares .pc-ctl-band__label's type so the
+   form still reads as the "FLEET" group, but it is now a flex ITEM. */
+.pc-fleet-strip__label {
+  align-self: center;
 }
 
-.pc-fleet-launch-row .pc-fleet-launch-row__submit {
-  border-top: 1px solid var(--border);
+/* Pushes the submit to the far edge of whatever line it lands on. */
+.pc-fleet-launch-row .pc-fleet-strip__submit {
+  margin-left: auto;
+  flex: none;
+}
+
+/* Each control is a flex item that may shrink but never below legibility.
+   `min-width: 0` on the field is what lets a long plan name ellipsize inside
+   its well instead of forcing the whole strip to a second line. */
+.pc-fleet-launch-row .pc-ctl-field {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 210px;
 }
 
 /* A member count is at most two digits — sizing it to the shared input width
    would leave a mostly-empty box next to the launch button. */
 .pc-fleet-launch-row .pc-fleet-launch-row__count {
-  max-width: 56px;
+  max-width: 52px;
+}
+.pc-fleet-launch-row .pc-ctl-field:has(.pc-fleet-launch-row__count) {
+  flex: none;
+}
+
+/* ═══ ⑥b Field, INLINE — the same shape, laid on its side ═══════════════════ */
+
+/* The stacked caption is what the Field shape uses to say "this control has a
+   NAME" (P-007 — the owner was reading aria-labels as UI copy because nothing
+   else named these controls). Compaction must not undo that, so the caption is
+   not deleted, only MOVED: it sits before the well on the same line, still
+   uppercase, still muted, still the thing you read first. The long form that
+   used to be the visible caption ("Plan — the lane members work") survives as
+   the `title`, so the explanation is one hover away rather than one line down. */
+.pc-ctl-field--inline {
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+}
+
+.pc-ctl-field--inline > .pc-ctl-field__cap {
+  flex: none;
+  /* Nudged up from the stacked caption's 9px: beside a 11.5px control it has
+     to hold its own as a label rather than read as a superscript. */
+  font-size: 9.5px;
+}
+
+/* The well takes the rest of the field, and clips rather than pushes. */
+.pc-ctl-field--inline > :not(.pc-ctl-field__cap) {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* ═══ shared focus treatment ════════════════════════════════════════════════ */

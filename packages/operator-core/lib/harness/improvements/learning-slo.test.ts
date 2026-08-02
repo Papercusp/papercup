@@ -13,6 +13,7 @@ import {
   LEARNING_SLO_DARK_NOTE,
   LEARNING_SLO_DEFAULTS,
   collectMemoryZeroHitSignals,
+  collectTriageEntropySignals,
   flowSignalsFromAggregate,
   governorStarvationSignals,
   medianOf,
@@ -347,6 +348,56 @@ describe('the D-001 dark gate (flag OFF)', () => {
     });
     expect(res.signals).toEqual([]);
     expect(res.note).toBe(LEARNING_SLO_DARK_NOTE);
+  });
+});
+
+// ── EI-19370922358009801 regression ────────────────────────────────────────────
+//
+// The pure mapper above was always correct — `triageEntropySignalsFromRows` fires on
+// a single-lane histogram exactly as designed. What made the detector blind for 13
+// days was the QUERY that feeds it: it windowed on `updated_at`, which dates nothing
+// on this table (a background sweep touches every row), so the "last 7 days" admitted
+// the entire historical corpus. Measured against the live DB on 2026-08-02 the
+// `updated_at` form returned place 1493 / gate 418 / reject 79 / gym 10 — normalized
+// entropy 0.50, well clear of the 0.15 SLO — while the classifier had emitted `place`
+// and nothing else since 2026-07-26.
+//
+// A pure-mapper test cannot catch that: the mapper never sees the window. So this
+// pins the SQL the collector actually issues.
+describe('collectTriageEntropySignals window key (the detector-blindness class)', () => {
+  const captureSql = (): { sql: Sql; queries: string[] } => {
+    const queries: string[] = [];
+    const fn = (strings: TemplateStringsArray, ..._args: unknown[]): Promise<unknown[]> => {
+      queries.push(strings.join(' ? '));
+      return Promise.resolve([]);
+    };
+    return { sql: fn as unknown as Sql, queries };
+  };
+
+  it('windows and orders on the TRIAGE time, never on updated_at', async () => {
+    const { sql, queries } = captureSql();
+    await collectTriageEntropySignals(sql, 'ws');
+    expect(queries).toHaveLength(1);
+    const q = queries[0];
+
+    // The defect, pinned directly: `updated_at` must not gate this window.
+    expect(q).not.toMatch(/updated_at\s*>/);
+
+    // The immutable triage stamp is the key, with the pre-field fallback.
+    expect(q).toContain("'triagedAt'");
+    expect(q).toContain("'stateUpdatedAt'");
+
+    // An UNORDERED `LIMIT 2000` hands the SLO an arbitrary 2000 rows of the match
+    // set rather than the recent behaviour it exists to judge — so the limit must
+    // be newest-first.
+    expect(q).toMatch(/ORDER BY[\s\S]*DESC[\s\S]*LIMIT/);
+  });
+
+  it('still scopes to the workspace and excludes non-organic (drill/replay) rows — D-002', async () => {
+    const { sql, queries } = captureSql();
+    await collectTriageEntropySignals(sql, 'ws');
+    expect(queries[0]).toContain('workspace_id');
+    expect(queries[0]).toContain("COALESCE(signal_origin, 'organic') = 'organic'");
   });
 });
 

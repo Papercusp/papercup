@@ -258,9 +258,19 @@ async function openIssueExistsForKeys(keys: readonly string[]): Promise<Set<stri
  * auto-implement/auto-review backlog noise is suppressed. */
 async function fileFindings(summary: RunSummary, tierLabel: string): Promise<void> {
   if (summary.hostLoad?.oversubscribed) {
+    // EI-19301664378023382: surface the PSI "some" evidence (recorded alongside the
+    // verdict, not fed into it — see runner.ts's samplePsiSome) right in the skip
+    // line, so this is no longer a bare assertion of contention: a human/auditor
+    // reading this line sees the kernel's own stall-time reading next to the
+    // page-delta/loadavg proxy that actually triggered the skip.
+    const psiMem = summary.hostLoad.psiMemSome60;
+    const psiCpu = summary.hostLoad.psiCpuSome60;
     console.info(
       `[p2p-perf] ${tierLabel} run ${summary.runId}: host was oversubscribed (load ratio ` +
-        `${summary.hostLoad.ratio1m.toFixed(2)}× cpus) — skipping auto-filing of ` +
+        `${summary.hostLoad.ratio1m.toFixed(2)}× cpus${
+          summary.hostLoad.swapping ? `, swap Δ${summary.hostLoad.swapPagesDelta} pages` : ''
+        }; PSI some avg60 mem=${psiMem !== null && psiMem !== undefined ? `${psiMem.toFixed(1)}%` : 'n/a'} ` +
+        `cpu=${psiCpu !== null && psiCpu !== undefined ? `${psiCpu.toFixed(1)}%` : 'n/a'}) — skipping auto-filing of ` +
         `${summary.sloViolations.length} SLO violation(s) / ${summary.regressions.length} regression(s) ` +
         `as unreliable under contention (EI-8843); see ${summary.reportPath} for the raw numbers.`,
     );

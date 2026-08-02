@@ -551,6 +551,39 @@ export async function getNextForBee(args: {
     // (the exact symptom EI-14837 reported). Suppress the broad co-fire; the targeted
     // `claim:released:<id>` still fires, and the real re-announce arrives via the
     // unblock/requeue path (reason 'unblocked'/'requeued') when the lane genuinely clears.
+    //
+    // P-011 (work-item-dependency-edges-2026-08-02): AUDIT the bounce. This round-trip is
+    // deliberately invisible to the caller — the row is never returned — so until now it
+    // left NO trace anywhere: no counter, no log, no ledger row. That made the plan's own
+    // closing question ("has the lane guard demoted to a backstop now that the dependency
+    // floor does the work pre-claim?") unanswerable, because the quantity it asks about was
+    // never recorded. A guard whose cost cannot be measured cannot be shown to have stopped
+    // costing anything.
+    //
+    // 'lost' is the existing outcome for a non-competitive refusal (see the fail-closed
+    // fleet-scope refusal above) — this is not a race that was lost to another claimer, so
+    // `reason` is what distinguishes it. Best-effort and swallow-on-error like every other
+    // call here: pure observability, never in the admission decision.
+    await auditClaimAttempt({
+      workspaceId: args.workspaceId,
+      harnessSlug: args.harness,
+      featureId: result.workItem.id,
+      claimerId: args.cupId,
+      outcome: 'lost',
+      detail: {
+        source: record.source,
+        reason: 'plan-lane-blocked',
+        // The lane guard's own verdict — which plan item held the row, and why. Without
+        // this the count says churn happened but not which of the guard's three distinct
+        // jobs (blocked-by graph, terminal-lane residue, owner-gate prose) produced it,
+        // and only the FIRST is the one the dependency floor is expected to take over.
+        planSlug: blocked.planSlug,
+        itemId: blocked.itemId,
+        effectiveStatus: blocked.effectiveStatus,
+        laneReason: blocked.reason,
+        family: result.workItem.family,
+      },
+    });
     await releaseWorkItem(result.workItem.id, {
       harness: args.harness,
       expectedAssignee: args.cupId,

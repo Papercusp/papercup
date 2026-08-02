@@ -21,6 +21,7 @@
 import { hostname, tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
 
 const DEFAULT_TIMEOUT_MS = 180_000;
 const DEFAULT_STALE_MS = 10 * 60_000;
@@ -152,5 +153,30 @@ export async function withFsMutex(name, fn, opts = {}) {
     return await fn();
   } finally {
     await rm(lockDir, { recursive: true, force: true });
+  }
+}
+
+/**
+ * EI-19304880034803985 — a NON-blocking, synchronous peek at whether `name`'s
+ * mutex is currently held, for a caller that wants to WARN a caller ("an
+ * install may be about to make you hang") rather than wait/acquire it.
+ *
+ * Deliberately does not reclaim a stale/dead-owner lock (that mutates shared
+ * state — a caller merely peeking must never race the real holder's own
+ * cleanup) and deliberately does not throw on any read/parse failure — an
+ * inconclusive peek reports `held:false` (never block a caller on a
+ * diagnostic that fails open by design, mirroring `withFsMutex`'s own
+ * fail-open error handling).
+ *
+ * @param {string} name
+ * @returns {{ held: boolean, owner?: { pid?: number, host?: string, startedAt?: string, name?: string }, lockDir: string }}
+ */
+export function peekFsMutexSync(name) {
+  const lockDir = join(lockRoot(), `${safeName(name)}.lock`);
+  try {
+    const raw = readFileSync(join(lockDir, 'owner.json'), 'utf8');
+    return { held: true, owner: JSON.parse(raw), lockDir };
+  } catch {
+    return { held: false, lockDir };
   }
 }

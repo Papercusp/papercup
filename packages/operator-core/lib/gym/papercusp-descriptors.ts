@@ -88,6 +88,19 @@ export interface BuildDescriptorsInput {
   pinCommit: string;
   /** Reads a test file's source AT THE PIN. Returns null if unreadable. */
   readTestSource: (testPath: string) => string | null;
+  /**
+   * The requirement titles the REWIND ACTUALLY BREAKS, keyed by implPath —
+   * measured by re-running each reverted candidate's oracle.
+   *
+   * Required, and this is the point: taking every `it()` title in the oracle
+   * file is wrong for large test files, and measurably so. The worst admitted
+   * candidate's oracle has 232 titles while its rewind breaks a handful; the
+   * verified sample broke 6 of 26. A spec of 226 already-passing requirements
+   * plus 6 real ones is not a specification, it is a haystack — it measures
+   * needle-finding rather than implementation, and at ~19.5KB it crowds out the
+   * agent's context before it has read any code.
+   */
+  failingIts: ReadonlyMap<string, readonly string[]>;
   /** Pool assignment; defaults to round-robin (see below). */
   pools?: readonly GymTaskPool[];
 }
@@ -118,10 +131,15 @@ export function buildDescriptorsFromProbe(input: BuildDescriptorsInput): Papercu
     const source = input.readTestSource(row.testPath);
     if (source === null) continue;
     const outline = extractTestOutline(source);
-    // No requirements recovered ⇒ no honest spec available. Dropping the task is
-    // correct: the alternative is writing one ourselves, which is the exact
-    // failure this module exists to avoid.
-    if (outline.its.length === 0) continue;
+
+    // The requirements this task must actually satisfy. An ADMITTED candidate
+    // failed when reverted, so an empty set here means the measurement did not
+    // reach us — a tooling gap, not a property of the candidate. Drop it rather
+    // than fall back to every title: the fallback is the haystack described
+    // above, and it degrades SILENTLY, whereas a drop shows up as a smaller
+    // corpus and gets investigated.
+    const failing = input.failingIts.get(row.implPath) ?? [];
+    if (failing.length === 0) continue;
 
     out.push({
       taskId: taskIdForImpl(row.implPath),
@@ -132,8 +150,9 @@ export function buildDescriptorsFromProbe(input: BuildDescriptorsInput): Papercu
       revertToCommit: row.parent,
       spec:
         `Restore \`${row.implPath}\` so its real test passes.\n\n` +
-        `The oracle \`${row.testPath}\` requires, in the words of the engineer who shipped it:\n` +
-        outline.its.map((t) => `  - ${t}`).join('\n'),
+        `The oracle is \`${row.testPath}\` — run it with \`npm run test:file -- ${row.testPath}\`. ` +
+        `These are the requirements it currently FAILS, in the words of the engineer who shipped them:\n` +
+        failing.map((t) => `  - ${t}`).join('\n'),
       intent:
         outline.describes.length > 0
           ? `Real shipped work on ${outline.describes.join(' / ')}.`

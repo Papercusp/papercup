@@ -1374,7 +1374,7 @@ import { backgroundWorkspaceIds } from '../workspace-registry';
 // (EI-312 leg 1: a test worker must not poke the live wake system). The
 // PAPERCUSP_BACKGROUND_WORKERS flag only controls background loops and is `0`
 // in the request workers whose process-local matcher must remain armed.
-import { backgroundWorkersEnabled, reactionMatcherShouldArm } from '../background-workers';
+import { isHostSingleton, reactionMatcherShouldArm } from '../background-workers';
 try {
   if (reactionMatcherShouldArm()) {
     // WI-4890: :3070 is a reuse-port cluster, but event-reaction rules are
@@ -1394,10 +1394,25 @@ try {
 // (crash recovery): a STARTED hive whose host died mid-turn never ran the
 // turn-end hook, so it may sit started with no wake armed forever. Arm the
 // watchdog fallback for each such hive. Fail-soft; never blocks boot.
-// Gated like the wake-rule registration above (EI-312 leg 1).
+//
+// EI-19304005891638175: gated on `isHostSingleton()`, NOT the bare
+// `backgroundWorkersEnabled()` this used to read (still correct for the
+// wake-rule registration above, which is per-process REQUEST-serving work,
+// not a singleton claim). `backgroundWorkersEnabled()` is env-only, so a
+// forked node:cluster worker inherits it and it reads true in every worker of
+// a clustered host — measured 17/17 on the :3070 release cluster. This is a
+// crash-recovery arm-a-fallback-wake check, so it must run exactly once per
+// host, not once per worker: 17 racing callers all read the underlying
+// wake's `live.armed === false` before any of them writes it (TOCTOU). The
+// arm itself is an idempotent upsert on a uniquely-keyed singleton routine
+// (`declarePotTimeWake` → `upsertRoutine`), so the race does not spawn
+// duplicate agent turns — but it does mean up to 17x redundant PG
+// read+upsert traffic and 17x duplicate `pot_watchdog_fires` audit rows
+// (`recordFire` is a plain INSERT, not idempotent) on every boot, for every
+// started pot. `isHostSingleton()` collapses that back to one.
 import { potBootCheck } from '../pot/watchdog';
 try {
-  if (backgroundWorkersEnabled()) {
+  if (isHostSingleton()) {
     void potBootCheck()
       .then((results) => {
         for (const r of results) {
@@ -1418,9 +1433,15 @@ try {
 // Re-arm the fallback for each GUARDED overwatch. Self-gates on the
 // `papercusp-overwatch` flag + B-07's started bit (no-op until activated).
 // Fail-soft; never blocks boot.
+//
+// EI-19304005891638175: same fix as the pot boot check above — gated on
+// `isHostSingleton()` rather than the bare `backgroundWorkersEnabled()`,
+// which reads true in every worker of a clustered host and let this
+// crash-recovery arm race 17-wide (TOCTOU on `live.armed`) instead of firing
+// once per host.
 import { overwatchBootCheck } from '../overwatch/watchdog';
 try {
-  if (backgroundWorkersEnabled()) {
+  if (isHostSingleton()) {
     void overwatchBootCheck()
       .then((results) => {
         for (const r of results) {

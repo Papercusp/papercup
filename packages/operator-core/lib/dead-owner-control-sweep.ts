@@ -2,6 +2,7 @@
 import type { Sql } from 'postgres';
 import { liveHolderFragment, parkedHolderFragment, STALE_CLAIM_GRACE_MS } from './work-items-stale-claims';
 import { HELD_AT_EXPR, HOLD_OPEN_GRACE_MS, HOLD_OPEN_PARKED_GRACE_MS } from './work-items-hold-open';
+import { POLICY_GATE_REASON_SQL_PATTERNS, recordBulkHoldClearAudit } from './work-items';
 
 export const DEAD_OWNER_CONTROL_GRACE_MS = 2 * 60 * 60 * 1000;
 
@@ -66,12 +67,40 @@ export async function sweepDeadOwnerControlState(
          AND COALESCE(
                ${sql.unsafe(HELD_AT_EXPR)} < now() - make_interval(secs => ${holdGraceSec}),
                true)
-      RETURNING d.owner_id
+         -- WI-6774: a POLICY-TIER hold (D-NNN / triageDecision:"gate" / literal
+         -- "policy-tier" in the reason) survives dead-owner-liveness cleanup — same rule,
+         -- same shared pattern constant, as reclaimStaleHoldOpens. Only the audited,
+         -- ownerOverride-gated work_items:hold_open clear may lift one of these.
+         AND NOT COALESCE(w.payload->>'held_open_reason', '') ~* ANY(${POLICY_GATE_REASON_SQL_PATTERNS})
+      RETURNING d.owner_id, w.workspace_id, w.feature_id
     )
     SELECT (SELECT array_agg(owner_id ORDER BY owner_id) FROM dead_owner) AS owners,
            (SELECT count(*) FROM ended_loop) AS loops_terminated,
-           (SELECT count(*) FROM lifted_hold) AS holds_lifted`;
-  const row = rows[0];
+           (SELECT count(*) FROM lifted_hold) AS holds_lifted,
+           (SELECT COALESCE(json_agg(json_build_object(
+                     'workspace_id', workspace_id, 'feature_id', feature_id, 'former_holder', owner_id
+                   )), '[]'::json)
+              FROM lifted_hold) AS lifted_items`;
+  const row = rows[0] as
+    | {
+        owners: string[] | null;
+        loops_terminated: string | number;
+        holds_lifted: string | number;
+        lifted_items: Array<{ workspace_id: string; feature_id: string; former_holder: string }> | null;
+      }
+    | undefined;
+
+  // WI-6774: this bulk liveness clear previously left NO audit_log row anywhere — structural now.
+  void recordBulkHoldClearAudit(
+    sql,
+    (row?.lifted_items ?? []).map((it) => ({
+      id: it.feature_id,
+      workspaceId: it.workspace_id,
+      formerHolder: it.former_holder,
+    })),
+    { actor: 'dead-owner-control-sweep', sweepName: 'sweepDeadOwnerControlState' },
+  );
+
   return {
     owners: row?.owners ?? [],
     loopsTerminated: Number(row?.loops_terminated ?? 0),

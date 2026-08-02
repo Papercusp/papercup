@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 // convention test-file-router.test.ts already uses for the sibling .mjs CLI import.
 import {
   withFsMutex,
+  peekFsMutexSync,
   // @ts-expect-error
 } from '../../../../scripts/lib/fs-mutex.mjs';
 
@@ -173,5 +174,63 @@ describe('withFsMutex', () => {
     process.env.PAPERCUSP_DISABLE_FS_MUTEX = '1';
     const result = await withFsMutex('npm-install', async () => 'unlocked');
     expect(result).toBe('unlocked');
+  });
+});
+
+// EI-19304880034803985: a NON-blocking peek so a caller (test-files.mjs) can
+// WARN ("an install is in flight, this may hang") instead of hanging silently
+// on a spawnSync it cannot introspect while the mutex is held.
+describe('peekFsMutexSync', () => {
+  it('reports held:false when no lock directory exists', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'pc-fs-mutex-'));
+    process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = dir;
+
+    expect(peekFsMutexSync('npm-install').held).toBe(false);
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it('reports held:true with the owner when a lock is currently held', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'pc-fs-mutex-'));
+    process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = dir;
+    const lockDir = join(dir, 'npm-install.lock');
+    await mkdir(lockDir, { recursive: true });
+    const owner = { pid: 424242, host: hostname(), startedAt: new Date().toISOString(), name: 'npm-install' };
+    await writeFile(join(lockDir, 'owner.json'), JSON.stringify(owner));
+
+    const peek = peekFsMutexSync('npm-install');
+    expect(peek.held).toBe(true);
+    expect(peek.owner).toMatchObject(owner);
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it('never blocks/waits — returns immediately even while a real holder has the lock', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'pc-fs-mutex-'));
+    process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = dir;
+
+    // A real, un-released hold (fn never resolves within this test) — peek must
+    // not be the thing that waits for it.
+    const held = withFsMutex('npm-install', () => new Promise(() => {}), { timeoutMs: 5_000, retryMs: 5 });
+
+    // Give the mkdir a tick to land before peeking.
+    await new Promise((resolveSleep) => setTimeout(resolveSleep, 50));
+    const start = Date.now();
+    const peek = peekFsMutexSync('npm-install');
+    expect(Date.now() - start).toBeLessThan(50);
+    expect(peek.held).toBe(true);
+
+    void held; // deliberately never awaited — it would hang the test
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it('never throws — a missing/unreadable owner.json reports held:false', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'pc-fs-mutex-'));
+    process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = dir;
+    // Lock directory exists but owner.json was never (or not yet) written —
+    // the narrow window right after mkdir succeeds, before writeFile lands.
+    await mkdir(join(dir, 'npm-install.lock'), { recursive: true });
+
+    expect(() => peekFsMutexSync('npm-install')).not.toThrow();
+    expect(peekFsMutexSync('npm-install').held).toBe(false);
+    await rm(dir, { recursive: true, force: true });
   });
 });

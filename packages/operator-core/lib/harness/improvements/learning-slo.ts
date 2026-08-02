@@ -299,9 +299,28 @@ export function triageEntropySignalsFromRows(
 
 /**
  * triage-entropy: decision distribution over items triaged in the window
- * (payload.ideaLifecycle.triageDecision; updated_at is the window proxy —
- * post-triage transitions bump it, but a degenerate router fires regardless).
+ * (payload.ideaLifecycle.triageDecision).
  * Organic-only per D-002 — drill/replay rows must not shape the distribution.
+ *
+ * ⚠ THE WINDOW KEY IS THE TRIAGE TIME, NOT `updated_at`. This query used to filter on
+ * `updated_at > now() - 7d`, which dates nothing on this table: a background sweep
+ * touches every row, so the "last 7 days" window admitted the WHOLE historical corpus
+ * and its healthy old mixture drowned the live signal. Measured 2026-08-02 against the
+ * live DB, the `updated_at` form returned `place 1493 / gate 418 / reject 79 / gym 10`
+ * — normalized entropy 0.50, comfortably above the 0.15 SLO, i.e. "routing looks
+ * healthy" — while the classifier had in fact emitted `place` and ONLY `place` for
+ * ~429 consecutive decisions across 13 days (EI-19370922358009801). The detector was
+ * built for exactly that collapse and could not see it.
+ *
+ * `triagedAt` is stamped immutably at triage (lifecycle.ts); rows predating that field
+ * COALESCE to `stateUpdatedAt`. Both are ISO-8601 UTC strings written by
+ * `new Date().toISOString()`, so they are compared LEXICOGRAPHICALLY against a
+ * formatted bound — a cast would throw the whole collector on one malformed row, and a
+ * detector that dies silently is the failure mode this fix exists to remove.
+ *
+ * The `LIMIT` is ordered NEWEST-FIRST. An unordered `LIMIT 2000` samples an arbitrary
+ * 2000 rows of the match set, so even a correct window could have handed the SLO a
+ * sample that was not the recent behaviour it is meant to judge.
  */
 export async function collectTriageEntropySignals(
   sql: Sql,
@@ -315,7 +334,14 @@ export async function collectTriageEntropySignals(
      WHERE workspace_id = ${workspaceId}
        AND COALESCE(signal_origin, 'organic') = 'organic'
        AND payload->'ideaLifecycle'->>'triageDecision' IS NOT NULL
-       AND updated_at > now() - make_interval(days => ${windowDays})
+       AND COALESCE(
+             payload->'ideaLifecycle'->>'triagedAt',
+             payload->'ideaLifecycle'->>'stateUpdatedAt'
+           ) > to_char((now() - make_interval(days => ${windowDays})) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS')
+     ORDER BY COALESCE(
+                payload->'ideaLifecycle'->>'triagedAt',
+                payload->'ideaLifecycle'->>'stateUpdatedAt'
+              ) DESC
      LIMIT 2000`;
   return triageEntropySignalsFromRows(rows, opts);
 }

@@ -108,6 +108,50 @@ function sampleSwapPages(): { pswpin: number; pswpout: number } | null {
 }
 
 /**
+ * EI-19301664378023382: the CPU-ratio and swap-page-delta confounds above are
+ * both *asserted* proxies for contention — neither is the kernel's own stall
+ * accounting. Measured live 2026-08-02: on this box the swap-page-delta alone
+ * marked BOTH of the two most recent nightly runs "OVERSUBSCRIBED (swap
+ * thrashing)" (Δ2,394,052 and Δ259,671 pages, both ≫ the 1000-page/~4MB
+ * threshold), while a same-moment PSI check showed memory "some" avg60 at
+ * only ~2-5% and avg10 at ~0% — i.e. the kernel's own measure of actual
+ * memory-stall time was low, not the sustained thrashing the verdict implies.
+ * A page-count threshold has no notion of RATE or of whether anything was
+ * actually STALLED waiting on it; PSI does.
+ *
+ * Fix scope (deliberately narrow — see the item's own "Care" note against
+ * over-correcting a guard whose underlying prior, real scale-test flakiness
+ * under real load, is genuine): this does NOT change `computeHostHealth`'s
+ * oversubscribed/swapping verdict or either threshold. It ONLY samples PSI
+ * "some" (memory + cpu) the same way `sampleSwapPages` samples vmstat —
+ * start/end, max of the two — and threads it through to `RunSummary.hostLoad`
+ * and the rendered report/log line, so the verdict is now accompanied by the
+ * kernel's own stall-time evidence instead of standing on the page-delta
+ * alone. A human (or a future, better-calibrated automated re-tuning of the
+ * threshold) can then see directly whether a given "oversubscribed" call was
+ * corroborated by real stall time or not, rather than trusting an assertion.
+ */
+function samplePsiSome(resource: 'memory' | 'cpu'): { avg10: number; avg60: number } | null {
+  try {
+    return parsePsiSome(readFileSync(`/proc/pressure/${resource}`, 'utf8'));
+  } catch {
+    return null; // non-Linux host, /proc unavailable, or permission denied — best-effort
+  }
+}
+
+/** Pure parse of one `/proc/pressure/{memory,cpu}` file's `some` line —
+ *  exported for unit testing without touching the fs. Format:
+ *  `some avg10=0.00 avg60=0.00 avg300=0.00 total=0`. */
+export function parsePsiSome(psiText: string): { avg10: number; avg60: number } | null {
+  const line = psiText.split('\n').find((l) => l.startsWith('some '));
+  if (!line) return null;
+  const avg10 = Number(/\bavg10=([\d.]+)/.exec(line)?.[1] ?? NaN);
+  const avg60 = Number(/\bavg60=([\d.]+)/.exec(line)?.[1] ?? NaN);
+  if (!Number.isFinite(avg10) || !Number.isFinite(avg60)) return null;
+  return { avg10, avg60 };
+}
+
+/**
  * Combine the CPU-ratio and swap-delta signals into one host-health verdict.
  * Pure + exported for unit testing (EI-9145) — the two confounds are
  * independent: either alone should mark the comparison UNCERTAIN.
@@ -212,7 +256,14 @@ export interface RunSummary {
    *  swap-page delta). `oversubscribed` ⇒ the baseline comparison above is
    *  UNCERTAIN — a wall-clock/PG-latency-sensitive scenario could be
    *  measuring shared-box CPU contention OR swap thrashing, not a code
-   *  regression. `swapping` isolates which confound fired. */
+   *  regression. `swapping` isolates which confound fired.
+   *
+   *  `psiMemSome60`/`psiCpuSome60` (EI-19301664378023382): the kernel's own
+   *  PSI "some" stall-time evidence (max of a start/end sample), recorded
+   *  ALONGSIDE the verdict above so it is evidence-based rather than a bare
+   *  assertion — see samplePsiSome's doc comment. Does NOT feed the
+   *  oversubscribed/swapping decision; `null` when /proc/pressure is
+   *  unavailable (non-Linux, permission denied). */
   hostLoad: {
     loadavg1m: number;
     cpus: number;
@@ -220,6 +271,8 @@ export interface RunSummary {
     oversubscribed: boolean;
     swapPagesDelta: number | null;
     swapping: boolean;
+    psiMemSome60: number | null;
+    psiCpuSome60: number | null;
   };
 }
 
@@ -288,6 +341,8 @@ function renderReport(
     oversubscribed: boolean;
     swapPagesDelta: number | null;
     swapping: boolean;
+    psiMemSome60: number | null;
+    psiCpuSome60: number | null;
   },
 ): string {
   const lines: string[] = [
@@ -300,6 +355,11 @@ function renderReport(
       ? [
           `- host load: ${hostLoad.loadavg1m.toFixed(1)} / ${hostLoad.cpus} cpus (ratio ${hostLoad.ratio1m.toFixed(2)}×)` +
             (hostLoad.swapPagesDelta !== null ? `, swap Δ ${hostLoad.swapPagesDelta} pages` : '') +
+            // EI-19301664378023382: PSI "some" stall-time — recorded ALWAYS (verdict or
+            // not), independent evidence alongside the loadavg/swap-delta proxies above.
+            (hostLoad.psiMemSome60 !== null || hostLoad.psiCpuSome60 !== null
+              ? `, PSI some avg60: mem=${hostLoad.psiMemSome60 !== null ? `${hostLoad.psiMemSome60.toFixed(1)}%` : 'n/a'} cpu=${hostLoad.psiCpuSome60 !== null ? `${hostLoad.psiCpuSome60.toFixed(1)}%` : 'n/a'}`
+              : '') +
             (hostLoad.oversubscribed
               ? ` — **⚠ OVERSUBSCRIBED (${hostLoad.swapping ? 'swap thrashing, EI-9145' : 'CPU, EI-8843'}${
                   hostLoad.swapping && hostLoad.ratio1m > 1.0 ? ' + CPU' : ''
@@ -349,6 +409,10 @@ async function main(): Promise<void> {
   // suspect; the max of the two samples is the conservative call.
   const startLoadRatio = sampleLoadRatio();
   const startSwap = sampleSwapPages();
+  // EI-19301664378023382: same start/end/max shape, for the PSI evidence
+  // recorded alongside the verdict (see samplePsiSome's doc comment).
+  const startPsiMem = samplePsiSome('memory');
+  const startPsiCpu = samplePsiSome('cpu');
 
   const artifacts: PerfArtifact[] = [];
   const ctx: ScenarioRunCtx = {
@@ -450,7 +514,25 @@ async function main(): Promise<void> {
   const swapPagesDelta =
     startSwap && endSwap ? endSwap.pswpin - startSwap.pswpin + (endSwap.pswpout - startSwap.pswpout) : null;
   const { oversubscribed, swapping } = computeHostHealth({ ratio1m, swapPagesDelta });
-  const hostLoad = { loadavg1m: loadavg()[0], cpus: osCpus().length, ratio1m, oversubscribed, swapPagesDelta, swapping };
+  // EI-19301664378023382: max(start, end) PSI "some" — same conservative shape
+  // as the load/swap samples above, recorded but NOT fed into computeHostHealth
+  // (see samplePsiSome's doc comment for why this is evidence, not a gate change).
+  const endPsiMem = samplePsiSome('memory');
+  const endPsiCpu = samplePsiSome('cpu');
+  const psiMemSome60 =
+    startPsiMem || endPsiMem ? Math.max(startPsiMem?.avg60 ?? 0, endPsiMem?.avg60 ?? 0) : null;
+  const psiCpuSome60 =
+    startPsiCpu || endPsiCpu ? Math.max(startPsiCpu?.avg60 ?? 0, endPsiCpu?.avg60 ?? 0) : null;
+  const hostLoad = {
+    loadavg1m: loadavg()[0],
+    cpus: osCpus().length,
+    ratio1m,
+    oversubscribed,
+    swapPagesDelta,
+    swapping,
+    psiMemSome60,
+    psiCpuSome60,
+  };
   if (oversubscribed) {
     const reasons = [
       ratio1m > HOST_OVERSUBSCRIBED_RATIO ? `CPU load ratio ${ratio1m.toFixed(2)}× cpus (limit ${HOST_OVERSUBSCRIBED_RATIO}×, EI-8843)` : null,
@@ -459,7 +541,10 @@ async function main(): Promise<void> {
     console.warn(
       `\n⚠ host oversubscribed during this run (${reasons.join(' AND ')}) — the baseline comparison ` +
         `above is UNCERTAIN: a wall-clock/PG-latency-sensitive scenario may be measuring shared-box ` +
-        `contention, not a code regression. The nightly routine will skip auto-filing findings from this run.`,
+        `contention, not a code regression. The nightly routine will skip auto-filing findings from this run. ` +
+        `PSI some avg60 (kernel stall-time evidence, EI-19301664378023382): mem=${psiMemSome60 !== null ? `${psiMemSome60.toFixed(1)}%` : 'n/a'} ` +
+        `cpu=${psiCpuSome60 !== null ? `${psiCpuSome60.toFixed(1)}%` : 'n/a'} — a LOW PSI reading alongside this verdict means the ` +
+        `page-delta/loadavg proxy likely over-called it; a human/auditor should weigh this before trusting the suppression.`,
     );
   }
 

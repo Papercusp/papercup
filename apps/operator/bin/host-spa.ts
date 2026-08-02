@@ -30,7 +30,11 @@ import { resolveDistinctId } from '@papercusp/operator-core/lib/flag-distinct-id
 import { reinitFlagBackend } from '@papercusp/operator-core/lib/flag-bus';
 // P-006: the destination invariant as a POLICY (the prevention leg), kept in one
 // place so this host, the vite dev server and the desktop cannot drift apart.
-import { cspReportOnlyHeaders } from '@papercusp/desktop-ipc';
+// Imported from the LEAF module, not the '@papercusp/desktop-ipc' barrel: this
+// host is a Node process, and the barrel pulls in @tauri-apps/api and the
+// webview bootstrap, which have no business being loaded server-side.
+// csp-policy.ts imports nothing at all, so it is safe in any environment.
+import { cspReportOnlyHeaders } from '../../../libs/generic/desktop-ipc/src/csp-policy';
 import { isTestingFeaturesEnabled } from '@papercusp/operator-core/lib/posthog-config';
 import { describeMissingBundle } from '../lib/spa-build-status';
 

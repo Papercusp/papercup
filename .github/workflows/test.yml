@@ -744,6 +744,35 @@ jobs:
         if: ${{ !cancelled() }}
         run: npm run lint:tsc
 
+      # EI-19372643177590910: the two sibling per-project tsc baseline gates were
+      # DARK — defined in package.json, invoked by NOTHING. No CI step, no
+      # green-checkpoint leg, no aggregate script chained them, so they could only
+      # ever run if a human typed them by hand.
+      #
+      # That is worse than having no gate, because both baselines DOCUMENT
+      # themselves as enforced and are read that way. The orchestrator baseline
+      # says, in its own note: "Do not read `files: {}` as 'not set up yet': the
+      # gate runs ... so ANY new type error in this package is a red naming the
+      # file." WI-6826 seeded that baseline at 59 errors and WI-6838 paid every
+      # one of them off to reach a strict zero across ~152 sources — a zero that
+      # was then protected by nothing at all. A ratchet nobody turns is not a
+      # ratchet; it is a comment.
+      #
+      # Both were measured green on COMMITTED code before being wired on here,
+      # which is the only measurement that counts: run locally, this shared tree
+      # shows every peer's half-written file (two files failed TS1xxx parse checks
+      # purely because they were mid-edit, and both parsed cleanly at HEAD), while
+      # these gates actually execute against a clean checkout of a single sha.
+      # Measuring blast radius on the dirty tree would have argued against wiring
+      # them on, for reasons that do not exist where they run.
+      - name: Lint TSC type errors — operator-vite (per-file baseline ratchet)
+        if: ${{ !cancelled() }}
+        run: npm run lint:tsc:operator-vite
+
+      - name: Lint TSC type errors — orchestrator (strict zero, no tolerance)
+        if: ${{ !cancelled() }}
+        run: npm run lint:tsc:orchestrator
+
       # Vite externalized-module guard (EI-7275): a `vite build` warning "Module
       # node:* has been externalized for browser compatibility" means a Node-only
       # module reached the SPA's entry graph — the externalized stub THROWS on

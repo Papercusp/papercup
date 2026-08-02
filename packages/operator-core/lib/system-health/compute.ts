@@ -2618,19 +2618,32 @@ export function lastSystemHealth(workspaceId?: string): SystemHealth | null {
 }
 
 /**
- * Per-workspace in-flight de-dup for the tick's full aggregation (EI-19303672371455669).
- * Concurrent callers racing into a cold cache — `resolveSystemHealth`'s cold path, the
- * periodic scheduler, and the explicit post-ack/unack refresh (ack.ts/unack.ts) — can all
- * legitimately land here within the same ~1.6-2.0s window and previously each ran their
- * own full ~20-collector recompute (measured live: one booting host sustained ~40x its
- * expected tick rate for minutes). Concurrent callers now await the SAME in-flight promise
- * instead. Mirrors `makeOpenImprovementsReader`'s per-call promise memo above, generalized
- * to a keyed map since the tick is per-workspace and multiple workspaces/callers can race
- * concurrently. Cleared the instant the promise SETTLES (success OR failure) — unlike that
- * per-tick memo (deliberately short-lived and free to retain a rejection for its one tick),
- * a failed tick here must be retryable on the very next call, never cached as a permanent
- * rejection.
+ * Generic per-key single-flight de-dup (EI-19303672371455669): concurrent callers sharing
+ * the same `key` await the SAME in-flight `fn()` promise instead of each independently
+ * invoking `fn`. Cleared from `store` the instant the promise SETTLES — success OR failure
+ * — so a failed call is retryable on the very next invocation, never cached as a permanent
+ * rejection. Generalizes `makeOpenImprovementsReader`'s per-call promise-memo (above) to a
+ * keyed map, for the case where the key space itself (e.g. one entry per workspace) can
+ * have several independent, concurrently-racing keys rather than just one memoized call.
+ * Exported + pure (no module-level state of its own) so it's directly unit-testable without
+ * standing up whatever `fn` actually does.
  */
+export function dedupeInFlight<T>(store: Map<string, Promise<T>>, key: string, fn: () => Promise<T>): Promise<T> {
+  const existing = store.get(key);
+  if (existing) return existing;
+  const promise = fn().finally(() => {
+    if (store.get(key) === promise) store.delete(key);
+  });
+  store.set(key, promise);
+  return promise;
+}
+
+/** Per-workspace in-flight store for the tick's full aggregation (EI-19303672371455669).
+ *  Concurrent callers racing into a cold cache — `resolveSystemHealth`'s cold path, the
+ *  periodic scheduler, and the explicit post-ack/unack refresh (ack.ts/unack.ts) — can all
+ *  legitimately land here within the same ~1.6-2.0s window, and previously each ran their
+ *  own full ~20-collector recompute (measured live: one booting host sustained ~40x its
+ *  expected tick rate for minutes). Wired through `dedupeInFlight` below. */
 const tickInFlight = new Map<string, Promise<SystemHealth>>();
 
 /**
@@ -2642,13 +2655,7 @@ const tickInFlight = new Map<string, Promise<SystemHealth>>();
  */
 export async function runSystemHealthTick(workspaceId?: string): Promise<SystemHealth> {
   const ws = workspaceId ?? activeWorkspaceId();
-  const existing = tickInFlight.get(ws);
-  if (existing) return existing;
-  const promise = runSystemHealthTickUncached(ws).finally(() => {
-    if (tickInFlight.get(ws) === promise) tickInFlight.delete(ws);
-  });
-  tickInFlight.set(ws, promise);
-  return promise;
+  return dedupeInFlight(tickInFlight, ws, () => runSystemHealthTickUncached(ws));
 }
 
 async function runSystemHealthTickUncached(ws: string): Promise<SystemHealth> {

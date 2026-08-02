@@ -109,6 +109,7 @@ export function Select({
   triggerChildren,
   side,
   align,
+  triggerData,
 }: {
   value: string;
   onChange: (value: string) => void;

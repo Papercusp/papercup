@@ -23,6 +23,32 @@ export function backgroundWorkersEnabled(env: NodeJS.ProcessEnv = process.env): 
 }
 
 /**
+ * EI-19304005891638175: `backgroundWorkersEnabled()` answers "should THIS
+ * process do background work?" — it is env-only, so a forked node:cluster
+ * worker inherits its parent's env and answers TRUE in all N processes of a
+ * clustered host (measured: all 17 of the :3070 release cluster). Several
+ * boot-time crash-recovery checks (`potBootCheck`, `overwatchBootCheck`) used
+ * it AS IF it meant "am I the one host-singleton?", which it does not — that
+ * question additionally needs `cluster.isPrimary`. This is the mistake
+ * `isSubstrateOwnerProcess` (below) already avoids for the hyperbee substrate,
+ * and `host-bootstrap.ts`'s credential-sync watcher (EI-3385) already avoids
+ * by hand with an inline `cluster.isPrimary` check — this gives that combined
+ * predicate ONE name so the next "arm this exactly once per host" gate finds
+ * it instead of reaching for `backgroundWorkersEnabled()` alone again.
+ *
+ * Unlike `isSubstrateOwnerProcess` (which negates `requestOnlyHost`, a PURE
+ * env predicate with no vitest short-circuit — the substrate write path must
+ * stay gate-testable under vitest), this composes with
+ * `backgroundWorkersEnabled()` itself, so it inherits its VITEST short-circuit:
+ * a vitest worker is never a "host singleton" for background-machinery
+ * purposes, matching every other predicate in this file.
+ */
+export function isHostSingleton(opts?: { isPrimary?: boolean; env?: NodeJS.ProcessEnv }): boolean {
+  const isPrimary = opts?.isPrimary ?? nodeCluster.isPrimary;
+  return isPrimary && backgroundWorkersEnabled(opts?.env ?? process.env);
+}
+
+/**
  * Headless UTILITY host (PAPERCUSP_UTILITY_HOST=1) — a short-lived dedicated
  * operator instance (the gym-operator, future eval/bench hosts) that needs the
  * request surface + DBOS pipelines but none of the interactive/dogfood legs.

@@ -118,7 +118,14 @@ describe('system:readiness-drift-monitor — sweep wiring', () => {
     });
     await run();
 
-    const logged = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    // `warnSpy` is declared as ReturnType<typeof vi.spyOn> with its generics
+    // uninstantiated, so `mock.calls` degrades to any[] and this parameter was an
+    // implicit any (TS7006) — invisible to vitest, which never typechecks, but a
+    // hard red on the operator-core tsc gate that CI and green-checkpoint DO run.
+    // `unknown[]` is deliberately stronger than typing the spy: console.warn's own
+    // params are `any`, so a typed spy would still hand back `any` elements, while
+    // this forces the String() conversion the assertion already performs.
+    const logged = warnSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('\n');
     expect(logged).toContain('ENDPOINT DEFECTS');
     expect(logged).toContain('edge#42'); // repairable, not merely countable
     // The finding must say a mismatch means the WRITE SEAM was bypassed — that is the

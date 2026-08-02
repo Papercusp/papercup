@@ -30,6 +30,7 @@
  */
 
 import type { ScoredItem } from './digest';
+import { PLATFORM_POT_SLUG, LEGACY_PLATFORM_POT_SLUGS, isPlatformPotScope } from '../../platform-pot-slug';
 import {
   matchGlob,
   infraEnvironmentHit,
@@ -75,8 +76,38 @@ export interface IdeaClassifierInput {
   watchdogKey?: string;
 }
 
-/** Scopes that mean "papercusp itself" — the dogfood case the D-005 taxonomy exists for. */
-export const PAPERCUSP_SELF_SCOPES: readonly string[] = ['operator', 'harness:papercup'];
+/**
+ * Scopes that mean "papercusp itself" — the dogfood case the D-005 taxonomy exists for.
+ *
+ * ⚠ DERIVED from {@link PLATFORM_POT_SLUG}, never hand-written. This list used to read
+ * `['operator', 'harness:papercup']` — the PRE-RENAME spelling — and by the time the Pot
+ * was `papercusp` nothing recognised the dogfood scope as self (EI-19370922358009801).
+ * Prefer {@link isPapercuspSelfScope} over `.includes()`: the predicate canonicalizes,
+ * so a scope carrying any legacy spelling resolves correctly without being enumerated.
+ */
+export const PAPERCUSP_SELF_SCOPES: readonly string[] = [
+  'operator',
+  `harness:${PLATFORM_POT_SLUG}`,
+  ...LEGACY_PLATFORM_POT_SLUGS.map((s) => `harness:${s}`),
+];
+
+/**
+ * Does this scope name papercusp ITSELF (the dogfood Pot) rather than an external
+ * project's code? `operator` (workspace-global) and every spelling of the platform
+ * Pot — current or legacy — answer true.
+ *
+ * This is the ONE question leg 1 of {@link classifyIdeaType} asks. It must not be a
+ * literal comparison: `engineer_issues.scope` is DERIVED (`'harness:' || harness_slug`),
+ * so any re-slug of the platform Pot — e.g. the owner-directed migrations 630/631 that
+ * moved the workspace's own issues from `operator:<ws>` onto `papercusp` — silently
+ * changes the string this branch sees.
+ */
+export function isPapercuspSelfScope(scope: string | null | undefined): boolean {
+  if (!scope) return true; // no scope at all ⇒ not an external project
+  const s = scope.trim();
+  if (!s.startsWith('harness:')) return true; // 'operator' / workspace-global labels
+  return isPlatformPotScope(s);
+}
 
 /** Paths that mean the change is a PROMPT/PERSONA/PLAYBOOK edit (the gym-A/B-able class). PROPOSED (P-004). */
 export const PROMPT_PATH_PATTERNS: readonly string[] = [
@@ -133,7 +164,9 @@ export const PROMPT_KEYWORDS: readonly string[] = [
  */
 export function classifyIdeaType(item: IdeaClassifierInput): IdeaTriageClassification {
   // 1. External-target Hive → product (the harness's own code rides its pipeline).
-  if (item.scope && item.scope.startsWith('harness:') && !PAPERCUSP_SELF_SCOPES.includes(item.scope)) {
+  //    The self check CANONICALIZES (isPapercuspSelfScope) rather than comparing
+  //    literals — see EI-19370922358009801 for what a stale literal costs here.
+  if (item.scope && item.scope.startsWith('harness:') && !isPapercuspSelfScope(item.scope)) {
     return { type: 'product', reason: `Scope "${item.scope}" targets an external project's code` };
   }
 

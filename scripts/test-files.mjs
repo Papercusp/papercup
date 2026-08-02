@@ -17,6 +17,8 @@ import { fileURLToPath } from 'node:url';
 import { loadavg, availableParallelism } from 'node:os';
 import { applyWorkerCapEnv } from './lib/worker-cap.mjs';
 import { stripVitestAnsi } from './lib/vitest-summary.mjs';
+import { peekFsMutexSync } from './lib/fs-mutex.mjs';
+import { repoLockName } from './npm-install-safe.mjs';
 
 export const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -293,6 +295,40 @@ const MID_INSTALL_HINT =
   'and locks:list, then retry once it finishes. Prefer `npm run install:safe` for any future install on this tree ' +
   'so it serializes instead of racing concurrent test runs.';
 
+/**
+ * EI-19304880034803985 — the hint above only ever fires on the FAILURE
+ * signature (`looksLikeMidInstallCorruption`), but the dominant real symptom
+ * is a HANG: `npx vitest list`/`npx vitest run` blocks indefinitely while
+ * node_modules is being rewritten out from under it, so this script never
+ * reaches the code that would print a hint at all — the caller just burns its
+ * outer timeout (120s/560s measured) and sees an unexplained stall.
+ *
+ * Widen the TRIGGER rather than write a new detector (the fix `install:safe`
+ * already holds is `scripts/lib/fs-mutex.mjs`'s named mutex): peek it — a
+ * non-blocking read, never an acquire — immediately BEFORE each vitest spawn
+ * point, and print a hint UP FRONT when it is held. This turns a silent hang
+ * into a stated wait: the message is already flushed to stdout the moment the
+ * (possibly-hanging) spawnSync call begins, so it survives even if the outer
+ * caller kills this process on its own timeout.
+ */
+function warnIfInstallInFlight(label) {
+  let peek;
+  try {
+    peek = peekFsMutexSync(repoLockName());
+  } catch {
+    return; // diagnostic only — must never affect the real run
+  }
+  if (!peek.held) return;
+  const owner = peek.owner ?? {};
+  const heldSince = owner.startedAt ? ` since ${owner.startedAt}` : '';
+  const pidInfo = owner.pid ? ` (pid ${owner.pid}${owner.host ? `@${owner.host}` : ''})` : '';
+  console.error(
+    `TEST_FILE_MID_INSTALL_SUSPECTED an \`npm install\` is in flight${pidInfo}${heldSince} — ` +
+      `${label} may HANG (not fail) until it completes — see EI-19304880034803985 / EI-18662389554660036. ` +
+      'Check locks:list / `ps aux | grep "npm install"`, then retry once it finishes.',
+  );
+}
+
 export function aggregateGroupResults(groupResults) {
   const requested = groupResults.reduce((sum, g) => sum + g.requested, 0);
   const matched = groupResults.reduce((sum, g) => sum + g.matched, 0);
@@ -354,6 +390,7 @@ export function main(argv = process.argv.slice(2)) {
     console.log(`ROUTE cwd=${cwdLabel} config=${group.config ?? '(package default)'}`);
     for (const file of requested) console.log(`  requested ${file}`);
 
+    warnIfInstallInFlight(`\`vitest list\` (group cwd=${cwdLabel})`);
     const listed = run('npx', ['vitest', 'list', ...configArgs, ...requested], {
       cwd: group.cwd,
       env: process.env,
@@ -414,6 +451,7 @@ export function main(argv = process.argv.slice(2)) {
     // signature can be detected below; forwarded verbatim so nothing is lost for a live TTY.
     // 256MB matches scripts/affected-tests.mjs's captured-output maxBuffer — spawnSync's 1MB
     // default would read a large suite's output as an ENOBUFS-killed-child failure.
+    warnIfInstallInFlight(`\`vitest run\` (group cwd=${cwdLabel})`);
     const result = spawnSync(
       'npx',
       ['vitest', 'run', ...configArgs, ...exact, ...groupVitestArgs],

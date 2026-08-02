@@ -54,6 +54,22 @@ export interface IdeaLifecyclePayload {
   stateUpdatedAt: string;
   /** The Queen's triage decision (if triaged) */
   triageDecision?: 'place' | 'gate' | 'gym' | 'reject';
+  /**
+   * When {@link triageDecision} was set — an IMMUTABLE triage timestamp, stamped only
+   * on a transition that carries a decision and never advanced by a later lifecycle
+   * move (`placed`/`applied`/…).
+   *
+   * ⚠ Do NOT substitute `stateUpdatedAt` (advances on every transition) or the row's
+   * `updated_at` (a background sweep touches every row, so it dates nothing). Windowing
+   * the triage-entropy SLO on `updated_at` is exactly why that detector read the last
+   * 7 days as `place 1493 / gate 418 / reject 79 / gym 10` — normalized entropy 0.50,
+   * comfortably over its 0.15 SLO — while the live classifier had emitted `place` and
+   * nothing else for 13 straight days (EI-19370922358009801).
+   *
+   * Absent on rows triaged before this field landed; readers COALESCE to
+   * `stateUpdatedAt`, which is the closest surviving proxy.
+   */
+  triagedAt?: string;
   /** Reason for the decision */
   triageReason?: string;
   /** The D-005 routing taxonomy (consume-edges P-021). Rows persisted before the
@@ -93,10 +109,14 @@ export function updateIdeaLifecycle(
     decayDays?: number;
   },
 ): IdeaLifecyclePayload {
+  const now = new Date().toISOString();
   return {
     ...current,
     state: newState,
-    stateUpdatedAt: new Date().toISOString(),
+    stateUpdatedAt: now,
+    // Stamp the immutable triage time ONLY on a transition that carries a decision —
+    // a later `placed`/`applied` move must never advance it (EI-19370922358009801).
+    ...(context?.triageDecision && { triagedAt: now }),
     ...(context?.triageDecision && { triageDecision: context.triageDecision }),
     ...(context?.triageReason && { triageReason: context.triageReason }),
     ...(context?.ideaType && { ideaType: context.ideaType }),

@@ -338,7 +338,14 @@ export default function FleetLaunchRow({ className, onLaunched }: FleetLaunchRow
       <div className="pc-new-session-launcher pc-fleet-launch-row__fields">
         <span className="pc-ctl-band__label pc-fleet-strip__label">Fleet</span>
         <div className="pc-ctl-field pc-ctl-field--inline">
-          <span className="pc-ctl-field__cap" id="fleet-cap-name">
+          {/* The VISIBLE caption shortens to "Name" (the strip's own "FLEET"
+              label supplies the rest of the phrase to a sighted reader), but
+              the ACCESSIBLE name stays the full "Fleet name" — a screen-reader
+              user gets no such spatial grouping, and "Name" alone in a popup
+              full of names is not a name. `aria-label` wins over the
+              `aria-labelledby` this used to carry, and WCAG 2.5.3 is satisfied
+              because the accessible name still CONTAINS the visible label. */}
+          <span className="pc-ctl-field__cap" id="fleet-cap-name" aria-hidden="true">
             Name
           </span>
           <input
@@ -348,7 +355,7 @@ export default function FleetLaunchRow({ className, onLaunched }: FleetLaunchRow
             onChange={(e) => void setFleetName(e.target.value)}
             placeholder="Fleet's durable handle"
             title="Fleet name — names the fleet's durable handle"
-            aria-labelledby="fleet-cap-name"
+            aria-label="Fleet name"
             data-testid="fleet-launch-name"
           />
         </div>
@@ -409,11 +416,12 @@ export default function FleetLaunchRow({ className, onLaunched }: FleetLaunchRow
             options={WINDOW_MODE_OPTIONS}
           />
         </div>
-        <div className="pc-ctl-field">
-          <span className="pc-ctl-field__cap" id="fleet-cap-count">
+        <div className="pc-ctl-field pc-ctl-field--inline">
+          <span className="pc-ctl-field__cap" id="fleet-cap-count" aria-hidden="true">
             Members
           </span>
           <input
+            aria-label="Members"
             className="pc-new-session-launcher__input pc-fleet-launch-row__count"
             type="number"
             min={1}
@@ -424,18 +432,20 @@ export default function FleetLaunchRow({ className, onLaunched }: FleetLaunchRow
             // "12" snaps back), so the raw value is held and bounded at launch.
             onChange={(e) => void setCount(Number.parseInt(e.target.value, 10) || 1)}
             onBlur={() => void setCount(clampMemberCount(count))}
-            aria-labelledby="fleet-cap-count"
             title={`How many members (1–${FLEET_MAX_MEMBERS})`}
             data-testid="fleet-launch-count"
           />
         </div>
-      </div>
-      <div className="pc-ctl-band pc-fleet-launch-row__submit">
-        <span className="pc-ctl-band__spacer" />
+        {/* The submit lives INSIDE the strip rather than in a band of its own.
+            It used to sit in a third stacked band with a `border-top`, which
+            cost a whole row to render one right-aligned button. `margin-left:
+            auto` pushes it to the far edge of whichever line it lands on, so
+            the strip is one line when there is room and wraps to two when
+            there is not — never three. */}
         <Button
           variant="primary"
           size="sm"
-          className="pc-new-session-launcher__btn"
+          className="pc-new-session-launcher__btn pc-fleet-strip__submit"
           onClick={() => void launch()}
           disabled={launching}
           data-testid="fleet-launch-submit"

@@ -67,6 +67,7 @@
 
 import type { Sql, TransactionSql } from 'postgres';
 import { liveHolderFragment, parkedHolderFragment, STALE_CLAIM_GRACE_MS } from './work-items-stale-claims';
+import { POLICY_GATE_REASON_SQL_PATTERNS, recordBulkHoldClearAudit } from './work-items';
 
 type Db = Sql | TransactionSql;
 
@@ -171,6 +172,13 @@ export async function reclaimStaleHoldOpens(
          AND COALESCE(
                ${sql.unsafe(HELD_AT_EXPR)} < now() - make_interval(secs => ${holdGraceSec}),
                true)
+         -- (d) WI-6774: a POLICY-TIER gate (D-NNN decision id / triageDecision:"gate" /
+         -- literal "policy-tier" in the reason) must NEVER be auto-lifted by mere holder
+         -- liveness expiry — it is deliberately set to survive ordinary session churn and
+         -- may only be cleared via the audited, ownerOverride-gated work_items:hold_open
+         -- clear path (looksLikePolicyGate). Same pattern list as that JS predicate, kept
+         -- in one shared constant so the two cannot drift.
+         AND NOT COALESCE(w.payload->>'held_open_reason', '') ~* ANY(${POLICY_GATE_REASON_SQL_PATTERNS})
          FOR UPDATE OF w SKIP LOCKED
     )
     UPDATE harness_shared.work_items w
@@ -189,6 +197,15 @@ export async function reclaimStaleHoldOpens(
      WHERE w.workspace_id = s.workspace_id AND w.feature_id = s.feature_id
     RETURNING s.workspace_id, s.harness_slug, s.feature_id, s.item_kind, s.status,
               s.former_holder, s.former_reason, s.held_open_at`;
+
+  // WI-6774: this bulk liveness clear previously left NO audit_log row anywhere — the ONLY
+  // trace was the best-effort coord broadcast below, itself tagged 'service-health' and so
+  // excluded from a holder's default inbox view. Structural now: every lift is audit-visible.
+  void recordBulkHoldClearAudit(
+    sql,
+    expired.map((e) => ({ id: e.feature_id, workspaceId: e.workspace_id, formerHolder: e.former_holder })),
+    { actor: 'hold-open-sweep', sweepName: 'reclaimStaleHoldOpens' },
+  );
 
   return { expired };
 }

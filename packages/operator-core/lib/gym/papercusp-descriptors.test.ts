@@ -57,14 +57,37 @@ describe('taskIdForImpl', () => {
 });
 
 describe('buildDescriptorsFromProbe', () => {
-  const build = (rows: ProbeResultRow[], src: string | null = SRC) =>
-    buildDescriptorsFromProbe({ rows, pinCommit: PIN, readTestSource: () => src });
+  const FAILING = ['throws loudly on an unknown macro (a typo must not store a dead key)'];
+  const build = (rows: ProbeResultRow[], src: string | null = SRC, failing: readonly string[] = FAILING) =>
+    buildDescriptorsFromProbe({
+      rows,
+      pinCommit: PIN,
+      readTestSource: () => src,
+      failingIts: new Map(rows.map((r) => [r.implPath, failing])),
+    });
 
   it('takes the spec VERBATIM from the oracle — no paraphrase, no invented prose', () => {
     const [d] = build([row()]);
     expect(d.spec).toContain('throws loudly on an unknown macro (a typo must not store a dead key)');
     expect(d.spec).toContain(row().testPath);
     expect(d.intent).toContain('expandPatternMacro');
+  });
+
+  /**
+   * The haystack regression. Measured: the worst admitted candidate's oracle
+   * carries 232 titles while its rewind breaks a handful, and the verified
+   * sample broke 6 of 26. Listing all of them measures needle-finding, not
+   * implementation — and at ~19.5KB crowds out the agent's context.
+   */
+  it('lists ONLY the requirements the rewind actually breaks, not every title in the file', () => {
+    const [d] = build([row()]);
+    // present in the source outline, but NOT in the failing set
+    expect(d.spec).not.toContain('@fleet:<slug>');
+    expect(d.spec).toContain('currently FAILS');
+  });
+
+  it('DROPS a candidate whose breaking requirements were never measured, rather than listing them all', () => {
+    expect(build([row()], SRC, [])).toEqual([]);
   });
 
   it('pins every oracle at pinCommit and rewinds only to the joint commit’s parent', () => {
@@ -79,8 +102,7 @@ describe('buildDescriptorsFromProbe', () => {
     expect(build([row({ verdict: 'rejected', reason: 'no-oracle' })])).toEqual([]);
   });
 
-  it('DROPS a task whose oracle yields no requirements rather than writing one for it', () => {
-    expect(build([row()], 'const x = 1;')).toEqual([]);
+  it('DROPS a task whose oracle source cannot be read rather than writing one for it', () => {
     expect(build([row()], null)).toEqual([]);
   });
 

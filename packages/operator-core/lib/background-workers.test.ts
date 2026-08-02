@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { backgroundWorkersEnabled, dbosLaunchesHere, reactionMatcherShouldArm, requestOnlyHost, utilityHostEnabled } from './background-workers';
+import { backgroundWorkersEnabled, dbosLaunchesHere, isHostSingleton, reactionMatcherShouldArm, requestOnlyHost, utilityHostEnabled } from './background-workers';
 
 const saved = {
   VITEST: process.env.VITEST,
@@ -105,6 +105,51 @@ describe('dbosLaunchesHere (request-only readiness false-503 fix)', () => {
     // It gates a readiness DECISION, not machinery, so it must compute the real
     // env-derived value even under vitest — the health handler tests rely on this.
     expect(dbosLaunchesHere({ VITEST: 'true', PAPERCUSP_DBOS_ENABLE: '1' } as unknown as NodeJS.ProcessEnv)).toBe(true);
+  });
+});
+
+describe('isHostSingleton (EI-19304005891638175 — backgroundWorkersEnabled() is NOT a host-singleton check)', () => {
+  it('cluster PRIMARY + background workers ON → true (the intended once-per-host case)', () => {
+    expect(
+      isHostSingleton({ isPrimary: true, env: { PAPERCUSP_BACKGROUND_WORKERS: '1' } as unknown as NodeJS.ProcessEnv }),
+    ).toBe(true);
+  });
+
+  it('cluster WORKER + background workers ON → false — the exact bug: backgroundWorkersEnabled() alone would say true here', () => {
+    const workerEnv = { PAPERCUSP_BACKGROUND_WORKERS: '1' } as unknown as NodeJS.ProcessEnv;
+    // A forked cluster worker inherits its primary's env, so this is the measured
+    // 17/17 :3070 release-cluster case — every worker reads backgroundWorkersEnabled
+    // true even though only the primary should arm a once-per-host fallback wake.
+    expect(backgroundWorkersEnabled(workerEnv)).toBe(true);
+    expect(isHostSingleton({ isPrimary: false, env: workerEnv })).toBe(false);
+  });
+
+  it('cluster PRIMARY + background workers OFF (e.g. :3170 staging) → false', () => {
+    expect(
+      isHostSingleton({ isPrimary: true, env: { PAPERCUSP_HONO_PORT: '3170' } as unknown as NodeJS.ProcessEnv }),
+    ).toBe(false);
+  });
+
+  it('cluster WORKER + background workers OFF → false (both gates independently say no)', () => {
+    expect(
+      isHostSingleton({ isPrimary: false, env: { PAPERCUSP_HONO_PORT: '3170' } as unknown as NodeJS.ProcessEnv }),
+    ).toBe(false);
+  });
+
+  it('inherits the VITEST short-circuit from backgroundWorkersEnabled — never a singleton under test, even as the primary', () => {
+    expect(
+      isHostSingleton({
+        isPrimary: true,
+        env: { VITEST: 'true', PAPERCUSP_BACKGROUND_WORKERS: '1' } as unknown as NodeJS.ProcessEnv,
+      }),
+    ).toBe(false);
+  });
+
+  it('defaults `env` to process.env and `isPrimary` to the real node:cluster.isPrimary when omitted', () => {
+    // The unforked default (vitest itself is never cluster-forked) — this process
+    // IS primary, so the only thing left deciding the outcome is backgroundWorkersEnabled(),
+    // which is false under vitest regardless of what's actually in process.env.
+    expect(isHostSingleton()).toBe(false);
   });
 });
 

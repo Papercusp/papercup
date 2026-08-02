@@ -16,6 +16,7 @@ import {
   watchdogSourceOf,
   INFRA_SIGNAL_SOURCES,
   PAPERCUSP_SELF_SCOPES,
+  isPapercuspSelfScope,
 } from './triage';
 import type { ScoredItem } from './digest';
 
@@ -58,6 +59,54 @@ describe('classifyIdeaType — D-005 taxonomy', () => {
     for (const scope of PAPERCUSP_SELF_SCOPES) {
       expect(classifyIdeaType({ scope, title: 'fix harness scheduler' }).type).toBe('code-bug');
     }
+  });
+
+  // ── EI-19370922358009801 regression ────────────────────────────────────────
+  //
+  // ⚠ THE LITERAL IS THE POINT. The loop above iterates PAPERCUSP_SELF_SCOPES, so it
+  // asserts only "whatever is in the list is treated as self" — it is VACUOUS about
+  // the scope the live system actually emits, and it stayed green for the entire
+  // 13-day outage. `engineer_issues.scope` is DERIVED as `'harness:' || harness_slug`,
+  // and the owner-directed migrations 630/631 (2026-07-19) re-slugged the workspace's
+  // own issues onto `harness_slug='papercusp'`. The allowlist still read
+  // `'harness:papercup'` (the pre-rename spelling), so from that moment leg 1 classed
+  // EVERY dogfood idea as an external project's code → `product` → unconditional
+  // `place`: ~429 consecutive decisions, gate 0 / reject 0 / gym 0.
+  //
+  // These cases must therefore hardcode the scope string the DB really contains,
+  // independent of any exported list, or the guard can go vacuous again the same way.
+  it('does NOT classify the live dogfood scope "harness:papercusp" as an external product', () => {
+    const r = classifyIdeaType({ scope: 'harness:papercusp', title: 'fix harness scheduler' });
+    expect(r.type).toBe('code-bug');
+    expect(r.type).not.toBe('product');
+  });
+
+  it('keeps routing the dogfood scope through the FULL taxonomy, not just leg 1', () => {
+    // Each of these is a lane the `product` misclassification silently swallowed:
+    // an infra escalation, a prompt/gym-A-B change, and a needs-design draft all
+    // became `place` because leg 1 short-circuited before they were ever reached.
+    expect(classifyIdeaType({ scope: 'harness:papercusp', watchdogKey: `${INFRA_SIGNAL_SOURCES[0]}:x` }).type)
+      .toBe('infra-environment');
+    expect(classifyIdeaType({ scope: 'harness:papercusp', paths: ['apps/operator/prompts/su.persona.md'] }).type)
+      .toBe('process-prompt');
+    expect(classifyIdeaType({ scope: 'harness:papercusp', kind: 'feature', title: 'net-new thing' }).type)
+      .toBe('needs-design');
+  });
+
+  it('still treats a genuinely external Pot as product (the fix does not over-reach)', () => {
+    expect(classifyIdeaType({ scope: 'harness:oddsmith-hive', title: 'fix the odds table' }).type).toBe('product');
+    expect(classifyIdeaType({ scope: 'harness:papercusp-public-site-pot', title: 'copy tweak' }).type).toBe('product');
+  });
+
+  it('isPapercuspSelfScope canonicalizes legacy spellings instead of enumerating them', () => {
+    expect(isPapercuspSelfScope('harness:papercusp')).toBe(true);
+    expect(isPapercuspSelfScope('harness:papercup')).toBe(true); // pre-rename repo name
+    expect(isPapercuspSelfScope('harness:papercup-hive')).toBe(true);
+    expect(isPapercuspSelfScope('operator')).toBe(true);
+    expect(isPapercuspSelfScope(undefined)).toBe(true);
+    expect(isPapercuspSelfScope('harness:oddsmith-hive')).toBe(false);
+    // Near-miss: a DIFFERENT Pot whose slug merely starts with the platform slug.
+    expect(isPapercuspSelfScope('harness:papercusp-public-site-pot')).toBe(false);
   });
 
   it('defaults to code-bug when scope is missing', () => {
