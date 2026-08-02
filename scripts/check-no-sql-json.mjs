@@ -22,8 +22,9 @@
  * `postgres(getHarnessAdminUrl()|gymUri, {prepare:false})` pool, where it is
  * tolerated. New jsonb writes should use `${JSON.stringify(x)}::jsonb` regardless.
  */
-import { execSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
+
+import { describeUnscanned, listTrackedFiles } from './lib/tracked-files.mjs';
 
 const ROOT = new URL('..', import.meta.url).pathname;
 
@@ -45,9 +46,12 @@ const ALLOW = new Set([
   'packages/operator-core/lib/llm-testing/telemetry.ts', // fresh getHarnessAdminUrl pool
 ]);
 
-const tracked = execSync('git ls-files', { cwd: ROOT, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 })
-  .split('\n')
-  .filter(Boolean);
+// WI-6666: SCAN_PREFIXES above explicitly names two `libs/papercusp/**` dirs, but a
+// bare `git ls-files` (the original enumerator here) STOPS AT THE SUPERPROJECT
+// BOUNDARY — libs/papercusp is a submodule, so those two prefixes matched ZERO files
+// no matter what they contained. `listTrackedFiles` recurses into submodules, so this
+// guard can finally see the two dirs it always claimed to scan.
+const { files: tracked, unscanned } = listTrackedFiles(ROOT);
 
 const inScope = (f) =>
   SCAN_PREFIXES.some((p) => f.startsWith(p)) &&
@@ -83,7 +87,10 @@ for (const f of tracked) {
 }
 
 if (offenders.length === 0) {
-  console.log('✓ no sql.json( on a getOrgPg-class client (jsonb is bound as ${JSON.stringify(x)}::jsonb).');
+  console.log(
+    '✓ no sql.json( on a getOrgPg-class client (jsonb is bound as ${JSON.stringify(x)}::jsonb).' +
+      describeUnscanned(unscanned),
+  );
   process.exit(0);
 }
 

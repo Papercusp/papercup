@@ -1803,12 +1803,24 @@ describe('fleet:launch-on-plan handler — WI-6673 degenerate-lane (observation-
     expect(opts.states).toEqual(expect.arrayContaining(['open']));
   });
 
-  it('does not run the composition read at all for a pure plan fleet (no claimKinds ⇒ no claim-spec lane to characterize)', async () => {
-    await tool.handler(
+  // EI-19276371141300541: this used to assert the OPPOSITE — that a pure plan fleet (no
+  // claimKinds) got NO composition read at all, on the theory that only a claimKinds lane is
+  // "a claim-spec lane to characterize". That was the same blind spot the pool-collapse guard
+  // had: a fresh plan-only lane is a freshly-generated spec just like a kind-only one, and
+  // skipping both its zero-match refuse AND this degenerate-lane check is exactly how a
+  // starved/degenerate plan lane shipped with zero signal anywhere in the response. Both
+  // checks now run uniformly for every freshly-built spec (plan-only included).
+  it('DOES run the composition read for a pure plan fleet too (no claimKinds) — a fresh plan-only lane is just as characterizable', async () => {
+    aggregateAdmittedCompositionMock.mockResolvedValue(HEALTHY_COMPOSITION);
+    const res = await tool.handler(
       { name: 'Plan Fleet', plan: 'my-plan', harness: 'papercusp', count: 1 } as never,
       {} as never,
     );
-    expect(aggregateAdmittedCompositionMock).not.toHaveBeenCalled();
+    const payload = JSON.parse((res as any).content[0].text);
+    expect(payload.ok).toBe(true);
+    expect(aggregateAdmittedCompositionMock).toHaveBeenCalledTimes(1);
+    // A healthy composition stays silent — no false alarm on the common case.
+    expect(payload.claimSpecApplied.warning ?? '').not.toContain('DEGENERATE LANE');
   });
 });
 
