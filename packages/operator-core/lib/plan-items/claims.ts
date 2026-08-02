@@ -22,6 +22,7 @@
 import { getOrgPg } from '@papercusp/db-org';
 import { DEFAULT_WORKSPACE_ID } from '../workspace-id-constant';
 import { getClaimAuthority } from './claim-authority';
+import { notifyAgentOrdersChanged } from '../agent-orders-notify';
 
 export type LivenessMode = 'availability' | 'activity';
 export type HeartbeatKind = 'activity' | 'extend' | 'keepalive';
@@ -161,7 +162,15 @@ export async function acquireClaimLocal(opts: AcquireOpts): Promise<AcquireResul
            owner_label, owner_name, intent, liveness_mode, ttl_sec, acquired_ts, expires_ts,
            last_activity_ts, (expires_ts <= clock_timestamp()) AS expired
   `;
-  if (rows[0]) return { ok: true, claim: claimFromDb(rows[0]) };
+  if (rows[0]) {
+    // WI-6974: a claim ACQUIRED/STOLEN/re-taken changes this owner's declared lane,
+    // which the Orders panel renders. Pushed HERE and not from a plan_item_claims row
+    // trigger, because `renewOwnerActivityClaims` rewrites `last_activity_ts` on EVERY
+    // TURN of every claim-holding owner — a trigger cannot tell that heartbeat from a
+    // real lane change, so it would push the panel on a timer.
+    await notifyAgentOrdersChanged(opts.owner);
+    return { ok: true, claim: claimFromDb(rows[0]) };
+  }
   // Conflict update skipped → a LIVE claim held by another owner. Report it.
   // Use SELECT FOR UPDATE to lock the row during check to prevent concurrent claims
   // on a freed item (race condition: two agents both get null from getClaim(), then both
@@ -220,7 +229,10 @@ export async function acquireClaimLocal(opts: AcquireOpts): Promise<AcquireResul
            owner_label, owner_name, intent, liveness_mode, ttl_sec, acquired_ts, expires_ts,
            last_activity_ts, (expires_ts <= clock_timestamp()) AS expired
   `;
-  if (retry[0]) return { ok: true, claim: claimFromDb(retry[0]) };
+  if (retry[0]) {
+    await notifyAgentOrdersChanged(opts.owner); // WI-6974 — same lane change, won on the retry.
+    return { ok: true, claim: claimFromDb(retry[0]) };
+  }
   const after = await getClaim(opts.workspaceId, opts.harnessSlug, opts.planSlug, opts.itemId);
   return after ? { ok: false, conflict: after } : { ok: false, conflict: synthMissing(opts) };
 }
@@ -353,6 +365,9 @@ export async function releaseClaimLocal(p: ReleaseClaimParams): Promise<boolean>
        AND claim_id = ${claimId}::uuid AND owner = ${owner}
     RETURNING item_id
   `;
+  // WI-6974: a RELEASE empties the lane the Orders panel shows. Only on a real
+  // delete — a no-op release (wrong claim_id / already gone) wrote nothing.
+  if (rows.length > 0) await notifyAgentOrdersChanged(owner);
   return rows.length > 0;
 }
 
@@ -364,6 +379,7 @@ export async function releaseAllClaimsForOwner(workspaceId: string, owner: strin
      WHERE workspace_id = ${workspaceId} AND owner = ${owner}
     RETURNING item_id
   `;
+  if (rows.length > 0) await notifyAgentOrdersChanged(owner); // WI-6974 — lane emptied.
   return rows.length;
 }
 

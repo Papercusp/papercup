@@ -569,6 +569,24 @@ jobs:
         if: ${{ !cancelled() }}
         run: npm run lint:bundle-budget
 
+      # CDN-egress guard (egress-monitor-origin-axis-2026-08-02 P-004): no NEW
+      # foreign-origin asset URL may enter the shipped bundle. Third leg of that
+      # plan's D-003 and the ONLY one that can see code nobody ran — the runtime
+      # egress monitor is structurally blind to an unexercised path (Monaco
+      # fetched 0.55.1 from jsdelivr for months because nobody opened the Gym
+      # while a monitor was installed), and CSP prevents rather than observes.
+      # Reads the built files in Node rather than shelling out to grep, which
+      # classifies minified chunks as BINARY and silently reports nothing.
+      # Baseline-ratcheted (scripts/no-cdn-egress-baseline.json, every row
+      # carrying a reason + status); a hit is a DISCOVERY to establish liveness
+      # for, never a verdict that egress occurred. Runs its own `vite build`
+      # into a throwaway outDir, ~60s — deliberately NOT sharing the
+      # bundle-budget build above, so neither gate's failure can mask the
+      # other's.
+      - name: Lint CDN egress
+        if: ${{ !cancelled() }}
+        run: npm run lint:no-cdn-egress
+
       # Smart-quote guard (EI-418, found via EI-412): a curly quote used as a
       # code delimiter (copy-paste through a smart-quoting surface) is a hard
       # esbuild/tsc parse failure that reads as mysterious. GATING — flags

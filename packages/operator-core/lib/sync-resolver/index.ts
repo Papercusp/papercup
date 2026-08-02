@@ -1132,14 +1132,36 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     // presence-backed queries instead. If the panel ever needs presence-driven
     // pushes, add it knowingly — this omission is a decision, not an oversight.
     //
-    // ONLY work_items is declared, though the chain also reads session_briefs,
-    // plan_item_claims, carry_notes, agent_modes and agent_mode_changes. Those five
-    // have NO entry in table-to-query-names.ts, so declaring them would assert a
-    // push-liveness that does not exist — the panel would LOOK live and refresh on
-    // remount only, which is the accounts.pool defect (WI-6796) this file's second
-    // guard was written to catch. Declaring less than you read is safe; declaring
-    // more than is WIRED is the bug. Wiring the other five is WI-6974.
-    backingTables: ['harness_shared.work_items'],
+    // WI-6974 — the other five are now DECLARED, and every one of them is
+    // PUSH_EXEMPT with a PRODUCER-side push instead of a table-bridge entry
+    // (lib/agent-orders-notify.ts; the derived-reads precedent in
+    // resolver-backing-table-coverage.test.ts). This item was originally filed as
+    // "wire them like work_items"; reading the WRITERS says that is wrong for all
+    // five, and a point-in-time write-rate sample cannot see why:
+    //
+    //   plan_item_claims  renewOwnerActivityClaims rewrites last_activity_ts on
+    //                     EVERY TURN of every claim-holding owner — a heartbeat, the
+    //                     coord_presence shape above, not a lane change.
+    //   carry_notes       every agent's loop:checkpoint (~26/hr fleet-wide, measured).
+    //   session_briefs    the row moves on intent/current_files writes; only the
+    //                     control_* columns are orders, and persistControlAnchor runs
+    //                     on essentially every orient with an explicit no-op branch.
+    //   agent_modes,      genuinely event-driven, but neither carries an owner-scoped
+    //   agent_mode_changes key the bridge could scope by, so a trigger would full-bust
+    //                     every open panel for a mode set on an unrelated agent.
+    //
+    // A row trigger fires on the write, never on its meaning — so wiring these would
+    // trade WI-6974's defect (refreshes on remount only) for its mirror image, a panel
+    // pushed on a timer, which is WORSE because it looks live. The producers know both
+    // things the trigger cannot: WHETHER orders changed, and for WHICH owner.
+    backingTables: [
+      'harness_shared.work_items',
+      'harness_shared.session_briefs',
+      'harness_shared.plan_item_claims',
+      'harness_shared.carry_notes',
+      'harness_shared.agent_modes',
+      'harness_shared.agent_mode_changes',
+    ],
     argsSchema: z.object({ ownerId: z.string().min(1) }),
     resolve: async (args) => {
       const { ownerId } = args as { ownerId: string };

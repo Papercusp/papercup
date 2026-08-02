@@ -15,6 +15,7 @@ import { getModes } from '../../modes/store';
 import { getLoopStatus, type LoopStatus } from '../../harness/routines/loop';
 import { latestFleetMembership } from '../../fleet-membership-store';
 import { getSessionBrief } from '../../session-brief';
+import { notifyAgentOrdersChanged } from '../../agent-orders-notify';
 
 export const CONTROL_ANCHOR_SCHEMA = 'ctrl-v1' as const;
 export const CONTROL_TRANSITION_SCHEMA = 'ctrl-transition-v1' as const;
@@ -330,6 +331,23 @@ export async function persistControlAnchor(
   `;
   const row = rows[0];
   if (!row) throw new Error('control_anchor_persist_returned_no_row');
+  // WI-6974 — push the Orders panel ONLY when the control state actually moved.
+  //
+  // This is the whole argument for a producer push over a `session_briefs` row
+  // trigger. `persistControlAnchor` runs on essentially every orient, and the
+  // upsert above deliberately treats an unchanged state as a no-op (the three
+  // `IS DISTINCT FROM` CASEs). A trigger fires on the UPDATE regardless, so it
+  // would push every open Orders panel on every agent's every wake — a timer,
+  // not an orders change.
+  //
+  // Detecting "did it move" needs no extra query: on a real change the row keeps
+  // OUR transition (EXCLUDED.control_transition, with the generations jsonb_set
+  // onto it), so its provenance.recordedAt is the one we just minted; on a no-op
+  // it keeps the PREVIOUS transition, recorded at an earlier instant. Comparing
+  // generation numbers cannot distinguish them — the stored transition's
+  // `generation` equals `control_generation` in BOTH cases.
+  const persistedAt = row.control_transition?.provenance?.recordedAt;
+  if (persistedAt === provenance.recordedAt) await notifyAgentOrdersChanged(input.ownerId);
   return {
     generation: Number(row.control_generation),
     state: normalizeControlAnchorState(row.control_state),

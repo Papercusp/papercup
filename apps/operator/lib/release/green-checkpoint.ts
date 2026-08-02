@@ -3533,9 +3533,11 @@ export const ISOLATION_RUN_TIMEOUT_MS = 5 * 60_000;
 /**
  * EI-19332206710686203: the PER-TEST deadline every RESCUE re-run passes to vitest.
  *
- * Vitest's default `testTimeout` is 5s, and NOTHING in this repo's config chain raises it
- * (`apps/operator/vitest.config.ts`, `libs/test-config/src/vitest-config.ts` — both silent),
- * so every re-run below inherited 5s. That is structurally fatal to what those re-runs are
+ * Vitest's default `testTimeout` is 5s, and at the time this was written NOTHING in the
+ * config chain raised it for a RESCUE re-run — `libs/test-config/src/vitest-config.ts`
+ * keys off `VITEST_UNIT_TIMEOUT_MS`, which only `buildGreenCheckpointEnv` sets, and the
+ * rescue paths spawn outside that env — so every re-run below inherited 5s. Structurally
+ * fatal to what those re-runs are
  * FOR. A rescue re-run's whole job is to decide "was that red the box, or the code?" — but
  * at loadavg 130+ on a 128-core box the dominant flake shape is a test that is merely SLOW,
  * and a 5s deadline turns "slow" into "failed" in the re-run exactly as it did in the gate
@@ -3544,9 +3546,23 @@ export const ISOLATION_RUN_TIMEOUT_MS = 5 * 60_000;
  * against the 5s default with ZERO actual offenders, and red-pinned the fleet's gate.
  *
  * 60s is deliberately generous: these re-runs are re-verification, not the deadline that
- * polices test speed. The MAIN suite keeps vitest's tight default on purpose — that is what
- * surfaces a genuinely hanging test, and loosening it fleet-wide would trade a real signal
- * for this narrow rescue. Only the rescue paths need the room to discriminate.
+ * polices test speed. Only the rescue paths need the room to discriminate.
+ *
+ * ⚠ DO NOT read the above as "the MAIN suite runs on vitest's tight 5s default" — an
+ * earlier revision of this comment said exactly that and it is FALSE. The gate suite runs
+ * at 180s: `buildGreenCheckpointEnv` sets `VITEST_UNIT_TIMEOUT_MS=180000` (see the 180s
+ * note further up in this file), which `vitest-config.ts` reads for the unit layer
+ * (default 60s outside the gate). That stale sentence contradicted this file's own 180s
+ * note for long enough to put a wrong number into a filed bug report
+ * (EI-19370814345784324) and set it against a correct workspace fact. A comment asserting
+ * a CONFIG VALUE is untested and rots silently — verify against the config before quoting.
+ *
+ * ⚠ AND: no `testTimeout` value here bounds a HANG. vitest implements it with a timer on
+ * the worker's own event loop, so a test that blocks that loop SYNCHRONOUSLY (the
+ * `mkdirSync('/proc/...')` ENOENT/EEXIST spin observed 2026-08-02) can never let the
+ * callback be scheduled — 5s and 180s are equally unfireable. The only real backstops are
+ * the OUTER wall-clock caps named below and the parent's 120m process-group SIGTERM. See
+ * EI-19370814345784324; raising this constant does not help that class at all.
  *
  * Fail-safe in both directions: each call site still carries its own OUTER wall-clock cap
  * (ISOLATION_RUN_TIMEOUT_MS / CONCURRENT_CONFIRM_TIMEOUT_MS / WORKSPACE_RERUN_TIMEOUT_MS),

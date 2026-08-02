@@ -32,6 +32,7 @@
 import { getOrgPg } from '@papercusp/db-org';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { resolveConcreteWorkspaceId } from './workspace-registry';
+import { notifyAgentOrdersChanged } from './agent-orders-notify';
 
 // ── Scope keys (the convergence axis) ────────────────────────────────────────
 
@@ -883,7 +884,12 @@ export async function setLoopCarryNote(
   ref: LoopCarryNoteRef,
   note: string | null | undefined,
 ): Promise<string | null> {
-  return setCarryNote({ scope: loopScope(ref.harness, ref.ownerId), workspaceId: loopCarryWs() }, note);
+  const stored = await setCarryNote(
+    { scope: loopScope(ref.harness, ref.ownerId), workspaceId: loopCarryWs() },
+    note,
+  );
+  await notifyAgentOrdersChanged(ref.ownerId);
+  return stored;
 }
 
 /** {@link setLoopCarryNote} with access to the PRIOR note — the write path a caller
@@ -900,11 +906,17 @@ export async function setLoopCarryNoteWithPrior(
   note: string | null | undefined,
   opts?: Parameters<typeof setCarryNoteWithPrior>[2],
 ): Promise<SetCarryNoteResult> {
-  return setCarryNoteWithPrior(
+  const result = await setCarryNoteWithPrior(
     { scope: loopScope(ref.harness, ref.ownerId), workspaceId: loopCarryWs() },
     note,
     opts,
   );
+  // WI-6974: the loop carry-note (note + walls + checks) is Orders-panel content,
+  // and this ref carries the ownerId the panel is keyed by — so the push is exact.
+  // A `guard`-BLOCKED write wrote nothing, so it must not push: `blockedReason` is
+  // the producer-side signal a carry_notes row trigger could not have seen.
+  if (!result.blockedReason) await notifyAgentOrdersChanged(ref.ownerId);
+  return result;
 }
 
 /** Read an su AUTO loop's current carry-note (the full note), or null when none.

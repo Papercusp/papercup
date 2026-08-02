@@ -37,6 +37,7 @@ import {
 } from './candidate-contains';
 import { cellUnknown, formatCellUnknown, type CellUnknown } from './cell-contract';
 import { describeRefireBudget } from './release/in-flight-retriage';
+import { dispatchedSweepMatcher } from './routines-dispatch-derivation';
 
 const pexec = promisify(execFile);
 
@@ -456,6 +457,33 @@ const RUNTIME_OWNERS: RuntimeOwnerEntry[] = [
       restartTarget: null,
       activation:
         'Rust/Tauri shell code — it is COMPILED into the desktop binary, not served by any host. Neither a deploy nor a `dev:restart` activates it: rebuild the shell (`cd papercusp-desktop && npm run dev`).',
+    },
+  },
+  // EI-19369080695408825 — MUST STAY LAST. The catch-all for routinesTick-dispatched
+  // sweeps, DERIVED from routines-workflow.ts's real `await import(...)` set rather than
+  // hand-copied (see routines-dispatch-derivation.ts for why, and for the failure
+  // direction: it degrades to never-matching, never to matching-everything).
+  //
+  // Because `classifyRuntimeOwners` returns the FIRST match, every hand-written rule above
+  // still wins — including the WI-5440 dual-consumer entries, which must keep reporting
+  // BOTH routes and would be wrongly collapsed to bg-host-only if this rule preceded them.
+  // So this changes the answer for exactly one population: a NEW sweep no rule covers yet,
+  // which today falls through to DEFAULT_OWNER and gets reported as `deployed ✓` for code
+  // the :3070 operator never executes. That mislabel red-pinned the shared gate twice in
+  // one day (sweeps #25 and #26) — not because it was undetectable, but because detecting
+  // it depended on an author running a suite they could skip.
+  //
+  // Adding sweep #27 now needs no edit here at all.
+  {
+    get match(): RegExp {
+      return dispatchedSweepMatcher();
+    },
+    own: {
+      host: 'bg-host',
+      releasePipelineApplies: false,
+      restartTarget: 'bg-host',
+      activation:
+        'This is a periodic sweep dispatched DIRECTLY by `routinesTickImpl` (lib/dbos/routines-workflow.ts), not through the `system:<action>` registry — routinesTick only runs when PAPERCUSP_BACKGROUND_WORKERS=1 (bg-host); :3070/:3170 boot request-only and never execute it. It loads on RESTART: dev:restart { target: "bg-host", confirm: true }. A deploy does not carry it (WI-6659 / EI-11120).',
     },
   },
 ];

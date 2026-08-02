@@ -20,6 +20,7 @@
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { modeById, axisKeyFor, type ModeDef } from './registry';
+import { notifyAgentOrdersChanged } from '../agent-orders-notify';
 
 export interface ModeRow {
   workspaceId: string;
@@ -168,6 +169,10 @@ export async function setMode(opts: SetModeOpts): Promise<SetModeResult> {
       workspaceId: opts.workspaceId, ownerId: opts.ownerId, axisKey,
       oldMode: incumbent.mode, newMode: null, reason: opts.reason, setBy: opts.setBy, ownerDirected,
     });
+    // WI-6974: a mode CLEAR changes what this agent was told, so push the Orders
+    // panel for this owner. Reached only past the `noop` guard above, so the push
+    // tracks real transitions — the thing a row trigger on agent_modes could not do.
+    await notifyAgentOrdersChanged(opts.ownerId);
     return { ok: true, mode: def, switchedFrom: null };
   }
 
@@ -190,6 +195,10 @@ export async function setMode(opts: SetModeOpts): Promise<SetModeResult> {
     workspaceId: opts.workspaceId, ownerId: opts.ownerId, axisKey,
     oldMode: incumbent?.mode ?? null, newMode: def.id, reason: opts.reason, setBy: opts.setBy, ownerDirected,
   });
+  // WI-6974: same as the clear branch — a set / auto-switch / reason-refresh is a
+  // real orders change for THIS owner. Both `noop` early-returns above are already
+  // past, so this never fires on a re-assert that wrote nothing.
+  await notifyAgentOrdersChanged(opts.ownerId);
   const switchedFrom = incumbent && incumbent.mode !== def.id ? incumbent.mode : null;
   return { ok: true, mode: def, switchedFrom };
 }

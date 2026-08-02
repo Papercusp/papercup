@@ -91,6 +91,29 @@ const PUSH_EXEMPT: Record<string, string> = {
       'precompute substrate; the PRODUCER pushes notifySyncInvalidate(producer.key) on a real payload change (derived-reads/registry.ts) — better than a table trigger, which would also fire on no-op refreshes.',
     ]),
   ),
+
+  // WI-6974 — the Orders panel's five non-work_items tables. Same producer-push shape
+  // as the derived-reads block above, for the same reason and one step stronger: each
+  // of these tables is written far more often by something that is NOT an orders
+  // change, so a row trigger (which fires on the write, never on its meaning) would
+  // push every open panel on a timer. lib/agent-orders-notify.ts carries the full
+  // argument; each producer emits `{ ownerId }`, so the refetch is scoped to the ONE
+  // panel viewing that agent rather than a full bust.
+  //
+  // RE-ARM (all five): remove the entry and wire the table in table-to-query-names.ts
+  // if its producer push is ever dropped, OR if the bridge gains an owner-scoped
+  // `{ name, scope }` target for it — scoping is what would make a trigger safe here,
+  // and no production user of that mechanism exists yet.
+  'agentOrders.byOwner :: harness_shared.session_briefs':
+    'orders live in the control_* columns only, but the row also moves on intent/current_files writes; persistControlAnchor runs on ~every orient and pushes ONLY when control_state actually changed (its own IS DISTINCT FROM no-op branch) — a trigger cannot see that distinction.',
+  'agentOrders.byOwner :: harness_shared.plan_item_claims':
+    'renewOwnerActivityClaims rewrites last_activity_ts on EVERY TURN of every claim-holding owner — a heartbeat, the coord_presence anti-pattern. plan-items/claims.ts pushes on acquire/release ONLY, never on heartbeat/renew/extend.',
+  'agentOrders.byOwner :: harness_shared.carry_notes':
+    'every agent loop:checkpoint writes this table (~26/hr fleet-wide, measured 2026-08-02). setLoopCarryNote* pushes for the ref\'s ownerId and skips a guard-BLOCKED write, which wrote nothing.',
+  'agentOrders.byOwner :: harness_shared.agent_modes':
+    'event-driven but carries no owner-scoped key the bridge could scope by, so a trigger would full-bust every open panel for a mode set on an unrelated agent. modes/store.ts setMode pushes past its noop guards.',
+  'agentOrders.byOwner :: harness_shared.agent_mode_changes':
+    'append-only audit of the same transition as agent_modes; pushed by the same modes/store.ts setMode call rather than twice from two triggers.',
 };
 
 /**

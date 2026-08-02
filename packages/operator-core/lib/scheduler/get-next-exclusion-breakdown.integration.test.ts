@@ -19,6 +19,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import type postgres from 'postgres';
 import { HARNESS_FEATURES_CONSOLIDATED_DDL, WORK_ITEM_DEPS_DDL } from '../../test/_work-items-schema';
 import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
+import type { FilterNode } from './claim-spec';
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
 vi.mock('@papercusp/db-org', async () => {
@@ -313,8 +314,8 @@ describe('EI-18802055183255275 — readIssueClaimability (materialized temp-tabl
  */
 describe('P-005 — readClaimSpecDelta: which items a proposed spec revision drops or picks up', () => {
   const sev = (s: string) => ({ _ei: { severity: s } });
-  const CRIT_OR_MAJOR = { field: 'severity', op: 'in', value: ['critical', 'major'] } as const;
-  const CRIT_ONLY = { field: 'severity', op: '=', value: 'critical' } as const;
+  const CRIT_OR_MAJOR: FilterNode = { field: 'severity', op: 'in', value: ['critical', 'major'] };
+  const CRIT_ONLY: FilterNode = { field: 'severity', op: '=', value: 'critical' };
 
   it('names the rows a NARROWING revision would drop, and agrees with the single-spec oracle on both sides', async () => {
     await seedIssue('WI-D-CRIT', sev('critical'));

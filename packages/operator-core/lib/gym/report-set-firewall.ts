@@ -152,8 +152,13 @@ export const GYM_OPTIMIZE_ON_SETS: readonly BenchSet[] = Object.freeze([
   {
     id: 'gym-real-anchor',
     usage: 'optimize-on',
-    title: 'Real-feature replay (real-anchor.ts — falsifiability anchor + optional train source)',
-    rationale: 'Papercusp\'s OWN shipped features replayed at their base commit; the substrate is our repos, never an external benchmark repo.',
+    title: 'Real-feature replay on the real Papercusp repo (papercusp-substrate.ts — falsifiability anchor + train source)',
+    // The substrate is OUR repo at a pinned commit, never an external benchmark repo,
+    // so tuning on it cannot contaminate an impartial score. NOTE (D-006): tasks are
+    // built by rewinding ONE implementation file inside a pinned real checkout — NOT by
+    // replaying at "the commit before the fix", which is meaningless here because
+    // git-sync squashes the whole shared tree into one commit every few minutes.
+    rationale: 'Papercusp\'s OWN shipped changes replayed inside our real repo at a pinned commit; the substrate is our repo, never an external benchmark repo.',
   },
 ]);
 
