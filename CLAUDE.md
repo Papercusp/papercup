@@ -292,6 +292,29 @@ work in the tree. Merge conflicts go to a `merge-resolver` agent, not you. From
 auto-deploys it to `:3070`. Pipeline view: `/admin/git`. Long form + symptoms:
 [repo-conventions § branch + commit](/internal/docs/system/repo-conventions).
 
+> ⚠ **Checking whether your edit landed, and it is inside a SUBMODULE
+> (`papercusp-desktop`, `libs/generic/*`)? Run the check INSIDE the submodule** —
+> from the superproject the answer is ambiguous in the one direction that matters.
+> The superproject tracks only a gitlink (`160000 <sha> papercusp-desktop`), so
+> **`git status --porcelain papercusp-desktop/<path>` prints NOTHING whether the file
+> is committed or completely untracked** — and an untracked file inside a submodule
+> never announces itself with the `??` you would expect. Both readings are available
+> and both are expensive: read the empty as "clean, therefore committed" and a
+> genuinely stranded edit reports as landed; read it as "git doesn't know this file"
+> and a perfectly committed edit sends you to redo work.
+>
+> ```bash
+> cd papercusp-desktop && git cat-file -e HEAD:<path-inside-submodule>   # exit 0 = committed
+> cd papercusp-desktop && git status --porcelain <path-inside-submodule> # empty = clean, here it MEANS it
+> ```
+>
+> `git ls-files --error-unmatch <path>` from the superproject is a useful *first*
+> filter — it turns the ambiguous empty into an exit code — but note it exits
+> nonzero for a submodule-internal path **and** for a genuinely untracked one, so
+> nonzero means "not tracked by THIS repo", not "stranded". Only the in-submodule
+> check above separates those two. (Measured 2026-08-02: all three cases confirmed
+> on `papercusp-desktop/bin/tauri-guarded` — EI-19370400151089283.)
+
 > ⚠ **`git blame` on this repo never tells you who wrote a change — never trust it
 > for attribution, especially in an escalation.** git-sync commits the whole tree
 > under one identity, so blame is a false-positive generator, not a dead end —

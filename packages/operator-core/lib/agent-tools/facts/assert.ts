@@ -30,7 +30,8 @@ import {
   type FactDependency,
   type FactSourceProvenance,
 } from '../../agent-facts/store';
-import { isAssumptionFact } from '../../agent-facts/store';
+import { isAssumptionFact, factVersions } from '../../agent-facts/store';
+import { assessKeyContest, type KeyContestAssessment } from '../../facts/contested-key';
 import { resolveScopeRefAlias } from './scope-ctx';
 import { carryProvenanceFields } from '../../carry-surface-provenance-stamp';
 import { noteAssumptionAsserted } from '../../agent-state-stamp';
@@ -430,6 +431,42 @@ export default defineTool({
     // detector retired the warning pointed at nothing, and a warning that names a
     // surface which no longer exists is worse than no warning — it sends the reader
     // looking for a tool to satisfy. Do not reinstate it without a detector to name.
+    //
+    // P-006 / D-001 — the dispute detector, which DOES have a detector to name, and
+    // deliberately does NOT repeat the mistake above. It keys on the version chain this
+    // very write produces (no `claim` field, no opt-in, no cooperation needed), and it
+    // costs NOTHING on the common path: a first assert has no `supersedesId`, so the
+    // chain is never read. Only a re-assert pays — ~10% of writes on the measured data.
+    //
+    // Fail-soft by construction: an advisory that could fail a write would be a strictly
+    // worse trade than the friction it prevents.
+    let keyContested: KeyContestAssessment | null = null;
+    if (fact.supersedesId != null) {
+      try {
+        const versions = await factVersions({
+          scope: args.scope,
+          scopeRef: scopeRef ?? null,
+          key: slotted.key,
+          limit: 8,
+        });
+        keyContested = assessKeyContest({
+          // Exclude the row THIS call just wrote — the assessment is about the ground the
+          // asserter is walking over, not about their own footprint.
+          chain: versions.filter((v) => v.id !== fact.id).map((v) => ({
+            id: v.id,
+            createdBy: v.createdBy,
+            body: v.body,
+            kind: v.kind,
+            settledBy: v.settledBy ?? null,
+            updatedAt: v.updatedAt,
+          })),
+          asserter: identity.ownerId,
+          assertedKind: args.kind ?? null,
+        });
+      } catch {
+        keyContested = null;
+      }
+    }
     return {
       content: [
         {
@@ -439,6 +476,7 @@ export default defineTool({
             fact,
             ...(truncation ? { truncated: truncation } : {}),
             ...(dependencyWarning ? { dependenciesUnresolved: dependencyWarning } : {}),
+            ...(keyContested ? { keyContested } : {}),
             ...provenanceFields,
           }),
         },
