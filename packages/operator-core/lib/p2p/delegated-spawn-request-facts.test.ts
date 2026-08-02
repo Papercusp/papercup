@@ -78,16 +78,14 @@ describe('spawnRequestFactsFromRow (WI-7042)', () => {
     expect(r!.targetOfferId).toBe('seat-78c6bba3c96de094');
   });
 
-  it('prefers the SIGNED record fleetSlug over the projected column', () => {
-    // The column is a projection of the record; if they ever disagree, the
-    // signed record is the one the honoring host actually acted on.
-    const r = spawnRequestFactsFromRow({ ...row(), fleet_slug: 'some-other-fleet' });
-    expect(r!.facts.fleetSlug).toBe('fed-drill');
-  });
-
-  it('falls back to the column when the record carries no fleetSlug', () => {
-    const r = spawnRequestFactsFromRow({ ...row({ fleetSlug: null }), fleet_slug: 'from-column' });
-    expect(r!.facts.fleetSlug).toBe('from-column');
+  /**
+   * Why there is no fleet_slug COLUMN fallback: the closed-schema validator
+   * refuses a spawn_request whose record has no fleetSlug, so such a row never
+   * reaches a fallback at all. Pinning that here keeps someone from "fixing"
+   * the mapper by reintroducing unreachable code.
+   */
+  it('rejects a record with no fleetSlug outright — the column fallback would be unreachable', () => {
+    expect(spawnRequestFactsFromRow(row({ fleetSlug: null }))).toBeNull();
   });
 
   it('returns null (never throws) for every not-a-usable-spawn-request shape', () => {
@@ -96,9 +94,6 @@ describe('spawnRequestFactsFromRow (WI-7042)', () => {
     expect(spawnRequestFactsFromRow(row({ kind: 'seat' }))).toBeNull();
     expect(spawnRequestFactsFromRow(row({ kind: 'work' }))).toBeNull();
     expect(spawnRequestFactsFromRow(row({ spawnRequest: null }))).toBeNull();
-    // No fleet from either source ⇒ refuse rather than invent one, since fleet
-    // is what member attribution is scoped by.
-    expect(spawnRequestFactsFromRow({ ...row({ fleetSlug: null }), fleet_slug: null })).toBeNull();
   });
 });
 

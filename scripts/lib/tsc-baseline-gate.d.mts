@@ -349,6 +349,77 @@ export function formatLandingRaceCaveat({ recentCount, windowMin }: {
     windowMin?: number;
 }): string[];
 /**
+ * EI-19341572300046923 — the repo-relative directory prefix a `tsc -p <dir>/tsconfig.json`
+ * invocation actually COMPILES.
+ *
+ * Every per-project CLI here is a thin wrapper whose `tscCommand` is a per-project constant
+ * (`lint-tsc.mjs` → `packages/operator-core/`, `lint-tsc-operator-vite.mjs` →
+ * `apps/operator-vite/`, …). `--files=` is a GATE-scoping flag that never reaches tsc, so
+ * naming a file OUTSIDE that project does not widen the compile — it just scopes the verdict
+ * to files this run never looked at. Deriving the prefix from the command itself (rather than
+ * a hand-maintained roster) means a new per-project CLI inherits the guard below for free;
+ * a roster would reproduce the very "gate exists, gates nothing" defect WI-6841 documents.
+ *
+ * @param {string} tscCommand
+ * @returns {string | null} prefix with a trailing slash, `''` for a whole-repo project, or
+ *   `null` when no `-p` operand is parseable (callers must then FAIL OPEN — an unparseable
+ *   command is not evidence that a file is uncovered).
+ */
+export function projectPrefixFromTscCommand(tscCommand: string): string | null;
+/**
+ * Split the caller's `--files=` set into the files this invocation can actually judge and the
+ * ones it cannot.
+ *
+ * A `''` prefix (whole-repo project) covers everything.
+ *
+ * @param {{files: Iterable<string>, coveredPrefixes: Iterable<string>}} opts
+ * @returns {{covered: string[], uncovered: string[]}}
+ */
+export function partitionFilesByCoverage({ files, coveredPrefixes }: {
+    files: Iterable<string>;
+    coveredPrefixes: Iterable<string>;
+}): {
+    covered: string[];
+    uncovered: string[];
+};
+/**
+ * Which typecheck gate DOES cover `file`? Discovery, not a hardcoded map: walk up to the
+ * nearest `package.json` and read its `typecheck` script.
+ *
+ * The four per-project gates in this repo are reachable this way because each workspace's own
+ * `typecheck` script points at the right one (e.g. apps/operator-vite's is
+ * `node ../../scripts/lint-tsc-operator-vite.mjs`, the baseline-gated form — not a raw `tsc`).
+ * So a workspace that earns a gate later is routed to automatically.
+ *
+ * @param {string} root Absolute repo root.
+ * @param {string} file Repo-relative path.
+ * @returns {{workspaceDir: string, packageName: string, command: string | null} | null}
+ *   `command: null` = the owning workspace declares NO typecheck script (a real coverage gap,
+ *   worth saying out loud); `null` = no owning package.json found at all.
+ */
+export function suggestTypecheckGate(root: string, file: string): {
+    workspaceDir: string;
+    packageName: string;
+    command: string | null;
+} | null;
+/**
+ * The banner for `--files=` entries this run cannot judge.
+ *
+ * Written to be impossible to mistake for a pass: the failure this closes is that a scoped run
+ * naming only out-of-project files printed a clean verdict having typechecked NONE of them —
+ * indistinguishable from a real green, which is the same silent-zero shape `build:typecheck`
+ * already refuses (it will not report a clean run that checked zero files).
+ *
+ * @param {{label: string, uncovered: string[], suggestions: Map<string, ReturnType<typeof suggestTypecheckGate>>, fatal: boolean}} opts
+ * @returns {string[]} console lines.
+ */
+export function formatUncoveredFilesBanner({ label, uncovered, suggestions, fatal }: {
+    label: string;
+    uncovered: string[];
+    suggestions: Map<string, ReturnType<typeof suggestTypecheckGate>>;
+    fatal: boolean;
+}): string[];
+/**
  * Run the full CLI gate for one project and `process.exit(...)` with its verdict — the shared
  * `main()` every per-project CLI (lint-tsc.mjs, lint-tsc-operator-vite.mjs, …) delegates to.
  *
