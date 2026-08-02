@@ -476,11 +476,33 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
   child.stderr?.on('data', onData);
 
   const timer = setTimeout(() => {
-    if (job.status === 'running') {
-      job.status = 'timed_out';
-      killProcessTree(child, 'SIGKILL');
+    if (job.status !== 'running') return;
+    job.status = 'timed_out';
+    // WI-6677: SAY SO, in the job's own output. A silent death at a deadline the
+    // caller never chose is indistinguishable from an OOM, a peer's pkill, or a
+    // crash — and agents have burned real time hunting each of those. The line
+    // lands in the spill log too, so it survives loss of the in-memory registry.
+    appendOutput(
+      job,
+      `\n[capability:bash] deadline reached: exceeded ${effectiveTimeoutMs}ms wall-clock. ` +
+        `Sending SIGTERM (SIGKILL in ${TIMEOUT_SIGTERM_GRACE_MS}ms if it does not exit). ` +
+        `For a longer job pass an explicit \`timeout\` (max ${MAX_BACKGROUND_TIMEOUT_MS}ms).\n`,
+    );
+    // SIGTERM first so the job's own trap/finally can clean up (temp trees,
+    // checkouts, spawned sidecars). SIGKILL skips all of it, which is how a
+    // timed-out job used to leak gigabytes.
+    try {
+      killProcessTree(child, 'SIGTERM');
+    } catch {
+      /* fall through to the SIGKILL escalation */
     }
-  }, Math.min(timeoutMs, MAX_TIMEOUT_MS));
+    setTimeout(() => {
+      // Liveness must be judged by `exitCode`, not `job.status` — the status was
+      // flipped to 'timed_out' synchronously above, so testing it here would make
+      // this escalation dead code. Same reasoning as killJob's grace timer below.
+      if (job.exitCode === null) killProcessTree(child, 'SIGKILL');
+    }, TIMEOUT_SIGTERM_GRACE_MS).unref();
+  }, effectiveTimeoutMs);
 
   child.on('error', (err) => {
     appendOutput(job, `\n[spawn error] ${err instanceof Error ? err.message : String(err)}\n`);
@@ -508,7 +530,7 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
     finishSyncEnrolment(enrolment, {
       state: job.status === 'timed_out' ? 'timed_out' : job.status === 'killed' ? 'killed' : 'exited',
       exitCode: code,
-      exitReason: job.status === 'timed_out' ? `exceeded ${timeoutMs}ms timeout` : null,
+      exitReason: job.status === 'timed_out' ? `exceeded ${effectiveTimeoutMs}ms timeout` : null,
     });
   });
 

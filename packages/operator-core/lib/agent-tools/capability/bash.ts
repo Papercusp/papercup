@@ -6,18 +6,25 @@
  * Bash tool's ergonomics: combined output streaming (the `output` event),
  * truncation/overflow-to-file, and async/background jobs (`run_in_background`).
  *
- * Foreground: streams output, enforces a wall-clock timeout, returns the
+ * Foreground: streams output, enforces a short wall-clock timeout, returns the
  * (head+tail-trimmed-if-large) combined output + the spill-log path.
  * Background: returns a `bash_id` immediately; read incremental output with
  * `capability:bash_output` and stop it with `capability:bash_kill` — the way a
  * 5-minute build is run without holding one blocking request.
+ *
+ * BOTH modes have a deadline; they do NOT share one (WI-6677). The background
+ * default is hours, not the foreground's two minutes, because a background job
+ * is by definition meant to outlive the call — see the constants in
+ * `bash-jobs.ts` for why inheriting the foreground pair was a trap.
  */
 
 import { isAbsolute, resolve } from 'node:path';
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import {
+  DEFAULT_BACKGROUND_TIMEOUT_MS,
   DEFAULT_TIMEOUT_MS,
+  MAX_BACKGROUND_TIMEOUT_MS,
   MAX_TIMEOUT_MS,
   runForeground,
   startBackground,
@@ -31,7 +38,7 @@ export default defineTool({
   description:
     'Run a shell command (bash -c) server-side in the project dir. Streams combined output; large output spills to a log file. Set run_in_background for long jobs (build/test/dev-server) and poll with capability:bash_output.',
   guidance: {
-    when: 'Run any shell command — build, test, git status, file inspection, scripts. For a command that runs longer than ~1–2 min (build, test suite, dev server), pass run_in_background:true and poll capability:bash_output.',
+    when: 'Run any shell command — build, test, git status, file inspection, scripts. For a command that runs longer than ~1–2 min (build, test suite, dev server), pass run_in_background:true and poll capability:bash_output. A background job still has a wall-clock deadline (4h default, 12h max) and is SIGTERMed then SIGKILLed at it — the launch result names the deadline; raise `timeout` for a longer job.',
     notWhen:
       'To read/write/edit a single file, prefer capability:read / capability:write / capability:edit (they coordinate the file lock and mirror the native editors). For git, prefer capability:git.',
     chaining:
@@ -66,9 +73,13 @@ export default defineTool({
       .number()
       .int()
       .positive()
-      .max(MAX_TIMEOUT_MS)
+      .max(MAX_BACKGROUND_TIMEOUT_MS)
       .optional()
-      .describe(`Wall-clock timeout in ms (default ${DEFAULT_TIMEOUT_MS}, max ${MAX_TIMEOUT_MS}).`),
+      .describe(
+        `Wall-clock timeout in ms. FOREGROUND: default ${DEFAULT_TIMEOUT_MS}, clamped to ${MAX_TIMEOUT_MS}. ` +
+          `BACKGROUND (run_in_background): default ${DEFAULT_BACKGROUND_TIMEOUT_MS}, max ${MAX_BACKGROUND_TIMEOUT_MS} — ` +
+          `the job IS terminated at its deadline (SIGTERM, then SIGKILL), so raise this for a job that legitimately runs longer.`,
+      ),
     run_in_background: z
       .boolean()
       .optional()
@@ -81,7 +92,11 @@ export default defineTool({
   async handler(args, ctx) {
     const baseDir = resolveCapabilityBaseDir(ctx);
     const cwd = args.cwd ? (isAbsolute(args.cwd) ? args.cwd : resolve(baseDir, args.cwd)) : baseDir;
-    const timeoutMs = args.timeout ?? DEFAULT_TIMEOUT_MS;
+    // WI-6677: the default depends on the MODE. A background job is contractually
+    // meant to outlive this call, so it must not inherit the short foreground
+    // default — that made the tool SIGKILL exactly the long jobs it exists for.
+    const timeoutMs =
+      args.timeout ?? (args.run_in_background ? DEFAULT_BACKGROUND_TIMEOUT_MS : DEFAULT_TIMEOUT_MS);
     // P-022/D-008: re-apply the OS sandbox to this operator-side shell when the
     // papercusp-capability-exec-sandbox flag is armed (default-OFF, fail-open).
     const sandboxEnabled = await capabilityExecSandboxEnabled();
@@ -106,7 +121,16 @@ export default defineTool({
               status: 'running',
               cwd,
               log_path: job.logPath,
-              advice: `Background shell started. Read output: capability:bash_output { bash_id: "${job.id}" }. Stop: capability:bash_kill { bash_id: "${job.id}" }.`,
+              // WI-6677: state the deadline at LAUNCH. It is enforced by SIGTERM/SIGKILL,
+              // so a caller who needs longer must know now — not discover it as an
+              // unexplained death two hours in.
+              timeout_ms: job.timeoutMs,
+              deadline: job.deadlineAt ? new Date(job.deadlineAt).toISOString() : undefined,
+              advice:
+                `Background shell started. Read output: capability:bash_output { bash_id: "${job.id}" }. ` +
+                `Stop: capability:bash_kill { bash_id: "${job.id}" }. ` +
+                `It is terminated at ${job.deadlineAt ? new Date(job.deadlineAt).toISOString() : 'its deadline'} — ` +
+                `re-launch with a larger \`timeout\` (max ${MAX_BACKGROUND_TIMEOUT_MS}ms) if it needs longer.`,
             }),
           },
         ],

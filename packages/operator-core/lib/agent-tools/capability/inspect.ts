@@ -26,7 +26,14 @@
 import { isAbsolute, relative, resolve } from 'node:path';
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
-import { DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS, runForeground, startBackground } from './bash-jobs';
+import {
+  DEFAULT_BACKGROUND_TIMEOUT_MS,
+  DEFAULT_TIMEOUT_MS,
+  MAX_BACKGROUND_TIMEOUT_MS,
+  MAX_TIMEOUT_MS,
+  runForeground,
+  startBackground,
+} from './bash-jobs';
 import { capabilityExecSandboxEnabled } from './exec-sandbox';
 import { resolveCapabilityBaseDir } from './base-dir';
 
@@ -132,13 +139,18 @@ export function filterTscOutputToPaths(
 // never learns the durable fix is a detached run, and the very capability that exists to
 // remove the "shell out + poll" friction pushes them back to it. Clamp the FOREGROUND command
 // timeout safely below the cap so the tool ALWAYS self-times-out first (status:'timed_out')
-// and returns an actionable "re-run with run_in_background" hint. A background run is uncapped
-// (it returns a bash_id immediately), so it is never clamped.
+// and returns an actionable "re-run with run_in_background" hint. A background run is not bound
+// by the TRANSPORT cap (it returns a bash_id immediately), so this clamp never applies to it.
+//
+// ⚠ WI-6677: "not bound by the transport cap" is NOT "uncapped", which this comment used to
+// claim. A background job still has its own wall-clock deadline and is terminated at it. It
+// simply must not be the FOREGROUND default — see DEFAULT_BACKGROUND_TIMEOUT_MS in bash-jobs.ts.
 export const MCP_TRANSPORT_CAP_MS = 55_000;
 /** Foreground ceiling — below the transport cap, with ~5s headroom to serialize the response. */
 export const FOREGROUND_TIMEOUT_CEILING_MS = 50_000;
 
-/** Clamp a FOREGROUND command timeout below the MCP transport cap (EI-6073). Background is uncapped. */
+/** Clamp a FOREGROUND command timeout below the MCP transport cap (EI-6073).
+ *  Background runs skip this clamp — they carry their own (much longer) deadline instead. */
 export function clampForegroundTimeoutMs(requestedMs: number): number {
   return Math.min(requestedMs, FOREGROUND_TIMEOUT_CEILING_MS);
 }
@@ -210,10 +222,10 @@ export default defineTool({
       .number()
       .int()
       .positive()
-      .max(MAX_TIMEOUT_MS)
+      .max(MAX_BACKGROUND_TIMEOUT_MS)
       .optional()
       .describe(
-        `Wall-clock timeout in ms (default ${DEFAULT_TIMEOUT_MS}, max ${MAX_TIMEOUT_MS}). A FOREGROUND run is clamped to ${FOREGROUND_TIMEOUT_CEILING_MS}ms (below the ~55s MCP transport cap) so it returns a hint instead of an opaque request_timeout — for a longer run pass run_in_background:true (uncapped).`,
+        `Wall-clock timeout in ms. FOREGROUND: default ${DEFAULT_TIMEOUT_MS}, clamped to ${FOREGROUND_TIMEOUT_CEILING_MS}ms (below the ~55s MCP transport cap) so it returns a hint instead of an opaque request_timeout. BACKGROUND (run_in_background): default ${DEFAULT_BACKGROUND_TIMEOUT_MS}, max ${MAX_BACKGROUND_TIMEOUT_MS} — not bound by the transport cap, but still terminated at its own deadline.`,
       ),
   }),
   async handler(args, ctx) {
@@ -222,7 +234,11 @@ export default defineTool({
     if (!resolved.ok) return err(resolved.reason, resolved.message);
     const { command, cwd } = resolved;
 
-    const requestedTimeoutMs = args.timeout ?? DEFAULT_TIMEOUT_MS;
+    // WI-6677: mode-dependent default, same as capability:bash. A detached suite is
+    // exactly what run_in_background is FOR here, so it must not inherit the short
+    // foreground default that exists to stay under the MCP transport cap.
+    const requestedTimeoutMs =
+      args.timeout ?? (args.run_in_background ? DEFAULT_BACKGROUND_TIMEOUT_MS : DEFAULT_TIMEOUT_MS);
     // Reuse the capability:bash OS sandbox (P-022/D-008) on the operator-side exec.
     const sandboxEnabled = await capabilityExecSandboxEnabled();
 

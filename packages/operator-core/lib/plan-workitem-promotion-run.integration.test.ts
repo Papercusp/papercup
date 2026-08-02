@@ -519,3 +519,182 @@ describe('promotePlanItems (P-006): plan → placeable work-items, against real 
     expect(res.promoted).toBe(0);
   });
 });
+
+describe('backfillPromotedDependencyEdges (P-009): already-promoted items gain the plan graph', () => {
+  const backfill = (over: { dryRun?: boolean; planSlugs?: string[] } = {}) =>
+    run.backfillPromotedDependencyEdges({ workspaceId: WS, harnessSlug: HARNESS, ...over });
+
+  /**
+   * The shape every test here needs: items that are ALREADY promoted but carry NO edges, which is
+   * what every plan promoted before P-006 looks like. Reproduced honestly rather than by writing
+   * rows directly — promote while the plan declares no blockers, then let the plan declare the
+   * dependency it always meant. Promotion will never revisit those items (they are converted), so
+   * only the backfill can supply the graph.
+   */
+  const promoteThenDeclare = async (
+    before: { id: string; status: string; text: string }[],
+    after: { id: string; status: string; text: string; blockedBy?: string[] }[],
+  ) => {
+    h.plans.set(PLAN, { items: before });
+    await run.promotePlanItems(base);
+    expect(await depEdges()).toEqual([]);
+    h.plans.set(PLAN, { items: after });
+    // Promotion is now a no-op: every item is already converted, so it writes no edge either.
+    expect((await run.promotePlanItems(base)).edgesWritten).toBe(0);
+    expect(await depEdges()).toEqual([]);
+    const rows = await features();
+    return (title: string) => rows.find((r) => r.title === title)!.feature_id;
+  };
+
+  it('writes the edges promotion WOULD have written for items minted before P-006', async () => {
+    const id = await promoteThenDeclare(
+      [
+        { id: 'P-001', status: 'todo', text: 'Prereq' },
+        { id: 'P-002', status: 'todo', text: 'Dependent' },
+      ],
+      [
+        { id: 'P-001', status: 'todo', text: 'Prereq' },
+        { id: 'P-002', status: 'todo', text: 'Dependent', blockedBy: ['P-001'] },
+      ],
+    );
+
+    const res = await backfill();
+    expect(res).toMatchObject({
+      dryRun: false,
+      itemsConsidered: 1,
+      edgesWritten: 1,
+      edgesPreserved: 0,
+      edgeFailures: 0,
+      blockersDangling: 0,
+      blockersUnresolved: 0,
+    });
+    expect(await depEdges()).toEqual([{ blocked: id('Dependent'), blocker: id('Prereq') }]);
+  });
+
+  it('D-015: PRESERVES an edge another author wrote — plain reuse would silently DELETE it', async () => {
+    // The bug this pins is invisible in writePromotedDependencyEdges itself. syncFeatureBlockEdges
+    // is DELETE-all-then-INSERT on the blocked side, which is safe at promotion ONLY because the
+    // item was minted microseconds earlier and therefore has no edges — a precondition of the
+    // CALLER. A backfill targets weeks-old items, and 3 of the 185 in the live set already carried
+    // an agent-authored edge naming a plan item the plan's own blockedBy does not. Without the
+    // union this test's `Sibling → Dependent` edge is gone after the backfill, and nothing
+    // anywhere records that a gate was destroyed.
+    const id = await promoteThenDeclare(
+      [
+        { id: 'P-001', status: 'todo', text: 'Prereq' },
+        { id: 'P-002', status: 'todo', text: 'Dependent' },
+        { id: 'P-003', status: 'todo', text: 'Sibling' },
+      ],
+      [
+        { id: 'P-001', status: 'todo', text: 'Prereq' },
+        { id: 'P-002', status: 'todo', text: 'Dependent', blockedBy: ['P-001'] },
+        { id: 'P-003', status: 'todo', text: 'Sibling' },
+      ],
+    );
+    const { syncFeatureBlockEdges } = await import('./dbos/feature-blockers-edges');
+    await syncFeatureBlockEdges(HARNESS, id('Dependent'), [id('Sibling')]);
+    expect(await depEdges()).toEqual([{ blocked: id('Dependent'), blocker: id('Sibling') }]);
+
+    const res = await backfill();
+    expect(res).toMatchObject({ edgesWritten: 1, edgesPreserved: 1, edgeFailures: 0 });
+    // BOTH survive: the plan-derived edge is added, the pre-existing one is carried through.
+    expect(await depEdges()).toEqual(
+      [
+        { blocked: id('Dependent'), blocker: id('Prereq') },
+        { blocked: id('Dependent'), blocker: id('Sibling') },
+      ].sort((a, b) => a.blocker.localeCompare(b.blocker)),
+    );
+  });
+
+  it('dryRun computes every counter and writes NOTHING', async () => {
+    const id = await promoteThenDeclare(
+      [
+        { id: 'P-001', status: 'todo', text: 'Prereq' },
+        { id: 'P-002', status: 'todo', text: 'Dependent' },
+      ],
+      [
+        { id: 'P-001', status: 'todo', text: 'Prereq' },
+        { id: 'P-002', status: 'todo', text: 'Dependent', blockedBy: ['P-001'] },
+      ],
+    );
+
+    const dry = await backfill({ dryRun: true });
+    expect(dry).toMatchObject({ dryRun: true, itemsConsidered: 1, edgesWritten: 1 });
+    expect(await depEdges()).toEqual([]); // the whole point: a rehearsal, not a write
+
+    // ...and the real run then produces exactly what the rehearsal predicted.
+    const real = await backfill();
+    expect(real.edgesWritten).toBe(dry.edgesWritten);
+    expect(await depEdges()).toEqual([{ blocked: id('Dependent'), blocker: id('Prereq') }]);
+  });
+
+  it('is IDEMPOTENT — a second run converges rather than duplicating', async () => {
+    const id = await promoteThenDeclare(
+      [
+        { id: 'P-001', status: 'todo', text: 'Prereq' },
+        { id: 'P-002', status: 'todo', text: 'Dependent' },
+      ],
+      [
+        { id: 'P-001', status: 'todo', text: 'Prereq' },
+        { id: 'P-002', status: 'todo', text: 'Dependent', blockedBy: ['P-001'] },
+      ],
+    );
+    const first = await backfill();
+    const second = await backfill();
+    // Same counters, same single edge — the union is order-stable, so re-running is a no-op.
+    expect(second.edgesWritten).toBe(first.edgesWritten);
+    expect(second.edgeFailures).toBe(0);
+    expect(await depEdges()).toEqual([{ blocked: id('Dependent'), blocker: id('Prereq') }]);
+  });
+
+  it('inherits the DONE-blocker skip, leaving a pre-existing edge untouched (the live WI-3504 shape)', async () => {
+    // Two inherited behaviors compose here, and the composition is what made 2 of the 3 live
+    // collisions harmless: a done blocker is SATISFIED so it is skipped, which empties the
+    // blocker set, which trips the never-call-sync-with-an-empty-set rule — so the item is never
+    // written at all and its unrelated edge survives. Pinned because it is currently luck of
+    // status, not design: flip P-001 to open and this item DOES get written.
+    const id = await promoteThenDeclare(
+      [
+        { id: 'P-001', status: 'todo', text: 'Prereq' },
+        { id: 'P-002', status: 'todo', text: 'Dependent' },
+        { id: 'P-003', status: 'todo', text: 'Sibling' },
+      ],
+      [
+        { id: 'P-001', status: 'done', text: 'Prereq' },
+        { id: 'P-002', status: 'todo', text: 'Dependent', blockedBy: ['P-001'] },
+        { id: 'P-003', status: 'todo', text: 'Sibling' },
+      ],
+    );
+    const { syncFeatureBlockEdges } = await import('./dbos/feature-blockers-edges');
+    await syncFeatureBlockEdges(HARNESS, id('Dependent'), [id('Sibling')]);
+
+    const res = await backfill();
+    expect(res).toMatchObject({ edgesWritten: 0, blockersUnresolved: 0, edgeFailures: 0 });
+    expect(await depEdges()).toEqual([{ blocked: id('Dependent'), blocker: id('Sibling') }]);
+  });
+
+  it('D-012: a plan-level CYCLE still refuses the edges (the pre-flight is inherited, not re-implemented)', async () => {
+    await promoteThenDeclare(
+      [
+        { id: 'P-001', status: 'todo', text: 'First' },
+        { id: 'P-002', status: 'todo', text: 'Second' },
+      ],
+      [
+        { id: 'P-001', status: 'todo', text: 'First', blockedBy: ['P-002'] },
+        { id: 'P-002', status: 'todo', text: 'Second', blockedBy: ['P-001'] },
+      ],
+    );
+    const res = await backfill();
+    expect(res).toMatchObject({ edgesWritten: 0, edgesRejectedCyclic: 2, edgeFailures: 0 });
+    expect(await depEdges()).toEqual([]);
+  });
+
+  it('considers only plans with promoted items, and reports nothing for an unpromoted plan', async () => {
+    h.plans.set('never-promoted', {
+      items: [{ id: 'P-001', status: 'todo', text: 'Untouched', blockedBy: ['P-002'] }],
+    });
+    const res = await backfill();
+    expect(res).toMatchObject({ plansScanned: 0, itemsConsidered: 0, edgesWritten: 0 });
+    expect(res.perPlan).toEqual([]);
+  });
+});
