@@ -210,12 +210,14 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
       },
     });
     expect(r.recipes).toEqual([{ id: 'fan-out-wi', title: 'Fan-out work items', runCount: 7, similarity: 0.82 }]);
-    // order: core three → memory → whoami (P-007: hoisted above the facts fold)
-    // → plan-events → planNow (WI-5228: planSlug was passed) → recipes → declare
+    // order: core three → observe (WI-5343 claimable floor check) → memory →
+    // whoami (P-007: hoisted above the facts fold) → plan-events → planNow
+    // (WI-5228: planSlug was passed) → recipes → declare
     expect(calls.map((c) => c.name)).toEqual([
       'fleet:assignments',
       'work_items:list',
       'coord:inbox',
+      'work_items:observe',
       'memory:search',
       'coord:whoami',
       'coord:plan-events',
