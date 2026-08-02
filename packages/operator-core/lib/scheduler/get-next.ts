@@ -782,7 +782,7 @@ export interface IssueClaimExclusionBreakdown {
 const ALL_ISSUE_CLAIM_FLOORS_PASS =
   `ok_untaken AND ok_claim_hold AND ok_needs_human AND ok_observation ` +
   `AND ok_external_blocker AND ok_plan_lane AND ok_federation AND ok_loop_noise ` +
-  `AND ok_completed AND ok_rig AND ok_no_blocker AND ok_cooldown`;
+  `AND ok_completed AND ok_rig AND ok_no_blocker AND ok_cooldown AND ok_origin`;
 
 /**
  * The SHARED inner subquery for issue-family claimability: every candidate issue-family
@@ -825,6 +825,10 @@ export function issueClaimCandidateSubquery(
       (${loopIterationNoiseExclusionSql(sql)})                          AS ok_loop_noise,
       (${alreadyTerminallyCompletedExclusionSql(sql)})                  AS ok_completed,
       (${crossMachineRigExclusionSql(sql, rigAvailable)})               AS ok_rig,
+      -- WI-6409: mirror claimNextIssueWorkItem's own-node-aware origin floor (local OR our
+      -- own author key) — previously absent from this shared subquery entirely, so a
+      -- true-remote-origin row read as claimable here while the real claim refused it.
+      (${isIssueLocallyClaimableWhereSql(sql, issueWs)})                AS ok_origin,
       (NOT EXISTS (
           SELECT 1 FROM harness_shared.work_item_deps d
            WHERE d.workspace_id = 'default'
@@ -907,7 +911,8 @@ export async function aggregateIssueClaimExclusions(
       count(*) FILTER (WHERE spec_match AND ok_untaken AND NOT ok_completed)::int       AS already_completed,
       count(*) FILTER (WHERE spec_match AND ok_untaken AND NOT ok_rig)::int             AS cross_machine_rig,
       count(*) FILTER (WHERE spec_match AND ok_untaken AND NOT ok_no_blocker)::int      AS blocked_dep,
-      count(*) FILTER (WHERE spec_match AND ok_untaken AND NOT ok_cooldown)::int        AS cooldown
+      count(*) FILTER (WHERE spec_match AND ok_untaken AND NOT ok_cooldown)::int        AS cooldown,
+      count(*) FILTER (WHERE spec_match AND ok_untaken AND NOT ok_origin)::int          AS remote_origin
     FROM (${sub}) sub
   `) as Array<{
     matched: number;
@@ -924,6 +929,7 @@ export async function aggregateIssueClaimExclusions(
     cross_machine_rig: number;
     blocked_dep: number;
     cooldown: number;
+    remote_origin: number;
   }>;
   const r = rows[0];
   return {
@@ -942,6 +948,7 @@ export async function aggregateIssueClaimExclusions(
       crossMachineRig: r?.cross_machine_rig ?? 0,
       blockedDep: r?.blocked_dep ?? 0,
       cooldown: r?.cooldown ?? 0,
+      remoteOrigin: r?.remote_origin ?? 0,
     },
   };
 }
@@ -964,6 +971,8 @@ export interface IssueClaimExclusionSample {
   crossMachineRig: string[];
   blockedDep: string[];
   cooldown: string[];
+  /** WI-6409: sampled ids of true-remote-origin rows — see {@link IssueClaimExclusionBreakdown.excluded}'s remoteOrigin. */
+  remoteOrigin: string[];
 }
 
 /**

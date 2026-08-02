@@ -59,6 +59,7 @@ import {
 } from '../../scheduler/claim-spec-store';
 import { heartbeatPresence, setPresenceFleet, PRESENCE_STALE_MS } from '../coordination/presence';
 import { resolveHarnessPlansDir, readPlanBySlug, resolvePlanHarnessSlug } from '../plans/source';
+import { startVerdictForRow } from '../plans/plan-start-gate';
 import { fleetRoleFor, json, recolorCallerTerminal, resolveFleetCaller } from './_shared';
 import { reseedLeaderCompactionLimit } from './take-leadership-core';
 import { resolveSeatLaunch, seatAvailabilityForFleet } from '../../fleet/seat-accounting';
@@ -1060,6 +1061,20 @@ export default defineTool({
         if (!found) {
           return err(
             `Plan \`${planSlug}\` not found in harness \`${harness}\`. Create it first (plans:apply-plan-block / plans:new + plans:add-item), then launch the fleet.`,
+          );
+        }
+        // P-006 start gate, checked HERE for the same reason the existence check is
+        // here: before any window opens. A fleet launched on an under-specified plan
+        // would otherwise put N members to work and have each of them independently
+        // discover mid-task that the plan has no target — N failures for one missing
+        // argument, and N sessions to clean up.
+        const gate = startVerdictForRow(found.row, planSlug);
+        if (!gate.ok) {
+          return err(
+            `Plan \`${planSlug}\` cannot start: ${gate.refusal.hint}` +
+              (gate.refusal.missing.length > 0
+                ? ` (missing: ${gate.refusal.missing.join(', ')})`
+                : ''),
           );
         }
       }

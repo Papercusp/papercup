@@ -30,15 +30,26 @@ import { evaluatePlanStartReadiness, type PlanStartReadiness } from './plan-inpu
  * list is the contract; the test is what keeps it true.
  */
 export const PLAN_START_DOORS = [
-  'plans:start',
-  'plans:launch',
-  'plans:run-now',
-  'plans:arm-schedule',
-  'fleet:launch-on-plan',
-  'runScheduledPlanFire',
+  { door: 'plans:start', file: 'lib/agent-tools/plans/start.ts' },
+  { door: 'plans:launch', file: 'lib/agent-tools/plans/launch.ts' },
+  { door: 'plans:run-now', file: 'lib/agent-tools/plans/run-now.ts' },
+  { door: 'plans:arm-schedule', file: 'lib/agent-tools/plans/arm-schedule.ts' },
+  { door: 'fleet:launch-on-plan', file: 'lib/agent-tools/fleet_registry/launch-on-plan.ts' },
+  { door: 'runScheduledPlanFire', file: 'lib/harness/routines/plan-run-action.ts' },
 ] as const;
 
-export type PlanStartDoor = (typeof PLAN_START_DOORS)[number];
+export type PlanStartDoor = (typeof PLAN_START_DOORS)[number]['door'];
+
+/**
+ * The gate entry points. A door satisfies the P-007 guard by calling one of these:
+ * the async loader, the row-level verdict, or (for the fire path, which is not an
+ * agent tool and already holds its own row) the pure oracle directly.
+ */
+export const PLAN_START_GATE_ENTRYPOINTS = [
+  'checkPlanStartable',
+  'startVerdictForRow',
+  'evaluatePlanStartReadiness',
+] as const;
 
 /** The refusal payload a door returns verbatim. Shaped so the caller never has to
  *  re-derive anything: what is missing, why, and what to do about it. */

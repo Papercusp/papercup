@@ -483,6 +483,109 @@ describe('destructive tree-wide git guard (hive-loop-supervision-2026-06-21, age
 });
 
 /**
+ * EI-19294800751120438 — the WRAPPED/QUOTED command evasion class.
+ *
+ * Every deny-guard in the gate used to match RAW command text: split on [;&|\n],
+ * peel a hand-maintained wrapper NAME-list, `re.match` an anchored pattern. Measured
+ * before the fix: 4 DENY / 14 probes on the shared-tree git guard, and the same hole
+ * in the pkill, systemctl-exit and crontab guards. `bash -c "…"` defeated all of them.
+ *
+ * The wrapper name-list is specifically what rotted — the 2026-07-06 `rtk` bypass was
+ * fixed by ADDING `rtk` to the list, which left `timeout` open for another three
+ * weeks. So the fix was structural: ONE `scannable_command()` normalizer (quote
+ * stripping, ANSI-C decoding, heredoc handling, and recursive descent into every
+ * executed shell payload, with wrappers peeled by parsing argv rather than by name),
+ * which every guard now matches through.
+ *
+ * This table is the regression net whose ABSENCE let `timeout` hide. Each case is a
+ * form that was measured ALLOW before the fix. A new guard added to the gate should
+ * get a row here too.
+ */
+describe('wrapped/quoted command evasion (EI-19294800751120438)', () => {
+  describe('shared-tree git guard', () => {
+    it.each([
+      ['bash -c', 'bash -c "git reset --hard"'],
+      ['sh -c with single quotes', "sh -c 'git clean -fd'"],
+      ['eval', 'eval "git reset --hard"'],
+      ['quoted argument tokens', 'git "reset" "--hard"'],
+      ['command substitution', '$(echo git) reset --hard'],
+      ['variable indirection', 'x=git; $x reset --hard'],
+      ['pipe-to-shell', 'echo "git reset --hard" | bash'],
+      ['here-string', 'bash <<< "git reset --hard"'],
+      ['env --split-string', 'env -S "git reset --hard"'],
+      // `timeout` was NOT in the old _WRAP_STRIP name-list — the exact rot this fixes.
+      ['timeout wrapper', 'timeout 60 git reset --hard'],
+      ['nested wrappers around a -c payload', 'timeout 60 sudo bash -c "git reset --hard"'],
+      ['heredoc fed to a shell', 'bash <<EOF\ngit reset --hard\nEOF'],
+    ])('denies %s', (_label, command) => {
+      expectGitDeny(runGate(bashCmd(command), AGENT));
+    });
+  });
+
+  describe('pkill/killall guard', () => {
+    it.each([
+      ['bash -c', 'bash -c "pkill -f node"'],
+      ['eval', 'eval "pkill -f node"'],
+      ['killall via bash -c', 'bash -c "killall vitest"'],
+      ['sh -c', "sh -c 'pkill -f vitest'"],
+    ])('denies %s', (_label, command) => {
+      expectPkillDeny(runGate(bashCmd(command)));
+    });
+
+    // The regression this table caught during the fix itself: an early version of the
+    // normalizer collapsed a multi-word quoted span to `""`, so `pkill -f "npm run
+    // test"` became `pkill -f ""` and the guard — which matches on the pattern
+    // ARGUMENT — stopped firing. Quoted spans now keep their words.
+    it('still denies a QUOTED multi-word pattern (span content must survive unquoting)', () => {
+      expectPkillDeny(runGate(bashCmd('pkill -f "npm run test"')));
+    });
+  });
+
+  describe('systemd user-manager exit guard', () => {
+    it.each([
+      ['bash -c', 'bash -c "systemctl --user exit"'],
+      ['eval', 'eval "systemctl --user exit"'],
+    ])('denies %s', (_label, command) => {
+      expectExitGuardDeny(runGate(bashCmd(command)));
+    });
+  });
+
+  describe('native-scheduler lockout', () => {
+    it.each([
+      ['bash -c', 'bash -c "crontab -e"'],
+      ['command substitution', '$(echo crontab) -e'],
+      ['sh -c', "sh -c 'crontab -l'"],
+    ])('denies %s', (_label, command) => {
+      expectDeny(runGate(bashCmd(command), AGENT));
+    });
+  });
+
+  /**
+   * The other half of the contract. Surfacing quoted words to the guards must NOT
+   * make ordinary work deniable — a false positive here blocks the whole fleet, which
+   * is strictly worse than the hole being closed. These hold because every guard
+   * anchors with `re.match`: unquoted inner words appear mid-segment, not at command
+   * position, so they cannot match a destructive pattern.
+   */
+  describe('does not over-block once quoted content is surfaced', () => {
+    it.each([
+      ['a commit message naming a destructive op', 'git commit -m "docs: explain git reset --hard"'],
+      ['a string argument naming a destructive op', 'echo "git reset --hard"'],
+      ['a quoted regex alternation (EI-9937)', 'grep -E "at|batch" scripts/foo.ts'],
+      ['prose mentioning crontab', 'echo "remember: crontab is denied here"'],
+      ['a heredoc written to a FILE, not run', 'cat <<EOF > /tmp/notes.txt\ngit reset --hard\nEOF'],
+      ['searching the tree for pkill', "rg -n 'pkill' apps/operator"],
+      ['a scoped single-file checkout', 'git checkout -- path/to/one.file.ts'],
+      ['a soft reset', 'git reset --soft HEAD~1'],
+      ['stash list (read-only)', 'git stash list'],
+      ['killing a specific pid', 'kill 12345'],
+    ])('allows %s', (_label, command) => {
+      expectAllow(runGate(bashCmd(command), AGENT));
+    });
+  });
+});
+
+/**
  * EI-13135 — systemd user-manager exit/kill guard.
  *
  * `systemctl --user exit` tears down the WHOLE shared user@<uid> manager in

@@ -28,6 +28,7 @@ import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { resolveCtxHarnessSlug } from './_ctx-opts';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { buildPlanContextBundle } from './context-bundle';
+import { checkPlanStartable } from './plan-start-gate';
 import { getRepoRoot } from './source';
 import { insertPlanRun } from './runs';
 import { executePlanAgentTurn } from './turn';
@@ -66,6 +67,12 @@ const argsSchema = z.object({
         'row; the agent turn runs in the background and writes its ' +
         'turns + final status asynchronously. Default true (wait for the ' +
         'turn to complete).',
+    ),
+  inputs: z
+    .record(z.string(), z.unknown())
+    .optional()
+    .describe(
+      "Per-invocation input overrides, shallow-merged over the plan's stored values and validated before the run is created (plan-structured-inputs P-011). The resolved set is rendered into the agent's launch seed as an INPUTS block. Omit to launch with the plan's stored values.",
     ),
 });
 
@@ -131,13 +138,27 @@ export function derivePlanAgentPriority(
 }
 
 async function launchHandler(input: LaunchArgs, ctx: LaunchCtx) {
-  // 1. Assemble the launch seed (plan doc + rationale digest — P-009).
   const sctx = harnessScopedCtx(input.harness, ctx);
   const __ctxHarness = resolveCtxHarnessSlug(sctx);
-  const bundle = await buildPlanContextBundle(
-    input.slug,
-    __ctxHarness ? { harnessSlug: __ctxHarness } : {},
-  );
+  const scopeOpts = __ctxHarness ? { harnessSlug: __ctxHarness } : {};
+
+  // 1. START GATE (plan-structured-inputs P-006), BEFORE the seed is assembled and
+  //    before any run row exists — a refused launch must leave no trace. Per-invocation
+  //    `inputs` are merged over the plan's stored values and validated together, so
+  //    what the agent is seeded with is exactly what was approved.
+  const gate = await checkPlanStartable(input.slug, scopeOpts, input.inputs ?? null);
+  if (!gate.ok) {
+    return {
+      isError: true,
+      content: [{ type: 'text' as const, text: JSON.stringify(gate.refusal) }],
+    };
+  }
+
+  // 2. Assemble the launch seed (plan doc + INPUTS block + rationale digest).
+  const bundle = await buildPlanContextBundle(input.slug, {
+    ...scopeOpts,
+    inputs: gate.inputs,
+  });
   if (!bundle) {
     return {
       isError: true,

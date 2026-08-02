@@ -81,9 +81,17 @@ export type StaticFeature = z.infer<typeof StaticFeatureSchema>;
  * is rejected loudly.
  *
  * PROMOTE-TIME (the set exists now → expand up front):
- *   - items: an inline explicit set
- *   - glob:  repo files matching a glob (e.g. `app/api/​**​/route.ts`)
- *   - sql:   the first column of each row from the harness PG
+ *   - items:      an inline explicit set
+ *   - glob:       repo files matching a glob (e.g. `app/api/​**​/route.ts`)
+ *   - sql:        the first column of each row from the harness PG
+ *   - from_input: the named PLAN INPUT holding the set
+ *     (plan-structured-inputs-2026-08-01 P-012). The other three make a wave's
+ *     fan-out a property of the PLAN — hardcoded, or derived from the repo/DB.
+ *     This one makes it a property of the RUN, so one plan fans out differently
+ *     per invocation instead of needing a near-duplicate plan per target set.
+ *     Resolved from the run's validated inputs; declare the field as an array in
+ *     the plan's input_schema and the start gate guarantees it is present before
+ *     any wave expands.
  * COMPLETION-TIME (the set derives from a feature's discovery work → deferred):
  *   - from_feature: the feature id/title whose worker PUBLISHES the item-set via
  *     the `generators:publish` tool. The wave is NOT expanded at promote; when
@@ -93,6 +101,7 @@ export const ForEachResolverSchema = z.union([
   z.object({ items: z.array(z.string().min(1)).min(1) }).strict(),
   z.object({ glob: z.string().min(1) }).strict(),
   z.object({ sql: z.string().min(1) }).strict(),
+  z.object({ from_input: z.string().min(1) }).strict(),
   z.object({ from_feature: z.string().min(1) }).strict(),
 ]);
 export type ForEachResolver = z.infer<typeof ForEachResolverSchema>;

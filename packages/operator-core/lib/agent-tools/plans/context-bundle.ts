@@ -236,11 +236,20 @@ export function assemblePlanContextBundleText(input: PlanBundleInput): string {
  */
 export async function buildPlanContextBundle(
   slug: string,
-  opts: PlanSourceOpts & { harnessSlug?: string } = {},
+  opts: PlanSourceOpts & {
+    harnessSlug?: string;
+    /**
+     * The resolved inputs this run executes with (P-009). Passed in by the caller
+     * rather than re-read here, because the caller has already had them VALIDATED by
+     * the start gate — re-deriving them would risk seeding the agent with values the
+     * gate never approved. Omit to fall back to the plan's stored values.
+     */
+    inputs?: unknown;
+  } = {},
 ): Promise<PlanContextBundle | null> {
   const read = await readPlanBySlug(slug, opts);
   if (!read) return null;
-  const { parsed, archived } = read;
+  const { parsed, archived, row } = read;
 
   let rationales: PlanBundleRationale[] = [];
   try {
@@ -273,6 +282,8 @@ export async function buildPlanContextBundle(
     status,
     planMarkdown: parsed.raw,
     rationales,
+    inputs: opts.inputs !== undefined ? opts.inputs : row.templateData,
+    inputSchema: row.inputSchema,
   });
 
   return {
