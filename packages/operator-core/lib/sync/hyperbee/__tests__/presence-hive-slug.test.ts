@@ -61,4 +61,25 @@ describe('isSharedPresenceRow — hive_slug tolerance (back-compat)', () => {
   it('rejects a non-string, non-null hive_slug', () => {
     expect(isSharedPresenceRow({ ...base, hive_slug: 123 })).toBe(false);
   });
+
+  // EI-19330771435294981 / mig 724 — the published capability SET. Decode must
+  // tolerate its absence (a pre-upgrade peer never sends it) while rejecting a
+  // malformed payload HERE rather than at the text[] INSERT, since this value
+  // arrives over the wire from another machine and feeds an election.
+  it('accepts a row WITHOUT active_routines (pre-mig-724 peer)', () => {
+    expect(isSharedPresenceRow(base)).toBe(true);
+  });
+
+  it('accepts active_routines null / empty / populated', () => {
+    expect(isSharedPresenceRow({ ...base, active_routines: null })).toBe(true);
+    expect(isSharedPresenceRow({ ...base, active_routines: [] })).toBe(true);
+    expect(isSharedPresenceRow({ ...base, active_routines: ['git-sync'] })).toBe(true);
+  });
+
+  it('rejects a malformed active_routines payload', () => {
+    expect(isSharedPresenceRow({ ...base, active_routines: 'git-sync' })).toBe(false);
+    expect(isSharedPresenceRow({ ...base, active_routines: [1, 2] })).toBe(false);
+    expect(isSharedPresenceRow({ ...base, active_routines: ['ok', null] })).toBe(false);
+    expect(isSharedPresenceRow({ ...base, active_routines: [''] })).toBe(false);
+  });
 });

@@ -14,6 +14,7 @@ import {
   type LastAnnounce,
   type PresenceIdentity,
 } from '../presence-announce';
+import { isSharedPresenceRow, type SharedPresenceRow } from '../projections/presence';
 
 const ID: PresenceIdentity = { githubUserId: 4242, machineLabel: 'thinkpad', devicePubkey: 'pubAAA' };
 const STATE: PresenceState = { intent: 'building federation', currentView: 'harness/papercup', harnessSlug: 'papercup' };
@@ -58,6 +59,10 @@ describe('buildPresenceAnnounceRow / Op', () => {
       // (EI-18761517980514694); the publisher stamps TRUE only on a node that
       // actually fires this pot's cadence loops.
       runs_routines: null,
+      // active_routines defaults null = "no advertised capability"
+      // (EI-19330771435294981, mig 724); the publisher stamps the node's ACTIVE
+      // routine names so each election derives its OWN predicate from the set.
+      active_routines: null,
     });
   });
 
@@ -69,6 +74,25 @@ describe('buildPresenceAnnounceRow / Op', () => {
     expect(buildPresenceAnnounceRow(ID, STATE, NOW, null, true).runs_routines).toBe(true);
     expect(buildPresenceAnnounceRow(ID, STATE, NOW, null, false).runs_routines).toBeNull();
     expect(buildPresenceAnnounceRow(ID, STATE, NOW, null, null).runs_routines).toBeNull();
+  });
+
+  it('stamps active_routines only when NON-EMPTY — [] collapses to null for wire compat', () => {
+    // Same rule one field on (EI-19330771435294981). An empty set and "unknown"
+    // are the identical verdict to every consumer — not a candidate for ANY
+    // election — so collapsing both to null keeps a routine-less node's signed
+    // frame byte-identical to the pre-mig-724 wire form.
+    const set = ['git-sync', 'gym-cycle'];
+    expect(buildPresenceAnnounceRow(ID, STATE, NOW, null, null, set).active_routines).toEqual(set);
+    expect(buildPresenceAnnounceRow(ID, STATE, NOW, null, null, []).active_routines).toBeNull();
+    expect(buildPresenceAnnounceRow(ID, STATE, NOW, null, null, null).active_routines).toBeNull();
+  });
+
+  it('threads active_routines through buildPresenceAnnounceOp as a valid presence row', () => {
+    const op = buildPresenceAnnounceOp(ID, STATE, NOW, null, true, ['git-sync']);
+    const value = op.value as SharedPresenceRow;
+    expect(value.active_routines).toEqual(['git-sync']);
+    expect(value.runs_routines).toBe(true);
+    expect(isSharedPresenceRow(value)).toBe(true);
   });
   it('builds a put op keyed <github_user_id>/<machine> (mirrors the projection composeKey)', () => {
     const op = buildPresenceAnnounceOp(ID, STATE, NOW);

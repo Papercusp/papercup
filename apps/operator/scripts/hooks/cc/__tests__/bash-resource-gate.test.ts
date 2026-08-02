@@ -2472,6 +2472,65 @@ describe('interpreter inline-code write guard (EI-18691482279179647)', () => {
 });
 
 /**
+ * EI-18828866497684686 — a COMPUTED write path (derived from a parsed log, a
+ * loop variable, an env var, string concatenation — anything that is not a
+ * plain quoted literal) is invisible to `_payload_literal_tree_path`'s
+ * literal-only scan, so an interpreter write via a computed path sails
+ * through with no deny and, before this fix, no signal at all. This is the
+ * guard's own documented "honest limit" (no static scan can see a runtime-
+ * constructed path) — the fix is NOT to deny it (that would also flag the
+ * common, safe case of a computed path resolving OUTSIDE the tree, and a
+ * literal out-of-tree write like `open('/tmp/x.log','w')` must stay silent
+ * too — see the second test below), but to say so once, non-blocking, so a
+ * silent pass no longer reads as an endorsement.
+ */
+describe('interpreter write-guard advisory for a COMPUTED path (EI-18828866497684686)', () => {
+  const expectComputedAdvisory = (out: { stdout: string; status: number | null }) => {
+    expect(out.status).toBe(0);
+    const hso = JSON.parse(out.stdout).hookSpecificOutput;
+    expect(hso.permissionDecision).toBe('allow'); // soft — command proceeds
+    expect(hso.additionalContext).toContain('EI-18828866497684686');
+    expect(hso.additionalContext).toContain('COMPUTED path');
+    return hso.additionalContext as string;
+  };
+
+  it('advises (not denies) a python3 heredoc writing via a variable path derived from a loop', () => {
+    const command =
+      "python3 - <<'EOF'\n" +
+      "for f in changed_paths:\n" +
+      "    open(f, 'w').write('x')\n" +
+      'EOF';
+    const ctx = expectComputedAdvisory(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
+    expect(ctx).toContain('python3');
+  });
+
+  it('advises for `node -e` writing via fs.writeFileSync with a computed path', () => {
+    const command = `node -e "require('fs').writeFileSync(path.join(dir, name), data)"`;
+    expectComputedAdvisory(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
+  });
+
+  it('stays SILENT for a LITERAL out-of-tree write — the advisory is not "no in-tree hit", only "no literal at all"', () => {
+    const command = `python3 -c "open('/tmp/scratch.log', 'w').write('x')"`;
+    expectAllow(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
+  });
+
+  it('a deny (literal in-tree path) still wins — never merely advises when a real hit exists', () => {
+    const command = `python3 -c "open('apps/operator/generated.ts', 'w').write('x')"`;
+    const reason = denyReason(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
+    expect(reason).toContain('EI-18691482279179647');
+  });
+
+  it('does not fire for a read via a computed path (no write indicator at all)', () => {
+    const command =
+      "python3 - <<'EOF'\n" +
+      "for f in changed_paths:\n" +
+      "    print(open(f).read())\n" +
+      'EOF';
+    expectAllow(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
+  });
+});
+
+/**
  * EI-18814109122347052 — a print() LABEL containing a slash was resolved as a
  * path.
  *

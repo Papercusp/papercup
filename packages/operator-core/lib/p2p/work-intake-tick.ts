@@ -361,10 +361,15 @@ async function processOneOffer(
   }
   // No receipt here on the WON path: executeClaimedOffer (offer-executor.ts)
   // already receipts every step of its own pipeline fail-closed (P-004, M21) —
-  // emitting a second one here would be redundant, and P2P_RECEIPT_KINDS
-  // (receipts.ts) has no 'claimed'/'executed' kind to emit truthfully anyway
-  // (only 'refusal' | 'excused-breach' exist today). A distinct success-receipt
-  // kind is real product surface, out of D-004's scope — flagged, not invented.
+  // emitting a second one here would be redundant.
+  //
+  // UPDATE (EI-19333624101736074): the success-receipt kind this comment once
+  // flagged as "real product surface — flagged, not invented" now EXISTS —
+  // P2P_RECEIPT_KINDS carries 'honored', emitted on the delegated-spawn honored
+  // path. It is deliberately NOT emitted here, for the redundancy reason above
+  // and not for want of a truthful kind. If this path ever stops being covered
+  // by executeClaimedOffer's own receipts, emit kind='honored' rather than
+  // reusing a refusal kind.
   ctx.log(
     `offer ${stored.offerId}: EXECUTED (outcome=${outcome.decision.outcome}, ok=${outcome.execute.ok}${
       outcome.execute.ok ? '' : `, refusal=${outcome.execute.refusal.code}`

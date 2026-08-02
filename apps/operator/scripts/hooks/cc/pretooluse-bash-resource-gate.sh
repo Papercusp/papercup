@@ -2565,6 +2565,59 @@ def _write_call_arg_spans(body):
     return spans
 
 
+# EI-18828866497684686 — is the write call's PATH argument (its first,
+# top-level comma-separated argument) a plain literal at all, or a bare
+# expression (a variable, `os.path.join(...)`, string concatenation, an
+# f-string with no literal segment, …)? Deliberately NOT "does a literal
+# resolve in-tree" (`_payload_literal_tree_path` already answers that, and a
+# literal that resolves OUTSIDE the tree — e.g. `open('/tmp/x.log','w')` — is
+# common and safe, so it must not trip this). This only asks "is there
+# anything here for a literal-only scan to even look at" — no quote character
+# before the first TOP-LEVEL comma (respecting nested parens/brackets/braces,
+# so `open(os.path.join(a, b), 'w')`'s inner comma does not end the first
+# argument early) means the path was constructed at runtime and is invisible
+# to every literal-matching check in this guard, by the file's own documented
+# "honest limit".
+def _first_call_arg_has_no_literal(span):
+    if not span or span[0] != '(':
+        return False
+    depth = 0
+    in_quote = None
+    first_arg_end = None
+    i, n = 0, len(span)
+    while i < n:
+        ch = span[i]
+        if in_quote:
+            if ch == '\\' and i + 1 < n:
+                i += 2
+                continue
+            if ch == in_quote:
+                in_quote = None
+            i += 1
+            continue
+        if ch in '\'"':
+            in_quote = ch
+        elif ch in '([{':
+            depth += 1
+        elif ch in ')]}':
+            depth -= 1
+            if depth == 0:
+                first_arg_end = i
+                break
+        elif ch == ',' and depth == 1:
+            first_arg_end = i
+            break
+        i += 1
+    if first_arg_end is None:
+        return False  # unbalanced — nothing safe to conclude
+    first_arg = span[1:first_arg_end]
+    return not any(c in first_arg for c in ('\'', '"'))
+
+
+def _has_computed_write_path(body):
+    return any(_first_call_arg_has_no_literal(_span) for _span in _write_call_arg_spans(body))
+
+
 def _payload_literal_tree_path(body, canon, cwd):
     # Every quoted token inside a write-call argument span (see
     # _write_call_arg_spans above — EI-18814109122347052) that looks
@@ -2634,17 +2687,19 @@ def _interpreter_write_guard():
     # to `_payload_literal_tree_path`, same "honest limit" this guard's own
     # header comment already documents as permanent (no static scan of the
     # command text can see a runtime-constructed path). Silently allowing it
-    # is the correct call — deny-by-default here would flag the overwhelmingly
-    # common, SAFE case of a script writing an out-of-tree scratch/log file via
-    # a computed path too, reopening exactly the false-positive class this file
-    # has already paid for six times over (see the family of EI-* comments
-    # above). But a SILENT pass reads as an endorsement an agent has no way to
-    # tell apart from "this guard checked and found nothing wrong" — so when a
-    # write-indicating interpreter body clears every check above with NO
-    # literal in-tree hit, say so, once per session, non-blocking: the guard
-    # only sees literal paths; a computed one inside the tree still bypasses
-    # locking and this guard cannot catch it.
-    _saw_write_no_hit = False
+    # is the correct call — deny-by-default here would ALSO flag the
+    # overwhelmingly common, SAFE case of a script writing an out-of-tree
+    # scratch/log file via a LITERAL path (e.g. `open('/tmp/x.log','w')`),
+    # reopening exactly the false-positive class this file has already paid
+    # for six times over (see the family of EI-* comments above) — so the
+    # advisory below fires ONLY when the path argument has NO literal at all
+    # (`_has_computed_write_path`), never merely "no in-tree literal found".
+    # A silent pass on a genuinely computed path still reads as an
+    # endorsement an agent cannot tell apart from "checked, nothing wrong" —
+    # so say so, once per session, non-blocking: the guard only sees literal
+    # paths; a computed one inside the tree still bypasses locking and this
+    # guard cannot catch it.
+    _saw_computed_write = False
     for _body in _bodies:
         if not _body_indicates_file_write(_body):
             continue  # a read, a stdout/stderr print, or no recognized file
@@ -2662,9 +2717,9 @@ def _interpreter_write_guard():
                 'Genuinely a scratch/log file? Write it outside the tree '
                 '(~/.papercusp/scratch or /tmp).' % (_interp, _hit)
             )
-        else:
-            _saw_write_no_hit = True
-    if _saw_write_no_hit and not ADVISORY:
+        elif _has_computed_write_path(_body):
+            _saw_computed_write = True
+    if _saw_computed_write and not ADVISORY:
         ADVISORY = (
             'shell-write guard notice (EI-18828866497684686): this `%s` invocation writes a '
             'file (open()/write_text()/writeFileSync()/etc.) but no LITERAL in-tree path was '

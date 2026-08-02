@@ -181,7 +181,8 @@ const MAX_HARNESS_FANOUT = 20;
  * The quotas could only be deleted by ALSO collapsing the three per-pool
  * searches into one multi-scope search — see the fan-out below for why.
  */
-const INJECTION_TOTAL_LIMIT = 12;
+/** Exported so the P-002 guard probes at production's own ceiling, not a copy. */
+export const INJECTION_TOTAL_LIMIT = 12;
 
 /**
  * Watermark window for the pre-turn dedup (docs-and-memory-as-projections D-006):
@@ -269,6 +270,46 @@ function injectFusionMode(): 'floored-union' | 'cosine-gated' {
   return process.env.PAPERCUSP_MEMORY_FUSION_MODE === 'floored-union'
     ? 'floored-union'
     : 'cosine-gated';
+}
+
+/**
+ * THE PUSH-PATH ADMISSION CONTRACT, read in ONE place (P-002).
+ *
+ * These three values decide TOGETHER which entries an auto-injection may admit:
+ * the cosine floor, the lexical bar, and the fusion mode that says whether a
+ * lexical-only hit is admissible at all. The third is not a detail — under
+ * `floored-union` the lexical leg admits independently of the cosine floor, so
+ * the floor's effect on the ADMITTED SET is a function of all three, never of
+ * `minScore` alone (D-010, and the reason D-008's "just raise the floor" fails).
+ *
+ * Exported so the P-002 recurrence guard measures THE CONSTRUCTION THIS PATH
+ * RUNS instead of a copy of it — which is the difference between a guard and a
+ * decoration. The failure mode is already in the tree: `bench/precision-monitor.ts`
+ * documents itself as measuring "the EXACT production push floor" and hardcodes
+ * `fusionMode: 'floored-union'` — the value this path STOPPED using when D-010
+ * flipped the push default to `cosine-gated`. A copied constant cannot notice it
+ * has gone stale, so that monitor has been reporting a shape production no longer
+ * runs. A guard frozen the same way would pass forever against the shape it
+ * captured on the day it was written.
+ *
+ * Reading the live values (env overrides included) makes the guard track a
+ * retune automatically and FAIL if the floor is removed outright.
+ */
+export interface PushSearchFloors {
+  /** Absolute cosine floor for the cosine leg; `undefined` = disabled. */
+  minScore: number | undefined;
+  /** Normalized lexical admission bar; `undefined` = the backend default. */
+  minLexScore: number | undefined;
+  /** Whether a lexical-only hit may be admitted at all. */
+  fusionMode: 'floored-union' | 'cosine-gated';
+}
+
+export function pushSearchFloors(): PushSearchFloors {
+  return {
+    minScore: injectMinScore(),
+    minLexScore: injectMinLexScore(),
+    fusionMode: injectFusionMode(),
+  };
 }
 
 /**
@@ -571,10 +612,10 @@ async function buildBlockInner(
   let harnessHits: Array<{ hit: MemoryEntry; slug: string }> = [];
   let hiveHits: Array<{ hit: MemoryEntry; slug: string }> = [];
   try {
-    const minScore = injectMinScore();
-    const minLexScore = injectMinLexScore();
-    // F-B (D-010): the limit is a CEILING on this path, not a target.
-    const fusionMode = injectFusionMode();
+    // P-002: read the admission contract from the ONE exported constructor the
+    // recurrence guard also calls, so the guard cannot drift from this path.
+    // F-B (D-010): `fusionMode` makes the limit a CEILING here, not a target.
+    const { minScore, minLexScore, fusionMode } = pushSearchFloors();
     // F-D (P-034, D-014): the redundancy penalty — see injectDiversityLambda().
     const diversityLambda = injectDiversityLambda();
 

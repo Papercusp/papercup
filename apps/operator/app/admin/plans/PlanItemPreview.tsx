@@ -236,6 +236,13 @@ export function buildPlanItemAttention({
     body: selected?.text ?? '',
     status: selected?.storedStatus ?? '',
     importance: 'normal',
+    // Pre-existing TS2739 (missing `tier` + `triageState`), fixed in passing: it
+    // was MASKED because tsc reports one error per object literal and the
+    // `harnessSlug` mismatch above took the slot. `tier` upholds the documented
+    // AttentionItem invariant `needsHuman === (tier === 'decision')`, and an
+    // item synthesized on the fly has by definition never been triaged.
+    tier: isNeedsHuman ? 'decision' : 'activity',
+    triageState: 'untriaged',
     needsHuman: isNeedsHuman,
     actions: isNeedsHuman
       ? [

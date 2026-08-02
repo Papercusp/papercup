@@ -82,6 +82,18 @@ export type DelegatedSpawnVerdict =
    * would dress the exact ambiguity this module exists to remove up as a verdict.
    */
   | 'indeterminate'
+  /**
+   * The honoring host FEDERATED a success receipt (kind='honored',
+   * EI-19333624101736074), but this host cannot observe the member itself.
+   *
+   * Strictly stronger than `indeterminate` and strictly weaker than
+   * `honored-live`, and the distinction is the point: we now KNOW the request
+   * was honored and by whom and on which account — we do NOT know whether the
+   * member survived boot, because the receipt attests a LAUNCH, not a boot.
+   * Never collapse this into `honored-live` (over-claims a booted member) or
+   * into `no-response` (flatly false — someone did honor it).
+   */
+  | 'honored-unverified'
   /** Still inside the honor window with nothing observed yet. Not a failure. */
   | 'pending';
 
@@ -183,6 +195,16 @@ export function classifyDelegatedSpawnOutcome(args: {
     };
   }
 
+  // EI-19333624101736074: the honoring host now federates a SUCCESS receipt too.
+  // It is direct evidence that the request was honored, and it survives the
+  // member-evidence blackout that makes a remote outcome unknowable — so it must
+  // be consulted BEFORE any inference from an absence of members. Its detail
+  // names the account the seat actually ran under, which is the first thing
+  // asked when a member is honored and then dies.
+  const honoredReceipt = receipts
+    .filter((r) => r.kind === 'honored')
+    .sort((a, b) => a.tsMs - b.tsMs)[0];
+
   // Presence rows carry no request id, so candidacy is "same fleet, appeared
   // after the request was published". That is a heuristic, and it is REPORTED
   // as one whenever another request could also claim these members.
@@ -195,6 +217,29 @@ export function classifyDelegatedSpawnOutcome(args: {
     }));
 
   if (candidates.length === 0) {
+    // A success receipt settles WHETHER it was honored even when nothing else
+    // crosses the wire — which is exactly the remote case. It does NOT settle
+    // whether the member booted (the receipt attests a launch), so this stays
+    // short of `honored-live`.
+    if (honoredReceipt) {
+      return {
+        verdict: 'honored-unverified',
+        detail:
+          `the honoring host federated a success receipt for this request${
+            honoredReceipt.detail ? `: ${honoredReceipt.detail}` : ''
+          } — so it WAS honored. ` +
+          (args.memberEvidenceAvailable === false
+            ? 'This host cannot see the member itself (a remote honor: the fleet registry is machine-local and ' +
+              'presence rows are reaped), and the receipt attests that the member PROCESS was launched, not that it ' +
+              'booted — so whether it survived boot is still unknown from here. Read the member log ON the honoring host.'
+            : 'No member matching this request appeared on this host, though member evidence IS available here — so ' +
+              'the member most likely died before it could register presence. Read its boot log for the cause.'),
+        attribution: 'none',
+        members: [],
+        shortfall: request.count,
+        actionable: true,
+      };
+    }
     // A remote honor leaves NO member trace on this host, so "no members" is not
     // evidence of anything. Say so instead of manufacturing a verdict from an
     // absence we already know to be uninformative.
@@ -202,11 +247,12 @@ export function classifyDelegatedSpawnOutcome(args: {
       return {
         verdict: 'indeterminate',
         detail:
-          `the ${Math.round(windowMs / 60_000)}-min honor window elapsed with no refusal receipt, and this host holds ` +
+          `the ${Math.round(windowMs / 60_000)}-min honor window elapsed with no receipt of any kind, and this host holds ` +
           'NO member evidence for a remote honor (the fleet registry is machine-local and presence rows are reaped) — ' +
           'so honored-and-died, honored-and-finished, and never-honored are INDISTINGUISHABLE from here. This is a ' +
-          'gap in the protocol, not a finding about this request: the honoring host emits a receipt only on refusal. ' +
-          'Resolve it by reading the member log ON the honoring host, or land the honored-path success receipt.',
+          'gap in the protocol, not a finding about this request. The honoring host emits a success receipt ' +
+          "(kind='honored') as of EI-19333624101736074, so a peer that emits NEITHER receipt is most likely running a " +
+          'build that predates it — check its version before concluding anything. Otherwise read the member log ON that host.',
         attribution: 'none',
         members: [],
         shortfall: request.count,
@@ -269,9 +315,14 @@ export function classifyDelegatedSpawnOutcome(args: {
       detail:
         `PHANTOM HONOR: ${diedAtBoot.length} member(s) joined '${request.fleetSlug}' and then died within ` +
         `${Math.round(bootMs / 1000)}s (shortest lifetime ${Math.min(...diedAtBoot.map((m) => m.lifetimeMs))}ms). ` +
-        'The seat was consumed but no work can have been done. The honoring host emits no success receipt, so this ' +
-        'is only visible by reconciliation — read the member log ON that host for the boot error (an auth failure is ' +
-        'the common cause; see EI-19331694139523035).' +
+        'The seat was consumed but no work can have been done. ' +
+        (honoredReceipt
+          ? // The success receipt attests the LAUNCH and names the account, which is
+            // the first thing to check when the member then dies at boot.
+            `The honoring host's success receipt says${honoredReceipt.detail ? `: ${honoredReceipt.detail}` : ' it launched'} — ` +
+            'so compare that account against the boot error (an auth failure is the common cause; see EI-19331694139523035).'
+          : 'The honoring host emitted no success receipt, so this is only visible by reconciliation — read the member ' +
+            'log ON that host for the boot error (an auth failure is the common cause; see EI-19331694139523035).') +
         shortfallNote +
         caveat,
       attribution,

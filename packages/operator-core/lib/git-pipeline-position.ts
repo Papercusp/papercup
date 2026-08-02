@@ -2520,6 +2520,20 @@ export async function gitPipelinePosition(
     }
     return v;
   };
+  // WI-6484: `!targetSha` means there is NOTHING TO MEASURE — no commit has ever
+  // touched this path, an explicit sha never resolved, or neither a path nor a sha
+  // was supplied — not that the four legs below were measured and genuinely came
+  // back false. Without this hoist, `positions.*` silently stays at its initialized
+  // `false`, and the ONLY channel that distinguishes "measured false" from "nothing
+  // to measure" for a consumer that reads just the headline (notably the
+  // `git.pipelinePosition` state cell, whose `positionsUnknown` hoist is exactly
+  // that channel) never fires — "deployed: false" then reads as "not deployed yet,
+  // wait for it", when waiting is in fact infinite (the overwhelmingly common cause
+  // is a typo'd/renamed path). See the `notes` pushed above (e.g. "No commit has
+  // touched '<path>' yet") for the human-readable reason; this is its branchable form.
+  if (!targetSha) {
+    positionsUnknown.push('committedLocal', 'onStaging', 'inMain', 'deployed');
+  }
   if (targetSha) {
     positions.committedLocal = readLeg('committedLocal', await refContains(git, gitDir, 'HEAD', targetSha));
     if (submodule) {
@@ -2953,6 +2967,28 @@ export async function gitPipelinePosition(
       unknown: cellUnknown(
         'not-applicable',
         `the gate judges the superproject, which stores only a gitlink for submodule '${submodule}', so candidate containment is not measurable for this path — check the committed gitlink pin instead`,
+      ),
+    });
+  } else if (!changeInCandidate.judgingSha) {
+    // WI-6485: the real path branch ran (relPath && !submodule) but no checkpoint
+    // run is currently in flight, so `judgingSha` is null for the SAME reason as
+    // the sha-only-probe and submodule legs above (nothing to compare against) —
+    // an ordinary, enumerable, `not-applicable` fact, not an absence of
+    // measurement. The prior code left this branch of the null unexplained: it
+    // hoists the sha-only-probe and submodule cases but silently dropped this
+    // one, so a caller reading just `judgingSha: null` + an empty hoist read it
+    // as "measured, nothing unknown" via the CellHoist contract — the exact same
+    // defect class as WI-6484's `positions.*` gap, one leg over. `detail` (when
+    // present) already carries the human-readable reason, e.g. "A checkpoint
+    // fired now would judge <sha>, which DOES carry this file's current
+    // content." — reused here as the branchable qualifier's own detail.
+    verdictUnknown.push({
+      leg: 'changeInCandidate.judgingSha',
+      unknown: cellUnknown(
+        'not-applicable',
+        changeInCandidate.detail
+          ? `no checkpoint run is in flight right now — nothing to compare against yet. ${changeInCandidate.detail}`
+          : 'no checkpoint run is in flight right now — nothing to compare against yet',
       ),
     });
   }

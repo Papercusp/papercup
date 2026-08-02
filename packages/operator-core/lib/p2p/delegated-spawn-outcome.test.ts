@@ -58,6 +58,91 @@ describe('classifyDelegatedSpawnOutcome (EI-19333624101736074)', () => {
     expect(r.members[0]).toMatchObject({ sessionState: 'ended', lifetimeMs: 3_200 });
   });
 
+  // The success receipt (kind='honored') is the other half of this item: it is
+  // the ONE signal that crosses machines on the happy path, so it resolves the
+  // question member evidence cannot answer remotely.
+  describe("the federated success receipt (kind='honored')", () => {
+    const honoredReceipt = (detail: string) => ({
+      kind: 'honored',
+      detail,
+      tsMs: REQUESTED_AT + 2_000,
+    });
+
+    it('a REMOTE honor WITH a success receipt ⇒ honored-unverified, not indeterminate — the receipt settles that it was honored', () => {
+      const r = classifyDelegatedSpawnOutcome({
+        request: request(),
+        receipts: [honoredReceipt("honored: opened 1/1 member(s) for fleet 'fed-drill' with account='default'")],
+        members: [],
+        nowMs: NOW_AFTER,
+        memberEvidenceAvailable: false,
+      });
+      expect(r.verdict).toBe('honored-unverified');
+      // The account is the first thing asked when a member is honored then dies.
+      expect(r.detail).toContain("account='default'");
+      expect(r.detail).toMatch(/WAS honored/);
+      // It must NOT over-claim a booted member...
+      expect(r.verdict).not.toBe('honored-live');
+      expect(r.detail).toMatch(/not that it\s+booted|launched, not that it booted|survived boot is still unknown/);
+      // ...nor under-claim that nobody responded.
+      expect(r.detail).not.toMatch(/nobody honored/i);
+      expect(r.actionable).toBe(true);
+    });
+
+    it('a success receipt with member evidence AVAILABLE but no member ⇒ honored-unverified pointing at a pre-presence death', () => {
+      const r = classifyDelegatedSpawnOutcome({
+        request: request(),
+        receipts: [honoredReceipt('honored: opened 1/1')],
+        members: [],
+        nowMs: NOW_AFTER,
+        memberEvidenceAvailable: true,
+      });
+      expect(r.verdict).toBe('honored-unverified');
+      expect(r.detail).toMatch(/died before it could register presence/);
+    });
+
+    it('a refusal still WINS over a success receipt for the same offer (a refusal is terminal)', () => {
+      const r = classifyDelegatedSpawnOutcome({
+        request: request(),
+        receipts: [
+          honoredReceipt('honored: opened 1/1'),
+          { kind: 'refusal', code: 'seats_exhausted', detail: 'no seats', tsMs: REQUESTED_AT + 500 },
+        ],
+        members: [],
+        nowMs: NOW_AFTER,
+        memberEvidenceAvailable: false,
+      });
+      expect(r.verdict).toBe('refused');
+      expect(r.refusalCode).toBe('seats_exhausted');
+    });
+
+    it('a phantom WITH a success receipt names the account to compare against the boot error', () => {
+      const joined = REQUESTED_AT + 30_000;
+      const r = classifyDelegatedSpawnOutcome({
+        request: request(),
+        receipts: [honoredReceipt("opened 1/1 with account='default' (downgraded --account=auto → default)")],
+        members: [member({ firstSeenMs: joined, lastActiveMs: joined + 3_200, sessionState: 'ended' })],
+        nowMs: NOW_AFTER,
+      });
+      expect(r.verdict).toBe('honored-then-died');
+      expect(r.detail).toContain('PHANTOM HONOR');
+      expect(r.detail).toContain("account='default'");
+      expect(r.detail).toMatch(/compare that account against the boot error/);
+    });
+
+    it('a peer emitting NEITHER receipt is reported as possibly running an older build, not as a failure', () => {
+      const r = classifyDelegatedSpawnOutcome({
+        request: request(),
+        receipts: [],
+        members: [],
+        nowMs: NOW_AFTER,
+        memberEvidenceAvailable: false,
+      });
+      expect(r.verdict).toBe('indeterminate');
+      expect(r.detail).toMatch(/predates it/);
+      expect(r.detail).not.toMatch(/nobody honored/i);
+    });
+  });
+
   it('a member that RAN and finished is honored-completed, never a phantom', () => {
     const r = classifyDelegatedSpawnOutcome({
       request: request(),
