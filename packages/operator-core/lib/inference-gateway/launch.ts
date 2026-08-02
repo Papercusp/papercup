@@ -261,6 +261,81 @@ function makeCredentialHealthAlert(
 }
 
 /**
+ * Build the gateway's DB-HEALTH transition handler (EI-19303809952284205). Fired ONCE per episode by
+ * db-health.ts when the durable side-paths cross from healthy → sustained-failing (and once again on
+ * recovery) — never per failed write, so a flapping reconnect cannot spam the fleet.
+ *
+ * Deliberately the SAME shape as `makeCredentialHealthAlert` above: a durable transition-only
+ * escalation (idempotent across the whole episode via `source: 'gateway-db-health'`, so an
+ * already-open alert is never piled on) plus a fleet broadcast, everything fire-and-forget and
+ * every IO failure swallowed — this is called from inside the gateway's own `.catch()` handlers and
+ * must never throw back into them.
+ *
+ * The recovery leg RESOLVES the open escalation rather than opening a second one: the 2026-08-01
+ * incident's whole shape was "nobody noticed for hours", and an alert that cannot close itself
+ * becomes noise that trains the reader to ignore it (the EI-2146 lesson from liveness-alarm).
+ */
+function makeDbHealthAlert(
+  ws: string | undefined,
+  log: (level: 'info' | 'warn' | 'error', msg: string) => void,
+): (event: { healthy: boolean; snapshot: DbHealthSnapshot }) => void {
+  const identity = { ownerId: 'inference-gateway', ownerLabel: 'inference-gateway', source: 'static-client' as const, workspaceId: ws ?? null, userId: null };
+  const SOURCE = 'gateway-db-health';
+  return ({ healthy, snapshot }) => {
+    void (async () => {
+      const ops = snapshot.failingOps.join(', ') || 'unknown';
+      const mins = snapshot.unhealthyForMs === null ? 0 : Math.round(snapshot.unhealthyForMs / 60_000);
+      const summary = healthy
+        ? `Inference gateway REGAINED its database — durable account writes are landing again`
+        : `Inference gateway has LOST its database — ${ops} failing for ${mins}m; account usage-window writes are being dropped`;
+      const body = healthy
+        ? `The gateway's durable side-paths (usage-window projection / pool reload / rate hints / scale observer) are succeeding again. /healthz is back to 200.`
+        : `The gateway is still serving traffic, but every durable write is failing (${ops}; last error: ${snapshot.lastError ?? 'unknown'}). ` +
+          `While this persists: account usage-window observations are DROPPED (the Accounts tab freezes at its last reading), the account pool ` +
+          `cannot be reloaded (the gateway falls back to a single synthetic credential and IGNORES every account pin, reporting healthyAccounts: 0), ` +
+          `and auto-scale-out is inert. ` +
+          (snapshot.connectionLevel
+            ? `The errors are connection-level, so the database is UNREACHABLE from this process — most likely a cached-at-boot Postgres port that no longer exists (see endStalePool, EI-19285027465993737: a long-lived process that predates that fix stays wedged until it restarts, and the dead port appears in no config file). Restarting the gateway is the fastest recovery. `
+            : `The errors are NOT connection-level — the database is reachable and rejecting these writes, so check permissions/schema before restarting. `) +
+          `/healthz now reports ok:false + 503 for as long as this lasts.`;
+      // Durable, transition-only escalation (idempotent per episode).
+      try {
+        const { openEscalation, listEscalations, resolveEscalation } = await import('../agent-tools/coordination/escalations');
+        const open = await listEscalations({ status: 'open' });
+        const mine = open.filter((e) => (e as Record<string, unknown>).source === SOURCE);
+        if (healthy) {
+          for (const e of mine) {
+            await resolveEscalation({
+              msg_id: String((e as Record<string, unknown>).msg_id ?? ''),
+              choice: 'recovered',
+              note: summary,
+              resolver: identity.ownerId,
+            });
+          }
+        } else if (mine.length === 0) {
+          await openEscalation(identity, {
+            severity: 'blocker',
+            summary,
+            body,
+            meta: { source: SOURCE, failingOps: snapshot.failingOps, connectionLevel: snapshot.connectionLevel, lastError: snapshot.lastError },
+          });
+        }
+      } catch (e) {
+        log('warn', `gateway db-health escalation failed: ${(e as Error).message}`);
+      }
+      // Loud fleet broadcast (best-effort, independent of the escalation) — every agent routing
+      // through this gateway is running on ignored account pins while it lasts.
+      try {
+        const { sendMessage } = await import('../agent-tools/coordination/messages');
+        await sendMessage(identity, { to: ['*'], summary, body, category: 'service-health' });
+      } catch (e) {
+        log('warn', `gateway db-health broadcast failed: ${(e as Error).message}`);
+      }
+    })();
+  };
+}
+
+/**
  * Build the gateway `onOrgDisallowed` side-channel. The gateway calls this FIRE-AND-FORGET the first time an
  * account returns a short streak of org/subscription-disqualified 403s ("not allowed for this organization" /
  * "subscription disabled for claude code") — a PERMANENT Anthropic-side disable the 6h in-memory pause can't
@@ -760,6 +835,11 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
   // POLL the DB pool (B-HOT-1): periodically hot-reload so an account registered / removed / egress-changed
   // via accounts:* applies LIVE (no restart — the friction that needed two restarts to swap one account).
   // Default 60s; 0 disables. Skipped when the pool can't hot-reload (a single-account back-compat pool).
+  // EI-19303809952284205: fire ONE durable escalation + fleet broadcast when the gateway's durable
+  // paths cross into sustained failure, and resolve it on recovery. db-health.ts emits only on a
+  // TRANSITION, so a flapping reconnect cannot turn this into a broadcast storm.
+  setDbHealthTransitionHandler(makeDbHealthAlert(opts.workspace, log));
+
   const reloadMs = opts.poolReloadIntervalMs ?? 60_000;
   let reloadTimer: ReturnType<typeof setInterval> | undefined;
   if (reloadMs > 0 && pool.reload) {
@@ -851,6 +931,10 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
       if (reloadTimer) clearInterval(reloadTimer);
       if (hintTimer) clearInterval(hintTimer);
       if (localBackendTimer) clearInterval(localBackendTimer);
+      // EI-19303809952284205: drop the alert handler with the service. The tracker is a process
+      // singleton, so leaving it registered would let a torn-down service (a test, a restarted
+      // in-process gateway) keep firing escalations at the fleet.
+      setDbHealthTransitionHandler(undefined);
       unobserve();
       await gateway.close();
     },

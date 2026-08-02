@@ -1377,7 +1377,7 @@ export interface IssueClaimabilityReading {
 /**
  * Read the FULL claimability picture — {@link aggregateIssueClaimExclusions}'s counts,
  * {@link listIssueClaimableRows}' survivor rows, and optionally
- * {@link sampleIssueClaimExclusions}' per-floor id sample — inside ONE read-only
+ * {@link sampleIssueClaimExclusions}' per-floor id sample — inside ONE
  * REPEATABLE READ transaction, so all three observe the SAME snapshot.
  *
  * WHY (WI-5947): sharing the inner subquery + the floor predicate makes the three reads
@@ -1391,11 +1391,14 @@ export interface IssueClaimabilityReading {
  * did not exist. One snapshot removes the race at the source, and makes the "cannot
  * diverge" guarantee TRUE rather than aspirational.
  *
- * REPEATABLE READ (not SERIALIZABLE): these are pure reads, so a stable snapshot is the
- * entire requirement — and a read-only REPEATABLE READ transaction cannot raise a
- * serialization failure, so this adds a consistency guarantee without adding a retry path.
- * A stalled read surfaces as a bounded statement_timeout error rather than hanging: the
- * admin pool deliberately carries NO statement_timeout (migrations run on it).
+ * REPEATABLE READ (not SERIALIZABLE): a stable snapshot is the entire requirement — and
+ * since nothing here ever writes to a REAL table (the transaction only reads them, plus
+ * writes to its own session-local temp table — see EI-18802055183255275 below for why this
+ * is no longer marked SQL `READ ONLY`), there is no write-write conflict this transaction
+ * could ever be a party to, so it cannot raise a serialization failure and this adds a
+ * consistency guarantee without adding a retry path. A stalled read surfaces as a bounded
+ * statement_timeout error rather than hanging: the admin pool deliberately carries NO
+ * statement_timeout (migrations run on it).
  *
  * The reading is ALL-OR-NOTHING BY DESIGN: if the transaction fails, this throws. It never
  * degrades to unsynchronized reads or to a synthesised zero — "could not measure" must stay
@@ -1437,7 +1440,20 @@ export async function readIssueClaimability(
     // Both must precede the first DATA statement of the transaction: PG rejects
     // SET TRANSACTION once a query has run, which would silently leave the reads on
     // READ COMMITTED — i.e. exactly the unsynchronized behaviour this removes.
-    await tx.unsafe('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY');
+    //
+    // EI-18802055183255275: REPEATABLE READ only — NOT ", READ ONLY" anymore. A real-DB
+    // integration test caught this the moment it exercised the temp-table materialization
+    // below against live Postgres (the mocked-pg unit tests in claimability-snapshot.test.ts
+    // stub every query, so they could not): Postgres unconditionally refuses `CREATE TABLE
+    // AS` — including for a TEMP table — inside a READ ONLY transaction ("cannot execute
+    // CREATE TABLE AS in a read-only transaction", PG's read-only guard does not special-case
+    // this one command the way it special-cases INSERT/UPDATE/DELETE against a temp
+    // relation). REPEATABLE READ alone still gives the ONE property this function actually
+    // needs (WI-5947's stable snapshot — every read below observes the same point-in-time
+    // view of the real tables); READ ONLY was defense-in-depth against an accidental write to
+    // a REAL table, which this function still never performs (every write below targets only
+    // the session-local temp table created below).
+    await tx.unsafe('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ');
     await tx.unsafe(`SET LOCAL statement_timeout = ${stmtMs}`);
     const client = tx as unknown as OrgSql;
 
@@ -1454,13 +1470,11 @@ export async function readIssueClaimability(
     // including under `breakdownOnly:true`, which still paid 2 of those passes per the
     // WI-6673 unconditional admitted-composition read). Materializing once turns that into
     // ~1 full pass + several sub-100ms scans of the already-computed ~14k-row temp table.
-    // Temp tables ARE permitted inside a READ ONLY transaction (they are session-local,
-    // not the kind of catalog/relation write the read-only guard exists to block); ON
-    // COMMIT DROP cleans it up when this transaction ends, so a pooled connection can
-    // never carry a stale copy into its next, unrelated checkout — and each concurrent
-    // caller gets its OWN connection for the duration of `sql.begin`, so the fixed literal
-    // table name never collides across concurrent readIssueClaimability calls (Postgres
-    // temp tables are per-backend-session, invisible across connections).
+    // ON COMMIT DROP cleans the temp table up when this transaction ends, so a pooled
+    // connection can never carry a stale copy into its next, unrelated checkout — and each
+    // concurrent caller gets its OWN connection for the duration of `sql.begin`, so the fixed
+    // literal table name never collides across concurrent readIssueClaimability calls
+    // (Postgres temp tables are per-backend-session, invisible across connections).
     const states = [...(opts.states ?? ISSUE_FAMILY_CLAIMABLE_STATES)];
     const issueWs = issuesScopeWorkspace();
     const operatorScopeSlug = `operator:${issueWs}`;

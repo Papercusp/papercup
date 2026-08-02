@@ -58,7 +58,19 @@ vi.mock('../../coordination/presence', async (importOriginal) => ({
 
 vi.mock('../../plans/source', () => ({
   resolveHarnessPlansDir: vi.fn(async (slug: string) => ({ harnessSlug: slug, workspaceId: 'ws-1' })),
-  readPlanBySlug: vi.fn(async () => ({ slug: 'my-plan' })),
+  // Contract-shaped on purpose. The real readPlanBySlug resolves
+  // `{ parsed, archived, row: PlanRow } | null` — `row` is NOT optional. The
+  // P-006 start gate reads row.templateData / row.template / row.inputSchema,
+  // so a stub without `row` throws a TypeError that the handler's surrounding
+  // catch disguises as "Could not resolve plan ..." — which then fails
+  // JSON.parse in every assertion here rather than pointing at the real cause.
+  // template/inputSchema null => planSchemaSource 'none' => start gate ready.
+  readPlanBySlug: vi.fn(async () => ({
+    slug: 'my-plan',
+    parsed: { items: [] },
+    archived: false,
+    row: { planSlug: 'my-plan', template: null, inputSchema: null, templateData: null },
+  })),
 }));
 
 vi.mock('../_shared', () => ({

@@ -137,7 +137,10 @@ describe('readIssueClaimability — one snapshot for every claimability read (WI
     const pg = makePool();
     await readIssueClaimability(undefined, { ...OPTS, client: pg.client }, { limit: 20, sampleLimit: 5 });
 
-    expect(pg.txLog[0]).toBe('EXEC:SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY');
+    // EI-18802055183255275: no longer ", READ ONLY" — Postgres unconditionally refuses
+    // `CREATE TABLE AS` (even for a TEMP table) inside a read-only transaction, and this
+    // function now materializes one. See the matching comment at the call site.
+    expect(pg.txLog[0]).toBe('EXEC:SET TRANSACTION ISOLATION LEVEL REPEATABLE READ');
     expect(pg.txLog[1]).toMatch(/^EXEC:SET LOCAL statement_timeout = \d+$/);
     // Nothing may execute ahead of the isolation preamble — including the CREATE TEMP
     // TABLE materialization, which is itself the first QUERY (data statement).
