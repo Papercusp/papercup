@@ -98,3 +98,61 @@ Scratch sits at **13G** against a 24h GC retention
 of a write-only telemetry call that nobody reads.
 
 If you are hunting spill volume, start there — not with the agents.
+
+## A column cap does not transfer — check the line structure first
+
+OMP caps output at 512 columns so one very wide line cannot eat a whole budget.
+Measured against real spilled output here, 89.5% of agent-facing bytes lie
+beyond column 512 — which looks like overwhelming confirmation and is not.
+
+Every sampled spill file has **exactly 10 lines, exactly one of which exceeds
+512 chars, and it begins `{"ok":true,...`**. The width is not a pathological
+wide line among normal ones; it is the serialized JSON result on a single line.
+A 512-column cap applied there would not make a wide line harmless — it would
+truncate every result to 512 characters.
+
+The cap only means anything where output is genuinely line-oriented text:
+
+| surface | lines >512 | bytes beyond col 512 | max line |
+|---|---|---|---|
+| `capability:bash` | 1.0% | 28.4% | 13,741 |
+| `logs:read` | 0.6% | 46.0% | 23,787 |
+| `sessions:read` | 26.5% | 47.4% | 1,625 |
+| `capability:read` | 0.1% | 1.8% | 2,051 |
+
+On `capability:bash` and `logs:read` the OMP pattern is real — ~1% of lines
+carry 28–46% of the bytes. But those surfaces produced 29 and 4 spill files
+respectively against `activity:report`'s 64,326, so a cap there is correct and
+almost irrelevant to total volume. Fix the 202KB write-tool response first.
+
+**The general lesson:** a headline percentage far outside its expected range is
+usually telling you something about the measurement's definition, not about the
+system. Check the line/record structure before porting a mechanism that assumes
+one.
+
+## Which truncation is machine-readable
+
+Three distinct truncation paths reach an agent, and they differ:
+
+| path | signal | recoverable by paging the spill? |
+|---|---|---|
+| payload-tier projection | **structured** — `_meta.payloadProjection` (`serialize-result.ts:241`) | no |
+| result-door own cut | **structured** — `_meta.resultDoor` | yes |
+| tool's own field cutoff | prose only — regex-detected `"*_truncated": true` | no |
+
+The door already branched structurally on the upstream `payloadProjection`
+marker (`result-door.ts:181`) while announcing **its own** cut only in the
+`[result-door: …]` prose footer — so the highest-frequency truncation path on
+the box was the one a consumer could detect only by string-matching English.
+That asymmetry is now closed: the door stamps `_meta.resultDoor`
+(`truncated`, `spillPath`, `spillUri`, `originalChars`, `doorTokens`,
+`upstreamProjected`, `innerTruncationMarkers`) alongside the footer.
+
+The prose stays. It is what teaches the reader the knob that would have
+prevented the truncation; the structured marker is what lets code branch on it.
+
+The third row is architectural rather than an oversight: each tool bakes its own
+field-level cutoff into the body it serializes, so there is no shared marker to
+stamp (EI-18745696571494110). Both non-recoverable rows mean the same thing for
+a reader — **do not page the spill, re-call the tool** with `payloadTier:'full'`
+or a wider per-field limit.

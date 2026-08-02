@@ -234,6 +234,91 @@ export interface SpawnMembersResult {
   firstError: string | null;
 }
 
+/** Result of {@link defaultVerifyLocalMemberBoot} / a caller's DI override. */
+export interface LocalBootVerifyResult {
+  /** True when a NEW presence row for `fleetSlug` was observed locally within the
+   *  verify window — i.e. an agent actually booted, not merely that a spawn call
+   *  returned 'ok'. */
+  observed: boolean;
+  /** Human detail — always states what evidence produced the verdict. */
+  detail: string;
+}
+
+/** How long to locally poll `coord_presence` for the spawned member's row before
+ *  finalizing 'honored' (Windows desktop-bridge honors only — see
+ *  {@link defaultVerifyLocalMemberBoot}). Mirrors the order of magnitude of
+ *  spawnHeadless's own HEADLESS_BOOT_RECEIPT_MS boot-death window: long enough for a
+ *  normal psu boot (coord:orient runs within the first few seconds), short enough to
+ *  not meaningfully stall the replication-apply loop it runs inside. */
+export const LOCAL_BOOT_VERIFY_MS = 8000;
+const LOCAL_BOOT_VERIFY_POLL_MS = 1000;
+
+/**
+ * EI-19328706303827921: best-effort LOCAL liveness check after a spawn reports
+ * `opened > 0`, gated to Windows desktop-bridge honors only (see the call site).
+ *
+ * `spawn.opened` only proves the OS accepted a launch request. For the Windows
+ * desktop-bridge branch (console-spawn.ts's `isWindowsDesktopHost()` case) that is the
+ * ENTIRE signal: `bridged.ok` means the Tauri `console_launch` IPC round-trip to the
+ * desktop webview succeeded, never that a window opened or an agent process is alive —
+ * unlike the Linux/macOS/headless paths, which each run their own boot-death probe
+ * before returning 'ok' (EARLY_EXIT_PROBE_MS / the headless boot-receipt scan), so this
+ * check would be pure redundant latency there and is deliberately skipped.
+ *
+ * Polls THIS host's own `coord_presence` for a NEW member on `fleetSlug` — the same
+ * "did a launch actually produce an agent?" oracle presence-fleet.ts documents
+ * (`listFleetPresence`) — for up to {@link LOCAL_BOOT_VERIFY_MS}. Deliberately does
+ * NOT change `local_disposition` or refuse the request on a miss: a legitimately slow
+ * boot must never be downgraded to a false refusal (same fail-open philosophy as the
+ * honor path's other best-effort probes — WI-5306's runtime preflight, WI-5316's
+ * account resolution). It only sharpens the federated success receipt's honesty
+ * ("confirmed booted locally" vs "not observed within Ns — possible phantom honor")
+ * instead of the same boilerplate caveat regardless of what actually happened.
+ */
+export async function defaultVerifyLocalMemberBoot(args: {
+  workspaceId: string;
+  fleetSlug: string;
+  sinceMs: number;
+  windowMs?: number;
+  pollMs?: number;
+  sleep?: (ms: number) => Promise<void>;
+}): Promise<LocalBootVerifyResult> {
+  const windowMs = args.windowMs ?? LOCAL_BOOT_VERIFY_MS;
+  const pollMs = args.pollMs ?? LOCAL_BOOT_VERIFY_POLL_MS;
+  const sleep =
+    args.sleep ??
+    ((ms: number) =>
+      new Promise<void>((resolveSleep) => {
+        const t = setTimeout(resolveSleep, ms);
+        t.unref?.();
+      }));
+  const deadline = Date.now() + windowMs;
+  try {
+    const { listFleetPresence } = await import('../agent-tools/coordination/presence-fleet');
+    for (;;) {
+      const rows = await listFleetPresence(args.workspaceId, args.fleetSlug);
+      const fresh = rows.find((r) => r.startedAt.getTime() >= args.sinceMs);
+      if (fresh) {
+        return {
+          observed: true,
+          detail: `a member (owner ${fresh.ownerId}) joined '${args.fleetSlug}' locally, confirming the desktop-bridge launch actually booted`,
+        };
+      }
+      if (Date.now() >= deadline) break;
+      await sleep(pollMs);
+    }
+  } catch (e) {
+    return {
+      observed: false,
+      detail: `local presence check failed (best-effort, non-fatal): ${e instanceof Error ? e.message : String(e)}`,
+    };
+  }
+  return {
+    observed: false,
+    detail: `no member joined '${args.fleetSlug}' locally within ${Math.round(windowMs / 1000)}s of honoring`,
+  };
+}
+
 export type DelegatedSpawnHonorOutcome =
   | { outcome: 'gate_off' }
   | { outcome: 'skipped'; reason: string }
@@ -282,11 +367,42 @@ export interface DelegatedSpawnHonorDeps {
   isPotMember?: (workspaceId: string, potSlug: string, githubUserId: number) => Promise<boolean>;
   nowMs?: () => number;
   honorWindowMs?: number;
+  /**
+   * EI-19328706303827921: is THIS honoring host a Windows desktop-bridge host
+   * (`isWindowsDesktopHost()`)? Default resolves the real check. Injected so tests can
+   * force either branch without faking `/proc/version`.
+   */
+  isWindowsHost?: () => boolean;
+  /**
+   * EI-19328706303827921: best-effort LOCAL liveness verification, run ONLY on a
+   * Windows desktop-bridge honor (see {@link defaultVerifyLocalMemberBoot}'s doc for
+   * why the other platforms skip it). Never changes the outcome or disposition — it
+   * only sharpens the federated receipt's honesty about whether a boot was actually
+   * observed.
+   */
+  verifyLocalMemberBoot?: (args: {
+    workspaceId: string;
+    fleetSlug: string;
+    sinceMs: number;
+  }) => Promise<LocalBootVerifyResult>;
 }
 
 async function defaultResolveDevicePubkey(githubUserId: number): Promise<string> {
   const keypair = await loadOrGenerateDeviceKeypair(resolveDeviceKeychainId(githubUserId));
   return keypair.pubkeyBase64;
+}
+
+/** Default `isWindowsHost` dep — dynamic import mirrors this file's other lazy deps
+ *  (keeps the desktop-detection graph off the sync-projection import path). Async
+ *  seam (unlike the underlying sync `isWindowsDesktopHost()`) purely so the import
+ *  can be lazy; best-effort → false on any load failure. */
+async function defaultIsWindowsHost(): Promise<boolean> {
+  try {
+    const { isWindowsDesktopHost } = await import('../windows-desktop-windows');
+    return isWindowsDesktopHost();
+  } catch {
+    return false;
+  }
 }
 
 /**

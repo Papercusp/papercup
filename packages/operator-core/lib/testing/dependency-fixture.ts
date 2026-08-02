@@ -74,8 +74,27 @@ export interface FixtureEdgeSpec {
 }
 
 export interface DependencyScenarioSpec {
+  /** The workspace the ITEM rows live in. Varies per tenant. */
   readonly workspace: string;
   readonly harness: string;
+  /**
+   * The workspace the EDGE rows live in — a DIFFERENT AXIS from `workspace`, and the
+   * single most dangerous thing to get wrong in this file.
+   *
+   * `work_item_deps` is keyed in the COORDINATION workspace (DEFAULT_COORD_WORKSPACE,
+   * i.e. 'default'); every edge row is written there by design, whatever workspace the
+   * items themselves live in. Migration 719 says so explicitly and warns against
+   * "fixing" the edge lookup to match the item workspace: "Scoping the edge lookup to
+   * p_workspace would match zero rows and disable blocking entirely."
+   *
+   * This field exists because THIS FIXTURE GOT IT WRONG. It originally wrote edges into
+   * `spec.workspace`, so for any non-'default' tenant — which is the DEFAULT this
+   * factory hands out — every seeded edge was invisible to the oracle and gated nothing.
+   * That is precisely the D-017 inert-edge class the factory was built to detect,
+   * reproduced by the tool meant to detect it, and the pure projection tests could not
+   * see it because they only compare the factory against itself.
+   */
+  readonly coordWorkspace: string;
   readonly items: readonly FixtureItem[];
   readonly edges: readonly FixtureEdgeSpec[];
 }
@@ -84,7 +103,11 @@ export interface ItemRow {
   workspace_id: string;
   harness_slug: string;
   feature_id: string;
-  item_kind: Family;
+  /**
+   * A REAL kind value ('feature' | 'bug' | ...), NOT the family name — the engine derives
+   * family from this value via `item_kind IN ('bug','change','task')`. See ITEM_KIND_FOR.
+   */
+  item_kind: string;
   status: string;
   taken_by: string | null;
   created_ts: number;
@@ -118,6 +141,13 @@ function otherFamily(f: Family): Family {
 
 const DEFAULT_WORKSPACE = 'papercusp-workspace';
 const DEFAULT_HARNESS = 'papercusp';
+/**
+ * The coordination workspace `work_item_deps` is keyed in. NOT a tenant knob: every edge
+ * row lives here by design regardless of which workspace the items live in (migration
+ * 719). Overridable only so a test can prove that an edge written under the WRONG coord
+ * workspace is inert — which is what this factory itself was doing.
+ */
+const DEFAULT_COORD_WORKSPACE = 'default';
 
 /**
  * Build a scenario spec.
@@ -130,12 +160,14 @@ const DEFAULT_HARNESS = 'papercusp';
 export function defineScenario(opts: {
   workspace?: string;
   harness?: string;
+  coordWorkspace?: string;
   items: readonly FixtureItem[];
   edges: readonly FixtureEdgeSpec[];
 }): DependencyScenarioSpec {
   const spec: DependencyScenarioSpec = {
     workspace: opts.workspace ?? DEFAULT_WORKSPACE,
     harness: opts.harness ?? DEFAULT_HARNESS,
+    coordWorkspace: opts.coordWorkspace ?? DEFAULT_COORD_WORKSPACE,
     items: opts.items,
     edges: opts.edges,
   };
@@ -164,13 +196,28 @@ function itemOf(spec: DependencyScenarioSpec, id: string): FixtureItem {
   return it;
 }
 
+/**
+ * A REAL `item_kind` value for each family — not the family NAME.
+ *
+ * The database classifies family by the VALUE of item_kind: the SQL everywhere reads
+ * `item_kind IN ('bug','change','task')` for the issue family and treats everything else
+ * as feature family. So writing the literal string 'issue' produces a row the engine
+ * classifies as a FEATURE — and it then looks that blocker up by harness-qualified ref
+ * while this factory wrote it bare, so the edge resolves to nothing.
+ *
+ * This factory did exactly that until P-006 drove it against real SQL. Like the
+ * coordWorkspace bug, the pure projection tests could not see it: 'issue' is a perfectly
+ * consistent value to compare against itself. Only the live oracle disagreed.
+ */
+const ITEM_KIND_FOR: Readonly<Record<Family, string>> = { feature: 'feature', issue: 'bug' };
+
 /** Rows for `harness_shared.work_items`. Pure. */
 export function projectItemRows(spec: DependencyScenarioSpec): ItemRow[] {
   return spec.items.map((i, idx) => ({
     workspace_id: spec.workspace,
     harness_slug: spec.harness,
     feature_id: i.id,
-    item_kind: i.family,
+    item_kind: ITEM_KIND_FOR[i.family],
     status: i.status,
     taken_by: i.takenBy ?? null,
     created_ts: i.createdTs ?? (idx + 1) * 100,
@@ -191,7 +238,9 @@ export function projectEdgeRows(spec: DependencyScenarioSpec): EdgeRow[] {
     const defect = e.defect ?? 'none';
 
     const base = {
-      workspace_id: spec.workspace,
+      // The COORD workspace, NEVER spec.workspace — see DependencyScenarioSpec.coordWorkspace.
+      // Writing spec.workspace here makes every edge inert for any non-'default' tenant.
+      workspace_id: spec.coordWorkspace,
       blocked_kind: blocked.family,
       blocked_ref: canonicalRef(blocked.family, spec.harness, blocked.id),
       dep_type: 'blocks',
@@ -300,7 +349,9 @@ export async function seedScenario(sql: SqlLike, spec: DependencyScenarioSpec): 
  * Deliberately mixed-family with one of each defect, so a sweep over (workspace,
  * harness) exercises every class without each test restating the graph.
  */
-export function standardScenario(opts: { workspace?: string; harness?: string } = {}): DependencyScenarioSpec {
+export function standardScenario(
+  opts: { workspace?: string; harness?: string; coordWorkspace?: string } = {},
+): DependencyScenarioSpec {
   return defineScenario({
     ...opts,
     items: [

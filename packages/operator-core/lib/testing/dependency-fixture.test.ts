@@ -232,3 +232,59 @@ describe('expectations derived from the spec', () => {
     expect(expectedBlockedIds(s, ['archived'])).toEqual([]);
   });
 });
+
+/**
+ * REGRESSION GUARD for a bug this factory shipped with (found by P-006, 2026-08-02).
+ *
+ * `projectEdgeRows` wrote edges into `spec.workspace`. But `work_item_deps` is keyed in
+ * the COORDINATION workspace ('default') — migration 719 is explicit that the edge
+ * lookup must NOT be scoped to the item workspace, because doing so "would match zero
+ * rows and disable blocking entirely". Since this factory DEFAULTS to a non-'default'
+ * tenant on purpose, every edge it seeded was invisible to the oracle and gated nothing:
+ * the exact inert-edge class the factory exists to detect.
+ *
+ * Nothing here could catch it before, and that is the instructive part — these are pure
+ * projection tests, so they compared the factory against itself and agreed. It took
+ * driving the real oracle (dependency-tenant-matrix.integration.test.ts), whose seeded
+ * POSITIVE control failed, to surface it. A suite of only-negative expectations would
+ * have stayed green with blocking entirely disabled.
+ */
+describe('edge rows live in the COORD workspace, never the item workspace', () => {
+  const twoAxis = defineScenario({
+    workspace: 'tenant-x-ws',
+    harness: 'tenant-x-pot',
+    items: [
+      { id: 'F-a', family: 'feature', status: 'open' },
+      { id: 'F-b', family: 'feature', status: 'wip' },
+    ],
+    edges: [{ blocked: 'F-a', blocker: 'F-b' }],
+  });
+
+  it("defaults the coord workspace to 'default' even when the item workspace is not", () => {
+    expect(twoAxis.workspace).toBe('tenant-x-ws');
+    expect(twoAxis.coordWorkspace).toBe('default');
+  });
+
+  it('writes every edge row under the COORD workspace, not the item workspace', () => {
+    const rows = projectEdgeRows(twoAxis);
+    expect(rows).not.toHaveLength(0);
+    for (const r of rows) expect(r.workspace_id).toBe('default');
+  });
+
+  it('keeps ITEM rows in the item workspace — the two axes must not be collapsed', () => {
+    for (const r of projectItemRows(twoAxis)) expect(r.workspace_id).toBe('tenant-x-ws');
+  });
+
+  it('allows an explicit WRONG coord workspace, so a test can prove such an edge is inert', () => {
+    const wrong = defineScenario({
+      workspace: 'tenant-x-ws',
+      coordWorkspace: 'tenant-x-ws', // the original bug, now expressible on purpose
+      items: [
+        { id: 'F-a', family: 'feature', status: 'open' },
+        { id: 'F-b', family: 'feature', status: 'wip' },
+      ],
+      edges: [{ blocked: 'F-a', blocker: 'F-b' }],
+    });
+    for (const r of projectEdgeRows(wrong)) expect(r.workspace_id).toBe('tenant-x-ws');
+  });
+});

@@ -842,9 +842,15 @@ describe('RECYCLE re-renders the base persona instead of inheriting it (stale-pr
     "if(line==='QUIT'){process.exit(0);}}});" +
     'setTimeout(()=>process.exit(0),15000);';
 
+  /** The PRE-FIX mint, frozen as a fixture: rotate the session id but copy every other
+   *  flag through verbatim, ignoring personaFile entirely. That bare copy-through IS the
+   *  bug (psu-launcher.mjs `out.push(a)`), and driving the guard with it is what proves
+   *  the guard can actually detect what it was written for. */
+  const preFixMint = (a: string[]) => ({ args: [...a, '--session-id', 'pre-fix'], nativeId: 'pre-fix' });
+
   /** `refreshed` = what the operator's persona-refresh hands back: a path, or null
-   *  when the refresh failed / was unavailable. */
-  async function driveRespawn(refreshed: string | null) {
+   *  when the refresh failed / was unavailable. `mint` defaults to the REAL one. */
+  async function driveRespawn(refreshed: string | null, mint?: (a: string[]) => unknown) {
     const { mintRecycleArgs } = await import('../scripts/psu-launcher.mjs');
     const ownerId = `su-persona-refresh-itest-${process.pid}-${Math.floor(performance.now())}`;
     const sock = socketPathFor(ownerId);
@@ -863,7 +869,7 @@ describe('RECYCLE re-renders the base persona instead of inheriting it (stale-pr
       ownerId,
       io,
       bridgeTty: false,
-      mintRecycleArgs,
+      mintRecycleArgs: mint ?? mintRecycleArgs,
       refreshPersonaFile,
       onExit: (c: number) => { exitCode = c; },
     });
@@ -906,6 +912,23 @@ describe('RECYCLE re-renders the base persona instead of inheriting it (stale-pr
       const { spfs, stale } = await driveRespawn(null);
       expect(spfs).toHaveLength(2);
       expect(spfs.every((s) => s === stale)).toBe(true);
+    },
+    30_000,
+  );
+
+  it(
+    'PROOF the guard discriminates: under the PRE-FIX mint the successor inherits the stale render even though a refresh was available',
+    async () => {
+      // A guard that cannot detect what it was written for is theatre (P-003). This
+      // reproduces the original bug on demand: a refresh IS supplied, yet the copy-
+      // through mint carries `--system-prompt-file <stale>` into the successor anyway.
+      // The first test in this block asserts the opposite outcome from the same input,
+      // so if the fix were ever unwired that test necessarily goes red.
+      const fresh = `/tmp/launch-context/session-refresh-FRESH-${process.pid}.md`;
+      const { spfs, stale } = await driveRespawn(fresh, preFixMint);
+      expect(spfs).toHaveLength(2);
+      expect(spfs[1]).toBe(stale); // the bug, reproduced
+      expect(spfs[1]).not.toBe(fresh);
     },
     30_000,
   );

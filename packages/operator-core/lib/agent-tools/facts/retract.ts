@@ -5,7 +5,7 @@
  */
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
-import { retractFact, FACT_SCOPES } from '../../agent-facts/store';
+import { retractFact, findFactKeyElsewhere, FACT_SCOPES } from '../../agent-facts/store';
 import { resolveScopeRefFromCtx, resolveScopeRefAlias } from './scope-ctx';
 
 export default defineTool({
@@ -38,6 +38,29 @@ export default defineTool({
     // EI-7371: resolve common misnamed aliases (scope_ref/ref/harness) first.
     const scopeRef = await resolveScopeRefFromCtx(args.scope, resolveScopeRefAlias(args.scope, args), ctx);
     const retracted = await retractFact({ scope: args.scope, scopeRef: scopeRef ?? null, key: args.key });
-    return { data: { ok: true, retracted } };
+    if (retracted) return { data: { ok: true, retracted } };
+
+    // EI-19328780288425209: a miss here is ambiguous — "never existed" vs "exists at a
+    // DIFFERENT scope" — and the latter left a wrong fact live and believed-retracted for
+    // 5h+ in the incident that reported this. Check before returning a bare false.
+    const elsewhere = await findFactKeyElsewhere({
+      scope: args.scope,
+      scopeRef: scopeRef ?? '',
+      key: args.key,
+    });
+    if (!elsewhere.length) return { data: { ok: true, retracted: false } };
+
+    const first = elsewhere[0]!;
+    return {
+      data: {
+        ok: true,
+        retracted: false,
+        alsoFoundAtScopes: elsewhere,
+        hint:
+          `key '${args.key}' exists at scope:'${first.scope}'` +
+          (first.scopeRef ? ` scopeRef:'${first.scopeRef}'` : '') +
+          ` (not the scope you searched) — retract there instead of concluding it's gone.`,
+      },
+    };
   },
 });

@@ -72,13 +72,35 @@ async function sidecarBlocked(harness: string, id: string, workspace: string): P
   return rows.length > 0;
 }
 
-/** Every item in the scenario the oracle currently withholds, sorted for comparison. */
-async function oracleBlockedSet(spec: DependencyScenarioSpec): Promise<string[]> {
+/**
+ * Every FEATURE-family item the oracle withholds, sorted.
+ *
+ * ⚠ FEATURE-FAMILY ONLY, and this is a real property of the system rather than a
+ * convenience. `work_item_is_blocked` matches its blocked leg as
+ * `blocked_ref = p_harness || '#' || p_feature` — the harness-qualified form — so it is
+ * structurally the FEATURE-family oracle. Issue-family readiness is enforced by a
+ * DIFFERENT door: `depsBlockedExclusionSql` in work-items.ts, whose predicate is
+ * `d.blocked_ref = wi.feature_id`, i.e. the BARE form INV-01 requires for that family.
+ *
+ * I checked this against live data before writing it down, because the shape looks
+ * alarming: 27 of 27 issue-family blocked edges carry a bare ref that this oracle can
+ * never match, which reads exactly like "every issue-family edge is inert" — the D-017
+ * bug again. It is not. Those edges are matched by the other door. Asserting issue items
+ * against THIS oracle would have manufactured a false regression report.
+ */
+async function oracleBlockedFeatures(spec: DependencyScenarioSpec): Promise<string[]> {
   const out: string[] = [];
   for (const item of spec.items) {
+    if (item.family !== 'feature') continue;
     if (await oracleBlocked(spec.harness, item.id, spec.workspace)) out.push(item.id);
   }
   return out.sort();
+}
+
+/** The spec's expectation, narrowed to the family this oracle is responsible for. */
+function expectedBlockedFeatures(spec: DependencyScenarioSpec): string[] {
+  const featureIds = new Set(spec.items.filter((i) => i.family === 'feature').map((i) => i.id));
+  return expectedBlockedIds(spec).filter((id) => featureIds.has(id));
 }
 
 beforeAll(async () => {
@@ -114,21 +136,33 @@ const TENANTS: ReadonlyArray<{ name: string; workspace: string; harness: string 
 
 describe('tenant matrix — the standard scenario behaves identically under every tenant (P-006)', () => {
   for (const tenant of TENANTS) {
-    it(`${tenant.name}: the oracle withholds exactly the items with a live blocker`, async () => {
+    it(`${tenant.name}: the oracle withholds exactly the feature-family items with a live blocker`, async () => {
       const spec = standardScenario({ workspace: tenant.workspace, harness: tenant.harness });
       await seedScenario(db.sql as never, spec);
 
-      // expectedBlockedIds is computed from the SPEC, independently of the database — the
+      // The expectation is computed from the SPEC, independently of the database — and the
       // defective edges (kind-mismatch, wrong-qualifier, dangling) are expected to gate
-      // NOTHING, so this expectation encodes the bug's cost as well as the fix's success.
-      expect(await oracleBlockedSet(spec)).toEqual(expectedBlockedIds(spec));
+      // NOTHING, so this encodes the bug's cost as well as the fix's success.
+      expect(await oracleBlockedFeatures(spec)).toEqual(expectedBlockedFeatures(spec));
     });
 
-    it(`${tenant.name}: the maintained sidecar agrees with the oracle for every item`, async () => {
+    it(`${tenant.name}: the sweep is not vacuous — at least one item IS withheld`, async () => {
+      // Guards the assertion above, which compares two computed sets and would pass
+      // trivially if both were empty. Under this scenario F-blocked has a live
+      // (non-terminal, correctly-formed) blocker, so an empty result means the rig is
+      // broken rather than the system being clean. This is the check that caught both
+      // fixture bugs P-006 found.
+      const spec = standardScenario({ workspace: tenant.workspace, harness: tenant.harness });
+      await seedScenario(db.sql as never, spec);
+      expect(await oracleBlockedFeatures(spec)).not.toHaveLength(0);
+    });
+
+    it(`${tenant.name}: the maintained sidecar agrees with the oracle for every feature item`, async () => {
       const spec = standardScenario({ workspace: tenant.workspace, harness: tenant.harness });
       await seedScenario(db.sql as never, spec);
 
       for (const item of spec.items) {
+        if (item.family !== 'feature') continue;
         const oracle = await oracleBlocked(spec.harness, item.id, spec.workspace);
         const sidecar = await sidecarBlocked(spec.harness, item.id, spec.workspace);
         expect(sidecar, `${item.id} under ${spec.workspace}/${spec.harness}`).toBe(oracle);
