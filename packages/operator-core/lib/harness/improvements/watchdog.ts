@@ -2869,6 +2869,7 @@ export async function defaultPapercuspCollectors(
     },
     // P-010 blind-source collectors (each conservative + behind the P-009 per-source budget).
     { name: 'papercusp-migration-drift', collect: () => collectMigrationDriftSignals() },
+    { name: 'papercusp-schema-ahead-of-code', collect: () => collectSchemaAheadSignals() },
     { name: 'papercusp-routine-failure', collect: () => collectRoutineFailureSignals(getOrgPg().sql) },
     { name: 'papercusp-stuck-plan', collect: () => collectStuckPlanSignals(getOrgPg().sql, workspaceId) },
     { name: 'papercusp-failed-spawn', collect: () => collectFailedSpawnSignals(getOrgPg().sql, opts) },

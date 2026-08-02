@@ -270,6 +270,23 @@ function suppressedDoc(lines, lineNo) {
 }
 
 /**
+ * A prose "…" is a DOCUMENTATION convention (the prompt trailing off / summarizing the
+ * rest of a real message for brevity) — it is never itself part of the emitted text, so
+ * trailing it off the literal before matching is a real precision win, not a loophole:
+ * `⚠ PREDICTED exclusion: N commit(s) …` in release-fixer.md is CURRENT (verified
+ * against checkpoint-run.ts) and only fails a verbatim/fragment match because the doc's
+ * own "…" and its placeholder word ("N" standing in for `${excluded.length}`) are not
+ * literal output. Stripping the ellipsis narrows, but does not eliminate, that gap —
+ * a placeholder WORD (as opposed to a digit, which front-end 1's `proseShaped` already
+ * excludes for the same reason) is not generically detectable, so a short residual
+ * false-positive class remains and is suppressed at the two known sites via the pragma
+ * rather than papered over here.
+ */
+function stripTrailingEllipsis(s) {
+  return s.replace(/\s*(…|\.\.\.)\s*$/, '');
+}
+
+/**
  * Judge one prompt file's backticked literals against the code corpus. Mirrors
  * `judgeFile`'s DRIFTED/ORPHANED split: DRIFTED when a long fragment of the literal IS
  * in the corpus (the guarded string was reworded, not removed — the live incident's
@@ -288,9 +305,16 @@ export function judgeDocFile({ file, text, includes }) {
     if (!looksLikeEmittedOutput(lit)) continue;
     considered++;
     const trimmed = lit.trim();
-    if (includes(lit) || (trimmed !== lit && includes(trimmed))) continue;
+    const untrailed = stripTrailingEllipsis(trimmed);
+    if (
+      includes(lit) ||
+      (trimmed !== lit && includes(trimmed)) ||
+      (untrailed !== trimmed && untrailed.length >= MIN_LITERAL && includes(untrailed))
+    ) {
+      continue;
+    }
     if (suppressedDoc(lines, line)) continue;
-    const drift = driftFragment(lit, includes);
+    const drift = driftFragment(untrailed.length >= MIN_LITERAL ? untrailed : lit, includes);
     findings.push({
       file,
       line,
