@@ -29,7 +29,7 @@ describe('systemd StartLimit-placement guard predicate (EI-19381535849234617)', 
   it('FLAGS both keys, each on its own line, when both are misplaced', () => {
     const unit = ['[Service]', 'StartLimitIntervalSec=600', 'StartLimitBurst=6'].join('\n');
     const hits = findMisplacedStartLimitKeys(unit);
-    expect(hits.map((h) => h.key)).toEqual(['StartLimitIntervalSec', 'StartLimitBurst']);
+    expect(hits.map((h: { key: string }) => h.key)).toEqual(['StartLimitIntervalSec', 'StartLimitBurst']);
   });
 
   it('does NOT flag the keys correctly placed under [Unit]', () => {
@@ -63,6 +63,6 @@ describe('systemd StartLimit-placement guard predicate (EI-19381535849234617)', 
     // [Service] block, no [Unit] section present anywhere.
     const dropIn = ['[Service]', '# comment', 'StartLimitIntervalSec=600', 'StartLimitBurst=6'].join('\n');
     const hits = findMisplacedStartLimitKeys(dropIn);
-    expect(hits.map((h) => h.key)).toEqual(['StartLimitIntervalSec', 'StartLimitBurst']);
+    expect(hits.map((h: { key: string }) => h.key)).toEqual(['StartLimitIntervalSec', 'StartLimitBurst']);
   });
 });

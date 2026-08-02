@@ -3221,6 +3221,18 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     // The precomputed snapshot covers the nullary call — the only shape any UI
     // makes. An explicit ARGS-bearing call (an agent drilling into one plan) is
     // rare, off the panel path, and still computed live so it stays exact.
+    //
+    // ⚠ LIST/DETAIL SPLIT (WI-7210). The two branches return DIFFERENT shapes,
+    // deliberately:
+    //   • nullary  → a SUMMARY row per plan: { slug, errors?, warningCount?,
+    //     warningCodes? } — warnings are tallied by code, not carried as prose,
+    //     and archived/exempt/legacy are omitted when false. 133,328 B / 913
+    //     rows (was 561,007 B — 2.24x over the default ceiling).
+    //   • args-bearing → the COMPLETE report, computed live and unprojected.
+    // Full warning prose is therefore always reachable, just not on the list
+    // read. The projection lives in the PRODUCER (derived-reads/producers.ts,
+    // `summarizePlanLintReport`) so the stored jsonb shrinks too, not just the
+    // wire — and it sits before the resolver, so delta hashing is unaffected.
     resolve: async (args) => {
       const hasArgs = args != null && Object.keys(args as Record<string, unknown>).length > 0;
       if (!hasArgs) {

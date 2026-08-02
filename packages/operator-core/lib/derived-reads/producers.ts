@@ -69,15 +69,80 @@ registerDerivedRead({
 // If a live consumer appears and needs it fresher, the fix is to make the lint
 // itself incremental (lint only plans whose updated_at moved), not to shorten
 // this ttl — see WI-5460.
+//
+// ── WI-7210: the stored shape is a SUMMARY, not the full dump ────────────────
+//
+// `full: true` (above) is what the RESOLVER needs to see a `reports` array at
+// all, but storing those reports verbatim measured 561,007 B over 913 rows —
+// 2.24x the 250,000 B default sync-read ceiling, and the largest unallowlisted
+// violation in the tree. Where that went:
+//
+//   warnings  421,839 B  75.2%   (629/913 rows)
+//   errors     48,661 B   8.7%   (158/913 rows)
+//   slug       42,862 B   7.6%
+//   archived+exempt+legacy 40,172 B 7.2%  — constant `false` on ALL 913 rows
+//
+// 355,049 B of that is `message` PROSE generated from only 18 distinct `code`
+// values — the same remediation sentences repeated across the corpus. A code
+// tally carries the same information for a list view at a fraction of the size.
+//
+// So the snapshot stores, per plan:
+//   • `errors` IN FULL — they block, they are rare (158 rows), and a panel
+//     shows them verbatim;
+//   • `warnings` as a COUNT + per-code tally — the bulk, and the part that is
+//     reconstructible prose;
+//   • the three booleans OMITTED WHEN FALSE (D-025 null-omit) — lossless,
+//     since a true value still round-trips.
+//
+// Measured: 561,007 -> 133,328 B (-76.2%), 913 rows unchanged. Full per-plan
+// detail is NOT lost — the resolver's ARGS-BEARING branch still computes a
+// complete report live for a drill-in, which is the same list/detail split
+// P-006 applied to `featuresConsolidated`.
+//
+// ⚠ producerVersion MUST stay ahead of any change to this shape: the registry
+// treats a snapshot from an older version as absent rather than serving a
+// superseded shape (registry.ts:204).
+type PlanLintReport = {
+  slug?: unknown;
+  errors?: unknown[];
+  warnings?: { code?: unknown }[];
+  archived?: unknown;
+  exempt?: unknown;
+  legacy?: unknown;
+};
+
+export function summarizePlanLintReport(report: PlanLintReport): Record<string, unknown> {
+  const out: Record<string, unknown> = { slug: report.slug };
+  const errors = Array.isArray(report.errors) ? report.errors : [];
+  const warnings = Array.isArray(report.warnings) ? report.warnings : [];
+  if (errors.length > 0) out.errors = errors;
+  if (warnings.length > 0) {
+    const byCode: Record<string, number> = {};
+    for (const w of warnings) {
+      const code = typeof w?.code === 'string' ? w.code : 'unknown';
+      byCode[code] = (byCode[code] ?? 0) + 1;
+    }
+    out.warningCount = warnings.length;
+    out.warningCodes = byCode;
+  }
+  // D-025 null-omit: these are `false` on every row today, so emitting them
+  // costs 40KB to say nothing. A `true` still round-trips.
+  if (report.archived) out.archived = true;
+  if (report.exempt) out.exempt = true;
+  if (report.legacy) out.legacy = true;
+  return out;
+}
+
 registerDerivedRead({
   key: 'plans.lint',
   ttlMs: 6 * 60 * 60_000,
-  producerVersion: 2,
+  producerVersion: 3,
   scope: 'workspace',
   compute: async () => {
     const { callPlansRead } = await import('../agent-tools/plans/read-dispatch');
     const r = (await callPlansRead('lint', { full: true })) as { reports?: unknown[] };
-    return Array.isArray(r?.reports) ? r.reports : [];
+    if (!Array.isArray(r?.reports)) return [];
+    return r.reports.map((report) => summarizePlanLintReport((report ?? {}) as PlanLintReport));
   },
 });
 

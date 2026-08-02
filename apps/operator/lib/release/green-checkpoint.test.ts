@@ -14,6 +14,7 @@ import {
   extractFailingTestNames,
   extractFailingCasesByFile,
   describeFailingCases,
+  validateFailingTestPaths,
   ISOLATION_MAX_NAMED_CASES,
   stripAnsi,
   classifyRedAgainstTip,
@@ -1767,6 +1768,62 @@ describe('extractFailingTests (P-012 failure signature)', () => {
       'src/components/left-sidebar/MugTab.test.tsx',
       'src/components/left-sidebar/MugTab.tree.test.tsx',
     ]);
+  });
+});
+
+// EI-19340004308033958 recurrence guard: a `failingTests` entry can be a MANGLED
+// suffix of a real path (e.g. `lib/y.test.ts`) that resolves to nothing in the
+// judged candidate — worse than an absent field, because it looks authoritative.
+describe('validateFailingTestPaths (EI-19340004308033958)', () => {
+  it('drops a file-shaped entry that does not exist in the tree', () => {
+    const exists = (p: string) => p.endsWith('real.test.ts');
+    const result = validateFailingTestPaths(
+      ['lib/real.test.ts', 'lib/y.test.ts'],
+      '/tree',
+      exists,
+    );
+    expect(result.kept).toEqual(['lib/real.test.ts']);
+    expect(result.dropped).toEqual(['lib/y.test.ts']);
+  });
+
+  it('passes through non-file entries (workspace names, gate ids) untouched, never validated', () => {
+    const exists = vi.fn(() => false); // would drop everything if wrongly consulted
+    const result = validateFailingTestPaths(
+      ['@papercusp/operator-vite', 'lint:tsc'],
+      '/tree',
+      exists,
+    );
+    expect(result.kept).toEqual(['@papercusp/operator-vite', 'lint:tsc']);
+    expect(result.dropped).toEqual([]);
+    expect(exists).not.toHaveBeenCalled();
+  });
+
+  it('keeps every entry when all resolve', () => {
+    const result = validateFailingTestPaths(['lib/a.test.ts', 'lib/b.spec.tsx'], '/tree', () => true);
+    expect(result.kept).toEqual(['lib/a.test.ts', 'lib/b.spec.tsx']);
+    expect(result.dropped).toEqual([]);
+  });
+
+  it('checks existence against treeDir-joined paths, not the bare entry', () => {
+    let seen: string | null = null;
+    validateFailingTestPaths(['lib/x.test.ts'], '/candidate-tree', (p) => {
+      seen = p;
+      return true;
+    });
+    expect(seen).toBe(join('/candidate-tree', 'lib/x.test.ts'));
+  });
+
+  it('real filesystem end-to-end: a real temp file is kept, a mangled sibling is dropped', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'gc-validate-'));
+    try {
+      mkdirSync(join(dir, 'lib'), { recursive: true });
+      writeFileSync(join(dir, 'lib', 'real.test.ts'), '// ok');
+      const result = validateFailingTestPaths(['lib/real.test.ts', 'lib/y.test.ts'], dir);
+      expect(result.kept).toEqual(['lib/real.test.ts']);
+      expect(result.dropped).toEqual(['lib/y.test.ts']);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

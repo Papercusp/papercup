@@ -431,7 +431,7 @@ export async function stalePromptRenderSweep(
   const scopes: Array<{ workspaceId: string; harnessSlug: string }> = [];
   for (const s of sessions) {
     if (!s.workspaceId || !s.harnessSlug) continue;
-    const k = `${s.workspaceId} ${s.harnessSlug}`;
+    const k = `${s.workspaceId}\x00${s.harnessSlug}`;
     if (scopeKeys.has(k)) continue;
     scopeKeys.add(k);
     scopes.push({ workspaceId: s.workspaceId, harnessSlug: s.harnessSlug });

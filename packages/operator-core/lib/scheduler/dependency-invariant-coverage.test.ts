@@ -60,6 +60,8 @@ const CORPUS = [
   'scheduler/claim-respects-blocking.integration.test.ts',
   'scheduler/dependency-tenant-matrix.integration.test.ts',
   'scheduler/dependency-family-matrix.integration.test.ts',
+  'scheduler/dependency-writer-effectiveness.integration.test.ts',
+  'scheduler/dependency-writer-census.test.ts',
   'scheduler/work-item-deps-integrity.integration.test.ts',
   'scheduler/get-next-for-bee-plan-lane-guard.test.ts',
   'scheduler/readiness-reconcile.integration.test.ts',
@@ -84,10 +86,20 @@ const KNOWN_UNCOVERED: Record<string, string> = {
   // gap is more instructive than the fix: it was invisible for as long as coverage was
   // counted in lines, and obvious the moment it was counted in propositions.
   //
-  // syncFeatureBlockEdges is the PROMOTION path, where replace-semantics is correct and is
-  // what its test asserts ("writes/replaces/clears"). No test covers the BACKFILL path's
-  // obligation to UNION, so "a backfill silently deletes hand-authored edges" is unguarded.
-  'INV-10': 'backfill UNIONs rather than REPLACES — only the promotion path (replace) is tested',
+  // INV-10 (backfill UNIONs rather than REPLACES) was here until P-008 closed it, and its
+  // shape is worth keeping. The backfill and promotion share ONE writer
+  // (writePromotedDependencyEdges, D-014), so a test of that function looked like a test of
+  // both — while the entire difference is a caller-supplied `preserveExistingEdges` flag, and
+  // promotion's test asserts the OPPOSITE behaviour ("writes/replaces/clears") perfectly
+  // correctly. A shared implementation is not shared coverage when the callers disagree on a
+  // parameter. dependency-writer-effectiveness.integration.test.ts now proves the union
+  // through the claim door (the preserved edge still WITHHOLDS after the plan-derived blocker
+  // is satisfied), with the replace path run on the same fixture as its negative control.
+  //
+  // The set is now EMPTY, which is a claim, not a milestone: it says every registry invariant
+  // has at least one citation in the corpus. It is held honest from both sides — the
+  // exact-set assertion below fails the moment a citation is dropped OR an invariant is
+  // added, so reaching zero cannot be preserved by quietly deleting either.
 };
 
 const read = (rel: string) => readFileSync(resolve(CORE, rel), 'utf8');

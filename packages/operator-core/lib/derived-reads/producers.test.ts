@@ -348,3 +348,76 @@ describe('derived-reads producers: P-005 (releaseReadiness, observations)', () =
     expect(computeLearningObservations).toHaveBeenCalledWith({});
   });
 });
+
+// ── plans.lint summary projection (WI-7210) ──────────────────────────────────
+//
+// The stored snapshot is a SUMMARY, not the full lint dump: 561,007 B / 913
+// rows measured live on :3170, 2.24x the 250,000 B default sync-read ceiling.
+// 355,049 B of it was `message` prose generated from 18 distinct codes.
+//
+// These pin the LIST half. The DETAIL half — the resolver's args-bearing branch
+// returning a complete unprojected report — is pinned separately in
+// sync-resolver/plans-entries.test.ts ("plans.revisions / plans.runs /
+// plans.lint unwrap their fields"), so the split cannot silently collapse into
+// one shape.
+describe('summarizePlanLintReport (plans.lint list projection)', () => {
+  it('tallies warnings by code and drops their prose, keeping the count', async () => {
+    const { summarizePlanLintReport } = await import('./producers');
+    const out = summarizePlanLintReport({
+      slug: 'a',
+      warnings: [
+        { code: 'unphased_item', level: 'warning', message: 'long remediation prose ...' },
+        { code: 'unphased_item', level: 'warning', message: 'more long prose ...' },
+        { code: 'parse_warning', level: 'warning', message: 'yet more prose ...' },
+      ],
+    } as never);
+    expect(out).toEqual({
+      slug: 'a',
+      warningCount: 3,
+      warningCodes: { unphased_item: 2, parse_warning: 1 },
+    });
+    // Absence, not null — a `warnings` key present-but-empty would still cost
+    // bytes on every row and would read as "prose available" to a consumer.
+    expect('warnings' in out).toBe(false);
+  });
+
+  it('keeps errors IN FULL — they block, they are rare, a panel shows them verbatim', async () => {
+    const { summarizePlanLintReport } = await import('./producers');
+    const errors = [{ code: 'missing_now_section', level: 'error', message: 'No `## Now` section ...' }];
+    const out = summarizePlanLintReport({ slug: 'b', errors } as never);
+    expect(out.errors).toEqual(errors);
+  });
+
+  it('omits archived/exempt/legacy when false (D-025) but round-trips a true', async () => {
+    const { summarizePlanLintReport } = await import('./producers');
+    const falsy = summarizePlanLintReport({
+      slug: 'c',
+      archived: false,
+      exempt: false,
+      legacy: false,
+    } as never);
+    // These were `false` on all 913 rows — 40,172 B to say nothing.
+    expect(Object.keys(falsy)).toEqual(['slug']);
+    const truthy = summarizePlanLintReport({ slug: 'd', archived: true, legacy: true } as never);
+    expect(truthy).toEqual({ slug: 'd', archived: true, legacy: true });
+  });
+
+  it('a clean plan projects to slug ALONE — 246 of 913 rows are this shape', async () => {
+    const { summarizePlanLintReport } = await import('./producers');
+    expect(summarizePlanLintReport({ slug: 'e', errors: [], warnings: [] } as never)).toEqual({
+      slug: 'e',
+    });
+  });
+
+  it('the producer is registered at producerVersion 3 so the old shape is not served', async () => {
+    // registry.ts:204 treats a snapshot from an older producerVersion as ABSENT
+    // rather than serving a superseded shape. Bumping this is what makes the
+    // projection safe to deploy against already-stored 561KB snapshots.
+    vi.resetModules();
+    const registry = await import('./registry');
+    registry.__clearDerivedReadRegistryForTest();
+    await import('./producers');
+    const producer = registry.listDerivedReadProducers().find((p) => p.key === 'plans.lint');
+    expect(producer?.producerVersion).toBe(3);
+  });
+});
