@@ -25,6 +25,9 @@ const corpus: ToolDiscoveryEntry[] = [
   entry('gateway:status', 'gateway queue admission details for slow agents'),
   entry('accounts:status', 'account capacity and rate limit status'),
   entry('dev:service_health', 'probe local services and desktop'),
+  entry('dev:pipeline_position', 'is a code change live, deployed, or blocked in the pipeline'),
+  entry('state:read', 'read a registered state cell by name'),
+  entry('change_ledger:calendar', 'browse the change ledger by date'),
 ];
 
 // Deterministic embedding space: one orthogonal axis per concept.
@@ -115,6 +118,33 @@ describe('findTools', () => {
 
   it('never overrides an explicit exact tool name', () => {
     expect(decisiveToolForSymptom('gateway:status for slow agents')).toBeNull();
+  });
+
+  // WI-6524: the liveness/staleness question family — tools:find ranked
+  // dev:pipeline_position 13th and state:read absent from the top 25 for these
+  // exact phrasings, even though each tool is the platform's one authoritative
+  // answer. Decisive routing closes the intent→tool gap without waiting on the
+  // semantic index to eventually learn it.
+  it('routes "is my change live" phrasing to dev:pipeline_position first', async () => {
+    expect(decisiveToolForSymptom('is my change live on the running server yet')).toBe('dev:pipeline_position');
+    const hits = await findTools(corpus, 'is my change live on the running server yet', { limit: 3 });
+    expect(hits[0].tool).toBe('dev:pipeline_position');
+  });
+
+  it('routes other change-liveness phrasings to dev:pipeline_position', () => {
+    expect(decisiveToolForSymptom('has my fix shipped yet')).toBe('dev:pipeline_position');
+    expect(decisiveToolForSymptom('which sha is deployed right now')).toBe('dev:pipeline_position');
+  });
+
+  it('routes "is this value stale" phrasing to state:read first', async () => {
+    expect(decisiveToolForSymptom('check whether a value I was given is stale')).toBe('state:read');
+    const hits = await findTools(corpus, 'check whether a value I was given is stale', { limit: 3 });
+    expect(hits[0].tool).toBe('state:read');
+  });
+
+  it('does not force-route an unrelated query containing "live"/"stale"', () => {
+    expect(decisiveToolForSymptom('live audio streaming latency')).toBeNull();
+    expect(decisiveToolForSymptom('a stale UI cache after a nuqs change')).toBeNull();
   });
 
   it('degrades to lexical when the embedder throws', async () => {

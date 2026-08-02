@@ -89,6 +89,29 @@ export function decisiveToolForSymptom(query: string): string | null {
   ) {
     return 'dev:why';
   }
+  // WI-6524: "is my change live yet" is the single most common liveness question
+  // on this platform (CLAUDE.md names dev:pipeline_position as ITS answer) but the
+  // phrasing itself semantically ranked the tool ~13th, behind unrelated detail
+  // surfaces — because none of those detail tools are wrong exactly, just not the
+  // one authoritative first read. Route it decisively, same as the other symptoms.
+  if (
+    /is (?:my|this|the) (?:change|edit|fix|code|commit|pr)\b[^?]*\b(?:live|deployed|shipped)\b|has (?:my|this|the) (?:change|edit|fix|code|commit) (?:shipped|deployed|landed|reached)|when will (?:my|this) change (?:be live|deploy)|not (?:yet )?(?:live|deployed) on (?:the )?(?:running )?server|which sha is (?:live|deployed|running)/.test(
+      q,
+    )
+  ) {
+    return 'dev:pipeline_position';
+  }
+  // WI-6524: the staleness-check side of the same gap — "is this value stale" is
+  // exactly what a registered state cell exists to answer, but the phrasing (as
+  // opposed to the surface's own vocabulary, "read a registered state cell")
+  // matched nothing in the top 25.
+  if (
+    /(?:check|verify|confirm) (?:whether|if) .*\bis stale\b|\b(?:is|was) (?:this|that|the) value (?:i (?:was given|have|received)|stale)\b|stale (?:value|read|data) check/.test(
+      q,
+    )
+  ) {
+    return 'state:read';
+  }
   return null;
 }
 

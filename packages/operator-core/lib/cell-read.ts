@@ -163,6 +163,28 @@ export interface CellHoist {
 }
 
 /**
+ * WI-6506 — the falsifier's independent measurement, delivered alongside the value
+ * it exists to contradict a false reading of.
+ *
+ * `field`/`kills` are carried straight from `spec.falsifier` (never re-derived — a
+ * caller should not have to go read the registry to know what `value` even means).
+ */
+export interface CellFalsifierRead {
+  /** The independent field path this falsifier reads (`spec.falsifier.field`). */
+  field: string;
+  /** The value AT that path, in this SAME resolver payload — no second dispatch. */
+  value: unknown;
+  /** The false reading this independent measurement is meant to kill (`spec.falsifier.kills`). */
+  kills: string;
+  /** True ⇒ the declared field path was absent from the resolver payload: registration
+   *  drift, NOT a measured null. Mirrors `CellHoist.drifted`, for the identical MISSING
+   *  ≠ NULL reason `cell-falsifier-reality.test.ts` documents — own-key path EXISTENCE,
+   *  not `valueAtPath`, decides this, because `valueAtPath` collapses a legitimately
+   *  null intermediate segment to the SAME `undefined` a missing key produces. */
+  drifted?: true;
+}
+
+/**
  * Render a hoist for a prose surface, or `null` when it has nothing to say.
  * Mirrors `formatCellUnknown` — `key`/`value` tell a program what to do, this tells
  * a reader why, and neither replaces the other.
@@ -471,6 +493,7 @@ export async function readCell(
       value,
       headline: spec.headline,
       resolver: spec.resolver,
+      falsifier: falsifierFrom(payload, spec.falsifier),
       ...(spec.unknownHoist === undefined ? {} : { unknownHoist: hoistFrom(payload, spec.unknownHoist) }),
       ...(materialPath !== undefined && materialValue !== undefined
         ? { material: { path: materialPath, value: materialValue } }
@@ -508,6 +531,42 @@ export async function readCell(
 function hoistFrom(payload: unknown, key: string): CellHoist {
   const hoisted = valueAtPath(payload, key);
   return hoisted === undefined ? { key, value: null, drifted: true } : { key, value: hoisted };
+}
+
+/**
+ * WI-6506 — own-key path walk: does EVERY segment actually exist in the object
+ * graph, independent of what value is found there? Mirrors
+ * `cell-falsifier-reality.test.ts`'s `pathExists` exactly (own-key check via `in`,
+ * not `valueAtPath`'s `cur == null` short-circuit).
+ *
+ * The distinction is load-bearing here in a way it is not for `hoistFrom`/`material`
+ * above: `valueAtPath` treats a legitimately-null INTERMEDIATE segment (e.g.
+ * `goal.agreement` when `goal` itself is `null` — "this agent holds no goal", a real
+ * measured answer) the SAME as a missing key anywhere along the chain, collapsing
+ * both to `undefined`. A falsifier is exactly the field a caller must be able to
+ * trust is either genuinely resolved (even to `null`) or genuinely absent — using
+ * `valueAtPath` here would silently reintroduce the MISSING-vs-NULL conflation this
+ * whole item exists to close.
+ */
+function falsifierPathExists(payload: unknown, path: string): { exists: boolean; value: unknown } {
+  let cur: unknown = payload;
+  for (const seg of path.split('.')) {
+    if (cur === null || cur === undefined || typeof cur !== 'object') return { exists: false, value: undefined };
+    if (!(seg in (cur as Record<string, unknown>))) return { exists: false, value: undefined };
+    cur = (cur as Record<string, unknown>)[seg];
+  }
+  return { exists: true, value: cur };
+}
+
+/**
+ * WI-6506 — the falsifier lens, off the SAME payload (axis 5, exactly like `material`
+ * and `hoistFrom` above: one derivation, many lenses — no second dispatch).
+ */
+function falsifierFrom(payload: unknown, f: { field: string; kills: string }): CellFalsifierRead {
+  const r = falsifierPathExists(payload, f.field);
+  return r.exists
+    ? { field: f.field, value: r.value, kills: f.kills }
+    : { field: f.field, value: null, kills: f.kills, drifted: true };
 }
 
 /** Sentinel for "this cell needs a subject and none was given" — distinct from the

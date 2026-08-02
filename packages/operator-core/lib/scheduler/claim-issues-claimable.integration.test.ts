@@ -550,3 +550,46 @@ describe('claim-hold exclusion — a do-not-opportunistically-claim item is NOT 
     expect(diag.readyUnclaimed).toBe(0);
   });
 });
+
+describe('claimNextIssueWorkItem honors a caller/spec `states` override (WI-6453 follow-up)', () => {
+  beforeEach(() => {
+    h.issuesClaimable = true;
+  });
+
+  // WI-6453 follow-up (2026-08-02): claimNextIssueWorkItem used to IGNORE `filter.states`
+  // entirely and always hardcode ISSUE_FAMILY_CLAIMABLE_STATES (['open']), while every
+  // sibling read/diagnose path (aggregateIssueClaimExclusions, explainIssueClaimFloors, and
+  // 4 other helpers in scheduler/get-next.ts) correctly honors `opts.states ??
+  // ISSUE_FAMILY_CLAIMABLE_STATES`. A claim spec with `states: ['open', 'failing']`
+  // (CLAIM_STATES_ALLOWLIST explicitly allows 'failing') would therefore have the READ
+  // oracle report a 'failing' issue-family row as claimable while the REAL self-select claim
+  // path could never actually claim it — a claim-path/read-path divergence in the same class
+  // as EI-10062/WI-4309/WI-5275/WI-5822/WI-6453, triggered by a states override instead of a
+  // filter shape.
+
+  it('a `failing` issue-family row is NOT claimed under the default states (unchanged behavior)', async () => {
+    await seedIssue('EI-STATE-1', { state: 'failing', createdTs: 100 });
+    expect(await claimOne('w-states-1')).toBeNull();
+  });
+
+  it('a `failing` issue-family row IS claimed when the caller passes states:["open","failing"]', async () => {
+    await seedIssue('EI-STATE-2', { state: 'failing', createdTs: 100 });
+    const claimed = await wi.claimNextWorkItem({
+      harness: H,
+      assignee: 'w-states-2',
+      states: ['open', 'failing'],
+    });
+    expect(claimed?.id).toBe('EI-STATE-2');
+  });
+
+  it('states:["failing"] alone excludes an `open` row but claims a `failing` one', async () => {
+    await seedIssue('EI-STATE-3', { state: 'open', createdTs: 100 });
+    await seedIssue('EI-STATE-4', { state: 'failing', createdTs: 110 });
+    const claimed = await wi.claimNextWorkItem({
+      harness: H,
+      assignee: 'w-states-3',
+      states: ['failing'],
+    });
+    expect(claimed?.id).toBe('EI-STATE-4');
+  });
+});
