@@ -288,6 +288,99 @@ export interface HudBadge {
   ownerDirected?: boolean;
 }
 
+/**
+ * One transcript match, carried from the search endpoint onto the card that
+ * matched (owner ask 2026-08-02: "when searching a transcript it doesn't show
+ * the relevant part of the conversation on the preview card").
+ *
+ * The endpoint already returned every field here — HudView read `ownerId` out
+ * of the response and dropped the rest, so a search result rendered as an
+ * ordinary card with nothing saying WHY it matched.
+ */
+export interface HudSearchHit {
+  /** Turn index within the transcript. The reason this is worth carrying: it is
+   *  what lets opening a search result land ON the match instead of at the tail. */
+  turnIdx: number;
+  /** PG `ts_headline` output — the excerpt with `<mark>` around matched terms.
+   *  Null when the engine returned none; `excerpt` is then the fallback. */
+  highlight: string | null;
+  /** The unmarked excerpt. Always present. */
+  excerpt: string;
+  /** 'user' | 'assistant' | … — whose turn matched. */
+  speaker: string | null;
+  ts: string | null;
+  sessionId: string;
+  sourceKind: string;
+  /** How many OTHER turns in this session also matched. A single excerpt with
+   *  no hint that 40 more exist misrepresents the result as the whole answer. */
+  more: number;
+}
+
+/** A run of excerpt text, flagged as matched or not — see `parseHighlight`. */
+export interface HudHighlightSegment {
+  text: string;
+  mark: boolean;
+}
+
+const HTML_ENTITIES: Record<string, string> = {
+  amp: '&',
+  lt: '<',
+  gt: '>',
+  quot: '"',
+  apos: "'",
+};
+
+function decodeEntities(s: string): string {
+  return s.replace(/&(#x[0-9a-f]+|#[0-9]+|[a-z]+);/gi, (whole, body: string) => {
+    const key = body.toLowerCase();
+    if (key.startsWith('#x')) {
+      const n = Number.parseInt(body.slice(2), 16);
+      return Number.isFinite(n) ? String.fromCodePoint(n) : whole;
+    }
+    if (key.startsWith('#')) {
+      const n = Number.parseInt(body.slice(1), 10);
+      return Number.isFinite(n) ? String.fromCodePoint(n) : whole;
+    }
+    return HTML_ENTITIES[key] ?? whole;
+  });
+}
+
+/**
+ * Split a `ts_headline` string into marked / unmarked runs for rendering.
+ *
+ * This exists so the card can render the highlight as REACT NODES. The obvious
+ * alternative — `dangerouslySetInnerHTML` — is not acceptable here on any
+ * argument: the string is agent transcript text, i.e. arbitrary content that
+ * routinely CONTAINS markup, code and quoted HTML. Escaping is the server's job
+ * and `ts_headline` does escape, but a rendering path whose safety depends on an
+ * upstream escaper staying correct forever is one regression away from
+ * executing transcript content in the operator. Segments cannot do that: every
+ * run becomes a text node no matter what it holds.
+ *
+ * Whitespace is condensed because this is a DISPLAY helper — transcript
+ * excerpts carry markdown and hard newlines that would otherwise break a
+ * two-line card clamp into ragged fragments.
+ */
+export function parseHighlight(raw: string): HudHighlightSegment[] {
+  const out: HudHighlightSegment[] = [];
+  const re = /<mark>([\s\S]*?)<\/mark>/gi;
+  const push = (text: string, mark: boolean) => {
+    const condensed = decodeEntities(text).replace(/\s+/g, ' ');
+    if (condensed.trim().length > 0 || (out.length > 0 && condensed === ' ')) {
+      out.push({ text: condensed, mark });
+    }
+  };
+  let last = 0;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(raw)) !== null) {
+    if (m.index > last) push(raw.slice(last, m.index), false);
+    push(m[1], true);
+    last = m.index + m[0].length;
+  }
+  if (last < raw.length) push(raw.slice(last), false);
+  return out;
+}
+
 export interface HudSession {
   ownerId: string;
   /** Short display handle, e.g. `su-92bacd`. */
@@ -314,6 +407,9 @@ export interface HudSession {
   doneCount: number;
   advSessionId: number | null;
   windowId: string | null;
+  /** The transcript match that put this card in a filtered result, or null when
+   *  no search is running / this session matched on its card text instead. */
+  searchHit: HudSearchHit | null;
   /** Sort key WITHIN the column: lower sorts first. */
   sortKey: number;
 }
@@ -402,6 +498,11 @@ export interface HudBuildOptions {
    *  the no-plan group, so it filters like any other — same contract as
    *  `fleets`, on purpose (P-004). Applied AFTER `fleets`. */
   plans?: Array<string | null>;
+  /** Transcript matches by ownerId (owner ask 2026-08-02). Absent = no search
+   *  running; a session missing from a PRESENT map matched on card text, not
+   *  transcript, which is a real and different state — hence a map rather than
+   *  a field on the roster entry. */
+  searchHits?: ReadonlyMap<string, HudSearchHit>;
 }
 
 // ── helpers ─────────────────────────────────────────────────────────────────
@@ -831,7 +932,7 @@ function sortKeyFor(v: ColumnVerdict): number {
 export function toHudSession(
   e: HudRosterEntry,
   asks: HudAsk[] | undefined,
-  opts: { nowMs: number; thresholds: HudThresholds },
+  opts: { nowMs: number; thresholds: HudThresholds; searchHit?: HudSearchHit | null },
 ): HudSession {
   const verdict = deriveColumn(e, asks, opts);
   const claimed = e.claims.length;
@@ -855,6 +956,7 @@ export function toHudSession(
     doneCount: done,
     advSessionId: e.advSessionId,
     windowId: e.windowId,
+    searchHit: opts.searchHit ?? null,
     sortKey: sortKeyFor(verdict),
   };
 }
@@ -964,7 +1066,13 @@ export function buildHudBoard(
     entries = entries.filter((e) => want.has(e.fleetSlug));
   }
 
-  const inView = entries.map((e) => toHudSession(e, byOwner.get(e.ownerId), { nowMs, thresholds }));
+  const inView = entries.map((e) =>
+    toHudSession(e, byOwner.get(e.ownerId), {
+      nowMs,
+      thresholds,
+      searchHit: opts.searchHits?.get(e.ownerId) ?? null,
+    }),
+  );
 
   /* The plan filter's options are derived HERE — after the fleet filter, before
      the plan filter — and that ordering is the whole of P-004's "driven by the

@@ -37,6 +37,7 @@ import {
   loopRoutineName,
   computeLoopStall,
   computeTurnsStalled,
+  computeLifecycleBackoff,
   TURNS_STALLED_MIN_FIRE_COUNT,
   autoArmFleetMemberLoop,
   LOOP_WAKE_ACTION,
@@ -307,6 +308,90 @@ describe('computeTurnsStalled (EI-18712914572668391 — fires attempted vs turns
         nowMs: NOW,
       }),
     ).toBe(true);
+  });
+});
+
+describe('computeLifecycleBackoff (EI-19325288514307343 — backed-off vs dead, without opening the escalation queue)', () => {
+  const NOW2 = Date.parse('2026-08-02T21:00:00.000Z');
+
+  it('is null when the loop is not active — nothing to "resume"', () => {
+    expect(
+      computeLifecycleBackoff({
+        active: false,
+        lastDeliveryOutcome: 'loop-lifecycle-death:usage_limit',
+        nextFireAtIso: new Date(NOW2 + 3_600_000).toISOString(),
+        nowMs: NOW2,
+      }),
+    ).toBeNull();
+  });
+
+  it('is null when the last recorded outcome is not a lifecycle-death (the common/healthy case)', () => {
+    for (const outcome of [null, 'ok', 'loop-lifecycle', 'loop-stuck-backstop']) {
+      expect(
+        computeLifecycleBackoff({
+          active: true,
+          lastDeliveryOutcome: outcome,
+          nextFireAtIso: new Date(NOW2 + 60_000).toISOString(),
+          nowMs: NOW2,
+        }),
+      ).toBeNull();
+    }
+  });
+
+  it('extracts the reason suffix and the resume window from a lifecycle-death outcome', () => {
+    const until = new Date(NOW2 + 3_607_000).toISOString();
+    expect(
+      computeLifecycleBackoff({
+        active: true,
+        lastDeliveryOutcome: 'loop-lifecycle-death:usage_limit',
+        nextFireAtIso: until,
+        nowMs: NOW2,
+      }),
+    ).toEqual({ reason: 'usage_limit', until, resumesInMs: 3_607_000 });
+  });
+
+  it('clears itself the instant a LATER fire records a normal outcome — never a sticky flag', () => {
+    // Same routine, but the most recent recordFire call overwrote last_status after a
+    // successful retry: lastDeliveryOutcome no longer carries the lifecycle-death prefix.
+    expect(
+      computeLifecycleBackoff({
+        active: true,
+        lastDeliveryOutcome: 'loop-lifecycle',
+        nextFireAtIso: new Date(NOW2 + 60_000).toISOString(),
+        nowMs: NOW2,
+      }),
+    ).toBeNull();
+  });
+
+  it('defaults an empty reason suffix to "unknown" rather than an empty string', () => {
+    const out = computeLifecycleBackoff({
+      active: true,
+      lastDeliveryOutcome: 'loop-lifecycle-death:',
+      nextFireAtIso: new Date(NOW2 + 60_000).toISOString(),
+      nowMs: NOW2,
+    });
+    expect(out?.reason).toBe('unknown');
+  });
+
+  it('clamps resumesInMs to 0 rather than going negative when nextFireAt is already in the past', () => {
+    const past = new Date(NOW2 - 60_000).toISOString();
+    const out = computeLifecycleBackoff({
+      active: true,
+      lastDeliveryOutcome: 'loop-lifecycle-death:rate_limited',
+      nextFireAtIso: past,
+      nowMs: NOW2,
+    });
+    expect(out).toEqual({ reason: 'rate_limited', until: past, resumesInMs: 0 });
+  });
+
+  it('reports resumesInMs:null when nextFireAt is null (defensive — should not happen while active+un-parked)', () => {
+    const out = computeLifecycleBackoff({
+      active: true,
+      lastDeliveryOutcome: 'loop-lifecycle-death:usage_limit',
+      nextFireAtIso: null,
+      nowMs: NOW2,
+    });
+    expect(out).toEqual({ reason: 'usage_limit', until: null, resumesInMs: null });
   });
 });
 

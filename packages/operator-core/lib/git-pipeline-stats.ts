@@ -189,6 +189,28 @@ export interface GitPipelineSnapshot {
      *  Feeds Rule 4 of gate-verdict-freshness.ts. Null when no refire is in flight, or its
      *  marker is missing/abandoned. */
     inFlightRetriage?: StoredInFlightRetriage | null;
+    /**
+     * EI-19325520469216548: how stale the JUDGED CANDIDATE was at verdict time, in ms — the
+     * SAME `evaluateGateVerdictFreshness` measurement that already decides `verdictStale`'s
+     * `'candidate-fossil'` reason, but hoisted here so a reader can see the number even when
+     * it falls short of that rule's threshold (the routine ~4min quiet-cut lag is normal and
+     * will never trip 'candidate-fossil', yet a caller asking "might this red be about code
+     * that's already fixed?" benefits from seeing the age directly). Null when it could not be
+     * computed (a blob predating `candidateCommittedAt`, or clock skew) — never 0-as-fresh.
+     */
+    candidateAgeMs: number | null;
+    /**
+     * EI-19325520469216548: commits that landed on staging after the judged candidate was cut
+     * (`gate_health.commitsBehindTip`, written alongside `candidateCommittedAt`) — the concrete
+     * count behind the age above. This was already being RECORDED and already fed into
+     * `evaluateGateVerdictFreshness` as an input, but discarded at the destructure site rather
+     * than surfaced, so no reader of THIS snapshot (nor, transitively, of `dev:pipeline_position`,
+     * which projects a subset of `gate`) could see it. A caller who just committed a fix and
+     * sees this non-zero on a red gate has a concrete, first-hand reason to suspect the red
+     * predates their fix, without needing to pass `paths` to `release:checkpoint-run` at all.
+     * Null when unmeasured (a blob predating the field).
+     */
+    commitsBehindTip: number | null;
   };
 
   /** A currently-OPEN merge conflict (resolver still working / unresolved), or null. */
@@ -491,6 +513,10 @@ export async function gitPipelineSnapshot(
    * and those read identically as a passing gate. Capture which one it was BEFORE the
    * default is applied; it is unrecoverable afterwards.
    */
+  // EI-19325520469216548: captured under its own name BEFORE it is handed to
+  // evaluateGateVerdictFreshness as an input — it was already being computed for that call and
+  // then discarded, which is exactly the "computed but never surfaced" gap this closes.
+  const rawCommitsBehindTip = num(gateHealth.commitsBehindTip);
   const measuredConsecutiveReds = num(gateHealth.consecutiveReds);
   const countersUnknown: CellUnknown | null =
     measuredConsecutiveReds == null
@@ -504,6 +530,10 @@ export async function gitPipelineSnapshot(
     stale: gcVerdictStale,
     reason: gcVerdictStaleReason,
     reasonCode: gcVerdictStaleReasonCode,
+    // EI-19325520469216548: this was already being computed by the function below and
+    // discarded at this very destructure — never assigned to a name, never returned. See the
+    // `candidateAgeMs` field on `GitPipelineSnapshot.gate` for why that mattered.
+    candidateAgeMs: gcCandidateAgeMs,
   } = evaluateGateVerdictFreshness({
     consecutiveReds: rawConsecutiveReds,
     observedAtMs: verdictObservedAtMs,
@@ -521,7 +551,7 @@ export async function gitPipelineSnapshot(
     // current (measured 2026-08-02: a 651-min-fossil verdict cost ~2h of fleet time and produced
     // four contradictory conclusions, because `stale` came back false).
     candidateCommittedAtMs,
-    commitsBehindTip: num(gateHealth.commitsBehindTip),
+    commitsBehindTip: rawCommitsBehindTip,
   });
   const effectiveGate = pinProvenGateCorrection(gcVerdictStaleReasonCode, {
     consecutiveReds: rawConsecutiveReds,
@@ -637,6 +667,8 @@ export async function gitPipelineSnapshot(
       retriageStaleTip,
       retriageDetail,
       inFlightRetriage,
+      candidateAgeMs: gcCandidateAgeMs ?? null,
+      commitsBehindTip: rawCommitsBehindTip,
       flakyWorkspaces: Object.entries(flakeHistory)
         .filter(([, v]) => (v?.flakes ?? 0) >= 3)
         .map(([ws]) => ws),

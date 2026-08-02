@@ -48,8 +48,14 @@ export interface RailCollapse {
 export function useRailCollapse(): RailCollapse {
   const [raw, setRaw] = useQueryState(RAIL_COLLAPSE_PARAM, parseAsString.withDefault(''));
 
+  /* `?? ''` even though `withDefault('')` types this as a plain string: clearing
+     the param writes `null`, and a store that hands that value straight back
+     (nuqs's own testing adapter, and every suite's hand-rolled useState-backed
+     mock) would otherwise throw on `.split` — a crash in the render path of both
+     rails, triggered by the ordinary act of re-opening the last folded section.
+     The type says it cannot happen; the value says otherwise. */
   const set = useMemo(
-    () => new Set(raw.split(',').map((s) => s.trim()).filter(Boolean)),
+    () => new Set((raw ?? '').split(',').map((s) => s.trim()).filter(Boolean)),
     [raw],
   );
 

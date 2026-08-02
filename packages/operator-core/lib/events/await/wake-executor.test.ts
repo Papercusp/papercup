@@ -420,6 +420,7 @@ describe('rehydrateLoopWakeText — EI-18825117783927950 (loop:end / re-arm does
       lastTurnAt: null,
       lastRealTurnAt: null,
       turnsStalled: false,
+      lifecycleBackoff: null,
       ...over,
     };
   }

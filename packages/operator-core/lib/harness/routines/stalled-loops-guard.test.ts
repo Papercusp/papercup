@@ -44,6 +44,7 @@ function status(overrides: Partial<LoopStatus> & { turnsStalled: boolean }): Loo
     lastWakeError: null,
     lastTurnAt: null,
     lastRealTurnAt: null,
+    lifecycleBackoff: null,
     ...overrides,
   };
 }

@@ -265,6 +265,9 @@ export default function HudView({ workspaceId = null }: { workspaceId?: string |
      the column counts keep describing what is actually on screen — the same
      model-not-view rule the entity boards' search already follows. */
   const [searchOwners, setSearchOwners] = useState<Set<string> | null>(null);
+  /** The top transcript match per session — the card excerpt AND the turn the
+   *  modal opens on (owner ask 2026-08-02). */
+  const [searchHits, setSearchHits] = useState<Map<string, HudSearchHit> | null>(null);
   const [searching, setSearching] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
   const searchSeq = useRef(0);
@@ -288,6 +291,7 @@ export default function HudView({ workspaceId = null }: { workspaceId?: string |
     // filter rather than empty the board.
     if (q.length < 2) {
       setSearchOwners(null);
+      setSearchHits(null);
       setSearchError(null);
       setSearching(false);
       return;
@@ -307,6 +311,19 @@ export default function HudView({ workspaceId = null }: { workspaceId?: string |
           sessions?: {
             active: { ownerId?: string | null } | null;
             session: { coordOwnerId?: string | null } | null;
+            sessionId?: string | null;
+            sourceKind?: string | null;
+            /* Owner ask 2026-08-02. These came back on every response all along
+               — the old handler destructured out the ownerId and dropped them,
+               which is why a search result rendered as an ordinary card with
+               nothing saying why it matched. Ordered best-first by the engine. */
+            hits?: {
+              turnIdx?: number | null;
+              excerpt?: string | null;
+              highlight?: string | null;
+              speaker?: string | null;
+              ts?: string | null;
+            }[];
           }[];
           error?: string;
         };
@@ -314,14 +331,36 @@ export default function HudView({ workspaceId = null }: { workspaceId?: string |
         if (!r.ok || body.ok === false) {
           setSearchError(body.error ?? `search failed (${r.status})`);
           setSearchOwners(new Set());
+          setSearchHits(null);
           return;
         }
         const owners = new Set<string>();
+        const hits = new Map<string, HudSearchHit>();
         for (const s of body.sessions ?? []) {
           const id = s.active?.ownerId ?? s.session?.coordOwnerId ?? null;
-          if (id) owners.add(id);
+          if (!id) continue;
+          owners.add(id);
+          /* The engine ranks hits, so [0] is the best one — that is the excerpt
+             the card shows and the turn the modal opens on. `more` keeps the
+             rest honest: one excerpt with no hint that 40 others exist reads as
+             the whole answer. A hit with no usable text is skipped rather than
+             rendered as an empty strip. */
+          const top = s.hits?.[0];
+          const text = top?.highlight ?? top?.excerpt ?? '';
+          if (!top || !text.trim()) continue;
+          hits.set(id, {
+            turnIdx: typeof top.turnIdx === 'number' ? top.turnIdx : -1,
+            highlight: top.highlight ?? null,
+            excerpt: top.excerpt ?? '',
+            speaker: top.speaker ?? null,
+            ts: top.ts ?? null,
+            sessionId: s.sessionId ?? '',
+            sourceKind: s.sourceKind ?? '',
+            more: Math.max(0, (s.hits?.length ?? 0) - 1),
+          });
         }
         setSearchOwners(owners);
+        setSearchHits(hits);
       } catch (e) {
         if (ctl.signal.aborted || seq !== searchSeq.current) return;
         setSearchError(e instanceof Error ? e.message : 'search failed');

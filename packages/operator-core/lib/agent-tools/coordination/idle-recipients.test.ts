@@ -65,6 +65,7 @@ function loopStatus(overrides: Partial<LoopStatus> = {}): LoopStatus {
     lastTurnAt: null,
     lastRealTurnAt: null,
     turnsStalled: false,
+    lifecycleBackoff: null,
     ...overrides,
   };
 }

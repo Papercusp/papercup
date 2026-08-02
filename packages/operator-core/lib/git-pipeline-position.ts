@@ -747,6 +747,36 @@ export interface PipelinePosition {
        *  when the cache carried no computedAt (should not happen once populated). */
       asOfAgeMs: number | null;
     } | null;
+    /**
+     * EI-19325520469216548: is the recorded RED still trustworthy? PROJECTED from
+     * `git-pipeline-stats`'s `evaluateGateVerdictFreshness` (WI-4489 + EI-19346660748445728's
+     * candidate-fossil rule) — the SAME computation the /admin/git panel already shows, but
+     * until this fix it was silently dropped when this tool's `gate` object was built, so a
+     * caller reading `consecutiveReds`/`stalled` here saw an undifferentiated red with no way
+     * to tell "genuinely broken" from "the quiet-cut judged a commit before your fix landed".
+     * `false` on a green gate (0 reds) or when nothing proves staleness — never treat `false`
+     * as "definitely a real regression", only as "nothing here says otherwise".
+     */
+    verdictStale: boolean;
+    /** Human-readable reason `verdictStale` fired, or null when it did not. */
+    verdictStaleReason: string | null;
+    /** WHICH rule fired — see `GateVerdictFreshness.reasonCode` in gate-verdict-freshness.ts.
+     *  `'pin-advance'` is hard proof a green already happened; the others prove only that the
+     *  cached red is UNVERIFIED, not that the gate is green. Null when `verdictStale` is false. */
+    verdictStaleReasonCode: 'pin-advance' | 'writer-starved' | 'retriage-proven' | 'refire-in-flight' | 'candidate-fossil' | null;
+    /** EI-19325520469216548: how stale the judged candidate was at verdict time, in ms — present
+     *  even when it falls short of the 'candidate-fossil' threshold (the routine ~4min quiet-cut
+     *  lag is normal). Null when unmeasured. */
+    candidateAgeMs: number | null;
+    /** EI-19325520469216548: commits that landed on staging after the judged candidate was cut —
+     *  the concrete count behind `candidateAgeMs`. A non-zero value on a red gate right after you
+     *  just committed a fix is a first-hand reason to suspect the red predates it, with no need
+     *  to pass `paths` to `release:checkpoint-run` to learn that. Null when unmeasured. */
+    commitsBehindTip: number | null;
+    /** EI-19325520469216548 (follow-up to WI-4533): the short sha of the candidate the current
+     *  `consecutiveReds`/`failingTests` verdict pertains to (`gate_health.observedCandidate`).
+     *  Null when there is no verdict, or on a blob predating this field. */
+    observedCandidate: string | null;
   };
   /**
    * EI-7846: provenance for the CURRENT gate/deploy verdict — distinct from the
@@ -2809,6 +2839,17 @@ export async function gitPipelinePosition(
     fireStale: snap.gate.fireStale,
     fireStaleReason: snap.gate.fireStaleReason,
     checkpointRunInFlight,
+    // EI-19325520469216548: PROJECTED straight from the snapshot — git-pipeline-stats already
+    // computes all five (evaluateGateVerdictFreshness + its two enrichments), and until now they
+    // were dropped here, so a caller of THIS tool (the one every agent role is told to reach for)
+    // saw only an undifferentiated red while /admin/git, reading the same snapshot directly,
+    // already showed the full staleness verdict.
+    verdictStale: snap.gate.verdictStale,
+    verdictStaleReason: snap.gate.verdictStaleReason,
+    verdictStaleReasonCode: snap.gate.verdictStaleReasonCode ?? null,
+    candidateAgeMs: snap.gate.candidateAgeMs,
+    commitsBehindTip: snap.gate.commitsBehindTip,
+    observedCandidate: snap.gate.observedCandidate,
   };
   // EI-18793581783459047: surfaced as a NOTE (not folded into the tight one-line
   // `summary`, which is already densely tuned) so a caller about to launch a heavy
@@ -2858,6 +2899,28 @@ export async function gitPipelinePosition(
             : ''),
       );
     }
+  }
+
+  // EI-19325520469216548: surfaced as a NOTE — same rationale as the checkpointRunInFlight
+  // block above — so a caller reading `gate.consecutiveReds`/`gate.stalled` at a glance still
+  // gets the warning even without inspecting the nested `gate.verdictStale*` fields. Gated on
+  // `stalled` (not just `consecutiveReds > 0`) so a red that hasn't crossed the alert threshold
+  // yet doesn't grow extra noise on every single read; a caller reasoning about the raw count
+  // still has the fields above regardless of this note firing.
+  if (gate.verdictStale && gate.stalled) {
+    notes.push(
+      `⚠ THIS RED MAY BE STALE (do not go re-fix the test(s) it names on this evidence alone): ${gate.verdictStaleReason ?? 'the recorded verdict is unverified'}` +
+        (gate.candidateAgeMs != null
+          ? ` — the judged candidate was ${Math.round(gate.candidateAgeMs / 60_000)}min old at verdict time` +
+            (gate.commitsBehindTip != null && gate.commitsBehindTip > 0
+              ? ` (${gate.commitsBehindTip} commit(s) landed on staging that it never saw)`
+              : '') +
+            '.'
+          : '.') +
+        (gate.verdictStaleReasonCode === 'pin-advance'
+          ? ' This reason is HARD PROOF a green already happened — the streak may be safely treated as reset.'
+          : ' Re-judge at tip (release:checkpoint-run) or wait for the next verdict before spending time on the named failure.'),
+    );
   }
 
   // EI-7846: verdict provenance, derived from the snapshot's already-loaded deploy
