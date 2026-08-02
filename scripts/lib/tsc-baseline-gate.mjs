@@ -812,6 +812,137 @@ export function formatLandingRaceCaveat({ recentCount, windowMin = LANDING_RACE_
 }
 
 /**
+ * EI-19341572300046923 — the repo-relative directory prefix a `tsc -p <dir>/tsconfig.json`
+ * invocation actually COMPILES.
+ *
+ * Every per-project CLI here is a thin wrapper whose `tscCommand` is a per-project constant
+ * (`lint-tsc.mjs` → `packages/operator-core/`, `lint-tsc-operator-vite.mjs` →
+ * `apps/operator-vite/`, …). `--files=` is a GATE-scoping flag that never reaches tsc, so
+ * naming a file OUTSIDE that project does not widen the compile — it just scopes the verdict
+ * to files this run never looked at. Deriving the prefix from the command itself (rather than
+ * a hand-maintained roster) means a new per-project CLI inherits the guard below for free;
+ * a roster would reproduce the very "gate exists, gates nothing" defect WI-6841 documents.
+ *
+ * @param {string} tscCommand
+ * @returns {string | null} prefix with a trailing slash, `''` for a whole-repo project, or
+ *   `null` when no `-p` operand is parseable (callers must then FAIL OPEN — an unparseable
+ *   command is not evidence that a file is uncovered).
+ */
+export function projectPrefixFromTscCommand(tscCommand) {
+  const m = /(?:^|\s)-p\s+(\S+)/.exec(String(tscCommand ?? ''));
+  if (!m) return null;
+  const withoutConfig = m[1].replace(/^["']|["']$/g, '').replace(/(?:^|\/)tsconfig[^/]*\.json$/, '');
+  if (withoutConfig === '' || withoutConfig === '.') return '';
+  return withoutConfig.endsWith('/') ? withoutConfig : `${withoutConfig}/`;
+}
+
+/**
+ * Split the caller's `--files=` set into the files this invocation can actually judge and the
+ * ones it cannot.
+ *
+ * A `''` prefix (whole-repo project) covers everything.
+ *
+ * @param {{files: Iterable<string>, coveredPrefixes: Iterable<string>}} opts
+ * @returns {{covered: string[], uncovered: string[]}}
+ */
+export function partitionFilesByCoverage({ files, coveredPrefixes }) {
+  const prefixes = [...coveredPrefixes].filter((p) => typeof p === 'string');
+  const covered = [];
+  const uncovered = [];
+  for (const raw of files) {
+    const file = String(raw).replace(/^\.\//, '');
+    if (prefixes.some((p) => p === '' || file.startsWith(p))) covered.push(file);
+    else uncovered.push(file);
+  }
+  return { covered, uncovered };
+}
+
+/**
+ * Which typecheck gate DOES cover `file`? Discovery, not a hardcoded map: walk up to the
+ * nearest `package.json` and read its `typecheck` script.
+ *
+ * The four per-project gates in this repo are reachable this way because each workspace's own
+ * `typecheck` script points at the right one (e.g. apps/operator-vite's is
+ * `node ../../scripts/lint-tsc-operator-vite.mjs`, the baseline-gated form — not a raw `tsc`).
+ * So a workspace that earns a gate later is routed to automatically.
+ *
+ * @param {string} root Absolute repo root.
+ * @param {string} file Repo-relative path.
+ * @returns {{workspaceDir: string, packageName: string, command: string | null} | null}
+ *   `command: null` = the owning workspace declares NO typecheck script (a real coverage gap,
+ *   worth saying out loud); `null` = no owning package.json found at all.
+ */
+export function suggestTypecheckGate(root, file) {
+  const parts = String(file).replace(/^\.\//, '').split('/').filter(Boolean);
+  for (let i = parts.length - 1; i >= 1; i--) {
+    const dir = parts.slice(0, i).join('/');
+    const pkgPath = resolve(root, dir, 'package.json');
+    if (!existsSync(pkgPath)) continue;
+    let pkg;
+    try {
+      pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'));
+    } catch {
+      continue;
+    }
+    const hasTypecheck = Boolean(pkg?.scripts?.typecheck);
+    return {
+      workspaceDir: dir,
+      packageName: typeof pkg?.name === 'string' ? pkg.name : dir,
+      command: hasTypecheck ? `npm run --workspace ${dir} typecheck` : null,
+    };
+  }
+  return null;
+}
+
+/**
+ * The banner for `--files=` entries this run cannot judge.
+ *
+ * Written to be impossible to mistake for a pass: the failure this closes is that a scoped run
+ * naming only out-of-project files printed a clean verdict having typechecked NONE of them —
+ * indistinguishable from a real green, which is the same silent-zero shape `build:typecheck`
+ * already refuses (it will not report a clean run that checked zero files).
+ *
+ * @param {{label: string, uncovered: string[], suggestions: Map<string, ReturnType<typeof suggestTypecheckGate>>, fatal: boolean}} opts
+ * @returns {string[]} console lines.
+ */
+export function formatUncoveredFilesBanner({ label, uncovered, suggestions, fatal }) {
+  const lines = [''];
+  lines.push(
+    fatal
+      ? `❌ NOTHING YOU NAMED WAS TYPECHECKED — all ${uncovered.length} file(s) are outside \`${label}\`.`
+      : `⚠ ${uncovered.length} of the file(s) you named are OUTSIDE \`${label}\` and were NOT typechecked.`,
+  );
+  lines.push(`   \`--files=\` scopes this gate's VERDICT; it does not widen what tsc compiles.`);
+  lines.push('');
+
+  /** @type {Map<string, string[]>} */
+  const byCommand = new Map();
+  const ungated = [];
+  for (const file of uncovered) {
+    const s = suggestions.get(file);
+    if (s?.command) {
+      if (!byCommand.has(s.command)) byCommand.set(s.command, []);
+      byCommand.get(s.command).push(file);
+    } else {
+      ungated.push({ file, workspaceDir: s?.workspaceDir ?? null });
+    }
+  }
+
+  for (const [command, files] of byCommand) {
+    lines.push(`   RUN THIS to check them:  ${command}`);
+    for (const f of files) lines.push(`     - ${f}`);
+  }
+  if (ungated.length) {
+    lines.push(`   ⚠ NO typecheck gate covers these — nothing local will ever catch a type error here:`);
+    for (const u of ungated) {
+      lines.push(`     - ${u.file}${u.workspaceDir ? `   (workspace ${u.workspaceDir} declares no \`typecheck\` script)` : ''}`);
+    }
+  }
+  lines.push('');
+  return lines;
+}
+
+/**
  * Run the full CLI gate for one project and `process.exit(...)` with its verdict — the shared
  * `main()` every per-project CLI (lint-tsc.mjs, lint-tsc-operator-vite.mjs, …) delegates to.
  *
@@ -829,6 +960,43 @@ export function runTscBaselineGate({
   const updateFlag = argv.includes('--update');
   const explicitFiles = parseExplicitFiles(argv);
   const mineFlag = argv.includes('--mine') || explicitFiles !== null;
+
+  // EI-19341572300046923 — REFUSE to report a verdict about files this project never compiles.
+  //
+  // `lint:tsc` is `tsc -p packages/operator-core/tsconfig.json`. Passing
+  // `--files=apps/operator-vite/src/Foo.tsx` scoped the verdict to a file that compile never
+  // saw, so the gate found zero recorded errors for it and printed GREEN — a clean report that
+  // had typechecked nothing the caller named. That is indistinguishable from a real pass, and it
+  // is exactly how two operator-vite gate reds reached the fleet green-checkpoint on 2026-08-02:
+  // the author ran the scoped check, saw green, and the first real observer was a ~55min suite
+  // hours later in someone else's triage queue.
+  //
+  // Deliberately placed BEFORE the compile: the answer is a pure path comparison, so the
+  // all-uncovered case fails in milliseconds instead of paying ~150s (plus pc-heavy queue) for a
+  // run that could not have judged anything. Coverage is DERIVED from `tscCommand` + the
+  // foreign baselines this gate already reads, so a new per-project CLI inherits it for free.
+  //
+  // Fail-open on an unparseable `-p` operand: not knowing the project's prefix is not evidence
+  // that a file lies outside it, and a lint gate must never invent a red it cannot substantiate.
+  if (explicitFiles !== null && explicitFiles.size > 0) {
+    const projectPrefix = projectPrefixFromTscCommand(tscCommand);
+    if (projectPrefix !== null) {
+      const { covered, uncovered } = partitionFilesByCoverage({
+        files: explicitFiles,
+        coveredPrefixes: [projectPrefix, ...foreignBaselines.map((b) => b.prefix)],
+      });
+      if (uncovered.length > 0) {
+        const suggestions = new Map(uncovered.map((f) => [f, suggestTypecheckGate(root, f)]));
+        const fatal = covered.length === 0;
+        for (const line of formatUncoveredFilesBanner({ label, uncovered, suggestions, fatal })) {
+          console.error(line);
+        }
+        // Some covered, some not: the covered verdict below is still TRUE and worth having, so
+        // warn and continue. Nothing covered: there is no honest verdict to print at all.
+        if (fatal) process.exit(1);
+      }
+    }
+  }
 
   let tscOutput = '';
   let tscThrew = false;

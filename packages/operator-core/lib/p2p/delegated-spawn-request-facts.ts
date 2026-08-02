@@ -26,7 +26,18 @@ export interface SpawnRequestOfferRow {
 export interface SpawnRequestFactsResult {
   /** Ready to hand to `classifyDelegatedSpawnOutcome({ request })`. */
   facts: DelegatedSpawnRequestFacts;
-  /** The seat-offer publisher this request targeted — the HONORING host. */
+  /**
+   * The seat offer this request targeted. THIS is what identifies the honoring
+   * MACHINE: a seat offer id hashes the target device pubkey, so it names
+   * exactly one machine's delegation. Resolve it to that seat row's
+   * `signer_device_pubkey` and feed it to {@link memberEvidenceAvailableForHonor}.
+   */
+  targetOfferId: string;
+  /**
+   * The seat-offer publisher — an ACCOUNT, not a machine. Display/audit only.
+   * ⚠ NEVER use this to decide local-vs-remote: see the warning on
+   * {@link memberEvidenceAvailableForHonor}.
+   */
   targetPublisherGithubUserId: number;
   /** The requesting session's coord owner id (advisory, for display). */
   requesterOwnerId: string;
@@ -65,6 +76,7 @@ export function spawnRequestFactsFromRow(row: SpawnRequestOfferRow): SpawnReques
       count: p.count,
       requestedAtMs: p.requestedAtMs,
     },
+    targetOfferId: p.targetOfferId,
     targetPublisherGithubUserId: p.targetPublisherGithubUserId,
     requesterOwnerId: p.requesterOwnerId,
     planSlug: p.planSlug,

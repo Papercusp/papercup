@@ -10,9 +10,12 @@
 
 import { describe, expect, it } from 'vitest';
 import { countWaitingPlans, waitingLabel } from '../adv/AdvNowRunning';
-import type { PlanStartStatus } from '@/app/admin/plans/plans-api';
+import type { PlanListRow } from '@/app/admin/plans/plans-api';
 
-const p = (startStatus: PlanStartStatus) => ({ startStatus });
+// PlanListRow.startStatus is `?: Exclude<PlanStartStatus, null>` (WI-7045 / D-025 — every
+// optional PlanListRow field is `?: T`, never `T | null`; "never started" is an ABSENT key,
+// not a null one). `undefined` is the fixture's "never started" value, matching the real feed.
+const p = (startStatus: PlanListRow['startStatus']) => ({ startStatus });
 
 describe('countWaitingPlans', () => {
   it('returns 0 for an empty list', () => {
@@ -20,12 +23,12 @@ describe('countWaitingPlans', () => {
   });
 
   it('counts only plans with startStatus "started"', () => {
-    const plans = [p('started'), p('paused'), p('done'), p(null), p('started')];
+    const plans = [p('started'), p('paused'), p('done'), p(undefined), p('started')];
     expect(countWaitingPlans(plans)).toBe(2);
   });
 
   it('ignores paused / done / never-started plans entirely', () => {
-    expect(countWaitingPlans([p('paused'), p('done'), p(null)])).toBe(0);
+    expect(countWaitingPlans([p('paused'), p('done'), p(undefined)])).toBe(0);
   });
 
   it('counts every started plan when all are started', () => {

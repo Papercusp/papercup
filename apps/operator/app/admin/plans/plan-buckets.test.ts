@@ -18,16 +18,16 @@ function row(overrides: Partial<PlanListRow> = {}): PlanListRow {
     title: 'Demo Plan',
     status: 'draft',
     updated: '2026-05-20',
-    created: null,
-    owner: null,
+    created: undefined,
+    owner: undefined,
     archived: false,
     isLegacy: false,
-    itemCounts: null,
-    nextAction: null,
+    itemCounts: undefined,
+    nextAction: undefined,
     harness: 'papercup',
-    startStatus: null,
-    priority: null,
-    maxImportance: null,
+    startStatus: undefined,
+    priority: undefined,
+    maxImportance: undefined,
     ...overrides,
   };
 }
@@ -72,7 +72,7 @@ describe('bucketOf', () => {
   });
 
   it('paused (not started) approved plan is ready, not running', () => {
-    expect(bucketOf(row({ status: 'ready', startStatus: 'paused' as PlanStartStatus }))).toBe('ready');
+    expect(bucketOf(row({ status: 'ready', startStatus: 'paused' }))).toBe('ready');
   });
 });
 
@@ -148,7 +148,7 @@ describe('applyPlanFilters', () => {
       row({ slug: 'mine-1', owner: 'me@x.com' }),
       row({ slug: 'mine-2', owner: 'ME@X.COM' }), // case-insensitive match
       row({ slug: 'theirs', owner: 'you@x.com' }),
-      row({ slug: 'ownerless', owner: null }),
+      row({ slug: 'ownerless', owner: undefined }),
     ];
     const me = 'me@x.com';
     expect(applyPlanFilters(plans, { ...NO_FILTERS, view: 'mine', viewerEmail: me }, '').map((p) => p.slug)).toEqual([
@@ -182,7 +182,7 @@ describe('applyPlanFilters', () => {
       row({ slug: 'a', initiative: 'shared-hive' }),
       row({ slug: 'b', initiative: 'Shared-Hive' }), // case-insensitive match
       row({ slug: 'c', initiative: 'release-gate' }),
-      row({ slug: 'd', initiative: null }),
+      row({ slug: 'd', initiative: undefined }),
       row({ slug: 'e' }), // no initiative field at all (undefined)
     ];
     expect(

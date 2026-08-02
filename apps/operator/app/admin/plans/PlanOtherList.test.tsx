@@ -32,24 +32,24 @@ function item(over: Partial<AttentionItem> = {}): AttentionItem {
     kind: 'coord-escalation',
     source: 'coord',
     harnessSlug: 'h',
-    planSlug: null,
-    itemRef: null,
+    planSlug: undefined,
+    itemRef: undefined,
     title: 'A blocking escalation',
     body: '',
     status: 'open',
     importance: 'normal',
     tier: 'alert',
     needsHuman: false,
-    ownerAgentId: null,
-    ownerLabel: null,
+    ownerAgentId: undefined,
+    ownerLabel: undefined,
     triageState: 'untriaged',
-    triageNote: null,
-    triagedBy: null,
-    triagedAt: null,
+    triageNote: undefined,
+    triagedBy: undefined,
+    triagedAt: undefined,
     actions: [],
     ref: { kind: 'coord-escalation' },
-    authorizer: null,
-    whyGated: null,
+    authorizer: undefined,
+    whyGated: undefined,
     ...over,
   };
 }
@@ -74,7 +74,7 @@ function planItem(over: Partial<AttentionItem> = {}): AttentionItem {
 }
 
 function group(items: AttentionItem[]): AttentionGroup {
-  return { key: 'g', kind: 'plan', planSlug: null, harnessSlug: 'h', title: 'grp', items, maxImportance: 'normal' };
+  return { key: 'g', kind: 'plan', planSlug: undefined, harnessSlug: 'h', title: 'grp', items, maxImportance: 'normal' };
 }
 
 const BASE = {

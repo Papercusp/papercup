@@ -867,7 +867,12 @@ export default defineTool({
         try {
           const { listConvertedPlanItemRefs } =
             await import("../../plan-items/convert");
-          const convertedRefs = await listConvertedPlanItemRefs();
+          // Tenant-scoped: `smokeWorkspaceId` is the workspace resolved up front for this
+          // request (ctx.workspaceId, else activeWorkspaceId()). Inheriting the old
+          // DEFAULT_COORD_WORKSPACE default asked the wrong tenant whether an item was
+          // converted, so converted items survived the dedupe and showed in BOTH the Queue
+          // and Working — the exact double-render D-013 exists to prevent.
+          const convertedRefs = await listConvertedPlanItemRefs(smokeWorkspaceId);
           if (convertedRefs.size > 0) {
             const kept = dropConvertedPlanItems(items, convertedRefs);
             items.length = 0;

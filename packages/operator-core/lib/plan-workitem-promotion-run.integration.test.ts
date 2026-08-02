@@ -176,7 +176,7 @@ describe('promotePlanItems (P-006): plan → placeable work-items, against real 
     expect(rows.every((r) => r.taken_by === null || r.taken_by === '')).toBe(true);
 
     // Each carries an implements edge back to its plan-item (the idempotency truth).
-    const refs = await convert.listConvertedPlanItemRefs();
+    const refs = await convert.listConvertedPlanItemRefs(WS);
     expect(refs.has(planItemRef(PLAN, 'P-001'))).toBe(true);
     expect(refs.has(planItemRef(PLAN, 'P-002'))).toBe(true);
     expect(refs.has(planItemRef(PLAN, 'P-003'))).toBe(false);

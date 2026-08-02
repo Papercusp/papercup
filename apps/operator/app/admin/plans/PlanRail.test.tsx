@@ -64,19 +64,19 @@ function plan(slug: string, over: Partial<PlanListRow> = {}): PlanListRow {
     slug,
     title: slug,
     status: 'active',
-    updated: null,
-    created: null,
-    owner: null,
+    updated: undefined,
+    created: undefined,
+    owner: undefined,
     archived: false,
     isLegacy: false,
-    itemCounts: null,
-    nextAction: null,
+    itemCounts: undefined,
+    nextAction: undefined,
     // Empty so the HarnessPill (a Radix Tooltip needing a provider) is
     // skipped — irrelevant to the drag-handle structure under test.
     harness: '',
     startStatus: 'started',
-    priority: null,
-    maxImportance: null,
+    priority: undefined,
+    maxImportance: undefined,
     ...over,
   };
 }
@@ -163,8 +163,8 @@ describe('PlanRail drag-to-reorder handle', () => {
 
   it('does not offer drag for non-started plans', () => {
     const { container } = renderRail([
-      plan('x-2026-01-01', { startStatus: null }),
-      plan('y-2026-01-02', { startStatus: null }),
+      plan('x-2026-01-01', { startStatus: undefined }),
+      plan('y-2026-01-02', { startStatus: undefined }),
     ]);
     expect(container.querySelectorAll('.pc-plan-row__drag-handle').length).toBe(0);
   });
@@ -186,8 +186,8 @@ describe('PlanRail pSort ordering', () => {
 
   it('applies the pSort nuqs key to the rendered order', () => {
     const plans = [
-      plan('bravo', { startStatus: null, title: 'Bravo', updated: '2026-06-01' }),
-      plan('alpha', { startStatus: null, title: 'alpha', updated: '2026-01-01' }),
+      plan('bravo', { startStatus: undefined, title: 'Bravo', updated: '2026-06-01' }),
+      plan('alpha', { startStatus: undefined, title: 'alpha', updated: '2026-01-01' }),
     ];
     // Default smart order: same bucket → updated desc → bravo first.
     const byDefault = renderRail(plans);
@@ -211,7 +211,7 @@ describe('PlanRail render cap (perf D-001)', () => {
 
   it('caps the rendered rows for a large corpus and reveals the rest on demand', () => {
     const plans = Array.from({ length: 130 }, (_, i) =>
-      plan(`p-${String(i).padStart(3, '0')}`, { startStatus: null }),
+      plan(`p-${String(i).padStart(3, '0')}`, { startStatus: undefined }),
     );
     const { container, getByRole } = renderRail(plans);
     // Bounded initial render — NOT all 130 rows mounted (perf rule #2).
@@ -225,7 +225,7 @@ describe('PlanRail render cap (perf D-001)', () => {
 
   it('renders the whole list inline (no "Show all") when it fits under the cap', () => {
     const plans = Array.from({ length: 12 }, (_, i) =>
-      plan(`q-${i}`, { startStatus: null }),
+      plan(`q-${i}`, { startStatus: undefined }),
     );
     const { container, queryByRole } = renderRail(plans);
     expect(renderedRows(container as HTMLElement)).toBe(12);

@@ -196,7 +196,11 @@ export async function promotePlanItems(opts: {
 
   // Idempotency: an item already CONVERTED (has an `implements` edge — the same
   // truth convert-at-pickup uses) is never re-promoted.
-  const convertedRefs = await listConvertedPlanItemRefs();
+  // ⚠ Pass the RESOLVED tenant. This read used to inherit listConvertedPlanItemRefs'
+  // `DEFAULT_COORD_WORKSPACE` default, i.e. it asked 'default' whether an item in THIS
+  // workspace was already promoted — so an already-converted item could read as
+  // not-yet-promoted and be re-minted. (See that function's header for the measurement.)
+  const convertedRefs = await listConvertedPlanItemRefs(opts.workspaceId);
   const alreadyIds = openItems
     .map((i) => i.id)
     .filter((id) => convertedRefs.has(planItemRef(opts.planSlug, id)));
@@ -566,7 +570,12 @@ export async function backfillPromotedDependencyEdges(opts: {
   if (opts.planSlugs) {
     planSlugs = [...opts.planSlugs];
   } else {
-    const refs = await listConvertedPlanItemRefs();
+    // ⚠ The RESOLVED tenant, not the default. Discovering candidate plans in the wrong
+    // workspace is a SILENT under-coverage: measured 2026-08-02, the defaulted read found
+    // 18 of 24 edges and missed 4 plans outright, while every counter reported healthy
+    // (0 failures / 0 dangling / 0 unresolved). A migration that half-runs and reports
+    // success is worse than one that fails.
+    const refs = await listConvertedPlanItemRefs(opts.workspaceId);
     const slugs = new Set<string>();
     for (const ref of refs) {
       // planItemRef is `<planSlug>#<itemId>`; split on the LAST '#' so a slug containing one

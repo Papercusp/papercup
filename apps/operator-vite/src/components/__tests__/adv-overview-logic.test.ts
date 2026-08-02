@@ -40,19 +40,12 @@ function plan(over: Partial<PlanListRow> = {}): PlanListRow {
     title: 'P',
     status: 'active',
     updated: '2026-06-05',
-    // Required (string|null / Importance|null) fields the base previously omitted —
-    // absence typed them `undefined`, which PlanListRow forbids. A factory that
-    // RETURNS PlanListRow must supply every required field.
-    created: null,
-    maxImportance: null,
-    owner: null,
+    // These are all OPTIONAL PlanListRow fields (`?: T`, never `T | null` — WI-7045 /
+    // D-025: the wire omits null-valued keys, so an absent value arrives `undefined`).
+    // A factory modeling the wire leaves them out entirely rather than writing `null`.
     archived: false,
     isLegacy: false,
-    itemCounts: null,
-    nextAction: null,
     harness: 'all',
-    startStatus: null,
-    priority: null,
     ...over,
   };
 }
@@ -102,8 +95,8 @@ function agent(over: Partial<OverviewRosterEntry> = {}): OverviewRosterEntry {
 
 // ─── planProgress ──────────────────────────────────────────────────────────
 describe('planProgress', () => {
-  it('null counts → all zero', () => {
-    expect(planProgress(null)).toEqual({ done: 0, total: 0, pct: 0 });
+  it('undefined counts → all zero', () => {
+    expect(planProgress(undefined)).toEqual({ done: 0, total: 0, pct: 0 });
   });
   it('computes done/total/pct over active+done, excluding dropped/unknown', () => {
     const r = planProgress({ todo: 2, wip: 1, done: 3, dropped: 5, unknown: 9 });

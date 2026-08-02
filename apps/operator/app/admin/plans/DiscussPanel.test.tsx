@@ -44,7 +44,7 @@ describe('DiscussPanel routing', () => {
   });
 
   it('non-system owner, NO harness → reply thread only (no toggle)', () => {
-    render(<DiscussPanel item={item({ ownerAgentId: 'bee-7', harnessSlug: null })} chatLabel="x" />);
+    render(<DiscussPanel item={item({ ownerAgentId: 'bee-7', harnessSlug: undefined })} chatLabel="x" />);
     expect(screen.getByTestId('message-owner')).toBeTruthy();
     expect(screen.queryByRole('button', { name: /Fresh/ })).toBeNull();
   });

@@ -60,14 +60,14 @@ const ACTIVE_BUCKETS: ReadonlySet<PlanBucket> = new Set(['draft', 'ready', 'runn
 export const STALE_MS = 14 * 24 * 60 * 60 * 1000;
 
 /** True when an active plan hasn't been touched in ≥ STALE_MS. Pure. */
-export function isStale(updated: string | null, now = Date.now()): boolean {
+export function isStale(updated: string | null | undefined, now = Date.now()): boolean {
   if (!updated) return false;
   const t = Date.parse(updated);
   return Number.isFinite(t) && now - t >= STALE_MS;
 }
 
 /** Compact relative recency — same local convention as the roster/backup panes. */
-export function agoLabel(iso: string | null): string {
+export function agoLabel(iso: string | null | undefined): string {
   if (!iso) return '—';
   const ms = Date.now() - Date.parse(iso);
   if (!Number.isFinite(ms) || ms < 0) return '—';

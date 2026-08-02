@@ -39,22 +39,19 @@ import {
 } from './MugTab';
 
 function plan(over: Partial<PlanListRow>): PlanListRow {
+  // Every field left out below is an OPTIONAL PlanListRow field (`?: T`, never
+  // `T | null` — WI-7045 / D-025: the wire omits null-valued keys, so an absent
+  // value arrives `undefined`). A factory modeling the wire omits them rather
+  // than writing `null` (and needs no `as PlanListRow` cast once it does).
   return {
     slug: 'p',
     title: 'P',
     status: 'draft',
-    updated: null,
-    created: null,
-    owner: null,
     archived: false,
     isLegacy: false,
-    itemCounts: null,
-    nextAction: null,
     harness: 'h',
-    startStatus: null,
-    priority: null,
     ...over,
-  } as PlanListRow;
+  };
 }
 
 function steering(over: Partial<HiveSteeringRow> = {}): HiveSteeringRow {
@@ -129,8 +126,8 @@ describe('buildSteerRows', () => {
     expect(ghost.status).toBeNull();
   });
 
-  it('falls back title→slug when an active plan has a null title', () => {
-    const rows = buildSteerRows([plan({ slug: 'a', title: null })], []);
+  it('falls back title→slug when an active plan has no title', () => {
+    const rows = buildSteerRows([plan({ slug: 'a', title: undefined })], []);
     expect(rows[0].title).toBe('a');
   });
 });

@@ -121,7 +121,7 @@ describe('buildLaunchPlanOptions', () => {
   });
 
   it('omits the detail line entirely when the plan has no updated field', () => {
-    const plans = [plan({ slug: 's', harness: 'papercup', title: 'No date', updated: null })];
+    const plans = [plan({ slug: 's', harness: 'papercup', title: 'No date', updated: undefined })];
     const opts = buildLaunchPlanOptions(plans, null, false);
     const group = opts[1] as { options: Array<{ label: string; detail?: string }> };
     expect(group.options[0].label).toBe('No date');

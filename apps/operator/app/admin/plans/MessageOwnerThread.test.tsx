@@ -85,12 +85,12 @@ describe('<MessageOwnerThread /> compose surface', () => {
   });
 
   it('falls back to ownerAgentId when there is no label', () => {
-    render(<MessageOwnerThread item={mkItem({ ownerLabel: null, ownerAgentId: 'agent-42' })} />);
+    render(<MessageOwnerThread item={mkItem({ ownerLabel: undefined, ownerAgentId: 'agent-42' })} />);
     expect(screen.getByText(/message agent-42/i)).toBeTruthy();
   });
 
   it('falls back to "<harness> agents" when there is no owner at all', () => {
-    render(<MessageOwnerThread item={mkItem({ ownerLabel: null, ownerAgentId: null, harnessSlug: 'orch' })} />);
+    render(<MessageOwnerThread item={mkItem({ ownerLabel: undefined, ownerAgentId: undefined, harnessSlug: 'orch' })} />);
     expect(screen.getByText(/message orch agents/i)).toBeTruthy();
   });
 

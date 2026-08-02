@@ -12,17 +12,12 @@ function plan(over: Partial<PlanListRow> & { slug: string }): PlanListRow {
     slug: over.slug,
     title: over.title ?? over.slug,
     status: over.status ?? 'active',
-    updated: over.updated ?? null,
-    created: null,
-    owner: null,
+    updated: over.updated,
     archived: over.archived ?? false,
     isLegacy: over.isLegacy ?? false,
-    itemCounts: over.itemCounts ?? null,
-    nextAction: null,
+    itemCounts: over.itemCounts,
     harness: over.harness ?? 'papercusp',
-    startStatus: over.startStatus ?? null,
-    priority: null,
-    maxImportance: null,
+    startStatus: over.startStatus,
   } as PlanListRow;
 }
 
@@ -110,7 +105,7 @@ describe('progressOf', () => {
     expect(progressOf({ itemCounts: { done: 3, todo: 2, wip: 1, unknown: 9 } })).toEqual({ done: 3, total: 6 });
   });
   it('returns null when there are no counted items', () => {
-    expect(progressOf({ itemCounts: null })).toBeNull();
+    expect(progressOf({ itemCounts: undefined })).toBeNull();
     expect(progressOf({ itemCounts: { unknown: 4 } })).toBeNull();
   });
 });

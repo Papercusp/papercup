@@ -75,6 +75,10 @@ import {
   partitionStandingByCommitRecency,
   formatLandingRaceCaveat,
   LANDING_RACE_WINDOW_SEC,
+  projectPrefixFromTscCommand,
+  partitionFilesByCoverage,
+  suggestTypecheckGate,
+  formatUncoveredFilesBanner,
   runTscBaselineGate,
 } from './lib/tsc-baseline-gate.mjs';
 
@@ -95,6 +99,10 @@ export {
   partitionStandingByCommitRecency,
   formatLandingRaceCaveat,
   LANDING_RACE_WINDOW_SEC,
+  projectPrefixFromTscCommand,
+  partitionFilesByCoverage,
+  suggestTypecheckGate,
+  formatUncoveredFilesBanner,
 };
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');

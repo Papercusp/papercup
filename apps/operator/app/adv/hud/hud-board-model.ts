@@ -184,9 +184,9 @@ export const TERMINAL_LAUNCH_ONLINE_GRACE_SEC = 60;
  * an unattributed card needs to render + be identified without an owning
  * agent to key off of. */
 export interface HudAsk {
-  ownerAgentId: string | null;
+  ownerAgentId?: string | null;
   title: string;
-  occurredAt: string | null;
+  occurredAt?: string | null;
   /** The source AttentionItem's own id — stable React key for an unattributed
    *  card (there is no ownerAgentId to key off of). */
   id: string;
@@ -195,9 +195,9 @@ export interface HudAsk {
    *  human label via HUD_ASK_KIND_LABEL, unknown kinds falling back to the
    *  raw string. */
   kind: string;
-  itemRef: string | null;
-  planSlug: string | null;
-  harnessSlug: string | null;
+  itemRef?: string | null;
+  planSlug?: string | null;
+  harnessSlug?: string | null;
   /** The source `AttentionItem.ref` — the STRUCTURED destination, kept because
    *  it is the only field that says what an ask is ABOUT rather than what it
    *  looks like (WI-6742). `itemRef`/`planSlug` cannot stand in for it:

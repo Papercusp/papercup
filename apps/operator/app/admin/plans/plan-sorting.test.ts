@@ -17,17 +17,17 @@ function row(slug: string, over: Partial<PlanListRow> = {}): PlanListRow {
     slug,
     title: slug,
     status: 'draft',
-    updated: null,
-    created: null,
-    owner: null,
+    updated: undefined,
+    created: undefined,
+    owner: undefined,
     archived: false,
     isLegacy: false,
-    itemCounts: null,
-    nextAction: null,
+    itemCounts: undefined,
+    nextAction: undefined,
     harness: 'papercup',
-    startStatus: null,
-    priority: null,
-    maxImportance: null,
+    startStatus: undefined,
+    priority: undefined,
+    maxImportance: undefined,
     ...over,
   };
 }
@@ -125,7 +125,7 @@ describe('priority sort', () => {
 
 describe('progress sort', () => {
   it('planProgress mirrors the progress bar (done / all items incl. dropped)', () => {
-    expect(planProgress(null)).toBeNull();
+    expect(planProgress(undefined)).toBeNull();
     expect(planProgress({})).toBeNull();
     expect(planProgress({ done: 3, todo: 1 })).toBe(0.75);
     expect(planProgress({ done: 1, dropped: 1 })).toBe(0.5);
@@ -163,7 +163,7 @@ describe('urgency sort', () => {
   it('hottest open item wins; plans with nothing open (null) last', () => {
     const rows = [
       row('normal-plan', { maxImportance: 'normal' }),
-      row('all-done', { maxImportance: null, updated: '2026-06-09' }),
+      row('all-done', { maxImportance: undefined, updated: '2026-06-09' }),
       row('urgent-plan', { maxImportance: 'urgent' }),
       row('high-plan', { maxImportance: 'high' }),
       row('low-plan', { maxImportance: 'low' }),
@@ -191,7 +191,7 @@ describe('title sort', () => {
   it('case-insensitive A–Z, falling back to slug for untitled plans', () => {
     const rows = [
       row('z-slug', { title: 'alpha' }),
-      row('beta-slug', { title: null }),
+      row('beta-slug', { title: undefined }),
       row('a-slug', { title: 'Gamma' }),
     ];
     expect(slugsBy('title', rows)).toEqual(['z-slug', 'beta-slug', 'a-slug']);

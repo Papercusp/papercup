@@ -276,10 +276,31 @@ export function looksLikeResidualClosure(text: string): boolean {
  * completion, but reflect-rules flips a completed plan-item to `done` (which the
  * Queue already excludes), so a still-open plan-item carrying an edge is one that
  * is actively executing.
+ *
+ * ⚠ `workspaceId` is REQUIRED — deliberately, and it used to default to
+ * `DEFAULT_COORD_WORKSPACE` ('default'). That default was a gen-1 tenant bug of exactly the
+ * kind `agent-tools/plans/_write-scope.ts` documents three generations of, wearing a costume
+ * that made it invisible: not a literal at the call site, but a DEFAULT PARAMETER, so every
+ * caller read `listConvertedPlanItemRefs()` and looked perfectly clean.
+ *
+ * Migration 295 moved real plan data to PAPERCUSP_WORKSPACE_ID, so 'default' became legacy
+ * residue that is still populated enough to look right: measured 2026-08-02, `coord_links`
+ * held 1468 implements-links over 251 plans in 'papercusp-workspace' and 1371 over 196 plans
+ * in 'default'. The OVERLAP is what made the bug survive — a caller reading the wrong tenant
+ * still got a large, plausible, non-empty set, just missing whichever plans lived only in the
+ * real one. P-009's backfill silently covered 18 of 24 edges (4 plans missed entirely) with
+ * every counter reporting healthy: 0 failures, 0 dangling, 0 unresolved.
+ *
+ * It is required rather than re-defaulted because no honest default exists: the correct tenant
+ * is the caller's RESOLVED scope (`resolvePlanWriteScope` / `opts.workspaceId` / `ctx`), which
+ * this function cannot see. Callers must pass it and therefore must think about it.
+ *
+ * ⚠ A test fixture using `workspaceId: 'default'` CANNOT observe this class of bug — the
+ * fixture value silently satisfies the wrong default, which is precisely why P-009's 26/26
+ * green, mutation-verified suite never saw it. Pin tenant behavior with a NON-default
+ * workspace (see the tenant-scope regression test in plan-workitem-promotion-run).
  */
-export async function listConvertedPlanItemRefs(
-  workspaceId: string = DEFAULT_COORD_WORKSPACE,
-): Promise<Set<string>> {
+export async function listConvertedPlanItemRefs(workspaceId: string): Promise<Set<string>> {
   const { sql } = getOrgPg();
   const rows = await sql<{ dst_ref: string }[]>`
     SELECT DISTINCT dst_ref

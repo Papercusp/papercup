@@ -309,7 +309,10 @@ function Toggle({
  * Shared date-window predicate — PlanRail imports this so the filter
  * logic lives in exactly one place.
  */
-export function withinDateWindow(updated: string | null, window: DateWindow | null): boolean {
+export function withinDateWindow(
+  updated: string | null | undefined,
+  window: DateWindow | null,
+): boolean {
   if (!window) return true;
   if (!updated) return false;
   const t = Date.parse(updated);

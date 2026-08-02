@@ -173,9 +173,9 @@ export const HUD_ENTITY_DEFAULT_MAX_PER_COLUMN = 60;
  *  why this is declared rather than imported from plans-api). */
 export interface HudPlanInput {
   slug: string;
-  title: string | null;
+  title?: string | null;
   status: string;
-  updated: string | null;
+  updated?: string | null;
   harnessSlug?: string | null;
   nextAction?: string | null;
   itemCounts?: Record<string, number> | null;

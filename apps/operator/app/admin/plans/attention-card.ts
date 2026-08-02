@@ -154,7 +154,7 @@ export function attentionItemToCardSpec(item: AttentionItem): AskChoiceArgs {
  *  — the attention item's harness may be a managed harness, not the hive
  *  home. Unresolvable → harmless no-op; the always-armed-wake invariant
  *  (start-hive-wake-orchestration D-002) still guarantees pickup. */
-function resumeLoop(_harnessSlug: string | null): void {
+function resumeLoop(_harnessSlug: string | null | undefined): void {
   void fetch('/api/agent-mcp/run-tool', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },

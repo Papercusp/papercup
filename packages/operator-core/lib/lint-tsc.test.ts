@@ -11,7 +11,8 @@
  */
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 // eslint-disable-next-line import/no-relative-packages
 import {
@@ -31,6 +32,10 @@ import {
   formatLandingRaceCaveat,
   LANDING_RACE_WINDOW_SEC,
   TSC_COMMAND,
+  projectPrefixFromTscCommand,
+  partitionFilesByCoverage,
+  suggestTypecheckGate,
+  formatUncoveredFilesBanner,
 } from '../../../scripts/lint-tsc.mjs';
 // eslint-disable-next-line import/no-relative-packages
 import {
@@ -974,5 +979,185 @@ describe('new-file reds: COMMITTED does not mean SETTLED (WI-6767)', () => {
     // permission slip. "Never greenwash this one" is the invariant the whole new-file branch rests
     // on (EI-18766822535373909).
     expect(text).not.toMatch(/safe to ignore|you can ignore|not a real error|disregard/i);
+  });
+});
+
+/**
+ * EI-19341572300046923 — a scoped run must never report a verdict about files it never compiled.
+ *
+ * `--files=` scopes this gate's VERDICT; it does NOT widen what tsc compiles (`tscCommand` is a
+ * per-project constant). So naming a file outside the project produced zero recorded errors for
+ * it and a clean exit — a green that had typechecked nothing the caller asked about. The first
+ * test below pins that underlying mechanism, so the guard can never be "simplified" away on the
+ * belief that the old path was already safe.
+ */
+describe('EI-19341572300046923 — refusing a verdict about uncompiled files', () => {
+  const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
+
+  it('MECHANISM: an out-of-project file yields a CLEAN verdict — why the pre-compile guard exists', () => {
+    // tsc -p packages/operator-core never sees an operator-vite file, so it contributes no
+    // diagnostics. Scoped to only that file, the per-file decision has nothing to fail on.
+    const r = decidePerFile({
+      currentByFile: { 'packages/operator-core/lib/real.ts': 2 },
+      baselineByFile: { 'packages/operator-core/lib/real.ts': 2 },
+      brokenFiles: [],
+      changedFiles: new Set(['apps/operator-vite/src/components/adv/TasksRosterPanel.tsx']),
+    });
+    // Clean — indistinguishable from a genuine pass. THAT is the bug the guard prevents.
+    expect(r.verdict).toBe('ok');
+    expect(r.regressions).toEqual([]);
+  });
+
+  describe('projectPrefixFromTscCommand', () => {
+    it('derives the compiled prefix from each real per-project command', () => {
+      expect(projectPrefixFromTscCommand(TSC_COMMAND)).toBe('packages/operator-core/');
+      expect(projectPrefixFromTscCommand(OPERATOR_VITE_TSC_COMMAND)).toBe('apps/operator-vite/');
+    });
+
+    it('returns null when no -p operand is parseable, so callers FAIL OPEN', () => {
+      // Not knowing the prefix is not evidence a file lies outside it. A lint gate must never
+      // invent a red it cannot substantiate.
+      expect(projectPrefixFromTscCommand('npx tsc --noEmit')).toBeNull();
+      expect(projectPrefixFromTscCommand('')).toBeNull();
+      expect(projectPrefixFromTscCommand(undefined as unknown as string)).toBeNull();
+    });
+
+    it('treats a repo-root project as covering everything', () => {
+      expect(projectPrefixFromTscCommand('npx tsc -p tsconfig.json --noEmit')).toBe('');
+      expect(projectPrefixFromTscCommand('npx tsc -p . --noEmit')).toBe('');
+    });
+  });
+
+  describe('partitionFilesByCoverage', () => {
+    it('splits the named set into judgeable and not-judgeable', () => {
+      const { covered, uncovered } = partitionFilesByCoverage({
+        files: ['packages/operator-core/lib/a.ts', 'apps/operator-vite/src/b.tsx'],
+        coveredPrefixes: ['packages/operator-core/'],
+      });
+      expect(covered).toEqual(['packages/operator-core/lib/a.ts']);
+      expect(uncovered).toEqual(['apps/operator-vite/src/b.tsx']);
+    });
+
+    it('counts a FOREIGN baseline prefix as covered — operator-vite really does judge operator-core files', () => {
+      // The SPA's type graph pulls operator-core in transitively (EI-18649014117371738), so those
+      // files ARE measured by that gate. Flagging them would be a false alarm.
+      const { covered, uncovered } = partitionFilesByCoverage({
+        files: ['packages/operator-core/lib/a.ts'],
+        coveredPrefixes: [
+          'apps/operator-vite/',
+          ...FOREIGN_BASELINES.map((b: { prefix: string }) => b.prefix),
+        ],
+      });
+      expect(covered).toEqual(['packages/operator-core/lib/a.ts']);
+      expect(uncovered).toEqual([]);
+    });
+
+    it('a repo-root project covers everything', () => {
+      const { uncovered } = partitionFilesByCoverage({
+        files: ['anywhere/at/all.ts'],
+        coveredPrefixes: [''],
+      });
+      expect(uncovered).toEqual([]);
+    });
+
+    it('normalises a ./-prefixed path so it is not spuriously flagged', () => {
+      const { covered } = partitionFilesByCoverage({
+        files: ['./packages/operator-core/lib/a.ts'],
+        coveredPrefixes: ['packages/operator-core/'],
+      });
+      expect(covered).toEqual(['packages/operator-core/lib/a.ts']);
+    });
+  });
+
+  describe('suggestTypecheckGate (discovery, not a hardcoded roster)', () => {
+    it("routes a real operator-vite file to that workspace's own typecheck script", () => {
+      const s = suggestTypecheckGate(
+        REPO_ROOT,
+        'apps/operator-vite/src/components/adv/TasksRosterPanel.tsx',
+      );
+      expect(s).not.toBeNull();
+      expect(s!.workspaceDir).toBe('apps/operator-vite');
+      expect(s!.command).toBe('npm run --workspace apps/operator-vite typecheck');
+    });
+
+    it('finds the NEAREST owning package, not the first ancestor with a package.json', () => {
+      const s = suggestTypecheckGate(REPO_ROOT, 'packages/operator-core/lib/lint-tsc.test.ts');
+      expect(s!.workspaceDir).toBe('packages/operator-core');
+    });
+
+    it('returns null when no owning package.json exists', () => {
+      expect(suggestTypecheckGate(REPO_ROOT, 'no-such-dir-xyz/file.ts')).toBeNull();
+    });
+
+    it('reports command:null for a workspace with NO typecheck script — a real coverage gap', () => {
+      const dir = mkdtempSync(join(tmpdir(), 'tsc-gate-'));
+      try {
+        writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'ungated', scripts: {} }));
+        const s = suggestTypecheckGate(dir, 'sub/file.ts');
+        expect(s).not.toBeNull();
+        expect(s!.command).toBeNull();
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+  });
+
+  describe('formatUncoveredFilesBanner', () => {
+    const suggestions = new Map([
+      [
+        'apps/operator-vite/src/b.tsx',
+        {
+          workspaceDir: 'apps/operator-vite',
+          packageName: '@papercusp/operator-vite',
+          command: 'npm run --workspace apps/operator-vite typecheck',
+        },
+      ],
+    ]);
+
+    it('states plainly that NOTHING was checked when every named file is outside', () => {
+      const text = formatUncoveredFilesBanner({
+        label: 'operator-core',
+        uncovered: ['apps/operator-vite/src/b.tsx'],
+        suggestions,
+        fatal: true,
+      }).join('\n');
+      expect(text).toMatch(/NOTHING YOU NAMED WAS TYPECHECKED/);
+      // It must hand over the exact next command, not merely diagnose.
+      expect(text).toContain('npm run --workspace apps/operator-vite typecheck');
+    });
+
+    it('warns but does not claim total failure when SOME files were covered', () => {
+      const text = formatUncoveredFilesBanner({
+        label: 'operator-core',
+        uncovered: ['apps/operator-vite/src/b.tsx'],
+        suggestions,
+        fatal: false,
+      }).join('\n');
+      expect(text).not.toMatch(/NOTHING YOU NAMED/);
+      expect(text).toMatch(/were NOT typechecked/);
+    });
+
+    it('calls out a file NO gate covers instead of silently omitting it', () => {
+      const text = formatUncoveredFilesBanner({
+        label: 'operator-core',
+        uncovered: ['apps/thing/src/x.ts'],
+        suggestions: new Map([
+          ['apps/thing/src/x.ts', { workspaceDir: 'apps/thing', packageName: 'thing', command: null }],
+        ]),
+        fatal: true,
+      }).join('\n');
+      expect(text).toMatch(/NO typecheck gate covers these/);
+      expect(text).toMatch(/apps\/thing/);
+    });
+
+    it('never greenwashes — the same invariant the landing-race caveat carries', () => {
+      const text = formatUncoveredFilesBanner({
+        label: 'operator-core',
+        uncovered: ['apps/operator-vite/src/b.tsx'],
+        suggestions,
+        fatal: true,
+      }).join('\n');
+      expect(text).not.toMatch(/safe to ignore|you can ignore|not a real error|disregard|passed/i);
+    });
   });
 });

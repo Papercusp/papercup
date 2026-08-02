@@ -35,7 +35,7 @@ afterEach(() => cleanup());
 function plan(
   slug: string,
   status: PlanStatus,
-  startStatus: PlanStartStatus = null,
+  startStatus: PlanListRow['startStatus'] = undefined,
   over: Partial<PlanListRow> = {},
 ): PlanListRow {
   return {
@@ -43,16 +43,16 @@ function plan(
     title: slug,
     status,
     updated: '2026-06-01T00:00:00.000Z',
-    created: null,
-    owner: null,
+    created: undefined,
+    owner: undefined,
     archived: false,
     isLegacy: false,
-    itemCounts: null,
-    nextAction: null,
+    itemCounts: undefined,
+    nextAction: undefined,
     harness: 'h',
     startStatus,
-    priority: null,
-    maxImportance: null,
+    priority: undefined,
+    maxImportance: undefined,
     ...over,
   };
 }

@@ -264,7 +264,7 @@ describe('usePlanListMaps', () => {
       data: {
         plans: [
           PLAN({ slug: 'p1', title: 'One', harness: 'zeta', status: 'active', startStatus: 'started' }),
-          PLAN({ slug: 'p2', title: null as never, harness: 'alpha', status: 'draft', startStatus: null }),
+          PLAN({ slug: 'p2', title: null as never, harness: 'alpha', status: 'draft', startStatus: undefined }),
           PLAN({ slug: 'p3', title: 'Three', harness: 'zeta', status: 'shipped', startStatus: 'done' }),
         ],
       },

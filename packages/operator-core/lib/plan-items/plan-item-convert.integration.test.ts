@@ -459,7 +459,7 @@ describe('listConvertedPlanItemRefs (P-104/D-013): the decision↔execution boun
     const r = await convert.convertPlanItem({ ...base, itemId: 'P-001', owner: 'sess-A', ownerName: 'builder-1' });
     expect(r.status).toBe('converted');
 
-    const refs = await convert.listConvertedPlanItemRefs();
+    const refs = await convert.listConvertedPlanItemRefs(WS);
     expect(refs.has(planItemRef(PLAN, 'P-001'))).toBe(true); // carries an implements edge
     expect(refs.has(planItemRef(PLAN, 'P-002'))).toBe(false); // never converted
     expect(refs.size).toBe(1);
@@ -473,7 +473,7 @@ describe('listConvertedPlanItemRefs (P-104/D-013): the decision↔execution boun
       INSERT INTO harness_shared.coord_links (workspace_id, src_kind, src_ref, dst_kind, dst_ref, rel)
       VALUES (${WS}, 'feature', ${`${HARNESS}#WI-999`}, ${PLAN_ITEM_KIND}, ${planItemRef(PLAN, 'P-001')}, ${convert.IMPLEMENTS_REL})`;
 
-    const refs = await convert.listConvertedPlanItemRefs();
+    const refs = await convert.listConvertedPlanItemRefs(WS);
     expect(refs.size).toBe(1);
     expect(refs.has(planItemRef(PLAN, 'P-001'))).toBe(true);
   });
@@ -481,7 +481,7 @@ describe('listConvertedPlanItemRefs (P-104/D-013): the decision↔execution boun
   it('captures a kind=feature conversion (the qualified src ref still maps to dst <plan>#<item>)', async () => {
     const r = await convert.convertPlanItem({ ...base, itemId: 'P-002', owner: 'sess-A', ownerName: 'builder-1', kind: 'feature' });
     expect(r.status).toBe('converted');
-    const refs = await convert.listConvertedPlanItemRefs();
+    const refs = await convert.listConvertedPlanItemRefs(WS);
     expect(refs.has(planItemRef(PLAN, 'P-002'))).toBe(true);
   });
 
@@ -491,12 +491,12 @@ describe('listConvertedPlanItemRefs (P-104/D-013): the decision↔execution boun
       INSERT INTO harness_shared.coord_links (workspace_id, src_kind, src_ref, dst_kind, dst_ref, rel)
       VALUES (${WS}, 'issue', 'WI-77', ${PLAN_ITEM_KIND}, ${planItemRef(PLAN, 'P-001')}, 'blocks'),
              (${WS}, 'issue', 'WI-78', 'issue', 'WI-1', ${convert.IMPLEMENTS_REL})`;
-    const refs = await convert.listConvertedPlanItemRefs();
+    const refs = await convert.listConvertedPlanItemRefs(WS);
     expect(refs.size).toBe(0);
   });
 
   it('empty when nothing has been converted', async () => {
-    const refs = await convert.listConvertedPlanItemRefs();
+    const refs = await convert.listConvertedPlanItemRefs(WS);
     expect(refs.size).toBe(0);
   });
 });

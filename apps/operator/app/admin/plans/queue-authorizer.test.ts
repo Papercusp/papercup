@@ -40,7 +40,7 @@ describe('byAuthorizer (P-004)', () => {
       mk({ id: 'a', authorizer: 'you' }),
       mk({ id: 'b', authorizer: 'queen-eligible' }),
       mk({ id: 'c', authorizer: 'queen-eligible' }),
-      mk({ id: 'd', authorizer: null }),
+      mk({ id: 'd', authorizer: undefined }),
     ], t);
     const byKey = Object.fromEntries(sections.map((s) => [s.key, s.items.map((i) => i.id)]));
     expect(byKey['auth:you']).toEqual(['a']);
@@ -62,7 +62,7 @@ describe('byAuthorizer (P-004)', () => {
 
 describe('whyLine (P-005)', () => {
   it('is null for non-decisions (no authorizer)', () => {
-    expect(whyLine(mk({ id: 'a', authorizer: null }), t)).toBeNull();
+    expect(whyLine(mk({ id: 'a', authorizer: undefined }), t)).toBeNull();
   });
 
   it('routes "you" items with their reason', () => {
