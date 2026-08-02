@@ -496,8 +496,15 @@ describe('decorateMemberVerdicts (EI-8995)', () => {
 describe('decorateProductiveToolCalls (EI-19307414464301772)', () => {
   it('stamps productiveToolCallAt from the batch fetch', async () => {
     const iso = new Date(NOW - 60_000).toISOString();
+    // `productiveToolCallAt` is OPTIONAL in the generic constraint, so inferring T
+    // from baseAgent() alone gives a T without it and the reads below are TS2339.
+    // Annotate the input so T carries the key the function stamps.
+    const input: Array<AgentAssignment & { productiveToolCallAt?: string | null }> = [
+      baseAgent({ agentId: 'su-agent-1' }),
+      baseAgent({ agentId: 'su-agent-2' }),
+    ];
     const [stamped, absent] = await decorateProductiveToolCalls(
-      [baseAgent({ agentId: 'su-agent-1' }), baseAgent({ agentId: 'su-agent-2' })],
+      input,
       async () => new Map([['su-agent-1', iso]]),
     );
     expect(stamped.productiveToolCallAt).toBe(iso);

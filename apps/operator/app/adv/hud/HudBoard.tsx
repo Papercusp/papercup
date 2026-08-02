@@ -403,6 +403,52 @@ export default function HudBoard({
       ) : (
       <>
       <div className="hud__top">
+        {/* Owner ask 2026-08-02: "move the search sessions input to the left
+            side instead of the right and highlight it so that it's very hard to
+            miss". It used to render LAST in this row — past the plan filter, the
+            agent toggle and every count chip, i.e. the far right of a wide board
+            — wearing the same quiet .hud__search chrome as the entity tabs'
+            filter boxes, so it read as one more muted chip and was routinely
+            missed. It now LEADS the row and carries the --hero treatment
+            (magnifier + accent ring + tinted well); the quiet base stays for
+            HudEntityColumns.
+
+            What it searches is the reason it is worth this much salience: every
+            session's FULL TRANSCRIPT, not the card text. The roster carries only
+            metadata, so "which session was I debugging the gym gate in" is
+            unanswerable from the board itself.
+
+            In this row (not .hud__fleets) for the same nowrap/overflow reason
+            documented on the plan filter below. */}
+        {onSessionQuery ? (
+          <span className="hud__searchwrap">
+            <svg
+              className="hud__search-icon"
+              viewBox="0 0 16 16"
+              aria-hidden="true"
+              focusable="false"
+            >
+              <circle cx="6.8" cy="6.8" r="4.6" fill="none" stroke="currentColor" strokeWidth="1.9" />
+              <path
+                d="M10.3 10.3 L14 14"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.9"
+                strokeLinecap="round"
+              />
+            </svg>
+            <input
+              type="search"
+              className="hud__search hud__search--hero"
+              value={sessionQuery}
+              placeholder="Search transcripts…"
+              aria-label="Search session transcripts"
+              data-testid="hud-session-search"
+              onChange={(e) => onSessionQuery(e.target.value)}
+            />
+          </span>
+        ) : null}
+
         {/* P-002 (owner asks 2026-07-26) put the launch cluster at the head of
             this row, ahead of the count chips. P-009 lifted it one level, into
             the tab strip above — it is a HUD-wide control, not a sessions-board
@@ -413,7 +459,9 @@ export default function HudBoard({
             before all agents". It previously sat at the END of this row, past a
             flex:1 .hud__spacer that right-aligned it — so on a wide board it was
             a screen-width away from the other filters it belongs with. It now
-            LEADS the row, ahead of the su-only/all-agents toggle.
+            leads the FILTER cluster, ahead of the su-only/all-agents toggle —
+            behind only the transcript search, which took the head of the row
+            under the 2026-08-02 ask above.
 
             Keeping it in .hud__top (not down in .hud__fleets) still matters for
             the original reason: .hud__fleets is nowrap + overflow-x:auto, so a
@@ -477,23 +525,6 @@ export default function HudBoard({
             );
           })}
         </div>
-
-        {/* Searches every session's FULL TRANSCRIPT, not the card text — the
-            roster carries only metadata, so "which session was I debugging the
-            gym gate in" is unanswerable from the board itself. In this row (not
-            .hud__fleets) for the same nowrap/overflow reason documented on the
-            plan filter, which now leads the row. */}
-        {onSessionQuery ? (
-          <input
-            type="search"
-            className="hud__search"
-            value={sessionQuery}
-            placeholder="Search transcripts…"
-            aria-label="Search session transcripts"
-            data-testid="hud-session-search"
-            onChange={(e) => onSessionQuery(e.target.value)}
-          />
-        ) : null}
 
       </div>
 

@@ -171,4 +171,59 @@ describe('fetchUnansweredDirected (EI-13819 SQL path)', () => {
     expect(map.get(MEMBER.ownerId)?.count).toBe(1);
     expect(map.get(MEMBER.ownerId)?.newest[0]?.summary).toBe('question 2');
   });
+
+  // ---- EI-19315474516256070: SYSTEM/machine noise must not read as unanswered ----
+
+  it('EI-19315474516256070: an explicit expects:"none" overrides a stale/inconsistent expectsReply:true (the live divergence)', async () => {
+    // The confirmed live shape (work_items/request_release.ts): a raw sendMessage() caller
+    // passes expectsReply:true directly, while `expects` independently reads 'none' — e.g.
+    // the write-time machine-emitter stamp in messages.ts overwrote it because the same call
+    // also set `auto:true`. `expects`, being the more specific/authoritative D-048 field, must
+    // win: the sender said no reply is wanted, so this must NOT count as owed.
+    await sendMessage(LEADER, {
+      to: [MEMBER.ownerId],
+      summary: 'release request (auto-stamped expects:none, but legacy expectsReply:true)',
+      expectsReply: true,
+      extra: { expects: 'none' },
+    });
+
+    const map = await fetchUnansweredDirected([MEMBER.ownerId]);
+    expect(map.get(MEMBER.ownerId)).toBeUndefined();
+  });
+
+  it('EI-19315474516256070: a machine-pattern sender is excluded even when it sets expectsReply:true', async () => {
+    const WATCHDOG = ident('system-watchdog');
+    await sendMessage(WATCHDOG, {
+      to: [MEMBER.ownerId],
+      summary: 'severe event broadcast',
+      expectsReply: true,
+    });
+
+    const map = await fetchUnansweredDirected([MEMBER.ownerId]);
+    expect(map.get(MEMBER.ownerId)).toBeUndefined();
+  });
+
+  it('EI-19315474516256070: auto:true lifecycle chatter is excluded even when it sets expectsReply:true', async () => {
+    await sendMessage(LEADER, {
+      to: [MEMBER.ownerId],
+      summary: 'lifecycle chatter with a stray expectsReply',
+      expectsReply: true,
+      extra: { auto: true },
+    });
+
+    const map = await fetchUnansweredDirected([MEMBER.ownerId]);
+    expect(map.get(MEMBER.ownerId)).toBeUndefined();
+  });
+
+  it('a genuine expects:"answer" (or unset expects) directed message still counts (no over-exclusion)', async () => {
+    await sendMessage(LEADER, {
+      to: [MEMBER.ownerId],
+      summary: 'please claim P-012',
+      expectsReply: true,
+      extra: { expects: 'answer' },
+    });
+
+    const map = await fetchUnansweredDirected([MEMBER.ownerId]);
+    expect(map.get(MEMBER.ownerId)?.count).toBe(1);
+  });
 });

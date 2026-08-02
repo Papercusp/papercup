@@ -995,6 +995,29 @@ nothing to recover (EI-16611).
 So: **checkpoint the `bash_id`, never a native task id**, and never write "await
 background task `<id>`" as a successor's next action.
 
+⚠ **A background command's own reported exit code is the LAST statement's, not
+the one you care about — never trust it for a compound command, native OR
+`capability:bash`.** (EI-19314565734665863, hit twice in one session on
+2026-08-02.) The natural idiom for capturing a verdict —
+`timeout 900 <cmd> > log 2>&1; echo "EXIT=$?" >> log` run with
+`run_in_background: true` — silently defeats itself: when `<cmd>` is killed by
+`timeout` (exit 124) or fails, the trailing `echo` still runs and exits 0, so
+the **native** Bash tool's own completion notification reports "completed
+(exit code 0)" for a run that never finished. That notification is Claude
+Code's own bookkeeping (the shell process's exit status, not `<cmd>`'s) — there
+is nothing in papercusp to patch here; treat it as untrustworthy for any `;`-
+or `&&`-chained command and grep the log's own `EXIT=` line instead (it reads
+`$?` immediately after `<cmd>`, so it IS accurate). **`capability:bash` does
+not need this idiom at all** — its background job registry (`bash-jobs.ts`)
+tracks the real child process's exit code natively (not from a caller's echo)
+and `capability:bash_output` returns it as `exit_code`; trust that field
+directly. It also already applies `-o pipefail` so a piped command
+(`cmd | tail -60`) reports the pipeline's real exit code, not the last
+stage's (EI-13414) — the same masking bug, different shell construct. If you
+find yourself appending `; echo "EXIT=$?"` to a `capability:bash` command,
+that is a sign you're hand-rolling something the tool already gives you for
+free.
+
 ⚠ **Never wait on a process-table pattern you typed yourself.** `until ! pgrep
 -f '<pat>'; do sleep 5; done` can NEVER exit from an agent shell: `pgrep -f`
 matches the FULL command line, and your own `bash -c` argv contains the literal
