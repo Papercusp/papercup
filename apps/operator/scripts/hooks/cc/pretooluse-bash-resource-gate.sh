@@ -2647,13 +2647,111 @@ def _has_computed_write_path(body):
     return any(_first_call_arg_has_no_literal(_span) for _span in _write_call_arg_spans(body))
 
 
+# EI-19327302389409134 — the guard already denies `open('literal/tree/path', 'w')`
+# and already ADVISES (non-blocking) on `open(p, 'w')` where `p` is any bare
+# variable, because the value could be a runtime-computed path this guard's own
+# "honest limit" says no static scan can ever see. But the reported repro is
+# narrower and IS staticaly visible: `p = 'literal/tree/path'` assigned two lines
+# above, then `open(p, 'w')` — a plain literal, one hop of variable indirection
+# away, in the SAME body this guard already scans. Being refused for `sed -i` and
+# then silently ALLOWED (only advised) for this reads as "assign it to a variable
+# first" being the sanctioned workaround, which is the opposite of the lesson the
+# refusal is supposed to teach.
+#
+# Deliberately narrow, matching the discipline every predecessor fix in this file
+# already established (see the EI-* family above _QUOTED_LITERAL_RE): only a
+# SIMPLE `IDENT = 'literal'` / `IDENT = "literal"` assignment, anchored at a
+# statement boundary (start-of-line or `;`, never mid-expression) so it cannot
+# match `foo == 'bar'`, a dict key `d['x'] = 'y'`, or a kwarg `f(x='y')` — paired
+# with the write call's first argument being that EXACT bare identifier and
+# nothing else (`open(p, 'w')` matches; `open(p.name, 'w')`, `open(a + b, 'w')`,
+# `open(os.path.join(p, x), 'w')` do not — those stay in the existing computed-
+# path ADVISORY, unchanged). This is still a plain text scan, not dataflow: a
+# variable reassigned or shadowed between the assignment and the call is not
+# tracked (last assignment anywhere in the body wins, the same top-to-bottom
+# approximation `_payload_literal_tree_path`'s direct-literal scan already
+# relies on) — an accepted, documented approximation, not a claim of soundness.
+_SIMPLE_ASSIGN_RE = re.compile(
+    r'(?:^|[\n;])[ \t]*([A-Za-z_][A-Za-z0-9_]*)[ \t]*=[ \t]*(["\'])((?:(?!\2)[^\\]|\\.)*)\2'
+)
+_BARE_IDENT_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
+
+
+def _literal_var_assignments(body):
+    """{ varName: literalValue } for simple `VAR = 'literal'` assignments in
+    `body` — last assignment wins (top-to-bottom scan order)."""
+    out = {}
+    for _m in _SIMPLE_ASSIGN_RE.finditer(body):
+        out[_m.group(1)] = _m.group(3)
+    return out
+
+
+def _first_call_arg_bare_ident(span):
+    """The first top-level argument of a write-call span, IF it is nothing but a
+    single bare identifier (`open(p, 'w')` -> `'p'`); None for anything else
+    (an attribute/index/call/binop, multiple tokens, or an unbalanced span).
+    Same balanced-paren first-arg extraction as `_first_call_arg_has_no_literal`."""
+    if not span or span[0] != '(':
+        return None
+    depth = 0
+    in_quote = None
+    first_arg_end = None
+    i, n = 0, len(span)
+    while i < n:
+        ch = span[i]
+        if in_quote:
+            if ch == '\\' and i + 1 < n:
+                i += 2
+                continue
+            if ch == in_quote:
+                in_quote = None
+            i += 1
+            continue
+        if ch in '\'"':
+            in_quote = ch
+        elif ch in '([{':
+            depth += 1
+        elif ch in ')]}':
+            depth -= 1
+            if depth == 0:
+                first_arg_end = i
+                break
+        elif ch == ',' and depth == 1:
+            first_arg_end = i
+            break
+        i += 1
+    if first_arg_end is None:
+        return None  # unbalanced — nothing safe to conclude
+    cand = span[1:first_arg_end].strip()
+    return cand if _BARE_IDENT_RE.match(cand) else None
+
+
 def _payload_literal_tree_path(body, canon, cwd):
     # Every quoted token inside a write-call argument span (see
     # _write_call_arg_spans above — EI-18814109122347052) that looks
     # path-like (contains `/` or a dotted extension) and carries no
     # shell/interpreter expansion syntax ($, `, {, }) — resolved the same
     # literal-only way as _resolve_write_target.
+    _var_literals = None  # lazily built only if a bare-identifier arg needs it
     for _span in _write_call_arg_spans(body):
+        # EI-19327302389409134: the call's path argument may be a BARE VARIABLE
+        # whose value was a plain literal assigned earlier in the same body
+        # (`p = 'tree/path'; ...; open(p, 'w')`) — see the helpers + comment
+        # above _SIMPLE_ASSIGN_RE for the narrow, intentionally non-dataflow
+        # matching discipline. Checked once per span, before the direct-literal
+        # scan below (their hits are equivalent; order doesn't matter here).
+        _bare = _first_call_arg_bare_ident(_span)
+        if _bare:
+            if _var_literals is None:
+                _var_literals = _literal_var_assignments(body)
+            _val = _var_literals.get(_bare)
+            if _val is not None and not any(ch in _val for ch in ('$', '`', '{', '}')):
+                for cand in _val.split():
+                    if not _looks_like_path_candidate(cand):
+                        continue
+                    resolved = _resolve_write_target(cand, cwd)
+                    if resolved and (resolved == canon or resolved.startswith(canon + os.sep)):
+                        return cand
         for _m in _QUOTED_LITERAL_RE.finditer(_span):
             raw = _m.group(1) if _m.group(1) is not None else _m.group(2)
             if any(ch in raw for ch in ('$', '`', '{', '}')):

@@ -2754,6 +2754,22 @@ export async function gitPipelinePosition(
           ['inMain', 'origin/main'],
           ['deployed', deployedSha],
         ];
+        // EI-19325915429897280: a marker verdict of `present === true` used to
+        // unconditionally exonerate the leg (positionsMarker) — but `present` only
+        // answers "does this string occur in ref's version of the file", not "does
+        // YOUR change occur". A marker that isn't unique to the edit (a pre-existing
+        // identifier, a common symbol) makes ANY candidate read as carrying the
+        // change, exactly as EI-19325709344484737's sibling bug did for
+        // changeInCandidate/markerJudging — fixed there via `markerPartialAgainst`'s
+        // count-comparison; this leg had no equivalent. Establish ONE baseline —
+        // the marker's count at `targetSha`'s PARENT, i.e. the file immediately
+        // before the change under discussion — computed once outside the loop since
+        // it does not depend on `ref`, only on `targetSha`.
+        const markerBaseline = marker
+          ? await markerAtCommit(gitReadForMarker, `${targetSha}~1`, relPath, marker)
+          : null;
+        const markerBaselineCount = typeof markerBaseline?.count === 'number' ? markerBaseline.count : null;
+
         for (const [leg, ref] of legs) {
           if (!ref) continue;
           // Only a leg reading FALSE can be a newer-commit artifact; a true leg is
@@ -2768,16 +2784,43 @@ export async function gitPipelinePosition(
             const verdict = await markerAtCommit(gitReadForMarker, ref, relPath, marker);
             markerLegs[leg] = verdict;
             if (verdict.present === true) {
-              positions[leg] = true;
-              notes.push(
-                `${leg}: CORRECTED to true by the marker. The newest commit touching '${relPath}' ` +
-                  `(${targetSha.slice(0, 9)}) is not in ${ref} — but ${ref}'s own version of the file ` +
-                  `contains your marker ${verdict.count}×, so YOUR change IS there. The false was about ` +
-                  `a later commit to the same file, not about your change.`,
-              );
-              continue;
-            }
-            if (verdict.present === false) {
+              // Require STRICT net-new occurrence against the pre-change baseline —
+              // never bare presence. A count comparison can only under-claim (a change
+              // that adds no new occurrence of the marker is simply not detected, the
+              // pre-existing behaviour), never over-claim, mirroring markerPartialAgainst.
+              const strictlyNew =
+                typeof verdict.count === 'number' &&
+                typeof markerBaselineCount === 'number' &&
+                verdict.count > markerBaselineCount;
+              if (strictlyNew) {
+                positions[leg] = true;
+                notes.push(
+                  `${leg}: CORRECTED to true by the marker. The newest commit touching '${relPath}' ` +
+                    `(${targetSha.slice(0, 9)}) is not in ${ref} — but ${ref}'s own version of the file ` +
+                    `contains your marker ${verdict.count}× against a baseline of ${markerBaselineCount}× at ` +
+                    `${targetSha.slice(0, 9)}~1 (before your change), a strict net-new occurrence, so YOUR ` +
+                    `change IS there. The false was about a later commit to the same file, not about your change.`,
+                );
+                continue;
+              }
+              if (typeof markerBaselineCount === 'number') {
+                notes.push(
+                  `${leg}: marker '${marker}' is present in ${ref} (${verdict.count}×), but it is NOT unique ` +
+                    `to your change — it already occurred ${markerBaselineCount}× before your change (at ` +
+                    `${targetSha.slice(0, 9)}~1), so its presence in ${ref} proves nothing either way. Pick a ` +
+                    `marker string your change introduced, not a pre-existing identifier.`,
+                );
+              } else {
+                notes.push(
+                  `${leg}: marker '${marker}' is present in ${ref}, but the baseline count before your change ` +
+                    `could not be measured (${markerBaseline?.unknownReason?.detail ?? 'unknown reason'}), so ` +
+                    `presence alone does not prove YOUR change is there.`,
+                );
+              }
+              // Fall through (not `continue`) — leave positions[leg] as measured
+              // (false) and let the newer-commit explanation below still fire, same
+              // as the unmeasured (present === null) case just below.
+            } else if (verdict.present === false) {
               notes.push(
                 `${leg}: confirmed NOT present — ${ref}'s version of '${relPath}' does not contain your ` +
                   `marker${verdict.pathPresent === false ? " (the path does not exist there at all)" : ''}. ` +
@@ -2785,8 +2828,9 @@ export async function gitPipelinePosition(
               );
               continue;
             }
-            // present === null: unknown. Fall through to the explanation below, which is
-            // still better than a bare false, but never claim the marker settled it.
+            // present === null (unknown), or present === true but not strictly new:
+            // fall through to the explanation below, which is still better than a
+            // bare false, but never claim the marker settled it.
           }
 
           const earlier = await newestTouchingInRef(git, root, ref, relPath);
