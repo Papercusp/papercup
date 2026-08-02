@@ -374,14 +374,21 @@ export async function readCell(
   const timedOut = Symbol('cell-read:dispatch-timed-out');
   let payload: unknown;
   try {
+    const dispatch = dispatchReadOnlyTool(spec.changeSignal.tool, args, {
+      workspaceId: env.workspaceId,
+      harnessSlug: env.harnessSlug,
+      role: env.role,
+      onBehalfOf: reader.ownerId,
+      spawnId: 'cell-read',
+    });
+    // A dispatch that loses the race can still reject LATER, after we've already
+    // returned via the timeout branch below — and nothing else will be listening for
+    // that rejection at that point. Swallow it here so a slow-then-failing resolver
+    // cannot surface as an unhandled promise rejection (bounded-timeout.ts documents
+    // the identical hazard for its own race).
+    dispatch.catch(() => {});
     const raced = await Promise.race([
-      dispatchReadOnlyTool(spec.changeSignal.tool, args, {
-        workspaceId: env.workspaceId,
-        harnessSlug: env.harnessSlug,
-        role: env.role,
-        onBehalfOf: reader.ownerId,
-        spawnId: 'cell-read',
-      }),
+      dispatch,
       new Promise<typeof timedOut>((resolve) => {
         const timer = setTimeout(() => resolve(timedOut), CELL_READ_TIMEOUT_MS);
         // Never keep the process alive on this timer alone (a lingering dispatch we no

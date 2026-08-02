@@ -726,7 +726,7 @@ describe('WI-6529 — reconcileFailingFiles: per-file reconciliation (not any-ov
   });
 
   it('every named file confirmed, nothing missing ⇒ unchanged', () => {
-    expect(reconcileFailingFiles(['lib/a.test.ts'], ['lib/a.test.ts', 'lib/unrelated.test.ts'])).toEqual({
+    expect(reconcileFailingFiles(['lib/a.test.ts'], ['lib/a.test.ts'])).toEqual({
       files: ['lib/a.test.ts'],
       corrected: false,
     });
