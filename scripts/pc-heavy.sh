@@ -673,6 +673,18 @@ if [ -z "$_held" ]; then
   done
 fi
 
+# EI-19315037905600226 — a machine-readable landmark for "the wait is over, the
+# real command is about to start", printed on stderr the instant this script
+# stops waiting (whether it won a slot or fell through the timeout). Without
+# this, a background job SIGKILLed by ITS OWN caller-side deadline (see
+# capability:bash / bash-jobs.ts) while still queued here looks byte-identical
+# to one killed mid-execution — the caller cannot tell "my task ran long" from
+# "my task never got a turn". bash-jobs.ts greps a job's output for this exact
+# string when its deadline fires; keep the two in sync
+# (PC_HEAVY_SLOT_ACQUIRED_MARKER in
+# packages/operator-core/lib/agent-tools/capability/bash-jobs.ts).
+echo "[pc-heavy] slot acquired — starting real work" >&2
+
 # The child self-limits via the slot it now (or effectively) holds — tell the
 # admission gate not to also deny it.
 export PC_HEAVY_BYPASS=1

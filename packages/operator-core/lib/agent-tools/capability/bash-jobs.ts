@@ -86,6 +86,29 @@ export const TIMEOUT_SIGTERM_GRACE_MS = 10_000;
 const MAX_RETAINED_JOBS = 64;
 
 /**
+ * EI-19315037905600226 — the stable marker `scripts/pc-heavy.sh` writes to STDERR
+ * the INSTANT it stops waiting for a semaphore slot and is about to hand off to the
+ * caller's real command. Before that point a `capability:bash`-run command wrapped
+ * in pc-heavy can sit QUEUED for minutes (default up to `PC_HEAVY_TIMEOUT_SEC`,
+ * 900s) on a loaded box — and this job's OWN wall-clock deadline (below) is not
+ * exempt from that wait, so a job SIGKILLed while still queued produces a
+ * "deadline reached" message that reads byte-identical to one killed mid-execution.
+ * Two agents independently burned real time on that ambiguity the same day: one
+ * relaunched into the same wall three times believing the platform was broken, the
+ * other nearly recorded a run that never executed as a green verification.
+ *
+ * Grepping the job's own output for this marker at deadline time (best-effort —
+ * absent for any job that never calls pc-heavy.sh at all, which is a legitimate,
+ * uninformative case) lets the deadline message say which one it was whenever the
+ * answer IS knowable, instead of leaving every deadline equally ambiguous.
+ *
+ * Keep this literal string in sync with the `echo` in scripts/pc-heavy.sh —
+ * asserted by that script's own test suite (pc-heavy.test.ts) and by this file's
+ * `queued-while-killed` deadline test.
+ */
+export const PC_HEAVY_SLOT_ACQUIRED_MARKER = '[pc-heavy] slot acquired — starting real work';
+
+/**
  * A temp dir given to every capability-exec'd child, overriding whatever ephemeral
  * `TMPDIR` the operator inherited (EI-5912). The capability exec-sandbox (srt / the
  * bwrap `--tmpfs /tmp`) mounts a FRESH writable `/tmp`, so an inherited per-session
@@ -518,10 +541,24 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
     // caller never chose is indistinguishable from an OOM, a peer's pkill, or a
     // crash — and agents have burned real time hunting each of those. The line
     // lands in the spill log too, so it survives loss of the in-memory registry.
+    //
+    // EI-19315037905600226: a SECOND, narrower ambiguity hides inside "deadline
+    // reached" itself — it does not say whether the job ever got to DO anything.
+    // If the job's output never showed pc-heavy's slot-acquired marker, this
+    // deadline is very likely a QUEUE timeout (killed waiting for a heavy-command
+    // semaphore slot), not a real-work timeout — say so, whenever it's knowable.
+    const neverAcquiredSlot = !job.buffer.includes(PC_HEAVY_SLOT_ACQUIRED_MARKER);
+    const queuedHint = neverAcquiredSlot
+      ? ` This job's output never showed pc-heavy's "slot acquired" marker — if it runs ` +
+        `through scripts/pc-heavy.sh, it most likely died QUEUED on the heavy-command ` +
+        `semaphore (see PC_HEAVY_TIMEOUT_SEC / host load) and never began real work, rather ` +
+        `than timing out mid-execution. (If this job does not use pc-heavy.sh, disregard.)`
+      : '';
     appendOutput(
       job,
-      `\n[capability:bash] deadline reached: exceeded ${effectiveTimeoutMs}ms wall-clock. ` +
-        `Sending SIGTERM (SIGKILL in ${TIMEOUT_SIGTERM_GRACE_MS}ms if it does not exit). ` +
+      `\n[capability:bash] deadline reached: exceeded ${effectiveTimeoutMs}ms wall-clock.` +
+        queuedHint +
+        ` Sending SIGTERM (SIGKILL in ${TIMEOUT_SIGTERM_GRACE_MS}ms if it does not exit). ` +
         `For a longer job pass an explicit \`timeout\` (max ${MAX_BACKGROUND_TIMEOUT_MS}ms).\n`,
     );
     // SIGTERM first so the job's own trap/finally can clean up (temp trees,

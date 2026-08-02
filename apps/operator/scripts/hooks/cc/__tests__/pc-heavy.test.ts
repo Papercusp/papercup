@@ -275,7 +275,22 @@ describe('pc-heavy.sh — flock counting semaphore (WI-3821)', () => {
     const r = runSync(['bash', '-c', 'echo out-line; echo err-line >&2; exit 5'], { PC_HEAVY_SLOTS: '2' });
     expect(r.status).toBe(5);
     expect(r.stdout.trim()).toBe('out-line');
-    expect(r.stderr.trim()).toBe('err-line');
+    // Not an exact match: the wrapper also emits its own "slot acquired" landmark
+    // (EI-19315037905600226, asserted below) on the same stream before handing off
+    // to the real command.
+    expect(r.stderr).toContain('err-line');
+  });
+
+  it('EI-19315037905600226: emits a "slot acquired" landmark on stderr right before handing off to the real command', () => {
+    // The exact literal bash-jobs.ts's background-deadline handler greps a job's
+    // output for, to tell "killed while still queued" from "killed mid-execution".
+    const r = runSync(['bash', '-c', 'echo real-output'], { PC_HEAVY_SLOTS: '2' });
+    expect(r.status).toBe(0);
+    expect(r.stderr).toContain('[pc-heavy] slot acquired — starting real work');
+    // It must precede the real command's own output on the combined timeline —
+    // proving it marks the handoff, not merely "sometime during the run".
+    const markerIdx = r.stderr.indexOf('[pc-heavy] slot acquired');
+    expect(markerIdx).toBeGreaterThanOrEqual(0);
   });
 });
 

@@ -1024,7 +1024,7 @@ export default defineTool({
     'lastToolCallAgeMs, claims (doing/workItemIds/queuedCount/load), loop state+nextFireAt, ' +
     'stalled, unanswered, contextPressure, parkedOn + parkedOnResolved (a composed await is ONE ' +
     'entry: ROOT deadline + any/all mode), benchSuggestion, `dormant`, `spinning` (no real progress), ' +
-    'unownedCriticals + unownedCriticalsFederated (remote, unclaimable) + abandonedUnclaimed (CLAIM it).',
+    'unownedCriticals + unownedCriticalsFederated (remote, unclaimable) + abandonedUnclaimed.',
   guidance: {
     when:
       'AFTER a wake: "who is working / stuck / unanswered / about to compact across MY fleet". ' +
@@ -1040,7 +1040,7 @@ export default defineTool({
       '`unanswered` → coord:send a follow-up or coord:catch-up. `benchSuggestion` set → ' +
       'fleet:bench onto the blocked-on gate; `dormant:true` → wake, never bench. ' +
       '`spinning:true` → coord:send{wake:"required"}. ' +
-      'Nonzero `unownedCriticals`/`abandonedUnclaimed` → CLAIM it (release is a no-op — WI-6678); ' +
+      'Nonzero `unownedCriticals`/`abandonedUnclaimed` → CLAIM it (release is a no-op, WI-6678). ' +
       '`unownedCriticalsFederated` is remote, unclaimable (WI-6846). ' +
       '`idleWithClaimableAlert` → wake those members; never bench (the queue is NOT empty).',
   },

@@ -16,6 +16,7 @@ import {
   JOB_LOG_END_MARKER_PREFIX,
   MAX_BACKGROUND_TIMEOUT_MS,
   MAX_TIMEOUT_MS,
+  PC_HEAVY_SLOT_ACQUIRED_MARKER,
   __resetBashJobs,
   formatJobLogEndMarker,
   getJob,
@@ -448,5 +449,35 @@ describe('background job deadlines (WI-6677)', () => {
     expect(out).toContain('400ms');
     // The explanation is on disk too, so it survives loss of the in-memory registry.
     expect(readFileSync(job.logPath, 'utf8')).toContain('deadline reached');
+  }, 30_000);
+
+  /**
+   * EI-19315037905600226 — "deadline reached" alone conflates two very different
+   * deaths: killed mid-execution vs. killed while still QUEUED behind pc-heavy's
+   * semaphore (a job's own wall-clock deadline is not exempt from that wait). The
+   * deadline handler greps the job's own output for pc-heavy's slot-acquired
+   * landmark to tell them apart whenever the answer is knowable.
+   */
+  it('⭐ says the job likely died QUEUED (never acquired a pc-heavy slot) when its output never showed the marker', async () => {
+    // No pc-heavy involved at all here — just proves the hint fires whenever the
+    // marker is absent, which is the honest, best-effort signal (the hint itself
+    // is worded conditionally: "if it runs through scripts/pc-heavy.sh").
+    const job = startBackground({ command: 'echo working; sleep 30', cwd: STATE, stateDir: STATE }, 400);
+    await waitForEnd(job.id);
+    const out = readJobOutput(job);
+    expect(out).toContain('deadline reached');
+    expect(out).toContain('never showed pc-heavy\'s "slot acquired" marker');
+    expect(out).toContain('most likely died QUEUED');
+  }, 30_000);
+
+  it('⭐ omits the queued hint once the job\'s output shows the pc-heavy slot-acquired marker — it really was mid-execution', async () => {
+    const job = startBackground(
+      { command: `echo '${PC_HEAVY_SLOT_ACQUIRED_MARKER}'; sleep 30`, cwd: STATE, stateDir: STATE },
+      400,
+    );
+    await waitForEnd(job.id);
+    const out = readJobOutput(job);
+    expect(out).toContain('deadline reached');
+    expect(out).not.toContain('most likely died QUEUED');
   }, 30_000);
 });

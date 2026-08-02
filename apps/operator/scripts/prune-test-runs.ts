@@ -40,7 +40,7 @@ async function main(): Promise<void> {
     onnotice: () => {},
   });
   try {
-    const rows = await sql<{ prune_test_runs: number }>`
+    const rows = await sql<{ prune_test_runs: number }[]>`
       SELECT harness_shared.prune_test_runs(${keep})
     `;
     const deleted = Number(rows[0]?.prune_test_runs ?? 0);
