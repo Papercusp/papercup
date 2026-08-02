@@ -1283,6 +1283,17 @@ export type ReapFirstOutputStallFn = (candidate: FirstOutputStallCandidate) => P
  *     (`launcher_host` = me AND `launcher_boot_id` = this boot id).
  *   • In-process loopback launches (pid = the operator's own pid) are excluded.
  *   • `isFirstOutputStalled` is re-applied per row as the authoritative gate.
+ *   • EI-18729995135827661 (2026-08-02) CORRECTION: candidates are also filtered to
+ *     {@link isSupervisedBeeRow} rows only — the SAME class-based exclusion
+ *     {@link reclaimWedgedSpawns} gets for free (its own SQL requires `last_output_at
+ *     IS NOT NULL`, which by construction can only ever match a supervised bee) and
+ *     {@link classifyCeilingJamRow} applies explicitly. This reaper's query selects
+ *     the OPPOSITE condition (`last_output_at IS NULL`), so without this filter a
+ *     never-streamed row from ANY currently-active non-supervised class (overwatch /
+ *     blueprint / implement / in-process loopback launches, none of which populate
+ *     `last_output_at` BY DESIGN, per EI-7215/EI-18729995135827661) would misread as
+ *     first-output-stalled the moment it crossed {@link FIRST_OUTPUT_STALL_MS} —
+ *     these classes never emit that signal at ANY age, not just early on.
  *
  * Flag-gated OFF by the caller (same RECLAIM_STALLED switch as
  * reclaimWedgedSpawns — killing a live agent is a hot-path placement change).
@@ -1304,10 +1315,11 @@ export async function reclaimFirstOutputStalledSpawns(
   const staleSec = Math.max(1, Math.round(staleMs / 1000));
   const me = hostname();
 
-  const candidates = await sql<
+  const rawCandidates = await sql<
     {
       spawn_id: string;
       workspace_id: string;
+      run_id: string | null;
       launcher_host: string | null;
       launcher_boot_id: string | null;
       pid: number | null;
@@ -1315,7 +1327,7 @@ export async function reclaimFirstOutputStalledSpawns(
       started_at: string;
     }[]
   >`
-    SELECT spawn_id, workspace_id, launcher_host, launcher_boot_id, pid,
+    SELECT spawn_id, workspace_id, run_id, launcher_host, launcher_boot_id, pid,
            heartbeat_at, started_at
       FROM harness_shared.spawned_agents
      WHERE status IN ('running', 'restarting')
@@ -1326,6 +1338,22 @@ export async function reclaimFirstOutputStalledSpawns(
        AND heartbeat_at >= now() - ${staleSec}::int * interval '1 second'
        AND last_output_at IS NULL
        AND started_at < now() - ${silentSec}::int * interval '1 second'`;
+  // EI-18729995135827661 (2026-08-02): a row's spawn CLASS, not merely its age, decides
+  // whether "never streamed" is evidence of anything. `isSupervisedBeeRow` is the SAME
+  // class filter {@link reclaimWedgedSpawns} gets for free (its own SQL requires
+  // `last_output_at IS NOT NULL`, which structurally can only ever match the supervised-bee
+  // population) and {@link classifyCeilingJamRow} applies explicitly — but this reaper's
+  // query selects on `last_output_at IS NULL`, the OPPOSITE condition, so nothing here
+  // excluded a non-supervised class by construction. Left unfiltered, every currently-active
+  // in-process-loopback / overwatch / blueprint / implement spawn (per EI-18729995135827661's
+  // survey: 0-for-thousands ever populate `last_output_at`, BY DESIGN, not merely "not yet")
+  // would look identical to a genuinely first-output-stalled bee the moment it crossed
+  // {@link FIRST_OUTPUT_STALL_MS} — and RECLAIM_STALLED (currently dark-OFF, EI-7685) gates
+  // this reaper too, so the danger is latent, not live: the moment that flag is ever flipped
+  // on without this filter, this reaper would SIGTERM essentially every non-opspawn spawn in
+  // the fleet within minutes of it starting. Filter to the supervised-bee population BEFORE
+  // classifying, exactly as the sibling reclaimers already do.
+  const candidates = rawCandidates.filter((c) => isSupervisedBeeRow({ spawn_id: c.spawn_id, run_id: c.run_id }));
   if (candidates.length === 0) {
     return { reclaimed: 0, spawnIds: [], workspaces: [] };
   }

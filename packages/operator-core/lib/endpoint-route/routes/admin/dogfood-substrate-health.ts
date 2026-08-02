@@ -10,10 +10,9 @@
  * Used by monitoring scripts + the admin diagnostic page. Public read.
  */
 
-import nodeCluster from 'node:cluster';
 import { defineTool } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
-import { requestOnlyHost } from '../../../background-workers';
+import { isSubstrateOwnerProcess } from '../../../background-workers';
 import { listBootedHandles } from '../../../sync/hyperbee/boot-all';
 import { listBootstrapProgress } from '../../../sync/hyperbee/bootstrap-progress';
 import { loadSubstrateDrainStats } from '../../../sync/hyperbee/load-drain-stats';
@@ -56,8 +55,11 @@ const get = defineTool({
     // substrate at all (bg-host does). Blindly trusting `local` there rendered a
     // false-confident `reachedSubstrateOwner:true, bootedCount:0` even while the substrate
     // was genuinely live on bg-host. `requestOnlyHost()` excludes that case.
+    // EI-18735338283879820: use the SHARED predicate (background-workers.ts) rather than
+    // an inline copy — two copies of one rule is exactly what let the read/write halves
+    // of this fix drift apart the first time.
     const { booted, reachedSubstrateOwner } = resolveEffectiveBootedHandles(listBootedHandles(), {
-      isSubstrateOwnerProcess: nodeCluster.isPrimary && !requestOnlyHost(),
+      isSubstrateOwnerProcess: isSubstrateOwnerProcess(),
       resolveRemote: getCachedRemoteBootedHandles,
     });
     const progress = listBootstrapProgress();

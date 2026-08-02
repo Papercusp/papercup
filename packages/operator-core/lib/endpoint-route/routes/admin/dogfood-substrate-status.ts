@@ -22,9 +22,8 @@
  * discoverable from the workspace tree.
  */
 
-import nodeCluster from 'node:cluster';
 import { defineTool } from '@papercusp/agent-mcp';
-import { requestOnlyHost } from '../../../background-workers';
+import { isSubstrateOwnerProcess } from '../../../background-workers';
 import { listBootedHandles } from '../../../sync/hyperbee/boot-all';
 import { resolveEffectiveBootedHandles } from '../../../sync/hyperbee/in-process-status';
 import { getCachedRemoteBootedHandles } from '../../../sync/hyperbee/cluster-booted-handles-sync';
@@ -43,8 +42,12 @@ const get = defineTool({
     // never boots the substrate at all, so trusting `local` there silently
     // rendered a false-confident empty `booted:[]`. Fall back to the primary's
     // cached broadcast (a genuine forked worker) when this isn't the owner.
+    // EI-18735338283879820: use the SHARED predicate (background-workers.ts)
+    // rather than an inline `nodeCluster.isPrimary && !requestOnlyHost()` copy —
+    // two copies of one rule is exactly what let the read/write halves of this
+    // fix drift apart the first time.
     const { booted, reachedSubstrateOwner } = resolveEffectiveBootedHandles(listBootedHandles(), {
-      isSubstrateOwnerProcess: nodeCluster.isPrimary && !requestOnlyHost(),
+      isSubstrateOwnerProcess: isSubstrateOwnerProcess(),
       resolveRemote: getCachedRemoteBootedHandles,
     });
     return Response.json({
