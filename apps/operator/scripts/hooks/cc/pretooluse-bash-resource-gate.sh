@@ -1109,8 +1109,18 @@ except Exception:
 #   * `pipefail` / `PIPESTATUS` — an explicit exit-status-preservation idiom.
 # The target is the UNAWARE case: a plain `;` chain ending in a reporter.
 #
-# SOFT (never denies), and silent when the command already ends in an explicit
-# `exit "$rc"` — the correct pattern, which makes BOTH channels truthful.
+# EI-18861104217890085: the reporter list used to be echo/printf/ls/date/stat/
+# true/pwd/wc/cat/tee only — missing tail/head/grep/sed/awk/… entirely, even
+# though the PIPE guard above already treats every one of those as a masking
+# stage. That gap let the EXACT idiom the pipe guard's own docstring
+# recommends as the safe alternative ("redirect to a log file … and read that
+# instead: `cmd > /tmp/x.log 2>&1; head -N /tmp/x.log`") walk straight through
+# this guard unadvised: `npm run test:affected > /tmp/x.log 2>&1; echo
+# "EXIT=$?"; tail -25 /tmp/x.log` ends in `tail`, not `echo`, so the old list
+# never matched it — a real FAILED affected-sweep was reported "completed
+# (exit code 0)" (hit live 2026-07-28 verifying WI-6522). Aligned to the same
+# reporter set the pipe guard already uses, so a caller can't route around
+# this guard just by adding one more `;`-segment before the trailing reader.
 try:
     if (tool_name.lower() == 'bash'
             and tool_input.get('run_in_background')
@@ -1126,7 +1136,9 @@ try:
                         if s.strip()]
             # Only a MULTI-command line can mask: a lone `echo` masks nothing.
             if len(_tr_segs) >= 2 and re.match(
-                    r'^(?:\S*/)?(?:echo|printf|ls|date|stat|true|pwd|wc|cat|tee)\b',
+                    r'^(?:\S*/)?(?:echo|printf|ls|date|stat|true|pwd|wc|cat|tee'
+                    r'|tail|head|grep|egrep|fgrep|sed|awk|sort|uniq|cut|tr'
+                    r'|jq|column|xargs|tac|nl|less|more)\b',
                     _tr_segs[-1]):
                 ADVISORY = (
                     'background `;`-chain exit-code advisory (WI-6944): this '

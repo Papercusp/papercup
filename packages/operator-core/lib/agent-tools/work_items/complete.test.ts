@@ -584,6 +584,29 @@ describe('work_items:complete (keyed-array)', () => {
       expect(setWorkItemStateWithAliasInfo).toHaveBeenCalled();
     });
 
+    // EI-18855312333744373 — WI-6553's actual shape: a deployed-web verification, cited
+    // as URL paths + HTTP status codes, wrongly rejected as fabricated because the
+    // extractor read `/me.jpg` as a local filesystem citation.
+    it('a BACKED claim via deployed URL + HTTP status (a web-deploy verification) closes normally, citing NOTHING on local disk', async () => {
+      getWorkItem.mockResolvedValue(item);
+      setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...item, state: 'passed' }));
+      const r = await one({
+        id: 'F-12',
+        state: 'passed',
+        completion: {
+          summary: 'shipped the /about page to Cloudflare Pages',
+          testResult:
+            'https://papercusp.com/about -> 200 (5,214 B); /me.jpg -> 200 (121,060 B); ' +
+            '/shots/shot-oddsmith.png -> 200 (89,004 B)',
+          verifiedHow: 'live-drove-ui',
+        },
+      });
+      expect(r.ok).toBe(true);
+      expect(r.error).toBeUndefined();
+      expect(setWorkItemStateWithAliasInfo).toHaveBeenCalled();
+      expect(r.workItem.state).toBe('passed');
+    });
+
     it("does NOT touch a close whose verifiedHow is 'unit' (the gate is scoped to 'live-drove-ui' only)", async () => {
       getWorkItem.mockResolvedValue(item);
       setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...item, state: 'passed' }));

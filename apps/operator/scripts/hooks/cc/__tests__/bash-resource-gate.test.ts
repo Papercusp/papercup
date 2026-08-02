@@ -1519,6 +1519,26 @@ describe('background `;`-chain trailing-reporter exit-code advisory (WI-6944)', 
     expectChainAdvisory(runGate(bashWithInput({ command, run_in_background: true })));
   });
 
+  // EI-18861104217890085: the reporter list used to be echo/ls/date/wc/cat/tee
+  // only, so the exact idiom the PIPE guard's own docstring recommends as the
+  // safe alternative to a pipe ("redirect to a log file … and read that
+  // instead: `cmd > /tmp/x.log 2>&1; head -N /tmp/x.log`") walked straight
+  // through this guard unadvised whenever the trailing reader was tail/head/
+  // grep/sed/awk/… rather than echo/ls/date/wc. Live repro (verifying
+  // WI-6522): `npm run test:affected > /tmp/x.log 2>&1; echo "EXIT=$?"; tail
+  // -25 /tmp/x.log` — a REAL failed sweep reported "completed (exit code 0)"
+  // because the command ends in `tail`, not `echo`.
+  it.each([
+    ['tail reading the log (the exact live repro, EI-18861104217890085)',
+      'npm run test:affected > /tmp/x.log 2>&1; echo "EXIT=$?"; tail -25 /tmp/x.log'],
+    ['head reading the log', 'npm test > /tmp/o 2>&1; head -20 /tmp/o'],
+    ['grep filtering the log', 'npm test > /tmp/o 2>&1; grep FAIL /tmp/o'],
+    ['sed slicing the log', "npm run build > /tmp/o 2>&1; sed -n '1,40p' /tmp/o"],
+    ['awk on the log', 'npm test > /tmp/o 2>&1; awk "{print $1}" /tmp/o'],
+  ])('fires on a trailing reporter widened to match the pipe guard: %s', (_label, command) => {
+    expectChainAdvisory(runGate(bashWithInput({ command, run_in_background: true })));
+  });
+
   // Deliberate NON-targets. Each masks (or looks like it might), but each also
   // demonstrates that the author already knows about exit codes — so advising
   // them is noise. The pipe suite above independently asserts the first two;

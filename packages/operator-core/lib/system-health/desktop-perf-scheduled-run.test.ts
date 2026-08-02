@@ -40,9 +40,21 @@ describe('runDesktopPerfScheduledRun', () => {
     expect(spawnFn).not.toHaveBeenCalled();
   });
 
+  // `runDesktopPerfScheduledRun` awaits `io.readEnabled()` before it calls
+  // `io.spawnFn` and wires up the child's event listeners — even a
+  // synchronously resolved promise still defers that wiring by one microtask
+  // tick. Every test below that drives `child` must flush that tick first, or
+  // the emitted event finds no listener yet: an 'error' emit with no listener
+  // throws (Node's default), and a 'close'/'data' emit with no listener is
+  // just silently dropped, which hangs the test until it times out.
+  async function flushReadEnabledTick(): Promise<void> {
+    await Promise.resolve();
+  }
+
   it('spawns `npm test` in the wdio dir and resolves ran:true on a clean exit', async () => {
     const { io: fakeIo, child, spawnFn } = io();
     const p = runDesktopPerfScheduledRun(fakeIo);
+    await flushReadEnabledTick();
     child.emit('close', 0);
     const r = await p;
     expect(r.ran).toBe(true);
@@ -57,30 +69,43 @@ describe('runDesktopPerfScheduledRun', () => {
 
   it('still resolves ran:true on a NONZERO exit — a test-finding failure is not a tick failure', async () => {
     const { io: fakeIo, child } = io();
-    const p = runDesktopPerfScheduledRun(fakeIo);
-    child.stdout.emit('data', Buffer.from('some suite output'));
-    child.emit('close', 1);
-    const r = await p;
-    expect(r.ran).toBe(true);
-    expect(r.exitCode).toBe(1);
-    expect(r.timedOut).toBeUndefined();
+    // Expected: a nonzero exit logs a visibility-only warning (the module doc
+    // is explicit this is NOT a tick failure) — assert on it rather than
+    // leaving it unmocked.
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const p = runDesktopPerfScheduledRun(fakeIo);
+      await flushReadEnabledTick();
+      child.stdout.emit('data', Buffer.from('some suite output'));
+      child.emit('close', 1);
+      const r = await p;
+      expect(r.ran).toBe(true);
+      expect(r.exitCode).toBe(1);
+      expect(r.timedOut).toBeUndefined();
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('wdio exited 1'));
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 
   it('resolves ran:false with a reason on a spawn error (never throws)', async () => {
     const { io: fakeIo, child } = io();
-    const p = runDesktopPerfScheduledRun(fakeIo);
-    // `runDesktopPerfScheduledRun` awaits `io.readEnabled()` before it calls
-    // `io.spawnFn` and wires up `child.on('error', ...)` — even a synchronously
-    // resolved promise still defers that wiring by one microtask tick. Emitting
-    // 'error' before that tick finds NO listener attached, and Node's default
-    // behaviour for an unheard 'error' event is to throw. Flush the microtask
-    // queue first so the handler is attached before we emit.
-    await Promise.resolve();
-    child.emit('error', new Error('ENOENT: npm not found'));
-    const r = await p;
-    expect(r.ran).toBe(false);
-    expect(r.skippedReason).toMatch(/spawn error/);
-    expect(r.skippedReason).toMatch(/ENOENT/);
+    // Expected: the spawn-error path deliberately logs the failure via
+    // console.error before resolving — assert on it explicitly rather than
+    // leaving it unmocked (vitest-fail-on-console fails an unmocked call).
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const p = runDesktopPerfScheduledRun(fakeIo);
+      await flushReadEnabledTick();
+      child.emit('error', new Error('ENOENT: npm not found'));
+      const r = await p;
+      expect(r.ran).toBe(false);
+      expect(r.skippedReason).toMatch(/spawn error/);
+      expect(r.skippedReason).toMatch(/ENOENT/);
+      expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('failed to spawn'));
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 
   it('kills the child and resolves timedOut:true after the bound (fake timers)', async () => {
