@@ -2432,7 +2432,8 @@ export async function summarizeOpenPlacements(
              )
            )
       )
-      SELECT work_item_id, status, fail_count, harness_slug, updated_at, source_plan_slug, source_plan_item_ids
+      SELECT work_item_id, status, fail_count, harness_slug, updated_at,
+             recovery_started_at, placed_at, source_plan_slug, source_plan_item_ids
         FROM live_open
        ORDER BY (status = 'cursed') DESC, (status = 'stranded') DESC, (status = 'recovering') DESC, updated_at DESC
        LIMIT ${limit}`;

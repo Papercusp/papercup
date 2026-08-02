@@ -194,9 +194,13 @@ describe('buildOpenPlacementSummary', () => {
   // ever actually verifying whether the underlying work had already landed. The
   // brief now flags this directly instead of relying on a human/agent to
   // re-derive the staleness by hand each time.
-  it('EI-8437: flags a `recovering` item whose placement row is older than the stale threshold', () => {
+  it('EI-8437/EI-18799814531115618: flags a `recovering` item whose recovery episode is older than the stale threshold', () => {
     const nowMs = NOW;
-    const staleUpdatedAt = new Date(nowMs - (DEFAULT_STALE_RECOVERING_MS + 60 * 60_000)).toISOString();
+    // updated_at is FRESH (as it always is — the reconcile sweep bumps it every
+    // ~2 min) but recovery_started_at is genuinely old; stale must key off the
+    // latter, not the former.
+    const freshUpdatedAt = new Date(nowMs - 60_000).toISOString();
+    const staleRecoveryStartedAt = new Date(nowMs - (DEFAULT_STALE_RECOVERING_MS + 60 * 60_000)).toISOString();
     const summary = buildOpenPlacementSummary(
       [{ status: 'recovering', count: 1 }],
       [
@@ -205,18 +209,70 @@ describe('buildOpenPlacementSummary', () => {
           status: 'recovering',
           fail_count: 0,
           harness_slug: 'papercusp',
-          updated_at: staleUpdatedAt,
+          updated_at: freshUpdatedAt,
+          recovery_started_at: staleRecoveryStartedAt,
         },
       ],
       nowMs,
     );
     expect(summary.items[0]).toMatchObject({ workItemId: 'WI-329', stale: true });
-    expect(summary.items[0].ageHours).toBeGreaterThanOrEqual(DEFAULT_STALE_RECOVERING_MS / 3_600_000);
+    // ageHours ("time since last reconcile touch") stays near-zero — it is a
+    // DIFFERENT clock from the one that decides `stale`.
+    expect(summary.items[0].ageHours).toBeCloseTo(1 / 60, 1);
+  });
+
+  // EI-18799814531115618 — the exact regression this bug describes: a
+  // `recovering` row whose `updated_at` the watchdog's own reconcile sweep
+  // just touched (seconds old) but whose `recovery_started_at` is genuinely
+  // >24h old. Before the fix this read `stale: undefined` forever, because
+  // `stale` was computed from `updated_at` — a field bumped unconditionally on
+  // every sweep — making the EI-8437 "VERIFY before re-placing" nudge dead
+  // code. This test fails against the pre-fix code and passes after it.
+  it('EI-18799814531115618: recurrence guard — updated_at seconds old, recovery_started_at >24h old → stale:true', () => {
+    const nowMs = NOW;
+    const secondsAgo = new Date(nowMs - 5_000).toISOString();
+    const overADayAgo = new Date(nowMs - (DEFAULT_STALE_RECOVERING_MS + 2 * 60 * 60_000)).toISOString();
+    const summary = buildOpenPlacementSummary(
+      [{ status: 'recovering', count: 1 }],
+      [
+        {
+          work_item_id: 'WI-4652',
+          status: 'recovering',
+          fail_count: 0,
+          harness_slug: 'papercusp',
+          updated_at: secondsAgo,
+          recovery_started_at: overADayAgo,
+        },
+      ],
+      nowMs,
+    );
+    expect(summary.items[0].stale).toBe(true);
+  });
+
+  it('EI-18799814531115618: falls back to placed_at when recovery_started_at is null', () => {
+    const nowMs = NOW;
+    const stalePlacedAt = new Date(nowMs - (DEFAULT_STALE_RECOVERING_MS + 60 * 60_000)).toISOString();
+    const summary = buildOpenPlacementSummary(
+      [{ status: 'recovering', count: 1 }],
+      [
+        {
+          work_item_id: 'WI-NO-RECOVERY-MARK',
+          status: 'recovering',
+          fail_count: 0,
+          harness_slug: 'papercusp',
+          updated_at: new Date(nowMs - 60_000).toISOString(),
+          recovery_started_at: null,
+          placed_at: stalePlacedAt,
+        },
+      ],
+      nowMs,
+    );
+    expect(summary.items[0].stale).toBe(true);
   });
 
   it('EI-8437: does NOT flag a `recovering` item still inside the stale threshold', () => {
     const nowMs = NOW;
-    const freshUpdatedAt = new Date(nowMs - 60 * 60_000).toISOString(); // 1h ago
+    const freshRecoveryStartedAt = new Date(nowMs - 60 * 60_000).toISOString(); // 1h ago
     const summary = buildOpenPlacementSummary(
       [{ status: 'recovering', count: 1 }],
       [
@@ -225,7 +281,8 @@ describe('buildOpenPlacementSummary', () => {
           status: 'recovering',
           fail_count: 0,
           harness_slug: 'papercusp',
-          updated_at: freshUpdatedAt,
+          updated_at: freshRecoveryStartedAt,
+          recovery_started_at: freshRecoveryStartedAt,
         },
       ],
       nowMs,
