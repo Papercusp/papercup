@@ -375,7 +375,18 @@ describe('psu-pty-host delivery-id dedup: a retry of an ALREADY-DELIVERED wake n
         command: execPath,
         args: ['-e', echoChildCode(3500)],
         cwd: '/tmp',
-        env: { ...hermeticEnv(), PAPERCUSP_SID: ownerId, TERM: 'xterm-256color' },
+        env: {
+          ...hermeticEnv(),
+          PAPERCUSP_SID: ownerId,
+          TERM: 'xterm-256color',
+          // This generic echo child never produces whatever confirmation pattern
+          // submitVerify actually looks for, so it retries the CR (default quiet
+          // threshold 6000ms) — which holds the inject mutex the SECOND injection
+          // below needs. Shrink both so the first delivery's pipeline (mutex +
+          // submit-verify) fully settles well within this test's budget.
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '80',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS: '150',
+        },
         ownerId,
         io,
         bridgeTty: false,

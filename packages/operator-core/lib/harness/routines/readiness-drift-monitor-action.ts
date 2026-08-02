@@ -98,7 +98,7 @@ const fmtEndpoint = (defects: readonly DepEndpointDefect[]): string =>
     .slice(0, SAMPLE)
     .map(
       (d) =>
-        `edge#${d.edge_id} ${d.side}=${d.ref} declared=${d.declared_kind}` +
+        `${d.relation}#${d.row_id} ${d.side}=${d.ref} declared=${d.declared_kind}` +
         (d.expected_kind
           ? ` expected=${d.expected_kind}`
           : d.bare_id_found_in
@@ -116,7 +116,10 @@ async function sweepEndpointIntegrity(): Promise<void> {
   try {
     const res = await reconcileWorkItemDepEndpoints();
     if (res.defects === 0) {
-      console.log('[readiness-drift-monitor] work_item_deps endpoints are family-consistent (defects=0)');
+      console.log(
+        '[readiness-drift-monitor] work-item endpoints are family-consistent across ' +
+          'work_item_deps + coord_links + coord_threads (defects=0)',
+      );
       return;
     }
     // MISMATCHED leads: those edges are silently inert, which is the D-017 hazard.
@@ -131,7 +134,10 @@ async function sweepEndpointIntegrity(): Promise<void> {
       console.warn(
         '[readiness-drift-monitor] a mismatch should be INEXPRESSIBLE at the write seam ' +
           '(resolveDepEndpoint) — its presence means a writer BYPASSED that seam. Investigate the ' +
-          'writer; repair by re-running syncWorkItemDepEdges for the affected item, not by hand-editing rows.',
+          'writer; repair by re-running syncWorkItemDepEdges for the affected item, not by hand-editing rows. ' +
+          'NOTE the relation: a work_item_deps row is the MIRROR and re-running the writer fixes it, ' +
+          'but a coord_links row is the AUTHORITATIVE source — re-running the writer there just ' +
+          'reproduces the bad ref, so the source row itself has to be corrected.',
       );
     }
     if (res.dangling.length > 0) {

@@ -1,0 +1,324 @@
+/**
+ * MCP transport P2-5 deadline path — HANDLER-LEVEL coverage for the two
+ * claims that rode on `raced.{toolOutcome,deadlineFired}` untested (WI-6914,
+ * filed while closing WI-6868's closure-narrowing fix on that same holder
+ * object):
+ *
+ *   1. On a deadline, the caller is answered immediately with a clean
+ *      `request_timeout` error — the tool keeps running server-side, and its
+ *      eventual replay-receipt persist does NOT re-block the response
+ *      (`if (!raced.deadlineFired) await persist;` in _mcp-handler.ts).
+ *   2. The receipt persisted once the tool finishes is the tool's REAL
+ *      outcome, never the raced timeout envelope (EI-19301511582594101:
+ *      "persisting the raced timeout envelope would make every retry replay
+ *      the timeout instead of the real outcome" — `raced.toolOutcome`, never
+ *      `dispatched`, is what gets stored).
+ *
+ * `__tests__/mcp-deadline.test.ts` already pins `raceDeadline` /
+ * `effectiveMcpDeadlineMs` as ISOLATED units — no handler, no receipt
+ * (op cit., grep for replay|store|persist there finds nothing).
+ * `mcp-handler-gating-matrix.test.ts` drives the real handler and covers the
+ * replay-receipt commit-then-store ORDERING, but never enters the deadline
+ * branch at all (grep for 'deadline' in that file finds nothing) — every
+ * case there takes the normal (non-deadline) path.
+ *
+ * This file closes exactly that gap, at the SAME "drive the real registered
+ * tools/call handler" level gating-matrix uses (same seam mocks, same
+ * `callTool` shape) — but as its OWN small, dedicated file rather than
+ * bolted onto the shared 96-test gating-matrix file. `MCP_DEADLINE_MS` is a
+ * module-load-time const read from `PAPERCUSP_MCP_DEADLINE_MS`
+ * (`effectiveMcpDeadlineMs(projected.timeoutSec)` only ever RAISES it, never
+ * lowers it below the base — see the WI-6914 filing), so it must be set
+ * BEFORE `_mcp-handler` is imported; retrofitting that into gating-matrix's
+ * shared 96 tests would apply the short deadline file-wide and risk flaking
+ * unrelated cases under fleet load. A separate file with its own module
+ * instance avoids that entirely.
+ */
+import { createRequire } from 'node:module';
+import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { _resetVerifiedSpawns } from '../../spawn-signing';
+
+const h = vi.hoisted(() => {
+  const fakeTx = Object.assign(async (..._a: unknown[]) => [] as unknown[], {
+    unsafe: async (..._a: unknown[]) => [] as unknown[],
+  });
+  const fakeSql = Object.assign(async (..._a: unknown[]) => [] as unknown[], {
+    unsafe: async (..._a: unknown[]) => [] as unknown[],
+    begin: async <T>(fn: (tx: unknown) => Promise<T>): Promise<T> => fn(fakeTx),
+  });
+  return {
+    fakeTx,
+    fakeSql,
+    withWorkspaceCalls: [] as string[],
+    commitFailure: null as Error | null,
+    txEvents: [] as string[],
+    replayStores: [] as Array<{ idempotencyKey: string; result: unknown }>,
+    storedReplay: null as { content: Array<Record<string, unknown>>; _meta?: Record<string, unknown> } | null,
+    invocations: [] as unknown[],
+    handlers: new Map<string, (req: unknown, extra: unknown) => Promise<unknown>>(),
+    verifySpawnParams: vi.fn(
+      async (_u: unknown): Promise<{ ok: boolean; reason?: string }> => ({ ok: true }),
+    ),
+    logVerificationFailure: vi.fn(async (_rec: unknown): Promise<void> => {}),
+    verifyAccessToken: vi.fn(
+      async (_bearer: string): Promise<Record<string, unknown> | null> => null,
+    ),
+    isValidSuperuserBearer: vi.fn(
+      (bearer: string | null | undefined): boolean => bearer === 'test-su-bearer',
+    ),
+    workspaceForCoordOwner: vi.fn(async (_sid: string): Promise<string | null> => null),
+    potHomeSlugForHarness: vi.fn(async (): Promise<string | null> => null),
+    resolveWorkspaceForHarnessSlugIn: vi.fn(
+      async (preferredWs: string): Promise<string | null> => preferredWs,
+    ),
+  };
+});
+
+// Same capture shim gating-matrix.test.ts uses — no real streamable-HTTP transport.
+vi.mock('mcp-handler', () => ({
+  createMcpHandler: (
+    setup: (server: {
+      server: { setRequestHandler: (schema: unknown, fn: unknown) => void };
+    }) => void,
+  ) => {
+    setup({
+      server: {
+        setRequestHandler: (schema: unknown, fn: unknown) => {
+          const s = schema as {
+            shape?: { method?: { value?: string; _def?: { value?: string } } };
+          };
+          const method = s?.shape?.method?.value ?? s?.shape?.method?._def?.value;
+          h.handlers.set(String(method), fn as (req: unknown, extra: unknown) => Promise<unknown>);
+        },
+      },
+    });
+    return () => {
+      throw new Error('HTTP fetch handler is not exercised by this test');
+    };
+  },
+}));
+
+vi.mock('@papercusp/db-org', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  return {
+    ...actual,
+    getOrgPg: () => ({ sql: h.fakeSql }),
+    withWorkspace: async <T>(ws: string, fn: (tx: unknown) => Promise<T>): Promise<T> => {
+      h.withWorkspaceCalls.push(ws);
+      const out = await fn(h.fakeTx);
+      if (h.commitFailure) throw h.commitFailure;
+      h.txEvents.push('commit');
+      return out;
+    },
+  };
+});
+// The seam under test: capture every persisted replay receipt, plain functions
+// (not vi.fn()) so beforeEach's vi.resetAllMocks() cannot strip the impl out
+// from under the assertions — the same reason gating-matrix.test.ts does this.
+vi.mock('../routes/transport/_mcp-result-replay', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  return {
+    ...actual,
+    lookupStoredMcpResult: async (): Promise<Record<string, unknown> | null> =>
+      h.storedReplay
+        ? { ...h.storedReplay, _meta: { ...(h.storedReplay._meta ?? {}), replayed: true } }
+        : null,
+    storeMcpResult: async (a: { idempotencyKey: string; result: unknown }): Promise<void> => {
+      h.txEvents.push('store');
+      h.replayStores.push({ idempotencyKey: a.idempotencyKey, result: a.result });
+    },
+  };
+});
+vi.mock('../../projected-tool-deps', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  const realDeps = actual.PROJECTED_DEPS as Record<string, unknown>;
+  return {
+    ...actual,
+    PROJECTED_DEPS: {
+      ...realDeps,
+      recordInvocation: async (input: unknown): Promise<void> => {
+        h.invocations.push(input);
+      },
+    },
+  };
+});
+vi.mock('../../spawn-signing', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  return { ...actual, verifySpawnParams: h.verifySpawnParams, logVerificationFailure: h.logVerificationFailure };
+});
+vi.mock('../../power-user-token', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  return { ...actual, verifyAccessToken: h.verifyAccessToken };
+});
+vi.mock('../../superuser-token', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  return { ...actual, isValidSuperuserBearer: h.isValidSuperuserBearer };
+});
+vi.mock('../../adv-sessions', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  return { ...actual, workspaceForCoordOwner: h.workspaceForCoordOwner };
+});
+vi.mock('../../resolve-harness-paths', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  return {
+    ...actual,
+    resolveHarnessPaths: async () => ({
+      projectDir: '/tmp/mcp-deadline-receipt-proj',
+      stateDir: '/tmp/mcp-deadline-receipt-state',
+    }),
+  };
+});
+vi.mock('../../hive-federation', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  return { ...actual, potHomeSlugForHarness: h.potHomeSlugForHarness };
+});
+vi.mock('../../harness-core', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  return { ...actual, resolveWorkspaceForHarnessSlugIn: h.resolveWorkspaceForHarnessSlugIn };
+});
+
+(globalThis as { require?: NodeJS.Require }).require ??= createRequire(import.meta.url);
+process.env.AGENT_MCP_TOOL_MANIFEST = '/nonexistent/mcp-deadline-receipt-no-manifest.json';
+delete process.env.PAPERCUSP_REQUIRE_SPAWN_SIG;
+// The whole point of this file existing separately from gating-matrix.test.ts:
+// MCP_DEADLINE_MS is read ONCE at module load, so this must be set before the
+// import below — and setting it here applies ONLY to this file's own module
+// instance, never to gating-matrix's other 96 cases.
+const TEST_DEADLINE_MS = 25;
+process.env.PAPERCUSP_MCP_DEADLINE_MS = String(TEST_DEADLINE_MS);
+
+await import('../routes/transport/_mcp-handler');
+const { registerProjectedTool, unregisterProjectedToolsForPlugin } = await import('@papercusp/agent-mcp');
+
+/* ─── One synthetic probe: sleeps well past the deadline, then returns a
+ *     result distinguishable from the timeout envelope. ────────────────── */
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+const SLOW_TOOL_MS = 150; // several multiples of TEST_DEADLINE_MS
+const REAL_OUTCOME_TEXT = 'deadlinetest-real-outcome-not-a-timeout';
+let slowCalls = 0;
+
+registerProjectedTool({
+  pluginName: 'mcp-deadline-receipt-test',
+  description: 'test-only probe: sleeps past the P2-5 deadline, then resolves with a distinct real result',
+  inputSchema: { type: 'object', additionalProperties: true },
+  capabilities: [],
+  agentRoles: ['scoper'],
+  expose: { mcp: { name: 'deadlinetest:slow' } },
+  fn: async () => {
+    slowCalls += 1;
+    await sleep(SLOW_TOOL_MS);
+    return { content: [{ type: 'text' as const, text: REAL_OUTCOME_TEXT }] };
+  },
+});
+
+afterAll(() => {
+  unregisterProjectedToolsForPlugin('mcp-deadline-receipt-test');
+});
+
+const MCP = 'http://127.0.0.1:3070/api/mcp';
+
+function extraFor(url: string, headers: Record<string, string> = {}): unknown {
+  return { requestInfo: { url, headers: { host: '127.0.0.1:3070', ...headers } } };
+}
+function superuserExtra(query = '', headers: Record<string, string> = {}): unknown {
+  return extraFor(`${MCP}?superuser=1${query}`, { authorization: 'Bearer test-su-bearer', ...headers });
+}
+
+interface CallResult {
+  isError?: boolean;
+  content: Array<{ type: string; text?: string }>;
+  _meta?: Record<string, unknown>;
+}
+async function callTool(
+  name: string,
+  args: Record<string, unknown>,
+  extra: unknown,
+  meta?: Record<string, unknown>,
+): Promise<CallResult> {
+  return (await h.handlers.get('tools/call')!(
+    { params: { name, arguments: args, ...(meta ? { _meta: meta } : {}) } },
+    extra,
+  )) as CallResult;
+}
+const textOf = (r: CallResult): string => r.content.map((c) => c.text ?? '').join('');
+
+beforeEach(() => {
+  vi.resetAllMocks();
+  slowCalls = 0;
+  h.withWorkspaceCalls.length = 0;
+  h.commitFailure = null;
+  h.txEvents.length = 0;
+  h.replayStores.length = 0;
+  h.storedReplay = null;
+  h.invocations.length = 0;
+  delete process.env.PAPERCUSP_REQUIRE_SPAWN_SIG;
+  _resetVerifiedSpawns();
+});
+
+describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6914)', () => {
+  const scoped = (ws: string) => superuserExtra(`&workspace=${ws}`);
+
+  it('answers with a clean request_timeout error once the deadline fires, without waiting for the tool', async () => {
+    const res = await callTool('deadlinetest:slow', {}, scoped('ws-test'), { idempotencyKey: 'idem-deadline-1' });
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toContain('request_timeout');
+    expect(textOf(res)).toContain('deadlinetest:slow');
+    expect(textOf(res)).toContain(`${TEST_DEADLINE_MS}ms`);
+    // Idempotency-key-aware wording (the two branches in _mcp-handler.ts differ
+    // on whether a key was supplied) — this call passed one.
+    expect(textOf(res)).toContain('retry with the same _meta.idempotencyKey');
+  });
+
+  it('does NOT re-block the response on the receipt persist — replayStores is still empty the instant the caller is answered', async () => {
+    const res = await callTool('deadlinetest:slow', {}, scoped('ws-test'), { idempotencyKey: 'idem-deadline-2' });
+    expect(res.isError).toBe(true);
+    // The whole point of `if (!raced.deadlineFired) await persist`: the caller
+    // was already answered with the timeout envelope, and the persist for the
+    // still-running tool has NOT happened yet — it happens in the background.
+    expect(h.replayStores).toEqual([]);
+  });
+
+  it('once the tool actually finishes, the persisted receipt is its REAL outcome — never the raced timeout envelope (EI-19301511582594101)', async () => {
+    const res = await callTool('deadlinetest:slow', {}, scoped('ws-test'), { idempotencyKey: 'idem-deadline-3' });
+    expect(res.isError).toBe(true); // the CALLER got the timeout envelope...
+
+    // ...but the tool keeps running server-side (raceDeadline never cancels
+    // `run()`) and its real outcome is what eventually gets persisted. Poll
+    // rather than a fixed sleep — deadline-bounded, so this can't hang the
+    // suite even if the background persist regresses to never firing.
+    const deadlineAt = Date.now() + SLOW_TOOL_MS + 2_000;
+    while (h.replayStores.length === 0 && Date.now() < deadlineAt) {
+      await sleep(10);
+    }
+
+    expect(slowCalls).toBe(1); // the tool really did run (not cancelled, not skipped)
+    expect(h.replayStores).toHaveLength(1);
+    expect(h.replayStores[0]!.idempotencyKey).toBe('idem-deadline-3');
+    const stored = h.replayStores[0]!.result as CallResult;
+    // The crux of the bug this item guards against: the STORED receipt must be
+    // the tool's real content, not the "request_timeout" envelope the caller
+    // was shown. A regression here would make every retry with this key replay
+    // a timeout forever instead of the tool's actual (successful) result.
+    expect(textOf(stored)).toBe(REAL_OUTCOME_TEXT);
+    expect(textOf(stored)).not.toContain('request_timeout');
+    expect(stored.isError).not.toBe(true);
+  });
+
+  it('with no idempotencyKey, the deadline still answers cleanly (no-retry-yet wording) and never persists a receipt', async () => {
+    const res = await callTool('deadlinetest:slow', {}, scoped('ws-test'));
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toContain('request_timeout');
+    expect(textOf(res)).toContain('Do NOT retry yet');
+
+    // Give the slow tool plenty of time to finish server-side; without an
+    // idempotencyKey the handler's `if (idempotencyKey && ...)` guard means no
+    // receipt is ever written, regardless of how the tool finishes.
+    await sleep(SLOW_TOOL_MS + 100);
+    expect(slowCalls).toBe(1);
+    expect(h.replayStores).toEqual([]);
+  });
+});

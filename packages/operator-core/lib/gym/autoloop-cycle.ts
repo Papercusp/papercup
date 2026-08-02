@@ -343,9 +343,29 @@ export async function runOneAutoloopCycle(
       controlSql = gymSql;
     }
 
-    // 2. Tiny substrate repo, pinned at its seed commit.
-    const { tasks, substrateFiles } = fixedTasks();
-    mkdirSync(substrateDir, { recursive: true });
+    // 2. REAL substrate: a pinned, sparse, dependency-ready clone of the actual
+    // Papercusp repo, with ONE COMMIT PER TASK whose tree carries the rewound
+    // implementation.
+    //
+    // This replaces the former toy repo — a 4-line stub service with a
+    // hand-written "add /health" task that no one ever needed and no real test
+    // guarded. D-004 (owner): "IT SHOULD BE PUTTING THE REAL PAPERCUSP APP
+    // THROUGH THE GYM". Each task now rewinds ONE genuinely shipped
+    // implementation file inside the real repo and is scored by the REAL test
+    // that shipped with it, so fitness is an observed test outcome (D-002)
+    // rather than a judge's opinion of a fake.
+    //
+    // The per-task commit is what makes this honest: the runner clones from the
+    // object store and never sees a working tree, so pinning tasks at the
+    // corpus pin would hand the agent the SHIPPED file and every oracle would
+    // pass on turn zero while still reporting corpus:'real' (D-007).
+    // `papercuspTaskToGymTask` refuses that by construction.
+    const { tasks: materialised } = await materialisePapercuspSubstrate({
+      sourceRepo: REPO_ROOT,
+      destDir: substrateDir,
+    });
+    const tasks: LoopTask[] = materialised.map((m) => m.gymTask);
+    log(`substrate: real papercusp @ ${materialised[0]?.descriptor.pinCommit.slice(0, 12)} — ${tasks.length} real tasks`);
     mkdirSync(join(substrateDir, '.papercusp'), { recursive: true });
     // Production-fidelity: the REAL chunk-loop worker model with the L1 gate pointed at the
     // substrate's dependency-free `npm run typecheck`. The substrate is buildable. See ab-run.ts.

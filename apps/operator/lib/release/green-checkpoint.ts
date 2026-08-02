@@ -1466,6 +1466,10 @@ export function classifyRedAgainstTip(input: {
 
 export const NON_TEST_GATE_SCRIPTS: Record<string, string[]> = {
   'lint:tsc': ['lint:tsc'],
+  // WI-7140: registered so a stale orchestrator red is re-verifiable at tip by the
+  // auto-refire, exactly like lint:tsc. It qualifies on the header's own terms —
+  // deterministic, repo-wide, and cheap (~2s against a ~55min suite).
+  'lint:tsc:orchestrator': ['lint:tsc:orchestrator'],
   'lint:migrations': ['lint:migrations'],
   'lint:identity-leak': ['lint:no-owner-name-tags', 'lint:no-box-identity', 'lint:no-identity-literals'],
   'lint:design-primitives': ['lint:design-primitives'],
@@ -3753,6 +3757,8 @@ interface PostSuiteLegs {
   ok: boolean;
   typecheck: LegOutcome;
   typecheckPapercuspLibs: LegOutcome;
+  /** WI-7140: libs/papercusp/packages/orchestrator, at a STRICT ZERO baseline. */
+  typecheckOrchestrator: LegOutcome;
   lintMigrations: LegOutcome;
   /** WI-6842: expand/contract discipline on destructive migration DDL (a migration
    *  applies to the SHARED DB immediately; the release checkout lags by a full
@@ -3780,6 +3786,7 @@ function legsNotRun(skipReason: string): PostSuiteLegs {
     ok: true,
     typecheck: skipped,
     typecheckPapercuspLibs: skipped,
+    typecheckOrchestrator: skipped,
     lintMigrations: skipped,
     lintMigrationForwardCompat: skipped,
     lintIdentity: skipped,
@@ -3904,6 +3911,66 @@ export async function runPostSuiteLegs(
         '\n\n=== LIBS/PAPERCUSP TYPECHECK FAILED (npm run lint:tsc:papercusp-libs) — a type regression in a libs/papercusp package blocks the release ===\n' +
           libsTypecheck.stdout +
           libsTypecheck.stderr,
+      );
+    }
+  }
+
+  // WI-7140: libs/papercusp/packages/orchestrator. Same phantom-gate shape as the leg
+  // above, one package over: `lint:tsc:orchestrator` existed as a working, baseline-
+  // ratcheted script that NOTHING invoked — no CI step, no gate leg, no aggregate. Its
+  // own header (WI-6826) states the problem it was built for ("this package's 157 TS
+  // sources were typechecked by NOTHING"), but the fix stopped at "a runnable script
+  // exists" rather than "something runs it". EI-19372643177590910 wired it into CI;
+  // this leg is what makes a regression block PROMOTION rather than just a PR.
+  //
+  // Placed with the other typecheck legs so a shared-type change that breaks several
+  // packages reports as one coherent failure block.
+  //
+  // WHY THIS ONE IS SAFE TO GATE ON, measured before wiring (the prerequisite WI-7140
+  // itself sets — a leg that reds the moment it is added blocks the whole fleet):
+  //   - The package is at a STRICT ZERO: baseline `files: {}` on purpose (WI-6826 seeded
+  //     59 errors, WI-6838 paid off all 59), so there is no tolerance to drift into and
+  //     no baseline-inheritance subtlety of the kind that makes the operator-vite gate
+  //     name files the author never opened (EI-18649014117371738).
+  //   - It is NOT vacuously green. The script prints "0 type errors across 0 file(s)",
+  //     which reads exactly like "checked nothing"; `tsc --listFiles` shows it loading
+  //     157 in-package files, i.e. zero files WITH errors. Re-verify it that way, never
+  //     from the summary line.
+  //   - The CHECKPOINT TREE genuinely contains what this leg checks — 152 src/**/*.ts,
+  //     the tsconfig, the baseline and node_modules are all present there. A leg pointed
+  //     at a tree missing its sources passes vacuously FOREVER, which is the same class
+  //     as the gitignored-runtime-asset bug fixed in 9457807685, aimed one level up.
+  //
+  // Its sibling `lint:tsc:operator-vite` is deliberately NOT a leg: ~151 baseline entries
+  // plus cross-package inheritance make it capable of red-pinning promotion on drift that
+  // is not a regression. It stays CI-only until that is settled.
+  const orchestratorTypecheckCheck = haltedBy ? null : checkNpmScript(treeDir, 'lint:tsc:orchestrator');
+  if (haltedBy) {
+    legs.typecheckOrchestrator = { status: 'skipped', skipReason: haltedBy };
+  } else if (orchestratorTypecheckCheck === 'unreadable') {
+    legs.typecheckOrchestrator = { status: 'failed' };
+    haltedBy = 'package.json unreadable (checking for lint:tsc:orchestrator)';
+    failingSignatures.push('package.json-unreadable');
+    outputs.push(
+      `\n\n=== PACKAGE.JSON UNREADABLE (WI-6056) — could not read/parse package.json in ${treeDir} while checking for lint:tsc:orchestrator ===\n`,
+    );
+  } else if (orchestratorTypecheckCheck === 'absent') {
+    legs.typecheckOrchestrator = { status: 'skipped', skipReason: 'candidate provides no lint:tsc:orchestrator script' };
+  } else {
+    const orchestratorTypecheck = await exec('npm', ['run', 'lint:tsc:orchestrator'], {
+      cwd: treeDir,
+      env,
+      allowNonZero: true,
+      heavy: true,
+    });
+    legs.typecheckOrchestrator = { status: orchestratorTypecheck.code === 0 ? 'passed' : 'failed' };
+    if (orchestratorTypecheck.code !== 0) {
+      haltedBy = 'lint:tsc:orchestrator failed';
+      failingSignatures.push('lint:tsc:orchestrator');
+      outputs.push(
+        '\n\n=== ORCHESTRATOR TYPECHECK FAILED (npm run lint:tsc:orchestrator) — this package is gated at a STRICT ZERO, so any named file here is a NEW type error, never pre-existing baseline noise ===\n' +
+          orchestratorTypecheck.stdout +
+          orchestratorTypecheck.stderr,
       );
     }
   }
@@ -4264,6 +4331,7 @@ export async function runPostSuiteLegs(
   legs.ok = ![
     legs.typecheck,
     legs.typecheckPapercuspLibs,
+    legs.typecheckOrchestrator,
     legs.lintMigrations,
     legs.lintMigrationForwardCompat,
     legs.lintIdentity,

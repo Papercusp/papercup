@@ -1,6 +1,22 @@
 /**
- * work-item-deps-integrity.ts — endpoint-integrity detector for `work_item_deps`
+ * work-item-deps-integrity.ts — endpoint-integrity detector for every relation that stores
+ * a work-item endpoint: `work_item_deps`, `coord_links` and `coord_threads`
  * (work-item-dependency-edges-2026-08-02, EI-19325959789634791 / D-017 step 2).
+ *
+ * ── Why it covers three relations, not one (EI-19376392851673381) ───────────────────────
+ * It originally read `work_item_deps` alone — which is the MIRROR. `coord_links` is the
+ * AUTHORITATIVE store it is derived from, so a bad ref there is faithfully reproduced into
+ * the mirror and re-running the writer can never fix it. Watching only the mirror produced
+ * the worst possible failure mode: after migration 734's backfill the sweep reported
+ * defects=0 while 32 stale qualified refs sat live in coord_links + coord_threads,
+ * invisible, under a green verdict.
+ *
+ * `coord_threads` is not a cosmetic third table. Since the work-item mail surface was
+ * retired (WI-6097), durable work-item-scoped direction IS thread posts, so a stale
+ * `parent_ref` orphans an item's comments from the item.
+ *
+ * Measured live 2026-08-02 when the widening landed: work_item_deps 0 defects, the other
+ * two 231 (177 dangling + 54 mismatched) — i.e. the mirror was clean and the source was not.
  *
  * D-017's defect: a `work_item_deps` endpoint carries a `*_kind` alongside a ref, and
  * NOTHING checked that the endpoint actually RESOLVES to a row of the declared kind. An
@@ -125,7 +141,8 @@ export async function reconcileWorkItemDepEndpoints(
   const rows = await sql<
     Array<{
       defect: 'mismatched' | 'dangling';
-      edge_id: string;
+      row_id: string;
+      relation: DepEndpointRelation;
       workspace_id: string;
       side: DepEndpointSide;
       declared_kind: string;
@@ -223,14 +240,15 @@ export async function reconcileWorkItemDepEndpoints(
      WHERE j.expected_kind IS NULL
         OR j.declared_kind IS DISTINCT FROM j.expected_kind
         OR NOT j.form_ok
-     ORDER BY defect, j.workspace_id, j.ref, j.side
+     ORDER BY defect, j.relation, j.workspace_id, j.ref, j.side
   `;
 
   const mismatched: DepEndpointDefect[] = [];
   const dangling: DepEndpointDefect[] = [];
   for (const r of rows) {
     const defect: DepEndpointDefect = {
-      edge_id: r.edge_id,
+      relation: r.relation,
+      row_id: r.row_id,
       workspace_id: r.workspace_id,
       side: r.side,
       declared_kind: r.declared_kind,

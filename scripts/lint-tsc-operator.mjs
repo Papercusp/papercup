@@ -45,6 +45,21 @@ const baselineFile = resolve(ROOT, 'apps/operator/.tsc-baseline.json');
 /** @type {string} */
 export const TSC_COMMAND = 'npx tsc -p apps/operator/tsconfig.json --noEmit --incremental false';
 
+// Cross-package files this gate MEASURES but does not OWN (EI-18649014117371738), mirroring
+// lint-tsc-operator-vite.mjs's FOREIGN_BASELINES: apps/operator's type graph pulls
+// packages/operator-core in transitively via the `@papercusp/operator-core` path alias, so a
+// real share of this baseline's entries live there. Pointing at the OWNING package's baseline
+// (rather than duplicating those counts here under a second, independently-drifting record)
+// makes `lint:tsc` (operator-core) and `lint:tsc:operator` agree by construction on the same
+// file instead of two hand-maintained baselines happening to stay in sync.
+const FOREIGN_BASELINES = [
+  {
+    prefix: 'packages/operator-core/',
+    baselineFile: resolve(ROOT, 'packages/operator-core/.tsc-baseline.json'),
+    label: 'operator-core',
+  },
+];
+
 function main() {
   runTscBaselineGate({
     root: ROOT,
@@ -52,6 +67,7 @@ function main() {
     baselineFile,
     label: 'operator',
     argv: process.argv.slice(2),
+    foreignBaselines: FOREIGN_BASELINES,
   });
 }
 

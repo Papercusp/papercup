@@ -1,0 +1,344 @@
+/**
+ * Scanner for the INVERTED form of the block-3b guard (EI-19374654827980571).
+ *
+ * ## What this answers
+ *
+ * `setup-release-checkout.sh` block 3b provisions gitignored runtime assets
+ * into the gate's checkout, but it provisions exactly ONE root:
+ * `apps/operator/public`. The sibling guard
+ * (`setup-release-checkout-runtime-assets.test.ts`) locks the REGRESSION
+ * direction — deleting the block, narrowing its root, breaking its pipeline.
+ *
+ * It cannot see the EXTENSION direction: a NEW test that hard-requires a
+ * gitignored artifact under any OTHER root reproduces the original failure in
+ * full, with none of that guard firing. That failure is maximally deceptive —
+ * PERMANENT (no re-fire can materialise a gitignored file), fleet-wide (it
+ * red-pins `main`), and impossible for its author to reproduce locally BY
+ * CONSTRUCTION, because it passes on every machine where postinstall ran.
+ *
+ * So this module inverts the question: enumerate the roots 3b WOULD copy, then
+ * assert that every gitignored path a test HARD-REQUIRES falls inside that set.
+ * The guard therefore fails toward "3b's coverage is too narrow", which is the
+ * actionable direction — widening 3b's roots turns it green again.
+ *
+ * ## Why an AST rather than a text scan
+ *
+ * The obvious scan — "flag tests mentioning gitignored paths" — is too noisy to
+ * survive. Measured on this repo (EI-19373637173456393): of 15 ignored paths
+ * implicated by a literal-prefix text scan, only 2 genuinely required the
+ * artifact; the other 13 were `.next` / `dist` / `tsbuildinfo` / `.astro` paths
+ * tests merely MENTION. A guard with a 13/15 false-positive rate gets ignored,
+ * then disabled.
+ *
+ * Discriminating "REQUIRES this path exists" from "mentions this path" is the
+ * whole problem, and it needs two things a text scan cannot do:
+ *
+ *   1. the path must flow into a call whose failure mode IS "file missing"
+ *      (`existsSync`, `readFile`, `statSync`, ...), and
+ *   2. that call must not be in a position that TOLERATES absence (a skip
+ *      guard, a ternary, a try/catch) — tolerating absence is the correct
+ *      pattern and must never be flagged.
+ *
+ * Measured after this change: 0 violations and 0 false positives across the
+ * repo's test corpus, versus 13 false positives for the text scan.
+ *
+ * ## Why `git check-ignore` rather than `git status --ignored`
+ *
+ * `git status --porcelain --ignored` only reports paths that EXIST ON DISK. Its
+ * answer therefore differs between a dev box (assets present, postinstall ran)
+ * and the gate's checkout (assets absent — the very condition being guarded),
+ * which would make this guard's verdict depend on where it runs.
+ * `git check-ignore` evaluates the ignore RULES against a path string, so it
+ * answers identically in both places, including for paths that do not exist.
+ * It also consults the index, so a TRACKED file is correctly reported as not
+ * ignored — tracked content survives `git clean -fdqx` and is never at risk.
+ */
+import { execFileSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
+import ts from 'typescript';
+
+/**
+ * fs entry points whose failure mode when the path is absent IS the red we are
+ * guarding against. Both the sync and the promise-based spellings are listed
+ * DELIBERATELY: the first draft of this scanner covered only the `*Sync` forms
+ * and silently missed `porcupine-cdn.test.ts`, which is one of the two known
+ * real instances (it does `await readFile(VENDORED_MODEL)`). A scanner that
+ * cannot detect an instance you already know about certifies nothing.
+ */
+const FS_REQUIRE_FNS = new Set([
+  'existsSync', 'readFileSync', 'statSync', 'lstatSync', 'readdirSync',
+  'openSync', 'accessSync', 'realpathSync', 'copyFileSync', 'createReadStream',
+  'readFile', 'stat', 'lstat', 'readdir', 'open', 'access', 'realpath', 'copyFile',
+]);
+
+/** Path-composition helpers whose arguments are path FRAGMENTS. */
+const PATH_JOIN_FNS = new Set(['resolve', 'join', 'normalize', 'relative']);
+
+/** A literal that looks like a repo-relative path into this monorepo. */
+const REPO_RELATIVE = /^(apps|packages|libs|scripts|docs|bin|papercusp-desktop|e2e)\//;
+
+export interface RequiredAssetSite {
+  /** repo-relative path of the test file making the requirement */
+  file: string;
+  line: number;
+  /** the fs function through which the requirement is expressed */
+  fn: string;
+  /** the repo-relative path the test requires to exist */
+  path: string;
+}
+
+export interface UndecidablePath {
+  path: string;
+  reason: string;
+}
+
+export interface AssetCoverageResult {
+  /** every hard-required path that is gitignored, covered or not */
+  required: RequiredAssetSite[];
+  /** required + gitignored + inside a root 3b provisions */
+  covered: RequiredAssetSite[];
+  /** required + gitignored + OUTSIDE every root 3b provisions — the red-pin risk */
+  violations: RequiredAssetSite[];
+  /** paths git could not decide on; surfaced rather than silently passed */
+  undecidable: UndecidablePath[];
+  /** diagnostics so a green result can be shown to be non-vacuous */
+  stats: { testFilesScanned: number; parsed: number; sites: number; candidates: number };
+}
+
+/** Collect string literals reachable from a path expression, following local consts. */
+function literalsOf(
+  node: ts.Node | undefined,
+  consts: Map<string, ts.Expression>,
+  depth = 0,
+  seen: Set<string> = new Set(),
+): string[] {
+  if (!node || depth > 8) return [];
+
+  if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) return [node.text];
+
+  if (ts.isTemplateExpression(node)) {
+    const out: string[] = node.head.text ? [node.head.text] : [];
+    for (const span of node.templateSpans) {
+      out.push(...literalsOf(span.expression, consts, depth + 1, seen));
+      if (span.literal.text) out.push(span.literal.text);
+    }
+    return out;
+  }
+
+  if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.PlusToken) {
+    return [
+      ...literalsOf(node.left, consts, depth + 1, seen),
+      ...literalsOf(node.right, consts, depth + 1, seen),
+    ];
+  }
+
+  if (ts.isCallExpression(node)) {
+    const fn = calleeName(node);
+    // Only descend through path-composition calls; the vditor case is
+    // `resolve(REPO_ROOT, 'apps/operator/public', base, 'dist/js/lute/lute.min.js')`,
+    // i.e. the interesting literals are arguments of a join, not the callee.
+    return PATH_JOIN_FNS.has(fn)
+      ? node.arguments.flatMap((a) => literalsOf(a, consts, depth + 1, seen))
+      : [];
+  }
+
+  if (ts.isIdentifier(node)) {
+    if (seen.has(node.text)) return [];
+    const next = new Set(seen);
+    next.add(node.text);
+    const init = consts.get(node.text);
+    return init ? literalsOf(init, consts, depth + 1, next) : [];
+  }
+
+  if (ts.isParenthesizedExpression(node)) return literalsOf(node.expression, consts, depth + 1, seen);
+
+  return [];
+}
+
+function calleeName(node: ts.CallExpression): string {
+  if (ts.isIdentifier(node.expression)) return node.expression.text;
+  if (ts.isPropertyAccessExpression(node.expression)) return node.expression.name.text;
+  return '';
+}
+
+/**
+ * Does this call sit somewhere that TOLERATES the path being absent?
+ *
+ * `if (!existsSync(p)) return;`, `existsSync(p) ? a : b`, `it.skipIf(!existsSync(p))`
+ * and try/catch are all the CORRECT pattern for an optional artifact — a test
+ * that degrades to a skip cannot red-pin the gate, so flagging it would be a
+ * false positive and would push authors toward disabling this guard.
+ */
+function toleratesAbsence(call: ts.CallExpression): boolean {
+  let n: ts.Node | undefined = call.parent;
+  for (let hops = 0; n && hops < 8; hops++, n = n.parent) {
+    if (ts.isIfStatement(n) || ts.isConditionalExpression(n)) return true;
+    if (ts.isPrefixUnaryExpression(n) && n.operator === ts.SyntaxKind.ExclamationToken) return true;
+    if (ts.isTryStatement(n)) return true;
+    if (
+      ts.isBinaryExpression(n) &&
+      (n.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken ||
+        n.operatorToken.kind === ts.SyntaxKind.BarBarToken ||
+        n.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken)
+    ) {
+      return true;
+    }
+    if (ts.isCallExpression(n) && /skipIf|runIf/.test(calleeName(n))) return true;
+  }
+  return false;
+}
+
+/** Candidate repo-relative paths implied by one fs-require site. */
+function candidatePathsFor(literals: string[]): string[] {
+  const out = new Set<string>();
+  for (let i = 0; i < literals.length; i++) {
+    const base = literals[i];
+    if (!REPO_RELATIVE.test(base)) continue;
+    const clean = (s: string) => s.replace(/^\/+|\/+$/g, '');
+    out.add(clean(base));
+    // Join with the following literal fragments — the vditor shape splits the
+    // path across several arguments of a single resolve().
+    const tail = literals
+      .slice(i + 1)
+      .filter((l) => l && !l.startsWith('.') && !l.startsWith('/') && !REPO_RELATIVE.test(l));
+    for (let take = 1; take <= tail.length; take++) {
+      out.add(clean([base, ...tail.slice(0, take)].join('/')).replace(/\/{2,}/g, '/'));
+    }
+  }
+  return [...out];
+}
+
+/**
+ * Ask git whether each path is ignored, routing submodule-internal paths to
+ * their owning submodule (the superproject answers `fatal: ... is in submodule`
+ * for those, which must NOT be swallowed as "not ignored").
+ */
+export function makeGitIgnoreOracle(repoRoot: string, submodulePaths: string[]) {
+  return function isIgnored(path: string): boolean | 'unknown' {
+    const sub = submodulePaths
+      .filter((s) => path === s || path.startsWith(s + '/'))
+      .sort((a, b) => b.length - a.length)[0];
+    const cwd = sub ? `${repoRoot}/${sub}` : repoRoot;
+    const rel = sub ? path.slice(sub.length + 1) : path;
+    if (!rel) return false;
+    try {
+      execFileSync('git', ['check-ignore', '-q', '--', rel], { cwd, stdio: 'pipe' });
+      return true;
+    } catch (err) {
+      // exit 1 = "not ignored" (the normal answer). Any other status means git
+      // could not decide, which is reported rather than treated as a pass.
+      const status = (err as { status?: number }).status;
+      return status === 1 ? false : 'unknown';
+    }
+  };
+}
+
+export function listSubmodulePaths(repoRoot: string): string[] {
+  try {
+    const out = execFileSync('git', ['config', '--file', '.gitmodules', '--get-regexp', 'path'], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+    });
+    return out.trim().split('\n').filter(Boolean).map((l) => l.split(/\s+/)[1]).filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Extract the roots block 3b provisions, FROM THE SHIPPED SCRIPT.
+ *
+ * Deriving this (rather than hardcoding `apps/operator/public`) is what makes
+ * the guard an inversion of 3b rather than a restatement of it: narrowing the
+ * block's root shrinks the covered set, which turns previously-covered
+ * requirements into violations.
+ */
+export function extractProvisionedRoots(scriptSource: string): string[] {
+  const roots = new Set<string>();
+  for (const m of scriptSource.matchAll(/^\s*[A-Z_]*ASSET_REL(?:\[\d*\])?=["']([^"']+)["']/gm)) {
+    roots.add(m[1].replace(/\/+$/, ''));
+  }
+  return [...roots];
+}
+
+export function scanRequiredIgnoredAssets(opts: {
+  repoRoot: string;
+  /** repo-relative test file paths */
+  testFiles: string[];
+  /** roots block 3b provisions, e.g. ['apps/operator/public'] */
+  coveredRoots: string[];
+  isIgnored: (path: string) => boolean | 'unknown';
+  readFile?: (absPath: string) => string;
+}): AssetCoverageResult {
+  const read = opts.readFile ?? ((p: string) => readFileSync(p, 'utf8'));
+  const sites: RequiredAssetSite[] = [];
+  let parsed = 0;
+
+  for (const rel of opts.testFiles) {
+    let src: string;
+    try {
+      src = read(`${opts.repoRoot}/${rel}`);
+    } catch {
+      continue;
+    }
+    // Cheap prefilter. Must stay in sync with FS_REQUIRE_FNS — an entry point
+    // missing here is invisible no matter how good the AST pass is, which is
+    // exactly how the promise-based `readFile` case was missed at first.
+    if (!/\b(existsSync|readFile|statSync|lstat|readdir|accessSync|access|openSync|realpath|copyFile|createReadStream|stat)\b/.test(src)) {
+      continue;
+    }
+    parsed++;
+
+    const sf = ts.createSourceFile(rel, src, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+
+    const consts = new Map<string, ts.Expression>();
+    const collectConsts = (n: ts.Node): void => {
+      if (ts.isVariableDeclaration(n) && ts.isIdentifier(n.name) && n.initializer) {
+        if (!consts.has(n.name.text)) consts.set(n.name.text, n.initializer);
+      }
+      ts.forEachChild(n, collectConsts);
+    };
+    collectConsts(sf);
+
+    const visit = (n: ts.Node): void => {
+      if (ts.isCallExpression(n) && n.arguments.length > 0) {
+        const fn = calleeName(n);
+        if (FS_REQUIRE_FNS.has(fn) && !toleratesAbsence(n)) {
+          const literals = literalsOf(n.arguments[0], consts);
+          const line = sf.getLineAndCharacterOfPosition(n.getStart(sf)).line + 1;
+          for (const path of candidatePathsFor(literals)) {
+            sites.push({ file: rel, line, fn, path });
+          }
+        }
+      }
+      ts.forEachChild(n, visit);
+    };
+    visit(sf);
+  }
+
+  const candidates = [...new Set(sites.map((s) => s.path))];
+  const verdicts = new Map<string, boolean | 'unknown'>();
+  const undecidable: UndecidablePath[] = [];
+  for (const c of candidates) {
+    const v = opts.isIgnored(c);
+    verdicts.set(c, v);
+    if (v === 'unknown') undecidable.push({ path: c, reason: 'git check-ignore could not decide' });
+  }
+
+  const isCovered = (p: string) =>
+    opts.coveredRoots.some((r) => p === r || p.startsWith(r.replace(/\/+$/, '') + '/'));
+
+  const required = sites.filter((s) => verdicts.get(s.path) === true);
+  return {
+    required,
+    covered: required.filter((s) => isCovered(s.path)),
+    violations: required.filter((s) => !isCovered(s.path)),
+    undecidable,
+    stats: {
+      testFilesScanned: opts.testFiles.length,
+      parsed,
+      sites: sites.length,
+      candidates: candidates.length,
+    },
+  };
+}

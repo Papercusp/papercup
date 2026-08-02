@@ -170,6 +170,9 @@ export function mapAdvSessionRow(r: {
   started_at: string | Date;
   ended_at: string | Date | null;
   exit_code: number | null;
+  /** Optional so a SELECT that omits it maps to null = UNKNOWN provenance, which is
+   *  treated as un-attributed (caveated), never as a clean 'self' exit. */
+  ended_by?: string | null;
   port_id?: string | null;
   port_source_adv_session_id?: number | string | null;
   port_status?: string | null;
