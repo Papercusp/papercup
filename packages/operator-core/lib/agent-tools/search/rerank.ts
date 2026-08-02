@@ -59,6 +59,32 @@ export function rerankCandidateCount(limit: number): number {
   return Math.max(limit, Math.min(limit * RERANK_OVERFETCH, RERANK_MAX_CANDIDATES));
 }
 
+/**
+ * The text a cross-encoder should score against the query.
+ *
+ * ⚠ NOT `hit.excerpt`. In `sources.ts`, `excerpt` is `trunc(body)` — literally
+ * `body.slice(0, 200)`, the first 200 characters of the document — while the
+ * MATCH-CENTRED text (`ts_headline`, up to 2 fragments around the query terms)
+ * lands in a separate `highlight` field that the rerank path never read.
+ *
+ * Scoring the excerpt therefore asks the cross-encoder "is this document's
+ * OPENING about the query?" — which for any document whose relevant passage is
+ * not in its first 200 chars is the wrong question, and it silently demotes
+ * exactly the long documents a reranker is most useful for.
+ *
+ * So: lead with the matched fragments (marker tags stripped — `<mark>` is a
+ * rendering concern and would just be tokenizer noise), then append the opening
+ * for topical context when it adds anything. Both fields are already on every
+ * `SearchHit`, so this costs no extra retrieval.
+ */
+export function rerankText(hit: SearchHit): string {
+  const highlight = (hit.highlight ?? '').replace(/<\/?mark>/g, '').trim();
+  const excerpt = (hit.excerpt ?? '').trim();
+  if (!highlight) return excerpt;
+  if (!excerpt || highlight.includes(excerpt) || excerpt.includes(highlight)) return highlight;
+  return `${highlight} … ${excerpt}`;
+}
+
 /** Read the rerank key from operator_credentials, falling back to the env var. */
 async function rerankApiKey(): Promise<string | undefined> {
   try {
@@ -97,7 +123,7 @@ export async function rerankProseHits(
       query,
       hits.map((hit) => ({
         id: `${hit.source}:${hit.source_id}`,
-        text: hit.excerpt, // what the cross-encoder scores against the query
+        text: rerankText(hit), // match-centred text, NOT the head-of-doc excerpt
         row: hit, // carried through untouched
       })),
       {

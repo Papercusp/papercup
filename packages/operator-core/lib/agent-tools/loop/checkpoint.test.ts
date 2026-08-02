@@ -17,9 +17,36 @@ const withBoundedTimeout = vi.fn(async (..._a: unknown[]) => ({ value: undefined
 // (structured → render, raw → passthrough), not renderCarryNote's exact output. The pure
 // walls machinery (splitCarryNoteWalls / withCarryNoteWalls / normalizeWallEntries) stays
 // REAL via importOriginal — the P-006 merge tests below pin the tool's contract around it.
+//
+// WI-6813: the tool now writes through setLoopCarryNoteWithPrior and performs the
+// walls/checks merge INSIDE that call's `transform` (atomic with the write) rather
+// than caller-side. The double below therefore RUNS the real transform against the
+// prior `getLoopCarryNote` is configured with, then records the transform's OUTPUT on
+// the `setLoopCarryNote` spy — so every assertion in this suite still reads
+// `setLoopCarryNote.mock.calls[0][1]` as "the note that was actually stored", and the
+// merge under test is genuinely exercised rather than stubbed past.
+// When set, the prior the STORE hands the transform from its locked row — which is
+// deliberately allowed to differ from what `getLoopCarryNote` returns, so a test can
+// simulate a concurrent writer landing where the old caller-side read → merge → write
+// had its race window.
+let storePriorOverride: string | null | undefined;
+const setLoopCarryNoteWithPrior = vi.fn(
+  async (
+    ref: unknown,
+    note: unknown,
+    opts?: { transform?: (prior: string | null, note: unknown) => string | null | undefined },
+  ) => {
+    const prior =
+      storePriorOverride !== undefined ? storePriorOverride : (((await getLoopCarryNote()) as string | null) ?? null);
+    const merged = opts?.transform ? opts.transform(prior, note) : (note as string | null | undefined);
+    const stored = await setLoopCarryNote(ref, merged);
+    return { stored, priorLength: (prior ?? '').length };
+  },
+);
 vi.mock('../../carry-note', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   setLoopCarryNote: (...a: unknown[]) => setLoopCarryNote(...a),
+  setLoopCarryNoteWithPrior: (...a: [unknown, unknown, never]) => setLoopCarryNoteWithPrior(...a),
   getLoopCarryNote: (...a: unknown[]) => getLoopCarryNote(...a),
   renderCarryNote: (f: Record<string, string | undefined>) => `RENDERED:${JSON.stringify(f)}`,
 }));
@@ -58,6 +85,7 @@ const body = (o: Out) => JSON.parse(o.content[0]!.text);
 
 beforeEach(() => {
   vi.clearAllMocks();
+  storePriorOverride = undefined; // default: the store's prior IS getLoopCarryNote's value
   setLoopCarryNote.mockResolvedValue('stored-note');
   getLoopCarryNote.mockResolvedValue(null); // default: no prior note ⇒ no walls to carry
   getLoopStatus.mockResolvedValue(null); // default: no armed routine found
@@ -233,12 +261,49 @@ describe('loop:checkpoint — the P-006 walls merge (commitments cleared explici
     expect(b).toMatchObject({ ok: true, walls: 1 });
   });
 
-  it('a throwing prior-note read fails open: the write proceeds with no carried walls', async () => {
-    getLoopCarryNote.mockRejectedValue(new Error('pg down'));
+  // ── WI-6813: the merge moved INSIDE the write transaction ──────────────────
+  //
+  // This replaces an older test that pinned the opposite contract ("a throwing
+  // prior-note read FAILS OPEN: the write proceeds with no carried walls"). That
+  // behaviour was a latent data-loss bug, not a safety property: the tool read the
+  // prior in a SEPARATE round-trip, so a transient read blip silently dropped every
+  // carried wall — owner-gated commitments — and still reported ok:true, which is
+  // precisely the failure walls exist to prevent. There is no separate read to fail
+  // any more, so the fail-open path it protected is now unreachable by construction.
+  it('WI-6813: merges against the STORE-side prior, so a concurrent writer is not clobbered', async () => {
+    // The race the old caller-side read → merge → write had: a peer lands between
+    // the read and the write. Here the stale caller-side view (getLoopCarryNote)
+    // shows NO walls, while the row the write actually LOCKS carries one. The
+    // stored note must reflect the locked row — under the old shape the peer's wall
+    // was silently clobbered.
+    getLoopCarryNote.mockResolvedValue(null);
+    storePriorOverride = PRIOR_WITH_WALL;
     const b = body(await call({ next: 'x' }));
-    expect(b).toMatchObject({ ok: true, walls: 0 });
     const [, written] = setLoopCarryNote.mock.calls[0] as [unknown, string];
-    expect(written).not.toContain('## Walls');
+    expect(written).toContain('zombie PIDs');
+    // The REPORTED count comes from the transform's own output, so it describes what
+    // was actually stored rather than a second, staler merge that could disagree.
+    expect(b).toMatchObject({ ok: true, walls: 1 });
+  });
+
+  it('WI-6813: performs no separate prior read — the merge runs in the write transaction', async () => {
+    getLoopCarryNote.mockResolvedValue(PRIOR_WITH_WALL);
+    await call({ next: 'x' });
+    // Exactly one write call, and it carries the transform the store runs under its
+    // row lock. (The only getLoopCarryNote call is the double's own, standing in for
+    // the store's locked read — the tool itself no longer reads the prior at all.)
+    expect(setLoopCarryNoteWithPrior).toHaveBeenCalledTimes(1);
+    const opts = setLoopCarryNoteWithPrior.mock.calls[0]![2] as { transform?: unknown };
+    expect(typeof opts?.transform).toBe('function');
+    expect(getLoopCarryNote).toHaveBeenCalledTimes(1);
+  });
+
+  it('WI-6813: a failing store surfaces the error instead of storing a walls-less note', async () => {
+    // The corrected contract. Losing the checkpoint loudly is strictly safer than
+    // succeeding with the carried commitments silently stripped out.
+    setLoopCarryNote.mockRejectedValue(new Error('pg down'));
+    storePriorOverride = PRIOR_WITH_WALL;
+    await expect(call({ next: 'x' })).rejects.toThrow('pg down');
   });
 });
 

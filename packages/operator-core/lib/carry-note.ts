@@ -485,6 +485,64 @@ export function normalizeCheckEntries(
   return out;
 }
 
+/**
+ * WI-6813: the walls+checks merge, extracted PURE so it can run INSIDE
+ * {@link setCarryNoteWithPrior}'s locked transaction (via its `transform` seam)
+ * instead of as a caller-side read → merge → write. That caller-side shape has a
+ * genuine race: between the prior read and the write, a concurrent writer on the
+ * same scope can land, and the merge then silently clobbers their rows.
+ *
+ * Semantics — IDENTICAL for both row kinds, deliberately: an EXPLICIT arg wins
+ * outright (its `[]` is the only true clear) → else the raw note's own rendered
+ * section wins → else the PRIOR rows carry forward, across rewrites AND across a
+ * note clear. A rows-only write likewise carries the prior narrative body forward.
+ *
+ * ⚠ THE CLEAR BEHAVIOUR IS A DELIBERATE DIVERGENCE from work_items:checkpoint —
+ * do not harmonise them. A LOOP's rows SURVIVE a note clear (the note persists as
+ * walls/checks-only and renders every wake until explicitly `[]`-ed); WORK-ITEM
+ * rows are WIPED on clear, so `work_items:complete`'s terminal cleanup cannot
+ * resurrect a checks-only checkpoint on a closed item. Both are intentional and
+ * tested on their own side. Copying the work-item rule here would silently drop
+ * owner-gated WALLS — precisely the failure walls exist to prevent.
+ */
+export function mergeCarryRows(opts: {
+  /** The AUTHORITATIVE prior note. Inside a `transform` this is the locked row's. */
+  priorNote: string | null | undefined;
+  /** The note this write proposes (rendered structured fields, or the raw string). */
+  baseNote: string | null | undefined;
+  /** An EXPLICIT walls arg — `[]` clears; `undefined` defers to the note/prior. */
+  walls?: ReadonlyArray<{ claim: string; recheck?: string; sinceMs?: number }>;
+  /** An EXPLICIT checks arg — `[]` clears; `undefined` defers to the note/prior. */
+  checks?: ReadonlyArray<{ claim: string; recheck?: string; verified?: string; sinceMs?: number }>;
+  /** Whether this call writes a narrative at all (structured fields or a raw note). */
+  hasNoteWrite: boolean;
+  nowMs?: number;
+}): { note: string; narrativeBody: string; walls: WallEntry[]; checks: CheckEntry[] } {
+  const priorParts = splitCarryNoteWalls(opts.priorNote ?? null);
+  const priorCheckParts = splitCarryNoteChecks(priorParts.body);
+  const rawParts = splitCarryNoteWalls(opts.baseNote ?? '');
+  const rawCheckParts = splitCarryNoteChecks(rawParts.body);
+  const walls =
+    opts.walls !== undefined
+      ? normalizeWallEntries(opts.walls, priorParts.walls, opts.nowMs)
+      : rawParts.walls.length > 0
+        ? normalizeWallEntries(rawParts.walls, priorParts.walls, opts.nowMs)
+        : priorParts.walls;
+  const checks =
+    opts.checks !== undefined
+      ? normalizeCheckEntries(opts.checks, priorCheckParts.checks, opts.nowMs)
+      : rawCheckParts.checks.length > 0
+        ? normalizeCheckEntries(rawCheckParts.checks, priorCheckParts.checks, opts.nowMs)
+        : priorCheckParts.checks;
+  const narrativeBody = opts.hasNoteWrite ? rawCheckParts.body : priorCheckParts.body;
+  return {
+    note: withCarryNoteWalls(withCarryNoteChecks(narrativeBody, checks), walls),
+    narrativeBody,
+    walls,
+    checks,
+  };
+}
+
 // ── External-state-claim lint (P-009) ────────────────────────────────────────
 
 const CLAIM_ASSERTION_RE = /\b(MUST|expects?|alarm if|will\s+(?:roll|change|move|land)|anchor(?:ed)?\s+on)\b/i;
@@ -826,6 +884,27 @@ export async function setLoopCarryNote(
   note: string | null | undefined,
 ): Promise<string | null> {
   return setCarryNote({ scope: loopScope(ref.harness, ref.ownerId), workspaceId: loopCarryWs() }, note);
+}
+
+/** {@link setLoopCarryNote} with access to the PRIOR note — the write path a caller
+ *  needs when its note must be MERGED against what is already stored (the P-006
+ *  walls / P-001 checks rows) rather than plainly replacing it.
+ *
+ *  WI-6813: pass `transform` (with {@link mergeCarryRows}) and the merge runs inside
+ *  the row's `SELECT ... FOR UPDATE` transaction — atomic with the write, one fewer
+ *  round-trip, and it CANNOT clobber a concurrent writer on the same scope the way a
+ *  caller-side read → merge → write can. Pinned to the same coord workspace as
+ *  {@link setLoopCarryNote} so producer and wake-executor address the same row. */
+export async function setLoopCarryNoteWithPrior(
+  ref: LoopCarryNoteRef,
+  note: string | null | undefined,
+  opts?: Parameters<typeof setCarryNoteWithPrior>[2],
+): Promise<SetCarryNoteResult> {
+  return setCarryNoteWithPrior(
+    { scope: loopScope(ref.harness, ref.ownerId), workspaceId: loopCarryWs() },
+    note,
+    opts,
+  );
 }
 
 /** Read an su AUTO loop's current carry-note (the full note), or null when none.

@@ -22,6 +22,29 @@ import { truncateHint } from './request-compaction';
 import { __resetRefusalMarkers } from '../../enforcement-gate-io';
 import { __resetRespawnExpectedMarkers, consumeRespawnExpected } from '../../carry-respawn-marker';
 
+// The marker is PG-backed (migration 716 — the operator is clustered, so an
+// in-memory Map was invisible to the sibling worker handling the SessionEnd).
+// Stand the table up in memory here so this stays a pure tool unit test, keeping
+// the real single-use + TTL + per-owner semantics the assertions below rely on.
+// The SQL itself is proven in carry-respawn-marker.integration.test.ts.
+const respawnMarks = vi.hoisted(() => new Map<string, number>());
+vi.mock('../../carry-respawn-marker', () => ({
+  RESPAWN_EXPECTED_TTL_MS: 60_000,
+  markRespawnExpected: async (ownerId: string, ttlMs = 60_000) => {
+    if (ownerId?.trim()) respawnMarks.set(ownerId, Date.now() + ttlMs);
+  },
+  consumeRespawnExpected: async (ownerId: string) => {
+    if (!ownerId?.trim()) return false;
+    const expiresAt = respawnMarks.get(ownerId);
+    if (expiresAt === undefined) return false;
+    respawnMarks.delete(ownerId);
+    return expiresAt >= Date.now();
+  },
+  __resetRespawnExpectedMarkers: async () => {
+    respawnMarks.clear();
+  },
+}));
+
 const findLiveHost = vi.fn();
 const injectIntoHost = vi.fn();
 vi.mock('../../events/await/psu-pty-discovery', () => ({
@@ -90,7 +113,7 @@ const ENVELOPE_LINE = /^⟦turn-origin:self-compaction nonce:[a-f0-9]{16}⟧\n/;
 beforeEach(() => {
   vi.clearAllMocks();
   __resetRefusalMarkers(); // P-016 gate marker is module-level — isolate each test
-  __resetRespawnExpectedMarkers(); // EI-18676518990229124 — same module-level isolation
+  void __resetRespawnExpectedMarkers(); // EI-18676518990229124 — same module-level isolation
   injectIntoHost.mockResolvedValue(true);
   buildCarryBrief.mockResolvedValue(emptyBrief);
   buildOwnerRespawnLaunchSpec.mockResolvedValue(closedSpec);
@@ -239,20 +262,20 @@ describe('session:request-compaction — carry-respawn marker (EI-18676518990229
     injectIntoHost.mockResolvedValue(true);
     const b = body(await call({ focus: 'x' }));
     expect(b.ok).toBe(true);
-    expect(consumeRespawnExpected('su-caller')).toBe(true);
+    expect(await consumeRespawnExpected('su-caller')).toBe(true);
   });
 
   it('a failed socket write does NOT mark the owner', async () => {
     findLiveHost.mockReturnValue(carryHost);
     injectIntoHost.mockResolvedValue(false);
     await call({ focus: 'x' });
-    expect(consumeRespawnExpected('su-caller')).toBe(false);
+    expect(await consumeRespawnExpected('su-caller')).toBe(false);
   });
 
   it('a refused cut (host predates carry-respawn) never marks the owner', async () => {
     findLiveHost.mockReturnValue(staleHost);
     await call({ focus: 'x' });
-    expect(consumeRespawnExpected('su-caller')).toBe(false);
+    expect(await consumeRespawnExpected('su-caller')).toBe(false);
   });
 
   it('a P-016 flush-gate refusal never marks the owner (nothing was queued)', async () => {
@@ -263,7 +286,7 @@ describe('session:request-compaction — carry-respawn marker (EI-18676518990229
     });
     const b = body(await call({ focus: 'x' }));
     expect(b.error).toBe('flush-required');
-    expect(consumeRespawnExpected('su-caller')).toBe(false);
+    expect(await consumeRespawnExpected('su-caller')).toBe(false);
   });
 });
 

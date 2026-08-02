@@ -162,7 +162,11 @@ Drill traversals count only when marked `origin='drill'` and run on the current 
 
 ### owner-controls · `owner-controls-probe`
 
-`autoloop:control { action:'status' }` round-trip + `pot:get-steering` coherent with
+`autoloop:status` round-trip (NOT `autoloop:control { action:'status' }` — that call is
+invalid: `autoloop:control`'s only param is `op: 'pause'|'resume'|'reset-errors'`
+(`agent-tools/autoloop/control.ts`), it has no `action` param and no status op; the
+per-role/gate READ is the separate `autoloop:status` tool, `agent-tools/autoloop/status.ts`
+— corrected 2026-08-01, WI-6722) + `pot:get-steering` coherent with
 the last set (watch the stale-override class: a pot-level steering override silently
 shadowing workspace config — the 2026-07-14 incident) + a watchdog page demonstrably
 delivered (`notifications:recent`).
@@ -181,7 +185,21 @@ loop while `:3070` is still behind; state which host serves each graded path.
   `papercusp-workspace` residue); the live `papercusp` kettle chain cycles ~10min and
   survived two bg-host restarts unaided on 2026-07-16. Scope kettle reads to the live
   pot slug; the stale retired-slug rows are cleanup, not signal (flagged in EI-13081
-  evidence).
+  evidence). **UPDATE 2026-08-01 (WI-6722, live `papercusp` row only — the resolution
+  above still stands for the retired-slug rows):** the LIVE `papercusp` kettle row is
+  frozen again — `last_fired_at` 2026-07-25T18:47:52Z, `overwatch_started:…:papercusp`
+  flipped to `false` at 2026-07-25T19:13:38Z. Root cause traced to plan
+  `left-sidebar-order-compaction-kettle-scope-2026-07-25` (P-007): a live-UI
+  verification pass drove the real Kettle Start/Pause control, found it ALREADY
+  paused, and correctly "restored the original state" (paused) after testing the
+  toggle — it never re-armed it, and nothing has called `kettle:start` since. This is
+  a deliberate/explicit pause (`overwatch_started` is owner/agent-tool-set-only — see
+  `overwatch/control-state.ts`), not a code defect; WI-1766 (2026-07-03) resolved an
+  identical shape NOT-A-DEFECT for the same reason. **Grading implication:** a future
+  pass MUST re-probe `harness_shared.autoloop_state` live rather than trust this
+  runbook's cached "cycles ~10min" claim — it was true on 2026-07-16 and has been
+  false since 2026-07-25. Resuming is an owner-authority action
+  (`kettle:start`/the Kettle pane toggle); do not autonomously invoke it while grading.
 - **capacity-admission**: the 2026-07-13 hard wall has partially cleared (aviynw3
   0.06 on 7d-util, was 1.0); passed on 2026-07-16 with 2 healthy accounts + clean
   gated classification. Still re-probe live every pass.

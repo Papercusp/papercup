@@ -94,10 +94,17 @@ const HANDSHAKE_UNHEALTHY_MS =
   MCP_PROXY_RETRY_WINDOW_MS + PSU_CLIENT_HEADROOM_MS;
 /** Any single stable tool name; correctness does NOT depend on it (trap 2 above). */
 const PROBE_TOOL = process.env.PAPERCUSP_MCP_PROXY_WATCHDOG_PROBE_TOOL || 'coord:orient';
+/**
+ * DATA-PLANE probe tool (WI-6739). Must be READ-ONLY and must actually touch Postgres —
+ * the whole point is to execute a query, not to prove the registry can be serialised.
+ * `facts:list` is a cheap scoped SELECT with no side effects.
+ */
+const DB_PROBE_TOOL = process.env.PAPERCUSP_MCP_PROXY_WATCHDOG_DB_PROBE_TOOL || 'facts:list';
 const SUPERUSER_TOKEN_FILE = join(homedir(), '.papercusp', 'superuser-token');
 
 let unreachableSince = 0;
 let handshakeFailingSince = 0;
+let dataFailingSince = 0;
 let lastRestart = 0;
 const restartTimes = []; // epoch ms of recent restarts (rolling 1h window for the circuit breaker)
 
@@ -162,6 +169,50 @@ export function classifyProbeResult({ networkError, status, json } = {}) {
  * circuit breaker and making the log lie about what was broken. Only a :3070 restart
  * cleared it (all 29 dark sessions recovered inside the 7 minutes after it).
  */
+/**
+ * Pure verdict for one DATA-PLANE probe — the third plane, and the one that actually
+ * failed on 2026-08-01 (WI-6739).
+ *
+ * That outage had THREE distinct planes and only the third was broken:
+ *   /api/health      → 200 in ~2ms, continuously.
+ *   session plane    → fine. Of the whole peak hour only 9 `/api/mcp` requests failed…
+ *   data plane       → …against 5,542 failed DB-backed `bootstrap-su/heartbeat` POSTs.
+ * :3070 was ECONNREFUSING a dead Postgres endpoint (a stale embedded-pg port) while its
+ * event loop, its HTTP server and its in-memory tool registry were all perfectly healthy.
+ * So a `tools/list` probe — which is served from the registry and never queries PG — stays
+ * GREEN throughout. A detector that is green during the incident it exists to catch is
+ * worse than no detector, because it actively reassures. Hence: execute a real read-only
+ * tool and require it to come back.
+ *
+ * The classification is deliberately conservative so this can never cry wolf:
+ *   'ok'     — a JSON-RPC result came back. The query ran.
+ *   'config' — a JSON-RPC error that is NOT connection-shaped (bad args, renamed tool).
+ *              OUR fault, never the service's — logged, never alarmed.
+ *   'dead'   — no response / timeout / non-200 (a 408 is literally what clients saw), or a
+ *              JSON-RPC error naming a connection failure (the tool ran and could not reach PG).
+ */
+export function classifyDataPlaneResult({ networkError, status, json } = {}) {
+  if (networkError) return 'dead'; // timeout — a pool waiting on a dead endpoint never answers
+  if (status !== 200) return 'dead'; // 408/5xx — the exact client-visible symptom on 2026-08-01
+  if (!json || typeof json !== 'object') return 'dead';
+  const err = json.error;
+  if (err) {
+    const text = `${err.code ?? ''} ${err.message ?? ''}`.toLowerCase();
+    if (text.includes('auth') || text.includes('bearer') || text.includes('unauthenticated')) return 'config';
+    // A tool that RAN but could not reach the database is the signal, not a config fault.
+    const connectionShaped =
+      text.includes('econnrefused') ||
+      text.includes('etimedout') ||
+      text.includes('econnreset') ||
+      text.includes('connect ') ||
+      text.includes('connection') ||
+      text.includes('pool') ||
+      text.includes('timeout');
+    return connectionShaped ? 'dead' : 'config';
+  }
+  return json.result ? 'ok' : 'config';
+}
+
 export function decideHandshakeAction(proxyKind, upstreamKind) {
   if (proxyKind === 'ok') return 'none';
   if (proxyKind === 'auth') return 'none'; // our own credential; never a service verdict
@@ -218,6 +269,42 @@ async function probeMcp(port, { full = false } = {}) {
   }
 }
 
+/**
+ * Execute a real read-only tool through a real MCP session, so the probe exercises the
+ * DATABASE, not just the tool registry. See classifyDataPlaneResult for why.
+ */
+async function probeDataPlane(port) {
+  const token = readProbeToken();
+  if (!token) return { kind: 'config', detail: `no superuser token at ${SUPERUSER_TOKEN_FILE}` };
+  const qs = `superuser=1&client=mcp-proxy-watchdog-db&tools=${encodeURIComponent(DB_PROBE_TOOL)}`;
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), HANDSHAKE_TIMEOUT_MS);
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/api/mcp?${qs}`, {
+      method: 'POST',
+      signal: ctrl.signal,
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+        Accept: 'application/json, text/event-stream',
+      },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: { name: DB_PROBE_TOOL, arguments: { scope: 'workspace' } },
+      }),
+    });
+    const json = parseMcpBody(await res.text());
+    const kind = classifyDataPlaneResult({ status: res.status, json });
+    return { kind, detail: kind === 'ok' ? 'query returned' : (json?.error?.message ?? `HTTP ${res.status}`) };
+  } catch (e) {
+    return { kind: 'dead', detail: e.message };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 function restart(reason) {
   const now = Date.now();
   if (now - lastRestart < DEBOUNCE_MS) {
@@ -262,7 +349,57 @@ async function poll() {
 
 let lastAuthLog = 0;
 let lastUpstreamLog = 0;
+let lastDataLog = 0;
+let lastDataConfigLog = 0;
 const LOG_THROTTLE_MS = 10 * 60_000;
+
+/**
+ * Data-plane poll (WI-6739) — runs only once the session plane is GREEN, because that is
+ * precisely the blind spot: on 2026-08-01 the catalog served fine while every DB-backed
+ * call timed out for ~100 minutes and nothing anywhere alarmed.
+ *
+ * Never restarts the proxy. A :3070 that cannot reach Postgres is not a proxy fault, and
+ * restarting the proxy would burn a circuit-breaker slot while the log blamed the wrong
+ * service — the same reasoning as the upstream branch in pollHandshake.
+ */
+async function pollDataPlane() {
+  const { kind, detail } = await probeDataPlane(PORT);
+
+  if (kind === 'ok') {
+    if (dataFailingSince) {
+      log(`data plane recovered (was failing ${Math.round((Date.now() - dataFailingSince) / 1000)}s)`);
+      dataFailingSince = 0;
+    }
+    return;
+  }
+
+  if (kind === 'config') {
+    const now = Date.now();
+    if (now - lastDataConfigLog > LOG_THROTTLE_MS) {
+      lastDataConfigLog = now;
+      log(`PROBE CONFIG: data-plane probe tool "${DB_PROBE_TOOL}" did not execute (${detail}) — this watchdog is BLIND to the WI-6739 class until fixed, but it is OUR probe config, not a service fault. Set PAPERCUSP_MCP_PROXY_WATCHDOG_DB_PROBE_TOOL to a live read-only tool.`);
+    }
+    return;
+  }
+
+  const now = Date.now();
+  if (!dataFailingSince) {
+    dataFailingSince = now;
+    log(`data plane FAILING (${detail}) — session plane and /api/health are GREEN; that combination is the WI-6739 signature`);
+    return;
+  }
+  if (!shouldRestart(dataFailingSince, now, HANDSHAKE_UNHEALTHY_MS)) return;
+
+  if (now - lastDataLog > LOG_THROTTLE_MS) {
+    lastDataLog = now;
+    const secs = Math.round((now - dataFailingSince) / 1000);
+    log(
+      `CRITICAL: MCP DATA plane dead ${secs}s while the session plane and /api/health stay GREEN (${detail}). ` +
+        `This is the 2026-08-01 signature (WI-6739): the operator on :${UPSTREAM_PORT} is serving its tool catalog from memory while every DB-backed call times out — most likely a dead/stale Postgres endpoint it will retry forever. ` +
+        `Restarting ${UNIT} would NOT fix this and is being withheld. Remediation: check :${UPSTREAM_PORT}'s journal for repeated "connect ECONNREFUSED" to its DB port, then restart the operator host.`,
+    );
+  }
+}
 
 /**
  * Session-plane poll — the detector /api/health cannot be (EI-19299524366372518).
@@ -291,6 +428,8 @@ async function pollHandshake() {
       log(`session plane recovered (was failing ${Math.round((Date.now() - handshakeFailingSince) / 1000)}s)`);
       handshakeFailingSince = 0;
     }
+    // Session plane green is exactly when the WI-6739 class hides. Check the data plane.
+    await pollDataPlane();
     return;
   }
 
@@ -339,6 +478,9 @@ function start() {
   );
   log(
     `session-plane probe — tools/list via :${PORT} every ${POLL_MS}ms (filter "${PROBE_TOOL}", timeout ${HANDSHAKE_TIMEOUT_MS}ms), unhealthy after ${HANDSHAKE_UNHEALTHY_MS}ms, upstream :${UPSTREAM_PORT}`,
+  );
+  log(
+    `data-plane probe (WI-6739) — tools/call "${DB_PROBE_TOOL}" via :${PORT}, runs whenever the session plane is green, unhealthy after ${HANDSHAKE_UNHEALTHY_MS}ms; catches a DB-dead operator that still serves its tool catalog`,
   );
   setInterval(() => void poll().catch((e) => log(`poll error: ${e.message}`)), POLL_MS);
   setInterval(() => void pollHandshake().catch((e) => log(`handshake poll error: ${e.message}`)), POLL_MS);

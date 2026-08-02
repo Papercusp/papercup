@@ -226,15 +226,22 @@ export default defineTool({
         // skipping here trades nothing away for the real-death case.
         // WI-6756: the SAME "same-owner continuation, not a death" exemption, for
         // the OTHER trigger that re-execs the CLI child — a COLD loop wake
-        // delivered over psu-socket-reset/recycle. The in-memory marker above
-        // cannot cover it: that wake is injected from papercup-bg-host while THIS
-        // report is handled by papercup-dev-api, so the mark is written in a
-        // different process than the one that would read it. The wake ledger
-        // crosses that boundary; see session-reset-continuation.ts for the full
-        // incident + why no new table/write path was introduced. Fail-open on a
-        // read error (fall through to the release = today's behavior) so this
-        // guard can never strand a claim by failing.
-        const respawnExpected = consumeRespawnExpected(owner);
+        // delivered over psu-socket-reset/recycle. The marker above cannot cover
+        // it for a different reason than staleness: that wake is injected by
+        // papercup-bg-host, which never calls markRespawnExpected at all (it does
+        // not go through session:request-compaction), so there is no mark to
+        // find. The wake pipeline's own delivery ledger is the signal instead;
+        // see session-reset-continuation.ts for the full incident + why no new
+        // table/write path was introduced for that leg. Both checks are
+        // fail-open on a read error (fall through to the release = today's
+        // behavior) so neither guard can strand a claim by failing.
+        //
+        // Both are now cross-PROCESS reads, and deliberately so: the operator is
+        // clustered (N round-robin :3070 workers), so the process that marked a
+        // respawn is usually not the one handling this report — that mismatch is
+        // exactly what made the original in-memory marker fail intermittently
+        // (see carry-respawn-marker.ts).
+        const respawnExpected = await consumeRespawnExpected(owner);
         const resetWake = respawnExpected
           ? null
           : await recentContextResetWake(owner).catch((e) => {

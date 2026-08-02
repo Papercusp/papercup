@@ -38,6 +38,7 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { coverageOf, describeUnscanned, listTrackedFiles } from './lib/tracked-files.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const STRICT = process.argv.includes('--strict');
@@ -331,6 +332,16 @@ if (hits.size > 0) {
 }
 
 if (!fail && hits.size === 0 && expired.length === 0) {
-  console.log('check-env-feature-gates: clean — every boolean PAPERCUSP_ env gate is classified config or a registered (in-review) capability.');
+  // WI-6776: this guard's verdict is an ABSENCE claim ("no unclassified env gate exists"),
+  // and `git grep --recurse-submodules` cannot descend into an archive-extracted submodule
+  // (no .git) — so in a release-shaped checkout it searches the superproject only and still
+  // prints clean. Coverage is derived from the same enumerator the recursion depends on.
+  const cov = coverageOf(listTrackedFiles(ROOT).files, ROOT);
+  console.log(
+    'check-env-feature-gates: clean — every boolean PAPERCUSP_ env gate is classified config ' +
+      `or a registered (in-review) capability (searched the superproject + ` +
+      `${cov.scanned.length}/${cov.declared.length} submodule(s)).` +
+      describeUnscanned(cov, ROOT),
+  );
 }
 process.exit(fail ? 1 : 0);

@@ -18,6 +18,8 @@ const h = vi.hoisted(() => ({
   heal: vi.fn(),
   release: vi.fn(),
   resetWake: vi.fn(),
+  /** In-memory stand-in for the marker's PG table (see the mock below). */
+  marks: new Map<string, number>(),
 }));
 
 vi.mock('@papercusp/activity-bridge', () => ({ recordActivity: vi.fn(async () => ({ id: 42 })) }));
@@ -32,6 +34,27 @@ vi.mock('../../work-item-lease-release', () => ({ releaseAllWorkItemLeasesForOwn
 // the read never settles, so it hangs PAST the handler's try/catch (which only catches
 // throws) until the suite timeout. Stub it in every test in this file.
 vi.mock('../../session-reset-continuation', () => ({ recentContextResetWake: h.resetWake }));
+// The carry-respawn marker is PG-backed too (migration 716 — the operator is clustered,
+// so an in-memory Map was invisible to the sibling worker that handles the SessionEnd).
+// Same reasoning as the stub above: keep this file a pure handler unit test by standing
+// the table up in memory, preserving the real single-use + TTL + per-owner semantics.
+// The SQL itself is proven in carry-respawn-marker.integration.test.ts.
+vi.mock('../../carry-respawn-marker', () => ({
+  RESPAWN_EXPECTED_TTL_MS: 60_000,
+  markRespawnExpected: async (ownerId: string, ttlMs = 60_000) => {
+    if (ownerId?.trim()) h.marks.set(ownerId, Date.now() + ttlMs);
+  },
+  consumeRespawnExpected: async (ownerId: string) => {
+    if (!ownerId?.trim()) return false;
+    const expiresAt = h.marks.get(ownerId);
+    if (expiresAt === undefined) return false;
+    h.marks.delete(ownerId);
+    return expiresAt >= Date.now();
+  },
+  __resetRespawnExpectedMarkers: async () => {
+    h.marks.clear();
+  },
+}));
 
 const tool = (await import('./report')).default;
 const ctx = { principal: { workspaceId: '*' } } as unknown as Parameters<typeof tool.handler>[1];
@@ -45,7 +68,7 @@ beforeEach(() => {
   h.release.mockReset().mockResolvedValue({ releasedIds: [], claimsCleared: 0 });
   // Default: no context-reset wake in the window ⇒ an ordinary death, release runs.
   h.resetWake.mockReset().mockResolvedValue(null);
-  __resetRespawnExpectedMarkers();
+  void __resetRespawnExpectedMarkers();
 });
 
 describe('activity:report SessionEnd → work-item lease release (P-002 fast path)', () => {
@@ -97,10 +120,10 @@ describe('activity:report SessionEnd → work-item lease release (P-002 fast pat
  */
 describe('activity:report SessionEnd → carry-respawn marker suppresses the P-002 release', () => {
   it('a marked owner (carry-respawn expected) → releaseAllWorkItemLeasesForOwner is SKIPPED, inbox-wake cancel still fires', async () => {
-    markRespawnExpected('su-resuming');
+    await markRespawnExpected('su-resuming');
     const res = await run({ owner: 'su-resuming', kind: 'lifecycle', summary: '■ session ended' });
     expect(h.release).not.toHaveBeenCalled();
-    // The in-memory marker short-circuits: no wake-ledger round-trip is spent when it already answers.
+    // The marker short-circuits: no wake-ledger round-trip is spent when it already answers.
     expect(h.resetWake).not.toHaveBeenCalled();
     expect(h.cancel).toHaveBeenCalledTimes(1);
     expect(JSON.parse((res as { content: { text: string }[] }).content[0].text)).toMatchObject({ ok: true });
@@ -114,7 +137,7 @@ describe('activity:report SessionEnd → carry-respawn marker suppresses the P-0
   });
 
   it('the mark is SINGLE-USE: a second SessionEnd for the same owner (e.g. a real death shortly after) is NOT suppressed', async () => {
-    markRespawnExpected('su-flappy');
+    await markRespawnExpected('su-flappy');
     await run({ owner: 'su-flappy', kind: 'lifecycle', summary: '■ session ended' });
     expect(h.release).not.toHaveBeenCalled();
     await run({ owner: 'su-flappy', kind: 'lifecycle', summary: '■ session ended' });
@@ -123,7 +146,7 @@ describe('activity:report SessionEnd → carry-respawn marker suppresses the P-0
   });
 
   it('the mark is scoped per-owner: marking su-x never suppresses su-y\'s release', async () => {
-    markRespawnExpected('su-x');
+    await markRespawnExpected('su-x');
     await run({ owner: 'su-y', kind: 'lifecycle', summary: '■ session ended' });
     expect(h.release).toHaveBeenCalledTimes(1);
     expect(h.release).toHaveBeenCalledWith('su-y');
@@ -133,10 +156,9 @@ describe('activity:report SessionEnd → carry-respawn marker suppresses the P-0
 /**
  * WI-6756: the SAME exemption for the OTHER trigger that ends a session under
  * the same ownerId — a COLD loop wake delivered over psu-socket-reset/recycle,
- * which re-execs the CLI child. The in-memory carry-respawn marker structurally
- * cannot cover this one (the wake is injected from papercup-bg-host, this report
- * is handled by papercup-dev-api — different processes), so the guard reads the
- * durable wake ledger instead. Measured before the fix: 5 consecutive wakes each
+ * which re-execs the CLI child. The carry-respawn marker structurally cannot
+ * cover this one: papercup-bg-host injects that wake and never marks anything,
+ * so there is no mark to find. The guard reads the durable wake ledger instead. Measured before the fix: 5 consecutive wakes each
  * force-released the leader's claims ~412ms after the wake landed.
  */
 describe('activity:report SessionEnd → a recent context-reset wake suppresses the P-002 release (WI-6756)', () => {

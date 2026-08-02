@@ -75,3 +75,100 @@ describe('host-bootstrap wires every startup guard', () => {
     expect(bootSrc).toMatch(/agentCmdBootWarning\s*\(/);
   });
 });
+
+/**
+ * EI-19305266463631270 — per-HOST singletons must be started under `cluster.isPrimary`.
+ *
+ * The bug this pins: three per-host singletons are started within ~40 lines of each other in
+ * host-bootstrap, and exactly one of them (ensureHarnessStatusSweep) was missing the
+ * `cluster.isPrimary` wrapper its two neighbours had. It instead leaned on its own internal
+ * `backgroundWorkersEnabled()` stand-down — the very predicate the comment beside the
+ * fs-watcher already explains cannot express "once per host", because the dev-api drop-in sets
+ * PAPERCUSP_BACKGROUND_WORKERS=0 service-wide. Result: on the 16-worker :3070 release cluster
+ * the predicate read false in all 17 processes, none stood down, and all 17 armed a 30s
+ * PID-liveness sweep (plus a 17-way thundering herd on every deploy, since it also ticks
+ * immediately at boot).
+ *
+ * Why a source assertion rather than invoking the boot path: same reason as the suite above —
+ * runBootstrap() starts background tickers that must not touch the shared DB from a unit test.
+ *
+ * This does real brace-matching rather than a proximity regex, so it cannot be satisfied by an
+ * `if (cluster.isPrimary)` that merely appears somewhere earlier in the file.
+ */
+describe('host-bootstrap starts per-host singletons under cluster.isPrimary', () => {
+  /** Blank out comments so braces inside them never affect depth, WITHOUT shifting indices. */
+  const masked = (() => {
+    let out = bootSrc.split('');
+    let i = 0;
+    while (i < out.length) {
+      const two = bootSrc[i] + bootSrc[i + 1];
+      if (two === '//') {
+        while (i < out.length && out[i] !== '\n') out[i++] = ' ';
+      } else if (two === '/*') {
+        while (i < out.length && !(bootSrc[i - 1] === '*' && bootSrc[i] === '/')) out[i++] = ' ';
+        if (i < out.length) out[i++] = ' ';
+      } else i++;
+    }
+    return out.join('');
+  })();
+
+  /** [start,end) spans of every `if (cluster.isPrimary) { ... }` block body. */
+  const primarySpans: Array<[number, number]> = (() => {
+    const spans: Array<[number, number]> = [];
+    const re = /if\s*\(\s*cluster\.isPrimary\s*\)\s*\{/g;
+    for (let m = re.exec(masked); m; m = re.exec(masked)) {
+      let depth = 1;
+      let j = m.index + m[0].length;
+      for (; j < masked.length && depth > 0; j++) {
+        if (masked[j] === '{') depth++;
+        else if (masked[j] === '}') depth--;
+      }
+      spans.push([m.index, j]);
+    }
+    return spans;
+  })();
+
+  /**
+   * Each entry is a per-HOST singleton: one instance per machine is correct, and a second one
+   * in a forked request worker is pure duplicated work against the shared DB.
+   */
+  const HOST_SINGLETONS: Array<{ call: string; costsIfDuplicated: string }> = [
+    {
+      call: 'ensureHarnessFsWatcher',
+      costsIfDuplicated: 'N inotify watchers per host — its uncaught ENOSPC was the fatal crash at 32 workers (EI-3385)',
+    },
+    {
+      call: 'ensureHarnessStatusSweep',
+      costsIfDuplicated: 'N x 30s PID-liveness sweeps writing harness_lanes/agent_runs (EI-19305266463631270)',
+    },
+    {
+      call: 'startClaudeCredentialSync',
+      costsIfDuplicated: 'N credential convergers racing rotating refresh tokens (EI-3385)',
+    },
+  ];
+
+  it('finds the cluster.isPrimary guard blocks it is going to assert against', () => {
+    // Guards the guard: if this file is refactored so the pattern no longer matches, the
+    // per-singleton assertions below would all vacuously pass against an empty span list.
+    expect(primarySpans.length).toBeGreaterThanOrEqual(HOST_SINGLETONS.length);
+  });
+
+  for (const { call, costsIfDuplicated } of HOST_SINGLETONS) {
+    it(`starts ${call}() under cluster.isPrimary — else every forked worker duplicates it: ${costsIfDuplicated}`, () => {
+      const re = new RegExp(`(?<![\\w.])${call}\\s*\\(`, 'g');
+      const sites = [...masked.matchAll(re)].map((m) => m.index ?? -1);
+      expect(sites.length).toBeGreaterThan(0);
+
+      for (const at of sites) {
+        const guarded = primarySpans.some(([s, e]) => at > s && at < e);
+        expect(
+          guarded,
+          `${call}() is called at index ${at} OUTSIDE any if (cluster.isPrimary) block. ` +
+            `A per-host singleton must not run in forked request workers: ${costsIfDuplicated}. ` +
+            `Do not substitute backgroundWorkersEnabled() — it is env-only and a fork inherits env, ` +
+            `and the dev-api drop-in sets PAPERCUSP_BACKGROUND_WORKERS=0 service-wide.`,
+        ).toBe(true);
+      }
+    });
+  }
+});

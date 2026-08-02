@@ -11,14 +11,25 @@
 # What it guarantees about the release checkout at $PAPERCUSP_RELEASE_ROOT:
 #   1. a git worktree detached at the target commit (default: green `main`) —
 #      the superproject's tracked files, as real isolated files,
-#   2. submodule SOURCE extracted at each submodule's EXACT pinned sha via
-#      `git archive` from the integration tree's LOCAL object store. This is the
-#      only thing that works here: many submodule pins are never pushed to origin
-#      (the integration tree holds them locally), so a fresh worktree/clone's
-#      `submodule update` fails "upload-pack: not our ref". `git archive` reads
-#      local objects, produces REAL files (not hardlinks → isolated from peer
-#      edits to the integration tree), and pins to the right commit by
-#      construction. (All submodules are top-level here — no recursion needed.)
+#   2. submodule REPOS — REAL git repositories, cloned from the integration
+#      tree's LOCAL object store and detached at each submodule's EXACT pinned
+#      sha. Sourcing locally is what makes this work at all: many submodule pins
+#      are never pushed to origin (the integration tree holds them locally), so a
+#      fresh worktree/clone's `submodule update` fails "upload-pack: not our
+#      ref". `git clone --local` reads exactly the same local objects `git
+#      archive` did, HARDLINKS them (immutable → near-zero disk, and unaffected
+#      by peer edits to the integration tree), and checks out a working tree of
+#      REAL files at the pinned commit.
+#
+#      Why real repos rather than extracted files (EI-19299565558496583): a plain
+#      file tree has no `.git`, so it is not a submodule to git at all, and
+#      `git ls-files --recurse-submodules` silently returns superproject-only —
+#      no error, just a smaller list. Measured in the gate checkout: 7,526
+#      recursive == 7,526 plain (+0 from recursion), 35/35 submodules
+#      uninitialized, hiding ~3,500 TS files (~32% of the tree) from every
+#      tracked-files guard IN THE GATE. With real repos: +1,055 files, 0
+#      uninitialized. `git archive` extraction is RETAINED as the fallback below.
+#      (All submodules are top-level here — no recursion needed.)
 #   3. node_modules HARDLINK-copied from the integration tree. We must COPY, not
 #      symlink: npm-workspace packages are relative symlinks (../../packages/X);
 #      a symlinked node_modules dir would resolve those back to the INTEGRATION
@@ -193,20 +204,95 @@ extract_submodule_source() {  # <repo-relative path> <pinned sha>
   rsync -a --exclude='node_modules' --exclude='.git' "$INTEGRATION_ROOT/$rel_path/" "$RELEASE_ROOT/$rel_path/"
 }
 
-log "extracting submodule source at pinned shas (git archive, local objects)"
+# EI-19299565558496583: clone a REAL submodule repository at the pinned sha. This
+# is the PRIMARY path; extract_submodule_source above is the FALLBACK and is
+# deliberately retained rather than replaced — it carries its own incident
+# hardening (EI-18749180047527506's completeness check + the rsync last resort)
+# and still produces correct CONTENT when a clone cannot be made.
+#
+# Two properties here are load-bearing and must not be "simplified away":
+#
+#  (a) `git clone --local` produces a real `.git` DIRECTORY inside the submodule
+#      path (git's legacy layout). That is REQUIRED, not incidental. The obvious
+#      alternative — `git submodule update --init` with the URL rewritten to the
+#      local path — places each gitdir under `git rev-parse --git-common-dir`/
+#      modules/<name>, and because the release tree is a LINKED WORKTREE of the
+#      integration repo, that common dir IS the integration repo's own `.git`.
+#      It would collide with the integration tree's live submodule gitdirs, i.e.
+#      corrupt the tree the whole fleet is working in. A self-contained `.git`
+#      dir is isolated by construction.
+#
+#  (b) This function must NEVER write submodule config. `git config` run from a
+#      linked worktree writes to the SHARED config — into the integration repo —
+#      so registering `submodule.<name>.url` here would mutate that tree too.
+#      It is also unnecessary: the release worktree already INHERITS
+#      `submodule.<name>.active` from the shared config, which is why recursion
+#      works with zero config writes.
+#
+# Named + reads INTEGRATION_ROOT/RELEASE_ROOT from the outer scope so it can be
+# sed-extracted and unit-tested (setup-release-checkout-deps.test.ts pattern),
+# like need_node_modules / sync_one_node_modules / extract_submodule_source.
+clone_submodule_repo() {  # <repo-relative path> <pinned sha>
+  local rel_path="$1" sha="$2"
+  # Deliberately a SECOND `local`: bash expands every argument of a single
+  # `local` before the builtin assigns any of them, so folding this into the
+  # line above makes `$rel_path` unbound under `set -u` (caught in test).
+  local dest="$RELEASE_ROOT/$rel_path"
+  rm -rf "${dest:?}"
+  # --no-checkout: the clone's default HEAD may be a different commit, and the
+  # ONLY working-tree files this may write are the pinned ones.
+  git clone --quiet --local --no-checkout "$INTEGRATION_ROOT/$rel_path" "$dest" 2>/dev/null || return 1
+  git -C "$dest" checkout --quiet --detach "$sha" 2>/dev/null || return 1
+  # Pin correctness: HEAD must be EXACTLY the gitlink sha, never merely "close".
+  [ "$(git -C "$dest" rev-parse HEAD 2>/dev/null || true)" = "$sha" ] || return 1
+  # Completeness — the same guarantee the archive path buys with its tar-manifest
+  # count, but strictly stronger: a clean worktree proves every tracked file is
+  # present AND carries the pinned content. `-uno` keeps it cheap.
+  [ -z "$(git -C "$dest" status --porcelain -uno 2>/dev/null)" ] || return 1
+  return 0
+}
+
+log "cloning submodule repos at pinned shas (local objects; real .git so --recurse-submodules works)"
+_sub_cloned=0
+_sub_fallback=0
 while IFS= read -r P; do
   [ -n "$P" ] || continue
   [ -d "$INTEGRATION_ROOT/$P" ] || { log "WARN integration submodule missing: $P — skipping"; continue; }
   # The gitlink sha recorded at the release worktree's HEAD for this path.
   S="$(git -C "$RELEASE_ROOT" ls-tree HEAD "$P" 2>/dev/null | awk '{print $3}')"
   [ -n "$S" ] || { log "WARN no gitlink sha for $P — skipping"; continue; }
-  extract_submodule_source "$P" "$S"
+  if clone_submodule_repo "$P" "$S"; then
+    _sub_cloned=$((_sub_cloned + 1))
+  else
+    _sub_fallback=$((_sub_fallback + 1))
+    log "WARN clone failed for $P@${S:0:10} — falling back to git archive extraction (that submodule gets NO .git, so tracked-files guards will not see inside it)"
+    extract_submodule_source "$P" "$S"
+  fi
 # P-009: read the submodule list from the TARGET commit's .gitmodules blob, NOT the
 # integration tree's current working copy — a submodule added/removed on staging while
 # the target still pins the old set would otherwise be extracted from the wrong list
 # during the transition window. `git config --blob <sha>:.gitmodules` reads the committed
 # config; 2>/dev/null + an empty loop is the correct no-op when a sha has no .gitmodules.
 done < <(git -C "$INTEGRATION_ROOT" config --blob "${TARGET_SHA}:.gitmodules" --get-regexp '\.path$' 2>/dev/null | awk '{print $2}')
+
+# 2a. Recursion sanity (EI-19299565558496583) ---------------------------------
+# The defect this replaced was SILENT — no error, just a smaller file list — and
+# that is precisely why it survived long enough to hide ~32% of the tree from the
+# gate. Log the real numbers on EVERY run so a regression shows up in the deploy
+# log immediately, instead of surfacing months later as a guard that mysteriously
+# stopped finding things.
+#
+# Deliberately NON-FATAL: a deploy must never be wedged by a reporting check, and
+# the archive fallback above still yields correct CONTENT (only recursion is
+# lost). Hard enforcement belongs to the gate's own scan-sanity floor
+# (prompt-blueprint-verb-catalog.test.ts), which fails loudly by design.
+_plain="$(git -C "$RELEASE_ROOT" ls-files 2>/dev/null | wc -l | tr -d ' ')"
+_recursive="$(git -C "$RELEASE_ROOT" ls-files --recurse-submodules 2>/dev/null | wc -l | tr -d ' ')"
+_uninit="$(git -C "$RELEASE_ROOT" submodule status 2>/dev/null | grep -c '^-' || true)"
+log "submodule recursion: cloned=$_sub_cloned archive-fallback=$_sub_fallback tracked plain=$_plain recursive=$_recursive uninitialized=$_uninit"
+if [ "$_sub_cloned" -gt 0 ] && [ "$_recursive" -le "$_plain" ]; then
+  log "WARN recursion added NO files despite $_sub_cloned cloned submodule repo(s) — tracked-files guards are probably scanning the superproject only"
+fi
 
 # 3. node_modules ----------------------------------------------------------
 # EI-2118: list workspace packages (@papercusp/@papercup) that RESOLVE in the

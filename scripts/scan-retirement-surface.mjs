@@ -48,6 +48,7 @@
 import { execSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { coverageOf, describeUnscanned } from './lib/tracked-files.mjs';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 
@@ -214,7 +215,10 @@ export function scanSurface({
   const byIdentifier = {};
   for (const h of hits) (byIdentifier[h.identifier] ??= []).push(h);
 
-  return { hits, suppressed, byIdentifier, filesScanned: files.length };
+  // WI-6776: return the file LIST, not just its length, so the caller can state what
+  // the scan did not cover. A retirement sweep is an absence proof ("no references
+  // remain"), and an absence proof over a subtree that was never opened is worthless.
+  return { hits, suppressed, byIdentifier, filesScanned: files.length, files };
 }
 
 function parseArgs(argv) {
@@ -242,9 +246,14 @@ function main() {
   }
 
   const root = args.root ?? ROOT;
-  const { hits, suppressed, filesScanned } = scanSurface({ ...surface, root });
+  const { hits, suppressed, filesScanned, files } = scanSurface({ ...surface, root });
 
-  console.log(`scan-retirement-surface: "${surface.name}" — ${surface.identifiers.length} identifier(s), ${filesScanned} file(s) scanned`);
+  const cov = coverageOf(files, root);
+  console.log(
+    `scan-retirement-surface: "${surface.name}" — ${surface.identifiers.length} identifier(s), ` +
+      `${filesScanned} file(s) scanned across the superproject + ${cov.scanned.length}/${cov.declared.length} submodule(s)` +
+      describeUnscanned(cov, root),
+  );
   if (suppressed.length > 0) {
     console.log(`\n${suppressed.length} known-false-positive hit(s) suppressed by allowlist:`);
     for (const s of suppressed) {

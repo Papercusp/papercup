@@ -9,9 +9,11 @@ process.env.PAPERCUSP_WATCHDOG_NO_AUTOSTART = '1';
 type Watchdog = typeof import('./watchdog.mjs');
 let shouldRestart: Watchdog['shouldRestart'];
 let classifyProbeResult: Watchdog['classifyProbeResult'];
+let classifyDataPlaneResult: Watchdog['classifyDataPlaneResult'];
 let decideHandshakeAction: Watchdog['decideHandshakeAction'];
 beforeAll(async () => {
-  ({ shouldRestart, classifyProbeResult, decideHandshakeAction } = await import('./watchdog.mjs'));
+  ({ shouldRestart, classifyProbeResult, classifyDataPlaneResult, decideHandshakeAction } =
+    await import('./watchdog.mjs'));
 });
 
 /**

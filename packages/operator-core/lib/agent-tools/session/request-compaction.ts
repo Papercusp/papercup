@@ -353,7 +353,11 @@ export default defineTool({
     // the socket write succeeded) so report.ts's P-002 branch skips the
     // release for this transition; a respawn that never lands still frees the
     // owner's claims via the P-001 scheduled backstop (the marker's short TTL).
-    if (ok) markRespawnExpected(identity.ownerId);
+    // Awaited (WI-6756 follow-on): the mark is a PG row now, not a heap entry —
+    // the operator is clustered, so the worker that handles the imminent
+    // SessionEnd is usually NOT this one. It must be durably written before the
+    // respawn's SessionEnd can race it; markRespawnExpected never throws.
+    if (ok) await markRespawnExpected(identity.ownerId);
     // EI-8987: the cut is already QUEUED at this point (idle-gated — it fires
     // after THIS turn ends), so a warning here is still actionable: the turn
     // hasn't ended yet, so the agent reading this result can fire one more

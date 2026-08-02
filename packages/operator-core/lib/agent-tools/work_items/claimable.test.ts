@@ -51,6 +51,7 @@ const BREAKDOWN = {
     crossMachineRig: 0,
     blockedDep: 0,
     cooldown: 0,
+    remoteOrigin: 0,
   },
 };
 const ROWS = [

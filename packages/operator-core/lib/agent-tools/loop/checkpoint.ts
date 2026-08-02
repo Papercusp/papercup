@@ -24,18 +24,12 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { resolvePotHomeSlug } from '../../pot/wake';
 import {
-  getLoopCarryNote,
   lintUncheckedExternalClaims,
-  normalizeCheckEntries,
-  normalizeWallEntries,
+  mergeCarryRows,
   renderCarryNote,
   renderCheckLine,
   renderWallLine,
-  setLoopCarryNote,
-  splitCarryNoteChecks,
-  splitCarryNoteWalls,
-  withCarryNoteChecks,
-  withCarryNoteWalls,
+  setLoopCarryNoteWithPrior,
   CARRY_NOTE_MAX_CHECKS,
   CARRY_NOTE_MAX_WALLS,
   rescueTaggedCarryNoteBlob,
@@ -289,41 +283,57 @@ export default defineTool({
     //   `## Walls` rows win next; otherwise the PRIOR walls carry forward — across
     //   rewrites AND across a note clear (the note then survives as walls-only).
     //   A walls-only write likewise carries the prior note body forward.
-    const prior = await getLoopCarryNote({ harness, ownerId }).catch(() => null);
-    const priorParts = splitCarryNoteWalls(prior);
-    const priorCheckParts = splitCarryNoteChecks(priorParts.body);
-    const rawParts = splitCarryNoteWalls(baseNote ?? '');
-    const rawCheckParts = splitCarryNoteChecks(rawParts.body);
     // A rescued blob's own rows slot in where the explicit arg would have gone — an
     // EXPLICIT `walls`/`checks` arg still wins outright (including its `[]` clear).
     const effectiveWalls = args.walls ?? rescued?.walls;
     const effectiveChecks = args.checks ?? rescued?.checks;
-    const walls =
-      effectiveWalls !== undefined
-        ? normalizeWallEntries(effectiveWalls, priorParts.walls)
-        : rawParts.walls.length > 0
-          ? normalizeWallEntries(rawParts.walls, priorParts.walls)
-          : priorParts.walls;
-    // P-001 (cold-carry-system-hardening-2026-07-19): checks merge — identical
-    // explicit-wins / raw-note-section-next / prior-carries-forward semantics as walls.
-    const checks =
-      effectiveChecks !== undefined
-        ? normalizeCheckEntries(effectiveChecks, priorCheckParts.checks)
-        : rawCheckParts.checks.length > 0
-          ? normalizeCheckEntries(rawCheckParts.checks, priorCheckParts.checks)
-          : priorCheckParts.checks;
     const hasNoteWrite = hasStructured || args.note !== undefined;
-    const narrativeBody = hasNoteWrite ? rawCheckParts.body : priorCheckParts.body;
-    const note = withCarryNoteWalls(withCarryNoteChecks(narrativeBody, checks), walls);
+
+    // WI-6813: the walls/checks merge runs INSIDE the row's locked transaction (the
+    // `transform` seam), not out here. The caller-side read → merge → write it
+    // replaces had a real race — a concurrent writer on this scope landing between
+    // the prior read and the write was silently clobbered, which for WALLS means
+    // dropping an owner-gated commitment.
+    //
+    // The transform's own output is CAPTURED (via a holder object, so the assignment
+    // survives control-flow narrowing) rather than re-merged out here: the advisory
+    // lint and the reported counts then describe EXACTLY what was stored, instead of
+    // a second merge against a staler prior that could disagree with it.
+    const captured: { merged?: ReturnType<typeof mergeCarryRows> } = {};
+    const workspaceId = ctx.workspaceId ?? ctx.principal?.workspaceId ?? undefined;
+    const { stored } = await setLoopCarryNoteWithPrior(
+      { harness, ownerId, workspaceId: workspaceId ?? undefined },
+      baseNote,
+      {
+        transform: (priorNote) => {
+          captured.merged = mergeCarryRows({
+            priorNote,
+            baseNote,
+            walls: effectiveWalls,
+            checks: effectiveChecks,
+            hasNoteWrite,
+          });
+          return captured.merged.note;
+        },
+      },
+    );
+    // Unreachable today (this tool passes no `guard`, and only a blocked guard skips
+    // the transform) — but a missing capture must never silently read as "no rows".
+    const { walls, checks, narrativeBody } =
+      captured.merged ??
+      mergeCarryRows({
+        priorNote: null,
+        baseNote,
+        walls: effectiveWalls,
+        checks: effectiveChecks,
+        hasNoteWrite,
+      });
 
     // P-009: advisory lint — an external-state ASSERTION in the narrative prose whose
     // distinctive tokens (hash / WI-EI id / ISO instant) appear in NO check/wall row is
     // a carried claim with no probe (the phantom-re-anchor shape). Never blocks.
     const probeText = [...checks.map(renderCheckLine), ...walls.map(renderWallLine)].join('\n');
     const uncheckedClaims = hasNoteWrite ? lintUncheckedExternalClaims(narrativeBody, probeText) : [];
-
-    const workspaceId = ctx.workspaceId ?? ctx.principal?.workspaceId ?? undefined;
-    const stored = await setLoopCarryNote({ harness, ownerId, workspaceId: workspaceId ?? undefined }, note);
 
     // P-020 (su-ideate-learning-substrate): checkpoint-HARVEST. The carry-note `insight`
     // is exactly the "non-obvious thing a future agent would re-derive" the observation

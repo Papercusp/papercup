@@ -13,11 +13,19 @@
  *   2. this module's own ROOT resolving to `scripts/` instead of the repo root,
  *      which silently reduced the default enumeration to ~33 files.
  */
+import { readdirSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 // @ts-expect-error — .mjs guard helper, no type declarations (same import shape
 // as the other guard tests, e.g. dbos/no-raw-setinterval-guard.test.ts).
-import { declaredSubmodules, describeUnscanned, listTrackedFiles } from '../../../scripts/lib/tracked-files.mjs';
+import {
+  coverageOf,
+  declaredSubmodules,
+  describeUnscanned,
+  listTrackedFiles,
+} from '../../../scripts/lib/tracked-files.mjs';
 
 describe('tracked-files helper (WI-6730)', () => {
   const scan = listTrackedFiles() as {
@@ -89,6 +97,109 @@ describe('tracked-files helper (WI-6730)', () => {
     expect(describeUnscanned([])).toBe('');
     const note = describeUnscanned(['libs/zero-harness']) as string;
     expect(note).toContain('libs/zero-harness');
-    expect(note).toContain('NOT scanned');
+    // The RATIO is the load-bearing part: "0/39" cannot be misread as clean, where
+    // a bare ✓ over an empty scan reads exactly like a pass (WI-6776).
+    expect(note).toMatch(/coverage \d+\/\d+ declared submodule\(s\) enumerated/);
+    expect(note).toContain('says nothing about them');
+  });
+
+  it('describeUnscanned diagnoses the CAUSE by tree shape, not "not initialized" for everything', () => {
+    // WI-6776. The first version reported every gap as "not initialized". Measured
+    // 2026-08-02 in papercusp-checkpoint (the green gate's own tree): 0/39 submodules
+    // enumerated while 38 are checked out WITH CONTENT ON DISK — `git archive`-extracted
+    // by setup-release-checkout.sh, so there is no `.git` for --recurse-submodules to
+    // descend into. "Not initialized" sends a reader to `git submodule update --init`
+    // chasing a fault that does not exist, which is the wasted-diagnostic-time cost
+    // EI-19301033966613245 was filed about.
+    //
+    // Both branches are driven with ordinary repo paths rather than real submodules, so
+    // this is deterministic in any checkout: `scripts` always has content, and the
+    // nonexistent path never does.
+    const present = describeUnscanned(['scripts']) as string;
+    expect(present).toContain('present on disk but NOT git-enumerable');
+    expect(present).toContain('BY DESIGN');
+    expect(present).not.toContain('not initialized');
+
+    const absent = describeUnscanned(['libs/definitely-not-checked-out-here']) as string;
+    expect(absent).toContain('not initialized');
+    expect(absent).not.toContain('present on disk');
+  });
+
+  it('coverageOf partitions an already-computed file list, so a guard can keep its own enumerator', () => {
+    // The seam that made WI-6776 fixable without forcing every guard onto one `git`
+    // invocation: check-no-nul-in-source and check-no-control-bytes need `-z` output
+    // (a guard about byte-level corruption must not assume filenames are newline-free)
+    // and check-env-feature-gates uses `git grep`. What they share is the coverage
+    // CONTRACT, not the command.
+    const { declared, scanned, unscanned } = coverageOf(['libs/generic/sync/src/x.ts', 'package.json']) as {
+      declared: string[];
+      scanned: string[];
+      unscanned: string[];
+    };
+    expect(scanned).toEqual(['libs/generic/sync']);
+    expect(new Set([...scanned, ...unscanned])).toEqual(new Set(declared));
+    // An empty list must report ZERO coverage, never full — the false-clean direction.
+    const empty = coverageOf([]) as { scanned: string[]; unscanned: string[] };
+    expect(empty.scanned).toEqual([]);
+    expect(empty.unscanned.length).toBeGreaterThan(30);
+  });
+});
+
+/**
+ * WI-6776 — the ratchet. Migrating today's guards fixes today's guards; it does not
+ * stop the next one from enumerating the tree and printing a bare ✓ over subtrees it
+ * never opened. This asserts the CONTRACT rather than a file list, so a new recursing
+ * script has to opt in (or state a reason) instead of silently reintroducing the class.
+ *
+ * Note the glob is `scripts/*.mjs`, NOT `scripts/check-*.mjs`: the parent item listed
+ * three offenders because it globbed `check-*`, and that missed `scan-retirement-surface.mjs`
+ * (recurses, different prefix) as well as `check-env-feature-gates.mjs`.
+ */
+describe('recursing guards must report coverage (WI-6776 ratchet)', () => {
+  const scriptsDir = fileURLToPath(new URL('../../../scripts', import.meta.url));
+
+  /**
+   * Scripts that recurse but legitimately need no coverage line. Each entry states WHY —
+   * an unexplained entry is how a ratchet quietly becomes a rubber stamp.
+   */
+  const ALLOW = new Map<string, string>([
+    [
+      'lib/tracked-files.mjs',
+      'IS the shared helper — it defines the coverage contract rather than consuming it.',
+    ],
+  ]);
+
+  /** Every .mjs under scripts/, including subdirectories, as a scripts/-relative path. */
+  const listMjs = (dir: string, prefix = ''): string[] =>
+    readdirSync(dir, { withFileTypes: true }).flatMap((e) =>
+      e.isDirectory()
+        ? listMjs(join(dir, e.name), `${prefix}${e.name}/`)
+        : e.name.endsWith('.mjs')
+          ? [`${prefix}${e.name}`]
+          : [],
+    );
+
+  const recursing = listMjs(scriptsDir).filter((f) =>
+    readFileSync(join(scriptsDir, f), 'utf8').includes('recurse-submodules'),
+  );
+
+  it('finds the recursing scripts at all (a zero here would make this suite vacuous)', () => {
+    expect(recursing.length).toBeGreaterThanOrEqual(4);
+    expect(recursing).toContain('check-no-control-bytes.mjs');
+  });
+
+  it.each(recursing)('%s reports what its scan did NOT cover', (file) => {
+    if (ALLOW.has(file)) return;
+    const text = readFileSync(join(scriptsDir, file), 'utf8');
+    expect(
+      text.includes('describeUnscanned') || text.includes('coverageOf'),
+      `${file} enumerates the tree with --recurse-submodules but never reports coverage.\n` +
+        `In a release-shaped checkout (papercusp-checkpoint / papercusp-release: submodule source is\n` +
+        `git archive-extracted, so there is no .git to descend into) that scan reaches ZERO submodule\n` +
+        `files and still prints success — a confident ✓ over ~22% of the tree it never opened.\n` +
+        `FIX: import { coverageOf, describeUnscanned } from './lib/tracked-files.mjs' and append the\n` +
+        `suffix to the success message. If this script genuinely needs no coverage line, add it to\n` +
+        `ALLOW in this test WITH A REASON.`,
+    ).toBe(true);
   });
 });

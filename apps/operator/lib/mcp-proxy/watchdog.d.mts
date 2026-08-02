@@ -16,6 +16,12 @@
 /** Verdict for one session-plane probe. See classifyProbeResult in watchdog.mjs. */
 export type ProbeKind = 'ok' | 'auth' | 'empty' | 'dead';
 
+/**
+ * Verdict for one DATA-plane probe (WI-6739). 'config' is deliberately distinct from 'dead':
+ * a probe we mis-configured must never alarm as a service fault.
+ */
+export type DataPlaneKind = 'ok' | 'config' | 'dead';
+
 /** Remediation chosen from a proxy probe plus a same-moment upstream probe. */
 export type HandshakeAction = 'none' | 'restart-proxy' | 'upstream-wedged';
 
@@ -30,6 +36,12 @@ export function classifyProbeResult(result?: {
   status?: number;
   json?: unknown;
 }): ProbeKind;
+
+export function classifyDataPlaneResult(result?: {
+  networkError?: unknown;
+  status?: number;
+  json?: unknown;
+}): DataPlaneKind;
 
 export function decideHandshakeAction(
   proxyKind: ProbeKind | string,
