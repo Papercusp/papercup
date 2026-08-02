@@ -37,8 +37,24 @@
  */
 import type { AnchorHTMLAttributes, CSSProperties, MouseEvent as ReactMouseEvent } from 'react';
 import { Tooltip } from '@/app/harness/Tooltip';
+import { preloadVditor } from '@/app/_components/MarkdownEditor';
 import { STATUS, type HarnessStatus } from '../../harness/theme';
 import type { WorkRefKind } from './parse-work-refs';
+
+/**
+ * Activating one of these pills opens PlanPopupModal / WorkItemPopupModal, whose
+ * body is Vditor-rendered markdown. The chat itself renders with ReactMarkdown
+ * and never touches Vditor, so that stack is COLD here — and the sidebar Plans
+ * face was, until WI-7088, the only surface that warmed it (PlansPane.tsx). A
+ * plan opened from chat therefore paid the whole cold cost on the click, which
+ * is the "opening a plan takes several seconds" report.
+ *
+ * Hover/focus is the precise pre-click signal: it costs nothing when the user
+ * never activates the pill, and buys the entire warm window when they do.
+ * `preloadVditor` memoizes its promise, so the extra pills on screen — and the
+ * repeat hovers — collapse into the one load.
+ */
+const warmPopupRenderer = () => void preloadVditor();
 
 export interface WorkRefPillProps {
   /** The exact ref token as matched, e.g. "WI-5927", "EI-42", "F-100",
@@ -149,6 +165,8 @@ export function WorkRefPill({
         <a
           href={href}
           onClick={handleClick}
+          onPointerEnter={warmPopupRenderer}
+          onFocus={warmPopupRenderer}
           aria-label={accessibleLabel}
           className={className}
           style={pillStyle(meta, size, true)}
@@ -165,6 +183,8 @@ export function WorkRefPill({
         <button
           type="button"
           onClick={onActivate}
+          onPointerEnter={warmPopupRenderer}
+          onFocus={warmPopupRenderer}
           aria-label={accessibleLabel}
           className={className}
           style={pillStyle(meta, size, true)}

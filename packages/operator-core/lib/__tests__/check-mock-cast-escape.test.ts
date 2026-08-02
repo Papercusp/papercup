@@ -109,7 +109,9 @@ describe('findMockCastEscapesInText', () => {
   it('counts multiple occurrences across the same file, each with its own line number', () => {
     const src = ['a.mockResolvedValue(1 as never);', 'b.mockReturnValue(2 as any);'].join('\n');
     const found = findMockCastEscapesInText(src);
-    expect(found.map((f) => f.line)).toEqual([1, 2]);
+    // Annotated because the helper is imported from an untyped `.mjs` script, so `found` is
+    // `any` and the callback parameter would otherwise be an implicit-any (TS7006) gate red.
+    expect(found.map((f: { line: number }) => f.line)).toEqual([1, 2]);
   });
 });
 

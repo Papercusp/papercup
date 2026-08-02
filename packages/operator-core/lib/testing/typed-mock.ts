@@ -42,6 +42,26 @@ type AsyncMockFor<T extends (...args: never[]) => Promise<unknown>> = Mock<T>;
 type MockFor<T extends (...args: never[]) => unknown> = Mock<T>;
 
 /**
+ * ⚠ Do NOT "clean up" the `as Parameters<typeof mock.mockX>[0]` casts in the bodies below —
+ * they are load-bearing, and removing them reds the fleet's typecheck gate (WI-7090).
+ *
+ * Vitest declares these setters against its OWN `MockReturnType<T>`, a conditional type
+ * (`T extends Constructable ? InstanceType<T> : T extends Procedure ? ReturnType<T> : never`)
+ * that is NOT exported, so we cannot name it. Because `T` here is constrained to
+ * `(...args: never[]) => …` rather than vitest's `Procedure`, TypeScript cannot prove which
+ * branch applies and leaves the conditional UNRESOLVED — at which point `ReturnType<T>` and
+ * `MockReturnType<T>` are not mutually assignable even though they denote the same type for
+ * every real call. Hence TS2345 on all five setters.
+ *
+ * The cast is DERIVED from the mock's own parameter type rather than written as `as never` /
+ * `as any` for two reasons: it stays correct if vitest changes those signatures, and this
+ * module exists precisely to delete `as never` from fixtures — `check-mock-cast-escape.mjs`
+ * ratchets that count, so introducing one here would undercut the helper's whole purpose.
+ * The PUBLIC signatures keep the real `Awaited<ReturnType<T>>` / `ReturnType<T>` / `T`, so
+ * callers still get fully-checked fixtures; the unsoundness is confined to one line each.
+ */
+
+/**
  * `mock.mockResolvedValue(value)`, with `value` checked against the real function's
  * own resolved-value type (`Awaited<ReturnType<T>>`) — inferred from `mock` itself.
  */
@@ -49,7 +69,7 @@ export function mockResolvedTyped<T extends (...args: never[]) => Promise<unknow
   mock: AsyncMockFor<T>,
   value: Awaited<ReturnType<T>>,
 ): void {
-  mock.mockResolvedValue(value);
+  mock.mockResolvedValue(value as Parameters<typeof mock.mockResolvedValue>[0]);
 }
 
 /** `Once` sibling of {@link mockResolvedTyped}. */
@@ -57,7 +77,7 @@ export function mockResolvedOnceTyped<T extends (...args: never[]) => Promise<un
   mock: AsyncMockFor<T>,
   value: Awaited<ReturnType<T>>,
 ): void {
-  mock.mockResolvedValueOnce(value);
+  mock.mockResolvedValueOnce(value as Parameters<typeof mock.mockResolvedValueOnce>[0]);
 }
 
 /**
@@ -65,12 +85,12 @@ export function mockResolvedOnceTyped<T extends (...args: never[]) => Promise<un
  * return type — inferred from `mock` itself.
  */
 export function mockReturnTyped<T extends (...args: never[]) => unknown>(mock: MockFor<T>, value: ReturnType<T>): void {
-  mock.mockReturnValue(value);
+  mock.mockReturnValue(value as Parameters<typeof mock.mockReturnValue>[0]);
 }
 
 /** `Once` sibling of {@link mockReturnTyped}. */
 export function mockReturnOnceTyped<T extends (...args: never[]) => unknown>(mock: MockFor<T>, value: ReturnType<T>): void {
-  mock.mockReturnValueOnce(value);
+  mock.mockReturnValueOnce(value as Parameters<typeof mock.mockReturnValueOnce>[0]);
 }
 
 /**
@@ -81,7 +101,7 @@ export function mockReturnOnceTyped<T extends (...args: never[]) => unknown>(moc
  * fixture inside.
  */
 export function mockImplementationTyped<T extends (...args: never[]) => unknown>(mock: MockFor<T>, impl: T): void {
-  mock.mockImplementation(impl);
+  mock.mockImplementation(impl as Parameters<typeof mock.mockImplementation>[0]);
 }
 
 /** `mock.mockRejectedValue(reason)` for a mock installed for an async function `T`. */

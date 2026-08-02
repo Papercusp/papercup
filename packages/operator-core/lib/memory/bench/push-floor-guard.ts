@@ -124,11 +124,40 @@ export interface PositiveControl {
   meanAdmitted: number;
 }
 
+/**
+ * The SEPARATION reading (D-056's decisive follow-up): the distribution of each
+ * class's TOP cosine score.
+ *
+ * Knowing that off-topic queries are admitted does not say whether ANY floor
+ * could reject them. That is a property of the corpus + embedder, not of the
+ * code — and `score-floor.ts`'s header states the premise D-006 calibrated 0.45
+ * on: hard negatives topped ~0.385 while real hits sat ~0.51–0.58, so 0.45 sat
+ * in the gap. If the two ranges now OVERLAP, no threshold separates them and
+ * P-002's literal "returns ZERO" criterion is unsatisfiable at any floor — which
+ * is a re-derivation of the criterion, not a bug to fix.
+ *
+ * Reported per class so the on-topic floor (what a raise would COST in recall)
+ * and the hard-negative ceiling (what it would BUY in precision) are read
+ * together. A raise is only sound where the hard-negative ceiling sits below the
+ * on-topic floor.
+ */
+export interface ClassScoreSpread {
+  className: string;
+  queries: number;
+  /** Top cosine score per query, ascending — the raw material for a sweep. */
+  topScores: number[];
+  min: number;
+  median: number;
+  max: number;
+}
+
 export interface PushFloorProbeResult {
   backend: string;
   /** The LIVE floors, as read from `pushSearchFloors()`. */
   floors: PushSearchFloors;
   corpusSeeded: number;
+  /** Per-class top-cosine spread — the separation reading. */
+  spread: ClassScoreSpread[];
   /** Assertion (a): off-topic queries and what they admitted. */
   offTopic: OffTopicOutcome[];
   /** Assertion (b): every admitted entry whose cosine score is missing or below floor. */
@@ -142,6 +171,26 @@ export interface PushFloorProbeResult {
 /** Normalized-text alias, mirroring `fuse()`'s cross-leg identity rule. */
 function norm(text: string): string {
   return text.trim().replace(/\s+/g, ' ');
+}
+
+/** Summarize per-class top-cosine scores. Pure — unit-tested. */
+export function summarizeSpread(byClass: ReadonlyMap<string, number[]>): ClassScoreSpread[] {
+  const out: ClassScoreSpread[] = [];
+  for (const [className, raw] of byClass) {
+    const topScores = [...raw].sort((a, b) => a - b);
+    if (topScores.length === 0) continue;
+    const mid = Math.floor(topScores.length / 2);
+    out.push({
+      className,
+      queries: topScores.length,
+      topScores,
+      min: topScores[0]!,
+      median:
+        topScores.length % 2 === 0 ? (topScores[mid - 1]! + topScores[mid]!) / 2 : topScores[mid]!,
+      max: topScores[topScores.length - 1]!,
+    });
+  }
+  return out.sort((a, b) => a.className.localeCompare(b.className));
 }
 
 /**
@@ -267,6 +316,7 @@ export async function probePushFloor(deps: ProbeDeps): Promise<PushFloorProbeRes
 
   const offTopic: OffTopicOutcome[] = [];
   const violations: FloorViolation[] = [];
+  const spreadByClass = new Map<string, number[]>();
   let onTopicQueries = 0;
   let onTopicWithHits = 0;
   let onTopicAdmitted = 0;
@@ -292,11 +342,20 @@ export async function probePushFloor(deps: ProbeDeps): Promise<PushFloorProbeRes
     // deep, so an admitted entry is absent from this map only when the cosine
     // leg genuinely did not return it — i.e. a lexical-only admission — rather
     // than because the probe truncated the tail.
+    // Run UNCONDITIONALLY, not just when something was admitted: the separation
+    // reading needs the top cosine score for EVERY query, and a query that
+    // admitted nothing is exactly the one whose score says why.
+    const cosineHits = await deps.cosineLeg.search(q.query, {
+      scope: deps.scope,
+      limit: deps.cosineProbeLimit,
+    });
+    const top = cosineHits.find((h) => typeof h.score === 'number')?.score;
+    if (typeof top === 'number') {
+      const bucket = spreadByClass.get(q.className) ?? [];
+      bucket.push(top);
+      spreadByClass.set(q.className, bucket);
+    }
     if (admitted.length > 0) {
-      const cosineHits = await deps.cosineLeg.search(q.query, {
-        scope: deps.scope,
-        limit: deps.cosineProbeLimit,
-      });
       violations.push(
         ...evaluateFloorViolations(q.id, admitted, cosineScoreMap(cosineHits), deps.floors.minScore),
       );
@@ -315,6 +374,7 @@ export async function probePushFloor(deps: ProbeDeps): Promise<PushFloorProbeRes
     backend: deps.backend.name,
     floors: deps.floors,
     corpusSeeded: deps.corpusSeeded,
+    spread: summarizeSpread(spreadByClass),
     offTopic,
     violations,
     positiveControl: {
@@ -367,4 +427,34 @@ export function summarizeProbe(result: PushFloorProbeResult): string {
     `positive control ${result.positiveControl.withHits}/${result.positiveControl.queries} ` +
     `(mean ${result.positiveControl.meanAdmitted.toFixed(2)} admitted)`
   );
+}
+
+/**
+ * The separation verdict, in the form the next decision needs: does the
+ * hard-negative CEILING sit below the on-topic FLOOR? Only then does a floor
+ * raise separate the classes rather than just trading recall for precision.
+ */
+export function summarizeSeparation(
+  result: PushFloorProbeResult,
+  offTopicClass = 'hard-negative',
+): string {
+  const neg = result.spread.find((s) => s.className === offTopicClass);
+  const pos = result.spread.filter((s) => s.className !== offTopicClass);
+  const lines = result.spread.map(
+    (s) => `    ${s.className.padEnd(20)} n=${String(s.queries).padStart(3)} ` +
+      `min=${s.min.toFixed(4)} median=${s.median.toFixed(4)} max=${s.max.toFixed(4)}`,
+  );
+  let verdict = '    (no hard-negative class in this probe set)';
+  if (neg && pos.length > 0) {
+    const posFloor = Math.min(...pos.map((s) => s.min));
+    verdict =
+      neg.max < posFloor
+        ? `    SEPARABLE: hard-negative max ${neg.max.toFixed(4)} < on-topic min ${posFloor.toFixed(4)} ` +
+          `— a floor in that gap rejects every hard negative at zero recall cost.`
+        : `    NOT SEPARABLE BY ANY FLOOR: hard-negative max ${neg.max.toFixed(4)} >= on-topic min ` +
+          `${posFloor.toFixed(4)}. The classes OVERLAP, so no single cosine threshold admits every ` +
+          `real hit while rejecting every hard negative — "off-topic admits ZERO" is unsatisfiable ` +
+          `at any floor, and the honest target is a bounded FP rate.`;
+  }
+  return `top-cosine spread by class:\n${lines.join('\n')}\n${verdict}`;
 }

@@ -124,7 +124,11 @@ function deps(over: Partial<Parameters<typeof resolveDelegatedSpawnOutcome>[1]> 
     loadMembers: vi.fn(async () => []),
     nowMs: () => REQUESTED_AT + 10_000,
     ...over,
-  } as Parameters<typeof resolveDelegatedSpawnOutcome>[1];
+    // NonNullable: the deps parameter is OPTIONAL on the real signature, so without this every
+    // `const d = deps(); d.getOffer` in this file is TS18048 'possibly undefined'. The helper
+    // always returns a full deps object, so narrowing here (rather than at ~4 call sites) keeps
+    // the assertions readable and cannot mask a genuinely-absent dep.
+  } as NonNullable<Parameters<typeof resolveDelegatedSpawnOutcome>[1]>;
 }
 
 describe('resolveDelegatedSpawnOutcome (WI-7042)', () => {

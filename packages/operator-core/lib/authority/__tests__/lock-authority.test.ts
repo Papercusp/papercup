@@ -660,6 +660,14 @@ describe('lockAuthorityForHive — requiresRoutine (EI-19330771435294981)', () =
   const self = { githubUserId: 3, devicePubkey: 'zzzzzz' };
   // The real papercusp shape: no cadence routine anywhere (so runs_routines is null
   // on every row), but both peers DO run git-sync and now publish it.
+  //
+  // ⚠ These two fields must stay CONSISTENT with what a real publisher emits, and
+  // since P-004 that is load-bearing rather than cosmetic. A mig-724 publisher gates
+  // the set and the bit on the same `dbosLaunches()`, so a row carrying a cadence
+  // routine in `active_routines` ALWAYS carries `runs_routines: true` too — and
+  // `routineHostsOnly` now derives from the set when it is present. A fixture with
+  // 'gym-cycle' in the set but a null bit is therefore not merely unrealistic, it
+  // asserts the opposite of what it reads as: it makes that peer cadence-ELIGIBLE.
   const rows: Row[] = [
     {
       device_pubkey: 'aaa', github_user_id: 1, machine_label: 'mac',
@@ -667,7 +675,7 @@ describe('lockAuthorityForHive — requiresRoutine (EI-19330771435294981)', () =
     },
     {
       device_pubkey: 'zzz', github_user_id: 2, machine_label: 'tower',
-      last_seen_ms: NOW - 1000, runs_routines: null, active_routines: ['git-sync', 'gym-cycle'],
+      last_seen_ms: NOW - 1000, runs_routines: null, active_routines: ['git-sync'],
     },
   ];
   const hiveDeps = (rs: Row[], over: Partial<LockAuthorityDeps> = {}): LockAuthorityDeps => ({
@@ -767,8 +775,13 @@ describe('lockAuthorityForHive — requiresRoutine (EI-19330771435294981)', () =
   });
 
   it('INTERSECTS with routineHostsOnly when a caller opts into both', async () => {
-    // 'zzz' runs git-sync AND publishes the cadence bit; 'aaa' only git-sync.
-    const both: Row[] = [rows[0]!, { ...rows[1]!, runs_routines: true }];
+    // 'zzz' runs git-sync AND a cadence routine; 'aaa' only git-sync. Since P-004
+    // "publishes the cadence bit" means carrying a CADENCE ROUTINE in the set — the
+    // set outranks the bit whenever it is present — so the two fields move together.
+    const both: Row[] = [
+      rows[0]!,
+      { ...rows[1]!, active_routines: ['git-sync', 'gym-cycle'], runs_routines: true },
+    ];
     const r = await lockAuthorityForHive(
       'hive',
       hiveDeps(both, { requiresRoutine: 'git-sync', routineHostsOnly: true }),
@@ -792,6 +805,89 @@ describe('lockAuthorityForHive — requiresRoutine (EI-19330771435294981)', () =
       ),
     );
     expect(r).toEqual({ isSelf: true, liveCount: 1 });
+  });
+});
+
+// ── P-004 / D-006: `routineHostsOnly` DERIVED from the published set
+//
+// The predicate no longer reads `runs_routines` when `active_routines` is present:
+// it asks `set ∩ CADENCE_RUNNER_ROUTINES ≠ ∅`. D-005 point 1 makes that
+// semantics-preserving for a mig-724 publisher (one `dbosLaunches()` gates both).
+//
+// The case D-005 does NOT cover, and the reason the fallback exists, is the
+// PRE-mig-724 peer: it publishes the bit and no set. Reading absent as "not a
+// candidate" — correct for `requiresRoutine` — would silently drop that peer from
+// the cadence election, which is the WI-6996 narrowing this plan exists to remove,
+// reintroduced by its own fix. So absent DEFERS to the bit.
+describe('lockAuthorityForHive — routineHostsOnly derived from active_routines (P-004 / D-006)', () => {
+  type Row = {
+    device_pubkey: string;
+    github_user_id: number;
+    machine_label: string;
+    last_seen_ms: number;
+    runs_routines?: boolean | null;
+    active_routines?: readonly string[] | null;
+  };
+  const self = { githubUserId: 3, devicePubkey: 'zzzzzz' };
+  const peer = (over: Partial<Row>): Row[] => [
+    {
+      device_pubkey: 'aaa', github_user_id: 1, machine_label: 'mac',
+      last_seen_ms: NOW - 1000, ...over,
+    },
+  ];
+  const deps = (rs: Row[]): LockAuthorityDeps => ({
+    now: () => NOW,
+    staleMs: 90_000,
+    fetchHivePresenceRows: async () => rs,
+    resolveSelf: async () => self,
+    useHrwRendezvous: false,
+    evictionMonitor: null,
+    routineHostsOnly: true,
+  });
+  // Eligible ⇒ 'aaa' survives the narrowing and wins argmin over self 'zzzzzz'.
+  const eligible = async (rs: Row[]) => (await lockAuthorityForHive('hive', deps(rs))).isSelf === false;
+
+  it('NEW peer running a cadence routine ⇒ eligible (derived from the set)', async () => {
+    expect(await eligible(peer({ active_routines: ['gym-cycle'], runs_routines: true }))).toBe(true);
+  });
+
+  it('NEW peer running ONLY git-sync ⇒ NOT eligible — the derivation does not widen', async () => {
+    // The whole point of D-003: git-sync must not buy a seat in the cadence
+    // election. This is the assertion that would fail if someone "simplified"
+    // the predicate to a non-empty check on the set.
+    expect(await eligible(peer({ active_routines: ['git-sync'], runs_routines: null }))).toBe(false);
+  });
+
+  it('PRE-mig-724 peer (bit true, NO set) ⇒ eligible via the fallback — the WI-6996 regression guard', async () => {
+    // If this ever goes false, a rolling upgrade silently drops every not-yet-
+    // upgraded cadence host out of the election.
+    expect(await eligible(peer({ runs_routines: true }))).toBe(true);
+    expect(await eligible(peer({ runs_routines: true, active_routines: null }))).toBe(true);
+  });
+
+  it('a peer publishing neither ⇒ NOT eligible', async () => {
+    expect(await eligible(peer({}))).toBe(false);
+    expect(await eligible(peer({ runs_routines: null, active_routines: null }))).toBe(false);
+  });
+
+  it('the SET OUTRANKS the bit when both are present — an upgraded peer is judged on what it actually runs', async () => {
+    // A publisher cannot legitimately emit this pair (one dbosLaunches() gates
+    // both), so it only arises from a stale/forged row. Pinning it makes the
+    // precedence explicit rather than incidental.
+    expect(await eligible(peer({ active_routines: ['git-sync'], runs_routines: true }))).toBe(false);
+    expect(await eligible(peer({ active_routines: ['gym-cycle'], runs_routines: null }))).toBe(true);
+  });
+
+  it('an EMPTY set is "advertises nothing", not "unknown" — it does NOT fall back to the bit', async () => {
+    // D-005 point 2: the publisher collapses [] to null on the wire, so a literal
+    // [] should not reach a reader. If one does, it is a positive statement that
+    // the node runs nothing — distinct from the absent case above it.
+    expect(await eligible(peer({ active_routines: [], runs_routines: true }))).toBe(false);
+  });
+
+  it('matches cadence routine names EXACTLY — no prefix or substring match', async () => {
+    expect(await eligible(peer({ active_routines: ['gym-cycle-watchdog'] }))).toBe(false);
+    expect(await eligible(peer({ active_routines: ['scout-cycle'] }))).toBe(true);
   });
 });
 

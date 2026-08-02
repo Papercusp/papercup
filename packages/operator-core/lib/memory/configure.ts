@@ -435,18 +435,30 @@ const isEmbedderPreference = (v: string | undefined): v is EmbedderPreference =>
   !!v && (EMBEDDER_PREFERENCES as readonly string[]).includes(v);
 
 /**
- * Map the MEMORY preference to the PROSE/SEARCH-surface preference (P-015
- * harrier default flip + the P-006 verdict): harrier is memory-side only —
- * its native 1024 dims don't fit the vector(384) prose columns, and
- * harrier@384's rejection margin collapses (.0705 vs gemma .1576). Under a
- * 'harrier' preference the prose surfaces would otherwise dims-guard OFF
- * entirely (backfill sweep skips, query legs degrade to lexical-only), so
- * the search side stays in the gemma space the 20k+ stored vectors live in.
- * Used by `resolveBackfillEmbedder` and `buildQueryEmbedderResolved`; the
- * mem0 memory side deliberately does NOT apply it.
+ * Map the MEMORY preference to the PROSE/SEARCH-surface preference.
+ *
+ * Some memory-side embedders cannot physically write the shared prose columns,
+ * and under those preferences the prose surfaces would dims-guard OFF entirely
+ * (backfill sweep skips, query legs degrade to lexical-only). Rather than lose
+ * prose search, the search side stays in the gemma space the ~414k stored
+ * vectors live in. Used by `resolveBackfillEmbedder` and
+ * `buildQueryEmbedderResolved`; the mem0 memory side deliberately does NOT
+ * apply it — memory has a per-mode table per space, so it has no such problem.
+ *
+ * Who gets remapped, and why:
+ *  - `harrier` (P-015 default flip + the P-006 verdict) — native 1024 with no
+ *    MRL, and harrier@384's rejection margin collapses (.0705 vs gemma .1576).
+ *  - `local` (NEW, D-005 §6) — bge-small is natively 384 with `mrl:'none'`, so
+ *    it cannot emit the 768 the columns now hold. This is the SAME situation
+ *    harrier has always been in, so it gets the same answer. Note `local` is
+ *    also what `readEmbedderPreference` falls back to for an unrecognized
+ *    stored pref, which makes remapping it here load-bearing: without it, a
+ *    single unknown-pref read would silently turn prose search lexical-only.
+ *    Cost of the remap is nil — gemma loads through the same transformers
+ *    package `local` does, so anywhere `local` resolves, gemma can too.
  */
 export function proseSurfacePreference(p: EmbedderPreference): EmbedderPreference {
-  return p === 'harrier' ? 'gemma' : p;
+  return p === 'harrier' || p === 'local' ? 'gemma' : p;
 }
 
 /** Read the live embedder preference (env override → persisted voice pref →

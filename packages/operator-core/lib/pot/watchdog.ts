@@ -269,6 +269,17 @@ export type WatchdogSource =
   // 2026-07-28 while both were caught up and simply unused, so lag alone would
   // have paged twice for nothing. Scoped per source_kind.
   | 'session-ingest-lag'
+  // EI-19281872822982156: the SILENTLY-STOPPED autoloop role detector. Distinct from
+  // 'autoloop-chronic' above, and the distinction is the whole point: chronic fires on an
+  // error STREAK, so a role that stopped firing CLEANLY (no recent fire at all, despite a
+  // non-zero consecutive_errors) is invisible to it — it has no ongoing stream of errors to
+  // streak on. Debounced per (harness, role) over 24h via the same claimWatchdogFire
+  // single-flight the chronic sweep uses.
+  | 'autoloop-silent-stop'
+  // The learning-loop health sweep's per-blueprint escalation: a learning loop sitting in an
+  // unhealthy status (or a 'collision', which the sweep reports in the status slot). Debounced
+  // per blueprint over 24h, keyed `learning-loop::<blueprintId>`.
+  | 'learning-loop-health'
   // session-turn-storage-2026-07-28 D-008: the COMPLEMENT of session-ingest-lag
   // — an adapter that CONSUMES bytes normally while its faithful-parts writer
   // emits nothing. Invisible to the lag guard by construction (no backlog, so

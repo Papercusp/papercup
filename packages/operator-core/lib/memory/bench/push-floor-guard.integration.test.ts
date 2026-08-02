@@ -53,6 +53,7 @@ import {
   positiveControlFailure,
   probePushFloor,
   summarizeProbe,
+  summarizeSeparation,
   type FloorProbeQuery,
   type PushFloorProbeResult,
 } from './push-floor-guard';
@@ -115,6 +116,8 @@ describe('P-002 — the push path admits nothing off-topic and nothing below the
       });
       // eslint-disable-next-line no-console -- the measurement is the artifact
       console.log(`[P-002] ${summarizeProbe(result)}`);
+      // eslint-disable-next-line no-console -- D-056's decisive follow-up reading
+      console.log(`[P-002] ${summarizeSeparation(result)}`);
     } catch (e) {
       setupError = e instanceof Error ? e : new Error(String(e));
     }

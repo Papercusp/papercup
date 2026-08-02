@@ -60,6 +60,7 @@ import { systemDistinctId } from '../flag-distinct-id';
 import { getPeerRpcTransport, PeerUnreachableError } from './peer-rpc-transport';
 import { getAuthorityEvictionMonitor, type AuthorityEvictionMonitor } from './peer-eviction';
 import { selectAuthorityRendezvous, type RendezvousPeerRow } from './rendezvous-authority';
+import { CADENCE_RUNNER_ROUTINES } from '../cadence-runner-capability';
 
 /**
  * A peer in a harness swarm, identified by the same `(github_user_id,
@@ -309,7 +310,24 @@ function effectiveEligibility(
   deps: LockAuthorityDeps,
 ): ReadonlySet<string> | undefined {
   const required: Array<(r: LivePeerRow) => boolean> = [];
-  if (deps.routineHostsOnly) required.push((r) => r.runs_routines === true);
+  // P-004 / D-006: DERIVED from the published set, with a fallback to the legacy
+  // bit. `active_routines` present is authoritative — mig-724 publishers gate the
+  // set on `dbosLaunches()` exactly as they gate the bit, so
+  // `set ∩ CADENCE_RUNNER_ROUTINES ≠ ∅` IS today's `runs_routines` (D-005 point 1).
+  //
+  // But absent means UNKNOWN here, not "not a candidate" — and that is the one
+  // place D-005 point 2's "treat absent/null/empty as one case" must NOT be
+  // carried across from `requiresRoutine`. A pre-mig-724 peer publishes the bit
+  // and NO set; reading absent as ineligible would silently drop it from the
+  // cadence election — reintroducing the exact WI-6996 narrowing this plan exists
+  // to remove, via its own fix. So absent defers to the bit it still publishes.
+  if (deps.routineHostsOnly) {
+    required.push((r) =>
+      r.active_routines != null
+        ? r.active_routines.some((n) => (CADENCE_RUNNER_ROUTINES as readonly string[]).includes(n))
+        : r.runs_routines === true,
+    );
+  }
   const routine = deps.requiresRoutine;
   // Absent / null / empty active_routines ⇒ not a candidate: a pre-upgrade peer
   // and a node advertising nothing are the same verdict, and the publisher

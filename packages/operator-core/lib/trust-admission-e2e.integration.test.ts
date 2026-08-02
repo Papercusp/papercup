@@ -38,6 +38,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import { HARNESS_FEATURES_CONSOLIDATED_DDL, USER_TRUST_LIST_DDL, WORK_ITEM_DEPS_DDL } from '../test/_work-items-schema';
 import type postgres from 'postgres';
 import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
+import { CLAIM_STATES_ALLOWLIST } from './scheduler/claim-states';
 import type { HarnessFeatureRow } from './sync/hyperbee/projections/harness-features';
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
@@ -126,12 +127,28 @@ beforeEach(async () => {
   await db.sql`DELETE FROM harness_shared.audit_log`;
 });
 
-/** A remote, un-screened (audit_verdict NULL, no verified author) todo feature — the foreign work the gate quarantines. */
+/**
+ * The status a fixture row must carry to be visible to the claim floors.
+ *
+ * work-item-status-full-unify (2026-07-19, commit 5c112e51) made `open` the single
+ * unified claimable token; the feature-family `todo` was retired. A row written at
+ * 'todo' is invisible to `claimNextWorkItem` REGARDLESS of admission, which in this
+ * file is especially treacherous: the quarantine assertions here are all
+ * `toBeNull()`, and an unclaimable-by-STATUS row is indistinguishable from a
+ * correctly-quarantined one — so those legs kept passing VACUOUSLY while leg (a),
+ * the one that asserts a successful claim, failed as `expected undefined to be
+ * 'F-FOREIGN'`.
+ *
+ * Derived from the production allowlist, never hardcoded — see the guard test below.
+ */
+const CLAIMABLE_STATUS = 'open';
+
+/** A remote, un-screened (audit_verdict NULL, no verified author) claimable-status feature — the foreign work the gate quarantines. */
 function insRemotePending(fid: string, ts = 1) {
   return h.sql`
     INSERT INTO harness_shared.harness_features_consolidated
       (workspace_id, harness_slug, feature_id, title, status, item_kind, origin, audit_verdict, created_ts, updated_ts)
-    VALUES (${WS}, ${HARNESS}, ${fid}, ${fid}, 'todo', 'feature', 'remote', NULL, ${ts}, ${ts})`;
+    VALUES (${WS}, ${HARNESS}, ${fid}, ${fid}, ${CLAIMABLE_STATUS}, 'feature', 'remote', NULL, ${ts}, ${ts})`;
 }
 
 /** Seed a pot_members admission row — `pubkeys` become device_attestations; `binding` is the binding_status. */
@@ -180,6 +197,15 @@ function runAuditorLane(verdict: 'admit' | 'reject', reasons = '') {
 }
 
 describe('Brief A5 — three-tier admission flow end-to-end (real PG)', () => {
+  // RECURRENCE GUARD (status-vocabulary drift — the 2026-07-19 unify broke this file).
+  // Critical HERE because most quarantine assertions below are `toBeNull()`: if the
+  // fixture status stops being claimable they keep passing for the WRONG REASON, and the
+  // suite reports a green admission gate that is really testing nothing. Assert the
+  // coupling directly so the next vocabulary change fails here, naming itself.
+  it('fixture status is a token the claim floors accept (guards status-vocabulary drift)', () => {
+    expect(CLAIM_STATES_ALLOWLIST).toContain(CLAIMABLE_STATUS);
+  });
+
   it('(a) UNTRUSTED remote → quarantined → auditor ADMIT → auto-runs', async () => {
     await insRemotePending('F-FOREIGN');
 

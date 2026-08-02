@@ -9,7 +9,7 @@
  * The script's pure functions are imported directly (same pattern as apps/operator's
  * psu-pty-host / ptool script tests).
  */
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -36,6 +36,7 @@ import {
   partitionFilesByCoverage,
   suggestTypecheckGate,
   formatUncoveredFilesBanner,
+  coalesceWatermarkFor,
 } from '../../../scripts/lint-tsc.mjs';
 // eslint-disable-next-line import/no-relative-packages
 import {
@@ -1180,6 +1181,73 @@ describe('EI-19341572300046923 — refusing a verdict about uncompiled files', (
         fatal: true,
       }).join('\n');
       expect(text).not.toMatch(/safe to ignore|you can ignore|not a real error|disregard|passed/i);
+    });
+  });
+
+  // The watermark that lets concurrent gate runs share ONE compile (EI-19340233074452707).
+  //
+  // A full compile that started at S read the tree as of S, so its diagnostics are a true
+  // answer about file F iff mtime(F) < S. Passing max(mtime) over the files this run was
+  // asked about lets pc-heavy drop its whole-tree token — which on this repo moves ~every
+  // 18s against a ~170s compile, so no two callers ever shared a key and each paid a full
+  // compile (3-5 byte-identical operator-core compiles observed live on 2026-08-02).
+  describe('coalesceWatermarkFor — freshness watermark for compile sharing', () => {
+    let dir = '';
+    afterEach(() => {
+      if (dir) rmSync(dir, { recursive: true, force: true });
+      dir = '';
+    });
+    const mk = (rel: string, mtimeMs?: number) => {
+      const p = join(dir, rel);
+      mkdirSync(dirname(p), { recursive: true });
+      writeFileSync(p, 'x');
+      if (mtimeMs !== undefined) utimesSync(p, mtimeMs / 1000, mtimeMs / 1000);
+      return rel;
+    };
+
+    it('returns the NEWEST mtime across the named files, rounded past its whole second', () => {
+      dir = mkdtempSync(join(tmpdir(), 'cwm-'));
+      const older = 1_700_000_000_000;
+      const newer = 1_700_000_500_000;
+      mk('a.ts', older);
+      mk('b.ts', newer);
+      const got = coalesceWatermarkFor({ root: dir, files: new Set(['a.ts', 'b.ts']), updateFlag: false });
+      expect(got).toBe(Math.floor(newer / 1000) + 1);
+    });
+
+    it('rounds UP so a sub-second edit can never tie with an earlier compile start', () => {
+      // The hazard this guards: a file written at t.900 floors to t, and a compile that
+      // began at t.100 — BEFORE the edit — also stamps t. Comparing equal would replay a
+      // pre-edit answer as fresh, which is the exact bug the barrier exists to prevent.
+      dir = mkdtempSync(join(tmpdir(), 'cwm-'));
+      const t = 1_700_000_000;
+      mk('a.ts', t * 1000 + 900);
+      expect(coalesceWatermarkFor({ root: dir, files: new Set(['a.ts']), updateFlag: false })).toBe(t + 1);
+    });
+
+    it('opts out (null) for an UNSCOPED run — a bare CI gate judges every file', () => {
+      dir = mkdtempSync(join(tmpdir(), 'cwm-'));
+      expect(coalesceWatermarkFor({ root: dir, files: null, updateFlag: false })).toBeNull();
+      expect(coalesceWatermarkFor({ root: dir, files: new Set(), updateFlag: false })).toBeNull();
+    });
+
+    it('opts out (null) under --update — a run that WRITES the baseline must measure it itself', () => {
+      // Ratcheting off a replayed compile would persist a count nobody re-measured from
+      // this tree state, and a too-low baseline is the EI-487 / WI-4488 failure mode.
+      dir = mkdtempSync(join(tmpdir(), 'cwm-'));
+      mk('a.ts');
+      expect(coalesceWatermarkFor({ root: dir, files: new Set(['a.ts']), updateFlag: true })).toBeNull();
+    });
+
+    it('fails CLOSED on a file it cannot stat, rather than computing a partial watermark', () => {
+      dir = mkdtempSync(join(tmpdir(), 'cwm-'));
+      mk('a.ts');
+      // A named file that is missing is not evidence that nothing changed — giving back a
+      // watermark derived from only the files we could see would admit replays the caller
+      // never vouched for.
+      expect(
+        coalesceWatermarkFor({ root: dir, files: new Set(['a.ts', 'gone.ts']), updateFlag: false }),
+      ).toBeNull();
     });
   });
 });

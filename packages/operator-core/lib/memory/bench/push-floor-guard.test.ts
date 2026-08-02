@@ -18,6 +18,8 @@ import {
   positiveControlFailure,
   probePushFloor,
   summarizeProbe,
+  summarizeSeparation,
+  summarizeSpread,
   type AdmittedEntry,
   type FloorProbeQuery,
   type PushFloorProbeResult,
@@ -173,6 +175,46 @@ describe('positiveControlFailure — TRAP 2, the anti-vacuity rule', () => {
   });
 });
 
+describe('summarizeSpread / summarizeSeparation — D-056 separation reading', () => {
+  it('computes min/median/max per class, ascending', () => {
+    const s = summarizeSpread(new Map([['hard-negative', [0.6, 0.4, 0.5]]]));
+    expect(s[0]).toMatchObject({ className: 'hard-negative', queries: 3, min: 0.4, median: 0.5, max: 0.6 });
+  });
+
+  it('averages the two middle values for an even count', () => {
+    const s = summarizeSpread(new Map([['x', [0.2, 0.4, 0.6, 0.8]]]));
+    expect(s[0]?.median).toBeCloseTo(0.5, 10);
+  });
+
+  it('reports SEPARABLE when the hard-negative ceiling sits below the on-topic floor', () => {
+    const r = {
+      spread: summarizeSpread(
+        new Map([
+          ['hard-negative', [0.30, 0.385]],
+          ['lexical-gap', [0.51, 0.58]],
+        ]),
+      ),
+    } as PushFloorProbeResult;
+    const out = summarizeSeparation(r);
+    expect(out).toContain('SEPARABLE');
+    expect(out).not.toContain('NOT SEPARABLE');
+  });
+
+  it('reports NOT SEPARABLE when the classes overlap — the criterion is then unsatisfiable', () => {
+    const r = {
+      spread: summarizeSpread(
+        new Map([
+          ['hard-negative', [0.52, 0.66]],
+          ['lexical-gap', [0.51, 0.58]],
+        ]),
+      ),
+    } as PushFloorProbeResult;
+    const out = summarizeSeparation(r);
+    expect(out).toContain('NOT SEPARABLE BY ANY FLOOR');
+    expect(out).toContain('bounded FP rate');
+  });
+});
+
 describe('probePushFloor — wiring', () => {
   const queries: FloorProbeQuery[] = [
     { id: 'hn-1', query: 'kubernetes ingress', className: 'hard-negative', expectEmpty: true },
@@ -224,9 +266,15 @@ describe('probePushFloor — wiring', () => {
     });
     // A floored ground truth could never observe a below-floor admission — it
     // would filter away the very evidence the guard exists to find.
-    expect(seen).toHaveLength(1);
-    expect(seen[0]?.opts).not.toHaveProperty('minScore');
-    expect(seen[0]?.opts).toMatchObject({ limit: 200 });
+    //
+    // One probe per query, INCLUDING queries that admitted nothing: the D-056
+    // separation reading needs every query's top cosine score, and a query that
+    // admitted nothing is precisely the one whose score explains why.
+    expect(seen).toHaveLength(queries.length);
+    for (const call of seen) {
+      expect(call.opts).not.toHaveProperty('minScore');
+      expect(call.opts).toMatchObject({ limit: 200 });
+    }
   });
 
   it('records an off-topic admission as evidence rather than throwing', async () => {
