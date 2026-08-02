@@ -334,4 +334,20 @@ describe('work_items:claimable handler', () => {
     // Three independent round-trips presented as one verdict is the defect; one call is the fix.
     expect(readM).toHaveBeenCalledTimes(1);
   });
+
+  describe('EI-18835176695181727: rows/count aliases', () => {
+    it('exposes `rows` as an alias of `claimable` and `count` as an alias of `claimableCount`', async () => {
+      const out = await run({ harness: 'papercup' });
+      expect(out.rows).toEqual(out.claimable);
+      expect(out.count).toBe(out.claimableCount);
+      expect(out.count).toBe(3);
+      expect(out.rows.map((r: { id: string }) => r.id)).toEqual(['WI-A', 'WI-B', 'WI-C']);
+    });
+
+    it('the aliases stay correct under breakdownOnly (empty rows, count still the oracle total)', async () => {
+      const out = await run({ harness: 'papercup', breakdownOnly: true });
+      expect(out.rows).toEqual([]);
+      expect(out.count).toBe(3);
+    });
+  });
 });

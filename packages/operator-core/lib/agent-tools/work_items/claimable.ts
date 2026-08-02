@@ -221,10 +221,18 @@ export default defineTool({
       harness,
       /** The authoritative count: rows passing spec_match AND every claim floor. */
       claimableCount: breakdown.claimable,
+      /** EI-18835176695181727: alias of `claimableCount`. Sibling read tools (e.g.
+       *  dev:pg_query) return `{ rows, count }`; a caller who guesses that shape here
+       *  instead of `{ claimable, claimableCount }` gets `undefined`-keyed access —
+       *  which silently yields `[]`/`0`, not an error, and `0` reads as "queue drained"
+       *  at exactly the moment a drain/wind-down call is made on it. Purely additive. */
+      count: breakdown.claimable,
       /** In-lane issue-family rows the spec's own filter matched, BEFORE floors. */
       matchedByFilter: breakdown.matchedByFilter,
       returned: claimable.length,
       claimable,
+      /** EI-18835176695181727: alias of `claimable` — see `count` above. */
+      rows: claimable,
       /** Per-floor stranding counts (INDEPENDENT/overlapping — they do NOT sum). */
       excludedBreakdown: breakdown.excluded,
       /** WI-6673: what the admitted set is MADE OF — byKind, bySeverity, lowSeverityShare,

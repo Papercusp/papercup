@@ -54,6 +54,7 @@
  * into an if-chain.
  */
 
+import { withBoundedTimeout } from './bounded-timeout';
 import { cellUnknown, type CellUnknown } from './cell-contract';
 import { getCell, type CellReader, type CellSpec } from './cell-registry';
 import {
@@ -232,12 +233,33 @@ export interface CellReadEnv {
 }
 
 /**
+ * WI-6488 — the bound `readCell`'s own header always claimed but never had. Overridable
+ * for tests / an unusually slow resolver (e.g. a `git rev-list` over a large history);
+ * defaults to the same order of magnitude as the sync resolver's own
+ * `PAPERCUSP_SYNC_RESOLVER_TIMEOUT_MS` (10s) so a hung resolver on a hot path (a lock
+ * acquire, a claim, a presence read) cannot wedge its caller forever.
+ *
+ * Deliberately the NARROWEST of the three fix directions the bug report weighed: it
+ * bounds `readCell`'s own WAIT on the dispatch, not the dispatch itself (`withBoundedTimeout`,
+ * reused rather than a hand-rolled `Promise.race`, is explicit about this: "does NOT cancel
+ * the underlying query"). The resolver call keeps running in the background — no
+ * AbortSignal is threaded through `dispatchReadOnlyTool` yet — so a resolver that leaks a
+ * lock or a connection on its own is still a bug worth fixing separately. What this closes
+ * is the specific failure this module documents: a caller on a hot path — a lock acquire, a
+ * claim, a presence read — waiting on `readCell` forever because ITS resolver hung.
+ */
+export const CELL_READ_TIMEOUT_MS = Number(process.env.PAPERCUSP_CELL_READ_TIMEOUT_MS) || 10_000;
+
+/**
  * Read one cell's value AS a specific reader.
  *
- * TOTAL — never throws. Every consumer of this is on a hot path (a lock acquire, a
- * claim, a presence read), and P-026 rule (f) makes that a requirement rather than a
- * courtesy: an enrichment that can throw is an enrichment that can fail the operation
- * it decorates.
+ * TOTAL — never throws, and (WI-6488) never waits past CELL_READ_TIMEOUT_MS either.
+ * Every consumer of this is on a hot path (a lock acquire, a claim, a presence read),
+ * and P-026 rule (f) makes that a requirement rather than a courtesy: an enrichment
+ * that can throw — or hang — is an enrichment that can fail the operation it decorates.
+ * A resolver that never settles now produces a `resolver-failed` unknown instead of
+ * wedging its caller forever; see CELL_READ_TIMEOUT_MS's doc comment for the bound's
+ * scope (it stops readCell WAITING, it does not cancel the resolver dispatch).
  *
  * @param subject the value for a `callerRelativity: { kind:'parameter' }` cell — i.e.
  *   WHAT the cell is being read about (an ownerId for the goal cell, a path for the
@@ -288,16 +310,59 @@ export async function readCell(
   }
 
   // GATE 2 — the resolver tool's own role gate, enforced on the dispatch.
+  //
+  // ⚠ BOUNDED BY `withBoundedTimeout` (WI-6488) — this module's own header claims TOTAL,
+  // but "never throws" and "always terminates" are different properties, and only the
+  // first held before this fix. A resolver that never settles must not make readCell
+  // never settle either, on consumers this module itself names as hot paths (a lock
+  // acquire, a claim, a presence read). See CELL_READ_TIMEOUT_MS above for why this
+  // bounds the WAIT rather than cancelling the dispatch.
+  //
+  // The dispatch error is captured in a closure (rather than trusted to
+  // `withBoundedTimeout`'s stringified `errorMessage`) because gate-2 classification
+  // needs the ORIGINAL `ReadOnlyDispatchError` — its `.code` drives
+  // `unknownForDispatchError`'s access-denial-vs-everything-else branch, which a bare
+  // string cannot reconstruct.
+  let dispatchError: unknown;
+  const DISPATCH_TIMED_OUT = Symbol('cell-read:dispatch-timed-out');
+  const raced = await withBoundedTimeout(
+    () =>
+      dispatchReadOnlyTool(spec.changeSignal.tool, args, {
+        workspaceId: env.workspaceId,
+        harnessSlug: env.harnessSlug,
+        role: env.role,
+        onBehalfOf: reader.ownerId,
+        spawnId: 'cell-read',
+      }).catch((err) => {
+        dispatchError = err;
+        throw err;
+      }),
+    { fallback: DISPATCH_TIMED_OUT, timeoutMs: CELL_READ_TIMEOUT_MS, label: `cell-read:${cell}` },
+  );
+
   let payload: unknown;
-  try {
-    payload = await dispatchReadOnlyTool(spec.changeSignal.tool, args, {
-      workspaceId: env.workspaceId,
-      harnessSlug: env.harnessSlug,
-      role: env.role,
-      onBehalfOf: reader.ownerId,
-      spawnId: 'cell-read',
-    });
-  } catch (err) {
+  if (raced.degraded && raced.reason === 'timeout') {
+    // The resolver WAS allowed to look — it just did not finish in time. That is
+    // `resolver-failed` by this module's own mapping table (line ~199), never
+    // `not-measured`: the caller's lever is retry-or-escalate, not "obtain access".
+    return {
+      status: 'unknown',
+      cell,
+      unknown: cellUnknown(
+        'resolver-failed',
+        `the resolver ("${spec.changeSignal.tool}") did not respond within ${CELL_READ_TIMEOUT_MS}ms. ` +
+          'readCell stopped waiting on it (WI-6488) — this bounds the CALLER, not the resolver: the ' +
+          'dispatch may still be running in the background. If this recurs for the same cell, the ' +
+          "resolver itself likely has a genuine hang (a wedged lock, an unbounded external call) that " +
+          'needs its own fix, not a longer timeout.',
+      ),
+    };
+  }
+  if (raced.degraded) {
+    // reason === 'error' — the dispatch threw. Reclassify off the CAPTURED error (not
+    // `raced.errorMessage`, which is a plain string) so ReadOnlyDispatchError's code
+    // still drives the access-denial branch below.
+    const err = dispatchError;
     if (err instanceof ReadOnlyDispatchError || (err as Error)?.name === 'ReadOnlyDispatchError') {
       return { status: 'unknown', cell, unknown: unknownForDispatchError(err as ReadOnlyDispatchError) };
     }
@@ -308,6 +373,7 @@ export async function readCell(
       unknown: cellUnknown('resolver-failed', err instanceof Error ? err.message : String(err)),
     };
   }
+  payload = raced.value;
 
   /**
    * ⚠ THE PROJECTION IS INSIDE A GUARD, and the guard is not decorative — it closes a

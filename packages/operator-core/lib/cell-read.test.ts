@@ -14,7 +14,7 @@
  * hazard D-042 closes.
  */
 
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const dispatchReadOnlyTool = vi.fn();
 
@@ -28,7 +28,7 @@ vi.mock('./events/await/predicate-watch', async (importOriginal) => {
   };
 });
 
-import { readCell, unknownForDispatchError } from './cell-read';
+import { CELL_READ_TIMEOUT_MS, readCell, unknownForDispatchError } from './cell-read';
 import { BUILTIN_CELLS } from './cell-registrations';
 import { ReadOnlyDispatchError } from './events/await/predicate-watch';
 import { registerCell, __resetCellRegistryForTests, type CellSpec } from './cell-registry';
@@ -738,41 +738,68 @@ describe('P-007 — TOTALITY FUZZ: readCell never throws, whatever the resolver 
 });
 
 /**
- * ⚠⚠ TOTALITY IS "NEVER THROWS" — IT IS **NOT** "ALWAYS TERMINATES", AND THE DIFFERENCE
- * IS A LIVE DEFECT (WI-6488).
+ * ⚠⚠ TOTALITY IS "NEVER THROWS" — AND NOW, ALSO, "ALWAYS TERMINATES" (WI-6488 FIXED).
  *
- * Every row above proves `readCell` cannot fail its caller by THROWING. Nothing in this
- * module, in `dispatchReadOnlyTool`, or in `dispatchProjectedTool` bounds how long the
- * resolver may take — verified by inspection 2026-07-27: there is no timeout, no
- * `Promise.race`, and no AbortSignal anywhere on that path. So a resolver that HANGS
- * hangs `readCell`, and through it whatever it was decorating.
+ * Every row above proves `readCell` cannot fail its caller by THROWING. Until WI-6488,
+ * nothing bounded how long the resolver could take — verified by inspection 2026-07-27:
+ * no timeout, no `Promise.race`, no AbortSignal anywhere on the
+ * `readCell → dispatchReadOnlyTool → dispatchProjectedTool` path. A resolver that HUNG
+ * hung `readCell`, and through it whatever it was decorating.
  *
  * On this module's own stated consumers — "a lock acquire, a claim, a presence read" —
- * that is STRICTLY WORSE than the throw P-026 (f) forbids. A throw is caught by the
- * `catch` twenty lines up and the operation proceeds without its enrichment; a hang
- * holds the lock. The rule was written against the failure that is easy to picture, and
- * the harder one slipped underneath it.
+ * that was STRICTLY WORSE than the throw P-026 (f) forbids: a throw is caught by the
+ * `catch` in gate 2 and the operation proceeds without its enrichment, but a hang holds
+ * the lock. The fix bounds `readCell`'s own WAIT via `withBoundedTimeout` (reused from
+ * `bounded-timeout.ts` rather than a hand-rolled race) — see `CELL_READ_TIMEOUT_MS`'s
+ * doc comment in `cell-read.ts` for why this bounds the CALLER, not the resolver dispatch
+ * itself (no AbortSignal is threaded through yet — a resolver that leaks a lock or a
+ * connection on its own is a separate bug).
  *
- * The test below PINS the current behaviour rather than asserting the desired one — a
- * test asserting an absent bound would simply be red forever and get skipped. When
- * WI-6488 is fixed this test FAILS, which is the intended trigger to flip it to expect
- * `'readCell'` and assert the bound instead.
+ * This test used to PIN the absent bound (a test asserting a bound that did not exist
+ * would have been red forever). Now that the bound exists, it asserts it: a resolver that
+ * never settles must not make `readCell` wait past `CELL_READ_TIMEOUT_MS`, and the
+ * timed-out read must render as an ENUMERATED unknown — never a throw, never a silent
+ * hang — with code `resolver-failed` (the resolver was allowed to look; it just did not
+ * finish, so the caller's lever is retry-or-escalate, not "obtain access").
  */
-describe('P-007 — the bound that does NOT exist (pins WI-6488)', () => {
-  it('⚠ a resolver that never settles makes readCell never settle either', async () => {
+describe('WI-6488 — readCell now BOUNDS a resolver that never settles', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('a resolver that never settles no longer hangs readCell — it times out as resolver-failed', async () => {
     registerCell(spec());
     dispatchReadOnlyTool.mockImplementation(() => new Promise(() => {}));
 
-    const winner = await Promise.race([
-      readCell('test.cell', READER, ENV).then(() => 'readCell' as const),
-      new Promise<'timer'>((r) => setTimeout(() => r('timer'), 250)),
-    ]);
+    const pending = readCell('test.cell', READER, ENV);
+    await vi.advanceTimersByTimeAsync(CELL_READ_TIMEOUT_MS);
+    const out = await pending;
 
-    expect(
-      winner,
-      'readCell RETURNED before the timer — a bound now exists on the resolver dispatch. That is the WI-6488 ' +
-        "fix landing, and it is good news: flip this expectation to 'readCell' and assert the unknown code the " +
-        'bound produces (it should be resolver-failed, whose lever is retry-or-escalate).',
-    ).toBe('timer');
+    expect(out.status).toBe('unknown');
+    if (out.status === 'unknown') {
+      expect(out.unknown.code).toBe('resolver-failed');
+      expect(out.unknown.detail).toMatch(/did not respond within/);
+    }
+  });
+
+  it('a resolver that settles just under the bound still returns its real value', async () => {
+    registerCell(spec());
+    dispatchReadOnlyTool.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          setTimeout(() => resolve({ positions: { deployed: true } }), CELL_READ_TIMEOUT_MS - 1);
+        }),
+    );
+
+    const pending = readCell('test.cell', READER, ENV);
+    await vi.advanceTimersByTimeAsync(CELL_READ_TIMEOUT_MS - 1);
+    const out = await pending;
+
+    expect(out.status).toBe('value');
+    if (out.status === 'value') expect(out.value).toBe(true);
   });
 });
