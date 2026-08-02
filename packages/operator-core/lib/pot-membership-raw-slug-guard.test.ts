@@ -112,16 +112,73 @@ describe('raw-installSlug guard predicate (EI-19298972043721870)', () => {
     //           graduated on the audited "autoloop_state is not re-homed" verdict
     //           (rows persist under '*', '@singleton', 'oddsmith' and 'papercup'
     //           un-rewritten — the re-home triggers themselves surviving verbatim).
-    //           ⚠ The remaining 5 will NOT all graduate: harness_plans IS re-homed, so
-    //           3 of them need a real conversion. Expect this number to fall via
-    //           CONVERSIONS from here, not only via ALLOWLIST entries.
+    //    5 → 0  2026-08-02 WI-6978 — the audit CLOSED. The last five split, as
+    //           predicted, into both outcomes rather than all graduating:
+    //             CONVERTED (relation IS re-homed) — plan-run-action ·
+    //               ready-plan-autostart · draft-review-watchdog (harness_plans);
+    //               poll-daemon's harness_features_consolidated read.
+    //             ALLOWLISTED (relation is NOT re-homed) — ungraded-filings-watchdog
+    //               (scout_routed_ideas), plus plan-run-action and poll-daemon again
+    //               for their REMAINING relations (plan_runs; pr_reviewer_settings +
+    //               trusted_authors). Two files are both converted and allowlisted —
+    //               a per-file verdict over a per-relation truth.
     expect(
       BASELINE.size,
       'BASELINE changed size. If you GRADUATED a file (audited its relation and moved it to ' +
         'ALLOWLIST, or converted it to routineStorageSlug), DECREMENT the expected count here ' +
         'in this same edit and add a history line above. If this grew, you added a grandfather ' +
         'instead of fixing a site — do NOT raise the number to make this pass.',
-    ).toBe(5);
+    ).toBe(0);
+  });
+});
+
+/**
+ * EI-19340006901835339 (WI-6978). The predicate used to match ONLY the bare identifier,
+ * so every member-expression spelling was invisible — and the guard went on printing
+ * "✓ no NEW offenders" over sites it had never examined.
+ *
+ * That is the same bug class the guard itself exists to catch, one level up: an absence
+ * rendering as a clean verdict. The corpus-completeness half of it was already reasoned
+ * about carefully (see formatCleanVerdict below); the PATTERN-completeness half was not.
+ *
+ * Widening it surfaced 6 previously-unseen sites in 3 files, 5 of them genuine latent
+ * bugs on the re-homed harness_plans relation. The sharpest was
+ * scout/ready-plan-autostart.ts, ALREADY grandfathered for its bare-identifier site: an
+ * auditor could have fixed that one, watched the guard go green, and shipped with two
+ * more broken filters in the same file.
+ *
+ * These cases are why the tests below assert the SPELLINGS, not just the concept — the
+ * old suite exercised only `${installSlug}`, which is precisely why the hole survived
+ * a test file explicitly written to pin the predicate down.
+ */
+describe('predicate sees member-expression spellings, not just the bare identifier', () => {
+  it('FLAGS a filter on a property access ending in installSlug', () => {
+    // The two real spellings found in-tree, verbatim.
+    expect(usesRawInstallSlugFilter('WHERE harness_slug = ${routine.installSlug}')).toBe(true);
+    expect(usesRawInstallSlugFilter('AND p.harness_slug = ${args.installSlug}')).toBe(true);
+  });
+
+  it('FLAGS a deeper path, and tolerates whitespace around the dots', () => {
+    expect(usesRawInstallSlugFilter('WHERE harness_slug = ${opts.ctx.installSlug}')).toBe(true);
+    expect(usesRawInstallSlugFilter('WHERE harness_slug = ${ args . installSlug }')).toBe(true);
+  });
+
+  it('does NOT flag a property access ending in something else', () => {
+    // Only the FINAL segment matters: the fix is still recognised as the fix, even
+    // when it arrives via a property. This is what keeps the widening from turning
+    // into a blunt "anything interpolated" match.
+    expect(usesRawInstallSlugFilter('WHERE harness_slug = ${args.planStorageSlug}')).toBe(false);
+    expect(usesRawInstallSlugFilter('WHERE harness_slug = ${routine.storageSlug}')).toBe(false);
+    expect(usesRawInstallSlugFilter('WHERE harness_slug = ${await planSlugFor(routine)}')).toBe(
+      false,
+    );
+  });
+
+  it('does NOT flag a member expression merely CONTAINING installSlug as a prefix', () => {
+    expect(usesRawInstallSlugFilter('WHERE harness_slug = ${args.installSlugResolved}')).toBe(
+      false,
+    );
+    expect(usesRawInstallSlugFilter('WHERE harness_slug = ${rawInstallSlug}')).toBe(false);
   });
 });
 

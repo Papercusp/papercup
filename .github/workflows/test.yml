@@ -16,6 +16,20 @@ on:
   # green-checkpoint.ts) explicitly fires this via the GitHub API right after each
   # FF of `main` — restoring a real, working remote gate on every promotion.
   workflow_dispatch:
+    inputs:
+      # WI-7013: green-checkpoint's dispatchCiWorkflow (apps/operator/lib/release/
+      # green-checkpoint.ts) passes the sha `main` advanced FROM as this input —
+      # the real diff base for a promotion dispatched at ref=main. Without it,
+      # AFFECTED_BASE below falls back to origin/main, which on a workflow_dispatch
+      # run checked out AT main IS the same commit as HEAD: an empty diff, so the
+      # affected-test step reports `tasks=0 status=passed` having verified nothing
+      # (green by vacuity). Optional — a caller with no prior sha (dispatchCiWorkflow
+      # omits it) or a human manually dispatching this workflow both leave it unset,
+      # and the fallback below is unchanged.
+      base:
+        description: 'Base sha to diff against (green-checkpoint passes the pre-FF main sha; leave blank to diff against origin/main)'
+        required: false
+        type: string
 
 concurrency:
   group: test-${{ github.ref }}

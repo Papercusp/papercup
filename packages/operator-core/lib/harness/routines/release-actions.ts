@@ -705,6 +705,9 @@ export async function trackGateStall(
   /** EI-13288: the CLI's own stale-candidate re-triage verdict (see CheckpointVerdict.retriage
    *  above), when the caller has one. */
   retriage?: { classification: 'real-red' | 'stale-candidate' | 'unknown'; tip: string | null; detail: string },
+  /** EI-19329732364513693 test seam — injectable git runner for the candidate-staleness
+   *  measurement below. Defaults to the real one; mirrors checkReleaseFixerCandidateStale. */
+  gitRunner?: GitCheckRunner,
 ): Promise<void> {
   // P-016 (D-010): a partial advance ('advanced-prefix') MOVED `main` (the longest green
   // prefix is deployable), so it resets the "main hasn't advanced" stall streak just like
@@ -754,6 +757,17 @@ export async function trackGateStall(
     console.log(gateStallNoopLogMessage(status));
     return;
   }
+  // EI-19329732364513693: stamp HOW STALE the judged candidate is into the same blob that
+  // carries the verdict, so a reader never has to re-derive it (and so the overwhelmingly
+  // common case — not thinking to derive it at all — stops costing a wild-goose chase).
+  // Fail-safe: nulls on any git error. Deliberately AFTER the 'noop' early-return above, which
+  // leaves gate_health untouched and must not pay for a git call it will never record.
+  const staleness: CandidateStaleness = candidate
+    ? await measureCandidateStaleness(integrationRoot(), candidate, gitRunner ?? defaultGitCheckRunner).catch(() => ({
+        candidateCommittedAt: null,
+        commitsBehindTip: null,
+      }))
+    : { candidateCommittedAt: null, commitsBehindTip: null };
   let next: Record<string, unknown>;
   if (gateClass === 'reset') {
     if (!isGreen) {
@@ -774,7 +788,7 @@ export async function trackGateStall(
     // refreshing `last_fired_at`, so `fireStale` reads FRESH). See release/gate-verdict-freshness.ts.
     // EI-13288: a stale-candidate note from a PRIOR red streak must not linger once the gate is
     // green again — same recovery-clear convention as `failingTests` just above.
-    next = { consecutiveReds: 0, lastGreenAt: Date.now(), firstRedAt: null, stallAlerted: false, lastFrom: fromPin ?? gh.lastFrom ?? null, watchdogAlerted: false, failingTests: [], observedAt: Date.now(), observedCandidate: candidate?.slice(0, 12) ?? null, retriageStaleTip: null, retriageDetail: null };
+    next = { consecutiveReds: 0, lastGreenAt: Date.now(), firstRedAt: null, stallAlerted: false, lastFrom: fromPin ?? gh.lastFrom ?? null, watchdogAlerted: false, failingTests: [], observedAt: Date.now(), observedCandidate: candidate?.slice(0, 12) ?? null, retriageStaleTip: null, retriageDetail: null, candidateCommittedAt: staleness.candidateCommittedAt, commitsBehindTip: staleness.commitsBehindTip };
     // P-003: clear the durable stall escalation on the green transition (idempotent).
     // WI-2825: a 0-row match here (harness_slug/phase mismatch, or the row was already
     // cleared/removed some other way) previously succeeded silently — no error, no log —
@@ -916,6 +930,11 @@ export async function trackGateStall(
       observedCandidate: candidate?.slice(0, 12) ?? null,
       retriageStaleTip: retriageStale ? (retriage!.tip?.slice(0, 12) ?? null) : null,
       retriageDetail: retriageStale ? retriage!.detail : null,
+      // EI-19329732364513693: this is the branch that MATTERS. A red names failing tests and
+      // BOTH agents and the release-fixer dispatcher act on those names, so a red must carry
+      // enough provenance for a reader to judge whether it is still true of the tree.
+      candidateCommittedAt: staleness.candidateCommittedAt,
+      commitsBehindTip: staleness.commitsBehindTip,
     };
   }
   await sql.unsafe(
@@ -1214,6 +1233,54 @@ export async function checkReleaseFixerCandidateStale(
   const ahead = await runner(root, ['rev-list', '--count', `origin/main..${candidate}`]);
   const candidatePromoted = ahead.ok && ahead.stdout === '0';
   return { candidateExists, candidatePromoted };
+}
+
+/** EI-19329732364513693: how OLD is the candidate a verdict judged, and how far behind tip?
+ *  See {@link measureCandidateStaleness} for why a verdict that omits this misleads. */
+export interface CandidateStaleness {
+  /** ISO-8601 commit time of the candidate; null when unreadable (GC'd sha, git error). */
+  candidateCommittedAt: string | null;
+  /** Commits on `staging` the candidate does NOT contain; null when unreadable. */
+  commitsBehindTip: number | null;
+}
+
+/**
+ * EI-19329732364513693: measure the candidate's AGE and DISTANCE BEHIND TIP, so a recorded
+ * verdict can disclose them.
+ *
+ * Why this exists. The quiet-cut picks a candidate by waiting for a window with no recent
+ * commits, so on a continuously-busy tree it can reach arbitrarily far back. What then makes
+ * that candidate *fail* is not age as such — it is that git-sync commits the WHOLE tree on a
+ * timer, so a refactor whose component edit and test edit are minutes-to-hours apart is
+ * committed as a broken intermediate, and that intermediate is eligible to be judged.
+ * Measured 2026-08-02: five failures across two consecutive reds, every one already green at
+ * tip, with component→test skew windows of 34min, 2h11m, and (for the run fired 11:15:03Z) a
+ * fix that landed 39 SECONDS after the candidate was cut.
+ *
+ * A red verdict names failing tests, and both agents and the release-fixer dispatcher act on
+ * those names. Nothing in the log header, the broadcast, or `gate_health` said how old the
+ * candidate was, so responders re-derived it by hand or — far more often — did not, and
+ * chased failures that had been fixed hours earlier. Persisting these two numbers makes a
+ * stale red self-defusing: "candidate is N commits / Xh behind tip" ends the chase at the
+ * source instead of costing each reader the same rediscovery.
+ *
+ * Read-only and FAIL-SAFE: any git error yields nulls rather than throwing, because
+ * `trackGateStall` must never fail a routine tick for want of a diagnostic.
+ */
+export async function measureCandidateStaleness(
+  root: string,
+  candidate: string,
+  runner: GitCheckRunner = defaultGitCheckRunner,
+): Promise<CandidateStaleness> {
+  const committed = await runner(root, ['log', '-1', '--format=%cI', candidate]);
+  // `<candidate>..staging` counts commits reachable from staging but NOT from the candidate —
+  // i.e. exactly how far the tree moved on past what this verdict judged.
+  const behind = await runner(root, ['rev-list', '--count', `${candidate}..staging`]);
+  const parsedBehind = behind.ok ? Number.parseInt(behind.stdout, 10) : Number.NaN;
+  return {
+    candidateCommittedAt: committed.ok && committed.stdout ? committed.stdout : null,
+    commitsBehindTip: Number.isFinite(parsedBehind) ? parsedBehind : null,
+  };
 }
 
 /**

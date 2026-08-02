@@ -2205,7 +2205,7 @@ async function tryLongestGreenPrefix(
   }
   const adv = await deps.advance(prefixTip);
   if (!adv.advanced) return null;
-  if (!noPush) await deps.push(cfg.releaseRef).catch((e) => deps.log(`warn: push ${cfg.releaseRef} failed: ${e}`));
+  if (!noPush) await deps.push(cfg.releaseRef, adv.from).catch((e) => deps.log(`warn: push ${cfg.releaseRef} failed: ${e}`));
   deps.log(
     `✅ partial-green-gate: ${cfg.releaseRef} advanced ${adv.from?.slice(0, 8) ?? 'none'} → ${prefixTip.slice(0, 8)} ` +
       `(longest green prefix; tip ${candidate.slice(0, 8)} still red)`,
@@ -2855,7 +2855,7 @@ export async function runGreenCheckpoint(
 
   const adv = await deps.advance(candidate);
   if (adv.advanced && !opts.noPush) {
-    await deps.push(cfg.releaseRef).catch((e) => deps.log(`warn: push ${cfg.releaseRef} failed: ${e}`));
+    await deps.push(cfg.releaseRef, adv.from).catch((e) => deps.log(`warn: push ${cfg.releaseRef} failed: ${e}`));
   }
   deps.log(`✅ ${cfg.releaseRef} advanced ${adv.from?.slice(0, 8) ?? 'none'} → ${candidate.slice(0, 8)} (green)`);
   const flakeNote = flakeSuspects?.length
@@ -3077,8 +3077,23 @@ export function hasNpmScript(treeDir: string, scriptName: string): boolean {
  * which this is never called for). Best-effort: a GitHub API hiccup (network, auth,
  * missing `workflow_dispatch:` trigger on a fork) must never fail the checkpoint
  * itself, so every failure is caught and only logged.
+ *
+ * WI-7013: `baseSha` is the sha `main` advanced FROM (the pre-FF tip). test.yml's
+ * affected-test step diffs `AFFECTED_BASE..HEAD`; without a real base it defaults to
+ * `origin/main`, which on a `workflow_dispatch` run at `ref=main` IS the checked-out
+ * HEAD — an empty diff that reports `tasks=0 status=passed` having verified nothing,
+ * green by vacuity rather than green by having actually run the affected suites. We
+ * thread the pre-FF sha through as the `base` workflow input so the dispatched run
+ * judges the real promotion delta. `baseSha` is optional and the input is omitted
+ * when absent (a fresh `ready` branch, `AdvanceResult.from === null`) — test.yml
+ * degrades to its unchanged `origin/main` default in that case, exactly as before.
  */
-async function dispatchCiWorkflow(integrationRoot: string, ref: string, log: (s: string) => void): Promise<void> {
+async function dispatchCiWorkflow(
+  integrationRoot: string,
+  ref: string,
+  log: (s: string) => void,
+  baseSha?: string | null,
+): Promise<void> {
   try {
     const { gitOriginUrl, parseGithubRemote } = await import(
       '@papercusp/operator-core/lib/cupboard/resolve-repo-coords'
@@ -3100,8 +3115,12 @@ async function dispatchCiWorkflow(integrationRoot: string, ref: string, log: (s:
       repo: coords.repo,
       workflow_id: 'test.yml',
       ref,
+      ...(baseSha ? { inputs: { base: baseSha } } : {}),
     });
-    log(`ci-dispatch: triggered test.yml on ${coords.owner}/${coords.repo}@${ref}`);
+    log(
+      `ci-dispatch: triggered test.yml on ${coords.owner}/${coords.repo}@${ref}` +
+        (baseSha ? ` (base=${baseSha.slice(0, 8)})` : ' (no base — first advance, test.yml defaults to origin/main)'),
+    );
   } catch (e) {
     log(`warn: ci-dispatch failed (non-fatal, test.yml stays un-re-verified this tick): ${e}`);
   }
@@ -4147,14 +4166,14 @@ export function realCheckpointDeps(
     // PAPERCUSP_MAIN_PUSH_OK=1 — green-checkpoint is the ONE writer allowed past
     // the pre-push guard on `main` (bin/git-hooks/pre-push). Everyone else's
     // pushes to main are blocked by that hook.
-    push: async (ref) => {
+    push: async (ref, baseSha) => {
       await exec('git', ['-C', cfg.integrationRoot, 'push', 'origin', `${ref}:${ref}`], {
         env: { ...process.env, PAPERCUSP_MAIN_PUSH_OK: '1' },
       });
       // See dispatchCiWorkflow's doc comment (EI-18661485259809120): the pushed commit's
       // `[skip ci]` message means the push above never actually triggers test.yml on
       // GitHub's side — re-fire it explicitly so the remote gate still runs.
-      await dispatchCiWorkflow(cfg.integrationRoot, ref, log);
+      await dispatchCiWorkflow(cfg.integrationRoot, ref, log, baseSha);
     },
     async broadcast(summary, body) {
       const { sendMessage } = await import('@papercusp/operator-core/lib/agent-tools/coordination/messages');
