@@ -429,10 +429,10 @@ export default defineTool({
     for (const spec of needed) {
       await sendMessage(identity, {
         to: [args.member],
-        text:
-          `CHECKPOINT REQUIRED on ${spec.itemId} — ${reason}.\n\n` +
-          `Write your in-flight state NOW: work_items:checkpoint { id: '${spec.itemId}', checkpoint: '<what you have done, what is left, the next concrete action>' }. ` +
-          'Your leader is verifying this from the checkpoint ledger, not from a reply — do the write, an acknowledgement does not count. ' +
+        summary: `CHECKPOINT REQUIRED on ${spec.itemId} — ${reason}`,
+        body:
+          `Write your in-flight state NOW: work_items:checkpoint { id: '${spec.itemId}', checkpoint: '<what you have done, what is left, the next concrete action>' }.\n\n` +
+          'Your leader is verifying this from the checkpoint LEDGER, not from a reply — do the write; an acknowledgement does not count. ' +
           'Anything not written may be lost when this lane is interrupted.',
         kind: 'message',
         harnessSlug: spec.harness ?? harnessHint ?? null,

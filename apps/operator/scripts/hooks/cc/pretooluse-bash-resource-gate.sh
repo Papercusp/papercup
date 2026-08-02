@@ -1825,7 +1825,9 @@ except Exception:
 #
 # Safe-by-default & FAIL-OPEN: this hook lands fleet-wide via git-sync with no
 # review, so a fail-closed bug would wedge every agent's bash. The threshold is
-# 1.5x cores (catches the 1.9x=245 onset; never trips healthy 1.0-1.3x load);
+# 1.0x cores (was 1.5x; EI-19296434833105508 — the herd forms BELOW 1.5x and
+# operator liveness degrades from ~1.3x, and a denied caller's remedy queues
+# politely rather than failing, so a lower bar costs nothing but a nice queue);
 # kill-switch PC_HEAVY_ADMISSION=off; skipped when PC_HEAVY_BYPASS=1 (pc-heavy
 # sets it) or the caller is not an agent/shared-tree session (owner exempt);
 # every error path allows. PC_HEAVY_LOAD1_OVERRIDE lets tests inject a load.
@@ -1886,6 +1888,19 @@ def _heavy_admission():
         _pc_lead = _next
     if re.match(r'(?:bash\s+|sh\s+)?(?:\S*/)?pc-heavy\.sh(?:\s|$)', _pc_lead):
         return
+    #   (a2) ROOT npm entrypoints that are ALREADY wrapped in scripts/pc-heavy.sh
+    #       inside package.json (EI-19296434833105508): denying them would re-open
+    #       the EI-10001 "the remedy doesn't work" trap — the agent runs the
+    #       blessed self-throttling command and is denied before npm can spawn
+    #       the wrapper, under exactly the load the wrapper exists to queue for.
+    #       Exact script names only (these exist ONLY at the repo root); bare
+    #       `npm test` / `npm run test` stay gated because a WORKSPACE cwd
+    #       resolves those to its own raw vitest, not the wrapper.
+    if re.match(
+        r'npm\s+run\s+(?:test:affected(?::integration)?|test:all(?::integration)?'
+        r'|test:file|lint:tsc(?::operator-vite)?|typecheck)(?=\s|$)',
+        _pc_lead):
+        return
     #   (b) a leading `PC_HEAVY_BYPASS=1` env-assignment prefix (bare, behind
     #       other assignments, or behind `env`) — mirrors the message's own
     #       `PC_HEAVY_BYPASS=1 <cmd>` remedy and the `env`-prefixed heavy form
@@ -1944,18 +1959,26 @@ def _heavy_admission():
         load1 = float(_ov) if _ov not in (None, '') else os.getloadavg()[0]
         cores = os.cpu_count() or 1
         _mx = os.environ.get('PC_HEAVY_MAX_LOAD1')
-        max_load1 = float(_mx) if _mx not in (None, '') else round(1.5 * cores)
+        # 1.0x cores, down from 1.5x (EI-19296434833105508, measured 2026-08-01):
+        # under the old 192 threshold a 52-vitest + 35-tsc herd formed at load
+        # ~111 and drove load1 to 216 — and the operator's heartbeat starts
+        # failing from ~171 (EI-19294517824914302), so "healthy 1.0-1.3x" was
+        # not in fact harmless. A denied caller loses nothing: the remedy
+        # (pc-heavy / the wrapped root npm entrypoints, allowed above) QUEUES
+        # for a slot instead of failing.
+        max_load1 = float(_mx) if _mx not in (None, '') else round(1.0 * cores)
     except Exception:
         return  # can't read load/cores → fail-open
     if load1 > max_load1:
         deny(
             f'heavy-command admission (WI-3821): host load1={load1:.0f} is over the '
-            f'{max_load1:.0f} threshold (~1.5x cores) — starting another vitest/tsc/'
-            f'test build now would pile onto an already-saturated box (this class '
-            f'melted the host to load 3000+ twice this week). Either wait ~30-60s and '
-            f're-run once load drops, or run it under `scripts/pc-heavy.sh -- <your '
-            f'command>`, which waits for a free build slot (flock counting semaphore) '
-            f'and runs niced instead of failing. Kill-switch (prepend inline): '
+            f'{max_load1:.0f} threshold (~1x cores) — starting another bare vitest/tsc/'
+            f'test build now piles onto a box whose operator liveness degrades past '
+            f'~1.3x (this class melted the host to load 3000+ and triggered MCP-dark '
+            f'cascades). Run it under `scripts/pc-heavy.sh -- <your command>` (waits '
+            f'for a free build slot, runs niced), or use the self-throttling root '
+            f'entrypoints (`npm run test:affected` / `test:file` / `lint:tsc`), which '
+            f'pass this gate and queue politely. Kill-switch (prepend inline): '
             f'`PC_HEAVY_ADMISSION=off <your command>`.'
         )
 

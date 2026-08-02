@@ -30,14 +30,16 @@
  * Fix: never put a backtick in a SQL comment. Rephrase with quotes, e.g.
  * `-- the bare '>=' applied …` instead of `` -- the bare `>=` applied … ``.
  */
-import { execSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
+import { describeUnscanned, listTrackedFiles } from './lib/tracked-files.mjs';
 
 const ROOT = new URL('..', import.meta.url).pathname;
 
-const tracked = execSync('git ls-files', { cwd: ROOT, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 })
-  .split('\n')
-  .filter(Boolean);
+// WI-6730: enumerate via the shared helper, which recurses into submodules. A
+// bare `git ls-files` does not — it emits one gitlink entry per submodule — so
+// this guard never scanned a single file inside any of the 39 and printed ✓
+// regardless. `unscanned` is reported on success rather than silently dropped.
+const { files: tracked, unscanned } = listTrackedFiles(ROOT);
 
 const inScope = (f) =>
   /\.(ts|tsx|mjs)$/.test(f) &&
@@ -93,7 +95,9 @@ for (const f of tracked) {
 }
 
 if (offenders.length === 0) {
-  console.log('✓ no backtick inside a `--` SQL comment near a sql`...` tagged template (EI-7661).');
+  console.log(
+    `✓ no backtick inside a \`--\` SQL comment near a sql\`...\` tagged template (EI-7661).${describeUnscanned(unscanned)}`,
+  );
   process.exit(0);
 }
 
