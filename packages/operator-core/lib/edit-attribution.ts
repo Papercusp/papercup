@@ -17,6 +17,7 @@
 
 import { getOrgPg } from '@papercusp/db-org';
 import { getActiveClaimForOwner } from './work-item-claims';
+import { getPresence } from './agent-tools/coordination/presence';
 
 export interface RecordEditAttributionInput {
   /** The lock's coordination domain — the physical repo root (the join key). */
@@ -55,6 +56,19 @@ export async function recordEditAttribution(input: RecordEditAttributionInput): 
       }
     }
 
+    // WI-6584: plan_slug was UNCONDITIONALLY written as NULL here — the input type didn't
+    // even carry a planSlug field, so there was nothing to thread even if a caller wanted to.
+    // `work_item_claims` (the join above) has no plan_slug column at all (a work-item claim
+    // and a declared plan lane are different things), so the only live source for "which plan
+    // is this agent working under, right now" is its own presence row (coord:declare-intent /
+    // coord:orient write `current_plan_slug` there — agent-coordination-architecture-v2 §4.2).
+    // One more cheap single-row indexed read (by agentId, mirrors the claim lookup above);
+    // best-effort like everything else here — absent/stale presence just means an honest
+    // unattributed plan_slug, never a guess.
+    let planSlug: string | null = null;
+    const presence = await getPresence(input.agentId).catch(() => null);
+    if (presence?.currentPlanSlug) planSlug = presence.currentPlanSlug;
+
     const { sql } = getOrgPg();
     // One row per file via unnest — a single round-trip on the hot path.
     await sql`
@@ -63,7 +77,7 @@ export async function recordEditAttribution(input: RecordEditAttributionInput): 
          harness_slug, work_item_id, plan_slug, intent)
       SELECT ${input.repoRoot}, f, ${input.agentId}, ${input.sessionId ?? null},
              ${input.contributor ?? null}, ${input.workspaceId ?? null},
-             ${harnessSlug}, ${workItemId}, ${null}, ${input.intent ?? null}
+             ${harnessSlug}, ${workItemId}, ${planSlug}, ${input.intent ?? null}
         FROM unnest(${files}::text[]) AS f
     `;
   } catch {

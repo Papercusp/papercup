@@ -258,7 +258,7 @@ const endTurnArg = z
 const toArg = z
   .array(z.string().min(1), {
     error:
-      'coord:send needs `to`: recipient ids. Accepts the SHORT HANDLE shown in the [coord+N] injection / inbox (e.g. "93a38"), the "su-…" prefix, OR the full ownerId — all resolve against the live roster, so NO coord:presence lookup is needed to reply to a peer. ["*"] broadcasts, ["human"] surfaces to the user. AUDIENCE SELECTORS expand to a group: @fleet:<slug> (live members of a named fleet — the cohort an agent joins, no per-agent subscribe), @fleet-leader:<slug> (escalate to the fleet lead), @topic:<slug>, @plan:<slug>, @object:<kind>:<ref>, @file:<path>. The selector is preserved as the audience key, so members catch up later via coord:catch-up. (To make a peer who is waiting on your reply act NOW rather than on their next turn, set wake:"required" — a plain send only injects.)',
+      'coord:send needs `to`: recipient ids. Accepts the SHORT HANDLE shown in the [coord+N] injection / inbox (e.g. "93a38"), the "su-…" prefix, OR the full ownerId — all resolve against the live roster, so NO coord:presence lookup is needed to reply to a peer. ["*"] broadcasts, ["human"] surfaces to the user. AUDIENCE SELECTORS expand to a group: @fleet:<slug> (live members of a named fleet — the cohort an agent joins, no per-agent subscribe), @fleet-leader:<slug> (escalate to the fleet lead), @topic:<slug>, @plan:<slug>, @object:<kind>:<ref>, @file:<path>. The selector is preserved as the audience key, so members catch up later via coord:catch-up. (To make a peer who is waiting on your reply act NOW rather than on their next turn, set wake:"required" — a plain send only injects.) ⚠ ALL-OR-NOTHING BY DESIGN (EI-19343900550313022): every id here addresses the SAME one message — if even ONE fails to resolve (a typo, a fabricated/padded ownerId, a since-ended session), the WHOLE send refuses (`unknown_recipient`) and NOBODY in the list receives it, including the valid ids. This is deliberate: a multi-recipient message is one atomic delivery (one persisted row, one reply-thread, one wake fan), so a partially-valid list cannot silently leave some addressees informed and others not. If recipients should succeed/fail INDEPENDENTLY, send them as separate messages via the `items:[{ to, summary, … }]` axis instead — each item is resolved and reported per-item, so one bad address never blocks the others.',
   })
   .min(1, 'coord:send needs at least one recipient in `to` — ["*"] broadcasts, ["human"] surfaces to the user.');
 
@@ -563,6 +563,13 @@ async function sendOne(
       goneRepliedTo = closingGoneSender ? r.unknown.filter((id) => id === closingGoneSender) : [];
       const trulyUnknown = r.unknown.filter((id) => !goneRepliedTo.includes(id));
       if (trulyUnknown.length || r.ambiguous.length) {
+        // EI-19343900550313022: this is ALL-OR-NOTHING BY DESIGN (see toArg's
+        // own description), but that is easy to miss in the moment — a sender
+        // with 2 valid + 1 fabricated/typo'd recipient reads "nothing was sent"
+        // and can reasonably assume the valid two are unaffected. They are not:
+        // say so explicitly whenever the list carried >1 addressee, so the
+        // sender knows to re-notify the valid ones (or re-split via items[]).
+        const otherValidCount = r.resolved.length + goneRepliedTo.length;
         return {
           ok: false,
           to: msg.to,
@@ -575,6 +582,13 @@ async function sendOne(
               ? ' Just closing the loop on a message from someone whose session has ended? ' +
                 'coord:ack { msg_id } never requires the original sender to still be in the ' +
                 'roster — use it instead of a manual related_msg_id reply.'
+              : '') +
+            (otherValidCount > 0
+              ? ` ⚠ This send named ${otherValidCount} OTHER, VALID recipient(s) alongside the bad ` +
+                'address(es) below — they received NOTHING either (all-or-nothing by design: one ' +
+                'message, one atomic delivery). If they need this now, resend to just the valid ' +
+                'ids, or use `items:[{ to, summary, … }]` to address recipients independently so ' +
+                "one bad id can't block the rest."
               : ''),
           ...(trulyUnknown.length ? { unknown_recipients: trulyUnknown } : {}),
           ...(r.ambiguous.length ? { ambiguous_recipients: r.ambiguous } : {}),

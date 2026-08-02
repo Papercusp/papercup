@@ -193,7 +193,23 @@ export class WorkspaceBackup {
     }
   }
 
-  async snapshot(reason: SnapshotTriggerReason, context?: Record<string, unknown>): Promise<SnapshotResult> {
+  async snapshot(
+    reason: SnapshotTriggerReason,
+    context?: Record<string, unknown>,
+    opts?: {
+      /**
+       * WI-6588-adjacent fix (EI-18875467740392530): the row is INSERTed as
+       * step 1, well before the expensive kopia CLI shell-out (which is what
+       * routinely runs 2.5-10+ minutes on a multi-GB workspace, far past any
+       * tool-transport deadline). Fired synchronously the moment that row
+       * exists so a caller racing this promise against a shorter deadline
+       * (backup:snapshot_create) can still return the durable id immediately
+       * — the caller polls `list()`/`backup:snapshot_list` for the eventual
+       * status instead of the tool call itself blocking on it.
+       */
+      onStarted?: (snapshotId: number) => void;
+    },
+  ): Promise<SnapshotResult> {
     const sql = backupHost().getSql();
     // Durability seam (D-010 / P-011). Pass-through unless a host injects a
     // runner, so this is behaviorally identical to the un-stepped flow when no
@@ -222,6 +238,7 @@ export class WorkspaceBackup {
       `;
       return { id: insertRows[0]!.id, startedAtMs: Date.now() };
     });
+    opts?.onStarted?.(snapshotRowId);
 
     await this.event(snapshotRowId, 'progress', { phase: 'started', sources });
 

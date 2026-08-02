@@ -19,7 +19,7 @@
 import { getOrgPg } from '@papercusp/db-org';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { normalizeEventKey } from './announce-key';
-import { keyMatchesPattern, payloadMatchesFilter } from './pattern';
+import { keyMatchesPattern, payloadMatchesFilter, patternLiteralPrefix } from './pattern';
 import { WAKE_TURN_CHANNELS } from './types';
 import { withEffectiveDeadlines } from './effective-deadline';
 import type {
@@ -1288,6 +1288,84 @@ export async function probeKeyFireEvidence(eventKey: string): Promise<KeyFireEvi
     fires: Number(row.fires) || 0,
     lastFiredAt: row.last_fired_at ? String(row.last_fired_at) : null,
   };
+}
+
+/**
+ * EI-19332682533219755 — what a PATTERN await will ACTUALLY match, from observed
+ * history rather than from the author's mental model of their own glob.
+ *
+ * The incident: an agent parked on `release:green:*` expecting "the gate went
+ * green". It fired `satisfied: true` carrying `pipeline: "oddsmith"` — a
+ * DIFFERENT project co-hosted on this box, whose sha is not even an object in
+ * this repository. `*` is a plain glob over the rest of the key, and the pipeline
+ * is a key SEGMENT (`release:green:<pipeline>`), so on a multi-pipeline host the
+ * "obvious generalisation" of the catalogued template silently becomes a
+ * CROSS-PROJECT subscription. Every affordance then reads as success: the key
+ * family is literally named `release:green`, the wake says `satisfied: true`, and
+ * the documented next step after green is to SHIP. Nothing in the wake discloses
+ * that the pipeline is foreign — the incident was caught only by hand-checking
+ * the sha against the repo.
+ *
+ * The glob is not broken; it does exactly what a glob does. What was missing is
+ * DISCLOSURE, so this answers the one question the author cannot answer from the
+ * pattern alone: which concrete keys does this actually cover? Purely
+ * observational — it never narrows or rejects an await (a coordination primitive
+ * the fleet parks on must not start dropping wakes to fix a reporting gap).
+ *
+ * Read-only and index-backed: the latch's PK is `(workspace_id, event_key)`, so
+ * an anchored prefix is a btree range read. Bounded by `limit` in every branch —
+ * a glob with no anchorable prefix (`*:papercusp`) degrades to a bounded
+ * recency-ordered scan rather than an unbounded one.
+ */
+export interface PatternMatchScope {
+  /** The literal prefix the scan anchored on; `''` when the glob leads with a wildcard. */
+  prefix: string;
+  /** Distinct concrete keys already observed that this pattern WOULD match, most-recent first. */
+  matchedKeys: string[];
+  /** The scan hit its row cap, so `matchedKeys` may be incomplete. */
+  truncated: boolean;
+}
+
+export async function probePatternMatchScope(
+  glob: string,
+  opts?: { limit?: number },
+): Promise<PatternMatchScope> {
+  const { sql } = getOrgPg();
+  const ws = eventsWs();
+  const pattern = String(glob ?? '').trim();
+  const limit = Math.max(1, Math.min(500, opts?.limit ?? 200));
+  const prefix = patternLiteralPrefix(pattern);
+  const empty: PatternMatchScope = { prefix, matchedKeys: [], truncated: false };
+  if (!pattern.includes('*')) return empty;
+
+  // `prefix` is derived from literal key text, never a caller-supplied LIKE
+  // pattern — escape the wildcards anyway so a key containing `%`/`_` cannot
+  // widen the scan (same defence as probeKeyFireEvidence).
+  const rows = prefix
+    ? await sql`
+        SELECT event_key
+          FROM harness_shared.event_key_fires
+         WHERE workspace_id = ${ws}
+           AND (event_key = ${prefix} OR event_key LIKE ${`${prefix.replace(/([\\%_])/g, '\\$1')}:%`} ESCAPE '\\')
+         ORDER BY last_fired_at DESC
+         LIMIT ${limit}
+      `
+    : await sql`
+        SELECT event_key
+          FROM harness_shared.event_key_fires
+         WHERE workspace_id = ${ws}
+         ORDER BY last_fired_at DESC
+         LIMIT ${limit}
+      `;
+
+  // Narrow with the EXACT matcher the fire path uses, so this can never claim a
+  // key that would not really wake the caller (or miss one that would).
+  const matchedKeys: string[] = [];
+  for (const r of rows) {
+    const key = typeof r?.event_key === 'string' ? r.event_key : null;
+    if (key && keyMatchesPattern(pattern, key)) matchedKeys.push(key);
+  }
+  return { prefix, matchedKeys, truncated: rows.length >= limit };
 }
 
 /** Exact-key event history for events:status.  One call returns declarations,

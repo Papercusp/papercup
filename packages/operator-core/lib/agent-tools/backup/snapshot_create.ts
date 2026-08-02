@@ -10,11 +10,21 @@
 import { randomBytes } from 'node:crypto';
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
-import { workspaceBackupFor } from '../../backup';
+import { workspaceBackupFor, type SnapshotResult } from '../../backup';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { dbosBackupActive } from '../../dbos/dbos-flags';
 import { dbosStarted } from '../../dbos/bootstrap';
 import { softText, clampText, LIMITS } from '../limits';
+
+// EI-18875467740392530: a real kopia snapshot of this workspace routinely runs
+// 2.5-10+ minutes (measured: 2m31s/7m18s/10m31s/2m31s/2m30s on ~9GB), while this
+// tool inherits the dispatch stack's default 60s hard AbortController deadline
+// (it declares no static timeoutSec) and the ~55s MCP transport ceiling. So the
+// call was ALWAYS reporting a bare "exceeded timeout of 60s" failure while the
+// snapshot succeeded seconds-to-minutes later — the opposite of the truth, on
+// the tool that is the designated PRE-DESTRUCTIVE safety rail. Kept safely
+// under both outer ceilings.
+const SAFE_DEADLINE_MS = 45_000;
 
 export default defineTool({
   name: 'backup:snapshot_create',
@@ -60,13 +70,56 @@ export default defineTool({
     // launched, run the snapshot as a durable workflow (crash-resume via the
     // StepRunner seam); otherwise call snapshot() directly. `getResult` is
     // awaited so the tool keeps its synchronous request→result contract.
-    let result;
+    let result: SnapshotResult;
     if (dbosBackupActive() && dbosStarted()) {
       const { startBackupSnapshotWorkflow } = await import('../../dbos/backup-workflow');
       const nonce = Date.now().toString(36) + randomBytes(4).toString('hex');
       result = await startBackupSnapshotWorkflow({ workspaceId: ws, reason: args.reason, context }, nonce);
     } else {
-      result = await workspaceBackupFor(ws).snapshot(args.reason, context);
+      // EI-18875467740392530: race the real (potentially minutes-long) snapshot
+      // against SAFE_DEADLINE_MS instead of letting the dispatch stack's own 60s
+      // abort fire first and report a bare, misleading "timeout" for an operation
+      // that is in fact succeeding. `onStarted` fires the moment the durable
+      // tracking row exists (step 1 of snapshot(), well before the expensive
+      // kopia shell-out), so even the deadline-loses branch can hand back a real
+      // snapshotId to poll on. The snapshot promise is NOT cancelled when the
+      // deadline wins — it keeps running to completion in this same long-lived
+      // process; backup:snapshot_list is the authoritative way to observe it
+      // finish (this is exactly what the tool's own row-update step records).
+      let startedId: number | undefined;
+      const wb = workspaceBackupFor(ws);
+      const snapshotPromise = wb.snapshot(args.reason, context, {
+        onStarted: (id) => { startedId = id; },
+      });
+      const deadline = new Promise<{ timedOut: true }>((resolve) => {
+        setTimeout(() => resolve({ timedOut: true }), SAFE_DEADLINE_MS).unref();
+      });
+      const winner = await Promise.race([
+        snapshotPromise.then((r): { timedOut: false; result: SnapshotResult } => ({ timedOut: false, result: r })),
+        deadline,
+      ]);
+      if (winner.timedOut) {
+        // Never let a background failure vanish silently: it is already durably
+        // recorded (snapshot()'s own catch path flips backup_snapshots.status to
+        // 'failed' with error_text) — this is only a log line for live triage.
+        snapshotPromise.catch((err) => {
+          // eslint-disable-next-line no-console
+          console.warn(`[backup:snapshot_create] background snapshot for ${ws} failed after the tool's own deadline:`, err);
+        });
+        return {
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify({
+              stillRunning: true,
+              snapshotId: startedId ?? null,
+              note: 'Snapshot is still running in the background — this routinely takes minutes on a large workspace. '
+                + 'Poll backup:snapshot_list to confirm completion (status \'ok\'/\'failed\'). Do NOT retry this call or '
+                + 'treat this response as a failure — the snapshot is proceeding.',
+            }),
+          }],
+        };
+      }
+      result = winner.result;
     }
     return { content: [{ type: 'text' as const, text: JSON.stringify(result) }] };
   },

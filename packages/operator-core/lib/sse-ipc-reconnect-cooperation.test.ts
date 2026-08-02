@@ -207,7 +207,16 @@ describe('SSE-over-IPC reconnect cooperation (createResilientEventSource × IpcE
 
       await waitFor(() => conns.length === 1);
       conns[0]!.push({ kind: 'error', code: 'invoke_failed', message: 'state not managed' });
-      await new Promise((r) => setTimeout(r, 80));
+      // WI-6685: this used to be a fixed `setTimeout(r, 80)` sleep — a real-time
+      // race against the async warn-once chain (push -> generator resume -> for-await
+      // continuation -> warnIpcUnavailableOnce), unlike every OTHER wait in this file,
+      // which polls a predicate via `waitFor`. On a heavily loaded shared dev box a
+      // fixed sleep is exactly the kind of margin that occasionally isn't enough (3
+      // failures observed within one 7-minute window under load, zero in the ~120
+      // other recorded runs before/since — EI-18869662206197947). Waiting on the
+      // actual condition removes the timing dependency entirely instead of just
+      // widening the margin.
+      await waitFor(() => errors.length > 0);
       expect(made).toHaveLength(1);
       expect(made[0]!.readyState).toBe(0); // CONNECTING, not CLOSED
       expect(errors.some((e) => e.includes('IPC bridge unavailable'))).toBe(true);

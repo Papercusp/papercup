@@ -31,6 +31,7 @@ import {
   findNearMissKeys,
   cancelAwaitsForSubscribersOnKeys,
   probeKeyFireEvidence,
+  probePatternMatchScope,
   type KeyFireEvidence,
 } from '../../events/await/store';
 import { registerComposedAwait } from '../../events/await/compose';
@@ -461,6 +462,37 @@ export default defineTool({
       }
     }
 
+    // ── EI-19332682533219755: a PATTERN whose glob silently spans SCOPES.
+    // `release:green:*` looks like "the gate went green", but the pipeline is a
+    // key SEGMENT (`release:green:<pipeline>`) and `*` is a plain glob over the
+    // rest of the key — so on a multi-pipeline host it subscribes to OTHER
+    // PROJECTS. Live case: an agent awaiting the papercusp gate woke on
+    // `satisfied: true` carrying `pipeline: "oddsmith"`, whose sha is not even an
+    // object in this repo, while the papercusp gate was still mid-run. Every
+    // affordance read as success (family literally named `release:green`, wake
+    // says satisfied, documented next step is to SHIP) and nothing disclosed the
+    // foreign scope; it was caught only by hand-checking the sha.
+    //
+    // So DISCLOSE what the glob really covers, from observed fire history. This
+    // deliberately does NOT narrow or reject the await: a primitive the whole
+    // fleet parks on must never start dropping wakes to fix a reporting gap, and
+    // cross-pipeline monitors are legitimate (checkpoint:await has an explicit
+    // `global: true` for exactly that). Advisory only, best-effort, time-bounded.
+    let patternScope: { matchedKeys: string[]; truncated: boolean } | null = null;
+    if (patternAwait) {
+      const probe = await withBoundedTimeout(probePatternMatchScope(eventKey), {
+        fallback: null,
+        timeoutMs: 1_500,
+        label: 'events-await:patternScope',
+      });
+      // Only worth saying when the pattern demonstrably spans MORE THAN ONE
+      // concrete key — a glob matching a single observed key (or none yet) is
+      // exactly what its author expected and needs no warning.
+      if (probe.value && probe.value.matchedKeys.length > 1) {
+        patternScope = { matchedKeys: probe.value.matchedKeys, truncated: probe.value.truncated };
+      }
+    }
+
     // ── EI-13095 (the WI-5075 stranded-await incident): the done-key LATCH.
     // `work-item:done:<id>` fires ONCE, at settle time, so a registration made
     // AFTER the item settled can only ever time out — the awaiter sleeps through
@@ -737,6 +769,21 @@ export default defineTool({
               : {}),
             ...(args.fromMsg ? { resolved_from_msg: args.fromMsg } : {}),
             ...(patternAwait ? { pattern: true } : {}),
+            ...(patternScope
+              ? {
+                  pattern_spans_multiple_keys: true,
+                  pattern_matched_keys: patternScope.matchedKeys,
+                  pattern_spans_multiple_keys_advice:
+                    `SCOPE CHECK — "${eventKey}" already matches ${patternScope.matchedKeys.length}` +
+                    `${patternScope.truncated ? '+' : ''} DISTINCT keys that have really fired here: ` +
+                    `${patternScope.matchedKeys.slice(0, 8).join(', ')}` +
+                    `${patternScope.matchedKeys.length > 8 ? ', …' : ''}. You will wake on the FIRST of ` +
+                    `them to fire — which may not be the one you mean, and the wake will still say ` +
+                    `satisfied:true. If you meant one specifically, await that exact key instead, or keep ` +
+                    `the glob and add a payload_filter on the field that discriminates them. Registered ` +
+                    `anyway — this is a warning, not a refusal, and cross-scope monitors are legitimate.`,
+                }
+              : {}),
             ...(announcedGate ? { announced_gate: announcedGate } : {}),
             ...(noKnownEmitterForAnnouncedGate
               ? {

@@ -496,6 +496,25 @@ describe('coord:send wake-on-reply (coord-wake-on-reply)', () => {
     expect(b.results[0]).toMatchObject({ ok: false, error: 'unknown_recipient', unknown_recipients: ['ghost'] });
     expect(sendM).not.toHaveBeenCalled();
   });
+
+  it('EI-19343900550313022: a MIXED valid+unknown `to` list still refuses whole (all-or-nothing by design), but the message names the stranded valid recipients + the items[] escape hatch', async () => {
+    resolveM.mockResolvedValueOnce({
+      resolved: ['bee-1', 'bee-2'],
+      unknown: ['fabricated-ghost'],
+      ambiguous: [],
+    } as never);
+    const b = await body({ to: ['bee-1', 'bee-2', 'fabricated-ghost'], summary: 'hi all' });
+    expect(b.results[0]).toMatchObject({ ok: false, error: 'unknown_recipient', unknown_recipients: ['fabricated-ghost'] });
+    expect(b.results[0].message).toMatch(/2 OTHER, VALID recipient/);
+    expect(b.results[0].message).toMatch(/items:\[/);
+    expect(sendM).not.toHaveBeenCalled(); // nothing sent — including to bee-1/bee-2
+  });
+
+  it('a single unknown recipient with no other valid ones does NOT carry the mixed-list hint', async () => {
+    resolveM.mockResolvedValueOnce({ resolved: [], unknown: ['ghost'], ambiguous: [] } as never);
+    const b = await body({ to: ['ghost'], summary: 'hi' });
+    expect(b.results[0].message).not.toMatch(/OTHER, VALID recipient/);
+  });
 });
 
 describe('coord:send body auto-refs opt-out (coord-authority-hardening P-008)', () => {

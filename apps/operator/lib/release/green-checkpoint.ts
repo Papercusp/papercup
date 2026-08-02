@@ -2249,8 +2249,16 @@ export const WORKER_CRASH_MAX_WORKSPACES = 2;
  *  `AGENT_MODELS` (the operator's per-role model map, e.g. `{"worker":"opus"}` in
  *  .env.local) leaked into the gate and broke `@papercusp/orchestrator` invoke.test
  *  2026-06-09 — green in a clean shell, red only under the routine. The gate measures
- *  the COMMITTED defaults; tests that need it set it themselves. */
-export const HOST_ENV_STRIP = ['AGENT_MODELS'];
+ *  the COMMITTED defaults; tests that need it set it themselves.
+ *
+ *  `HARNESS_SLUG` (WI-6583): the vitest/playwright test-run reporters now ALSO read
+ *  this (not just `PAPERCUSP_*`-prefixed vars) as a harness-attribution fallback for
+ *  a harness-spawned agent-role process. If the gate's own host process ever inherits
+ *  a stray `HARNESS_SLUG`, leaving it unstripped would silently undo the deliberate
+ *  "gate rows (`source='ci'`) stay unattributed" design this file documents just below
+ *  (buildGateChildEnv's own comment on why `PAPERCUSP_TEST_RUN_HARNESS` /
+ *  `PAPERCUSP_WORKSPACE_ID` are deliberately never stamped here). */
+export const HOST_ENV_STRIP = ['AGENT_MODELS', 'HARNESS_SLUG'];
 
 /**
  * Per-fork V8 old-space cap (MiB) the gate FORCES onto the spawned vitest forks.

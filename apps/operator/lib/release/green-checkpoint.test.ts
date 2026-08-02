@@ -2008,6 +2008,7 @@ describe('buildGreenCheckpointEnv (the gate measures COMMITTED defaults)', () =>
       PAPERCUSP_OPERATOR_URL: 'http://host', // the 2026-06-07 non-flag class
       SPAWN_SU_BEARER: 'tok', // NOT PAPERCUSP_-prefixed and not in HOST_ENV_STRIP — survives
       AGENT_MODELS: '{"worker":"opus"}', // the 2026-06-09 invoke.test class
+      HARNESS_SLUG: 'papercusp', // WI-6583: a non-PAPERCUSP_-prefixed attribution fallback
     };
     const env = buildGreenCheckpointEnv('base123', src);
     expect(env.PAPERCUSP_FLAG_DEMO).toBeUndefined();
@@ -2018,6 +2019,16 @@ describe('buildGreenCheckpointEnv (the gate measures COMMITTED defaults)', () =>
     expect(env.SPAWN_SU_BEARER).toBe('tok');
     // pure — never mutates the caller's env object
     expect(src.PAPERCUSP_FLAG_DEMO).toBe('1');
+  });
+
+  // WI-6583: HARNESS_SLUG is a non-`PAPERCUSP_`-prefixed test-run-attribution
+  // fallback the vitest/playwright reporters now read (admin-test-runs-reporter.ts's
+  // resolveTestRunHarnessSlug). If the gate's own host process ever inherited a stray
+  // HARNESS_SLUG, leaving it unstripped would silently undo the deliberate
+  // "gate rows stay unattributed" design documented on buildGreenCheckpointEnv itself.
+  it('strips a host-inherited HARNESS_SLUG so gate rows stay unattributed (WI-6583)', () => {
+    const env = buildGreenCheckpointEnv('base123', { HARNESS_SLUG: 'some-other-harness' });
+    expect(env.HARNESS_SLUG).toBeUndefined();
   });
 
   // EI-19307211919650123: the gate's test rows must be distinguishable from an

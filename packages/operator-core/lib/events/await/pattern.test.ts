@@ -13,6 +13,7 @@ import {
   keyMatchesPattern,
   assertUsablePattern,
   payloadMatchesFilter,
+  patternLiteralPrefix,
 } from './pattern';
 
 describe('isPattern', () => {
@@ -107,6 +108,45 @@ describe('payloadMatchesFilter (EI-8998 — predicate/payload watches)', () => {
   it('a malformed operand inside an otherwise-valid filter degrades to false rather than throwing', () => {
     // an unterminated regex source is an author bug mingo's compiler rejects at build time
     expect(payloadMatchesFilter({ name: { matches: '[' } }, { name: 'x' })).toBe(false);
+  });
+});
+
+describe('patternLiteralPrefix (EI-19332682533219755)', () => {
+  it('anchors on the literal segment before the first wildcard', () => {
+    expect(patternLiteralPrefix('release:green:*')).toBe('release:green');
+    expect(patternLiteralPrefix('work-item:done:*')).toBe('work-item:done');
+    expect(patternLiteralPrefix('fleet:*:my-slug')).toBe('fleet');
+  });
+
+  it('returns no prefix when the glob leads with a wildcard, so a caller cannot turn it into an unbounded scan', () => {
+    expect(patternLiteralPrefix('*')).toBe('');
+    expect(patternLiteralPrefix('*:papercusp')).toBe('');
+  });
+
+  it('trims back to a whole segment rather than cutting mid-segment', () => {
+    // 'release:gre*' must not anchor on 'release:gre' — a prefix scan on a partial
+    // segment silently under-matches the keys the glob really covers.
+    expect(patternLiteralPrefix('release:gre*')).toBe('release');
+  });
+
+  it('passes an exact (wildcard-free) key through whole', () => {
+    expect(patternLiteralPrefix('release:green:papercusp')).toBe('release:green');
+    expect(patternLiteralPrefix('bare')).toBe('bare');
+  });
+
+  it('is defensive about a non-string key, like its siblings on the emit path', () => {
+    expect(patternLiteralPrefix(undefined as unknown as string)).toBe('');
+    expect(patternLiteralPrefix(null as unknown as string)).toBe('');
+  });
+
+  it('the incident glob really does cross pipelines — the regression this exists to disclose', () => {
+    // EI-19332682533219755: `release:green:*` was armed meaning "MY gate went
+    // green" and woke on a co-hosted foreign project's verdict instead.
+    expect(keyMatchesPattern('release:green:*', 'release:green:papercusp')).toBe(true);
+    expect(keyMatchesPattern('release:green:*', 'release:green:oddsmith')).toBe(true);
+    // ...and both live under one anchorable prefix, so the disclosure probe can
+    // find them with a single index-backed range read.
+    expect(patternLiteralPrefix('release:green:*')).toBe('release:green');
   });
 });
 

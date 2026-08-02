@@ -122,6 +122,30 @@ export function payloadMatchesFilter(filter: unknown, payload: unknown): boolean
 }
 
 /**
+ * The literal, wildcard-free key PREFIX of a glob — everything before its first
+ * `*`, trimmed back to a whole `:` segment boundary. Used to turn a pattern into
+ * an index-backed prefix scan over the fire latch (`event_key_fires`), which is
+ * then narrowed with the exact `keyMatchesPattern` semantics above.
+ *
+ *   `release:green:*`  → `release:green`
+ *   `fleet:*:my-slug`  → `fleet`
+ *   `*:papercusp`      → ``          (no anchorable prefix — caller must bound the scan)
+ *
+ * Returns `''` when the glob starts with a wildcard: there is no prefix to
+ * anchor on, and a caller must NOT turn that into an unbounded scan.
+ */
+export function patternLiteralPrefix(glob: string): string {
+  if (typeof glob !== 'string') return '';
+  const star = glob.indexOf('*');
+  const literal = star === -1 ? glob : glob.slice(0, star);
+  // Trim back to the last complete segment: a partial segment (`release:gr`)
+  // would under-match a prefix scan that assumes segment boundaries.
+  const cut = literal.lastIndexOf(':');
+  if (cut === -1) return star === -1 ? literal : '';
+  return literal.slice(0, cut);
+}
+
+/**
  * Reject a too-broad glob at registration. A pattern that is only wildcards and
  * separators (`*`, `*:*`) would match nearly every emit and wake-storm the
  * subscriber, so we require at least a few literal (non-`*`, non-`:`) characters

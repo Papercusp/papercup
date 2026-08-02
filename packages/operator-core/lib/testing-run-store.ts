@@ -259,11 +259,21 @@ async function persistFallbackRow(s: RunSnapshot): Promise<void> {
       commit = ctx.commit;
     } catch { /* fail-soft */ }
 
-    // P-007: carry the harness scope keys when the spawning context set them
-    // (PAPERCUSP_TEST_RUN_HARNESS / PAPERCUSP_WORKSPACE_ID). NULL for the plain
-    // dogfood/admin-ui path — both columns are nullable (migration 413).
-    const harnessSlug = process.env.PAPERCUSP_TEST_RUN_HARNESS || null;
-    const workspaceId = process.env.PAPERCUSP_WORKSPACE_ID || null;
+    // WI-6583: carry the harness scope keys when the spawning context set
+    // them. PAPERCUSP_TEST_RUN_HARNESS / PAPERCUSP_WORKSPACE_ID (P-007, a
+    // deliberately harness-scoped dogfood run) is checked first, then the two
+    // OTHER naming conventions that carry the same identity on the vast
+    // majority of real runs: HARNESS_SLUG (harness-spawned agent-role
+    // processes, endpoint-route/routes/harness/spawn.ts) and
+    // PAPERCUSP_HARNESS_SLUG / PAPERCUSP_WORKSPACE (an interactive su/psu
+    // shell session). NULL only when none apply — both columns stay nullable
+    // (migration 413). Mirrors resolveTestRunHarnessSlug/WorkspaceId in
+    // libs/test-config's admin-test-runs-reporter.ts (duplicated rather than
+    // imported: this is production runtime code, test-config is a test-only
+    // package).
+    const harnessSlug =
+      process.env.PAPERCUSP_TEST_RUN_HARNESS || process.env.HARNESS_SLUG || process.env.PAPERCUSP_HARNESS_SLUG || null;
+    const workspaceId = process.env.PAPERCUSP_WORKSPACE_ID || process.env.PAPERCUSP_WORKSPACE || null;
     const { loopLagP95Ms, rssMb } = captureSaturationSnapshot();
     const { getOrgPg } = await import('@papercusp/db-org');
     const { sql } = getOrgPg();
