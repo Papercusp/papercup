@@ -1071,18 +1071,20 @@ export default function SessionChatModal({
     }
   }, [releaseWindowScreen]);
 
-  /* Never strand the WINDOW fullscreen. Closing the popup while it owns the
-     display would leave the whole app filling the screen with the control that
-     undoes it no longer rendered — so release on close AND on unmount, not
-     only in `closeChat` (which a route change or a cleared session skips). */
+  /* Never strand the display. Closing the popup while `screen` is engaged would
+     leave the whole app filling the screen with the control that undoes it no
+     longer rendered — so release on close AND on unmount, not only in
+     `closeChat` (which a route change or a cleared session skips). `exitScreen`
+     rather than `releaseWindowScreen` so this covers the browser's DOM
+     fullscreen too; the unmount case cannot wait for an event to correct it. */
   useEffect(() => {
-    if (!open) void releaseWindowScreen();
-  }, [open, releaseWindowScreen]);
+    if (!open) void exitScreen();
+  }, [open, exitScreen]);
   useEffect(
     () => () => {
-      void releaseWindowScreen();
+      void exitScreen();
     },
-    [releaseWindowScreen],
+    [exitScreen],
   );
 
   const toggleWindow = useCallback(() => {
@@ -1091,8 +1093,8 @@ export default function SessionChatModal({
       return;
     }
     if (screenActive) {
-      // Coming from `screen`: leave the browser's fullscreen FIRST, then land
-      // in window mode. The explicit set has to come after, because the
+      // Coming from `screen`: give the display back FIRST (whichever mechanism
+      // is holding it), then land in window mode. The set has to come after: the
       // fullscreenchange handler above clears the mode on the way out — without
       // it this click would read as "exit maximize" rather than "switch to
       // full window".

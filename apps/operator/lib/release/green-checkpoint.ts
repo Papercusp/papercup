@@ -411,6 +411,21 @@ function defaultPidAlive(pid: number): boolean {
  *  case, so the longer window costs nothing in the common crash path. */
 export const CHECKPOINT_LOCK_STALE_MS = 190 * 60_000;
 
+/** WI-7069: how long the stretch from CANDIDATE SELECTION to SUITE START may take before the
+ *  run says so loudly. This is NOT another kill bound — nothing acts on it — it is the
+ *  instrument that was missing when a verdict judged a 10h51m-old commit and no one could tell
+ *  whether selection had chosen badly or the age had accumulated afterwards.
+ *
+ *  20m is generous against what actually runs in that stretch: setupTree (git checkout +
+ *  `cp -al` hardlink copy + a forced node_modules re-copy), the migration preflight, the
+ *  tree-drift preflight, and a pc-heavy slot wait that is itself capped at
+ *  HEAVY_SLOT_WAIT_SEC=120s and fails OPEN. A healthy run clears all of it in single-digit
+ *  minutes, so crossing 20m means something in there is genuinely blocked — and the one
+ *  unbounded call on that path is setupTree's `bash setup-release-checkout.sh`, which takes
+ *  no timeout (see runCmd: adding one to a `heavy` call would silently disable the pc-heavy
+ *  wrapper, so bounding it needs a process-GROUP kill, not a timeoutMs). */
+export const CANDIDATE_SELECTION_TO_SUITE_WARN_MS = 20 * 60_000;
+
 /** WI-1319 root fix (c): a SELF-BOUND wall-clock watchdog, armed by THIS process
  *  (green-checkpoint.ts) itself, independent of the supervising parent
  *  (release-actions.ts's `runScript`, which SIGTERMs the whole process group at
@@ -2768,6 +2783,29 @@ export async function runGreenCheckpoint(
   }
 
   deps.log(`checkpointing candidate ${candidate.slice(0, 8)} (base ${lastReady?.slice(0, 8) ?? 'none'})`);
+  /**
+   * WI-7069: the instant the candidate became FINAL.
+   *
+   * Everything below this line runs while the candidate stays PINNED — `setupTree` (a git
+   * checkout + `cp -al` + a FORCED node_modules re-copy), the migration preflight, the
+   * tree-drift preflight, then the suite itself. So the sha we JUDGE can be arbitrarily older
+   * than the sha we CHOSE, and until now nothing recorded the interval between the two.
+   *
+   * That missing number is not a nicety. On 2026-08-02 the 12:53Z verdict judged a commit
+   * committed 10h51m earlier; with no selected-at stamp, "the candidate was old" is
+   * indistinguishable from "selection chose badly", and the only way to tell them apart was
+   * reconstructing the selection instant from git history by hand (the answer: selection was
+   * CORRECT — `rev-list -1 --first-parent --before=T` could only have returned that sha for a
+   * cutoff inside a 2-minute window, so the age was accumulated AFTER selection, here). That
+   * archaeology cost ~2h of fleet time and produced four contradictory conclusions.
+   *
+   * Diagnostic ONLY: it never blocks, never re-cuts, and never alters the advance/hold
+   * decision — the same discipline as the migration and tree-drift preflights below. The
+   * downstream HARM is already handled independently by gate-verdict-freshness rule 5
+   * ('candidate-fossil'), which judges total candidate age at verdict time. This answers the
+   * different question that rule cannot: WHERE that age came from.
+   */
+  const candidateSelectedAtMs = Date.now();
   // EI-18757156963245979: (re)enter the SUITE phase. This must be written at the top of EVERY
   // invocation, not just the first, because a stale-red auto-refire RE-ENTERS this function
   // recursively in the SAME process — without this reset the marker would still read
@@ -2860,6 +2898,43 @@ export async function runGreenCheckpoint(
       }
     } catch (e) {
       deps.log(`tree-drift preflight failed (${e instanceof Error ? e.message : e})`);
+    }
+  }
+  // WI-7069: report the selection→suite gap RIGHT BEFORE judging — the last moment at which
+  // the number is still complete, and the first at which it is actionable. Fail-soft in every
+  // direction: a git failure here degrades to logging the gap alone, and nothing below reads
+  // the result. See `candidateSelectedAtMs` for why this exists.
+  {
+    const selectionToSuiteMs = Date.now() - candidateSelectedAtMs;
+    let committedNote = '';
+    try {
+      const committedAtSec = await commitUnixTime(cfg.integrationRoot, candidate);
+      // commitUnixTime is `Number(await git(...))`, which yields NaN — it does NOT throw — if
+      // git prints anything non-numeric. Without this guard the catch below never runs and the
+      // line reads "candidate committed NaNm ago", which is worse than omitting it.
+      if (Number.isFinite(committedAtSec)) {
+        const ageMin = Math.round((Date.now() / 1000 - committedAtSec) / 60);
+        committedNote = `; candidate committed ${ageMin}m ago`;
+      }
+    } catch {
+      /* age is a nicety — never let it cost us the gap measurement itself */
+    }
+    const gapMin = Math.round(selectionToSuiteMs / 60_000);
+    const line =
+      `candidate-age: selected ${candidate.slice(0, 8)} ${gapMin}m ago, judging it now` +
+      `${committedNote} (setup + preflights + slot wait all elapse while the candidate stays pinned)`;
+    if (selectionToSuiteMs > CANDIDATE_SELECTION_TO_SUITE_WARN_MS) {
+      // Loud, and states the consequence rather than just the number: a verdict written from
+      // here describes a tree that is already this far behind, and every downstream reader
+      // (agents chasing the named failing tests) will treat it as current unless told.
+      deps.log(
+        `⚠ ${line} — this exceeds the ${Math.round(CANDIDATE_SELECTION_TO_SUITE_WARN_MS / 60_000)}m ` +
+          `expected setup budget, so the verdict about to be produced describes a STALE tree. ` +
+          `Suspect a blocked step between selection and here (setupTree's setup-release-checkout.sh ` +
+          `is unbounded — WI-7069), not a bad candidate choice.`,
+      );
+    } else {
+      deps.log(line);
     }
   }
   const { green, summary, failingTests, flakeSuspects, failingFiles = [], logPath, isolationNote } = await deps.runGreen(

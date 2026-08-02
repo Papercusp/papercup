@@ -317,7 +317,15 @@ export type WatchdogSource =
   // wrong direction for an unremediated risk, so this pages instead of
   // letting the fact silently vanish from folds. Debounced 24h per fact key
   // (wall-lapse-watchdog.ts).
-  | 'wall-fact-lapse';
+  | 'wall-fact-lapse'
+  // EI-19342686127995790: a COMMITTED new-file tsc red that OUTLIVED its author's
+  // attention. The gate already computes this finding ~9x/hour and prints it to a
+  // stdout nobody reads; the sweep (tsc-red-sweep.ts) files only the reds that
+  // DWELL, because the measured base rate is self-healing — 4 of 5 cleared unaided
+  // inside 15 minutes on 2026-08-02, so filing on first sight would have minted 5
+  // items that day, 4 of them self-closing unread. Debounced 24h per path, keyed
+  // `tsc-new-file-red::<path>`.
+  | 'tsc-new-file-red';
 
 export interface FallbackArmResult {
   /** 'armed' = time wake declared; 'staged' = routed to the manual-mode review

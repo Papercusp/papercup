@@ -40,6 +40,7 @@ import { dirname } from 'node:path';
 import { CHARS_PER_TOKEN_ESTIMATE, capInjectionText, computeTurnDoors } from './context-doors';
 import { getDoorConstantsSync } from './context-doors-config';
 import { buildScratchUri, safeScratchFilesystemPath } from './scratch-uri';
+import { buildSpillIndex } from './result-door-index';
 
 /** The BAKED floor `resultEach` door (window 0 ⇒ the 8K-floor split ⇒ 1500 tokens).
  *  The live door is resolved per call through the P-023 config surface
@@ -252,7 +253,16 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
         `# _truncated markers fired)\n` +
         `# tool: ${opts.toolName}\n# spilled: ${new Date().toISOString()}\n` +
         `# original ~${Math.ceil(totalChars / CHARS_PER_TOKEN_ESTIMATE)} tokens (${totalChars} chars); door ${doorTokens} tokens\n\n`;
-    writeFileSync(fsPath, header + fullText, { mode: 0o600 });
+    // P-003 (agent-epistemics-2026-08-02): for a LIST-shaped result, lead the file
+    // with one line per entry. The door already solves SIZE; this solves the question
+    // the reader actually arrives with — "which of these do I care about" — which was
+    // otherwise answered by grepping the spill file by hand. It lives in the FILE, not
+    // in the returned result, so it costs the agent zero context. `buildSpillIndex`
+    // returns null (never throws) whenever an index would not help, keeping the
+    // door's fail-soft contract: a missing index is an annoyance, a failed WRITE
+    // loses the payload.
+    const spillIndex = buildSpillIndex(fullText);
+    writeFileSync(fsPath, header + (spillIndex ? `${spillIndex}\n` : '') + fullText, { mode: 0o600 });
 
     // Rebuild content: text items consume the budget in order (the boundary item
     // is cut at a line/space break); non-text items pass through untouched.
