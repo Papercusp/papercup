@@ -20,7 +20,19 @@
  * Plus the WI-1416 hang guard: a wedged git subprocess fails FAST with a recorded
  * timeout error instead of hanging the fire into a reap.
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+
+// WI-6824: runGitSync's `log` sink defaults to console.warn (it used to be a no-op, which is
+// why a real ~10h git-sync fault left zero trace in journald). This suite deliberately drives
+// blocked/deferred submodule paths, which narrate — capture the expected output.
+let gitSyncWarnSpy: ReturnType<typeof vi.spyOn> | undefined;
+beforeEach(() => {
+  gitSyncWarnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+});
+afterEach(() => {
+  gitSyncWarnSpy?.mockRestore();
+  gitSyncWarnSpy = undefined;
+});
 import { execFileSync } from 'node:child_process';
 import { chmodSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';

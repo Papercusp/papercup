@@ -584,6 +584,18 @@ nothing to recover (EI-16611).
 So: **checkpoint the `bash_id`, never a native task id**, and never write "await
 background task `<id>`" as a successor's next action.
 
+⚠ **Never wait on a process-table pattern you typed yourself.** `until ! pgrep
+-f '<pat>'; do sleep 5; done` can NEVER exit from an agent shell: `pgrep -f`
+matches the FULL command line, and your own `bash -c` argv contains the literal
+pattern, so the poll matches ITSELF and the condition stays true forever — a
+peer burned 27 silent minutes exactly here (EI-19312699396945642; same
+self-match class as the documented `pkill -f` trap). `ps … | grep <pat>` loop
+conditions share the defect, and `grep -v grep` does NOT save you (the `bash
+-c` wrapper still matches). The PreToolUse gate now denies the loop form. Wait
+on the PID instead (`tail --pid=<pid> -f /dev/null`, or `kill -0 <pid>` in the
+loop) — or, if you genuinely must pattern-poll, bracket the first character so
+the pattern cannot match its own argv: `pgrep -f '[l]int-tsc'`.
+
 Do not sit in a `sleep`/poll loop waiting on work you did not launch either —
 prefer the push path (`events:await`, a completion event) over polling; see the
 "never wait for a calm window" and force-the-deploy rules above.

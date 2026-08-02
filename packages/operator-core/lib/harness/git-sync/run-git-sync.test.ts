@@ -1,4 +1,18 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+
+// WI-6824: runGitSync's `log` sink defaults to console.warn. It used to default to a no-op,
+// which is why an unrelated-history merge failure alarmed the fleet for ~10h while leaving
+// ZERO trace in journald — and why this suite passed in silence despite driving the
+// conflict/error/oversized/quarantine paths, all of which narrate. The narration is
+// EXPECTED here, so capture it rather than letting vitest-fail-on-console reject it.
+let gitSyncWarnSpy: ReturnType<typeof vi.spyOn> | undefined;
+beforeEach(() => {
+  gitSyncWarnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+});
+afterEach(() => {
+  gitSyncWarnSpy?.mockRestore();
+  gitSyncWarnSpy = undefined;
+});
 import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, utimesSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';

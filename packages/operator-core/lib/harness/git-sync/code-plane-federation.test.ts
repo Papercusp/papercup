@@ -41,7 +41,19 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+
+// WI-6824: runGitSync's `log` sink defaults to console.warn (it used to be a no-op, which is
+// why a real ~10h git-sync fault left zero trace in journald). The push-failure path this
+// suite exercises narrates — capture the expected output.
+let gitSyncWarnSpy: ReturnType<typeof vi.spyOn> | undefined;
+beforeEach(() => {
+  gitSyncWarnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+});
+afterEach(() => {
+  gitSyncWarnSpy?.mockRestore();
+  gitSyncWarnSpy = undefined;
+});
 
 import { runGitSync } from './run-git-sync';
 import { decideGitSyncPush } from './decide-git-sync-push';

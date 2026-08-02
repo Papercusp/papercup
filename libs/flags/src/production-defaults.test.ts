@@ -316,28 +316,17 @@ const PRE_INVERSION_DEFAULT_OFF: ReadonlySet<string> = new Set<string>([
   'papercusp-improvement-auto-implement',
   'papercusp-lazy-substrate-boot',
   'papercusp-capability-envelope-overrides',
-  // 2026-07-27 (WI-6499) — papercusp-task-manager: a DELIBERATE new dark flag on an
-  // EXPLICIT owner directive ("put the task manager behind a testing flag it isn't
-  // ready yet"), issued the same day the flag shipped default-ON. case: incomplete.
+  // (papercusp-task-manager was added here 2026-07-27 by WI-6499 and REMOVED 2026-08-02
+  // by WI-6844 — it graduated to default-ON on an explicit owner directive: "we put it
+  // behind a testing flag. Remove that flag, we'll make it part of our standard
+  // release." Its dark entry predicted this ("expected to graduate quickly"), which is
+  // the value of writing the graduation condition down at the time the entry is added.
   //
-  // NOT the EI-7230 never-added-to-DARK_FLAGS class the entries above mostly are — its
-  // comment genuinely said DEFAULT ON and it genuinely derived ON. It is a reversal.
-  //
-  // It is also NOT the parking-lot abuse the watermark polices, though it superficially
-  // resembles it (finished-looking work going dark). The distinction: the owner is the
-  // one asking for the gate, on a subsystem that intercepts EVERY spawn on the box and
-  // has never run a sustained residue-classification window — the precondition plan
-  // D-010 already names before anything acts on `unaccounted`.
-  //
-  // What made the reversal urgent: the flag was DECORATIVE. It had two call sites (the
-  // pane's sync query, the /admin/tasks route), so OFF blanked the dashboard while every
-  // spawn stayed confined and ledgered, the 30s reconciler kept running, and a
-  // systemd-run probe still fired at module import — a kill-switch that reads as safe
-  // and isn't. WI-6499 made the gate real at the seams (task-manager/enabled.ts, the
-  // single authority, fail-CLOSED) so OFF is now byte-identical to the pre-feature box.
-  // Parking subset 13 → 14, so DARK_FLAGS_HIGH_WATERMARK raised 13 → 14 under the owner
-  // directive (the sign-off path the policy names). Count 32 → 33.
-  'papercusp-task-manager',
+  // Removing it from THIS set is the correct action, not a weakening of the guard: the
+  // snapshot exists to catch a SILENT flip, and a documented graduation is the one thing
+  // it is not. The flag KEY still exists as a runtime kill-switch — a default-ON flag is
+  // not a dark flag — so nothing here should reference it any more. Count 32 → 31,
+  // parking subset + DARK_FLAGS_HIGH_WATERMARK both 14 → 13.)
 ]);
 
 // DARK_FLAGS_REVIEW_BY (the re-review deadline) and DARK_FLAGS_HIGH_WATERMARK (the
@@ -567,7 +556,13 @@ describe('production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED)', (
     // owner-attended cutover (workspace-scoped-coordination-2026-06-20 D-019): build verified
     // complete (D-010), flipped live via the pg override, brains re-key verified. case was
     // 'cutover' — no watermark impact. Count 33 → 32.
-    expect(offCount).toBe(32);
+    // 2026-08-02 (WI-6844) — papercusp-task-manager GRADUATED to default-ON on an explicit
+    // owner directive ("we put it behind a testing flag. Remove that flag, we'll make it
+    // part of our standard release"), six days after WI-6499 darkened it. case was
+    // 'incomplete', so this one DOES move the parking subset: 14 → 13, and
+    // DARK_FLAGS_HIGH_WATERMARK was lowered 14 → 13 with it rather than left as headroom
+    // (a ceiling only ratchets if a graduation spends the slot it frees). Count 32 → 31.
+    expect(offCount).toBe(31);
   });
 
   it('sanity: the four cut-for-V1 flags + key owner-authority security flags are still dark', () => {

@@ -252,6 +252,25 @@ async function convergeFleet(
   throw new Error(`fleet did not converge within ${maxRounds} rounds — DIVERGENCE / PING-PONG`);
 }
 
+/** WI-6824: git-sync's `log` sink defaults to console.warn. It used to default to a no-op,
+ *  which is why a merge failure that alarmed the fleet for ~10h left ZERO trace in journald
+ *  — and also why these suites passed in silence: they deliberately drive the conflict and
+ *  error paths, which narrate. Capture that narration (vitest-fail-on-console treats an
+ *  unmocked warn as a failure) and keep it readable, so a test can assert on what git-sync
+ *  actually reported rather than merely that it stayed quiet. */
+let warned: string[] = [];
+let warnSpy: ReturnType<typeof vi.spyOn> | undefined;
+beforeEach(() => {
+  warned = [];
+  warnSpy = vi.spyOn(console, 'warn').mockImplementation((...args: unknown[]) => {
+    warned.push(args.map((a) => String(a)).join(' '));
+  });
+});
+afterEach(() => {
+  warnSpy?.mockRestore();
+  warnSpy = undefined;
+});
+
 // ════════════════════════════════════════════════════════════════════════════
 // P-004 — N-peer convergence beyond the two-peer suite
 // ════════════════════════════════════════════════════════════════════════════
@@ -499,15 +518,11 @@ describe('P-005: a force-pushed history rewrite is ABSORBED or LOUDLY errors —
     // so this exact failure alarmed the fleet for ~10h while leaving zero trace in
     // journald. Asserting on the injected sink alone would never have caught that, because
     // the injection is what the test supplies and production does not.
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    try {
-      const again = await runGitSync('rworphan-victim', { runGit: testRunGit, repoPath: victim, config: { branch: 'main' } });
-      expect(again.status).toBe('error');
-      const warned = warn.mock.calls.map((c) => String(c[0]));
-      expect(warned.some((m) => m.includes('merge failed (no conflicted paths)'))).toBe(true);
-    } finally {
-      warn.mockRestore();
-    }
+    const before = warned.length;
+    const again = await runGitSync('rworphan-victim', { runGit: testRunGit, repoPath: victim, config: { branch: 'main' } });
+    expect(again.status).toBe('error');
+    const viaDefaultSink = warned.slice(before);
+    expect(viaDefaultSink.some((m) => m.includes('merge failed (no conflicted paths)') && m.includes('merge-base=NONE(unrelated)'))).toBe(true);
     } finally {
       await rm(tmpRoot, { recursive: true, force: true }).catch(() => {});
     }

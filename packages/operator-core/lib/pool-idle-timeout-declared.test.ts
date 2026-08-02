@@ -221,10 +221,11 @@ describe('the guard itself detects an undeclared idle policy (non-vacuity)', () 
 describe('pool idle policy is always declared (P-009 connection saturation)', () => {
   const files = SCAN_ROOTS.flatMap((r) => walk(join(REPO_ROOT, r)));
 
-  it('finds the pool sites it is meant to guard (test is not vacuously green)', () => {
-    const total = files.reduce((n, f) => n + findPoolSites(readFileSync(f, 'utf8')).length, 0);
-    // Guards against the scan silently matching nothing (bad root, renamed helper).
-    expect(total).toBeGreaterThanOrEqual(10);
+  it('the tree scan is wired correctly (test is not vacuously green)', () => {
+    // Anchored to the SCAN, never to the SIZE of the guarded population — see the note on
+    // the identical assertion in the WI-6062 describe below for why a `>= N` floor here is
+    // a landmine rather than a safety net.
+    expect(files.length).toBeGreaterThan(100);
   });
 
   it('every pool spreading a shared connection-options helper declares idle_timeout', () => {
@@ -314,11 +315,21 @@ async function run() {
 describe('singleton pg-client pools always declare an application_name (WI-6062)', () => {
   const files = SCAN_ROOTS.flatMap((r) => walk(join(REPO_ROOT, r)));
 
-  it('finds the singleton sites it is meant to guard (test is not vacuously green)', () => {
-    const total = files.reduce((n, f) => n + findSingletonPoolSites(readFileSync(f, 'utf8')).length, 0);
-    // Guards against the scan silently matching nothing (bad root, renamed pattern).
-    // Measured live 2026-07-26: ~14 module-level singleton pg-client pools.
-    expect(total).toBeGreaterThanOrEqual(10);
+  it('the tree scan is wired correctly (test is not vacuously green)', () => {
+    // Non-vacuity is anchored to the SCAN (did walk() find real source files?), NEVER to
+    // the size of the population being guarded.
+    //
+    // Every population counted in this file SHRINKS as pools migrate to
+    // getLongLivedAdminPool — at the end state findSingletonPoolSites goes to zero by
+    // design. A `>= N` floor therefore reds the gate for whoever finishes the migration:
+    // the guard punishing its own success. This was not hypothetical — the floor here
+    // read `>= 10` with a comment recording ~14 sites measured 2026-07-26, and by
+    // 2026-08-02 the real count was exactly 10, one migration from a spurious red.
+    //
+    // Detector correctness — the thing a count was standing in for — is proven directly
+    // by the fixture describe above, which runs these same functions over known-good and
+    // known-bad strings. That is where it belongs: a fixture cannot drift with the tree.
+    expect(files.length).toBeGreaterThan(100);
   });
 
   it('every module-level singleton pg-client pool declares an application_name', () => {
@@ -464,14 +475,15 @@ describe('admin pools track the URL they were built with (EI-19306394439939264)'
   const files = SCAN_ROOTS.flatMap((r) => walk(join(REPO_ROOT, r)));
 
   it('the tree scan is wired correctly (test is not vacuously green)', () => {
-    // Non-vacuity is anchored to the STABLE singleton-pool population and to the scan
-    // finding files at all — deliberately NOT to the number of untracked pools. Driving
-    // that number to ZERO is the entire point of this guard, so asserting it stays >= N
-    // would red the gate for whoever finishes the migration: the guard would punish its
-    // own success. (The fixture describe above is what proves the detector still fires.)
-    const singletons = files.reduce((n, f) => n + findSingletonPoolSites(readFileSync(f, 'utf8')).length, 0);
+    // Anchored to the scan finding files at all — NOT to any pool count. An earlier
+    // version of this assertion also required `singletons >= 10`, reasoning that the
+    // singleton population was "stable" while only the untracked count was being driven
+    // to zero. That was wrong: migrating a pool removes its module-level singleton too,
+    // so both populations shrink together. Completing the migration on 2026-08-02 landed
+    // that count on exactly 10 — the guard was one migration from punishing its own
+    // success, the very failure the old comment claimed to have avoided.
+    // (The fixture describe above is what proves the detector still fires.)
     expect(files.length).toBeGreaterThan(100);
-    expect(singletons).toBeGreaterThanOrEqual(10);
   });
 
   it('no NEW singleton admin pool bypasses getLongLivedAdminPool', () => {

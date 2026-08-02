@@ -15,8 +15,8 @@
 
 /** Per-tier caps. `standard` is a looser projection, not a different shape. */
 const CAPS = {
-  trimmed: { claimable: 8, title: 90, inbox: 5, inboxSummary: 140, memory: 3, memoryText: 220, events: 5, eventText: 220, catchUp: 5, meChars: 2_400, facts: 8, factsBody: 200, paneContext: 2_400 },
-  standard: { claimable: 15, title: 140, inbox: 8, inboxSummary: 240, memory: 5, memoryText: 400, events: 8, eventText: 500, catchUp: 8, meChars: 6_000, facts: 14, factsBody: 400, paneContext: 6_000 },
+  trimmed: { claimable: 8, title: 90, inbox: 5, inboxSummary: 140, memory: 3, memoryText: 220, events: 5, eventText: 220, catchUp: 5, meChars: 2_400, facts: 8, factsBody: 200, paneContext: 2_400, briefMembers: 6, briefLists: 5, briefReason: 240 },
+  standard: { claimable: 15, title: 140, inbox: 8, inboxSummary: 240, memory: 5, memoryText: 400, events: 8, eventText: 500, catchUp: 8, meChars: 6_000, facts: 14, factsBody: 400, paneContext: 6_000, briefMembers: 12, briefLists: 10, briefReason: 500 },
 } as const;
 
 type TierName = keyof typeof CAPS;
@@ -47,6 +47,63 @@ function projectClaimable(row: unknown, titleCap: number): unknown {
     ...(r.assignee ? { assignee: r.assignee } : {}),
     ...(r.severity ? { severity: r.severity } : {}),
     ...(planItem ? { plan_item: planItem } : {}),
+  };
+}
+
+/** Priority for keeping a fleet member when the roster is capped (EI-19314271768708528).
+ *  A leader reads `leaderBrief` to find the members that need INTERVENTION, so a naive
+ *  head-slice is not merely lossy — it is inverted: on an 11-member fleet with a cap of
+ *  6 it can show six healthy workers and hide the one dead member, which is the same
+ *  silent-drop class this whole shaper exists to prevent. Rank the actionable rows
+ *  first; healthy working members are the droppable bulk. Array.sort is stable, so the
+ *  brief's own ordering is preserved within a rank. */
+function briefMemberRank(m: unknown): number {
+  const r = (m ?? {}) as Record<string, unknown>;
+  const state = String(r.sessionState ?? '');
+  const verdict = String(r.verdict ?? '');
+  // Gone or wedged — the leader must relaunch/reclaim.
+  if (r.stalled === true || verdict === 'dead' || verdict === 'stalled' || state === 'ended' || state === 'suspect') return 0;
+  // About to compact, or sitting on an unanswered directed question.
+  const unanswered = (r.unanswered as { count?: number } | undefined)?.count ?? 0;
+  const pressure = String(r.contextPressure ?? '');
+  if (pressure === 'critical' || pressure === 'high' || unanswered > 0) return 1;
+  // Idle next to claimable work, benched, or dormant — recoverable throughput.
+  if (r.benchSuggestion != null || r.dormant === true) return 2;
+  return 3;
+}
+
+/** Project one leaderBrief member row. Keeps every field a leader ACTS on
+ *  (liveness, claim, pressure, bench advice) and caps the two unbounded legs:
+ *  `benchSuggestion.reason` is a ~450-char paragraph repeated per idle member, and
+ *  `unanswered.newest` carries whole message bodies (already depth-omitted upstream). */
+function projectBriefMember(m: unknown, titleCap: number, reasonCap: number): unknown {
+  if (!m || typeof m !== 'object') return m;
+  const r = m as Record<string, unknown>;
+  const doing = r.doing as Record<string, unknown> | null | undefined;
+  const unanswered = r.unanswered as Record<string, unknown> | null | undefined;
+  const bench = r.benchSuggestion as Record<string, unknown> | null | undefined;
+  return {
+    agentId: r.agentId,
+    ...(r.label ? { label: r.label } : {}),
+    ...(r.fleetRole ? { fleetRole: r.fleetRole } : {}),
+    ...(r.sessionState ? { sessionState: r.sessionState } : {}),
+    ...(r.verdict ? { verdict: r.verdict } : {}),
+    ...(r.wakeMode ? { wakeMode: r.wakeMode } : {}),
+    ...(r.stalled === true ? { stalled: true } : {}),
+    ...(r.dormant === true ? { dormant: true } : {}),
+    ...(r.contextPressure ? { contextPressure: r.contextPressure } : {}),
+    ...(typeof r.load === 'number' ? { load: r.load } : {}),
+    ...(typeof r.queuedCount === 'number' ? { queuedCount: r.queuedCount } : {}),
+    ...(typeof r.lastToolCallAgeMs === 'number' ? { lastToolCallAgeMs: r.lastToolCallAgeMs } : {}),
+    ...(r.nextFireAt ? { nextFireAt: r.nextFireAt } : {}),
+    ...(Array.isArray(r.workItemIds) ? { workItemIds: r.workItemIds } : {}),
+    ...(doing ? { doing: { id: doing.id, title: cap(doing.title, titleCap), ...(doing.status ? { status: doing.status } : {}) } } : {}),
+    // parkedOn is how a leader distinguishes "correctly parked on a gate" from "idle".
+    ...(r.parkedOn != null ? { parkedOn: r.parkedOn } : {}),
+    ...(r.parkedOnResolved != null ? { parkedOnResolved: r.parkedOnResolved } : {}),
+    ...(unanswered ? { unanswered: { count: unanswered.count, ...(unanswered.oldestAgeMs != null ? { oldestAgeMs: unanswered.oldestAgeMs } : {}) } } : {}),
+    ...(bench ? { benchSuggestion: { kind: bench.kind, ...(bench.item != null ? { item: bench.item } : {}), reason: cap(bench.reason, reasonCap) } } : {}),
+    ...(r.isSelf === true ? { isSelf: true } : {}),
   };
 }
 
@@ -189,6 +246,37 @@ export function shapeOrient(data: unknown, tier: TierName): unknown {
   // capped at 3, short summaries) and passes through untouched.
   if (typeof d.paneContext === 'string' && d.paneContext.length > c.paneContext) {
     out.paneContext = `${d.paneContext.slice(0, c.paneContext)}\n… (trimmed — drill in via curation:feed / curation:state-of-pot / fleet:assignments, or payloadTier:'full')`;
+  }
+
+  // EI-19314271768708528: `leaderBrief` had NO shaper, so it reached the budget pass
+  // full-fat and was dropped WHOLE — on a monitor wake (the mode that exists to deliver
+  // it) the leader was left with `me`, its own one-row assignment view, which reads
+  // exactly like a fleet-wide verdict of one live agent and zero stalled. Project it
+  // like every other leg instead: `summary` is ~20 scalars carrying every aggregate
+  // alert (dead / stalled / idle_with_claimable / unowned_criticals) and is the highest
+  // value-per-byte field in the whole result, so it is kept WHOLE and the roster is what
+  // yields — with the D-004 count + fetch-pointer.
+  const brief = d.leaderBrief as Record<string, unknown> | null | undefined;
+  if (brief && typeof brief === 'object') {
+    const out2: Record<string, unknown> = { ...brief };
+    if (Array.isArray(brief.members)) {
+      const total = brief.members.length;
+      const ranked = [...brief.members].sort((a, b) => briefMemberRank(a) - briefMemberRank(b));
+      out2.members = ranked.slice(0, c.briefMembers).map((m) => projectBriefMember(m, c.title, c.briefReason));
+      if (total > c.briefMembers) {
+        out2.membersTruncated = { total, shown: c.briefMembers, ranked: 'actionable-first (dead/stalled → pressured/unanswered → idle/benched → healthy)', more: 'fleet:leader-brief' };
+      }
+    }
+    // The advisory rosters are unbounded work-item lists (18 unowned criticals in the
+    // reporting incident); cap with a pointer rather than letting them crowd out members.
+    for (const key of ['unownedCriticals', 'abandonedUnclaimed', 'orphaned', 'stalled']) {
+      const list = brief[key];
+      if (Array.isArray(list) && list.length > c.briefLists) {
+        out2[key] = list.slice(0, c.briefLists);
+        out2[`${key}Truncated`] = { total: list.length, shown: c.briefLists, more: 'fleet:leader-brief' };
+      }
+    }
+    out.leaderBrief = out2;
   }
 
   const catchUp = d.fleetCatchUp as { fleet?: unknown; total?: number; recent?: unknown[] } | null | undefined;
