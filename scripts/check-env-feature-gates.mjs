@@ -53,6 +53,7 @@ const ALLOW = new Set([
   'PAPERCUSP_LLM_TEST_SKIP_CLAIM', 'PAPERCUSP_ALLOW_LLM_TEST_BUDGET_BYPASS', 'PAPERCUSP_FAULT_INJECTION', 'PAPERCUSP_REPLAY_VERIFY',
   'PAPERCUSP_VALIDATE_TOOL_OUTPUT', 'PAPERCUSP_INTERNAL_DOCS_BYPASS', 'PAPERCUSP_POSTHOG_TESTING_FEATURES',
   'PAPERCUSP_INTERNAL_BUILD', 'PAPERCUSP_TESTING_FULL_ACCESS_ROLES',
+  'PAPERCUSP_FORBID_REAL_PG', // test-harness safety guard (libs/test-config/setup-no-real-pg.ts): forbids a unit test from opening a real PG connection
   // ── runtime mode / process wiring (a launcher sets these, not a feature) ──
   'PAPERCUSP_USE_EMBEDDED_PG', 'PAPERCUSP_USE_PG_STATE', 'PAPERCUSP_DBOS_ENABLE', 'PAPERCUSP_DBOS_ORCHESTRATOR',
   'PAPERCUSP_DBOS_ROUTINES', 'PAPERCUSP_DBOS_AUTOLOOP', 'PAPERCUSP_DBOS_TIMERS',
@@ -85,6 +86,13 @@ const ALLOW = new Set([
   //    — each is confirmed fully-shipped default-ON behavior with an opt-out kill-switch
   //    (`!== 'off'`), not a pending "should this be on?" capability decision. ──
   'PAPERCUSP_MEM0_CONVERSATION_CAPTURE', // default ON (operator converse mem0 capture); =off kill-switch
+  // EI-18747066020546067 (2026-08-02): graduated out of KNOWN_ENV_CAPABILITY_GATES.
+  // The D-010 "OWNER-ATTENDED live cutover" its old registry entry was waiting on has
+  // happened: verified LIVE + ARMED on papercup-bg-host.service (systemd drop-in
+  // 90-partial-green-gate.conf, "owner-approved 2026-07-01 via su-379eb"). No longer a
+  // pending "should this be on?" question — confirmed-gated infra config, same shape as
+  // the other DBOS/gateway ops kill-switches below.
+  'PAPERCUSP_PARTIAL_GREEN_GATE',
   // ⚠ EI-18747066020546067 (2026-07-27): this "graduated" verdict rested on the entry
   // being "confirmed fully-shipped and working" — but EI-18746586784230719 found the
   // guard has NEVER actually executed in the live operator (createAnthropicJudge()
@@ -105,6 +113,8 @@ const ALLOW = new Set([
   'PAPERCUSP_GITSYNC_STALL_WATCHDOG', 'PAPERCUSP_MCP_DARK_WATCHDOG', 'PAPERCUSP_MCP_DARK_INTERACTIVE',
   'PAPERCUSP_RECIPE_HYGIENE', 'PAPERCUSP_WORKTREE_COVERAGE_WATCHDOG', 'PAPERCUSP_SPAWN_READINESS_SHADOW',
   'PAPERCUSP_BGHOST_WATCHDOG_NO_AUTOSTART', 'PAPERCUSP_WATCHDOG_NO_AUTOSTART', 'PAPERCUSP_PARENT_DEATH_WATCH',
+  'PAPERCUSP_DBOS_HANG_WATCHDOG', // default-ON DBOS-workflow hang watchdog kill-switch (=== '0' opts out)
+  'PAPERCUSP_WAL_GUARD', // default-ON periodic-workflows WAL guard kill-switch (=== '0' opts out)
   // inference-gateway internal self-tuning (default-ON, `!== '0'` opts out)
   'PAPERCUSP_GATEWAY_ABSORB_STALLS', 'PAPERCUSP_GATEWAY_ABSORB_TIER_SCALE', 'PAPERCUSP_GATEWAY_RPM_SMOOTH',
   'PAPERCUSP_GATEWAY_SERVICEABLE_CLAMP', 'PAPERCUSP_GATEWAY_SUPERVISE', 'PAPERCUSP_GATEWAY_SUPPRESS_BAREBURST_ROTATE',
@@ -168,48 +178,44 @@ const ALLOW = new Set([
 // Audit it with: node scripts/check-env-feature-gates.mjs
 const KNOWN_ENV_CAPABILITY_GATES = {
   PAPERCUSP_PGBOUNCER: {
-    reviewBy: '2026-07-31',
-    reason: 'Transaction pooling — proven + LIVE on staging :3170 (2026-06-21); rolling out to bg-host + the :3070 cluster (backend-connection-scaling-2026-06-17). Stays env: it is a connection-URL routing switch read before any FLAGS/PG access exists.',
+    reviewBy: '2026-09-01',
+    reason: 'Transaction pooling — proven + LIVE on staging :3170 (systemd drop-in since 2026-06-21) AND on :3070 dev-api (systemd drop-in since 2026-07-20, EI-18147753127456018). RE-VERIFIED 2026-08-02: still not on papercup-bg-host.service (no matching drop-in) — rollout genuinely incomplete there. Stays env: it is a connection-URL routing switch read before any FLAGS/PG access exists. DECIDE: finish the bg-host rollout, or accept the current 2-of-3-hosts state as done and graduate to ALLOW.',
   },
   PAPERCUSP_LISTEN_HUB: {
-    reviewBy: '2026-07-31',
-    reason: 'Shared PG LISTEN connection hub (collapses 4 wake-bus conns → 1). Built + on the :3070 cluster; finish the fleet rollout. Stays env: boot-time connection infra.',
+    reviewBy: '2026-09-01',
+    reason: 'Shared PG LISTEN connection hub (collapses 4 wake-bus conns → 1). RE-VERIFIED 2026-08-02: live on :3070 dev-api (systemd drop-in, 50-cluster.conf) only — no matching drop-in on staging-api or bg-host, and no .env.local entry anywhere in the shared tree. Rollout incomplete; DECIDE: finish rolling out to staging + bg-host, or migrate to a FLAG.',
   },
   PAPERCUSP_DESIGN_GATE: {
-    reviewBy: '2026-07-31',
-    reason: 'Design-phase invocation gate — blocks feature runs until design accepted/ignored. Built + 11 tests, OFF everywhere. DECIDE: enable per-workspace or migrate to a FLAG.',
-  },
-  PAPERCUSP_PARTIAL_GREEN_GATE: {
-    reviewBy: '2026-07-31',
-    reason: 'Longest-green-PREFIX FF for the green-checkpoint gate (release-pipeline-resilience-2026-06-09 P-016 / D-010): when armed, a red batch TIP no longer hostages the clean prefix — `main` FFs to the longest prefix that ITSELF runs green (confirm-gated; the always-tested-green invariant holds). Built + unit-tested, OFF. Default-OFF + env-armed (the established perf/delta-gate pattern) because D-010 calls for an OWNER-ATTENDED live cutover of the fleet-critical gate. DECIDE: arm on the green-checkpoint routine after attended verify, or migrate to a FLAG.',
+    reviewBy: '2026-09-01',
+    reason: 'Design-phase invocation gate — blocks feature runs until design accepted/ignored. Built + 11 tests, OFF everywhere (re-verified 2026-08-02: no systemd drop-in, no .env.local entry on any of dev-api/staging-api/bg-host). Still pending an explicit decision; DECIDE: enable per-workspace or migrate to a FLAG.',
   },
   PAPERCUSP_AGENT_GOVERNOR: {
-    reviewBy: '2026-07-31',
-    reason: 'Agent-spawn rate governance (budget-based backpressure). Built, OFF. Scaling-relevant (thousands-of-agents). DECIDE: enable or migrate to a FLAG.',
+    reviewBy: '2026-09-01',
+    reason: 'Agent-spawn rate governance (budget-based backpressure). Scaling-relevant (thousands-of-agents). RE-VERIFIED 2026-08-02: PAPERCUSP_AGENT_GOVERNOR=1 in apps/operator/.env.local (the shared staging tree) is live on papercup-staging-api.service (:3170) and papercup-bg-host.service, which both run from that tree — but NOT on papercup-dev-api.service (:3070 live release), which sources a separate .env.local in papercup-release with no such entry. Mid-rollout, not yet on the live/main host. DECIDE: roll out to :3070 or migrate to a FLAG.',
   },
   PAPERCUSP_AGENT_GOVERNOR_PG: {
-    reviewBy: '2026-07-31',
-    reason: 'Cross-process PG-backed agent-governor budget coordination for multi-process operators. Built, OFF. Pairs with AGENT_GOVERNOR.',
+    reviewBy: '2026-09-01',
+    reason: 'Cross-process PG-backed agent-governor budget coordination for multi-process operators. Pairs with AGENT_GOVERNOR — same re-verified 2026-08-02 status: live on staging (:3170) + bg-host via the shared .env.local, not yet on :3070 live.',
   },
   PAPERCUSP_CHUNK_LOCK_PG: {
-    reviewBy: '2026-07-31',
-    reason: 'PG-backed file-lock coordinator for worker chunk loops (cross-feature concurrency, @papercusp/locks). Built, OFF. DECIDE: enable or migrate to a FLAG.',
+    reviewBy: '2026-09-01',
+    reason: 'PG-backed file-lock coordinator for worker chunk loops (cross-feature concurrency, @papercusp/locks). Built, OFF (re-verified 2026-08-02: no systemd drop-in, no .env.local entry anywhere). Still pending an explicit decision; DECIDE: enable or migrate to a FLAG.',
   },
   PAPERCUSP_PERSIST_CHUNKS: {
-    reviewBy: '2026-07-31',
-    reason: 'Tool-output chunk archival to PG (harness_shared.invoker_run_chunks). Built, OFF. DECIDE: enable or migrate to a FLAG.',
+    reviewBy: '2026-09-01',
+    reason: 'Tool-output chunk archival to PG (harness_shared.invoker_run_chunks). Built, OFF (re-verified 2026-08-02: no systemd drop-in, no .env.local entry anywhere). Still pending an explicit decision; DECIDE: enable or migrate to a FLAG.',
   },
   PAPERCUSP_SHARED_OPERATOR: {
-    reviewBy: '2026-07-31',
-    reason: 'Multi-workspace orchestration mode (reads the workspace registry). Built, OFF. Stays env: process-mode switch read at boot. DECIDE: enable or migrate to a FLAG.',
+    reviewBy: '2026-09-01',
+    reason: 'Multi-workspace orchestration mode (reads the workspace registry). Built, OFF (re-verified 2026-08-02: no systemd drop-in, no .env.local entry anywhere). Stays env: process-mode switch read at boot. DECIDE: enable or migrate to a FLAG.',
   },
   PAPERCUSP_GIT_EXPORT_COMMIT: {
-    reviewBy: '2026-07-31',
-    reason: 'Git-export commit recording in feature metadata. Built, OFF. DECIDE: enable or migrate to a FLAG.',
+    reviewBy: '2026-09-01',
+    reason: 'Git-export commit recording in feature metadata. Built, OFF (re-verified 2026-08-02: no systemd drop-in, no .env.local entry anywhere). Still pending an explicit decision; DECIDE: enable or migrate to a FLAG.',
   },
   PAPERCUSP_MEMORY_DEDUP: {
-    reviewBy: '2026-07-31',
-    reason: "Memory dedup-on-remember (top-k similarity, checked === 'on'). Built, OFF. DECIDE: enable or migrate to a FLAG.",
+    reviewBy: '2026-09-01',
+    reason: "Memory dedup-on-remember (top-k similarity, checked === 'on'). Built, OFF (re-verified 2026-08-02: no systemd drop-in, no .env.local entry anywhere). Still pending an explicit decision; DECIDE: enable or migrate to a FLAG.",
   },
   PAPERCUSP_AMBIENT_CURSOR: {
     reviewBy: '2026-08-15',

@@ -267,4 +267,134 @@ describe('release preflight: cold-seed migration boot-smoke (P-001)', () => {
       }
     }
   }, 300_000);
+
+  /**
+   * EI-18748424931934157 — THE HOLE 678 FELL THROUGH.
+   *
+   * Both tests above replay migrations against a DB containing ONLY `harness_shared`
+   * (plus whatever a migration itself creates). No per-harness schema — `hello_world`,
+   * `oddsmith`, `papercusp`, … — nor its `harness_features` view over
+   * `harness_shared.harness_features_consolidated` is ever present, because those are
+   * scaffolded at RUNTIME (scaffoldHarnessSchema, called from the add-project /
+   * onboard-action flow), never by a migration. So a migration that DROPs or
+   * incompatibly redefines a view/table with real per-harness dependents is
+   * structurally invisible here: a fresh testcontainer is the one environment where
+   * that migration is safe, and it is the only environment tested.
+   *
+   * That is exactly how migration 678 shipped: it bare-`DROP VIEW`'d
+   * `harness_shared.harness_features_consolidated`, passed every migration test (this
+   * file's other two included), and then crash-looped the operator on real boot —
+   * "cannot drop view harness_shared.harness_features_consolidated because other
+   * objects depend on it". 678 itself is fixed (append-only CREATE OR REPLACE now);
+   * this test is the CLASS-level guard so the next migration that reaches for DROP
+   * over a depended-on view fails here in ~seconds instead of at a packaged boot.
+   *
+   * Mirrors scaffold-harness-schema.ts's real `harness_features` view DDL (kept
+   * intentionally minimal — one representative view, not the full 8-view scaffold —
+   * per the ticket's guard (1)) against a SYNTHETIC harness slug that cannot collide
+   * with a real one. Staged in two phases (000-baseline first, exactly like the
+   * seeded-backfill test above) because `harness_features_consolidated` is created in
+   * 000-baseline itself — the per-harness view has to exist BEFORE the incremental
+   * migrations (107+) replay for a breaking one to be caught.
+   */
+  it('a migration that breaks a per-harness dependent view fails here, not at boot (the migration-678 class)', async () => {
+    const sqlDir = resolveSqlDir();
+    expect(sqlDir).toBeTruthy();
+
+    const depDb = `bootdep_${randomBytes(5).toString('hex')}`;
+    const admin = postgres(adminUri, { max: 1, onnotice: () => {} });
+    try {
+      await admin.unsafe(`CREATE DATABASE "${depDb}"`);
+    } finally {
+      await admin.end({ timeout: 5 });
+    }
+
+    const depUrl = new URL(adminUri);
+    depUrl.pathname = `/${depDb}`;
+    let client: postgres.Sql | undefined;
+    let stageDir = '';
+
+    try {
+      const setup = postgres(depUrl.toString(), { max: 1, onnotice: () => {} });
+      try {
+        await setup.unsafe(`CREATE EXTENSION IF NOT EXISTS pgcrypto`);
+        await setup.unsafe(`CREATE EXTENSION IF NOT EXISTS pg_trgm`);
+        await setup.unsafe(`CREATE EXTENSION IF NOT EXISTS vector`);
+      } finally {
+        await setup.end({ timeout: 5 });
+      }
+      client = postgres(depUrl.toString(), { max: 1, prepare: false, onnotice: () => {} });
+
+      // PHASE 1 — 000-baseline only. It creates harness_shared.harness_features_consolidated
+      // (verified: grep -c below), so the per-harness view below can be built on top of it.
+      const baselineFile = '000-baseline.sql';
+      const baselineText = await readFile(join(sqlDir!, baselineFile), 'utf8');
+      expect(
+        baselineText,
+        '000-baseline.sql must define harness_features_consolidated — if this ever moves to a ' +
+          'later migration, seed the dependent view AFTER that migration instead of after baseline',
+      ).toContain('harness_features_consolidated');
+
+      stageDir = await mkdtemp(join(tmpdir(), 'papercusp-mig-dep-stage-'));
+      await copyFile(join(sqlDir!, baselineFile), join(stageDir, baselineFile));
+      await applyPendingMigrations({ client, sqlDir: stageDir, log: () => {} });
+
+      // A synthetic slug — cannot collide with a real harness, and a-slug-that-looks-like-
+      // one is exactly what a raw "any per-harness schema exists" check would miss.
+      const slug = 'preflight-dep-guard';
+      const schema = 'harness_preflight_dep_guard';
+      await client.unsafe(`
+        CREATE SCHEMA IF NOT EXISTS ${schema};
+        CREATE OR REPLACE VIEW ${schema}.harness_features AS
+          SELECT * FROM harness_shared.harness_features_consolidated
+          WHERE harness_slug = '${slug}'
+          WITH CHECK OPTION;
+      `);
+
+      // PHASE 2 — the real directory, everything after baseline. The runner skips
+      // already-recorded files, so this applies exactly the incremental set with the
+      // dependent view now in place — replaying the real boot-order shape a migration
+      // like 678 actually ships into.
+      const { failed } = await applyPendingMigrations({
+        client,
+        sqlDir: sqlDir!,
+        continueOnError: true,
+        log: () => {},
+      });
+
+      if (failed.length > 0) {
+        const detail = failed.map((f) => `  - ${f.file}: ${f.error}`).join('\n');
+        throw new Error(
+          `${failed.length} migration(s) FAILED to apply with a per-harness dependent view in ` +
+            `place (they pass against a bare harness_shared-only DB, which is why the replays ` +
+            `above miss them). A real install carries per-harness schemas and would crash-loop ` +
+            `on boot exactly like migration 678 did:\n${detail}`,
+        );
+      }
+
+      // The CASCADE variant: a migration that drops-and-forgets-to-recreate the
+      // dependent view doesn't fail apply at all (CASCADE silently takes it with it) —
+      // it just leaves per-harness reads broken at boot. Assert the view still resolves.
+      await expect(
+        client.unsafe(`SELECT 1 FROM ${schema}.harness_features LIMIT 1`),
+        `${schema}.harness_features must still exist and be queryable after the full replay — ` +
+          'a migration that CASCADE-dropped it without recreating would pass the check above ' +
+          'and fail silently here instead',
+      ).resolves.not.toThrow();
+    } finally {
+      await client?.end({ timeout: 5 }).catch(() => {});
+      if (stageDir) await rm(stageDir, { recursive: true, force: true }).catch(() => {});
+      const cleanup = postgres(adminUri, { max: 1, onnotice: () => {} });
+      try {
+        await cleanup
+          .unsafe(
+            `SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '${depDb}' AND pid <> pg_backend_pid()`,
+          )
+          .catch(() => {});
+        await cleanup.unsafe(`DROP DATABASE IF EXISTS "${depDb}"`).catch(() => {});
+      } finally {
+        await cleanup.end({ timeout: 5 });
+      }
+    }
+  }, 300_000);
 });
