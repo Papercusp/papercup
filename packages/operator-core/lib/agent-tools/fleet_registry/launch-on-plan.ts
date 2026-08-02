@@ -1934,6 +1934,7 @@ export default defineTool({
           }
         }
         const briefText = ownBriefText ?? sharedBriefText;
+        kickoffBriefTexts.push(briefText);
         try {
           const composed = composeMemberLaunchContext({
             fleetSlug,
@@ -1963,6 +1964,55 @@ export default defineTool({
       briefReadError = briefReadError
         ? `${briefReadError}\n${perMemberReadErrors.join('\n')}`
         : perMemberReadErrors.join('\n');
+    }
+
+    // EI-18862608742257943: does the claim spec THIS launch is about to apply actually
+    // admit every WI-/EI- id the kickoff brief(s) name? A member kicked off with "your
+    // only job is WI-xxxx" that then cannot claim WI-xxxx does the work anyway — unclaimed
+    // (assignee stays NULL, fleet:assignments shows it holding nothing, the death-resilience
+    // reclaim-on-death net never engages) — the free-text brief and the enforced claim spec
+    // were authored independently and nothing reconciled them. Re-fetch the EFFECTIVE spec
+    // fresh (rather than threading a local out of the claim-spec block above) so this checks
+    // whatever actually landed, whichever of the preserve/merge/build branches ran above.
+    // LOCAL placement only — a remote placement already returned earlier. FAILS OPEN: any
+    // lookup error must never strand a launch, same philosophy as every other diagnostic in
+    // this handler (poolEffect preview, degenerate-lane composition, …).
+    try {
+      const kickoffIds = extractKickoffWorkItemIds(kickoffBriefTexts);
+      if (kickoffIds.length > 0 && !args.confirmKickoffMismatch) {
+        const claimSpecWorkspaceId = resolveClaimSpecWorkspace(workspaceId);
+        const effectiveSpec = await getClaimSpec({ cupId: fleetSpecBeeKey(fleetSlug), workspaceId: claimSpecWorkspaceId });
+        const { getWorkItem } = await import('../../work-items');
+        const mismatches: string[] = [];
+        for (const id of kickoffIds) {
+          const item = await getWorkItem(id, harness).catch(() => null);
+          if (!item) continue; // not found — not a scope problem; the claim call 404s on its own
+          if (TERMINAL_WORK_ITEM_STATES.has(String(item.state ?? '').toLowerCase())) continue; // already finished — nothing to claim
+          const matches = await itemMatchesRawClaimSpec(item, effectiveSpec, claimSpecWorkspaceId);
+          if (!matches) mismatches.push(id);
+        }
+        if (mismatches.length > 0) {
+          try {
+            await releaseFleetLaunchSlot({ workspaceId, fleetSlug, at: slot.at });
+          } catch {
+            /* best-effort — a release failure must not mask the real refusal below */
+          }
+          return err(
+            `KICKOFF/CLAIM-SPEC MISMATCH (EI-18862608742257943): the brief(s) this launch would hand its ` +
+              `members name ${mismatches.join(', ')}, but the claim spec this launch is about to apply ` +
+              `(${formatSpecRef(effectiveSpec.specId, effectiveSpec.revision)}) does not admit ` +
+              `${mismatches.length === 1 ? 'it' : 'them'} — a member told "${mismatches[0]} is your only job" ` +
+              `would be UNABLE to work_items:claim it (fleet_scope_violation), so it would do the work anyway ` +
+              `unclaimed: assignee stays NULL, fleet:assignments shows it holding nothing, and the ` +
+              `death-resilience reclaim-on-death net never engages. NO members were opened. Either widen the ` +
+              `spec first (scheduler:set_claim_spec { fleet: "${fleetSlug}", spec: <a revision whose ` +
+              `view.filter admits ${mismatches.join(', ')}> }), drop the id from the brief, or re-send with ` +
+              `confirmKickoffMismatch:true if the brief only mentions it for context.`,
+          );
+        }
+      }
+    } catch {
+      /* a diagnosis must never strand a launch — fail open */
     }
 
     // Base envelope (cwd/env) once — skip the superuser .mcp.json (each member's psu
