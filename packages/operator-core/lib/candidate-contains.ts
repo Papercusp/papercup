@@ -342,6 +342,82 @@ export interface PathContainment {
   unknownReason: CellUnknown | null;
 }
 
+/** The newest commit touching `relPath` in `ref` — tri-state (module doc: an absence must
+ *  never read as a positive). `null` = the read failed; `{ sha: null }` = a MEASURED
+ *  absence (no commit in `ref`'s history touches this path); `{ sha }` = found. */
+async function newestCommitTouching(
+  git: GitRead,
+  ref: string,
+  relPath: string,
+): Promise<{ sha: string | null } | null> {
+  const out = await git(['log', '-1', '--pretty=%H', ref, '--', relPath]);
+  if (out === null) return null;
+  return { sha: out === '' ? null : out };
+}
+
+/**
+ * Is `sha` an ancestor-or-equal of `ref`? Tri-state, and deliberately NOT
+ * `merge-base --is-ancestor` — its 0/1 exit is swallowed by every stdout-only runner in
+ * this tree (see git-pipeline-position.ts's `refContains`, the identical fix for the
+ * identical reason). `${ref}..${sha}` lists commits reachable from `sha` but not `ref`;
+ * `rev-list --count` prints a number on success either way, so a genuine "not an
+ * ancestor" (a nonzero count) survives through a runner that only reads stdout.
+ */
+async function isAncestorOrEqual(git: GitRead, sha: string, ref: string): Promise<boolean | null> {
+  const out = await git(['rev-list', '--count', `${ref}..${sha}`]);
+  if (out === null) return null;
+  return out === '0';
+}
+
+/**
+ * EI-19326775809436764 — a path classified `uncommitted` by blob comparison against the
+ * live WORKING TREE is not self-evidently the CALLER's missing work. On a checkout edited
+ * by ~100 concurrent agents, the dirty content just as often belongs to a peer mid-edit on
+ * a file the caller separately (and already, committedly) touched. Reporting that path as
+ * `missing` and prescribing "commit it (git-sync:run), then re-fire" is then both wrong and
+ * expensive — a needless multi-hour suite re-run on a candidate that already carries every
+ * commit that has landed.
+ *
+ * This does NOT attempt to determine WHOSE edit the dirty content is — that is undecidable
+ * without a marker (see `markerAtCommit`'s doc above: git-sync commits the whole tree under
+ * one identity, so no commit is identifiably "yours"). It answers a narrower, fully
+ * decidable question instead: has EVERY commit that has ever landed on this path (as of
+ * `committedSha`) already reached the candidate? If so, nothing COMMITTED is missing — the
+ * blob mismatch is caused entirely by content nobody has committed yet, and blaming "your
+ * missing commit" for it is unsound.
+ *
+ * Per this module's absence-is-never-a-positive rule, a confirmed refinement is reported as
+ * UNKNOWN (`insufficient-data`), never as `inCandidate: true` — it does not prove the
+ * caller's own edit is captured (it may still be sitting uncommitted), it only disproves
+ * that a LANDED commit is missing. Returns null when no refinement applies (the read failed,
+ * no commit has ever touched this path at `committedSha`, or the ancestry check found the
+ * candidate genuinely behind) — callers keep the original `uncommitted` classification.
+ */
+async function refineUnattributedUncommitted(
+  git: GitRead,
+  committedSha: string,
+  candidateSha: string,
+  path: string,
+): Promise<PathContainment | null> {
+  const newest = await newestCommitTouching(git, committedSha, path);
+  if (!newest?.sha) return null;
+  const upToDate = await isAncestorOrEqual(git, newest.sha, candidateSha);
+  if (upToDate !== true) return null;
+  return {
+    path,
+    inCandidate: null,
+    reason: null,
+    unknownReason: cellUnknown(
+      'insufficient-data',
+      `The candidate already contains every commit landed for '${path}' as of HEAD — nothing COMMITTED is ` +
+        `missing. The remaining difference from the working tree is UNCOMMITTED content that could be yours ` +
+        `(not yet swept by git-sync) or a peer's unrelated edit on this shared tree; this tool cannot attribute ` +
+        `it. If it is your own uncommitted work, git-sync:run then re-fire; otherwise this path's containment ` +
+        `is already confirmed by ancestry — no re-fire needed.`,
+    ),
+  };
+}
+
 /**
  * Classify each path against `candidateSha` by blob identity against the WORKING TREE.
  *
@@ -446,21 +522,22 @@ export async function classifyPathsAgainstCandidate(
       const headBlob = committedSha ? await blobAtCommit(git, committedSha, path) : null;
       if (!candidateBlob) {
         if (!committedSha) return { path, inCandidate: false, reason: 'absent', unknownReason: null };
-        return {
-          path,
-          inCandidate: false,
-          // HEAD carries exactly this content ⇒ committed, merely newer than the candidate.
-          // HEAD lacks it or differs ⇒ the edit really has not left the working tree.
-          reason: headBlob === treeBlob ? 'newer-commit' : 'uncommitted',
-          unknownReason: null,
-        };
+        // HEAD carries exactly this content ⇒ committed, merely newer than the candidate.
+        // HEAD lacks it or differs ⇒ the edit really has not left the working tree — UNLESS
+        // ancestry proves otherwise; see refineUnattributedUncommitted below.
+        if (headBlob === treeBlob) return { path, inCandidate: false, reason: 'newer-commit', unknownReason: null };
+        const refined = await refineUnattributedUncommitted(git, committedSha, candidateSha, path);
+        if (refined) return refined;
+        return { path, inCandidate: false, reason: 'uncommitted', unknownReason: null };
       }
-      return {
-        path,
-        inCandidate: false,
-        reason: headBlob && headBlob !== treeBlob ? 'uncommitted' : 'newer-commit',
-        unknownReason: null,
-      };
+      if (!(headBlob && headBlob !== treeBlob)) {
+        return { path, inCandidate: false, reason: 'newer-commit', unknownReason: null };
+      }
+      {
+        const refined = committedSha ? await refineUnattributedUncommitted(git, committedSha, candidateSha, path) : null;
+        if (refined) return refined;
+      }
+      return { path, inCandidate: false, reason: 'uncommitted', unknownReason: null };
     }),
   );
 }

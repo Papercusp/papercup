@@ -956,8 +956,18 @@ describe('launchDetachedCheckpoint replaceStale (EI-9672: force alone could not 
     const spawnFn = vi.fn();
     const execFn = staleActiveExecFn(1); // stop fails
     const readLogHead = vi.fn(() => '[green-checkpoint] checkpointing candidate 11111111 (base def)\n');
+    // EI-19326961954611487: recordDisplacement is written BEFORE the stop attempt (so the
+    // marker survives even if the stop itself fails) — this old-enough run reaches it too.
+    const recordDisplacement = vi.fn();
 
-    const r = await launchDetachedCheckpoint({ root: '/tree', replaceStale: true }, spawnFn as never, execFn, readLogHead);
+    const r = await launchDetachedCheckpoint(
+      { root: '/tree', replaceStale: true },
+      spawnFn as never,
+      execFn,
+      readLogHead,
+      undefined,
+      recordDisplacement,
+    );
 
     expect(spawnFn).not.toHaveBeenCalled();
     expect(r.launched).toBe(false);
@@ -1001,8 +1011,18 @@ describe('launchDetachedCheckpoint replaceStale (EI-9672: force alone could not 
     const execFn = staleActiveExecFn(1); // stop fails
     const readLogHead = vi.fn(() => '[green-checkpoint] checkpointing candidate 11111111 (base def)\n');
     const cancelStaleAwaits = vi.fn(async () => ({ cancelled: 0 }));
+    // EI-19326961954611487: this old-enough run also reaches recordDisplacement (written
+    // before the stop attempt), even though the stop itself fails.
+    const recordDisplacement = vi.fn();
 
-    await launchDetachedCheckpoint({ root: '/tree', replaceStale: true }, spawnFn as never, execFn, readLogHead, cancelStaleAwaits);
+    await launchDetachedCheckpoint(
+      { root: '/tree', replaceStale: true },
+      spawnFn as never,
+      execFn,
+      readLogHead,
+      cancelStaleAwaits,
+      recordDisplacement,
+    );
 
     expect(cancelStaleAwaits).not.toHaveBeenCalled();
   });
@@ -1108,6 +1128,36 @@ describe('launchDetachedCheckpoint replaceStale (EI-9672: force alone could not 
     expect(line).toContain('fed654cba321'.slice(0, 12));
     expect(line).toContain('2026-08-02T05:15:07.000Z');
     expect(line).toContain('300s elapsed');
+  });
+
+  // EI-19326961954611487 recurrence guard: the un-injected DEFAULT appendFn must never reach
+  // the real filesystem under test — this is the exact leak that wrote synthetic "[displaced
+  // ...] STOPPED via replaceStale" lines with placeholder shas into the SHARED, PRODUCTION
+  // /tmp/papercup-green-checkpoint-manual-*.log namespace, which CLAUDE.md tells agents to
+  // trust as gate ground truth. A future un-injected call site (here or anywhere else that
+  // imports recordCheckpointDisplacement without supplying appendFn) is caught by this guard
+  // regardless of call path, not just the two sites fixed above.
+  it('EI-19326961954611487: the un-injected default appendFn never performs a real fs write under test (fail-soft: logged, not thrown)', async () => {
+    const os = await import('node:os');
+    const fs = await import('node:fs');
+    const path = await import('node:path');
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const target = path.join(os.tmpdir(), `papercup-green-checkpoint-manual-recurrence-guard-${Date.now()}.log`);
+    expect(fs.existsSync(target)).toBe(false);
+
+    expect(() =>
+      recordCheckpointDisplacement(target, {
+        candidate: '1111111111111111111111111111111111111111',
+        current_candidate: '2222222222222222222222222222222222222222',
+        elapsed_sec: 2700,
+        started_at: '2026-08-02T07:05:08.579Z',
+      }),
+    ).not.toThrow();
+
+    expect(fs.existsSync(target)).toBe(false); // the real write never happened
+    expect(consoleErrorSpy).toHaveBeenCalledTimes(1);
+    expect(String(consoleErrorSpy.mock.calls[0]?.[0])).toMatch(/refusing a real fs write .* under test/);
+    consoleErrorSpy.mockRestore();
   });
 });
 

@@ -63,6 +63,15 @@ const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 export const DEFAULT_ROOTS = ['apps', 'packages', 'libs/generic'];
 
 /**
+ * One deliberate exclusion from this leg.
+ *
+ * @typedef {object} Exemption
+ * @property {string} reason   short machine-ish tag, e.g. 'already-a-leg' | 'committed-errors'
+ * @property {string} detail   why, in prose — printed verbatim on every run
+ * @property {string} filedAs  the id/pointer that says how this exemption ENDS
+ */
+
+/**
  * Packages that declare a `typecheck` script but are deliberately NOT run by THIS leg.
  *
  * This is a narrow, visible exception list — NOT the hardcoded roster the discovery above exists
@@ -70,6 +79,8 @@ export const DEFAULT_ROOTS = ['apps', 'packages', 'libs/generic'];
  * silently ungated, the original bug), whereas this decides who is EXCLUDED, is printed in full
  * on every single run, and is asserted by a test. An entry cannot go quiet, and every entry
  * carries a filed id that says how it ends.
+ *
+ * @type {Record<string, Exemption>}
  */
 export const EXEMPT = {
   'packages/operator-core': {

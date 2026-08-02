@@ -48,6 +48,19 @@ function fakeGit(opts: {
   allFail?: boolean;
   /** Does `<sha>^{commit}` resolve? Default true — a bogus candidate sets it false. */
   resolvesCommit?: boolean;
+  /**
+   * `${ref}:${path}` → the newest commit sha touching `path` in `ref` (the
+   * `log -1 --pretty=%H <ref> -- <path>` shape `refineUnattributedUncommitted` reads).
+   * Absent key ⇒ '' (a measured "no commit touches this path"), matching every other
+   * unset-option default in this fake — NOT a failure.
+   */
+  newestCommit?: Record<string, string>;
+  /**
+   * `${ref}..${sha}` → the `rev-list --count` output (a decimal string). Absent key ⇒
+   * `null` (a FAILED read, the safe default so a test that does not care about ancestry
+   * never accidentally triggers the refinement).
+   */
+  revListCount?: Record<string, string>;
 }): GitRead {
   return async (args) => {
     if (opts.allFail) return null;
@@ -60,7 +73,17 @@ function fakeGit(opts: {
       return opts.tree?.[args[2]] ?? null;
     }
     if (args[0] === 'ls-files') return opts.lsFiles ?? '';
+    // `log -1 --pretty=%H <ref> -- <path>` (newestCommitTouching) is a DISTINCT shape
+    // from `log --oneline --no-decorate <range> -- <path>` (excludedCommitsTouchingPath)
+    // — route on `args[1]` so both can be modelled independently in the same fake.
+    if (args[0] === 'log' && args[1] === '-1') {
+      const key = `${args[3]}:${args[5]}`;
+      return opts.newestCommit?.[key] ?? '';
+    }
     if (args[0] === 'log') return opts.log ?? '';
+    if (args[0] === 'rev-list' && args[1] === '--count') {
+      return opts.revListCount?.[args[2]] ?? null;
+    }
     if (args[0] === 'diff') return opts.diff ?? '';
     // `git ls-tree <sha> -- <path>`: an entry line when present, EXIT 0 WITH NO OUTPUT
     // when the tree simply has no such path. That '' is the clean-miss signal

@@ -7,23 +7,7 @@ export function groupByRoot(entries: any): Map<any, any>;
 export function main({ repoRoot, roots, exempt, listOnly, listInvisible, spawn, log, warn, error, }?: {
     repoRoot?: any;
     roots?: string[] | undefined;
-    exempt?: {
-        'packages/operator-core': {
-            reason: string;
-            detail: string;
-            filedAs: string;
-        };
-        'apps/operator-vite': {
-            reason: string;
-            detail: string;
-            filedAs: string;
-        };
-        'apps/papercusp-publish': {
-            reason: string;
-            detail: string;
-            filedAs: string;
-        };
-    } | undefined;
+    exempt?: Record<string, Exemption> | undefined;
     listOnly?: any;
     listInvisible?: any;
     spawn?: typeof realSpawn | undefined;
@@ -38,6 +22,14 @@ export function main({ repoRoot, roots, exempt, listOnly, listInvisible, spawn, 
  */
 export const DEFAULT_ROOTS: string[];
 /**
+ * One deliberate exclusion from this leg.
+ *
+ * @typedef {object} Exemption
+ * @property {string} reason   short machine-ish tag, e.g. 'already-a-leg' | 'committed-errors'
+ * @property {string} detail   why, in prose — printed verbatim on every run
+ * @property {string} filedAs  the id/pointer that says how this exemption ENDS
+ */
+/**
  * Packages that declare a `typecheck` script but are deliberately NOT run by THIS leg.
  *
  * This is a narrow, visible exception list — NOT the hardcoded roster the discovery above exists
@@ -45,22 +37,25 @@ export const DEFAULT_ROOTS: string[];
  * silently ungated, the original bug), whereas this decides who is EXCLUDED, is printed in full
  * on every single run, and is asserted by a test. An entry cannot go quiet, and every entry
  * carries a filed id that says how it ends.
+ *
+ * @type {Record<string, Exemption>}
  */
-export const EXEMPT: {
-    'packages/operator-core': {
-        reason: string;
-        detail: string;
-        filedAs: string;
-    };
-    'apps/operator-vite': {
-        reason: string;
-        detail: string;
-        filedAs: string;
-    };
-    'apps/papercusp-publish': {
-        reason: string;
-        detail: string;
-        filedAs: string;
-    };
+export const EXEMPT: Record<string, Exemption>;
+/**
+ * One deliberate exclusion from this leg.
+ */
+export type Exemption = {
+    /**
+     * short machine-ish tag, e.g. 'already-a-leg' | 'committed-errors'
+     */
+    reason: string;
+    /**
+     * why, in prose — printed verbatim on every run
+     */
+    detail: string;
+    /**
+     * the id/pointer that says how this exemption ENDS
+     */
+    filedAs: string;
 };
 import { realSpawn } from './lib/typecheck-fanout.mjs';

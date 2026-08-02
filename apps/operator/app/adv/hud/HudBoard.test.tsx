@@ -22,6 +22,7 @@ import {
   ALL_PLANS,
   buildHudBoard,
   type HudRosterEntry,
+  type HudSearchHit,
 } from './hud-board-model';
 
 vi.mock('@/app/harness/Tooltip', () => ({
@@ -230,7 +231,9 @@ describe('HudBoard — sessions transcript search', () => {
        said why any of them matched. The endpoint had been returning the excerpt
        all along; HudView kept the ownerId and dropped it. */
     describe('the matched excerpt is on the card', () => {
-      const hit = {
+      // Annotated, not inferred: an inferred literal narrows `highlight` to
+      // `string`, and the no-highlight fallback case below genuinely passes null.
+      const hit: HudSearchHit = {
         turnIdx: 10,
         highlight: 'the <mark>Harrier</mark> embedder is default',
         excerpt: 'the Harrier embedder is default',
