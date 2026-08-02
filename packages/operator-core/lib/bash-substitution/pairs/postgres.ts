@@ -74,6 +74,13 @@ export const psqlSelectRead: SubstitutionPair = {
   bashPattern: new RegExp(
     // No shell expansion in the connection, and no heredoc.
     String.raw`^psql\s+(?![^\n]*[$\`])(?![^\n]*<<)` +
+      // ...and not a MULTI-STATEMENT invocation (two or more `-c`). See the
+      // note on the psql-describe pattern below: `dev:pg_query` runs one
+      // statement per call, so a two-`-c` command has no single-call tool
+      // expression and must fall OUTSIDE the pattern (D-008) rather than
+      // being claimed and then either failing coverage or — worse — passing it
+      // because `cover()` only inspects the first `-c`.
+      String.raw`(?![^\n]*-c\s+[^\n]*-c\s+)` +
       // A literal operator-Postgres connection, then a -c SELECT/WITH.
       String.raw`[^\n]*(?:\/papercusp\b|-d\s+papercusp\b)[^\n]*-c\s+["']?\s*(?:select|with)\b`,
     'i',
@@ -127,8 +134,19 @@ export const psqlDescribe: SubstitutionPair = {
   // object classes that are not relations, so per D-008 they fall OUTSIDE the
   // pattern rather than dragging the verdict down — describing them is a
   // separate capability, not a missing corner of this one.
+  // A MULTI-STATEMENT psql (two or more `-c`) is excluded outright. `dev:pg_query`
+  // runs one statement per call, so `psql … -c "SELECT …" -c "\d table"` has no
+  // single-call tool expression — it falls outside the pattern per D-008 rather
+  // than dragging the verdict down.
+  //
+  // This exclusion was invisible until the atomizer was fixed (D-047), and the way
+  // it hid is worth recording: the old splitter cut on the `;` INSIDE the SELECT's
+  // quotes, so the corpus contained a tidy `-c "\d harness_shared.watchdog_ticks"`
+  // fragment that matched and covered cleanly. The bug was not merely inflating the
+  // denominator — it was MANUFACTURING favourable evidence, by shredding the exact
+  // commands a pattern could not honestly serve into pieces that it could.
   bashPattern: new RegExp(
-    String.raw`^psql\s+(?![^\n]*[$\`])[^\n]*(?:\/papercusp\b|-d\s+papercusp\b)[^\n]*-c\s+["']?\s*\\d(?:[tvim]|\+)*(?:\s|["']|$)`,
+    String.raw`^psql\s+(?![^\n]*[$\`])(?![^\n]*-c\s+[^\n]*-c\s+)[^\n]*(?:\/papercusp\b|-d\s+papercusp\b)[^\n]*-c\s+["']?\s*\\d(?:[tvim]|\+)*(?:\s|["']|$)`,
     'i',
   ),
   toolName: 'dev:pg_query',

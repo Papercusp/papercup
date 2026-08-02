@@ -213,7 +213,7 @@ describe('EI-6480 — issue-claim re-read is workspace-exact, not scope-re-deriv
       SELECT status, origin, terminal_owner
         FROM harness_shared.work_items
        WHERE workspace_id = 'default' AND feature_id = 'WI-self-heal'`;
-    expect(rows[0]).toEqual({ status: 'resolved', origin: 'local', terminal_owner: 'w1' });
+    expect(rows[0]).toEqual({ status: 'done', origin: 'local', terminal_owner: 'w1' });
   });
 
   it('a DIFFERENT caller (not the recorded author) on the SAME wrongly-flipped row is still correctly refused — self-heal never fires for a non-author', async () => {

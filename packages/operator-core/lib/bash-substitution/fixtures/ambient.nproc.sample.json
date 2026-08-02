@@ -1,8 +1,8 @@
 {
-  "evidenceRef": "plan bash-to-tool-substitution-2026-07-26 / pair ambient.nproc",
+  "evidenceRef": "plan bash-to-tool-substitution-2026-07-26 / pair ambient.nproc (re-baselined for bash-substitution-reachable-ceiling-2026-08-01 P-002: corrected quote/heredoc-aware atomizer, D-047)",
   "extractedAt": "2026-07-26T13:34:00Z",
-  "totalAtoms": 44,
-  "totalSessions": 27,
+  "totalAtoms": 43,
+  "totalSessions": 26,
   "sample": [
     {
       "sid": "su-fe74471f-5278-4d38-8ea0-d07c8e47f544",

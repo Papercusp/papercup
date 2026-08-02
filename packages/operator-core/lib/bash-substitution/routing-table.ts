@@ -47,6 +47,19 @@ export function routingCell(text: string): string {
  * every agent's prompt would be the same harm one layer up: it would send agents
  * to a tool that cannot do the job.
  *
+ * ...with ONE exception, which is the mirror of that same principle: a pair
+ * carrying a `policyTier` is ENFORCED, on authority granted elsewhere (D-003 —
+ * a rule that already existed independently of this plan), not on a verdict
+ * derived here. Filtering such a row out would leave agents blocked by a gate
+ * with no documentation of what to do instead, which is a worse failure than the
+ * one this filter prevents. The rule is real whether or not the corpus happens to
+ * contain enough of it to audit.
+ *
+ * That case stopped being hypothetical at P-002: correcting the atomizer (D-047)
+ * dropped `deps.unsafe-install`'s population from 28 atoms to 18 — below the
+ * census floor — so its verdict became `unaudited` while its `deny` tier stood
+ * untouched.
+ *
  * `tier` is deliberately absent. It is promotion state (observe → advise → deny)
  * earned by P-020's observation window and lives only in the database. The table
  * states what the right tool IS — stable guidance; how hard the gate currently
@@ -55,7 +68,7 @@ export function routingCell(text: string): string {
  */
 export function renderRoutingBlock(pairs: SubstitutionPair[]): string {
   const rows = pairs
-    .filter((p) => p.expectedVerdict === 'equivalent')
+    .filter((p) => p.expectedVerdict === 'equivalent' || p.policyTier != null)
     .map(
       (p) =>
         `| ${routingCell(p.routing.want)} | ${routingCell(p.routing.use)} | ${routingCell(

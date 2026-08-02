@@ -1,5 +1,5 @@
 {
-  "evidenceRef": "WI-6445 / pair code-search.definition-lookup",
+  "evidenceRef": "WI-6445 / pair code-search.definition-lookup (re-baselined for bash-substitution-reachable-ceiling-2026-08-01 P-002: corrected quote/heredoc-aware atomizer, D-047)",
   "extractedAt": "2026-07-26T13:34:00Z",
   "totalAtoms": 44,
   "totalSessions": 29,

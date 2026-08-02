@@ -23,6 +23,7 @@
  */
 import { useCallback, useEffect, useState } from 'react';
 import { isTauriNative } from '@papercusp/operator-core/lib/pty-tauri';
+import { commands } from '@/lib/tauri-bindings';
 import { InlinePtyTerminal } from './SetupWizard/InlinePtyTerminal';
 
 interface SpawnSpec {
@@ -157,15 +158,6 @@ export async function markSetupFinished(fetchImpl: typeof fetch = fetch): Promis
 
 type ExternalState = 'idle' | 'launching' | 'running' | 'error';
 
-interface WindowWithTauriInvoke extends Window {
-  // Raw invoke: tauri-bindings.ts is specta-GENERATED ("do not edit") and
-  // stale — it predates external_console_run / focus_window_by_title. Raw
-  // invoke returns the command's Ok value directly and rejects with the Err.
-  __TAURI_INTERNALS__?: {
-    invoke?: <T>(cmd: string, args?: Record<string, unknown>) => Promise<T>;
-  };
-}
-
 export function OnboardingConsole() {
   const [tauri, setTauri] = useState<boolean | null>(null);
   const [spec, setSpec] = useState<SpawnSpec | null | 'loading'>('loading');
@@ -223,17 +215,22 @@ export function OnboardingConsole() {
     setExternal('launching');
     setExternalError(null);
     try {
-      const invoke = (window as WindowWithTauriInvoke).__TAURI_INTERNALS__?.invoke;
-      if (!invoke) throw new Error('Tauri invoke unavailable');
-      await invoke('external_console_run', {
-        spec: {
-          command: s.command,
-          args: s.args,
-          cwd: s.cwd,
-          env: s.env,
-          title: EXTERNAL_CONSOLE_TITLE,
-        },
+      // Typed specta binding (was a raw __TAURI_INTERNALS__ invoke until
+      // EI-18899708711154370 / D-014, when the stale duplicate of the generated
+      // bindings — which predated this command — was removed).
+      //
+      // ⚠ The typed wrapper does NOT reject on a command error the way raw invoke
+      // did: a Rust `Err` comes back as `{ status: 'error' }`. Re-throw it, or a
+      // failed launch would fall through to `setExternal('running')` and show the
+      // user a running console that was never started.
+      const res = await commands.externalConsoleRun({
+        command: s.command,
+        args: s.args,
+        cwd: s.cwd,
+        env: s.env,
+        title: EXTERNAL_CONSOLE_TITLE,
       });
+      if (res.status === 'error') throw new Error(res.error);
       setExternal('running');
     } catch (e) {
       setExternalError(String((e as Error)?.message ?? e));
@@ -274,8 +271,11 @@ export function OnboardingConsole() {
   // USER-INITIATED focus (button click) — mirrors focus_window_by_title's
   // no-focus-steal contract; never call from an automated driver.
   const focusExternal = useCallback(() => {
-    const invoke = (window as WindowWithTauriInvoke).__TAURI_INTERNALS__?.invoke;
-    void invoke?.('focus_window_by_title', { title: EXTERNAL_CONSOLE_TITLE });
+    // Best-effort, as the raw invoke was: outside a Tauri webview there is no IPC
+    // and the binding rejects rather than no-op'ing, so swallow it either way.
+    void commands.focusWindowByTitle(EXTERNAL_CONSOLE_TITLE).catch(() => {
+      /* focus is a convenience — never surface a failure here */
+    });
   }, []);
 
   if (tauri === false || spec === null) {

@@ -1,8 +1,8 @@
 {
-  "evidenceRef": "plan bash-to-tool-substitution-2026-07-26 / pair service.listening-ports",
+  "evidenceRef": "plan bash-to-tool-substitution-2026-07-26 / pair service.listening-ports (re-baselined for bash-substitution-reachable-ceiling-2026-08-01 P-002: corrected quote/heredoc-aware atomizer, D-047)",
   "extractedAt": "2026-07-26T13:34:00Z",
-  "totalAtoms": 100,
-  "totalSessions": 29,
+  "totalAtoms": 83,
+  "totalSessions": 27,
   "sample": [
     {
       "sid": "su-cd450e2a-a441-442a-afe6-f112522cbde8",
@@ -15,49 +15,9 @@
       "atom": "lsof -iTCP:3170 -sTCP:LISTEN -P -n 2>/dev/null"
     },
     {
-      "sid": "su-d761523d-ac48-4323-875f-724b5ee96bb5",
-      "ts": "2026-07-17T17:59:01.576Z",
-      "atom": "lsof -nP -iTCP -sTCP:LISTEN 2>&1"
-    },
-    {
-      "sid": "su-33f6b153-38e2-41a2-8cd5-72072b321e93",
-      "ts": "2026-07-19T20:47:39.910Z",
-      "atom": "lsof -nP -iTCP -sTCP:LISTEN 2>/dev/null"
-    },
-    {
-      "sid": "su-d761523d-ac48-4323-875f-724b5ee96bb5",
-      "ts": "2026-07-17T20:36:43.996Z",
-      "atom": "lsof -nP -iTCP:$p -sTCP:LISTEN 2>/dev/null"
-    },
-    {
-      "sid": "su-33f6b153-38e2-41a2-8cd5-72072b321e93",
-      "ts": "2026-07-19T18:54:49.900Z",
-      "atom": "lsof -nP -iTCP:23706 -sTCP:LISTEN 2>/dev/null"
-    },
-    {
-      "sid": "su-33f6b153-38e2-41a2-8cd5-72072b321e93",
-      "ts": "2026-07-19T20:39:17.086Z",
-      "atom": "lsof -nP -iTCP:3070 -sTCP:LISTEN 2>/dev/null"
-    },
-    {
-      "sid": "su-d761523d-ac48-4323-875f-724b5ee96bb5",
-      "ts": "2026-07-17T17:35:00.482Z",
-      "atom": "lsof -nP -p \"$APPID\" -a -iTCP -sTCP:LISTEN 2>&1"
-    },
-    {
-      "sid": "su-e3b21216-e294-4a92-b8f8-5a73a244ff09",
-      "ts": "2026-07-26T14:16:03.510Z",
-      "atom": "netstat -lntp 2>/dev/null"
-    },
-    {
       "sid": "su-e7df908e-b996-4da8-967c-0d655e68c8c8",
       "ts": "2026-07-20T10:40:28.545Z",
       "atom": "netstat -tlnp 2>/dev/null"
-    },
-    {
-      "sid": "su-e3b21216-e294-4a92-b8f8-5a73a244ff09",
-      "ts": "2026-07-26T14:16:03.510Z",
-      "atom": "ss -lntp 2>/dev/null"
     },
     {
       "sid": "su-e80ad977-8155-413d-ba06-36494ee85032",
@@ -68,11 +28,6 @@
       "sid": "su-cd450e2a-a441-442a-afe6-f112522cbde8",
       "ts": "2026-07-20T08:19:36.424Z",
       "atom": "ss -ltn"
-    },
-    {
-      "sid": "su-bce40c51-b86c-40dc-9ab6-f5bf6f579cd0",
-      "ts": "2026-07-21T06:12:50.362Z",
-      "atom": "ss -ltn 2>&1"
     },
     {
       "sid": "su-6f7850f2-2112-4e72-bb09-e8983af3f851",
@@ -98,11 +53,6 @@
       "sid": "su-ccb43bf4-89a3-4222-88e8-0c345cea2749",
       "ts": "2026-07-21T00:25:23.023Z",
       "atom": "ss -tlnH \"sport = :3270\" 2>/dev/null"
-    },
-    {
-      "sid": "su-d93ac1bf-d48f-420d-8136-dea6de467e7f",
-      "ts": "2026-07-20T15:14:19.693Z",
-      "atom": "ss -tlnH 2>/dev/null"
     },
     {
       "sid": "su-ccb43bf4-89a3-4222-88e8-0c345cea2749",

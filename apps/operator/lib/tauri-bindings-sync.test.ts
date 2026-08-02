@@ -28,6 +28,19 @@
  * If assertion 2 fails, the fix is NOT to hand-edit the bindings (the file is
  * generated — a hand-edit is lost on the next dev run). Run the desktop app in
  * dev (`cd papercusp-desktop && npm run dev`), which regenerates it in place.
+ *
+ * WHERE THE GENERATED FILE LIVES (EI-18899708711154370 · D-014, 2026-08-02). It is
+ * `packages/operator-core/lib/tauri-bindings.ts`; `apps/operator/lib/tauri-bindings.ts`
+ * is a re-export. There used to be TWO live copies imported side by side, because a
+ * package cannot import from an app: with generation in apps/operator, operator-core
+ * had to hand-maintain its own copy, which drifted 12 commands behind. specta writes
+ * exactly one file, so the other was stale by construction. Hence assertion 1 pins
+ * the export at the PACKAGE.
+ *
+ * A fourth silence, added the same day: the generated output did not typecheck
+ * standalone (it referenced `Value` without declaring it), and nothing noticed
+ * because the routine loop typechecks operator-core only
+ * → `it('generated bindings declare every type they reference')`.
  */
 import { describe, expect, it } from 'vitest';
 import { existsSync, readFileSync } from 'node:fs';
@@ -56,7 +69,22 @@ function findRepoRoot(): string {
 const REPO_ROOT = findRepoRoot();
 const CRATE_DIR = path.join(REPO_ROOT, 'papercusp-desktop', 'src-tauri');
 const MAIN_RS = path.join(CRATE_DIR, 'src', 'main.rs');
-const CANONICAL_BINDINGS = path.join(REPO_ROOT, 'apps', 'operator', 'lib', 'tauri-bindings.ts');
+/**
+ * The ONE generated bindings file.
+ *
+ * It lives in `packages/operator-core`, not in this app (EI-18899708711154370 ·
+ * no-http-anywhere-2026-07-28 D-014). Until 2026-08-02 specta wrote it here and
+ * operator-core — which cannot import from an app — kept a hand-maintained second
+ * copy that drifted 12 commands behind. `apps/operator/lib/tauri-bindings.ts` is now
+ * a re-export, so this constant must keep pointing at the PACKAGE.
+ */
+const CANONICAL_BINDINGS = path.join(
+  REPO_ROOT,
+  'packages',
+  'operator-core',
+  'lib',
+  'tauri-bindings.ts',
+);
 
 /**
  * The command names inside `tauri_specta::collect_commands![ ... ]`.
@@ -109,6 +137,113 @@ function hasBinding(bindings: string, name: string): boolean {
 }
 
 /**
+ * Names TypeScript provides itself, so a reference to one is never "undeclared".
+ * Deliberately small — this file's generated surface uses very few of them, and a
+ * bloated allowlist is how a real undeclared name gets waved through.
+ */
+const TS_GLOBAL_TYPES = new Set([
+  'Array',
+  'Boolean',
+  'Date',
+  'Error',
+  'Exclude',
+  'Extract',
+  'Function',
+  'Map',
+  'NonNullable',
+  'Number',
+  'Object',
+  'Omit',
+  'Parameters',
+  'Partial',
+  'Pick',
+  'Promise',
+  'Readonly',
+  'Record',
+  'RegExp',
+  'Required',
+  'ReturnType',
+  'Set',
+  'String',
+  'Symbol',
+  'Uint8Array',
+]);
+
+/**
+ * Type names the generated file REFERENCES but never declares, imports, or binds as
+ * a generic parameter.
+ *
+ * WHY THIS IS ASSERTED (D-014c). specta 2.0.0-rc.24 expands `serde_json::Value`
+ * INLINE at each use site, but its recursive arms cannot be inlined — so the
+ * exporter emitted the bare name (`Value[]`, `{ [key in string]: Value }`) while
+ * never emitting `export type Value`. The generated file therefore did not typecheck
+ * standalone (4x TS2304), and that sat unnoticed because `lint:tsc` checks
+ * `packages/operator-core` ONLY — the file lived in `apps/operator`, which nothing
+ * in the routine loop typechecks. Now that the file IS in operator-core the compiler
+ * would catch it, but only as a raw TS2304 with no hint of the cause; this names it.
+ *
+ * The fix for a failure here is in the GENERATOR (the `.header(...)` in main.rs),
+ * never in the generated output — a hand-added declaration in the output was already
+ * dropped once by a regeneration.
+ */
+function undeclaredTypeReferences(bindings: string): string[] {
+  // Strip comments and string literals first: the generated file is full of prose
+  // doc-comments and `__TAURI_INVOKE("...")` names whose capitalised words are not
+  // type references.
+  const code = bindings
+    .replace(/\/\*[\s\S]*?\*\//g, ' ')
+    .replace(/\/\/[^\n]*/g, ' ')
+    .replace(/"(?:[^"\\]|\\.)*"/g, '""')
+    .replace(/'(?:[^'\\]|\\.)*'/g, "''");
+
+  const declared = new Set<string>(TS_GLOBAL_TYPES);
+  for (const m of code.matchAll(/\b(?:type|interface|class|enum)\s+([A-Za-z_$][\w$]*)/g)) {
+    declared.add(m[1]);
+  }
+  // Imported bindings, e.g. `import { invoke as __TAURI_INVOKE, Channel } from ...`.
+  for (const m of code.matchAll(/\bimport\s*(?:type\s*)?\{([^}]*)\}/g)) {
+    for (const spec of m[1].split(',')) {
+      const name = spec.trim().split(/\s+as\s+/).pop()?.trim();
+      if (name) declared.add(name);
+    }
+  }
+  // Generic parameters, e.g. `function typedError<T, E>(...)` / `type Foo<T> = ...`.
+  for (const m of code.matchAll(/\b(?:function|type|interface|class)\s+[\w$]+\s*<([^>]*)>/g)) {
+    for (const param of m[1].split(',')) {
+      const name = param.trim().split(/\s+/)[0]?.replace(/[^\w$]/g, '');
+      if (name) declared.add(name);
+    }
+  }
+
+  const referenced = new Set<string>();
+  // A capitalised identifier NOT in a property-key position (`Bool:` / `Array?:`).
+  // The generated `Value` union is built from object keys named `Array`, `Object`,
+  // `String`, `Number`, `Bool` — keys, not type references, and excluding them is
+  // what keeps this check from crying wolf on every serde-tagged enum.
+  for (const m of code.matchAll(/\b([A-Z][\w$]*)\b(?!\s*\??\s*:)/g)) referenced.add(m[1]);
+
+  return [...referenced].filter((name) => !declared.has(name)).sort();
+}
+
+/**
+ * Builder calls chained onto `Typescript::default()` before the `,`.
+ *
+ * ⚠ THE TRAP THIS EXISTS FOR. These patterns used to require `Typescript::default()`
+ * to be followed IMMEDIATELY by the comma. So the moment anyone configured the
+ * generator — exactly what `.header(BINDINGS_HEADER)` does today (D-014) — the match
+ * failed and `exportedBindingsPath` threw "could not find the specta export
+ * destination". That is: changing the generator config silently disarms the very
+ * guard that polices the generator config, and it fails as a confusing parse error
+ * rather than as the assertion it is. Keep this tolerant of a chain.
+ *
+ * `[^()]*` per argument: enough for `.header(BINDINGS_HEADER)` and any other
+ * ident/literal argument, and it deliberately does NOT try to balance nested parens
+ * — an inlined argument containing `(` should fail loudly here rather than be
+ * mis-parsed into a wrong export path.
+ */
+const BUILDER_CHAIN = String.raw`(?:\s*\.[A-Za-z_]\w*\([^()]*\))*`;
+
+/**
  * The export destination declared in main.rs, as a path resolved from the crate
  * dir.
  *
@@ -123,7 +258,9 @@ function hasBinding(bindings: string, name: string): boolean {
  */
 function exportedBindingsPath(mainRs: string): { literal: string; resolved: string } {
   const anchored = mainRs.match(
-    /\.export\(\s*specta_typescript::Typescript::default\(\)\s*,\s*concat!\(\s*env!\("CARGO_MANIFEST_DIR"\)\s*,\s*"([^"]+)"\s*,?\s*\)/,
+    new RegExp(
+      String.raw`\.export\(\s*specta_typescript::Typescript::default\(\)${BUILDER_CHAIN}\s*,\s*concat!\(\s*env!\("CARGO_MANIFEST_DIR"\)\s*,\s*"([^"]+)"\s*,?\s*\)`,
+    ),
   );
   if (anchored) {
     return {
@@ -133,7 +270,9 @@ function exportedBindingsPath(mainRs: string): { literal: string; resolved: stri
   }
 
   const bare = mainRs.match(
-    /\.export\(\s*specta_typescript::Typescript::default\(\)\s*,\s*"([^"]+)"/,
+    new RegExp(
+      String.raw`\.export\(\s*specta_typescript::Typescript::default\(\)${BUILDER_CHAIN}\s*,\s*"([^"]+)"`,
+    ),
   );
   if (bare) return { literal: bare[1], resolved: path.resolve(CRATE_DIR, bare[1]) };
 
@@ -184,6 +323,44 @@ describe('tauri-specta bindings stay in sync with the Rust command list', () => 
     expect(hasBinding(bindings, 'no_such_command_zzz')).toBe(false);
   });
 
+  it('detects an undeclared type reference (detector is not vacuously permissive)', () => {
+    // Positive control: a file shaped like the real bug — `Value` referenced in the
+    // two forms specta actually emits, declared nowhere.
+    const broken = [
+      'import { invoke as __TAURI_INVOKE, Channel } from "@tauri-apps/api/core";',
+      'export type Thing = { items: Value[] };',
+      'export type Bag = { map: { [key in string]: Value } };',
+    ].join('\n');
+    expect(undeclaredTypeReferences(broken)).toEqual(['Value']);
+
+    // Negative controls: declaring it fixes it, and the serde-tagged union's object
+    // KEYS (Bool/Array/Object/String/Number) must not be mistaken for references.
+    expect(undeclaredTypeReferences(`export type Value = string;\n${broken}`)).toEqual([]);
+    expect(
+      undeclaredTypeReferences(
+        'export type V = ({ Bool: boolean }) & { Array?: never; Object?: never; String?: never; Number?: never };',
+      ),
+    ).toEqual([]);
+  });
+
+  it('generated bindings declare every type they reference', () => {
+    const bindings = readFileSync(CANONICAL_BINDINGS, 'utf8');
+    const undeclared = undeclaredTypeReferences(bindings);
+
+    expect(
+      undeclared,
+      `The generated bindings reference ${undeclared.length} type(s) they never ` +
+        `declare: ${undeclared.join(', ')}.\n` +
+        'This is a GENERATOR defect, not a file defect — specta expands some types ' +
+        '(notably serde_json::Value) inline but cannot inline their recursive arms, ' +
+        'so it emits the bare name and no declaration.\n' +
+        'FIX IT IN THE GENERATOR CONFIG: the `.header(BINDINGS_HEADER)` call in ' +
+        'papercusp-desktop/src-tauri/src/main.rs. Do NOT hand-add the declaration to ' +
+        'the generated file — one was added there before and the next regeneration ' +
+        'silently dropped it.',
+    ).toEqual([]);
+  });
+
   it('has a binding for every collected command', () => {
     const commands = collectedCommands(mainRs);
     // Sanity floor: a parse that silently yields nothing would make this test
@@ -196,8 +373,9 @@ describe('tauri-specta bindings stay in sync with the Rust command list', () => 
     expect(
       missing,
       `${missing.length} command(s) collected in main.rs have no binding in ` +
-        'apps/operator/lib/tauri-bindings.ts. The file is GENERATED — do not hand-add them; ' +
-        'run the desktop app in dev (cd papercusp-desktop && npm run dev) to regenerate it.',
+        'packages/operator-core/lib/tauri-bindings.ts. The file is GENERATED — do not ' +
+        'hand-add them; run the desktop app in dev (cd papercusp-desktop && npm run dev) ' +
+        'to regenerate it.',
     ).toEqual([]);
   });
 });

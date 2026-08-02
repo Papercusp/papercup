@@ -1568,12 +1568,41 @@ export interface JsonSchemaObject {
   [k: string]: unknown;
 }
 
-export function fetchPlanInputs(slug: string, harnessSlug?: string | null, signal?: AbortSignal) {
-  return getJson<PlanInputSchemaInfo | { ok: false; slug: string; error: string }>(
+export type PlanInputsResult = PlanInputSchemaInfo | { ok: false; slug?: string; error: string };
+
+/**
+ * `plans:get-input-schema` is a BULK tool, so even a single-slug call comes back as
+ * `{ ok, results: [row], counts }`. The admin route only unwraps that envelope for
+ * `get` (see unwrapBulkGet), so every other bulk verb arrives wrapped — which reads as
+ * a row whose every field is `undefined`, i.e. a panel that silently renders nothing
+ * rather than an error anyone would notice. Unwrap here, and pin it in tests: this was
+ * caught by probing the live route, NOT by the component tests, which mock this
+ * function and would have kept passing.
+ */
+export function unwrapPlanInputs(body: unknown): PlanInputsResult {
+  if (!body || typeof body !== 'object') return { ok: false, error: 'malformed_response' };
+  const results = (body as { results?: unknown }).results;
+  if (Array.isArray(results)) {
+    const row = results[0];
+    return row && typeof row === 'object'
+      ? (row as PlanInputsResult)
+      : { ok: false, error: 'not_found' };
+  }
+  // Not the bulk envelope — a bare { error } from a trust/validation failure.
+  return body as PlanInputsResult;
+}
+
+export async function fetchPlanInputs(
+  slug: string,
+  harnessSlug?: string | null,
+  signal?: AbortSignal,
+): Promise<PlanInputsResult> {
+  const body = await getJson<unknown>(
     'get-input-schema',
     { slug, ...(harnessSlug ? { harness: harnessSlug } : {}) },
     signal,
   );
+  return unwrapPlanInputs(body);
 }
 
 /** Supply a plan's input values. Partial data is accepted by design (D-004) —

@@ -1,7 +1,7 @@
 {
-  "evidenceRef": "plan bash-to-tool-substitution-2026-07-26 P-005 / pair file-read.sed-range (re-drawn for EI-18799531134810488: single-file-operand pattern)",
+  "evidenceRef": "plan bash-to-tool-substitution-2026-07-26 P-005 / pair file-read.sed-range (re-drawn for EI-18799531134810488: single-file-operand pattern) (re-baselined for bash-substitution-reachable-ceiling-2026-08-01 P-002: corrected quote/heredoc-aware atomizer, D-047)",
   "extractedAt": "2026-07-26T13:34:00Z",
-  "totalAtoms": 3784,
+  "totalAtoms": 3783,
   "totalSessions": 76,
   "sample": [
     {
@@ -25,9 +25,9 @@
       "atom": "sed -n '1,40p' apps/operator/scripts/hooks/cc/pretooluse-secrets-guard.mjs"
     },
     {
-      "sid": "su-a8557b00-55fb-4438-a7bd-f269a7a3bf6c",
-      "ts": "2026-07-26T02:25:52.337Z",
-      "atom": "sed -n '1,50p' /home/dev/papercupai-workspace/papercusp/apps/operator/app/_lints/design-primitives.test.ts"
+      "sid": "su-7905fadc-2ba3-4492-897d-99d351a64a68",
+      "ts": "2026-07-26T07:16:36.106Z",
+      "atom": "sed -n '1,50p' /home/dev/.papercusp/scratch/papercusp-workspace/work_items:get/26e6ad1c-776f-4b32-81c9-9e99fc552fc6/result-door-1785050182648.md 2>/dev/null"
     },
     {
       "sid": "su-c12c22d8-2503-489d-8649-bdfcb3d68910",
@@ -45,14 +45,14 @@
       "atom": "sed -n '1,80p' packages/operator-core/lib/agent-tools/setup/status.ts"
     },
     {
-      "sid": "su-a8ea9aff-9469-4a8f-90bf-f09c6a383ca3",
-      "ts": "2026-07-25T21:59:58.911Z",
-      "atom": "sed -n '100,135p' packages/operator-core/lib/sync/pot-git/publish-guard.ts"
+      "sid": "su-b0971728-8161-44b0-9e6a-9adbe4d42cd6",
+      "ts": "2026-07-26T06:46:22.362Z",
+      "atom": "sed -n '100,135p' packages/operator-core/lib/agent-tools/coordination/presence-payload.ts"
     },
     {
-      "sid": "su-e80ad977-8155-413d-ba06-36494ee85032",
-      "ts": "2026-07-26T01:36:43.316Z",
-      "atom": "sed -n '120,136p' packages/ingestion/src/resolutions.test.ts"
+      "sid": "su-e044d888-c238-4311-8eb0-aef7896b3e92",
+      "ts": "2026-07-19T23:54:53.268Z",
+      "atom": "sed -n '120,135p' packages/operator-core/lib/operator-state-pg.ts"
     },
     {
       "sid": "su-143b12bd-edcc-4af5-b983-3ec8f258b992",
@@ -65,9 +65,9 @@
       "atom": "sed -n '160,250p' packages/operator-core/lib/knowledge-packs/pack-format.ts"
     },
     {
-      "sid": "su-7a80832c-ade5-4ed2-9a08-43f72fbbdae4",
-      "ts": "2026-07-26T05:12:52.439Z",
-      "atom": "sed -n '190,260p' node_modules/hyperswarm/index.js"
+      "sid": "su-6ffd5ea8-6af3-4616-a0c6-b2a57ea4da57",
+      "ts": "2026-07-21T09:28:12.255Z",
+      "atom": "sed -n '190,260p' /home/dev/papercupai-workspace/papercusp/papercusp-desktop/bin/lib/deb-hetzner-rig.sh"
     },
     {
       "sid": "su-bce40c51-b86c-40dc-9ab6-f5bf6f579cd0",
@@ -80,9 +80,9 @@
       "atom": "sed -n '2440,2500p' apps/operator/lib/release/green-checkpoint.ts"
     },
     {
-      "sid": "su-e80ad977-8155-413d-ba06-36494ee85032",
-      "ts": "2026-07-25T20:37:06.139Z",
-      "atom": "sed -n '272,320p' packages/integration/src/llm-analyst.ts"
+      "sid": "su-794899a8-2470-4901-9f0b-4cb285ed3046",
+      "ts": "2026-07-20T03:26:40.279Z",
+      "atom": "sed -n '273,330p' packages/operator-core/lib/sync/hyperbee/replication-liveness.ts"
     },
     {
       "sid": "su-055aef7f-b4be-41a4-bbdb-1068c9fc79e3",

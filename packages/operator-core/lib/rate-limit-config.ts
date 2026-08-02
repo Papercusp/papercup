@@ -228,10 +228,17 @@ export async function writeRateLimitConfig(input: Partial<RateLimitConfig>): Pro
   // `cached` — and therefore their governor's actually-enforced cap — converges too. Best-effort:
   // the value is already durably persisted, so a notify failure never blocks the write; the next
   // boot (or any other write) still converges it.
-  const { sql } = getOrgPg();
-  await sql`SELECT pg_notify(${NOTIFY_CHANNEL}, '')`.catch((err: unknown) => {
+  // The `.catch()` alone did NOT deliver the best-effort contract stated above: `getOrgPg()`
+  // acquires the pool SYNCHRONOUSLY and can throw before any promise exists to catch on, so a
+  // pool-acquisition failure propagated out of writeRateLimitConfig and DID block the write —
+  // the one thing this comment promises cannot happen. Surfaced by the forbid-real-PG rail
+  // [EI-19311807188719573], which throws exactly there. Wrap the acquisition too.
+  try {
+    const { sql } = getOrgPg();
+    await sql`SELECT pg_notify(${NOTIFY_CHANNEL}, '')`;
+  } catch (err: unknown) {
     console.error('[rate-limit-config] cross-process notify failed:', err);
-  });
+  }
   return cfg;
 }
 

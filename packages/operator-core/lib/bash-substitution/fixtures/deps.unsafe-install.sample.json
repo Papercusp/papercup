@@ -1,43 +1,13 @@
 {
-  "evidenceRef": "plan bash-to-tool-substitution-2026-07-26 / pair deps.unsafe-install",
+  "evidenceRef": "plan bash-to-tool-substitution-2026-07-26 / pair deps.unsafe-install (re-baselined for bash-substitution-reachable-ceiling-2026-08-01 P-002: corrected quote/heredoc-aware atomizer, D-047)",
   "extractedAt": "2026-07-26T13:34:00Z",
-  "totalAtoms": 28,
-  "totalSessions": 11,
+  "totalAtoms": 18,
+  "totalSessions": 8,
   "sample": [
-    {
-      "sid": "su-6f7850f2-2112-4e72-bb09-e8983af3f851",
-      "ts": "2026-07-19T19:44:33.439Z",
-      "atom": "npm ci"
-    },
-    {
-      "sid": "su-6f7850f2-2112-4e72-bb09-e8983af3f851",
-      "ts": "2026-07-19T19:44:33.439Z",
-      "atom": "npm install"
-    },
-    {
-      "sid": "su-33f6b153-38e2-41a2-8cd5-72072b321e93",
-      "ts": "2026-07-19T18:54:14.858Z",
-      "atom": "npm install --legacy-peer-deps"
-    },
-    {
-      "sid": "su-38101f27-bf18-4044-9ca1-bd66bcf0b411",
-      "ts": "2026-07-26T00:56:03.891Z",
-      "atom": "npm install --legacy-peer-deps --no-audit --no-fund --ignore-scripts --workspace=@papercusp/operator --workspace=@papercusp/operator-vite 2>&1"
-    },
-    {
-      "sid": "su-38101f27-bf18-4044-9ca1-bd66bcf0b411",
-      "ts": "2026-07-25T22:36:57.459Z",
-      "atom": "npm install --legacy-peer-deps --prefer-offline --no-audit --no-fund --ignore-scripts --workspace=@papercusp/operator --workspace=@papercusp/operator-vite 2>&1"
-    },
     {
       "sid": "su-6f5ca4fb-38ab-468f-8d82-247940a52119",
       "ts": "2026-07-25T23:43:18.848Z",
       "atom": "npm install --legacy-peer-deps 2>&1"
-    },
-    {
-      "sid": "su-6bf2ddf4-01af-4873-a116-9ddcb2a0a779",
-      "ts": "2026-07-25T21:15:16.407Z",
-      "atom": "npm install --legacy-peer-deps > /tmp/mono-root-install.log 2>&1"
     },
     {
       "sid": "su-6f5ca4fb-38ab-468f-8d82-247940a52119",

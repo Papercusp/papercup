@@ -1,7 +1,7 @@
 {
-  "evidenceRef": "plan bash-to-tool-substitution-2026-07-26 / pair ambient.date-read",
+  "evidenceRef": "plan bash-to-tool-substitution-2026-07-26 / pair ambient.date-read (re-baselined for bash-substitution-reachable-ceiling-2026-08-01 P-002: corrected quote/heredoc-aware atomizer, D-047)",
   "extractedAt": "2026-07-26T13:34:00Z",
-  "totalAtoms": 728,
+  "totalAtoms": 723,
   "totalSessions": 50,
   "sample": [
     {
@@ -25,9 +25,9 @@
       "atom": "date '+%Y-%m-%d %H:%M:%S %z'"
     },
     {
-      "sid": "su-055aef7f-b4be-41a4-bbdb-1068c9fc79e3",
-      "ts": "2026-07-26T14:44:12.780Z",
-      "atom": "date '+%Y-%m-%dT%H:%M:%S (local)'"
+      "sid": "su-709bb0d6-12de-465e-bb82-0f4bb282c87a",
+      "ts": "2026-07-26T09:52:01.689Z",
+      "atom": "date '+%Y-%m-%d %H:%M:%S'"
     },
     {
       "sid": "su-4ef7fb1d-c309-4356-a09a-638833555a7c",
@@ -40,28 +40,28 @@
       "atom": "date '+now=%H:%M:%S %Z (%sZ)'"
     },
     {
-      "sid": "su-4ef7fb1d-c309-4356-a09a-638833555a7c",
-      "ts": "2026-07-25T21:18:29.864Z",
-      "atom": "date '+relaunching poll at %H:%M:%S — next cron tick expected 17:30'"
-    },
-    {
-      "sid": "su-bce40c51-b86c-40dc-9ab6-f5bf6f579cd0",
-      "ts": "2026-07-21T11:37:04.394Z",
-      "atom": "date +\"%Y-%m-%d %H:%M:%S %Z (local)\""
+      "sid": "su-055aef7f-b4be-41a4-bbdb-1068c9fc79e3",
+      "ts": "2026-07-26T15:49:35.170Z",
+      "atom": "date '+now=%H:%M:%S'"
     },
     {
       "sid": "su-e80ad977-8155-413d-ba06-36494ee85032",
-      "ts": "2026-07-26T05:33:24.429Z",
-      "atom": "date +%FT%T%z"
+      "ts": "2026-07-26T00:21:59.803Z",
+      "atom": "date '+restarted %H:%M:%S'"
     },
     {
-      "sid": "su-055aef7f-b4be-41a4-bbdb-1068c9fc79e3",
-      "ts": "2026-07-25T19:23:47.698Z",
-      "atom": "date +%H:%M"
+      "sid": "su-d93ac1bf-d48f-420d-8136-dea6de467e7f",
+      "ts": "2026-07-20T14:19:28.464Z",
+      "atom": "date +\"%Y-%m-%d %H:%M:%S %Z\""
+    },
+    {
+      "sid": "su-a8ea9aff-9469-4a8f-90bf-f09c6a383ca3",
+      "ts": "2026-07-26T01:05:52.270Z",
+      "atom": "date +%H:%M:%S"
     },
     {
       "sid": "su-772cf615-c6a4-488e-8491-b553ced6b4ac",
-      "ts": "2026-07-20T18:57:30.667Z",
+      "ts": "2026-07-20T18:46:23.752Z",
       "atom": "date +%T"
     },
     {
@@ -75,9 +75,9 @@
       "atom": "date -Is"
     },
     {
-      "sid": "su-707029ce-300a-469b-8fca-4cd393f5a0d2",
-      "ts": "2026-07-26T15:11:10.979Z",
-      "atom": "date -u '+%H:%M:%SZ'"
+      "sid": "su-ccb43bf4-89a3-4222-88e8-0c345cea2749",
+      "ts": "2026-07-21T01:03:35.439Z",
+      "atom": "date -u"
     },
     {
       "sid": "su-707029ce-300a-469b-8fca-4cd393f5a0d2",
@@ -95,14 +95,14 @@
       "atom": "date -u +\"%FT%TZ\""
     },
     {
-      "sid": "su-7905fadc-2ba3-4492-897d-99d351a64a68",
-      "ts": "2026-07-26T08:46:15.421Z",
-      "atom": "date -u +\"%Y-%m-%dT%H:%M:%SZ\""
+      "sid": "su-ccb43bf4-89a3-4222-88e8-0c345cea2749",
+      "ts": "2026-07-21T02:10:25.667Z",
+      "atom": "date -u +\"%Y-%m-%dT%H:%M:%S.%3NZ\""
     },
     {
-      "sid": "su-707029ce-300a-469b-8fca-4cd393f5a0d2",
-      "ts": "2026-07-26T01:37:02.088Z",
-      "atom": "date -u +%H:%M:%S"
+      "sid": "su-e80ad977-8155-413d-ba06-36494ee85032",
+      "ts": "2026-07-26T05:33:24.429Z",
+      "atom": "date -u +%FT%TZ"
     },
     {
       "sid": "su-055aef7f-b4be-41a4-bbdb-1068c9fc79e3",
@@ -110,19 +110,19 @@
       "atom": "date -u +%H:%MZ"
     },
     {
-      "sid": "su-e80ad977-8155-413d-ba06-36494ee85032",
-      "ts": "2026-07-26T07:02:52.670Z",
-      "atom": "date -u +%Y-%m-%dT%H:%M:%S.000Z"
-    },
-    {
       "sid": "su-48ed7aaf-a682-4059-b032-42e9488f6620",
-      "ts": "2026-07-26T11:32:11.177Z",
-      "atom": "date -u +%s"
+      "ts": "2026-07-26T04:11:41.711Z",
+      "atom": "date -u +%Y-%m-%dT%H:%M:%S"
     },
     {
       "sid": "su-707029ce-300a-469b-8fca-4cd393f5a0d2",
-      "ts": "2026-07-26T16:10:02.774Z",
-      "atom": "date -u +'now: %H:%M:%SZ'"
+      "ts": "2026-07-26T13:00:51.435Z",
+      "atom": "date -u +%Y-%m-%dT%H:%M:%SZ"
+    },
+    {
+      "sid": "su-e3b21216-e294-4a92-b8f8-5a73a244ff09",
+      "ts": "2026-07-26T13:29:42.679Z",
+      "atom": "date -u +'UTC %H:%M:%S'"
     }
   ]
 }

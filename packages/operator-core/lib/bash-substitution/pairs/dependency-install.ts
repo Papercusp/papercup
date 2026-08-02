@@ -98,7 +98,21 @@ export const unsafeDependencyInstall: SubstitutionPair = {
     insteadOf:
       'a bare `npm install` / `npm ci` — it rewrites `node_modules/.bin` under every other agent\'s in-flight test run, and two overlapping installs corrupt a package durably. ⚠ NOT claimed: an install naming a package operand (it may target a scratch tree `install:safe` cannot reach) or `--dry-run`',
   },
-  expectedVerdict: 'equivalent',
+  // `unaudited` since P-002 (2026-08-02), and this is a DOWNGRADE ON PURPOSE, not
+  // a regression. Correcting the atomizer (D-047) shrank this pattern's population
+  // from 28 atoms to 18 across 8 sessions — below the census floor of >= 20 atoms —
+  // because ten of the twenty-eight were never commands an agent ran: they were
+  // `npm install` lines sitting inside heredoc bodies and quoted scripts, which the
+  // old newline-splitting atomizer promoted into atoms of their own.
+  //
+  // So no verdict can honestly be derived here any more, and `auditPair` rightly
+  // refuses to record one. That changes NOTHING about enforcement: this row's
+  // `deny` is authorized by D-003 as a rule that already existed independently of
+  // this plan, never by the verdict, and `renderRoutingBlock` keeps documenting it
+  // for exactly that reason. The honest reading is "the guard is right, the corpus
+  // is simply too thin to re-derive it" — which is also why widening the pattern to
+  // manufacture a passing population would be the wrong repair.
+  expectedVerdict: 'unaudited',
   // The plan's only row that enters above `observe`. Authorized by D-003, NOT
   // by the green verdict above — see the header. `assertPolicyTier` enforces
   // that the `policy-violation:` intent prefix is present before this is honoured.

@@ -1,5 +1,5 @@
 {
-  "evidenceRef": "plan bash-to-tool-substitution-2026-07-26 / pair service.curl-health-probe",
+  "evidenceRef": "plan bash-to-tool-substitution-2026-07-26 / pair service.curl-health-probe (re-baselined for bash-substitution-reachable-ceiling-2026-08-01 P-002: corrected quote/heredoc-aware atomizer, D-047)",
   "extractedAt": "2026-07-26T13:34:00Z",
   "totalAtoms": 42,
   "totalSessions": 13,
@@ -28,6 +28,11 @@
       "sid": "su-707029ce-300a-469b-8fca-4cd393f5a0d2",
       "ts": "2026-07-26T03:41:06.884Z",
       "atom": "curl -s -m 5 -o /dev/null -w 'health=%{http_code}\\n' http://127.0.0.1:3070/api/health"
+    },
+    {
+      "sid": "su-e15fb42f-6686-41e7-8368-37f5ec26ef3c",
+      "ts": "2026-07-26T07:06:24.527Z",
+      "atom": "curl -s -o /dev/null -m 2 \"http://127.0.0.1:3170/api/health\" 2>/dev/null"
     },
     {
       "sid": "su-e80ad977-8155-413d-ba06-36494ee85032",
@@ -60,9 +65,9 @@
       "atom": "curl -s -o /dev/null -w \"%{http_code}\\n\" http://127.0.0.1:3070/api/health 2>&1"
     },
     {
-      "sid": "su-707029ce-300a-469b-8fca-4cd393f5a0d2",
-      "ts": "2026-07-26T02:55:31.905Z",
-      "atom": "curl -s -o /dev/null -w \"%{http_code}\\n\" http://127.0.0.1:3070/api/health 2>/dev/null"
+      "sid": "su-fe74471f-5278-4d38-8ea0-d07c8e47f544",
+      "ts": "2026-07-20T05:11:34.105Z",
+      "atom": "curl -s -o /dev/null -w \"%{http_code}\\n\" http://127.0.0.1:3170/api/health 2>&1"
     },
     {
       "sid": "su-b0971728-8161-44b0-9e6a-9adbe4d42cd6",
@@ -108,11 +113,6 @@
       "sid": "su-e3b21216-e294-4a92-b8f8-5a73a244ff09",
       "ts": "2026-07-26T03:19:06.439Z",
       "atom": "curl -s -o /dev/null -w '%{http_code}\\n' --max-time 5 http://127.0.0.1:3070/api/health 2>&1"
-    },
-    {
-      "sid": "su-b0971728-8161-44b0-9e6a-9adbe4d42cd6",
-      "ts": "2026-07-26T10:11:20.213Z",
-      "atom": "curl -s -o /dev/null -w '%{http_code}\\n' http://127.0.0.1:3170/api/health 2>&1\" 2>&1"
     },
     {
       "sid": "su-707029ce-300a-469b-8fca-4cd393f5a0d2",

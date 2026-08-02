@@ -58,6 +58,30 @@ export const MIN_POPULATION_ATOMS = MIN_SAMPLE_SIZE;
 export const MIN_POPULATION_SESSIONS = 5;
 
 /**
+ * Has this pair earned a verdict at all? True when the deduped sample meets
+ * {@link MIN_SAMPLE_SIZE}, or when the population is large and fleet-wide enough
+ * to count as a census (see {@link auditPair}'s note on why low spelling-variety
+ * must not be punished).
+ *
+ * Exported and factored out so a CALLER can ask the question before paying for
+ * an audit that would throw. `auditPair` itself is the enforcement point and
+ * uses this same predicate, so "would it throw" and "does it throw" cannot
+ * drift — the alternative, matching on the thrown Error's message text, would
+ * silently start swallowing genuine audit failures the day that sentence is
+ * reworded.
+ */
+export function meetsAuditFloor(
+  sampleSize: number,
+  population?: { totalAtoms: number; totalSessions: number },
+): boolean {
+  const isCensus =
+    population !== undefined &&
+    population.totalAtoms >= MIN_POPULATION_ATOMS &&
+    population.totalSessions >= MIN_POPULATION_SESSIONS;
+  return sampleSize >= MIN_SAMPLE_SIZE || isCensus;
+}
+
+/**
  * The real POPULATION a sample was drawn from (`CorpusFixture`'s own counts).
  *
  * Optional, and only ever used to WIDEN the floor, never to narrow it.
@@ -119,12 +143,7 @@ export function auditPair(
   // evidence to be had, and demanding it would be demanding variety that does
   // not exist. A genuinely rare intent still throws: the population floors are
   // checked against real commands AND distinct sessions.
-  const isCensus =
-    population !== undefined &&
-    population.totalAtoms >= MIN_POPULATION_ATOMS &&
-    population.totalSessions >= MIN_POPULATION_SESSIONS;
-
-  if (sample.length < MIN_SAMPLE_SIZE && !isCensus) {
+  if (!meetsAuditFloor(sample.length, population)) {
     const pop = population
       ? ` The population it was drawn from is ${population.totalAtoms} atoms across ` +
         `${population.totalSessions} sessions, which does not meet the census floor ` +

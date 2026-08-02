@@ -1,14 +1,9 @@
 {
-  "evidenceRef": "plan bash-to-tool-substitution-2026-07-26 / pair ambient.free",
+  "evidenceRef": "plan bash-to-tool-substitution-2026-07-26 / pair ambient.free (re-baselined for bash-substitution-reachable-ceiling-2026-08-01 P-002: corrected quote/heredoc-aware atomizer, D-047)",
   "extractedAt": "2026-07-26T13:34:00Z",
-  "totalAtoms": 32,
-  "totalSessions": 20,
+  "totalAtoms": 31,
+  "totalSessions": 19,
   "sample": [
-    {
-      "sid": "su-6eab8a26-2a45-4253-a708-671fd3182607",
-      "ts": "2026-07-26T05:26:06.011Z",
-      "atom": "free"
-    },
     {
       "sid": "su-707029ce-300a-469b-8fca-4cd393f5a0d2",
       "ts": "2026-07-26T08:55:41.855Z",

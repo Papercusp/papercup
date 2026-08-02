@@ -1,7 +1,7 @@
 {
-  "evidenceRef": "plan bash-to-tool-substitution-2026-07-26 P-005 / pair file-read.tail (re-drawn for EI-18799531134810488: single-file-operand pattern)",
+  "evidenceRef": "plan bash-to-tool-substitution-2026-07-26 P-005 / pair file-read.tail (re-drawn for EI-18799531134810488: single-file-operand pattern) (re-baselined for bash-substitution-reachable-ceiling-2026-08-01 P-002: corrected quote/heredoc-aware atomizer, D-047)",
   "extractedAt": "2026-07-26T13:34:00Z",
-  "totalAtoms": 2089,
+  "totalAtoms": 2039,
   "totalSessions": 65,
   "sample": [
     {
@@ -10,49 +10,49 @@
       "atom": "tail -1 /tmp/b_hits.txt"
     },
     {
-      "sid": "su-6ffd5ea8-6af3-4616-a0c6-b2a57ea4da57",
-      "ts": "2026-07-20T01:23:51.950Z",
-      "atom": "tail -100 /tmp/live-fed-gate-20260719-205709/local-matrix.out 2>/dev/null"
-    },
-    {
-      "sid": "su-4ef7fb1d-c309-4356-a09a-638833555a7c",
-      "ts": "2026-07-25T18:36:12.066Z",
-      "atom": "tail -12 /tmp/claude-1000/-home-dev-papercupai-workspace-papercusp/8d937c89-eb17-40fd-b19f-a70d5cb60de5/scratchpad/tests.log"
-    },
-    {
-      "sid": "su-48ed7aaf-a682-4059-b032-42e9488f6620",
-      "ts": "2026-07-26T12:53:46.273Z",
-      "atom": "tail -15 /tmp/live-fed-gate-20260726-083840/content-matrix.out"
-    },
-    {
-      "sid": "su-10aa1083-b92f-46c9-b340-ccf4455f801d",
-      "ts": "2026-07-17T10:38:34.715Z",
-      "atom": "tail -150 /tmp/test-affected-p005.log"
-    },
-    {
-      "sid": "su-39274e17-029f-409c-b058-970c9cc5bfdc",
-      "ts": "2026-07-26T01:12:55.341Z",
-      "atom": "tail -20 /tmp/claude-1000/-home-dev-papercupai-workspace-papercusp/f22b20ab-9d6c-4334-b508-056ab17629e5/tasks/boj5if5zy.output"
-    },
-    {
-      "sid": "su-6bf2ddf4-01af-4873-a116-9ddcb2a0a779",
-      "ts": "2026-07-25T21:08:22.815Z",
-      "atom": "tail -20 /tmp/wi5769/mac-universal-verify.log 2>&1"
-    },
-    {
-      "sid": "su-707029ce-300a-469b-8fca-4cd393f5a0d2",
-      "ts": "2026-07-26T02:56:00.924Z",
-      "atom": "tail -25 /tmp/claude-1000/-home-dev-papercupai-workspace-papercusp/2315b059-d712-4c36-bf4c-349f79c73ace/tasks/bw8r2cytx.output"
+      "sid": "su-bce40c51-b86c-40dc-9ab6-f5bf6f579cd0",
+      "ts": "2026-07-19T19:12:19.810Z",
+      "atom": "tail -100 /tmp/live-fed-gate-20260719-144259/local-matrix.out 2>/dev/null"
     },
     {
       "sid": "su-29a4071e-0980-4838-89c4-e1793c366a6b",
       "ts": "2026-07-26T15:12:37.285Z",
-      "atom": "tail -3 /tmp/claude-1000/-home-dev-papercupai-workspace-papercusp/1f0335d5-9043-4090-993d-636a391bbe2b/tasks/bd0uei85h.output"
+      "atom": "tail -12 /tmp/claude-1000/-home-dev-papercupai-workspace-papercusp/1f0335d5-9043-4090-993d-636a391bbe2b/scratchpad/tsc.log"
     },
     {
-      "sid": "su-33f6b153-38e2-41a2-8cd5-72072b321e93",
-      "ts": "2026-07-19T18:53:02.471Z",
-      "atom": "tail -3 ~/mac-flip-e2e.log 2>/dev/null"
+      "sid": "su-bce40c51-b86c-40dc-9ab6-f5bf6f579cd0",
+      "ts": "2026-07-21T14:13:55.975Z",
+      "atom": "tail -15 /tmp/live-fed-gate-20260721-094337/local-matrix.out"
+    },
+    {
+      "sid": "su-73565638-a17a-4be4-adfd-86a6750ac1c1",
+      "ts": "2026-07-26T04:01:57.729Z",
+      "atom": "tail -150 /tmp/psu_pty_integration.log"
+    },
+    {
+      "sid": "su-4ef7fb1d-c309-4356-a09a-638833555a7c",
+      "ts": "2026-07-25T21:07:03.907Z",
+      "atom": "tail -20 /tmp/claude-1000/-home-dev-papercupai-workspace-papercusp/edc37e29-e590-4802-8d2d-2d2855482f1f/tasks/bi5lf7hyn.output 2>/dev/null"
+    },
+    {
+      "sid": "su-92bacd98-b714-4f44-a4fc-08e73ea7ca39",
+      "ts": "2026-07-25T23:57:46.927Z",
+      "atom": "tail -20 /tmp/wi5769/mac-universal-verify-retry6.log 2>/dev/null"
+    },
+    {
+      "sid": "su-1acf5890-4740-4a79-a5c0-440b62a880bb",
+      "ts": "2026-07-26T00:48:48.805Z",
+      "atom": "tail -25 /tmp/claude-1000/-home-dev-papercupai-workspace-papercusp/029db26f-c1fe-458d-a500-5de11cc10cd6/tasks/bbu7gtfmn.output"
+    },
+    {
+      "sid": "su-ccb43bf4-89a3-4222-88e8-0c345cea2749",
+      "ts": "2026-07-20T09:37:20.499Z",
+      "atom": "tail -3 /tmp/claude-1000/-home-dev-papercupai-workspace-papercusp/d0bac92f-7cda-41fa-891c-437768aefce8/tasks/bej8bf19i.output"
+    },
+    {
+      "sid": "su-bce40c51-b86c-40dc-9ab6-f5bf6f579cd0",
+      "ts": "2026-07-21T05:11:52.153Z",
+      "atom": "tail -30 /home/dev/.papercusp-lane-a-fed/inst-a.log 2>&1"
     },
     {
       "sid": "su-d93ac1bf-d48f-420d-8136-dea6de467e7f",
@@ -60,9 +60,9 @@
       "atom": "tail -30 /tmp/live-fed-gate-20260721-004051/build.log 2>/dev/null"
     },
     {
-      "sid": "su-6f5ca4fb-38ab-468f-8d82-247940a52119",
-      "ts": "2026-07-25T23:06:15.631Z",
-      "atom": "tail -30 /tmp/wi5769/mac-universal-verify-retry3.log 2>&1"
+      "sid": "su-cfeca4f2-6e46-41d3-89f3-ae8916b0cc95",
+      "ts": "2026-07-25T21:21:27.553Z",
+      "atom": "tail -30 /tmp/wi5766-tsc.log 2>&1"
     },
     {
       "sid": "su-055aef7f-b4be-41a4-bbdb-1068c9fc79e3",
@@ -72,7 +72,7 @@
     {
       "sid": "su-d93ac1bf-d48f-420d-8136-dea6de467e7f",
       "ts": "2026-07-21T17:56:36.205Z",
-      "atom": "tail -40 /tmp/live-fed-gate-20260721-113952/content-matrix.out 2>/dev/null"
+      "atom": "tail -40 /tmp/live-fed-gate-20260721-124218/content-matrix.out"
     },
     {
       "sid": "su-63f9b336-5b17-461a-b12e-a8421de9a09b",
@@ -80,39 +80,39 @@
       "atom": "tail -40 packages/operator-core/lib/scheduler/fleet-scope-admission.test.ts"
     },
     {
-      "sid": "su-709bb0d6-12de-465e-bb82-0f4bb282c87a",
-      "ts": "2026-07-26T14:48:30.446Z",
-      "atom": "tail -5 /tmp/p007-affected.log 2>/dev/null"
+      "sid": "su-707029ce-300a-469b-8fca-4cd393f5a0d2",
+      "ts": "2026-07-26T04:10:01.286Z",
+      "atom": "tail -5 /tmp/papercup-green-checkpoint-manual-1fxzuva.log 2>/dev/null"
     },
     {
-      "sid": "su-6ffd5ea8-6af3-4616-a0c6-b2a57ea4da57",
-      "ts": "2026-07-21T10:12:13.709Z",
-      "atom": "tail -50 /home/dev/.papercusp/scratch/wi5672-routine-diff-20260721T093212Z.log 2>&1"
+      "sid": "su-7905fadc-2ba3-4492-897d-99d351a64a68",
+      "ts": "2026-07-26T05:57:59.769Z",
+      "atom": "tail -50 /tmp/assign-live3.log"
     },
     {
       "sid": "su-e80ad977-8155-413d-ba06-36494ee85032",
-      "ts": "2026-07-25T23:53:13.927Z",
-      "atom": "tail -6 /tmp/oddsmith-suite-wi5805.log"
+      "ts": "2026-07-26T00:21:06.282Z",
+      "atom": "tail -6 /tmp/oddsmith-suite-wi5819.log"
     },
     {
       "sid": "su-9d726f46-c7bc-4986-8700-62340b58689d",
-      "ts": "2026-07-26T15:28:03.447Z",
-      "atom": "tail -60 /tmp/claude-1000/-home-dev-papercupai-workspace-papercusp/d0e70ce7-c996-4f65-b0eb-56616da8d65d/tasks/b5amqs6cb.output"
+      "ts": "2026-07-26T07:10:19.121Z",
+      "atom": "tail -60 /tmp/claude-1000/-home-dev-papercupai-workspace-papercusp/f490c77b-9f3a-4411-8721-4b2998280941/tasks/bq2xtqj0u.output"
     },
     {
-      "sid": "su-7845f434-583f-4801-86ba-d06f350d1071",
-      "ts": "2026-07-26T08:10:05.285Z",
-      "atom": "tail -60 /tmp/verify-tauri-headless.0TImC1/tauri.log 2>&1"
+      "sid": "su-b0971728-8161-44b0-9e6a-9adbe4d42cd6",
+      "ts": "2026-07-26T06:24:47.994Z",
+      "atom": "tail -60 /tmp/verify-tauri-headless.WY1B6H/tauri.log 2>&1"
     },
     {
-      "sid": "su-4ca244e4-540e-4acc-bb67-9335192fc85f",
-      "ts": "2026-07-25T19:35:57.733Z",
-      "atom": "tail -8 /tmp/tc-vite.log"
+      "sid": "su-6eab8a26-2a45-4253-a708-671fd3182607",
+      "ts": "2026-07-26T06:47:29.889Z",
+      "atom": "tail -8 /tmp/toolsmd.log 2>/dev/null"
     },
     {
-      "sid": "su-bce40c51-b86c-40dc-9ab6-f5bf6f579cd0",
-      "ts": "2026-07-21T12:09:22.884Z",
-      "atom": "tail -80 /tmp/live-fed-gate-20260721-073904/local-matrix.out"
+      "sid": "su-d93ac1bf-d48f-420d-8136-dea6de467e7f",
+      "ts": "2026-07-21T17:55:43.617Z",
+      "atom": "tail -80 /tmp/live-fed-gate-20260721-133815/local-matrix.out"
     },
     {
       "sid": "su-a7d08fd3-ba65-45d3-a07f-a335b9004454",
@@ -120,9 +120,9 @@
       "atom": "tail -n 15 /tmp/wi5634-soak.log 2>&1"
     },
     {
-      "sid": "su-6f5ca4fb-38ab-468f-8d82-247940a52119",
-      "ts": "2026-07-25T22:09:43.163Z",
-      "atom": "tail -n 40 /tmp/wi5769/mac-universal-verify-retry.log 2>/dev/null"
+      "sid": "su-38101f27-bf18-4044-9ca1-bd66bcf0b411",
+      "ts": "2026-07-26T00:52:21.639Z",
+      "atom": "tail -n 40 /tmp/wi5769/mac-universal-verify-retry8.log 2>&1"
     }
   ]
 }

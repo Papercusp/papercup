@@ -1,7 +1,7 @@
-# Exit 144 — pkill -f kills your own Bash tool shell
+# Process-table self-match — pkill -f kills your own shell; pgrep -f wait-loops never exit
 URL: /internal/docs/agent-insights/exit-144-pkill-self-match
 
-A Bash tool call that contains `pkill -f "<pattern>"` dies with exit 144 when the pattern appears anywhere in the script text — the tool runs the script with its full text in argv, so pkill matches and kills its own shell. Misdiagnosed on 2026-06-11 as "the box wall-clock-SIGTERMs every vite/playwright launch", which stalled e2e verification for a whole session and forced a needless handoff.
+Any agent shell that pattern-matches the process table matches its OWN command line, because the pattern text is inside the bash -c argv. Kill direction — `pkill -f "<pattern>"` dies with exit 144 (kills its own shell). Wait direction — `until ! pgrep -f '<pattern>'; do sleep 5; done` loops FOREVER (the poll always finds itself; a peer burned 27 silent minutes, EI-19312699396945642). Same class, two symptoms; `ps | grep` loops share it and `grep -v grep` does not help.
 
 ## Symptom
 
@@ -46,15 +46,57 @@ kill -- -$VPID 2>/dev/null || kill $VPID
 
 Acceptable alternatives: `pgrep -x <binary>` (exact name match, no -f), or
 `pgrep -f` → inspect the PID list → `kill <pids>` (pgrep doesn't kill, so
-matching yourself is harmless). Never `pkill -f` / `pkill -9 -f` from a tool
-call. The same rule protects peers: name-pattern kills on the shared box have
-previously taken out the owner's live desktop and peer Xvfb instances.
+matching yourself is harmless **in a one-shot kill flow** — see the wait-loop
+section below for where it is NOT harmless). Never `pkill -f` / `pkill -9 -f`
+from a tool call. The same rule protects peers: name-pattern kills on the
+shared box have previously taken out the owner's live desktop and peer Xvfb
+instances.
+
+## The same self-match, wait direction: a `pgrep -f` poll loop NEVER exits
+
+The kill direction dies loudly (exit 144). The **wait** direction fails
+*silently*: it looks like patient waiting, produces no error and no output,
+and never ends. Observed live 2026-08-02 (EI-19312699396945642) — a session
+"waiting" for its queued `lint:tsc` run sat 27 minutes in:
+
+```bash
+until ! pgrep -f 'lint-tsc' >/dev/null; do sleep 5; done   # NEVER exits
+```
+
+`pgrep -f` matches full command lines; the loop's own `bash -c` argv contains
+the literal `lint-tsc`, so the poller is always in its own result set and the
+condition is permanently true — regardless of what the real job does. The
+poll's natural trigger ("the box is busy, my job is queued") is exactly when
+the wasted minutes cost most.
+
+`ps … | grep <pat>` loop conditions have the same defect, **and `grep -v
+grep` does not fix it**: the `bash -c` wrapper whose argv carries the pattern
+is not named `grep`, so it still matches.
+
+Fixes, best first:
+
+1. **Don't poll.** `capability:bash { run_in_background: true }` +
+   `capability:bash_output { bash_id, filter }` — completion notification plus
+   a log that survives an operator restart.
+2. **Wait on the PID, not a pattern:** `tail --pid=<pid> -f /dev/null`, or
+   `kill -0 <pid>` in the loop.
+3. **If you genuinely must pattern-poll, bracket the first character** so the
+   pattern cannot match its own argv: `pgrep -f '[l]int-tsc'` still matches a
+   real `lint-tsc` process, but the poller's own argv now contains
+   `[l]int-tsc`, which the regex does not match (same trick as
+   `ps aux | grep '[f]oo'`).
+
+The PreToolUse bash gate now **denies** the un-bracketed loop form
+(`pretooluse-bash-resource-gate.sh`, "process-table wait-loop self-match
+guard") — one-shot `pgrep -f` / `ps | grep` reads terminate on their own and
+stay allowed.
 
 ## Wider lesson
 
 A 100%-reproducible "environment kills my process" with partial script output
-is a *self-kill* until proven otherwise. Check exactly which line stopped
-producing effects before blaming the box — and grep your own script for
-`pkill`/`kill` patterns that could match the script text itself. This class
-has now hit at least four sessions (desktop-kill incident, su-6c28e,
-su-69643, su-1656a's e2e saga).
+is a *self-kill* until proven otherwise, and a pattern-poll that "just keeps
+waiting" is a *self-match* until proven otherwise. Check exactly which line
+stopped producing effects before blaming the box — and grep your own script
+for `pkill`/`pgrep`/`kill` patterns that could match the script text itself.
+This class has now hit at least five sessions (desktop-kill incident,
+su-6c28e, su-69643, su-1656a's e2e saga, su-e6ac4eb7's 27-minute pgrep loop).

@@ -1,5 +1,6 @@
 import { getBrowserWorkspaceId } from './browser-workspace';
 import { isChromelessPath } from './chromeless-routes';
+import { commands } from './tauri-bindings';
 
 /**
  * The Quick Panel popup window (papercusp-desktop `src-tauri/src/docs_search.rs`)
@@ -50,25 +51,27 @@ export function resolveQuickPanelHandoff(
 
 /**
  * Hand `route` to the desktop, which opens it in the main app window
- * (Spotlight-style) and hides the palette. Raw Tauri invoke because
- * `tauri-bindings.ts` is specta-generated and this command is new (same pattern
- * as OnboardingConsole's raw invoke). Best-effort: outside a Tauri webview this
- * is a no-op, but the only caller path is gated on `isQuickPanelWindow()`, which
- * only the Rust palette window sets — so we are always in Tauri here.
+ * (Spotlight-style) and hides the palette.
+ *
+ * Uses the TYPED specta binding. It previously went through a raw
+ * `__TAURI_INTERNALS__.invoke('open_route_in_app')` because the generated bindings
+ * this package could see were a stale second copy that predated the command — the
+ * duplicate removed in EI-18899708711154370 / D-014. There is now one generated
+ * file, in this package, so raw invoke buys nothing and costs the compile-time check
+ * on the command name and its arguments.
+ *
+ * Best-effort: outside a Tauri webview this is a no-op, but the only caller path is
+ * gated on `isQuickPanelWindow()`, which only the Rust palette window sets — so we
+ * are always in Tauri here.
  */
 export function openRouteInApp(route: string): void {
   if (typeof window === 'undefined') return;
-  const internals = (
-    window as unknown as {
-      __TAURI_INTERNALS__?: {
-        invoke?: (cmd: string, args?: Record<string, unknown>) => Promise<unknown>;
-      };
-    }
-  ).__TAURI_INTERNALS__;
   try {
-    void internals?.invoke?.('open_route_in_app', { route });
+    void commands.openRouteInApp(route).catch(() => {
+      /* best-effort — a failed hand-off must never navigate the panel in place */
+    });
   } catch {
-    /* best-effort — a failed hand-off must never navigate the panel in place */
+    /* best-effort — e.g. no Tauri IPC available in this window */
   }
 }
 
