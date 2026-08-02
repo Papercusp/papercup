@@ -4,6 +4,7 @@ import * as RS from '@radix-ui/react-select';
 import { Check, ChevronDown } from 'lucide-react';
 import type { CSSProperties, ReactNode } from 'react';
 
+
 export interface SelectOption {
   value: string;
   label: ReactNode;
@@ -105,6 +106,9 @@ export function Select({
   contentStyle,
   className,
   triggerClassName,
+  triggerChildren,
+  side,
+  align,
 }: {
   value: string;
   onChange: (value: string) => void;
@@ -120,7 +124,35 @@ export function Select({
   contentStyle?: CSSProperties;
   className?: string;
   triggerClassName?: string;
+  /**
+   * Replaces the default `<Value/> + <Icon/>` trigger body with your own
+   * markup, for a trigger whose shape is NOT "selected text + caret".
+   *
+   * The case this exists for is the chat popup's mode pill, which is a
+   * two-part object — a filled cap carrying the axis name (`AUTO`) plus its
+   * current value (`on ▾`) — and which must keep that shape because the
+   * shape IS the vocabulary (chat-controls.css: a mode and the control that
+   * sets it are ONE thing). Wrapping the pill in a separate trigger would put
+   * a button inside a button; supplying the body keeps one element.
+   *
+   * You own the caret when you pass this — the default `<Icon/>` is not
+   * rendered, since a custom trigger usually places its own.
+   */
+  triggerChildren?: ReactNode;
+  /** Preferred side to open on. Radix still flips when there is no room. */
+  side?: 'top' | 'right' | 'bottom' | 'left';
+  align?: 'start' | 'center' | 'end';
+  /**
+   * Extra `data-*` attributes for the trigger, for state a caller needs to
+   * read off the element (styling hooks, test handles). Keys are used exactly
+   * as given, so pass the full `data-…` name. An `undefined` value is dropped
+   * rather than rendered as the string "undefined".
+   */
+  triggerData?: Record<string, string | undefined>;
 }) {
+  const triggerDataAttrs = Object.fromEntries(
+    Object.entries(triggerData ?? {}).filter(([, v]) => v !== undefined),
+  );
   return (
     <RS.Root value={value} onValueChange={onChange} disabled={disabled}>
       <RS.Trigger
@@ -128,16 +160,23 @@ export function Select({
         aria-label={ariaLabel}
         aria-describedby={describedBy}
         data-testid={testId}
+        {...triggerDataAttrs}
         className={triggerClassName ?? className}
         style={triggerClassName || className ? undefined : { ...TRIGGER_DEFAULT_STYLE, ...triggerStyle }}
       >
-        <RS.Value placeholder={placeholder} />
-        <RS.Icon><ChevronDown size={11} /></RS.Icon>
+        {triggerChildren ?? (
+          <>
+            <RS.Value placeholder={placeholder} />
+            <RS.Icon><ChevronDown size={11} /></RS.Icon>
+          </>
+        )}
       </RS.Trigger>
       <RS.Portal>
         <RS.Content
           data-anim="pop"
           position="popper"
+          side={side}
+          align={align}
           sideOffset={4}
           style={{ ...CONTENT_STYLE, ...contentStyle }}
         >

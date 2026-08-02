@@ -24,6 +24,7 @@ import { askUserLocal } from '@/lib/chat-cards/ask-user-local';
 // barrel; the shorter-looking `/registry` path is the bug.
 import { listChatActions, listChatModeActions } from '@/lib/chat-actions';
 import type { ChatAction, ChatActionContext, ChatModeAction } from '@/lib/chat-actions/types';
+import { Select } from '@/app/harness/Select';
 
 /**
  * WI-6552: ceiling on a `params()` option-load before the bar gives up.
@@ -144,32 +145,32 @@ export function ChatActionBar({ ctx }: { ctx: ChatActionContext }): ReactNode {
   if (actions.length === 0 && modes.length === 0) return null;
 
   /**
-   * A mode pill's click opens its chooser, then writes the pick. Deliberately
-   * the SAME askUserLocal/LocalCardHost plumbing an action's `params()` uses —
-   * there is no second card vocabulary (plan D-001), so a mode chooser looks
-   * and behaves exactly like every other chooser on the surface.
+   * Writes a mode pick chosen from the pill's own dropdown.
+   *
+   * [owner 2026-08-02] "I dont like how the options popup looks, just make
+   * it look like a standard drop down/up." This used to route through
+   * askUserLocal/LocalCardHost, which renders the option set as a stack of
+   * full-width AskChoiceCard rows in the card slot ABOVE the composer — a
+   * ~200px panel, detached from the pill that opened it, for what is a
+   * two-to-three value switch. The pill already ends in a caret, and a caret
+   * means "a menu opens HERE"; opening a card elsewhere broke that promise.
+   *
+   * Note this does not violate the prior plan's D-001 ("there is no second
+   * card vocabulary"). That rule is about CARDS — a chooser that asks a
+   * question and waits for an answer. A mode pill is not asking a question:
+   * it is a value picker whose current value it already displays, which is
+   * precisely a <select>. Using the design-system Select makes it the same
+   * control as every other value picker on the surface, so the vocabulary got
+   * smaller here, not larger.
    */
-  const invokeMode = async (mode: ChatModeAction): Promise<void> => {
+  const applyMode = async (mode: ChatModeAction, optionId: string): Promise<void> => {
     setError(null);
     setDone(null);
     setRunningId(mode.id);
     try {
+      await mode.set(ctx, optionId);
       const options = mode.options(ctx);
-      const r = await askUserLocal({
-        prompt: `Set ${mode.cap}`,
-        // z.string() rather than z.enum: the option set is supplied by the
-        // descriptor at click time, so it is not a compile-time constant.
-        dataSchema: z.object({ picks: z.tuple([z.string()]) }),
-        presentation: {
-          kind: 'radio',
-          options: options.map((o) => ({ id: o.id, label: o.label, hint: o.hint })),
-        },
-        allowDecline: true,
-      });
-      if (r.action !== 'submit') return;
-      const [choice] = (r.payload as { picks: [string] }).picks;
-      await mode.set(ctx, choice);
-      setDone(`${mode.cap} → ${options.find((o) => o.id === choice)?.label ?? choice}`);
+      setDone(`${mode.cap} → ${options.find((o) => o.id === optionId)?.label ?? optionId}`);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
       // eslint-disable-next-line no-console
@@ -232,28 +233,46 @@ export function ChatActionBar({ ctx }: { ctx: ChatActionContext }): ReactNode {
       {modes.map((mode) => {
         const state = mode.current(ctx);
         return (
-          <button
+          <Select
             key={mode.id}
-            type="button"
-            className={`pc-ctl-mode${state.on ? '' : ' pc-ctl-mode--off'}`}
-            data-testid={`chat-mode-${mode.id}`}
-            data-on={state.on ? 'true' : 'false'}
-            onClick={() => void invokeMode(mode)}
+            /* `optionId` when the axis distinguishes it from display text
+               (autonomy shows "on" for the option `auto`); the overlays'
+               option ids already ARE their display values, so `value` is the
+               id there and the fallback is exact, not approximate. */
+            value={state.optionId ?? state.value}
+            onChange={(optionId) => void applyMode(mode, optionId)}
             disabled={runningId !== null}
-            aria-busy={runningId === mode.id}
-            /* aria-label, not `title`: design-primitives forbids a title-only
-               tooltip on a button, and this is the text a screen reader needs
-               anyway — the visible pill is deliberately only two short words. */
-            aria-label={`${mode.cap} is ${state.value}${state.title ? ` — ${state.title}` : ''}. Change it.`}
-          >
-            <span className="pc-ctl-mode__inner">
-              <span className="pc-ctl-mode__cap">{mode.cap}</span>
-              <span className="pc-ctl-mode__value">
-                {state.value}
-                <span aria-hidden="true">▾</span>
+            options={mode.options(ctx).map((o) => ({
+              value: o.id,
+              label: o.hint ? (
+                <span className="pc-ctl-mode-opt">
+                  <span className="pc-ctl-mode-opt__label">{o.label}</span>
+                  <span className="pc-ctl-mode-opt__hint">{o.hint}</span>
+                </span>
+              ) : (
+                o.label
+              ),
+            }))}
+            testId={`chat-mode-${mode.id}`}
+            triggerData={{ 'data-on': state.on ? 'true' : 'false' }}
+            triggerClassName={`pc-ctl-mode${state.on ? '' : ' pc-ctl-mode--off'}`}
+            /* The band sits at the BOTTOM of the popup, so the menu's natural
+               home is above it — hence the owner's "drop down/up". Radix still
+               flips to `bottom` on its own when the pill is high enough that
+               there is no room above, so this is a preference, not a pin. */
+            side="top"
+            align="start"
+            ariaLabel={`${mode.cap} is ${state.value}${state.title ? ` — ${state.title}` : ''}. Change it.`}
+            triggerChildren={
+              <span className="pc-ctl-mode__inner">
+                <span className="pc-ctl-mode__cap">{mode.cap}</span>
+                <span className="pc-ctl-mode__value">
+                  {state.value}
+                  <span aria-hidden="true">▾</span>
+                </span>
               </span>
-            </span>
-          </button>
+            }
+          />
         );
       })}
       {modes.length > 0 && actions.length > 0 ? (

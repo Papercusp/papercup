@@ -24,6 +24,9 @@ import {
   fitsProseColumns,
   modeTargetDims,
 } from './prose-vector-dims';
+// The sweep that has to REFILL whatever a width migration wipes — asserted
+// against the widened set below, so the two lists cannot drift apart again.
+import { TARGETS } from './embed-backfill';
 
 describe('the prose column width contract', () => {
   it('every prose-eligible mode emits EXACTLY the column width', () => {
@@ -109,5 +112,36 @@ describe('the prose column width contract', () => {
     // read as broader coverage than it is.
     const keys = PROSE_VECTOR_COLUMNS.map((c) => `${c.table}.${c.column}`);
     expect(new Set(keys).size).toBe(keys.length);
+  });
+
+  /**
+   * EI-19374072666153095 — the OTHER half of "a width migration is survivable".
+   *
+   * A width change necessarily WIPES every column it touches (pgvector cannot
+   * cast between widths, so migration 727 ALTERs `USING NULL`). That is only
+   * acceptable because the backfill sweep refills them — which is true ONLY for
+   * columns the sweep actually visits. A column in PROSE_VECTOR_COLUMNS but NOT
+   * in TARGETS is wiped by the migration and refilled by nothing: a PERMANENT
+   * loss dressed up as a temporary degradation.
+   *
+   * Measured before this guard existed: `code_recipes` (8,165 vectors) and
+   * `datatype_registry` (8) were in the widened set and absent from TARGETS,
+   * with no other re-embed path. Both are among the exact tables this module's
+   * own docblock records as having been silently missed once already, which is
+   * why the fix is an assertion rather than two more hand-maintained rows.
+   */
+  it('every column the migration WIPES has a backfill target that refills it', () => {
+    const swept = new Set(TARGETS.map((t) => `${t.table}.${t.embedCol}`));
+    const orphaned = PROSE_VECTOR_COLUMNS.filter((c) => !swept.has(`${c.table}.${c.column}`)).map(
+      (c) => `${c.table}.${c.column}`,
+    );
+    expect(
+      orphaned,
+      `These prose columns are widened (and therefore NULLed) by a width migration but have no ` +
+        `entry in embed-backfill's TARGETS, so nothing ever refills them — the vectors are lost ` +
+        `permanently, not temporarily: ${orphaned.join(', ')}. Add a TARGETS entry (bodySql + the ` +
+        `real PRIMARY KEY in keyCols), or remove the column from PROSE_VECTOR_COLUMNS if it is ` +
+        `genuinely not a shared prose surface.`,
+    ).toEqual([]);
   });
 });

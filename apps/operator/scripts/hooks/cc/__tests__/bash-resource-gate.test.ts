@@ -914,9 +914,15 @@ describe('heavy-command admission control (WI-3821)', () => {
   const OVER = { PC_HEAVY_MAX_LOAD1: '100', PC_HEAVY_LOAD1_OVERRIDE: '200' };
   const UNDER = { PC_HEAVY_MAX_LOAD1: '100', PC_HEAVY_LOAD1_OVERRIDE: '50' };
 
-  const expectHeavyDeny = (out: { stdout: string; status: number | null }) => {
-    expect(out.status).toBe(0);
-    const decision = JSON.parse(out.stdout);
+  // EI-19284963139619048: was a bare `JSON.parse(out.stdout)` — the exact
+  // fail-open shape EI-18829641916212203 already made self-diagnosing via
+  // `parseDecision` for expectDeny/expectGitDeny, but this helper (and its
+  // WI-3853-describe sibling below) were never migrated, so a transient
+  // fail-open here still surfaced as a bare `SyntaxError: Unexpected end of
+  // JSON input` — indistinguishable from a real admission-gate regression.
+  const expectHeavyDeny = (out: { stdout: string; stderr?: string; status: number | null }) => {
+    expect(out.status).toBe(0); // deny is exit 0 + decision JSON (hook protocol)
+    const decision = parseDecision(out);
     expect(decision.hookSpecificOutput.permissionDecision).toBe('deny');
     expect(decision.hookSpecificOutput.permissionDecisionReason).toContain('heavy-command admission');
   };
@@ -1240,9 +1246,12 @@ describe('compound `cd <canonical> && …` coverage (WI-3853 — marker-less fle
   // so only the tree check can catch these — and it must follow the leading cd.
   const OUTSIDE = '/tmp/outside-canonical';
   const OVER = { PC_HEAVY_MAX_LOAD1: '100', PC_HEAVY_LOAD1_OVERRIDE: '200' };
-  const expectHeavyDeny = (out: { stdout: string; status: number | null }) => {
-    expect(out.status).toBe(0);
-    expect(JSON.parse(out.stdout).hookSpecificOutput.permissionDecisionReason).toContain('heavy-command admission');
+  // EI-19284963139619048: same fail-open-shape fix as the sibling
+  // expectHeavyDeny above — route through parseDecision so a transient
+  // fail-open self-diagnoses instead of a bare JSON.parse SyntaxError.
+  const expectHeavyDeny = (out: { stdout: string; stderr?: string; status: number | null }) => {
+    expect(out.status).toBe(0); // deny is exit 0 + decision JSON (hook protocol)
+    expect(parseDecision(out).hookSpecificOutput.permissionDecisionReason).toContain('heavy-command admission');
   };
 
   it('git-guard fires on `cd <canonical> && git reset --hard` from a marker-less session', () => {

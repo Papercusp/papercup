@@ -109,13 +109,14 @@ registerChatModeAction({
     // carrying both should read as the colder one rather than silently
     // reporting the warmer.
     if (modes.has('cold-auto')) {
-      return { value: 'cold', on: true, title: modeById('cold-auto')?.oneLiner };
+      return { value: 'cold', optionId: 'cold-auto', on: true, title: modeById('cold-auto')?.oneLiner };
     }
     if (modes.has('auto')) {
-      return { value: 'on', on: true, title: modeById('auto')?.oneLiner };
+      return { value: 'on', optionId: 'auto', on: true, title: modeById('auto')?.oneLiner };
     }
     return {
       value: 'off',
+      optionId: 'manual',
       on: false,
       title: 'Confirm-before-acting posture — no standing autonomy mode is set',
     };

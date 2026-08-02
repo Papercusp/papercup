@@ -35,7 +35,8 @@ async function main(): Promise<void> {
     ON CONFLICT (install_slug, name) DO UPDATE SET
       trigger_config = EXCLUDED.trigger_config,
       target_role = EXCLUDED.target_role,
-      active = EXCLUDED.active,
+      -- active intentionally NOT re-applied on conflict (EI-19301170070808928): a
+      -- re-seed must never clobber an operator's runtime pause/resume of this routine.
       updated_at = now()`;
   console.log(`[seed-hive-canary] routine ${id} seeded (harness=${SLUG}, active=${active})`);
   await sql.end({ timeout: 5 });

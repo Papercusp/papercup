@@ -35,11 +35,15 @@ import { getOrgPg } from '@papercusp/db-org';
 import { potHomeSlugForHarness } from './hive-federation';
 
 /**
- * The canonical dogfood / platform Pot slug — a workspace's own "self" Pot. Mirrors
- * `harness-registry`'s `CANONICAL_DOGFOOD_SLUG` and the migration-649 backfill
- * catch-all target. A workspace-global ("operator") work item homes here.
+ * The canonical dogfood / platform Pot slug + its legacy-alias canonicalizer now
+ * live in the PG-free {@link ../platform-pot-slug} module, so a PURE classifier can
+ * import them without dragging `@papercusp/db-org` in (EI-19370922358009801 — the
+ * `improvements/triage.ts` self-scope allowlist hardcoded the pre-rename spelling
+ * precisely because it could not import this file). Re-exported here so every
+ * existing `pot-membership` import keeps working unchanged.
  */
-export const PLATFORM_POT_SLUG = 'papercusp';
+export { PLATFORM_POT_SLUG, canonicalPotSlug, isPlatformPotScope } from './platform-pot-slug';
+import { PLATFORM_POT_SLUG } from './platform-pot-slug';
 
 /**
  * Workspace-global scope labels a work item might carry INSTEAD of a real Pot slug
@@ -70,15 +74,6 @@ export function isWorkspaceGlobalLabel(
   if (s.startsWith('operator:')) return true;
   if (workspaceId && s === workspaceId.trim()) return true;
   return WORKSPACE_GLOBAL_LABELS.has(s);
-}
-
-/**
- * TS mirror of `harness_shared.canonical_harness_slug` (SQL migration 359): the
- * legacy dogfood repo name folds to the platform Pot; everything else is unchanged.
- * Keep aligned with the SQL function and the P-006 backstop migration.
- */
-export function canonicalPotSlug(slug: string): string {
-  return slug === 'papercup' || slug === 'papercup-hive' ? PLATFORM_POT_SLUG : slug;
 }
 
 /** Injectable Pot lookup (no PG) so {@link resolveWorkItemPot} unit-tests purely. */

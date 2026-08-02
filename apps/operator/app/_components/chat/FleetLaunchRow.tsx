@@ -335,26 +335,25 @@ export default function FleetLaunchRow({ className, onLaunched }: FleetLaunchRow
           member", "Headed or headless members"). Those strings were never
           written as UI copy; they were being READ as UI copy because nothing
           else named the controls. ── */}
-      <div className="pc-ctl-band">
-        <span className="pc-ctl-band__label">Fleet</span>
-      </div>
       <div className="pc-new-session-launcher pc-fleet-launch-row__fields">
-        <div className="pc-ctl-field">
+        <span className="pc-ctl-band__label pc-fleet-strip__label">Fleet</span>
+        <div className="pc-ctl-field pc-ctl-field--inline">
           <span className="pc-ctl-field__cap" id="fleet-cap-name">
-            Fleet name
+            Name
           </span>
           <input
             className="pc-new-session-launcher__input"
             type="text"
             value={fleetName}
             onChange={(e) => void setFleetName(e.target.value)}
-            placeholder="Names the fleet's durable handle"
+            placeholder="Fleet's durable handle"
+            title="Fleet name — names the fleet's durable handle"
             aria-labelledby="fleet-cap-name"
             data-testid="fleet-launch-name"
           />
         </div>
-        <div className="pc-ctl-field">
-          <span className="pc-ctl-field__cap">Plan — the lane members work</span>
+        <div className="pc-ctl-field pc-ctl-field--inline">
+          <span className="pc-ctl-field__cap" title="Plan — the lane members work">Plan</span>
           <Combobox
             triggerClassName="pc-new-session-launcher__select pc-new-session-launcher__select--plan"
             value={planSlug ?? PLAN_SELECT_PLACEHOLDER}
@@ -367,8 +366,8 @@ export default function FleetLaunchRow({ className, onLaunched }: FleetLaunchRow
             options={planOptions}
           />
         </div>
-        <div className="pc-ctl-field">
-          <span className="pc-ctl-field__cap">Model — every member</span>
+        <div className="pc-ctl-field pc-ctl-field--inline">
+          <span className="pc-ctl-field__cap" title="Model — every member">Model</span>
           <Combobox
             triggerClassName="pc-new-session-launcher__select pc-new-session-launcher__select--model"
             value={model || MODEL_SELECT_DEFAULT}
@@ -385,8 +384,8 @@ export default function FleetLaunchRow({ className, onLaunched }: FleetLaunchRow
             `default` (system/CLI login, gateway skipped), `auto` (gateway-routed
             with failover) and every pool account (a hard gateway pin). One
             control, because psu's --account is one flag with three modes. */}
-        <div className="pc-ctl-field">
-          <span className="pc-ctl-field__cap">Account routing</span>
+        <div className="pc-ctl-field pc-ctl-field--inline">
+          <span className="pc-ctl-field__cap" title="Account routing — for every fleet member">Account</span>
           <Combobox
             triggerClassName="pc-new-session-launcher__select pc-new-session-launcher__select--account"
             value={account}
@@ -398,8 +397,8 @@ export default function FleetLaunchRow({ className, onLaunched }: FleetLaunchRow
             options={accountOptions}
           />
         </div>
-        <div className="pc-ctl-field">
-          <span className="pc-ctl-field__cap">Windows</span>
+        <div className="pc-ctl-field pc-ctl-field--inline">
+          <span className="pc-ctl-field__cap" title="Windows — headed or headless members">Windows</span>
           <Combobox
             triggerClassName="pc-new-session-launcher__select pc-new-session-launcher__select--window"
             value={headless ? HEADLESS_VALUE : HEADED_VALUE}

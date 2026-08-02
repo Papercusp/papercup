@@ -28,6 +28,9 @@ import { activeWorkspaceId } from '@papercusp/operator-core/lib/workspace-regist
 import { readProfile } from '@papercusp/operator-core/lib/session';
 import { resolveDistinctId } from '@papercusp/operator-core/lib/flag-distinct-id';
 import { reinitFlagBackend } from '@papercusp/operator-core/lib/flag-bus';
+// P-006: the destination invariant as a POLICY (the prevention leg), kept in one
+// place so this host, the vite dev server and the desktop cannot drift apart.
+import { cspReportOnlyHeaders } from '@papercusp/desktop-ipc';
 import { isTestingFeaturesEnabled } from '@papercusp/operator-core/lib/posthog-config';
 import { describeMissingBundle } from '../lib/spa-build-status';
 
@@ -199,6 +202,12 @@ async function serveIndexHtmlWithWorkspace(indexPath: string, req: Request): Pro
       // elsewhere); only this dynamic shell opts out, so any normal reload now gets the
       // latest flags + bundle.
       'cache-control': 'no-store, max-age=0',
+      // P-006: report-only CSP on the SPA DOCUMENT (a CSP applies to the document
+      // it is served with, so the hashed asset responses are the wrong place for
+      // it). Report-only never blocks, so this cannot break the shell — it turns
+      // the browser into a second egress sensor whose blind spots differ from
+      // resource timing's.
+      ...cspReportOnlyHeaders(),
     },
   });
 }

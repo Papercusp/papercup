@@ -48,7 +48,8 @@ async function main(): Promise<void> {
     ON CONFLICT (install_slug, name) DO UPDATE SET
       target_role = EXCLUDED.target_role,
       trigger_config = EXCLUDED.trigger_config,
-      active = EXCLUDED.active,
+      -- active intentionally NOT re-applied on conflict (EI-19301170070808928): a
+      -- re-seed must never clobber an operator's runtime pause/resume of this routine.
       workspace_id = EXCLUDED.workspace_id,
       updated_at = now()
   `;

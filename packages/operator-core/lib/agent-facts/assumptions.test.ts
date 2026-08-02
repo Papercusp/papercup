@@ -15,11 +15,37 @@ import {
   danglingAssumptionsMessage,
   isComparableAtDeclaration,
   isDanglingCondition,
+  nonAssumptionKindAdvisory,
   parseAssumptionRef,
   resolveAssumptions,
   wasStaleAtDeclaration,
   type DeclaredBasisRow,
+  type ResolvedAssumption,
 } from './assumptions';
+
+/** A fake tagged-template `sql` — a tag call is just `fn(strings, ...values)`, so
+ *  a plain async function that ignores its args and returns the fixture rows
+ *  works as `inject` (per the repo's standing unit-test convention: mock the
+ *  tagged template, never hit live PG). */
+function fakeSql(rows: unknown[]): Parameters<typeof resolveAssumptions>[3] {
+  return (async (..._args: unknown[]) => rows) as unknown as Parameters<typeof resolveAssumptions>[3];
+}
+
+function factRow(over: Partial<Record<string, unknown>> = {}): Record<string, unknown> {
+  return {
+    id: 1,
+    scope: 'owner',
+    scope_ref: 'su-1',
+    key: 'my-key',
+    body: 'the fact body',
+    retracted_at: null,
+    superseded_at: null,
+    expired: false,
+    kind: null,
+    confidence: null,
+    ...over,
+  };
+}
 
 describe('parseAssumptionRef', () => {
   it('treats a plain slug as a bare key', () => {
@@ -154,7 +180,7 @@ describe('danglingAssumptionsMessage', () => {
 
   it('names the offending entries and the scopes actually searched', () => {
     const msg = danglingAssumptionsMessage(
-      [{ declared: 'ghost-key', ref: null, key: 'ghost-key', scope: null, scopeRef: null, versionId: null, condition: 'dangling' }],
+      [{ declared: 'ghost-key', ref: null, key: 'ghost-key', scope: null, scopeRef: null, versionId: null, condition: 'dangling', kind: null, confidence: null, isAssumption: null }],
       selectors,
     );
     expect(msg).toContain('"ghost-key"');
@@ -167,7 +193,7 @@ describe('danglingAssumptionsMessage', () => {
     // Without this the obvious misreading of the refusal is "my fact expired",
     // which sends the agent to re-assert something that already resolves.
     const msg = danglingAssumptionsMessage(
-      [{ declared: 'k', ref: null, key: 'k', scope: null, scopeRef: null, versionId: null, condition: 'dangling' }],
+      [{ declared: 'k', ref: null, key: 'k', scope: null, scopeRef: null, versionId: null, condition: 'dangling', kind: null, confidence: null, isAssumption: null }],
       selectors,
     );
     expect(msg).toMatch(/EXPIRED or RETRACTED key still resolves/);
@@ -176,18 +202,126 @@ describe('danglingAssumptionsMessage', () => {
 
   it('pluralizes so the refusal reads correctly for one and for many', () => {
     const one = danglingAssumptionsMessage(
-      [{ declared: 'a', ref: null, key: 'a', scope: null, scopeRef: null, versionId: null, condition: 'dangling' }],
+      [{ declared: 'a', ref: null, key: 'a', scope: null, scopeRef: null, versionId: null, condition: 'dangling', kind: null, confidence: null, isAssumption: null }],
       selectors,
     );
     const many = danglingAssumptionsMessage(
       [
-        { declared: 'a', ref: null, key: 'a', scope: null, scopeRef: null, versionId: null, condition: 'dangling' },
-        { declared: 'b', ref: null, key: 'b', scope: null, scopeRef: null, versionId: null, condition: 'dangling' },
+        { declared: 'a', ref: null, key: 'a', scope: null, scopeRef: null, versionId: null, condition: 'dangling', kind: null, confidence: null, isAssumption: null },
+        { declared: 'b', ref: null, key: 'b', scope: null, scopeRef: null, versionId: null, condition: 'dangling', kind: null, confidence: null, isAssumption: null },
       ],
       selectors,
     );
     expect(one).toContain('key "a" does not resolve');
     expect(many).toContain('keys "a", "b" do not resolve');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// EI-19298742806956600 — the assumption gate accepted a VERIFIED CONCLUSION as
+// an assumption, because resolution never inspected `kind`/`confidence` at all.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('resolveAssumptions stamps kind/confidence/isAssumption on every resolved entry', () => {
+  const selectors = assumptionSelectorsFor({ ownerId: 'su-1' });
+
+  it('a real assumption (kind:"assumption") resolves isAssumption:true', async () => {
+    const out = await resolveAssumptions(['my-key'], selectors, {}, fakeSql([factRow({ kind: 'assumption' })]));
+    expect(out[0]).toMatchObject({ kind: 'assumption', isAssumption: true });
+  });
+
+  it('the LEGACY form (no kind, confidence:"suspected") still resolves isAssumption:true', async () => {
+    const out = await resolveAssumptions(
+      ['my-key'],
+      selectors,
+      {},
+      fakeSql([factRow({ kind: null, confidence: 'suspected' })]),
+    );
+    expect(out[0]).toMatchObject({ kind: null, confidence: 'suspected', isAssumption: true });
+  });
+
+  it('a VERIFIED CONCLUSION resolves isAssumption:false — the exact defect this closes', async () => {
+    const out = await resolveAssumptions(
+      ['my-key'],
+      selectors,
+      {},
+      fakeSql([factRow({ kind: 'conclusion', confidence: 'verified' })]),
+    );
+    expect(out[0]).toMatchObject({ kind: 'conclusion', confidence: 'verified', isAssumption: false });
+  });
+
+  it('a plain fact with no kind and no suspected confidence resolves isAssumption:false, not null', async () => {
+    const out = await resolveAssumptions(['my-key'], selectors, {}, fakeSql([factRow()]));
+    expect(out[0]).toMatchObject({ kind: null, confidence: null, isAssumption: false });
+  });
+
+  it('a DANGLING entry (no row at all) carries isAssumption:null — nothing to judge, not "false"', async () => {
+    const out = await resolveAssumptions(['ghost-key'], selectors, {}, fakeSql([]));
+    expect(out[0]).toMatchObject({ condition: 'dangling', kind: null, confidence: null, isAssumption: null });
+  });
+
+  it('an unrecognized kind/confidence value on the row parses to null rather than passing through raw', async () => {
+    // Defends against a future DB value this enum doesn't know about silently
+    // being treated as a real kind/confidence instead of "unparseable".
+    const out = await resolveAssumptions(
+      ['my-key'],
+      selectors,
+      {},
+      fakeSql([factRow({ kind: 'not-a-real-kind', confidence: 'not-a-real-confidence' })]),
+    );
+    expect(out[0]).toMatchObject({ kind: null, confidence: null, isAssumption: false });
+  });
+});
+
+describe('nonAssumptionKindAdvisory — WARN-ONLY, never a refusal', () => {
+  function resolved(over: Partial<ResolvedAssumption>): ResolvedAssumption {
+    return {
+      declared: 'my-key',
+      ref: 'fact:owner:su-1:my-key@v1',
+      key: 'my-key',
+      scope: 'owner',
+      scopeRef: 'su-1',
+      versionId: 1,
+      condition: 'live',
+      kind: null,
+      confidence: null,
+      isAssumption: null,
+      ...over,
+    };
+  }
+
+  it('fires for a cited key that resolved but was not an assumption', () => {
+    const msg = nonAssumptionKindAdvisory([
+      resolved({ declared: 'gate-red-is-flake', key: 'gate-red-is-flake', kind: 'conclusion', confidence: 'verified', isAssumption: false }),
+    ]);
+    expect(msg).toBeDefined();
+    expect(msg).toContain('"gate-red-is-flake"');
+    expect(msg).toContain('kind:conclusion');
+    expect(msg).toContain('confidence:verified');
+    expect(msg).toMatch(/advisory only/i);
+  });
+
+  it('does NOT fire for a real assumption', () => {
+    expect(nonAssumptionKindAdvisory([resolved({ kind: 'assumption', isAssumption: true })])).toBeUndefined();
+  });
+
+  it('does NOT fire for a dangling/unresolved entry — isAssumption:null is "nothing to judge", not a hit', () => {
+    expect(nonAssumptionKindAdvisory([resolved({ condition: 'dangling', isAssumption: null })])).toBeUndefined();
+    expect(nonAssumptionKindAdvisory([resolved({ condition: 'unresolved', isAssumption: null })])).toBeUndefined();
+  });
+
+  it('only names the offending keys when the declaration mixes assumption and non-assumption citations', () => {
+    const msg = nonAssumptionKindAdvisory([
+      resolved({ declared: 'real-assumption', isAssumption: true, kind: 'assumption' }),
+      resolved({ declared: 'a-conclusion', isAssumption: false, kind: 'conclusion' }),
+    ]);
+    expect(msg).toBeDefined();
+    expect(msg).toContain('"a-conclusion"');
+    expect(msg).not.toContain('"real-assumption"');
+  });
+
+  it('returns undefined for an empty resolution list', () => {
+    expect(nonAssumptionKindAdvisory([])).toBeUndefined();
   });
 });
 

@@ -110,6 +110,22 @@ export interface ChatModeState {
   /** Short current value rendered beside the cap — "on", "off", "cold". */
   value: string;
   /**
+   * Which `options()` entry `value` corresponds to, when the two differ.
+   *
+   * `value` is DISPLAY text and is deliberately terser than an option label —
+   * the autonomy axis shows "on" for the option whose id is `auto` and "cold"
+   * for `cold-auto`. The dropdown needs the id to put a checkmark on the row
+   * that is actually in force, and deriving it by matching display text would
+   * be a silent mis-highlight the moment either string changes.
+   *
+   * OPTIONAL on purpose: for an axis whose option ids already ARE its display
+   * values (the stackable overlays, ids `on`/`off`), `value` is the id and
+   * this adds nothing. Callers fall back to `value`. Making it required would
+   * strand every existing fixture that builds a ChatModeState — the exact trap
+   * `lint:required-field-strands` exists to catch.
+   */
+  optionId?: string;
+  /**
    * Whether the axis is engaged. Drives the FORM (filled cap vs hollow), which
    * is what makes on/off legible in greyscale rather than by colour alone.
    */

@@ -260,6 +260,35 @@ export const TARGETS: BackfillTarget[] = [
     bodySql: `COALESCE(title, '') || E'\\n' || left(COALESCE(content, ''), 2000)`,
     keyCols: ['workspace_id', 'harness_slug', 'plan_slug'],
   },
+  // EI-19374072666153095: code_recipes and datatype_registry are BOTH in
+  // PROSE_VECTOR_COLUMNS — so a width migration wipes them (`USING NULL`) — but
+  // neither had a sweep entry here, and neither has any other re-embed path:
+  // their only writers are UPSERTs using `COALESCE(EXCLUDED.embedding, <existing>)`
+  // (code-recipes-store.ts / datatype-registry-store.ts), which store a vector
+  // only when a caller supplies one. So the plan's "surfaces run lexical-only
+  // until the sweep refills them" reasoning did NOT hold for these two: measured
+  // 2026-08-02, migration 727 would have stranded 8,165 code_recipes vectors and
+  // 8 datatype_registry vectors PERMANENTLY, degrading recipes:search's semantic
+  // leg across its whole existing corpus rather than for the planned ~1h.
+  //
+  // Neither table has migration 530's `<embedCol>_mode` discriminator column.
+  // That is handled, not ignored: runBackfillSweep probes information_schema per
+  // target and passes `spaceAware: false` when the column is absent, so these
+  // sweep correctly today. The cost is only that a FUTURE embedder-space change
+  // cannot selectively re-embed them (WI-3616's concern) — tracked separately on
+  // EI-19374072666153095 rather than bundled into a width migration.
+  {
+    table: 'harness_shared.code_recipes',
+    embedCol: 'embedding',
+    bodySql: `COALESCE(title, '') || E'\\n' || left(COALESCE(description, ''), 2000)`,
+    keyCols: ['id'],
+  },
+  {
+    table: 'harness_shared.datatype_registry',
+    embedCol: 'embedding',
+    bodySql: `COALESCE(title, '') || E'\\n' || left(COALESCE(description, ''), 2000)`,
+    keyCols: ['workspace_id', 'id'],
+  },
 ];
 
 /**

@@ -196,6 +196,31 @@ for (const file of TOOL_FILES) {
 // of the 12. Real count 442 → 430; this LOWERS the ceiling to 438, leaving 8 slots of
 // churn headroom (matching this file's established convention).
 //
+// 2026-08-02 (WI-7123 + WI-7125, su-5ca1d): reds at 439 — the green-checkpoint gate's
+// 19:41Z isolation set. Unlike the last three this one WAS attributable: the newly
+// added `plans/backfill-dependency-edges.ts` hand-rolled inline JSON (the other two
+// tool files added that day already returned `{ data }`). Fixed the offender, then
+// paid the headroom back in the intended currency — 8 more mechanical single-return,
+// no-isError tools migrated to `{ data }`: backup/{settings_get,snapshot_list},
+// voice/{status,leave}, setup/set_update_channel, dev/pg_health,
+// operator/{trigger_state,paused}. Four of them DID have direct-handler tests
+// asserting the legacy `content[0].text` shape (backup/settings_get.test.ts,
+// operator/paused.test.ts, setup/setup-tools.test.ts, operator/__tests__/config.test.ts);
+// each has a single shared helper, so all four were repointed to accept EITHER shape
+// — the 07-26 `parseTextPayload` pattern — rather than edited call-site by call-site.
+// Real count 439 → 430; ceiling STAYS 438, restoring the 8 slots. 241 mechanical
+// candidates remain (single inline-JSON return, no isError).
+//
+// ⚠ Two traps when picking candidates, both hit on 2026-08-02: (1) the INLINE_JSON_RE
+// below is deliberately coarse, so a file whose `JSON.stringify` is NOT its return
+// still matches — migrating one of those does not lower the count at all
+// (coordination/tools/handoffs, dev/{pg_table_sizes,harnesses,pg_active_queries} are
+// exactly this). Confirm the stringify is inside the `return { content: [...] }`.
+// (2) Do NOT clear a candidate by grepping test dirs for its basename — common tool
+// names (`status`, `paused`, `activity`) match unrelated tests and read as a
+// legacy-shape test that is not there. Check the tool's own __tests__ dir, or just
+// migrate and run the affected suites.
+//
 // If you are here because the gate is red again: migrate a batch and lower this
 // further — do NOT just bump it.
 const BASELINE = 438;

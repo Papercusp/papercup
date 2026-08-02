@@ -16,6 +16,7 @@
 
 import type { DeploymentConfig, Frame } from '@papercusp/deployment-driver';
 import { getOrgPg } from '@papercusp/db-org';
+import { PLATFORM_POT_SLUG } from './platform-pot-slug';
 import { readOperatorState, updateOperatorState, writeOperatorState } from './operator-state-pg';
 import { activeWorkspaceId } from './workspace-registry';
 
@@ -307,8 +308,13 @@ export function dedupeProjectsBySlug(
 
 /** The pre-rename repo NAME of the papercusp dogfood repo (see `canonicalizeLegacyPapercup`). */
 const LEGACY_DOGFOOD_SLUG = 'papercup';
-/** The canonical product/hive slug the legacy dogfood name maps to. */
-const CANONICAL_DOGFOOD_SLUG = 'papercusp';
+/**
+ * The canonical product/hive slug the legacy dogfood name maps to — the SHARED
+ * constant, not a fourth private copy of the literal (EI-19370922358009801: three
+ * independent copies of `'papercusp'` are why the triage self-scope allowlist could
+ * keep the pre-rename spelling for weeks without anything noticing).
+ */
+const CANONICAL_DOGFOOD_SLUG = PLATFORM_POT_SLUG;
 
 /**
  * Legacy-identity guard (WI-3168): `papercup` is the PRE-RENAME name of the

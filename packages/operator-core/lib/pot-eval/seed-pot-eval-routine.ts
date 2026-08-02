@@ -66,7 +66,8 @@ async function main(): Promise<void> {
         'blueprintId', 'pot-eval',
         'payload', COALESCE(${budgetPayload}::text::jsonb, harness_shared.routines.payload_template->'payload', '{}'::jsonb)
       ),
-      active = EXCLUDED.active,
+      -- active intentionally NOT re-applied on conflict (EI-19301170070808928): a
+      -- re-seed must never clobber an operator's runtime pause/resume of this routine.
       workspace_id = EXCLUDED.workspace_id,
       updated_at = now()
   `;

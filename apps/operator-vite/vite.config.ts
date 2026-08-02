@@ -9,6 +9,9 @@ import { distWipeGuardPlugin } from './dist-wipe-guard';
 import { watchHeartbeatPlugin } from './watch-heartbeat';
 import { tanstackLazyRetryPlugin } from './tanstack-lazy-retry';
 import { createDevWatchIgnore } from './dev-watch-ignore';
+// P-006: the destination invariant as a POLICY (the prevention leg), kept in one
+// place so the dev server, the SPA host and the desktop cannot drift apart.
+import { cspReportOnlyHeaders } from '../../libs/generic/desktop-ipc/src/csp-policy';
 
 // Operator SPA — Vite dev server. Takes over :3055 (was `next dev`).
 // The API + internal docs are served by the @hono/node-server host on
@@ -244,6 +247,16 @@ export default defineConfig({
     // standing systemd service, bin/dev).
     port: Number(process.env.OPERATOR_E2E_PORT ?? process.env.PORT) || 3055,
     host: process.env.PAPERCUSP_BIND_HOST ?? '127.0.0.1',
+    // P-006: report-only CSP expressing the destination invariant. REPORT-ONLY
+    // never blocks anything, so this cannot break the app — it makes the browser
+    // itself a second egress sensor, with different blind spots from resource
+    // timing (it sees a fetch the monitor's ring buffer has evicted, and a
+    // request blocked before it ever reaches the network stack).
+    //
+    // Applied to every dev-server response rather than just the document. A CSP
+    // on a .js/.css response is simply ignored by the browser, so the broader
+    // application is harmless and avoids having to special-case the SPA shell.
+    headers: cspReportOnlyHeaders(),
     // CORS policy for /api belongs to the Hono host (:3070) — its middleware
     // allows `last-event-id` etc. and echoes the origin. Vite's own default
     // CORS middleware answers OPTIONS preflights BEFORE the proxy with a

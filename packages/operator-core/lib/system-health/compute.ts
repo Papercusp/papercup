@@ -2618,12 +2618,40 @@ export function lastSystemHealth(workspaceId?: string): SystemHealth | null {
 }
 
 /**
+ * Per-workspace in-flight de-dup for the tick's full aggregation (EI-19303672371455669).
+ * Concurrent callers racing into a cold cache — `resolveSystemHealth`'s cold path, the
+ * periodic scheduler, and the explicit post-ack/unack refresh (ack.ts/unack.ts) — can all
+ * legitimately land here within the same ~1.6-2.0s window and previously each ran their
+ * own full ~20-collector recompute (measured live: one booting host sustained ~40x its
+ * expected tick rate for minutes). Concurrent callers now await the SAME in-flight promise
+ * instead. Mirrors `makeOpenImprovementsReader`'s per-call promise memo above, generalized
+ * to a keyed map since the tick is per-workspace and multiple workspaces/callers can race
+ * concurrently. Cleared the instant the promise SETTLES (success OR failure) — unlike that
+ * per-tick memo (deliberately short-lived and free to retain a rejection for its one tick),
+ * a failed tick here must be retryable on the very next call, never cached as a permanent
+ * rejection.
+ */
+const tickInFlight = new Map<string, Promise<SystemHealth>>();
+
+/**
  * One health tick: recompute + cache + invalidate `health.snapshot` so an open
  * Health tab refreshes (SSE-live). Driven by the in-process periodic scheduler;
- * also run on-demand by `getSystemHealth` when the cache is stale.
+ * also run on-demand by `getSystemHealth` when the cache is stale. Single-flighted per
+ * workspace (see `tickInFlight` above) — N concurrent callers pay for exactly ONE
+ * aggregation.
  */
 export async function runSystemHealthTick(workspaceId?: string): Promise<SystemHealth> {
   const ws = workspaceId ?? activeWorkspaceId();
+  const existing = tickInFlight.get(ws);
+  if (existing) return existing;
+  const promise = runSystemHealthTickUncached(ws).finally(() => {
+    if (tickInFlight.get(ws) === promise) tickInFlight.delete(ws);
+  });
+  tickInFlight.set(ws, promise);
+  return promise;
+}
+
+async function runSystemHealthTickUncached(ws: string): Promise<SystemHealth> {
   const prev = cache.get(ws) ?? null;
   const health = await computeSystemHealth(ws);
   // P-004 (health-tab-v2): auto-clear acks whose panel recovered / snooze

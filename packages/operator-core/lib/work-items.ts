@@ -3832,6 +3832,47 @@ export async function setWorkItemClaimHold(
   return { id, harness: located[0].harness_slug ?? null, hold, applicable: true };
 }
 
+/**
+ * WI-6774: the structural audit-log write for a BULK, liveness-triggered hold-open clear —
+ * `reclaimStaleHoldOpens` and `sweepDeadOwnerControlState` are raw multi-row `UPDATE`s that
+ * never went through {@link setWorkItemClaimHold}, so their clears left NO `audit_log` row at
+ * all (the incident this closes: a policy-tier fence on a live-money item vanished with zero
+ * trace anywhere audit-searchable). Mirrors `setWorkItemClaimHold`'s own audit write —
+ * fire-and-forget, never throws, swallows the "table doesn't exist" case some lightweight test
+ * fixtures hit — so a sweep's clear is now audit-visible exactly like an explicit one, just
+ * tagged with its own actor id instead of an agent's.
+ */
+export async function recordBulkHoldClearAudit(
+  sql: ReturnType<typeof getOrgPg>['sql'],
+  rows: ReadonlyArray<{ id: string; workspaceId: string; formerHolder: string | null }>,
+  opts: { actor: string; sweepName: string },
+): Promise<void> {
+  if (rows.length === 0) return;
+  await Promise.all(
+    rows.map((r) =>
+      sql
+        .unsafe(
+          `INSERT INTO harness_shared.audit_log (id, ts, actor, action, subject, details, workspace_id)
+           VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7)`,
+          [
+            `wi-claim-hold-${opts.sweepName}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+            Date.now(),
+            opts.actor,
+            'work_items:claim_hold:clear',
+            r.id,
+            JSON.stringify({ mode: 'lease_only_clear', sweep: opts.sweepName, formerHolder: r.formerHolder }),
+            r.workspaceId,
+          ],
+        )
+        .catch((err: unknown) => {
+          const code = (err as { code?: string } | undefined)?.code;
+          if (code === '42P01') return; // no audit_log table in this fixture — expected, non-fatal.
+          console.warn(`[${opts.sweepName}] audit write failed for ${r.id}:`, (err as Error)?.message);
+        }),
+    ),
+  );
+}
+
 /** P-006: who holds a work-item OPEN (payload.held_open_by), or null.
  *  WI-4531: also carries `at` (payload.held_open_at) — the hold's lease anchor, which the
  *  expiry rule (work-items-hold-open.ts) needs to tell a fresh hold from dead residue. */
@@ -3936,6 +3977,29 @@ export function looksLikePolicyGate(reason: string | null): boolean {
   if (!reason) return false;
   return /\bD-\d{3}\b/i.test(reason) || /triageDecision\s*[:=]\s*["']?gate["']?/i.test(reason) || /policy-tier/i.test(reason);
 }
+
+/**
+ * WI-6774: the SAME three patterns {@link looksLikePolicyGate} tests, as POSIX regex source
+ * strings for a Postgres `~* ANY(...)` predicate — so the LIVENESS SWEEPS
+ * (`reclaimStaleHoldOpens`, `sweepDeadOwnerControlState`) can exclude a policy-tier hold from
+ * their bulk raw-SQL clear WITHOUT a second, hand-copied regex list that could silently drift
+ * from the JS predicate above (exactly the kind of drift this codebase's other "one predicate,
+ * never two copies" comments warn about).
+ *
+ * Why this exists at all: `looksLikePolicyGate` was, before WI-6774, checked ONLY at the
+ * explicit `work_items:hold_open` clear call site. The two liveness sweeps clear
+ * `held_open_*`/`_claimHold` via a bulk `UPDATE ... WHERE` keyed purely on holder-liveness +
+ * hold age — with NO reason check at all — so a policy-tier fence (set specifically to survive
+ * ordinary liveness/session churn, e.g. a live-money trading control) was silently stripped the
+ * moment its holder's session went stale past grace, same as any ordinary hold. Measured
+ * live 2026-07-28: a policy-tier hold on a critical, owner-gated live-money item was cleared
+ * ~35s after crossing the 2h hold-open grace threshold, with no audit_log row anywhere.
+ */
+export const POLICY_GATE_REASON_SQL_PATTERNS: readonly string[] = [
+  String.raw`\yD-\d{3}\y`,
+  String.raw`triageDecision\s*[:=]\s*"?'?gate"?'?`,
+  String.raw`policy-tier`,
+];
 
 /**
  * The issue family's CLAIMABLE statuses — the not-yet-settled `open` state (the issue
