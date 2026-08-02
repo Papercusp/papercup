@@ -628,11 +628,13 @@ export const messageBodyArg = z
       code: 'custom',
       message:
         '`body` must be an ARRAY of sections — a plain string is no longer accepted. Wrap what you ' +
-        'wrote: body: [{ text: "<your text>" }]. That minimum is always valid, and it puts the four ' +
+        'wrote: body: [{ text: "<your text>" }]. That minimum is always valid, and it puts the five ' +
         'authored fields one keystroke away, which is the point: `premises` (the claims this part ' +
         'rests on, so a reader can re-check your footing), `forYouBecause` (why THIS recipient is ' +
         'getting it), `youMayNotKnow` (something you hold that they likely lack), `couldNotDetermine` ' +
-        '(what you could NOT establish — silence there reads as confidence you do not have). Split ' +
+        '(what you could NOT establish — silence there reads as confidence you do not have), ' +
+        '`clarify` (a question PAIRED with the assumption you are proceeding on meanwhile — you ' +
+        'never wait, the answer corrects you). Split ' +
         'into SEVERAL sections when parts of your message have different dispositions, so a firm ' +
         'finding and an unverified guess are not delivered as if they were the same thing. The ' +
         'ENVELOPE fields (expects, blocking, why, basedOn) stay on the message and are refused on a ' +
@@ -643,9 +645,9 @@ export const messageBodyArg = z
     'The message body: an ARRAY of sections. A plain string is REFUSED — the minimum is ' +
       '[{ text: "..." }]. Use SEVERAL sections when the parts of your message have different ' +
       'dispositions — a concession, an experimental result, an explicitly-undetermined claim — ' +
-      'each with its own `premises`, `forYouBecause`, `youMayNotKnow`, `couldNotDetermine`. The ' +
-      'ENVELOPE fields (expects, blocking, why, basedOn) stay on the message and are refused on a ' +
-      'section.',
+      'each with its own `premises`, `forYouBecause`, `youMayNotKnow`, `couldNotDetermine`, ' +
+      '`clarify`. The ENVELOPE fields (expects, blocking, why, basedOn) stay on the message and ' +
+      'are refused on a section.',
   );
 
 export {

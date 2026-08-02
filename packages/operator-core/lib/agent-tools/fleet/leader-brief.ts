@@ -934,14 +934,14 @@ export default defineTool({
     "A leader's ONE-call health brief for ONE fleet (yours by default). Per member: " +
     'sessionState, `verdict` (booted|joined|first-turn-done|speaking|stalled|dead), wakeMode, ' +
     'lastToolCallAgeMs, claims (doing/workItemIds/queuedCount/load), loop state+nextFireAt, ' +
-    'stalled, unanswered, contextPressure (ok|high|critical), parkedOn + parkedOnResolved ' +
-    '(a composed await is ONE entry w/ its ROOT deadline + any/all mode), benchSuggestion ' +
-    '(check `kind`), `dormant`, unownedCriticals + abandonedUnclaimed (assignee IS NULL — CLAIM it).',
+    'stalled, unanswered, contextPressure, parkedOn + parkedOnResolved (a composed await is ONE ' +
+    'entry w/ ROOT deadline + any/all mode), benchSuggestion, `dormant`, ' +
+    'unownedCriticals + abandonedUnclaimed (assignee IS NULL — CLAIM it).',
   guidance: {
     when:
-      'AFTER something wakes you: "who is working / stuck / unanswered / about to compact across MY fleet". ' +
+      'AFTER a wake: "who is working / stuck / unanswered / about to compact across MY fleet". ' +
       'How you SEE the fleet, NOT how you watch it — PARK, do not poll: events:await the ' +
-      'fleet:*:<slug> transition keys (events:catalog lists them) + work-item:claimable. ' +
+      'fleet:*:<slug> transition keys (see events:catalog) + work-item:claimable. ' +
       "loop:arm is then a LONG fallback heartbeat (15m+), never the monitor. Folded into " +
       "coord:orient { mode:'monitor' }. Ready-to-paste spec: " +
       'agent-insights/leading-a-fleet-without-polling.',
