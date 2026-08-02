@@ -48,6 +48,20 @@
 # but note the client fallback retirement ships independently in code.)
 [Unit]
 Description=Papercusp shared embedding sidecar (:3384, gemma+harrier+rerank)
+# EI-19381535849234617: StartLimitIntervalSec is a [Unit] directive — it was
+# sitting in [Service] below, where systemd parses it, warns
+# ("Unknown key name 'StartLimitIntervalSec' in section 'Service', ignoring"),
+# and IGNORES it, leaving the default 10s/5-burst rate limiter armed. With
+# RestartSec=2 that lets 5 fast-failing restarts (a bad bundle, a held port, an
+# ExecStartPre esbuild failure) exhaust the limit in ~8-10s and drop the unit
+# into `failed`, where Restart=always no longer applies — and the companion
+# watchdog's `systemctl restart` on a wedged /healthz cannot clear a
+# start-limit failure either. Clients have required this sidecar since WI-4021
+# (the in-process fallback is retired), so that failure mode is not a
+# degradation, it's an outage. Placing it here is what actually disables the
+# rate limiter (StartLimitIntervalSec=0 in [Unit]) and restores the "NEVER
+# gives up" property [Service]'s Restart=always/RestartSteps below describe.
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
@@ -65,7 +79,6 @@ Restart=always
 RestartSec=2
 RestartSteps=6
 RestartMaxDelaySec=60
-StartLimitIntervalSec=0
 # ExecStartPre's esbuild can take ~1-2min on a loaded host.
 TimeoutStartSec=300
 TimeoutStopSec=10

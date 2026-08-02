@@ -251,6 +251,110 @@ describe('spawnConsole early-exit probe — WI-1886(b)', () => {
   }, 10_000);
 });
 
+describe('spawnConsole boot receipt — the visible-path phantom-ok (EI-19330040718883562)', () => {
+  // Same live shape as the spawnHeadless boot-receipt suite above: the window
+  // survives EARLY_EXIT_PROBE_MS because buildConsoleOneliner unconditionally
+  // `exec`s a login shell after the greeting — so a dead agent command never
+  // shows up as a process exit, and the OLD code reported a phantom ok.
+  const envelope: ConsoleEnvelope = {
+    cwd: '/tmp',
+    env: {},
+    mcpJsonContents: '',
+    greetingCmd: 'psu --fleet=fed-drill',
+    needsSuperuserBootstrap: false,
+    sessionId: 'test-sid',
+  };
+  const AUTH_DEATH =
+    '[papercusp] initial terminal command exited with status 1; terminal left open for inspection.\n';
+  const TICK = (_ms: number) => new Promise<void>((r) => { setTimeout(r, 5); });
+
+  beforeEach(() => {
+    vi.mocked(isWindowsDesktopHost).mockReturnValue(false);
+    spawnMock.mockReset();
+    vi.stubEnv('DISPLAY', ':99');
+    vi.stubEnv('TERMINAL', 'bash');
+    _resetTerminalCacheForTests();
+  });
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    _resetTerminalCacheForTests();
+  });
+
+  it('verifyBootReceipt OMITTED (default): a client that outlives the probe ⇒ ok immediately, receipt never consulted', async () => {
+    spawnMock.mockImplementation(() => fakeChild(7001)); // never exits
+    // A bootProbes.readLog that WOULD report a failure — proving it is never
+    // even called when verifyBootReceipt is not set, i.e. byte-identical to
+    // the pre-fix behavior for every caller that didn't opt in.
+    let readLogCalls = 0;
+    const r = await spawnConsole({
+      envelope,
+      desktopEnvProbes: FAKE_DESKTOP_PROBES,
+      bootProbes: { readLog: () => { readLogCalls++; return AUTH_DEATH; }, sleep: TICK, windowMs: 60 },
+    });
+    expect(r.status).toBe('ok');
+    expect(readLogCalls).toBe(0);
+  }, 10_000);
+
+  it('verifyBootReceipt:true + greeting-failure sentinel ⇒ error, even though the process is still alive', async () => {
+    spawnMock.mockImplementation(() => fakeChild(7002)); // never exits — the live shape
+    const r = await spawnConsole({
+      envelope,
+      desktopEnvProbes: FAKE_DESKTOP_PROBES,
+      verifyBootReceipt: true,
+      bootProbes: { readLog: () => AUTH_DEATH, sleep: TICK, windowMs: 60 },
+    });
+    expect(r.status).toBe('error');
+    expect((r as { code: number }).code).toBe(502);
+    expect((r as { error: string }).error).toMatch(/died at boot \(exit 1\)/);
+    expect((r as { error: string }).error).toMatch(/EI-19330040718883562/);
+  }, 10_000);
+
+  it('verifyBootReceipt:true + a healthy member (no sentinel) ⇒ ok — never manufacture a failure', async () => {
+    spawnMock.mockImplementation(() => fakeChild(7003));
+    const r = await spawnConsole({
+      envelope,
+      desktopEnvProbes: FAKE_DESKTOP_PROBES,
+      verifyBootReceipt: true,
+      bootProbes: { readLog: () => '', sleep: TICK, windowMs: 60 },
+    });
+    expect(r.status).toBe('ok');
+    expect((r as { pid: number | null }).pid).toBe(7003);
+  }, 10_000);
+
+  it('verifyBootReceipt:true — the sentinel appearing LATE (after the early-exit probe) is still caught', async () => {
+    spawnMock.mockImplementation(() => fakeChild(7004));
+    let reads = 0;
+    const r = await spawnConsole({
+      envelope,
+      desktopEnvProbes: FAKE_DESKTOP_PROBES,
+      verifyBootReceipt: true,
+      bootProbes: {
+        readLog: () => (++reads < 4 ? '' : AUTH_DEATH),
+        sleep: TICK,
+        windowMs: 400,
+      },
+    });
+    expect(r.status).toBe('error');
+    expect(reads).toBeGreaterThan(3); // it kept watching past the first look
+  }, 10_000);
+});
+
+describe('buildConsoleOneliner boot-receipt tee (EI-19330040718883562)', () => {
+  it('omitting bootReceiptPath is byte-identical to the pre-fix banner', () => {
+    const out = buildConsoleOneliner('/x', {}, 'false', APPEARANCE);
+    expect(out).not.toContain('tee -a');
+  });
+
+  it('a supplied bootReceiptPath tees the failure banner into it, without changing the printed text', () => {
+    const withReceipt = buildConsoleOneliner('/x', {}, 'false', APPEARANCE, '/tmp/receipt.log');
+    const without = buildConsoleOneliner('/x', {}, 'false', APPEARANCE, null);
+    expect(withReceipt).toContain("| tee -a '/tmp/receipt.log'");
+    expect(withReceipt).toContain('initial terminal command exited with status %s');
+    // Stripping the tee clause should recover the exact unmodified banner.
+    expect(withReceipt.replace(" | tee -a '/tmp/receipt.log'", '')).toBe(without);
+  });
+});
+
 describe('headlessLogPath — per-session log filename (headless-fleet-launch P-002)', () => {
   it('slugifies the label + stamps pid/time under the given dir', () => {
     const p = headlessLogPath({ logDir: '/var/log/fleet', label: 'my-fleet · member 1/3 (plan)', pid: 42, nowMs: 1000 });

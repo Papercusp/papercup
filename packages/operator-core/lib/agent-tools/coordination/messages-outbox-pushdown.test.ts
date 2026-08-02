@@ -254,11 +254,27 @@ function primeWindowSql(pages: { id: number; body: unknown }[][]) {
   return queries;
 }
 
-/** A page of `n` envelopes from `alice`, newest-first like the SQL `id DESC`. */
+/**
+ * A page of `n` envelopes from `alice`, newest-first like the SQL `id DESC`.
+ *
+ * The base instant is FIXED — never `Date.now()`. The delegation test below primes
+ * each call form with its OWN `page(4)` and then asserts the two results are deeply
+ * equal, so a per-call clock read made the fixtures differ by exactly 1ms whenever
+ * the two calls straddled a millisecond boundary. That is load-sensitive, so it grew
+ * likelier exactly when the gate was busiest, and the gate's fresh-process flake
+ * absorption did not absorb it: it red-pinned the green-checkpoint on 2026-08-02 with
+ * a diff whose entire content was `…645Z` vs `…644Z` (WI-7207).
+ *
+ * Nothing here depends on the timestamps being near NOW — paging is keyset-on-`id`,
+ * and the assertions are on lengths, counts and the `exhausted` flag. Pinning also
+ * matches what the rest of this file already does (`env()` defaults to this same
+ * instant; the INBOX_PAGE_ROWS fixture uses `Date.UTC(2026, 7, 2, 12, 0, 0)`).
+ */
+const PAGE_BASE_MS = Date.UTC(2026, 7, 2, 12, 0, 0);
 const page = (n: number, startId = 0) =>
   Array.from({ length: n }, (_, i) => ({
     id: startId + n - i,
-    body: env({ msg_id: `m${startId + n - i}`, ts: new Date(Date.now() - i * 1000).toISOString() }),
+    body: env({ msg_id: `m${startId + n - i}`, ts: new Date(PAGE_BASE_MS - i * 1000).toISOString() }),
   }));
 
 describe('readOutboxWindow — bounded keyset-paged read (EI-19340198432470691)', () => {

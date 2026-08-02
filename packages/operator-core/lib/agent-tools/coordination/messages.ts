@@ -1171,6 +1171,63 @@ export async function getSupersededBy(msgId: string): Promise<string | null> {
   }
 }
 
+/** One message's supersession marker: what replaced it, and when. */
+export interface SupersessionMark {
+  supersededBy: string;
+  supersededAt: string | null;
+}
+
+/**
+ * Batch form of {@link getSupersededBy} for a page of messages (P-004 follow-up).
+ *
+ * Exists because the READ side of supersession was missing: migration 732 records
+ * the marker and `coord:supersede` writes it, but `readCoordFeed` — which backs
+ * BOTH `coord:feed` and `coord:catch-up` — never selected it. So the later reader,
+ * the one P-004's whole rationale is about ("produces no message, no argument and
+ * no signal"), still saw a retracted claim unmarked. The correction body even
+ * PROMISES otherwise: "anyone catching up later sees this correction instead of
+ * acting on it." That promise was false until this read existed.
+ *
+ * Batched by msg_id over the already-bounded page rather than per row: a feed page
+ * is up to MAX_FEED_LIMIT envelopes, and a per-row `getSupersededBy` would turn one
+ * read into N round-trips on the hot catch-up path.
+ *
+ * Fail-soft on purpose, exactly like {@link getSupersededBy}: a supersession lookup
+ * that errors must degrade to "unmarked", never break the feed. The marker is an
+ * annotation on history, not history itself.
+ */
+export async function getSupersededMap(
+  msgIds: readonly string[],
+): Promise<Map<string, SupersessionMark>> {
+  const out = new Map<string, SupersessionMark>();
+  if (msgIds.length === 0 || !coordHasPgFastPath()) return out;
+  const ids = [...new Set(msgIds.filter((id) => typeof id === 'string' && id !== ''))];
+  if (ids.length === 0) return out;
+  try {
+    const sql = coordSql();
+    const rows = await sql<
+      { msg_id: string | null; superseded_by_msg_id: string | null; superseded_at: string | null }[]
+    >`
+      SELECT msg_id, superseded_by_msg_id, superseded_at
+        FROM harness_shared.coord_event_log
+       WHERE workspace_id = ${coordWorkspaceId()}
+         AND surface = 'messages'
+         AND superseded_by_msg_id IS NOT NULL
+         AND msg_id = ANY(${ids})
+    `;
+    for (const row of rows) {
+      if (typeof row.msg_id !== 'string' || typeof row.superseded_by_msg_id !== 'string') continue;
+      out.set(row.msg_id, {
+        supersededBy: row.superseded_by_msg_id,
+        supersededAt: row.superseded_at ? String(row.superseded_at) : null,
+      });
+    }
+  } catch {
+    // Degrade to unmarked — see the fail-soft note above.
+  }
+  return out;
+}
+
 /**
  * Mark `msgId` superseded by `correctionMsgId` (P-004, migration 732).
  *

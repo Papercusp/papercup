@@ -31,9 +31,7 @@
  * BYPASSRLS admin connection (mig 016) so `max(id)` sees every workspace; the synthesized
  * invalidation is name-only (full-bust), so each client refetches its own scope.
  */
-import postgres from 'postgres';
-import { longLivedPoolConnectionOptions } from '@papercusp/db-org';
-import { getHarnessAdminUrl } from '../embedded-pg-discovery';
+import { getLongLivedAdminPool } from '../long-lived-admin-pool';
 import { notifySyncInvalidate } from '../sync-sse';
 import { APPEND_HEAVY_POLL_SPECS } from './table-to-query-names';
 
@@ -149,7 +147,8 @@ export function startAppendHeavyInvalidator(deps: AppendHeavyInvalidatorDeps): (
 
 /**
  * Host wrapper: wires the real BYPASSRLS admin connection + the sync-sse bridge. Call once at
- * operator-host boot (flag-gated). Returns a stop handle that also closes the connection.
+ * operator-host boot (flag-gated). Returns a stop handle that halts the poll loop; the pool
+ * itself is registry-owned and intentionally outlives it (see the note on the return).
  */
 export function startAppendHeavyInvalidatorHost(opts?: {
   pollMs?: number;
@@ -164,12 +163,27 @@ export function startAppendHeavyInvalidatorHost(opts?: {
   // EI-18122461766429683: tagged + zombie-safe (see longLivedPoolConnectionOptions) — this was
   // one of the untagged, unreaped singleton pools whose accumulation across host restarts
   // drove server-wide PG connection saturation past its SLO budget.
-  const sql = postgres(getHarnessAdminUrl(), {
-    ...longLivedPoolConnectionOptions('append-heavy-invalidator'),
-    max: 1,
-    idle_timeout: 0,
-    connect_timeout: 30,
-  });
+  // EI-19383722505382723: resolved PER USE, never captured. A `const sql = postgres(
+  // getHarnessAdminUrl(), …)` here binds the admin URL ONCE at host boot — so when embedded-pg
+  // dies and `~/.papercusp/embedded-pg.json` goes stale (or is DELETED, which correctly restores
+  // the healthy native :5432), this poller keeps dialling the dead port for the whole process
+  // lifetime and only a service restart clears it. Measured twice: deleting the discovery file
+  // left the ECONNREFUSED rate completely unchanged, because nothing here ever re-asked.
+  // `getLongLivedAdminPool` re-resolves on every call and rebinds when the endpoint moved, so
+  // recovery needs no restart. Eligible because this pool is TRANSACTIONAL — the accessor is
+  // deliberately NOT for LISTEN pools, whose subscription a silent rebuild would drop.
+  //
+  // `idle_timeout: 0` is preserved verbatim from the pre-migration site. Note it is off the
+  // documented convention for a transactional pool (which wants `poolIdleTimeoutSec()`), but
+  // changing idle policy is a DIFFERENT fix from rebind-on-move and does not belong smuggled
+  // into this one; `extra` is spread last by the accessor, so this keeps the exact prior
+  // behaviour. Tracked separately.
+  const db = () =>
+    getLongLivedAdminPool('append-heavy-invalidator', {
+      max: 1,
+      idle_timeout: 0,
+      connect_timeout: 30,
+    });
   // Per-table MONOTONIC change-key column (bigint) — NOT every table has a usable `id` (see
   // APPEND_HEAVY_POLL_SPECS). Built from the hardcoded allow-list, never user input.
   const changeKeyByTable = new Map(APPEND_HEAVY_POLL_SPECS.map((s) => [s.table, s.changeKey]));
@@ -180,6 +194,9 @@ export function startAppendHeavyInvalidatorHost(opts?: {
     isEnabled: opts?.isEnabled,
     maxId: async (table) => {
       const changeKey = changeKeyByTable.get(table) ?? 'id';
+      // Re-resolved per tick (see `db` above) — this is what makes a moved endpoint recoverable
+      // without a restart. Bound to a local so the identifier escaping below uses this very pool.
+      const sql = db();
       // table + changeKey come from the hardcoded APPEND_HEAVY_POLL_SPECS allow-list (never user
       // input); sql(...) escapes both identifiers regardless.
       const rows = await sql<{ m: string | number | null }[]>`
@@ -193,6 +210,11 @@ export function startAppendHeavyInvalidatorHost(opts?: {
   });
   return () => {
     stop();
-    void sql.end({ timeout: 5 });
+    // Deliberately does NOT end the pool. It is owned by the long-lived-admin-pool registry —
+    // shared by label and rebound on endpoint moves — so ending it here would strand a CLOSED
+    // handle under this label that the next `getLongLivedAdminPool('append-heavy-invalidator')`
+    // caller is handed straight back (the URL matches, so the rebind check passes it through).
+    // The sole production caller discards this handle, and repeated start/stop now reuses the
+    // one registry pool instead of accumulating a fresh one per start.
   };
 }

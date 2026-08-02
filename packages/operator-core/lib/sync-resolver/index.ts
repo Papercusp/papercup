@@ -2541,9 +2541,25 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       // `featuresConsolidated.detail` (mirrors the workItems.byHarness/.detail
       // split, P-006). List row count is unchanged so client search/count still
       // see every row.
-      return (await db
+      // WI-7203: two more columns left the wire, and the nulls with them.
+      //
+      // `harnessSlug` is REDUNDANT WITH THE QUERY ARG — every row carries the slug
+      // the caller just passed in `args.harnessSlug`, so it is 1,606 copies of a
+      // constant the client already has (the same cut agentRunsConsolidated.recent
+      // made). `updatedTs` is only ORDERed BY, server-side; SQL happily sorts on an
+      // unselected column, and the sole consumer's `SyncFeatureRow` declares
+      // NEITHER field, so neither was reachable.
+      //
+      // Then omit null-valued keys (D-025). This feed is where that pays most:
+      // measured live, `claims` was null on 1,560 of 1,606 rows, `tags` on 1,603,
+      // `sourcePlanSlug` on 437.
+      //
+      // Together: 637,015 -> 502,813 B (-21.1%), losslessly. Per-ROW cost falls
+      // 394 -> 313 B. Applied HERE in the resolver, not the serializer, for the
+      // D-025 reason: the delta protocol hashes the rows this returns, so
+      // stripping later would make every delta client force-full forever.
+      const rows = (await db
         .select({
-          harnessSlug: t.harnessSlug,
           featureId: t.featureId,
           title: t.title,
           status: t.status,
@@ -2553,7 +2569,6 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
           needsHumanReview: t.needsHumanReview,
           sourcePlanSlug: t.sourcePlanSlug,
           workingUsers: t.workingUsers,
-          updatedTs: t.updatedTs,
         })
         .from(t)
         .where(
@@ -2561,7 +2576,12 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
             ? and(eq(t.harnessSlug, harnessSlug), eq(t.workspaceId, workspaceId))
             : eq(t.harnessSlug, harnessSlug),
         )
-        .orderBy(desc(t.updatedTs))) as unknown[];
+        .orderBy(desc(t.updatedTs))) as Array<Record<string, unknown>>;
+      return rows.map((r) => {
+        const out: Record<string, unknown> = {};
+        for (const [k, v] of Object.entries(r)) if (v !== null) out[k] = v;
+        return out;
+      }) as unknown[];
     },
   },
 

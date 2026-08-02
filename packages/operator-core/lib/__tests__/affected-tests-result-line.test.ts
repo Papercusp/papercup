@@ -31,7 +31,7 @@ const source = readFileSync(AFFECTED_TESTS, 'utf8');
 describe('affected-tests.mjs emits a self-verifying AFFECTED_TESTS_RESULT line (EI-18796017307093897)', () => {
   it('defines resultLine() from the same failed/quarantinedFailed/tasks counters that decide the exit code', () => {
     expect(source).toMatch(
-      /const resultLine = \(status\) =>\s*\n\s*`AFFECTED_TESTS_RESULT status=\$\{status\} tasks=\$\{tasks\.length\} failed=\$\{failed\} quarantinedFailed=\$\{quarantinedFailed\}`;/,
+      /const resultLine = \(status\) =>\s*\n\s*`AFFECTED_TESTS_RESULT status=\$\{status\} tasks=\$\{tasks\.length\} failed=\$\{failed\} quarantinedFailed=\$\{quarantinedFailed\} timedOutTasks=\$\{timedOutTasks\}`;/,
     );
   });
 
@@ -57,7 +57,7 @@ describe('affected-tests.mjs emits a self-verifying AFFECTED_TESTS_RESULT line (
     // both genuine PASS verdicts (nothing to run is not a failure) — a caller
     // grepping for the marker line must still find one, not silence.
     expect(source).toMatch(
-      /outSync\('No affected workspaces\.'\);\s*\n\s*outSync\('AFFECTED_TESTS_RESULT status=passed tasks=0 failed=0 quarantinedFailed=0 reason=no-affected-workspaces'\);/,
+      /outSync\('No affected workspaces\.'\);\s*\n\s*outSync\('AFFECTED_TESTS_RESULT status=passed tasks=0 failed=0 quarantinedFailed=0 timedOutTasks=0 reason=no-affected-workspaces'\);/,
     );
     // The message TAIL is deliberately loose (`[^`]*`): what this guards is that
     // the marker line is emitted on this early-exit path, not the prose of the
@@ -65,10 +65,10 @@ describe('affected-tests.mjs emits a self-verifying AFFECTED_TESTS_RESULT line (
     // a trailing '.' added to "…none declare a 'test' script." reds the fleet's
     // green gate on a copy edit that cannot affect any caller grepping the marker.
     expect(source).toMatch(
-      /none declare a 'test' script[^`]*`\);\s*\n\s*outSync\('AFFECTED_TESTS_RESULT status=passed tasks=0 failed=0 quarantinedFailed=0 reason=no-test-script'\);/,
+      /none declare a 'test' script[^`]*`\);\s*\n\s*outSync\('AFFECTED_TESTS_RESULT status=passed tasks=0 failed=0 quarantinedFailed=0 timedOutTasks=0 reason=no-test-script'\);/,
     );
     expect(source).toMatch(
-      /if \(dry\) \{\s*\n\s*outSync\(`AFFECTED_TESTS_RESULT status=dry-run tasks=\$\{tasks\.length\} failed=0 quarantinedFailed=0`\);/,
+      /if \(dry\) \{\s*\n\s*outSync\(`AFFECTED_TESTS_RESULT status=dry-run tasks=\$\{tasks\.length\} failed=0 quarantinedFailed=0 timedOutTasks=0`\);/,
     );
   });
 

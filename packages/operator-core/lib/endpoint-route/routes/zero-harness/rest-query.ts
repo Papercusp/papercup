@@ -18,6 +18,7 @@
  * Ported from app/api/zero-harness/rest-query/route.ts.
  */
 import { resolveNamedQueryV2, NAME_NOT_FOUND } from '../../../sync-resolver';
+import { observeResolve } from '../../../sync-resolver/resolve-observability';
 import { resourceDeltaConfig } from '../../../sync-resolver/resource-delta-config';
 import { negotiateRowsDelta } from '@papercusp/tooldef';
 import { defineTool } from '@papercusp/agent-mcp';
@@ -52,7 +53,25 @@ export default defineTool({
       // v2 dispatcher; the legacy ZQL resolver fall-through has been
       // removed. NAME_NOT_FOUND now surfaces as 400 instead of falling
       // through to a Zero compilation that no longer exists.
-      const v2 = await resolveNamedQueryV2(name, args);
+      // Timed so a SLOW read is visible server-side. This route sets
+      // sampleRate: 0 (a ~3s-polled transport must not flood route_invocations)
+      // and its catch below returns a bare 500, so without this a read that
+      // hung for ten seconds and failed left no trace anywhere — see
+      // resolve-observability.ts (EI-19375505819043214).
+      const startedMs = Date.now();
+      let v2: Awaited<ReturnType<typeof resolveNamedQueryV2>>;
+      try {
+        v2 = await resolveNamedQueryV2(name, args);
+      } catch (err) {
+        observeResolve({
+          name,
+          argsJson,
+          elapsedMs: Date.now() - startedMs,
+          error: err,
+        });
+        throw err;
+      }
+      observeResolve({ name, argsJson, elapsedMs: Date.now() - startedMs });
       if (v2 === NAME_NOT_FOUND) {
         return Response.json(
           { error: `unknown queryName: ${name}`, name },

@@ -53,6 +53,26 @@ export function parseSummaryFailedCounts(text: any): {
  */
 export function parseFailedTestFiles(text: string): string[];
 /**
+ * Count vitest's own hard-timeout failures — `"Test timed out in Nms."` / `"Hook timed
+ * out in Nms."`, the exact message `@vitest/runner` throws when a case or hook exceeds
+ * `testTimeout`/`hookTimeout` — in a run's combined stdout+stderr. ANSI-stripped first,
+ * like every other parser here (EI-18819483316574031: skipping that step is why a sibling
+ * parser went blind on real colourized gate output for weeks).
+ *
+ * EI-19332556961886184: a test that TIMES OUT reds a suite exactly like a real assertion
+ * failure — nothing in a bare "N failed" count says which. Under fleet load this is a
+ * load artifact, not evidence the code is broken, and it is worst exactly when the fleet
+ * is busiest. This gives a caller a cheap, precise (not the broader `waitFor`/"Exceeded
+ * timeout" heuristic green-checkpoint.ts's `outputHasTimingSignature` uses for retry
+ * *policy*) way to surface the distinction — it decides nothing about whether the
+ * failure is "real"; it only lets a triager see that a timeout signature is present
+ * before spending time chasing a defect that may not exist.
+ *
+ * @param {string} text
+ * @returns {number}
+ */
+export function countTimeoutSignatures(text: string): number;
+/**
  * The path shape of a vitest test file, as a regex SOURCE FRAGMENT rather than a RegExp.
  *
  * Exported as a string because its two consumers embed it in different line-anchored

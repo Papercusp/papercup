@@ -517,7 +517,7 @@ const affected = affectedWorkspaces();
 
 if (!affected.length) {
   outSync('No affected workspaces.');
-  outSync('AFFECTED_TESTS_RESULT status=passed tasks=0 failed=0 quarantinedFailed=0 reason=no-affected-workspaces');
+  outSync('AFFECTED_TESTS_RESULT status=passed tasks=0 failed=0 quarantinedFailed=0 timedOutTasks=0 reason=no-affected-workspaces');
   process.exit(0);
 }
 
@@ -543,7 +543,7 @@ for (const ws of affected) {
 
 if (!tasks.length) {
   outSync(`Affected: ${affected.map((w) => w.name).join(', ')} — but none declare a 'test' script.`);
-  outSync('AFFECTED_TESTS_RESULT status=passed tasks=0 failed=0 quarantinedFailed=0 reason=no-test-script');
+  outSync('AFFECTED_TESTS_RESULT status=passed tasks=0 failed=0 quarantinedFailed=0 timedOutTasks=0 reason=no-test-script');
   process.exit(0);
 }
 
@@ -557,7 +557,7 @@ for (const t of tasks) outSync(`  - ${t.ws.name} :: ${t.script}`);
 outSync(`Full run log: ${RUN_LOG_PATH} (grep this — not just the exit code or a truncated tail — for the real per-suite verdict)`);
 
 if (dry) {
-  outSync(`AFFECTED_TESTS_RESULT status=dry-run tasks=${tasks.length} failed=0 quarantinedFailed=0`);
+  outSync(`AFFECTED_TESTS_RESULT status=dry-run tasks=${tasks.length} failed=0 quarantinedFailed=0 timedOutTasks=0`);
   process.exit(0);
 }
 
@@ -687,6 +687,13 @@ function spawnSpecFor(t, extraArgs) {
 
 let failed = 0;
 let quarantinedFailed = 0;
+// EI-19332556961886184: a non-quarantined failure whose own output ALSO shows a vitest
+// hard-timeout signature ("Test/Hook timed out in Nms.") — tracked separately from
+// `failed` so a triager can see "N failed, M of which show a timeout signature" instead
+// of a bare "N failed" that collapses a load-correlated timeout and a real assertion
+// break into the same red. Purely additive: never subtracted from `failed`, never
+// changes the exit code or any retry/absorption decision.
+let timedOutTasks = 0;
 // EI-2341 item 2: the final summary used to report only a COUNT of failed tasks,
 // so finding WHICH task failed meant scrolling back through the whole run's
 // interleaved output. Track names as we go and name them in the final summary.
@@ -766,6 +773,23 @@ for (const t of tasks) {
     } else {
       failed++;
       failedTaskNames.push(`${t.ws.name} :: ${t.script}`);
+      // EI-19332556961886184: surface a timeout signature right here, in the log a
+      // triager reads, instead of letting it collapse into an indistinguishable red.
+      // Only possible when the child's output was captured (a non-TTY / background
+      // caller — see captureOutput() above); an interactive TTY run streamed straight
+      // to the terminal via stdio:'inherit' and r.stdout/r.stderr are unset here.
+      if (captureOutput()) {
+        const timedOutCount = countTimeoutSignatures(`${r.stdout ?? ''}${r.stderr ?? ''}`);
+        if (timedOutCount > 0) {
+          timedOutTasks++;
+          errSync(
+            `  ⚠ this run's output shows ${timedOutCount} vitest "timed out" signature(s) — this ` +
+              `failure may be a wall-clock timeout artifact (load-correlated), NOT necessarily a real ` +
+              `assertion failure. Verify before treating as a regression: grep the run log for ` +
+              `"timed out in" (see AGENT-ENV/CLAUDE.md's assertion-vs-timeout recipe).`,
+          );
+        }
+      }
     }
   }
 }
@@ -831,10 +855,18 @@ if (quarantinedFailed) {
 // notifier can grep RUN_LOG_PATH for this line instead of trusting a
 // possibly-misreported exit code alone.
 const resultLine = (status) =>
-  `AFFECTED_TESTS_RESULT status=${status} tasks=${tasks.length} failed=${failed} quarantinedFailed=${quarantinedFailed}`;
+  `AFFECTED_TESTS_RESULT status=${status} tasks=${tasks.length} failed=${failed} quarantinedFailed=${quarantinedFailed} timedOutTasks=${timedOutTasks}`;
 if (failed) {
   errSync(`\n${failed} non-quarantined task(s) failed:`);
   for (const name of failedTaskNames) errSync(`  - ${name}`);
+  // EI-19332556961886184: named separately from the list above so a triager sees the
+  // distinction without having to scroll back through each task's own output.
+  if (timedOutTasks) {
+    errSync(
+      `${timedOutTasks} of the ${failed} failed task(s) show a vitest "timed out" signature — ` +
+        `verify before assuming a real assertion break (see the per-task note above / grep the run log).`,
+    );
+  }
   errSync(resultLine('failed'));
   errSync(`Full run log: ${RUN_LOG_PATH}`);
   process.exit(1);
