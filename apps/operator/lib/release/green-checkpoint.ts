@@ -144,6 +144,14 @@ export interface CheckpointDeps {
     refireAttempt: number;
     maxRefires: number;
     failingFiles: string[];
+    /** EI-19343532231631821: did this refire consume a slot of the charged budget? An UNCHARGED
+     *  refire leaves `refireAttempt` where it was, so without this a reader watching the marker
+     *  sees the attempt number stand still and cannot tell a stalled run from a run whose rescues
+     *  are all succeeding. */
+    charged?: boolean;
+    /** Refires performed this run, charged or not — the counter bounded by the absolute ceiling. */
+    totalRefires?: number;
+    absoluteCeiling?: number;
   }): Promise<void>;
   /** Age of the deployed release pin + how far it trails tip, for the staleness alarm.
    *  Optional: absent ⇒ alarm never fires. */
@@ -990,6 +998,165 @@ export function autoRefireCapFromEnv(env: NodeJS.ProcessEnv = process.env): numb
   return Number.isFinite(v) && v >= 0 ? Math.floor(v) : 2;
 }
 
+/**
+ * EI-19343532231631821 — the ABSOLUTE ceiling on refires within one run, counted regardless of
+ * whether each was CHARGED.
+ *
+ * `maxRefires` bounds FAILED rescues (the loop guard that converges a genuinely-broken tip to a
+ * held gate + a human). Once an uncharged refire exists, that counter alone no longer bounds the
+ * recursion at all: a tree where SOMETHING is always freshly red produces an unbroken chain of
+ * disjoint failing sets, every one of them a "successful rescue", forever. This is the second of
+ * the two required bounds — the other is the deadline below.
+ */
+export function refireAbsoluteCeiling(maxRefires: number): number {
+  const cap = Math.floor(maxRefires);
+  return Number.isFinite(cap) && cap > 0 ? cap * 3 : 0;
+}
+
+/** Wall-clock budget for the WHOLE run (all passes) beyond which no further refire is started.
+ *  Deliberately BELOW `GREEN_CHECKPOINT_SUITE_TIMEOUT_MS` (120m, release-actions.ts): a refire
+ *  begun near the timeout is killed mid-suite and the run dies having recorded NO verdict at all,
+ *  which is strictly worse than recording the red it already has. `release-timing-invariants.test.ts`
+ *  enforces the ordering. */
+export const DEFAULT_REFIRE_RUN_BUDGET_MS = 110 * 60_000;
+
+export function refireRunBudgetMsFromEnv(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env.PAPERCUSP_GATE_REFIRE_RUN_BUDGET_MS;
+  if (raw === undefined) return DEFAULT_REFIRE_RUN_BUDGET_MS;
+  const v = Number(raw);
+  return Number.isFinite(v) && v > 0 ? Math.floor(v) : DEFAULT_REFIRE_RUN_BUDGET_MS;
+}
+
+/**
+ * Would starting one more pass overrun the run budget? Predicted from the pass that just FINISHED
+ * (the best available estimate of the next one's cost) rather than a fixed guess.
+ *
+ * Unmeasured inputs (NaN — a caller that did not time its pass) return false, preserving the
+ * pre-EI-19343532231631821 behaviour of never blocking on time. That is fail-OPEN, which is safe
+ * here ONLY because `refireAbsoluteCeiling` independently bounds the recursion; never let both
+ * bounds become optional at the same time.
+ */
+export function refireDeadlineExceeded(input: { elapsedMs: number; lastPassMs: number; budgetMs: number }): boolean {
+  const { elapsedMs, lastPassMs, budgetMs } = input;
+  if (![elapsedMs, lastPassMs, budgetMs].every((n) => Number.isFinite(n))) return false;
+  return elapsedMs + lastPassMs > budgetMs;
+}
+
+/**
+ * Reduce either failing-set representation to ONE comparable key.
+ *
+ * ⚠ This is the fail-OPEN hazard in the whole feature, so it is a function rather than an inline
+ * compare. The same failing file reaches this code in two shapes:
+ *   - `FailingFile { workspace, file }` — what `runGreen` parses out of the current pass;
+ *   - a bare workspace-relative string — what `gate_health.inFlightRetriage.failingFiles` persists
+ *     (`failingFiles.map(f => f.file)`), and therefore the only shape available to a reader
+ *     reconstructing the rescued set from the marker.
+ * A naive compare between those two shapes matches NOTHING, so every set looks disjoint, so NO
+ * refire is ever charged and the charged budget silently stops existing — the dangerous direction.
+ *
+ * So the key is the workspace-relative FILE PATH ALONE, deliberately dropping `workspace` even
+ * when we have it: the marker has already lost it irrecoverably, and a key that only works for
+ * in-process threading would rot the moment anything read the marker. The cost is that two
+ * identically-named files in different workspaces compare EQUAL, which over-charges a refire —
+ * i.e. it fails CLOSED, back to today's always-charge behaviour. That asymmetry is the point.
+ *
+ * Non-test gate ids (`lint:tsc`, …) pass through unchanged and cannot collide with a path.
+ */
+export function normaliseFailingKey(entry: string | FailingFile): string {
+  const raw = typeof entry === 'string' ? entry : entry.file;
+  return String(raw ?? '')
+    .trim()
+    .replace(/\\/g, '/')
+    .replace(/\/{2,}/g, '/')
+    .replace(/^\.\//, '')
+    .replace(/^\//, '');
+}
+
+/** The normalised intersection of the set a run is RESCUING and the set that just failed.
+ *  Non-empty ⇒ the rescue did not work ⇒ charge the refire. */
+export function refireOverlap(
+  prior: readonly (string | FailingFile)[] | undefined,
+  current: readonly (string | FailingFile)[] | undefined,
+): string[] {
+  if (!prior?.length || !current?.length) return [];
+  const priorKeys = new Set(prior.map(normaliseFailingKey).filter(Boolean));
+  const out = new Set<string>();
+  for (const entry of current) {
+    const key = normaliseFailingKey(entry);
+    if (key && priorKeys.has(key)) out.add(key);
+  }
+  return [...out];
+}
+
+/** Bound on the accumulated rescued-set carried across refires — a pathological run cannot grow
+ *  it without limit. Far above any real failing set (the largest observed is ~40 files). */
+export const REFIRE_PRIOR_FAILING_CAP = 500;
+
+/**
+ * Accumulate the UNION of every failing set seen so far in this run, not just the previous pass's.
+ *
+ * Comparing only against the immediately-preceding pass would miss an OSCILLATION — set {A} rescued
+ * to {B} rescued back to {A} — where each step looks disjoint from the one before it while the run
+ * makes no progress at all. Against the union, A's return overlaps and is charged.
+ */
+export function mergeFailingKeys(
+  prior: readonly (string | FailingFile)[] | undefined,
+  current: readonly (string | FailingFile)[] | undefined,
+): string[] {
+  const merged = new Set<string>();
+  for (const entry of [...(prior ?? []), ...(current ?? [])]) {
+    const key = normaliseFailingKey(entry);
+    if (key) merged.add(key);
+    if (merged.size >= REFIRE_PRIOR_FAILING_CAP) break;
+  }
+  return [...merged];
+}
+
+/** The EI-19343532231631821 budget inputs to `classifyRedAgainstTip`, assembled identically for
+ *  BOTH refire sites (the test-file rescue and its lint/typecheck sibling) so the two can never
+ *  drift into charging differently for the same event. */
+export function refireBudgetInputs(
+  opts: Pick<CheckpointOpts, 'refireAttempts' | 'totalRefires' | 'priorFailing'>,
+  currentFailing: readonly (string | FailingFile)[],
+  runStartedAtMs: number,
+  passStartedAtMs: number,
+  now: () => number = Date.now,
+): Pick<
+  Parameters<typeof classifyRedAgainstTip>[0],
+  'priorFailing' | 'currentFailing' | 'totalRefires' | 'absoluteCeiling' | 'deadlineExceeded'
+> {
+  const at = now();
+  return {
+    priorFailing: opts.priorFailing ?? [],
+    currentFailing,
+    totalRefires: opts.totalRefires ?? opts.refireAttempts ?? 0,
+    absoluteCeiling: refireAbsoluteCeiling(autoRefireCapFromEnv()),
+    deadlineExceeded: refireDeadlineExceeded({
+      elapsedMs: at - runStartedAtMs,
+      // The pass that just finished is the best available predictor of the next one's cost.
+      lastPassMs: at - passStartedAtMs,
+      budgetMs: refireRunBudgetMsFromEnv(),
+    }),
+  };
+}
+
+/** The recursion's carried state for one refire — the single place the charged budget advances. */
+export function nextRefireOpts(
+  opts: Pick<CheckpointOpts, 'refireAttempts' | 'totalRefires' | 'priorFailing'>,
+  verdict: Pick<RedTriage, 'chargeRefire'>,
+  currentFailing: readonly (string | FailingFile)[],
+  runStartedAtMs: number,
+): Required<Pick<CheckpointOpts, 'refireAttempts' | 'totalRefires' | 'priorFailing' | 'runStartedAtMs'>> {
+  return {
+    // CHARGED only when the rescue failed. An uncharged refire deliberately leaves this counter
+    // untouched, which is the entire point of EI-19343532231631821 — see classifyRedAgainstTip.
+    refireAttempts: (opts.refireAttempts ?? 0) + (verdict.chargeRefire ? 1 : 0),
+    totalRefires: (opts.totalRefires ?? opts.refireAttempts ?? 0) + 1,
+    priorFailing: mergeFailingKeys(opts.priorFailing, currentFailing),
+    runStartedAtMs,
+  };
+}
+
 /** Pure verdict classifier. `tipRetest` is the result of re-running EXACTLY the named
  *  failing files at `tip` (null when we could not or did not run it). */
 export function classifyRedAgainstTip(input: {
@@ -997,33 +1164,117 @@ export function classifyRedAgainstTip(input: {
   tip: string | null;
   failingTests: string[];
   tipRetest: { ran: boolean; pass: boolean } | null;
+  /** Count of CHARGED refires so far — i.e. how many rescues have FAILED, not how many have run. */
   refireAttempts: number;
   maxRefires: number;
+  /** EI-19343532231631821 — the union of every failing set this run has already tried to rescue
+   *  (see `mergeFailingKeys`). Absent ⇒ nothing to overlap with ⇒ nothing is charged, which is
+   *  correct for the FIRST refire of a run: no rescue has been attempted yet, so none can have
+   *  failed. */
+  priorFailing?: readonly (string | FailingFile)[];
+  /** This pass's failing set, compared against `priorFailing` to decide the charge. */
+  currentFailing?: readonly (string | FailingFile)[];
+  /** Total refires this run has performed, CHARGED OR NOT — bounded by `absoluteCeiling`. */
+  totalRefires?: number;
+  absoluteCeiling?: number;
+  /** Would one more pass overrun the run's wall-clock budget (see `refireDeadlineExceeded`)? */
+  deadlineExceeded?: boolean;
 }): RedTriage {
   const { candidate, tip, failingTests, tipRetest, refireAttempts, maxRefires } = input;
+  const unrefirable = { chargeRefire: false, refireBlockedBy: null } as const;
   if (!tip || tip === candidate) {
-    return { classification: 'real-red', autoRefire: false, detail: 'candidate is the tip — nothing newer to blame' };
+    return {
+      classification: 'real-red',
+      autoRefire: false,
+      ...unrefirable,
+      detail: 'candidate is the tip — nothing newer to blame',
+    };
   }
   if (failingTests.length === 0) {
-    return { classification: 'unknown', autoRefire: false, detail: 'no named failing tests — cannot re-run at tip' };
+    return {
+      classification: 'unknown',
+      autoRefire: false,
+      ...unrefirable,
+      detail: 'no named failing tests — cannot re-run at tip',
+    };
   }
   if (!tipRetest?.ran) {
-    return { classification: 'unknown', autoRefire: false, detail: 'tip re-run unavailable' };
+    return { classification: 'unknown', autoRefire: false, ...unrefirable, detail: 'tip re-run unavailable' };
   }
   if (tipRetest.pass) {
-    const autoRefire = maxRefires > 0 && refireAttempts < maxRefires;
+    // EI-19343532231631821 — CHARGE THE FAILED RESCUE, NOT THE REFIRE.
+    //
+    // Observed end-to-end on the papercusp gate run of 2026-08-02 (pid 514562):
+    //   pass 1   6f418144  RED {hyperbee/boot, TasksRosterPanel, SessionsRosterView} → all pass at tip
+    //   refire 1 16dbb52a  RED {release-actions, hygiene}  ← COMPLETELY DISJOINT     → both pass at tip
+    //   refire 2 8592e24a  FINAL attempt; any red now sticks.
+    // Refire 1 DID ITS JOB — the three files it was rescuing were gone — and was then charged an
+    // attempt for UNRELATED breakage that the ~30-min-newer cut imported. Two different events
+    // shared one budget, so on a tree this active (145 commits behind the pin) the rescue budget
+    // is spent on tree churn rather than on the flake/skew absorption it was built for, and the
+    // run ends red only to restart ~55min later against an even later tip. Self-perpetuating.
+    //
+    // The two events, separated:
+    //   * same red PERSISTS at the new candidate → the rescue is FAILING. Charge it. This is the
+    //     loop guard that must survive: it is what converges a genuinely-broken tip to a held gate
+    //     and a human, and `refireAttempts >= maxRefires` below still stops everything regardless.
+    //   * old red GONE, NEW files red → the rescue SUCCEEDED. Fresh tree churn, not a failure of
+    //     this mechanism. Do NOT charge it — bound it by the ceiling + deadline instead.
+    const overlap = refireOverlap(input.priorFailing, input.currentFailing);
+    const chargeRefire = overlap.length > 0;
+    const totalRefires = input.totalRefires ?? refireAttempts;
+    const absoluteCeiling = input.absoluteCeiling ?? refireAbsoluteCeiling(maxRefires);
+    // Ordered so the reported reason is the one the operator must act on FIRST.
+    const refireBlockedBy: RedTriage['refireBlockedBy'] =
+      maxRefires <= 0
+        ? 'cap-disabled'
+        : refireAttempts >= maxRefires
+          ? 'charged-budget'
+          : totalRefires >= absoluteCeiling
+            ? 'absolute-ceiling'
+            : input.deadlineExceeded === true
+              ? 'deadline'
+              : null;
+    const autoRefire = refireBlockedBy === null;
+    const blockDetail: Record<NonNullable<RedTriage['refireBlockedBy']>, string> = {
+      'cap-disabled': 'refire cap reached (auto-refire disabled: maxRefires=0)',
+      'charged-budget':
+        `refire cap reached (charged budget ${refireAttempts}/${maxRefires} spent — the SAME breakage ` +
+        'survived every rescue, so the tip is genuinely broken: a human is needed)',
+      'absolute-ceiling':
+        `refire ABSOLUTE CEILING reached (${totalRefires}/${absoluteCeiling} refires, charged budget only ` +
+        `${refireAttempts}/${maxRefires}) — every individual red WAS rescued, but the tree was never ` +
+        'simultaneously green within one run; the fix is to slow the tree or widen the window, NOT to ' +
+        'debug the files named above',
+      deadline:
+        'refire DEADLINE reached — another pass would outlast the run budget and be killed mid-suite ' +
+        'with no verdict recorded at all; holding the red this run already has instead',
+    };
     return {
       classification: 'stale-candidate',
       autoRefire,
+      chargeRefire,
+      refireBlockedBy,
       detail:
         `${failingTests.length} failing file(s) PASS at tip ${tip.slice(0, 8)} — the red is stale ` +
         `(candidate ${candidate.slice(0, 8)} predates the fix)` +
-        (autoRefire ? `; auto-refiring (attempt ${refireAttempts + 1}/${maxRefires})` : '; refire cap reached'),
+        (autoRefire
+          ? chargeRefire
+            ? `; auto-refiring (CHARGED attempt ${refireAttempts + 1}/${maxRefires} — ${overlap.length} file(s) ` +
+              `from the set this run was already rescuing are STILL failing: ${overlap.slice(0, 3).join(', ')}` +
+              `${overlap.length > 3 ? `, +${overlap.length - 3} more` : ''})`
+            : `; auto-refiring (UNCHARGED — the previous rescue SUCCEEDED: this candidate's failures are ` +
+              `DISJOINT from the set being rescued, so this is fresh tree churn, not a failed rescue. ` +
+              `Charged budget still ${refireAttempts}/${maxRefires}; refire ${totalRefires + 1}/${absoluteCeiling} ` +
+              `of the absolute ceiling)`
+          : `; ${blockDetail[refireBlockedBy]}`),
     };
   }
   return {
     classification: 'real-red',
     autoRefire: false,
+    chargeRefire: false,
+    refireBlockedBy: null,
     // ALL-OR-NOTHING caveat (EI-19324146335802876). `tipRetest` collapses a GROUP re-run of
     // EVERY named failing file into one boolean, so ONE still-broken file produces this
     // verdict even when every other file is already fixed at tip. The old wording —
@@ -2124,9 +2375,19 @@ export interface CheckpointOpts {
   candidate?: string;
   /** Don't push `ready` to origin (local-only). */
   noPush?: boolean;
-  /** How many times this run has already auto-refired on a stale red (internal; the
-   *  cap in autoRefireCapFromEnv bounds the recursion). */
+  /** How many of this run's auto-refires were CHARGED — i.e. how many rescues FAILED (the same
+   *  breakage survived the re-cut). Internal; bounded by autoRefireCapFromEnv. Since
+   *  EI-19343532231631821 this is NOT the number of refires performed — see `totalRefires`. */
   refireAttempts?: number;
+  /** Total refires performed this run, charged or not (internal; bounded by
+   *  `refireAbsoluteCeiling`, so a tree that always has SOMETHING freshly red still terminates). */
+  totalRefires?: number;
+  /** Normalised union of every failing set this run has already tried to rescue (internal; see
+   *  `mergeFailingKeys`). Compared against the next pass's failures to decide the charge. */
+  priorFailing?: string[];
+  /** Wall-clock start of the FIRST pass of this run, threaded across refires so the deadline bound
+   *  measures the whole run rather than restarting at each recursion (internal). */
+  runStartedAtMs?: number;
 }
 
 /**
@@ -2310,6 +2571,13 @@ export async function runGreenCheckpoint(
   deps: CheckpointDeps,
   opts: CheckpointOpts = {},
 ): Promise<CheckpointResult> {
+  // EI-19343532231631821 — the deadline bound's two clocks. A stale-red auto-refire RECURSES into
+  // this function in the SAME process, so `passStartedAtMs` restarts per pass (it predicts the next
+  // pass's cost) while `runStartedAtMs` is threaded through `opts` and measures the WHOLE run.
+  // Without the threaded one, elapsed time would reset at every refire and the run could keep
+  // refiring straight past the suite timeout, be killed mid-suite, and record NO verdict at all.
+  const passStartedAtMs = Date.now();
+  const runStartedAtMs = opts.runStartedAtMs ?? passStartedAtMs;
   let candidate = opts.candidate
     ? await revParse(cfg.integrationRoot, opts.candidate)
     : await revParse(cfg.integrationRoot, cfg.integrationBranch);
@@ -2631,6 +2899,7 @@ export async function runGreenCheckpoint(
         tipRetest: tipRun ? { ran: true, pass: tipRun.pass } : null,
         refireAttempts: opts.refireAttempts ?? 0,
         maxRefires: autoRefireCapFromEnv(),
+        ...refireBudgetInputs(opts, failingFiles, runStartedAtMs, passStartedAtMs),
       });
       retriage = { ...verdict, tip };
       // WI-5366: tipRun.summary carries the verified-head note (+ per-workspace
@@ -2651,20 +2920,20 @@ export async function runGreenCheckpoint(
         // before this process returns anything — mark the refire IN FLIGHT now so a concurrent
         // reader doesn't spend that whole window seeing a plain cached red with no hint a fresh
         // verdict is imminent.
+        const next = nextRefireOpts(opts, verdict, failingFiles, runStartedAtMs);
         await deps
           .recordInFlightRetriage?.({
             fromCandidate: candidate,
             refiringCandidate: tip,
-            refireAttempt: (opts.refireAttempts ?? 0) + 1,
+            refireAttempt: next.refireAttempts,
             maxRefires: autoRefireCapFromEnv(),
             failingFiles: failingFiles.map((f) => f.file),
+            charged: verdict.chargeRefire,
+            totalRefires: next.totalRefires,
+            absoluteCeiling: refireAbsoluteCeiling(autoRefireCapFromEnv()),
           })
           .catch(() => {});
-        return runGreenCheckpoint(cfg, deps, {
-          ...opts,
-          candidate: tip,
-          refireAttempts: (opts.refireAttempts ?? 0) + 1,
-        });
+        return runGreenCheckpoint(cfg, deps, { ...opts, candidate: tip, ...next });
       }
     } else {
       // EI-18759362119598634: the LINT/TYPECHECK sibling of the rescue above. A gate
@@ -2687,6 +2956,7 @@ export async function runGreenCheckpoint(
           tipRetest: tipRun ? { ran: true, pass: tipRun.pass } : null,
           refireAttempts: opts.refireAttempts ?? 0,
           maxRefires: autoRefireCapFromEnv(),
+          ...refireBudgetInputs(opts, gateIds, runStartedAtMs, passStartedAtMs),
         });
         retriage = { ...verdict, tip };
         deps.log(`re-triage: ${verdict.classification} — ${verdict.detail}${tipRun ? ` (${tipRun.summary})` : ''}`);
@@ -2695,20 +2965,20 @@ export async function runGreenCheckpoint(
           await deps.broadcast(
             `🔁 green-checkpoint re-firing on tip ${tip.slice(0, 8)}: red at ${candidate.slice(0, 8)} was STALE (${gateIds.length} gate(s) pass at tip: ${gateIds.join(', ')})`,
           ).catch(() => {});
+          const next = nextRefireOpts(opts, verdict, gateIds, runStartedAtMs);
           await deps
             .recordInFlightRetriage?.({
               fromCandidate: candidate,
               refiringCandidate: tip,
-              refireAttempt: (opts.refireAttempts ?? 0) + 1,
+              refireAttempt: next.refireAttempts,
               maxRefires: autoRefireCapFromEnv(),
               failingFiles: gateIds,
+              charged: verdict.chargeRefire,
+              totalRefires: next.totalRefires,
+              absoluteCeiling: refireAbsoluteCeiling(autoRefireCapFromEnv()),
             })
             .catch(() => {});
-          return runGreenCheckpoint(cfg, deps, {
-            ...opts,
-            candidate: tip,
-            refireAttempts: (opts.refireAttempts ?? 0) + 1,
-          });
+          return runGreenCheckpoint(cfg, deps, { ...opts, candidate: tip, ...next });
         }
       }
     }

@@ -50,11 +50,23 @@ export interface InFlightRetriageInfo {
   fromCandidate: string;
   /** The newer tip this refire is re-verifying. */
   refiringCandidate: string;
-  /** 1-based attempt number, so a reader can say "attempt N/maxRefires". */
+  /** 1-based CHARGED attempt number, so a reader can say "attempt N/maxRefires".
+   *  ⚠ Since EI-19343532231631821 this does NOT advance on every refire — only on a refire whose
+   *  failures OVERLAP the set already being rescued (a FAILED rescue). Read `totalRefires` for the
+   *  number of refires actually performed; a run whose rescues all succeed holds this at 0 while
+   *  `totalRefires` climbs, and that is the healthy case, not a stalled one. */
   refireAttempt: number;
   maxRefires: number;
   /** The failing file(s) this refire is trying to disprove — echoed for a human-readable note. */
   failingFiles: string[];
+  /** EI-19343532231631821: did THIS refire consume a slot of the charged budget? `false` ⇒ the
+   *  previous rescue SUCCEEDED and these failures are fresh tree churn imported by the newer cut. */
+  charged?: boolean;
+  /** Refires performed this run, charged or not — bounded by `absoluteCeiling`. */
+  totalRefires?: number;
+  /** The hard ceiling on `totalRefires`; with every rescue succeeding this, not `maxRefires`, is
+   *  what eventually stops the run. */
+  absoluteCeiling?: number;
 }
 
 /** The shape persisted to `gate_health.inFlightRetriage` — `InFlightRetriageInfo` plus the
