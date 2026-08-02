@@ -46,6 +46,25 @@ export interface RoutineValidationResult {
   activeRoutineNames: string[];
   unregisteredHarnesses: Set<string>;
   problematicRoutines: Array<{ installSlug: string; routineName: string; workspaceId: string }>;
+  /**
+   * ACTIVE `system:<action>` routines with NO registered handler (EI-19367772473246483).
+   * Their fire path reaches `getSystemAction(action)`, finds nothing, logs
+   * `no handler registered … skipping` and does nothing — every tick, forever — while this
+   * validator reported "startup validation passed — N active routine(s) resolve" and NAMED
+   * the dead routine in that list, because it only ever checked that `install_slug` resolves.
+   *
+   * Deliberately a SEPARATE bucket from `problematicRoutines`: that one is auto-PAUSED by
+   * `enforceActiveRoutines`, which is the wrong remedy here. The row is correct; the missing
+   * piece is a side-effect `import './<name>-action'` in `register-system-actions.ts`. Pausing
+   * would destroy the evidence and silently drop the routine — turning a loud, fixable bug
+   * into the exact invisible no-op this field exists to expose.
+   */
+  unregisteredSystemActions: Array<{
+    installSlug: string;
+    routineName: string;
+    action: string;
+    workspaceId: string;
+  }>;
 }
 
 /**
@@ -69,9 +88,12 @@ export async function validateActiveRoutines(
   const ws = workspaceId ?? activeWorkspaceId();
   const { sql } = getOrgPg();
 
-  // Read all active routines in this workspace
+  // Read all active routines in this workspace. `target_role` + the two loop-fire columns
+  // are needed by the unregistered-system-action check below, which must mirror the fire
+  // path's dispatch precedence exactly (see `findUnregisteredSystemActions`).
   const activeRoutines = await sql`
-    SELECT DISTINCT install_slug, name, workspace_id
+    SELECT DISTINCT install_slug, name, workspace_id, target_role,
+                    reschedule_interval_sec, target_owner_id
     FROM harness_shared.routines
     WHERE active = true AND workspace_id = ${ws}
     ORDER BY install_slug, name
@@ -105,9 +127,15 @@ export async function validateActiveRoutines(
     }
   }
 
-  const ok = problematicRoutines.length === 0;
+  const unregisteredSystemActions = await findUnregisteredSystemActions(activeRoutines);
 
-  if (!ok && !opts?.silent) {
+  const ok = problematicRoutines.length === 0 && unregisteredSystemActions.length === 0;
+
+  if (unregisteredSystemActions.length > 0 && !opts?.silent) {
+    console.error(formatUnregisteredSystemActions(unregisteredSystemActions));
+  }
+
+  if (problematicRoutines.length > 0 && !opts?.silent) {
     // Log a FATAL error so it surfaces in monitoring + pages ops
     console.error(
       `[routine-validation] FATAL: ${problematicRoutines.length} active routine(s) target ` +
@@ -123,7 +151,92 @@ export async function validateActiveRoutines(
     activeRoutineNames,
     unregisteredHarnesses,
     problematicRoutines,
+    unregisteredSystemActions,
   };
+}
+
+/**
+ * Which ACTIVE routines would hit `no handler registered … skipping` on their next fire
+ * (EI-19367772473246483).
+ *
+ * MIRRORS THE FIRE PATH'S DISPATCH PRECEDENCE, and must keep doing so — this is the whole
+ * correctness argument. `routines-workflow.ts` dispatches:
+ *
+ *   if (rescheduleIntervalSec != null && targetOwnerId)  -> fireLoopWake(), handled INLINE
+ *   else if (targetRole.startsWith('system:'))           -> getSystemAction() registry lookup
+ *
+ * So an engine loop (`loop-su-<uuid>`, `target_role = 'system:loop-wake'`) never reaches the
+ * registry and correctly has no handler registered for it. Checking `system:%` alone would
+ * flag every one of them: measured on this workspace, 36 of 155 active `system:%` routines are
+ * inline loop fires, so the naive form would have reported 36 false positives — against a
+ * guard whose sibling auto-PAUSES what it flags. Verified against live data: with the loop
+ * exemption, an EMPTY registry flags 119 routines and 0 of the 36 loop rows.
+ *
+ * Fail-soft: the registry is populated by a side-effect import of ~100 action modules. If that
+ * import throws, we report NO violations rather than guess — a false "handler missing" here is
+ * far more damaging than a missed one, since it is the signal a human acts on.
+ */
+async function findUnregisteredSystemActions(
+  activeRoutines: readonly unknown[],
+): Promise<Array<{ installSlug: string; routineName: string; action: string; workspaceId: string }>> {
+  let getSystemAction: (name: string) => unknown;
+  try {
+    // Side-effect import: populates the registry. The boot sequence does NOT otherwise import
+    // it (only `dbos/routines-workflow.ts` does), so without this the check would see an empty
+    // registry and flag everything. Idempotent + module-cached, so a repeat call is free.
+    await import('../harness/routines/register-system-actions');
+    ({ getSystemAction } = await import('../harness/routines/system-actions'));
+  } catch (e) {
+    console.warn(
+      '[routine-validation] system-action registry import failed — skipping the ' +
+        `unregistered-handler check (reporting none): ${e instanceof Error ? e.message : e}`,
+    );
+    return [];
+  }
+
+  const SYSTEM_PREFIX = 'system:';
+  const missing: Array<{ installSlug: string; routineName: string; action: string; workspaceId: string }> = [];
+  for (const raw of activeRoutines) {
+    const r = raw as {
+      install_slug?: string;
+      name?: string;
+      workspace_id?: string;
+      target_role?: string | null;
+      reschedule_interval_sec?: number | null;
+      target_owner_id?: string | null;
+    };
+    const targetRole = r.target_role ?? '';
+    if (!targetRole.startsWith(SYSTEM_PREFIX)) continue;
+    // Inline loop fire — takes precedence over system dispatch, needs no registered handler.
+    if (r.reschedule_interval_sec != null && r.target_owner_id) continue;
+
+    const action = targetRole.slice(SYSTEM_PREFIX.length);
+    if (getSystemAction(action)) continue;
+    missing.push({
+      installSlug: r.install_slug || '<empty>',
+      routineName: r.name || '<unnamed>',
+      action,
+      workspaceId: r.workspace_id || '<empty>',
+    });
+  }
+  return missing;
+}
+
+/** The operator-facing message for a dead system-action routine — names the exact one-line fix. */
+function formatUnregisteredSystemActions(
+  missing: ReadonlyArray<{ installSlug: string; routineName: string; action: string }>,
+): string {
+  const names = [...new Set(missing.map((m) => m.action))];
+  return (
+    `[routine-validation] FATAL: ${missing.length} ACTIVE routine(s) target a system action with ` +
+    `NO REGISTERED HANDLER: ${names.map((n) => `system:${n}`).join(', ')}. Each fire logs ` +
+    `"no handler registered … skipping" and does NOTHING — the routine is silently dead, at its ` +
+    `full cadence, indefinitely. Almost always a missing side-effect import in ` +
+    `packages/operator-core/lib/harness/routines/register-system-actions.ts — add ` +
+    `${names.map((n) => `import './${n}-action';`).join(' ')} (verify the filename). NOT ` +
+    `auto-paused: the routine row is correct, the code is what is missing. ` +
+    `Details: ${JSON.stringify(missing)}`
+  );
 }
 
 export interface EnforceActiveRoutinesResult extends RoutineValidationResult {
@@ -213,6 +326,14 @@ export async function enforceActiveRoutines(workspaceId?: string): Promise<Enfor
       `${JSON.stringify(autoDeactivated)}. Paused, not deleted — reactivate via routines:set once ` +
       `the harness is re-registered (or the slug was a typo). See EI-18678269428596559.`,
     );
+  }
+  // EI-19367772473246483: this path passes `silent: true`, so the validator's own report is
+  // suppressed and must be re-emitted here — otherwise the boot caller (which only logs on
+  // `ok`) prints NOTHING and the dead routine stays invisible, which is the bug itself.
+  // Deliberately NOT auto-healed: unlike an unregistered harness, there is no DB flip that
+  // fixes a missing import, and pausing the row would erase the only evidence.
+  if (result.unregisteredSystemActions.length > 0) {
+    console.error(formatUnregisteredSystemActions(result.unregisteredSystemActions));
   }
   if (stillProblematic.length > 0) {
     console.error(

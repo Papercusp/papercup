@@ -188,12 +188,12 @@ describe('readClaimSpecDelta — both sides in ONE snapshot (P-005)', () => {
 
 describe('projectDeltaRow — attributing a moved row to filter vs states', () => {
   const base: ClaimSpecDeltaSqlRow = {
-    id: 'WI-1',
-    kind: 'bug',
+    delta_id: 'WI-1',
+    delta_kind: 'bug',
     title: 't',
     status: 'open',
-    severity: 'major',
-    plan: null,
+    delta_severity: 'major',
+    delta_plan: null,
     feature_order: '3',
     created_ts: '1700000000000',
     spec_match: true,

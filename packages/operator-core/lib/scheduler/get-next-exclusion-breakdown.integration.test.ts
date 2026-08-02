@@ -292,3 +292,150 @@ describe('EI-18802055183255275 — readIssueClaimability (materialized temp-tabl
     expect(out.sample?.needsHuman).toEqual(['WI-RC-20']);
   });
 });
+
+/**
+ * agent-epistemics-2026-08-02 P-005 — DB-backed proof for `readClaimSpecDelta`, the
+ * before/after read behind `scheduler:preview_spec_delta`.
+ *
+ * The mocked-pg unit suite (claim-spec-delta.test.ts) pins the TRANSACTION SHAPE — one
+ * REPEATABLE READ txn, one floor materialization, three reads off it — but stubs every query
+ * to return zero rows, so it cannot execute a line of the actual SQL. What only a real
+ * database can prove is exactly what that shape makes non-obvious: the delta materializes the
+ * candidate population decorated with TWO match columns (`spec_match` for the stored spec, a
+ * second compiled filter as `proposed_match`) over the UNION of both sides' claimable states,
+ * and both compiled filters must evaluate correctly against that derived table's columns.
+ *
+ * The load-bearing assertion is AGREEMENT: each side of a delta must equal what
+ * `readIssueClaimability` reports for that spec ALONE. A delta that quietly disagrees with the
+ * single-spec oracle is worse than no delta — it would send a leader to re-steer a lane on
+ * numbers the claim door does not honor, which is the exact drift (a second SQL copy of the
+ * floors) this design exists to prevent.
+ */
+describe('P-005 — readClaimSpecDelta: which items a proposed spec revision drops or picks up', () => {
+  const sev = (s: string) => ({ _ei: { severity: s } });
+  const CRIT_OR_MAJOR = { field: 'severity', op: 'in', value: ['critical', 'major'] } as const;
+  const CRIT_ONLY = { field: 'severity', op: '=', value: 'critical' } as const;
+
+  it('names the rows a NARROWING revision would drop, and agrees with the single-spec oracle on both sides', async () => {
+    await seedIssue('WI-D-CRIT', sev('critical'));
+    await seedIssue('WI-D-MAJ', sev('major'));
+    await seedIssue('WI-D-MINOR', sev('minor'));
+    await seedIssue('WI-D-TAKEN', sev('major'), { takenBy: 'su-outside' }); // floored on BOTH sides
+
+    const delta = await readClaimSpecDelta(
+      { filter: CRIT_OR_MAJOR },
+      { filter: CRIT_ONLY },
+      { harness: H },
+      { limit: 20 },
+    );
+
+    expect(delta.currentClaimable).toBe(2); // CRIT + MAJ (TAKEN is floored, MINOR is out of filter)
+    expect(delta.proposedClaimable).toBe(1); // CRIT
+    expect(delta.retained).toBe(1);
+    expect(delta.newlyExcludedCount).toBe(1);
+    expect(delta.newlyAdmittedCount).toBe(0);
+    expect(delta.newlyExcluded.map((r) => r.id)).toEqual(['WI-D-MAJ']);
+    // Attribution: the filter moved it, not the states — the two have different fixes.
+    expect(delta.newlyExcluded[0]).toMatchObject({ cause: 'filter', severity: 'major', status: 'open' });
+    expect(delta.truncated).toEqual({ newlyExcluded: false, newlyAdmitted: false });
+
+    // AGREEMENT with the single-spec oracle, per side. This is the anti-drift assertion.
+    const current = await readIssueClaimability(CRIT_OR_MAJOR, { harness: H }, { limit: 20 });
+    const proposed = await readIssueClaimability(CRIT_ONLY, { harness: H }, { limit: 20 });
+    expect(delta.currentClaimable).toBe(current.breakdown.claimable);
+    expect(delta.proposedClaimable).toBe(proposed.breakdown.claimable);
+    // A floored row is invisible to the delta entirely — it was in neither lane, so it can be
+    // neither a loss nor a gain.
+    const moved = [...delta.newlyExcluded, ...delta.newlyAdmitted].map((r) => r.id);
+    expect(moved).not.toContain('WI-D-TAKEN');
+  });
+
+  it('names the rows a WIDENING revision would pick up', async () => {
+    await seedIssue('WI-W-CRIT', sev('critical'));
+    await seedIssue('WI-W-MAJ', sev('major'));
+
+    const delta = await readClaimSpecDelta(
+      { filter: CRIT_ONLY },
+      { filter: CRIT_OR_MAJOR },
+      { harness: H },
+      { limit: 20 },
+    );
+
+    expect(delta.currentClaimable).toBe(1);
+    expect(delta.proposedClaimable).toBe(2);
+    expect(delta.newlyExcludedCount).toBe(0);
+    expect(delta.newlyAdmitted.map((r) => r.id)).toEqual(['WI-W-MAJ']);
+    expect(delta.newlyAdmitted[0]!.cause).toBe('filter');
+  });
+
+  it('treats a states-only revision as a first-class delta and attributes it to `states`', async () => {
+    // The starvation shape this fleet has actually hit: an issue-family lane re-steered onto a
+    // status token its rows do not carry. The filter is IDENTICAL on both sides, so a
+    // filter-only diff would report "no change" for the most common way a lane starves.
+    await seedIssue('WI-S-OPEN', null);
+    await seedIssue('WI-S-FAILING', null, { status: 'failing' });
+
+    const delta = await readClaimSpecDelta({ states: ['open'] }, { states: ['failing'] }, { harness: H }, {
+      limit: 20,
+    });
+
+    expect(delta.currentClaimable).toBe(1);
+    expect(delta.proposedClaimable).toBe(1);
+    expect(delta.retained).toBe(0);
+    expect(delta.newlyExcluded.map((r) => r.id)).toEqual(['WI-S-OPEN']);
+    expect(delta.newlyAdmitted.map((r) => r.id)).toEqual(['WI-S-FAILING']);
+    expect(delta.newlyExcluded[0]!.cause).toBe('states');
+    expect(delta.newlyAdmitted[0]!.cause).toBe('states');
+  });
+
+  it('attributes a row moved by BOTH dimensions to `both`', async () => {
+    await seedIssue('WI-B-1', sev('major'), { status: 'failing' });
+
+    const delta = await readClaimSpecDelta(
+      { filter: CRIT_OR_MAJOR, states: ['failing'] },
+      { filter: CRIT_ONLY, states: ['open'] },
+      { harness: H },
+      { limit: 20 },
+    );
+
+    expect(delta.newlyExcluded.map((r) => r.id)).toEqual(['WI-B-1']);
+    expect(delta.newlyExcluded[0]!.cause).toBe('both');
+  });
+
+  it('reports an identical revision as a zero delta', async () => {
+    await seedIssue('WI-N-1', sev('critical'));
+    await seedIssue('WI-N-2', sev('major'));
+
+    const delta = await readClaimSpecDelta(
+      { filter: CRIT_OR_MAJOR },
+      { filter: CRIT_OR_MAJOR },
+      { harness: H },
+      { limit: 20 },
+    );
+
+    expect(delta).toMatchObject({
+      currentClaimable: 2,
+      proposedClaimable: 2,
+      retained: 2,
+      newlyExcludedCount: 0,
+      newlyAdmittedCount: 0,
+      newlyExcluded: [],
+      newlyAdmitted: [],
+    });
+  });
+
+  it('keeps the COUNTS exact when the row lists are capped, and says so', async () => {
+    // A capped list that silently under-reports the loss is how a leader green-lights a
+    // revision that drops 40 items after seeing 2.
+    for (let i = 0; i < 5; i += 1) await seedIssue(`WI-C-${i}`, sev('major'));
+
+    const delta = await readClaimSpecDelta({ filter: CRIT_OR_MAJOR }, { filter: CRIT_ONLY }, { harness: H }, {
+      limit: 2,
+    });
+
+    expect(delta.newlyExcludedCount).toBe(5);
+    expect(delta.newlyExcluded).toHaveLength(2);
+    expect(delta.truncated.newlyExcluded).toBe(true);
+    expect(delta.truncated.newlyAdmitted).toBe(false);
+  });
+});

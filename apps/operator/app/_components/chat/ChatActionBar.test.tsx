@@ -11,7 +11,7 @@ import { ChatActionBar, withTimeout, PARAMS_TIMEOUT_MS } from './ChatActionBar';
 import { DEFAULT_REQUEST_TIMEOUT_MS } from '@papercusp/sync';
 import { LocalCardHost } from './LocalCardHost';
 import { _resetAskUserLocalForTests } from '@/lib/chat-cards/ask-user-local';
-import { _resetChatActionsForTests, registerChatAction } from '@/lib/chat-actions/registry';
+import { _resetChatActionsForTests, registerChatAction, registerChatModeAction } from '@/lib/chat-actions/registry';
 import type { ChatActionContext } from '@/lib/chat-actions/types';
 
 const ctx: ChatActionContext = { sessionOwnerId: 'su-1', ownerLabel: 'su-1' };
@@ -203,6 +203,153 @@ describe('ChatActionBar', () => {
     expect(groups.length).toBe(2);
     expect(groups[0].getAttribute('data-group')).toBe('beta');
     expect(groups[1].getAttribute('data-group')).toBe('alpha');
+  });
+
+  /* ── P-005 mode pills (session-chat-popup-direction-d-2026-08-02) ──────────
+     The descriptor layer is covered by PostureActions.test.ts; this is the
+     RENDER half, which had no coverage at all — and it is the half that carries
+     the bug the owner actually reported. P-005 exists because a mode was
+     modelled as a ChatAction: it then had to be SHOWN somewhere else as a
+     read-only chip while its setter sat here as a button with a different name,
+     so one concept wore two costumes and neither said it was the other.
+
+     So the assertions below are about the pill being ONE object that both
+     reports and sets. A regression here is not cosmetic: registering a posture
+     axis as a plain ChatAction again would still render a working button, still
+     pass every other test in this file, and silently restore the duplicate
+     pair. ── */
+  describe('P-005 mode-actions render as pills that report AND set', () => {
+    const axis = (over: Partial<Parameters<typeof registerChatModeAction>[0]> = {}) => ({
+      id: 'autonomy',
+      cap: 'AUTO',
+      available: () => true,
+      current: () => ({ value: 'on', on: true, title: 'Acting without asking' }),
+      options: () => [
+        { id: 'manual', label: 'Manual' },
+        { id: 'auto', label: 'Auto' },
+      ],
+      set: vi.fn(),
+      ...over,
+    });
+
+    it('renders the cap AND the current value in one control — not a chip plus a differently-named button', () => {
+      registerChatModeAction(axis());
+      render(<ChatActionBar ctx={ctx} />);
+
+      const pill = screen.getByTestId('chat-mode-autonomy');
+      // Both halves live on the SAME element. Reading them off one node is the
+      // assertion: two nodes anywhere in the bar is the shape P-005 removed.
+      expect(pill.textContent).toContain('AUTO');
+      expect(pill.textContent).toContain('on');
+      // …and it is the setter too, so there is no second control to find.
+      expect(pill.tagName).toBe('BUTTON');
+      expect(screen.queryByTestId('chat-action-autonomy')).toBeNull();
+    });
+
+    it('carries the state in the FORM, not by colour alone — off is a distinct class + data-on', () => {
+      registerChatModeAction(axis({ id: 'ideate', cap: 'IDEATE', current: () => ({ value: 'off', on: false }) }));
+      render(<ChatActionBar ctx={ctx} />);
+
+      const pill = screen.getByTestId('chat-mode-ideate');
+      expect(pill.getAttribute('data-on')).toBe('false');
+      expect(pill.className).toContain('pc-ctl-mode--off');
+    });
+
+    it('the on-state is the same control WITHOUT the off modifier (the two states are distinguishable)', () => {
+      registerChatModeAction(axis());
+      render(<ChatActionBar ctx={ctx} />);
+
+      const pill = screen.getByTestId('chat-mode-autonomy');
+      expect(pill.getAttribute('data-on')).toBe('true');
+      // Paired with the case above so neither is vacuous: the SAME two probes
+      // read differently for on vs off, which is what "legible in greyscale"
+      // has to mean mechanically.
+      expect(pill.className).not.toContain('pc-ctl-mode--off');
+    });
+
+    it('the accessible name states the axis, its value AND that it is changeable', () => {
+      registerChatModeAction(axis());
+      render(<ChatActionBar ctx={ctx} />);
+
+      // The visible pill is two short words by design, so the screen-reader
+      // name is the only place the whole sentence exists. A `title` would fail
+      // lint:design-primitives AND be unreachable by keyboard.
+      const label = screen.getByTestId('chat-mode-autonomy').getAttribute('aria-label') ?? '';
+      expect(label).toContain('AUTO');
+      expect(label).toContain('on');
+      expect(label).toContain('Acting without asking');
+      expect(label).toMatch(/change it/i);
+    });
+
+    it('clicking opens the axis chooser and applies the pick through the descriptor’s own set()', async () => {
+      const set = vi.fn();
+      registerChatModeAction(axis({ set }));
+      render(
+        <>
+          <ChatActionBar ctx={ctx} />
+          <LocalCardHost />
+        </>,
+      );
+
+      fireEvent.click(screen.getByTestId('chat-mode-autonomy'));
+      await waitFor(() => expect(screen.getByText('Manual')).toBeTruthy());
+      fireEvent.click(screen.getByText('Manual'));
+      // The pick reaches set() as the OPTION ID, not the label — the descriptor
+      // owns the vocabulary, the bar only carries the choice across.
+      await waitFor(() => expect(set).toHaveBeenCalledWith(ctx, 'manual'));
+      // And the outcome is acknowledged: a silent success is indistinguishable
+      // from a dead click (the WI-6552 lesson, which applies to pills too).
+      await waitFor(() => expect(screen.getByTestId('chat-action-bar-done').textContent).toMatch(/AUTO/));
+    });
+
+    it('a failing set() surfaces the error instead of leaving the pill stuck busy', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      registerChatModeAction(axis({ set: () => { throw new Error('sticky conflict'); } }));
+      render(
+        <>
+          <ChatActionBar ctx={ctx} />
+          <LocalCardHost />
+        </>,
+      );
+
+      fireEvent.click(screen.getByTestId('chat-mode-autonomy'));
+      await waitFor(() => expect(screen.getByText('Manual')).toBeTruthy());
+      fireEvent.click(screen.getByText('Manual'));
+      await waitFor(() => expect(screen.getByRole('alert').textContent).toMatch(/sticky conflict/));
+      // The bar has to come back — a disabled pill with no card and no error is
+      // the worst form of "nothing happened".
+      expect((screen.getByTestId('chat-mode-autonomy') as HTMLButtonElement).disabled).toBe(false);
+      warn.mockRestore();
+    });
+
+    it('modes render BEFORE the verbs, separated — what the agent IS, then what acts on it', () => {
+      registerChatModeAction(axis());
+      registerChatAction({ id: 'focus', label: 'Focus', available: () => true, run: vi.fn() });
+      const { container } = render(<ChatActionBar ctx={ctx} />);
+
+      const order = Array.from(
+        container.querySelectorAll<HTMLElement>('[data-testid="chat-mode-autonomy"],[data-testid="chat-action-focus"]'),
+      ).map((el) => el.dataset.testid);
+      expect(order).toEqual(['chat-mode-autonomy', 'chat-action-focus']);
+      // The separator exists only when BOTH populations are present.
+      expect(container.querySelector('.pc-ctl-band__sep')).toBeTruthy();
+    });
+
+    it('draws no separator when there are modes but no verbs (nothing to separate)', () => {
+      registerChatModeAction(axis());
+      const { container } = render(<ChatActionBar ctx={ctx} />);
+      expect(screen.getByTestId('chat-mode-autonomy')).toBeTruthy();
+      expect(container.querySelector('.pc-ctl-band__sep')).toBeNull();
+    });
+
+    it('an unavailable axis is not rendered at all', () => {
+      registerChatModeAction(axis({ available: () => false }));
+      const { container } = render(<ChatActionBar ctx={ctx} />);
+      expect(screen.queryByTestId('chat-mode-autonomy')).toBeNull();
+      // …and a bar with nothing in it stays absent rather than rendering an
+      // empty band.
+      expect(container.firstChild).toBeNull();
+    });
   });
 
   it('a run() rejection surfaces an error without crashing the bar', async () => {

@@ -1,0 +1,121 @@
+{
+  "$comment": "Baseline for scripts/check-no-cdn-egress.mjs (egress-monitor-origin-axis-2026-08-02 P-004). RATCHET, NOT AMNESTY: entries are expected to be removed as fixes land. Every entry needs a `reason`. Regenerate with: npm run lint:no-cdn-egress:update",
+  "generated": "2026-08-02",
+  "entries": [
+    {
+      "file": "assets/chunk-<hash>.js",
+      "url": "https://embed.reddit.com/widgets.js",
+      "reason": "TODO: classify this occurrence"
+    },
+    {
+      "file": "assets/chunk-<hash>.js",
+      "url": "https://platform.twitter.com/widgets.js",
+      "reason": "TODO: classify this occurrence"
+    },
+    {
+      "file": "assets/dist-<hash>.js",
+      "url": "https://cdn.jsdelivr.net/npm/@alexanderolsen/libsamplerate-js@2.1.2/dist/libsamplerate.worklet.js",
+      "reason": "TODO: classify this occurrence"
+    },
+    {
+      "file": "assets/dist-<hash>.js",
+      "url": "https://github.com/rochars/wavefile/blob/master/lib/codecs/mulaw.js",
+      "reason": "TODO: classify this occurrence"
+    },
+    {
+      "file": "assets/es-<hash>.js",
+      "url": "https://cdn.jsdelivr.net/npm/monaco-editor@0.55.1/min/vs",
+      "reason": "TODO: classify this occurrence"
+    },
+    {
+      "file": "assets/forms-<hash>.js",
+      "url": "https://raw.githubusercontent.com/ajv-validator/ajv/master/lib/refs/data.json#",
+      "reason": "TODO: classify this occurrence"
+    },
+    {
+      "file": "assets/module-<hash>.js",
+      "url": "https://cdn.jsdelivr.net/npm/@emoji-mart/data@latest/i18n/${r}.json",
+      "reason": "TODO: classify this occurrence"
+    },
+    {
+      "file": "assets/module-<hash>.js",
+      "url": "https://cdn.jsdelivr.net/npm/@emoji-mart/data@latest/sets/${t}/${n}.json",
+      "reason": "TODO: classify this occurrence"
+    },
+    {
+      "file": "el-<hash>.html",
+      "url": "https://cdn.jsdelivr.net/npm/@elevenlabs/client@1.4.0/+esm",
+      "reason": "TODO: classify this occurrence"
+    },
+    {
+      "file": "excalidraw/chunk-<hash>.js",
+      "url": "https://embed.reddit.com/widgets.js",
+      "reason": "TODO: classify this occurrence"
+    },
+    {
+      "file": "excalidraw/chunk-<hash>.js",
+      "url": "https://platform.twitter.com/widgets.js",
+      "reason": "TODO: classify this occurrence"
+    },
+    {
+      "file": "vditor/dist/js/flowchart.js/flowchart.min.js",
+      "url": "http://adrai.github.io/flowchart.js",
+      "reason": "TODO: classify this occurrence"
+    },
+    {
+      "file": "vditor/dist/js/highlight.js/styles/a11y-dark.min.css",
+      "url": "https://github.com/isagalaev/highlight.js/blob/master/src/styles/tomorrow-night-eighties.css",
+      "reason": "TODO: classify this occurrence"
+    },
+    {
+      "file": "vditor/dist/js/highlight.js/styles/a11y-light.min.css",
+      "url": "https://github.com/isagalaev/highlight.js/blob/master/src/styles/tomorrow-night-eighties.css",
+      "reason": "TODO: classify this occurrence"
+    },
+    {
+      "file": "vditor/dist/js/highlight.js/third-<hash>.js",
+      "url": "https://cdn.jsdelivr.net/npm/highlightjs-sap-abap@0.2.0/dist/abap.min.js",
+      "reason": "TODO: classify this occurrence"
+    },
+    {
+      "file": "vditor/dist/js/highlight.js/third-<hash>.js",
+      "url": "https://cdn.jsdelivr.net/npm/highlightjs-solidity@2.0.5/dist/solidity.min.js",
+      "reason": "TODO: classify this occurrence"
+    },
+    {
+      "file": "vditor/dist/js/highlight.js/third-<hash>.js",
+      "url": "https://cdn.jsdelivr.net/npm/highlightjs-solidity@2.0.5/dist/yul.min.js",
+      "reason": "TODO: classify this occurrence"
+    },
+    {
+      "file": "vditor/dist/js/highlight.js/third-<hash>.js",
+      "url": "https://github.com/highlightjs/highlightjs-hlsl/blob/master/dist/hlsl.min.js",
+      "reason": "TODO: classify this occurrence"
+    },
+    {
+      "file": "vditor/dist/js/markmap/markmap.min.js",
+      "url": "https://cdn.jsdelivr.net/npm/d3@6.7.0",
+      "reason": "TODO: classify this occurrence"
+    },
+    {
+      "file": "vditor/dist/js/markmap/markmap.min.js",
+      "url": "https://cdn.jsdelivr.net/npm/markmap-view@0.14.3",
+      "reason": "TODO: classify this occurrence"
+    },
+    {
+      "file": "vditor/dist/js/markmap/markmap.min.js",
+      "url": "https://cdn.jsdelivr.net/npm/webfontloader@1.6.28/webfontloader.js",
+      "reason": "TODO: classify this occurrence"
+    },
+    {
+      "file": "vditor/dist/js/mathjax/sre/sre_browser.js",
+      "url": "https://cdn.jsdelivr.net/npm/wicked-good-xpath@1.3.0/dist/wgxpath.install.js",
+      "reason": "TODO: classify this occurrence"
+    },
+    {
+      "file": "vditor/dist/js/mermaid/mermaid.min.js",
+      "url": "https://github.com/jquery/jquery/blob/master/src/event.js",
+      "reason": "TODO: classify this occurrence"
+    }
+  ]
+}

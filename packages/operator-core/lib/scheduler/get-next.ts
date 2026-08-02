@@ -1643,19 +1643,21 @@ export async function readClaimSpecDelta(
 
     // in_current / in_proposed are the FULL claimability predicate per side: that side's
     // filter AND every floor AND that side's claimable states.
+    //
+    // `SELECT *` (not a narrow projection) is load-bearing: each side's rows are ORDERed by
+    // its OWN spec via compileRank, whose vocabulary reaches base columns this row shape does
+    // not carry (`payload`, for one). Projecting narrowly here drops them from the derived
+    // table and the ORDER BY fails at runtime with `column "payload" does not exist` — caught
+    // by the DB-backed sibling test, invisible to the mocked-pg one. The lean row shape is
+    // built in JS instead, from the aliases below.
     const floors = client.unsafe(ALL_ISSUE_CLAIM_FLOORS_PASS);
     const sided = client`
       SELECT
-        feature_id                AS id,
-        COALESCE(item_kind, kind) AS kind,
-        title,
-        status,
-        COALESCE(payload->'_ei'->>'severity', payload->>'severity') AS severity,
-        source_plan_slug          AS plan,
-        feature_order,
-        created_ts,
-        spec_match,
-        proposed_match,
+        *,
+        feature_id                AS delta_id,
+        COALESCE(item_kind, kind) AS delta_kind,
+        COALESCE(payload->'_ei'->>'severity', payload->>'severity') AS delta_severity,
+        source_plan_slug          AS delta_plan,
         (spec_match     AND ${floors} AND status = ANY(${currentStates}::text[]))  AS in_current,
         (proposed_match AND ${floors} AND status = ANY(${proposedStates}::text[])) AS in_proposed,
         (status = ANY(${currentStates}::text[]))  AS status_in_current,
@@ -1708,13 +1710,16 @@ export async function readClaimSpecDelta(
   })) as ClaimSpecDeltaReading;
 }
 
+/** The delta query's row. The `delta_`-prefixed aliases exist because the query projects
+ *  `SELECT *` (so compileRank can reach every base column) and several natural names —
+ *  `kind`, `severity` — collide with base columns whose values are NOT the resolved ones. */
 export interface ClaimSpecDeltaSqlRow {
-  id: string;
-  kind: string;
+  delta_id: string;
+  delta_kind: string;
   title: string | null;
   status: string;
-  severity: string | null;
-  plan: string | null;
+  delta_severity: string | null;
+  delta_plan: string | null;
   feature_order: number | string | null;
   created_ts: number | string | null;
   spec_match: boolean;
@@ -1741,12 +1746,12 @@ export function projectDeltaRow(r: ClaimSpecDeltaSqlRow, side: 'excluded' | 'adm
       ? r.status_in_current && !r.status_in_proposed
       : r.status_in_proposed && !r.status_in_current;
   return {
-    id: r.id,
-    kind: r.kind,
+    id: r.delta_id,
+    kind: r.delta_kind,
     title: r.title,
     status: r.status,
-    severity: r.severity,
-    plan: r.plan,
+    severity: r.delta_severity,
+    plan: r.delta_plan,
     featureOrder: r.feature_order == null ? null : Number(r.feature_order),
     createdTs: r.created_ts == null ? null : Number(r.created_ts),
     cause: byFilter && byStates ? 'both' : byStates ? 'states' : 'filter',

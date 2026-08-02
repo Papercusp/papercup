@@ -1251,6 +1251,16 @@ describe('SessionChatModal', () => {
       // owner asked to leave out.
       expect(within(conversation).queryByTestId('session-chat-orders-rail')).toBeNull();
       expect(within(conversation).queryByTestId('agent-orders-stub')).toBeNull();
+      // Positive control for the two nulls above — a scoped query that can only
+      // ever return null is not evidence of anything. The composer IS inside the
+      // conversation (it is the owner's named carve-out), so the same `within`
+      // finds it, which is what makes the nulls a statement about the DOM shape
+      // rather than about a typo'd testid.
+      expect(within(conversation).getByPlaceholderText(/Type to wake/)).toBeTruthy();
+      // Same control from the other side: the dossier is the OTHER sibling, so
+      // it is outside too — if this ever passed while the rail assertion failed,
+      // the two panels would have diverged on the one rule that governs both.
+      expect(within(conversation).queryByTestId('session-chat-dossier-rail')).toBeNull();
     });
 
     it('full window drops the panel AND its toggle, even with chatOrders still true', async () => {
@@ -1277,6 +1287,11 @@ describe('SessionChatModal', () => {
       await renderResolved();
       expect(screen.queryByTestId('session-chat-orders-rail')).toBeNull();
       expect(screen.queryByTestId('session-chat-orders-toggle')).toBeNull();
+      // This case seeds the mode BEFORE the first render, so it has no
+      // present-then-absent baseline of its own — without these, a fixture that
+      // rendered nothing at all would satisfy both nulls above.
+      expect(screen.getByTestId('session-chat-conversation')).toBeTruthy();
+      expect(screen.getByPlaceholderText(/Type to wake/)).toBeTruthy();
     });
 
     it('restores the panel when maximize is exited — the open state is remembered, not cleared', async () => {

@@ -18,6 +18,15 @@ vi.mock('../workspace-registry', () => ({
   activeWorkspaceId: vi.fn(),
 }));
 
+// EI-19367772473246483: the unregistered-system-action check populates the registry via a
+// side-effect import of ~100 action modules. Stub both dynamically-imported modules so the
+// test controls exactly which handlers count as registered (and loads none of that graph).
+const { registeredRef } = vi.hoisted(() => ({ registeredRef: { current: new Set<string>() } }));
+vi.mock('../harness/routines/register-system-actions', () => ({}));
+vi.mock('../harness/routines/system-actions', () => ({
+  getSystemAction: (name: string) => (registeredRef.current.has(name) ? () => undefined : undefined),
+}));
+
 import * as dbOrg from '@papercusp/db-org';
 import * as harnessCore from '../harness-core';
 import * as workspaceRegistry from '../workspace-registry';
@@ -238,6 +247,158 @@ describe('enforceActiveRoutines (EI-18678269428596559 recurrence guard P-3)', ()
     const logged = consoleSpy.mock.calls.map((c) => String(c[0]));
     expect(logged.some((l) => l.startsWith('[routine-validation] FATAL'))).toBe(true);
 
+    consoleSpy.mockRestore();
+  });
+});
+
+/**
+ * EI-19367772473246483 — an ACTIVE `system:<action>` routine whose handler was never
+ * registered fires forever into `no handler registered … skipping` while this validator
+ * reported "startup validation passed" and NAMED it in the resolving list.
+ *
+ * Live cost of the gap: WI-6639's `sweep-stalled-loops` (the guard that disarms/escalates
+ * stalled engine loops) ticked hourly as a NO-OP because nothing imported its action module —
+ * so the very mechanism meant to escalate a silently-halted loop was itself silently halted.
+ */
+describe('validateActiveRoutines — unregistered system-action handlers (EI-19367772473246483)', () => {
+  const mockWs = 'papercusp-workspace';
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    registeredRef.current = new Set<string>();
+    vi.mocked(workspaceRegistry.activeWorkspaceId).mockReturnValue(mockWs);
+    // These rows carry a real install_slug, so the harness leg must pass for the
+    // system-action leg to be the only thing under test.
+    vi.mocked(harnessCore.resolveProject).mockResolvedValue({ slug: 'papercusp' } as any);
+  });
+  afterEach(() => vi.clearAllMocks());
+
+  it('flags an active system: routine whose handler is NOT registered, and fails ok', async () => {
+    registeredRef.current = new Set(['git-sync']); // sweep-stalled-loops deliberately absent
+    const mockSql = vi.fn().mockResolvedValue([
+      {
+        install_slug: 'papercusp',
+        name: 'sweep-stalled-loops',
+        workspace_id: mockWs,
+        target_role: 'system:sweep-stalled-loops',
+        reschedule_interval_sec: null,
+        target_owner_id: null,
+      },
+    ]);
+    vi.mocked(dbOrg.getOrgPg).mockReturnValue({ sql: mockSql } as any);
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const result = await validateActiveRoutines();
+
+    expect(result.unregisteredSystemActions).toEqual([
+      {
+        installSlug: 'papercusp',
+        routineName: 'sweep-stalled-loops',
+        action: 'sweep-stalled-loops',
+        workspaceId: mockWs,
+      },
+    ]);
+    // `ok` must go false — this is what stops the boot log printing the reassuring
+    // "startup validation passed — N active routine(s) resolve" line over a dead routine.
+    expect(result.ok).toBe(false);
+    // Kept OUT of problematicRoutines: that bucket is what enforceActiveRoutines PAUSES,
+    // and pausing is the wrong remedy for a missing import.
+    expect(result.problematicRoutines).toHaveLength(0);
+    const logged = consoleSpy.mock.calls.map((c) => String(c[0]));
+    expect(logged.some((l) => l.includes('NO REGISTERED HANDLER'))).toBe(true);
+    consoleSpy.mockRestore();
+  });
+
+  it('passes when the handler IS registered', async () => {
+    registeredRef.current = new Set(['sweep-stalled-loops']);
+    const mockSql = vi.fn().mockResolvedValue([
+      {
+        install_slug: 'papercusp',
+        name: 'sweep-stalled-loops',
+        workspace_id: mockWs,
+        target_role: 'system:sweep-stalled-loops',
+        reschedule_interval_sec: null,
+        target_owner_id: null,
+      },
+    ]);
+    vi.mocked(dbOrg.getOrgPg).mockReturnValue({ sql: mockSql } as any);
+
+    const result = await validateActiveRoutines();
+
+    expect(result.unregisteredSystemActions).toHaveLength(0);
+    expect(result.ok).toBe(true);
+  });
+
+  it('NEVER flags an inline loop fire — it bypasses the registry by dispatch precedence', async () => {
+    // The false-positive that matters: measured live, 36 of 155 active `system:%` routines are
+    // `system:loop-wake` engine loops handled INLINE by fireLoopWake(). `system:%` alone would
+    // flag every one of them, against a guard whose sibling auto-pauses what it flags.
+    registeredRef.current = new Set<string>(); // empty registry — the harshest case
+    const mockSql = vi.fn().mockResolvedValue([
+      {
+        install_slug: 'papercusp',
+        name: 'loop-su-7854d874',
+        workspace_id: mockWs,
+        target_role: 'system:loop-wake',
+        reschedule_interval_sec: 900,
+        target_owner_id: 'su-7854d874',
+      },
+    ]);
+    vi.mocked(dbOrg.getOrgPg).mockReturnValue({ sql: mockSql } as any);
+
+    const result = await validateActiveRoutines();
+
+    expect(result.unregisteredSystemActions).toHaveLength(0);
+    expect(result.ok).toBe(true);
+  });
+
+  it('still flags a system: routine that has an interval but NO bound owner (not a loop fire)', async () => {
+    // Guards the exemption's precision: dispatch requires BOTH an interval and an owner to
+    // take the inline path, so an interval alone must not buy an exemption.
+    registeredRef.current = new Set<string>();
+    const mockSql = vi.fn().mockResolvedValue([
+      {
+        install_slug: 'papercusp',
+        name: 'some-cadenced-action',
+        workspace_id: mockWs,
+        target_role: 'system:some-cadenced-action',
+        reschedule_interval_sec: 600,
+        target_owner_id: null,
+      },
+    ]);
+    vi.mocked(dbOrg.getOrgPg).mockReturnValue({ sql: mockSql } as any);
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const result = await validateActiveRoutines();
+
+    expect(result.unregisteredSystemActions).toHaveLength(1);
+    expect(result.unregisteredSystemActions[0].action).toBe('some-cadenced-action');
+    consoleSpy.mockRestore();
+  });
+
+  it('enforceActiveRoutines REPORTS an unregistered handler but issues no UPDATE', async () => {
+    registeredRef.current = new Set<string>();
+    const mockSql = vi.fn().mockResolvedValue([
+      {
+        install_slug: 'papercusp',
+        name: 'sweep-stalled-loops',
+        workspace_id: mockWs,
+        target_role: 'system:sweep-stalled-loops',
+        reschedule_interval_sec: null,
+        target_owner_id: null,
+      },
+    ]);
+    vi.mocked(dbOrg.getOrgPg).mockReturnValue({ sql: mockSql } as any);
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const result = await enforceActiveRoutines();
+
+    expect(result.autoDeactivated).toEqual([]);
+    expect(mockSql).toHaveBeenCalledTimes(1); // SELECT only — the row is correct, the code is not
+    // enforce passes silent:true, so it must re-emit the report itself or the boot caller
+    // (which logs only on `ok`) prints nothing at all.
+    const logged = consoleSpy.mock.calls.map((c) => String(c[0]));
+    expect(logged.some((l) => l.includes('NO REGISTERED HANDLER'))).toBe(true);
     consoleSpy.mockRestore();
   });
 });
