@@ -2759,15 +2759,13 @@ async function runIntegratorLeg(slug: string, workspaceId: string): Promise<void
     // P-505: gate on the lease ONCE here (the tick's own default gate would
     // re-query presence) — only the current authority derives a grant; grant
     // derivation on a non-authority could wrongly seed its staging ref.
-    // WI-6996: `routineHostsOnly` — candidacy is restricted to devices that
-    // actually RUN this pot's cadence loops (`shared_presence.runs_routines`).
-    // Without it this election is argmin/HRW over the live presence roster with
-    // no notion of whether the winner integrates, which is the EXACT failure
-    // EI-18761517980514694 documents for gym-cycle ("the election succeeded and
-    // elected a node that does not run the loop, which is why it never
-    // self-corrected"). That fix shipped OPT-IN and this call site never opted
-    // in, so it stayed reachable here — and it fired: on 2026-08-02 an iMac with
-    // a fresh 10s heartbeat but no papercusp integrator held this lease for ~5h
+    // WI-6996: candidacy is restricted to devices that actually RUN THIS routine.
+    // Without any such restriction the election is argmin/HRW over the live
+    // presence roster with no notion of whether the winner integrates, which is
+    // the EXACT failure EI-18761517980514694 documents for gym-cycle ("the
+    // election succeeded and elected a node that does not run the loop, which is
+    // why it never self-corrected"). It fired here on 2026-08-02: an iMac with a
+    // fresh 10s heartbeat but no papercusp integrator held this lease for ~5h
     // while the one machine doing the committing declined `not_authority` every
     // tick. Canonical `refs/hive/staging` froze, so egress saw canonical==origin
     // and pushed nothing, and origin/staging sat 70 commits behind with every
@@ -2775,16 +2773,32 @@ async function runIntegratorLeg(slug: string, workspaceId: string): Promise<void
     // origin-freshness-watchdog.ts — it compares canonical-vs-origin, so this
     // class of freeze silently disables its own detector).
     //
+    // EI-19330771435294981: this used to pass `routineHostsOnly: true`, which is
+    // the CADENCE-loop predicate (`gym-cycle`/`scout-cycle`). Papercusp runs no
+    // cadence routine, so that bit is null on EVERY row here — the narrowing
+    // excluded ALL peers rather than the incapable ones, leaving integrator
+    // arbitration OFF rather than tightened. It was a time bomb, not a fix: the
+    // moment one peer armed a cadence routine it would have become the sole
+    // eligible integrator for a routine it does not run. `requiresRoutine` asks
+    // this election's OWN question instead — is `'git-sync'` in the peer's
+    // published `shared_presence.active_routines` (mig 724).
+    //
+    // Matching is EXACT array membership, not substring: `foreign-git-sync` is a
+    // real routine here and must never satisfy this predicate.
+    //
     // Safe by construction: eligibility constrains PEERS only — both selectors
     // add SELF unconditionally AFTER the exclusion filter (lock-authority.ts
     // `selectAuthorityFromRows`), so the degenerate case (no device publishes
-    // the bit yet) is "every peer excluded ⇒ self wins ⇒ this node integrates
+    // the set yet) is "every peer excluded ⇒ self wins ⇒ this node integrates
     // its own repo", which is strictly better than freezing. Two nodes briefly
     // both integrating is the already-accepted risk this leg documents above
     // (FF-only + CAS + epoch fence, proven P-308).
     let authority: Awaited<ReturnType<typeof lockAuthorityForHive>>;
     try {
-      authority = await lockAuthorityForHive(potHomeSlug, { eligibleDevices, routineHostsOnly: true });
+      authority = await lockAuthorityForHive(potHomeSlug, {
+        eligibleDevices,
+        requiresRoutine: 'git-sync',
+      });
     } catch {
       // presence unreadable — the real authority still runs its own tick
       await decline('presence_unreadable');

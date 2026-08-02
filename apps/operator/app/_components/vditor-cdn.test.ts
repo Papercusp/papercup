@@ -32,9 +32,25 @@ const MARKDOWN_EDITOR = resolve(HERE, 'MarkdownEditor.tsx');
  *  constructor. Both read `options.cdn`; both are lazy `import('vditor')`. */
 const VDITOR_ENTRY_POINTS = /(?:Vditor\.preview\(|new Vditor\()/g;
 
+/**
+ * Drop comments before pattern-matching. Load-bearing, not tidiness: this very
+ * file's subject documents its own API in prose ("the first `new Vditor(...)`",
+ * "each Vditor.preview() call"), so a naive match counts those doc mentions as
+ * call sites — the first cut of this test read 6 entry points where 3 exist and
+ * failed against correct code. A guard that miscounts the thing it guards is
+ * worse than no guard, because the noise is what gets silenced.
+ *
+ * Block comments go first, so a URL living inside one (`https://unpkg.com/...`
+ * in the VDITOR_CDN docs) is already gone. The line-comment rule then refuses to
+ * fire on a `//` preceded by `:` so it cannot bite a bare protocol in real code.
+ */
+function stripComments(src: string): string {
+  return src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1');
+}
+
 describe('vditor cdn (WI-7088)', () => {
   it('every Vditor entry point passes an explicit cdn', async () => {
-    const src = await readFile(MARKDOWN_EDITOR, 'utf8');
+    const src = stripComments(await readFile(MARKDOWN_EDITOR, 'utf8'));
 
     const entryPoints = src.match(VDITOR_ENTRY_POINTS) ?? [];
     const cdnArgs = src.match(/cdn:\s*VDITOR_CDN\b/g) ?? [];
@@ -44,14 +60,15 @@ describe('vditor cdn (WI-7088)', () => {
     expect(cdnArgs.length).toBe(entryPoints.length);
   });
 
-  it('no OTHER module constructs Vditor behind this guard\'s back', () => {
+  it('no OTHER module constructs Vditor behind this guard\'s back', async () => {
     // The assertion above only inspects MarkdownEditor.tsx. A second module
-    // importing vditor directly would be invisible to it — so pin the fact that
+    // constructing Vditor would be invisible to it — so pin the fact that
     // MarkdownEditor.tsx is the single wrapper. `git grep` (not a tree walk)
     // keeps this off node_modules, the generated public/vditor mirror, and dist.
-    const hits = execFileSync(
+    const candidates = execFileSync(
       'git',
-      ['grep', '-l', '-E', "from 'vditor'|import\\('vditor'\\)", '--', 'apps', 'packages', 'libs'],
+      ['grep', '-l', '-E', "from 'vditor'|import\\('vditor'\\)|new Vditor\\(|Vditor\\.preview\\(",
+       '--', '*.ts', '*.tsx'],
       { cwd: REPO_ROOT, encoding: 'utf8' },
     )
       .split('\n')
@@ -59,7 +76,19 @@ describe('vditor cdn (WI-7088)', () => {
       // Tests may stub the module; only real call sites matter here.
       .filter((f) => !f.includes('.test.'));
 
-    expect(hits).toEqual(['apps/operator/app/_components/MarkdownEditor.tsx']);
+    // A file only counts as a call site if it constructs Vditor in CODE. Several
+    // files legitimately DISCUSS it in prose — ChunkReloadPrompt.tsx documents
+    // `import('vditor')` as its motivating example — and a memory-bench JSON
+    // fixture even quotes this bug's own history back. Matching raw text flagged
+    // all of them; comment-stripped code is the honest test.
+    const constructors: string[] = [];
+    for (const file of candidates) {
+      const code = stripComments(await readFile(resolve(REPO_ROOT, file), 'utf8'));
+      if (VDITOR_ENTRY_POINTS.test(code)) constructors.push(file);
+      VDITOR_ENTRY_POINTS.lastIndex = 0; // /g regex carries state between .test()
+    }
+
+    expect(constructors).toEqual(['apps/operator/app/_components/MarkdownEditor.tsx']);
   });
 
   it('the cdn base resolves to a real local mirror, not the internet', async () => {

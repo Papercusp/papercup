@@ -101,7 +101,17 @@ export function mockReturnOnceTyped<T extends (...args: never[]) => unknown>(moc
  * fixture inside.
  */
 export function mockImplementationTyped<T extends (...args: never[]) => unknown>(mock: MockFor<T>, impl: T): void {
-  mock.mockImplementation(impl as Parameters<typeof mock.mockImplementation>[0]);
+  // ⚠ The `as unknown as` double hop is required HERE and only here (WI-7094). The four
+  // setters above cast a VALUE, where TS only needs assignability. This one converts a
+  // FUNCTION TYPE `T` into vitest's `NormalizedProcedure<T>`, and since that conditional
+  // stays unresolved (see the header) TS judges the two types insufficiently overlapping
+  // and raises TS2352 — a stricter error than the TS2345 the others hit, whose own
+  // suggested remedy is to route through `unknown` first. Removing the hop reds the gate.
+  // Note this is still NOT an `as never` / `as any` escape: the target stays DERIVED from
+  // the mock's real parameter type, so it self-corrects if vitest changes the signature,
+  // and `check-mock-cast-escape.mjs` (which ratchets casts ENDING in a bare `as never` /
+  // `as any`) is not tripped by it.
+  mock.mockImplementation(impl as unknown as Parameters<typeof mock.mockImplementation>[0]);
 }
 
 /** `mock.mockRejectedValue(reason)` for a mock installed for an async function `T`. */

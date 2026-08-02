@@ -19,6 +19,7 @@
 import { execSync, execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { recordStandingReds } from './tsc-red-observations.mjs';
 
 /**
  * One diagnostic parsed out of tsc's output.
@@ -979,6 +980,22 @@ export function formatUncoveredFilesBanner({ label, uncovered, suggestions, fata
  *   exists to prevent (EI-487 / WI-4488: an under-report that ratchets in reads as clean
  *   for days). A run that WRITES the baseline measures it itself.
  *
+ * ## KNOWN NARROWING — name every file you edited, not just the one you are asking about
+ *
+ * The watermark is computed from the files you NAMED, so the guarantee it buys is exactly
+ * "the shared compile postdates edits to the files this run renders a verdict on". If you
+ * edit G and then ask only about F, a replay may come from a compile that predates the G
+ * edit — and since F imports G, F's reported count could be pre-G. The tree token used to
+ * cover that incidentally (any edit anywhere busted the key), so this is a real narrowing
+ * and not merely a restatement.
+ *
+ * It is accepted rather than closed because every way of closing it re-widens the
+ * watermark to "any uncommitted edit in the tree", which on a checkout ~16 agents are
+ * saving into is `now` on every call — i.e. exactly the churn that made coalescing
+ * impossible in the first place (~1 change/18s vs a ~170s compile). The mitigation is the
+ * instruction the gate already gives everywhere: pass `--files=` listing what you actually
+ * changed. That is also what makes the VERDICT trustworthy here, so the two align.
+ *
  * @param {{ root: string, files: Set<string> | null, updateFlag: boolean }} args
  * @returns {number | null} epoch seconds, or null to disable coalescing for this run
  */
@@ -1393,6 +1410,12 @@ export function runTscBaselineGate({
           console.log(`    Not YOUR gate failure (you did not name them), so this run stays green — but the`);
           console.log(`    committed one(s) above need an owner. A bare npm run of this gate reds the fleet on them.`);
         }
+        // EI-19342686127995790 — this is the exact line the fleet computes ~9x/hour and discards.
+        // Remember it so a red that OUTLIVES its author can be found later; the sweeper (never this
+        // hot path) decides whether it has persisted long enough to deserve an owner. Local append
+        // only, and every failure is swallowed inside recordStandingReds — the gate's verdict and
+        // exit code must not depend on it. `standing` excludes dirty paths by construction.
+        recordStandingReds({ entries: standing, project: label ?? '' });
       }
       process.exit(0);
       break;

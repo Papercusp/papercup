@@ -822,10 +822,20 @@ export async function listResumableSessions(limit = 30): Promise<AdvSessionRow[]
   }
 }
 
+/**
+ * EI-19284963139619048: `loop:status`'s wake-reachability probe reads the caller's
+ * session row through this function to decide the wake channel. It used to run on
+ * the plain, unbounded `getOrgPg()` admin pool — no statement_timeout — so a stall
+ * here (lock wait / slow scan under fleet load) hung `loop:status` itself until the
+ * client's own 300s idle-timeout killed the call blind (pg-bounded-txn.ts's header
+ * documents this exact symptom class, already fixed for `work_items:comment`).
+ * boundedOrgTxn sets a real statement_timeout so a stall now fails fast + typed —
+ * caught by the SAME try/catch this function already had for a missing-table read,
+ * so a timeout degrades to `null` exactly like today's other error paths.
+ */
 export async function getAdvSession(id: number): Promise<AdvSessionRow | null> {
   try {
-    const { sql } = getOrgPg();
-    const rows = await sql<
+    const rows = await boundedOrgTxn((tx) => tx<
       Array<{
         id: number;
         workspace_id: string;
@@ -861,7 +871,7 @@ export async function getAdvSession(id: number): Promise<AdvSessionRow | null> {
        WHERE workspace_id = ${activeWorkspaceId()}
          AND id = ${id}
        LIMIT 1
-    `;
+    `);
     const r = rows[0];
     if (!r) return null;
     return mapAdvSessionRow(r);

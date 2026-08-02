@@ -146,6 +146,11 @@ describe('positiveControlFailure — TRAP 2, the anti-vacuity rule', () => {
       backend: 'hybrid-pg',
       floors: { minScore: 0.45, minLexScore: 0.4, fusionMode: 'cosine-gated' },
       corpusSeeded: 114,
+      // Required on PushFloorProbeResult. Empty here on purpose: these cases
+      // exercise positiveControlFailure (TRAP 2, anti-vacuity), which reads
+      // `positiveControl` and never the separation reading — same rationale as
+      // the empty `offTopic`/`violations` below.
+      spread: [],
       offTopic: [],
       violations: [],
       positiveControl: { queries: 120, withHits: 100, meanAdmitted: 6.2 },
