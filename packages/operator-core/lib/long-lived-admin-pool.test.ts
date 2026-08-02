@@ -49,6 +49,7 @@ vi.mock('@papercusp/db-org', async () => {
 let mod: typeof import('./long-lived-admin-pool');
 beforeEach(async () => {
   built.length = 0;
+  builtOpts.length = 0; // must reset too — else builtOpts[0] is test #1's build, not this test's
   ended.length = 0;
   currentUrl = 'postgresql://u:p@127.0.0.1:20216/papercusp';
   mod = await import('./long-lived-admin-pool');

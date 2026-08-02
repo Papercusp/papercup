@@ -28,7 +28,7 @@ import {
   type ObservationRatings,
   type ScorecardRatingRubric,
 } from './harness/improvements/observation-types';
-import { issuesScopeWorkspace, issuesOutLinksMany } from './issues-engineer';
+import { issuesScopeWorkspace, issuesOutLinksMany, type IssueOutLink } from './issues-engineer';
 import { getRubric, rubricInstrumentContract, type Rubric, type RubricStatus } from './rubrics';
 import { pgTimestampToIso } from './pg-timestamp';
 
@@ -439,6 +439,25 @@ export interface ListScorecardsFilter {
    * Set true only for an explicit "did the monitor speak at all (incl. the floor)" read.
    */
   includeSynthesized?: boolean;
+  /**
+   * Resolve each row's outbound coord_links edges into {@link ScorecardRow.linkedItems}.
+   * Default TRUE (opt-OUT, deliberately mirroring `ListIssuesFilter.includeBody`): a
+   * default-false would let every existing caller silently lose the field, and because
+   * `linkedItems` is a non-optional array a wrong default yields an empty list rather
+   * than a compile error.
+   *
+   * Set FALSE on any read that only aggregates ratings/scores. It skips one join-heavy
+   * query per call — `issuesOutLinksMany` over up to `limit` issue refs, LEFT JOINing
+   * engineer_issues AND features. Measured (pg_stat_statements, 2026-08-02): that
+   * statement — queryid 4304231427406153880, reachable ONLY from here — was the
+   * most-called query on the box at 1,209,724 calls / 64,865s / 279 rows per call,
+   * heavier than either wide-read survivor P-008 was chasing, and its result is read by
+   * exactly ONE consumer in the tree (the ScorecardDetail UI panel).
+   *
+   * ⚠ Keep it TRUE for anything feeding scorecard DETAIL — the `scorecards.list`
+   * sync-resolver is what populates that panel.
+   */
+  includeLinks?: boolean;
 }
 
 interface ScorecardRowDb {
@@ -495,7 +514,13 @@ export async function listScorecards(filter: ListScorecardsFilter = {}): Promise
   const out: ScorecardRow[] = [];
   // WI-3594: batch-fetch every row's outbound links in ONE query (no N+1) rather
   // than a per-row listOut — a scorecard page can be up to `limit` (500) rows.
-  const linksByIssue = await issuesOutLinksMany(rows.map((r) => r.issue_id));
+  // WI-6124: ...and skip that query ENTIRELY when the caller opted out. Batching fixed the
+  // N+1 but every aggregate-only reader still paid one join-heavy query per call for a
+  // field it never read — see ListScorecardsFilter.includeLinks for the measurement.
+  const linksByIssue =
+    filter.includeLinks === false
+      ? new Map<string, IssueOutLink[]>()
+      : await issuesOutLinksMany(rows.map((r) => r.issue_id));
 
   for (const row of rows) {
     const observation = asStructuredObservation((row.payload as { observation?: unknown } | null)?.observation);
@@ -880,6 +905,9 @@ export async function scorecardTrend(filter: ScorecardTrendFilter): Promise<Rubr
     sourceHive: filter.sourceHive,
     since: filter.since,
     limit: filter.limit ?? 500,
+    // WI-6124: the trend is a pure roll-up of ratings + createdAt and never reads
+    // `linkedItems`, so skip the per-call outbound-links join (see includeLinks).
+    includeLinks: false,
   });
   // listScorecards is newest-first; the series wants chronological (oldest→newest).
   const chrono = [...rows].reverse();
