@@ -33,6 +33,8 @@ import buildTypecheck, {
   suggestProjects,
   runTsc,
   buildScopedTsconfig,
+  ambientTypePackages,
+  projectDeclaresTypes,
 } from './typecheck';
 import {
   FOREGROUND_TIMEOUT_CEILING_MS,
@@ -443,5 +445,218 @@ describe('buildScopedTsconfig (scopeToFiles)', () => {
     s.cleanup();
     expect(existsSync(s.configPath)).toBe(false);
     expect(() => s.cleanup()).not.toThrow();
+  });
+});
+
+// Trap 3: absolute `typeRoots` is NECESSARY BUT NOT SUFFICIENT. With `types` left
+// undefined, TS's automatic "@types under typeRoots" inclusion does not survive the config
+// living in a temp dir, so every ambient global disappears. MEASURED 2026-08-02 on
+// apps/operator/scripts/hooks/cc/__tests__/pc-heavy.test.ts: 28 phantom errors -> 0 with
+// `types` populated. It hid for so long because operator-core — the project the scoped mode
+// was proved on — declares `types: ["node"]` itself and was immune.
+describe('ambientTypePackages — what tsc would have auto-included', () => {
+  let root: string;
+
+  beforeAll(() => {
+    root = mkdtempSync(join(tmpdir(), 'p024-ambient-'));
+    const typeRoot = join(root, 'node_modules', '@types');
+    mkdirSync(join(typeRoot, 'node'), { recursive: true });
+    mkdirSync(join(typeRoot, 'babel__core'), { recursive: true });
+    mkdirSync(join(typeRoot, '.cache'), { recursive: true });
+    writeFileSync(join(typeRoot, 'README.md'), 'not a package');
+  });
+
+  afterAll(() => rmSync(root, { recursive: true, force: true }));
+
+  it('returns the directory names as bare package names, sorted', () => {
+    // Bare names are the form `compilerOptions.types` expects — NOT paths.
+    expect(ambientTypePackages(join(root, 'node_modules', '@types'))).toEqual([
+      'babel__core',
+      'node',
+    ]);
+  });
+
+  it('ignores files and dot-directories, which are not packages', () => {
+    const got = ambientTypePackages(join(root, 'node_modules', '@types'));
+    expect(got).not.toContain('README.md');
+    expect(got).not.toContain('.cache');
+  });
+
+  it('returns [] rather than throwing when @types does not exist', () => {
+    // The caller keys off the empty array to OMIT `types` entirely. Emitting `types: []`
+    // would mean "include NO ambient packages" — strictly worse than not setting it, and
+    // would guarantee the exact phantom-error flood this repair exists to stop.
+    expect(ambientTypePackages(join(root, 'nope', '@types'))).toEqual([]);
+  });
+});
+
+describe('projectDeclaresTypes — the gate that keeps the repair from being destructive', () => {
+  let root: string;
+  const write = (name: string, body: unknown | string) =>
+    writeFileSync(
+      join(root, name),
+      typeof body === 'string' ? body : JSON.stringify(body, null, 2),
+    );
+
+  beforeAll(() => {
+    root = mkdtempSync(join(tmpdir(), 'p024-declares-'));
+  });
+
+  afterAll(() => rmSync(root, { recursive: true, force: true }));
+
+  it('is TRUE when the project declares compilerOptions.types', () => {
+    // MEASURED 2026-08-02: injecting the full 96-package enumeration into a scoped run of
+    // packages/operator-core took it from 1 error to 92 — an explicit `types` in the
+    // extending config OVERRIDES the inherited one, and operator-core pins `types: ["node"]`
+    // precisely to keep the other ambient test-framework globals out.
+    write('declares.json', { compilerOptions: { types: ['node'] } });
+    expect(projectDeclaresTypes(join(root, 'declares.json'))).toBe(true);
+  });
+
+  it('is TRUE for an explicitly EMPTY types, which is a deliberate exclusion', () => {
+    // `types: []` means "no ambient packages at all" — a stronger statement than silence,
+    // and the one case where overriding would do the most damage.
+    write('empty-types.json', { compilerOptions: { types: [] } });
+    expect(projectDeclaresTypes(join(root, 'empty-types.json'))).toBe(true);
+  });
+
+  it('is FALSE when nothing in the chain declares types — the case the repair is for', () => {
+    write('bare.json', { compilerOptions: { strict: true } });
+    expect(projectDeclaresTypes(join(root, 'bare.json'))).toBe(false);
+  });
+
+  it('is FALSE for a config with no compilerOptions at all', () => {
+    write('nothing.json', { include: ['src'] });
+    expect(projectDeclaresTypes(join(root, 'nothing.json'))).toBe(false);
+  });
+
+  it('follows the extends chain and finds a types declared by the PARENT', () => {
+    write('parent-typed.json', { compilerOptions: { types: ['node'] } });
+    write('child-of-typed.json', { extends: './parent-typed.json', compilerOptions: { strict: true } });
+    expect(projectDeclaresTypes(join(root, 'child-of-typed.json'))).toBe(true);
+  });
+
+  it('follows the extends chain and still reports FALSE when no link declares types', () => {
+    write('grandparent-bare.json', { compilerOptions: { strict: true } });
+    write('parent-bare.json', { extends: './grandparent-bare.json' });
+    write('child-bare.json', { extends: './parent-bare.json' });
+    expect(projectDeclaresTypes(join(root, 'child-bare.json'))).toBe(false);
+  });
+
+  it('resolves an extends WITHOUT the .json suffix, the way tsc does', () => {
+    write('suffixless-parent.json', { compilerOptions: { types: ['node'] } });
+    write('suffixless-child.json', { extends: './suffixless-parent' });
+    expect(projectDeclaresTypes(join(root, 'suffixless-child.json'))).toBe(true);
+  });
+
+  it('is FALSE for a tsconfig whose paths contain the "@/*" alias — the case that defeated the first implementation', () => {
+    // REGRESSION GUARD, not a hypothetical. The first version stripped JSONC comments
+    // UNCONDITIONALLY, and the block-comment regex treated the `/*` inside `"@/*"` as the
+    // start of a comment and ate the rest of `paths`. That made apps/operator's perfectly
+    // VALID JSON unparseable; since this function fails open, every project then reported
+    // "declares types", the repair silently never ran, and every surface still looked right.
+    // Hence: JSON.parse FIRST, strip only as a fallback.
+    write('alias.json', {
+      compilerOptions: {
+        strict: true,
+        baseUrl: '.',
+        paths: { '@/*': ['./*'], '~/*': ['./src/*'] },
+      },
+    });
+    expect(projectDeclaresTypes(join(root, 'alias.json'))).toBe(false);
+  });
+
+  it('still parses a genuinely JSONC config (comments + trailing comma) via the fallback', () => {
+    write(
+      'jsonc.json',
+      ['{', '  // the ambient set is pinned on purpose', '  "compilerOptions": {', '    "types": ["node"],', '  },', '}'].join('\n'),
+    );
+    expect(projectDeclaresTypes(join(root, 'jsonc.json'))).toBe(true);
+  });
+
+  it('fails OPEN (true) on a file that does not exist', () => {
+    // The enumeration is a repair for a KNOWN-broken case, never something to force on a
+    // project whose intent we could not read.
+    expect(projectDeclaresTypes(join(root, 'absent.json'))).toBe(true);
+  });
+
+  it('fails OPEN (true) on genuinely malformed JSON', () => {
+    write('broken.json', '{ this is not json at all ');
+    expect(projectDeclaresTypes(join(root, 'broken.json'))).toBe(true);
+  });
+
+  it('fails OPEN (true) on a BARE PACKAGE extends, which is not resolvable from here', () => {
+    write('pkg-extends.json', { extends: '@tsconfig/node20/tsconfig.json' });
+    expect(projectDeclaresTypes(join(root, 'pkg-extends.json'))).toBe(true);
+  });
+
+  it('fails OPEN (true) on an extends pointing at a file that is missing', () => {
+    write('dangling.json', { extends: './no-such-parent.json' });
+    expect(projectDeclaresTypes(join(root, 'dangling.json'))).toBe(true);
+  });
+
+  it('fails OPEN (true) on a CYCLIC extends chain instead of recursing forever', () => {
+    write('cycle-a.json', { extends: './cycle-b.json' });
+    write('cycle-b.json', { extends: './cycle-a.json' });
+    expect(projectDeclaresTypes(join(root, 'cycle-a.json'))).toBe(true);
+  });
+});
+
+describe('buildScopedTsconfig — the types gate, end to end', () => {
+  let root: string;
+  let file: string;
+
+  beforeAll(() => {
+    root = mkdtempSync(join(tmpdir(), 'p024-typesgate-'));
+    mkdirSync(join(root, 'node_modules', '@types', 'node'), { recursive: true });
+    mkdirSync(join(root, 'node_modules', '@types', 'babel__core'), { recursive: true });
+    file = join(root, 'a.ts');
+    writeFileSync(file, 'export const a = 1;\n');
+    writeFileSync(
+      join(root, 'tsconfig.undeclared.json'),
+      JSON.stringify({ compilerOptions: { strict: true, paths: { '@/*': ['./*'] } } }),
+    );
+    writeFileSync(
+      join(root, 'tsconfig.declared.json'),
+      JSON.stringify({ compilerOptions: { types: ['node'] } }),
+    );
+  });
+
+  afterAll(() => rmSync(root, { recursive: true, force: true }));
+
+  it('INJECTS the enumerated ambient set for a project that declares no types', () => {
+    const s = buildScopedTsconfig(root, join(root, 'tsconfig.undeclared.json'), [file]);
+    try {
+      const cfg = JSON.parse(readFileSync(s.configPath, 'utf8'));
+      expect(cfg.compilerOptions.types).toEqual(['babel__core', 'node']);
+    } finally {
+      s.cleanup();
+    }
+  });
+
+  it('OMITS types entirely for a project that declares its own, leaving the inherited set intact', () => {
+    const s = buildScopedTsconfig(root, join(root, 'tsconfig.declared.json'), [file]);
+    try {
+      const cfg = JSON.parse(readFileSync(s.configPath, 'utf8'));
+      // Not `types: []` — the key must be ABSENT, or it overrides the project's own pin.
+      expect('types' in cfg.compilerOptions).toBe(false);
+    } finally {
+      s.cleanup();
+    }
+  });
+
+  it('OMITS types when @types cannot be read, degrading to the previous behaviour', () => {
+    const bare = mkdtempSync(join(tmpdir(), 'p024-notypes-'));
+    const bareFile = join(bare, 'a.ts');
+    writeFileSync(bareFile, 'export const a = 1;\n');
+    writeFileSync(join(bare, 'tsconfig.json'), JSON.stringify({ compilerOptions: { strict: true } }));
+    const s = buildScopedTsconfig(bare, join(bare, 'tsconfig.json'), [bareFile]);
+    try {
+      const cfg = JSON.parse(readFileSync(s.configPath, 'utf8'));
+      expect('types' in cfg.compilerOptions).toBe(false);
+    } finally {
+      s.cleanup();
+      rmSync(bare, { recursive: true, force: true });
+    }
   });
 });
