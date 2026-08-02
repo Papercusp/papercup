@@ -11,6 +11,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   tryConsumeFederatedWake,
+  federatedWakeAllowance,
+  recordFederatedWakeSpend,
   resetFederatedWakeRate,
   DEFAULT_FED_WAKE_MAX_PER_HOUR,
 } from './federated-wake-rate';
@@ -20,9 +22,11 @@ const T0 = 1_700_000_000_000;
 beforeEach(() => {
   resetFederatedWakeRate();
   delete process.env.PAPERCUSP_FED_WAKE_MAX_PER_HOUR;
+  delete process.env.PAPERCUSP_FED_WAKE_DIRECTED_RESERVE;
 });
 afterEach(() => {
   delete process.env.PAPERCUSP_FED_WAKE_MAX_PER_HOUR;
+  delete process.env.PAPERCUSP_FED_WAKE_DIRECTED_RESERVE;
 });
 
 describe('tryConsumeFederatedWake', () => {
@@ -97,5 +101,80 @@ describe('tryConsumeFederatedWake', () => {
     } finally {
       warn.mockRestore();
     }
+  });
+});
+
+/**
+ * WI-7043 — ambient traffic (fed_event re-fires, courtesy receipts) used to share
+ * ONE undifferentiated budget with directed addressee wakes AND to charge before
+ * knowing whether it woke anyone. Measured on the tower↔Mac rig: 33 fed_events +
+ * 7 directed wakes in one hour against a cap of 30, so both LIVE-1 parity wakes
+ * were suppressed while their messages applied normally.
+ */
+describe('WI-7043: ambient spend must not starve directed wakes', () => {
+  it('reserves headroom: ambient stops at cap-reserve while directed still reaches the cap', () => {
+    process.env.PAPERCUSP_FED_WAKE_MAX_PER_HOUR = '9';
+    process.env.PAPERCUSP_FED_WAKE_DIRECTED_RESERVE = '3';
+    // Ambient may take 6 (9 - 3) and no more…
+    for (let i = 0; i < 6; i++) {
+      expect(tryConsumeFederatedWake('dev-a', 1, T0, 'ambient')).toBe(true);
+    }
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      expect(tryConsumeFederatedWake('dev-a', 1, T0, 'ambient')).toBe(false);
+    } finally {
+      warn.mockRestore();
+    }
+    // …and the 3 reserved tokens are still there for the directed fan.
+    expect(federatedWakeAllowance('dev-a', 'directed', T0)).toBe(3);
+    expect(tryConsumeFederatedWake('dev-a', 3, T0, 'directed')).toBe(true);
+  });
+
+  it('the shipped default keeps a third of the cap reserved for directed wakes', () => {
+    // 30/hour default → ambient ceiling 20, directed 30.
+    expect(federatedWakeAllowance('dev-a', 'ambient', T0)).toBe(20);
+    expect(federatedWakeAllowance('dev-a', 'directed', T0)).toBe(
+      DEFAULT_FED_WAKE_MAX_PER_HOUR,
+    );
+  });
+
+  it('an emit that woke NOBODY costs nothing (the starvation bug)', () => {
+    process.env.PAPERCUSP_FED_WAKE_MAX_PER_HOUR = '4';
+    process.env.PAPERCUSP_FED_WAKE_DIRECTED_RESERVE = '0';
+    const before = federatedWakeAllowance('dev-a', 'ambient', T0);
+    // The admission check charges nothing…
+    expect(before).toBe(4);
+    expect(federatedWakeAllowance('dev-a', 'ambient', T0)).toBe(4);
+    // …and a re-fire that matched no local watcher bills zero.
+    recordFederatedWakeSpend('dev-a', 0, 'ambient', T0);
+    expect(federatedWakeAllowance('dev-a', 'ambient', T0)).toBe(4);
+    // Only a re-fire that actually woke someone is billed.
+    recordFederatedWakeSpend('dev-a', 2, 'ambient', T0);
+    expect(federatedWakeAllowance('dev-a', 'ambient', T0)).toBe(2);
+  });
+
+  it('100 no-op fed_event re-fires leave a directed wake fully deliverable', () => {
+    process.env.PAPERCUSP_FED_WAKE_MAX_PER_HOUR = '30';
+    for (let i = 0; i < 100; i++) {
+      if (federatedWakeAllowance('dev-a', 'ambient', T0) > 0) {
+        recordFederatedWakeSpend('dev-a', 0, 'ambient', T0); // woken: 0
+      }
+    }
+    expect(federatedWakeAllowance('dev-a', 'directed', T0)).toBe(30);
+    expect(tryConsumeFederatedWake('dev-a', 5, T0, 'directed')).toBe(true);
+  });
+
+  it('recordFederatedWakeSpend ignores non-positive and non-finite counts', () => {
+    process.env.PAPERCUSP_FED_WAKE_MAX_PER_HOUR = '5';
+    recordFederatedWakeSpend('dev-a', -3, 'ambient', T0);
+    recordFederatedWakeSpend('dev-a', Number.NaN, 'ambient', T0);
+    expect(federatedWakeAllowance('dev-a', 'directed', T0)).toBe(5);
+  });
+
+  it('recorded spend ages out of the sliding window like consumed tokens', () => {
+    process.env.PAPERCUSP_FED_WAKE_MAX_PER_HOUR = '2';
+    recordFederatedWakeSpend('dev-a', 2, 'ambient', T0);
+    expect(federatedWakeAllowance('dev-a', 'directed', T0)).toBe(0);
+    expect(federatedWakeAllowance('dev-a', 'directed', T0 + 60 * 60 * 1000 + 1)).toBe(2);
   });
 });

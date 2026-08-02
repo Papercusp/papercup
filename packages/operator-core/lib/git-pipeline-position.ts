@@ -2520,18 +2520,28 @@ export async function gitPipelinePosition(
     }
     return v;
   };
-  // WI-6484: `!targetSha` means there is NOTHING TO MEASURE — no commit has ever
-  // touched this path, an explicit sha never resolved, or neither a path nor a sha
-  // was supplied — not that the four legs below were measured and genuinely came
-  // back false. Without this hoist, `positions.*` silently stays at its initialized
-  // `false`, and the ONLY channel that distinguishes "measured false" from "nothing
-  // to measure" for a consumer that reads just the headline (notably the
-  // `git.pipelinePosition` state cell, whose `positionsUnknown` hoist is exactly
-  // that channel) never fires — "deployed: false" then reads as "not deployed yet,
-  // wait for it", when waiting is in fact infinite (the overwhelmingly common cause
-  // is a typo'd/renamed path). See the `notes` pushed above (e.g. "No commit has
-  // touched '<path>' yet") for the human-readable reason; this is its branchable form.
-  if (!targetSha) {
+  // WI-6484: `!targetSha` USUALLY means there is NOTHING TO MEASURE — an explicit
+  // sha never resolved, neither a path nor a sha was supplied, or no commit has
+  // EVER touched this path AND it doesn't even exist dirty in the working tree
+  // (the overwhelmingly likely cause: a typo'd/renamed/wrong-submodule path) — not
+  // that the four legs below were measured and genuinely came back false. Without
+  // this hoist, `positions.*` silently stays at its initialized `false`, and the
+  // ONLY channel that distinguishes "measured false" from "nothing to measure" for
+  // a consumer that reads just the headline (notably the `git.pipelinePosition`
+  // state cell, whose `positionsUnknown` hoist is exactly that channel) never
+  // fires — "deployed: false" then reads as "not deployed yet, wait for it", when
+  // waiting is in fact infinite.
+  //
+  // EXEMPTION, reconciled with the "brand-new dirty file" case just below (P-006 /
+  // D-039): when the path IS dirty (exists uncommitted in the working tree) and no
+  // sha was explicitly requested, "not committed yet" is a genuine, confident,
+  // actionable MEASUREMENT — the git log read succeeded and correctly found
+  // nothing, because the file simply has not been committed. That is one of the
+  // commonest reads there is (an agent checking whether its own new file landed),
+  // and hoisting it would make the hoist noisy for exactly that common case. So the
+  // hoist applies to every `!targetSha` case EXCEPT this one.
+  const noCommitButDirtyPath = !inp.sha && !!relPath && dirtyUncommitted;
+  if (!targetSha && !noCommitButDirtyPath) {
     positionsUnknown.push('committedLocal', 'onStaging', 'inMain', 'deployed');
   }
   if (targetSha) {

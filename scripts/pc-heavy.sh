@@ -60,7 +60,15 @@
 #   PC_HEAVY_COALESCE     "1"(default)/"0" — coalesce genuinely-CONCURRENT
 #                         identical invocations (see below). off/false/no also
 #                         disable.
-#   PC_HEAVY_COALESCE_SEC coalescing window in seconds (default 90).
+#   PC_HEAVY_COALESCE_SEC result-freshness window in seconds (default 90) —
+#                         how long an ALREADY-FINISHED result may be replayed.
+#                         This is NOT how long a follower waits for a running
+#                         leader; see below.
+#   PC_HEAVY_COALESCE_MAX_WAIT_SEC
+#                         hard cap on how long a follower waits for a LIVE
+#                         leader (default 1800). Leader liveness is OBSERVED
+#                         (pid + start-time), so this only bounds a leader that
+#                         is hung-but-alive; a dead leader is detected at once.
 #
 # Crash-safe: the slot is an flock held on an open fd for the child's whole
 # lifetime; the kernel releases it when this process exits for ANY reason
@@ -87,11 +95,14 @@
 # ~10min git-sync auto-commit cadence) and keyed only on command identity, not
 # tree content: it is thundering-herd coalescing, not a content-addressed
 # result cache — we do NOT want a second, home-rolled version of the tsc
-# `--incremental` staleness bug EI-487 already burned this team on. A slow
-# leader is never blocked on by a follower forever: after the coalescing
-# window elapses with no fresh result, a follower gives up waiting and just
-# runs the command itself (uncached), so a wedged/crashed leader can never
-# starve the fleet. Kill-switch: PC_HEAVY_COALESCE=0.
+# `--incremental` staleness bug EI-487 already burned this team on.
+#
+# A slow leader is never blocked on by a follower forever — but "is the leader
+# still alive?" is answered by OBSERVING it, never by a timeout. See the
+# leader-liveness note at the wait loop below (EI-19343301596011451): tying the
+# follower's patience to PC_HEAVY_COALESCE_SEC made coalescing INVERT for every
+# command slower than that window, which is precisely the set of commands it
+# exists to protect. Kill-switch: PC_HEAVY_COALESCE=0.
 
 # NOTE: deliberately no `set -e` — a non-blocking flock miss returns non-zero by
 # design and must not abort the script.
@@ -397,6 +408,50 @@ if [ "$_coalesce_enabled" = 1 ]; then
     exit "$(cat "$_c_exit" 2>/dev/null || echo 1)"
   }
 
+  # ── Leader liveness (EI-19343301596011451) ────────────────────────────────
+  # "May I reuse a FINISHED result?" and "is the leader still WORKING?" are
+  # different questions. They used to share _coalesce_ttl, and the second one
+  # has no correct constant: any command slower than the window had its LIVE
+  # leader's lock reclaimed as 'abandoned', while every follower hit the
+  # deadline and launched a duplicate. The heavier the command, the more
+  # reliably coalescing inverted into the herd it exists to prevent —
+  # operator-core's typecheck runs ~180s against a 90s window, and five
+  # identical compiles were observed queued at once with none running.
+  #
+  # So liveness is now OBSERVED. The leader stamps its identity into the
+  # lockdir; a follower waits for as long as that process is actually alive.
+  # PID alone is insufficient (PID wrap is ~daily on this box under fleet
+  # load), so the start-time from /proc/<pid>/stat is recorded alongside it and
+  # must match — a recycled PID reads as dead, never as a live leader.
+  _c_max_wait="${PC_HEAVY_COALESCE_MAX_WAIT_SEC:-1800}"
+
+  # starttime (stat field 22), robust to a comm containing spaces/parens:
+  # everything through the final ')' is pid + comm, so field 22 is the 20th
+  # field of the remainder.
+  _proc_start() {
+    sed 's/.*) //' "/proc/$1/stat" 2>/dev/null | awk '{print $20}'
+  }
+  _leader_id() { printf '%s %s\n' "$$" "$(_proc_start "$$")"; }
+
+  _leader_alive() {
+    [ -d "$_c_lockdir" ] || return 1
+    _pid=""; _pstart=""
+    if [ -f "$_c_lockdir/pid" ]; then
+      read -r _pid _pstart < "$_c_lockdir/pid" 2>/dev/null || true
+    fi
+    if [ -n "$_pid" ] && [ -n "$_pstart" ]; then
+      _cur=$(_proc_start "$_pid")
+      [ -n "$_cur" ] && [ "$_cur" = "$_pstart" ]
+      return
+    fi
+    # No usable stamp — the leader wins the lock a moment before it can stamp,
+    # or /proc is unavailable. Fall back to the previous age heuristic rather
+    # than declaring a possibly-live leader dead: this path must never reclaim
+    # MORE aggressively than the behaviour it replaced.
+    _lm=$(stat -c %Y "$_c_lockdir" 2>/dev/null || echo 0)
+    [ $(( $(date +%s) - _lm )) -le "$_coalesce_ttl" ]
+  }
+
   # Fast path: an already-fresh result sitting from a just-finished run —
   # never even touch the slot machinery.
   if _coalesce_fresh; then _coalesce_replay; fi
@@ -418,7 +473,7 @@ if [ "$_coalesce_enabled" = 1 ]; then
   # the common case; re-checking immediately AFTER winning the lock closes the
   # remaining microsecond TOCTOU window between that check and the mkdir call
   # itself (the previous leader can finish + free the lock in that gap too).
-  _c_deadline=$(( $(date +%s) + _coalesce_ttl ))
+  _c_deadline=$(( $(date +%s) + _c_max_wait ))
   while :; do
     if _coalesce_fresh; then _coalesce_replay; fi
     if mkdir "$_c_lockdir" 2>/dev/null; then
@@ -427,9 +482,13 @@ if [ "$_coalesce_enabled" = 1 ]; then
       # and removed its lock in that exact gap). Defer to it instead of
       # redundantly re-running.
       if _coalesce_fresh; then
-        rmdir "$_c_lockdir" 2>/dev/null || true
+        rm -rf "$_c_lockdir" 2>/dev/null || true
         _coalesce_replay
       fi
+      # Stamp identity so followers can OBSERVE this leader rather than time
+      # it out. Written immediately after winning the lock; _leader_alive
+      # tolerates the sub-millisecond gap where the dir exists unstamped.
+      _leader_id > "$_c_lockdir/pid" 2>/dev/null || true
       _do_cache_write=1
       trap 'rm -rf "$_c_lockdir" 2>/dev/null' EXIT
       break
@@ -437,15 +496,18 @@ if [ "$_coalesce_enabled" = 1 ]; then
     # Reclaim an ABANDONED lock. Unlike the flock slots above, a plain mkdir
     # lock has no kernel-level auto-release — a leader that's SIGKILL'd (never
     # trappable) leaves it stuck forever otherwise, taxing every future
-    # identical call with a full wait before it gives up. A lock older than
-    # the coalescing window is presumed dead; reclaim and retry immediately.
-    if [ -d "$_c_lockdir" ]; then
-      _lock_mt=$(stat -c %Y "$_c_lockdir" 2>/dev/null || echo 0)
-      if [ $(( $(date +%s) - _lock_mt )) -gt "$_coalesce_ttl" ]; then
-        rmdir "$_c_lockdir" 2>/dev/null || true
-        continue
-      fi
+    # identical call with a full wait before it gives up. "Abandoned" is now a
+    # liveness OBSERVATION, so a long-running leader is never evicted and a
+    # dead one is reclaimed at once instead of after a full window.
+    #
+    # rm -rf, not rmdir: the lockdir carries the pid stamp, and rmdir only
+    # removes EMPTY dirs — it would fail silently here and disable reclaim.
+    if ! _leader_alive; then
+      rm -rf "$_c_lockdir" 2>/dev/null || true
     fi
+    # Deliberately fall through to the deadline check + sleep rather than
+    # `continue`-ing straight back: if the reclaim ever fails (permissions, a
+    # racing peer) an immediate retry would spin hot forever.
     [ "$(date +%s)" -ge "$_c_deadline" ] && break
     sleep 0.3
   done

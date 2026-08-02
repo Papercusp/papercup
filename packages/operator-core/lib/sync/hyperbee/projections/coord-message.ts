@@ -25,7 +25,11 @@ import type postgres from 'postgres';
 import type { TableProjection, ProvenanceContext } from '../projection';
 import { decideMemberContentOp } from '../member-content-guard';
 import type { PendingMembershipContent } from '../pending-membership-content';
-import { tryConsumeFederatedWake } from '../federated-wake-rate';
+import {
+  tryConsumeFederatedWake,
+  federatedWakeAllowance,
+  recordFederatedWakeSpend,
+} from '../federated-wake-rate';
 import { resolveAuthorCommsTier } from '../comms-tier-gate';
 import { quarantineCoordMessage, type QuarantineReason } from '../coord-quarantine-store';
 import { tryConsumeMemberMessageRate } from '../member-rate-gate';
@@ -235,7 +239,12 @@ async function writeToPg(
       // the verified source-log identity (provenance.authorPubkey), matching the
       // apply-path fans — never the spoofable body.from.
       const qb = row.body as { receipt?: unknown };
-      if (qb.receipt === true && tryConsumeFederatedWake(provenance?.authorPubkey ?? 'unknown', 1)) {
+      // WI-7043: a courtesy receipt is AMBIENT — it must never spend the reserve
+      // that keeps directed addressee wakes deliverable.
+      if (
+        qb.receipt === true &&
+        tryConsumeFederatedWake(provenance?.authorPubkey ?? 'unknown', 1, Date.now(), 'ambient')
+      ) {
         try {
           const { sendMessage } = await import('../../../agent-tools/coordination/messages');
           const { machineFingerprint } = await import('../../../identity/device-keychain-id');
@@ -391,7 +400,14 @@ async function writeToPg(
     // spoofable body.from). Over budget ⇒ the wake is suppressed but the message
     // is already applied — delivery is never dropped, only the re-invoke. The
     // addressee fan costs one token per addressee (each is a billable turn).
-    if (b.wake === true && to.length > 0 && commsTierAtLeast(authorTier, 'wake') && tryConsumeFederatedWake(authorPubkey ?? 'unknown', to.length)) {
+    if (
+      b.wake === true &&
+      to.length > 0 &&
+      commsTierAtLeast(authorTier, 'wake') &&
+      // WI-7043: DIRECTED — may draw on the whole cap, including the reserve that
+      // ambient fed_event/receipt traffic is held out of.
+      tryConsumeFederatedWake(authorPubkey ?? 'unknown', to.length, Date.now(), 'directed')
+    ) {
       try {
         const { wakeRecipients } = await import('../../../agent-tools/coordination/inbox-wake');
         const fan = await wakeRecipients(to, {
@@ -440,7 +456,8 @@ async function writeToPg(
             originalFrom &&
             originalFrom !== b.from &&
             // P-003: the reply-wake spends one token from the same author budget.
-            tryConsumeFederatedWake(authorPubkey ?? 'unknown', 1)
+            // WI-7043: DIRECTED — it re-invokes a specific named local agent.
+            tryConsumeFederatedWake(authorPubkey ?? 'unknown', 1, Date.now(), 'directed')
           ) {
             const { wakeRecipients } = await import('../../../agent-tools/coordination/inbox-wake');
             await wakeRecipients([originalFrom], {
@@ -470,15 +487,25 @@ async function writeToPg(
     const fe = b.fed_event as { key?: unknown; payload?: unknown; summary?: unknown; source?: unknown } | undefined;
     if (fe && typeof fe.key === 'string' && fe.key.length > 0 && commsTierAtLeast(authorTier, 'wake')) {
       try {
-        if (tryConsumeFederatedWake(authorPubkey ?? 'unknown', 1)) {
+        // WI-7043: bill what this re-fire ACTUALLY woke, not the attempt. Most
+        // federated events match no local watcher (`emitAwaitedEvent` fires only
+        // registered awaits — no watchers = no-op), and charging those burned the
+        // shared per-device budget on nothing: measured 33 fed_events against a
+        // 30/hour cap in one hour on the tower↔Mac rig, starving the directed
+        // addressee fan above so real cross-machine wakes were silently dropped.
+        // Admission is now a free `allowance > 0` check at the AMBIENT ceiling
+        // (which cannot touch the directed reserve), and the spend is recorded
+        // afterwards from the emit's own `woken` count.
+        if (federatedWakeAllowance(authorPubkey ?? 'unknown', 'ambient') > 0) {
           const { emitAwaitedEvent } = await import('../../../events/await/engine');
-          await emitAwaitedEvent({
+          const emitted = await emitAwaitedEvent({
             key: fe.key,
             ...(fe.payload !== undefined ? { payload: fe.payload } : {}),
             ...(typeof fe.summary === 'string' ? { summary: fe.summary } : {}),
             ...(typeof fe.source === 'string' ? { source: fe.source } : {}),
             workspaceId: opts.workspaceId,
           });
+          recordFederatedWakeSpend(authorPubkey ?? 'unknown', emitted?.woken ?? 0, 'ambient');
         }
       } catch (e) {
          

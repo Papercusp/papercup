@@ -880,8 +880,20 @@ function formatRefusalTarget(
  *  a live `FrameDuplex` satisfies it structurally (no second counter to drift
  *  from the real one) while a test can construct it as a plain object. */
 export interface ServeProgress {
-  /** Total bytes written toward the requester so far. */
+  /** Total bytes written toward the requester so far.
+   *
+   *  ⚠ NOT a liveness signal ON ITS OWN — see `bytesIn`. Under protocol v2 the
+   *  server writes a fixed capability advertisement before it has read anything,
+   *  so this is nonzero for every serve that merely got as far as saying hello. */
   readonly bytesOut: number;
+  /** Total bytes received FROM the requester so far — i.e. whether the peer ever
+   *  actually asked for anything.
+   *
+   *  This is the half that makes rule 0's "is it streaming?" question answerable.
+   *  `upload-pack` cannot emit a single byte of pack data before receiving the
+   *  client's `command=fetch` + want lines, so any genuinely-streaming serve has
+   *  this nonzero; a serve wedged at the greeting has it at exactly 0. */
+  readonly bytesIn: number;
   /** Wall-clock of the last outbound write; `0` before the first byte. */
   readonly lastWriteAt: number;
 }
