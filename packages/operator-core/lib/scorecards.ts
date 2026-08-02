@@ -441,21 +441,27 @@ export interface ListScorecardsFilter {
   includeSynthesized?: boolean;
   /**
    * Resolve each row's outbound coord_links edges into {@link ScorecardRow.linkedItems}.
-   * Default TRUE (opt-OUT, deliberately mirroring `ListIssuesFilter.includeBody`): a
-   * default-false would let every existing caller silently lose the field, and because
-   * `linkedItems` is a non-optional array a wrong default yields an empty list rather
-   * than a compile error.
+   * Default FALSE — links are OPT-IN. Pass true only on a read that actually SURFACES
+   * them; today that is exactly two sites (the `scorecards.list` sync-resolver, which
+   * populates the ScorecardDetail panel, and the `scorecards:list` agent tool, which
+   * hands whole rows to agents).
    *
-   * Set FALSE on any read that only aggregates ratings/scores. It skips one join-heavy
-   * query per call — `issuesOutLinksMany` over up to `limit` issue refs, LEFT JOINing
-   * engineer_issues AND features. Measured (pg_stat_statements, 2026-08-02): that
-   * statement — queryid 4304231427406153880, reachable ONLY from here — was the
-   * most-called query on the box at 1,209,724 calls / 64,865s / 279 rows per call,
-   * heavier than either wide-read survivor P-008 was chasing, and its result is read by
-   * exactly ONE consumer in the tree (the ScorecardDetail UI panel).
+   * WHY OPT-IN (WI-6124, 2026-08-02). Resolving links costs one join-heavy query per
+   * call — `issuesOutLinksMany` over up to `limit` issue refs, LEFT JOINing
+   * engineer_issues AND features. Measured (pg_stat_statements): that statement —
+   * queryid 4304231427406153880, reachable ONLY from here — was the most-called query
+   * on the box at 1,209,724 calls / 64,865s / 279 rows per call, heavier than either
+   * wide-read survivor P-008 was chasing. Nearly all of it was waste: NO server-side
+   * caller reads `linkedItems` at all (verified tree-wide), only the one UI panel.
    *
-   * ⚠ Keep it TRUE for anything feeding scorecard DETAIL — the `scorecards.list`
-   * sync-resolver is what populates that panel.
+   * It was eager-by-default, so each new aggregate caller silently inherited the cost —
+   * which is precisely how it grew this large: `scorecardTrend` and the derived-reads
+   * producer both arrived later and both paid it for a field they never read. Neither
+   * default is compile-enforceable (both surfacing sites pass rows straight through, so
+   * TS cannot see the read), so the default is chosen on cost asymmetry instead: a
+   * missed opt-in omits a UI field — visible to whoever is looking at the panel, and
+   * pinned by a test below — while a missed opt-out silently costs ~1.2M heavy joins.
+   * Cheap+visible beats expensive+invisible, so absence of an opinion must mean "don't".
    */
   includeLinks?: boolean;
 }
@@ -512,15 +518,14 @@ export async function listScorecards(filter: ListScorecardsFilter = {}): Promise
     }
   >();
   const out: ScorecardRow[] = [];
-  // WI-3594: batch-fetch every row's outbound links in ONE query (no N+1) rather
-  // than a per-row listOut — a scorecard page can be up to `limit` (500) rows.
-  // WI-6124: ...and skip that query ENTIRELY when the caller opted out. Batching fixed the
-  // N+1 but every aggregate-only reader still paid one join-heavy query per call for a
-  // field it never read — see ListScorecardsFilter.includeLinks for the measurement.
-  const linksByIssue =
-    filter.includeLinks === false
-      ? new Map<string, IssueOutLink[]>()
-      : await issuesOutLinksMany(rows.map((r) => r.issue_id));
+  // WI-3594: when links ARE wanted, batch-fetch every row's in ONE query (no N+1)
+  // rather than a per-row listOut — a scorecard page can be up to `limit` (500) rows.
+  // WI-6124: ...and skip that query ENTIRELY unless the caller asked for links. Batching
+  // fixed the N+1, but every aggregate-only reader still paid one join-heavy query per
+  // call for a field it never read — see ListScorecardsFilter.includeLinks.
+  const linksByIssue = filter.includeLinks
+    ? await issuesOutLinksMany(rows.map((r) => r.issue_id))
+    : new Map<string, IssueOutLink[]>();
 
   for (const row of rows) {
     const observation = asStructuredObservation((row.payload as { observation?: unknown } | null)?.observation);
@@ -905,9 +910,8 @@ export async function scorecardTrend(filter: ScorecardTrendFilter): Promise<Rubr
     sourceHive: filter.sourceHive,
     since: filter.since,
     limit: filter.limit ?? 500,
-    // WI-6124: the trend is a pure roll-up of ratings + createdAt and never reads
-    // `linkedItems`, so skip the per-call outbound-links join (see includeLinks).
-    includeLinks: false,
+    // WI-6124: no includeLinks — the trend is a pure roll-up of ratings + createdAt and
+    // never reads `linkedItems`, so it takes the default and skips the join.
   });
   // listScorecards is newest-first; the series wants chronological (oldest→newest).
   const chrono = [...rows].reverse();

@@ -764,7 +764,10 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     resolve: async (args) => {
       const { listScorecards } = await import('../scorecards');
       const { rubricRef, limit } = args as { rubricRef: string; limit: number };
-      return (await listScorecards({ rubricRef, limit })) as unknown[];
+      // WI-6124: links are opt-IN. This is the read behind the ScorecardDetail panel,
+      // which is the ONE place `linkedItems` is rendered — so this is a real opt-in, not
+      // a copied default. Dropping it silently empties that panel's "Linked items" list.
+      return (await listScorecards({ rubricRef, limit, includeLinks: true })) as unknown[];
     },
   },
   'rubrics.trend': {

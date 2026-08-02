@@ -52,7 +52,20 @@ export const COORD_EXECUTABLE_KINDS = [
  * evidence/provenance band to it), which is why the two are named separately
  * rather than partitioned by a predicate over one flat union.
  */
-export const COORD_CONVERSATIONAL_KINDS = ['message', 'ack', 'escalation', 'escalation_resolved'] as const;
+export const COORD_CONVERSATIONAL_KINDS = [
+  'message',
+  'ack',
+  'escalation',
+  'escalation_resolved',
+  // context-injection-audit-2026-07-28 P-039 / D-012: a commitment-scoped notice
+  // that a peer the RECEIVER is blocked on changed liveness state. Conversational
+  // by construction — it reports a derived verdict and carries no authority over
+  // runtime state (the reader decides whether to keep waiting). Deliberately NOT
+  // `message`: the per-recipient unanswered-directed aggregate counts only
+  // kind='message'/unset, so a distinct kind keeps these system notices out of
+  // that count for free instead of relying on a machine-sender exclusion.
+  'presence_alert',
+] as const;
 
 export type CoordExecutableKind = (typeof COORD_EXECUTABLE_KINDS)[number];
 export type CoordConversationalKind = (typeof COORD_CONVERSATIONAL_KINDS)[number];

@@ -64,6 +64,9 @@ export default defineTool({
       since: args.since,
       limit: args.limit,
       includeSynthesized: args.includeSynthesized,
+      // WI-6124: links are opt-IN. This tool returns whole rows to an agent, so it is a
+      // surfacing read — keep it true or agents silently see every scorecard as unlinked.
+      includeLinks: true,
     });
     return {
       data: { ok: true, count: scorecards.length, scorecards },

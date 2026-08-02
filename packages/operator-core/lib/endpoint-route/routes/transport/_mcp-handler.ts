@@ -1599,6 +1599,11 @@ const handler = createMcpHandler(
         extra: unknown,
       ) => {
         const toolName = req.params.name;
+        // Wall-clock at handler entry. The dispatcher stamps its own startedAt for
+        // a real dispatch; this one exists for the paths that answer WITHOUT
+        // dispatching — today the idempotency replay branch, whose telemetry row
+        // records how long serving the stored result took (WI-6792).
+        const callStartedAt = Date.now();
         // `let` (not const): the scoped-superuser clamp may RE-RESOLVE a wildcard
         // `harness:'all'` on plans:list into a workspace-wide read of the session's
         // own workspace (F-A1) before dispatch — see the clamp block below.
@@ -1939,32 +1944,10 @@ const handler = createMcpHandler(
               }
             }
           }
-          // Replay lookup (P-046 / EI-68) — placed after the profile gate so a
-          // replay grants nothing a fresh call wouldn't. Keys are scoped to the
-          // caller's STABLE identity: uiClientId (the per-session SID for
-          // SU/power sessions, where spawnId is per-request) falling back to
-          // spawnId (stable for signed orchestrator spawns). Best-effort: a
-          // store outage degrades to normal execution, never an error.
+          // Keys are scoped to the caller's STABLE identity: uiClientId (the
+          // per-session SID for SU/power sessions, where spawnId is per-request)
+          // falling back to spawnId (stable for signed orchestrator spawns).
           const replayOwnerKey = spawnRes.ctx.uiClientId ?? spawnRes.ctx.spawnId;
-          if (idempotencyKey && !skipReplayForReadOnly) {
-            try {
-              const stored = await lookupStoredMcpResult(replayOwnerKey, idempotencyKey);
-              if (stored) {
-                return stored as {
-                  content: Array<{ type: 'text'; text: string } | Record<string, unknown>>;
-                  isError?: boolean;
-                  _meta?: Record<string, unknown>;
-                  structuredContent?: unknown;
-                };
-              }
-            } catch (err) {
-               
-              console.warn(
-                `[mcp-replay] lookup failed for ${toolName} (key=${idempotencyKey}): ` +
-                  (err instanceof Error ? err.message : String(err)),
-              );
-            }
-          }
           // Superuser per-call workspace scoping (EI-30) — the inverse of the
           // power-user clamp. An unscoped superuser session (workspaceId '*')
           // that passes a concrete `workspace` arg dispatches under THAT

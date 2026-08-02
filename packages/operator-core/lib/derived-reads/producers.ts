@@ -278,13 +278,12 @@ registerDerivedRead({
     // out of the window) + a real UNBOUNDED total count.
     const [totalCounts, perRubricScorecards] = await Promise.all([
       scorecardTotalCountsByRubric(),
-      // WI-6124: this aggregation reads only `createdAt` and `score10` (below), never
-      // `linkedItems` — so opt out of the per-call outbound-links join. This is the
-      // highest-volume listScorecards caller in the tree (~13 rubrics x up to 500 rows
-      // EVERY producer run), so it paid ~13 of those joins per run for nothing.
-      Promise.all(
-        rubrics.map((r) => listScorecards({ rubricRef: r.rubricId, limit: 500, includeLinks: false })),
-      ),
+      // WI-6124: no includeLinks — this aggregation reads only `createdAt` and `score10`
+      // (below), never `linkedItems`, so it takes the opt-in default and skips the
+      // outbound-links join. This is the highest-volume listScorecards caller in the tree
+      // (~13 rubrics x up to 500 rows EVERY producer run); back when links were eager it
+      // paid ~13 of those join-heavy queries per run for a field it never read.
+      Promise.all(rubrics.map((r) => listScorecards({ rubricRef: r.rubricId, limit: 500 }))),
     ]);
     return rubrics.map((r, i) => {
       const cards = perRubricScorecards[i] ?? [];

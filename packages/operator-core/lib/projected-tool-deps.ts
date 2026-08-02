@@ -161,7 +161,20 @@ interface RecordInvocationInput {
     | "quota-exceeded"
     | "role-not-allowed"
     | "timeout"
-    | "invalid-input";
+    | "invalid-input"
+    /**
+     * WI-6792: the call was served from the idempotency-key replay store — the
+     * tool never ran. Written by the MCP handler's replay branch, which returns
+     * before dispatch and so never reaches the dispatcher's own recordTelemetry.
+     *
+     * DELIBERATELY its own member rather than 'ok' + a metadata flag:
+     * readQuotaState counts `status = 'ok'` rows, so a replay that reused 'ok'
+     * would charge the caller quota for work that was never performed. As its
+     * own status it is queryable ("how much of this window was replay?") and
+     * quota-neutral. No migration: tool_invocations.status has no CHECK
+     * constraint (verified via pg_constraint), only NOT NULL.
+     */
+    | "replayed";
   outputRef?: string | null;
   outputSize?: number | null;
   errorMessage?: string | null;

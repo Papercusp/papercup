@@ -77,6 +77,37 @@ import {
   renderLeak,
 } from './lib/identity-leak-patterns.mjs';
 
+/**
+ * ⚠ SUPERPROJECT-ONLY, DELIBERATELY — do NOT "fix" this by recursing into
+ * submodules (WI-6730 swept the other guards onto scripts/lib/tracked-files.mjs;
+ * this one is a documented EXCEPTION, and the exception was measured, not assumed).
+ *
+ * Recursing here finds 8 pre-existing `[owner:<name>]` tags in submodule source —
+ * 3 applied SQL migrations under libs/papercusp/libs/db/sql, and 5 in
+ * papercusp-desktop (two of them inside audit-release-bundle.py / stage-source-
+ * tree.sh, where the literal is the PATTERN BEING DOCUMENTED, not a leak).
+ *
+ * They are not a leak, and stripping them is the wrong move, because the desktop
+ * release already neutralises this class BY DESIGN — WI-4419 durable /
+ * desktop-v0-0-12-release-tri-platform#D-004. bin/stage-source-tree.sh redacts
+ * every identity literal in a COPY of each must-ship file at tar time (a
+ * --transform overlay, streaming — never the working tree), driven by
+ * REDACTION_BY_KEY in bin/audit-release-bundle.py, where the `build-git-name`
+ * key maps this box's `git config user.name` to the placeholder `owner`. The
+ * produced bytes carry no real name, and the gate still fails on any UN-redacted
+ * identity — the scrub removes the leak, it does not hide it.
+ *
+ * D-004 rejects the alternative in as many words: those files "cannot be pruned
+ * (they ship / run), and a per-file source edit is a treadmill that reds the next
+ * cut the moment a new tag lands." So extending ENFORCEMENT here would contradict
+ * a recorded decision and start exactly that treadmill — while gaining no real
+ * coverage, since the bundle is already clean.
+ *
+ * If you are here because you want submodule coverage: the seam exists
+ * (`listFilesIncludingUntracked()` in scripts/lib/tracked-files.mjs recurses while
+ * keeping `--others`, which plain `--recurse-submodules` cannot). The blocker is
+ * the POLICY above, not the enumerator. Change D-004 first, or leave this alone.
+ */
 const files = execFileSync(
   'git',
   ['ls-files', '-z', '--cached', '--others', '--exclude-standard'],
@@ -100,7 +131,7 @@ for (const file of files) {
 }
 
 if (findings.length === 0) {
-  console.log('✓ no named owner-provenance tags in shipped source');
+  console.log('✓ no named owner-provenance tags in shipped source (superproject — see the scope note above)');
   process.exit(0);
 }
 

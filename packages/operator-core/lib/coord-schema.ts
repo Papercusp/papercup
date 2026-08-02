@@ -110,6 +110,10 @@ const KIND_LEGEND: Record<CoordKind, LegendEntry> = {
   ack: { glyph: '=', name: 'ack — acknowledgement' },
   escalation: { glyph: '^', name: 'escalation — needs attention' },
   escalation_resolved: { glyph: '=', name: 'escalation resolved' },
+  // context-injection-audit-2026-07-28 P-039 / D-012. Its own glyph, for exactly
+  // the reason the `handoff_expired` note above records: a line telling you the
+  // peer you are BLOCKED ON just died must not render as `-` (a free-text note).
+  presence_alert: { glyph: 'x', name: 'presence alert — a peer YOU are blocked on died or stopped responding' },
 };
 
 /**

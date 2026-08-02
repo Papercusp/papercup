@@ -231,6 +231,19 @@ export function workFeedStatus(d: WorkFeedHealth): PanelStatus {
 export function tokensStatus(d: TokensHealth): PanelStatus {
   if (d.accountsTotal > 0 && d.accountsAvailable === 0) return 'crit';
   if (d.gatewayEnabled && d.gatewayReachable === false) return 'crit';
+  // EI-19303809952284205 — the gateway is UP and serving but has lost its database. Every durable
+  // account subsystem is inert: usage-window writes dropped (the Accounts tab freezes), the pool
+  // cannot reload (the gateway falls back to ONE synthetic credential and ignores every account pin,
+  // reporting healthyAccounts: 0), auto-scale-out dead. This ran for hours on 2026-08-01 with
+  // `/healthz` reporting ok:true, and was found only because a human noticed a stale UI panel.
+  if (d.gatewayDb?.ok === false) return 'crit';
+  // The INDEPENDENT leg: the operator's own view of the projection. Fires when the gateway is dead
+  // outright, or too old to report `gatewayDb` (the incident's gateway had been up 13.7 days — a
+  // long-lived process is exactly what this condition afflicts, so the self-report cannot be the
+  // only detector). Gated on real fleet spend so an idle box is never alarmed: `spendUsd` comes from
+  // agent_usage_samples, a DIFFERENT writer than the account-pool projection, so "the fleet made
+  // calls but the pool never moved" is a genuine cross-check rather than one signal grading itself.
+  if (projectionWriteStalled(d, POOL_PROJECTION_STALE_CRIT_MS)) return 'crit';
   if (d.gateway?.wedge) return 'crit';
   // WI-3565: a confirmed, sustained starvation WITH idle healthy accounts sitting unused is crit —
   // it is exactly the "queue deep, pool idle, nothing alarmed" incident this detector exists to catch.

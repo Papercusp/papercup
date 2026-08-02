@@ -349,6 +349,29 @@ export interface TokensHealth {
   /** The gateway's own admission/AIMD metrics + wedge/throttle verdict (B-GW-5). null = not read
    *  (gateway unreachable / flag off / /stats failed) — never fabricated. */
   gateway: GatewayPanelMetrics | null;
+  /** EI-19303809952284205 — the gateway's SELF-REPORTED durable-path health, straight off its
+   *  `stats().db`. This is the FAST leg: the gateway knows within ~3min that its Postgres is gone.
+   *  null = unknown (unreachable, flag off, or a gateway build predating the field — a long-lived
+   *  gateway being exactly the process this afflicts). Never read null as healthy. */
+  gatewayDb: {
+    ok: boolean;
+    connectionLevel: boolean;
+    failingOps: string[];
+    unhealthyForMs: number | null;
+    lastError: string | null;
+  } | null;
+  /** EI-19303809952284205 — age of the FRESHEST `rate.utilizationAt` across the whole pool, i.e. how
+   *  long since the gateway last landed ANY usage-window write. This is the SLOW, INDEPENDENT leg: it
+   *  is computed by the operator from the account-pool projection, so it still fires when the gateway
+   *  is dead outright or too old to report `gatewayDb`.
+   *
+   *  FRESHEST, deliberately not oldest: a single account with no traffic reaching it legitimately goes
+   *  stale (observed live 2026-08-01 — aviynw10 sat at an 18:26Z reading because its egress proxy was
+   *  transport-failing, nothing to do with sync). Taking the max would alarm on that. The real
+   *  condition is that NO account has been written recently, which is the write path itself being dead.
+   *
+   *  null = no account has ever been observed (a fresh pool) — not a fault. */
+  poolProjectionFreshestAgeMs: number | null;
 }
 
 /** Watchdog liveness. */

@@ -219,6 +219,7 @@
     "lint:no-workspace-default:strict": "node scripts/check-workspace-default-sql.mjs --strict",
     "lint:tsc": "bash scripts/pc-heavy.sh node scripts/lint-tsc.mjs",
     "lint:tsc:operator-vite": "bash scripts/pc-heavy.sh node scripts/lint-tsc-operator-vite.mjs",
+    "lint:tsc:orchestrator": "bash scripts/pc-heavy.sh node scripts/lint-tsc-orchestrator.mjs",
     "typecheck": "bash scripts/pc-heavy.sh node scripts/lint-tsc.mjs",
     "lint:vite-externalized": "node scripts/check-vite-externalized-warnings.mjs",
     "trace:vite-externalized": "node scripts/trace-vite-externalized.mjs",

@@ -89,6 +89,53 @@ export function listTrackedFiles(cwd = ROOT) {
 }
 
 /**
+ * Every tracked AND UNTRACKED-but-not-ignored file, superproject + each
+ * submodule git can descend into, as superproject-relative paths.
+ *
+ * ── WHY THIS CANNOT JUST BE `listTrackedFiles` (WI-6730) ────────────────────
+ * The identity guards (check-no-owner-name-tags, check-no-box-identity,
+ * check-no-identity-literals) deliberately pass `--others --exclude-standard`,
+ * because a brand-NEW file is invisible to a plain `git ls-files` until it is
+ * `git add`-ed — and that is precisely the moment a fresh identity leak is most
+ * likely to be sitting in the tree. Losing that would be a real regression, not
+ * a stylistic one.
+ *
+ * But git REFUSES to combine those flags with recursion:
+ *
+ *     $ git ls-files --recurse-submodules --others
+ *     fatal: ls-files --recurse-submodules unsupported mode
+ *
+ * So these guards could not adopt `listTrackedFiles()` without trading their
+ * untracked coverage for submodule coverage — one blind spot for another. This
+ * function buys both: the superproject keeps the untracked-inclusive flags, and
+ * each submodule is enumerated with the SAME flags in its own working tree, with
+ * results prefixed back to superproject-relative paths.
+ *
+ * A submodule git cannot descend into (no `.git` — the archive-extracted release
+ * checkouts described under `describeUnscanned`) simply contributes nothing and
+ * falls out as `unscanned`, exactly like the recursing path. Coverage is computed
+ * from the emitted paths, never from an exit code, so the two agree.
+ */
+export function listFilesIncludingUntracked(cwd = ROOT) {
+  const FLAGS = ['ls-files', '-z', '--cached', '--others', '--exclude-standard'];
+  const runZ = (dir) => {
+    try {
+      return execSync(`git ${FLAGS.join(' ')}`, { cwd: dir, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 })
+        .split('\0')
+        .filter(Boolean);
+    } catch {
+      return [];
+    }
+  };
+
+  const files = runZ(cwd);
+  for (const path of declaredSubmodules(cwd)) {
+    for (const rel of runZ(join(cwd, path))) files.push(`${path}/${rel}`);
+  }
+  return { files, ...coverageOf(files, cwd) };
+}
+
+/**
  * Coverage partition for an ALREADY-COMPUTED file list — the seam that lets a
  * guard keep its own enumeration and still report honest coverage (WI-6776).
  *

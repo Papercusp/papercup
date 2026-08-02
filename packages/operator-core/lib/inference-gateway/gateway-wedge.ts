@@ -48,6 +48,21 @@ export interface RawGatewayStats {
    *  and the in-flight registry disagreed in a way the valve could not reclaim — a leaked admission slot
    *  surfaced as a COUNTED signal. Optional (deploy-skew): a pre-P-005 gateway omits it → read as 0. */
   slotReconcileMismatch?: number;
+  /** EI-19303809952284205: the gateway's DURABLE-PATH health (db-health.ts). `ok:false` = its
+   *  Postgres side-paths have been failing long enough that the account pool cannot reload, usage-window
+   *  writes are dropped, and the gateway has silently fallen back to a single synthetic credential.
+   *
+   *  Optional for deploy-skew: `/admin/stats` is parsed off a REMOTE gateway process that may predate
+   *  this field, and a long-lived gateway is EXACTLY the process this condition afflicts (the incident's
+   *  gateway had been up 13.7 days). Absence means UNKNOWN — never healthy. */
+  db?: {
+    ok?: boolean;
+    observed?: boolean;
+    connectionLevel?: boolean;
+    failingOps?: string[];
+    unhealthyForMs?: number | null;
+    lastError?: string | null;
+  };
 }
 
 /** The structured gateway metrics surfaced on the dashboard (the "emit structured metrics" half). */

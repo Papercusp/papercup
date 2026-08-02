@@ -115,6 +115,41 @@ function loadWorkItemDeps(): Promise<WorkItemProbeDeps> {
   return workItemDepsPromise;
 }
 
+/**
+ * The SQL-backed probes' dependencies, shared for exactly the reason
+ * {@link loadWorkItemDeps} above is shared — and this one was the half the
+ * original fix MISSED.
+ *
+ * `workspaceScopedSql` used to open its own `import()` pair on every call, and it
+ * is called by THREE probes (`planDecision`, `planItem`, `fact`). Since
+ * `resolvePremiseStamps` resolves every ref through one `Promise.all`, a message
+ * citing two plan decisions ran two of those concurrently — reproducing precisely
+ * the unshared-import escape the work-item probe was hardened against, in the same
+ * file, one function below the comment explaining why it must not happen.
+ *
+ * The lesson worth keeping: the bug was never "the work-item probe is wrong", it
+ * was "an un-memoized dynamic import inside a concurrently-called function". Fixing
+ * the one site that had a failing test left every sibling site still holding it.
+ */
+type SqlProbeDeps = {
+  getOrgPg: () => { sql: unknown };
+  activeWorkspaceId: () => string;
+};
+let sqlDepsPromise: Promise<SqlProbeDeps> | null = null;
+
+function loadSqlDeps(): Promise<SqlProbeDeps> {
+  sqlDepsPromise ??= Promise.all([import('@papercusp/db-org'), import('../../workspace-registry')])
+    .then(([dbOrg, registry]) => ({
+      getOrgPg: dbOrg.getOrgPg as unknown as SqlProbeDeps['getOrgPg'],
+      activeWorkspaceId: registry.activeWorkspaceId as unknown as SqlProbeDeps['activeWorkspaceId'],
+    }))
+    .catch((err) => {
+      sqlDepsPromise = null;
+      throw err;
+    });
+  return sqlDepsPromise;
+}
+
 export interface PremiseProbeScope {
   /** The sender's harness, used to disambiguate a feature-family work-item id. */
   harnessSlug?: string | null;

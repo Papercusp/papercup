@@ -1047,6 +1047,7 @@ export default defineTool({
     // Hoist the resolved harness/workspace so the promotion failsafe below reuses them.
     let planHarnessSlug = harness;
     let planWorkspaceId = workspaceId;
+    let planRow: Parameters<typeof startVerdictForRow>[0] | null = null;
     try {
       const resolved = await resolveHarnessPlansDir(harness, { workspaceId });
       planHarnessSlug = resolved.harnessSlug;
@@ -1063,23 +1064,35 @@ export default defineTool({
             `Plan \`${planSlug}\` not found in harness \`${harness}\`. Create it first (plans:apply-plan-block / plans:new + plans:add-item), then launch the fleet.`,
           );
         }
-        // P-006 start gate, checked HERE for the same reason the existence check is
-        // here: before any window opens. A fleet launched on an under-specified plan
-        // would otherwise put N members to work and have each of them independently
-        // discover mid-task that the plan has no target — N failures for one missing
-        // argument, and N sessions to clean up.
-        const gate = startVerdictForRow(found.row, planSlug);
-        if (!gate.ok) {
-          return err(
-            `Plan \`${planSlug}\` cannot start: ${gate.refusal.hint}` +
-              (gate.refusal.missing.length > 0
-                ? ` (missing: ${gate.refusal.missing.join(', ')})`
-                : ''),
-          );
-        }
+        planRow = found.row;
       }
     } catch (e: any) {
       return err(`Could not resolve ${planSlug ? `plan \`${planSlug}\`` : `harness \`${harness}\``}: ${e?.message ?? e}`);
+    }
+
+    // P-006 start gate, checked HERE for the same reason the existence check is
+    // above: before any window opens. A fleet launched on an under-specified plan
+    // would otherwise put N members to work and have each of them independently
+    // discover mid-task that the plan has no target — N failures for one missing
+    // argument, and N sessions to clean up.
+    //
+    // Deliberately OUTSIDE the resolution try/catch above. This gate does no IO, so
+    // nothing it throws is a resolution failure — but while it lived inside, any
+    // defect here was relabelled `Could not resolve plan ...`, which is simply false
+    // and sends the reader after the plan store / database instead of the real cause.
+    // That is not hypothetical: a stub whose shape predated this gate made
+    // `found.row` undefined, and the resulting TypeError was reported as a
+    // resolution failure in 40 tests at once (EI-19310192267009629).
+    if (planSlug && planRow) {
+      const gate = startVerdictForRow(planRow, planSlug);
+      if (!gate.ok) {
+        return err(
+          `Plan \`${planSlug}\` cannot start: ${gate.refusal.hint}` +
+            (gate.refusal.missing.length > 0
+              ? ` (missing: ${gate.refusal.missing.join(', ')})`
+              : ''),
+        );
+      }
     }
 
     // #3 FAILSAFE (fleet-launch-promote-workitems-failsafe, 2026-07-08): members self-pull via
