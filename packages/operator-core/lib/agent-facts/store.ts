@@ -60,10 +60,29 @@ export type FactConfidence = (typeof FACT_CONFIDENCE_LEVELS)[number];
  * mechanically true, rather than a convention nobody can query, once the three
  * modalities are distinguishable:
  *
- *   conclusion — a settled finding. Today's default behaviour, stated.
- *   assumption — provisional; pairs with {@link FactDependency} so it can go
- *                stale on its own declared terms (D-007/D-019).
- *   convention — normative ("we do X here"); P-018's target.
+ *   conclusion  — a settled finding. Today's default behaviour, stated.
+ *   assumption  — provisional; pairs with {@link FactDependency} so it can go
+ *                 stale on its own declared terms (D-007/D-019).
+ *   convention  — normative ("we do X here"); P-018's target.
+ *   undecidable — NOT determinable from the available evidence, recorded so
+ *                 peers STOP RE-DERIVING it (agent-epistemics-2026-08-02 P-002).
+ *
+ * `undecidable` is the odd one out and deliberately so: the first three assert
+ * that something IS so, while this one asserts the ABSENCE of a determination.
+ * It earns a modality rather than a table because subject, scope, TTL and
+ * upsert-by-key semantics are all identical — only the claim's shape differs.
+ *
+ * It exists because 2026-08-02 cost four agents ~90 minutes producing four
+ * contradictory answers to one question that was not answerable from the fields
+ * they were reading. "Nobody can determine this" was knowable early, and had to
+ * be written in four non-authoritative places (CLAUDE.md, a carry-note, a
+ * broadcast, a work-item) because no addressable home existed. A fact is that
+ * home: it upserts by key and folds VERBATIM into every orient until retracted.
+ *
+ * ⚠ An `undecidable` REQUIRES `settledBy` (enforced in {@link assertFact}, not
+ * only in the tool). Without it the record cannot stop re-derivation — a reader
+ * cannot distinguish "nobody COULD determine this" from "nobody has tried
+ * lately", and the cheapest way to tell those apart is to try again.
  *
  * Workspace-scope CORRELATES with conventions but is not identical to them (a
  * workspace-scoped conclusion is not a convention), so correlation cannot
@@ -73,8 +92,35 @@ export type FactConfidence = (typeof FACT_CONFIDENCE_LEVELS)[number];
  * modality nobody stated is the same manufactured-certainty failure the nullable
  * `confidence` column already refuses.
  */
-export const FACT_KINDS = ['conclusion', 'assumption', 'convention'] as const;
+export const FACT_KINDS = ['conclusion', 'assumption', 'convention', 'undecidable'] as const;
 export type FactKind = (typeof FACT_KINDS)[number];
+
+/**
+ * An `undecidable` fact must name what WOULD settle the question.
+ *
+ * Validated in the STORE rather than only in the tool for the same reason
+ * {@link validateConventionEnforcement} is: a non-tool caller (a routine, a
+ * backfill) must not be able to write an exit-less UNKNOWN. The rule is the
+ * substance of P-002, not the tool's manners.
+ *
+ * Returns an error string, or null when the input is acceptable.
+ */
+export function validateUndecidableSettledBy(
+  kind: string | null,
+  settledBy: string | null | undefined,
+): string | null {
+  if (kind !== 'undecidable') {
+    // Not an error to omit it elsewhere — but silently STORING it on another
+    // modality would invent a meaning no reader could look up.
+    return settledBy != null && settledBy.trim() !== ''
+      ? `settledBy is only meaningful for kind:'undecidable' (got kind:'${kind ?? 'null'}') — it names what would settle an open question, so on a settled claim it has no referent`
+      : null;
+  }
+  if (settledBy == null || settledBy.trim() === '') {
+    return "kind:'undecidable' requires settledBy — name the evidence that WOULD settle this question. An undecidable with no stated exit does not stop re-derivation, it invites it: a reader cannot tell \"nobody COULD determine this\" from \"nobody has tried lately\"";
+  }
+  return null;
+}
 
 /**
  * P-018 / D-016: the enforcement tiers, STRONGEST FIRST — the order is the
@@ -311,6 +357,11 @@ export interface AgentFact {
    *  declared — including for every convention whose only enforcement is
    *  documentation, which D-016 rules out as a tier. */
   enforcement: ConventionEnforcement | null;
+  /** P-002 / migration 730: what evidence WOULD settle this question — present
+   *  only for kind:'undecidable', and ABSENT (not null) when the read did not
+   *  select the column, so "not projected" stays distinguishable from "an
+   *  undecidable with no exit", which is a defect rather than a narrow read. */
+  settledBy?: string | null;
   createdBy: string;
   updatedAt: string;
   expiresAt: string;
@@ -377,6 +428,11 @@ export interface AssertFactInput {
    *  {@link validateConventionEnforcement} — a tier on a non-convention, a
    *  floorless gate/detector, and a floored structural are all REFUSED. */
   enforcement?: ConventionEnforcement | null;
+  /** P-002: what evidence WOULD settle this question. REQUIRED for
+   *  kind:'undecidable' and refused on any other kind — validated by
+   *  {@link validateUndecidableSettledBy}. An UNKNOWN with no stated exit
+   *  invites the re-derivation it exists to prevent. */
+  settledBy?: string | null;
   createdBy: string;
   ttlSec?: number;
   workspaceId?: string;
@@ -868,6 +924,13 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
     throw new InvalidInputError(`facts:assert — ${enforcementError}`);
   }
   const enforcement = input.enforcement ?? null;
+  // P-002, same rationale as the enforcement check above: an exit-less UNKNOWN
+  // must be unwritable by ANY caller, not merely discouraged by the tool.
+  const settledByError = validateUndecidableSettledBy(kind, input.settledBy);
+  if (settledByError) {
+    throw new InvalidInputError(`facts:assert — ${settledByError}`);
+  }
+  const settledBy = input.settledBy?.trim() ? input.settledBy.trim() : null;
   const dependsOn = normalizeFactDependencies(input.dependsOn);
   const claim = input.claim && typeof input.claim === 'object' ? input.claim : null;
   // P-008 (a): APPEND-VERSIONING, not upsert-in-place (migration 689).
@@ -914,7 +977,7 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
     INSERT INTO harness_shared.agent_facts
       (workspace_id, harness_slug, scope, scope_ref, key, body, source_ref, created_by, expires_at, shareable,
        audience_scope, source_provenance, confidence, supersedes_id, kind, depends_on, claim,
-       enforcement)
+       enforcement, settled_by)
     VALUES
       (${ws},
        -- keep an already-stamped federation identity when a later assert omits
@@ -931,10 +994,11 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
        ${kind},
        ${dependsOn ? JSON.stringify(dependsOn) : null}::text::jsonb,
        ${claim ? JSON.stringify(claim) : null}::text::jsonb,
-       ${enforcement ? JSON.stringify(enforcement) : null}::text::jsonb)
+       ${enforcement ? JSON.stringify(enforcement) : null}::text::jsonb,
+       ${settledBy})
     RETURNING id, superseded_at::text, supersedes_id,
               scope, scope_ref, key, body, source_ref, audience_scope, source_provenance,
-              confidence, kind, depends_on, claim, enforcement, created_by, updated_at::text, expires_at::text`;
+              confidence, kind, depends_on, claim, enforcement, settled_by, created_by, updated_at::text, expires_at::text`;
   // Cap enforcement — evict oldest-updated live facts past the cap for this
   // (scope, ref). LOCAL partition only (H6): the local writer's cap must never
   // evict foreign-source observations (those are bounded per-source by the
@@ -1101,7 +1165,11 @@ export async function foldFacts(
     if (sel.scope !== 'workspace' && !ref) continue; // an unset optional dimension folds nothing
     const rows = await sql<AgentFactRow[]>`
       SELECT id, scope, scope_ref, key, body, source_ref, audience_scope, source_provenance,
-             confidence, kind, depends_on, claim, enforcement, created_by, updated_at::text, expires_at::text,
+             -- P-002: settled_by rides the FOLD specifically. An undecidable whose exit
+             -- is stored but never surfaced cannot stop re-derivation — the reader would
+             -- see "nobody could determine this" with no way to act on it, which is the
+             -- half-finish this modality exists to prevent.
+             confidence, kind, depends_on, claim, enforcement, settled_by, created_by, updated_at::text, expires_at::text,
              -- P-008 (c): the cell version, so the fold can mark what changed since
              -- the reader's cursor without a second query.
              fed_hlc
@@ -1320,7 +1388,7 @@ export async function factVersions(
   const rows = await sql<AgentFactRow[]>`
     SELECT id, superseded_at::text, supersedes_id,
            scope, scope_ref, key, body, source_ref, audience_scope, source_provenance,
-           confidence, kind, depends_on, claim, enforcement, created_by, updated_at::text, expires_at::text
+           confidence, kind, depends_on, claim, enforcement, settled_by, created_by, updated_at::text, expires_at::text
       FROM harness_shared.agent_facts
      WHERE workspace_id = ${ws} AND scope = ${args.scope}
        AND coalesce(scope_ref,'') = ${ref} AND key = ${key}
@@ -1443,6 +1511,8 @@ interface AgentFactRow {
   claim?: unknown;
   /** P-018 — migration 692. */
   enforcement?: unknown;
+  /** P-002 — migration 730. What would settle an `undecidable`. */
+  settled_by?: string | null;
   created_by: string;
   updated_at: string;
   expires_at: string;
@@ -1515,6 +1585,11 @@ function rowToFact(r: AgentFactRow): AgentFact {
     // convention and a convention whose tier failed to parse must both read as
     // "no tier declared", never as a tier the row does not carry.
     enforcement: parseConventionEnforcement(r.enforcement),
+    // P-002, migration 730. Spread-when-selected like `fed_hlc` below rather than
+    // defaulted to null: a read that did not select the column must stay
+    // distinguishable from an undecidable that genuinely carries no exit — the
+    // latter is a defect worth seeing, the former is just a narrow projection.
+    ...(r.settled_by === undefined ? {} : { settledBy: r.settled_by }),
     createdBy: r.created_by,
     updatedAt: r.updated_at,
     expiresAt: r.expires_at,

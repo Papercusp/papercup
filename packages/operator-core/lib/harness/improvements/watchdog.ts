@@ -260,6 +260,20 @@ export interface WatchdogSignal {
    */
   earliestAt?: string;
   /**
+   * (EI-19363804802198172) red-test only: the COMMIT dimension the wall-clock
+   * window flattens. Carried on the signal (not just rendered into `body`) so the
+   * debounce can ask the one question that decides whether the evidence is live:
+   * has a DESCENDANT of every failing sha already passed this same test?
+   */
+  redTest?: {
+    /** Distinct failing shas in the window, newest first. */
+    failShas: string[];
+    /** Newest passing sha in the window, if any. */
+    lastPassSha?: string;
+    /** Newest passing run's timestamp (ISO), if any. */
+    lastPassAt?: string;
+  };
+  /**
    * Resolution cooldown (ms). When set, a signal whose key matches only RESOLVED
    * dups is suppressed (→ `staleResolved`) if the newest resolution landed within
    * this window before the signal's `latestAt`. For collectors whose SCANNED tree
@@ -671,6 +685,19 @@ interface RedTestRow {
   latest_fail_at?: string | Date | null;
   /** Oldest fail in the window (EI-10102 debounce span). */
   earliest_fail_at?: string | Date | null;
+  /**
+   * (EI-19363804802198172) The `commit_sha` of every failing run in the window,
+   * newest first. The window is a WALL-CLOCK slice of a shared tree that several
+   * runners test CONCURRENTLY and OUT OF ORDER, so "5 failures" routinely means
+   * "one sha failed 4× and another 1×" — often a sha that was already superseded
+   * before the first of those runs. Collapsing that dimension is what makes the
+   * signal read as one live recurring bug.
+   */
+  fail_shas?: (string | null)[] | null;
+  /** Newest PASSING run's sha in the window, if any. */
+  last_pass_sha?: string | null;
+  /** Newest PASSING run's timestamp in the window, if any. */
+  last_pass_at?: string | Date | null;
 }
 
 /** ISO-or-undefined from a pg timestamp value (Date under postgres.js, string in tests). */
@@ -702,22 +729,95 @@ export function redTestSignalsFromRows(rows: RedTestRow[], windowHours: number):
       const ea = toIsoOrUndefined(prev.earliest_fail_at);
       const eb = toIsoOrUndefined(r.earliest_fail_at);
       prev.earliest_fail_at = ea && eb ? (ea <= eb ? ea : eb) : (ea ?? eb ?? null);
+      // The commit dimension merges too: the canonical and checkpoint trees test
+      // the same shas, so the union is what "which commits failed" means here.
+      prev.fail_shas = [...(prev.fail_shas ?? []), ...(r.fail_shas ?? [])];
+      const pa = toIsoOrUndefined(prev.last_pass_at);
+      const pb = toIsoOrUndefined(r.last_pass_at);
+      if (pb && (!pa || pb > pa)) {
+        prev.last_pass_at = pb;
+        prev.last_pass_sha = r.last_pass_sha;
+      } else {
+        prev.last_pass_at = pa ?? pb ?? null;
+      }
     } else {
       byPath.set(path, { ...r, file_path: path });
     }
   }
-  return [...byPath.values()].map((r) => ({
-    source: 'red-test' as const,
-    key: r.file_path,
-    title: `Test failing repeatedly: ${r.file_path}`,
-    body:
-      `Watchdog signal (red-test): ${r.file_path} (${r.framework}) failed ${r.fails}× in the last ` +
-      `${windowHours}h and its latest run is still red.\n\nLast failure tail:\n${(r.sample ?? '').slice(-1500) || '(no output captured)'}`,
-    severity: 'major' as const,
-    paths: [r.file_path],
-    latestAt: toIsoOrUndefined(r.latest_fail_at),
-    earliestAt: toIsoOrUndefined(r.earliest_fail_at),
-  }));
+  return [...byPath.values()].map((r) => {
+    const failShaCounts = countFailShas(r.fail_shas);
+    const lastPassSha = r.last_pass_sha ?? undefined;
+    const lastPassAt = toIsoOrUndefined(r.last_pass_at);
+    return {
+      source: 'red-test' as const,
+      key: r.file_path,
+      title: `Test failing repeatedly: ${r.file_path}`,
+      body:
+        `Watchdog signal (red-test): ${r.file_path} (${r.framework}) failed ${r.fails}× in the last ` +
+        `${windowHours}h and its latest run is still red.\n` +
+        renderRedTestCommitContext(failShaCounts, lastPassSha, lastPassAt) +
+        `\nLast failure tail:\n${(r.sample ?? '').slice(-1500) || '(no output captured)'}`,
+      severity: 'major' as const,
+      paths: [r.file_path],
+      latestAt: toIsoOrUndefined(r.latest_fail_at),
+      earliestAt: toIsoOrUndefined(r.earliest_fail_at),
+      redTest: {
+        failShas: failShaCounts.map(([sha]) => sha),
+        ...(lastPassSha ? { lastPassSha } : {}),
+        ...(lastPassAt ? { lastPassAt } : {}),
+      },
+    };
+  });
+}
+
+/**
+ * Pure: failing shas → `[sha, count]` pairs, most failures first, nulls/blanks
+ * dropped. Preserves first-seen order among equal counts (rows arrive newest
+ * first), so the head of the list is the most recent heaviest offender.
+ */
+function countFailShas(shas: (string | null)[] | null | undefined): Array<[string, number]> {
+  const counts = new Map<string, number>();
+  for (const s of shas ?? []) {
+    const sha = (s ?? '').trim();
+    if (!sha) continue;
+    counts.set(sha, (counts.get(sha) ?? 0) + 1);
+  }
+  return [...counts.entries()].sort((a, b) => b[1] - a[1]);
+}
+
+/**
+ * Pure: the two lines that turn "failed 5× in 6h" from a claim about TIME into a
+ * claim about CODE. Both are single-column reads the aggregate already has; both
+ * were absent, and their absence cost real investigation time twice in one day
+ * (EI-19362285834938726 / EI-19365113150061623 — see this ticket).
+ *
+ * Rendered as `''` when the aggregate carried no sha data (a framework that
+ * doesn't record `commit_sha`, or older rows), so the body degrades to exactly
+ * its previous form rather than growing empty scaffolding.
+ */
+function renderRedTestCommitContext(
+  failShaCounts: Array<[string, number]>,
+  lastPassSha: string | undefined,
+  lastPassAt: string | undefined,
+): string {
+  const lines: string[] = [];
+  if (failShaCounts.length > 0) {
+    const rendered = failShaCounts.map(([sha, n]) => `${sha.slice(0, 10)} ×${n}`).join(', ');
+    lines.push(
+      failShaCounts.length === 1
+        ? `Failures all on ONE commit: ${rendered}`
+        : `Failures span ${failShaCounts.length} commits: ${rendered}` +
+          ` — these may be DIFFERENT causes, or runs against an already-superseded tree.`,
+    );
+  }
+  lines.push(
+    lastPassSha || lastPassAt
+      ? `Last PASS in window: ${lastPassAt ?? 'unknown time'}` +
+        `${lastPassSha ? ` (${lastPassSha.slice(0, 10)})` : ''}` +
+        ` — check it against the failing shas before bisecting; a pass on a DESCENDANT sha means the failures judged superseded code.`
+      : `Last PASS in window: none — this test has not passed once in the window.`,
+  );
+  return `\n${lines.join('\n')}\n`;
 }
 
 /**
@@ -802,6 +902,7 @@ export async function debounceRedTestSignals(
   bufferMs = 10 * 60 * 1000,
   checkParsesCleanly?: FileParsesCleanlyCheck,
   checkExists?: FileExistsCheck,
+  checkAncestry?: GitAncestryCheck,
 ): Promise<WatchdogSignal[]> {
   const kept: WatchdogSignal[] = [];
   for (const s of signals) {
@@ -810,6 +911,12 @@ export async function debounceRedTestSignals(
       kept.push(s);
       continue;
     }
+    // (EI-19363804802198172) Every failing sha already superseded by a sha that
+    // PASSED this test → the evidence describes code that no longer exists and
+    // has been proven green since. Checked FIRST: it is the cheapest way to be
+    // certain the signal is moot, and unlike the checks below it does not depend
+    // on the file's current on-disk state at all.
+    if (checkAncestry && (await isSupersededByPassingDescendant(s, checkAncestry))) continue;
     if (checkExists) {
       let exists = true;
       try {
@@ -945,6 +1052,77 @@ export async function doesFileCurrentlyParseCleanly(filePath: string): Promise<b
 export type FileExistsCheck = (filePath: string) => Promise<boolean>;
 
 /**
+ * (EI-19363804802198172) Callback shape for "is `ancestorSha` an ancestor of
+ * `descendantSha`?" — dependency-injected so the supersession DECISION stays
+ * unit-testable without a real git history. `isShaAncestorOf` is the real IO
+ * implementation wired in by `collectRedTestSignals`.
+ */
+export type GitAncestryCheck = (ancestorSha: string, descendantSha: string) => Promise<boolean>;
+
+/**
+ * Real IO `GitAncestryCheck`: `git merge-base --is-ancestor a b` — exit 0 means
+ * a is an ancestor of b. Any other exit (not an ancestor, unknown sha, shallow
+ * clone, git missing) resolves to `false`, i.e. "cannot show supersession", so a
+ * git hiccup can never suppress a real signal.
+ */
+export async function isShaAncestorOf(ancestorSha: string, descendantSha: string): Promise<boolean> {
+  if (!ancestorSha || !descendantSha) return false;
+  if (ancestorSha === descendantSha) return false; // a sha does not supersede itself
+  const repoRoot = resolveRedTestRepoRoot();
+  try {
+    await execFileP('git', ['merge-base', '--is-ancestor', ancestorSha, descendantSha], {
+      cwd: repoRoot,
+      timeout: 5000,
+      maxBuffer: 16 * 1024,
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Pure-ish decision (the git call is behind the injected `checkAncestry`): are
+ * ALL of this signal's failing shas ancestors of a sha that has since PASSED the
+ * same test? If so the failures judged code that has been superseded AND proven
+ * green, and the signal is a false positive by construction.
+ *
+ * Why ancestry and not timestamps: several runners test this shared tree
+ * CONCURRENTLY and OUT OF ORDER, so a fail can land at 18:00 for a sha that was
+ * already superseded by a sha which passed at 17:51. Ordering the runs by
+ * wall-clock makes that look like "still red, and flaky"; ordering them by
+ * ancestry shows it is neither. The live case behind this ticket had exactly
+ * that shape, which is why the simpler "is the last PASS newer than the last
+ * FAIL" rule would NOT have caught it.
+ *
+ * Fails CLOSED on suppression (= keeps the signal) throughout: no pass sha, no
+ * fail shas, an unknown sha, or a throwing check all mean "cannot show
+ * supersession", and a signal is only ever dropped on a positive answer for
+ * EVERY failing sha.
+ */
+export async function isSupersededByPassingDescendant(
+  signal: WatchdogSignal,
+  checkAncestry: GitAncestryCheck,
+): Promise<boolean> {
+  const meta = signal.redTest;
+  const passSha = meta?.lastPassSha;
+  if (!meta || !passSha || meta.failShas.length === 0) return false;
+  // A pass on a sha that itself failed is not supersession — it is flakiness on
+  // one commit, which is a real signal and must survive.
+  if (meta.failShas.includes(passSha)) return false;
+  for (const failSha of meta.failShas) {
+    let superseded = false;
+    try {
+      superseded = await checkAncestry(failSha, passSha);
+    } catch {
+      superseded = false; // fail open — a git error never suppresses a real signal
+    }
+    if (!superseded) return false;
+  }
+  return true;
+}
+
+/**
  * Real IO `FileExistsCheck`: does `filePath` exist on disk right now (resolved against
  * the repo root, same as `doesFileCurrentlyParseCleanly`)? A synchronous check is fine
  * here — no size/content is read, just a stat.
@@ -967,7 +1145,7 @@ export async function fetchRedTestRows(sql: Sql, opts: CollectOptions = {}): Pro
   const minFails = opts.redTestMinFails ?? 3;
   return sql<RedTestRow[]>`
     WITH recent AS (
-      SELECT file_path, framework, status, output_tail, started_at,
+      SELECT file_path, framework, status, output_tail, started_at, commit_sha,
              row_number() OVER (PARTITION BY file_path ORDER BY started_at DESC) AS rn
         FROM harness_shared.test_runs
        WHERE started_at > now() - make_interval(hours => ${windowHours})
@@ -990,7 +1168,16 @@ export async function fetchRedTestRows(sql: Sql, opts: CollectOptions = {}): Pro
            count(*) FILTER (WHERE status IN ('fail', 'error'))::int AS fails,
            max(output_tail) FILTER (WHERE status IN ('fail', 'error')) AS sample,
            max(started_at) FILTER (WHERE status IN ('fail', 'error')) AS latest_fail_at,
-           min(started_at) FILTER (WHERE status IN ('fail', 'error')) AS earliest_fail_at
+           min(started_at) FILTER (WHERE status IN ('fail', 'error')) AS earliest_fail_at,
+           -- (EI-19363804802198172) The COMMIT dimension. 'fail_shas' keeps one entry
+           -- per failing RUN (not per distinct sha) so the per-sha counts are
+           -- recoverable; 'last_pass_*' is the newest green run in the window, which
+           -- is what decides whether those failures are still live evidence.
+           array_agg(commit_sha ORDER BY started_at DESC)
+             FILTER (WHERE status IN ('fail', 'error')) AS fail_shas,
+           (array_agg(commit_sha ORDER BY started_at DESC)
+             FILTER (WHERE status = 'pass'))[1] AS last_pass_sha,
+           max(started_at) FILTER (WHERE status = 'pass') AS last_pass_at
       FROM recent
      GROUP BY file_path
     HAVING count(*) FILTER (WHERE status IN ('fail', 'error')) >= ${minFails}
@@ -1022,12 +1209,17 @@ export async function collectRedTestSignals(sql: Sql, opts: CollectOptions = {})
   // catches a scratch/transient test file that failed repeatedly and was
   // deleted before ever being committed (neither debounce above can see it:
   // there's no commit to find, and it's rarely a transform-class failure).
+  // (EI-19363804802198172): ALSO drop any signal whose failing shas have ALL been
+  // superseded by a sha that has since PASSED this test — concurrent runners test
+  // this shared tree out of order, so a "latest run is still red" can be a run
+  // against a commit that was already fixed and proven green.
   return debounceRedTestSignals(
     signals,
     wasFilePathCommittedInRange,
     undefined,
     doesFileCurrentlyParseCleanly,
     doesFileExistOnDisk,
+    isShaAncestorOf,
   );
 }
 

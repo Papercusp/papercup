@@ -181,7 +181,15 @@ export default defineTool({
       .enum(FACT_KINDS)
       .optional()
       .describe(
-        "P-008: the claim MODALITY — 'conclusion' (a settled finding), 'assumption' (provisional; pair it with dependsOn so it goes stale on its own terms), or 'convention' (normative: \"we do X here\"). This is NOT `scope`: scope says who the fact is ABOUT, kind says what kind of claim it is. Omit = not declared (never rewritten to 'conclusion' — a modality nobody stated is not one).",
+        "P-008: the claim MODALITY — 'conclusion' (a settled finding), 'assumption' (provisional; pair it with dependsOn so it goes stale on its own terms), 'convention' (normative: \"we do X here\"), or 'undecidable' (NOT determinable from the available evidence — recorded so peers STOP RE-DERIVING it; REQUIRES settledBy). This is NOT `scope`: scope says who the fact is ABOUT, kind says what kind of claim it is. Omit = not declared (never rewritten to 'conclusion' — a modality nobody stated is not one).",
+      ),
+    settledBy: z
+      .string()
+      .min(1)
+      .max(500)
+      .optional()
+      .describe(
+        "P-002: what evidence WOULD settle this question. REQUIRED for kind:'undecidable', and REFUSED on any other kind (on a settled claim it has no referent). Name a concrete probe — a query, a tool, a measurement — not \"more investigation\". The rule mirrors the required insteadRead on refuseAnswer(): an UNKNOWN with no stated exit does not stop re-derivation, it INVITES it, because the next reader cannot distinguish \"nobody COULD determine this\" from \"nobody has tried lately\" and the cheapest way to tell them apart is to try again — which is the exact cost this modality exists to eliminate.",
       ),
     dependsOn: z
       .array(
@@ -344,6 +352,7 @@ export default defineTool({
       sourceProvenance,
       confidence: args.confidence ?? null,
       kind: args.kind ?? null,
+      settledBy: args.settledBy ?? null,
       ...(dependsOn.length > 0 ? { dependsOn } : {}),
       ...(args.claim ? { claim: args.claim } : {}),
       // P-018: validated inside assertFact (validateConventionEnforcement), not

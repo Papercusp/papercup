@@ -674,7 +674,10 @@ function LiveSessionChat({
   );
 
   // D-004: the chip is READ-ONLY (no click handler) — a plain span, only for
-  // the assistant's own turns (user turns keep the default 'You' avatar).
+  // the assistant's own turns. Declining (null) on a USER turn is what hands
+  // it to OperatorChat's own user-profile-icon fallback (WI-6503) — the owner's
+  // own messages must wear the OWNER's icon, never this session's agent mark.
+  // So this early return is load-bearing, not just an optimisation.
   const renderAvatar = useCallback(
     (m: ChatMessage): ReactNode | null => {
       if (m.role !== 'assistant' || !rosterEntry) return null;

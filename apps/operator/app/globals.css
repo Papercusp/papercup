@@ -25806,6 +25806,19 @@ body.papercusp-chromeless .oracle-fab {
   border-color: var(--hud-fleet, rgb(from var(--accent-strong) r g b / 0.14));
 }
 
+/* The USER's own profile icon (WI-6503). The account has no avatar image —
+   its profile icon IS its initial, exactly as the account menu renders it
+   (.pc-user-avatar) — so this only needs glyph typography on the existing
+   avatar slot, which already carries the user-side accent tint via
+   `.oracle-msg-user .oracle-msg-avatar`. Falls back to a neutral person icon
+   (sized by .oracle-msg-icon) while the identity resolves. */
+.oracle-msg-avatar--user-identity {
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: 0.01em;
+}
+
 .oracle-msg-icon {
   width: 20px;
   height: 20px;

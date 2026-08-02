@@ -24,6 +24,7 @@ import { readFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { stripJsComments } from './strip-js-comments';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, '../../../..');
@@ -40,10 +41,14 @@ const RUNTIME_IMPORT = /@\/app\/_components\/monaco-runtime/;
  * naive match counts those mentions as call sites. A guard that miscounts the
  * thing it guards is worse than no guard, because the noise is what gets
  * silenced.
+ *
+ * The shared single-pass scanner, NOT the two-regex form both CDN guards
+ * originally carried: that version strips block comments first, so a `/*` inside
+ * a LINE comment (HarnessPluginsSection.tsx line 8 contains `.claude/​*`) opens a
+ * phantom block comment and swallows the real import 17 lines later. See
+ * strip-js-comments.ts.
  */
-function stripComments(src: string): string {
-  return src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1');
-}
+const stripComments = stripJsComments;
 
 /** Real, live call sites — excludes tests (which mock the module) and the
  *  retired web app under libs/papercusp/_retired (guarded by lint:no-retired). */

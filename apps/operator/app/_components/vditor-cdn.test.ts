@@ -23,6 +23,7 @@ import { readFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { stripJsComments } from './strip-js-comments';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, '../../../..');
@@ -40,13 +41,15 @@ const VDITOR_ENTRY_POINTS = /(?:Vditor\.preview\(|new Vditor\()/g;
  * failed against correct code. A guard that miscounts the thing it guards is
  * worse than no guard, because the noise is what gets silenced.
  *
- * Block comments go first, so a URL living inside one (`https://unpkg.com/...`
- * in the VDITOR_CDN docs) is already gone. The line-comment rule then refuses to
- * fire on a `//` preceded by `:` so it cannot bite a bare protocol in real code.
+ * SUPERSEDED IMPLEMENTATION (cdn-egress-fixes-2026-08-02 P-001): the two-regex
+ * form this file used to carry stripped BLOCK comments first, so a `/*` inside a
+ * LINE comment opened a phantom block comment that ran to the next `*​/` anywhere
+ * in the file. Measured on HarnessPluginsSection.tsx, that swallowed 44 lines
+ * including a real import. It never fired on MarkdownEditor.tsx, but the failure
+ * is silent whenever the swallowed region still leaves the count above the floor
+ * — so it is fixed at the shared helper for both guards, not left latent here.
  */
-function stripComments(src: string): string {
-  return src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1');
-}
+const stripComments = stripJsComments;
 
 describe('vditor cdn (WI-7088)', () => {
   it('every Vditor entry point passes an explicit cdn', async () => {

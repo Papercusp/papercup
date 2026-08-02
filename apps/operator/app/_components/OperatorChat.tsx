@@ -19,7 +19,7 @@
  */
 
 import { useCallback, useEffect, useState, type ReactNode } from 'react';
-import { Lightbulb, Wrench } from 'lucide-react';
+import { Lightbulb, UserRound, Wrench } from 'lucide-react';
 import { toast } from 'sonner';
 import { parseAsString, useQueryState } from 'nuqs';
 import {
@@ -43,6 +43,7 @@ import { Tooltip } from '../harness/Tooltip';
 import { FLAGS } from '@papercusp/flags';
 import { useFlag } from '@/lib/flag-hooks';
 import { ReportBlockCard } from './chat/ReportBlockCard';
+import { useCurrentUserIdentity } from './use-current-user';
 
 interface Props {
   /** Conversation messages, oldest first. */
@@ -236,6 +237,46 @@ export function OperatorChat({
     },
     [harnessSlug, setOpenChatPlan, setOpenWorkItem],
   );
+
+  // WI-6503 [owner 2026-07-27, verbatim follow-up] "the chat box should disaply
+  // the users profile icon in their chat, not the papercup icon."
+  //
+  // The user's OWN messages used to fall through to the pane mark — which is
+  // the Papercup cup in the sidebar, and the counterparty AGENT's mark in
+  // SessionChatModal. Either way the owner's own turns wore someone else's
+  // branding. The `paneIcon` prop fixed only half the item (the pane no longer
+  // brands a non-papercup conversation as Papercup); this is the other half,
+  // and it is a SUBSTITUTION — rendering nothing would satisfy the item's
+  // original title and is explicitly NOT what was asked for.
+  //
+  // It lives HERE rather than at each call site on purpose: OperatorChat is the
+  // component every chat surface shares (OperatorChatSidebar + SessionChatModal),
+  // so one implementation covers "every chat surface sharing the component"
+  // without either caller having to remember. A caller's own `renderAvatar`
+  // still wins — SessionChatModal's roster identity chip is consulted first and
+  // only declines (returns null) for non-assistant turns.
+  const currentUser = useCurrentUserIdentity();
+  const renderAvatarWithUser = useCallback(
+    (m: ChatMessage): ReactNode | null | undefined => {
+      const override = renderAvatar?.(m);
+      if (override) return override;
+      if (m.role !== 'user') return override;
+      // Identity not resolved yet (or unresolvable) ⇒ a neutral person glyph.
+      // NEVER the papercup mark: that fallback is the reported bug.
+      return (
+        <span className="oracle-msg-avatar oracle-msg-avatar--user-identity">
+          <span className="pc-sr-only">{currentUser ? `${currentUser.displayName} (you)` : 'You'}</span>
+          {currentUser ? (
+            <span aria-hidden="true">{currentUser.initial}</span>
+          ) : (
+            <UserRound className="oracle-msg-icon" aria-hidden="true" />
+          )}
+        </span>
+      );
+    },
+    [renderAvatar, currentUser],
+  );
+
   // Inbox "Discuss" hands a drafted message to this composer (chat-seed.ts):
   // consume a staged seed on mount (the usual path — the chat body was
   // unmounted while the inbox view showed), and listen for the live event in
@@ -421,7 +462,7 @@ export function OperatorChat({
         renderToolChip={renderOperatorToolChip}
         renderToolCard={renderToolCard}
         renderReport={renderReport}
-        renderAvatar={renderAvatar}
+        renderAvatar={renderAvatarWithUser}
         footer={footer}
         onLoadEarlier={onLoadEarlier}
         hasMoreEarlier={hasMoreEarlier}
