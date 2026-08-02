@@ -976,10 +976,43 @@ _SCANNABLE_CACHE = {}
 
 def _scannable():
     """Memoized scannable form of THIS invocation's command. Lazy so a call that
-    exits early on an advisory never pays for the normalization."""
+    exits early on an advisory never pays for the normalization.
+
+    Use for an ANCHORED guard (`re.match` at command position). Such a guard is
+    safe to hand unquoted inner words: prose lands mid-segment, never at command
+    position, so `git commit -m "explain git reset --hard"` cannot match."""
     if 'v' not in _SCANNABLE_CACHE:
         _SCANNABLE_CACHE['v'] = _scannable_command(command)
     return _SCANNABLE_CACHE['v']
+
+
+def _scannable_quote_stripped():
+    """Scannable form for a guard that must NOT see quoted PROSE.
+
+    Some guards match a subcommand anywhere in the text rather than at command
+    position (the tauri-agent-tools target guard, the scheduler keyword guard).
+    Those relied on `_strip_shell_quotes` DELETING quoted spans, so a sentence like
+    `echo "you could run tauri-agent-tools eval ..."` was not read as an
+    invocation — surfacing the words instead re-created exactly that false deny
+    (caught by the existing suite, EI-10939 / EI-9937).
+
+    So keep the original base treatment (quoted spans removed) and append only the
+    EXECUTED payload lines, which are genuine code rather than prose. That closes
+    the `bash -c "crontab -e"` hole without weakening the prose exemption."""
+    if 'qs' not in _SCANNABLE_CACHE:
+        try:
+            payloads = _scan_executed_payloads(_scan_strip_written_heredocs(command))
+            parts = [_strip_shell_quotes(command)]
+            seen = set()
+            for p in payloads:
+                if p in seen:
+                    continue
+                seen.add(p)
+                parts.append(_scannable_command(p))
+            _SCANNABLE_CACHE['qs'] = '\n'.join(parts)
+        except Exception:
+            _SCANNABLE_CACHE['qs'] = _strip_shell_quotes(command)
+    return _SCANNABLE_CACHE['qs']
 
 # ── Piped background exit-code trap advisory (EI-8871/EI-14065) ────────────
 # `cmd | tail -N` (or `| head` / `| grep`) run in the background reports the
@@ -1323,14 +1356,14 @@ def _is_agent_or_fleet_session():
     return bool((os.environ.get('PAPERCUSP_FLEET_SLUG') or '').strip())
 
 
-# EI-19294800751120438: scan the SCANNABLE form (so `bash -c "crontab -e"` and
-# `$(echo crontab) -e` are caught), still wrapped in _strip_shell_quotes so
-# EI-9937's false-positive fix survives — a quoted `grep -E "at|batch"` span is
-# not a bare word, so it collapses rather than reading as a separator + keyword.
+# EI-19294800751120438: scan the QUOTE-STRIPPED scannable form — quoted spans stay
+# deleted (EI-9937's `grep -E "at|batch"` exemption survives intact) while the
+# EXECUTED payloads of `bash -c "crontab -e"` / `$(echo crontab) -e` are appended
+# as their own lines and caught.
 if _is_agent_or_fleet_session() and re.search(
         r'(?:^|[;&|\n]\s*|\bsudo\s+)(?:crontab|batch|systemd-run)\b'
         r'|(?:^|[;&|\n]\s*|\bsudo\s+)at\s+(?:now|midnight|noon|teatime|\+?\d)',
-        _strip_shell_quotes(_scannable())):
+        _scannable_quote_stripped()):
     deny(_os_scheduler_deny_reason(command))
 
 # ── systemd user-manager exit/kill guard (EI-13135, 2026-07-17) ─────────────
@@ -1585,9 +1618,9 @@ def _tauri_target_deny_reason(sub, bridges, mutating):
 # SCANNABLE form. They must use the SAME text — reading the subcommand from a
 # nested payload while checking --target on the raw string would manufacture a
 # false deny for a wrapped command that DID aim explicitly.
-_tat_sub = _tat_subcommand(_strip_shell_quotes(_scannable()))
+_tat_sub = _tat_subcommand(_scannable_quote_stripped())
 if _tat_sub in TAT_MUTATING or _tat_sub in TAT_BRIDGE_READ:
-    _stripped_cmd = _strip_shell_quotes(_scannable())
+    _stripped_cmd = _scannable_quote_stripped()
     if not _tat_has_explicit_target(_stripped_cmd):
         _mutating = _tat_sub in TAT_MUTATING
         _bridges = _tat_live_bridges()

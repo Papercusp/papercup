@@ -757,7 +757,15 @@ export default defineTool({
                 return fail('harness_slug_required', `wave "${w.id}" has a for_each glob/sql resolver, which needs a target harness (set harness_slug or \`## Promote\` target_harness)`);
               }
               try {
-                items = await resolveForEach(w.generate.for_each, buildForEachCtx(harnessSlug, ctx.workspaceId));
+                // P-012: `templateData` carries the plan's resolved inputs, which the
+                // `from_input` kind fans out over. The start gate has already
+                // guaranteed a declared-required input is present, so a wave reaching
+                // here cannot be missing the field it fans out on.
+                items = await resolveForEach(
+                  w.generate.for_each,
+                  buildForEachCtx(harnessSlug, ctx.workspaceId),
+                  planFile.row.templateData,
+                );
               } catch (e) {
                 const code = e instanceof FanoutCapError ? 'for_each_fanout' : 'for_each_resolver_error';
                 return fail(code, `wave "${w.id}": ${e instanceof Error ? e.message : String(e)}`);
@@ -831,7 +839,12 @@ export default defineTool({
               return fail('harness_slug_required', 'a for_each glob/sql resolver needs a target harness (set harness_slug or target_harness)');
             }
             try {
-              generateItems = await resolveForEach(w.generate.for_each, buildForEachCtx(harnessSlug, ctx.workspaceId));
+              // P-012 — see the sibling call above.
+              generateItems = await resolveForEach(
+                w.generate.for_each,
+                buildForEachCtx(harnessSlug, ctx.workspaceId),
+                planFile.row.templateData,
+              );
             } catch (e) {
               const code = e instanceof FanoutCapError ? 'for_each_fanout' : 'for_each_resolver_error';
               return fail(code, e instanceof Error ? e.message : String(e));

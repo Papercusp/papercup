@@ -262,7 +262,37 @@ describe('chunk-split UTF-8 corruption guard (WI-6728)', () => {
       }
     }
     if (unverifiable.length > 0) {
-      console.warn(
+      // ⚠ console.INFO, deliberately — NOT console.warn (EI-19298378364087215).
+      //
+      // The suite runs vitest-fail-on-console with shouldFailOnWarn, so a warn
+      // here does not "report" the gap — it FAILS this test. And it fails it
+      // with `Expected test not to call console.warn()`, which names neither
+      // this guard nor the coverage gap, so every reader diagnosed it as an
+      // unrelated flake. It is also unreproducible outside the gate: in a dev
+      // tree the submodules are real, `unverifiable` is empty, and the file
+      // passes 14/14 — so the red only ever appears where nobody can debug it.
+      //
+      // The gap it reports is a STRUCTURAL, EXPECTED property of the gate's own
+      // checkout, not a code defect: setup-release-checkout.sh archive-extracts
+      // submodule source at each pinned sha (many pins are never pushed to
+      // origin, so `git submodule update` cannot work there), leaving plain
+      // files with no .git that `ls-files --recurse-submodules` cannot see.
+      // Reddening the fleet's release gate on that held `main` ~7h / 70 commits.
+      //
+      // This is NOT a weakening of the ratchet. The "fixed — DELETE this key"
+      // verdict is made unreachable by the `continue` above, not by this line;
+      // the dedicated "never concludes 'fixed' for a file the enumerator could
+      // not open" test pins that invariant; and the ratchet still asserts
+      // normally on every file that WAS scanned (38/39 submodules in staging).
+      // Only the log LEVEL changes — the gap stays printed, on every run.
+      //
+      // DURABLE FIX (tracked on EI-19298378364087215, not done here): have
+      // extract_submodule_source() persist the `tar -tf` manifest it already
+      // computes, splice it into listTrackedFiles() for archive-extracted
+      // submodules to restore real coverage, and only THEN promote near-total
+      // non-coverage to a thrown broken-environment error — a signal that names
+      // the environment, instead of a console-level accident that names nothing.
+      console.info(
         `[child-output-guard] ratchet NOT verified for ${unverifiable.length} baselined file(s) — ` +
           `their submodule was not scanned by the enumerator, so "0 sites found" means "never opened", ` +
           `not "fixed". This is a coverage gap, not a pass:\n  ${unverifiable.join('\n  ')}`,

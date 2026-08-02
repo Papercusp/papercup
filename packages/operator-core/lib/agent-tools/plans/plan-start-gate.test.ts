@@ -91,7 +91,7 @@ describe('P-007 DOOR COVERAGE GUARD — every start door consults the gate', () 
       'lib/agent-tools/plans/run-now.ts',
       'lib/harness/routines/plan-run-action.ts',
     ];
-    const registered = new Set(PLAN_START_DOORS.map((d) => d.file));
+    const registered = new Set<string>(PLAN_START_DOORS.map((d) => d.file));
     for (const f of CALLERS) {
       if (!existsSync(join(PKG_ROOT, f))) continue;
       const src = read(f);

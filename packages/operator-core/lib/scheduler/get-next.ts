@@ -1049,7 +1049,8 @@ export async function sampleIssueClaimExclusions(
       ${sampleOf('NOT ok_completed')}           AS already_completed,
       ${sampleOf('NOT ok_rig')}                 AS cross_machine_rig,
       ${sampleOf('NOT ok_no_blocker')}          AS blocked_dep,
-      ${sampleOf('NOT ok_cooldown')}            AS cooldown
+      ${sampleOf('NOT ok_cooldown')}            AS cooldown,
+      ${sampleOf('NOT ok_origin')}              AS remote_origin
   `) as Array<{
     taken: string[];
     claim_hold: string[];
@@ -1063,6 +1064,7 @@ export async function sampleIssueClaimExclusions(
     cross_machine_rig: string[];
     blocked_dep: string[];
     cooldown: string[];
+    remote_origin: string[];
   }>;
   const r = rows[0];
   return {
@@ -1078,6 +1080,7 @@ export async function sampleIssueClaimExclusions(
     crossMachineRig: r?.cross_machine_rig ?? [],
     blockedDep: r?.blocked_dep ?? [],
     cooldown: r?.cooldown ?? [],
+    remoteOrigin: r?.remote_origin ?? [],
   };
 }
 
