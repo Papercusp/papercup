@@ -46,9 +46,42 @@ export const INLINE_OUTPUT_CAP = 30_000;
 /** Hard ceiling on retained in-memory output per job (bytes). Beyond this the
  *  in-memory tail is trimmed (the full stream is still on disk). 5 MB. */
 const MEM_BUFFER_CAP = 5 * 1024 * 1024;
-/** Default + max command wall-clock (ms). */
+/** Default + max command wall-clock (ms) for a FOREGROUND run. It holds the
+ *  caller's request open, so it stays short by design. */
 export const DEFAULT_TIMEOUT_MS = 120_000;
 export const MAX_TIMEOUT_MS = 600_000;
+/**
+ * Default + max wall-clock (ms) for a BACKGROUND job — deliberately NOT the
+ * foreground pair above (WI-6677).
+ *
+ * A background job exists precisely to OUTLIVE the call that started it, so
+ * inheriting the foreground default made the tool kill the jobs it exists for.
+ * The trap was exact: the repo CLAUDE.md tells every agent "for anything that
+ * runs longer than ~1–2 min, start it with run_in_background:true", and the
+ * inherited default was 2 minutes — so the documented remedy SIGKILLed precisely
+ * the jobs it recommended, unless the caller happened to also pass `timeout`.
+ * Nothing in the tool description said the timeout applied to background jobs
+ * at all. Filed twice from opposite directions: a P-205 acceptance drill
+ * (4.9GB deb extract, dead at exactly 120s) and an as-committed test run whose
+ * 489MB temp tree leaked because the SIGKILL skipped the script's cleanup.
+ *
+ * The 10-minute foreground ceiling was the other half: this repo's own green
+ * checkpoint suite runs ~55 min, so the ceiling made the tool structurally
+ * unable to host the longest jobs anyone would want to background. These
+ * bounds are still bounds — a background job is not immortal — but they are
+ * sized to real work rather than to a blocking request.
+ */
+export const DEFAULT_BACKGROUND_TIMEOUT_MS = 4 * 60 * 60 * 1_000; // 4h
+export const MAX_BACKGROUND_TIMEOUT_MS = 12 * 60 * 60 * 1_000; // 12h
+/**
+ * Grace between SIGTERM and SIGKILL when a job hits its OWN deadline (WI-6677).
+ * The deadline path used to SIGKILL outright, which no `trap`/`finally` can
+ * observe — so every timed-out job leaked whatever it was mid-way through
+ * creating (temp trees, checkouts, a left-running sidecar). Matching `killJob`'s
+ * terminate-then-escalate shape gives cleanup a chance to run and still
+ * guarantees the process dies.
+ */
+export const TIMEOUT_SIGTERM_GRACE_MS = 10_000;
 /** Keep at most this many finished jobs around for late `bash_output` reads. */
 const MAX_RETAINED_JOBS = 64;
 
@@ -94,6 +127,12 @@ export interface BashJob {
    */
   taskId?: string;
   scopeUnit?: string | null;
+  /** WI-6677: the EFFECTIVE wall-clock this job will be terminated at, after
+   *  clamping — so a caller can be told its deadline instead of discovering it
+   *  as an unexplained death. Undefined for foreground runs. */
+  timeoutMs?: number;
+  /** Epoch ms of that deadline (`startedAt + timeoutMs`). */
+  deadlineAt?: number;
 }
 
 const JOBS = new Map<string, BashJob>();
@@ -377,10 +416,17 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
   const id = cryptoRandomId();
   const logPath = join(scratchDir(opts.stateDir), `bash-${id}.log`);
 
+  // WI-6677: clamp against the BACKGROUND ceiling, not the foreground one. Every
+  // downstream use (the ledger's runtimeMaxSec, the kill timer, the exitReason a
+  // later poll reads) must agree on this ONE number — the old code clamped inside
+  // the timer only, so the ledger advertised a runtimeMaxSec the timer never
+  // honoured.
+  const effectiveTimeoutMs = Math.min(timeoutMs, MAX_BACKGROUND_TIMEOUT_MS);
+
   // task-manager P-008: mint the task id + confinement decision BEFORE the fork so
   // the scope name can go into the argv; the ledger WRITES happen afterwards,
   // fire-and-forget, and can never block or fail this spawn (see enroll-sync.ts).
-  const enrolment = beginSyncEnrolment({ class: 'bash-job', runtimeMaxSec: Math.ceil(timeoutMs / 1000) });
+  const enrolment = beginSyncEnrolment({ class: 'bash-job', runtimeMaxSec: Math.ceil(effectiveTimeoutMs / 1000) });
 
   // EI-16635: background:true — this job is a run_in_background spawn, meant to
   // outlive this call, so the sandbox path (when enabled) must not die-with-parent.
@@ -401,6 +447,8 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
     logStream: safeWriteStream(logPath),
     taskId: enrolment.taskId,
     scopeUnit: enrolment.scopeUnit,
+    timeoutMs: effectiveTimeoutMs,
+    deadlineAt: Date.now() + effectiveTimeoutMs,
   };
   JOBS.set(id, job);
 
@@ -417,7 +465,7 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
       launchedBy: opts.launchedBy ?? 'capability:bash',
       workItemId: opts.workItemId ?? null,
       logPath,
-      runtimeMaxSec: Math.ceil(timeoutMs / 1000),
+      runtimeMaxSec: Math.ceil(effectiveTimeoutMs / 1000),
       detail: { bashJobId: id, sandboxed: Boolean(opts.sandboxEnabled) },
     },
     child.pid ?? null,

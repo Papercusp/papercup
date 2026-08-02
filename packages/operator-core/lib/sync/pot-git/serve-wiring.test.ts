@@ -351,7 +351,7 @@ describe('resolveServeAdmission (EI-18802033487678337)', () => {
     channel: object,
     repoPath: string,
     sessionId: number,
-    progress: ServeProgress = { bytesOut: 0, lastWriteAt: 0 },
+    progress: ServeProgress = { bytesOut: 0, bytesIn: 0, lastWriteAt: 0 },
   ): InFlightServe => ({
     channel,
     repoPath,
@@ -464,8 +464,13 @@ describe('resolveServeAdmission (EI-18802033487678337)', () => {
   // maximally wrong exactly when the transfer matters most.
   describe('rule 0 — an actively streaming serve is never discarded (WI-6412)', () => {
     const NOW = 1_000_000;
+    // A genuinely streaming serve necessarily has inbound bytes: `upload-pack`
+    // cannot emit any pack data before the client's `command=fetch` + wants
+    // arrive. `bytesIn` is small because a request is small — the asymmetry with
+    // `bytesOut` is the normal shape of a fetch, not a quirk of this fixture.
     const streamed = (msSinceLastWrite: number, bytesOut = 145_081_103): ServeProgress => ({
       bytesOut,
+      bytesIn: 226,
       lastWriteAt: NOW - msSinceLastWrite,
     });
 
@@ -504,7 +509,7 @@ describe('resolveServeAdmission (EI-18802033487678337)', () => {
     // admitted a moment ago but has produced nothing is the orphan rule 1
     // exists to reap, and must not be protected just for being young.
     it('still SUPERSEDES a serve that has never written a byte, however recent', () => {
-      const orphan = serve(chanA, REPO, 1, { bytesOut: 0, lastWriteAt: NOW });
+      const orphan = serve(chanA, REPO, 1, { bytesOut: 0, bytesIn: 0, lastWriteAt: NOW });
       const got = resolveServeAdmission({
         repoPath: REPO,
         channel: chanA,
@@ -513,6 +518,93 @@ describe('resolveServeAdmission (EI-18802033487678337)', () => {
       });
       expect(got.admit).toBe(true);
       expect(got.supersede).toEqual([orphan]);
+    });
+
+    // WI-6189 — THE GREETING-WEDGE. `bytesOut > 0` alone could not answer "is
+    // this serve streaming?", because protocol v2 opens with a capability
+    // advertisement the server writes BEFORE reading any input. Measured on this
+    // box at exactly 147B, and identical for a 120K repo and a 4.9M one (it
+    // carries no repo content), so it is nonzero for every serve that got as far
+    // as spawning — including one that then hangs forever because the requester
+    // never sent its `command=fetch`.
+    //
+    // Live on the tower 2026-08-02: across six hours EVERY serve to peers
+    // nWXvaGiA/Lm1ABoMR died at 0B or exactly 147B — not one ever reached its
+    // first pack byte — while 10 requests in a single 30s window were refused
+    // `busy-streaming` behind a serve stuck at the greeting.
+    const V2_CAPABILITY_ADVERTISEMENT_BYTES = 147;
+    const greetedThenHung = (msSinceGreeting: number): ServeProgress => ({
+      bytesOut: V2_CAPABILITY_ADVERTISEMENT_BYTES,
+      // The whole point: the requester never asked for anything.
+      bytesIn: 0,
+      lastWriteAt: NOW - msSinceGreeting,
+    });
+
+    it('SUPERSEDES a serve wedged at the v2 greeting, however recent its 147B write', () => {
+      const wedged = serve(chanA, REPO, 1, greetedThenHung(100));
+      const got = resolveServeAdmission({
+        repoPath: REPO,
+        channel: chanA,
+        inFlight: [wedged],
+        now: NOW,
+      });
+      // Before the fix this was held as `busy-streaming` for the full window.
+      expect(got.admit).toBe(true);
+      expect(got.supersede).toEqual([wedged]);
+      expect(got.refuseReason).toBeUndefined();
+    });
+
+    // The operative harm was not the wasted slot, it was the REFUSALS issued on
+    // the wedged serve's behalf — the requests that might have succeeded.
+    it('does not refuse busy-streaming behind a greeting-wedged serve', () => {
+      let refusals = 0;
+      for (let attempt = 0; attempt < 10; attempt += 1) {
+        const t = NOW + attempt * 3_000;
+        const got = resolveServeAdmission({
+          repoPath: REPO,
+          channel: chanA,
+          // Re-wedged each time: a fresh 147B greeting, still no inbound byte.
+          inFlight: [serve(chanA, REPO, 1, { ...greetedThenHung(0), lastWriteAt: t - 100 })],
+          now: t,
+        });
+        if (got.refuseReason === 'busy-streaming') refusals += 1;
+      }
+      expect(refusals).toBe(0);
+    });
+
+    // The boundary that keeps the fix from being a blunt byte threshold: a real
+    // stream that has only just begun has FEWER outbound bytes than the wedged
+    // serve above, and must still be protected. Keying on `bytesIn` gets this
+    // right; comparing `bytesOut` against 147 would get it exactly backwards.
+    it('protects a real stream whose pack has barely started (fewer bytes than the greeting)', () => {
+      const justStarted = serve(chanA, REPO, 1, {
+        bytesOut: 64,
+        bytesIn: 226,
+        lastWriteAt: NOW - 100,
+      });
+      const got = resolveServeAdmission({
+        repoPath: REPO,
+        channel: chanA,
+        inFlight: [justStarted],
+        now: NOW,
+      });
+      expect(got.supersede).toEqual([]);
+      expect(got.refuseReason).toBe('busy-streaming');
+    });
+
+    // ...and the fix must not resurrect the WI-6412 livelock it narrows: that
+    // one streamed 145MB-790MB, which necessarily had inbound bytes.
+    it('still protects the WI-6412 multi-GB transfer (it has inbound bytes by construction)', () => {
+      const live = serve(chanA, REPO, 1, streamed(200));
+      expect(live.progress.bytesIn).toBeGreaterThan(0);
+      const got = resolveServeAdmission({
+        repoPath: REPO,
+        channel: chanA,
+        inFlight: [live],
+        now: NOW,
+      });
+      expect(got.supersede).toEqual([]);
+      expect(got.refuseReason).toBe('busy-streaming');
     });
 
     it('treats the window boundary itself as still streaming', () => {
@@ -576,7 +668,9 @@ describe('resolveServeAdmission (EI-18802033487678337)', () => {
           channel: chanA,
           // Still streaming when the re-request lands — the last write is
           // moments old, not 15s old.
-          inFlight: [serve(chanA, REPO, 1, { bytesOut: servedBytes, lastWriteAt: t - 100 })],
+          inFlight: [
+            serve(chanA, REPO, 1, { bytesOut: servedBytes, bytesIn: 226, lastWriteAt: t - 100 }),
+          ],
           now: t,
         });
         discarded += got.supersede.length;

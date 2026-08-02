@@ -313,6 +313,77 @@ describe('pc-heavy.sh — coalescing (EI-18685262961418231)', () => {
     expect(coalescedCount).toBeGreaterThan(0);
   });
 
+  it('collapses to EXACTLY ONE real run even when the command is SLOWER than the coalescing window (EI-19343301596011451)', async () => {
+    // The regression this exists for. `_coalesce_ttl` used to serve two
+    // different questions: "may I replay a FINISHED result?" and "is the leader
+    // still WORKING?". A follower therefore gave up waiting after the window
+    // and ran the command itself, and a LIVE leader's lock was reclaimed as
+    // 'abandoned' purely for outliving it. So for any command slower than the
+    // window, coalescing INVERTED: every follower launched a duplicate, and the
+    // heavier the command the more reliably it happened. Observed live as five
+    // concurrent `tsc -p packages/operator-core` compiles (~180s each) queued
+    // against the 90s default, with none of them running.
+    //
+    // The sibling test above cannot catch this: it pairs a 0.4s command with a
+    // 30s window, so the command is ~75x FASTER than the window and no follower
+    // ever reaches the deadline. Its `realRuns < n` assertion would also still
+    // pass at 5-of-6 duplicated. This test inverts both: the command outlives
+    // the window, and the expectation is exact.
+    const marker = join(dir, 'slow-runs.marker');
+    const n = 5;
+    const results = await Promise.all(
+      Array.from({ length: n }, () =>
+        new Promise<{ status: number | null; stderr: string }>((res) => {
+          const p = spawn(
+            'bash',
+            [PC_HEAVY, 'bash', '-c', `printf x >> "${marker}"; sleep 5; echo slow-done`],
+            { env: baseEnv({ PC_HEAVY_SLOTS: '8', PC_HEAVY_COALESCE_SEC: '2' }), cwd: dir },
+          );
+          let stderr = '';
+          p.stderr.on('data', (d) => (stderr += d));
+          p.on('exit', (status) => res({ status, stderr }));
+        }),
+      ),
+    );
+
+    for (const r of results) expect(r.status).toBe(0);
+    // EXACTLY one — not "fewer than n". Pre-fix this read 5.
+    expect(readFileSync(marker, 'utf8').length).toBe(1);
+    // ...and every other caller got there by replaying, not by racing.
+    expect(results.filter((r) => r.stderr.includes('coalesced:')).length).toBe(n - 1);
+  }, 60_000);
+
+  it('reclaims a lock whose leader DIED even though the stamped pid was recycled by a live process (EI-19343301596011451)', () => {
+    // Leader liveness is observed via pid, and PID wrap is ~daily on this box
+    // under fleet load — so pid alone would let an unrelated live process
+    // impersonate a dead leader and stall every follower for the full
+    // max-wait. The stamp therefore carries the pid's start-time too, and a
+    // mismatch reads as dead.
+    const marker = join(dir, 'reuse-runs.marker');
+    // Seed a lock for the key this exact command will hash to, by letting one
+    // real (fast) run create and release it, then re-planting it corrupted.
+    const cmd = ['bash', '-c', `printf y >> "${marker}"; echo reuse-probe`];
+    const first = runSync(cmd, { PC_HEAVY_SLOTS: '2', PC_HEAVY_COALESCE_SEC: '1' });
+    expect(first.status).toBe(0);
+
+    const coalesceDir = join(dir, 'coalesce');
+    const key = readdirSync(coalesceDir).find((f) => f.endsWith('.exit'))?.replace(/\.exit$/, '');
+    expect(key).toBeTruthy();
+
+    // Expire the cached result so the next call cannot simply replay it, then
+    // plant a lock stamped with a LIVE pid (this test process) but a start-time
+    // that cannot be ours.
+    rmSync(join(coalesceDir, `${key}.exit`), { force: true });
+    const lockDir = join(coalesceDir, `${key}.lock`);
+    mkdirSync(lockDir, { recursive: true });
+    writeFileSync(join(lockDir, 'pid'), `${process.pid} 999999999\n`);
+
+    // Must reclaim and run rather than wait out PC_HEAVY_COALESCE_MAX_WAIT_SEC.
+    const second = runSync(cmd, { PC_HEAVY_SLOTS: '2', PC_HEAVY_COALESCE_SEC: '1' });
+    expect(second.status).toBe(0);
+    expect(readFileSync(marker, 'utf8').length).toBe(2);
+  });
+
   it('a later (non-concurrent) identical call within the window reuses the cached result, including stderr + exit code', () => {
     const first = runSync(['bash', '-c', 'echo out-x; echo err-x >&2; exit 4'], {
       PC_HEAVY_SLOTS: '2',

@@ -960,8 +960,15 @@ export const DEFAULT_SERVE_PROGRESS_WINDOW_MS = 30_000;
  * THREE rules, in order:
  *
  *  0. PROTECT-IN-PROGRESS (WI-6412). If any in-flight serve of R on C is still
- *     actively streaming — it has written real bytes within `progressWindowMs`
- *     — refuse the new request `busy-streaming` and supersede NOTHING.
+ *     actively streaming — the requester has actually sent a request AND bytes
+ *     have moved within `progressWindowMs` — refuse the new request
+ *     `busy-streaming` and supersede NOTHING.
+ *
+ *     Both halves are load-bearing. Outbound bytes alone do not mean the serve
+ *     is doing anything: protocol v2 opens with a fixed 147B capability
+ *     advertisement written before the server reads any input, so a serve that
+ *     greeted the peer and then hung forever looked exactly like one streaming a
+ *     4GB pack, and protected itself accordingly (WI-6189). See the predicate.
  *
  *     This exists because rule 1's premise below is FALSE against a requester
  *     that re-drives on a timer, and was observed live: one peer re-requested
@@ -1023,13 +1030,46 @@ export function resolveServeAdmission(args: {
   // Rule 0. Keyed on bytes ACTUALLY MOVED, not merely on a fresh timestamp: a
   // serve admitted moments ago that has produced nothing is the abandoned
   // orphan rule 1 exists to reap, and must not be protected just for being
-  // young. (Known residual: a serve still enumerating objects has written no
-  // bytes yet, so it remains supersedable. That is unchanged behaviour and not
-  // the observed livelock — the logged attempts each reached 145MB+ well inside
-  // one re-request period — but it is the next thing to look at if a repo large
-  // enough to spend >15s before its first byte ever exhibits this.)
+  // young.
+  //
+  // ⚠ `bytesOut > 0` ALONE CANNOT ANSWER THIS, and believing it did is what let
+  // a wedged serve protect itself (WI-6189). Under protocol v2 `upload-pack`
+  // writes its capability advertisement UNCONDITIONALLY, before it has read a
+  // single byte of input — measured on this box at exactly 147B, identical for a
+  // 120K repo and a 4.9M one because it carries no repo content at all:
+  //
+  //     000eversion 2 / 0015agent=git/2.43.0 / 0013ls-refs=unborn /
+  //     0020fetch=shallow wait-for-done / 0012server-option /
+  //     0017object-format=sha1 / 0010object-info / 0000
+  //
+  // So EVERY serve that got as far as spawning satisfies `bytesOut > 0` within
+  // milliseconds, including one that then hangs forever because the requester
+  // never sent its `command=fetch`. The predicate could not distinguish
+  // "streaming a 4GB pack" from "said hello and stopped" — and the latter was
+  // then held as `busy-streaming`, refusing the very requests that might have
+  // succeeded. Live on the tower 2026-08-02: across six hours EVERY serve to
+  // peers nWXvaGiA/Lm1ABoMR died at 0B or exactly 147B, not one ever reaching
+  // its first pack byte, with 10 requests refused `busy-streaming` in one 30s
+  // window behind a serve stuck at the greeting.
+  //
+  // `bytesIn > 0` is the half that makes the question answerable, and it is
+  // exact rather than a heuristic threshold: the server cannot produce any pack
+  // data before receiving the client's `command=fetch` + want lines, so a
+  // genuinely-streaming serve ALWAYS has it (no healthy serve is demoted), while
+  // a serve wedged at the greeting has it at exactly 0. Prefer it to comparing
+  // `bytesOut` against 147 — that number is a function of the git version
+  // (`agent=git/2.43.0` is inside it) and would rot silently on an upgrade.
+  //
+  // This NARROWS rule 0; it does not widen it. The WI-6412 livelock it was built
+  // for streamed 145MB-790MB, which necessarily had `bytesIn > 0`, so it stays
+  // protected. (Unchanged residual, still worth its own fix: a serve that HAS
+  // received its request and is enumerating objects writes nothing further, so
+  // once `lastWriteAt` ages past the window it remains supersedable.)
   const streaming = sameChannel.filter(
-    (s) => s.progress.bytesOut > 0 && now - s.progress.lastWriteAt <= windowMs,
+    (s) =>
+      s.progress.bytesIn > 0 &&
+      s.progress.bytesOut > 0 &&
+      now - s.progress.lastWriteAt <= windowMs,
   );
   if (streaming.length > 0) {
     return { admit: false, refuseReason: 'busy-streaming', supersede: [] };
@@ -1259,8 +1299,9 @@ function handleReq(state: ChannelState, v: ReqFrame): void {
       repoKey: v.repoKey,
       sessionId: v.id,
       startedAt,
-      // The duplex IS the progress view (it already counts every outbound byte),
-      // so there is no second counter that could disagree with the real one.
+      // The duplex IS the progress view (it already counts every byte in BOTH
+      // directions), so there is no second counter that could disagree with the
+      // real one — `bytesIn` in particular comes straight from `pushChunk`.
       progress: duplex,
     };
     const aborter = new AbortController();

@@ -643,6 +643,31 @@ describe('gitPipelinePosition (P-002)', () => {
       expect(res.positionsUnknown).toEqual([]);
     });
 
+    /**
+     * WI-6484 — the opposite no-target case from the one just above, and the one the
+     * WI actually reported: a path that has NEVER been touched by any commit AND is
+     * not even dirty in the working tree (`git status` found nothing either). Unlike
+     * a brand-new uncommitted file, there is nothing here to distinguish "not yet
+     * created" from "typo'd/renamed/wrong-submodule path" — the overwhelmingly likely
+     * real-world cause. This IS nothing-to-measure, and must be hoisted so a caller
+     * reading just the headline (notably the `git.pipelinePosition` cell's
+     * `positionsUnknown` hoist) does not read "deployed: false" as "wait for it" when
+     * waiting is in fact infinite.
+     */
+    it('DOES hoist all four positions for a path that has NEVER been touched and is not dirty either (WI-6484)', async () => {
+      const res = await gitPipelinePosition(
+        { path: 'does/not/exist.ts' },
+        {
+          git: fakeGit({}), // no pathCommit, no dirty ⇒ the path plausibly does not exist at all
+          loadDeploy: async () => deploy(),
+          loadSnapshot: async () => snap(),
+        },
+      );
+      expect(res.targetSha).toBeNull();
+      expect(res.positions).toEqual({ committedLocal: false, onStaging: false, inMain: false, deployed: false });
+      expect(res.positionsUnknown.sort()).toEqual(['committedLocal', 'deployed', 'inMain', 'onStaging']);
+    });
+
     it('reports a sha-only probe as not-applicable, never as "no run in flight"', async () => {
       const res = await gitPipelinePosition(
         { sha: 'abc1234567' },

@@ -2337,9 +2337,23 @@ describe('interpreter inline-code write guard (EI-18691482279179647)', () => {
     ['a plain `python3 file.py` with no -c/-e/heredoc', 'python3 apps/operator/tool.py --flag'],
     ['python3 -c with no path literal at all', `python3 -c "print(1 + 1)"`],
     ['a read-only python3 -c (no write call, no tree path)', `python3 -c "import sys; print(sys.version)"`],
-    ['a redirect target using shell expansion is left alone (fail-open)', `python3 -c "open(sys.argv[1], 'w')" "$SOME_PATH"`],
   ])('allows %s', (_label, command) => {
     expectAllow(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
+  });
+
+  // EI-18828866497684686: `open(sys.argv[1], 'w')` is the canonical COMPUTED-path
+  // shape (the target is an argv value, definitionally not a literal) — before
+  // that fix this was fully silent ("left alone, fail-open"); it now still
+  // ALLOWS (never denies — a bare argv reference gives the guard nothing to
+  // resolve against the tree), but with the new non-blocking advisory, since
+  // this is exactly the gap that advisory exists to surface.
+  it('allows (with the computed-path advisory) a redirect target using shell expansion — no longer fully silent', () => {
+    const command = `python3 -c "open(sys.argv[1], 'w')" "$SOME_PATH"`;
+    const out = runGate(bashCmd(command, { cwd: CANON }), CANON_ENV);
+    expect(out.status).toBe(0);
+    const hso = JSON.parse(out.stdout).hookSpecificOutput;
+    expect(hso.permissionDecision).toBe('allow');
+    expect(hso.additionalContext).toContain('EI-18828866497684686');
   });
 
   it('does not fire when the resolved target is OUTSIDE the canonical tree even with a relative path', () => {
