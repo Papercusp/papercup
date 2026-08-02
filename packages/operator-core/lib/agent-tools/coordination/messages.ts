@@ -1071,6 +1071,66 @@ export async function getMessageById(msgId: string): Promise<CoordEnvelope | nul
 }
 
 /**
+ * P-004 (agent-epistemics-2026-08-02, migration 732): has this message already
+ * been corrected, and by what?
+ *
+ * Returns the correction's msg_id, or null when the message is current OR the
+ * columns are not readable. NOTE those two collapse deliberately: a fail-open
+ * null means "proceed with the supersession", and the worst case is a second
+ * correction in a chain — strictly better than refusing a legitimate retraction
+ * because a read hiccuped, since a blocked retraction leaves wrong information
+ * standing.
+ */
+export async function getSupersededBy(msgId: string): Promise<string | null> {
+  if (!msgId || !coordHasPgFastPath()) return null;
+  try {
+    const sql = coordSql();
+    const rows = await sql<{ superseded_by_msg_id: string | null }[]>`
+      SELECT superseded_by_msg_id
+        FROM harness_shared.coord_event_log
+       WHERE workspace_id = ${coordWorkspaceId()}
+         AND surface = 'messages'
+         AND msg_id = ${msgId}
+       LIMIT 1
+    `;
+    return rows[0]?.superseded_by_msg_id ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Mark `msgId` superseded by `correctionMsgId` (P-004, migration 732).
+ *
+ * Ordering matters and is the caller's contract: the correction is SENT first,
+ * then this marks the original. That way a failure here leaves a delivered
+ * correction and an unmarked original — noisy but safe — rather than an original
+ * marked as corrected by a message that was never delivered, which would tell
+ * every later reader to go find a correction that does not exist.
+ *
+ * `WHERE superseded_by_msg_id IS NULL` makes it idempotent AND race-safe: two
+ * concurrent supersessions cannot overwrite each other, and the first one wins.
+ */
+export async function markSuperseded(msgId: string, correctionMsgId: string): Promise<boolean> {
+  if (!msgId || !correctionMsgId || !coordHasPgFastPath()) return false;
+  try {
+    const sql = coordSql();
+    const rows = await sql<{ msg_id: string }[]>`
+      UPDATE harness_shared.coord_event_log
+         SET superseded_by_msg_id = ${correctionMsgId}, superseded_at = now()
+       WHERE workspace_id = ${coordWorkspaceId()}
+         AND surface = 'messages'
+         AND msg_id = ${msgId}
+         AND superseded_by_msg_id IS NULL
+      RETURNING msg_id
+    `;
+    return rows.length > 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * A full coord msg_id looks like `msas1j6h-0000-<32 hex>`. The LEADING SHORT
  * FORM is what actually circulates: agents cite ids in prose, summaries and
  * carry-notes constantly ("still waiting on msas1j6h"), and `getMessageById`

@@ -2170,8 +2170,21 @@ body.has-op-chat .pc-header {
   line-height: 1.35;
 }
 
+/* WI-6503 [owner 2026-07-27, verbatim follow-up] "the chat box should disaply
+   the users profile icon in their chat, not the papercup icon."
+
+   This rule used to be "display: none !important", which made the owner's own
+   turns avatar-LESS in the rail. That was defensible while the only thing the
+   slot could show was the pane's papercup mark — a duplicate of the mark on
+   every reply, so hiding it saved ~37px of a narrow rail for free. It is not
+   defensible now: the slot carries the USER's own profile icon, which is
+   exactly what the item asks to see, so hiding it here would silently defeat
+   the fix on the one surface the owner actually reported.
+
+   Sized by the '.op-chat-sidebar .oracle-msg-avatar' rule above (30px), so the
+   row costs 30px + the 7px column-gap. */
 .op-chat-sidebar .oracle-msg-user .oracle-msg-avatar {
-  display: none !important;
+  display: inline-flex !important;
 }
 
 .op-chat-sidebar .oracle-msg-user .oracle-msg-stack {

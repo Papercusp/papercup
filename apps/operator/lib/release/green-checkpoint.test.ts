@@ -583,6 +583,80 @@ describe('runGreenCheckpoint', () => {
     expect(calls).toContain('runGreen');
   });
 
+  /**
+   * WI-7069 — the selection→suite gap is MEASURED and REPORTED.
+   *
+   * The 2026-08-02 12:53Z verdict judged a commit committed 10h51m earlier. Selection was
+   * provably CORRECT (the quiet-cut could only have returned that sha for a cutoff inside a
+   * 2-minute window), so the age accumulated AFTER selection — during setupTree/preflights —
+   * and nothing recorded that interval. With no selected-at stamp, "the candidate was old" and
+   * "selection chose badly" are indistinguishable, which is what turned a diagnosis into hours
+   * of git archaeology and produced four contradictory conclusions across the fleet.
+   *
+   * These pin the INSTRUMENT, not a kill bound: the run must still judge in both cases.
+   */
+  it('WI-7069: reports the selection→suite gap before judging, and stays QUIET on a healthy run', async () => {
+    const c1 = await commit('a', '1', 'c1');
+    await git(repo, ['branch', 'ready', c1]);
+    await commit('a', '2', 'c2');
+    const logs: string[] = [];
+    const { deps, calls } = stubDeps(true);
+    const priorLog = deps.log;
+    deps.log = (s: string) => {
+      logs.push(s);
+      priorLog?.(s);
+    };
+    await runGreenCheckpoint(cfg(), deps, { noPush: true });
+    const line = logs.find((l) => l.includes('candidate-age:')) ?? '';
+    expect(line).toContain('judging it now');
+    // A fast run must NOT carry the warning — a detector that fires on the healthy case is
+    // worse than none (this file's own EI-10609 lesson).
+    expect(line).not.toContain('⚠');
+    expect(line).not.toContain('STALE tree');
+    // Purely diagnostic: the run still judges.
+    expect(calls).toContain('runGreen');
+  });
+
+  it('⭐ WI-7069: a long stretch between selection and the suite WARNS that the verdict describes a stale tree — and still judges', async () => {
+    const c1 = await commit('a', '1', 'c1');
+    await git(repo, ['branch', 'ready', c1]);
+    await commit('a', '2', 'c2');
+    const logs: string[] = [];
+    const { deps, calls } = stubDeps(true);
+    const priorLog = deps.log;
+    deps.log = (s: string) => {
+      logs.push(s);
+      priorLog?.(s);
+    };
+    // Reproduce the real failure shape: the candidate is selected, then a step BETWEEN
+    // selection and the suite blocks for a long time. Advancing a Date.now offset from inside
+    // setupTree exercises the ACTUAL code path (real awaits, real git) rather than stubbing
+    // the measurement the test exists to verify.
+    const realNow = Date.now.bind(Date);
+    let offsetMs = 0;
+    const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => realNow() + offsetMs);
+    try {
+      const priorSetup = deps.setupTree;
+      deps.setupTree = async (ref: string) => {
+        offsetMs = 45 * 60_000; // 45m, past the 20m budget
+        return priorSetup?.(ref);
+      };
+      await runGreenCheckpoint(cfg(), deps, { noPush: true });
+    } finally {
+      nowSpy.mockRestore();
+    }
+    const line = logs.find((l) => l.includes('candidate-age:')) ?? '';
+    expect(line).toContain('⚠');
+    expect(line).toContain('45m ago');
+    expect(line).toContain('STALE tree');
+    // It must point at the RIGHT culprit — the whole purpose is that the next reader stops
+    // suspecting candidate selection, which is where the 2026-08-02 investigation went wrong.
+    expect(line).toContain('not a bad candidate choice');
+    expect(line).toContain('WI-7069');
+    // Diagnostic ONLY — never blocks, re-cuts, or changes the advance/hold decision.
+    expect(calls).toContain('runGreen');
+  });
+
   it('EI-13992: a THROWING ensureMigrationsCurrent is swallowed — the gate still runs + judges normally (never blocks on the preflight)', async () => {
     const c1 = await commit('a', '1', 'c1');
     await git(repo, ['branch', 'ready', c1]);
