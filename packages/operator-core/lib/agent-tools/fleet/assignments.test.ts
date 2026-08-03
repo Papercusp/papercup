@@ -421,6 +421,34 @@ describe('loop-owned monitor state — P-010 agent-operability (EI-11402)', () =
     );
     expect(out.loopMode).toBeNull();
   });
+
+  // EI-19381528967421062: a loop backed off from a provider wall reads active:true with
+  // nextFireAt far in the future and nothing else here distinguished that from a healthy
+  // between-wakes wait. Thread the SAME derivation loop:status already computes.
+  it('EI-19381528967421062: threads lifecycleBackoff through when the loop backed off from a provider wall', async () => {
+    const backoff = { reason: 'rate_limited', until: new Date(NOW + 6_000_000).toISOString(), resumesInMs: 6_000_000 };
+    const [out] = await decorateLoopMonitorStates(
+      [baseAgent({ declaredPlanSlug: 'plan-a' })],
+      async () => new Map([['su-agent-1', loop({ lifecycleBackoff: backoff })]]),
+    );
+    expect(out.lifecycleBackoff).toEqual(backoff);
+  });
+
+  it('lifecycleBackoff is null for a healthy loop (no backoff stamped)', async () => {
+    const [out] = await decorateLoopMonitorStates(
+      [baseAgent({ declaredPlanSlug: 'plan-a' })],
+      async () => new Map([['su-agent-1', loop()]]),
+    );
+    expect(out.lifecycleBackoff).toBeNull();
+  });
+
+  it('lifecycleBackoff is null when there is no active loop at all', async () => {
+    const [out] = await decorateLoopMonitorStates(
+      [baseAgent({ declaredPlanSlug: 'plan-a' })],
+      async () => new Map(),
+    );
+    expect(out.lifecycleBackoff).toBeNull();
+  });
 });
 
 describe('decorateMemberVerdicts (EI-8995)', () => {

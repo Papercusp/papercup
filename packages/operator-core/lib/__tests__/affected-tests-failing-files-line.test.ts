@@ -34,6 +34,7 @@ import { fileURLToPath } from 'node:url';
 
 import {
   formatFailingFilesLine,
+  renderFailingFilesSummary,
   parseFailedTestFiles,
   AFFECTED_TESTS_FAILING_FILES_TOKEN,
   FAILING_FILES_LINE_MAX_ENTRIES,
