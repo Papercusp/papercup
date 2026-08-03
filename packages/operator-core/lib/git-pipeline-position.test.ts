@@ -1762,6 +1762,62 @@ describe('computeStages: position x health', () => {
     expect(stage(s, 'gate').detail).toMatch(/RED \(3 consecutive\)/);
   });
 
+  /**
+   * EI-19405864032365760 — the READ side. This is the surface that actually misled the fleet:
+   * a preflight abort is not counted as a red (correctly), so the counters stay frozen on the
+   * PREVIOUS verdict and this stage kept rendering it as the current blocker. Measured
+   * 2026-08-03: ~2.5h of agents being told "the reds are yours to fix" and chasing test files
+   * that had nothing to do with a pending migration.
+   */
+  const abortedGate = (consecutiveReds: number) => ({
+    stalled: consecutiveReds > 0,
+    consecutiveReds,
+    lastGreenAtMs: 1,
+    fireStale: false,
+    fireStaleReason: null,
+    verdictStale: false,
+    verdictStaleReason: null,
+    verdictStaleReasonCode: null,
+    candidateAgeMs: null,
+    commitsBehindTip: null,
+    observedCandidate: 'oldcandidat',
+    inconclusive: {
+      status: 'migrations-pending',
+      candidate: 'deadbeefcafe',
+      detail: 'migration preflight ABORTED this run — 1 migration(s) are pending. Pending: 727-widen-vectors.sql: null value',
+      observedAtMs: 1,
+    },
+  });
+
+  it('⭐ EI-19405864032365760: an ABORTED gate reports the abort, not the stale red streak', () => {
+    const s = computeStages(input({ gate: abortedGate(3) }));
+    const detail = stage(s, 'gate').detail ?? '';
+    // Leads with the truth: no verdict was rendered, and re-firing aborts identically.
+    expect(detail).toMatch(/ABORTED before judging/i);
+    expect(detail).toMatch(/migrations-pending/);
+    // Names the blocking migration — the ONLY path from "main is stuck" to a fixable cause.
+    expect(detail).toMatch(/727-widen-vectors\.sql/);
+    // Explicitly disowns the frozen counters instead of presenting them as current.
+    expect(detail).toMatch(/PREVIOUS verdict, not this one/i);
+    expect(detail).not.toMatch(/The reds are yours to fix/i);
+  });
+
+  it('⭐ EI-19405864032365760: the lever routes to the migration, never to another checkpoint run', () => {
+    const lever = stage(computeStages(input({ gate: abortedGate(3) })), 'gate').lever ?? '';
+    expect(lever).toMatch(/db:migrate/);
+    // The pre-fix levers are both actively wrong here: a re-fire aborts at the same preflight,
+    // and the named failing tests are not what is holding the pipeline.
+    expect(lever).not.toMatch(/release:checkpoint-run/);
+    expect(lever).not.toMatch(/fix the reds/i);
+  });
+
+  it('⭐ EI-19405864032365760: an abort with no prior red streak omits the counter caveat', () => {
+    // Nothing stale to disown — the caveat must not appear and invent a red that never existed.
+    const detail = stage(computeStages(input({ gate: abortedGate(0) })), 'gate').detail ?? '';
+    expect(detail).toMatch(/ABORTED before judging/i);
+    expect(detail).not.toMatch(/PREVIOUS verdict/i);
+  });
+
   it('EI-7846: a force-deployed sha is `broken` — "deployed" must not imply "tested"', () => {
     const s = computeStages(
       input({

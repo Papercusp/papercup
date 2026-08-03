@@ -46,6 +46,17 @@ const log = (...a) => console.log(`[memvec-727 ${ts()}]`, ...a);
 
 async function main() {
   process.env.PAPERCUSP_REPO_ROOT ??= REPO;
+
+  // MUST come first, and it is imported for its SIDE EFFECT, not its exports.
+  // `memory/configure.ts` calls configureMemory({...}) at module top level, and
+  // that injection is what gives `@papercusp/memory` its vec-table resolver.
+  // Without it activeVecTable() returns null and the backfill reports
+  // `skipped: 'embedder-disabled'` — which reads exactly like "embedding is
+  // turned off" rather than "this process never configured the subsystem".
+  // The operator gets this for free because its boot path imports configure.ts;
+  // a standalone driver does not.
+  await import(path.join(REPO, 'packages/operator-core/lib/memory/configure.ts'));
+
   const { backfillCanonicalMemoryVectors } = await import(
     path.join(REPO, 'packages/operator-core/lib/memory/canonical-vec-backfill.ts')
   );
