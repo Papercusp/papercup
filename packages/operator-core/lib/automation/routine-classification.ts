@@ -322,6 +322,10 @@ export const TARGET_ROLE_SPEND: Readonly<Record<string, SpendEntry>> = {
   'system:knowledge-pack-delivery': { spend: 'none', why: 'Copies pack items into pools — no authoring' },
   'system:knowledge-pack-hygiene': { spend: 'none', why: 'Rule-based stale/contradiction sweep over pack rows' },
   'system:hive-git-gc': { spend: 'none', why: 'Garbage-collects hive git objects' },
+  'system:corpus-term-df': {
+    spend: 'none',
+    why: 'Recomputes corpus term document-frequency by tokenizing sampled turns locally — no model call',
+  },
   'system:gc-plan-runs': { spend: 'none', why: 'Prunes finished plan-run rows' },
   'system:gc-dead-loops': { spend: 'none', why: 'Reaps loop rows whose owning session is long gone' },
   'system:sweep-stalled-loops': {

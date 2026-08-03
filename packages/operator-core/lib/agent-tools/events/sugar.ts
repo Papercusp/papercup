@@ -167,9 +167,28 @@ async function defaultCheckpointPipeline(): Promise<string | undefined> {
 // file/events:await — probe NOW, answer already_deployed instead of registering a
 // dead-on-arrival wait. Best-effort + time-bounded: an unresolvable probe (timeout,
 // unknown sha) falls through to a normal registration, never blocks arming.
-async function deployAlreadyLiveProbe(
-  sha: string,
-): Promise<{ deployed: boolean; targetSha: string | null; deployedSha: string | null }> {
+// EI-19448585641887174: `positions.deployed` is a GIT fact — true from the deploy's
+// `swap` step onward, because it is ancestry against the RELEASE CHECKOUT'S HEAD
+// (dev-deploy-state derives `deployed` from `cfg.releaseRoot`). The process restart
+// happens LATER (apps/operator/lib/release/deploy.ts: swap … L389 restart … L438 emit).
+// So inside the swap→restart window this probe was reporting a sha as "live on :3070"
+// and telling the caller to "proceed with the work that needed it live now" while the
+// OLD process was still serving — "deployed ✓" stated as a process conclusion, the
+// misread CLAUDE.md records as filed four separate times.
+//
+// The falsifier was already in the object this probe builds and discarded:
+// `serving.startedSinceCodeChange`. It is reported ALONGSIDE `deployed` rather than
+// folded INTO it, deliberately — see the latch site for why suppressing the latch here
+// would re-open EI-18676050719521433.
+async function deployAlreadyLiveProbe(sha: string): Promise<{
+  deployed: boolean;
+  targetSha: string | null;
+  deployedSha: string | null;
+  /** AFFIRMATIVE evidence the serving process has not loaded the deployed code.
+   *  `false` means measured-and-current; `null` means unmeasurable, never "stale". */
+  servingStale: boolean;
+  servingBehindMin: number | null;
+}> {
   const snapshot = await gitPipelineSnapshot();
   const position = await gitPipelinePosition(
     { sha },
@@ -179,6 +198,11 @@ async function deployAlreadyLiveProbe(
     deployed: !!position.targetSha && position.positions.deployed,
     targetSha: position.targetSha,
     deployedSha: position.deployedSha,
+    // Only an AFFIRMATIVE `false` counts. `null` (no unit, unprobeable host) must read
+    // as "not measured", never as staleness — inventing a warning from an absence is
+    // the same defect in the opposite direction.
+    servingStale: position.serving.startedSinceCodeChange === false,
+    servingBehindMin: position.serving.behindMin,
   };
 }
 
@@ -229,18 +253,43 @@ defineTool({
 
     if (args.sha) {
       const probe = await withBoundedTimeout(deployAlreadyLiveProbe(args.sha), {
-        fallback: { deployed: false, targetSha: null, deployedSha: null },
+        fallback: {
+          deployed: false,
+          targetSha: null,
+          deployedSha: null,
+          servingStale: false,
+          servingBehindMin: null,
+        },
         timeoutMs: 3_000,
         label: "deploy-await:alreadyDeployedLatch",
       });
       if (probe.value.deployed) {
+        // EI-19448585641887174: the latch STILL fires when serving is stale, and that is
+        // deliberate — its subject is key semantics, not liveness. `release:deployed:<sha>`
+        // is emitted only for shas in the batch that ships them, so for an already-shipped
+        // sha the wait is dead whatever the process is doing; suppressing the latch here
+        // would re-open EI-18676050719521433 (a full-timeout sleep holding a work-item
+        // claim). What was wrong was the CLAIM, not the latch: `serving` measures the
+        // process against the LATEST deploy, not against this sha, so it cannot decide
+        // whether to wait — only whether "live" is an honest word. So report it, and
+        // point at the key that DOES mark restart-complete.
+        const stale = probe.value.servingStale;
+        const behind = probe.value.servingBehindMin;
         return reply({
           ok: true,
           already_deployed: true,
           event: keys[0],
           sha: probe.value.targetSha,
           deployedSha: probe.value.deployedSha,
-          advice: `${args.sha} is ALREADY deployed (live on :3070) — its exact "${keys[0]}" key is emitted only for shas in a FUTURE deploy batch, so it can never re-fire for this one. Do not wait; proceed with the work that needed it live now.`,
+          serving_stale: stale,
+          advice: stale
+            ? `${args.sha} is in the release checkout, but :3070 is NOT yet running it — the serving process started ` +
+              `${behind === null ? "" : `~${behind}m `}BEFORE the code it serves, i.e. a deploy has swapped the files and has ` +
+              `not restarted the process yet. Do NOT treat this as live. Waiting on "${keys[0]}" is still pointless (that ` +
+              `key only fires for shas in a FUTURE deploy batch) — instead await the GLOBAL "release:deployed", which is ` +
+              `emitted only after the restart AND its health probe pass, or re-read dev:pipeline_position and check ` +
+              `serving.startedSinceCodeChange.`
+            : `${args.sha} is ALREADY deployed (live on :3070) — its exact "${keys[0]}" key is emitted only for shas in a FUTURE deploy batch, so it can never re-fire for this one. Do not wait; proceed with the work that needed it live now.`,
         });
       }
     }

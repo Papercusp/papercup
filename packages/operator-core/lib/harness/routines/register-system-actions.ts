@@ -416,6 +416,15 @@ import './cargo-test-action';
 // legacy hives); armed by upsertHiveGitGcRoutine at the mode-flip-off-legacy
 // call site (hive-git-gc-routine.ts) — no bespoke reconcile sweep needed.
 import './hive-git-gc-action';
+// context-injection-retrieval-reach-and-visibility-2026-08-03 P-018 (D-064):
+// `system:corpus-term-df` — the ephemeral (tier:'ephemeral', 6h) cadence that
+// rebuilds the corpus document-frequency table `corpusQueryText` selects query
+// terms with. Slow on purpose: DF only feeds a RANKING among ~100 candidates,
+// and that ordering does not turn over on the timescale the corpus grows.
+// Additive by construction — until the table is first populated the lookup
+// returns null and the leg keeps its original length ordering, so there is
+// nothing to stage dark.
+import './corpus-term-df-action';
 // critical-process-supervisor-2026-07-04 P-002 (EI-7021 design): `system:supervision-reconcile`
 // — the failed-unit reconciler, a bespoke ephemeral (tier:'ephemeral', 60s) operator-HOME cadence
 // (same reasoning as hive-git-gc-action's deviation from the generic per-install triggers.schedule

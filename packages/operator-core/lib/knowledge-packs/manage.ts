@@ -447,24 +447,41 @@ export interface SweepResult {
   capped: boolean;
 }
 
+/** Pool-shaped sweep result — {@link SweepResult} without the hive framing. */
+export interface PoolSweepResult {
+  /** The scope key swept (e.g. `hive:my-pot`, `harness:papercusp`, a user id). */
+  scope: string;
+  scanned: number;
+  pairs: ConflictPair[];
+  /** True when the pool exceeded the scan cap and the tail was skipped. */
+  capped: boolean;
+}
+
 /** Sweep cap — N searches + ≤N judge calls; a huge pool gets a loud partial. */
 const SWEEP_MAX_ROWS = 200;
 
 /**
- * Re-run the conflict judge across a hive's whole pool — catches
- * contradictions that EMERGE after install (a pack row vs what the hive
- * organically learned last week), which the write-time check can't see.
+ * Re-run the conflict judge across ANY memory pool, named by its scope key.
+ *
+ * This is the generalized core; {@link sweepHiveConflicts} is the hive-shaped
+ * wrapper that existing callers use. It was widened for
+ * memory-corpus-hygiene-and-release-distribution-2026-08-03 P-004: our OWN
+ * pools (`harness:<slug>` and the user pool) were never swept by anything —
+ * the hygiene routine only ever enumerated hives — and the plan item is
+ * explicit that the fix reuses THIS judge rather than authoring a second one.
+ *
  * Read-only: returns the pairs; resolution (forget/update one side) is the
  * caller's deliberate act. Pairs are deduped (a↔b reported once).
  */
-export async function sweepHiveConflicts(
-  opts: { potSlug: string },
+export async function sweepPoolConflicts(
+  opts: { scope: string; maxRows?: number },
   deps: ManageDeps = {},
-): Promise<SweepResult> {
+): Promise<PoolSweepResult> {
   const backend = deps.backend ?? getMemoryBackend();
   const judge = deps.judge ?? realJudge();
-  const all = await backend.list({ scope: hiveScopeKey(opts.potSlug) });
-  const rows = all.slice(0, SWEEP_MAX_ROWS);
+  const cap = Math.max(1, opts.maxRows ?? SWEEP_MAX_ROWS);
+  const all = await backend.list({ scope: opts.scope });
+  const rows = all.slice(0, cap);
   const byId = new Map(rows.map((r) => [r.id, r]));
 
   const seen = new Set<string>();

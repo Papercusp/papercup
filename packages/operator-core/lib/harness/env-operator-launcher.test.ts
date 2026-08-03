@@ -14,6 +14,8 @@ import { delimiter, join, resolve } from 'node:path';
 import {
   planEnvOperatorLaunch,
   launchEnvOperators,
+  isTransientSkip,
+  defaultDetectSourceArchivePending,
   PROVISIONABLE_ENV_OPERATORS,
   type EnvOperatorPlanEntry,
   type EnvOperatorSpec,
@@ -100,6 +102,57 @@ describe('planEnvOperatorLaunch (pure)', () => {
       expect(plan[id].action).toBe('skip');
       expect(plan[id].skipReason).toBe('no-source-tree');
     }
+  });
+
+  // EI-19442842364710969 — a first boot skips dev/local because the shipped source
+  // archive has not finished extracting (measured ~30min for a 5.3G tree at ~2.9MB/s).
+  // That skip used to be reported with the SAME string as a build that shipped no source
+  // at all, so a machine reader could not tell "not yet" from "never" — which produced a
+  // false FAIL in the WI-3307 mac acceptance gate.
+  it('reports a PENDING source extract distinctly from a permanently absent tree', () => {
+    const pending = byId(
+      planEnvOperatorLaunch({ ...base, hasSourceTree: false, sourceArchivePending: true }),
+    );
+    const absent = byId(planEnvOperatorLaunch({ ...base, hasSourceTree: false }));
+    for (const id of ['dev', 'prod', 'staging']) {
+      expect(pending[id].action).toBe('skip');
+      expect(pending[id].skipReason).toBe('source-tree-pending');
+      // ...and the terminal case is untouched — the two must never collapse together.
+      expect(absent[id].skipReason).toBe('no-source-tree');
+      expect(pending[id].skipReason).not.toBe(absent[id].skipReason);
+    }
+  });
+
+  it('classifies pending as transient and every other skip as terminal', () => {
+    expect(isTransientSkip('source-tree-pending')).toBe(true);
+    // The whole point: a gate branching on this must NOT treat these as "come back later".
+    for (const terminal of [
+      'no-source-tree',
+      'no-toolchain',
+      'disabled',
+      'is-self',
+      'already-reachable',
+    ]) {
+      expect(isTransientSkip(terminal)).toBe(false);
+    }
+    expect(isTransientSkip(undefined)).toBe(false);
+  });
+
+  it('does not let a pending extract mask a more specific skip reason', () => {
+    const plan = byId(
+      planEnvOperatorLaunch({
+        ...base,
+        hasSourceTree: false,
+        sourceArchivePending: true,
+        disabledIds: ['dev'],
+        selfPort: 3070,
+        reachablePorts: [3170],
+      }),
+    );
+    // Precedence is unchanged — pending only ever refines the source-less branch.
+    expect(plan.dev.skipReason).toBe('disabled');
+    expect(plan.prod.skipReason).toBe('is-self');
+    expect(plan.staging.skipReason).toBe('already-reachable');
   });
 
   it('skips all spawnable envs when the toolchain is missing', () => {
@@ -213,6 +266,59 @@ describe('launchEnvOperators (effectful, fully faked)', () => {
     expect(res.spawned).toHaveLength(0);
     expect(spawnedCalls).toHaveLength(0);
     expect(res.skipped.every((s) => s.reason === 'no-source-tree')).toBe(true);
+  });
+
+  // EI-19442842364710969 — the same no-tree state, but with an extract in flight.
+  it('reports source-tree-pending (not no-source-tree) while the shipped archive unpacks', async () => {
+    const { deps, spawnedCalls } = fakeLaunchDeps({
+      detectSourceRoot: () => null,
+      detectSourceArchivePending: () => true,
+    });
+    const res = await launchEnvOperators(deps);
+    expect(spawnedCalls).toHaveLength(0);
+    expect(res.skipped.every((s) => s.reason === 'source-tree-pending')).toBe(true);
+    // Every one of them is a "come back later", so the caller can run a second pass.
+    expect(res.skipped.every((s) => isTransientSkip(s.reason))).toBe(true);
+  });
+
+  it('never consults the pending check once a real source tree exists', async () => {
+    let consulted = 0;
+    const { deps } = fakeLaunchDeps({
+      detectSourceRoot: () => '/src/papercup',
+      detectSourceArchivePending: () => {
+        consulted += 1;
+        return true;
+      },
+    });
+    const res = await launchEnvOperators(deps);
+    expect(consulted).toBe(0);
+    expect(res.skipped.some((s) => s.reason === 'source-tree-pending')).toBe(false);
+  });
+
+  it('defaultDetectSourceArchivePending is false without a shipped archive', () => {
+    const prev = process.env.PAPERCUSP_SOURCE_ARCHIVE;
+    try {
+      delete process.env.PAPERCUSP_SOURCE_ARCHIVE;
+      expect(defaultDetectSourceArchivePending()).toBe(false);
+      // A build that points at an archive which is not on disk is terminal, not pending.
+      process.env.PAPERCUSP_SOURCE_ARCHIVE = join(tmpdir(), 'no-such-archive-xyz.tar.zst');
+      expect(defaultDetectSourceArchivePending()).toBe(false);
+      process.env.PAPERCUSP_SOURCE_ARCHIVE = '   ';
+      expect(defaultDetectSourceArchivePending()).toBe(false);
+      // ...but a build that DID ship one, on disk, is genuinely pending.
+      const dir = mkdtempSync(join(tmpdir(), 'src-archive-'));
+      const archive = join(dir, 'source.tar.zst');
+      writeFileSync(archive, 'x');
+      try {
+        process.env.PAPERCUSP_SOURCE_ARCHIVE = archive;
+        expect(defaultDetectSourceArchivePending()).toBe(true);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    } finally {
+      if (prev === undefined) delete process.env.PAPERCUSP_SOURCE_ARCHIVE;
+      else process.env.PAPERCUSP_SOURCE_ARCHIVE = prev;
+    }
   });
 
   it('skips everything when the toolchain is missing and cannot be installed', async () => {

@@ -152,7 +152,16 @@ interface Snapshot {
 const snapshots = new Map<string, Snapshot>();
 const inFlight = new Map<string, Promise<Snapshot | null>>();
 
-async function loadSnapshot(sql: Sql, workspaceId: string): Promise<Snapshot | null> {
+async function loadSnapshot(
+  sql: Sql,
+  workspaceId: string,
+  // Stamped from the CALLER's clock, not `Date.now()`. Sharing one clock is
+  // what makes the TTL exercisable at all: a snapshot stamped with wall-clock
+  // time while the reader compares against an injected `nowMs` is permanently
+  // "fresh" (the difference goes negative), so the re-read path would never run
+  // in a test and the expiry would ship unverified.
+  loadedAtMs: number,
+): Promise<Snapshot | null> {
   const rows = (await sql`
     SELECT term, df, ndocs
       FROM harness_shared.corpus_term_df
@@ -161,7 +170,7 @@ async function loadSnapshot(sql: Sql, workspaceId: string): Promise<Snapshot | n
   if (rows.length === 0) return null;
   const df = new Map<string, number>();
   for (const r of rows) df.set(r.term, r.df);
-  return { df, loadedAtMs: Date.now(), ndocs: rows[0]!.ndocs };
+  return { df, loadedAtMs, ndocs: rows[0]!.ndocs };
 }
 
 /**
@@ -189,7 +198,7 @@ export async function corpusTermDfLookup(
   // bulk read on a cold cache.
   let pending = inFlight.get(workspaceId);
   if (!pending) {
-    pending = loadSnapshot(sql, workspaceId)
+    pending = loadSnapshot(sql, workspaceId, nowMs)
       .catch(() => null)
       .finally(() => inFlight.delete(workspaceId));
     inFlight.set(workspaceId, pending);

@@ -121,11 +121,17 @@ describe('conflictMarkersDetector', () => {
 });
 
 describe('DEFAULT_CONTENT_DETECTORS', () => {
-  it('ships all eight seeded detectors, keyed for the guard + escalation', () => {
+  it('ships all nine seeded detectors, keyed for the guard + escalation', () => {
     expect(DEFAULT_CONTENT_DETECTORS.map((d) => d.key)).toEqual([
       'mdx',
       'smart-quotes',
       'nul-bytes',
+      // EI-19415157731625374: ordered BEFORE ts-parse for the same reason
+      // smart-quotes is — a backtick in a SQL comment is a parse error whose
+      // generic diagnostic points tens of lines from the cause, so the specific
+      // message must be recorded first. It also catches the SILENT form, where
+      // the file parses and ts-parse is structurally blind.
+      'sql-comment-backtick',
       // WI-6683: ordered after smart-quotes so the more specific curly-quote
       // message is recorded first for a file that trips both. nul-bytes sits
       // between them without disturbing that: a NUL byte is a distinct, more

@@ -73,6 +73,12 @@ vi.mock("../../git-pipeline-position", () => ({
     targetSha: "abc123",
     deployedSha: "not-target",
     positions: { committedLocal: true, onStaging: true, inMain: true, deployed: false },
+    // EI-19448585641887174: the real resolver ALWAYS returns `serving` (a required
+    // field on PipelinePosition), so a fixture without it is drift, not a smaller
+    // valid shape. The latch reads it un-defensively for exactly that reason — a
+    // fixture that forgets it should fail loudly rather than silently read as
+    // "not stale", which is the direction that would ship a false "it's live".
+    serving: { startedSinceCodeChange: true, behindMin: null },
   })),
 }));
 
@@ -313,6 +319,7 @@ describe("deploy:await already-deployed latch (EI-18676050719521433 — was pure
       targetSha: "33bfb1e68de2bffd5c45c831762261ec426790f7",
       deployedSha: "a5ba5521",
       positions: { committedLocal: true, onStaging: true, inMain: true, deployed: true },
+      serving: { startedSinceCodeChange: true, behindMin: null },
     } as never);
 
     const out = await callDeploy({ sha: "33bfb1e68de2bffd5c45c831762261ec426790f7" });
@@ -325,6 +332,65 @@ describe("deploy:await already-deployed latch (EI-18676050719521433 — was pure
     });
     expect(out.advice).toContain("Do not wait");
     expect(registerAwait).not.toHaveBeenCalled();
+  });
+
+  /**
+   * EI-19448585641887174 — the swap→restart window.
+   *
+   * `positions.deployed` is ancestry against the RELEASE CHECKOUT'S HEAD, which the
+   * deploy's `swap` step moves BEFORE it restarts the process (deploy.ts: swap …
+   * L389 restart … L438 emit release:deployed). So this state is not exotic — every
+   * normal deploy passes through it — and in it the latch was telling callers the sha
+   * was "live on :3070" and to "proceed with the work that needed it live now" while
+   * the OLD process was still serving. A git fact stating a process conclusion.
+   */
+  it("does NOT claim a sha is live while the serving process has not restarted into it", async () => {
+    vi.mocked(gitPipelinePosition).mockResolvedValueOnce({
+      targetSha: "33bfb1e68de2bffd5c45c831762261ec426790f7",
+      deployedSha: "33bfb1e6",
+      // The files ARE in the release checkout…
+      positions: { committedLocal: true, onStaging: true, inMain: true, deployed: true },
+      // …and the process serving them predates the code by 3 minutes.
+      serving: { startedSinceCodeChange: false, behindMin: 3 },
+    } as never);
+
+    const out = await callDeploy({ sha: "33bfb1e68de2bffd5c45c831762261ec426790f7" });
+
+    // The LATCH still fires, and that is deliberate: its subject is key semantics, not
+    // liveness. Suppressing it here would re-open EI-18676050719521433 — a full-timeout
+    // sleep on a per-sha key that can never re-fire for an already-shipped sha.
+    expect(out.already_deployed).toBe(true);
+    expect(registerAwait, 'must not register a per-sha wait that cannot fire').not.toHaveBeenCalled();
+
+    // What changed is the CLAIM. The false "it is live, go" must be gone…
+    expect(out.serving_stale).toBe(true);
+    expect(out.advice).not.toMatch(/live on :3070/);
+    expect(out.advice).not.toMatch(/proceed with the work/);
+    // …replaced by the measurement and the key that actually marks restart-complete.
+    expect(out.advice).toMatch(/NOT yet running it/);
+    expect(out.advice).toMatch(/~3m/);
+    expect(out.advice).toMatch(/release:deployed/);
+  });
+
+  /**
+   * The opposite-direction guard. `startedSinceCodeChange` is null on a host with no
+   * serving unit (tauri-desktop) or an unprobeable one — manufacturing a staleness
+   * warning from that absence would be the same defect with the sign flipped, and it
+   * would fire on every such caller.
+   */
+  it("treats an UNMEASURABLE serving reading as not-stale, never as stale", async () => {
+    vi.mocked(gitPipelinePosition).mockResolvedValueOnce({
+      targetSha: "33bfb1e68de2bffd5c45c831762261ec426790f7",
+      deployedSha: "33bfb1e6",
+      positions: { committedLocal: true, onStaging: true, inMain: true, deployed: true },
+      serving: { startedSinceCodeChange: null, behindMin: null },
+    } as never);
+
+    const out = await callDeploy({ sha: "33bfb1e68de2bffd5c45c831762261ec426790f7" });
+
+    expect(out.already_deployed).toBe(true);
+    expect(out.serving_stale).toBe(false);
+    expect(out.advice).toContain("Do not wait");
   });
 
   it("a sha NOT yet deployed still registers exactly as before (sibling case)", async () => {
