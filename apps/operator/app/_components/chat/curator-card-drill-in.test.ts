@@ -5,6 +5,8 @@ import {
   resolveDrillInTarget,
   resolvePlanItemDrillIn,
   resolveRefDestination,
+  refNeedsLiveItems,
+  reportNeedsLiveItems,
   type DrillInItem,
   type PlanItemDrillItem,
   type RefDestinationItem,
@@ -284,5 +286,83 @@ describe('resolveDrillInTarget — the ONE verdict the Open button and its click
       ownerAgentId: 'su-abc12345',
     });
     expect(resolveDrillInTarget('health:some-panel', items, 'papercusp')).toBeNull();
+  });
+});
+
+describe('refNeedsLiveItems / reportNeedsLiveItems (no-http-anywhere P-008, D-030 option C)', () => {
+  // The gate this feeds is a FETCH gate: `true` costs the ~891 KB attention
+  // feed, `false` must NEVER change what a card renders or where its click
+  // lands. These tests pin both halves of that contract.
+
+  it('a ref answerable from the ref STRING ALONE does not need the feed', () => {
+    // Steps 1-2 of resolveRefDestination return before `items` is read.
+    expect(refNeedsLiveItems('wi:WI-6594')).toBe(false);
+    expect(refNeedsLiveItems('wi:papercusp#WI-6594')).toBe(false);
+    expect(refNeedsLiveItems('plan:my-plan-2026-07-17')).toBe(false);
+    expect(refNeedsLiveItems('WI-6594')).toBe(false);
+    expect(refNeedsLiveItems('papercusp#WI-6594')).toBe(false);
+  });
+
+  it('a ref that must be MATCHED against live items needs the feed', () => {
+    expect(refNeedsLiveItems('escalation:msg-1')).toBe(true);
+    expect(refNeedsLiveItems('decision:some-id')).toBe(true);
+    expect(refNeedsLiveItems('some-bare-attention-id')).toBe(true);
+    // `health:` resolves to nothing either way — but proving that still takes
+    // the step-3 pass, so it deliberately reports true: over-fetch, never under.
+    expect(refNeedsLiveItems('health:some-panel')).toBe(true);
+  });
+
+  it('THE INVARIANT: when it says false, the feed cannot change the verdict', () => {
+    const withItems: RefDestinationItem[] = [
+      {
+        id: 'coord-escalation:msg-1',
+        itemRef: 'papercusp#WI-999',
+        planSlug: 'other-plan',
+        ownerAgentId: 'su-abc12345',
+      },
+      {
+        id: 'WI-6594',
+        itemRef: 'papercusp#WI-6594',
+        planSlug: 'my-plan-2026-07-17',
+        ownerAgentId: 'su-def67890',
+      },
+    ];
+    for (const ref of [
+      'wi:WI-6594',
+      'wi:papercusp#WI-6594',
+      'plan:my-plan-2026-07-17',
+      'WI-6594',
+      'papercusp#WI-6594',
+    ]) {
+      expect(refNeedsLiveItems(ref)).toBe(false);
+      // Same answer with a populated feed as with none — which is exactly what
+      // makes gating the fetch off behaviour-preserving for these refs.
+      expect(resolveRefDestination(ref, withItems)).toEqual(resolveRefDestination(ref, []));
+      expect(resolveDrillInTarget(ref, withItems, 'papercusp')).toEqual(
+        resolveDrillInTarget(ref, [], 'papercusp'),
+      );
+    }
+  });
+
+  it('an empty / whitespace / absent ref never asks for the feed', () => {
+    expect(reportNeedsLiveItems(null)).toBe(false);
+    expect(reportNeedsLiveItems(undefined)).toBe(false);
+    expect(reportNeedsLiveItems({ plans: [] })).toBe(false);
+    expect(reportNeedsLiveItems({ plans: [{ items: [] }] })).toBe(false);
+    expect(reportNeedsLiveItems({ plans: [{ items: [{ ref: '' }, {}] }] })).toBe(false);
+  });
+
+  it('a report needs the feed iff SOME row does', () => {
+    const workItemsOnly = {
+      plans: [{ items: [{ ref: 'wi:papercusp#WI-1' }, { ref: 'plan:p-2026' }] }],
+    };
+    expect(reportNeedsLiveItems(workItemsOnly)).toBe(false);
+    const oneEscalation = {
+      plans: [
+        { items: [{ ref: 'wi:papercusp#WI-1' }] },
+        { items: [{ ref: 'plan:p-2026' }, { ref: 'escalation:msg-9' }] },
+      ],
+    };
+    expect(reportNeedsLiveItems(oneEscalation)).toBe(true);
   });
 });

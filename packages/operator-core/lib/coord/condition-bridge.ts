@@ -38,6 +38,7 @@
 import { getOrgPg } from '@papercusp/db-org';
 import { ANY_FAMILY_TERMINAL_STATES } from '../work-item-dispatch-states';
 import { createWorkItem, setWorkItemState } from '../work-items';
+import { resolveWorkItemPot } from '../pot-membership';
 import { findConditionObject, linkWorkItemToCondition, type ConditionObject } from './condition-object';
 
 /**
@@ -393,16 +394,23 @@ export async function acquireConditionOwner(
   if (!won) {
     // A peer won the race. Stand down: settle our row so it does not become the
     // very duplicate this plan exists to prevent, and adopt the winner.
-    const winner = await findConditionObject(key, { harnessSlug: spec.harness });
+    //
+    // The winner is resolved from the COLUMN first for the same reason as step 2,
+    // and it matters MORE here: we know a row holds the key (that is why we
+    // lost), so a link-only read that returns null would report `workItem: null`
+    // — "nobody owns this" — at the exact moment the index proved somebody does.
+    const winner =
+      (await findConditionKeyHolder(key, { harnessSlug: harness, workspaceId: spec.workspaceId })) ??
+      (await findConditionObject(key, { harnessSlug: harness })).workItem;
     const droppedOk = await settleWorkItem(item.id, 'dropped', {
-      harness: spec.harness,
-      reason: `superseded by ${winner.workItem ?? 'the concurrent owner'} — lost the condition-key claim race for '${key}'`,
+      harness,
+      reason: `superseded by ${winner ?? 'the concurrent owner'} — lost the condition-key claim race for '${key}'`,
     });
     return {
       conditionKey: key,
-      workItem: winner.workItem,
+      workItem: winner,
       created: false,
-      lostRaceTo: winner.workItem ?? undefined,
+      lostRaceTo: winner ?? undefined,
       ...(droppedOk ? {} : { duplicateLeftOpen: item.id }),
     };
   }
@@ -410,7 +418,7 @@ export async function acquireConditionOwner(
   // 4. Record the durable association too. The link is append-only history; the
   //    column is current ownership. Best-effort: a failed link must not orphan a
   //    successful claim (the claim is the load-bearing half).
-  await linkWorkItemToCondition(item.id, key, { harness: spec.harness }).catch(() => undefined);
+  await linkWorkItemToCondition(item.id, key, { harness }).catch(() => undefined);
 
   return { conditionKey: key, workItem: item.id, created: true };
 }
@@ -475,13 +483,22 @@ export async function releaseConditionOwner(
   opts: { harness?: string; workspaceId?: string; settle?: boolean; reason?: string } = {},
 ): Promise<ReleaseResult> {
   const key = conditionKey.trim();
-  const current = await findConditionObject(key, { harnessSlug: opts.harness });
-  if (!current.workItem) {
+  // Same normalization as the acquire path — a release scoped to the caller's
+  // un-normalized harness would fail to find the very row the bridge stored.
+  const harness = opts.harness ? await resolveStoredConditionHarness(opts.harness, opts.workspaceId) : undefined;
+  // COLUMN first (the enforcement point), link second. A holder with no link is
+  // exactly the row that must be released here: leaving its key in place is what
+  // makes the condition permanently unownable.
+  const owner =
+    (await findConditionKeyHolder(key, { harnessSlug: harness, workspaceId: opts.workspaceId })) ??
+    (await findConditionObject(key, { harnessSlug: harness })).workItem;
+  if (!owner) {
     // Still sweep terminal holders — a settled row may hold the key even when no
     // LIVE owner exists, and leaving it there blocks the next occurrence.
     await releaseStaleConditionKeys(key, opts.workspaceId);
     return { conditionKey: key, released: null, settled: false };
   }
+  const current = { workItem: owner };
 
   // Settle ONLY an item the bridge itself minted. A hand-filed root-cause bug can
   // legitimately hold this key (adopting one instead of minting a duplicate is the
@@ -494,7 +511,7 @@ export async function releaseConditionOwner(
       // `settled` is what the close ACTUALLY did — never an assumption. Asserting
       // it while discarding the outcome is what hid this module's own defect.
       settled = await settleWorkItem(current.workItem, 'done', {
-        harness: opts.harness,
+        harness,
         reason: opts.reason ?? `condition '${key}' resolved`,
       });
     } else {

@@ -1803,7 +1803,15 @@ describe('computeStages: position x health', () => {
   });
 
   it('⭐ EI-19405864032365760: the lever routes to the migration, never to another checkpoint run', () => {
-    const lever = stage(computeStages(input({ gate: abortedGate(3) })), 'gate').lever ?? '';
+    // `inMain: false` is load-bearing: the gate only offers a lever while it is still HOLDING
+    // your change back. Once it is in main the stage is 'past' and a null lever is correct.
+    const lever =
+      stage(
+        computeStages(
+          input({ gate: abortedGate(3), positions: { committedLocal: true, onStaging: true, inMain: false, deployed: false } }),
+        ),
+        'gate',
+      ).lever ?? '';
     expect(lever).toMatch(/db:migrate/);
     // The pre-fix levers are both actively wrong here: a re-fire aborts at the same preflight,
     // and the named failing tests are not what is holding the pipeline.

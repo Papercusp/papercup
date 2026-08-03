@@ -79,6 +79,22 @@ vi.mock('../agent-tools/coordination/log', async (importOriginal) => {
   return { ...actual, coordScopeWorkspace: () => WS };
 });
 
+// Production homes every issue to a real Pot (`createIssue` → `resolveWorkItemPot`),
+// which NORMALIZES a member harness to its hive home — `oddsmith` becomes
+// `oddsmith-hive`. That normalization is the whole substance of
+// EI-19407969585168294, and the fixture DB has no pot tables, so the real
+// resolver would just throw and the bridge would fall back to the caller's slug
+// — i.e. the trap would be silently absent from the test. Emulate it for exactly
+// one slug: identity for everything else, so no other case changes meaning.
+vi.mock('../pot-membership', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  return {
+    ...actual,
+    resolveWorkItemPot: async ({ rawSlug }: { rawSlug?: string | null }) =>
+      rawSlug === 'member' ? 'member-hive' : (rawSlug ?? null),
+  };
+});
+
 // Imported AFTER the mocks are registered (vi.mock is hoisted).
 const bridge = await import('./condition-bridge');
 const { findConditionObject, linkWorkItemToCondition } = await import('./condition-object');
@@ -401,47 +417,95 @@ describe('the completion-integrity gate — the defect this file found', () => {
 });
 
 describe('the two-writes/one-read asymmetry (column vs link)', () => {
-  it('a key held by an item with NO link makes the condition unownable AND churns a dropped row per tick', async () => {
-    // FOUND BY THIS FILE. Ownership is written to TWO places — `condition_key`
-    // (the column the unique index enforces) and the `about` coord_link — but
-    // `findConditionObject` reads only the LINK. So a row holding the key
-    // WITHOUT a link is invisible to every ownership read while still blocking
-    // the index.
+  it('a mint is ADOPTABLE on the next tick even when the store normalizes the harness (EI-19407969585168294)', async () => {
+    // THE FALSIFIER for the live churn bug, and the case every prior test
+    // missed: they all pass a harness the store stores verbatim, so nothing
+    // normalizes and the bug is invisible. Production does not: the alarm
+    // derives `oddsmith` from `green-stall:oddsmith`, `createIssue` homes the
+    // row to its Pot (`oddsmith-hive`), and the ownership read then filtered on
+    // the un-normalized slug — so the bridge could never see the row it had just
+    // created. Live: one owner (WI-7321) and three doomed re-mints in ~50min.
     //
-    // The consequence is not a bad read, it is unbounded churn: each reconcile
-    // tick finds no owner, mints an item, loses the claim to the invisible
-    // holder, drops the item it just minted, and reports `workItem: null`. On
-    // the reconciler's 5-minute cadence that is ~288 dropped work-items a day
-    // for one condition, and the condition can never be owned.
-    //
-    // Reachable exactly by the cleanup D-020 just made SAFE (and therefore
-    // attractive): hand-adopting a condition_key onto an existing bug. D-020
-    // made the SETTLE side safe; this is the ACQUIRE side of the same move.
-    // Asserted here as CURRENT BEHAVIOR so the fix has a falsifier.
+    // Simulated here by making the resolver map the member slug to a hive home,
+    // which is exactly what `resolveWorkItemPot` does in production.
+    const key = 'green-stall:member';
+    const MEMBER = 'member';
+    const HOME = 'member-hive';
+    // The caller passes the MEMBER slug, exactly as the alarm does.
+    const first = await bridge.acquireConditionOwner(key, { ...spec('stalled'), harness: MEMBER });
+    expect(first.created).toBe(true);
+
+    // The row was STORED under the hive home, not the slug that was asked for.
+    // This line is the bug's precondition; if it ever stops holding, the case
+    // below stops testing anything.
+    const [row] = await db.sql<{ harness_slug: string }[]>`
+      SELECT harness_slug FROM harness_shared.work_items WHERE feature_id = ${first.workItem}`;
+    expect(row.harness_slug).toBe(HOME);
+
+    // The NEXT tick asks with the same member slug and must ADOPT. Before the
+    // fix it returned created:true, immediately lost the key race to the row
+    // above, and stood down — one wasted work-item per tick, forever.
+    const second = await bridge.acquireConditionOwner(key, { ...spec('stalled'), harness: MEMBER });
+    expect(second).toMatchObject({ created: false, workItem: first.workItem });
+
+    // Nothing was minted-and-discarded: the adopt happened BEFORE the create.
+    const total = await db.sql<{ n: number }[]>`SELECT count(*)::int AS n FROM harness_shared.work_items`;
+    expect(total[0].n).toBe(1);
+    expect(await holdersOf(key)).toEqual([first.workItem]);
+
+    // Release resolves through the same normalization, so the key is really freed.
+    const rel = await bridge.releaseConditionOwner(key, { harness: MEMBER, workspaceId: WS, settle: true });
+    expect(rel).toMatchObject({ released: first.workItem, settled: true });
+    expect(await holdersOf(key)).toEqual([]);
+  });
+
+  it('a key held by an item with NO link is now ADOPTED — the column is the enforcement point', async () => {
+    // The repair for the asymmetry documented below: the adopt-step reads the
+    // `condition_key` column (what the unique index enforces) rather than only
+    // the append-only link, so a row holding the key without a link is no longer
+    // invisible to ownership while still blocking the index.
     const key = 'green-stall:papercup';
     const orphan = await createWorkItem({ kind: 'bug', title: 'holds the key, never linked', harness: H, severity: 'major' });
     expect(await bridge.claimConditionKey(orphan.id, key, WS)).toBe(true);
 
-    // Invisible to the ownership read...
+    // Still invisible to the LINK-based read...
     expect((await findConditionObject(key, { harnessSlug: H })).workItem).toBeNull();
 
-    // ...so two ticks mint and immediately drop two items, owning nothing.
-    const t1 = await bridge.acquireConditionOwner(key, spec('stalled'));
-    const t2 = await bridge.acquireConditionOwner(key, spec('stalled'));
-    expect(t1).toMatchObject({ created: false, workItem: null });
-    expect(t2).toMatchObject({ created: false, workItem: null });
-    expect(await holdersOf(key)).toEqual([orphan.id]);
+    // ...but the bridge adopts it, mints nothing, and discards nothing.
+    const tick = await bridge.acquireConditionOwner(key, spec('stalled'));
+    expect(tick).toMatchObject({ created: false, workItem: orphan.id });
+    const total = await db.sql<{ n: number }[]>`SELECT count(*)::int AS n FROM harness_shared.work_items`;
+    expect(total[0].n).toBe(1);
 
-    const dropped = await db.sql<{ n: number }[]>`
-      SELECT count(*)::int AS n FROM harness_shared.work_items
-       WHERE feature_id <> ${orphan.id} AND status = ANY(${ANY_FAMILY_TERMINAL_STATES as string[]}::text[])`;
-    expect(dropped[0].n).toBe(2); // one wasted row per tick, forever
-
-    // And release cannot clear it either — the sweep only touches TERMINAL rows,
-    // so the orphaned key survives the condition resolving.
+    // And release can now find and free it — leaving that key in place is what
+    // made the condition permanently unownable.
     const rel = await bridge.releaseConditionOwner(key, { harness: H, workspaceId: WS, settle: true });
-    expect(rel).toMatchObject({ released: null, settled: false });
-    expect(await holdersOf(key)).toEqual([orphan.id]);
+    expect(rel).toMatchObject({ released: orphan.id, settleSkipped: 'not-bridge-minted' });
+    expect(await holdersOf(key)).toEqual([]);
+  });
+
+  it('the link read ALONE still cannot see a key holder — which is why the adopt-step no longer relies on it', async () => {
+    // The asymmetry itself, pinned as a standing fact rather than as behavior.
+    // Ownership is WRITTEN to two places — `condition_key` (the column the unique
+    // index enforces) and the `about` coord_link — and `findConditionObject`
+    // reads only the LINK. This test asserts that gap still exists, so that if
+    // someone later "simplifies" the adopt-step back to a link-only read, the
+    // reason it was changed is sitting right here.
+    //
+    // What the gap USED to cost: each tick found no owner, minted, lost the
+    // claim to the invisible holder, and discarded the row — ~288 wasted
+    // work-items a day per condition on the 5-minute cadence, and a condition
+    // that could never be owned. Reachable exactly via the cleanup D-020 made
+    // SAFE and therefore attractive: hand-adopting a key onto an existing bug.
+    const key = 'green-stall:papercup';
+    const orphan = await createWorkItem({ kind: 'bug', title: 'holds the key, never linked', harness: H, severity: 'major' });
+    expect(await bridge.claimConditionKey(orphan.id, key, WS)).toBe(true);
+
+    // The LINK read: blind to it.
+    expect((await findConditionObject(key, { harnessSlug: H })).workItem).toBeNull();
+    // The COLUMN read (the enforcement point): sees it, which is what the
+    // adopt-step now asks.
+    expect(await bridge.findConditionKeyHolder(key, { harnessSlug: H, workspaceId: WS })).toBe(orphan.id);
   });
 
   it('linking the same orphan row makes it a normal, adoptable owner (the one-line repair)', async () => {

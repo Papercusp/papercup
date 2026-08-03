@@ -30,7 +30,7 @@ import { parseAsBoolean, parseAsString, parseAsStringEnum, useQueryState } from 
 import { useRouter } from '@/lib/router-compat/navigation';
 import { useResolvedHarnessSlug } from '@/app/adv/create/use-create-data';
 import { OperatorChat } from './OperatorChat';
-import { resolveDrillInTarget } from './chat/curator-card-drill-in';
+import { resolveDrillInTarget, reportNeedsLiveItems } from './chat/curator-card-drill-in';
 import {
   CHAT_PLAN_POPUP_PARAM,
   CHAT_WORK_ITEM_POPUP_PARAM,
@@ -322,21 +322,34 @@ export function OperatorChatSidebar({ faces = [] }: { faces?: readonly OpChatFac
   // hooks read — no extra query", and that stopped being true when WI-5955 moved
   // both badges onto the narrow `plans.attentionCounts`. This is now the ONLY
   // app-wide consumer of the full feed, and ChromeShell mounts this sidebar on
-  // every non-chromeless route — so it fetches on EVERY screen. Measured
+  // every non-chromeless route — so it used to fetch on EVERY screen. Measured
   // 2026-08-03 (no-http-anywhere-2026-07-28 D-028/D-030): 891 KB on the git tab
   // against :3270, 68% of that route's entire first paint, on a page that
   // renders no attention feed at all.
   //
-  // Not gated here yet because the obvious gate does not work: `chatOpen`
-  // defaults to TRUE, and the only fields the drill-in actually reads are
-  // `id` / `itemRef` / `planSlug` (see curator-card-drill-in.ts) — three strings
-  // per item out of a ~1,096-item feed. The options are ranked in D-030; do not
-  // "fix" this by narrowing usePlanAttention's args, which is the trap D-029
-  // documents for its sibling.
+  // GATED 2026-08-03 (P-008, D-030 option C) on whether any rendered card row
+  // ACTUALLY needs the feed. The gate is precise rather than conservative
+  // because `resolveRefDestination` answers `wi:…` / `plan:…` / bare work-item
+  // refs at steps 1-2 WITHOUT reading items at all — only `escalation:` /
+  // `decision:` / bare non-work-item refs fall through to the live-item match.
+  // `refNeedsLiveItems` runs that short-circuit rather than restating it, so it
+  // cannot drift from the resolver (see its docblock). Behaviour is preserved
+  // exactly: a row whose verdict the feed could change keeps the feed.
+  //
+  // ⛔ Do NOT "simplify" this to `chatOpen` — it defaults to TRUE and the
+  // collapsed shell still MOUNTS OperatorChat (aria-hidden), so it saves nothing.
+  // ⛔ Do NOT "fix" the size by narrowing usePlanAttention's args instead —
+  // that is the D-029 trap, and D-001 of slim-plans-attention-sync-payload
+  // measured ~677 items silently dropped when the harnessSlug axis was treated
+  // as a row predicate.
   //
   // ⚠ Anyone editing this hook: re-measure before claiming a saving, and update
   // THIS comment with it. A stale cost note is how the 891 KB stayed invisible.
-  const { items: inboxItems } = useInboxAttention();
+  const needsAttentionFeed = useMemo(
+    () => conv.messages.some((m) => reportNeedsLiveItems(m.report)),
+    [conv.messages],
+  );
+  const { items: inboxItems } = useInboxAttention(needsAttentionFeed);
   const inboxItemsRef = useRef(inboxItems);
   inboxItemsRef.current = inboxItems;
   // hud-consolidation-2026-07-26 P-004 pointed a curator card's drill-in at the

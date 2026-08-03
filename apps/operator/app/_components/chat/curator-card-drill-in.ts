@@ -236,6 +236,53 @@ export type DrillInTarget =
   | { kind: 'plan'; slug: string }
   | { kind: 'session'; ownerAgentId: string };
 
+/** Resolving a ref against NO live items — the "steps 1+2 only" answer. */
+const NO_LIVE_ITEMS: readonly RefDestinationItem[] = [];
+
+/**
+ * Does resolving this ref REQUIRE the live attention feed, or is it answerable
+ * from the ref string alone?
+ *
+ * `resolveRefDestination` returns at step 1 (`wi:…`, `plan:…`) or step 2 (a
+ * bare/qualified work-item id) WITHOUT EVER READING `items` — so for those refs
+ * the feed cannot change the verdict, the rendered button, or where the click
+ * lands. Only a ref that falls through to step 3 (`escalation:<msgId>`,
+ * `decision:<id>`, a bare non-work-item id, `health:<panelId>`) is matched
+ * against live items.
+ *
+ * That asymmetry is what makes the feed gateable. This predicate IS the
+ * short-circuit test, run rather than re-stated: resolve against an empty item
+ * list, and if the answer is already concrete, the items were never consulted.
+ * Deriving it this way means it cannot drift out of sync with the resolver — a
+ * new step-1/2 prefix is picked up here for free, and a re-ordering that starts
+ * consulting items earlier flips this to `true` (fetch the feed) rather than
+ * silently under-fetching.
+ *
+ * Caller: OperatorChatSidebar gates its `useInboxAttention()` on whether ANY
+ * rendered card row needs the feed (no-http-anywhere-2026-07-28 P-008 / D-030 —
+ * that feed measured 891 KB on every route, 68% of a route that renders no
+ * attention items at all). Note `health:<panelId>` returns true here: it
+ * resolves to nothing either way, but proving that needs the same step-3 pass,
+ * and over-fetching for it is strictly safer than teaching this a second,
+ * drift-prone copy of the resolver's ref vocabulary.
+ */
+export function refNeedsLiveItems(ref: string): boolean {
+  return resolveRefDestination(ref, NO_LIVE_ITEMS).kind === 'none';
+}
+
+/**
+ * Does any row in this report block need the live attention feed?
+ * The per-message half of {@link refNeedsLiveItems}; `false` for a report with
+ * no refs at all, which is the common curator card.
+ */
+export function reportNeedsLiveItems(
+  report: { plans?: readonly { items?: readonly { ref?: string }[] }[] } | null | undefined,
+): boolean {
+  return (report?.plans ?? []).some((p) =>
+    (p.items ?? []).some((i) => i.ref != null && i.ref !== '' && refNeedsLiveItems(i.ref)),
+  );
+}
+
 /**
  * The SINGLE openable-verdict a card's Open button and its click must share:
  * null means "nothing to open", which per the owner's 2026-07-28 ruling means no

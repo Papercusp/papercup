@@ -27,9 +27,14 @@ import {
   appendResidueSample,
   censusTerminalResidue,
   evaluateResidueTrend,
+  isMaintDue,
   resolveTerminalSliceAbs,
 } from '../../task-manager/terminal-residue-census';
-import { readResidueSamples, writeResidueSamples } from '../../task-manager/terminal-residue-store';
+import {
+  readLastCensusAtMs,
+  readResidueSamples,
+  writeResidueSamples,
+} from '../../task-manager/terminal-residue-store';
 
 /** Coord identity for the reconciler's own broadcasts (mirrors SUPERVISION_IDENTITY). */
 const TASK_MANAGER_IDENTITY: AgentIdentity = {
@@ -43,13 +48,39 @@ const TASK_MANAGER_IDENTITY: AgentIdentity = {
 /** Terminal rows are the "what ran overnight and what did it cost" record. A week
  *  is long enough to answer that and short enough to keep the live index hot. */
 const TERMINAL_RETENTION_HOURS = 168;
-/** GC is cheap but pointless every 30s — roughly hourly at the 30s cadence. */
-const GC_EVERY_N_TICKS = 120;
+/** GC is cheap but pointless every 30s — hourly is ample. */
+const GC_INTERVAL_MS = 60 * 60_000;
 /** The residue census is a trend over DAYS; hourly is ample and keeps the ring small. */
-const RESIDUE_EVERY_N_TICKS = 120;
+const RESIDUE_INTERVAL_MS = 60 * 60_000;
 /** Don't re-broadcast an accumulation report more than once every few hours. */
 const RESIDUE_RENOTIFY_MS = 6 * 60 * 60_000;
-let tickCount = 0;
+
+/**
+ * EI-19407950136194410 — WALL-CLOCK watermarks, never tick counts.
+ *
+ * These two jobs used to be gated on `tickCount % 120` against a module-scoped
+ * counter. A counter inside the process resets when the process does, so a host
+ * restarting more often than hourly never reached 120 and ran NEITHER job, silently
+ * and forever. See `isMaintDue` for the full account; the short version is that the
+ * census is the leading indicator for residue that host CHURN creates, so the old
+ * gate went blind exactly when it was needed and a restart meant to activate it
+ * pushed it out another hour instead.
+ *
+ * The two jobs need DIFFERENT strategies because they differ in idempotence:
+ *
+ *  - GC is an idempotent, cheap DELETE with a time predicate. It needs no persisted
+ *    watermark at all: `null` means "first tick of this process", which answers DUE,
+ *    so a restart makes the GC run SOONER rather than never. Re-running it costs one
+ *    near-no-op DELETE.
+ *  - The CENSUS is NOT idempotent — every run appends a sample to a multi-week trend
+ *    ring, and the trend is a floor comparison across that ring. Sampling on every
+ *    restart would let a churning host inflate the ring and skew the very floor the
+ *    indicator is built on. So it hydrates the watermark the store ALREADY persists
+ *    (`lastCensusAtMs`) once per process, and gates on that.
+ */
+let lastGcAtMs: number | null = null;
+let lastResidueAtMs: number | null = null;
+let residueWatermarkHydrated = false;
 let lastResidueNotifyAtMs = 0;
 
 registerSystemAction('task-reconcile', async (ctx: SystemActionCtx) => {
@@ -70,11 +101,24 @@ registerSystemAction('task-reconcile', async (ctx: SystemActionCtx) => {
       })),
   });
 
-  tickCount += 1;
-  if (tickCount % GC_EVERY_N_TICKS === 0) {
+  const nowMs = Date.now();
+
+  if (isMaintDue({ lastAtMs: lastGcAtMs, nowMs, intervalMs: GC_INTERVAL_MS })) {
+    // Stamp BEFORE awaiting: a failed GC must not re-fire every 30s, and the stamp
+    // also keeps two overlapping ticks from both entering.
+    lastGcAtMs = nowMs;
     await gcTerminalTasks(TERMINAL_RETENTION_HOURS).catch(() => 0);
   }
-  if (tickCount % RESIDUE_EVERY_N_TICKS === 0) {
+
+  const target = { installSlug: ctx.installSlug, workspaceId: ctx.workspaceId };
+  if (!residueWatermarkHydrated) {
+    // Once per process. A read failure yields null, which reads as DUE — the census
+    // erring toward one extra sample beats it going quiet on an unreadable store.
+    residueWatermarkHydrated = true;
+    lastResidueAtMs = await readLastCensusAtMs(target);
+  }
+  if (isMaintDue({ lastAtMs: lastResidueAtMs, nowMs, intervalMs: RESIDUE_INTERVAL_MS })) {
+    lastResidueAtMs = nowMs;
     await sampleResidue(ctx, tick.scan.userManagerRoot);
   }
 });

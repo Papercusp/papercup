@@ -4,6 +4,7 @@ import {
   censusTerminalResidue,
   cgroupWindowProtects,
   evaluateResidueTrend,
+  isMaintDue,
   isPidInLiveWindowScope,
   resolveTerminalSliceAbs,
   type ResidueSample,
@@ -408,5 +409,56 @@ describe('parseResidueSamples', () => {
   it('reads a non-array (absent key, wrong shape) as empty', () => {
     expect(parseResidueSamples(undefined)).toEqual([]);
     expect(parseResidueSamples({})).toEqual([]);
+  });
+});
+
+describe('isMaintDue (EI-19407950136194410)', () => {
+  const HOUR = 60 * 60_000;
+  const NOW = 1_785_734_000_000;
+
+  it('is due once the interval has elapsed, and not before', () => {
+    expect(isMaintDue({ lastAtMs: NOW - HOUR + 1, nowMs: NOW, intervalMs: HOUR })).toBe(false);
+    expect(isMaintDue({ lastAtMs: NOW - HOUR, nowMs: NOW, intervalMs: HOUR })).toBe(true);
+    expect(isMaintDue({ lastAtMs: NOW - 5 * HOUR, nowMs: NOW, intervalMs: HOUR })).toBe(true);
+  });
+
+  it('treats an ABSENT or unreadable watermark as due, never as satisfied', () => {
+    // The store returns null both for "never run" and for "could not read". Both must
+    // answer DUE: a detector that goes quiet because its own history was unreadable is
+    // the exact failure this replaces.
+    expect(isMaintDue({ lastAtMs: null, nowMs: NOW, intervalMs: HOUR })).toBe(true);
+    expect(isMaintDue({ lastAtMs: Number.NaN, nowMs: NOW, intervalMs: HOUR })).toBe(true);
+  });
+
+  it('treats a FUTURE watermark as due rather than wedging shut', () => {
+    // Clock skew or a restored backup could otherwise disable the job for as long as
+    // the skew lasts — silently, which is the polarity we are eliminating.
+    expect(isMaintDue({ lastAtMs: NOW + 10 * HOUR, nowMs: NOW, intervalMs: HOUR })).toBe(true);
+  });
+
+  it('REGRESSION: still fires when the host restarts more often than the interval', () => {
+    // THE BUG. The old gate counted 30s ticks in a module-scoped `let`, so reaching
+    // 120 needed 60 uninterrupted minutes of uptime. A host restarting every ~50min
+    // ran the census and the GC exactly ZERO times, forever, with no error and no log.
+    // Simulate that churn: uptime never reaches the interval, but real elapsed time
+    // does — and the watermark, unlike a counter, survives the restarts.
+    const restartEveryMs = 50 * 60_000;
+    const lastRunAtMs = NOW;
+    let clock = NOW;
+    let fired = false;
+
+    for (let restart = 0; restart < 5; restart += 1) {
+      clock += restartEveryMs; // a fresh process; an in-process counter would reset here
+      if (isMaintDue({ lastAtMs: lastRunAtMs, nowMs: clock, intervalMs: HOUR })) fired = true;
+    }
+
+    expect(fired).toBe(true);
+  });
+
+  it('a null watermark makes a restart run the job SOONER, never never', () => {
+    // The GC leg carries no persisted watermark on purpose: `null` at process start
+    // answers due, so churn accelerates it instead of silencing it.
+    expect(isMaintDue({ lastAtMs: null, nowMs: NOW, intervalMs: HOUR })).toBe(true);
+    expect(isMaintDue({ lastAtMs: NOW, nowMs: NOW, intervalMs: HOUR })).toBe(false);
   });
 });

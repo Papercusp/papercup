@@ -1494,8 +1494,20 @@ export default defineTool({
       // field ends up carrying less information than the prose it replaced.
       const directed = Array.isArray(m.to) && m.to.length > 0 && !m.to.includes('*') && !m.to.includes('human');
       if (!directed || (expects !== 'action' && expects !== 'answer')) return;
-      const sections = Array.isArray(m.body) ? (m.body as Array<Record<string, unknown>>) : [];
-      if (sections.length && !sections.some((s) => s && s.forYouBecause !== undefined)) {
+      const isArrayBody = Array.isArray(m.body);
+      const sections = isArrayBody ? (m.body as Array<Record<string, unknown>>) : [];
+      const hasForYouBecause = sections.some((s) => s && s.forYouBecause !== undefined);
+      // EI-19407756530556168: a MALFORMED (non-array, e.g. a plain string) `body` is refused
+      // separately by messageBodyArg's own field-level check, below, IN THE SAME RESPONSE —
+      // but this function can't enumerate "sections" of a malformed body, so without this
+      // branch it always reads as zero sections and SILENTLY skips the forYouBecause
+      // requirement. That deferred the requirement to the caller's NEXT round-trip, after
+      // they'd separately fixed the body's shape — the exact one-issue-at-a-time sequencing
+      // this gate exists to prevent. A malformed body can never itself satisfy
+      // forYouBecause, so it is always correct to flag this now rather than wait for a
+      // shape fix to reveal it.
+      const bodyMalformed = m.body !== undefined && !isArrayBody;
+      if ((sections.length && !hasForYouBecause) || bodyMalformed) {
         pctx.addIssue({
           code: 'custom',
           path: [...path, 'body'],

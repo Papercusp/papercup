@@ -1091,6 +1091,19 @@ describe('coord:send structured-body gate (owner directive 2026-07-28 — the st
     expect(tool.args.safeParse({ to: ['bee-1'], summary: 'hi', expects: 'action', body: sections }).success).toBe(true);
   });
 
+  it(
+    'EI-19407756530556168: a DIRECTED action/answer with a MALFORMED (string) body reports BOTH ' +
+      'the array-shape refusal AND the forYouBecause requirement in ONE safeParse — a caller fixing ' +
+      'the body shape must not have to discover forYouBecause only on the NEXT round-trip',
+    () => {
+      const r = tool.args.safeParse({ to: ['bee-1'], summary: 'hi', expects: 'action', body: 'just some prose' });
+      expect(r.success).toBe(false);
+      const msg = r.success ? '' : r.error.issues.map((i) => i.message).join(' | ');
+      expect(msg).toContain('body: [{ text:'); // the array-shape refusal
+      expect(msg).toContain('forYouBecause'); // the conditional requirement, surfaced up front
+    },
+  );
+
   it('EXEMPTS a broadcast from forYouBecause — "why YOU specifically" is not well-formed for `*`', () => {
     expect(
       tool.args.safeParse({ to: ['*'], summary: 'hi', expects: 'action', body: [{ text: 'x' }] }).success,
