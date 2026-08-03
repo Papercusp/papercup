@@ -34,6 +34,13 @@ import type {
   TaskInventoryRow,
   LiveProcessRow,
 } from '@papercusp/operator-core/lib/task-manager/inventory';
+// WI-7371 — the SHARED derivation, also used by the admin page, so the two surfaces
+// cannot drift apart the way the pill and this panel did in WI-6844.
+import {
+  fmtCpuPct,
+  resourceTitle,
+  useResourceTotals,
+} from '@/app/admin/tasks/use-resource-totals';
 
 /** `live` is `unknown` on TaskInventory — the scan's own shape, narrowed here. */
 type LiveScan = {
@@ -250,6 +257,10 @@ export default function TasksRosterPanel({ active }: { active: boolean }) {
   const live = (data?.live ?? null) as LiveScan | null;
   const nowMs = Date.now();
 
+  // WI-7371. Called BEFORE the `if (!data)` early return below — hooks must run on
+  // every render, and this one carries the previous CPU sample the rate is derived from.
+  const resources = useResourceTotals(data?.summary?.resources);
+
   const needle = q.trim().toLowerCase();
   const match = (...fields: (string | null | undefined)[]) =>
     needle.length === 0 || fields.some((f) => (f ?? '').toLowerCase().includes(needle));
@@ -274,6 +285,25 @@ export default function TasksRosterPanel({ active }: { active: boolean }) {
     <div className="pc-tasks-roster" role="group" aria-label="Task manager" data-testid="tasks-roster">
       {/* Summary before detail. `scan.processes` is the honest process total —
           strictly larger than the ledger count until every seam enrols. */}
+      {/* WI-7371 — live resource totals, first, because "how much is this costing"
+          is the question the pane is usually opened to answer. Both figures come from
+          the server-side fold over the FULL tracked set, so they do not change when the
+          class filter below narrows the rows. */}
+      <dl className="pc-tasks-roster__pressure" data-testid="tasks-resource-totals">
+        <div>
+          <dt>Memory</dt>
+          <dd title={resources ? resourceTitle(resources).mem : undefined} data-testid="tasks-total-mem">
+            {resources ? fmtBytes(resources.rssBytesTotal) : '—'}
+          </dd>
+        </div>
+        <div>
+          <dt>CPU</dt>
+          <dd title={resources ? resourceTitle(resources).cpu : undefined} data-testid="tasks-total-cpu">
+            {resources && resources.hasRate ? fmtCpuPct(resources.cpuBusyPct) : '…'}
+          </dd>
+        </div>
+      </dl>
+
       <dl className="pc-tasks-roster__pressure">
         <div><dt>Enrolled</dt><dd title="Ledger TASKS — a task is one confined subtree">{data.summary.total}</dd></div>
         <div><dt>Scanned</dt><dd title="Kernel PROCESSES — one task holds many">{live?.scan?.processes ?? '—'}</dd></div>

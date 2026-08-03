@@ -5440,7 +5440,10 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       const { telemetryRollup } = await import('../dev-data');
       return cachedRead(
         {},
-        { tool: 'dev.telemetry', key: { hours, limit }, softTtlMs: 30_000 },
+        // `tags: []` is DELIBERATE, not an unfinished line. CachedReadOptions.tags
+        // is REQUIRED, and the empty array is how "no ECA dependency, bounded by
+        // softTtl alone" is expressed — see the header comment. Do NOT fill it in.
+        { tool: 'dev.telemetry', key: { hours, limit }, tags: [], softTtlMs: 30_000 },
         async () => (await telemetryRollup({ workspaceIds: null, hours, limit })).entries,
       );
     },
@@ -5471,7 +5474,8 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       const { toolFormatAdoption } = await import('../dev-data');
       return cachedRead(
         {},
-        { tool: 'dev.toolFormatAdoption', key: { hours }, softTtlMs: 30_000 },
+        // tags DELIBERATELY EMPTY — same reasoning as dev.telemetry above.
+        { tool: 'dev.toolFormatAdoption', key: { hours }, tags: [], softTtlMs: 30_000 },
         async () => (await toolFormatAdoption({ workspaceIds: null, hours })).rows,
       );
     },

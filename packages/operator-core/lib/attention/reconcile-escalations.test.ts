@@ -294,15 +294,38 @@ describe('reconcileUnanswerableEscalationsOnce (EI-19411323991062966)', () => {
     getPresenceMock.mockRejectedValue(new Error('presence down'));
 
     const r = await reconcileUnanswerableEscalationsOnce({ nowMs: NOW, ttlMs: ttl });
-    expect(r).toMatchObject({ stale: 0, resolved: 0 });
+    expect(r).toMatchObject({ stale: 0, resolved: 0, outcome: 'aborted' });
     expect(batchMock).not.toHaveBeenCalled();
   });
 
   it('never probes liveness at all when nothing is past the TTL', async () => {
     listMock.mockResolvedValue([humanRow({ msg_id: 'young', ts: iso(1 * DAY) })]);
     const r = await reconcileUnanswerableEscalationsOnce({ nowMs: NOW, ttlMs: ttl });
-    expect(r).toMatchObject({ stale: 0, resolved: 0 });
+    expect(r).toMatchObject({ stale: 0, resolved: 0, outcome: 'no-candidates' });
     expect(resolveStatesMock).not.toHaveBeenCalled();
     expect(getPresenceMock).not.toHaveBeenCalled();
+  });
+
+  // WI-7397 regression guard. The defect was NOT that the fail-safe resolves
+  // nothing — that is correct — but that it was INDISTINGUISHABLE from a
+  // healthy idle tick, so a permanently-degraded reaper looked exactly like one
+  // with no work to do. If someone ever collapses these back onto a single
+  // shared `nothing` value, this fails.
+  it('WI-7397: a fail-safe abort is distinguishable from a healthy no-op', async () => {
+    listMock.mockResolvedValue([humanRow({ msg_id: 'young', ts: iso(1 * DAY) })]);
+    const healthy = await reconcileUnanswerableEscalationsOnce({ nowMs: NOW, ttlMs: ttl });
+
+    listMock.mockResolvedValue([humanRow({ msg_id: 'dead' })]);
+    resolveStatesMock.mockRejectedValue(new Error('oracle down'));
+    getPresenceMock.mockResolvedValue(null);
+    const degraded = await reconcileUnanswerableEscalationsOnce({ nowMs: NOW, ttlMs: ttl });
+
+    // The counts are identical — that is precisely why they used to be confused.
+    expect(healthy.resolved).toBe(degraded.resolved);
+    expect(healthy.stale).toBe(degraded.stale);
+    // The outcome is what separates them.
+    expect(healthy.outcome).toBe('no-candidates');
+    expect(degraded.outcome).toBe('aborted');
+    expect(healthy.outcome).not.toBe(degraded.outcome);
   });
 });
