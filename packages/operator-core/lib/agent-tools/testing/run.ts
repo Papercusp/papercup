@@ -45,6 +45,7 @@
 import { z } from 'zod';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import { existsSync } from 'node:fs';
 import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -131,7 +132,7 @@ function runRouter(args: string[], cwd: string, env: NodeJS.ProcessEnv, timeoutM
 export default defineTool({
   name: 'testing:run',
   description:
-    'Run exact Vitest files through the repo router (scripts/test-files.mjs) and return a DISTILLED result — { passed, failed, skipped, files, failures:[{file,test,message}], durationMs, runId } — instead of raw reporter output you have to tail/grep. Routes each file to its owning workspace config and hard-refuses a zero/partial-match false-green run. `failed` is always the TRUE total; `failures` is a bounded sample of it, so when `failuresTruncated` is set read `failuresOmitted`, never `failures.length`. Stamps PAPERCUSP_TEST_RUN_GROUP so the run correlates in harness_shared.test_runs.',
+    'Run exact Vitest files through the repo router (scripts/test-files.mjs) and return a DISTILLED result — { passed, failed, skipped, files, failures:[{file,test,message}], durationMs, runId, root } — instead of raw reporter output you have to tail/grep. `root` is the resolved workspace root the run actually executed in (WI-7189: a run against the wrong tree used to be silent — check `root` if a result looks stale or surprising, e.g. it names a clone under .papercusp-workspaces/clones/ instead of the canonical staging checkout). Routes each file to its owning workspace config and hard-refuses a zero/partial-match false-green run (error `route_error`), or a resolved root that is not a papercusp checkout at all (error `invalid_root`). `failed` is always the TRUE total; `failures` is a bounded sample of it, so when `failuresTruncated` is set read `failuresOmitted`, never `failures.length`. Stamps PAPERCUSP_TEST_RUN_GROUP so the run correlates in harness_shared.test_runs.',
   guidance: {
     when: 'You edited code and want to know whether specific test files pass, and which tests failed and why. The default way to run named test files.',
     notWhen: 'Running everything your edits affected (use `npm run test:affected` — not covered here), a non-Vitest suite (cargo/playwright), or when you genuinely need raw reporter output.',
@@ -173,6 +174,37 @@ export default defineTool({
     // uses, so this tool now reads the same tree those tools write.
     const root = resolveAgentWorkspaceRoot(ctx);
     const runId = randomUUID();
+
+    // WI-7189 / EI-19383071792758676: a wrong-tree resolution used to be SILENT —
+    // a file that happens to exist (with stale content) at the resolved root ran
+    // and returned a confident, plausible, WRONG green. `root` is now echoed on
+    // EVERY return path below so a wrong-tree run is visible instead of silent
+    // (deliberately NOT gated on the requested files existing under root — the
+    // router already refuses that loudly via `route_error`/TEST_FILE_ROUTE_ERROR,
+    // and duplicating the check here would only race that well-tested path).
+    // One additional loud pre-flight refusal catches what the router's own check
+    // can't: a root that isn't a papercusp checkout AT ALL — missing the router
+    // script itself (e.g. a stale/legacy clone such as
+    // `.papercusp-workspaces/clones/papercup`, the known phantom-pot identity
+    // `canonicalizeLegacyPapercup` collapses at the registry layer but that a
+    // session already scoped to it bypasses). Without this check that case fails
+    // as an opaque spawn error two layers down instead of naming the real cause.
+    if (!existsSync(join(root, 'scripts', 'test-files.mjs'))) {
+      return {
+        data: {
+          ok: false,
+          runId,
+          root,
+          error: 'invalid_root',
+          hint:
+            `resolved workspace root '${root}' has no scripts/test-files.mjs — it is not a papercusp ` +
+            `checkout (or is a stale/partial one). This usually means the calling session is scoped to ` +
+            `the wrong harness/tree (e.g. a legacy standalone clone) rather than the canonical staging ` +
+            `checkout. Verify with 'pwd'/'git remote -v' in the tree you intend, and re-check how this ` +
+            `session's harness/project is registered.`,
+        },
+      };
+    }
     // EI-18776865728050036 — same clamp as build:typecheck, for the same reason: this tool is
     // dispatched FOREGROUND over an MCP transport that hard-caps a call at ~55s (EI-6073), so a
     // suite slower than that had the call killed before the `error:'timeout'` branch below could
@@ -200,6 +232,7 @@ export default defineTool({
           data: {
             ok: false,
             runId,
+            root,
             error: 'timeout',
             timeoutMs,
             hint:
@@ -212,7 +245,7 @@ export default defineTool({
       // A route/launch error never produced a report — surface the router's own
       // diagnostics (they name the cause: unmatched path, mid-install corruption).
       if (outcome.code === ROUTER_EXIT_ROUTE_ERROR || outcome.code === null) {
-        return { data: { ok: false, runId, error: 'route_error', routerOutput: outcome.output.slice(-2000) } };
+        return { data: { ok: false, runId, root, error: 'route_error', routerOutput: outcome.output.slice(-2000) } };
       }
 
       // EI-18822211427354845: the router runs ONE `vitest run` per owning workspace
@@ -235,7 +268,7 @@ export default defineTool({
         // Exit 1 with no report is the REFUSED false-green (the router bailed
         // before running anything) — the one case where "no results" is the
         // answer, and must never read as a pass.
-        return { data: { ok: false, runId, error: 'no_report', routerOutput: outcome.output.slice(-2000) } };
+        return { data: { ok: false, runId, root, error: 'no_report', routerOutput: outcome.output.slice(-2000) } };
       }
 
       const run = mergeDistilledRuns(
@@ -250,7 +283,7 @@ export default defineTool({
       // "how many failed". A result that already fits is returned untouched.
       return {
         data: boundTestRunPayload(
-          { ok: run.failed === 0 && outcome.code === 0, runId },
+          { ok: run.failed === 0 && outcome.code === 0, runId, root },
           run,
         ),
       };

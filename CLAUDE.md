@@ -722,11 +722,49 @@ one-pass-stale answer.
 ⚠ **`AFFECTED_TESTS_RESULT failed=N` counts TASKS (workspaces), not FILES — never derive your work
 list from it.** It names how many workspace test-tasks went red (`@papercusp/operator-core :: test`),
 so ONE task routinely hides a dozen files. Measured three times in one night: `failed=2` vs 3 distinct
-files, `failed=3` vs 4, and `failed=2` vs **11**. Derive the real set:
+files, `failed=3` vs 4, and `failed=2` vs **11**.
+
+✅ **The run now states its own per-FILE break set — read that line instead of mining prose:**
 
 ```bash
-sed 's/\x1b\[[0-9;]*m//g' <log> | grep -oE 'FAIL +[^ ]+\.test\.ts' | sort -u
+grep -o 'AFFECTED_TESTS_FAILING_FILES.*' <log> | tail -1
+# AFFECTED_TESTS_FAILING_FILES run=<pid>-<nonce> coverage=complete fileCount=11 \
+#   unattributedCount=0 truncated=false files=[{"workspace":"…","file":"…"}] unattributed=[]
 ```
+
+Read **`coverage`** before `files`, because an empty list is ambiguous in the expensive direction
+(EI-19395701908500754). `complete` = every failed task was attributed. `partial` / `unattributed` =
+some (or all) failed tasks could NOT be named down to a file — a TTY run with no captured child
+output, a worker crash/OOM that printed no FAIL rows, or a non-vitest task like cargo — and each
+such task is listed with its reason. **`files=[]` never means "nothing failed"** unless
+`coverage=none`. `run=` is the same token as the `Full run log:` path, which is how you tell this
+run's break set from a fixture line in an interleaved verdict log.
+
+⚠ **A verdict log older than 2026-08-03 has no such line — and the fallback recipe this file used
+to give was itself a phantom-path generator.** `grep -oE 'FAIL +[^ ]+\.test\.ts'` does not merely
+skip a `.tsx` suite: `\.test\.ts` matches the PREFIX of `…PreviewPanel.test.tsx`, so `-o` prints the
+truncated `app/adv/create/PreviewPanel.test.ts` — **a file that does not exist**. Measured on the
+060ea000f206 log: 11 paths out, one of them fabricated, and the real
+`app/adv/create/PreviewPanel.test.tsx` absent. A reader then goes looking for a file that isn't
+there and doubts their tooling rather than the recipe — the same symptom as mining fixture prose,
+from a different cause. (The production parser, `scripts/lib/vitest-summary.mjs`'s
+`VITEST_TEST_FILE_SOURCE`, always had the right shape; only this doc's hand-rolled copy was wrong.)
+Match the full extension set, and both row shapes — vitest prints `FAIL` rows for only the first few
+failures but emits a `❯` rollup row for every failing file:
+
+```bash
+sed 's/\x1b\[[0-9;]*m//g' <log> \
+  | grep -oE '(FAIL +|❯ +)[^ ]+\.(test|spec)\.[cm]?[jt]sx?' \
+  | sed -E 's/^(FAIL|❯) +//' | sort -u
+```
+
+⚠⚠ **Do NOT mine the gate's own prose for failing files** — `[green-checkpoint] isolation:
+re-running <files>` and friends are emitted by green-checkpoint's SELF-TESTS too (they drive the
+real `runGreen`), so a `grep 'isolation:'` on a verdict log returns FIXTURE paths. Measured on the
+01:36:17Z red: it yielded `lib/a.test.ts` / `lib/b.test.ts`, neither of which exists in this tree,
+while the real set was 11 real files across two workspaces. Since WI-7274 those fixture lines carry
+`[green-checkpoint:TEST-FIXTURE]` instead of `[green-checkpoint]`, so an untagged log predates the
+fix and every one of its `[green-checkpoint]` lines is suspect.
 
 ⚠⚠ **The verdict's `📍 lineage: … none of the failing files were modified in that range
 (presumptively a real red)` line is UNRELIABLE — never let it talk you out of re-checking at HEAD.**

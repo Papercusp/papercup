@@ -247,6 +247,30 @@ const amplification = summarize(
   main.filter((s) => s.firstBilled > 0).map((s) => s.billedTotal / s.firstBilled),
 );
 
+/**
+ * THE SYMMETRIC COMPARISON — and the reason the naive break-even above is not the
+ * answer either way.
+ *
+ * It is tempting to "correct" break-even by dividing it by the amplification
+ * factor, on the grounds that a deposit in the parent is re-sent for the rest of
+ * the session. That is WRONG, and wrong in the direction that rescues the
+ * firewall: the member re-sends its OWN persona, playbook and tool catalogue on
+ * every one of its turns too. Amplifying one side only turns a measurement into
+ * an argument. Applied to both sides the factors largely cancel.
+ *
+ * So compare the two things that are actually per-turn, both measured, no model:
+ *   - a member's ALL-IN cost of one turn      (billedTotal / turns)
+ *   - the recurring overhead inside that      (~CACHE_READ_WEIGHT * entry cost:
+ *     what it costs merely to RE-STATE the member's own prompt each turn)
+ *   - versus what one absorbed exploration turn would have cost in the parent,
+ *     credited generously WITH its own re-send amplification.
+ *
+ * If a member's per-turn overhead exceeds the amplified cost of just letting the
+ * exploration land in the parent, fan-out cannot pay on token economics at any N.
+ */
+const perTurnBilled = summarize(main.map((s) => s.billedTotal / s.assistantTurns));
+const perTurnWindow = summarize(main.map((s) => s.maxWindow));
+
 /** What exploration actually deposits, per turn that carried a tool result. */
 const perTurnResultChars = [];
 for (const s of main) {
@@ -278,6 +302,24 @@ const breakEven = {
 
 const observedTurns = summarize(main.map((s) => s.assistantTurns));
 
+/**
+ * Credit the parent-side deposit with re-send amplification over the REMAINING
+ * session (half the median length, since a deposit lands mid-session on average),
+ * and charge the member the same recurring re-statement of its own prompt.
+ */
+const residualTurns = Math.max(1, Math.round(observedTurns.p50 / 2));
+const depositAmplified = depositTokensP50 * (1 + CACHE_READ_WEIGHT * residualTurns);
+const memberTurnOverhead = CACHE_READ_WEIGHT * entryBilledClean.p50;
+const symmetric = {
+  note: 'per-turn, both sides amplified — the comparison that decides the question',
+  memberAllInBilledPerTurn_p50: perTurnBilled.p50,
+  memberRecurringPromptOverheadPerTurn: Math.round(memberTurnOverhead),
+  residualTurnsAssumed: residualTurns,
+  parentDepositAmplifiedPerExplorationTurn: Math.round(depositAmplified),
+  firewallPaysOnTokens: memberTurnOverhead < depositAmplified,
+  overheadRatio: depositAmplified > 0 ? +(memberTurnOverhead / depositAmplified).toFixed(2) : null,
+};
+
 const report = {
   measuredAt: new Date().toISOString(),
   windowDays: DAYS,
@@ -302,6 +344,8 @@ const report = {
     note: 'billedTotal / firstBilled — how many entry-costs a session bills over its life',
     ratio: amplification,
   },
+  symmetricComparison: symmetric,
+  perTurnCost: { billed: perTurnBilled, peakWindow: perTurnWindow },
   explorationDepositChars: { perTurn: depositPerTurn },
   observedSessionLengthTurns: observedTurns,
   breakEven,
@@ -335,8 +379,9 @@ const beCleanBilled = depositTokensP50 > 0 ? +(entryBilledClean.p50 / depositTok
 console.log(`UNBIASED break-even: window=${beCleanWindow} turns  billed=${beCleanBilled} turns`);
 console.log(`RE-SEND AMPLIFICATION (entry-costs billed per session life)`);
 console.log(`                                 p50=${amplification.p50}x mean=${amplification.mean}x p90=${amplification.p90}x`);
-console.log(`AMPLIFIED break-even (deposit credited at the measured p50 amplification):`);
-if (amplification.p50 > 0) {
-  console.log(`   window=${(beCleanWindow / amplification.p50).toFixed(1)} turns  billed=${(beCleanBilled / amplification.p50).toFixed(1)} turns`);
-}
+console.log(`--- the symmetric comparison (both sides amplified) ---`);
+console.log(`member all-in billed per turn      p50=${f(perTurnBilled.p50)}  mean=${f(perTurnBilled.mean)}`);
+console.log(`member RECURRING prompt overhead   ${f(symmetric.memberRecurringPromptOverheadPerTurn)} billed tok/turn (just to re-state its own prompt)`);
+console.log(`parent cost of ONE absorbed turn   ${f(symmetric.parentDepositAmplifiedPerExplorationTurn)} billed tok (deposit + ${symmetric.residualTurnsAssumed} re-sends)`);
+console.log(`=> firewall pays on tokens? ${symmetric.firewallPaysOnTokens ? 'YES' : 'NO'}  (overhead is ${symmetric.overheadRatio}x the thing it absorbs)`);
 console.log(`wrote ${OUT}`);

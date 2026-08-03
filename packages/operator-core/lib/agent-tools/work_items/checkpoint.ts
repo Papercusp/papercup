@@ -89,6 +89,22 @@
  * both the shorthand and the `items[]` fields, so the two paths accept identical input.
  * Deliberately NOT `z.coerce.boolean()` — that coerces via `Boolean(x)`, which would
  * turn the string `"false"` into `true`.
+ *
+ * WI-7190: `append: true` used to arm NO shrink guard at all — the one mode whose
+ * whole contract is "never lose the existing text" was the mode with no shrink
+ * protection. Confirmed live: a caller's append pre-read (the `getWorkItemCheckpoint`
+ * call above, used only to build the joined text) came back empty on a resolvable
+ * item while a real 10,671-char checkpoint existed — the join then had nothing to
+ * join onto, `checkpointToStore` collapsed to just the addendum, and the write
+ * silently REPLACED the prior checkpoint while still returning
+ * `ok:true, verified:true`. Fix: the append path now ALSO arms a guard — run inside
+ * the SAME locked write transaction as `setWorkItemCheckpointWithPrior`'s own prior
+ * read — that compares what the tool's separate pre-read saw against the
+ * AUTHORITATIVE prior read at write time. If the pre-read came back
+ * null/empty/errored while the authoritative prior is substantial (>500 chars), the
+ * write is refused (`append_base_unreadable`) instead of silently degrading to a
+ * replace. `confirmShrink: true` still forces it through (same escape hatch as the
+ * plain-replace guard), for a caller that genuinely wants to reset the checkpoint.
  */
 import { z } from 'zod';
 import { createHash } from 'node:crypto';
@@ -249,7 +265,9 @@ export default defineTool({
     "re-injected on the next invocation of that item (yours or a successor's). Replace-on-write; `append:true` joins instead. " +
     'Returns { ok, results:[{ ok, id, harness, cleared, length, contentHash, verified, storedHead, by | error }], counts }. ' +
     'Writes are verify-read (checkpoint_verify_failed on a miss); a plain replace shrinking a substantial checkpoint ' +
-    '>50% is BLOCKED (`shrink_blocked` — pass `append:true`/`confirmShrink:true`). Refuses a peer-held item (`not_holder`).',
+    '>50% is BLOCKED (`shrink_blocked` — pass `append:true`/`confirmShrink:true`); an `append:true` whose pre-read ' +
+    'disagrees with the real stored checkpoint is BLOCKED too (`append_base_unreadable`, same escape hatch), so ' +
+    'append can never silently degrade into a clobbering replace. Refuses a peer-held item (`not_holder`).',
   guidance: {
     when:
       'At a task boundary or on graceful eviction, before you finish/yield: persist what a successor (or your ' +
@@ -372,8 +390,22 @@ export default defineTool({
           };
         }
         let checkpointToStore = it.checkpoint;
+        // WI-7190: this pre-read is a SEPARATE call (getWorkItemCheckpoint) from the
+        // authoritative prior the write transaction reads a few lines below (inside
+        // setWorkItemCheckpointWithPrior's own SELECT ... FOR UPDATE). Track what it
+        // saw — `appendPriorRaw` (null/failed vs. real content) — so the guard below
+        // can catch the two paths disagreeing BEFORE the write commits, instead of
+        // silently joining onto nothing and clobbering a real prior checkpoint while
+        // still reporting ok:true/verified:true.
+        let appendPriorRaw: string | null = null;
+        let appendPreReadFailed = false;
         if (wantsAppend && it.checkpoint) {
-          const prior = await getWorkItemCheckpoint({ harness, workItemId: it.id, workspaceId }).catch(() => null);
+          try {
+            appendPriorRaw = await getWorkItemCheckpoint({ harness, workItemId: it.id, workspaceId });
+          } catch {
+            appendPriorRaw = null;
+            appendPreReadFailed = true;
+          }
           // EI-19298690705878336: strip any rendered `## Checks` section out of the
           // prior BEFORE joining. That section runs to the end of the document (there
           // is no following heading to bound it), so appending after it would bury the
@@ -382,7 +414,7 @@ export default defineTool({
           // The rows are NOT lost by stripping here: the transform below recovers them
           // from the stored prior note, which the store reads inside its own locked
           // transaction.
-          const priorBody = prior !== null ? splitCarryNoteChecks(prior).body : null;
+          const priorBody = appendPriorRaw !== null ? splitCarryNoteChecks(appendPriorRaw).body : null;
           checkpointToStore = joinCheckpoint(priorBody, it.checkpoint);
         }
         // EI-8824: c.workspaceId is '*' for an unscoped superuser session (the
@@ -468,7 +500,29 @@ export default defineTool({
                       'Pass { append: true } to join onto the existing checkpoint instead, or { confirmShrink: true } ' +
                       'if this replace is intentional.'
                     : null
-              : undefined,
+              : wantsAppend && !wantsConfirmShrink
+                ? // WI-7190: `append:true` used to arm NO guard at all — "the one mode whose
+                  // whole contract is 'never lose the existing text' was the mode with no
+                  // shrink protection." Confirmed live: the tool's own pre-read
+                  // (getWorkItemCheckpoint, above) came back empty on a resolvable item while
+                  // a 10,671-char checkpoint genuinely existed — the join then had nothing to
+                  // join onto, so `checkpointToStore` was just the addendum, and the write
+                  // silently REPLACED the real checkpoint while still returning
+                  // ok:true/verified:true. `_priorNote`/`priorLen` here are the AUTHORITATIVE
+                  // prior — read inside this same locked transaction, independent of the
+                  // tool's separate pre-read above — so disagreement between the two is
+                  // exactly the failure signature: the write path resolves the item, the
+                  // (different) read path used to build the join does not.
+                  (_priorNote, priorLen) =>
+                    priorLen > 500 && (appendPriorRaw === null || appendPriorRaw.length === 0)
+                      ? `append_base_unreadable — the append pre-read returned ${appendPreReadFailed ? 'an error' : 'nothing'} ` +
+                        `while the current checkpoint is ${priorLen} chars (read authoritatively at write time, inside ` +
+                        'the same locked transaction as this write). Appending now would silently REPLACE it instead of ' +
+                        'joining — refusing the write rather than losing it. Retry (a transient read/key mismatch is the ' +
+                        'likely cause), pass { harness } explicitly, or pass { confirmShrink: true } to force the replace ' +
+                        'if that is actually intended.'
+                      : null
+                : undefined,
           ...depsOpt,
         });
         stored = res.stored;
@@ -478,7 +532,14 @@ export default defineTool({
         const depsStamped = res.depsStamped;
         const depsRecomputed = res.recomputed;
         if (blockedReason) {
-          return { ok: false as const, id: it.id, error: `shrink_blocked — ${blockedReason}` };
+          // WI-7190: the append guard's reason already carries its own leading error
+          // code (`append_base_unreadable — …`) — don't relabel it `shrink_blocked`,
+          // it isn't a shrink, it's the append's pre-read disagreeing with the
+          // authoritative prior. Anything WITHOUT its own code (the plain-replace
+          // guard's message, or a caller-supplied reason in a test double) keeps the
+          // original `shrink_blocked — ` prefix unchanged.
+          const hasOwnCode = /^[a-z][a-z0-9_]*\s+—\s/.test(blockedReason);
+          return { ok: false as const, id: it.id, error: hasOwnCode ? blockedReason : `shrink_blocked — ${blockedReason}` };
         }
         // agent-activity-liveness-truth P-001 (D-001/D-004): a non-clear checkpoint write
         // is REAL item-scoped progress — credit it so the item reads as `progressing`, not

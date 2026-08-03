@@ -190,6 +190,48 @@ describe('the fixture prose that caused EI-19395701908500754 cannot reach the br
   });
 });
 
+describe('the shared parser does not truncate an extension into a phantom path', () => {
+  /**
+   * Measured on the 060ea000f206 verdict log while documenting the fallback recipe. The
+   * recipe CLAUDE.md used to give — `grep -oE 'FAIL +[^ ]+\.test\.ts'` — does not merely
+   * skip a `.tsx` suite: `\.test\.ts` matches the PREFIX of `PreviewPanel.test.tsx`, and
+   * `-o` prints the truncated match. So it emitted `app/adv/create/PreviewPanel.test.ts`,
+   * a path that does not exist in this tree, and the real `.tsx` file never appeared.
+   *
+   * Pinned here because the production parser is the thing everything else now depends on:
+   * if its file-shape fragment is ever narrowed back to `\.test\.ts`, the break set this
+   * whole change exists to make trustworthy starts fabricating paths instead.
+   */
+  const REAL_FAIL_ROW = 'FAIL  app/adv/create/PreviewPanel.test.tsx';
+
+  it('keeps the full .tsx path that the naive regex truncates', () => {
+    expect(parseFailedTestFiles(REAL_FAIL_ROW)).toEqual(['app/adv/create/PreviewPanel.test.tsx']);
+  });
+
+  it('demonstrates the truncation it is guarding against (the falsifier)', () => {
+    // Not a test of our code — proof that the failure mode above is real, so the assertion
+    // above cannot later be dismissed as guarding nothing.
+    const naive = REAL_FAIL_ROW.match(/FAIL +[^ ]+\.test\.ts/)?.[0].replace(/^FAIL +/, '');
+    expect(naive).toBe('app/adv/create/PreviewPanel.test.ts'); // ← the phantom path
+    expect(naive).not.toBe('app/adv/create/PreviewPanel.test.tsx');
+  });
+
+  it('covers the other extensions a monorepo actually has', () => {
+    const rows = [
+      'FAIL  lib/a.test.ts',
+      'FAIL  lib/b.spec.tsx',
+      'FAIL  lib/c.test.mts',
+      'FAIL  lib/d.test.jsx',
+    ].join('\n');
+    expect(parseFailedTestFiles(rows).sort()).toEqual([
+      'lib/a.test.ts',
+      'lib/b.spec.tsx',
+      'lib/c.test.mts',
+      'lib/d.test.jsx',
+    ]);
+  });
+});
+
 describe('renderFailingFilesSummary — the block the red path actually prints', () => {
   it('leads with the files, warns that failed=N counts tasks, and ends with the machine line', () => {
     const lines = renderFailingFilesSummary({

@@ -63,6 +63,16 @@ import {
   vitestSuiteFailRow,
   VITEST_TEST_FILE_SOURCE,
 } from '../../../../scripts/lib/vitest-summary.mjs';
+// EI-19395755190419540 — the orchestrator's stdout tags, DEFINED one layer down so the log
+// PARSER (operator-core) and this EMITTER can share one literal across the package boundary.
+// Imported (not merely re-exported) because `log()` below calls orchestratorStdoutTag() on
+// every narration line: a bare `export … from` re-exports without binding locally. Full
+// rationale at the re-export site.
+import {
+  ORCHESTRATOR_STDOUT_TAG,
+  ORCHESTRATOR_STDOUT_TAG_UNDER_TEST,
+  orchestratorStdoutTag,
+} from '../../../../packages/operator-core/lib/release/checkpoint-log-tags';
 
 export interface CheckpointDeps {
   /** (Re)build the isolated checkpoint checkout at `ref` (setup-release-checkout.sh). */
@@ -880,23 +890,20 @@ export const GREEN_CHECKPOINT_RESULT_MARKER = '__GREEN_CHECKPOINT_RESULT__';
 /** What a captured fixture marker is rewritten to before the suite log is persisted. */
 export const CAPTURED_RESULT_MARKER_PLACEHOLDER = '__CAPTURED_TEST_FIXTURE_RESULT__';
 
-/** The tag every orchestrator narration line carries on stdout. */
-export const ORCHESTRATOR_STDOUT_TAG = '[green-checkpoint]';
-
-/** WI-7274: the same tag, emitted instead when the narrating process is itself under a test
- *  runner — i.e. the line is a FIXTURE, not this run's account of itself.
+/** WI-7274: the orchestrator's stdout tags — the production one, the under-test one that marks
+ *  a line as a FIXTURE, and the selector between them. DEFINED in operator-core, re-exported
+ *  here; see the layering note below for why.
  *
- *  THE TRAP. The gate's suite includes `green-checkpoint-real-deps.test.ts`, which drives the
- *  real `runGreen` on purpose. Driving production code means EMITTING production log lines, and
- *  the suite's stdout is captured verbatim into the persisted log — so the log carries lines
- *  byte-identical to a genuine verdict, with the only provenance (vitest's `stdout | <file>`
- *  header) on a SEPARATE line that no line-oriented grep returns.
- *
+ *  THE TRAP they exist for. The gate's suite includes `green-checkpoint-real-deps.test.ts`,
+ *  which drives the real `runGreen` on purpose. Driving production code means EMITTING
+ *  production log lines, and the suite's stdout is captured verbatim into the persisted log —
+ *  so the log carries lines byte-identical to a genuine verdict, with the only provenance
+ *  (vitest's `stdout | <file>` header) on a SEPARATE line that no line-oriented grep returns.
  *  Measured on the 01:36:17Z verdict for candidate 060ea000f206:
  *      grep "holding the gate" <log>   -> 4 hits, ALL FOUR test fixtures.
- *  The run's real verdict was in the tail, in a different shape entirely. Four of five agents
- *  triaging that red re-derived the same breakdown from this log within six minutes
- *  (EI-19394685308718346); a log whose lines cannot be trusted is why triage is not shareable.
+ *  Four of five agents triaging that red re-derived the same wrong breakdown within six
+ *  minutes (EI-19394685308718346); a log whose lines cannot be trusted is why triage is not
+ *  shareable.
  *
  *  This is the SECOND instance of one class. EI-18832272104497819 fixed it for
  *  GREEN_CHECKPOINT_RESULT_MARKER by defanging that one token at the write site — correct, and
@@ -905,34 +912,27 @@ export const ORCHESTRATOR_STDOUT_TAG = '[green-checkpoint]';
  *  funnel closes the class rather than the next token: a line is marked by the process that
  *  KNOWS it is a fixture, instead of being guessed at afterwards by a reader or a regex.
  *
- *  Two properties worth keeping when editing this:
- *   - A real run is NEVER under vitest. Verified on the live orchestrator (pid 1490611,
- *     2026-08-03): `VITEST` absent, `NODE_ENV` unset. `buildGreenCheckpointEnv` sets
- *     `VITEST_MAX_FORKS/THREADS/UNIT_TIMEOUT_MS` but never `VITEST`, so the gate cannot mark
- *     its own genuine verdict as a fixture. That inversion would be far worse than the bug.
- *   - The fixture tag deliberately does NOT contain `ORCHESTRATOR_STDOUT_TAG` as a substring
- *     (`:` where `]` would be). So the habit every reader already has — grepping
- *     `[green-checkpoint]` — silently STOPS matching fixtures, with no change on their side.
+ *  ⚠ WHY THESE LIVE IN operator-core AND ARE ONLY RE-EXPORTED HERE (EI-19395755190419540).
+ *  WI-7274 tagged the LINE but could not fix the READER: `parseCheckpointCandidates`
+ *  (packages/operator-core/lib/release-checkpoint-launch.ts) had NO anchor at all and harvested
+ *  a sha straight out of a tagged fixture line — corrupting the AUTOMATED answer to "which sha
+ *  is the gate judging", the question CLAUDE.md sends every agent to. That reader sits a layer
+ *  BELOW this file and must not import from apps/operator, and the literal must not be
+ *  hand-synced into two places (this file already carries one such pair in
+ *  GREEN_CHECKPOINT_RESULT_MARKER <-> release-actions.ts, and a third would be worse than the
+ *  boundary). So the single definition moved DOWN into a ZERO-IMPORT leaf module — zero
+ *  imports so that pulling it into this orchestrator's hot path cannot drag a dependency graph
+ *  along — and this file re-exports it. Every existing importer of these names is unaffected.
  *
- *  ⚠ STATED LIMIT — this tags the LINE; it does not fix a reader that discards the line.
- *  `parseCandidates` (release-checkpoint-launch.ts) matches `/checkpointing candidate (\S+)/`
- *  with no anchor, so it still harvests a sha out of a tagged fixture line. That gap is pinned
- *  as a test below, deliberately, so this fix cannot read as more complete than it is. It
- *  cannot be closed by anchoring POSITIVELY on this tag: the persisted log's orchestrator
- *  transcript carries the same line UNPREFIXED (`recordOrchestratorLine` receives the raw
- *  message; only `console.log` adds a tag), so requiring the tag would break candidate
- *  extraction from every persisted log. The sound anchor is negative — exclude this tag. */
-export const ORCHESTRATOR_STDOUT_TAG_UNDER_TEST = '[green-checkpoint:TEST-FIXTURE]';
-
-/** Which tag {@link ORCHESTRATOR_STDOUT_TAG} the orchestrator should narrate under.
- *  `env` is injectable because the guard that matters most — that a REAL run is tagged
- *  `[green-checkpoint]` — has to be asserted from inside a test, which is always under vitest
- *  and would otherwise only ever be able to observe the fixture branch. */
-export function orchestratorStdoutTag(env: NodeJS.ProcessEnv = process.env): string {
-  return env.VITEST || env.NODE_ENV === 'test'
-    ? ORCHESTRATOR_STDOUT_TAG_UNDER_TEST
-    : ORCHESTRATOR_STDOUT_TAG;
-}
+ *  Two properties preserved across that move, both verified rather than assumed:
+ *   - A real run is NEVER under vitest, so the gate cannot mark its own genuine verdict as a
+ *     fixture — an inversion far worse than the bug. Probed from THIS directory under the
+ *     gate's own runtime (`./node_modules/.bin/tsx`) with `VITEST`/`NODE_ENV` stripped:
+ *     `orchestratorStdoutTag()` still returns `[green-checkpoint]`.
+ *   - The fixture tag deliberately does NOT contain `ORCHESTRATOR_STDOUT_TAG` as a substring
+ *     (`:` where `]` would be), so the habit every reader already has — grepping
+ *     `[green-checkpoint]` — silently STOPS matching fixtures, with no change on their side. */
+export { ORCHESTRATOR_STDOUT_TAG, ORCHESTRATOR_STDOUT_TAG_UNDER_TEST, orchestratorStdoutTag };
 
 /** EI-18832272104497819: the persisted suite log is NOT the verdict channel. This run's
  *  verdict goes to the CLI's own stdout (behind GREEN_CHECKPOINT_RESULT_MARKER) only

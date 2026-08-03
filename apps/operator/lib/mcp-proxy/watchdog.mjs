@@ -51,7 +51,7 @@
 import { execFile } from 'node:child_process';
 import { appendFileSync, mkdirSync, readFileSync } from 'node:fs';
 import { MCP_PROXY_LOCAL_HEALTH_PATH, MCP_PROXY_RETRY_WINDOW_MS, PSU_CLIENT_HEADROOM_MS } from './budgets.mjs';
-import { samplePgBouncerPools } from './pgbouncer-pool-sample.mjs';
+import { samplePgBouncerPools, SAMPLE_LOG_FILE as POOL_SAMPLE_LOG_FILE, MIN_SAMPLE_INTERVAL_MS as POOL_SAMPLE_MIN_INTERVAL_MS } from './pgbouncer-pool-sample.mjs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 
@@ -608,7 +608,7 @@ function start() {
   );
   log(
     `pgbouncer pool sampler (EI-19384024494946006) — SHOW POOLS/SHOW STATS captured on every ` +
-      `reachability/data-plane FAILING onset (debounced ${MIN_SAMPLE_INTERVAL_MS_FOR_LOG}ms), logged to ${SAMPLE_LOG_FILE_FOR_LOG}`,
+      `reachability/data-plane FAILING onset (debounced ${POOL_SAMPLE_MIN_INTERVAL_MS}ms), logged to ${POOL_SAMPLE_LOG_FILE}`,
   );
   if (probeArgs.invalid) {
     // Loud at startup rather than once per 10min throttle window: every poll from here on is a

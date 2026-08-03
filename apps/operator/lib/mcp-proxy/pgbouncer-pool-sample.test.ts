@@ -1,0 +1,123 @@
+import { describe, it, expect, beforeAll, beforeEach, afterEach } from 'vitest';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+// Types come from pgbouncer-pool-sample.d.mts — without it this import is an implicit `any`
+// (TS7016) and every assertion below silently stops type-checking (see watchdog.test.ts for
+// the identical rationale — this module is plain .mjs on purpose, imported by a bare-`node`
+// systemd entrypoint, so it cannot become TypeScript).
+type PoolSample = typeof import('./pgbouncer-pool-sample.mjs');
+let buildShowPoolsArgs: PoolSample['buildShowPoolsArgs'];
+let samplePgBouncerPools: PoolSample['samplePgBouncerPools'];
+let _resetSampleDebounceForTests: PoolSample['_resetSampleDebounceForTests'];
+let SAMPLE_LOG_FILE: PoolSample['SAMPLE_LOG_FILE'];
+let MIN_SAMPLE_INTERVAL_MS: PoolSample['MIN_SAMPLE_INTERVAL_MS'];
+
+let tmpHome: string;
+
+beforeAll(async () => {
+  // Redirect the sampler's log file into a scratch dir BEFORE importing the module, since the
+  // log path is resolved once at module load from PAPERCUSP_MCP_PROXY_WATCHDOG_POOL_SAMPLE_LOG.
+  tmpHome = mkdtempSync(join(tmpdir(), 'pgbouncer-pool-sample-test-'));
+  process.env.PAPERCUSP_MCP_PROXY_WATCHDOG_POOL_SAMPLE_LOG = join(tmpHome, 'samples.log');
+  ({ buildShowPoolsArgs, samplePgBouncerPools, _resetSampleDebounceForTests, SAMPLE_LOG_FILE, MIN_SAMPLE_INTERVAL_MS } =
+    await import('./pgbouncer-pool-sample.mjs'));
+});
+
+beforeEach(() => {
+  _resetSampleDebounceForTests();
+});
+
+afterEach(() => {
+  try {
+    rmSync(SAMPLE_LOG_FILE, { force: true });
+  } catch {
+    /* fine if it was never written this test */
+  }
+});
+
+describe('pgbouncer pool sampler — buildShowPoolsArgs (EI-19384024494946006)', () => {
+  it('queries SHOW POOLS + SHOW STATS against the admin virtual database, as the admin user', () => {
+    const args = buildShowPoolsArgs({ host: '127.0.0.1', port: 6432, user: 'harness_admin' });
+    expect(args).toEqual(['-h', '127.0.0.1', '-p', '6432', '-U', 'harness_admin', '-d', 'pgbouncer', '-c', 'SHOW POOLS;', '-c', 'SHOW STATS;']);
+  });
+
+  it('defaults to the box-standard admin console coordinates when no override is given', () => {
+    const args = buildShowPoolsArgs();
+    // -d pgbouncer (never an app database — the admin console is a separate virtual DB)
+    expect(args).toContain('pgbouncer');
+    expect(args).toContain('SHOW POOLS;');
+    expect(args).toContain('SHOW STATS;');
+  });
+});
+
+describe('pgbouncer pool sampler — samplePgBouncerPools (EI-19384024494946006)', () => {
+  it('invokes psql with the built args, PGPASSWORD in env, and a timeout — then logs the output', async () => {
+    const calls: unknown[] = [];
+    const execFileImpl = (cmd: string, args: string[], options: Record<string, unknown>, cb: (...a: unknown[]) => void) => {
+      calls.push({ cmd, args, options });
+      cb(null, 'pool output here', '');
+    };
+
+    const result = await samplePgBouncerPools('test-reason', { execFileImpl });
+
+    expect(result.ok).toBe(true);
+    expect(result.output).toBe('pool output here');
+    expect(calls).toHaveLength(1);
+    const call = calls[0] as { cmd: string; args: string[]; options: Record<string, unknown> };
+    expect(call.cmd).toBe('psql');
+    expect(call.args).toEqual(buildShowPoolsArgs());
+    expect(call.options.env).toMatchObject({ PGPASSWORD: expect.any(String) });
+    expect(call.options.timeout).toBeGreaterThan(0);
+
+    const logged = readFileSync(SAMPLE_LOG_FILE, 'utf8');
+    expect(logged).toContain('reason=test-reason');
+    expect(logged).toContain('pool output here');
+  });
+
+  it('never throws when psql errors — logs the error and reports ok:false', async () => {
+    const execFileImpl = (cmd: string, args: string[], options: Record<string, unknown>, cb: (...a: unknown[]) => void) => {
+      cb(Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:6432'), { message: 'connect ECONNREFUSED 127.0.0.1:6432' }), '', 'connection refused');
+    };
+
+    const result = await samplePgBouncerPools('test-error', { execFileImpl });
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain('ECONNREFUSED');
+    const logged = readFileSync(SAMPLE_LOG_FILE, 'utf8');
+    expect(logged).toContain('reason=test-error');
+    expect(logged).toContain('ERROR:');
+  });
+
+  it('never throws when execFileImpl itself throws synchronously', async () => {
+    const execFileImpl = () => {
+      throw new Error('boom — broken test double / spawn failure');
+    };
+    await expect(samplePgBouncerPools('test-sync-throw', { execFileImpl })).resolves.toMatchObject({ ok: false });
+  });
+
+  it('debounces repeat calls within MIN_SAMPLE_INTERVAL_MS — a burst of onsets samples once', async () => {
+    let calls = 0;
+    const execFileImpl = (cmd: string, args: string[], options: Record<string, unknown>, cb: (...a: unknown[]) => void) => {
+      calls += 1;
+      cb(null, 'output', '');
+    };
+    let clock = 1_000_000;
+    const now = () => clock;
+
+    const first = await samplePgBouncerPools('onset-a', { execFileImpl, now });
+    expect(first.skipped).toBeUndefined();
+    expect(calls).toBe(1);
+
+    clock += 1_000; // well inside the debounce window
+    const second = await samplePgBouncerPools('onset-b', { execFileImpl, now });
+    expect(second.skipped).toBe('debounced');
+    expect(calls).toBe(1); // still one — the second call did not spawn psql again
+
+    clock += MIN_SAMPLE_INTERVAL_MS + 1; // past the debounce window
+    const third = await samplePgBouncerPools('onset-c', { execFileImpl, now });
+    expect(third.skipped).toBeUndefined();
+    expect(calls).toBe(2);
+  });
+});

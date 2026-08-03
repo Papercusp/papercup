@@ -85,17 +85,50 @@ describe('toCellOwnership', () => {
   });
 });
 
-describe('unownedCell', () => {
-  it('is no-object with every lease field null', () => {
+describe('unownedCell vs unmeasuredCell', () => {
+  it('unowned is a MEASURED no-object with no unknown attached', () => {
     expect(unownedCell('green-stall:x')).toEqual({
       eventKey: 'green-stall:x',
       workItem: null,
       claimState: 'no-object',
+      unknown: null,
       takenBy: null,
       takenAt: null,
       expiresAt: null,
+      holderSessionState: null,
       duplicates: [],
     });
+  });
+
+  // REGRESSION GUARD. P-004 shipped these as the SAME value, so an unreachable
+  // store rendered as the reassuring "nobody owns this red — go file one".
+  it('unmeasured is NOT no-object — a failed read never reads as an empty one', () => {
+    const u = unmeasuredCell('green-stall:x', 'pg down');
+    expect(u.claimState).toBeNull();
+    expect(u.claimState).not.toBe('no-object');
+    expect(u.unknown).toEqual({ code: 'resolver-failed', detail: 'pg down' });
+  });
+});
+
+describe('ownershipContradicted (the P-005 falsifier verdict)', () => {
+  it('fires when a HELD lease is contradicted by a dead holder', () => {
+    const own = { ...toCellOwnership(mkObj({ claimState: 'held', takenBy: 'su-x' }), 'ended') };
+    expect(ownershipContradicted(own)).toBe(true);
+  });
+
+  it('does NOT fire for a parked holder — parked is alive and will wake', () => {
+    const own = { ...toCellOwnership(mkObj({ claimState: 'held', takenBy: 'su-x' }), 'parked') };
+    expect(ownershipContradicted(own)).toBe(false);
+  });
+
+  it('does NOT fire when the oracle could not answer (null is no contradiction)', () => {
+    const own = { ...toCellOwnership(mkObj({ claimState: 'held', takenBy: 'su-x' }), null) };
+    expect(ownershipContradicted(own)).toBe(false);
+  });
+
+  it('does not fire for a lease that already expired — that is not a contradiction', () => {
+    const own = { ...toCellOwnership(mkObj({ claimState: 'lease-expired', takenBy: 'su-x' }), 'ended') };
+    expect(ownershipContradicted(own)).toBe(false);
   });
 });
 
@@ -123,27 +156,58 @@ describe('readGateOwnership', () => {
     expect(own.workItem).toBeNull();
   });
 
-  // A cell must ALWAYS render. A throwing resolver must degrade to "no owner",
-  // never propagate into the pipeline-position read.
-  it('fails soft to no-object when the store is unreachable, never throws', async () => {
+  // A cell must ALWAYS render, but it must render UNMEASURED — never "no owner".
+  it('degrades to UNMEASURED when the store is unreachable, never throws', async () => {
     const own = await readGateOwnership({
       harness: 'papercusp',
       findConditionObjects: (async () => {
         throw new Error('pg down');
       }) as never,
     });
-    expect(own).toEqual(unownedCell('green-stall:papercusp'));
+    expect(own.claimState).toBeNull();
+    expect(own.unknown?.code).toBe('resolver-failed');
+    expect(own.eventKey).toBe('green-stall:papercusp');
   });
 
-  it('still names the eventKey when it cannot resolve ownership', async () => {
+  it('resolves the holder liveness through the presence oracle when a holder exists', async () => {
     const own = await readGateOwnership({
-      harness: 'oddsmith',
-      findConditionObjects: (async () => {
-        throw new Error('pg down');
+      harness: 'papercusp',
+      findConditionObjects: (async () =>
+        new Map([['green-stall:papercusp', mkObj({ claimState: 'held', takenBy: 'su-dead' })]])) as never,
+      resolveSessionStates: oracle('ended'),
+    });
+    expect(own.holderSessionState).toBe('ended');
+    expect(ownershipContradicted(own)).toBe(true);
+  });
+
+  it('does NOT call the oracle when there is no holder to measure', async () => {
+    let calls = 0;
+    const own = await readGateOwnership({
+      harness: 'papercusp',
+      findConditionObjects: (async () =>
+        new Map([['green-stall:papercusp', mkObj({ claimState: 'claimable', takenBy: null })]])) as never,
+      resolveSessionStates: (async () => {
+        calls += 1;
+        return new Map();
       }) as never,
     });
-    // The key is knowable without the store — losing it would make a degraded read
-    // indistinguishable from "this cell has no incident concept at all".
-    expect(own.eventKey).toBe('green-stall:oddsmith');
+    expect(calls).toBe(0);
+    expect(own.holderSessionState).toBeNull();
+  });
+
+  // A failed falsifier leg must not invent liveness in EITHER direction: null
+  // means "no contradiction established", never "the holder is alive".
+  it('leaves holderSessionState null when the oracle throws, keeping the claim readable', async () => {
+    const own = await readGateOwnership({
+      harness: 'papercusp',
+      findConditionObjects: (async () =>
+        new Map([['green-stall:papercusp', mkObj({ claimState: 'held', takenBy: 'su-x' })]])) as never,
+      resolveSessionStates: (async () => {
+        throw new Error('oracle down');
+      }) as never,
+    });
+    expect(own.claimState).toBe('held');
+    expect(own.holderSessionState).toBeNull();
+    expect(ownershipContradicted(own)).toBe(false);
   });
 });
