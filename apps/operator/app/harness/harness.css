@@ -1129,6 +1129,18 @@
   color: color-mix(in oklab, var(--fg), transparent 55%);
 }
 
+/* Radix's available-height is the room for the WHOLE panel, and in this shape
+   the panel also carries the search row. Without this the list would claim the
+   full measurement and push itself past the viewport edge — re-creating P-006
+   from the other direction. 44px = panel padding (12) + search row (~27) + the
+   gap (4). */
+.h-combobox-menu .h-combobox__list {
+  max-height: min(
+    var(--h-combobox-max-list, 320px),
+    calc(var(--radix-popover-content-available-height, 320px) - 44px)
+  );
+}
+
 /* P-006 — THE overflow fix. The old Radix Select rendered an unbounded
    Viewport with no scroll buttons, so a long plan list simply ran off the
    bottom of the screen with no way to reach the rest. Bounded by whichever

@@ -31,6 +31,7 @@ import type {
   ChatModeOption,
 } from '@/lib/chat-actions/types';
 import { Select } from '@/app/harness/Select';
+import { ComboboxMenu } from '@/app/harness/Combobox';
 
 /**
  * WI-6552: ceiling on a `params()` option-load before the bar gives up.
@@ -314,32 +315,88 @@ export function ChatActionBar({ ctx }: { ctx: ChatActionContext }): ReactNode {
           it. Reading order follows that dependency. */}
       {modes.map((mode) => {
         const state = mode.current(ctx);
+        /* WI-7471: the option set is RESOLVED, not called here. An async
+           `options()` invoked during render would re-fetch on every
+           re-render; `ensureOptions` fetches once, on open. */
+        const resolvedOptions =
+          modeOptions[mode.id] ??
+          (optionsLoading[mode.id] ? [{ id: '__loading__', label: 'Loading…' }] : []);
+        /* `optionId` when the axis distinguishes it from display text
+           (autonomy shows "on" for the option `auto`); the overlays'
+           option ids already ARE their display values, so `value` is the
+           id there and the fallback is exact, not approximate. */
+        const value = state.optionId ?? state.value;
+        const ariaLabel = `${mode.cap} is ${state.value}${state.title ? ` — ${state.title}` : ''}. Change it.`;
+        const triggerClassName = `pc-ctl-mode${state.on ? '' : ' pc-ctl-mode--off'}`;
+        /* Hoisted so BOTH menu shapes hang the identical pill off themselves.
+           The pill is a two-part object — a filled cap carrying the axis name
+           plus its current value — and the shape IS the vocabulary
+           (chat-controls.css: a mode and the control that sets it are ONE
+           thing), so which control opens the menu must not change how the pill
+           reads. */
+        const triggerChildren = (
+          <span className="pc-ctl-mode__inner">
+            <span className="pc-ctl-mode__cap">{mode.cap}</span>
+            <span className="pc-ctl-mode__value">
+              {state.value}
+              <span aria-hidden="true">▾</span>
+            </span>
+          </span>
+        );
+        // A placeholder row must not be pickable — selecting it would post
+        // `__loading__` as a real value.
+        const isPlaceholder = (id: string) => id === '__loading__';
+
+        /* An axis whose option set is UNBOUNDED gets the searchable, scrolling
+           menu; a two- or three-state axis gets the plain one, where a search
+           box would be noise. See `searchable` on ChatModeAction. */
+        if (mode.searchable) {
+          return (
+            <ComboboxMenu
+              key={mode.id}
+              value={value}
+              onChange={(optionId) => void applyMode(mode, optionId)}
+              disabled={runningId !== null}
+              onOpenChange={(open) => {
+                if (open) ensureOptions(mode);
+              }}
+              options={resolvedOptions.map((o) => ({
+                value: o.id,
+                /* `label` is plain text here by contract — it is both what the
+                   row shows and what cmdk scores. The hint becomes the second
+                   line AND a search key, so typing a rubric's characteristic
+                   finds it, not just its title. */
+                label: o.label,
+                detail: o.hint,
+                keywords: o.hint ? [o.hint] : undefined,
+                disabled: isPlaceholder(o.id),
+              }))}
+              testId={`chat-mode-${mode.id}`}
+              triggerData={{ 'data-on': state.on ? 'true' : 'false' }}
+              triggerClassName={triggerClassName}
+              triggerChildren={triggerChildren}
+              /* The band sits at the BOTTOM of the popup, so the menu's natural
+                 home is above it. Radix still flips when there is no room. */
+              side="top"
+              align="start"
+              ariaLabel={ariaLabel}
+              searchPlaceholder={mode.searchPlaceholder}
+            />
+          );
+        }
+
         return (
           <Select
             key={mode.id}
-            /* `optionId` when the axis distinguishes it from display text
-               (autonomy shows "on" for the option `auto`); the overlays'
-               option ids already ARE their display values, so `value` is the
-               id there and the fallback is exact, not approximate. */
-            value={state.optionId ?? state.value}
+            value={value}
             onChange={(optionId) => void applyMode(mode, optionId)}
             disabled={runningId !== null}
-            /* WI-7471: the option set is RESOLVED, not called here. An async
-               `options()` invoked during render would re-fetch on every
-               re-render; `ensureOptions` fetches once, on open. */
             onOpenChange={(open) => {
               if (open) ensureOptions(mode);
             }}
-            options={(
-              modeOptions[mode.id] ??
-              (optionsLoading[mode.id]
-                ? [{ id: '__loading__', label: 'Loading…' }]
-                : [])
-            ).map((o) => ({
+            options={resolvedOptions.map((o) => ({
               value: o.id,
-              // A placeholder row must not be pickable — selecting it would
-              // post `__loading__` as a real value.
-              disabled: o.id === '__loading__',
+              disabled: isPlaceholder(o.id),
               label: o.hint ? (
                 <span className="pc-ctl-mode-opt">
                   <span className="pc-ctl-mode-opt__label">{o.label}</span>
@@ -351,23 +408,15 @@ export function ChatActionBar({ ctx }: { ctx: ChatActionContext }): ReactNode {
             }))}
             testId={`chat-mode-${mode.id}`}
             triggerData={{ 'data-on': state.on ? 'true' : 'false' }}
-            triggerClassName={`pc-ctl-mode${state.on ? '' : ' pc-ctl-mode--off'}`}
+            triggerClassName={triggerClassName}
             /* The band sits at the BOTTOM of the popup, so the menu's natural
                home is above it — hence the owner's "drop down/up". Radix still
                flips to `bottom` on its own when the pill is high enough that
                there is no room above, so this is a preference, not a pin. */
             side="top"
             align="start"
-            ariaLabel={`${mode.cap} is ${state.value}${state.title ? ` — ${state.title}` : ''}. Change it.`}
-            triggerChildren={
-              <span className="pc-ctl-mode__inner">
-                <span className="pc-ctl-mode__cap">{mode.cap}</span>
-                <span className="pc-ctl-mode__value">
-                  {state.value}
-                  <span aria-hidden="true">▾</span>
-                </span>
-              </span>
-            }
+            ariaLabel={ariaLabel}
+            triggerChildren={triggerChildren}
           />
         );
       })}

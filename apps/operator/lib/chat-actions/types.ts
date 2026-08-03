@@ -193,6 +193,28 @@ export interface ChatModeAction {
    * axes do; the bar accepts either.
    */
   options(ctx: ChatActionContext): ChatModeOption[] | Promise<ChatModeOption[]>;
+  /**
+   * Render this axis's menu as a SEARCHABLE, scrolling list instead of a plain
+   * one. Default false.
+   *
+   * The distinction it encodes is whether the option set is BOUNDED. AUTO and
+   * the overlays offer two or three fixed states, where a search box is noise;
+   * GRADE offers one row per active rubric, a set the workspace grows without
+   * limit — so it is the axis that needs to scroll and filter. That is the same
+   * property `options()` being async already tracks, but declared rather than
+   * inferred: a sync axis could still be unbounded, and the surface should not
+   * have to guess from the shape of a function.
+   *
+   * [owner 2026-08-03] "the grade mode popup should not offer to ask the agent,
+   * it should just have a scroll and a search filter in the dropdown."
+   */
+  searchable?: boolean;
+  /**
+   * Placeholder for the search box, when `searchable`. Lives on the axis
+   * because the axis is what knows its options are called "rubrics"; the bar
+   * renders whatever it is handed and falls back to a generic prompt.
+   */
+  searchPlaceholder?: string;
   /** Apply a chosen option. */
   set(ctx: ChatActionContext, optionId: string): Promise<void> | void;
 }
