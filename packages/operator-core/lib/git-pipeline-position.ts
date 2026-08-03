@@ -1505,7 +1505,12 @@ export function runtimeGenerationDivergenceNote(
   return (
     `RUNTIME GENERATIONS DIVERGE${where}: ` +
     `${current.map((g) => `${g.unit} (${g.label})`).join(' + ')} ALREADY run this code as it stands — each started after it last changed. ` +
-    `${behind.map((g) => `${g.unit} (${g.label}, ~${g.behindMin}m behind)`).join(' + ')} do NOT. ` +
+    // `behindMin` is null when the host is behind for a reason that is not restart
+    // LAG — a release checkout serving different content is out of date by content,
+    // not by minutes, and "~nullm behind" is how that leaked into the prose.
+    `${behind
+      .map((g) => `${g.unit} (${g.label}, ${g.behindMin === null ? 'serving DIFFERENT content' : `~${g.behindMin}m behind`})`)
+      .join(' + ')} do NOT. ` +
     `If you only need to OBSERVE this code running — measure it, reproduce against it, confirm a routine's behaviour changed — it is ALREADY LIVE on the hosts listed first and you are NOT blocked on a deploy. ` +
     `A deploy is required only to activate it on the release checkout. ` +
     `Do not read an unmoved deploy sha as "my change is not running anywhere".`

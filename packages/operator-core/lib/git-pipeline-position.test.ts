@@ -4494,6 +4494,10 @@ describe('runtime generations (WI-9974) — every host, both directions', () => 
       const note = runtimeGenerationDivergenceNote(gens, 'packages/operator-core/lib/memory/knowledge-read.ts');
       expect(note).toContain('papercup-bg-host.service');
       expect(note).toMatch(/NOT blocked on a deploy/i);
+      // A content-differs host is out of date by CONTENT, not by minutes — the
+      // first live run rendered this as the literal "~nullm behind".
+      expect(note).toContain('serving DIFFERENT content');
+      expect(note).not.toContain('null');
     });
   });
 

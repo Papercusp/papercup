@@ -1078,6 +1078,57 @@
   max-width: min(460px, var(--radix-popover-content-available-width, 460px));
 }
 
+/* ── ComboboxMenu: the trigger-as-control shape ────────────────────────────
+   Same panel, same list, same rows as Combobox — the only addition is that the
+   search box lives INSIDE the panel (Combobox's search box is the control
+   itself, out in the page). WI-10013 [owner 2026-08-03]: "the grade mode popup
+   should not offer to ask the agent, it should just have a scroll and a search
+   filter in the dropdown". */
+.h-combobox-menu {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+/* The box around the icon + input, mirroring .h-combobox__box so the two
+   shapes read as one family. */
+.h-combobox-menu__search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 7px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: color-mix(in oklab, var(--bg-2), transparent 24%);
+}
+
+.h-combobox-menu__search:focus-within {
+  border-color: color-mix(in oklab, var(--accent), transparent 40%);
+}
+
+.h-combobox-menu__search-icon {
+  flex: none;
+  opacity: 0.6;
+  pointer-events: none;
+}
+
+.h-combobox-menu__input {
+  flex: 1 1 auto;
+  min-width: 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.h-combobox-menu__input::placeholder {
+  color: color-mix(in oklab, var(--fg), transparent 55%);
+}
+
 /* P-006 — THE overflow fix. The old Radix Select rendered an unbounded
    Viewport with no scroll buttons, so a long plan list simply ran off the
    bottom of the screen with no way to reach the rest. Bounded by whichever

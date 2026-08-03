@@ -1,7 +1,23 @@
 'use client';
 
 /**
- * Combobox — a SEARCHABLE single-select whose control IS a text box.
+ * Searchable single-selects. TWO shapes live here, differing only in where the
+ * search box sits — pick by what the CONTROL has to look like:
+ *
+ *   • `Combobox`     — the control IS the text box (this file's original, and
+ *                      the default when nothing constrains the trigger).
+ *   • `ComboboxMenu` — the control is a BUTTON you supply, and the search box
+ *                      sits inside the dropped panel. For a trigger whose shape
+ *                      is fixed by something else, e.g. the chat popup's mode
+ *                      pill. See its own doc block for why it is a sibling
+ *                      rather than a flag on `Combobox`.
+ *
+ * They share the option types, the row renderer, the cmdk filtering model, the
+ * Popover portal and every `h-combobox__*` style, so the list itself cannot
+ * drift between them.
+ *
+ * ── Combobox ──
+ * A SEARCHABLE single-select whose control IS a text box.
  *
  * The visible control is the search input itself: click or tab into it and the
  * full list drops open; type and it filters. There is no separate "open the
@@ -41,7 +57,7 @@
  * second line.
  */
 import { Command as CmdK } from 'cmdk';
-import { Check, ChevronDown } from 'lucide-react';
+import { Check, ChevronDown, Search } from 'lucide-react';
 import { useCallback, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Popover } from './Popover';
 
@@ -81,6 +97,60 @@ export function flattenComboboxEntries(entries: ComboboxEntry[]): ComboboxOption
     else out.push(entry);
   }
   return out;
+}
+
+/**
+ * The one row renderer both shapes share — `Combobox` (input-as-control) and
+ * `ComboboxMenu` (trigger-as-control) differ in where the search box lives, not
+ * in what a row looks like. Kept as a plain function rather than duplicated in
+ * each so the two-line row, the search-key contract and the check indicator
+ * cannot drift apart.
+ */
+function renderComboboxItem(
+  opt: ComboboxOption,
+  value: string | null,
+  onSelect: (value: string) => void,
+) {
+  return (
+    <CmdK.Item
+      key={opt.value}
+      // `value` is the option's own value, unique by construction — labels are
+      // not (two plans can share a title), and duplicate cmdk values collapse
+      // into one selectable row. The human-readable text rides along in
+      // `keywords`, which cmdk scores equally.
+      value={opt.value}
+      keywords={[opt.label, ...(opt.keywords ?? [])]}
+      disabled={opt.disabled}
+      onSelect={() => onSelect(opt.value)}
+      className="h-combobox__item"
+    >
+      <span className="h-combobox__item-copy">
+        <span className="h-combobox__item-label">{opt.label}</span>
+        {opt.detail != null && <span className="h-combobox__item-detail">{opt.detail}</span>}
+      </span>
+      {opt.value === value && (
+        <Check size={11} className="h-combobox__item-check" aria-hidden="true" />
+      )}
+    </CmdK.Item>
+  );
+}
+
+/** Groups + flat rows, in caller order. Shared by both shapes for the same
+ *  reason as `renderComboboxItem`. */
+function renderComboboxEntries(
+  entries: ComboboxEntry[],
+  value: string | null,
+  onSelect: (value: string) => void,
+) {
+  return entries.map((entry, idx) =>
+    isComboboxGroup(entry) ? (
+      <CmdK.Group key={`grp-${idx}`} heading={entry.label} className="h-combobox__group">
+        {entry.options.map((opt) => renderComboboxItem(opt, value, onSelect))}
+      </CmdK.Group>
+    ) : (
+      renderComboboxItem(entry, value, onSelect)
+    ),
+  );
 }
 
 export interface ComboboxProps {
@@ -169,29 +239,6 @@ export function Combobox({
     [onChange],
   );
 
-  const renderItem = (opt: ComboboxOption) => (
-    <CmdK.Item
-      key={opt.value}
-      // `value` is the option's own value, unique by construction — labels are
-      // not (two plans can share a title), and duplicate cmdk values collapse
-      // into one selectable row. The human-readable text rides along in
-      // `keywords`, which cmdk scores equally.
-      value={opt.value}
-      keywords={[opt.label, ...(opt.keywords ?? [])]}
-      disabled={opt.disabled}
-      onSelect={() => select(opt.value)}
-      className="h-combobox__item"
-    >
-      <span className="h-combobox__item-copy">
-        <span className="h-combobox__item-label">{opt.label}</span>
-        {opt.detail != null && <span className="h-combobox__item-detail">{opt.detail}</span>}
-      </span>
-      {opt.value === value && (
-        <Check size={11} className="h-combobox__item-check" aria-hidden="true" />
-      )}
-    </CmdK.Item>
-  );
-
   return (
     <CmdK
       label={ariaLabel}
@@ -255,17 +302,198 @@ export function Combobox({
       >
         <CmdK.List className="h-combobox__list">
           <CmdK.Empty className="h-combobox__empty">{emptyLabel}</CmdK.Empty>
-          {options.map((entry, idx) =>
-            isComboboxGroup(entry) ? (
-              <CmdK.Group key={`grp-${idx}`} heading={entry.label} className="h-combobox__group">
-                {entry.options.map(renderItem)}
-              </CmdK.Group>
-            ) : (
-              renderItem(entry)
-            ),
-          )}
+          {renderComboboxEntries(options, value, select)}
         </CmdK.List>
       </Popover>
     </CmdK>
+  );
+}
+
+/**
+ * The wrapper floor from `harness.css`'s `[data-radix-popper-content-wrapper]`
+ * rule. It is a DEFAULT here, not a suggestion, and it is the reason this
+ * component exists as its own export rather than a flag on `Combobox`.
+ *
+ * `harness/Popover` defaults its Content to `zIndex: 90`, and Radix copies a
+ * popper Content's computed z-index onto the position:fixed wrapper as an
+ * INLINE style — which beats the stylesheet floor. 90 clears `<main>` (70), so
+ * every Combobox on an ordinary page works; it does NOT clear
+ * `.oracle-dock--maximal-hud` (1450), which is exactly where the chat popup's
+ * control band lives. A menu at 90 there mounts, positions, reports
+ * `opacity: 1` and is completely unclickable — the P-006 defect the owner
+ * reported as "None of the option selector dropdowns are working in the bottom
+ * panel", and one that jsdom cannot catch because it does not paint.
+ *
+ * Tracked for the underlying primitive as EI-19470132622399873 (Popover's own
+ * default should be the floor, and `_lints/popper-stacking.test.ts`'s
+ * `/zIndex:\s*(\d+)/` cannot see a `?? 90` default). Until that lands, a menu
+ * primitive that can be dropped into the dock must carry the floor itself.
+ */
+const POPPER_WRAPPER_FLOOR_Z = 1500;
+
+export interface ComboboxMenuProps {
+  /** Selected option value, or null when nothing is chosen. */
+  value: string | null;
+  onChange: (value: string) => void;
+  options: ComboboxEntry[];
+  /** Required — labels the trigger, the panel and the search box. */
+  ariaLabel: string;
+  /**
+   * The trigger's body. You own its shape entirely; this component supplies
+   * only a `<button>` to hang it on, so a trigger that is NOT "selected text +
+   * caret" stays one element rather than a button inside a button.
+   */
+  triggerChildren: ReactNode;
+  triggerClassName?: string;
+  /** Extra `data-*` for the trigger (styling hooks, test handles). Pass the
+   *  full `data-…` name; an `undefined` value is dropped. */
+  triggerData?: Record<string, string | undefined>;
+  disabled?: boolean;
+  id?: string;
+  /** Trigger test id. The search box gets `<testId>-search`. */
+  testId?: string;
+  searchPlaceholder?: string;
+  emptyLabel?: string;
+  /** Hard ceiling for the list in px; the panel also clamps to the room Radix
+   *  measures below (or above) the trigger, whichever is smaller. */
+  maxListHeight?: number;
+  side?: 'top' | 'right' | 'bottom' | 'left';
+  align?: 'start' | 'center' | 'end';
+  /** Only lower this if you know the surface — see POPPER_WRAPPER_FLOOR_Z. */
+  zIndex?: number;
+  /** Fired on open (`true`) and close (`false`) — the moment to lazily fetch
+   *  an option set that is not a constant. */
+  onOpenChange?: (open: boolean) => void;
+}
+
+/**
+ * ComboboxMenu — a SEARCHABLE single-select whose control is a BUTTON you
+ * supply, with the search box inside the dropped panel.
+ *
+ * ── Why this is a sibling of `Combobox` and not a prop on it ──
+ * `Combobox`'s control IS its text box: focus it and the list drops, type and
+ * it filters, and the box doubles as the display of the current selection.
+ * That shape is load-bearing there and is documented at the top of this file.
+ *
+ * It cannot serve a trigger whose shape is fixed by something else. The case
+ * this exists for is the chat popup's mode pill — a filled cap carrying the
+ * axis name (`GRADE`) plus its current value (`on ▾`) — which must keep that
+ * shape because the shape IS the vocabulary (chat-controls.css: a mode and the
+ * control that sets it are ONE thing). Inverting `Combobox` to serve it would
+ * mean two focus models, two meanings for the input, and two open/close
+ * regimes inside one component, on a component with five live callers.
+ *
+ * So the two shapes stay separate and share what is genuinely shared: the
+ * option types, `renderComboboxItem`/`renderComboboxEntries`, the cmdk
+ * filtering and keyboard model, the `harness/Popover` portal, and every
+ * `h-combobox__*` style including the bounded-scroll list (P-006) and the
+ * two-line row (P-007).
+ *
+ * COMPOSITION note — unlike `Combobox`, the cmdk root lives ENTIRELY inside the
+ * panel (the standard Popover+Command arrangement). `Combobox` has to span the
+ * root across both halves because its input sits outside the portal; here the
+ * input is inside it, so the trigger stays outside cmdk's keyboard handling and
+ * cannot have a keystroke on the closed pill resolve to selecting a row.
+ */
+export function ComboboxMenu({
+  value,
+  onChange,
+  options,
+  ariaLabel,
+  triggerChildren,
+  triggerClassName,
+  triggerData,
+  disabled,
+  id,
+  testId,
+  searchPlaceholder = 'Search…',
+  emptyLabel = 'No matches',
+  maxListHeight = 320,
+  side,
+  align = 'start',
+  zIndex = POPPER_WRAPPER_FLOOR_Z,
+  onOpenChange,
+}: ComboboxMenuProps) {
+  const [open, setOpen] = useState(false);
+  /** The search text. Unlike `Combobox`'s `draft` this is ONLY a query — it
+   *  never doubles as the display of the selection, because the trigger shows
+   *  that. It resets on close so a re-open always starts from the full list. */
+  const [query, setQuery] = useState('');
+
+  const handleOpenChange = useCallback(
+    (next: boolean) => {
+      setOpen(next);
+      if (!next) setQuery('');
+      onOpenChange?.(next);
+    },
+    [onOpenChange],
+  );
+
+  const select = useCallback(
+    (optValue: string) => {
+      onChange(optValue);
+      handleOpenChange(false);
+    },
+    [onChange, handleOpenChange],
+  );
+
+  const triggerDataAttrs = Object.fromEntries(
+    Object.entries(triggerData ?? {}).filter(([, v]) => v !== undefined),
+  );
+
+  return (
+    <Popover
+      open={open && !disabled}
+      onOpenChange={handleOpenChange}
+      side={side}
+      align={align}
+      sideOffset={4}
+      ariaLabel={ariaLabel}
+      zIndex={zIndex}
+      /* Radix's own auto-focus targets the CONTENT element, which would leave
+         the first keystroke going nowhere. Suppressing it and letting the input
+         claim focus on mount is what makes "open and type" work. */
+      autoFocusOnOpen={false}
+      contentClassName="h-combobox__panel h-combobox-menu__panel"
+      contentStyle={{ ['--h-combobox-max-list' as string]: `${maxListHeight}px` }}
+      trigger={
+        <button
+          type="button"
+          id={id}
+          disabled={disabled}
+          data-testid={testId}
+          className={triggerClassName}
+          {...triggerDataAttrs}
+        >
+          {triggerChildren}
+        </button>
+      }
+    >
+      <CmdK
+        label={ariaLabel}
+        loop
+        /* Only filter once something is typed — an empty query must show the
+           FULL list, which is the whole point of the search box replacing a
+           truncated one. */
+        shouldFilter={query.trim() !== ''}
+        className="h-combobox-menu"
+      >
+        <div className="h-combobox-menu__search">
+          <Search size={11} aria-hidden="true" className="h-combobox-menu__search-icon" />
+          <CmdK.Input
+            autoFocus
+            value={query}
+            onValueChange={setQuery}
+            placeholder={searchPlaceholder}
+            data-testid={testId ? `${testId}-search` : undefined}
+            className="h-combobox-menu__input"
+          />
+        </div>
+        <CmdK.List className="h-combobox__list">
+          <CmdK.Empty className="h-combobox__empty">{emptyLabel}</CmdK.Empty>
+          {renderComboboxEntries(options, value, select)}
+        </CmdK.List>
+      </CmdK>
+    </Popover>
   );
 }
