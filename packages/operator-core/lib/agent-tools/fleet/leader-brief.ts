@@ -1264,7 +1264,9 @@ export default defineTool({
         }).catch(() => null);
         return await readClaimConcurrencyBatch({
           cupIds: grouped.map((a) => a.agentId),
-          workspaceId: actorWorkspace,
+          // `actorWorkspace` is string|null; the reader takes an optional string and
+          // falls back to DEFAULT_COORD_WORKSPACE, which is what null means here too.
+          workspaceId: actorWorkspace ?? undefined,
           maxConcurrentClaims: rec?.spec.limits?.maxConcurrentClaims,
         });
       } catch {

@@ -24,6 +24,8 @@ import {
   matchesSessionText,
   parseHighlight,
   searchHitAnchor,
+  fetchTranscriptSearch,
+  rollUpTranscriptSearch,
   shortHandle,
   TERMINAL_LAUNCH_ONLINE_GRACE_SEC,
   toHudSession,
@@ -1058,5 +1060,130 @@ describe('searchHitAnchor', () => {
   it('drops a trailing … so the anchor is not searched for with the truncation marker', () => {
     const a = searchHitAnchor(hit({ excerpt: '[user] the first two hundred characters of the turn…' }));
     expect(a).toBe('the first two hundred characters of the turn');
+  });
+});
+
+/**
+ * WI-7344 — the transcript-search round-trip.
+ *
+ * Owner report 2026-08-03: "searched 'theory' … still showed searching
+ * transcripts 30 seconds later". The call had no deadline, so a stalled
+ * operator spun forever with no error. These cover the deadline AND the
+ * discrimination that makes it work: a timeout and a supersede/unmount abort
+ * both set `signal.aborted`, so a caller branching on that flag alone swallows
+ * the timeout and re-creates the hang the deadline was added to prevent.
+ */
+describe('fetchTranscriptSearch', () => {
+  const session = (over: Record<string, unknown> = {}) => ({
+    active: { ownerId: 'su-aaa' },
+    sessionId: 's1',
+    sourceKind: 'claude',
+    hits: [
+      { turnIdx: 7, excerpt: 'a theory of gates', highlight: 'a <mark>theory</mark> of gates' },
+    ],
+    ...over,
+  });
+  const okResponse = (sessions: unknown[]) =>
+    ({ ok: true, json: async () => ({ ok: true, sessions }) }) as unknown as Response;
+  /** A fetch that never settles on its own — the wedged-operator case. */
+  const neverSettles = ((_u: string, init?: { signal?: AbortSignal }) =>
+    new Promise((_res, rej) => {
+      init?.signal?.addEventListener('abort', () =>
+        rej(Object.assign(new Error('aborted'), { name: 'AbortError' })),
+      );
+    })) as unknown as typeof fetch;
+
+  it('returns owners + best hit on a normal response', async () => {
+    const r = await fetchTranscriptSearch('theory', {
+      timeoutMs: 1000,
+      fetchImpl: (async () => okResponse([session()])) as unknown as typeof fetch,
+    });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect([...r.owners]).toEqual(['su-aaa']);
+    expect(r.hits.get('su-aaa')?.turnIdx).toBe(7);
+    expect(r.hits.get('su-aaa')?.more).toBe(0);
+  });
+
+  it('reports a TIMEOUT as an outcome, not a hang — the whole point of WI-7344', async () => {
+    // Before the fix this awaited forever and the "searching transcripts…"
+    // chip never cleared.
+    const r = await fetchTranscriptSearch('theory', {
+      timeoutMs: 10,
+      fetchImpl: neverSettles,
+    });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.timedOut).toBe(true);
+    expect(r.message).toMatch(/timed out/i);
+  });
+
+  it('does NOT report a caller abort as a timeout — it rethrows for the caller to ignore', async () => {
+    // The discrimination that keeps the deadline honest. If a supersede abort
+    // came back as `timedOut`, every keystroke would flash a spurious
+    // "timed out" error at the owner.
+    const outer = new AbortController();
+    const p = fetchTranscriptSearch('theory', {
+      timeoutMs: 60_000,
+      signal: outer.signal,
+      fetchImpl: neverSettles,
+    });
+    outer.abort();
+    await expect(p).rejects.toThrow(/abort/i);
+  });
+
+  it('surfaces a server-side failure as a non-timeout error', async () => {
+    const r = await fetchTranscriptSearch('theory', {
+      timeoutMs: 1000,
+      fetchImpl: (async () =>
+        ({
+          ok: false,
+          status: 500,
+          json: async () => ({ ok: false, error: 'boom' }),
+        }) as unknown as Response) as unknown as typeof fetch,
+    });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.timedOut).toBe(false);
+    expect(r.message).toBe('boom');
+  });
+});
+
+describe('rollUpTranscriptSearch', () => {
+  it('counts an owner as matched even when its top hit has no renderable text', () => {
+    // The session genuinely matched; only the excerpt strip is unrenderable.
+    // Dropping the OWNER too would silently hide a real result from the board.
+    const { owners, hits } = rollUpTranscriptSearch([
+      { active: { ownerId: 'su-a' }, hits: [{ excerpt: '   ', highlight: null }] },
+    ]);
+    expect([...owners]).toEqual(['su-a']);
+    expect(hits.has('su-a')).toBe(false);
+  });
+
+  it('falls back to the inactive session owner id, and reports the other-match count', () => {
+    const { owners, hits } = rollUpTranscriptSearch([
+      {
+        active: null,
+        session: { coordOwnerId: 'su-b' },
+        sessionId: 's9',
+        hits: [{ excerpt: 'first' }, { excerpt: 'second' }, { excerpt: 'third' }],
+      },
+    ]);
+    expect([...owners]).toEqual(['su-b']);
+    expect(hits.get('su-b')?.more).toBe(2);
+    expect(hits.get('su-b')?.turnIdx).toBe(-1); // absent turnIdx must not become 0
+  });
+
+  it('skips a session with no attributable owner instead of keying on empty string', () => {
+    const { owners, hits } = rollUpTranscriptSearch([
+      { active: null, session: null, hits: [{ excerpt: 'x' }] },
+    ]);
+    expect(owners.size).toBe(0);
+    expect(hits.size).toBe(0);
+  });
+
+  it('treats a null/absent session list as no matches', () => {
+    expect(rollUpTranscriptSearch(null).owners.size).toBe(0);
+    expect(rollUpTranscriptSearch(undefined).hits.size).toBe(0);
   });
 });

@@ -51,7 +51,7 @@
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../../workspace-registry';
-import { getLoopStatuses, turnsStalledFloorMs, type LoopStatus } from './loop';
+import { getLoopStatuses, turnsStalledFloorMs, rearmFireStarvedLoop, type LoopStatus } from './loop';
 import { autoPauseLoopRoutine } from './loop-cost-cap';
 import { broadcastSevereEvent } from '../../severe-event-broadcast';
 
@@ -60,6 +60,8 @@ export interface StalledLoopsSweepDeps {
   getStatuses?: typeof getLoopStatuses;
   /** Injectable for tests; defaults to the real auto-pause write. */
   autoPause?: typeof autoPauseLoopRoutine;
+  /** Injectable for tests; defaults to the real re-arm write (EI-19406534159939583). */
+  rearm?: typeof rearmFireStarvedLoop;
   /** Injectable for tests; defaults to the real fleet-wide broadcast. */
   broadcast?: typeof broadcastSevereEvent;
 }
@@ -78,6 +80,15 @@ export interface StalledLoopsSweepResult {
    * source is under-reporting again — it should normally be 0.
    */
   vetoedByRecentTurn: string[];
+  /**
+   * EI-19406534159939583: owners whose loop was FIRE-starved rather than turn-stalled — the
+   * agent answered the last fire it received and then no further fire arrived. These are
+   * RE-ARMED, never disarmed: the fault is in the firing path, and disarming would be
+   * irreversible (the reconciler's re-arm sweep gates on `active = TRUE`). A non-zero count
+   * is an INFRASTRUCTURE signal — the loop-fire path stopped serving live agents — and is
+   * worth chasing even though no agent is at fault.
+   */
+  reArmedFireStarved: string[];
   dryRun: boolean;
 }
 

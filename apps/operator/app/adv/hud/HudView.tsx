@@ -57,6 +57,7 @@ import {
   type HudColumnId,
   type HudRosterEntry,
   type HudSearchHit,
+  fetchTranscriptSearch,
 } from './hud-board-model';
 import {
   buildPlanBoard,
@@ -105,12 +106,6 @@ const WORK_ITEM_PER_STATE = 40;
  *  transcripts…" — the owner's 2026-08-03 report. */
 const SEARCH_TIMEOUT_MS = 20_000;
 
-/** Abort reason that distinguishes "we gave up waiting" from the routine
- *  supersede/unmount abort. Both set `signal.aborted`, so without a reason the
- *  timeout is indistinguishable from a newer keystroke and gets swallowed
- *  silently — which is precisely how a timeout would re-create the hang it was
- *  added to fix. A plain sentinel object: identity is the whole point. */
-const SEARCH_TIMEOUT_REASON = { hudSearchTimeout: true } as const;
 
 /* The "all fleets" sentinel is imported from hud-board-model, not re-declared:
    HudBoard raises it and this file compares against it, and while each spelled
