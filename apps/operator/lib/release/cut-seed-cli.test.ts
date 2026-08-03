@@ -576,12 +576,15 @@ describe('openSourceStoreForCut (WI-4487 — readOnly is a point-in-time snapsho
 
     it('names the live operator as the cause and offers both remedies (quiesce / drop --sparse)', async () => {
       const { openStore } = harness({ locked: true });
-      const err = await openSourceStoreForCut({
+      const err = (await openSourceStoreForCut({
         ...base,
         sparse: true,
         openStore,
         ...live,
-      }).catch((e: unknown) => e as Error);
+      }).then(
+        () => new Error('expected a refusal, got a resolved cut'),
+        (e: unknown) => e,
+      )) as Error;
       expect(err.message).toMatch(/live operator holds the store/);
       expect(err.message).toMatch(/quiesce the operator/);
       expect(err.message).toMatch(/PAPERCUSP_SEED_SPARSE=0/);

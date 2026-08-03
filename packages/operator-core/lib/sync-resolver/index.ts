@@ -1196,10 +1196,12 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // Deliberately a SEPARATE named query rather than another leg on
   // agentDetail.byOwner: the orders gather runs buildCarryBrief (several
   // queries — directives, walls, checkpoints, cited-ref hydration), while the
-  // Orders panel is independently toggleable and defaults CLOSED on a narrow
-  // viewport. Folding it in would make every chat popup pay that cost even when
-  // the panel is never shown, and agentDetail is already read by the footer's
-  // summary chip on every open.
+  // Orders panel is independently toggleable. It now defaults OPEN
+  // [owner 2026-08-03], so the popup does pay the gather on a normal open —
+  // but a reader who CLOSES the panel must stop paying for it, and that is
+  // what keeping this query separate buys. Folding it into agentDetail would
+  // make the cost unconditional, and agentDetail is already read by the
+  // footer's summary chip on every open.
   'agentOrders.byOwner': {
     // WI-6964. Traced from the gather chain, not guessed: getAgentOrders →
     // buildCarryBrief (work_items), buildControlAnchorState (session_briefs,

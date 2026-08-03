@@ -1338,20 +1338,48 @@ describe('SessionChatModal', () => {
     const rerenderOpen = (rerender: (ui: React.ReactElement) => void) =>
       rerender(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
 
-    it('is CLOSED by default — the toggle is offered, but the panel (and its gather) is not mounted', async () => {
+    /* [owner 2026-08-03, verbatim]: "In the HUD tab when opening a conversation
+       the 'ORDERS — what they were told' should be expanded by default." This
+       case is the direct inversion of the one that used to assert the opposite
+       default to the dossier; the cost reasoning that justified opt-in (the
+       agentOrders.byOwner carry-brief gather) survives only as the CLOSED half
+       below. */
+    it('is OPEN by default — the panel and its gather mount with the conversation', async () => {
       await renderResolved();
-      // Opposite default to the dossier on purpose: `enabled` gates the
-      // agentOrders.byOwner carry-brief gather, so a panel nobody opened must
-      // cost nothing. Asserting the stub (not just the wrapper) is what makes
-      // this a claim about the FETCH and not merely about layout.
+      // Asserting the stub and its `enabled` prop (not just the wrapper) is what
+      // makes this a claim about the FETCH and not merely about layout: `enabled`
+      // is what gates the agentOrders.byOwner gather.
+      const rail = screen.getByTestId('session-chat-orders-rail');
+      expect(within(rail).getByTestId('agent-orders-stub')).toBeTruthy();
+      expect(lastAgentOrdersProps?.enabled).toBe(true);
+      expect(lastAgentOrdersProps?.ownerId).toBe('su-live-1');
+      expect(screen.getByTestId('session-chat-orders-toggle')).toBeTruthy();
+    });
+
+    it('closing it stops the gather — the panel is still what gates the fetch', async () => {
+      // The half of the pre-2026-08-03 opt-in rationale that outlived the
+      // default flip, and the reason agentOrders.byOwner stays a SEPARATE named
+      // query rather than another leg on agentDetail.byOwner: a reader who
+      // closes the panel must stop paying for the carry-brief gather. Folding it
+      // in would make that cost unconditional and nothing here would notice.
+      const { rerender } = await renderResolved();
+      expect(screen.getByTestId('agent-orders-stub')).toBeTruthy();
+
+      nuqs.chatOrders = false;
+      rerenderOpen(rerender);
       expect(screen.queryByTestId('session-chat-orders-rail')).toBeNull();
       expect(screen.queryByTestId('agent-orders-stub')).toBeNull();
-      expect(lastAgentOrdersProps).toBeNull();
+      // The toggle survives the panel — a reader who closed it must be able to
+      // get it back.
       expect(screen.getByTestId('session-chat-orders-toggle')).toBeTruthy();
     });
 
     it('the toggle mounts the panel via the chatOrders nuqs key, scoped to the session owner', async () => {
+      // Starts from CLOSED so the click under test is the one that OPENS —
+      // since the default flip, a click from the default state would close it.
+      nuqs.chatOrders = false;
       const { rerender } = await renderResolved();
+      expect(screen.queryByTestId('session-chat-orders-rail')).toBeNull();
 
       fireEvent.click(screen.getByTestId('session-chat-orders-toggle'));
       expect(nuqsSetters.chatOrders).toHaveBeenCalledWith(true);

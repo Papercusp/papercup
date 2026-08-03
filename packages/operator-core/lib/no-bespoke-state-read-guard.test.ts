@@ -12,7 +12,13 @@
  *
  * Same posture as `no-raw-setinterval-guard.test.ts` (P-007), for the same reason.
  */
+import { execSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, it, expect } from 'vitest';
+
+/** Repo root — vitest's cwd is `packages/operator-core`, which is NOT it (see below). */
+const REPO_ROOT = new URL('../../../', import.meta.url).pathname;
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore — pure JS guard script, no .d.ts; imported for its predicates only. Kept on ONE line: @ts-ignore suppresses only the line that follows it, so a multi-line import leaves the module specifier unguarded and TS7016 reds the build.
 import { isStateReadCandidate, isMutatingVerb, parseToolDefs, judgeToolDef, BASELINE, MIN_EXEMPTION_REASON, STATE_NOUNS, BASELINE_REVIEW_BY, baselineExpired, VERDICTS, VERDICT_KINDS, verdictGaps, verdictRollup, capabilityEffect, SCAN_DIRS, WRITE_CAPABILITIES as GUARD_WRITE_CAPABILITIES, WRITE_CAPABILITY_SUFFIXES as GUARD_WRITE_CAPABILITY_SUFFIXES } from '../../../scripts/check-no-bespoke-state-read.mjs';
@@ -379,4 +385,92 @@ describe('no-bespoke-state-read guard:EI-18791777695307535 — the fleet:assignm
     expect(isStateReadCandidate({ name: 'locks:acquire_resource', capability: 'locks:write' })).toBe(false);
     expect(isStateReadCandidate({ name: 'locks:release', capability: 'locks:write' })).toBe(false);
   });
+});
+
+/**
+ * EI-19444550724173505 — WHERE THE GUARD LOOKS, which is a separate question from
+ * what it decides, and the one a green run cannot answer.
+ *
+ * Every other test here exercises the PREDICATE. None of them would notice the
+ * guard scanning the wrong half of the repo: a tool in an unscanned root is never
+ * parsed, never judged, and never counted, so the run prints a clean verdict
+ * having never looked at it. "Found nothing" and "looked nowhere" are the same
+ * output. That is not hypothetical — the sibling gate `scout/coord-tier-gate.ts`
+ * shipped a first draft with exactly this defect (two hand-listed roots, a
+ * confident `0 offenders`, blind to all four coordination verbs in `lib/coord-ops`),
+ * and it was caught only by a coverage cross-check like the one below.
+ *
+ * WHY A TEST AND NOT AN IMPORT. The obvious fix — have the guard import the
+ * canonical `TOOL_SOURCE_DIRS` — is unavailable: the guard runs as bare `node`
+ * (package.json `lint:no-bespoke-state-read`) with no TS transform, and nothing in
+ * `scripts/**` imports a `.ts` anywhere in this repo (verified 2026-08-03, zero
+ * precedents). A `.test.ts` importing a `.mjs`, on the other hand, is routine here
+ * (five precedents). So the duplicated list stays, and THIS is what makes it safe.
+ */
+describe('no-bespoke-state-read guard:where it looks (EI-19444550724173505)', () => {
+  it('scans every canonical tool root — a root added to TOOL_SOURCE_DIRS must be added here too', () => {
+    const missing = TOOL_SOURCE_DIRS.filter((d) => !(SCAN_DIRS as string[]).includes(d));
+    expect(
+      missing,
+      'SCAN_DIRS in scripts/check-no-bespoke-state-read.mjs is missing these canonical tool root(s), so a ' +
+        'state-read tool declared in one would never be judged and the gate would still print a clean run. ' +
+        'The guard runs as bare node and cannot import TOOL_SOURCE_DIRS, so add them by hand there.',
+    ).toEqual([]);
+  });
+
+  it('the two lists agree in BOTH directions — a stale root here silently costs scan coverage elsewhere', () => {
+    // Not merely cosmetic: a root in SCAN_DIRS that the catalog has dropped means
+    // one of the two lists is wrong about where tools live, and the guard is the
+    // one that fails silently. Fail loudly instead and let a human pick.
+    const extra = (SCAN_DIRS as string[]).filter((d) => !TOOL_SOURCE_DIRS.includes(d));
+    expect(extra, 'SCAN_DIRS names root(s) the canonical TOOL_SOURCE_DIRS does not — reconcile the two').toEqual(
+      [],
+    );
+  });
+
+  it('no state-read candidate lives OUTSIDE the scanned roots — the property, not just the list', () => {
+    // The list assertions above compare two hand-written arrays; this one asks the
+    // question those arrays exist to answer. Measured 2026-08-03 when the roots were
+    // widened from 2 to 4: 522 additional files came into scope and the candidate
+    // count stayed at 48 — i.e. this closed a LATENT hole, nothing had escaped yet.
+    const scanned = new Set<string>();
+    const outside = new Set<string>();
+    for (const [dirs, sink] of [
+      [SCAN_DIRS as string[], scanned],
+      [TOOL_SOURCE_DIRS.filter((d) => !(SCAN_DIRS as string[]).includes(d)), outside],
+    ] as const) {
+      if (dirs.length === 0) continue;
+      // cwd MUST be the repo root: vitest runs from `packages/operator-core`, and
+      // `git ls-files` resolves pathspecs relative to the CWD — so the repo-root-
+      // relative dirs above match NOTHING from there. That is not a hypothetical:
+      // this test first ran with 0 files scanned and still reported every
+      // assertion green, because "no candidate outside the roots" is trivially
+      // true when you scanned no files at all. The `scanned.size` floor below is
+      // what caught it, which is precisely why a coverage check needs a floor and
+      // not just an emptiness assertion.
+      const files = execSync(`git ls-files ${dirs.join(' ')}`, {
+        cwd: REPO_ROOT,
+        encoding: 'utf8',
+        maxBuffer: 256 * 1024 * 1024,
+      })
+        .split('\n')
+        .filter((f) => /\.ts$/.test(f) && !/\.(test|spec)\./.test(f));
+      for (const f of files) {
+        let text: string;
+        try {
+          text = readFileSync(join(REPO_ROOT, f), 'utf8');
+        } catch {
+          continue;
+        }
+        for (const row of parseToolDefs(text)) if (isStateReadCandidate(row)) sink.add(row.name);
+      }
+    }
+    expect(
+      [...outside],
+      'these state-read tools are declared in a tool root the guard does not scan, so they are invisible to it',
+    ).toEqual([]);
+    // A collapsed scan must not read as "clean" either (the census's own
+    // MIN_PLAUSIBLE reasoning): if this ever returns near-zero, the scan broke.
+    expect(scanned.size).toBeGreaterThanOrEqual(20);
+  }, 30_000);
 });
