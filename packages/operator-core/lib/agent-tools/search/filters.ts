@@ -97,18 +97,17 @@ export async function resolveSearchFilters(
   if (args.owner) owners.add(args.owner === 'self' ? callerOwnerId : args.owner);
 
   if (args.fleet) {
-    // EVER-members from the append-only ledger (D-002). Workspace-scoped with
-    // the 'default' fallback used by host-global rows.
-    const ws = opts?.workspaceId ?? '';
-    const rows = await sql<Array<{ owner_id: string }>>`
-      SELECT DISTINCT owner_id FROM harness_shared.fleet_membership_events
-       WHERE fleet_slug = ${args.fleet}
-         AND (${ws} = '' OR workspace_id = ${ws} OR workspace_id = 'default')
-    `;
-    for (const r of rows) if (r.owner_id) owners.add(r.owner_id);
+    // EVER-members from the append-only ledger (session-search-scope-2026-07-05 D-002).
+    // The query itself lives in fleet-membership-store's `fleetEverMembers` — the module
+    // that owns the ledger — so this surface and every other ever-member consumer
+    // (work_items:burn_down's deltaBy) resolve membership through ONE oracle rather than
+    // each carrying its own copy of the workspace-fallback predicate.
+    const { fleetEverMembers } = await import('../../fleet-membership-store');
+    const members = await fleetEverMembers(args.fleet, { workspaceId: opts?.workspaceId }, sql);
+    for (const id of members) owners.add(id);
     // An unknown fleet resolves to NO owners — surface that as an impossible
     // filter (empty results) rather than silently ignoring the narrowing.
-    if (!rows.length && !args.owner) owners.add('__no_such_fleet__');
+    if (members.size === 0 && !args.owner) owners.add('__no_such_fleet__');
   }
 
   let sessionId = args.session;

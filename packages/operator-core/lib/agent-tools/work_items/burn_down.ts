@@ -396,6 +396,13 @@ export function buildBurnDownResult(
       const closedAtMs = item.closedAt ? Date.parse(item.closedAt) : NaN;
       if (hasSince && Number.isFinite(closedAtMs) && closedAtMs > sinceMs) {
         terminal.delta += 1;
+        // EI-19313376980892266 fix B: attribute the delta as we count it, so the
+        // partition can never disagree with the total it partitions.
+        const cls = classifyTerminalOwner(item.terminalOwner);
+        if (cls === 'unattributed') deltaBy.unattributed += 1;
+        else if (cls === 'system') deltaBy.system += 1;
+        else if (fleetMembers && fleetMembers.has(item.terminalOwner!)) deltaBy.fleet += 1;
+        else deltaBy.otherAgents += 1;
         closedRows.push({ id: item.id, kind: item.kind, title: item.title, state, harness: item.harness, ts: item.closedAt! });
       } else if (hasSince && !item.closedAt) {
         deltaClosedUndated += 1;

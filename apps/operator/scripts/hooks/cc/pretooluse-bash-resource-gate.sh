@@ -2378,9 +2378,61 @@ except Exception:
 # leaks past the closing `)`, and this advisory does no paren-depth tracking
 # to tell a scoped `cd` from a real one — exactly the "Correct forms" fix the
 # advisory text below recommends (`( cd apps/operator && npx vitest … )`).
+#
+# Also inert when the whole command already anchors a restore variable
+# absolutely (`F=$(git rev-parse --show-toplevel)/…`, `F=$PWD/…`, …) — the
+# OTHER "Correct forms" fix. This is a coarse, whole-command check (it does
+# not trace which variable the anchor feeds), but a command that already
+# demonstrates this idiom anywhere has shown awareness of the exact hazard
+# this advisory exists to name, so nagging it further is pure noise.
+_ABS_ANCHOR_ASSIGN_RE = re.compile(
+    r'=\s*"?\$\(\s*(?:git\s+rev-parse\s+--show-toplevel|pwd)\s*\)'
+    r'|=\s*"?\$\{?(?:PWD|OLDPWD)\}?"?(?:$|[\s/])'
+)
+
+
+def _quote_preserve_tokens(s):
+    """Like `_strip_shell_quotes`, but a quoted span becomes a single
+    placeholder TOKEN (`\x00Q\x00`) instead of a blank. `_strip_shell_quotes`
+    is right for operator-boundary scanning (a quoted `;`/`&`/`|` must not
+    read as a real separator) but WRONG for a POSITIONAL-ARGUMENT COUNT (`cp
+    SRC DEST`): collapsing a quoted arg (`"$F"`) to a blank makes it vanish
+    from `.split()` entirely, silently undercounting `cp`/`mv`'s destination
+    — exactly the common shape of the restore idiom this advisory targets.
+    A placeholder token keeps the count right while staying just as inert
+    against operator/keyword injection from inside the quotes."""
+    out, i, n = [], 0, len(s)
+    while i < n:
+        c = s[i]
+        if c == "'":
+            j = s.find("'", i + 1)
+            if j == -1:
+                break
+            out.append(' \x00Q\x00 ')
+            i = j + 1
+        elif c == '"':
+            j = i + 1
+            while j < n:
+                if s[j] == '\\':
+                    j += 2
+                    continue
+                if s[j] == '"':
+                    break
+                j += 1
+            if j >= n:
+                break
+            out.append(' \x00Q\x00 ')
+            i = j + 1
+        else:
+            out.append(c)
+            i += 1
+    return ''.join(out)
+
+
 try:
-    if not ADVISORY and '(' not in command and ')' not in command:
-        _cdtrap_clean = _strip_shell_quotes(_strip_heredoc_bodies(command))
+    if (not ADVISORY and '(' not in command and ')' not in command
+            and not _ABS_ANCHOR_ASSIGN_RE.search(command)):
+        _cdtrap_clean = _quote_preserve_tokens(_strip_heredoc_bodies(command))
         _cd_m = _CD_RE.search(_cdtrap_clean)
         if _cd_m:
             _has_exit_trap = bool(
@@ -2393,9 +2445,17 @@ try:
                     continue
                 _toks = [t for t in _strip_redirect_tokens(_m.group(2).split())
                          if not t.startswith('-')]
-                if len(_toks) >= 2:
-                    _cprestore_after_cd = _m.group(1)
-                    break
+                if len(_toks) < 2:
+                    continue
+                # Already cwd-independent (absolute, `~`, or a `$(...)`/$PWD/
+                # $OLDPWD-anchored computation) written INLINE at the call
+                # site — the whole-command anchor check above already caught
+                # the assign-then-reference form; this catches the same fix
+                # spelled directly in the cp/mv argument.
+                if re.match(r'^(?:/|~|\$\(|\$\{?(?:PWD|OLDPWD)\}?)', _toks[-1]):
+                    continue
+                _cprestore_after_cd = _m.group(1)
+                break
             if _has_exit_trap or _cprestore_after_cd:
                 _why = ('an EXIT trap' if _has_exit_trap
                         else ('a `%s` after the cd' % _cprestore_after_cd))

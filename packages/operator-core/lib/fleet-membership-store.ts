@@ -90,6 +90,48 @@ export async function appendFleetMembershipIfAbsent(
 }
 
 /**
+ * Every owner who was EVER a member of `fleetSlug` — the durable, postmortem-safe
+ * answer to "whose work counts as this fleet's", including members that have since
+ * died or been presence-reaped.
+ *
+ * This is the ONE read behind every ever-member question; it exists so the rule below
+ * is stated once rather than re-derived per caller (EI-19313376980892266's own "one
+ * oracle" principle applied to the oracle this module owns).
+ *
+ * ⚠ NEVER answer this from `coord_presence.fleet_slug`. That column is a projection of
+ * the LATEST fact and is cleared when an agent ends, so a live-presence read silently
+ * drops exactly the dead members a window-scoped question is asking about. This is a
+ * ratified convention, not a preference — `session-search-scope-2026-07-05` **D-002**
+ * (see `agent-tools/search/filters.ts`, which resolves `fleet:<slug>` this same way).
+ *
+ * Measured cost of getting it wrong, 2026-08-03 on fleet `nonp2p-bug-drain-0801`:
+ * 22 ever-members vs 11 live, and 708 closes in the trailing 24h vs 318 attributable
+ * from presence alone — a live-presence basis would have UNDER-reported that fleet's
+ * own output by 55%.
+ *
+ * An unknown fleet resolves to an EMPTY set. Callers must treat empty as "no members
+ * known", never as "this fleet did nothing" — the two are indistinguishable here and
+ * only the caller knows which it can safely assume.
+ */
+export async function fleetEverMembers(
+  fleetSlug: string,
+  opts: { workspaceId?: string } = {},
+  sql?: Sql,
+): Promise<Set<string>> {
+  const s = pg(sql);
+  const ws = opts.workspaceId ?? '';
+  const rows = await s<Array<{ owner_id: string }>>`
+    SELECT DISTINCT owner_id
+      FROM harness_shared.fleet_membership_events
+     WHERE fleet_slug = ${fleetSlug}
+       AND (${ws} = '' OR workspace_id = ${ws} OR workspace_id = 'default')
+  `;
+  const out = new Set<string>();
+  for (const r of rows) if (r.owner_id) out.add(r.owner_id);
+  return out;
+}
+
+/**
  * The canonical CURRENT membership for an owner: the latest fact (MAX id). Returns null
  * when the owner has no membership fact at all; a returned `{ fleetSlug: null }` means the
  * owner's latest fact was a leave (explicitly in no fleet). This is the same projection the

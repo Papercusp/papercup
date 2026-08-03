@@ -198,6 +198,9 @@ describe('listFleetRosterDiagnosed (WI-3818 bounded fan-out)', () => {
     // escalation-worthy claim ("nothing will ever wake this agent"), so a
     // degraded leg has to yield `null` (UNKNOWN) instead.
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    // Pin `now` next to the fixture's heartbeat, otherwise the PRESENCE_DEAD_MS
+    // ceiling force-ends su-1 and the verdict under test never reaches `parked`.
+    vi.setSystemTime(new Date('2026-07-10T10:00:10Z'));
     fetchPresenceTier1Mock.mockResolvedValue(new Map<string, PresenceTier1Joins>());
     fetchWakeabilityMock.mockResolvedValue(
       new Map<string, WakeabilitySignals>([['su-1', { wakeable: true, liveTurn: false }]]),
@@ -221,6 +224,7 @@ describe('listFleetRosterDiagnosed (WI-3818 bounded fan-out)', () => {
   });
 
   it('carries selfWake through to the entry when the leg answers', async () => {
+    vi.setSystemTime(new Date('2026-07-10T10:00:10Z')); // see the note above
     fetchPresenceTier1Mock.mockResolvedValue(new Map<string, PresenceTier1Joins>());
     fetchWakeabilityMock.mockResolvedValue(
       new Map<string, WakeabilitySignals>([['su-1', { wakeable: true, liveTurn: false }]]),

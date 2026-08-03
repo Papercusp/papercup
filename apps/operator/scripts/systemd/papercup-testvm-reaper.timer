@@ -2,16 +2,22 @@
 Description=Run the Papercusp stale-testvm reaper every 15 minutes (EI-18792610532592319)
 
 [Timer]
-# 15 min: frequent enough that a leaked VM never runs unnoticed for more than
-# ~6h15m total (the reaper's own 6h default age threshold + one tick), rare
-# enough to be a negligible fixed cost (one /proc walk + at most a handful of
-# `vmctl down` calls, most ticks finding nothing to do).
-OnBootSec=5min
-OnUnitActiveSec=15min
+# OnCalendar, NOT OnBootSec/OnUnitActiveSec (memory 26f538f6, EI-10733/EI-11989):
+# monotonic triggers measure from the service's last transition, which is NOT
+# persisted across a `systemctl --user` manager restart — the trigger silently
+# goes dark (no fire, no error) until the NEXT manager restart re-arms it. That
+# exact mechanism caused two real backup-timer outages on this box (~20h dark).
+# OnCalendar fires on wall-clock boundaries regardless of manager restarts, and
+# Persistent=true catches up a run the box slept through — the durable pattern,
+# mirroring papercup-live-federation-gate.timer's own OnCalendar use.
+#
+# Every 15 min: frequent enough that a leaked VM never runs unnoticed for more
+# than ~6h15m total (the reaper's own 6h default age threshold + one tick),
+# rare enough to be a negligible fixed cost (one /proc walk + at most a
+# handful of `vmctl down` calls, most ticks finding nothing to do).
+OnCalendar=*-*-* *:00/15:00
+Persistent=true
 AccuracySec=1min
-# No catch-up on missed runs — a fresh sweep is what matters, not auditing how
-# many ticks were missed while the box was asleep.
-Persistent=false
 Unit=papercup-testvm-reaper.service
 
 [Install]

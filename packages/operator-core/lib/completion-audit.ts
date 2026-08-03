@@ -207,6 +207,44 @@ export const KNOWN_SYSTEM_COMPLETION_BYPASS_IDENTITIES: readonly string[] = [
 export const RECONCILER_SYSTEM_ACTOR = 'system:plan-item-reconcile' as const;
 
 /**
+ * Which KIND of actor a `terminal_owner` names. Used to attribute a burn-down delta
+ * (work_items:burn_down `deltaBy`) so a harness-wide close count is never read as one
+ * fleet's output — the misread that reported ~30 closes/hour to an owner when the
+ * fleet's real figure was ~6.6 (EI-19313376980892266).
+ *
+ * `system` is deliberately decided STRUCTURALLY (prefix) as well as by the known
+ * identity constants, because the automation identities are declared in four different
+ * modules and one of them — `watchdog-green-resolve` — is a bare string literal with no
+ * constant at all (`harness/improvements/auto-close.ts`). A membership-only test would
+ * therefore misfile it as an agent: measured 2026-08-03, that single identity closed 42
+ * items in 30 days, all of which a prefix-blind classifier would have credited to agents.
+ *
+ * The classification is TOTAL and the buckets are MUTUALLY EXCLUSIVE — unlike the claim
+ * `excluded` buckets, which overlap by construction. That makes the resulting counts a
+ * true partition, which `deltaBy` asserts.
+ */
+export type TerminalOwnerClass = 'system' | 'agent' | 'unattributed';
+
+/** Automation identity prefixes. `system:` is the routine/action convention; `watchdog-`
+ *  is the improvements-watchdog convention (auto-close, green-resolve, orphan-superseded). */
+const SYSTEM_OWNER_PREFIXES = ['system:', 'watchdog-'] as const;
+
+/**
+ * Classify a `terminal_owner` value. A null/blank owner is `unattributed` — NOT
+ * `system`: "nobody recorded who closed this" and "automation closed this" are
+ * different facts, and collapsing them would hide the mass-unattributed-close
+ * signature that EI-18820653360383242 exists to keep visible.
+ */
+export function classifyTerminalOwner(owner: string | null | undefined): TerminalOwnerClass {
+  const id = owner?.trim();
+  if (!id) return 'unattributed';
+  if (SYSTEM_OWNER_PREFIXES.some((p) => id.startsWith(p))) return 'system';
+  if (id === RECONCILER_SYSTEM_ACTOR) return 'system';
+  if (KNOWN_SYSTEM_COMPLETION_BYPASS_IDENTITIES.includes(id)) return 'system';
+  return 'agent';
+}
+
+/**
  * WI-5891 — layout/geometry-bearing file extensions for the `geometry-unverified`
  * audit bucket. A `.css` file is unambiguously layout-bearing; `.tsx`/`.jsx` are
  * included too because `filesChanged` carries only PATHS (no diff content to check
