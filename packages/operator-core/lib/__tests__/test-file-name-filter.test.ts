@@ -11,9 +11,15 @@ vi.mock('node:child_process', async (importOriginal) => {
 });
 import { spawnSync } from 'node:child_process';
 
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
 import {
   nameFilterFrom,
   testsExecutedFrom,
+  testsExecutedFromReport,
+  outputFilePathFrom,
   main,
   // The .mjs CLI has no declaration file; the diagnostic lands on the `from`
   // line of this multi-line import, so the suppression directive must be the
@@ -113,6 +119,97 @@ describe('testsExecutedFrom — how many tests actually EXECUTED (skipped is not
   });
 });
 
+/**
+ * Captured 2026-08-03 by running the real router against
+ * packages/operator-core/lib/__tests__/test-file-name-filter.test.ts with
+ * `--reporter=json --outputFile=…` and reading the emitted report. Only the fields the
+ * detector reads are kept; the counts are the measured ones.
+ */
+const REAL_REPORTS = {
+  // -t 'zzz-definitely-no-such-test' — THE BUG under a machine reporter: 19 collected, 19
+  // pending, 0 executed, and vitest still reports success:true.
+  allSkipped: { numTotalTests: 19, numPassedTests: 0, numFailedTests: 0, numPendingTests: 19, numTodoTests: 0, success: true },
+  // -t 'name filter' — a filter that really matched.
+  partial: { numTotalTests: 19, numPassedTests: 7, numFailedTests: 0, numPendingTests: 12, numTodoTests: 0, success: true },
+  withFailures: { numTotalTests: 14, numPassedTests: 12, numFailedTests: 2, numPendingTests: 0, numTodoTests: 0, success: false },
+};
+
+describe('outputFilePathFrom — locating the JSON report the router already asked for', () => {
+  it('returns null when no --outputFile is present', () => {
+    expect(outputFilePathFrom([])).toBeNull();
+    expect(outputFilePathFrom(['--reporter=json', '-t', 'x'])).toBeNull();
+  });
+
+  it('reads both the =-joined and space-separated forms', () => {
+    expect(outputFilePathFrom(['--outputFile=/tmp/r.json'])).toBe('/tmp/r.json');
+    expect(outputFilePathFrom(['--outputFile', '/tmp/r.json'])).toBe('/tmp/r.json');
+  });
+
+  it('takes the LAST occurrence, as vitest itself does', () => {
+    expect(outputFilePathFrom(['--outputFile=/tmp/a.json', '--outputFile', '/tmp/b.json'])).toBe('/tmp/b.json');
+  });
+
+  it('treats a trailing flag with no value, or an empty value, as absent', () => {
+    expect(outputFilePathFrom(['--outputFile'])).toBeNull();
+    expect(outputFilePathFrom(['--outputFile='])).toBeNull();
+  });
+
+  // PINNED DELIBERATELY, and the narrowness is the correctness property — not a gap to widen
+  // later. `perGroupVitestArgs` rewrites only the two bare forms, so a form it does not rewrite
+  // points EVERY group at one shared file; each group would then read whichever group wrote
+  // last and report another group's count as its own. If this is ever widened,
+  // perGroupVitestArgs must be widened in the same commit.
+  it('does NOT recognise the per-reporter --outputFile.json form that perGroupVitestArgs cannot rewrite', () => {
+    expect(outputFilePathFrom(['--outputFile.json=/tmp/r.json'])).toBeNull();
+  });
+});
+
+describe('testsExecutedFromReport — exact counts from the machine reporter (EI-19451028801041450)', () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'tf-report-'));
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  const write = (name: string, body: unknown) => {
+    const p = join(dir, name);
+    writeFileSync(p, typeof body === 'string' ? body : JSON.stringify(body));
+    return p;
+  };
+
+  // The whole point: a zero-match run under --reporter=json, where stdout carries no summary
+  // row at all and the old detector therefore failed open on every call.
+  it('reads ZERO executed from the all-skipped report that caused this bug', () => {
+    expect(testsExecutedFromReport(write('r.json', REAL_REPORTS.allSkipped))).toBe(0);
+  });
+
+  it('counts only the tests that actually ran when a filter matches some', () => {
+    expect(testsExecutedFromReport(write('r.json', REAL_REPORTS.partial))).toBe(7);
+  });
+
+  it('counts failures as executed', () => {
+    expect(testsExecutedFromReport(write('r.json', REAL_REPORTS.withFailures))).toBe(14);
+  });
+
+  it('resolves a relative path against the group cwd', () => {
+    write('rel.json', REAL_REPORTS.partial);
+    expect(testsExecutedFromReport('rel.json', dir)).toBe(7);
+  });
+
+  // Fail OPEN on anything unreadable. `null` means UNVERIFIED; fabricating a 0 here would
+  // invent reds for legitimate runs — the opposite, equally expensive mistake.
+  it('returns null — never zero — for anything it cannot read', () => {
+    expect(testsExecutedFromReport(null)).toBeNull();
+    expect(testsExecutedFromReport(join(dir, 'does-not-exist.json'))).toBeNull();
+    expect(testsExecutedFromReport(write('bad.json', 'not json at all'))).toBeNull();
+    expect(testsExecutedFromReport(write('empty.json', {}))).toBeNull();
+    // A report carrying the sibling fields but not the two we count.
+    expect(testsExecutedFromReport(write('partialShape.json', { numTotalTests: 9, success: true }))).toBeNull();
+  });
+});
+
 describe('main() — a name filter that matches ZERO tests must not report a verdict (EI-19425177453558152)', () => {
   // WHY THIS IS PINNED. `test-files.mjs` already hard-fails a zero-or-partial FILE match before
   // executing, and CLAUDE.md advertises exactly that — which is precisely what teaches callers to
@@ -194,5 +291,73 @@ describe('main() — a name filter that matches ZERO tests must not report a ver
     stubVitest('{"testResults":[]}\n');
     expect(main([FILE, '--', '-t', 'anything', '--reporter=json'])).toBe(0);
     expect(linesFrom(errSpy)).toContain('TEST_FILE_NAME_FILTER_UNVERIFIED');
+  });
+
+  /**
+   * EI-19451028801041450 — the guard above was INERT for the primary consumer.
+   *
+   * `testing:run` (the surface CLAUDE.md tells every agent to prefer over `npm run test:file`)
+   * always passes `--reporter=json --outputFile=…`. Under a machine reporter vitest prints no
+   * `Tests` summary row at all, so the stdout detector returned "unreadable" and the check
+   * failed OPEN on every single call — verified end-to-end from the CLI, and never once firing
+   * through the surface that mattered.
+   *
+   * These drive main() with EMPTY stdout — exactly what a JSON reporter leaves behind — so they
+   * can only pass by reading the report. Note the pairing: same empty stdout, opposite verdicts,
+   * decided solely by the report's contents. Without the green half, a blanket refusal would
+   * satisfy the red half.
+   */
+  describe('under a machine reporter, where stdout carries no summary row at all', () => {
+    let dir: string;
+    beforeEach(() => {
+      dir = mkdtempSync(join(tmpdir(), 'tf-main-report-'));
+    });
+    afterEach(() => {
+      rmSync(dir, { recursive: true, force: true });
+    });
+
+    const withReport = (body: unknown) => {
+      const p = join(dir, 'report.json');
+      writeFileSync(p, JSON.stringify(body));
+      return p;
+    };
+
+    it('fails a zero-match run that the stdout-only detector let through as passed', () => {
+      const report = withReport(REAL_REPORTS.allSkipped);
+      stubVitest('');
+      expect(main([FILE, '--', '-t', 'zzz-no-such-test-name', '--reporter=json', `--outputFile=${report}`])).not.toBe(0);
+      const err = linesFrom(errSpy);
+      expect(err).toContain('TEST_FILE_NAME_FILTER_NO_MATCH');
+      expect(err).toContain('testsExecuted=0');
+      // The UNVERIFIED branch is what the old code took here; it must be gone, not merely joined.
+      expect(err).not.toContain('TEST_FILE_NAME_FILTER_UNVERIFIED');
+      expect(linesFrom(logSpy)).not.toContain('TEST_FILE_RESULT');
+    });
+
+    it('stays green when the report shows the filter really did match tests', () => {
+      const report = withReport(REAL_REPORTS.partial);
+      stubVitest('');
+      expect(main([FILE, '--', '-t', 'rejects', '--reporter=json', `--outputFile=${report}`])).toBe(0);
+      expect(linesFrom(logSpy)).toMatch(/TEST_FILE_RESULT .*status=passed/);
+      expect(linesFrom(errSpy)).not.toContain('TEST_FILE_NAME_FILTER');
+    });
+
+    // The report is PREFERRED, not merely consulted: when the two sources disagree the exact
+    // one must win. Here stdout claims a full green run while the report records zero executed.
+    it('prefers the report over a stdout summary row that disagrees with it', () => {
+      const report = withReport(REAL_REPORTS.allSkipped);
+      stubVitest(REAL_ROWS.allPassed);
+      expect(main([FILE, '--', '-t', 'zzz-no-such-test-name', '--reporter=json', `--outputFile=${report}`])).not.toBe(0);
+      expect(linesFrom(errSpy)).toContain('testsExecuted=0');
+    });
+
+    // Fail OPEN, still. A named report that never appeared (a crashed run, a bad path) must
+    // fall back to the stdout parse rather than fabricate a zero.
+    it('falls back to stdout when the named report does not exist', () => {
+      stubVitest(REAL_ROWS.partial);
+      const missing = join(dir, 'never-written.json');
+      expect(main([FILE, '--', '-t', 'rejects', '--reporter=json', `--outputFile=${missing}`])).toBe(0);
+      expect(linesFrom(logSpy)).toMatch(/TEST_FILE_RESULT .*status=passed/);
+    });
   });
 });

@@ -408,6 +408,83 @@ export function testsExecutedFrom(output) {
   return null;
 }
 
+/**
+ * EI-19451028801041450 — the machine-reporter half of the guard above.
+ *
+ * `testsExecutedFrom` parses vitest's HUMAN summary row, so it is inert for any caller that
+ * passes `--reporter=json`: there is no `Tests` row on stdout at all, the parse returns
+ * "unreadable", and the check fails OPEN on every single call, forever. That is not a
+ * hypothetical caller — `testing:run` (the surface CLAUDE.md's routing table tells every agent
+ * to prefer over `npm run test:file`) ALWAYS passes `--reporter=json --outputFile=…`.
+ *
+ * THE GENERALIZABLE SHAPE, worth more than this fix: an output-sniffing guard silently scopes
+ * itself to whichever output format its author happened to test with. It does not fail loudly
+ * when a caller changes reporters — it just quietly stops being a guard, while still reporting
+ * itself as working and still passing its own CLI-level verification.
+ *
+ * The router already KNOWS the report path (`--outputFile` is in vitestArgs and it already
+ * rewrites it per group), so read the report and count EXACTLY instead of sniffing stdout.
+ *
+ * ⚠ The two readers MUST agree on what "executed" means, which is why they live adjacent:
+ * executed = passed + failed. A skipped/pending/todo test was COLLECTED, not run — counting it
+ * would defeat the whole guard, since a zero-match `-t` is precisely the case where vitest
+ * collects every test and skips every one (measured: numTotalTests 19, numPendingTests 19,
+ * numPassedTests 0).
+ *
+ * Returns `null` — never 0 — for anything unreadable (no path, missing file, malformed JSON, a
+ * report without the count fields). `null` means UNVERIFIED and preserves the existing
+ * three-state contract in aggregateGroupResults; fabricating a 0 here would invent reds.
+ *
+ * @param {string | null} reportPath value of `--outputFile`, if any
+ * @param {string} [cwd] the group's cwd — vitest resolves a relative --outputFile against it
+ * @returns {number | null} tests executed, or null if the report could not be read
+ */
+export function testsExecutedFromReport(reportPath, cwd) {
+  if (!reportPath) return null;
+  const resolved = isAbsolute(reportPath) ? reportPath : resolve(cwd ?? process.cwd(), reportPath);
+  let report;
+  try {
+    report = JSON.parse(readFileSync(resolved, 'utf8'));
+  } catch {
+    return null; // diagnostic only — an unreadable report must never fail a real run
+  }
+  if (!report || typeof report !== 'object') return null;
+  const { numPassedTests: passed, numFailedTests: failed } = report;
+  if (typeof passed !== 'number' || typeof failed !== 'number') return null;
+  return passed + failed;
+}
+
+/**
+ * The `--outputFile` path in play for a group, or null.
+ *
+ * ⚠ Deliberately recognises ONLY the two bare forms `perGroupVitestArgs` rewrites
+ * (`--outputFile=<p>` and `--outputFile <p>`) — NOT vitest's per-reporter
+ * `--outputFile.json=<p>`. Widening this without also widening `perGroupVitestArgs` would be a
+ * correctness bug, not extra coverage: a form that is not rewritten per group points every
+ * group at ONE shared file, so each group would read whichever group wrote last and report
+ * another group's count as its own. Keep the two functions recognising the same set.
+ *
+ * Last occurrence wins, matching how vitest itself treats a repeated flag.
+ *
+ * @param {string[]} vitestArgs args forwarded after the `--` separator
+ * @returns {string | null}
+ */
+export function outputFilePathFrom(vitestArgs) {
+  const args = vitestArgs ?? [];
+  let found = null;
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
+    if (arg.startsWith('--outputFile=')) {
+      found = arg.slice('--outputFile='.length);
+    } else if (arg === '--outputFile' && i + 1 < args.length) {
+      found = args[i + 1];
+      i += 1;
+    }
+  }
+  const trimmed = typeof found === 'string' ? found.trim() : '';
+  return trimmed === '' ? null : trimmed;
+}
+
 export function aggregateGroupResults(groupResults) {
   const requested = groupResults.reduce((sum, g) => sum + g.requested, 0);
   const matched = groupResults.reduce((sum, g) => sum + g.matched, 0);
@@ -601,7 +678,17 @@ export function main(argv = process.argv.slice(2)) {
       // EI-19425177453558152: `executed` counts FILES. Under a name filter that is not enough to
       // know anything ran, so measure TESTS too — `undefined` when no filter is in play keeps the
       // three states (n/a · unreadable · measured) distinct in aggregateGroupResults.
-      testsExecuted: nameFilter ? testsExecutedFrom(`${result.stdout ?? ''}\n${result.stderr ?? ''}`) : undefined,
+      //
+      // EI-19451028801041450: prefer the JSON report's exact counts, and fall back to the stdout
+      // summary row only when there is no report. Reading stdout FIRST would be inert for every
+      // caller that passes `--reporter=json` (which `testing:run` always does) — under a machine
+      // reporter no `Tests` row is printed at all, so the guard would fail open every time.
+      // `??` and not `||`: a measured 0 is the whole point of this check and must NOT be
+      // retried as if it were unreadable.
+      testsExecuted: nameFilter
+        ? testsExecutedFromReport(outputFilePathFrom(groupVitestArgs), group.cwd) ??
+          testsExecutedFrom(`${result.stdout ?? ''}\n${result.stderr ?? ''}`)
+        : undefined,
       unmatchedCount: 0,
       failed: groupFailed,
       launchError: false,

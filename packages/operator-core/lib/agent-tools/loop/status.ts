@@ -15,12 +15,14 @@ import {
   probeWakeReachability,
   type WakeReachabilityVerdict,
 } from '../../events/await/wake-reachability';
+import { listWakeAwaitsForSubscriber } from '../../events/await/store';
+import type { LivePushChannels } from './arm';
 
 export default defineTool({
   name: 'loop:status',
   profile: 'engineer',
   description:
-    "Inspect the loop on your own session (or another owner's, with `ownerId`): active?, interval, parked (turn in flight), next/last fire, cost-cap. Also returns `turnsStalled` (EI-18712914572668391) — true when fires keep landing (fireCount climbing) but `lastTurnAt` (the most recent real turn-completion marker) isn't keeping pace, e.g. a wedged wake channel; `stalled` alone only catches a PARKED in-flight turn stuck past its dwell window, not this armed-but-not-producing case. Returns null when no loop exists for the owner — but a `null` alongside a `storeIdentityViolation` block (EI-19384072467112035) means this process was reading from the WRONG database when it looked: treat the null as UNKNOWN, not as \"no loop\", and do not re-arm on the strength of it alone.",
+    "Inspect the loop on your own session (or another owner's, with `ownerId`): active?, interval, parked (turn in flight), next/last fire, cost-cap. Also returns `turnsStalled` (EI-18712914572668391) — true when fires keep landing (fireCount climbing) but `lastTurnAt` (the most recent real turn-completion marker) isn't keeping pace, e.g. a wedged wake channel; `stalled` alone only catches a PARKED in-flight turn stuck past its dwell window, not this armed-but-not-producing case. Returns null when no loop exists for the owner — but a `null` alongside a `storeIdentityViolation` block (EI-19384072467112035) means this process was reading from the WRONG database when it looked: treat the null as UNKNOWN, not as \"no loop\", and do not re-arm on the strength of it alone. Also returns `pendingAwaits` (EI-19415169477907694) — your OWN live non-inbox-wake events:await registrations right now, so \"am I actually parked?\" is answerable after a call whose response you never trust (a dropped MCP transport, a backgrounded/failed events:await): `status:'found'` with a sample of keys means a registration IS live; `status:'none'` means NOTHING is registered, which is the loud signal that a believed-successful await never actually landed; `status:'unknown'` means the lookup itself failed (never read as 'none').",
   guidance: {
     when: 'Check whether your loop is still armed + when it next fires, or inspect another agent\'s loop.',
     notWhen: 'See the WORK a loop is producing — that is fleet:assignments (the self-assigned work_items). Whole-engine health — autoloop:status.',
@@ -62,6 +64,25 @@ export default defineTool({
           ...(reachability.warning ? { warning: reachability.warning } : {}),
         }
       : null;
+
+    // EI-19415169477907694: "am I actually parked?" — the caller's own live, non-inbox-wake
+    // events:await registrations. Answers the exact filed failure: a dropped MCP transport
+    // (or any await call whose response the caller cannot trust) can leave an agent believing
+    // it registered a park when nothing was ever written. Run unconditionally (not gated on
+    // loop.active) — an agent that never armed a loop and instead parked on a bare events:await
+    // deserves this answer too. Best-effort + fail-soft, same discipline as reachability above
+    // and as loop:arm's own use of this exact read (EI-19447204017443244): a lookup failure
+    // must read as 'unknown', never collapse into 'none' (that would fabricate a measurement).
+    let pendingAwaits: LivePushChannels = { status: 'unknown' };
+    try {
+      const awaits = await listWakeAwaitsForSubscriber(ownerId);
+      pendingAwaits =
+        awaits.length > 0
+          ? { status: 'found', count: awaits.length, sample: awaits.slice(0, 5).map((a) => a.eventKey) }
+          : { status: 'none' };
+    } catch {
+      /* best-effort — a lookup failure must read as 'unknown', never 'none' */
+    }
 
     // EI-19384072467112035: a `loop: null` here is the documented "no loop exists" signal,
     // and an agent reading it correctly re-arms. But `getLoopStatus` reads through
@@ -105,6 +126,7 @@ export default defineTool({
             ownerId,
             loop: status,
             reachability: reachabilityOut,
+            pendingAwaits,
             ...(storeIdentityWarning ? { storeIdentityWarning } : {}),
           }),
         },

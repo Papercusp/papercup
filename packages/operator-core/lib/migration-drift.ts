@@ -385,11 +385,21 @@ export function classifyContentDrift(
   });
 }
 
+/** EI-19415309774723126: `000-baseline.sql` is FROZEN/GENERATED — regenerated
+ *  wholesale by `pull-schema.mjs` from the live schema, so its on-disk bytes
+ *  routinely diverge from whatever was recorded at apply time BY DESIGN. It is
+ *  a known false-positive class for content-drift specifically (still a
+ *  perfectly normal runner migration for `missing`/`extra`/`schemaAhead`
+ *  purposes — only excluded from the byte-level drift comparison). */
+const CONTENT_DRIFT_EXCLUDED_FILES = new Set(['000-baseline.sql']);
+
 /**
  * Pure core of the content-drift detection — exported for tests.
  *
  * Skips, deliberately and each for a different reason:
  *  - non-runner files (templates / manual-only) — never applied by the runner;
+ *  - `000-baseline.sql` — frozen/generated, diverges by design (see
+ *    {@link CONTENT_DRIFT_EXCLUDED_FILES});
  *  - rows with no recorded sha256 — legacy rows predating the column; absence
  *    of evidence is not drift, so they are unjudgeable, not clean;
  *  - files absent from disk — that is exactly what `extra` reports; double
@@ -402,6 +412,7 @@ export function computeContentDrift(
   const drifted: MigrationContentDrift[] = [];
   for (const row of appliedRows) {
     if (!isRunnerMigration(row.filename)) continue;
+    if (CONTENT_DRIFT_EXCLUDED_FILES.has(row.filename)) continue;
     const recorded = row.sha256?.trim();
     if (!recorded) continue;
     const disk = diskSha.get(row.filename);

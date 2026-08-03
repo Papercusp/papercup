@@ -32,6 +32,7 @@ import {
 } from './recall-stats';
 import type { MemoryPrecisionSnapshot } from './bench/precision-read';
 import { DOCS_CONTENT_ROOT } from '../agent-tools/docs/_repo-paths';
+import { TtlMap } from '../ttl-map';
 
 /** Canonical agent-insights MDX directory (the same tree docs:* serves). */
 export const INSIGHTS_DIR = path.join(DOCS_CONTENT_ROOT, 'agent-insights');
@@ -128,6 +129,86 @@ export interface MemoryHealth extends RecallHealth {
  * The recall aggregate degrades to zeros independently (e.g. migration
  * 240 not applied yet) so the store counts never vanish with it.
  */
+/** The three store counts — the only part of memory-health that is workspace-INVARIANT. */
+interface StoreCounts {
+  totalMemories: number;
+  entityRows: number;
+  feedback30d: number;
+}
+
+/**
+ * TTL >= the system-health tick interval (30s, `dbos/in-process-periodic.ts`), so
+ * consecutive ticks HIT rather than straddling an expiry. 60s of staleness on a
+ * "how many memories exist" panel number is not observable.
+ */
+export const STORE_COUNTS_TTL_MS = 60_000;
+
+/**
+ * WI-9137. These counts cost 12.97 HOURS of cumulative DB time over 24.5 days
+ * (1,292,711 calls, 8.7B buffer hits, rank #26 by exec time / #19 by buffers),
+ * because the health tick recomputes them every 30s PER WORKSPACE in EVERY
+ * operator-shaped process — measured live at 0.68 calls/s.
+ *
+ * ⚠ The per-call cost is IRREDUCIBLE at the SQL level; do not "optimise the query"
+ * here, it has been tried. All three obvious fixes were measured and refuted:
+ *   1. expression index on `(payload ? 'entityType')` — planner does not use it
+ *      (cost 2552.51 -> 2553.55, still two Seq Scans);
+ *   2. partial index `(id) WHERE payload ? 'entityType'` — not used either, and
+ *      the planner is RIGHT: the predicate matches 29,715/33,820 rows (88%), so a
+ *      full scan genuinely is cheaper than an index scan over 88% of the table;
+ *   3. a single-scan `count(*) FILTER (...)` rewrite — fewer buffers (7,435 vs
+ *      9,537) but SLOWER (61.8ms vs 57.7ms), because FILTER must materialise the
+ *      wide jsonb payload (width=277) where the separate counts scan at width=0.
+ * There is also no I/O to remove (shared_blks_read = 0 — already fully cached).
+ * So the only lever is the CALL RATE, which is what this cache addresses.
+ *
+ * Keyed GLOBALLY, not per workspace: the SQL carries no workspace_id predicate,
+ * so every workspace was independently recomputing the identical global number.
+ * That redundancy is the actual defect — this removes it rather than hiding it.
+ *
+ * Caches the PROMISE, so concurrent ticks single-flight onto one query instead of
+ * each missing the cache and issuing its own. A rejection is evicted immediately,
+ * never cached: the counts leg deliberately has no `.catch` (see readMemoryHealth)
+ * and must keep failing loudly.
+ */
+const storeCountsCache = new TtlMap<Promise<StoreCounts>>({
+  ttlMs: STORE_COUNTS_TTL_MS,
+  maxEntries: 1,
+});
+const STORE_COUNTS_KEY = 'global';
+
+/** Test seam — drop the memo so a test observes a real query. */
+export function __resetStoreCountsCache(): void {
+  storeCountsCache.clear();
+}
+
+function readStoreCounts(sql: Sql): Promise<StoreCounts> {
+  const hit = storeCountsCache.get(STORE_COUNTS_KEY);
+  if (hit) return hit;
+  const pending = (async (): Promise<StoreCounts> => {
+    const rows = (await sql`
+    SELECT
+      (SELECT count(*)::int FROM harness_shared.memory_canonical
+        WHERE NOT (payload ? 'entityType'))                       AS total_memories,
+      (SELECT count(*)::int FROM harness_shared.memory_canonical
+        WHERE payload ? 'entityType')                             AS entity_rows,
+      (SELECT count(*)::int FROM harness_shared.memory_feedback
+        WHERE created_at >= now() - interval '30 days')           AS feedback_30d
+  `) as unknown as Array<Record<string, unknown>>;
+    const r = rows[0] ?? {};
+    return {
+      totalMemories: Number(r.total_memories ?? 0),
+      entityRows: Number(r.entity_rows ?? 0),
+      feedback30d: Number(r.feedback_30d ?? 0),
+    };
+  })().catch((err: unknown) => {
+    storeCountsCache.delete(STORE_COUNTS_KEY);
+    throw err;
+  });
+  storeCountsCache.set(STORE_COUNTS_KEY, pending);
+  return pending;
+}
+
 export async function readMemoryHealth(sql: Sql): Promise<MemoryHealth> {
   // WI-7369: these FOUR reads are issued CONCURRENTLY, not sequentially. They are
   // fully independent — no one of them consumes another's result, and each already
@@ -157,16 +238,8 @@ export async function readMemoryHealth(sql: Sql): Promise<MemoryHealth> {
     fragmentHits7d: 0,
   };
   let recallTelemetryOk = true;
-  const [rows, recall, recallBySurface, queryBySurface] = await Promise.all([
-    sql`
-    SELECT
-      (SELECT count(*)::int FROM harness_shared.memory_canonical
-        WHERE NOT (payload ? 'entityType'))                       AS total_memories,
-      (SELECT count(*)::int FROM harness_shared.memory_canonical
-        WHERE payload ? 'entityType')                             AS entity_rows,
-      (SELECT count(*)::int FROM harness_shared.memory_feedback
-        WHERE created_at >= now() - interval '30 days')           AS feedback_30d
-  ` as unknown as Promise<Array<Record<string, unknown>>>,
+  const [counts, recall, recallBySurface, queryBySurface] = await Promise.all([
+    readStoreCounts(sql),
     readRecallHealth(sql).catch((err: unknown) => {
       // The aggregate stays all-zeros — which READS AS PERFECT (0% zero-hit).
       // Flag the failure so consumers can tell "nothing missed" from "nothing known".
@@ -180,14 +253,13 @@ export async function readMemoryHealth(sql: Sql): Promise<MemoryHealth> {
     // P-041: the query-side slice, same degrade-to-empty independence.
     readRecallQueryHealth(sql).catch((): RecallQueryHealth[] => []),
   ]);
-  const r = rows[0] ?? {};
   return {
     ...recall,
     recallBySurface,
     queryBySurface,
     recallTelemetryOk,
-    totalMemories: Number(r.total_memories ?? 0),
-    entityRows: Number(r.entity_rows ?? 0),
-    feedback30d: Number(r.feedback_30d ?? 0),
+    totalMemories: counts.totalMemories,
+    entityRows: counts.entityRows,
+    feedback30d: counts.feedback30d,
   };
 }

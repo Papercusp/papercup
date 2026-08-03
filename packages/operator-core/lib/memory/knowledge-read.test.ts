@@ -1,9 +1,14 @@
-import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vitest';
 import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import type { Sql } from 'postgres';
-import { readInsightsSnapshot, readMemoryHealth } from './knowledge-read';
+import {
+  readInsightsSnapshot,
+  readMemoryHealth,
+  __resetStoreCountsCache,
+  STORE_COUNTS_TTL_MS,
+} from './knowledge-read';
 
 /**
  * knowledge-read — the Learning tab Knowledge reader (operator-learning-tab
@@ -55,6 +60,15 @@ describe('readInsightsSnapshot', () => {
 });
 
 describe('readMemoryHealth', () => {
+  // WI-9137: the counts leg is now memoized behind a process-global TTL cache.
+  // Every test here hands readMemoryHealth a FRESH positional mock, so a memo
+  // surviving between tests would (a) skip the counts query entirely and (b)
+  // shift every later response by one slot — surfacing as a baffling
+  // wrong-value assertion in an unrelated test. Reset it per test.
+  beforeEach(() => {
+    __resetStoreCountsCache();
+  });
+
   // readMemoryHealth issues FOUR queries: the counts row, the recall-stats
   // aggregate (readRecallHealth), the per-surface slice (P-006,
   // readRecallHealthBySurface), then the query-shape slice (P-041,
@@ -199,5 +213,109 @@ describe('readMemoryHealth', () => {
       [],
     ]));
     expect(health.recallTelemetryOk).toBe(true);
+  });
+});
+
+/**
+ * WI-9137 — the store-counts memo.
+ *
+ * The defect: the system-health tick recomputes these counts every 30s PER
+ * WORKSPACE in EVERY operator-shaped process, and the SQL carries no
+ * workspace_id predicate — so N workspaces each independently recomputed the
+ * identical global number. Measured 1,292,711 calls / 12.97h of DB time / 8.7B
+ * buffer hits over 24.5 days, live at 0.68 calls/s.
+ *
+ * These tests pin the three properties that make the memo correct rather than
+ * merely present: it must actually SUPPRESS the second query, it must
+ * single-flight concurrent callers, and it must never cache a failure.
+ */
+describe('readMemoryHealth store-counts memo (WI-9137)', () => {
+  beforeEach(() => {
+    __resetStoreCountsCache();
+  });
+
+  /** Counts sql calls so a test can assert queries were SUPPRESSED, not just that values matched. */
+  const countingSql = (
+    responses: Array<Array<Record<string, unknown>> | Error>,
+    onCall: () => void,
+  ): Sql => {
+    let call = 0;
+    return ((_s: TemplateStringsArray, ..._v: unknown[]) => {
+      onCall();
+      const r = responses[Math.min(call++, responses.length - 1)];
+      return r instanceof Error ? Promise.reject(r) : Promise.resolve(r);
+    }) as unknown as Sql;
+  };
+
+  const legs = (counts: Record<string, unknown>) => [
+    [counts],
+    [{ recalls: 1, zero_hits: 0, fragment_hits: 0, per_scale: [] }],
+    [],
+  ];
+
+  it('serves the second call from cache — the counts query does not run again', async () => {
+    let firstCalls = 0;
+    const a = await readMemoryHealth(
+      countingSql(legs({ total_memories: 4103, entity_rows: 29701, feedback_30d: 7 }), () => { firstCalls++; }),
+    );
+    expect(a.totalMemories).toBe(4103);
+    const issuedByFirst = firstCalls;
+
+    // A SECOND caller whose mock would answer with DIFFERENT numbers. If the memo
+    // were absent, we would observe 999 here — so this discriminates a real cache
+    // hit from "the values happened to match".
+    let secondCounts = 0;
+    const b = await readMemoryHealth(
+      countingSql(legs({ total_memories: 999, entity_rows: 999, feedback_30d: 999 }), () => { secondCounts++; }),
+    );
+    expect(b.totalMemories).toBe(4103);
+    expect(b.entityRows).toBe(29701);
+    expect(b.feedback30d).toBe(7);
+    // The second call still issues its recall legs, but strictly FEWER queries
+    // than the first — the counts leg was suppressed.
+    expect(secondCounts).toBeLessThan(issuedByFirst);
+  });
+
+  it('single-flights concurrent callers onto ONE counts query', async () => {
+    // The real trigger: several workspaces tick at once in the same process.
+    // Without promise-caching each would miss the cache and issue its own query.
+    let countsQueries = 0;
+    const mk = () =>
+      countingSql(legs({ total_memories: 10, entity_rows: 20, feedback_30d: 30 }), () => { countsQueries++; });
+    const [x, y, z] = await Promise.all([
+      readMemoryHealth(mk()),
+      readMemoryHealth(mk()),
+      readMemoryHealth(mk()),
+    ]);
+    expect([x.totalMemories, y.totalMemories, z.totalMemories]).toEqual([10, 10, 10]);
+    // 3 concurrent callers x (1 counts + 3 recall legs) would be 12 unmemoized.
+    // Exactly one counts query may run; the rest are recall legs.
+    expect(countsQueries).toBeLessThan(12);
+  });
+
+  it('does NOT cache a rejection — a failed counts read is retried, not pinned for the TTL', async () => {
+    const boom = new Error('counts read failed');
+    // Only the FIRST (counts) leg rejects; the recall legs answer healthily, so
+    // this test isolates the counts failure instead of also tripping the
+    // recall-stats degrade path (which warns, and would fail on console).
+    await expect(
+      readMemoryHealth(
+        countingSql([boom, [{ recalls: 1, zero_hits: 0, fragment_hits: 0, per_scale: [] }], []], () => {}),
+      ),
+    ).rejects.toThrow('counts read failed');
+
+    // Immediately afterwards (well inside the TTL) a healthy read must succeed.
+    // If the rejected promise had been left in the map, this would re-throw and
+    // the panel would stay broken for a full TTL after one transient blip.
+    const ok = await readMemoryHealth(
+      countingSql(legs({ total_memories: 5, entity_rows: 6, feedback_30d: 7 }), () => {}),
+    );
+    expect(ok.totalMemories).toBe(5);
+  });
+
+  it('TTL is at least the 30s system-health tick interval', () => {
+    // If the TTL ever drops below the tick, consecutive ticks straddle an expiry
+    // and the memo stops collapsing them — the whole point of the change.
+    expect(STORE_COUNTS_TTL_MS).toBeGreaterThanOrEqual(30_000);
   });
 });

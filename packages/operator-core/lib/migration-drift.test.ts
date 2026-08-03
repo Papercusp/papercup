@@ -88,6 +88,24 @@ describe('computeContentDrift', () => {
     ).toEqual([]);
   });
 
+  it('EI-19415309774723126: excludes 000-baseline.sql — frozen/generated, diverges by design', () => {
+    // pull-schema.mjs regenerates this file wholesale from the live schema, so
+    // its on-disk bytes routinely differ from whatever was recorded at apply
+    // time even with no half-landed migration involved. It must never show up
+    // as content drift, unlike every other runner-eligible file.
+    expect(
+      computeContentDrift(
+        rows(['000-baseline.sql', 'recorded-sha'], ['001-real.sql', 'recorded-sha']),
+        new Map([
+          ['000-baseline.sql', 'regenerated-different-sha'],
+          ['001-real.sql', 'edited-sha'],
+        ]),
+      ),
+    ).toEqual([
+      { filename: '001-real.sql', recordedSha256: 'recorded-sha', diskSha256: 'edited-sha' },
+    ]);
+  });
+
   it('reports every drifted file, sorted by filename', () => {
     expect(
       computeContentDrift(

@@ -315,7 +315,6 @@ export const BASELINE = new Set([
   'packages/operator-core/lib/auth-config-overrides.ts',
   'packages/operator-core/lib/harness/routines/configure-per-workspace.ts',
   'packages/operator-core/lib/lexicon/configure.ts',
-  'packages/operator-core/lib/workspace-brain-scope.ts',
 ]);
 
 /**

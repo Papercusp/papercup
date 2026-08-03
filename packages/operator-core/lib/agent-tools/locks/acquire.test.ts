@@ -119,7 +119,8 @@ describe('locks:acquire — outcome branches', () => {
         expires_ts: new Date('2026-02-01T00:00:00Z'),
         held: ['@external/home/.config/mimeapps.list'],
       },
-    } as never);
+      via: 'local-authority',
+    });
     const out = await tool.handler({
       external_paths: [join(homedir(), '.config', 'mimeapps.list')],
       intent: 'edit desktop defaults',
@@ -129,7 +130,7 @@ describe('locks:acquire — outcome branches', () => {
   });
 
   it('fast-path busy with no wait/wake → busy()', async () => {
-    routeM.mockResolvedValue({ value: { ok: false, busy: [{ path: 'a.ts', owner: 'o2' }] } } as never);
+    routeM.mockResolvedValue({ value: { ok: false, busy: [{ path: 'a.ts', owner: 'o2' }] }, via: 'local-authority' });
     const b = body(await call({}));
     expect(b).toMatchObject({ ok: false, busy: [{ path: 'a.ts', owner: 'o2' }] });
   });
@@ -174,10 +175,12 @@ describe('locks:acquire — outcome branches', () => {
       if (n++ < 1) {
         throw Object.assign(new Error('workspace contended'), { name: 'WorkspaceContendedError', pgCode: '55P03' });
       }
-      // WI-5217: `as never` matches the established pattern for every other routeM
-      // mock return in this file — RouteResult<T> requires a `via` field this test
-      // fixture doesn't (need to) supply.
-      return { value: { ok: true, lock_id: 'L1', expires_ts: new Date('2026-02-01T00:00:00Z'), held: ['a.ts'] } } as never;
+      // `via` is genuinely required by RouteResult<T>, and acquire.ts:271 branches on it
+      // (`routed.via !== 'remote-authority'` decides whether a P-015 lock-event is
+      // emitted) — so omitting it did not make the fixture neutral, it made it silently
+      // take the local-authority path with `undefined`. Supplying it is what this test
+      // meant all along (EI-19452618085391226).
+      return { value: { ok: true, lock_id: 'L1', expires_ts: new Date('2026-02-01T00:00:00Z'), held: ['a.ts'] }, via: 'local-authority' as const };
     });
     vi.useFakeTimers();
     try {
@@ -192,21 +195,21 @@ describe('locks:acquire — outcome branches', () => {
   });
 
   it('wake_on_grant queues a waiter + await and returns immediately', async () => {
-    routeM.mockResolvedValue({ value: { ok: false, busy: [{ path: 'a.ts', owner: 'o2' }] } } as never);
+    routeM.mockResolvedValue({ value: { ok: false, busy: [{ path: 'a.ts', owner: 'o2' }] }, via: 'local-authority' });
     insertM.mockResolvedValue({ ok: true, ticket_id: 'T1' } as never);
     const b = body(await call({ wake_on_grant: true }));
     expect(b).toMatchObject({ ok: false, queued_for_wake: true, ticket_id: 'T1', await_id: 'A1' });
   });
 
   it('wake_on_grant self-grant (path freed during insert) → ok', async () => {
-    routeM.mockResolvedValue({ value: { ok: false, busy: [] } } as never);
+    routeM.mockResolvedValue({ value: { ok: false, busy: [] }, via: 'local-authority' });
     insertM.mockResolvedValue({ ok: true, self_granted: true, lock_id: 'L2', expires_ts: new Date('2026-03-01T00:00:00Z'), held: ['a.ts'] } as never);
     const b = body(await call({ wake_on_grant: true }));
     expect(b).toMatchObject({ ok: true, lock_id: 'L2', held: ['a.ts'] });
   });
 
   it('wake_on_grant with a failed waiter insert surfaces the reason', async () => {
-    routeM.mockResolvedValue({ value: { ok: false, busy: [] } } as never);
+    routeM.mockResolvedValue({ value: { ok: false, busy: [] }, via: 'local-authority' });
     insertM.mockResolvedValue({ ok: false, reason: 'waiter_cap_exceeded' } as never);
     const b = body(await call({ wake_on_grant: true }));
     expect(b).toMatchObject({ ok: false, reason: 'waiter_cap_exceeded' });
@@ -217,7 +220,7 @@ describe('locks:acquire — EI-19324204900062056 blocking-wait connection resili
   // Contention path so the tool proceeds past the fast-path to the wait
   // subsystem (LISTEN + INSERT waiter + poll loop).
   beforeEach(() => {
-    routeM.mockResolvedValue({ value: { ok: false, busy: [{ path: 'a.ts', owner: 'o2' }] } } as never);
+    routeM.mockResolvedValue({ value: { ok: false, busy: [{ path: 'a.ts', owner: 'o2' }] }, via: 'local-authority' });
   });
 
   it('a transient CONNECTION_CLOSED error while polling status mid-wait is swallowed — the wait continues instead of crashing the call', async () => {
@@ -278,7 +281,7 @@ describe('locks:acquire — EI-19382183884861720: the two gaps EI-19324204900062
   // subsystem (LISTEN + INSERT waiter + poll loop) — same setup as the
   // EI-19324204900062056 suite above.
   beforeEach(() => {
-    routeM.mockResolvedValue({ value: { ok: false, busy: [{ path: 'a.ts', owner: 'o2' }] } } as never);
+    routeM.mockResolvedValue({ value: { ok: false, busy: [{ path: 'a.ts', owner: 'o2' }] }, via: 'local-authority' });
   });
 
   it('a transient CONNECTION_CLOSED error on the IMMEDIATE post-insert re-check is swallowed — falls through to the wait loop instead of crashing the call', async () => {
@@ -350,7 +353,7 @@ describe('locks:acquire — EI-9033 pending_edit (apply-on-grant) guardrails', (
   });
 
   it('threads a valid pending_edit into the waiter and flags apply_on_grant', async () => {
-    routeM.mockResolvedValue({ value: { ok: false, busy: [{ path: 'a.ts', owner: 'o2' }] } } as never);
+    routeM.mockResolvedValue({ value: { ok: false, busy: [{ path: 'a.ts', owner: 'o2' }] }, via: 'local-authority' });
     insertM.mockResolvedValue({ ok: true, ticket_id: 'T9' } as never);
     const b = body(
       await call({
@@ -374,7 +377,7 @@ describe('locks:acquire — WI-1550 P-015 lock-event emission on a LOCALLY-decid
       value: { ok: true, lock_id: 'L1', expires_ts: new Date('2026-02-01T00:00:00Z'), held: ['a.ts'] },
       via: 'local-authority',
       scope: 'harness-x',
-    } as never);
+    });
     const b = body(await call({}));
     expect(b).toMatchObject({ ok: true, lock_id: 'L1' });
     expect(recordEventM).toHaveBeenCalledTimes(1);
@@ -389,7 +392,7 @@ describe('locks:acquire — WI-1550 P-015 lock-event emission on a LOCALLY-decid
       via: 'fail-open',
       scope: 'harness-x',
       warning: 'authority unreachable',
-    } as never);
+    });
     await call({});
     expect(recordEventM).toHaveBeenCalledTimes(1);
   });
@@ -399,7 +402,7 @@ describe('locks:acquire — WI-1550 P-015 lock-event emission on a LOCALLY-decid
       value: { ok: true, lock_id: 'L1', expires_ts: new Date('2026-02-01T00:00:00Z'), held: ['a.ts'] },
       via: 'remote-authority',
       scope: 'harness-x',
-    } as never);
+    });
     await call({});
     expect(recordEventM).not.toHaveBeenCalled();
   });
@@ -409,7 +412,7 @@ describe('locks:acquire — WI-1550 P-015 lock-event emission on a LOCALLY-decid
       value: { ok: true, lock_id: 'L1', expires_ts: new Date('2026-02-01T00:00:00Z'), held: ['a.ts'] },
       via: 'local-authority',
       // scope omitted — unmanaged/unfederated domain
-    } as never);
+    });
     await call({});
     expect(recordEventM).not.toHaveBeenCalled();
   });
@@ -419,7 +422,7 @@ describe('locks:acquire — WI-1550 P-015 lock-event emission on a LOCALLY-decid
       value: { ok: true, lock_id: 'L1', expires_ts: new Date('2026-02-01T00:00:00Z'), held: ['a.ts', 'b.ts'] },
       via: 'local-authority',
       scope: 'harness-x',
-    } as never);
+    });
     await call({ paths: ['a.ts', 'b.ts'] });
     expect(recordEventM).toHaveBeenCalledTimes(2);
     expect(recordEventM.mock.calls.map((c) => (c[0] as { path: string }).path).sort()).toEqual(['a.ts', 'b.ts']);

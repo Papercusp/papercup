@@ -172,10 +172,28 @@ export async function syncTurnChunks(
   const minChars = opts.minChars ?? TURN_CHUNK_MIN_TEXT_CHARS;
   const stats: TurnChunkSyncStats = { turns: 0, chunks: 0, errors: 0, more: false };
 
+  // ⚠ THE `sha` IS COMPUTED ONCE, VIA LATERAL, AND THAT IS A MEASURED CHOICE.
+  // The natural phrasing inlines `encode(sha256(convert_to(st.text,'UTF8')),'hex')`
+  // in BOTH the select list and the NOT EXISTS, and Postgres does not common-
+  // subexpression them — it hashes every candidate turn's text twice. Measured
+  // on the live 409k-row table in the caught-up steady state (the state this
+  // query is in almost always, since it then returns zero work):
+  //   inline twice  1045ms · LATERAL once  810ms · no sha at all  282ms
+  // So hashing is the dominant cost of this query, not the scan and not the
+  // probes, and halving the passes is the cheap half of the fix. The other half
+  // — not hashing at all — needs chunk-sync state on the parent row and is
+  // filed separately rather than smuggled into this item.
+  //
+  // The scan itself is served by session_turns_chunkable_idx (migration 753),
+  // a partial index on exactly this eligibility predicate; without it the same
+  // query costs 2844ms because it walks all 409k rows to find the ~8% that are
+  // long enough to chunk.
   const stale = await sql.unsafe<StaleTurnRow[]>(
-    `SELECT st.workspace_id, st.source_kind, st.session_id, st.turn_idx, st.text,
-            encode(sha256(convert_to(st.text, 'UTF8')), 'hex') AS sha
+    `SELECT st.workspace_id, st.source_kind, st.session_id, st.turn_idx, st.text, s.sha
        FROM harness_shared.session_turns st
+       CROSS JOIN LATERAL (
+              SELECT encode(sha256(convert_to(st.text, 'UTF8')), 'hex') AS sha
+            ) s
       WHERE length(st.text) > $1
         AND NOT EXISTS (
               SELECT 1 FROM harness_shared.session_turn_chunks c
@@ -183,7 +201,7 @@ export async function syncTurnChunks(
                  AND c.source_kind  = st.source_kind
                  AND c.session_id   = st.session_id
                  AND c.turn_idx     = st.turn_idx
-                 AND c.turn_sha     = encode(sha256(convert_to(st.text, 'UTF8')), 'hex')
+                 AND c.turn_sha     = s.sha
             )
       ORDER BY st.ingested_at DESC
       LIMIT $2`,

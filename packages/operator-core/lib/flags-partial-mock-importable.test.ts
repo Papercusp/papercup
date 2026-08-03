@@ -75,6 +75,11 @@ import { workItemClaimLeaseEnabled } from './work-item-claim-lease-wiring';
 import { workItemRedundancyEnabled } from './work-item-redundancy';
 import { cacheTagEcaEnabled } from './events/cache-eca-rule';
 import { issuesScopeWorkspace } from './issues-engineer';
+// workspace-brain-scope is the one caller with NO sync reader of its flag cache — its only reader is
+// async and awaits the real getFlag. It is listed here for the same reason as the rest (importability
+// under a partial mock), but note it CANNOT join the reader-throws assertion below: calling its
+// reader returns a promise, so the arm's throw would surface as a rejection, not a throw.
+import { isWorkspaceCoordinationOn } from './workspace-brain-scope';
 
 describe('modules stay importable under a partial @papercusp/flags/server mock', () => {
   it('collected this file at all (a module-scope binding read would have failed it here)', () => {
@@ -110,5 +115,13 @@ describe('the fix is IMPORTABILITY, not reader-callability (do not widen this cl
     expect(() => workItemRedundancyEnabled()).toThrow(/onFlagChange/);
     expect(() => cacheTagEcaEnabled()).toThrow(/onFlagChange/);
     expect(() => issuesScopeWorkspace()).toThrow(/onFlagChange/);
+  });
+
+  it('an ASYNC reader surfaces the same arm as a REJECTION, not a throw', () => {
+    // workspace-brain-scope's only flag reader is async, so its arm failure cannot be caught by the
+    // sync `expect(fn).toThrow` form above — it becomes a rejected promise. Pinned separately rather
+    // than folded in, because a reader that returns instead of throwing is exactly the shape that
+    // would let a regression sit in the list above looking asserted while asserting nothing.
+    return expect(isWorkspaceCoordinationOn()).rejects.toThrow(/onFlagChange/);
   });
 });

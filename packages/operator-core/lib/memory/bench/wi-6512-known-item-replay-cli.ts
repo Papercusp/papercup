@@ -52,6 +52,79 @@ interface Args {
   verbose: boolean;
   mode: 'both' | 'independent' | 'sequential';
   explainSelection: boolean;
+  arms: boolean;
+}
+
+/**
+ * The paired arm comparison: for each batch, run the REAL corpus leg twice —
+ * once with the query the LENGTH proxy would have chosen, once with the query
+ * P-018's BANDED selection actually chooses — and ask which one retrieves a
+ * record that answers the question.
+ *
+ * WHY THIS IS THE PRODUCTION PATH AND NOT AN APPROXIMATION: `recallCorpusContext`
+ * derives its own query via `corpusQueryText(rawText)`. Feed it a rawText that is
+ * ALREADY the two selected terms and both selections re-select the same two (two
+ * candidates, k=2, neither an id) — so the query reaching the engine is exactly
+ * that arm's, whichever selection happens to be wired on. Same engine, same
+ * sources, same floors, same collapse. No fork of production behaviour, and no
+ * flag to flip.
+ *
+ * Both arms run back-to-back against the SAME live corpus, which is what closes
+ * the drift confounder: a difference between them cannot be "the corpus changed
+ * since the baseline".
+ */
+async function compareArms(): Promise<void> {
+  const [{ corpusQueryText }, { corpusTermDfLookup }, { recallCorpusContext }, { getOrgPg }] =
+    await Promise.all([
+      import('../corpus-recall'),
+      import('../corpus-term-df'),
+      import('../corpus-recall-io'),
+      import('@papercusp/db-org'),
+    ]);
+  const { sql } = getOrgPg();
+  const df = await corpusTermDfLookup(sql, 'papercusp-workspace');
+  console.log('\n## ARM COMPARISON — does the arm\'s query retrieve an ANSWER-BEARING record?');
+  if (!df) {
+    console.log('   ⚠ no DF snapshot; both arms would be identical. Nothing to compare.');
+    return;
+  }
+
+  const probe = async (query: string): Promise<{ hit: string; lines: number; top: string }> => {
+    const res = await recallCorpusContext({
+      queryText: query,
+      workspaceId: 'papercusp-workspace',
+      harnessSlugs: ['papercusp'],
+    });
+    const rendered = res.lines.map((l) => l.line).join('\n');
+    const found = carriesAnswer(rendered);
+    return {
+      hit: found ? found.marker.slice(0, 8) : '',
+      lines: res.lines.length,
+      top: (res.lines[0]?.line ?? '').slice(0, 90),
+    };
+  };
+
+  let lengthHits = 0;
+  let bandedHits = 0;
+  for (const batch of REPLAY) {
+    const raw = deriveBatchQuery(batch.calls);
+    const qLength = corpusQueryText(raw);
+    const qBanded = corpusQueryText(raw, undefined, { df });
+    const [a, b] = await Promise.all([probe(qLength), probe(qBanded)]);
+    if (a.hit) lengthHits++;
+    if (b.hit) bandedHits++;
+    console.log(`\n   turn ${batch.turn}`);
+    console.log(`     LENGTH "${qLength}" -> ${a.lines} lines  ${a.hit ? `✓ ANSWER via ${a.hit}` : '·'}`);
+    console.log(`       top: ${a.top}`);
+    console.log(`     BANDED "${qBanded}" -> ${b.lines} lines  ${b.hit ? `✓ ANSWER via ${b.hit}` : '·'}`);
+    console.log(`       top: ${b.top}`);
+  }
+  console.log(
+    `\n   ANSWER-BEARING batches — LENGTH ${lengthHits}/${REPLAY.length}   BANDED ${bandedHits}/${REPLAY.length}`,
+  );
+  if (bandedHits < lengthHits) {
+    console.log(`   → P-018 BANDED selection RETRIEVES THE ANSWER LESS OFTEN than the proxy it replaced.`);
+  }
 }
 
 /**
@@ -108,6 +181,7 @@ function parseArgs(argv: readonly string[]): Args {
     verbose: argv.includes('--verbose'),
     mode: modeRaw,
     explainSelection: argv.includes('--explain-selection'),
+    arms: argv.includes('--arms'),
   };
 }
 
@@ -237,6 +311,7 @@ async function main(): Promise<void> {
   }
 
   if (args.explainSelection) await explainSelection();
+  if (args.arms) await compareArms();
 
   let independent: ModeSummary | undefined;
   let sequential: ModeSummary | undefined;

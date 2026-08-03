@@ -34,13 +34,17 @@ vi.mock('../../events/await/wake-reachability', () => ({
   })),
 }));
 
+vi.mock('../../events/await/store', () => ({ listWakeAwaitsForSubscriber: vi.fn(async () => []) }));
+
 vi.mock('../../harness/routines/loop', () => ({ getLoopStatus: vi.fn() }));
 
 import { _resetStoreIdentityForTests, pinOrVerifyStoreIdentity } from '@papercusp/db-org';
 import { getLoopStatus } from '../../harness/routines/loop';
+import { listWakeAwaitsForSubscriber } from '../../events/await/store';
 import statusTool from './status';
 
 const getLoopStatusMock = getLoopStatus as unknown as ReturnType<typeof vi.fn>;
+const listWakeAwaitsMock = listWakeAwaitsForSubscriber as unknown as ReturnType<typeof vi.fn>;
 
 const OURS = { systemIdentifier: '7635091775813704249', database: 'papercusp' };
 const IMPOSTOR = { systemIdentifier: '7111222333444555666', database: 'papercusp' };
@@ -55,6 +59,8 @@ const run = (args: Record<string, unknown> = {}) =>
 beforeEach(() => {
   _resetStoreIdentityForTests();
   getLoopStatusMock.mockReset();
+  listWakeAwaitsMock.mockReset();
+  listWakeAwaitsMock.mockResolvedValue([]);
 });
 
 describe('loop:status store-identity delivery', () => {
@@ -107,5 +113,51 @@ describe('loop:status store-identity delivery', () => {
     const out = await run();
 
     expect(JSON.stringify(out)).not.toContain('secret');
+  });
+});
+
+describe('loop:status pendingAwaits (EI-19415169477907694)', () => {
+  it('reports status:none when the caller holds no live non-inbox-wake await', async () => {
+    getLoopStatusMock.mockResolvedValue(null);
+    listWakeAwaitsMock.mockResolvedValue([]);
+
+    const out = await run();
+
+    expect(out.pendingAwaits).toEqual({ status: 'none' });
+  });
+
+  it('reports status:found with a sample of event keys when awaits are live', async () => {
+    getLoopStatusMock.mockResolvedValue(null);
+    listWakeAwaitsMock.mockResolvedValue([
+      { eventKey: 'work-item:claimable', expiresTs: null, rootId: null },
+      { eventKey: 'release:green:papercusp', expiresTs: null, rootId: null },
+    ]);
+
+    const out = await run();
+
+    expect(out.pendingAwaits).toEqual({
+      status: 'found',
+      count: 2,
+      sample: ['work-item:claimable', 'release:green:papercusp'],
+    });
+  });
+
+  it('degrades to status:unknown (never "none") when the lookup fails — a failed lookup must not fabricate a measurement', async () => {
+    getLoopStatusMock.mockResolvedValue(null);
+    listWakeAwaitsMock.mockRejectedValue(new Error('pg unavailable'));
+
+    const out = await run();
+
+    expect(out.pendingAwaits).toEqual({ status: 'unknown' });
+  });
+
+  it('is computed even when no loop is armed (a bare events:await with no loop still deserves this answer)', async () => {
+    getLoopStatusMock.mockResolvedValue(null);
+    listWakeAwaitsMock.mockResolvedValue([{ eventKey: 'lock:grant:t1', expiresTs: null, rootId: null }]);
+
+    const out = await run();
+
+    expect(out.loop).toBeNull();
+    expect(out.pendingAwaits).toEqual({ status: 'found', count: 1, sample: ['lock:grant:t1'] });
   });
 });

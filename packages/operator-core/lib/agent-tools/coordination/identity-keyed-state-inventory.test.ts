@@ -101,6 +101,20 @@ const ALLOWLIST: Record<string, Classification> = {
     status: 'exempt',
     reason: 'append-only activity LOG (who did what, when) — not a current-holder claim any reader treats as live.',
   },
+  // Migration 745 (EI-19411045952024591). Deliberately the EXEMPT twin of the COVERED
+  // 'routines.target_owner_id' above: that column is the live claim (rebound so the loop
+  // keeps waking the right agent); THIS one is its append-only HISTORY. Rebinding here
+  // would not merely be unnecessary, it would FALSIFY the evidence — the table exists
+  // because the single-row stores overwrite themselves, so rewriting a past transition's
+  // owner destroys the very record ("who held this routine when it parked") it was added
+  // to preserve. Sole writer is loop-transition-log.ts; no functional reader (adv-roster
+  // and dead-owner-control-sweep read `routines`, not this table), and the migration
+  // states the contract outright: "evidence, never an input to scheduling".
+  'routine_loop_transitions.target_owner_id': {
+    status: 'exempt',
+    reason:
+      'append-only transition HISTORY of routines.target_owner_id (migration 745) — a record of who was targeted AT that transition, never read as a live claim. A rebind would corrupt the forensic record it exists to keep.',
+  },
   'adv_sessions.coord_owner_id': {
     status: 'exempt',
     reason: "the session's OWN record, created under its own id at boot — never read/reaped keyed on a DIFFERENT session's liveness.",
