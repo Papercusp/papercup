@@ -108,6 +108,15 @@ export interface CoordOpCaps {
     body?: string;
     options?: { id: string; label: string }[];
     plan_slug?: string;
+    /**
+     * Domain-free extras bag, spread FLAT onto the escalation envelope by
+     * `openEscalation`. Used by `askOp` to stamp the `conversationId` of the
+     * question thread this escalation is the Decision-tier twin of, so
+     * answering the conversation clears the escalation too
+     * (attention/conversation-escalation-link.ts). Never read by dedup —
+     * `escalationDedupIdentity` consults only subjectSignature/dedupKind.
+     */
+    meta?: Record<string, unknown>;
   }): Promise<{ msg_id: string }>;
 
   /** Subscribe an owner to a topic/object (the subscribe→inject substrate). */

@@ -115,10 +115,18 @@ export function disabledInventory(): TaskInventory {
 /** Cap on live-process rows shipped to the pane. */
 const MAX_LIVE_PROCESS_ROWS = 4000;
 
-/** Row priority under the cap: ours, then real escapes, then exempt lifetimes. */
+/**
+ * Row priority under the cap: ours, then real escapes, then dead-window residue,
+ * then exempt lifetimes.
+ *
+ * `abandoned-window` outranks `exempt` because it is residue a human should see,
+ * and ranks below `unaccounted` because it is not a chokepoint bypass — a human
+ * did legitimately own it, right up until they closed the window (D-018).
+ */
 function scopeRank(scope: ProcessScope): number {
   if (scope === 'owned') return 0;
-  return scope === 'unaccounted' ? 1 : 2;
+  if (scope === 'unaccounted') return 1;
+  return scope === 'abandoned-window' ? 2 : 3;
 }
 
 /**

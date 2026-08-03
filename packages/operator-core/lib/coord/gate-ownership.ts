@@ -264,6 +264,53 @@ export function ownershipNeedsLivenessConfirmation(own: CellOwnership): boolean 
 }
 
 /**
+ * The THIRD verdict, and the only one that is an explicit ALLOWLIST.
+ *
+ * `ownershipContradicted` answers "confirmed dead" and
+ * `ownershipNeedsLivenessConfirmation` answers "too ambiguous to act on". Neither
+ * answers the question a COORDINATION rail actually asks — "is a peer positively
+ * on this right now, so I should stand down?" — and deriving it as the complement
+ * of the other two is wrong in a way that matters.
+ *
+ * A complement would classify any state added to `SessionState` later as
+ * positively-live, i.e. it would REFUSE on a state nobody has reasoned about.
+ * For this rail that is the wrong default: the run-lock singleton is the real
+ * safety mechanism, this is coordination on top of it, so an unknown verdict must
+ * FAIL OPEN (let the run through) rather than wedge the gate for the whole fleet
+ * on an enum change. Hence an allowlist — but a `Record<SessionState, …>`, so a
+ * new member is a COMPILE ERROR demanding a decision, never a silent default.
+ * That is the structural half of the D-018 lesson: the P-005 bug was not a wrong
+ * string, it was a hand-rolled liveness taxonomy that no type forced anyone to
+ * revisit.
+ */
+const POSITIVELY_LIVE: Record<SessionState, boolean> = {
+  live: true,
+  // Alive and inbox-wakeable, merely idle — a peer between turns still owns its work.
+  parked: true,
+  // ⚠ ALIVE per the session log (see ownershipContradicted's note). Excluding it
+  // here would re-introduce the P-005 bug on the rail instead of in the helper.
+  recorded: true,
+  // AMBIGUOUS — route via ownershipNeedsLivenessConfirmation and confirm with a
+  // required wake. Never enough on its own to block a peer's gate run.
+  draining: false,
+  suspect: false,
+  // Confirmed dead. A dead holder must NEVER wedge the gate.
+  ended: false,
+};
+
+/**
+ * PURE. Is this claim held by a holder the oracle POSITIVELY reports as alive?
+ *
+ * `false` whenever the answer is not a positive yes — no holder, an unread oracle
+ * (`null`), an ambiguous verdict, or a confirmed-dead one. Callers standing down on
+ * a `true` therefore never stand down on an absence of evidence.
+ */
+export function ownershipHeldByLiveHolder(own: CellOwnership): boolean {
+  if (own.claimState !== 'held' || own.holderSessionState === null) return false;
+  return POSITIVELY_LIVE[own.holderSessionState] ?? false;
+}
+
+/**
  * Read ownership of the green-checkpoint gate's stall condition.
  *
  * Costs ONE indexed SELECT (`findConditionObjects` is batched and capped), not a

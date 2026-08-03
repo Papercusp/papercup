@@ -137,6 +137,7 @@ export function buildCoordOpCaps(base: CoordOpEnvBase): CoordOpCaps {
         body: input.body,
         options: input.options,
         plan_slug: input.plan_slug,
+        ...(input.meta ? { meta: input.meta } : {}),
       });
       return { msg_id: rec.msg_id };
     },

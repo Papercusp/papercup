@@ -57,7 +57,16 @@
  * is the number the pane should have been showing in red all along.
  */
 
-export type ProcessScope = 'owned' | 'exempt' | 'unaccounted';
+/**
+ * `abandoned-window` is its OWN class, not a flavour of the other three (P-008 / D-018).
+ *
+ * It was `exempt` (wrong — the human whose lifetime justified the exemption is
+ * gone) and then briefly `unaccounted`, which is true but throws away the one
+ * fact that makes it actionable and non-alarming: a human DID own this, and then
+ * closed the window. That distinction is what lets the pane say "a window closed
+ * but these kept running" instead of either "nothing to see" or "an escape".
+ */
+export type ProcessScope = 'owned' | 'exempt' | 'abandoned-window' | 'unaccounted';
 
 /** Why an out-of-slice process is not an escapee. Extend only with a structural rule. */
 export type ExemptReason = 'human-terminal' | 'systemd-unit';
@@ -141,7 +150,7 @@ export function classifyScope(
     // A closed window's scope is no longer "a lifetime the human owns" — it is
     // whatever an agent left running inside a window nobody is watching.
     if (isWindow && opts.terminalWindowAlive === false) {
-      return { scope: 'unaccounted', exemptReason: null };
+      return { scope: 'abandoned-window', exemptReason: null };
     }
     return { scope: 'exempt', exemptReason: 'human-terminal' };
   }

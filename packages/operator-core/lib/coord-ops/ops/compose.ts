@@ -123,9 +123,20 @@ export const askOp: CoordOp<z.infer<typeof askArgs>, z.infer<typeof askResult>> 
       topics: a.topics,
       harness: ctx.harnessSlug,
     });
-    // Land it in the human's inbox so the ask is actually seen.
+    // Land it in the human's inbox so the ask is actually seen. This is the
+    // DECISION-tier leg of the ask (escalationToAttention: blocker/question →
+    // Decision); the thread above is the Alert-tier leg. `conversationId` links
+    // the two so `conversations:resolve` clears BOTH — without it, every
+    // question the owner ANSWERED left a permanent zombie in the Decision tier
+    // (measured 9 of 11, EI-19399318647145782; see
+    // attention/conversation-escalation-link.ts).
     await ctx.caps
-      .escalate({ severity: 'question', summary: a.question, body: a.body })
+      .escalate({
+        severity: 'question',
+        summary: a.question,
+        body: a.body,
+        meta: conversationLinkMeta(thread.conversation_id),
+      })
       .catch(() => {
         /* best-effort — the thread itself is the durable ask surface */
       });

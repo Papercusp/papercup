@@ -3796,6 +3796,130 @@ describe('mapCheckpointRunInFlight — pure mapper (EI-18793581783459047)', () =
     );
     expect(out?.asOfAgeMs).toBe(0);
   });
+
+  /**
+   * EI-19395922387569240 — THE RECURRENCE GUARD. This leg was cache-ONLY, and `{ active:
+   * false }` was documented (and consumed at the gate lever) as "MEASURED idle". It was not
+   * measured: it was a snapshot of unbounded age. Both directions were already wrong in the
+   * live DB when this was filed, measured 2026-08-03:
+   *
+   *   papercusp-workspace  age 90.9s (its own ttl is 90s)  activeRun { active: false }
+   *   default              age 7.03 HOURS                  activeRun { active: true,
+   *                                                          candidate f990615f, elapsedSec 314 }
+   *
+   * The stale `false` is the expensive one — it routes the gate lever to "wait out the
+   * quiet-cut window, then release:checkpoint-run", i.e. it recommends firing a manual run
+   * into a live one, the exact 🚨 action CLAUDE.md forbids because it discards an in-flight
+   * rescue and costs a full ~55min suite.
+   *
+   * The fix is reuse, not new machinery: `isCheckpointRunLockHeldCheap` already answered this
+   * for BOTH origins (every run holds that lock for its whole duration) and was simply never
+   * wired to the read agents actually call.
+   */
+  describe('EI-19395922387569240: the LIVE run lock outranks the cached reading for liveness', () => {
+    const MARKER_FIXTURE = {
+      fromCandidate: '6f4181447486a33e4b471b82dee3ed0893c3efa6',
+      refiringCandidate: '16dbb52a7849320e27832500bf2157f00b1db1c3',
+      refireAttempt: 1,
+      maxRefires: 2,
+    };
+    const STALE = 25_299_000; // the 7.03h `default` row, to the millisecond
+    const staleActive = {
+      activeRun: { active: true, candidate: 'f990615f', startedAtMs: NOW - STALE - 314_000, elapsedSec: 314 },
+      computedAtMs: NOW - STALE,
+    };
+    const staleIdle = {
+      activeRun: { active: false, candidate: null, startedAtMs: null, elapsedSec: null },
+      computedAtMs: NOW - 600_000,
+    };
+
+    it('⭐ a HELD lock overturns a stale cached "idle" — the false all-clear that sent callers to fire into a live run', () => {
+      const out = mapCheckpointRunInFlight(staleIdle, NOW, null, { held: true, elapsedSec: 720 });
+      expect(out?.active).toBe(true);
+      expect(out?.activeSource).toBe('run-lock');
+      // The lock knows how long, so the caller can see it is a long run rather than a new one.
+      expect(out?.elapsedSec).toBe(720);
+      expect(out?.startedAtMs).toBe(NOW - 720_000);
+    });
+
+    it('⭐ a NOT-HELD lock overturns a stale cached "active" — a run that ended hours ago must not read as in flight', () => {
+      const out = mapCheckpointRunInFlight(staleActive, NOW, null, { held: false, elapsedSec: null });
+      expect(out?.active).toBe(false);
+      expect(out?.activeSource).toBe('run-lock');
+      // And the finished run's DETAIL must not be re-presented as current: reporting
+      // `candidate f990615f` here is precisely "what the gate is judging right now" being
+      // answered with a 7h-old fact.
+      expect(out?.candidate).toBeNull();
+      expect(out?.startedAtMs).toBeNull();
+      expect(out?.elapsedSec).toBeNull();
+      // The cache's age is still reported — that is what the field means.
+      expect(out?.asOfAgeMs).toBe(STALE);
+    });
+
+    /**
+     * The one case the lock cannot see, straight from its own doc: it "misses a manual-unit
+     * run that hasn't (yet) raced for the shared run-lock". During that startup sliver the
+     * systemd probe is right and the lock is not, so a FRESH cached active must survive.
+     * Without this the fix would trade a stale false negative for a fresh one.
+     */
+    it('does NOT let a not-held lock overturn a FRESH cached active (the manual-run startup sliver)', () => {
+      const freshActive = {
+        activeRun: { active: true, candidate: 'abc123', startedAtMs: NOW - 5_000, elapsedSec: 5 },
+        computedAtMs: NOW - 1_000,
+      };
+      const out = mapCheckpointRunInFlight(freshActive, NOW, null, { held: false, elapsedSec: null });
+      expect(out?.active).toBe(true);
+      // Cache-backed, so it must NOT claim to be a live measurement.
+      expect(out).not.toHaveProperty('activeSource');
+      expect(out?.candidate).toBe('abc123');
+    });
+
+    it('answers liveness with NO cache at all — previously UNKNOWN, though the lock could answer for free', () => {
+      expect(mapCheckpointRunInFlight(null, NOW, null, { held: true, elapsedSec: 60 })).toMatchObject({
+        active: true,
+        activeSource: 'run-lock',
+        elapsedSec: 60,
+      });
+      expect(mapCheckpointRunInFlight(null, NOW, null, { held: false, elapsedSec: null })).toMatchObject({
+        active: false,
+        activeSource: 'run-lock',
+      });
+      // No cache behind it, so there is no cache-age to report.
+      expect(mapCheckpointRunInFlight(null, NOW, null, { held: false, elapsedSec: null })?.asOfAgeMs).toBeNull();
+    });
+
+    it('still reports UNKNOWN (null) when BOTH the cache and the lock fail to answer', () => {
+      expect(mapCheckpointRunInFlight(null, NOW, null, null)).toBeNull();
+      expect(mapCheckpointRunInFlight(null, NOW)).toBeNull();
+    });
+
+    it('prefers the lock elapsed over the cache\'s frozen one, which understates a live run by exactly asOfAgeMs', () => {
+      const cachedMidRun = {
+        activeRun: { active: true, candidate: 'abc123', startedAtMs: NOW - 720_000, elapsedSec: 300 },
+        computedAtMs: NOW - 420_000,
+      };
+      // Cache says 5m (frozen 7m ago); the run is really 12m in.
+      const out = mapCheckpointRunInFlight(cachedMidRun, NOW, null, { held: true, elapsedSec: 720 });
+      expect(out?.elapsedSec).toBe(720);
+    });
+
+    it('attaches the retriage marker on a lock-driven upgrade, so the cron re-triage window stays readable', () => {
+      const out = mapCheckpointRunInFlight(staleIdle, NOW, MARKER_FIXTURE, { held: true, elapsedSec: 900 });
+      expect(out?.active).toBe(true);
+      expect(out?.inRetriageWindow).toBe(true);
+      expect(out?.candidate).toBe(MARKER_FIXTURE.refiringCandidate);
+      expect(out?.candidateSource).toBe('retriage-marker');
+    });
+
+    it('an omitted lock leaves the reply shape byte-identical to the cache-only behaviour', () => {
+      const cache = {
+        activeRun: { active: true, candidate: 'abc123', startedAtMs: NOW - 60_000, elapsedSec: 60 },
+        computedAtMs: NOW - 1_000,
+      };
+      expect(mapCheckpointRunInFlight(cache, NOW, null, null)).toEqual(mapCheckpointRunInFlight(cache, NOW));
+      expect(mapCheckpointRunInFlight(cache, NOW, null, null)).not.toHaveProperty('activeSource');
+    });
+  });
 });
 
 describe('gitPipelinePosition wires checkpointRunInFlight into gate + notes (EI-18793581783459047)', () => {

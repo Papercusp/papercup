@@ -29,6 +29,15 @@
  * is supposed to embody, not commit. Read-only otherwise + debounced; env-killable
  * (PAPERCUSP_SINGLE_PRIMARY_GUARD=0).
  *
+ * THE SELF-CLEAR IS DURABLE, NOT PER-PROCESS (WI-7291, 2026-08-03). This guard runs on
+ * EVERY request worker, so the process that raises an alarm is routinely not the one that
+ * later observes the recovery. Keying the all-clear off in-process memory therefore skipped
+ * it in exactly the processes able to send it, and the drift above was re-committed in a
+ * subtler form: 122 `no-primary` alarms since 2026-07-11 with ZERO resolutions ever, and a
+ * `split-brain-primary` condition still open 23 days after recovering. Recovery is now
+ * judged against the DURABLE condition fold (openSinglePrimaryConditions), so whichever
+ * process sees a healthy count clears the condition regardless of which one raised it.
+ *
  * VERIFY THE CONSEQUENCE, DON'T ASSERT IT (EI-19388269294151851, 2026-08-03): a count of
  * 0 used to hardcode the summary "DBOS routines, git-sync, and the Mug wake-loop are all
  * down". That inference held when bg-host was the only process that could run them — and
@@ -56,6 +65,7 @@ import {
   type EscalationSeverity,
 } from '../agent-tools/coordination/escalations';
 import type { AgentIdentity } from '../agent-tools/coordination/identity';
+import { MESSAGE_GC_RETENTION_DAYS } from '../agent-tools/coordination/message-log-gc';
 import { activeWorkspaceId } from '../workspace-registry';
 import { notifyAttention } from '../attention-notify';
 import { broadcastSevereEvent, broadcastSevereEventResolvedMany } from '../severe-event-broadcast';
@@ -191,6 +201,73 @@ export async function lastRoutineFireAgeSec(
   return typeof age === 'number' && Number.isFinite(age) ? age : null;
 }
 
+/** The condition-key namespace this guard alarms under. Both keys it can emit
+ *  (`no-primary`, `no-dedicated-primary`, `split-brain-primary`) are prefixed with it,
+ *  so one prefix match finds every condition this guard owns. */
+const CONDITION_PREFIX = 'single-primary:';
+
+/**
+ * The `single-primary:*` conditions that are OPEN right now, read from DURABLE state.
+ *
+ * A condition is open ⇔ its latest alarm is strictly newer than its latest resolution —
+ * the same fold `coord:conditions` (computeConditionStates) applies, and the same
+ * `condition_key` / `resolves_condition[s]` envelope shape severe-event-broadcast writes.
+ *
+ * WHY A LOCAL QUERY RATHER THAN reusing readConditionEnvelopes() + computeConditionStates():
+ * those read through the coord seam (coordSql/coordWorkspaceId), which resolves the AMBIENT
+ * workspace — but this guard is explicitly workspace-PARAMETERIZED and must judge the
+ * workspace it was handed, or a multi-workspace process silently all-clears the wrong
+ * tenant's alarm. This also stays narrow (one prefix, aggregates in PG) instead of folding
+ * the whole condition stream in JS every 3 min in every process. The WHERE clause matches
+ * `coord_event_log_conditions_idx` exactly so the read seeks that partial index.
+ *
+ * Bounded by the message-log GC retention window: a condition whose latest alarm AND
+ * resolution both fall outside it no longer exists to all-clear. Errors are the CALLER's
+ * to absorb — a failed read must degrade to "emit nothing", never to a false all-clear.
+ */
+export async function openSinglePrimaryConditions(
+  sql: SqlLike,
+  workspaceId: string,
+): Promise<string[]> {
+  const sinceIso = new Date(Date.now() - MESSAGE_GC_RETENTION_DAYS * 86_400_000).toISOString();
+  const prefixLike = `${CONDITION_PREFIX}%`;
+  const rows = await sql<Array<{ key: string }>>`
+    WITH ev AS (
+      SELECT ts, body
+        FROM harness_shared.coord_event_log
+       WHERE workspace_id = ${workspaceId}
+         AND surface = 'messages'
+         AND (body ? 'condition_key' OR body ? 'resolves_condition')
+         AND ts >= ${sinceIso}
+    ),
+    alarms AS (
+      SELECT body->>'condition_key' AS key, max(ts) AS at
+        FROM ev
+       WHERE body->>'condition_key' LIKE ${prefixLike}
+         -- A resolution envelope carries condition_key TOO (severe-event-broadcast stamps
+         -- both), so an alarm is defined by the ABSENCE of the resolve fields.
+         AND NOT (body ? 'resolves_condition' OR body ? 'resolves_conditions')
+       GROUP BY 1
+    ),
+    resolves AS (
+      SELECT k AS key, max(ts) AS at
+        FROM ev
+        CROSS JOIN LATERAL jsonb_array_elements_text(
+          CASE WHEN jsonb_typeof(body->'resolves_conditions') = 'array'
+               THEN body->'resolves_conditions'
+               ELSE jsonb_build_array(body->>'resolves_condition') END
+        ) AS k
+       WHERE (body ? 'resolves_condition' OR body ? 'resolves_conditions')
+         AND k LIKE ${prefixLike}
+       GROUP BY 1
+    )
+    SELECT a.key AS key
+      FROM alarms a
+      LEFT JOIN resolves r ON r.key = a.key
+     WHERE r.at IS NULL OR a.at > r.at`;
+  return rows.map((r) => r.key).filter((k): k is string => typeof k === 'string' && k.length > 0);
+}
+
 // ── check + hysteresis + debounce + self-clear + starter ─────────────────────────
 
 const lastAlertedAt = new Map<string, number>();
@@ -224,6 +301,10 @@ export interface PrimaryGuardDeps {
   /** WI-4023: the fleet all-clear when the guard self-clears (default: real
    *  broadcastSevereEventResolvedMany). Inject a no-op in tests for the same reason. */
   pageResolved?: (keys: string[]) => Promise<void>;
+  /** WI-7291: the `single-primary:*` conditions currently OPEN in durable state — the
+   *  input that lets ANY process all-clear a recovery, not only the one that alarmed.
+   *  Default: the real workspace-scoped PG read. */
+  openConditions?: () => Promise<string[]>;
 }
 
 async function defaultPage(verdict: PrimaryVerdict, streak: number, count: number, ws: string): Promise<void> {
@@ -305,25 +386,62 @@ export async function runSinglePrimaryCheck(
   if (verdict.ok || !verdict.key) {
     consecutiveNon1.clear();
     let selfCleared = false;
-    if (openAlarms.size > 0) {
-      const clearedKeys: string[] = [];
-      for (const [key, msgId] of [...openAlarms]) {
-        try {
-          await resolve({
-            msg_id: msgId,
-            choice: 'auto-resolved-recovered',
-            note: `single-primary count returned to 1 (healthy) — the ${key} alarm self-cleared against live state.`,
-          });
-          selfCleared = true;
-          clearedKeys.push(key);
-        } catch {
-          /* best-effort: never crash the request worker */
-        }
+
+    // Resolve the ESCALATION rows this process opened. Still keyed off the in-process
+    // map because resolveEscalation needs a msg_id only the opener holds — and unlike the
+    // condition all-clear below, this path is not the leak: openEscalation dedups, and a
+    // row orphaned by a worker restart is drained by the 14-day escalation GC.
+    for (const [key, msgId] of [...openAlarms]) {
+      try {
+        await resolve({
+          msg_id: msgId,
+          choice: 'auto-resolved-recovered',
+          note: `single-primary count returned to 1 (healthy) — the ${key} alarm self-cleared against live state.`,
+        });
+        selfCleared = true;
+      } catch {
+        /* best-effort: never crash the request worker */
       }
-      openAlarms.clear();
-      // WI-4023: pair the self-clear above with a fleet-facing all-clear — see the
-      // paging note below for why an escalation row alone isn't enough.
-      await pageResolved(clearedKeys);
+    }
+    openAlarms.clear();
+
+    // WI-7291 (root-cause fix, 2026-08-03): the fleet all-clear is driven by DURABLE
+    // condition state, NOT by the per-process `openAlarms` map above.
+    //
+    // THE BUG THIS REPLACES: `pageResolved` used to fire only when THIS process's map was
+    // non-empty, so an all-clear required the SAME process to both alarm and observe the
+    // recovery. A guard runs on every request worker (:3070, :3170, the desktop sidecar at
+    // :3270, …), and the process that alarms is routinely not the one that later sees a
+    // healthy count — so the all-clear was skipped by exactly the processes able to send
+    // it. Measured 2026-08-03: `single-primary:no-primary` had 122 alarms since 2026-07-11
+    // and ZERO resolutions EVER; `single-primary:split-brain-primary` had been open 23 days
+    // after plainly recovering. A permanently-open condition then feeds
+    // condition-staleness-alarm, which re-escalates it every ~30 min (59 escalations in one
+    // 12h window) — a false blocker that trains every agent to discount this alarm, which
+    // is precisely what a genuine routine-engine death cannot afford.
+    //
+    // EDGE-TRIGGERED BY CONSTRUCTION: the read returns a key only while its latest alarm is
+    // newer than its latest resolution, so a recovery emits ONE all-clear and then reads
+    // clean — a peer still alarming re-opens the condition and earns exactly one more. This
+    // deliberately lets a process with direct evidence the count is 1 all-clear an alarm
+    // raised by a process that saw 0: the healthy reading is the falsifiable one, and the
+    // disagreement then shows up as a visible re-alarm rather than a stuck blocker.
+    //
+    // Fail-safe: a read error degrades to emitting nothing (the old behaviour), never to a
+    // false all-clear — the only direction that could hide a real outage.
+    let durablyOpen: string[] = [];
+    try {
+      durablyOpen = deps.openConditions
+        ? await deps.openConditions()
+        : await openSinglePrimaryConditions(getOrgPg().sql as SqlLike, ws);
+    } catch {
+      durablyOpen = [];
+    }
+    if (durablyOpen.length > 0) {
+      selfCleared = true;
+      // pageResolved re-prefixes, so hand it BARE keys — the durable read returns them
+      // already namespaced.
+      await pageResolved(durablyOpen.map((k) => k.slice(CONDITION_PREFIX.length)));
     }
     return { fired: false, verdict, selfCleared };
   }

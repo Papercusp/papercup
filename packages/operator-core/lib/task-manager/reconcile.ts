@@ -85,6 +85,18 @@ export interface ReconcileResult {
   /** Inside our slice, no live ledger row. Someone bypassed the chokepoint, or a
    *  scope outlived the row that described it. REPORT-ONLY in v1 (D-010). */
   unaccounted: ResidueGroup[];
+  /**
+   * A terminal window scope whose window is positively GONE, but whose processes
+   * kept running (P-008 / D-018). Its own class because both neighbours mislead:
+   * `exempt` claims a human owns this lifetime when the human closed it, and bare
+   * `unaccounted` loses the fact that one ever did.
+   *
+   * REPORT-ONLY, and more firmly than the rest (D-016): 14 of 15 such scopes on
+   * this box held live agent sessions or shared infra, so a dead window is NOT
+   * evidence of abandonment. It reads "a window closed but these kept running",
+   * never "kill these".
+   */
+  abandonedWindow: ResidueGroup[];
   /** A papercusp-tree process outside our slice — the owner's own terminal, a
    *  peer's session. Visible, never controlled: visibility != control. */
   foreign: ResidueGroup[];
@@ -259,13 +271,23 @@ export function reconcile(
   }
 
   // ── residue ──────────────────────────────────────────────────────────────
+  //
+  // D-018: the classifier's verdict WINS for `abandoned-window`. This split is
+  // otherwise a pure owned/scopeUnit heuristic that never reads `p.scope`, and a
+  // dead terminal window is neither owned nor in one of our `pc-*.scope` units —
+  // so it used to fall through to `foreign` ("someone else's process we merely
+  // display") even though `classifyScope` had already declared it residue. That
+  // silent re-filing is a second, independent blind spot: fixing only the scan's
+  // cmdline filter would have moved these into the scan and STILL reported zero.
   const unaccountedProcs: ScannedProcess[] = [];
+  const abandonedWindowProcs: ScannedProcess[] = [];
   const foreignProcs: ScannedProcess[] = [];
   for (const p of kernel) {
     if (claimedPids.has(p.pid)) continue;
     const scope = scopeUnitOf(p);
     if (scope && claimedScopes.has(scope)) continue;
-    if (p.owned || scope) unaccountedProcs.push(p);
+    if (p.scope === 'abandoned-window') abandonedWindowProcs.push(p);
+    else if (p.owned || scope) unaccountedProcs.push(p);
     else foreignProcs.push(p);
   }
 
@@ -273,6 +295,7 @@ export function reconcile(
     alive,
     stranded,
     unaccounted: groupResidue(unaccountedProcs),
+    abandonedWindow: groupResidue(abandonedWindowProcs),
     foreign: groupResidue(foreignProcs),
     overdue,
     tooYoung,
@@ -293,6 +316,10 @@ export function summarizeReconcile(r: ReconcileResult): {
   stranded: number;
   unaccounted: number;
   unaccountedPids: number;
+  /** Dead-window scopes + the processes they still hold (P-008 / D-018). Counted
+   *  separately so it can never be read as either "exempt" or a bypass. */
+  abandonedWindow: number;
+  abandonedWindowPids: number;
   foreign: number;
   overdue: number;
   tooYoung: number;
@@ -302,6 +329,8 @@ export function summarizeReconcile(r: ReconcileResult): {
     stranded: r.stranded.length,
     unaccounted: r.unaccounted.length,
     unaccountedPids: r.unaccounted.reduce((n, g) => n + g.pids.length, 0),
+    abandonedWindow: r.abandonedWindow.length,
+    abandonedWindowPids: r.abandonedWindow.reduce((n, g) => n + g.pids.length, 0),
     foreign: r.foreign.length,
     overdue: r.overdue.length,
     tooYoung: r.tooYoung.length,
