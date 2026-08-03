@@ -98,6 +98,9 @@ vi.mock('../../bounded-timeout', () => ({
 }));
 
 const tool = (await import('./checkpoint')).default;
+// REAL (the carry-note mock above spreads importOriginal) — used to build prior notes
+// through the same renderer the store persists, rather than a drift-prone literal.
+const { mergeCarryRows } = await import('../../carry-note');
 
 type Out = { content: { text: string }[]; isError?: boolean };
 const parse = (x: unknown) => (tool.args as { parse: (x: unknown) => unknown }).parse(x);
@@ -607,5 +610,65 @@ describe("WI-7264: repair-don't-refuse — an oversized or wrong-shaped sub-fiel
     it('still rejects a payload past the hard backstop — repair is for overruns, not for absurdity', () => {
       expect(() => parse({ did: 'D'.repeat(8000 * 4 + 1) })).toThrow();
     });
+  });
+});
+
+/**
+ * EI-19463731740128181 — the REPLY must announce rows a write dropped.
+ *
+ * carry-note.test.ts pins the merge helper's `droppedWalls`/`droppedChecks`; this block
+ * pins the TOOL WIRING, which is the half that actually reaches an agent. The two are
+ * separately breakable: the helper can compute a correct drop list that the handler
+ * never surfaces, and that failure mode is invisible to a helper-level test — it is
+ * exactly the shape the original bug had (a correct post-merge count, reported in a way
+ * no caller could read a loss from).
+ */
+describe('loop:checkpoint — a dropped row is REPORTED, never silent (EI-19463731740128181)', () => {
+  // Real via importOriginal (the module mock spreads it), so the prior is built by the
+  // same renderer the store persists — not a hand-written fixture that can drift.
+  const buildPrior = (
+    checks: { claim: string; recheck?: string; verified?: string }[],
+    walls: { claim: string; recheck?: string }[] = [],
+  ) => mergeCarryRows({ priorNote: null, baseNote: 'prior body', checks, walls, hasNoteWrite: true }).note;
+
+  it('names the carried checks a supplied list left out, with a note saying how to avoid it', async () => {
+    getLoopCarryNote.mockResolvedValue(
+      buildPrior([
+        { claim: 'gate is green', recheck: 'state:read', verified: 'saw 30/30 @2026-08-03T10:00:00.000Z' },
+        { claim: 'main is at abc123', recheck: 'git rev-parse main' },
+        { claim: 'deploy landed', recheck: 'curl :3070/api/health' },
+      ]),
+    );
+    const b = body(await call({ did: 'progress', checks: [{ claim: 'a brand new claim' }] }));
+
+    expect(b.ok).toBe(true); // the write SUCCEEDS — this reports a loss, never a refusal
+    expect(b.checks).toBe(1);
+    expect(b.checksDropped).toEqual(['gate is green', 'main is at abc123', 'deploy landed']);
+    expect(b.checksDroppedNote).toContain('REPLACES');
+  });
+
+  it('names dropped WALLS separately — an owner-gated commitment must never vanish quietly', async () => {
+    getLoopCarryNote.mockResolvedValue(
+      buildPrior([], [{ claim: 'owner must ratify the cutover' }, { claim: 'awaiting capital arming' }]),
+    );
+    const b = body(await call({ did: 'progress', walls: [{ claim: 'awaiting capital arming' }] }));
+
+    expect(b.walls).toBe(1);
+    expect(b.wallsDropped).toEqual(['owner must ratify the cutover']);
+    expect(b.checksDropped).toBeUndefined(); // independent axes — no cross-reporting
+  });
+
+  it('says NOTHING on the carry-forward path, so the common reply shape is unchanged', async () => {
+    getLoopCarryNote.mockResolvedValue(
+      buildPrior([{ claim: 'gate is green', recheck: 'state:read' }], [{ claim: 'owner must ratify' }]),
+    );
+    // No `checks`/`walls` args at all ⇒ every carried row is preserved by construction.
+    const b = body(await call({ did: 'progress' }));
+
+    expect(b.checks).toBe(1);
+    expect(b.walls).toBe(1);
+    expect(b.checksDropped).toBeUndefined();
+    expect(b.checksDroppedNote).toBeUndefined();
+    expect(b.wallsDropped).toBeUndefined();
   });
 });

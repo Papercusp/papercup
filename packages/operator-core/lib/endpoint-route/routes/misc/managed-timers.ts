@@ -26,7 +26,11 @@
  * `auth: 'loopback'` — the only caller is another operator process on the same box.
  */
 import { defineTool } from '@papercusp/agent-mcp';
-import { listManaged } from '@papercusp/scheduled-registry';
+import {
+  listManaged,
+  moduleDuplicationWarning,
+  moduleEvaluationCount,
+} from '@papercusp/scheduled-registry';
 import { defaultGetRegisteredSchedules } from '../../../dbos/dbos-schedule-introspect';
 import { describeProcessRole, ownHonoPort } from '../../../schedule-federation';
 
@@ -66,11 +70,29 @@ export default defineTool({
       // defaultGetRegisteredSchedules already swallows its own errors and returns
       // []; this is belt-and-braces so one registry can never take out the other.
     }
+    // Self-trust report (EI-19463700807328229). The original outage was an
+    // inventory that was HALF of one while looking complete — the reader had no
+    // way to tell. `moduleEvaluations` is that missing signal: > 1 means this
+    // module is duplicated in this process, so any NEW module-scoped state added
+    // to the registry would split. It travels WITH the timer list rather than as
+    // a separate health endpoint, because a separate endpoint is precisely what
+    // nobody thought to call for six days.
+    let moduleEvaluations: number | null = null;
+    let moduleDuplication: string | null = null;
+    try {
+      moduleEvaluations = moduleEvaluationCount();
+      moduleDuplication = moduleDuplicationWarning();
+    } catch {
+      // An older @papercusp/scheduled-registry build without these exports must
+      // degrade to "unknown", never take out the timer list itself.
+    }
     return Response.json({
       ok: timersError === null,
       ...identity,
       timers,
       dbosSchedules,
+      moduleEvaluations,
+      ...(moduleDuplication ? { moduleDuplication } : {}),
       ...(timersError ? { error: timersError } : {}),
     });
   },

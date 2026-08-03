@@ -279,6 +279,15 @@ export interface WorkFeedHealth {
    *  every agent's "shipped" work into a void, so this drives `crit` rather than
    *  `warn`. Optional; absent ⇒ 0. */
   stalePausedCriticalRoutines?: number;
+  /** EI-19462267124852221: the stale-paused read FAILED this tick (its fail-soft catch
+   *  fired), so `stalePausedRoutines: 0` above means "NOT OBSERVED", not "observed zero".
+   *  Without this flag the two are indistinguishable, and the liveness alarm's
+   *  auto-resolve-on-recovery reads an unreadable tick as "condition recovered" — which
+   *  is what fired + auto-resolved this signature 5,304/5,311 times in 30 days with a
+   *  BYTE-IDENTICAL summary naming the same 105 routines. A condition that genuinely
+   *  cleared and recurred cannot do that; the CONDITION was constant and the DETECTION
+   *  oscillated. Optional; absent ⇒ the read succeeded (prior fixtures unaffected). */
+  stalePausedRoutinesUnreadable?: boolean;
 }
 
 /**

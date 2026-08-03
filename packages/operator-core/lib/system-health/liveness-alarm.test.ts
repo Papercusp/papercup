@@ -7,6 +7,7 @@ import {
   livenessSignatureOf,
   beesIdleByDesign,
   beesLivenessFromHealth,
+  unobservableLivenessSignatures,
   _resetLivenessAlarmDebounce,
   INFRA_LIVENESS_IDENTITY,
   type BeesLivenessContext,
@@ -1545,5 +1546,108 @@ describe('runLivenessAlarmTick — durable dedup + auto-resolve (EI-2146)', () =
     const t3 = await runLivenessAlarmTick('ws', deps2);
     expect(t3.signals.map((s) => s.key)).not.toContain('panel:infra'); // still recovered
     expect(t3.fired.length).toBe(0); // no re-fire
+  });
+});
+
+describe('EI-19462267124852221 — an UNREADABLE input must not auto-resolve as "recovered"', () => {
+  beforeEach(() => _resetLivenessAlarmDebounce());
+
+  /** An open infra-liveness escalation carrying an explicit signature. */
+  function openRec(sig: string, msg_id: string): EscalationRecord {
+    return {
+      msg_id,
+      severity: 'advisory',
+      summary: `[infra-liveness] ${sig}`,
+      from: INFRA_LIVENESS_IDENTITY.ownerId,
+      livenessSignature: sig,
+      resolved: null,
+    } as unknown as EscalationRecord;
+  }
+
+  function tickWith(health: SystemHealth, opens: EscalationRecord[]) {
+    const resolvedIds: string[] = [];
+    return {
+      resolvedIds,
+      run: () =>
+        runLivenessAlarmTick('ws', {
+          readLast: () => health,
+          computeHealth: async () => health,
+          listOpen: async () => opens,
+          resolve: async (msg_id: string) => { resolvedIds.push(msg_id); },
+          escalate: async () => {},
+          page: async () => {},
+          now: () => 100 * 60_000 + 60_000,
+          snapshotStaleMs: 6 * 60_000,
+        }),
+    };
+  }
+
+  // ── the pure helper ────────────────────────────────────────────────────────
+  it('a panel that panelSafe caught (status unknown + error) marks EVERY signature it feeds unobservable', () => {
+    const h = mkHealth({
+      panels: { workFeed: { status: 'unknown', data: null, error: 'connect-phase deadline' } },
+    });
+    const out = unobservableLivenessSignatures(h);
+    expect([...out].sort()).toEqual(['dead-routines', 'stale-paused-routines']);
+  });
+
+  it('a SUCCEEDING panel whose stale-paused sub-read failed marks only that signature', () => {
+    const h = mkHealth({
+      panels: { workFeed: { data: { deadRoutines: 0, deadRoutineNames: [], stalePausedRoutines: 0, stalePausedRoutinesUnreadable: true } } },
+    });
+    expect([...unobservableLivenessSignatures(h)]).toEqual(['stale-paused-routines']);
+  });
+
+  it('CALIBRATION: a healthy, fully-READ panel marks nothing unobservable', () => {
+    // Without this the two assertions above would also pass if the helper simply
+    // returned every signature always.
+    const h = mkHealth({
+      panels: { workFeed: { data: { deadRoutines: 0, deadRoutineNames: [], stalePausedRoutines: 0 } } },
+    });
+    expect([...unobservableLivenessSignatures(h)]).toEqual([]);
+  });
+
+  it('the idiomatic `data: null` healthy fixture is NOT treated as unreadable (status stays ok)', () => {
+    // `data: null` is ambiguous — production only makes it via panelSafe's catch, but
+    // it is also this suite's "nothing to report" value. Keying on it would make a
+    // genuine recovery unresolvable, so the helper keys on `status`/`error` instead.
+    expect([...unobservableLivenessSignatures(mkHealth())]).toEqual([]);
+  });
+
+  // ── the defect: auto-resolve ───────────────────────────────────────────────
+  it('THE DEFECT: an open stale-paused escalation is NOT resolved when the sub-read was unreadable', async () => {
+    const health = mkHealth({
+      evaluatedAt: 100 * 60_000,
+      panels: { workFeed: { data: { deadRoutines: 0, deadRoutineNames: [], stalePausedRoutines: 0, stalePausedRoutinesUnreadable: true } } },
+    });
+    const t = tickWith(health, [openRec('stale-paused-routines', 'esc-sp')]);
+    const r = await t.run();
+    // Pre-fix this resolved 'esc-sp' as "condition recovered", dropping the open row
+    // the next fire would have coalesced onto → fire/false-resolve/fire forever
+    // (measured: 5,304 fires / 5,311 auto-resolves in 30d, byte-identical summary).
+    expect(t.resolvedIds).toEqual([]);
+    expect(r.resolved).toEqual([]);
+  });
+
+  it('THE DEFECT (panel-level): neither workFeed signature resolves when the whole panel was caught', async () => {
+    const health = mkHealth({
+      evaluatedAt: 100 * 60_000,
+      panels: { workFeed: { status: 'unknown', data: null, error: 'could not obtain a database connection' } },
+    });
+    const t = tickWith(health, [openRec('stale-paused-routines', 'esc-sp'), openRec('dead-routines', 'esc-dr')]);
+    await t.run();
+    expect(t.resolvedIds).toEqual([]);
+  });
+
+  it('CALIBRATION: a genuine, OBSERVED recovery still auto-resolves (the fix is not a blanket freeze)', async () => {
+    // The load-bearing control. Without it, the two tests above would pass if the fix
+    // simply stopped auto-resolving anything — which would break recovery entirely.
+    const health = mkHealth({
+      evaluatedAt: 100 * 60_000,
+      panels: { workFeed: { data: { deadRoutines: 0, deadRoutineNames: [], stalePausedRoutines: 0 } } },
+    });
+    const t = tickWith(health, [openRec('stale-paused-routines', 'esc-sp')]);
+    await t.run();
+    expect(t.resolvedIds).toEqual(['esc-sp']);
   });
 });

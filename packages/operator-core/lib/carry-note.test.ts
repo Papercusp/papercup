@@ -562,6 +562,39 @@ describe('mergeCarryRows — dropped rows are reported, never silent (EI-1946373
     expect(merged.droppedChecks).toEqual([]);
   });
 
+  /**
+   * FALSIFIABILITY CONTROL (tier 1 — the subject is an imported module, so the control
+   * lives here permanently rather than being probed by mutating the shared tree).
+   *
+   * The two ways this report can regress are both CONSTANTS: report nothing (the silent
+   * loss returns) or report the prior set unconditionally (a false alarm on every safe
+   * write). This case pins the real subject's output against BOTH constants at once and
+   * shows each equals what the OTHER scenario legitimately produces — so neither constant
+   * can satisfy the pair, and a green here cannot be an artifact of a vacuous assertion.
+   */
+  it('the drop report DISCRIMINATES — neither constant implementation could pass', () => {
+    const priorNote = priorNoteWith([1, 2, 3].map(check));
+    const onReplace = mergeCarryRows({
+      priorNote,
+      baseNote: 'body',
+      checks: [{ claim: 'a brand new claim' }],
+      hasNoteWrite: true,
+    }).droppedChecks;
+    const onCarryForward = mergeCarryRows({ priorNote, baseNote: 'body', hasNoteWrite: true }).droppedChecks;
+
+    const ALWAYS_EMPTY: string[] = [];
+    const ALWAYS_PRIOR = ['claim 1', 'claim 2', 'claim 3'];
+
+    // A "report nothing" regression reinstates the silent loss...
+    expect(onReplace).not.toEqual(ALWAYS_EMPTY);
+    expect(onReplace).toEqual(ALWAYS_PRIOR);
+    // ...and a "report everything" regression cries wolf on the safe path.
+    expect(onCarryForward).not.toEqual(ALWAYS_PRIOR);
+    expect(onCarryForward).toEqual(ALWAYS_EMPTY);
+    // The pair is only meaningful because the two scenarios genuinely diverge.
+    expect(onReplace).not.toEqual(onCarryForward);
+  });
+
   it('reports rows lost to the row cap rather than letting the cap drop them silently', () => {
     const prior = Array.from({ length: CARRY_NOTE_MAX_CHECKS }, (_, i) => check(i + 1));
     const priorNote = priorNoteWith(prior);

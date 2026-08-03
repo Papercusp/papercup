@@ -177,6 +177,19 @@ interface RegistryState {
   registry: Map<string, InternalRecord>;
   instanceCounter: number;
   resolved: ResolvedConfig;
+  /**
+   * How many times THIS module's body has been evaluated in this realm.
+   *
+   * The pin above fixes the split — but it also HIDES it: once both module
+   * records share one state object, nothing distinguishes one record from two,
+   * so the packaging fault survives forever and the next split is discovered the
+   * same expensive way. Counting evaluations is what turns the fix into a
+   * standing recurrence guard: > 1 means the duplication is BACK, reported by
+   * the very surface it used to blind.
+   *
+   * Cannot itself split — it lives in the pinned state, not module scope.
+   */
+  moduleEvaluations: number;
 }
 
 const STATE_KEY = Symbol.for('@papercusp/scheduled-registry.state');
@@ -188,11 +201,21 @@ if (!sharedState) {
     registry: new Map<string, InternalRecord>(),
     instanceCounter: 0,
     resolved: defaults(),
+    moduleEvaluations: 0,
   };
   globalStore[STATE_KEY] = sharedState;
 }
 
 const state: RegistryState = sharedState;
+
+/**
+ * Runs on EVERY evaluation of this module body — the first sets it to 1, a
+ * duplicate record takes it to 2. Deliberately placed at module scope: it is a
+ * count of module RECORDS, so it must not be reachable from any function.
+ *
+ * `?? 0` guards a state object pinned by an older build that predates this field.
+ */
+state.moduleEvaluations = (state.moduleEvaluations ?? 0) + 1;
 
 /**
  * The one shared inventory. Safe to alias into module scope because the Map IDENTITY never
@@ -358,6 +381,40 @@ export function getManaged(name: string): ManagedEntry | undefined {
 /** Count of currently-armed timers (raw instances, NOT aggregated rows). */
 export function managedCount(): number {
   return registry.size;
+}
+
+/**
+ * How many times this module's body was evaluated in this process.
+ *
+ * `1` is healthy. `> 1` means the module is DUPLICATED — the state is still
+ * shared (pinned), so the inventory is correct, but a duplicate module record is
+ * a packaging fault that will silently split any NEW module-scoped state added
+ * here later. `0` is impossible from a caller that imported this module.
+ */
+export function moduleEvaluationCount(): number {
+  return state.moduleEvaluations;
+}
+
+/**
+ * Standing recurrence guard for EI-19451658870832332 — the split that made an
+ * armed, firing timer absent from its own process's inventory for 6+ days.
+ *
+ * Returns `null` when healthy, or a ready-to-log warning when this module has
+ * been evaluated more than once. Surfaces embed this beside the timer list so
+ * the inventory reports its OWN trustworthiness: the failure mode was an
+ * inventory that looked complete while being half of one, and the reader had no
+ * way to tell. This is deliberately a property OF the inventory rather than a
+ * separate health check, because a separate check is exactly what nobody ran.
+ */
+export function moduleDuplicationWarning(): string | null {
+  const n = state.moduleEvaluations;
+  if (n <= 1) return null;
+  return (
+    `SPLIT MODULE SINGLETON: @papercusp/scheduled-registry was evaluated ${n}x in this process. ` +
+    `State is pinned so this inventory is still complete, but a duplicate module record is a ` +
+    `packaging fault (CJS/ESM double-load, a bare-vs-relative import of the same file, or a ` +
+    `symlinked node_modules copy). Any NEW module-scoped state added to this file will split.`
+  );
 }
 
 /** Stop ALL timers (graceful shutdown / test teardown). */

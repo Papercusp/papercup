@@ -72,6 +72,17 @@ export function makeFakeBootedHandle(opts: {
     },
     admitted,
     mergeNow: vi.fn(async () => 0),
+    // P-019 (D-012). Deliberately reports `appended: false` rather than faking a
+    // landed snapshot: no test using this fixture exercises the real producer, and a
+    // fixture that claims a snapshot exists would let a sparse-cut assertion pass
+    // against a log that has none. The real behaviour is covered end-to-end against a
+    // REAL booted substrate in __tests__/on-demand-head-snapshot.test.ts.
+    produceHeadSnapshotNow: vi.fn(async () => ({
+      appended: false,
+      coversUpTo: 0,
+      rowCount: 0,
+      chunkCount: 0,
+    })),
     onAnnounce: vi.fn(
       async (_frame: SignedAnnounce): Promise<AdmissionResult> => ({
         admit: false,

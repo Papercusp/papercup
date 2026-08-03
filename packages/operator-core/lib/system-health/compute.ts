@@ -929,10 +929,18 @@ async function collectWorkFeed(ctx: HealthCtx): Promise<HealthPanel<WorkFeedHeal
     // WI-5839 / EI-18654017982759582 items 2+3: stale/unexplained PAUSED routines —
     // the complement readDeadRoutines can never see (it only looks at active=true).
     // Best-effort/fail-soft: never let a metadata-shape surprise sink the whole panel.
+    // EI-19462267124852221: the catch must RECORD that it fired. Leaving `stalePaused`
+    // empty is correct for the panel (one metadata-shape surprise must not sink it), but
+    // an empty array is indistinguishable from a genuine zero — and downstream the
+    // liveness alarm reads "no signal firing" as "condition recovered" and auto-resolves
+    // the open escalation. That conflation is the whole defect: unreadable ≠ clear.
     let stalePaused: StalePausedRoutine[] = [];
+    let stalePausedUnreadable = false;
     try {
       stalePaused = await readStalePausedRoutines(sql, potSlug, ctx.ws);
-    } catch { /* leave empty — the dead-routine signal above still computes */ }
+    } catch {
+      stalePausedUnreadable = true; /* leave empty — the dead-routine signal above still computes */
+    }
     const stalePausedRoutineNames = stalePaused.map((r) => r.name);
     const stalePausedCriticalRoutines = stalePaused.filter((r) => r.critical).length;
     // Auto-eligible-stuck (EI-584): KEYED improvements that ARE auto-eligible but
@@ -958,6 +966,7 @@ async function collectWorkFeed(ctx: HealthCtx): Promise<HealthPanel<WorkFeedHeal
       frontier, frontierStuck, frontierBlocked, startedPlans, autoEligibleStuck,
       keylessHumanReviewBacklog, deadRoutines: deadRoutineNames.length, deadRoutineNames,
       stalePausedRoutines: stalePaused.length, stalePausedRoutineNames, stalePausedCriticalRoutines,
+      ...(stalePausedUnreadable ? { stalePausedRoutinesUnreadable: true } : {}),
     };
     const status = workFeedStatus(data);
     return {

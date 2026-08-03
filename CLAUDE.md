@@ -858,6 +858,32 @@ such task is listed with its reason. **`files=[]` never means "nothing failed"**
 `coverage=none`. `run=` is the same token as the `Full run log:` path, which is how you tell this
 run's break set from a fixture line in an interleaved verdict log.
 
+⚠⚠ **That line covers TEST FILES only — a red can be held by a post-suite LINT/TYPECHECK/BUILD leg
+instead, and then it is EMPTY while the gate is legitimately red.** Read `GATE_HELD_BY` for the
+gate's own answer to "what held it", which covers legs AND files:
+
+```bash
+grep -o 'GATE_HELD_BY.*' <log> | tail -1
+# GATE_HELD_BY count=1 truncated=false entries=["lint:no-control-bytes"]
+```
+
+It is emitted from the SAME list the gate decided red on (`failingTests`, which folds in every
+leg's `failingSignatures`), so it cannot drift from the verdict. **`count=` is legs + files
+combined — not a file count** (the `failed=N` misread above, one level up).
+
+Why this exists: candidate `dca4c291` (verdict 2026-08-03T17:27:30Z, part of the 6-red streak that
+held `main` at `5b898b7b` for ~4h) carried `AFFECTED_TESTS_RESULT status=passed tasks=58 failed=0`,
+**no** `AFFECTED_TESTS_FAILING_FILES` line at all, and **no** `FAILED (npm run …)` line — a genuine
+red whose cause appeared in neither place a triager looks. The real cause (`lint:no-control-bytes`)
+occurred twice in 12,562 lines, both inside the leg's own output block, because 3 of the 12 leg
+banners omitted the word FAILED that the other 9 use. Banners are now conformed and ratcheted
+(`green-checkpoint-leg-banner-shape.test.ts`), but **`GATE_HELD_BY` is the line to read** — banner
+text is prose, this is the verdict's own data. (WI-9613)
+
+⚠ A verdict log written before this landed has no `GATE_HELD_BY` line; for those, grep
+`FAILED (npm run` **and** check the three legacy-worded legs by name (`lint:no-control-bytes`,
+`lint:guard-reachability`, `lint:mock-cast-escape`) before concluding a red has no lint leg.
+
 ⚠ **A verdict log older than 2026-08-03 has no such line — and the fallback recipe this file used
 to give was itself a phantom-path generator.** `grep -oE 'FAIL +[^ ]+\.test\.ts'` does not merely
 skip a `.tsx` suite: `\.test\.ts` matches the PREFIX of `…PreviewPanel.test.tsx`, so `-o` prints the

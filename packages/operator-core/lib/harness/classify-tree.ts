@@ -90,6 +90,26 @@ const DEFAULT_SKIP_DIRS = [
   '.cache',
   'coverage',
   '.pnpm-store',
+  // EI-19464771433863331: the operator's OWN state directory. It holds
+  // GENERATED, gitignored content that can contain real git repos — e.g.
+  // `npm run gen:lib-api` materialises package checkouts under
+  // `.papercusp/lib-api/<pkg>/_media/<pkg>`, each with its own `.git` +
+  // `package.json` + `.papercusp/`, which is precisely the shape this
+  // classifier admits as a submodule. Live on 2026-08-03: 3 such artifact
+  // paths were registered as `harness_kind: 'sub-harness'`, and each
+  // registered sub-harness boots a substrate whose replication-liveness
+  // detector files `severity: major` EIs — so the artifact count multiplies
+  // every peer-log event (42 EIs from 2 log keys in one hour).
+  //
+  // Safe to skip by NAME: a legitimate sub-harness's own
+  // `.papercusp/config.json` is read by explicit path (see
+  // routes/harness/projects.ts registerSubs), never by walking, so nothing
+  // that depends on that file goes through here.
+  //
+  // NB this is a name denylist and cannot know about generated content in
+  // general; `.gitignore` is the authoritative answer and would fix the
+  // class. See the work-item for why that was not done unilaterally.
+  '.papercusp',
 ];
 
 /** Convert OS-native path separators to forward slashes for stable slugs. */

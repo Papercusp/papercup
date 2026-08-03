@@ -388,4 +388,62 @@ describe('dual module instance shares ONE inventory (EI-19451658870832332)', () 
     expect(h.intervals.length).toBe(before + 1);
     expect(h.intervals[before].ms).toBe(3000);
   });
+
+  // --- recurrence guard (EI-19463700807328229) -------------------------------
+  // Pinning fixed the split but HID it: once both records share one state
+  // object, nothing distinguishes one record from two. These assert the module
+  // now reports its own duplication, so a re-split is caught by the inventory
+  // instead of costing another multi-session investigation.
+
+  it('reports exactly one module evaluation, and no warning, when healthy', async () => {
+    // Fresh realm for this assertion: earlier tests in this file deliberately
+    // re-evaluate the module, so the count is cumulative across the suite.
+    vi.resetModules();
+    const g = globalThis as unknown as Record<symbol, unknown>;
+    delete g[Symbol.for('@papercusp/scheduled-registry.state')];
+
+    const fresh = await import('./index');
+
+    expect(fresh.moduleEvaluationCount()).toBe(1);
+    expect(fresh.moduleDuplicationWarning()).toBeNull();
+  });
+
+  it('counts a SECOND module record and warns — the recurrence signal', async () => {
+    vi.resetModules();
+    const g = globalThis as unknown as Record<symbol, unknown>;
+    delete g[Symbol.for('@papercusp/scheduled-registry.state')];
+
+    const first = await import('./index');
+    expect(first.moduleEvaluationCount()).toBe(1);
+
+    vi.resetModules();
+    const second = await import('./index');
+
+    // Both module records agree, because the counter lives in the pinned state.
+    expect(second.moduleEvaluationCount()).toBe(2);
+    expect(first.moduleEvaluationCount()).toBe(2);
+
+    const warning = second.moduleDuplicationWarning();
+    expect(warning).toContain('SPLIT MODULE SINGLETON');
+    expect(warning).toContain('2x');
+    // Must say the inventory is still trustworthy — the fix holds; it is the
+    // PACKAGING that regressed. Reading this as "the timer list is wrong" would
+    // send the next reader down the wrong path.
+    expect(warning).toMatch(/packaging fault/i);
+  });
+
+  it('keeps the counter in the pinned state, so it cannot itself split', async () => {
+    vi.resetModules();
+    const g = globalThis as unknown as Record<symbol, unknown>;
+    delete g[Symbol.for('@papercusp/scheduled-registry.state')];
+
+    await import('./index');
+    vi.resetModules();
+    await import('./index');
+    vi.resetModules();
+    const third = await import('./index');
+
+    // A module-scoped counter would read 1 here (fresh record); the pinned one reads 3.
+    expect(third.moduleEvaluationCount()).toBe(3);
+  });
 });

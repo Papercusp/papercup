@@ -586,6 +586,57 @@ export function evaluateLivenessAlarm(
   return signals;
 }
 
+/**
+ * EI-19462267124852221 — the signatures whose INPUT could not be read this tick, so
+ * their absence from `evaluateLivenessAlarm`'s output means "NOT EVALUATED", not
+ * "evaluated and genuinely clear".
+ *
+ * THE DEFECT THIS CLOSES. Auto-resolve-on-recovery (below) resolves every open
+ * escalation whose signal is no longer firing. But a signal stops firing for two
+ * completely different reasons — the condition cleared, or we could not observe it —
+ * and every read path here degrades the second into the first:
+ *
+ *   - `panelSafe` catches a panel-level throw and returns `data: null` +
+ *     `status:'unknown'` + `error`. The consumer then reads `wf?.stalePausedRoutines ?? 0`
+ *     → 0 → "not firing" → RESOLVED as recovered. The panel is literally SHOUTING
+ *     `status:'unknown'`; nothing was consulting it.
+ *   - the stale-paused sub-read has its own fail-soft catch INSIDE a panel that then
+ *     succeeds, so panel status looks fine while the count is a fabricated zero. That
+ *     one needs the explicit `stalePausedRoutinesUnreadable` flag (compute.ts).
+ *
+ * Measured cost of the conflation on ONE signature (30d, papercusp-workspace):
+ * 5,304 fires / 5,311 auto-resolves, ~1:1 interleaved, with a BYTE-IDENTICAL summary
+ * naming the same 105 routines throughout. A condition that genuinely cleared and
+ * recurred 5,311 times cannot emit identical text every time — the condition was
+ * CONSTANT and the detection oscillated. WI-4878's guard (recompute fresh health
+ * before resolving) does not help: the recompute takes the SAME degrading read paths,
+ * so it re-derives the same fabricated zero. Freshness was never the problem;
+ * OBSERVABILITY was.
+ *
+ * Deliberately PARTIAL: it maps only the signatures whose degradation is proven above.
+ * A signature absent from this map keeps the prior behavior (absence ⇒ resolvable), so
+ * adding one is a safe, additive change — map it to the panel it reads from.
+ */
+export function unobservableLivenessSignatures(health: SystemHealth): Set<string> {
+  const out = new Set<string>();
+  const workFeed = health.panels.workFeed;
+  // Panel-level unreadable. Key on what panelSafe's CATCH actually emits —
+  // `status:'unknown'` + an `error` string — NOT on `data == null` alone. `data: null`
+  // is ambiguous: production only produces it via that catch, but it is also the
+  // idiomatic "healthy / nothing to report" fixture value throughout this suite, and
+  // treating it as unreadable would make a genuine recovery unresolvable. `status`
+  // says "we do not know" unambiguously, and a panel that does not know has NOT
+  // observed recovery. EVERY signature derived from this panel is then unobservable.
+  if (workFeed && (workFeed.status === 'unknown' || workFeed.error != null)) {
+    out.add('stale-paused-routines');
+    out.add('dead-routines');
+  } else if (workFeed?.data?.stalePausedRoutinesUnreadable) {
+    // Panel succeeded, but this one sub-read's fail-soft catch fired.
+    out.add('stale-paused-routines');
+  }
+  return out;
+}
+
 // ── durable per-signal signature (dedup + auto-resolve key) ────────────────────
 
 /** The summary prefix every fired escalation carries. */
@@ -1283,12 +1334,16 @@ export async function runLivenessAlarmTick(
   // when we'd just computed fresh and should CHECK. Now we always check when
   // escalations are open; if the cache is merely fresh (< 6 min), we recompute
   // once more to be sure; if stale, we use the fresh snapshot from line 762.
+  // EI-19462267124852221: track WHICH snapshot produced `currentSigs`, so the
+  // unobservability check below judges the same evidence the signals came from.
+  let healthForSignals = health;
   if (openBySig.size > 0) {
     const sigsShouldRecover = Array.from(openBySig.keys()).some((sig) => !currentSigs.has(sig));
     if (sigsShouldRecover) {
       // Recompute fresh health snapshot for accurate recovery detection
       // (or verify the fresh snapshot we computed on line 762).
       const freshHealth = localSnapshotStale ? health : await compute(ws);
+      healthForSignals = freshHealth;
       signals = evaluateLivenessAlarm(freshHealth, null, {
         snapshotStaleMs: staleMs,
         prevPostmasterStartMs,
@@ -1305,10 +1360,17 @@ export async function runLivenessAlarmTick(
   //    EI-18673998482704275: this loop no longer touches `flapEpisodes` directly —
   //    it only records WHICH blocker signatures genuinely transitioned; the flap
   //    accounting for them happens atomically below, alongside the fire loop's.
+  //    EI-19462267124852221: a signal that is not firing because its input was
+  //    UNREADABLE this tick has not recovered — we simply did not look. Resolving it
+  //    drops the open row the next fire would have coalesced onto, so the next
+  //    readable tick re-fires a fresh escalation: fire → false-resolve → fire, at the
+  //    tick rate, forever. Skip those signatures and leave the open row standing.
+  const unobservableSigs = unobservableLivenessSignatures(healthForSignals);
   const resolved: string[] = [];
   const transitionedBlockerSigs: string[] = [];
   for (const [sig, recs] of openBySig) {
     if (currentSigs.has(sig)) continue; // still firing — keep the single open row
+    if (unobservableSigs.has(sig)) continue; // NOT OBSERVED this tick ≠ recovered
     // WI-4181: only a resolve that actually TRANSITIONED the row (wrote the
     // sibling escalation_resolved event) counts. resolveEscalation is idempotent
     // and returns the sentinel strings 'not_found' / 'already_resolved' /

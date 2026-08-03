@@ -30,6 +30,7 @@
 import type Corestore from 'corestore';
 import type { BootedHarnessHandle, LocalWriteOp } from './boot';
 import type { OwnLog, PeerLogOp } from './peer-log';
+import type { ProduceSnapshotResult } from './log-snapshot';
 import type { AdmittedLog } from './read-merge';
 import type { SwarmHandle } from './swarm';
 import type { SignedAnnounce } from './announce';
@@ -162,6 +163,33 @@ export class RemoteBootedHarnessHandle implements BootedHarnessHandle {
       storeId: this.storeId,
     });
     return r?.mergedOps ?? 0;
+  }
+
+  /**
+   * P-019 (D-012) — the on-demand head snapshot a no-outage `--sparse` release cut
+   * needs. Not implemented over the sidecar transport: `produceLogSnapshot` reads the
+   * whole own log and APPENDS to it, and after relocation both the log and the merge
+   * gate that must serialize the append live in the sidecar. Doing it from here would
+   * mean reading every block over IPC and appending outside that gate — i.e. exactly
+   * the race the in-process implementation exists to avoid.
+   *
+   * Throws with a named cause rather than returning a plausible-looking failure,
+   * because the ONE thing this must never do is let a cut believe it has a head
+   * snapshot it does not have — the silent 1.9 GB "sparse" seed D-012 traced. The
+   * caller (`/api/internal/substrate/head-snapshot`) converts this to `ok:false` and
+   * the cut refuses.
+   *
+   * Wiring a `substrate:produceHeadSnapshot` RPC verb is the real fix and is filed
+   * separately; it is not reachable today because the relocation itself
+   * (SUBSTRATE_SIDECAR, WI-604) is dark.
+   */
+  produceHeadSnapshotNow(): Promise<ProduceSnapshotResult> {
+    throw new Error(
+      `RemoteBootedHarnessHandle.produceHeadSnapshotNow: the own log for ${this.harnessSlug} lives ` +
+        'in the substrate sidecar (file-lock relocation), and no substrate:produceHeadSnapshot RPC ' +
+        'verb exists yet — so a no-outage sparse cut cannot be taken against a relocated store. ' +
+        'Quiesce and cut writable, or drop --sparse. See P-019 / D-012.',
+    );
   }
 
   onAnnounce(_frame: SignedAnnounce): Promise<AdmissionResult> {

@@ -434,3 +434,84 @@ describe('walkHarnessTree — integration against papercup`s real libs/', () => 
     },
   );
 });
+
+// EI-19464771433863331 — recurrence guard.
+//
+// `.papercusp` is the operator's OWN state directory: gitignored, GENERATED,
+// and known to contain real git repos (`npm run gen:lib-api` materialises
+// package checkouts under `.papercusp/lib-api/<pkg>/_media/<pkg>`, each with a
+// `.git` FILE pointing into `.git/modules/...` — i.e. exactly the shape rule 1
+// admits as a submodule). Live on 2026-08-03 three of those artifact paths were
+// registered as `harness_kind: 'sub-harness'`; each registered sub-harness boots
+// a substrate whose replication-liveness detector files `severity: major` EIs,
+// so the artifact count multiplies every peer-log event.
+//
+// This fixture reproduces the real on-disk shape byte-for-byte (same nesting
+// depth, same gitdir target) and fails if `.papercusp` leaves DEFAULT_SKIP_DIRS.
+describe('walkHarnessTree — generated .papercusp state dir is never walked (EI-19464771433863331)', () => {
+  let root: string;
+
+  beforeAll(() => {
+    root = mkdtempSync(join(tmpdir(), 'classify-tree-papercusp-skip-'));
+
+    // CALIBRATION CASE: a real source submodule that MUST still be found.
+    // Without this the guard below would also pass if the walker returned
+    // nothing at all, which would make it certify the opposite of its intent.
+    mkdirSync(join(root, 'libs', 'generic', 'cache'), { recursive: true });
+    writeFileSync(
+      join(root, 'libs', 'generic', 'cache', '.git'),
+      'gitdir: ../../../.git/modules/libs/generic/cache\n',
+    );
+
+    // THE REGRESSION: the exact live artifact path + depth (5 levels below the
+    // root, reachable under the default maxDepth of 4) and the exact gitdir
+    // content observed on disk.
+    const artifact = join(root, '.papercusp', 'lib-api', 'tooldef', '_media', 'tooldef-http');
+    mkdirSync(artifact, { recursive: true });
+    writeFileSync(
+      join(artifact, '.git'),
+      'gitdir: ../../../.git/modules/libs/generic/tooldef-http\n',
+    );
+    writeFileSync(join(artifact, 'package.json'), '{"name":"tooldef-http"}\n');
+    mkdirSync(join(artifact, '.papercusp'), { recursive: true });
+  });
+
+  afterAll(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('finds the real submodule (calibration — proves the walk actually ran)', () => {
+    const nodes = walkHarnessTree(root, { parentSlug: 'papercusp' });
+    const submodules = nodes.filter((n) => n.kind === 'submodule');
+    expect(submodules.map((n) => n.qualifiedSlug)).toContain('papercusp/libs/generic/cache');
+  });
+
+  it('does NOT classify a repo inside .papercusp/ as a submodule', () => {
+    const nodes = walkHarnessTree(root, { parentSlug: 'papercusp' });
+
+    // `qualifiedSlug` exists only on SubmoduleNode — the registration path
+    // (registerSubs) filters to `kind === 'submodule'`, so that is the set
+    // that can actually reach the registry.
+    const submoduleSlugs = nodes
+      .filter((n): n is Extract<ClassifiedNode, { kind: 'submodule' }> => n.kind === 'submodule')
+      .map((n) => n.qualifiedSlug);
+    expect(submoduleSlugs).not.toContain(
+      'papercusp/.papercusp/lib-api/tooldef/_media/tooldef-http',
+    );
+
+    // Nothing under the state dir at all — not the repo, not the plain dirs
+    // leading to it. `relPath` is present on every node variant, so this
+    // catches a leak of ANY kind. A single entry means the walk descended.
+    expect(nodes.map((n) => n.relPath).filter((p) => p.startsWith('.papercusp'))).toEqual([]);
+  });
+
+  it('reaches that depth when the dir is NOT skipped — proves the guard is not passing on depth', () => {
+    // Same tree, `.papercusp` removed from the skip set. If this finds nothing
+    // the fixture is too deep for the default maxDepth and the guard above
+    // would be vacuous, passing for the wrong reason.
+    const nodes = walkHarnessTree(root, { parentSlug: 'papercusp', skipDirs: ['node_modules', '.git'] });
+    expect(nodes.map((n) => n.qualifiedSlug)).toContain(
+      'papercusp/.papercusp/lib-api/tooldef/_media/tooldef-http',
+    );
+  });
+});

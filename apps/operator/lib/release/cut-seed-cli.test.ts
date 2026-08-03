@@ -538,28 +538,115 @@ describe('openSourceStoreForCut (WI-4487 — readOnly is a point-in-time snapsho
   // ── P-014 (D-012): --sparse REQUIRES a fresh head snapshot ────────────────────────
   // findLatestCompleteSnapshot scans back only SNAPSHOT_SCAN_LOOKBACK (4,000) ops, so a
   // sparse cut without a fresh tail snapshot resolves coreSparseFrom → 0 and silently
-  // ships the FULL core. Only the writable/quiesced branch can append one. The 2026-07-21
-  // release shipped 461,475 blocks / 1.9 GB labelled "sparse" exactly this way.
-  describe('--sparse precondition (P-014 / D-012)', () => {
+  // ships the FULL core. The 2026-07-21 release shipped 461,475 blocks / 1.9 GB labelled
+  // "sparse" exactly this way.
+  //
+  // ⚠ P-019 CHANGED THE ANSWER ON THE LIVE-OPERATOR PATH, and the three tests that used
+  // to assert a refusal there are gone, not merely renamed. P-014 refused because the
+  // read-only path cannot append; that was correct given the mechanisms of the time, and
+  // it made "no outage" and "sparse" mutually exclusive. P-019 adds the missing
+  // mechanism — the cut ASKS the operator holding the store to append on its behalf — so
+  // holding the store is no longer disqualifying. What IS disqualifying is having nobody
+  // to ask, and that is what the surviving refusal tests below pin.
+  describe('--sparse precondition (P-014 / D-012, revised by P-019)', () => {
     const live = {
       backfillImpl: (async () => ({ enqueued: 0, dropped: 0 })) as never,
       waitImpl: (async () => ({ undrained: 0, waitedMs: 1 })) as never,
     };
+    const holderFound = (async () => ({
+      kind: 'holder' as const,
+      sibling: { port: 3070, pid: 4070, startedAt: 1 },
+    })) as never;
+    const noHolder = (async () => ({
+      kind: 'no-holder' as const,
+      answered: [3070],
+      probed: [3070, 3170],
+    })) as never;
+    const snapshotProduced = (async () => ({
+      kind: 'produced' as const,
+      port: 3070,
+      pid: 4070,
+      process: 'operator',
+      appended: true,
+      coversUpTo: 461_475,
+      chunkCount: 10,
+      rowCount: 12_345,
+      elapsedMs: 8_200,
+    })) as never;
 
-    it('REFUSES a sparse cut on a LIVE-operator box — the read-only path cannot append the head snapshot', async () => {
+    it('P-019: ALLOWS a sparse cut on a LIVE-operator box once the operator appends the head snapshot', async () => {
       const { openStore } = harness({ locked: true });
-      await expect(
-        openSourceStoreForCut({ ...base, sparse: true, openStore, ...live }),
-      ).rejects.toThrow(/--sparse requires a fresh head snapshot/);
+      const res = await openSourceStoreForCut({
+        ...base,
+        sparse: true,
+        openStore,
+        ...live,
+        findHolderImpl: holderFound,
+        headSnapshotImpl: snapshotProduced,
+      });
+      // The no-outage path AND a trimmed cut — the pair P-014 could not deliver together.
+      expect(res.sourceWritable).toBe(false);
     });
 
-    it('refuses BEFORE backfill — a doomed cut must not leave rows enqueued in substrate_outbox', async () => {
-      const { openStore } = harness({ locked: true });
-      const ran: string[] = [];
+    it('P-019: asks for the snapshot AFTER the drain and BEFORE the read-only open (D-012 ordering)', async () => {
+      // Both halves are load-bearing and neither is visible from the code alone:
+      //   • before the drain ⇒ the snapshot covers less than the seed ships;
+      //   • after the read-only open ⇒ the snapshot lands in a log this cut, whose
+      //     readOnly handle is a point-in-time view, can no longer see.
+      const { calls, openStore } = harness({ locked: true });
       await openSourceStoreForCut({
         ...base,
         sparse: true,
         openStore,
+        backfillImpl: (async () => {
+          calls.push('backfill');
+          return { enqueued: 3, dropped: 0 };
+        }) as never,
+        waitImpl: (async () => {
+          calls.push('drain');
+          return { undrained: 0, waitedMs: 5 };
+        }) as never,
+        findHolderImpl: (async () => {
+          calls.push('probe');
+          return { kind: 'holder' as const, sibling: { port: 3070, pid: 4070, startedAt: 1 } };
+        }) as never,
+        headSnapshotImpl: (async () => {
+          calls.push('head-snapshot');
+          return {
+            kind: 'produced' as const,
+            port: 3070,
+            pid: 4070,
+            process: 'operator',
+            appended: true,
+            coversUpTo: 10,
+            chunkCount: 1,
+            rowCount: 2,
+            elapsedMs: 1,
+          };
+        }) as never,
+      });
+      expect(calls).toEqual([
+        'open:rw',
+        'probe',
+        'backfill',
+        'drain',
+        'head-snapshot',
+        'open:ro(wait=false)',
+      ]);
+    });
+
+    it('P-019: REFUSES when no process on the box holds the hive — and refuses BEFORE backfill', async () => {
+      // The P-014 fail-before-mutating invariant survives P-019 only because discovery is
+      // a separate, side-effect-free probe. Rolling it into the expensive request would
+      // have quietly handed that invariant back: backfillLocalState INSERTs into
+      // substrate_outbox, and those rows would be enqueued for a doomed cut.
+      const { openStore } = harness({ locked: true });
+      const ran: string[] = [];
+      const err = (await openSourceStoreForCut({
+        ...base,
+        sparse: true,
+        openStore,
+        findHolderImpl: noHolder,
         backfillImpl: (async () => {
           ran.push('backfill');
           return { enqueued: 0, dropped: 0 };
@@ -568,26 +655,69 @@ describe('openSourceStoreForCut (WI-4487 — readOnly is a point-in-time snapsho
           ran.push('drain');
           return { undrained: 0, waitedMs: 1 };
         }) as never,
-      }).catch(() => {});
-      // backfillLocalState INSERTs into substrate_outbox. Refusing after it would mutate PG
-      // for a cut that could never have produced a sparse seed.
+      }).then(
+        () => new Error('expected a refusal, got a resolved cut'),
+        (e: unknown) => e,
+      )) as Error;
+      expect(err.message).toMatch(/--sparse requires a fresh head snapshot/);
+      expect(err.message).toMatch(/no operator process here reports having booted/);
+      // Names the ports it looked at, so "nobody has it" is diagnosable rather than bare.
+      expect(err.message).toMatch(/probed ports 3070, 3170/);
       expect(ran).toEqual([]);
     });
 
-    it('names the live operator as the cause and offers both remedies (quiesce / drop --sparse)', async () => {
+    it('P-019: REFUSES (never silently degrades to FULL) when the holder cannot produce the snapshot', async () => {
+      // This one necessarily lands after the drain — a holder that fails is not knowable
+      // in advance. Refusing is still right: a silently-full "sparse" cut is
+      // indistinguishable from a working one until somebody measures the installer, which
+      // took three weeks last time.
+      const { openStore } = harness({ locked: true });
+      await expect(
+        openSourceStoreForCut({
+          ...base,
+          sparse: true,
+          openStore,
+          ...live,
+          findHolderImpl: holderFound,
+          headSnapshotImpl: (async () => ({
+            kind: 'failed' as const,
+            port: 3070,
+            error: 'this harness engine is stopped/closing.',
+          })) as never,
+        }),
+      ).rejects.toThrow(/could not produce it: this harness engine is stopped/);
+    });
+
+    it('P-019: the refusal still offers the quiesce and drop-sparse remedies', async () => {
       const { openStore } = harness({ locked: true });
       const err = (await openSourceStoreForCut({
         ...base,
         sparse: true,
         openStore,
         ...live,
+        findHolderImpl: noHolder,
       }).then(
         () => new Error('expected a refusal, got a resolved cut'),
         (e: unknown) => e,
       )) as Error;
-      expect(err.message).toMatch(/live operator holds the store/);
       expect(err.message).toMatch(/quiesce the operator/);
       expect(err.message).toMatch(/PAPERCUSP_SEED_SPARSE=0/);
+    });
+
+    it('P-019: a QUIESCED sparse cut never consults the operator — it appends the snapshot itself', async () => {
+      const { openStore } = harness({ locked: false });
+      let asked = false;
+      await openSourceStoreForCut({
+        ...base,
+        sparse: true,
+        openStore,
+        refreshImpl: (async () => {}) as never,
+        findHolderImpl: (async () => {
+          asked = true;
+          return { kind: 'no-holder' as const, answered: [], probed: [] };
+        }) as never,
+      });
+      expect(asked).toBe(false);
     });
 
     it('REFUSES a sparse cut when --skip-corestore-refresh suppressed the snapshot', async () => {
