@@ -117,6 +117,36 @@ interface PlanListRowLike {
 }
 
 /**
+ * Drop a resolved identity's `avatarUrl` when it is null, for the LIST feeds
+ * (EI-19455103442009801). Measured live on :3170: null on 1,475/1,475 occurrences
+ * of the plans.list superset read = 25,075 B, ~3.5% of that payload, carrying no
+ * information the key's absence does not already carry.
+ *
+ * WHY HERE AND NOT IN THE UI PROJECTION. `projectPlansReadForUi` is the natural
+ * home for this and CANNOT host it: read-dispatch projects first, then the
+ * plans.list / plans.byHive resolvers call this enricher, which deletes and
+ * RE-ATTACHES both identity keys. A descent added to that projection is a
+ * structural no-op — verified live, it moved the payload by 0 bytes.
+ *
+ * ⚠ NEVER MUTATE the argument: `resolvePlanAuthorIdentities` returns a Map whose
+ * values are SHARED across every row referencing the same author (949 rows carry
+ * a lastEditor here, drawn from far fewer distinct people), so an in-place delete
+ * would edit other rows' identities too. Copy-on-null; pass the original through
+ * untouched when a real avatar exists, which also keeps the common verified-member
+ * case allocation-free.
+ *
+ * The field stays DECLARED (`avatarUrl?: string | null`) and is still mapped from
+ * a real column, so a hive-membership row with a genuine avatar keeps it — the
+ * all-null measurement is a fact about this read's current data, not the field's
+ * purpose. Consumers read it with truthiness; see {@link ResolvedAuthor}.
+ */
+function withoutNullAvatarUrl(identity: ResolvedAuthor): ResolvedAuthor {
+  if (identity.avatarUrl != null) return identity;
+  const { avatarUrl: _omitted, ...rest } = identity;
+  return rest;
+}
+
+/**
  * Enrich plans.list rows in place-by-copy with `ownerIdentity` + `lastEditor`.
  * One hive_members index query + one batched latest-revision query, total.
  */
@@ -150,6 +180,11 @@ export async function enrichPlanListRows(
   const resolved = await resolvePlanAuthorIdentities(workspaceId, inputs, { sql });
 
   // ⚠ SET THE KEY ONLY WHEN IT RESOLVES — never `ownerIdentity: null` (WI-7045).
+  // Same rule one level down: `withoutNullAvatarUrl` drops the identity's own
+  // null `avatarUrl` (EI-19455103442009801). It has to happen HERE rather than in
+  // the UI projection for exactly the reason the next comment block describes —
+  // this enrichment runs after that projection and re-attaches these objects, so
+  // a null stripped there would be put straight back by the lines below.
   // This enrichment runs AFTER `projectPlansReadForUi` has already omitted the
   // row's null-valued keys (read-dispatch.ts projects, then the plans.list /
   // plans.byHive resolvers enrich), so writing an unconditional null here puts
@@ -169,8 +204,8 @@ export async function enrichPlanListRows(
     const out: PlanListRowLike = { ...r };
     delete out.ownerIdentity;
     delete out.lastEditor;
-    if (ownerIdentity) out.ownerIdentity = ownerIdentity;
-    if (lastEditor) out.lastEditor = lastEditor;
+    if (ownerIdentity) out.ownerIdentity = withoutNullAvatarUrl(ownerIdentity);
+    if (lastEditor) out.lastEditor = withoutNullAvatarUrl(lastEditor);
     return out;
   });
 }

@@ -205,51 +205,22 @@ describe('projectPlansReadForUi — plans:list', () => {
   });
 
   /**
-   * EI-19455103442009801: the omit now descends into the two nested identity
-   * bags, where `avatarUrl` was null on 1,475/1,475 live occurrences (25,075 B,
-   * 3.5% of the read production actually issues). The deferred audit of the
-   * shared AuthorIdentity type is done and clean — AuthorBadge reads the field
-   * as plain truthiness, and no consumer anywhere tests it with `=== null` /
-   * `in` / `hasOwnProperty`.
+   * SHALLOW, per D-025 — and deliberately still shallow for the IDENTITY objects
+   * (EI-19455103442009801). `avatarUrl` inside `lastEditor` / `ownerIdentity` was
+   * null on 1,475/1,475 live occurrences and IS worth cutting, but it cannot be
+   * cut here: `enrichPlanListRows` runs AFTER this projection and deletes then
+   * RE-ATTACHES both keys, so a descent added here is a structural no-op (verified
+   * live: 0 bytes changed). The real cut is at that attachment point, and
+   * plan-attribution.test.ts is what guards it.
+   *
+   * This test pins the no-op so the tempting patch cannot land here and look green
+   * while production still ships the nulls.
    */
-  it('omits nulls INSIDE the nested identity objects (lastEditor/ownerIdentity)', () => {
+  it('does NOT recurse into nested objects (nested nulls survive)', () => {
     const out = projectPlansReadForUi('list', {
-      plans: [
-        {
-          slug: 'p',
-          lastEditor: { id: 'u1', handle: 'ada', avatarUrl: null, kind: 'human', verified: true },
-          ownerIdentity: { id: 'u2', handle: 'bob', avatarUrl: null, kind: 'agent', verified: false },
-        },
-      ],
-    }) as { plans: Array<{ lastEditor: Record<string, unknown>; ownerIdentity: Record<string, unknown> }> };
-    expect(out.plans[0].lastEditor).toEqual({
-      id: 'u1',
-      handle: 'ada',
-      kind: 'human',
-      verified: true,
-    });
-    expect('avatarUrl' in out.plans[0].ownerIdentity).toBe(false);
-  });
-
-  /** A real avatar URL is dead weight only when null — never drop a live one. */
-  it('KEEPS a non-null avatarUrl inside an identity object', () => {
-    const out = projectPlansReadForUi('list', {
-      plans: [{ slug: 'p', lastEditor: { handle: 'ada', avatarUrl: 'https://a/42.png' } }],
+      plans: [{ slug: 'p', lastEditor: { handle: 'ada', avatarUrl: null } }],
     }) as { plans: Array<{ lastEditor: Record<string, unknown> }> };
-    expect(out.plans[0].lastEditor).toEqual({ handle: 'ada', avatarUrl: 'https://a/42.png' });
-  });
-
-  /**
-   * The descent is TARGETED at the two identity keys, NOT a global recursion —
-   * {@link omitNullValues} stays shallow everywhere else, because recursing
-   * would change every other read that uses it (and would reach into `ref`, the
-   * discriminated union the shallow rule exists to protect).
-   */
-  it('does NOT recurse into other nested objects (their nulls survive)', () => {
-    const out = projectPlansReadForUi('list', {
-      plans: [{ slug: 'p', itemCounts: { done: 1, blocked: null } }],
-    }) as { plans: Array<{ itemCounts: Record<string, unknown> }> };
-    expect(out.plans[0].itemCounts).toEqual({ done: 1, blocked: null });
+    expect(out.plans[0].lastEditor).toEqual({ handle: 'ada', avatarUrl: null });
   });
 
   /** The clip runs before the omit, so the two compose on a real string. */

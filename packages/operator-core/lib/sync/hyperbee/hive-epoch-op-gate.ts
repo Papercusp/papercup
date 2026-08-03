@@ -140,6 +140,15 @@ export function buildEpochEncryptCapability(
      * bypass below).
      */
     workspaceId?: string;
+    /**
+     * WI-2106: "has this hive EVER been re-keyed?" — the DISCRIMINATOR for the
+     * `epoch === BASELINE_EPOCH` bypass below. Optional: omitted ⇒ the pre-WI-2106
+     * behavior (always plaintext at baseline), which keeps every existing unit test and
+     * any caller that predates this dep byte-identical. Every real boot-deps caller
+     * passes it. Implementation must be MONOTONIC and fail-safe-false — see
+     * hive-epoch-keys-store.ts `hasRekeyEvidence`.
+     */
+    hasRekeyEvidence?: () => Promise<boolean>;
   },
 ): EpochEncryptCapability {
   // EI-6945: `getCurrentEpoch` (getHiveEpoch → getHiveSetting) is an UNCACHED PG
@@ -173,6 +182,29 @@ export function buildEpochEncryptCapability(
     epochCache = { epoch, at: now, generation };
     return epoch;
   };
+  // WI-2106: the re-key-evidence probe is a PG read, and `encryptOp` runs ONCE PER ROW of
+  // the drain batch (DEFAULT_DRAIN_BATCH=200) — exactly the N+1 shape EI-6945 removed from
+  // the epoch read above, so it gets the same treatment. Two properties make this cheaper
+  // than the epoch cache: the answer is MONOTONIC (false→true only, since rows are only
+  // inserted), so a `true` LATCHES permanently and is never re-queried; and the probe only
+  // runs at all when the epoch reads baseline. A `false` is re-checked on the same short
+  // TTL, which bounds how long a just-arrived first epoch key goes unnoticed.
+  let rekeyEvidenceLatched = false;
+  let rekeyEvidenceCheckedAt = 0;
+  const hasRekeyEvidenceCached = async (): Promise<boolean> => {
+    if (rekeyEvidenceLatched) return true;
+    if (deps.hasRekeyEvidence === undefined) return false;
+    const now = Date.now();
+    if (rekeyEvidenceCheckedAt !== 0 && now - rekeyEvidenceCheckedAt < EPOCH_CACHE_TTL_MS) {
+      return false;
+    }
+    rekeyEvidenceCheckedAt = now;
+    if (await deps.hasRekeyEvidence()) {
+      rekeyEvidenceLatched = true;
+      return true;
+    }
+    return false;
+  };
   return {
     async encryptOp(op: LocalWriteOp): Promise<{ epoch: number; value: unknown } | null> {
       const epoch = await getCurrentEpochCached();
@@ -186,7 +218,30 @@ export function buildEpochEncryptCapability(
       // member could ever decrypt (deferred forever at the decrypt gate). Net effect
       // on a 2-box pair: replication dead BOTH directions (the P-059 signature;
       // proven live on the gate rig 2026-07-03, inst-a/b.log 728+ drain failures).
-      if (epoch === BASELINE_EPOCH) return null; // plaintext — no epoch stamp
+      if (epoch === BASELINE_EPOCH) {
+        // WI-2106: epoch 0 is AMBIGUOUS — `coerceEpoch` maps unset/malformed/genuinely-
+        // baseline all to 0, and nothing writes the epoch row at hive CREATION (only the
+        // re-key boundary does). So "0" means EITHER "never re-keyed, plaintext is
+        // correct" OR "I don't know yet, and this hive may be at epoch 5" — the fresh
+        // joiner of an already-re-keyed hive whose settings-row backfill lags. Federating
+        // plaintext in the second case hands post-boundary content to the very member the
+        // boundary revoked. Ask the discriminator; anything other than a POSITIVE proof of
+        // a prior re-key keeps today's plaintext path, so a never-re-keyed hive (the norm)
+        // is byte-identical and can never wedge.
+        if (await hasRekeyEvidenceCached()) {
+          // Proven re-keyed, yet the local epoch still reads baseline ⇒ the epoch row has
+          // not backfilled. Fail CLOSED via the SAME mechanism the missing-key path
+          // already uses: this throw is caught by the outbox drain as an append failure
+          // (halt + retry — see this function's doc comment), so the op is neither
+          // federated in the clear nor lost. When the epoch row lands, the retry reads the
+          // real epoch and encrypts under it — the filing's option (a) "defer-then-encrypt"
+          // achieved with existing machinery rather than a new buffer or a guessed timer.
+          throw new EpochKeyUnavailableError(deps.potId, epoch, {
+            devicePubkey: 'wi-2106-baseline-ambiguous',
+          });
+        }
+        return null; // plaintext — no epoch stamp
+      }
       const key = await deps.resolveKey(deps.potId, epoch);
       // OpIdentity (object) — encryptOpPayload derives the opId internally via buildOpAAD.
       const id = { tableTag: op.table, rowKey: op.hbKey, authorPubkey: op.writerPubkey ?? '' };

@@ -67,6 +67,64 @@ describe('enrichPlanListRows', () => {
     });
   });
 
+  /**
+   * EI-19455103442009801 — a null `avatarUrl` is OMITTED, not shipped. It was null
+   * on 1,475/1,475 live occurrences of the plans.list superset read (25,075 B,
+   * ~3.5%), and the key's absence carries the same information.
+   *
+   * ⚠ This MUST be guarded here rather than in ui-read-projection.test.ts: that
+   * projection runs BEFORE this enrichment, which deletes and re-attaches both
+   * identity keys, so the same assertion there passes while production still ships
+   * the nulls. That near-miss is the whole reason this test exists.
+   */
+  it('OMITS a null avatarUrl from the attached identities (not `avatarUrl: null`)', async () => {
+    const sql = fakeSql({
+      // An authorId with no pot_members match → resolves with avatarUrl null.
+      revisions: [{ harness_slug: 'papercup', plan_slug: 'a', author_id: 'su-88991fc5-dd92', author_kind: 'agent' }],
+    });
+    const rows = (await enrichPlanListRows(
+      [{ slug: 'a', owner: 'aviynw2@gmail.com', harness: 'papercup' }],
+      { sql, workspaceId: 'default' },
+    )) as Array<Record<string, unknown>>;
+
+    const lastEditor = rows[0].lastEditor as Record<string, unknown>;
+    const ownerIdentity = rows[0].ownerIdentity as Record<string, unknown>;
+    expect('avatarUrl' in lastEditor).toBe(false);
+    expect('avatarUrl' in ownerIdentity).toBe(false);
+    // The rest of the identity is untouched — this omits one key, it does not slim.
+    expect(lastEditor).toMatchObject({ handle: 'su-88991fc5', kind: 'agent', verified: false });
+    expect(lastEditor.id).toBeDefined();
+  });
+
+  /**
+   * The shared-object hazard: `resolvePlanAuthorIdentities` returns a Map whose
+   * values are reused across every row referencing the same author, so stripping
+   * by mutation would corrupt sibling rows. Two rows with the SAME last editor
+   * must both come back stripped AND intact.
+   */
+  it('does not corrupt identities shared across rows (copy-on-null, no mutation)', async () => {
+    const sql = fakeSql({
+      revisions: [
+        { harness_slug: 'papercup', plan_slug: 'a', author_id: 'su-88991fc5-dd92', author_kind: 'agent' },
+        { harness_slug: 'papercup', plan_slug: 'b', author_id: 'su-88991fc5-dd92', author_kind: 'agent' },
+      ],
+    });
+    const rows = (await enrichPlanListRows(
+      [
+        { slug: 'a', owner: null, harness: 'papercup' },
+        { slug: 'b', owner: null, harness: 'papercup' },
+      ],
+      { sql, workspaceId: 'default' },
+    )) as Array<Record<string, unknown>>;
+
+    for (const row of rows) {
+      const le = row.lastEditor as Record<string, unknown>;
+      expect(le).toBeDefined();
+      expect('avatarUrl' in le).toBe(false);
+      expect(le).toMatchObject({ handle: 'su-88991fc5', kind: 'agent' });
+    }
+  });
+
   it('returns the input untouched for an empty list', async () => {
     const sql = fakeSql({});
     expect(await enrichPlanListRows([], { sql })).toEqual([]);

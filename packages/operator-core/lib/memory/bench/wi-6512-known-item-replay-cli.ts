@@ -98,6 +98,7 @@ async function runOracle(args: Args): Promise<void> {
   );
 
   let batchesWithAnyWinner = 0;
+  let batchesWithLenientWinner = 0;
   let batchesProvenUnreachable = 0;
   let batchesUndetermined = 0;
   const winnerProfile: Array<{ term: string; df: number; len: number; pos: number; batch: number }> = [];
@@ -132,7 +133,16 @@ async function runOracle(args: Args): Promise<void> {
     // A single-term sweep therefore reports batches as "unreachable" that are
     // perfectly reachable, which is a false ceiling in the expensive direction —
     // it argues for abandoning selection when selection is exactly what works.
-    const results: Array<{ term: string; win: boolean }> = [];
+    // ⚠ THIRD CORRECTION, same class as the first two. This probe used to score
+    // ONE criterion — `carriesAnswer`, which is LENIENT (the work-item id OR any
+    // of three mem0 records that would equally stop the investigation). The bar
+    // it is measured against ("beat STRICT 2 of 7") is the STRICT criterion (the
+    // literal work-item id). A lenient ceiling quoted against a strict bar is a
+    // UNITS MISMATCH: it inflates the apparent headroom and cannot be acted on.
+    // Caught by reconciling against a measurement already trusted — the endpoint
+    // run scored BANDED 0/7, while a lenient-only oracle called BANDED's turn-63
+    // pick a WINNER. Both are correct; they are not the same question. Score BOTH.
+    const results: Array<{ term: string; strict: boolean; lenient: boolean }> = [];
     const queue: string[] = [];
     for (let i = 0; i < terms.length; i++) {
       for (let j = i + 1; j < terms.length; j++) queue.push(`${terms[i]} ${terms[j]}`);
@@ -147,13 +157,22 @@ async function runOracle(args: Args): Promise<void> {
           harnessSlugs: ['papercusp'],
         });
         const rendered = res.lines.map((l) => l.line).join('\n');
-        results.push({ term, win: carriesAnswer(rendered) !== undefined });
+        results.push({
+          term,
+          strict: rendered.includes(KNOWN_ITEM),
+          lenient: carriesAnswer(rendered) !== undefined,
+        });
       }
     };
     await Promise.all([worker(), worker(), worker(), worker()]);
 
-    const winners = results.filter((r) => r.win).map((r) => r.term);
+    // STRICT is the headline: it is the only criterion comparable to the shipped
+    // bar (2 of 7). LENIENT is reported alongside so the gap between them is
+    // visible rather than silently chosen.
+    const winners = results.filter((r) => r.strict).map((r) => r.term);
+    const lenientWinners = results.filter((r) => r.lenient).map((r) => r.term);
     if (winners.length > 0) batchesWithAnyWinner++;
+    if (lenientWinners.length > 0) batchesWithLenientWinner++;
     for (const w of winners) {
       const [a, b] = w.split(' ') as [string, string];
       winnerProfile.push({
@@ -183,14 +202,23 @@ async function runOracle(args: Args): Promise<void> {
       // nothing is EVIDENCE; a truncated one that found nothing is NOT.
       console.log(
         complete
-          ? `     winners: (NONE — every pair tried; this batch is PROVEN unreachable by 2-term selection)`
-          : `     winners: (none found — but ${fullPairs - results.length} pairs were NOT tried: UNDETERMINED, not unreachable)`,
+          ? `     STRICT winners: (NONE — every pair tried; PROVEN unreachable by 2-term selection)`
+          : `     STRICT winners: (none found — but ${fullPairs - results.length} pairs NOT tried: UNDETERMINED, not unreachable)`,
       );
+      if (lenientWinners.length > 0) {
+        console.log(
+          `     …but ${lenientWinners.length} pair(s) DO return an answer-bearing record (lenient): ` +
+            `${lenientWinners.slice(0, 4).map((w) => `"${w}"`).join('  ')}${lenientWinners.length > 4 ? '  …' : ''}`,
+        );
+      }
     } else {
       const shown = winners
         .slice(0, 8)
         .map((w) => `"${w}"${same(w, picks.length) ? '[L]' : ''}${same(w, picks.banded) ? '[B]' : ''}`);
-      console.log(`     winners (${winners.length}): ${shown.join('  ')}${winners.length > 8 ? '  …' : ''}`);
+      console.log(
+        `     STRICT winners (${winners.length} of ${results.length} pairs; lenient ${lenientWinners.length}): ` +
+          `${shown.join('  ')}${winners.length > 8 ? '  …' : ''}`,
+      );
       console.log(
         `     did a shipped selector pick one?  LENGTH ${winners.some((w) => same(w, picks.length)) ? 'YES' : 'no'}` +
           `   BANDED ${winners.some((w) => same(w, picks.banded)) ? 'YES' : 'no'}`,

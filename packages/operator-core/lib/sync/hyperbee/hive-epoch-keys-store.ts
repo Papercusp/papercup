@@ -121,6 +121,55 @@ export async function getWrappedKey(
 }
 
 /**
+ * WI-2106: has this hive EVER been re-keyed, as far as this box can locally prove?
+ *
+ * The discriminator the epoch-0 plaintext bypass is missing. `coerceEpoch`
+ * (hive-epoch-state.ts) collapses THREE states into `0` — `unset`, `malformed`, and
+ * `genuinely-baseline` — and `setHiveEpoch` is called ONLY from the re-key boundary
+ * (hive-epoch-boundary.ts:125), never at hive creation. So a never-re-keyed hive and a
+ * fresh joiner of an ALREADY-re-keyed hive whose `hive_settings` epoch row has not
+ * backfilled yet BOTH read epoch 0, and `encryptOp` cannot tell them apart: the first
+ * must federate plaintext (correct), the second must NOT (a removed member could read
+ * it — the read-cut guarantee this module exists to provide).
+ *
+ * `pot_epoch_keys` supplies a signal that is independent of that row:
+ *   - MONOTONIC — rows are only ever INSERTed, so this can only go false→true. It can
+ *     never flap back and re-open the window. (Deliberately NOT a `hive_settings` key,
+ *     which FEDERATES under LWW: a lower value arriving with a later HLC would overwrite
+ *     a higher one and silently re-open exactly this hole.)
+ *   - LOCAL — a plain read of an already-projected table. No new durable surface, no
+ *     migration, no federation semantics to reason about.
+ *   - FAIL-SAFE BY CONSTRUCTION — a never-re-keyed hive has NO epoch>=1 row anywhere, so
+ *     this returns false and the plaintext bypass behaves exactly as it does today. That
+ *     is what keeps the fix from re-introducing the P-059 wedge: a naive "defer whenever
+ *     the epoch is unknown" would defer FOREVER on every never-re-keyed hive, which is
+ *     the precise infinite-drain-failure outage the baseline bypass was added to fix
+ *     (728+ drain failures, replication dead both directions, gate rig 2026-07-03).
+ *
+ * ANY epoch>=1 row proves a boundary ran, whichever device it was wrapped for — a joiner
+ * is granted keys for epochs [0..current] at admission, so this typically becomes true
+ * at admission rather than waiting on opportunistic content arrival.
+ *
+ * Honest limitation: this BOUNDS the plaintext window, it does not CLOSE it. A joiner
+ * that has neither its epoch row nor any wrapped key yet still reads baseline. Closing it
+ * entirely needs a join-time epoch handshake at the admission seam (see WI-2106).
+ */
+export async function hasRekeyEvidence(
+  workspaceId: string,
+  potHomeSlug: string,
+  sql?: Sql,
+): Promise<boolean> {
+  const s = pg(sql);
+  const rows = (await s.unsafe(
+    `SELECT 1 FROM harness_shared.pot_epoch_keys
+      WHERE workspace_id = $1 AND harness_slug = $2 AND epoch >= 1
+      LIMIT 1`,
+    [workspaceId, potHomeSlug],
+  )) as unknown as Array<unknown>;
+  return rows.length > 0;
+}
+
+/**
  * The member-side `WrappedKeyLoader` for the EpochKeyProvider, bound to (workspace,
  * Hive home). `load` returns the device's wrapped blob as bytes (base64-decoded), or
  * null when absent (removed member / not-yet-arrived → the provider fails closed).

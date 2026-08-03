@@ -367,3 +367,95 @@ describe('search:semantic — output projection (scope → harness_slug remap)',
     expect(p.total_hits).toBe(2);
   });
 });
+
+// ── P-009 runtime honesty ───────────────────────────────────────────────────
+// These drive the REAL handler with a working `tx`, so they cover the wiring
+// end-to-end rather than the `no handle` early-return the other tests take.
+describe('search:semantic — coverage honesty (P-009)', () => {
+  const TURNS_SURFACE = 'harness_shared.operator_turns.text_embedding';
+
+  /** A tx whose one query returns scripted coverage-sample rows. */
+  const txWith = (rows: unknown[]) => ({ unsafe: async () => rows });
+
+  const sample = (embedded: number, eligible: number, recent?: [number, number]) => ({
+    surface: TURNS_SURFACE,
+    observed_at: new Date().toISOString(),
+    eligible_rows: String(eligible),
+    embedded_rows: String(embedded),
+    recent_eligible: recent ? String(recent[0]) : null,
+    recent_embedded: recent ? String(recent[1]) : null,
+  });
+
+  beforeEach(async () => {
+    (await import('../../search/coverage-gate')).resetCoverageSnapshotCache();
+  });
+
+  it('reports a degraded surface with real numbers instead of answering confidently', async () => {
+    const tool = (await import('./semantic')).default;
+    const res = await tool.handler(
+      { query: 'x', scope: ['turns'] } as never,
+      CTX({ tx: txWith([sample(720, 1000)]) }) as never,
+    );
+    const p = payloadOf(res as never);
+    expect(p.coverage.degraded).toBe(true);
+    expect(p.coverage.sources[0]).toMatchObject({ source: 'turns', verdict: 'degraded' });
+    expect(p.coverage.sources[0].coverage).toBeCloseTo(0.72, 4);
+    expect(p.coverage.warning).toMatch(/DEGRADED/);
+  });
+
+  it('stays quiet — and cheap — when the index is healthy', async () => {
+    const tool = (await import('./semantic')).default;
+    const res = await tool.handler(
+      { query: 'x', scope: ['turns'] } as never,
+      CTX({ tx: txWith([sample(1000, 1000)]) }) as never,
+    );
+    const p = payloadOf(res as never);
+    expect(p.coverage.degraded).toBe(false);
+    expect(p.coverage.warning).toBeNull();
+    // A healthy search must not pay a per-source payload tax.
+    expect(p.coverage.sources).toEqual([]);
+  });
+
+  it("escalates the wording for mode='embeddings', where a missing row is UNREACHABLE", async () => {
+    const tool = (await import('./semantic')).default;
+    const res = await tool.handler(
+      { query: 'x', scope: ['turns'], mode: 'embeddings' } as never,
+      CTX({ tx: txWith([sample(720, 1000)]) }) as never,
+    );
+    const p = payloadOf(res as never);
+    expect(p.coverage.warning).toMatch(/UNREACHABLE/);
+    expect(p.coverage.warning).toMatch(/hybrid/);
+  });
+
+  it('reports UNKNOWN (never healthy) when no sample exists', async () => {
+    const tool = (await import('./semantic')).default;
+    const res = await tool.handler(
+      { query: 'x', scope: ['turns'] } as never,
+      CTX({ tx: txWith([]) }) as never,
+    );
+    const p = payloadOf(res as never);
+    expect(p.coverage.degraded).toBe(true);
+    expect(p.coverage.sources[0].verdict).toBe('unknown');
+    expect(p.coverage.warning).toMatch(/UNKNOWN/);
+  });
+
+  it('does not fail the search when the coverage read throws', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const tool = (await import('./semantic')).default;
+      const boom = { unsafe: async () => { throw new Error('pg is down'); } };
+      const res = await tool.handler(
+        { query: 'x', scope: ['turns'] } as never,
+        CTX({ tx: boom }) as never,
+      );
+      const p = payloadOf(res as never);
+      // Search still answers; honesty degrades to unknown rather than blocking.
+      expect(p.query).toBe('x');
+      expect(p.coverage.sources[0].verdict).toBe('unknown');
+      // ...and the degradation is logged, not swallowed.
+      expect(warn).toHaveBeenCalledTimes(1);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});

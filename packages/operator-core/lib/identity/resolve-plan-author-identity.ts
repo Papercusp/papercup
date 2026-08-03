@@ -44,8 +44,19 @@ export interface ResolvedAuthor {
   /** A short, human-facing handle — NEVER a raw email. */
   handle: string;
   /** GitHub avatar when the reference binds to a verified member; else null
-   *  (the UI renders an initials chip). */
-  avatarUrl: string | null;
+   *  (the UI renders an initials chip).
+   *
+   *  OPTIONAL, not merely nullable: the plans.list / plans.byHive wire payload
+   *  OMITS this key when it resolves to null (EI-19455103442009801 — it was null
+   *  on 1,475/1,475 live occurrences, 25,075 B of pure dead weight). The omission
+   *  happens at the attachment point in sync-resolver/plan-attribution.ts, not in
+   *  the UI projection, because that projection runs BEFORE the enrichment that
+   *  attaches these objects.
+   *
+   *  ⚠ Read it with TRUTHINESS (`avatarUrl ? … : …`, `??`, `?.`). `=== null`,
+   *  `'avatarUrl' in x`, `hasOwnProperty` and destructuring-with-a-default all
+   *  break on an omitted key. Every current consumer already uses truthiness. */
+  avatarUrl?: string | null;
   kind: 'human' | 'agent';
   /** True when handle/avatar come from a github-verified hive member. */
   verified: boolean;

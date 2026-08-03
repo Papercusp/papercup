@@ -61,29 +61,26 @@
  * value, and that function's `if (!counts) return null` guard already treats a
  * missing `itemCounts` the same as a null one.
  *
- * NOW extended into the nested identity objects too (EI-19455103442009801) —
- * `avatarUrl` inside `lastEditor` / `ownerIdentity`, measured null on 1,475/1,475
- * live occurrences = 25,075 B (3.5%) of the read production actually issues.
- * The deferred "needs its own audit of the shared AuthorIdentity type" is DONE,
- * and it came back clean on all three counts:
- *   1. The field is NOT deleted — only omitted from the wire when null. It stays
- *      declared, and `resolve-plan-author-identity.ts` still maps it from a real
- *      column (`r.avatar_url`), so hive-membership rows CAN carry a non-null
- *      value. 1,475/1,475-null is a fact about THIS read's data, not the field.
- *   2. Zero omit-unsafe consumers: `AuthorBadge.tsx` reads it as plain truthiness
- *      (`avatarUrl ? <img> : …`), and a tree-wide grep for `avatarUrl === null`,
- *      `!== null`, `'avatarUrl' in`, and `hasOwnProperty('avatarUrl')` found NONE.
- *   3. The blast radius is provably exactly one field: `ResolvedAuthor`'s other
- *      members (`id`, `handle`, `kind`, `verified`) are non-null BY CONSTRUCTION
- *      — every construction site sets them — so a generic null-omit applied to
- *      one of these objects cannot drop anything except `avatarUrl`.
- * ⚠ This is a TARGETED descent into two known-plain identity bags, NOT a global
- * recursion: {@link omitNullValues} stays shallow for every other nested value,
- * because making it recurse would change every other read that uses it (and would
- * reach into `ref`, the discriminated union the shallow rule exists to protect).
- * ⚠ Two UNRELATED types are named `AuthorIdentity` — AuthorBadge.tsx (this one)
- * and sync/hyperbee/policy-admission.ts (p2p). Do not conflate them; no hyperbee
- * file appears anywhere in the avatarUrl grep.
+ * STILL NOT extended into the nested identity objects HERE — and it CANNOT be,
+ * which is worth stating precisely because the obvious patch looks like it works
+ * (EI-19455103442009801). `avatarUrl` inside `lastEditor` / `ownerIdentity` was
+ * null on 1,475/1,475 live occurrences (25,075 B, 3.5% of the read production
+ * actually issues), so it IS worth cutting — but this projection is the wrong
+ * layer for it. `enrichPlanListRows` (sync-resolver/plan-attribution.ts) runs
+ * AFTER this function and `delete`s then RE-ATTACHES both keys, so a descent
+ * added here is a structural NO-OP: it fires on rows that do not carry the
+ * identity objects yet, and anything it did would be overwritten moments later.
+ * Verified live — adding the descent here changed the payload by 0 bytes.
+ *
+ * ✅ THE CUT LIVES AT THE ATTACHMENT POINT instead: `enrichPlanListRows` strips a
+ * null `avatarUrl` as it attaches, which is also where the WI-7045 "never write a
+ * null back after the projection omitted it" rule already lives. One fix there
+ * covers BOTH `plans.list` and `plans.byHive` (its only two production callers).
+ *
+ * ⚠ If you are here because you want to slim a NESTED object on the list feed,
+ * check whether a later enricher owns that key before editing this file — the
+ * `plans:items` descent below is genuine (nothing re-attaches `item`), so the two
+ * cases look identical from here and are not.
  *
  * plans:get and every other verb pass through unchanged — plans:get IS the
  * full-fidelity detail read.
@@ -241,19 +238,8 @@ function projectItems(data: Record<string, unknown>): Record<string, unknown> {
 }
 
 /**
- * The nested plain-bag identity objects on a plans:list row that the null-omit
- * descends into. Both are `ResolvedAuthor` shapes set by `plan-attribution.ts`
- * ONLY when they resolve (never `ownerIdentity: null` — WI-7045), so a present
- * value here is always a plain object, never a union a consumer narrows
- * structurally. See the header for the audit behind this descent.
- */
-const LIST_IDENTITY_KEYS = ['lastEditor', 'ownerIdentity'] as const;
-
-/**
  * Slim a plans:list row: clip `nextAction` to a tooltip preview and omit
- * null-valued keys (see {@link omitNullValues} — 15.2% of this payload), then
- * omit them inside the nested identity bags too (a further 3.5%, all of it
- * `avatarUrl` — see the header).
+ * null-valued keys (see {@link omitNullValues} — 15.2% of this payload).
  *
  * The clip runs BEFORE the omit so a `nextAction: null` is dropped rather than
  * left as a clipped null; `clipPreview` passes non-strings through, so the two
@@ -266,14 +252,6 @@ function projectList(data: Record<string, unknown>): Record<string, unknown> {
     if (!row || typeof row !== 'object') return row;
     const r = { ...(row as Record<string, unknown>) };
     if ('nextAction' in r) r.nextAction = clipPreview(r.nextAction, UI_TEXT_PREVIEW_MAX);
-    for (const key of LIST_IDENTITY_KEYS) {
-      const identity = r[key];
-      // A null identity is left for the row-level omit below to drop entirely;
-      // an array is not a ResolvedAuthor and is passed through untouched.
-      if (identity && typeof identity === 'object' && !Array.isArray(identity)) {
-        r[key] = omitNullValues(identity as Record<string, unknown>);
-      }
-    }
     return omitNullValues(r);
   });
   return { ...data, plans: rows };

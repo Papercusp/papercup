@@ -33,6 +33,8 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { decodeManifest } from '@papercusp/seed-bundle';
 import { resolveSeedDir, SEED_MANIFEST_FILE } from './restore-hive-seed';
+import { createBundledEpochKeyProvider } from './bundled-epoch-key-provider';
+import { resolveSeedDecryptionKey } from './deferred-git-restore';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 /** packages/operator-core/lib/sync/hyperbee → repo root */
@@ -131,6 +133,46 @@ describe.skipIf(!seedPresent)('shipped seed artifact (integrity of the real bund
     const parsed = JSON.parse(readFileSync(keysPath, 'utf8')) as unknown;
     expect(parsed, 'epoch-keys.json is not a non-empty object').toBeTruthy();
     expect(Object.keys(parsed as Record<string, unknown>).length).toBeGreaterThan(0);
+  });
+
+  it("RESOLVES the git store's declared keyRef through the real provider — not merely that keys ship", async () => {
+    // EI-19458472116740526. The assertion above is satisfied by ANY non-empty
+    // epoch-keys.json, including one that does not carry the epoch/potId this
+    // manifest's keyRef actually names — a seed cut at epoch 2 shipped with only
+    // epochs 0..1, or a potId rename. In that case the file exists, parses, is
+    // non-empty, every check above passes, and boot still cold-paths: the provider
+    // throws EpochKeyUnavailableError, resolveSeedDecryptionKey maps it to null,
+    // and the git store stays deferred forever. On an offline box that is exactly
+    // the empty pot the whole seed effort exists to prevent, and it is logged as a
+    // normal path, so nothing surfaces it.
+    //
+    // This runs the SHIPPED chain (bootstrap-papercusp-hive.ts:477-480 builds the
+    // same bundled provider) against the SHIPPED artifact, end to end: manifest →
+    // keyRef → provider → base64 decode → 32-byte length check.
+    //
+    // Cheap enough to be routine: measured 2026-08-03 at 0ms (epoch-keys.json is
+    // 138 bytes and the provider caches the parse). The item that filed this
+    // predicted key resolution could NOT be asserted cheaply — measurement showed
+    // otherwise. Only the DECRYPT half is expensive, and that is a separate,
+    // deliberately non-routine measurement (the full restore ran in 9.8s wall and
+    // materialized an 18,987-file checkout; evidence on the work-item).
+    const git = manifest!.stores.find((s) => s.kind === 'git');
+    expect(git?.encryption, 'no encrypted git store to resolve a key for').toBeDefined();
+    const keyRef = git!.encryption!.keyRef;
+
+    const key = await resolveSeedDecryptionKey(keyRef, {
+      epochKeyProvider: createBundledEpochKeyProvider(SEED_DIR),
+    });
+
+    // null is the fail-soft "stays deferred" signal — the silent degradation itself.
+    expect(
+      key,
+      `epoch ${keyRef.epoch} for pot '${keyRef.potId}' did not resolve from the bundled ` +
+        `epoch-keys.json — the shipped git seed would silently cold-path on an offline install`,
+    ).not.toBeNull();
+    // A wrong-length key is rejected by the provider (fail-closed), so a non-null
+    // result must be exactly 32 bytes; asserting it pins that contract here too.
+    expect(key!.length, 'resolved epoch key is not 32 bytes').toBe(32);
   });
 });
 
