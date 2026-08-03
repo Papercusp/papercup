@@ -59,6 +59,30 @@ function git(args, { allowFail = false } = {}) {
   }
 }
 
+const isExported = (node) =>
+  Boolean(node.modifiers?.some((mod) => mod.kind === ts.SyntaxKind.ExportKeyword));
+
+/**
+ * The names of every EXPORTED interface / type alias declared in `sourceText`.
+ *
+ * Deliberately SEPARATE from the property scan rather than derived from its dotted keys:
+ * an `export interface Foo {}` with no members contributes zero property paths, so a
+ * name-set inferred from those keys would not contain `Foo` — and adding the first
+ * required field to it would then be suppressed as "new type" when it is exactly the
+ * stranding case this guard exists to catch. Collecting declarations directly cannot
+ * make that mistake.
+ */
+export function collectExportedTypeNames(sourceText, fileName = 'f.ts') {
+  const sf = ts.createSourceFile(fileName, sourceText, ts.ScriptTarget.Latest, true);
+  const names = new Set();
+  for (const stmt of sf.statements) {
+    if ((ts.isInterfaceDeclaration(stmt) || ts.isTypeAliasDeclaration(stmt)) && isExported(stmt)) {
+      names.add(stmt.name.text);
+    }
+  }
+  return names;
+}
+
 /**
  * Collect every property of every EXPORTED interface / object-type alias, keyed by a
  * dotted path so nested object literals are covered too. The trap that motivated this
@@ -84,9 +108,6 @@ export function collectExportedRequiredProps(sourceText, fileName = 'f.ts') {
     }
   };
 
-  const isExported = (node) =>
-    Boolean(node.modifiers?.some((mod) => mod.kind === ts.SyntaxKind.ExportKeyword));
-
   for (const stmt of sf.statements) {
     if (ts.isInterfaceDeclaration(stmt) && isExported(stmt)) {
       walkMembers(stmt.members, stmt.name.text);
@@ -101,9 +122,23 @@ export function collectExportedRequiredProps(sourceText, fileName = 'f.ts') {
 export function diffRequiredAdditions(beforeText, afterText, fileName = 'f.ts') {
   const before = collectExportedRequiredProps(beforeText, fileName);
   const after = collectExportedRequiredProps(afterText, fileName);
+  // Types that did not EXIST at `before`. main() already skips a brand-new FILE for exactly
+  // this reason ("a brand-new exported interface has no pre-existing construction sites, so
+  // it cannot strand anything") — but that reasoning was only applied at file granularity,
+  // so a new type added to an EXISTING file reported every one of its fields as newly
+  // required. Stranded sites are impossible there by construction, not merely unlikely: no
+  // file at `before` can construct a type that does not exist at `before`, and any site
+  // introduced alongside it is part of the same diff and is typechecked with it.
+  //
+  // This matters beyond noise (EI-19422135158287319): the guard re-fires on every later edit
+  // to the same file, so one new type yields a run of identical warnings in a session, and a
+  // warning that is provably impossible is how a genuinely valuable advisory gets tuned out.
+  const beforeTypes = collectExportedTypeNames(beforeText, fileName);
   const added = [];
   for (const [path, info] of after) {
     if (info.optional) continue;
+    // The declaring type is the dotted path's root (`Type.field`, `Type.nested.field`).
+    if (!beforeTypes.has(path.split('.')[0])) continue;
     const prev = before.get(path);
     // Newly required: either it did not exist, or it existed as optional and became required.
     if (!prev) added.push({ path, reason: 'added-required' });

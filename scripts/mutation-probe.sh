@@ -47,6 +47,11 @@
 #   or by the tracked path itself (--in-tree mode), so the same --test string
 #   works in both.
 #
+#   {} is REQUIRED in copy-out mode (without it the test would run against the
+#   untouched original and every mutant would falsely "survive") and OPTIONAL
+#   under --in-tree, where the tracked file itself is the mutant and the
+#   substitution is a no-op.
+#
 # EXAMPLE (the real probe this script was extracted from)
 #   scripts/mutation-probe.sh \
 #     --file scripts/verify-tauri-headless.sh \
@@ -89,7 +94,24 @@ done
 [ -n "$TEST_CMD" ] || die "missing --test"
 [ -f "$FILE" ]     || die "no such file: $FILE"
 case "$EXPECT" in caught|survived) ;; *) die "--expect must be 'caught' or 'survived'" ;; esac
-case "$TEST_CMD" in *"{}"*) ;; *) die "--test must contain {} (where the probe target path is substituted)" ;; esac
+# The `{}` requirement is MODE-SPECIFIC, and the asymmetry is deliberate — do not "tidy" it
+# back into an unconditional check (EI-19455888914364007).
+#
+# COPY-OUT: load-bearing. `{}` is the ONLY thing pointing the test at the mutated copy, so a
+# command without it runs against the untouched original, the mutant always "survives", and the
+# probe reports your guard as weak when it is fine. Refuse rather than emit that false verdict.
+#
+# IN-TREE: the tracked file itself IS the mutant, so the substitution is a no-op and a command
+# that never names the path is perfectly sound. That is the NORMAL shape here — in-tree mode
+# exists precisely for subjects whose path is not overridable (a suite importing it by a fixed
+# path), which is the same reason the test cannot accept a `{}` to begin with. Demanding the
+# marker anyway forced callers to thread a dummy `PROBE_FILE={}` env var that nothing reads.
+if [ "$IN_TREE" -eq 0 ]; then
+  case "$TEST_CMD" in
+    *"{}"*) ;;
+    *) die "--test must contain {} (where the mutated COPY's path is substituted). If your test cannot take a path — e.g. it imports its subject by a fixed path — use --in-tree, where {} is optional." ;;
+  esac
+fi
 
 SCRATCH="$(mktemp -d "${TMPDIR:-/tmp}/mutation-probe.XXXXXX")" || die "could not create scratch dir"
 readonly SCRATCH

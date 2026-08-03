@@ -25,18 +25,35 @@ advertisement isn't always restored. So **anticipate this specifically when you 
 yourself on a loop** — verify `coord:*` still works right after a `/loop`, and fall
 straight to the bridge if not.
 
-**Crucial check before you assume an outage:** the operator is almost certainly
-**fine**. Confirm:
+**Crucial check before you assume an outage — probe BOTH endpoints, not just
+`/api/health`.** `/api/health` alone is NOT sufficient: it answers off a trivial
+path and stays fast even when the operator's event loop is saturated, so a 200
+there does *not* prove `/api/mcp` "is still fully serving requests" (that claim
+was this doc's own mistake until EI-19420557240747274, 2026-08-03 — corrected
+here). Run the pair:
 
 ```bash
 curl -s -m 4 -o /dev/null -w "%{http_code}\n" http://localhost:3070/api/health   # 200?
+timeout 20 curl -s -o /dev/null -w "%{http_code}\n" -X POST 'http://localhost:3070/api/mcp?superuser=1&client=probe&workspace=papercusp-workspace' \
+  -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"probe","version":"1"}}}'
 ```
 
-If `/api/health` is 200 (and `systemctl --user` shows `papercup-dev-api` active),
-the drop is at the **harness MCP-client layer** (the streamable-HTTP/SSE
-connection died and was not re-established), NOT an operator outage. The MCP
-endpoint itself is still fully serving requests — you just need a different
-transport to it.
+Read the pair together:
+
+- **`/api/health` 200 AND `/api/mcp` answers fast (not a timeout)** → the drop is
+  at the **harness MCP-client layer** (the streamable-HTTP/SSE connection died and
+  was not re-established), NOT an operator outage. The bridge below **will work** —
+  proceed.
+- **`/api/health` 200 but `/api/mcp` TIMES OUT** → the operator process is up but
+  its **event loop is saturated** (a wedge, not a client drop). This is a different
+  failure with a different fix: see
+  [surviving-an-operator-wedge-mcp-severance](/agent-insights/surviving-an-operator-wedge-mcp-severance/).
+  **The bridge below traverses the SAME wedged event loop as your MCP client did —
+  it will hang too, not rescue you.** Don't retry-storm it; back off per that
+  runbook instead.
+- **Both fail / connection refused** → the process itself is down, not a wedge or
+  a client drop; the bridge is irrelevant here too.
 
 ## The bridge
 

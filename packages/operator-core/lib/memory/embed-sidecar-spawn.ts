@@ -300,6 +300,20 @@ export async function spawnEmbedSidecar(): Promise<void> {
   });
 }
 
+/** EI-19418496145469907: log the "no sidecar configured at all" fallback
+ *  ONCE per process. Neither PAPERCUSP_EMBED_SIDECAR_URL nor
+ *  PAPERCUSP_EMBED_SIDECAR=1 is a perfectly normal state for most hosts (a
+ *  desktop install, a one-off script, an agent shell) — this is not an
+ *  error — but it was previously byte-identical in the logs to actually
+ *  exercising the sidecar path, so a standalone verification driver could
+ *  silently verify the wrong code branch with no observable tell. */
+let loggedNoSidecarConfigured = false;
+
+/** Test seam — clear the once-per-process "no sidecar configured" memo. */
+export function _resetNoSidecarConfiguredLogForTests(): void {
+  loggedNoSidecarConfigured = false;
+}
+
 /**
  * Ensure the host-local sidecar is up and return its base URL, or null when
  * disabled/unspawnable. The lazy front door consumers call on first embed —
@@ -314,7 +328,20 @@ export async function spawnEmbedSidecar(): Promise<void> {
 export async function ensureEmbedSidecar(
   requiredCapabilities: readonly string[] = [],
 ): Promise<string | null> {
-  if (!embedSidecarEnabled()) return null;
+  if (!embedSidecarEnabled()) {
+    if (!loggedNoSidecarConfigured) {
+      loggedNoSidecarConfigured = true;
+      console.warn(
+        '[embed-sidecar] no sidecar configured for this process ' +
+          `(${EMBED_SIDECAR_ENABLE_ENV} unset, no explicit URL) — using pure in-process embedding. ` +
+          'This is expected for hosts with no sidecar story. If you meant to exercise the sidecar ' +
+          'path (e.g. verifying production embedding behavior from a standalone driver), export ' +
+          'PAPERCUSP_EMBED_SIDECAR_URL — the systemd units\' value: ' +
+          "`systemctl --user show papercup-bg-host.service -p Environment`.",
+      );
+    }
+    return null;
+  }
   const url = embedSidecarLocalUrl();
   if (isEmbedSidecarRunning()) return url;
   // Sibling-owned? Liveness alone is NOT enough to adopt: the sibling may be a

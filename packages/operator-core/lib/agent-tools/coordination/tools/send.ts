@@ -253,7 +253,7 @@ const endTurnArg = z
   .boolean()
   .optional()
   .describe(
-    "ESC each addressee's CURRENT turn (mimic pressing Escape) BEFORE delivering — the dual of wake-as-Enter. Use ONLY when a recipient's turn is STUCK (e.g. wedged on an API error so a plain wake reaches nobody / typing+Enter won't start the next turn): the ESC ends the dead turn so the CLI re-arms, then (with wake) this message starts a fresh turn. Force-ESC is audited + storm-rate-limited; only end a turn you KNOW is stuck. Skips '*'/'human'/self.",
+    "ESC each addressee's CURRENT turn (mimic pressing Escape) BEFORE delivering — the dual of wake-as-Enter. Use ONLY when a recipient's turn is STUCK (e.g. wedged on an API error so a plain wake reaches nobody / typing+Enter won't start the next turn): the ESC ends the dead turn so the CLI re-arms, then (with wake) this message starts a fresh turn. Force-ESC is audited + storm-rate-limited; only end a turn you KNOW is stuck. Skips '*'/'human'/self. `ended` excludes any target confirmed dead by the same liveness check the wake leg uses — those land in `missed` instead, even if the ESC channel itself reported success.",
   );
 
 const toArg = z
@@ -980,6 +980,33 @@ async function sendOne(
         (r.ok ? ended : missed).push(owner);
       } catch {
         missed.push(owner);
+      }
+    }
+    // EI-19412221266350408: a pty-force ESC can report ok:true against a control socket whose
+    // underlying agent SESSION has already reached a terminal state (e.g. the launcher process
+    // outlived its session — a zombie launcher) — the keystroke channel itself works, but nothing
+    // is listening on the other end. That reads as "I force-ESC'd it, it should recover now" while
+    // the recipient never received anything, and directly contradicts the wake leg's own
+    // recipient_dead verdict for the SAME owner in the SAME call. Cross-check `ended` against the
+    // identical liveness oracle the wake leg's recipient_dead uses (reportIdleRecipients — genuinely
+    // no live session watching the inbox-wake key), and reclassify any confirmed-dead target as
+    // `missed` instead of `ended` — endTurn now shares the wake leg's liveness verdict rather than
+    // trusting the ESC channel's own success report alone.
+    if (ended.length > 0) {
+      try {
+        const { idle: deadDespiteEsc } = await reportIdleRecipients(ended, {
+          workspaceId: identity.workspaceId ?? undefined,
+        });
+        for (const owner of deadDespiteEsc) {
+          const i = ended.indexOf(owner);
+          if (i !== -1) {
+            ended.splice(i, 1);
+            missed.push(owner);
+          }
+        }
+      } catch {
+        /* fail-soft: the liveness cross-check is an enrichment — a probe hiccup keeps the raw
+         * pty-force verdict rather than failing the whole endTurn leg. */
       }
     }
     endTurn = { ended, missed };

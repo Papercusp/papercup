@@ -49,12 +49,41 @@ dropping the sidecar mid-stream can never mix embedding spaces (see
 
 With neither URL nor opt-in set, `resolveProcessSidecarUrl()` returns null and
 `buildSidecarFirstEmbedder` degenerates to the plain in-process embedder with
-zero per-call overhead — byte-for-byte the pre-sidecar behavior.
+zero per-call overhead — byte-for-byte the pre-sidecar behavior. Since
+EI-19418496145469907, `ensureEmbedSidecar()` logs this fallback **once per
+process at WARN** (`[embed-sidecar] no sidecar configured for this process …`)
+instead of silently — see the next section for why that matters.
 
 Resolution order (`embed-sidecar-wiring.ts`): explicit URL → `ensureEmbedSidecar()`
 (when opted in) → null. All four production seams (memory configure cascade,
 agent-tools query embedder, embed-backfill, reembed) route through this one seam
 via `buildSidecarAwareEmbedder(model, kind)`.
+
+### ⚠ A standalone verification driver does NOT inherit the production env — it silently runs a different code path
+
+`PAPERCUSP_EMBED_SIDECAR_URL` lives **only in the systemd units**
+(`papercup-bg-host.service` / `papercup-dev-api.service`), not in your
+interactive shell or an agent session. So a standalone driver — e.g.
+`npx tsx` importing `runBackfillSweep` or any other embedding call directly —
+runs with neither env var set, falls through to the pure in-process ONNX
+embedder, and every observable signal (mode name, dims, vector values,
+error count) is **identical** to a genuine sidecar-served run. The only tell
+without the WARN log above was a subtler per-call latency difference — not
+something you'd notice unless you already had a sidecar baseline to compare
+against (EI-19418496145469907).
+
+If you need to verify the actual production (sidecar-served) code path from a
+standalone driver, export the same value the systemd unit uses:
+
+```bash
+export PAPERCUSP_EMBED_SIDECAR_URL="$(systemctl --user show papercup-bg-host.service -p Environment \
+  | tr ' ' '\n' | grep '^PAPERCUSP_EMBED_SIDECAR_URL=' | cut -d= -f2-)"
+```
+
+Then confirm you're actually on that path: `buildSidecarAwareEmbedder`'s
+resolution should NOT print the "no sidecar configured" WARN, and (in
+embed-backfill specifically) the `sweep starting` / `embedder resolved` heartbeat
+lines should be followed by sidecar-side timing, not the bare in-process numbers.
 
 ## The wire (D-004)
 

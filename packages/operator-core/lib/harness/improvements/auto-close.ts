@@ -94,6 +94,21 @@ export const AUTO_CLOSE_ELIGIBLE_SOURCES: ReadonlySet<string> = new Set([
   // end. dispatchOrphanRate/connSaturationPct/etc. dropping below budget on a later tick
   // is exactly the "signal absent from known-open keys" condition this sweep exists for.
   'perf-regression',
+  // EI-19417016857494865: collectRoutineFailureSignals re-derives from a LIVE query every
+  // tick (`active = true AND metadata->>'last_error' <> ''`) and never caches or latches —
+  // the same reasoning as `loop-stalled` and `migration-drift` above. The routine RUNNER
+  // deletes `last_error`/`last_error_at`/`last_error_source` on its success path
+  // (routines-workflow.ts, source-scoped to 'runner'), so the signal stops the moment a
+  // routine fires cleanly again; deactivation also stops it unconditionally via the
+  // `active = true` filter. A quiet tick therefore reliably means the routine recovered.
+  // Without this, an instantaneous self-clearing failure (e.g. git-sync hitting one
+  // transient GitHub `Connection reset by peer` on a ~2min cadence) is escalated to a
+  // PERSISTENT claimable MAJOR bug that nothing ever retires: measured 2026-08-03, the
+  // `routine:git-sync` key alone re-filed 3× in 3 days and 12 such EIs since 07-11 were
+  // each hand-drained by a separate agent burning a full claim cycle on an
+  // already-recovered routine. The open-dup guard only suppresses a re-file WHILE one is
+  // open, so draining one merely clears the way for the next.
+  'routine-failure',
 ]);
 
 /** The minimal shape the pure decision needs (an EngineerIssue maps onto it). */

@@ -16,9 +16,18 @@ Mid-session, every `mcp__papercusp-su__*` tool vanishes — the harness emits
 `/loop` slash-command is processed** (EI-1740 / WI-260 / WI-258; corroborated
 across ≥2 agents). It does **not** auto-reconnect (observed dark 5h+).
 
-Key tell: the operator `:3070` stays **healthy** (`curl :3070/api/health` → 200).
-So this is a **client-side** disconnect, not a backend outage. The MCP *server*
-is still up and serving every other agent — only *your* client dropped.
+Key tell: the operator `:3070` stays **healthy** (`curl :3070/api/health` → 200)
+**AND `/api/mcp` itself answers promptly** (a short-timeout `initialize` POST
+returns, doesn't hang). Check both — `/api/health` alone is not enough: it
+answers off a trivial path and stays fast even when the event loop is
+saturated, so a 200 there does not by itself prove the MCP route is healthy
+(EI-19420557240747274). If `/api/health` is 200 but `/api/mcp` **times out**,
+that's server-side saturation, not a client drop — see
+[surviving-an-operator-wedge-mcp-severance](/agent-insights/surviving-an-operator-wedge-mcp-severance/)
+instead; the bridge below traverses the same wedged loop and won't rescue you
+in that case. When both checks are healthy: this is a **client-side**
+disconnect, not a backend outage. The MCP *server* is still up and serving
+every other agent — only *your* client dropped.
 
 ## Self-rescue: drive the MCP server directly over HTTP
 

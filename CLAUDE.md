@@ -933,6 +933,30 @@ unchanged — `in_flight_retriage: null` means "no refire in flight", never "unk
 desktop/delta gates and the `main` fast-forward still have to clear; an agent asserted "gate green"
 off the suite result that same morning and had to retract it.
 
+🚨🚨 **Never answer "is a gate run in flight" with a `pgrep`/`ps` process-table probe — not even a
+bracketed one, not even `proc-guard.mjs`.** The self-match fix documented above (bracketing, or
+`proc-guard`'s ancestor-chain exclusion) only protects against matching **your own** shell — it does
+nothing for the failure that actually bites here: matching a **PEER agent's** diagnostic shell.
+Anything specific enough to identify a gate run — a candidate sha, the literal string
+`green-checkpoint`, a failing test path — is exactly what other agents type into `git show`, `grep`,
+or `npx tsc … | grep` **while investigating that same incident**, so `pgrep -f 'release/green-checkpoint'`
+or `pgrep -af <candidate-sha>` matches their argv, not a real gate process. Measured 2026-08-03
+09:06Z: `pgrep -c -f 'release/green-checkpoint'` reported **3**; all three were peers' unrelated
+`bash -c` wrappers (one running `npx tsc` and grepping its output for that same path-string); the
+real count was 0. The same probe had correctly reported 3 REAL gate processes 24 minutes earlier in
+the same session — it is not simply broken, it silently degrades from correct to false-positive
+exactly as peers start typing the incident's identifying strings into their own shells, which is
+precisely when several agents converge on one red gate. The failure is bidirectional and both
+directions are expensive: a phantom "in flight" wrongly counsels waiting/standing down; a phantom
+"nothing in flight" wrongly counsels firing a manual `release:checkpoint-run` that discards a live
+rescue (see above) and costs a ~55min suite. It also resists noticing — the probe returns plausible
+rows (real processes, genuinely matching strings), never an obviously-empty or obviously-broken
+result. **Ask the run's own bookkeeping instead, never the kernel's process table:**
+`release:checkpoint-run`'s `already_running` refusal (self-checking, see above); `dev:pipeline_position`
+→ `gate.checkpointRunInFlight` (`active`/`candidate`/`startedAtMs`/`elapsedSec`); or the
+`inFlightRetriage` marker in `harness_shared.routines` directly (query at the top of the section
+above). (EI-19422230833209442, EI-19422359235363577)
+
 ## Server-side edits and the two-port model — no hot-reload
 
 The Hono host (`bin/hono-host.ts`, MCP tools, `lib/endpoint-route`,

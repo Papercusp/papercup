@@ -98,6 +98,32 @@ describe('mutation-probe.sh — in-tree mode restores the tracked file', () => {
     expect(read()).toBe(ORIGINAL);
   });
 
+  /**
+   * EI-19455888914364007 — the `{}` requirement is MODE-SPECIFIC, and this pins the asymmetry
+   * from BOTH sides with the SAME --test command, so neither half can be "tidied" away:
+   *
+   *  · in-tree  → ACCEPTED. The tracked file itself is the mutant, so the substitution is a
+   *    no-op. This is the normal shape here, because in-tree mode exists precisely for subjects
+   *    a suite imports by a FIXED path — such a test has nowhere to put a {} at all. Requiring
+   *    it anyway forced callers to thread a dummy `PROBE_FILE={}` env var that nothing reads.
+   *  · copy-out → still REFUSED (exit 2). There {} is the only thing pointing the test at the
+   *    mutated copy; without it the test runs against the untouched original, every mutant
+   *    "survives", and the probe reports a sound guard as weak.
+   */
+  it('accepts a --test with no {} placeholder, which copy-out mode must still refuse', () => {
+    const testCmd = `grep -q "^beta$" ${subject}`;
+
+    // in-tree: the mutation lands in the tracked file the command names, so the guard fails on
+    // the mutant => CAUGHT => exit 0. And the file is still restored afterwards.
+    expect(runProbe(['--in-tree', '--file', subject, '--mutate', 's/beta/BETA/', '--test', testCmd])).toBe(0);
+    expect(read()).toBe(ORIGINAL);
+
+    // Non-vacuousness: the very same command is still rejected without --in-tree, so this is a
+    // mode-specific relaxation and not a removed check.
+    expect(runProbe(['--file', subject, '--mutate', 's/beta/BETA/', '--test', testCmd])).toBe(2);
+    expect(read()).toBe(ORIGINAL);
+  });
+
   it('restores PROMPTLY on SIGTERM mid-probe — not merely eventually', async () => {
     const child = spawn(
       'bash',

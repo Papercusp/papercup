@@ -9,7 +9,7 @@
  */
 import { describe, expect, it } from 'vitest';
 // @ts-expect-error — .mjs guard script, no type declarations by design
-import { collectExportedRequiredProps, diffRequiredAdditions, formatNoFindings } from '../../../../scripts/check-required-field-strands.mjs';
+import { collectExportedRequiredProps, collectExportedTypeNames, diffRequiredAdditions, formatNoFindings } from '../../../../scripts/check-required-field-strands.mjs';
 
 const BEFORE = `
 export interface IssueClaimExclusionBreakdown {
@@ -121,6 +121,89 @@ describe('diffRequiredAdditions', () => {
       `export interface A { w?: { p: number; q: number; }; }`,
     );
     expect(added).toEqual([{ path: 'A.w.q', reason: 'added-required' }]);
+  });
+});
+
+/**
+ * EI-19422135158287319 — a type INTRODUCED in the same diff cannot strand anything.
+ *
+ * main() already skipped a brand-new FILE for exactly this reason ("a brand-new exported
+ * interface has no pre-existing construction sites, so it cannot strand anything"), but
+ * applied that reasoning only at FILE granularity. A new type added to an EXISTING file
+ * therefore reported every one of its fields as newly-required — and re-fired on every
+ * later edit to that file, so one new type produced a run of identical warnings in a
+ * single session (measured: 3 fires across 3 edits).
+ *
+ * The cost is not noise, it is CREDIBILITY: this guard's value depends on agents still
+ * reading it, and a warning that is provably impossible is how a good advisory gets tuned
+ * out — paid later by whoever hits a real strand.
+ */
+describe('diffRequiredAdditions — a type NEW in this diff strands nothing by construction', () => {
+  it('stays SILENT on a brand-new exported interface added to an existing file', () => {
+    const added = diffRequiredAdditions(
+      `export interface Existing { a: number; }`,
+      `export interface Existing { a: number; }\nexport interface RegistryBehaviour { readonly name: string; readonly seeAlso?: unknown; }`,
+    );
+    expect(added).toEqual([]);
+  });
+
+  it('stays SILENT on a brand-new exported TYPE ALIAS, including its nested literals', () => {
+    const added = diffRequiredAdditions(
+      `export interface Existing { a: number; }`,
+      `export interface Existing { a: number; }\nexport type NewShape = { top: string; nested: { deep: number; }; };`,
+    );
+    expect(added).toEqual([]);
+  });
+
+  it('STILL FIRES for a pre-existing type in the same diff — the guard is narrowed, not blunted', () => {
+    // The discriminating case: one new type (silent) + one real addition (flagged), together.
+    const added = diffRequiredAdditions(
+      `export interface Existing { a: number; }`,
+      `export interface Existing { a: number; b: string; }\nexport interface BrandNew { c: number; }`,
+    );
+    expect(added).toEqual([{ path: 'Existing.b', reason: 'added-required' }]);
+  });
+
+  it('FIRES on the first required field added to a pre-existing EMPTY interface', () => {
+    // The edge case that decides the implementation: an `export interface Foo {}` contributes
+    // ZERO property paths, so a type-name set inferred from those paths would not contain Foo
+    // and this genuine stranding would be suppressed as "new type". Names are collected from
+    // declarations directly precisely so this cannot happen.
+    const added = diffRequiredAdditions(
+      `export interface Foo {}`,
+      `export interface Foo { x: number; }`,
+    );
+    expect(added).toEqual([{ path: 'Foo.x', reason: 'added-required' }]);
+  });
+
+  it('still flags optional → required on a pre-existing type (the tightening path is unaffected)', () => {
+    const added = diffRequiredAdditions(
+      `export interface A { x?: number; }`,
+      `export interface A { x: number; }\nexport interface AlsoNew { y: string; }`,
+    );
+    expect(added).toEqual([{ path: 'A.x', reason: 'optional-to-required' }]);
+  });
+});
+
+describe('collectExportedTypeNames', () => {
+  it('collects exported interfaces and type aliases, and ignores non-exported ones', () => {
+    const names = collectExportedTypeNames(
+      `export interface A { x: number; }
+       export type B = { y: number; };
+       interface Hidden { z: number; }
+       type AlsoHidden = { w: number; };`,
+    );
+    expect([...names].sort()).toEqual(['A', 'B']);
+  });
+
+  it('includes a MEMBERLESS exported interface — the case a property-derived set would miss', () => {
+    expect([...collectExportedTypeNames(`export interface Empty {}`)]).toEqual(['Empty']);
+  });
+
+  it('includes a non-object type alias (never under-reports what already existed)', () => {
+    // `export type U = 'a' | 'b'` has no properties to scan, but it DID exist — and being
+    // conservative here only ever means reporting, never wrongly suppressing.
+    expect([...collectExportedTypeNames(`export type U = 'a' | 'b';`)]).toEqual(['U']);
   });
 });
 
