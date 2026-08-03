@@ -1874,6 +1874,63 @@ describe('tauri-agent-tools raw-JSON --token advisory (EI-15605)', () => {
  * resolving inside the canonical tree, not on the agent marker or cwd, so
  * every test below explicitly asserts this fires with NO agent marker too.
  */
+describe('shell-write guard: `#` comments are not shell syntax (EI-19385448516432576)', () => {
+  // A `->`/`=>`/`>` inside a comment is PROSE. Because this guard rejects the
+  // WHOLE command, a false positive here means nothing in the call ran — the
+  // agent then works around it, so the cost is silent and recurring. This was
+  // one of at least five filed false-positive reports against this guard.
+  it('allows the filed repro: an arrow inside a trailing `#` comment', () => {
+    expectAllow(
+      runGate(bashCmd('grep -n foo bar.ts # payload->x is the field', { cwd: CANON }), CANON_ENV),
+    );
+  });
+
+  it('allows a comment that merely TALKS about redirecting into the tree', () => {
+    expectAllow(
+      runGate(bashCmd('ls -la # writes > apps/operator/x.txt someday', { cwd: CANON }), CANON_ENV),
+    );
+  });
+
+  it('still denies a real redirect that happens to be followed by a comment', () => {
+    const reason = denyReason(
+      runGate(bashCmd('echo hi > apps/operator/generated.ts # log it', { cwd: CANON }), CANON_ENV),
+    );
+    expect(reason).toContain('EI-18664655909328670');
+    expect(reason).toContain('apps/operator/generated.ts');
+  });
+
+  /**
+   * ORDER REGRESSION GUARD. Comment-stripping MUST run after quote-stripping.
+   * Reversed, the `#` inside the quoted string would be treated as a comment
+   * introducer and swallow the rest of the line — including the REAL redirect —
+   * turning a false positive into a false NEGATIVE (a missed tree write), which
+   * is the far more expensive direction for this guard. If someone reorders the
+   * pipeline, this test fails instead of the hole opening silently.
+   */
+  it('still denies when a `#` appears inside a quoted argument before a real redirect', () => {
+    const reason = denyReason(
+      runGate(bashCmd('echo "x # y" > apps/operator/generated.ts', { cwd: CANON }), CANON_ENV),
+    );
+    expect(reason).toContain('apps/operator/generated.ts');
+  });
+
+  it('still denies when a URL fragment `#` precedes a real redirect', () => {
+    const reason = denyReason(
+      runGate(bashCmd('curl http://h/p#frag > apps/operator/generated.ts', { cwd: CANON }), CANON_ENV),
+    );
+    expect(reason).toContain('apps/operator/generated.ts');
+  });
+
+  it('does not treat `$#` or an infix `a#b` as a comment introducer', () => {
+    // Both must remain visible to the scanner: neither starts a comment in bash,
+    // and over-stripping here would hide a following real redirect.
+    const reason = denyReason(
+      runGate(bashCmd('echo $# a#b > apps/operator/generated.ts', { cwd: CANON }), CANON_ENV),
+    );
+    expect(reason).toContain('apps/operator/generated.ts');
+  });
+});
+
 describe('shell-write file-target guard (EI-18664655909328670)', () => {
   const expectShellWriteDeny = (out: { stdout: string; status: number | null }) => {
     const reason = denyReason(out);

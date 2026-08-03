@@ -11,6 +11,19 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render, screen, fireEvent, waitFor } from '@testing-library/react';
 
+// P-030: the bar reads pipeline stats from the shared PRECOMPUTED `dev.gitPipeline`
+// sync query (as GitClient/AdvOverviewTab do), not its own live REST poll. Mock the
+// sync hook the same way GitClient.test.tsx does; `mockFetch(ops, pipeline)` sets the
+// snapshot this returns. Note the fetch mocks below deliberately NO LONGER answer
+// /api/desktop/git-pipeline — if the component ever regresses to fetching it, the
+// mock throws `unexpected fetch` and the suite fails loudly.
+let mockPipelineResult: Record<string, unknown> = {
+  data: [{}], loading: false, fetching: false, error: null, invalidate: vi.fn(), transport: 'POLL',
+};
+vi.mock('@papercusp/sync', () => ({
+  useSyncQuery: () => mockPipelineResult,
+}));
+
 import EnvSwitcherBar from './EnvSwitcherBar';
 
 function op(p: {
@@ -36,6 +49,10 @@ function op(p: {
 }
 
 function mockFetch(operators: ReturnType<typeof op>[], pipeline?: unknown) {
+  // Pipeline stats now arrive via useSyncQuery, not fetch (P-030).
+  mockPipelineResult = {
+    data: [pipeline ?? {}], loading: false, fetching: false, error: null, invalidate: vi.fn(), transport: 'POLL',
+  };
   const fetchMock = vi.fn(async (url: string, _init?: RequestInit) => {
     const u = String(url);
     if (u.includes('/api/desktop/dev-operators/set-enabled')) {

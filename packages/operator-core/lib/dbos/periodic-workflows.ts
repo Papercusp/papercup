@@ -52,6 +52,7 @@ import { runStorageGrowthAlarmOnce } from '../storage/storage-growth-alarm';
 import { runReplicationSlotAlarmOnce } from '../storage/replication-slot-alarm';
 import { runTestDesktopReaperOnce } from '../test-desktop-reaper';
 import { runDiskSpaceAlarmOnce } from '../storage/disk-space-alarm';
+import { runEmbedCoverageAlarmOnce } from '../search/embed-coverage';
 import { runWalCheckpointSweep } from '../storage/localstorage-wal-guard';
 import { runMemoryAnchorAuditOnce } from '../memory/audit-memory-anchors';
 import { runDesktopPerfScheduledRun } from '../system-health/desktop-perf-scheduled-run';
@@ -792,6 +793,47 @@ const diskSpaceAlarmWorkflow = idempotentRegisterWorkflow('diskSpaceAlarm', () =
   }),
 );
 DBOS.registerScheduled(diskSpaceAlarmWorkflow, { name: 'diskSpaceAlarm', crontab: '0 13,43 * * * *' });
+
+// Every 30min (:21/:51, off the :00 stampede and off the other alarms): embedding
+// fingerprint-coverage alarm (semantic-search-fingerprint-coverage-2026-08-03
+// P-008/P-027/P-006, WI-7469).
+//
+// The guarded failure is UNIQUE among the alarms in this file in one respect: it has no
+// outward symptom at all. A full disk wedges the process, a runaway table shows up in
+// storage sizes — but semantic search over a 1%-populated vector index answers quickly,
+// with plausible-looking results, and looks exactly like a healthy one. It surfaced only
+// because a human noticed their own recent work was unfindable, weeks in. Everything
+// here is downstream of that: the detector's ABSENCE was the root defect.
+//
+// Three signals per surface, all measured over ELIGIBLE rows (rows a surface's own
+// bodySql excludes by design are never counted against it — a total-coverage alarm on
+// raw row counts is unsatisfiable for session_turns and would be muted within a week):
+// corpus coverage, 24h-new-row coverage (the recurrence catcher), and the P-006
+// drain-rate>write-rate invariant across consecutive samples.
+//
+// 30min rather than 5min because the counting scan is a real seq scan (~3.2s on the
+// 422k-row session_turns, measured 2026-08-03) and none of the three signals moves
+// meaningfully faster than that. Default ON; kill-switch PAPERCUSP_EMBED_COVERAGE_ALARM=0.
+// Never throws → can't affect what it watches. Shed under loop pressure.
+async function embedCoverageAlarmTick(): Promise<void> {
+  await DBOS.runStep(async () => {
+    if (process.env.PAPERCUSP_EMBED_COVERAGE_ALARM === '0') return;
+    if (shouldShedHeavyTick('embed-coverage-alarm')) return;
+    const r = await runEmbedCoverageAlarmOnce();
+    if (r.breaches.length > 0) {
+      console.log(
+        `[embed-coverage] ${r.breaches.length} breach(es): ` +
+          r.breaches.map((b) => `${b.surface}/${b.kind}`).join(', '),
+      );
+    }
+  }, { name: 'embed-coverage-alarm' });
+}
+const embedCoverageAlarmWorkflow = idempotentRegisterWorkflow('embedCoverageAlarm', () =>
+  DBOS.registerWorkflow(embedCoverageAlarmTick, {
+    name: 'embedCoverageAlarm', maxRecoveryAttempts: 5,
+  }),
+);
+DBOS.registerScheduled(embedCoverageAlarmWorkflow, { name: 'embedCoverageAlarm', crontab: '0 21,51 * * * *' });
 
 // Hourly (:08, off the other stampedes): WebKit localStorage WAL checkpoint
 // guard (WI-4189 follow-on — localstorage-wal-guard.ts). The 2026-07-11

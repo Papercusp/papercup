@@ -24,7 +24,12 @@ import { Tooltip } from '@/app/harness/Tooltip';
 // because they import the action modules directly. Keep this pointed at the
 // barrel; the shorter-looking `/registry` path is the bug.
 import { listChatActions, listChatModeActions } from '@/lib/chat-actions';
-import type { ChatAction, ChatActionContext, ChatModeAction } from '@/lib/chat-actions/types';
+import type {
+  ChatAction,
+  ChatActionContext,
+  ChatModeAction,
+  ChatModeOption,
+} from '@/lib/chat-actions/types';
 import { Select } from '@/app/harness/Select';
 
 /**
@@ -139,6 +144,18 @@ export function ChatActionBar({ ctx }: { ctx: ChatActionContext }): ReactNode {
   const modes = useMemo(() => listChatModeActions(ctx), [ctx]);
   const [runningId, setRunningId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  /**
+   * WI-7471: resolved option sets, keyed by mode id.
+   *
+   * A mode's `options()` may be async — GRADE's rows are one per ACTIVE rubric,
+   * fetched from the store. Render cannot await, and calling an async
+   * `options()` during render would re-fire the fetch on every re-render, so
+   * resolved sets are cached here and populated on MENU OPEN (below). A sync
+   * axis resolves in a microtask and is indistinguishable from immediate.
+   */
+  const [modeOptions, setModeOptions] = useState<Record<string, ChatModeOption[]>>({});
+  /** Mode ids whose options are in flight — drives the menu's placeholder row. */
+  const [optionsLoading, setOptionsLoading] = useState<Record<string, boolean>>({});
   /** WI-6552: last action that completed successfully — the success half of
    *  the feedback pair below. Cleared whenever another action starts. */
   const [done, setDone] = useState<string | null>(null);
@@ -164,13 +181,56 @@ export function ChatActionBar({ ctx }: { ctx: ChatActionContext }): ReactNode {
    * control as every other value picker on the surface, so the vocabulary got
    * smaller here, not larger.
    */
+  /**
+   * Resolve a mode's option set once, on first menu open (WI-7471).
+   *
+   * Bounded by the SAME `withTimeout` / `PARAMS_TIMEOUT_MS` the `params()` path
+   * uses, and for the same reason spelled out on that constant: the fetch that
+   * hangs here is `rubrics.list`, which is precisely the query WI-6552 caught
+   * never settling. Unbounded, the menu would sit on its loading row forever
+   * with no error — the worst of the two failures, because it looks like the
+   * feature simply does not work.
+   */
+  const ensureOptions = (mode: ChatModeAction): void => {
+    if (modeOptions[mode.id] || optionsLoading[mode.id]) return;
+    let result: ChatModeOption[] | Promise<ChatModeOption[]>;
+    try {
+      result = mode.options(ctx);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+      return;
+    }
+    // A sync axis needs no loading state at all — settle it in place so the
+    // menu opens fully populated rather than flashing a placeholder row.
+    if (Array.isArray(result)) {
+      setModeOptions((prev) => ({ ...prev, [mode.id]: result as ChatModeOption[] }));
+      return;
+    }
+    setOptionsLoading((prev) => ({ ...prev, [mode.id]: true }));
+    void withTimeout(
+      result,
+      PARAMS_TIMEOUT_MS,
+      `${mode.cap} could not load its options in time — try again.`,
+    )
+      .then((opts) => setModeOptions((prev) => ({ ...prev, [mode.id]: opts })))
+      .catch((e: unknown) => {
+        setError(e instanceof Error ? e.message : String(e));
+        // eslint-disable-next-line no-console
+        console.warn(`[chat-action-bar] mode ${mode.id} options failed`, e);
+      })
+      .finally(() => setOptionsLoading((prev) => ({ ...prev, [mode.id]: false })));
+  };
+
   const applyMode = async (mode: ChatModeAction, optionId: string): Promise<void> => {
     setError(null);
     setDone(null);
     setRunningId(mode.id);
     try {
       await mode.set(ctx, optionId);
-      const options = mode.options(ctx);
+      // The CACHE, not a fresh `options()` call: re-calling would re-fetch an
+      // async axis purely to render a confirmation string, and the cache is
+      // guaranteed populated — this only runs after a pick from that menu.
+      const options = modeOptions[mode.id] ?? [];
       setDone(`${mode.cap} → ${options.find((o) => o.id === optionId)?.label ?? optionId}`);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -264,8 +324,22 @@ export function ChatActionBar({ ctx }: { ctx: ChatActionContext }): ReactNode {
             value={state.optionId ?? state.value}
             onChange={(optionId) => void applyMode(mode, optionId)}
             disabled={runningId !== null}
-            options={mode.options(ctx).map((o) => ({
+            /* WI-7471: the option set is RESOLVED, not called here. An async
+               `options()` invoked during render would re-fetch on every
+               re-render; `ensureOptions` fetches once, on open. */
+            onOpenChange={(open) => {
+              if (open) ensureOptions(mode);
+            }}
+            options={(
+              modeOptions[mode.id] ??
+              (optionsLoading[mode.id]
+                ? [{ id: '__loading__', label: 'Loading…' }]
+                : [])
+            ).map((o) => ({
               value: o.id,
+              // A placeholder row must not be pickable — selecting it would
+              // post `__loading__` as a real value.
+              disabled: o.id === '__loading__',
               label: o.hint ? (
                 <span className="pc-ctl-mode-opt">
                   <span className="pc-ctl-mode-opt__label">{o.label}</span>

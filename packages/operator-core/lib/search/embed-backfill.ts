@@ -468,6 +468,10 @@ export const TARGETS: BackfillTarget[] = [
     keyCols: ['harness_slug', 'feature_id'],
     // Backed by hfc_updated_idx (updated_ts DESC). bigint epoch-ms, not a timestamp.
     orderBySql: 'updated_ts DESC',
+    // NOT `updated_ts` — see recencyCol's doc. Ordering wants the cheapest index scan;
+    // the 24h signal wants creation, or edit churn on old items masks a real regression.
+    recencyCol: 'created_ts',
+    recencyColKind: 'epochMs',
   },
   // P-009 (shared-embedding-sidecar-and-enrichment-2026-07-10): documentation
   // sections. docs:search is filesystem-backed, so doc-embed-sync.ts mirrors
@@ -483,6 +487,10 @@ export const TARGETS: BackfillTarget[] = [
     keyCols: ['source_key', 'slug', 'anchor'],
     // No index on updated_at, but the table is ~6.4k rows — the sort is trivial.
     orderBySql: 'updated_at DESC',
+    // doc_sections carries no created_at; rows are sha-keyed and re-synced, so
+    // updated_at IS the write time for this surface.
+    recencyCol: 'updated_at',
+    recencyColKind: 'timestamptz',
   },
   // P-010 (shared-embedding-sidecar-and-enrichment-2026-07-10): the plan
   // store (migration 553). plans:search gains a semantic leg and plans:new's
@@ -493,6 +501,8 @@ export const TARGETS: BackfillTarget[] = [
     embedCol: 'embedding',
     bodySql: `COALESCE(title, '') || E'\\n' || left(COALESCE(content, ''), 2000)`,
     keyCols: ['workspace_id', 'harness_slug', 'plan_slug'],
+    recencyCol: 'created_at',
+    recencyColKind: 'timestamptz',
   },
   // EI-19374072666153095: code_recipes and datatype_registry are BOTH in
   // PROSE_VECTOR_COLUMNS — so a width migration wipes them (`USING NULL`) — but
@@ -518,12 +528,16 @@ export const TARGETS: BackfillTarget[] = [
     keyCols: ['id'],
     // No index on created_at, but the table is ~9.1k rows — the sort is trivial.
     orderBySql: 'created_at DESC',
+    recencyCol: 'created_at',
+    recencyColKind: 'timestamptz',
   },
   {
     table: 'harness_shared.datatype_registry',
     embedCol: 'embedding',
     bodySql: `COALESCE(title, '') || E'\\n' || left(COALESCE(description, ''), 2000)`,
     keyCols: ['workspace_id', 'id'],
+    recencyCol: 'created_at',
+    recencyColKind: 'timestamptz',
   },
 ];
 
@@ -842,9 +856,17 @@ export interface BackfillSweepOptions {
  *
  * Sized to finish INSIDE the 5-minute DBOS tick so the cadence is clean and a
  * tick rarely finds the latch held. Measured 2026-08-03: the batched sidecar path
- * sustains ~16 rows/sec, so a 200s budget moves ~3,200 rows/sweep — well above the
- * old 4-batch ceiling, and enough that session_turns' ~320k eligible backlog
- * drains in hours rather than the ~13 days the ceiling implied.
+ * sustains ~8 rows/sec on REAL bodies, so a 200s budget moves ~1,600 rows/sweep —
+ * well above the old 4-batch ceiling, and enough that session_turns' ~320k eligible
+ * backlog drains in hours rather than the ~13 days the ceiling implied.
+ *
+ * ⚠ CORRECTED (plan D-008): an earlier revision of this comment said ~16 rows/sec.
+ * That figure came from a synthetic probe on SHORT text and does not survive contact
+ * with the corpus — embedding cost scales with body length (~100 chars 59ms · 386
+ * chars 124ms · ~1,900 chars 431ms), and a real 32-row batch averages 386 chars at
+ * 124 ms/row. Left in place because the mistake is instructive: throughput measured
+ * on synthetic text is not throughput, and the error was optimistic by 2× in the one
+ * direction that makes a backfill look affordable.
  *
  * ⚠ THIS IS A SOFT BUDGET and deliberately so: the deadline is checked BETWEEN
  * targets, never mid-batch, so a sweep can overrun by up to one `backfillTable`

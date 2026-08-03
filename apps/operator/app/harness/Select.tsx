@@ -123,6 +123,7 @@ export function Select({
   side,
   align,
   triggerData,
+  onOpenChange,
 }: {
   value: string;
   onChange: (value: string) => void;
@@ -163,12 +164,26 @@ export function Select({
    * rather than rendered as the string "undefined".
    */
   triggerData?: Record<string, string | undefined>;
+  /**
+   * Fired when the menu opens (`true`) and closes (`false`).
+   *
+   * Added for the chat popup's GRADE pill (WI-7471), whose option set is one
+   * row per active rubric and therefore has to be FETCHED. Opening is the
+   * moment that fetch becomes worth paying for: a caller can load its options
+   * lazily here instead of eagerly on mount, so a surface where the menu is
+   * never opened costs nothing.
+   *
+   * Deliberately a notification, not control: `RS.Root` stays UNCONTROLLED, so
+   * a caller that only wants the signal cannot accidentally break opening by
+   * forgetting to feed `open` back.
+   */
+  onOpenChange?: (open: boolean) => void;
 }) {
   const triggerDataAttrs = Object.fromEntries(
     Object.entries(triggerData ?? {}).filter(([, v]) => v !== undefined),
   );
   return (
-    <RS.Root value={value} onValueChange={onChange} disabled={disabled}>
+    <RS.Root value={value} onValueChange={onChange} disabled={disabled} onOpenChange={onOpenChange}>
       <RS.Trigger
         id={id}
         aria-label={ariaLabel}

@@ -166,8 +166,33 @@ export interface ChatModeAction {
    * disagrees with the rest of the surface.
    */
   current(ctx: ChatActionContext): ChatModeState;
-  /** The values this axis can be set to. */
-  options(ctx: ChatActionContext): ChatModeOption[];
+  /**
+   * The values this axis can be set to. MAY be async (WI-7471).
+   *
+   * Async because one axis's option set is not a constant: GRADE offers `Off`
+   * plus one row per ACTIVE rubric, and the rubric set lives in the store, not
+   * in this module. [owner 2026-08-03] "I want the rubric picker back, add that
+   * to the grade on/off toggle."
+   *
+   * ── Why async here and NOT on `current()` ──
+   * They look symmetric and are not. `current()` answers "what is this axis set
+   * to", which the surface ALREADY knows from the roster row it rendered the
+   * pill from — so it stays pure and sync, and the pill can never display a
+   * value that disagrees with the rest of the popup. `options()` answers "what
+   * COULD it be set to", which is a different question with a different source
+   * and is only ever needed once the user opens the menu.
+   *
+   * That timing is the whole reason this is allowed to be async rather than
+   * being fed in through `ctx`: the bar resolves it LAZILY, on menu open, so a
+   * session popup that nobody grades pays nothing. Feeding the rubric list
+   * through `ctx` would instead put a standing `rubrics.list` query on every
+   * popup open — working directly against WI-6617 (cut queries-per-screen) to
+   * serve a menu that is usually never opened.
+   *
+   * A sync implementation is still perfectly normal and is what the other three
+   * axes do; the bar accepts either.
+   */
+  options(ctx: ChatActionContext): ChatModeOption[] | Promise<ChatModeOption[]>;
   /** Apply a chosen option. */
   set(ctx: ChatActionContext, optionId: string): Promise<void> | void;
 }

@@ -1,0 +1,464 @@
+/**
+ * Fingerprint-coverage detector — WI-7469 (plan
+ * semantic-search-fingerprint-coverage-2026-08-03, P-008 / P-027 / P-006).
+ *
+ * The load-bearing tests here are the ones that pin the two ways this detector could be
+ * built such that it LOOKS correct and reports confident numbers while being useless:
+ *
+ *   1. Measuring coverage over ALL rows instead of ELIGIBLE rows (P-027). That makes the
+ *      alarm unsatisfiable for session_turns, so it sits red forever and gets muted.
+ *   2. Restating the eligibility/staleness predicates instead of importing the sweep's,
+ *      so the detector silently goes on measuring an old definition after a bodySql edit.
+ *
+ * Both are asserted structurally, against every real target, not just a fixture.
+ */
+import { describe, expect, it, vi } from 'vitest';
+import {
+  TARGETS,
+  eligiblePredicateSql,
+  modeColOf,
+  recentPredicateSql,
+  stalePredicateSql,
+  type BackfillTarget,
+} from './embed-backfill';
+import {
+  BACKLOG_GROWTH_SAMPLES,
+  MIN_BACKLOG_FOR_ALARM,
+  MIN_RECENT_SAMPLE,
+  RECENT_COVERAGE_FLOOR,
+  TOTAL_COVERAGE_FLOOR,
+  buildCoverageQuery,
+  computeDrain,
+  consecutiveBacklogGrowth,
+  detectCoverageBreaches,
+  formatCoverageToast,
+  runEmbedCoverageAlarmOnce,
+  surfaceKey,
+  toSurfaceCoverage,
+  type CoverageSample,
+  type SurfaceCoverage,
+} from './embed-coverage';
+
+const sessionTurns = TARGETS.find((t) => t.table === 'harness_shared.session_turns')!;
+
+function sample(over: Partial<CoverageSample> & { observedAt: Date }): CoverageSample {
+  return {
+    surface: 'harness_shared.session_turns.text_embedding',
+    totalRows: 1000,
+    eligibleRows: 800,
+    embeddedRows: 800,
+    recentEligible: null,
+    recentEmbedded: null,
+    ...over,
+  };
+}
+
+// ── P-027: eligibility, and the anti-drift guarantee ────────────────────────
+
+describe('eligibility is the sweep’s own predicate, not a restatement', () => {
+  it('every target’s coverage query embeds `length(<its own bodySql>) > 0` verbatim', () => {
+    for (const t of TARGETS) {
+      const q = buildCoverageQuery(t, true, 'gemma');
+      const expected = `length(${t.bodySql}) > 0`;
+      expect(eligiblePredicateSql(t)).toBe(expected);
+      expect(q.sql).toContain(expected);
+    }
+  });
+
+  it('the coverage query reuses stalePredicateSql, so "covered" means the ACTIVE space', () => {
+    // Measuring `embedCol IS NOT NULL` would report ~100% the moment the embedder mode
+    // changed under it — blindest during exactly the incident it exists to catch.
+    const q = buildCoverageQuery(sessionTurns, true, 'gemma');
+    expect(q.sql).toContain(modeColOf(sessionTurns));
+    expect(q.sql).toContain(`NOT (${stalePredicateSql(sessionTurns, true, '$1')})`);
+  });
+
+  it('falls back to the NULL-only predicate when the mode column is absent', () => {
+    const q = buildCoverageQuery(sessionTurns, false, 'gemma');
+    expect(q.sql).toContain(`${sessionTurns.embedCol} IS NULL`);
+    expect(q.sql).not.toContain(modeColOf(sessionTurns));
+  });
+
+  it('session_turns really does exclude rows by design — the premise P-027 rests on', () => {
+    // If this ever stops being true the unsatisfiable-alarm hazard is gone and this
+    // whole eligibility apparatus is dead weight. Pin the premise, not just the fix.
+    expect(sessionTurns.bodySql).toContain('length(text) >= 80');
+  });
+
+  it('coverage over ELIGIBLE rows is 100% where coverage over ALL rows would breach', () => {
+    // The exact regression: 18.4% of session_turns can never be embedded. Judged on raw
+    // rows this surface reads 81.6% — below the 95% floor — forever, no matter what the
+    // sweep does. Judged on eligible rows it is correctly, achievably green.
+    const c = toSurfaceCoverage(sessionTurns, {
+      totalRows: 1000,
+      eligibleRows: 816,
+      embeddedRows: 816,
+      recentEligible: null,
+      recentEmbedded: null,
+    });
+    expect(c.eligibleCoverage).toBe(1);
+    expect(c.ineligibleRows).toBe(184);
+    expect(816 / 1000).toBeLessThan(TOTAL_COVERAGE_FLOOR); // the alarm that could never clear
+    expect(detectCoverageBreaches([{ coverage: c, history: [] }])).toEqual([]);
+  });
+
+  it('an empty surface is fully covered, not 0% covered', () => {
+    const c = toSurfaceCoverage(sessionTurns, {
+      totalRows: 0, eligibleRows: 0, embeddedRows: 0, recentEligible: null, recentEmbedded: null,
+    });
+    expect(c.eligibleCoverage).toBe(1);
+  });
+});
+
+// ── Parameter binding ───────────────────────────────────────────────────────
+
+describe('parameter binding never supplies an unused placeholder', () => {
+  // Postgres derives the parameter COUNT from the highest $n REFERENCED and rejects a
+  // Bind supplying one the statement never uses. A fixed [mode, hours] array would fail
+  // only on surfaces lacking a mode or recency column — i.e. it would pass every test
+  // written against the common case, and break in production on two specific tables.
+  const highestPlaceholder = (sql: string): number =>
+    [...sql.matchAll(/\$(\d+)/g)].reduce((m, x) => Math.max(m, Number(x[1])), 0);
+
+  it('binds exactly what each real target references', () => {
+    for (const t of TARGETS) {
+      for (const spaceAware of [true, false]) {
+        const q = buildCoverageQuery(t, spaceAware, 'gemma');
+        expect(highestPlaceholder(q.sql)).toBe(q.params.length);
+      }
+    }
+  });
+
+  it('a target with neither a mode nor a recency column binds nothing', () => {
+    const bare: BackfillTarget = {
+      table: 'harness_shared.harness_decisions',
+      embedCol: 'body_embedding',
+      bodySql: `left(COALESCE(verb, ''), 10)`,
+      keyCols: ['harness_slug'],
+    };
+    const q = buildCoverageQuery(bare, false, 'gemma');
+    expect(q.params).toEqual([]);
+    expect(q.hasRecent).toBe(false);
+    expect(q.sql).not.toContain('recent_eligible');
+  });
+
+  it('a target with a recency column emits the recent columns and binds the window', () => {
+    const q = buildCoverageQuery(sessionTurns, true, 'gemma', 24);
+    expect(q.hasRecent).toBe(true);
+    expect(q.sql).toContain('recent_eligible');
+    expect(q.sql).toContain('recent_embedded');
+    expect(q.params).toEqual(['gemma', 24]);
+  });
+});
+
+describe('recency columns', () => {
+  it('uses epoch-ms arithmetic for bigint columns and interval arithmetic for timestamptz', () => {
+    // Verified against the live schema by measuring max() on each column, not by reading
+    // a declared type: the wrong scale yields a well-formed, plausible, WRONG answer.
+    const ms = TARGETS.find((t) => t.table === 'harness_shared.work_items')!;
+    expect(ms.recencyColKind).toBe('epochMs');
+    expect(recentPredicateSql(ms, '$1')).toContain('extract(epoch from now()) * 1000');
+
+    expect(sessionTurns.recencyColKind).toBe('timestamptz');
+    expect(recentPredicateSql(sessionTurns, '$1')).toContain('make_interval');
+  });
+
+  it('work_items measures CREATION, not the column it orders by', () => {
+    // updated_ts is the cheapest freshest-first index scan, but edit churn on old items
+    // would let a real regression on new rows hide behind it.
+    const wi = TARGETS.find((t) => t.table === 'harness_shared.work_items')!;
+    expect(wi.orderBySql).toContain('updated_ts');
+    expect(wi.recencyCol).toBe('created_ts');
+  });
+
+  it('a surface with no write-time column reports absent, never zero', () => {
+    const bare: BackfillTarget = {
+      table: 'harness_shared.harness_decisions',
+      embedCol: 'body_embedding',
+      bodySql: `left(COALESCE(verb, ''), 10)`,
+      keyCols: ['harness_slug'],
+    };
+    expect(recentPredicateSql(bare, '$1')).toBeNull();
+    const c = toSurfaceCoverage(bare, {
+      totalRows: 10, eligibleRows: 10, embeddedRows: 0, recentEligible: null, recentEmbedded: null,
+    });
+    expect(c.recentCoverage).toBeNull();
+    // …and an absent signal can never breach.
+    expect(detectCoverageBreaches([{ coverage: c, history: [] }]).some((b) => b.kind === 'recent-coverage'))
+      .toBe(false);
+  });
+});
+
+// ── P-006: the drain > write invariant ──────────────────────────────────────
+
+describe('P-006 drain rate vs write rate', () => {
+  const t0 = new Date('2026-08-03T00:00:00Z');
+  const t30 = new Date('2026-08-03T00:30:00Z');
+
+  it('decomposes the backlog delta exactly into writes minus drains', () => {
+    const d = computeDrain([
+      sample({ observedAt: t30, eligibleRows: 1100, embeddedRows: 700 }),
+      sample({ observedAt: t0, eligibleRows: 1000, embeddedRows: 500 }),
+    ])!;
+    expect(d.writtenEligible).toBe(100);
+    expect(d.drainedRows).toBe(200);
+    expect(d.backlogPrev).toBe(500);
+    expect(d.backlogCur).toBe(400);
+    // The identity the whole design rests on.
+    expect(d.backlogDelta).toBe(d.writtenEligible - d.drainedRows);
+    expect(d.holds).toBe(true);
+    expect(d.drainPerMin).toBeCloseTo(200 / 30);
+    expect(d.writePerMin).toBeCloseTo(100 / 30);
+  });
+
+  it('reports the invariant as violated when writes outrun drains', () => {
+    const d = computeDrain([
+      sample({ observedAt: t30, eligibleRows: 1300, embeddedRows: 600 }),
+      sample({ observedAt: t0, eligibleRows: 1000, embeddedRows: 500 }),
+    ])!;
+    expect(d.holds).toBe(false);
+    expect(d.backlogDelta).toBeGreaterThan(0);
+  });
+
+  it('is ABSENT, not zero, when unmeasurable', () => {
+    // "No data" must never be indistinguishable from "the sweep did nothing".
+    expect(computeDrain([])).toBeNull();
+    expect(computeDrain([sample({ observedAt: t0 })])).toBeNull();
+    // Clock skew / a duplicate sample: non-positive interval.
+    expect(computeDrain([sample({ observedAt: t0 }), sample({ observedAt: t30 })])).toBeNull();
+  });
+
+  it('counts only CONSECUTIVE growth, stopping at the first shrink', () => {
+    const mk = (mins: number, backlog: number) =>
+      sample({ observedAt: new Date(t0.getTime() + mins * 60_000), eligibleRows: 1000 + backlog, embeddedRows: 1000 });
+    // newest-first: 400, 300, 200, 250  → grew, grew, then shrank
+    expect(consecutiveBacklogGrowth([mk(90, 400), mk(60, 300), mk(30, 200), mk(0, 250)])).toBe(2);
+    expect(consecutiveBacklogGrowth([mk(30, 100), mk(0, 200)])).toBe(0);
+  });
+});
+
+// ── Breach rules ────────────────────────────────────────────────────────────
+
+describe('recent-row coverage — the recurrence catcher', () => {
+  it('breaches when new writes are not being indexed', () => {
+    const c = toSurfaceCoverage(sessionTurns, {
+      totalRows: 10_000, eligibleRows: 9000, embeddedRows: 9000,
+      recentEligible: 500, recentEmbedded: 400,
+    });
+    const b = detectCoverageBreaches([{ coverage: c, history: [] }]);
+    expect(b).toHaveLength(1);
+    expect(b[0]!.kind).toBe('recent-coverage');
+    expect(b[0]!.observed).toBeLessThan(RECENT_COVERAGE_FLOOR);
+  });
+
+  it('fires with NO history at all — it must not depend on a prior sample', () => {
+    // The corpus-coverage rule withholds without history; if this one did too, a cold
+    // start would be fully blind, which is when a regression is most likely to land.
+    const c = toSurfaceCoverage(sessionTurns, {
+      totalRows: 100, eligibleRows: 100, embeddedRows: 100,
+      recentEligible: 100, recentEmbedded: 0,
+    });
+    expect(detectCoverageBreaches([{ coverage: c, history: [] }])[0]!.kind).toBe('recent-coverage');
+  });
+
+  it('stays quiet on a sample too small to mean anything', () => {
+    const c = toSurfaceCoverage(sessionTurns, {
+      totalRows: 100, eligibleRows: 100, embeddedRows: 100,
+      recentEligible: MIN_RECENT_SAMPLE - 1, recentEmbedded: 0,
+    });
+    expect(detectCoverageBreaches([{ coverage: c, history: [] }])).toEqual([]);
+  });
+
+  it('stays quiet at full coverage', () => {
+    const c = toSurfaceCoverage(sessionTurns, {
+      totalRows: 100, eligibleRows: 100, embeddedRows: 100,
+      recentEligible: 100, recentEmbedded: 100,
+    });
+    expect(detectCoverageBreaches([{ coverage: c, history: [] }])).toEqual([]);
+  });
+});
+
+describe('corpus coverage is suppressed while genuinely converging', () => {
+  const t0 = new Date('2026-08-03T00:00:00Z');
+  const t30 = new Date('2026-08-03T00:30:00Z');
+  const low = toSurfaceCoverage(sessionTurns, {
+    totalRows: 400_000, eligibleRows: 340_000, embeddedRows: 30_000,
+    recentEligible: 1000, recentEmbedded: 1000,
+  });
+
+  it('does NOT fire during a draining backfill', () => {
+    // 8.8% coverage — far below the floor — but the backlog is shrinking. This is the
+    // expected state for hours during P-007. An alarm here would be muted long before
+    // it meant anything, which is the same failure P-027 describes by another route.
+    const history = [
+      sample({ observedAt: t30, eligibleRows: 340_000, embeddedRows: 30_000 }),
+      sample({ observedAt: t0, eligibleRows: 339_000, embeddedRows: 20_000 }),
+    ];
+    expect(low.eligibleCoverage).toBeLessThan(TOTAL_COVERAGE_FLOOR);
+    expect(detectCoverageBreaches([{ coverage: low, history }])
+      .some((b) => b.kind === 'total-coverage')).toBe(false);
+  });
+
+  it('DOES fire when coverage is low and the backlog is not shrinking', () => {
+    const history = [
+      sample({ observedAt: t30, eligibleRows: 340_000, embeddedRows: 30_000 }),
+      sample({ observedAt: t0, eligibleRows: 339_000, embeddedRows: 30_000 }),
+    ];
+    const b = detectCoverageBreaches([{ coverage: low, history }]);
+    expect(b.some((x) => x.kind === 'total-coverage')).toBe(true);
+  });
+
+  it('withholds rather than guesses when convergence is unknowable', () => {
+    // One sample cannot answer "is this converging?", and the honest response to an
+    // unknowable precondition is silence — the recent-row signal covers the gap.
+    const b = detectCoverageBreaches([{ coverage: low, history: [sample({ observedAt: t30 })] }]);
+    expect(b.some((x) => x.kind === 'total-coverage')).toBe(false);
+  });
+});
+
+describe('backlog-growing (P-006 violated)', () => {
+  const t = (mins: number) => new Date(new Date('2026-08-03T00:00:00Z').getTime() + mins * 60_000);
+  const growing = (n: number): CoverageSample[] =>
+    Array.from({ length: n }, (_, i) =>
+      sample({
+        observedAt: t((n - 1 - i) * 30),
+        eligibleRows: 100_000,
+        // newest-first: backlog shrinks as i grows ⇒ it GREW over time
+        embeddedRows: 10_000 + i * 1000,
+      }),
+    );
+
+  it('needs sustained growth, not one burst', () => {
+    const c = toSurfaceCoverage(sessionTurns, {
+      totalRows: 120_000, eligibleRows: 100_000, embeddedRows: 10_000,
+      recentEligible: 100, recentEmbedded: 100,
+    });
+    const twoIntervals = detectCoverageBreaches([{ coverage: c, history: growing(BACKLOG_GROWTH_SAMPLES) }]);
+    expect(twoIntervals.some((b) => b.kind === 'backlog-growing')).toBe(false);
+
+    const enough = detectCoverageBreaches([{ coverage: c, history: growing(BACKLOG_GROWTH_SAMPLES + 1) }]);
+    expect(enough.some((b) => b.kind === 'backlog-growing')).toBe(true);
+  });
+
+  it('ignores a tiny backlog on a small table', () => {
+    const c = toSurfaceCoverage(sessionTurns, {
+      totalRows: 100, eligibleRows: 100, embeddedRows: 100 - (MIN_BACKLOG_FOR_ALARM - 1),
+      recentEligible: null, recentEmbedded: null,
+    });
+    const history = Array.from({ length: BACKLOG_GROWTH_SAMPLES + 1 }, (_, i) =>
+      sample({ observedAt: t((BACKLOG_GROWTH_SAMPLES - i) * 30), eligibleRows: 100, embeddedRows: 90 + i }),
+    );
+    expect(detectCoverageBreaches([{ coverage: c, history }])
+      .some((b) => b.kind === 'backlog-growing')).toBe(false);
+  });
+});
+
+describe('toast', () => {
+  it('renders a rate breach as rows and a coverage breach as a percentage', () => {
+    const t = formatCoverageToast([
+      { surface: 's.a.emb', kind: 'recent-coverage', observed: 0.5, floor: 0.99, detail: 'd1' },
+      { surface: 's.b.emb', kind: 'backlog-growing', observed: 1234, floor: 500, detail: 'd2' },
+    ]);
+    expect(t.level).toBe('warning');
+    expect(t.description).toContain('50.0%');
+    expect(t.description).toContain('1234 rows');
+    // The muting hazard is named in the toast itself, so a reader knows the denominator.
+    expect(t.description).toContain('ELIGIBLE');
+  });
+});
+
+// ── The tick ────────────────────────────────────────────────────────────────
+
+describe('runEmbedCoverageAlarmOnce', () => {
+  const ok = (over: Partial<SurfaceCoverage> = {}): SurfaceCoverage => ({
+    ...toSurfaceCoverage(sessionTurns, {
+      totalRows: 100, eligibleRows: 100, embeddedRows: 100, recentEligible: 50, recentEmbedded: 50,
+    }),
+    ...over,
+  });
+
+  it('never throws when measurement fails — it cannot affect what it watches', async () => {
+    // Assert the warning too: a monitor that swallows its own failure SILENTLY is the
+    // same defect class this whole detector exists to fix, one level up.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const r = await runEmbedCoverageAlarmOnce({
+      measure: async () => { throw new Error('pg down'); },
+    });
+    expect(r).toEqual({ surfaces: [], drains: [], breaches: [] });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('pg down'));
+    warn.mockRestore();
+  });
+
+  it('persists a sample and stays silent when everything is healthy', async () => {
+    const persisted: CoverageSample[][] = [];
+    const emit = vi.fn();
+    const r = await runEmbedCoverageAlarmOnce({
+      measure: async () => [ok()],
+      loadHistory: async () => new Map(),
+      persist: async (s) => { persisted.push(s); },
+      emitToast: emit,
+    });
+    expect(r.breaches).toEqual([]);
+    expect(emit).not.toHaveBeenCalled();
+    expect(persisted[0]).toHaveLength(1);
+    expect(persisted[0]![0]!.surface).toBe(surfaceKey(sessionTurns));
+  });
+
+  it('toasts on a breach', async () => {
+    const emit = vi.fn();
+    const r = await runEmbedCoverageAlarmOnce({
+      measure: async () => [ok({ recentEligible: 100, recentEmbedded: 0, recentCoverage: 0 })],
+      loadHistory: async () => new Map(),
+      persist: async () => {},
+      emitToast: emit,
+    });
+    expect(r.breaches.map((b) => b.kind)).toContain('recent-coverage');
+    expect(emit).toHaveBeenCalledTimes(1);
+  });
+
+  it('still evaluates when the history read fails — history enhances, it is not required', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const emit = vi.fn();
+    const r = await runEmbedCoverageAlarmOnce({
+      measure: async () => [ok({ recentEligible: 100, recentEmbedded: 0, recentCoverage: 0 })],
+      loadHistory: async () => { throw new Error('no table yet'); },
+      persist: async () => {},
+      emitToast: emit,
+    });
+    expect(r.breaches.map((b) => b.kind)).toContain('recent-coverage');
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('history read failed'));
+    warn.mockRestore();
+  });
+
+  it('still returns its analysis when persistence fails', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const r = await runEmbedCoverageAlarmOnce({
+      measure: async () => [ok()],
+      loadHistory: async () => new Map(),
+      persist: async () => { throw new Error('disk full'); },
+      emitToast: async () => {},
+    });
+    expect(r.surfaces).toHaveLength(1);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('persist failed'));
+    warn.mockRestore();
+  });
+
+  it('computes a drain observation from the loaded history', async () => {
+    const prior = new Map<string, CoverageSample[]>([
+      [surfaceKey(sessionTurns), [sample({
+        surface: surfaceKey(sessionTurns),
+        observedAt: new Date(Date.now() - 30 * 60_000),
+        eligibleRows: 100, embeddedRows: 60,
+      })]],
+    ]);
+    const r = await runEmbedCoverageAlarmOnce({
+      measure: async () => [ok()],
+      loadHistory: async () => prior,
+      persist: async () => {},
+      emitToast: async () => {},
+    });
+    expect(r.drains).toHaveLength(1);
+    expect(r.drains[0]!.drainedRows).toBe(40);
+    expect(r.drains[0]!.holds).toBe(true);
+  });
+});

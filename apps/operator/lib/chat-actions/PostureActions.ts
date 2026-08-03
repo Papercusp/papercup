@@ -30,6 +30,7 @@
  * whichever mode wasn't already active. This avoids needing a mode:get round
  * trip just to pre-populate the card.
  */
+import { fetchSyncQuery } from '@papercusp/sync';
 import { modeById, modeChipLabel } from '@papercusp/operator-core/lib/modes/registry';
 import { registerChatModeAction } from './registry';
 import type { ChatActionContext } from './types';
@@ -37,7 +38,16 @@ import type { ChatActionContext } from './types';
 const AUTONOMY_IDS = ['manual', 'auto', 'cold-auto'] as const;
 type AutonomyId = (typeof AUTONOMY_IDS)[number];
 
-const OVERLAY_IDS = ['ideate', 'drain', 'grade'] as const;
+/**
+ * The overlays whose value really is just on/off.
+ *
+ * `grade` USED to be in this list and is registered separately below (WI-7471):
+ * turning grading on means naming a rubric, so its menu is `Off` + one row per
+ * active rubric rather than `On`/`Off`. Leaving it here as well would register
+ * the axis TWICE under the same id — so removing it from this array is part of
+ * that change, not an unrelated tidy-up.
+ */
+const OVERLAY_IDS = ['ideate', 'drain'] as const;
 type OverlayId = (typeof OVERLAY_IDS)[number];
 
 /** POST one mode:set write through the admin proxy route (P-003). Exported for tests. */
@@ -143,6 +153,93 @@ registerChatModeAction({
       AUTONOMY_IDS.filter((id) => id !== 'manual').map((id) =>
         postModeSet(agent, id, id === choice, reason),
       ),
+    );
+  },
+});
+
+/**
+ * The shape of one `rubrics.list` sync-query row.
+ *
+ * VERIFIED against the producer, not inherited (WI-7471): rubrics moved from a
+ * standalone `harness_shared.rubrics` table to plans (`template:'rubric'`,
+ * migration 353), so a field list copied from the pre-migration code could have
+ * been quietly wrong. These four are what `rubrics.list`'s derived-read producer
+ * actually projects today — packages/operator-core/lib/derived-reads/producers.ts.
+ * Only the fields this module reads are declared.
+ */
+interface RubricListRow {
+  rubricId: string;
+  characteristic: string;
+  title: string;
+  status: 'proposed' | 'active' | 'retired';
+}
+
+/** The `off` row of the GRADE menu. Its id can never collide with a rubric id
+ *  by accident, because rubric ids are slugs and this is compared first. */
+const GRADE_OFF = 'off';
+
+/**
+ * GRADE — the one overlay whose "on" carries a VALUE, so it does not fit the
+ * plain on/off shape the other two share (WI-7471).
+ *
+ * [owner 2026-08-03] "I want the rubric picker back, add that to the grade
+ * on/off toggle." The rubric picker used to be a separate `Grade session…`
+ * button; WI-7439 removed it as a duplicate of this pill's on/off toggle, which
+ * was right about the duplication and did lose the rubric CHOICE with it. It
+ * comes back HERE rather than as a second button, which is what the owner asked
+ * for and is also the better shape: a mode and the control that sets it are ONE
+ * object (see types.ts), and "which rubric" is simply that mode's value.
+ *
+ * `options()` is async — the rubric set is fetched, lazily, when the menu opens.
+ * `params()`-style fetching is the same pattern the deleted GradeAction used;
+ * see types.ts's `options` doc for why this is async while `current()` is not.
+ */
+registerChatModeAction({
+  id: 'mode-grade',
+  cap: modeChipLabel('grade').toUpperCase(),
+  group: 'posture',
+  available: (ctx) => Boolean(ctx.sessionOwnerId),
+  // PURE + sync, like every other axis: read straight off the roster row. The
+  // pill reports WHETHER grading is on; the chosen rubric rides in the mode's
+  // free-text reason (the same place the old GradeAction put it), which is not
+  // part of the roster projection — so claiming to display it here would mean
+  // displaying something this function cannot actually know.
+  current: (ctx) => {
+    const on = activeModes(ctx).has('grade');
+    return { value: on ? 'on' : 'off', optionId: on ? undefined : GRADE_OFF, on, title: modeById('grade')?.oneLiner };
+  },
+  options: async () => {
+    const rows = await fetchSyncQuery<RubricListRow>({ queryName: 'rubrics.list', args: {} });
+    // ACTIVE only: a proposed rubric is not yet something to grade against, and
+    // a retired one is deliberately out of use.
+    const active = rows.filter((r) => r.status === 'active');
+    return [
+      {
+        id: GRADE_OFF,
+        label: 'Off',
+        // WI-6552 [owner 2026-07-27]: the picker EXPLAINS what grade mode is
+        // rather than just naming the input. The owner met the old rubric list
+        // with no idea what it would do — "something that comes up that
+        // explains what grade mode is" — and a workspace can hold a dozen
+        // active rubrics, so the bare list gave no clue what picking one
+        // commits the agent to. The explanation survives the move onto the
+        // pill; it just rides the menu's first row now instead of a card.
+        hint: 'Grade mode asks this agent to score its own work against a rubric — a named checklist of criteria — and report the result, instead of just carrying on. Pick a rubric to turn it on.',
+      },
+      ...active.map((r) => ({ id: r.rubricId, label: r.title, hint: r.characteristic })),
+    ];
+  },
+  set: async (ctx, optionId) => {
+    const agent = ownerId(ctx);
+    if (optionId === GRADE_OFF) {
+      await postModeSet(agent, 'grade', false, 'owner turned grade mode off from the chat control band');
+      return;
+    }
+    await postModeSet(
+      agent,
+      'grade',
+      true,
+      `owner selected rubric ${optionId} for grade mode from the chat control band`,
     );
   },
 });

@@ -1,7 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { getChatModeAction } from './registry';
 import { activeModes } from './PostureActions';
-import type { ChatActionContext } from './types';
+import type { ChatActionContext, ChatModeAction, ChatModeOption } from './types';
+
+// WI-7471: GRADE's options() fetches the live rubric set. Mocked at the
+// module boundary so every OTHER axis's options() stays a pure sync array and
+// this file keeps testing descriptors rather than the sync layer.
+const fetchSyncQueryMock = vi.fn();
+vi.mock('@papercusp/sync', () => ({
+  fetchSyncQuery: (...args: unknown[]) => fetchSyncQueryMock(...args) as unknown,
+}));
 
 // Side-effect import — registers the four posture mode-actions into the shared
 // registry once for this file (same pattern as importing an Entry module from
@@ -17,10 +25,26 @@ function ctxWithModes(modes: unknown[]): ChatActionContext {
 
 const fetchMock = vi.fn();
 
+/**
+ * A mode's options as a SYNC array.
+ *
+ * `options()` returns `ChatModeOption[] | Promise<ChatModeOption[]>` since
+ * WI-7471. Every axis except GRADE is still sync, and asserting that is part of
+ * the point: an axis that quietly went async would start costing a fetch on
+ * menu open. So this narrows AND checks, rather than blanket-awaiting.
+ */
+function syncOptions(m: ChatModeAction): ChatModeOption[] {
+  const opts = m.options(ctx);
+  expect(Array.isArray(opts), `${m.id}.options() should still be synchronous`).toBe(true);
+  return opts as ChatModeOption[];
+}
+
 beforeEach(() => {
   fetchMock.mockReset();
   fetchMock.mockResolvedValue({ ok: true, text: async () => JSON.stringify({ ok: true }) });
   vi.stubGlobal('fetch', fetchMock);
+  fetchSyncQueryMock.mockReset();
+  fetchSyncQueryMock.mockResolvedValue([]);
 });
 
 afterEach(() => {
@@ -97,7 +121,7 @@ describe('mode-autonomy — current()', () => {
 
 describe('mode-autonomy — options() + set()', () => {
   it('offers manual/auto/cold-auto with registry-derived labels + hints', () => {
-    const options = getChatModeAction('mode-autonomy')!.options(ctx);
+    const options = syncOptions(getChatModeAction('mode-autonomy')!);
     expect(options.map((o) => o.id)).toEqual(['manual', 'auto', 'cold-auto']);
     const auto = options.find((o) => o.id === 'auto');
     expect(auto?.label).toBe('AUTO — act, don’t ask');
@@ -178,21 +202,25 @@ describe('overlay pills — current(), options(), set()', () => {
   it('carries the registry one-liner as the on-state hint, so no copy is written twice', () => {
     const ideate = getChatModeAction('mode-ideate')!;
     expect(ideate.current(ctxWithModes(['ideate'])).title).toMatch(/ideation passes/);
-    expect(ideate.options(ctx).find((o) => o.id === 'on')?.hint).toMatch(/ideation passes/);
+    expect(syncOptions(ideate).find((o) => o.id === 'on')?.hint).toMatch(/ideation passes/);
   });
 
   it('offers exactly on/off — they are independent booleans, not a shared multi-select', () => {
-    expect(getChatModeAction('mode-drain')!.options(ctx).map((o) => o.id)).toEqual(['on', 'off']);
+    expect(syncOptions(getChatModeAction('mode-drain')!).map((o) => o.id)).toEqual(['on', 'off']);
   });
 
   it('writes only its own mode, leaving the other overlays untouched', async () => {
     // The old single `Overlays` checkbox reconciled all three on every submit,
     // so toggling one silently rewrote the other two. Per-pill writes mean a
     // pill can never clear a mode the user did not touch.
-    await getChatModeAction('mode-grade')!.set(ctx, 'on');
+    //
+    // (Moved off `mode-grade` in WI-7471 — grade no longer has an `on` option,
+    // so asserting this through it would have been asserting against an id the
+    // menu can never produce.)
+    await getChatModeAction('mode-ideate')!.set(ctx, 'on');
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(JSON.parse(fetchMock.mock.calls[0][1].body as string)).toMatchObject({
-      mode: 'grade',
+      mode: 'ideate',
       enabled: true,
       agent: 'su-abc123',
       ownerDirected: true,
@@ -206,5 +234,64 @@ describe('overlay pills — current(), options(), set()', () => {
       mode: 'drain',
       enabled: false,
     });
+  });
+});
+
+/* ── [owner 2026-08-03] "I want the rubric picker back, add that to the grade
+      on/off toggle." (WI-7471)
+
+   GRADE is the one axis whose "on" carries a VALUE, so it is not an on/off
+   overlay: its menu is `Off` plus one row per ACTIVE rubric. These cases pin
+   the three things that separate it from the plain overlays above. ── */
+describe('mode-grade — the rubric picker lives ON the pill', () => {
+  const rubricRows = [
+    { rubricId: 'hive-coordination-health', characteristic: 'coordination', title: 'Hive coordination health', status: 'active' },
+    { rubricId: 'draft-thing', characteristic: 'drafts', title: 'Draft thing', status: 'proposed' },
+    { rubricId: 'old-thing', characteristic: 'legacy', title: 'Old thing', status: 'retired' },
+  ];
+
+  it('offers Off first, then one row per ACTIVE rubric — never a proposed or retired one', async () => {
+    fetchSyncQueryMock.mockResolvedValue(rubricRows);
+    const opts = await getChatModeAction('mode-grade')!.options(ctx);
+    expect(fetchSyncQueryMock).toHaveBeenCalledWith({ queryName: 'rubrics.list', args: {} });
+    expect(opts.map((o) => o.id)).toEqual(['off', 'hive-coordination-health']);
+    expect(opts[1].label).toBe('Hive coordination health');
+  });
+
+  /* WI-6552 [owner 2026-07-27]: the owner met the old picker with no idea what
+     it would do — "something that comes up that explains what grade mode is".
+     That explanation was the deleted card's `prompt`; it must survive the move
+     onto the pill, or this change re-creates the confusion it is restoring. */
+  it('still EXPLAINS what grade mode is, now on the Off row', async () => {
+    fetchSyncQueryMock.mockResolvedValue(rubricRows);
+    const opts = await getChatModeAction('mode-grade')!.options(ctx);
+    expect(opts[0].hint).toMatch(/score its own work against a rubric/i);
+  });
+
+  it('picking a rubric turns grade ON and names the rubric in the reason', async () => {
+    await getChatModeAction('mode-grade')!.set(ctx, 'hive-coordination-health');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body as string);
+    expect(body).toMatchObject({ mode: 'grade', enabled: true, agent: 'su-abc123', ownerDirected: true });
+    // The rubric rides the free-text reason — the same carrier the deleted
+    // GradeAction used, so chat-protocol still never learns what a rubric IS.
+    expect(body.reason).toMatch(/hive-coordination-health/);
+  });
+
+  it('picking Off turns grade off and does NOT name a rubric', async () => {
+    await getChatModeAction('mode-grade')!.set(ctx, 'off');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body as string);
+    expect(body).toMatchObject({ mode: 'grade', enabled: false });
+    expect(body.reason).not.toMatch(/rubric \S/);
+  });
+
+  /* The reason this axis is allowed to be async at all (types.ts): the fetch is
+     paid on menu OPEN, never on render. If GRADE's options were ever resolved
+     eagerly the popup would carry a standing rubrics.list read — the exact cost
+     WI-6617 is removing from this screen. */
+  it('fetches NOTHING until options() is actually called', () => {
+    getChatModeAction('mode-grade')!.current(ctx);
+    expect(fetchSyncQueryMock).not.toHaveBeenCalled();
   });
 });

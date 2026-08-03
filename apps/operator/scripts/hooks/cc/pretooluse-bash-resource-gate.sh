@@ -2004,6 +2004,28 @@ def _resolve_write_target(raw_target, cwd):
         return None
 
 
+def _strip_line_comments(s):
+    # EI-19385448516432576: remove `#`-to-end-of-line comments before scanning
+    # for redirect operators. A `->`/`=>`/`>` inside a comment is PROSE, not
+    # shell syntax — `grep -n foo bar.ts # payload->x is the field` was rejected
+    # as a redirect targeting `x`, and because this guard rejects the WHOLE
+    # command, nothing in that call ran.
+    #
+    # ORDER IS LOAD-BEARING: this runs AFTER _strip_shell_quotes, never before.
+    # A `#` inside a quoted span is literal data and quote-stripping has already
+    # removed it, so any `#` still present at a word boundary is a real comment
+    # introducer. The other order would let `echo "x # y" > tree/file.txt`
+    # swallow its own real redirect and MISS a tree write — trading a false
+    # positive for a false negative, which is the far more expensive direction
+    # for this guard. (Both orders are covered by tests, so a future reorder
+    # fails loudly rather than silently opening that hole.)
+    #
+    # The lookbehind requires start-of-string or whitespace, so `$#`, `a#b` and
+    # `http://host/path#frag` are untouched. Like the sibling strippers this
+    # only ever REMOVES characters, so it can never manufacture a match.
+    return re.sub(r'(?<![^\s])#[^\n]*', '', s)
+
+
 _HEREDOC_START_RE = re.compile(r"<<-?\s*(['\"]?)(\w+)\1")
 
 
@@ -2215,7 +2237,7 @@ def _shell_write_guard():
         _cwd = os.path.realpath(payload.get('cwd') or os.getcwd())
     except Exception:
         return
-    _clean = _strip_shell_quotes(_strip_heredoc_bodies(command))
+    _clean = _strip_line_comments(_strip_shell_quotes(_strip_heredoc_bodies(command)))
     _has_paren = '(' in _clean or ')' in _clean
     _targets = []  # (raw_target, human-readable construct name, position in _clean)
 
@@ -2930,7 +2952,7 @@ def _interpreter_write_guard():
         _cwd = os.path.realpath(payload.get('cwd') or os.getcwd())
     except Exception:
         return
-    _clean = _strip_shell_quotes(_strip_heredoc_bodies(command))
+    _clean = _strip_line_comments(_strip_shell_quotes(_strip_heredoc_bodies(command)))
     if not _INTERPRETER_RE.search(_clean):
         return  # no interpreter invocation at all — nothing to check
     _interp_m = _INTERPRETER_RE.search(_clean)

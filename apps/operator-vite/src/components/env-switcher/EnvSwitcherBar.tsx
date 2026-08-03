@@ -10,7 +10,8 @@
  * `/api/desktop/dev-operators` HTTP fetch, so a misrouted `/api` (Trap 5) or a
  * bad target build can NEVER make it self-hide. The HTTP fetch is kept ONLY for
  * enrichment (the deployed sha, the immutable "release" escape-hatch button, and
- * the per-env enabled state) and the git-pipeline status — all best-effort, none
+ * the per-env enabled state); the git-pipeline status comes from the shared
+ * `dev.gitPipeline` sync query (P-030) — all best-effort, none
  * able to hide the bar. If a target build white-screens so even this in-webview
  * bar can't paint, the native menu backstop (Env → CmdOrCtrl+Shift+1..4, in
  * env_switch.rs) still switches you out.
@@ -25,6 +26,7 @@
  * the app's sticky header).
  */
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useSyncQuery } from '@papercusp/sync';
 
 interface ResolvedDevOperator {
   id: string;
@@ -62,10 +64,22 @@ interface CommitRef {
   committedAtMs?: number | null;
 }
 
-/** The subset of GET /api/desktop/git-pipeline this bar renders — the SAME pipeline stats
+/** The subset of the `dev.gitPipeline` snapshot this bar renders — the SAME pipeline stats
  *  the native dev-wrapper bar showed: the staging (mainHead) / green-pin (ready) / deployed
  *  SHAs + tip age, behind-count, and the green-checkpoint gate health WITH time-since-last-green
- *  / red-streak / wedged-ticker. Shapes from git-pipeline-stats.ts. */
+ *  / red-streak / wedged-ticker. Shapes from git-pipeline-stats.ts.
+ *
+ *  P-030: this used to be a hand-rolled `fetch('/api/desktop/git-pipeline')` on the bar's own
+ *  30s `setInterval`. That REST route calls `gitPipelineSnapshot()` LIVE (~6 git fork/execs via
+ *  devDeployState on the read path), whereas the `dev.gitPipeline` sync query is served
+ *  PRECOMPUTED from `harness_shared.derived_read_snapshots` — the same snapshot GitClient and
+ *  AdvOverviewTab already read via useSyncQuery. So the bar was the last SPA consumer paying
+ *  for a live recompute of data two siblings already held cached and SSE-invalidated.
+ *
+ *  ⚠ The ROUTE stays: its other consumer is the desktop's NATIVE Rust bar
+ *  (papercusp-desktop/src-tauri/src/dev_wrapper.rs), which has no auth context and cannot ride
+ *  the @papercusp/sync stack. It is `auth:'public'` and pinned in auth-posture.test.ts's
+ *  MUST_BE_PUBLIC list — only this SPA component migrated. */
 interface PipelineStats {
   deploy?: {
     mainHead?: CommitRef | null; // the integration branch == "staging" (field name predates the rename)
@@ -103,7 +117,6 @@ export function EnvSwitcherBar() {
   // from "desktop, no envs" ([]). The Tauri list is the never-hide floor.
   const [tauriEnvs, setTauriEnvs] = useState<TauriEnv[] | null>(null);
   const [data, setData] = useState<DevOperatorsResponse | null>(null);
-  const [pipeline, setPipeline] = useState<PipelineStats | null>(null);
   const mounted = useRef(true);
   const navRef = useRef<HTMLElement | null>(null);
   useEffect(() => () => { mounted.current = false; }, []);
@@ -135,20 +148,26 @@ export function EnvSwitcherBar() {
     } catch {
       /* endpoint absent / misrouted → the Tauri floor still renders the bar */
     }
-    // Pipeline stats (best-effort; the bar renders without them).
-    try {
-      const pr = await fetch('/api/desktop/git-pipeline', { credentials: 'same-origin', cache: 'no-store' });
-      if (pr.ok && mounted.current) setPipeline((await pr.json()) as PipelineStats);
-    } catch {
-      /* stats are decorative — never block the bar */
-    }
   }, []);
 
   useEffect(() => {
     void load();
+    // Still an interval: it drives the Tauri env list + dev-operators legs above,
+    // which have no sync-query equivalent. The pipeline leg no longer rides it.
     const t = setInterval(() => void load(), REFRESH_MS);
     return () => clearInterval(t);
   }, [load]);
+
+  // Pipeline stats — decorative, and never able to block or hide the bar. Read from
+  // the shared PRECOMPUTED `dev.gitPipeline` snapshot (1-element array), matching
+  // GitClient.tsx and AdvOverviewTab.tsx, instead of a private live REST poll (P-030).
+  // useSyncQuery degrades to `data: undefined` rather than throwing, so the bar keeps
+  // the same "renders fine without stats" posture the old try/catch gave it.
+  const pipelineQ = useSyncQuery<PipelineStats>({
+    queryName: 'dev.gitPipeline',
+    staleTime: REFRESH_MS,
+  });
+  const pipeline: PipelineStats | null = pipelineQ.data?.[0] ?? null;
 
   const navigate = useCallback((op: ResolvedDevOperator) => {
     if (op.isSelf || !op.reachable) return;
