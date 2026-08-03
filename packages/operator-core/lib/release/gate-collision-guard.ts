@@ -165,7 +165,7 @@ export function judgeGateCollision(input: {
     probe.nextFireInSec <= IMMINENT_FIRE_LOOKAHEAD_SEC &&
     probe.nextFireInSec >= -IMMINENT_FIRE_LOOKBEHIND_SEC;
 
-  if (!probe.runLockHeld && !fireImminent) {
+  if (!fireImminent) { // MUTANT-2: run-lock condition removed
     return {
       blocked: false,
       kind: 'clear',

@@ -42,6 +42,7 @@ import {
   isMachineEmitterForStamping,
   isSystemEmissionUnderAgentIdentity,
 } from './machine-authored';
+import { shouldDerivePlanSlug, derivePlanSlug, PLAN_SLUG_DERIVED_PROVENANCE } from './derived-plan-slug';
 import { noteIntentDeclared } from '../../agent-state-stamp';
 
 export type { InboxOptions };
@@ -326,6 +327,37 @@ export async function sendMessage(
     env.expects = 'none';
     const existing = (env.fieldProvenance ?? {}) as Record<string, unknown>;
     env.fieldProvenance = { ...existing, expects: 'system-emitter-derived' };
+  }
+  // P-005 / D-097: `plan_slug` is DERIVABLE, not authored. The sender already
+  // told the system its plan at `coord:orient { planSlug }`; measured 24h,
+  // 2026-08-03: of 343 hand-authored sends, 228 came from a sender with a
+  // declared plan lane and only 12 carried the field — 216 missing across 24
+  // DISTINCT senders, so a plan-scoped `coord:feed { plan_slug }` was reading
+  // ~5% of its plan's traffic and presenting it as the whole. See
+  // ./derived-plan-slug for why this field qualifies where `current_files` does
+  // not (stamp what is FIXED AT WRITE TIME; derive at read what is LIVE).
+  //
+  // ⚠ MUST RUN AFTER THE TWO `auto` STAMPS ABOVE — `shouldDerivePlanSlug` reads
+  // `env.auto` to exclude D-095's system-code-under-a-borrowed-agent-identity
+  // population, which matches the agent-session shape by construction. Hoist it
+  // above them and a lifecycle notice inherits the calling agent's plan.
+  if (shouldDerivePlanSlug({ explicitPlanSlug: env.plan_slug, auto: env.auto, from: identity.ownerId })) {
+    // ⚠ DYNAMIC IMPORT, DELIBERATELY (EI-19281789650149592). A STATIC import of
+    // `./presence` from this hot path transitively reaches `presence-wakeability`,
+    // whose module-scope `const LIVE_TURN_WINDOW_MS = PRESENCE_STALE_MS` turns any
+    // suite that PARTIALLY mocks `../presence` into a collection failure naming a
+    // constant this change never mentions — 95 tests went uncollectable that way on
+    // 2026-08-01. That filing notes the class has no lint guard yet, only "tribal
+    // memory", and prescribes exactly this. Same remedy as coupling-divergence-stamp.
+    const slug = await derivePlanSlug({
+      ownerId: identity.ownerId,
+      readPlanSlug: async (id) => (await (await import('./presence')).getPresence(id))?.currentPlanSlug ?? null,
+    });
+    if (slug) {
+      env.plan_slug = slug;
+      const existing = (env.fieldProvenance ?? {}) as Record<string, unknown>;
+      env.fieldProvenance = { ...existing, plan_slug: PLAN_SLUG_DERIVED_PROVENANCE };
+    }
   }
   // Park the envelope durably for each addressed slot (./slot-parked-store) —
   // drained into the spawnee's handoff when an agent spawns into the slot (P-023).

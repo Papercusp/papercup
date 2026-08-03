@@ -15,6 +15,7 @@ import {
   endedDisplayName,
   endedSessionStreamUrl,
   headlineToSafeHtml,
+  hitProvenanceChip,
   searchFailureMessage,
   searchHitStreamUrl,
   searchResultFocusTarget,

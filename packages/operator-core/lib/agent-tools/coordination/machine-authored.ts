@@ -171,6 +171,28 @@ export function isMachineEmitterForStamping(from: string | null | undefined): bo
 const AGENT_SESSION_SENDER_RE = new RegExp(AGENT_SESSION_SENDER_PATTERN);
 
 /**
+ * Is `from` an AGENT SESSION identity — `su-…`, `s-…`, `cup-…`, `role-…`, or a
+ * bare uuid? The POSITIVE test, exported so callers share one definition of the
+ * shape rather than re-compiling {@link AGENT_SESSION_SENDER_PATTERN} locally.
+ *
+ * ⚠ READ THE RULE OF THUMB ON {@link AGENT_SESSION_SENDER_PATTERN} BEFORE
+ * REACHING FOR THIS. It is NOT the complement of
+ * {@link isMachineAuthoredSender}: use the negative test to SUPPRESS or ROUTE (be
+ * generous about who counts as a person), and this one when the question is
+ * "could this sender exhibit the behaviour at all" — a denominator, or a
+ * derivation that only makes sense for a real agent session.
+ *
+ * ⚠ IT CANNOT, ALONE, TELL YOU A HUMAN OR AGENT AUTHORED THE MESSAGE. System
+ * code emitting under a borrowed agent identity matches this too, by
+ * construction — see {@link isSystemEmissionUnderAgentIdentity}, which needs the
+ * ENVELOPE to separate them.
+ */
+export function isAgentSessionSender(from: string | null | undefined): boolean {
+  if (!from) return false;
+  return AGENT_SESSION_SENDER_RE.test(from.trim().toLowerCase());
+}
+
+/**
  * The FOURTH signal, and the only one keyed on the ENVELOPE rather than the name:
  * system code emitting under a BORROWED AGENT IDENTITY (D-095).
  *

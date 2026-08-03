@@ -100,6 +100,26 @@ export interface TranscriptTurnHit {
   /** ts_headline snippet — matched terms wrapped in <mark>. */
   highlight: string;
   score: number;
+  /**
+   * WHY this turn matched (P-004), classified SERVER-SIDE by
+   * `@papercusp/search`'s `hitProvenance` so the ranker names live in exactly
+   * one place instead of being re-derived in every card across the wire.
+   *
+   * Load-bearing for the UI: a `semantic` hit matched no query TERM, so its
+   * `highlight` carries no <mark> and is just the head of the turn. Without
+   * this field a card cannot tell that apart from a lexical match whose terms
+   * happen to fall outside the headline window, and renders both as if the
+   * text shown were the match.
+   *
+   * OPTIONAL on purpose — a hit built outside the engine (a test fixture, a
+   * hand-rolled searcher) legitimately has no attribution, and `undefined`
+   * must read as "no claim", never as a default.
+   */
+  matchedBy?: MatchProvenance;
+  /** Pre-fusion ts_rank_cd score, when a lexical leg returned this turn. */
+  lexicalScore?: number;
+  /** Pre-fusion cosine similarity, when the vector leg returned this turn. */
+  semanticScore?: number;
   /** Stamped from session_turns metadata (hydrated by the route). */
   ts?: string | null;
   speaker?: string | null;

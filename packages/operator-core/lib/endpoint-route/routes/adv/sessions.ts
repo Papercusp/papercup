@@ -12,7 +12,7 @@
 
 import os from 'node:os';
 import { defineTool } from '@papercusp/agent-mcp';
-import type { SearchFilters, RecencyRank } from '@papercusp/search';
+import type { SearchFilters, RecencyRank, MatchProvenance } from '@papercusp/search';
 import {
   closeWindowId,
   focusWindowId,
@@ -743,7 +743,7 @@ const searchTranscripts = defineTool({
     const stageTimingsMs: Record<string, number> = {};
     const mark = (label: string) => { stageTimingsMs[label] = Date.now() - t0; };
 
-    const [{ runHybridSearch }, { SEARCH_SOURCES }, { buildQueryEmbedder }, { parseTurnRef }, { activeWorkspaceId }, { getOrgPg }] =
+    const [{ runHybridSearch, hitProvenance }, { SEARCH_SOURCES }, { buildQueryEmbedder }, { parseTurnRef }, { activeWorkspaceId }, { getOrgPg }] =
       await Promise.all([
         import('@papercusp/search'),
         import('../../../agent-tools/search/sources'),
@@ -824,11 +824,18 @@ const searchTranscripts = defineTool({
     const turnHits: Array<{
       sourceKind: string; sessionId: string; turnIdx: number;
       excerpt: string; highlight: string; score: number;
+      matchedBy?: MatchProvenance; lexicalScore?: number; semanticScore?: number;
       ts?: string | null; speaker?: string | null; owner?: string | null;
     }> = [];
     for (const r of results) {
       const ref = parseTurnRef(r.source_id);
       if (!ref) continue;
+      // P-004: classify WHY this turn matched, here — the engine's ranker
+      // names ('bm25' / 'embeddings') stay engine-side and the wire carries a
+      // stable, self-describing verdict instead of raw internals every client
+      // would have to re-interpret. A vector-only hit matched no query term,
+      // so its `highlight` is the head of the turn rather than the match, and
+      // the card MUST say so instead of presenting it as one.
       turnHits.push({
         sourceKind: ref.sourceKind,
         sessionId: ref.sessionId,
@@ -836,6 +843,7 @@ const searchTranscripts = defineTool({
         excerpt: r.excerpt,
         highlight: r.highlight,
         score: r.score,
+        ...hitProvenance(r),
       });
     }
 

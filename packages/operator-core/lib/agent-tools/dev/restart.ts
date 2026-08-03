@@ -195,6 +195,10 @@ async function writeRestartAudit(
     reason: string | null;
     fenceSeq: number;
     phantomCoalesceBroken: boolean;
+    /** EI-19385475092979200: what the gate was doing when this restart fired, and
+     *  whether the collision guard was deliberately overridden. Recorded so a later
+     *  gate red can be ATTRIBUTED to this restart instead of read as a regression. */
+    gateCollision?: { kind: string; overridden: boolean; runElapsedSec: number | null } | null;
   },
 ): Promise<void> {
   try {
@@ -348,6 +352,26 @@ export default defineTool({
       });
     }
 
+    // EI-19385475092979200: refuse a gate-sensitive restart while a green-checkpoint run is in
+    // flight (or is within the two-sided window around a scheduled fire). Placed HERE
+    // deliberately — after the enablement refusal (which is cheaper and needs no probe) and
+    // BEFORE the cooldown marker is claimed, so a withheld restart never leaves a cooldown
+    // marker held for a restart that did not happen (the EI-11137 phantom-coalesce wedge).
+    // Fails OPEN: any probe failure proceeds, saying so. Soft block — `override_gate_collision`
+    // is the stated way through, because a genuinely wedged host mid-run must stay restartable.
+    const gate = await checkGateCollision(target, args.override_gate_collision === true);
+    if (gate.blocked) {
+      return json({
+        ok: false,
+        target,
+        reason: `gate_collision_${gate.kind.replace(/-/g, '_')}`,
+        restarted: false,
+        drained: false,
+        gate_collision: { kind: gate.kind, ...gate.detail },
+        note: gate.note,
+      });
+    }
+
     // WI-4221 debounce: for a cooldown-bearing target (staging), try to claim
     // the cooldown marker FIRST, before touching the drain-gate at all. If a
     // peer's real restart already holds it (their restart landed within the
@@ -496,6 +520,9 @@ export default defineTool({
           reason: args.reason ?? null,
           fenceSeq: fence.seq,
           phantomCoalesceBroken: phantomCoalesceBroken !== null,
+          gateCollision: isGateSensitiveTarget(target)
+            ? { kind: gate.kind, overridden: gate.overridden, runElapsedSec: gate.detail.runElapsedSec }
+            : null,
         });
         // Detached + delayed so this response returns before the service dies.
         const child = spawn('sh', ['-c', `sleep 1; ${restartCmd}`], {
@@ -513,6 +540,7 @@ export default defineTool({
           enabledVia: enabledByEnv ? 'env' : 'authorize_arg',
           audited: true,
           ...(phantomCoalesceBroken ? { phantomCoalesceBroken } : {}),
+          ...(gate.overridden ? { gateCollisionOverridden: { kind: gate.kind, ...gate.detail } } : {}),
           verifyWith: `systemctl --user show ${cfg.unit} -p MainPID --value  (expect a NEW pid${
             before.mainPid ? ` ≠ ${before.mainPid}` : ''
           } within ~3s)`,
@@ -524,7 +552,7 @@ export default defineTool({
             target === 'bg-host'
               ? ' bg-host restart freezes cross-machine peer-log rails ~13min while the substrate rejoins — see EI-13317.'
               : ''
-          }`,
+          }${gate.overridden || gate.kind === 'probe-failed' ? ` ⚠ ${gate.note}` : ''}`,
         });
       },
     );

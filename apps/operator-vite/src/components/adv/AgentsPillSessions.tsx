@@ -74,6 +74,14 @@ export interface SearchTurnHit {
   excerpt: string;
   highlight: string;
   score: number;
+  /** WHY this turn matched — classified server-side by @papercusp/search's
+   *  `hitProvenance` (P-004). Optional: absent from an older server, and from
+   *  a hit built outside the engine. `undefined` means "no claim made". */
+  matchedBy?: 'lexical' | 'semantic' | 'both' | 'unknown';
+  /** Pre-fusion ts_rank_cd score, when a lexical leg returned this turn. */
+  lexicalScore?: number;
+  /** Pre-fusion cosine similarity, when the vector leg returned this turn. */
+  semanticScore?: number;
 }
 
 /** One matched SESSION (classified server-side against roster + adv rows). */
@@ -150,6 +158,40 @@ export function headlineToSafeHtml(headline: string): string {
     .replaceAll('>', '&gt;')
     .replaceAll('&lt;mark&gt;', '<mark>')
     .replaceAll('&lt;/mark&gt;', '</mark>');
+}
+
+/**
+ * The match-provenance chip for a hit, or null when no chip is warranted
+ * (P-004). Pure — exported for tests.
+ *
+ * A hit the VECTOR leg alone returned matched no query TERM, so `ts_headline`
+ * had nothing to wrap in <mark> and handed back the head of the turn. Rendered
+ * bare, that text reads as "here is what matched" while actually being the
+ * first ~200 characters of a document — indistinguishable, to the reader, from
+ * a broken search. Naming it is what makes it honest: the excerpt becomes
+ * context for a match the card has explained, instead of a claim it cannot
+ * support.
+ *
+ * Only the vector-only case gets a chip. A `lexical` or `both` hit shows its
+ * own <mark> highlights, which already say why it matched — a chip there would
+ * be noise on the common path. `unknown` (no attribution: an older server, a
+ * non-engine hit) deliberately gets nothing: silence is the correct rendering
+ * of "we don't know", and guessing "semantic" would make correct lexical
+ * results look like fallbacks.
+ */
+export function hitProvenanceChip(
+  hit: Pick<SearchTurnHit, 'matchedBy' | 'semanticScore'>,
+): { label: string; title: string } | null {
+  if (hit.matchedBy !== 'semantic') return null;
+  const cosine =
+    typeof hit.semanticScore === 'number' ? ` (cosine ${hit.semanticScore.toFixed(2)})` : '';
+  return {
+    label: 'semantic match',
+    title:
+      `Matched by MEANING, not by your search terms${cosine}. ` +
+      'The text below is the start of the turn, not the matching phrase — ' +
+      'open the hit to see it in context.',
+  };
 }
 
 /** Display name for an ended session row: label → short owner id → agent+row.
@@ -345,21 +387,37 @@ function SearchResultRow({
         <span className="pc-agents-roster__name" style={color ? { color } : undefined}>{title}</span>
         <span className="pc-agents-roster__doing">{meta}</span>
       </div>
-      {result.hits.map((h) => (
-        <div
-          key={h.turnIdx}
-          className="pc-agents-sessions__hit"
-          role="button"
-          tabIndex={0}
-          data-testid={`hit-${result.sessionId}-${h.turnIdx}`}
-          onClick={() => openHit(h)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openHit(h); }
-          }}
-          // Engine ts_headline output, escaped except its own <mark> tags.
-          dangerouslySetInnerHTML={{ __html: headlineToSafeHtml(h.highlight || h.excerpt) }}
-        />
-      ))}
+      {result.hits.map((h) => {
+        // P-004: a vector-only hit has no matched terms, so the text below is
+        // the head of the turn rather than the match — say so instead of
+        // presenting it as one.
+        const prov = hitProvenanceChip(h);
+        return (
+          <div
+            key={h.turnIdx}
+            className={`pc-agents-sessions__hit${prov ? ' pc-agents-sessions__hit--semantic' : ''}`}
+            role="button"
+            tabIndex={0}
+            data-testid={`hit-${result.sessionId}-${h.turnIdx}`}
+            data-matched-by={h.matchedBy ?? undefined}
+            title={prov?.title}
+            onClick={() => openHit(h)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openHit(h); }
+            }}
+          >
+            {prov && (
+              <span className="pc-agents-sessions__provenance" data-testid="hit-provenance">
+                {prov.label}
+              </span>
+            )}
+            <span
+              // Engine ts_headline output, escaped except its own <mark> tags.
+              dangerouslySetInnerHTML={{ __html: headlineToSafeHtml(h.highlight || h.excerpt) }}
+            />
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -978,6 +1036,15 @@ function SessionsStyles() {
       .pc-agents-sessions__hit mark {
         background: color-mix(in srgb, var(--accent, #38bdf8), transparent 55%);
         color: inherit; border-radius: 2px; padding: 0 1px;
+      }
+      /* P-004 — a hit only the vector leg returned. Its text has no <mark>
+         because nothing matched a query TERM, so the excerpt is labelled and
+         set apart rather than shown as if it were the match. */
+      .pc-agents-sessions__hit--semantic { font-style: italic; }
+      .pc-agents-sessions__provenance {
+        font-style: normal; font-size: 9px; font-family: ui-monospace, monospace;
+        color: var(--fg-mute); border: 1px solid var(--border); border-radius: 3px;
+        padding: 0 3px; margin-right: 5px; white-space: nowrap; vertical-align: 1px;
       }
       /* Sticky footer: pinned to the popover bottom so the hover detail strip
          appearing/disappearing above it never displaces it (it was "fighting"

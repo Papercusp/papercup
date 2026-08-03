@@ -517,8 +517,29 @@ const CORPUS_DEGRADED_WARN_WINDOW_MS = 5 * 60_000;
 let _corpusDegradedWarnedAt = 0;
 let _corpusDegradedSinceWarn = 0;
 
+/**
+ * Under the test runner this diagnostic is SILENT unless a suite opts in (see
+ * `_resetCorpusLegHealthForTests`). This is not test-shyness — it is the same guard every
+ * sibling diagnostic in `lib/memory/` already carries (`session-extraction-llm.ts`,
+ * `anthropic-judge.ts`, `embed-exhaustion-alert.ts`), and it is load-bearing:
+ *
+ * `vitest-fail-on-console` turns ANY unexpected `console.warn` into a test failure, and there is
+ * no embedder in a unit-test environment — so `embedderAvailable` is false by CONFIGURATION, not
+ * by degradation. Without this guard the warn fires from deep inside `buildClaimRecallBlock` /
+ * `buildLaunchMemoryBlock` and reds every suite that transitively builds a memory block, in files
+ * that never mention memory. Measured 2026-08-03: it red-pinned the fleet gate via four unrelated
+ * files at once — get_next.warning, get_next.divergence-recheck, work-items-urgent, and
+ * mid-turn-context.p018-acceptance (EI/gate run a7f247ce).
+ *
+ * Production behaviour is UNCHANGED — outside the runner the warn fires exactly as before.
+ */
+const warnSuppressedByTestRunner = (): boolean =>
+  Boolean(process.env.VITEST || process.env.NODE_ENV === 'test') && !_corpusWarnOptedInByTest;
+let _corpusWarnOptedInByTest = false;
+
 function noteCorpusLegHealth(corpus: CorpusLegResult | null): void {
   if (!corpus || corpus.embedderAvailable) return;
+  if (warnSuppressedByTestRunner()) return;
   _corpusDegradedSinceWarn += 1;
   const now = Date.now();
   if (now - _corpusDegradedWarnedAt < CORPUS_DEGRADED_WARN_WINDOW_MS) return;
