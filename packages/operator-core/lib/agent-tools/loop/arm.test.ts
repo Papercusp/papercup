@@ -87,7 +87,7 @@ import { claimWorkItem, classifyClaimFailure, getWorkItem } from '../../work-ite
 import { armInboxWake } from '../../events/await/inbox-wake-arm';
 import { probeWakeReachability } from '../../events/await/wake-reachability';
 import { findLiveHost } from '../../events/await/psu-pty-discovery';
-import { decideDefaultCarry, computeLoopOverwriteNote } from './arm';
+import { decideDefaultCarry, computeLoopOverwriteNote, resolveBlockedBackoff } from './arm';
 
 const materializeM = vi.mocked(materializeLoop);
 const buildPromptM = vi.mocked(buildLoopWakePrompt);
@@ -535,5 +535,104 @@ describe('loop:arm — EI-18792078711601844 carry preserved on re-arm', () => {
     expect(b.loop.carry).toBe('warm'); // fresh-default path, no live host
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('prior-loop read failed'));
     warnSpy.mockRestore();
+  });
+});
+
+describe('loop:arm — EI-19395290807657827: the self-sealing backoff', () => {
+  describe('resolveBlockedBackoff (pure)', () => {
+    it('is a no-op when blockedOn is absent — every existing call site is unchanged', () => {
+      expect(resolveBlockedBackoff(7200, null)).toEqual({
+        intervalSec: 7200,
+        clamped: false,
+        note: null,
+        wakePremise: null,
+      });
+    });
+
+    it('THE REGRESSION CASE: a 2h backoff with no clearing event is capped to 15min', () => {
+      // The measured incident: five members re-armed at 7200s inside a 32s window and slept
+      // ~2h past a blocker that had already cleared.
+      const r = resolveBlockedBackoff(7200, { reason: 'green gate red 8h, blocking every deploy' });
+      expect(r.intervalSec).toBe(900);
+      expect(r.clamped).toBe(true);
+      expect(r.note).toContain('CAPPED 7200s → 900s');
+    });
+
+    it('does not inflate an interval already below the cap', () => {
+      const r = resolveBlockedBackoff(300, { reason: 'waiting on a peer' });
+      expect(r.intervalSec).toBe(300);
+      expect(r.clamped).toBe(false);
+    });
+
+    it('treats the cap boundary itself as un-clamped', () => {
+      const r = resolveBlockedBackoff(900, { reason: 'boundary' });
+      expect(r.intervalSec).toBe(900);
+      expect(r.clamped).toBe(false);
+    });
+
+    it('HONOURS a long interval when a clearing event is named — the push channel makes it safe', () => {
+      const r = resolveBlockedBackoff(7200, { reason: 'gate red', event: 'green-gate-verdict' });
+      expect(r.intervalSec).toBe(7200);
+      expect(r.clamped).toBe(false);
+    });
+
+    it('warns that naming an event is NOT the same as parking on it', () => {
+      const r = resolveBlockedBackoff(7200, { reason: 'gate red', event: 'green-gate-verdict' });
+      expect(r.note).toContain('events:await');
+      expect(r.note).toMatch(/does NOT register the await/i);
+    });
+
+    it('always emits a wake premise instructing a re-check, in BOTH branches', () => {
+      const withEvent = resolveBlockedBackoff(7200, { reason: 'gate red', event: 'green-gate-verdict' });
+      const without = resolveBlockedBackoff(7200, { reason: 'gate red' });
+      for (const r of [withEvent, without]) {
+        expect(r.wakePremise).toContain('gate red');
+        expect(r.wakePremise).toMatch(/RE-CHECK THAT PREMISE FIRST/);
+        expect(r.wakePremise).toMatch(/RESTORE your normal cadence/);
+      }
+      // Only the event-less branch can claim nothing will push a wake.
+      expect(without.wakePremise).toMatch(/NOTHING will push you a wake/);
+      expect(withEvent.wakePremise).toContain('green-gate-verdict');
+    });
+  });
+
+  describe('handler wiring', () => {
+    it('arms the CAPPED interval, not the requested one', async () => {
+      const b = body(await call({ intervalSec: 7200, blockedOn: { reason: 'gate red 8h' } }));
+      expect(b.loop.intervalSec).toBe(900);
+      expect(b.loop.requestedIntervalSec).toBe(7200);
+      expect(b.loop.blockedOn).toEqual({ reason: 'gate red 8h', event: null, intervalCapped: true });
+      expect(materializeM).toHaveBeenCalledWith(expect.objectContaining({ intervalSec: 900 }));
+    });
+
+    it('PREPENDS the premise to the kickoff — the mechanism that actually re-checks it each wake', async () => {
+      await call({ intervalSec: 7200, blockedOn: { reason: 'gate red 8h' } });
+      const kickoff = (materializeM.mock.calls.at(-1)![0] as { kickoff: string }).kickoff;
+      expect(kickoff).toMatch(/^⏸ BACKOFF PREMISE/);
+      expect(kickoff).toContain('gate red 8h');
+      // The original wake prompt must still be there — the premise prepends, never replaces.
+      expect(kickoff).toContain('kickoff-prompt');
+    });
+
+    it('leaves the kickoff and the response untouched when no backoff is declared', async () => {
+      const b = body(await call({ intervalSec: 7200 }));
+      expect(b.loop.intervalSec).toBe(7200);
+      expect(b.loop.blockedOn).toBeNull();
+      expect(b.loop.requestedIntervalSec).toBeUndefined();
+      expect((materializeM.mock.calls.at(-1)![0] as { kickoff: string }).kickoff).toBe('kickoff-prompt');
+    });
+
+    it('honours the long interval end-to-end when a clearing event is named', async () => {
+      const b = body(
+        await call({ intervalSec: 7200, blockedOn: { reason: 'gate red', event: 'green-gate-verdict' } }),
+      );
+      expect(b.loop.intervalSec).toBe(7200);
+      expect(b.loop.blockedOn).toEqual({
+        reason: 'gate red',
+        event: 'green-gate-verdict',
+        intervalCapped: false,
+      });
+      expect(materializeM).toHaveBeenCalledWith(expect.objectContaining({ intervalSec: 7200 }));
+    });
   });
 });

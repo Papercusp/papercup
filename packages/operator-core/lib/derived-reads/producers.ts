@@ -540,7 +540,14 @@ registerDerivedRead({
 registerDerivedRead({
   key: 'coord.history',
   ttlMs: 90_000,
-  producerVersion: 1,
+  // v2 (WI-7295): toHistoryItem stopped shipping the 7 projected columns a
+  // SECOND time inside `payload` (it used to be the whole envelope those columns
+  // were projected from) — 42,328 B / 16.2% of the default view, which is what
+  // put this read over its 250,000 B budget. The bump is LOAD-BEARING: the reader
+  // accepts any stored row at the SAME producerVersion, so a shape change without
+  // one keeps serving the old fat rows forever and ships INERT (WI-7275/WI-7279
+  // burned exactly that way — green tests, clean types, unchanged live bytes).
+  producerVersion: 2,
   scope: 'workspace',
   compute: async () => {
     const { loadCoordHistory } = await import('../endpoint-route/routes/coord');

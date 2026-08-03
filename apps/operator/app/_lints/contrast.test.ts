@@ -442,6 +442,10 @@ function collectPairs(): { pairs: Pair[]; skipped: SkippedPair[] } {
           reasons.add(`${theme}:background:${bg.unresolved.reason}(${bg.unresolved.detail})`);
           continue;
         }
+        if (process.env.CONTRAST_DEBUG && selector === '.pc-zone-cap') {
+          // eslint-disable-next-line no-console
+          console.error(`DEBUG ${theme} ${selector} fg=${fg.hex} bg=${bg.hex} ratio=${contrastRatio(fg.hex, bg.hex).toFixed(2)}`);
+        }
         min = Math.min(min, contrastRatio(fg.hex, bg.hex) / need);
       }
       const key = `${selector} :: ${cv[1]} :: ${bv[1]}`;

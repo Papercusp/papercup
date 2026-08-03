@@ -544,11 +544,11 @@ export default defineTool({
       }
     }
 
-    const kickoff =
+    const baseKickoff =
       wakePrompt ??
       buildLoopWakePrompt({
         ownerId,
-        intervalSec: intervalSec,
+        intervalSec,
         harness,
         goal,
         carry,
@@ -558,6 +558,16 @@ export default defineTool({
         // not-found candidate must not tell the agent "you hold X".
         workItem: claimedWorkItem,
       });
+
+    // EI-19395290807657827 — PREPEND the backoff premise to the kickoff. This is what makes
+    // the fix work rather than merely advise: the arming agent goes to sleep and can never
+    // re-read this tool's RESPONSE, but the kickoff is re-delivered on EVERY wake. Putting
+    // the premise first means the next wake re-checks the specific condition the interval
+    // was chosen under, instead of silently inheriting it for the rest of the loop's life.
+    // Applies to a custom wakePrompt too — the trap is orthogonal to how the wake reads.
+    const kickoff = backoff.wakePremise
+      ? `⏸ BACKOFF PREMISE — RE-CHECK THIS BEFORE ANYTHING ELSE:\n${backoff.wakePremise}\n\n${baseKickoff}`
+      : baseKickoff;
 
     // EI-18221784742583615 — arm-time overwrite guard. Using `prior` (read above, before
     // materializeLoop overwrites it) — if the re-arm materially changes an ACTIVE loop's
@@ -641,6 +651,11 @@ export default defineTool({
     // EI-18221784742583615: put the overwrite comparison right after the base note so it
     // is the FIRST thing the arming agent reads — ahead of the claim/warm/cold tails.
     const overwriteNoteText = overwriteNote ? ` ⚠ ${overwriteNote.message}` : '';
+    // EI-19395290807657827 — the backoff disclosure. Sits with the other advisory tails,
+    // but says something the agent CANNOT infer from the echoed interval alone: whether it
+    // was capped, and (when an event was named) that naming it is not the same as parking
+    // on it. A silently-capped interval would be worse than no cap at all.
+    const backoffNote = backoff.note ? ` ${backoff.note}` : '';
     const warningNote = unboundedWarmLoopWarning ? ` ⚠ ${unboundedWarmLoopWarning}` : '';
     // B (cold-with-carry-activation-2026-07-20): disclose when the headless default
     // kicked in, so the arming agent knows its loop will go COLD (transcript reset to
@@ -678,7 +693,7 @@ export default defineTool({
         ? ' 📡 Monitor loop armed — but prefer PUSH wherever the thing you are watching already emits. A fleet leader can park on fleet:member-dead · fleet:claim-released · fleet:item-completed · fleet:context-critical via events:await { event, timeout_sec, on_timeout:"wake" }, which wakes you ON the transition instead of N times between transitions. Keep THIS loop as the slow backstop (a longer intervalSec) rather than the primary watcher. events:catalog lists the full set.'
         : '';
     const note =
-      baseNote + overwriteNoteText + claimNote + warningNote + coldDefaultNote + monitorPushNote;
+      baseNote + overwriteNoteText + backoffNote + claimNote + warningNote + coldDefaultNote + monitorPushNote;
 
     return {
       content: [
@@ -691,7 +706,18 @@ export default defineTool({
               ownerId,
               ownerLabel,
               harness,
-              intervalSec: intervalSec,
+              intervalSec,
+              // EI-19395290807657827 — report the REQUESTED interval alongside the armed
+              // one whenever they differ, so a capped backoff is legible in the structured
+              // result and not only in the prose note.
+              requestedIntervalSec: backoff.clamped ? args.intervalSec : undefined,
+              blockedOn: args.blockedOn
+                ? {
+                    reason: args.blockedOn.reason,
+                    event: args.blockedOn.event ?? null,
+                    intervalCapped: backoff.clamped,
+                  }
+                : null,
               goal,
               carry,
               continuation: args.continuation ?? 'settle',

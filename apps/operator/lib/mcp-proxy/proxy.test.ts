@@ -875,6 +875,37 @@ describe('EI-19305299022434394: heartbeat — logs while a forward is held open 
     }
   });
 
+  it('EI-19388661789704364: a burst of many FAST (short-lived) overlapping requests never beats — only a genuinely long-held one does', async () => {
+    // Reproduces the measured production defect: zero `heartbeat` records across a 30h+/27MB
+    // ledger despite `shed_max_in_flight` proving real concurrency spikes occurred. A sampled
+    // periodic tick can miss every one of many short overlapping holds by bad luck; the
+    // per-request threshold timer must not — it fires only for a request that outlives the
+    // interval, regardless of how many fast neighbors it had.
+    const upstream = track(
+      http.createServer((_req, res) => {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end('{"result":"ok"}');
+      }),
+    );
+    await listen(upstream);
+    const logs: string[] = [];
+    const proxy = track(
+      createMcpProxy({
+        listenPort: 0, targetHost: '127.0.0.1', targetPort: port(upstream),
+        retryWindowMs: 5_000, retryBackoffMs: 20, heartbeatIntervalMs: 50, log: (s) => logs.push(s),
+      }),
+    );
+    await listen(proxy);
+
+    // A burst of fast requests, each completing well under the 50ms heartbeat threshold —
+    // none of these should ever produce a heartbeat, however many overlap at once.
+    for (let i = 0; i < 20; i++) {
+      // eslint-disable-next-line no-await-in-loop
+      await Promise.all([request(port(proxy)), request(port(proxy)), request(port(proxy))]);
+    }
+    expect(logs.some((l) => l.includes('heartbeat'))).toBe(false);
+  });
+
   it('heartbeatIntervalMs:0 disables the beat entirely (opt-out, no timer leak)', async () => {
     const upstream = track(
       http.createServer((_req, res) => {

@@ -444,4 +444,20 @@ describe('summarizePlanLintReport (plans.lint list projection)', () => {
       .find((p) => p.key === 'learning.improvements');
     expect(producer?.producerVersion).toBe(3);
   });
+
+  it('coord.history is at producerVersion 2 — the payload de-duplication needs it to take effect (WI-7295)', async () => {
+    // toHistoryItem used to set `payload: e`, the WHOLE envelope the row's own
+    // ts/msg_id/kind/from/to/plan_slug/harness_slug were projected FROM — so every
+    // row shipped those 7 values twice. Measured live 2026-08-03 on the default
+    // 200-row view: 42,328 redundant bytes, 16.2% of a 261,140 B read whose budget
+    // is 250,000. Same trap as learning.improvements above: without this bump the
+    // already-stored v1 snapshots keep passing the reader's version check and serve
+    // the old fat rows, so the cut ships inert.
+    vi.resetModules();
+    const registry = await import('./registry');
+    registry.__clearDerivedReadRegistryForTest();
+    await import('./producers');
+    const producer = registry.listDerivedReadProducers().find((p) => p.key === 'coord.history');
+    expect(producer?.producerVersion).toBe(2);
+  });
 });

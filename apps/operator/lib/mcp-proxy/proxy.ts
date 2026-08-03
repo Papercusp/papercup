@@ -637,24 +637,42 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
 
   // Half 2 of EI-19305299022434394: the proxy previously logged ONLY on completion/error, so a
   // stalled upstream that never completes anything produced total silence (106 minutes with zero
-  // log lines during the measured outage) — indistinguishable from an idle proxy. Emit a periodic
-  // beat whenever at least one forward is outstanding.
+  // log lines during the measured outage) — indistinguishable from an idle proxy.
+  //
+  // EI-19388661789704364: the ORIGINAL shape here was a single global `setInterval` that sampled
+  // `inFlightStarts.size` on a fixed 30s cadence and only logged/recorded when that ONE instant
+  // landed on a nonzero count. Measured live: zero `heartbeat` records across a 27MB / 30h+ ledger,
+  // despite `shed_max_in_flight` proving the proxy DID hit its concurrency ceiling repeatedly — the
+  // real traffic here is bursts of requests that each complete in milliseconds, so a 30s-aligned
+  // sample essentially never coincides with one being outstanding. The exact case the heartbeat was
+  // built for (one genuinely long-held/stalled forward) was therefore left to chance alignment
+  // instead of being detected deterministically.
+  //
+  // Fixed by moving from a SAMPLED aggregate tick to a per-request THRESHOLD timer: the instant a
+  // forward starts, schedule a check `heartbeatIntervalMs` out; if that SPECIFIC request is still
+  // outstanding when the timer fires, it is — by construction — a real long hold (not a fast burst
+  // that happened to be in flight at a sample instant), so it beats, then reschedules itself for as
+  // long as the request remains open. This fires deterministically for any forward held at least
+  // `heartbeatIntervalMs`, with no dependency on how many other requests are in flight or when.
   const heartbeatIntervalMs = opts.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS;
-  let heartbeatTimer: NodeJS.Timeout | undefined;
   if (heartbeatIntervalMs > 0) {
-    heartbeatTimer = setInterval(() => {
+    log(`heartbeat armed: intervalMs=${heartbeatIntervalMs} (beats per-request once a forward is held this long)`);
+  }
+  const stallTimers = new Map<number, NodeJS.Timeout>();
+  function scheduleStallCheck(inFlightId: number, startedAt: number): void {
+    if (heartbeatIntervalMs <= 0) return;
+    const timer = setTimeout(() => {
+      // The request may have completed (and cleared its slot) in the gap before this fired —
+      // that is the common case and not a stall, so say nothing.
+      if (!inFlightStarts.has(inFlightId)) return;
+      const oldestAgeMs = Date.now() - startedAt;
       const count = inFlightStarts.size;
-      if (count <= 0) return;
-      const now = Date.now();
-      let oldestStartedAt = now;
-      for (const startedAt of inFlightStarts.values()) {
-        if (startedAt < oldestStartedAt) oldestStartedAt = startedAt;
-      }
-      const oldestAgeMs = now - oldestStartedAt;
-      log(`heartbeat: ${count} request(s) in flight, oldest held ${Math.round(oldestAgeMs / 1000)}s`);
-      record({ kind: 'heartbeat', inFlight: count, oldestAgeMs, maxInFlight });
+      log(`heartbeat: request #${inFlightId} held ${Math.round(oldestAgeMs / 1000)}s, ${count} in flight total`);
+      record({ kind: 'heartbeat', inFlight: count, oldestAgeMs, maxInFlight, inFlightId });
+      scheduleStallCheck(inFlightId, startedAt); // still outstanding — keep beating until it isn't
     }, heartbeatIntervalMs);
-    heartbeatTimer.unref?.();
+    timer.unref?.();
+    stallTimers.set(inFlightId, timer);
   }
 
   const server = http.createServer((req, res) => {
@@ -703,7 +721,9 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
           return;
         }
         const inFlightId = nextInFlightId++;
-        inFlightStarts.set(inFlightId, Date.now());
+        const inFlightStartedAt = Date.now();
+        inFlightStarts.set(inFlightId, inFlightStartedAt);
+        scheduleStallCheck(inFlightId, inFlightStartedAt);
         try {
           // P-005: classify the forward + (for a tools/call) inject a per-request
           // idempotencyKey ONCE, reused across every retry of THIS request so :3070 dedups a
@@ -844,12 +864,20 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
           // EI-19305299022434394: always release the in-flight slot, on every exit path
           // (success return, exhausted-window fallthrough, or an unexpected throw).
           inFlightStarts.delete(inFlightId);
+          // EI-19388661789704364: cancel this request's own stall timer so a fast forward
+          // never leaves a dangling scheduled check (and never fires one after completion).
+          const stallTimer = stallTimers.get(inFlightId);
+          if (stallTimer) {
+            clearTimeout(stallTimer);
+            stallTimers.delete(inFlightId);
+          }
         }
       })();
     });
   });
   server.on('close', () => {
-    if (heartbeatTimer) clearInterval(heartbeatTimer);
+    for (const timer of stallTimers.values()) clearTimeout(timer);
+    stallTimers.clear();
   });
   return server;
 }

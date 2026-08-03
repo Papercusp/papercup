@@ -1003,6 +1003,51 @@ export interface WorkItemDetail extends WorkItem {
   links: { rel: string; dst: ObjectRef }[];
 }
 
+/** The last-N slice of a work-item's thread, plus what frames it. */
+export interface WorkItemThreadWindow {
+  posts: ThreadPostRow[];
+  /** TOTAL posts in the thread — from the same snapshot as `posts`. */
+  total: number;
+  /** Topic slugs this item is tagged into (areas, not messages). */
+  topics: string[];
+  /** The item's creation — the incident-start a topic read should be scoped to. */
+  createdAt: string;
+}
+
+/**
+ * The LAST `limit` posts of a work-item's thread, bounded, plus its total and topics.
+ *
+ * The bounded sibling of {@link getWorkItemDetail}, which reads a thread in FULL
+ * because it backs a full render. This exists for cell resolvers and other hot
+ * read paths, where pulling a 121-post thread to display 3 is the over-fetch the
+ * performance doc lists — see PgThreadStore.listRecentPosts for why the count
+ * rides the same query rather than a second one.
+ *
+ * Resolves the thread through {@link workItemObjectRef}, which is already
+ * family-aware (issue-family threads hang off the bare id, feature-family off a
+ * harness-qualified ref). Re-deriving that convention here would be a third copy
+ * of it, and the feature-family half is the one a bare-id lookup silently misses.
+ *
+ * Returns null when the item does not exist — distinct from a real empty thread,
+ * which returns `total: 0`.
+ */
+export async function getWorkItemThreadWindow(
+  id: string,
+  limit: number,
+  harness?: string,
+): Promise<WorkItemThreadWindow | null> {
+  const wi = await getWorkItem(id, harness);
+  if (!wi) return null;
+  const ref = workItemObjectRef(wi);
+  const [thread, topics] = await Promise.all([threads.getThreadByParent(ref), tags.listTags(ref)]);
+  // No thread row at all is the DEFAULT for an item nobody has commented on
+  // (threads are created on first post), not a failure — a real, measured zero.
+  const window = thread
+    ? await threads.listRecentPosts(thread.thread_id, limit)
+    : { posts: [] as ThreadPostRow[], total: 0 };
+  return { posts: window.posts, total: window.total, topics, createdAt: wi.createdAt };
+}
+
 /** A work-item plus its coord-substrate detail (topics, thread posts, outgoing links). */
 export async function getWorkItemDetail(id: string, harness?: string): Promise<WorkItemDetail | null> {
   const wi = await getWorkItem(id, harness);

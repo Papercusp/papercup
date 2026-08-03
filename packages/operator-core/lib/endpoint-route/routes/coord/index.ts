@@ -26,6 +26,31 @@ import { listHandoffs, listHandoffsPaginated } from '../../../agent-tools/coordi
 import { coordLog } from '../../../agent-tools/coordination/log';
 import { type CoordEnvelope } from '../../../agent-tools/coordination/envelope';
 
+/**
+ * Fields `toHistoryItem` PROJECTS out of the envelope onto the row's top level.
+ * They are stripped from `payload` so each row carries them once, not twice
+ * (WI-7295): `payload` used to be the whole envelope the columns were projected
+ * FROM, which duplicated 42,328 B across the default 200-row view — 16.2% of the
+ * read, and enough on its own to bust the 250,000 B sync-read budget.
+ *
+ * Every value stays reachable byte-identically at the row's top level, so this
+ * removes a second copy, never information. `summary` is NOT in this list: it is
+ * derived (envSummary truncates `detail` to 200 chars), so the full `detail`/
+ * `event` text must survive inside `payload`.
+ */
+const PROJECTED_ENVELOPE_FIELDS = [
+  'ts',
+  'msg_id',
+  'kind',
+  'from',
+  'to',
+  'plan_slug',
+  'harness_slug',
+] as const;
+
+/** The envelope minus the fields already projected onto the row. */
+export type HistoryPayload = Omit<CoordEnvelope, (typeof PROJECTED_ENVELOPE_FIELDS)[number]>;
+
 export interface HistoryItem {
   ts: string;
   msg_id: string;
@@ -36,7 +61,7 @@ export interface HistoryItem {
   plan_slug?: string;
   harness_slug?: string;
   summary?: string;
-  payload: CoordEnvelope;
+  payload: HistoryPayload;
 }
 
 function envSummary(e: CoordEnvelope): string {
@@ -54,6 +79,8 @@ function toHistoryItem(source: HistoryItem['source'], e: CoordEnvelope): History
   const harness_slug = typeof (e as { harness_slug?: unknown }).harness_slug === 'string'
     ? ((e as { harness_slug?: string }).harness_slug as string)
     : undefined;
+  const payload = { ...e } as Record<string, unknown>;
+  for (const k of PROJECTED_ENVELOPE_FIELDS) delete payload[k];
   return {
     ts: e.ts,
     msg_id: e.msg_id,
@@ -64,7 +91,7 @@ function toHistoryItem(source: HistoryItem['source'], e: CoordEnvelope): History
     plan_slug,
     harness_slug,
     summary: envSummary(e),
-    payload: e,
+    payload: payload as HistoryPayload,
   };
 }
 

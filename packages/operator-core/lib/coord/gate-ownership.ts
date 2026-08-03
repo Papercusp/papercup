@@ -34,6 +34,12 @@ import {
 } from './condition-object';
 import { operatorHomeHarnessSlug } from '../harness/operator-home-harness';
 import { cellUnknown, type CellUnknown } from '../cell-contract';
+import {
+  noSubjectThread,
+  readCellThread,
+  unmeasuredThread,
+  type CellThread,
+} from './cell-thread';
 import { resolveSessionStates } from '../agent-tools/coordination/liveness-oracle';
 import type { SessionState } from '../agent-tools/coordination/presence-wakeability';
 
@@ -125,12 +131,26 @@ export interface CellOwnership {
    * invisible instead of fixed.
    */
   duplicates: readonly string[];
+  /**
+   * P-006. What has already been SAID about this incident — the last few posts on
+   * the owning work-item's thread, plus pointers to the areas it is filed under.
+   *
+   * ⚠ ADVISORY PAYLOAD, deliberately OUTSIDE this cell's falsifier contract
+   * (D-006). The falsifier is `holderSessionState`, which measures the HOLDER; a
+   * prose excerpt asserts nothing beyond "these bytes were posted", so there is no
+   * apparatus that could contradict it. Do not reach for it when you want to know
+   * whether the ownership above is TRUE — it answers a different question ("has
+   * anyone explained this yet"), and treating a confident-sounding comment as
+   * evidence about the claim is how a stale message outranks a measurement.
+   */
+  thread: CellThread;
 }
 
 /** PURE. Project a resolved condition onto a cell's ownership block. */
 export function toCellOwnership(
   obj: ConditionObject,
   holderSessionState: SessionState | null = null,
+  thread: CellThread = noSubjectThread('thread not read on this projection'),
 ): CellOwnership {
   return {
     eventKey: obj.conditionKey,
@@ -142,6 +162,7 @@ export function toCellOwnership(
     expiresAt: obj.expiresAt,
     holderSessionState,
     duplicates: obj.duplicates,
+    thread,
   };
 }
 
@@ -162,6 +183,9 @@ export function unownedCell(eventKey: string): CellOwnership {
     expiresAt: null,
     holderSessionState: null,
     duplicates: [],
+    // Nothing owns the condition, so there is no thread to have — FINAL
+    // (`not-applicable`), not an empty one and not a failed read.
+    thread: noSubjectThread('no work-item owns this condition, so there is no thread to read'),
   };
 }
 
@@ -177,6 +201,9 @@ export function unmeasuredCell(eventKey: string, detail: string): CellOwnership 
     expiresAt: null,
     holderSessionState: null,
     duplicates: [],
+    // Ownership was unreadable, so the thread is unknown TOO — never silence.
+    // Reporting "nothing was said" here would restate the failure as reassurance.
+    thread: unmeasuredThread(`ownership unreadable, so its thread was not read: ${detail}`),
   };
 }
 
@@ -210,6 +237,7 @@ export async function readGateOwnership(
     harness?: string;
     findConditionObjects?: typeof findConditionObjects;
     resolveSessionStates?: typeof resolveSessionStates;
+    readCellThread?: typeof readCellThread;
   } = {},
 ): Promise<CellOwnership> {
   const harness = opts.harness?.trim() || operatorHomeHarnessSlug();
@@ -237,5 +265,12 @@ export async function readGateOwnership(
       holderSessionState = null;
     }
   }
-  return toCellOwnership(obj, holderSessionState);
+
+  // P-006, advisory. Independent of the falsifier above and fails soft on its own
+  // — a thread that cannot be read must never degrade the OWNERSHIP verdict, which
+  // was measured successfully and is the part of this cell anyone branches on.
+  const readThread = opts.readCellThread ?? readCellThread;
+  const thread = await readThread(obj.workItem, { harness });
+
+  return toCellOwnership(obj, holderSessionState, thread);
 }

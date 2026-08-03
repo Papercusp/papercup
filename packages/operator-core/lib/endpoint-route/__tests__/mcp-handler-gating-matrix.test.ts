@@ -552,6 +552,8 @@ describe('tools:invoke re-dispatch — `projection` nested in the target call\'s
 
   it('an INVALID nested projection fails CLOSED — the target tool is never dispatched', async () => {
     const res = await invokeCall({ projection: { pipe: [{ op: 'grep', pattern: '[[:digit:]]' }] } });
+    // eslint-disable-next-line no-console
+    console.log('DEBUG res=', JSON.stringify(res));
     expect(res.isError).toBe(true);
     expect(textOf(res)).toContain('projection_invalid');
     expect(invokeProbeSeen).toEqual([]); // never reached the target tool
