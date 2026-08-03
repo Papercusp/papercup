@@ -366,6 +366,90 @@ export async function flushPendingTelemetry(): Promise<void> {
 }
 
 /**
+ * EI-19389431406847252: `output_ref` is NULL on every `tool_invocations` row
+ * (324,661/324,661 measured over 36h) even for calls that demonstrably
+ * SPILLED a result to scratch — because the door's own spill decision
+ * (result-door.ts's `applyResultDoor`) happens in `_mcp-handler.ts`'s
+ * `execute()`, strictly AFTER `runDispatchStack`'s `finally` has already
+ * snapshotted + queued this call's telemetry row (recordTelemetry runs deep
+ * inside the generic dispatch stack shared by every consumer — capabilities/
+ * invoke, tools:invoke's inner re-dispatch, IPC — none of which should be
+ * doored, so the door cannot move earlier without dooring paths it must not
+ * touch). By the time the caller learns a spill happened, the row already
+ * exists (queued, often already flushed).
+ *
+ * This BACKFILLS output_ref/output_size onto that already-written row via a
+ * best-effort correlated UPDATE, rather than inserting a second row (which
+ * would double-count `status='ok'` quota) or threading a per-row telemetry
+ * handle through five generic layers.
+ *
+ * Correlation is deliberately NOT a hard foreign key — there is no per-call
+ * nonce carried into `metadata_json` (adding one is a bigger, separate change).
+ * It matches (workspace_id, spawn_id, tool_name, output_ref IS NULL, most
+ * recent invoked_at) inside a short recency window, plus run_id when the
+ * caller has one. For loopback SU/power-user sessions `runId` is minted FRESH
+ * per MCP request (see ctx construction in _mcp-handler.ts — "Per-request
+ * UUID, not the 'standalone' sentinel"), so that additional predicate makes
+ * the match effectively exact for that traffic; for signed role-scoped/bee
+ * spawns `run_id` is stable for the whole spawn and narrows nothing extra, so
+ * two back-to-back calls of the SAME tool from the SAME spawn inside the
+ * recency window could in principle backfill the wrong one of the pair. Good
+ * enough for the stated purpose (spill-rate / paged-rate analytics in one
+ * query instead of a two-source forensic reconstruction) — not a substitute
+ * for an exact key.
+ *
+ * flushPendingTelemetry() first: the row this spill belongs to may still be
+ * sitting in the in-memory queue (debounceMs default 10ms) — the UPDATE below
+ * only sees committed rows. Best-effort throughout: any failure is logged and
+ * swallowed, exactly like the rest of this file's telemetry writes.
+ */
+export async function backfillResultDoorOutputRef(input: {
+  workspaceId: string | null | undefined;
+  spawnId: string | null | undefined;
+  toolName: string;
+  runId?: string | null;
+  outputRef: string;
+  outputSize: number;
+}): Promise<void> {
+  if (!input.workspaceId || !input.spawnId) return;
+  try {
+    // Force the just-queued row to be durable before we try to UPDATE it.
+    await flushPendingTelemetry();
+    const { sql } = getOrgPg();
+    await sql.begin(async (tx) => {
+      await tx.unsafe(`SELECT set_config('app.workspace_id', $1, true)`, [
+        input.workspaceId,
+      ]);
+      await tx.unsafe(
+        `UPDATE harness_shared.tool_invocations
+            SET output_ref = $1, output_size = $2
+          WHERE id = (
+            SELECT id FROM harness_shared.tool_invocations
+             WHERE workspace_id = $3 AND spawn_id = $4 AND tool_name = $5
+               AND output_ref IS NULL
+               AND invoked_at >= now() - interval '30 seconds'
+               AND ($6::text IS NULL OR run_id = $6)
+             ORDER BY invoked_at DESC
+             LIMIT 1
+          )`,
+        [
+          input.outputRef,
+          input.outputSize,
+          input.workspaceId,
+          input.spawnId,
+          input.toolName,
+          input.runId ?? null,
+        ],
+      );
+    });
+  } catch (err) {
+    console.warn(
+      `[projected-tool-deps] backfillResultDoorOutputRef failed for ${input.toolName}: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+}
+
+/**
  * Build the tool_invocations row params snapshot for one settled dispatch.
  * Synchronous + cheap (JSON.stringify of args); null when there is no workspace
  * to scope to. Pulls Principal audit fields off ctx.principal when present

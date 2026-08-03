@@ -1041,11 +1041,17 @@ export async function getWorkItemThreadWindow(
   id: string,
   limit: number,
   harness?: string,
+  // Seam for the dispatch guard — production always takes the real defaults, and
+  // the real path is verified live rather than only through this seam.
+  deps: {
+    getWorkItem?: typeof getWorkItem;
+    getIssueThreadWindow?: typeof getIssueThreadWindow;
+  } = {},
 ): Promise<WorkItemThreadWindow | null> {
-  const wi = await getWorkItem(id, harness);
+  const wi = await (deps.getWorkItem ?? getWorkItem)(id, harness);
   if (!wi) return null;
   // Issue-family: the correctly-scoped store lives in issues-engineer.
-  if (wi.family === 'issue') return getIssueThreadWindow(id, limit);
+  if (wi.family === 'issue') return (deps.getIssueThreadWindow ?? getIssueThreadWindow)(id, limit);
   const ref = workItemObjectRef(wi);
   const [thread, topics] = await Promise.all([threads.getThreadByParent(ref), tags.listTags(ref)]);
   // No thread row at all is the DEFAULT for an item nobody has commented on

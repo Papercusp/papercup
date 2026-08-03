@@ -113,8 +113,9 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { setWorkItemCheckpointWithPrior, getWorkItemCheckpoint } from '../../work-item-checkpoint';
 import { SUPPORTED_DEP_KINDS } from '../../freshness/resolvers';
-import { markFeatureProgress, markIssueProgress } from '../../work-items';
+import { markFeatureProgress, markIssueProgress, isClaimHoldParked } from '../../work-items';
 import { lookupWorkItem } from './_lookup';
+import { detectPauseDeclaration, pauseNotEnforcedWarning } from '../../carry-note-pause-declaration';
 import { runBulk, bulkContent } from '../_bulk';
 import { resolveConcreteWorkspaceId } from '../../workspace-registry';
 import { carryProvenanceFields } from '../../carry-surface-provenance-stamp';
@@ -633,6 +634,24 @@ export default defineTool({
                   `it verbatim rather than a placeholder/marker — a large shrink like this usually means accidental ` +
                   `truncation (EI-9325). If the shrink is intentional, ignore this.`,
               }
+            : {}),
+          // EI-19395730805289668: this note DECLARES an owner pause, but the item carries no
+          // claim hold — so the pause is prose the claim path cannot read, and
+          // scheduler:get_next will keep serving the item (measured 2026-08-03T02:05Z).
+          //
+          // Warn-only, and deliberately NOT an auto-hold: two corpus items sat open-and-
+          // "paused" for weeks on SITUATIONAL directives that had long expired, so silently
+          // converting prose into an enforced hold would have made those worse. The author is
+          // the only one who knows which case they are in, and they know it right now.
+          //
+          // No extra read: `item` is already loaded above (the not_holder guard). A null item
+          // (unresolvable id) or one already held stays SILENT — an unknown hold state must
+          // not be reported as an absent one, or this nags the authors who did it correctly.
+          ...(stored !== null && item && !isClaimHoldParked(item.payload)
+            ? (() => {
+                const declared = detectPauseDeclaration(stored);
+                return declared ? { pauseNotEnforcedWarning: pauseNotEnforcedWarning(declared) } : {};
+              })()
             : {}),
         };
       },

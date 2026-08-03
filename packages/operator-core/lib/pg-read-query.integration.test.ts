@@ -192,6 +192,69 @@ describe('pgReadQuery — timestamp-without-tz UTC parsing (EI-19331550321709126
   });
 });
 
+/**
+ * EI-19397658288924647 recurrence guard: `date_trunc` buckets on the SESSION
+ * timezone. On this box that is America/New_York, so the obvious daily rollup
+ * bucketed in EDT while the result was still serialised with a literal `Z` —
+ * a label affirmatively WRONG about its own timezone, shifting every
+ * agent-built daily series by 4h with nothing in the row to notice it by.
+ * `pgReadQuery` now pins its transaction to UTC.
+ *
+ * The CONTROL test below is load-bearing: most CI/dev servers already run UTC,
+ * where every assertion here passes whether or not the fix exists. It proves
+ * the client really is non-UTC, so the assertions above it are not vacuous.
+ */
+describe('pgReadQuery — UTC bucketing (EI-19397658288924647)', () => {
+  let db: OrgTestDb;
+  let edtSql: postgres.Sql;
+  // 01:34Z on 08-03 is 21:34 EDT on 08-02 — the two zones disagree about which
+  // DAY this instant belongs to, which is the entire bug.
+  const CROSSES_MIDNIGHT_IN_EDT = "timestamptz '2026-08-03 01:34:00Z'";
+  const BUCKET = `date_trunc('day', ${CROSSES_MIDNIGHT_IN_EDT})::date`;
+
+  beforeAll(async () => {
+    db = await createOrgTestDb();
+    // max:1 so the SET is guaranteed to land on the same connection pgReadQuery
+    // then borrows — with a larger pool it could apply to a different one.
+    edtSql = postgres(db.adminDsn, { max: 1, onnotice: () => {} });
+    await edtSql.unsafe("SET TIME ZONE 'America/New_York'");
+  }, 120_000);
+
+  afterAll(async () => {
+    await edtSql?.end({ timeout: 1 }).catch(() => {});
+    await db?.cleanup();
+  });
+
+  it('runs with TimeZone=UTC even when the surrounding session is not', async () => {
+    const r = await pgReadQuery("SELECT current_setting('TimeZone') AS tz", { client: edtSql });
+    expect(r.rows[0]?.tz).toBe('UTC');
+  });
+
+  it('buckets on the UTC day (text form — no client date-parser involved)', async () => {
+    const r = await pgReadQuery(`SELECT ${BUCKET}::text AS d`, { client: edtSql });
+    // Pre-fix this was '2026-08-02' — the EDT day.
+    expect(r.rows[0]?.d).toBe('2026-08-03');
+  });
+
+  it("renders a `...T00:00:00.000Z` label that is TRUE, not 4h off", async () => {
+    const r = await pgReadQuery(`SELECT ${BUCKET} AS d`, { client: edtSql });
+    expect((r.rows[0]?.d as Date).toISOString()).toBe('2026-08-03T00:00:00.000Z');
+  });
+
+  it('CONTROL: the SAME client outside pgReadQuery still buckets in EDT — so the above is not vacuous', async () => {
+    const rows = (await edtSql.unsafe(`SELECT ${BUCKET}::text AS d`)) as unknown as Array<{ d: string }>;
+    expect(rows[0]?.d).toBe('2026-08-02');
+  });
+
+  it('the pin is transaction-scoped — it must not leak onto the pooled connection', async () => {
+    await pgReadQuery('SELECT 1 AS n', { client: edtSql });
+    const rows = (await edtSql.unsafe(
+      "SELECT current_setting('TimeZone') AS tz",
+    )) as unknown as Array<{ tz: string }>;
+    expect(rows[0]?.tz).toBe('America/New_York');
+  });
+});
+
 // EI-10514: EXPLAIN-only schema validation (parses/plans, never executes or writes) —
 // built for validateRubricReplicationSql to schema-check embedded rubric drill SQL.
 describe('explainReadQuery (real PG)', () => {

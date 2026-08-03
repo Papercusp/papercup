@@ -1,0 +1,229 @@
+import { describe, expect, it } from 'vitest';
+import {
+  censusTerminalResidue,
+  evaluateResidueTrend,
+  type ResidueSample,
+} from './terminal-residue-census';
+import type { CgroupFs } from './cgroup-read';
+
+const ROOT = '/sys/fs/cgroup';
+const TERM = `${ROOT}/user.slice/user-1000.slice/user@1000.service/app.slice/app-org.gnome.Terminal.slice`;
+
+const SERVER = 500;
+const USER_MANAGER = 2026497;
+
+/** Mirrors terminal-window.test.ts's fake so the two agree on /proc shape. */
+function box(opts: {
+  children: Record<string, number[]>;
+  ppids: Record<number, number>;
+  unreadableScopes?: string[];
+}): CgroupFs {
+  const files: Record<string, string> = {};
+  const dirs = new Set<string>([TERM]);
+
+  for (const [name, pids] of Object.entries(opts.children)) {
+    const abs = `${TERM}/${name}`;
+    dirs.add(abs);
+    if (!opts.unreadableScopes?.includes(name)) files[`${abs}/cgroup.procs`] = pids.join('\n');
+  }
+  for (const [pid, ppid] of Object.entries(opts.ppids)) {
+    files[`/proc/${pid}/stat`] =
+      `${pid} (node) S ${ppid} 1 1 0 -1 0 0 0 0 0 1 2 0 0 20 0 1 0 12345 0 0`;
+  }
+
+  return {
+    readFile: (p) => files[p] ?? null,
+    isDir: (p) => dirs.has(p),
+    readDir: (p) => {
+      const out = new Set<string>();
+      for (const d of dirs) {
+        if (d.startsWith(`${p}/`)) out.add(d.slice(p.length + 1).split('/')[0]!);
+      }
+      return [...out];
+    },
+  };
+}
+
+const scope = (n: number) => `vte-spawn-0000000${n}-0000-0000-0000-000000000000.scope`;
+
+describe('censusTerminalResidue', () => {
+  it('counts a scope whose window is gone, and leaves live ones alone', () => {
+    const fs = box({
+      children: {
+        'gnome-terminal-server.service': [SERVER],
+        [scope(1)]: [1001], // child of the server -> window ALIVE
+        [scope(2)]: [2001, 2002], // orphaned onto the user manager -> window DEAD
+      },
+      ppids: { [SERVER]: 1, 1001: SERVER, 2001: USER_MANAGER, 2002: USER_MANAGER },
+    });
+
+    const c = censusTerminalResidue(TERM, fs);
+
+    expect(c.scopesTotal).toBe(2);
+    expect(c.scopesDead).toBe(1);
+    expect(c.deadPids).toBe(2);
+    expect(c.unprobeable).toBe(0);
+    expect(c.dead).toEqual([{ scope: scope(2), pidCount: 2 }]);
+  });
+
+  it('never counts an undecidable scope as dead — unknown is not dead', () => {
+    const fs = box({
+      children: {
+        'gnome-terminal-server.service': [SERVER],
+        [scope(1)]: [1001],
+        [scope(2)]: [2001],
+      },
+      // no /proc entry for 2001 at all -> probe observes nothing -> null
+      ppids: { [SERVER]: 1, 1001: SERVER },
+      unreadableScopes: [],
+    });
+
+    const c = censusTerminalResidue(TERM, fs);
+
+    expect(c.scopesDead).toBe(0);
+    expect(c.unprobeable).toBe(1);
+  });
+
+  it('ignores non-window units in the slice', () => {
+    const fs = box({
+      children: {
+        'gnome-terminal-server.service': [SERVER],
+        'something-else.service': [9001],
+        [scope(1)]: [2001],
+      },
+      ppids: { [SERVER]: 1, 9001: 1, 2001: USER_MANAGER },
+    });
+
+    const c = censusTerminalResidue(TERM, fs);
+    expect(c.scopesTotal).toBe(1);
+    expect(c.scopesDead).toBe(1);
+  });
+
+  it('is immune to cmdline — the filter that blinds the scan (D-017)', () => {
+    // The probe reads only cgroup.procs + /proc/<pid>/stat. No cmdline is
+    // provided by the fake at all, and the census still sees the residue. This is
+    // the whole reason P-013 does not build on summary.unaccounted.
+    const fs = box({
+      children: {
+        'gnome-terminal-server.service': [SERVER],
+        [scope(1)]: [2001, 2002, 2003],
+      },
+      ppids: { [SERVER]: 1, 2001: USER_MANAGER, 2002: USER_MANAGER, 2003: USER_MANAGER },
+    });
+
+    const c = censusTerminalResidue(TERM, fs);
+    expect(c.scopesDead).toBe(1);
+    expect(c.deadPids).toBe(3);
+  });
+});
+
+describe('evaluateResidueTrend', () => {
+  const HOUR = 60 * 60_000;
+  const DAY = 24 * HOUR;
+  const now = 10 * DAY;
+
+  const at = (daysAgo: number, scopesDead: number): ResidueSample => ({
+    atMs: now - daysAgo * DAY,
+    scopesDead,
+  });
+
+  it('flags a rising FLOOR as accumulation', () => {
+    const samples = [
+      at(6, 3),
+      at(5, 4),
+      at(4, 3),
+      // recent window (<24h)
+      { atMs: now - 3 * HOUR, scopesDead: 9 },
+      { atMs: now - 2 * HOUR, scopesDead: 11 },
+      { atMs: now - 1 * HOUR, scopesDead: 10 },
+    ];
+
+    const v = evaluateResidueTrend(samples, { nowMs: now });
+
+    expect(v.trend).toBe('rising');
+    expect(v.olderFloor).toBe(3);
+    expect(v.recentFloor).toBe(9);
+    expect(v.floorDelta).toBe(6);
+    expect(v.alarm).toBe(true);
+  });
+
+  it('does NOT fire on churn — a moving peak over a flat floor', () => {
+    // Windows opening and closing all day swing the max wildly; the floor is what
+    // says whether anything is actually stuck. This is the false-positive D-016
+    // measured at ~93% for a level-based alarm.
+    const samples = [
+      at(6, 2),
+      at(5, 40),
+      at(4, 3),
+      { atMs: now - 3 * HOUR, scopesDead: 38 },
+      { atMs: now - 2 * HOUR, scopesDead: 2 },
+      { atMs: now - 1 * HOUR, scopesDead: 45 },
+    ];
+
+    const v = evaluateResidueTrend(samples, { nowMs: now });
+
+    expect(v.trend).toBe('steady');
+    expect(v.alarm).toBe(false);
+  });
+
+  it('reports falling when residue is being cleared', () => {
+    const samples = [
+      at(6, 12),
+      at(5, 14),
+      at(4, 13),
+      { atMs: now - 3 * HOUR, scopesDead: 2 },
+      { atMs: now - 2 * HOUR, scopesDead: 3 },
+      { atMs: now - 1 * HOUR, scopesDead: 2 },
+    ];
+
+    const v = evaluateResidueTrend(samples, { nowMs: now });
+
+    expect(v.trend).toBe('falling');
+    expect(v.alarm).toBe(false);
+  });
+
+  it('says UNKNOWN rather than healthy when history is too thin', () => {
+    const v = evaluateResidueTrend(
+      [{ atMs: now - HOUR, scopesDead: 30 }],
+      { nowMs: now },
+    );
+
+    expect(v.trend).toBe('unknown');
+    expect(v.alarm).toBe(false);
+    expect(v.summary).toMatch(/not the same as healthy/);
+  });
+
+  it('ignores samples older than the lookback', () => {
+    const samples = [
+      at(90, 0), // ancient, outside lookback — must not become the older floor
+      at(6, 8),
+      at(5, 9),
+      at(4, 8),
+      { atMs: now - 3 * HOUR, scopesDead: 9 },
+      { atMs: now - 2 * HOUR, scopesDead: 10 },
+      { atMs: now - 1 * HOUR, scopesDead: 9 },
+    ];
+
+    const v = evaluateResidueTrend(samples, { nowMs: now });
+
+    expect(v.olderFloor).toBe(8);
+    expect(v.trend).toBe('steady');
+  });
+
+  it('models the 16-day silent accumulation this indicator exists to catch', () => {
+    // One scope leaks per day and nothing clears it. No single day looks alarming,
+    // which is exactly why a level alarm never fired.
+    const samples: ResidueSample[] = [];
+    for (let d = 16; d >= 0; d--) {
+      samples.push({ atMs: now - d * DAY, scopesDead: 16 - d });
+    }
+    // enough recent samples to satisfy the floor comparison
+    samples.push({ atMs: now - 2 * HOUR, scopesDead: 16 });
+    samples.push({ atMs: now - 1 * HOUR, scopesDead: 16 });
+
+    const v = evaluateResidueTrend(samples, { nowMs: now });
+
+    expect(v.trend).toBe('rising');
+    expect(v.alarm).toBe(true);
+  });
+});
