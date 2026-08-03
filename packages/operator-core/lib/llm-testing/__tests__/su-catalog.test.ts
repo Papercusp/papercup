@@ -95,9 +95,14 @@ describe('SU_CATALOG load-bearing invariants (what the scenarios assert)', () =>
     expect(Object.keys(props)).toEqual(['row']);
   });
 
-  it('audit:list documents its headerless-CSV read contract', () => {
+  it('audit:list documents its self-describing TOON read contract (EI-136)', () => {
     const e = SU_CATALOG.find((e) => e.name === 'audit:list')!;
-    expect(e.description).toMatch(/headerless csv/i);
+    // The catalog the SUT reads must describe the encoding it will actually be
+    // handed, or SU-S08 measures the model against a contract that isn't shipped.
+    expect(e.description).toMatch(/toon/i);
+    expect(e.description).toMatch(/id,ts,actor,action,subject/);
+    // It must NOT still advertise the headerless form that EI-136 retired.
+    expect(e.description).not.toMatch(/headerless/i);
   });
 
   it('includes the design-phase group the playbook mandates for UI work', () => {

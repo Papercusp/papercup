@@ -60,6 +60,7 @@ export {
   getPrePromptEntry,
   listPrePromptEntries,
   readPrePromptFormat,
+  isPositionalReadEncoding,
   isWritePositional,
 } from './registry';
 

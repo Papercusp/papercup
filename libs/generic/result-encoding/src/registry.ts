@@ -129,7 +129,7 @@ export function readPrePromptFormat(name: string): Exclude<ReadEncoding, 'off'> 
  * Deriving both from here is the same anti-desync discipline as the shared
  * `projectReadColumns`/`projectWriteColumns` projection.
  */
-export function isPositionalReadEncoding(fmt: ReadEncoding | undefined): boolean {
+export function isPositionalReadEncoding(fmt: ReadEncoding | undefined): fmt is 'csv' | 'tsv' {
   return fmt === 'csv' || fmt === 'tsv';
 }
 

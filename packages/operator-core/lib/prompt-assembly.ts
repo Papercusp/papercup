@@ -40,6 +40,7 @@ import {
   type ProjectedTool,
 } from '@papercusp/agent-mcp';
 import {
+  isPositionalReadEncoding,
   listPrePromptEntries,
   projectReadColumns,
   projectWriteColumns,
@@ -446,8 +447,14 @@ export function renderWireSchemasSection(entryFilter?: (name: string) => boolean
   return renderWireSchemas(entries, (entry) => {
     const tool = byMcpName.get(entry.name);
     if (!tool) return {};
+    // Declare read columns ONLY for the positional encodings (csv/tsv), whose
+    // payload omits its own field names and so genuinely needs this legend. A
+    // self-describing 'toon' read carries `fields[N]:` inline, so declaring its
+    // columns here is dead prompt weight AND misleading — it instructs a
+    // position→column mapping the wire no longer uses (EI-136). Same predicate
+    // the read encoder gates on, so the two ends can't drift.
     const read =
-      entry.read !== 'off' && tool.outputJsonSchema
+      isPositionalReadEncoding(entry.read) && tool.outputJsonSchema
         ? projectReadColumns(tool.outputJsonSchema)
         : undefined;
     const write =

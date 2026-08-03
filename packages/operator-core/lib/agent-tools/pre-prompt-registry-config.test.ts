@@ -12,7 +12,7 @@
  * Run: cd packages/operator-core && npx vitest run lib/agent-tools/pre-prompt-registry-config.test.ts
  */
 import { describe, expect, it } from 'vitest';
-import { advertisedArgsSchema } from '@papercusp/result-encoding';
+import { advertisedArgsSchema, isPositionalReadEncoding } from '@papercusp/result-encoding';
 import { lookupByMcpName } from '@papercusp/agent-mcp';
 import { PRE_PROMPT_REGISTRY } from './pre-prompt-registry-config';
 import './work_items/set_state';
@@ -37,8 +37,20 @@ describe('PRE_PROMPT_REGISTRY', () => {
     }
   });
 
-  it('activates the audit:list read path (the one clean flat-row read)', () => {
-    expect(PRE_PROMPT_REGISTRY.find((e) => e.name === 'audit:list')?.read).toBe('csv');
+  it('serves the audit:list read as self-describing TOON, never a headerless positional body (EI-136)', () => {
+    const e = PRE_PROMPT_REGISTRY.find((x) => x.name === 'audit:list');
+    expect(e, 'audit:list must stay in the governed registry').toBeDefined();
+    // EI-136 measured a ~1/3 COLUMN-SHIFT MISREAD of this exact result under the
+    // headerless form (2 pass / 1 fail over 3 runs) — the reader had to map 5
+    // bare positions to a column order held thousands of tokens away in the
+    // prompt legend. TOON carries `fields[5]: …` adjacent to the rows instead.
+    expect(e?.read).toBe('toon');
+    // The load-bearing property is POSITIONAL-ness, not the literal string: any
+    // future flip to another headerless encoding (tsv) re-arms the same misread.
+    expect(
+      isPositionalReadEncoding(e?.read),
+      'audit:list must not be served in a headerless positional encoding — see EI-136',
+    ).toBe(false);
   });
 
   it('hardens the work_items:* misalignment guard with columnOverrides (D-007 residual, EI-7927)', () => {

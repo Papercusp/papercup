@@ -10,6 +10,7 @@
 
 import { PASS_THROUGH } from '@papercusp/testing-shell/llm';
 import type { ToolDispatchOverride } from '@papercusp/testing-shell/llm';
+import { encode } from '@papercusp/result-encoding';
 
 function canonical(name: string): string {
   return name.replace(/^mcp__agentmcp__/, '');
@@ -47,11 +48,36 @@ export const HARNESS_REQUIRED_GATE: ToolDispatchOverride = {
 };
 
 /**
- * Returns a Tier-3 HEADERLESS CSV result for `audit:list` (token-efficient-agent-io
- * P-013 read gate): a `format: csv` marker, a `[N]` count line, then N rows of
- * VALUES in the prompt-declared column order id,ts,actor,action,subject. The
- * read gate asserts the model maps row positions to columns — e.g. that the
- * actor (col 3) of the row whose action (col 4) is `locks:acquire` is `bob`.
+ * The three audit rows BOTH encoding arms of the SU-S08 read gate carry. Shared
+ * so the arms differ ONLY in encoding — that is what makes them comparable as an
+ * A/B (EI-136). `audit-read-fixtures.test.ts` asserts the CSV literal below
+ * still carries exactly these rows.
+ *
+ * The question the gate asks: who is the ACTOR on the row whose ACTION is
+ * `locks:acquire`? Answering needs column 4 to find the row, then column 3 of
+ * that row → `bob`. `alice`/`carol` are the decoy actors of the other two rows,
+ * so a column-shift misread names one of them.
+ */
+export const AUDIT_S08_ROWS = [
+  { id: 'au-1', ts: 1717, actor: 'alice', action: 'plans:set-status', subject: 'P-001' },
+  { id: 'au-2', ts: 1718, actor: 'bob', action: 'locks:acquire', subject: 'harness-fs-watcher.ts' },
+  { id: 'au-3', ts: 1719, actor: 'carol', action: 'work_items:complete', subject: 'WI-9' },
+] as const;
+
+/**
+ * ARM A (historical — NOT the shipped contract since EI-136): `audit:list` as a
+ * Tier-3 HEADERLESS CSV — a `format: csv` marker, a `[N]` count line, then N
+ * rows of bare VALUES whose column order lives only in the prompt's "## Wire
+ * schemas" legend, thousands of tokens away.
+ *
+ * Measured against this arm, sonnet-4-6 COLUMN-SHIFT-MISREAD ~1/3 of runs (2
+ * pass / 1 fail over 3, groundedness variance 1.89) — which is why production
+ * moved to arm B. Retained so the A/B stays re-runnable: an encoding change is
+ * only meaningful against the arm it replaced.
+ *
+ * The literal is kept verbatim (not re-derived) because it was verified
+ * byte-faithful against a live `audit:list` wire sample — note CSV does NOT
+ * quote a value containing `:` here, whereas TOON does.
  */
 export const AUDIT_CSV_RESULT: ToolDispatchOverride = {
   override(name) {
@@ -66,6 +92,31 @@ export const AUDIT_CSV_RESULT: ToolDispatchOverride = {
               'au-3,1719,carol,work_items:complete,WI-9',
           },
         ],
+      };
+    }
+    return PASS_THROUGH;
+  },
+};
+
+/**
+ * ARM B (the SHIPPED contract): `audit:list` as self-describing TOON. Same three
+ * rows, but the field names ride INLINE in the row header —
+ * `[3]{id,ts,actor,action,subject}:` — so the position→column mapping is local
+ * to the data and needs no legend lookup. That locality is the whole fix for
+ * EI-136; the self-description costs ~30 chars ONCE PER RESULT regardless of row
+ * count.
+ *
+ * Derived from the real `encode(…, 'toon')` rather than hand-written, so this
+ * fixture cannot drift from what production actually emits (a hand-copied
+ * encoding is exactly the fixture artifact that makes a green scenario
+ * meaningless). The `format:` marker line is prepended by the serializer, not
+ * the encoder, so it is added here to match the wire.
+ */
+export const AUDIT_TOON_RESULT: ToolDispatchOverride = {
+  override(name) {
+    if (canonical(name) === 'audit:list') {
+      return {
+        content: [{ text: `format: toon\n${encode(AUDIT_S08_ROWS as unknown as unknown[], 'toon')}` }],
       };
     }
     return PASS_THROUGH;

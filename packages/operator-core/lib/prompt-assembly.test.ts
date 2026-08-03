@@ -327,6 +327,46 @@ describe('renderWireSchemasSection — the "## Wire schemas" legend (P-003)', ()
     clearPrePromptRegistry();
   });
 
+  it('declares NO read columns for a self-describing TOON read (EI-136)', async () => {
+    const { configurePrePromptRegistry, clearPrePromptRegistry } = await import('@papercusp/result-encoding');
+    mockTools.push({
+      expose: { mcp: { name: 'audit:list' } },
+      description: 'audit',
+      capabilities: [],
+      outputJsonSchema: flatArrayOut,
+    });
+    // Shape-eligible for positional CSV (flat scalar array) — so this asserts the
+    // ENCODING gates the legend, not the schema. A TOON payload carries
+    // `fields[N]:` inline, so declaring the columns thousands of tokens away is
+    // dead weight AND instructs a position→column mapping the wire doesn't use.
+    configurePrePromptRegistry([{ name: 'audit:list', read: 'toon' }]);
+    const { renderWireSchemasSection } = await import('./prompt-assembly');
+    const out = renderWireSchemasSection();
+    expect(out).not.toContain('read →');
+    // With no write side either, the entry contributes nothing and the whole
+    // section collapses rather than emitting a bare heading.
+    expect(out).toBe('');
+    clearPrePromptRegistry();
+  });
+
+  it('still declares read columns for a headerless CSV read (the positional case)', async () => {
+    const { configurePrePromptRegistry, clearPrePromptRegistry } = await import('@papercusp/result-encoding');
+    mockTools.push({
+      expose: { mcp: { name: 'audit:list' } },
+      description: 'audit',
+      capabilities: [],
+      outputJsonSchema: flatArrayOut,
+    });
+    // The falsifier for the test above: same tool, same schema, only the
+    // encoding differs. A headerless body has no inline field names, so the
+    // legend is load-bearing and MUST still be emitted.
+    configurePrePromptRegistry([{ name: 'audit:list', read: 'csv' }]);
+    const { renderWireSchemasSection } = await import('./prompt-assembly');
+    const out = renderWireSchemasSection();
+    expect(out).toContain('read → id:id, state:todo|done');
+    clearPrePromptRegistry();
+  });
+
   it('returns empty string when the registry is empty', async () => {
     const { clearPrePromptRegistry } = await import('@papercusp/result-encoding');
     clearPrePromptRegistry();

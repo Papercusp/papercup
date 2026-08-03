@@ -335,12 +335,15 @@ export const SU_CATALOG: ReadonlyArray<SuCatalogEntry> = [
     input: obj({}),
   },
   {
-    // Tier-3 read tool (token-efficient-agent-io P-004): results arrive as
-    // HEADERLESS CSV — a `[N]` count line then N rows of VALUES in the column
-    // order named here (the prompt-declared schema). The P-013 read gate
-    // measures whether the model maps row positions to columns correctly.
+    // Compact row-encoded read tool (token-efficient-agent-io P-004). Results
+    // arrive as self-describing TOON: a `[N]{cols}:` row header carrying the
+    // field names INLINE, then N rows of VALUES in that order. It was
+    // HEADERLESS CSV until EI-136 measured a ~1/3 column-shift misread — with no
+    // inline names the reader had to reach for the prompt legend thousands of
+    // tokens away. The P-013 read gate (SU-S08) measures whether the model maps
+    // row positions to columns correctly.
     name: 'audit:list',
-    description: 'Recent audit events. Returns HEADERLESS CSV: a `[N]` count line then N rows of comma-separated VALUES in column order id,ts,actor,action,subject (no header row — map positions to these columns).',
+    description: 'Recent audit events. Returns compact TOON: a `[N]{id,ts,actor,action,subject}:` row header then N rows of comma-separated VALUES in that column order (the header names the columns — map positions to it).',
     input: obj({}),
   },
   {
