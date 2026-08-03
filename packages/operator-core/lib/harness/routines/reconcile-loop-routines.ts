@@ -184,6 +184,7 @@ import type { AgentIdentity } from '../../agent-tools/coordination/identity';
 import { SESSION_END_MARKER, SESSION_START_MARKER } from '../../agent-tools/activity/lifecycle-markers';
 import { classifySessionEnd, type SessionEndReason } from '../../search/session-end-reason';
 import { parseUsageResetMs } from '@papercusp/papercusp-shared/agent';
+import { recordLoopTransition } from './loop-transition-log';
 
 /**
  * Coerce a `timestamptz` column to epoch ms, tolerating BOTH shapes it can arrive in:
@@ -1325,6 +1326,32 @@ export async function reconcileLoopRoutines(
           nextFireAt: completedAt + rearmMs,
           via,
           ...(quickRetry ? { quickRetry: true } : {}),
+        });
+        // EI-19411045952024591: record the RE-ARM durably — the closing half of the park
+        // recorded by claimDueRoutine. This is the row whose ABSENCE is the fault: a loop
+        // that parks and never re-arms leaves a `parked` row with no `rearmed` successor,
+        // which is precisely the evidence the 2026-08-03 45min fire outage lacked. Also
+        // stamps the park DURATION this re-arm just closed (last_fired_at is set at park
+        // time by claimDueRoutine), so a creeping re-arm latency is visible BEFORE it
+        // becomes an outage rather than only after. Not awaited — instrument, not control.
+        const parkedSinceMs = row.last_fired_at ? new Date(row.last_fired_at as any).getTime() : NaN;
+        void recordLoopTransition(db, {
+          workspaceId: row.routine_workspace_id,
+          installSlug: row.install_slug,
+          routineId: row.id,
+          routineName: row.name,
+          targetOwnerId: row.target_owner_id,
+          event: 'rearmed',
+          actor: 'reconcile-loop-routines',
+          newNextFireAt: reArmIso,
+          intervalSec: row.interval_sec,
+          detail: {
+            via,
+            wasParked: !!row.parked,
+            ...(deferPastWall ? { deferPastWall: true } : {}),
+            ...(quickRetry ? { quickRetry: true } : {}),
+            ...(Number.isFinite(parkedSinceMs) ? { parkedMs: Date.now() - parkedSinceMs } : {}),
+          },
         });
         // Feed the autoloop circuit (loop-wake-rate-limit-robustness P0b). A completed turn
         // (lifecycle / presence-quiescence) is SUCCESS → recordFire('ok') resets the streak;

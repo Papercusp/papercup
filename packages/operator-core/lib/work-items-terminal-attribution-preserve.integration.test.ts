@@ -79,6 +79,7 @@ describe('work_items terminal attribution preservation (migration 726)', () => {
         '721-work-items-lane-generated-column.sql',
         '725-payload-object-shape-guard-and-plan-item-stamp-index.sql',
         '726-preserve-terminal-attribution-on-federated-write.sql',
+        '741-work-items-condition-key-singleton.sql',
       ],
       { label: 'work-items-terminal-attribution' },
     );

@@ -1,0 +1,144 @@
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import {
+  recordLoopTransition,
+  transitionRetentionDays,
+  __resetPruneThrottleForTest,
+} from './loop-transition-log';
+
+/**
+ * EI-19411045952024591 — the append-only loop transition log.
+ *
+ * The recurrence guard that matters is the FAIL-SOFT one: this table is an instrument on
+ * the hot fire path, and an instrument that can throw into the path it measures would
+ * turn a diagnosis gap into an outage. Every test below that touches error handling is
+ * guarding that property, not the happy path.
+ */
+
+/** A postgres-js-shaped tagged-template fake that records the statements it was given. */
+function fakeSql(opts: { throwOn?: RegExp } = {}) {
+  const statements: { text: string; values: unknown[] }[] = [];
+  const tag = (strings: TemplateStringsArray, ...values: unknown[]) => {
+    const text = strings.join('?');
+    statements.push({ text, values });
+    if (opts.throwOn && opts.throwOn.test(text)) {
+      return Promise.reject(new Error('simulated postgres failure'));
+    }
+    return Promise.resolve([] as any);
+  };
+  return Object.assign(tag, { statements });
+}
+
+const PARK = {
+  workspaceId: 'ws-1',
+  installSlug: 'papercusp',
+  routineId: 'routine-abc',
+  routineName: 'loop-su-70702',
+  targetRole: 'system:loop',
+  targetOwnerId: 'su-70702',
+  event: 'parked' as const,
+  actor: 'claim-due-routine',
+  newNextFireAt: 'infinity',
+  intervalSec: 600,
+};
+
+describe('recordLoopTransition', () => {
+  beforeEach(() => {
+    __resetPruneThrottleForTest();
+    vi.restoreAllMocks();
+  });
+
+  it('appends one row carrying the forensic payload (event, actor, routine identity)', async () => {
+    const sql = fakeSql();
+    await recordLoopTransition(sql as any, PARK);
+
+    const insert = sql.statements.find((s) => /INSERT INTO harness_shared\.routine_loop_transitions/.test(s.text));
+    expect(insert).toBeDefined();
+    // The three columns the incident query keys on, plus the park sentinel.
+    expect(insert!.values).toContain('parked');
+    expect(insert!.values).toContain('claim-due-routine');
+    expect(insert!.values).toContain('routine-abc');
+    expect(insert!.values).toContain('infinity');
+    expect(insert!.values).toContain('ws-1');
+  });
+
+  it('serialises detail to JSON and passes null (not undefined) for absent optionals', async () => {
+    const sql = fakeSql();
+    await recordLoopTransition(sql as any, {
+      workspaceId: 'ws-1',
+      installSlug: 'papercusp',
+      routineId: 'r1',
+      event: 'rearmed',
+      actor: 'reconcile-loop-routines',
+      newNextFireAt: '2026-08-03T04:07:16.000Z',
+      detail: { via: 'lifecycle', wasParked: true, parkedMs: 2_700_000 },
+    });
+
+    const insert = sql.statements.find((s) => /INSERT INTO/.test(s.text))!;
+    expect(insert.values).toContain(JSON.stringify({ via: 'lifecycle', wasParked: true, parkedMs: 2_700_000 }));
+    // Absent optionals must bind as SQL NULL, never undefined (postgres-js rejects undefined).
+    expect(insert.values).not.toContain(undefined);
+    expect(insert.values.filter((v) => v === null).length).toBeGreaterThan(0);
+  });
+
+  it('FAIL-SOFT: a failing insert never throws into the caller', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const sql = fakeSql({ throwOn: /INSERT INTO/ });
+
+    // The guarded property: the fire path awaits nothing and can never be broken by
+    // the instrument. A rejection here would surface as a failed claim/re-arm.
+    await expect(recordLoopTransition(sql as any, PARK)).resolves.toBeUndefined();
+    expect(warn).toHaveBeenCalled();
+  });
+
+  it('FAIL-SOFT: a failing PRUNE never throws and never masks the successful insert', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const sql = fakeSql({ throwOn: /DELETE FROM/ });
+
+    await expect(recordLoopTransition(sql as any, PARK)).resolves.toBeUndefined();
+    await new Promise((r) => setImmediate(r)); // let the fire-and-forget prune settle
+
+    expect(sql.statements.some((s) => /INSERT INTO/.test(s.text))).toBe(true);
+    // Hygiene failure is deliberately silent — it must not spam the fire path.
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('throttles the piggybacked prune so it does not run on every transition', async () => {
+    const sql = fakeSql();
+
+    await recordLoopTransition(sql as any, PARK);
+    await recordLoopTransition(sql as any, PARK);
+    await recordLoopTransition(sql as any, PARK);
+    await new Promise((r) => setImmediate(r));
+
+    const deletes = sql.statements.filter((s) => /DELETE FROM harness_shared\.routine_loop_transitions/.test(s.text));
+    expect(deletes).toHaveLength(1);
+    expect(sql.statements.filter((s) => /INSERT INTO/.test(s.text))).toHaveLength(3);
+  });
+});
+
+describe('transitionRetentionDays', () => {
+  const prev = process.env.PAPERCUSP_LOOP_TRANSITION_RETENTION_DAYS;
+  afterEach(() => {
+    if (prev === undefined) delete process.env.PAPERCUSP_LOOP_TRANSITION_RETENTION_DAYS;
+    else process.env.PAPERCUSP_LOOP_TRANSITION_RETENTION_DAYS = prev;
+  });
+
+  it('defaults to 7 days', () => {
+    delete process.env.PAPERCUSP_LOOP_TRANSITION_RETENTION_DAYS;
+    expect(transitionRetentionDays()).toBe(7);
+  });
+
+  it('honours an explicit override', () => {
+    process.env.PAPERCUSP_LOOP_TRANSITION_RETENTION_DAYS = '30';
+    expect(transitionRetentionDays()).toBe(30);
+  });
+
+  it('floors at 1 day so a bad value can never disable the evidence window', () => {
+    // A 0/negative/garbage retention would prune the table to nothing on the next write —
+    // silently destroying the exact history this table exists to hold.
+    for (const bad of ['0', '-5', 'abc', '']) {
+      process.env.PAPERCUSP_LOOP_TRANSITION_RETENTION_DAYS = bad;
+      expect(transitionRetentionDays()).toBe(7);
+    }
+  });
+});
