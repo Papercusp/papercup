@@ -6,6 +6,9 @@ import { describe, expect, it } from 'vitest';
 import {
   buildActiveEntryMatchFilter,
   classifySessionGroups,
+  DEFAULT_FRESH_WINDOW_H,
+  DEFAULT_HALF_LIFE_H,
+  DEFAULT_WEIGHT,
   groupHitsBySession,
   matchActiveEntry,
   matchSessionRow,
@@ -166,23 +169,46 @@ describe('classifySessionGroups', () => {
 describe('parseRecencyParams (WI-5097)', () => {
   const parse = (qs: string) => parseRecencyParams(new URLSearchParams(qs));
 
-  it('ABSENT params → the documented defaults (24h half-life, weight 0.3, fresh window 2×half-life)', () => {
+  const DEFAULTS = {
+    halfLifeMs: DEFAULT_HALF_LIFE_H * 3_600_000,
+    weight: DEFAULT_WEIGHT,
+    freshWindowMs: DEFAULT_FRESH_WINDOW_H * 3_600_000,
+  };
+
+  it('ABSENT params → the documented defaults', () => {
     // THE WI-5097 regression: `Number(null)` is 0, so the old inline parse
     // read an absent recencyWeight as an explicit 0 and silently disabled
     // the default-ON recency re-rank for every normal search.
-    expect(parse('q=inbox')).toEqual({
-      halfLifeMs: 24 * 3_600_000,
-      weight: 0.3,
-      freshWindowMs: 48 * 3_600_000,
+    expect(parse('q=inbox')).toEqual(DEFAULTS);
+  });
+
+  it('P-003: the defaults are 7d half-life, weight 0.5, 48h fresh window', () => {
+    // Pinned by VALUE as well as by constant, so a future edit to the
+    // constants has to come here and state its case. Each was reasoned in the
+    // docblocks on adv-session-search.ts:
+    //  - 7d, because at 24h a 3-day-old turn kept 12.5% of its recency credit
+    //    and the blend degenerated to "today vs everything else";
+    //  - 0.5, because P-002 made `weight` a true mixing fraction and 0.3 under
+    //    the OLD compressed-relevance blend was already ~the parity point, so
+    //    0.5 preserves the effective ranking rather than changing it;
+    //  - 48h ABSOLUTE, because the old `2 × halfLife` formula would silently
+    //    have redefined "fresh" as a fortnight once the half-life moved to 7d.
+    expect(DEFAULT_HALF_LIFE_H).toBe(168);
+    expect(DEFAULT_WEIGHT).toBe(0.5);
+    expect(DEFAULT_FRESH_WINDOW_H).toBe(48);
+  });
+
+  it('P-003: the fresh window no longer tracks the half-life', () => {
+    // The regression this decoupling exists to prevent: an explicit long
+    // half-life must NOT widen pool admission with it.
+    expect(parse('q=x&recencyHalfLifeH=720')).toMatchObject({
+      halfLifeMs: 720 * 3_600_000,
+      freshWindowMs: DEFAULT_FRESH_WINDOW_H * 3_600_000,
     });
   });
 
   it('blank values behave like absent ones (never an accidental 0)', () => {
-    expect(parse('q=x&recencyWeight=&recencyHalfLifeH=&recencyFreshWindowH=')).toEqual({
-      halfLifeMs: 24 * 3_600_000,
-      weight: 0.3,
-      freshWindowMs: 48 * 3_600_000,
-    });
+    expect(parse('q=x&recencyWeight=&recencyHalfLifeH=&recencyFreshWindowH=')).toEqual(DEFAULTS);
   });
 
   it('recency=off → undefined (re-rank disabled entirely)', () => {
@@ -194,18 +220,24 @@ describe('parseRecencyParams (WI-5097)', () => {
     expect(parse('q=x&recencyWeight=0.7')).toMatchObject({ weight: 0.7 });
     expect(parse('q=x&recencyHalfLifeH=6')).toMatchObject({
       halfLifeMs: 6 * 3_600_000,
-      freshWindowMs: 12 * 3_600_000, // fresh default tracks the half-life
+      freshWindowMs: DEFAULT_FRESH_WINDOW_H * 3_600_000, // P-003: no longer 2×half-life
     });
     expect(parse('q=x&recencyFreshWindowH=0')).toMatchObject({ freshWindowMs: 0 });
     expect(parse('q=x&recencyFreshWindowH=72')).toMatchObject({ freshWindowMs: 72 * 3_600_000 });
   });
 
   it('out-of-range / garbage values fall back to defaults', () => {
-    expect(parse('q=x&recencyWeight=2')).toMatchObject({ weight: 0.3 });
-    expect(parse('q=x&recencyWeight=-1')).toMatchObject({ weight: 0.3 });
-    expect(parse('q=x&recencyWeight=abc')).toMatchObject({ weight: 0.3 });
-    expect(parse('q=x&recencyHalfLifeH=0')).toMatchObject({ halfLifeMs: 24 * 3_600_000 });
-    expect(parse('q=x&recencyHalfLifeH=-5')).toMatchObject({ halfLifeMs: 24 * 3_600_000 });
-    expect(parse('q=x&recencyFreshWindowH=-1')).toMatchObject({ freshWindowMs: 48 * 3_600_000 });
+    expect(parse('q=x&recencyWeight=2')).toMatchObject({ weight: DEFAULT_WEIGHT });
+    expect(parse('q=x&recencyWeight=-1')).toMatchObject({ weight: DEFAULT_WEIGHT });
+    expect(parse('q=x&recencyWeight=abc')).toMatchObject({ weight: DEFAULT_WEIGHT });
+    expect(parse('q=x&recencyHalfLifeH=0')).toMatchObject({
+      halfLifeMs: DEFAULT_HALF_LIFE_H * 3_600_000,
+    });
+    expect(parse('q=x&recencyHalfLifeH=-5')).toMatchObject({
+      halfLifeMs: DEFAULT_HALF_LIFE_H * 3_600_000,
+    });
+    expect(parse('q=x&recencyFreshWindowH=-1')).toMatchObject({
+      freshWindowMs: DEFAULT_FRESH_WINDOW_H * 3_600_000,
+    });
   });
 });

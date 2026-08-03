@@ -294,4 +294,88 @@ describe('mode-grade — the rubric picker lives ON the pill', () => {
     getChatModeAction('mode-grade')!.current(ctx);
     expect(fetchSyncQueryMock).not.toHaveBeenCalled();
   });
+
+  /* ── [owner 2026-08-03] "grade mode rubric selector should have a create
+        rubric option if there are no rubrics. If there are a lot rubrics too
+        much to show that should be handled gracefully."
+
+     Both ends of the same range. The picker was only correct in the middle:
+     zero rubrics rendered `Off` alone (a menu whose only option is "no"), and
+     N rubrics rendered N rows inside a height-constrained popup. ── */
+  const manyRubrics = Array.from({ length: 23 }, (_, i) => ({
+    rubricId: `rubric-${String(i).padStart(2, '0')}`,
+    characteristic: `characteristic ${i}`,
+    // Deliberately reverse-sorted, so a test that passes proves the code sorts
+    // rather than inheriting the resolver's order.
+    title: `Rubric ${String(99 - i).padStart(2, '0')}`,
+    status: 'active',
+  }));
+
+  it('with NO active rubrics, offers a create row instead of a dead-end Off', async () => {
+    // Non-empty on the wire but nothing ACTIVE — the case a naive `rows.length`
+    // check would miss, and the one a fresh workspace actually hits.
+    fetchSyncQueryMock.mockResolvedValue([rubricRows[1], rubricRows[2]]);
+    const opts = await getChatModeAction('mode-grade')!.options(ctx);
+    expect(opts.map((o) => o.id)).toEqual(['off', '__create-rubric']);
+    expect(opts[1].label).toBe('Ask this agent to create one');
+    // It must say WHY there is nothing to pick, not just offer a verb.
+    expect(opts[1].hint).toMatch(/no rubrics exist yet/i);
+    expect(opts[1].hint).toMatch(/written by agents/i);
+  });
+
+  it('offers the create row ONLY when there is nothing to grade against', async () => {
+    fetchSyncQueryMock.mockResolvedValue(rubricRows);
+    const opts = await getChatModeAction('mode-grade')!.options(ctx);
+    expect(opts.map((o) => o.id)).not.toContain('__create-rubric');
+  });
+
+  it('caps a long list and SAYS how many it is hiding — a silent truncation teaches the wrong thing', async () => {
+    fetchSyncQueryMock.mockResolvedValue(manyRubrics);
+    const opts = await getChatModeAction('mode-grade')!.options(ctx);
+    // Off + 8 rubrics + the overflow row.
+    expect(opts).toHaveLength(10);
+    const overflow = opts[opts.length - 1];
+    expect(overflow.id).toBe('__more-rubrics');
+    expect(overflow.label).toBe('15 more — ask this agent to choose');
+    // The COUNT is the point: "8 of 23" is a different situation from "8".
+    expect(overflow.hint).toMatch(/showing 8 of 23/i);
+  });
+
+  it('sorts before capping, so the same workspace shows the same 8 every time', async () => {
+    fetchSyncQueryMock.mockResolvedValue(manyRubrics);
+    const opts = await getChatModeAction('mode-grade')!.options(ctx);
+    const titles = opts.slice(1, 9).map((o) => o.label);
+    expect(titles).toEqual([...titles].sort((a, b) => a.localeCompare(b)));
+    // The fixture arrives reverse-sorted, so an unsorted implementation would
+    // have started at "Rubric 99" — this is the positive control for the sort.
+    expect(titles[0]).toBe('Rubric 77');
+  });
+
+  it('no overflow row when everything already fits', async () => {
+    fetchSyncQueryMock.mockResolvedValue(manyRubrics.slice(0, 8));
+    const opts = await getChatModeAction('mode-grade')!.options(ctx);
+    expect(opts).toHaveLength(9);
+    expect(opts.map((o) => o.id)).not.toContain('__more-rubrics');
+  });
+
+  /* The critical guard on both rows. Turning grade mode ON without a rubric is
+     the WI-7471 defect itself — a mode set with no criteria, the rubric
+     surviving only as free text — so a friendlier label must not smuggle it
+     back in. These rows ASK; they do not set. */
+  it.each([
+    ['__create-rubric', /create a rubric/i],
+    ['__more-rubrics', /pick the rubric yourself/i],
+  ])('%s asks the agent via coord:send and never touches grade mode', async (optionId, bodyRe) => {
+    await getChatModeAction('mode-grade')!.set(ctx, optionId);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe('/api/admin/coord/send');
+    const body = JSON.parse(init.body as string);
+    expect(body.to).toEqual(['su-abc123']);
+    expect(body.wake).toBe('required');
+    expect(body.body).toMatch(bodyRe);
+    // The whole point: no mode was set, so grade cannot end up ON with no rubric.
+    expect(url).not.toBe('/api/admin/mode/set');
+    expect(body.mode).toBeUndefined();
+  });
 });
