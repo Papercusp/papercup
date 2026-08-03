@@ -75,9 +75,13 @@ export async function readInsightsSnapshot(
 export interface MemoryHealth extends RecallHealth {
   /**
    * REAL memories in harness_shared.memory_canonical. Excludes mem0's
-   * entity-store rows (payload ? 'entityType'), which share the physical
+   * entity-store rows (`row_kind = 'entity'`), which share the physical
    * table — pre-EI-366 this counted them too and read 2,170 when the
-   * store held 341 actual facts.
+   * store held 341 actual facts. Entity rows outnumber memories ~7:1, so
+   * this exclusion is load-bearing, not a detail: dropping it over-counts
+   * by ~8x (D-013 — that over-count is how a 28k-row "debris class" was
+   * hallucinated and nearly purged). `row_kind` is a GENERATED column
+   * (migration 757) so it cannot drift from the payload it derives from.
    */
   totalMemories: number;
   /** Segregated mem0 entity-linking rows sharing the canonical table. */
@@ -149,8 +153,8 @@ export const STORE_COUNTS_TTL_MS = 60_000;
  * because the health tick recomputes them every 30s PER WORKSPACE in EVERY
  * operator-shaped process — measured live at 0.68 calls/s.
  *
- * ⚠ The per-call cost is IRREDUCIBLE at the SQL level; do not "optimise the query"
- * here, it has been tried. All three obvious fixes were measured and refuted:
+ * ⚠ Read this whole note before "optimising the query" — most of it has been tried
+ * and refuted. Three fixes were measured against the JSONB predicate and all failed:
  *   1. expression index on `(payload ? 'entityType')` — planner does not use it
  *      (cost 2552.51 -> 2553.55, still two Seq Scans);
  *   2. partial index `(id) WHERE payload ? 'entityType'` — not used either, and
@@ -160,7 +164,21 @@ export const STORE_COUNTS_TTL_MS = 60_000;
  *      9,537) but SLOWER (61.8ms vs 57.7ms), because FILTER must materialise the
  *      wide jsonb payload (width=277) where the separate counts scan at width=0.
  * There is also no I/O to remove (shared_blks_read = 0 — already fully cached).
- * So the only lever is the CALL RATE, which is what this cache addresses.
+ *
+ * WHAT CHANGED (P-020 / WI-9355, migration 757). Finding 2 above is about the
+ * ENTITY side, which is 88% of the table — there the planner's refusal is correct
+ * and nothing has changed. But the MEMORY side is its mirror image (4,108 of 33,897
+ * rows, 12.1%), and nobody had measured THAT direction. Migration 757 adds a
+ * GENERATED STORED `row_kind` column plus a partial index on the minority side, and
+ * the totalMemories leg is no longer irreducible:
+ *   BEFORE  count(*) WHERE NOT (payload ? 'entityType')
+ *           Seq Scan          cost=2557.16  actual=70.9ms  buffers hit=4804
+ *   AFTER   count(*) WHERE row_kind = 'memory'
+ *           Bitmap Heap Scan  cost=1884.08  actual= 5.0ms  buffers hit=1138 read=17
+ * ~14x faster, ~4x fewer buffers. The entity leg stays a Seq Scan on purpose.
+ *
+ * The cache below is still worth keeping: it addresses the CALL RATE, which is an
+ * independent lever from the per-call cost and was the larger factor.
  *
  * Keyed GLOBALLY, not per workspace: the SQL carries no workspace_id predicate,
  * so every workspace was independently recomputing the identical global number.
@@ -182,16 +200,22 @@ export function __resetStoreCountsCache(): void {
   storeCountsCache.clear();
 }
 
-function readStoreCounts(sql: Sql): Promise<StoreCounts> {
+/**
+ * THE canonical "how many memories do we have" read. Exported so the P-020
+ * recurrence guard (memory-entity-discriminator.integration.test.ts) can drive
+ * this exact function instead of re-typing its SQL — a guard that re-declares
+ * the query it guards goes green while production drifts away from it.
+ */
+export function readStoreCounts(sql: Sql): Promise<StoreCounts> {
   const hit = storeCountsCache.get(STORE_COUNTS_KEY);
   if (hit) return hit;
   const pending = (async (): Promise<StoreCounts> => {
     const rows = (await sql`
     SELECT
       (SELECT count(*)::int FROM harness_shared.memory_canonical
-        WHERE NOT (payload ? 'entityType'))                       AS total_memories,
+        WHERE row_kind = 'memory')                                AS total_memories,
       (SELECT count(*)::int FROM harness_shared.memory_canonical
-        WHERE payload ? 'entityType')                             AS entity_rows,
+        WHERE row_kind = 'entity')                                AS entity_rows,
       (SELECT count(*)::int FROM harness_shared.memory_feedback
         WHERE created_at >= now() - interval '30 days')           AS feedback_30d
   `) as unknown as Array<Record<string, unknown>>;

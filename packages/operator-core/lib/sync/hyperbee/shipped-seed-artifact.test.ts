@@ -160,6 +160,19 @@ describe.skipIf(!seedPresent)('shipped seed artifact (integrity of the real bund
     expect(git?.encryption, 'no encrypted git store to resolve a key for').toBeDefined();
     const keyRef = git!.encryption!.keyRef;
 
+    // SeedKeyRef is a discriminated union on `via`, and the discriminant is itself
+    // load-bearing: deferred-git-restore.ts resolves `via:'seed-key-op'` to null
+    // unconditionally ("no standalone seed-key content op exists"), so a seed cut
+    // that way can NEVER restore its git half — it defers forever and cold-paths on
+    // every boot, online or off. Pinning the discriminant is therefore a real
+    // assertion about the shipped artifact, not just type narrowing for `.epoch`.
+    expect(
+      keyRef.via,
+      `shipped git seed uses keyRef.via='${keyRef.via}', which has no delivery path — ` +
+        `its code half would cold-path forever`,
+    ).toBe('epoch');
+    if (keyRef.via !== 'epoch') return;
+
     const key = await resolveSeedDecryptionKey(keyRef, {
       epochKeyProvider: createBundledEpochKeyProvider(SEED_DIR),
     });

@@ -474,6 +474,15 @@ function main() {
   if (census.notEnforced.length) {
     console.log('  Burn it down: `node scripts/check-lint-guard-reachability.mjs --census` lists each one and why.');
   }
+  // The KNOWN LIMITATION at the top of this file has to travel WITH the number, not sit in a
+  // source comment the reader of the number never opens. "68/82 enforced" invites exactly one
+  // wrong conclusion — "the tree is protected" — and that conclusion has already been drawn
+  // and already cost an outage: on 2026-08-03 a parse-breaking edit crash-looped :3170 for
+  // 17min while every guard that could have caught it was, by THIS measure, fully enforced.
+  console.log(
+    '  ⚠ ENFORCED = a blocking path RUNS it, never that it runs BEFORE the damage. Hosts that\n' +
+      '    bundle the WORKING TREE (:3170, bg-host) are past every commit-time guard by construction.',
+  );
   process.exit(0);
 }
 

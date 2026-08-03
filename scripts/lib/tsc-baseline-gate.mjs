@@ -812,6 +812,70 @@ export function diagnosticLinesForFiles(tscOutput, files, { maxPerFile = 3 } = {
 }
 
 /**
+ * Per-file quote cap for a REGRESSED file, deliberately larger than the new-file cap of 3.
+ *
+ * A new file's every error is new, so three lines are a fair sample of one homogeneous set. A
+ * regressed file's lines are a MIXTURE of pre-existing and new, and the reader has to find the new
+ * ones among them — so cutting at 3 is far likelier to hide the very line the report exists to
+ * surface. Ten bounds a pathological file without routinely truncating the ordinary 1–3 error case.
+ */
+export const REGRESSION_DIAGNOSTIC_MAX_PER_FILE = 10;
+
+/**
+ * The quoted-diagnostic block under ONE regressed file already present in the baseline.
+ *
+ * ## Why this is not simply `diagnosticLinesForFiles` again (EI-19454211066351073)
+ *
+ * The new-file branch (WI-6767) can quote lines and stop, because a file the baseline has never
+ * seen has a baseline of 0 — every error in it is new, so any line quoted is a line you caused.
+ *
+ * A file at `2 → 4` is different in kind, and the difference is a trap. The baseline stores a
+ * COUNT, not the errors themselves, so NOTHING in the gate knows WHICH 2 of the current 4 are new.
+ * Diagnostics arrive in compiler (line) order, so quoting the first N can legitimately show only
+ * pre-existing errors and never the regression at all. A reader handed three plausible errors,
+ * none of which is theirs, does not discover the omission — they fix a pre-existing one and read
+ * the still-red gate as flaky. That failure is worse than the silence this function replaces,
+ * because it is confidently wrong rather than merely unhelpful (the same "a count delta is not
+ * presence" class the containment recipe in CLAUDE.md warns about).
+ *
+ * So the block states its own limits: it never claims a quoted line is new, it names how many
+ * pre-date the change, and it says plainly that the split is not mechanically determinable. Where
+ * the baseline IS 0 the answer is unambiguous and it says THAT instead, because that is the common
+ * case and the reader should not have to weigh a caveat that does not apply.
+ *
+ * Pure (no I/O) so the wording is unit-testable — the wording is the whole feature, mirroring
+ * `formatAttributionHeadline` / `formatNewFileGuidance`.
+ *
+ * @param {{file: string, baseline: number, current: number, delta: number}} row - The gate entry.
+ * @param {string[]} lines - Already-capped diagnostic lines for this file (compiler order).
+ * @returns {string[]} Indented lines to print beneath the row; empty when nothing was quoted.
+ */
+export function formatRegressedFileDiagnostics(row, lines) {
+  const shown = Array.isArray(lines) ? lines : [];
+  if (shown.length === 0) return [];
+
+  const out = shown.map((line) => `      ${line}`);
+  const baseline = Number(row?.baseline ?? 0);
+  const current = Number(row?.current ?? shown.length);
+  const hidden = Math.max(0, current - shown.length);
+
+  if (hidden > 0) {
+    out.push(`      … +${hidden} more error(s) in this file not shown (capped at ${shown.length}).`);
+  }
+  if (baseline > 0) {
+    // Never say "your errors are above" — see the header. State the mixture and refuse to guess.
+    out.push(
+      `      ⚠ ${baseline} of this file's ${current} error(s) PRE-DATE your change. The baseline records only a`,
+      `        COUNT, so which of the lines above are the ${current - baseline} new one(s) is NOT mechanically`,
+      `        determinable — read them against what you just edited, don't assume it is the first one.`,
+    );
+  } else {
+    out.push(`      (this file's baseline is 0 — every error above is new.)`);
+  }
+  return out;
+}
+
+/**
  * How recently a file must have been committed for its red to be treated as possibly still landing.
  *
  * 20 minutes, sized from the mechanism rather than taste: git-sync commits this tree on a schedule
@@ -1559,17 +1623,47 @@ export function runTscBaselineGate({
       for (const f of result.brokenFiles) console.error(`   - ${f}`);
       process.exit(1);
       break;
-    case 'fail-regressed':
+    case 'fail-regressed': {
       console.error(`❌ ${result.regressions.length} file(s) added type errors above their baseline:`);
-      for (const r of result.regressions) console.error(formatRow(r));
+      // EI-19454211066351073 — quote the compiler lines the `+N` stands for. The gate has already
+      // run tsc and already parsed it per-file (that is where the delta comes from), so the
+      // messages are in hand at this exact moment and were being discarded. Without them the
+      // report says "you broke something" but not what, and the only way to find out is a second
+      // full ~150s compile that queues behind pc-heavy.
+      const diagnostics = diagnosticLinesForFiles(
+        tscOutput,
+        result.regressions.map((r) => r.file),
+        { maxPerFile: REGRESSION_DIAGNOSTIC_MAX_PER_FILE },
+      );
+      for (const r of result.regressions) {
+        console.error(formatRow(r));
+        for (const line of formatRegressedFileDiagnostics(r, diagnostics.get(r.file) ?? [])) {
+          console.error(line);
+        }
+      }
       console.error(`   Fix the new errors in the named file(s). The baseline only ratchets DOWN (raising a file is a hand-edit of ${baselineFile} with justification).`);
       process.exit(1);
       break;
-    case 'fail-attributed':
+    }
+    case 'fail-attributed': {
       console.error(
         formatAttributionHeadline({ count: result.attributed.length, explicit: explicitFiles !== null }),
       );
-      for (const r of result.attributed) console.error(formatRow(r));
+      // EI-19454211066351073 — this is the branch the `--files` flag exists to reach, and the one
+      // where the omission cost the most: `--files` is the only trustworthy attribution on this
+      // shared tree, so having just established that the regression IS yours, "what is it" is the
+      // very next question and the report used to stop exactly there.
+      const attributedDiagnostics = diagnosticLinesForFiles(
+        tscOutput,
+        result.attributed.map((r) => r.file),
+        { maxPerFile: REGRESSION_DIAGNOSTIC_MAX_PER_FILE },
+      );
+      for (const r of result.attributed) {
+        console.error(formatRow(r));
+        for (const line of formatRegressedFileDiagnostics(r, attributedDiagnostics.get(r.file) ?? [])) {
+          console.error(line);
+        }
+      }
       if (result.typeAttributed && result.typeAttributed.length > 0) {
         console.error(
           `   (${result.typeAttributed.length} of the above are NOT in your changed-file set — attributed because ` +
@@ -1595,6 +1689,7 @@ export function runTscBaselineGate({
       }
       process.exit(1);
       break;
+    }
     case 'fail-new-file': {
       // EI-18766822535373909: these are files the baseline has NEVER seen. Absence from the
       // changed set does not clear you — git-sync commits the tree every few minutes, so your own

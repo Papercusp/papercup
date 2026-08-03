@@ -227,8 +227,13 @@ async function runOracle(args: Args): Promise<void> {
   }
 
   console.log(
-    `\n   CEILING: ${batchesWithAnyWinner}/${REPLAY.length} batches have >=1 winning 2-TERM PAIR` +
+    `\n   CEILING (STRICT — the ONLY figure comparable to the shipped bar):` +
+      ` ${batchesWithAnyWinner}/${REPLAY.length} batches have >=1 winning 2-TERM PAIR` +
       ` (proven unreachable ${batchesProvenUnreachable}, undetermined ${batchesUndetermined})`,
+  );
+  console.log(
+    `   CEILING (LENIENT — any answer-bearing record): ${batchesWithLenientWinner}/${REPLAY.length}.` +
+      ` ⚠ Do NOT quote this against a STRICT bar; they are different questions.`,
   );
   console.log(
     `   Read it as a FLOOR when any batch is undetermined: the reachable count can only go UP with more probing.`,

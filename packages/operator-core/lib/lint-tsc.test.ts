@@ -38,6 +38,8 @@ import {
   partitionNewFilesByLiveEdit,
   partitionBrokenFilesByLiveEdit,
   diagnosticLinesForFiles,
+  formatRegressedFileDiagnostics,
+  REGRESSION_DIAGNOSTIC_MAX_PER_FILE,
   partitionStandingByCommitRecency,
   formatLandingRaceCaveat,
   LANDING_RACE_WINDOW_SEC,
@@ -1223,6 +1225,67 @@ describe('new-file reds: the count alone withholds the diagnosis (WI-6767)', () 
     const counted = Object.keys(countByFile(parseTscErrors(SAMPLE))).filter((f) => f !== '(unattributed)');
     const quoted = diagnosticLinesForFiles(SAMPLE, counted);
     for (const file of counted) expect(quoted.get(file)?.length ?? 0).toBeGreaterThan(0);
+  });
+});
+
+describe('formatRegressedFileDiagnostics — quote the lines, never overclaim which are new (EI-19454211066351073)', () => {
+  // WHY THIS EXISTS. The gate printed `x.ts: 0 → 1  (+1)` and nothing else: no code, no line, no
+  // message. It had already run tsc and already parsed it per-file — that is where the delta comes
+  // from — and then discarded the diagnostics, so the only way to learn WHAT broke was a second
+  // full ~150s compile queued behind pc-heavy.
+  //
+  // The trap this block guards is the FIX, not the omission. A file at `2 → 4` has a mixture of
+  // pre-existing and new errors, and the baseline stores only a COUNT — so nothing here knows
+  // WHICH two are new. Diagnostics arrive in line order, so quoting the first N can show only
+  // pre-existing errors and never the regression. A reader handed three plausible errors, none of
+  // them theirs, does not notice: they fix a pre-existing one and read the still-red gate as
+  // flaky. That is strictly worse than the silence it replaced, because it is confidently wrong.
+  const LINES = [
+    "lib/a.ts(10,3): error TS2322: Type 'string' is not assignable to type 'number'.",
+    'lib/a.ts(11,3): error TS2339: Property x does not exist.',
+  ];
+
+  it('quotes the compiler lines beneath the row', () => {
+    const out = formatRegressedFileDiagnostics({ file: 'lib/a.ts', baseline: 0, current: 2, delta: 2 }, LINES).join('\n');
+    expect(out).toContain("Type 'string' is not assignable to type 'number'");
+    expect(out).toContain('TS2339');
+  });
+
+  it('baseline 0 → says outright that every quoted error is new', () => {
+    const out = formatRegressedFileDiagnostics({ file: 'lib/a.ts', baseline: 0, current: 2, delta: 2 }, LINES).join('\n');
+    expect(out).toContain('baseline is 0');
+    expect(out).toContain('every error above is new');
+  });
+
+  it('baseline > 0 → names how many PRE-DATE the change and how many are new', () => {
+    const out = formatRegressedFileDiagnostics({ file: 'lib/a.ts', baseline: 2, current: 4, delta: 2 }, LINES).join('\n');
+    expect(out).toContain('2 of this file');
+    expect(out).toContain('PRE-DATE');
+    expect(out).toContain('2 new one(s)');
+  });
+
+  // THE CONTROL. This is the assertion that fails if someone later "simplifies" the caveat into a
+  // claim of newness — the exact regression that would restore the trap described above.
+  it('baseline > 0 → NEVER claims the quoted lines are the new ones', () => {
+    const out = formatRegressedFileDiagnostics({ file: 'lib/a.ts', baseline: 2, current: 4, delta: 2 }, LINES).join('\n');
+    expect(out).not.toContain('every error above is new');
+    // It must say the split is undecidable rather than implying an order.
+    expect(out).toContain('NOT mechanically');
+  });
+
+  it('flags the remainder when the per-file cap truncates the quote', () => {
+    const out = formatRegressedFileDiagnostics({ file: 'lib/a.ts', baseline: 0, current: 9, delta: 9 }, LINES).join('\n');
+    expect(out).toContain('+7 more error(s)');
+  });
+
+  it('quotes nothing → emits nothing (no orphan caveat under a row with no lines)', () => {
+    expect(formatRegressedFileDiagnostics({ file: 'lib/a.ts', baseline: 2, current: 4, delta: 2 }, [])).toEqual([]);
+  });
+
+  it('the regressed cap is larger than the new-file cap, because the sets differ in kind', () => {
+    // A new file's errors are homogeneous (all new); a regressed file's are a mixture the reader
+    // must search. Cutting the mixture at 3 is what hides the line the report exists to surface.
+    expect(REGRESSION_DIAGNOSTIC_MAX_PER_FILE).toBeGreaterThan(3);
   });
 });
 

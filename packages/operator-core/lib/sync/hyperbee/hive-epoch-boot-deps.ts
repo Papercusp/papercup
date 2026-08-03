@@ -21,7 +21,7 @@
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { createEpochKeyProvider } from './hive-epoch-key-provider';
-import { createPgWrappedKeyLoader } from './hive-epoch-keys-store';
+import { createPgWrappedKeyLoader, hasRekeyEvidence } from './hive-epoch-keys-store';
 import { createBundledEpochKeyProvider } from './bundled-epoch-key-provider';
 import { chainEpochKeyProviders } from './epoch-key-provider-chain';
 import { resolveSeedDir } from './restore-hive-seed';
@@ -201,6 +201,10 @@ export async function buildHiveRekeyBootDeps(opts: {
       // WI-4075: enables immediate (not just TTL-bound) cache invalidation on a local
       // epoch advance — see buildEpochEncryptCapability's doc comment.
       workspaceId: opts.workspaceId,
+      // WI-2106: lets the gate tell "never re-keyed" (plaintext is correct) apart from
+      // "epoch row hasn't backfilled yet" (plaintext would break the read cut). Without
+      // this dep the gate keeps the old always-plaintext-at-baseline behavior.
+      hasRekeyEvidence: () => hasRekeyEvidence(opts.workspaceId, potHomeSlug),
     });
     // WI-808: the gate IS installed (applyImpl will be epochGate(enforcedApply)). Records the
     // resolved potHomeSlug — which is the AAD `potId`, so a decrypt-fail's hive=… can be

@@ -268,6 +268,111 @@ describe('encryptOp at the BASELINE epoch (WI-2102)', () => {
   });
 });
 
+// WI-2106: epoch 0 is AMBIGUOUS. `coerceEpoch` maps unset/malformed/genuinely-baseline
+// all to 0, and nothing writes the epoch row at hive CREATION (only the re-key boundary,
+// hive-epoch-boundary.ts:125). So a never-re-keyed hive and a fresh joiner of an
+// ALREADY-re-keyed hive whose settings-row backfill lags BOTH read 0 — the first must
+// federate plaintext, the second must NOT (a removed member could read it). The
+// `hasRekeyEvidence` discriminator separates them.
+//
+// The two tests that matter are the NEGATIVE ones: they are what stops this fix from
+// re-introducing the P-059 wedge (WI-2102 above), which is the failure mode a naive
+// "defer whenever the epoch is unknown" would cause.
+describe('encryptOp baseline-ambiguity discriminator (WI-2106)', () => {
+  const localOpAt = (hbKey: string) => localOp({ hbKey });
+
+  it('CONTROL — no discriminator supplied ⇒ unchanged pre-WI-2106 behavior (plaintext at baseline)', async () => {
+    const resolveKey = vi.fn(KEY_MISSING);
+    const cap = buildEpochEncryptCapability({
+      crypto: fakeCrypto(),
+      resolveKey,
+      potId: HIVE,
+      getCurrentEpoch: async () => 0,
+      // hasRekeyEvidence deliberately omitted
+    });
+    await expect(cap.encryptOp(localOpAt('F-1'))).resolves.toBeNull();
+    expect(resolveKey).not.toHaveBeenCalled();
+  });
+
+  it('NEVER-RE-KEYED hive (no evidence) ⇒ still plaintext, and NEVER wedges the drain', async () => {
+    // This is the P-059 regression guard. If this test ever starts throwing, the fix has
+    // re-created the exact 728-drain-failure outage the baseline bypass was added to fix.
+    const resolveKey = vi.fn(KEY_MISSING);
+    const hasRekeyEvidence = vi.fn(async () => false);
+    const cap = buildEpochEncryptCapability({
+      crypto: fakeCrypto(),
+      resolveKey,
+      potId: HIVE,
+      getCurrentEpoch: async () => 0,
+      hasRekeyEvidence,
+    });
+    for (let i = 0; i < 25; i++) {
+      await expect(cap.encryptOp(localOpAt(`F-${i}`))).resolves.toBeNull();
+    }
+    expect(resolveKey).not.toHaveBeenCalled();
+  });
+
+  it('RE-KEYED hive whose epoch row has not backfilled ⇒ throws (fails CLOSED, never plaintext)', async () => {
+    const cap = buildEpochEncryptCapability({
+      crypto: fakeCrypto(),
+      resolveKey: KEY_OK,
+      potId: HIVE,
+      getCurrentEpoch: async () => 0, // backfill lag — the local row still reads baseline
+      hasRekeyEvidence: async () => true, // ...but a wrapped epoch>=1 key proves otherwise
+    });
+    // The drain treats a throw as an append failure (halt + retry), so the op is neither
+    // federated in the clear nor lost — it re-encrypts under the real epoch once the row lands.
+    await expect(cap.encryptOp(localOpAt('F-secret'))).rejects.toThrow(EpochKeyUnavailableError);
+  });
+
+  it('once the epoch row backfills, the same capability encrypts under the real epoch', async () => {
+    let epoch = 0;
+    const nowSpy = vi.spyOn(Date, 'now');
+    nowSpy.mockReturnValue(2_000_000);
+    const cap = buildEpochEncryptCapability({
+      crypto: fakeCrypto(),
+      resolveKey: KEY_OK,
+      potId: HIVE,
+      getCurrentEpoch: async () => epoch,
+      hasRekeyEvidence: async () => true,
+    });
+    await expect(cap.encryptOp(localOpAt('F-a'))).rejects.toThrow(EpochKeyUnavailableError);
+    epoch = 4; // the hive_settings epoch row federates in
+    nowSpy.mockReturnValue(2_010_000); // past the epoch cache TTL
+    const enc = await cap.encryptOp(localOpAt('F-a'));
+    expect(enc).not.toBeNull();
+    expect(enc!.epoch).toBe(4);
+    nowSpy.mockRestore();
+  });
+
+  it('the evidence probe is not re-run per row, and LATCHES true (EI-6945 N+1 discipline)', async () => {
+    const hasRekeyEvidence = vi.fn(async () => false);
+    const nowSpy = vi.spyOn(Date, 'now');
+    nowSpy.mockReturnValue(3_000_000);
+    const cap = buildEpochEncryptCapability({
+      crypto: fakeCrypto(),
+      resolveKey: KEY_OK,
+      potId: HIVE,
+      getCurrentEpoch: async () => 0,
+      hasRekeyEvidence,
+    });
+    for (let i = 0; i < 200; i++) await cap.encryptOp(localOpAt(`F-${i}`));
+    expect(hasRekeyEvidence).toHaveBeenCalledTimes(1); // not 200
+
+    // A false is re-checked after the TTL; the first true LATCHES and is never re-queried.
+    hasRekeyEvidence.mockResolvedValue(true);
+    nowSpy.mockReturnValue(3_010_000);
+    await expect(cap.encryptOp(localOpAt('F-x'))).rejects.toThrow(EpochKeyUnavailableError);
+    expect(hasRekeyEvidence).toHaveBeenCalledTimes(2);
+    nowSpy.mockReturnValue(3_020_000); // TTL elapsed again — a latched true must not re-probe
+    for (let i = 0; i < 50; i++) {
+      await expect(cap.encryptOp(localOpAt(`F-y${i}`))).rejects.toThrow(EpochKeyUnavailableError);
+    }
+    expect(hasRekeyEvidence).toHaveBeenCalledTimes(2); // latched — no further probes
+    nowSpy.mockRestore();
+  });
+});
+
 // EI-6945: outbox-drain calls encryptOp() ONCE PER ROW (up to DEFAULT_DRAIN_BATCH=200
 // per pass) — getCurrentEpoch must not re-hit its (uncached, PG-backed in production)
 // source on every row, or the per-row epoch-encrypt stage pays a full round-trip per
