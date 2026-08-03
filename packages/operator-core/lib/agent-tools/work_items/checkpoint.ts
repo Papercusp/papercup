@@ -120,9 +120,13 @@ import { runBulk, bulkContent } from '../_bulk';
 import { resolveConcreteWorkspaceId } from '../../workspace-registry';
 import { carryProvenanceFields } from '../../carry-surface-provenance-stamp';
 import {
+  CARRY_CAP_HARD_MULTIPLE,
   CARRY_NOTE_MAX_CHECKS,
+  CARRY_ROW_SOFT_CAPS,
+  type CarryArgRepair,
   normalizeCheckEntries,
   splitCarryNoteChecks,
+  truncateCarryField,
   withCarryNoteChecks,
 } from '../../carry-note';
 
@@ -213,11 +217,27 @@ function checksSpec() {
   return z
     .array(
       z.object({
-        claim: z.string().min(1).max(500).describe('The claim about external state, stated concretely.'),
-        recheck: z.string().max(300).optional().describe('The concrete probe that would falsify the claim.'),
+        // EI-19400299440742193: these are SANITY BACKSTOPS, not the real limits. The
+        // real caps (CARRY_ROW_SOFT_CAPS) are enforced by TRUNCATION in the handler.
+        // A zod `.max()` rejects the WHOLE CALL, so a `recheck` a few chars over 300
+        // used to discard the entire accompanying multi-KB checkpoint and the agent
+        // re-sent it — the bytes paid twice, and, worse, an item could be left with NO
+        // durable state at the moment its session ended. Measured over a 6-day window:
+        // 6 of the 9 schema rejections on this tool were exactly this, 32,967 chars.
+        // Same fix as WI-7264 landed for loop:checkpoint, reusing its helpers.
+        claim: z
+          .string()
+          .min(1)
+          .max(CARRY_ROW_SOFT_CAPS.claim * CARRY_CAP_HARD_MULTIPLE)
+          .describe('The claim about external state, stated concretely.'),
+        recheck: z
+          .string()
+          .max(CARRY_ROW_SOFT_CAPS.recheck * CARRY_CAP_HARD_MULTIPLE)
+          .optional()
+          .describe('The concrete probe that would falsify the claim.'),
         verified: z
           .string()
-          .max(300)
+          .max(CARRY_ROW_SOFT_CAPS.verified * CARRY_CAP_HARD_MULTIPLE)
           .optional()
           .describe(
             'The EVIDENCE STRING (what you actually observed), NOT a boolean — `true`/`false` is rejected. ' +
@@ -461,7 +481,29 @@ export default defineTool({
         // that merge has to happen inside the store's locked transaction, or a
         // concurrent writer on the same item can interleave between our read and our
         // write. Hence the `transform` seam rather than a read-then-write here.
-        const suppliedChecks = it.checks ?? args.checks;
+        // EI-19400299440742193: enforce the SOFT row caps by TRUNCATION, here, after the
+        // schema's backstop let the call through. The cap's job is to bound what
+        // re-injects into every future pickup of this item — truncation does that just
+        // as well as rejection did, without discarding the whole checkpoint. Every trim
+        // is REPORTED below: a cut the caller cannot see is the EI-18723223344390510
+        // failure mode, where a row was quietly reshaped and a verified check's evidence
+        // was destroyed with no signal.
+        const repairs: CarryArgRepair[] = [];
+        const rawSuppliedChecks = it.checks ?? args.checks;
+        const suppliedChecks = rawSuppliedChecks?.map((row, i) => {
+          const out = { ...row };
+          out.claim = truncateCarryField(out.claim, CARRY_ROW_SOFT_CAPS.claim, `checks[${i}].claim`, repairs);
+          if (typeof out.recheck === 'string')
+            out.recheck = truncateCarryField(out.recheck, CARRY_ROW_SOFT_CAPS.recheck, `checks[${i}].recheck`, repairs);
+          if (typeof out.verified === 'string')
+            out.verified = truncateCarryField(
+              out.verified,
+              CARRY_ROW_SOFT_CAPS.verified,
+              `checks[${i}].verified`,
+              repairs,
+            );
+          return out;
+        });
         const isClear = !(checkpointToStore && checkpointToStore.length > 0);
         // A CLEAR wipes the checks too, UNLESS the caller supplied some in the same
         // call. This is a DELIBERATE divergence from loop:checkpoint, where checks
@@ -596,6 +638,13 @@ export default defineTool({
            * included) instead of what was passed in.
            */
           checks: stored !== null ? splitCarryNoteChecks(stored).checks.length : 0,
+          /**
+           * EI-19400299440742193: every soft-cap TRIM this write applied, so a caller
+           * can see exactly what was shortened. Absent entirely when nothing was
+           * trimmed (the common case), so an unaffected result's shape is unchanged.
+           * The write SUCCEEDS either way — this reports a repair, never a refusal.
+           */
+          ...(repairs.length ? { repairs } : {}),
           by: ident.ownerId,
           // P-007/D-013: what the freshness axis recorded for this write. Absent
           // entirely when the caller declared nothing (the common case today), so

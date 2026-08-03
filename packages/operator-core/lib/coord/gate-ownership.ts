@@ -311,6 +311,31 @@ export function ownershipHeldByLiveHolder(own: CellOwnership): boolean {
 }
 
 /**
+ * PURE. Should a caller STAND DOWN because a live PEER already owns this incident?
+ *
+ * P-007's whole decision, in one testable place. It lives here rather than inline
+ * in `release:checkpoint-run` because a four-way conjunction spread across a tool
+ * handler is exactly the shape that looks obviously-correct and cannot be tested:
+ * the handler is a detached-launch side effect, so the only way to exercise its
+ * branch is to fire a ~55min suite.
+ *
+ * Every clause fails OPEN (returns false ⇒ proceed):
+ *   - no positive liveness verdict (unread / ambiguous / dead holder)
+ *   - no holder recorded at all
+ *   - the CALLER could not be identified — we cannot prove it is not our own claim
+ *   - the claim IS the caller's own
+ *
+ * `callerOwnerId` is deliberately required rather than optional: a caller that has
+ * not resolved its identity must pass `null` and get a `false`, instead of omitting
+ * the argument and silently standing down against its own claim.
+ */
+export function shouldStandDownForLivePeer(own: CellOwnership, callerOwnerId: string | null): boolean {
+  if (!ownershipHeldByLiveHolder(own)) return false;
+  if (!own.takenBy || !callerOwnerId) return false;
+  return own.takenBy !== callerOwnerId;
+}
+
+/**
  * Read ownership of the green-checkpoint gate's stall condition.
  *
  * Costs ONE indexed SELECT (`findConditionObjects` is batched and capped), not a

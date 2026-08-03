@@ -15,6 +15,7 @@ import {
   ownershipContradicted,
   ownershipNeedsLivenessConfirmation,
   ownershipHeldByLiveHolder,
+  shouldStandDownForLivePeer,
   readGateOwnership,
 } from './gate-ownership';
 import type { SessionState } from '../agent-tools/coordination/presence-wakeability';
@@ -243,6 +244,73 @@ describe('ownershipHeldByLiveHolder (the P-007 coordination verdict)', () => {
       const ambiguous = ownershipNeedsLivenessConfirmation(own) === true;
       expect([live, dead, ambiguous].filter(Boolean).length, `${s} must land in exactly one bucket`).toBe(1);
     }
+  });
+});
+
+/**
+ * P-007's actual decision. Pinned separately from the liveness predicate because
+ * its failure mode is different in kind: `ownershipHeldByLiveHolder` being wrong
+ * misreports a fact, whereas this being wrong REFUSES THE FLEET'S ONLY MANUAL
+ * VERDICT LEVER. Every clause must fail open.
+ */
+describe('shouldStandDownForLivePeer (the P-007 rail decision)', () => {
+  const held = (over: { state?: SessionState | null; takenBy?: string | null } = {}) => ({
+    ...toCellOwnership(
+      mkObj({ claimState: 'held', takenBy: over.takenBy === undefined ? 'su-peer' : over.takenBy }),
+      over.state === undefined ? 'live' : over.state,
+    ),
+  });
+
+  it('stands down for a LIVE peer who is not the caller — the case the rail exists for', () => {
+    expect(shouldStandDownForLivePeer(held(), 'su-me')).toBe(true);
+  });
+
+  it('NEVER stands down against the caller OWN claim — that would lock an agent out of its own gate', () => {
+    expect(shouldStandDownForLivePeer(held({ takenBy: 'su-me' }), 'su-me')).toBe(false);
+  });
+
+  it('proceeds when the CALLER cannot be identified — an unknown caller may be the holder', () => {
+    // resolveAgentIdentity throws on a power-user ctx missing uiClientId; the rail maps that to
+    // null. Refusing here would block a re-fire of the caller's own claim on an identity glitch.
+    expect(shouldStandDownForLivePeer(held(), null)).toBe(false);
+  });
+
+  it('proceeds for a DEAD holder — a dead peer must never wedge the gate', () => {
+    expect(shouldStandDownForLivePeer(held({ state: 'ended' }), 'su-me')).toBe(false);
+  });
+
+  it('proceeds on the two AMBIGUOUS verdicts — coordination never blocks on a maybe', () => {
+    expect(shouldStandDownForLivePeer(held({ state: 'draining' }), 'su-me')).toBe(false);
+    expect(shouldStandDownForLivePeer(held({ state: 'suspect' }), 'su-me')).toBe(false);
+  });
+
+  it('proceeds when the oracle could not answer, and when the store was unreadable', () => {
+    expect(shouldStandDownForLivePeer(held({ state: null }), 'su-me')).toBe(false);
+    expect(shouldStandDownForLivePeer(unmeasuredCell('green-stall:papercusp', 'store down'), 'su-me')).toBe(false);
+  });
+
+  it('proceeds when nothing owns the condition, and when the lease merely expired', () => {
+    expect(shouldStandDownForLivePeer(unownedCell('green-stall:papercusp'), 'su-me')).toBe(false);
+    expect(
+      shouldStandDownForLivePeer(
+        { ...toCellOwnership(mkObj({ claimState: 'lease-expired', takenBy: 'su-peer' }), 'live') },
+        'su-me',
+      ),
+    ).toBe(false);
+  });
+
+  it('stands down for the three ALIVE states only, holding caller and holder fixed', () => {
+    const verdicts = (['live', 'parked', 'draining', 'suspect', 'ended', 'recorded'] as const).map(
+      (s) => [s, shouldStandDownForLivePeer(held({ state: s }), 'su-me')] as const,
+    );
+    expect(Object.fromEntries(verdicts)).toEqual({
+      live: true,
+      parked: true,
+      recorded: true,
+      draining: false,
+      suspect: false,
+      ended: false,
+    });
   });
 });
 

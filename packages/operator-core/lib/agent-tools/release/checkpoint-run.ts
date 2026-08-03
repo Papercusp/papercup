@@ -35,7 +35,7 @@ import {
 import { attributeRetriageToRun, describeRefireBudget, readInFlightRetriage } from '../../release/in-flight-retriage';
 import { caveat, describeRefusal, isRefusedAnswer, refuseAnswer, withFieldReliability } from '../../field-reliability';
 import { applyPendingMigrationsNow } from '../../db-boot-migrate';
-import { ownershipHeldByLiveHolder, readGateOwnership } from '../../coord/gate-ownership';
+import { readGateOwnership, shouldStandDownForLivePeer } from '../../coord/gate-ownership';
 import { resolveAgentIdentity } from '../coordination/identity';
 
 export default defineTool({
@@ -209,14 +209,10 @@ export default defineTool({
       } catch {
         callerOwnerId = null;
       }
-      // `ownershipHeldByLiveHolder` is false for null/ambiguous/ended — so this stands down only
-      // on a POSITIVE liveness verdict, never on an absence of evidence.
-      if (
-        ownershipHeldByLiveHolder(ownership) &&
-        ownership.takenBy &&
-        callerOwnerId &&
-        ownership.takenBy !== callerOwnerId
-      ) {
+      // The decision is PURE and lives in gate-ownership.ts so it is testable without firing a
+      // ~55min detached suite; it is false for every unknown (unread/ambiguous/dead holder,
+      // unidentified caller, own claim).
+      if (shouldStandDownForLivePeer(ownership, callerOwnerId)) {
         const said = ownership.thread.recent.at(-1);
         return {
           content: [
