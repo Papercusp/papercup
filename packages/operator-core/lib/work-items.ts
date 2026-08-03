@@ -104,6 +104,7 @@ import {
   getIssue,
   getIssueInWorkspace,
   getIssueDetail,
+  getIssueThreadWindow,
   listIssues,
   countIssues,
   countIssuesByState,
@@ -1023,10 +1024,15 @@ export interface WorkItemThreadWindow {
  * performance doc lists — see PgThreadStore.listRecentPosts for why the count
  * rides the same query rather than a second one.
  *
- * Resolves the thread through {@link workItemObjectRef}, which is already
- * family-aware (issue-family threads hang off the bare id, feature-family off a
- * harness-qualified ref). Re-deriving that convention here would be a third copy
- * of it, and the feature-family half is the one a bare-id lookup silently misses.
+ * ⚠ DISPATCHES BY FAMILY, exactly like {@link getWorkItemDetail} — and the reason
+ * is a trap worth stating, because getting it wrong FAILS SILENTLY. It is not
+ * enough to resolve the family-aware ObjectRef: the two families' threads live
+ * behind stores scoped to DIFFERENT COORD WORKSPACES. issues-engineer's store
+ * resolves the workspace dynamically; the store in THIS module is pinned to
+ * `DEFAULT_COORD_WORKSPACE`. So reading an issue thread here matches zero rows,
+ * and since an absent thread legitimately means "nobody has commented", the caller
+ * receives a confident `total: 0` rather than an error. Measured live 2026-08-03:
+ * WI-6857 has 10 posts and read back as 0/0 through this module's store.
  *
  * Returns null when the item does not exist — distinct from a real empty thread,
  * which returns `total: 0`.
@@ -1038,6 +1044,8 @@ export async function getWorkItemThreadWindow(
 ): Promise<WorkItemThreadWindow | null> {
   const wi = await getWorkItem(id, harness);
   if (!wi) return null;
+  // Issue-family: the correctly-scoped store lives in issues-engineer.
+  if (wi.family === 'issue') return getIssueThreadWindow(id, limit);
   const ref = workItemObjectRef(wi);
   const [thread, topics] = await Promise.all([threads.getThreadByParent(ref), tags.listTags(ref)]);
   // No thread row at all is the DEFAULT for an item nobody has commented on

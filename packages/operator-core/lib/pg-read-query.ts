@@ -15,6 +15,8 @@
  *   - statement_timeout      → a runaway query can't wedge the pool.
  *   - LIMIT-wrap + row cap    → a fat result can't flood the agent's context.
  *   - pooled connection (getOrgPg) → no per-call connection open.
+ *   - TimeZone = UTC          → date_trunc/::date bucket on UTC boundaries, so a
+ *     rendered `…T00:00:00.000Z` label is TRUE (EI-19397658288924647, below).
  *
  * The single-statement / SELECT|WITH guard is defense-in-depth + a friendlier
  * early error; the READ ONLY transaction is the real enforcement.
@@ -1146,6 +1148,32 @@ export const PG_READ_QUERY_DEFAULT_TIMEOUT_MS = 5000;
 export const PG_READ_QUERY_HARD_TIMEOUT_MS = 30000;
 
 /**
+ * Pin the transaction's TimeZone to UTC (EI-19397658288924647).
+ *
+ * `date_trunc('day', <timestamptz>)` buckets on SESSION-timezone boundaries. On
+ * this box the session TZ is America/New_York, so the obvious daily rollup
+ * bucketed in EDT — while the result was serialised with a literal `Z`:
+ *
+ *     date_trunc('day', timestamptz '2026-08-03 01:34:00Z')::date
+ *       →  "2026-08-02T00:00:00.000Z"        ← asserts UTC, is not UTC
+ *
+ * That label is not merely ambiguous, it is affirmatively WRONG about its own
+ * timezone, and nothing in the row hints at the shift — an agent selecting only
+ * `day, count(*)` gets a clean, plausible, 4h-shifted series. Every measurement
+ * here is compared against a UTC anchor (a deploy time, a gate verdict,
+ * `host.now`, an incident window), and the shift moves pre-epoch events into the
+ * post-epoch bucket — the direction that manufactures a false positive for
+ * whatever change is being measured.
+ *
+ * Fixing the SESSION rather than the rendering makes the bucket boundary and the
+ * `Z` agree, which also fixes `now()`-relative filters and every other
+ * session-TZ-dependent function in one place. `SET LOCAL` scopes it to this
+ * transaction, so it can never leak onto a pooled connection shared with app
+ * code that legitimately wants server-local time.
+ */
+const SET_LOCAL_UTC = "SET LOCAL TIME ZONE 'UTC'";
+
+/**
  * Strip SQL noise a naive `;`-scan would misread as a statement separator:
  * single-quoted string literals ('...' with '' escaping), double-quoted
  * identifiers ("..." with "" escaping), dollar-quoted strings ($$...$$ /
@@ -1288,6 +1316,7 @@ export async function pgReadQuery(
     // READ ONLY must be set before the first data statement in the txn.
     await tx.unsafe('SET TRANSACTION READ ONLY');
     await tx.unsafe(`SET LOCAL statement_timeout = ${timeoutMs}`);
+    await tx.unsafe(SET_LOCAL_UTC);
     rows = (await tx.unsafe(
       `SELECT * FROM (${query}) AS _pgq LIMIT ${maxRows + 1}`,
     )) as unknown as Record<string, unknown>[];
@@ -1332,6 +1361,8 @@ export async function explainReadQuery(
     await sql.begin(async (tx) => {
       await tx.unsafe('SET TRANSACTION READ ONLY');
       await tx.unsafe(`SET LOCAL statement_timeout = ${timeoutMs}`);
+      // Same TZ pin as pgReadQuery so a query VALIDATES under the session it will RUN under.
+      await tx.unsafe(SET_LOCAL_UTC);
       await tx.unsafe(`EXPLAIN (COSTS OFF) ${query}`);
     });
     return { ok: true };

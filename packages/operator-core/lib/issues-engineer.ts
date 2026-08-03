@@ -1320,6 +1320,37 @@ export async function getIssueInWorkspace(
   return rows[0] ? toIssue(rows[0]) : null;
 }
 
+/**
+ * The LAST `limit` posts of an issue's thread, plus its total and topics.
+ *
+ * The bounded sibling of {@link getIssueDetail}, for cell resolvers and other hot
+ * read paths — see PgThreadStore.listRecentPosts for why the count rides the same
+ * query as the rows.
+ *
+ * ⚠ MUST live here rather than in work-items.ts, and this is not organizational
+ * taste: the two modules' coord stores are scoped to DIFFERENT workspaces. This
+ * one resolves dynamically (`getWorkspaceId: () => coordScopeWorkspace()`), while
+ * work-items.ts's hardcodes `DEFAULT_COORD_WORKSPACE` ('default'). Reading an
+ * issue thread through that store matches ZERO rows and — because a missing thread
+ * legitimately means "nobody has commented" — returns a confident, well-formed
+ * `total: 0` instead of an error. Verified live 2026-08-03: WI-6857 (10 real
+ * posts) read back as 0/0 through the work-items store before this existed.
+ */
+export async function getIssueThreadWindow(
+  id: string,
+  limit: number,
+): Promise<{ posts: ThreadPostRow[]; total: number; topics: string[]; createdAt: string } | null> {
+  const issue = await getIssue(id);
+  if (!issue) return null;
+  const [thread, topics] = await Promise.all([threads.getThreadByParent(issueRef(id)), tags.listTags(issueRef(id))]);
+  // No thread row is the DEFAULT for an uncommented item (threads are created on
+  // first post) — a real measured zero, not a failure.
+  const window = thread
+    ? await threads.listRecentPosts(thread.thread_id, limit)
+    : { posts: [] as ThreadPostRow[], total: 0 };
+  return { posts: window.posts, total: window.total, topics, createdAt: issue.createdAt };
+}
+
 export async function getIssueDetail(id: string): Promise<EngineerIssueDetail | null> {
   const issue = await getIssue(id);
   if (!issue) return null;

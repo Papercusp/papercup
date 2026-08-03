@@ -1031,11 +1031,11 @@ export default defineTool({
   profile: 'engineer',
   description:
     "A leader's ONE-call health brief for ONE fleet (yours by default). Per member: " +
-    'sessionState, `verdict` (booted|joined|first-turn-done|speaking|stalled|dead), wakeMode, ' +
+    'sessionState, `verdict`, wakeMode, ' +
     'lastToolCallAgeMs, claims (doing/workItemIds/queuedCount/load), loop state+nextFireAt, ' +
     'stalled, unanswered, contextPressure, parkedOn + parkedOnResolved, benchSuggestion, ' +
-    '`dormant`, `spinning`, `throttled` (loop backed off from a provider wall — nextFireAt is ' +
-    'a wait, not a normal tick; see the member\'s `throttled.until`/`.reason`), ' +
+    '`dormant`, `spinning`, `throttled` (backed off from a provider wall — nextFireAt is ' +
+    'a wait, not a tick; see `throttled.until`/`.reason`), ' +
     'unownedCriticals + unownedCriticalsFederated + abandonedUnclaimed.',
   guidance: {
     when:

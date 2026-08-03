@@ -2236,26 +2236,36 @@ const handler = createMcpHandler(
               // caller who asked for 20 lines gets 20 lines — not a door-truncated
               // slice of 4,000 plus a spill file to go page. Reduction the caller
               // ASKED for should pre-empt the door's fixed policy, never race it.
-              const result = applyResultDoor(
-                applyResultProjection(
-                  await maybeRunWithDeltaProxy({
-                  sessionKey: replayOwnerKey,
+              const projectedResult = applyResultProjection(
+                await maybeRunWithDeltaProxy({
+                sessionKey: replayOwnerKey,
+                toolName,
+                args: dispatchArgs,
+                requestedFormat,
+                explicitDelta,
+                itemKeyField: projected.delta?.itemKeyField,
+                runRaw: async (autoRequestedDelta, overrideDelta = true) => (await dispatchProjectedToolToMcp(
+                  projected,
                   toolName,
-                  args: dispatchArgs,
-                  requestedFormat,
-                  explicitDelta,
-                  itemKeyField: projected.delta?.itemKeyField,
-                  runRaw: async (autoRequestedDelta, overrideDelta = true) => (await dispatchProjectedToolToMcp(
-                    projected,
-                    toolName,
-                    dispatchArgs,
-                    overrideDelta ? { ...ctx, requestedDelta: autoRequestedDelta } : ctx,
-                    PROJECTED_DEPS,
-                  )) as McpCallResult,
-                  }),
-                  projectionSpec,
-                  { toolName },
-                ),
+                  dispatchArgs,
+                  overrideDelta ? { ...ctx, requestedDelta: autoRequestedDelta } : ctx,
+                  PROJECTED_DEPS,
+                )) as McpCallResult,
+                }),
+                projectionSpec,
+                { toolName },
+              );
+              // EI-19386201256023240: a tool whose documented/near-exclusive
+              // caller is a programmatic client (a shell hook `json.loads`-ing
+              // the raw body — e.g. activity:report's hook_bundle fold — see
+              // ProjectedTool.skipResultDoor) opts OUT of the door entirely: a
+              // door-truncated body plus its prose footer is invalid JSON, so
+              // such a caller's parse throws and fails open SILENTLY, dropping
+              // the call's payload with no error anywhere.
+              const result = projected.skipResultDoor
+                ? projectedResult
+                : applyResultDoor(
+                projectedResult,
                 {
                   toolName,
                   workspaceId: dispatchSpawnCtx.workspaceId,

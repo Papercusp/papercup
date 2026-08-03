@@ -373,6 +373,31 @@ defineTool({
   },
 });
 
+// EI-19389430626961976: a pair of probes whose ONLY difference is
+// `skipResultDoor`, both returning a body well over the resultEach door
+// budget (~6000 chars at the baked 1500-token floor) — for pinning that the
+// `runDispatch` choke point in _mcp-handler.ts actually READS
+// `projected.skipResultDoor` before calling applyResultDoor, not just that
+// the flag is threaded through define-tool.ts/tool-projection.ts.
+const DOOR_TEST_BIG_TEXT = 'x'.repeat(20000);
+defineTool({
+  name: 'gatingtest:door_default',
+  requirePrincipal: false,
+  capability: 'agent_tools:read',
+  args: z.object({}),
+  agentRoles: ['scoper'],
+  handler: async () => ({ big: DOOR_TEST_BIG_TEXT }),
+});
+defineTool({
+  name: 'gatingtest:door_skip',
+  requirePrincipal: false,
+  capability: 'agent_tools:read',
+  args: z.object({}),
+  agentRoles: ['scoper'],
+  skipResultDoor: true,
+  handler: async () => ({ big: DOOR_TEST_BIG_TEXT }),
+});
+
 afterAll(() => {
   unregisterProjectedToolsForPlugin('gating-matrix-test');
 });
@@ -523,6 +548,34 @@ describe('projection — the caller-specified reduction stage at the dispatch la
   });
 });
 
+/* ─── applyResultDoor choke point honors projected.skipResultDoor (EI-19389430626961976) ──
+ *
+ * `skipResultDoor` was threaded end-to-end through define-tool.ts /
+ * tool-projection.ts and set `true` on the real activity:report tool
+ * (EI-19386201256023240), but the ONE call site that invokes
+ * `applyResultDoor` never read it — every tools/call result was doored
+ * regardless of the flag, so the opt-out was dead code. These pin that the
+ * choke point actually branches on it, not just that the flag exists on the
+ * type.
+ */
+describe('applyResultDoor choke point honors projected.skipResultDoor', () => {
+  const scoped = (ws: string) => superuserExtra(`&workspace=${ws}`);
+
+  it('doors (truncates + spills) an oversized result by default', async () => {
+    const res = await callTool('gatingtest:door_default', {}, scoped('ws-test'));
+    expect(res.isError).not.toBe(true);
+    expect(res._meta?.resultDoor).toMatchObject({ truncated: true });
+    expect(textOf(res)).not.toContain(DOOR_TEST_BIG_TEXT);
+  });
+
+  it('skipResultDoor:true on the tool definition skips the door entirely — full body, no spill', async () => {
+    const res = await callTool('gatingtest:door_skip', {}, scoped('ws-test'));
+    expect(res.isError).not.toBe(true);
+    expect(res._meta?.resultDoor).toBeUndefined();
+    expect(textOf(res)).toContain(DOOR_TEST_BIG_TEXT);
+  });
+});
+
 /* ─── projection through the tools:invoke re-dispatch path (EI-19386035445533031) ── */
 //
 // The result-door footer tells a caller whose result overflowed to nest
@@ -549,7 +602,11 @@ describe('tools:invoke re-dispatch — `projection` nested in the target call\'s
   it('applies the projection to the re-dispatched result, same as a direct call', async () => {
     const res = await invokeCall({ projection: { pick: ['lines[0]'] } });
     expect(res.isError).not.toBe(true);
-    expect(JSON.parse(textOf(res))).toEqual({ lines: ['alpha'] });
+    // Only content[0] is the JSON body — tools:invoke's own declared
+    // `guidance.seeAlso` appends a SEPARATE "See also: …" content item, so
+    // joining the whole thing (textOf) would concatenate two JSON-adjacent
+    // texts into invalid JSON.
+    expect(JSON.parse((res.content[0] as { text: string }).text)).toEqual({ lines: ['alpha'] });
   });
 
   it('an INVALID nested projection fails CLOSED — the target tool is never dispatched', async () => {
@@ -563,7 +620,7 @@ describe('tools:invoke re-dispatch — `projection` nested in the target call\'s
     const res = await invokeCall({ probe: 'v' });
     expect(res.isError).not.toBe(true);
     expect(invokeProbeSeen).toEqual([{ probe: 'v' }]);
-    expect(JSON.parse(textOf(res))).toEqual({ lines: ['alpha', 'beta', 'gamma'] });
+    expect(JSON.parse((res.content[0] as { text: string }).text)).toEqual({ lines: ['alpha', 'beta', 'gamma'] });
   });
 });
 

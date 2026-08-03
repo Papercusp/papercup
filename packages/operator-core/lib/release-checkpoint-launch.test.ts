@@ -1528,6 +1528,22 @@ describe('defaultReadLogTail drops the partial first line on a SEEKED read (WI-7
     expect(parseCheckpointCandidates(tail)).toEqual(['13d9c65d']);
   });
 
+  it('THE case that actually produced a wrong answer: truncated fixture is the ONLY candidate', () => {
+    // Why this one matters more than the interleaved case above. The partial line is always
+    // the FIRST line of the window, and the caller takes the LAST candidate
+    // (`tailCandidates.at(-1)`, EI-19327704778173646). So a truncated fixture sha only WINS
+    // when it is the sole candidate in the 64KB window — and then it is reported as the sha
+    // the gate is judging. Verified against the old implementation: it returned ['deadbeef'],
+    // i.e. a fabricated candidate that looks entirely legitimate.
+    const fixture = '[green-checkpoint:TEST-FIXTURE] checkpointing candidate deadbeef (base f)\n';
+    const p = write('x'.repeat(400) + '\n' + fixture + 'suite output, no further candidates\n');
+    const tail = defaultReadLogTail(p, fixture.length + 24)!;
+    expect(parseCheckpointCandidates(tail)).toEqual([]);
+    // Empty is the SAFE outcome, not a loss: the caller falls back to the head-read's first
+    // candidate (`?? firstCandidate`), which is the documented pre-EI behaviour.
+    expect(parseCheckpointCandidates(tail).at(-1) ?? 'head-fallback').toBe('head-fallback');
+  });
+
   it('never yields a corrupted-but-matching sha — a cut reaching the sha kills the prefix', () => {
     // The asymmetry itself. Truncation only removes from the LEFT, so any cut deep enough to
     // touch the sha has already destroyed `checkpointing candidate`. Sweep every cut point

@@ -108,6 +108,7 @@ beforeEach(() => {
   getNextForBeeM.mockResolvedValue({
     workItem: { id: 'WI-lane', assignee: 'su-me', payload: { plan_item: { plan_slug: 'a-plan', item_id: 'P-1' } } } as never,
     claimedUnder: { specId: 'fleet-bugs', revision: 3 },
+    specSource: 'fleet',
   });
   claimNextM.mockResolvedValue({ id: 'WI-raw', assignee: 'su-me' } as never);
   getClaimTimePlanDecisions.mockResolvedValue(null);
@@ -148,10 +149,12 @@ describe('work_items:claim_next — plan-Decisions brief (EI-19387745408924340)'
       .mockResolvedValueOnce({
         workItem: { id: 'WI-1', assignee: 'su-me', payload: { plan_item: { plan_slug: 'a-plan', item_id: 'P-1' } } } as never,
         claimedUnder: { specId: 'fleet-bugs', revision: 3 },
+        specSource: 'fleet',
       })
       .mockResolvedValueOnce({
         workItem: { id: 'WI-2', assignee: 'su-me', payload: {} } as never,
         claimedUnder: { specId: 'fleet-bugs', revision: 3 },
+        specSource: 'fleet',
       })
       .mockResolvedValueOnce(null);
     getClaimTimePlanDecisions.mockResolvedValueOnce(BRIEF).mockResolvedValueOnce(null);
