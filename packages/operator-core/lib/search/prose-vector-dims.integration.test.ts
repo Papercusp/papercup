@@ -83,6 +83,13 @@ interface MeasuredColumn {
   dims: number;
 }
 
+/**
+ * A client the catalog reads accept — either the pooled connection or a
+ * transaction handle, so the negative control below can measure INSIDE its
+ * rolled-back transaction and see its own uncommitted DDL.
+ */
+type PgClient = postgres.Sql | postgres.TransactionSql;
+
 const key = (relname: string, attname: string): string => `${relname}.${attname}`;
 /** `harness_shared.session_turns` → `session_turns` (catalog stores the bare name). */
 const bare = (qualified: string): string => qualified.split('.').pop() as string;
@@ -106,7 +113,7 @@ const bare = (qualified: string): string => qualified.split('.').pop() as string
  * claims to close. Types other than `vector` have no contract yet, so leg 3
  * reports one as an unknown surface rather than silently accepting it.
  */
-async function measureVectorColumns(sql: postgres.Sql): Promise<MeasuredColumn[]> {
+async function measureVectorColumns(sql: PgClient): Promise<MeasuredColumn[]> {
   return sql<MeasuredColumn[]>`
     SELECT c.relname      AS relname,
            a.attname      AS attname,

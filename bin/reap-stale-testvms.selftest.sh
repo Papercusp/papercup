@@ -99,12 +99,20 @@ for _ in 1 2 3 4 5; do [ -r "/proc/$fake_vm_pid/cmdline" ] && break; sleep 0.2; 
 DRY_RUN=1
 MAX_AGE_SECS=100000   # a freshly-spawned fake process is always younger than this
 out="$(main 2>&1)"
+# NOTE: real papercusp-testvm-* processes may legitimately be running on this
+# box at the same time (e.g. an active fed-a/fed-b session) and will also be
+# swept — that's fine and expected, they'll be young too. The property under
+# test is narrower and box-state-independent: NOTHING is ever named as a REAP
+# candidate under a threshold this large, and our fake one specifically is
+# accounted for in skipped_young.
 if echo "$out" | grep -q "REAP candidate"; then
-  bad "a fresh fake VM was treated as a reap candidate under a huge age threshold (age gating broken): $out"
+  bad "something was treated as a reap candidate under a huge age threshold (age gating broken): $out"
 else
-  echo "$out" | grep -q "skipped_young=1" && ok "a fresh fake VM is correctly skipped as too young" \
-    || bad "expected skipped_young=1 in summary, got: $out"
+  ok "no candidate is reaped under a huge age threshold (age gating holds)"
 fi
+skipped_n="$(echo "$out" | grep -oE 'skipped_young=[0-9]+' | grep -oE '[0-9]+')"
+[ -n "$skipped_n" ] && [ "$skipped_n" -ge 1 ] && ok "our fake VM is counted in skipped_young ($skipped_n total)" \
+  || bad "expected skipped_young>=1 in summary, got: $out"
 
 MAX_AGE_SECS=0        # everything is "old enough" instantly
 out="$(main 2>&1)"

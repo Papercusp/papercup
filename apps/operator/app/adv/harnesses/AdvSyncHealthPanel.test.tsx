@@ -61,7 +61,7 @@ function snap(over: Partial<SyncMetricsSnapshot> = {}): SyncMetricsSnapshot {
       bytesReceived: 512,
     },
     cache: { hits: 4, misses: 2 },
-    invalidations: { fromSse: 1, fromTimer: 2, fromManual: 0 },
+    invalidations: { fromSse: 1, fromTimer: 2, fromManual: 0, bySseName: {} },
     transport: {
       inFlight: 2,
       queued: 0,

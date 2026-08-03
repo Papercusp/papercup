@@ -908,14 +908,80 @@ export async function runEmbedBackfillOnce(): Promise<void> {
   try {
     const { backfillCanonicalMemoryVectors } = await import('../memory/canonical-vec-backfill');
     const r = await backfillCanonicalMemoryVectors();
-    if (r.embedded > 0 || r.failed > 0) {
-      console.log(
-        `[memory-vec] backfill: embedded=${r.embedded} failed=${r.failed} ` +
-          `scanned=${r.scanned} (failed rows retry next tick)`,
-      );
-    }
+    logMemoryVecOutcome(r);
   } catch (err) {
     console.warn('[memory-vec] backfill failed:', (err as Error).message);
+  }
+}
+
+/** How often a HEALTHY idle sweep restates which table it is maintaining. */
+export const MEMORY_VEC_IDLE_LOG_INTERVAL_MS = 60 * 60 * 1000;
+
+let lastMemoryVecIdleLog: { at: number; target: string } = { at: 0, target: '' };
+
+/** Test seam — reset the idle-log rate limiter. */
+export function resetMemoryVecIdleLogState(): void {
+  lastMemoryVecIdleLog = { at: 0, target: '' };
+}
+
+/**
+ * Turn a memory-vec pass into an observable outcome.
+ *
+ * WHY THIS IS NOT JUST `if (embedded > 0)` (EI-19409840792445272): that condition
+ * made THREE different states byte-identical and silent — healthy-idle, a predicate
+ * matching nothing, and a disabled embedder. Only one of those is fine, and the
+ * other two are total outages of semantic recall. Worse, no line anywhere named the
+ * table being maintained, so "is this subsystem alive?" could not be answered from
+ * logs at all; a zero in a NON-active mode's table reads exactly like a dead sweep,
+ * which is precisely how it got misdiagnosed (twice) before this existed.
+ *
+ * The rules, in priority order:
+ *  1. embedder disabled  -> LOUD, every tick. Recall reads no vector space at all.
+ *  2. work happened      -> the normal line, now NAMING the target.
+ *  3. zero yield + empty vector space + recallable rows exist -> LOUD, every tick.
+ *     This cannot self-heal (the predicate matches nothing), so noise is correct.
+ *  4. healthy idle       -> quiet, but restate the live target hourly AND
+ *     immediately whenever it CHANGES — a mode switch is exactly when a human
+ *     needs to know which table went live.
+ */
+export function logMemoryVecOutcome(
+  r: import('../memory/canonical-vec-backfill').CanonicalVecBackfillResult,
+  now: number = Date.now(),
+  log: Pick<Console, 'log' | 'warn'> = console,
+): void {
+  if (r.skipped === 'embedder-disabled') {
+    log.warn(
+      '[memory-vec] DISABLED: no active embedder/vec table resolved — semantic memory recall ' +
+        'is reading NO vector space, and nothing will backfill until an embedder is configured.',
+    );
+    return;
+  }
+
+  const target = r.table ? `${r.table} (mode=${r.mode})` : 'an unresolved target';
+
+  if (r.embedded > 0 || r.failed > 0) {
+    log.log(
+      `[memory-vec] backfill: embedded=${r.embedded} failed=${r.failed} ` +
+        `scanned=${r.scanned} into ${target} (failed rows retry next tick)`,
+    );
+    return;
+  }
+
+  if (r.zeroYield?.vectorSpaceEmpty && r.zeroYield.canonicalHasRows) {
+    log.warn(
+      `[memory-vec] TOTAL FAILURE: ${target} holds NO vectors while recallable canonical rows ` +
+        'exist — semantic recall can return nothing. The backfill matched no rows, so this ' +
+        'will NOT self-heal.',
+    );
+    return;
+  }
+
+  if (
+    target !== lastMemoryVecIdleLog.target ||
+    now - lastMemoryVecIdleLog.at >= MEMORY_VEC_IDLE_LOG_INTERVAL_MS
+  ) {
+    lastMemoryVecIdleLog = { at: now, target };
+    log.log(`[memory-vec] idle: every recallable canonical row has a vector in ${target}`);
   }
 }
 

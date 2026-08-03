@@ -116,6 +116,29 @@ export interface CanonicalVecBackfillResult {
   /** Set when the pass did no work BY CONSTRUCTION (embedding is off) — distinct
    *  from an honest empty sweep, which reports scanned:0 with no `skipped`. */
   skipped?: 'embedder-disabled';
+  /**
+   * The ACTIVE mode + table this pass resolved, whenever one resolved at all.
+   *
+   * Reported UNCONDITIONALLY (not just when work happened) because "which table
+   * is this sweep actually maintaining?" is otherwise answerable only by reading
+   * code — and getting it wrong is the documented failure mode: a zero in a
+   * NON-active mode's table reads exactly like a dead subsystem (EI-19409840792445272,
+   * and see fact `memory-vec-gemma-zero-is-correct-not-a-failure`).
+   */
+  mode?: string;
+  table?: string;
+  /**
+   * Only computed on the ZERO-YIELD path (scanned === 0), where the counts alone
+   * are ambiguous: an honest idle sweep and a predicate that matches nothing are
+   * both {scanned:0, embedded:0, failed:0}. Two cheap EXISTS probes separate them.
+   *
+   * `vectorSpaceEmpty && canonicalHasRows` is the unambiguous total-failure state:
+   * rows exist that SHOULD have vectors, and the space recall reads holds none.
+   */
+  zeroYield?: {
+    vectorSpaceEmpty: boolean;
+    canonicalHasRows: boolean;
+  };
 }
 
 export interface CanonicalVecBackfillDeps {
@@ -124,6 +147,7 @@ export interface CanonicalVecBackfillDeps {
   selectRows?: (sql: Sql, schema: string, vecTable: string, limit: number) => Promise<CanonicalMemoryRow[]>;
   embed?: (memoryId: string, text: string) => Promise<boolean>;
   limit?: number;
+  probeZeroYield?: typeof probeZeroYield;
 }
 
 /**
@@ -165,6 +189,47 @@ export async function selectRowsMissingVectors(
 }
 
 /**
+ * Disambiguate a ZERO-YIELD sweep: is there genuinely nothing to do, or does the
+ * predicate match nothing while recall reads an empty vector space?
+ *
+ * Both states report `{scanned:0, embedded:0, failed:0}`, so counts alone cannot
+ * tell them apart — and the second is a total outage. Two EXISTS probes settle it:
+ *
+ *   - `vectorSpaceEmpty`   — the table recall JOINs holds NO rows at all.
+ *   - `canonicalHasRows`   — rows exist that SHOULD have a vector. The guards
+ *                            MIRROR `selectRowsMissingVectors` exactly (minus its
+ *                            NOT EXISTS), so this means "recallable", not merely
+ *                            "some row somewhere".
+ *
+ * Both true = unambiguous total failure. `EXISTS` short-circuits on the first row,
+ * so neither probe scans the table, and this only runs on the zero-yield path.
+ *
+ * ⚠ Do NOT "simplify" either probe to `count(*)`: on a 32k-row table that turns a
+ * free check into a full scan every idle tick, which is how a diagnostic gets
+ * deleted for being expensive — and then the silence comes back.
+ */
+export async function probeZeroYield(
+  sql: Sql,
+  schema: string,
+  vecTable: string,
+): Promise<{ vectorSpaceEmpty: boolean; canonicalHasRows: boolean }> {
+  const rows = await sql.unsafe(
+    `SELECT NOT EXISTS (SELECT 1 FROM ${schema}.${vecTable}) AS vector_space_empty,
+            EXISTS (
+              SELECT 1 FROM ${schema}.memory_canonical c
+               WHERE NOT (c.payload ? 'entityType')
+                 AND c.state != 'archived'
+                 AND coalesce(c.payload->>'data', '') != ''
+            ) AS canonical_has_rows`,
+  );
+  const row = (rows as unknown as Array<{ vector_space_empty: boolean; canonical_has_rows: boolean }>)[0];
+  return {
+    vectorSpaceEmpty: Boolean(row?.vector_space_empty),
+    canonicalHasRows: Boolean(row?.canonical_has_rows),
+  };
+}
+
+/**
  * One bounded pass: embed memories that recall can't see yet.
  *
  * Sequential by design — the embedder sidecar is a shared, saturable resource
@@ -187,6 +252,30 @@ export async function backfillCanonicalMemoryVectors(
   const sql = deps.sql ?? getOrgPg().sql;
   const rows = await selectRows(sql, active.schema, active.table, limit);
 
+  // Zero-yield is AMBIGUOUS by construction — an honest idle sweep and a
+  // predicate that matches nothing are both scanned:0. Resolve it here, where
+  // the schema/table are already known, so the caller can log the difference
+  // instead of staying silent for both (EI-19409840792445272). Two EXISTS
+  // probes, only on this path: free on a working system.
+  if (rows.length === 0) {
+    let zeroYield: CanonicalVecBackfillResult['zeroYield'];
+    try {
+      zeroYield = await (deps.probeZeroYield ?? probeZeroYield)(sql, active.schema, active.table);
+    } catch {
+      // A probe failure must never turn a healthy sweep into a failed one — the
+      // caller simply loses the idle/failure distinction for this tick.
+      zeroYield = undefined;
+    }
+    return {
+      scanned: 0,
+      embedded: 0,
+      failed: 0,
+      mode: active.mode,
+      table: active.table,
+      zeroYield,
+    };
+  }
+
   let embedded = 0;
   let failed = 0;
   for (const row of rows) {
@@ -204,5 +293,5 @@ export async function backfillCanonicalMemoryVectors(
     else failed++;
   }
 
-  return { scanned: rows.length, embedded, failed };
+  return { scanned: rows.length, embedded, failed, mode: active.mode, table: active.table };
 }
