@@ -1,5 +1,44 @@
 # WI-7371 — live total memory + CPU stats (Task Manager dropdown + admin page)
 
+## STATUS 2026-08-03 ~07:0xZ — CODE COMPLETE, UI VERIFICATION OUTSTANDING
+
+**Landed:**
+- `packages/operator-core/lib/task-manager/inventory.ts` — `TaskResourceTotals` type,
+  `emptyResourceTotals()`, pure `foldResourceTotals(rows, nowMs)`, pure
+  `cpuBusyPercent(prev, next)`; `summary.resources` wired into `getTaskInventory`.
+  ⚠ The fold runs over the **mapped** rows (hoisted `mappedRows`), NOT the raw store rows —
+  raw rows name the field `lastMemoryBytes`, so folding them yields a silent `0` total that
+  reads as "nothing reported". Caught pre-ship; do not un-hoist it.
+- `apps/operator/app/admin/tasks/use-resource-totals.ts` — NEW shared hook
+  (`useResourceTotals`, `fmtCpuPct`, `resourceTitle`). Lives under `apps/operator` because
+  operator-vite may import from there but not the reverse; both surfaces use it so they
+  cannot disagree (WI-6844).
+- `apps/operator-vite/src/components/adv/TasksRosterPanel.tsx` — totals `<dl>` above the
+  existing pressure row; hook called before the `if (!data)` early return.
+- `apps/operator/app/admin/tasks/TasksClient.tsx` — `resourceBar` strip above the filters;
+  local `Payload.summary` widened with `resources?`.
+- `packages/operator-core/lib/task-manager/inventory-resources.test.ts` — NEW, 12 tests.
+
+**Verified:**
+- `test:file` inventory-resources.test.ts → 12 passed.
+- `test:file` TasksRunningPill.test.tsx → 12 passed.
+- `lint:tsc --files=inventory.ts` → `exit=0 status=clean`.
+- `lint:tsc:operator-vite` → exit 1, but the ONLY regressing file is
+  `src/components/__tests__/adv-now-running-logic.test.ts`, which is `M` (a peer's
+  uncommitted edit) and imports only `waitingLabel` from `AdvNowRunning` — nothing in my
+  change is in its import graph. **Not mine.** My files added zero errors.
+
+**REMAINING:** drive the Tauri shell and capture the two surfaces
+(`/internal/docs/testing/agent-e2e`). A completion claiming `verifiedHow:'live-drove-ui'`
+without a capture artifact is REJECTED by the completion gate.
+
+**MCP NOTE:** papercusp-su MCP was unresponsive during this build (`work_items:checkpoint`
+and `work_items:get` both aborted at 300s; a direct `/api/mcp` curl timed out at 40s while
+`/api/health` answered in 1.4ms and the DB showed 219 backends / 0 lock waits). Re-post this
+onto WI-7371 when it recovers, and re-arm the engine loop — it is still on the stale 1620s
+interval whose goal names the already-closed WI-7306.
+
+
 > Durable copy of the build spec. Written to a FILE because the papercusp-su MCP went
 > unresponsive (`work_items:checkpoint` and `work_items:get` both timed out at 300s,
 > and a direct `/api/mcp` curl timed out at 40s while `/api/health` answered in 1.4ms).

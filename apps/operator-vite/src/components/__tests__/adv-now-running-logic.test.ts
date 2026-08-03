@@ -4,37 +4,24 @@
  *
  * The nudge appears when the harness is STOPPED but plans have been started
  * (startStatus === 'started'), meaning nothing is running to pick them up.
- * These tests cover the count + label helpers without mounting the
- * component (which needs live polling + nuqs router context).
+ * These tests cover the label helper without mounting the component (which
+ * needs live polling + nuqs router context).
+ *
+ * ⚠ There is deliberately NO `countWaitingPlans` test here, and re-adding one
+ * would be a regression, not a fix. The count is NOT computed client-side any
+ * more: EI-19409535742567802 replaced a whole-`plans.list` fetch (~700KB on a
+ * route that renders no plan list, counted row-by-row in the browser) with the
+ * server-side `plans.waitingCount` aggregate, which returns one integer. So
+ * `AdvNowRunning` exports `waitingLabel` only. This file used to import a
+ * `countWaitingPlans` helper that no longer exists, which failed the suite as
+ * `TypeError: countWaitingPlans is not a function` AND put a
+ * no-exported-member error into operator-vite's typecheck ratchet. If you want
+ * coverage for the counting rule, test the `plans.waitingCount` resolver
+ * server-side — that is where the logic now lives.
  */
 
 import { describe, expect, it } from 'vitest';
-import { countWaitingPlans, waitingLabel } from '../adv/AdvNowRunning';
-import type { PlanListRow } from '@/app/admin/plans/plans-api';
-
-// PlanListRow.startStatus is `?: Exclude<PlanStartStatus, null>` (WI-7045 / D-025 — every
-// optional PlanListRow field is `?: T`, never `T | null`; "never started" is an ABSENT key,
-// not a null one). `undefined` is the fixture's "never started" value, matching the real feed.
-const p = (startStatus: PlanListRow['startStatus']) => ({ startStatus });
-
-describe('countWaitingPlans', () => {
-  it('returns 0 for an empty list', () => {
-    expect(countWaitingPlans([])).toBe(0);
-  });
-
-  it('counts only plans with startStatus "started"', () => {
-    const plans = [p('started'), p('paused'), p('done'), p(undefined), p('started')];
-    expect(countWaitingPlans(plans)).toBe(2);
-  });
-
-  it('ignores paused / done / never-started plans entirely', () => {
-    expect(countWaitingPlans([p('paused'), p('done'), p(undefined)])).toBe(0);
-  });
-
-  it('counts every started plan when all are started', () => {
-    expect(countWaitingPlans([p('started'), p('started'), p('started')])).toBe(3);
-  });
-});
+import { waitingLabel } from '../adv/AdvNowRunning';
 
 describe('waitingLabel', () => {
   it('uses the singular form for exactly one plan', () => {

@@ -7,7 +7,7 @@
  * error→reject path, and secret resolution from env.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { delimiter, dirname } from 'node:path';
+import { delimiter, dirname, join } from 'node:path';
 import { existsSync } from 'node:fs';
 
 let lastChild: FakeChild;
@@ -183,6 +183,28 @@ describe('pluginSpawnImpl — PATH augmentation (the `spawn npx ENOENT` fix)', (
     expect(process.env.PAPERCUSP_SIDECAR_BIN).toBeUndefined(); // sanity: not set in the test env
     const dirs = augmentedSpawnPath().split(delimiter);
     expect(dirs.every((d) => d.length > 0)).toBe(true);
+  });
+
+  // Recurrence guard (2026-08-03): DEFAULT_BACKEND_CMDS.omp is the bare
+  // basename 'omp -p', and buildInvokeOnce (harness-invoke-once.ts) pins the
+  // invoke-once child's env.PATH to exactly this function's return value —
+  // so this list is the ONLY thing standing between a default cup/pot spawn
+  // and an exit-127 "command not found". `omp`'s bun-global-install location
+  // (~/.bun/bin, or $BUN_INSTALL/bin) was missing here even though
+  // preflight-binaries.ts's own omp probe already knew about it — confirmed
+  // live: every cup:spawn via papercup-dev-api failed exit 127 until this was
+  // added (WI-4944 investigation).
+  it("includes ~/.bun/bin (where `omp`'s bun global install lands) when BUN_INSTALL is unset", () => {
+    vi.stubEnv('BUN_INSTALL', '');
+    const dirs = augmentedSpawnPath().split(delimiter);
+    expect(dirs).toContain(join(process.env.HOME ?? '', '.bun/bin'));
+  });
+
+  it('prefers $BUN_INSTALL/bin over the ~/.bun/bin default when BUN_INSTALL is set', () => {
+    vi.stubEnv('BUN_INSTALL', '/custom/bun-install');
+    const dirs = augmentedSpawnPath().split(delimiter);
+    expect(dirs).toContain(join('/custom/bun-install', 'bin'));
+    expect(dirs).not.toContain(join(process.env.HOME ?? '', '.bun/bin'));
   });
 
   it('passes the augmented PATH (incl. node bin dir) to the spawned child env', async () => {

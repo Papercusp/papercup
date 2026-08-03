@@ -45,6 +45,24 @@ export function augmentedSpawnPath(): string {
     '/usr/local/bin',
     '/usr/bin',
     process.env.HOME ? join(process.env.HOME, '.local/bin') : '',
+    // `omp`'s bare basename (DEFAULT_BACKEND_CMDS.omp = 'omp -p') means the
+    // default cup/pot agent spawn (harness-invoke-once.ts buildInvokeOnce,
+    // which pins env.PATH to THIS function's return value on the invoke-once
+    // child) relies entirely on this list to resolve it. A bun global install
+    // lands bins at $BUN_INSTALL/bin, defaulting to ~/.bun/bin — the exact
+    // candidate preflight-binaries.ts's `probeOmpBinary` already knows about
+    // (it lists `${HOME}/.bun/bin/omp`), which this list had drifted out of
+    // sync with. Confirmed missing 2026-08-03: every `cup:spawn` (default
+    // role, no AGENT_ROLE_BACKENDS override) via papercup-dev-api failed
+    // exit-127 "command not found" because `omp` lives ONLY at
+    // ~/.bun/bin/omp and neither dev-api's own PATH nor this augmentation
+    // included that directory (EI-19415174699106397-adjacent finding, WI-4944
+    // investigation).
+    process.env.BUN_INSTALL
+      ? join(process.env.BUN_INSTALL, 'bin')
+      : process.env.HOME
+        ? join(process.env.HOME, '.bun/bin')
+        : '',
   ];
   const seen = new Set<string>();
   return [...prepend, ...(process.env.PATH ?? '').split(delimiter), ...extra]

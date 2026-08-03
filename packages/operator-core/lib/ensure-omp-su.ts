@@ -123,14 +123,46 @@ export function readEngineerOmpBootstrapState(home = homedir()): EngineerOmpBoot
  *  extension from the repo. In a bundled Tauri app these are shipped
  *  as resources; in dev they're at the repo path. Returns null if
  *  neither location resolves. */
-function resolveSourceDir(): string | null {
+export function resolveSourceDir(): string | null {
+  const sentinelAt = (dir: string) => join(dir, 'scripts', 'install-standalone-mcp.sh');
+
+  // WI-7344 / EI-19412167276099357: PREFER the canonical repo root when the
+  // environment names one, BEFORE falling back to the cwd walk below.
+  //
+  // Why this order matters, measured on the dev box 2026-08-03: the operator
+  // process's cwd is the RELEASE checkout (papercusp-release, green `main`), so
+  // the cwd walk resolves the RELEASE copy of every agent-facing artifact this
+  // helper and install-standalone-mcp.sh install — the CC hooks and the rendered
+  // su persona. Result: an agent lands a hook fix in the staging tree, the fix is
+  // committed and correct, and the hook that actually RUNS stays whatever release
+  // shipped. Measured that day: ~/.papercusp/hooks/cc/ask-gate-mirror.sh was
+  // byte-identical to the release copy dated 2026-07-26 — EIGHT DAYS stale — and
+  // was re-installed from release at 03:14 that morning, AFTER the fix landed in
+  // staging at 02:37. Two of the three fixes in EI-19412167276099357 were
+  // therefore inert on arrival, and the guard they repaired kept misfiring on
+  // every agent on the box.
+  //
+  // This is the same `process.cwd()`-resolves-to-release class that makes
+  // testing:run verify main's copy of a file rather than the one you just edited.
+  //
+  // Deliberately env-gated rather than path-sniffing: PAPERCUSP_REPO_ROOT is set
+  // for dev/psu sessions and is UNSET in a packaged Tauri app (where cwd is the
+  // sidecar dir and there is no second checkout), so packaged installs keep
+  // exactly today's behavior and only a box that HAS a canonical tree prefers it.
+  // Still sentinel-checked, so a stale/incorrect env var falls through instead of
+  // pointing the installer at a directory with no scripts/ in it.
+  const repoRoot = process.env.PAPERCUSP_REPO_ROOT?.trim();
+  if (repoRoot) {
+    const operatorAppDir = join(repoRoot, 'apps', 'operator');
+    if (existsSync(sentinelAt(operatorAppDir))) return operatorAppDir;
+  }
+
   // process.cwd() is the operator app dir when started via `npm run
   // dev` or via the sidecar. Walk up looking for scripts/install-
   // standalone-mcp.sh as a sentinel.
   let dir = process.cwd();
   for (let i = 0; i < 6; i++) {
-    const sentinel = join(dir, 'scripts', 'install-standalone-mcp.sh');
-    if (existsSync(sentinel)) return dir;
+    if (existsSync(sentinelAt(dir))) return dir;
     const parent = dirname(dir);
     if (parent === dir) break;
     dir = parent;

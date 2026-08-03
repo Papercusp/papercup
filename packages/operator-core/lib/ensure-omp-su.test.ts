@@ -83,3 +83,73 @@ describe('ensure-omp-su', () => {
     expect(state.wrapperPath).toBe(join(tmpHome, '.local', 'bin', 'omp-su'));
   });
 });
+
+/**
+ * WI-7344 — resolveSourceDir must prefer the canonical repo root over cwd.
+ *
+ * The operator process's cwd is the RELEASE checkout, so a cwd-first walk
+ * installs the CC hooks and the rendered su persona from release. Measured
+ * 2026-08-03: the live ask-gate-mirror.sh was byte-identical to a release copy
+ * dated 2026-07-26 (8 days stale) and was RE-installed from release hours after
+ * the fix landed in staging — so an agent's own hook fix could never reach the
+ * agents. These pin the precedence and the packaged-app fallback.
+ */
+describe('resolveSourceDir precedence (WI-7344)', () => {
+  let root = '';
+  let cwdRoot = '';
+  let realRepoRoot: string | undefined;
+  let cwdSpy: ReturnType<typeof vi.spyOn>;
+
+  const makeOperatorTree = (base: string) => {
+    const appDir = join(base, 'apps', 'operator');
+    mkdirSync(join(appDir, 'scripts'), { recursive: true });
+    writeFileSync(join(appDir, 'scripts', 'install-standalone-mcp.sh'), '#!/usr/bin/env bash\n');
+    return appDir;
+  };
+
+  beforeEach(() => {
+    vi.resetModules();
+    root = mkdtempSync(join(tmpdir(), 'wi7344-staging-'));
+    cwdRoot = mkdtempSync(join(tmpdir(), 'wi7344-release-'));
+    realRepoRoot = process.env.PAPERCUSP_REPO_ROOT;
+  });
+
+  afterEach(() => {
+    cwdSpy?.mockRestore();
+    if (realRepoRoot === undefined) delete process.env.PAPERCUSP_REPO_ROOT;
+    else process.env.PAPERCUSP_REPO_ROOT = realRepoRoot;
+    rmSync(root, { recursive: true, force: true });
+    rmSync(cwdRoot, { recursive: true, force: true });
+  });
+
+  it('prefers PAPERCUSP_REPO_ROOT over the cwd walk — the release-staleness fix', async () => {
+    const stagingApp = makeOperatorTree(root);
+    const releaseApp = makeOperatorTree(cwdRoot);
+    // cwd points at the RELEASE tree, exactly as the live operator's does.
+    cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(releaseApp);
+    process.env.PAPERCUSP_REPO_ROOT = root;
+
+    const mod = await import('./ensure-omp-su');
+    expect(mod.resolveSourceDir()).toBe(stagingApp);
+  });
+
+  it('falls back to the cwd walk when PAPERCUSP_REPO_ROOT is unset (packaged app)', async () => {
+    const releaseApp = makeOperatorTree(cwdRoot);
+    cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(releaseApp);
+    delete process.env.PAPERCUSP_REPO_ROOT;
+
+    const mod = await import('./ensure-omp-su');
+    expect(mod.resolveSourceDir()).toBe(releaseApp);
+  });
+
+  it('ignores a PAPERCUSP_REPO_ROOT with no operator tree rather than returning a bad dir', async () => {
+    // A stale/incorrect env var must FALL THROUGH to cwd, never point the
+    // installer at a directory that has no scripts/ in it.
+    const releaseApp = makeOperatorTree(cwdRoot);
+    cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(releaseApp);
+    process.env.PAPERCUSP_REPO_ROOT = join(root, 'does', 'not', 'exist');
+
+    const mod = await import('./ensure-omp-su');
+    expect(mod.resolveSourceDir()).toBe(releaseApp);
+  });
+});
