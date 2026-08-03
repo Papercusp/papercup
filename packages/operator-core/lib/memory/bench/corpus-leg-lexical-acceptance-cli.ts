@@ -389,6 +389,17 @@ async function measureCascade(
   const L: string[] = [];
   L.push(`\n## SHIPPED LEG — cascade vs the pre-P-017 leg (production query shape)  —  n=${n}`);
   L.push('');
+  if (!embedder) {
+    // Measured the hard way: without --hybrid the "before" arm runs BM25-only
+    // while `recallCorpusContext` always builds a real embedder, so the two arms
+    // differ in the EMBEDDING leg as well as the lexical one. That confound
+    // reported 55 "lost" lines for a cascade that is additive by construction —
+    // a false regression, in the direction that gets correct work reverted.
+    L.push(
+      '> ⚠ **CONFOUNDED — verdict withheld.** This section compares the shipped leg (which always builds an embedder) against a BM25-only control, so any difference mixes the embedding leg with the lexical one. Re-run with `--hybrid` for a valid comparison.',
+    );
+    L.push('');
+  }
   L.push('| metric | before (`and` only) | after (cascade) |');
   L.push('|---|---|---|');
   L.push(`| empty pointer sections | ${beforeZero} (${pct(beforeZero, n)}) | ${afterZero} (${pct(afterZero, n)}) |`);
@@ -396,7 +407,13 @@ async function measureCascade(
   L.push(`| leg latency p50 / p95 (ms) | — | ${quantile(afterMs, 0.5)} / ${quantile(afterMs, 0.95)} |`);
   L.push('');
   L.push(
-    `- **LINES LOST: ${lost} across ${lostQueries}/${n} queries** ${lost === 0 ? '✓ ADDITIVE — nothing the agent used to see disappeared' : '✗ THE CASCADE IS NOT ADDITIVE — a single loss falsifies it'}`,
+    `- **LINES LOST: ${lost} across ${lostQueries}/${n} queries** ${
+      !embedder
+        ? '(confounded — see the warning above; do NOT read this as a regression)'
+        : lost === 0
+          ? '✓ ADDITIVE — nothing the agent used to see disappeared'
+          : '✗ THE CASCADE IS NOT ADDITIVE — a single loss falsifies it'
+    }`,
   );
   L.push(`- lines GAINED: ${gained} (mean ${(gained / Math.max(n, 1)).toFixed(2)}/query)`);
   const worst = Math.max(...afterMs, 0);

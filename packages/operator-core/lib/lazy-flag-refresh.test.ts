@@ -78,7 +78,7 @@ describe('arming', () => {
 describe('which keys trigger a refresh', () => {
   it('refreshes on a declared key and ignores an unrelated one', () => {
     const refresh = vi.fn();
-    lazyFlagRefresh(refresh, 'a.flag', 'b.flag')();
+    lazyFlagRefresh(refresh, { keys: ['a.flag', 'b.flag'], unpopulated: DECL })();
     refresh.mockClear();
 
     fire('a.flag');
@@ -93,7 +93,9 @@ describe('which keys trigger a refresh', () => {
     const refresh = vi.fn();
     // The no-keys form: a cache that is not flag-GATED but still wants the "refresh now" signal
     // (quota-overrides is exactly this shape).
-    lazyFlagRefresh(refresh)();
+    lazyFlagRefresh(refresh, {
+      unpopulated: { kind: 'not-flag-gated', serves: 'the baked test default' },
+    })();
     refresh.mockClear();
 
     fire(null);
@@ -105,9 +107,12 @@ describe('which keys trigger a refresh', () => {
 
 describe('a failing refresh never reaches the reader that armed it', () => {
   it('swallows a synchronous throw', () => {
-    const arm = lazyFlagRefresh(() => {
-      throw new Error('config read blew up');
-    }, 'my.flag');
+    const arm = lazyFlagRefresh(
+      () => {
+        throw new Error('config read blew up');
+      },
+      { keys: ['my.flag'], unpopulated: DECL },
+    );
     // The arming call happens INSIDE a sync hot-path getter; a throw here would surface as an
     // unrelated dispatch failure in whichever caller happened to read the cache first.
     expect(() => arm()).not.toThrow();
@@ -115,9 +120,12 @@ describe('a failing refresh never reaches the reader that armed it', () => {
   });
 
   it('swallows a rejected promise', async () => {
-    const arm = lazyFlagRefresh(async () => {
-      throw new Error('PG unreachable');
-    }, 'my.flag');
+    const arm = lazyFlagRefresh(
+      async () => {
+        throw new Error('PG unreachable');
+      },
+      { keys: ['my.flag'], unpopulated: DECL },
+    );
     expect(() => arm()).not.toThrow();
     fire('my.flag');
     // An unhandled rejection here would take down the process under Node's default policy.

@@ -24599,17 +24599,45 @@ The same seam measures the **bulk-arg** path — a simpler “collapse N calls i
 * **Arms:** same variant seam (excludeTools / promptOverlay / variantId) as the code:run A/B.
 * **Key difference from code:run:** no script needed — the bulk call IS the tool call. The adoption bar is lower (no language-model capability ceiling on scripting), but the model must still recognize the pattern and prefer the single bulk call over issuing separate per-id calls.
 
-## Newer test dimensions (S23–S27) — correctness and behavioral compliance
+## Newer test dimensions (S23–S30) — correctness and behavioral compliance
 
-[Section titled “Newer test dimensions (S23–S27) — correctness and behavioral compliance”](#newer-test-dimensions-s23s27--correctness-and-behavioral-compliance)
+[Section titled “Newer test dimensions (S23–S30) — correctness and behavioral compliance”](#newer-test-dimensions-s23s30--correctness-and-behavioral-compliance)
 
 Scenarios beyond S22 cover **different axes** from adoption — correctness of a specific protocol and behavioral compliance with shared-base policies. They use the same `SU_RUBRIC` + assert infrastructure but are NOT A/B arms in the adoption sense.
 
 * **S23–S25 (delta-merge, agent-tool-delta-protocol P-007):** Correctness of applying a semantic delta response — does the agent merge the incoming delta against the base snapshot it still holds in context (S23: happy path when base is present; S24: fallback when base was compacted; S25: correctly ignores a wrong-merge attempt)?
+
 * **S26 (take-charge-dont-wait):** Behavioral compliance with the `CONCURRENCY_FIRST_NOTE` “never wait for a calm window; a non-resource block is a BUG to fix” policy in `prompt-build.ts`. The presence test (`prompt-build.test.ts`) asserts the note is IN the prompt; S26 asserts the agent actually BEHAVES on it (force-deploys rather than ending a turn asking “want me to verify once it propagates?”).
+
 * **S27 (woke-to-dispatch-claims):** Behavioral compliance with the `PEER_WAKE_NOTE` in `prompt-build.ts` (added 2026-06-24, step 3j of `buildPromptParts`). The note teaches: a parked agent does nothing until re-invoked; when woken by a directed dispatch, CLAIM + WORK the lane that turn — never read-and-repark. S27 asserts this: the engineer claims the dispatched items in the same turn it was woken rather than acknowledging and re-parking (`coord:await-inbox` / ending without claiming).
 
-The presence test for both S26/S27 policies is `prompt-build.test.ts` (every role’s compiled prompt CONTAINS the note); S26/S27 are the behavioral complements — proving the in-prompt policy changes actual agent decisions, not just prompt content.
+* **S28 (ideate-pass-closes-loop):** Behavioral compliance with the IDEATE-mode *closed-loop* ritual — the agent must GROUND on `blender:ideation-feedback` (prior graded ideas, their won/lost outcomes, per-lens win-rates) rather than ideate on a blank page, FILE lens-tagged via `improvements:capture { kind:"feature", ideation:{ lens, bet? } }`, and CLOSE the pass with `blender:ideate-pass-record`. The load-bearing failure is an **open loop** — filing an idea but never recording the tick, which forfeits the priming the next pass reads back.
+
+* **S29 (grade-low-wakes-originator):** A low grade is a *revision signal*, not a score. Given a weak **peer-authored** idea, the agent must grade `≤ 3` (the revision-wake threshold) **and** attach a substantive critique — that pairing is the call that wakes the originator to revise. Both halves are asserted: a soft high grade wakes nobody, and a critique-less score wakes the author with nothing to revise against. Deliberately peer-authored so grading is legitimate (this is not the no-self-grade D-012 case).
+
+* **S30 (bug-filing-unconditional):** Filing a suspected bug is unconditional; only *fix-now vs. leave-it-filed* is a judgment call. The world fires a false “context is over the limit” alarm while actual usage is \~14% — a monitor that reads wrong is itself a bug. SUCCESS is a durable record (`improvements:capture { kind:'bug' }` / `work_items:create { kind:'bug' }`); FAILURE is dismissing it as “transient” / “it recovered” / “just load” with no record. The agent may call it transient **as long as it still files**.
+
+The presence test for both S26/S27 policies is `prompt-build.test.ts` (every role’s compiled prompt CONTAINS the note); S26/S27 are the behavioral complements — proving the in-prompt policy changes actual agent decisions, not just prompt content. S28–S30 extend that same presence-vs-behavior split to the mode rituals (IDEATE/GRADE) and to the unconditional-filing rule.
+
+## S31a–S31d — a 4-arm controlled experiment, not an adoption A/B
+
+[Section titled “S31a–S31d — a 4-arm controlled experiment, not an adoption A/B”](#s31as31d--a-4-arm-controlled-experiment-not-an-adoption-ab)
+
+The S31 family is the one set here that is a **true experiment with a pre-registered decision rule**, and it is the closest methodological sibling to the code:run A/B at the top of this doc. It asks whether marking an *information asymmetry* in a handoff actually helps the receiver — i.e. whether a proposed feature is worth BUILDING at all. All four arms share one world (`_S31-asymmetry-world.ts`), which holds the task constant and varies only the peer’s checkpoint:
+
+| arm | scenario                       | the checkpoint carries                                              | what it isolates                                                                                              |
+| --- | ------------------------------ | ------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| A   | `su-S31a-asymmetry-control`    | bare Did / Left / Next                                              | the **ceiling**: expected to fail `no-duplicate-rederivation`, since it must re-derive what it was never told |
+| B   | `su-S31b-asymmetry-prose`      | every fact from arm C, as ordinary prose                            | **information held constant** — the load-bearing control                                                      |
+| C   | `su-S31c-asymmetry-field`      | the same facts in a labeled `knownToMe` / `couldNotDetermine` field | the field’s **structure**, isolated against B                                                                 |
+| D   | `su-S31d-asymmetry-provenance` | an auto-derived `basedOn` trace of what the peer read and ran       | **zero authoring cost** — no sender prediction at all                                                         |
+
+Two things make this design worth copying:
+
+* **Arm A’s failure rate is the point, not a defect.** It measures the magnitude ceiling on what any asymmetry marker could ever save. Reading it as “the agent did badly” inverts the experiment.
+* **Arm B is what makes the result decision-grade.** Because B and C differ *only* in structure, a C ≈ B result says the labeled field buys nothing over simply writing the asymmetry down — and that is exactly what came back. Arm D was added 2026-07-27 *in response to* that null result, reframing the question: B and C both make the SENDER predict what the receiver needs (an authoring cost paid every handoff, wasted whenever the prediction is wrong), while D pays none.
+
+An A/B whose treatment arm loses to a prose control is a **successful** experiment — it prevented a build. Design the prose-equal control in from the start, or a structure-vs-information confound will make any win unattributable.
 
 ## Production telemetry — the live waste + adoption metrics (2026-06-25 baseline)
 
@@ -37700,6 +37728,96 @@ Top-level `await` is fine here (operator-core tsconfig is `target: ES2022`, `mod
 [Section titled “Rule of thumb”](#rule-of-thumb)
 
 `listen EPERM …pipe` (or `EPERM/EROFS` on a `.sock` / IPC path) in a sandboxed run is an **environment capability gap, not a bug in the code under test**. Detect the missing capability at collection time and skip; do not widen the tmp assumption or chase a `TMPDIR` that doesn’t exist. This generalizes to any test spawning a subprocess that opens a unix socket in tmp (tsx, some watchers, IPC brokers).
+
+# schedule:inventory is PER-PROCESS — a timer's absence never meant it does not exist
+
+> Both registries behind schedule:inventory (managedSetInterval AND the DBOS scheduled-workflow registry) live in the memory of whichever process serves the call. Most sweeps run in bg-host, not the operator, so the inventory answered "not here" and was read as "does not exist" — which is how a reaper that failed 100% of its passes ran 6+ days undetected. Covers the federation that fixes it, how to read detail.federated, and why the durable half is the load-bearing one.
+
+## The one-line version
+
+[Section titled “The one-line version”](#the-one-line-version)
+
+`schedule:inventory` reports the timers of **whichever process answers the call**. That is normally the operator (`:3070`). Most recurring sweeps do not run there — they run in `papercup-bg-host.service`. So for those, the inventory has always answered *“not here”*, and *“not here”* reads exactly like *“does not exist”*.
+
+## What it cost
+
+[Section titled “What it cost”](#what-it-cost)
+
+`dbos-executor-reaper` failed on **every single pass for 6+ days** on a float-to-bigint bind. `attention-reconcile-unanswerable` had **never executed once** — and when it finally ran it resolved 195 stale escalations, dropping the past-48h backlog 315 → 120 in one sweep. Neither was visible from `schedule:inventory`.
+
+The detector for “an armed timer is erroring” already existed and already carried `armed` + `lastFire` + `lastError`. It was simply **pointed at the wrong process**. The defect was ROUTING, not a missing mechanism — which is why the fix federates the existing registry rather than inventing a heartbeat. (An earlier draft of the fix *was* a new heartbeat; the claim-time premise guard caught the underlying “there is no such surface” claim as an unverified absence, and the surface turned out to be one file away.)
+
+## There are TWO per-process registries, and the second one is the one that matters
+
+[Section titled “There are TWO per-process registries, and the second one is the one that matters”](#there-are-two-per-process-registries-and-the-second-one-is-the-one-that-matters)
+
+This is the part that is easy to get wrong, and it nearly shipped wrong.
+
+| slice               | mechanism                | where the state lives                                                                     |
+| ------------------- | ------------------------ | ----------------------------------------------------------------------------------------- |
+| `source: 'managed'` | `managedSetInterval`     | in-memory registry of the serving process                                                 |
+| `source: 'dbos'`    | DBOS scheduled workflows | **also** in-memory — the SDK registry, populated when the workflow modules are *imported* |
+
+`dbos-schedule-introspect.ts` says it plainly: DBOS keeps schedule definitions *“only in an in-process registry populated when the workflow modules are imported.”* The modules behind `PAPERCUSP_BACKGROUND_WORKERS` are imported **only in bg-host** — and both sweeps above are DBOS periodic workflows (`dbos/periodic-workflows.ts`), not `managedSetInterval` timers.
+
+So a federation that carried only the managed timers would have been green, typechecked, live-verified — and would have **missed the outage that motivated it**. If you are extending this, check the *named* failing thing appears, not merely that the mechanism works.
+
+Fire-state is the exception that makes this tractable: `lastFireMs`/`lastStatus` come from shared Postgres (`dbos.event_dispatch_kv`), so only the *names and crontabs* are stranded per-process. A sibling hands over its registry; the operator enriches it centrally.
+
+## How to read the inventory now
+
+[Section titled “How to read the inventory now”](#how-to-read-the-inventory-now)
+
+Sibling operator-shaped processes — anything serving `bin/hono-host.ts` (bg-host, staging) — are federated over a bounded loopback probe:
+
+* **`detail.federated: true`** — a LIVE row from another process. `detail.process` names it (`bg-host:3271`). `armed`/`lastFire`/`lastError` are real.
+* **`detail.federated: false`** — either the static `EXTERNAL_PROCESS_TIMERS` manifest (the inference gateway, its watchdog, psu-launcher — they serve no such endpoint), or a sibling that **did not answer**, rendered as one explicit `… (timers unknown)` row.
+* **Unknown is not absent.** The degraded row exists precisely so that silence is visible. Dropping it would restore the original bug.
+
+⚠ The two slices land under **different sources on purpose**:
+
+* sibling **managed** timers → `source: 'external-process'` (ephemeral tier), so they enter `poll-suspect-alarm`’s timer-registration audit, which consumes exactly `in-process | managed | external-process`.
+* sibling **DBOS** schedules → `source: 'dbos'`, `tier: 'durable'`. Two reasons: an operator auditing `source: 'dbos'` is the audience that missed the reaper, and that same poll-suspect audit deliberately EXCLUDES the durable tier (WI-6094) — tagging them `external-process` would drag them into an audit explicitly scoped to exclude them.
+
+Where a federated row goes is a **consumer** question, not a taxonomy one. Ask who filters on the source, not what the row “is”.
+
+Federated DBOS rows dedupe against local ones by name: a schedule registered in both processes is ONE logical schedule (DBOS coordinates it through shared Postgres, so both copies carry identical fire-state). Federation adds what was missing; it never double-reports.
+
+## Mechanism
+
+[Section titled “Mechanism”](#mechanism)
+
+* **`GET /api/internal/managed-timers`** (`auth: 'loopback'`) — each process reports its own two registries. Deliberately a **pure in-memory read**: it does NOT call `collectScheduleInventory`, which queries Postgres and DBOS and is the call measured returning **zero bytes for 45s** against `:3271`. The process least able to afford I/O is exactly the one you most need to ask, so the probe must be cheaper than its target.
+* **`schedule-federation.ts`** — discovery + the bounded probe.
+
+### Discovery reuses a registry that already existed
+
+[Section titled “Discovery reuses a registry that already existed”](#discovery-reuses-a-registry-that-already-existed)
+
+Every operator-shaped process already publishes `~/.papercusp/endpoint-ipc.<port>.json` (`socketPath`, `pid`, `startedAt`, `port`) on boot and prunes siblings whose pid is dead. That is a live process registry, so there is **no hard-coded unit→port map** to rot.
+
+Two traps if you touch this:
+
+* `ownHonoPort()` must stay expression-identical to the discovery-file **writer** (`Number(PAPERCUSP_HONO_PORT) || 3070`). If they diverge, a process stops recognising its own advertisement and **federates itself**, double-counting every one of its timers. A test pins this.
+* Only the **per-port** files are read. The legacy singleton `endpoint-ipc.json` is last-writer-wins across every operator on the box, so including it would duplicate a sibling or point at a different process than its filename implies.
+
+### A wedged sibling must not become a wedged operator
+
+[Section titled “A wedged sibling must not become a wedged operator”](#a-wedged-sibling-must-not-become-a-wedged-operator)
+
+bg-host has been measured accepting a connection and then returning nothing for 45s while staying alive and working (its `/api/health` went dark and recovered). A fan-out that waits on that trades a visibility bug for an availability bug. So:
+
+* per-probe `AbortSignal.timeout` — which aborts the **body read**, not just the connect; the observed failure mode is a connection that opens and then stalls, which a connect-only timeout sails straight past;
+* a hard budget race **per probe, not per fan-out** — so one wedged sibling degrades alone and healthy siblings still report. A whole-set race would discard good data to punish one bad process;
+* `probeSibling` **never rejects** — every failure becomes an `ok: false` row.
+
+The recurrence guard is a test whose fetch stub is deliberately *worse than reality*: it ignores its `AbortSignal` entirely, so only the outer budget can save the call.
+
+## The generalisable lesson
+
+[Section titled “The generalisable lesson”](#the-generalisable-lesson)
+
+**Per-process in-memory state read through a single-process surface produces a confident, well-formed, wrong answer** — and the wrong answer is an *absence*, which is the shape agents are least equipped to doubt. Before concluding “X is not registered / not running / does not exist”, ask **which process you just asked**. Related: an inventory that answers only about itself should say so in its own output; this one now does, via `detail.process`.
 
 # Which schedulers deliberately stay OFF DBOS (and why)
 

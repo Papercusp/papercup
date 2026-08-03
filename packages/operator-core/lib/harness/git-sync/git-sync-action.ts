@@ -133,6 +133,8 @@ import {
   discoverSubmodulesRecursive,
   listStashEntries,
   newStashEntries,
+  partitionStashEntriesByAge,
+  describeStashAge,
   type RunGit,
   type GitSyncConfig,
   type GitSyncOutcome,
@@ -910,12 +912,34 @@ async function checkForNewStashes(slug: string, workspaceId: string, superRepoPa
     await patchRoutineMetadata(slug, workspaceId, { known_stash_shas: allShas });
     if (fresh.length === 0) return;
 
-    const detail = fresh.map((e) => `${e.scope}: ${e.sha.slice(0, 8)} "${e.subject.slice(0, 80)}"`).join('; ');
+    const nowMs = Date.now();
+    const { recent, preExisting } = partitionStashEntriesByAge(fresh, nowMs);
+    const describe = (e: (typeof fresh)[number]) =>
+      `${e.scope}: ${e.sha.slice(0, 8)} (${describeStashAge(e, nowMs)}) "${e.subject.slice(0, 80)}"`;
+
+    // Newly-VISIBLE but old entries are not an emergency and must never carry the
+    // pop/drop prompt — a false urgency pointed at a destructive op on a shared tree is
+    // worse than silence, and crying wolf trains agents to ignore the real signal.
+    if (preExisting.length > 0) {
+      console.warn(
+        `[git-sync] ${slug}: ${preExisting.length} previously-unseen but PRE-EXISTING stash ` +
+          `entr${preExisting.length === 1 ? 'y' : 'ies'} (older than 24h — NOT new work, no action implied): ` +
+          `${preExisting.map(describe).join('; ')}`,
+      );
+    }
+    if (recent.length === 0) return;
+
+    const context =
+      preExisting.length > 0
+        ? ` (plus ${preExisting.length} older pre-existing entr${preExisting.length === 1 ? 'y' : 'ies'}, not counted above)`
+        : '';
     const summary =
-      `🚨 NEW git-stash entry on the canonical ${slug} tree (${fresh.length}) — a stash HIDES uncommitted ` +
-      `work from every agent (git-sync only ever commits the working tree, never a stash). If this wasn't ` +
-      `deliberate: 'git stash show -p <sha>' in the affected repo to inspect, then 'git stash pop' to recover ` +
-      `it (or drop it once confirmed unneeded). ${detail}`;
+      `🚨 NEW git-stash entry on the canonical ${slug} tree (${recent.length})${context} — a stash HIDES ` +
+      `uncommitted work from every agent (git-sync only ever commits the working tree, never a stash). ` +
+      `INSPECT FIRST: 'git stash show --stat <sha>' (read-only) in the affected repo. Do NOT reflexively ` +
+      `'stash pop'/'drop' — this checkout is shared, the stash is very likely a PEER's in-flight work, and ` +
+      `popping it into a tree you don't own is the destructive-git-op class CLAUDE.md forbids. Recovery is ` +
+      `the stash owner's call. ${recent.map(describe).join('; ')}`;
     console.warn(`[git-sync] ${slug}: ${summary}`);
     await sendMessage(GIT_SYNC_IDENTITY, { to: ['*'], summary, category: 'git-sync' }).catch(() => {});
   } catch (e) {

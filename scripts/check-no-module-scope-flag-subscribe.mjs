@@ -103,6 +103,92 @@ export function usesModuleScopeFlagSubscribe(text) {
   return false;
 }
 
+/**
+ * Files that MENTION `lazyFlagRefresh(` without calling it, so the declaration cross-check must skip
+ * them: the module that DEFINES the helper, and THIS guard, whose own matcher holds the literal in a
+ * string constant (`stripComments` removes comments, not string literals — the guard reported itself
+ * twice on first run).
+ */
+const LAZY_SELF_REFERENTIAL = new Set([
+  'packages/operator-core/lib/lazy-flag-refresh.ts',
+  'scripts/check-no-module-scope-flag-subscribe.mjs',
+]);
+
+const VALID_KINDS = new Set(['gates-an-override-store', 'not-flag-gated', 'selects-behaviour']);
+
+/** Floor on a `safeBecause`, so the required field cannot be satisfied with a token. */
+const MIN_JUSTIFICATION_CHARS = 60;
+
+/**
+ * Extract the argument text of every `lazyFlagRefresh(...)` INVOCATION in a file.
+ *
+ * Brace-matched rather than regexed, because every real call spans many lines (the declarations are
+ * deliberately prose-heavy). Comments are stripped first, so the helper's own doc-comment example is
+ * not scanned as a call site.
+ */
+export function extractLazyFlagRefreshCalls(text) {
+  const src = stripComments(text);
+  const needle = 'lazyFlagRefresh(';
+  const calls = [];
+  let i = 0;
+  for (;;) {
+    const at = src.indexOf(needle, i);
+    if (at === -1) break;
+    i = at + needle.length;
+    if (/\bfunction\s+$/.test(src.slice(Math.max(0, at - 20), at))) continue; // the definition
+    let depth = 1;
+    let j = i;
+    for (; j < src.length && depth > 0; j++) {
+      const c = src[j];
+      if (c === '(') depth++;
+      else if (c === ')') depth--;
+    }
+    calls.push(src.slice(i, j - 1));
+  }
+  return calls;
+}
+
+/**
+ * Cross-check ONE call's `unpopulated` declaration against its own arguments (EI-19448574704459898).
+ *
+ * ⚠ WHAT THIS CANNOT DO, deliberately: decide whether a `selects-behaviour` justification is TRUE.
+ * That is a semantic question about what the flag's off-branch points at — the exact judgement that
+ * `tsc`, the unit suites and this lint's own importability check are all structurally blind to, and
+ * the reason issues-engineer.ts went all-green while being wrong. The declaration exists to FORCE
+ * that judgement and make it greppable and reviewable; enforcing consistency is all a source lint
+ * can honestly add on top.
+ *
+ * @returns a problem string, or null when the declaration is self-consistent.
+ */
+export function checkUnpopulatedDeclaration(callText) {
+  const kindM = /kind\s*:\s*['"]([a-z-]+)['"]/.exec(callText);
+  if (!kindM) return 'no `unpopulated.kind` declared';
+  const kind = kindM[1];
+  if (!VALID_KINDS.has(kind)) return `unknown \`unpopulated.kind\` '${kind}'`;
+
+  const keysM = /keys\s*:\s*\[([\s\S]*?)\]/.exec(callText);
+  const hasKeys = !!keysM && keysM[1].trim().length > 0;
+  if (kind === 'not-flag-gated' && hasKeys) {
+    return "kind 'not-flag-gated' contradicts the flag keys passed in the same call";
+  }
+  if (kind !== 'not-flag-gated' && !hasKeys) {
+    return `kind '${kind}' requires at least one flag key (got none)`;
+  }
+
+  if (kind === 'selects-behaviour') {
+    const sbAt = callText.indexOf('safeBecause');
+    if (sbAt === -1) return "kind 'selects-behaviour' requires a `safeBecause`";
+    const chars = callText
+      .slice(sbAt + 'safeBecause'.length)
+      .replace(/[^A-Za-z0-9 ]/g, '')
+      .trim().length;
+    if (chars < MIN_JUSTIFICATION_CHARS) {
+      return `kind 'selects-behaviour' needs a substantive \`safeBecause\` (got ~${chars} chars, floor ${MIN_JUSTIFICATION_CHARS})`;
+    }
+  }
+  return null;
+}
+
 // BASELINE seeded 2026-07-28 (WI-6650) with 14 files; now 5. Do NOT add new
 // entries; each removal (lazy-init the site, per coordination/log.ts's
 // ensureCoordFlagInit) shrinks this set.
@@ -192,22 +278,45 @@ export function findOffenders() {
   const { files: tracked, unscanned } = listTrackedFiles(ROOT);
 
   const offenders = [];
+  const declarationProblems = [];
   for (const f of tracked) {
     if (isExcluded(f)) continue;
-    if (BASELINE.has(f)) continue;
     let text;
     try {
       text = readFileSync(new URL(f, `file://${ROOT}`), 'utf8');
     } catch {
       continue;
     }
+    // The unpopulated-state cross-check applies to every caller, INCLUDING a BASELINE file (a
+    // BASELINE entry exempts a module-scope subscribe, not a malformed declaration).
+    if (!LAZY_SELF_REFERENTIAL.has(f) && text.includes('lazyFlagRefresh(')) {
+      for (const call of extractLazyFlagRefreshCalls(text)) {
+        const problem = checkUnpopulatedDeclaration(call);
+        if (problem) declarationProblems.push({ file: f, problem });
+      }
+    }
+    if (BASELINE.has(f)) continue;
     if (usesModuleScopeFlagSubscribe(text)) offenders.push(f);
   }
-  return { offenders, unscanned };
+  return { offenders, declarationProblems, unscanned };
 }
 
 function main() {
-  const { offenders, unscanned } = findOffenders();
+  const { offenders, declarationProblems, unscanned } = findOffenders();
+
+  if (declarationProblems.length > 0) {
+    console.error('✗ malformed `lazyFlagRefresh` unpopulated-state declaration:');
+    console.error('  Every call must declare what its SYNC readers serve BEFORE the first async refresh');
+    console.error('  lands — the one property no routine signal in this repo measures (the source lint,');
+    console.error('  the partial-mock test, tsc and the unit suites all check importability and types, and');
+    console.error('  emit an identical green for a safe migration and an unsafe one). See the header of');
+    console.error('  packages/operator-core/lib/lazy-flag-refresh.ts for the override-store vs');
+    console.error('  behaviour-selector discriminator.\n');
+    for (const d of declarationProblems) console.error(`    ${d.file}: ${d.problem}`);
+    console.error(`\n  ${declarationProblems.length} problem(s). See EI-19448574704459898.`);
+    process.exit(1);
+  }
+
   if (offenders.length === 0) {
     const note =
       BASELINE.size > 0 ? ` (${BASELINE.size} file(s) still in the shrink-to-empty BASELINE — WI-6650)` : '';

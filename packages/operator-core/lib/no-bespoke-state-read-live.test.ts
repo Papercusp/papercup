@@ -90,11 +90,23 @@ describe('the live gate is actually scanning', () => {
     ['packages/operator-core/lib/agent-tools', 400],
     ['packages/agent-mcp/src/tools', 10],
   ])('scan root %s still exists and holds tool sources', (dir, floor) => {
+    // COVERAGE, not string identity. `SCAN_DIRS` may legitimately name an
+    // ANCESTOR of this root — 651c0dceed (2026-08-03) widened
+    // 'packages/agent-mcp/src/tools' to 'packages/agent-mcp/src', which polices
+    // a strict SUPERSET. An exact-match assertion reports that BROADENING as a
+    // coverage loss and fails with "the gate has stopped policing it", which is
+    // the opposite of what happened; the property worth guarding is that some
+    // scan root still walks this territory. (That commit updated the sibling
+    // assertion in no-bespoke-state-read-guard.test.ts and missed this one.)
+    const covering = (SCAN_DIRS as string[]).filter(
+      (root) => dir === root || dir.startsWith(`${root}/`),
+    );
     expect(
-      SCAN_DIRS,
-      `${dir} is no longer in SCAN_DIRS — the gate has stopped policing it, and will ` +
-        `report a clean tree for every violation committed there.`,
-    ).toContain(dir);
+      covering,
+      `${dir} is covered by no SCAN_DIRS root — the gate has stopped policing it, and will ` +
+        `report a clean tree for every violation committed there. ` +
+        `SCAN_DIRS = ${JSON.stringify(SCAN_DIRS)}`,
+    ).not.toHaveLength(0);
 
     const files = execSync(`git ls-files ${dir}`, { cwd: REPO_ROOT, encoding: 'utf8' })
       .split('\n')

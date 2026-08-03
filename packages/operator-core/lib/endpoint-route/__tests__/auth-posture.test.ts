@@ -101,6 +101,15 @@ const RULES: ReadonlyArray<{
       // `'loopback'` rejects non-loopback hosts while requiring no token. See
       // the route's own doc-comment (domain-read-canary.ts).
       { method: 'POST', path: '/internal/domain-read-canary', auth: 'loopback' },
+      // schedule-federation timer probe: the ONLY caller is a sibling
+      // operator-shaped process on the same box (bg-host, staging) asking this
+      // process for its per-process managedSetInterval + DBOS registries, which
+      // nothing can see from outside. Same contract as the three above — a
+      // same-box caller with no principal token, so `'loopback'` rejects
+      // non-loopback hosts at the route-stack chokepoint while requiring no
+      // token. Strictly NARROWER than the family's `{}`. See the route's own
+      // doc-comment (misc/managed-timers.ts).
+      { method: 'GET', path: '/internal/managed-timers', auth: 'loopback' },
     ],
   },
   // The /api/tui/* workbench READS stay `auth:'public'` (loopback-protected by

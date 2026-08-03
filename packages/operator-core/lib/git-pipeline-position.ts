@@ -25,6 +25,9 @@ import { promisify } from 'node:util';
 import * as path from 'node:path';
 import { devDeployState, type DevDeployState } from './dev-deploy-state';
 import { gitPipelineSnapshot, type GitPipelineSnapshot } from './git-pipeline-stats';
+// EI-19447523039740352. Safe direction: release-deploy-launch imports git-pipeline-STATS,
+// never git-pipeline-POSITION, so this does not close an import cycle.
+import { readDeployInFlight, type DeployInFlight } from './release-deploy-launch';
 import { probeServiceStart } from './agent-tools/dev/systemd-service-probe';
 import { RESTART_TARGET_UNITS } from './agent-tools/dev/restart-target-units';
 import {
@@ -1090,12 +1093,47 @@ export interface ServingTruth {
   /** The concrete command that makes the code live, when it is not. */
   restartLever: string | null;
   /**
+   * EI-19447523039740352: set when a deploy is ALREADY RUNNING and that deploy is
+   * what `restartLever` would have triggered — so the lever must NOT be offered.
+   *
+   * The staleness this stage detects (`startedSinceCodeChange:false`) is the NORMAL
+   * mid-deploy state, not an edge case: a deploy lands the files first and restarts
+   * the process late, so every healthy deploy passes through a window where the
+   * process legitimately predates its code. Offering the restart lever in that
+   * window tells the caller to fire a SECOND deploy against the shared release
+   * checkout — which `release:deploy` refuses by design, naming that exact collision
+   * as the hazard its guard exists to prevent. Reported live: an agent read
+   * `nextAction` (documented as "the ONE lever") mid-deploy and was one call away
+   * from firing it.
+   *
+   * `null` therefore means "not known to be superseded", NOT "no deploy is running":
+   * an unreadable systemd degrades to null and keeps the lever, because wrongly
+   * SUPPRESSING it would strand a caller whose process really is stale with no
+   * deploy coming. Only an affirmative in-flight reading suppresses.
+   */
+  restartSupersededBy: ServingRestartSuperseded | null;
+  /**
    * Why the answer is `null`, when it is — ENUMERATED, never prose (D-038 axis 2
    * corollary). `code` is what a caller branches on (`not-applicable` is a final
    * answer; `resolver-failed` is retry-or-escalate); `detail` carries the human
    * sentence this field used to hold on its own.
    */
   unknownReason: CellUnknown | null;
+}
+
+/**
+ * Why the serving restart lever is being WITHHELD — something is already doing it.
+ * Structured rather than a boolean so the caller can say WHICH deploy and since when,
+ * which is what makes "wait" actionable instead of merely quiet.
+ */
+export interface ServingRestartSuperseded {
+  kind: 'deploy-in-flight';
+  /** The transient systemd unit currently deploying (e.g. `papercup-auto-deploy`). */
+  unit: string;
+  /** When that deploy started, when systemd's timestamp parsed; null otherwise. */
+  startedAtMs: number | null;
+  /** systemd ActiveState — `deactivating` still counts, the :3070 restart happens late. */
+  activeState: string | null;
 }
 
 /**
@@ -1140,8 +1178,20 @@ export function evaluateServing(args: {
   process: { pid: number | null; startedAtMs: number | null } | null;
   codeAsOfMs: number | null;
   codeAsOfSource: 'deploy' | 'file-mtime' | null;
+  /**
+   * EI-19447523039740352: whether a deploy is running RIGHT NOW. Optional so every
+   * existing caller keeps today's behaviour; omitted/null is read as UNKNOWN, which
+   * keeps the lever rather than hiding it.
+   */
+  deployInFlight?: {
+    active: boolean;
+    unit: string;
+    activeState: string | null;
+    startedAtMs: number | null;
+    source: 'systemd' | 'systemd-unavailable';
+  } | null;
 }): ServingTruth {
-  const { runtime, process: proc, codeAsOfMs, codeAsOfSource } = args;
+  const { runtime, process: proc, codeAsOfMs, codeAsOfSource, deployInFlight } = args;
   const host = runtime?.host ?? null;
   const unit = host ? SERVING_UNIT_BY_HOST[host] : null;
   const restartLever = runtime ? servingRestartLever(runtime) : null;
@@ -1155,6 +1205,25 @@ export function evaluateServing(args: {
     startedSinceCodeChange: null,
     behindMin: null,
     restartLever,
+    // Scoped to `operator-release` ON PURPOSE. That host's lever IS a deploy
+    // (servingRestartLever returns deploy-cli for it), so a running deploy really
+    // does supersede it. Every other host restarts via `dev:restart` — a deploy
+    // performs no such restart, so a stale gateway/bg-host is NOT superseded by one
+    // and must keep its lever. Suppressing there would be the mirror-image bug:
+    // telling a caller to wait for something that is never going to happen.
+    //
+    // `source` is checked because `active:false` from an unreadable systemd means
+    // UNKNOWN, not idle (see readDeployInFlight) — and only an AFFIRMATIVE active
+    // reading may withhold a lever.
+    restartSupersededBy:
+      host === 'operator-release' && deployInFlight?.active === true && deployInFlight.source === 'systemd'
+        ? {
+            kind: 'deploy-in-flight',
+            unit: deployInFlight.unit,
+            startedAtMs: deployInFlight.startedAtMs,
+            activeState: deployInFlight.activeState,
+          }
+        : null,
     unknownReason: null,
   };
 
@@ -2163,11 +2232,24 @@ export function computeStages(
           : sv.codeAsOfSource === 'file-mtime'
             ? 'this file changing on disk'
             : 'the code changing';
-      return (
+      const stale =
         `The process serving this code (${sv.unit}, pid ${sv.pid}) started ~${sv.behindMin}m BEFORE ${src} — ` +
-        `it is executing an OLDER snapshot, so "deployed" here does NOT mean "running". ` +
-        `Waiting cannot fix this; it takes a restart: ${sv.restartLever}.`
-      );
+        `it is executing an OLDER snapshot, so "deployed" here does NOT mean "running". `;
+      // EI-19447523039740352: "Waiting cannot fix this" is FALSE while a deploy is
+      // running — the deploy restarts this host itself, and firing the lever now is
+      // a concurrent deploy against the shared release checkout. Say so instead.
+      if (sv.restartSupersededBy) {
+        const since = sv.restartSupersededBy.startedAtMs
+          ? ` (started ${new Date(sv.restartSupersededBy.startedAtMs).toISOString()})`
+          : '';
+        return (
+          stale +
+          `A deploy is ALREADY RUNNING (${sv.restartSupersededBy.unit}${since}) and it restarts this host itself, ` +
+          `so waiting IS the correct action. Do NOT fire ${sv.restartLever} — that is a second, concurrent deploy ` +
+          `against the shared release checkout, which release:deploy refuses by design.`
+        );
+      }
+      return stale + `Waiting cannot fix this; it takes a restart: ${sv.restartLever}.`;
     }
     if (sv.startedSinceCodeChange === null) {
       return sv.unknownReason ? formatCellUnknown(sv.unknownReason) : null;
@@ -2187,7 +2269,14 @@ export function computeStages(
     // A restart is the lever ONLY once the code has actually reached this host — offering
     // it while the deploy is still pending would restart the process onto the SAME old
     // code and read as "I did the thing and nothing changed" (EI-11120's shape).
-    lever: codeReachedHost && sv.startedSinceCodeChange === false ? sv.restartLever : null,
+    //
+    // ...and NOT while a deploy is mid-flight (EI-19447523039740352). This reuses the
+    // existing `lever:null` semantics rather than adding a concept: chooseNextAction
+    // turns a null lever into `nextAction:null`, which renderBlocked already prints as
+    // "WAITING AT SERVING (nothing to do — this leg is advancing on its own)" — the
+    // literally correct advice here, since the running deploy performs the restart.
+    lever:
+      codeReachedHost && sv.startedSinceCodeChange === false && !sv.restartSupersededBy ? sv.restartLever : null,
   });
 
   return stages;
@@ -2250,6 +2339,8 @@ export interface PipelinePositionDeps {
    * the ship-it-dark failure this plan exists to avoid.
    */
   probeUnitStart?: (unit: string) => Promise<{ pid: number | null; startedAtMs: number | null } | null>;
+  /** EI-19447523039740352: is a deploy running right now (so the serving restart lever is moot). */
+  readDeployInFlight?: () => Promise<DeployInFlight>;
   /** P-003: mtime (ms) of a repo-relative file — what a working-tree tsx host would load. */
   fileMtimeMs?: (absPath: string) => Promise<number | null>;
   /**
@@ -2536,6 +2627,10 @@ const realResolveGateCandidates = async (root: string): Promise<GateCandidates> 
 };
 
 /** Default unit-start probe: the shared systemd probe, mapped into ms. */
+/** EI-19447523039740352. Never throws: an unreadable systemd degrades to
+ *  `source:'systemd-unavailable'`, which evaluateServing reads as UNKNOWN (keeps the lever). */
+const realReadDeployInFlight = (): Promise<DeployInFlight> => readDeployInFlight();
+
 const realProbeUnitStart = async (unit: string): Promise<{ pid: number | null; startedAtMs: number | null } | null> => {
   const info = await probeServiceStart(unit);
   if (!info.ok || info.secondsSinceStart === undefined) return null;
@@ -2662,6 +2757,10 @@ async function submodulePaths(git: GitRunner, root: string): Promise<string[]> {
 function servingNote(p: Pick<PipelinePosition, 'positions' | 'serving'>): string {
   const sv = p.serving;
   if (sv.startedSinceCodeChange === false) {
+    // EI-19447523039740352: mid-deploy, the honest note is "wait", not the lever.
+    if (sv.restartSupersededBy) {
+      return ` ⚠ not live YET — ${sv.unit} has been up ~${sv.behindMin}m longer than the code it serves, but a deploy (${sv.restartSupersededBy.unit}) is ALREADY RUNNING and restarts it; wait, do not fire a second deploy`;
+    }
     return ` ⚠ but NOT LIVE — ${sv.unit} has been up ~${sv.behindMin}m longer than the code it serves (still running the older snapshot; ${sv.restartLever})`;
   }
   if (!p.positions.deployed) return '';
@@ -3426,10 +3525,17 @@ export async function gitPipelinePosition(
       codeAsOfSource = 'file-mtime';
     }
   }
-  const serving = evaluateServing({ runtime, process: servingProcess, codeAsOfMs, codeAsOfSource });
+  // EI-19447523039740352: only `operator-release`'s lever IS a deploy, so only it can be
+  // superseded by one — skip the systemctl round-trip entirely for every other host,
+  // where the answer could not change the verdict.
+  const deployInFlight =
+    runtime?.host === 'operator-release' ? await (deps.readDeployInFlight ?? realReadDeployInFlight)() : null;
+  const serving = evaluateServing({ runtime, process: servingProcess, codeAsOfMs, codeAsOfSource, deployInFlight });
   if (serving.startedSinceCodeChange === false) {
     notes.push(
-      `SERVING STALE CODE: ${serving.unit} (pid ${serving.pid}) started ~${serving.behindMin}m before the code it runs last changed. A git-derived "deployed" does not mean this process is running your change — ${serving.restartLever}`,
+      serving.restartSupersededBy
+        ? `SERVING STALE CODE, BUT A DEPLOY IS ALREADY RUNNING (${serving.restartSupersededBy.unit}): ${serving.unit} (pid ${serving.pid}) started ~${serving.behindMin}m before the code it runs last changed, and the in-flight deploy restarts it. WAIT — do not fire a second deploy against the shared release checkout.`
+        : `SERVING STALE CODE: ${serving.unit} (pid ${serving.pid}) started ~${serving.behindMin}m before the code it runs last changed. A git-derived "deployed" does not mean this process is running your change — ${serving.restartLever}`,
     );
   }
 

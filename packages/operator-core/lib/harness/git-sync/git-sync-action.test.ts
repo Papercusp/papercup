@@ -90,6 +90,12 @@ vi.mock('./run-git-sync', () => ({
   discoverSubmodulesRecursive: async (): Promise<string[]> => [],
   listStashEntries: async (): Promise<unknown[]> => [],
   newStashEntries: (): unknown[] => [],
+  // EI-19449313204576061 added age-awareness to the sweep; a full factory mock only
+  // exposes what it lists, so these must be here even though the empty-stash paths
+  // below never reach them (the EI-14928 class this mock's header already warns about).
+  partitionStashEntriesByAge: (): { recent: unknown[]; preExisting: unknown[] } => ({ recent: [], preExisting: [] }),
+  describeStashAge: (): string => 'unknown age',
+  STASH_RECENT_WINDOW_MS: 24 * 60 * 60 * 1000,
   // The action also pulls these for its bounded git plumbing; the sweep paths
   // exercised here never reach them with empty stash/submodule sets.
   runGitBounded: async () => ({ code: 0, stdout: '', stderr: '' }),

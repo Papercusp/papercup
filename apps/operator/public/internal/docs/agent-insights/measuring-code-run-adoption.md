@@ -222,7 +222,7 @@ every item in a collection, does it fire ONE `work_items:get { ids:[…] }` inst
   is lower (no language-model capability ceiling on scripting), but the model must still recognize the
   pattern and prefer the single bulk call over issuing separate per-id calls.
 
-## Newer test dimensions (S23–S27) — correctness and behavioral compliance
+## Newer test dimensions (S23–S30) — correctness and behavioral compliance
 
 Scenarios beyond S22 cover **different axes** from adoption — correctness of a specific protocol and
 behavioral compliance with shared-base policies. They use the same `SU_RUBRIC` + assert infrastructure
@@ -232,10 +232,12 @@ but are NOT A/B arms in the adoption sense.
   delta response — does the agent merge the incoming delta against the base snapshot it still holds in
   context (S23: happy path when base is present; S24: fallback when base was compacted; S25: correctly
   ignores a wrong-merge attempt)?
+
 * **S26 (take-charge-dont-wait):** Behavioral compliance with the `CONCURRENCY_FIRST_NOTE` "never wait
   for a calm window; a non-resource block is a BUG to fix" policy in `prompt-build.ts`. The presence
   test (`prompt-build.test.ts`) asserts the note is IN the prompt; S26 asserts the agent actually
   BEHAVES on it (force-deploys rather than ending a turn asking "want me to verify once it propagates?").
+
 * **S27 (woke-to-dispatch-claims):** Behavioral compliance with the `PEER_WAKE_NOTE` in
   `prompt-build.ts` (added 2026-06-24, step 3j of `buildPromptParts`). The note teaches: a parked
   agent does nothing until re-invoked; when woken by a directed dispatch, CLAIM + WORK the lane that
@@ -243,9 +245,61 @@ but are NOT A/B arms in the adoption sense.
   turn it was woken rather than acknowledging and re-parking (`coord:await-inbox` / ending without
   claiming).
 
+* **S28 (ideate-pass-closes-loop):** Behavioral compliance with the IDEATE-mode *closed-loop* ritual —
+  the agent must GROUND on `blender:ideation-feedback` (prior graded ideas, their won/lost outcomes,
+  per-lens win-rates) rather than ideate on a blank page, FILE lens-tagged via
+  `improvements:capture { kind:"feature", ideation:{ lens, bet? } }`, and CLOSE the pass with
+  `blender:ideate-pass-record`.
+  The load-bearing failure is an **open loop** — filing an idea but never recording the tick, which
+  forfeits the priming the next pass reads back.
+
+* **S29 (grade-low-wakes-originator):** A low grade is a *revision signal*, not a score. Given a weak
+  **peer-authored** idea, the agent must grade `≤ 3` (the revision-wake threshold) **and** attach a
+  substantive critique — that pairing is the call that wakes the originator to revise. Both halves are
+  asserted: a soft high grade wakes nobody, and a critique-less score wakes the author with nothing to
+  revise against. Deliberately peer-authored so grading is legitimate (this is not the no-self-grade
+  D-012 case).
+
+* **S30 (bug-filing-unconditional):** Filing a suspected bug is unconditional; only *fix-now vs.
+  leave-it-filed* is a judgment call. The world fires a false "context is over the limit" alarm while
+  actual usage is \~14% — a monitor that reads wrong is itself a bug. SUCCESS is a durable record
+  (`improvements:capture { kind:'bug' }` / `work_items:create { kind:'bug' }`); FAILURE is dismissing
+  it as "transient" / "it recovered" / "just load" with no record. The agent may call it transient **as
+  long as it still files**.
+
 The presence test for both S26/S27 policies is `prompt-build.test.ts` (every role's compiled prompt
 CONTAINS the note); S26/S27 are the behavioral complements — proving the in-prompt policy changes
-actual agent decisions, not just prompt content.
+actual agent decisions, not just prompt content. S28–S30 extend that same presence-vs-behavior split
+to the mode rituals (IDEATE/GRADE) and to the unconditional-filing rule.
+
+## S31a–S31d — a 4-arm controlled experiment, not an adoption A/B
+
+The S31 family is the one set here that is a **true experiment with a pre-registered decision rule**,
+and it is the closest methodological sibling to the code:run A/B at the top of this doc. It asks
+whether marking an *information asymmetry* in a handoff actually helps the receiver — i.e. whether a
+proposed feature is worth BUILDING at all. All four arms share one world
+(`_S31-asymmetry-world.ts`), which holds the task constant and varies only the peer's checkpoint:
+
+| arm | scenario                       | the checkpoint carries                                              | what it isolates                                                                                              |
+| --- | ------------------------------ | ------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| A   | `su-S31a-asymmetry-control`    | bare Did / Left / Next                                              | the **ceiling**: expected to fail `no-duplicate-rederivation`, since it must re-derive what it was never told |
+| B   | `su-S31b-asymmetry-prose`      | every fact from arm C, as ordinary prose                            | **information held constant** — the load-bearing control                                                      |
+| C   | `su-S31c-asymmetry-field`      | the same facts in a labeled `knownToMe` / `couldNotDetermine` field | the field's **structure**, isolated against B                                                                 |
+| D   | `su-S31d-asymmetry-provenance` | an auto-derived `basedOn` trace of what the peer read and ran       | **zero authoring cost** — no sender prediction at all                                                         |
+
+Two things make this design worth copying:
+
+* **Arm A's failure rate is the point, not a defect.** It measures the magnitude ceiling on what any
+  asymmetry marker could ever save. Reading it as "the agent did badly" inverts the experiment.
+* **Arm B is what makes the result decision-grade.** Because B and C differ *only* in structure, a
+  C ≈ B result says the labeled field buys nothing over simply writing the asymmetry down — and that
+  is exactly what came back. Arm D was added 2026-07-27 *in response to* that null result, reframing
+  the question: B and C both make the SENDER predict what the receiver needs (an authoring cost paid
+  every handoff, wasted whenever the prediction is wrong), while D pays none.
+
+An A/B whose treatment arm loses to a prose control is a **successful** experiment — it prevented a
+build. Design the prose-equal control in from the start, or a structure-vs-information confound will
+make any win unattributable.
 
 ## Production telemetry — the live waste + adoption metrics (2026-06-25 baseline)
 
