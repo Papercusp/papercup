@@ -252,9 +252,55 @@ describe('countBackgroundPrimaries', () => {
     const sql = (async () => [{ n: 2 }]) as never;
     expect(await countBackgroundPrimaries(sql)).toBe(2);
   });
-  it('defaults to 0 when the query returns nothing', async () => {
+  // WI-7291: this previously asserted `.toBe(0)` under the name "defaults to 0 when the
+  // query returns nothing" — the defect written down as intended behaviour. A count()
+  // aggregate always returns exactly one row, so an empty result means the read did not
+  // happen; reporting it as 0 made "I could not look" indistinguishable from "everything
+  // is dead", and paged the fleet with the routine-engine-death text on an unread count.
+  it('returns null (NOT 0) when the query returns no usable row — an unread count is not a zero count', async () => {
     const sql = (async () => []) as never;
+    expect(await countBackgroundPrimaries(sql)).toBeNull();
+  });
+  it('preserves a GENUINE zero as 0, not null — the real outage must still be reportable', async () => {
+    const sql = (async () => [{ n: 0 }]) as never;
     expect(await countBackgroundPrimaries(sql)).toBe(0);
+  });
+});
+
+describe('evaluatePrimaryCount — unread count (WI-7291)', () => {
+  it('never emits the routine-engine-death text when the count was not read', () => {
+    const verdict = evaluatePrimaryCount(null);
+    expect(verdict.key).toBe('no-primary-unverified');
+    expect(verdict.countObserved).toBe(false);
+    expect(verdict.summary).not.toContain('are all down');
+    expect(verdict.summary).not.toContain('NO background primary running');
+  });
+
+  it('still pages — an unreadable database must not SILENCE a real outage', () => {
+    const verdict = evaluatePrimaryCount(null);
+    expect(verdict.ok).toBe(false);
+    expect(verdict.severity).toBe('blocker');
+  });
+
+  // The regression that motivated checking count===null FIRST: a liveness read that
+  // succeeds and reports a stale age would otherwise fall through to the `no-primary`
+  // death verdict on a count nobody ever obtained.
+  it('an unread count outranks a successful stale-liveness read', () => {
+    const verdict = evaluatePrimaryCount(null, {
+      lastRoutineFireAgeSec: 9999,
+      status: 'observed',
+    });
+    expect(verdict.key).toBe('no-primary-unverified');
+    expect(verdict.summary).not.toContain('NO background primary running');
+  });
+
+  it('a genuine zero still earns the death verdict when liveness confirms it', () => {
+    const verdict = evaluatePrimaryCount(0, {
+      lastRoutineFireAgeSec: 9999,
+      status: 'observed',
+    });
+    expect(verdict.key).toBe('no-primary');
+    expect(verdict.countObserved).not.toBe(false);
   });
 });
 

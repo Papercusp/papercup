@@ -176,6 +176,12 @@ export interface PrimaryVerdict {
    *  alarm said "all down" and nothing anywhere recorded whether liveness was ever read.
    *  Optional — the healthy verdict gathers no evidence. */
   evidenceNote?: string;
+  /** WI-7291: false when the COUNT ITSELF was never read (countBackgroundPrimaries returned
+   *  null). Optional so no existing call site is stranded; absent means "the count was read".
+   *  Distinct from `evidenceNote`, which reports what was observed about routine LIVENESS —
+   *  the two reads fail independently and conflating them is what let an unread count page
+   *  the fleet as a confirmed outage. */
+  countObserved?: boolean;
 }
 
 /**
@@ -184,9 +190,27 @@ export interface PrimaryVerdict {
  * original count-only verdicts exactly.
  */
 export function evaluatePrimaryCount(
-  count: number,
+  count: number | null,
   evidence?: BackgroundActivityEvidence,
 ): PrimaryVerdict {
+  // WI-7291: the count was NOT READ. This is the absence of evidence, so it can never earn
+  // the routine-engine-death text — but it still pages, on the same principle as the
+  // unverified-liveness branch below: an unreadable database must never SILENCE a real
+  // outage. Checked FIRST, before any liveness reasoning, because a successful liveness read
+  // reporting a stale age would otherwise fall through to the `no-primary` death verdict on
+  // a count nobody ever obtained.
+  if (count === null) {
+    return {
+      count: 0,
+      countObserved: false,
+      ok: false,
+      severity: 'blocker',
+      key: 'no-primary-unverified',
+      evidenceNote: 'NOT observed (count-unread): the background-primary COUNT query returned no usable row',
+      summary:
+        'background-primary count could NOT BE READ (the query returned no usable row) — this is NOT a report that zero primaries are running, and must not be read as "routines, git-sync and the Mug wake-loop are down". Nothing was observed either way. VERIFY BEFORE ACTING (restarting a healthy bg-host kills in-flight routine work): SELECT count(DISTINCT application_name) FROM pg_stat_activity WHERE application_name LIKE \'dbos_transact_%\', and check max(last_fired_at) in harness_shared.routines.',
+    };
+  }
   if (count === 1) {
     return { count, ok: true, severity: null, key: null, summary: 'exactly one background primary (healthy)' };
   }
@@ -262,13 +286,30 @@ export function evaluatePrimaryCount(
 
 type SqlLike = <T = unknown>(strings: TemplateStringsArray, ...values: unknown[]) => Promise<T>;
 
-/** Count DISTINCT live DBOS executors via their pg_stat_activity application_name. */
-export async function countBackgroundPrimaries(sql: SqlLike): Promise<number> {
+/**
+ * Count DISTINCT live DBOS executors via their pg_stat_activity application_name.
+ *
+ * Returns `null` when the read produced NO USABLE ROW — which is categorically different
+ * from observing zero executors, and must never be collapsed into one.
+ *
+ * WI-7291 (2026-08-03): this used to end `return rows[0]?.n ?? 0`, so a read that came back
+ * empty rendered as the affirmative claim "there are zero background primaries" — and the
+ * caller then paged the entire fleet with "DBOS routines, git-sync, and the Mug wake-loop are
+ * all down". A `count(...)` aggregate ALWAYS returns exactly one row, so an empty result is
+ * never a real zero; it means the read did not happen (unexpected driver shape, a degraded or
+ * half-open pooled handle, a cancelled statement). That distinction is the whole point of the
+ * guard: this is a health probe whose "I could not look" answer was indistinguishable from its
+ * "everything is dead" answer.
+ *
+ * Note `?? null` (not `|| null`): a GENUINE zero is `0`, which `??` preserves and `||` would
+ * destroy — turning the one real outage this guard exists to catch into "unverified".
+ */
+export async function countBackgroundPrimaries(sql: SqlLike): Promise<number | null> {
   const rows = await sql<Array<{ n: number }>>`
     SELECT count(DISTINCT application_name)::int AS n
       FROM pg_stat_activity
      WHERE application_name LIKE 'dbos_transact_%'`;
-  return rows[0]?.n ?? 0;
+  return rows[0]?.n ?? null;
 }
 
 /**
