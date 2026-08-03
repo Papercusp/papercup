@@ -527,6 +527,28 @@ export function coalesceWatermarkFor({ root, files, updateFlag }: {
     files: Set<string> | null;
     updateFlag: boolean;
 }): number | null;
+/**
+ * Which scope the caller asked this gate to judge — reported on the completion marker so a
+ * reader can tell a whole-project verdict from one scoped to a handful of files. `--update`
+ * wins over the others because it MUTATES the baseline rather than judging against it.
+ * @param {string[]} argv
+ * @returns {'update'|'files'|'mine'|'all'}
+ */
+export function lintTscScopeFromArgv(argv: string[]): "update" | "files" | "mine" | "all";
+/**
+ * The terminal completion marker (EI-19395061642732083). Pure so it is unit-testable —
+ * the `process.on('exit')` hook that prints it is not.
+ *
+ * `status` is derived from the exit code the gate actually exited with, never from a
+ * separately-tracked variable that could drift out of sync with it.
+ * @param {{ label: string, scope: string, code: number }} input
+ * @returns {string}
+ */
+export function formatLintTscResultMarker({ label, scope, code }: {
+    label: string;
+    scope: string;
+    code: number;
+}): string;
 export function runTscBaselineGate({ root, tscCommand, baselineFile, label, argv, countField, foreignBaselines, }: {
     root: any;
     tscCommand: any;
