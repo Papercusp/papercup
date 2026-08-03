@@ -167,16 +167,47 @@ describe('alert falsifier reality (EI-19313376980892266 item C)', () => {
     // The ratchet. A future alert added with `{ reason: ... }` and no falsifier is
     // exactly the regression this item exists to prevent, and no fixture-based test
     // can see it because the fixture would never be written.
-    const src = readFileSync(SOURCE, 'utf8');
-    const returnTypes = [...src.matchAll(/\}\): \{ reason: string([^}]*)\} \| undefined \{/g)];
-    expect(returnTypes.length, 'found no alert return types — the census regex has rotted').
+    const violations = auditAlertReturnTypes(readFileSync(SOURCE, 'utf8'));
+    expect(violations.scanned, 'found no alert return types — the census regex has rotted').
       toBeGreaterThanOrEqual(4);
-    for (const m of returnTypes) {
-      expect(
-        m[1],
-        `an alert returns a bare { reason } with no falsifier — every alert must ship the ` +
-          `query that would disprove it (EI-19313376980892266 item C). Signature: ${m[0]}`,
-      ).toContain('falsifier');
-    }
+    expect(
+      violations.bare,
+      'an alert returns a bare { reason } with no falsifier — every alert must ship the ' +
+        'query that would disprove it (EI-19313376980892266 item C)',
+    ).toEqual([]);
+  });
+
+  it('NEGATIVE CONTROL: the census actually CATCHES a bare-reason alert', () => {
+    // Without this, a census that silently matched NOTHING would pass forever and the
+    // ratchet would be decorative. Proven against a synthetic source rather than by
+    // mutating leader-brief.ts, because git-sync sweeps this shared tree every few
+    // minutes and would commit the broken intermediate.
+    const good = 'export function computeXAlert(input: {\n  a: number;\n}): { reason: string; falsifier: AlertFalsifier } | undefined {';
+    const bad = 'export function computeYAlert(input: {\n  a: number;\n}): { reason: string } | undefined {';
+
+    expect(auditAlertReturnTypes(good).bare).toEqual([]);
+    const caught = auditAlertReturnTypes(bad);
+    expect(caught.scanned).toBe(1);
+    expect(caught.bare).toHaveLength(1);
+    expect(caught.bare[0]).toContain('reason: string');
+
+    // And it must see BOTH in a mixed source — a single compliant sibling must never
+    // mask a bare one.
+    const mixed = auditAlertReturnTypes(`${good}\n${bad}`);
+    expect(mixed.scanned).toBe(2);
+    expect(mixed.bare).toHaveLength(1);
   });
 });
+
+/**
+ * Census over leader-brief source: every `compute*Alert` return type shaped
+ * `{ reason: string ... } | undefined` must also declare a `falsifier`. PURE, so the
+ * guard itself can be proven to fail on the regression (see the negative control).
+ */
+export function auditAlertReturnTypes(src: string): { scanned: number; bare: string[] } {
+  const matches = [...src.matchAll(/\}\): \{ reason: string([^}]*)\} \| undefined \{/g)];
+  return {
+    scanned: matches.length,
+    bare: matches.filter((m) => !m[1].includes('falsifier')).map((m) => m[0]),
+  };
+}

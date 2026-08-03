@@ -103,6 +103,35 @@ describe('recordLoopTransition', () => {
     expect(warn).not.toHaveBeenCalled();
   });
 
+  it('an ABSENT table (42P01) warns ONCE then goes quiet — the code may deploy before its migration', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const sql = fakeSql({ throwOn: /INSERT INTO/, code: '42P01' });
+
+    await recordLoopTransition(sql as any, PARK);
+    await recordLoopTransition(sql as any, PARK);
+    await recordLoopTransition(sql as any, PARK);
+
+    // One warn total, and no further SQL attempted: an instrument that floods the log at
+    // loop cadence would bury the very signal it exists to surface.
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0]![0]).toMatch(/migration 745 not yet applied/);
+    expect(sql.statements.filter((s) => /INSERT INTO/.test(s.text))).toHaveLength(1);
+  });
+
+  it('does NOT latch on a transient failure — a real write error stays visible every time', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    // No `code`: an ordinary transient failure, not a missing relation.
+    const sql = fakeSql({ throwOn: /INSERT INTO/ });
+
+    await recordLoopTransition(sql as any, PARK);
+    await recordLoopTransition(sql as any, PARK);
+
+    // The quiet path is scoped to "table absent" ONLY. Latching on any error would let a
+    // genuine, ongoing write fault disappear after its first occurrence.
+    expect(warn).toHaveBeenCalledTimes(2);
+    expect(sql.statements.filter((s) => /INSERT INTO/.test(s.text))).toHaveLength(2);
+  });
+
   it('throttles the piggybacked prune so it does not run on every transition', async () => {
     const sql = fakeSql();
 

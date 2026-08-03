@@ -3199,6 +3199,29 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       return [deriveAttentionCounts(Array.isArray(r?.groups) ? r.groups : [])];
     },
   },
+  // plans.waitingCount — the AGGREGATE for AdvNowRunning's "N plans waiting"
+  // nudge (EI-19409535742567802). AdvNowRunning is chrome mounted on every
+  // /adv tab (AdvPotBar -> AdvShell header) and was pulling the WHOLE
+  // plans.list feed (~702 KB measured, on a route rendering no plan list)
+  // just to derive one integer client-side (countWaitingPlans = plans
+  // with startStatus === 'started'). This returns [{count}] instead — same
+  // precedent as plans.attentionCounts (WI-5955). Scoped by harness_slugs,
+  // matching AdvNowRunning's pre-existing client args shape exactly
+  // (`enabled: !!slug && stopped` guarantees slug is truthy whenever this
+  // actually fires, so an empty harness_slugs is dead in practice, matching
+  // the pre-migration direct plans.list call's behavior).
+  'plans.waitingCount': {
+    backingTables: ['harness_shared.harness_plans'],
+    resolve: async (args) => {
+      const { callPlansRead } = await import('../agent-tools/plans/read-dispatch');
+      const r = (await callPlansRead('list', (args ?? {}) as Record<string, unknown>)) as {
+        plans?: Array<{ startStatus?: string }>;
+      };
+      const plans = Array.isArray(r?.plans) ? r.plans : [];
+      const count = plans.filter((p) => p?.startStatus === 'started').length;
+      return [{ count }];
+    },
+  },
   // plans.attentionRefs — the DRILL-IN projection of the attention feed
   // (no-http-anywhere-2026-07-28 D-031). Sibling of attentionCounts: same
   // problem (an always-mounted chrome consumer pulling the whole feed for a
