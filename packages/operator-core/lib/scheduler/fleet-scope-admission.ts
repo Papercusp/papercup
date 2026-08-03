@@ -60,6 +60,33 @@ function specIsIssueFamilyOnly(spec: unknown): boolean {
   return kinds.every((k) => issueKinds.has(k));
 }
 
+/**
+ * EI-19393442073558754: true when the spec's filter tree references `plan` or
+ * `plan_item` ANYWHERE (top-level or nested under `all`/`any`/`not`). A plan/
+ * plan-item predicate is the SPECIFIC, structurally-understood mechanism behind
+ * the false-alarm class this gates: `plans:start` promotion always mints a
+ * FEATURE-family row for a plan item unless the item's own kind is bug/change/
+ * task (D-009), so a plan-scoped spec routinely and correctly matches 0
+ * issue-family rows while genuinely admitting feature-family work — that is
+ * EXPECTED, not a spec-authoring bug. Deliberately narrower than "any filter
+ * with no kind restriction": an id/tag/title-only filter has no such documented
+ * family correlation, so those keep the loud `specEmpty` escalation (a stale id
+ * allowlist genuinely does mean the spec is broken, per EI-18663622382734446).
+ */
+function specHasPlanPredicate(spec: unknown): boolean {
+  function walk(node: unknown): boolean {
+    if (node === null || typeof node !== 'object') return false;
+    const obj = node as { field?: unknown; all?: unknown; any?: unknown; not?: unknown };
+    if (typeof obj.field === 'string') return obj.field === 'plan' || obj.field === 'plan_item';
+    if (Array.isArray(obj.all)) return obj.all.some(walk);
+    if (Array.isArray(obj.any)) return obj.any.some(walk);
+    if ('not' in obj) return walk(obj.not);
+    return false;
+  }
+  const view = (spec as { view?: { filter?: unknown } } | undefined)?.view;
+  return walk(view?.filter);
+}
+
 export interface FleetScopeContext {
   ownerId: string;
   fleetSlug: string;
@@ -832,24 +859,29 @@ export function fleetScopedMiss(
   // with `specEmpty` by construction (both require the same `matchedByFilter === 0` base).
   const featureFamilyMiss =
     !paused && breakdown != null && breakdown.matchedByFilter === 0 && !!(opts?.featureFamilyMatched && opts.featureFamilyMatched > 0);
-  // EI-19393442073558754: a spec that is NOT restricted to issue-family kinds (no kind
-  // filter at all, or a plan-scoped spec whose promoted items are feature-family per
-  // D-009) can NEVER admit an issue-family row by construction — so `matchedByFilter: 0`
-  // here is EXPECTED, not evidence of a spec-authoring bug. This is distinct from
+  // EI-19393442073558754: a spec whose filter references `plan`/`plan_item` and is NOT
+  // itself restricted to issue-family kinds can genuinely, correctly admit ONLY
+  // feature-family rows for long stretches (D-009: a plan-promoted item is feature-family
+  // unless its own kind is bug/change/task) — so `matchedByFilter: 0` on the issue-family
+  // side is EXPECTED there, not evidence of a spec-authoring bug. Distinct from
   // `featureFamilyMiss` (which requires a CONFIRMED positive tier-1 count): this fires
-  // whenever the tier-1 check came back EMPTY too (0, a genuine drain) or could not run
-  // at all (null/undefined, diagnosis unavailable) — in both sub-cases the "SPEC MATCHES
+  // whenever the tier-1 check came back EMPTY too (0, a genuine drain) or could not run at
+  // all (null/undefined, diagnosis unavailable) — in both sub-cases the "SPEC MATCHES
   // NOTHING ... escalate your leader NOW" framing below is simply the wrong story for a
-  // spec that was never capable of matching the family it's being judged against. Live
-  // repro (2026-08-03): fleet opencode-omp-research's plan-scoped spec correctly served
-  // two feature-family claims minutes earlier, then reported `spec_matches_nothing` on
-  // an ordinary drain (2 items done, 1 blocked) purely because the issue-family
-  // breakdown — which that spec structurally can never satisfy — read zero.
+  // spec whose plan predicate makes it structurally reach the feature family instead. Live
+  // repro (2026-08-03): fleet opencode-omp-research's plan-scoped spec correctly served two
+  // feature-family claims minutes earlier, then reported `spec_matches_nothing` on an
+  // ordinary drain (2 items done, 1 blocked) purely because the issue-family breakdown —
+  // which that spec structurally can never satisfy — read zero. Deliberately narrower than
+  // "no kind restriction at all": an id/tag/title-only filter (no plan predicate) keeps the
+  // loud `specEmpty` escalation, since a stale id allowlist genuinely is a spec bug
+  // (EI-18663622382734446) and has no such documented family correlation.
   const specIssueOnly = specIsIssueFamilyOnly(scope.record.spec);
+  const specPlanScoped = !specIssueOnly && specHasPlanPredicate(scope.record.spec);
   const nonIssueSpecEmpty =
-    !paused && breakdown != null && breakdown.matchedByFilter === 0 && !featureFamilyMiss && !specIssueOnly;
+    !paused && breakdown != null && breakdown.matchedByFilter === 0 && !featureFamilyMiss && specPlanScoped;
   const specEmpty =
-    !paused && breakdown != null && breakdown.matchedByFilter === 0 && !featureFamilyMiss && specIssueOnly;
+    !paused && breakdown != null && breakdown.matchedByFilter === 0 && !featureFamilyMiss && !specPlanScoped;
   // EI-18741523426513509: the spec's filter DID match real rows, but every one is presently
   // excluded by a TRANSIENT claim floor (an uncleared plan-lane blocker, a peer's claim-hold,
   // needs-human, a federation-detector gate, …) — the pool is legitimately, honestly empty
@@ -935,9 +967,10 @@ export function fleetScopedMiss(
             'narrowing. windDown is deliberately NOT set: do not stand down, and do not re-author the claim spec on this alone.'
         : nonIssueSpecEmpty
           ? `ORDINARY DRAIN, NOT A SPEC-AUTHORING PROBLEM (EI-19393442073558754): claim spec ${formatSpecRef(scope.record.spec.specId, scope.record.spec.revision)}'s ` +
-            'view.filter has no kind restriction, or one that includes a non-issue-family kind — such a spec can NEVER match an ' +
-            'issue-family (bug/change/task) row, so the issue-family breakdown\'s `matchedByFilter: 0` is EXPECTED BY CONSTRUCTION ' +
-            'here (e.g. a plan-scoped spec whose plan\'s items are feature-family, D-009), not a sign the spec itself is broken. ' +
+            'view.filter references a plan/plan-item and is not restricted to issue-family kinds — a plan-scoped spec routinely and ' +
+            'correctly admits ONLY feature-family rows for long stretches (D-009: a plan-promoted item is feature-family unless its ' +
+            'own kind is bug/change/task), so the issue-family breakdown\'s `matchedByFilter: 0` is EXPECTED BY CONSTRUCTION here, ' +
+            'not a sign the spec itself is broken. ' +
             (opts?.featureFamilyMatched === 0
               ? 'The feature-family (tier-1) pool was ALSO checked and is genuinely empty right now — this is an ordinary drain.'
               : 'The feature-family (tier-1) pool could not be confirmed on this pull — treat this as a likely drain, but verify ' +

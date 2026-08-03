@@ -283,7 +283,23 @@ export function lintCarrySurfaceProvenance(text: string | null | undefined): Pro
     if (SOURCE_TAG_RE.test(line)) continue; // [self-imposed]/[peer:]/[inferred] — not owner-authority
     if (OWNER_ATTRIBUTION_RE.test(line)) {
       matches.push({ line: line.slice(0, MATCH_LINE_CAP), kind: 'owner-attribution' });
-    } else if (!hasTaggedProvenanceBlock && BARE_GATE_IMPERATIVE_RE.test(line)) {
+      continue;
+    }
+    if (OWNER_DIRECTIVE_NOUN_RE.test(line)) {
+      // EI-19393929983792049: same mention-vs-use split as the bracket tag above,
+      // generalized to the noun phrase.
+      if (isOwnerDirectiveNounQuotedForm(line)) continue; // definite quoting — never flag
+      if (isOwnerDirectiveNounPossibleMention(line)) {
+        matches.push({ line: line.slice(0, MATCH_LINE_CAP), kind: 'possible-owner-tag-mention' });
+        continue;
+      }
+      // Same treatment as a bare [owner:…] tag: it asserts owner authority with no
+      // verifiable anchor, so it gets the SAME kind (and the SAME P-005 owner-typed-
+      // turn auto-verify path when the line's own date matches today's turn).
+      matches.push({ line: line.slice(0, MATCH_LINE_CAP), kind: 'manual-owner-tag' });
+      continue;
+    }
+    if (!hasTaggedProvenanceBlock && BARE_GATE_IMPERATIVE_RE.test(line)) {
       matches.push({ line: line.slice(0, MATCH_LINE_CAP), kind: 'bare-gate-imperative' });
     }
   }

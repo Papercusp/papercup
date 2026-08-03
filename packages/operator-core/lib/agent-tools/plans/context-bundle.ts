@@ -22,7 +22,7 @@
 import { hashPlanContent } from './content-hash';
 import { readPlanBySlug, resolvePlanScope, type PlanSourceOpts } from './source';
 import { listPlanRevisions } from './revisions';
-import type { PlanStatus } from './parser';
+import { PLAN_STATUSES, type PlanStatus } from './parser';
 
 const SECTION_RULE =
   '═══════════════════════════════════════════════════════════════';

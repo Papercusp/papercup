@@ -163,6 +163,92 @@ describe('lintCarrySurfaceProvenance', () => {
     });
   });
 
+  // EI-19393929983792049: a bare NOUN-PHRASE ("owner directive N: …") asserts the same
+  // authority as a `[owner:…]` tag or an OWNER_ATTRIBUTION_RE verb phrase, but matched
+  // neither before this fix — the exact shape a self-compaction turn wrote live.
+  describe('EI-19393929983792049: bare "owner directive" / "owner mandate" noun-phrase attribution', () => {
+    it('flags the filed repro verbatim: "start owner directive 1: …"', () => {
+      const r = lintCarrySurfaceProvenance(
+        'start owner directive 1: the READ-ONLY P-011 audit runs first',
+      );
+      expect(r.flagged).toBe(true);
+      expect(r.matches[0].kind).toBe('manual-owner-tag');
+    });
+
+    it('flags the loop-goal re-emission shape: "Owner directive 2 (only outstanding unit): …"', () => {
+      const r = lintCarrySurfaceProvenance(
+        'Owner directive 2 (only outstanding unit): writing the plan is NOT approval to build it',
+      );
+      expect(r.flagged).toBe(true);
+      expect(r.matches[0].kind).toBe('manual-owner-tag');
+    });
+
+    it('flags the repo\'s own dated citation convention the same way (P-014: asserts, does not prove)', () => {
+      const r = lintCarrySurfaceProvenance(
+        'Owner directive 2026-07-06: do not spend V1 effort on P2P/cross-machine federation',
+      );
+      expect(r.flagged).toBe(true);
+      expect(r.matches[0].kind).toBe('manual-owner-tag');
+    });
+
+    it('flags "owner mandate" the same way', () => {
+      expect(
+        lintCarrySurfaceProvenance('per the owner mandate: ship this dark for now').matches[0]?.kind,
+      ).toBe('manual-owner-tag');
+    });
+
+    it('a [turn:…] ref on the same line clears it, exactly like the bracket tag', () => {
+      const r = lintCarrySurfaceProvenance(
+        'owner directive 1: hold the deploy [turn:bf1881bc@2026-07-14T17:42:41.307Z]',
+      );
+      expect(r.flagged).toBe(false);
+    });
+
+    it('a [self-imposed]/[peer:]/[inferred] tag on the same line clears it too', () => {
+      expect(
+        lintCarrySurfaceProvenance('[self-imposed] treat this as owner directive 1 for now').flagged,
+      ).toBe(false);
+      expect(
+        lintCarrySurfaceProvenance('[inferred] owner directive 2 no longer applies').flagged,
+      ).toBe(false);
+    });
+
+    it('downgrades meta-discussion of the convention to a mention, not the loud category', () => {
+      expect(
+        lintCarrySurfaceProvenance('Directive provenance — never manufacture an owner directive').matches[0]
+          ?.kind,
+      ).toBe('possible-owner-tag-mention');
+      expect(
+        lintCarrySurfaceProvenance(
+          'this is the telephone game that manufactures owner directives out of notes-to-self',
+        ).matches[0]?.kind,
+      ).toBe('possible-owner-tag-mention');
+    });
+
+    it('downgrades to possible-owner-tag-mention on nearby mention-context words', () => {
+      const r = lintCarrySurfaceProvenance('a claimed owner directive with no turn ref is suspect');
+      expect(r.matches[0]?.kind).toBe('possible-owner-tag-mention');
+    });
+
+    it('never flags a backtick-quoted mention of the phrase', () => {
+      expect(
+        lintCarrySurfaceProvenance('the doc uses the phrase `owner directive` loosely').flagged,
+      ).toBe(false);
+    });
+
+    it('an "owner directed" VERB phrase still routes through the existing owner-attribution match, not this one', () => {
+      const r = lintCarrySurfaceProvenance('the owner directed us to hold off, per the standup');
+      expect(r.flagged).toBe(true);
+      expect(r.matches[0].kind).toBe('owner-attribution');
+    });
+
+    it('does NOT flag unrelated prose mentioning "owner" and "director" separately', () => {
+      expect(
+        lintCarrySurfaceProvenance('the project director met with the owner to review the roadmap').flagged,
+      ).toBe(false);
+    });
+  });
+
   it('P-014: a [turn:<session>@<ts>] ref clears the line — with or without an owner tag', () => {
     expect(
       lintCarrySurfaceProvenance(
