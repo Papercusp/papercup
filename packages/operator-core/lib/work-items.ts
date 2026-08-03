@@ -3247,6 +3247,23 @@ export function claimFloorsWhereSql(sql: OrgSql, opts: ClaimFloorsOpts) {
     -- read the tag. Same COALESCE-for-NULL-safety shape, unaliased (this fragment
     -- runs in harness_features_consolidated context).
     AND COALESCE(payload, '{}'::jsonb) ->> '_claimHold' IS DISTINCT FROM 'true'
+    -- EI-19441925633833456: the HIVE-CANARY floor. A canary (payload.canary=true) is a
+    -- MEASUREMENT INSTRUMENT for "does the autonomous loop carry queued work end-to-end?",
+    -- so an agent self-selecting it and completing it does not answer that question — it
+    -- fabricates a pass. Observed: scheduler:get_next served F-CANARY-20260803 to an su on
+    -- 2026-08-03, and F-CANARY-20260802 was su-completed 58s after creation while the Hive
+    -- was owner-paused and no cup could possibly have run.
+    --
+    -- ⚠ This floor belongs HERE (self-select) and NOWHERE ELSE. Do NOT add it to
+    -- fetchFrontierRows (pot/survey.ts) and do NOT express it via payload._claimHold: that tag is
+    -- honored by BOTH this path and the Mug's placement frontier, so using it would make the
+    -- canary un-placeable and the detector would report a loop failure every day, forever —
+    -- breaking the instrument in the exact way it exists to detect. The requirement is
+    -- deliberately asymmetric: agents NO, cups YES.
+    --
+    -- NULL-safe via COALESCE, and scoped to a key only canary rows carry, so every ordinary
+    -- item passes unchanged. A canary remains claimable by explicit id for maintenance.
+    AND COALESCE(payload, '{}'::jsonb) ->> 'canary' IS DISTINCT FROM 'true'
     -- WI-5343: the reserved-plan-lane floor, extended to the FEATURE family. The issue-family
     -- claim has honored a plan-active / live-plan_item_claims-lease reservation since WI-2118 —
     -- but this path (getNextWorkItem tiers 1/2 + claimNextWorkItem) never read the payload.plan_item
