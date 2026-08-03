@@ -1096,7 +1096,10 @@ describe('resolveNamedQueryV2 — fleetAssignments.byHarness (workspace scoping)
       listFleetAssignments,
       groupByAgent: vi.fn(() => []),
     }));
-    vi.doMock('../adv-sessions', () => ({ listAdvSessions: vi.fn(async () => []) }));
+    vi.doMock('../adv-sessions', async (orig) => ({
+      ...(await orig<typeof import('../adv-sessions')>()),
+      listAdvSessions: vi.fn(async () => []),
+    }));
     vi.doMock('@papercusp/agent-mcp', () => ({
       classifyAgentPane: vi.fn(() => ({ kind: 'su', driveMode: 'manual' })),
     }));

@@ -259,15 +259,88 @@ describe('AgentOrders', () => {
 
   describe('empty sections still name what they would hold (owner ask)', () => {
     it('renders every section with an empty-but-named state rather than omitting them', () => {
-      setOrders({ modes: [], directives: [], facts: [], walls: [] });
-      const { container, getByText } = render(<AgentOrders ownerId="su-1" />);
-      for (const id of ['pc-orders-mission', 'pc-orders-modes', 'pc-orders-directives', 'pc-orders-facts', 'pc-orders-carry']) {
+      // `carry: null` explicitly — BASE ships a populated carry object, so
+      // without this the carry section is legitimately a CARD and asserting it
+      // quiet would be asserting against the fixture rather than the branch.
+      setOrders({ modes: [], directives: [], facts: [], walls: [], carry: null });
+      const { container, getByText, getByTestId } = render(<AgentOrders ownerId="su-1" />);
+
+      // Sections that always carry content stay as cards.
+      for (const id of ['pc-orders-mission', 'pc-orders-modes']) {
         expect(container.querySelector(`#${id}`)).toBeTruthy();
       }
-      // An absent section teaches nothing; a named empty one teaches that the
-      // signal exists and is currently clear.
-      expect(getByText('No open owner directives.')).toBeTruthy();
       expect(getByText('No modes registered — default posture.')).toBeTruthy();
+
+      /* The owner's principle is that an empty signal is NAMED, not omitted —
+         "an empty section that NAMES what it would hold is how a reader learns
+         the signal exists". P-005 changed the SHAPE that principle takes for a
+         settled section (a card became one quiet line, Treatment C3) without
+         changing the principle, so this asserts the name + the "none" wording
+         are still on screen rather than asserting a <section> exists. That
+         distinction is the whole point: pinning the principle to the card is
+         what would have made a correct design change look like a regression. */
+      for (const [testId, label, none] of [
+        ['rail-quiet-directives', 'Owner directives', 'none open'],
+        ['rail-quiet-facts', 'Standing facts', 'none in scope'],
+        ['rail-quiet-walls', 'Walls', 'nothing blocked on you'],
+        ['rail-quiet-carry', 'Carry', 'no carry state'],
+      ] as const) {
+        const quiet = getByTestId(testId);
+        expect(quiet.textContent).toContain(label);
+        expect(quiet.textContent).toContain(none);
+        // …and it is genuinely NOT a framed card any more, which is the saving.
+        expect(quiet.closest('.pc-orders__sec')).toBeNull();
+      }
+    });
+
+    /* ── the quiet-empty rule (P-005 / Treatment C3) ──────────────────────────
+       The rule is only safe because of what it REFUSES to quiet. The frame is
+       what encodes "there is something here", so a section that could not be
+       READ, or whose emptiness is itself the finding, has to keep its card —
+       plan D-003's three-state rule. These are the guards; without them the
+       branch silently files "I don't know" under "calm". */
+    it('keeps the CARD when a section could not be read — never quieter than "none"', () => {
+      setOrders({ carry: null, unavailable: ['carry'] });
+      const { container, queryByTestId, getByTestId } = render(<AgentOrders ownerId="su-1" />);
+      expect(queryByTestId('rail-quiet-carry')).toBeNull();
+      expect(container.querySelector('#pc-orders-carry')).toBeTruthy();
+      expect(getByTestId('orders-unavailable')).toBeTruthy();
+    });
+
+    it('keeps the CARD when a section wants the reader — data-attn is the opposite of quiet', () => {
+      setOrders({
+        directives: [{ id: 'd1', verbatimText: 'do the thing', createdAtMs: Date.now() }],
+        directivesTotalOpen: 1,
+        walls: [{ claim: 'owner must settle' }],
+      });
+      const { container, queryByTestId } = render(<AgentOrders ownerId="su-1" />);
+      for (const [quietId, sectionId] of [
+        ['rail-quiet-directives', 'pc-orders-directives'],
+        ['rail-quiet-walls', 'pc-orders-walls'],
+      ] as const) {
+        expect(queryByTestId(quietId)).toBeNull();
+        const section = container.querySelector(`#${sectionId}`);
+        expect(section).toBeTruthy();
+        expect(section!.getAttribute('data-attn')).toBe('true');
+      }
+    });
+
+    it('keeps the CARD for a carry-note that was NEVER written — an emptiness that is the news', () => {
+      // An agent looping with no carry-note loses its thread at the next cold
+      // wake. That is a finding shaped like emptiness, and quieting it would
+      // hide the one state this section exists to catch.
+      setOrders({ carry: { mode: 'cold', loopActive: true, neverWritten: true, note: null } });
+      const { container, queryByTestId, getByTestId } = render(<AgentOrders ownerId="su-1" />);
+      expect(queryByTestId('rail-quiet-carry')).toBeNull();
+      expect(container.querySelector('#pc-orders-carry')).toBeTruthy();
+      expect(getByTestId('orders-carry-never').textContent).toContain('cold wake would start blank');
+    });
+
+    it('groups the sections under the two cluster labels (Treatment C3)', () => {
+      setOrders({});
+      const { getByText } = render(<AgentOrders ownerId="su-1" />);
+      expect(getByText('What they were told')).toBeTruthy();
+      expect(getByText('What they’re carrying')).toBeTruthy();
     });
 
     it('skips the fetch entirely while collapsed — the reason orders is a separate query', () => {
@@ -332,7 +405,12 @@ describe('AgentOrders', () => {
     it('toggles are real buttons with an accessible name that says what the click DOES', () => {
       // A chevron cannot be seen by a screen reader, and `aria-expanded` alone
       // does not say which section it belongs to.
-      setOrders({});
+      //
+      // Asserted on a section that HAS content: since P-005 a settled section
+      // renders as a quiet line with no toggle at all, and deliberately so —
+      // there is no body to expand, and giving it the cap's affordance would
+      // promise one. Facts are populated here for that reason, not incidentally.
+      setOrders({ facts: [{ key: 'k', body: 'a standing fact' }] });
       const { getByTestId } = render(<AgentOrders ownerId="su-1" />);
       const toggle = getByTestId('rail-section-toggle-o-facts');
       expect(toggle.tagName).toBe('BUTTON');
@@ -341,6 +419,13 @@ describe('AgentOrders', () => {
       expect(getByTestId('rail-section-toggle-o-facts').getAttribute('aria-label')).toBe(
         'Standing facts — expand this section',
       );
+    });
+
+    it('a SETTLED section offers no toggle — there is no body to expand', () => {
+      setOrders({ facts: [] });
+      const { queryByTestId, getByTestId } = render(<AgentOrders ownerId="su-1" />);
+      expect(queryByTestId('rail-section-toggle-o-facts')).toBeNull();
+      expect(getByTestId('rail-quiet-facts').tagName).toBe('P');
     });
 
     it('bounds an OPEN section too — the half of the fix that needs no click', () => {

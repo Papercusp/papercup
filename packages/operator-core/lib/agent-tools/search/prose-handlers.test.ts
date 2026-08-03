@@ -90,7 +90,24 @@ const buildQueryEmbedder = vi.fn(async () => null as unknown);
 // — a fixed stand-in is fine here since the handler-level tests never assert
 // on the budget value itself, only on buildQueryEmbedder's scripted return.
 const interactiveEmbedAcquireBudgetMs = vi.fn(() => 4000);
-vi.mock('./embedder', () => ({ buildQueryEmbedder, interactiveEmbedAcquireBudgetMs }));
+// P-001: semantic.ts acquires the RESOLVED embedder (it needs the mode to pick
+// a minScore floor in that model's units). Derived from the same scripted
+// `buildQueryEmbedder` mock above so every existing per-test script
+// (mockResolvedValueOnce / mockRejectedValueOnce) keeps driving it, and the
+// call-count assertions keep counting. A rejection is deliberately NOT
+// swallowed here — the real builder owns that try/catch, and the last test in
+// this file pins that the HANDLER adds no boundary of its own.
+// `mode: 'test'` is deliberately an UNMEASURED mode ⇒ no floor is applied, so
+// these engine-wiring tests stay independent of the floor's value.
+const buildQueryEmbedderResolved = vi.fn(async (...args: unknown[]) => {
+  const embed = await (buildQueryEmbedder as (...a: unknown[]) => Promise<unknown>)(...args);
+  return embed ? { mode: 'test', dims: 768, embed } : null;
+});
+vi.mock('./embedder', () => ({
+  buildQueryEmbedder,
+  buildQueryEmbedderResolved,
+  interactiveEmbedAcquireBudgetMs,
+}));
 
 const CTX = (over: Record<string, unknown> = {}) => ({
   tx: (() => {}) as never,

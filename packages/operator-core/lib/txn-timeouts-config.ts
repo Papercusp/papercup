@@ -9,11 +9,18 @@
  * lock_timeout 5s→15s to ride out same-workspace contention) without a deploy — the most incident-
  * relevant of the §H storage/PG dials.
  *
- * Read via the ratified D-010 mechanism: a module-level SYNC cache (zero-await — getTxnTimeouts is
- * called per-txn on the mutating hot path), refreshed on (a) the flag's onFlagChange (kill-switch flip
- * + a key===null reload), (b) local write (same-process immediate), (c) a ~60s .unref()'d periodic
- * timer for bounded (≤60s) cross-process + restart freshness. The module import is deliberately PURE
- * (no import-time getFlag/PG read — locks/configure.ts imports it on the boot path).
+ * Read via a module-level SYNC cache (zero-await — getTxnTimeouts is called per-txn on the mutating
+ * hot path), refreshed on (a) the flag's onFlagChange (kill-switch flip + a key===null reload),
+ * (b) local write (same-process immediate), (c) a ~60s .unref()'d periodic timer for bounded (≤60s)
+ * cross-process + restart freshness. The module import is deliberately PURE (no import-time
+ * getFlag/PG read — agent-tools/locks/configure.ts imports it on the boot path); legs (a) and (c)
+ * are armed on FIRST READ rather than at import, so the import touches no flags/server binding at
+ * all — see ensureLiveRefreshArmed() below for why that distinction is load-bearing.
+ *
+ * (This header previously cited "the ratified D-010 mechanism" as the authority for the above.
+ * That citation is DANGLING: no plan decision in this workspace ratifies it — verified 2026-08-03
+ * against both the `decisions` jsonb and the raw `content` column of every plan. The design is
+ * sound on its own merits, which are stated here; it just was not governed by a D-010.)
  *
  * Default-ON kill-switch (FLAGS.TXN_TIMEOUTS_CONFIG): the override store is empty by default ⇒
  * txnTimeoutsConfig() returns the baked 5s/5s defaults ⇒ byte-identical. Flip the flag OFF to ignore
@@ -62,6 +69,7 @@ let cachedOverride: TxnTimeoutsOverride = {};
 
 /** The effective per-workspace txn timeouts for the locks hot path. SYNC, zero-await. */
 export function txnTimeoutsConfig(): TxnTimeoutsConfig {
+  ensureLiveRefreshArmed();
   if (!cachedEnabled) return TXN_TIMEOUTS_DEFAULTS;
   return {
     lockTimeoutMs: cachedOverride.lockTimeoutMs ?? TXN_TIMEOUTS_DEFAULTS.lockTimeoutMs,
@@ -77,6 +85,7 @@ export function txnTimeoutsConfig(): TxnTimeoutsConfig {
  * as txnTimeoutsConfig(). The migration runner opts out per-txn (SET LOCAL statement_timeout=0).
  */
 export function adminPoolStatementTimeoutMs(): number {
+  ensureLiveRefreshArmed();
   if (!cachedEnabled) return 0;
   const v = Math.trunc(cachedOverride.adminPoolStatementTimeoutMs ?? 0);
   return v > 0 ? v : 0;
@@ -94,16 +103,44 @@ export async function refreshTxnTimeoutsConfig(): Promise<void> {
     cachedOverride = {};
   }
 }
-// D-010 (a): event-driven refresh — fires on the kill-switch flip + a key===null reload. No
-// import-time getFlag (pure import — locks/configure.ts imports this on the boot path).
-onFlagChange((key) => {
-  if (key === null || key === FLAGS.TXN_TIMEOUTS_CONFIG) void refreshTxnTimeoutsConfig();
-});
-// D-010 (c): bounded cross-process + restart freshness. .unref() so it never holds the process open.
-// P-008: visible in schedule:inventory as a 'cache' timer (per-process config memo refresh).
-managedSetInterval('config-refresh:txn-timeouts', 60_000, () => refreshTxnTimeoutsConfig(), {
-  category: 'cache',
-});
+/**
+ * Live-refresh wiring, armed on FIRST USE rather than at import (EI-19416650993725684).
+ *
+ * WHY LAZY, and why this is not merely a style choice: an `import { onFlagChange }` whose binding
+ * is READ at module scope makes this module unimportable under a PARTIAL vitest mock of
+ * `@papercusp/flags/server`. Vitest's mocked-module proxy throws on binding ACCESS (not on
+ * invocation), so the whole test FILE dies at collection with
+ *   No "onFlagChange" export is defined on the "@papercusp/flags/server" mock
+ * contributing ZERO tests — a failure that names this module while pointing at a file that never
+ * mentions it. 96 of the 116 operator-core test files that mock flags/server omit `onFlagChange`,
+ * so every one of them is one transitive import of `agent-tools/locks/configure.ts` away from that.
+ * Two already hit it (loop/arm.test.ts, work_items/complete.test.ts, WI-7411).
+ *
+ * ⚠ MEASURED, do not "simplify" this back: defensive forms do NOT work, because they are still
+ * binding accesses — `onFlagChange?.(...)`, `typeof onFlagChange`, try/catch around the call, and
+ * `import * as ns` + `ns.onFlagChange?.()` all throw identically. Moving the access inside a
+ * function body is the only fix that keeps the import pure.
+ *
+ * Behaviour is unchanged for real consumers: the cache starts at the baked defaults and is only
+ * ever populated by an async refresh, so arming at first read rather than at import cannot change
+ * what any caller observes — the readers below return defaults until a refresh lands either way.
+ * A process that imports this module but never reads the config now also stops paying for a timer
+ * it never used.
+ */
+let liveRefreshArmed = false;
+function ensureLiveRefreshArmed(): void {
+  if (liveRefreshArmed) return;
+  liveRefreshArmed = true;
+  // (a): event-driven refresh — fires on the kill-switch flip + a key===null reload.
+  onFlagChange((key) => {
+    if (key === null || key === FLAGS.TXN_TIMEOUTS_CONFIG) void refreshTxnTimeoutsConfig();
+  });
+  // (c): bounded cross-process + restart freshness. .unref() so it never holds the process open.
+  // P-008: visible in schedule:inventory as a 'cache' timer (per-process config memo refresh).
+  managedSetInterval('config-refresh:txn-timeouts', 60_000, () => refreshTxnTimeoutsConfig(), {
+    category: 'cache',
+  });
+}
 
 // ── async read/write (the tool) ──────────────────────────────────────────────
 export async function readTxnTimeoutsOverride(): Promise<TxnTimeoutsOverride> {

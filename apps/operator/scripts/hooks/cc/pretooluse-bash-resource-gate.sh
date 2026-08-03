@@ -352,7 +352,17 @@ def _log_denial(reason):
 
 
 def deny(reason):
-    _frag = _matched_fragment(_DENY_VIEW.get('clean'), _DENY_VIEW.get('at'))
+    # `inReason` is opt-IN, not default (EI-18828567391761902 + EI-18691482279179647).
+    # A guard scanning SHELL text can safely quote its match back: the fragment is
+    # shell syntax, and the reader recognises it. A guard scanning an interpreter
+    # PAYLOAD cannot — that text is arbitrary user code, mostly prose, and quoting
+    # a slice of it makes the guard look like it matched the prose. Two existing
+    # tests enforce exactly that ("quotes back a real path token, never a prose
+    # fragment"), and they caught this when the fragment was attached
+    # unconditionally. The log gets the fragment either way, which is where the
+    # person writing the ticket needs it.
+    _frag = (_matched_fragment(_DENY_VIEW.get('clean'), _DENY_VIEW.get('at'))
+             if _DENY_VIEW.get('inReason') else '')
     if _frag:
         reason = (
             '%s\n\nWhat the guard actually matched, AFTER normalization '
@@ -2537,6 +2547,7 @@ def _shell_write_guard():
             # shows WHAT was matched, not just where it resolved to
             # (EI-19421518638516187).
             _DENY_VIEW['clean'], _DENY_VIEW['at'] = _clean, _at
+            _DENY_VIEW['inReason'] = True  # shell text — safe to quote back
             deny(
                 'shell-write guard (EI-18664655909328670): this %s targets `%s`, which '
                 'resolves INSIDE the shared staging tree. Raw shell writes to tree files '
@@ -3189,6 +3200,11 @@ def _interpreter_write_guard():
             # command — showing it is what tells a confused reader which of the
             # two the guard was reading (EI-19421518638516187).
             _DENY_VIEW['clean'], _DENY_VIEW['at'] = _body, _body.find(_hit)
+            # LOG-ONLY, explicitly: this text is arbitrary user code, so quoting a
+            # slice of it into the reason would breach the never-quote-prose
+            # invariant. Stated rather than left to fall through, so a future
+            # reorder cannot silently turn it on.
+            _DENY_VIEW['inReason'] = False
             deny(
                 'shell-write guard (EI-18691482279179647): this `%s` invocation runs inline '
                 'code that references `%s`, which resolves INSIDE the shared staging tree. '

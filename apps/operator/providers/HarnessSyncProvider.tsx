@@ -63,19 +63,117 @@ const queryClient = new QueryClient();
 /**
  * WI-6253: the sync concurrency gate's 24-wide default is tuned for the
  * Tauri webview→sidecar IPC path, which has no real per-host connection cap.
- * A plain (non-Tauri) browser tab pointed at the dev server has NO IPC bridge
- * at all — `fetch()` always opens a real WebKitGTK/browser HTTP connection —
- * so it must use the connection-capped value instead of inheriting the
- * IPC-tuned one. (The Tauri shell's own pre-IPC-ready startup window is a
- * separate, currently-unwired case — see query-fetcher.ts's
- * `CONNECTION_CAPPED_MAX_IN_FLIGHT` doc + follow-up WI-6460.)
+ * Anything riding a real HTTP connection must use the connection-capped value
+ * instead, because WebKitGTK grants ~6 connections per host and standing SSE
+ * streams already hold 3-4 of them.
+ *
+ * D-047 (`no-http-anywhere-2026-07-28`): the parameter is "does IPC actually
+ * carry `fetch` RIGHT NOW", proven by `endpoint_ipc_status().client`, never
+ * inferred. It used to be `isTauri()` — a `window.__TAURI_INTERNALS__` probe
+ * written for the SetupWizard's button captions — which tests SHELL PRESENCE,
+ * a different question. The shell can be present while `/api` is demonstrably
+ * on HTTP, in three cases:
+ *
+ *   1. the rollback lever `PAPERCUSP_DESKTOP_IPC=0` — Rust logs verbatim
+ *      "endpoint-ipc DISABLED (PAPERCUSP_DESKTOP_IPC=0) — /api on HTTP", and
+ *      `IpcStatus.client` reads `'disabled'`;
+ *   2. the pre-IPC startup window (`'never-connected'` / `'dial-in-flight'`);
+ *   3. a dropped connection (`'dead'`).
+ *
+ * In all three the old predicate returned `true` and handed the webview the
+ * IPC-tuned 24 against a ~6-connection pool — re-arming the exact WI-6253
+ * stampede, and doing it precisely when the lever was pulled BECAUSE something
+ * was already broken.
+ *
+ * (Whether 2 is the right FLOOR is a separate, still-open question — WI-6460.
+ * This decides only which signal selects it.)
  *
  * Exported as a pure function (rather than inlined in the component) so this
  * decision is unit-testable without mounting React.
  */
-export function resolveMaxInFlightFetches(isTauriEnv: boolean): number | undefined {
+export function resolveMaxInFlightFetches(ipcCarriesFetch: boolean): number | undefined {
   // undefined ⇒ SyncProvider's own default (DEFAULT_MAX_IN_FLIGHT, IPC-tuned).
-  return isTauriEnv ? undefined : CONNECTION_CAPPED_MAX_IN_FLIGHT;
+  return ipcCarriesFetch ? undefined : CONNECTION_CAPPED_MAX_IN_FLIGHT;
+}
+
+/**
+ * Ask the shell whether the IPC bridge is actually connected.
+ *
+ * Reads the STRUCTURED `IpcStatus.client` flag, never `resolution_detail`
+ * prose — the infer-from-a-string class D-005 exists to retire, and the same
+ * read D-008 established for `ipcOwnerIsContentOrigin`.
+ *
+ * Fails CAPPED in every ambiguous direction: no Tauri, an older shell whose
+ * `IpcStatus` predates the field, a rejected invoke, or any state other than
+ * `connected`. Over-capping costs a little latency; under-capping is the
+ * stampede this exists to prevent.
+ */
+export async function assertIpcCarriesFetch(): Promise<boolean> {
+  try {
+    const { invoke } = await import('@tauri-apps/api/core');
+    const status = await invoke<{ client?: string }>('endpoint_ipc_status');
+    return status?.client === 'connected';
+  } catch {
+    return false;
+  }
+}
+
+/** Bounded startup poll — how long to keep asking before settling for capped. */
+const IPC_ASSERT_TIMEOUT_MS = 30_000;
+const IPC_ASSERT_INTERVAL_MS = 500;
+
+/**
+ * Start CAPPED; raise only once IPC is PROVEN to carry fetch.
+ *
+ * The assertion is an async `invoke`, so it cannot be read during the render
+ * that first builds the gate — hence start-capped-then-raise rather than a
+ * drop-in swap. Raising later is free: `SSEAdapter`'s memo deps include
+ * `maxInFlightFetches`, so a change re-runs `getQueryFetcher`, which retunes
+ * the EXISTING gate in place (`setLimit` + `pump`) rather than minting a
+ * second one.
+ *
+ * ⚠ There is no webview-visible PUSH signal for IPC readiness. The
+ * `PAPERCUSP_IPC_READY` handshake that some @papercusp/sync comments cite as
+ * though this layer could observe it is a sidecar→Rust STDOUT line that never
+ * reaches the webview — so a bounded poll is the only way to see the startup
+ * transition. It stops permanently on the first proof, so steady state is free.
+ *
+ * KNOWN GAP (deliberate, D-047): an IPC connection that dies MID-SESSION does
+ * not re-cap, because the poll has already stopped. Closing that needs a push
+ * signal from Rust and is a separate item — recorded, not silently omitted.
+ */
+function useIpcCarriesFetch(): boolean {
+  const [carries, setCarries] = useState(false);
+
+  useEffect(() => {
+    // Shell ABSENCE is a sound negative: with no Tauri runtime there is no IPC
+    // bridge at all, so fetch is certainly on HTTP and polling would only burn
+    // ~60 failing invokes in a dev browser tab. Only the POSITIVE direction
+    // (shell present ⇒ on IPC) is the unsound inference D-047 removes.
+    if (!isTauri()) return;
+
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = Date.now() + IPC_ASSERT_TIMEOUT_MS;
+
+    const poll = async () => {
+      if (cancelled) return;
+      if (await assertIpcCarriesFetch()) {
+        if (!cancelled) setCarries(true);
+        return; // proven — stop asking
+      }
+      if (cancelled || Date.now() >= deadline) return;
+      timer = setTimeout(poll, IPC_ASSERT_INTERVAL_MS);
+    };
+    void poll();
+
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, []);
+
+  return carries;
 }
 
 // One rows-delta codec for the app lifetime (P-006). Injected into @papercusp/sync only while
@@ -119,6 +217,9 @@ export function HarnessSyncProvider({
 }) {
   // P-006: inject the rows-delta codec while the flag is on (the owner flips it after an attended
   // desktop verify). OFF ⇒ setSyncDeltaCodec(null) ⇒ the batch fetcher serves full re-fetches.
+  // D-047: start capped, raise once the shell PROVES IPC is carrying fetch.
+  const ipcCarriesFetch = useIpcCarriesFetch();
+
   const deltaOn = useFlag(FLAGS.SYNC_RESOURCE_DELTA);
   useEffect(() => {
     setSyncDeltaCodec(deltaOn ? syncDeltaCodec : null);
@@ -132,7 +233,7 @@ export function HarnessSyncProvider({
         userId={userID}
         restEndpoint={DEFAULT_REST_ENDPOINT}
         ssePollIntervalMs={ssePollIntervalMs}
-        maxInFlightFetches={resolveMaxInFlightFetches(isTauri())}
+        maxInFlightFetches={resolveMaxInFlightFetches(ipcCarriesFetch)}
         persistExcludeQueryNames={PERSIST_EXCLUDE_QUERY_NAMES}
       >
         {children}

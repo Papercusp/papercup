@@ -73,6 +73,11 @@ export default function HarnessTopBar({ slug }: Props) {
               // it has NOT been openable since it landed. Same trap, found by the
               // guard added alongside this line.
               'adv:member-work',
+              // adv:dep-graph (dependency-health-pane-2026-08-02) landed the same
+              // way for the third time: registered in HarnessesDock, unit-green,
+              // never listed here — so it shipped unopenable. Caught by the same
+              // guard, which is now three-for-three.
+              'adv:dep-graph',
               ...(crossMemberBrowse ? ['adv:hive-content'] : []),
               'adv:chat',
             ]}

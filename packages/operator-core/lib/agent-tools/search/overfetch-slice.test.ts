@@ -65,6 +65,9 @@ vi.mock('./sources', () => ({
 
 vi.mock('./embedder', () => ({
   buildQueryEmbedder: vi.fn(async () => null as unknown),
+  // P-001: semantic.ts acquires the RESOLVED embedder (needs the mode to pick
+  // a floor in that model's units). Null here = no embedder, same as before.
+  buildQueryEmbedderResolved: vi.fn(async () => null as unknown),
   interactiveEmbedAcquireBudgetMs: vi.fn(() => 4000),
 }));
 

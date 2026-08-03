@@ -441,7 +441,9 @@
   padding: 0;
   font-size: 9.5px;
   font-weight: 700;
-  letter-spacing: 0.045em;
+  /* NO letter-spacing — `lint:design-primitives` enforces 0 across app UI and a
+     nonzero value here reds the fleet gate. Tracking is the reflex reach for a
+     small uppercase label; weight + case + the muted ink already carry it. */
   text-transform: uppercase;
   /* Deliberately the rail's QUIETEST ink: this label groups the caps, so it
      must not compete with them. The rails set the actual value — each lifts its
@@ -479,7 +481,6 @@
 .pc-rail-quiet__label {
   font-size: 9.5px;
   font-weight: 700;
-  letter-spacing: 0.045em;
   text-transform: uppercase;
 }
 /** What "none" means HERE — italic, because it is a state, not a value. The

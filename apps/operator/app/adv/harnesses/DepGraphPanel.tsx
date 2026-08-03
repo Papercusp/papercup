@@ -242,10 +242,16 @@ export default function DepGraphPanel({ params }: PanelComponentProps) {
         type="button"
         className="pc-advpanel__iconbtn"
         aria-pressed={healthOnly}
-        title={
+        /* aria-label, not title: `lint:design-primitives` blocks title-only
+           tooltips on buttons because a title is invisible to keyboard and
+           touch — and this one carried the button's ONLY explanation of what
+           "Issues only" means. It was red-pinning the fleet's green gate on
+           committed code. The visible text stays; aria-label supersedes it as
+           the accessible name and carries the explanation with it. */
+        aria-label={
           healthOnly
-            ? 'Showing only edges that gate nothing: broken (blocker missing) or already satisfied. Click to show all.'
-            : 'Show only edges that gate nothing — broken (blocker missing) or already satisfied.'
+            ? 'Issues only — showing only edges that gate nothing: broken (blocker missing) or already satisfied. Activate to show all edges.'
+            : 'Issues only — show only edges that gate nothing: broken (blocker missing) or already satisfied.'
         }
         onClick={() => void setHealth(healthOnly ? 'all' : 'issues')}
       >

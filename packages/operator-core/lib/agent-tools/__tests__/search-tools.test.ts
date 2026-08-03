@@ -200,6 +200,11 @@ describe('search:semantic', () => {
     vi.doMock('@papercusp/search', () => ({ runHybridSearch }));
     vi.doMock('../search/embedder', () => ({
       buildQueryEmbedder: vi.fn(async () => vi.fn()),
+      // P-001: semantic.ts acquires the RESOLVED embedder — it needs the mode
+      // to pick a minScore floor in that model's units. 'test' is deliberately
+      // an UNMEASURED mode, so no floor is applied and these wiring assertions
+      // stay independent of the floor's value.
+      buildQueryEmbedderResolved: vi.fn(async () => ({ mode: 'test', dims: 768, embed: vi.fn() })),
       interactiveEmbedAcquireBudgetMs: vi.fn(() => 4000),
     }));
     vi.doMock('../search/rerank', mockRerank);
@@ -221,6 +226,11 @@ describe('search:semantic', () => {
     vi.doMock('@papercusp/search', () => ({ runHybridSearch }));
     vi.doMock('../search/embedder', () => ({
       buildQueryEmbedder: vi.fn(async () => vi.fn()),
+      // P-001: semantic.ts acquires the RESOLVED embedder — it needs the mode
+      // to pick a minScore floor in that model's units. 'test' is deliberately
+      // an UNMEASURED mode, so no floor is applied and these wiring assertions
+      // stay independent of the floor's value.
+      buildQueryEmbedderResolved: vi.fn(async () => ({ mode: 'test', dims: 768, embed: vi.fn() })),
       interactiveEmbedAcquireBudgetMs: vi.fn(() => 4000),
     }));
     vi.doMock('../search/rerank', mockRerank);
@@ -238,6 +248,11 @@ describe('search:semantic', () => {
     }));
     vi.doMock('../search/embedder', () => ({
       buildQueryEmbedder: vi.fn(async () => vi.fn()),
+      // P-001: semantic.ts acquires the RESOLVED embedder — it needs the mode
+      // to pick a minScore floor in that model's units. 'test' is deliberately
+      // an UNMEASURED mode, so no floor is applied and these wiring assertions
+      // stay independent of the floor's value.
+      buildQueryEmbedderResolved: vi.fn(async () => ({ mode: 'test', dims: 768, embed: vi.fn() })),
       interactiveEmbedAcquireBudgetMs: vi.fn(() => 4000),
     }));
     vi.doMock('../search/rerank', mockRerank);

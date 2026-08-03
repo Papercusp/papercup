@@ -99,7 +99,10 @@ export function isMachineAuthoredSender(from: string | null | undefined): boolea
  * scout/coord-health-lane.ts — loadCoordPremiseResolve, loadCoordClarifyAdoption
  * and loadCoordAuthoredAdoption; the last of these ALSO applies
  * {@link AGENT_SESSION_SENDER_PATTERN}, because a denominator needs the positive
- * test and this one alone is too permissive for that job).
+ * test and this one alone is too permissive for that job — and, since D-095, a
+ * THIRD positive filter on `expects`, because not even a correct sender pattern
+ * can exclude system code emitting under a borrowed agent identity; see
+ * {@link isSystemEmissionUnderAgentIdentity}).
  * Widening it there does not merely change future behaviour — it
  * retroactively changes which HISTORICAL rows those queries count as unanswered,
  * which messages.ts:288 calls out as "a separate change with its own measurement,
