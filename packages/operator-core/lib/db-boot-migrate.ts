@@ -100,6 +100,15 @@ const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout
 // truth for what's applied).
 export const MIGRATION_FAILURE_COOLDOWN_MS = 5 * 60 * 1000; // 5 minutes
 
+/** Resolve the cooldown duration. Overridable (PAPERCUSP_MIGRATION_COOLDOWN_MS)
+ *  purely for test isolation (a real cooldown run would otherwise take 5 real
+ *  minutes to observe expiry) — not intended as an operational tuning knob. */
+export function resolveMigrationFailureCooldownMs(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env.PAPERCUSP_MIGRATION_COOLDOWN_MS;
+  const parsed = raw ? Number(raw) : NaN;
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : MIGRATION_FAILURE_COOLDOWN_MS;
+}
+
 interface MigrationCooldownEntry {
   lastFailedAt: number;
   error: string;
@@ -193,6 +202,21 @@ export async function applyPendingMigrationsNow(): Promise<BootMigrateResult | n
     onnotice: () => {},
     connection: { lock_timeout: 15_000, application_name: 'papercusp-boot-migrate' },
   });
+  // EI-19403856469813053: load the cross-boot cooldown BEFORE attempting
+  // anything, so a file that failed recently (elsewhere: a prior boot, or a
+  // prior gate-preflight call) is excluded from this attempt entirely — it
+  // never takes the ACCESS EXCLUSIVE lock at all this call, rather than
+  // taking it again only to fail the same way. See the module-level comment
+  // above MIGRATION_FAILURE_COOLDOWN_MS for the full rationale.
+  const cooldownPath = resolveMigrationCooldownFilePath();
+  const cooldownMs = resolveMigrationFailureCooldownMs();
+  const cooldownState = await readMigrationCooldownState(cooldownPath);
+  const cooldownNow = Date.now();
+  const coolingDownEntries = Object.entries(cooldownState).filter(
+    ([, entry]) => cooldownNow - entry.lastFailedAt < cooldownMs,
+  );
+  const coolingDown = new Map(coolingDownEntries);
+  const skipFile = coolingDown.size > 0 ? (f: string) => defaultSkipFile(f) || coolingDown.has(f) : undefined;
   try {
     // Retry ONLY pure transaction contention (lock timeout / deadlock /
     // serialization). Any other failure — a syntax error, a constraint
@@ -210,6 +234,7 @@ export async function applyPendingMigrationsNow(): Promise<BootMigrateResult | n
         client,
         sqlDir,
         continueOnError: true,
+        skipFile,
         log: (s) => console.log(`[boot-migrate] ${s}`),
       });
       appliedCount += pass.appliedCount;
@@ -226,6 +251,42 @@ export async function applyPendingMigrationsNow(): Promise<BootMigrateResult | n
       );
       await sleep(delayMs);
     }
+    // Merge the cooling-down files (skipped this call — never attempted, so
+    // `failed` above has no entry for them) back in, so callers (the
+    // green-checkpoint / checkpoint-run preflight included) still see them as
+    // pending rather than silently vanishing from the report.
+    if (coolingDown.size > 0) {
+      const retryAfterEntries = coolingDownEntries.map(([file, entry]) => {
+        const retryInSec = Math.max(1, Math.ceil((entry.lastFailedAt + cooldownMs - cooldownNow) / 1000));
+        return {
+          file,
+          error: `skipped — cooling down after ${entry.attempts} prior boot-time failure(s) (last: ${entry.error}); retry in ~${retryInSec}s`,
+        };
+      });
+      failed = [...retryAfterEntries, ...failed];
+    }
+    // Persist the cooldown: refresh every file that's freshly failing this
+    // call (skips the just-merged cooling-down entries, which are unchanged),
+    // and drop any tracked file that's no longer in `failed` at all (applied —
+    // by this call, another boot, or db:migrate — the ledger is the source of
+    // truth; this cooldown state is just an optimization on top of it).
+    let cooldownChanged = false;
+    for (const f of failed) {
+      if (coolingDown.has(f.file)) continue;
+      cooldownState[f.file] = {
+        lastFailedAt: cooldownNow,
+        error: f.error,
+        attempts: (cooldownState[f.file]?.attempts ?? 0) + 1,
+      };
+      cooldownChanged = true;
+    }
+    for (const filename of Object.keys(cooldownState)) {
+      if (!failed.some((f) => f.file === filename)) {
+        delete cooldownState[filename];
+        cooldownChanged = true;
+      }
+    }
+    if (cooldownChanged) await writeMigrationCooldownState(cooldownPath, cooldownState);
     if (appliedCount > 0) {
       console.log(`[boot-migrate] applied ${appliedCount} pending migration(s) (of ${totalKnown} known)`);
     }

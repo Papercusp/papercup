@@ -94,7 +94,9 @@ export type ProseEligibleMode = (typeof PROSE_ELIGIBLE_MODES)[number];
  * `memory_vec_*` are deliberately NOT here: they are per-mode spaces with their
  * own widths (local stays 384, harrier 1024), so they are not governed by the
  * shared prose contract — but gemma's and openai's DO have to move with it, and
- * migration 727 handles them alongside these.
+ * migration 727 handles them alongside these. They are enumerated separately in
+ * `PROSE_MEMORY_VEC_COLUMNS` below; `WIDTH_MIGRATION_WIPE_SET` is the union, and
+ * is the list a refill-coverage guard must be written against (WI-7326).
  */
 export const PROSE_VECTOR_COLUMNS: ReadonlyArray<{ table: string; column: string }> = [
   { table: 'harness_shared.session_turns', column: 'text_embedding' },
@@ -107,6 +109,42 @@ export const PROSE_VECTOR_COLUMNS: ReadonlyArray<{ table: string; column: string
   { table: 'harness_shared.harness_decisions', column: 'body_embedding' },
   { table: 'harness_shared.code_recipes', column: 'embedding' },
   { table: 'harness_shared.datatype_registry', column: 'embedding' },
+];
+
+/**
+ * The `memory_vec_<mode>` columns a prose width migration ALSO wipes.
+ *
+ * DERIVED from `PROSE_ELIGIBLE_MODES` on purpose: a mode becomes prose-eligible
+ * exactly when it emits `PROSE_VECTOR_DIMS`, and at that moment its vec column
+ * necessarily moves with the shared width too. Hand-listing them is what let
+ * WI-7326 happen — 727's target list included these two and the refill-coverage
+ * guard was written against `PROSE_VECTOR_COLUMNS`, which by design does not.
+ *
+ * ⚠ THESE ARE NOT REFILLED BY `embed-backfill`'s TARGETS SWEEP, and cannot be.
+ * That sweep only ever runs `UPDATE <table> SET <col>` over rows that already
+ * exist. `memory_vec_*` are join tables whose row exists SOLELY to carry the
+ * vector, with `vector` NOT NULL — so the only expressible widening DELETEs the
+ * rows, leaving an empty table that no UPDATE can ever repopulate. Their refill
+ * path is the canonical memory sweep (`memory/canonical-vec-backfill.ts`), which
+ * selects on row ABSENCE and re-INSERTs from `memory_canonical` text.
+ */
+export const PROSE_MEMORY_VEC_COLUMNS: ReadonlyArray<{ table: string; column: string }> =
+  PROSE_ELIGIBLE_MODES.map((mode) => ({
+    table: `harness_shared.memory_vec_${mode}`,
+    column: 'vector',
+  }));
+
+/**
+ * Everything a prose width migration wipes — the set that must be fully covered
+ * by SOME refill path, asserted by `prose-vector-dims.test.ts`.
+ *
+ * The two halves have DIFFERENT refill mechanisms (TARGETS sweep vs the canonical
+ * memory sweep), which is precisely why a guard written against either half alone
+ * reads as complete coverage while leaving the other half silently unrefilled.
+ */
+export const WIDTH_MIGRATION_WIPE_SET: ReadonlyArray<{ table: string; column: string }> = [
+  ...PROSE_VECTOR_COLUMNS,
+  ...PROSE_MEMORY_VEC_COLUMNS,
 ];
 
 /**

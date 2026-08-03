@@ -16,11 +16,19 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { EMBEDDER_DIM_SPECS, isTrainedDim, type EmbedderMode } from '@papercusp/memory';
+import {
+  EMBEDDER_DIM_SPECS,
+  isTrainedDim,
+  MODE_DIMS,
+  VEC_TABLE,
+  type EmbedderMode,
+} from '@papercusp/memory';
 import {
   PROSE_VECTOR_DIMS,
   PROSE_ELIGIBLE_MODES,
   PROSE_VECTOR_COLUMNS,
+  PROSE_MEMORY_VEC_COLUMNS,
+  WIDTH_MIGRATION_WIPE_SET,
   fitsProseColumns,
   modeTargetDims,
 } from './prose-vector-dims';
@@ -132,8 +140,12 @@ describe('the prose column width contract', () => {
    */
   it('every column the migration WIPES has a backfill target that refills it', () => {
     const swept = new Set(TARGETS.map((t) => `${t.table}.${t.embedCol}`));
-    const orphaned = PROSE_VECTOR_COLUMNS.filter((c) => !swept.has(`${c.table}.${c.column}`)).map(
-      (c) => `${c.table}.${c.column}`,
+    const memoryVec = new Set(PROSE_MEMORY_VEC_COLUMNS.map((c) => `${c.table}.${c.column}`));
+    // The base-table half of the wipe set. memory_vec_* is excluded here because
+    // its refill path is a DIFFERENT mechanism (asserted by the two tests below);
+    // checking it for TARGETS membership would demand something inexpressible.
+    const orphaned = WIDTH_MIGRATION_WIPE_SET.map((c) => `${c.table}.${c.column}`).filter(
+      (k) => !memoryVec.has(k) && !swept.has(k),
     );
     expect(
       orphaned,
@@ -143,5 +155,64 @@ describe('the prose column width contract', () => {
         `real PRIMARY KEY in keyCols), or remove the column from PROSE_VECTOR_COLUMNS if it is ` +
         `genuinely not a shared prose surface.`,
     ).toEqual([]);
+  });
+
+  /**
+   * WI-7326 — the OTHER half of the wipe set, and the half that actually lost
+   * data. Migration 727 wiped `memory_vec_gemma` + `memory_vec_openai` alongside
+   * the prose columns, but the guard above was written against
+   * `PROSE_VECTOR_COLUMNS`, which deliberately excludes them. So the wipe set was
+   * strictly larger than the set being checked, and the uncovered half went
+   * unrefilled: 32,641 memories, 0 vectors, no error and no log line.
+   *
+   * A membership assertion would be circular here (the same list on both sides),
+   * so this asserts the two facts the canonical sweep actually DEPENDS on to
+   * write these tables — both silent-failure paths if they drift:
+   *
+   *   - `VEC_TABLE[mode]` is what `activeVecTable()` resolves; if it did not name
+   *     the wiped table the sweep would refill a different one and recall would
+   *     stay empty.
+   *   - `MODE_DIMS[mode]` is the width guard in `embedAndUpsertVector`, which
+   *     returns FALSE (never throws) on a mismatch — so a stale entry here makes
+   *     every write a silent no-op, which is exactly the failure vec-write.ts's
+   *     own docblock warns is "easy to miss".
+   */
+  it('every wiped memory_vec_* column is one the canonical sweep can actually write', () => {
+    expect(PROSE_MEMORY_VEC_COLUMNS.length).toBe(PROSE_ELIGIBLE_MODES.length);
+    for (const mode of PROSE_ELIGIBLE_MODES) {
+      expect(
+        `harness_shared.${VEC_TABLE[mode]}`,
+        `${mode} is prose-eligible, so migration 727 wipes its vec table — but VEC_TABLE ` +
+          `does not name the table PROSE_MEMORY_VEC_COLUMNS says was wiped, so the sweep ` +
+          `would refill a different table and recall would stay empty.`,
+      ).toBe(`harness_shared.memory_vec_${mode}`);
+      expect(
+        MODE_DIMS[mode],
+        `${mode} is prose-eligible (its vec column moved to vector(${PROSE_VECTOR_DIMS}) with ` +
+          `the prose columns), but MODE_DIMS says ${MODE_DIMS[mode]}. embedAndUpsertVector ` +
+          `RETURNS FALSE on a width mismatch rather than throwing, so every refill write would ` +
+          `silently no-op and this mode's recall would never come back.`,
+      ).toBe(PROSE_VECTOR_DIMS);
+    }
+  });
+
+  /**
+   * The inverse trap: "fixing" a missing memory_vec refill by adding a TARGETS
+   * entry. It type-checks, reads as correct, and is a permanent no-op — the
+   * TARGETS sweep only ever runs `UPDATE <table> SET <col>` over rows that
+   * already exist, and a width migration DELETEs every row in these join tables
+   * (their `vector` is NOT NULL, so `USING NULL` cannot apply). An empty table
+   * stays empty forever, with the sweep reporting a clean scanned:0 pass.
+   */
+  it('memory_vec_* is NOT in TARGETS — an UPDATE sweep can never repopulate an emptied join table', () => {
+    const swept = new Set(TARGETS.map((t) => `${t.table}.${t.embedCol}`));
+    for (const c of PROSE_MEMORY_VEC_COLUMNS) {
+      expect(
+        swept.has(`${c.table}.${c.column}`),
+        `${c.table}.${c.column} has a TARGETS entry, which cannot work: that sweep UPDATEs ` +
+          `existing rows, and a width migration deletes them all. Its refill path is ` +
+          `memory/canonical-vec-backfill.ts, which selects on row ABSENCE and re-INSERTs.`,
+      ).toBe(false);
+    }
   });
 });

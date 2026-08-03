@@ -75,4 +75,53 @@ describe('boundedOrgTxn', () => {
     await boundedOrgTxn(async () => 1, { client, statementTimeoutMs: 1, lockTimeoutMs: 1 });
     expect(vals).toContain('100ms'); // both floored to 100ms
   });
+
+  /**
+   * EI-19404770733829453: a bare "canceling statement due to lock timeout" names no
+   * cause. On a contention timeout, boundedOrgTxn runs a best-effort diagnostic query
+   * (on a FRESH connection — the failing txn's own connection already aborted) and
+   * folds the head blocker into the thrown error's message.
+   */
+  it('folds a head-blocker diagnosis into the thrown error on a contention timeout', async () => {
+    let calls = 0;
+    const client = {
+      begin: async (cb: (tx: unknown) => Promise<unknown>) => {
+        calls++;
+        if (calls === 1) {
+          // the main txn: a plain template-tag fn, like the other tests' fakeClient.
+          return cb((_s: TemplateStringsArray, ..._v: unknown[]) => Promise.resolve([] as unknown[]));
+        }
+        // the diagnostic query: tx needs `.unsafe`, and its SECOND call (the SELECT)
+        // is the one whose return value the diagnosis reads.
+        const rows = [
+          { pid: 1644480, age_s: 104, q: 'BEGIN; SET LOCAL statement_timeout = 0; -- a migration', unblocked: true },
+          { pid: 1671608, age_s: 80, q: 'LOCK TABLE harness_shared.harness_features', unblocked: false },
+        ];
+        const tx = { unsafe: async () => rows };
+        return cb(tx);
+      },
+    } as never;
+    const err = await boundedOrgTxn(async () => {
+      throw pgError('55P03');
+    }, { client }).catch((e) => e);
+    expect(err).toBeInstanceOf(OrgTxnTimeoutError);
+    expect((err as OrgTxnTimeoutError).blockerHint).toContain('pid 1644480');
+    expect((err as OrgTxnTimeoutError).blockerHint).toContain('a migration');
+    expect((err as OrgTxnTimeoutError).message).toContain('likely blocked by pid 1644480');
+    expect((err as OrgTxnTimeoutError).message).toContain('1 other backend(s) also waiting');
+  });
+
+  it('leaves blockerHint undefined (and the base message unchanged) when the diagnostic query itself fails', async () => {
+    // fakeClient() has no `.unsafe` at all — the diagnostic's tx.unsafe(...) throws,
+    // which describeContentionAtFailure must swallow rather than letting it mask
+    // (or replace) the real OrgTxnTimeoutError.
+    const err = await boundedOrgTxn(async () => {
+      throw pgError('55P03');
+    }, { client: fakeClient() }).catch((e) => e);
+    expect(err).toBeInstanceOf(OrgTxnTimeoutError);
+    expect((err as OrgTxnTimeoutError).blockerHint).toBeUndefined();
+    expect((err as OrgTxnTimeoutError).message).toBe(
+      'operator write timed out waiting for a row/advisory lock (pg 55P03 lock_timeout) — retry shortly',
+    );
+  });
 });

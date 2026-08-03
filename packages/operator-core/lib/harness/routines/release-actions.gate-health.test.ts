@@ -354,6 +354,7 @@ describe('trackGateStall persists candidate staleness into gate_health (EI-19329
       ['pkgA/foo.test.ts'],
       null,
       undefined,
+      null,
       stalenessRunner('2026-08-02T02:27:59Z', '86'),
     );
 

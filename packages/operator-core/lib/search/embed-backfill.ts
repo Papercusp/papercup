@@ -53,6 +53,30 @@ const OPENAI_EMBEDDER_MODEL = 'text-embedding-3-small';
 // pushes bigger batches for throughput, a laptop keeps latency/memory down.
 const BATCH_SIZE = getResourceProfile().embedBatchSize;
 
+/**
+ * WI-7327: per-row embed deadline.
+ *
+ * A single embed is ~0.3-1.5s against the local :3384 sidecar even on a loaded
+ * box, so 90s cannot fire on a merely-slow call — it fires only on a call that
+ * is never coming back. Without it one wedged request pins the sweep's `running`
+ * latch and silently disables ALL future backfill.
+ */
+const EMBED_ROW_TIMEOUT_MS = 90_000;
+
+function withEmbedTimeout<T>(p: Promise<T>, ms = EMBED_ROW_TIMEOUT_MS): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  return Promise.race([
+    p,
+    new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`embed_timeout_after_${ms}ms`)), ms);
+      // Never hold the process open on this timer alone.
+      (timer as unknown as { unref?: () => void }).unref?.();
+    }),
+  ]).finally(() => {
+    if (timer) clearTimeout(timer);
+  }) as Promise<T>;
+}
+
 type ResolvedMode = 'openai' | 'local' | 'gemma' | 'harrier' | 'disabled';
 
 interface BackfillStats {
@@ -388,7 +412,13 @@ export async function backfillTable(
     for (const row of batch) {
       stats.scanned += 1;
       try {
-        const vec = await embed(row.body);
+        // WI-7327: BOUND the embed. This await is the one place a sweep can hang
+        // forever — the embedder cascade ends in a `fetch` to the :3384 sidecar or an
+        // HTTP API, and neither carries its own deadline here. A hang holds the
+        // `running` latch (see runBackfillSweep) and wedges ALL future sweeps, which
+        // is exactly how 451k rows sat unembedded for hours. Rejecting instead lets
+        // the existing per-row catch count it as an error and move on.
+        const vec = await withEmbedTimeout(embed(row.body));
         if (!fitsProseColumns(vec.length)) {
           stats.errors += 1;
           continue;
@@ -435,13 +465,38 @@ interface SweepState {
   lastResult: BackfillStats[] | null;
   /** WI-2905: per-sweep rotation offset — which target leads THIS sweep. */
   sweepCounter: number;
+  /**
+   * WI-7327: when the in-flight sweep took the `running` latch, or null when idle.
+   *
+   * The latch used to be a bare boolean reset only in a `finally`. A sweep that
+   * THROWS reaches that finally; a sweep that HANGS never does — and because the
+   * state is pinned to globalThis it then survives every subsequent tick, so the
+   * backfill is wedged until the host restarts. Measured 2026-08-03: the 04:45:04Z
+   * sweep hung, and every 5-min tick after it returned `already_running` in ~265ms
+   * while 451k rows sat unembedded. Stamping the start time lets a later tick
+   * decide the holder is dead and take over.
+   */
+  startedAt: number | null;
 }
+/**
+ * How long a sweep may hold the latch before another tick treats it as dead.
+ * Generous relative to a real sweep (the slowest observed full sweep is ~4min)
+ * so this can only ever fire on a genuine hang, never on a slow-but-live sweep.
+ */
+const SWEEP_LATCH_STALE_MS = 15 * 60 * 1000;
 const __sweepStateKey = Symbol.for('papercusp.embedBackfillSweepState');
 const __sweepState: SweepState = (() => {
   const g = globalThis as typeof globalThis & { [__sweepStateKey]?: SweepState };
-  if (!g[__sweepStateKey]) g[__sweepStateKey] = { running: false, lastResult: null, sweepCounter: 0 };
+  if (!g[__sweepStateKey]) {
+    g[__sweepStateKey] = { running: false, lastResult: null, sweepCounter: 0, startedAt: null };
+  }
   // Upgrade an older pinned shape (pre-WI-2905) in place.
   if (typeof g[__sweepStateKey]!.sweepCounter !== 'number') g[__sweepStateKey]!.sweepCounter = 0;
+  // Upgrade a pre-WI-7327 pinned shape: an already-held latch has no start stamp,
+  // so date it now rather than leaving it immortal.
+  if (g[__sweepStateKey]!.startedAt === undefined) {
+    g[__sweepStateKey]!.startedAt = g[__sweepStateKey]!.running ? Date.now() : null;
+  }
   return g[__sweepStateKey]!;
 })();
 
@@ -493,8 +548,34 @@ export async function runBackfillSweep(
   opts: BackfillSweepOptions = {},
 ): Promise<BackfillStats[] | { skipped: string }> {
   const maxRowsPerTarget = opts.maxRowsPerTarget ?? MAX_ROWS_PER_TARGET_PER_SWEEP;
-  if (__sweepState.running) return { skipped: 'already_running' };
+  // WI-7327: the latch is TIME-BOXED, and every refusal is LOUD.
+  //
+  // Both halves matter. A hung sweep never reaches the `finally` that clears
+  // `running`, so a bare boolean wedges the backfill permanently; and the skip
+  // returns a non-array that `_runSweepLogged` cannot log, so the wedge is
+  // completely silent. Measured 2026-08-03: a sweep hung at 04:45:04Z and the
+  // next 9 ticks each returned here in ~265ms, emitting nothing, while
+  // session_turns + work_items (451k rows, no inline write-path embedder — this
+  // sweep is their ONLY source) stayed at zero.
+  if (__sweepState.running) {
+    const heldMs = __sweepState.startedAt === null ? 0 : Date.now() - __sweepState.startedAt;
+    if (heldMs < SWEEP_LATCH_STALE_MS) {
+      console.log(
+        `[embed-backfill] skipped: a sweep has held the latch for ${Math.round(heldMs / 1000)}s ` +
+          `(stale at ${SWEEP_LATCH_STALE_MS / 1000}s)`,
+      );
+      return { skipped: 'already_running' };
+    }
+    // Past the ceiling the holder is not slow, it is gone: no sweep legitimately
+    // runs this long. Take the latch rather than defer to a corpse forever.
+    console.warn(
+      `[embed-backfill] STALE LATCH: previous sweep has held it for ${Math.round(heldMs / 1000)}s ` +
+        `(> ${SWEEP_LATCH_STALE_MS / 1000}s) and is presumed hung — taking over. ` +
+        `If this repeats, the per-row embed is hanging (WI-7327).`,
+    );
+  }
   __sweepState.running = true;
+  __sweepState.startedAt = Date.now();
   try {
     const resolved = await resolveBackfillEmbedder();
     // Skip entirely when disabled OR when the active embedder's dims don't fit
@@ -585,6 +666,7 @@ export async function runBackfillSweep(
     return results;
   } finally {
     __sweepState.running = false;
+    __sweepState.startedAt = null;
   }
 }
 
@@ -627,12 +709,28 @@ async function _runSweepLogged(label: string): Promise<void> {
     const r = await runBackfillSweep();
     if (Array.isArray(r)) {
       const total = r.reduce((acc, s) => acc + s.embedded, 0);
+      const scanned = r.reduce((acc, s) => acc + s.scanned, 0);
+      const errors = r.reduce((acc, s) => acc + s.errors, 0);
       if (total > 0) {
         console.log(
           `[embed-backfill] ${label} sweep complete: ` +
             r.map((s) => `${s.table.split('.').pop()}=${s.embedded}/${s.scanned}`).join(' '),
         );
+      } else if (scanned > 0 || errors > 0) {
+        // WI-7327: a sweep that looked at rows and embedded NONE is a fault, not a
+        // quiet success — it is what a code/schema width skew looks like (every
+        // UPDATE rejected into the per-row catch). This used to print nothing, so
+        // "healthy" and "totally broken" were byte-identical: silence.
+        console.warn(
+          `[embed-backfill] ${label} sweep embedded NOTHING (scanned=${scanned} errors=${errors}) — ` +
+            r.filter((s) => s.scanned > 0 || s.errors > 0)
+              .map((s) => `${s.table.split('.').pop()}=${s.embedded}/${s.scanned}(err${s.errors})`)
+              .join(' '),
+        );
       }
+    } else if (r && typeof r === 'object' && 'skipped' in r) {
+      // The skip path returns a non-array, which the branch above cannot log at all.
+      console.log(`[embed-backfill] ${label} sweep skipped: ${r.skipped}`);
     }
   } catch (err) {
     console.warn(`[embed-backfill] ${label} sweep failed:`, (err as Error).message);

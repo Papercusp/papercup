@@ -13,6 +13,7 @@ vi.mock('../harness/improvements/read-items', () => ({
 import { knownQueryNamesV2, resolveNamedQueryV2 } from './index';
 import { computeLearningObservations } from './learning-observations-read';
 import { readListTotal } from './list-meta';
+import { assertShapeMatchesRecordedVersion } from '../derived-reads/shape-fingerprint';
 
 const issue = (id: string, createdAt: string) => ({
   id,
@@ -146,5 +147,49 @@ describe('learning.observations — Work Queue pagination contract', () => {
       limit: 2000,
     });
     expect(countIssues).toHaveBeenCalledWith({ topic: 'papercusp-observation', state: 'open' });
+  });
+
+  // ── WI-7289 shape guard ──────────────────────────────────────────────────
+  //
+  // The column-count pin above (WI-7303) protects the read-set from silent
+  // drift, but nothing tied it to the `learning.observations` derived-read
+  // producer's registered `producerVersion` in producers.ts — the exact gap
+  // that shipped this fix inert once already. This ties them: fingerprint a
+  // REAL row set (through computeLearningObservations's actual mapper, not a
+  // stand-in) and require it to match the shape recorded for the producer's
+  // LIVE registered version — see shape-fingerprint.ts's module doc.
+  it('shape-guard: the real observation-row shape matches the shape recorded for its LIVE registered producerVersion (WI-7289)', async () => {
+    const full = (id: string) => ({
+      id,
+      title: 'T',
+      body: 'B',
+      scope: 'operator',
+      createdAt: '2026-08-03T00:00:00.000Z',
+      payload: {
+        sourceRole: 'worker',
+        filedByRole: 'su',
+        observation: { kind: 'friction', confidence: 'high', scope: 'harness:papercusp', refs: ['plan:test'] },
+      },
+    });
+    listIssues.mockResolvedValue([full('EI-2'), full('EI-1')]);
+    const rows = await computeLearningObservations({});
+
+    const registry = await import('../derived-reads/registry');
+    registry.__clearDerivedReadRegistryForTest();
+    await import('../derived-reads/producers');
+    const producer = registry.listDerivedReadProducers().find((p) => p.key === 'learning.observations');
+    if (!producer) throw new Error('learning.observations producer not registered');
+
+    assertShapeMatchesRecordedVersion({
+      key: 'learning.observations',
+      producerVersion: producer.producerVersion,
+      sample: rows,
+      expectedByVersion: {
+        // Captured from a real computeLearningObservations() call against the
+        // `full()` fixture above (not hand-typed) — regenerate after a
+        // DELIBERATE shape change, per shape-fingerprint.ts's module doc.
+        2: 'arr<obj{_meta:obj{total:number},body:string,confidence:string,createdAt:string,id:string,kind:string,refs:arr<string>,scope:string,sourceRole:string,title:string}|obj{body:string,confidence:string,createdAt:string,id:string,kind:string,refs:arr<string>,scope:string,sourceRole:string,title:string}>',
+      },
+    });
   });
 });

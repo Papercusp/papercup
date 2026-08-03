@@ -21,6 +21,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CoordEnvelope, EscalationRecord } from '@papercusp/coordination/core';
 import type { HandoffWithAcceptance } from '../../../agent-tools/coordination/handoffs';
+import { assertShapeMatchesRecordedVersion } from '../../../derived-reads/shape-fingerprint';
 
 const {
   readLinesBoundedMock,
@@ -374,5 +375,38 @@ describe('loadCoordHistory — `payload` never re-ships a projected column (WI-7
     expect(stripped).toHaveLength(7);
     // The row still projects all 7 columns — strip and project must stay in lockstep.
     expect(PROJECTED.filter((k) => k in row)).toHaveLength(7);
+  });
+
+  // ── WI-7289 shape guard ──────────────────────────────────────────────────
+  //
+  // The de-dup pin above (WI-7295) protects the payload/top-level split from
+  // silent drift, but nothing tied it to the `coord.history` derived-read
+  // producer's registered `producerVersion` in producers.ts — the exact gap
+  // that shipped this fix inert once already (a stored v1 snapshot kept
+  // passing registry.ts:204's version check and served the old fat rows
+  // indefinitely). This ties them: fingerprint a REAL row (through
+  // loadCoordHistory's actual toHistoryItem logic, not a stand-in) and
+  // require it to match the shape recorded for the producer's LIVE
+  // registered version — see shape-fingerprint.ts's module doc.
+  it('shape-guard: the real history-item shape matches the shape recorded for its LIVE registered producerVersion (WI-7289)', async () => {
+    const row = await onlyRow();
+
+    const registry = await import('../../../derived-reads/registry');
+    registry.__clearDerivedReadRegistryForTest();
+    await import('../../../derived-reads/producers');
+    const producer = registry.listDerivedReadProducers().find((p) => p.key === 'coord.history');
+    if (!producer) throw new Error('coord.history producer not registered');
+
+    assertShapeMatchesRecordedVersion({
+      key: 'coord.history',
+      producerVersion: producer.producerVersion,
+      sample: row,
+      expectedByVersion: {
+        // Captured from a real loadCoordHistory() call against the `rich()`
+        // fixture above (not hand-typed) — regenerate after a DELIBERATE
+        // shape change, per shape-fingerprint.ts's module doc.
+        2: 'obj{from:string,harness_slug:string,kind:string,msg_id:string,payload:obj{body:string,detail:string},plan_slug:string,source:string,summary:string,to:arr<string>,ts:string}',
+      },
+    });
   });
 });

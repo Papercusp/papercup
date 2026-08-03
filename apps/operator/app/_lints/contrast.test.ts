@@ -239,6 +239,21 @@ interface Unresolved {
   unresolved: { reason: SkipReason; detail: string };
 }
 
+/** CSS `color-mix()` percentage resolution: neither operand's percentage
+ * given -> 50/50; one given -> the other is `100% - it`; both given -> as-is.
+ * Each branch returns a fully-resolved pair directly, so callers never see an
+ * intermediate `number | undefined`. */
+function resolvePercentagePair(a: number | undefined, b: number | undefined): [number, number] {
+  if (a === undefined && b === undefined) return [50, 50];
+  // Reaching here means NOT(both undefined); TS can't join that fact with a
+  // fresh `a === undefined` test to conclude `b` is defined, so assert it
+  // explicitly (sound: it's excluded by the branch above) rather than fight
+  // the narrower.
+  if (a === undefined) return [100 - (b as number), b as number];
+  if (b === undefined) return [a, 100 - a];
+  return [a, b];
+}
+
 /** Resolve ONE color expression — a hex literal, a named color, `var()`, or an
  * opaque two-operand `color-mix()` — to a `#rrggbb`. Never both resolved and
  * unresolved; see the file header for why a `color-mix()` touching
@@ -289,14 +304,14 @@ function resolveColorExpr(raw: string, table: Map<string, string>, depth = 0): R
         : { expr: part, pct: undefined as number | undefined };
     });
     // CSS color-mix percentage resolution: neither given -> 50/50; one given
-    // -> the other is `100% - it`.
-    let p0 = parsed[0].pct;
-    let p1 = parsed[1].pct;
-    if (p0 === undefined && p1 === undefined) {
-      p0 = 50;
-      p1 = 50;
-    } else if (p0 === undefined) p0 = 100 - (p1 as number);
-    else if (p1 === undefined) p1 = 100 - p0;
+    // -> the other is `100% - it`. Isolated in its own function (rather than
+    // two mutable `let`s narrowed via if/else-if) so every return is a fully
+    // resolved `[number, number]` — TS's control-flow analysis can't join
+    // "not(both undefined) AND p0 undefined => p1 defined" across two
+    // separate variables, which is what makes the inline `let` form report
+    // `p1` as possibly-undefined at the point of use even though the logic
+    // is sound (TS18048).
+    const [p0, p1] = resolvePercentagePair(parsed[0].pct, parsed[1].pct);
 
     const a = resolveColorExpr(parsed[0].expr, table, depth + 1);
     if (a.unresolved) return a;

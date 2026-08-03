@@ -72,7 +72,7 @@ import {
   computeLearningImprovementsSnapshot,
   HUMAN_QUEUE_WIRE_FIELDS,
 } from '../harness/improvements/learning-digest-snapshot';
-import { deriveShapeFingerprint, assertShapeMatchesRecordedVersion } from '../derived-reads/shape-fingerprint';
+import { assertShapeMatchesRecordedVersion } from '../derived-reads/shape-fingerprint';
 import { __clearDerivedReadRegistryForTest, listDerivedReadProducers } from '../derived-reads/registry';
 
 beforeEach(() => {

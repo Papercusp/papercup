@@ -16,7 +16,7 @@
 // boundary so no PG IO runs; the rollup grouping is what these tests pin down.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { deriveShapeFingerprint, assertShapeMatchesRecordedVersion } from './shape-fingerprint';
+import { assertShapeMatchesRecordedVersion } from './shape-fingerprint';
 
 function scorecard(rubricRef: string, createdAt: string, issueId = 'EI-1', score10: number | null = 10) {
   return {
