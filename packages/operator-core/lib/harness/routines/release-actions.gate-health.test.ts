@@ -369,7 +369,7 @@ describe('trackGateStall persists candidate staleness into gate_health (EI-19329
   it('carries the fields through a GREEN/reset tick too (the whole-object replace must not drop them)', async () => {
     seededGh = { consecutiveReds: 5, stallAlerted: true, lastGreenAt: Date.now() - 60_000 };
 
-    await trackGateStall(ctx, 'advanced', 'bb054adbccf5', [], null, undefined, stalenessRunner('2026-08-02T02:27:59Z', '3'));
+    await trackGateStall(ctx, 'advanced', 'bb054adbccf5', [], null, undefined, null, stalenessRunner('2026-08-02T02:27:59Z', '3'));
 
     const written = lastGateHealthWrite();
     expect(written).not.toBeNull();
@@ -388,12 +388,101 @@ describe('trackGateStall persists candidate staleness into gate_health (EI-19329
       return { ok: true, stdout: '1' };
     };
 
-    await trackGateStall(ctx, 'error', undefined, undefined, null, undefined, counting);
+    await trackGateStall(ctx, 'error', undefined, undefined, null, undefined, null, counting);
 
     const written = lastGateHealthWrite();
     expect(written).not.toBeNull();
     expect(written!.candidateCommittedAt).toBeNull();
     expect(written!.commitsBehindTip).toBeNull();
     expect(called).toBe(0);
+  });
+});
+
+/**
+ * EI-19405864032365760 regression: a `migrations-pending` preflight ABORT must be RECORDED
+ * (so every read surface can say "no verdict was rendered") while still not COUNTING as a red.
+ *
+ * Those two are different claims, and collapsing them is the bug: `classifyGateStallStatus`
+ * correctly returns 'noop' (a tick that judged no code is not evidence of a broken build), but
+ * the noop branch then returned without writing ANYTHING — leaving `consecutiveReds`,
+ * `observedCandidate` and `failingTests` frozen on the PREVIOUS verdict. Every consumer kept
+ * rendering that stale red as current. Measured live 2026-08-03: ~2.5h of a fleet being told
+ * "Gate is RED — the reds are yours to fix" and chasing unrelated test files while the real
+ * blocker was one migration failing to apply.
+ */
+describe('trackGateStall records an inconclusive ABORT without counting it as a red (EI-19405864032365760)', () => {
+  /** The abort write is path-scoped (`jsonb_set(… '{gate_health,inconclusive}' …)`), NOT the
+   *  whole-key `metadata || {gate_health: …}` replace — that distinction is the point (it cannot
+   *  shadow a concurrent counter write), so it needs its own capture. */
+  function lastInconclusiveWrite(): Record<string, unknown> | null {
+    for (let i = calls.length - 1; i >= 0; i--) {
+      const c = calls[i];
+      if (/jsonb_set/i.test(c.query) && /gate_health,inconclusive/.test(c.query) && typeof c.params[1] === 'string') {
+        return JSON.parse(c.params[1] as string) as Record<string, unknown>;
+      }
+    }
+    return null;
+  }
+
+  it('⭐ records status + candidate + the pending-migration detail on a migrations-pending abort', async () => {
+    seededGh = { consecutiveReds: 3, stallAlerted: true, failingTests: ['pkgA/old.test.ts'], observedCandidate: 'oldcandidat' };
+
+    await trackGateStall(ctx, 'migrations-pending', 'deadbeefcafe1234', undefined, null, undefined, '727-widen-vectors.sql: null value in column "vector"');
+
+    const inc = lastInconclusiveWrite();
+    // The bug: before this fix the noop branch returned early and wrote nothing at all.
+    expect(inc).not.toBeNull();
+    expect(inc!.status).toBe('migrations-pending');
+    expect(inc!.candidate).toBe('deadbeefcafe');
+    // The detail is the ONLY place the blocking migration is named — a reader who cannot see it
+    // has no path from "main is stuck" to "migration 727 is failing".
+    expect(inc!.detail).toContain('727-widen-vectors.sql');
+    expect(typeof inc!.observedAtMs).toBe('number');
+  });
+
+  it('⭐ leaves the red counters completely untouched — the abort is recorded, never counted', async () => {
+    seededGh = { consecutiveReds: 3, stallAlerted: true, lastGreenAt: Date.now() - 60_000 };
+
+    await trackGateStall(ctx, 'migrations-pending', 'deadbeefcafe1234', undefined, null, undefined, 'pending: 727');
+
+    // EI-2615 / EI-18757975681519069 hold: no whole-key gate_health write, so no
+    // consecutiveReds increment, no firstRedAt, no stall escalation.
+    expect(lastGateHealthWrite()).toBeNull();
+    expect(calls.some((c) => /harness_escalations/i.test(c.query))).toBe(false);
+  });
+
+  it('⭐ writes NOTHING for skipped-locked — a peer run is producing the real verdict (EI-2615)', async () => {
+    // Deliberately NOT widened to the whole noop class: there a peer run IS in flight and about
+    // to write the real verdict, which is precisely the write EI-2615 proved must not be raced.
+    seededGh = { consecutiveReds: 2, stallAlerted: false };
+
+    await trackGateStall(ctx, 'skipped-locked', 'deadbeefcafe1234', undefined, null, undefined, 'a peer holds the lock');
+
+    expect(lastInconclusiveWrite()).toBeNull();
+    expect(lastGateHealthWrite()).toBeNull();
+  });
+
+  it('⭐ a subsequent RED verdict clears the recorded abort (it superseded it)', async () => {
+    seededGh = { consecutiveReds: 0, stallAlerted: false, lastGreenAt: Date.now(), inconclusive: { status: 'migrations-pending' } };
+
+    await trackGateStall(ctx, 'not-green', 'cafebabe1234', ['pkgA/foo.test.ts']);
+
+    const written = lastGateHealthWrite();
+    expect(written).not.toBeNull();
+    // Explicit null, not merely absent: a stale abort note outliving the verdict that
+    // superseded it is the same class of bug as a stale failingTests list (EI-7505).
+    expect(written!.inconclusive).toBeNull();
+    expect(written!.consecutiveReds).toBe(1);
+  });
+
+  it('⭐ a subsequent GREEN verdict clears the recorded abort', async () => {
+    seededGh = { consecutiveReds: 2, stallAlerted: false, inconclusive: { status: 'migrations-pending' } };
+
+    await trackGateStall(ctx, 'advanced', 'cafebabe1234');
+
+    const written = lastGateHealthWrite();
+    expect(written).not.toBeNull();
+    expect(written!.inconclusive).toBeNull();
+    expect(written!.consecutiveReds).toBe(0);
   });
 });

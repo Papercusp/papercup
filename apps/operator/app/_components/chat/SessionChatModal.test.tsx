@@ -977,8 +977,32 @@ describe('SessionChatModal', () => {
       expect(screen.queryByTestId('session-chat-pending-escalations')).toBeNull();
     });
 
-    it('ignores a coord-escalation with no named options (nothing to pick)', async () => {
+    it('EI-19403137552594870: still renders a coord-escalation with no named options (OtherDetail falls back to its generic actions bar)', async () => {
       seedAttention([mkEscalation('esc-no-opts', { ref: { kind: 'coord-escalation', options: [] } })]);
+      mockFetchOnce(200, { sessions: [] });
+      render(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
+
+      await waitFor(() => expect(screen.getByTestId('session-chat-pending-escalations')).toBeTruthy());
+      expect(screen.getByTestId('other-detail').getAttribute('data-item')).toBe('esc-no-opts');
+    });
+
+    it('EI-19403137552594870: renders this owner\'s own kind:\'conversation\' question to the owner inline — previously invisible here', async () => {
+      seedAttention([
+        mkEscalation('convo-1', {
+          kind: 'conversation',
+          ref: { kind: 'conversation', conversationId: 'c1' },
+          actions: [{ id: 'answer', label: 'Answer' }],
+        }),
+      ]);
+      mockFetchOnce(200, { sessions: [] });
+      render(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
+
+      await waitFor(() => expect(screen.getByTestId('session-chat-pending-escalations')).toBeTruthy());
+      expect(screen.getByTestId('other-detail').getAttribute('data-item')).toBe('convo-1');
+    });
+
+    it('ignores a non-escalation, non-conversation attention item (e.g. a coord-message) for the same owner', async () => {
+      seedAttention([mkEscalation('msg-1', { kind: 'coord-message', ref: { kind: 'coord-message', msgId: 'm1' } })]);
       mockFetchOnce(200, { sessions: [] });
       render(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
 
@@ -986,13 +1010,13 @@ describe('SessionChatModal', () => {
       expect(screen.queryByTestId('session-chat-pending-escalations')).toBeNull();
     });
 
-    it('ignores a non-escalation attention item (e.g. a coord-message) for the same owner', async () => {
-      seedAttention([mkEscalation('msg-1', { kind: 'coord-message', ref: { kind: 'coord-message', msgId: 'm1' } })]);
+    it('EI-19403137552594870: caps the pending-cards region at PENDING_CARDS_MAX so a large backlog cannot swallow the transcript', async () => {
+      seedAttention(Array.from({ length: 9 }, (_, n) => mkEscalation(`esc-${n}`)));
       mockFetchOnce(200, { sessions: [] });
       render(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
 
-      await waitFor(() => expect(screen.getByText('No recent Claude session found for this agent.')).toBeTruthy());
-      expect(screen.queryByTestId('session-chat-pending-escalations')).toBeNull();
+      await waitFor(() => expect(screen.getByTestId('session-chat-pending-escalations')).toBeTruthy());
+      expect(screen.getAllByTestId('other-detail')).toHaveLength(5);
     });
 
     it('renders no pending-escalations section while closed (sessionOwnerId null)', () => {

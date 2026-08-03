@@ -2067,11 +2067,21 @@ export function computeStages(
             // "nothing to do" on a gate that had been red for 6.7h with NOTHING running.
             runInFlight && judgedRunCoversChange
             ? null
-            : g.fireStale
-              ? 'release:checkpoint-run (the green-checkpoint is not firing — no verdict is coming on its own)'
-              : gateHealth === 'stalled'
-                ? 'fix the reds, then release:checkpoint-run — a red gate holds main for everyone and is yours to green, not a queue to wait in'
-                : null
+            : // EI-19405864032365760: an ABORTED tick has a lever, and it is NOT the one the two
+              // arms below would hand out. `fireStale` is false (the gate IS firing, on schedule,
+              // and aborting each time) and the red streak belongs to an older run, so both
+              // "fire a checkpoint run" and "fix the reds" send the reader at the wrong thing —
+              // a re-fire aborts identically at the same preflight, and the named failing tests
+              // are not what is holding the pipeline. Route to the blocking condition instead.
+              g.inconclusive
+              ? g.inconclusive.status === 'migrations-pending'
+                ? 'db:migrate (the gate aborts before judging while a migration is pending — apply it, THEN the next scheduled run judges normally; firing one now aborts the same way)'
+                : `clear the gate's abort condition (${g.inconclusive.status}) — it renders no verdict until then, and re-firing aborts the same way`
+              : g.fireStale
+                ? 'release:checkpoint-run (the green-checkpoint is not firing — no verdict is coming on its own)'
+                : gateHealth === 'stalled'
+                  ? 'fix the reds, then release:checkpoint-run — a red gate holds main for everyone and is yours to green, not a queue to wait in'
+                  : null
         : null,
     });
 
