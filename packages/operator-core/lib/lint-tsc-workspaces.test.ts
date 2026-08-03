@@ -148,7 +148,7 @@ describe('the INVISIBLE population — absence of a gate is the finding', () => 
     expect(code).toBe(0);
     expect(sink.stdout()).toContain('2 director');
     expect(sink.stdout()).toContain('REPORT-ONLY');
-    expect(sink.stdout()).toContain('NO routine gate can reach them');
+    expect(sink.stdout()).toContain('NO routine gate reaches them');
   });
 });
 
@@ -192,6 +192,79 @@ describe('refusing to look green when nothing was checked', () => {
   });
 });
 
+describe('tsconfig-gated promotion (EI-19409185011887864)', () => {
+  // The bug: coverage required a `typecheck` SCRIPT, so a package with a tsconfig and no
+  // script was reported "unreachable by construction" forever — and every NEW package
+  // started out uncovered. A tsconfig is now the opt-in, under measured roots only.
+  it('a tsconfig-only package under a PROMOTE root is GATED, and run via tsc rather than npm', () => {
+    const root = makeTree({ 'libs/generic/quiet': { tsconfig: true } });
+    const sink = makeSink();
+    const spawned: string[][] = [];
+    const code = main({
+      repoRoot: root,
+      roots: ['libs/generic'],
+      exempt: NO_EXEMPT,
+      untypecheckable: {},
+      spawn: (pkg: { command?: string[] }) => {
+        spawned.push(pkg.command ?? ['npm', 'run', 'typecheck']);
+        return PASS;
+      },
+      ...sink.io,
+    });
+    expect(code).toBe(0);
+    expect(sink.stdout()).toContain('1 package(s) gated (1 via tsconfig alone)');
+    // It must NOT be run as `npm run typecheck` — the package has no such script, so that
+    // would fail with "Missing script" and read as a broken package rather than a clean one.
+    expect(spawned).toEqual([['npx', 'tsc', '--noEmit', '-p', 'tsconfig.json']]);
+  });
+
+  it('a tsconfig-only package OUTSIDE a PROMOTE root stays report-only, never silently gated', () => {
+    // The safety rail. Promotion makes a directory BLOCKING, so an unmeasured root must not
+    // be swept in: doing so red-pins the fleet gate on pre-existing errors no commit caused
+    // (measured — promoting `apps/` unmeasured failed on apps/operator immediately).
+    const root = makeTree({ 'packages/unmeasured': { tsconfig: true } });
+    const sink = makeSink();
+    const code = main({
+      repoRoot: root,
+      roots: ['packages'],
+      exempt: NO_EXEMPT,
+      untypecheckable: {},
+      spawn: () => PASS,
+      ...sink.io,
+    });
+    // Gating nothing here is correct, and the run still refuses to call that a green.
+    expect(code).toBe(1);
+    expect(sink.stdout()).toContain('REPORT-ONLY');
+  });
+
+  it('a held-back package is NOT gated and is named with its error count and filed id', () => {
+    // Same discipline as EXEMPT: an exclusion that stops being printed is how a temporary
+    // one becomes permanent without anyone deciding that it should.
+    const root = makeTree({ 'libs/generic/ok': { tsconfig: true }, 'libs/generic/dirty': { tsconfig: true } });
+    const sink = makeSink();
+    const spawned: string[] = [];
+    const code = main({
+      repoRoot: root,
+      roots: ['libs/generic'],
+      exempt: NO_EXEMPT,
+      untypecheckable: {
+        'libs/generic/dirty': { detail: 'zod v3/v4 skew in tests', errors: 3, filedAs: 'EI-1234' },
+      },
+      spawn: (pkg: { rel: string }) => {
+        spawned.push(pkg.rel);
+        return PASS;
+      },
+      ...sink.io,
+    });
+    expect(code).toBe(0);
+    expect(spawned).toEqual(['libs/generic/ok']); // the dirty one was never run
+    expect(sink.stdout()).toContain('NOT GATED');
+    expect(sink.stdout()).toContain('libs/generic/dirty');
+    expect(sink.stdout()).toContain('3 error(s)');
+    expect(sink.stdout()).toContain('EI-1234');
+  });
+});
+
 describe('exemptions cannot go quiet', () => {
   it('an exempt package is excluded from the gated set AND printed with its reason and filed id', () => {
     const root = makeTree({ 'packages/gated': { typecheck: true }, 'packages/skipped': { typecheck: true } });
@@ -204,7 +277,7 @@ describe('exemptions cannot go quiet', () => {
       ...sink.io,
     });
     expect(code).toBe(0);
-    expect(sink.stdout()).toContain('1 package(s) gated, 1 exempt');
+    expect(sink.stdout()).toContain('1 package(s) gated (0 via tsconfig alone), 1 exempt');
     expect(sink.stdout()).toContain('⊘ packages/skipped [committed-errors]');
     expect(sink.stdout()).toContain('WI-7166');
   });
