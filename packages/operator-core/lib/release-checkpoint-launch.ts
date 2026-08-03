@@ -314,16 +314,44 @@ function defaultReadLogHead(logPath: string): string | null {
  *
  * Best-effort by the same contract as `defaultReadLogHead`: any failure (missing file, no
  * permission, mid-rotation) returns null, which degrades to exactly the pre-EI behaviour —
- * the head-read's first candidate — rather than erroring a status probe. */
-function defaultReadLogTail(logPath: string, maxBytes = 65536): string | null {
+ * the head-read's first candidate — rather than erroring a status probe.
+ *
+ * WI-7296: ON A SEEKED READ THE PARTIAL FIRST LINE IS DISCARDED. Seeking to `size - maxBytes`
+ * lands mid-line, and a truncated FIXTURE line is the one shape that survives truncation into
+ * something harmful: `[green-checkpoint:TEST-FIXTURE] checkpointing candidate <sha>` sliced
+ * after the tag reads as a genuine candidate line to {@link parseCheckpointCandidates}.
+ *
+ * Keep it and the failure is a WRONG answer that looks right (a fixture sha reported as the
+ * judged candidate). Drop it and the failure is a MISSING answer, which already has a defined
+ * safe fallback: the caller does `tailCandidates.at(-1) ?? firstCandidate`, so an empty tail
+ * degrades to the head-read's first candidate — the documented pre-EI behaviour.
+ *
+ * The two directions are NOT symmetric, which is what makes this free rather than a trade
+ * (credit: su-4ca244e4, who filed EI-19395755190419540 and then pointed out I had documented
+ * this residual as if it were a coin-flip). Truncation only ever removes from the LEFT, so a
+ * sliced line either loses its leading tag while `checkpointing candidate <sha>` survives —
+ * the harmful case — or has its match prefix destroyed and matches nothing. There is NO case
+ * that yields a corrupted-but-matching sha, because any cut reaching the sha has already
+ * destroyed `checkpointing candidate`. So dropping the line can only ever cost us a candidate,
+ * never corrupt one.
+ *
+ * Cost: a candidate line that is BOTH the first line of the 64KB window AND the only one in
+ * it. Vanishingly rare, and it fails safe. The read stays bounded and O(1) — this is one
+ * `indexOf`, not a widened window; do NOT "fix" the rare case by reading more of the file. */
+export function defaultReadLogTail(logPath: string, maxBytes = 65536): string | null {
   let fd: number | null = null;
   try {
     const size = statSync(logPath).size;
+    // Unseeked: the whole file, so the first line is genuinely the first line — keep it.
     if (size <= maxBytes) return readFileSync(logPath, { encoding: 'utf8' });
     fd = openSync(logPath, 'r');
     const buf = Buffer.allocUnsafe(maxBytes);
     const read = readSync(fd, buf, 0, maxBytes, size - maxBytes);
-    return buf.subarray(0, read).toString('utf8');
+    const window = buf.subarray(0, read).toString('utf8');
+    const firstNewline = window.indexOf('\n');
+    // No newline at all ⇒ the entire window is one partial line ⇒ nothing usable. Return ''
+    // (the read SUCCEEDED and yielded no complete lines) rather than the raw partial slice.
+    return firstNewline === -1 ? '' : window.slice(firstNewline + 1);
   } catch {
     return null;
   } finally {
@@ -359,11 +387,11 @@ function defaultReadLogTail(logPath: string, maxBytes = 65536): string | null {
  *  Line-oriented on purpose: the tag and the sha are on the same line, so a per-line filter is
  *  exactly as precise as the data allows.
  *
- *  KNOWN RESIDUAL (documented, not silently widened): `defaultReadLogTail` seeks to
- *  `size - maxBytes`, so its FIRST line is usually partial. A fixture line whose leading tag
- *  was sliced off by that seek is still harvestable. Widening the read to fix it would cost the
- *  O(1) property that is the whole point of a bounded tail read on a multi-MB log, so the
- *  residual is left stated rather than traded for a worse one. */
+ *  The seek-truncation hole this used to carry as a KNOWN RESIDUAL is CLOSED (WI-7296):
+ *  `defaultReadLogTail` now discards the partial first line on a seeked read, so a fixture line
+ *  whose leading tag was sliced off never reaches this parser. That was free rather than a
+ *  trade because the two failure directions are asymmetric — see the reasoning on
+ *  {@link defaultReadLogTail}. Nothing here needs to compensate for it. */
 export function parseCheckpointCandidates(text: string | null): string[] {
   if (!text) return [];
   const out: string[] = [];

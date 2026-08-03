@@ -656,7 +656,11 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
   // `heartbeatIntervalMs`, with no dependency on how many other requests are in flight or when.
   const heartbeatIntervalMs = opts.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS;
   if (heartbeatIntervalMs > 0) {
-    log(`heartbeat armed: intervalMs=${heartbeatIntervalMs} (beats per-request once a forward is held this long)`);
+    // Deliberately does NOT contain the word "heartbeat" — that word marks a real per-request
+    // beat event (tests and any production log-grep for `heartbeat` key off it), and this is a
+    // one-time startup line, not a beat. EI-19388661789704364 asked for exactly this: a resolved
+    // value logged at start so "is it armed at all" is never itself a guess.
+    log(`in-flight stall watch armed: checkAfterMs=${heartbeatIntervalMs}`);
   }
   const stallTimers = new Map<number, NodeJS.Timeout>();
   function scheduleStallCheck(inFlightId: number, startedAt: number): void {

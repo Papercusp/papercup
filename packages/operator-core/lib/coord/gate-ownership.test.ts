@@ -15,6 +15,7 @@ import {
   ownershipContradicted,
   readGateOwnership,
 } from './gate-ownership';
+import { noSubjectThread, silentThread, unmeasuredThread } from './cell-thread';
 import type { ConditionObject } from './condition-object';
 
 /** An injected presence oracle returning one verdict for one owner. */
@@ -67,6 +68,11 @@ describe('toCellOwnership', () => {
       expiresAt: 'T2',
       holderSessionState: null,
       duplicates: [],
+      // P-006. The PURE projection does not read a thread — it defaults to an
+      // explicit "not read on this projection" rather than a fabricated empty
+      // one, so a caller that forgets to pass a thread cannot silently publish
+      // "nobody has commented".
+      thread: noSubjectThread('thread not read on this projection'),
     });
   });
 
@@ -97,6 +103,8 @@ describe('unownedCell vs unmeasuredCell', () => {
       expiresAt: null,
       holderSessionState: null,
       duplicates: [],
+      // P-006: nothing owns the condition ⇒ there is no thread to have.
+      thread: noSubjectThread('no work-item owns this condition, so there is no thread to read'),
     });
   });
 
@@ -209,5 +217,57 @@ describe('readGateOwnership', () => {
     expect(own.claimState).toBe('held');
     expect(own.holderSessionState).toBeNull();
     expect(ownershipContradicted(own)).toBe(false);
+  });
+});
+
+/**
+ * P-006. The thread is ADVISORY (D-006), and the tests that matter are about
+ * CONTAINMENT: an advisory leg must never be able to damage the measured verdict
+ * beside it, and must never render its own failure as reassurance.
+ */
+describe('the folded thread block', () => {
+  it('does not let an unreadable thread degrade a successfully measured ownership', async () => {
+    const own = await readGateOwnership({
+      harness: 'papercusp',
+      findConditionObjects: (async () =>
+        new Map([['green-stall:papercusp', mkObj({ claimState: 'held', takenBy: 'su-x' })]])) as never,
+      resolveSessionStates: oracle('ended'),
+      readCellThread: (async () => unmeasuredThread('thread store down')) as never,
+    });
+    // The ownership verdict — and its falsifier — survive intact.
+    expect(own.claimState).toBe('held');
+    expect(own.holderSessionState).toBe('ended');
+    expect(ownershipContradicted(own)).toBe(true);
+    // ...and the advisory block reports its own failure honestly.
+    expect(own.thread.unknown?.code).toBe('resolver-failed');
+    expect(own.thread.total).toBeNull();
+  });
+
+  it('renders not-applicable — never an empty thread — when nothing owns the condition', async () => {
+    const own = unownedCell('green-stall:papercusp');
+    expect(own.thread.unknown?.code).toBe('not-applicable');
+    expect(own.thread.total).toBeNull();
+  });
+
+  it('marks the thread unmeasured when ownership itself could not be read', async () => {
+    // Ownership unreadable ⇒ the thread was never even attempted. Reporting
+    // "nothing was said" here would restate the failure as reassurance.
+    const own = unmeasuredCell('green-stall:papercusp', 'store unreachable');
+    expect(own.claimState).toBeNull();
+    expect(own.thread.unknown?.code).toBe('resolver-failed');
+  });
+
+  it('passes the resolved harness through to the thread read', async () => {
+    let sawHarness: string | undefined;
+    await readGateOwnership({
+      harness: 'papercusp',
+      findConditionObjects: (async () =>
+        new Map([['green-stall:papercusp', mkObj({ claimState: 'claimable', takenBy: null })]])) as never,
+      readCellThread: (async (_id: string | null, o: { harness?: string }) => {
+        sawHarness = o.harness;
+        return silentThread();
+      }) as never,
+    });
+    expect(sawHarness).toBe('papercusp');
   });
 });

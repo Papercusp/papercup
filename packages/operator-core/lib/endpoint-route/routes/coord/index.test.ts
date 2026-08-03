@@ -66,7 +66,7 @@ vi.mock('../../../agent-tools/coordination/handoffs', () => ({
 vi.mock('../../../agent-tools/coordination/plan-events', () => ({ readPlanEvents: vi.fn(async () => []) }));
 vi.mock('../../../agent-tools/plans/source', () => ({ readAllPlans: readAllPlansMock }));
 
-import { loadCoordInbox, loadCoordPlans } from './index';
+import { loadCoordInbox, loadCoordPlans, loadCoordHistory } from './index';
 
 function msg(p: Partial<CoordEnvelope> = {}): CoordEnvelope {
   return { ts: '2026-07-20T00:00:00.000Z', msg_id: 'm0', from: 'alice', to: ['bob'], kind: 'message', ...p };
@@ -248,5 +248,70 @@ describe('loadCoordPlans — identity comes from the row, not the markdown (WI-7
     const plans = await loadCoordPlans();
     expect(plans.map((p) => p.slug)).not.toContain('legacy-plan');
     expect(plans).toHaveLength(3);
+  });
+});
+
+describe('loadCoordHistory — `payload` never re-ships a projected column (WI-7295)', () => {
+  // toHistoryItem used to set `payload: e` — the WHOLE envelope that the row's own
+  // ts/msg_id/kind/from/to/plan_slug/harness_slug were projected FROM. Measured live
+  // 2026-08-03 on the default 200-row view, that second copy was 42,328 B (16.2% of a
+  // 261,140 B read against a 250,000 B budget), identical on 200/200 rows with zero
+  // exceptions. These pin BOTH halves: the copies are gone, and nothing else is.
+  const PROJECTED = ['ts', 'msg_id', 'kind', 'from', 'to', 'plan_slug', 'harness_slug'] as const;
+
+  const rich = () =>
+    msg({
+      msg_id: 'm-rich',
+      kind: 'notify',
+      from: 'alice',
+      to: ['bob', 'carol'],
+      detail: 'the full detail text that summary truncates',
+      body: 'a body the expand pane still needs',
+      plan_slug: 'some-plan',
+      harness_slug: 'papercusp',
+    } as Partial<CoordEnvelope>);
+
+  async function onlyRow() {
+    readLinesBoundedMock.mockResolvedValueOnce([rich()]);
+    const { items } = await loadCoordHistory({ kinds: ['message'] });
+    expect(items).toHaveLength(1);
+    return items[0];
+  }
+
+  it('strips every projected key from payload — asserting ABSENCE, not a null value', async () => {
+    const row = await onlyRow();
+    for (const k of PROJECTED) {
+      // `not.toHaveProperty` is the point: a key present-but-null still costs
+      // bytes on the wire, so `toBeNull()` would pass while the read stayed fat.
+      expect(row.payload).not.toHaveProperty(k);
+    }
+  });
+
+  it('keeps every projected VALUE reachable, byte-identical, at the row top level', async () => {
+    const row = await onlyRow();
+    expect(row.ts).toBe('2026-07-20T00:00:00.000Z');
+    expect(row.msg_id).toBe('m-rich');
+    expect(row.kind).toBe('notify');
+    expect(row.from).toBe('alice');
+    expect(row.to).toEqual(['bob', 'carol']);
+    expect(row.plan_slug).toBe('some-plan');
+    expect(row.harness_slug).toBe('papercusp');
+  });
+
+  it('does NOT over-strip: the fields only payload carries survive', async () => {
+    const row = await onlyRow();
+    // `summary` is DERIVED (envSummary truncates detail to 200 chars), not copied —
+    // so `detail` must stay in payload or the expand pane loses the full text.
+    expect(row.payload).toHaveProperty('detail', 'the full detail text that summary truncates');
+    expect(row.payload).toHaveProperty('body', 'a body the expand pane still needs');
+    expect(row.summary).toBe('the full detail text that summary truncates');
+  });
+
+  it('pins the stripped-field COUNT at 7 so a new projected column cannot silently ship twice', async () => {
+    const row = await onlyRow();
+    const stripped = PROJECTED.filter((k) => !(k in (row.payload as Record<string, unknown>)));
+    expect(stripped).toHaveLength(7);
+    // The row still projects all 7 columns — strip and project must stay in lockstep.
+    expect(PROJECTED.filter((k) => k in row)).toHaveLength(7);
   });
 });

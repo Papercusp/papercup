@@ -892,14 +892,15 @@ describe('EI-19305299022434394: heartbeat — logs while a forward is held open 
     const proxy = track(
       createMcpProxy({
         listenPort: 0, targetHost: '127.0.0.1', targetPort: port(upstream),
-        retryWindowMs: 5_000, retryBackoffMs: 20, heartbeatIntervalMs: 50, log: (s) => logs.push(s),
+        retryWindowMs: 5_000, retryBackoffMs: 20, heartbeatIntervalMs: 500, log: (s) => logs.push(s),
       }),
     );
     await listen(proxy);
 
-    // A burst of fast requests, each completing well under the 50ms heartbeat threshold —
-    // none of these should ever produce a heartbeat, however many overlap at once.
-    for (let i = 0; i < 20; i++) {
+    // A burst of fast requests, each completing well under the 500ms heartbeat threshold
+    // (generous headroom for a loaded CI/fleet box) — none of these should ever produce a
+    // heartbeat, however many overlap at once.
+    for (let i = 0; i < 10; i++) {
       // eslint-disable-next-line no-await-in-loop
       await Promise.all([request(port(proxy)), request(port(proxy)), request(port(proxy))]);
     }

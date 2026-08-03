@@ -1081,7 +1081,10 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
   // instead of itself. A re-assert of an existing key supersedes its own prior
   // version (excluded by `superseded_at IS NULL`), so it never evicts a
   // neighbour to make room for itself.
-  const writtenId = rows[0].id;
+  // `IS DISTINCT FROM` (not `<>`) so a NULL id — impossible via the RETURNING
+  // above, but cheap to be total about — degrades to the old ranking instead of
+  // silently matching nothing and disabling the cap entirely.
+  const writtenId = rows[0].id ?? null;
   await sql`
     UPDATE harness_shared.agent_facts SET retracted_at = now(), evicted_at = now()
      WHERE source_hive IS NULL
@@ -1096,7 +1099,7 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
           AND retracted_at IS NULL AND expires_at > now()
           AND key NOT LIKE ${`${WALL_KEY_PREFIX}%`}
           AND key NOT LIKE ${`${DEAD_END_KEY_PREFIX}%`}
-          AND id <> ${writtenId}
+          AND id IS DISTINCT FROM ${writtenId}
         ORDER BY CASE confidence
                    WHEN 'verified'    THEN 0
                    WHEN 'provisional' THEN 1

@@ -6,6 +6,9 @@
  * Run: cd packages/operator-core && npx vitest run lib/release-checkpoint-launch.test.ts
  */
 import { EventEmitter } from 'node:events';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 // WI-4957: launchDetachedCheckpoint's DEFAULT `cancelStaleAwaits` param is the real
 // cancelStaleCheckpointAwaits, which lazily requires events/await/engine → a real PG pool.
@@ -23,6 +26,7 @@ import {
   launchDetachedCheckpoint,
   checkActiveCheckpointRun,
   parseCheckpointCandidates,
+  defaultReadLogTail,
   isCheckpointRunLockHeldCheap,
   stopActiveCheckpointUnit,
   recordCheckpointDisplacement,
@@ -1487,5 +1491,65 @@ describe('checkpointCandidateContainment (P-004)', () => {
     expect(r.testImplSplitRisk).toEqual({ detected: true, includedTests: [TEST_FILE], missingImpl: [IMPL_FILE] });
     expect(r.warning).toMatch(/KNOWN FALSE-RED SHAPE/);
     expect(r.warning).toMatch(/torn TDD pair/);
+  });
+});
+
+// WI-7296 (residual of EI-19395755190419540). A seeked tail read lands mid-line, and a
+// truncated FIXTURE line is the one shape that survives truncation into something HARMFUL:
+// `[green-checkpoint:TEST-FIXTURE] checkpointing candidate <sha>` sliced after the tag reads
+// as a genuine candidate. These pin the asymmetry that makes discarding it free rather than
+// a trade — dropping the partial line can only ever COST a candidate, never corrupt one.
+describe('defaultReadLogTail drops the partial first line on a SEEKED read (WI-7296)', () => {
+  const write = (body: string) => {
+    const dir = mkdtempSync(join(tmpdir(), 'wi7296-'));
+    const p = join(dir, 'run.log');
+    writeFileSync(p, body);
+    return p;
+  };
+
+  it('keeps the first line when the read was NOT seeked (whole file fits)', () => {
+    // The unseeked branch reads the entire file, so its first line really IS the first line.
+    // Dropping it there would lose a genuine candidate for no safety gain.
+    const p = write('checkpointing candidate aaa1 (base x)\nmore\n');
+    expect(defaultReadLogTail(p, 65536)).toContain('checkpointing candidate aaa1');
+    expect(parseCheckpointCandidates(defaultReadLogTail(p, 65536))).toEqual(['aaa1']);
+  });
+
+  it('DROPS a truncated fixture line that would otherwise read as a real candidate', () => {
+    // The harmful shape: seek lands inside the fixture tag, so the tag is gone but
+    // `checkpointing candidate <sha>` survives intact. Pre-WI-7296 this returned ['deadbeef'].
+    const fixture = '[green-checkpoint:TEST-FIXTURE] checkpointing candidate deadbeef (base f)\n';
+    const real = 'checkpointing candidate 13d9c65d (base 1e0ddc58)\n';
+    const p = write('x'.repeat(200) + '\n' + fixture + real);
+    // maxBytes chosen to land the seek INSIDE the fixture line's leading tag.
+    const tail = defaultReadLogTail(p, fixture.length + real.length - 12)!;
+    expect(tail).not.toContain('TEST-FIXTURE'); // the tag was sliced off — that is the trap
+    expect(tail).not.toContain('deadbeef'); // ...and the whole partial line is discarded
+    expect(parseCheckpointCandidates(tail)).toEqual(['13d9c65d']);
+  });
+
+  it('never yields a corrupted-but-matching sha — a cut reaching the sha kills the prefix', () => {
+    // The asymmetry itself. Truncation only removes from the LEFT, so any cut deep enough to
+    // touch the sha has already destroyed `checkpointing candidate`. Sweep every cut point
+    // across one candidate line: every result is either the exact sha or nothing. If this ever
+    // fails, the free-fix argument in defaultReadLogTail's comment no longer holds.
+    const line = 'checkpointing candidate 13d9c65d (base 1e0ddc58)';
+    for (let cut = 0; cut < line.length; cut++) {
+      const got = parseCheckpointCandidates(line.slice(cut));
+      expect(got.length === 0 || got[0] === '13d9c65d').toBe(true);
+    }
+  });
+
+  it('returns empty (not the raw slice) when the window holds no newline at all', () => {
+    // One gigantic line ⇒ the whole window is partial ⇒ nothing usable. Must not hand back
+    // the partial slice, which is exactly the harmful case above.
+    const p = write('[green-checkpoint:TEST-FIXTURE] checkpointing candidate deadbeef nonewline');
+    const tail = defaultReadLogTail(p, 20);
+    expect(tail).toBe('');
+    expect(parseCheckpointCandidates(tail)).toEqual([]);
+  });
+
+  it('degrades to null on an unreadable path, preserving the best-effort contract', () => {
+    expect(defaultReadLogTail(join(tmpdir(), 'wi7296-does-not-exist', 'nope.log'))).toBeNull();
   });
 });

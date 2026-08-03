@@ -220,7 +220,7 @@ function mixOklab(hexA: string, hexB: string, pctA: number): string {
   const A = toOklab(hexToRgb(hexA));
   const B = toOklab(hexToRgb(hexB));
   const p = pctA / 100;
-  return rgbToHex([0, 1, 2].map((i) => A[i] * p + B[i] * (1 - p)));
+  return rgbToHex(fromOklab([0, 1, 2].map((i) => A[i] * p + B[i] * (1 - p))));
 }
 function mixSrgb(hexA: string, hexB: string, pctA: number): string {
   const A = hexToRgb(hexA);
@@ -441,10 +441,6 @@ function collectPairs(): { pairs: Pair[]; skipped: SkippedPair[] } {
         if (bg.unresolved) {
           reasons.add(`${theme}:background:${bg.unresolved.reason}(${bg.unresolved.detail})`);
           continue;
-        }
-        if (process.env.CONTRAST_DEBUG && selector === '.pc-zone-cap') {
-          // eslint-disable-next-line no-console
-          console.error(`DEBUG ${theme} ${selector} fg=${fg.hex} bg=${bg.hex} ratio=${contrastRatio(fg.hex, bg.hex).toFixed(2)}`);
         }
         min = Math.min(min, contrastRatio(fg.hex, bg.hex) / need);
       }

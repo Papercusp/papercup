@@ -292,6 +292,17 @@ export interface CheckpointVerdict {
     tip: string;
     commitsBehind: number;
     failingFilesChangedInRange: string[];
+    /** EI-19390159514676981: TOTAL files changed in the range. Without it the durable
+     *  record cannot distinguish "the range was empty" (a real red) from "the range
+     *  changed other files, just not the failing TEST files" — which is the expected
+     *  shape of an ALREADY-FIXED red whenever the failing test polices OTHER files
+     *  (budget/lint/census ratchets are fixed in the file they police, never in
+     *  themselves). Absent ⇒ unmeasured, which must read as UNDETERMINED. */
+    rangeFilesChanged?: number;
+    /** EI-19393306381214544: how many failing entries were path-shaped. 0 ⇒ the empty
+     *  intersection compared NOTHING (the failures were bare workspace names), so it
+     *  is vacuous rather than evidence. */
+    failingPathsConsidered?: number;
   };
   /** EI-18850448565330905: structural mirror of green-checkpoint.ts's `CheckpointResult.crashed`
    *  — this verdict was synthesized by the CLI's own crash handler because the normal run
@@ -333,6 +344,16 @@ export function buildCheckpointDetail(v: CheckpointVerdict): Record<string, unkn
       tip: v.lineage.tip.slice(0, 12),
       commitsBehind: v.lineage.commitsBehind,
       failingFilesChangedInRange: v.lineage.failingFilesChangedInRange.slice(0, 20),
+      // Carry the two discriminators too, or the durable record reproduces exactly the
+      // false confidence the transient line was fixed for: an empty
+      // failingFilesChangedInRange is only real-red evidence when the range itself was
+      // empty AND there was something path-shaped to compare (EI-19390159514676981,
+      // EI-19393306381214544). Copied conditionally so an unmeasured leg stays absent
+      // rather than being written as a 0 that reads like a measurement.
+      ...(v.lineage.rangeFilesChanged != null ? { rangeFilesChanged: v.lineage.rangeFilesChanged } : {}),
+      ...(v.lineage.failingPathsConsidered != null
+        ? { failingPathsConsidered: v.lineage.failingPathsConsidered }
+        : {}),
     };
   }
   return detail;

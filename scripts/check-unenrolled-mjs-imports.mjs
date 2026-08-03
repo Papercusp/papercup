@@ -124,30 +124,35 @@ function directiveAbove(lines, anchor) {
 /**
  * True when the import carrying the specifier on `lineIdx` is type-suppressed.
  *
- * Checks TWO anchors, because tsc's directive placement rule differs by import
- * shape and this repo uses both:
+ * There is exactly ONE valid anchor: tsc reports TS7016 at the line carrying the
+ * module specifier, and a `@ts-ignore`/`@ts-expect-error` suppresses only the
+ * line immediately following it — so the directive must sit immediately above
+ * `lineIdx` itself. For a single-line `import { x } from './y.mjs'`, `lineIdx`
+ * IS the statement's own line, so this is also "directive above the statement".
+ * For a MULTI-LINE `import {\n  x,\n} from './y.mjs'`, `lineIdx` is the `from`
+ * line, so the directive must sit immediately above THAT — i.e. inside the
+ * braces (see the comments in fs-mutex.test.ts / test-file-router.test.ts,
+ * which spell this out).
  *
- *   - a single-line `import { x } from './y.mjs'` takes the directive above the
- *     statement;
- *   - a MULTI-LINE `import {\n  x,\n} from './y.mjs'` lands the diagnostic on
- *     the `from` line, so the directive must sit immediately above THAT — i.e.
- *     inside the braces (see the comments in fs-mutex.test.ts /
- *     test-file-router.test.ts, which spell this out).
- *
- * Anchoring only on the statement start walks straight past the second form and
- * reports three suppressed imports as offenders — measured, and the reason this
- * takes the union rather than picking one anchor.
+ * A directive placed above the `import` keyword of a MULTI-LINE import does
+ * **not** suppress anything — verified empirically against `tsc` (EI-19389216343173748:
+ * `check-migration-fixture-drift.test.ts` shipped exactly this shape and still
+ * red TS7016, plus a bonus TS2578 "unused directive"). A prior cut of this
+ * function anchored there as a fallback to avoid false positives on genuinely
+ * suppressed multi-line imports — but every import that fallback was rescuing
+ * already has its directive correctly placed immediately above the specifier
+ * line, so `directiveAbove(lines, lineIdx)` alone already recognizes it; the
+ * fallback's only real effect was to also accept the BROKEN placement as if it
+ * worked. Removed rather than special-cased, so the guard cannot again give
+ * false assurance for the exact case it exists to catch (EI-19365056012137849 is
+ * the same bug class, found independently in `tsc-red-observations.mjs`'s import).
  *
  * @param {string[]} lines
  * @param {number} lineIdx 0-based index of the line carrying the specifier
  * @returns {boolean}
  */
 export function isSuppressed(lines, lineIdx) {
-  if (directiveAbove(lines, lineIdx)) return true;
-  for (let i = lineIdx; i >= 0 && lineIdx - i <= 10; i -= 1) {
-    if (/\bimport\b/.test(lines[i] ?? '')) return directiveAbove(lines, i);
-  }
-  return false;
+  return directiveAbove(lines, lineIdx);
 }
 
 /**

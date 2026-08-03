@@ -374,7 +374,8 @@ export const GATE_OWNERSHIP_CELL: CellSpec = {
   federation: { kind: 'local' },
   changeSignal: { kind: 'poll', tool: 'dev:pipeline_position', path: 'gate.ownership.claimState' },
   shape:
-    '{ gate: { ownership: { eventKey, workItem, claimState, unknown, takenBy, takenAt, expiresAt, holderSessionState, duplicates[] } }, verdictUnknown[] }',
+    '{ gate: { ownership: { eventKey, workItem, claimState, unknown, takenBy, takenAt, expiresAt, holderSessionState, duplicates[], ' +
+    'thread: { recent[{ at, author, text, chars, truncated }], shown, total, topics[{ slug, ref, since }], unknown } } }, verdictUnknown[] }',
 };
 
 /**
