@@ -262,8 +262,36 @@ describe('countBackgroundPrimaries', () => {
     expect(await countBackgroundPrimaries(sql)).toBeNull();
   });
   it('preserves a GENUINE zero as 0, not null — the real outage must still be reportable', async () => {
-    const sql = (async () => [{ n: 0 }]) as never;
+    const sql = (async () => [{ n: 0, can_read_all_stats: true }]) as never;
     expect(await countBackgroundPrimaries(sql)).toBe(0);
+  });
+
+  // EI-19442084790376701: the SECOND form of "I could not look". pg_stat_activity is
+  // role-filtered — a reader that is neither superuser nor a member of pg_read_all_stats sees
+  // other roles' backends with application_name NULLED, so the LIKE matches nothing and
+  // count() returns a flawless 0. Measured 2026-08-03: the live DBOS backends are owned by
+  // harness_admin (which HAS the privilege and reads 1); harness_app holds neither and would
+  // read 0. Unlike the empty-row case above, the read SUCCEEDS and the row is well-formed, so
+  // no shape check can catch it — only asking the capability question directly.
+  //
+  // This is the recurrence guard for the ~10h false page: one worker reporting 0 while peers
+  // concurrently read 1, monotonic because the guard never reads healthy to reset its streak.
+  it('returns null (NOT 0) when the reader lacks pg_read_all_stats — a zero it was not permitted to see is not an observation', async () => {
+    const sql = (async () => [{ n: 0, can_read_all_stats: false }]) as never;
+    expect(await countBackgroundPrimaries(sql)).toBeNull();
+  });
+
+  it('suppresses even a NON-zero count from a blind reader — an unprivileged read undercounts, it does not merely zero out', async () => {
+    const sql = (async () => [{ n: 1, can_read_all_stats: false }]) as never;
+    expect(await countBackgroundPrimaries(sql)).toBeNull();
+  });
+
+  // Fail-OPEN on an absent flag, deliberately: treating "missing column" as blind would make
+  // the probe return null forever and silently stop reporting real outages. Only an
+  // affirmative false suppresses. This also pins the back-compat the two tests above rely on.
+  it('treats an ABSENT can_read_all_stats as permitted, so a driver quirk cannot silently disable the guard', async () => {
+    const sql = (async () => [{ n: 2 }]) as never;
+    expect(await countBackgroundPrimaries(sql)).toBe(2);
   });
 });
 

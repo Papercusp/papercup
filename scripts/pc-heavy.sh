@@ -497,6 +497,28 @@ if [ "$_coalesce_enabled" = 1 ]; then
   #   (b) if cwd is inside a git worktree, one `git status --porcelain=v2
   #       --branch` call (HEAD + tracked-file changes in one invocation) —
   #       covers "I edited a repo-tracked file the command exercises".
+  #
+  # (b) uses `--untracked-files=all`, NOT the cheaper-looking `=no` it carried
+  # until EI-19424611266793426. `=no` made the token blind to file CREATION, and
+  # that is not a niche gap — it is precisely inverted against the error class
+  # agents loop on this command to fix. A missing-module / missing-declaration
+  # error (TS7016, TS2307) is fixed BY CREATING A FILE, so the token could not
+  # see the one mutation that changes the verdict, and coalescing then replayed
+  # the pre-fix red for the full window. Measured 2026-08-03: a correct fix (add
+  # the entry to tsconfig.declarations.json, run gen:declarations, which emits an
+  # untracked `.d.mts`) re-ran and returned the byte-identical failure from a
+  # 201s-old cached run. The agent-facing cost is the worst shape available: a
+  # stale verdict is INDISTINGUISHABLE from a real one, so the natural next move
+  # is to abandon the correct fix and try a worse one (a cast, a @ts-expect-error,
+  # hand-writing a generated file this repo forbids editing).
+  #
+  # `=all` rather than `=normal` on BOTH counts, which is not the intuitive call:
+  # `=normal` collapses an untracked DIRECTORY to one entry, so a second file
+  # created inside a wholly-untracked dir does not move the token at all. And
+  # measured over 5 runs on this repo it is not even cheaper — 398ms for `=all`
+  # vs 441ms for `=normal` vs 309ms for `=no` (a single sample says the opposite;
+  # it is noise). So `=all` is both the sound choice and the fast one: +89ms on a
+  # wrapper whose whole purpose is guarding 150s+ compiles.
   # Fail-open: git/stat unavailable just yields an empty token, degrading to
   # the previous cwd+argv-only behavior rather than erroring — coalescing
   # was already best-effort, this doesn't change that contract.
@@ -514,7 +536,7 @@ if [ "$_coalesce_enabled" = 1 ]; then
       fi
     done
     if command -v git >/dev/null 2>&1; then
-      _git_state=$(git status --porcelain=v2 --branch --untracked-files=no 2>/dev/null)
+      _git_state=$(git status --porcelain=v2 --branch --untracked-files=all 2>/dev/null)
       [ -n "$_git_state" ] && _tree_token="$_tree_token|$(printf '%s' "$_git_state" | sha1sum | cut -d' ' -f1)"
     fi
   fi

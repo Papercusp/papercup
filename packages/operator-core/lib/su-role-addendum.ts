@@ -48,10 +48,17 @@ import {
 
 export { SU_TIER_ROLES, suRoleAddendumFileName };
 
-export type SuTierRole = string;
-
-/** Is this role name one that launches on the su tier? Narrowing type-guard. */
-export function isSuTierRole(role: string | null | undefined): role is SuTierRole {
+/**
+ * Is this role name one that launches on the su tier?
+ *
+ * Deliberately a plain boolean, NOT a `role is SuTierRole` type-predicate: the
+ * shared .mjs types the list as `readonly string[]`, so a predicate would narrow
+ * `string` against `string` and leave the FAILING branch as `never` — which is
+ * how the first cut of this broke bootstrap-su's own 400 message (it could no
+ * longer call `.slice()` on the rejected value). The allow-list is a RUNTIME
+ * security check; there is nothing for the type system to add here.
+ */
+export function isSuTierRole(role: string | null | undefined): boolean {
   return isSuTierRoleUntyped(role);
 }
 
@@ -67,7 +74,7 @@ export function resolveSuRoleAddendum(
   role: string | null | undefined,
   opts: { operatorAppRoot?: string } = {},
 ): string | null {
-  if (!isSuTierRole(role)) return null;
+  if (!role || !isSuTierRole(role)) return null;
   const explicitRoot = !!opts.operatorAppRoot;
   const root = opts.operatorAppRoot ?? operatorAppRootForPrompts();
   const fileName = suRoleAddendumFileName(role);

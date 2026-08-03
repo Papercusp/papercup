@@ -1267,10 +1267,24 @@ export function runTscBaselineGate({
   // Also kept by wrapping only the compile: pc-heavy no longer holds a slot for the whole gate
   // CLI, and argv is identical across callers so the key can match at all.
   //
-  // ⚠ Residual hole in the token, unchanged in KIND but widened in DURATION by the 420s window:
-  // it uses `--untracked-files=no`, so a NEW UNTRACKED .ts picked up by the tsconfig does not
-  // bust the key. Accepted because the gate's verdict is per-file against a committed baseline,
-  // and an untracked file has no baseline entry. Revisit if that ever stops being true.
+  // ✅ CLOSED 2026-08-03 (EI-19424611266793426). This used to read: the token uses
+  // `--untracked-files=no`, so a NEW UNTRACKED .ts picked up by the tsconfig does not bust the
+  // key — "accepted because the gate's verdict is per-file against a committed baseline, and an
+  // untracked file has no baseline entry. Revisit if that ever stops being true."
+  //
+  // It stopped being true, and the note's own escape clause is what caught it. That reasoning
+  // holds only while a new file's effect is CONFINED TO ITSELF. A declaration file breaks the
+  // premise by construction: a `.d.mts` is never judged on its own account, it changes the
+  // verdict of an ALREADY-TRACKED, already-baselined file. Measured: adding an entry to
+  // tsconfig.declarations.json and running gen:declarations emitted an untracked `.d.mts` that
+  // took full-replacement-mock-guard.test.ts from 1 error to 0 — while the token, blind to the
+  // creation, replayed the pre-fix red for the whole (now 420s) window. The same applies to any
+  // new file that RESOLVES an import rather than adding one: TS7016 and TS2307 are both fixed by
+  // creating a file, so the hole was inverted against the error class this gate is re-run to fix.
+  //
+  // pc-heavy's token now uses `--untracked-files=all` and its suite carries the two
+  // creation-busts-the-cache cases (proven by differential: both fail under `=no`, and the
+  // untracked-directory one still fails under `=normal`). Nothing here needs to compensate.
   const pcHeavyPath = resolve(root, 'scripts', 'pc-heavy.sh');
   const freshAfter = coalesceWatermarkFor({ root, files: explicitFiles, updateFlag });
   try {

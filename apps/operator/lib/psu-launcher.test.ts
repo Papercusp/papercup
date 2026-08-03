@@ -1649,6 +1649,26 @@ describe('psu-launcher arg parsing', () => {
     expect('label' in noLabel).toBe(false);
   });
 
+  it('freshSuBootstrapBody forwards a su-tier role NAME as su_role, never addendum prose (EI-996)', () => {
+    // Owner ask 2026-06-17: a planner should be a full su agent + a few role
+    // lines. The launcher sends the NAME; bootstrap-su resolves the text from
+    // prompts/su-role-planner.addendum.md. The wire must never carry the prose
+    // itself — this endpoint mints a SUPERUSER-tier prompt, so a free-text field
+    // would be an open prompt-injection surface for any loopback caller.
+    const body = freshSuBootstrapBody(
+      { agent: 'claude', workspace: 'ws1', harness: null, plan: null },
+      { suRole: 'planner' },
+    );
+    expect(body.su_role).toBe('planner');
+    expect('role_addendum' in body).toBe(false);
+    // A plain su launch stays byte-identical on the wire — no null noise.
+    const plainSu = freshSuBootstrapBody(
+      { agent: 'claude', workspace: 'ws1', harness: null, plan: null },
+      { suRole: null },
+    );
+    expect('su_role' in plainSu).toBe(false);
+  });
+
   it('freshSuBootstrapBody forwards --owner-id so bootstrap-su pre-pins the coord owner (WI-5002/EI-13277 programmatic-spawner contract)', () => {
     const args = parseArgs(['--no-picker', '--agent=claude', '--no-plan', '--headless', '--yes', '--owner-id=su-sweep-cell-r1-abc123']);
     expect(args.ownerId).toBe('su-sweep-cell-r1-abc123');

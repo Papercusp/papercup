@@ -48,13 +48,27 @@ const baseEnv = (extra: Record<string, string> = {}): NodeJS.ProcessEnv => ({
   ...extra,
 });
 
-function runSync(args: string[], env: Record<string, string> = {}) {
+function runSync(args: string[], env: Record<string, string> = {}, cwd?: string) {
   // cwd: dir — a fresh, non-git tmpdir per test, so the tree-state token's
   // git-status probe (EI-18688348461605365) naturally no-ops unless a test
   // deliberately `git init`s it. Keeps the suite hermetic and avoids paying
   // for (or racing against concurrent edits to) this repo's own live git
   // status on every spawn.
-  return spawnSync('bash', [PC_HEAVY, ...args], { encoding: 'utf8', env: baseEnv(env), cwd: dir, timeout: 30_000 });
+  //
+  // A test that `git init`s MUST pass an explicit `cwd` pointing at a SUBDIR of
+  // `dir` rather than initing `dir` itself (EI-19424611266793426). The cache lives
+  // at PC_HEAVY_DIR (= `dir` in this suite), so initing `dir` puts pc-heavy's OWN
+  // coalesce/slot artifacts inside the worktree it is probing — every run then
+  // writes untracked files that bust the next run's token, and coalescing can
+  // never happen. That is a pure fixture artifact: the real default is
+  // ${XDG_RUNTIME_DIR:-/tmp}/pc-heavy-slots, always outside the repo. Keeping the
+  // worktree one level down keeps the probe measuring the TEST's edits only.
+  return spawnSync('bash', [PC_HEAVY, ...args], {
+    encoding: 'utf8',
+    env: baseEnv(env),
+    cwd: cwd ?? dir,
+    timeout: 30_000,
+  });
 }
 
 describe('pc-heavy.sh — flock counting semaphore (WI-3821)', () => {
@@ -566,6 +580,19 @@ describe('pc-heavy.sh — coalescing (EI-18685262961418231)', () => {
   // worktree) into the key so an edit busts the cache while a genuine
   // no-op re-run still coalesces.
   describe('tree-state token busts the cache on a real edit (EI-18688348461605365)', () => {
+    // The worktree is a SUBDIR of `dir`, never `dir` itself — see runSync's note
+    // (EI-19424611266793426): PC_HEAVY_DIR is `dir`, so initing `dir` would put
+    // pc-heavy's own coalesce artifacts inside the tree it probes and no run could
+    // ever coalesce. Real usage always keeps the cache outside the repo.
+    const gitRepo = () => {
+      const repo = join(dir, 'repo');
+      mkdirSync(repo, { recursive: true });
+      execSync('git init -q', { cwd: repo });
+      execSync('git config user.email t@example.com && git config user.name test', { cwd: repo });
+      return repo;
+    };
+    const commitAll = (repo: string) => execSync('git add -A && git commit -q -m init', { cwd: repo });
+
     it('a referenced file argument changing between runs busts the cache — even OUTSIDE the git tree (the exact reported repro: a /tmp script)', () => {
       // The script path must be its own argv TOKEN (not embedded inside a
       // `-c '...'` shell string) — the fix stats each literal argv token
@@ -587,41 +614,84 @@ describe('pc-heavy.sh — coalescing (EI-18685262961418231)', () => {
     });
 
     it('a git-tracked source file changing between runs busts the cache, even when the command does not name it directly', () => {
-      execSync('git init -q', { cwd: dir });
-      execSync('git config user.email t@example.com && git config user.name test', { cwd: dir });
-      writeFileSync(join(dir, 'src.txt'), 'v1');
-      execSync('git add -A && git commit -q -m init', { cwd: dir });
+      const repo = gitRepo();
+      writeFileSync(join(repo, 'src.txt'), 'v1');
+      commitAll(repo);
 
-      const first = runSync(['bash', '-c', 'echo build-output'], { PC_HEAVY_SLOTS: '2', PC_HEAVY_COALESCE_SEC: '30' });
+      const first = runSync(['bash', '-c', 'echo build-output'], { PC_HEAVY_SLOTS: '2', PC_HEAVY_COALESCE_SEC: '30' }, repo);
       expect(first.stderr).not.toContain('coalesced:');
 
       // Simulate "I edited the source this build/test exercises" — e.g. the
       // `npm run test:affected` shape, where the changed file is nowhere in
       // argv but IS what makes the previous output stale.
-      writeFileSync(join(dir, 'src.txt'), 'v2 - modified');
+      writeFileSync(join(repo, 'src.txt'), 'v2 - modified');
 
-      const second = runSync(['bash', '-c', 'echo build-output'], { PC_HEAVY_SLOTS: '2', PC_HEAVY_COALESCE_SEC: '30' });
+      const second = runSync(['bash', '-c', 'echo build-output'], { PC_HEAVY_SLOTS: '2', PC_HEAVY_COALESCE_SEC: '30' }, repo);
       expect(second.stderr).not.toContain('coalesced:'); // busted, not a stale replay
     });
 
-    it('still coalesces a genuine no-op re-run inside a git worktree with no diff (the fix does not over-bust)', () => {
-      execSync('git init -q', { cwd: dir });
-      execSync('git config user.email t@example.com && git config user.name test', { cwd: dir });
-      writeFileSync(join(dir, 'src.txt'), 'v1');
-      execSync('git add -A && git commit -q -m init', { cwd: dir });
+    // EI-19424611266793426. The token used `--untracked-files=no`, so CREATING a file
+    // did not move it. That gap is inverted against the error class agents re-run this
+    // command to fix: a missing-module / missing-declaration error (TS7016, TS2307) is
+    // fixed BY CREATING A FILE, so the token was blind to exactly the mutation that
+    // flips the verdict, and the stale red replayed for the whole window — looking
+    // byte-identical to a real one.
+    it('a NEWLY CREATED untracked file busts the cache — the fix for a missing-declaration error is a new file, which -uno could not see', () => {
+      const repo = gitRepo();
+      writeFileSync(join(repo, 'src.ts'), 'import "./dep.mjs";');
+      commitAll(repo);
 
-      const first = runSync(['bash', '-c', 'echo out-y; echo err-y >&2; exit 3'], {
-        PC_HEAVY_SLOTS: '2',
-        PC_HEAVY_COALESCE_SEC: '30',
-      });
+      const first = runSync(['bash', '-c', 'echo typecheck-verdict'], { PC_HEAVY_SLOTS: '2', PC_HEAVY_COALESCE_SEC: '30' }, repo);
+      expect(first.stderr).not.toContain('coalesced:');
+
+      // The real repro shape: `gen:declarations` emits a NEW, still-untracked `.d.mts`
+      // sibling. Nothing tracked is modified — under -uno the tree token is unchanged.
+      writeFileSync(join(repo, 'dep.d.mts'), 'export declare const x: number;');
+
+      const second = runSync(['bash', '-c', 'echo typecheck-verdict'], { PC_HEAVY_SLOTS: '2', PC_HEAVY_COALESCE_SEC: '30' }, repo);
+      expect(second.stderr).not.toContain('coalesced:'); // must re-run, not replay the pre-fix verdict
+    });
+
+    it('a file created inside a WHOLLY-UNTRACKED directory also busts the cache (-unormal collapses such a dir to one entry and stays blind)', () => {
+      const repo = gitRepo();
+      writeFileSync(join(repo, 'src.ts'), 'x');
+      commitAll(repo);
+
+      // `generated/` is untracked as a whole, and already contains a file — so it is
+      // ALREADY represented in the status output before the run below.
+      mkdirSync(join(repo, 'generated'), { recursive: true });
+      writeFileSync(join(repo, 'generated', 'a.d.mts'), 'export declare const a: number;');
+
+      const first = runSync(['bash', '-c', 'echo verdict'], { PC_HEAVY_SLOTS: '2', PC_HEAVY_COALESCE_SEC: '30' }, repo);
+      expect(first.stderr).not.toContain('coalesced:');
+
+      // Adding a SECOND file to that same untracked dir. Under -unormal the dir is
+      // collapsed to a single `generated/` entry, so this is invisible; -uall sees it.
+      writeFileSync(join(repo, 'generated', 'b.d.mts'), 'export declare const b: number;');
+
+      const second = runSync(['bash', '-c', 'echo verdict'], { PC_HEAVY_SLOTS: '2', PC_HEAVY_COALESCE_SEC: '30' }, repo);
+      expect(second.stderr).not.toContain('coalesced:');
+    });
+
+    it('still coalesces a genuine no-op re-run inside a git worktree with no diff (the fix does not over-bust)', () => {
+      const repo = gitRepo();
+      writeFileSync(join(repo, 'src.txt'), 'v1');
+      commitAll(repo);
+
+      const first = runSync(
+        ['bash', '-c', 'echo out-y; echo err-y >&2; exit 3'],
+        { PC_HEAVY_SLOTS: '2', PC_HEAVY_COALESCE_SEC: '30' },
+        repo,
+      );
       expect(first.status).toBe(3);
       expect(first.stderr).not.toContain('coalesced:');
 
       // Nothing changed (no edit, no new commit) — a true duplicate poll.
-      const second = runSync(['bash', '-c', 'echo out-y; echo err-y >&2; exit 3'], {
-        PC_HEAVY_SLOTS: '2',
-        PC_HEAVY_COALESCE_SEC: '30',
-      });
+      const second = runSync(
+        ['bash', '-c', 'echo out-y; echo err-y >&2; exit 3'],
+        { PC_HEAVY_SLOTS: '2', PC_HEAVY_COALESCE_SEC: '30' },
+        repo,
+      );
       expect(second.status).toBe(3);
       expect(second.stderr).toContain('coalesced:');
     });

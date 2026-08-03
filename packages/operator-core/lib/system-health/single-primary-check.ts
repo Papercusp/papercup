@@ -303,13 +303,47 @@ type SqlLike = <T = unknown>(strings: TemplateStringsArray, ...values: unknown[]
  *
  * Note `?? null` (not `|| null`): a GENUINE zero is `0`, which `??` preserves and `||` would
  * destroy — turning the one real outage this guard exists to catch into "unverified".
+ *
+ * EI-19442084790376701 (2026-08-03): WI-7291 above closed the EMPTY-ROW form of "I could not
+ * look". This closes the second, subtler form — an UNPRIVILEGED READER — which the empty-row
+ * check cannot see because the read succeeds and returns a perfectly well-formed row.
+ *
+ * `pg_stat_activity` is ROLE-FILTERED: a role that is neither superuser nor a member of
+ * `pg_read_all_stats` sees other roles' backends with `application_name` NULLED. Measured on
+ * this box 2026-08-03: the 6 live DBOS backends are owned by `harness_admin`, which HAS
+ * `pg_read_all_stats` and correctly reports 1 — while `harness_app` holds neither privilege, so
+ * the same query matches nothing and `count(...)` returns a flawless `0`. That zero is a
+ * VISIBILITY ARTIFACT, not an observation, and it is indistinguishable from a real outage:
+ * deterministic, permanent for that process's whole life, and monotonic because the guard never
+ * once reads healthy to reset its streak (L546). It is the exact shape of the ~10h false page
+ * this item was filed for — one worker reporting 0 while peers concurrently read 1.
+ *
+ * The guard is a PROBE, so the honest answer to "am I allowed to see the thing I am counting?"
+ * = no is `null` ("I could not look"), never `0` ("everything is dead"). Answering the
+ * CAPABILITY question directly beats inferring blindness from the shape of the result, which is
+ * how this class hides in the first place.
  */
 export async function countBackgroundPrimaries(sql: SqlLike): Promise<number | null> {
-  const rows = await sql<Array<{ n: number }>>`
-    SELECT count(DISTINCT application_name)::int AS n
-      FROM pg_stat_activity
-     WHERE application_name LIKE 'dbos_transact_%'`;
-  return rows[0]?.n ?? null;
+  const rows = await sql<Array<{ n: number; can_read_all_stats: boolean }>>`
+    SELECT (SELECT count(DISTINCT application_name)::int
+              FROM pg_stat_activity
+             WHERE application_name LIKE 'dbos_transact_%') AS n,
+           (pg_has_role(current_user, 'pg_read_all_stats', 'member')
+            OR COALESCE((SELECT r.rolsuper FROM pg_roles r WHERE r.rolname = current_user), false))
+             AS can_read_all_stats`;
+  const row = rows[0];
+  if (!row) return null;
+  // Blind reader ⇒ the count is unanswerable, NOT zero. Checked before `n` so a stats-blind
+  // process can never page "all background work is down" off its own missing permission.
+  //
+  // `=== false` (not `!`) is deliberate, and it is the SAFE direction here even though this is
+  // a health probe. The flag is computed by the query above, so it is missing only if the
+  // driver dropped the column — and treating THAT as "blind" would make the guard return null
+  // forever, i.e. silently convert the probe into a permanent no-op that can never report a
+  // real outage. Absent ⇒ behave exactly as before this change; only an affirmative `false`
+  // (a reader that actually answered "I lack the privilege") suppresses the count.
+  if (row.can_read_all_stats === false) return null;
+  return row.n ?? null;
 }
 
 /**
@@ -624,7 +658,46 @@ export async function runSinglePrimaryCheck(
   // see its comment for the measured evidence.
   const prev = lastAlertedAt.get(verdict.key);
   if (prev !== undefined && now - prev < debounceMs) return { fired: false, verdict, selfCleared: false };
+  // Whether THIS process has already paged this condition at least once. Captured before the
+  // overwrite below, and the input to the outlier check that follows.
+  const pagedBefore = prev !== undefined;
   lastAlertedAt.set(verdict.key, now);
+
+  // EI-19442084790376701: THE PAGE-LOOP. Two individually-correct fixes compose into an
+  // unbounded page storm, and only their INTERACTION is wrong:
+  //   1. this process pages;
+  //   2. WI-7291 has a peer that reads a healthy count all-clear it ~2min later, RESOLVING
+  //      the escalation row;
+  //   3. `findOpenDuplicate` folds `{ status: 'open' }` (escalations.ts), so a RESOLVED row is
+  //      invisible to it and the next `escalate()` returns `repeatCount = 1`;
+  //   4. `alreadyPagedByPeer` below is therefore false → this process pages AGAIN, every
+  //      `debounceMs`, forever.
+  // Measured 2026-08-03: a single stuck reader paged the fleet every 30min for ~10h, each
+  // alarm followed ~2min later by a peer's all-clear (09:43:46→09:45:21, 09:13:46→09:15:46,
+  // 08:43:46→08:44:54, 08:13:46→08:15:46), streak climbing monotonically past 266.
+  //
+  // The all-clear comment above states the intended design: a disagreement should surface as
+  // "a visible re-alarm rather than a stuck blocker". That intent is preserved here — what is
+  // removed is only the URGENT PAGE, exactly the advisory/blocker split made below. The
+  // escalation row is still written on every cycle, so the disagreement stays visible and
+  // durable; it simply stops waking the whole fleet on a reading a peer has already falsified.
+  //
+  // Keyed on an OBSERVED RESOLUTION (we paged, and the condition is no longer open), never on
+  // "not currently open" alone — the latter is also true of a real outage nobody has reported
+  // yet, and would suppress the genuine FIRST page this guard exists to send.
+  let peerFalsifiedOurReading = false;
+  if (pagedBefore) {
+    try {
+      const stillOpen = deps.openConditions
+        ? await deps.openConditions()
+        : await openSinglePrimaryConditions(getOrgPg().sql as SqlLike, ws);
+      peerFalsifiedOurReading = !stillOpen.includes(`${CONDITION_PREFIX}${verdict.key}`);
+    } catch {
+      // Fail OPEN: a failed read must never suppress a page. Suppression requires positive
+      // evidence that a peer resolved us, never the mere absence of a successful read.
+      peerFalsifiedOurReading = false;
+    }
+  }
   // Default true so a failed/unclear escalate() (caught below) still pages — the
   // historical best-effort behavior; only a CONFIRMED durable duplicate suppresses it.
   let alreadyPagedByPeer = false;
@@ -632,7 +705,11 @@ export async function runSinglePrimaryCheck(
     const rec = await escalate({
       severity: verdict.severity ?? 'blocker',
       summary: `[single-primary] ${verdict.summary}`,
-      body: `Detected by the request-path single-primary guard (R4-2), SUSTAINED over ${streak} consecutive checks. Live DBOS background primaries: ${count} (expected exactly 1). Routine-liveness evidence — ${verdict.evidenceNote ?? 'none recorded'}. Workspace: ${ws}.`,
+      body: `Detected by the request-path single-primary guard (R4-2), SUSTAINED over ${streak} consecutive checks. Live DBOS background primaries: ${count} (expected exactly 1). Routine-liveness evidence — ${verdict.evidenceNote ?? 'none recorded'}. Workspace: ${ws}.${
+        peerFalsifiedOurReading
+          ? ` ⚠ OUTLIER READER (EI-19442084790376701): a peer process observed a HEALTHY count and all-cleared this condition after our last page, so our reading is contradicted by a falsifiable observation. Recorded durably, urgent page SUPPRESSED. This process (pid ${process.pid}) has now read non-1 ${streak} consecutive times without ever reading healthy — if that continues, THIS process is the fault, not the background primaries.`
+          : ''
+      }`,
     });
     // Remember the open escalation's msg_id so a later recovery can self-clear it.
     const msgId = (rec as { msg_id?: string } | undefined)?.msg_id;
