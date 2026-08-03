@@ -39,10 +39,19 @@ import {
   MIN_RECENT_SAMPLE,
 } from './embed-coverage';
 
-/** Minimal structural handle — mirrors the `sql.unsafe` call shape used by
- *  embed-coverage.ts, so tests can pass a fake without a live PG. */
+/**
+ * Minimal structural handle — mirrors the `sql.unsafe` call shape used by
+ * embed-coverage.ts, so tests can pass a plain fake without a live PG.
+ *
+ * Returns `PromiseLike<unknown>` rather than `Promise<Row[]>` on purpose:
+ * postgres.js's `unsafe` returns a `PendingQuery` (thenable, not a Promise),
+ * and the row shape is genuinely unknown until we assert it. Widening here is
+ * what lets a real `Sql` satisfy this interface WITHOUT an `as never` cast at
+ * the call site — a cast there would silence type errors at exactly the seam
+ * this module depends on being right.
+ */
 export interface CoverageSqlHandle {
-  unsafe<T = unknown>(query: string, params?: unknown[]): Promise<T>;
+  unsafe(query: string, params?: unknown[]): PromiseLike<unknown>;
 }
 
 /**
@@ -152,7 +161,7 @@ export async function loadCoverageSnapshot(
   workspaceId: string,
   now: Date = new Date(),
 ): Promise<CoverageSnapshot> {
-  const rows = await sql.unsafe<SampleRow[]>(
+  const rows = (await sql.unsafe(
     `SELECT DISTINCT ON (surface)
             surface, observed_at, eligible_rows, embedded_rows,
             recent_eligible, recent_embedded
@@ -160,7 +169,7 @@ export async function loadCoverageSnapshot(
       WHERE workspace_id = $1
       ORDER BY surface, observed_at DESC`,
     [workspaceId],
-  );
+  )) as SampleRow[] | null;
 
   const snapshot: CoverageSnapshot = new Map();
   for (const r of rows ?? []) {

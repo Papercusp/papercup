@@ -61,11 +61,29 @@
  * value, and that function's `if (!counts) return null` guard already treats a
  * missing `itemCounts` the same as a null one.
  *
- * NOT extended into the nested identity objects: `avatarUrl` inside `lastEditor` /
- * `ownerIdentity` is null on all 1,436 occurrences (~26 KB, 3.2% more), but it is
- * declared on the SHARED `AuthorIdentity` type (AuthorBadge.tsx) that plans:items
- * and the attention feed also carry, so it needs its own audit + change rather
- * than riding along here.
+ * NOW extended into the nested identity objects too (EI-19455103442009801) —
+ * `avatarUrl` inside `lastEditor` / `ownerIdentity`, measured null on 1,475/1,475
+ * live occurrences = 25,075 B (3.5%) of the read production actually issues.
+ * The deferred "needs its own audit of the shared AuthorIdentity type" is DONE,
+ * and it came back clean on all three counts:
+ *   1. The field is NOT deleted — only omitted from the wire when null. It stays
+ *      declared, and `resolve-plan-author-identity.ts` still maps it from a real
+ *      column (`r.avatar_url`), so hive-membership rows CAN carry a non-null
+ *      value. 1,475/1,475-null is a fact about THIS read's data, not the field.
+ *   2. Zero omit-unsafe consumers: `AuthorBadge.tsx` reads it as plain truthiness
+ *      (`avatarUrl ? <img> : …`), and a tree-wide grep for `avatarUrl === null`,
+ *      `!== null`, `'avatarUrl' in`, and `hasOwnProperty('avatarUrl')` found NONE.
+ *   3. The blast radius is provably exactly one field: `ResolvedAuthor`'s other
+ *      members (`id`, `handle`, `kind`, `verified`) are non-null BY CONSTRUCTION
+ *      — every construction site sets them — so a generic null-omit applied to
+ *      one of these objects cannot drop anything except `avatarUrl`.
+ * ⚠ This is a TARGETED descent into two known-plain identity bags, NOT a global
+ * recursion: {@link omitNullValues} stays shallow for every other nested value,
+ * because making it recurse would change every other read that uses it (and would
+ * reach into `ref`, the discriminated union the shallow rule exists to protect).
+ * ⚠ Two UNRELATED types are named `AuthorIdentity` — AuthorBadge.tsx (this one)
+ * and sync/hyperbee/policy-admission.ts (p2p). Do not conflate them; no hyperbee
+ * file appears anywhere in the avatarUrl grep.
  *
  * plans:get and every other verb pass through unchanged — plans:get IS the
  * full-fidelity detail read.
@@ -223,8 +241,19 @@ function projectItems(data: Record<string, unknown>): Record<string, unknown> {
 }
 
 /**
+ * The nested plain-bag identity objects on a plans:list row that the null-omit
+ * descends into. Both are `ResolvedAuthor` shapes set by `plan-attribution.ts`
+ * ONLY when they resolve (never `ownerIdentity: null` — WI-7045), so a present
+ * value here is always a plain object, never a union a consumer narrows
+ * structurally. See the header for the audit behind this descent.
+ */
+const LIST_IDENTITY_KEYS = ['lastEditor', 'ownerIdentity'] as const;
+
+/**
  * Slim a plans:list row: clip `nextAction` to a tooltip preview and omit
- * null-valued keys (see {@link omitNullValues} — 15.2% of this payload).
+ * null-valued keys (see {@link omitNullValues} — 15.2% of this payload), then
+ * omit them inside the nested identity bags too (a further 3.5%, all of it
+ * `avatarUrl` — see the header).
  *
  * The clip runs BEFORE the omit so a `nextAction: null` is dropped rather than
  * left as a clipped null; `clipPreview` passes non-strings through, so the two
@@ -237,6 +266,14 @@ function projectList(data: Record<string, unknown>): Record<string, unknown> {
     if (!row || typeof row !== 'object') return row;
     const r = { ...(row as Record<string, unknown>) };
     if ('nextAction' in r) r.nextAction = clipPreview(r.nextAction, UI_TEXT_PREVIEW_MAX);
+    for (const key of LIST_IDENTITY_KEYS) {
+      const identity = r[key];
+      // A null identity is left for the row-level omit below to drop entirely;
+      // an array is not a ResolvedAuthor and is passed through untouched.
+      if (identity && typeof identity === 'object' && !Array.isArray(identity)) {
+        r[key] = omitNullValues(identity as Record<string, unknown>);
+      }
+    }
     return omitNullValues(r);
   });
   return { ...data, plans: rows };

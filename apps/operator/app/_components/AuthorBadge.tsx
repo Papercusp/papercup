@@ -23,7 +23,21 @@ import { ownerColor } from './owner-color';
 export interface AuthorIdentity {
   id: string;
   handle: string;
-  avatarUrl: string | null;
+  /**
+   * OPTIONAL on the wire, not just nullable (EI-19455103442009801). The
+   * plans:list UI projection now OMITS this key when it is null — it was null on
+   * 1,475/1,475 live occurrences, 25,075 B of pure dead weight — so a list-fed
+   * identity arrives WITHOUT the key, while plans:items and the attention feed
+   * still send an explicit `null`. Both readings must stay legal, hence
+   * `?: string | null`.
+   *
+   * ⚠ Read it with TRUTHINESS (`avatarUrl ? … : …`, `??`, `?.`) as the badge
+   * below does. `=== null`, `'avatarUrl' in identity`, `hasOwnProperty` and
+   * destructuring-with-a-default all break on an omitted key — see
+   * {@link file://../../../../packages/operator-core/lib/agent-tools/plans/ui-read-projection.ts}
+   * `omitNullValues` for the full wire contract.
+   */
+  avatarUrl?: string | null;
   kind: 'human' | 'agent';
   verified: boolean;
 }

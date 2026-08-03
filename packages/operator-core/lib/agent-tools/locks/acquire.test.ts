@@ -196,21 +196,21 @@ describe('locks:acquire — outcome branches', () => {
 
   it('wake_on_grant queues a waiter + await and returns immediately', async () => {
     routeM.mockResolvedValue({ value: { ok: false, busy: [{ path: 'a.ts', owner: 'o2' }] }, via: 'local-authority' });
-    insertM.mockResolvedValue({ ok: true, ticket_id: 'T1' } as never);
+    insertM.mockResolvedValue({ ok: true, ticket_id: 'T1', wait_until: new Date(Date.now() - 1000) });
     const b = body(await call({ wake_on_grant: true }));
     expect(b).toMatchObject({ ok: false, queued_for_wake: true, ticket_id: 'T1', await_id: 'A1' });
   });
 
   it('wake_on_grant self-grant (path freed during insert) → ok', async () => {
     routeM.mockResolvedValue({ value: { ok: false, busy: [] }, via: 'local-authority' });
-    insertM.mockResolvedValue({ ok: true, self_granted: true, lock_id: 'L2', expires_ts: new Date('2026-03-01T00:00:00Z'), held: ['a.ts'] } as never);
+    insertM.mockResolvedValue({ ok: true, self_granted: true, lock_id: 'L2', expires_ts: new Date('2026-03-01T00:00:00Z'), held: ['a.ts'] });
     const b = body(await call({ wake_on_grant: true }));
     expect(b).toMatchObject({ ok: true, lock_id: 'L2', held: ['a.ts'] });
   });
 
   it('wake_on_grant with a failed waiter insert surfaces the reason', async () => {
     routeM.mockResolvedValue({ value: { ok: false, busy: [] }, via: 'local-authority' });
-    insertM.mockResolvedValue({ ok: false, reason: 'waiter_cap_exceeded' } as never);
+    insertM.mockResolvedValue({ ok: false, reason: 'waiter_cap_exceeded' });
     const b = body(await call({ wake_on_grant: true }));
     expect(b).toMatchObject({ ok: false, reason: 'waiter_cap_exceeded' });
   });
@@ -229,16 +229,16 @@ describe('locks:acquire — EI-19324204900062056 blocking-wait connection resili
     // that a single real ~50ms tick carries it past waitUntilMs — avoids
     // fake-timer choreography of the internal ceiling Promise/setTimeout
     // while keeping the test's wall-clock cost negligible.
-    insertM.mockResolvedValue({ ok: true, ticket_id: 'T-A', wait_until: new Date(Date.now() + 50) } as never);
+    insertM.mockResolvedValue({ ok: true, ticket_id: 'T-A', wait_until: new Date(Date.now() + 50) });
     // Pre-loop immediate re-check: not yet granted, so the loop is entered.
-    statusM.mockResolvedValueOnce({ status: 'waiting' } as never);
+    statusM.mockResolvedValueOnce({ status: 'waiting' });
     // Inside the loop: poking the workspace hits the transient connection drop.
     pokeM.mockRejectedValueOnce(connectionClosedError());
     // Step 6 (after the loop exits on wait_until elapsing): both calls
     // succeed normally on the reconnected pool — proves the mid-loop error
     // didn't abort the call, it was swallowed and control reached here.
-    expireM.mockResolvedValueOnce(undefined as never);
-    tryAcquireM.mockResolvedValueOnce({ ok: false, busy: [{ path: 'a.ts', owner: 'o2' }] } as never);
+    expireM.mockResolvedValueOnce(undefined);
+    tryAcquireM.mockResolvedValueOnce({ ok: false, busy: [{ path: 'a.ts', owner: 'o2', owner_label: null, intent: 'edit', expires_ts: new Date(Date.now() + 60_000) }] });
 
     const b = body(await call({ wait: { max_sec: 1 } }));
 
@@ -249,8 +249,8 @@ describe('locks:acquire — EI-19324204900062056 blocking-wait connection resili
   });
 
   it('a transient CONNECTION_CLOSED error at the tail (step 6 expireWaiter) degrades to a structured wait_connection_unstable — never a raw thrown/MCP-fatal error', async () => {
-    insertM.mockResolvedValue({ ok: true, ticket_id: 'T-B', wait_until: new Date(Date.now() - 1000) } as never); // already elapsed → 0 loop iterations
-    statusM.mockResolvedValueOnce({ status: 'waiting' } as never);
+    insertM.mockResolvedValue({ ok: true, ticket_id: 'T-B', wait_until: new Date(Date.now() - 1000) }); // already elapsed → 0 loop iterations
+    statusM.mockResolvedValueOnce({ status: 'waiting' });
     expireM.mockRejectedValueOnce(connectionClosedError());
 
     const b = body(await call({ wait: { max_sec: 1 } }));
@@ -268,8 +268,8 @@ describe('locks:acquire — EI-19324204900062056 blocking-wait connection resili
   });
 
   it('a NON-transient error mid-wait still propagates (this fix must not mask genuine bugs)', async () => {
-    insertM.mockResolvedValue({ ok: true, ticket_id: 'T-C', wait_until: new Date(Date.now() + 50) } as never);
-    statusM.mockResolvedValueOnce({ status: 'waiting' } as never);
+    insertM.mockResolvedValue({ ok: true, ticket_id: 'T-C', wait_until: new Date(Date.now() + 50) });
+    statusM.mockResolvedValueOnce({ status: 'waiting' });
     pokeM.mockRejectedValueOnce(new Error('boom: not a connection error'));
 
     await expect(call({ wait: { max_sec: 1 } })).rejects.toThrow('boom: not a connection error');
@@ -285,15 +285,15 @@ describe('locks:acquire — EI-19382183884861720: the two gaps EI-19324204900062
   });
 
   it('a transient CONNECTION_CLOSED error on the IMMEDIATE post-insert re-check is swallowed — falls through to the wait loop instead of crashing the call', async () => {
-    insertM.mockResolvedValue({ ok: true, ticket_id: 'T-D', wait_until: new Date(Date.now() + 50) } as never);
+    insertM.mockResolvedValue({ ok: true, ticket_id: 'T-D', wait_until: new Date(Date.now() + 50) });
     // Immediate post-insert re-check (BEFORE the step 4-5 loop): connection drop.
     statusM.mockRejectedValueOnce(connectionClosedError());
     // Inside the loop the connection has reconnected — resolves normally.
-    pokeM.mockResolvedValue(undefined as never);
-    statusM.mockResolvedValueOnce({ status: 'waiting' } as never);
+    pokeM.mockResolvedValue(undefined);
+    statusM.mockResolvedValueOnce({ status: 'waiting' });
     // Step 6 after the loop exits on wait_until elapsing.
-    expireM.mockResolvedValueOnce(undefined as never);
-    tryAcquireM.mockResolvedValueOnce({ ok: false, busy: [{ path: 'a.ts', owner: 'o2' }] } as never);
+    expireM.mockResolvedValueOnce(undefined);
+    tryAcquireM.mockResolvedValueOnce({ ok: false, busy: [{ path: 'a.ts', owner: 'o2', owner_label: null, intent: 'edit', expires_ts: new Date(Date.now() + 60_000) }] });
 
     const b = body(await call({ wait: { max_sec: 1 } }));
 
@@ -303,7 +303,7 @@ describe('locks:acquire — EI-19382183884861720: the two gaps EI-19324204900062
   });
 
   it('a NON-transient error on the immediate post-insert re-check still propagates (never masked)', async () => {
-    insertM.mockResolvedValue({ ok: true, ticket_id: 'T-E', wait_until: new Date(Date.now() + 50) } as never);
+    insertM.mockResolvedValue({ ok: true, ticket_id: 'T-E', wait_until: new Date(Date.now() + 50) });
     statusM.mockRejectedValueOnce(new Error('boom: not a connection error'));
 
     await expect(call({ wait: { max_sec: 1 } })).rejects.toThrow('boom: not a connection error');
@@ -312,10 +312,10 @@ describe('locks:acquire — EI-19382183884861720: the two gaps EI-19324204900062
   it('a transient CONNECTION_CLOSED error on the waiter INSERT (step 3) is retried once and the call proceeds normally', async () => {
     insertM
       .mockRejectedValueOnce(connectionClosedError())
-      .mockResolvedValueOnce({ ok: true, ticket_id: 'T-F', wait_until: new Date(Date.now() - 1000) } as never); // already elapsed → 0 loop iterations
-    statusM.mockResolvedValueOnce({ status: 'waiting' } as never);
-    expireM.mockResolvedValueOnce(undefined as never);
-    tryAcquireM.mockResolvedValueOnce({ ok: false, busy: [{ path: 'a.ts', owner: 'o2' }] } as never);
+      .mockResolvedValueOnce({ ok: true, ticket_id: 'T-F', wait_until: new Date(Date.now() - 1000) }); // already elapsed → 0 loop iterations
+    statusM.mockResolvedValueOnce({ status: 'waiting' });
+    expireM.mockResolvedValueOnce(undefined);
+    tryAcquireM.mockResolvedValueOnce({ ok: false, busy: [{ path: 'a.ts', owner: 'o2', owner_label: null, intent: 'edit', expires_ts: new Date(Date.now() + 60_000) }] });
 
     const b = body(await call({ wait: { max_sec: 1 } }));
 
@@ -354,7 +354,7 @@ describe('locks:acquire — EI-9033 pending_edit (apply-on-grant) guardrails', (
 
   it('threads a valid pending_edit into the waiter and flags apply_on_grant', async () => {
     routeM.mockResolvedValue({ value: { ok: false, busy: [{ path: 'a.ts', owner: 'o2' }] }, via: 'local-authority' });
-    insertM.mockResolvedValue({ ok: true, ticket_id: 'T9' } as never);
+    insertM.mockResolvedValue({ ok: true, ticket_id: 'T9', wait_until: new Date(Date.now() - 1000) });
     const b = body(
       await call({
         wake_on_grant: true,

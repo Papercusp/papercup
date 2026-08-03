@@ -211,7 +211,7 @@ describe('loadCoverageSnapshot', () => {
         },
       ],
     };
-    const s = await loadCoverageSnapshot(sql as never, 'ws', NOW);
+    const s = await loadCoverageSnapshot(sql, 'ws', NOW);
     const r = s.get(TURNS)!;
     // Postgres returns bigint as a STRING; a naive read would make pct NaN.
     expect(r.pct).toBeCloseTo(0.72, 5);
@@ -232,7 +232,7 @@ describe('loadCoverageSnapshot', () => {
         },
       ],
     };
-    const s = await loadCoverageSnapshot(sql as never, 'ws', NOW);
+    const s = await loadCoverageSnapshot(sql, 'ws', NOW);
     expect(s.get(TURNS)!.recentPct).toBeNull();
   });
 
@@ -240,7 +240,7 @@ describe('loadCoverageSnapshot', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
       const sql = { unsafe: async () => { throw new Error('pg is down'); } };
-      const s = await loadCoverageSnapshotCached(sql as never, 'ws', NOW);
+      const s = await loadCoverageSnapshotCached(sql, 'ws', NOW);
       expect(s.size).toBe(0);
       // The whole failure mode this item exists to kill: an outage must not
       // read as a clean bill of health.
@@ -269,18 +269,18 @@ describe('loadCoverageSnapshot', () => {
         }];
       },
     };
-    await loadCoverageSnapshotCached(sql as never, 'ws', NOW);
-    await loadCoverageSnapshotCached(sql as never, 'ws', new Date(NOW.getTime() + 1_000));
+    await loadCoverageSnapshotCached(sql, 'ws', NOW);
+    await loadCoverageSnapshotCached(sql, 'ws', new Date(NOW.getTime() + 1_000));
     expect(calls).toBe(1);
-    await loadCoverageSnapshotCached(sql as never, 'ws', new Date(NOW.getTime() + 120_000));
+    await loadCoverageSnapshotCached(sql, 'ws', new Date(NOW.getTime() + 120_000));
     expect(calls).toBe(2);
   });
 
   it('does not serve one workspace a different workspace cached snapshot', async () => {
     let calls = 0;
     const sql = { unsafe: async () => { calls += 1; return []; } };
-    await loadCoverageSnapshotCached(sql as never, 'ws-a', NOW);
-    await loadCoverageSnapshotCached(sql as never, 'ws-b', NOW);
+    await loadCoverageSnapshotCached(sql, 'ws-a', NOW);
+    await loadCoverageSnapshotCached(sql, 'ws-b', NOW);
     expect(calls).toBe(2);
   });
 });

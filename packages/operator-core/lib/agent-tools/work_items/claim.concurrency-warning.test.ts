@@ -149,7 +149,7 @@ beforeEach(() => {
   store.readThrows = false;
   store.specThrows = false;
   claimM.mockImplementation(async (id: string) => ({ id, harness: 'papercup', assignee: 'me' }) as never);
-  getWorkItemM.mockResolvedValue(null as never);
+  getWorkItemM.mockResolvedValue(null);
   getClaimTimeCheckpointHint.mockResolvedValue(null);
   blockersM.mockResolvedValue([]);
 });

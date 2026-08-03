@@ -91,7 +91,7 @@ async function runOracle(args: Args): Promise<void> {
   const df = await corpusTermDfLookup(sql, 'papercusp-workspace');
 
   console.log('\n## ORACLE — which SINGLE candidate terms retrieve an answer-bearing record?');
-  console.log(`   (ceiling measurement for WI-9273; ${args.oracleMaxTerms} candidates max per batch)\n`);
+  console.log(`   (ceiling for WI-9273: ALL 2-term pairs over the first ${args.oracleMaxTerms} candidates)\n`);
 
   let batchesWithAnyWinner = 0;
   const winnerProfile: Array<{ term: string; df: number; len: number; pos: number; batch: number }> = [];
@@ -104,10 +104,21 @@ async function runOracle(args: Args): Promise<void> {
       banded: df ? corpusQueryText(raw, undefined, { df }).split(' ') : [],
     };
 
-    // Bounded concurrency: each probe is an embed + hybrid search (~1-2s), and a
-    // serial sweep over ~10 terms x 7 batches is long enough that people skip it.
+    // PAIRS, not single terms. ⚠ This is a CORRECTION of this probe's first
+    // version, and the bug is worth stating because it is counter-intuitive:
+    // single-term retrieval is NOT a lower bound for two-term retrieval. The leg
+    // issues an AND (then P-017's graded cascade), so adding a term makes the
+    // query MORE selective — two terms can surface a record that NEITHER term
+    // surfaces alone. Measured here: turn 69 retrieves WI-6512 on
+    // "sessions explain", while `sessions` alone and `explain` alone both miss.
+    // A single-term sweep therefore reports batches as "unreachable" that are
+    // perfectly reachable, which is a false ceiling in the expensive direction —
+    // it argues for abandoning selection when selection is exactly what works.
     const results: Array<{ term: string; win: boolean }> = [];
-    const queue = [...terms];
+    const queue: string[] = [];
+    for (let i = 0; i < terms.length; i++) {
+      for (let j = i + 1; j < terms.length; j++) queue.push(`${terms[i]} ${terms[j]}`);
+    }
     const worker = async (): Promise<void> => {
       for (;;) {
         const term = queue.shift();
@@ -123,17 +134,36 @@ async function runOracle(args: Args): Promise<void> {
     };
     await Promise.all([worker(), worker(), worker(), worker()]);
 
-    const winners = terms.filter((t) => results.find((r) => r.term === t)?.win);
+    const winners = results.filter((r) => r.win).map((r) => r.term);
     if (winners.length > 0) batchesWithAnyWinner++;
     for (const w of winners) {
-      winnerProfile.push({ term: w, df: df ? df(w) : -1, len: w.length, pos: terms.indexOf(w), batch: batch.turn });
+      const [a, b] = w.split(' ') as [string, string];
+      winnerProfile.push({
+        term: w,
+        df: df ? Math.min(df(a), df(b)) : -1,
+        len: Math.max(a.length, b.length),
+        pos: Math.max(terms.indexOf(a), terms.indexOf(b)),
+        batch: batch.turn,
+      });
     }
 
-    const mark = (t: string): string =>
-      `${t}${picks.length.includes(t) ? '[L]' : ''}${picks.banded.includes(t) ? '[B]' : ''}`;
-    console.log(`   turn ${batch.turn}`);
-    console.log(`     winners: ${winners.length > 0 ? winners.map(mark).join(' ') : '(NONE — unreachable at 1 term)'}`);
-    console.log(`     losers : ${terms.filter((t) => !winners.includes(t)).map(mark).join(' ')}`);
+    const same = (pair: string, picked: string[]): boolean => {
+      const p = pair.split(' ');
+      return picked.length === 2 && p.every((t) => picked.includes(t));
+    };
+    console.log(`   turn ${batch.turn}  (${results.length} pairs probed over ${terms.length} candidates)`);
+    if (winners.length === 0) {
+      console.log(`     winners: (NONE — no 2-term pair in the candidate pool retrieves the answer)`);
+    } else {
+      const shown = winners
+        .slice(0, 8)
+        .map((w) => `"${w}"${same(w, picks.length) ? '[L]' : ''}${same(w, picks.banded) ? '[B]' : ''}`);
+      console.log(`     winners (${winners.length}): ${shown.join('  ')}${winners.length > 8 ? '  …' : ''}`);
+      console.log(
+        `     did a shipped selector pick one?  LENGTH ${winners.some((w) => same(w, picks.length)) ? 'YES' : 'no'}` +
+          `   BANDED ${winners.some((w) => same(w, picks.banded)) ? 'YES' : 'no'}`,
+      );
+    }
   }
 
   console.log(`\n   Batches with >=1 winning single term: ${batchesWithAnyWinner}/${REPLAY.length}`);

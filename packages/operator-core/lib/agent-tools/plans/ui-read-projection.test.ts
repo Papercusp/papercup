@@ -205,16 +205,51 @@ describe('projectPlansReadForUi — plans:list', () => {
   });
 
   /**
-   * SHALLOW, per D-025. `avatarUrl` is null on all 1,436 live occurrences inside
-   * these identity objects (~26 KB more), but it is declared on the SHARED
-   * AuthorIdentity type that plans:items and the attention feed also carry — so
-   * it needs its own consumer audit, not a silent ride-along here.
+   * EI-19455103442009801: the omit now descends into the two nested identity
+   * bags, where `avatarUrl` was null on 1,475/1,475 live occurrences (25,075 B,
+   * 3.5% of the read production actually issues). The deferred audit of the
+   * shared AuthorIdentity type is done and clean — AuthorBadge reads the field
+   * as plain truthiness, and no consumer anywhere tests it with `=== null` /
+   * `in` / `hasOwnProperty`.
    */
-  it('does NOT recurse into nested objects (nested nulls survive)', () => {
+  it('omits nulls INSIDE the nested identity objects (lastEditor/ownerIdentity)', () => {
     const out = projectPlansReadForUi('list', {
-      plans: [{ slug: 'p', lastEditor: { handle: 'ada', avatarUrl: null } }],
+      plans: [
+        {
+          slug: 'p',
+          lastEditor: { id: 'u1', handle: 'ada', avatarUrl: null, kind: 'human', verified: true },
+          ownerIdentity: { id: 'u2', handle: 'bob', avatarUrl: null, kind: 'agent', verified: false },
+        },
+      ],
+    }) as { plans: Array<{ lastEditor: Record<string, unknown>; ownerIdentity: Record<string, unknown> }> };
+    expect(out.plans[0].lastEditor).toEqual({
+      id: 'u1',
+      handle: 'ada',
+      kind: 'human',
+      verified: true,
+    });
+    expect('avatarUrl' in out.plans[0].ownerIdentity).toBe(false);
+  });
+
+  /** A real avatar URL is dead weight only when null — never drop a live one. */
+  it('KEEPS a non-null avatarUrl inside an identity object', () => {
+    const out = projectPlansReadForUi('list', {
+      plans: [{ slug: 'p', lastEditor: { handle: 'ada', avatarUrl: 'https://a/42.png' } }],
     }) as { plans: Array<{ lastEditor: Record<string, unknown> }> };
-    expect(out.plans[0].lastEditor).toEqual({ handle: 'ada', avatarUrl: null });
+    expect(out.plans[0].lastEditor).toEqual({ handle: 'ada', avatarUrl: 'https://a/42.png' });
+  });
+
+  /**
+   * The descent is TARGETED at the two identity keys, NOT a global recursion —
+   * {@link omitNullValues} stays shallow everywhere else, because recursing
+   * would change every other read that uses it (and would reach into `ref`, the
+   * discriminated union the shallow rule exists to protect).
+   */
+  it('does NOT recurse into other nested objects (their nulls survive)', () => {
+    const out = projectPlansReadForUi('list', {
+      plans: [{ slug: 'p', itemCounts: { done: 1, blocked: null } }],
+    }) as { plans: Array<{ itemCounts: Record<string, unknown> }> };
+    expect(out.plans[0].itemCounts).toEqual({ done: 1, blocked: null });
   });
 
   /** The clip runs before the omit, so the two compose on a real string. */

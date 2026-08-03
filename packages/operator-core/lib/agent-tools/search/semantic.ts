@@ -115,10 +115,7 @@ export default defineTool({
     // DISTINCT ON over already-persisted samples (never a live COUNT scan),
     // TTL-memoised, and fail-open — a read error resolves to `unknown`, which
     // is reported as unknown and never as healthy.
-    const coveragePromise = loadCoverageSnapshotCached(
-      ctx.tx as never,
-      ctx.workspaceId ?? '',
-    );
+    const coveragePromise = loadCoverageSnapshotCached(ctx.tx, ctx.workspaceId ?? '');
     // WI-3929 (same class as EI-9312): bound the ACTUAL per-query embed call
     // inside runHybridSearch, not just the embedder ACQUISITION above — a
     // resolved-but-slow embedder (warm local ONNX under load, or the OpenAI

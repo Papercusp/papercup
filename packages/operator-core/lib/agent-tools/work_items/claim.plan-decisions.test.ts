@@ -85,7 +85,7 @@ beforeEach(() => {
     async (id: string) =>
       ({ id, harness: 'papercup', assignee: 'me', payload: { plan_item: { plan_slug: 'a-plan', item_id: 'P-1' } } }) as never,
   );
-  getWorkItemM.mockResolvedValue(null as never);
+  getWorkItemM.mockResolvedValue(null);
   getClaimTimeCheckpointHint.mockResolvedValue(null);
   getClaimTimePriorWorkHint.mockResolvedValue(null);
   planItemClaimCollision.mockResolvedValue(null);
