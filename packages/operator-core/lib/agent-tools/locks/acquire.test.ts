@@ -103,7 +103,7 @@ describe('locks:acquire — outcome branches', () => {
   });
 
   it('fast-path success → ok projection (echoes owner, ISO expiry, held)', async () => {
-    routeM.mockResolvedValue({ value: { ok: true, lock_id: 'L1', expires_ts: new Date('2026-02-01T00:00:00Z'), held: ['a.ts'] } } as never);
+    routeM.mockResolvedValue({ value: { ok: true, lock_id: 'L1', expires_ts: new Date('2026-02-01T00:00:00Z'), held: ['a.ts'] }, via: 'local-authority' });
     const b = body(await call({}));
     expect(b).toMatchObject({
       ok: true, lock_id: 'L1', owner: 'me', owner_label: 'Me',

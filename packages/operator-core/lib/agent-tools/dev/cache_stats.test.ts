@@ -55,7 +55,12 @@ describe('dev:cache_stats', () => {
 
   it('reports a real miss-then-hit as 1 miss + 1 hit at 50% served', async () => {
     const factory = vi.fn(async () => [{ v: 1 }]);
-    const opts = { tool: 'plans:attention', key: { a: 1 }, softTtlMs: 60_000 };
+    // `tags: []` throughout this file: these are TELEMETRY tests (hit/miss/stale
+    // accounting), and none of them invalidates by tag — they drive the cache
+    // through softTtl and fake timers instead. An empty dependency list is the
+    // honest declaration for that, and it passes through to getOrSet unchanged,
+    // so the runtime behaviour is identical to the pre-`tags` calls these were.
+    const opts = { tool: 'plans:attention', key: { a: 1 }, tags: [], softTtlMs: 60_000 };
 
     await cachedRead(ctx, opts, factory); // miss  -> builds
     await cachedRead(ctx, opts, factory); // hit   -> served from L1

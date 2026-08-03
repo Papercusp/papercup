@@ -85,17 +85,27 @@
  * - **Gates an override store** (`telemetry-buffer-config`, `capability-tier-overrides`,
  *   `capability-envelope-overrides`) — the flag decides only whether a STORED OVERRIDE is honoured,
  *   so unpopulated serves the baked constants, which is what production runs whenever no override is
- *   set (the normal case). Safe by construction, default-ON or not.
- * - **Selects a behaviour** (`work-item-claim-lease-wiring`, `work-item-redundancy`,
- *   `events/cache-eca-rule`) — the flag chooses between two substantive behaviours, so the window
+ *   set (the normal case). Safe by construction, default-ON or not. Do NOT seed these: the cached
+ *   value is an object read from PG, not a mirror of the flag.
+ * - **Selects a behaviour** — the flag chooses between two substantive behaviours, so the window
  *   genuinely serves the OTHER one. Safe only if that is a self-healing DEGRADATION (a skipped cache
  *   bump, a claim without its lease) rather than a WRONG ANSWER. Justify it in `safeBecause`.
+ * - **Seeded from the flag default** (`work-item-redundancy`, `work-item-claim-lease-wiring`,
+ *   `events/cache-eca-rule`, `issues-engineer`) — the STRONGEST kind and the one to prefer whenever
+ *   the cached value is a plain mirror of a flag. Pass a `seed` and the divergence disappears
+ *   instead of needing a justification. As of 2026-08-03 every behaviour-selector here has been
+ *   converted, which is why the list above is empty: when a caller looks like it selects a
+ *   behaviour, the question to ask first is why it cannot simply be seeded.
  *
  * The unsafe shape is a behaviour-selector whose off-branch points at something DEAD or WRONG rather
- * than merely reduced: `issues-engineer.ts` resolves `false` → the legacy `'default'` coord
- * workspace, a partition whose last write was 2026-06-22 while every live row sits elsewhere — so
- * its first read per process would be a hard, deterministic zero, not a degradation. That module is
- * deliberately NOT migrated; see the block comment there.
+ * than merely reduced. `issues-engineer.ts` was the worked example: UNSEEDED it resolved `false` →
+ * the legacy `'default'` coord workspace, a partition taking no writes while every live row sits
+ * elsewhere — a hard, deterministic zero on the first read per process, not a degradation. It was
+ * migrated, measured all-green, and correctly REVERTED (EI-19448574704459898). It is now migrated
+ * and KEPT, because the `seed` puts `FLAG_DEFAULTS[ISSUES_PER_WORKSPACE]` (true → the active
+ * workspace) in front of that first read, which is what every live-writing process resolves anyway.
+ * Read that as the general lesson: a caller blocked on an unsafe unpopulated VALUE is usually one
+ * `seed` away, not one boot-warm away.
  *
  * ### The SECOND axis: read-site displacement (the value is not the only thing that moves)
  *
@@ -136,10 +146,16 @@
  *   lint cannot see (an IIFE, a helper call, a `const _ = subscribe()`) still fails loudly. Add one
  *   import line there per module you migrate.
  * - The SAME source lint also cross-checks each call's `unpopulated.kind` against its own `keys`
- *   (`not-flag-gated` must pass no keys; the other two must pass at least one), so a declaration
- *   cannot contradict its arguments. What it deliberately CANNOT check is whether a
- *   `selects-behaviour` justification is TRUE — that judgement is the author's, which is exactly why
- *   it is a required, greppable, reviewable field rather than an inference.
+ *   (`not-flag-gated` must pass no keys; the flag-gated kinds must pass at least one) and against
+ *   its `seed` — `seeded-from-flag-default` must actually PASS one, no other kind may, and that
+ *   seed's body must deref `FLAG_DEFAULTS[...]` rather than assign a literal. That last check is
+ *   what makes "seed from the registry, not a literal" (below) enforceable instead of advisory: a
+ *   literal agrees with the registry exactly until the flag graduates, so it fails silently, later,
+ *   in a file nobody is looking at. Its cases live in
+ *   `agent-tools/coordination/no-module-scope-flag-subscribe-guard.test.ts`.
+ *   What the lint deliberately CANNOT check is whether a `selects-behaviour` justification is TRUE —
+ *   that judgement is the author's, which is exactly why it is a required, greppable, reviewable
+ *   field rather than an inference.
  */
 import { onFlagChange } from '@papercusp/flags/server';
 

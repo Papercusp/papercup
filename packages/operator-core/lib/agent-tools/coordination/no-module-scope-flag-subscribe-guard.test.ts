@@ -14,10 +14,13 @@
 import { describe, it, expect } from 'vitest';
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore — pure JS guard script, no .d.ts; imported for its predicate only.
-import {
-  usesModuleScopeFlagSubscribe,
-  checkUnpopulatedDeclaration,
-} from '../../../../../scripts/check-no-module-scope-flag-subscribe.mjs';
+// ⚠ Keep this import on ONE line. `@ts-ignore` suppresses the next LINE only, and the TS7016
+// "no declaration file" error is reported at the MODULE SPECIFIER — so wrapping this into a
+// multi-line named-import list moves the specifier out from under the directive and the file
+// regresses by exactly one type error (measured 2026-08-03, WI-8887). Prettier leaves it alone at
+// this width; if it ever grows past the print width, move the directive rather than reflowing.
+// prettier-ignore
+import { usesModuleScopeFlagSubscribe, checkUnpopulatedDeclaration } from '../../../../../scripts/check-no-module-scope-flag-subscribe.mjs';
 
 describe('no-module-scope-flag-subscribe guard predicate (WI-6650)', () => {
   it('FLAGS a module-scope onFlagChange subscription', () => {

@@ -189,7 +189,13 @@ export async function syncTurnChunks(
         [t.workspace_id, t.source_kind, t.session_id, t.turn_idx],
       );
       if (chunks.length > 0) {
-        const params: unknown[] = [];
+        // Typed concretely rather than `unknown[]`: postgres.js infers the
+        // parameter element type, and `unknown[]` collapses it to
+        // `ParameterOrJSON<never>[]`, which nothing is assignable to. (The
+        // doc-embed-sync precedent this module mirrors uses `unknown[]` and
+        // carries exactly that error in the operator-core tsc baseline — copied
+        // shape, copied defect. Every value here is a string or a number.)
+        const params: Array<string | number> = [];
         const values = chunks
           .map((content, i) => {
             params.push(t.workspace_id, t.source_kind, t.session_id, t.turn_idx, i, content, t.sha);
