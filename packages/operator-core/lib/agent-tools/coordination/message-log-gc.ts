@@ -97,18 +97,28 @@ export async function gcOldCoordMessages(
              msg_id,
              body->>'related_msg_id' AS related_msg_id,
              harness_slug,
-             ts
+             ts,
+             -- CONDITION-CARRYING: a single-primary alarm / resolution. NOT chatter —
+             -- it is health state, read back by openSinglePrimaryConditions and the
+             -- coord conditions fast path, both of which bound their scan at exactly
+             -- MESSAGE_GC_RETENTION_DAYS on the stated grounds that "nothing older
+             -- survives GC anyway". Expiring these on the shorter FEDERATED horizon
+             -- would silently shrink that window to 7d for the harness-scoped ones,
+             -- and an alarm aged out with no resolution reads as RESOLVED rather than
+             -- as missing. Measured 2026-08-03: 52 such rows are harness-scoped, so
+             -- exempting them costs nothing and removes the whole failure class.
+             (body ? 'condition_key' OR body ? 'resolves_condition') AS is_condition
         FROM harness_shared.coord_event_log
        WHERE surface = 'messages'
     ),
     thread AS (
       -- Only rooted threads are eligible. A reply whose root is already missing is
       -- kept; deleting an orphaned fragment cannot improve thread integrity.
-      SELECT workspace_id, msg_id AS root_id, msg_id, harness_slug, ts
+      SELECT workspace_id, msg_id AS root_id, msg_id, harness_slug, ts, is_condition
         FROM base
        WHERE related_msg_id IS NULL
       UNION
-      SELECT t.workspace_id, t.root_id, b.msg_id, b.harness_slug, b.ts
+      SELECT t.workspace_id, t.root_id, b.msg_id, b.harness_slug, b.ts, b.is_condition
         FROM thread t
         JOIN base b
           ON b.workspace_id = t.workspace_id
@@ -122,6 +132,7 @@ export async function gcOldCoordMessages(
                  max(t.ts) AS newest_ts,
                  bool_and(t.harness_slug IS NULL) AS operator_scope_only,
                  bool_and(t.harness_slug IS NOT NULL) AS federated_only,
+                 bool_or(t.is_condition) AS carries_condition,
                  bool_or(p.post_msg_id IS NOT NULL) AS referenced_by_thread_posts
             FROM thread t
             LEFT JOIN harness_shared.coord_thread_posts p
@@ -131,13 +142,18 @@ export async function gcOldCoordMessages(
         ) g
        WHERE NOT g.referenced_by_thread_posts
          -- Per-scope horizon. A MIXED-scope thread satisfies neither branch and is
-         -- kept (see SINGLE-SCOPE THREADS ONLY above).
+         -- kept (see SINGLE-SCOPE THREADS ONLY above). A condition-carrying thread
+         -- stays on the LONGER operator horizon whatever its scope, so the health
+         -- readers' 30d window is unchanged by federated retention.
          AND (
            (g.operator_scope_only
              AND g.newest_ts < now() - make_interval(days => ${retentionDays}))
            OR
            (g.federated_only
-             AND g.newest_ts < now() - make_interval(days => ${federatedRetentionDays}))
+             AND g.newest_ts < now() - make_interval(days => CASE
+                   WHEN g.carries_condition THEN ${retentionDays}
+                   ELSE ${federatedRetentionDays}
+                 END))
          )
        ORDER BY g.newest_ts ASC
        LIMIT ${threadLimit}

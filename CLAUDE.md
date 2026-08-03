@@ -1277,6 +1277,32 @@ on the PID instead (`tail --pid=<pid> -f /dev/null`, or `kill -0 <pid>` in the
 loop) — or, if you genuinely must pattern-poll, bracket the first character so
 the pattern cannot match its own argv: `pgrep -f '[l]int-tsc'`.
 
+✅ **There is a purpose-built tool for this and you should reach for it FIRST —
+`node scripts/proc-guard.mjs check <pattern>`.** It walks the CALLER's own
+ancestor chain and excludes every pid in it before matching, so it cannot
+self-match no matter where the pattern appears in your command (the pgrep
+argument, an `echo` label, a comment, an `ls` path). Exit 0 + the matching rows
+(pid + full cmdline) when a genuinely external process matches; exit 1 + a "no
+match" line otherwise — and it never prints a bare count without the rows,
+because a count alone hides exactly this failure. Verified: `check
+'definitely-not-a-real-process-zzqq'` correctly reports NO match while a bare
+`pgrep -f` with that same pattern reports MATCHED against its own wrapper.
+Bracketing is the inline fallback, not the primary answer — it protects the
+pgrep argument only, and an `echo`/`ls` elsewhere in the same compound command
+silently re-arms the self-match (measured 2026-08-03: a bracketed `[X]vfb :90`
+probe self-matched because an `echo "== Xvfb :90 =="` label sat earlier in the
+same call).
+
+⚠⚠ **`pgrep -q` DOES NOT EXIST on this box** (procps here has no `-q`), and this
+one fails via the EXIT CODE rather than a spurious match, so bracketing does not
+help. `pgrep -qf X && echo ALIVE || echo gone` prints **`gone`** on the usage
+error — a well-formed answer to the question you asked, while the process is
+very much alive (measured: it printed `gone` while `pgrep -cf` returned **13**).
+The natural next action is to conclude a job died and re-run it. Use
+`proc-guard` above, `pgrep -cf` (count), `pgrep -x <name>` (matches the process
+NAME, so argv cannot fool it at all), or `kill -0 <pid>`
+(EI-19446554284039165).
+
 ⚠ **Waiting on the right PID isn't enough for an `npm run <target>` you
 launched detached — the PID you can grab immediately is usually the WRAPPER,
 not the real work, and a wrapper-PID wait returns exit 0 while the job is

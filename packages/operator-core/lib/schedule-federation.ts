@@ -1,0 +1,289 @@
+/**
+ * Cross-process managed-timer federation — the P-014 follow-on that
+ * `schedule-inventory.ts`'s `ExternalProcessTimer` docstring has been naming as
+ * pending ever since that file was written ("live fire-state requires
+ * per-process federation … once each process exposes its managed-timer list
+ * over its own admin/IPC").
+ *
+ * ## The bug this closes
+ *
+ * `schedule:inventory`'s `source: 'managed'` slice reads
+ * `listManaged()` — the in-memory `managedSetInterval` registry of **whichever
+ * process serves the call**. On this box that is the operator (:3070). But most
+ * recurring sweeps do not run there: they run in `papercup-bg-host.service`, a
+ * SEPARATE process off the same `bin/hono-host.ts` entrypoint. So every bg-host
+ * timer was structurally invisible to the one surface built to inventory timers,
+ * and an inventory that answers "that timer is not here" reads exactly like "that
+ * timer does not exist".
+ *
+ * Measured cost (2026-08-03, EI-19445595198254637): `dbos-executor-reaper` failed
+ * on EVERY pass for 6+ days on a float-to-bigint bind, and
+ * `attention-reconcile-unanswerable` had never executed once. Neither was
+ * detectable from `schedule:inventory`, because both live in bg-host. The
+ * detector for "an armed timer is erroring" already existed and already carried
+ * `armed` + `lastFire` + `lastError` — it was simply pointed at the wrong process.
+ * **The defect was ROUTING, not a missing mechanism**, which is why the fix here
+ * federates the existing registry instead of inventing a heartbeat.
+ *
+ * ## Discovery — reuses the registry that already exists
+ *
+ * Every operator-shaped process already publishes
+ * `~/.papercusp/endpoint-ipc.<port>.json` on boot (`endpoint-ipc-discovery.ts`)
+ * carrying `{ socketPath, pid, startedAt, port }`, and prunes siblings whose pid
+ * is dead. That is a live process registry, so this module reads it rather than
+ * hard-coding a unit→port map (which would silently rot the first time a port
+ * moved). Self-exclusion is exact because the self-port is derived with the SAME
+ * expression the writer uses (`Number(PAPERCUSP_HONO_PORT) || 3070`).
+ *
+ * ## Why PULL (bounded HTTP) and not PUSH (publish to Postgres)
+ *
+ * A push design needs a new table + a new publisher + a migration — a new durable
+ * surface for what is a visibility gap. A wide search for an existing
+ * process/instance/heartbeat-scoped table found nothing to extend. Pull matches an
+ * existing pattern (`dev/build_status.ts` already probes sibling ports) and adds no
+ * durable surface. Push only wins if HISTORY is later required; say so explicitly
+ * if that requirement appears rather than drifting into it.
+ *
+ * ## The hard constraint: a sibling may be WEDGED, and must not take us with it
+ *
+ * bg-host is not reliably responsive. Measured the same day
+ * (EI-19446421329946902): a `schedule:inventory` MCP call against :3271 returned
+ * ZERO BYTES twice (30s, 45s) and its `/api/health` went unresponsive and then
+ * recovered, while the process stayed alive and working. So this module is built
+ * to degrade, never to block:
+ *
+ *  - a short per-probe timeout (`AbortSignal.timeout`, which aborts the body read
+ *    too, not just the connect);
+ *  - a hard OUTER budget, so even a probe that ignores its signal cannot hold the
+ *    inventory hostage;
+ *  - `probeSibling` NEVER rejects — every failure becomes an `ok: false` row, so a
+ *    non-answering sibling renders as UNKNOWN rather than silently absent. Unknown
+ *    is strictly better than invisible; invisible is the bug being fixed.
+ *
+ * The probe endpoint (`GET /api/internal/managed-timers`) is deliberately a pure
+ * in-memory read with no DB and no DBOS call, so probing a contended sibling adds
+ * no I/O of its own.
+ */
+import { homedir } from 'node:os';
+import { join } from 'node:path';
+import { readdir, readFile } from 'node:fs/promises';
+import type { ManagedEntry } from '@papercusp/scheduled-registry';
+
+/** Loopback path each operator-shaped process serves its managed registry on. */
+export const SIBLING_PROBE_PATH = '/api/internal/managed-timers';
+
+/** Per-sibling probe deadline. Healthy answers are single-digit ms (pure memory read). */
+export const DEFAULT_SIBLING_PROBE_TIMEOUT_MS = 1200;
+
+/** Hard outer fan-out budget across ALL siblings — the backstop for a probe that ignores its signal. */
+export const DEFAULT_SIBLING_FANOUT_BUDGET_MS = 2000;
+
+/** A live sibling operator-shaped process, as advertised by its own discovery file. */
+export interface SiblingOperator {
+  port: number;
+  pid: number;
+  /** epoch ms the sibling published its discovery file (its boot time). */
+  startedAt: number;
+}
+
+/** One sibling's managed-timer slice, or the reason it could not be read. */
+export interface SiblingManagedTimers {
+  port: number;
+  pid: number;
+  /** Stable display label, e.g. `bg-host:3271`. Falls back to `operator:<port>` when the sibling never answered to self-identify. */
+  label: string;
+  /** The sibling's self-reported role, or null when it did not answer. */
+  process: string | null;
+  /** false ⇒ its timers are UNKNOWN (not absent); read `error`. */
+  ok: boolean;
+  timers: ManagedEntry[];
+  error?: string;
+  elapsedMs: number;
+}
+
+/**
+ * This process's own role, as reported by `/api/internal/managed-timers` and used
+ * to label federated rows. Kept deliberately coarse — `bg-host` vs `operator` — and
+ * always paired with the port, so the label is unambiguous (`operator:3170` is the
+ * staging operator) without a port→name map that could drift.
+ */
+export function describeProcessRole(env: NodeJS.ProcessEnv = process.env): string {
+  const bg = (env.PAPERCUSP_BACKGROUND_WORKERS ?? '').trim().toLowerCase();
+  if (bg && bg !== '0' && bg !== 'false') return 'bg-host';
+  return 'operator';
+}
+
+/**
+ * This process's serving port. MUST stay expression-identical to
+ * `endpoint-ipc-discovery.ts`'s `writeEndpointIpcDiscovery` — self-exclusion in
+ * `listSiblingOperators` is only exact because both sides derive the port the same
+ * way; a divergence would make a process federate ITSELF and double-count its rows.
+ */
+export function ownHonoPort(env: NodeJS.ProcessEnv = process.env): number {
+  return Number(env.PAPERCUSP_HONO_PORT) || 3070;
+}
+
+/** `process.kill(pid, 0)` liveness — mirrors the copy in endpoint-ipc-discovery.ts. */
+function pidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    // ESRCH = genuinely dead. EPERM = a process with that pid exists but is not
+    // ours to signal — that still proves alive.
+    return (e as NodeJS.ErrnoException)?.code === 'EPERM';
+  }
+}
+
+/**
+ * The live sibling operator-shaped processes on this box, newest-port-first-stable.
+ *
+ * Reads ONLY the per-port discovery files. The legacy singleton
+ * `endpoint-ipc.json` is deliberately skipped: it is last-writer-wins across every
+ * operator on the box, so including it would either duplicate a per-port sibling or
+ * point at a different (possibly dead) process than its filename implies.
+ *
+ * Fail-soft everywhere: a missing dir, a corrupt file, or a raced-away read yields
+ * fewer siblings, never a throw.
+ */
+export async function listSiblingOperators(
+  opts: {
+    dir?: string;
+    selfPort?: number;
+    isAlive?: (pid: number) => boolean;
+  } = {},
+): Promise<SiblingOperator[]> {
+  const dir = opts.dir ?? join(homedir(), '.papercusp');
+  const selfPort = opts.selfPort ?? ownHonoPort();
+  const alive = opts.isAlive ?? pidAlive;
+
+  let names: string[];
+  try {
+    names = await readdir(dir);
+  } catch {
+    return [];
+  }
+
+  const out: SiblingOperator[] = [];
+  for (const name of names) {
+    const m = /^endpoint-ipc\.(\d+)\.json$/.exec(name);
+    if (!m) continue;
+    const port = Number(m[1]);
+    if (!Number.isFinite(port) || port <= 0 || port === selfPort) continue;
+    try {
+      const parsed = JSON.parse(await readFile(join(dir, name), 'utf8')) as {
+        pid?: unknown;
+        startedAt?: unknown;
+      };
+      const pid = Number(parsed?.pid);
+      if (!Number.isFinite(pid) || pid <= 0) continue;
+      if (!alive(pid)) continue; // stale advertisement from a dead process
+      out.push({ port, pid, startedAt: Number(parsed?.startedAt) || 0 });
+    } catch {
+      /* unreadable / corrupt / raced away — skip, never throw */
+    }
+  }
+  out.sort((a, b) => a.port - b.port);
+  return out;
+}
+
+type FetchLike = (url: string, init: { signal: AbortSignal; headers: Record<string, string> }) => Promise<{
+  ok: boolean;
+  status: number;
+  json: () => Promise<unknown>;
+}>;
+
+function degraded(s: SiblingOperator, error: string, elapsedMs: number): SiblingManagedTimers {
+  return {
+    port: s.port,
+    pid: s.pid,
+    label: `operator:${s.port}`,
+    process: null,
+    ok: false,
+    timers: [],
+    error,
+    elapsedMs,
+  };
+}
+
+/**
+ * Probe ONE sibling. NEVER rejects — every failure (timeout, refused connection,
+ * non-2xx, malformed body) becomes an `ok: false` row. That invariant is what lets
+ * the caller `Promise.all` these without a rejection path, and what lets the outer
+ * budget race abandon them without producing an unhandled rejection.
+ */
+export async function probeSibling(
+  s: SiblingOperator,
+  opts: { timeoutMs?: number; fetchImpl?: FetchLike } = {},
+): Promise<SiblingManagedTimers> {
+  const timeoutMs = opts.timeoutMs ?? DEFAULT_SIBLING_PROBE_TIMEOUT_MS;
+  const doFetch = (opts.fetchImpl ?? (globalThis.fetch as unknown as FetchLike));
+  const startedAt = Date.now();
+  try {
+    const res = await doFetch(`http://127.0.0.1:${s.port}${SIBLING_PROBE_PATH}`, {
+      // AbortSignal.timeout aborts the BODY read too, not just the connect — the
+      // observed bg-host failure mode is a connection that opens and then returns
+      // zero bytes for 45s, which a connect-only timeout would sail straight past.
+      signal: AbortSignal.timeout(timeoutMs),
+      headers: { accept: 'application/json' },
+    });
+    if (!res.ok) return degraded(s, `HTTP ${res.status}`, Date.now() - startedAt);
+    const body = (await res.json()) as { process?: unknown; timers?: unknown };
+    const proc = typeof body?.process === 'string' && body.process ? body.process : null;
+    const timers = Array.isArray(body?.timers) ? (body.timers as ManagedEntry[]) : [];
+    return {
+      port: s.port,
+      pid: s.pid,
+      label: `${proc ?? 'operator'}:${s.port}`,
+      process: proc,
+      ok: true,
+      timers,
+      elapsedMs: Date.now() - startedAt,
+    };
+  } catch (e) {
+    return degraded(s, e instanceof Error ? e.message : String(e), Date.now() - startedAt);
+  }
+}
+
+/** A budget timer that can never keep the process alive. */
+function budgetExpiry<T>(ms: number, value: () => T): Promise<T> {
+  return new Promise<T>((resolve) => {
+    const t = setTimeout(() => resolve(value()), ms);
+    (t as unknown as { unref?: () => void }).unref?.();
+  });
+}
+
+/**
+ * Fan out to every live sibling and return their managed-timer slices.
+ *
+ * Bounded twice on purpose: each probe carries its own `AbortSignal.timeout`, AND
+ * the whole fan-out races a hard outer budget. The outer race is not redundant —
+ * it is the guard that makes "a wedged sibling cannot block the operator's
+ * inventory" true even if a fetch implementation mishandles its signal, which is
+ * precisely the class of failure bg-host has already demonstrated.
+ */
+export async function collectSiblingManagedTimers(
+  opts: {
+    timeoutMs?: number;
+    budgetMs?: number;
+    siblings?: SiblingOperator[];
+    fetchImpl?: FetchLike;
+  } = {},
+): Promise<SiblingManagedTimers[]> {
+  const timeoutMs = opts.timeoutMs ?? DEFAULT_SIBLING_PROBE_TIMEOUT_MS;
+  const budgetMs = opts.budgetMs ?? DEFAULT_SIBLING_FANOUT_BUDGET_MS;
+  const siblings = opts.siblings ?? (await listSiblingOperators().catch(() => []));
+  if (!siblings.length) return [];
+
+  const probes = Promise.all(
+    siblings.map((s) => probeSibling(s, { timeoutMs, fetchImpl: opts.fetchImpl })),
+  );
+  // probeSibling never rejects, so abandoning `probes` here cannot surface as an
+  // unhandled rejection — it simply settles unobserved.
+  return await Promise.race([
+    probes,
+    budgetExpiry(budgetMs, () =>
+      siblings.map((s) => degraded(s, `sibling fan-out budget ${budgetMs}ms exceeded`, budgetMs)),
+    ),
+  ]);
+}

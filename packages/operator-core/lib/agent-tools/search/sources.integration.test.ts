@@ -507,3 +507,149 @@ describe('GAP 10 — workspace B sees its OWN rows (proves the filter is scoping
     expect(out[0].row.excerpt).toContain('another workspace');
   });
 });
+
+/**
+ * P-017 / D-062 — `lexicalSql`, the corpus injection leg's term-combination mode.
+ *
+ * The regression this suite exists to prevent is asymmetric, so it is guarded in
+ * both directions:
+ *
+ *   * `'and'` (the DEFAULT, and what every caller still gets) must be EXACTLY
+ *     today's query. The first test asserts that against the literal pre-P-017
+ *     SQL run side-by-side — same rows, same order, same rank floats, same
+ *     highlight bytes — because the shared `sources.ts` registry backs
+ *     `search:fulltext`, `search:semantic`, `sessions:search` and
+ *     `ask-knowledge-tier` as well, and silently re-ranking those was never in
+ *     scope.
+ *   * `'coverage-graded'` must be a strict SUPERSET with the AND rows in the top
+ *     tier — the no-regression property that let this ship as one query instead
+ *     of a two-pass cascade.
+ */
+const p17Params = (over: Partial<SearchSourceParams> = {}): SearchSourceParams =>
+  params({ query: P17_QUERY, ...over });
+
+/** Mirrors `HEADLINE_OPTS` in sources.ts — duplicated on purpose: the point of
+ *  the equivalence test is that the SHIPPED constant produces these bytes. */
+const HEADLINE_OPTS_MIRROR =
+  'StartSel=<mark>, StopSel=</mark>, MaxFragments=2, FragmentDelimiter=" … ", MaxWords=18, MinWords=5, ShortWord=2';
+
+describe('P-017 — session_turn.bm25 lexicalMode', () => {
+  it("'and' mode is the PRE-P-017 query exactly — same rows, order, ranks and highlight bytes", async () => {
+    // The literal query as it stood before `lexicalSql` was introduced.
+    const legacy = (await sql`
+      SELECT source_kind, session_id, turn_idx,
+             ts_rank_cd(text_tsv, plainto_tsquery('english', ${P17_QUERY})) AS rank,
+             ts_headline('english', left(text, 4000),
+               plainto_tsquery('english', ${P17_QUERY}),
+               ${HEADLINE_OPTS_MIRROR}) AS highlight
+        FROM harness_shared.session_turns
+       WHERE (workspace_id = ${WS_A} OR workspace_id = 'default')
+         AND text_tsv @@ plainto_tsquery('english', ${P17_QUERY})
+    ORDER BY rank DESC LIMIT 20
+    `) as unknown as Array<{ source_kind: string; session_id: string; turn_idx: number; rank: number; highlight: string }>;
+
+    const out = await byName('session_turn').bm25(p17Params());
+
+    expect(out.map((r) => r.row.source_id)).toEqual(
+      legacy.map((r) => `${r.source_kind}:${r.session_id}:${r.turn_idx}`),
+    );
+    expect(out.map((r) => r.score)).toEqual(legacy.map((r) => r.rank));
+    expect(out.map((r) => r.row.highlight)).toEqual(legacy.map((r) => r.highlight));
+    // …and it is the all-terms set, nothing more: AND cannot reach T_FOUR.
+    expect(out.map((r) => r.row.source_id).sort()).toEqual([T_ALL_A, T_ALL_B]);
+  });
+
+  it("'coverage-graded' is a strict SUPERSET of 'and', with the AND rows in the top coverage tier", async () => {
+    const and = await byName('session_turn').bm25(p17Params());
+    const graded = await byName('session_turn').bm25(p17Params({ lexicalMode: 'coverage-graded' }));
+
+    const andIds = and.map((r) => r.row.source_id);
+    const gradedIds = graded.map((r) => r.row.source_id);
+
+    // Containment — the property that makes this no-regression by construction.
+    for (const id of andIds) expect(gradedIds).toContain(id);
+    expect(gradedIds.length).toBeGreaterThan(andIds.length);
+
+    // The AND set occupies the top tier — not merely present, but FIRST.
+    expect(gradedIds.slice(0, andIds.length).sort()).toEqual([...andIds].sort());
+  });
+
+  it('recovers a 4-of-5 document the AND query discards outright', async () => {
+    const and = await byName('session_turn').bm25(p17Params());
+    const graded = await byName('session_turn').bm25(p17Params({ lexicalMode: 'coverage-graded' }));
+
+    expect(and.map((r) => r.row.source_id)).not.toContain(T_FOUR);
+    expect(graded.map((r) => r.row.source_id)).toContain(T_FOUR);
+    // It sits directly below the coverage-5 tier, above the coverage-2 trap.
+    expect(graded.map((r) => r.row.source_id)).toEqual([
+      ...graded.slice(0, 2).map((r) => r.row.source_id),
+      T_FOUR,
+      T_TRAP,
+    ]);
+  });
+
+  it('COVERAGE outranks ts_rank_cd — the frequency trap scores higher yet places last', async () => {
+    const graded = await byName('session_turn').bm25(p17Params({ lexicalMode: 'coverage-graded' }));
+    const byId = new Map(graded.map((r) => [r.row.source_id, r]));
+
+    const trap = byId.get(T_TRAP);
+    const allTerms = byId.get(T_ALL_A);
+    expect(trap).toBeDefined();
+    expect(allTerms).toBeDefined();
+
+    // BOTH halves matter. If the first assertion ever fails the fixture has
+    // stopped exercising the trap, and the second would pass vacuously.
+    expect(trap!.score).toBeGreaterThan(allTerms!.score);
+    expect(graded[graded.length - 1].row.source_id).toBe(T_TRAP);
+  });
+
+  it('the rarest-lexeme anchor is STRICT — 4-of-5 documents lacking it are excluded (the cost that bounds the scan)', async () => {
+    const graded = await byName('session_turn').bm25(p17Params({ lexicalMode: 'coverage-graded' }));
+    const ids = graded.map((r) => r.row.source_id);
+    // stId(10) matches corpus+recall+pointer+section — coverage 4, no `clamp`.
+    expect(ids).not.toContain(stId(10));
+    expect(ids).toEqual([T_ALL_A, T_ALL_B, T_FOUR, T_TRAP].filter((id) => ids.includes(id)));
+    expect(ids).toHaveLength(4);
+  });
+
+  it('graded highlights render against the DISJUNCTIVE query, so a partial match gets a real fragment', async () => {
+    const graded = await byName('session_turn').bm25(p17Params({ lexicalMode: 'coverage-graded' }));
+    const four = graded.find((r) => r.row.source_id === T_FOUR);
+    expect(four?.row.highlight).toContain('<mark>');
+  });
+
+  it('SECURITY — the workspace-B decoy is counted by the unfiltered DF probe but leaks into NEITHER mode', async () => {
+    for (const mode of ['and', 'coverage-graded'] as const) {
+      const out = await byName('session_turn').bm25(p17Params({ lexicalMode: mode }));
+      expect(out.map((r) => r.row.source_id)).not.toContain(T_DECOY_B);
+      for (const r of out) expect(r.row.excerpt).not.toContain('another workspace');
+    }
+    // …and B still sees its OWN row, so this is scoping, not blanket hiding.
+    const b = await byName('session_turn').bm25(
+      p17Params({ workspaceId: WS_B, lexicalMode: 'coverage-graded' }),
+    );
+    expect(b.map((r) => r.row.source_id)).toEqual([T_DECOY_B]);
+  });
+});
+
+describe('P-017 — work_item.bm25 lexicalMode (the second source the corpus leg reads)', () => {
+  it("'and' returns only the all-terms issue; 'coverage-graded' is a superset ordered by coverage", async () => {
+    const and = await byName('work_item').bm25(p17Params());
+    const graded = await byName('work_item').bm25(p17Params({ lexicalMode: 'coverage-graded' }));
+
+    expect(and.map((r) => r.row.source_id)).toEqual(['EI-C1']);
+    // C2 is 4-of-5 with the anchor; C3 is 2-of-5 with the anchor; the N-rows
+    // lack `clamp` entirely and the anchor excludes them.
+    expect(graded.map((r) => r.row.source_id)).toEqual(['EI-C1', 'EI-C2', 'EI-C3']);
+    for (const id of and.map((r) => r.row.source_id)) {
+      expect(graded.map((r) => r.row.source_id)).toContain(id);
+    }
+  });
+
+  it('SECURITY — the workspace-B issue never leaks under either mode', async () => {
+    for (const mode of ['and', 'coverage-graded'] as const) {
+      const out = await byName('work_item').bm25(p17Params({ lexicalMode: mode }));
+      expect(out.map((r) => r.row.source_id)).not.toContain('EI-D9');
+    }
+  });
+});

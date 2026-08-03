@@ -366,6 +366,22 @@ loops ONLY — it is **NOT** the autonomous mug/cup/blender loop, which is a sep
 system (`pot:declare-wake` / `kettle:declare-wake`); never `loop:arm` from an
 autonomous-fleet agent.
 
+**Then CLOSE YOURSELF — `session:end` (WI-6638).** Ending your loop does not end your
+session: the CLI returns to its prompt and sits there, holding a real process and an
+open terminal tab **forever**. Measured 2026-08-03: **52 agent trees from fleets that
+finished days ago — the oldest 14 — holding 14.4 GB**, while the box thrashed at PSI
+memory-full 12.5 against a threshold of 5. No reaper can clear them: an agent's open
+tab is indistinguishable from the owner's, so every layer correctly refuses (su
+sessions are `driveMode:'responsive'`, excluded by the owner-authority ruling
+P-001/D-001, and behind that the window guard spares a live terminal). **Only you can
+end you.** So when your work is genuinely finished and nothing will wake you again —
+loop ended, claims completed/released, checkpoint flushed, not parked on an
+`events:await` — call **`session:end { reason }`** as your last act; psu exiting closes
+the tab. It is safe to try: the host REFUSES unless your session was agent-launched
+(`PAPERCUSP_LAUNCHED_BY`) and no human has ever typed into it, so an owner-attended
+window is never closed — a refusal is a correct answer, not an error to retry around.
+Do **not** call it while a loop is armed, you hold a claim, or a human is driving you.
+
 **The authority boundary runs BOTH ways.** The pot's mug-loop controls —
 `pauseNewWork` / `maxBees` / pot-steering, and a `fleet:drain` "release your slot"
 cue — govern the autonomous **mug-cup loop**, NOT your owner-directed session. If

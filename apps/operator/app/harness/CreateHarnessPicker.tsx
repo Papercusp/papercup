@@ -403,10 +403,14 @@ function ExistingLocalForm({ onBack, onSuccess, hive, hiveLabel }: { onBack: () 
     args: {},
     staleTime: 60_000,
   });
+  // No domain ternary here: this form is always coding (see defaultPack above),
+  // so TS narrows it to the literal 'coding' and a `=== 'work'` test is provably
+  // dead (TS2367). NewLocalForm's copy DOES branch, because its defaultPack is a
+  // real 'coding'|'work' union driven by the `domain` prop.
   const availablePacks =
     packRows && packRows.length > 0
       ? packRows
-      : [{ id: defaultPack, title: defaultPack === 'work' ? 'Generic work learnings' : 'Generic coding learnings', version: '', itemCount: 0 }];
+      : [{ id: defaultPack, title: 'Generic coding learnings', version: '', itemCount: 0 }];
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();

@@ -20,6 +20,7 @@ import { activeWorkspaceId } from './workspace-registry';
 import { listDbosScheduledWorkflows, type DbosScheduledEntry } from './dbos/dbos-schedule-introspect';
 import { buildDefaultChecks, inProcessPeriodicChecksArmed } from './dbos/in-process-periodic';
 import { listManaged, type ManagedEntry, type TimerClassification } from '@papercusp/scheduled-registry';
+import { collectSiblingManagedTimers, type SiblingManagedTimers } from './schedule-federation';
 
 /**
  * Every source collectScheduleInventory can emit a row for. SINGLE source of truth:

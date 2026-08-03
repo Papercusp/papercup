@@ -94,7 +94,11 @@ function main() {
   console.error('  commit. A LEADING literal also suppresses `&&` narrowing, so it turns a clean');
   console.error('  file into a committed tsc red (EI-19446174755157221: 0 → 7 TS18047).\n');
   console.error('  Delete the branch if it is dead, or gate it on a NAMED constant/flag if it is');
-  console.error('  temporary — a named gate is greppable and survives a sweep honestly.\n');
+  console.error('  temporary — a named gate is greppable and survives a sweep honestly.');
+  console.error('  Running a DIFFERENTIAL ("does this still misbehave with the guard off?")? The');
+  console.error('  source edit is avoidable: lift the logic into a pure function and drive both');
+  console.error('  arms from a test — the only version of that experiment a sweep cannot commit');
+  console.error('  half-finished.\n');
   for (const o of offenders) console.error('    ' + o);
   console.error(`\n  ${offenders.length} offender(s).`);
   process.exit(1);

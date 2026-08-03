@@ -135,6 +135,10 @@ export function usesModuleScopeFlagSubscribe(text) {
 // adding it to lib/flags-partial-mock-importable.test.ts, which tests the actual
 // mechanism (importability under a partial mock) that this source lint only
 // approximates.
+// Also removed 2026-08-03 (EI-19416650993725684): work-item-claim-lease-wiring.ts,
+// onto the same helper. It had FOUR readers of its cached boolean (the exported
+// getter plus three internal `if (!claimLeaseOn)` guards) and no periodic refresh
+// timer to bound a missed arm, so every one of the four arms.
 export const BASELINE = new Set([
   // ⚠ EXAMINED AND DEFERRED, NOT MISSED — do NOT pattern-match this one onto its
   // siblings above. It looks identical (same config-override family, same timer,

@@ -278,7 +278,11 @@ export const constantConditionalDetector: ContentDetector = {
       'This is almost always a temporary local disable, and git-sync commits the whole tree ' +
       'every few minutes, so it reaches `staging` mid-experiment. A leading literal also ' +
       'suppresses `&&` narrowing, turning a clean file into a committed tsc red. ' +
-      'Delete the branch if it is dead, or gate it on a NAMED constant/flag if it is temporary.'
+      'Delete the branch if it is dead, or gate it on a NAMED constant/flag if it is temporary. ' +
+      'If you are running a DIFFERENTIAL ("does this still misbehave with the guard off?"), ' +
+      'the source edit is avoidable entirely: lift the logic into a pure function and drive ' +
+      'both arms from a test. On an auto-committing tree that is the only version of the ' +
+      'experiment that cannot be committed half-finished.'
     );
   },
   fixerRole: CONTENT_FIXER_ROLE,
