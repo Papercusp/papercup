@@ -116,7 +116,7 @@ export const AUDIT_TOON_RESULT: ToolDispatchOverride = {
   override(name) {
     if (canonical(name) === 'audit:list') {
       return {
-        content: [{ text: `format: toon\n${encode(AUDIT_S08_ROWS as unknown as unknown[], 'toon')}` }],
+        content: [{ text: `format: toon\n${encode(AUDIT_S08_ROWS, 'toon')}` }],
       };
     }
     return PASS_THROUGH;
