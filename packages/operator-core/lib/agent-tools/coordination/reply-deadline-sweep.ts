@@ -143,6 +143,15 @@ async function findDueReplyDeadlines(
          SELECT 1 FROM harness_shared.coord_event_log e2
           WHERE e2.workspace_id = e1.workspace_id
             AND e2.surface = 'messages'
+            -- The body ? 'related_msg_id' clause is logically REDUNDANT with the equality
+            -- below (body->>key is NULL when the key is absent, and NULL never equals a
+            -- msg_id), but it is REQUIRED for the planner to use
+            -- coord_event_log_related_msg_id_idx, which is PARTIAL: it is defined
+            -- WHERE (body ? 'related_msg_id'). Without this clause the index cannot be
+            -- proven to cover, and the anti-join degrades to hashing every messages row.
+            -- Measured 2026-08-03 (EI-19448297390091252): 40,684 -> 721 buffers (56x),
+            -- 156.9ms -> 8.96ms, scanning 86,722 rows to return zero. Do not "simplify".
+            AND e2.body ? 'related_msg_id'
             AND e2.body->>'related_msg_id' = e1.msg_id
        )
      ORDER BY (e1.body->>'replyDeadlineAt')::bigint ASC

@@ -86,7 +86,7 @@ async function msg(opts: {
   /** Make it a single-primary CONDITION alarm (health state, not chatter). */
   conditionKey?: string;
 }) {
-  const body: Record<string, unknown> = opts.relatedTo
+  const body: Record<string, string> = opts.relatedTo
     ? { kind: 'message', msg_id: opts.msgId, related_msg_id: opts.relatedTo }
     : { kind: 'message', msg_id: opts.msgId };
   if (opts.conditionKey) body.condition_key = opts.conditionKey;

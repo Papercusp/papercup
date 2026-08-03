@@ -289,6 +289,48 @@ A loud warning + exit 1 = the shared dist changed after this instance froze —
 restart (`"$VERIFY_TAURI_STOP"` then re-run the boot script) before trusting
 any further checks; reloading the page will NOT pick up the edit.
 
+### Assertion (`--`) mode runs that guard FOR you — and can settle it decisively
+
+The above is the `--boot-only` workflow, where *you* drive an instance and so
+*you* must remember to check. In assertion mode
+(`verify-tauri-headless.sh -- <cmd>`) the script now runs the freshness check
+itself, just before exec'ing your command — you no longer have to remember it.
+(`$VERIFY_TAURI_FRESHNESS_CHECK` used to be exported **only** on the
+`--boot-only` path, so referencing it from an assertion command died with
+`VERIFY_TAURI_FRESHNESS_CHECK: unbound variable` — EI-19444780917356384. It and
+`$VERIFY_TAURI_SPA_DIST`, the frozen bundle's path, are now exported in both
+modes.)
+
+Two checks fire there, deliberately different in force — and the distinction
+matters, because only one of them can actually answer your question:
+
+* **Drift (advisory).** "The shared dist moved since we froze." On this box the
+  fleet's `vite build --watch` rebuilds constantly, so drift is near-permanent
+  and does **not** prove *your* change is missing — a peer's unrelated edit
+  moves it too. It warns and points at the decisive check rather than failing
+  your run.
+* **Containment (decisive).** Pass a string your change introduced:
+
+  ```bash
+  VERIFY_TAURI_ASSERT_SNAPSHOT_CONTAINS='myNewSymbol' \
+    bash scripts/verify-tauri-headless.sh -- bash my-assertions.sh
+  ```
+
+  The script greps the **frozen** bundle and, if the string is absent, exits
+  **3** *before running your command at all* — because a run that cannot
+  exercise your change can only produce a false negative about pre-edit code.
+  Exit 3 is distinct from 1 (your assertion failed) and 2 (usage), so a stale
+  snapshot is never mistaken for a broken feature.
+
+**Why this matters more than it sounds:** a verification against a stale
+snapshot produces a clean, well-formed, *confident* "your fix does not work" —
+indistinguishable in every observable respect from a genuine failure. Measured:
+an edit built at 10:58:00 against a snapshot frozen \~10:57 cost a full \~6-minute
+boot+drive cycle and came within one manual grep of sending an agent off to
+"re-fix" already-correct code. If you are verifying a change you just made,
+pass `VERIFY_TAURI_ASSERT_SNAPSHOT_CONTAINS`; treat a NEGATIVE result without it
+as unproven.
+
 **One residual gap:** if `apps/operator-vite/dist/` hasn't been built yet
 (fresh checkout / never ran `npm run build` there), the script logs a WARNING
 and falls through to the shared, watcher-exposed dist as before — build

@@ -133,6 +133,23 @@ in `schedule:inventory` (*visibility ≠ control*). A bare `setInterval` fails
 `lint:no-raw-setinterval` (the BASELINE is empty). Full model:
 [the scheduler layer model](/internal/docs/agent-insights/two-tier-scheduler-and-timer-visibility).
 
+⚠ **`schedule:inventory` is PER-PROCESS, and which process answers you decides what
+you can see.** `source: 'managed'` reads the in-memory registry of whichever process
+SERVES the call — normally the operator (:3070). Most recurring sweeps do not run
+there; they run in `papercup-bg-host.service`. So a timer's absence from the inventory
+has never meant "that timer does not exist", and reading it that way is how
+`dbos-executor-reaper` failed 100% of its passes for 6+ days undetected while
+`attention-reconcile-unanswerable` had never executed once (EI-19445595198254637).
+Sibling operator-shaped processes (bg-host, staging — anything serving
+`bin/hono-host.ts`) are now federated live: they appear as `source:
+'external-process'` rows carrying real `armed`/`lastFire`/`lastError`, tagged
+`detail.federated: true` and `detail.process: '<role>:<port>'`. **Read
+`detail.federated` before trusting a row's fire-state** — a `false` row is either the
+static manifest (the inference gateway, its watchdog, psu-launcher, which serve no
+such endpoint) or a sibling that did not answer the probe, and a non-answering
+sibling renders as one explicit `… (timers unknown)` row. Unknown is not absent.
+Mechanism: `schedule-federation.ts` + `GET /api/internal/managed-timers`.
+
 ## Spawning: no unenrolled `detached` spawn, and never kill by name
 
 The process analogue of the scheduler rule above. A `detached: true` spawn creates a

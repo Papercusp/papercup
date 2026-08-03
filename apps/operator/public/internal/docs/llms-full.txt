@@ -39975,12 +39975,32 @@ assertBundleContainsMarkers({
 
 Call it immediately before spawning/executing **any** pre-built bundle whose output you plan to use as evidence for a diagnostic conclusion — not just for hyperdht/P2P work. This applies to any ad hoc investigation rig that pre-builds a bundle and expects a `patches/` or source edit to be reflected in it.
 
-## Two guards this does NOT (yet) implement — still worth doing by hand
+## Bundle provenance stamping — NOW IMPLEMENTED for the sidecar (EI-19446480107603858)
 
-[Section titled “Two guards this does NOT (yet) implement — still worth doing by hand”](#two-guards-this-does-not-yet-implement--still-worth-doing-by-hand)
+[Section titled “Bundle provenance stamping — NOW IMPLEMENTED for the sidecar (EI-19446480107603858)”](#bundle-provenance-stamping--now-implemented-for-the-sidecar-ei-19446480107603858)
 
-1. **Bundle provenance stamping** — stamp a build with the mtimes/hashes of the patches present in `node_modules` at build time, and refuse to run a bundle whose patch-set is older than the current `patches/` directory. Not implemented here deliberately: a bundle can rebuild without touching `patches/`’s own mtime (e.g. a plain `npm install`), so provenance-by-mtime can false-negative in a way a marker-presence check cannot. If you need this, treat it as a *second*, independent layer — not a replacement.
-2. **Never let a diagnostic field collapse to a falsy default.** When you write instrumentation into a patch, prefer an explicit sentinel (`'absent'` / `null` with a distinct shape) over letting the reader default an absent key to `false`/`0`/`undefined`. Then absent-vs-zero is decidable from the log alone, and no control-arm analysis is ever needed to recover it after the fact — this is what the `bytesReceived: 0` occurrence in the same investigation cost to resolve.
+This section used to say provenance stamping was unimplemented and worth doing by hand. For the **sidecar** input set it now exists, so do *not* hand-roll it:
+
+* `papercusp-desktop/bin/build-desktop-sidecar.sh` records `build-provenance.json` (the shared `emit-build-provenance.sh` schema — git head, build sha, UTC timestamp) into every sidecar it publishes.
+* `papercusp-desktop/bin/check-sidecar-freshness.js` (logic in `bin/lib/sidecar-freshness.js`) is called by **both** cross-build legs, which previously gated the sidecar on existence + arch only — loud when it was MISSING, silent when it was merely OLD, which is the common case because rebuilding it is a separate manual step.
+
+It deliberately does **not** decide staleness the way the old text above proposed. Two design constraints, both learned the expensive way:
+
+* **Not by mtime** — the original objection here still stands, and `bin/lib/spa-freshness.js` documents the same finding independently: a packaging copy refreshes the stale file’s mtime, so timestamps call it current.
+* **Not by “sidecar gitHead != repo HEAD”** — that is the obvious fix and it is wrong here. This is one shared checkout edited by the whole fleet, so HEAD moves every few minutes and such a rule fires on essentially every build for every agent. A guard that cries wolf is worse than none, because it trains the bypass.
+
+So it splits into an always-on half and an opt-in half:
+
+1. **A banner, unconditionally** — the sidecar’s recorded age, gitHead and buildSha, printed by every consuming build. The silence *was* the defect: in WI-3307 a bundle shipped a 9-hour-old operator while its other half (the rsync’d source tree) was current, so every acceptance criterion passed on the fresh half. “built 9h ago from `ebb8505`” would have stopped it before \~73 minutes of cargo zigbuild.
+2. **`PAPERCUSP_REQUIRE_SIDECAR_CONTAINS=<sha>`** — assert “this cut must carry commit X” and the build refuses when the sidecar’s provenance does not contain it (git ancestry, exit 4; override `PAPERCUSP_ALLOW_STALE_SIDECAR=1`). Because it only fires when someone asserted something, it has no false positives. This is the “grep the built artifact for a symbol only my fix introduces” check — the thing that actually caught the WI-3307 staleness — promoted from a shell snippet each caller had to remember into a precondition every caller inherits. Remembering was the property that failed.
+
+**The half-fresh artifact is the generalisable lesson.** When an artifact is assembled from inputs with *different refresh policies*, “I rebuilt it” is not a claim about any particular input, and the partly-fresh case is far more deceptive than the wholly-stale one because the evidence of freshness is real. Before trusting a build to carry your fix, grep the OUTPUT for a symbol only your fix introduces — seconds, against a \~73-minute build.
+
+## The guard this still does NOT implement — worth doing by hand
+
+[Section titled “The guard this still does NOT implement — worth doing by hand”](#the-guard-this-still-does-not-implement--worth-doing-by-hand)
+
+1. **Never let a diagnostic field collapse to a falsy default.** When you write instrumentation into a patch, prefer an explicit sentinel (`'absent'` / `null` with a distinct shape) over letting the reader default an absent key to `false`/`0`/`undefined`. Then absent-vs-zero is decidable from the log alone, and no control-arm analysis is ever needed to recover it after the fact — this is what the `bytesReceived: 0` occurrence in the same investigation cost to resolve.
 
 ## When you’ll hit this again
 
@@ -86215,7 +86235,9 @@ The `packages/operator-core/lib/operator-state-pg.ts` helpers branch on `ENCRYPT
 
 A **knowledge pack** is a versioned, git-canonical set of *learnings* — curated, project-transferable working wisdom. At pot creation the selected pack is **copied** into the pot’s own memory store; from then on the pot owns every row — editable, deletable, growable — and every agent in every member harness recalls it.
 
-**Which pack seeds is a 3-level priority** (`pot:create`, `_create.ts`): an explicit `knowledgePack` arg wins; else the blueprint’s declared `knowledge.pack`; else the global fallback **`papercusp-default`** (32 learnings). So `papercusp-default` is *only* the fallback — a pot whose blueprint declares a `knowledge.pack` seeds that instead (see [Built-in packs](#built-in-packs-three-of-them)).
+**Which pack seeds is a 3-level priority** (`pot:create`, `_create.ts`): an explicit `knowledgePack` arg wins; else the blueprint’s declared `knowledge.pack`; else the global fallback **`coding`** (`DEFAULT_KNOWLEDGE_PACK_ID`). So `coding` serves two roles — the coding-pot pack *and* the global fallback — and a pot whose blueprint declares a `knowledge.pack` seeds that instead (see [Built-in packs](#built-in-packs-two-of-them)).
+
+> **EI-1539:** the fallback used to be a third pack, `papercusp-default`, whose content was byte-identical to `coding` apart from its manifest. It was retired and the constant repointed at `coding`; nothing was lost in the merge. Pre-existing rows still carry provenance `pack_id: 'papercusp-default'` and simply lose pack linkage for upgrade/uninstall — the learnings themselves stay valid.
 
 ## The three load-bearing decisions
 
@@ -86231,7 +86253,7 @@ A **knowledge pack** is a versioned, git-canonical set of *learnings* — curate
 
 | Piece                    | Location                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Built-in packs           | `libs/papercusp/packages/harness/knowledge-packs/<pack-id>/` (manifest.yaml + one-learning-per-file md; renamed from `harness/learnings/` — the loader hard-fails on a missing builtin dir, never a soft miss) — three ship: `papercusp-default`, `coding`, `work`                                                                                                                                                                                                                                                |
+| Built-in packs           | `libs/papercusp/packages/harness/knowledge-packs/<pack-id>/` (manifest.yaml + one-learning-per-file md; renamed from `harness/learnings/` — the loader hard-fails on a missing builtin dir, never a soft miss) — two ship: `coding`, `work`                                                                                                                                                                                                                                                                       |
 | Comb-installed packs     | per-workspace `papercuspRoot()/knowledge-packs/<pack-id>/` (the legacy `learning-packs/` root is migrated on boot)                                                                                                                                                                                                                                                                                                                                                                                                |
 | The `fleet-lessons` pack | **shared root** `workspacesRoot()/shared/knowledge-packs/fleet-lessons/` — workspace-INDEPENDENT, so every workspace resolves the same pack (candidates are fleet-global). Resolution order: builtin → shared → installed; a stray per-workspace copy is shadowed, not merged                                                                                                                                                                                                                                     |
 | A pot’s live learnings   | mem0 rows, scope `pot:<home-slug>`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
@@ -86241,21 +86263,20 @@ A **knowledge pack** is a versioned, git-canonical set of *learnings* — curate
 | Pre-turn injection       | `buildMemoryContextBlock` — pot pool resolved member→pot via the registry’s `hive_slug`; token-budgeted (\~4k default, `PAPERCUSP_MEMORY_INJECT_BUDGET_CHARS`), priority user > harness > pot-organic > pot-pack; muted packs filtered                                                                                                                                                                                                                                                                            |
 | Runtime recall scope     | `memory:search` default fan-out is **confined to the session’s pot subtree** (P-018, `narrowHarnessSlugsToSessionHive`, `lib/memory/pot-scope.ts`). A pot-scoped agent never cross-recalls sibling pots’ harness pools. Workspace-spanning sessions (`harness='*'`) and plain standalone harnesses are exempt — their fan-out is unchanged. Gated by `FLAGS.SCOPED_SUPERUSER_CLAMP`; fail-open (flag read error → full fan-out retained). `memory:list` is unaffected (it only adds explicitly-passed pot pools). |
 
-## Built-in packs (three of them)
+## Built-in packs (two of them)
 
-[Section titled “Built-in packs (three of them)”](#built-in-packs-three-of-them)
+[Section titled “Built-in packs (two of them)”](#built-in-packs-two-of-them)
 
-Three packs ship under the builtin root, each seeded by the blueprint-driven priority above (D-010, `domain-generic-pot-architecture`):
+Two packs ship under the builtin root, each seeded by the blueprint-driven priority above (D-010, `domain-generic-pot-architecture`):
 
-| Pack                | Seeded for                                                                          | Shape                                                                                            |
-| ------------------- | ----------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
-| `papercusp-default` | the global fallback (no blueprint `knowledge.pack`, no explicit arg) — 38 learnings | shape-conditional                                                                                |
-| `coding`            | a coding pot (`extends: coding`)                                                    | shape-conditional items (`ui\|service\|library\|cli\|any`) — generic engineering discovery rules |
-| `work`              | a work pot (`extends: work`)                                                        | fully `any` (repo-less) — coordination discipline + rubric-judged deliverables                   |
+| Pack     | Seeded for                                                                                                    | Shape                                                                                            |
+| -------- | ------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| `coding` | a coding pot (`extends: coding`) **and** the global fallback (no blueprint `knowledge.pack`, no explicit arg) | shape-conditional items (`ui\|service\|library\|cli\|any`) — generic engineering discovery rules |
+| `work`   | a work pot (`extends: work`)                                                                                  | fully `any` (repo-less) — coordination discipline + rubric-judged deliverables                   |
 
-`coding` and `work` carry only generic *discovery rules*, never stack bindings; project specifics belong in the per-pot override and a separate project pack. Because a coding pot defaults to `coding` and a work pot to `work`, `papercusp-default` is **not** seeded for those blueprints.
+`coding` and `work` carry only generic *discovery rules*, never stack bindings; project specifics belong in the per-pot override and a separate project pack. A coding pot defaults to `coding` and a work pot to `work`, so the blueprint’s own declaration decides in every case; the fallback only applies to a pot that declares nothing.
 
-**Curation is single-source** (EI-18121649240446176): `sync-map.json` next to the packs declares that `papercusp-default` mirrors ALL of `coding` and `work` mirrors a named subset of shared discipline items. Edit the canonical `coding/` copy, then `npm run gen:knowledge-packs`; `pack-sync.test.ts` reds the gate on any drift, and deliberately diverging an item is a one-line sync-map edit. Item files may also carry `domains: [...]` (see the domain-targeting row above) — the axis is opt-in per item, so untagged packs behave exactly as before it existed.
+**Curation is single-source** (EI-18121649240446176): `sync-map.json` next to the packs declares that `work` mirrors a named subset of `coding`’s shared discipline items. A mirror listed there whose directory is missing fails `pack-sync.test.ts` outright (it `readdir`s each mirror), so retiring a pack means deleting its directory **and** its sync-map entry together. Edit the canonical `coding/` copy, then `npm run gen:knowledge-packs`; `pack-sync.test.ts` reds the gate on any drift, and deliberately diverging an item is a one-line sync-map edit. Item files may also carry `domains: [...]` (see the domain-targeting row above) — the axis is opt-in per item, so untagged packs behave exactly as before it existed.
 
 ## Candidate-promotion loop (fleet → pack) — auto-adopt behind a transferability bar
 
@@ -89431,6 +89452,27 @@ bash "$VERIFY_TAURI_FRESHNESS_CHECK"
 ```
 
 Silent + exit 0 = nothing changed since boot, the snapshot is still current. A loud warning + exit 1 = the shared dist changed after this instance froze — restart (`"$VERIFY_TAURI_STOP"` then re-run the boot script) before trusting any further checks; reloading the page will NOT pick up the edit.
+
+### Assertion (`--`) mode runs that guard FOR you — and can settle it decisively
+
+[Section titled “Assertion (--) mode runs that guard FOR you — and can settle it decisively”](#assertion----mode-runs-that-guard-for-you--and-can-settle-it-decisively)
+
+The above is the `--boot-only` workflow, where *you* drive an instance and so *you* must remember to check. In assertion mode (`verify-tauri-headless.sh -- <cmd>`) the script now runs the freshness check itself, just before exec’ing your command — you no longer have to remember it. (`$VERIFY_TAURI_FRESHNESS_CHECK` used to be exported **only** on the `--boot-only` path, so referencing it from an assertion command died with `VERIFY_TAURI_FRESHNESS_CHECK: unbound variable` — EI-19444780917356384. It and `$VERIFY_TAURI_SPA_DIST`, the frozen bundle’s path, are now exported in both modes.)
+
+Two checks fire there, deliberately different in force — and the distinction matters, because only one of them can actually answer your question:
+
+* **Drift (advisory).** “The shared dist moved since we froze.” On this box the fleet’s `vite build --watch` rebuilds constantly, so drift is near-permanent and does **not** prove *your* change is missing — a peer’s unrelated edit moves it too. It warns and points at the decisive check rather than failing your run.
+
+* **Containment (decisive).** Pass a string your change introduced:
+
+  ```bash
+  VERIFY_TAURI_ASSERT_SNAPSHOT_CONTAINS='myNewSymbol' \
+    bash scripts/verify-tauri-headless.sh -- bash my-assertions.sh
+  ```
+
+  The script greps the **frozen** bundle and, if the string is absent, exits **3** *before running your command at all* — because a run that cannot exercise your change can only produce a false negative about pre-edit code. Exit 3 is distinct from 1 (your assertion failed) and 2 (usage), so a stale snapshot is never mistaken for a broken feature.
+
+**Why this matters more than it sounds:** a verification against a stale snapshot produces a clean, well-formed, *confident* “your fix does not work” — indistinguishable in every observable respect from a genuine failure. Measured: an edit built at 10:58:00 against a snapshot frozen \~10:57 cost a full \~6-minute boot+drive cycle and came within one manual grep of sending an agent off to “re-fix” already-correct code. If you are verifying a change you just made, pass `VERIFY_TAURI_ASSERT_SNAPSHOT_CONTAINS`; treat a NEGATIVE result without it as unproven.
 
 **One residual gap:** if `apps/operator-vite/dist/` hasn’t been built yet (fresh checkout / never ran `npm run build` there), the script logs a WARNING and falls through to the shared, watcher-exposed dist as before — build operator-vite first for a genuinely isolated run. If you ever land in that fallback (or are driving the shell manually per the “manual recipe” below, which has no snapshot at all), fall back to the pre-EI-10364 resilience pattern: structure the drive as **one assertion per fresh page load** (state via nuqs URL params, which the operator already supports for exactly this) and retry on `Importing a module script failed` — a fresh load always fetches current chunks, and that error must never be read as a failure of the feature under test.
 

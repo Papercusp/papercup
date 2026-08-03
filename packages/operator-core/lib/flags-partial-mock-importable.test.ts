@@ -57,14 +57,7 @@ import { taskManagerEnabledSync } from './task-manager/enabled';
 import { envelopeRoleOverrides } from './capability-envelope-overrides';
 import { telemetryBufferConfig } from './telemetry-buffer-config';
 import { capabilityTierOverrideFor } from './capability-tier-overrides';
-// Added 2026-08-03. work-item-redundancy was blocked here by nothing it owns: this file asserts a
-// property of the whole transitive import GRAPH, and work-item-redundancy → work-items.ts reaches
-// BOTH work-item-claim-lease-wiring and issues-engineer. Adding it named one blocker at a time —
-// claim-lease-wiring first, then (once migrated) issues-engineer at the next hop — so all three
-// had to land together. That graph-level reach is a FEATURE of this guard, being exactly what the
-// per-file source lint cannot see. So when adding a module here kills COLLECTION, the fix is to
-// migrate the module the error NAMES; never drop the import to make it pass — that would trade a
-// loud, accurate failure for a silent standing exemption.
+// Added 2026-08-03 (all FOUR readers of its cached boolean arm, not just the exported getter).
 import { workItemClaimLeaseEnabled } from './work-item-claim-lease-wiring';
 // ⚠ STILL NOT LISTABLE: './work-item-redundancy'. It IS migrated and de-listed from the source
 // lint's BASELINE — nothing it owns is wrong. This file asserts a property of the whole transitive

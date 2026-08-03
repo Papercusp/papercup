@@ -26,6 +26,7 @@ import { attachHolderContext } from "./_holder-lens";
 import { holderContextReader } from "../coordination/holder-advisory";
 import { getWorkItemLifecycleHistory } from "../../work-item-lifecycle-history";
 import { activeWorkspaceId } from "../../workspace-registry";
+import { shapeWorkItemsGet } from "./get-shape";
 
 /**
  * SWR backstop for work_items:get (cache-expensive-tool-reads-2026-06-22 P-005).

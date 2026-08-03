@@ -18,9 +18,17 @@ member harness recalls it.
 **Which pack seeds is a 3-level priority** (`pot:create`,
 `_create.ts`): an explicit `knowledgePack` arg wins; else the blueprint's
 declared `knowledge.pack`; else the global fallback
-**`papercusp-default`** (32 learnings). So `papercusp-default` is *only*
-the fallback — a pot whose blueprint declares a `knowledge.pack` seeds
-that instead (see [Built-in packs](#built-in-packs-three-of-them)).
+**`coding`** (`DEFAULT_KNOWLEDGE_PACK_ID`). So `coding` serves two roles —
+the coding-pot pack *and* the global fallback — and a pot whose blueprint
+declares a `knowledge.pack` seeds that instead (see
+[Built-in packs](#built-in-packs-two-of-them)).
+
+> **EI-1539:** the fallback used to be a third pack, `papercusp-default`,
+> whose content was byte-identical to `coding` apart from its manifest. It
+> was retired and the constant repointed at `coding`; nothing was lost in
+> the merge. Pre-existing rows still carry provenance
+> `pack_id: 'papercusp-default'` and simply lose pack linkage for
+> upgrade/uninstall — the learnings themselves stay valid.
 
 ## The three load-bearing decisions
 
@@ -52,7 +60,7 @@ that instead (see [Built-in packs](#built-in-packs-three-of-them)).
 
 | Piece                    | Location                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Built-in packs           | `libs/papercusp/packages/harness/knowledge-packs/<pack-id>/` (manifest.yaml + one-learning-per-file md; renamed from `harness/learnings/` — the loader hard-fails on a missing builtin dir, never a soft miss) — three ship: `papercusp-default`, `coding`, `work`                                                                                                                                                                                                                                                |
+| Built-in packs           | `libs/papercusp/packages/harness/knowledge-packs/<pack-id>/` (manifest.yaml + one-learning-per-file md; renamed from `harness/learnings/` — the loader hard-fails on a missing builtin dir, never a soft miss) — two ship: `coding`, `work`                                                                                                                                                                                                                                                                       |
 | Comb-installed packs     | per-workspace `papercuspRoot()/knowledge-packs/<pack-id>/` (the legacy `learning-packs/` root is migrated on boot)                                                                                                                                                                                                                                                                                                                                                                                                |
 | The `fleet-lessons` pack | **shared root** `workspacesRoot()/shared/knowledge-packs/fleet-lessons/` — workspace-INDEPENDENT, so every workspace resolves the same pack (candidates are fleet-global). Resolution order: builtin → shared → installed; a stray per-workspace copy is shadowed, not merged                                                                                                                                                                                                                                     |
 | A pot's live learnings   | mem0 rows, scope `pot:<home-slug>`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
@@ -62,25 +70,27 @@ that instead (see [Built-in packs](#built-in-packs-three-of-them)).
 | Pre-turn injection       | `buildMemoryContextBlock` — pot pool resolved member→pot via the registry's `hive_slug`; token-budgeted (\~4k default, `PAPERCUSP_MEMORY_INJECT_BUDGET_CHARS`), priority user > harness > pot-organic > pot-pack; muted packs filtered                                                                                                                                                                                                                                                                            |
 | Runtime recall scope     | `memory:search` default fan-out is **confined to the session's pot subtree** (P-018, `narrowHarnessSlugsToSessionHive`, `lib/memory/pot-scope.ts`). A pot-scoped agent never cross-recalls sibling pots' harness pools. Workspace-spanning sessions (`harness='*'`) and plain standalone harnesses are exempt — their fan-out is unchanged. Gated by `FLAGS.SCOPED_SUPERUSER_CLAMP`; fail-open (flag read error → full fan-out retained). `memory:list` is unaffected (it only adds explicitly-passed pot pools). |
 
-## Built-in packs (three of them)
+## Built-in packs (two of them)
 
-Three packs ship under the builtin root, each seeded by the blueprint-driven
+Two packs ship under the builtin root, each seeded by the blueprint-driven
 priority above (D-010, `domain-generic-pot-architecture`):
 
-| Pack                | Seeded for                                                                          | Shape                                                                                            |
-| ------------------- | ----------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
-| `papercusp-default` | the global fallback (no blueprint `knowledge.pack`, no explicit arg) — 38 learnings | shape-conditional                                                                                |
-| `coding`            | a coding pot (`extends: coding`)                                                    | shape-conditional items (`ui\|service\|library\|cli\|any`) — generic engineering discovery rules |
-| `work`              | a work pot (`extends: work`)                                                        | fully `any` (repo-less) — coordination discipline + rubric-judged deliverables                   |
+| Pack     | Seeded for                                                                                                    | Shape                                                                                            |
+| -------- | ------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| `coding` | a coding pot (`extends: coding`) **and** the global fallback (no blueprint `knowledge.pack`, no explicit arg) | shape-conditional items (`ui\|service\|library\|cli\|any`) — generic engineering discovery rules |
+| `work`   | a work pot (`extends: work`)                                                                                  | fully `any` (repo-less) — coordination discipline + rubric-judged deliverables                   |
 
 `coding` and `work` carry only generic *discovery rules*, never stack
 bindings; project specifics belong in the per-pot override and a separate
-project pack. Because a coding pot defaults to `coding` and a work pot to
-`work`, `papercusp-default` is **not** seeded for those blueprints.
+project pack. A coding pot defaults to `coding` and a work pot to `work`, so
+the blueprint's own declaration decides in every case; the fallback only
+applies to a pot that declares nothing.
 
 **Curation is single-source** (EI-18121649240446176): `sync-map.json` next to
-the packs declares that `papercusp-default` mirrors ALL of `coding` and `work`
-mirrors a named subset of shared discipline items. Edit the canonical
+the packs declares that `work` mirrors a named subset of `coding`'s shared
+discipline items. A mirror listed there whose directory is missing fails
+`pack-sync.test.ts` outright (it `readdir`s each mirror), so retiring a pack
+means deleting its directory **and** its sync-map entry together. Edit the canonical
 `coding/` copy, then `npm run gen:knowledge-packs`; `pack-sync.test.ts` reds
 the gate on any drift, and deliberately diverging an item is a one-line
 sync-map edit. Item files may also carry `domains: [...]` (see the

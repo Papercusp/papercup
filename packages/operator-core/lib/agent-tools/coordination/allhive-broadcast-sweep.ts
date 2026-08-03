@@ -140,6 +140,15 @@ async function findUnflaggedAllHiveBroadcasts(
          SELECT 1 FROM harness_shared.coord_event_log e2
           WHERE e2.workspace_id = e1.workspace_id
             AND e2.surface = 'messages'
+            -- Same reasoning as the kind/to clauses above, applied to the SUBQUERY:
+            -- kept verbatim so the planner can use coord_event_log_related_msg_id_idx,
+            -- which is PARTIAL: it is defined WHERE (body ? 'related_msg_id'). The
+            -- clause is logically redundant with the equality below (body->>key is NULL
+            -- when the key is absent and NULL never equals a msg_id), but without it the
+            -- index cannot be proven to cover and the anti-join scans every messages row.
+            -- Measured 2026-08-03 (EI-19448297390091252) on this query's sibling shape:
+            -- 40,684 -> 721 buffers (56x), 156.9ms -> 8.96ms. Do not "simplify".
+            AND e2.body ? 'related_msg_id'
             AND e2.body->>'related_msg_id' = e1.msg_id
             AND e2.body->>'from' = ${ALLHIVE_SWEEP_OWNER}
        )
