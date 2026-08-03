@@ -43,6 +43,7 @@ import { COORD_ROLES } from '../coordination/roles';
 import { objectSelector } from '../coordination/audience';
 import {
   getWorkItem,
+  harnessScopeMismatch,
   setWorkItemStateWithAliasInfo,
   workItemObjectRef,
   mergeWorkItemOutputPayload,
