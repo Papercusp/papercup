@@ -344,6 +344,8 @@ describe('terminateIdleLiveSessions (P-011 slice 2 / WI-152: live-but-idle TERMI
     aliveByPid?: Record<number, boolean>;
     markEndedImpl?: (id: number) => Promise<void>;
     gracefulImpl?: (owner: string) => Promise<boolean>;
+    /** P-012/D-019: owners the cgroup window signal says to spare. */
+    windowProtectedOwners?: string[];
   }) {
     const calls = {
       graceful: [] as string[],
@@ -377,9 +379,54 @@ describe('terminateIdleLiveSessions (P-011 slice 2 / WI-152: live-but-idle TERMI
       }),
       // Instant wait so the test never actually sleeps.
       wait: vi.fn(async () => {}),
+      windowProtects: vi.fn((owner: string) =>
+        (over.windowProtectedOwners ?? []).includes(owner),
+      ),
     };
     return { deps, calls };
   }
+
+  it('SPARES a session whose window the cgroup signal still sees (P-012/D-019)', async () => {
+    // The gap this closes: the on-desktop exemption comes from wmctrl, which is
+    // EMPTY on a headless host / rotted handle / Windows — and an empty PROTECTION
+    // set protects nobody, so that leg fails toward killing (WI-1586, WI-1641).
+    const { deps, calls } = makeDeps({
+      targets: [idleSession(1, 'su-protected'), idleSession(2, 'su-orphan')],
+      windowProtectedOwners: ['su-protected'],
+    });
+
+    const r = await terminateIdleLiveSessions({ deps });
+
+    expect(r.sparedByWindow).toBe(1);
+    expect(r.terminated).toBe(1);
+    expect(r.terminatedIds).toEqual([2]);
+    // The spared session must not be touched AT ALL — not Ctrl-C'd, not killed,
+    // not marked ended. Interrupting the turn of a session the owner is watching
+    // is itself the harm, so guarding only the SIGKILL would be too late.
+    expect(calls.graceful).toEqual(['su-orphan']);
+    expect(calls.marked).toEqual([2]);
+  });
+
+  it('spares BEFORE the graceful interrupt even in dryRun accounting', async () => {
+    const { deps, calls } = makeDeps({
+      targets: [idleSession(7, 'su-protected')],
+      windowProtectedOwners: ['su-protected'],
+    });
+    const r = await terminateIdleLiveSessions({ dryRun: true, deps });
+    // A protected session is not even PLANNED for termination.
+    expect(r.sparedByWindow).toBe(1);
+    expect(r.terminated).toBe(0);
+    expect(r.terminatedIds).toEqual([]);
+    expect(calls.graceful).toHaveLength(0);
+  });
+
+  it('is strictly ADDITIVE — protecting nobody leaves today’s behaviour unchanged', async () => {
+    const { deps, calls } = makeDeps({ targets: [idleSession(3, 'su-a')] });
+    const r = await terminateIdleLiveSessions({ deps });
+    expect(r.sparedByWindow).toBe(0);
+    expect(r.terminated).toBe(1);
+    expect(calls.sigkill).toHaveLength(1);
+  });
 
   it('DOUBLE-GATE: no-op (no listIdle, no kills) unless BOTH flags are on', async () => {
     // master off

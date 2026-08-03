@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 import {
   appendResidueSample,
   censusTerminalResidue,
+  cgroupWindowProtects,
   evaluateResidueTrend,
+  isPidInLiveWindowScope,
   resolveTerminalSliceAbs,
   type ResidueSample,
 } from './terminal-residue-census';
@@ -237,6 +239,80 @@ describe('evaluateResidueTrend', () => {
 
     expect(v.trend).toBe('rising');
     expect(v.alarm).toBe(true);
+  });
+});
+
+describe('isPidInLiveWindowScope / cgroupWindowProtects (P-012 / D-019)', () => {
+  /** box() + a /proc/<pid>/cgroup pointing the pid at one of its scopes. */
+  const boxWithCgroup = (
+    opts: Parameters<typeof box>[0] & { cgroupOf: Record<number, string> },
+  ): CgroupFs => {
+    const inner = box(opts);
+    return {
+      ...inner,
+      readFile: (p) => {
+        const m = /^\/proc\/(\d+)\/cgroup$/.exec(p);
+        if (m) {
+          const rel = opts.cgroupOf[Number(m[1])];
+          return rel ? `0::${rel}\n` : null;
+        }
+        return inner.readFile(p);
+      },
+    };
+  };
+
+  const rel = (name: string) =>
+    `/user.slice/user-1000.slice/user@1000.service/app.slice/app-org.gnome.Terminal.slice/${name}`;
+
+  it('reports alive for a pid inside a live window', () => {
+    const fs = boxWithCgroup({
+      children: { 'gnome-terminal-server.service': [SERVER], [scope(1)]: [1001] },
+      ppids: { [SERVER]: 1, 1001: SERVER },
+      cgroupOf: { 1001: rel(scope(1)) },
+    });
+    expect(isPidInLiveWindowScope(1001, fs)).toBe('alive');
+  });
+
+  it('reports dead for a pid whose window is gone', () => {
+    const fs = boxWithCgroup({
+      children: { 'gnome-terminal-server.service': [SERVER], [scope(2)]: [2001] },
+      ppids: { [SERVER]: 1, 2001: USER_MANAGER },
+      cgroupOf: { 2001: rel(scope(2)) },
+    });
+    expect(isPidInLiveWindowScope(2001, fs)).toBe('dead');
+  });
+
+  it('reports unknown for a REAL window scope it cannot decide', () => {
+    // A window scope whose members have no readable /proc entry. This is the case
+    // the reaper's wmctrl leg gets wrong (empty ⇒ unprotected ⇒ kill).
+    const fs = boxWithCgroup({
+      children: { 'gnome-terminal-server.service': [SERVER], [scope(3)]: [3001] },
+      ppids: { [SERVER]: 1 }, // no /proc/3001/stat
+      cgroupOf: { 3001: rel(scope(3)) },
+    });
+    expect(isPidInLiveWindowScope(3001, fs)).toBe('unknown');
+  });
+
+  it('distinguishes not-a-window from unknown — collapsing them disables the reaper', () => {
+    const fs = boxWithCgroup({
+      children: { 'gnome-terminal-server.service': [SERVER] },
+      ppids: { [SERVER]: 1 },
+      cgroupOf: { 4242: '/system.slice/papercup-bg-host.service' },
+    });
+    expect(isPidInLiveWindowScope(4242, fs)).toBe('not-a-window');
+    // unreadable /proc is likewise "no opinion", never a window verdict
+    expect(isPidInLiveWindowScope(9999, fs)).toBe('not-a-window');
+  });
+
+  it('PROTECTS on alive and unknown, never on dead or not-a-window (D-019 polarity)', () => {
+    // The reaper's existing wmctrl protection fails toward KILLING (an empty set
+    // protects nobody); this leg must fail toward SPARING for a real window,
+    // matching classifyScope's "unknown stays exempt" — while staying strictly
+    // additive, so a non-window session is left to the existing rules.
+    expect(cgroupWindowProtects('alive')).toBe(true);
+    expect(cgroupWindowProtects('unknown')).toBe(true);
+    expect(cgroupWindowProtects('dead')).toBe(false);
+    expect(cgroupWindowProtects('not-a-window')).toBe(false);
   });
 });
 

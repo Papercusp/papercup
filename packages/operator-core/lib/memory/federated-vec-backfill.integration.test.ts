@@ -105,6 +105,62 @@ describe('federated memory vector backfill — the predicate (real PG)', () => {
     expect(rows.map((r) => r.id)).not.toContain(REMOTE_EMBEDDED);
   });
 
+  /**
+   * EI-19404620261958999 — the guard that makes the tempting migration "fix"
+   * fail LOUDLY instead of silently destroying semantic recall.
+   *
+   * Migration 727 widens these vector columns with `ALTER ... TYPE vector(768)
+   * USING NULL`. `memory_vec_gemma.vector` and `memory_vec_openai.vector` are
+   * NOT NULL, so that aborted and left 727 permanently pending — which froze the
+   * fleet's gate, because release:checkpoint-run refuses on a failed migration.
+   *
+   * The obvious recovery is to drop the NOT NULL so `USING NULL` succeeds. It
+   * applies cleanly and looks successful. It is catastrophic, and THIS test is
+   * why: the predicate keys on ROW ABSENCE (`NOT EXISTS ... WHERE v.memory_id =
+   * c.id`), never on the vector VALUE. A row that survives the widening holding
+   * a NULL vector therefore satisfies EXISTS, is never selected, and never gets
+   * a vector again — semantic recall for that mode degrades to nothing with no
+   * error and no log line. `reembed.ts` uses the same NOT EXISTS shape, so there
+   * is no second path that would rescue it.
+   *
+   * The correct treatment (landed in 727) is to DELETE the rows: the text lives
+   * in memory_canonical and vec-write.ts's `ON CONFLICT (memory_id)` upsert
+   * re-INSERTs them, so absence is recoverable where a NULL is not.
+   *
+   * If this test ever fails, someone has made the predicate value-aware — which
+   * is a legitimate design change, but it MUST land together with the migration
+   * change, or the two disagree about what "missing a vector" means.
+   */
+  it('a NULL-vector row is INVISIBLE to the sweep — so nulling a column strands it forever', async () => {
+    // Exactly the state a `DROP NOT NULL` + `USING NULL` widening would leave:
+    // the row survives, its vector does not.
+    await db.sql.unsafe(
+      `INSERT INTO ${SCHEMA}.${VEC} (memory_id, vector) VALUES ('${REMOTE_A}', NULL)`,
+    );
+
+    const rows = await selectFederatedRowsMissingVectors(db.sql, SCHEMA, VEC, 25);
+
+    expect(
+      rows.map((r) => r.id),
+      'A row holding a NULL vector is NOT re-embedded: the predicate tests row ' +
+        'EXISTENCE, not the vector value. This is why migration 727 must DELETE ' +
+        'rows rather than drop the NOT NULL — nulling them is a permanent, silent ' +
+        'loss of semantic recall, not a temporary degradation.',
+    ).not.toContain(REMOTE_A);
+
+    // ...and the contrast that proves the row was otherwise eligible: with the
+    // row absent instead of NULL, the very same memory IS selected. Without this
+    // leg the assertion above would also pass if REMOTE_A were excluded for some
+    // unrelated reason (archived, entity, empty text).
+    await db.sql.unsafe(`DELETE FROM ${SCHEMA}.${VEC} WHERE memory_id = '${REMOTE_A}'`);
+    const afterDelete = await selectFederatedRowsMissingVectors(db.sql, SCHEMA, VEC, 25);
+    expect(
+      afterDelete.map((r) => r.id),
+      'Sanity leg: the same memory IS picked up once its vec row is ABSENT, ' +
+        'confirming the exclusion above is caused by the surviving NULL row.',
+    ).toContain(REMOTE_A);
+  });
+
   it('honors the batch limit', async () => {
     const rows = await selectFederatedRowsMissingVectors(db.sql, SCHEMA, VEC, 1);
     expect(rows.map((r) => r.id)).toEqual([REMOTE_B]);

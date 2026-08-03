@@ -135,6 +135,80 @@ export function censusTerminalResidue(terminalSliceAbs: string, fs: CgroupFs): R
   };
 }
 
+/**
+ * Is `pid` sitting in a terminal window scope whose window is still ALIVE?
+ *
+ * `true` alive · `false` the window is positively gone · `null` NOT APPLICABLE or
+ * COULD NOT TELL (the pid is not in a window scope, /proc was unreadable, the
+ * terminal application could not be identified).
+ *
+ * ── WHY THIS EXISTS (P-012 / D-019) ─────────────────────────────────────────
+ *
+ * The idle-session reaper decides what to SIGKILL from a different population
+ * than this detector: open `adv_sessions` rows keyed by `coord_owner_id`. Its
+ * "don't kill a window the user is looking at" protection comes from
+ * `desktop-window-liveness`, which enumerates X windows via `wmctrl` — and when
+ * that is unavailable (headless host, no DISPLAY, a rotted launch handle,
+ * Windows) it yields an EMPTY set. An empty PROTECTION set protects nobody, so
+ * that signal fails toward KILLING. It has already done so twice: WI-1586 (the
+ * exemption silently became a no-op and it SIGKILLed a session the owner had
+ * open on screen) and WI-1641 (the same lapse on Windows).
+ *
+ * This predicate answers the same question from the cgroup tree instead, so it
+ * needs no X server and holds precisely where the wmctrl signal is empty. It is
+ * ADDITIVE: a caller folds it in as one more reason to protect, never as a
+ * reason to kill. Per D-019, unknown (`null`) must PROTECT — matching
+ * `classifyScope`, which treats an unprobeable window as still exempt, and
+ * inverting the reaper's existing fail-toward-kill polarity.
+ */
+/**
+ * `alive` the window is open · `dead` it is positively gone · `unknown` it IS a
+ * window scope but the probe could not decide · `not-a-window` the pid is not in
+ * a terminal window scope at all.
+ *
+ * `unknown` and `not-a-window` MUST stay distinct. Collapsing them to one "no
+ * answer" value is a real bug, not a tidiness question: `not-a-window` is the
+ * common case for a headless psu session, so a protection rule that treats it
+ * like `unknown` would spare EVERY such session and silently disable the reaper
+ * — the same over-broad-signal failure this plan keeps finding, with the sign
+ * flipped toward never acting.
+ */
+export type WindowScopeVerdict = 'alive' | 'dead' | 'unknown' | 'not-a-window';
+
+export function isPidInLiveWindowScope(pid: number, fs: CgroupFs): WindowScopeVerdict {
+  const raw = fs.readFile(`/proc/${pid}/cgroup`);
+  if (!raw) return 'not-a-window';
+
+  // `0::/user.slice/.../vte-spawn-<uuid>.scope` — take the path off the last field.
+  const line = raw.split('\n').find((l) => l.includes('::'));
+  const rel = line?.slice(line.indexOf('::') + 2).trim();
+  if (!rel) return 'not-a-window';
+  if (!isTerminalWindowScope(rel)) return 'not-a-window';
+
+  const scopeAbs = `${CGROUP_ROOT}${rel}`;
+  const sliceAbs = scopeAbs.slice(0, scopeAbs.lastIndexOf('/'));
+  const appPids = readTerminalAppPids(sliceAbs, fs);
+  const alive = terminalWindowAlive(scopeAbs, appPids, fs);
+  return alive === null ? 'unknown' : alive ? 'alive' : 'dead';
+}
+
+/**
+ * D-019: should the reaper SPARE this pid on the strength of the cgroup signal?
+ *
+ * The polarity is the whole point, so it is expressed once here rather than left
+ * to each call site. This leg protects only when it has something to say about a
+ * REAL window: `alive` (obviously) and `unknown` (a window scope we could not
+ * read — the reaper's wmctrl leg fails toward killing in exactly this case, so
+ * this one must not).
+ *
+ * `not-a-window` yields NO protection — not because the session is unimportant,
+ * but because this leg has no opinion about it and must stay strictly additive:
+ * it may only ever prevent a kill that happens today, never disable the sweep.
+ */
+export function cgroupWindowProtects(verdict: WindowScopeVerdict): boolean {
+  return verdict === 'alive' || verdict === 'unknown';
+}
+
 /** One observation of the dead-window count. */
 export interface ResidueSample {
   atMs: number;

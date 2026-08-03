@@ -49,6 +49,8 @@ import { issuesScopeWorkspace } from './issues-engineer';
 import { activeWorkspaceId } from './workspace-registry';
 import { releaseAllWorkItemLeasesForOwner } from './work-item-lease-release';
 import { probeProcessLiveness } from './agent-tools/coordination/presence';
+import { nodeCgroupFs } from './task-manager/cgroup-read';
+import { cgroupWindowProtects, isPidInLiveWindowScope } from './task-manager/terminal-residue-census';
 
 /** Liveness/grace window. Matches work-items-stale-claims STALE_CLAIM_GRACE_MS
  *  and the fleet_assignment view (10 min): a live psu session's supervisor beat
@@ -839,6 +841,13 @@ export interface IdleLiveTerminateResult {
   terminatedIds: number[];
   /** Sessions whose termination threw / failed (counted, never fatal). */
   failed: number;
+  /**
+   * P-012 / D-019: spared because the CGROUP window signal still sees their
+   * window (or could not rule it out). Counted rather than silently skipped —
+   * a protection nobody can observe is how the last one rotted into a no-op for
+   * weeks without anyone noticing (WI-1586).
+   */
+  sparedByWindow: number;
   dryRun: boolean;
 }
 
@@ -862,6 +871,23 @@ export interface TerminateDeps {
   markEnded: (advSessionId: number) => Promise<void>;
   /** Pause between the Ctrl-C and the liveness re-check. */
   wait: (ms: number) => Promise<void>;
+  /**
+   * P-012 / D-019 — the cgroup-derived "spare this one" leg.
+   *
+   * The on-desktop exemption above comes from `desktop-window-liveness`, which
+   * enumerates X windows via wmctrl. When that is unavailable — headless host, no
+   * DISPLAY, a rotted launch handle, Windows — it yields an EMPTY set, and an
+   * empty PROTECTION set protects nobody, so that signal fails toward KILLING. It
+   * has done so twice (WI-1586: the exemption became a silent no-op and this sweep
+   * SIGKILLed a session the owner had open on screen; WI-1641: the same lapse on
+   * Windows).
+   *
+   * This leg answers the same question from the cgroup tree, needs no X server,
+   * and so holds exactly where wmctrl is empty. It is strictly ADDITIVE: it can
+   * only ever prevent a kill that happens today, never cause one, and it stays
+   * silent (`false`) for a session that is not in a terminal window scope at all.
+   */
+  windowProtects: (ownerId: string) => boolean;
 }
 
 function defaultPidAlive(pid: number): boolean {
@@ -891,6 +917,16 @@ const defaultTerminateDeps: TerminateDeps = {
   },
   markEnded: (advSessionId) => markAdvSessionEnded(advSessionId, null, 'reaper'),
   wait: (ms) => new Promise((r) => setTimeout(r, ms)),
+  windowProtects: (ownerId) => {
+    try {
+      const pid = findLiveHost(ownerId)?.pid;
+      if (pid == null) return false; // nothing to judge — leave the existing rules alone
+      return cgroupWindowProtects(isPidInLiveWindowScope(pid, nodeCgroupFs));
+    } catch {
+      // A probe failure must not decide a kill either way; the other protections stand.
+      return false;
+    }
+  },
 };
 
 /**
@@ -920,6 +956,7 @@ export async function terminateIdleLiveSessions(
     terminated: 0,
     terminatedIds: [],
     failed: 0,
+    sparedByWindow: 0,
     dryRun,
   };
 
@@ -943,6 +980,15 @@ export async function terminateIdleLiveSessions(
 
   for (const t of targets) {
     try {
+      // 0. P-012/D-019: spare a session whose window the CGROUP signal still sees
+      //    (or cannot rule out). Checked BEFORE the graceful Ctrl-C, not merely
+      //    before the SIGKILL — interrupting the turn of a session the owner is
+      //    watching is itself the harm, so a protection that only guarded the kill
+      //    would arrive too late.
+      if (deps.windowProtects(t.coordOwnerId)) {
+        result.sparedByWindow += 1;
+        continue;
+      }
       if (dryRun) {
         // Plan only — no Ctrl-C, no kill, no PG write.
         result.terminated += 1;
