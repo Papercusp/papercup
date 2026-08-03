@@ -22,12 +22,15 @@ import postgres from 'postgres';
 // release-preflight-migration-boot-smoke.integration.test.ts. The suppression
 // also meant the cast was unchecked: it could have drifted from the real
 // function silently.
-import { applyPendingMigrations } from '@papercusp/embedded-postgres-server';
+import { applyPendingMigrations, defaultSkipFile } from '@papercusp/embedded-postgres-server';
 import { getHarnessAdminUrl } from './embedded-pg-discovery';
 import { isRetryableLockFailure } from './pg-retryable-failure';
 import { checkMigrationDrift, resolveSqlDir, sqlDirCandidates } from './migration-drift';
 import { sendMessage } from './agent-tools/coordination/messages';
 import type { AgentIdentity } from './agent-tools/coordination/identity';
+import { readFile, writeFile, mkdir } from 'node:fs/promises';
+import { homedir } from 'node:os';
+import { dirname, join } from 'node:path';
 
 const BOOT_MIGRATE_IDENTITY: AgentIdentity = {
   ownerId: 'boot-migrate',
@@ -67,6 +70,67 @@ export function contentionRetryBackoffMs(attempt: number): number {
 }
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+// EI-19403856469813053: a CROSS-BOOT cooldown for a migration file that keeps
+// failing. The original symptom this closes: migration 727 (an ALTER on
+// harness_shared.work_items — a table with dependent VIEWS, per the
+// engineer_issues/harness_features_consolidated pattern) sat pending and
+// FAILING (a NOT NULL abort) for ~30 minutes on 2026-08-03. Every single
+// operator boot AND every green-checkpoint gate preflight during that window
+// (this function is that preflight — see checkpoint-run.ts / green-checkpoint.ts)
+// called applyPendingMigrationsNow() fresh, which re-attempted the SAME known-
+// broken ALTER — taking a real ACCESS EXCLUSIVE lock on work_items each time,
+// before failing and rolling back. Under fleet load (frequent operator boots +
+// frequent gate re-fires), that repeats every few minutes for as long as the
+// migration stays broken, each time stalling every reader of work_items (and
+// its dependent views) for up to their own lock_timeout.
+//
+// This does NOT change retry-until-fixed semantics — a broken migration still
+// gets retried once the cooldown elapses, and a human/agent fixing the file
+// still gets it applied promptly (cooldown, not a permanent skip). It only
+// stops the SAME known-broken file from re-taking a full-strength lock on
+// literally every boot within a short window. Deliberately file-based (not a
+// DB table): this path runs BEFORE we know the schema is even healthy, so it
+// must not depend on schema state of its own to bootstrap, and a shared file
+// under ~/.papercusp naturally scopes the cooldown to "this box", matching
+// where the amplification (many agents booting on the SAME shared PG) occurs.
+// Best-effort throughout: a read/write failure here must never affect whether
+// migrations actually apply — this is a rate-limiting optimization, not a
+// correctness mechanism (the schema_migrations ledger stays the sole source of
+// truth for what's applied).
+export const MIGRATION_FAILURE_COOLDOWN_MS = 5 * 60 * 1000; // 5 minutes
+
+interface MigrationCooldownEntry {
+  lastFailedAt: number;
+  error: string;
+  attempts: number;
+}
+type MigrationCooldownState = Record<string, MigrationCooldownEntry>;
+
+/** Resolve the cooldown state file path. Overridable (PAPERCUSP_MIGRATION_COOLDOWN_FILE)
+ *  for test isolation — mirrors the PAPERCUSP_PG_DATA_DIR override convention already
+ *  used by @papercusp/embedded-postgres-server for the same reason. */
+export function resolveMigrationCooldownFilePath(env: NodeJS.ProcessEnv = process.env): string {
+  return env.PAPERCUSP_MIGRATION_COOLDOWN_FILE || join(homedir(), '.papercusp', 'migration-failure-cooldown.json');
+}
+
+async function readMigrationCooldownState(path: string): Promise<MigrationCooldownState> {
+  try {
+    const parsed: unknown = JSON.parse(await readFile(path, 'utf8'));
+    return parsed && typeof parsed === 'object' ? (parsed as MigrationCooldownState) : {};
+  } catch {
+    return {}; // missing file / corrupt JSON — treat as "nothing cooling down"
+  }
+}
+
+async function writeMigrationCooldownState(path: string, state: MigrationCooldownState): Promise<void> {
+  try {
+    await mkdir(dirname(path), { recursive: true });
+    await writeFile(path, JSON.stringify(state), 'utf8');
+  } catch {
+    /* best-effort — see module-level rationale above */
+  }
+}
 
 export interface BootMigrateResult {
   applied: number;

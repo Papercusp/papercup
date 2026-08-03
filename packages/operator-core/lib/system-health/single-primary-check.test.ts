@@ -249,6 +249,48 @@ describe('runSinglePrimaryCheck (hysteresis + debounce + self-clear)', () => {
     expect(calls[0].summary).toContain('split-brain');
   });
 
+  it('EI-19400981259017885: a SECOND process observing the SAME already-open condition does NOT re-page (only escalate() dedups did before this fix)', async () => {
+    // Simulates the real multi-process shape: `startSinglePrimaryGuard()` runs on every
+    // hono-host worker, each with its OWN in-process consecutiveNon1/lastAlertedAt state
+    // (reset here via _resetSinglePrimaryDebounce between "processes"), but all sharing
+    // ONE durable escalation store — modeled here as `openState`, which is exactly what
+    // openEscalation's cross-process dedup-by-subject-signature gives in production: a
+    // second escalate() call for the same still-open condition returns the SAME record
+    // with `repeatCount` bumped, rather than creating a fresh row.
+    let openState: { msgId: string; repeatCount: number } | null = null;
+    const escalate = async () => {
+      if (openState) {
+        openState = { ...openState, repeatCount: openState.repeatCount + 1 };
+        return { msg_id: openState.msgId, repeatCount: openState.repeatCount };
+      }
+      openState = { msgId: 'shared-esc-1', repeatCount: 1 };
+      return { msg_id: openState.msgId, repeatCount: openState.repeatCount };
+    };
+    const paged: unknown[] = [];
+    const page = async (v: unknown) => { paged.push(v); };
+
+    // Process A: sustains 2 ticks, fires — this is the FIRST opener, so it pages.
+    let now = 0;
+    const depsA = { count: async () => 0, routineFireAgeSec: async () => null, escalate, page, now: () => now };
+    expect((await runSinglePrimaryCheck('ws', depsA)).fired).toBe(false); // streak 1
+    now += 3 * 60_000;
+    const a = await runSinglePrimaryCheck('ws', depsA);
+    expect(a.fired).toBe(true);
+    expect(paged.length).toBe(1); // A is the first opener — pages once.
+
+    // Process B: independent in-memory state (its own consecutiveNon1/lastAlertedAt —
+    // simulated by resetting the module Maps), but reaches its OWN sustained streak
+    // moments later against the SAME durable condition A already opened.
+    _resetSinglePrimaryDebounce();
+    let nowB = 0;
+    const depsB = { count: async () => 0, routineFireAgeSec: async () => null, escalate, page, now: () => nowB };
+    expect((await runSinglePrimaryCheck('ws', depsB)).fired).toBe(false); // streak 1
+    nowB += 3 * 60_000;
+    const b = await runSinglePrimaryCheck('ws', depsB);
+    expect(b.fired).toBe(true); // B still records/escalates (audit trail intact)…
+    expect(paged.length).toBe(1); // …but does NOT re-page: openState.repeatCount was 2.
+  });
+
   it('SELF-CLEARS its own escalation when the count returns to 1', async () => {
     const escalations: unknown[] = [];
     const resolves: Array<{ msg_id: string; choice: string }> = [];

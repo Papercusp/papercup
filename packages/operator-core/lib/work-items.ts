@@ -306,8 +306,52 @@ export function isRankWriter(v: unknown): v is RankWriter {
 
 // ── Capability stores (shared coord workspace, mirrors issues-engineer) ────────────
 const coordOpts = { getSql: () => getOrgPg().sql, ensureSchema: async () => {}, workspaceId: DEFAULT_COORD_WORKSPACE };
-const tags = new PgTaggableStore(coordOpts);
-const threads = new PgThreadStore(coordOpts);
+
+/**
+ * EI-19398986978436931: `tags`/`threads` below are pinned to DEFAULT_COORD_WORKSPACE,
+ * which is correct ONLY for feature-family objects. issues-engineer.ts's equivalent
+ * stores resolve their workspace dynamically (→ the real papercusp-workspace), so an
+ * issue-family ObjectRef routed through THESE stores instead matches zero rows — and
+ * because an absent thread/tag-set legitimately means "nothing yet", the caller gets a
+ * confident, well-formed empty result rather than an error (measured live: a 10-post
+ * issue thread read back as posts:0, total:0). See the doc comment on
+ * {@link getWorkItemThreadWindow} for the full trap writeup.
+ *
+ * Every CURRENT call site in this file already dispatches issue-family work to
+ * issues-engineer.ts BEFORE ever reaching `tags`/`threads` (confirmed by re-reading
+ * every call site as of this fix) — so there is no live bug today. This guard exists
+ * for the NEXT author who adds a `tags.`/`threads.` call site and forgets the family
+ * dispatch: instead of silently matching zero rows, it throws loudly, at the call,
+ * naming the mistake.
+ *
+ * Kept local to work-items.ts (not lifted into the shared/generic
+ * @papercusp/coordination store library) — "issue family" is an app-level (papercusp)
+ * concept, not something the generic coord-store package should know about.
+ */
+function guardAgainstIssueRef<T extends object>(store: T, storeName: string): T {
+  return new Proxy(store, {
+    get(target, prop, receiver) {
+      const value = Reflect.get(target, prop, receiver);
+      if (typeof value !== 'function') return value;
+      return (...args: unknown[]) => {
+        for (const arg of args) {
+          if (arg && typeof arg === 'object' && (arg as { kind?: unknown }).kind === ISSUE_KIND) {
+            throw new Error(
+              `work-items.ts: ${storeName}.${String(prop)}() was called with an issue-family ObjectRef ` +
+                `(${JSON.stringify(arg)}). This store is pinned to DEFAULT_COORD_WORKSPACE and can only ` +
+                `ever match zero rows for an issue — dispatch issue-family reads/writes to ` +
+                `issues-engineer.ts instead (see EI-19398986978436931).`,
+            );
+          }
+        }
+        return Reflect.apply(value as (...a: unknown[]) => unknown, target, args);
+      };
+    },
+  });
+}
+
+const tags = guardAgainstIssueRef(new PgTaggableStore(coordOpts), 'tags');
+const threads = guardAgainstIssueRef(new PgThreadStore(coordOpts), 'threads');
 const subs = new PgEntitySubscriptionStore(coordOpts);
 const links = new PgLinkStore(coordOpts);
 

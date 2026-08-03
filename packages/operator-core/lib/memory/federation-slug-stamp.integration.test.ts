@@ -15,7 +15,7 @@
  * the trigger proves only that the test's own SQL works.
  *
  * `createFreshPgDb` provisions only `harness_shared` + the fed-order-key fns, so
- * (mirroring federated-vec-backfill.integration.test.ts) this hand-rolls the columns
+ * (mirroring canonical-vec-backfill.integration.test.ts) this hand-rolls the columns
  * the trigger reads. memory_canonical carries only those columns here; `shareable`
  * is declared with its real mig-562 GENERATED expression because the capture
  * trigger's WHEN clause keys off it, so its derivation is part of what's under test.

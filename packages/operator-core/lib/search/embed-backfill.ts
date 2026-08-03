@@ -677,24 +677,28 @@ export async function runEmbedBackfillOnce(): Promise<void> {
     console.warn('[memory-journal] drain failed:', (err as Error).message);
   }
 
-  // Federated-memory vector backfill (EI-10405): a memory projected from a peer
-  // hive lands as canonical TEXT with NO vector — the wire carries none by design
-  // (EI-9308: "let each peer re-embed locally"), and the projection's raw-SQL
-  // upsert bypasses the only code that writes memory_vec_* rows. Until it is
-  // embedded HERE, semantic recall cannot return it at all. Rides this tick for
+  // Canonical-memory vector backfill: a memory row with no vector in the ACTIVE
+  // mode's table is invisible to semantic recall, and this is the only sweep that
+  // can re-INSERT one from canonical text alone. Two ways a row gets here — a
+  // memory projected from a peer hive lands as canonical TEXT with NO vector (the
+  // wire carries none by design, EI-9308: "let each peer re-embed locally", and
+  // the projection's raw-SQL upsert bypasses the only code that writes
+  // memory_vec_* rows), and a vector WIPE — a width migration or a mode switch —
+  // empties the active table for every row at once (WI-7326; the TARGETS sweep
+  // above cannot help, it only UPDATEs rows that still exist). Rides this tick for
   // the same reason the journal drain does (both want the embedder back), with
   // the same bounded + non-fatal shape.
   try {
-    const { backfillFederatedMemoryVectors } = await import('../memory/federated-vec-backfill');
-    const r = await backfillFederatedMemoryVectors();
+    const { backfillCanonicalMemoryVectors } = await import('../memory/canonical-vec-backfill');
+    const r = await backfillCanonicalMemoryVectors();
     if (r.embedded > 0 || r.failed > 0) {
       console.log(
-        `[memory-fed-vec] backfill: embedded=${r.embedded} failed=${r.failed} ` +
+        `[memory-vec] backfill: embedded=${r.embedded} failed=${r.failed} ` +
           `scanned=${r.scanned} (failed rows retry next tick)`,
       );
     }
   } catch (err) {
-    console.warn('[memory-fed-vec] backfill failed:', (err as Error).message);
+    console.warn('[memory-vec] backfill failed:', (err as Error).message);
   }
 }
 

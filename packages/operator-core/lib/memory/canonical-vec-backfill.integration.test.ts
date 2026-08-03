@@ -1,13 +1,13 @@
 /**
- * federated-vec-backfill REAL-PG tests (EI-10405) — the SELECT predicate that
- * decides which memories semantic recall currently cannot see.
+ * canonical-vec-backfill REAL-PG tests (EI-10405, WI-7326) — the SELECT predicate
+ * that decides which memories semantic recall currently cannot see.
  *
  * The orchestration (skip-when-disabled, batch bound, non-fatal rows) is unit-
- * tested in `federated-vec-backfill.test.ts` with injected deps. What only a real
+ * tested in `canonical-vec-backfill.test.ts` with injected deps. What only a real
  * Postgres can prove is the predicate itself: a `NOT EXISTS` join against the
- * active mode's vec table, the `source_hive IS NOT NULL` federation filter, and
- * the entity/archived/empty guards. A fake sql happily "passes" a predicate that
- * silently matches nothing — which is exactly the class of bug this fix is about.
+ * active mode's vec table, the entity/archived/empty guards, and — since WI-7326 —
+ * the ABSENCE of any `source_hive` filter. A fake sql happily "passes" a predicate
+ * that silently matches nothing, which is exactly the class of bug this is about.
  *
  * `createFreshPgDb` provisions only `harness_shared` + the fed-order-key fns, so
  * (mirroring memory-federation-privacy.integration.test.ts) this hand-rolls the
@@ -19,9 +19,9 @@
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import {
-  backfillFederatedMemoryVectors,
-  selectFederatedRowsMissingVectors,
-} from './federated-vec-backfill';
+  backfillCanonicalMemoryVectors,
+  selectRowsMissingVectors,
+} from './canonical-vec-backfill';
 import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
 
 const SCHEMA = 'harness_shared';
@@ -36,11 +36,15 @@ const REMOTE_ENTITY = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
 const REMOTE_ARCHIVED = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
 const REMOTE_EMPTY = '11111111-1111-4111-8111-111111111111';
 
-describe('federated memory vector backfill — the predicate (real PG)', () => {
+// Newest-first, which is the order the predicate returns and every expectation
+// below relies on: LOCAL_ROW (now) > REMOTE_B (-1min) > REMOTE_A (-2min).
+const ALL_ELIGIBLE = [LOCAL_ROW, REMOTE_B, REMOTE_A];
+
+describe('canonical memory vector backfill — the predicate (real PG)', () => {
   let db: FreshPgDb;
 
   beforeAll(async () => {
-    db = await createFreshPgDb('fed-vec-backfill');
+    db = await createFreshPgDb('canon-vec-backfill');
     await db.sql.unsafe(`
       CREATE TABLE IF NOT EXISTS ${SCHEMA}.memory_canonical (
         id          UUID PRIMARY KEY,
@@ -68,7 +72,7 @@ describe('federated memory vector backfill — the predicate (real PG)', () => {
 
   beforeEach(async () => {
     await db.sql.unsafe(`TRUNCATE ${SCHEMA}.memory_canonical CASCADE`);
-    // Two federated rows with no vector — the rows recall is blind to today.
+    // Federated and local rows with no vector — the rows recall is blind to today.
     // created_at is staggered so the newest-first ordering is assertable.
     await db.sql.unsafe(`
       INSERT INTO ${SCHEMA}.memory_canonical (id, payload, state, source_hive, created_at) VALUES
@@ -76,8 +80,8 @@ describe('federated memory vector backfill — the predicate (real PG)', () => {
         ('${REMOTE_B}', '{"data":"peer memory B","user_id":"u1"}'::jsonb, 'active', 'peer-log-key-2', now() - interval '1 min'),
         -- already embedded here: must NOT be re-embedded (idempotence).
         ('${REMOTE_EMBEDDED}', '{"data":"peer memory already embedded","user_id":"u1"}'::jsonb, 'active', 'peer-log-key-1', now()),
-        -- LOCAL row (NULL partition) with no vector: out of scope by design —
-        -- that is the user-initiated /reembed path, not this background sweep.
+        -- LOCAL row (NULL partition) with no vector: IN scope since WI-7326 —
+        -- nothing else will ever embed it (see the dedicated test below).
         ('${LOCAL_ROW}', '{"data":"my own local memory","user_id":"u1"}'::jsonb, 'active', NULL, now()),
         -- mem0 entity-linking row, archived row, empty-text row: never recallable memories.
         ('${REMOTE_ENTITY}', '{"data":"some entity","entityType":"COMPOUND"}'::jsonb, 'active', 'peer-log-key-1', now()),
@@ -87,21 +91,70 @@ describe('federated memory vector backfill — the predicate (real PG)', () => {
     `);
   });
 
-  it('selects exactly the federated rows that have no vector in the active mode table', async () => {
-    const rows = await selectFederatedRowsMissingVectors(db.sql, SCHEMA, VEC, 25);
-    // Newest-first: B (1 min ago) before A (2 min ago). Everything else excluded:
-    // already-embedded, local-partition, entity, archived, empty-text.
-    expect(rows.map((r) => r.id)).toEqual([REMOTE_B, REMOTE_A]);
-    expect(rows[0]?.data).toBe('peer memory B');
+  it('selects exactly the rows that have no vector in the active mode table', async () => {
+    const rows = await selectRowsMissingVectors(db.sql, SCHEMA, VEC, 25);
+    // Newest-first. Everything else excluded: already-embedded, entity,
+    // archived, empty-text.
+    expect(rows.map((r) => r.id)).toEqual(ALL_ELIGIBLE);
+    expect(rows[1]?.data).toBe('peer memory B');
   });
 
-  it('a LOCAL row missing a vector is never touched (the sweep is federated-only)', async () => {
-    const rows = await selectFederatedRowsMissingVectors(db.sql, SCHEMA, VEC, 25);
-    expect(rows.map((r) => r.id)).not.toContain(LOCAL_ROW);
+  /**
+   * WI-7326 — the regression this sweep's scope was WIDENED to fix. This
+   * assertion is deliberately the exact INVERSE of the one it replaces ("a LOCAL
+   * row missing a vector is never touched"), so re-narrowing the predicate reds
+   * here instead of silently killing recall.
+   *
+   * The old `source_hive IS NOT NULL` filter was justified by: local rows missing
+   * a vector are mode-switch residue, and belong to the user-initiated /reembed
+   * pass — "federated rows have no such path, NOTHING ELSE WILL EVER EMBED THEM."
+   * That last clause is the real criterion, and migration 727 falsified it for
+   * local rows: widening `memory_vec_gemma`/`memory_vec_openai` to 768 had to
+   * DELETE every row (the columns are NOT NULL and pgvector cannot cast widths),
+   * which is a SAME-MODE wipe that no path repairs —
+   *
+   *   - `reembedMemories` throws `reembed_noop_same_mode` when from === to, and
+   *     otherwise needs a `JOIN <fromTable>`: it copies a vector between modes, it
+   *     cannot rebuild one from text.
+   *   - embed-backfill's TARGETS sweep only ever UPDATEs rows that still exist.
+   *
+   * Live effect when it fired: 32,641 canonical rows, ZERO federated, so this
+   * predicate matched nothing at all and workspace semantic recall silently ran
+   * lexical-only.
+   */
+  it('a LOCAL row missing a vector IS selected — nothing else will ever embed it (WI-7326)', async () => {
+    const rows = await selectRowsMissingVectors(db.sql, SCHEMA, VEC, 25);
+    expect(
+      rows.map((r) => r.id),
+      'A local (source_hive IS NULL) row with no vector must be swept. Re-adding a ' +
+        'federation filter here strands every local row after any same-mode vector ' +
+        'wipe — a width migration or a mode switch — with no error and no log line.',
+    ).toContain(LOCAL_ROW);
   });
 
-  it('a federated row that already has a vector is not re-embedded', async () => {
-    const rows = await selectFederatedRowsMissingVectors(db.sql, SCHEMA, VEC, 25);
+  /**
+   * The predicate must key on the ACTIVE mode's table, so a corpus that is fully
+   * embedded in one mode still reads as entirely unvectored in another. This is
+   * the state migration 727 produced (memory_vec_local populated, gemma/openai
+   * emptied) and the reason the sweep has to be able to rebuild a whole mode.
+   */
+  it('a row embedded in ANOTHER mode is still selected for the active mode', async () => {
+    const OTHER = 'memory_vec_other';
+    await db.sql.unsafe(`
+      CREATE TABLE IF NOT EXISTS ${SCHEMA}.${OTHER} (
+        memory_id UUID PRIMARY KEY REFERENCES ${SCHEMA}.memory_canonical(id) ON DELETE CASCADE,
+        vector    TEXT
+      );
+      INSERT INTO ${SCHEMA}.${OTHER} (memory_id, vector) VALUES ('${LOCAL_ROW}', '[0.9]');
+    `);
+    // Asking about the ACTIVE table: the other mode's vector is irrelevant.
+    const rows = await selectRowsMissingVectors(db.sql, SCHEMA, VEC, 25);
+    expect(rows.map((r) => r.id)).toContain(LOCAL_ROW);
+    await db.sql.unsafe(`DROP TABLE ${SCHEMA}.${OTHER}`);
+  });
+
+  it('a row that already has a vector is not re-embedded', async () => {
+    const rows = await selectRowsMissingVectors(db.sql, SCHEMA, VEC, 25);
     expect(rows.map((r) => r.id)).not.toContain(REMOTE_EMBEDDED);
   });
 
@@ -138,7 +191,7 @@ describe('federated memory vector backfill — the predicate (real PG)', () => {
       `INSERT INTO ${SCHEMA}.${VEC} (memory_id, vector) VALUES ('${REMOTE_A}', NULL)`,
     );
 
-    const rows = await selectFederatedRowsMissingVectors(db.sql, SCHEMA, VEC, 25);
+    const rows = await selectRowsMissingVectors(db.sql, SCHEMA, VEC, 25);
 
     expect(
       rows.map((r) => r.id),
@@ -153,7 +206,7 @@ describe('federated memory vector backfill — the predicate (real PG)', () => {
     // leg the assertion above would also pass if REMOTE_A were excluded for some
     // unrelated reason (archived, entity, empty text).
     await db.sql.unsafe(`DELETE FROM ${SCHEMA}.${VEC} WHERE memory_id = '${REMOTE_A}'`);
-    const afterDelete = await selectFederatedRowsMissingVectors(db.sql, SCHEMA, VEC, 25);
+    const afterDelete = await selectRowsMissingVectors(db.sql, SCHEMA, VEC, 25);
     expect(
       afterDelete.map((r) => r.id),
       'Sanity leg: the same memory IS picked up once its vec row is ABSENT, ' +
@@ -162,8 +215,8 @@ describe('federated memory vector backfill — the predicate (real PG)', () => {
   });
 
   it('honors the batch limit', async () => {
-    const rows = await selectFederatedRowsMissingVectors(db.sql, SCHEMA, VEC, 1);
-    expect(rows.map((r) => r.id)).toEqual([REMOTE_B]);
+    const rows = await selectRowsMissingVectors(db.sql, SCHEMA, VEC, 1);
+    expect(rows.map((r) => r.id)).toEqual([LOCAL_ROW]);
   });
 
   it('once a row is embedded it leaves the queue — the sweep converges', async () => {
@@ -185,13 +238,13 @@ describe('federated memory vector backfill — the predicate (real PG)', () => {
       embed,
     };
 
-    const first = await backfillFederatedMemoryVectors(deps);
-    expect(first).toEqual({ scanned: 2, embedded: 2, failed: 0 });
-    expect(embedded).toEqual([REMOTE_B, REMOTE_A]);
+    const first = await backfillCanonicalMemoryVectors(deps);
+    expect(first).toEqual({ scanned: 3, embedded: 3, failed: 0 });
+    expect(embedded).toEqual(ALL_ELIGIBLE);
 
     // The whole point: those memories are now visible to the vector-join recall
     // path, and the next tick finds nothing left to do.
-    const second = await backfillFederatedMemoryVectors(deps);
+    const second = await backfillCanonicalMemoryVectors(deps);
     expect(second).toEqual({ scanned: 0, embedded: 0, failed: 0 });
   });
 
@@ -201,10 +254,10 @@ describe('federated memory vector backfill — the predicate (real PG)', () => {
       resolveVecTable: async () => ({ mode: 'local' as const, schema: SCHEMA, table: VEC }),
       embed: async () => false, // embedder down / quota-cooled
     };
-    const r = await backfillFederatedMemoryVectors(deps);
-    expect(r).toEqual({ scanned: 2, embedded: 0, failed: 2 });
+    const r = await backfillCanonicalMemoryVectors(deps);
+    expect(r).toEqual({ scanned: 3, embedded: 0, failed: 3 });
     // Still queued — an outage delays recall, it never permanently loses it.
-    const stillQueued = await selectFederatedRowsMissingVectors(db.sql, SCHEMA, VEC, 25);
-    expect(stillQueued.map((r2) => r2.id)).toEqual([REMOTE_B, REMOTE_A]);
+    const stillQueued = await selectRowsMissingVectors(db.sql, SCHEMA, VEC, 25);
+    expect(stillQueued.map((r2) => r2.id)).toEqual(ALL_ELIGIBLE);
   });
 });
