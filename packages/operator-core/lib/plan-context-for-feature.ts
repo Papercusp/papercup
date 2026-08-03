@@ -13,6 +13,7 @@
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from './workspace-registry';
 import { readPlanBySlug } from './agent-tools/plans/source';
+import { planItemProvenanceFromRow } from './plan-item-provenance';
 
 const PLAN_CONTEXT_CHAR_BUDGET = 6_000;
 const PLAN_CONTEXT_HEADING = '## Source Plan Context';
@@ -27,6 +28,9 @@ export interface PlanContextResult {
 interface FeatureProvenanceRow {
   source_plan_slug: string | null;
   source_plan_item_ids: string[] | null;
+  /** The live item-level link — see plan-item-provenance (EI-19435123521651527). */
+  stamped_plan_slug: string | null;
+  stamped_item_id: string | null;
   title: string;
 }
 
@@ -37,7 +41,11 @@ async function queryProvenance(
   try {
     const { sql } = getOrgPg();
     const rows = await sql<FeatureProvenanceRow[]>`
-      SELECT source_plan_slug, source_plan_item_ids, title
+      SELECT source_plan_slug,
+             source_plan_item_ids,
+             payload -> 'plan_item' ->> 'plan_slug' AS stamped_plan_slug,
+             payload -> 'plan_item' ->> 'item_id'   AS stamped_item_id,
+             title
         FROM harness_shared.harness_features_consolidated
        WHERE workspace_id = ${activeWorkspaceId()}
          AND harness_slug = ${harnessSlug}
@@ -70,10 +78,12 @@ export async function getPlanContextForFeature(
   featureId: string,
 ): Promise<PlanContextResult | null> {
   const provenance = await queryProvenance(harnessSlug, featureId);
-  if (!provenance?.source_plan_slug) return null;
-
-  const planSlug = provenance.source_plan_slug;
-  const itemIds = provenance.source_plan_item_ids ?? [];
+  // EI-19435123521651527: resolve through the shared precedence rule — the legacy
+  // `source_plan_item_ids` column has been effectively unwritten since the mint path
+  // moved to the `payload.plan_item` stamp, so reading it alone dropped the item scope
+  // (and, for a stamp-only row, the plan slug) without any error to notice.
+  const { planSlug, itemIds } = planItemProvenanceFromRow(provenance);
+  if (!planSlug) return null;
 
   let planResult: Awaited<ReturnType<typeof readPlanBySlug>>;
   try {

@@ -23,6 +23,7 @@
 
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from './workspace-registry';
+import { resolvePlanItemProvenance } from './plan-item-provenance';
 import {
   computePlanItemTestStatus,
   deriveAssertionStatus,
@@ -53,15 +54,13 @@ export async function itemTestGate(
     const ws = activeWorkspaceId();
 
     // 1. Provenance: which plan items was this feature promoted from?
-    const prov = await sql<{ source_plan_item_ids: string[] | null }[]>`
-      SELECT source_plan_item_ids
-        FROM harness_shared.harness_features_consolidated
-       WHERE workspace_id = ${ws}
-         AND harness_slug = ${harness}
-         AND feature_id   = ${featureId}
-       LIMIT 1
-    `;
-    const itemIds = prov[0]?.source_plan_item_ids ?? [];
+    //    Resolved through plan-item-provenance, NOT a bare `source_plan_item_ids` read.
+    //    That column has been effectively unwritten since the mint path moved to the
+    //    `payload.plan_item` stamp (1 row vs 1,239 workspace-wide, measured 2026-08-03),
+    //    so reading it alone made `itemIds` empty for every feature and this gate
+    //    returned `{ ok: true }` on the very next line — structurally unable to refuse
+    //    anything. EI-19435123521651527.
+    const { itemIds } = await resolvePlanItemProvenance(harness, featureId);
     if (itemIds.length === 0) return { ok: true }; // no plan provenance ⇒ nothing to prove
 
     // 2. The source plan items' inline VAL assertions.

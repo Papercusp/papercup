@@ -317,20 +317,31 @@ export default defineTool({
                     {
                       feature_id: string;
                       status: string;
+                      source_plan_slug: string | null;
                       source_plan_item_ids: string[] | null;
+                      stamped_plan_slug: string | null;
+                      stamped_item_id: string | null;
                       harness_slug: string;
                     }[]
                   >`
-              SELECT feature_id, status, source_plan_item_ids, harness_slug
+              SELECT feature_id, status, source_plan_slug, source_plan_item_ids,
+                     payload -> 'plan_item' ->> 'plan_slug' AS stamped_plan_slug,
+                     payload -> 'plan_item' ->> 'item_id'   AS stamped_item_id,
+                     harness_slug
                 FROM harness_shared.harness_features_consolidated
-               WHERE workspace_id   = ${DEFAULT_WORKSPACE_ID}
-                 AND source_plan_slug = ${slug}
-                 AND source_plan_item_ids IS NOT NULL
+               WHERE workspace_id = ${DEFAULT_WORKSPACE_ID}
+                 AND (source_plan_slug = ${slug}
+                      OR payload -> 'plan_item' ->> 'plan_slug' = ${slug})
             `;
                 },
               );
               for (const row of rows) {
-                for (const itemId of row.source_plan_item_ids ?? []) {
+                // EI-19435123521651527: `source_plan_item_ids` is effectively unwritten
+                // (1 row workspace-wide vs 1,239 carrying the `payload.plan_item` stamp),
+                // so the old `WHERE source_plan_item_ids IS NOT NULL` predicate matched
+                // nothing and this badge map was always empty. Resolve via the shared
+                // precedence rule instead.
+                for (const itemId of planItemProvenanceFromRow(row).itemIds) {
                   linkedFeatures[itemId] = {
                     featureId: row.feature_id,
                     status: row.status,
