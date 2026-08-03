@@ -201,6 +201,31 @@ describe('classifyContentDrift', () => {
     for (const d of many) expect(d.classificationDetail.length).toBeGreaterThan(0);
   });
 
+  it('stops spending past the budget and marks the REST unclassified, never benign', () => {
+    // Injected clock: the first entry is classified, then time jumps past the
+    // budget, so everything after it must degrade to unclassified rather than
+    // keep walking git history.
+    let t = 0;
+    const clock = () => (t += 600); // each read advances 600ms
+    const many = [
+      { filename: 'a.sql', recordedSha256: 'r', diskSha256: 'd' },
+      { filename: 'b.sql', recordedSha256: 'r', diskSha256: 'd' },
+      { filename: 'c.sql', recordedSha256: 'r', diskSha256: 'd' },
+    ];
+    const got = classifyContentDrift(
+      many,
+      appliedOk('SELECT 1;'),
+      () => 'SELECT 1; -- benign comment',
+      { budgetMs: 1000, now: clock },
+    );
+    // First is classified normally...
+    expect(got[0].classification).toBe('comments-only');
+    // ...the rest ran out of budget, and are HAZARDOUS, not benign.
+    expect(got[1].classification).toBe('unclassified');
+    expect(got[1].classificationDetail).toMatch(/budget was exhausted/);
+    expect(got[2].classification).toBe('unclassified');
+  });
+
   it('is empty-safe — the normal case, where nothing drifted at all', () => {
     expect(
       classifyContentDrift(

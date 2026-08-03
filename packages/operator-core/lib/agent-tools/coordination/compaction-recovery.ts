@@ -27,6 +27,17 @@ export interface CompactionRecovery {
    *  authoritative full-resync payload for AUTO/IDEATE/DRAIN, loop/carry,
    *  route, and active scope after compaction. */
   control?: import('./control-anchor').ControlAnchor | null;
+  /** WI-7302 part 2: fires when this session is registered in an autonomy mode
+   *  (auto | cold-auto | drain) while NOTHING will wake it unprompted — no
+   *  armed loop and no standing wake-await. Present ONLY when it fires, so it
+   *  costs nothing on the healthy path.
+   *
+   *  Delivered here specifically because a just-compacted successor is the
+   *  agent most exposed to it and least able to notice: it inherits a mode
+   *  registration from a predecessor whose loop may have died, and a respawn
+   *  restores CONTEXT, not a TURN. This path already reads loop status LIVE, so
+   *  the check reflects the world now rather than the last persisted anchor. */
+  wakeSourceLostWarning?: string;
   /** Held (assigned, non-terminal) work-items + their checkpoints. `body` is the
    *  item's description (capped) so the post-compaction agent doesn't re-fetch it
    *  via work_items:get — measured at 43% of post-compaction orients
@@ -97,6 +108,15 @@ export async function buildCompactionRecovery(
         active: recovery.control.state.loop.active,
         intervalSec: recovery.control.state.loop.intervalSec,
       };
+      // WI-7302 part 2: the anchor was just rebuilt from the canonical stores
+      // (including a LIVE wake-source read), so this reflects the world now —
+      // not the last persisted transition. Attached only when it fires.
+      const { wakeSourceLostWarning } = await import('../mode/set');
+      const warning = wakeSourceLostWarning({
+        modes: recovery.control.state.modes,
+        wakeSource: recovery.control.state.wakeSource,
+      });
+      if (warning) recovery.wakeSourceLostWarning = warning;
     } catch {
       recovery.control = null;
       recovery.loop = loop

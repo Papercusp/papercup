@@ -35,7 +35,11 @@ export default defineTool({
   agentRoles: [...AGENT_ROLES],
   args: z.object({}),
   async handler() {
-    const d = await checkMigrationDrift();
+    // classifyContent: this is the diagnostic surface where an agent is asking
+    // the question, so it pays the git-history walk that separates a real
+    // half-landed migration from a benign comment-only edit. Boot /
+    // system-health / the watchdog deliberately do not (EI-19408574209859155).
+    const d = await checkMigrationDrift({ classifyContent: true });
     return {
       content: [
         {

@@ -43,7 +43,7 @@ vi.mock('../coordination/identity', async () => {
   };
 });
 
-import setTool, { wakeSourceWarning } from './set';
+import setTool, { wakeSourceWarning, wakeSourceLostWarning } from './set';
 import { ADMIN_COORD_UI_OWNER } from '../coordination/identity';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -66,6 +66,49 @@ beforeEach(() => {
  * wake source; registering one with no armed loop leaves the agent running only for as
  * long as an interactive owner keeps replying, and silently inert the moment they stop.
  */
+describe('wakeSourceLostWarning (pure) — WI-7302 part 2', () => {
+  const lost = (o: Partial<Parameters<typeof wakeSourceLostWarning>[0]>) =>
+    wakeSourceLostWarning({ modes: ['auto'], wakeSource: 'none', ...o });
+
+  it('warns when an autonomy mode is registered and nothing will wake the session', () => {
+    const msg = lost({});
+    expect(msg).toContain('WAKE SOURCE GONE');
+    expect(msg).toContain('loop:arm'); // the remedy, callable, not alluded to
+  });
+
+  it('does NOT warn a session correctly parked on an events:await', () => {
+    // THE false-alarm case, and the reason this keys on wakeSource rather than
+    // on !loop.active. A member parked on `events:await { work-item:claimable }`
+    // has NO armed loop and is still perfectly wakeable — and the member
+    // contract explicitly PRESCRIBES that park. A loop-only predicate would
+    // fire hardest at sanctioned behaviour, which is worse than not warning.
+    expect(lost({ wakeSource: 'event' })).toBeNull();
+  });
+
+  it('does NOT warn when a loop is armed', () => {
+    expect(lost({ wakeSource: 'loop' })).toBeNull();
+  });
+
+  it('does NOT warn a session in no autonomy mode — it never claimed to self-run', () => {
+    // An interactive session with no loop is the NORMAL, correct case.
+    expect(lost({ modes: [] })).toBeNull();
+    expect(lost({ modes: ['ideate'] })).toBeNull(); // orthogonal axis, not autonomy
+  });
+
+  it('fires for cold-auto and drain, not just auto', () => {
+    expect(lost({ modes: ['cold-auto'] })).toContain('WAKE SOURCE GONE');
+    expect(lost({ modes: ['drain'] })).toContain('WAKE SOURCE GONE');
+    // …and names which posture is stranded, so the reader knows what to fix.
+    expect(lost({ modes: ['drain'] })).toContain('drain');
+  });
+
+  it('stays SILENT when the wake-source leg was not resolved (UNKNOWN)', () => {
+    // A degraded query must never be able to tell a healthy AUTO session that
+    // it is about to die. Absent is unknown, and unknown is not 'none'.
+    expect(lost({ wakeSource: undefined })).toBeNull();
+  });
+});
+
 describe('wakeSourceWarning (pure)', () => {
   const warn = (o: Partial<Parameters<typeof wakeSourceWarning>[0]>) =>
     wakeSourceWarning({ modeId: 'auto', axis: 'autonomy', enabled: true, loopActive: false, ...o });

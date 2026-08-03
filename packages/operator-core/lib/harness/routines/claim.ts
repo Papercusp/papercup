@@ -31,6 +31,7 @@ import type { Sql } from 'postgres';
 import type { RoutineRow } from '@papercusp/db-org';
 import { computeNextFire } from './schedule-next';
 import { routineStorageSlug } from '../../pot-membership';
+import { recordLoopTransition } from './loop-transition-log';
 
 /**
  * WI-6978 — the slug `harness_plans` rows are actually STORED under for this routine.
@@ -72,6 +73,25 @@ export async function claimDueRoutine(sql: Sql, routine: RoutineRow): Promise<bo
          AND (next_fire_at IS NULL OR next_fire_at <= now())
       RETURNING id
     `;
+    // EI-19411045952024591: record the PARK durably. `last_fired_at` above is overwritten
+    // single-row state, so once a loop parks and is never re-armed there is nothing left
+    // saying when it parked or who last held it — which is exactly why the 2026-08-03
+    // 45min fire outage could not be diagnosed after the fact. Not awaited: this is an
+    // instrument on the hot tick path and must never delay or fail a claim.
+    if (rows.length > 0) {
+      void recordLoopTransition(sql, {
+        workspaceId: routine.workspaceId,
+        installSlug: routine.installSlug,
+        routineId: routine.id,
+        routineName: routine.name,
+        targetRole: routine.targetRole,
+        targetOwnerId: routine.targetOwnerId,
+        event: 'parked',
+        actor: 'claim-due-routine',
+        newNextFireAt: 'infinity',
+        intervalSec: routine.rescheduleIntervalSec,
+      });
+    }
     return rows.length > 0;
   }
 

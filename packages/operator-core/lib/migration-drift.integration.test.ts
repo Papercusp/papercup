@@ -70,6 +70,46 @@ describe('checkMigrationDrift', () => {
     if (d.missingCanonical.length > 0) expect(d.inSync).toBe(false);
   });
 
+  /**
+   * EI-19408574209859155 — THE COST GUARD. Classification recovers the applied
+   * bytes from git history, one `git log` + up to N `git show` subprocesses per
+   * drifted file. Measured on this tree: 68 drifted files, 8.5–10s.
+   *
+   * `checkMigrationDrift` is called from boot, system-health and the watchdog,
+   * and NONE of them read `contentDrift`. So the default MUST stay off. If
+   * someone flips it, this fails — structurally, because a classified entry can
+   * only be produced by actually doing the git walk.
+   */
+  it('does NOT classify content drift by default — boot/system-health/watchdog must not pay for git', async () => {
+    const d = await checkMigrationDrift();
+    for (const entry of d.contentDrift) {
+      expect(entry.classification).toBe('unclassified');
+      expect(entry.classificationDetail).toMatch(/did not request classification/);
+    }
+    // Unclassified counts as hazardous, so skipping the work can never make
+    // drift look benign — the whole set stays in the actionable subset.
+    expect(d.contentDriftExecutable.length).toBe(d.contentDrift.length);
+  });
+
+  /**
+   * The opt-in path: `db:check_drift` passes classifyContent, and the verdict
+   * must partition cleanly — `contentDriftExecutable` is exactly the entries
+   * that are NOT proven benign.
+   */
+  it('classifyContent:true partitions drift into benign vs actionable', async () => {
+    const d = await checkMigrationDrift({ classifyContent: true });
+    if (d.contentDrift.length === 0) return; // nothing drifted here — nothing to assert
+    for (const entry of d.contentDrift) {
+      expect(['executable', 'comments-only', 'unclassified']).toContain(entry.classification);
+      expect(entry.classificationDetail.length).toBeGreaterThan(0);
+    }
+    const benign = d.contentDrift.filter((e) => e.classification === 'comments-only');
+    // The actionable subset is the complement of the benign one — never a
+    // superset (which would defeat the point) and never missing a hazard.
+    expect(d.contentDriftExecutable.length).toBe(d.contentDrift.length - benign.length);
+    for (const e of d.contentDriftExecutable) expect(e.classification).not.toBe('comments-only');
+  });
+
   // WI-6037: `missingDeployed`/`missingPendingDeploy` must partition `missing` exactly —
   // every missing file is in exactly one bucket, and (per the fail-toward-reporting
   // contract) missingDeployed === missing whenever the deployed tree isn't resolvable.

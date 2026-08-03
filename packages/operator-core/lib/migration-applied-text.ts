@@ -22,11 +22,20 @@
  * `blob <len>\0<content>`, a different digest of different bytes — so each
  * candidate is re-hashed with sha256 over the raw blob.
  *
- * ── Cost ──────────────────────────────────────────────────────────────────
- * Bounded and lazy. It runs ONLY for files whose raw hashes already differ
- * (today: one), walks at most `maxCommits` revisions of a single path, and
- * stops at the first match. A migration file's history is a handful of
- * commits.
+ * ── Cost — measure it, do not assume it ───────────────────────────────────
+ * This is bounded (at most `maxCommits` revisions of one path, stopping at the
+ * first match) but it is NOT cheap in aggregate, and the intuition that it is
+ * turned out to be wrong by two orders of magnitude.
+ *
+ * The assumption was "it runs only for files whose raw hashes already differ,
+ * which is ~one". Measured on this tree 2026-08-03: **68** files carry
+ * byte-level drift, because a long-lived dev DB accumulates every edit ever
+ * made to an already-applied migration. Classifying all of them costs
+ * **8.5–10s** — one `git log` plus up to N `git show` subprocesses per file.
+ *
+ * That is why `checkMigrationDrift` gates this behind `classifyContent`
+ * (default OFF). Boot, system-health and the watchdog all call it and none of
+ * them read `contentDrift`; only `db:check_drift` opts in.
  *
  * ── Failure is never silent ───────────────────────────────────────────────
  * Every failure path returns `{ ok: false, reason }` and the caller reports

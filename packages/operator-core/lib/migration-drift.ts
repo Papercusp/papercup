@@ -285,6 +285,21 @@ export interface ClassifiedMigrationContentDrift extends MigrationContentDrift {
 }
 
 /**
+ * Wall-clock ceiling on a whole classification pass. Measured 2026-08-03: 68
+ * drifted files take ~13s, so this leaves headroom for today's corpus while
+ * capping the worst case as it grows. Files not reached are `unclassified`,
+ * i.e. still counted as hazardous.
+ */
+export const DEFAULT_CLASSIFY_BUDGET_MS = 20_000;
+
+export interface ClassifyContentDriftOptions {
+  /** Wall-clock ceiling for the whole pass (default {@link DEFAULT_CLASSIFY_BUDGET_MS}). */
+  budgetMs?: number;
+  /** Injectable clock, for testing the budget without sleeping. */
+  now?: () => number;
+}
+
+/**
  * Pure classifier for byte-level content drift — exported for tests, with both
  * IO seams injected so it can be exercised without git or a filesystem.
  *
@@ -303,13 +318,29 @@ export function classifyContentDrift(
   raw: ReadonlyArray<MigrationContentDrift>,
   readAppliedText: (d: MigrationContentDrift) => AppliedMigrationTextResult,
   readDiskText: (filename: string) => string | null,
+  opts: ClassifyContentDriftOptions = {},
 ): ClassifiedMigrationContentDrift[] {
+  const budgetMs = opts.budgetMs ?? DEFAULT_CLASSIFY_BUDGET_MS;
+  const startedAt = opts.now?.() ?? Date.now();
+  const now = () => opts.now?.() ?? Date.now();
+
   return raw.map((d): ClassifiedMigrationContentDrift => {
     const unclassified = (why: string): ClassifiedMigrationContentDrift => ({
       ...d,
       classification: 'unclassified',
       classificationDetail: why,
     });
+
+    // The corpus only grows: 68 drifted files cost ~13s today, so an unbounded
+    // walk becomes a real stall at 200. Past the budget, stop spending and mark
+    // the rest unclassified — which counts as HAZARDOUS, so running out of time
+    // can never make drift look benign.
+    if (now() - startedAt > budgetMs) {
+      return unclassified(
+        `not classified — the ${budgetMs}ms classification budget was exhausted before reaching ` +
+          `this file (${raw.length} drifted files); re-run with a larger budgetMs to classify it`,
+      );
+    }
 
     let applied: AppliedMigrationTextResult;
     try {
@@ -430,7 +461,33 @@ export function computeSchemaAhead(onDisk: string[], applied: string[]): string[
   });
 }
 
-export async function checkMigrationDrift(): Promise<MigrationDrift> {
+export interface CheckMigrationDriftOptions {
+  /**
+   * Classify each content-drift entry as `executable` / `comments-only`
+   * (EI-19408574209859155). DEFAULT FALSE, and deliberately so: classification
+   * recovers the applied bytes from git history, which costs one `git log` plus
+   * up to N `git show` invocations PER drifted file.
+   *
+   * That is not a theoretical cost. Measured on this tree 2026-08-03: 68 files
+   * carry byte-level drift (a long-lived dev DB accumulates them), and
+   * classifying all of them takes **8.5–10s**. `checkMigrationDrift` is called
+   * from boot, system-health and the watchdog — none of which read
+   * `contentDrift` at all — so making them pay that would be a pure regression.
+   *
+   * When false, every entry is reported with `classification: 'unclassified'`
+   * and a detail saying so. That is honest rather than optimistic: an
+   * unclassified entry counts as hazardous in `contentDriftExecutable`, so
+   * skipping the work can never make drift look benign.
+   *
+   * `db:check_drift` — the diagnostic surface where an agent is actually asking
+   * the question — passes true.
+   */
+  classifyContent?: boolean;
+}
+
+export async function checkMigrationDrift(
+  opts: CheckMigrationDriftOptions = {},
+): Promise<MigrationDrift> {
   const sqlDir = resolveSqlDir();
   const onDisk = sqlDir
     ? fs.readdirSync(sqlDir).filter(isRunnerMigration).sort()
@@ -503,24 +560,34 @@ export async function checkMigrationDrift(): Promise<MigrationDrift> {
   // EI-19408574209859155: a byte difference is not yet a verdict. Recover the
   // bytes that ACTUALLY ran (from git — the DB stores only their hash) and
   // compare executable content, so a provably-benign comment-only edit stops
-  // being indistinguishable from a real half-landed migration. This is lazy by
-  // construction: it runs only for files whose raw hashes already differ, which
-  // is normally zero.
-  const contentDrift = classifyContentDrift(
-    rawContentDrift,
-    (d) =>
-      contentDriftSqlDir
-        ? recoverAppliedMigrationText(contentDriftSqlDir, d.filename, d.recordedSha256)
-        : { ok: false, reason: 'no sql dir resolved to search history in' },
-    (filename) => {
-      if (!contentDriftSqlDir) return null;
-      try {
-        return fs.readFileSync(path.join(contentDriftSqlDir, filename), 'utf8');
-      } catch {
-        return null;
-      }
-    },
-  );
+  // being indistinguishable from a real half-landed migration.
+  //
+  // Opt-in: see CheckMigrationDriftOptions.classifyContent for why the default
+  // is off (measured 8.5–10s on this tree, in a function boot/system-health/the
+  // watchdog all call without ever reading this field).
+  const contentDrift = opts.classifyContent
+    ? classifyContentDrift(
+        rawContentDrift,
+        (d) =>
+          contentDriftSqlDir
+            ? recoverAppliedMigrationText(contentDriftSqlDir, d.filename, d.recordedSha256)
+            : { ok: false, reason: 'no sql dir resolved to search history in' },
+        (filename) => {
+          if (!contentDriftSqlDir) return null;
+          try {
+            return fs.readFileSync(path.join(contentDriftSqlDir, filename), 'utf8');
+          } catch {
+            return null;
+          }
+        },
+      )
+    : rawContentDrift.map((d) => ({
+        ...d,
+        classification: 'unclassified' as const,
+        classificationDetail:
+          'not classified — this caller did not request classification (pass classifyContent:true, ' +
+          'or use db:check_drift, to separate a half-landed migration from a comment-only edit)',
+      }));
   const contentDriftExecutable = contentDrift.filter((d) => d.classification !== 'comments-only');
 
   return {

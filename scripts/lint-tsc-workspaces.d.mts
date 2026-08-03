@@ -7,23 +7,7 @@ export function groupByRoot(entries: any): Map<any, any>;
 export function main({ repoRoot, roots, exempt, untypecheckable, listOnly, listInvisible, spawn, log, warn, error, }?: {
     repoRoot?: any;
     roots?: string[] | undefined;
-    exempt?: {
-        'packages/operator-core': {
-            reason: string;
-            detail: string;
-            filedAs: string;
-        };
-        'apps/operator-vite': {
-            reason: string;
-            detail: string;
-            filedAs: string;
-        };
-        'apps/papercusp-publish': {
-            reason: string;
-            detail: string;
-            filedAs: string;
-        };
-    } | undefined;
+    exempt?: Record<string, Exemption> | undefined;
     untypecheckable?: Record<string, {
         detail: string;
         errors: number;
@@ -65,17 +49,6 @@ export const PROMOTE_ROOTS: string[];
  * @property {string} filedAs  the id/pointer that says how this exemption ENDS
  */
 /**
- * Packages that declare a `typecheck` script but are deliberately NOT run by THIS leg.
- *
- * This is a narrow, visible exception list — NOT the hardcoded roster the discovery above exists
- * to avoid. The difference that matters: a roster decides who IS gated (so anything missing is
- * silently ungated, the original bug), whereas this decides who is EXCLUDED, is printed in full
- * on every single run, and is asserted by a test. An entry cannot go quiet, and every entry
- * carries a filed id that says how it ends.
- *
- * @type {Record<string, Exemption>}
- */
-/**
  * Directories with a tsconfig.json that do NOT currently typecheck clean, so gating them on
  * that tsconfig (see `promoted` below) would red the fleet gate on a pre-existing condition
  * no commit caused.
@@ -96,23 +69,30 @@ export const UNTYPECHECKABLE: Record<string, {
     errors: number;
     filedAs: string;
 }>;
-export const EXEMPT: {
-    'packages/operator-core': {
-        reason: string;
-        detail: string;
-        filedAs: string;
-    };
-    'apps/operator-vite': {
-        reason: string;
-        detail: string;
-        filedAs: string;
-    };
-    'apps/papercusp-publish': {
-        reason: string;
-        detail: string;
-        filedAs: string;
-    };
-};
+/**
+ * Packages that declare a `typecheck` script but are deliberately NOT run by THIS leg.
+ *
+ * This is a narrow, visible exception list — NOT the hardcoded roster the discovery above exists
+ * to avoid. The difference that matters: a roster decides who IS gated (so anything missing is
+ * silently ungated, the original bug), whereas this decides who is EXCLUDED, is printed in full
+ * on every single run, and is asserted by a test. An entry cannot go quiet, and every entry
+ * carries a filed id that says how it ends.
+ *
+ * ⚠ THE `@type` BELOW IS LOAD-BEARING, AND IT MUST STAY ADJACENT TO THE DECLARATION.
+ * Without it, tsc infers a CLOSED object type from this literal's three keys, `gen:declarations`
+ * emits that closed type into lint-tsc-workspaces.d.mts, and every caller that passes a partial
+ * or empty exempt map starts failing TS2739 "Type {} is missing the following properties" — the
+ * `exempt` parameter of `main()` below takes its type from the `exempt = EXEMPT` default, so the
+ * blast radius is every caller, not just this constant.
+ *
+ * That is not hypothetical: this docblock was once separated from its declaration by the
+ * UNTYPECHECKABLE insert above, which orphaned the annotation and put 11 committed tsc errors
+ * into lint-tsc-workspaces.test.ts — a file nobody had touched — reding the fleet gate. A JSDoc
+ * `@type` binds to the NEXT declaration, so inserting anything between the two silently drops it.
+ *
+ * @type {Record<string, Exemption>}
+ */
+export const EXEMPT: Record<string, Exemption>;
 /**
  * One deliberate exclusion from this leg.
  */

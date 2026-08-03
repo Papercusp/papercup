@@ -77,6 +77,52 @@ export function wakeSourceWarning(opts: {
   );
 }
 
+/**
+ * WI-7302 part 2 — the SYMMETRIC case of `wakeSourceWarning` above.
+ *
+ * That one fires when you are ABOUT to lose your wake source (registering an
+ * autonomy mode with no loop armed). It has no counterpart for the state that
+ * actually stranded a fleet on 2026-08-02: you HAD a wake source, and it is
+ * gone now. Nothing re-checks after the transition, so the loss is silent.
+ *
+ * Two design points, both load-bearing:
+ *
+ *  1. It keys on `wakeSource === 'none'`, NOT on `!loop.active`. The loop-only
+ *     reading is the tempting one — it is what the sibling above uses — and it
+ *     is WRONG here: a session correctly parked on `events:await
+ *     { work-item:claimable }` has no armed loop and is still perfectly
+ *     wakeable. The member contract explicitly PRESCRIBES that park, so a
+ *     loop-only check would cry wolf precisely at sanctioned behaviour, and a
+ *     warning that fires on correct behaviour is worse than no warning.
+ *
+ *  2. The registered MODE is what makes this actionable, and it is why no
+ *     tombstone is needed to answer "did I once have a loop?". The useful
+ *     question is not what you HAD, it is what you are SUPPOSED to have — and
+ *     an `auto`/`drain` registration is exactly the durable statement that this
+ *     session intends to outlive its owner. Modes live in their own store, so a
+ *     wipe of `routines` does not take them with it.
+ *
+ * UNKNOWN (`wakeSource` absent — the leg degraded) returns null: a failed query
+ * must never be able to tell a healthy session that it is about to die.
+ */
+export function wakeSourceLostWarning(opts: {
+  modes: readonly string[];
+  wakeSource?: 'loop' | 'event' | 'none';
+}): string | null {
+  if (opts.wakeSource !== 'none') return null;
+  const autonomy = opts.modes.filter((m) => m === 'auto' || m === 'cold-auto' || m === 'drain');
+  if (autonomy.length === 0) return null;
+  return (
+    `⚠ WAKE SOURCE GONE. You are registered '${autonomy.join("' + '")}' — an autonomy posture that is ` +
+    'meant to outlive an owner sitting there — but NOTHING will wake you unprompted: no armed engine ' +
+    'loop, and no standing events:await. The next turn you end is your last, and a carry-respawn ' +
+    'restores CONTEXT, not a TURN. Re-arm now: loop:arm { intervalSec, goal } — or, if you are ' +
+    'deliberately waiting on a condition, park properly with events:await so something can wake you. ' +
+    'If you are genuinely finishing inside this turn, mode:set { enabled: false } instead of leaving ' +
+    'a mode registered on a session that cannot act on it.'
+  );
+}
+
 export default defineTool({
   name: 'mode:set',
   profile: 'engineer',

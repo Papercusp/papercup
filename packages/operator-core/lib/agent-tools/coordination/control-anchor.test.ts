@@ -50,6 +50,35 @@ function inMemoryPersistSql() {
   return sql;
 }
 
+describe('CTRL anchor wakeSource (WI-7302 part 2)', () => {
+  it('OMITS wakeSource entirely when the leg did not resolve — absent is UNKNOWN', () => {
+    // Never normalize an unresolved leg into 'none': that is a positive,
+    // escalation-worthy claim ("nothing will ever wake this session") and a
+    // degraded query must not be able to manufacture it.
+    const out = normalizeControlAnchorState(state());
+    expect('wakeSource' in out).toBe(false);
+  });
+
+  it('carries a resolved wakeSource through normalization', () => {
+    expect(normalizeControlAnchorState({ ...state(), wakeSource: 'none' })).toMatchObject({
+      wakeSource: 'none',
+    });
+    expect(normalizeControlAnchorState({ ...state(), wakeSource: 'event' })).toMatchObject({
+      wakeSource: 'event',
+    });
+  });
+
+  it('stays inside the anchor token budget with wakeSource present', () => {
+    // The anchor is re-delivered on every post-compaction orient, which is why
+    // the prose warning lives on the recovery block and only a short enum
+    // lives here.
+    const withField = estimateControlAnchorTokens(
+      normalizeControlAnchorState({ ...state(), wakeSource: 'none' }),
+    );
+    expect(withField).toBeLessThan(CONTROL_ANCHOR_MAX_TOKENS);
+  });
+});
+
 describe('compact durable CTRL anchor', () => {
   it('canonicalizes duplicated modes/items so equivalent reads are byte-stable', () => {
     expect(normalizeControlAnchorState(state())).toMatchObject({
