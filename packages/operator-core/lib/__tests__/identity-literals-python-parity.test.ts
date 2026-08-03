@@ -54,7 +54,12 @@ export function mjsLoopKeys(source: string): string[] {
     .sort();
 }
 
-/** Keys python's build-box `identity_literals()` assigns, e.g. `lits["build-user-name"] = user`. */
+/**
+ * Keys python's build-box `identity_literals()` assigns — BOTH the direct
+ * `lits["build-user-name"] = user` form AND the `for key, cfg in (("build-git-email", ...))`
+ * loop form. Parsing only the direct form silently under-reports by 2 and makes the parity
+ * assertion fail for a bogus reason (measured while writing this test).
+ */
 export function pyIdentityLiteralKeys(source: string): string[] {
   const start = source.indexOf('def identity_literals(');
   expect(start, 'could not locate def identity_literals() in the python gate').toBeGreaterThan(-1);
@@ -62,8 +67,27 @@ export function pyIdentityLiteralKeys(source: string): string[] {
   const rest = source.slice(start + 1);
   const end = rest.indexOf('\ndef ');
   const body = end === -1 ? rest : rest.slice(0, end);
-  return [...body.matchAll(/lits\[["']([a-z-]+)["']\]\s*=/g)].map((m) => m[1]).sort();
+  const direct = [...body.matchAll(/lits\[["']([a-z-]+)["']\]\s*=/g)].map((m) => m[1]);
+  const looped = [...body.matchAll(/\(["'](build-[a-z-]+)["'],\s*["']user\.[a-z]+["']\)/g)].map(
+    (m) => m[1],
+  );
+  return [...new Set([...direct, ...looped])].sort();
 }
+
+/**
+ * Python keys that the .mjs deliberately handles in a DIFFERENT class rather than in class 3's
+ * literal resolver. The python packs all machine identity into one flat dict; the .mjs
+ * decomposes it into three classes with three matchers (see the module header), so set-equality
+ * against `resolveIdentityLiterals()` alone is the WRONG model.
+ *
+ * `build-home-path` is class 2's job (`findBoxIdentityPaths`, wired into check-no-box-identity.mjs),
+ * and class 2's matcher is strictly richer than a bare literal would be — it also understands the
+ * munged `-home-builduser-` form, already-redacted paths, and `/home/<file>` that is not a home dir
+ * at all. Porting it into class 3 as a plain literal would be a REGRESSION, not a fix.
+ */
+const DELEGATED_TO_ANOTHER_CLASS: Record<string, string> = {
+  'build-home-path': 'class 2 — findBoxIdentityPaths (check-no-box-identity.mjs)',
+};
 
 /** Keys in python's cross-box KNOWN_SENSITIVE_IDENTITIES dict (names only, never values). */
 export function pyKnownSensitiveKeys(source: string): string[] {
@@ -89,13 +113,28 @@ describe('EI-19462813694036210: identity-literal parity between the .mjs and .py
     expect(knownSensitiveKeys.length).toBeGreaterThanOrEqual(3);
   });
 
-  it('⭐ UNDER-PORT: the .mjs mirrors every build-box key python resolves', () => {
+  it('⭐ UNDER-PORT: every python build-box key is covered by SOME class in the .mjs', () => {
+    // NOT set-equality against class 3 alone — the .mjs decomposes what python keeps flat.
+    // A python key is covered if class 3 resolves it OR another class owns it explicitly.
+    const covered = [...new Set([...mjsKeys, ...Object.keys(DELEGATED_TO_ANOTHER_CLASS)])].sort();
     expect(
-      mjsKeys,
-      'scripts/lib/identity-leak-patterns.mjs resolveIdentityLiterals() must mirror ' +
-        "audit-release-bundle.py identity_literals() exactly — the module's own header calls a " +
-        "mismatch here a false-green. Port the new key, don't relax this test.",
+      covered,
+      'audit-release-bundle.py identity_literals() gained (or lost) a key that the .mjs does not ' +
+        "account for. The module's own header calls a mismatch here a false-green. Either port it " +
+        'into class 3, or add it to DELEGATED_TO_ANOTHER_CLASS naming the class that owns it — ' +
+        "don't relax this test.",
     ).toEqual(pyBuildKeys);
+  });
+
+  it('the delegated keys really are absent from class 3 (so the delegation is honest)', () => {
+    // Guards the other half of the above: if someone ALSO ports a delegated key into class 3,
+    // the union assertion still passes while the key is now hunted twice, by two matchers with
+    // different false-positive surfaces. Keep the ownership single.
+    for (const [key, owner] of Object.entries(DELEGATED_TO_ANOTHER_CLASS)) {
+      expect(mjsKeys, `${key} is owned by ${owner}, so class 3 must not resolve it too`).not.toContain(
+        key,
+      );
+    }
   });
 
   it('⭐ OVER-PORT: the .mjs does NOT arm the cross-box known-sensitive set', () => {
@@ -103,14 +142,21 @@ describe('EI-19462813694036210: identity-literal parity between the .mjs and .py
     // the measured blast radius. If you are here because you want to add these: don't — they are
     // redacted at tar time by bin/stage-source-tree.sh, and blocking them at edit time red-pins
     // main on 31 files.
+    //
+    // NOTE this asserts on the RESOLVED KEY SET, not on whether the file mentions the key. The
+    // header deliberately DOES name these keys (that documentation is the actual fix for this
+    // item), so a `mjs.includes(key)` check here would fail on its own remedy — it did, on the
+    // first run of this test.
     for (const key of knownSensitiveKeys) {
       expect(
-        mjs.includes(key),
+        mjsKeys,
         `${key} must NOT be armed in the edit-time detector (it is handled by stage-time ` +
           'redaction; arming it red-pins main on ~31 tracked doc files)',
-      ).toBe(false);
+      ).not.toContain(key);
     }
-    expect(mjs).not.toContain('KNOWN_SENSITIVE_IDENTITIES = ');
+    // No local copy of the cross-box dict either — mentioning it in prose is fine, defining one
+    // is the thing that would arm it.
+    expect(mjs).not.toMatch(/KNOWN_SENSITIVE_IDENTITIES\s*=\s*[{[]/);
   });
 
   it('the known-sensitive set is the expected one — a NEW entry must be a conscious decision', () => {

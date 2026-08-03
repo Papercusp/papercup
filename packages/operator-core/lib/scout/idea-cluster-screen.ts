@@ -148,6 +148,13 @@ export interface ClusterScreenRow {
   assertedOpenSiblingIds: string[];
 
   /**
+   * Refs to items that were ABANDONED (dropped/deprecated) — terminal, but NOT
+   * built. Surfaced because a re-filing of previously-abandoned work deserves a
+   * triager's attention, but never grounds to drop. See `ABANDONED_STATES`.
+   */
+  assertedAbandonedIds: string[];
+
+  /**
    * Refs whose state could not be resolved (no resolver supplied, or lookup
    * failed). Fail-open: counted as NEITHER prior art nor duplication, because
    * guessing either way is a verdict the evidence does not support.
@@ -180,15 +187,30 @@ export interface ClusterScreenRow {
   notes: string[];
 }
 
-/** States that mean an item is FINISHED, so a reference to it is real prior art. */
-export const TERMINAL_STATES = new Set([
-  'done',
-  'resolved',
-  'closed',
-  'dropped',
-  'deprecated',
-  'passed',
-]);
+/**
+ * States meaning the work was actually DONE — the only ones that make a cited
+ * reference real prior art.
+ */
+export const IMPLEMENTED_STATES = new Set(['done', 'resolved', 'closed', 'passed']);
+
+/**
+ * States meaning the item was ABANDONED, not built.
+ *
+ * ⚠ These are terminal but they are NOT prior art, and conflating the two is a
+ * mistake I made and had to measure my way out of. Both `dropped` and
+ * `deprecated` close an item precisely because nobody implemented it.
+ *
+ * Measured cost of the conflation: WI-2479 ("Persistent fleet headcount target
+ * governor") cited EI-6805 ("Fleet self-healing headcount governor") — nearly the
+ * same title, so it looks like a textbook prior-art hit — but EI-6805 is
+ * `dropped`. Recommending DROP there retires an idea because an IDENTICAL idea
+ * was previously abandoned. EI-7622/EI-7593 is the same shape.
+ *
+ * The signal is still worth surfacing (a re-filing of abandoned work is worth a
+ * triager's attention, in either direction), so it is reported — just never as
+ * grounds to drop.
+ */
+export const ABANDONED_STATES = new Set(['dropped', 'deprecated']);
 
 export interface ScreenOptions extends CodeExistenceOptions {
   /**
@@ -406,6 +428,7 @@ export function decideVerdict(
     ClusterScreenRow,
     | 'assertedPriorArtIds'
     | 'assertedOpenSiblingIds'
+    | 'assertedAbandonedIds'
     | 'selfIdHits'
     | 'lexicalHits'
     | 'retrievalRan'
@@ -425,6 +448,12 @@ export function decideVerdict(
   }
   if (evidence.selfIdHits.length > 0) {
     notes.push(`${evidence.selfIdHits.length} source file(s) cite a member's own id`);
+  }
+  if (evidence.assertedAbandonedIds.length > 0) {
+    notes.push(
+      `cites ABANDONED (dropped/deprecated) item(s) ${evidence.assertedAbandonedIds.join(', ')} — ` +
+        `previously filed and NOT built, so this is a re-filing, not prior art`,
+    );
   }
   if (strongLexical.length > 0) {
     // Reported as context for the reader, never as grounds for a verdict.
@@ -526,11 +555,13 @@ export async function screenIdeaClusters(
     }
     const assertedPriorArtIds: string[] = [];
     const assertedOpenSiblingIds: string[] = [];
+    const assertedAbandonedIds: string[] = [];
     const assertedUnresolvedIds: string[] = [];
     for (const ref of assertedRefIds) {
       const st = states.get(ref);
       if (!st) assertedUnresolvedIds.push(ref);
-      else if (TERMINAL_STATES.has(st)) assertedPriorArtIds.push(ref);
+      else if (IMPLEMENTED_STATES.has(st)) assertedPriorArtIds.push(ref);
+      else if (ABANDONED_STATES.has(st)) assertedAbandonedIds.push(ref);
       else assertedOpenSiblingIds.push(ref);
     }
 
@@ -538,6 +569,7 @@ export async function screenIdeaClusters(
       ...evidenceRest,
       assertedPriorArtIds,
       assertedOpenSiblingIds,
+      assertedAbandonedIds,
       assertedUnresolvedIds,
     };
     const { verdict, notes } = decideVerdict(members.length, evidence);
@@ -578,6 +610,9 @@ export function summariseClusterRow(row: ClusterScreenRow): string {
   }
   if (row.assertedOpenSiblingIds.length > 0) {
     bits.push(`open siblings: ${row.assertedOpenSiblingIds.join('/')}`);
+  }
+  if (row.assertedAbandonedIds.length > 0) {
+    bits.push(`ABANDONED (not built): ${row.assertedAbandonedIds.join('/')}`);
   }
   if (row.selfIdHits.length > 0) bits.push(`self-id: ${row.selfIdHits.length}`);
   const strong = row.lexicalHits.filter((h) => h.strength === 'strong');

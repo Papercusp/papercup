@@ -2790,8 +2790,72 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     );
   }
 
+  /**
+   * P-019 (D-012) — service a pending ON-DEMAND head snapshot.
+   *
+   * Called from the TOP of `mergeOnePass`, and the position is a fix, not a
+   * preference. It first sat beside the periodic compaction near the END of the
+   * pass — which is unreachable on an IDLE pass, because `if (!changed) return 0`
+   * short-circuits well before it. A harness whose drain has just completed is idle
+   * BY DEFINITION, and that is precisely the moment a release cut asks for this: the
+   * request would have been armed, never serviced, and the cut would have hung until
+   * its budget expired. Caught by the empty-own-log case in
+   * `__tests__/on-demand-head-snapshot.test.ts`, which timed out at 60s.
+   *
+   * It runs INSIDE the serialized merge block for the same reason the periodic
+   * compaction does: `produceLogSnapshot` APPENDS, and an append racing a pass is
+   * exactly what the merge gate exists to prevent. Running at the top rather than the
+   * bottom costs nothing in correctness — a merge pass reads the ADMITTED logs and
+   * writes PG; it never appends to the own log, so the snapshot summarises the same
+   * own-log state either way.
+   *
+   * ⚠ COST, and the whole reason this is request-driven rather than automatic:
+   * produceLogSnapshot reads the ENTIRE own log ([0, length) — 461,475 blocks on this
+   * box as of 2026-08-03), so it STALLS the merge loop for its duration. Survivable
+   * precisely because it is one-shot and deliberate (a release cut is already waiting
+   * on it). The elapsed time is recorded as a boot event so the stall is observable
+   * after the fact instead of being an unexplained merge gap.
+   *
+   * Failure is DELIVERED to the requester, never swallowed: unlike the periodic
+   * compaction (best-effort, nobody is waiting), a caller is awaiting this promise, and
+   * a silent failure would leave the cut believing it has a head snapshot it does not
+   * have — the exact silent-degrade D-012 traced.
+   */
+  async function servicePendingHeadSnapshot(): Promise<void> {
+    if (!pendingHeadSnapshot) return;
+    const waiter = pendingHeadSnapshot;
+    pendingHeadSnapshot = null;
+    const startedAt = Date.now();
+    const lengthBefore = ownLog.length;
+    try {
+      const snap = await produceLogSnapshot(ownLog, {
+        now: Date.now(),
+        schemaVersion: CURRENT_SCHEMA_VERSION,
+      });
+      if (snap.appended) lastSnapshotCoversUpTo = snap.coversUpTo;
+      try {
+        recordBootEvent(
+          opts.workspaceId,
+          opts.harnessSlug,
+          'peer_capped',
+          `on-demand head snapshot: appended=${snap.appended} coversUpTo=${snap.coversUpTo} ` +
+            `chunks=${snap.chunkCount} rows=${snap.rowCount} readBlocks=${lengthBefore} ` +
+            `mergeStalledMs=${Date.now() - startedAt}`,
+        );
+      } catch {
+        // observability must never abort the merge pass
+      }
+      waiter.resolve(snap);
+    } catch (e) {
+      waiter.reject(e);
+    }
+  }
+
   /** One serialized merge pass. Only ever called from mergeNow's gate. */
   async function mergeOnePass(): Promise<number> {
+    // P-019 — BEFORE anything that can return early (notably the `!changed` idle
+    // short-circuit further down). See servicePendingHeadSnapshot's doc comment.
+    await servicePendingHeadSnapshot();
     try {
       // WI-3852 (F2 of WI-898): a bucket EVICTED from either content-deferral buffer (epoch-
       // key-not-yet-local / member-not-yet-federated) since the last pass has NO recovery path
@@ -3258,52 +3322,6 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
           } catch {
             // observability must never abort the merge pass
           }
-        }
-      }
-
-      // P-019 (D-012) — service a pending ON-DEMAND head snapshot, here, inside the
-      // serialized merge block, for the same reason the periodic compaction above sits
-      // here: `produceLogSnapshot` APPENDS, and an append racing a pass is exactly what
-      // the merge gate exists to prevent.
-      //
-      // ⚠ COST, and it is the whole reason this is request-driven rather than automatic:
-      // produceLogSnapshot reads the ENTIRE own log ([0, length) — 461,475 blocks on this
-      // box as of 2026-08-03), so it STALLS the merge loop for its duration. That is
-      // survivable precisely because it is one-shot and deliberate (a release cut is
-      // already waiting on it), and it is why the request carries no retry: a caller that
-      // asks twice pays twice. The elapsed time is recorded as a boot event so the stall
-      // is observable after the fact rather than being an unexplained merge gap.
-      //
-      // Failure is DELIVERED to the requester, never swallowed: unlike the periodic
-      // compaction (best-effort, nobody is waiting), a caller is awaiting this promise and
-      // a silent failure here would leave the cut believing it has a head snapshot it does
-      // not have — which is the exact silent-degrade D-012 traced.
-      if (pendingHeadSnapshot) {
-        const waiter = pendingHeadSnapshot;
-        pendingHeadSnapshot = null;
-        const startedAt = Date.now();
-        const lengthBefore = ownLog.length;
-        try {
-          const snap = await produceLogSnapshot(ownLog, {
-            now: Date.now(),
-            schemaVersion: CURRENT_SCHEMA_VERSION,
-          });
-          if (snap.appended) lastSnapshotCoversUpTo = snap.coversUpTo;
-          try {
-            recordBootEvent(
-              opts.workspaceId,
-              opts.harnessSlug,
-              'peer_capped',
-              `on-demand head snapshot: appended=${snap.appended} coversUpTo=${snap.coversUpTo} ` +
-                `chunks=${snap.chunkCount} rows=${snap.rowCount} readBlocks=${lengthBefore} ` +
-                `mergeStalledMs=${Date.now() - startedAt}`,
-            );
-          } catch {
-            // observability must never abort the merge pass
-          }
-          waiter.resolve(snap);
-        } catch (e) {
-          waiter.reject(e);
         }
       }
 

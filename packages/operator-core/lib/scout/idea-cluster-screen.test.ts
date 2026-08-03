@@ -175,6 +175,7 @@ describe('aggregateReports', () => {
 const BARE = {
   assertedPriorArtIds: [] as string[],
   assertedOpenSiblingIds: [] as string[],
+  assertedAbandonedIds: [] as string[],
   selfIdHits: [] as string[],
   lexicalHits: [] as never[],
   retrievalRan: true,
@@ -208,6 +209,22 @@ describe('decideVerdict', () => {
     });
     expect(verdict).toBe('COLLAPSE-AND-RESCOPE');
     expect(notes.join(' ')).toMatch(/duplication, not prior art/);
+  });
+
+  it('MEASURED: a DROPPED/DEPRECATED ref is abandoned work, NOT prior art', () => {
+    // WI-2479 ("Persistent fleet headcount target governor") cites EI-6805
+    // ("Fleet self-healing headcount governor") — nearly identical titles, so it
+    // reads as a textbook prior-art hit. EI-6805 is `dropped`: nobody built it.
+    // Dropping WI-2479 would retire an idea because the SAME idea was previously
+    // abandoned. EI-7622/EI-7593 is the same shape.
+    const { verdict, notes } = decideVerdict(1, { ...bare, assertedAbandonedIds: ['EI-6805'] });
+    expect(verdict).toBe('GREENLIGHT');
+    expect(notes.join(' ')).toMatch(/NOT built/);
+  });
+
+  it('CONTROL: the same ref in an IMPLEMENTED state does reach DROP', () => {
+    // Proves the state split does real work rather than disabling the leg.
+    expect(decideVerdict(1, { ...bare, assertedPriorArtIds: ['EI-6805'] }).verdict).toBe('DROP');
   });
 
   it('MEASURED: strong lexical hits alone must NOT reach DROP', () => {
@@ -436,6 +453,7 @@ describe('summariseClusterRow', () => {
       verdict: 'INCONCLUSIVE',
       assertedPriorArtIds: [],
       assertedOpenSiblingIds: [],
+      assertedAbandonedIds: [],
       assertedUnresolvedIds: [],
       assertedPhrases: [],
       selfIdHits: [],
@@ -459,6 +477,7 @@ describe('summariseClusterRow', () => {
       verdict: 'COLLAPSE-AND-RESCOPE',
       assertedPriorArtIds: ['EI-7347'],
       assertedOpenSiblingIds: [],
+      assertedAbandonedIds: [],
       assertedUnresolvedIds: [],
       assertedPhrases: [],
       selfIdHits: [],
