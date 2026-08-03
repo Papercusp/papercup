@@ -1440,3 +1440,179 @@ describe('WI-3455 — discovery key ownership + self-heal (the su-a8f52 strandin
     25_000,
   );
 });
+
+/**
+ * WI-6638 — SHUTDOWN: a finished agent session closes its own terminal window.
+ *
+ * psu runs as `exec <psu …>` inside `gnome-terminal --wait`, so the host exiting IS
+ * the tab closing. These are the end-to-end halves that unit tests cannot reach: the
+ * accepted path must actually TEAR THE HOST DOWN, and — the assertion that matters —
+ * the refused path must leave a human's session demonstrably ALIVE.
+ *
+ * Why this is not a reaper: measured 2026-08-03, `findIdleLiveSessions()` returns 0
+ * for this whole cohort (every psu session classifies driveMode:'responsive' and is
+ * excluded by the queen-fleet-authority-boundary ruling P-001/D-001), and behind that
+ * `terminalWindowAlive()` reads 55 of 55 stale scopes as ALIVE — correctly, because
+ * they are real shells under the live terminal app. Both protections stand untouched.
+ */
+describe('SHUTDOWN — a finished agent session exits and closes its own window (WI-6638)', () => {
+  /** Like envelopeInject, but returns the host's JSON ack line (the verdict). */
+  function injectForAck(
+    sock: string,
+    envelope: Record<string, unknown>,
+  ): Promise<Record<string, unknown> | null> {
+    return new Promise((resolve) => {
+      let buf = '';
+      let acked: Record<string, unknown> | null = null;
+      const c = net.connect(sock, () => {
+        c.write(JSON.stringify({ v: 1, ...envelope }));
+        c.end();
+      });
+      c.on('data', (d) => {
+        buf += d.toString('utf8');
+        const nl = buf.indexOf('\n');
+        if (nl === -1 || acked) return;
+        try {
+          acked = JSON.parse(buf.slice(0, nl));
+        } catch {
+          /* malformed — the close below still resolves */
+        }
+      });
+      c.on('error', () => resolve(acked));
+      c.on('close', () => resolve(acked));
+    });
+  }
+
+  /** A child that would outlive the test unless something actually kills it. */
+  const LONG_LIVED_CHILD =
+    "process.stdin.setEncoding('utf8');let b='';" +
+    "process.stdin.on('data',d=>{b+=d;let i;while((i=b.indexOf('\\n'))>=0){const line=b.slice(0,i);b=b.slice(i+1);process.stdout.write('ECHO:'+line+'\\n');}});" +
+    'setTimeout(()=>process.exit(0),60000);';
+
+  it(
+    'ACCEPTS an agent-launched, never-typed-into session: kills the child and tears the host down',
+    async () => {
+      const ownerId = `su-itest-shutdown-ok-${process.pid}-${Math.floor(performance.now())}`;
+      const sock = socketPathFor(ownerId);
+      const meta = metaPathFor(ownerId);
+      const { io } = fakeIo();
+
+      let exitCode: number | null = null;
+      const done = hostThroughPty({
+        command: execPath,
+        args: ['-e', LONG_LIVED_CHILD],
+        cwd: '/tmp',
+        env: {
+          ...process.env,
+          PAPERCUSP_SID: ownerId,
+          TERM: 'xterm-256color',
+          // The structural discriminator: injectLaunchedByArg stamps this onto every
+          // tool-driven psu launch; an owner-typed `psu` never carries one.
+          PAPERCUSP_LAUNCHED_BY: 'su-the-launching-agent',
+        },
+        ownerId,
+        advSessionId: 6638,
+        io,
+        bridgeTty: false,
+        onExit: (c: number) => {
+          exitCode = c;
+        },
+      });
+
+      await sleep(500);
+      const m = JSON.parse(readFileSync(meta, 'utf8'));
+      // Advertised so a would-be requester can see the verdict before sending.
+      expect(m.caps).toContain('shutdown');
+      expect(m.launchedBy).toBe('su-the-launching-agent');
+
+      const startedAt = Date.now();
+      const ack = await injectForAck(sock, {
+        mode: 'shutdown',
+        data: 'fleet wound down',
+        ownerId,
+      });
+      // The ACK must arrive BEFORE the teardown races the socket away — otherwise a
+      // successful shutdown reads to the caller as a transport miss and gets retried.
+      expect(ack).toMatchObject({ ok: true, reason: 'shutdown-accepted' });
+
+      const code = await done;
+      // The child's own timeout is 60s: finishing at all proves the shutdown killed it.
+      expect(Date.now() - startedAt).toBeLessThan(20_000);
+      expect(typeof code).toBe('number');
+      expect(exitCode).not.toBeNull();
+      // The window is gone: same cleanup path as any other child exit.
+      expect(existsSync(sock)).toBe(false);
+      expect(existsSync(meta)).toBe(false);
+    },
+    40_000,
+  );
+
+  it(
+    'REFUSES a session with no PAPERCUSP_LAUNCHED_BY and leaves it ALIVE — a hand-started window is the owner\'s',
+    async () => {
+      const ownerId = `su-itest-shutdown-refuse-${process.pid}-${Math.floor(performance.now())}`;
+      const sock = socketPathFor(ownerId);
+      const eventLog = eventLogPathForOwner(ownerId);
+      const { captured, io } = fakeIo();
+
+      // A hand-started psu carries no launcher provenance. Delete rather than blank
+      // it, so a runner that happens to export one cannot mask the refusal.
+      const env: NodeJS.ProcessEnv = {
+        ...process.env,
+        PAPERCUSP_SID: ownerId,
+        TERM: 'xterm-256color',
+      };
+      delete env.PAPERCUSP_LAUNCHED_BY;
+
+      const done = hostThroughPty({
+        command: execPath,
+        args: [
+          '-e',
+          "process.stdin.setEncoding('utf8');let b='';" +
+            "process.stdin.on('data',d=>{b+=d;let i;while((i=b.indexOf('\\n'))>=0){const line=b.slice(0,i);b=b.slice(i+1);process.stdout.write('ECHO:'+line+'\\n');}});" +
+            'setTimeout(()=>process.exit(0),8000);',
+        ],
+        cwd: '/tmp',
+        env,
+        ownerId,
+        advSessionId: 6639,
+        io,
+        bridgeTty: false,
+        onExit: () => undefined,
+      });
+
+      try {
+        await sleep(500);
+        expect(existsSync(sock)).toBe(true);
+
+        const ack = await injectForAck(sock, { mode: 'shutdown', data: 'go away', ownerId });
+        expect(ack).toMatchObject({
+          ok: false,
+          reason: 'shutdown-refused:not-agent-launched',
+        });
+
+        // THE ASSERTION THIS TEST EXISTS FOR: the session is untouched. Wait past the
+        // shutdown's own ack-delay + grace window, then prove the child still serves.
+        await sleep(1200);
+        expect(existsSync(sock)).toBe(true);
+        await rawInject(sock, 'still-here\n');
+        await sleep(500);
+        expect(captured()).toContain('ECHO:still-here');
+
+        // The refusal is recorded, so a puzzled operator can see WHY nothing closed.
+        const events = readFileSync(eventLog, 'utf8')
+          .trim()
+          .split('\n')
+          .filter(Boolean)
+          .map((l) => JSON.parse(l));
+        expect(events.find((e) => e.kind === 'shutdown-refused')).toMatchObject({
+          reason: 'not-agent-launched',
+        });
+        expect(events.find((e) => e.kind === 'shutdown-accepted')).toBeUndefined();
+      } finally {
+        await done.catch(() => undefined);
+      }
+    },
+    40_000,
+  );
+});

@@ -103,9 +103,25 @@ export function usesModuleScopeFlagSubscribe(text) {
   return false;
 }
 
-// BASELINE seeded 2026-07-28 (WI-6650) with 14 files; now 12. Do NOT add new
+// BASELINE seeded 2026-07-28 (WI-6650) with 14 files; now 6. Do NOT add new
 // entries; each removal (lazy-init the site, per coordination/log.ts's
 // ensureCoordFlagInit) shrinks this set.
+//
+// ⚠⚠ THIS LINT IS HALF-BLIND TO THE FILES IT LISTS — VERIFY THE PROPERTY BEFORE YOU
+// DE-LIST, NEVER THIS LINT'S OWN VERDICT. It detects a column-0 `onFlagChange(`. It
+// CANNOT see an eager `void refreshX()` whose body reaches `getFlag` — an async body
+// runs synchronously to its first await, so that call touches the flags/server binding
+// at module scope just as hard, and the file stays unimportable under a partial mock.
+// Migrate only the visible half and this guard goes GREEN on a file that is still
+// broken — a false green indistinguishable from a real one, made worse by the fact
+// that the BASELINE would then positively certify the file as fixed.
+// Both files migrated 2026-08-03 had BOTH accesses (work-item-redundancy.ts,
+// work-item-claim-lease-wiring.ts), so treat the pair as the expected shape, not an
+// oddity. Per-file checklist before de-listing:
+//   grep -n '^void \|^onFlagChange(\|^const .* = .*(' <file>   # both module-scope forms
+//   then add the file to lib/flags-partial-mock-importable.test.ts, which tests the
+//   actual PROPERTY (does this import under an empty mock?) rather than this lint's
+//   syntactic proxy for it.
 //
 // Removed 2026-08-03 (EI-19416650993725684), both migrated to a lazy arm called
 // from their own readers: txn-timeouts-config.ts (ensureLiveRefreshArmed) and
@@ -136,7 +152,6 @@ export const BASELINE = new Set([
   'packages/operator-core/lib/harness/routines/configure-per-workspace.ts',
   'packages/operator-core/lib/issues-engineer.ts',
   'packages/operator-core/lib/lexicon/configure.ts',
-  'packages/operator-core/lib/work-item-claim-lease-wiring.ts',
   'packages/operator-core/lib/workspace-brain-scope.ts',
 ]);
 

@@ -16,7 +16,11 @@ import {
   type SteerablePlanRow,
 } from './steerable-plans';
 
-function plan(over: Partial<Record<keyof PlanRowLike, unknown>>): PlanRowLike {
+// `over` is deliberately an open record, not `Partial<PlanRowLike>`: several
+// cases feed the FAT fields a real plans.list row carries (itemCounts,
+// nextAction, ownerIdentity, …) to prove the projection drops them, and those
+// are not keys of PlanRowLike.
+function plan(over: Record<string, unknown>): PlanRowLike {
   return { slug: 'p', title: 'P', status: 'draft', archived: false, isLegacy: false, harness: 'h', ...over };
 }
 

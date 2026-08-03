@@ -178,6 +178,29 @@ async function setupSchema(s: postgres.Sql): Promise<void> {
       PRIMARY KEY (workspace_id, issue_id)
     );
   `);
+
+  // ── session_turns (501-session-turns.sql) ──
+  // P-017: the `session_turn` source is one of the two the corpus injection leg
+  // reads, and one of the two `lexicalSql` was applied to. `text_tsv` mirrors
+  // production's GENERATED expression exactly, so the coverage/anchor SQL below
+  // is exercised against real tsvector semantics, not an approximation.
+  await s.unsafe(`
+    CREATE TABLE harness_shared.session_turns (
+      workspace_id  TEXT        NOT NULL DEFAULT 'default',
+      source_kind   TEXT        NOT NULL,
+      session_id    TEXT        NOT NULL,
+      turn_idx      INTEGER     NOT NULL,
+      ts            TIMESTAMPTZ,
+      owner         TEXT,
+      harness_slug  TEXT,
+      cwd           TEXT,
+      speaker       TEXT        NOT NULL,
+      text          TEXT        NOT NULL,
+      text_tsv      tsvector GENERATED ALWAYS AS (to_tsvector('english', left(text, 20000))) STORED,
+      ingested_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+      PRIMARY KEY (workspace_id, source_kind, session_id, turn_idx)
+    );
+  `);
 }
 
 /**
@@ -231,6 +254,85 @@ async function seed(s: postgres.Sql): Promise<{ convA: string; convB: string }> 
   return { convA, convB };
 }
 
+/**
+ * P-017 / D-062 fixture — the corpus injection leg's two sources under both
+ * lexical modes.
+ *
+ * The query is five distinct lexemes (`corpus recall pointer section clamp`),
+ * and the corpus is built so every property under test is DECIDABLE rather than
+ * incidental:
+ *
+ *   * `clamp` is the strict argmin of document frequency (5 vs 7/7/7/8 across
+ *     the whole table), so the rarest-lexeme ANCHOR is deterministic. Note the
+ *     DF probe is deliberately UNFILTERED — it counts the workspace-B decoy too
+ *     — which is why that decoy is also a scope tripwire below.
+ *   * `T_FOUR` matches four of five and CONTAINS the anchor: it is the document
+ *     the AND query discards outright and coverage-graded retrieval recovers.
+ *   * `T_TRAP` is the `ts_rank_cd` trap in miniature — one anchor occurrence
+ *     plus a common term repeated 80×, so it outranks a short all-terms
+ *     document on frequency alone. Coverage-first ordering must bury it. The
+ *     test asserts BOTH halves (higher rank, lower position), so it cannot pass
+ *     by accident on a fixture where the trap never fired.
+ *   * `N1..N4` match up to four terms but LACK the anchor. Their absence from
+ *     the graded result is the anchor's cost, asserted deliberately: it is what
+ *     bounds the candidate set (23,011 → 1,669 on the real table), and it can
+ *     never drop an AND hit, since every AND hit necessarily matches the anchor.
+ */
+const P17_QUERY = 'corpus recall pointer section clamp';
+const P17_SESSION = 'sess-p017';
+const stId = (turnIdx: number): string => `claude:${P17_SESSION}:${turnIdx}`;
+
+const T_ALL_A = stId(1);
+const T_ALL_B = stId(2);
+const T_FOUR = stId(3);
+const T_TRAP = stId(4);
+const T_DECOY_B = stId(20);
+
+async function seedP17(s: postgres.Sql): Promise<void> {
+  const turn = async (
+    ws: string,
+    idx: number,
+    text: string,
+  ): Promise<void> => {
+    await s`INSERT INTO harness_shared.session_turns
+              (workspace_id, source_kind, session_id, turn_idx, speaker, text, ts)
+            VALUES (${ws}, 'claude', ${P17_SESSION}, ${idx}, 'assistant', ${text},
+                    ${`2026-08-03T00:00:${String(idx).padStart(2, '0')}Z`})`;
+  };
+
+  // 5 of 5 — the only documents the AND query can return.
+  await turn(WS_A, 1, 'corpus recall pointer section clamp');
+  await turn(WS_A, 2, 'the clamp applies once the corpus recall pointer section is built');
+  // 4 of 5, WITH the anchor, WITHOUT `section` — recovered only by grading.
+  await turn(WS_A, 3, 'corpus recall pointer clamp, discussed without the fifth term');
+  // 2 of 5, anchor present, one common term repeated — the ts_rank_cd trap.
+  await turn(WS_A, 4, `clamp ${'section '.repeat(80)}`);
+  // Noise: up to 4 of 5 but NO anchor. Raises the common lexemes' DF above
+  // `clamp`'s, and is excluded from the graded result by the anchor filter.
+  await turn(WS_A, 10, 'corpus recall pointer section noise one');
+  await turn(WS_A, 11, 'corpus recall section noise two');
+  await turn(WS_A, 12, 'corpus pointer section noise three');
+  await turn(WS_A, 13, 'recall pointer section noise four');
+  // THE DECOY: all five terms, workspace B. Counted by the unfiltered DF probe,
+  // but must never surface in an A-scoped result under EITHER mode.
+  await turn(WS_B, 20, 'corpus recall pointer section clamp in another workspace');
+
+  // engineer_issues — the OTHER source `lexicalSql` was applied to. Same shape:
+  // `clamp` rarest (3) vs corpus/recall/pointer 4 and section 5.
+  const issue = async (ws: string, id: string, title: string, body: string): Promise<void> => {
+    await s`INSERT INTO harness_shared.engineer_issues
+              (workspace_id, issue_id, scope, title, body, kind, state, severity)
+            VALUES (${ws}, ${id}, 'harness:sheets', ${title}, ${body}, 'task', 'open', 'minor')`;
+  };
+  await issue(WS_A, 'EI-C1', 'corpus recall pointer', 'section clamp all five terms');
+  await issue(WS_A, 'EI-C2', 'corpus recall pointer', 'clamp but not the fifth term');
+  await issue(WS_A, 'EI-C3', 'clamp only', 'section only');
+  await issue(WS_A, 'EI-N1', 'corpus recall', 'section noise, no anchor');
+  await issue(WS_A, 'EI-N2', 'corpus pointer', 'section noise, no anchor');
+  await issue(WS_A, 'EI-N3', 'recall pointer', 'section noise, no anchor');
+  await issue(WS_B, 'EI-D9', 'corpus recall pointer', 'section clamp in another workspace');
+}
+
 const params = (over: Partial<SearchSourceParams> = {}): SearchSourceParams => ({
   sql,
   query: 'kubernetes',
@@ -245,6 +347,7 @@ beforeAll(async () => {
   sql = db.sql;
   await setupSchema(sql);
   await seed(sql);
+  await seedP17(sql);
 }, 60_000);
 
 afterAll(async () => {

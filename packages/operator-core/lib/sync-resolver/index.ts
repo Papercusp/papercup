@@ -3287,7 +3287,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
         includeArchived: true,
         includeLegacy: true,
       };
-      const r = (await callPlansRead('list', readArgs)) as { plans?: unknown[] };
+      const r = (await callPlansRead('list', readArgs)) as { plans?: Array<Record<string, unknown>> };
       return selectSteerablePlanRows(Array.isArray(r?.plans) ? r.plans : []);
     },
   },

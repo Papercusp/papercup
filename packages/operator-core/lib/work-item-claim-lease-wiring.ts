@@ -9,8 +9,9 @@
  * remains the OWNER'S KILL SWITCH: flipping it OFF reverts `work_items:claim_next` / `:claim`
  * to the plain local `SELECT … FOR UPDATE SKIP LOCKED` on one PG. Migrated off the ad-hoc `PAPERCUSP_WORKITEM_CLAIM_LEASE` env gate to a FLAG
  * (work-queue-stuck-item-recovery P-012 / D-008); because the decision is read SYNC deep in
- * the claim path, the flag is held in a SYNC-cached boolean refreshed on boot + every flag
- * change (the lexicon/issues-engineer pattern). Listed in KNOWN_DARK_FLAGS.
+ * the claim path, the flag is held in a SYNC-cached boolean refreshed on the FIRST READ + every
+ * flag change (`lazy-flag-refresh.ts` — see the arming note on `armFlagRefresh` below).
+ * Listed in KNOWN_DARK_FLAGS.
  *
  * When ON: after the local claim sets `taken_by`, the claim tool acquires the Hive lease
  * through the per-Hive authority (the swarm router installed at boot — see
@@ -22,7 +23,8 @@
  * `work-item-claim-reconcile.ts` (P-005) resolves any double-claim on reconvergence.
  */
 import { FLAGS } from '@papercusp/flags';
-import { getFlag, onFlagChange } from '@papercusp/flags/server';
+import { getFlag } from '@papercusp/flags/server';
+import { lazyFlagRefresh } from './lazy-flag-refresh';
 import { activeWorkspaceId } from './workspace-registry';
 import { systemDistinctId } from './flag-distinct-id';
 import { potHomeSlugForHarness } from './hive-federation';
@@ -31,8 +33,17 @@ import { getBootedHarness } from './sync/hyperbee/boot-all';
 import { resolveMyPubkey } from './orchestrator/distributed-claim';
 
 // P-012 / D-008: the WORKITEM_CLAIM_LEASE flag, SYNC-cached because the claim-path read
-// must be synchronous. Refreshed on an initial read + every flag change (the
-// issues-engineer/lexicon pattern). Unloaded → false (DEFAULT OFF, the safe behavior).
+// must be synchronous.
+//
+// ⚠ Unloaded → false, and the flag's registry DEFAULT is ON (graduated 2026-06-23, WI-597).
+// An earlier version of this comment claimed "DEFAULT OFF, the safe behavior" — that was
+// stale in the same way this file's header once was (see the header's own note). The
+// unpopulated state is nonetheless the SAFE one, which is what licenses lazy arming below:
+// false means "skip the Hive lease and use the plain local SELECT … FOR UPDATE SKIP LOCKED",
+// i.e. exactly the baked pre-feature path the owner's kill switch reverts to. It closes the
+// feature rather than opening anything up, so it cannot be a WRONG or unsafe value — only a
+// not-yet-applied one. Contrast auth-config-overrides.ts, which stays in the guard BASELINE
+// precisely because ITS unpopulated state is the permissive one.
 let claimLeaseOn = false;
 async function refreshClaimLease(): Promise<void> {
   try {
@@ -41,14 +52,31 @@ async function refreshClaimLease(): Promise<void> {
     claimLeaseOn = false;
   }
 }
-void refreshClaimLease();
-onFlagChange((key) => {
-  if (key === null || key === FLAGS.WORKITEM_CLAIM_LEASE) void refreshClaimLease();
-});
+
+// EI-19416650993725684: the subscription is armed on FIRST READ, never at module scope — a
+// module-scope `onFlagChange` binding access makes this file (and every test that
+// transitively imports it) unimportable under a PARTIAL vitest mock of
+// '@papercusp/flags/server'. See lazy-flag-refresh.ts for the mechanism and for why the
+// defensive-looking forms (`onFlagChange?.()`, typeof, try/catch) do NOT work.
+//
+// ⚠ ARM FROM EVERY READER — there are FOUR here, not just the exported getter:
+// workItemClaimLeaseEnabled, releaseWorkItemLease, releaseIssueClaimLease and
+// gcOrphanIssueLeases each read `claimLeaseOn` directly. A missed arm point in a process
+// whose only reader is, say, the orphan-lease reaper would leave that reaper permanently
+// unarmed; this module has NO periodic refresh timer to bound such a miss, unlike the
+// config-override callers lazy-flag-refresh's doc describes.
+//
+// The one behaviour change: the FIRST reader call still sees `false` (the refresh is async,
+// the read is sync). For the claim path that means one claim taken without the cross-Swarm
+// lease — which is precisely the documented FAIL-OPEN posture (D-007), with
+// work-item-claim-reconcile.ts (P-005) resolving any double-claim on reconvergence. On a
+// single box the authority is self, so the skipped lease is a local no-op.
+const armFlagRefresh = lazyFlagRefresh(refreshClaimLease, FLAGS.WORKITEM_CLAIM_LEASE);
 
 /** The owner's ratification switch (D-008). Default OFF. Read from the SYNC-cached
  *  WORKITEM_CLAIM_LEASE flag (migrated off the PAPERCUSP_WORKITEM_CLAIM_LEASE env gate). */
 export function workItemClaimLeaseEnabled(): boolean {
+  armFlagRefresh();
   return claimLeaseOn;
 }
 
@@ -97,6 +125,7 @@ export async function leaseClaimedWorkItem(opts: {
  * to "this one item is temporarily un-self-selectable", never a correctness break.
  */
 export async function releaseWorkItemLease(opts: { harness: string; workItemId: string; owner: string | null | undefined }): Promise<void> {
+  armFlagRefresh();
   if (!claimLeaseOn || !opts.owner) return;
   try {
     const workspaceId = activeWorkspaceId();
@@ -133,6 +162,7 @@ export async function releaseIssueClaimLease(opts: {
   owner: string | null | undefined;
   workspaceId?: string;
 }): Promise<boolean> {
+  armFlagRefresh();
   if (!claimLeaseOn || !opts.owner) return false;
   try {
     const workspaceId = opts.workspaceId ?? activeWorkspaceId();
@@ -151,6 +181,7 @@ export async function releaseIssueClaimLease(opts: {
  * number of orphan leases cleared (for the reaper's observability + the integration test).
  */
 export async function gcOrphanIssueLeases(): Promise<number> {
+  armFlagRefresh();
   if (!claimLeaseOn) return 0;
   try {
     return await gcOrphanIssueClaimsLocal();
