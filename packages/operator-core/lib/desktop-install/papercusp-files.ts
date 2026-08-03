@@ -491,13 +491,29 @@ function resolveOperatorAppRoot(): string {
  * alone resolves nothing.
  */
 export function promptsDirCandidates(operatorAppRoot: string, explicitRoot: boolean): string[] {
-  return explicitRoot
-    ? [path.join(operatorAppRoot, 'prompts')]
-    : [
-        path.join(operatorAppRoot, 'prompts'),
-        path.join(process.cwd(), 'apps', 'operator', 'prompts'),
-        path.join(process.cwd(), 'prompts'),
-      ];
+  if (explicitRoot) return [path.join(operatorAppRoot, 'prompts')];
+  const out = [
+    path.join(operatorAppRoot, 'prompts'),
+    path.join(process.cwd(), 'apps', 'operator', 'prompts'),
+    path.join(process.cwd(), 'prompts'),
+  ];
+  // MODULE-relative ancestors, so resolution does not depend on where the
+  // process was STARTED (EI-996). The cwd candidates above silently resolve
+  // nothing whenever cwd is not the repo root — measured: from
+  // packages/operator-core they miss entirely. In production the operator
+  // happens to run from the repo root, which is exactly what makes this class
+  // of bug invisible until something launches from elsewhere. Walking up from
+  // this module's own location has no such dependency.
+  for (const base of [operatorAppRoot, process.cwd()]) {
+    let dir = base;
+    for (let up = 0; up < 6; up += 1) {
+      const parent = path.dirname(dir);
+      if (parent === dir) break;
+      dir = parent;
+      out.push(path.join(dir, 'apps', 'operator', 'prompts'));
+    }
+  }
+  return [...new Set(out)];
 }
 
 /** The auto-discovered operator app root — exported for sibling prompt resolvers (EI-996). */

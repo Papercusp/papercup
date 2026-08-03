@@ -21,8 +21,8 @@
  * only bites once an operator sets a value. Lowering a cap below the baked value is honoured (tighten),
  * raising it is honoured (loosen the throttle) — both are call-rate policy, not capability grants.
  */
-import { onFlagChange } from '@papercusp/flags/server';
 import { managedSetInterval } from '@papercusp/scheduled-registry';
+import { lazyFlagRefresh } from './lazy-flag-refresh';
 import type { RolesQuota } from '@papercusp/tooldef';
 import { readOperatorState, writeOperatorState } from './operator-state-pg';
 import { registerOverrideConcern, type OverrideEntry } from './config-overrides/registry';
@@ -56,9 +56,7 @@ let cached: Record<string, QuotaOverride> = {};
 
 /** The per-(tool,role) override for the dispatch step, or undefined. SYNC, zero-await. */
 export function quotaOverrideFor(toolName: string, role: string | undefined): QuotaOverride | undefined {
-  // First use arms the live-flip subscription (see ensureFlagSubscriptionArmed) and, on the call
-  // that arms it, kicks the population this module used to get from the boot flag-reload.
-  if (ensureFlagSubscriptionArmed()) void refreshQuotaOverrides();
+  armFlagRefresh(); // first use installs the flag-reload subscription — see ./lazy-flag-refresh
   if (!role) return undefined;
   return cached[quotaOverrideKey(toolName, role)];
 }
@@ -79,7 +77,6 @@ export function mergeRoleQuota(
 }
 
 export async function refreshQuotaOverrides(): Promise<void> {
-  ensureFlagSubscriptionArmed();
   try {
     const row = (await readOperatorState<QuotaOverrides>(STATE_TABLE)) ?? {};
     const next: Record<string, QuotaOverride> = {};
@@ -93,39 +90,13 @@ export async function refreshQuotaOverrides(): Promise<void> {
   }
 }
 /**
- * Refresh-on-flag-reload wiring, armed on FIRST USE rather than at import (EI-19416650993725684).
- *
- * `onFlagChange(key === null)` fires on the boot flag-reload and is used here purely as a "refresh
- * now" signal — this feature is NOT gated by any flag. Returns `true` on the call that installed the
- * subscription, so that caller can kick the first population the boot reload used to provide.
- *
- * WHY LAZY, and why this is not merely a style choice: an `import { onFlagChange }` whose binding is
- * READ at module scope makes this module unimportable under a PARTIAL vitest mock of
- * `@papercusp/flags/server`. Vitest's mocked-module proxy throws on binding ACCESS (not on
- * invocation), so the whole test FILE dies at collection with
- *   No "onFlagChange" export is defined on the "@papercusp/flags/server" mock
- * contributing ZERO tests — a failure that names this module while pointing at a file that never
- * mentions it. This module is on the dispatch hot path (projected-tool-deps → mergeRoleQuota), so
- * its import reach is wide.
- *
- * ⚠ MEASURED, do not "simplify" this back: defensive forms do NOT work, because they are still
- * binding accesses — `onFlagChange?.(...)`, `typeof onFlagChange`, try/catch around the call, and
- * `import * as ns` + `ns.onFlagChange?.()` all throw identically. Moving the access inside a
- * function body is the only fix that keeps the import pure.
- *
- * BOTH readers arm, so the subscription is installed by whichever runs first: `quotaOverrideFor`
- * (every dispatch, via mergeRoleQuota) or `refreshQuotaOverrides` (the 60s timer below, and the
- * same-process write path). In a live operator that is at least as early as the boot reload was.
+ * Refresh-on-flag-reload, armed on FIRST USE rather than at import (EI-19416650993725684) — the
+ * `key === null` bus reload is used purely as a "refresh now" signal here, since this feature is NOT
+ * gated by any flag (hence no keys). The import touches no flag binding, which is what keeps this
+ * module collectable under a partial `@papercusp/flags/server` mock; see ./lazy-flag-refresh for the
+ * mechanism, the measured dead-ends, and the two guards that hold it in place.
  */
-let flagSubscriptionArmed = false;
-function ensureFlagSubscriptionArmed(): boolean {
-  if (flagSubscriptionArmed) return false;
-  flagSubscriptionArmed = true; // set FIRST — terminates the refresh → arm re-entrancy
-  onFlagChange((key) => {
-    if (key === null) void refreshQuotaOverrides();
-  });
-  return true;
-}
+const armFlagRefresh = lazyFlagRefresh(refreshQuotaOverrides);
 // Bounded cross-process + restart freshness. .unref() so it never holds the process (or a test) open.
 // P-008: visible in schedule:inventory as a 'cache' timer (per-process config memo refresh).
 managedSetInterval('config-refresh:quota', 60_000, () => refreshQuotaOverrides(), {

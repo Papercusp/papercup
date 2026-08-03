@@ -377,6 +377,56 @@ function resolveViteCli(treePath: string): string | null {
   return null;
 }
 
+/** Argv for the `local` (vite) child — EI-19424980348813193.
+ *
+ * The port MUST be passed explicitly and STRICTLY. Neither half is optional:
+ *
+ *  - `--port <p>`: without it vite falls back to `apps/operator-vite/vite.config.ts`'s
+ *    `Number(OPERATOR_E2E_PORT ?? PORT) || 3055`, and `PORT` is AMBIENT in this process —
+ *    the primary operator sets it to its OWN Hono port (`defaultSelfPort()` reads exactly
+ *    that env). So an inherited `PORT` silently retargets the SPA at the operator's port.
+ *  - `--strictPort`: without it a collision on that wrong port makes vite WALK to the next
+ *    free one and serve happily there, so the failure is silent and invisible — the launcher
+ *    polls `entry.port` forever while a perfectly healthy dev server answers somewhere else.
+ *
+ * Observed on the packaged mac install 2026-08-03 (bundle b5f11ff9): the `local` child was
+ * spawned as a bare `vite.js`, inherited `PORT=3070` from the primary, found 3070 held by
+ * that same primary, walked to 3071 (free on IPv4 — the sibling dev operator held it only as
+ * IPv6 `*:3071`, and node's V6ONLY bind leaves the IPv4 half open) and served the real SPA
+ * with HTTP 200 on `127.0.0.1:3071` for 26+ minutes. Every probe asked `:3055`, got nothing,
+ * and the env was filed as a HANG — `0% CPU` + `STAT Ss` + flat RSS read as "wedged" when
+ * they are exactly what a correct, idle, serving vite looks like. `--strictPort` converts
+ * that silent mis-bind into a loud immediate failure. */
+export function viteChildArgv(viteCli: string, port: number): string[] {
+  return [viteCli, '--port', String(port), '--strictPort'];
+}
+
+/** Env for the `local` (vite) child — EI-19424980348813193.
+ *
+ * Identical to every other source child, MINUS the two variables
+ * `apps/operator-vite/vite.config.ts` reads as "the port I should listen on"
+ * (`OPERATOR_E2E_PORT ?? PORT`). Both are ambient in the primary operator and mean
+ * something else entirely there, so they are DELETED rather than overridden: `viteChildArgv`'s
+ * explicit `--port` is the single source of truth for where the SPA listens, and leaving a
+ * stale `PORT` in the child's env would keep a second, contradictory answer alive for the
+ * next reader to trip over. */
+export function viteChildEnv(
+  base: NodeJS.ProcessEnv,
+  treePath: string,
+  selfPort: number | null,
+): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {
+    ...base,
+    ...sourceChildEnv(treePath),
+    ...(selfPort != null ? { PAPERCUSP_API_TARGET: `http://127.0.0.1:${selfPort}` } : {}),
+    // The provisioning launcher must not re-run for the children (no recursion).
+    PAPERCUSP_PROVISION_ENV_OPERATORS: '0',
+  };
+  delete env.PORT;
+  delete env.OPERATOR_E2E_PORT;
+  return env;
+}
+
 /** Env additions every SOURCE-spawned child gets (extraction↔launcher contract, msg
  *  mrano4w7 / WI-3306): the child's OWN tree as its PAPERCUSP_INTEGRATION_ROOT — its
  *  prompt/capability/git internals must resolve to the tree it serves, never inherit
@@ -537,26 +587,22 @@ function defaultSpawnOperator(
       if (!viteCli) return null;
       const selfPort = defaultSelfPort();
       const log = openEnvOperatorLog(entry.id);
-      writeSpawnHeader(log.fd, entry.id, entry.port, [process.execPath, viteCli], {
+      const argv = viteChildArgv(viteCli, entry.port);
+      writeSpawnHeader(log.fd, entry.id, entry.port, [process.execPath, ...argv], {
         PAPERCUSP_INTEGRATION_ROOT: treePath,
         ...(selfPort != null
           ? { PAPERCUSP_API_TARGET: `http://127.0.0.1:${selfPort}` }
           : {}),
         PAPERCUSP_PROVISION_ENV_OPERATORS: '0',
+        // EI-19424980348813193: recorded so the log shows the scrub happened. An
+        // inherited PORT is what silently retargeted this child at the wrong port.
+        PORT: '(deleted — vite.config.ts reads it as its own listen port)',
       });
-      const child = spawn(process.execPath, [viteCli], {
+      const child = spawn(process.execPath, argv, {
         cwd: join(treePath, 'apps', 'operator-vite'),
         detached: true,
         stdio: log.stdio,
-        env: {
-          ...process.env,
-          ...sourceChildEnv(treePath),
-          ...(selfPort != null
-            ? { PAPERCUSP_API_TARGET: `http://127.0.0.1:${selfPort}` }
-            : {}),
-          // The provisioning launcher must not re-run for the children (no recursion).
-          PAPERCUSP_PROVISION_ENV_OPERATORS: '0',
-        },
+        env: viteChildEnv(process.env, treePath, selfPort),
       });
       child.unref();
       return { id: entry.id, port: entry.port, pid: child.pid };

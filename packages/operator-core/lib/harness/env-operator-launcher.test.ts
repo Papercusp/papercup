@@ -21,6 +21,8 @@ import {
   defaultDetectSourceRoot,
   sourceChildEnv,
   openEnvOperatorLog,
+  viteChildArgv,
+  viteChildEnv,
 } from './env-operator-launcher';
 
 const SPECS: readonly EnvOperatorSpec[] = [

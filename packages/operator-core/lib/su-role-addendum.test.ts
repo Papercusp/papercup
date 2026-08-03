@@ -94,6 +94,16 @@ describe('resolveSuRoleAddendum', () => {
     });
   });
 
+  it('auto-discovers the prompt source WITHOUT an explicit root, independent of cwd', () => {
+    // The regression this pins: bootstrap-su calls resolveSuRoleAddendum(role)
+    // with no root, so resolution fell back to process.cwd()-rooted candidates.
+    // Vitest runs from packages/operator-core, where those resolve NOTHING — a
+    // planner would have launched at the SUPERUSER tier with no role lines at
+    // all, looking configured. It only worked because the operator happens to
+    // run from the repo root, which is what kept it invisible.
+    expect(resolveSuRoleAddendum('planner')).toBeTruthy();
+  });
+
   it('returns null for null/undefined/empty role', () => {
     expect(resolveSuRoleAddendum(null)).toBeNull();
     expect(resolveSuRoleAddendum(undefined)).toBeNull();

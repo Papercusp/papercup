@@ -45,6 +45,7 @@ let cachedOverride: TelemetryBufferOverride = {};
 
 /** The effective telemetry-buffer config for the hot path. SYNC, zero-await. */
 export function telemetryBufferConfig(): TelemetryBufferConfig {
+  armFlagRefresh(); // first use installs the flag subscription — see ./lazy-flag-refresh
   if (!cachedEnabled) return TELEMETRY_BUFFER_DEFAULTS;
   return {
     maxPending: cachedOverride.maxPending ?? TELEMETRY_BUFFER_DEFAULTS.maxPending,
@@ -65,11 +66,11 @@ export async function refreshTelemetryBufferConfig(): Promise<void> {
     cachedOverride = {};
   }
 }
-// D-010 (a): event-driven refresh — fires on the kill-switch flip + a key===null reload. No
-// import-time getFlag (pure import — projected-tool-deps imports this on the hot path).
-onFlagChange((key) => {
-  if (key === null || key === FLAGS.TELEMETRY_BUFFER_CONFIG) void refreshTelemetryBufferConfig();
-});
+// D-010 (a): event-driven refresh — fires on the kill-switch flip + a key===null reload. Armed on
+// FIRST USE, not at import (EI-19416650993725684): the import touches no flag binding at all, so a
+// test that partially mocks `@papercusp/flags/server` can still collect. projected-tool-deps imports
+// this on the hot path, so its reach is wide. See ./lazy-flag-refresh for the mechanism + guards.
+const armFlagRefresh = lazyFlagRefresh(refreshTelemetryBufferConfig, FLAGS.TELEMETRY_BUFFER_CONFIG);
 // D-010 (c): bounded cross-process + restart freshness. .unref() so it never holds the process open.
 // P-008: visible in schedule:inventory as a 'cache' timer (per-process config memo refresh).
 managedSetInterval('config-refresh:telemetry-buffer', 60_000, () => refreshTelemetryBufferConfig(), {
