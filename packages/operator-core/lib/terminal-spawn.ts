@@ -44,7 +44,7 @@ import { LINUX_TERMINALS_FLAT } from './linux-terminals';
  * desktop session was actually resolved, because a client-server terminal with
  * no reachable D-Bus server ghosts (WI-4718/WI-4711). This module has no such
  * detection, so it keeps the pre-WI-4718 behaviour — tracked as
- * EI-19409098127440755, deliberately NOT changed as part of a data dedupe.
+ * EI-19408594551235977, deliberately NOT changed as part of a data dedupe.
  */
 export const LINUX_TERMINALS: ReadonlyArray<readonly [string, readonly string[]]> =
   LINUX_TERMINALS_FLAT;

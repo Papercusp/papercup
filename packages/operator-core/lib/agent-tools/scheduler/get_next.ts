@@ -21,7 +21,7 @@ import {
   getNextForBee,
   resolveClaimSpecWorkspace,
   getClaimSpecRecord,
-  getActiveClaimsForBee,
+  readClaimConcurrency,
 } from '../../scheduler/claim-spec-store';
 import { CLAIM_STATES_ALLOWLIST } from '../../work-items';
 import { holderContextReader, resolveHolderAdvisoryMap } from '../coordination/holder-advisory';
@@ -222,26 +222,27 @@ async function buildMissDiagnosis(args: {
     // limit") — a live incident burned a fleet leader hours bisecting the claim query for
     // exactly this. Check it FIRST and, when true, report it plainly (with the held ids,
     // so the caller can act immediately) instead of computing floors at all.
-    const activeClaims = await getActiveClaimsForBee({
+    // EI-19313376980892266: goes through the shared oracle (evaluateClaimConcurrency) so
+    // this diagnosis, getNextWorkItem's refusal, fleet:leader-brief's idle accounting and
+    // work_items:claim's gate cannot disagree about who is at capacity.
+    const concurrency = await readClaimConcurrency({
       cupId: args.ownerId,
       workspaceId: resolvedWorkspace,
+      maxConcurrentClaims: rec?.spec.limits?.maxConcurrentClaims,
     }).catch(() => null);
-    if (activeClaims) {
-      const maxConcurrentClaims = rec?.spec.limits?.maxConcurrentClaims ?? 1;
-      if (activeClaims.length >= maxConcurrentClaims) {
-        const heldIds = activeClaims.map((c) => c.id);
-        return {
-          error:
-            `${STATIC}. Diagnosis: you already hold ${activeClaims.length}/${maxConcurrentClaims} concurrent ` +
-            `claim(s) — release or complete one before claiming another; held: ${heldIds.join(', ')}.`,
-          diagnosis: {
-            concurrencyBlocked: true,
-            activeClaims: activeClaims.length,
-            maxConcurrentClaims,
-            heldIds,
-          },
-        };
-      }
+    if (concurrency?.blocked) {
+      return {
+        error:
+          `${STATIC}. Diagnosis: you already hold ${concurrency.activeClaims}/${concurrency.maxConcurrentClaims} ` +
+          `concurrent claim(s) — release or complete one before claiming another; ` +
+          `held: ${concurrency.heldIds.join(', ')}.`,
+        diagnosis: {
+          concurrencyBlocked: true,
+          activeClaims: concurrency.activeClaims,
+          maxConcurrentClaims: concurrency.maxConcurrentClaims,
+          heldIds: concurrency.heldIds,
+        },
+      };
     }
 
     // D-002 (drain-claim-spec-hardening-2026-07-13, fixes EI-11300): mirror getNextWorkItem's
@@ -821,7 +822,7 @@ export default defineTool({
       ? { error: '' as string, diagnosis: undefined, floors: undefined }
       : (
           // EI-18167154191955470: the miss diagnosis fans out to several unbounded PG reads
-          // (getClaimSpecRecord / getActiveClaimsForBee / diagnoseClaimNextMiss / …) — bound it
+          // (getClaimSpecRecord / readClaimConcurrency / diagnoseClaimNextMiss / …) — bound it
           // too so a pool stall HERE can't reproduce the 300s hang. buildMissDiagnosis already
           // fails soft to the STATIC message, so the timeout fallback is exactly that static miss.
           await withBoundedTimeout(

@@ -176,9 +176,84 @@ export const PROSE_VECTOR_DEPENDENT_VIEWS: ReadonlyArray<{ view: string; column:
  * The dims guard every prose reader/writer already performs, as one named
  * predicate rather than six copies of `resolved.dims !== EMBED_DIM`. Callers
  * return null / skip the sweep when this is false.
+ *
+ * ⚠ WHAT THIS DOES **NOT** CHECK, AND WHY THAT MATTERS (WI-7327).
+ *
+ * It compares the EMBEDDER's width against the DECLARED constant. It never
+ * looks at the database. So it answers "does the emitter agree with the code's
+ * belief about the columns" — NOT "does the emitter fit the columns".
+ *
+ * Those come apart on exactly one axis, and it is the dangerous one: when the
+ * constant has moved but the migration has not. Then `PROSE_VECTOR_DIMS` and
+ * `resolved.dims` are BOTH the new width, this predicate returns true, and the
+ * guard sails through while every write to a still-old column fails. That is
+ * the file docblock's "a dims guard that agrees with itself" hazard, and it is
+ * not hypothetical: shipping the 768 constant while the columns were still
+ * vector(384) produced 9.5 hours of total, SILENT embed failure — every UPDATE
+ * rejected by pgvector, swallowed by a per-row catch, zero rows written, zero
+ * log output.
+ *
+ * This function is deliberately left pure and synchronous — it is called
+ * per-query on hot read paths (semantic legs, dupe guards, novelty legs), where
+ * a database round-trip would be wrong. The live-schema half of the contract is
+ * `computeProseColumnWidthSkew` below, which the backfill sweep runs ONCE per
+ * sweep. Keep both: this one is cheap and catches an ineligible EMBEDDER, that
+ * one is authoritative and catches a skewed SCHEMA. Neither subsumes the other.
  */
 export function fitsProseColumns(dims: number): boolean {
   return dims === PROSE_VECTOR_DIMS;
+}
+
+/**
+ * A prose column whose LIVE width disagrees with `PROSE_VECTOR_DIMS` — i.e. the
+ * code is emitting vectors the database cannot store.
+ */
+export interface ProseColumnWidthSkew {
+  table: string;
+  column: string;
+  /** The width the column ACTUALLY has, measured from the live catalog. */
+  liveDims: number;
+  /** The width the code believes it has (`PROSE_VECTOR_DIMS`). */
+  declaredDims: number;
+}
+
+/**
+ * Pure core of the live-schema width check — exported for tests, and pure so
+ * that the module every hot path imports stays free of a database dependency.
+ * The caller measures; this classifies. (Same split as `computeContentDrift` in
+ * migration-drift.ts, and for the same reason: the judgement is the part worth
+ * testing exhaustively, and it should not need a database to test.)
+ *
+ * ⚠ `dims` MUST come from `pg_attribute.atttypmod`. For pgvector that column
+ * holds the dimension DIRECTLY — there is no varchar-style `+4` offset.
+ * Verified against the live catalog 2026-08-03: atttypmod 768 renders as
+ * `vector(768)`, 384 as `vector(384)`, 1024 as `vector(1024)`. Passing a
+ * `+4`-adjusted number here would make every column read as skewed.
+ *
+ * Skips, deliberately: a column absent from the measurement. Absence of
+ * evidence is not skew — a table that has not been created yet, or was not
+ * covered by the caller's query, is UNJUDGEABLE rather than broken. Reporting
+ * it would turn "this DB predates the surface" into a false total-failure
+ * alarm.
+ */
+export function computeProseColumnWidthSkew(
+  measured: ReadonlyArray<{ table: string; column: string; dims: number }>,
+): ProseColumnWidthSkew[] {
+  const skewed: ProseColumnWidthSkew[] = [];
+  for (const m of measured) {
+    if (!Number.isFinite(m.dims) || m.dims <= 0) continue; // unjudgeable, not skewed
+    if (m.dims !== PROSE_VECTOR_DIMS) {
+      skewed.push({
+        table: m.table,
+        column: m.column,
+        liveDims: m.dims,
+        declaredDims: PROSE_VECTOR_DIMS,
+      });
+    }
+  }
+  return skewed.sort(
+    (a, b) => a.table.localeCompare(b.table) || a.column.localeCompare(b.column),
+  );
 }
 
 /** The declared target width for a mode — the emitting side of the contract. */

@@ -256,6 +256,24 @@ export function computeBenchSuggestion(
    * suppression — an unread control state must not silence a real starvation signal.
    */
   fleetPaused?: boolean | null,
+  /**
+   * EI-19313376980892266: this member's AUTHORITATIVE concurrency verdict — the same
+   * `evaluateClaimConcurrency` result `scheduler:get_next` refuses on, read from
+   * `work_items.taken_by` rather than from the presence layer.
+   *
+   * Why it must be passed in rather than derived from `a.load`: `load`/`workItemIds`
+   * come from presence, and a PARKED item retains `taken_by` while dropping out of them.
+   * `load === 0 && activeClaims >= 1` is therefore reachable, and in exactly that state
+   * this function used to report `idle-with-claimable` for a member the scheduler was
+   * structurally refusing. Live 2026-08-02: five members reported idle-with-claimable
+   * were all AT CAPACITY; the leader broadcast twice and woke all five (woken:1 verified)
+   * demanding work they were forbidden to take.
+   *
+   * `undefined`/absent reads as "not read on this call" and never suppresses — an
+   * unread verdict must not silence a real starvation signal (same fail-open discipline
+   * as `fleetPaused` above).
+   */
+  concurrency?: { blocked: boolean; activeClaims: number; heldIds: string[] } | null,
 ): LeaderBriefMember['benchSuggestion'] {
   if ((a.parkedOn?.length ?? 0) > 0) return undefined;
   if (a.verdict === 'speaking' || a.verdict === 'first-turn-done') {
@@ -321,6 +339,14 @@ export function computeBenchSuggestion(
   // prescribe a remedy the claim path itself refuses to honor.
   if (fleetPaused) return undefined;
   if (a.load === 0 && (a.queued?.length ?? 0) === 0 && !a.doing) {
+    // EI-19313376980892266: `a.load === 0` is a PRESENCE-layer reading and does NOT mean
+    // the scheduler considers this member free — a parked/held item keeps `taken_by`, so
+    // it counts against maxConcurrentClaims while contributing nothing to `load`. Every
+    // branch below diagnoses idleness and prescribes waking or benching; for a member at
+    // capacity both remedies are wrong, and "wake it" is the expensive one (the member
+    // burns a turn re-discovering a refusal it cannot act on). Defer to the one oracle
+    // instead of re-deriving capacity from a field that cannot see it.
+    if (concurrency?.blocked) return undefined;
     // EI-18681259560385029: the ORIGINAL text asserted "likely idle-cycling a drained or
     // scoped-out lane" UNCONDITIONALLY — a confident diagnosis of a fact it never checked.
     // When the queue is actually nonempty that sentence points a leader AWAY from the truth

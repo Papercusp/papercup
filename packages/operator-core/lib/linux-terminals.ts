@@ -14,7 +14,7 @@
  * console-spawn picks between the two groups below based on whether a real
  * desktop session and its D-Bus were resolved (WI-4718); terminal-spawn walks
  * them in flat order. Those differ for a real reason and converging them is a
- * behavioural change, tracked separately — see EI-19409098127440755. Do not
+ * behavioural change, tracked separately — see EI-19408594551235977. Do not
  * "simplify" one into the other without reading it.
  *
  * The split into two groups is load-bearing, not cosmetic — see each comment.

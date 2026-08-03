@@ -106,6 +106,139 @@ export async function countActiveClaimsForBee(
 }
 
 /**
+ * EI-11796: one active/held lane is the fail-closed default when a spec names no limit.
+ * Exported so no consumer re-spells `?? 1` and silently drifts from the others.
+ */
+export const DEFAULT_MAX_CONCURRENT_CLAIMS = 1;
+
+/** The verdict {@link evaluateClaimConcurrency} returns — what every surface must report FROM. */
+export type ClaimConcurrencyVerdict = {
+  /** True ⇒ `scheduler:get_next` WILL refuse this bee. Never re-derive this comparison. */
+  blocked: boolean;
+  activeClaims: number;
+  maxConcurrentClaims: number;
+  /** The held item ids, so a refusal/alert can name exactly what to release. */
+  heldIds: string[];
+};
+
+/**
+ * EI-19313376980892266 — THE ONE ORACLE for "is this bee at its concurrency cap".
+ *
+ * The principle CLAUDE.md already states for `work_items:claimable` ("wrapping the SAME
+ * oracle scheduler:get_next runs, so it can't diverge from what the queue actually
+ * serves") applied to the concurrency limit, which previously had FOUR consumers and
+ * THREE behaviours:
+ *
+ *   - getNextWorkItem (below)      — enforced, its own copy of the rule
+ *   - get_next.ts buildMissDiagnosis — enforced, a SECOND independent copy
+ *   - fleet:leader-brief            — never consulted it at all; branched on the brief's
+ *                                     own `load` (workItemIds) instead
+ *   - work_items:claim              — no check whatsoever
+ *
+ * The live cost of that divergence (2026-08-02, one leader session): a PARKED item keeps
+ * `taken_by`, so it counts in {@link getActiveClaimsForBee} but drops out of the brief's
+ * `load`. `load === 0 && activeClaims >= 1` is therefore a REACHABLE state, and in it the
+ * brief reported five members `idle_with_claimable` — telling the leader to wake members
+ * the scheduler was structurally refusing. Three wakes and five member turns were spent
+ * demanding work that could not be taken. Both surfaces were internally consistent; they
+ * simply answered from different sources.
+ *
+ * PURE on purpose: `computeBenchSuggestion` is a pure function and must stay one (it is
+ * unit-tested without a database), so the DB read lives in {@link readClaimConcurrency}
+ * and the DECISION lives here, where every caller shares it.
+ */
+export function evaluateClaimConcurrency(args: {
+  /** Either the held rows (preferred — yields `heldIds`) or a bare count. */
+  activeClaims: readonly { id: string }[] | number;
+  /** The resolved spec's limit; nullish ⇒ {@link DEFAULT_MAX_CONCURRENT_CLAIMS}. */
+  maxConcurrentClaims?: number | null;
+}): ClaimConcurrencyVerdict {
+  const maxConcurrentClaims = args.maxConcurrentClaims ?? DEFAULT_MAX_CONCURRENT_CLAIMS;
+  const heldIds = typeof args.activeClaims === 'number' ? [] : args.activeClaims.map((c) => c.id);
+  const activeClaims =
+    typeof args.activeClaims === 'number' ? args.activeClaims : args.activeClaims.length;
+  return {
+    blocked: activeClaims >= maxConcurrentClaims,
+    activeClaims,
+    maxConcurrentClaims,
+    heldIds,
+  };
+}
+
+/**
+ * Async companion to {@link evaluateClaimConcurrency}: read this bee's real held claims
+ * and return the shared verdict. Any surface that reports on, or gates, a claim MUST go
+ * through this rather than counting rows it happens to have in hand.
+ */
+export async function readClaimConcurrency(
+  args: { cupId: string; workspaceId?: string; maxConcurrentClaims?: number | null },
+  sqlOverride?: OrgSql,
+): Promise<ClaimConcurrencyVerdict> {
+  const activeClaims = await getActiveClaimsForBee(
+    { cupId: args.cupId, workspaceId: args.workspaceId },
+    sqlOverride,
+  );
+  return evaluateClaimConcurrency({
+    activeClaims,
+    maxConcurrentClaims: args.maxConcurrentClaims,
+  });
+}
+
+/**
+ * Batched {@link readClaimConcurrency} — ONE query for many bees, keyed by cupId.
+ *
+ * EI-19313376980892266: `fleet:leader-brief` must answer "is this member at capacity"
+ * from the same rows the scheduler reads (`taken_by`), not from the presence layer's
+ * `load`/`claims` — that mismatch is the whole bug. Doing it per-member would be one
+ * query per member on a hot leader path, so the READ is batched here while the DECISION
+ * stays in the shared pure {@link evaluateClaimConcurrency}.
+ *
+ * A cupId with no held rows is still present in the returned map, with a `blocked:false`
+ * verdict — so a caller can never mistake "absent from the map" for "not blocked".
+ */
+export async function readClaimConcurrencyBatch(
+  args: { cupIds: readonly string[]; workspaceId?: string; maxConcurrentClaims?: number | null },
+  sqlOverride?: OrgSql,
+): Promise<Map<string, ClaimConcurrencyVerdict>> {
+  const cupIds = [...new Set(args.cupIds.filter((id) => typeof id === 'string' && id.length > 0))];
+  const out = new Map<string, ClaimConcurrencyVerdict>();
+  if (cupIds.length === 0) return out;
+
+  const sql = sqlOverride ?? getOrgPg().sql;
+  const workspaces = [
+    ...new Set([args.workspaceId ?? DEFAULT_COORD_WORKSPACE, DEFAULT_COORD_WORKSPACE]),
+  ];
+  // Same predicate as getActiveClaimsForBee — a PARKED/held row retains taken_by and so
+  // counts here, which is exactly the row the presence layer's `load` can omit.
+  const rows = (await sql`
+    SELECT feature_id AS id, taken_by AS cup_id
+      FROM harness_shared.work_items
+     WHERE workspace_id = ANY(${workspaces}::text[])
+       AND taken_by = ANY(${cupIds}::text[])
+       AND status NOT IN ('passed', 'deprecated', 'resolved', 'closed')`) as Array<{
+    id: string;
+    cup_id: string;
+  }>;
+
+  const heldByCup = new Map<string, { id: string }[]>();
+  for (const row of rows) {
+    const list = heldByCup.get(row.cup_id) ?? [];
+    list.push({ id: row.id });
+    heldByCup.set(row.cup_id, list);
+  }
+  for (const cupId of cupIds) {
+    out.set(
+      cupId,
+      evaluateClaimConcurrency({
+        activeClaims: heldByCup.get(cupId) ?? [],
+        maxConcurrentClaims: args.maxConcurrentClaims,
+      }),
+    );
+  }
+  return out;
+}
+
+/**
  * WI-1564 (LIVE-1 D5 failure): resolve the workspace partition a claim-spec
  * write/read should use from the caller's identity. The bug class: a tool
  * handler that omits `workspaceId` falls back to DEFAULT_COORD_WORKSPACE
@@ -439,11 +572,16 @@ export async function getNextForBee(args: {
   // intentionally read from the resolved spec, not from prompt compliance:
   // parked claims remain assigned, and a fresh get_next must not hand the same
   // member another item unless its leader explicitly authored concurrency > 1.
-  const maxConcurrentClaims = record.spec.limits?.maxConcurrentClaims ?? 1;
-  const activeClaims = await countActiveClaimsForBee(
-    { cupId: args.cupId, workspaceId: args.workspaceId },
-  );
-  if (activeClaims >= maxConcurrentClaims) return null;
+  // EI-19313376980892266: this comparison used to live here AND (independently) in
+  // get_next.ts's miss diagnosis, and nowhere else — the two other surfaces that report
+  // on claims (fleet:leader-brief, work_items:claim) never applied it. All four now share
+  // evaluateClaimConcurrency so they cannot answer differently.
+  const concurrency = await readClaimConcurrency({
+    cupId: args.cupId,
+    workspaceId: args.workspaceId,
+    maxConcurrentClaims: record.spec.limits?.maxConcurrentClaims,
+  });
+  if (concurrency.blocked) return null;
 
   // WI-3667: the global floors (claimFloorsWhereSql) enforce EXPLICIT `blocks` dep
   // edges + the coarse plan-WIDE reserved-lane floor, but nothing checks a linked
