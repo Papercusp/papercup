@@ -25,6 +25,8 @@
  * into two instances. A `Symbol.for` registry key is immune to that.
  */
 
+import { pinModuleState } from '@papercusp/module-singleton';
+
 /** A loaded TTS model: callable with the model inputs, resolves the waveform. */
 export type KokoroModelHandle = (inputs: {
   input_ids: unknown;
@@ -52,8 +54,26 @@ export interface KokoroTransformersHost {
   Tensor: new (dtype: 'float32', data: unknown, dims: number[]) => unknown;
 }
 
-const HOST_KEY = Symbol.for('@papercusp/kokoro-tts:host');
-type HostGlobal = typeof globalThis & { [HOST_KEY]?: KokoroTransformersHost | null };
+/**
+ * The pin key — also the id this module reports under in
+ * `listModuleDuplications()`, so a split here is visible in the REALM-WIDE
+ * report rather than only through this module's own accessor. Unchanged from
+ * the `Symbol.for(...)` description this seam used before it was migrated
+ * (EI-19469900474673886).
+ */
+const STATE_KEY = '@papercusp/kokoro-tts:host';
+
+interface KokoroState {
+  host: KokoroTransformersHost | null | undefined;
+}
+
+/**
+ * Pinned + counted by `@papercusp/module-singleton` rather than hand-rolled.
+ * A hand-rolled `globalThis[Symbol.for(...)]` slot fixes correctness but is
+ * invisible to `listModuleDuplications()`, so the central report answers a
+ * clean `[]` while this module is split. Must stay at module scope.
+ */
+const state = pinModuleState<KokoroState>(STATE_KEY, () => ({ host: undefined }));
 
 /**
  * Wire the host's transformers primitives. Call once before first use (the
@@ -63,12 +83,12 @@ type HostGlobal = typeof globalThis & { [HOST_KEY]?: KokoroTransformersHost | nu
  * path). Idempotent — last call wins.
  */
 export function configureKokoroTts(host: KokoroTransformersHost): void {
-  (globalThis as HostGlobal)[HOST_KEY] = host;
+  state.host = host;
 }
 
 /** Internal accessor — throws if the host hasn't been configured yet. */
 export function kokoroTransformersHost(): KokoroTransformersHost {
-  const host = (globalThis as HostGlobal)[HOST_KEY];
+  const host = state.host;
   if (!host) {
     throw new Error(
       '@papercusp/kokoro-tts is not configured — call configureKokoroTts({ StyleTextToSpeech2Model, AutoTokenizer, Tensor }) before using KokoroTts (the operator does this in lib/voice-node/kokoro-local.ts).',
@@ -79,10 +99,10 @@ export function kokoroTransformersHost(): KokoroTransformersHost {
 
 /** Test/diagnostic helper: is a host wired? */
 export function isKokoroTtsConfigured(): boolean {
-  return (globalThis as HostGlobal)[HOST_KEY] != null;
+  return state.host != null;
 }
 
 /** Test hook: clear the wired host. */
 export function __resetKokoroTtsHostForTests(): void {
-  (globalThis as HostGlobal)[HOST_KEY] = null;
+  state.host = null;
 }

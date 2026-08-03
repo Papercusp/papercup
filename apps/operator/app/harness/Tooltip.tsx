@@ -2,6 +2,7 @@
 
 import * as RT from '@radix-ui/react-tooltip';
 import type { ReactNode } from 'react';
+import { POPPER_WRAPPER_FLOOR_Z } from './popper-z';
 
 const CONTENT_STYLE: React.CSSProperties = {
   maxWidth: 320,
@@ -17,7 +18,7 @@ const CONTENT_STYLE: React.CSSProperties = {
      copies this onto the popper wrapper as an inline style, so it — not the
      harness.css floor — decides whether this is visible. See P-006 / the
      popper-stacking lint. */
-  zIndex: 1500,
+  zIndex: POPPER_WRAPPER_FLOOR_Z,
 };
 
 export function Tooltip({ label, children, side = 'top', align = 'center' }: {

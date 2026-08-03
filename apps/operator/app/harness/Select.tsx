@@ -3,6 +3,7 @@
 import * as RS from '@radix-ui/react-select';
 import { Check, ChevronDown } from 'lucide-react';
 import type { CSSProperties, ReactNode } from 'react';
+import { POPPER_WRAPPER_FLOOR_Z } from './popper-z';
 
 
 export interface SelectOption {
@@ -74,7 +75,7 @@ const CONTENT_STYLE: CSSProperties = {
      completely unclickable. The harness.css wrapper rule is the FLOOR for
      poppers that set no content z-index at all; this is the one that governs
      Select. Guarded by `_lints/popper-stacking.test.ts`. */
-  zIndex: 1500,
+  zIndex: POPPER_WRAPPER_FLOOR_Z,
   boxShadow: '0 18px 54px rgba(0,0,0,0.62), inset 0 1px 0 rgba(255,255,255,0.06)',
   fontSize: 12,
   minWidth: 'var(--radix-select-trigger-width)',

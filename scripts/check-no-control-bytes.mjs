@@ -85,7 +85,12 @@ function extensionOf(file) {
   return file.slice(dot);
 }
 
-function isScannedPath(file) {
+// Exported so the edit-time PreToolUse guard (pretooluse-control-bytes-content-guard.mjs,
+// EI-19478121013052934) scopes itself to EXACTLY the set this gate scans, rather than
+// re-deriving it. A re-derived copy drifts, and both drift directions cost: too wide and
+// the guard blocks an edit the gate would have accepted; too narrow and it waves through
+// the very byte that red-pins the fleet gate an hour later.
+export function isScannedPath(file) {
   return SOURCE_EXTENSIONS.has(extensionOf(file)) && !ALLOW_PREFIXES.some((prefix) => file.startsWith(prefix));
 }
 

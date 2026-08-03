@@ -60,6 +60,7 @@ import { Command as CmdK } from 'cmdk';
 import { Check, ChevronDown, Search } from 'lucide-react';
 import { useCallback, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Popover } from './Popover';
+import { POPPER_WRAPPER_FLOOR_Z } from './popper-z';
 
 export interface ComboboxOption {
   value: string;
@@ -324,12 +325,13 @@ export function Combobox({
  * reported as "None of the option selector dropdowns are working in the bottom
  * panel", and one that jsdom cannot catch because it does not paint.
  *
- * Tracked for the underlying primitive as EI-19470132622399873 (Popover's own
- * default should be the floor, and `_lints/popper-stacking.test.ts`'s
- * `/zIndex:\s*(\d+)/` cannot see a `?? 90` default). Until that lands, a menu
- * primitive that can be dropped into the dock must carry the floor itself.
+ * FIXED AT THE PRIMITIVE (EI-19470132622399873, 2026-08-03): `harness/Popover`
+ * now CLAMPS its Content z-index up to the floor rather than defaulting to 90,
+ * so this default is no longer load-bearing for correctness — a Combobox that
+ * passed nothing, or passed a low value, would be clamped anyway. It is kept
+ * because it documents the intent at the point of use, and re-exported from the
+ * one shared definition so the value cannot drift.
  */
-const POPPER_WRAPPER_FLOOR_Z = 1500;
 
 export interface ComboboxMenuProps {
   /** Selected option value, or null when nothing is chosen. */

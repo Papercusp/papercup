@@ -3,6 +3,7 @@
 import * as RP from '@radix-ui/react-popover';
 import * as RT from '@radix-ui/react-tooltip';
 import type { CSSProperties, ReactNode, RefObject } from 'react';
+import { POPPER_WRAPPER_FLOOR_Z, clampPopperZ } from './popper-z';
 
 /**
  * Popover — the canonical replacement for hand-rolled "anchored dropdown"
@@ -101,7 +102,11 @@ export function Popover({
   zIndex?: number;
 }) {
   const baseStyle: CSSProperties = {
-    zIndex: zIndex ?? 90,
+    /* CLAMPED, not defaulted. Radix copies this onto
+       `[data-radix-popper-content-wrapper]` as an inline style, which overrides
+       the harness.css floor — so a value below the floor is not "lower
+       ordering", it is burial behind the app shell. See harness/popper-z.ts. */
+    zIndex: clampPopperZ(zIndex),
     ...contentStyle,
   };
   /** True when the event came from inside the caller's keep-open element. */
@@ -172,7 +177,7 @@ export function Popover({
                 boxShadow: '0 4px 16px rgba(0,0,0,0.4)',
                 /* Clears the shell — Radix copies this to the popper wrapper
                    inline, overriding the harness.css floor (P-006). */
-                zIndex: 1500,
+                zIndex: POPPER_WRAPPER_FLOOR_Z,
               }}
             >
               {tooltipLabel}

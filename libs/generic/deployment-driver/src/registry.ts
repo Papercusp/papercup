@@ -9,28 +9,48 @@
  * bootstrap — the same host-seam pattern as `@papercusp/locks`'s `configureLocks`
  * and `@papercusp/host-platform`'s `registerHostPlatform`.
  *
- * Uses a `Symbol.for(...)`-keyed global so a single registry survives ESM/tsx
- * module-forking (the same reason `@papercusp/memory` does — a module-local `Map`
- * would split into per-fork copies and a driver registered in one fork would be
- * invisible in another).
+ * Pins the registry to the realm via `@papercusp/module-singleton` so a single
+ * registry survives ESM/tsx module-forking (the same reason `@papercusp/memory`
+ * does — a module-local `Map` would split into per-fork copies and a driver
+ * registered in one fork would be invisible in another).
  */
+import { pinModuleState } from '@papercusp/module-singleton';
 import type { DeploymentConfig, DeploymentDriver, DeploymentTarget } from './types';
 import { LocalDriver } from './local-driver';
 
-const REGISTRY_KEY = Symbol.for('@papercusp/deployment-driver:registry');
+/**
+ * The pin key — also the id this module reports under in
+ * `listModuleDuplications()`, so a split here is visible in the REALM-WIDE
+ * report rather than only through this module's own accessors. The string is
+ * unchanged from the `Symbol.for(...)` description used before the migration
+ * (EI-19469900474673886).
+ */
+const STATE_KEY = '@papercusp/deployment-driver:registry';
 
 type Registry = Map<DeploymentTarget, DeploymentDriver>;
-type RegistryGlobal = typeof globalThis & { [REGISTRY_KEY]?: Registry };
+
+interface RegistryState {
+  registry: Registry;
+}
+
+/**
+ * Pinned + counted rather than hand-rolled on `globalThis[Symbol.for(...)]`: a
+ * hand-rolled slot fixes correctness but is invisible to
+ * `listModuleDuplications()`, so the central report answers a clean `[]` while
+ * this module is split. Must stay at module scope — `evaluations` is only a
+ * module-RECORD count if this runs exactly once per evaluation of this body.
+ *
+ * Seeding is eager now rather than on first `registry()` call. `LocalDriver` is
+ * a static import, so it is already initialised at this point; the observable
+ * behaviour is unchanged (`local` was always present on the first read).
+ */
+const state = pinModuleState<RegistryState>(STATE_KEY, () => ({
+  // the built-in default — always present
+  registry: new Map<DeploymentTarget, DeploymentDriver>([['local', LocalDriver]]),
+}));
 
 function registry(): Registry {
-  const g = globalThis as RegistryGlobal;
-  let reg = g[REGISTRY_KEY];
-  if (!reg) {
-    reg = new Map<DeploymentTarget, DeploymentDriver>();
-    reg.set('local', LocalDriver); // the built-in default — always present
-    g[REGISTRY_KEY] = reg;
-  }
-  return reg;
+  return state.registry;
 }
 
 /**

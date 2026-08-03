@@ -56,7 +56,39 @@ interface Args {
   arms: boolean;
   oracle: boolean;
   oracleMaxTerms: number;
+  ceiling: boolean;
 }
+
+/** Drop reasons that are purely a consequence of ORDER: the hit survived every
+ *  filter and lost only because six better-ranked refs got there first. A
+ *  reordering or slot-reservation policy could have admitted it. */
+const ORDER_DROPS: ReadonlySet<CorpusDropReason> = new Set(['cap-exhausted', 'budget-exhausted']);
+
+/** Drop reasons that EXCLUDED the hit before ordering ever happened. No
+ *  reordering and no reserved slot can rescue these — they are a different fix
+ *  in a different layer, and counting them as "selection could fix this" is the
+ *  error this whole measurement exists to prevent. */
+const FILTER_DROPS: ReadonlySet<CorpusDropReason> = new Set([
+  'self-session',
+  'out-of-scope',
+  'no-term-overlap',
+  'not-novel',
+]);
+
+type CeilingVerdict =
+  /** Already in the injected block — selection needs no help here. */
+  | 'admitted'
+  /** Survived to ordering, lost on rank/cap. THE RESCUABLE CLASS. */
+  | 'order-blocked'
+  /** Filtered out before ordering. Selection policy cannot reach it. */
+  | 'filter-blocked'
+  /** Retrieval never returned it. Nothing downstream of retrieval can help. */
+  | 'not-retrieved'
+  /** Recorded only as a collapsed duplicate but never admitted — should be
+   *  impossible; reported rather than silently bucketed. */
+  | 'anomaly'
+  /** The arm did not hold, or the leg did not run to completion. NOT a result. */
+  | 'void';
 
 /**
  * THE ORACLE — which 2-TERM PAIRS retrieve an answer-bearing record at all, and

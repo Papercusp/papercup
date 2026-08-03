@@ -94,7 +94,10 @@ afterAll(async () => {
           `SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '${dbName}' AND pid <> pg_backend_pid()`,
         )
         .catch(() => {});
-      await admin.unsafe(`DROP DATABASE IF EXISTS "${dbName}"`).catch(() => {});
+      // WI-4311: WITH (FORCE) — pg_terminate_backend above only SIGNALS; a plain
+      // DROP can still block on a not-yet-closed backend (parked 6s-267s+ under
+      // fleet load). FORCE terminates remaining connections in the same statement.
+      await admin.unsafe(`DROP DATABASE IF EXISTS "${dbName}" WITH (FORCE)`).catch(() => {});
     } finally {
       await admin.end({ timeout: 5 });
     }
@@ -261,7 +264,8 @@ describe('release preflight: cold-seed migration boot-smoke (P-001)', () => {
             `SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '${seededDb}' AND pid <> pg_backend_pid()`,
           )
           .catch(() => {});
-        await cleanup.unsafe(`DROP DATABASE IF EXISTS "${seededDb}"`).catch(() => {});
+        // WI-4311: WITH (FORCE) — see the note on the dbName teardown above.
+        await cleanup.unsafe(`DROP DATABASE IF EXISTS "${seededDb}" WITH (FORCE)`).catch(() => {});
       } finally {
         await cleanup.end({ timeout: 5 });
       }
@@ -391,7 +395,8 @@ describe('release preflight: cold-seed migration boot-smoke (P-001)', () => {
             `SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '${depDb}' AND pid <> pg_backend_pid()`,
           )
           .catch(() => {});
-        await cleanup.unsafe(`DROP DATABASE IF EXISTS "${depDb}"`).catch(() => {});
+        // WI-4311: WITH (FORCE) — see the note on the dbName teardown above.
+        await cleanup.unsafe(`DROP DATABASE IF EXISTS "${depDb}" WITH (FORCE)`).catch(() => {});
       } finally {
         await cleanup.end({ timeout: 5 });
       }

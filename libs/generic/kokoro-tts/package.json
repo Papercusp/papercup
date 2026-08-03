@@ -13,6 +13,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@papercusp/module-singleton": "*",
     "phonemizer": "^1.2.1"
   },
   "devDependencies": {
