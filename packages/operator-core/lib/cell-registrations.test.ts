@@ -99,6 +99,11 @@ describe('P-007: the four verdict cells', () => {
       'agent.goal',
       'deploy.3070.sha',
       'gate.greenCheckpoint.candidate',
+      // D-014. Its own cell, and deliberately NOT part of the pipeline family
+      // below: it resolves via readGateOwnership(), not gitPipelinePosition(),
+      // because it derives WHO owns the red from lease + presence state rather
+      // than from the tree. Registered here; excluded from NEW_CELLS on purpose.
+      'gate.greenCheckpoint.ownership',
       'gate.greenCheckpoint.verdict',
       'git.mainBehindStaging',
       'git.pipelinePosition',
