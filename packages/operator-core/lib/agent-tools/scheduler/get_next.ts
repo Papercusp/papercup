@@ -909,10 +909,10 @@ export default defineTool({
                         // say plainly that the rest are NOT shown — a claimer who
                         // is about to violate a ruling it was never handed is the
                         // exact failure this brief exists to prevent.
-                        planDecisionsNote:
-                          planDecisions.totalDecisions > planDecisions.decisions.length
-                            ? `Showing the ${planDecisions.decisions.length} MOST RECENT of ${planDecisions.totalDecisions} governing decision(s) on plan '${planDecisions.planSlug}' — ${planDecisions.totalDecisions - planDecisions.decisions.length} older one(s) are NOT shown. Read before acting, and read the rest before concluding no ruling governs your item: plans:get { slug:'${planDecisions.planSlug}', heading:'Decisions' }.`
-                            : `${planDecisions.totalDecisions} governing decision(s) recorded on plan '${planDecisions.planSlug}' — read before acting; a ruling other lanes must follow lives here, not only in coord (plans:get { slug:'${planDecisions.planSlug}', heading:'Decisions' } for full bodies).`,
+                        // EI-19387745408924340: rendered via the shared helper so
+                        // this wording cannot drift from work_items:claim /
+                        // claim_next's copies of the same note.
+                        planDecisionsNote: renderPlanDecisionsNoteHelper(planDecisions),
                       }
                     : {}),
                   ...(premises

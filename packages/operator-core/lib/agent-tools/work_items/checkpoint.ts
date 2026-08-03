@@ -265,9 +265,8 @@ export default defineTool({
     "re-injected on the next invocation of that item (yours or a successor's). Replace-on-write; `append:true` joins instead. " +
     'Returns { ok, results:[{ ok, id, harness, cleared, length, contentHash, verified, storedHead, by | error }], counts }. ' +
     'Writes are verify-read (checkpoint_verify_failed on a miss); a plain replace shrinking a substantial checkpoint ' +
-    '>50% is BLOCKED (`shrink_blocked` — pass `append:true`/`confirmShrink:true`); an `append:true` whose pre-read ' +
-    'disagrees with the real stored checkpoint is BLOCKED too (`append_base_unreadable`, same escape hatch), so ' +
-    'append can never silently degrade into a clobbering replace. Refuses a peer-held item (`not_holder`).',
+    '>50%, or an append with a disagreeing pre-read, is BLOCKED (`shrink_blocked` / `append_base_unreadable` — ' +
+    'pass `confirmShrink:true` to bypass). Refuses a peer-held item (`not_holder`).',
   guidance: {
     when:
       'At a task boundary or on graceful eviction, before you finish/yield: persist what a successor (or your ' +
@@ -275,11 +274,10 @@ export default defineTool({
       'Declare `dependsOn` for a real freshness verdict.',
     notWhen:
       'Mid-task scratch the live transcript already holds; never dump file contents or tool output. Not an edit ' +
-      'channel: use work_items:update for the body, work_items:comment for a note (both exist even if a trimmed ' +
-      "surface hides them). Not for a peer's item — claim it, or comment instead.",
+      'channel: use work_items:update for the body, work_items:comment for a note. Not for a peer\'s item — claim it, or comment instead.',
     chaining:
       'Call before work_items:complete / on yield; blank clears a stale note. Doubles as a liveness pulse — a ' +
-      'claim held through long local-only tool use can go presence-stale and be reclaimed (no separate heartbeat verb).',
+      'claim held through long local-only tool use can go presence-stale and be reclaimed.',
   },
   capability: 'work_items:write',
   requirePrincipal: false,

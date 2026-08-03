@@ -444,6 +444,56 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
     expect(keys).toContain('long-lived');
   });
 
+  it('WI-7292: an assert never evicts the row it just wrote, so a short-TTL fact can still enter a SATURATED scope', async () => {
+    const scopeRef = 'su-self-eviction';
+    const base = { scope: 'owner' as const, scopeRef, createdBy: 'su-int', workspaceId: WS };
+
+    // Reproduce the live shape of harness:papercusp when this was measured:
+    // saturated at exactly the cap, every incumbent verified and long-lived
+    // (soonest survivor 7 days out, ZERO live facts under a 3-day TTL).
+    for (let i = 0; i < FACTS_PER_SCOPE_CAP; i++) {
+      await assertFact(
+        { ...base, key: `incumbent-${i}`, body: `n ${i}`, confidence: 'verified', ttlSec: 30 * 86400 },
+        db.sql,
+      );
+    }
+
+    // The urgent, deliberately SHORT-lived fact — the class a fleet acts on within
+    // the hour ("this alarm is false right now"). `expires_at DESC` is the #2 sort
+    // key, so it ranks dead last and the pre-fix sweep retracted it as part of the
+    // very statement that inserted it: written .710Z, evicted .714Z.
+    await assertFact(
+      { ...base, key: 'urgent', body: 'this alarm is false right now', confidence: 'verified', ttlSec: 3600 },
+      db.sql,
+    );
+
+    const live = await foldFacts(
+      [{ scope: 'owner', scopeRef }],
+      { workspaceId: WS, audiences: 'all', limitPerSelector: 500 },
+      db.sql,
+    );
+    const keys = live.map((f) => f.key);
+
+    // Non-vacuity FIRST: the cap must actually have BITTEN. Without this, "urgent
+    // survived" proves nothing — it would survive just as happily in a scope where
+    // eviction never ran at all (the trap the sibling guards above call out).
+    expect(keys.length).toBe(FACTS_PER_SCOPE_CAP);
+    expect(keys.filter((k) => k.startsWith('incumbent-')).length).toBe(FACTS_PER_SCOPE_CAP - 1);
+
+    // The write survives its own assert — the whole point.
+    expect(keys).toContain('urgent');
+
+    // And state it at the row level too, because THAT is the shape of the bug: a
+    // caller got ok:true with a future expiresAt while the row was already dead.
+    const [row] = await db.sql<{ retracted_at: string | null; evicted_at: string | null }[]>`
+      SELECT retracted_at::text, evicted_at::text
+        FROM harness_shared.agent_facts
+       WHERE workspace_id = ${WS} AND scope = 'owner'
+         AND scope_ref = ${scopeRef} AND key = 'urgent' AND superseded_at IS NULL`;
+    expect(row.retracted_at).toBeNull();
+    expect(row.evicted_at).toBeNull();
+  });
+
   it('WI-6935 (b): a cap eviction is distinguishable from a deliberate retract via evicted_at', async () => {
     const scopeRef = 'su-evicted-at';
     const base = { scope: 'owner' as const, scopeRef, createdBy: 'su-int', workspaceId: WS };

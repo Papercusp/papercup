@@ -19,16 +19,32 @@
  * The lint:
  *   1. Builds a per-theme token table (`_brand-primitives.css` palette +
  *      `_semantic.css` :root, overlaid with each `_semantic.<theme>.css`)
- *   2. Resolves `var()` chains down to a hex literal
+ *   2. Resolves `var()` chains — INCLUDING a token whose value is an opaque,
+ *      two-operand `color-mix(in oklab|srgb, A [p%], B [p%])` — down to a hex
+ *      literal
  *   3. Globs CSS under app/ and operator-vite/src/ for rules that set BOTH
  *      `color` and `background`/`background-color` to a `var(--token)`
  *   4. Asserts every such pair clears WCAG AA in EVERY theme
  *
  * Only directly-paired declarations are checked (both in the same rule), which
  * is the exact shape of the bug and keeps false positives at zero — a rule that
- * inherits its background from a parent is out of scope. Pairs whose tokens
- * resolve to `color-mix()`/`rgba()`/gradients are skipped (not statically
- * resolvable to one hex).
+ * inherits its background from a parent is out of scope.
+ *
+ * EI-19386265666375541: this lint used to skip EVERY pair whose token resolved
+ * to a `color-mix()` unconditionally — including the fully-deterministic,
+ * opaque-to-opaque case (`color-mix(in oklab, var(--accent-strong) 58%,
+ * var(--bg-popover))`, both operands solid colors, the result a single
+ * knowable hex). That is exactly the shape local "plate" tokens use throughout
+ * this codebase (a strong accent mixed toward the surface it sits on), so the
+ * carve-out silently blinded the lint to the one category of token this app
+ * actually uses for tinted fills, and a real sub-AA pair (the session popup's
+ * zone caps, 4.05:1 against a 4.5:1 floor) shipped uncaught. The resolver below
+ * computes that class for real. A `color-mix()` operand that is `transparent`,
+ * `currentColor`, or carries alpha (`rgba()`/`hsla()`) is still correctly left
+ * unresolved — its true rendered color depends on what is painted underneath,
+ * which this per-rule static check cannot see — but such a skip is no longer
+ * SILENT: `skipped pairs` below snapshots every one, so a new skip is a
+ * reviewed diff instead of a gap nobody notices.
  *
  * Fix a failure by pairing correctly, not by widening the carve-out:
  *   - text ON an accent fill (`--accent`, `--accent-soft`, `--accent-strong`)
@@ -104,12 +120,124 @@ function tableFor(theme: string): Map<string, string> {
 const HEX = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i;
 const VAR_REF = /^var\(\s*(--[a-z0-9-]+)\s*(?:,[\s\S]*)?\)$/i;
 
-/** Resolve a token to a `#rrggbb`, following var() chains. null if not a plain color. */
-function resolveToken(token: string, table: Map<string, string>, depth = 0): string | null {
-  if (depth > 12) return null;
-  const raw = table.get(token.toLowerCase());
-  if (!raw) return null;
+/* ── general color-expression resolution (values, not just var() chains) ──
+ * Handles hex literals, a small set of named colors, `var(--x[, fallback])`,
+ * and an opaque two-operand `color-mix(in oklab|srgb, A [p%]?, B [p%]?)`. */
+
+const NAMED_COLORS: Readonly<Record<string, string>> = {
+  white: '#ffffff',
+  black: '#000000',
+  red: '#ff0000',
+};
+/** Keywords whose real color depends on paint context this static per-rule
+ * check cannot see — correctly left unresolved, not a resolver gap. */
+const DYNAMIC_KEYWORDS = new Set(['transparent', 'currentcolor']);
+
+/** Split a comma-separated argument list, respecting nested parens. */
+function splitTopLevel(s: string): string[] {
+  const parts: string[] = [];
+  let depth = 0;
+  let cur = '';
+  for (const ch of s) {
+    if (ch === '(') depth++;
+    else if (ch === ')') depth--;
+    if (ch === ',' && depth === 0) {
+      parts.push(cur.trim());
+      cur = '';
+    } else cur += ch;
+  }
+  if (cur.trim()) parts.push(cur.trim());
+  return parts;
+}
+
+/** Split only on the FIRST top-level comma — `var()`'s `<name>, <fallback>`
+ * shape, where the fallback itself may legally contain further commas. */
+function splitFirstTopLevel(s: string): [string, string | undefined] {
+  let depth = 0;
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (ch === '(') depth++;
+    else if (ch === ')') depth--;
+    else if (ch === ',' && depth === 0) return [s.slice(0, i).trim(), s.slice(i + 1).trim()];
+  }
+  return [s.trim(), undefined];
+}
+
+function parseFnCall(raw: string): { name: string; args: string } | null {
+  const m = /^([a-z-]+)\(([\s\S]*)\)$/i.exec(raw.trim());
+  return m ? { name: m[1].toLowerCase(), args: m[2] } : null;
+}
+
+/* oklab / srgb color-mix math (ported from the investigation behind
+ * EI-19386265666375541, self-tested there against known WCAG pairs:
+ * white/black = 21.00, #767676/#fff = 4.54). */
+const srgbToLin = (c: number): number => (c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4);
+const linToSrgb = (c: number): number => (c <= 0.0031308 ? c * 12.92 : 1.055 * c ** (1 / 2.4) - 0.055);
+
+function hexToRgb(hex: string): [number, number, number] {
+  const h = hex.slice(1);
+  const out = [0, 2, 4].map((i) => parseInt(h.slice(i, i + 2), 16) / 255);
+  return [out[0], out[1], out[2]];
+}
+function rgbToHex(rgb: number[]): string {
+  return `#${rgb.map((c) => Math.round(Math.max(0, Math.min(1, c)) * 255).toString(16).padStart(2, '0')).join('')}`;
+}
+function toOklab([r, g, b]: readonly number[]): [number, number, number] {
+  const R = srgbToLin(r),
+    G = srgbToLin(g),
+    B = srgbToLin(b);
+  const l = Math.cbrt(0.4122214708 * R + 0.5363325363 * G + 0.0514459929 * B);
+  const m = Math.cbrt(0.2119034982 * R + 0.6806995451 * G + 0.1073969566 * B);
+  const s = Math.cbrt(0.0883024619 * R + 0.2817188376 * G + 0.6299787005 * B);
+  return [
+    0.2104542553 * l + 0.793617785 * m - 0.0040720468 * s,
+    1.9779984951 * l - 2.428592205 * m + 0.4505937099 * s,
+    0.0259040371 * l + 0.7827717662 * m - 0.808675766 * s,
+  ];
+}
+function fromOklab([L, a, b]: readonly number[]): [number, number, number] {
+  const l = (L + 0.3963377774 * a + 0.2158037573 * b) ** 3;
+  const m = (L - 0.1055613458 * a - 0.0638541728 * b) ** 3;
+  const s = (L - 0.0894841775 * a - 1.291485548 * b) ** 3;
+  return [
+    linToSrgb(4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s),
+    linToSrgb(-1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s),
+    linToSrgb(-0.0041960863 * l - 0.7034186147 * m + 1.707614701 * s),
+  ];
+}
+function mixOklab(hexA: string, hexB: string, pctA: number): string {
+  const A = toOklab(hexToRgb(hexA));
+  const B = toOklab(hexToRgb(hexB));
+  const p = pctA / 100;
+  return rgbToHex([0, 1, 2].map((i) => A[i] * p + B[i] * (1 - p)));
+}
+function mixSrgb(hexA: string, hexB: string, pctA: number): string {
+  const A = hexToRgb(hexA);
+  const B = hexToRgb(hexB);
+  const p = pctA / 100;
+  return rgbToHex([0, 1, 2].map((i) => A[i] * p + B[i] * (1 - p)));
+}
+
+type SkipReason = 'unknown-token' | 'dynamic-or-alpha' | 'unsupported-function' | 'depth-exceeded';
+interface Resolved {
+  hex: string;
+  unresolved?: undefined;
+}
+interface Unresolved {
+  hex: null;
+  unresolved: { reason: SkipReason; detail: string };
+}
+
+/** Resolve ONE color expression — a hex literal, a named color, `var()`, or an
+ * opaque two-operand `color-mix()` — to a `#rrggbb`. Never both resolved and
+ * unresolved; see the file header for why a `color-mix()` touching
+ * transparent/currentColor/alpha is correctly left unresolved rather than a
+ * resolver gap. */
+function resolveColorExpr(raw: string, table: Map<string, string>, depth = 0): Resolved | Unresolved {
+  const fail = (reason: SkipReason, detail: string): Unresolved => ({ hex: null, unresolved: { reason, detail } });
+  if (depth > 12) return fail('depth-exceeded', raw);
   const v = raw.trim();
+
   if (HEX.test(v)) {
     let h = v.slice(1);
     if (h.length === 3)
@@ -117,10 +245,67 @@ function resolveToken(token: string, table: Map<string, string>, depth = 0): str
         .split('')
         .map((c) => c + c)
         .join('');
-    return `#${h.toLowerCase()}`;
+    return { hex: `#${h.toLowerCase()}` };
   }
-  const ref = VAR_REF.exec(v);
-  return ref ? resolveToken(ref[1], table, depth + 1) : null;
+  const lower = v.toLowerCase();
+  if (DYNAMIC_KEYWORDS.has(lower)) return fail('dynamic-or-alpha', v);
+  if (NAMED_COLORS[lower]) return { hex: NAMED_COLORS[lower] };
+
+  const call = parseFnCall(v);
+  if (!call) return fail('unknown-token', v);
+
+  if (call.name === 'var') {
+    const [token, fallback] = splitFirstTopLevel(call.args);
+    const rawToken = table.get(token.toLowerCase());
+    if (rawToken !== undefined) return resolveColorExpr(rawToken, table, depth + 1);
+    if (fallback !== undefined) return resolveColorExpr(fallback, table, depth + 1);
+    return fail('unknown-token', token);
+  }
+
+  if (call.name === 'color-mix') {
+    const inMatch = /^in\s+([a-z0-9-]+)(?:\s+\w+\s+hue)?\s*,\s*([\s\S]+)$/i.exec(call.args.trim());
+    if (!inMatch) return fail('unsupported-function', v);
+    const space = inMatch[1].toLowerCase();
+    if (space !== 'oklab' && space !== 'srgb')
+      return fail('unsupported-function', `color-mix in ${space}`);
+    const parts = splitTopLevel(inMatch[2]);
+    if (parts.length !== 2) return fail('unsupported-function', v);
+
+    const parsed = parts.map((part) => {
+      const m = /^([\s\S]+?)\s+([\d.]+)%$/.exec(part);
+      return m
+        ? { expr: m[1].trim(), pct: parseFloat(m[2]) }
+        : { expr: part, pct: undefined as number | undefined };
+    });
+    // CSS color-mix percentage resolution: neither given -> 50/50; one given
+    // -> the other is `100% - it`.
+    let p0 = parsed[0].pct;
+    let p1 = parsed[1].pct;
+    if (p0 === undefined && p1 === undefined) {
+      p0 = 50;
+      p1 = 50;
+    } else if (p0 === undefined) p0 = 100 - (p1 as number);
+    else if (p1 === undefined) p1 = 100 - p0;
+
+    const a = resolveColorExpr(parsed[0].expr, table, depth + 1);
+    if (a.unresolved) return a;
+    const b = resolveColorExpr(parsed[1].expr, table, depth + 1);
+    if (b.unresolved) return b;
+
+    const total = p0 + p1;
+    const pctA = total > 0 ? (p0 / total) * 100 : 50; // normalize when p0+p1 != 100
+    const hex = space === 'oklab' ? mixOklab(a.hex, b.hex, pctA) : mixSrgb(a.hex, b.hex, pctA);
+    return { hex };
+  }
+
+  return fail('unsupported-function', v);
+}
+
+/** Resolve a token to a `#rrggbb`, following var()/color-mix() chains. */
+function resolveToken(token: string, table: Map<string, string>, depth = 0): Resolved | Unresolved {
+  const raw = table.get(token.toLowerCase());
+  if (raw === undefined) return { hex: null, unresolved: { reason: 'unknown-token', detail: token } };
+  return resolveColorExpr(raw, table, depth);
 }
 
 function relativeLuminance(hex: string): number {
@@ -154,6 +339,16 @@ interface Pair {
   colorToken: string;
   bgToken: string;
   min: number;
+}
+
+interface SkippedPair {
+  file: string;
+  selector: string;
+  colorToken: string;
+  bgToken: string;
+  /** One `<theme>:<color|background>:<reason>` entry per theme that could not
+   * be resolved (deduped) — enough to tell a reader WHY without re-deriving it. */
+  reasons: string[];
 }
 
 function cssFiles(): string[] {

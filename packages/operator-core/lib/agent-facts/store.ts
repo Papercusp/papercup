@@ -1056,6 +1056,32 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
   // across 4 agent-origin wakes, and leaving `updated_at DESC` in place is ALSO a
   // judgement, one that is actively destroying data. Revisit the key order if the
   // owner rules differently; the guard test pins the intent, not the SQL.
+  //
+  // WI-7292: the row THIS call just wrote is EXCLUDED from the victim ranking
+  // (`id <> writtenId`), and the incumbents are capped at CAP-1 because the new
+  // row already occupies one slot. Without the exclusion the sweep ranked the
+  // fresh row against the incumbents and, whenever it sorted past the cap,
+  // retracted the very row the same statement had just inserted — while
+  // `facts:assert` returned ok:true with a future `expiresAt`. Measured
+  // 2026-08-03T02:34:38Z: written .710Z, retracted+evicted .714Z. FOUR
+  // MILLISECONDS, and the author cannot tell.
+  //
+  // It was not an edge case. `expires_at DESC` is the #2 key, so on a SATURATED
+  // scope every new fact whose TTL is shorter than the 50th incumbent's is
+  // destroyed by its own assert, every time — harness:papercusp sat at exactly
+  // 50/50 with a soonest-survivor expiry 7 DAYS out and ZERO live facts under a
+  // 3-day TTL. That zero is survivorship, not taste: the scope had become
+  // structurally closed to short-lived facts. And a short TTL is how an author
+  // says "urgent, and it stops being true soon" ("this alarm is false right
+  // now") — so the cap preferentially destroyed the operational facts a fleet
+  // acts on within the hour, while 90-day architectural facts were immortal.
+  //
+  // The cap is unchanged: capping incumbents at CAP-1 keeps the live total at
+  // CAP exactly, so a scope-full assert now evicts the next-worst INCUMBENT
+  // instead of itself. A re-assert of an existing key supersedes its own prior
+  // version (excluded by `superseded_at IS NULL`), so it never evicts a
+  // neighbour to make room for itself.
+  const writtenId = rows[0].id;
   await sql`
     UPDATE harness_shared.agent_facts SET retracted_at = now(), evicted_at = now()
      WHERE source_hive IS NULL
@@ -1070,6 +1096,7 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
           AND retracted_at IS NULL AND expires_at > now()
           AND key NOT LIKE ${`${WALL_KEY_PREFIX}%`}
           AND key NOT LIKE ${`${DEAD_END_KEY_PREFIX}%`}
+          AND id <> ${writtenId}
         ORDER BY CASE confidence
                    WHEN 'verified'    THEN 0
                    WHEN 'provisional' THEN 1
@@ -1078,7 +1105,7 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
                  END ASC,
                  expires_at DESC,
                  updated_at DESC
-       OFFSET ${FACTS_PER_SCOPE_CAP})`;
+       OFFSET ${Math.max(0, FACTS_PER_SCOPE_CAP - 1)})`;
   return rowToFact(rows[0]);
 }
 

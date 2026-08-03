@@ -134,3 +134,18 @@ export async function getClaimTimePlanDecisions(opts: {
     return null;
   }
 }
+
+/**
+ * Render the claim-time `planDecisionsNote` shown alongside `decisions` —
+ * shared VERBATIM by every claim surface that wires this port
+ * (scheduler:get_next, work_items:claim, work_items:claim_next) so the
+ * wording cannot drift between them the way the wiring itself already had
+ * (EI-19387745408924340: this port's own docstring claimed all three call it,
+ * while only one did). Extracted from scheduler:get_next's inline copy —
+ * behavior-identical, not a rewording.
+ */
+export function renderPlanDecisionsNote(brief: ClaimTimePlanDecisionsBrief): string {
+  return brief.totalDecisions > brief.decisions.length
+    ? `Showing the ${brief.decisions.length} MOST RECENT of ${brief.totalDecisions} governing decision(s) on plan '${brief.planSlug}' — ${brief.totalDecisions - brief.decisions.length} older one(s) are NOT shown. Read before acting, and read the rest before concluding no ruling governs your item: plans:get { slug:'${brief.planSlug}', heading:'Decisions' }.`
+    : `${brief.totalDecisions} governing decision(s) recorded on plan '${brief.planSlug}' — read before acting; a ruling other lanes must follow lives here, not only in coord (plans:get { slug:'${brief.planSlug}', heading:'Decisions' } for full bodies).`;
+}
