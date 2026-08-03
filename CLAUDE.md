@@ -109,8 +109,10 @@ the migrated params: `apps/operator/docs/nuqs-audit-2026-05-11.md`.
 Reads via `useSyncQuery({ queryName, args })`; writes fire
 `notifySyncInvalidate(...)` (+ `useSyncMutate` for the hook). **Never** hand-roll
 `fetch + setInterval`, SWR, React-Query, or a raw `EventSource` for query data —
-the library is the one audited path (SSE-primary on desktop, WS in browser, REST
-fallback). Zero is **retired**; ignore `libs/zero-harness`.
+the library is the one audited path (**SSE in every runtime** — desktop *and*
+browser, no runtime branch; POLLING/REST only as the degraded fallback. The Zero
+WebSocket branch was retired in the 2026-05-07 cutover and nothing selects WS
+now). Zero is **retired**; ignore `libs/zero-harness`.
 
 Wiring: resolver entry in `packages/operator-core/lib/sync-resolver/index.ts`
 (read) + `notifySyncInvalidate` from `packages/operator-core/lib/sync-sse.ts`
@@ -163,9 +165,13 @@ RECURRING, this one everything RUNNING). Full model:
 
 ## Deployment model: desktop is the product; the standalone webapp is RETIRED
 
-Shipping target = the Tauri desktop app; **desktop SSE is the sync path that
-matters** (browser WS is a dev fallback — a feature that only works under WS is
-incomplete). Source of truth:
+Shipping target = the Tauri desktop app; **SSE is the sync path that matters** —
+`HarnessSyncProvider` passes a literal `syncType="SSE"` with **no** runtime
+branch, so a plain browser tab runs the SAME transport as production. WS is
+**retired** (nothing selects it); POLLING is the degraded fallback and is
+catastrophic here (~40 registered queries re-fetched per tick against a
+6-connection-per-host cap starves the pool), so a feature that only works under
+POLLING — or that assumes the retired Zero WS — is incomplete. Source of truth:
 `apps/operator/providers/HarnessSyncProvider.tsx`. Transport table +
 stale-docs-to-mistrust list:
 [repo-conventions § deployment model](/internal/docs/system/repo-conventions).
