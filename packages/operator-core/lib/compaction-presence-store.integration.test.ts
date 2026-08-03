@@ -83,3 +83,87 @@ describe('PgPresenceStore compaction columns (agent-managed-compaction)', () => 
     expect(rec?.contextTokens ?? null).toBeNull();
   });
 });
+
+/**
+ * EI-19418749207847685 — a carry-respawn reuses the ownerId but starts a NEW
+ * process, so the cached context estimate describes a session that no longer
+ * exists. The age-based staleness guard in deriveContextPressure CANNOT catch
+ * this: the estimate is genuinely recent, just not about this process, so the
+ * bucket is asserted with full confidence. Observed live — a session respawned
+ * at 4% context read `critical` for ~12 minutes, which is precisely the cue the
+ * playbook says to self-compact on, so the stale value drives a fresh context to
+ * discard itself and respawn into the same reading.
+ *
+ * The guard is the pid transition. These tests pin BOTH directions, because a
+ * fix that over-clears is its own bug: the estimate must survive every
+ * same-process re-declare (coord:orient re-declares intent on EVERY wake), or
+ * the watchdog's reading is wiped faster than it is written and the bucket
+ * degrades to a permanent `null`.
+ */
+describe('context estimate is invalidated on a pid change (carry-respawn)', () => {
+  it('write() with a NEW pid clears the dead session estimate but keeps the limit', async () => {
+    const s = store();
+    const o = owner();
+    await s.write(identity(o), { pid: 1001 });
+    await s.setCompactionLimit(o, 400_000);
+    await s.setContextEstimate(o, 380_000); // predecessor died at ~95%
+    expect((await s.get(o))?.contextTokens).toBe(380_000);
+
+    // The carry-respawn: same ownerId, new process.
+    await s.write(identity(o), { pid: 2002 });
+
+    const rec = await s.get(o);
+    expect(rec?.pid).toBe(2002);
+    expect(rec?.contextTokens ?? null).toBeNull();
+    expect(rec?.contextEstimatedAt ?? null).toBeNull();
+    // The LIMIT is configuration, not an observation of the dead process — it
+    // must survive, or every respawned session loses its compaction target.
+    expect(rec?.compactionLimit).toBe(400_000);
+  });
+
+  it('write() with the SAME pid preserves the estimate', async () => {
+    const s = store();
+    const o = owner();
+    await s.write(identity(o), { pid: 1001 });
+    await s.setContextEstimate(o, 144_000);
+    // coord:orient re-declares intent on every wake — same process, so this must
+    // not wipe the reading the watchdog just took.
+    await s.write(identity(o), { intent: 'next wake', pid: 1001 });
+    expect((await s.get(o))?.contextTokens).toBe(144_000);
+  });
+
+  it('write() with NO pid reported preserves the estimate', async () => {
+    const s = store();
+    const o = owner();
+    await s.write(identity(o), { pid: 1001 });
+    await s.setContextEstimate(o, 144_000);
+    // A caller that does not know its own pid must never invalidate a valid
+    // estimate — same preserve-on-omission rule touchHeartbeat uses for pid/host.
+    await s.write(identity(o), { intent: 'no pid this time' });
+    expect((await s.get(o))?.contextTokens).toBe(144_000);
+  });
+
+  it('touchHeartbeat with a NEW pid clears the dead session estimate', async () => {
+    const s = store();
+    const o = owner();
+    await s.write(identity(o), { pid: 1001 });
+    await s.setContextEstimate(o, 380_000);
+    await s.touchHeartbeat(o, { pid: 2002, host: 'box' });
+    const rec = await s.get(o);
+    expect(rec?.pid).toBe(2002);
+    expect(rec?.contextTokens ?? null).toBeNull();
+    expect(rec?.contextEstimatedAt ?? null).toBeNull();
+  });
+
+  it('touchHeartbeat with the SAME pid preserves the estimate', async () => {
+    const s = store();
+    const o = owner();
+    await s.write(identity(o), { pid: 1001 });
+    await s.setContextEstimate(o, 144_000);
+    // The 60s supervisor keepalive beats constantly with an unchanged pid.
+    await s.touchHeartbeat(o, { pid: 1001 });
+    expect((await s.get(o))?.contextTokens).toBe(144_000);
+    await s.touchHeartbeat(o, { pid: 1001, host: 'box' });
+    expect((await s.get(o))?.contextTokens).toBe(144_000);
+  });
+});

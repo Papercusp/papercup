@@ -89,7 +89,14 @@ export function resolveTerminalSliceAbs(
 export type ResidueDisposition =
   /** Holds a listening socket or a pid the caller knows is live — NOT residue. */
   | 'live-service-held'
-  /** Old enough, and nothing suggests a live tenant. The only reclaim candidate. */
+  /**
+   * Old enough, and nothing suggests a live tenant. The only reclaim candidate.
+   *
+   * A FLOOR on what is abandoned, never the whole of it: the probe protects
+   * anything holding a TCP port, so an abandoned daemon that still listens (a
+   * forgotten emulator, a stray `http.server`) lands in `live-service-held`
+   * instead. Under-reporting here is the intended error direction.
+   */
   | 'stale'
   /** Too young to judge, unprobeable, or no probe was supplied. Never counted as stale. */
   | 'indeterminate';

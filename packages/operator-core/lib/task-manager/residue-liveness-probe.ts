@@ -17,6 +17,22 @@
  * returned 200 and its node pid owned four LISTEN sockets. Nothing else about the
  * scope distinguished it from an orphan: not age (it was days old), not process
  * count, not command name. "Is someone able to connect to this?" did.
+ *
+ * ── WHAT THIS DELIBERATELY GETS WRONG, AND WHY ──────────────────────────────
+ *
+ * TCP only. `/proc/net/unix` is not consulted, and that is a choice rather than an
+ * omission: on this box essentially every process holds a unix socket (dbus alone
+ * accounts for hundreds), so including them would mark almost everything a
+ * "service" and collapse the signal to a constant. TCP LISTEN is rare enough to
+ * carry information.
+ *
+ * The cost is over-protection, and it is visible in real output. On the same scan,
+ * a 16.9-day-old **abandoned Android emulator** (its `netsimd` holds a port) and a
+ * stray 8.3-day-old `python3 http.server` both classify as `live-service-held`.
+ * Both are junk; neither will be reported as stale. That is the error direction we
+ * want — a missed reclaim candidate costs some memory, whereas pointing an operator
+ * at a running service costs an outage — but it means `deadStale` is a FLOOR on
+ * what is abandoned, never the whole of it, and a surface must not imply otherwise.
  */
 import { readFileSync, readdirSync, readlinkSync } from 'node:fs';
 

@@ -816,8 +816,8 @@
      makes the two bands one grid rather than two that merely happen to start
      in the same place (§⑧). The submit is its own track so it can never
      consume a field cell and push the strip onto a third line. */
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: var(--pc-ctl-gutter) minmax(0, 1fr) auto;
   align-items: center;
   gap: 6px 10px;
   padding: 7px 11px;

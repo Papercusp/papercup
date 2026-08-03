@@ -117,7 +117,10 @@ function withEmbedTimeout<T>(
   }) as Promise<T>;
 }
 
-type ResolvedMode = 'openai' | 'local' | 'gemma' | 'harrier' | 'disabled';
+// Exported for embed-coverage.ts (WI-7469): the coverage metric must ask the SAME
+// "is this row still stale?" question the sweep asks, which is mode-aware — so the
+// mode type has to cross the module boundary with it.
+export type ResolvedMode = 'openai' | 'local' | 'gemma' | 'harrier' | 'disabled';
 
 /**
  * P-005 — embed a WHOLE batch in one call. Returns one vector per input, in order.
@@ -295,11 +298,89 @@ export interface BackfillTarget {
    * whole backlog on EVERY batch.
    */
   orderBySql?: string;
+  /**
+   * WI-7469 (P-008) — the column recording when a row was WRITTEN, used only by the
+   * coverage detector's 24h-new-row signal.
+   *
+   * Deliberately NOT derived by parsing `orderBySql`. The two answer different
+   * questions and only usually coincide: `orderBySql` names whatever column gives the
+   * cheapest freshest-first index scan (for work_items that is `updated_ts`), while
+   * this must be a CREATION time or the signal silently changes meaning — a row created
+   * two weeks ago and touched today is not a new row, and counting it as one would let a
+   * regression on genuinely-new rows hide behind ordinary edit churn.
+   *
+   * OPTIONAL because two surfaces genuinely have no write-time column at all
+   * (harness_escalations, harness_decisions). Their recent-coverage reads NULL —
+   * absent, never zero, so a missing signal can never be mistaken for a breach.
+   */
+  recencyCol?: string;
+  /**
+   * How to compare `recencyCol` to now(). Both shapes are live in this schema and they
+   * are not interchangeable — VERIFIED by measuring max() on each column rather than by
+   * reading its declared type: `work_items.created_ts`, `operator_turns.created_at` and
+   * `harness_brainstorm.updated_at` are all bigint EPOCH-MILLISECONDS (not seconds —
+   * checked, because the wrong scale here yields a well-formed, plausible, wrong answer
+   * rather than an error), while the rest are timestamptz.
+   */
+  recencyColKind?: 'timestamptz' | 'epochMs';
 }
 
 /** The column (migration 530) recording which embedder produced a row's vector. */
 export function modeColOf(target: BackfillTarget): string {
   return `${target.embedCol}_mode`;
+}
+
+/**
+ * The rows this target can EVER embed — P-027's eligibility predicate.
+ *
+ * This is the exact filter `backfillTable`'s SELECT applies, factored out so the
+ * coverage detector can share it rather than restate it. Sharing is the whole point:
+ * `session_turns`' bodySql returns '' for turns under 80 chars, so 18.4% of that table
+ * is excluded BY DESIGN and can never be embedded. A coverage alarm whose denominator
+ * is the raw row count is therefore UNSATISFIABLE for that surface — it would sit red
+ * forever, get muted, and be useless by the time it had something to say. A restated
+ * copy of this predicate would drift the moment anyone edited a bodySql, which is the
+ * same failure arriving later and more confusingly.
+ */
+export function eligiblePredicateSql(target: BackfillTarget): string {
+  return `length(${target.bodySql}) > 0`;
+}
+
+/**
+ * The rows the sweep still OWES work on — see the long note in `backfillTable` for why
+ * this is about the vector's SPACE, not merely its presence (WI-3616).
+ *
+ * Factored out for the same reason as `eligiblePredicateSql`: coverage means "the sweep
+ * has nothing left to do here", which is `eligible AND NOT stale`. Measuring it as
+ * `embedCol IS NOT NULL` instead would OVER-REPORT after an embedder-space change —
+ * every row would look covered while every query ranked against a foreign space as
+ * noise, i.e. the detector would be blindest in precisely the incident it exists to catch.
+ *
+ * `modeExpr` is the SQL expression holding the ACTIVE embedder mode — a bind placeholder
+ * ('$2') on the sweep's parameterised path, or a quoted literal from `quoteModeLiteral`.
+ */
+export function stalePredicateSql(
+  target: BackfillTarget,
+  spaceAware: boolean,
+  modeExpr: string,
+): string {
+  return spaceAware
+    ? `(${target.embedCol} IS NULL OR ${modeColOf(target)} IS DISTINCT FROM ${modeExpr})`
+    : `${target.embedCol} IS NULL`;
+}
+
+/**
+ * A boolean fragment selecting rows WRITTEN within `hoursExpr` hours of now, or null
+ * when the target carries no write-time column.
+ *
+ * `hoursExpr` is a SQL expression (a bind placeholder on the caller's path) — the window
+ * is never string-interpolated from a number.
+ */
+export function recentPredicateSql(target: BackfillTarget, hoursExpr: string): string | null {
+  if (!target.recencyCol) return null;
+  return target.recencyColKind === 'epochMs'
+    ? `${target.recencyCol} >= (extract(epoch from now()) * 1000)::bigint - (${hoursExpr}::bigint * 3600000)`
+    : `${target.recencyCol} >= now() - make_interval(hours => ${hoursExpr}::int)`;
 }
 
 // Exported for embed-space-self-check.ts (WI-3644): the canonical set of
@@ -323,18 +404,24 @@ export const TARGETS: BackfillTarget[] = [
     embedCol: 'body_embedding',
     bodySql: `left(COALESCE(escalation, ''), 2000) || E'\\n' || left(COALESCE(supervisor_notes, ''), 2000)`,
     keyCols: ['harness_slug', 'phase'],
+    // No write-time column on this table at all — recent-coverage reads NULL (absent, not zero).
   },
   {
     table: 'harness_shared.harness_brainstorm',
     embedCol: 'content_embedding',
     bodySql: `left(content, 2000)`,
     keyCols: ['harness_slug', 'phase'],
+    // Only an update-time column exists here; it is the best available write proxy.
+    recencyCol: 'updated_at',
+    recencyColKind: 'epochMs',
   },
   {
     table: 'harness_shared.operator_turns',
     embedCol: 'text_embedding',
     bodySql: `left(text, 2000)`,
     keyCols: ['id'],
+    recencyCol: 'created_at',
+    recencyColKind: 'epochMs',
   },
   {
     table: 'harness_shared.harness_decisions',
@@ -343,6 +430,7 @@ export const TARGETS: BackfillTarget[] = [
     // observed max is small today, but nothing bounds it going forward).
     bodySql: `COALESCE(verb, '') || ' ' || left(COALESCE(args, ''), 2000)`,
     keyCols: ['harness_slug', 'line_hash'],
+    // No write-time column on this table at all — recent-coverage reads NULL (absent, not zero).
   },
   // session-search-scope-2026-07-05: the episodic transcript index. Embed
   // SELECTIVELY — only turns >= 80 chars (short acks are noise for semantic
@@ -361,6 +449,8 @@ export const TARGETS: BackfillTarget[] = [
     // `ingested_at` rather than `ts`: `ts` is indexed only as (owner, ts), which a
     // global ordering cannot use.
     orderBySql: 'ingested_at DESC',
+    recencyCol: 'ingested_at',
+    recencyColKind: 'timestamptz',
   },
   // P-008 (shared-embedding-sidecar-and-enrichment-2026-07-10): the work-item
   // ledger — ONE base table (migration 374 unified issue + feature families
@@ -503,9 +593,7 @@ export async function backfillTable(
    * active space, then go quiet. `IS DISTINCT FROM` — not `<> ` — because `NULL <> 'local'`
    * is NULL, which would silently match nothing and reintroduce the original bug.
    */
-  const stale = spaceAware
-    ? `(${target.embedCol} IS NULL OR ${modeCol} IS DISTINCT FROM $2)`
-    : `${target.embedCol} IS NULL`;
+  const stale = stalePredicateSql(target, spaceAware, '$2');
 
   // Loop until nothing is stale — OR until a full batch makes ZERO progress (every row failed to
   // embed). Without the zero-progress break, a row whose embed PERSISTENTLY fails (e.g. every
@@ -534,7 +622,7 @@ export async function backfillTable(
       `SELECT ${keySelect}, (${target.bodySql}) AS body
          FROM ${target.table}
         WHERE ${stale}
-          AND length(${target.bodySql}) > 0${orderBy}
+          AND ${eligiblePredicateSql(target)}${orderBy}
         LIMIT $1 OFFSET $${spaceAware ? 3 : 2}`,
       spaceAware ? [wantRows, mode, failedSoFar] : [wantRows, failedSoFar],
     );

@@ -153,6 +153,33 @@ export class PgPresenceStore implements PresenceStore {
         current_files     = COALESCE(${filesJson}::text::jsonb, harness_shared.coord_presence.current_files),
         host              = EXCLUDED.host,
         pid               = EXCLUDED.pid,
+        -- EI-19418749207847685: a carry-respawn REUSES the ownerId but starts a NEW
+        -- process, so any cached context estimate describes a session that no longer
+        -- exists. AGE alone cannot catch this — the estimate can be only minutes old
+        -- (well inside CONTEXT_ESTIMATE_STALE_MS) and still be the DEAD session's, so
+        -- deriveContextPressure asserts a bucket from it with full confidence.
+        -- Observed live: a session respawned at 4% context read 'critical' for ~12
+        -- minutes, which is the cue the playbook says to self-compact on — i.e. the
+        -- stale value drives a fresh context to discard itself, then respawn and read
+        -- 'critical' again. Invalidate on the identity change itself: a CHANGED pid
+        -- means the estimate is not about this process. NULL is the honest "unknown"
+        -- deriveContextPressure already contracts for (never coerced to 'ok'), and the
+        -- watchdog's next sweep refills it with this session's real usage.
+        -- Guarded on EXCLUDED.pid IS NOT NULL so a caller that doesn't know its own
+        -- pid never invalidates a valid estimate (same preserve-on-omission rule as
+        -- touchHeartbeat's pid/host handling).
+        context_tokens    = CASE
+          WHEN EXCLUDED.pid IS NOT NULL
+           AND EXCLUDED.pid IS DISTINCT FROM harness_shared.coord_presence.pid
+            THEN NULL
+          ELSE harness_shared.coord_presence.context_tokens
+        END,
+        context_estimated_at = CASE
+          WHEN EXCLUDED.pid IS NOT NULL
+           AND EXCLUDED.pid IS DISTINCT FROM harness_shared.coord_presence.pid
+            THEN NULL
+          ELSE harness_shared.coord_presence.context_estimated_at
+        END,
         agent_role        = COALESCE(EXCLUDED.agent_role, harness_shared.coord_presence.agent_role),
         pot_slug          = COALESCE(EXCLUDED.pot_slug, harness_shared.coord_presence.pot_slug),
         -- populate-once-then-keep, same family as agent_role/pot_slug: an
@@ -193,16 +220,28 @@ export class PgPresenceStore implements PresenceStore {
     // beat recorded.)
     const pid = liveness?.pid;
     const host = liveness?.host;
+    // EI-19418749207847685 — see write()'s ON CONFLICT for the full rationale. A
+    // CHANGED pid means the cached context estimate belongs to a process that no
+    // longer exists (a carry-respawn reuses the ownerId), so clear it rather than
+    // let deriveContextPressure assert a DEAD session's bucket with full confidence
+    // — its age-based staleness guard cannot see this, because the estimate is
+    // genuinely recent, just not about this process. Composed once and spliced into
+    // both pid-setting branches so the two cannot drift apart.
+    const invalidateEstimateOnPidChange = (newPid: number) => sql`,
+               context_tokens = CASE WHEN coord_presence.pid IS DISTINCT FROM ${newPid}
+                                     THEN NULL ELSE coord_presence.context_tokens END,
+               context_estimated_at = CASE WHEN coord_presence.pid IS DISTINCT FROM ${newPid}
+                                     THEN NULL ELSE coord_presence.context_estimated_at END`;
     if (pid != null && host != null) {
       await sql`
         UPDATE harness_shared.coord_presence
-           SET heartbeat_at = now(), pid = ${pid}, host = ${host}
+           SET heartbeat_at = now(), pid = ${pid}, host = ${host}${invalidateEstimateOnPidChange(pid)}
          WHERE owner_id = ${ownerId}
       `;
     } else if (pid != null) {
       await sql`
         UPDATE harness_shared.coord_presence
-           SET heartbeat_at = now(), pid = ${pid}
+           SET heartbeat_at = now(), pid = ${pid}${invalidateEstimateOnPidChange(pid)}
          WHERE owner_id = ${ownerId}
       `;
     } else if (host != null) {
