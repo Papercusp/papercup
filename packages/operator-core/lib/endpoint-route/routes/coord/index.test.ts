@@ -203,10 +203,22 @@ describe('loadCoordPlans — identity comes from the row, not the markdown (WI-7
     expect(plans.map((p) => p.status)).toEqual(['draft', 'superseded', 'superseded']);
   });
 
-  it('reports the row updated date, not the parent date frozen in the snapshot frontmatter', async () => {
+  it('prefers the row updated date when the column carries one', async () => {
     readAllPlansMock.mockResolvedValueOnce(corpus);
     const plans = await loadCoordPlans();
     expect(plans.map((p) => p.updated)).toEqual(['2026-07-06', '2026-07-21', '2026-07-22']);
+  });
+
+  it('falls back to the frontmatter date when the row column is NULL — the real snapshot shape', async () => {
+    // Measured 2026-08-03: `updated` is NULL on all 50 live run snapshots, so
+    // canonical-first is a no-op there. Pinned so the fallback is not later
+    // "cleaned up" into a row-only read that would blank the date on all 50.
+    readAllPlansMock.mockResolvedValueOnce([
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      planRec('alert@run-1', 'superseded', null as any, parentFrontmatter),
+    ]);
+    const plans = await loadCoordPlans();
+    expect(plans.map((p) => p.updated)).toEqual(['2026-07-06']);
   });
 
   it('still prefers the frontmatter title (display text, not identity) and falls back to the canonical slug', async () => {

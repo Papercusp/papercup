@@ -5293,18 +5293,41 @@ export function realCheckpointDeps(
       let failingTests = checkpointFailureSignature(signatureOutput, green, buildOk);
       for (const sig of legs.failingSignatures) if (!failingTests.includes(sig)) failingTests.push(sig);
       let summary = summarizeSuiteOutput(fullOutput);
-      // EI-19340004308033958: drop any FILE-shaped failingTests entry that does not
-      // resolve to a real path in the judged candidate BEFORE quarantine tries to match
-      // against it — a mangled/truncated path is worse than no field (it sends a
-      // triager after a file that doesn't exist), so surface the loss loudly instead of
-      // persisting it silently.
+      // EI-19340004308033958 wanted to stop a MANGLED failingTests path (a truncated
+      // suffix of a real file) misleading a triager, and DROPPED any FILE-shaped entry
+      // that did not resolve under `treeDir`.
+      //
+      // WI-7239: that drop was unsound and removed EVERY real entry. vitest reports test
+      // files WORKSPACE-relative (`lib/memory/injection.test.ts`) while `treeDir` is the
+      // REPO ROOT, so `join(treeDir, entry)` cannot resolve for a genuine failure —
+      // measured: that path is absent at the root and present under
+      // `packages/operator-core/`. The check therefore had no true-negative case at all.
+      //
+      // The damage was not cosmetic. `failingTests` is consumed ~8 lines below by
+      // `applyTestQuarantine`, so emptying it of file paths meant quarantine could no
+      // longer match ANY test and `allFailuresQuarantined` could never fire — a run that
+      // should have gone green by quarantine stayed RED. It also destroyed the
+      // release-fixer's dedup signature. Live fingerprint while it was active: reds #9
+      // and #10 recorded `["@papercusp/operator-core"]` / `[… , "@papercusp/web"]` —
+      // workspace names only, since a workspace name is not file-shaped and so bypasses
+      // FAILING_TEST_FILE_SHAPE, while all three genuinely-failing FILE paths vanished.
+      //
+      // So the guard is ADVISORY: report what did not resolve, drop nothing. A false drop
+      // costs the whole gate its quarantine; the mangled path it guards against merely
+      // misleads one triager. Resolving an entry against its OWNING WORKSPACE (the
+      // {workspace,file} pairs `parseFailingFilesByWorkspace` already produces) would let
+      // this discriminate properly — tracked on WI-7239 as a follow-up, deliberately not
+      // done inline while the gate is red.
+      //
+      // The two `green-checkpoint-real-deps.test.ts` cases asserting `failingTests`
+      // CONTAINS the failing file are the recurrence guard: re-introduce the drop and
+      // they go red again.
       if (!green && failingTests.length) {
         const validated = validateFailingTestPaths(failingTests, treeDir);
         if (validated.dropped.length) {
-          failingTests = validated.kept;
-          const note = `\n\nDropped unresolvable failingTests entr${validated.dropped.length === 1 ? 'y' : 'ies'} (did not exist in the judged candidate — read the log body for the real failure): ${validated.dropped.join(', ')}`;
+          const note = `\n\nNOTE: ${validated.dropped.length} failingTests entr${validated.dropped.length === 1 ? 'y' : 'ies'} did not resolve under the candidate tree root (expected for a workspace-relative path — see WI-7239; retained, not dropped): ${validated.dropped.join(', ')}`;
           summary = `${summary}${note}`.slice(-2000);
-          log(`[green-checkpoint] dropped ${validated.dropped.length} unresolvable failingTests entr${validated.dropped.length === 1 ? 'y' : 'ies'} (not a real path in the candidate tree): ${validated.dropped.join(', ')}`);
+          log(`[green-checkpoint] ${validated.dropped.length} failingTests entr${validated.dropped.length === 1 ? 'y' : 'ies'} did not resolve under the tree root (retained — workspace-relative paths never resolve there; WI-7239): ${validated.dropped.join(', ')}`);
         }
       }
       if (!green && buildOk && failingTests.length) {

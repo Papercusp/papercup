@@ -29,14 +29,22 @@ import {
   type TranscriptTurn,
 } from '../../../agent-chats-data';
 import '../../../agent-tools/index';
+import {
+  acquireAgentChatLock,
+  releaseAgentChatLock,
+  type AgentChatLockHandle,
+} from '../../../agent-chat-lock';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 /**
- * Per-chat in-memory lock. A second message POST while a prior one is
- * streaming returns 409 — prevents duplicate spawn-and-append races.
+ * Per-chat streaming lock — see agent-chat-lock.ts (WI-7139). PG-backed, not a
+ * module-scoped Map: :3070 is a 16-worker `node:cluster` release cluster, so an
+ * in-memory lock is only effective within ONE of the 16 workers and is
+ * defeated by two POSTs for the same chat landing on different ones. A second
+ * message POST while a prior one is streaming (on ANY worker) returns 409 —
+ * prevents duplicate spawn-and-append races.
  */
-const activeChats = new Map<string, { startedAt: number }>();
 
 /**
  * P-008 (work-item-chat-context-modernize-2026-07-18, D-003/D-004): race any
@@ -226,10 +234,29 @@ const messagesRoute = defineTool({
     const userContent = (body.content ?? '').trim();
     if (!userContent) return Response.json({ error: 'content is required' }, { status: 400 });
 
-    if (activeChats.has(chatId)) {
+    // Acquire the lock HERE (atomic, cross-worker) rather than only checking —
+    // acquiring at the point of the check, not later right before spawn, also
+    // closes the intra-process TOCTOU window the old check-then-set-much-later
+    // pattern left open (everything between the old check and the old `set`
+    // below is async and could interleave two requests on the SAME worker).
+    const chatLock: AgentChatLockHandle | null = await acquireAgentChatLock(chatId, activeWorkspaceId());
+    if (!chatLock) {
       return Response.json({ error: 'chat already has an in-flight assistant response' }, { status: 409 });
     }
-
+    // From here on, every return path MUST release chatLock. The whole
+    // pre-flight sequence below (load chat, cost caps, feature-lock, persist
+    // user turn, assemble prompt) has many early-return branches; rather than
+    // thread a release call through each one, it's wrapped in one IIFE that
+    // either returns an early Response (caller releases + returns it) or the
+    // data the spawn step below needs (caller keeps the lock and proceeds).
+    type Preflight = Response | {
+      chat: ChatRow;
+      itemHarness: Awaited<ReturnType<typeof resolveItemHarness>>;
+      baseTranscript: TranscriptTurn[];
+      projectDir: string;
+      assembled: { text: string; runId: string };
+    };
+    const preflight: Preflight = await (async (): Promise<Preflight> => {
     let chat: ChatRow;
     try {
       const db = dbForSlug(slug);
@@ -446,11 +473,18 @@ const messagesRoute = defineTool({
       return Response.json({ error: `failed to assemble prompt: ${(e as Error).message}` }, { status: 500 });
     }
 
-    activeChats.set(chatId, { startedAt: Date.now() });
+    return { chat, itemHarness, baseTranscript, projectDir, assembled };
+    })();
+
+    if (preflight instanceof Response) {
+      await releaseAgentChatLock(chatLock);
+      return preflight;
+    }
+    const { chat, itemHarness, baseTranscript, projectDir, assembled } = preflight;
 
     const tool = lookupByMcpName('agent_chats:chat');
     if (!tool) {
-      activeChats.delete(chatId);
+      await releaseAgentChatLock(chatLock);
       return Response.json({ error: 'agent_chats:chat tool not registered' }, { status: 500 });
     }
 
@@ -550,7 +584,7 @@ const messagesRoute = defineTool({
           threwMessage = e instanceof Error ? e.message : String(e);
           throw e;
         } finally {
-          activeChats.delete(chatId);
+          await releaseAgentChatLock(chatLock);
           if (spawnTracking) {
             const outcome = resolveChatRunOutcome({
               sawDone,

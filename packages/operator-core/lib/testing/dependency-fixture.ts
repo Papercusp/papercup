@@ -294,8 +294,40 @@ export function expectedDefectiveEdges(spec: DependencyScenarioSpec): {
 }
 
 /**
+ * Terminal states, PER FAMILY, mirroring `work_item_is_blocked` (migration 719).
+ *
+ * ⚠ THESE TWO SETS ARE NOT THE SAME SET, and that asymmetry is the system's, not a typo.
+ * The shipped oracle applies a different list to each family's blocker leg:
+ *
+ *   feature blocker → status NOT IN ('passed','deprecated','done','dropped')
+ *   issue   blocker → status NOT IN ('resolved','closed','done','dropped')
+ *
+ * Each family's list is its own lifecycle vocabulary: a feature is `passed`/`deprecated`,
+ * an issue is `resolved`/`closed`, and only `done`/`dropped` are shared. So `closed` is
+ * terminal for an issue blocker and NOT terminal for a feature one.
+ *
+ * WHY THIS IS SPELLED OUT RATHER THAN LEFT AS ONE UNION. This function previously
+ * defaulted to the family-blind UNION of both lists, which disagrees with the shipped
+ * oracle for four of the six states — it called `closed`/`resolved` terminal for a
+ * feature blocker and `passed`/`deprecated` terminal for an issue one. P-010's random
+ * graphs caught it on their first run (feature blocker at `closed`: the oracle withheld
+ * the dependent, this model said it was free).
+ *
+ * It survived P-002, P-006 and P-007 because every consumer drove `standardScenario`,
+ * whose only terminal status is `done` — the one value both lists agree on. The fixture
+ * built to stop bugs hiding on an axis the tests hold constant was itself hiding one on
+ * exactly that axis. Do not re-collapse these into a single list.
+ */
+export const FEATURE_TERMINAL_STATES: readonly string[] = ['passed', 'deprecated', 'done', 'dropped'];
+export const ISSUE_TERMINAL_STATES: readonly string[] = ['resolved', 'closed', 'done', 'dropped'];
+
+/**
  * Ids that SHOULD be withheld: any item with at least one edge whose blocker is
  * non-terminal AND whose edge is not defective.
+ *
+ * Terminality is decided by the BLOCKER'S OWN FAMILY (see the two sets above), because
+ * that is how the oracle decides it. Pass `terminalStates` to override both families at
+ * once — used to pin a specific vocabulary in a test rather than to paper over the split.
  *
  * A defective edge is deliberately excluded — it gates nothing, which is the whole
  * finding. So this doubles as the expectation for a negative control: an item whose
@@ -304,14 +336,15 @@ export function expectedDefectiveEdges(spec: DependencyScenarioSpec): {
  */
 export function expectedBlockedIds(
   spec: DependencyScenarioSpec,
-  terminalStates: readonly string[] = ['done', 'resolved', 'dropped', 'deprecated', 'closed'],
+  terminalStates?: readonly string[],
 ): string[] {
-  const terminal = new Set(terminalStates);
+  const terminalFor = (family: Family): ReadonlySet<string> =>
+    new Set(terminalStates ?? (family === 'feature' ? FEATURE_TERMINAL_STATES : ISSUE_TERMINAL_STATES));
   const blocked = new Set<string>();
   for (const e of spec.edges) {
     if ((e.defect ?? 'none') !== 'none') continue;
     const blocker = spec.items.find((i) => i.id === e.blocker);
-    if (!blocker || terminal.has(blocker.status)) continue;
+    if (!blocker || terminalFor(blocker.family).has(blocker.status)) continue;
     blocked.add(e.blocked);
   }
   return [...blocked].sort();

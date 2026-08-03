@@ -106,15 +106,29 @@ function otherOnly(
   const plans = allowPlans.length ? new Set(allowPlans) : null;
   const passesKind = (kind: AttentionKind) =>
     kind === 'plan-item' ? includePlanItems : !allow || allow.has(kind);
+  // Cross-group dedupe (WI-5337 / EI-19373923898562595): a non-plan-scoped
+  // item (owner-wall, loop-carry-note) is present in EVERY group server-side,
+  // so filtering each group independently still emits it once per surviving
+  // group — duplicate rows/keys downstream in both the plan-grouped
+  // (planSections) and authorizer-grouped (byAuthorizer) views. Keep the
+  // first occurrence only, same "first-seen wins" rule as flattenAttentionItems,
+  // while preserving per-group structure for planSections' plan buckets.
+  const seen = new Set<string>();
   return groups
     .map((g) => ({
       ...g,
-      items: g.items.filter(
-        (i) =>
-          passesKind(i.kind) &&
-          (!plans || (i.planSlug != null && plans.has(i.planSlug))) &&
-          (tier === 'all' || i.tier === tier),
-      ),
+      items: g.items.filter((i) => {
+        if (
+          !passesKind(i.kind) ||
+          (plans && (i.planSlug == null || !plans.has(i.planSlug))) ||
+          (tier !== 'all' && i.tier !== tier)
+        ) {
+          return false;
+        }
+        if (seen.has(i.id)) return false;
+        seen.add(i.id);
+        return true;
+      }),
     }))
     .filter((g) => g.items.length > 0);
 }

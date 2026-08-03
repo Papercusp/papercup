@@ -193,10 +193,12 @@ export async function loadCoordPlans(): Promise<Array<Record<string, unknown>>> 
       slug: p.row.planSlug,
       title: p.parsed.frontmatter.title ?? p.row.planSlug,
       status: p.row.status ?? p.parsed.frontmatter.status ?? 'unknown',
-      // Same 50 rows diverge here too — a snapshot's frontmatter carries the
-      // PARENT's `updated` date. (`title` deliberately still leads with the
-      // frontmatter: it is display text rather than identity, and its 20
-      // row-vs-markdown divergences are a separate, undiagnosed cause.)
+      // Canonical-first for consistency with slug/status, though measured as a
+      // NO-OP today: the `updated` column is NULL on all 50 snapshots, so this
+      // falls through to the frontmatter exactly as before. (`title`
+      // deliberately still LEADS with the frontmatter — it is display text
+      // rather than identity, and its 20 row-vs-markdown divergences have a
+      // separate, undiagnosed cause.)
       updated: p.row.updated ?? p.parsed.frontmatter.updated ?? null,
       now_state: p.parsed.now?.state ?? null,
       now_next: p.parsed.now?.next ?? null,

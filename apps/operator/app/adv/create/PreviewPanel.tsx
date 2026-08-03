@@ -18,7 +18,7 @@ import type { PanelComponentProps } from '@/app/harness/dock/panel-registry';
 import PlanItemPreview from '@/app/admin/plans/PlanItemPreview';
 import { OtherDetail } from '@/app/admin/plans/PlanOtherList';
 import { DecisionDetail, type DecisionRow } from '@/app/_components/DecisionLog';
-import { usePlanAttention } from '@/app/admin/plans/plans-api';
+import { usePlanAttention, flattenAttentionItems } from '@/app/admin/plans/plans-api';
 import { useCreateScope, usePlanListMaps } from './use-create-data';
 
 /**
@@ -72,8 +72,11 @@ export default function PreviewPanel(_props?: Partial<PanelComponentProps>) {
       ? undefined
       : { harnessSlug: scope.harnessFilter ?? scope.advActiveSlug ?? undefined },
   );
+  // flattenAttentionItems dedupes by id first (WI-5337 / EI-19373923898562595):
+  // a non-plan-scoped item appears in multiple groups server-side, so a bare
+  // flatMap would render it once per group.
   const otherItems = useMemo(
-    () => (attention.data?.groups ?? []).flatMap((g) => g.items).filter((i) => i.kind !== 'plan-item'),
+    () => flattenAttentionItems(attention.data?.groups ?? []).filter((i) => i.kind !== 'plan-item'),
     [attention.data],
   );
 

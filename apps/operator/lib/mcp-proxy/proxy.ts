@@ -88,12 +88,40 @@ const UPSTREAM_AGENT = new http.Agent({
  * the W1.3 stale-socket 400s stayed invisible. Append a structured JSONL record (journald-
  * independent, survives restart) that a health collector / SLO can ingest. NEVER throws —
  * telemetry must never break forwarding. Env override: PAPERCUSP_MCP_PROXY_FAILURE_LOG.
+ *
+ * ⚠ THE LEDGER IS SHARED AND MULTI-WRITER (EI-19388683897769817): this file is the real,
+ * fleet-facing production telemetry a health collector reads, NOT a scratch log. Every
+ * reader of it must apply `isNonInstanceRecord` (system-health/mcp-proxy-health.ts) to
+ * exclude `listenPort: 0` (test/sidecar) rows, or it over-counts failures — measured live,
+ * 18% of a 13,189-record sample were test-suite noise (28-record batches from short-lived
+ * pids, `maxInFlight: 2` fixture values) with no env override set. `isNonInstanceRecord`
+ * lives in exactly ONE reader today; a second consumer that forgets it silently inherits
+ * the pollution (already shipped once and caught in review, see
+ * plan `outage-must-not-be-silent-2026-08-02` D-005).
  */
 function failureLogPath(): string {
   // Resolved per-call (not cached at module load) so the sink is env-overridable at runtime + testable.
   return process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG || join(homedir(), '.papercusp', 'mcp-proxy-failures.jsonl');
 }
+/**
+ * PURE: should `recordProxyFailure` skip writing this call entirely? EI-19388683897769817 —
+ * a test that constructs a proxy WITHOUT setting PAPERCUSP_MCP_PROXY_FAILURE_LOG must never
+ * fall through to the real default `~/.papercusp/mcp-proxy-failures.jsonl` — that silently
+ * appended ~18% test noise (short-lived-pid batches, `listenPort: 0`, fixture values like
+ * `maxInFlight: 2`) into the shared production ledger every suite run. Guarded at the WRITE
+ * site (not per-test) so a future test cannot forget: under vitest, only an EXPLICIT override
+ * writes; the default path is skipped entirely rather than silently redirected, because
+ * nothing in this suite depends on the default path being written to (the two tests that
+ * assert on ledger content already set the override themselves). Exported as a pure
+ * predicate (inputs, not env reads) so it is unit-testable without touching real env/fs.
+ */
+export function shouldSkipDefaultFailureLog(isTest: boolean, hasExplicitOverride: boolean): boolean {
+  return isTest && !hasExplicitOverride;
+}
 function recordProxyFailure(rec: Record<string, unknown>): void {
+  if (shouldSkipDefaultFailureLog(Boolean(process.env.VITEST), Boolean(process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG))) {
+    return;
+  }
   try {
     const path = failureLogPath();
     mkdirSync(dirname(path), { recursive: true }); // idempotent; failures are rare so this is cheap

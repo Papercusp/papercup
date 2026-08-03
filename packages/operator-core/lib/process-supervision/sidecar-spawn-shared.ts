@@ -318,3 +318,11 @@ export function registerSidecarShutdownHooks(opts: SidecarShutdownHooksOpts): vo
 export function _resetSidecarShutdownHookRegistryForTests(): void {
   hooksRegisteredFor.clear();
 }
+
+/** Test seam — which labels have registered shutdown hooks in this process.
+ *  WI-7249: lets a guard assert that registration happened as a side effect of
+ *  SPAWNING, without spawning a real child or counting raw process listeners
+ *  (which every other module in the test process also adds to). */
+export function _registeredSidecarShutdownLabelsForTests(): string[] {
+  return [...hooksRegisteredFor].sort();
+}

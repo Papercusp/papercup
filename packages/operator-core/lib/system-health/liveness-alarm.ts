@@ -903,6 +903,59 @@ export interface AlarmDeps {
     ws: string,
     mutate: (current: FlapState) => FlapMutationResult,
   ) => Promise<FlapMutationResult>;
+  /** EI-19375157952766991: fresh, direct re-verification for the 'dead-routines'
+   *  signal at FIRE TIME — see `defaultReverifyDeadRoutines`'s doc comment for why.
+   *  Default = `defaultReverifyDeadRoutines` (a live DB re-read), gated identically
+   *  to `readRoutineEngineLiveness`/`readAutoloopFireRows` (only when `readLast` is
+   *  NOT injected — i.e. production; a test injecting `readLast` gets `null`, so
+   *  every existing hermetic test keeps its byte-identical fire behavior). Returning
+   *  `null` (unknown/failed) is FAIL-OPEN — it must never suppress a signal, only
+   *  confirm one. */
+  reverifyDeadRoutines?: (ws: string, now: number) => Promise<string[] | null>;
+}
+
+/**
+ * EI-19375157952766991 — "cry wolf on git-sync". `evaluateLivenessAlarm`'s
+ * `dead-routines` signal pages a fleet-wide `blocker` prescribing engine
+ * remediation off whatever `health` snapshot `runLivenessAlarmTick` happened to
+ * be holding — which, when the process-local cache is "fresh enough"
+ * (`localSnapshotStale` false, i.e. < `DEFAULT_SNAPSHOT_STALE_MS` = 6min old),
+ * can be trusted for up to 6 more minutes without ever being re-checked. Against
+ * a 10min (`DEAD_ROUTINE_OVERDUE_MS`) overdue threshold, a snapshot taken right
+ * as a routine crossed that line — from a genuinely transient tick-duration
+ * blip under this box's heavy concurrent-agent load, the same class of
+ * transient `deadRoutineOverdueMsForCiWindow` already widens the threshold for
+ * during a green-checkpoint run — can self-clear within seconds while the
+ * cached reading still pages minutes later.
+ *
+ * Measured live 2026-08-02 20:27:48Z (EI-19375157952766991): a `dead-routines`
+ * blocker fired naming git-sync/cross-hive-outbox-drain/green-checkpoint as 4
+ * routines overdue >10m; the escalation's own record shows it auto-resolved
+ * 57 SECONDS later, and `git log` proved git-sync had committed continuously
+ * through the entire window (largest gap 7.0min) with no >10min gap at any
+ * point — the alarm's own prescribed remediation ("Revive the bg-host ticker")
+ * would have been destructive against a demonstrably healthy engine.
+ *
+ * This re-reads `readDeadRoutines` fresh, directly against PG, at the moment
+ * this signal is ABOUT TO escalate/page (not from any cached snapshot) — the
+ * same "capture the emitter's inputs at fire time" the filed item itself
+ * prescribes. An empty fresh re-read means the condition has already cleared:
+ * treat it as a confirmed transient blip (no escalation opened, no page) rather
+ * than alarming on stale data. A re-verify FAILURE (PG error, a stripped test
+ * bundle missing the dynamic imports) returns `null` and is FAIL-OPEN — it must
+ * never suppress a genuine incident, only confirm one.
+ */
+async function defaultReverifyDeadRoutines(ws: string, now: number): Promise<string[] | null> {
+  try {
+    const [{ getOrgPg }, { readDeadRoutines, resolveDeadRoutineOverdueMs }, { resolvePotHomeSlug }] =
+      await Promise.all([import('@papercusp/db-org'), import('./compute'), import('../pot/wake')]);
+    const { sql } = getOrgPg();
+    const potSlug = resolvePotHomeSlug(undefined, undefined);
+    const overdueMs = await resolveDeadRoutineOverdueMs(sql, potSlug, now);
+    return await readDeadRoutines(sql, overdueMs);
+  } catch {
+    return null;
+  }
 }
 
 async function defaultReadRoutineEngineLiveness(nowMs: number): Promise<RoutineEngineLiveness> {
@@ -1280,10 +1333,26 @@ export async function runLivenessAlarmTick(
   //    itself is opened unconditionally here (WI-4181 dedup only); whether it ALSO
   //    pages the fleet is decided atomically below, together with the resolve
   //    step's recovery-broadcast decision.
+  // EI-19375157952766991: fresh re-verification for 'dead-routines' at FIRE TIME —
+  // see `defaultReverifyDeadRoutines`'s doc comment. Gated identically to
+  // `readRoutineEngine`/`readAutoloopFireRows`/`readBeeCapacity` above: only wired
+  // in production (deps.readLast === undefined); a test injecting `readLast` keeps
+  // every existing hermetic fixture's byte-identical fire behavior (reverify: null).
+  const reverifyDeadRoutines =
+    deps.reverifyDeadRoutines ?? (deps.readLast === undefined ? defaultReverifyDeadRoutines : null);
+
   const fired: AlarmSignal[] = [];
   const newBlockerSignals: AlarmSignal[] = [];
   for (const s of signals) {
     if (openBySig.has(s.key)) continue; // an open escalation already covers this signature
+    if (s.key === 'dead-routines' && reverifyDeadRoutines) {
+      const fresh = await reverifyDeadRoutines(ws, now).catch(() => null);
+      // A confirmed-empty fresh re-read means the condition already cleared —
+      // a transient blip, not the sustained engine-starvation this signal exists
+      // to catch. `null` (re-verify unknown/failed) is fail-OPEN: fall through
+      // and fire as before, never silently suppress a genuine incident.
+      if (fresh !== null && fresh.length === 0) continue;
+    }
     const prev = lastAlertedAt.get(s.key);
     if (prev !== undefined && now - prev < debounceMs) continue;
     lastAlertedAt.set(s.key, now);

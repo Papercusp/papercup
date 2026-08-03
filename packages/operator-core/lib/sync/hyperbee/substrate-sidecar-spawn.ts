@@ -196,6 +196,12 @@ export async function spawnSubstrateSidecar(
   socketPath?: string,
   useScope: boolean = substrateSidecarScopeEnabled(),
 ): Promise<void> {
+  // WI-7249 / D-011: registration belongs to the SPAWN, not to a call site. This
+  // sidecar registers via substrate-boot-wrapper today and so does not leak — but it
+  // has the same call-site-coupled shape the spawner-sidecar leaked from, and is one
+  // new entry point away from the same bug. Idempotent by label.
+  registerSidecarShutdownHooks();
+
   if (sidecarProcess) {
     // Already running
     if (sidecarReady) return;

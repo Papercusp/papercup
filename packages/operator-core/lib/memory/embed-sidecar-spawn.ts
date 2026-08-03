@@ -180,6 +180,12 @@ function scheduleRespawn(): void {
  * inside the timeout even on a cold model cache).
  */
 export async function spawnEmbedSidecar(): Promise<void> {
+  // WI-7249 / D-011: registration belongs to the SPAWN, not to a call site. Registered
+  // inside ensureEmbedSidecar today, so a direct spawnEmbedSidecar() caller (it is
+  // exported) would register nothing — the same shape the spawner-sidecar leaked from.
+  // Idempotent by label.
+  registerEmbedSidecarShutdownHooks();
+
   if (sidecarProcess) {
     // Already running
     if (sidecarReady) return;

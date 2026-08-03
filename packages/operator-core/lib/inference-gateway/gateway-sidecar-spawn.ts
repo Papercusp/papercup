@@ -234,6 +234,12 @@ export async function gatewayReprobeTick(
 }
 
 async function spawnGatewayChild(port: number): Promise<void> {
+  // WI-7249 / D-011: registration belongs to the SPAWN, not to a call site. Placed on
+  // the child-spawn seam rather than in ensureGatewaySidecar so the respawn path and
+  // the reprobe-tick path are covered too, and so the adopt-external path (which
+  // spawns nothing) correctly registers nothing. Idempotent by label.
+  registerGatewaySidecarShutdownHooks();
+
   deliberateStop = false;
   if (respawnTimer) {
     clearTimeout(respawnTimer);

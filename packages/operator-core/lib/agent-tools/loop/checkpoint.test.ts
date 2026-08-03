@@ -51,7 +51,7 @@ const setLoopCarryNoteWithPrior = vi.fn(
     return { stored, priorLength: (prior ?? '').length };
   },
 );
-const getLoopCarryNoteWithMeta = vi.fn(async () => ({
+const getLoopCarryNoteWithMeta = vi.fn(async (..._a: unknown[]) => ({
   note: lastStoredNote,
   updatedAtMs: lastStoredNote !== null ? Date.now() : null,
 }));

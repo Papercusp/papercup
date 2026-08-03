@@ -64,8 +64,27 @@
  * fires on batch one, pays once, stays in budget, cannot be silenced by a
  * warm-up throttle. Those are corpus-independent and genuinely green.
  *
- * The RETRIEVAL half was measured against the LIVE endpoint on 2026-08-02
- * (:3170, the same seven batches, real store) and it is RED. Verbatim result:
+ * ═══ RETRIEVAL: WAS RED, FIXED 2026-08-03 (WI-6857 / D-060) ═════════════════
+ *
+ * Re-measured live on :3170 after the fix — the same seven batches, real store,
+ * three fresh-owner passes, all identical: **1 of 7, batch ONE (turn 63)**. That
+ * IS the pass; this item's criterion is "batch 1 or 2, without the query naming
+ * the id". Batches 2-7 are a SEPARATE defect (WI-7237: `corpusQueryText` keeps
+ * two terms BY LENGTH, and a 3+ digit token short-circuits the query to that
+ * number alone) and cannot move at any budget — do not read 6 misses as a
+ * partial fix, and do not read 1 of 7 as a full green either.
+ *
+ * Root cause was TWO INDEPENDENT CUTS, neither of them the query — which is why
+ * three well-run single-variable experiments each measured 0/7 CORRECTLY and
+ * each concluded WRONGLY. CUT 1: the corpus leg retrieved WI-6512 on every
+ * batch and dropped it `budget-exhausted` at rank 4 (caps now 6/1800). CUT 2:
+ * `clampToBudget` cut the WHOLE composed block at 350, deleting the pointer
+ * section `composeWithCorpus` appends last — it now clamps the mem0 half only.
+ * Before → after, same batches: 398-403 chars / no pointer section / 0 of 7 →
+ * 1109-2255 chars / pointers on all 7 / 1 of 7.
+ *
+ * THE ORIGINAL RED, kept because its four probes are the reason the diagnosis
+ * was findable at all. Measured 2026-08-02, verbatim:
  *
  *   • batch 1 fired — 377 chars, so the timing claim holds;
  *   • WI-6512 appeared in ZERO of the seven batches. Total 2,360 chars of
@@ -82,13 +101,14 @@
  *     session history takes several seconds. I searched, found nothing". The
  *     corpus surfaces the RECORD OF THE SAME FAILURE rather than the answer.
  *
- * So the mid-turn channel matches SURFACE TOKENS, not the problem. That verdict
- * is recorded as a plan Decision rather than as a permanently-red test here — a
- * test that cannot pass until a fix lands belongs on the fix, not in the fleet
- * gate. A fixture green here must therefore never be read as the acceptance
- * case passing; a four-record fixture cannot reproduce the ceiling and the
- * crowd-out that actually decide what surfaces (the trap this very file walked
- * into on its first draft).
+ * That verdict was recorded as a plan Decision rather than as a permanently-red
+ * test here — a test that cannot pass until a fix lands belongs on the fix, not
+ * in the fleet gate. It also could not have been caught here: **a fixture green
+ * in this file must never be read as the acceptance case passing.** A four-record
+ * fixture cannot reproduce the ceiling and the crowd-out that actually decide
+ * what surfaces — that is precisely what both cuts turned out to be, and the trap
+ * this very file walked into on its first draft. The acceptance number comes from
+ * replaying REPLAY against the live endpoint, and from nowhere else.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
@@ -468,7 +488,7 @@ beforeEach(() => {
 
 // ─────────────────────────────────────────────────────────────────────────────
 
-describe('P-018 TRANSPORT half — replaying the WI-6512 investigation (retrieval half is RED, see header)', () => {
+describe('P-018 TRANSPORT half — replaying the WI-6512 investigation (retrieval measured live, see header)', () => {
   it('fires on batch ONE — the call that saves the other twelve', async () => {
     const pushes = await replay(newOwner());
     const firstHit = pushes.findIndex((p) => p.length > 0);

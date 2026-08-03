@@ -92,6 +92,23 @@ function scheduleRespawn(socketPath: string): void {
  * Waits for the PAPERCUSP_SPAWNER_READY handshake line.
  */
 export async function spawnSpawnerSidecar(socketPath?: string): Promise<void> {
+  // WI-7249 / D-011: shutdown-hook registration is a property of SPAWNING, not of
+  // each caller remembering. It used to live at exactly one call site
+  // (host-bootstrap.ts, bg-host only), so the entry points ordinary AGENT processes
+  // take — git-via-sidecar (git-sync, pot-git storage, harness docs runner,
+  // dev-deploy-state) and dbos/orchestrator-runner — spawned a child and registered
+  // nothing to stop it. The call-site distribution proved it: 1 of 50 orphans came
+  // from bg-host (the path that DOES register), 49 of 50 from agent-session cgroups.
+  //
+  // The leak is PERMANENT, not a redundant duplicate: the socket is pid-keyed
+  // (spawner-socket-path.ts), so once the owning host dies its sidecar can never be
+  // addressed again — a corpse holding RAM, observed to 403h/16.8 days.
+  //
+  // Registered BEFORE the already-running early return, so a second entry point that
+  // finds a live child still ensures the hooks exist. Idempotent by label, so the
+  // remaining call-site calls are harmless no-ops.
+  registerSpawnerSidecarShutdownHooks();
+
   if (sidecarProcess) {
     // Already running
     if (sidecarReady) return;

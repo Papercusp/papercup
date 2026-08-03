@@ -81,7 +81,13 @@ export function classifyProjectionBody(
   } catch {
     /* not the joined body — try each item */
   }
-  // TEETH PROBE — temporarily disabled per-item fallback; revert immediately.
+  for (let i = 0; i < textItems.length; i += 1) {
+    try {
+      return { json: { parsed: JSON.parse(textItems[i].text), itemIndex: i }, lineCount };
+    } catch {
+      /* not this one — keep looking */
+    }
+  }
   return { json: null, lineCount };
 }
 

@@ -23,6 +23,7 @@ import {
   CHEAP_REPEATING_BEAT_RETRY_WINDOW_MS,
   shouldShedForInFlight,
   DEFAULT_MAX_IN_FLIGHT,
+  shouldSkipDefaultFailureLog,
   type McpProxyTarget,
 } from './proxy';
 import { MCP_PROXY_LOCAL_HEALTH_PATH } from './budgets.mjs';
@@ -36,6 +37,24 @@ describe('shouldRetry — refused-only + in-window (no double-execution)', () =>
   });
   it('does NOT retry past the window even if still refused', () => {
     expect(shouldRetry(false, 46_000, 45_000)).toBe(false);
+  });
+});
+
+// EI-19388683897769817: a test that never sets PAPERCUSP_MCP_PROXY_FAILURE_LOG must never
+// silently fall through to the real production ledger (~18% of a live 13,189-record sample
+// was test/sidecar noise from exactly this gap). recordProxyFailure() consults this pure
+// predicate before ever touching fs — tested directly (inputs, not env/fs) so the guard's
+// LOGIC is pinned without depending on real environment state or touching disk.
+describe('shouldSkipDefaultFailureLog — the write-site guard against test pollution of the shared prod ledger', () => {
+  it('SKIPS under vitest with no explicit override — the exact gap that let 18% test noise into the ledger', () => {
+    expect(shouldSkipDefaultFailureLog(true, false)).toBe(true);
+  });
+  it('WRITES under vitest when an explicit override IS set — a test that wants to assert on ledger content still can', () => {
+    expect(shouldSkipDefaultFailureLog(true, true)).toBe(false);
+  });
+  it('WRITES outside vitest (real production/dev process) regardless of override — never silently drops real telemetry', () => {
+    expect(shouldSkipDefaultFailureLog(false, false)).toBe(false);
+    expect(shouldSkipDefaultFailureLog(false, true)).toBe(false);
   });
 });
 

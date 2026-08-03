@@ -958,9 +958,36 @@ export const STAGING_API_DOWN_CONFIRM_TICKS = 2;
  */
 export const ODDSMITH_SIDECAR_DOWN_CONFIRM_TICKS = 2;
 
+/**
+ * EI-19375157952766991: `bg-host-ticker` was the one portless probe left
+ * UNDAMPED — a single bad tick reported it DOWN immediately, unlike every
+ * sibling probe above (desktop/staging-api/oddsmith-sidecar), each of which
+ * was damped for exactly this reason after a measured single-tick false-alarm
+ * incident. `probeBgHostTicker` reads `MAX(last_fired_at)` fleet-wide over a
+ * live PG connection on every tick; a single transient read (a momentary pool
+ * stall, a slow query under this box's heavy concurrent-agent load, or a
+ * genuinely-brief tick-duration blip in the routine engine itself — see
+ * `deadRoutineOverdueMsForCiWindow`'s doc comment for the same class of
+ * transient elsewhere in this alarm family) can read as stale for one tick
+ * and self-clear by the next. Measured live 2026-08-02 20:26-20:28Z: the
+ * ticker probe fired `bg-host-ticker is DOWN` (⚠ no routine has fired in 16m)
+ * prescribing a destructive `service-restart lane` remediation for a healthy
+ * service — `git log` showed git-sync committing continuously through the
+ * whole window (largest gap 7.0min, well under the 15min `BG_HOST_STALE_MS`
+ * threshold), and re-running the probe's own exact query moments later
+ * returned an age of 7s. Two ticks is provably sufficient here by the same
+ * argument as `staging-api`/`oddsmith-sidecar`: this probe runs on the same
+ * 60s service-health tick, so two consecutive bad ticks require the false
+ * reading to persist ≥60s — well past the self-clearing blip actually
+ * observed — while a genuinely frozen ticker (BG_HOST_STALE_MS=15min of no
+ * fires) stays down across ticks and still alarms, 60s later.
+ */
+export const BG_HOST_TICKER_DOWN_CONFIRM_TICKS = 2;
+
 export const DOWN_CONFIRM_TICKS: Readonly<Record<string, number>> = {
   desktop: DESKTOP_DOWN_CONFIRM_TICKS,
   'staging-api': STAGING_API_DOWN_CONFIRM_TICKS,
+  'bg-host-ticker': BG_HOST_TICKER_DOWN_CONFIRM_TICKS,
   'oddsmith-sidecar': ODDSMITH_SIDECAR_DOWN_CONFIRM_TICKS,
 };
 
