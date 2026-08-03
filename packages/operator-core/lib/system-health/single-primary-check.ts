@@ -683,7 +683,11 @@ export async function runSinglePrimaryCheck(
   // never urgent-page the owner or fire an "everything is down" fleet broadcast — that
   // false urgency is the whole defect this split fixes. `alreadyPagedByPeer` closes the
   // SAME class of false urgency for the multi-process re-page case (EI-19400981259017885).
-  if (verdict.severity === 'blocker' && !alreadyPagedByPeer) await page(verdict, streak, count, ws);
+  // WI-7291: page the VERDICT's count, not the raw read. They differ in exactly one case —
+  // an unread count, where the raw value is `null` and the verdict reports 0 alongside
+  // `countObserved: false`. The pager also receives the whole verdict, so it can render
+  // "could not be read" honestly instead of asserting a zero nobody observed.
+  if (verdict.severity === 'blocker' && !alreadyPagedByPeer) await page(verdict, streak, verdict.count, ws);
   return { fired: true, verdict, selfCleared: false };
 }
 

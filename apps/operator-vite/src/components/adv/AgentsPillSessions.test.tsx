@@ -554,3 +554,98 @@ describe('SessionSearchResults in-flight honesty (WI-4734 — owner-hit: a 20s s
     expect(inspectorProps.last?.focusTarget).toBeUndefined();
   });
 });
+
+// ── P-004 (semantic-search-fingerprint-coverage-2026-08-03): match provenance.
+// A hit only the VECTOR leg returned matched no query TERM, so ts_headline had
+// nothing to <mark> and handed back the head of the turn. Rendered bare, that
+// text claims to be the match and is not — the reader cannot tell a strong
+// semantic hit from a broken search. ────────────────────────────────────────
+describe('hitProvenanceChip (pure)', () => {
+  it('labels a vector-only hit and names the cosine in the tooltip', () => {
+    const chip = hitProvenanceChip({ matchedBy: 'semantic', semanticScore: 0.6142 });
+    expect(chip?.label).toBe('semantic match');
+    expect(chip?.title).toContain('cosine 0.61');
+    // The tooltip must say what the text below actually IS, or the label alone
+    // still leaves the excerpt reading as the matching phrase.
+    expect(chip?.title).toContain('start of the turn');
+  });
+
+  it('omits the cosine — never renders NaN/undefined — when the score is absent', () => {
+    const chip = hitProvenanceChip({ matchedBy: 'semantic' });
+    expect(chip?.label).toBe('semantic match');
+    expect(chip?.title).not.toMatch(/cosine|NaN|undefined/);
+  });
+
+  it('shows NO chip for lexical or hybrid hits — their <mark> already explains them', () => {
+    expect(hitProvenanceChip({ matchedBy: 'lexical' })).toBeNull();
+    expect(hitProvenanceChip({ matchedBy: 'both' })).toBeNull();
+  });
+
+  it('shows NO chip when provenance is unknown or absent (an older server)', () => {
+    // Guessing "semantic" here would make correct lexical results read as
+    // fallbacks — silence is the right rendering of "we do not know".
+    expect(hitProvenanceChip({ matchedBy: 'unknown' })).toBeNull();
+    expect(hitProvenanceChip({})).toBeNull();
+  });
+});
+
+describe('SessionSearchResults renders match provenance (P-004 wiring)', () => {
+  const NOW = Date.parse('2026-08-03T12:00:00Z');
+  const hit = (over: Partial<SearchSessionResult['hits'][number]>) => ({
+    turnIdx: 0,
+    ts: '2026-08-03T11:00:00Z',
+    owner: 'su-x',
+    excerpt: 'the turn opens with something unrelated to the query',
+    highlight: 'the turn opens with something unrelated to the query',
+    score: 1,
+    ...over,
+  });
+  const result = (over: Partial<SearchSessionResult> & { sessionId: string }) =>
+    ({ sourceKind: 'claude', topScore: 1, hits: [], active: null, session: null, ...over }) as SearchSessionResult;
+
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+  });
+
+  const respondWith = (sessions: SearchSessionResult[]) =>
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => ({ ok: true, sessions }) })));
+
+  it('labels a vector-only hit "semantic match" instead of presenting its excerpt head as the match', async () => {
+    respondWith([result({ sessionId: 'sid-sem', hits: [hit({ matchedBy: 'semantic', semanticScore: 0.61 })] })]);
+    render(<SessionSearchResults query="theory of mind" nowMs={NOW} />);
+    await waitFor(() => expect(screen.queryByTestId('search-pending')).toBeNull());
+    expect(screen.getByTestId('hit-provenance').textContent).toBe('semantic match');
+    // The excerpt is still shown — it is the only content there is — but the
+    // row now declares what it is, and carries the verdict for styling/asserts.
+    const row = screen.getByTestId('hit-sid-sem-0');
+    expect(row.getAttribute('data-matched-by')).toBe('semantic');
+    expect(row.className).toContain('pc-agents-sessions__hit--semantic');
+    expect(row.textContent).toContain('the turn opens with something unrelated');
+  });
+
+  it('leaves a lexical hit unlabelled — no chip, no italic modifier', async () => {
+    respondWith([
+      result({
+        sessionId: 'sid-lex',
+        hits: [hit({ matchedBy: 'lexical', lexicalScore: 0.07, highlight: 'a <mark>deploy</mark> ran' })],
+      }),
+    ]);
+    render(<SessionSearchResults query="deploy" nowMs={NOW} />);
+    await waitFor(() => expect(screen.queryByTestId('search-pending')).toBeNull());
+    expect(screen.queryByTestId('hit-provenance')).toBeNull();
+    const row = screen.getByTestId('hit-sid-lex-0');
+    expect(row.className).not.toContain('--semantic');
+    // The <mark> survives the restructure into chip + text spans (the sanitizer
+    // still runs, now on the inner span rather than the row itself).
+    expect(row.querySelector('mark')?.textContent).toBe('deploy');
+  });
+
+  it('renders a hit with NO provenance field exactly as before (an older server)', async () => {
+    respondWith([result({ sessionId: 'sid-old', hits: [hit({})] })]);
+    render(<SessionSearchResults query="anything" nowMs={NOW} />);
+    await waitFor(() => expect(screen.queryByTestId('search-pending')).toBeNull());
+    expect(screen.queryByTestId('hit-provenance')).toBeNull();
+    expect(screen.getByTestId('hit-sid-old-0').getAttribute('data-matched-by')).toBeNull();
+  });
+});

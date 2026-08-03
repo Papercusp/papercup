@@ -554,10 +554,21 @@ function noteCorpusLegHealth(corpus: CorpusLegResult | null): void {
   _corpusDegradedSinceWarn = 0;
 }
 
-/** Test hook: reset the degradation throttle so a suite can assert re-warn behavior. */
+/**
+ * Test hook: reset the degradation throttle so a suite can assert re-warn behavior — and, by
+ * calling it, OPT THAT SUITE IN to the warn actually being emitted under the runner.
+ *
+ * The two are deliberately one call rather than two: the only reason to reset this throttle is to
+ * make assertions about the warn, so every caller wants both. Coupling them means the suite that
+ * asserts on the diagnostic (`injection.test.ts`, which calls this from a file-global beforeEach)
+ * keeps working untouched, while every OTHER suite — which never calls this — stays silent and
+ * cannot be red-pinned by a warn it never asked about. Opt-in is per module registry, and vitest
+ * isolates those per test FILE, so this cannot leak from one suite into another.
+ */
 export function _resetCorpusLegHealthForTests(): void {
   _corpusDegradedWarnedAt = 0;
   _corpusDegradedSinceWarn = 0;
+  _corpusWarnOptedInByTest = true;
 }
 
 /**

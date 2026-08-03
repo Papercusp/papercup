@@ -70,7 +70,7 @@ All multi-byte integers are **big-endian**.
 | `0x04` | ERROR       | Server → Client | UTF-8 JSON: `{ id, error: { code, message }}`|
 | `0x05` | EVENT_BIN   | Server → Client | Self-describing binary (see below)           |
 | `0x06` | CANCEL      | Client → Server | UTF-8 JSON: `{ id }`                         |
-| `0x07` | DATA        | Client → Server | Opaque binary for an open call (see below)   |
+| `0x07` | *(reserved)* | —              | Was DATA; removed — see "Removed frame types" |
 
 ### `id` semantics
 
@@ -100,37 +100,38 @@ the reviewer flagged).
 
 The 16 MiB frame cap caps binary events at ~16 MiB minus header overhead.
 
-### DATA payload layout
+## Removed frame types
 
-Client → Server bytes for a call that is **already open**. With only REQUEST
-and CANCEL the channel is server-**streaming**: once a call is open the client
-can only abandon it, never feed it. DATA is what makes the channel full duplex,
-so a long-lived stream can ride it instead of holding a real socket.
+### `0x07` DATA — removed, tag RESERVED
 
-```
-+-----------+-----------------------+
-| id (8B BE)| payload bytes (rest)  |
-+-----------+-----------------------+
-```
+**This channel is server-streaming, not full duplex.** Client → Server is
+REQUEST and CANCEL only: once a call is open the client can abandon it but
+cannot feed it. The server closes the connection on any other client frame.
 
-- `id`: u64 BE, matches the originating REQUEST. The server MUST route the
-  bytes to that in-flight call and MUST ignore a DATA frame whose `id` names no
-  open call (a late DATA racing a DONE is normal, not an error).
-- Remaining bytes (`length - 8`) are the raw payload, opaque to the transport.
+DATA (`0x07`) was added by `no-http-anywhere-2026-07-28` P-012 to make the
+channel full duplex, then removed on that same plan (WI-7545) because both of
+its stated consumers went away:
 
-Thinner than EVENT_BIN on purpose: EVENT_BIN is self-describing because the
-server multiplexes *named* events onto one call, whereas DATA is an opaque byte
-run for one already-open call, so `id` is the only routing key needed. The tail
-carries no length prefix — the frame header's own length already bounds it, and
-duplicating that would create two sources of truth that can disagree.
+- **P-014** (move the PTY and voice connections onto the channel) was
+  **refuted**: the WebKitGTK connection cap is per-**origin**, so those
+  listeners hold their own pools and moving them frees zero sockets. The
+  shipped `ws-guard.ts` exempts both by name — they "must keep their native
+  sockets."
+- **P-013** shipped a WebSocket **guard** (`pass` / `declared-exemption` /
+  `violation`), not a data-carrying shim. Nothing was ever built that needed a
+  client → server byte path.
 
-A **zero-byte tail is legal** and meaningful: it lets a sender signal
-end-of-stream without tearing the call down. Receivers MUST NOT treat
-`length == 8` as malformed.
+So the frame was specified, encoded, decoded and tested on both sides while
+being unreachable in both directions — and the spec asserted MUST-level routing
+semantics the server never implemented. That gap is the reason this section
+exists rather than the frame: a spec that promises behaviour the implementation
+refuses is worse than a spec that is silent.
 
-Ordering is per-connection and therefore per-call: the transport preserves the
-order of DATA frames sharing an `id`. It says nothing about interleaving across
-different `id`s.
+**Do not reuse `0x07`.** A tag that meant DATA to one build and something else
+to another is a silent wire-compat break. Both codecs pin it as unassigned
+(`removed_and_unassigned_tags_are_rejected` in Rust; the matching case in the TS
+suite). If the channel ever genuinely needs full duplex, the removed design is
+recoverable from git history — take a fresh tag (`0x08`).
 
 ## Lifecycle
 
