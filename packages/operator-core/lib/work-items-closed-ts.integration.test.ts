@@ -42,15 +42,22 @@ const WS = 'ws-closed-ts';
 const BASE_DDL = `
   CREATE TABLE harness_shared.work_items (
     workspace_id            text   NOT NULL,
+    harness_slug            text   NOT NULL DEFAULT 'papercup',
     feature_id              text   NOT NULL,
     item_kind               text   NOT NULL,
     status                  text   NOT NULL,
     title                   text,
+    summary                 text,
     created_ts              bigint,
     updated_ts              bigint,
     terminal_owner          text,
     terminal_completion_ref text,
     authority               text,
+    -- Not touched by 698 itself, but REQUIRED by the later work_items migrations the
+    -- staleness auditor now (correctly) makes this fixture carry: 721 generates the lane
+    -- column from payload and 725 adds the payload object-shape guard. Without it those
+    -- two abort with 'column "payload" does not exist' (EI-18808675015292160).
+    payload                 jsonb,
     PRIMARY KEY (workspace_id, feature_id)
   );
 
@@ -87,9 +94,18 @@ describe('work_items.closed_ts (migration 698)', () => {
     db = await createFreshPgDb('closedts');
     sql = db.sql;
     await sql.unsafe(BASE_DDL);
-    await applyMigrationsForTest(sql, ['698-work-items-closed-ts.sql'], {
-      label: 'work-items-closed-ts',
-    });
+    await applyMigrationsForTest(
+      sql,
+      [
+        '698-work-items-closed-ts.sql',
+        // Later work_items migrations this fixture's BASE_DDL must also carry, in numeric
+        // order — the auditor (EI-18808675015292160) names them as they land.
+        '721-work-items-lane-generated-column.sql',
+        '725-payload-object-shape-guard-and-plan-item-stamp-index.sql',
+        '741-work-items-condition-key-singleton.sql',
+      ],
+      { label: 'work-items-closed-ts' },
+    );
   }, 120_000);
 
   afterAll(async () => {

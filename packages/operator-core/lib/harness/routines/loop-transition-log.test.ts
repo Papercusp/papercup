@@ -15,13 +15,14 @@ import {
  */
 
 /** A postgres-js-shaped tagged-template fake that records the statements it was given. */
-function fakeSql(opts: { throwOn?: RegExp } = {}) {
+function fakeSql(opts: { throwOn?: RegExp; code?: string } = {}) {
   const statements: { text: string; values: unknown[] }[] = [];
   const tag = (strings: TemplateStringsArray, ...values: unknown[]) => {
     const text = strings.join('?');
     statements.push({ text, values });
     if (opts.throwOn && opts.throwOn.test(text)) {
-      return Promise.reject(new Error('simulated postgres failure'));
+      const err = Object.assign(new Error('simulated postgres failure'), opts.code ? { code: opts.code } : {});
+      return Promise.reject(err);
     }
     return Promise.resolve([] as any);
   };

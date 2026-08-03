@@ -1718,12 +1718,35 @@ export default defineTool({
                 `queue hands them to a member — the count falls only when one is claimed and finished.`,
             }
           : {}),
-        ...(strandedFleetAlert ? { strandedFleetAlertReason: strandedFleetAlert.reason } : {}),
-        ...(specStarvedAlert ? { specStarvedAlertReason: specStarvedAlert.reason } : {}),
-        ...(idleWithClaimableAlert
-          ? { idleWithClaimableAlertReason: idleWithClaimableAlert.reason }
+        // EI-19313376980892266 item C: every alert ships its FALSIFIER beside its reason
+        // — the read-only one-liner whose output either confirms or KILLS the alert. The
+        // reason is what the leader believes; the falsifier is what they can run. Emitted
+        // as a sibling field rather than folded into the reason string so it survives a
+        // truncating renderer and is machine-checkable (alert-falsifier-reality.test.ts).
+        ...(strandedFleetAlert
+          ? {
+              strandedFleetAlertReason: strandedFleetAlert.reason,
+              strandedFleetAlertFalsifier: strandedFleetAlert.falsifier,
+            }
           : {}),
-        ...(floorStarvedAlert ? { floorStarvedAlertReason: floorStarvedAlert.reason } : {}),
+        ...(specStarvedAlert
+          ? {
+              specStarvedAlertReason: specStarvedAlert.reason,
+              specStarvedAlertFalsifier: specStarvedAlert.falsifier,
+            }
+          : {}),
+        ...(idleWithClaimableAlert
+          ? {
+              idleWithClaimableAlertReason: idleWithClaimableAlert.reason,
+              idleWithClaimableAlertFalsifier: idleWithClaimableAlert.falsifier,
+            }
+          : {}),
+        ...(floorStarvedAlert
+          ? {
+              floorStarvedAlertReason: floorStarvedAlert.reason,
+              floorStarvedAlertFalsifier: floorStarvedAlert.falsifier,
+            }
+          : {}),
         // P-014: always carried when ANY invariant is registered — including the
         // all-satisfied case. A leader must be able to tell "my checks ran and found
         // nothing" from "my checks are not running", which a reason-only field cannot
