@@ -116,6 +116,24 @@ export function buildAllocationResult({ next, filename, reservedBy, dryRun, cano
     arm_path: armPath,
     arm_command: `mv ${draftPath} ${armPath}`,
     reserved_by: reservedBy,
+    // Authoring-time reminder for the forward-compat guard (EI-19462877357083817).
+    //
+    // ⚠ Deliberately phrased so it does NOT satisfy check-migration-forward-compat's
+    // ACK_MARKER (/^[ \t]*--[ \t]*FORWARD-COMPAT:[ \t]*\S/im). That marker matches ANY
+    // non-whitespace after the colon, so a seeded placeholder line — `-- FORWARD-COMPAT:
+    // TODO`, or `-- FORWARD-COMPAT: <why>` — would RUBBER-STAMP the migration and
+    // silence the guard permanently. Hence the format is shown mid-line, never at the
+    // start of one. `next-migration-forward-compat-reminder.test.ts` pins this by
+    // running the real exported ACK_MARKER against this exact string.
+    forward_compat:
+      'If this migration contains destructive DDL (DROP INDEX / DROP COLUMN / DROP TABLE / ' +
+      'DROP CONSTRAINT / RENAME / SET NOT NULL / a partial UNIQUE INDEX), it needs an ' +
+      'acknowledgment line of the form:  -- FORWARD-COMPAT: <why the currently-deployed ' +
+      'release does not use this>  — written as a real sentence, not a placeholder. The DB ' +
+      'migrates NOW while :3070 keeps serving the older release checkout, so destructive DDL ' +
+      'breaks code that is still live. Without it the green gate reds LAST and fleet-wide, ' +
+      'hours after the DDL already applied. Prefer expand/contract: EXPAND now, CONTRACT in a ' +
+      'later migration. Check with: npm run lint:migration-forward-compat',
     note: dryRun
       ? 'DRY RUN — nothing reserved. Re-run without --dry-run to claim this number.'
       : `Reserved. Write + iterate the migration at ${draftPath} (a ".DRAFT" suffix — NOT the sidecar mirror). The runner only ever applies files matching *.sql, so this draft is INVISIBLE to boot auto-apply / db:migrate / the green-checkpoint preflight while you edit it (including any deliberate temporary both-ways guard-test mutation). Once it's ready and tested, ARM it for auto-apply with: mv ${draftPath} ${armPath}`,

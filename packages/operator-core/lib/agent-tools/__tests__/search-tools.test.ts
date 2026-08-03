@@ -70,7 +70,10 @@ type HybridMock = (
 describe('search:fulltext', () => {
   it('calls runFullTextSearch with query + workspaceId + the over-fetched (rerankCandidateCount) limit', async () => {
     const runFullTextSearch = vi.fn<FullTextMock>(async () => ({ results: [MOCK_HIT], totalHits: 1 }));
-    vi.doMock('@papercusp/search', () => ({ runFullTextSearch }));
+    vi.doMock('@papercusp/search', async (importOriginal) => ({
+      ...(await importOriginal<typeof import('@papercusp/search')>()),
+      runFullTextSearch,
+    }));
     vi.doMock('../search/rerank', mockRerank);
 
     const { default: tool } = await import('../search/fulltext');
@@ -88,7 +91,8 @@ describe('search:fulltext', () => {
   });
 
   it('returns hits and totalHits in the response', async () => {
-    vi.doMock('@papercusp/search', () => ({
+    vi.doMock('@papercusp/search', async (importOriginal) => ({
+      ...(await importOriginal<typeof import('@papercusp/search')>()),
       runFullTextSearch: vi.fn(async () => ({ results: [MOCK_HIT], totalHits: 1 })),
     }));
     vi.doMock('../search/rerank', mockRerank);
@@ -102,7 +106,10 @@ describe('search:fulltext', () => {
 
   it('expands scope=all to all four named scopes', async () => {
     const runFullTextSearch = vi.fn<FullTextMock>(async () => ({ results: [], totalHits: 0 }));
-    vi.doMock('@papercusp/search', () => ({ runFullTextSearch }));
+    vi.doMock('@papercusp/search', async (importOriginal) => ({
+      ...(await importOriginal<typeof import('@papercusp/search')>()),
+      runFullTextSearch,
+    }));
     vi.doMock('../search/rerank', mockRerank);
 
     const { default: tool } = await import('../search/fulltext');
@@ -116,7 +123,10 @@ describe('search:fulltext', () => {
 
   it('filters to only the requested scope', async () => {
     const runFullTextSearch = vi.fn<FullTextMock>(async () => ({ results: [], totalHits: 0 }));
-    vi.doMock('@papercusp/search', () => ({ runFullTextSearch }));
+    vi.doMock('@papercusp/search', async (importOriginal) => ({
+      ...(await importOriginal<typeof import('@papercusp/search')>()),
+      runFullTextSearch,
+    }));
     vi.doMock('../search/rerank', mockRerank);
 
     const { default: tool } = await import('../search/fulltext');
@@ -128,7 +138,10 @@ describe('search:fulltext', () => {
 
   it('passes harness_slug as scopeFilter', async () => {
     const runFullTextSearch = vi.fn<FullTextMock>(async () => ({ results: [], totalHits: 0 }));
-    vi.doMock('@papercusp/search', () => ({ runFullTextSearch }));
+    vi.doMock('@papercusp/search', async (importOriginal) => ({
+      ...(await importOriginal<typeof import('@papercusp/search')>()),
+      runFullTextSearch,
+    }));
     vi.doMock('../search/rerank', mockRerank);
 
     const { default: tool } = await import('../search/fulltext');
@@ -144,7 +157,8 @@ describe('search:fulltext', () => {
   // create a duplicate of an already-landed WI-* fix. The hint must appear on
   // every response that didn't search work_item, and NEVER when it did.
   it('surfaces work_item_scope_hint on the historic (work_item-less) default scope', async () => {
-    vi.doMock('@papercusp/search', () => ({
+    vi.doMock('@papercusp/search', async (importOriginal) => ({
+      ...(await importOriginal<typeof import('@papercusp/search')>()),
       runFullTextSearch: vi.fn(async () => ({ results: [], totalHits: 0 })),
     }));
     vi.doMock('../search/rerank', mockRerank);
@@ -156,7 +170,8 @@ describe('search:fulltext', () => {
   });
 
   it('surfaces work_item_scope_hint when an explicit scope omits work_item', async () => {
-    vi.doMock('@papercusp/search', () => ({
+    vi.doMock('@papercusp/search', async (importOriginal) => ({
+      ...(await importOriginal<typeof import('@papercusp/search')>()),
       runFullTextSearch: vi.fn(async () => ({ results: [], totalHits: 0 })),
     }));
     vi.doMock('../search/rerank', mockRerank);
@@ -168,7 +183,8 @@ describe('search:fulltext', () => {
   });
 
   it('omits work_item_scope_hint once scope:["work_item"] is included', async () => {
-    vi.doMock('@papercusp/search', () => ({
+    vi.doMock('@papercusp/search', async (importOriginal) => ({
+      ...(await importOriginal<typeof import('@papercusp/search')>()),
       runFullTextSearch: vi.fn(async () => ({ results: [], totalHits: 0 })),
     }));
     vi.doMock('../search/rerank', mockRerank);
@@ -180,7 +196,8 @@ describe('search:fulltext', () => {
   });
 
   it('omits work_item_scope_hint under scope:["all"] (work_item is included)', async () => {
-    vi.doMock('@papercusp/search', () => ({
+    vi.doMock('@papercusp/search', async (importOriginal) => ({
+      ...(await importOriginal<typeof import('@papercusp/search')>()),
       runFullTextSearch: vi.fn(async () => ({ results: [], totalHits: 0 })),
     }));
     vi.doMock('../search/rerank', mockRerank);
@@ -197,13 +214,23 @@ describe('search:fulltext', () => {
 describe('search:semantic', () => {
   it('calls runHybridSearch with query + mode + workspaceId', async () => {
     const runHybridSearch = vi.fn<HybridMock>(async () => ({ results: [], totalHits: 0, embedderAvailable: true }));
-    vi.doMock('@papercusp/search', () => ({ runHybridSearch }));
-    vi.doMock('../search/embedder', () => ({
+    vi.doMock('@papercusp/search', async (importOriginal) => ({
+      ...(await importOriginal<typeof import('@papercusp/search')>()),
+      runHybridSearch,
+    }));
+    vi.doMock('../search/embedder', async (importOriginal) => ({
+      // importOriginal keeps the rest of the module real — notably
+      // `embedderModeOf`, which the P-017 floor policy calls. A wholesale stub
+      // would leave it undefined; the policy's try/catch would swallow the
+      // throw and still yield "no floor", so these tests would pass for the
+      // WRONG reason and stop being evidence about the floor at all.
+      ...(await importOriginal<typeof import('../search/embedder')>()),
       buildQueryEmbedder: vi.fn(async () => vi.fn()),
-      // P-001: semantic.ts acquires the RESOLVED embedder — it needs the mode
-      // to pick a minScore floor in that model's units. 'test' is deliberately
-      // an UNMEASURED mode, so no floor is applied and these wiring assertions
-      // stay independent of the floor's value.
+      // P-001/P-017: semantic.ts acquires the RESOLVED embedder; the engine now
+      // derives the floor from that embedder INSTANCE. 'test' is deliberately
+      // an UNMEASURED mode, and the stub embedder was never registered by the
+      // real factory, so no floor applies and these wiring assertions stay
+      // independent of the floor's value.
       buildQueryEmbedderResolved: vi.fn(async () => ({ mode: 'test', dims: 768, embed: vi.fn() })),
       interactiveEmbedAcquireBudgetMs: vi.fn(() => 4000),
     }));
@@ -223,13 +250,23 @@ describe('search:semantic', () => {
 
   it('defaults to hybrid mode', async () => {
     const runHybridSearch = vi.fn<HybridMock>(async () => ({ results: [], totalHits: 0, embedderAvailable: false }));
-    vi.doMock('@papercusp/search', () => ({ runHybridSearch }));
-    vi.doMock('../search/embedder', () => ({
+    vi.doMock('@papercusp/search', async (importOriginal) => ({
+      ...(await importOriginal<typeof import('@papercusp/search')>()),
+      runHybridSearch,
+    }));
+    vi.doMock('../search/embedder', async (importOriginal) => ({
+      // importOriginal keeps the rest of the module real — notably
+      // `embedderModeOf`, which the P-017 floor policy calls. A wholesale stub
+      // would leave it undefined; the policy's try/catch would swallow the
+      // throw and still yield "no floor", so these tests would pass for the
+      // WRONG reason and stop being evidence about the floor at all.
+      ...(await importOriginal<typeof import('../search/embedder')>()),
       buildQueryEmbedder: vi.fn(async () => vi.fn()),
-      // P-001: semantic.ts acquires the RESOLVED embedder — it needs the mode
-      // to pick a minScore floor in that model's units. 'test' is deliberately
-      // an UNMEASURED mode, so no floor is applied and these wiring assertions
-      // stay independent of the floor's value.
+      // P-001/P-017: semantic.ts acquires the RESOLVED embedder; the engine now
+      // derives the floor from that embedder INSTANCE. 'test' is deliberately
+      // an UNMEASURED mode, and the stub embedder was never registered by the
+      // real factory, so no floor applies and these wiring assertions stay
+      // independent of the floor's value.
       buildQueryEmbedderResolved: vi.fn(async () => ({ mode: 'test', dims: 768, embed: vi.fn() })),
       interactiveEmbedAcquireBudgetMs: vi.fn(() => 4000),
     }));
@@ -243,15 +280,23 @@ describe('search:semantic', () => {
   });
 
   it('returns results and embedderAvailable flag', async () => {
-    vi.doMock('@papercusp/search', () => ({
+    vi.doMock('@papercusp/search', async (importOriginal) => ({
+      ...(await importOriginal<typeof import('@papercusp/search')>()),
       runHybridSearch: vi.fn(async () => ({ results: [MOCK_HIT], totalHits: 1, embedderAvailable: true })),
     }));
-    vi.doMock('../search/embedder', () => ({
+    vi.doMock('../search/embedder', async (importOriginal) => ({
+      // importOriginal keeps the rest of the module real — notably
+      // `embedderModeOf`, which the P-017 floor policy calls. A wholesale stub
+      // would leave it undefined; the policy's try/catch would swallow the
+      // throw and still yield "no floor", so these tests would pass for the
+      // WRONG reason and stop being evidence about the floor at all.
+      ...(await importOriginal<typeof import('../search/embedder')>()),
       buildQueryEmbedder: vi.fn(async () => vi.fn()),
-      // P-001: semantic.ts acquires the RESOLVED embedder — it needs the mode
-      // to pick a minScore floor in that model's units. 'test' is deliberately
-      // an UNMEASURED mode, so no floor is applied and these wiring assertions
-      // stay independent of the floor's value.
+      // P-001/P-017: semantic.ts acquires the RESOLVED embedder; the engine now
+      // derives the floor from that embedder INSTANCE. 'test' is deliberately
+      // an UNMEASURED mode, and the stub embedder was never registered by the
+      // real factory, so no floor applies and these wiring assertions stay
+      // independent of the floor's value.
       buildQueryEmbedderResolved: vi.fn(async () => ({ mode: 'test', dims: 768, embed: vi.fn() })),
       interactiveEmbedAcquireBudgetMs: vi.fn(() => 4000),
     }));

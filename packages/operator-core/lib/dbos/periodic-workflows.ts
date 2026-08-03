@@ -712,6 +712,11 @@ async function storageGrowthAlarmTick(): Promise<void> {
         `[storage-growth-alarm] ${r.breaches.length} categor(y/ies) over ceiling: ${r.breaches.map((b) => `${b.id}=${(b.bytes / 1024 ** 3).toFixed(1)}GB`).join(', ')}`,
       );
     }
+    if (r.undeclared.length > 0) {
+      console.log(
+        `[storage-growth-alarm] ${r.undeclared.length} table(s) over floor with NO retention decision: ${r.undeclared.map((u) => `${u.table}=${Math.round(u.bytes / 1024 ** 2)}MB`).join(', ')}`,
+      );
+    }
   }, { name: 'storage-growth-alarm' });
 }
 const storageGrowthAlarmWorkflow = idempotentRegisterWorkflow('storageGrowthAlarm', () =>

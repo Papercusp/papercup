@@ -365,6 +365,73 @@ describe('lintCarrySurfaceProvenance', () => {
   });
 });
 
+// EI-19461711239876849: a line that WITHDRAWS an owner attribution is the compliance
+// the convention asks for, not a violation of it. Every string below is a VERBATIM line
+// from this workspace's stored carry-surface corpus (harness_shared.carry_notes /
+// agent_facts), lightly truncated — the positives are real retractions the lint used to
+// penalise, and the negatives are the real asserted attributions that the filed
+// suggestion (suppress on a downgrade tag alone) would have silently laundered.
+describe('lintCarrySurfaceProvenance — owner-attribution WITHDRAWALS (EI-19461711239876849)', () => {
+  const withdrawals: [string, string][] = [
+    [
+      'the filed repro: refuses an owner tag and downgrades it to [peer:…]',
+      '⚠ PROVENANCE: the 2026-07-11 note "owner-authorization stands" is a THIRD-PARTY claim in a checkpoint, not a quoted owner turn. I could not verify it against an owner turn. Treat it as [peer:su-28637], NOT as [owner:Someone].',
+    ],
+    [
+      'a PROVENANCE CORRECTION block retracting a bare assertion',
+      'PROVENANCE CORRECTION: the "Owner approved implementing P-008" line is NOT anchored to an OWNER-stamped turn — it is [self-imposed]. Do not carry it forward as [owner:jane 2026-08-01].',
+    ],
+    [
+      'a trailing [self-imposed …, not an owner directive] tag (the dominant real-world form)',
+      'DO NOT relax the gate just because the chain is persuasive — that is the exact move this item was filed against. [self-imposed gate — not an owner directive]',
+    ],
+    [
+      'the noun-phrase form, with no [owner:…] bracket at all',
+      'Restarting kills the live panes, so it is the human call [self-imposed reasoning, not an owner directive].',
+    ],
+  ];
+  for (const [label, line] of withdrawals) {
+    it(`does not flag a withdrawal — ${label}`, () => {
+      const kinds = lintCarrySurfaceProvenance(line).matches.map((m) => m.kind);
+      expect(kinds).not.toContain('manual-owner-tag');
+      expect(kinds).not.toContain('possible-owner-tag-mention');
+    });
+  }
+
+  // The guard on the guard: these carry a downgrade tag AND assert real owner authority.
+  // Suppressing them is the laundering failure the conjunctive rule exists to avoid, so
+  // a future "simplification" to a downgrade-tag-only check must fail HERE.
+  const realAttributions: [string, string][] = [
+    [
+      'a relayed-verbatim owner ask — cites a [peer:…] relayer but asserts owner authority',
+      'SECOND LIVE OWNER ASK (relayed VERBATIM by [peer:su-bf97d] who received it interactively; treat as owner-sourced, relay noted): [owner:jane 2026-07-12] "test the shortcuts on all platforms."',
+    ],
+    [
+      'a dated pause directive asserted as owner-sourced',
+      '[owner:jane 2026-07-11, relayed via su-63834, verified verbatim in coord inbox] Pause directive: parking per token-conservation directive. [inferred] scope.',
+    ],
+    [
+      'an owner DEMAND asserted inside an otherwise [self-imposed]-tagged status line',
+      '[self-imposed 2026-07-12, AUTO] MASTER/DETAIL REWORK IMPLEMENTED — visual verify PENDING (owner [owner:jane 2026-07-12] demands real GUI verify before close).',
+    ],
+  ];
+  for (const [label, line] of realAttributions) {
+    it(`still flags a real asserted attribution — ${label}`, () => {
+      const kinds = lintCarrySurfaceProvenance(line).matches.map((m) => m.kind);
+      expect(kinds).toContain('manual-owner-tag');
+    });
+  }
+
+  it('does not suppress a bare-gate imperative merely because a withdrawal sits elsewhere', () => {
+    const text = [
+      'The "do NOT ship until the audit lands" rule below is mine.',
+      'Separately: that gate is [self-imposed], NOT an owner directive.',
+    ].join('\n');
+    const kinds = lintCarrySurfaceProvenance(text).matches.map((m) => m.kind);
+    expect(kinds).toContain('bare-gate-imperative');
+  });
+});
+
 describe('provenanceLintField', () => {
   it('returns undefined on a clean write (no noise on the common case)', () => {
     expect(provenanceLintField('routine progress note, nothing attributed')).toBeUndefined();

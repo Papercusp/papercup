@@ -17,6 +17,17 @@
  * "unbounded" tables are mostly TOAST-heavy + low-row (activity-bounded, not
  * runaway), so this PREVENTS a future recurrence rather than reclaiming today.
  *
+ * TWO INDEPENDENT LEGS (EI-7518). The category-ceiling leg above walks
+ * `computeStorageUsage()`, which iterates STORAGE_CATEGORIES — so it can only
+ * ever see tables somebody REGISTERED. A table nobody registered produces no
+ * row and therefore cannot breach at ANY size, which left this alarm unable to
+ * catch its own motivating case: a table growing unwatched *because* it was
+ * never declared. `detectUndeclaredGrowth` is the second leg — it sweeps the
+ * catalog directly (`pg_stat_user_tables`, NOT the category list) for tables
+ * over a floor that carry no recorded retention decision. Measured 2026-08-03,
+ * five such tables held ~278 MB, the largest being `pot_throughput_ticks` at
+ * 167 MB / 410,510 rows with zero DELETE sites anywhere in the tree.
+ *
  * Read-only + best-effort: it never throws (mirrors the other periodic monitors),
  * so it can never affect the system it watches.
  */

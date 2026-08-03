@@ -670,6 +670,25 @@ const CC_HOOK_FILES = [
   // milliseconds after the write, while it is still the author's turn to add one line
   // to a sibling fixture.
   'posttooluse-migration-fixture-drift-nudge.mjs',
+  // EI-19462877357083817: PostToolUse (matcher "Edit|Write|MultiEdit") ADVISORY nudge when an
+  // edited migration carries destructive DDL (DROP INDEX/COLUMN/TABLE/CONSTRAINT, RENAME,
+  // SET NOT NULL, partial UNIQUE INDEX) with no `-- FORWARD-COMPAT:` acknowledgment. The
+  // detector (scripts/check-migration-forward-compat.mjs) is correct but speaks LAST: it runs
+  // only inside green-checkpoint, which is hours after the write AND after db:migrate already
+  // applied the DDL to the live DB — so the window it exists to protect (dropping something
+  // out from under the older release still serving :3070) is never actually guarded, and what
+  // it delivers is a fleet-wide gate red. Worse, the gate short-circuits at the first failing
+  // leg, so this leg only RUNS once every earlier one passes: on WI-9591 it fired zero times
+  // in three preceding verdicts and surfaced only on the first candidate whose tests went
+  // green — a fresh red exactly when the fleet believed it was recovering. In that incident
+  // the required justification was ALREADY present in all five migrations and was rigorous;
+  // only the machine-readable token was missing. At least the fourth occurrence (WI-6842,
+  // EI-19407054630567497, WI-9573/WI-9591). Finding the violation was never the hard part —
+  // KNOWING TO RUN the lint is, at the one moment the fix is a single comment line typed by
+  // the author who still has the reasoning in their head. Deliberately covers `.DRAFT` /
+  // `.PENDING-CODE-DEPLOY` files, since next-migration.mjs tells authors to iterate there and
+  // that IS the authoring window.
+  'posttooluse-migration-forward-compat-nudge.mjs',
   // EI-19459260956682226: PostToolUse (matcher "Edit|Write|MultiEdit") ADVISORY nudge when
   // an edited tool-definition file breaches the P-011 prompt-weight budget. Three detectors
   // already measure this and ALL THREE are post-hoc or opt-in — the gate test (after the
@@ -1581,6 +1600,19 @@ export function mergeClaudeHookSettings(
     hooks.PostToolUse = replaceOurHookEntries(ev('PostToolUse'), ours('posttooluse-migration-fixture-drift-nudge.mjs'), {
       matcher: 'Edit|Write|MultiEdit',
       hooks: cmd('posttooluse-migration-fixture-drift-nudge.mjs'),
+    });
+  // merge_migration_forward_compat_nudge_hook — PostToolUse, matcher 'Edit|Write|MultiEdit'
+  // (EI-19462877357083817). Advisory only: it can never deny — destructive DDL is often
+  // correct, and the acknowledgment is the point, not abstention. Fires only when the file
+  // AS IT NOW STANDS carries destructive DDL with no `-- FORWARD-COMPAT:` line, i.e. exactly
+  // the state the green-checkpoint leg would red on hours later. The rule itself
+  // (violationsFor / ACK_MARKER / ENFORCE_FROM) is imported from the lint rather than copied,
+  // so the nudge and the gate leg cannot drift apart and leave the nudge quiet on a file the
+  // gate still fails.
+  if (has('posttooluse-migration-forward-compat-nudge.mjs'))
+    hooks.PostToolUse = replaceOurHookEntries(ev('PostToolUse'), ours('posttooluse-migration-forward-compat-nudge.mjs'), {
+      matcher: 'Edit|Write|MultiEdit',
+      hooks: cmd('posttooluse-migration-forward-compat-nudge.mjs'),
     });
   // merge_tool_prompt_weight_nudge_hook — PostToolUse, matcher 'Edit|Write|MultiEdit'
   // (EI-19459260956682226). Advisory only: it can never deny — growing a tool description

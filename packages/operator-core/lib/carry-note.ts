@@ -627,6 +627,18 @@ export function normalizeCheckEntries(
  * resurrect a checks-only checkpoint on a closed item. Both are intentional and
  * tested on their own side. Copying the work-item rule here would silently drop
  * owner-gated WALLS — precisely the failure walls exist to prevent.
+ *
+ * EI-19463731740128181: an EXPLICIT list REPLACES — {@link normalizeCheckEntries}
+ * and {@link normalizeWallEntries} iterate the INCOMING rows only, using `prior`
+ * solely to inherit recheck/verified/sinceMs onto claims that reappear. A carried
+ * claim the caller leaves out is therefore DROPPED. That is defensible as semantics
+ * (it is the only way to retire a stale row) but it was SILENT here: the reply
+ * reported a post-merge COUNT and nothing else, so adding one row to a carried set —
+ * the single most natural use of the parameter, and what the `checksLint` advisory
+ * actively tells you to do — destroyed the rest behind an `ok: true`. `droppedWalls`
+ * / `droppedChecks` make the loss VISIBLE so it is never inferable only by diffing a
+ * count you would have had to record beforehand. Mirrors the `checksDropped` report
+ * work_items:checkpoint landed for the identical defect (EI-19460631385508515).
  */
 export function mergeCarryRows(opts: {
   /** The AUTHORITATIVE prior note. Inside a `transform` this is the locked row's. */
@@ -640,7 +652,19 @@ export function mergeCarryRows(opts: {
   /** Whether this call writes a narrative at all (structured fields or a raw note). */
   hasNoteWrite: boolean;
   nowMs?: number;
-}): { note: string; narrativeBody: string; walls: WallEntry[]; checks: CheckEntry[] } {
+}): {
+  note: string;
+  narrativeBody: string;
+  walls: WallEntry[];
+  checks: CheckEntry[];
+  /** Prior WALL claims this write did not carry forward (see the EI-19463731740128181
+   *  note above). Empty when nothing was lost — including the carry-forward path,
+   *  where `undefined` preserves every prior row by construction. */
+  droppedWalls: string[];
+  /** Prior CHECK claims this write did not carry forward. Same contract as
+   *  {@link droppedWalls}. */
+  droppedChecks: string[];
+} {
   const priorParts = splitCarryNoteWalls(opts.priorNote ?? null);
   const priorCheckParts = splitCarryNoteChecks(priorParts.body);
   const rawParts = splitCarryNoteWalls(opts.baseNote ?? '');
@@ -663,7 +687,24 @@ export function mergeCarryRows(opts: {
     narrativeBody,
     walls,
     checks,
+    droppedWalls: droppedClaims(priorParts.walls, walls),
+    droppedChecks: droppedClaims(priorCheckParts.checks, checks),
   };
+}
+
+/** Prior claims absent from the surviving set, compared on the SAME trimmed key the
+ *  normalizers dedup by — so a row that merely changed its recheck/evidence (or was
+ *  re-passed with surrounding whitespace) never reads as dropped. Blank prior claims
+ *  are ignored: they can never be re-passed (the normalizers skip them), so counting
+ *  them would report a permanent phantom loss on every write. */
+function droppedClaims(
+  prior: ReadonlyArray<{ claim: string }>,
+  kept: ReadonlyArray<{ claim: string }>,
+): string[] {
+  const keptClaims = new Set(kept.map((r) => (r.claim ?? '').trim()));
+  return prior
+    .map((r) => (r.claim ?? '').trim())
+    .filter((claim) => claim.length > 0 && !keptClaims.has(claim));
 }
 
 // ── External-state-claim lint (P-009) ────────────────────────────────────────

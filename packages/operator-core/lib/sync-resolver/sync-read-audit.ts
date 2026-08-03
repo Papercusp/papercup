@@ -479,13 +479,29 @@ export async function measureSyncReadPayloadsViaRest(opts: {
     }
   }
 
+  const loadAvg1End = os.loadavg()[0];
+  return finishReport(measured, skipped, { loadAvg1Start, loadAvg1End, cores });
+}
+
+/**
+ * Shared tail of BOTH measurement paths (REST and in-process) — the ranking, the
+ * two disjoint buckets, and the report envelope.
+ *
+ * Extracted rather than duplicated on purpose. The two buckets are DISJOINT and
+ * both derive from the same `overBudget`: the point of WI-7084 is that every
+ * over-budget row lands in exactly ONE of them instead of an allowlisted one
+ * landing in neither. Two hand-copied versions of that rule is precisely how the
+ * conflation comes back, and it would come back silently — a duplicated filter
+ * that drifts still returns a well-formed report.
+ */
+function finishReport(
+  measured: SyncReadMeasurement[],
+  skipped: string[],
+  host: { loadAvg1Start: number; loadAvg1End: number; cores: number },
+): SyncReadAuditReport {
   measured.sort((a, b) => b.bytes - a.bytes);
-  // The two buckets are DISJOINT and both are derived from the same `overBudget`
-  // — the point of WI-7084 is that every over-budget row now lands in exactly one
-  // of them instead of an allowlisted one landing in neither.
   const violations = measured.filter((m) => m.overBudget && !m.allowlisted);
   const ratchetRegressions = measured.filter((m) => m.overBudget && m.allowlisted);
-  const loadAvg1End = os.loadavg()[0];
   return {
     measured,
     violations,
@@ -493,6 +509,172 @@ export async function measureSyncReadPayloadsViaRest(opts: {
     skipped,
     budgetBytes: PAYLOAD_BUDGET_BYTES,
     budgetMs: LATENCY_BUDGET_MS,
-    host: { loadAvg1Start, loadAvg1End, cores, loadPerCore: loadAvg1End / cores },
+    host: { ...host, loadPerCore: host.loadAvg1End / host.cores },
   };
+}
+
+/**
+ * LIVE audit, measured IN-PROCESS — same report as `measureSyncReadPayloadsViaRest`
+ * with no HTTP, no port to guess and no superuser token to read.
+ *
+ * WHY THIS IS BYTE-FAITHFUL, and not merely cheaper (EI-19457924854150358). Read
+ * `endpoint-route/routes/zero-harness/rest-query.ts` alongside this: for the path
+ * the audit actually exercises, everything between the resolver and the wire is
+ * reproduced here.
+ *
+ *   rest-query:64   rows = await resolveNamedQueryV2(name, args)   // name+args ONLY,
+ *                                                                  // no auth/workspace ctx
+ *   rest-query:96   delta negotiation is gated on `?delta=` being PRESENT — the audit
+ *                   never sends it, so the FULL branch runs every time
+ *   rest-query:140  responseValue = { rows, version: String(Date.now()) }
+ *   rest-query:143  body = await serializeJsonResponse(responseValue, itemCount)
+ *   rest-query:94   the response is NOT compressed (loopback desktop sidecar)
+ *
+ * So the REST path's `text.length` and this function's `body.length` measure the
+ * same string. `version` is a 13-digit epoch, so its contribution is length-stable
+ * across runs.
+ *
+ * ⚠ THAT EQUIVALENCE IS REASONED FROM THE SOURCE, NOT MEASURED HERE. Before you
+ * trust a number this function produced, calibrate it against
+ * `measureSyncReadPayloadsViaRest` on a live operator for a handful of names and
+ * check the byte counts agree — `compareMeasurementPaths()` below does exactly
+ * that. A divergence means this path measures the wrong thing, not that the REST
+ * path is stale; the REST function is the ORACLE, which is why it stays.
+ *
+ * `ms` here is resolver compute time with no loopback round-trip, which is what
+ * LATENCY_BUDGET_MS says it bounds ("compute time on the operator") — so it is
+ * closer to the documented meaning than the REST timing, not further from it.
+ *
+ * Kept free of STATIC imports like the rest of this module: pulling in the
+ * sync-resolver index statically would drag its ~7k-line registry into every
+ * consumer of this file, including the unit test that drives the REST path with
+ * a fake fetch and needs no resolver at all.
+ */
+export async function measureSyncReadPayloadsInProcess(opts: {
+  fixtures: Record<string, QueryFixture>;
+}): Promise<SyncReadAuditReport> {
+  const os = await import('node:os');
+  const { resolveNamedQueryV2, NAME_NOT_FOUND } = await import('./index');
+  const { serializeJsonResponse } = await import('../cpu-task-worker');
+
+  const measured: SyncReadMeasurement[] = [];
+  const skipped: string[] = [];
+  const cores = os.cpus().length || 1;
+  const loadAvg1Start = os.loadavg()[0];
+
+  for (const [name, fixture] of Object.entries(opts.fixtures)) {
+    if (fixture === null) {
+      skipped.push(name);
+      continue;
+    }
+    const started = Date.now();
+    try {
+      const resolved = await resolveNamedQueryV2(name, fixture as Record<string, unknown>);
+      const ms = Date.now() - started;
+      if (resolved === NAME_NOT_FOUND) {
+        // The REST path answers this with a 400, and an errored fetch is never
+        // judged over-budget there. Mirror that exactly rather than letting an
+        // unknown name score 0 bytes and read as a suspiciously lean query.
+        measured.push({
+          name,
+          bytes: 0,
+          ms,
+          rows: null,
+          overBudget: false,
+          overBytes: false,
+          overMs: false,
+          ...budgetCeilings(name),
+          allowlisted: Boolean(SYNC_READ_ALLOWLIST[name]),
+          error: 'unknown queryName',
+        });
+        continue;
+      }
+      const rowCount = Array.isArray(resolved) ? resolved.length : 1;
+      const body = await serializeJsonResponse(
+        { rows: resolved, version: String(Date.now()) },
+        rowCount,
+      );
+      const bytes = body.length;
+      measured.push({
+        name,
+        bytes,
+        ms,
+        rows: Array.isArray(resolved) ? resolved.length : null,
+        ...evaluateBudget(name, bytes, ms),
+      });
+    } catch (err) {
+      measured.push({
+        name,
+        bytes: 0,
+        ms: Date.now() - started,
+        rows: null,
+        overBudget: false,
+        overBytes: false,
+        overMs: false,
+        ...budgetCeilings(name),
+        allowlisted: Boolean(SYNC_READ_ALLOWLIST[name]),
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  const loadAvg1End = os.loadavg()[0];
+  return finishReport(measured, skipped, { loadAvg1Start, loadAvg1End, cores });
+}
+
+/**
+ * CALIBRATION — run both measurement paths over the same fixtures and report where
+ * their byte counts disagree. This is the falsifier for the equivalence argument in
+ * `measureSyncReadPayloadsInProcess`'s docstring; without it that argument is a
+ * confident claim about a wire format derived by reading, which is exactly the
+ * shape of finding this repo keeps having to retract.
+ *
+ * `bytesDelta` is inProcess − rest. Expect 0 on the no-delta full path. A NONZERO
+ * delta is the interesting output: it means rest-query does something to the body
+ * that this file does not reproduce, and the in-process numbers must not be
+ * trusted until it is explained.
+ *
+ * Deliberately NOT a unit test: it needs a live, populated operator, same as the
+ * REST harness it calibrates against.
+ */
+export async function compareMeasurementPaths(opts: {
+  baseUrl: string;
+  token: string;
+  fixtures: Record<string, QueryFixture>;
+  fetchImpl?: typeof fetch;
+}): Promise<{
+  agreed: string[];
+  diverged: { name: string; restBytes: number; inProcessBytes: number; bytesDelta: number }[];
+  restErrored: string[];
+  inProcessErrored: string[];
+}> {
+  const [rest, inProc] = await Promise.all([
+    measureSyncReadPayloadsViaRest(opts),
+    measureSyncReadPayloadsInProcess({ fixtures: opts.fixtures }),
+  ]);
+  const restBy = new Map(rest.measured.map((m) => [m.name, m]));
+  const agreed: string[] = [];
+  const diverged: { name: string; restBytes: number; inProcessBytes: number; bytesDelta: number }[] = [];
+  const restErrored: string[] = [];
+  const inProcessErrored: string[] = [];
+
+  for (const ip of inProc.measured) {
+    const r = restBy.get(ip.name);
+    if (!r) continue;
+    // An errored row on EITHER side carries an error body's bytes, not the read's
+    // — comparing those two would manufacture a divergence that says nothing about
+    // the wire format. Report them separately instead of scoring them.
+    if (r.error) restErrored.push(ip.name);
+    if (ip.error) inProcessErrored.push(ip.name);
+    if (r.error || ip.error) continue;
+    if (r.bytes === ip.bytes) agreed.push(ip.name);
+    else
+      diverged.push({
+        name: ip.name,
+        restBytes: r.bytes,
+        inProcessBytes: ip.bytes,
+        bytesDelta: ip.bytes - r.bytes,
+      });
+  }
+  return { agreed, diverged, restErrored, inProcessErrored };
 }

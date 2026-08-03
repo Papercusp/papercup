@@ -122,7 +122,8 @@ export interface ClusterScreenRow {
   verdict: ClusterVerdict;
 
   /**
-   * Prior art the filings THEMSELVES name, as bare work-item ids.
+   * REAL prior art: refs the filings name that resolve to a TERMINAL item
+   * (done/resolved/closed/dropped/deprecated). Only these drive DROP.
    *
    * ⚠ `kind: 'work-item-id'` ONLY. The "existing <X>" PHRASE half is deliberately
    * excluded from anything that drives a verdict — authors routinely open with
@@ -132,6 +133,26 @@ export interface ClusterScreenRow {
    * and was confirmed against a live mislabel by su-b9269a31 within the hour.)
    */
   assertedPriorArtIds: string[];
+
+  /**
+   * Refs that resolve to a STILL-OPEN item — a duplication signal, NOT prior art.
+   *
+   * Measured on the real backlog: EI-7654 and EI-7663 each cite EI-7650 and
+   * EI-7652 as "existing", and all four are open, untriaged members of the SAME
+   * 07-04→07-15 cohort. Counting those as prior art recommends DROP for an idea
+   * whose only crime is pointing at its own siblings.
+   *
+   * This is also how the collapse verdict works WITHOUT embeddings: an idea
+   * citing a live sibling is a merge candidate on the strength of its own text.
+   */
+  assertedOpenSiblingIds: string[];
+
+  /**
+   * Refs whose state could not be resolved (no resolver supplied, or lookup
+   * failed). Fail-open: counted as NEITHER prior art nor duplication, because
+   * guessing either way is a verdict the evidence does not support.
+   */
+  assertedUnresolvedIds: string[];
   /** Captured for the reader; NEVER reaches the verdict. See above. */
   assertedPhrases: string[];
 
@@ -159,7 +180,25 @@ export interface ClusterScreenRow {
   notes: string[];
 }
 
+/** States that mean an item is FINISHED, so a reference to it is real prior art. */
+export const TERMINAL_STATES = new Set([
+  'done',
+  'resolved',
+  'closed',
+  'dropped',
+  'deprecated',
+  'passed',
+]);
+
 export interface ScreenOptions extends CodeExistenceOptions {
+  /**
+   * Resolve referenced work-item ids to their states, so an asserted ref can be
+   * classified as real prior art (terminal) vs a live sibling (open).
+   *
+   * Omit and EVERY asserted ref lands in `assertedUnresolvedIds` — the screen
+   * then reports no prior art from this leg rather than assuming it.
+   */
+  resolveRefStates?: (ids: string[]) => Promise<Map<string, string>>;
   /** Override the clustering threshold (default `CLUSTER_DISTANCE_THRESHOLD`). */
   distanceThreshold?: number;
   /** Override the manual-split size (default `MANUAL_SPLIT_MIN_SIZE`). */
@@ -261,15 +300,20 @@ export function aggregateReports(
   reports: CodeExistenceReport[],
   memberIds: string[],
   maxSemantic = 5,
-): Pick<
-  ClusterScreenRow,
-  | 'assertedPriorArtIds'
-  | 'assertedPhrases'
-  | 'selfIdHits'
-  | 'lexicalHits'
-  | 'semanticHits'
-  | 'retrievalRan'
-> {
+): Omit<
+  Pick<
+    ClusterScreenRow,
+    | 'assertedPhrases'
+    | 'selfIdHits'
+    | 'lexicalHits'
+    | 'semanticHits'
+    | 'retrievalRan'
+  >,
+  never
+> & {
+  /** Every external ref named, UNCLASSIFIED — state resolution happens upstream. */
+  assertedRefIds: string[];
+} {
   const own = new Set(memberIds.map((id) => id.toUpperCase()));
   const assertedIds = new Set<string>();
   const phrases = new Set<string>();
@@ -321,7 +365,7 @@ export function aggregateReports(
   }
 
   return {
-    assertedPriorArtIds: [...assertedIds].sort(),
+    assertedRefIds: [...assertedIds].sort(),
     assertedPhrases: [...phrases].sort(),
     selfIdHits: [...selfIdHits].sort(),
     lexicalHits: [...lexical.values()].sort(
@@ -360,31 +404,55 @@ export function decideVerdict(
   size: number,
   evidence: Pick<
     ClusterScreenRow,
-    'assertedPriorArtIds' | 'selfIdHits' | 'lexicalHits' | 'retrievalRan'
+    | 'assertedPriorArtIds'
+    | 'assertedOpenSiblingIds'
+    | 'selfIdHits'
+    | 'lexicalHits'
+    | 'retrievalRan'
   >,
 ): { verdict: ClusterVerdict; notes: string[] } {
   const notes: string[] = [];
   const strongLexical = evidence.lexicalHits.filter((h) => h.strength === 'strong');
+
+  // HIGH-PRECISION legs only. Lexical is deliberately NOT here — see below.
   const hasPriorArt =
-    evidence.assertedPriorArtIds.length > 0 ||
-    evidence.selfIdHits.length > 0 ||
-    strongLexical.length > 0;
+    evidence.assertedPriorArtIds.length > 0 || evidence.selfIdHits.length > 0;
 
   if (evidence.assertedPriorArtIds.length > 0) {
-    notes.push(`filings name prior art outright: ${evidence.assertedPriorArtIds.join(', ')}`);
+    notes.push(
+      `filings name FINISHED prior art outright: ${evidence.assertedPriorArtIds.join(', ')}`,
+    );
   }
   if (evidence.selfIdHits.length > 0) {
     notes.push(`${evidence.selfIdHits.length} source file(s) cite a member's own id`);
   }
   if (strongLexical.length > 0) {
-    notes.push(`strong lexical hits: ${strongLexical.map((h) => h.term).join(', ')}`);
+    // Reported as context for the reader, never as grounds for a verdict.
+    //
+    // MEASURED on the real backlog, which is why this leg was demoted: the terms
+    // graded "strong" included `facts:assert`, `plans:get`, `plans:items`,
+    // `release:checkpoint-run` and `test:affected` — tool names the idea MENTIONS.
+    // Of course they exist in the tree. Their existence says nothing about
+    // whether the idea's proposed MECHANISM exists, and letting them drive DROP
+    // turned a screen into a recommendation to retire ideas for naming a tool.
+    notes.push(
+      `lexical hits (context only, not grounds to drop): ${strongLexical.map((h) => h.term).join(', ')}`,
+    );
   }
 
-  if (size > 1) {
-    notes.push(
-      `${size} filings co-cluster: recommend ONE rescoped item + ${size - 1} merged. ` +
-        `Co-clustering shows they are about one condition — it does NOT show the condition is dead.`,
-    );
+  if (size > 1 || evidence.assertedOpenSiblingIds.length > 0) {
+    if (evidence.assertedOpenSiblingIds.length > 0) {
+      notes.push(
+        `cites STILL-OPEN sibling(s) ${evidence.assertedOpenSiblingIds.join(', ')} as "existing" — ` +
+          `duplication, not prior art`,
+      );
+    }
+    if (size > 1) {
+      notes.push(
+        `${size} filings co-cluster: recommend ONE rescoped item + ${size - 1} merged. ` +
+          `Co-clustering shows they are about one condition — it does NOT show the condition is dead.`,
+      );
+    }
     return { verdict: 'COLLAPSE-AND-RESCOPE', notes };
   }
   if (hasPriorArt) return { verdict: 'DROP', notes };
@@ -392,7 +460,7 @@ export function decideVerdict(
     notes.push('retrieval did not run — an empty result here carries NO information');
     return { verdict: 'INCONCLUSIVE', notes };
   }
-  notes.push('screened, no prior art found — proceed to normal triage');
+  notes.push('screened, no conclusive prior art — proceed to normal triage');
   return { verdict: 'GREENLIGHT', notes };
 }
 
@@ -439,7 +507,39 @@ export async function screenIdeaClusters(
       }
     }
 
-    const evidence = aggregateReports(reports, memberIds, opts.maxSemanticPerCluster ?? 5);
+    const { assertedRefIds, ...evidenceRest } = aggregateReports(
+      reports,
+      memberIds,
+      opts.maxSemanticPerCluster ?? 5,
+    );
+
+    // Classify each asserted ref by the STATE of the item it points at. A ref to
+    // a finished item is prior art; a ref to a live one is duplication. Fail-open
+    // on a resolver error: unresolved refs drive nothing.
+    let states = new Map<string, string>();
+    if (opts.resolveRefStates && assertedRefIds.length > 0) {
+      try {
+        states = await opts.resolveRefStates(assertedRefIds);
+      } catch {
+        states = new Map();
+      }
+    }
+    const assertedPriorArtIds: string[] = [];
+    const assertedOpenSiblingIds: string[] = [];
+    const assertedUnresolvedIds: string[] = [];
+    for (const ref of assertedRefIds) {
+      const st = states.get(ref);
+      if (!st) assertedUnresolvedIds.push(ref);
+      else if (TERMINAL_STATES.has(st)) assertedPriorArtIds.push(ref);
+      else assertedOpenSiblingIds.push(ref);
+    }
+
+    const evidence = {
+      ...evidenceRest,
+      assertedPriorArtIds,
+      assertedOpenSiblingIds,
+      assertedUnresolvedIds,
+    };
     const { verdict, notes } = decideVerdict(members.length, evidence);
     const ages = members.map((m) => ageDays(m.createdAt, now));
     const confidence: ClusterConfidence =
@@ -473,10 +573,15 @@ export function summariseClusterRow(row: ClusterScreenRow): string {
   const bits: string[] = [];
   if (row.confidence === 'needs-manual-split') bits.push('⚠ NEEDS-MANUAL-SPLIT');
   if (!row.retrievalRan) bits.push('⚠ retrieval did not run');
-  if (row.assertedPriorArtIds.length > 0) bits.push(`asserted: ${row.assertedPriorArtIds.join('/')}`);
+  if (row.assertedPriorArtIds.length > 0) {
+    bits.push(`DONE prior art: ${row.assertedPriorArtIds.join('/')}`);
+  }
+  if (row.assertedOpenSiblingIds.length > 0) {
+    bits.push(`open siblings: ${row.assertedOpenSiblingIds.join('/')}`);
+  }
   if (row.selfIdHits.length > 0) bits.push(`self-id: ${row.selfIdHits.length}`);
   const strong = row.lexicalHits.filter((h) => h.strength === 'strong');
-  if (strong.length > 0) bits.push(`lexical: ${strong.map((h) => h.term).join('/')}`);
+  if (strong.length > 0) bits.push(`lexical(ctx): ${strong.map((h) => h.term).join('/')}`);
   if (row.semanticHits.length > 0) bits.push(`semantic: ${row.semanticHits.length}`);
   bits.push(`age ${row.premiseAgeDays.oldest}d`);
   return `${head} — ${bits.join(' · ')}`;

@@ -71,7 +71,7 @@ import {
   type AdmittedLog,
   type MergeCursorStore,
 } from './read-merge';
-import { produceLogSnapshot, shouldCompactOwnLog } from './log-snapshot';
+import { produceLogSnapshot, shouldCompactOwnLog, type ProduceSnapshotResult } from './log-snapshot';
 import type { OpEnvelope } from './op-envelope-types';
 import { buildHiveRekeyBootDeps } from './hive-epoch-boot-deps';
 import { drainQueuedEpochContent, type DrainedEpoch } from './hive-epoch-op-gate';
@@ -707,6 +707,27 @@ export interface BootedHarnessHandle {
    *  with the number of ops applied. Idempotent + safe to call concurrently
    *  (it serializes internally). */
   mergeNow(): Promise<number>;
+  /**
+   * P-019 (D-012) — append ONE fresh head `__snapshot__` to the own log, NOW, and
+   * resolve with what landed. Serviced inside the serialized merge block, so it can
+   * never race a merge pass.
+   *
+   * The caller is a RELEASE CUT on a box where this process holds the corestore: the
+   * cutter opens the store read-only (WI-4487, no outage) and therefore cannot append
+   * the head snapshot a `--sparse` cut requires. Without a snapshot inside
+   * `SNAPSHOT_SCAN_LOOKBACK` of the tail, `computeSparseFrom` returns 0 and the
+   * "sparse" seed silently ships the FULL core — how a 1.9 GB seed labelled sparse
+   * shipped on 2026-07-21 and went unnoticed for three weeks.
+   *
+   * NOT gated on the dark `SUBSTRATE_LOG_SNAPSHOT` producer flag — see the call site.
+   *
+   * ⚠ EXPENSIVE and SYNCHRONOUS with respect to merging: it reads the whole own log,
+   * so the merge loop stalls for its duration. One-shot and request-driven on purpose.
+   * Concurrent callers COALESCE onto one snapshot. Rejects if the engine is stopped;
+   * a failed merge pass does NOT reject — the request is serviced by the next pass, so
+   * the DEADLINE belongs to the caller.
+   */
+  produceHeadSnapshotNow(): Promise<ProduceSnapshotResult>;
   /**
    * Handle an inbound signed announce from a peer (called by the swarm
    * connection handler in 4b). Verifies the sig, runs the admission
@@ -1942,6 +1963,28 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     ? ((await findLatestSnapshotIndex(ownLog).catch(() => null)) ?? 0)
     : 0;
 
+  // P-019 (D-012) — the ON-DEMAND head snapshot. A release cut taken on a box where
+  // THIS process holds the corestore (the WI-4487 no-outage path) cannot append the
+  // head snapshot a `--sparse` cut requires: the cutter opens the store READ-ONLY and
+  // holds no write lock. So the cutter asks US to append it, and we service the
+  // request INSIDE the serialized merge block — the same place, and for the same
+  // reason, as the periodic compaction above: an append racing a merge pass is the
+  // one thing this engine must never do.
+  //
+  // Deliberately NOT gated on `snapshotProducerEnabled`. That dark flag rations the
+  // PERIODIC producer, whose cross-machine convergence is P-008-unverified. This is a
+  // one-shot, operator-requested append at release-cut time — precisely what the
+  // QUIESCED cut branch already does unconditionally today
+  // (cut-seed-cli.ts `refreshCorestoreStateForSeed`, which calls produceLogSnapshot
+  // with no flag check). Gating it here would make the no-outage cut strictly weaker
+  // than the outage-taking one it exists to replace, for no new exposure: the two cut
+  // paths append the SAME op at the SAME point in the cut. See plan
+  // memory-corpus-hygiene-and-release-distribution-2026-08-03 D-012.
+  let pendingHeadSnapshot: {
+    resolve: (r: ProduceSnapshotResult) => void;
+    reject: (e: unknown) => void;
+  } | null = null;
+
   // ── SUBSTRATE_SIDECAR Option B replication-offload (WI-604) ── FLAG-GATED, dark.
   // Read ONCE at boot (boot-scoped, like the snapshot + authority transports). When
   // ON, the swarm connection handler hands each accepted peer socket to the sidecar
@@ -2672,6 +2715,38 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     return pendingMerge;
   }
 
+  // P-019 (D-012) — arm the one-shot head snapshot and kick a pass to service it.
+  // COALESCES on a single in-flight request: two concurrent callers share one snapshot
+  // and one O(history) read. Without this, the second `pendingHeadSnapshot = …` would
+  // overwrite the first waiter and hang it forever — the shape that makes a "just set a
+  // flag" request channel quietly unsafe under any concurrency at all.
+  let inFlightHeadSnapshot: Promise<ProduceSnapshotResult> | null = null;
+  function produceHeadSnapshotNow(): Promise<ProduceSnapshotResult> {
+    if (inFlightHeadSnapshot) return inFlightHeadSnapshot;
+    if (stopped) {
+      // mergeNow() short-circuits to 0 when stopped, so an armed request would never be
+      // serviced and the caller would wait forever. Say so instead.
+      return Promise.reject(
+        new Error(
+          `[substrate] cannot produce an on-demand head snapshot for ${opts.workspaceId}::${opts.harnessSlug}: ` +
+            'this harness engine is stopped/closing.',
+        ),
+      );
+    }
+    const p = new Promise<ProduceSnapshotResult>((resolve, reject) => {
+      pendingHeadSnapshot = { resolve, reject };
+    }).finally(() => {
+      inFlightHeadSnapshot = null;
+    });
+    inFlightHeadSnapshot = p;
+    // Fire-and-forget: the pass's own promise tells us nothing about the snapshot (the
+    // snapshot's result arrives on `p`), and a merge-pass failure must not reject the
+    // request — the pending flag survives and the next pass (poll cadence ~1Hz) services
+    // it. The CALLER owns the deadline, not the engine.
+    void mergeNow();
+    return p;
+  }
+
   /**
    * WI-183: replication-stall detector. Samples an admitted REMOTE log's live
    * replicator-peer count (`RemoteLog.peersCount()` — best-effort, `undefined`
@@ -3183,6 +3258,52 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
           } catch {
             // observability must never abort the merge pass
           }
+        }
+      }
+
+      // P-019 (D-012) — service a pending ON-DEMAND head snapshot, here, inside the
+      // serialized merge block, for the same reason the periodic compaction above sits
+      // here: `produceLogSnapshot` APPENDS, and an append racing a pass is exactly what
+      // the merge gate exists to prevent.
+      //
+      // ⚠ COST, and it is the whole reason this is request-driven rather than automatic:
+      // produceLogSnapshot reads the ENTIRE own log ([0, length) — 461,475 blocks on this
+      // box as of 2026-08-03), so it STALLS the merge loop for its duration. That is
+      // survivable precisely because it is one-shot and deliberate (a release cut is
+      // already waiting on it), and it is why the request carries no retry: a caller that
+      // asks twice pays twice. The elapsed time is recorded as a boot event so the stall
+      // is observable after the fact rather than being an unexplained merge gap.
+      //
+      // Failure is DELIVERED to the requester, never swallowed: unlike the periodic
+      // compaction (best-effort, nobody is waiting), a caller is awaiting this promise and
+      // a silent failure here would leave the cut believing it has a head snapshot it does
+      // not have — which is the exact silent-degrade D-012 traced.
+      if (pendingHeadSnapshot) {
+        const waiter = pendingHeadSnapshot;
+        pendingHeadSnapshot = null;
+        const startedAt = Date.now();
+        const lengthBefore = ownLog.length;
+        try {
+          const snap = await produceLogSnapshot(ownLog, {
+            now: Date.now(),
+            schemaVersion: CURRENT_SCHEMA_VERSION,
+          });
+          if (snap.appended) lastSnapshotCoversUpTo = snap.coversUpTo;
+          try {
+            recordBootEvent(
+              opts.workspaceId,
+              opts.harnessSlug,
+              'peer_capped',
+              `on-demand head snapshot: appended=${snap.appended} coversUpTo=${snap.coversUpTo} ` +
+                `chunks=${snap.chunkCount} rows=${snap.rowCount} readBlocks=${lengthBefore} ` +
+                `mergeStalledMs=${Date.now() - startedAt}`,
+            );
+          } catch {
+            // observability must never abort the merge pass
+          }
+          waiter.resolve(snap);
+        } catch (e) {
+          waiter.reject(e);
         }
       }
 
@@ -4638,6 +4759,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     },
     admitted,
     mergeNow,
+    produceHeadSnapshotNow,
     onAnnounce: onAnnounceWithConnection,
     async ensureScopeParticipation(scopes: readonly ScopeId[]): Promise<void> {
       for (const s of scopes) participatingScopes.set(formatScopeId(s), s);

@@ -148,6 +148,69 @@ const empty = (outcome: CorpusRecallOutcome): CorpusRecallResult => ({
   outcome,
 });
 
+type QueryEmbedder = (text: string) => Promise<number[]>;
+
+/** Warm state for the query embedder. Module-scoped on purpose: the cost being
+ *  avoided is per-PROCESS, not per-call. */
+let warmEmbedder: QueryEmbedder | null = null;
+let warmupInFlight: Promise<void> | null = null;
+
+/**
+ * Acquire + prime the query embedder OFF the critical path, and resolve when
+ * it is genuinely usable. Idempotent; safe to call on every request.
+ *
+ * ⚠ THE FIX FOR EI-19460902984682209 — read before "simplifying" this back
+ * into an inline `await buildQueryEmbedder(...)` inside the leg.
+ *
+ * This leg's ENTIRE wall-clock bound is 2s (`corpusRecallTimeoutMs`). Measured
+ * 2026-08-03 on this box, a cold embedder costs ~1374ms to ACQUIRE and a
+ * further ~2222ms for its FIRST embed — ~3.6s, comfortably past the whole
+ * budget. Awaiting acquisition inline spent 60%+ of the leg's deadline merely
+ * DISCOVERING the embedder was not ready, leaving under 800ms for the ~1.2s
+ * search it was supposed to be degrading to. So the leg timed out and returned
+ * EMPTY — the one outcome indistinguishable from "nothing relevant" — on the
+ * first call of every fresh process, for its whole life.
+ *
+ * The header of this file already promised the right behaviour ("a COLD
+ * embedder ... must degrade to BM25-only rather than stall the turn"); the bug
+ * was that the DISCOVERY was charged to the very budget the degradation exists
+ * to protect. So a request uses the embedder only when it is ALREADY warm, and
+ * otherwise runs BM25-only immediately and leaves the warmup to finish behind
+ * it. Single-variable measurement, same 2s bound: cold call 2003ms/0 lines →
+ * 1197ms/6 lines, and those 6 lines are byte-identical to the warm hybrid
+ * result (this corpus's motivating retrieval is lexical — see
+ * `corpusEmbedBudgetMs`).
+ *
+ * A failed acquisition never latches: `warmupInFlight` is cleared so a later
+ * call retries, matching the rest of this file's fail-soft posture.
+ */
+export function warmCorpusEmbedder(): Promise<void> {
+  const started = (warmupInFlight ??= (async () => {
+    try {
+      const built = (await buildQueryEmbedder({
+        acquireBudgetMs: corpusEmbedBudgetMs(),
+      })) as QueryEmbedder | null;
+      if (!built) {
+        warmupInFlight = null;
+        return;
+      }
+      // Pay the cold ONNX/pipeline embed HERE rather than on a turn.
+      await built('corpus recall embedder warmup');
+      warmEmbedder = built;
+    } catch {
+      warmupInFlight = null;
+    }
+  })());
+  return started;
+}
+
+/** Test seam: drop the process-wide warm state so a suite can exercise both
+ *  the cold (BM25-only) and warm (hybrid) paths deterministically. */
+export function resetCorpusEmbedderWarmup(): void {
+  warmEmbedder = null;
+  warmupInFlight = null;
+}
+
 /** Bound a promise without touching the shared memory-degradation latch. */
 async function withBound<T>(p: Promise<T>, ms: number, fallback: T): Promise<T> {
   if (!Number.isFinite(ms)) return await p;
@@ -205,7 +268,7 @@ export async function recallCorpusContext(
   input: CorpusRecallInput,
 ): Promise<CorpusRecallResult> {
   const rawText = input.queryText?.trim() ?? '';
-  if (!rawText) return EMPTY;
+  if (!rawText) return empty('no-query');
   // The engine ANDs every lexeme (plainto_tsquery) and the injected text is the
   // raw prompt envelope — median 1000 chars at turn-start — so the raw text
   // must NEVER reach the engine. See corpusQueryText for the measurements.
@@ -215,14 +278,15 @@ export async function recallCorpusContext(
   // database, so the cheap exit stays cheap. The BANDED form (P-018/D-064)
   // needs a DF lookup and is derived inside the try, where `sql` exists.
   const queryText = corpusQueryText(rawText);
-  if (!queryText) return EMPTY;
-  if (!input.skipFlagCheck && !(await corpusRecallEnabled())) return EMPTY;
+  if (!queryText) return empty('no-query');
+  if (!input.skipFlagCheck && !(await corpusRecallEnabled())) return empty('disabled');
 
   const maxItems = input.maxItems ?? CORPUS_MAX_ITEMS;
   const sources = SEARCH_SOURCES.filter((s) =>
     (CORPUS_SOURCE_NAMES as readonly string[]).includes(s.name),
   );
-  if (sources.length === 0) return EMPTY;
+  // Nothing registered to read — the leg is off by configuration, not empty.
+  if (sources.length === 0) return empty('disabled');
 
   const budgetChars = input.budgetChars ?? CORPUS_BUDGET_CHARS;
 
@@ -255,7 +319,12 @@ export async function recallCorpusContext(
       // The DF signal, its table and its refresh routine are all kept: the
       // redesign needs the signal, just not as a pure rarity ranker.
       const effectiveQuery = queryText;
-      const built = await buildQueryEmbedder({ acquireBudgetMs: embedBudget });
+      // Already-warm ONLY — never await acquisition here. See
+      // `warmCorpusEmbedder` for the measurements behind that
+      // (EI-19460902984682209); a cold process runs BM25-only and warms behind
+      // this request instead of timing the whole leg out.
+      const built = warmEmbedder;
+      if (!built) void warmCorpusEmbedder();
       // The cascade can run the engine TWICE on the same query text, and the
       // query vector depends only on that text — memoise so the second stage
       // reuses the first stage's embedding instead of paying for it again.
@@ -395,7 +464,9 @@ export async function recallCorpusContext(
     })();
 
     const out = await withBound(run, corpusRecallTimeoutMs(), null);
-    if (!out) return EMPTY;
+    // The bound expired. This is NOT "the corpus had nothing" — say so, so a
+    // caller (and any benchmark) can tell the two apart (EI-19460902984682209).
+    if (!out) return empty('timed-out');
 
     return {
       block: renderCorpusBlock(out.lines),
@@ -403,11 +474,12 @@ export async function recallCorpusContext(
       dropped: out.dropped,
       embedderAvailable: out.fused.embedderAvailable,
       candidateCount: out.count,
+      outcome: 'ok',
     };
   } catch (err) {
     if (process.env.NODE_ENV !== 'test') {
       console.warn('[memory-corpus-recall] failed:', (err as Error).message);
     }
-    return EMPTY;
+    return empty('failed');
   }
 }

@@ -291,6 +291,7 @@ import miscRuntimeVintageReport from './misc/runtime-vintage-report';
 import miscMemoryCanaryProbe from './misc/memory-canary-probe';
 import miscDomainReadCanary from './misc/domain-read-canary';
 import miscManagedTimers from './misc/managed-timers';
+import miscSubstrateHeadSnapshot from './misc/substrate-head-snapshot';
 import miscHealth from './misc/health';
 import miscHealthReady from './misc/health-ready';
 import miscHealthDeep from './misc/health-deep';
@@ -765,6 +766,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(miscMemoryCanaryProbe as AnyRoute),
   ...flatten(miscDomainReadCanary as AnyRoute),
   ...flatten(miscManagedTimers as AnyRoute),
+  ...flatten(miscSubstrateHeadSnapshot as AnyRoute),
   ...flatten(miscHealth as AnyRoute),
   ...flatten(miscHealthReady as AnyRoute),
   ...flatten(miscHealthDeep as AnyRoute),

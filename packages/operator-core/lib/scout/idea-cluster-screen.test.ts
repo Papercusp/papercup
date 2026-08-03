@@ -145,7 +145,7 @@ describe('aggregateReports', () => {
       ],
       ['EI-7526', 'EI-7593'],
     );
-    expect(agg.assertedPriorArtIds).toEqual(['EI-7347']);
+    expect(agg.assertedRefIds).toEqual(['EI-7347']);
   });
 
   it('routes "existing <X>" phrases away from the verdict-bearing field', () => {
@@ -159,7 +159,7 @@ describe('aggregateReports', () => {
       ],
       ['EI-7303'],
     );
-    expect(agg.assertedPriorArtIds).toEqual([]);
+    expect(agg.assertedRefIds).toEqual([]);
     expect(agg.assertedPhrases).toEqual(['retry/backoff logic']);
   });
 
@@ -172,8 +172,16 @@ describe('aggregateReports', () => {
   });
 });
 
+const BARE = {
+  assertedPriorArtIds: [] as string[],
+  assertedOpenSiblingIds: [] as string[],
+  selfIdHits: [] as string[],
+  lexicalHits: [] as never[],
+  retrievalRan: true,
+};
+
 describe('decideVerdict', () => {
-  const bare = { assertedPriorArtIds: [], selfIdHits: [], lexicalHits: [], retrievalRan: true };
+  const bare = BARE;
 
   it('WORKED CASE (cluster A): a multi-member cluster collapses even WITH prior art', () => {
     // Ten filings, a TRUE premise, and three-week-older prior art (EI-7347).
@@ -182,16 +190,39 @@ describe('decideVerdict', () => {
     expect(verdict).toBe('COLLAPSE-AND-RESCOPE');
   });
 
-  it('WORKED CASE (EI-7303): a singleton with prior art is DROP', () => {
+  it('WORKED CASE (EI-7303): a singleton with high-precision prior art is DROP', () => {
     // Its own premise experiment PASSED at 21.8x, so a premise-only screen
     // greenlights it — and the build would have duplicated `watchdogKey`.
-    const { verdict } = decideVerdict(1, {
+    const { verdict } = decideVerdict(1, { ...bare, selfIdHits: ['lib/scout/watchdog.ts'] });
+    expect(verdict).toBe('DROP');
+  });
+
+  it('MEASURED: a ref to a STILL-OPEN sibling is duplication, not prior art', () => {
+    // Real backlog: EI-7654 and EI-7663 each cite EI-7650 and EI-7652 as
+    // "existing", and all four are open members of the same untriaged cohort.
+    // Reading those as prior art recommends retiring an idea for pointing at
+    // its own siblings.
+    const { verdict, notes } = decideVerdict(1, {
+      ...bare,
+      assertedOpenSiblingIds: ['EI-7650', 'EI-7652'],
+    });
+    expect(verdict).toBe('COLLAPSE-AND-RESCOPE');
+    expect(notes.join(' ')).toMatch(/duplication, not prior art/);
+  });
+
+  it('MEASURED: strong lexical hits alone must NOT reach DROP', () => {
+    // The terms graded "strong" on the real backlog included `facts:assert`,
+    // `plans:get` and `test:affected` — tool names the idea merely MENTIONS.
+    // They exist in the tree by definition and say nothing about the proposed
+    // mechanism. Letting them drive DROP retires ideas for naming a tool.
+    const { verdict, notes } = decideVerdict(1, {
       ...bare,
       lexicalHits: [
-        { term: 'watchdogKey', source: 'backtick', fileCount: 4, examples: [], strength: 'strong' },
+        { term: 'facts:assert', source: 'tool-name', fileCount: 12, examples: [], strength: 'strong' },
       ],
     });
-    expect(verdict).toBe('DROP');
+    expect(verdict).toBe('GREENLIGHT');
+    expect(notes.join(' ')).toMatch(/context only, not grounds to drop/);
   });
 
   it('collapses a multi-member cluster even when retrieval never ran', () => {
@@ -237,12 +268,7 @@ describe('falsifiability controls (deliberately broken implementations)', () => 
     const broken = (): string => 'GREENLIGHT';
     expect(broken()).toBe('GREENLIGHT'); // the wrong answer...
     expect(
-      decideVerdict(1, {
-        assertedPriorArtIds: [],
-        selfIdHits: [],
-        lexicalHits: [],
-        retrievalRan: false,
-      }).verdict,
+      decideVerdict(1, { ...BARE, retrievalRan: false }).verdict,
     ).toBe('INCONCLUSIVE'); // ...and the real one differs, so the property bites.
   });
 
@@ -258,12 +284,11 @@ describe('falsifiability controls (deliberately broken implementations)', () => 
   it('CALIBRATION: the controls are not passing because every verdict is the same', () => {
     // If the verdict function degenerated to one constant, the controls above
     // would still pass. This asserts the function genuinely discriminates.
-    const bare = { assertedPriorArtIds: [], selfIdHits: [], lexicalHits: [], retrievalRan: true };
     const verdicts = new Set([
-      decideVerdict(1, bare).verdict,
-      decideVerdict(1, { ...bare, retrievalRan: false }).verdict,
-      decideVerdict(1, { ...bare, selfIdHits: ['a.ts'] }).verdict,
-      decideVerdict(3, bare).verdict,
+      decideVerdict(1, BARE).verdict,
+      decideVerdict(1, { ...BARE, retrievalRan: false }).verdict,
+      decideVerdict(1, { ...BARE, selfIdHits: ['a.ts'] }).verdict,
+      decideVerdict(3, BARE).verdict,
     ]);
     expect(verdicts).toEqual(new Set(['GREENLIGHT', 'INCONCLUSIVE', 'DROP', 'COLLAPSE-AND-RESCOPE']));
   });
@@ -322,15 +347,57 @@ describe('screenIdeaClusters', () => {
     });
   });
 
-  it('surfaces asserted prior art and reaches DROP on a singleton', () => {
+  it('a ref to a TERMINAL item is prior art and reaches DROP', () => {
     const ideas = [
       idea('EI-7526', {
         text: 'Existing EI-7347 tooling detects actor-less signals reactively.',
       }),
     ];
-    return screenIdeaClusters(ideas, okDeps(), { now: NOW }).then((rows) => {
+    const resolveRefStates = async () => new Map([['EI-7347', 'resolved']]);
+    return screenIdeaClusters(ideas, okDeps(), { now: NOW, resolveRefStates }).then((rows) => {
       expect(rows[0].assertedPriorArtIds).toContain('EI-7347');
+      expect(rows[0].assertedOpenSiblingIds).toEqual([]);
       expect(rows[0].verdict).toBe('DROP');
+    });
+  });
+
+  it('the SAME ref, still OPEN, collapses instead of dropping', () => {
+    // Identical input, one field different in the store — the verdict must flip.
+    // This is the pair that proves state resolution is doing real work rather
+    // than the DROP above coming from the text alone.
+    const ideas = [
+      idea('EI-7526', {
+        text: 'Existing EI-7347 tooling detects actor-less signals reactively.',
+      }),
+    ];
+    const resolveRefStates = async () => new Map([['EI-7347', 'open']]);
+    return screenIdeaClusters(ideas, okDeps(), { now: NOW, resolveRefStates }).then((rows) => {
+      expect(rows[0].assertedPriorArtIds).toEqual([]);
+      expect(rows[0].assertedOpenSiblingIds).toEqual(['EI-7347']);
+      expect(rows[0].verdict).toBe('COLLAPSE-AND-RESCOPE');
+    });
+  });
+
+  it('FAIL-OPEN: with no resolver, an asserted ref drives NOTHING', () => {
+    // Guessing "terminal" would drop live ideas; guessing "open" would collapse
+    // genuinely-finished ones. Unresolved refs are reported and drive neither.
+    const ideas = [idea('EI-7526', { text: 'Existing EI-7347 tooling exists.' })];
+    return screenIdeaClusters(ideas, okDeps(), { now: NOW }).then((rows) => {
+      expect(rows[0].assertedUnresolvedIds).toEqual(['EI-7347']);
+      expect(rows[0].assertedPriorArtIds).toEqual([]);
+      expect(rows[0].verdict).not.toBe('DROP');
+      expect(rows[0].verdict).not.toBe('COLLAPSE-AND-RESCOPE');
+    });
+  });
+
+  it('a THROWING resolver fails open rather than failing the pass', () => {
+    const ideas = [idea('EI-7526', { text: 'Existing EI-7347 tooling exists.' })];
+    const resolveRefStates = async () => {
+      throw new Error('db down');
+    };
+    return screenIdeaClusters(ideas, okDeps(), { now: NOW, resolveRefStates }).then((rows) => {
+      expect(rows[0].assertedUnresolvedIds).toEqual(['EI-7347']);
+      expect(rows[0].verdict).not.toBe('DROP');
     });
   });
 
@@ -368,6 +435,8 @@ describe('summariseClusterRow', () => {
       confidence: 'high',
       verdict: 'INCONCLUSIVE',
       assertedPriorArtIds: [],
+      assertedOpenSiblingIds: [],
+      assertedUnresolvedIds: [],
       assertedPhrases: [],
       selfIdHits: [],
       lexicalHits: [],
@@ -389,6 +458,8 @@ describe('summariseClusterRow', () => {
       confidence: 'high',
       verdict: 'COLLAPSE-AND-RESCOPE',
       assertedPriorArtIds: ['EI-7347'],
+      assertedOpenSiblingIds: [],
+      assertedUnresolvedIds: [],
       assertedPhrases: [],
       selfIdHits: [],
       lexicalHits: [],
@@ -398,6 +469,6 @@ describe('summariseClusterRow', () => {
       notes: [],
     };
     expect(summariseClusterRow(row)).toMatch(/\+6/);
-    expect(summariseClusterRow(row)).toMatch(/asserted: EI-7347/);
+    expect(summariseClusterRow(row)).toMatch(/DONE prior art: EI-7347/);
   });
 });

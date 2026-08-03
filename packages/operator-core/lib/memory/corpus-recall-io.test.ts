@@ -33,7 +33,9 @@ vi.mock('../agent-tools/search/embedder', () => ({ buildQueryEmbedder }));
 vi.mock('@papercusp/flags', () => ({ FLAGS: { MEMORY_CORPUS_RECALL: 'papercusp-memory-corpus-recall' } }));
 vi.mock('@papercusp/flags/server', () => ({ getFlag }));
 
-const { recallCorpusContext } = await import('./corpus-recall-io');
+const { recallCorpusContext, warmCorpusEmbedder, resetCorpusEmbedderWarmup } = await import(
+  './corpus-recall-io'
+);
 
 const hit = (over: Record<string, unknown> = {}) => ({
   source: 'work_item',
@@ -62,6 +64,12 @@ beforeEach(() => {
   getFlag.mockResolvedValue(true);
   buildQueryEmbedder.mockResolvedValue((async () => [0.1, 0.2]) as unknown);
   delete process.env.PAPERCUSP_MEMORY_CORPUS_TIMEOUT_MS;
+  // The embedder warm state is per-PROCESS by design (EI-19460902984682209), so
+  // without this a warmup kicked off by an earlier test silently supplies the
+  // NEXT test's embedder — which is exactly how two tests here first went red:
+  // one asserting the cold path saw a live embedder, one asserting an embed
+  // count saw a stale embedder from a previous test's mock and counted zero.
+  resetCorpusEmbedderWarmup();
 });
 
 describe('recallCorpusContext — the contract handed to the search engine', () => {
@@ -252,6 +260,89 @@ describe('recallCorpusContext — degradation (never throws, never blocks a turn
     const [, ctx] = runHybridSearch.mock.calls[0];
     expect((ctx as { embedder: unknown }).embedder).toBeNull();
   });
+
+  /**
+   * EI-19460902984682209 — the COLD-START regression guard.
+   *
+   * Measured on this box: acquiring the embedder costs ~1374ms and its first
+   * embed ~2222ms, against a whole-leg bound of 2000ms. Awaiting acquisition
+   * inline therefore spent the leg's entire deadline discovering the embedder
+   * was not ready, and the FIRST call in every fresh process returned an empty
+   * block — indistinguishable from "nothing relevant". Single-variable arms,
+   * same bound: 2003ms/0 lines inline vs 1197ms/6 lines when the acquisition is
+   * off the critical path.
+   *
+   * This is the falsifier: an acquisition that NEVER settles must not cost the
+   * leg anything. Revert to an inline `await buildQueryEmbedder(...)` and the
+   * leg stalls until its bound and hands back a null block, failing here.
+   */
+  it('never awaits embedder acquisition — a never-resolving acquire costs the leg nothing', async () => {
+    buildQueryEmbedder.mockReturnValue(new Promise(() => {}) as unknown); // never settles
+    runHybridSearch.mockResolvedValue({ ...ok(), embedderAvailable: false });
+    const t0 = Date.now();
+    const res = await recallCorpusContext(base);
+    expect(res.block).toContain('WI-6512');
+    expect(res.outcome).toBe('ok');
+    expect(Date.now() - t0).toBeLessThan(200);
+    const [, ctx] = runHybridSearch.mock.calls[0];
+    expect((ctx as { embedder: unknown }).embedder).toBeNull();
+  });
+
+  it('the FIRST call runs BM25-only even when acquisition would succeed, then warms for later ones', async () => {
+    runHybridSearch.mockResolvedValue({ ...ok(), embedderAvailable: false });
+    const cold = await recallCorpusContext(base);
+    expect(cold.block).toContain('WI-6512'); // the cold call still ANSWERS
+    expect((runHybridSearch.mock.calls[0][1] as { embedder: unknown }).embedder).toBeNull();
+
+    await warmCorpusEmbedder();
+    runHybridSearch.mockClear();
+    await recallCorpusContext(base);
+    expect((runHybridSearch.mock.calls[0][1] as { embedder: unknown }).embedder).not.toBeNull();
+  });
+
+  it('a failed acquisition does not latch — a later call retries', async () => {
+    buildQueryEmbedder.mockResolvedValue(null as unknown);
+    await warmCorpusEmbedder();
+    buildQueryEmbedder.mockResolvedValue((async () => [0.1, 0.2]) as unknown);
+    await warmCorpusEmbedder();
+    runHybridSearch.mockResolvedValue(ok());
+    await recallCorpusContext(base);
+    expect((runHybridSearch.mock.calls[0][1] as { embedder: unknown }).embedder).not.toBeNull();
+  });
+
+  /**
+   * `lines: []` used to wear five faces at once. The dangerous pair is
+   * `timed-out` (the leg never finished — says NOTHING about the corpus) and a
+   * completed run that genuinely found nothing; reading the first as the second
+   * is what hid this bug for the leg's whole life.
+   */
+  it('distinguishes a bound expiry from a genuinely empty corpus', async () => {
+    process.env.PAPERCUSP_MEMORY_CORPUS_TIMEOUT_MS = '20';
+    runHybridSearch.mockImplementation(
+      () => new Promise((resolve) => setTimeout(() => resolve(ok()), 500)),
+    );
+    const timedOut = await recallCorpusContext(base);
+    expect(timedOut.outcome).toBe('timed-out');
+    expect(timedOut.lines).toEqual([]);
+
+    delete process.env.PAPERCUSP_MEMORY_CORPUS_TIMEOUT_MS;
+    runHybridSearch.mockReset();
+    runHybridSearch.mockResolvedValue(ok([]));
+    const reallyEmpty = await recallCorpusContext(base);
+    expect(reallyEmpty.outcome).toBe('ok'); // ran to completion, found nothing
+    expect(reallyEmpty.lines).toEqual([]);
+  });
+
+  it('reports why it declined to run at all', async () => {
+    getFlag.mockResolvedValue(false);
+    expect((await recallCorpusContext(base)).outcome).toBe('disabled');
+    getFlag.mockResolvedValue(true);
+    expect((await recallCorpusContext({ ...base, queryText: 'a of to the and' })).outcome).toBe(
+      'no-query',
+    );
+    runHybridSearch.mockRejectedValue(new Error('pg down'));
+    expect((await recallCorpusContext(base)).outcome).toBe('failed');
+  });
 });
 
 /**
@@ -363,6 +454,11 @@ describe('recallCorpusContext — the P-017 cascade', () => {
   it('embeds ONCE across both stages — the cascade must not double the embed bill', async () => {
     const embed = vi.fn(async () => [0.1, 0.2]);
     buildQueryEmbedder.mockResolvedValue(embed as unknown);
+    // The leg only ever uses an ALREADY-warm embedder, so warm it explicitly —
+    // this is the hybrid path, and without the warmup the cascade would
+    // correctly run BM25-only and embed zero times.
+    await warmCorpusEmbedder();
+    embed.mockClear(); // the warmup itself embeds once; count only the cascade
     runHybridSearch.mockImplementation(async (_s: unknown, ctx: { embedder: ((t: string) => Promise<number[]>) | null }) => {
       // The engine calls the embedder itself; both stages share one context.
       if (ctx.embedder) await ctx.embedder(QUERY);
