@@ -12,7 +12,7 @@
  * Pure — unit-tests without PG.
  */
 
-import type { RecencyRank } from '@papercusp/search';
+import type { MatchProvenance, RecencyRank } from '@papercusp/search';
 import type { RosterEntry } from './adv-roster';
 import type { AdvSessionRow } from './adv-sessions';
 

@@ -78,6 +78,7 @@ import { inWorkspaceTxn } from '../locks/in-workspace-txn';
 import { probeServiceStart } from './systemd-service-probe';
 import { RESTART_TARGET_UNITS } from './restart-target-units';
 import { activeWorkspaceId } from '../../workspace-registry';
+import { checkGateCollision, isGateSensitiveTarget } from '../../release/gate-collision-guard';
 
 const MAX_DRAIN_SEC = 300;
 const DEFAULT_DRAIN_SEC = 120;
@@ -246,6 +247,16 @@ export default defineTool({
      *  confirm+drain is the deliberate-action gate; this only lifts the env
      *  backstop. Every real restart it enables is written to audit_log. */
     authorize: z.boolean().optional(),
+    /** EI-19385475092979200: proceed even though a green-checkpoint run is in
+     *  flight (or is about to fire). A gate-sensitive restart is SOFT-blocked,
+     *  not hard-blocked — a genuinely wedged sidecar mid-run must still be
+     *  restartable — but the override has to be deliberate and stated. */
+    override_gate_collision: z
+      .boolean()
+      .optional()
+      .describe(
+        'Restart a gate-sensitive target (embed-sidecar/gateway/bg-host) even though a green-checkpoint run is in flight or imminent. Only pass when the target is genuinely wedged and cannot wait — a restart mid-run can starve the gate into a FALSE red that gets misdiagnosed as a regression.',
+      ),
     /** Short free-text reason, recorded on the audit_log row when a real
      *  restart fires (either enablement route). Optional but encouraged when
      *  using `authorize` in place of the env gate. */
@@ -274,12 +285,22 @@ export default defineTool({
               : ''
           }`
         : '';
+      // EI-19385475092979200: report the gate-collision state in the PREVIEW too. A dry run is
+      // where an agent decides whether to act now or wait, so telling it "the gate fires in 40s"
+      // here is what prevents the confirm call from being made at all — strictly better than
+      // refusing that call afterwards. Read-only; never blocks the dry run.
+      const preview = await checkGateCollision(target, args.override_gate_collision === true);
       return json({
         ok: true,
         dry_run: true,
         target,
         would_run: restartCmd,
-        note: `Pass confirm:true to acquire exclusive(${cfg.resource}), drain current users, then restart. DISRUPTS all agents.${cooldownNote} confirm:true ALONE is not enough — the real restart also needs the enablement gate: pass authorize:true + a short \`reason\` (≤300 chars) in the same call, or set PAPERCUSP_ALLOW_DEV_RESTART=1 on the operator process. Without it the call is REFUSED outright (ok:false, nothing drained).`,
+        ...(isGateSensitiveTarget(target)
+          ? { gate_collision: { kind: preview.kind, would_block: preview.blocked, ...preview.detail } }
+          : {}),
+        note: `Pass confirm:true to acquire exclusive(${cfg.resource}), drain current users, then restart. DISRUPTS all agents.${cooldownNote} confirm:true ALONE is not enough — the real restart also needs the enablement gate: pass authorize:true + a short \`reason\` (≤300 chars) in the same call, or set PAPERCUSP_ALLOW_DEV_RESTART=1 on the operator process. Without it the call is REFUSED outright (ok:false, nothing drained).${
+          preview.blocked ? ` ⚠ ${preview.note}` : ''
+        }`,
       });
     }
 
