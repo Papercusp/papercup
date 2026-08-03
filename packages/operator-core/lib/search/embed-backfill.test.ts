@@ -136,13 +136,13 @@ describe('runBackfillSweep (P-010)', () => {
 
     // Simulate a sweep that took the latch and never gave it back.
     state.running = true;
-    state.startedAt = Date.now() - 16 * 60 * 1000; // older than the 15-min ceiling
+    state.startedAt = Date.now() - 61 * 60 * 1000; // older than the 60-min ceiling
 
     unsafeResults = [[]]; // ext probe → no vector extension → clean early exit
 
     // Precondition: we really are holding the latch the module reads.
     expect(state.running).toBe(true);
-    expect(state.startedAt).toBeLessThan(Date.now() - 15 * 60 * 1000);
+    expect(state.startedAt).toBeLessThan(Date.now() - 60 * 60 * 1000);
 
     const result = await runBackfillSweep();
 
@@ -166,8 +166,13 @@ describe('runBackfillSweep (P-010)', () => {
       Symbol.for('papercusp.embedBackfillSweepState')
     ] as { running: boolean; startedAt: number | null };
 
+    // 20 MINUTES — deliberately longer than a naive "surely a sweep is done by
+    // now" guess. Measured 2026-08-03: consecutive HEALTHY sweeps took 14.5min
+    // and 15.3min against the real backlog. An earlier draft of this fix set the
+    // ceiling at 15min, which would have declared both of those dead and run a
+    // second sweep alongside them. This case fails if anyone re-lowers it.
     state.running = true;
-    state.startedAt = Date.now() - 30 * 1000; // slow, but well inside the ceiling
+    state.startedAt = Date.now() - 20 * 60 * 1000;
 
     const result = await runBackfillSweep();
     expect(result).toEqual({ skipped: 'already_running' });

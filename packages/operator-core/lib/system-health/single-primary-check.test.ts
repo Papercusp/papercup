@@ -13,8 +13,14 @@ describe('evaluatePrimaryCount (pure)', () => {
   it('exactly one → healthy', () => {
     expect(evaluatePrimaryCount(1)).toMatchObject({ ok: true, key: null });
   });
-  it('zero → blocker (silent routine-engine death)', () => {
-    expect(evaluatePrimaryCount(0)).toMatchObject({ ok: false, severity: 'blocker', key: 'no-primary' });
+  // WI-7317: still a BLOCKER (an unobservable database must never silence a real outage) but
+  // no longer the `no-primary` death verdict — with no evidence argument nothing was observed.
+  it('zero with no evidence at all → blocker, but the UNVERIFIED key', () => {
+    expect(evaluatePrimaryCount(0)).toMatchObject({
+      ok: false,
+      severity: 'blocker',
+      key: 'no-primary-unverified',
+    });
   });
   it('two → blocker (split-brain catastrophe)', () => {
     const v = evaluatePrimaryCount(2);
@@ -56,9 +62,10 @@ describe('evaluatePrimaryCount — count 0 checks its consequence against live e
     expect(v.summary).toContain('all down');
   });
 
-  it('zero with UNKNOWN evidence falls back to the blocker — never invents a healthier read', () => {
-    expect(evaluatePrimaryCount(0, { lastRoutineFireAgeSec: null }).key).toBe('no-primary');
-    expect(evaluatePrimaryCount(0).key).toBe('no-primary');
+  it('zero with UNKNOWN evidence never invents a healthier read — it still pages', () => {
+    // Severity is the conservative axis and does NOT move: unknown still reaches the owner.
+    expect(evaluatePrimaryCount(0, { lastRoutineFireAgeSec: null }).severity).toBe('blocker');
+    expect(evaluatePrimaryCount(0).severity).toBe('blocker');
   });
 
   it('split-brain is unaffected by activity evidence (>1 is always a blocker)', () => {
@@ -73,6 +80,86 @@ describe('evaluatePrimaryCount — count 0 checks its consequence against live e
     expect(routinesDemonstrablyFiring({ lastRoutineFireAgeSec: -5 })).toBe(false);
     expect(routinesDemonstrablyFiring({ lastRoutineFireAgeSec: NaN })).toBe(false);
     expect(routinesDemonstrablyFiring(undefined)).toBe(false);
+  });
+});
+
+// WI-7317 — absence of evidence is not evidence of death. The count-0 split originally routed
+// a NULL age (i.e. "I could not observe liveness") into the `no-primary` death verdict. That is
+// the input a MISRESOLVED DB handle produces, because `count` and the liveness age are read
+// through the SAME handle — so the single most assertive alarm in the system fired on exactly
+// the reading that proves the reader is broken. Measured live 2026-08-03: 108 active routines
+// in papercusp-workspace, most recent fire 0.7s earlier, 1 live primary, while this guard
+// broadcast "routines, git-sync and the Mug wake-loop are all down" on a streak of 175.
+describe('evaluatePrimaryCount — an UNOBSERVED count-0 never claims the engine is dead', () => {
+  const UNAVAILABLE = { lastRoutineFireAgeSec: null, status: 'unavailable' as const };
+  const ABSENT = { lastRoutineFireAgeSec: null, status: 'absent' as const };
+
+  it('a FAILED liveness read is its own condition, not the death verdict', () => {
+    expect(evaluatePrimaryCount(0, UNAVAILABLE)).toMatchObject({
+      severity: 'blocker',
+      key: 'no-primary-unverified',
+    });
+  });
+
+  it('an EMPTY liveness read is likewise unverified — a live workspace always has fire times', () => {
+    expect(evaluatePrimaryCount(0, ABSENT).key).toBe('no-primary-unverified');
+  });
+
+  it.each([
+    ['unavailable', UNAVAILABLE],
+    ['absent', ABSENT],
+    ['not gathered', undefined],
+  ])('never renders the routine-engine-death text (%s)', (_label, ev) => {
+    const s = evaluatePrimaryCount(0, ev).summary;
+    expect(s).not.toContain('all down');
+    expect(s).not.toContain('routine-engine-death');
+    expect(s).toContain('UNVERIFIED');
+  });
+
+  it('warns that the COUNT is equally unverified — they share one DB handle', () => {
+    // The trap that cost hours: reading count-0 as an independent corroborating observation.
+    expect(evaluatePrimaryCount(0, UNAVAILABLE).summary).toContain('SAME database handle');
+  });
+
+  it('prescribes VERIFY, never "restart the bg-host" — the remediation is the real harm', () => {
+    // Acting on a false no-primary blocker kills in-flight routine work and reaps headless
+    // children in that cgroup (EI-9748 class), so the text must not send anyone to a restart.
+    const s = evaluatePrimaryCount(0, UNAVAILABLE).summary;
+    expect(s).toContain('VERIFY BEFORE ACTING');
+    expect(s).not.toContain('Start the bg-host');
+  });
+
+  it('distinguishes the two unobserved causes — a wrong workspace id is diagnosable', () => {
+    expect(evaluatePrimaryCount(0, UNAVAILABLE).summary).toContain('FAILED');
+    expect(evaluatePrimaryCount(0, ABSENT).summary).toContain('MISRESOLVED workspace id');
+  });
+
+  it('a NEGATIVE age is clock skew, not staleness — also unverified', () => {
+    // routinesDemonstrablyFiring already rejects it; it must not fall through to "stale".
+    expect(evaluatePrimaryCount(0, { lastRoutineFireAgeSec: -5 }).key).toBe('no-primary-unverified');
+    expect(evaluatePrimaryCount(0, { lastRoutineFireAgeSec: NaN }).key).toBe('no-primary-unverified');
+  });
+
+  it('a genuinely OBSERVED stale age keeps the death verdict untouched', () => {
+    // The one reading that earns it: we looked, and background work really has stopped.
+    const v = evaluatePrimaryCount(0, { lastRoutineFireAgeSec: 3600, status: 'observed' });
+    expect(v).toMatchObject({ severity: 'blocker', key: 'no-primary' });
+    expect(v.summary).toContain('all down');
+  });
+
+  it('every non-healthy verdict carries its evidence, so the claim is auditable later', () => {
+    // Nothing recorded whether liveness was ever read, which is why the 2026-08-03 diagnosis
+    // needed hours of archaeology instead of one look at the escalation body.
+    expect(evaluatePrimaryCount(0, { lastRoutineFireAgeSec: 42 }).evidenceNote).toContain('fired 42s ago');
+    expect(evaluatePrimaryCount(0, { lastRoutineFireAgeSec: 3600 }).evidenceNote).toContain('3600s');
+    expect(evaluatePrimaryCount(0, UNAVAILABLE).evidenceNote).toContain('NOT observed');
+    expect(evaluatePrimaryCount(2, UNAVAILABLE).evidenceNote).toContain('NOT observed');
+    expect(evaluatePrimaryCount(1).evidenceNote).toBeUndefined();
+  });
+
+  it('split-brain is still decided on the count alone', () => {
+    expect(evaluatePrimaryCount(2, UNAVAILABLE).key).toBe('split-brain-primary');
+    expect(evaluatePrimaryCount(2, ABSENT).key).toBe('split-brain-primary');
   });
 });
 
@@ -461,16 +548,64 @@ describe('runSinglePrimaryCheck (hysteresis + debounce + self-clear)', () => {
   });
 
   it('a failing evidence query degrades to the blocker, never to silence', async () => {
+    const paged: unknown[] = [];
     let now = 0;
     const deps = {
       count: async () => 0,
       routineFireAgeSec: async () => { throw new Error('pg down'); },
       escalate: async () => ({ msg_id: 'blk-2' }),
-      page: async () => {},
+      page: async (v: unknown) => { paged.push(v); },
       now: () => now,
     };
     await runSinglePrimaryCheck('ws', deps);
     now += 3 * 60_000;
-    expect((await runSinglePrimaryCheck('ws', deps)).verdict.key).toBe('no-primary');
+    const b = await runSinglePrimaryCheck('ws', deps);
+    // WI-7317: the SEVERITY is unchanged — it still pages — but the read failed, so the
+    // verdict says so instead of asserting the engine is dead.
+    expect(b.verdict.key).toBe('no-primary-unverified');
+    expect(b.verdict.severity).toBe('blocker');
+    expect(paged).toHaveLength(1);
+  });
+
+  // WI-7317: the caller is what knows WHY the age is null — the tick distinguishes a read that
+  // threw from one that returned nothing, and evaluatePrimaryCount cannot recover that after
+  // the fact. These pin the wiring, not just the pure function.
+  it('classifies a THROWN liveness read as unavailable and an EMPTY one as absent', async () => {
+    const run = (routineFireAgeSec: () => Promise<number | null>) =>
+      runSinglePrimaryCheck('ws', {
+        count: async () => 0,
+        routineFireAgeSec,
+        escalate: async () => ({ msg_id: 'e' }),
+        page: async () => {},
+        sustainTicks: 1,
+        now: () => 0,
+      });
+
+    _resetSinglePrimaryDebounce();
+    const threw = await run(async () => { throw new Error('pg down'); });
+    expect(threw.verdict.evidenceNote).toContain('unavailable');
+    expect(threw.verdict.summary).toContain('FAILED');
+
+    _resetSinglePrimaryDebounce();
+    const empty = await run(async () => null);
+    expect(empty.verdict.evidenceNote).toContain('absent');
+    expect(empty.verdict.summary).toContain('MISRESOLVED workspace id');
+  });
+
+  it('records the observed evidence in the durable escalation body', async () => {
+    // The 2026-08-03 alarm recorded its conclusion and none of its evidence, so nobody could
+    // tell from the record whether liveness had ever been read.
+    const bodies: string[] = [];
+    const r = await runSinglePrimaryCheck('ws', {
+      count: async () => 0,
+      routineFireAgeSec: async () => 42,
+      escalate: async (i: { body?: string }) => { bodies.push(i.body ?? ''); return { msg_id: 'e' }; },
+      page: async () => {},
+      sustainTicks: 1,
+      now: () => 0,
+    });
+    expect(r.verdict.key).toBe('no-dedicated-primary');
+    expect(bodies[0]).toContain('Routine-liveness evidence');
+    expect(bodies[0]).toContain('fired 42s ago');
   });
 });

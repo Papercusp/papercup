@@ -23,7 +23,7 @@
  *     collects the bad one in `failed`, and coord-broadcasts the failure — and
  *     never throws (boot continues).
  */
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi, type Mock } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 import postgres from 'postgres';
 import { randomBytes } from 'node:crypto';
 import { mkdtempSync, writeFileSync } from 'node:fs';
@@ -87,6 +87,26 @@ function makeSqlDir(files: Record<string, string>): string {
   return dir;
 }
 
+// EI-19403856469813053: applyPendingMigrationsNow() now reads/writes a small
+// cross-boot cooldown file, defaulting to a REAL path under the host's actual
+// ~/.papercusp (see resolveMigrationCooldownFilePath in db-boot-migrate.ts).
+// EVERY test in this file that reaches applyPendingMigrationsNow() — not just
+// the dedicated cooldown describe block below — must stay off that real path,
+// or a test run pollutes (and, under fleet load, RACES on) the shared host
+// file every other agent's boot-migrate/green-checkpoint preflight also reads.
+// A file-wide beforeEach/afterEach keeps this hermetic for every test here,
+// including ones that never mention "cooldown" at all.
+const hermeticCooldownFiles: string[] = [];
+beforeEach(() => {
+  const p = join(tmpdir(), `a1-boot-cooldown-default-${randomBytes(4).toString('hex')}.json`);
+  hermeticCooldownFiles.push(p);
+  process.env.PAPERCUSP_MIGRATION_COOLDOWN_FILE = p;
+});
+afterEach(() => {
+  delete process.env.PAPERCUSP_MIGRATION_COOLDOWN_FILE;
+  delete process.env.PAPERCUSP_MIGRATION_COOLDOWN_MS;
+});
+
 beforeAll(async () => {
   const adminUri = await getTestPg();
   const dbName = `bm_${randomBytes(5).toString('hex')}`;
@@ -111,6 +131,7 @@ afterAll(async () => {
   await bootClient?.end({ timeout: 5 });
   await rootSql?.end({ timeout: 5 });
   await Promise.all(createdSqlDirs.map((dir) => rm(dir, { recursive: true, force: true })));
+  await Promise.all(hermeticCooldownFiles.map((f) => rm(f, { force: true })));
 });
 
 describe('boot-apply runner mechanics (§A1)', () => {
@@ -273,11 +294,9 @@ describe('boot-apply cross-boot failure cooldown (EI-19403856469813053)', () => 
     }
   }
 
-  afterEach(() => {
-    delete process.env.PAPERCUSP_MIGRATION_COOLDOWN_FILE;
-    delete process.env.PAPERCUSP_MIGRATION_COOLDOWN_MS;
-  });
-
+  // (The file-wide beforeEach/afterEach above already resets
+  // PAPERCUSP_MIGRATION_COOLDOWN_FILE/_MS between every test in this file —
+  // no per-block reset needed here.)
   afterAll(async () => {
     await Promise.all(cooldownFiles.map((f) => rm(f, { force: true })));
   });

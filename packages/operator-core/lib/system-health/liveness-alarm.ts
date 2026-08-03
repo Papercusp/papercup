@@ -1104,8 +1104,19 @@ export async function runLivenessAlarmTick(
   const listOpen =
     deps.listOpen ??
     (async () => {
-      const { escalations } = await listEscalationsPaginated({ status: 'open', maxRecords: OPEN_SCAN_WINDOW });
-      return escalations.filter((e) => e.from === INFRA_LIVENESS_IDENTITY.ownerId);
+      // EI-19403159016550818: scope the read to THIS alarm server-side. Reading a
+      // workspace-wide page and filtering `from` in JS silently drops this alarm's
+      // own rows once the workspace open set exceeds the window — the page is
+      // ordered oldest-first, so an actively-minting alarm's rows are the ones cut
+      // off, and the auto-resolve below then becomes a no-op that is
+      // indistinguishable from "nothing of mine is open". Measured 2026-08-03:
+      // 6 open rows for this alarm, only 1 inside a 500-row window.
+      const { escalations } = await listEscalationsPaginated({
+        status: 'open',
+        maxRecords: OPEN_SCAN_WINDOW,
+        from: INFRA_LIVENESS_IDENTITY.ownerId,
+      });
+      return escalations;
     });
   const resolve =
     deps.resolve ??

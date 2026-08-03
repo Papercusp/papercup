@@ -51,6 +51,7 @@ import { isWindowsDesktopHost } from './windows-desktop-windows';
 import { requestDesktopConsoleLaunch } from './console-launch-bridge';
 // task-manager P-009 follow-up: the HEADLESS path enrols (see
 // buildHeadlessSpawnCommand's doc for why this file's windowed path does not).
+import { scrubTerminalContextEnv } from './terminal-spawn';
 import { beginSyncEnrolment, completeSyncEnrolment } from './task-manager/enroll-sync';
 import { scopeUnitForTask, sliceForClass } from './task-manager/types';
 import { warmScopeProbe } from './task-manager/managed-spawn';
@@ -1287,10 +1288,33 @@ export async function spawnConsole(opts: SpawnConsoleOpts): Promise<SpawnConsole
   } catch {
     stderrFd = null;
   }
+  // EI-19407722209410974: scrub the terminal identity of whatever tab THIS
+  // process was started in before handing the env to a NEW emulator. This file
+  // keeps its own LINUX_TERMINALS/findTerminal copy rather than going through
+  // `spawnInTerminal`, so the EI-19385011811175105 fix there did not reach here
+  // — and this is the busier path (capability:terminal, and every VISIBLE
+  // fleet:launch-on-plan member).
+  //
+  // Concretely: an operator started by `npm run dev` from a gnome-terminal tab
+  // carries that tab's GNOME_TERMINAL_SCREEN. Inherited, gnome-terminal asks the
+  // D-Bus factory for a screen that is long gone, prints "Failed to get screen
+  // from object path ...", and EXITS 0 having opened nothing — a silent
+  // zero-window launch reported as success. The systemd :3070 operator has no
+  // such var, which is why this only bites a desktop-served operator.
+  //
+  // Applied to the MERGED env on purpose: no caller legitimately sets a terminal
+  // identity, so an explicit one is as wrong as an inherited one.
+  //
+  // The WAYLAND_DISPLAY line below is the same lesson learned once before
+  // (WI-4272) and never generalised — this is that generalisation.
+  const spawnEnv: NodeJS.ProcessEnv = scrubTerminalContextEnv({
+    ...process.env,
+    ...desktopEnv,
+    ...envelope.env,
+  });
   // WI-4272: with a caller display override, strip the inherited
   // WAYLAND_DISPLAY so GTK/webkit children in the spawned terminal bind the
   // X11 backend on the override display instead of the seat's Wayland socket.
-  const spawnEnv: NodeJS.ProcessEnv = { ...process.env, ...desktopEnv, ...envelope.env };
   if (opts.displayOverride) delete spawnEnv.WAYLAND_DISPLAY;
   try {
     const child = spawn(term.bin, childArgs, {
@@ -1507,7 +1531,11 @@ async function spawnMacConsole(
       detached: true,
       stdio: ['ignore', 'ignore', stderrFd ?? 'ignore'],
       cwd: envelope.cwd,
-      env: { ...process.env, ...envelope.env },
+      // EI-19407722209410974: same scrub as the Linux path. No D-Bus factory is
+      // involved here, so the zero-window failure cannot occur — but
+      // ITERM_SESSION_ID / TERM_SESSION_ID / the multiplexer vars are still this
+      // process's terminal identity, and a new window is not in it.
+      env: scrubTerminalContextEnv({ ...process.env, ...envelope.env }),
     });
     child.unref();
     if (stderrFd != null) {
@@ -1907,7 +1935,12 @@ export async function spawnHeadless(opts: SpawnHeadlessOpts): Promise<SpawnConso
       detached: true,
       stdio: ['ignore', logFd ?? 'ignore', logFd ?? 'ignore'],
       cwd: envelope.cwd,
-      env: { ...process.env, ...envelope.env },
+      // EI-19407722209410974: a headless member has no window, so the
+      // GNOME_TERMINAL_SCREEN failure cannot reach it — but TMUX / ZELLIJ* / STY
+      // would tell the psu it is running inside the OPERATOR's multiplexer pane,
+      // which it is not. pui and `psu --brain` both drive zellij, so that is a
+      // live wrong-answer, not a hypothetical one.
+      env: scrubTerminalContextEnv({ ...process.env, ...envelope.env }),
     });
     child.unref();
     completeSyncEnrolment(

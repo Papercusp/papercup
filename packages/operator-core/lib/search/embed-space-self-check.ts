@@ -185,8 +185,18 @@ export async function runEmbedSpaceSelfCheckTick(
   const listOpen =
     deps.listOpen ??
     (async () => {
-      const { escalations } = await listEscalationsPaginated({ status: 'open', maxRecords: 50 });
-      return escalations.filter((e) => e.from === EMBED_SPACE_SELF_CHECK_IDENTITY.ownerId);
+      // EI-19403159016550818: scope the read to THIS check server-side — see the
+      // note in condition-staleness-alarm.ts. This was the most exposed instance
+      // of the class: a 50-row oldest-first page against a 607-row workspace open
+      // set, so its own row (measured 2026-08-03 at position 525) could never
+      // appear and its auto-resolve could never fire. Scoping makes the read
+      // complete for this author regardless of the workspace-wide backlog.
+      const { escalations } = await listEscalationsPaginated({
+        status: 'open',
+        maxRecords: 50,
+        from: EMBED_SPACE_SELF_CHECK_IDENTITY.ownerId,
+      });
+      return escalations;
     });
   const resolveOpen =
     deps.resolveOpen ??

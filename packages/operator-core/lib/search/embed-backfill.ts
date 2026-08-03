@@ -470,20 +470,30 @@ interface SweepState {
    *
    * The latch used to be a bare boolean reset only in a `finally`. A sweep that
    * THROWS reaches that finally; a sweep that HANGS never does — and because the
-   * state is pinned to globalThis it then survives every subsequent tick, so the
-   * backfill is wedged until the host restarts. Measured 2026-08-03: the 04:45:04Z
-   * sweep hung, and every 5-min tick after it returned `already_running` in ~265ms
-   * while 451k rows sat unembedded. Stamping the start time lets a later tick
-   * decide the holder is dead and take over.
+   * state is pinned to globalThis, nothing would ever clear it. Stamping the start
+   * time lets a later tick decide the holder is dead and take over.
+   *
+   * Calibrate against SWEEP_LATCH_STALE_MS's note: healthy sweeps really do run
+   * 14-15 minutes, so "still running" is the normal case, not a fault.
    */
   startedAt: number | null;
 }
 /**
  * How long a sweep may hold the latch before another tick treats it as dead.
- * Generous relative to a real sweep (the slowest observed full sweep is ~4min)
- * so this can only ever fire on a genuine hang, never on a slow-but-live sweep.
+ *
+ * ⚠ CALIBRATION MATTERS MORE THAN IT LOOKS — set this too low and the "recovery"
+ * runs a SECOND sweep concurrently with a perfectly healthy one, which is the
+ * exact double-embedding the latch exists to prevent. A HEALTHY full sweep here
+ * is minutes, not seconds: measured 2026-08-03 on the real backlog, consecutive
+ * successful sweeps took 873s (14.5min) and 918s (15.3min) — ten targets × up to
+ * MAX_ROWS_PER_TARGET_PER_SWEEP rows × a ~0.3-4s local embed each. A 15-minute
+ * ceiling would have fired on BOTH of those.
+ *
+ * So this is deliberately ~4× the slowest observed healthy sweep. It is a
+ * dead-holder backstop, not a performance ceiling: a sweep still running at 60
+ * minutes is not slow, it is gone.
  */
-const SWEEP_LATCH_STALE_MS = 15 * 60 * 1000;
+const SWEEP_LATCH_STALE_MS = 60 * 60 * 1000;
 const __sweepStateKey = Symbol.for('papercusp.embedBackfillSweepState');
 const __sweepState: SweepState = (() => {
   const g = globalThis as typeof globalThis & { [__sweepStateKey]?: SweepState };
@@ -550,13 +560,20 @@ export async function runBackfillSweep(
   const maxRowsPerTarget = opts.maxRowsPerTarget ?? MAX_ROWS_PER_TARGET_PER_SWEEP;
   // WI-7327: the latch is TIME-BOXED, and every refusal is LOUD.
   //
-  // Both halves matter. A hung sweep never reaches the `finally` that clears
-  // `running`, so a bare boolean wedges the backfill permanently; and the skip
-  // returns a non-array that `_runSweepLogged` cannot log, so the wedge is
-  // completely silent. Measured 2026-08-03: a sweep hung at 04:45:04Z and the
-  // next 9 ticks each returned here in ~265ms, emitting nothing, while
-  // session_turns + work_items (451k rows, no inline write-path embedder — this
-  // sweep is their ONLY source) stayed at zero.
+  // The LOUD half is the one that was actually costing us, and the story is
+  // worth keeping because it burned an investigation. A healthy sweep here runs
+  // for MINUTES (measured 14.5min and 15.3min on 2026-08-03), so the 5-min tick
+  // legitimately finds one in flight and skips — correct, intended behaviour.
+  // But the skip returned a non-array that `_runSweepLogged` could not log, so
+  // it printed NOTHING. A healthy mid-sweep skip and a genuinely wedged latch
+  // were therefore indistinguishable from the outside: both just silence and a
+  // ~265ms tick. That ambiguity led to a wrong "the backfill is wedged"
+  // diagnosis and an unnecessary bg-host restart. Saying which one is happening
+  // costs one log line.
+  //
+  // The TIME-BOX is a backstop for the case that diagnosis wrongly assumed: a
+  // sweep that hangs never reaches the `finally` that clears `running`, and the
+  // state is pinned to globalThis, so nothing else would ever clear it.
   if (__sweepState.running) {
     const heldMs = __sweepState.startedAt === null ? 0 : Date.now() - __sweepState.startedAt;
     if (heldMs < SWEEP_LATCH_STALE_MS) {

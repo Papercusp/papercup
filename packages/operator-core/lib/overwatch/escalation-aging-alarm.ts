@@ -110,11 +110,17 @@ export async function runEscalationAgingAlarmTick(
   const listOpen =
     deps.listOpen ??
     (async () => {
+      // EI-19403159016550818: scope the read to THIS alarm server-side — see the
+      // note in condition-staleness-alarm.ts. A workspace-wide page + JS `from`
+      // filter silently returns [] once this alarm's rows fall past the window,
+      // which reads as "nothing of mine is open" and makes auto-resolve a no-op.
+      // Measured 2026-08-03: this alarm's 1 open row sat at position 567 of 607.
       const { escalations } = await listEscalationsPaginated({
         status: 'open',
         maxRecords: OPEN_SCAN_WINDOW,
+        from: ESCALATION_AGING_ALARM_IDENTITY.ownerId,
       });
-      return escalations.filter((e) => e.from === ESCALATION_AGING_ALARM_IDENTITY.ownerId);
+      return escalations;
     });
   const resolve =
     deps.resolve ??

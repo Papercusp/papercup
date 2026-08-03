@@ -64,11 +64,40 @@
  *
  * So the count alone can no longer name the consequence. The count-0 case is now split on
  * LIVE EVIDENCE — the most recent active-routine fire:
- *   • routines STALE   → the real `no-primary` blocker (unchanged text, unchanged paging);
- *   • routines FIRING  → `no-dedicated-primary`, an ADVISORY: redundancy is degraded and
- *     bg-host needs restoring, but background work is demonstrably not stopped.
+ *   • routines STALE      → the real `no-primary` blocker (unchanged text, unchanged paging);
+ *   • routines FIRING     → `no-dedicated-primary`, an ADVISORY: redundancy is degraded and
+ *     bg-host needs restoring, but background work is demonstrably not stopped;
+ *   • routines UNOBSERVED → `no-primary-unverified` (WI-7317, see below).
  * A false blocker is not a harmless over-report: it trains every agent to discount this
  * alarm, which is exactly what a genuine routine-engine death cannot afford.
+ *
+ * ABSENCE OF EVIDENCE IS NOT EVIDENCE OF DEATH (WI-7317, 2026-08-03). The split above
+ * initially routed a NULL age — "I could not observe routine liveness" — into the `no-primary`
+ * blocker, on the stated reasoning that falling back to the count-only verdict was the
+ * fail-safe direction. It is not, and the mistake is instructive: it treats the count as an
+ * independent second opinion when it is not. `count` and the liveness age are read through the
+ * SAME `getOrgPg().sql` handle, so a handle that misresolves poisons BOTH — yielding count 0
+ * AND age null, i.e. exactly the input that produced the most severe, most assertive verdict.
+ * The advisory downgrade never "failed" here; it was fed unobservable evidence.
+ *
+ * Sharper still: on any workspace with routine history a genuine engine death CANNOT produce
+ * a null age — the `last_fired_at` timestamps simply freeze and the age grows without bound.
+ * A null therefore means the read threw, or matched no rows for the judged workspace (a fresh
+ * install — or a misresolved workspace id). None of those observe routines to be down.
+ *
+ * Measured live 2026-08-03 05:1x Z, which is what forced this: `papercusp-workspace` had 108
+ * active routines with the most recent fire 0.7s earlier and exactly 1 live primary, while
+ * this guard was broadcasting `no-primary` — "DBOS routines, git-sync, and the Mug wake-loop
+ * are all down" — on a streak of 175 consecutive checks (~8.7h, monotonic across four
+ * intervening `severe-event-resolved`s). A correct evidence read would have returned ~0s and
+ * downgraded it to the advisory.
+ *
+ * The rule this encodes: BE CONSERVATIVE ABOUT SEVERITY, NEVER ABOUT ACCURACY. An unobserved
+ * count-0 still pages as a `blocker` — an unreadable database must never silence a real
+ * outage — but under its own key, saying what was and was not observed, and prescribing
+ * VERIFY rather than "restart the bg-host". That remediation is why a false blocker here is
+ * actively dangerous rather than merely noisy: acting on it kills in-flight routine work and
+ * reaps headless children in that service's cgroup (EI-9748 class).
  */
 import { getOrgPg } from '@papercusp/db-org';
 import { managedSetInterval } from '@papercusp/scheduled-registry';
@@ -106,13 +135,27 @@ const DEFAULT_SUSTAIN_TICKS = 2;
 const ROUTINE_FRESH_SEC = 10 * 60;
 
 /**
+ * WHY the age reads the way it does — the distinction a bare `null` destroys.
+ *   • `observed`    — the read ran and returned an age. The only status that can support a
+ *                     claim ABOUT routine liveness, in either direction.
+ *   • `absent`      — the read ran and matched nothing for the judged workspace. On a live
+ *                     workspace this means the workspace id is wrong, not that routines died.
+ *   • `unavailable` — the read FAILED. Nothing was observed, and the count (same DB handle)
+ *                     is equally suspect.
+ * Both non-`observed` statuses are "I could not look", never "I looked and saw nothing running".
+ */
+export type BackgroundEvidenceStatus = 'observed' | 'absent' | 'unavailable';
+
+/**
  * Live evidence about whether background work is ACTUALLY running, gathered independently
  * of the primary count so a count-0 verdict can be checked rather than assumed.
- * `lastRoutineFireAgeSec: null` = not gathered / unknown — the guard then falls back to
- * the historical count-only behaviour rather than inventing a healthier reading.
+ * `lastRoutineFireAgeSec: null` = NOT OBSERVED — see the header note: that is the absence of
+ * evidence, not evidence of death, and it no longer renders the routine-engine-death text.
+ * `status` is optional so no existing call site is stranded; omitted reads as "not gathered".
  */
 export interface BackgroundActivityEvidence {
   lastRoutineFireAgeSec: number | null;
+  status?: BackgroundEvidenceStatus;
 }
 
 /** PURE: is background work demonstrably alive on this evidence? Unknown ⇒ false. */
@@ -127,6 +170,12 @@ export interface PrimaryVerdict {
   severity: EscalationSeverity | null;
   key: string | null;
   summary: string;
+  /** WI-7317: what was actually OBSERVED about routine liveness, carried with the verdict so
+   *  the durable escalation + fleet broadcast record the evidence behind the claim instead of
+   *  only its conclusion. Reconstructing this after the fact cost hours on 2026-08-03: the
+   *  alarm said "all down" and nothing anywhere recorded whether liveness was ever read.
+   *  Optional — the healthy verdict gathers no evidence. */
+  evidenceNote?: string;
 }
 
 /**
@@ -151,24 +200,61 @@ export function evaluatePrimaryCount(
         ok: false,
         severity: 'advisory',
         key: 'no-dedicated-primary',
+        evidenceNote: `observed: an active routine fired ${age}s ago`,
         summary:
           `no dedicated background primary (bg-host) — but background work is NOT stopped: an active routine fired ${age}s ago, so a routines-enabled non-primary host is serving them. Degraded redundancy (bg-host down or restarting), NOT the routine-engine-death class. Restore the bg-host.`,
       };
     }
+
+    const age = evidence?.lastRoutineFireAgeSec;
+    // POSITIVE evidence that routines are NOT firing. This is the ONLY reading that earns the
+    // routine-engine-death text — we looked, and background work really has stopped. A
+    // NEGATIVE age is clock skew, not staleness, so it is not this branch either.
+    if (typeof age === 'number' && Number.isFinite(age) && age >= 0) {
+      return {
+        count,
+        ok: false,
+        severity: 'blocker',
+        key: 'no-primary',
+        evidenceNote: `observed: no active routine has fired for ${Math.round(age)}s`,
+        summary:
+          'NO background primary running — DBOS routines, git-sync, and the Mug wake-loop are all down (the silent routine-engine-death class). Start the bg-host / restore a background worker.',
+      };
+    }
+
+    // Liveness was NOT observed (read failed, matched nothing, or was never gathered). Per the
+    // header note this is the absence of evidence, so it must not render the death text — but
+    // it still pages, because an unreadable database must never silence a real outage.
+    const status = evidence?.status;
+    const why =
+      status === 'unavailable'
+        ? 'the routine-liveness read FAILED'
+        : status === 'absent'
+          ? 'the routine-liveness read matched no active routine in the judged workspace (a fresh install — or a MISRESOLVED workspace id)'
+          : 'no routine-liveness evidence was gathered';
     return {
       count,
       ok: false,
       severity: 'blocker',
-      key: 'no-primary',
+      key: 'no-primary-unverified',
+      evidenceNote: `NOT observed (${status ?? 'not-gathered'}): ${why}`,
       summary:
-        'NO background primary running — DBOS routines, git-sync, and the Mug wake-loop are all down (the silent routine-engine-death class). Start the bg-host / restore a background worker.',
+        `background primaries read as 0, but this is UNVERIFIED: ${why}. Do NOT read this as "routines, git-sync and the Mug wake-loop are down" — that was never observed. The count is read through the SAME database handle as the failed liveness read, so the 0 itself is equally unverified. VERIFY BEFORE ACTING (restarting a healthy bg-host kills in-flight routine work): SELECT count(DISTINCT application_name) FROM pg_stat_activity WHERE application_name LIKE 'dbos_transact_%', and check max(last_fired_at) in harness_shared.routines.`,
     };
   }
+  // >1 is a blocker on the COUNT alone — routine liveness neither confirms nor refutes a
+  // split brain (both executors are firing routines; that is the catastrophe, not a mitigation).
+  // The evidence is still recorded, because "what did the guard see" must never be lost again.
+  const sbAge = evidence?.lastRoutineFireAgeSec;
   return {
     count,
     ok: false,
     severity: 'blocker',
     key: 'split-brain-primary',
+    evidenceNote:
+      typeof sbAge === 'number' && Number.isFinite(sbAge)
+        ? `observed: an active routine fired ${Math.round(sbAge)}s ago (not exculpatory for >1)`
+        : `NOT observed (${evidence?.status ?? 'not-gathered'}) — irrelevant to a split-brain verdict`,
     summary:
       `${count} background primaries on one DB — split-brain DBOS (appVersion war / 102GB-outbox / plans-rewritten-100k× class). Stop all but one immediately.`,
   };
@@ -351,7 +437,7 @@ async function defaultPage(verdict: PrimaryVerdict, streak: number, count: numbe
   try {
     await broadcastSevereEvent({
       summary: `[single-primary] ${verdict.summary}`,
-      body: `Detected by the request-path single-primary guard (R4-2), SUSTAINED over ${streak} consecutive checks. Live DBOS background primaries: ${count} (expected exactly 1). Workspace: ${ws}. See harness_escalations for the durable record.`,
+      body: `Detected by the request-path single-primary guard (R4-2), SUSTAINED over ${streak} consecutive checks. Live DBOS background primaries: ${count} (expected exactly 1). Routine-liveness evidence — ${verdict.evidenceNote ?? 'none recorded'}. Workspace: ${ws}. See harness_escalations for the durable record.`,
       category: 'severe-event',
       conditionKey: `single-primary:${verdict.key}`,
     });
@@ -403,9 +489,13 @@ export async function runSinglePrimaryCheck(
       const age = deps.routineFireAgeSec
         ? await deps.routineFireAgeSec()
         : await lastRoutineFireAgeSec(getOrgPg().sql as SqlLike, ws);
-      evidence = { lastRoutineFireAgeSec: age };
+      // WI-7317: a null here is the read finding NOTHING, which is categorically different
+      // from the read FAILING below — and both are different from observing a stale age.
+      // Collapsing all three into a bare null is what let "I could not look" render as
+      // "routines are down".
+      evidence = { lastRoutineFireAgeSec: age, status: age === null ? 'absent' : 'observed' };
     } catch {
-      evidence = { lastRoutineFireAgeSec: null };
+      evidence = { lastRoutineFireAgeSec: null, status: 'unavailable' };
     }
   }
   const verdict = evaluatePrimaryCount(count, evidence);
@@ -501,7 +591,7 @@ export async function runSinglePrimaryCheck(
     const rec = await escalate({
       severity: verdict.severity ?? 'blocker',
       summary: `[single-primary] ${verdict.summary}`,
-      body: `Detected by the request-path single-primary guard (R4-2), SUSTAINED over ${streak} consecutive checks. Live DBOS background primaries: ${count} (expected exactly 1). Workspace: ${ws}.`,
+      body: `Detected by the request-path single-primary guard (R4-2), SUSTAINED over ${streak} consecutive checks. Live DBOS background primaries: ${count} (expected exactly 1). Routine-liveness evidence — ${verdict.evidenceNote ?? 'none recorded'}. Workspace: ${ws}.`,
     });
     // Remember the open escalation's msg_id so a later recovery can self-clear it.
     const msgId = (rec as { msg_id?: string } | undefined)?.msg_id;

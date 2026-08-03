@@ -3,10 +3,20 @@
  *
  * The operator opens OS-native terminals server-side on Linux (the operator
  * sidecar runs in the desktop's GUI session, so a detached spawn here opens a
- * window on the user's display). This module is the single home for the
- * terminal-emulator discovery + spawn that was previously duplicated across
- * `console-launch.ts` and `launch-su.ts`. New launchers (e.g. `launch-pui.ts`)
- * build a `bash -lc` one-liner and hand it to {@link spawnInTerminal}.
+ * window on the user's display). This module holds the terminal-emulator
+ * discovery + spawn that was previously duplicated across `console-launch.ts`
+ * and `launch-su.ts`. New launchers (e.g. `launch-pui.ts`) build a `bash -lc`
+ * one-liner and hand it to {@link spawnInTerminal}.
+ *
+ * ⚠ It is NOT the only such spawner, despite what this comment used to claim.
+ * `console-spawn.ts` keeps its own LINUX_TERMINALS table, its own findTerminal
+ * and its own spawn (it carries extra session-bus / display-override /
+ * desktop-detection logic), and it serves the busier callers —
+ * `capability:terminal` and every VISIBLE `fleet:launch-on-plan` member. That
+ * stale "single home" wording is exactly why the EI-19385011811175105 fix landed
+ * here and missed there (EI-19407722209410974). A fix to spawn BEHAVIOUR must be
+ * applied to both until they are actually merged; grep the SYMPTOM
+ * (`gnome-terminal`) rather than this module's callers.
  *
  * Linux-only — callers gate on `process.platform === 'linux'` and return 501
  * before reaching here on other platforms (mirrors console-launch.ts).

@@ -314,11 +314,28 @@ export function OperatorChatSidebar({ faces = [] }: { faces?: readonly OpChatFac
   const potOpen = view === 'pot';
   const plansOpen = view === 'plans';
   // The live attention items, so a drill-in can RESOLVE its ref against a real
-  // attention item and read its owning agent (WI-5342). Same shared
-  // plans.attention cache the badge hooks read — no extra query. Held in a ref
-  // so handleCardDrillIn stays identity-stable (it's memo-keyed into
-  // OperatorChat's renderers) while still reading the freshest items at click
-  // time.
+  // attention item and read its owning agent (WI-5342). Held in a ref so
+  // handleCardDrillIn stays identity-stable (it's memo-keyed into OperatorChat's
+  // renderers) while still reading the freshest items at click time.
+  //
+  // ⚠ COST — this line used to read "same shared plans.attention cache the badge
+  // hooks read — no extra query", and that stopped being true when WI-5955 moved
+  // both badges onto the narrow `plans.attentionCounts`. This is now the ONLY
+  // app-wide consumer of the full feed, and ChromeShell mounts this sidebar on
+  // every non-chromeless route — so it fetches on EVERY screen. Measured
+  // 2026-08-03 (no-http-anywhere-2026-07-28 D-028/D-030): 891 KB on the git tab
+  // against :3270, 68% of that route's entire first paint, on a page that
+  // renders no attention feed at all.
+  //
+  // Not gated here yet because the obvious gate does not work: `chatOpen`
+  // defaults to TRUE, and the only fields the drill-in actually reads are
+  // `id` / `itemRef` / `planSlug` (see curator-card-drill-in.ts) — three strings
+  // per item out of a ~1,096-item feed. The options are ranked in D-030; do not
+  // "fix" this by narrowing usePlanAttention's args, which is the trap D-029
+  // documents for its sibling.
+  //
+  // ⚠ Anyone editing this hook: re-measure before claiming a saving, and update
+  // THIS comment with it. A stale cost note is how the 891 KB stayed invisible.
   const { items: inboxItems } = useInboxAttention();
   const inboxItemsRef = useRef(inboxItems);
   inboxItemsRef.current = inboxItems;
