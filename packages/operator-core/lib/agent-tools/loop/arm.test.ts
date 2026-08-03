@@ -547,13 +547,56 @@ describe('loop:arm — EI-18792078711601844 carry preserved on re-arm', () => {
 
 describe('loop:arm — EI-19395290807657827: the self-sealing backoff', () => {
   describe('resolveBlockedBackoff (pure)', () => {
-    it('is a no-op when blockedOn is absent — every existing call site is unchanged', () => {
-      expect(resolveBlockedBackoff(7200, null)).toEqual({
-        intervalSec: 7200,
+    it('changes NO BEHAVIOUR when blockedOn is absent — every existing call site is unchanged', () => {
+      // P-006/D-098 narrowed this contract deliberately: a wide undeclared interval now
+      // returns an advisory `note`. The BEHAVIOURAL half is what the call sites depend on
+      // and it is asserted here field-by-field — interval untouched, never clamped, no
+      // wake premise injected.
+      const r = resolveBlockedBackoff(7200, null);
+      expect(r.intervalSec).toBe(7200);
+      expect(r.clamped).toBe(false);
+      expect(r.wakePremise).toBeNull();
+    });
+
+    it('stays fully silent for an ordinary short interval — the nudge must not nag a 60s loop', () => {
+      expect(resolveBlockedBackoff(60, null)).toEqual({
+        intervalSec: 60,
         clamped: false,
         note: null,
         wakePremise: null,
       });
+    });
+
+    // ── P-006 / D-098: surface `blockedOn` where it is actionable ──────────────
+    // Measured 0 uses in 294 arm calls across 91 agents (14d) — built, better than a
+    // prose-matching auto-attach, and never asked for.
+    it('NUDGES an undeclared WIDE interval toward blockedOn, advisory only', () => {
+      const r = resolveBlockedBackoff(1800, null);
+      expect(r.intervalSec).toBe(1800); // advisory: never caps an undeclared loop
+      expect(r.clamped).toBe(false);
+      expect(r.wakePremise).toBeNull();
+      expect(r.note).toContain('blockedOn');
+      expect(r.note).toContain('events:catalog');
+    });
+
+    it('warns the await must be IN ADDITION to the loop, never instead of it (WI-6595)', () => {
+      // The whole reason P-006's original "await INSTEAD of the poll" was refused: a
+      // parked await suppresses loop fires, so an await on an event that cannot fire
+      // deletes the agent's only backstop.
+      const r = resolveBlockedBackoff(1800, null);
+      expect(r.note).toMatch(/never instead of it/i);
+      expect(r.note).toContain('WI-6595');
+    });
+
+    it('fires exactly at the cap boundary — one threshold, not a second constant', () => {
+      expect(resolveBlockedBackoff(899, null).note).toBeNull();
+      expect(resolveBlockedBackoff(900, null).note).toContain('blockedOn');
+    });
+
+    it('a DECLARED blocker never gets the undeclared-nudge — it gets the real backoff note', () => {
+      const r = resolveBlockedBackoff(1800, { reason: 'gate red' });
+      expect(r.note).toContain('Backoff recorded');
+      expect(r.note).not.toMatch(/If you widened it because/i);
     });
 
     it('THE REGRESSION CASE: a 2h backoff with no clearing event is capped to 15min', () => {

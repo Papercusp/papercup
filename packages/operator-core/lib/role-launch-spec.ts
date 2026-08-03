@@ -486,6 +486,17 @@ export interface BuildSuLaunchSpecInput {
   planSlug?: string | null;
   planTitle?: string | null;
   planNow?: { state: string; next: string } | null;
+  /**
+   * EI-996 (owner ask 2026-06-17): a short ROLE ADDENDUM appended to the rendered
+   * su playbook, so a role can run as a full SU agent (engineer playbook +
+   * superuser MCP) with "just a few lines added about their role" rather than
+   * getting a separate, role-scoped prompt + MCP tier.
+   *
+   * Appended LAST — after the playbook and after the hive-instance su override —
+   * so the role's focus is the final word the agent reads. Omitted/blank ⇒ the
+   * spec is byte-identical to a plain su launch.
+   */
+  roleAddendum?: string | null;
   /** Test override forwarded to `renderSuPlaybook`. */
   operatorAppRoot?: string;
 }
@@ -660,6 +671,16 @@ async function buildSuLaunchSpec(input: BuildSuLaunchSpecInput): Promise<LaunchS
     } catch {
       /* best-effort hive-instance su override */
     }
+  }
+  // EI-996 (owner ask 2026-06-17): append the ROLE ADDENDUM last, so a role running on
+  // the su tier reads the full engineer playbook first and its own focus as the final
+  // word. Deliberately part of the STABLE prefix (above the launch-context seam below):
+  // the addendum is fixed per role, so a cohort of same-role sessions still shares one
+  // byte-identical cache entry — it just shares a role-specific one. An omitted/blank
+  // addendum leaves suPersonaText untouched, so a plain su launch stays byte-identical.
+  const roleAddendum = input.roleAddendum?.trim();
+  if (roleAddendum) {
+    suPersonaText = `${suPersonaText.replace(/\n+$/, '')}\n\n${roleAddendum}\n`;
   }
   const launchCtx = composeLaunchContext({
     harnessSlug,

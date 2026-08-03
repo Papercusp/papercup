@@ -44,6 +44,21 @@ interface HarnessDockProps {
 
 const httpLayoutStore = createFetchDockLayoutStore('/api/dock-layouts');
 
+/**
+ * Panel types that may still be registered AFTER hydration, so the dock's
+ * dead-layout guard must never treat them as retired.
+ *
+ * `plugin:<name>:<id>` panels are registered by useRegisterPluginPanels once
+ * `/api/plugins` resolves — its §8.3 hot-swap contract is precisely that a
+ * layout referencing an unloaded plugin renders MissingPanel and then swaps in
+ * the real component when the registration lands. So an unregistered `plugin:*`
+ * type is the EXPECTED cold-start state, not evidence of a dead layout: without
+ * this exemption a slow plugin fetch would reseed a perfectly good layout.
+ *
+ * Module scope keeps the identity stable across renders (the prop is a memo dep).
+ */
+const isDeferredPanelType = (type: string): boolean => type.startsWith('plugin:');
+
 export function HarnessDock({ layoutName, className, slug }: HarnessDockProps) {
   const workspaceId = useWorkspaceId();
   const layoutStore = useMemo<DockLayoutStore>(() => ({
@@ -132,6 +147,7 @@ export function HarnessDock({ layoutName, className, slug }: HarnessDockProps) {
         className={className ?? 'dockview-theme-dark'}
         missingComponent={MissingPanel}
         canClosePanel={canClosePanel}
+        isDeferredPanelType={isDeferredPanelType}
         onApiReady={onApiReady}
         onApiDispose={onApiDispose}
         onPanelRemoved={onPanelRemoved}

@@ -96,13 +96,52 @@ export interface BlockedBackoffResolution {
 
 /**
  * PURE: resolve a blocker-motivated interval. Omitting `blockedOn` preserves the exact
- * pre-existing behaviour (no cap, no note, no premise), so no existing call site changes.
+ * pre-existing BEHAVIOUR (no cap, no premise, interval untouched) — since P-006/D-098 it
+ * may return an advisory `note`, but nothing that changes what the loop does.
  */
 export function resolveBlockedBackoff(
   requestedIntervalSec: number,
   blockedOn?: LoopBlockedOn | null,
 ): BlockedBackoffResolution {
   if (!blockedOn) {
+    // P-006 / D-098 — SURFACE THE AFFORDANCE AT THE ONE MOMENT IT IS ACTIONABLE.
+    //
+    // `blockedOn` was built, is strictly better than a prose-matching auto-attach, and
+    // measured 0 uses in 294 arm calls across 91 distinct arming agents (14d). Zero, not
+    // low. It is optional and nothing ever asks for it — D-016's shape exactly, so it got
+    // the adoption prose earns.
+    //
+    // ⚠ THE TRIGGER IS THE INTERVAL, NEVER THE GOAL TEXT, and that is a ruling not a
+    // preference (D-098). Matching the goal prose was P-006's original proposal and it is
+    // undecidable here: of 292 armed goals, 182 are work-pull/drain loops where a loop is
+    // CORRECT, and 117 (40%) match the drain AND blocker vocabularies simultaneously — a
+    // drain loop that mentions a gate in passing is textually identical to a gate-watch
+    // loop. Every false positive would nudge an agent toward parking a loop that must keep
+    // pulling. The interval is a STRUCTURAL signal and needs no matcher.
+    //
+    // Threshold reuses BLOCKED_INTERVAL_CAP_SEC rather than inventing a second constant, so
+    // the nudge fires exactly where the cap WOULD have applied had the blocker been
+    // declared — i.e. on loops that took the widening without the annotation that governs
+    // it. Measured: 115 of 292 arms (39%) sit at or above it, p90 1800s, max 4200s; the
+    // 65 arms at <=60s never see this.
+    //
+    // Advisory ONLY — no cap, no premise, no behaviour change. An undeclared long interval
+    // is legitimate (a genuinely slow cadence), so this must inform and never obstruct.
+    if (requestedIntervalSec >= BLOCKED_INTERVAL_CAP_SEC) {
+      return {
+        intervalSec: requestedIntervalSec,
+        clamped: false,
+        note:
+          `⏸ ${requestedIntervalSec}s is a WIDE interval. If you widened it because you are waiting on something, ` +
+          `say so: loop:arm { blockedOn: { reason, event } }. Naming the clearing event (events:catalog lists them) ` +
+          `keeps your interval AND re-checks the premise on every wake; naming only a reason caps the interval at ` +
+          `${BLOCKED_INTERVAL_CAP_SEC}s so a cleared blocker cannot leave you asleep (EI-19395290807657827). ` +
+          `⚠ Park on the event IN ADDITION to this loop, never instead of it — a parked await suppresses these ` +
+          `fires, so an await on an event that never fires (a gate that goes red, say) removes your only way back ` +
+          `(WI-6595). If the cadence is simply slow by design, ignore this.`,
+        wakePremise: null,
+      };
+    }
     return { intervalSec: requestedIntervalSec, clamped: false, note: null, wakePremise: null };
   }
 

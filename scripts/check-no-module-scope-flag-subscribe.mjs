@@ -103,9 +103,14 @@ export function usesModuleScopeFlagSubscribe(text) {
   return false;
 }
 
-// BASELINE seeded 2026-07-28 (WI-6650) — 14 files. Do NOT add new entries; each
-// removal (lazy-init the site, per coordination/log.ts's ensureCoordFlagInit)
-// shrinks this set.
+// BASELINE seeded 2026-07-28 (WI-6650) with 14 files; now 13. Do NOT add new
+// entries; each removal (lazy-init the site, per coordination/log.ts's
+// ensureCoordFlagInit) shrinks this set.
+//
+// Removed 2026-08-03 (EI-19416650993725684): txn-timeouts-config.ts, migrated to
+// a lazy ensureLiveRefreshArmed() called from its two sync readers. A stale entry
+// here is not cosmetic — it is a standing EXEMPTION, so leaving a fixed file
+// listed would silently re-permit the very regression the fix removed.
 export const BASELINE = new Set([
   'packages/operator-core/lib/auth-config-overrides.ts',
   'packages/operator-core/lib/capability-envelope-overrides.ts',
@@ -117,7 +122,6 @@ export const BASELINE = new Set([
   'packages/operator-core/lib/quota-overrides.ts',
   'packages/operator-core/lib/task-manager/enabled.ts',
   'packages/operator-core/lib/telemetry-buffer-config.ts',
-  'packages/operator-core/lib/txn-timeouts-config.ts',
   'packages/operator-core/lib/work-item-claim-lease-wiring.ts',
   'packages/operator-core/lib/work-item-redundancy.ts',
   'packages/operator-core/lib/workspace-brain-scope.ts',

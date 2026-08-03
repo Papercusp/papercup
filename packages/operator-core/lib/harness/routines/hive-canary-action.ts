@@ -92,11 +92,60 @@ export function isCanaryTerminal(status: string): boolean {
   return CANARY_TERMINAL.has(status);
 }
 
+/**
+ * The PASS-like subset of {@link CANARY_TERMINAL}: statuses that assert the work
+ * was actually CARRIED to a successful conclusion. The complement (`dropped`,
+ * `deprecated`, `failed`) is ABANDON-like — it records that the canary was given
+ * up on, which is an honest disposition rather than a claimed success.
+ *
+ * The split exists because only a pass-like terminal can constitute a FALSE GREEN.
+ * An su that `dropped` a stale canary during an owner pause is doing legitimate
+ * cleanup; an su that marked one `done` produced a row indistinguishable from the
+ * autonomous loop having carried it (see {@link isVoidedCanaryOwner}).
+ */
+export const CANARY_PASS_LIKE = new Set(['done', 'passed', 'resolved', 'closed']);
+
+/**
+ * True when a canary's `terminal_owner` is an AGENT or human rather than the
+ * autonomous loop — i.e. the completion proves nothing about the thing the canary
+ * exists to measure.
+ *
+ * Ownership shapes observed in `harness_features_consolidated.terminal_owner`:
+ *  - `s-<epochMs>-<hex>`   a cup session — the autonomous loop. THE ONLY VALID PASS.
+ *  - `su-<uuid>`           an su/engineer agent — self-selected, carried by hand.
+ *  - `system:hive-canary`  this routine's own deprecation stamp (see Phase 1).
+ *
+ * Unknown/NULL owners are NOT treated as agent-owned: this predicate gates a bug
+ * report, so it must fail CLOSED (report nothing) rather than manufacture a red on
+ * a shape it does not recognise. Historic rows predating terminal_owner therefore
+ * stay silent instead of retro-firing.
+ */
+export function isVoidedCanaryOwner(terminalOwner: string | null | undefined): boolean {
+  if (!terminalOwner) return false;
+  if (terminalOwner.startsWith('system:')) return false;
+  // A cup session id is `s-<digits>-<hex>`; an su id is `su-<uuid>`. Match the cup
+  // shape positively rather than blacklisting `su-` so any future agent-id prefix
+  // is treated as an agent (fail-loud on the measurement) rather than as a cup.
+  if (/^s-\d+-[0-9a-f]+$/i.test(terminalOwner)) return false;
+  return true;
+}
+
 export interface CanaryFeatureRow {
   feature_id: string;
   status: string;
   created_ts: number | string;
-  payload: { canary?: boolean; canary_reported?: boolean; canary_sla_reported?: boolean } | null;
+  /**
+   * Who drove the canary to its terminal state. Load-bearing, not decorative: the
+   * verdict is meaningless without it, because `status` alone cannot distinguish
+   * "the autonomous loop carried this end-to-end" from "an agent typed done".
+   */
+  terminal_owner?: string | null;
+  payload: {
+    canary?: boolean;
+    canary_reported?: boolean;
+    canary_sla_reported?: boolean;
+    canary_void_reported?: boolean;
+  } | null;
 }
 
 export interface CanaryPlan {
@@ -112,6 +161,18 @@ export interface CanaryPlan {
    * re-evaluated (and genuinely reported if still overdue) once un-paused.
    */
   suppressed: string[];
+  /**
+   * Canaries that reached a PASS-like terminal state under an AGENT's ownership
+   * rather than the autonomous loop's — the measurement for that day is VOID, not
+   * healthy. Before this existed such a row was silently filtered out as "terminal,
+   * nothing to report", so a canary an su completed by hand was indistinguishable
+   * from one a cup carried, and the detector's silence read as a green.
+   *
+   * Deliberately NOT pause-suppressed. An owner pause explains a canary that is
+   * STUCK; it does not explain one that was marked done. If anything a pause makes
+   * a pass-like completion more suspect, since no cup could have produced it.
+   */
+  voided: string[];
 }
 
 /** Today's canary id from a clock (UTC date-keyed — one per day, replay-stable). */
@@ -135,12 +196,24 @@ export function planCanaryTick(
   const deadlineHours = opts.deadlineHours ?? 6;
   const nowMs = opts.nowMs ?? Date.now();
   const cutoff = nowMs - deadlineHours * 3_600_000;
-  const candidates = rows
+  const canaryRows = rows
     .filter((r) => r.payload !== null && r.payload !== undefined)
-    .filter((r) => r.payload?.canary === true)
+    .filter((r) => r.payload?.canary === true);
+  const candidates = canaryRows
     .filter((r) => r.payload?.canary_reported !== true)
     .filter((r) => !CANARY_TERMINAL.has(r.status))
     .filter((r) => Number(r.created_ts) < cutoff)
+    .map((r) => r.feature_id);
+  // A canary that reached a PASS-like terminal state under an agent's ownership is
+  // a VOID measurement, not a healthy one. This is the case the detector used to be
+  // structurally blind to: `!CANARY_TERMINAL.has(status)` above drops every terminal
+  // row, so a hand-completed canary left the pipeline silently and the silence read
+  // as a pass. Abandon-like terminals (`dropped`/`deprecated`/`failed`) are excluded
+  // — an agent dropping a stale canary is honest cleanup, not a claimed success.
+  const voided = canaryRows
+    .filter((r) => r.payload?.canary_void_reported !== true)
+    .filter((r) => CANARY_PASS_LIKE.has(r.status))
+    .filter((r) => isVoidedCanaryOwner(r.terminal_owner))
     .map((r) => r.feature_id);
   // Pause-aware (EI-7420): an owner-initiated pauseNewWork means the Queen is
   // intentionally starting no new work — a stuck canary under that condition is
@@ -148,9 +221,10 @@ export function planCanaryTick(
   // the report entirely (never mark canary_reported) so the SAME canary is
   // re-evaluated — and genuinely reported if still overdue — once un-paused.
   if (opts.isPaused) {
-    return { overdue: [], queueId: canaryIdFor(nowMs), suppressed: candidates };
+    // `voided` deliberately survives the pause — see CanaryPlan.voided.
+    return { overdue: [], queueId: canaryIdFor(nowMs), suppressed: candidates, voided };
   }
-  return { overdue: candidates, queueId: canaryIdFor(nowMs), suppressed: [] };
+  return { overdue: candidates, queueId: canaryIdFor(nowMs), suppressed: [], voided };
 }
 
 export interface CanarySlaPlan {
@@ -277,7 +351,7 @@ registerSystemAction('hive-canary', async (ctx: SystemActionCtx) => {
   // Address rows where they are actually STORED, not where the routine is installed.
   const storageSlug = await canaryStorageSlug(installSlug, workspaceId);
   const rows = await sql<CanaryFeatureRow[]>`
-    SELECT feature_id, status, created_ts, payload
+    SELECT feature_id, status, created_ts, terminal_owner, payload
       FROM harness_shared.harness_features_consolidated
      WHERE workspace_id = ${workspaceId} AND harness_slug = ${storageSlug}
        AND item_kind = 'feature' AND payload IS NOT NULL AND payload->>'canary' = 'true'
@@ -349,6 +423,56 @@ registerSystemAction('hive-canary', async (ctx: SystemActionCtx) => {
     } else {
       console.warn(
         `[hive-canary] ${installSlug}/${fid} MISSED its ${deadlineHours}h deadline — ` +
+          (res.created ? `filed ${res.issue?.id ?? 'improvement'}` : `report deduped (${res.reason ?? 'duplicate'})`),
+      );
+    }
+  }
+
+  // Phase 1b — VOID: a canary that reached a PASS-like terminal state under an
+  // AGENT's ownership measured nothing. Reported SEPARATELY from the overdue miss
+  // (distinct watchdogKey + its own `canary_void_reported` stamp) so this never
+  // interferes with the Phase 1 report/deprecate lifecycle (EI-8524), and NOT
+  // suppressed by the owner pause (see CanaryPlan.voided).
+  //
+  // Before this existed the row was simply filtered out as "terminal", so the
+  // strongest possible negative signal — the canary was satisfied by the very
+  // population it does not measure — produced total silence, which every surface
+  // downstream read as a healthy pass.
+  for (const fid of plan.voided.slice(0, 3)) {
+    const owner = rows.find((r) => r.feature_id === fid)?.terminal_owner ?? 'unknown';
+    const res = await captureImprovement({
+      title: `Hive canary ${installSlug}/${fid} was completed by an AGENT, not the autonomous loop — measurement VOID`,
+      kind: 'bug',
+      severity: 'major',
+      body:
+        `The daily canary feature ${fid} in harness ${installSlug} reached a pass-like terminal state, but its ` +
+        `terminal_owner is \`${owner}\` — an agent/human, not a cup session (\`s-<epochMs>-<hex>\`).\n\n` +
+        `The canary exists to answer exactly one question: does the autonomous hive loop carry queued work ` +
+        `end-to-end? A completion performed by an agent does not answer it. This day's measurement is VOID — ` +
+        `treat it as NO DATA, never as a healthy pass.\n\n` +
+        `This is not a reprimand of the agent: the canary sat in the general claimable pool, so ` +
+        `scheduler:get_next hands it out like ordinary work. The durable fix is to make canaries ` +
+        `structurally un-self-selectable while keeping them cup-placeable (EI-19441925633833456).`,
+      foundDuring: 'hive-canary routine (void-measurement check)',
+      dedupScope: 'open',
+      watchdogKey: `hive-canary-void:${installSlug}:${fid}`,
+    });
+    // Stamp ONLY. Status and terminal_owner are left exactly as they are: the row IS
+    // the evidence, and rewriting it would destroy the record of what happened.
+    const voidStamp = await sql<{ feature_id: string }[]>`
+      UPDATE harness_shared.harness_features_consolidated
+         SET payload = CASE
+               WHEN payload IS NULL THEN '{"canary": true, "canary_void_reported": true}'::jsonb
+               ELSE payload || '{"canary_void_reported": true}'::jsonb
+             END,
+             updated_ts = ${Date.now()}
+       WHERE workspace_id = ${workspaceId} AND harness_slug = ${storageSlug} AND feature_id = ${fid}
+       RETURNING feature_id`;
+    if (voidStamp.length === 0) {
+      console.warn(`[hive-canary] ${installSlug}/${fid} void-stamp UPDATE failed — row not found`);
+    } else {
+      console.warn(
+        `[hive-canary] ${installSlug}/${fid} VOID — completed by ${owner}, not the autonomous loop; ` +
           (res.created ? `filed ${res.issue?.id ?? 'improvement'}` : `report deduped (${res.reason ?? 'duplicate'})`),
       );
     }
@@ -449,7 +573,7 @@ registerSystemAction('hive-canary-sla', async (ctx: SystemActionCtx) => {
   // Address rows where they are actually STORED, not where the routine is installed.
   const storageSlug = await canaryStorageSlug(installSlug, workspaceId);
   const rows = await sql<CanaryFeatureRow[]>`
-    SELECT feature_id, status, created_ts, payload
+    SELECT feature_id, status, created_ts, terminal_owner, payload
       FROM harness_shared.harness_features_consolidated
      WHERE workspace_id = ${workspaceId} AND harness_slug = ${storageSlug}
        AND item_kind = 'feature' AND payload IS NOT NULL AND payload->>'canary' = 'true'
