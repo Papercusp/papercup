@@ -596,3 +596,83 @@ describe('runConditionStalenessTick — durable dedup + auto-resolve (mirrors li
     expect(r.signals).toEqual([]);
   });
 });
+
+describe('WI-7254 — the dedup key must not contain the condition age', () => {
+  // The bug: this tick passed ONLY `meta.conditionStalenessSignature`, but
+  // escalations.ts coalesces on `meta.subjectSignature` (else it hashes the
+  // SUMMARY). The summary embeds the age — "has been OPEN for 267m" — so every
+  // emission produced a key no previous emission could match. Measured live
+  // 2026-08-03: 71 open rows, 71 distinct signatures, 4 distinct once
+  // `open for <N>m` is normalized away — 5h45m where 4 rows were warranted.
+  //
+  // These assert the INVARIANT (same condition ⇒ same dedup identity at any age),
+  // not the specific field plumbing, so a future refactor that keeps the
+  // invariant stays green and one that reintroduces an age-varying key reds.
+  function captureMeta() {
+    const metas: Record<string, unknown>[] = [];
+    return {
+      metas,
+      escalate: async (input: { meta?: Record<string, unknown> }) => {
+        metas.push(input.meta ?? {});
+        return undefined;
+      },
+    };
+  }
+
+  const stuck = mkState({
+    condition_key: 'single-primary:no-primary',
+    open_since: '2026-08-02T20:31:00.000Z',
+    last_seen: '2026-08-03T00:58:00.000Z',
+    latest_summary: 'no background primary running',
+  });
+
+  it('passes an explicit subjectSignature — the field escalations.ts actually reads', async () => {
+    _resetConditionStalenessDebounce();
+    const cap = captureMeta();
+    await runConditionStalenessTick({
+      readStates: async () => [stuck],
+      escalate: cap.escalate,
+      listOpen: async () => [],
+      resolve: async () => undefined,
+      now: () => Date.parse('2026-08-03T00:58:59.000Z'),
+      staleMs: 45 * 60_000,
+      absenceMs: 6 * 60 * 60_000,
+    });
+    expect(cap.metas).toHaveLength(1);
+    expect(cap.metas[0].subjectSignature).toBe('stale-condition:single-primary:no-primary');
+    // The module's own auto-resolve sweep reads this one back
+    // (staleConditionSignatureOf) — dropping it would strand every open row.
+    expect(cap.metas[0].conditionStalenessSignature).toBe('stale-condition:single-primary:no-primary');
+  });
+
+  it('the dedup signature is IDENTICAL at two different ages', async () => {
+    // The actual regression test: same condition, +90 minutes older.
+    const capA = captureMeta();
+    _resetConditionStalenessDebounce();
+    await runConditionStalenessTick({
+      readStates: async () => [stuck],
+      escalate: capA.escalate,
+      listOpen: async () => [],
+      resolve: async () => undefined,
+      now: () => Date.parse('2026-08-03T00:58:59.000Z'),
+      staleMs: 45 * 60_000,
+      absenceMs: 6 * 60 * 60_000,
+    });
+
+    const capB = captureMeta();
+    _resetConditionStalenessDebounce();
+    await runConditionStalenessTick({
+      readStates: async () => [stuck],
+      escalate: capB.escalate,
+      listOpen: async () => [],
+      resolve: async () => undefined,
+      now: () => Date.parse('2026-08-03T02:28:59.000Z'),
+      staleMs: 45 * 60_000,
+      absenceMs: 6 * 60 * 60_000,
+    });
+
+    expect(capA.metas[0].subjectSignature).toBe(capB.metas[0].subjectSignature);
+    // ...and it must not carry a minute count, which is what made it unique.
+    expect(String(capA.metas[0].subjectSignature)).not.toMatch(/\d+m/);
+  });
+});

@@ -32,6 +32,20 @@ vi.setConfig({ testTimeout: 15_000, hookTimeout: 15_000 });
 // vi.fn stub. Hoisting removes the ordering dependency entirely instead of relying
 // on per-test re-arming — this mock now always wins regardless of import
 // timing or worker-level module-cache sharing.
+// WI-7139: grant the PG-backed per-chat streaming lock (agent-chat-lock.ts). It
+// fails CLOSED — any PG error reads as "already locked" and the route 409s — so an
+// unsatisfied lock turns every assertion here into 409. These tests exercise the
+// ROUTE, not the lock (which has its own coverage); mocking the lock also keeps
+// them independent of @papercusp/db-org's export surface, which is what broke
+// them (a new `getOrgPg` import stranded every db-org mock that did not list it).
+vi.mock('../../agent-chat-lock', () => ({
+  AGENT_CHAT_LOCK_TTL_MS: 10 * 60_000,
+  acquireAgentChatLock: async (chatId: string) => ({ chatId, token: 'test-lock-token' }),
+  releaseAgentChatLock: async () => {},
+  isAgentChatLocked: async () => false,
+  __resetAgentChatLocks: async () => {},
+}));
+
 vi.mock('../../fleet/chat-spawn-tracking', async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
   return {

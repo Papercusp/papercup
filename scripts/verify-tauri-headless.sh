@@ -370,6 +370,39 @@ pick_and_lock_ports() {
 }
 pick_and_lock_ports
 
+# ── EI: drop a STALE endpoint-ipc advertisement for the port we just reserved ──
+# `endpoint-ipc.<port>.json` is written by whichever operator serves <port> and
+# is read by the desktop's Rust side to dial IPC. The publisher-side sweep
+# (endpoint-ipc-discovery.ts `pruneStaleSiblingDiscoveryFiles`) only runs when
+# some operator PUBLISHES, so a verifier run that dies before its own operator
+# publishes leaves its advertisement behind forever — and the port families this
+# script uses (33xxx/34xxx) are handed out by DISPLAY slot, so the NEXT run to
+# land on that slot inherits the dead pointer. That is not a soft failure: the
+# desktop is launched with requireIpc (no HTTP fallback), so the dial refuses
+# with "restart orphan" and the whole run aborts before the caller's script
+# executes. Observed 2026-08-03 on :33700 (advertised pid 597573, long dead,
+# nothing listening) — the run failed with an IPC error that reads like a
+# desktop/operator bug rather than a leftover file, which is what makes it
+# expensive to diagnose.
+#
+# Deleting is safe by construction here: pick_and_lock_ports only returns a port
+# that is FREE and now advisory-locked by us, so nothing can legitimately be
+# serving it. We still apply the same conservative rule the TS sweeper uses —
+# remove ONLY when the advertised pid is provably not running — so a racing
+# publisher is never clobbered. Best-effort: never fail the run over hygiene.
+prune_stale_ipc_advert_for_port() {
+  local port="$1" f pid
+  f="$HOME/.papercusp/endpoint-ipc.${port}.json"
+  [ -f "$f" ] || return 0
+  pid="$(sed -n 's/.*"pid"[[:space:]]*:[[:space:]]*\([0-9]\+\).*/\1/p' "$f" | head -1)"
+  [ -n "$pid" ] || return 0
+  if ! kill -0 "$pid" 2>/dev/null; then
+    rm -f "$f" 2>/dev/null \
+      && log "pruned stale endpoint-ipc advertisement for :$port (advertised pid $pid is dead)"
+  fi
+}
+prune_stale_ipc_advert_for_port "$DEV_PORT"
+
 log "display=:$DISPLAY_NUM devPort=$DEV_PORT ptyPort=$PTY_PORT work=$WORK"
 log "contention: $(contention_summary)"
 

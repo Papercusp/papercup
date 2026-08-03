@@ -946,10 +946,66 @@ export async function countWorkItemsByState(filter: ListWorkItemsFilter = {}): P
 
 /** Resolve one work-item by id, searching both kind-tables (ids are disjoint across families). */
 export async function getWorkItem(id: string, harness?: string): Promise<WorkItem | null> {
-  // Issue-family ids (EI-* or a WI-* that lives in engineer_issues) are globally unique.
+  // ⚠ `harness` is NOT applied to the issue-family branch — see harnessScopeMismatch()
+  // below for why that is deliberate, and for the guard that covers what it leaves open.
+  //
+  // This used to read "Issue-family ids (EI-* or a WI-* that lives in engineer_issues)
+  // are globally unique", which justified the unscoped read. That premise is TRUE for
+  // `EI-<snowflake>` ids and FALSE for `WI-<n>` ids: D-008 (migration
+  // 142-work-items-unify.sql) started minting WI ids into this same table from
+  // `harness_shared.work_item_seq`, a PER-DATABASE sequence that STARTs at 1. So
+  // WI-1/WI-2/WI-3 exist in every long-lived store and a fresh one mints exactly those.
+  // `getFeatureWorkItemOnly` 12 lines below already states the correct rule (F-B3: "a
+  // bare WI/F id is unique only within a (workspace, harness), not globally") — the two
+  // halves of one id space disagreed, and the issue half was the one being trusted.
   const issue = await getIssue(id);
   if (issue) return issueToWorkItem(issue);
   return getFeatureWorkItemOnly(id, harness);
+}
+
+/**
+ * A resolved work-item whose harness CONTRADICTS the one the caller asked for.
+ *
+ * `requested` is what the caller named; `resolved` is the harness of the row they
+ * actually got back.
+ */
+export interface HarnessScopeMismatch {
+  requested: string;
+  resolved: string;
+}
+
+/**
+ * Did the resolver answer a DIFFERENT question than it was asked? (EI-19393623437103599)
+ *
+ * `getWorkItem` silently ignores `harness` for issue-family rows, so a caller can name
+ * one pot and be handed another pot's item with no signal at all. Reproduced live: a
+ * `work_items:get { ids:['WI-1'], harness:'hello-world-hive' }` returns the `papercusp`
+ * row and echoes `harness:'papercusp'` back in its own response body.
+ *
+ * The fix is NOT to filter by harness. 56 of `getWorkItem`'s 77 non-test call sites pass
+ * one, and many pass it loosely (a session default, an ambient slug) while relying on it
+ * being ignored — hard-filtering would turn a rare silent-WRONG-row into a broad silent
+ * `null`, which is strictly worse: `null` flows into `if (!item)` and reads as "does not
+ * exist" rather than "I declined to answer". Every currently-correct answer must keep
+ * returning the same row.
+ *
+ * So detect the CONTRADICTION instead, which is exactly and only the broken case:
+ * the caller named a harness AND the row that came back belongs to a different one.
+ * Callers decide what that is worth — reads surface it, destructive writes refuse on it.
+ *
+ * Returns `null` when there is nothing to report: no harness was requested, or the row
+ * carries no harness to contradict (a workspace-global/unscoped row), or they agree.
+ */
+export function harnessScopeMismatch(
+  item: Pick<WorkItem, 'harness'>,
+  requestedHarness?: string | null,
+): HarnessScopeMismatch | null {
+  if (!requestedHarness) return null;
+  const resolved = item.harness;
+  // An unscoped row has no harness to contradict — absence is not disagreement.
+  if (!resolved) return null;
+  if (resolved === requestedHarness) return null;
+  return { requested: requestedHarness, resolved };
 }
 
 /**

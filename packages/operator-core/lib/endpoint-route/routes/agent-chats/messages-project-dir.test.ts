@@ -30,7 +30,41 @@ vi.mock('@papercusp/agent-mcp', () => ({
   // exit with a deterministic 500 — far enough to prove assembly succeeded.
   lookupByMcpName: () => null,
 }));
+// WI-7139: grant the PG-backed per-chat streaming lock (agent-chat-lock.ts). It
+// fails CLOSED — any PG error reads as "already locked" and the route 409s — so an
+// unsatisfied lock turns every assertion here into 409. These tests exercise the
+// ROUTE, not the lock (which has its own coverage); mocking the lock also keeps
+// them independent of @papercusp/db-org's export surface, which is what broke
+// them (a new `getOrgPg` import stranded every db-org mock that did not list it).
+vi.mock('../../../agent-chat-lock', () => ({
+  AGENT_CHAT_LOCK_TTL_MS: 10 * 60_000,
+  acquireAgentChatLock: async (chatId: string) => ({ chatId, token: 'test-lock-token' }),
+  releaseAgentChatLock: async () => {},
+  isAgentChatLocked: async () => false,
+  __resetAgentChatLocks: async () => {},
+}));
+
 vi.mock('@papercusp/db-org', () => ({
+  // The route acquires a PG-backed per-chat lock (agent-chat-lock.ts, WI-7139)
+  // before assembling, and that lock calls `getOrgPg().sql` when no sql is
+  // injected. A factory WITHOUT getOrgPg makes it throw -> the lock fails CLOSED
+  // -> console.warn -> vitest-fail-on-console reds this test (WI-7267).
+  //
+  // Echo the generated token back so the lock ACQUIRES: it compares
+  // rows[0].token against the uuid it just minted, so returning [] would swap
+  // the throw for a silent 409 and the assertions below would still fail. Match
+  // by UUID SHAPE, not argument position, so reordering the query's
+  // interpolations cannot quietly turn this back into a 409.
+  getOrgPg: () => ({
+    sql: async (_strings: TemplateStringsArray, ...values: unknown[]) => {
+      const token = values.find(
+        (v): v is string =>
+          typeof v === 'string' &&
+          /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v),
+      );
+      return token ? [{ token }] : [];
+    },
+  }),
   getLegacyClient: () => ({
     prepare: (sql: string) => {
       prepareLog.push(sql);

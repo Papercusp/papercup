@@ -458,7 +458,13 @@ describe('buildDigest', () => {
 
     it('reports consideredCount/corpusTotal/windowed matching the digest’s own total/returned/windowed', () => {
       const d = buildDigest(items, { nowMs: NOW, corpusTotal: 999 });
-      expect(d.likelyDuplicatesScope).toEqual({ consideredCount: items.length, corpusTotal: 999, windowed: true });
+      expect(d.likelyDuplicatesScope).toEqual({
+        consideredCount: items.length,
+        corpusTotal: 999,
+        windowed: true,
+        nearDupPass: 'ran',
+        nearDupConsidered: expect.any(Number),
+      });
     });
 
     it('an EMPTY likelyDuplicates at a small window is now DISTINGUISHABLE from "no duplicates in the corpus"', () => {
@@ -468,7 +474,74 @@ describe('buildDigest', () => {
       const noDupesInWindow: ImprovementCandidate[] = [cand({ id: 'x1', title: 'alpha' }), cand({ id: 'x2', title: 'beta' })];
       const d = buildDigest(noDupesInWindow, { nowMs: NOW, corpusTotal: 200 });
       expect(d.likelyDuplicates).toEqual([]);
-      expect(d.likelyDuplicatesScope).toEqual({ consideredCount: 2, corpusTotal: 200, windowed: true });
+      expect(d.likelyDuplicatesScope).toEqual({
+        consideredCount: 2,
+        corpusTotal: 200,
+        windowed: true,
+        nearDupPass: 'ran',
+        nearDupConsidered: 2,
+      });
+    });
+  });
+
+  /**
+   * EI-19393516222436864 — the near-dup leg is cost-gated at
+   * NEAR_DUP_MAX_CANDIDATES, and the production corpus (15,166 open rows,
+   * measured 2026-08-03) is nearly 4x that bound. So the skip was not an edge
+   * case: it was the ALWAYS-taken branch, and nothing in the result said so.
+   *
+   * These tests deliberately build a corpus ACROSS the bound. A small fixture
+   * cannot reproduce a cap — it passes while the capped behaviour goes
+   * unexercised, which is a false green in exactly the direction that hides this
+   * defect.
+   */
+  describe('near-dup cost-gate degradation is REPORTED, not silent (EI-19393516222436864)', () => {
+    /** Distinct titles, so nothing is claimed by the exact/quote passes first. */
+    const distinct = (n: number): ImprovementCandidate[] =>
+      Array.from({ length: n }, (_, i) => cand({ id: `n${i}`, title: `unique subject ${i} alpha bravo` }));
+
+    it('reports nearDupPass:"ran" below the bound', () => {
+      const r = findLikelyDuplicatesDetailed(distinct(10));
+      expect(r.nearDupPass).toBe('ran');
+      expect(r.nearDupConsidered).toBe(10);
+    });
+
+    it('reports nearDupPass:"skipped-cost-gate" ABOVE the bound', () => {
+      const r = findLikelyDuplicatesDetailed(distinct(NEAR_DUP_MAX_CANDIDATES + 1));
+      expect(r.nearDupPass).toBe('skipped-cost-gate');
+      expect(r.nearDupConsidered).toBe(NEAR_DUP_MAX_CANDIDATES + 1);
+    });
+
+    it('a re-worded duplicate that WOULD cluster below the bound is missed above it — the real cost of the skip', () => {
+      // Two titles that overlap enough to pass NEAR_DUP_JACCARD but are not
+      // identical, so only the near-dup leg can join them.
+      const pair = [
+        cand({ id: 'p1', title: 'presence list overflows the sidebar badly' }),
+        cand({ id: 'p2', title: 'presence list overflows the sidebar' }),
+      ];
+      const below = findLikelyDuplicatesDetailed(pair);
+      expect(below.nearDupPass).toBe('ran');
+      expect(below.clusters.some((c) => c.ids.includes('p1') && c.ids.includes('p2'))).toBe(true);
+
+      // Same pair, buried in a corpus over the bound: the leg never runs, so the
+      // pair is NOT clustered. The result must say why rather than imply "no dupe".
+      const above = findLikelyDuplicatesDetailed([...pair, ...distinct(NEAR_DUP_MAX_CANDIDATES)]);
+      expect(above.nearDupPass).toBe('skipped-cost-gate');
+      expect(above.clusters.some((c) => c.ids.includes('p1') && c.ids.includes('p2'))).toBe(false);
+    });
+
+    it('buildDigest surfaces the skip in scope AND headline, so a reader cannot infer completeness', () => {
+      const d = buildDigest(distinct(NEAR_DUP_MAX_CANDIDATES + 1), { nowMs: NOW });
+      expect(d.likelyDuplicatesScope?.nearDupPass).toBe('skipped-cost-gate');
+      // windowed is FALSE here — the caller loaded the whole corpus. That is
+      // exactly the case that used to read as "fully scoped, exhaustive".
+      expect(d.likelyDuplicatesScope?.windowed).toBe(false);
+      expect(d.headline).toMatch(/near-dup pass SKIPPED/);
+    });
+
+    it('the plain findLikelyDuplicates wrapper is unchanged for callers that only want clusters', () => {
+      const via = findLikelyDuplicates(distinct(10));
+      expect(via).toEqual(findLikelyDuplicatesDetailed(distinct(10)).clusters);
     });
   });
 

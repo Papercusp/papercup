@@ -37,7 +37,44 @@ vi.mock('@papercusp/agent-mcp', () => ({
   dispatchProjectedToolStream: h.dispatchMock,
   lookupByMcpName: () => ({ mcpToolName: 'agent_chats:chat' }),
 }));
+// WI-7139: the messages route now takes a PG-BACKED per-chat streaming lock
+// (agent-chat-lock.ts) before it spawns. That module fails CLOSED by design — any
+// PG error is treated as "already locked" and the route returns 409 — so a test
+// that does not satisfy it gets 409 on every assertion instead of the behaviour
+// under test. These files exercise the ROUTE, not the lock (agent-chat-lock has
+// its own coverage), so grant the lock outright rather than reaching through it
+// into a db-org mock: mocking the lock keeps these tests independent of
+// @papercusp/db-org's export surface, which is exactly what broke them (a new
+// `getOrgPg` import stranded every db-org mock that did not list it).
+vi.mock('../../../agent-chat-lock', () => ({
+  AGENT_CHAT_LOCK_TTL_MS: 10 * 60_000,
+  acquireAgentChatLock: async (chatId: string) => ({ chatId, token: 'test-lock-token' }),
+  releaseAgentChatLock: async () => {},
+  isAgentChatLocked: async () => false,
+  __resetAgentChatLocks: async () => {},
+}));
+
 vi.mock('@papercusp/db-org', () => ({
+  // The route acquires a PG-backed per-chat lock (agent-chat-lock.ts, WI-7139)
+  // before assembling, and that lock calls `getOrgPg().sql` when no sql is
+  // injected. A factory WITHOUT getOrgPg makes it throw -> the lock fails CLOSED
+  // -> console.warn -> vitest-fail-on-console reds this test (WI-7267).
+  //
+  // Echo the generated token back so the lock ACQUIRES: it compares
+  // rows[0].token against the uuid it just minted, so returning [] would swap
+  // the throw for a silent 409 and the assertions below would still fail. Match
+  // by UUID SHAPE, not argument position, so reordering the query's
+  // interpolations cannot quietly turn this back into a 409.
+  getOrgPg: () => ({
+    sql: async (_strings: TemplateStringsArray, ...values: unknown[]) => {
+      const token = values.find(
+        (v): v is string =>
+          typeof v === 'string' &&
+          /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v),
+      );
+      return token ? [{ token }] : [];
+    },
+  }),
   getLegacyClient: () => ({
     prepare: (sql: string) => ({
       get: async () => {

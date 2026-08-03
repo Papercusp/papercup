@@ -186,7 +186,21 @@ export interface ImprovementDigest {
    * ticket that reported D1 itself proposed for exactly that cost tradeoff:
    * make the scoping VISIBLE instead of paying to eliminate it.
    */
-  likelyDuplicatesScope: { consideredCount: number; corpusTotal: number; windowed: boolean } | null;
+  likelyDuplicatesScope: {
+    consideredCount: number;
+    corpusTotal: number;
+    windowed: boolean;
+    /**
+     * Whether the cost-gated near-dup leg RAN (EI-19393516222436864). The three
+     * fields above describe only the WINDOW, so before this they reported
+     * `windowed: false` — i.e. "fully scoped, exhaustive" — on exactly the
+     * full-corpus read where the near-dup leg is always skipped. Scope and
+     * COMPLETENESS are different claims and this one was missing.
+     */
+    nearDupPass: 'ran' | 'skipped-cost-gate';
+    /** Candidates the near-dup leg had to consider, vs its NEAR_DUP_MAX_CANDIDATES bound. */
+    nearDupConsidered: number;
+  } | null;
   /**
    * Recurring friction signatures (P-003) — every signature seen more than once,
    * recurrence + decay attached. The Queen reads this to weight a *recurring*
@@ -316,10 +330,40 @@ export function extractQuotedSignatures(text: string | undefined): string[] {
  *  regex+sort+alloc storm + GC churn that saturated the loop at a 775+ backlog). */
 const NEAR_DUP_MAX_CANDIDATES = 4000;
 
+/**
+ * What {@link findLikelyDuplicatesDetailed} actually managed to do
+ * (EI-19393516222436864).
+ *
+ * The near-dup leg is cost-gated at {@link NEAR_DUP_MAX_CANDIDATES}, and MEASURED
+ * 2026-08-03 the production corpus is 15,166 open rows — so in practice that leg
+ * had NEVER run, and nothing in the result said so. A caller saw only clusters,
+ * and 80.7% of rows landing in none of them reads as a fact about the corpus
+ * rather than about a skipped pass. This makes the degradation legible instead of
+ * paying to remove a bound that is load-bearing (WI-5820: the quadratic pass was
+ * the single largest first-party cost in a live CPU profile).
+ */
+export interface DupClusterResult {
+  clusters: DupCluster[];
+  /** Whether the O(n²) token-overlap leg ran, or was skipped by the cost gate. */
+  nearDupPass: 'ran' | 'skipped-cost-gate';
+  /** How many candidates that leg had to consider (post exact/quote claiming). */
+  nearDupConsidered: number;
+}
+
 /** Cluster candidates that are likely duplicates (a shared quoted error/exception
  *  signature, exact normalized title-signature, OR title token-overlap ≥
- *  NEAR_DUP_JACCARD). Best-effort surfacing for a cheap merge. */
+ *  NEAR_DUP_JACCARD). Best-effort surfacing for a cheap merge.
+ *
+ *  Returns ONLY the clusters, so it cannot tell you whether the near-dup leg
+ *  actually ran — prefer {@link findLikelyDuplicatesDetailed} when that matters
+ *  (i.e. whenever you report coverage to anyone). Kept as-is for the callers that
+ *  legitimately only consume clusters. */
 export function findLikelyDuplicates(candidates: ImprovementCandidate[]): DupCluster[] {
+  return findLikelyDuplicatesDetailed(candidates).clusters;
+}
+
+/** {@link findLikelyDuplicates}, plus whether the cost-gated near-dup leg ran. */
+export function findLikelyDuplicatesDetailed(candidates: ImprovementCandidate[]): DupClusterResult {
   const clusters: DupCluster[] = [];
   const claimed = new Set<string>();
 
@@ -368,8 +412,13 @@ export function findLikelyDuplicates(candidates: ImprovementCandidate[]): DupClu
   // 2. near-dup pass (token overlap) over the not-yet-claimed.
   const remaining = candidates.filter((c) => !claimed.has(c.id));
   // Bound: above NEAR_DUP_MAX_CANDIDATES skip the O(n²) pass (best-effort, D-001)
-  // so a pathological backlog can't peg the event loop.
-  if (remaining.length > NEAR_DUP_MAX_CANDIDATES) return clusters;
+  // so a pathological backlog can't peg the event loop. The skip is REPORTED
+  // rather than silent (EI-19393516222436864) — at production scale this is the
+  // branch that always taken, so a caller that cannot see it is being told the
+  // clustering was more complete than it was.
+  if (remaining.length > NEAR_DUP_MAX_CANDIDATES) {
+    return { clusters, nearDupPass: 'skipped-cost-gate', nearDupConsidered: remaining.length };
+  }
   // Precompute each token set ONCE. The previous implementation recomputed
   // tokenSet() (regex strip + lowercase + split + sort + Set alloc) inside the
   // inner loop — ~n²/2 heavy calls — which dominated the operator-loop CPU + GC at
@@ -434,7 +483,7 @@ export function findLikelyDuplicates(candidates: ImprovementCandidate[]): DupClu
       clusters.push({ signature: sigById.get(remaining[i].id) ?? dedupSignature(remaining[i].title), ids: group });
     }
   }
-  return clusters;
+  return { clusters, nearDupPass: 'ran', nearDupConsidered: remaining.length };
 }
 
 /** The most recent activity timestamp for a candidate (resolution time when
@@ -605,7 +654,8 @@ export function buildDigest(
   // was paying ~840ms/cycle for a clustering it discarded outright). `null`
   // (not `[]`) marks "did not run" so a reader can never mistake skipped for
   // "ran, found none" (D-002).
-  const likelyDuplicates = opts.nearDuplicates === false ? null : findLikelyDuplicates(candidates);
+  const dupResult = opts.nearDuplicates === false ? null : findLikelyDuplicatesDetailed(candidates);
+  const likelyDuplicates = dupResult?.clusters ?? null;
   // Recurrence-decay on the stable signature (P-003) — only the signatures that
   // actually recurred (count > 1) are interesting for triage.
   const recurringSignatures = signatureRecurrence(candidates, { nowMs }).filter((s) => s.count > 1);
@@ -620,9 +670,15 @@ export function buildDigest(
   const windowed = total > returned;
 
   const likelyDuplicatesScope =
-    likelyDuplicates === null
+    dupResult === null
       ? null
-      : { consideredCount: returned, corpusTotal: total, windowed };
+      : {
+          consideredCount: returned,
+          corpusTotal: total,
+          windowed,
+          nearDupPass: dupResult.nearDupPass,
+          nearDupConsidered: dupResult.nearDupConsidered,
+        };
 
   // P-005: a LINEAR pass, so unlike the O(n²) dedup leg it never degrades and is
   // always run over everything the caller loaded.
@@ -635,6 +691,11 @@ export function buildDigest(
     (likelyDuplicates && likelyDuplicates.length ? `, ${likelyDuplicates.length} likely-dup cluster(s)` : '') +
     (windowed && likelyDuplicates && likelyDuplicates.length === 0
       ? ` (dedup scoped to the ${returned}-item window — pass a higher \`limit\` to check the rest of the ${total}-item corpus)`
+      : '') +
+    // The skip is the ALWAYS-taken branch at production scale, so a headline that
+    // omits it overstates the dedup every single time it is read.
+    (dupResult?.nearDupPass === 'skipped-cost-gate'
+      ? ` ⚠ near-dup pass SKIPPED (${dupResult.nearDupConsidered} candidates > the ${NEAR_DUP_MAX_CANDIDATES} cost gate) — only exact title/quote signatures were clustered, so re-worded duplicates are NOT counted`
       : '') +
     (recurringSignatures.length ? `, ${recurringSignatures.length} recurring signature(s)` : '') +
     // Surfaced in the headline on purpose: this class went unaddressed while
