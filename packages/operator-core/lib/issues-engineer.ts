@@ -242,47 +242,72 @@ async function refreshIssuesPerWorkspace(): Promise<void> {
     issuesFlagReadAtMs = Date.now();
   }
 }
-// ⚠ EXAMINED AND REVERTED 2026-08-03 (EI-19416650993725684) — do NOT lazy-arm this module the
-// way its BASELINE siblings were migrated, however mechanical the change looks. It was migrated
-// onto lazy-flag-refresh, measured, and backed out; the reasoning is recorded here so the next
-// agent does not re-do it:
-//
-//   Lazy arming moves the cache's first population from import to the FIRST READER CALL, and
-//   because the refresh is async while the reader is sync, that first call returns the
-//   UNPOPULATED value. Here that is `false` → DEFAULT_COORD_WORKSPACE, i.e. the legacy shared
-//   'default' coord workspace — and ISSUES_PER_WORKSPACE is deliberately held ON (the cutover
-//   finished 2026-06-22; see the flag's note in libs/flags/src/types.ts). The 'default'
-//   partition is DEAD: ~2.4k stale rows, last write 2026-06-22, while every live EI/WI sits in
-//   the workspace partition. So the pre-refresh window does not degrade to "the override has
-//   not taken effect yet" — it resolves issue scope to a dead partition, which is exactly the
-//   `wi.workspace_id = $issueWs` matches-nothing failure resolveIssuesScopeWorkspace's own doc
-//   comment below calls "a hard, deterministic, restart-immune zero".
-//
-//   The module-scope refresh below is what keeps that window at BOOT (where nothing reads yet)
-//   instead of at the first real read (where every process would hit it once).
-//
-// ⚠ THE UNBLOCK CONDITION RECORDED HERE ON 2026-08-03 WAS WRONG, and is corrected in place rather
-// than deleted so the next agent does not go looking for it again. It read: "a cache like this needs
-// an explicit WARM on a boot path (the way task-manager/enabled.ts does with warmTaskManagerFlag)
-// before it can be migrated." There is no such pattern to copy — `warmTaskManagerFlag` has ZERO
-// production call sites (verified: only its own definition, its post-flip re-warm, and its test).
-// task-manager is safe under lazy arming because it CHOSE a fail-OPEN unpopulated value
-// (`cached !== false`), not because anything warms it early.
-//
-// So the real unblock condition is one of:
-//   (a) make the unpopulated value SAFE — i.e. have resolveIssuesScopeWorkspace fall back to the
-//       ACTIVE workspace rather than DEFAULT_COORD_WORKSPACE while the flag is unresolved, which
-//       matches the flag's held-ON production state and is a semantic change to data routing that
-//       deserves its own work-item and test; or
-//   (b) genuinely warm this on a path that provably runs in EVERY process that resolves issue scope
-//       — and "provably" is the hard part, since a missed process reverts to (the unsafe) case.
-// Until one of those lands, the module-scope refresh below is CORRECT: it keeps the unresolved
-// window at BOOT, where nothing reads yet, instead of at the first real read in every process.
-// Same posture as auth-config-overrides.ts, the other BASELINE entry deferred for an unsafe
-// unpopulated state. Tracked as EI-19448574704459898.
-void refreshIssuesPerWorkspace();
-onFlagChange((key) => {
-  if (key === null || key === FLAGS.ISSUES_PER_WORKSPACE) void refreshIssuesPerWorkspace();
+/**
+ * Armed on FIRST USE, not at import (EI-19416650993725684) — SEEDED, which is what finally made
+ * that safe (WI-8887). The history is kept because this module was migrated once, measured
+ * ALL-GREEN, and REVERTED as wrong; a future reader needs to know which of those two verdicts is
+ * the live one and why.
+ *
+ * ⚠ TWO module-scope flag-binding accesses were removed here, not one — the same shape as
+ * `work-item-redundancy.ts`. The eager `void refreshIssuesPerWorkspace()` reached `getFlag`
+ * SYNCHRONOUSLY (an async function body runs up to its first await when called), so migrating the
+ * `onFlagChange(...)` alone would have turned the source lint green while leaving the module just
+ * as unimportable under a partial `@papercusp/flags/server` mock — merely failing on `getFlag`
+ * instead. That gap is why this file is listed in `flags-partial-mock-importable.test.ts` rather
+ * than trusted to the lint.
+ *
+ * ## Why the FIRST attempt (2026-08-03) was correctly reverted
+ *
+ * Lazy arming moves the cache's first population from import to the FIRST READER CALL, and because
+ * the refresh is async while the reader is sync, that first call returns the UNPOPULATED value.
+ * Unseeded, that was this module's `let issuesPerWorkspaceOn = false` → DEFAULT_COORD_WORKSPACE,
+ * i.e. the legacy shared 'default' coord partition — while ISSUES_PER_WORKSPACE is held ON. So the
+ * window did not degrade to "an override has not taken effect yet"; it resolved issue scope to a
+ * near-dead partition, i.e. the `wi.workspace_id = $issueWs` matches-nothing failure this file's
+ * own doc comment below calls "a hard, deterministic, restart-immune zero".
+ *
+ * ## What changed: the seed, and the two checks that cleared it (WI-8887, both MEASURED)
+ *
+ * 1. VALUE. The seed populates the cache SYNCHRONOUSLY on arm from `FLAG_DEFAULTS`, which is
+ *    `true` for ISSUES_PER_WORKSPACE (measured 2026-08-03) — so the window now serves the ACTIVE
+ *    workspace, which is what live production actually does. Verified by EFFECT rather than by
+ *    reading a flag value: `harness_shared.work_items` took 387 issue-family rows into
+ *    `papercusp-workspace` in one hour (newest 2026-08-03T17:09:39Z) against 0 into 'default', so
+ *    every live-writing process resolves this flag ON. The seeded window therefore MATCHES
+ *    production instead of contradicting it, and this migration is strictly SAFER than the
+ *    module-scope form it replaces: that form's import→first-refresh window served the dead
+ *    partition too, and "nothing reads at boot" was an assumption, never a guarantee.
+ *      Residual, accepted: a workspace whose override store holds this flag OFF gets the mirror
+ *    hazard for one refresh round-trip. Measured, exactly one does — 'generic-test', which holds
+ *    9 issue-family rows total and has taken no write since 2026-06-18.
+ * 2. READ SITE. The second discriminator (a flag READ has effects beyond its value — it red
+ *    `projected-tool-deps.test.ts` for capability-envelope-overrides). Clean here, provably:
+ *    `resolveIssuesScopeWorkspace` ALREADY calls `getFlag(ISSUES_PER_WORKSPACE, systemDistinctId())`
+ *    from inside the reader on every stale-TTL read (see its first line). Arming adds no flag read
+ *    at all — `onFlagChange` is `changeHandlers.add(handler)`, a Set insertion.
+ *
+ * `resolveIssuesScopeWorkspace` is the ONLY reader of the cache (`issuesScopeWorkspace()` delegates
+ * to it), so arming there covers every path. ⚠ Any NEW sync reader must arm too.
+ */
+const armIssuesFlagRefresh = lazyFlagRefresh(refreshIssuesPerWorkspace, {
+  keys: [FLAGS.ISSUES_PER_WORKSPACE],
+  // Seed from the flag REGISTRY, not a literal, so a graduation of the flag's default carries here
+  // automatically. The deref is LAZY (inside this callback), the form
+  // check-no-module-scope-flag-subscribe.mjs documents as correct and does not flag.
+  seed: () => {
+    issuesPerWorkspaceOn = FLAG_DEFAULTS[FLAGS.ISSUES_PER_WORKSPACE];
+  },
+  unpopulated: {
+    kind: 'seeded-from-flag-default',
+    serves:
+      'FLAG_DEFAULTS[ISSUES_PER_WORKSPACE] — currently true, i.e. the ACTIVE workspace, which is ' +
+      'what every live-writing process resolves (387 issue rows into papercusp-workspace in one ' +
+      "hour vs 0 into 'default', measured 2026-08-03). The window diverges only where a runtime " +
+      'OVERRIDE holds the flag OFF, self-heals within one getFlag round-trip, and the one ' +
+      "workspace that does hold it OFF ('generic-test') has taken no write since 2026-06-18. " +
+      'Note this does NOT cover a getFlag FAILURE: that path still fails CLOSED to the legacy ' +
+      "'default' partition (see refreshIssuesPerWorkspace above) — unchanged by this migration.",
+  },
 });
 /** The engineer-issues workspace scope NOW (F): active workspace when the flag is ON,
  *  else the legacy shared `default` coord workspace.
@@ -318,6 +343,7 @@ export function issuesScopeWorkspace(): string {
  * original `issuesScopeWorkspace()` (falls back to `activeWorkspaceId()`).
  */
 export function resolveIssuesScopeWorkspace(explicitActiveWorkspaceId?: string): string {
+  armIssuesFlagRefresh(); // first use seeds the cache + installs the subscription (WI-8887)
   if (Date.now() - issuesFlagReadAtMs > ISSUES_FLAG_TTL_MS) void refreshIssuesPerWorkspace();
   if (!issuesPerWorkspaceOn) return DEFAULT_COORD_WORKSPACE;
   return explicitActiveWorkspaceId ?? activeWorkspaceId();

@@ -33,6 +33,7 @@ import { devDeployState } from "../../dev-deploy-state";
 import { liveBlockedState, liveSettledProbe } from "../../work-items-events";
 import { withBoundedTimeout } from "../../bounded-timeout";
 import { CHECKPOINT_MAX_RUNTIME_SEC } from "../../release-checkpoint-launch";
+import { readDeployInFlight } from "../../release-deploy-launch";
 import { gitPipelinePosition } from "../../git-pipeline-position";
 import { gitPipelineSnapshot } from "../../git-pipeline-stats";
 import { findGreenCheckpointVerdictForCandidate } from "../../harness/git-sync/pipeline-events";
@@ -294,7 +295,46 @@ defineTool({
       }
     }
 
-    return reply(await armAwaits(ctx, keys, note, args.timeout_sec));
+    // EI-19448585641887174: the UNTARGETED arm ("wake on the next deploy of any sha") has
+    // no already-landed latch, and that is where the reported loss happened — an agent
+    // armed this DURING a deploy, believing it would wake when that deploy finished, and
+    // slept the full 900s. `release:deployed` is emitted at the very END of a deploy
+    // (after the restart and its health probe), so for a deploy already past that point
+    // the event has ALREADY fired and this await can only be satisfied by a LATER one.
+    //
+    // We ARM anyway rather than refuse — "wake me on the next deploy" is a legitimate
+    // thing to want, and refusing would break it. What was missing is that the caller
+    // was never TOLD, and by the time the silence is informative the window is gone.
+    const armed = await armAwaits(ctx, keys, note, args.timeout_sec);
+    if (!args.sha) {
+      const flight = await withBoundedTimeout(readDeployInFlight(), {
+        fallback: null,
+        timeoutMs: 3_000,
+        label: "deploy-await:inFlightArmWarning",
+      });
+      // Only an AFFIRMATIVE systemd reading warns. `systemd-unavailable` means the probe
+      // could not measure, which must never be dressed up as "a deploy is running".
+      const f = flight.value;
+      if (f && f.active && f.source === "systemd") {
+        return reply({
+          ...armed,
+          deploy_in_flight: {
+            unit: f.unit,
+            activeState: f.activeState,
+            startedAtMs: f.startedAtMs,
+            logPath: f.logPath,
+          },
+          warning:
+            `A deploy is ALREADY RUNNING (${f.unit} is ${f.activeState}) and you armed an UNTARGETED await. ` +
+            `"release:deployed" is emitted only at the END of a deploy — after the restart and its health probe — so if that ` +
+            `deploy is already past its restart the event has ALREADY fired and this await will NOT wake for it; it will wait ` +
+            `for the NEXT deploy. If what you wanted was "wake when the CURRENT deploy finishes", cancel this and check ` +
+            `dev:pipeline_position instead: serving.startedSinceCodeChange flipping true is the restart actually completing. ` +
+            `(A targeted deploy:await { sha } does not have this gap — it probes before arming.)`,
+        });
+      }
+    }
+    return reply(armed);
   },
 });
 

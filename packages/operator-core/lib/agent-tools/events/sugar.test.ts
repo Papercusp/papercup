@@ -82,6 +82,23 @@ vi.mock("../../git-pipeline-position", () => ({
   })),
 }));
 
+// EI-19448585641887174: the UNTARGETED deploy:await arm probes the deploy unit to warn
+// when it is being armed mid-deploy — mocked so the rig stays hermetic (the real module
+// shells out to systemctl). Default: MEASURED idle, so every existing untargeted case
+// arms exactly as before and emits no warning.
+vi.mock("../../release-deploy-launch", () => ({
+  readDeployInFlight: vi.fn(async () => ({
+    active: false,
+    unit: "papercup-auto-deploy",
+    activeState: "inactive",
+    subState: "dead",
+    startedAtMs: null,
+    logPath: "/tmp/papercup-auto-deploy.log",
+    logMtimeMs: null,
+    source: "systemd",
+  })),
+}));
+
 // EI-18676650746298156: checkpoint:await's candidateSha already-judged latch probes this —
 // mocked here so the rig stays hermetic (the real module hits Postgres). Default: no
 // matching row, so every EXISTING checkpoint:await case keeps registering exactly as before.
@@ -104,6 +121,7 @@ import { devDeployState } from "../../dev-deploy-state";
 import { liveBlockedState, liveSettledProbe } from "../../work-items-events";
 import { gitPipelineSnapshot } from "../../git-pipeline-stats";
 import { gitPipelinePosition } from "../../git-pipeline-position";
+import { readDeployInFlight } from "../../release-deploy-launch";
 import { findGreenCheckpointVerdictForCandidate } from "../../harness/git-sync/pipeline-events";
 import { checkpointPipelineName } from "./sugar";
 
@@ -409,9 +427,74 @@ describe("deploy:await already-deployed latch (EI-18676050719521433 — was pure
     expect(gitPipelineSnapshot).not.toHaveBeenCalled();
     expect(gitPipelinePosition).not.toHaveBeenCalled();
     expect(out.already_deployed).toBeUndefined();
+    // Deploy unit measured IDLE (default mock) ⇒ nothing to warn about.
+    expect(out.warning).toBeUndefined();
     expect(
       vi.mocked(registerAwait).mock.calls.map((c) => c[0].eventKey),
     ).toEqual(["release:deployed", "release:deploy-failed"]);
+  });
+
+  /**
+   * EI-19448585641887174 — the reported loss, at the arm site.
+   *
+   * The UNTARGETED form has no already-landed latch, so arming it mid-deploy registers a
+   * wait that the IN-FLIGHT deploy can never satisfy (its `release:deployed` fires at the
+   * END, after the restart, and by then it has already fired). Reported live: 900s slept
+   * for nothing. It must still ARM — "wake me on the next deploy" is legitimate — but the
+   * caller has to be TOLD, while they can still act on it.
+   */
+  it("WARNS when an untargeted await is armed while a deploy is already running — and still arms", async () => {
+    vi.mocked(readDeployInFlight).mockResolvedValueOnce({
+      active: true,
+      unit: "papercup-auto-deploy",
+      activeState: "activating",
+      subState: "running",
+      startedAtMs: 1_700_000,
+      logPath: "/tmp/papercup-auto-deploy.log",
+      logMtimeMs: null,
+      source: "systemd",
+    } as never);
+
+    const out = await callDeploy({});
+
+    // Still armed — the warning must not cost the caller the wait they asked for.
+    expect(
+      vi.mocked(registerAwait).mock.calls.map((c) => c[0].eventKey),
+    ).toEqual(["release:deployed", "release:deploy-failed"]);
+    expect(out.deploy_in_flight).toMatchObject({ unit: "papercup-auto-deploy", activeState: "activating" });
+    expect(out.warning).toMatch(/ALREADY RUNNING/);
+    expect(out.warning).toMatch(/will NOT wake for it/);
+    expect(out.warning).toMatch(/startedSinceCodeChange/);
+  });
+
+  /**
+   * The absence-vs-measurement guard, same rule as the serving latch above: a probe that
+   * could NOT read systemd reports `active:false, source:'systemd-unavailable'`, and that
+   * is UNKNOWN — never "a deploy is running". Warning on it would fire spuriously on every
+   * host without systemd.
+   */
+  it("does NOT warn on an UNMEASURABLE deploy-unit reading", async () => {
+    vi.mocked(readDeployInFlight).mockResolvedValueOnce({
+      active: true, // even if some future path sets this, the source is what decides
+      unit: "papercup-auto-deploy",
+      activeState: null,
+      subState: null,
+      startedAtMs: null,
+      logPath: "/tmp/papercup-auto-deploy.log",
+      logMtimeMs: null,
+      source: "systemd-unavailable",
+    } as never);
+
+    const out = await callDeploy({});
+
+    expect(out.warning).toBeUndefined();
+    expect(out.deploy_in_flight).toBeUndefined();
+    expect(registerAwait).toHaveBeenCalledTimes(2);
+  });
+
+  it("a TARGETED await never pays the in-flight probe (it has its own latch)", async () => {
+    await callDeploy({ sha: "abc123" });
+    expect(readDeployInFlight).not.toHaveBeenCalled();
   });
 
   it("a probe failure/timeout fails OPEN — registers normally rather than blocking the await", async () => {

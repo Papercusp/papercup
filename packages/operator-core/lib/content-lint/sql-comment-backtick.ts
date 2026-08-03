@@ -22,12 +22,30 @@
  * actionable message should be the one recorded.
  *
  * ── Why this is a heuristic, and why that is correct here ──────────────────
- * It is deliberately a LINE SCANNER, not a parser. The AST approach is not
- * merely harder, it is impossible for the case that matters: the stray backtick
- * terminates the template, so the file frequently does not PARSE — there are no
- * template-literal nodes left to walk. The incidents themselves suggest the
- * cheap discriminator: a `--` SQL line-comment essentially never legitimately
- * appears outside a SQL string in this codebase.
+ * It is deliberately a LINE SCANNER, not a parser — but NOT for the reason you
+ * might assume, and the wrong reason is worth stating because it is seductive.
+ *
+ * It is tempting to say "the file does not parse, so there are no nodes to
+ * walk". That is FALSE, measured both ways on the real incident shapes:
+ *   - the SILENT case (`sql` tagged) parses CLEANLY — 0 parse diagnostics — which
+ *     is precisely what makes it silent;
+ *   - the LOUD case (plain DDL template) emits TS1005s but TypeScript
+ *     error-RECOVERS and still yields template-literal nodes.
+ * So neither "it doesn't parse" nor "there are no nodes" discriminates anything.
+ *
+ * The real reason is worse, and is the whole trap: THE AST FAITHFULLY ENCODES
+ * THE MIS-PARSE. By the time you have nodes, the stray backtick has already been
+ * consumed as the template's TERMINATOR — it is no longer *inside* any
+ * template's content. So an AST walk asking "is there a backtick inside a SQL
+ * comment inside this template?" correctly answers NO, on a file that is broken
+ * exactly that way. The evidence you would search for has been reinterpreted as
+ * syntax. (Measured: the first template node ends mid-comment, right at the
+ * stray backtick, and a second bogus template node is formed from the remainder.)
+ *
+ * A line scanner works because it reads the bytes the AUTHOR wrote, before the
+ * parser's reinterpretation. The incidents themselves suggest the cheap
+ * discriminator: a `--` SQL line-comment essentially never legitimately appears
+ * outside a SQL string in this codebase.
  *
  * ── The >=2 backtick rule (measured, not guessed) ─────────────────────────
  * The authoring mistake is always a markdown-quoted PAIR (`` `closed_ts` ``), so

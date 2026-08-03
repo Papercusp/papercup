@@ -1061,6 +1061,59 @@ describe('heavy-command admission control (WI-3821)', () => {
     expect(decision.hookSpecificOutput.permissionDecisionReason).toContain('heavy-command admission');
   };
 
+  /**
+   * EI-19419178369405401 — a sanctioned root entrypoint must be exempt at EVERY
+   * command position, not only as the first word.
+   *
+   * The (a2) skip-check was `re.match` (start-anchored) while heavy-detection is
+   * anchored at every command position, so `npm run test:file` passed alone and
+   * was DENIED after any separator. That denied the blessed, already
+   * self-throttling entrypoint under exactly the load it exists to queue for,
+   * and the deny text then named that same entrypoint as the remedy.
+   *
+   * These are written as COMPOUNDS on purpose: the bare forms already passed
+   * before the fix, so a bare-command test would go green against the bug.
+   */
+  it.each([
+    ['leading echo', 'echo "=== 1/3 ==="; npm run test:file -- lib/x.test.ts'],
+    ['leading export', 'export SUBJECT=/tmp/copy.sh; npm run test:file -- lib/x.test.ts'],
+    ['leading builtin', 'true; npm run test:file -- lib/x.test.ts'],
+    ['newline + timeout', 'echo hi\ntimeout 400 npm run test:file -- lib/x.test.ts'],
+    ['test:affected', 'echo hi; npm run test:affected'],
+    ['test:all:integration', 'echo hi; npm run test:all:integration'],
+    ['lint:tsc', 'echo hi; npm run lint:tsc'],
+  ])('allows a sanctioned root entrypoint mid-command (%s), over threshold', (_label, command) => {
+    expectAllow(runGate(bashCmd(command), { ...AGENT, ...OVER }));
+  });
+
+  /**
+   * The exemption must NOT grant amnesty to the rest of the command line.
+   * Before this fix (a2) was an unconditional early `return`, so a sanctioned
+   * entrypoint at the FRONT waved through everything after it — measured
+   * 2026-08-03: `npm run test:file && npx vitest` was ALLOWED at any load.
+   * Expressing the exemption as a negative lookahead inside heavy-detection
+   * (rather than an early return) is what closes this.
+   */
+  it.each([
+    ['sanctioned then raw vitest', 'npm run test:file -- x.test.ts && npx vitest run y.test.ts'],
+    ['sanctioned then npm run build', 'npm run test:file -- x.test.ts; npm run build'],
+    ['sanctioned then bare tsc', 'npm run test:affected && npx tsc --noEmit'],
+  ])('still denies a raw heavy command hiding behind a sanctioned one (%s)', (_label, command) => {
+    expectHeavyDeny(runGate(bashCmd(command), { ...AGENT, ...OVER }));
+  });
+
+  // The narrowness that keeps the fix safe: only the EXACT root script names are
+  // exempt. A workspace cwd resolves these to its own raw vitest, not the
+  // pc-heavy-wrapped root script, so they must stay gated in every position.
+  it.each([
+    ['bare npm test after a separator', 'echo hi; npm test'],
+    ['npm run test after a separator', 'echo hi; npm run test'],
+    ['an unsanctioned test:* script', 'echo hi; npm run test:unit'],
+    ['npm run build after a separator', 'echo hi; npm run build'],
+  ])('does not over-exempt: %s stays denied', (_label, command) => {
+    expectHeavyDeny(runGate(bashCmd(command), { ...AGENT, ...OVER }));
+  });
+
   it.each([
     ['npm test', 'npm test'],
     ['npm run test', 'npm run test'],

@@ -260,6 +260,7 @@ import './knowledge_packs/candidates';
 import './knowledge_packs/decide_candidate';
 import './memory/forget';
 import './memory/update';
+import './memory/sweep';
 import './memory/recover-from-transcripts';
 import './autoloop/status';
 import './autoloop/control';

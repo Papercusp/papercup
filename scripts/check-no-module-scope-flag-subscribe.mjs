@@ -246,11 +246,16 @@ export function checkUnpopulatedDeclaration(callText) {
 // module's OWN documented fail-CLOSED state (no tag bump), costing at most one skipped
 // invalidation per process — a briefly stale cache entry, never a wrong value.
 //
-// issues-engineer.ts was migrated the same way in that session and REVERTED — see the
-// inline note at its BASELINE entry below. It is the reason work-item-redundancy.ts is
-// still not listable in flags-partial-mock-importable.test.ts: redundancy →
-// work-items.ts reaches BOTH claim-lease-wiring (now migrated) and issues-engineer
-// (not), so the graph guard surfaces the blockers one hop at a time.
+// issues-engineer.ts was migrated the same way in that session and REVERTED — then
+// re-migrated SEEDED and kept (WI-8887, 2026-08-03). Recorded because the reverted
+// verdict is the memorable one: the revert was correct for an UNSEEDED migration (the
+// unpopulated `false` resolved issue scope to the near-dead 'default' partition) and is
+// void once `seed` puts FLAG_DEFAULTS[ISSUES_PER_WORKSPACE] (true) in front of the first
+// reader — which is what every live-writing process resolves anyway. Full reasoning, and
+// the read-site check that also had to clear, at the arm site in issues-engineer.ts.
+// Landing it also unblocked work-item-redundancy.ts and events/cache-eca-rule.ts for
+// flags-partial-mock-importable.test.ts: both reach issues-engineer via work-items.ts, so
+// the graph guard had been surfacing the blockers one hop at a time.
 export const BASELINE = new Set([
   // ⚠ EXAMINED AND DEFERRED, NOT MISSED — do NOT pattern-match this one onto its
   // siblings above. It looks identical (same config-override family, same timer,
@@ -265,15 +270,6 @@ export const BASELINE = new Set([
   // boot path, not lazy arming alone. Migrate it deliberately, with that warm.
   'packages/operator-core/lib/auth-config-overrides.ts',
   'packages/operator-core/lib/harness/routines/configure-per-workspace.ts',
-  // ⚠ EXAMINED AND REVERTED, NOT MISSED — a migration onto lazy-flag-refresh was written,
-  // measured and BACKED OUT 2026-08-03. It is mechanically easy (ONE reader,
-  // resolveIssuesScopeWorkspace, and an existing 3s self-heal TTL) and semantically unsafe:
-  // ISSUES_PER_WORKSPACE is deliberately held ON, and the unpopulated `false` resolves issue
-  // scope to the legacy 'default' coord workspace — a DEAD partition (last write 2026-06-22)
-  // while every live EI/WI is in the workspace partition. Lazy arming would put that value in
-  // front of the FIRST reader call in every process. Needs a boot-path WARM first (see the
-  // long note at the reverted site in issues-engineer.ts). Same posture as auth-config-overrides.
-  'packages/operator-core/lib/issues-engineer.ts',
   'packages/operator-core/lib/lexicon/configure.ts',
   'packages/operator-core/lib/workspace-brain-scope.ts',
 ]);

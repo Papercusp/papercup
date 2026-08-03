@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import ts from 'typescript';
 import {
   findSqlCommentBacktick,
   sqlCommentBacktickScopeMatches,
@@ -158,6 +159,84 @@ describe('findSqlCommentBacktick — file-level SQL scope gate', () => {
   it('DOES scope a plain DDL file via raw CREATE TABLE/VIEW/INDEX', () => {
     const text = src('const d = "CREATE UNIQUE INDEX x ON t (a)";', 'const c = "  -- the `a` column";');
     expect(findSqlCommentBacktick('a.ts', text)).not.toBeNull();
+  });
+});
+
+/**
+ * These pin the JUSTIFICATION for using a line scanner instead of an AST walk,
+ * because the obvious justification is WRONG and was believed here before being
+ * measured. If a future reader reaches for the AST approach, these are the facts
+ * that must change first.
+ */
+describe('why an AST walk cannot replace this scanner (measured, not assumed)', () => {
+  const parse = (text: string) =>
+    ts.createSourceFile('x.ts', text, ts.ScriptTarget.Latest, false, ts.ScriptKind.TS);
+  const diagsOf = (sf: ts.SourceFile) =>
+    (sf as ts.SourceFile & { parseDiagnostics?: ts.Diagnostic[] }).parseDiagnostics ?? [];
+  const countTemplates = (sf: ts.SourceFile) => {
+    let n = 0;
+    const walk = (node: ts.Node) => {
+      if (ts.isNoSubstitutionTemplateLiteral(node) || ts.isTemplateExpression(node)) n++;
+      ts.forEachChild(node, walk);
+    };
+    walk(sf);
+    return n;
+  };
+
+  const SILENT = [
+    'const r = await sql`',
+    '  UPDATE t SET a = 1',
+    '   WHERE id = 2',
+    '     -- the bare `>=` applied here',
+    '     AND b <= ${x}',
+    '`;',
+    'export const after = 1;',
+  ].join('\n');
+
+  const LOUD = [
+    'export const DDL = `',
+    'CREATE TABLE t (',
+    '  closed_ts timestamptz',
+    '  -- the `closed_ts` column is written by plans:start',
+    ');',
+    '`;',
+    'export const after = 1;',
+  ].join('\n');
+
+  it('the SILENT case PARSES CLEANLY — so "the file does not parse" is false, and ts-parse is blind to it', () => {
+    const sf = parse(SILENT);
+    expect(diagsOf(sf)).toHaveLength(0);
+    // ...and this is exactly why it is dangerous: it compiles, ships, and RUNS
+    // with the query truncated. Only this detector sees it.
+    expect(findSqlCommentBacktick('x.ts', SILENT)).not.toBeNull();
+  });
+
+  it('the LOUD case still yields template NODES — so "there are no nodes to walk" is false too', () => {
+    const sf = parse(LOUD);
+    expect(diagsOf(sf).length).toBeGreaterThan(0); // TS1005 cascade
+    expect(countTemplates(sf)).toBeGreaterThan(0); // but TS error-RECOVERS
+    expect(findSqlCommentBacktick('x.ts', LOUD)).not.toBeNull();
+  });
+
+  it('the REAL reason: the stray backtick is consumed as the TERMINATOR, so it is no longer inside any template', () => {
+    const sf = parse(SILENT);
+    const texts: string[] = [];
+    const walk = (node: ts.Node) => {
+      if (ts.isNoSubstitutionTemplateLiteral(node) || ts.isTemplateExpression(node)) {
+        texts.push(node.getText(sf));
+      }
+      ts.forEachChild(node, walk);
+    };
+    walk(sf);
+    // The first template ends mid-comment, right AT the offending backtick —
+    // getText() includes that terminator, so the node's text ends '--`'. The SQL
+    // body it was supposed to carry is truncated at the comment.
+    expect(texts[0].endsWith('--`')).toBe(true);
+    expect(texts[0]).not.toContain('>=');
+    expect(texts[0]).not.toContain('AND b <=');
+    // So an AST walk asking "is there a backtick INSIDE this template's SQL?"
+    // correctly answers no, on a file that is broken in exactly that way. The
+    // evidence has been reinterpreted as syntax. A byte scanner is immune.
   });
 });
 

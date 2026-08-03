@@ -233,13 +233,54 @@ async function turnChunksTableExists(sql: Sql): Promise<boolean> {
 interface TurnChunkSyncState {
   running: boolean;
   fails: number;
+  /** Memoized migration-749 probe for the READ path — see below. */
+  available: boolean;
+  availableCheckedAt: number;
 }
 const __turnChunkStateKey = Symbol.for('papercusp.turnChunkSyncState');
 const __turnChunkState: TurnChunkSyncState = (() => {
   const g = globalThis as typeof globalThis & { [__turnChunkStateKey]?: TurnChunkSyncState };
-  if (!g[__turnChunkStateKey]) g[__turnChunkStateKey] = { running: false, fails: 0 };
+  if (!g[__turnChunkStateKey]) {
+    g[__turnChunkStateKey] = { running: false, fails: 0, available: false, availableCheckedAt: 0 };
+  }
   return g[__turnChunkStateKey]!;
 })();
+
+/** How long a NEGATIVE availability probe is cached. */
+const AVAILABILITY_TTL_MS = 60_000;
+
+/**
+ * Is migration 749 applied? — the READ path's fail-open guard.
+ *
+ * ⚠ THIS CANNOT BE DONE IN SQL, AND THE OBVIOUS ATTEMPT SILENTLY DOESN'T WORK.
+ * A `to_regclass('…') IS NOT NULL` guard inside the query's WHERE clause reads
+ * like it would make the chunk leg conditional, but Postgres resolves every
+ * relation at PARSE time — so a query merely MENTIONING a missing table fails
+ * outright, before any predicate is evaluated. The branch has to happen in JS,
+ * on a query that was never built.
+ *
+ * Failing open matters here specifically: the chunk leg is an ENHANCEMENT to a
+ * working semantic leg. If an unapplied migration took down the whole leg, this
+ * change would be a regression on every deployment that hasn't migrated yet —
+ * strictly worse than the truncation it fixes.
+ *
+ * Cached asymmetrically on purpose: a TRUE is permanent (tables are not
+ * dropped), a FALSE is re-probed on a TTL so a live-applied migration is picked
+ * up without an operator restart — which on this box is the normal way
+ * migrations land.
+ */
+export async function turnChunksAvailable(sql: Sql): Promise<boolean> {
+  if (__turnChunkState.available) return true;
+  const now = Date.now();
+  if (now - __turnChunkState.availableCheckedAt < AVAILABILITY_TTL_MS) return false;
+  __turnChunkState.availableCheckedAt = now;
+  try {
+    __turnChunkState.available = await turnChunksTableExists(sql);
+  } catch {
+    __turnChunkState.available = false;
+  }
+  return __turnChunkState.available;
+}
 
 /** Persistent-failure bound — stops re-paying a failing pass every tick. */
 const MAX_SYNC_FAILURES = 5;

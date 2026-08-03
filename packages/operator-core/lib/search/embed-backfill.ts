@@ -509,6 +509,42 @@ export const TARGETS: BackfillTarget[] = [
     recencyCol: 'ingested_at',
     recencyColKind: 'timestamptz',
   },
+  // P-034 (semantic-search-fingerprint-coverage-2026-08-03, decision D-016):
+  // per-chunk vectors for LONG session turns. The entry ABOVE embeds
+  // `left(text, 2000)`, so everything past that cut has no vector at all —
+  // measured 2026-08-03, 33,232 turns (8.1%) carrying ~90.5M invisible chars,
+  // where a probe drawn from past the cut ranks its true parent at MRR ~0.25 /
+  // recall@1 ~14% out of 60. turn-chunk-sync.ts derives migration 749's
+  // session_turn_chunks (1500-char windows, 250 overlap, sha-keyed) and THIS
+  // entry vectorizes them; the transcript search leg unions chunk hits back to
+  // their parent turn by MAX score, lifting the same corpus to MRR 0.73-0.84 /
+  // recall@1 60-75%.
+  //
+  // ⚠ Do NOT "simplify" this away by widening the parent's left(text, 2000)
+  // instead. That was measured and REJECTED: a single 768-dim vector DILUTES as
+  // its text grows, so the width sweep peaks and then DECLINES (at probe 3000,
+  // width 8000 scores WORSE than width 4000), and the apparent optimum is just
+  // the narrowest width containing the probe — moving the probe collapsed width
+  // 4000 by 49%. Chunking was the only position-independent arm. D-016 has the
+  // full table.
+  //
+  // `content` is already capped at 1500 by the splitter, so the left() here is
+  // belt-and-braces, matching doc_sections. No title to prepend: a chunk's
+  // neighbours are its context, and the parent's speaker/owner metadata is
+  // joined at query time rather than baked into the embedded text.
+  {
+    table: 'harness_shared.session_turn_chunks',
+    embedCol: 'embedding',
+    bodySql: `left(COALESCE(content, ''), 2000)`,
+    keyCols: ['workspace_id', 'source_kind', 'session_id', 'turn_idx', 'chunk_idx'],
+    // Backed by session_turn_chunks_updated_idx — a backward index scan, not a
+    // sort. Freshest-first so a newly-chunked turn is searchable within a tick.
+    orderBySql: 'updated_at DESC',
+    // Rows are sha-keyed and replaced wholesale on a turn edit, so updated_at IS
+    // the write time for this surface (same as doc_sections).
+    recencyCol: 'updated_at',
+    recencyColKind: 'timestamptz',
+  },
   // P-008 (shared-embedding-sidecar-and-enrichment-2026-07-10): the work-item
   // ledger — ONE base table (migration 374 unified issue + feature families
   // into harness_shared.work_items; engineer_issues / harness_features_
@@ -1296,6 +1332,17 @@ export async function runEmbedBackfillOnce(): Promise<void> {
     await runDocSectionsSyncOnce();
   } catch (err) {
     console.warn('[embed-backfill] doc-sections sync failed:', (err as Error).message);
+  }
+  // P-034: derive chunk rows for long turns before the sweep, same reason —
+  // the session_turn_chunks target needs rows to embed. Unlike doc-sections
+  // this runs EVERY tick: its source is a continuously-growing table, not a
+  // process-lifetime memoized filesystem corpus. Fail-open and independently
+  // caught, so a chunk-sync fault can never cost the sweep its whole tick.
+  try {
+    const { runTurnChunkSyncTick } = await import('./turn-chunk-sync');
+    await runTurnChunkSyncTick();
+  } catch (err) {
+    console.warn('[embed-backfill] turn-chunk sync failed:', (err as Error).message);
   }
   await _runSweepLogged('periodic');
 

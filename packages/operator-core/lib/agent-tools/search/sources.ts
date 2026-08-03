@@ -503,27 +503,107 @@ const sessionTurn: SearchSource = {
       },
     }));
   },
+  /**
+   * P-034 / D-016 — scores a turn by the BEST of (its own vector, its chunk
+   * vectors), not by its own vector alone.
+   *
+   * WHY THERE IS A SECOND LEG AT ALL. `text_embedding` is built from
+   * `left(text, 2000)`, so content past that cut has no vector and is
+   * unretrievable here. Measured over the 33,232 turns (8.1%) longer than the
+   * cut — ~90.5M invisible characters — a probe drawn from past it ranked its
+   * true parent at MRR ~0.25 / recall@1 ~14% out of 60. Unioning per-chunk
+   * vectors (migration 749, 1500-char windows / 250 overlap) lifts the SAME
+   * corpus and queries to MRR 0.73-0.84 / recall@1 60-75%.
+   *
+   * ⚠ MAX, NEVER MEAN. A turn is relevant if ANY part of it is, which is how a
+   * chunked index is queried. Averaging a turn's chunk scores would reintroduce
+   * precisely the dilution chunking exists to remove — a long turn with one
+   * dead-on paragraph would score below a short mediocre one.
+   *
+   * ⚠ AND NOT A WIDER left(). That is the obvious cheaper fix and it was
+   * measured and rejected: one 768-dim vector dilutes as its text grows, so
+   * width PEAKS then DECLINES (at probe 3000, width 8000 scored WORSE than
+   * 4000), and any apparent optimum is just the narrowest width containing the
+   * probe — moving the probe collapsed width 4000 by 49%. See D-016.
+   *
+   * Both legs are separately top-K'd before the merge so each uses its own HNSW
+   * index; deduping afterwards can only ever COLLAPSE rows, never invent them,
+   * so the parent-only behaviour is preserved exactly when a turn has no chunks
+   * (every turn ≤2000 chars, i.e. ~92% of them).
+   */
   async embedding(p): Promise<Listing> {
     const f = sessionTurnFilterSql(p);
+    // Fail-open: an unapplied migration 749 must degrade to the parent-only
+    // leg, never take the semantic leg down. Cannot be a SQL-side guard —
+    // Postgres resolves relations at parse time, so naming a missing table
+    // fails the whole query before any predicate runs.
+    const { turnChunksAvailable } = await import('../../search/turn-chunk-sync');
+    const withChunks = await turnChunksAvailable(p.sql);
     const rows = (await p.sql`
-      SELECT source_kind, session_id, turn_idx, speaker, owner, harness_slug, ts, text,
-             1 - (text_embedding <=> ${p.qVec}::vector) AS sim,
+      WITH scored AS (
+        -- ⚠ EACH BRANCH IS PARENTHESIZED ON PURPOSE. Without the parens the
+        -- trailing ORDER BY / LIMIT binds to the WHOLE union rather than to its
+        -- branch, which silently turns two independent top-K probes into one —
+        -- and the chunk leg would then be able to starve the parent leg out of
+        -- the result entirely. Verified against live PG 2026-08-03.
+        (SELECT workspace_id, source_kind, session_id, turn_idx,
+               1 - (text_embedding <=> ${p.qVec}::vector) AS sim
+          FROM harness_shared.session_turns
+         WHERE (workspace_id = ${p.workspaceId} OR workspace_id = 'default')
+           AND (${p.scopeFilter}::text IS NULL OR harness_slug = ${p.scopeFilter})
+           AND (${f.owners}::text[] IS NULL OR owner = ANY(${f.owners}::text[]))
+           AND (${f.speaker}::text IS NULL OR speaker = ${f.speaker})
+           AND (${f.sessionId}::text IS NULL OR session_id = ${f.sessionId})
+           AND (${f.sourceKind}::text IS NULL OR source_kind = ${f.sourceKind})
+           AND (${f.since}::timestamptz IS NULL OR COALESCE(ts, ingested_at) >= ${f.since}::timestamptz)
+           AND (${f.until}::timestamptz IS NULL OR COALESCE(ts, ingested_at) < ${f.until}::timestamptz)
+           AND text_embedding IS NOT NULL
+      ORDER BY text_embedding <=> ${p.qVec}::vector
+         LIMIT ${p.limit})
+        ${withChunks
+          ? p.sql`
+        UNION ALL
+        (SELECT c.workspace_id, c.source_kind, c.session_id, c.turn_idx,
+               1 - (c.embedding <=> ${p.qVec}::vector) AS sim
+          FROM harness_shared.session_turn_chunks c
+          JOIN harness_shared.session_turns st
+            ON st.workspace_id = c.workspace_id
+           AND st.source_kind  = c.source_kind
+           AND st.session_id   = c.session_id
+           AND st.turn_idx     = c.turn_idx
+         WHERE (st.workspace_id = ${p.workspaceId} OR st.workspace_id = 'default')
+           AND (${p.scopeFilter}::text IS NULL OR st.harness_slug = ${p.scopeFilter})
+           AND (${f.owners}::text[] IS NULL OR st.owner = ANY(${f.owners}::text[]))
+           AND (${f.speaker}::text IS NULL OR st.speaker = ${f.speaker})
+           AND (${f.sessionId}::text IS NULL OR st.session_id = ${f.sessionId})
+           AND (${f.sourceKind}::text IS NULL OR st.source_kind = ${f.sourceKind})
+           AND (${f.since}::timestamptz IS NULL OR COALESCE(st.ts, st.ingested_at) >= ${f.since}::timestamptz)
+           AND (${f.until}::timestamptz IS NULL OR COALESCE(st.ts, st.ingested_at) < ${f.until}::timestamptz)
+           AND c.embedding IS NOT NULL
+      ORDER BY c.embedding <=> ${p.qVec}::vector
+         LIMIT ${p.limit})`
+          : p.sql``}
+      ),
+      best AS (
+        SELECT DISTINCT ON (workspace_id, source_kind, session_id, turn_idx)
+               workspace_id, source_kind, session_id, turn_idx, sim
+          FROM scored
+      ORDER BY workspace_id, source_kind, session_id, turn_idx, sim DESC
+      )
+      SELECT st.source_kind, st.session_id, st.turn_idx, st.speaker, st.owner,
+             st.harness_slug, st.ts, st.text, b.sim,
              ${p.wantHighlight === false
                ? p.sql`''`
-               : p.sql`ts_headline('english', left(text, 4000),
+               : p.sql`ts_headline('english', left(st.text, 4000),
                    plainto_tsquery('english', ${p.query}),
                    ${HEADLINE_OPTS})`} AS highlight
-        FROM harness_shared.session_turns
-       WHERE (workspace_id = ${p.workspaceId} OR workspace_id = 'default')
-         AND (${p.scopeFilter}::text IS NULL OR harness_slug = ${p.scopeFilter})
-         AND (${f.owners}::text[] IS NULL OR owner = ANY(${f.owners}::text[]))
-         AND (${f.speaker}::text IS NULL OR speaker = ${f.speaker})
-         AND (${f.sessionId}::text IS NULL OR session_id = ${f.sessionId})
-         AND (${f.sourceKind}::text IS NULL OR source_kind = ${f.sourceKind})
-         AND (${f.since}::timestamptz IS NULL OR COALESCE(ts, ingested_at) >= ${f.since}::timestamptz)
-         AND (${f.until}::timestamptz IS NULL OR COALESCE(ts, ingested_at) < ${f.until}::timestamptz)
-         AND text_embedding IS NOT NULL
-    ORDER BY text_embedding <=> ${p.qVec}::vector
+        FROM best b
+        JOIN harness_shared.session_turns st
+          ON st.workspace_id = b.workspace_id
+         AND st.source_kind  = b.source_kind
+         AND st.session_id   = b.session_id
+         AND st.turn_idx     = b.turn_idx
+    ORDER BY b.sim DESC
        LIMIT ${p.limit}
     `) as unknown as Array<{ source_kind: string; session_id: string; turn_idx: number; speaker: string; owner: string | null; harness_slug: string | null; ts: string | null; text: string; sim: number; highlight: string }>;
     return rows.map((r) => ({

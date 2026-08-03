@@ -537,6 +537,29 @@ describe('EI-18724155280048738: an in-flight deploy must be distinguishable from
     expect(s.recommendation).toMatch(/\bps\b/);
   });
 
+  /**
+   * EI-19448585641887174 — this recommendation used to end with a flat "or await the
+   * release:deployed / deploy-failed events", and an agent followed it mid-deploy and
+   * burned a 900s timeout. `release:deployed` is emitted at the END of a deploy (after
+   * the restart AND its health probe), so for a deploy already past its restart it has
+   * ALREADY fired and an await armed now waits for the NEXT one.
+   *
+   * We cannot cheaply tell from here WHICH side of the restart this deploy is on, so the
+   * requirement is not "recommend the right thing" — it is "do not assert the wrong half".
+   * State the timing and name the check that decides it.
+   */
+  it('does not flatly recommend awaiting release:deployed — it states WHEN that event fires and names the check', () => {
+    const s = computeDeployStatus(mkSnap({}, { deployedBehindGreenPin: 2 }), inFlight());
+
+    // The bare imperative is gone…
+    expect(s.recommendation).not.toMatch(/or await the release:deployed/i);
+    // …replaced by the timing fact that makes the advice decidable…
+    expect(s.recommendation).toMatch(/only at the END of the deploy/i);
+    expect(s.recommendation).toMatch(/ALREADY fired/i);
+    // …and the discriminator a caller can actually act on.
+    expect(s.recommendation).toMatch(/serving\.startedSinceCodeChange/);
+  });
+
   it('deploy-in-flight OUTRANKS every parked state — each of them reads as "nothing is happening"', () => {
     const cases: [string, GitPipelineSnapshot][] = [
       ['green ahead', mkSnap({}, { deployedBehindGreenPin: 2 })],

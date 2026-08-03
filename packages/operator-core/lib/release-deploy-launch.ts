@@ -356,7 +356,17 @@ export function computeDeployStatus(snap: GitPipelineSnapshot, inFlight: DeployI
     recommendation =
       `A deploy is RUNNING right now — systemd unit ${inFlight.unit} is ${inFlight.activeState}${startedAgo}. ` +
       `Do NOT trigger another: the manual lever and the auto-serve share one transient unit, so a second trigger is refused, and a genuine concurrent deploy against the shared release checkout is what that guard exists to prevent. ` +
-      `Watch it with \`tail -f ${inFlight.logPath}\` (the \`__DEPLOY_PLAN__\` line marks the plan; the process tree only becomes \`ps\`-visible ~20s in), or await the release:deployed / deploy-failed events. ` +
+      `Watch it with \`tail -f ${inFlight.logPath}\` (the \`__DEPLOY_PLAN__\` line marks the plan; the process tree only becomes \`ps\`-visible ~20s in). ` +
+      // EI-19448585641887174: this used to recommend "await release:deployed" flatly, and
+      // that is only right EARLY in a deploy. The event is emitted at the very END — after
+      // the restart AND its health probe (apps/operator/lib/release/deploy.ts L389 restart
+      // … L438 emit) — so for a deploy already past its restart it has ALREADY fired, and
+      // an await armed now silently waits for the NEXT deploy instead. Reported live: an
+      // agent followed this line and burned a 900s timeout. We cannot cheaply decide WHICH
+      // side of the restart this deploy is on from here (that needs the serving probe), so
+      // state the mechanism and name the check rather than assert the wrong half.
+      `To WAIT on it: \`release:deployed\`/\`deploy-failed\` fire only at the END of the deploy, after the restart and its health probe — so if this deploy is already past its restart the event has ALREADY fired, and an await armed now would wait for the NEXT deploy, not this one. ` +
+      `Check first with dev:pipeline_position: \`serving.startedSinceCodeChange: true\` means the restart already happened (verify directly, do NOT arm an await). ` +
       `Re-check this status once it finishes to confirm the live sha moved.`;
   } else if (hasGreenAhead) {
     // There IS green, deployable code that hasn't reached :3070 — the expedite case.

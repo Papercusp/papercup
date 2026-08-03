@@ -49,6 +49,11 @@ import pg from 'pg';
 import { getHarnessAdminUrl } from '../../embedded-pg-discovery';
 import { EMBED_SIDECAR_CAP_EMBED } from '../embed-sidecar-server';
 import { resolveProcessSidecarUrl } from '../embed-sidecar-wiring';
+import {
+  splitTurnChunks,
+  TURN_CHUNK_CHARS,
+  TURN_CHUNK_OVERLAP,
+} from '../../search/turn-chunk-sync';
 
 const argOf = (flag: string): string | undefined => {
   const i = process.argv.indexOf(flag);

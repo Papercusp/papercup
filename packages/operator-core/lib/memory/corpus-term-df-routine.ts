@@ -60,19 +60,29 @@ export async function upsertCorpusTermDfRoutine(
     ...(input.sampleDocs != null ? { sample_docs: input.sampleDocs } : {}),
   });
 
+  // `trigger_kind` is NOT NULL and stays 'cron' even for an ephemeral row —
+  // the column describes the row's SHAPE, while `tier='ephemeral'` is what
+  // routes it to the per-host executor instead of the DBOS `routinesTick`
+  // (which filters `tier='durable'`). `next_fire_at` is NULL for the same
+  // reason: schedule-next computation is meaningless here, the executor reads
+  // `trigger_config.interval_sec` directly. Mirrors hive-git-gc-routine.ts.
   await sql`
     INSERT INTO harness_shared.routines
-      (id, workspace_id, install_slug, name, target_role, tier, trigger_config, active)
+      (id, install_slug, name, trigger_kind, trigger_config, target_role,
+       concurrency, catchup, active, tier, next_fire_at, workspace_id)
     VALUES (
-      ${id}, ${input.workspaceId}, ${input.installSlug}, ${CORPUS_TERM_DF_ROUTINE_NAME},
-      ${CORPUS_TERM_DF_TARGET}, 'ephemeral', ${triggerConfig}::jsonb,
-      ${input.active ?? true}
+      ${id}, ${input.installSlug}, ${CORPUS_TERM_DF_ROUTINE_NAME}, 'cron',
+      ${triggerConfig}::text::jsonb, ${CORPUS_TERM_DF_TARGET},
+      'skip', 'skip-old', ${input.active ?? true}, 'ephemeral', NULL, ${input.workspaceId}
     )
-    ON CONFLICT (install_slug, name) DO UPDATE
-      SET target_role    = EXCLUDED.target_role,
-          tier           = EXCLUDED.tier,
-          trigger_config = EXCLUDED.trigger_config
-          ${input.active == null ? sql`` : sql`, active = EXCLUDED.active`}
+    ON CONFLICT (install_slug, name) DO UPDATE SET
+      trigger_kind   = EXCLUDED.trigger_kind,
+      trigger_config = EXCLUDED.trigger_config,
+      target_role    = EXCLUDED.target_role,
+      tier           = EXCLUDED.tier,
+      -- active is deliberately NOT re-applied: a bare re-seed must never clobber
+      -- an operator's runtime pause of this routine (EI-19301170070808928).
+      updated_at     = now()
   `;
 
   return { id };

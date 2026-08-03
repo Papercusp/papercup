@@ -59,23 +59,22 @@ import { telemetryBufferConfig } from './telemetry-buffer-config';
 import { capabilityTierOverrideFor } from './capability-tier-overrides';
 // Added 2026-08-03 (all FOUR readers of its cached boolean arm, not just the exported getter).
 import { workItemClaimLeaseEnabled } from './work-item-claim-lease-wiring';
-// ⚠ STILL NOT LISTABLE — and NOT for anything either one owns. Both are migrated AND de-listed
-// from the source lint's BASELINE: './work-item-redundancy' and './events/cache-eca-rule'.
+// The next THREE landed together (WI-8887) and are one unblock, not three. work-item-redundancy
+// and events/cache-eca-rule were migrated + de-listed days earlier but stayed UNLISTABLE here for
+// something neither of them owns: this file asserts a property of the whole transitive import
+// GRAPH, and both reach work-items.ts → issues-engineer.ts, which subscribed at module scope. Each
+// import killed COLLECTION naming issues-engineer.ts via work-items.ts:98 — the mock rather than
+// the importer, which is exactly why this class reads as unrelated to whoever grew the import edge.
 //
-// This file asserts a property of the whole transitive import GRAPH, and both reach work-items.ts
-// → issues-engineer.ts, which still subscribes at module scope. Adding either import kills
-// COLLECTION on a module neither of them owns (verified 2026-08-03: the error points at
-// issues-engineer.ts:269 via work-items.ts:98, naming the mock rather than the importer — which
-// is exactly why this class reads as unrelated to whoever's change grew the import edge).
+// issues-engineer's own migration had been written, measured all-green and REVERTED once (its
+// unseeded unpopulated state resolved issue scope to the near-dead 'default' partition); the
+// `seed` is what made it safe. Full reasoning at its arm site.
 //
-// Do NOT "fix" that by deleting an import once added: a loud, accurate collection failure is this
-// guard WORKING, and dropping the import converts it into a silent standing exemption.
-//
-// The unblock condition is issues-engineer's, and it is NOT simply "migrate issues-engineer":
-// that migration was written, measured all-green, and REVERTED — its unpopulated flag state
-// resolves issue scope to a DEAD partition (see the long note at the reverted site in
-// issues-engineer.ts, and EI-19448574704459898). It needs a boot-path WARM first.
-// One warm unblocks all three: work-item-redundancy, cache-eca-rule, and issues-engineer itself.
+// Do NOT "fix" a future collection failure here by deleting an import: a loud, accurate collection
+// failure is this guard WORKING, and dropping the import converts it into a silent exemption.
+import { workItemRedundancyEnabled } from './work-item-redundancy';
+import { cacheTagEcaEnabled } from './events/cache-eca-rule';
+import { issuesScopeWorkspace } from './issues-engineer';
 
 describe('modules stay importable under a partial @papercusp/flags/server mock', () => {
   it('collected this file at all (a module-scope binding read would have failed it here)', () => {
@@ -103,5 +102,13 @@ describe('the fix is IMPORTABILITY, not reader-callability (do not widen this cl
     expect(() => telemetryBufferConfig()).toThrow(/onFlagChange/);
     expect(() => capabilityTierOverrideFor('capability:bash')).toThrow(/onFlagChange/);
     expect(() => workItemClaimLeaseEnabled()).toThrow(/onFlagChange/);
+    // The last three are SEEDED callers, and they belong in this list for a reason worth stating:
+    // `seed` populates the cache correctly BEFORE `onFlagChange` is touched, which invites the
+    // reading that a seeded caller is exempt from this boundary. It is not — the seed is wrapped in
+    // its own try/catch (a seed must never reach a hot-path reader) while the subscription is not,
+    // so arming still throws.
+    expect(() => workItemRedundancyEnabled()).toThrow(/onFlagChange/);
+    expect(() => cacheTagEcaEnabled()).toThrow(/onFlagChange/);
+    expect(() => issuesScopeWorkspace()).toThrow(/onFlagChange/);
   });
 });
