@@ -58,6 +58,58 @@ describe('isWorkspaceCoordinationOn — sticky topology read', () => {
   });
 });
 
+/**
+ * EI-19455760069884279 — stickiness must apply to RESOLVED values only, never to the error
+ * fallback. The `catch` RESOLVES (rather than rejecting) to a fail-closed `false`, so before the
+ * fix that `false` was cached exactly like a real read and ONE transient getFlag failure pinned
+ * the whole process to legacy per-hive keying until a flag flip or restart — while production is
+ * ON. Every test below fails against that old shape, which is what makes them a guard rather than
+ * a description.
+ */
+describe('isWorkspaceCoordinationOn — a FAILED read is never cached', () => {
+  it('surfaces the failure instead of pinning silently', async () => {
+    // The log is throttled to 5 min PER PROCESS, so this must be the first failing read in the
+    // file; the error tests below deliberately assert nothing about the log for that reason.
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    h.getFlag.mockRejectedValueOnce(new Error('flag store unreachable'));
+    await isWorkspaceCoordinationOn();
+    expect(spy).toHaveBeenCalledWith(expect.stringContaining('WORKSPACE_COORDINATION read FAILED'));
+    spy.mockRestore();
+  });
+
+  it('fails to legacy keying for THAT call, then recovers on the next', async () => {
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    h.getFlag.mockRejectedValueOnce(new Error('transient'));
+    expect(await isWorkspaceCoordinationOn()).toBe(false); // fail-closed, this operation only
+    h.getFlag.mockResolvedValueOnce(true);
+    expect(await isWorkspaceCoordinationOn()).toBe(true); // NOT pinned — the cache stayed unset
+    expect(h.getFlag).toHaveBeenCalledTimes(2);
+    spy.mockRestore();
+  });
+
+  it('keeps retrying while the failure persists', async () => {
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    h.getFlag.mockRejectedValue(new Error('sustained outage'));
+    expect(await isWorkspaceCoordinationOn()).toBe(false);
+    expect(await isWorkspaceCoordinationOn()).toBe(false);
+    expect(await isWorkspaceCoordinationOn()).toBe(false);
+    expect(h.getFlag).toHaveBeenCalledTimes(3);
+    spy.mockRestore();
+  });
+
+  it('resumes normal stickiness once a read genuinely resolves', async () => {
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    h.getFlag.mockRejectedValueOnce(new Error('transient'));
+    expect(await isWorkspaceCoordinationOn()).toBe(false);
+    h.getFlag.mockResolvedValueOnce(true);
+    expect(await isWorkspaceCoordinationOn()).toBe(true);
+    h.getFlag.mockResolvedValueOnce(false);
+    expect(await isWorkspaceCoordinationOn()).toBe(true); // sticky again — the fix is narrow
+    expect(h.getFlag).toHaveBeenCalledTimes(2);
+    spy.mockRestore();
+  });
+});
+
 describe('workspaceBrainScopeKey (K1 write key)', () => {
   it('OFF → legacy per-hive slug (byte-identical to today)', () => {
     expect(workspaceBrainScopeKey(WS, HIVE, false)).toBe(HIVE);

@@ -48,13 +48,15 @@ import { systemDistinctId } from './flag-distinct-id';
 // stale twice over: FLAG_DEFAULTS is now `true`, and the `catch` below does not return the
 // registry default at all — it returns a hardcoded `false`.
 //
-// ⚠⚠ AND THE STICKINESS APPLIES TO THAT ERROR VALUE. The `.then` below caches whatever the async
-// IIFE resolved to, and the `catch { return false }` resolves rather than rejecting — so ONE
-// transient getFlag failure pins this whole process to legacy per-hive keying until a flag-change
-// event or a restart, while production is ON. That is the opposite of what stickiness was added to
-// achieve (it was added to stop a transient value from being observed at all). Filed separately;
-// NOT changed here, because changing which keying topology a process commits to on an error is a
-// behaviour change that deserves its own item and test rather than a drive-by.
+// ⚠⚠ STICKINESS IS FOR RESOLVED VALUES ONLY — never for the error fallback (EI-19455760069884279).
+// It previously applied to both: the `.then` cached whatever the async IIFE resolved to, and a
+// `catch { return false }` RESOLVES rather than rejecting, so one transient getFlag failure pinned
+// the whole process to legacy per-hive keying until a flag-change event or a restart — while
+// production is ON. That was the exact inverse of the intent: stickiness was added so a transient
+// blip could not be OBSERVED, and as written a transient blip was the one thing made PERMANENT.
+// The read now reports {ok} alongside the value and caches only `ok:true`, so a failure still
+// fails-to-legacy for THAT call (preserving the per-operation fail-closed behaviour) while leaving
+// the cache `undefined` so the next call retries.
 let workspaceCoordinationOn: boolean | undefined;
 let workspaceCoordinationRead: Promise<boolean> | undefined;
 let workspaceCoordinationEpoch = 0;
@@ -103,6 +105,13 @@ const armFlagRefresh = lazyFlagRefresh(invalidateWorkspaceCoordination, {
   },
 });
 
+// A getFlag failure here must not vanish silently into "the flag is off" — the pin it used to
+// cause left no trace at all, so the process simply behaved as if the rollout had never happened.
+// Throttled so a sustained flag-store outage surfaces periodically instead of once per call.
+// Same shape as issues-engineer.refreshIssuesPerWorkspace, which hit this identical trap.
+let _lastWorkspaceCoordinationErrorLoggedAtMs = 0;
+const WORKSPACE_COORDINATION_FLAG_ERROR_LOG_THROTTLE_MS = 5 * 60_000; // 5 min
+
 export async function isWorkspaceCoordinationOn(): Promise<boolean> {
   armFlagRefresh(); // first use installs the invalidation subscription
   if (workspaceCoordinationOn !== undefined) return workspaceCoordinationOn;
@@ -110,13 +119,25 @@ export async function isWorkspaceCoordinationOn(): Promise<boolean> {
   const epoch = workspaceCoordinationEpoch;
   workspaceCoordinationRead = (async () => {
     try {
-      return await getFlag(FLAGS.WORKSPACE_COORDINATION, systemDistinctId());
-    } catch {
-      return false;
+      const value = await getFlag(FLAGS.WORKSPACE_COORDINATION, systemDistinctId());
+      return { ok: true as const, value };
+    } catch (err) {
+      const now = Date.now();
+      if (now - _lastWorkspaceCoordinationErrorLoggedAtMs >= WORKSPACE_COORDINATION_FLAG_ERROR_LOG_THROTTLE_MS) {
+        _lastWorkspaceCoordinationErrorLoggedAtMs = now;
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(
+          `[workspace-brain-scope] WORKSPACE_COORDINATION read FAILED — using legacy per-hive keying ` +
+            `for this call only (fail-closed, NOT cached; the next call retries): ${message}`,
+        );
+      }
+      return { ok: false as const, value: false };
     }
-  })().then((value) => {
-    if (epoch === workspaceCoordinationEpoch) workspaceCoordinationOn = value;
-    return value;
+  })().then((outcome) => {
+    // Cache ONLY a real resolution. The error path's fail-to-legacy `false` is returned to THIS
+    // caller but deliberately NOT cached, so a transient failure cannot pin the process.
+    if (outcome.ok && epoch === workspaceCoordinationEpoch) workspaceCoordinationOn = outcome.value;
+    return outcome.value;
   }).finally(() => {
     if (epoch === workspaceCoordinationEpoch) workspaceCoordinationRead = undefined;
   });

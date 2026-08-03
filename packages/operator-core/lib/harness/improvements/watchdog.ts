@@ -1827,7 +1827,21 @@ export async function collectRoutineFailureSignals(sql: Sql): Promise<WatchdogSi
            last_fired_at
       FROM harness_shared.routines
      WHERE active = true AND COALESCE(metadata->>'last_error', '') <> ''
-     LIMIT 20`;
+     -- EI-19417016857494865: this LIMIT previously had NO ORDER BY, so which routines
+     -- got reported was nondeterministic whenever more than the cap carried an error —
+     -- a still-failing routine could drop out of the reported set on one tick and
+     -- reappear on the next. That is exactly the property that makes an ABSENCE-based
+     -- auto-close unsound, and it is why every other auto-close-eligible collector
+     -- (loop-stalled, stuck-plan, orphaned-spawn, stalled-claim) orders before its cap.
+     -- Oldest error first, so the longest-standing failure is never crowded out; the
+     -- name column is a total-order tiebreak so membership is stable across ticks.
+     -- NOTE: never put a backtick character in this comment — it lives inside a tagged
+     -- SQL template literal, so a backtick TERMINATES the template and breaks the whole
+     -- module (it crash-looped :3170 fleet-wide once, 2026-08-03). The cap sits
+     -- above the total active-routine count (191 live 2026-08-03), so truncation cannot
+     -- occur in practice — an absent key means recovered, never merely crowded out.
+     ORDER BY metadata->>'last_error_at' ASC NULLS FIRST, name ASC
+     LIMIT 200`;
   return routineFailureSignalsFromRows(rows);
 }
 
