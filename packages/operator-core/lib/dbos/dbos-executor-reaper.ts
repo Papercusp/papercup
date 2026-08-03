@@ -156,7 +156,17 @@ export async function reapDeadExecutorWorkflows(
     // (`false AND …`) when processStartedAtMs is unset — every existing caller (the
     // periodic tick before this fix, and any other embedder) is behavior-identical.
     const hasProcessStartedAtMs = processStartedAtMs != null;
-    const processStartedAtMsParam = processStartedAtMs ?? 0;
+    // EI-19441859859931739: FLOOR at the bind site. `created_at` is a bigint
+    // column, and this param's documented default is
+    // `Date.now() - process.uptime() * 1000` — `process.uptime()` returns a
+    // FLOAT (seconds), so the epoch carries a fractional part
+    // ("1785734149790.5593"). Postgres rejects that literal outright with
+    // `invalid input syntax for type bigint`, which aborts the ENTIRE reap
+    // pass before any reaping happens — every pass, silently, at info level.
+    // Flooring HERE rather than only at the default below makes the seam
+    // integer-safe for every caller, including an embedder that computes and
+    // passes its own float. Do not remove in favour of a caller-side floor.
+    const processStartedAtMsParam = Math.floor(processStartedAtMs ?? 0);
 
     // Dead executors: stale (no workflow_status update in the window) AND still
     // holding at least one non-terminal workflow worth reaping.
@@ -448,8 +458,9 @@ export function startExecutorReaper(
     staleRoutineFireNoOutputMs?: number;
     staleRoutineFireOrphanMs?: number;
     /** EI-18752434722211671: this process's own start time (epoch ms). Defaults to
-     *  `Date.now() - process.uptime() * 1000` (the same "derive true process start
-     *  from Node's own uptime counter" idiom already used by mug-warm-session.ts and
+     *  `Date.now() - Math.floor(process.uptime() * 1000)` (the same "derive true
+     *  process start from Node's own uptime counter" idiom already used by
+     *  orphaned-dispatch.ts, mug-warm-session.ts and
      *  compaction-compliance-watchdog.ts) — reads the OS-backed uptime clock rather
      *  than a module-load-time capture, so it is correct even if this module is
      *  imported/evaluated a moment after the process actually started. Threaded into
@@ -461,7 +472,8 @@ export function startExecutorReaper(
 ): void {
   if (process.env.PAPERCUSP_DBOS_EXECUTOR_REAPER === '0') return;
   const intervalMs = opts.intervalMs ?? DEFAULT_REAP_INTERVAL_MS;
-  const processStartedAtMs = opts.processStartedAtMs ?? Date.now() - process.uptime() * 1000;
+  const processStartedAtMs =
+    opts.processStartedAtMs ?? Date.now() - Math.floor(process.uptime() * 1000);
 
   // EI-3673: `run` used to be `(): void` — it fired `reapDeadExecutorWorkflows(...)`
   // with `void promise.then(onSuccess)` and RETURNED IMMEDIATELY without waiting for

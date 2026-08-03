@@ -59,6 +59,7 @@ import { STAGING_REF } from '../sync/pot-git/integrator';
 import { resolveUsageActor } from '../harness/usage-actor';
 import {
   evaluateOriginFreshness,
+  isIntegratorStalledThisSweep,
   describeOriginFreshnessAlert,
   describeOriginFreshnessRecovery,
   DEFAULT_AHEAD_COUNT_MAX,
@@ -345,6 +346,7 @@ export async function checkOriginFreshness(
           of_publish_refused_sweeps: number | null;
           of_publish_backlog_sweeps: number | null;
           of_integrator_backlog_sweeps: number | null;
+          of_integrator_canonical_sha: string | null;
           publish_refused: string | null;
           publish_backlog_remains: string | null;
           publish_published_sha: string | null;
@@ -483,7 +485,11 @@ export async function checkOriginFreshness(
       // pubkey is unresolvable, yields null ⇒ treated as healthy, never a false alarm.
       let integratorBacklogCommits: number | null = null;
       try {
-        const selfPubkey = (await resolveUsageActor()).devicePubkey;
+        // resolveUsageActor() can return null (an unresolvable/uninitialised actor), and a
+        // resolved actor need not carry a devicePubkey — optional-chain BOTH rather than
+        // assert. An unresolvable identity must degrade to "no signal" (healthy), never to a
+        // throw that costs the whole sweep, and never to a false alarm.
+        const selfPubkey = (await resolveUsageActor())?.devicePubkey ?? null;
         if (selfPubkey && canonicalSha != null) {
           const selfNamespaceSha = await readNamespaceRef(repoPath, selfPubkey, STAGING_REF, runGit);
           if (selfNamespaceSha != null && selfNamespaceSha !== canonicalSha) {
@@ -495,14 +501,36 @@ export async function checkOriginFreshness(
       } catch {
         integratorBacklogCommits = null; // diagnostics must never break the sweep
       }
-      const integratorHasBacklog = (integratorBacklogCommits ?? 0) > 0;
+      // A BARE "namespace is ahead" IS NOT A STALL — thresholding on it would make this
+      // detector a noise generator on every healthy busy pot. Measured on papercusp
+      // 2026-08-03 minutes after the incident cleared: canonical == origin (fully recovered)
+      // and the namespace was STILL 4 commits ahead, because git-sync commits every ~3 min
+      // while this watchdog samples every 15 — so an instantaneous delta is nonzero almost
+      // always, and a sweep counter keyed on it would climb monotonically and alarm within
+      // the hour on a perfectly healthy pipeline.
+      //
+      // The real condition is "the namespace is ahead AND canonical DID NOT MOVE since the
+      // last sweep" — i.e. the integrator had work to do and did not do it. On a healthy pot
+      // canonical advances between sweeps, so the counter resets to 0 every time; during the
+      // real 2026-08-03 stall canonical was pinned at 7450c49aa5 for ~5.4h, so it climbs.
+      // This mirrors how `of_origin_sha` / `of_origin_since_ms` above track the ORIGIN tip:
+      // a remembered sha is what turns an instantaneous reading into a progress verdict.
+      const prevIntegratorCanonicalSha = row?.of_integrator_canonical_sha ?? null;
+      const canonicalAdvanced = canonicalSha != null && canonicalSha !== prevIntegratorCanonicalSha;
+      const integratorStalled = isIntegratorStalledThisSweep({
+        backlogCommits: integratorBacklogCommits,
+        canonicalSha,
+        prevCanonicalSha: prevIntegratorCanonicalSha,
+      });
       const prevIntegratorSweeps = row?.of_integrator_backlog_sweeps ?? 0;
-      const integratorBacklogSweeps = integratorHasBacklog ? prevIntegratorSweeps + 1 : 0;
-      if (integratorBacklogSweeps !== prevIntegratorSweeps) {
+      const integratorBacklogSweeps = integratorStalled ? prevIntegratorSweeps + 1 : 0;
+      if (integratorBacklogSweeps !== prevIntegratorSweeps || canonicalAdvanced) {
         await sql`
           UPDATE harness_shared.routines
              SET metadata = COALESCE(metadata, '{}'::jsonb)
-                   || jsonb_build_object('of_integrator_backlog_sweeps', ${integratorBacklogSweeps}::int),
+                   || jsonb_build_object(
+                        'of_integrator_backlog_sweeps', ${integratorBacklogSweeps}::int,
+                        'of_integrator_canonical_sha', ${canonicalSha}::text),
                  updated_at = now()
            WHERE install_slug = ${entry.slug} AND target_role = 'system:git-sync'`;
       }

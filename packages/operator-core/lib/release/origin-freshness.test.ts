@@ -10,6 +10,7 @@ import { describe, it, expect } from 'vitest';
 import { selectOriginWatermark } from './origin-freshness-watchdog';
 import {
   evaluateOriginFreshness,
+  isIntegratorStalledThisSweep,
   originFreshness,
   describeOriginFreshnessAlert,
   describeOriginFreshnessRecovery,
@@ -438,5 +439,62 @@ describe('EI-19442274898324113 — an INTEGRATOR stall must not disable its own 
     const msg = describeOriginFreshnessRecovery('integrator-backlog', 'papercusp');
     expect(msg).toMatch(/INTEGRATOR RECOVERED/);
     expect(msg).toMatch(/canonical/);
+  });
+});
+
+describe('EI-19442274898324113 — isIntegratorStalledThisSweep: backlog alone is NOT a stall', () => {
+  /**
+   * The false-alarm guard. Thresholding on a bare "namespace is ahead" would alarm on every
+   * healthy busy pot: git-sync commits every ~3 min, the watchdog sweeps every 15, so the
+   * instantaneous delta is nonzero almost always. Measured on papercusp minutes AFTER the
+   * 2026-08-03 incident fully cleared (canonical == origin, pipeline healthy): namespace was
+   * STILL 4 commits ahead. The stall condition needs canonical to have STOOD STILL too.
+   */
+  const SHA_A = 'a'.repeat(40);
+  const SHA_B = 'b'.repeat(40);
+
+  it('a HEALTHY busy pot (backlog present, canonical advancing) is NOT a stall — the live 4-ahead reading', () => {
+    expect(
+      isIntegratorStalledThisSweep({ backlogCommits: 4, canonicalSha: SHA_B, prevCanonicalSha: SHA_A }),
+    ).toBe(false);
+  });
+
+  it('backlog present AND canonical pinned since the last sweep IS a stall — the live frozen shape', () => {
+    expect(
+      isIntegratorStalledThisSweep({ backlogCommits: 28, canonicalSha: SHA_A, prevCanonicalSha: SHA_A }),
+    ).toBe(true);
+  });
+
+  it('canonical pinned but NOTHING to integrate is not a stall (an idle pot is allowed to sit still)', () => {
+    for (const backlog of [0, null]) {
+      expect(
+        isIntegratorStalledThisSweep({ backlogCommits: backlog, canonicalSha: SHA_A, prevCanonicalSha: SHA_A }),
+      ).toBe(false);
+    }
+  });
+
+  it('an unreadable canonical is never a stall — absent evidence must not manufacture an alarm', () => {
+    expect(
+      isIntegratorStalledThisSweep({ backlogCommits: 99, canonicalSha: null, prevCanonicalSha: SHA_A }),
+    ).toBe(false);
+  });
+
+  it('the first-ever observation is never a stall — a detector must not alarm on its own cold start', () => {
+    expect(
+      isIntegratorStalledThisSweep({ backlogCommits: 99, canonicalSha: SHA_A, prevCanonicalSha: null }),
+    ).toBe(false);
+  });
+
+  it('a sustained stall stays true across consecutive sweeps, so the sweep counter can accumulate', () => {
+    // Four consecutive sweeps with canonical pinned — what the ~5.4h live stall looked like.
+    for (let i = 0; i < 4; i += 1) {
+      expect(
+        isIntegratorStalledThisSweep({ backlogCommits: 28 + i, canonicalSha: SHA_A, prevCanonicalSha: SHA_A }),
+      ).toBe(true);
+    }
+    // Then the integrator moves — the very next sweep is healthy, resetting the counter.
+    expect(
+      isIntegratorStalledThisSweep({ backlogCommits: 2, canonicalSha: SHA_B, prevCanonicalSha: SHA_A }),
+    ).toBe(false);
   });
 });

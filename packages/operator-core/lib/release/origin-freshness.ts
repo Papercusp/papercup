@@ -199,6 +199,41 @@ export interface OriginFreshnessVerdict {
   reason: string | null;
 }
 
+/**
+ * EI-19442274898324113 — does THIS sweep count as an integrator stall?
+ *
+ * Pure, and extracted rather than left inline in the watchdog precisely because it is the
+ * subtle half of the signal. The naive form ("the namespace is ahead of canonical") is
+ * WRONG and would make this detector a noise generator: git-sync commits every ~3 min while
+ * the watchdog sweeps every 15, so an instantaneous delta is nonzero on any busy pot almost
+ * always. Measured on papercusp minutes AFTER the 2026-08-03 incident fully cleared
+ * (canonical == origin, everything healthy): the namespace was still 4 commits ahead.
+ * A sweep counter keyed on that would have climbed monotonically and alarmed inside an hour.
+ *
+ * The real condition is "the integrator had work to do AND canonical did not move since the
+ * last sweep". A remembered sha is what turns an instantaneous reading into a progress
+ * verdict — the same trick `of_origin_sha` / `of_origin_since_ms` already use for the origin
+ * tip. On a healthy pot canonical advances between sweeps and the counter resets to 0; during
+ * the real stall canonical was pinned at 7450c49aa5 for ~5.4h and it climbs.
+ *
+ * A null/unknown canonical is NOT a stall — absent evidence must never manufacture an alarm.
+ */
+export function isIntegratorStalledThisSweep(input: {
+  /** Commits the local namespace has that canonical lacks. Null/0 ⇒ nothing to integrate. */
+  backlogCommits: number | null;
+  /** Canonical `refs/hive/staging` as read this sweep. */
+  canonicalSha: string | null;
+  /** Canonical as remembered from the PREVIOUS sweep (null on the first ever observation). */
+  prevCanonicalSha: string | null;
+}): boolean {
+  if (input.canonicalSha == null) return false; // unreadable ⇒ no signal, never an alarm
+  if ((input.backlogCommits ?? 0) <= 0) return false; // nothing to integrate ⇒ healthy
+  // First-ever observation (no remembered sha) counts as "advanced": we have no evidence it
+  // stood still, and a detector must not alarm on its own cold start.
+  if (input.prevCanonicalSha == null) return false;
+  return input.canonicalSha === input.prevCanonicalSha;
+}
+
 export const DEFAULT_AHEAD_COUNT_MAX = 50;
 export const DEFAULT_PUBLISH_REFUSED_SWEEPS_MAX = 3;
 export const DEFAULT_PUBLISH_BACKLOG_SWEEPS_MAX = 4;
