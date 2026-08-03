@@ -141,8 +141,6 @@ function defaults(): ResolvedConfig {
   };
 }
 
-let resolved: ResolvedConfig = defaults();
-
 interface InternalRecord {
   entry: ManagedEntry;
   /** unique registry key (== name for singletons; `name#N` for instanced timers). */
@@ -152,8 +150,56 @@ interface InternalRecord {
   stopped: boolean;
 }
 
-const registry = new Map<string, InternalRecord>();
-let instanceCounter = 0;
+/**
+ * Mutable state, PINNED TO globalThis rather than held in module scope.
+ *
+ * Why (EI-19451658870832332, measured live on bg-host 2026-08-03): this module can be
+ * instantiated TWICE inside ONE process. The host entry runs under tsx (a CJS preflight
+ * alongside an ESM loader), importers reach this package through both bare-specifier and
+ * relative paths, and `node_modules/@papercusp/*` are symlinks into the repo. Any one of
+ * those seams yields two module records — and module-scoped state then splits into two
+ * DISJOINT inventories.
+ *
+ * The resulting failure is silent and expensive: a timer armed through instance A is absent
+ * from `listManaged()` served by instance B, so `/api/internal/managed-timers` — and
+ * `schedule:inventory` above it — reports a RUNNING timer as missing. Measured: the
+ * dbos-executor-reaper reaped workflows every 2 minutes inside bg-host while absent from
+ * that same process's own inventory, which read as "the reaper is dark" and cost hours of
+ * investigation across several sessions. Absence from an inventory is evidence only when
+ * there is exactly ONE inventory.
+ *
+ * A global-symbol key fixes the whole class without depending on WHICH seam duplicated the
+ * module: it is correct under dual-package, symlink, CJS/ESM-split and bundled-copy alike.
+ * `Symbol.for` is deliberate — it is the cross-realm symbol registry, so a second instance
+ * resolves the SAME key instead of minting a fresh one.
+ */
+interface RegistryState {
+  registry: Map<string, InternalRecord>;
+  instanceCounter: number;
+  resolved: ResolvedConfig;
+}
+
+const STATE_KEY = Symbol.for('@papercusp/scheduled-registry.state');
+
+const globalStore = globalThis as unknown as Record<symbol, RegistryState | undefined>;
+let sharedState = globalStore[STATE_KEY];
+if (!sharedState) {
+  sharedState = {
+    registry: new Map<string, InternalRecord>(),
+    instanceCounter: 0,
+    resolved: defaults(),
+  };
+  globalStore[STATE_KEY] = sharedState;
+}
+
+const state: RegistryState = sharedState;
+
+/**
+ * The one shared inventory. Safe to alias into module scope because the Map IDENTITY never
+ * changes — every instance binds the same object. `resolved` and `instanceCounter` are
+ * reassigned, so those are always read through `state` and must never be aliased this way.
+ */
+const registry = state.registry;
 
 /**
  * Override the injected seams (timer fns, clock, shed gate, logger). Partial merge —
@@ -161,7 +207,7 @@ let instanceCounter = 0;
  * host's tick-load-shed into `shouldShed`); tests call it to inject a controllable timer.
  */
 export function configureScheduledRegistry(config: ScheduledRegistryConfig): void {
-  resolved = { ...resolved, ...stripUndefined(config) };
+  state.resolved = { ...state.resolved, ...stripUndefined(config) };
 }
 
 function stripUndefined<T extends object>(o: T): Partial<T> {
@@ -179,9 +225,9 @@ function makeTick(name: string, fn: () => void | Promise<void>, opts: ManagedTim
       rec.entry.lastError = null;
     } else {
       rec.entry.lastError = err instanceof Error ? err.message : String(err);
-      resolved.log(`${name} tick failed (next interval retries): ${rec.entry.lastError}`);
+      state.resolved.log(`${name} tick failed (next interval retries): ${rec.entry.lastError}`);
     }
-    rec.entry.lastFireAt = resolved.now();
+    rec.entry.lastFireAt = state.resolved.now();
     rec.entry.fires += 1;
     rec.running = false;
     rec.entry.running = false;
@@ -189,7 +235,7 @@ function makeTick(name: string, fn: () => void | Promise<void>, opts: ManagedTim
   return () => {
     if (rec.stopped) return;
     if (rec.running) return; // re-entrancy guard — a slow tick never piles up a second run
-    if (opts.shed && resolved.shouldShed(name)) return; // shed this cycle under load
+    if (opts.shed && state.resolved.shouldShed(name)) return; // shed this cycle under load
     rec.running = true;
     rec.entry.running = true;
     // Run a SYNCHRONOUS tick synchronously — this preserves the bare-setInterval timing
@@ -228,7 +274,7 @@ export function managedSetInterval(
   const instanced = opts.instanced ?? false;
   // Singletons key by name (re-arming replaces); instanced timers get a unique key so many
   // coexist under one display name (aggregated in listManaged).
-  const key = instanced ? `${name}#${(instanceCounter += 1)}` : name;
+  const key = instanced ? `${name}#${(state.instanceCounter += 1)}` : name;
   if (!instanced && registry.has(key)) {
     // Idempotent re-arm: silently stop the previous timer and register fresh. No warn —
     // host watchdogs re-arm across boot retries / test cases, and the inventory always
@@ -240,7 +286,7 @@ export function managedSetInterval(
     name,
     category: opts.category,
     intervalMs,
-    armedAt: resolved.now(),
+    armedAt: state.resolved.now(),
     lastFireAt: null,
     lastError: null,
     running: false,
@@ -252,10 +298,10 @@ export function managedSetInterval(
   };
   const rec: InternalRecord = { entry, key, timer: { unref: undefined }, running: false, stopped: false };
   const tick = makeTick(name, fn, opts, rec);
-  rec.timer = resolved.setIntervalImpl(tick, intervalMs);
+  rec.timer = state.resolved.setIntervalImpl(tick, intervalMs);
   rec.timer.unref?.();
   if (opts.fireOnArm) {
-    const t = resolved.setTimeoutImpl(tick, 0);
+    const t = state.resolved.setTimeoutImpl(tick, 0);
     t.unref?.();
   }
   registry.set(key, rec);
@@ -267,7 +313,7 @@ export function stopManaged(name: string): boolean {
   const rec = registry.get(name);
   if (!rec) return false;
   rec.stopped = true;
-  resolved.clearIntervalImpl(rec.timer);
+  state.resolved.clearIntervalImpl(rec.timer);
   registry.delete(name);
   return true;
 }
@@ -322,5 +368,5 @@ export function stopAllManaged(): void {
 /** Reset the registry AND restore default seams — for test isolation. */
 export function resetScheduledRegistry(): void {
   stopAllManaged();
-  resolved = defaults();
+  state.resolved = defaults();
 }

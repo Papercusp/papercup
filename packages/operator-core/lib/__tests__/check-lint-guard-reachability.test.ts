@@ -16,7 +16,9 @@
  *      would correctly flag ITSELF. That self-consistency is intentional.
  */
 import { describe, expect, it } from 'vitest';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -496,6 +498,37 @@ describe('the repository itself (real-tree assertion)', () => {
     for (const [name, reason] of ACKNOWLEDGED_PARTIAL_COVERAGE) {
       expect(String(reason).length, `${name} needs a stated reason`).toBeGreaterThan(10);
     }
+  });
+
+  it('FAILS OPEN when the registration source is unreadable, instead of red-pinning the gate', () => {
+    // This runs as a BLOCKING green-checkpoint leg. Coverage credits a guard as fully
+    // covered when it is registered in REPO_WIDE_INVARIANT_GUARDS, so an unreadable
+    // registration source would reclassify every registered guard as `partial` and fail
+    // the gate for the whole fleet — on a missing file, not on a real defect.
+    //
+    // The subject is pointed at a COPY outside the tree: proving this by deleting the
+    // real file from a shared checkout would let git-sync commit the deletion.
+    const stub = path.join(os.tmpdir(), 'guard-reachability-no-registrations.mjs');
+    // ⚠ The stub must not NAME the sentinel it is meant to lack. The first version of
+    // this fixture was the comment "deliberately contains no REPO_WIDE_INVARIANT_GUARDS
+    // block" — which CONTAINS that string, so the detector read the disclaimer as the
+    // thing itself and the fail-open branch never ran. Prose about a token is
+    // indistinguishable from the token to anything that greps (EI-19459777127106385).
+    fs.writeFileSync(stub, '// a registration source with no guard registrations in it\n');
+    // spawnSync, not execFileSync: the skip notice is a WARNING and goes to stderr, which
+    // execFileSync discards on a successful run. Asserting against stdout alone would have
+    // passed for the wrong reason the moment the notice moved streams.
+    const r = spawnSync('node', [SCRIPT], {
+      cwd: REPO_ROOT,
+      encoding: 'utf-8',
+      env: { ...process.env, LINT_GUARD_REACHABILITY_AFFECTED_TESTS: stub },
+    });
+    const out = `${r.stdout ?? ''}${r.stderr ?? ''}`;
+    expect(r.status, `expected a fail-OPEN exit 0, got ${r.status}:\n${out}`).toBe(0);
+    expect(out).toMatch(/coverage axis SKIPPED/);
+    // …and specifically NOT a stale/partial failure, which is the fail-closed trap.
+    expect(out).not.toMatch(/STALE partial-coverage/);
+    expect(out).not.toMatch(/enforced over only PART/);
   });
 
   it('states the coverage caveat in the ordinary PASS output, not only on failure', () => {

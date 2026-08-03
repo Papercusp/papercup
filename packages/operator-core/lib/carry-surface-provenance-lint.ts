@@ -91,6 +91,60 @@ const BACKTICK_WRAPPED_OWNER_TAG_RE = /`\[owner:[^\]]*\]`/i;
 const OWNER_TAG_MENTION_CONTEXT_RE =
   /(?:\bforms?\b|\bconvention\b|\bpatterns?\b|\bsyntax\b|\bexamples?\b|\be\.g\.,?|->)[^[]{0,30}\[owner:/i;
 
+/**
+ * EI-19461711239876849: the module flagged `manual-owner-tag` on a line whose whole
+ * purpose was to REFUSE an owner attribution and downgrade it — i.e. it penalised the
+ * exact correction the convention exists to elicit. An agent that learns "writing
+ * [owner:…] trips a lint" is nudged toward silently DROPPING an unverifiable
+ * attribution rather than documenting that it is unverifiable, which re-creates the
+ * WI-3532 telephone game from the other end.
+ *
+ * A withdrawal is recognized CONJUNCTIVELY — both halves required:
+ *   1. a DOWNGRADE tag ([self-imposed] · [peer:…] · [inferred]) on the line, which a
+ *      correctly-retracted attribution always carries (it must say what the source
+ *      actually was), and
+ *   2. an explicit NEGATION of owner authority nearby — "NOT as [owner:…]", "NOT an
+ *      owner directive", "not a quoted owner turn", "could not verify it against an
+ *      owner turn", "NOT anchored to an OWNER-stamped turn".
+ *
+ * The conjunction is what makes it safe, and it is MEASURED, not assumed. Corpus:
+ * the 251 distinct carry-surface lines in this workspace's stored history
+ * (harness_shared.carry_notes + agent_facts) carrying an owner-authority shape, of
+ * which 222 flagged `manual-owner-tag` before this rule:
+ *   - this rule reclassifies 17, and all 17 are genuine retractions / self-
+ *     attributions ("[self-imposed gate — not an owner directive]", the PROVENANCE
+ *     CORRECTION blocks the convention asks for);
+ *   - every real ASSERTED owner attribution still flags.
+ *
+ * ⚠ The filed suggestion — "skip when a [peer:]/[self-imposed]/[inferred] tag appears
+ * in the same sentence" — was measured against that corpus and REJECTED. The downgrade
+ * tag ALONE suppresses 22, and 4 of the 5 extra are REAL owner attributions it would
+ * silently launder: a verbatim relayed ask ("relayed VERBATIM by [peer:…] … treat as
+ * owner-sourced: [owner:…]"), a dated pause directive, a plan reactivation, and an
+ * owner DEMAND for GUI verification. Negation ALONE is worse in the other direction
+ * (34). Requiring BOTH is what separates a retraction from an assertion that merely
+ * happens to cite a peer alongside it — which is exactly what a relay looks like.
+ */
+const OWNER_TAG_DOWNGRADE_TAG_RE = /\[(?:self-imposed|peer:|inferred)\b[^\]]*\]/i;
+/** An owner-AUTHORITY reference: the bracket tag, or "owner" as an authority noun. */
+const OWNER_AUTHORITY_REF =
+  '(?:\\[owner:|\\bowner(?:[-\\s](?:directive|mandate|turn|tag|stamped|sourced|typed|authoriz\\w*)\\b|\\b))';
+/** A negator governing an owner-authority reference within one clause (no sentence
+ *  boundary crossed, short window) — "NOT as [owner:…]", "NOT an owner directive". */
+const NEGATED_OWNER_AUTHORITY_RE = new RegExp(
+  `(?:\\bnot\\b|\\bnever\\b|n't\\b|\\bcannot\\b)[^.!?\\n]{0,40}?${OWNER_AUTHORITY_REF}`,
+  'i',
+);
+
+/**
+ * A line that RETRACTS an owner attribution rather than asserting one. Applies to both
+ * the bracket tag and the `owner directive|mandate` noun phrase — a retraction is
+ * written in whichever form the thing being retracted used.
+ */
+function isProvenanceWithdrawal(line: string): boolean {
+  return OWNER_TAG_DOWNGRADE_TAG_RE.test(line) && NEGATED_OWNER_AUTHORITY_RE.test(line);
+}
+
 /** Definite quoting of the tag's syntax — never flag, not even as a mention. */
 function isOwnerTagQuotedForm(line: string): boolean {
   return BACKTICK_WRAPPED_OWNER_TAG_RE.test(line);
@@ -271,6 +325,9 @@ export function lintCarrySurfaceProvenance(text: string | null | undefined): Pro
       // documentation of the convention, not an attribution, should not be
       // treated as an asserted directive.
       if (isOwnerTagQuotedForm(line)) continue; // definite quoting — never flag
+      // EI-19461711239876849: a line RETRACTING an owner attribution is the compliance
+      // this convention asks for, not a violation of it — never nudge it.
+      if (isProvenanceWithdrawal(line)) continue;
       if (isOwnerTagPossibleMention(line)) {
         matches.push({ line: line.slice(0, MATCH_LINE_CAP), kind: 'possible-owner-tag-mention' });
         continue;
@@ -289,6 +346,10 @@ export function lintCarrySurfaceProvenance(text: string | null | undefined): Pro
       // EI-19393929983792049: same mention-vs-use split as the bracket tag above,
       // generalized to the noun phrase.
       if (isOwnerDirectiveNounQuotedForm(line)) continue; // definite quoting — never flag
+      // EI-19461711239876849: same retraction carve-out as the bracket tag above — the
+      // noun form is what a retraction of a noun-form assertion ("this is [self-imposed],
+      // NOT an owner directive") is necessarily written in.
+      if (isProvenanceWithdrawal(line)) continue;
       if (isOwnerDirectiveNounPossibleMention(line)) {
         matches.push({ line: line.slice(0, MATCH_LINE_CAP), kind: 'possible-owner-tag-mention' });
         continue;

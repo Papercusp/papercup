@@ -137,6 +137,38 @@ describe('probeCodeExistence', () => {
     expect(summariseCodeExistence(report)).toContain('no existing surface found');
   });
 
+  it('ZERO-WORK FALSE GREEN: text with no distinctive terms is searched:false, not a miss', async () => {
+    // Regression. This previously returned searched:true having never called the
+    // backend — a probe that did no work reporting as one that found nothing.
+    // Same class as `tsc -p .` checking zero files and exiting clean.
+    //
+    // It matters most for the ideas it is worst on: text with no greppable
+    // vocabulary is exactly where prior art is hardest to find, so those items
+    // would have collected the cleanest "nothing found" in the backlog.
+    let called = 0;
+    const deps: CodeSearchDeps = {
+      search: async () => {
+        called += 1;
+        return [];
+      },
+    };
+    const report = await probeCodeExistence('we should make the thing better somehow', deps);
+
+    expect(report.terms).toEqual([]);
+    expect(called).toBe(0); // the backend really was never called...
+    expect(report.searched).toBe(false); // ...so it must not claim it searched
+    expect(report.unavailableReason).toContain('never called');
+    expect(summariseCodeExistence(report)).toContain('NOT evidence of absence');
+  });
+
+  it('CONTROL: the zero-terms guard does not fire on text that DOES yield terms', async () => {
+    // Without this, the assertion above would also pass if extraction broke
+    // entirely and every report became searched:false.
+    const report = await probeCodeExistence(EI_7303_BODY, fakeSearch({}));
+    expect(report.terms.length).toBeGreaterThan(0);
+    expect(report.searched).toBe(true);
+  });
+
   it('FAILS OPEN: a throwing searcher is never reported as "nothing found"', async () => {
     // The whole point of the module is preventing a false "no prior art exists".
     // A probe outage must be distinguishable from a real miss.
@@ -180,7 +212,10 @@ describe('probeCodeExistence', () => {
     expect(hit?.fileCount).toBe(5); // count is the full total, not the capped sample
   });
 
-  it('handles an empty body without searching', async () => {
+  it('handles an empty body without searching — and SAYS it did not search', async () => {
+    // This test used to assert `called === false` and `searched === true` on
+    // consecutive lines: "the backend never ran" and "the backend ran" at once.
+    // The contradiction was the bug, recorded as an expectation.
     let called = false;
     const deps: CodeSearchDeps = {
       search: async () => {
@@ -190,7 +225,8 @@ describe('probeCodeExistence', () => {
     };
     const report = await probeCodeExistence('', deps);
     expect(called).toBe(false);
-    expect(report.searched).toBe(true);
+    expect(report.searched).toBe(false);
+    expect(report.unavailableReason).toContain('never called');
     expect(report.matches).toEqual([]);
   });
 });
@@ -284,8 +320,10 @@ describe('asserted prior art — "the filings confess"', () => {
   });
 
   it('needs no backend at all — survives a total retrieval outage', async () => {
-    // Needs a code-shaped term, or the lexical leg short-circuits on "no candidates"
-    // and returns searched:true having never called the (throwing) backend.
+    // The code-shaped term is here so line 2 of the assertions can prove the
+    // lexical leg genuinely TRIED and failed, rather than short-circuiting on
+    // "no candidates" — two different roads to searched:false (see the
+    // zero-terms regression test below).
     const body = `${EI_7526_OPENING} The proposed gate lives in \`emitTimeSignalGate\`.`;
     const deps: CodeSearchDeps = {
       search: async () => {

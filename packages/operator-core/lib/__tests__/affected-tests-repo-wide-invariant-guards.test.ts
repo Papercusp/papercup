@@ -52,6 +52,9 @@ import {
   SOURCE_ROOTS as PARTIAL_INDEX_SOURCE_ROOTS,
   SCHEMA_FILE_REL as PARTIAL_INDEX_SCHEMA_FILE,
 } from '../../../../scripts/check-partial-index-alignment.mjs';
+// Likewise the REAL scanned dir of the forward-compat lint, so the guard's routing
+// prefix cannot drift from the directory the lint actually reads.
+import { SQL_DIR_REL as MIGRATION_SQL_DIR } from '../../../../scripts/check-migration-forward-compat.mjs';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
 const AFFECTED_TESTS = resolve(REPO_ROOT, 'scripts/affected-tests.mjs');
@@ -267,5 +270,79 @@ describe('affected-tests: partial-index-alignment guard (WI-9434)', () => {
         'narrow task ~12x more expensive for the same ratchet',
     ).toContain('check-partial-index-alignment.mjs');
     expect(pkg.scripts?.[PI_SCRIPT]).not.toContain('vitest');
+  });
+});
+
+/**
+ * WI-9573 — the THIRD instance of the class, and the most expensive so far.
+ *
+ * Unlike the two guards above, `lint:migration-forward-compat` had NO local
+ * enforcement point at all. It was invoked only by green-checkpoint
+ * (apps/operator/lib/release/green-checkpoint.ts), and a `.sql` migration maps to no
+ * workspace test suite — so there was no partial coverage to widen, the signal was
+ * entirely absent, and a violation first surfaced as a red FLEET gate hours later,
+ * blocking every agent. MEASURED 2026-08-03: it red-pinned the gate for 4 consecutive
+ * runs on migrations 750/751/752/754/755, and three other sessions independently hit
+ * the same wall the same day (EI-19409083906144989, EI-19407054630567497).
+ *
+ * The fourth test below is not ceremony — it pins the exact trap the author of this
+ * guard fell into. The router silently `continue`s when the host workspace does not
+ * define the script, so registering the guard while operator-core lacked
+ * `lint:migration-forward-compat` produced a registry entry that attached NOTHING and
+ * looked, from every output, exactly like success.
+ */
+describe('affected-tests: migration forward-compat guard (WI-9573)', () => {
+  const FC_SCRIPT = 'lint:migration-forward-compat';
+  const FC_TASK = `${HOST_WORKSPACE} :: ${FC_SCRIPT}`;
+  /** A real migration, under the directory the lint itself reports scanning. */
+  const MIGRATION_PATH = `${MIGRATION_SQL_DIR}/750-drop-dead-hfc-partial-indexes.sql`;
+
+  it('attaches for a migration .sql change, which routes to no operator-core suite', () => {
+    const out = dryTasks(MIGRATION_PATH);
+    expect(
+      out,
+      `a migration at ${MIGRATION_PATH} must run the forward-compat guard. Before this ` +
+        'wiring it ran ONLY inside green-checkpoint, so destructive DDL with no ' +
+        'FORWARD-COMPAT acknowledgment got zero local signal and red-pinned the shared ' +
+        'gate for every agent hours later.',
+    ).toContain(FC_TASK);
+  });
+
+  it('does NOT double-run it when the host workspace is already affected', () => {
+    const out = dryTasks(INSIDE_TS_PATH);
+    expect(out, 'the host workspace should run its own suite here').toContain(
+      `${HOST_WORKSPACE} :: test`,
+    );
+    expect(
+      out,
+      "operator-core's full suite already covers this ratchet, so attaching the narrow " +
+        'task as well would run the same scan twice',
+    ).not.toContain(FC_TASK);
+  });
+
+  it('does NOT attach for a .sql OUTSIDE the scanned migrations directory', () => {
+    // The discriminating case: same extension, different directory. A prefix-free
+    // `endsWith('.sql')` rule would attach here and spend every agent's edit budget
+    // on a scan that cannot produce a finding.
+    const out = dryTasks('apps/operator/docs/examples/999-not-a-migration.sql');
+    expect(
+      out,
+      `only files under ${MIGRATION_SQL_DIR}/ are scanned by the lint, so a .sql ` +
+        'elsewhere cannot violate the invariant',
+    ).not.toContain(FC_TASK);
+  });
+
+  it('keeps the guard script defined, so the attachment cannot silently no-op', () => {
+    const pkg = JSON.parse(
+      readFileSync(resolve(REPO_ROOT, 'packages/operator-core/package.json'), 'utf8'),
+    ) as { scripts?: Record<string, string> };
+    expect(
+      pkg.scripts?.[FC_SCRIPT],
+      `${HOST_WORKSPACE} must define "${FC_SCRIPT}". The router only builds a task when ` +
+        'the script exists on the HOST workspace — defining it only in the ROOT ' +
+        'package.json is not enough, and that exact mistake made this guard attach ' +
+        'nothing while every probe still looked healthy.',
+    ).toBeTruthy();
+    expect(pkg.scripts?.[FC_SCRIPT]).toContain('check-migration-forward-compat.mjs');
   });
 });

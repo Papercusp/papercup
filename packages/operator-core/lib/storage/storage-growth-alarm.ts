@@ -23,6 +23,7 @@
 import { generated, getOrgPg } from '@papercusp/db-org';
 import { desc, inArray } from 'drizzle-orm';
 import { notifySyncInvalidate } from '../sync-sse';
+import { isPgCategory, STORAGE_CATEGORIES } from './categories';
 import { computeStorageUsage, type StorageUsageRow } from './usage';
 
 const GIB = 1024 ** 3;
@@ -54,6 +55,113 @@ export interface GrowthAlarmDeps {
   computeUsage?: () => Promise<StorageUsageRow[]>;
   /** Injectable for tests — defaults to a toast_log row + sync invalidate. */
   emitToast?: (t: { level: string; message: string; description: string }) => Promise<void>;
+  /** Injectable for tests — defaults to a live `pg_stat_user_tables` size scan.
+   *  Feeds the UNDECLARED sweep below, which deliberately does NOT go through
+   *  `computeStorageUsage` (that is category-derived — the blind spot). */
+  listTableSizes?: () => Promise<TableSizeRow[]>;
+}
+
+/** One physical table's size, straight from the catalog — NOT category-derived. */
+export interface TableSizeRow {
+  table: string;
+  totalBytes: number;
+  rows: number;
+}
+
+/** An undeclared table over the floor: growing, and owned by no retention policy. */
+export interface UndeclaredGrowth {
+  table: string;
+  bytes: number;
+  rows: number;
+  floorBytes: number;
+}
+
+/**
+ * Floor above which a `harness_shared` table is EXPECTED to carry a retention
+ * decision. Deliberately far tighter than `categoryCeilingBytes` (GBs): a
+ * declared table is watched and owned, so it earns a generous ceiling; an
+ * UNDECLARED one is by definition unowned, which is the higher-risk class and
+ * the one that historically ran to 102 GB unnoticed (EI-126).
+ */
+export function undeclaredFloorBytes(): number {
+  return envNum('PAPERCUSP_STORAGE_ALARM_UNDECLARED_MB', 128) * 1024 * 1024;
+}
+
+/**
+ * Tables that carry a retention decision made SOMEWHERE OTHER than
+ * `STORAGE_CATEGORIES` — each with the evidence for it. Without this map the
+ * sweep below would report a table as unowned merely because its owner is a
+ * bespoke GC actor rather than a declared category, which is a FALSE "nothing
+ * prunes this" — the precise error that makes a coverage audit untrustworthy.
+ *
+ * ⚠ An entry here is a CLAIM that something prunes the table. Add one only with
+ * the deleting call site verified (`grep -n "delete from harness_shared.<t>"`),
+ * never because a table "looks managed" or "is probably fine".
+ *
+ * Absence from this map is NOT an accusation — it means no retention decision
+ * has been RECORDED for that table, which is exactly what the sweep surfaces.
+ */
+export const RETENTION_COVERED_ELSEWHERE: Readonly<Record<string, string>> = {
+  operator_turns: 'pruned by operator-turns-gc.ts',
+  operator_conversations: 'pruned by operator-turns-gc.ts',
+  plan_revisions: 'pruned by agent-tools/plans/revisions-gc.ts',
+  coord_thread_posts: 'pruned by agent-tools/coordination/message-log-gc.ts',
+  work_items: 'canonical work ledger — not age-prunable by design',
+  memory_canonical: 'canonical memory store — not age-prunable by design',
+  memory_vec_harrier: 'canonical memory vectors — not age-prunable by design',
+};
+
+/** `bak_*` pre-migration snapshots are frozen undo trails, never live growth —
+ *  skipped STRUCTURALLY rather than listed, mirroring the same carve-out in
+ *  identity-keyed-state-inventory.test.ts (hand-listing each new one red the
+ *  fleet gate four times there). */
+const FROZEN_BACKUP_TABLE_RE = /^bak_/;
+
+/**
+ * Pure: which tables are over the floor with no recorded retention decision.
+ *
+ * This is the leg `detectBreaches` structurally cannot cover. `detectBreaches`
+ * walks `computeStorageUsage()`, which iterates `STORAGE_CATEGORIES` — so a
+ * table nobody registered produces NO row and can therefore never breach, at
+ * ANY size. An alarm whose stated job is catching tables that grow unwatched
+ * was itself scoped to the watched set; a gate conditioned on the very act
+ * whose omission is the bug cannot catch the bug.
+ *
+ * Also returns `staleCovered`: entries in RETENTION_COVERED_ELSEWHERE matching
+ * no live table (renamed/dropped), so the map cannot rot into fiction.
+ */
+export function detectUndeclaredGrowth(
+  tables: TableSizeRow[],
+  declaredTables: readonly string[],
+  floorBytes: number = undeclaredFloorBytes(),
+): { undeclared: UndeclaredGrowth[]; staleCovered: string[] } {
+  const declared = new Set(declaredTables);
+  const live = new Set(tables.map((t) => t.table));
+
+  const undeclared = tables
+    .filter(
+      (t) =>
+        t.totalBytes > floorBytes &&
+        !declared.has(t.table) &&
+        !(t.table in RETENTION_COVERED_ELSEWHERE) &&
+        !FROZEN_BACKUP_TABLE_RE.test(t.table),
+    )
+    .map((t) => ({ table: t.table, bytes: t.totalBytes, rows: t.rows, floorBytes }))
+    .sort((a, b) => b.bytes - a.bytes);
+
+  // An EMPTY catalog is not evidence that every table was renamed — it means the
+  // scan returned nothing (a transient read that resolved to [] rather than
+  // throwing). Deriving staleness from it would name the whole map as rot and
+  // fire a confident, entirely false alarm, so absence of data is treated as
+  // "unknown" rather than "absent".
+  const staleCovered =
+    tables.length === 0
+      ? []
+      : Object.keys(RETENTION_COVERED_ELSEWHERE)
+          .filter((t) => !live.has(t))
+          .sort();
+
+  return { undeclared, staleCovered };
 }
 
 function fmtGb(bytes: number): string {
@@ -115,20 +223,77 @@ export function formatBreachToast(breaches: StorageBreach[]): { level: string; m
   };
 }
 
+function fmtSize(bytes: number): string {
+  return bytes >= GIB ? `${(bytes / GIB).toFixed(1)} GB` : `${Math.round(bytes / (1024 * 1024))} MB`;
+}
+
+/** Build ONE aggregated toast for the undeclared sweep. Pure — unit-testable.
+ *  Deliberately one toast for the whole set, not one per table: a per-table
+ *  alarm on a dozen unowned tables trains the reader to dismiss it. */
+export function formatUndeclaredToast(
+  found: UndeclaredGrowth[],
+  staleCovered: string[] = [],
+): { level: string; message: string; description: string } {
+  const lines = found
+    .map((u) => `• harness_shared.${u.table}: ${fmtSize(u.bytes)} / ${u.rows.toLocaleString()} rows`)
+    .join('\n');
+  const stale =
+    staleCovered.length > 0
+      ? `\n\n⚠ RETENTION_COVERED_ELSEWHERE names ${staleCovered.length} table(s) that no longer exist ` +
+        `(renamed/dropped — remove or update): ${staleCovered.join(', ')}.`
+      : '';
+  return {
+    level: 'warning',
+    message:
+      found.length === 0
+        ? `Retention coverage map is stale — ${staleCovered.length} entry/entries name no live table`
+        : `${found.length} unowned table(s) over ${fmtSize(found[0].floorBytes)} with no retention decision`,
+    description:
+      `These Postgres tables are over the floor and carry NO recorded retention decision — no storage ` +
+      `category, and no entry in RETENTION_COVERED_ELSEWHERE. They are invisible to the category ceiling ` +
+      `alarm by construction, so they can grow without bound unnoticed:\n${lines}\n\n` +
+      `This is not an accusation that they are unpruned — it means nobody recorded a decision. Fix by ` +
+      `either adding a category in storage/categories.ts (with an ageColumn + federation class), or, if ` +
+      `something already prunes it, recording that in RETENTION_COVERED_ELSEWHERE with the verified call ` +
+      `site. Tune the floor via PAPERCUSP_STORAGE_ALARM_UNDECLARED_MB.${stale}`,
+  };
+}
+
+/** Default undeclared-table scan: the catalog, NOT the category list. */
+async function defaultListTableSizes(): Promise<TableSizeRow[]> {
+  const { getOrgPg } = await import('@papercusp/db-org');
+  const sql = getOrgPg().sql as unknown as (
+    strings: TemplateStringsArray,
+    ...v: unknown[]
+  ) => Promise<Array<{ table: string; total_bytes: string | number; rows: string | number }>>;
+  const rows = await sql`
+    SELECT relname AS table,
+           pg_total_relation_size(relid) AS total_bytes,
+           n_live_tup AS rows
+      FROM pg_stat_user_tables
+     WHERE schemaname = 'harness_shared'`;
+  return rows.map((r) => ({
+    table: String(r.table),
+    totalBytes: Number(r.total_bytes),
+    rows: Number(r.rows),
+  }));
+}
+
 /** One read-only pass: size every storage category, toast on any breach. Never
  *  throws — observability is best-effort, mirroring the other periodic monitors. */
 export async function runStorageGrowthAlarmOnce(
   deps: GrowthAlarmDeps = {},
-): Promise<{ checked: number; breaches: StorageBreach[] }> {
+): Promise<{ checked: number; breaches: StorageBreach[]; undeclared: UndeclaredGrowth[] }> {
   const computeUsage = deps.computeUsage ?? (() => computeStorageUsage({ sizesOnly: true }));
   const emitToast = deps.emitToast ?? defaultEmitToast;
+  const listTableSizes = deps.listTableSizes ?? defaultListTableSizes;
 
   let rows: StorageUsageRow[] = [];
   try {
     rows = await computeUsage();
   } catch (err) {
     console.warn(`[storage-growth-alarm] usage scan skipped (non-fatal): ${(err as Error)?.message ?? String(err)}`);
-    return { checked: 0, breaches: [] };
+    rows = [];
   }
 
   const breaches = detectBreaches(rows);
@@ -139,5 +304,23 @@ export async function runStorageGrowthAlarmOnce(
       console.warn(`[storage-growth-alarm] toast emit failed (non-fatal): ${(err as Error)?.message ?? String(err)}`);
     }
   }
-  return { checked: rows.length, breaches };
+
+  // ── The undeclared sweep (the leg detectBreaches structurally cannot cover) ──
+  // Runs INDEPENDENTLY of the usage scan above: the category path is precisely
+  // the blind spot, so a failure there must not also blind the catalog sweep.
+  let undeclared: UndeclaredGrowth[] = [];
+  try {
+    const declaredTables = STORAGE_CATEGORIES.filter(isPgCategory).map((c) => c.table);
+    const result = detectUndeclaredGrowth(await listTableSizes(), declaredTables);
+    undeclared = result.undeclared;
+    if (undeclared.length > 0 || result.staleCovered.length > 0) {
+      await emitToast(formatUndeclaredToast(undeclared, result.staleCovered));
+    }
+  } catch (err) {
+    console.warn(
+      `[storage-growth-alarm] undeclared sweep skipped (non-fatal): ${(err as Error)?.message ?? String(err)}`,
+    );
+  }
+
+  return { checked: rows.length, breaches, undeclared };
 }

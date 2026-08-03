@@ -38,7 +38,11 @@ registerSystemAction('plan-item-orphan-reconcile', async (ctx: SystemActionCtx) 
     result.terminalPlanItems > 0 ||
     result.reconciled.length > 0 ||
     result.gated.length > 0 ||
-    result.ungated.length > 0
+    result.ungated.length > 0 ||
+    // EI-19460536530145188: a tick that DECLINED to close something is worth a
+    // line even when it healed nothing else — that is the case an operator most
+    // needs to see, and the one the old condition was silent about.
+    result.skippedUnprovenLink.length > 0
   ) {
     console.log(
       `[plan-item-orphan-reconcile] ${ctx.installSlug}: ${result.candidatePlanItems} candidate plan-item(s), ` +
@@ -47,7 +51,10 @@ registerSystemAction('plan-item-orphan-reconcile', async (ctx: SystemActionCtx) 
         `(${result.skippedInFlight.length} in-flight, ${result.skippedAlreadyTerminal.length} already-terminal skipped)` +
         (result.reconciled.length ? `: ${result.reconciled.join(', ')}` : '') +
         (result.gated.length ? ` [parked: ${result.gated.join(', ')}]` : '') +
-        (result.ungated.length ? ` [restored: ${result.ungated.join(', ')}]` : ''),
+        (result.ungated.length ? ` [restored: ${result.ungated.join(', ')}]` : '') +
+        (result.skippedUnprovenLink.length
+          ? ` [left OPEN — stamp-only link, no implements edge: ${result.skippedUnprovenLink.join(', ')}]`
+          : ''),
     );
   }
 });

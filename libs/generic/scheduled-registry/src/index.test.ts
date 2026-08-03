@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   configureScheduledRegistry,
   getManaged,
@@ -319,5 +319,73 @@ describe('timer classification (P-011 / D-004)', () => {
     // if divergent classifications per name ever become legitimate, THIS test is the one to
     // revisit deliberately.
     expect(getManaged('mixed')?.classification).toBe('must-sample');
+  });
+});
+
+describe('dual module instance shares ONE inventory (EI-19451658870832332)', () => {
+  // `vi.resetModules()` drops the module registry, so the dynamic import below RE-EVALUATES
+  // index.ts and hands back a genuinely SEPARATE module instance. That is the production
+  // hazard reproduced in-process: the host entry runs under tsx (CJS preflight + ESM loader),
+  // importers reach this package through both bare-specifier and relative paths, and
+  // node_modules/@papercusp/* are symlinks — any of which yields two module records.
+  //
+  // Falsifiable by construction: with the state held in module scope (as it was before
+  // EI-19451658870832332) the re-evaluated instance starts with an EMPTY Map, so every
+  // expectation below fails. It measured live as dbos-executor-reaper reaping every 2 minutes
+  // inside bg-host while absent from that same process's own /api/internal/managed-timers.
+
+  it('CONTROL: vi.resetModules() really does re-evaluate — module-scoped state comes back EMPTY', async () => {
+    // Calibration, not a feature test. If this ever fails, resetModules() has stopped
+    // producing a second instance and EVERY assertion in this describe block below is
+    // passing vacuously — fix this before trusting them.
+    const control = await import('./module-scoped-control.fixture');
+    control.marks.push('first-instance');
+    expect(control.marks).toEqual(['first-instance']);
+
+    vi.resetModules();
+    const controlAgain = await import('./module-scoped-control.fixture');
+
+    expect(controlAgain.marks).toEqual([]);
+    expect(controlAgain.marks).not.toBe(control.marks);
+  });
+
+  it('a timer armed in the FIRST instance is visible to a second, freshly-evaluated instance', async () => {
+    harness();
+    managedSetInterval('dual-instance-probe', 1000, () => undefined, { category: 'watchdog' });
+    expect(listManaged().map((e) => e.name)).toContain('dual-instance-probe');
+
+    vi.resetModules();
+    const second = await import('./index');
+
+    expect(second.listManaged().map((e) => e.name)).toContain('dual-instance-probe');
+    expect(second.managedCount()).toBe(managedCount());
+    expect(second.getManaged('dual-instance-probe')?.intervalMs).toBe(1000);
+  });
+
+  it('is symmetric — a timer armed in the SECOND instance is visible to the first', async () => {
+    harness();
+    vi.resetModules();
+    const second = await import('./index');
+
+    second.managedSetInterval('armed-in-second', 2000, () => undefined, { category: 'cache' });
+
+    expect(listManaged().map((e) => e.name)).toContain('armed-in-second');
+    expect(getManaged('armed-in-second')?.category).toBe('cache');
+  });
+
+  it('shares the CONFIGURED seams, so the second instance cannot silently run unshedded', async () => {
+    // The second-order half of the same bug: `configureScheduledRegistry` writes to the same
+    // state, so a hidden instance must not fall back to default seams (real setInterval, no
+    // host tick-load-shed). Asserted via the fake setIntervalImpl installed by harness() on
+    // the FIRST instance — an unshared config would arm a REAL timer and capture nothing.
+    const h = harness();
+    const before = h.intervals.length;
+
+    vi.resetModules();
+    const second = await import('./index');
+    second.managedSetInterval('seam-probe', 3000, () => undefined, { category: 'watchdog' });
+
+    expect(h.intervals.length).toBe(before + 1);
+    expect(h.intervals[before].ms).toBe(3000);
   });
 });

@@ -40,7 +40,7 @@ ECONNREFUSED port itself is Claude-Code-CLI-internal (outside papercusp's
 codebase), so there is no papercusp-side code fix for the underlying wedge — only
 faster recognition + the curl/`mcp-call.mjs` route-around below.
 
-## Verify the server is up (optional)
+## Verify the server is up (do this — it's not optional, it decides which runbook applies)
 
 ```bash
 curl -s -i -m 8 -X POST 'http://localhost:3070/api/mcp?superuser=1&client=probe&workspace=papercusp-workspace' \
@@ -48,7 +48,20 @@ curl -s -i -m 8 -X POST 'http://localhost:3070/api/mcp?superuser=1&client=probe&
   -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"probe","version":"1"}}}'
 ```
 
-A 200 with a `serverInfo` SSE `data:` line = the server is fine; only your client dropped.
+A 200 with a `serverInfo` SSE `data:` line in under a couple seconds = the
+server is fine; only your client dropped — the recovery below applies.
+
+**If this call itself times out (hangs, no response) rather than erroring
+fast** — do NOT conclude "server down" and do NOT assume the curl recipes
+below will save you. A prior `curl :3070/api/health` returning 200 does not
+rule this out either: `/api/health` answers off a trivial path and stays fast
+even when the event loop is saturated, while `/api/mcp` does real work and
+queues behind the saturation (EI-19420557240747274). A hang here means the
+operator's event loop is **wedged**, not that your client merely dropped —
+this doc's bridge traverses the exact same wedged route your MCP client used,
+so it will hang too. Go to
+[surviving-an-operator-wedge-mcp-severance](/agent-insights/surviving-an-operator-wedge-mcp-severance/)
+instead: back off, don't retry-storm, stage writes for the next open window.
 
 ## Fastest recovery: the committed helper
 

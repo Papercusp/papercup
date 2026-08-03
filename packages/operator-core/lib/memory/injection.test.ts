@@ -34,12 +34,11 @@ type CorpusIoStub = {
   candidateCount: number;
 };
 let corpusIoResult: CorpusIoStub | null = null;
-vi.mock('./corpus-recall-io', () => ({
-  recallCorpusContext: vi.fn(async () => {
-    if (!corpusIoResult) throw new Error('corpus leg not stubbed for this test');
-    return corpusIoResult;
-  }),
-}));
+const recallCorpusContext = vi.fn(async (_input: Record<string, unknown>) => {
+  if (!corpusIoResult) throw new Error('corpus leg not stubbed for this test');
+  return corpusIoResult;
+});
+vi.mock('./corpus-recall-io', () => ({ recallCorpusContext }));
 
 // The harness registry backs the member→hive resolution (knowledge-packs
 // P-004). Canned per-test via `registryProjects`; default empty ⇒ no hive pull.
@@ -945,6 +944,27 @@ describe('corpus leg carries its own retrieval health (P-001)', () => {
       queryContext: 'why did the corpus leg return that',
     });
   };
+
+  it('hands the corpus leg the caller’s OWNER id, so its self-echo filter can fire', async () => {
+    // EI-19460887729945170 — the wiring regression that shipped. This value has
+    // always been the per-agent coord ownerId (`su-xxxx…`; claim-port.ts:47),
+    // but it used to be passed as `excludeSessionId` and compared against hits'
+    // NATIVE transcript uuids — two identity spaces, never equal — so the
+    // self-session filter never fired once in production. Asserting the FIELD,
+    // not just the value, is the point: a rename back would restore the bug
+    // silently, with every other test still green.
+    corpusIoResult = oneLine({ embedderAvailable: true });
+    useBackend(mockBackend([{ id: 'm1', text: 'alpha' }]));
+    await buildMemoryContextBlock({
+      userId: 'u1',
+      workspaceId: 'ws',
+      queryContext: 'why did the corpus leg return that',
+      session: { sessionId: 'su-be34c423', port: 'mid-turn' },
+    });
+    const passed = recallCorpusContext.mock.calls.at(-1)?.[0] ?? {};
+    expect(passed).toMatchObject({ excludeOwnerId: 'su-be34c423' });
+    expect(passed).not.toHaveProperty('excludeSessionId');
+  });
 
   it('WARNS when the leg ran BM25-only, and throttles the re-warn', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});

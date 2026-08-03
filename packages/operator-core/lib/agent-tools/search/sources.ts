@@ -11,6 +11,12 @@
  * a filter in the shared filter bag, never a new search verb).
  */
 
+// P-017 (side-effect import): installs the engine-level ranking policy — the
+// embedding floor every prose surface should inherit rather than hand-pass.
+// Placed on the SOURCE REGISTRY, not on each caller, because a surface using
+// these sources is exactly a surface the policy is calibrated for; that makes
+// the coverage structural instead of another thing to remember.
+import '../../search/configure-search-defaults';
 import type { SearchSource, SearchSourceParams, Listing } from '@papercusp/search';
 
 /** Standard ts_headline options for all four surfaces. */

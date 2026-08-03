@@ -654,16 +654,40 @@ function main() {
     }
   }
 
+  // ⚠ FAIL OPEN. The coverage axis credits a guard as fully covered when it is registered
+  // in REPO_WIDE_INVARIANT_GUARDS — so if that source is unreadable, EVERY registered guard
+  // would silently reclassify as `partial` and this leg (a blocking green-checkpoint leg)
+  // would red-pin the whole fleet on a missing file rather than on a real defect.
+  //
+  // The rest of this script already errs toward "reachable" for exactly this reason: a false
+  // negative costs a missed report, a false positive costs a fleet-wide gate run. Coverage
+  // inherits that stance — no registration source means the axis is not measured at all.
+  // Overridable for the same reason the package.json subject is: the fail-open branch
+  // below can then be PROVEN against a copy outside the tree, instead of by deleting a
+  // load-bearing file from a shared checkout that git-sync sweeps every few minutes.
+  const affectedTestsSource = readIfExists(
+    process.env.LINT_GUARD_REACHABILITY_AFFECTED_TESTS || resolve(ROOT, 'scripts/affected-tests.mjs'),
+  );
+  const coverageMeasurable = affectedTestsSource.includes('REPO_WIDE_INVARIANT_GUARDS');
+  if (!coverageMeasurable) {
+    console.warn(
+      '⚠ coverage axis SKIPPED: scripts/affected-tests.mjs has no REPO_WIDE_INVARIANT_GUARDS block.\n' +
+        '  Reporting enforcement only. (Failing here would red-pin the gate on a missing file.)',
+    );
+  }
+
   const census = buildReachabilityCensus({
     scripts,
     corpora,
     acknowledged: ACKNOWLEDGED_UNREACHABLE,
-    coverage: {
-      enforcingTests,
-      workspaceDirs: discoverWorkspaceDirs(JSON.parse(readIfExists(resolve(ROOT, 'package.json')) || '{}'), files),
-      implSources,
-      repoWideRegistered: parseRepoWideRegistrations(readIfExists(resolve(ROOT, 'scripts/affected-tests.mjs'))),
-    },
+    coverage: coverageMeasurable
+      ? {
+          enforcingTests,
+          workspaceDirs: discoverWorkspaceDirs(JSON.parse(readIfExists(resolve(ROOT, 'package.json')) || '{}'), files),
+          implSources,
+          repoWideRegistered: parseRepoWideRegistrations(affectedTestsSource),
+        }
+      : null,
   });
 
   if (json) {
@@ -736,7 +760,13 @@ function main() {
     console.error('     • RETIRE it — delete the script and its implementation.');
   }
 
-  const unacknowledgedPartial = census.partiallyCovered.filter((r) => !ACKNOWLEDGED_PARTIAL_COVERAGE.has(r.name));
+  // Both partial-coverage checks are gated on the axis having actually been MEASURED.
+  // Without this, an unmeasured run reports every acknowledged entry as "stale" (its
+  // guard is absent from an empty partiallyCovered list) and fails the gate — the same
+  // fail-closed trap the skip above exists to avoid, one step further down.
+  const unacknowledgedPartial = coverageMeasurable
+    ? census.partiallyCovered.filter((r) => !ACKNOWLEDGED_PARTIAL_COVERAGE.has(r.name))
+    : [];
   if (unacknowledgedPartial.length) {
     failed = true;
     console.error(`\n❌ ${unacknowledgedPartial.length} lint guard(s) are enforced over only PART of what they scan:`);
@@ -752,9 +782,9 @@ function main() {
     console.error('   predicate, so it runs on every changed path it actually covers.');
   }
 
-  const stalePartial = [...ACKNOWLEDGED_PARTIAL_COVERAGE.keys()].filter(
-    (n) => !census.partiallyCovered.some((r) => r.name === n),
-  );
+  const stalePartial = coverageMeasurable
+    ? [...ACKNOWLEDGED_PARTIAL_COVERAGE.keys()].filter((n) => !census.partiallyCovered.some((r) => r.name === n))
+    : [];
   if (stalePartial.length) {
     failed = true;
     console.error(`\n❌ ${stalePartial.length} STALE partial-coverage entr(ies) — no longer partially covered:`);

@@ -88,8 +88,16 @@ export interface CodeExistenceReport {
    */
   matches: CodeExistenceMatch[];
   /**
-   * Did the lexical backend actually run? `false` = probe unavailable and the
-   * empty `matches` carries NO information. Never read `false` as "nothing found".
+   * Did the lexical backend actually run? `false` = the empty `matches` carries
+   * NO information. Never read `false` as "nothing found".
+   *
+   * TWO distinct causes set it false, and `unavailableReason` distinguishes them:
+   *   1. the search backend threw (a probe outage);
+   *   2. no distinctive terms could be extracted, so the backend was never
+   *      called at all.
+   *
+   * Cause 2 is easy to mistake for a real miss — it looks like a completed probe
+   * that found nothing. It is not. See the early return in `probeCodeExistence`.
    */
   searched: boolean;
   /** Present when `searched` is false — why the probe could not run. */
@@ -396,7 +404,28 @@ export async function probeCodeExistence(
   }
 
   if (candidates.length === 0) {
-    return { terms, matches: [], searched: true, semantic, semanticSearched, selfIdHits, assertedPriorArt };
+    // ZERO-WORK FALSE GREEN — do not "simplify" this back to `searched: true`.
+    //
+    // No candidate terms means the lexical backend was NEVER CALLED. Reporting
+    // `searched: true` here would claim a probe ran and found nothing, which is
+    // the exact false negative this module exists to prevent — the same shape as
+    // `tsc -p .` typechecking zero files and reporting clean.
+    //
+    // It also fails in the most expensive direction: an idea whose text yields no
+    // greppable vocabulary (short, prose-only, no backticked identifiers) is
+    // precisely the one whose prior art is hardest to find, so it would receive
+    // the CLEANEST "nothing found" of the whole backlog.
+    return {
+      terms,
+      matches: [],
+      searched: false,
+      unavailableReason:
+        'no distinctive terms could be extracted from the idea text — the lexical backend was never called',
+      semantic,
+      semanticSearched,
+      selfIdHits,
+      assertedPriorArt,
+    };
   }
 
   const matches: CodeExistenceMatch[] = [];

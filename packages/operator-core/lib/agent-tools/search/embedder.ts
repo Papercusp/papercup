@@ -180,6 +180,37 @@ function cachedQueryEmbed(mode: string, dims: number, embed: Embedder): Embedder
   };
 }
 
+/**
+ * Embedder instance → the mode that built it (P-017).
+ *
+ * A cosine floor is only meaningful in the embedding space it was measured
+ * in, so anything applying one must be able to tell "this is the embedder I
+ * calibrated against" from "this is some other one". The mode used to be
+ * available ONLY to callers that went through `buildQueryEmbedderResolved`
+ * and kept the wrapper — `buildQueryEmbedder` throws it away, which is why
+ * six of the eight search call sites could not floor even in principle.
+ *
+ * Binding it to the function instance fixes that centrally: every embedder
+ * this module hands out carries its own provenance, so a policy can resolve
+ * the right floor with no per-caller plumbing, and an UNRECOGNISED embedder
+ * (a caller's own, from another space) simply misses — yielding no floor
+ * rather than a threshold imported from a foreign space.
+ *
+ * A WeakMap so a discarded embedder is still collectable.
+ */
+const embedderModes = new WeakMap<Embedder, ResolvedQueryEmbedder['mode']>();
+
+/**
+ * The mode of an embedder built by this module, or `undefined` for one it did
+ * not build. `undefined` means "unknown space" and callers MUST treat it as
+ * "apply nothing space-specific" — never as a default space.
+ */
+export function embedderModeOf(
+  embedder: Embedder | null | undefined,
+): ResolvedQueryEmbedder['mode'] | undefined {
+  return embedder ? embedderModes.get(embedder) : undefined;
+}
+
 export async function buildQueryEmbedderResolved(
   opts?: QueryEmbedderAcquireOpts,
 ): Promise<ResolvedQueryEmbedder | null> {
@@ -207,12 +238,12 @@ export async function buildQueryEmbedderResolved(
     });
     const resolved = await withAcquireBudget(acquire, opts?.acquireBudgetMs ?? 0);
     if (resolved === null || resolved.mode === 'disabled') return null;
-    return {
-      mode: resolved.mode,
-      dims: resolved.dims,
-      // WI-4734: memoized per (mode, dims, query) — see queryEmbedCache above.
-      embed: cachedQueryEmbed(resolved.mode, resolved.dims, resolved.embed),
-    };
+    // WI-4734: memoized per (mode, dims, query) — see queryEmbedCache above.
+    const embed = cachedQueryEmbed(resolved.mode, resolved.dims, resolved.embed);
+    // P-017: stamp the space onto the instance every caller will actually hold,
+    // so the floor policy can recognise it without any caller passing a mode.
+    embedderModes.set(embed, resolved.mode);
+    return { mode: resolved.mode, dims: resolved.dims, embed };
   } catch {
     // Mirrors the prior local-mode behavior: a pipeline load failure (package missing,
     // model fetch failed, …) degrades to BM25-only rather than throwing.

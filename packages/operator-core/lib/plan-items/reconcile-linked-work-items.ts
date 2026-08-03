@@ -723,6 +723,15 @@ export interface OrphanReconcileSweepResult {
   skippedInFlight: string[];
   /** Linked but already terminal — nothing to do. */
   skippedAlreadyTerminal: string[];
+  /**
+   * EI-19460536530145188: issue-family work-items left OPEN because only the
+   * `payload.plan_item` stamp linked them to the completed plan item — no
+   * `implements` edge, so nothing asserts they implement it. Surfaced here (not
+   * merely omitted from `reconciled`) so the sweep's own report says what it
+   * declined to close: a skip that is invisible is the same silence this guard
+   * exists to end.
+   */
+  skippedUnprovenLink: string[];
 }
 
 /** Default per-tick candidate cap — a generous bound (orphan residue is bursty at
@@ -772,6 +781,7 @@ export async function reconcileOrphanedPlanItemWorkItems(
     ungated: [],
     skippedInFlight: [],
     skippedAlreadyTerminal: [],
+    skippedUnprovenLink: [],
   };
 
   const { sql } = getOrgPg();
@@ -846,6 +856,7 @@ export async function reconcileOrphanedPlanItemWorkItems(
         out.reconciled.push(...r.reconciled);
         out.skippedInFlight.push(...r.skippedInFlight);
         out.skippedAlreadyTerminal.push(...r.skippedAlreadyTerminal);
+        out.skippedUnprovenLink.push(...r.skippedUnprovenLink);
         continue;
       }
       // NON-terminal (EI-14699): sync the effective lane onto linked work-items.

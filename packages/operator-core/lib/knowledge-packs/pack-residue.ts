@@ -76,7 +76,7 @@ export const PACK_RESIDUE_RULES: readonly PackResidueRule[] = [
     pattern: /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi,
     why:
       'an agent-session / run UUID names one ephemeral process on OUR fleet — ' +
-      'D-020 lists agent-session ids as tier-3 THIS-BOX, and it is unresolvable off-box',
+      'D-008 lists agent-session ids as tier-3 THIS-BOX, and it is unresolvable off-box',
   },
   {
     id: 'signature-hash',
@@ -144,9 +144,9 @@ export function findPackResidue(text: string): PackResidueHit[] {
  * reimplementing them — an earlier draft of THIS file reimplemented the literal
  * matcher, which was exactly the mistake the header warns about.
  *
- * Three of that module's classes map onto D-020's tier-3 THIS-BOX list:
+ * Three of that module's classes map onto D-008's tier-3 THIS-BOX list:
  *
- *   D-020 tier-3 term        class    matcher                needs entries?
+ *   D-008 tier-3 term        class    matcher                needs entries?
  *   absolute paths           2        findBoxIdentityPaths    no (shape-based)
  *   hostnames, git identity  3        findIdentityLiterals    YES (this box's values)
  *   (named owner provenance) 1        findOwnerNameLeaks      no
@@ -215,7 +215,7 @@ export function findIdentityResidue(
       rule: 'box-identity-path',
       match: `/home/<${f.user.slice(0, 2)}…>`,
       why:
-        "an absolute home path names one machine's filesystem layout — D-020 lists " +
+        "an absolute home path names one machine's filesystem layout — D-008 lists " +
         'absolute paths as tier-3 THIS-BOX, excluded from everything we ship',
     });
   }
@@ -237,7 +237,7 @@ export function findIdentityResidue(
         rule: 'box-identity',
         match: `<${f.key}>`,
         why:
-          `this text carries THIS BOX's ${f.key} literal — D-020 excludes tier-3 ` +
+          `this text carries THIS BOX's ${f.key} literal — D-008 excludes tier-3 ` +
           'THIS-BOX content (hostnames, absolute paths, VM aliases, agent-session ' +
           'ids, credentials) from anything we ship',
       });
@@ -278,7 +278,7 @@ export const PACK_ITEM_MIN_TEXT_CHARS = 60;
  * how transferable the sentence looks, and it is the one kind whose whole
  * purpose is to be person-specific.
  *
- * Deliberately NOT excluded: `project` and `reference`. Under D-020 (owner,
+ * Deliberately NOT excluded: `project` and `reference`. Under D-008 (owner,
  * verbatim: "ship dev-infra too") the shipping rule is TWO tiers — tier 1
  * PRODUCT and tier 2 DEV-INFRASTRUCTURE both ship, and only tier 3 THIS-BOX is
  * held back. Excluding a kind because it looks like dev-infra would contradict

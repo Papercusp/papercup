@@ -102,6 +102,29 @@ export interface CorpusRecallInput {
   skipFlagCheck?: boolean;
 }
 
+/**
+ * WHY the leg ended where it did. `lines: []` alone is five different states
+ * wearing one face, and the most dangerous of them — the wall-clock bound
+ * expiring — is indistinguishable from the most benign, "the corpus genuinely
+ * had nothing". EI-19460902984682209: that ambiguity is what let every first
+ * injection in a fresh process return an empty block for its whole life
+ * without anyone noticing.
+ *
+ * Only `'ok'` means the leg ran to completion, and even then `lines` may be
+ * empty — that is the honest "nothing relevant".
+ */
+export type CorpusRecallOutcome =
+  /** The leg ran to completion. `lines` may still be empty. */
+  | 'ok'
+  /** `corpusRecallTimeoutMs` expired. NOT evidence that the corpus is empty. */
+  | 'timed-out'
+  /** The kill-switch flag is off, or no in-scope source is registered. */
+  | 'disabled'
+  /** Nothing searchable in the input text. */
+  | 'no-query'
+  /** The leg threw (PG down, engine error). Best-effort, never rethrown. */
+  | 'failed';
+
 export interface CorpusRecallResult {
   /** The rendered markdown section, or null when nothing was admitted. */
   block: string | null;
@@ -111,15 +134,19 @@ export interface CorpusRecallResult {
   embedderAvailable: boolean;
   /** Candidates the engine returned, before pure-core selection. */
   candidateCount: number;
+  /** Why the leg ended here — see `CorpusRecallOutcome`. Read this before
+   *  concluding anything from an empty `lines`. */
+  outcome: CorpusRecallOutcome;
 }
 
-const EMPTY: CorpusRecallResult = {
+const empty = (outcome: CorpusRecallOutcome): CorpusRecallResult => ({
   block: null,
   lines: [],
   dropped: [],
   embedderAvailable: false,
   candidateCount: 0,
-};
+  outcome,
+});
 
 /** Bound a promise without touching the shared memory-degradation latch. */
 async function withBound<T>(p: Promise<T>, ms: number, fallback: T): Promise<T> {

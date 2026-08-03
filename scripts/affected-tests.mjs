@@ -405,6 +405,11 @@ const PARTIAL_INDEX_SOURCE_ROOTS = [
 ];
 const PARTIAL_INDEX_SCHEMA_FILE = 'libs/papercusp/libs/db/src/schema/generated.ts';
 
+// WI-9573. Mirrors SQL_DIR in scripts/check-migration-forward-compat.mjs — that lint
+// readdirSync()s exactly this directory, so if it ever moves, this must follow or the
+// guard silently stops firing (the same "green because it stopped checking" shape).
+const MIGRATION_SQL_DIR = 'libs/papercusp/libs/db/sql';
+
 const REPO_WIDE_INVARIANT_GUARDS = [
   {
     workspace: '@papercusp/operator-core',
@@ -433,6 +438,23 @@ const REPO_WIDE_INVARIANT_GUARDS = [
     appliesTo: (f) =>
       f === PARTIAL_INDEX_SCHEMA_FILE ||
       (/\.[cm]?tsx?$/.test(f) && PARTIAL_INDEX_SOURCE_ROOTS.some((r) => f.startsWith(`${r}/`))),
+  },
+  {
+    // WI-9573 — the D-034 shape a THIRD time, and the most expensive instance yet.
+    // lint:migration-forward-compat had NO local enforcement point at all: it was invoked
+    // only by green-checkpoint (apps/operator/lib/release/green-checkpoint.ts), so a
+    // migration author got zero signal and the violation first surfaced as a red FLEET
+    // gate hours later, blocking every agent. That is not hypothetical — on 2026-08-03 it
+    // red-pinned the gate for 4 consecutive runs on migrations 750/751/752/754/755, and
+    // three other sessions hit the same wall independently the same day (see also
+    // EI-19409083906144989, EI-19407054630567497).
+    //
+    // A .sql migration also maps to NO workspace test suite, so unlike the two guards
+    // above there was no partial coverage to widen — the local signal was entirely absent.
+    workspace: '@papercusp/operator-core',
+    // The standalone script (~0.1s: it readdirs one directory and regex-scans 65 files).
+    script: 'lint:migration-forward-compat',
+    appliesTo: (f) => f.startsWith(`${MIGRATION_SQL_DIR}/`) && f.endsWith('.sql'),
   },
 ];
 

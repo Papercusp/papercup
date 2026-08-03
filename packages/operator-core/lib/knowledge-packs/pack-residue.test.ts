@@ -104,7 +104,7 @@ describe('findPackResidue', () => {
   });
 
   it('names an agent-session UUID as session-id — ONCE, not also as signature-hash', () => {
-    // D-020 lists agent-session ids as tier-3. A UUID's final group is exactly 12
+    // D-008 lists agent-session ids as tier-3. A UUID's final group is exactly 12
     // hex, so the signature-hash rule ALSO matches it; overlap suppression is what
     // keeps the refusal from naming one string under two rules with two different
     // (one of them wrong) explanations.
@@ -182,7 +182,7 @@ describe('findPackShapeFaults — the length/kind floor', () => {
     expect(hits.map((h) => h.rule)).toEqual(['inadmissible-kind']);
   });
 
-  it("ADMITS 'project' and 'reference' — D-020 ships tier-2 dev-infra, so kind is not a tier gate", () => {
+  it("ADMITS 'project' and 'reference' — D-008 ships tier-2 dev-infra, so kind is not a tier gate", () => {
     // Pins the ratified two-tier rule ("ship dev-infra too"). If a future change
     // excludes one of these kinds, it contradicts an owner decision and this fails.
     for (const kind of ['project', 'reference', 'feedback']) {

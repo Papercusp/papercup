@@ -25,7 +25,6 @@ import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { runHybridSearch } from '@papercusp/search';
 import { SEARCH_SOURCES } from './sources';
 import { buildQueryEmbedderResolved, interactiveEmbedAcquireBudgetMs } from './embedder';
-import { proseMinScoreFloors } from '../../search/prose-min-score';
 import {
   loadCoverageSnapshotCached,
   assessSearchCoverage,
@@ -135,9 +134,10 @@ export default defineTool({
       embedder,
       embedTimeoutMs: interactiveEmbedAcquireBudgetMs(),
       filters,
-      // P-001: reject sub-floor vector candidates BEFORE fusion. Undefined for
-      // an embedder mode we have no measurement for ⇒ nothing is filtered.
-      minScore: proseMinScoreFloors(resolvedEmbedder?.mode),
+      // P-001 floors are INHERITED now, not hand-passed (P-017): the engine
+      // resolves them from the embedder instance via the policy installed by
+      // lib/search/configure-search-defaults. This surface used to be the only
+      // one of eight that floored, precisely because the floor lived here.
       log: ctx.log,
     });
 

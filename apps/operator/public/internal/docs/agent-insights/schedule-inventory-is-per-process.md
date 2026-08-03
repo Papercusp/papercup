@@ -119,11 +119,61 @@ on that trades a visibility bug for an availability bug. So:
 The recurrence guard is a test whose fetch stub is deliberately *worse than reality*: it
 ignores its `AbortSignal` entirely, so only the outer budget can save the call.
 
+## Worse than per-process: it was per-MODULE-INSTANCE (2026-08-03, EI-19451658870832332)
+
+Federating across processes was necessary and it was **not sufficient**. Asking the *right*
+process still returned a wrong answer, because one process held **two registries**.
+
+`dbos-executor-reaper` was reaping workflows every 2 minutes inside `papercup-bg-host` —
+visible the whole time in `journalctl --user -u papercup-bg-host` as
+`[dbos-executor-reaper] reaped 1 workflow(s) …` — while absent from
+`/api/internal/managed-timers` **served by that same pid**. Both readings were correct:
+
+* `managedSetInterval` registers unconditionally, and `listManaged()` filters nothing
+  (`libs/generic/scheduled-registry/src/index.ts`). A single instance cannot produce both.
+* So there were **two live instances of `@papercusp/scheduled-registry` in one process**,
+  each with its own module-level `const registry = new Map()`.
+
+The host entry runs under tsx (a CJS preflight alongside an ESM loader), importers reach the
+package through both bare-specifier and relative paths, and `node_modules/@papercusp/*` are
+symlinks into the repo. Any one of those seams yields two module records.
+
+**The fix does not depend on knowing which seam did it.** The registry's mutable state is now
+pinned to `globalThis` under a `Symbol.for(...)` key — correct under dual-package, symlink,
+CJS/ESM-split and bundled-copy alike. `configureScheduledRegistry`'s seams are shared too, so
+a hidden instance can no longer quietly run with default seams (i.e. ignoring the host's
+tick-load-shed).
+
+### Two traps this burned, both worth internalising
+
+**A negative result only covers the conditions it actually reproduced.** A controlled tsx
+probe "FALSIFIED" the dual-instance hypothesis — importing the registry statically and the
+reaper by package subpath, with a control proving the import path was exercised. It was a
+sound experiment that did not recreate the host's real loader conditions, and it sent the
+investigation to a dead end for a full wake. A probe's `false` is scoped to its setup.
+
+**Unobservable is not empty.** `:3070` has no `/api/internal/managed-timers` route at all —
+it returns `{"error":"not_found"}`, because the route does not exist in the release build. A
+`json.get('timers', [])` parse renders that as `total 0`, i.e. a *false zero* shaped exactly
+like a measurement. Any process eliminated "by measurement" through that endpoint was never
+actually measured.
+
+**Guard:** `libs/generic/scheduled-registry/src/index.test.ts` re-evaluates the module via
+`vi.resetModules()` and asserts the two instances share one inventory. It ships with a
+**calibration control** (`module-scoped-control.fixture.ts`) that asserts module-scoped state
+does *not* survive the same reset — because if `resetModules()` ever stopped producing a
+second instance, the guard would pass vacuously and the hazard would walk right back in.
+
 ## The generalisable lesson
 
 **Per-process in-memory state read through a single-process surface produces a confident,
 well-formed, wrong answer** — and the wrong answer is an *absence*, which is the shape
 agents are least equipped to doubt. Before concluding "X is not registered / not running /
-does not exist", ask **which process you just asked**. Related: an inventory that answers
-only about itself should say so in its own output; this one now does, via
-`detail.process`.
+does not exist", ask **which process you just asked** — and, per the section above, whether
+that process holds more than one copy of the thing you are asking about. Related: an
+inventory that answers only about itself should say so in its own output; this one now does,
+via `detail.process`.
+
+The sharper form, learned the expensive way: **an inventory's absence is evidence only if
+there is exactly ONE inventory.** Establish that before spending a wake on what the absence
+"means".

@@ -40,19 +40,44 @@
  */
 
 import { readdirSync, readFileSync, existsSync } from 'node:fs';
-import { join, dirname } from 'node:path';
+import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const SQL_DIR = join(__dirname, '..', 'libs', 'papercusp', 'libs', 'db', 'sql');
+/**
+ * Repo-relative form of the scanned directory, EXPORTED so the repo-wide invariant
+ * guard that routes this lint (MIGRATION_SQL_DIR in scripts/affected-tests.mjs) can be
+ * asserted against the directory this lint actually reads, rather than a hand-copied
+ * duplicate of it. Mirrors SCHEMA_FILE_REL in check-partial-index-alignment.mjs, and
+ * exists for the same reason: if the two silently disagree the guard stops firing and
+ * the run stays green while no longer checking anything. (WI-9573)
+ */
+export const SQL_DIR_REL = 'libs/papercusp/libs/db/sql';
+const SQL_DIR = join(__dirname, '..', ...SQL_DIR_REL.split('/'));
 
 /**
  * Migrations are immutable once applied, so historical files can never be fixed.
  * Enforce from the first migration authored after this guard landed.
  */
-const ENFORCE_FROM = 693;
+export const ENFORCE_FROM = 693;
 
-const ACK_MARKER = /^[ \t]*--[ \t]*FORWARD-COMPAT:[ \t]*\S/im;
+/**
+ * The acknowledgment token, EXPORTED for the same reason SQL_DIR_REL is: the
+ * authoring-time PostToolUse nudge
+ * (apps/operator/scripts/hooks/cc/posttooluse-migration-forward-compat-nudge.mjs)
+ * must apply THIS marker, not a hand-copied duplicate. A second copy that
+ * silently disagreed would let the nudge stay quiet on a file the gate then
+ * reds on — reintroducing the exact discover-it-hours-later cost the nudge
+ * exists to remove.
+ *
+ * NOTE for anyone tempted to seed a placeholder ack into new migrations: this
+ * matches ANY non-whitespace after the colon, so `-- FORWARD-COMPAT: TODO` and
+ * `-- FORWARD-COMPAT: <why>` both SATISFY it. A seeded placeholder would
+ * therefore rubber-stamp every migration and silence the guard permanently.
+ * scripts/next-migration.mjs deliberately emits prose that does NOT match;
+ * `forward-compat-authoring-nudge.test.ts` pins that.
+ */
+export const ACK_MARKER = /^[ \t]*--[ \t]*FORWARD-COMPAT:[ \t]*\S/im;
 
 const RULES = [
   {
@@ -97,9 +122,27 @@ function stripComments(sql) {
   return sql.replace(/\/\*[\s\S]*?\*\//g, '\n').replace(/--[^\n]*/g, '\n');
 }
 
-function violationsFor(sqlText) {
+/**
+ * The single detection rule. EXPORTED so the authoring-time nudge reuses it
+ * verbatim rather than re-implementing the regex set (see ACK_MARKER's note).
+ * Returns the matched RULES entries ({ id, re, why }), empty when clean.
+ */
+export function violationsFor(sqlText) {
   const code = stripComments(sqlText);
   return RULES.filter((r) => r.re.test(code));
+}
+
+/**
+ * True when `file` is a migration this guard ENFORCES on — i.e. `NNN-*.sql`
+ * with NNN >= ENFORCE_FROM. Exported so the nudge applies the same cutoff and
+ * never nags about a historical migration that can no longer be edited.
+ */
+export function isEnforcedMigrationFile(file) {
+  if (!file.endsWith('.sql')) return false;
+  const dash = file.indexOf('-');
+  if (dash <= 0) return false;
+  const num = Number.parseInt(file.slice(0, dash), 10);
+  return Number.isFinite(num) && num >= ENFORCE_FROM;
 }
 
 /**
@@ -177,8 +220,8 @@ function main() {
   }
 
   const inScope = all
+    .filter((f) => isEnforcedMigrationFile(f))
     .map((f) => ({ file: f, num: Number.parseInt(f.slice(0, f.indexOf('-')), 10) }))
-    .filter((e) => Number.isFinite(e.num) && e.num >= ENFORCE_FROM)
     .sort((a, b) => a.num - b.num);
 
   const offenders = [];
@@ -214,4 +257,9 @@ function main() {
   );
 }
 
-main();
+// Run the CLI ONLY when executed directly — never on import. The authoring-time
+// nudge imports this module for `violationsFor` / `ACK_MARKER`, and an
+// unguarded `main()` would run the whole repo scan (and possibly process.exit(1))
+// inside a PostToolUse hook that must always fail open.
+const invokedDirectly = process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url));
+if (invokedDirectly) main();

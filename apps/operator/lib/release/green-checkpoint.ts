@@ -3732,6 +3732,43 @@ export async function runGreenCheckpoint(
         deps.log(`historical-flake-lookup skipped (${e instanceof Error ? e.message : e})`);
       }
     }
+    // WI-9613: state the gate's OWN red cause in its OWN log.
+    //
+    // `failingTests` already folds every post-suite LEG signature into the failing
+    // TEST files (runGreen ~L5715: `for (const sig of legs.failingSignatures) ...`),
+    // and the verdict block already has it in scope — but it was only ever written to
+    // the BROADCAST, never to the per-candidate log. So a red caused purely by a lint
+    // leg was untriageable from the artifact triage actually reads.
+    //
+    // Measured on candidate dca4c291 (verdict 2026-08-03T17:27:30Z, part of the 6-red
+    // streak that held main at 5b898b7b for ~4h): the log carries
+    // `AFFECTED_TESTS_RESULT status=passed tasks=58 failed=0`, has NO
+    // AFFECTED_TESTS_FAILING_FILES line at all, and NO `FAILED (npm run ...)` line —
+    // so BOTH lines the repo's triage guidance names come back empty on a genuine red.
+    // The true cause (`lint:no-control-bytes`) appeared exactly twice in 12,562 lines,
+    // both inside the leg's own output block. That is the most expensive shape of red:
+    // it reads as "red with no cause", so triagers re-derive it from scratch, or
+    // conclude the red is stale and re-fire a ~55min suite.
+    //
+    // Derived from `failingTests` rather than re-scraped from banner text because it is
+    // the SAME list the gate decided red on — it cannot drift from the verdict. (Banner
+    // text is an unenforced convention: 3 of 12 leg banners omit the word FAILED that
+    // the other 9 use, which is the proximate reason the standard grep misses them.)
+    //
+    // Entries are LEG signatures and TEST files combined, and are deliberately NOT
+    // split into two fields: any shape-based classifier here would be a heuristic that
+    // silently mislabels, and a mislabeled cause is worse than an unlabeled one. The
+    // label says plainly what the list contains so it cannot be misread as a file count
+    // (the failure mode of `AFFECTED_TESTS_RESULT failed=N`, which counts workspaces).
+    let heldByNote = '';
+    if (failingTests?.length) {
+      const MAX_HELD_BY = 40;
+      const shown = failingTests.slice(0, MAX_HELD_BY);
+      heldByNote =
+        `\n\nGATE_HELD_BY count=${failingTests.length} truncated=${failingTests.length > MAX_HELD_BY} ` +
+        `entries=${JSON.stringify(shown)}` +
+        `\n(post-suite LEG signatures AND failing TEST files, combined — this is the list the gate held the release on)`;
+    }
     // EI-19370028836452003: the per-candidate log is WRITTEN by runGreen (see the
     // writeFileSync ~line 4550) BEFORE this verdict block runs, so the file named
     // `...-cand-<X>.log` never contained X's OWN lineage / already-fixed-since /
@@ -3759,6 +3796,10 @@ export async function runGreenCheckpoint(
           defangCapturedResultMarkers(
             `\n\n[green-checkpoint verdict for candidate ${candidate.slice(0, 8)}]\n` +
               `candidate ${candidate.slice(0, 8)} is NOT green — ${cfg.releaseRef} stays at ${lastReady?.slice(0, 8) ?? 'unset'}` +
+              // WI-9613: the cause goes BEFORE the staleness/lineage notes — a triager
+              // reading top-down should learn WHAT held the gate before being told
+              // whether it might already be fixed.
+              heldByNote +
               lineageNote +
               alreadyFixedNote +
               historicalFlakeNote +
@@ -3772,7 +3813,10 @@ export async function runGreenCheckpoint(
     await deps
       .broadcast(
         `🟥 green-checkpoint: ${candidate.slice(0, 8)} not green — \`${cfg.releaseRef}\` held at ${lastReady?.slice(0, 8) ?? 'unset'}`,
-        summary + lineageNote + alreadyFixedNote + historicalFlakeNote,
+        // WI-9613: the held-gate broadcast/escalation carries the same canonical cause
+        // line as the log, so an agent woken by the red does not have to open the log
+        // to learn which leg held it.
+        summary + heldByNote + lineageNote + alreadyFixedNote + historicalFlakeNote,
       )
       .catch(() => {});
     // release-pipeline-resilience-2026-06-09 P-005: emit a reaction event on the RED path,
@@ -5007,7 +5051,7 @@ export async function runPostSuiteLegs(
       haltedBy = 'lint:no-control-bytes failed';
       failingSignatures.push('lint:no-control-bytes');
       outputs.push(
-        '\n\n=== RAW CONTROL BYTES IN SOURCE (npm run lint:no-control-bytes) — a byte that makes git diff and ugrep skip the file silently ===\n' +
+        '\n\n=== RAW CONTROL BYTES LINT FAILED (npm run lint:no-control-bytes) — a byte that makes git diff and ugrep skip the file silently ===\n' +
           controlBytes.stdout +
           controlBytes.stderr,
       );
@@ -5046,7 +5090,7 @@ export async function runPostSuiteLegs(
       haltedBy = 'lint:guard-reachability failed';
       failingSignatures.push('lint:guard-reachability');
       outputs.push(
-        '\n\n=== LINT GUARD RUNS ON NO BLOCKING PATH (npm run lint:guard-reachability) — a guard that is neither wired nor retired rots silently and its green gets quoted as evidence ===\n' +
+        '\n\n=== GUARD REACHABILITY LINT FAILED (npm run lint:guard-reachability) — a guard that is neither wired nor retired rots silently and its green gets quoted as evidence ===\n' +
           guardReach.stdout +
           guardReach.stderr,
       );
@@ -5083,7 +5127,7 @@ export async function runPostSuiteLegs(
       haltedBy = 'lint:mock-cast-escape failed';
       failingSignatures.push('lint:mock-cast-escape');
       outputs.push(
-        '\n\n=== MOCK FIXTURE CAST ESCAPE RATCHET (npm run lint:mock-cast-escape) — `as never`/`as any` on a mock setter defeats the fixture type check, so a fixture stales silently and fails at RUNTIME in a file your change never touched ===\n' +
+        '\n\n=== MOCK FIXTURE CAST ESCAPE RATCHET LINT FAILED (npm run lint:mock-cast-escape) — `as never`/`as any` on a mock setter defeats the fixture type check, so a fixture stales silently and fails at RUNTIME in a file your change never touched ===\n' +
           mockCast.stdout +
           mockCast.stderr,
       );

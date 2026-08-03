@@ -1,11 +1,27 @@
-# Gate-red triage: the break-window recipe + the four drift classes
+# Gate-red triage: the break-window recipe + the five drift classes
 URL: /internal/docs/agent-insights/gate-red-break-window-triage
 
-How the 2026-07-05 6-red gate was greened: bisect the break window, then classify each red as fixture-drift, deliberate-engine-evolution test drift, env-reroute, or chronic — each has a mechanical fix.
+How the 2026-07-05 6-red gate was greened: check the failing SET for one shared cause first, then classify each remaining red as fixture-drift, deliberate-engine-evolution test drift, env-reroute, chronic, or collateral console-warn damage — each has a mechanical fix.
 
 The green gate went 6+ consecutive reds on 2026-07-05 (\~23 failing test files). One
-agent greened it in one session because almost every red fell into one of FOUR
+agent greened it in one session because almost every red fell into one of FIVE
 recurring classes with mechanical fixes. This is the recipe.
+
+## Step 0 — look at the SET before you look at any file
+
+**Do this first, every time.** Everything below is per-file, and that framing is itself a
+trap: N reds are not always N problems. Before triaging anything, ask whether the failing
+files share ONE cause (Class 5) — because the per-file loop cannot see it by construction,
+and neither can the watchdog, which files one "Test failing repeatedly: `<file>`" item per
+collaterally-damaged suite with no hint they are related.
+
+Measured 2026-08-03: that produced three separate work-items across unrelated subsystems,
+and **three agents independently re-derived the same single root cause**. Reading one full
+failure tail would have answered it for all three.
+
+The tell is cheap: **identical failure fingerprints across UNRELATED suites** — same
+failure counts, same shas, same last-pass sha. Unrelated suites do not regress and
+self-heal in lockstep. When you see that, go to Class 5 before running step 1.
 
 ## The recipe (per red file)
 
@@ -89,6 +105,58 @@ nondeterminism WI-2923, `observation-source-pot-backfill` view-era re-run WI-292
 A test that re-runs a HISTORICAL migration body at head schema breaks the moment a later
 migration restructures its target (mig 383 dropped 366's trigger; mig 374 made
 `engineer_issues` a view) — guard the CURRENT contract, not the retired one.
+
+## Class 5 — collateral console-warn damage (N unrelated suites, ONE commit)
+
+The repo runs `vitest-fail-on-console`, so **any** `console.warn`/`error` reached on a
+widely-imported path becomes a HARD failure in every suite that transitively touches it.
+One unconditional warn therefore reds a set of suites with nothing functionally in common,
+and each looks like its own regression.
+
+**Recognition** — the fingerprints are identical across unrelated suites (see step 0).
+**Confirmation is one read:** open the full captured failure tail of ONE red. If it is a
+`vitest-fail-on-console` stack, it names the warn directly. Then:
+
+```bash
+git log -S'<the exact warn text>' -- <the file the stack names>   # the introducing commit
+```
+
+That is the whole diagnosis for the entire set — no per-file bisect, no break-window walk.
+
+**Fix** at the warn, not in the tests: gate it behind the established seam
+
+```ts
+if (!process.env.VITEST || process.env.PAPERCUSP_<OPT_IN>) console.warn(...)
+```
+
+Prior instances, all fixed this way: `embed-sidecar-spawn.ts:334` (2026-08-03, commit
+`115b49e203`, red-pinned 5-8 suites across scheduler / work-items / mcp-handler gating /
+knowledge-tier dedup), `hive-directory-boot.ts:221`/`:249`, `session-compacted-events.ts:28`.
+The 2026-08-03 warn fired on a condition its own message called *expected* ("This is
+expected for hosts with no sidecar story") — a warn describing a normal state is the
+highest-risk shape, because nothing about the call site looks wrong.
+
+> ⚠ **Do NOT propose a lint for unguarded `console.warn` — measured and rejected.**
+> Re-measure before arguing with this; the command is the claim:
+>
+> ```bash
+> # call sites in operator-core production (non-test) code
+> grep -rn 'console\.\(warn\|error\)' --include=*.ts packages/operator-core/lib \
+>   | grep -v node_modules | grep -v '\.test\.ts' | grep -v '__tests__' | wc -l
+> ```
+>
+> **1800** on 2026-08-03, and only a small fraction are VITEST-gated (12 with a 2-line
+> `grep -B2 … | grep -c VITEST` window — the exact number depends on how far up you look for
+> the guard, which is itself the point: there is no reliable syntactic marker). So a blanket
+> lint fires on the overwhelming majority of a \~1800-site population, nearly all of them
+> legitimate. Blast radius depends on IMPORT REACHABILITY, not on the call site's syntax, so
+> there is no cheap static discriminator between a harmless warn and one that reds five
+> suites. Recognition is the affordance that pays here; detection already works (the suites
+> do go red).
+
+**Also check** `agent-insights/dispatch-postinvoke-seam-tables-in-hermetic-tests` — same
+`vitest-fail-on-console` signature, different cause (missing seam tables). Matching the
+signature alone is not the diagnosis; read which warn the stack names.
 
 ## Verdict mechanics that bite
 

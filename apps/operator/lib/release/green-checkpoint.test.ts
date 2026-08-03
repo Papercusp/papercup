@@ -920,6 +920,68 @@ describe('runGreenCheckpoint', () => {
     expect(body).toContain(`candidate ${r.candidate.slice(0, 8)} is NOT green`);
   });
 
+  // WI-9613: a red whose ONLY cause is a post-suite LEG must name that leg in its own log.
+  //
+  // Reproduces candidate dca4c291 (real verdict 2026-08-03T17:27:30Z, part of the 6-red
+  // streak that held main at 5b898b7b for ~4h): the suite PASSED
+  // (`AFFECTED_TESTS_RESULT status=passed tasks=58 failed=0`), there was no
+  // AFFECTED_TESTS_FAILING_FILES line at all, and no `FAILED (npm run ...)` line — so both
+  // lines the repo's triage guidance names came back empty on a genuine red. The true cause
+  // (`lint:no-control-bytes`) occurred twice in 12,562 lines, both inside the leg's own
+  // output block, and never in a line that says "this is what held the gate".
+  //
+  // FALSIFIABILITY (self-contained, no tree mutation — see CLAUDE.md "Proving a guard is
+  // falsifiable"): the pre-written body below is fixed and contains NO leg name, and
+  // `failingTests` here carries a leg signature and NO test file. So the leg name can appear
+  // in the final body ONLY via the verdict block's canonical line. If that emission is
+  // removed, this assertion cannot pass by accident.
+  it('WI-9613: a lint-leg-only red names the leg in the verdict log (GATE_HELD_BY)', async () => {
+    const c1 = await commit('a', '1', 'c1');
+    await git(repo, ['branch', 'ready', c1]);
+    await commit('a', '2', 'c2');
+    const logDir = mkdtempSync(join(tmpdir(), 'gc-heldby-log-'));
+    const logPath = join(logDir, 'stamp-base-deadbeef-cand-cafebabe.log');
+    // Stands in for what runGreen already wrote. Deliberately contains NEITHER the leg
+    // name NOR any AFFECTED_TESTS_FAILING_FILES / "FAILED (npm run" line — i.e. exactly
+    // the dca4c291 shape a triager could not resolve.
+    writeFileSync(logPath, '[green-checkpoint] candidate=... green=false\nSUITE BODY MARKER\n');
+    const deps: CheckpointDeps = {
+      setupTree: async () => {},
+      // The leg signature with NO failing test file — runGreen folds legs.failingSignatures
+      // into failingTests (~L5715), so this is the real shape of a lint-only red.
+      runGreen: async () => ({
+        green: false,
+        summary: 'lint leg failed',
+        failingTests: ['lint:no-control-bytes'],
+        logPath,
+      }),
+      advance: (candidate) => advanceReady(repo, candidate, 'ready'),
+      push: async () => {},
+      broadcast: async () => {},
+      escalate: async () => {},
+      clearEscalation: async () => {},
+      emitEvent: async () => {},
+      log: () => {},
+    };
+    const r = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+    const body = readFileSync(logPath, 'utf8');
+    rmSync(logDir, { recursive: true, force: true });
+    expect(r.green).toBe(false);
+    // The suite body a triager greps still survives (append, not rewrite).
+    expect(body).toContain('SUITE BODY MARKER');
+    // ⭐ The decisive one: the log now states its OWN red cause, greppably.
+    expect(body).toContain('GATE_HELD_BY');
+    expect(body).toContain('lint:no-control-bytes');
+    // The canonical line must be the thing that carries it — not incidental prose.
+    const heldByLine = body.split('\n').find((l) => l.includes('GATE_HELD_BY'));
+    expect(heldByLine).toBeDefined();
+    expect(heldByLine).toContain('lint:no-control-bytes');
+    expect(heldByLine).toContain('count=1');
+    // Guards the `AFFECTED_TESTS_RESULT failed=N` misread class: the label must say what
+    // the entries ARE, so the count is never read as a failing-FILE count.
+    expect(body).toMatch(/LEG signatures AND failing TEST files/);
+  });
+
   // WI-7482: the re-triage verdict must reach the persisted log on the NON-refiring paths.
   //
   // Same write-before-compute shape as the lineage regression above, one field over — and it

@@ -12856,9 +12856,24 @@ The server wraps the **same** `@papercusp/memory` builders the in-process path u
 | `PAPERCUSP_EMBED_SIDECAR_MODE=1` | This process **is** the sidecar (the packaged divert in `serve.ts` / `hono-host.ts`). Also disables the opt-in inside the sidecar itself — the recursion guard. |
 | `PAPERCUSP_EMBED_SIDECAR_PORT`   | Port override. Default **3384** (mnemonic: the 384-dim space it serves).                                                                                        |
 
-With neither URL nor opt-in set, `resolveProcessSidecarUrl()` returns null and `buildSidecarFirstEmbedder` degenerates to the plain in-process embedder with zero per-call overhead — byte-for-byte the pre-sidecar behavior.
+With neither URL nor opt-in set, `resolveProcessSidecarUrl()` returns null and `buildSidecarFirstEmbedder` degenerates to the plain in-process embedder with zero per-call overhead — byte-for-byte the pre-sidecar behavior. Since EI-19418496145469907, `ensureEmbedSidecar()` logs this fallback **once per process at WARN** (`[embed-sidecar] no sidecar configured for this process …`) instead of silently — see the next section for why that matters.
 
 Resolution order (`embed-sidecar-wiring.ts`): explicit URL → `ensureEmbedSidecar()` (when opted in) → null. All four production seams (memory configure cascade, agent-tools query embedder, embed-backfill, reembed) route through this one seam via `buildSidecarAwareEmbedder(model, kind)`.
+
+### ⚠ A standalone verification driver does NOT inherit the production env — it silently runs a different code path
+
+[Section titled “⚠ A standalone verification driver does NOT inherit the production env — it silently runs a different code path”](#-a-standalone-verification-driver-does-not-inherit-the-production-env--it-silently-runs-a-different-code-path)
+
+`PAPERCUSP_EMBED_SIDECAR_URL` lives **only in the systemd units** (`papercup-bg-host.service` / `papercup-dev-api.service`), not in your interactive shell or an agent session. So a standalone driver — e.g. `npx tsx` importing `runBackfillSweep` or any other embedding call directly — runs with neither env var set, falls through to the pure in-process ONNX embedder, and every observable signal (mode name, dims, vector values, error count) is **identical** to a genuine sidecar-served run. The only tell without the WARN log above was a subtler per-call latency difference — not something you’d notice unless you already had a sidecar baseline to compare against (EI-19418496145469907).
+
+If you need to verify the actual production (sidecar-served) code path from a standalone driver, export the same value the systemd unit uses:
+
+```bash
+export PAPERCUSP_EMBED_SIDECAR_URL="$(systemctl --user show papercup-bg-host.service -p Environment \
+  | tr ' ' '\n' | grep '^PAPERCUSP_EMBED_SIDECAR_URL=' | cut -d= -f2-)"
+```
+
+Then confirm you’re actually on that path: `buildSidecarAwareEmbedder`’s resolution should NOT print the “no sidecar configured” WARN, and (in embed-backfill specifically) the `sweep starting` / `embedder resolved` heartbeat lines should be followed by sidecar-side timing, not the bare in-process numbers.
 
 ## The wire (D-004)
 
@@ -16641,11 +16656,21 @@ If you’re staring at a gate that reports GREEN while you *know* something is f
 
 This is the mechanical companion to the release ruling that a starvation-downgrade never satisfies first-green for GO/NO-GO (plan `p2p-public-release-remaining-lanes-2026-07-16`, D-005): the ruling says a downgrade isn’t a green; this insight is *why the gate’s own bookkeeping must encode that* or the ruling is quietly defeated by a shared marker.
 
-# Gate-red triage: the break-window recipe + the four drift classes
+# Gate-red triage: the break-window recipe + the five drift classes
 
-> How the 2026-07-05 6-red gate was greened: bisect the break window, then classify each red as fixture-drift, deliberate-engine-evolution test drift, env-reroute, or chronic — each has a mechanical fix.
+> How the 2026-07-05 6-red gate was greened: check the failing SET for one shared cause first, then classify each remaining red as fixture-drift, deliberate-engine-evolution test drift, env-reroute, chronic, or collateral console-warn damage — each has a mechanical fix.
 
-The green gate went 6+ consecutive reds on 2026-07-05 (\~23 failing test files). One agent greened it in one session because almost every red fell into one of FOUR recurring classes with mechanical fixes. This is the recipe.
+The green gate went 6+ consecutive reds on 2026-07-05 (\~23 failing test files). One agent greened it in one session because almost every red fell into one of FIVE recurring classes with mechanical fixes. This is the recipe.
+
+## Step 0 — look at the SET before you look at any file
+
+[Section titled “Step 0 — look at the SET before you look at any file”](#step-0--look-at-the-set-before-you-look-at-any-file)
+
+**Do this first, every time.** Everything below is per-file, and that framing is itself a trap: N reds are not always N problems. Before triaging anything, ask whether the failing files share ONE cause (Class 5) — because the per-file loop cannot see it by construction, and neither can the watchdog, which files one “Test failing repeatedly: `<file>`” item per collaterally-damaged suite with no hint they are related.
+
+Measured 2026-08-03: that produced three separate work-items across unrelated subsystems, and **three agents independently re-derived the same single root cause**. Reading one full failure tail would have answered it for all three.
+
+The tell is cheap: **identical failure fingerprints across UNRELATED suites** — same failure counts, same shas, same last-pass sha. Unrelated suites do not regress and self-heal in lockstep. When you see that, go to Class 5 before running step 1.
 
 ## The recipe (per red file)
 
@@ -16694,6 +16719,32 @@ Related: `libs/test-config/src/console-noise-filter.ts` silences a small, growin
 [Section titled “Class 4 — chronic reds (NOT yours to block on)”](#class-4--chronic-reds-not-yours-to-block-on)
 
 A file failing since BEFORE the break window, with the gate green meanwhile, is a chronic — the gate absorbed or skipped it. Check `test_runs` history FIRST; file a WI instead of blocking the greening (2026-07-05: `composition-chaos` reconcile-winner nondeterminism WI-2923, `observation-source-pot-backfill` view-era re-run WI-2924). A test that re-runs a HISTORICAL migration body at head schema breaks the moment a later migration restructures its target (mig 383 dropped 366’s trigger; mig 374 made `engineer_issues` a view) — guard the CURRENT contract, not the retired one.
+
+## Class 5 — collateral console-warn damage (N unrelated suites, ONE commit)
+
+[Section titled “Class 5 — collateral console-warn damage (N unrelated suites, ONE commit)”](#class-5--collateral-console-warn-damage-n-unrelated-suites-one-commit)
+
+The repo runs `vitest-fail-on-console`, so **any** `console.warn`/`error` reached on a widely-imported path becomes a HARD failure in every suite that transitively touches it. One unconditional warn therefore reds a set of suites with nothing functionally in common, and each looks like its own regression.
+
+**Recognition** — the fingerprints are identical across unrelated suites (see step 0). **Confirmation is one read:** open the full captured failure tail of ONE red. If it is a `vitest-fail-on-console` stack, it names the warn directly. Then:
+
+```bash
+git log -S'<the exact warn text>' -- <the file the stack names>   # the introducing commit
+```
+
+That is the whole diagnosis for the entire set — no per-file bisect, no break-window walk.
+
+**Fix** at the warn, not in the tests: gate it behind the established seam
+
+```ts
+if (!process.env.VITEST || process.env.PAPERCUSP_<OPT_IN>) console.warn(...)
+```
+
+Prior instances, all fixed this way: `embed-sidecar-spawn.ts:334` (2026-08-03, commit `115b49e203`, red-pinned 5-8 suites across scheduler / work-items / mcp-handler gating / knowledge-tier dedup), `hive-directory-boot.ts:221`/`:249`, `session-compacted-events.ts:28`. The 2026-08-03 warn fired on a condition its own message called *expected* (“This is expected for hosts with no sidecar story”) — a warn describing a normal state is the highest-risk shape, because nothing about the call site looks wrong.
+
+> ⚠ **Do NOT propose a lint for unguarded `console.warn` — measured and rejected.** At `1410d88d6a`: **1796** `console.warn|error` calls in operator-core production (non-test) code, **62** already gated on `process.env.VITEST`. A blanket lint fires \~1734 false positives. Blast radius depends on IMPORT REACHABILITY, not on the call site’s syntax, so there is no cheap static discriminator between a harmless warn and one that reds five suites. Recognition is the affordance that pays here; detection already works (the suites do go red).
+
+**Also check** `agent-insights/dispatch-postinvoke-seam-tables-in-hermetic-tests` — same `vitest-fail-on-console` signature, different cause (missing seam tables). Matching the signature alone is not the diagnosis; read which warn the stack names.
 
 ## Verdict mechanics that bite
 
@@ -23824,7 +23875,7 @@ This session (su-37e53), 2026-06-16 — mini-swe-agent opus baseline for `benchm
 
 Mid-session, every `mcp__papercusp-su__*` tool vanishes — the harness emits `480 deferred tools no longer available (MCP server disconnected): mcp__papercusp-su__*` — and `ToolSearch` for them returns nothing. Observed to fire **right after a `/loop` slash-command is processed** (EI-1740 / WI-260 / WI-258; corroborated across ≥2 agents). It does **not** auto-reconnect (observed dark 5h+).
 
-Key tell: the operator `:3070` stays **healthy** (`curl :3070/api/health` → 200). So this is a **client-side** disconnect, not a backend outage. The MCP *server* is still up and serving every other agent — only *your* client dropped.
+Key tell: the operator `:3070` stays **healthy** (`curl :3070/api/health` → 200) **AND `/api/mcp` itself answers promptly** (a short-timeout `initialize` POST returns, doesn’t hang). Check both — `/api/health` alone is not enough: it answers off a trivial path and stays fast even when the event loop is saturated, so a 200 there does not by itself prove the MCP route is healthy (EI-19420557240747274). If `/api/health` is 200 but `/api/mcp` **times out**, that’s server-side saturation, not a client drop — see [surviving-an-operator-wedge-mcp-severance](/agent-insights/surviving-an-operator-wedge-mcp-severance/) instead; the bridge below traverses the same wedged loop and won’t rescue you in that case. When both checks are healthy: this is a **client-side** disconnect, not a backend outage. The MCP *server* is still up and serving every other agent — only *your* client dropped.
 
 ## Self-rescue: drive the MCP server directly over HTTP
 
@@ -23911,9 +23962,9 @@ EI-19384363493799969 (2026-08-02, ≥4th independent hit of this whole class): b
 
 Throughout, a direct `curl` `tools/call` to the exact proxy URL in `~/.claude.json` (see below / `scripts/mcp-call.mjs`) answers every call in well under 1.5s — so this is confirmed the same class as the rest of this doc (a wedged **client**, not a slow/down server), just with a distinguishing two-phase precursor (instant-refuse-on-an-unrelated-port → then a full hang) instead of a clean “tools vanish” drop. Recognizing this signature immediately — rather than spending several minutes assuming “all my tools are broken” — is the entire value of this addendum; the recovery is identical to the rest of this doc. The ECONNREFUSED port itself is Claude-Code-CLI-internal (outside papercusp’s codebase), so there is no papercusp-side code fix for the underlying wedge — only faster recognition + the curl/`mcp-call.mjs` route-around below.
 
-## Verify the server is up (optional)
+## Verify the server is up (do this — it’s not optional, it decides which runbook applies)
 
-[Section titled “Verify the server is up (optional)”](#verify-the-server-is-up-optional)
+[Section titled “Verify the server is up (do this — it’s not optional, it decides which runbook applies)”](#verify-the-server-is-up-do-this--its-not-optional-it-decides-which-runbook-applies)
 
 ```bash
 curl -s -i -m 8 -X POST 'http://localhost:3070/api/mcp?superuser=1&client=probe&workspace=papercusp-workspace' \
@@ -23921,7 +23972,9 @@ curl -s -i -m 8 -X POST 'http://localhost:3070/api/mcp?superuser=1&client=probe&
   -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"probe","version":"1"}}}'
 ```
 
-A 200 with a `serverInfo` SSE `data:` line = the server is fine; only your client dropped.
+A 200 with a `serverInfo` SSE `data:` line in under a couple seconds = the server is fine; only your client dropped — the recovery below applies.
+
+**If this call itself times out (hangs, no response) rather than erroring fast** — do NOT conclude “server down” and do NOT assume the curl recipes below will save you. A prior `curl :3070/api/health` returning 200 does not rule this out either: `/api/health` answers off a trivial path and stays fast even when the event loop is saturated, while `/api/mcp` does real work and queues behind the saturation (EI-19420557240747274). A hang here means the operator’s event loop is **wedged**, not that your client merely dropped — this doc’s bridge traverses the exact same wedged route your MCP client used, so it will hang too. Go to [surviving-an-operator-wedge-mcp-severance](/agent-insights/surviving-an-operator-wedge-mcp-severance/) instead: back off, don’t retry-storm, stage writes for the next open window.
 
 ## Fastest recovery: the committed helper
 
@@ -36205,13 +36258,20 @@ A harness’s `papercusp-su` MCP **client connection** can drop mid-session and 
 
 **A `/loop` (or other skill) reload is a suspected trigger.** In one session (su-707ed, 2026-06-20, EI-1740) the `mcp__papercusp-su__*` tools were present and in use, then vanished *immediately after the first `/loop` ran* (a large deferred-tools system-reminder appeared and the papercusp-su tools were absent from it). The harness rebuilds its tool registry on a skill reload and the MCP advertisement isn’t always restored. So **anticipate this specifically when you put yourself on a loop** — verify `coord:*` still works right after a `/loop`, and fall straight to the bridge if not.
 
-**Crucial check before you assume an outage:** the operator is almost certainly **fine**. Confirm:
+**Crucial check before you assume an outage — probe BOTH endpoints, not just `/api/health`.** `/api/health` alone is NOT sufficient: it answers off a trivial path and stays fast even when the operator’s event loop is saturated, so a 200 there does *not* prove `/api/mcp` “is still fully serving requests” (that claim was this doc’s own mistake until EI-19420557240747274, 2026-08-03 — corrected here). Run the pair:
 
 ```bash
 curl -s -m 4 -o /dev/null -w "%{http_code}\n" http://localhost:3070/api/health   # 200?
+timeout 20 curl -s -o /dev/null -w "%{http_code}\n" -X POST 'http://localhost:3070/api/mcp?superuser=1&client=probe&workspace=papercusp-workspace' \
+  -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"probe","version":"1"}}}'
 ```
 
-If `/api/health` is 200 (and `systemctl --user` shows `papercup-dev-api` active), the drop is at the **harness MCP-client layer** (the streamable-HTTP/SSE connection died and was not re-established), NOT an operator outage. The MCP endpoint itself is still fully serving requests — you just need a different transport to it.
+Read the pair together:
+
+* **`/api/health` 200 AND `/api/mcp` answers fast (not a timeout)** → the drop is at the **harness MCP-client layer** (the streamable-HTTP/SSE connection died and was not re-established), NOT an operator outage. The bridge below **will work** — proceed.
+* **`/api/health` 200 but `/api/mcp` TIMES OUT** → the operator process is up but its **event loop is saturated** (a wedge, not a client drop). This is a different failure with a different fix: see [surviving-an-operator-wedge-mcp-severance](/agent-insights/surviving-an-operator-wedge-mcp-severance/). **The bridge below traverses the SAME wedged event loop as your MCP client did — it will hang too, not rescue you.** Don’t retry-storm it; back off per that runbook instead.
+* **Both fail / connection refused** → the process itself is down, not a wedge or a client drop; the bridge is irrelevant here too.
 
 ## The bridge
 
@@ -37813,11 +37873,38 @@ bg-host has been measured accepting a connection and then returning nothing for 
 
 The recurrence guard is a test whose fetch stub is deliberately *worse than reality*: it ignores its `AbortSignal` entirely, so only the outer budget can save the call.
 
+## Worse than per-process: it was per-MODULE-INSTANCE (2026-08-03, EI-19451658870832332)
+
+[Section titled “Worse than per-process: it was per-MODULE-INSTANCE (2026-08-03, EI-19451658870832332)”](#worse-than-per-process-it-was-per-module-instance-2026-08-03-ei-19451658870832332)
+
+Federating across processes was necessary and it was **not sufficient**. Asking the *right* process still returned a wrong answer, because one process held **two registries**.
+
+`dbos-executor-reaper` was reaping workflows every 2 minutes inside `papercup-bg-host` — visible the whole time in `journalctl --user -u papercup-bg-host` as `[dbos-executor-reaper] reaped 1 workflow(s) …` — while absent from `/api/internal/managed-timers` **served by that same pid**. Both readings were correct:
+
+* `managedSetInterval` registers unconditionally, and `listManaged()` filters nothing (`libs/generic/scheduled-registry/src/index.ts`). A single instance cannot produce both.
+* So there were **two live instances of `@papercusp/scheduled-registry` in one process**, each with its own module-level `const registry = new Map()`.
+
+The host entry runs under tsx (a CJS preflight alongside an ESM loader), importers reach the package through both bare-specifier and relative paths, and `node_modules/@papercusp/*` are symlinks into the repo. Any one of those seams yields two module records.
+
+**The fix does not depend on knowing which seam did it.** The registry’s mutable state is now pinned to `globalThis` under a `Symbol.for(...)` key — correct under dual-package, symlink, CJS/ESM-split and bundled-copy alike. `configureScheduledRegistry`’s seams are shared too, so a hidden instance can no longer quietly run with default seams (i.e. ignoring the host’s tick-load-shed).
+
+### Two traps this burned, both worth internalising
+
+[Section titled “Two traps this burned, both worth internalising”](#two-traps-this-burned-both-worth-internalising)
+
+**A negative result only covers the conditions it actually reproduced.** A controlled tsx probe “FALSIFIED” the dual-instance hypothesis — importing the registry statically and the reaper by package subpath, with a control proving the import path was exercised. It was a sound experiment that did not recreate the host’s real loader conditions, and it sent the investigation to a dead end for a full wake. A probe’s `false` is scoped to its setup.
+
+**Unobservable is not empty.** `:3070` has no `/api/internal/managed-timers` route at all — it returns `{"error":"not_found"}`, because the route does not exist in the release build. A `json.get('timers', [])` parse renders that as `total 0`, i.e. a *false zero* shaped exactly like a measurement. Any process eliminated “by measurement” through that endpoint was never actually measured.
+
+**Guard:** `libs/generic/scheduled-registry/src/index.test.ts` re-evaluates the module via `vi.resetModules()` and asserts the two instances share one inventory. It ships with a **calibration control** (`module-scoped-control.fixture.ts`) that asserts module-scoped state does *not* survive the same reset — because if `resetModules()` ever stopped producing a second instance, the guard would pass vacuously and the hazard would walk right back in.
+
 ## The generalisable lesson
 
 [Section titled “The generalisable lesson”](#the-generalisable-lesson)
 
-**Per-process in-memory state read through a single-process surface produces a confident, well-formed, wrong answer** — and the wrong answer is an *absence*, which is the shape agents are least equipped to doubt. Before concluding “X is not registered / not running / does not exist”, ask **which process you just asked**. Related: an inventory that answers only about itself should say so in its own output; this one now does, via `detail.process`.
+**Per-process in-memory state read through a single-process surface produces a confident, well-formed, wrong answer** — and the wrong answer is an *absence*, which is the shape agents are least equipped to doubt. Before concluding “X is not registered / not running / does not exist”, ask **which process you just asked** — and, per the section above, whether that process holds more than one copy of the thing you are asking about. Related: an inventory that answers only about itself should say so in its own output; this one now does, via `detail.process`.
+
+The sharper form, learned the expensive way: **an inventory’s absence is evidence only if there is exactly ONE inventory.** Establish that before spending a wake on what the absence “means”.
 
 # Which schedulers deliberately stay OFF DBOS (and why)
 
@@ -47732,6 +47819,82 @@ The apparent root cause (from the error text): `WebSearch` dispatches to a small
 [Section titled “Recurrence”](#recurrence)
 
 `EI-18753696723750409` is intentionally NOT closed `done` — there is no code change in this repo that fixes it. It is being marked `needs_human`, because the actionable next step (report upstream to Anthropic, and/or the owner deciding whether `xhigh` should still be the saved default given this tradeoff) is outside this fleet’s authority. This doc is the durable pointer so the diagnosis survives even after the work item closes.
+
+# What ships in a knowledge pack — and the residue the release audit does not catch
+
+> Builtin packs ship automatically: the desktop cut copies every file under packages/harness, so committing a pack dir ships it with no cut change at all. The curation loop writes somewhere else entirely — a runtime path outside the repo and the bundle — which is why the one pack it feeds never reached a fresh install. And the release-bundle audit will not save you here: it scans for BUILD-BOX identity, while fleet-authored pack items carry internal LEDGER references. All three live fleet-lessons items were shipped-ready with work-item ids, harness scope literals and signature hashes in their footers, and the audit flagged none of it.
+
+## The three roots, and which one ships
+
+[Section titled “The three roots, and which one ships”](#the-three-roots-and-which-one-ships)
+
+`load-packs.ts` resolves packs from three roots, **earlier wins on id clash**:
+
+| root        | path                                                                                 | ships?  |
+| ----------- | ------------------------------------------------------------------------------------ | ------- |
+| `builtin`   | `libs/papercusp/packages/harness/knowledge-packs/<id>/`                              | **yes** |
+| `shared`    | `<workspacesRoot()>/shared/knowledge-packs/<id>/` — i.e. `~/.papercusp-workspaces/…` | no      |
+| `installed` | `~/.papercusp/knowledge-packs/<id>/`                                                 | no      |
+
+**A builtin pack ships with no release-cut change of any kind.** `build-desktop-sidecar.sh` (the harness-copy step) enumerates `find . -type f` under `packages/harness`, excluding only `docs-viewer`, `node_modules` and `.git`, and copies the lot into `sidecar/harness`. A pack directory committed under `knowledge-packs/` is therefore already in the bundle’s file list. If you are about to edit the cut to ship a pack, stop — you don’t need to.
+
+## The bug this cost us
+
+[Section titled “The bug this cost us”](#the-bug-this-cost-us)
+
+The curation loop (`materializeCandidateIntoPack`) writes adopted candidates to the **shared** root, which is a runtime path under the user’s home — outside the repo and outside the bundle. So `fleet-lessons`, the one pack the automated loop actually feeds, never reached a fresh install. The pack existed, the loop worked, the cut succeeded; the knowledge simply had no route to a customer.
+
+The fix (P-006 / plan decision D-017) is **export-then-commit**: export the curated pack into the repo’s builtin dir and commit it —
+
+```bash
+npm run gen:fleet-lessons          # export (idempotent)
+npm run gen:fleet-lessons:check    # exit 1 on drift or residue
+```
+
+Off-fleet (a CI runner, a fresh clone) there is no shared root, so the exporter prints “nothing to export” and exits 0.
+
+### Why not just copy it during the cut?
+
+[Section titled “Why not just copy it during the cut?”](#why-not-just-copy-it-during-the-cut)
+
+Because that makes the shipped bundle a function of the **build box’s home directory**. Four consequences, any one disqualifying:
+
+1. builds of the same commit stop being reproducible;
+2. nothing in git records what shipped — nothing to review, nothing to revert;
+3. whatever the loop last adopted reaches customers unvetted;
+4. on a box without that directory the cut ships the pack **missing** while reporting success — the original bug relocated, not fixed.
+
+That is the same defect class as sourcing bundle content from ambient machine state elsewhere in the cut. Don’t open a second one.
+
+## The residue class the release audit does not catch
+
+[Section titled “The residue class the release audit does not catch”](#the-residue-class-the-release-audit-does-not-catch)
+
+This is the part that surprises people.
+
+`audit-release-bundle.py` does scan the cut for identity — but its rule is **build-box identity**: the unix user, hostname and git identity of the machine doing the build, resolved at run time. Fleet-authored pack items carry a *different* kind of residue: internal **references out of our own ledger**.
+
+* work-item ids — `EI-8288`, `WI-42`
+* scope literals — `harness:@singleton`, `harness:papercusp-workspace`
+* 12-hex recurrence signature digests — `4072cfad012b`
+
+None of those are machine identity, so **the release audit passes every one of them**. Measured 2026-08-03: all three items in the live `fleet-lessons` pack carried a provenance footer naming EI-8288 / EI-9411 / `harness:@singleton` / `harness:papercusp-workspace` plus a signature hash, and the audit flagged nothing. On a fresh install those are dangling pointers into a ledger the reader has never seen — noise shaped like a citation.
+
+> **Do not read a clean release-audit as “this pack item is fit to ship.”** The audit answers a different question.
+
+The rule now lives in one place, `findPackResidue` (`knowledge-packs/pack-residue.ts`), with three call sites so they cannot drift:
+
+* the **producer** (`renderCandidateLearningFile`) no longer emits any of it;
+* the **exporter** refuses a pack that trips it;
+* `pack-residue.test.ts` gates **every committed builtin pack** on every test run, and picks up new packs automatically by enumerating the directory.
+
+## Stripping provenance loses nothing
+
+[Section titled “Stripping provenance loses nothing”](#stripping-provenance-loses-nothing)
+
+The instinct is that removing ids from the footer destroys traceability. It does not — it moves it where it belongs. `knowledge_pack_candidates.pack_item_id` links each shipped item back to its candidate row, which retains `source_item_ids`, `signature`, `scopes` and `recurrence_count` (verified populated on all three adopted rows).
+
+**Ledger for traceability, pack for transferable knowledge.** The footer keeps only the recurrence *count* — the one part a stranger can actually use, because it says how much evidence stands behind the lesson.
 
 # Where work-item completion evidence actually lives — and why an audit reads it as missing
 

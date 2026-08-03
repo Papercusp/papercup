@@ -150,6 +150,20 @@ such endpoint) or a sibling that did not answer the probe, and a non-answering
 sibling renders as one explicit `… (timers unknown)` row. Unknown is not absent.
 Mechanism: `schedule-federation.ts` + `GET /api/internal/managed-timers`.
 
+⚠ Federation was necessary, **not sufficient** — until 2026-08-03 a timer could be missing
+from the inventory of **its own process**. `dbos-executor-reaper` reaped every 2 min inside
+bg-host while absent from `/api/internal/managed-timers` served by that same pid, because the
+process held **two instances** of `@papercusp/scheduled-registry`, each with its own
+module-level registry Map (tsx's CJS-preflight + ESM loader, bare-vs-relative specifiers, and
+symlinked `node_modules/@papercusp/*` all produce this). The registry's state is now pinned to
+`globalThis` under a `Symbol.for` key, so it is single-instance regardless of the seam. Two
+readings this burned, both general: **a probe's negative covers only the conditions it
+reproduced** (a tsx probe "falsified" the dual-instance theory and cost a wake), and
+**unobservable is not empty** — `:3070` has no such route at all (verified: zero mentions of
+`managed-timers` anywhere in the release checkout), and a `.get('timers', [])` parse turns its
+`{"error":"not_found"}` into a false `total 0`. Full story:
+[schedule:inventory is per-process](/internal/docs/agent-insights/schedule-inventory-is-per-process).
+
 ## Spawning: no unenrolled `detached` spawn, and never kill by name
 
 The process analogue of the scheduler rule above. A `detached: true` spawn creates a
@@ -1488,16 +1502,32 @@ regression there is invisible to *both* routine checks and first reds the
 > ratchet-only-down), added 2026-08-02, and it attributes correctly — it reports which of a
 > file's errors PRE-DATE your change rather than blaming you for the standing baseline.
 >
-> ⚠ **Do NOT use `lint:tsc:operator-vite` for these files, and do NOT believe it when it says
-> nothing covers them.** It refuses with *"NO typecheck gate covers these — nothing local will
-> ever catch a type error here"*, which is FALSE: it only knows its own project plus whether the
-> workspace declares a `typecheck` npm script, and never checks SIBLING gates like
-> `lint:tsc:operator`. Measured 2026-08-03 (EI-19461218392796337): an agent trusted that
-> sentence, fell back to hand-grepping a raw `tsc -p apps/operator/tsconfig.json` against a
-> 579-error baseline, concluded 5 type errors it had just introduced into
-> `green-checkpoint.test.ts` were "pre-existing", and shipped them — `lint:tsc:operator` flagged
-> them immediately (`18 of this file's 23 error(s) PRE-DATE your change`, `exit=1 regressed`).
-> The file it wrongly declared uncoverable implements the fleet's release gate.
+> ✅ **You no longer have to know which gate to pick — name your files at ANY `lint:tsc*` gate and
+> it routes you** (EI-19461218392796337, fixed + verified live 2026-08-03; these are scripts run
+> from the working tree, so there is no deploy to wait for). A gate that cannot judge the files
+> you named now resolves them against its SIBLINGS and prints the command that can:
+> `RUN THIS to check them:  npm run lint:tsc:operator`. Coverage is read from each sibling's own
+> exported declaration, so a new `lint:tsc:*` script is picked up the moment it lands.
+>
+> ⚠ **It used to assert the opposite, so distrust any older note repeating it.** The refusal
+> read *"NO typecheck gate covers these — nothing local will ever catch a type error here"* — a
+> UNIVERSAL concluded from two facts that do not imply it (the file is outside MY project; its
+> workspace declares no `typecheck` script), never consulting the sibling gates. Being covered by
+> a sibling while declaring no workspace script is the NORMAL arrangement here, so it was wrong in
+> the common case. Measured 2026-08-03: an agent trusted that sentence, fell back to hand-grepping
+> a raw `tsc -p apps/operator/tsconfig.json` against a 579-error baseline, concluded 5 type errors
+> it had just introduced into `green-checkpoint.test.ts` were "pre-existing", and shipped them —
+> `lint:tsc:operator` flagged them instantly (`18 of this file's 23 error(s) PRE-DATE your
+> change`, `exit=1 regressed`). The file it wrongly declared uncoverable implements the fleet's
+> release gate.
+>
+> **The transferable rule, which the fix itself had to obey:** a tool asserting a UNIVERSAL
+> ("no X exists", "nothing will ever") is making a claim about a scope it usually cannot see —
+> verify an absence against the registry/manifest (here, one `grep lint:tsc package.json`), never
+> against one tool's refusal. The banner now says *"No typecheck gate FOUND"* and, when any gate's
+> coverage could not be resolved, adds *"the search was INCOMPLETE, so this is 'none found', NOT
+> 'none exists'"* — naming each gate it could not read. Replacing one confident universal with a
+> better-informed confident universal would have been the same defect in a bigger hat.
 
 > ⚠ **Do NOT reach for `npm run --workspace <dir> typecheck` as the fallback — most workspaces
 > have no such script and it dead-ends with `npm error Missing script: "typecheck"`.** Measured
