@@ -15,10 +15,15 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import {
-  cpuBusyPercent,
-  type TaskResourceTotals,
-} from '@papercusp/operator-core/lib/task-manager/inventory';
+// ⚠ `/inventory-shared`, NEVER `/inventory` (WI-8191). `cpuBusyPercent` is a VALUE import, so
+// the specifier below is a RUNTIME edge: pointing it at `./inventory` drags that module's
+// server graph (store / reconcile-tick / scan / _repo-paths → node:fs, node:os, node:path,
+// node:child_process) into the SPA's browser-eager bundle, where `node:` builtins are stubs
+// that throw on property access — the route white-screens at module-init on :3055. The shared
+// file is the same definitions with zero runtime imports. A type-only import from `./inventory`
+// would be harmless (erased), but this one is not type-only.
+import { cpuBusyPercent } from '@papercusp/operator-core/lib/task-manager/inventory-shared';
+import type { TaskResourceTotals } from '@papercusp/operator-core/lib/task-manager/inventory-shared';
 
 export type ResourceHeader = {
   /** Σ RSS across tracked tasks. Upper bound — shared pages double-count. */
