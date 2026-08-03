@@ -25,12 +25,13 @@ import { COORD_ROLES } from '../coordination/roles';
 import { resolvePotHomeSlug } from '../../pot/wake';
 import {
   lintUncheckedExternalClaims,
-
   mergeCarryRows,
   renderCarryNote,
   renderCheckLine,
   renderWallLine,
   setLoopCarryNoteWithPrior,
+  getLoopCarryNoteWithMeta,
+  shortCarryHash,
   CARRY_NOTE_MAX_CHECKS,
   CARRY_NOTE_MAX_WALLS,
   rescueTaggedCarryNoteBlob,
@@ -101,7 +102,8 @@ export default defineTool({
     "Keyed by the loop's ownerId — stable across reset/recycle (a cold successor reads the SAME note). " +
     'Replace-on-write; blank/null clears — except { walls } rows (owner-gated) and { checks } rows ' +
     '(external-state claims + probes): both render into every wake until you pass []. ' +
-    'Returns { ok, harness, ownerId, cleared, length, walls, checks }.',
+    'Returns { ok, harness, ownerId, cleared, length, verified, contentHash, walls, checks }. ' +
+    'Writes are verify-read (checkpoint_verify_failed on a miss — WI-7124).',
   guidance: {
     when:
       "Before you end a turn on a COLD loop (carry:'cold'): persist what the next cold wake needs to continue — " +
@@ -319,6 +321,50 @@ export default defineTool({
         },
       },
     );
+
+    // WI-7124 (mirrors the work_items:checkpoint P-003 verify-read precedent,
+    // fleet-deltas-leader-primitives-2026-07-10): prove the write is visible through
+    // the SAME path a COLD-WAKE reader resolves it by — not merely that the store
+    // echoed back what we asked it to write. This carry-note has a DOCUMENTED,
+    // real historical failure of exactly this shape (WI-2148, see the `harness`
+    // resolution above): the write-side scope key (a session's transient
+    // ctx.harnessSlug) can diverge from the read-side key (the armed routine's fixed
+    // install_slug), silently creating a SECOND, stale-diverging carry_notes row that
+    // the next cold wake never sees — "written" from the caller's point of view, but
+    // invisible to the reader that actually matters. Catch that class LOUDLY at write
+    // time, before the slower advisory reads below, instead of discovering it only
+    // when a cold wake resumes from a stale/absent note (WI-7124's whole complaint).
+    let verifyError: string | null = null;
+    let verified: true | null = null;
+    let contentHash: string | null = null;
+    if (stored !== null) {
+      const verifyRead = await getLoopCarryNoteWithMeta({ harness, ownerId, workspaceId }).catch(
+        () => ({ note: null, updatedAtMs: null }),
+      );
+      if (verifyRead.note !== stored) {
+        verifyError =
+          `checkpoint_verify_failed — the write did not read back via the reader path a cold wake ` +
+          `uses (stored ${stored.length} chars, read back ${
+            verifyRead.note === null ? 'null' : `${verifyRead.note.length} chars`
+          }). A cold wake of this loop would NOT see this note. Retry, or pass { harness } explicitly ` +
+          `if your session's scope may differ from the armed routine's (WI-2148).`;
+      } else {
+        verified = true;
+        contentHash = shortCarryHash(stored);
+      }
+    }
+    if (verifyError) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify({ ok: false, error: verifyError, harness, ownerId }),
+          },
+        ],
+        isError: true,
+      };
+    }
+
     // Unreachable today (this tool passes no `guard`, and only a blocked guard skips
     // the transform) — but a missing capture must never silently read as "no rows".
     const { walls, checks, narrativeBody } =
@@ -531,6 +577,12 @@ export default defineTool({
             ownerId,
             cleared: stored === null,
             length: stored?.length ?? 0,
+            /** WI-7124: the write READ BACK byte-identically via the SAME path a cold
+             *  wake uses (null on a clear — nothing to verify; a mismatch never reaches
+             *  here — it returns checkpoint_verify_failed above instead). */
+            verified,
+            /** First 12 hex chars of sha256(stored) — eyeball-check without a re-read. */
+            contentHash,
             walls: walls.length,
             checks: checks.length,
             // EI-18833865002636933: NEVER rescue silently. The original defect was that a

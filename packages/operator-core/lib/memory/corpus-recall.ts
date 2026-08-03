@@ -145,7 +145,7 @@ export interface SelectCorpusResult {
 /** Max lines this leg may contribute. Small on purpose: it is additive to a
  *  block whose mem0 half is already saturated 64.3% of the time (D-037).
  *
- *  RAISED 3 → 6 by D-058 (WI-6857). D-037 sized these two constants to bound an
+ *  RAISED 3 → 6 by D-060 (WI-6857). D-037 sized these two constants to bound an
  *  ADDITIVE section; nothing had yet measured what they cost in RECALL. The P-018
  *  acceptance replay did: at 3/900 the recorded answer (WI-6512) ranks 4th and is
  *  dropped `budget-exhausted` before it is ever rendered — the leg retrieved it
@@ -153,11 +153,11 @@ export interface SelectCorpusResult {
  *  2026-08-03 against the live store over all 7 batches × 3 cap settings: 6/1800
  *  admits it; 8/3000 admits nothing further, so the wider setting is unjustified.
  *  ⚠ These are a RECALL/COST trade-off, not free parameters — re-measure before
- *  moving them, and see D-058 for what the extra chars buy and cost. */
+ *  moving them, and see D-060 for what the extra chars buy and cost. */
 export const CORPUS_MAX_ITEMS = 6;
 
 /** Char budget for this leg ALONE — not a share of the mem0 budget (D-037).
- *  RAISED 900 → 1800 by D-058; see CORPUS_MAX_ITEMS for the measurement. */
+ *  RAISED 900 → 1800 by D-060; see CORPUS_MAX_ITEMS for the measurement. */
 export const CORPUS_BUDGET_CHARS = 1800;
 
 /** A teaser is one bounded line; a runaway teaser must never become content. */

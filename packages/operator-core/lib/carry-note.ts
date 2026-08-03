@@ -29,10 +29,21 @@
  * constructors. Keyed (workspace_id, scope); the workspace_id column carries
  * workspace isolation.
  */
+import { createHash } from 'node:crypto';
 import { getOrgPg } from '@papercusp/db-org';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { resolveConcreteWorkspaceId } from './workspace-registry';
 import { notifyAgentOrdersChanged } from './agent-orders-notify';
+
+/**
+ * First 12 hex chars of sha256(text) — short enough to eyeball, long enough that an
+ * accidental collision between two DIFFERENT carry-note bodies is not a real concern.
+ * Shared home for the hash BOTH carry-note-backed checkpoint tools (work_items:checkpoint,
+ * loop:checkpoint) use so a caller can eyeball-confirm a write without a second read.
+ */
+export function shortCarryHash(text: string): string {
+  return createHash('sha256').update(text, 'utf8').digest('hex').slice(0, 12);
+}
 
 // ── Scope keys (the convergence axis) ────────────────────────────────────────
 

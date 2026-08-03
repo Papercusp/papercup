@@ -43,6 +43,54 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
   return !!v && typeof v === 'object' && !Array.isArray(v);
 }
 
+/** How a materialized result body looks to the two projection domains. */
+export interface ProjectionBodyShape {
+  /** The JSON payload, when the body (or one of its text items) parses. */
+  json: { parsed: unknown; itemIndex: number } | null;
+  /** Lines the `pipe` operators would see. 1 ⇒ every line operator is
+   *  all-or-nothing on this body. */
+  lineCount: number;
+}
+
+/**
+ * Classify a result body for projection: is there a JSON payload (⇒ `pick`
+ * reduces it), and how many lines do the `pipe` operators actually see?
+ *
+ * Extracted so the two callers CANNOT diverge (D-012, plan
+ * agent-context-firewall-and-output-spill-2026-08-02): `applyResultProjection`
+ * uses it to find the payload `pick` operates on, and the result-door footer
+ * uses it to decide which operator to RECOMMEND. Before this, the footer was a
+ * constant that led with `pipe` unconditionally — advertising, on a one-line
+ * JSON body, the one operator family that provably cannot reduce it (a
+ * `grep` no-match returns an EMPTY body, which reads like a successful
+ * filter). Same shape as P-015: derive the taught remedy from the code that
+ * enforces it, so it cannot drift.
+ *
+ * The per-item fallback is load-bearing, not defensive: a structured result is
+ * routinely NOT one text item — the JSON payload is followed by advisory prose
+ * ("See also: …") — so the JOINED text does not parse even though the payload
+ * plainly does.
+ */
+export function classifyProjectionBody(
+  textItems: ReadonlyArray<{ text: string }>,
+): ProjectionBodyShape {
+  const joined = textItems.map((it) => it.text).join('\n\n');
+  const lineCount = joined === '' ? 0 : splitLines(joined).lines.length;
+  try {
+    return { json: { parsed: JSON.parse(joined), itemIndex: -1 }, lineCount };
+  } catch {
+    /* not the joined body — try each item */
+  }
+  for (let i = 0; i < textItems.length; i += 1) {
+    try {
+      return { json: { parsed: JSON.parse(textItems[i].text), itemIndex: i }, lineCount };
+    } catch {
+      /* not this one — keep looking */
+    }
+  }
+  return { json: null, lineCount };
+}
+
 // ── line operators ────────────────────────────────────────────────────────────
 
 function splitLines(text: string): { lines: string[]; trailingNewline: boolean } {
@@ -300,44 +348,29 @@ export function applyResultProjection<T extends ProjectableResult>(
     let regexFlavor: 'js-regexp' | undefined;
 
     if (spec.pick) {
-      let parsed: unknown;
-      let parseOk = true;
-      try {
-        parsed = JSON.parse(working);
-      } catch {
-        parseOk = false;
+      // SHARED with the result-door footer (classifyProjectionBody) so the
+      // operator we RECOMMEND cannot drift from the one that actually runs —
+      // D-012. The per-item fallback inside it is load-bearing: a structured
+      // result is routinely NOT one text item (the JSON payload is followed by
+      // advisory prose, "See also: …"), so the joined text does not parse even
+      // though the payload plainly does. Caught live on work_items:list, where
+      // `pick` reported "not JSON" against a body visibly starting `[{"id":…`.
+      const { json } = classifyProjectionBody(textItems);
+      // itemIndex >= 0 means it took that per-item fallback: say the advisory
+      // items were dropped rather than dropping them quietly.
+      if (json && json.itemIndex >= 0 && textItems.length > 1) {
+        notes.push(
+          `pick applied to the JSON payload item; ${textItems.length - 1} advisory text item(s) ` +
+            `(e.g. "See also" routing hints) were dropped — re-call without \`pick\` to keep them.`,
+        );
       }
-      // A structured tool result is routinely NOT one text item: the JSON
-      // payload is followed by advisory prose ("See also: …"), so the joined
-      // text does not parse even though the payload plainly does. Caught live
-      // on work_items:list, where `pick` reported "not JSON" against a body
-      // that visibly starts `[{"id":…`. Fall back to the first text item that
-      // DOES parse — that is the payload — and say that the advisory items
-      // were dropped rather than dropping them quietly.
-      if (!parseOk) {
-        for (const it of textItems) {
-          try {
-            parsed = JSON.parse(it.text);
-            parseOk = true;
-            if (textItems.length > 1) {
-              notes.push(
-                `pick applied to the JSON payload item; ${textItems.length - 1} advisory text item(s) ` +
-                  `(e.g. "See also" routing hints) were dropped — re-call without \`pick\` to keep them.`,
-              );
-            }
-            break;
-          } catch {
-            /* not this one — keep looking */
-          }
-        }
-      }
-      if (!parseOk) {
+      if (!json) {
         notes.push(
           'pick SKIPPED: this result body is not JSON, so there are no fields to select — ' +
             'the text was passed to `pipe` unchanged. Use `pipe` line operators for text results.',
         );
       } else {
-        const { picked, unmatched } = applyPick(parsed, spec.pick);
+        const { picked, unmatched } = applyPick(json.parsed, spec.pick);
         if (unmatched.length === spec.pick.length) {
           notes.push(
             `pick matched NOTHING (${unmatched.join(', ')}) — body left unprojected rather than ` +

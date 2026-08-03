@@ -30,6 +30,13 @@ const withBoundedTimeout = vi.fn(async (..._a: unknown[]) => ({ value: undefined
 // simulate a concurrent writer landing where the old caller-side read → merge → write
 // had its race window.
 let storePriorOverride: string | null | undefined;
+// WI-7124: what the STORE actually persisted on the last write — the fixture for the new
+// verify-read (getLoopCarryNoteWithMeta), so every PRE-EXISTING test in this suite (which
+// only ever configures setLoopCarryNote's return value) automatically gets a verify-read
+// that AGREES with it, with zero changes needed at each call site. A test that wants to
+// exercise the checkpoint_verify_failed path overrides getLoopCarryNoteWithMeta directly
+// (see the WI-7124 describe block below).
+let lastStoredNote: string | null = null;
 const setLoopCarryNoteWithPrior = vi.fn(
   async (
     ref: unknown,
@@ -40,14 +47,20 @@ const setLoopCarryNoteWithPrior = vi.fn(
       storePriorOverride !== undefined ? storePriorOverride : (((await getLoopCarryNote()) as string | null) ?? null);
     const merged = opts?.transform ? opts.transform(prior, note) : (note as string | null | undefined);
     const stored = await setLoopCarryNote(ref, merged);
+    lastStoredNote = (stored as string | null | undefined) ?? null;
     return { stored, priorLength: (prior ?? '').length };
   },
 );
+const getLoopCarryNoteWithMeta = vi.fn(async () => ({
+  note: lastStoredNote,
+  updatedAtMs: lastStoredNote !== null ? Date.now() : null,
+}));
 vi.mock('../../carry-note', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   setLoopCarryNote: (...a: unknown[]) => setLoopCarryNote(...a),
   setLoopCarryNoteWithPrior: (...a: [unknown, unknown, never]) => setLoopCarryNoteWithPrior(...a),
   getLoopCarryNote: (...a: unknown[]) => getLoopCarryNote(...a),
+  getLoopCarryNoteWithMeta: (...a: unknown[]) => getLoopCarryNoteWithMeta(...a),
   renderCarryNote: (f: Record<string, string | undefined>) => `RENDERED:${JSON.stringify(f)}`,
 }));
 vi.mock('../coordination/roles', () => ({ COORD_ROLES: ['operator'] }));
@@ -86,6 +99,7 @@ const body = (o: Out) => JSON.parse(o.content[0]!.text);
 beforeEach(() => {
   vi.clearAllMocks();
   storePriorOverride = undefined; // default: the store's prior IS getLoopCarryNote's value
+  lastStoredNote = null; // WI-7124: reset the verify-read fixture between tests
   setLoopCarryNote.mockResolvedValue('stored-note');
   getLoopCarryNote.mockResolvedValue(null); // default: no prior note ⇒ no walls to carry
   getLoopStatus.mockResolvedValue(null); // default: no armed routine found
@@ -253,6 +267,50 @@ describe('loop:checkpoint — the loop carry-note producer', () => {
         label: 'loop:checkpoint continuation reads',
       }),
     );
+  });
+});
+
+describe('WI-7124: verify-read — the write must read back via the SAME path a cold wake uses', () => {
+  it('a normal write reports verified:true + a contentHash (read-back agrees with what was stored)', async () => {
+    const b = body(await call({ next: 'x' }));
+    expect(b).toMatchObject({ ok: true, verified: true });
+    expect(b.contentHash).toMatch(/^[0-9a-f]{12}$/);
+    expect(getLoopCarryNoteWithMeta).toHaveBeenCalledWith(
+      expect.objectContaining({ harness: 'papercusp', ownerId: 'su-caller' }),
+    );
+  });
+
+  it('a clear (stored=null) skips the verify-read entirely — nothing to verify', async () => {
+    setLoopCarryNote.mockResolvedValueOnce(null);
+    const b = body(await call({ note: '' }));
+    expect(b).toMatchObject({ ok: true, cleared: true, verified: null, contentHash: null });
+    expect(getLoopCarryNoteWithMeta).not.toHaveBeenCalled();
+  });
+
+  it('WI-2148-class divergence: a read-back that disagrees with what was stored fails LOUDLY (checkpoint_verify_failed), never silently', async () => {
+    // Simulate exactly the documented failure: the write landed under one scope key
+    // but the reader resolves a DIFFERENT (stale/absent) row.
+    getLoopCarryNoteWithMeta.mockResolvedValueOnce({ note: null, updatedAtMs: null });
+    const out = await call({ next: 'x' });
+    expect(out.isError).toBe(true);
+    const b = body(out);
+    expect(b.ok).toBe(false);
+    expect(b.error).toMatch(/checkpoint_verify_failed/);
+    expect(b.error).toMatch(/WI-2148/);
+  });
+
+  it('a verify-read that throws is treated as a miss (fails loud, never crashes the tool)', async () => {
+    getLoopCarryNoteWithMeta.mockRejectedValueOnce(new Error('pg down'));
+    const out = await call({ next: 'x' });
+    expect(out.isError).toBe(true);
+    expect(body(out)).toMatchObject({ ok: false });
+    expect(body(out).error).toMatch(/checkpoint_verify_failed/);
+  });
+
+  it('a verify mismatch short-circuits BEFORE the advisory continuation-gate reads run', async () => {
+    getLoopCarryNoteWithMeta.mockResolvedValueOnce({ note: 'something-else', updatedAtMs: 1 });
+    await call({ next: 'x' });
+    expect(withBoundedTimeout).not.toHaveBeenCalled();
   });
 });
 

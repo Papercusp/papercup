@@ -25,6 +25,7 @@ const isSystemActor = (v: string | null | undefined): boolean =>
 import {
   usePlanList,
   usePlanAttention,
+  flattenAttentionItems,
   type PlanListRow,
   type AttentionItem,
   type AttentionTier,
@@ -647,8 +648,14 @@ export default function AdvOverviewTab() {
 
   // ── derive tile data (pure helpers, exported + unit-tested) ────────────
   const plans = useMemo(() => selectActivePlans(plansQ.data?.plans ?? []), [plansQ.data]);
+  // Dedupe by id via the shared helper (WI-5337 / EI-19373923898562595): a
+  // non-plan-scoped attention item (owner-wall, loop-carry-note) appears in
+  // MULTIPLE plan groups server-side, so a bare `groups.flatMap(g => g.items)`
+  // emitted it once per group — duplicate React keys on the `decisions` row
+  // below (reproduced live: 6 "two children with the same key" console
+  // errors on ?tab=overview). See flattenAttentionItems' own doc.
   const attentionItems = useMemo(
-    () => (attentionQ.data?.groups ?? []).flatMap((g) => g.items ?? []),
+    () => flattenAttentionItems(attentionQ.data?.groups ?? []),
     [attentionQ.data],
   );
   const decisions = useMemo(() => selectDecisions(attentionItems), [attentionItems]);

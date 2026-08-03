@@ -73,7 +73,7 @@ const QUERY_CLAMP = 1_000;
  * handle for the agent to go get the detail if it wants it. That is the correct
  * shape for an interruption — it must be cheap enough to ignore.
  *
- * ⚠ SCOPE (D-058 / WI-6857): this bounds the MEM0 HALF ONLY. The P-008 corpus
+ * ⚠ SCOPE (D-060 / WI-6857): this bounds the MEM0 HALF ONLY. The P-008 corpus
  * pointer section carries its own CORPUS_BUDGET_CHARS (corpus-recall.ts) and is
  * NOT re-clamped here — see clampToBudget for why. So the arithmetic above is
  * no longer the whole cost: a recall that carries a full pointer section costs

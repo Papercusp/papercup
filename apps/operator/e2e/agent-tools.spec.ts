@@ -6,9 +6,11 @@
  * level; this spec verifies the catch-all routing + auth gate work end-to-end.
  *
  * Categories:
- *  - Unauthenticated reads (docs/outline, flags/list)
- *  - Authenticated reads (tasks/list, harness/list_features) — 401 without bearer
- *  - Input validation (zod schema errors return 500 with details)
+ *  - Unauthenticated reads (docs/outline, flags/list, harness/list_features —
+ *    `requirePrincipal: false`, so no bearer needed)
+ *  - Authenticated reads (tasks/list, memory/remember) — 401 without bearer
+ *  - Input validation (zod schema errors return 400 invalid_input, not 500 —
+ *    the dispatch stack validates args BEFORE invoking the handler, EI-334)
  *  - Unknown tool (404 with unknown_tool code)
  */
 import { test, expect } from './_egress';
@@ -67,14 +69,19 @@ test.describe('agent-tools catch-all routing', () => {
     expect(parsed.flags).toBeDefined();
   });
 
-  test('docs:search rejects missing query with handler_error', async ({ request }) => {
+  test('docs:search rejects missing query with invalid_input', async ({ request }) => {
     const res = await request.post(`${baseURL}/api/agent-tools/docs/search`, {
       data: {},
       headers: { 'Content-Type': 'application/json' },
     });
-    expect(res.status()).toBe(500);
+    // The dispatch stack validates args against the tool's zod schema before
+    // invoking the handler and codes a schema-validation failure `invalid_input`
+    // (400), not `handler_error` (500) — EI-334: keeps caller mistakes out of
+    // the structural tool-error telemetry class (tooldef dispatch-stack.ts
+    // `invoke` step). Was asserted as 500/handler_error before that fix landed.
+    expect(res.status()).toBe(400);
     const body = await res.json();
-    expect(body.error?.code).toBe('handler_error');
+    expect(body.error?.code).toBe('invalid_input');
     expect(body.error?.message).toMatch(/invalid_args/);
   });
 

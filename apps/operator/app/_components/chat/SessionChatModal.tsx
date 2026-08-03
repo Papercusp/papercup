@@ -859,6 +859,7 @@ export default function SessionChatModal({
   focusAnchor = null,
   focusAnchorTs = null,
   focusTerm = null,
+  focusSessionId = null,
 }: {
   /** The inbox item's ownerAgentId — null hides the modal. */
   sessionOwnerId: string | null;
@@ -889,6 +890,12 @@ export default function SessionChatModal({
    *  raw entry text, and the excerpt is `ts_headline` output whose whitespace
    *  has been reflowed, so it almost never matches (measured 2026-08-02). */
   focusTerm?: string | null;
+  /** The session the matched turn lives in. Search is OWNER-scoped across an
+   *  agent's whole carry-respawn chain while this modal resolves the owner's
+   *  LATEST session, so a hit from an earlier link is not in the transcript
+   *  that would otherwise be streamed. Overrides the resolved session id for
+   *  the stream only. */
+  focusSessionId?: string | null;
 }) {
   const [resolved, setResolved] = useState<SessionListRow | null>(null);
   const [resolveError, setResolveError] = useState<string | null>(null);
@@ -941,14 +948,22 @@ export default function SessionChatModal({
 
   const streamUrl = useMemo(() => {
     if (!sessionOwnerId || !resolved) return null;
-    const p = new URLSearchParams({ sessionId: resolved.session_id, owner: sessionOwnerId });
+    /* A search deep-link streams the session the MATCH is in, not the owner's
+       latest — see `focusSessionId`. When they differ the target is by
+       definition an earlier link in the respawn chain and therefore ended, so
+       it also needs `ended=1` below to reach the rematerialize-from-archive
+       fallback (EI-16982); `resolved.active` describes the LATEST session and
+       would say otherwise. */
+    const streamSessionId = focusSessionId || resolved.session_id;
+    const isEarlierSession = streamSessionId !== resolved.session_id;
+    const p = new URLSearchParams({ sessionId: streamSessionId, owner: sessionOwnerId });
     // EI-16982: an ended session's on-disk transcript is routinely GC'd within
     // ~2h of archiving (session-dir-gc.ts); the backend already has a
     // rematerialize-from-archive fallback (WI-3990) gated on `ended=1`, but it
     // silently never fires unless the caller passes it. `resolved.active` is
     // the server-stamped liveness we already have in hand here — reuse it
     // rather than inventing a new signal.
-    if (resolved.active === false) p.set('ended', '1');
+    if (resolved.active === false || isEarlierSession) p.set('ended', '1');
     /* Search deep-link (owner ask 2026-08-02, part b). THIS is what makes
        opening on the match possible at all — without it the route backfills
        the TAIL, and a search hit is almost never in the tail: search indexes
@@ -971,7 +986,7 @@ export default function SessionChatModal({
     if (focusTerm) p.set('find', focusTerm);
     if (focusAnchorTs) p.set('anchorTs', focusAnchorTs);
     return `/api/adv/session/thinking?${p.toString()}`;
-  }, [sessionOwnerId, resolved, focusTerm, focusAnchorTs]);
+  }, [sessionOwnerId, resolved, focusTerm, focusAnchorTs, focusSessionId]);
 
   const handleSend = (text: string) => {
     if (!sessionOwnerId) return;

@@ -159,6 +159,25 @@ export default function HudView({ workspaceId = null }: { workspaceId?: string |
      box while the modal is open cannot silently re-stream the transcript
      underneath it. */
   const [openFocusQ, setOpenFocusQ] = useQueryState('hudfocusq', parseAsString);
+  /* The SESSION the matched turn actually lives in — and the reason the whole
+     feature could not work without it.
+
+     Search is OWNER-scoped across an agent's entire carry-respawn CHAIN
+     (`session_turns` rows for one ownerId span every session it ever ran),
+     while the modal is SESSION-scoped: `resolveOwnerClaudeSession` returns the
+     owner's LATEST session and the route streams THAT transcript file. So a
+     hit from any earlier link in the chain is simply not in the file being
+     streamed, and no amount of anchoring can find it.
+
+     Measured 2026-08-02 on su-1c1faa38: 10+ distinct session_ids for that one
+     owner; the resolved session covered 20:46–22:56Z while the clicked hit's
+     turn was at 03:18Z, in a different session entirely. The route dutifully
+     anchored on the first term-matching entry of the file it DID have, which
+     is how this surfaced as a confident scroll to the wrong turn.
+
+     `HudSearchHit.sessionId` already carries the right answer — it was being
+     dropped on the floor. */
+  const [openFocusSid, setOpenFocusSid] = useQueryState('hudfocussid', parseAsString);
   // WI-6367: which session THIS view just launched, and when. Deliberately
   // useState, not nuqs: it is mid-flight lifecycle state, not user-meaningful
   // (a shared/reloaded URL must not claim a session is "starting up" — by then
@@ -703,8 +722,9 @@ export default function HudView({ workspaceId = null }: { workspaceId?: string |
       void setOpenFocus(searchHitAnchor(hit));
       void setOpenFocusTs(hit?.ts ?? null);
       void setOpenFocusQ(hit ? (queryRef.current.trim() || null) : null);
+      void setOpenFocusSid(hit?.sessionId || null);
     },
-    [setOpenOwner, setOpenFocus, setOpenFocusTs, setOpenFocusQ],
+    [setOpenOwner, setOpenFocus, setOpenFocusTs, setOpenFocusQ, setOpenFocusSid],
   );
 
   const entityView =
@@ -813,6 +833,7 @@ export default function HudView({ workspaceId = null }: { workspaceId?: string |
         focusAnchor={openFocus}
         focusAnchorTs={openFocusTs}
         focusTerm={openFocusQ}
+        focusSessionId={openFocusSid}
         onClose={() => {
           // WI-6367: the launch context is only meaningful for the modal it
           // opened — drop it on close so reopening the same session later
@@ -823,6 +844,7 @@ export default function HudView({ workspaceId = null }: { workspaceId?: string |
           void setOpenFocus(null);
           void setOpenFocusTs(null);
           void setOpenFocusQ(null);
+          void setOpenFocusSid(null);
         }}
       />
       {/* P-002: the Plans / Work items tabs' destination. Mounted here (not in

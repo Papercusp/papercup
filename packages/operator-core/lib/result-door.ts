@@ -48,6 +48,7 @@ import { CHARS_PER_TOKEN_ESTIMATE, capInjectionText, computeTurnDoors } from './
 import { getDoorConstantsSync } from './context-doors-config';
 import { buildScratchUri, safeScratchFilesystemPath } from './scratch-uri';
 import { buildSpillIndex } from './result-door-index';
+import { classifyProjectionBody } from './result-projection';
 
 /** The BAKED floor `resultEach` door (window 0 ⇒ the 8K-floor split ⇒ 1500 tokens).
  *  The live door is resolved per call through the P-023 config surface
@@ -118,12 +119,68 @@ function detectInnerTruncationMarkers(text: string): string[] {
  * arrives exactly when it is actionable — the same "advise at the decision
  * point" shape as the code:run batch nudge.
  */
-const PROJECTION_HINT =
-  ` ⓘ To get only what you need in ONE call instead of paging this spill, re-call with a ` +
-  `caller-specified projection: \`projection: { pipe: [{ op:"grep", pattern:"..." }, { op:"head", n:20 }] }\` ` +
-  `for text, or \`projection: { pick: ["results[].id","results[].state"] }\` for a JSON body. ` +
-  `Operators: grep (fixed/ignoreCase/invert/before/after/context), head, tail, sort, uniq, cut, count — ` +
-  `applied in order, to any tool's result.`;
+/**
+ * D-012 (plan agent-context-firewall-and-output-spill-2026-08-02): the hint is
+ * a FUNCTION of the payload, not a constant.
+ *
+ * The constant this replaces led with `pipe` "for text" on every result —
+ * including the one-line JSON bodies that are the overwhelming majority of what
+ * this door cuts. On such a body the line operators are provably all-or-nothing
+ * (measured: `grep` with a non-matching pattern returns an EMPTY body, `head
+ * n:3` returns the ENTIRE array), so the footer's first suggestion was the one
+ * operator family that cannot reduce the payload it is attached to — and a
+ * no-match reads exactly like a successful filter. Filed as
+ * EI-19387749343846381.
+ *
+ * opencode does the same thing correctly and is where the ruling comes from
+ * (`tool/truncate.ts:109-111`): its spill hint branches on `hasTaskTool(agent)`
+ * so it never advertises a recovery route the reading agent cannot take. This
+ * is that, applied to payload TYPE — and the classification comes from
+ * `classifyProjectionBody`, the same function the projection stage itself uses
+ * to find the body `pick` operates on, so the advertised operator cannot drift
+ * from the one that would actually run.
+ */
+export function buildProjectionHint(
+  textItems: ReadonlyArray<{ text: string }>,
+  toolName: string,
+): string {
+  const lead = ` ⓘ To get only what you need in ONE call instead of paging this spill, re-call with a `;
+  const asString =
+    ` Send \`projection\` as an object, or as a JSON STRING if your client can only pass strings.`;
+  let shape: { json: unknown; lineCount: number };
+  try {
+    shape = classifyProjectionBody(textItems);
+  } catch {
+    // Fail-soft to the payload-agnostic wording rather than losing the hint.
+    return (
+      `${lead}caller-specified projection: \`projection: { pick: ["results[].id"] }\` for a JSON ` +
+      `body, or \`projection: { pipe: [{ op:"grep", pattern:"..." }] }\` for multi-line text.${asString}`
+    );
+  }
+  if (shape.json) {
+    return (
+      `${lead}caller-specified projection. This body is JSON, so \`pick\` is what reduces it: ` +
+      `\`projection: { pick: ["results[].id","results[].state"] }\`. The \`pipe\` line-operators do ` +
+      `NOT — this body is ${shape.lineCount} line(s), so grep/head/tail are all-or-nothing on it ` +
+      `(a no-match returns an EMPTY body, which reads like a successful filter). \`pick\` ` +
+      `re-serializes pretty-printed, so a \`pipe\` stage AFTER a \`pick\` does work.${asString}`
+    );
+  }
+  if (shape.lineCount > 1) {
+    return (
+      `${lead}caller-specified projection. This body is ${shape.lineCount} lines of non-JSON text, so ` +
+      `the \`pipe\` line-operators are what reduce it: ` +
+      `\`projection: { pipe: [{ op:"grep", pattern:"..." }, { op:"head", n:20 }] }\`. Operators: grep ` +
+      `(fixed/ignoreCase/invert/before/after/context), head, tail, sort, uniq, cut, count — applied in ` +
+      `order. \`pick\` does not apply here (it selects JSON fields).${asString}`
+    );
+  }
+  return (
+    ` ⓘ \`projection\` cannot help with this one: the body is a single non-JSON line, so \`pick\` ` +
+    `(JSON fields) and the \`pipe\` line-operators are both all-or-nothing on it. Page the spill file ` +
+    `with a bounded read (offset/limit), or re-call ${toolName} with narrower arguments.`
+  );
+}
 
 function isTextItem(it: unknown): it is { type: 'text'; text: string } {
   return (
@@ -219,10 +276,8 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
       } as T;
     }
 
-    const fullText = items
-      .filter(isTextItem)
-      .map((it) => it.text)
-      .join('\n\n');
+    const textItems = items.filter(isTextItem);
+    const fullText = textItems.map((it) => it.text).join('\n\n');
     const parts = scratchParts(opts);
     const basename = `result-door-${Date.now()}.md`;
     const uri = buildScratchUri({ ...parts, basename });
@@ -324,9 +379,10 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
           `limit/budget argument or payloadTier:'full'.)]`,
     });
     // Appended to whichever footer variant fired — every truncation is a chance
-    // to teach the one knob that would have prevented it (see PROJECTION_HINT).
+    // to teach the one knob that would have prevented it — but only the form of
+    // it that can actually reduce THIS payload (see buildProjectionHint, D-012).
     const lastItem = doored[doored.length - 1] as { type: 'text'; text: string };
-    lastItem.text = `${lastItem.text.slice(0, -1)}${PROJECTION_HINT}]`;
+    lastItem.text = `${lastItem.text.slice(0, -1)}${buildProjectionHint(textItems, opts.toolName)}]`;
     // P-009 (plan agent-context-firewall-and-output-spill-2026-08-02): until now
     // the door announced its OWN cut ONLY in the prose footer above, so a reader
     // had to string-match an English sentence to learn its data was truncated —

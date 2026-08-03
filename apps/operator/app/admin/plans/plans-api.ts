@@ -344,6 +344,36 @@ export function normalizeAttentionGroups(rows: readonly unknown[]): AttentionGro
   return groups;
 }
 
+/**
+ * Flatten `groups[].items` into one deduped-by-`id` list — the shared,
+ * correct way for a UI consumer to derive "every attention item" from the
+ * `plans.attention` feed.
+ *
+ * A non-plan-scoped item (owner-wall, loop-carry-note, an alert not tied to
+ * one plan) legitimately appears in MULTIPLE groups server-side, so a bare
+ * `groups.flatMap(g => g.items)` emits it once per group — duplicate React
+ * keys, rows rendered 2-5x, and any derived count disagreeing with the
+ * visible list (WI-5337, fixed in `useInboxAttention`). That fix lived only
+ * in the Inbox pane's hook; `AdvOverviewTab`'s Overview tiles flatten the
+ * SAME feed independently and re-introduced the identical bug
+ * (EI-19373923898562595 — reproduced live: 6 duplicate-key console errors on
+ * `?tab=overview`, item `owner-wall:loop-carry-note:<su-id>`). Centralizing
+ * the dedupe here means every current AND future consumer of `usePlanAttention`
+ * gets it for free instead of re-deriving it (and re-forgetting it).
+ */
+export function flattenAttentionItems(groups: readonly AttentionGroup[]): AttentionItem[] {
+  const seen = new Set<string>();
+  const out: AttentionItem[] = [];
+  for (const g of groups) {
+    for (const it of g.items) {
+      if (seen.has(it.id)) continue;
+      seen.add(it.id);
+      out.push(it);
+    }
+  }
+  return out;
+}
+
 /** Per-tier counts the reader returns alongside `groups` (for badges). */
 export type TierCounts = Record<AttentionTier, number>;
 

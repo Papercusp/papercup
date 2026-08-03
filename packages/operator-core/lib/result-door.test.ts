@@ -13,7 +13,7 @@ import { BAKED_DOOR_CONSTANTS, CHARS_PER_TOKEN_ESTIMATE } from './context-doors'
 const { doorConstantsMock } = vi.hoisted(() => ({ doorConstantsMock: vi.fn() }));
 vi.mock('./context-doors-config', () => ({ getDoorConstantsSync: doorConstantsMock }));
 
-import { applyResultDoor, RESULT_DOOR_TOKENS } from './result-door';
+import { applyResultDoor, buildProjectionHint, RESULT_DOOR_TOKENS } from './result-door';
 
 const BUDGET_CHARS = RESULT_DOOR_TOKENS * CHARS_PER_TOKEN_ESTIMATE;
 const RUN_ID = '11111111-2222-4333-8444-555555555555';
@@ -374,5 +374,104 @@ describe('applyResultDoor', () => {
       };
       expect(applyResultDoor(result, { toolName: 'coord:inbox', workspaceId: 'ws-1', runId: RUN_ID })).toBe(result);
     });
+  });
+});
+
+/**
+ * D-012 (plan agent-context-firewall-and-output-spill-2026-08-02) — the spill
+ * footer must be a FUNCTION of the payload, not a constant.
+ *
+ * The bug this replaces: the footer led with `pipe` "for text" on EVERY result,
+ * including the one-line JSON bodies that are most of what this door cuts —
+ * where the line operators are provably all-or-nothing and a `grep` no-match
+ * returns an empty body that reads like a successful filter
+ * (EI-19387749343846381).
+ *
+ * TEETH: these do not merely assert today's wording. Every case drives the door
+ * with a DIFFERENT body shape and requires the output to FOLLOW it, and the
+ * third case uses a payload placement that only the shared
+ * `classifyProjectionBody` finds — a re-hardcoded `JSON.parse(joined)`
+ * classifier passes the first two and fails that one.
+ */
+describe('buildProjectionHint — D-012 payload-aware spill footer', () => {
+  /** A COMPACT (single-line) JSON array over `chars` — the shape this door cuts most. */
+  function longJson(chars: number): string {
+    const rows: Array<Record<string, string>> = [];
+    while (JSON.stringify(rows).length < chars) {
+      rows.push({ id: `WI-${rows.length}`, state: 'open', title: 'a work item title with some length to it' });
+    }
+    return JSON.stringify(rows);
+  }
+
+  function footerFor(content: Array<{ type: 'text'; text: string }>, toolName = 'work_items:list'): string {
+    const doored = applyResultDoor({ content }, { toolName, workspaceId: 'ws-1', runId: RUN_ID });
+    return (doored.content.at(-1) as { text: string }).text;
+  }
+
+  it('a JSON body leads with `pick` and states that `pipe` cannot reduce it', () => {
+    const footer = footerFor([{ type: 'text', text: longJson(BUDGET_CHARS * 2) }]);
+    expect(footer).toContain('`pick` is what reduces it');
+    expect(footer).toContain('all-or-nothing');
+    expect(footer).toContain('1 line(s)');
+    // The actual defect was ORDER: the pipe form was advertised first.
+    expect(footer.indexOf('pick')).toBeLessThan(footer.indexOf('pipe'));
+    // The operator list belongs to the text variant only — it is dead weight here.
+    expect(footer).not.toContain('grep (fixed/ignoreCase');
+    // The constant this replaced said exactly this; its return would be a regression.
+    expect(footer).not.toContain('for text, or');
+  });
+
+  it('a multi-line non-JSON body offers the `pipe` operators and says `pick` does not apply', () => {
+    const footer = footerFor([{ type: 'text', text: longText(BUDGET_CHARS * 2) }], 'capability:bash');
+    expect(footer).toContain('op:"grep"');
+    expect(footer).toContain('lines of non-JSON text');
+    expect(footer).toContain('`pick` does not apply');
+    expect(footer).toContain('grep (fixed/ignoreCase');
+  });
+
+  it('finds the JSON payload even when it is neither the joined body nor the first item', () => {
+    // The live shape: a JSON payload accompanied by advisory prose, so the
+    // JOINED text does not parse. A classifier that only tries the join — or
+    // only the first item — calls this "text" and emits the wrong operator.
+    const footer = footerFor([
+      { type: 'text', text: 'See also: work_items:claimable (the claim floors as a tool)' },
+      { type: 'text', text: longJson(BUDGET_CHARS * 2) },
+    ]);
+    expect(footer).toContain('`pick` is what reduces it');
+    expect(footer).not.toContain('lines of non-JSON text');
+  });
+
+  it('a single-line non-JSON body says projection cannot help, and names the tool to re-call', () => {
+    const footer = footerFor([{ type: 'text', text: 'x'.repeat(BUDGET_CHARS * 2) }], 'capability:read');
+    expect(footer).toContain('`projection` cannot help');
+    expect(footer).toContain('capability:read');
+    expect(footer).not.toContain('op:"grep"');
+  });
+
+  it('the hint is derived from the body, not fixed: the same tool gets DIFFERENT advice for JSON vs text', () => {
+    const jsonHint = buildProjectionHint([{ text: '{"a":1}' }], 'plans:get');
+    const textHint = buildProjectionHint([{ text: 'line one\nline two\nline three' }], 'plans:get');
+    expect(jsonHint).not.toEqual(textHint);
+    expect(jsonHint).toContain('pick');
+    expect(jsonHint).toContain('1 line(s)');
+    expect(textHint).toContain('3 lines of non-JSON text');
+    // Reader-capability leg: the reachable form for a schema-driven client.
+    expect(jsonHint).toContain('JSON STRING');
+    expect(textHint).toContain('JSON STRING');
+  });
+
+  it('fails soft to payload-agnostic wording rather than losing the hint', () => {
+    // A getter that throws stands in for any future classifier fault; the door's
+    // contract is that a hint problem never costs the caller the footer.
+    const hostile = [
+      {
+        get text(): string {
+          throw new Error('boom');
+        },
+      },
+    ] as unknown as Array<{ text: string }>;
+    const hint = buildProjectionHint(hostile, 'plans:get');
+    expect(hint).toContain('pick');
+    expect(hint).toContain('pipe');
   });
 });

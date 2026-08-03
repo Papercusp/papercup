@@ -23,6 +23,7 @@ import { useMemo } from 'react';
 import { useSyncQuery } from '@papercusp/sync';
 import {
   usePlanAttention,
+  flattenAttentionItems,
   type AttentionItem,
   type AttentionTier,
 } from '@/app/admin/plans/plans-api';
@@ -94,25 +95,11 @@ export interface InboxAttention {
 export function useInboxAttention(enabled = true): InboxAttention {
   const q = usePlanAttention({ enabled });
   const groups = q.data?.groups;
-  const items = useMemo(() => {
-    // Dedupe by id: a non-plan-scoped attention item (owner-wall, loop-carry-
-    // note, an alert that isn't tied to one plan) appears in MULTIPLE plan
-    // groups, so a bare `groups.flatMap(g => g.items)` emits it once per group
-    // → the inbox renders the same row 2-5x with duplicate React keys, and the
-    // chip "Needs you"/"All" counts disagree with the visible list (WI-5337).
-    // Keep first occurrence; every consumer (badge, filter, plans-needing-you)
-    // reads this, so deduping here fixes all of them at once.
-    const seen = new Set<string>();
-    const out: AttentionItem[] = [];
-    for (const g of groups ?? []) {
-      for (const it of g.items) {
-        if (seen.has(it.id)) continue;
-        seen.add(it.id);
-        out.push(it);
-      }
-    }
-    return out;
-  }, [groups]);
+  // Dedupe by id via the shared helper (WI-5337 fix, centralized in
+  // plans-api.ts so every consumer — this pane, badge, plans-needing-you,
+  // AdvOverviewTab's tiles — gets it for free; see flattenAttentionItems'
+  // own doc for why a bare flatMap re-duplicates non-plan-scoped items).
+  const items = useMemo(() => flattenAttentionItems(groups ?? []), [groups]);
   return { items, loading: q.loading, error: q.error, refresh: q.refresh };
 }
 
