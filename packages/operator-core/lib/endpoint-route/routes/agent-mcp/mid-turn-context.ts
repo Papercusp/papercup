@@ -51,6 +51,11 @@
  * `auth: 'loopback'` — the hook runs on this box.
  */
 import { defineTool } from '@papercusp/agent-mcp';
+// Pure module, zero static imports of its own — see corpus-recall.ts. Imported
+// statically (not dynamically like everything else in the handler) precisely
+// because it drags nothing behind it, and because clampToBudget must stay a
+// pure sync function its tests can call directly.
+import { CORPUS_BLOCK_HEADING } from '../../../memory/corpus-recall';
 
 /** Query clamp — embed the head of a long command, not a pasted heredoc. */
 const QUERY_CLAMP = 1_000;
@@ -67,6 +72,15 @@ const QUERY_CLAMP = 1_000;
  * The shape this buys is a TEASER, not a briefing: a line or two plus enough
  * handle for the agent to go get the detail if it wants it. That is the correct
  * shape for an interruption — it must be cheap enough to ignore.
+ *
+ * ⚠ SCOPE (D-058 / WI-6857): this bounds the MEM0 HALF ONLY. The P-008 corpus
+ * pointer section carries its own CORPUS_BUDGET_CHARS (corpus-recall.ts) and is
+ * NOT re-clamped here — see clampToBudget for why. So the arithmetic above is
+ * no longer the whole cost: a recall that carries a full pointer section costs
+ * ~2.2k chars, not ~350. The bound that matters is MAX_PER_MIN below (recalls,
+ * not tool calls), which caps this channel at ~26k chars/min worst case — and
+ * far less in practice, because the per-epoch surfaced-refs ledger means a
+ * pointer is delivered ONCE, not on every batch that would rank it.
  */
 const MID_TURN_BUDGET_CHARS = (() => {
   const raw = Number(process.env.PAPERCUSP_MID_TURN_BUDGET_CHARS);
@@ -200,8 +214,29 @@ export function deriveQuery(tool: string, input: unknown): string {
  * ignore.
  */
 export function clampToBudget(block: string, budget: number = MID_TURN_BUDGET_CHARS): string {
-  if (!block || block.length <= budget) return block ?? '';
-  const cut = block.slice(0, budget);
+  if (!block) return '';
+  // WI-6857 CUT 2. The clamp is a REPAIR for an UNENFORCED budget, not a policy
+  // — so it must apply to the leg whose budget is unenforced, and only that one.
+  // `composeWithCorpus` (injection.ts) appends the P-008 corpus pointer section
+  // AFTER the mem0 block, so a whole-block clamp at 350 deleted that section on
+  // EVERY call: measured 21/21 live calls returning 398-403 chars, which is this
+  // budget plus the suffix below, never the pointers. The corpus leg has no
+  // first-row exemption (WI-6870 removed it) and enforces CORPUS_BUDGET_CHARS
+  // strictly, so it arrives already bounded and a second clamp here would only
+  // re-truncate a section that is already the right size — and truncate it
+  // mid-line, leaving a `work_items:get { id: 'WI-65` that resolves to nothing.
+  const at = block.lastIndexOf(`\n\n### ${CORPUS_BLOCK_HEADING}`);
+  if (at >= 0) return `${clampSection(block.slice(0, at), budget)}${block.slice(at)}`;
+  // Corpus-only block (the mem0 leg had nothing — P-008's motivating case, so it
+  // must not be clamped away either): composeWithCorpus renders it at `##`.
+  if (block.startsWith(`## ${CORPUS_BLOCK_HEADING}`)) return block;
+  return clampSection(block, budget);
+}
+
+/** The char clamp itself, applied to ONE section. PURE. */
+function clampSection(section: string, budget: number): string {
+  if (section.length <= budget) return section;
+  const cut = section.slice(0, budget);
   // Prefer a word boundary, but never sacrifice most of the budget to find one.
   const lastSpace = cut.lastIndexOf(' ');
   const head = lastSpace > budget * 0.6 ? cut.slice(0, lastSpace) : cut;

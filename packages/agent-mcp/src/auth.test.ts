@@ -41,6 +41,11 @@ vi.mock('@papercusp/db-org', () => {
       const tx = (..._a: unknown[]) => Promise.resolve(principalRows);
       return cb(tx);
     },
+    // WI-7097: resolveTokenIdentity wraps its token_index query in a deadline
+    // race — pass the promise straight through unchanged. The deadline's own
+    // racing behavior is covered directly by db-call-deadline.test.ts; this
+    // mock's job is only to keep resolveBearer's existing branching testable.
+    withDbCallDeadline: (p: Promise<unknown>, _opts: unknown) => p,
   };
 });
 
