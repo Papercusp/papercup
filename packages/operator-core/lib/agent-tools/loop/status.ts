@@ -63,11 +63,50 @@ export default defineTool({
         }
       : null;
 
+    // EI-19384072467112035: a `loop: null` here is the documented "no loop exists" signal,
+    // and an agent reading it correctly re-arms. But `getLoopStatus` reads through
+    // `getOrgPg()`, which can (per plan outage-must-not-be-silent-2026-08-02) be talking to
+    // a DIFFERENT, freshly-initdb'd store than the one this process pinned — in which case
+    // "no row for this owner" is a correct answer from the WRONG database, not evidence the
+    // loop is gone. Only checked on the null/negative path: a found row is trustworthy
+    // regardless (a match against another store's data, by a snowflake-shaped owner id, is
+    // not a realistic false positive), so this can never make a healthy `loop:null` noisier.
+    // `storeIdentityViolation()` is non-null only after two successfully-read, genuinely
+    // different cluster identities — never on a failed/absent probe — so it cannot fire
+    // spuriously either. Mirrors dev:pg_health's delivery of the same guard (D-004: DETECT
+    // already existed everywhere: the gap was always that nobody surfaced it where an agent
+    // was actually looking).
+    let storeIdentityWarning: {
+      severity: 'critical';
+      headline: string;
+      whatThisMeans: string;
+      detail: string;
+    } | null = null;
+    if (status === null) {
+      const violation = storeIdentityViolation();
+      if (violation) {
+        storeIdentityWarning = {
+          severity: 'critical',
+          headline:
+            'WRONG STORE — this null may not mean "no loop exists". This process has talked to a different database than the one it pinned.',
+          whatThisMeans:
+            'Do NOT treat this loop:null as "no loop is armed" and re-arm on its strength alone — that risks a duplicate loop if the real store (with the real loop row) becomes reachable again moments later. Re-check after confirming the store is healthy (dev:pg_health), or via fleet:assignments / coord:presence for corroborating signs the owner already has an active loop.',
+          detail: describeStoreIdentityMismatch(violation.pinned, violation.observed),
+        };
+      }
+    }
+
     return {
       content: [
         {
           type: 'text' as const,
-          text: JSON.stringify({ ok: true, ownerId, loop: status, reachability: reachabilityOut }),
+          text: JSON.stringify({
+            ok: true,
+            ownerId,
+            loop: status,
+            reachability: reachabilityOut,
+            ...(storeIdentityWarning ? { storeIdentityWarning } : {}),
+          }),
         },
       ],
     };

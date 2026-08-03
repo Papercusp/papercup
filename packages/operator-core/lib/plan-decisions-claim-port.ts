@@ -44,7 +44,18 @@ export interface ClaimTimePlanDecision {
 
 export interface ClaimTimePlanDecisionsBrief {
   planSlug: string;
+  /** The surfaced window — the `MAX_DECISIONS` most RECENT decisions, oldest-first
+   *  within the window. May be shorter than `totalDecisions`. */
   decisions: ClaimTimePlanDecision[];
+  /**
+   * How many structured decisions the plan actually has. ALWAYS report this
+   * alongside `decisions.length` — never describe the window as if it were the
+   * whole set (EI-19396519606401168: the note was built from the post-slice
+   * length and read as "this plan has 8 decisions" on a plan with 25, so a
+   * claimer that had been handed a deferred item was told, in the same payload,
+   * that it had seen the governing rulings).
+   */
+  totalDecisions: number;
 }
 
 /** Per-decision excerpt cap — generous enough to read the ruling's substance
@@ -52,9 +63,31 @@ export interface ClaimTimePlanDecisionsBrief {
  *  plan can't overflow the claim payload the same way plans:get's own
  *  DECISION_BODY_CAP bounds its `sections` mode. */
 const SNIPPET_CHARS = 240;
-/** Cap on how many decisions ride the claim payload — a plan with more than
- *  this has a decision LOG, not a short list of live rulings; the excess stays
- *  one `plans:get` away. */
+/**
+ * Cap on how many decisions ride the claim payload — a plan with more than this
+ * has a decision LOG, not a short list of live rulings; the excess stays one
+ * `plans:get` away.
+ *
+ * ⚠ WHICH end of the log we keep is the load-bearing part, and it used to be the
+ * wrong one (EI-19396519606401168). `parsePlan().decisions` is in DOCUMENT order,
+ * and `plans:add-decision` APPENDS — so document order is append order, oldest
+ * first, and the original `slice(0, MAX_DECISIONS)` kept the eight STALEST
+ * rulings and dropped everything after them.
+ *
+ * That is backwards for the job this port does. Decisions accumulate over a
+ * plan's life, so the newest ones are precisely the ones that retarget, defer,
+ * re-scope or refute an existing item — the rulings a claimer is most likely to
+ * be about to violate. Measured on `no-http-anywhere-2026-07-28` (25 decisions):
+ * the retained window was D-001..D-009, while D-022 — which explicitly defers
+ * P-004/005/006 — sat at ordinal 21 and never surfaced, so an agent handed P-004
+ * was told it had seen the governing decisions and started building.
+ *
+ * So: keep the most RECENT window, and always report `totalDecisions` so the
+ * window is never mistaken for the whole set. A foundational early ruling that
+ * falls out of the window is the acceptable trade — it is one `plans:get` away,
+ * and the note now says so — whereas a missed SUPERSEDING ruling sends the
+ * claimer to do work the plan has already ruled out.
+ */
 const MAX_DECISIONS = 8;
 
 /**
@@ -87,11 +120,15 @@ export async function getClaimTimePlanDecisions(opts: {
     if (!decisions.length) return null;
     return {
       planSlug,
-      decisions: decisions.slice(0, MAX_DECISIONS).map((d) => ({
+      // The most RECENT window, oldest-first within it — see MAX_DECISIONS. A
+      // negative slice on a shorter array is the whole array, so a plan at or
+      // under the cap is unaffected and still surfaces every decision.
+      decisions: decisions.slice(-MAX_DECISIONS).map((d) => ({
         id: d.id,
         title: d.title,
         snippet: clampSnippet(d.body, SNIPPET_CHARS),
       })),
+      totalDecisions: decisions.length,
     };
   } catch {
     return null;

@@ -182,6 +182,23 @@ describe('projectMember (pure)', () => {
     expect(healthyBetweenItems.doing).toBeNull();
     expect(healthyBetweenItems.loopMode).toBe('work');
   });
+
+  // EI-19381528967421062: a member whose loop backed off from a provider wall reads
+  // active:true/sessionState:parked identically to a healthy between-wakes member on
+  // every OTHER field here — `throttled` is the ONE signal that tells them apart.
+  it('omits `throttled` when the loop is healthy (no lifecycleBackoff stamped)', () => {
+    const m = projectMember(baseAgent({ monitorState: 'waiting', nextFireAt: '2026-07-10T12:01:00.000Z' }), NOW);
+    expect('throttled' in m).toBe(false);
+  });
+
+  it('carries `throttled` verbatim when the loop backed off from a provider wall', () => {
+    const lifecycleBackoff = { reason: 'rate_limited', until: '2026-08-02T23:58:00.000Z', resumesInMs: 5_940_000 };
+    const m = projectMember(baseAgent({ nextFireAt: '2026-08-02T23:58:00.000Z', lifecycleBackoff }), NOW);
+    expect(m.throttled).toEqual(lifecycleBackoff);
+    // nextFireAt alone (per the earlier tests) is indistinguishable from a healthy wait —
+    // throttled is what makes THIS row legible as "silenced until X", not "next tick soon".
+    expect(m.nextFireAt).toBe('2026-08-02T23:58:00.000Z');
+  });
 });
 
 describe('computeBenchSuggestion (pure, EI-9943)', () => {

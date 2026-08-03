@@ -97,6 +97,14 @@ export interface LeaderBriefMember {
    *  this) — orthogonal to `monitorState`, which is the lifecycle verdict, not the armed mode.
    *  Null when no active loop. */
   loopMode: 'work' | 'monitor' | null;
+  /** EI-19381528967421062: present ONLY while this member's loop is backed off from a
+   *  provider wall (rate-limit/usage-cap) — `nextFireAt` above reflects that wait, NOT a
+   *  normal cadence tick, and `active:true` alone cannot say so. A leader reading this row
+   *  can tell "healthy, next tick in 60s" from "silenced until `until`" without a separate
+   *  per-owner `loop:status` call. Absent (not null) when the loop is healthy — matches
+   *  `unanswered`/`parkedOn`'s "present only when it matters" convention. See
+   *  computeLifecycleBackoff (harness/routines/loop.ts). */
+  throttled?: LifecycleBackoffInfo;
   /** ms since the member's last recorded tool call; null = never (still booting). */
   lastToolCallAgeMs: number | null;
   doing: unknown;
@@ -781,6 +789,7 @@ export type DecoratedAgent = AgentAssignment & {
   monitorState?: MonitorState | null;
   nextFireAt?: string | null;
   loopMode?: 'work' | 'monitor' | null;
+  lifecycleBackoff?: LifecycleBackoffInfo | null;
 };
 
 /**
@@ -982,6 +991,7 @@ export function projectMember(
     monitorState: a.monitorState ?? null,
     nextFireAt: a.nextFireAt ?? null,
     loopMode: a.loopMode ?? null,
+    ...(a.lifecycleBackoff ? { throttled: a.lifecycleBackoff } : {}),
     lastToolCallAgeMs,
     productiveToolCallAgeMs,
     doing: a.doing,
@@ -1024,7 +1034,9 @@ export default defineTool({
     'sessionState, `verdict` (booted|joined|first-turn-done|speaking|stalled|dead), wakeMode, ' +
     'lastToolCallAgeMs, claims (doing/workItemIds/queuedCount/load), loop state+nextFireAt, ' +
     'stalled, unanswered, contextPressure, parkedOn + parkedOnResolved, benchSuggestion, ' +
-    '`dormant`, `spinning`, unownedCriticals + unownedCriticalsFederated + abandonedUnclaimed.',
+    '`dormant`, `spinning`, `throttled` (loop backed off from a provider wall — nextFireAt is ' +
+    'a wait, not a normal tick; see the member\'s `throttled.until`/`.reason`), ' +
+    'unownedCriticals + unownedCriticalsFederated + abandonedUnclaimed.',
   guidance: {
     when:
       'AFTER a wake: "who is working / stuck / unanswered / about to compact across MY fleet". ' +
@@ -1241,6 +1253,12 @@ export default defineTool({
       // here (stalled, dead) reads these as healthy. >0 means wake it explicitly and
       // investigate; do not assume the loop will self-correct.
       spinning: members.filter((m) => m.spinning === true).length,
+      // EI-19381528967421062: members whose loop is backed off from a provider wall right
+      // now — `active:true`/`sessionState:parked` read identical to a healthy between-wakes
+      // member on every OTHER surface. >0 here means those claims are stranded until
+      // `throttled.until`, not lost; do not relaunch/reclaim solely on this, but do NOT read
+      // the fleet as fully healthy either — see each member's `throttled` field for when.
+      throttled: members.filter((m) => m.throttled != null).length,
       // The live authoritative claimable total behind the two fields above (the same
       // number work_items:claimable reports). null ⇒ could not be read on this brief —
       // NOT zero, and never to be read as a drained lane.

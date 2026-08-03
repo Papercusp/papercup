@@ -902,8 +902,17 @@ export default defineTool({
                   ...(planDecisions
                     ? {
                         planDecisions: planDecisions.decisions,
+                        // EI-19396519606401168: this note used to be built from
+                        // the POST-CAP length, so a capped brief announced itself
+                        // as the complete set ("8 governing decision(s) recorded"
+                        // on a plan with 25). Say the true total and, when capped,
+                        // say plainly that the rest are NOT shown — a claimer who
+                        // is about to violate a ruling it was never handed is the
+                        // exact failure this brief exists to prevent.
                         planDecisionsNote:
-                          `${planDecisions.decisions.length} governing decision(s) recorded on plan '${planDecisions.planSlug}' — read before acting; a ruling other lanes must follow lives here, not only in coord (plans:get { slug:'${planDecisions.planSlug}', heading:'Decisions' } for full bodies).`,
+                          planDecisions.totalDecisions > planDecisions.decisions.length
+                            ? `Showing the ${planDecisions.decisions.length} MOST RECENT of ${planDecisions.totalDecisions} governing decision(s) on plan '${planDecisions.planSlug}' — ${planDecisions.totalDecisions - planDecisions.decisions.length} older one(s) are NOT shown. Read before acting, and read the rest before concluding no ruling governs your item: plans:get { slug:'${planDecisions.planSlug}', heading:'Decisions' }.`
+                            : `${planDecisions.totalDecisions} governing decision(s) recorded on plan '${planDecisions.planSlug}' — read before acting; a ruling other lanes must follow lives here, not only in coord (plans:get { slug:'${planDecisions.planSlug}', heading:'Decisions' } for full bodies).`,
                       }
                     : {}),
                   ...(premises
