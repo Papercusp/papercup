@@ -674,6 +674,46 @@ describe('computeBenchSuggestion — idle beside a NONEMPTY queue (EI-1868125956
     expect(s?.reason).toMatch(/wake/i);
   });
 
+  // EI-19412077774087262 — the live inversion: su-70390c8c sat at contextPressure
+  // 'critical' with NO claim while this suggestion told the leader it "should be taking
+  // work". A member at critical context that claims runs out mid-item and dies HOLDING the
+  // claim, so the standard remedy converts an idle member into an orphaned work-item.
+  describe('CRITICAL context inverts the remedy', () => {
+    const critical = { ...idle, contextPressure: 'critical' as const };
+
+    it('still reports the lane is NOT drained (the claimable fact is unchanged)', () => {
+      const s = computeBenchSuggestion(critical, 2);
+      expect(s?.kind).toBe('idle-with-claimable');
+      expect(s?.reason).toMatch(/2 item\(s\) ARE claimable/);
+    });
+
+    it('does NOT tell the leader to wake it to claim — that orphans the claim', () => {
+      const s = computeBenchSuggestion(critical, 2);
+      expect(s?.reason).toMatch(/DO NOT wake it to claim/);
+      expect(s?.reason).toMatch(/orphans the claim/);
+      // and must not fall back to the other wrong remedy either
+      expect(s?.reason).toMatch(/DO NOT fleet:bench/);
+    });
+
+    it('prescribes the ORDERING that makes claiming safe (flush -> self-compact -> pull)', () => {
+      const s = computeBenchSuggestion(critical, 2);
+      expect(s?.reason).toMatch(/checkpoint/);
+      expect(s?.reason).toMatch(/self-compact/);
+      expect(s?.reason).toMatch(/idle CORRECTLY/);
+    });
+
+    it('leaves NON-critical pressure on the ordinary wake-it path', () => {
+      // The guard must be scoped to 'critical' only — 'high' and 'ok' members are genuinely
+      // startable, and suppressing their dispatch would starve the lane for the opposite reason.
+      for (const p of ['ok', 'high', null, undefined] as const) {
+        const s = computeBenchSuggestion({ ...idle, contextPressure: p }, 2);
+        expect(s?.kind).toBe('idle-with-claimable');
+        expect(s?.reason).toMatch(/Wake it to re-run scheduler:get_next/);
+        expect(s?.reason).not.toMatch(/DO NOT wake it to claim/);
+      }
+    });
+  });
+
   it('keeps the historical bench advice when the lane is VERIFIED drained (0 claimable AND 0 matching)', () => {
     // EI-18689489507862177 TIGHTENED THIS TEST'S PREMISE. It used to pass `claimableCount: 0`
     // with no gating read and assert "VERIFIED drained" — but an empty queue alone cannot

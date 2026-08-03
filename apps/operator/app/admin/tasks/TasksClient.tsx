@@ -3,6 +3,8 @@
 import { useMemo, type CSSProperties, type ReactElement } from 'react';
 import { useQueryState, parseAsBoolean, parseAsString } from 'nuqs';
 import { useSyncQuery } from '@papercusp/sync';
+import { fmtCpuPct, resourceTitle, useResourceTotals } from './use-resource-totals';
+import type { TaskResourceTotals } from '@papercusp/operator-core/lib/task-manager/inventory';
 
 // `@/app/...` (not a relative path): this component is rendered from BOTH trees —
 // apps/operator's own /admin/tasks page and operator-vite's route + left-rail tab —
@@ -75,7 +77,13 @@ type LiveProcess = { pid: number; cmdline: string | null; cgroupPath: string; ow
 
 type Payload = {
   enabled: boolean;
-  summary: { total: number; byState: Record<string, number>; byClass: Record<string, number> };
+  summary: {
+    total: number;
+    byState: Record<string, number>;
+    byClass: Record<string, number>;
+    /** WI-7371 — server-side fold over the FULL tracked set, not the filtered rows. */
+    resources?: TaskResourceTotals;
+  };
   live: (Live & { unaccounted?: number | { cgroupPath: string; pids: number[]; sample: string }[] }) | null;
   rows: Row[];
   liveProcesses?: LiveProcess[];
@@ -144,6 +152,19 @@ const mono: CSSProperties = { fontFamily: 'var(--font-mono, ui-monospace, monosp
 const cell: CSSProperties = { padding: '6px 10px', borderBottom: '1px solid var(--border, #2a2a2a)', ...mono };
 /** Header cells stay pinned while a long task list scrolls under them. */
 const head: CSSProperties = { textAlign: 'left', position: 'sticky', top: 0, background: 'var(--bg, #111)' };
+
+/** WI-7371 — the live totals strip. Tokens carry fallbacks per the css-tokens lint. */
+const resourceBar: CSSProperties = {
+  display: 'flex',
+  gap: 18,
+  alignItems: 'baseline',
+  padding: '8px 12px',
+  marginBottom: 12,
+  border: '1px solid var(--border, #2a2a2a)',
+  borderRadius: 6,
+  background: 'var(--bg-subtle, #171717)',
+  ...mono,
+};
 
 /** The task table's columns. Declared once at module scope (not rebuilt per render)
  *  because every cell renderer here is a pure function of its row. */
@@ -254,6 +275,8 @@ export default function TasksClient(): ReactElement {
   });
 
   const data = q.data[0] ?? null;
+  // WI-7371 — same hook the popover uses, so the two surfaces cannot disagree (WI-6844).
+  const resources = useResourceTotals(data?.summary?.resources);
   const error = q.error?.message ?? null;
 
   const live = data?.live ?? null;
@@ -291,6 +314,28 @@ export default function TasksClient(): ReactElement {
         work-item, under what budget, and what it costs. Read-only — kill / freeze / limit are the{' '}
         <code>processes:*</code> tools.
       </p>
+
+      {/* WI-7371 — live totals across the FULL tracked set. Deliberately above the
+          filters: these do NOT narrow with the class/state selectors below, because they
+          are folded server-side over every tracked task. A client-side sum over `rows`
+          would silently report the filtered subset under a whole-system label. */}
+      {resources && (
+        <div style={resourceBar} data-testid="tasks-resource-totals">
+          <span title={resourceTitle(resources).mem}>
+            <span style={{ opacity: 0.7 }}>memory </span>
+            <strong data-testid="tasks-total-mem">{fmtBytes(resources.rssBytesTotal)}</strong>
+          </span>
+          <span title={resourceTitle(resources).cpu}>
+            <span style={{ opacity: 0.7 }}>cpu </span>
+            <strong data-testid="tasks-total-cpu">
+              {resources.hasRate ? fmtCpuPct(resources.cpuBusyPct) : 'measuring…'}
+            </strong>
+          </span>
+          <span style={{ opacity: 0.55 }}>
+            {resources.rssBytesKnown}/{resources.rowsConsidered} reporting
+          </span>
+        </div>
+      )}
 
       {error && <div style={{ color: 'var(--bad)', marginBottom: 12 }}>Load failed: {error}</div>}
 

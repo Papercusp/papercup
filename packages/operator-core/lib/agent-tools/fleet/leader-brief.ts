@@ -202,6 +202,13 @@ export function computeBenchSuggestion(
     // the leader's own monitor row", never a false suppression.
     fleetRole?: string | null;
     loopMode?: 'work' | 'monitor' | null;
+    // EI-19412077774087262: a member at CRITICAL context that claims work ORPHANS the
+    // claim — it runs out of context mid-item and dies holding it. So "wake it to claim"
+    // is the wrong remedy for exactly that member, and the idle-with-claimable branch
+    // below used to prescribe it unconditionally. Optional (same convention as the fields
+    // above) so pre-existing call sites keep compiling; absent reads as "no pressure
+    // signal", never a false suppression.
+    contextPressure?: ContextPressureBucket | null;
   },
   /**
    * EI-18681259560385029: the fleet's LIVE authoritative claimable count (the same
@@ -356,6 +363,31 @@ export function computeBenchSuggestion(
     // Live 2026-07-26T04:32Z: five members carried this line while claimableCount was 2, and
     // the leader read it and stood the fleet down. Branch on the real number instead.
     if (claimableCount != null && claimableCount > 0) {
+      // EI-19412077774087262: CRITICAL context inverts the remedy. The reason text below
+      // prescribes "wake it to claim", which for a member at critical context is precisely
+      // the wrong move — it claims, runs out of context mid-item, and dies HOLDING the
+      // claim, converting an idle member into an orphaned work-item the leader then has to
+      // reclaim. Observed live 2026-08-03T06:2xZ on nonp2p-bug-drain-0801: su-70390c8c sat
+      // at contextPressure 'critical' with NO claim while this line told the leader it
+      // "should be taking work". The member was in fact correct to hold off. Report the
+      // SAME idle-with-claimable fact (the lane genuinely is not drained) but prescribe the
+      // ordering that makes claiming safe, rather than a remedy the member must ignore.
+      if (a.contextPressure === 'critical') {
+        return {
+          kind: 'idle-with-claimable',
+          reason:
+            `alive with NO claim and nothing queued while ${claimableCount} item(s) ARE claimable, ` +
+            'BUT this member is at CRITICAL context pressure — it is idle CORRECTLY, not starving. ' +
+            'DO NOT wake it to claim: claiming at critical context orphans the claim (it dies mid-item ' +
+            'still holding it, which costs you a reclaim on top of the lost turn). DO NOT fleet:bench ' +
+            'it either — the lane is not drained. The remedy is ORDERING, not dispatch: it must flush ' +
+            '(work_items:checkpoint / loop:checkpoint) then self-compact (session:request-compaction ' +
+            '{ autoContinue: true }), and it will pull on the next wake with a clean context. If it is ' +
+            'still critical and unclaimed several wakes from now, THAT is the fault worth chasing.',
+          item: null,
+          itemTitle: null,
+        };
+      }
       return {
         kind: 'idle-with-claimable',
         reason:
