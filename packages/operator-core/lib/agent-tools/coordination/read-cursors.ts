@@ -65,7 +65,15 @@ class PgReadCursorStore implements ReadCursorStore {
                (workspace_id, owner_id, surface, committed, pending, pending_at, updated_at)
         VALUES (${ws}, ${ownerId}, ${surface},
                 (SELECT COALESCE(pending, committed) FROM old),
-                ${sql.json(next)}, now(), now())
+                -- WI-7092 / EI-607: this sql is getOrgPg's client (line 53) -- sql.json(next)
+                -- THROWS on it in production (a postgres-js CJS/ESM dual-package
+                -- module-instance mismatch; see
+                -- agent-insights/sql-json-throws-on-getorgpg-client). Bind as
+                -- JSON.stringify(next)::jsonb instead -- portable, server-side cast, and
+                -- correct under vitest too (vitest's module transform does not reproduce
+                -- the CJS/ESM split, so a vitest-run test cannot tell the two forms apart --
+                -- this comment plus lint:no-sql-json are what actually guard the class).
+                ${JSON.stringify(next)}::jsonb, now(), now())
         ON CONFLICT (workspace_id, owner_id, surface) DO UPDATE
            SET committed  = COALESCE(harness_shared.coord_read_cursors.pending,
                                      harness_shared.coord_read_cursors.committed),

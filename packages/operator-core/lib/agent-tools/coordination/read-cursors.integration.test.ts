@@ -1,20 +1,34 @@
 /**
- * read-cursors.integration.test.ts — proves PgReadCursorStore.ackAndAdvance works
- * against the REAL getOrgPg()-class client (WI-7092 / EI-607).
+ * read-cursors.integration.test.ts — proves PgReadCursorStore.ackAndAdvance persists
+ * a real jsonb OBJECT (not a string scalar) through the real getOrgPg()-class client,
+ * against a real, migrated Postgres (WI-7092 / EI-607).
  *
  * Before this fix, `ackAndAdvance`'s INSERT bound its `pending` column via
- * `sql.json(next)` — which THROWS on getOrgPg's client (a postgres-js dual-package
- * module-instance mismatch; see agent-insights/sql-json-throws-on-getorgpg-client).
- * `read-cursors.test.ts` only ever exercises `InMemoryReadCursorStore` (its own
- * header says the Pg store's live behavior was "verified... via psql round-trip, not
- * here") — so this write path had ZERO automated coverage and was silently broken in
- * production every time it ran: every real cursor-ack call threw, so the fleet-deltas
- * P-004 two-phase ack protocol never actually persisted a cursor row.
+ * `sql.json(next)`, which THROWS on getOrgPg's client in PRODUCTION (a postgres-js
+ * CJS/ESM dual-package module-instance mismatch; see
+ * agent-insights/sql-json-throws-on-getorgpg-client). `read-cursors.test.ts` only
+ * ever exercises `InMemoryReadCursorStore` (its own header says the Pg store's live
+ * behavior was "verified... via psql round-trip, not here") — so this write path had
+ * ZERO automated coverage and was silently broken in production every time it ran:
+ * every real cursor-ack call threw, so the fleet-deltas P-004 two-phase ack protocol
+ * never actually persisted a cursor row.
+ *
+ * ⚠ What this test does NOT prove: it does not, by itself, catch a REGRESSION back to
+ * `sql.json(next)`. Confirmed empirically (temporarily reverting the fix and re-running
+ * this suite): `sql.json` does not throw under vitest even when routed at the real
+ * getOrgPg() against a real migrated DB — the dual-package CJS/ESM hazard the doc above
+ * describes is specific to the actual built/bundled Node runtime resolving
+ * `@papercusp/db-org`'s compiled output, which vitest's module transform does not
+ * reproduce. This matches the doc's own "integration tests are structurally blind to
+ * this class" warning; it turns out that includes a getOrgPg-routed one too, not only
+ * the tolerant root-postgres fixture client. The actual regression guard for THIS
+ * specific class is the static `lint:no-sql-json` guard (scripts/check-no-sql-json.mjs).
+ * What this test DOES prove, and is worth having on its own: the two-phase ack SQL
+ * (the CTE, the jsonb round-trip, the ON CONFLICT promotion) is correct against a real
+ * Postgres — coverage `read-cursors.test.ts` never had at all.
  *
  * This test env-routes the real getOrgPg() at a throwaway MIGRATED database (the
- * `hive-git-mode-gc-arming.integration.test.ts` / "serve-wiring" idiom) so the exact
- * production call path — including the dual-package hazard that makes `sql.json`
- * throw — is what's exercised, not a tolerant fixture client.
+ * `hive-git-mode-gc-arming.integration.test.ts` / "serve-wiring" idiom).
  *
  * Run: npm run test:file -- packages/operator-core/lib/agent-tools/coordination/read-cursors.integration.test.ts
  */

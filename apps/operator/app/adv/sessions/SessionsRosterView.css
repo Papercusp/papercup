@@ -761,6 +761,58 @@
   color: var(--pc-dossier-cap-label);
   opacity: 0.72;
 }
+
+/* ── P-008: the Activity rail's BODY type, lifted for the popup only ─────────
+ * [owner 2026-08-02] "I'm finding the text hard to read on the left and right
+ * hand sidebars."
+ *
+ * MEASURED: contrast was never the problem here — on this ground the rail runs
+ * 15.1:1 (body), 11.7:1 (dim) and 7.7:1 (muted), all comfortably AAA. Raising
+ * contrast would only have flattened the muted tier into body text and cost the
+ * tonal hierarchy. The defect is SIZE, so this moves size and nothing else.
+ *
+ * Values chosen to MATCH the Orders rail on the opposite edge (body 12.5px,
+ * caps 10.5px). The two rails flank the same popup and are read in one glance;
+ * two different body sizes there read as a bug, not as hierarchy.
+ *
+ * SCOPED to `.pc-zone--activity` on purpose, accepting the duplication. The
+ * `.pc-dossier__*` rules below are shared with the /adv detail pane, which is a
+ * different density context (a full-width pane in a two-pane board, not a
+ * ~200px rail in a 740px popup) and was not part of this ask. Lifting the
+ * shared rules would silently restyle a screen the owner was not looking at.
+ * If /adv is ever judged to have the same problem, the right move is to lift
+ * the shared rules and DELETE this block — not to let the two drift. */
+.pc-zone--activity .pc-dossier__meta-row,
+.pc-zone--activity .pc-dossier__coord-line,
+.pc-zone--activity .pc-dossier__empty-line,
+.pc-zone--activity .pc-dossier__checkpoint,
+.pc-zone--activity .pc-dossier__lock,
+.pc-zone--activity .pc-dossier__windown {
+  font-size: 12.5px;
+}
+.pc-zone--activity .pc-dossier__meta-val {
+  font-size: 12.5px;
+}
+.pc-zone--activity .pc-dossier__dir,
+.pc-zone--activity .pc-dossier__coord-ts,
+.pc-zone--activity .pc-dossier__lock-exp,
+.pc-zone--activity .pc-dossier__lock-intent,
+.pc-zone--activity .pc-dossier__drillin,
+.pc-zone--activity .pc-dossier__ctxbar-pct {
+  font-size: 12px;
+}
+/* NB `__badge-count` here is the one in a section BODY. The badge riding ON a
+   cap bar is already pinned to the smaller cap scale (10px) by the rule above,
+   which is more specific (3 classes vs 2) and therefore wins — it must stay
+   subordinate to its 10.5px bar rather than take the body size. */
+.pc-zone--activity .pc-dossier__meta-key,
+.pc-zone--activity .pc-dossier__badge-count {
+  font-size: 11.5px;
+}
+.pc-zone--activity .pc-dossier__subhead,
+.pc-zone--activity .pc-dossier__lockmark {
+  font-size: 11px;
+}
 .pc-dossier__badge-count {
   margin-left: auto;
   font-size: 10.5px;

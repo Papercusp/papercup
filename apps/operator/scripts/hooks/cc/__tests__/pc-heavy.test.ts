@@ -1151,4 +1151,110 @@ describe('pc-heavy.sh — release-gate reserve (EI-19315056231449472)', () => {
       expect(slotsLine(r.stderr)).toContain('gate=0');
     });
   });
+
+  // ── Refusing the broad sweep in the classifier phases (EI-19385714326170346).
+  // The clamp above is about LOAD; this is about the gate's VERDICT. During
+  // `isolating`/`delivering` the gate re-runs failing files at single concurrency
+  // to decide real-break vs load-flake, so a concurrent broad sweep can flip that
+  // classification and red the gate fleet-wide on code that is fine.
+  //
+  // The load-bearing tests here are the NEGATIVE ones: this guard refuses work, so
+  // every unknown must fail OPEN (the opposite direction to the clamp's "throttle
+  // more"). A bug that refuses too eagerly blocks routine work for every agent.
+  describe('refuses the broad sweep in classifier phases (EI-19385714326170346)', () => {
+    const plantPhase = (lock: string, body: string | object): void =>
+      writeFileSync(join(lock, 'phase.json'), typeof body === 'string' ? body : JSON.stringify(body));
+    const at = () => new Date().toISOString();
+    // argv carries the marker the guard matches on, but the command is `true` —
+    // so a NON-refusal exits 0 harmlessly instead of running a real suite.
+    const sweep = (env: Record<string, string> = {}) =>
+      runSync(['true', 'scripts/affected-tests.mjs'], { PC_HEAVY_COALESCE: '0', ...env });
+    const scoped = (env: Record<string, string> = {}) =>
+      runSync(['true', 'scripts/test-files.mjs'], { PC_HEAVY_COALESCE: '0', ...env });
+
+    for (const phase of ['isolating', 'delivering'] as const) {
+      it(`REFUSES test:affected during \`${phase}\``, () => {
+        const lock = plantLock(liveOwner());
+        plantPhase(lock, { phase, at: at(), phaseProtocol: 2 });
+        const r = sweep();
+        expect(r.status).toBe(75);
+        expect(r.stderr).toContain('REFUSING test:affected');
+        expect(r.stderr).toContain(phase);
+        // It must tell the agent what to do INSTEAD — the whole point is that the
+        // knowledge reaches the moment of action, not a doc they already read.
+        expect(r.stderr).toContain('npm run test:file --');
+        expect(r.stderr).toContain('PC_HEAVY_ALLOW_DURING_GATE=1');
+      });
+    }
+
+    it('NEVER refuses a scoped test:file run — it is the prescribed alternative', () => {
+      const lock = plantLock(liveOwner());
+      plantPhase(lock, { phase: 'isolating', at: at(), phaseProtocol: 2 });
+      const r = scoped();
+      expect(r.status).toBe(0);
+      expect(r.stderr).not.toContain('REFUSING');
+    });
+
+    it('does NOT refuse during the long `suite` sweep — that window is hours, not minutes', () => {
+      const lock = plantLock(liveOwner());
+      plantPhase(lock, { phase: 'suite', at: at(), phaseProtocol: 2 });
+      const r = sweep();
+      expect(r.status).toBe(0);
+      expect(r.stderr).not.toContain('REFUSING');
+    });
+
+    // THE one that would wedge the fleet for hours if it regressed: protocol 1
+    // folds isolation INSIDE `suite`, so `isolating` never appears and refusing on
+    // `suite` there would block every sweep for the run's whole ~2.7h lifetime.
+    it('FAILS OPEN against a protocol-1 writer (phaseProtocol absent)', () => {
+      const lock = plantLock(liveOwner());
+      plantPhase(lock, { phase: 'suite', at: at() });
+      expect(sweep().status).toBe(0);
+      const lock2 = plantLock(liveOwner(), 'bbb222');
+      plantPhase(lock2, { phase: 'isolating', at: at() });
+      expect(sweep().status).toBe(0);
+    });
+
+    it('FAILS OPEN on missing / unparseable / unrecognized phase input', () => {
+      // no phase.json at all
+      plantLock(liveOwner());
+      expect(sweep().status).toBe(0);
+      for (const body of ['not json', '{}', '', '{"phase":"isolating","phaseProtocol":"two"}',
+                          { phase: 'wat', at: at(), phaseProtocol: 2 }]) {
+        rmSync(join(dir, 'checkpoint-logs'), { recursive: true, force: true });
+        const lock = plantLock(liveOwner());
+        plantPhase(lock, body);
+        expect(sweep().status).toBe(0);
+      }
+    });
+
+    it('FAILS OPEN when no gate run is live at all', () => {
+      expect(sweep().status).toBe(0);
+      plantLock({ pid: deadPid, startedAt: at(), token: 'tok' });
+      expect(sweep().status).toBe(0);
+    });
+
+    it('PC_HEAVY_ALLOW_DURING_GATE=1 escapes the refusal', () => {
+      const lock = plantLock(liveOwner());
+      plantPhase(lock, { phase: 'isolating', at: at(), phaseProtocol: 2 });
+      expect(sweep({ PC_HEAVY_ALLOW_DURING_GATE: '1' }).status).toBe(0);
+    });
+
+    // Structural, but assert it: green-checkpoint's own suite and isolation
+    // re-runs inherit PC_HEAVY_RELEASE_GATE=1 and exec long before this guard, so
+    // the gate can never refuse itself into a deadlock.
+    it('the release gate itself is never refused (PC_HEAVY_RELEASE_GATE=1)', () => {
+      const lock = plantLock(liveOwner());
+      plantPhase(lock, { phase: 'isolating', at: at(), phaseProtocol: 2 });
+      const r = sweep({ PC_HEAVY_RELEASE_GATE: '1' });
+      expect(r.status).toBe(0);
+      expect(r.stderr).not.toContain('REFUSING');
+    });
+
+    it('PC_HEAVY_GATE_RESERVE=0 disables the refusal along with the clamp', () => {
+      const lock = plantLock(liveOwner());
+      plantPhase(lock, { phase: 'isolating', at: at(), phaseProtocol: 2 });
+      expect(sweep({ PC_HEAVY_GATE_RESERVE: '0' }).status).toBe(0);
+    });
+  });
 });

@@ -328,6 +328,14 @@ const STANDALONE_PACKAGE_DIRS = ['papercusp-desktop'];
 // divergence from the first nobody would notice.
 const NON_WORKSPACE_PATH_ROUTES = [
   { prefix: 'scripts/', workspace: '@papercusp/operator-core' },
+  // CLAUDE.md is a PRESCRIPTIVE artifact spliced into every agent's prompt, and
+  // its executable claims are asserted by operator-core's doc-claims suite
+  // (false-premise-in-prescriptive-artifacts-2026-08-02 P-004). MEASURED before
+  // adding it: `--changed-paths CLAUDE.md` selected ZERO workspaces, so the one
+  // guard that checks this file did not run when this file changed — the guard
+  // would have fired only via the full suite, hours later at the fleet gate,
+  // which is the exact latency the check exists to remove.
+  { prefix: 'CLAUDE.md', workspace: '@papercusp/operator-core' },
 ];
 
 // EI-19388389386110890 — REPO-WIDE INVARIANTS ENFORCED FROM ONE WORKSPACE.

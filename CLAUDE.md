@@ -1324,18 +1324,25 @@ training cutoffs; don't guess from memory.
    `allowedTools` (operator-converse:
    `packages/operator-core/lib/operator-mcp-tools.ts`; oracle:
    `packages/operator-core/lib/agent-tools/oracle/prompts.ts`).
-5. **Run** `cd packages/operator-core && npx vitest run tools-md-sync` — green
-   before commit. This quick-check now also enforces the P-011 prompt-weight
-   budget (≤1500 soft / ≤1600 hard per tool's description+guidance), so an
-   over-budget guidance edit reds HERE instead of silently wedging the green
-   gate (EI-7284).
+5. **Run** `npm run lint:tool-prompts` — green before commit. This quick-check
+   now also enforces the P-011 prompt-weight budget (≤1500 soft / ≤1600 hard per
+   tool's description+guidance), so an over-budget guidance edit reds HERE
+   instead of silently wedging the green gate (EI-7284).
+
+   > It is a ROOT entrypoint that queues behind `scripts/pc-heavy.sh`, which is
+   > what makes it runnable when you actually need it. A bare
+   > `npx vitest run tools-md-sync` is REFUSED by the heavy-command admission
+   > gate under fleet load — i.e. this mandated check used to be un-runnable as
+   > written during exactly the hours the fleet is busiest, so the gate got
+   > skipped and the breach surfaced later as a frozen fleet gate
+   > (EI-19364889235428417).
 
 > **Editing a live tool counts too.** In practice nearly every prompt-weight gate
 > red has come from *growing* an existing tool's `description`/`guidance`, not from
 > adding a new one — and an editor never reads an "Adding a tool" section, so the
 > breach lands committed and freezes the fleet gate hours later. Run the same
-> `tools-md-sync` quick-check after ANY description/guidance change, not just an
-> add. Backstop (EI-10966): the live operator now re-checks the prompt-weight
+> `npm run lint:tool-prompts` quick-check after ANY description/guidance change,
+> not just an add. Backstop (EI-10966): the live operator now re-checks the prompt-weight
 > budget at tool-registration and warns in its OWN log the moment a hot-reloaded
 > edit goes over budget — so a skipped quick-check surfaces in the operator, not
 > only at the fleet gate.
@@ -1354,8 +1361,8 @@ THIS `CLAUDE.md` in as the Project guide — repo-convention changes belong here
 harness spawn prompts from `libs/papercusp/packages/harness/prompts/<role>.md`.
 **Never edit rendered outputs** (`~/.papercusp/*-collaborator*.md`, anything
 under `papercup-release`, captured prompts). Dev edits load immediately
-(`PAPERCUSP_RELOAD_PROMPTS=1`). After a `<role>.tools.md` edit run the
-tools-md-sync test; after a substantial SU-playbook edit run
+(`PAPERCUSP_RELOAD_PROMPTS=1`). After a `<role>.tools.md` edit run
+`npm run lint:tool-prompts`; after a substantial SU-playbook edit run
 `npm --prefix apps/operator run llm-test -- --target su`. Long form:
 [repo-conventions § prompts](/internal/docs/system/repo-conventions).
 

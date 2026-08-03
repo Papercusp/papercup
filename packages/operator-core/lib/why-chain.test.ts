@@ -203,7 +203,9 @@ describe('computeWhyChain (EI-7349)', () => {
       expect(res.stages[1].status).toBe('degraded');
       expect(res.stages[1].reason).toContain('99 commit');
       expect(res.stages[1].reason).toContain('origin');
-      expect(res.stages[1].reason).not.toContain('normal');
+      // The message itself may legitimately SAY "never normal" — assert against the
+      // specific staging-buffer gloss it must not carry, not the bare substring.
+      expect(res.stages[1].reason).not.toContain('await the next gate run — normal');
       expect(res.rootCause?.stage).toBe('deploy');
     });
 
@@ -211,7 +213,9 @@ describe('computeWhyChain (EI-7349)', () => {
       const res = await computeWhyChain(deps({ snap: snap({ deploy: { stagingAheadOfOrigin: 1 } }) }));
       expect(res.stages[1].status).toBe('degraded');
       expect(res.stages[1].reason).toContain('1 commit');
-      expect(res.stages[1].reason).not.toContain('normal');
+      // The message itself may legitimately SAY "never normal" — assert against the
+      // specific staging-buffer gloss it must not carry, not the bare substring.
+      expect(res.stages[1].reason).not.toContain('await the next gate run — normal');
     });
 
     it('unpushed-to-origin outranks the ordinary staging buffer AND the real deploy gap (checked first)', async () => {
