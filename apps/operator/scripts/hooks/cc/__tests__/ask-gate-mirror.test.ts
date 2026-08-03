@@ -157,10 +157,26 @@ describe('ask-gate-mirror — operator-independent paths', () => {
     ])('BOUNCES a withheld deliverable: %s', (text) => {
       const out = bounced(text);
       expect(out?.decision).toBe('block');
-      expect(out.reason).toMatch(/DEFERRING a deliverable/);
+      expect(out.reason).toMatch(/DEFERRING something/);
       // The reason must TEACH the fix (write it now → end → ask next turn),
       // not merely refuse the stop.
       expect(out.reason).toMatch(/in THIS turn/i);
+    });
+
+    // EI-19412167276099357 defect 2: a deferred QUESTION ("I'll ask … next
+    // message") used to slip past — the delivery-verb list only covered
+    // deliverable-handoff verbs, not asking. Measured live 2026-08-03.
+    it.each([
+      "I'll ask how you want this executed in the next message.",
+      "I'll confirm the route with you in the next message.",
+      "Let me check with you next turn on which lane to take.",
+    ])('BOUNCES a deferred question: %s', (text) => {
+      const out = bounced(text);
+      expect(out?.decision).toBe('block');
+      expect(out.reason).toMatch(/DEFERRING something/);
+      // The reason must teach "ask NOW", not just "write the content now" —
+      // this class of bounce has no deliverable to write out.
+      expect(out.reason).toMatch(/ask it NOW/i);
     });
 
     it.each([
@@ -195,7 +211,28 @@ describe('ask-gate-mirror — operator-independent paths', () => {
     it('a deferring turn that ALSO carries an <ask> tag still bounces (mirror fires, then bounce)', () => {
       const out = bounced('Which route do you want? <ask>{"question":"Which route?"}</ask>\nNext turn I\'ll send the plan.');
       expect(out?.decision).toBe('block');
-      expect(out.reason).toMatch(/DEFERRING a deliverable/);
+      expect(out.reason).toMatch(/DEFERRING something/);
+    });
+
+    // EI-19412167276099357 defect 3: a turn that QUOTES the banned pattern as
+    // evidence — a fenced/indented example, an inline-code fixture, a
+    // |-delimited table row — must never be scanned as if it were the
+    // agent's own closing sentence. Mirrors the real false positive: a reply
+    // that fully delivered its analysis, but cited the pattern's fixtures.
+    it.each([
+      'Root-caused it. The trap looks like:\n\n    I\'ll put the plan in front of you next turn.\n\nThis turn delivers the fix in full; nothing is withheld.',
+      'Fixture: `I\'ll lay out the options next turn` was the exact string that tripped it. This turn is done; everything above is the complete write-up.',
+      '| example | trips it |\n| --- | --- |\n| I\'ll present the plan next turn | yes |\n\nAll findings are above in full; nothing deferred.',
+    ])('ALLOWS a turn that only QUOTES the pattern as evidence: %s', (text) => {
+      const r = run(payload({ hook_event_name: 'Stop', session_id: 's1', transcript_path: transcriptWith(text) }));
+      expect(r.status).toBe(0);
+      expect(r.stdout).toBe('');
+    });
+
+    it('a REAL deferral is still caught even alongside a quoted table elsewhere in the turn', () => {
+      const out = bounced('| col1 | col2 |\n| a | b |\n\nI\'ll lay out the options next turn.');
+      expect(out?.decision).toBe('block');
+      expect(out.reason).toMatch(/DEFERRING something/);
     });
 
     it('is loop-guarded: stop_hook_active:true → allow, so the bounce can never double-fire', () => {

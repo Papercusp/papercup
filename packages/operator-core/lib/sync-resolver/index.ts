@@ -3213,6 +3213,14 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // cross-harness — a panel-scoped feed would resolve fewer refs and silently
   // render fewer Open buttons.
   'plans.attentionRefs': {
+    // Same table as attentionItem/attentionCounts — the attention feed is a
+    // projection of harness_plans (+ plan_revisions/plan_parts writes, which
+    // land as harness_plans updates per TABLE_TO_QUERY_NAMES). Declared here
+    // to satisfy the shrink-only undeclared-baseline ratchet
+    // (resolver-backing-table-coverage.test.ts, EI-19411367924293520); the
+    // invalidation edge already exists at table-to-query-names.ts's
+    // 'harness_shared.harness_plans' -> 'plans.attentionRefs' mapping.
+    backingTables: ['harness_shared.harness_plans'],
     resolve: async () => {
       const { callPlansRead } = await import('../agent-tools/plans/read-dispatch');
       const r = (await callPlansRead('attention', {})) as { groups?: unknown[] };
@@ -5375,6 +5383,29 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // dev.telemetry — per-tool invocation rollup (calls / bytes / latency p50/p95 /
   // repeat-within-spawn) over a window. Powers the Tool-usage tab's hot-tools +
   // batching-waste panels (usage-insights P-003/P-004). Flat scalar-array rows.
+  //
+  // CACHED (WI-7367, the latency axis opened by no-http-anywhere D-033). This was
+  // the slowest sync read in the tree: 2,472-2,567ms measured live on :3070,
+  // steady across repeats. It aggregates the whole `hours` window of
+  // harness_shared.tool_invocations — 288,924 rows over 24h on a 2.3 GB table —
+  // down to 100 rows / 21 KB. The cost is the SCAN and it scales with the window
+  // (24h 2.5s · 6h 0.51s · 1h 0.10s), so NO per-row projection can help: the 21 KB
+  // output was never the problem. That is what makes this the LATENCY axis rather
+  // than the bytes axis every other audit entry in this file is about.
+  //
+  // The 30s softTtl is not a guess. ToolUsagePanel.tsx declares
+  // `staleTime: 30_000` on this exact query, so the sole consumer has already
+  // stated it tolerates 30s of staleness — and recomputing a 24-HOUR rollup more
+  // often than that cannot change an answer anyone can perceive. Each recompute
+  // otherwise drops 2.5s of work into the concurrency gate alongside real user
+  // reads, which is what D-001 forbids.
+  //
+  // DELIBERATELY UN-TAGGED. tool_invocations takes a row on EVERY tool call
+  // fleet-wide (~289k/day), so a `tool_invocations` invalidation tag would evict
+  // this entry continuously and buy exactly nothing — the same reasoning
+  // plans:attention records for its append-heavy coord_event_log sources (the
+  // coord:inbox D-006 problem). Bounded by the short SWR softTtl instead.
+  // Do NOT "fix" this by adding a tag.
   'dev.telemetry': {
     argsSchema: z.object({
       hours: z.number().int().positive().max(336).default(24),
@@ -5382,23 +5413,44 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     }),
     resolve: async (args) => {
       const { hours, limit } = args as { hours: number; limit: number };
+      const { cachedRead } = await import('../cache');
       const { telemetryRollup } = await import('../dev-data');
-      const { entries } = await telemetryRollup({ workspaceIds: null, hours, limit });
-      return entries;
+      return cachedRead(
+        {},
+        { tool: 'dev.telemetry', key: { hours, limit }, softTtlMs: 30_000 },
+        async () => (await telemetryRollup({ workspaceIds: null, hours, limit })).entries,
+      );
     },
   },
 
   // dev.toolFormatAdoption — served-format mix (toon/json/csv/none) on the MCP
   // transport over a window: the token-opt compact-adoption signal (P-002/D-002).
+  //
+  // CACHED (WI-7368) — same defect and same remedy as dev.telemetry above, and it
+  // shares that read's panel, module (../dev-data), table and window. It returns
+  // 121 BYTES over 3 rows and still spent 264-274ms doing it, which is the purest
+  // statement of the latency axis in the whole surface: there is no payload story
+  // available at 121 bytes, so the entire cost is the scan. Confirmed by the same
+  // window test as its sibling — 24h 0.274/0.264s vs 1h 0.0206/0.0213s, a 13x
+  // spread on an output that barely moves (121 B vs 116 B).
+  //
+  // Same 30s softTtl for the same stated reason (ToolUsagePanel.tsx declares
+  // staleTime: 30_000 on this query too) and same deliberate absence of tags —
+  // see the dev.telemetry comment above for why a tool_invocations tag would
+  // evict continuously and buy nothing.
   'dev.toolFormatAdoption': {
     argsSchema: z.object({
       hours: z.number().int().positive().max(336).default(24),
     }),
     resolve: async (args) => {
       const { hours } = args as { hours: number };
+      const { cachedRead } = await import('../cache');
       const { toolFormatAdoption } = await import('../dev-data');
-      const { rows } = await toolFormatAdoption({ workspaceIds: null, hours });
-      return rows;
+      return cachedRead(
+        {},
+        { tool: 'dev.toolFormatAdoption', key: { hours }, softTtlMs: 30_000 },
+        async () => (await toolFormatAdoption({ workspaceIds: null, hours })).rows,
+      );
     },
   },
 

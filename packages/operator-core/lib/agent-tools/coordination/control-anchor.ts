@@ -16,6 +16,7 @@ import { getLoopStatus, type LoopStatus } from '../../harness/routines/loop';
 import { latestFleetMembership } from '../../fleet-membership-store';
 import { getSessionBrief } from '../../session-brief';
 import { notifyAgentOrdersChanged } from '../../agent-orders-notify';
+import { fetchSelfWake, type SelfWakeSignals, type SelfWakeSource } from './presence-selfwake';
 
 export const CONTROL_ANCHOR_SCHEMA = 'ctrl-v1' as const;
 export const CONTROL_TRANSITION_SCHEMA = 'ctrl-transition-v1' as const;
@@ -28,6 +29,21 @@ const MAX_ID_CHARS = 120;
 export interface ControlAnchorState {
   modes: string[];
   loop: { active: boolean; intervalSec: number | null };
+  /**
+   * WI-7302 part 2 — will ANYTHING wake this session unprompted?
+   * `loop` (an armed engine loop) | `event` (a standing policy='wake' await) |
+   * `none` (nothing will).
+   *
+   * Deliberately NOT derivable from `loop.active` above: a session correctly
+   * parked on `events:await { work-item:claimable }` has `loop.active:false`
+   * and is still perfectly wakeable. The member contract PRESCRIBES that park,
+   * so treating !loop.active as "no wake source" would fire hardest at exactly
+   * the sanctioned behaviour. See presence-selfwake.ts.
+   *
+   * OPTIONAL on purpose: absent = the leg was not resolved (UNKNOWN), never
+   * `'none'`. Costs ~5 tokens against the anchor's 384 budget when present.
+   */
+  wakeSource?: SelfWakeSource;
   carry: 'warm' | 'cold';
   route:
     | { kind: 'self' }
@@ -124,6 +140,9 @@ export function normalizeControlAnchorState(input: ControlAnchorState): ControlA
       active: Boolean(input.loop.active),
       intervalSec: input.loop.intervalSec == null ? null : Math.max(0, Math.floor(input.loop.intervalSec)),
     },
+    // WI-7302: spread-when-present so UNKNOWN stays absent rather than being
+    // normalized into a `'none'` that would read as a positive finding.
+    ...(input.wakeSource ? { wakeSource: input.wakeSource } : {}),
     carry: input.carry === 'cold' ? 'cold' : 'warm',
     route,
     scope: {
@@ -408,10 +427,15 @@ export function renderControlTransitionContext(delivery: ControlTransitionDelive
 export async function buildControlAnchorState(
   ownerId: string,
   workspaceId: string,
-  opts: { sql?: Sql; loop?: LoopStatus | null } = {},
+  opts: {
+    sql?: Sql;
+    loop?: LoopStatus | null;
+    /** WI-7302: DI seam so the wake-source leg unit-tests without PG. */
+    fetchSelfWakeFn?: (ids: string[]) => Promise<Map<string, SelfWakeSignals>>;
+  } = {},
 ): Promise<ControlAnchorState> {
   const sql = opts.sql ?? getOrgPg().sql;
-  const [modes, loop, membership, brief, claims] = await Promise.all([
+  const [modes, loop, membership, brief, claims, selfWake] = await Promise.all([
     getModes(workspaceId, ownerId, sql),
     opts.loop === undefined ? getLoopStatus(ownerId, { sql }) : Promise.resolve(opts.loop),
     latestFleetMembership(workspaceId, ownerId, sql),
@@ -424,6 +448,13 @@ export async function buildControlAnchorState(
          AND expires_ts > clock_timestamp()
        ORDER BY plan_slug, item_id
     `,
+    // WI-7302 part 2: the forward-looking wake-source leg. Best-effort — on any
+    // failure this resolves to an empty map and `wakeSource` is simply absent
+    // (UNKNOWN), because a degraded query must never be able to tell a healthy
+    // session that nothing will ever wake it.
+    (opts.fetchSelfWakeFn ?? fetchSelfWake)([ownerId]).catch(
+      () => new Map<string, SelfWakeSignals>(),
+    ),
   ]);
   const planClaims = brief?.currentPlanSlug
     ? claims.filter((c) => c.plan_slug === brief.currentPlanSlug)
@@ -439,6 +470,7 @@ export async function buildControlAnchorState(
   return normalizeControlAnchorState({
     modes: modes.map((m) => m.mode),
     loop: { active: Boolean(loop?.active), intervalSec: loop?.intervalSec ?? null },
+    wakeSource: selfWake.get(ownerId)?.selfWake,
     carry: loop?.carry ?? 'warm',
     route,
     scope: {

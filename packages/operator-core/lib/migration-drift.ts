@@ -263,6 +263,98 @@ export interface MigrationContentDrift {
 }
 
 /**
+ * EI-19408574209859155: what a byte-level content-drift entry actually MEANS.
+ *
+ *  - `executable`     the SQL that would run differs — a genuine half-landed
+ *                     migration (the mig-708 hazard). The edit never executed
+ *                     and never will; the repair is a NEW migration.
+ *  - `comments-only`  the executable SQL is identical; only comments and
+ *                     whitespace differ. Benign — DB and file still correspond.
+ *  - `unclassified`   the question could not be answered: the applied bytes
+ *                     were unrecoverable, or one side could not be lexed with
+ *                     confidence. Treated as hazardous, never as benign.
+ */
+export type ContentDriftClassification = 'executable' | 'comments-only' | 'unclassified';
+
+export interface ClassifiedMigrationContentDrift extends MigrationContentDrift {
+  classification: ContentDriftClassification;
+  /** Human-readable justification — the commit the applied text was recovered
+   *  from, or precisely why the verdict could not be reached. Always populated,
+   *  so a reader never has to re-derive the classification by hand. */
+  classificationDetail: string;
+}
+
+/**
+ * Pure classifier for byte-level content drift — exported for tests, with both
+ * IO seams injected so it can be exercised without git or a filesystem.
+ *
+ * `readAppliedText` recovers the exact bytes that ran (see
+ * migration-applied-text.ts — it walks git history for the blob whose sha256
+ * matches what the runner recorded, because the applied TEXT is not stored in
+ * the database, only its hash). `readDiskText` reads the file as it is now.
+ *
+ * Every path that cannot reach a confident "benign" verdict returns
+ * `unclassified`, which callers count as hazardous. That asymmetry is the
+ * whole safety property: reporting a benign edit as drift costs a moment of
+ * attention, while reporting a half-landed migration as benign silences the
+ * signal the detector exists to carry.
+ */
+export function classifyContentDrift(
+  raw: ReadonlyArray<MigrationContentDrift>,
+  readAppliedText: (d: MigrationContentDrift) => AppliedMigrationTextResult,
+  readDiskText: (filename: string) => string | null,
+): ClassifiedMigrationContentDrift[] {
+  return raw.map((d): ClassifiedMigrationContentDrift => {
+    const unclassified = (why: string): ClassifiedMigrationContentDrift => ({
+      ...d,
+      classification: 'unclassified',
+      classificationDetail: why,
+    });
+
+    let applied: AppliedMigrationTextResult;
+    try {
+      applied = readAppliedText(d);
+    } catch (err) {
+      return unclassified(
+        `applied text unrecoverable: ${(err as Error)?.message ?? 'unknown error'}`,
+      );
+    }
+    if (!applied.ok) return unclassified(`applied text unrecoverable: ${applied.reason}`);
+
+    let disk: string | null;
+    try {
+      disk = readDiskText(d.filename);
+    } catch (err) {
+      return unclassified(`on-disk text unreadable: ${(err as Error)?.message ?? 'unknown error'}`);
+    }
+    if (disk === null) return unclassified('on-disk text unreadable');
+
+    const appliedNorm = normalizeMigrationSql(applied.text);
+    if (!appliedNorm.ok) return unclassified(`applied SQL unparseable: ${appliedNorm.reason}`);
+    const diskNorm = normalizeMigrationSql(disk);
+    if (!diskNorm.ok) return unclassified(`on-disk SQL unparseable: ${diskNorm.reason}`);
+
+    const at = applied.commit.slice(0, 12);
+    if (appliedNorm.normalized === diskNorm.normalized) {
+      return {
+        ...d,
+        classification: 'comments-only',
+        classificationDetail:
+          `executable SQL is identical to the applied blob (${at}); only comments/whitespace ` +
+          `differ, so the live schema still matches this file`,
+      };
+    }
+    return {
+      ...d,
+      classification: 'executable',
+      classificationDetail:
+        `executable SQL DIFFERS from the applied blob (${at}) — the edit never ran and never ` +
+        `will; repair with a NEW migration re-applying the intended state`,
+    };
+  });
+}
+
+/**
  * Pure core of the content-drift detection — exported for tests.
  *
  * Skips, deliberately and each for a different reason:
@@ -400,13 +492,36 @@ export async function checkMigrationDrift(): Promise<MigrationDrift> {
   // is where agents edit, so an edit-after-apply is observable there first (and
   // often ONLY there, until the next deploy carries it into the release tree).
   const contentDriftSqlDir = canonicalStagingSqlDir ?? sqlDir;
-  const contentDrift = computeContentDrift(
+  const rawContentDrift = computeContentDrift(
     appliedRows,
     hashMigrationsOnDisk(
       contentDriftSqlDir,
       appliedRows.map((r) => r.filename).filter(isRunnerMigration),
     ),
   );
+
+  // EI-19408574209859155: a byte difference is not yet a verdict. Recover the
+  // bytes that ACTUALLY ran (from git — the DB stores only their hash) and
+  // compare executable content, so a provably-benign comment-only edit stops
+  // being indistinguishable from a real half-landed migration. This is lazy by
+  // construction: it runs only for files whose raw hashes already differ, which
+  // is normally zero.
+  const contentDrift = classifyContentDrift(
+    rawContentDrift,
+    (d) =>
+      contentDriftSqlDir
+        ? recoverAppliedMigrationText(contentDriftSqlDir, d.filename, d.recordedSha256)
+        : { ok: false, reason: 'no sql dir resolved to search history in' },
+    (filename) => {
+      if (!contentDriftSqlDir) return null;
+      try {
+        return fs.readFileSync(path.join(contentDriftSqlDir, filename), 'utf8');
+      } catch {
+        return null;
+      }
+    },
+  );
+  const contentDriftExecutable = contentDrift.filter((d) => d.classification !== 'comments-only');
 
   return {
     sqlDir,
@@ -431,6 +546,7 @@ export async function checkMigrationDrift(): Promise<MigrationDrift> {
     canonicalStagingSqlDir,
     missingCanonical,
     contentDrift,
+    contentDriftExecutable,
     contentDriftSqlDir,
   };
 }

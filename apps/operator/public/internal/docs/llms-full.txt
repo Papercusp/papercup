@@ -11405,6 +11405,131 @@ Go to the primary artifact, not to a re-run and not to argument. On 2026-08-02 t
 * `EI-19332682533219755` — the await-glob cross-match, filed with three suggested fixes.
 * `EI-19331631573087955` — the identity guard reading working-tree files rather than the judged candidate’s blobs.
 
+# Diagnosing a silent store outage — when the database answers, and lies
+
+> The 2026-08-02 outage returned `not_found` for records that existed, because reads were hitting a different, empty Postgres. Three liveness/shape guards all passed. Here is how to tell a wrong-store outage from data loss, and which artifacts actually answer the question.
+
+## The failure this exists for
+
+[Section titled “The failure this exists for”](#the-failure-this-exists-for)
+
+On 2026-08-02, for about 13 minutes, every `work_items:*` and `plans:*` read returned `not_found` for records that provably existed. `coord:orient` reported the control generation reset 5 → 1, `modes: []`, and an inbox that had shrunk from 687 to 57 with July 17 messages presented as recent.
+
+Nothing was deleted. MCP traffic was reaching a **different, healthy, empty Postgres** — an ephemeral operator instance’s embedded PG. Every answer was *correct for the database that answered it*. That is the entire difficulty: a wrong-store outage is indistinguishable from catastrophic data loss on every surface an agent normally looks at, and it invites exactly the wrong response.
+
+> **If you take one thing from this page:** a sudden, total, *clean* absence of your data — no errors, no partial reads, just `not_found` everywhere and counters reset to plausible-looking small numbers — is far more likely to be a **wrong store** than a deletion. Deletions are messy and partial. Wrong stores are tidy. **Never delete, re-create or “restore” anything on the strength of a clean `not_found`.**
+
+## Why three existing guards all passed
+
+[Section titled “Why three existing guards all passed”](#why-three-existing-guards-all-passed)
+
+This is the part worth internalising, because the instinct on reading the incident is “so the liveness check was missing” — and it was not.
+
+| guard                                     | question it asks                               | verdict on the impostor                 |
+| ----------------------------------------- | ---------------------------------------------- | --------------------------------------- |
+| `isPidAlive()`                            | is the discovery file’s writer pid alive?      | **PASS** — it was                       |
+| `isDiscoveredPortServed()`                | is that port in `TCP_LISTEN`?                  | **PASS** — it was                       |
+| `validateDiscoveryTargetOnce()` (WI-5244) | does `harness_shared.schema_migrations` exist? | **PASS** — freshly migrated, 433 tables |
+
+All three ask a variant of *“is this a plausible papercusp database?”*. The impostor was a perfectly plausible papercusp database. It simply was not **ours**.
+
+Three distinct properties are easy to conflate, and only the third settles it:
+
+* **Liveness** — something is running there.
+* **Shape** — it looks like our schema.
+* **Identity** — it is the same store we have been talking to.
+
+A stricter liveness or shape check is not a weaker version of an identity check. It is a different question, and no amount of it reaches this failure.
+
+## The guard that now catches it
+
+[Section titled “The guard that now catches it”](#the-guard-that-now-catches-it)
+
+`libs/papercusp/libs/db/src/store-identity.ts` fingerprints a store by its cluster `system_identifier` (`pg_control_system()`) plus `current_database()`. initdb assigns `system_identifier` per cluster and it never changes, so an impostor cluster cannot share ours, while our own restarts and port shuffles keep it.
+
+The first determinate identity a process sees is **pinned**; a later disagreement is **latched** and logged with a `[store-identity]` banner. An unreadable probe is `indeterminate` and changes nothing — *a check that cannot run must never reject a healthy configuration*.
+
+**When you see `[store-identity] 🚨 WRONG STORE` in a log, the diagnosis is already done.** Read the two endpoints it names and go straight to the discovery file. Programmatically, `storeIdentityViolation()` from `@papercusp/db-org` is non-null for the rest of the process lifetime — a non-null value means any `not_found` observed since came from the wrong store.
+
+## The artifacts that actually answer the question
+
+[Section titled “The artifacts that actually answer the question”](#the-artifacts-that-actually-answer-the-question)
+
+Ranked by how much they told us, which is *not* the order you will reach for them.
+
+### 1. `~/.papercusp/mcp-proxy-failures.jsonl` — the highest-value artifact
+
+[Section titled “1. \~/.papercusp/mcp-proxy-failures.jsonl — the highest-value artifact”](#1-papercuspmcp-proxy-failuresjsonl--the-highest-value-artifact)
+
+The proxy’s own record of upstream attempts and recoveries. It showed `:3070` recovering **7×** in 20 minutes, each after 19–32 attempts — a flap invisible on every other surface, because a *recovered* failure produces no alarm anywhere else.
+
+⚠ **It renders UTC while journald renders EDT.** Correlating the two without converting mis-buckets events by four hours, which reads as “these are unrelated, hours apart” when they are the same second. This trap has cost real diagnostic time; convert first.
+
+### 2. The component’s own journal — and the shape of its silence
+
+[Section titled “2. The component’s own journal — and the shape of its silence”](#2-the-components-own-journal--and-the-shape-of-its-silence)
+
+`journalctl --user -u <unit>` logs *completions and errors*. It does not log “I am currently stuck”. So during a stall it goes **quiet**, and quiet is ambiguous: it looks identical to healthy-and-idle.
+
+Two readings, and you must pick deliberately:
+
+* **A LOG HOLE — a gap with traffic either side — is the signature of a wedge**, not health.
+* **Steady log volume PROVES the event loop is not wedged**, which is a genuinely useful negative result: it rules out a whole class and sends you to the data plane instead.
+
+### 3. `psql` against the real admin URL
+
+[Section titled “3. psql against the real admin URL”](#3-psql-against-the-real-admin-url)
+
+`getHarnessAdminUrl()` / the live operator’s `DATABASE_URL`. This is the check that *settles* wrong-store-vs-data-loss in one query, and it is the one to run first once you suspect it:
+
+```sql
+SELECT (SELECT system_identifier::text FROM pg_control_system()) AS sysid,
+       current_database(), (SELECT count(*) FROM harness_shared.schema_migrations);
+```
+
+If your records are present here while the tools say `not_found`, you have a wrong-store outage and nothing is lost.
+
+## The health-check blind spot
+
+[Section titled “The health-check blind spot”](#the-health-check-blind-spot)
+
+Per the three-plane model (WI-6739), `/api/health` and `tools/list` are served **without touching Postgres**. Neither can detect a DB-dead operator, so “`:3070` is healthy” is compatible with every read failing. A health probe that does not exercise the data plane cannot see a data-plane outage.
+
+## Failing fast matters as much as being right
+
+[Section titled “Failing fast matters as much as being right”](#failing-fast-matters-as-much-as-being-right)
+
+The outage had two phases, and the second was worse to *experience*:
+
+1. **Wrong answers** — reads succeeded against the empty store.
+2. **Hangs** — the impostor died and the proxy hung instead of erroring. A `work_items:get` ran past 300s.
+
+A hang presents as **silence**; an error presents as a **fault**. Silence is why a fleet-wide outage looked, to every agent, like nothing in particular was happening. When a tool call has been outstanding for minutes with no output, treat that as a *finding* — it is evidence about the transport, not merely slowness.
+
+## Diagnostic discipline — the part that generalises
+
+[Section titled “Diagnostic discipline — the part that generalises”](#diagnostic-discipline--the-part-that-generalises)
+
+Four wrong readings were produced during this single incident, one of them acted on (a file was edited on an unverified hypothesis about which process reads it, then reverted). Every one had the same shape: **inferring a mechanism from configuration instead of reading the component’s own logs.** Every correction came from the logs.
+
+Three rules, each earned here:
+
+1. **Read the component’s own journal before reasoning about its config.** “It reads this file, therefore it follows it” is a hypothesis. The proxy’s journal showed it targeting `:3070` directly; it never read the file it was assumed to follow.
+
+2. **Before writing “X does not check Y”, confirm there is exactly ONE X.** A critical bug was filed asserting the resolver “never checks that the pid is alive or the port is listening” — it checks both, and had for 29 hours. The correction to *that* was also over-broad, because there are **two** discovery implementations with different gate coverage, and both agents generalised from whichever they read first. `grep -l` for the symbol across the tree costs seconds. See `outage-must-not-be-silent-2026-08-02` D-001 and D-002.
+
+3. **The more damning a finding looks, the more likely you are misreading its units or its scope.** “All the data is gone” was true of one database and false of the system. A suspiciously clean, total, round result is usually a definitional artifact — here, a different store — rather than a real catastrophe.
+
+## Fast triage
+
+[Section titled “Fast triage”](#fast-triage)
+
+1. `[store-identity] 🚨 WRONG STORE` in any log → **done**; go to step 4.
+2. `psql` the real admin URL. Records present → wrong-store outage, **nothing is lost**.
+3. Check `~/.papercusp/mcp-proxy-failures.jsonl` (UTC!) for flaps; check the unit journal for a log *hole* rather than for errors.
+4. Inspect `~/.papercusp/embedded-pg.json` — who wrote it, is that pid alive, is that port the one you expect? A rewrite by another local install or an ephemeral instance is the usual cause.
+5. Do **not** re-create plans or work-items while this holds — they land in the wrong store and duplicate when it is restored.
+
 # Dispatch flags (crossWorkspace, etc.) are read off the PROJECTED def, not the source def
 
 > A defineTool flag like crossWorkspace can be set on the def yet silently dropped in projection, so the host dispatch never honors it. Symptom appears far from cause. Diff the source def against lookupByMcpName(name).
@@ -23640,6 +23765,14 @@ Your `mcp__papercusp-su__*` tools disappear mid-session: a system-reminder says 
 
 The **server is healthy** — the drop is the Claude Code MCP *client*, which does not re-handshake a dropped streamable-HTTP/SSE connection. A manual `/mcp` reconnect (or session restart) fixes it — but in an unattended auto-mode loop you can’t run `/mcp`. So route around it.
 
+## Symptom variant: an ECONNREFUSED on an unrelated local port, THEN a silent hang
+
+[Section titled “Symptom variant: an ECONNREFUSED on an unrelated local port, THEN a silent hang”](#symptom-variant-an-econnrefused-on-an-unrelated-local-port-then-a-silent-hang)
+
+EI-19384363493799969 (2026-08-02, ≥4th independent hit of this whole class): before the familiar “tools vanish” symptom above, the FIRST `mcp__papercusp-su__*` call of the session/wake can fail **instantly** with something like `connect ECONNREFUSED 127.0.0.1:22060` — a port that matches **no** papercusp service (`:3070` operator, `:9071` mcp-proxy, `:9073` gateway all confirmed up via `ss -ltnp` in the same incident). Nothing on the host listens there; it reads as a Claude-Code-internal per-session ephemeral bridge/sandbox-proxy port that had not (re)established yet. A **second** identical call also refuses. Then, \~25s later, the *same* tool transitions from instant-refuse to a **silent 300s+ hang** (no response/progress) until the harness’s own MCP idle timeout aborts it.
+
+Throughout, a direct `curl` `tools/call` to the exact proxy URL in `~/.claude.json` (see below / `scripts/mcp-call.mjs`) answers every call in well under 1.5s — so this is confirmed the same class as the rest of this doc (a wedged **client**, not a slow/down server), just with a distinguishing two-phase precursor (instant-refuse-on-an-unrelated-port → then a full hang) instead of a clean “tools vanish” drop. Recognizing this signature immediately — rather than spending several minutes assuming “all my tools are broken” — is the entire value of this addendum; the recovery is identical to the rest of this doc. The ECONNREFUSED port itself is Claude-Code-CLI-internal (outside papercusp’s codebase), so there is no papercusp-side code fix for the underlying wedge — only faster recognition + the curl/`mcp-call.mjs` route-around below.
+
 ## Verify the server is up (optional)
 
 [Section titled “Verify the server is up (optional)”](#verify-the-server-is-up-optional)
@@ -24421,6 +24554,257 @@ Wire all three into a weekly check (a scorecard row or a `dev:` rollup) so a reg
 * Both are pure + unit-tested (injected `RunQuery`, no PG in tests) exactly like `code-run-adoption.ts`; each exports its canonical SQL (`LIMIT_FAILURE_RATE_SQL` / `ORIENT_DEDUP_RATE_SQL`) so it is also directly runnable via `dev:pg_query` if a caller wants the raw rows instead of the rolled-up read.
 
 **WI-839 — now ALSO a recurring measurement, not just an on-demand `dev:` read.** The dev: tools above are manual (someone has to remember to call them); the item’s real ask (“so a regression surfaces without a manual audit”) needed a periodic surface. `system-health/compute.ts`’s `collectToolEfficiency` folds all 3 grades (adoption + limit-failure + orient-dedup) into ONE new Health-tab panel (`PanelKey: 'toolEfficiency'`, `types.ts`) computed on every `computeSystemHealth` tick (the same \~30s cadence every other panel runs on) — surfaced on the read-only Health tab (flag `papercusp-system-health-tab`) with zero bespoke UI code (the tab renders generically off `PANEL_ORDER`/`health.panels[key]`). Panel status: `crit` if any leg graded `broken`, `warn` if any is `degraded`, `unknown` only when every leg’s window is too small to grade, else `ok` (`toolEfficiencyStatus`, pure + unit-tested in `compute.test.ts`). So a regression in any of the 3 now greys/reds a Health-tab card automatically, on the existing tick — no manual `dev:` call or `dev:pg_query` needed to notice one.
+
+# Measuring payload-tier forced truncation and result-door spill
+
+> The telemetry for both truncation stages does not exist in tool_invocations — here is the method that actually works, and the measured 2026-08-02 numbers.
+
+Two separate stages can cut a tool result before it reaches an agent. They have very different recoverability, very different rates, and — the trap this page exists for — **neither is recorded in `tool_invocations`.**
+
+## The two stages are not the same thing
+
+[Section titled “The two stages are not the same thing”](#the-two-stages-are-not-the-same-thing)
+
+|                            | payload-tier forced hard ceiling                 | result-door spill                        |
+| -------------------------- | ------------------------------------------------ | ---------------------------------------- |
+| threshold                  | 30,000 chars (`PAYLOAD_TIER_HARD_CEILING_CHARS`) | \~1500 tokens per result                 |
+| recoverable?               | **No** — content is dropped in memory            | **Yes** — full result written to scratch |
+| rate (measured 2026-08-02) | 939 fires / 7 days (\~134/day)                   | 68,649 spills / 24h                      |
+
+The lossy stage runs **before** the lossless one, so the door can only preserve what already survived — `result-door.ts:159-166` says so in its own comment. That ordering is real. What it is *not* is expensive: the irrecoverable stage fires roughly **500× less often** than the recoverable one.
+
+## Do not try to measure this from `tool_invocations`
+
+[Section titled “Do not try to measure this from tool\_invocations”](#do-not-try-to-measure-this-from-tool_invocations)
+
+This is the expensive mistake, because the table looks like it should answer it.
+
+* `harness_shared.tool_invocations` has 30 columns and **none** records payload projection or truncation.
+* `forced: true` is set on the response object in `libs/generic/tooldef/src/payload-tier.ts:532,556` and otherwise emitted only to a `console.warn`.
+* `result-door.ts` writes **no** durable telemetry row at all. Grep it for insert/telemetry/metric and you get nothing.
+* `output_size` is not a usable proxy. Measured over 2 days: 1,413 recorded calls, `output_size` 99.2% populated, but only **2** above the 30,000-char ceiling — while **73,587** spill files sat on disk. The table under-records real tool traffic by roughly **50×**.
+
+A query over `output_size` returns a well-formed, plausible, wrong answer. It will tell you truncation is nearly nonexistent.
+
+## The method that works
+
+[Section titled “The method that works”](#the-method-that-works)
+
+The forced path emits a distinctive warn line at both sites, so the journal is a direct census:
+
+```bash
+journalctl --user -u papercup-dev-api --since '7 days ago' --no-pager \
+  | grep -c 'hard ceiling'
+
+
+# which tools hit it
+journalctl --user -u papercup-dev-api --since '7 days ago' --no-pager \
+  | grep 'hard ceiling' \
+  | sed -E 's/.*\[payload-tier\] ([^ ]+) .*/\1/' | sort | uniq -c | sort -rn
+```
+
+For the door, the durable record is the **filesystem**, not the database:
+
+```bash
+find ~/.papercusp/scratch -name 'result-door-*.md' | wc -l
+# by tool
+find ~/.papercusp/scratch/<workspace> -name 'result-door-*.md' \
+  | sed 's|.*/scratch/<workspace>/||; s|/.*||' | sort | uniq -c | sort -rn
+```
+
+## Measured distribution (2026-08-02)
+
+[Section titled “Measured distribution (2026-08-02)”](#measured-distribution-2026-08-02)
+
+Forced hard-ceiling fires by tool, 7 days, `papercup-dev-api` (staging: 0):
+
+| tool                 | fires     | re-callable?               |
+| -------------------- | --------- | -------------------------- |
+| `coord:orient`       | 648 (69%) | yes — cheap wake bootstrap |
+| `work_items:observe` | 106       | yes                        |
+| `plans:get`          | 54        | yes                        |
+| `work_items:get`     | 38        | yes                        |
+| `work_items:list`    | 33        | yes                        |
+| `coord:presence`     | 13        | yes                        |
+| `work_items:claim`   | 11        | **no — side-effecting**    |
+| `facts:list`         | 8         | yes                        |
+| `fleet:assignments`  | 6         | yes                        |
+| `plans:items`        | 5         | yes                        |
+
+Only 1.2% of fires are on a side-effecting call. For everything else, re-calling with `payloadTier:'full'` is already the correct and cheapest recovery — which is why building a raw-payload mirror to invert the ladder was measured and **rejected**, not shipped.
+
+## The dominant spill source is one tool, and it is a write
+
+[Section titled “The dominant spill source is one tool, and it is a write”](#the-dominant-spill-source-is-one-tool-and-it-is-a-write)
+
+87% of all spill files (64,326 of 73,587) come from **`activity:report`** — the per-CLI hook ingest tool called on every tool call by every agent. Its own description says it is fire-and-forget and *“returns `{ ok, id }`”*. Measured response sizes across 64,380 spills: **median 202KB, p90 351KB, max 492KB**.
+
+Scratch sits at **13G** against a 24h GC retention (`scratch-gc.ts`, `RETENTION_MS = 24h`, DBOS-scheduled daily 03:00 behind `FLAGS.STORAGE_RETAIN_SCRATCH`), i.e. roughly 11G/day written for the response of a write-only telemetry call that nobody reads.
+
+If you are hunting spill volume, start there — not with the agents.
+
+## But is a spill ever READ? Measured: \~4% — and the method is not obvious
+
+[Section titled “But is a spill ever READ? Measured: \~4% — and the method is not obvious”](#but-is-a-spill-ever-read-measured-4--and-the-method-is-not-obvious)
+
+Volume is the easy half. The question that decides whether spill-and-reference is a solved problem is whether agents actually page what the door wrote for them. Measured 2026-08-02 over a 36h window (`workspace_id='papercusp-workspace'`):
+
+|                                                                                                        | count                                                              |
+| ------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------ |
+| spills produced                                                                                        | 80,048                                                             |
+| …of which hook/standing tools nobody can page (`activity:report`, `facts:list`, `locks:check_command`) | 75,633 (94.5%)                                                     |
+| **agent-facing denominator**                                                                           | **4,415**                                                          |
+| distinct spills actually read                                                                          | \~195, by 45 distinct agents, 59 with an explicit `offset`/`limit` |
+| `payloadTier:'full'` re-calls (the pay-twice route)                                                    | 157, by 22 agents, across 12 tools                                 |
+
+**\~4.4% of agent-facing spills are ever paged; \~92% are abandoned outright — and agents re-run the tool at full tier almost as often as they page a copy already sitting on disk.**
+
+Read that as an **adoption/routing** failure, not a capability gap: 45 agents demonstrably know how to page a spill with a bounded read, so the mechanism works. The cause is that the footer advertises remedies that don’t fit — `pipe` line-operators cannot reduce a one-line JSON body (see the column-cap section below for why every result is one line), and `projection` was unreachable from every schema-driven client until it was taught to accept a JSON string.
+
+### The method: the numerator is NOT in `tool_invocations` either
+
+[Section titled “The method: the numerator is NOT in tool\_invocations either”](#the-method-the-numerator-is-not-in-tool_invocations-either)
+
+The same trap as the rest of this page, one level deeper. A client-native `Read` of a spill file **never reaches `tool_invocations`** — it is a CLI-side tool. Counting `capability:read` alone finds 3 distinct spills and tells you paging is essentially nonexistent, which is wrong by \~60×.
+
+The route that works is the PreToolUse hook’s own ingest rows, because they record every tool call *including client-native ones*:
+
+```sql
+SELECT args_json->>'tool_name' AS via_tool,
+       count(*)                        AS read_events,
+       count(DISTINCT args_json->'tool_input'->>'file_path') AS distinct_spills,
+       count(*) FILTER (WHERE args_json->'tool_input'->>'offset' IS NOT NULL) AS bounded
+FROM harness_shared.tool_invocations
+WHERE invoked_at > now() - interval '36 hours'
+  AND workspace_id = 'papercusp-workspace'      -- multi-tenant: always scope
+  AND tool_name = 'activity:report'
+  AND args_json->>'phase' = 'pre'
+  AND args_json->'tool_input'->>'file_path' LIKE '%result-door-%'
+GROUP BY 1 ORDER BY 2 DESC;
+```
+
+Native `Read` accounted for 186 of the \~195 distinct spills; `capability_read` for 3. Measure only the papercusp-side tool and you will conclude the feature is dead.
+
+Note also that `output_ref` is **NULL on all 324,661 invocations** in the window — the door still does not record its own spill — which is why the denominator has to come off the filesystem and the numerator out of a hook table. Populating `output_ref` at spill time would collapse this whole exercise into one join (filed as EI-19389431406847252).
+
+### ⚠ `atime` is NOT a shortcut here — it measures YOUR probe, not the agents
+
+[Section titled “⚠ atime is NOT a shortcut here — it measures YOUR probe, not the agents”](#-atime-is-not-a-shortcut-here--it-measures-your-probe-not-the-agents)
+
+The obvious cheap method is to ask the filesystem which spill files were read: `atime > mtime`. Run on this box it reports **99.348% read-after-write**, i.e. “spill is universally paged” — the exact opposite of the truth, stated with a precision that makes it very easy to believe.
+
+It was self-inflicted. Any earlier recursive grep over the home tree — e.g. `grep -rl '<pattern>' "$HOME" --include=*.md` — **reads every spill file**, because every spill is a `.md` under that tree, and stamps its `atime`. The measurement was of the measurer.
+
+The control that settles it, and which costs one command:
+
+```bash
+# a genuine no-read baseline: freshly written spills, before anything can touch them
+NOW=$(date +%s)
+find ~/.papercusp/scratch -name 'result-door-*.md' -printf '%A@ %T@\n' \
+  | awk -v now="$NOW" '($2 > now-90){ printf "delta=%+ds\n", $1-$2 }'
+# => delta=+0s on a clean corpus. Anything else means something read them.
+```
+
+Bucketing by file age makes the contamination visible directly: files younger than the contaminating grep read 82.7%, everything older 99.5% — a discontinuity at the moment the grep ran, which no real behavioural change would produce.
+
+**The generalisation, which has now cost this line of work three times:** a rate at either extreme (0% or \~100%) over a large N is an artifact until a control says otherwise, and **the first suspect is your own probe.** The sibling instances were a `projection` telemetry rate of 100%-invalid that was really a deploy boundary, and a `0 matches` grep in one file read as “the feature is unimplemented” when it lived in another. `atime` on a shared box that agents grep is not evidence.
+
+## A column cap does not transfer — check the line structure first
+
+[Section titled “A column cap does not transfer — check the line structure first”](#a-column-cap-does-not-transfer--check-the-line-structure-first)
+
+OMP caps output at 512 columns so one very wide line cannot eat a whole budget. Measured against real spilled output here, 89.5% of agent-facing bytes lie beyond column 512 — which looks like overwhelming confirmation and is not.
+
+Every sampled spill file has **exactly 10 lines, exactly one of which exceeds 512 chars, and it begins `{"ok":true,...`**. The width is not a pathological wide line among normal ones; it is the serialized JSON result on a single line. A 512-column cap applied there would not make a wide line harmless — it would truncate every result to 512 characters.
+
+The cap only means anything where output is genuinely line-oriented text:
+
+| surface           | lines >512 | bytes beyond col 512 | max line |
+| ----------------- | ---------- | -------------------- | -------- |
+| `capability:bash` | 1.0%       | 28.4%                | 13,741   |
+| `logs:read`       | 0.6%       | 46.0%                | 23,787   |
+| `sessions:read`   | 26.5%      | 47.4%                | 1,625    |
+| `capability:read` | 0.1%       | 1.8%                 | 2,051    |
+
+On `capability:bash` and `logs:read` the OMP pattern is real — \~1% of lines carry 28–46% of the bytes. But those surfaces produced 29 and 4 spill files respectively against `activity:report`’s 64,326, so a cap there is correct and almost irrelevant to total volume. Fix the 202KB write-tool response first.
+
+**The general lesson:** a headline percentage far outside its expected range is usually telling you something about the measurement’s definition, not about the system. Check the line/record structure before porting a mechanism that assumes one.
+
+## Which truncation is machine-readable
+
+[Section titled “Which truncation is machine-readable”](#which-truncation-is-machine-readable)
+
+Three distinct truncation paths reach an agent, and they differ:
+
+| path                    | signal                                                                 | recoverable by paging the spill? |
+| ----------------------- | ---------------------------------------------------------------------- | -------------------------------- |
+| payload-tier projection | **structured** — `_meta.payloadProjection` (`serialize-result.ts:241`) | no                               |
+| result-door own cut     | **structured** — `_meta.resultDoor`                                    | yes                              |
+| tool’s own field cutoff | prose only — regex-detected `"*_truncated": true`                      | no                               |
+
+The door already branched structurally on the upstream `payloadProjection` marker (`result-door.ts:181`) while announcing **its own** cut only in the `[result-door: …]` prose footer — so the highest-frequency truncation path on the box was the one a consumer could detect only by string-matching English. That asymmetry is now closed: the door stamps `_meta.resultDoor` (`truncated`, `spillPath`, `spillUri`, `originalChars`, `doorTokens`, `upstreamProjected`, `innerTruncationMarkers`) alongside the footer.
+
+The prose stays. It is what teaches the reader the knob that would have prevented the truncation; the structured marker is what lets code branch on it.
+
+The third row is architectural rather than an oversight: each tool bakes its own field-level cutoff into the body it serializes, so there is no shared marker to stamp (EI-18745696571494110). Both non-recoverable rows mean the same thing for a reader — **do not page the spill, re-call the tool** with `payloadTier:'full'` or a wider per-field limit.
+
+## Zoom out before optimising: spill is not where the tokens are
+
+[Section titled “Zoom out before optimising: spill is not where the tokens are”](#zoom-out-before-optimising-spill-is-not-where-the-tokens-are)
+
+Everything above measures one stage. Before spending effort on it, measure the whole window — because the answer changed what the plan that produced this doc was willing to build.
+
+Measured 2026-08-03 over 6 days of raw transcript JSONL (590 files, 266,544 lines, 0 unparseable), **\~49.4M estimated tokens into context**; per session p50 76,446 · p90 127,312 · max 2.75M:
+
+| source                          | est. tokens |     share |
+| ------------------------------- | ----------: | --------: |
+| `tool_result`                   |  30,277,398 | **61.3%** |
+| `tool_use` (the ARGS we send)   |  12,547,035 | **25.4%** |
+| `text` (user + assistant prose) |   3,490,285 |     7.07% |
+| `thinking`                      |   3,078,506 |     6.23% |
+
+And inside `tool_result`, two **client-side** tools dominate:
+
+| tool                              |  calls | est. result tokens | share of `tool_result` | avg chars |
+| --------------------------------- | -----: | -----------------: | ---------------------: | --------: |
+| `Read`                            |  5,397 |         11,949,446 |             **39.47%** |     8,856 |
+| `Bash`                            | 23,837 |          7,490,553 |             **24.74%** |     1,257 |
+| largest MCP tool (`tools:invoke`) |  1,714 |            984,345 |                  3.25% |     2,297 |
+
+`Read` + `Bash` = **64.2%** of all `tool_result` tokens — larger than every papercusp MCP tool combined (\~36%). The payload-tier ceiling, the result door, `projection` and the spill store run on **none** of it. Two consequences worth carrying:
+
+* Work aimed at shrinking MCP tool results is optimising the minority share. The cheapest personal levers are the boring ones: `capability:read` with `offset`/`limit` instead of a whole-file `Read`, and one `code:run` instead of N `Bash` round-trips.
+* `tool_use` is **25.4%** of all context and nothing measures it. The two largest argument payloads are `work_items:checkpoint` (2.34M chars) and `coord:send` (2.16M chars) — the durable notes and messages we *write* cost more context than most results we read.
+
+Reproduce: `node scripts/measure-context-token-baseline.mjs 6` (writes `byKind`, `topToolsByResultChars` and `doorFooters` as JSON).
+
+### ⚠ Do NOT re-derive this from `harness_shared.session_turn_parts`
+
+[Section titled “⚠ Do NOT re-derive this from harness\_shared.session\_turn\_parts”](#-do-not-re-derive-this-from-harness_sharedsession_turn_parts)
+
+That table looks purpose-built for it — it carries `speaker`, `part_kind`, `tool_name`, `text` — and it is wrong for this measurement. `search/session-ingest.ts` caps every part at `PART_TEXT_CAP = 2000` chars. The cap is correct for its own job (faithful *render* of recent sessions) and it clips exactly the category you are trying to measure: the ingester’s own comment puts `tool_result` at 218 MB raw against text’s 21 MB and says capping at 2k “recovers 61% of it”. A decomposition read off that table understates `tool_result` by roughly an order of magnitude **while looking entirely plausible** — the capped run reported 51.7%, which is a believable number.
+
+The tell was cheap and general: `max(length(text))` was **2,026** across 244,738 rows. **A distribution that stops dead is a cap, not a population.** Check the max of any text column against its plausible max before trusting an aggregate over it.
+
+## The spill footer is emitted \~2,600 times per 6 days — so measure its wording
+
+[Section titled “The spill footer is emitted \~2,600 times per 6 days — so measure its wording”](#the-spill-footer-is-emitted-2600-times-per-6-days--so-measure-its-wording)
+
+Of those 2,599 doored results, **2,146 (82.6%) had a JSON body**, 451 (17.4%) multi-line text, 2 single-line. (Shape is classified from the *kept* head, since the transcript holds the doored text — leading `{` or `[` after trim.)
+
+That distribution is why the footer is now a function of the payload rather than a constant: `pipe` line-operators cannot reduce a one-line JSON body — `head n:3` returns the whole array and a non-matching `grep` returns an **empty** body, which reads exactly like a filter that worked. Only `pick` reduces it. The old constant led with `pipe` on five out of six doored results.
+
+The part worth generalising is the *cost* discipline, not the wording:
+
+|                               |                                            chars |
+| ----------------------------- | -----------------------------------------------: |
+| retired constant              |                                              420 |
+| first replacement, as written |                                          **570** |
+| over the same 6d corpus       | **+376,173 chars ≈ +94,043 est. tokens, +34.5%** |
+| after trimming, JSON variant  |                                              356 |
+| net over the same corpus      | **−135,018 chars ≈ −33,754 est. tokens, −12.4%** |
+
+The first cut was authored with a plausible argument for why it must be smaller (it dropped an irrelevant operator list) and was recorded as “context cost went down” in a plan decision *before anyone measured it*. It was 34.5% bigger. Any string on a per-call path is a multiplied cost: **measure a wording change on that path, do not eyeball it** — `buildProjectionHint` in `packages/operator-core/lib/result-door.ts` carries a budget note saying so.
 
 # Measuring per-keystroke input latency in the Tauri webview
 
@@ -25231,11 +25615,12 @@ Use the CLI (added `2026-06-20` — works even with the MCP client down):
 ```bash
 npm run db:next-migration -- --name add-foo-index --intent "what it does"
 # → reserves the next free NNN in harness_shared.migration_reservations and prints
-#   the canonical path: libs/papercusp/libs/db/sql/<NNN>-add-foo-index.sql
+#   a DRAFT write-target: libs/papercusp/libs/db/sql/<NNN>-add-foo-index.sql.DRAFT
+#   (+ arm_path / arm_command — see below)
 # Add --dry-run to see the number without reserving it.
 ```
 
-It scans BOTH dirs for the on-disk max **inside** the advisory lock (the `2026-07-03` EI-6852 fix — see above), allocates, and records the reservation — the same contract as the MCP `db:next-migration` tool. Then write the file to `libs/papercusp/libs/db/sql/<NNN>-<slug>.sql` (NOT the sidecar mirror). It auto-applies on the next operator restart. It refuses to hand out a number when PG is unreachable (an unreserved number re-opens the race).
+It scans BOTH dirs for the on-disk max **inside** the advisory lock (the `2026-07-03` EI-6852 fix — see above), allocates, and records the reservation — the same contract as the MCP `db:next-migration` tool. Then **write + iterate at the printed `.DRAFT` path**, not the bare `.sql` name (`2026-08-02`, EI-19366138707071397): the migration runner only ever applies files matching `*.sql` (`migration-runner.js`’s `.filter(f => f.endsWith('.sql'))` — the same mechanism the pre-existing `NNN-*.sql.PENDING-CODE-DEPLOY` idiom relies on), so a `.DRAFT`-suffixed file is invisible to boot auto-apply, `db:migrate`, and the green-checkpoint preflight while it’s mid-edit — including a deliberate temporary both-ways guard-test mutation (the “prove a guard you haven’t seen fail” house rule), which previously could race a concurrent operator restart and execute half-finished SQL against the live DB (the migration-729/WI-7057 near-miss that prompted this). Once it’s finished and tested, **arm it** with the tool’s printed `arm_command` (`mv <path>.DRAFT <path>`) to land it at `libs/papercusp/libs/db/sql/<NNN>-<slug>.sql` (NOT the sidecar mirror) — only then does it auto-apply on the next operator restart. It refuses to hand out a number when PG is unreachable (an unreserved number re-opens the race).
 
 ## Recommended fix (plan)
 
@@ -45988,6 +46373,157 @@ Combine the two fixes:
 [Section titled “Cost if you skip this”](#cost-if-you-skip-this)
 
 This investigation burned several verification runs before landing on the method above — each `-p` run confidently reported “the hook didn’t fire,” which is true of `-p` and says nothing about the hook. Cheap to avoid once written down; expensive to rediscover per-agent.
+
+# Verifying a menu is actually clickable (not just "open")
+
+> A Radix menu can mount, position correctly, report fully visible — and still be unreachable by a real mouse. How to test the question that matters, and the four false-fails that waste probe cycles first.
+
+**“The menu opens” and “a user can click it” are different questions.** Assert the second one. This is the runbook distilled from WI-7211, where four probe cycles were spent proving the wrong thing.
+
+## The bug this exists to catch
+
+[Section titled “The bug this exists to catch”](#the-bug-this-exists-to-catch)
+
+Owner report: *“None of the option selector dropdowns are working in the bottom panel.”*
+
+Every menu opened correctly. `data-state` flipped to `open`, the options mounted, the popper wrapper was present, the content measured 350×168 fully inside both the modal and the viewport, and computed style reported `opacity: 1`, `visibility: visible`, `pointer-events: auto`.
+
+It was still completely unusable, because it painted **behind the app shell**. `document.elementFromPoint()` at the menu’s own centre returned `.oracle-empty-state` — the chat placeholder sitting *behind* it in the DOM but *above* it in paint order.
+
+The mechanism ([full decision](/internal/docs/plans) `session-popup-compaction-and-contrast-2026-08-02` D-004): Radix wraps popper Content in `[data-radix-popper-content-wrapper]`, which is `position: fixed`, so it establishes **its own stacking context**. A `z-index` set on the Content only orders things *inside* that wrapper. Worse, Radix *copies* the Content’s computed z-index onto the wrapper as an **inline style**, which beats any stylesheet rule without `!important`.
+
+## The one assertion that matters
+
+[Section titled “The one assertion that matters”](#the-one-assertion-that-matters)
+
+```js
+const w = document.querySelector('[data-radix-popper-content-wrapper]')
+const c = w.firstElementChild || w
+const r = c.getBoundingClientRect()
+const hit = document.elementFromPoint(
+  Math.round(r.x + r.width / 2),
+  Math.round(r.y + r.height / 2),
+)
+// TRUE only if a real mouse click at the menu's centre would land in the menu.
+const reachable = !!(hit && c.contains(hit))
+```
+
+Check each option’s own centre too — a menu can be partly covered. Everything else (`data-state`, option count, computed opacity) is necessary but **not sufficient**, and each of those reported “fine” while the bug was fully present.
+
+## Why a jsdom test cannot cover this
+
+[Section titled “Why a jsdom test cannot cover this”](#why-a-jsdom-test-cannot-cover-this)
+
+**jsdom does not paint.** It has no stacking contexts and no hit-testing, so `elementFromPoint` has nothing to say. `ChatActionBar.test.tsx` has 28 tests over these exact Selects and all 28 stayed green throughout.
+
+A jsdom test asserting “the menu opens” *cannot fail* on this defect, and will be read as coverage — which is worse than having no test at all. Guard this class either with a **live Tauri probe** or with a **static invariant** over the stylesheet. The one in the repo is `apps/operator/app/_lints/popper-stacking.test.ts`, which asserts the wrapper has an explicit z-index, that no shell layer stacks at or above it, and that no popper Content sets a z-index below that floor.
+
+Note the shell layers are higher than you will guess: `<main>` is promoted to `70`, and `.oracle-dock--maximal-hud` reaches **1450**. A hand-picked “safely above” value of 90 was still buried. Do not choose this number from the layers you happen to remember — let the lint tell you.
+
+## Four false-fails that will cost you a probe cycle each
+
+[Section titled “Four false-fails that will cost you a probe cycle each”](#four-false-fails-that-will-cost-you-a-probe-cycle-each)
+
+Each of these makes healthy code look broken. All four were hit on WI-7211 before the real bug was found.
+
+1. **The open flip is ASYNC.** Reading `data-state` in the same tick as the click returns `"closed"` on a fully successful open. `sleep >= 1s` before asserting.
+2. **`[aria-haspopup]` matches nothing.** A Radix Select trigger carries `role="combobox"` + `aria-controls` but *no* `aria-haspopup`. That selector silently returns null and reads as “the trigger is missing”. Select by `[data-testid^="…"]`.
+3. **“Radix ignores synthetic input” is not true here.** WebKitGTK has `PointerEvent`, `setPointerCapture`, `hasPointerCapture` and `releasePointerCapture` — all present. A dispatched `pointerdown`+`pointerup` pair (`{button: 0, pointerType: 'mouse', isPrimary: true}`) opens the menu, and so does a plain `.click()`. The real caveat is about **X11-level** synthetic input (xdotool into Xvfb), not JS-dispatched events. `ChatActionBar.test.tsx`’s `openPill` helper is the reference.
+4. **Dispatching directly on an option bypasses hit-testing.** It will report the mode applied successfully even when no real mouse could ever reach that option — which is exactly the bug. Useful for proving the *apply path* works; useless for proving reachability.
+
+## Driving it
+
+[Section titled “Driving it”](#driving-it)
+
+`tauri-agent-tools` flags are easy to guess wrong, and a wrong flag fails *inside* a \~5 minute verifier boot:
+
+* `screenshot` takes `-o, --output <path>` — **not** `--out`
+* `check` takes `--eval <js>` — **not** `--expr`
+* `--help` is refused by the multi-bridge target guard, so read the flags from `dist/commands/*.js` (tracked as EI-19389052544654400)
+* **Always** pass `--pid "$VERIFY_TAURI_PID"`. Without it the CLI attaches to an arbitrary bridge — frequently the owner’s live desktop.
+
+Closing UI work also needs a real artifact: the completion-integrity guard rejects `verifiedHow: 'live-drove-ui'` unless the record cites a screenshot path or a recorded `tauri-agent-tools` capture/screenshot/check invocation. A drive-by `eval` is not an artifact. Plan a capture run into the work, not after it.
+
+# Verifying an RLS query as harness_admin proves nothing
+
+> dev:pg_query and `psql -U harness_admin` run as a role with rolbypassrls=true; the operator's app path runs as harness_app, which does not. So the standard way an agent 'verifies the real SQL against live PG' cannot detect the one failure that matters — an RLS-scoped query returning ZERO rows, which reads as 'no matching state' rather than as an error. Includes which helper uses which role, the two silent failure directions, and the two-role drill that actually falsifies.
+
+## The trap
+
+[Section titled “The trap”](#the-trap)
+
+You write a query for operator code, then verify it the normal way — `dev:pg_query`, or `psql` against the admin URL. It returns exactly the rows you expect. You ship it.
+
+That verification is worthless for any table with RLS, because **the two roles disagree and the disagreement is silent**:
+
+| role                                                      | `rolbypassrls` | sees RLS-protected rows?         |
+| --------------------------------------------------------- | -------------- | -------------------------------- |
+| `harness_admin` (what `dev:pg_query` / the admin URL use) | **true**       | always                           |
+| `harness_app` (the operator’s app path)                   | **false**      | only with `app.workspace_id` set |
+
+Measured 2026-08-03 on `harness_shared.coord_event_log`, policy `coord_event_log_workspace_isolation` → `workspace_id = current_setting('app.workspace_id', true)`:
+
+```plaintext
+as harness_admin                              -> rows (RLS bypassed entirely)
+as harness_app, no app.workspace_id           -> 0 rows
+as harness_app, SET app.workspace_id='…'      -> 11,768 rows
+```
+
+Note the shape of the failure. It is not an error, a permission denial, or a wrong answer — it is an **empty result**, which every caller reads as “there is no such state right now.” The EXPLAIN is the tell: the index scan reports `never executed` / `Index Searches: 0`, because RLS reduced the predicate to something provably false.
+
+## Which helper uses which role
+
+[Section titled “Which helper uses which role”](#which-helper-uses-which-role)
+
+Both in `libs/papercusp/libs/db/src/connection.ts`:
+
+* **`getOrgPg()` → `harness_admin`, BYPASSES RLS.** Its own docstring: *“use `getOrgPg()` only for migrations and tooling that intentionally spans workspaces.”*
+* **`getOrgPgApp()` → `harness_app`, SUBJECT to RLS.** The workspace-scoping contract is `withWorkspace()`, which opens a transaction on that client and issues `SET LOCAL app.workspace_id`.
+
+## The two silent failure directions
+
+[Section titled “The two silent failure directions”](#the-two-silent-failure-directions)
+
+Because a lot of system code runs on `getOrgPg()`, both mistakes are easy and neither announces itself:
+
+1. **On `getOrgPg()`, an explicit `workspace_id = $1` predicate is LOAD-BEARING, not defensive.** RLS is not scoping you. Drop or loosen it — or let a refactor “simplify” it away because “RLS handles that” — and the read silently spans **every tenant**. For a watchdog that resolves alarms, that means one workspace’s recovery all-clears another workspace’s live alarm.
+
+2. **Switching such code to `getOrgPgApp()` without `withWorkspace()` returns zero rows.** This looks like the *safer, more correct* change — use the least-privileged role — and it is exactly the change that breaks it. A guard whose durable read returns empty simply stops acting, forever, while every test still passes and the code still looks right.
+
+Direction 2 is the nastier one: it converts a working guard into a no-op that is indistinguishable from a quiet, healthy system.
+
+## The drill
+
+[Section titled “The drill”](#the-drill)
+
+Before trusting any verification of a query against an RLS table, run it **as both roles**, and as `harness_app` run it **both with and without** the setting:
+
+```bash
+# convention creds, hardcoded in connection.ts
+PGPASSWORD=harness_app_pwd psql -X -U harness_app -h localhost -p 5432 -d papercusp -At \
+  -c "SELECT count(*) FROM harness_shared.coord_event_log WHERE workspace_id='papercusp-workspace'"
+# -> 0   (no app.workspace_id: this is what your code would actually see)
+
+
+PGPASSWORD=harness_app_pwd psql -X -U harness_app -h localhost -p 5432 -d papercusp -At \
+  -c "SET app.workspace_id='papercusp-workspace'; SELECT count(*) FROM harness_shared.coord_event_log"
+# -> 11768
+```
+
+Check whether a table even has RLS before assuming it doesn’t:
+
+```sql
+SELECT relrowsecurity, relforcerowsecurity FROM pg_class WHERE oid='harness_shared.coord_event_log'::regclass;
+SELECT polname, pg_get_expr(polqual, polrelid) FROM pg_policy WHERE polrelid='harness_shared.coord_event_log'::regclass;
+```
+
+## The general rule
+
+[Section titled “The general rule”](#the-general-rule)
+
+**A probe that runs under different privileges, scope, or window than the real code cannot falsify the real code’s behaviour.** RLS is one instance; the same session that produced this doc hit another the same hour — a claim of “this has NEVER happened” derived from a query with a 7-day `ts >` bound, which was wrong because the last occurrence was 13 days back.
+
+Both errors share one shape: *the probe could not have detected the failure it was being used to rule out.* When a verification comes back clean, the question to ask is not “did it pass?” but **“under what conditions did it run, and are they the real ones?”**
 
 # Verifying a desktop-operator fix on the RIGHT instance (don't fix the wrong window/build)
 
@@ -88892,6 +89428,16 @@ curl -s -H "x-papercusp-workspace: <fresh-slug>" \
   http://127.0.0.1:<port>/api/desktop/setup-wizard-state
 # expect: no "finished_at" key at all
 ```
+
+⚠ **This curl check alone does NOT prove the UI will land on `/onboarding` — it only proves the *server* is first-run-eligible.** The Tauri webview’s own `/api/*` calls are routed by a separate Rust-side mechanism (`env_switch.rs` / `main.rs`’s `SELECTED_API_PORT`, default `:3070`) that is **not** derived from `devUrl` in your `--config` override and does **not** automatically follow `OPERATOR_DEV_PORT`. If you launch a non-default-port instance (as this recipe requires, to get an isolated operator) without also pinning `PAPERCUSP_DEV_API_TARGET=<same port>`, the webview’s in-app fetch to `setup-wizard-state` silently hits a *different*, already-onboarded operator and lands on `/adv` — even though the curl check above passed. Confirmed 2026-08-03 (WI-3134 round 3, EI-19412290906822408): add `PAPERCUSP_DEV_API_TARGET=<port>` (same value as `OPERATOR_DEV_PORT`) to the launch env alongside `PAPERCUSP_WORKSPACE_ID` — this pins both content and `/api` (see the isolated-stack-for-mutation-e2e recipe, which already sets it for its own separate-DB stack) and is required here too. Verify from *inside* the webview, not just via curl:
+
+```sh
+tauri-agent-tools eval --pid <pid> \
+  "fetch('/api/desktop/setup-wizard-state').then(r=>r.text())"
+# must match the curl output above — a mismatch means /api is not pinned
+```
+
+**`<port>` above must be the instance YOU launched with that `PAPERCUSP_WORKSPACE_ID=<fresh-slug>` env pin — not some other already-running dev server.** `isKnownWorkspace()` (`packages/operator-core/lib/workspace-registry.ts`) accepts a workspace id only when it’s the special `default`, when it matches *that process’s own* `PAPERCUSP_WORKSPACE_ID` pin, or when it’s already in the on-disk workspace registry — a freshly-invented slug is none of those for any *other* running instance (the everyday `:3070`/`:3170` dev servers, a peer’s own pinned launch, …). Curl that header at the wrong port and you always get **400 `unknown_workspace`**, no matter how plausible the slug looks — the middleware (`packages/operator-core/lib/workspace-context-middleware.ts`) rejects loudly rather than silently falling back. Registration is per-process, not global: there is no separate “register a workspace” step to run first, but the header only works against the one process that was actually launched with that pin.
 
 ### 1.6 Robust navigation, blocked `sleep`, and the token file format (EI-9161)
 

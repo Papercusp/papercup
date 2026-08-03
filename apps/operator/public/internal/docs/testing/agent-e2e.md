@@ -587,6 +587,45 @@ curl -s -H "x-papercusp-workspace: <fresh-slug>" \
 # expect: no "finished_at" key at all
 ```
 
+⚠ **This curl check alone does NOT prove the UI will land on `/onboarding` —
+it only proves the *server* is first-run-eligible.** The Tauri webview's own
+`/api/*` calls are routed by a separate Rust-side mechanism
+(`env_switch.rs` / `main.rs`'s `SELECTED_API_PORT`, default `:3070`) that is
+**not** derived from `devUrl` in your `--config` override and does **not**
+automatically follow `OPERATOR_DEV_PORT`. If you launch a non-default-port
+instance (as this recipe requires, to get an isolated operator) without also
+pinning `PAPERCUSP_DEV_API_TARGET=<same port>`, the webview's in-app fetch to
+`setup-wizard-state` silently hits a *different*, already-onboarded operator
+and lands on `/adv` — even though the curl check above passed. Confirmed
+2026-08-03 (WI-3134 round 3, EI-19412290906822408): add
+`PAPERCUSP_DEV_API_TARGET=<port>` (same value as `OPERATOR_DEV_PORT`) to the
+launch env alongside `PAPERCUSP_WORKSPACE_ID` — this pins both content and
+`/api` (see the isolated-stack-for-mutation-e2e recipe, which already sets it
+for its own separate-DB stack) and is required here too. Verify from
+*inside* the webview, not just via curl:
+
+```sh
+tauri-agent-tools eval --pid <pid> \
+  "fetch('/api/desktop/setup-wizard-state').then(r=>r.text())"
+# must match the curl output above — a mismatch means /api is not pinned
+```
+
+**`<port>` above must be the instance YOU launched with that
+`PAPERCUSP_WORKSPACE_ID=<fresh-slug>` env pin — not some other
+already-running dev server.** `isKnownWorkspace()`
+(`packages/operator-core/lib/workspace-registry.ts`) accepts a workspace id
+only when it's the special `default`, when it matches *that process's own*
+`PAPERCUSP_WORKSPACE_ID` pin, or when it's already in the on-disk workspace
+registry — a freshly-invented slug is none of those for any *other* running
+instance (the everyday `:3070`/`:3170` dev servers, a peer's own pinned
+launch, …). Curl that header at the wrong port and you always get **400
+`unknown_workspace`**, no matter how plausible the slug looks — the
+middleware (`packages/operator-core/lib/workspace-context-middleware.ts`)
+rejects loudly rather than silently falling back. Registration is
+per-process, not global: there is no separate "register a workspace" step to
+run first, but the header only works against the one process that was
+actually launched with that pin.
+
 ### 1.6 Robust navigation, blocked `sleep`, and the token file format (EI-9161)
 
 Three frictions that cost real time driving the operator webview

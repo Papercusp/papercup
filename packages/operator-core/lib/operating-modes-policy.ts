@@ -67,7 +67,8 @@ DISCLOSE (state your default, act, record it); you NEVER pause to ask the owner 
 For work that outlives this turn, arm the ENGINE loop (\`loop:arm { intervalSec, goal }\`,
 default 60s; extend while hard-blocked, restore after) and \`loop:end\` when done. Ending a
 turn under an ongoing directive with neither work in flight nor an armed loop is the
-failure mode. End every turn with what you did + the next step you're taking — then take it.`;
+failure mode. End every turn with what you did + the next step you're taking — then take it
+IN THIS SAME TURN; never announce a step you are not about to take.`;
   }
   return `## AUTO mode — the owner's switch for "act, don't ask"
 
@@ -140,7 +141,8 @@ yourself with these defaults — they are NOT things to surface:
 - **Build vs defer** → build + verify now; DISCLOSE what you deferred, don't ask permission
   to defer.
 
-End every turn with what you did + the single next step you're taking — then take it.
+End every turn with what you did + the single next step you're taking — then take it IN THIS
+SAME TURN; never announce a step you are not about to take.
 
 **AUTO mode + the engine loop are the two halves of "go autonomous."** AUTO mode is the
 *authorization posture* (act, don't ask); the **engine loop** (\`loop:arm { intervalSec,

@@ -142,8 +142,12 @@ async function blockEdge(blockedRef: string, blockerRef: string, blockedKind = '
       (workspace_id, blocked_kind, blocked_ref, blocker_kind, blocker_ref, dep_type)
     VALUES (${WS}, ${blockedKind}, ${blockedRef}, ${blockerKind}, ${blockerRef}, 'blocks')`;
 }
-const seedPlan = (slug: string, status: string) =>
-  db.sql`INSERT INTO harness_shared.harness_plans (plan_slug, status) VALUES (${slug}, ${status})`;
+// `opStatus` is the OPERATIONAL axis (started/paused/done — what plans:start / plans:pause
+// write); `status` is the LIFECYCLE one. Floor #11 reads BOTH, and a plan that is genuinely
+// RUNNING normally reads status='ready' + op_status='started' (EI-19409397800537963).
+const seedPlan = (slug: string, status: string, opStatus: string | null = null) =>
+  db.sql`INSERT INTO harness_shared.harness_plans (plan_slug, status, op_status)
+          VALUES (${slug}, ${status}, ${opStatus})`;
 const seedLease = (slug: string, itemId: string, owner: string, expiresMinFromNow: number) =>
   db.sql`INSERT INTO harness_shared.plan_item_claims (plan_slug, item_id, owner, expires_ts)
           VALUES (${slug}, ${itemId}, ${owner}, now() + make_interval(mins => ${expiresMinFromNow}))`;
@@ -189,6 +193,11 @@ beforeAll(async () => {
   // P-001 (the thing under test): the SSOT function + view. Applying the REAL migration file (not
   // a re-typed copy) is the point — this test binds the migration's SQL to the TS claim path.
   await db.sql.unsafe(readMigration('654-work-item-claim-floors-ssot.sql')).simple();
+  // EI-19409397800537963: re-points floor #11 at the OPERATIONAL plan axis (op_status
+  // started/paused, not the lifecycle status alone) and tenant-scopes both plan subqueries.
+  // Applied AFTER 654 for the same reason 654 itself is applied here rather than re-typed —
+  // the migration chain, in order, is what this test binds the TS claim path to.
+  await db.sql.unsafe(readMigration('744-plan-lane-floor-op-status.sql')).simple();
 }, 180_000);
 afterAll(async () => {
   await db.cleanup();
@@ -239,11 +248,27 @@ describe('work_items_claimable (SSOT view) admits EXACTLY the rows claimNextIssu
     await seedPlan('other-lease-plan', 'draft'); // 11b. reserved by ANOTHER owner's live lease
     await seedPlanLinkedIssue('WI-OTHER-LEASE', 'other-lease-plan', 'P-03');
     await seedLease('other-lease-plan', 'P-03', 'su-other-owner', 20);
+    // 11c. reserved to a STARTED plan whose LIFECYCLE status is still 'ready' — the shape a
+    // real running plan actually has, since plans:start writes op_status and never touches
+    // status. Both representations read the lifecycle column ALONE until
+    // EI-19409397800537963, so this row was served by both doors; on live papercusp that was
+    // 31 items across 12 running plans. 11d is the same for an owner-PAUSED plan, whose
+    // plans:pause contract is "no new features are picked until plans:start".
+    await seedPlan('started-plan', 'ready', 'started');
+    await seedPlanLinkedIssue('WI-STARTED-PLAN', 'started-plan', 'P-04');
+    await seedPlan('paused-plan', 'ready', 'paused'); // 11d. owner-paused
+    await seedPlanLinkedIssue('WI-PAUSED-PLAN', 'paused-plan', 'P-05');
+    // …and the anti-over-exclusion control: a plan whose op run FINISHED reserves nothing, so
+    // its leftover items drain normally rather than starving behind a done plan.
+    await seedPlan('done-plan', 'ready', 'done');
+    await seedPlanLinkedIssue('WI-DONE-PLAN-FREE', 'done-plan', 'P-06');
     await seed('F-OPEN', { kind: 'feature', status: 'open' }); // 12. blocked-dep (non-terminal blocker)
     await seed('WI-DEP-BLOCKED');
     await blockEdge('WI-DEP-BLOCKED', `${H}#F-OPEN`, 'issue', 'feature');
 
-    const expected = ['WI-CHANGE', 'WI-DEP-OK', 'WI-DRAFT-FREE', 'WI-OP', 'WI-PLAIN', 'WI-TASK'].sort();
+    const expected = [
+      'WI-CHANGE', 'WI-DEP-OK', 'WI-DONE-PLAN-FREE', 'WI-DRAFT-FREE', 'WI-OP', 'WI-PLAIN', 'WI-TASK',
+    ].sort();
     const viewSet = await viewClaimableIds();
     const drainSet = await drainInlineClaimIds();
 

@@ -41,4 +41,46 @@ describe('db:check_drift handler', () => {
       sql_dir: '/sql',
     });
   });
+
+  /**
+   * EI-19408574209859155: `content_drift_executable` is the field an alert
+   * should key on — the subset that is NOT proven benign. Dropping it from the
+   * projection would silently send readers back to the raw `content_drift`
+   * list, where a provably-benign comment-only edit (the `-- FORWARD-COMPAT:`
+   * remedy `lint:migration-forward-compat` itself prescribes) is
+   * indistinguishable from a real half-landed migration.
+   */
+  it('projects the CLASSIFIED content drift, keeping the actionable subset separate', async () => {
+    const benign = {
+      filename: '727-widen.sql',
+      recordedSha256: 'a',
+      diskSha256: 'b',
+      classification: 'comments-only',
+      classificationDetail: 'only comments/whitespace differ',
+    };
+    const hazard = {
+      filename: '708-federate.sql',
+      recordedSha256: 'c',
+      diskSha256: 'd',
+      classification: 'executable',
+      classificationDetail: 'the edit never ran and never will',
+    };
+    driftM.mockResolvedValue({
+      inSync: true,
+      missing: [],
+      extra: [],
+      onDisk: [],
+      applied: [],
+      sqlDir: '/sql',
+      contentDrift: [benign, hazard],
+      contentDriftExecutable: [hazard],
+      contentDriftSqlDir: '/sql',
+    } as never);
+    const out = (await tool.handler({} as never, {} as never)) as Out;
+    const got = body(out);
+    // The full list is still reported — classification never HIDES an entry.
+    expect(got.content_drift).toEqual([benign, hazard]);
+    // ...but the benign one is absent from the actionable subset.
+    expect(got.content_drift_executable).toEqual([hazard]);
+  });
 });

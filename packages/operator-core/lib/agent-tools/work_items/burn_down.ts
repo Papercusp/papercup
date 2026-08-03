@@ -114,6 +114,13 @@ export interface BurnDownResult {
      *  predates the close stamp" are distinguishable — reading updatedAt instead is
      *  what once reported 3,833 ancient rows as closed within one hour. */
     deltaClosedUndated: number;
+    /** EI-19313376980892266 fix B — WHO produced `delta`. Present only with `since`.
+     *  `delta` is harness-WIDE; without this split it reads as the caller's own fleet's
+     *  output and over-reports by whatever the rest of the harness closed. */
+    deltaBy?: BurnDownDeltaBy;
+    /** Always true when `deltaBy` is present: its four counts sum to `delta` exactly.
+     *  Stated on the wire so a reader need not test the invariant themselves. */
+    deltaByPartitions?: boolean;
     /**
      * agent-protocol-authority-semantics-2026-07-26 P-004 — the terminal rows split by
      * COMPLETION AUTHORITY, which is the axis that answers "how much of this actually

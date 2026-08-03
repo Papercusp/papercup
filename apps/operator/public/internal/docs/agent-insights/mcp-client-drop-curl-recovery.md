@@ -15,6 +15,31 @@ not re-handshake a dropped streamable-HTTP/SSE connection. A manual `/mcp`
 reconnect (or session restart) fixes it — but in an unattended auto-mode loop you
 can't run `/mcp`. So route around it.
 
+## Symptom variant: an ECONNREFUSED on an unrelated local port, THEN a silent hang
+
+EI-19384363493799969 (2026-08-02, ≥4th independent hit of this whole class):
+before the familiar "tools vanish" symptom above, the FIRST `mcp__papercusp-su__*`
+call of the session/wake can fail **instantly** with something like
+`connect ECONNREFUSED 127.0.0.1:22060` — a port that matches **no** papercusp
+service (`:3070` operator, `:9071` mcp-proxy, `:9073` gateway all confirmed up via
+`ss -ltnp` in the same incident). Nothing on the host listens there; it reads as a
+Claude-Code-internal per-session ephemeral bridge/sandbox-proxy port that had not
+(re)established yet. A **second** identical call also refuses. Then, \~25s later,
+the *same* tool transitions from instant-refuse to a **silent 300s+ hang** (no
+response/progress) until the harness's own MCP idle timeout aborts it.
+
+Throughout, a direct `curl` `tools/call` to the exact proxy URL in `~/.claude.json`
+(see below / `scripts/mcp-call.mjs`) answers every call in well under 1.5s — so
+this is confirmed the same class as the rest of this doc (a wedged **client**, not
+a slow/down server), just with a distinguishing two-phase precursor
+(instant-refuse-on-an-unrelated-port → then a full hang) instead of a clean
+"tools vanish" drop. Recognizing this signature immediately — rather than
+spending several minutes assuming "all my tools are broken" — is the entire value
+of this addendum; the recovery is identical to the rest of this doc. The
+ECONNREFUSED port itself is Claude-Code-CLI-internal (outside papercusp's
+codebase), so there is no papercusp-side code fix for the underlying wedge — only
+faster recognition + the curl/`mcp-call.mjs` route-around below.
+
 ## Verify the server is up (optional)
 
 ```bash

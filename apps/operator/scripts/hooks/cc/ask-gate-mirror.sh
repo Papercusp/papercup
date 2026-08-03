@@ -336,17 +336,21 @@ def question_shaped_ending(text):
 
 # ── WI-5865: "deferred deliverable" heuristic — the failure the PreToolUse
 # delivery guard CANNOT see. That guard fires when a dialog and a long report
-# collide in ONE turn; this one fires when a turn ends by PROMISING content for
-# a future turn and delivers neither ("next turn I'll put the plan in front of
-# you"). Owner-reported 2026-07-25 after an su deferred a finished plan twice —
-# two round trips for content that already existed.
+# collide in ONE turn; this one fires when a turn ends by PROMISING content (or
+# a QUESTION — EI-19412167276099357 defect 2) for a future turn and delivers
+# neither ("next turn I'll put the plan in front of you" / "I'll ask how you
+# want this executed in the next message"). Owner-reported 2026-07-25 after an
+# su deferred a finished plan twice — two round trips for content that already
+# existed; the question-deferral shape was measured live 2026-08-03 (same cost,
+# a different owner turn).
 #
 # Deliberately narrow, because a bounce costs the fleet a turn: a sentence must
 # carry ALL THREE of (1) a future-TURN marker — "next wake"/"next tick" are
 # EXCLUDED, they are legitimate loop cadence — (2) a first-person future
-# ("I'll" / "I will" / "let me"), and (3) a delivery verb or a deliverable noun.
-# So "next turn I'll re-check the gate" (real future work) does not trip it,
-# while "I'll lay out the options next turn" (withheld content) does. ──────────
+# ("I'll" / "I will" / "let me"), and (3) a delivery/ask verb or a deliverable
+# noun. So "next turn I'll re-check the gate" (real future work) does not trip
+# it, while "I'll lay out the options next turn" (withheld content) and "I'll
+# ask how you want this next message" (a deferred question) both do. ──────────
 
 _DEFER_FUTURE_TURN_RE = re.compile(
     r'\bnext\s+(?:turn|message|reply|response)\b|\bfollowing\s+turn\b|\bin\s+my\s+next\s+(?:turn|message|reply|response)\b',
@@ -355,7 +359,7 @@ _DEFER_FUTURE_TURN_RE = re.compile(
 _DEFER_FIRST_PERSON_RE = re.compile(r"\b(?:i'?ll|i\s+will|i'?m\s+going\s+to|let\s+me)\b", re.I)
 _DEFER_DELIVERY_VERB_RE = re.compile(
     r"\b(?:put|present|lay\s+out|show|share|send|give|hand|deliver|walk\s+you\s+through|"
-    r"write\s+up|outline|sketch|circulate)\b",
+    r"write\s+up|outline|sketch|circulate|ask|confirm|check\s+with|run\s+by|get\s+your)\b",
     re.I,
 )
 _DEFER_DELIVERABLE_NOUN_RE = re.compile(
@@ -364,6 +368,39 @@ _DEFER_DELIVERABLE_NOUN_RE = re.compile(
     r"assessment|walkthrough|rundown)\b",
     re.I,
 )
+
+
+# ── EI-19412167276099357 defect 3: strip content a turn is QUOTING (a fenced
+# code block, an inline-code span, a blockquoted peer message, a markdown
+# table row) before the heuristics below scan it. Without this, a turn that
+# CITES an example of the banned pattern — this very file's own evidence
+# tables, a quoted fixture — gets scanned as if it were the agent's own prose
+# and bounced for the citation, which is exactly backwards: that turn had
+# already delivered its content in full. A fenced block is removed whole;
+# blockquote and table-row LINES are dropped entirely (they carry someone
+# else's / a fixture's words, never the agent's own closing sentence). ────────
+
+_FENCED_BLOCK_RE = re.compile(r'```.*?```', re.DOTALL)
+_INLINE_CODE_RE = re.compile(r'`[^`\n]+`')
+_TABLE_ROW_RE = re.compile(r'^\s*\|.*\|\s*$')
+_BLOCKQUOTE_LINE_RE = re.compile(r'^\s*>')
+# CommonMark treats 4-space indentation as a code block same as ``` fences —
+# and it's the format this very bug's own evidence used ("    (no bounce)  …").
+_INDENTED_CODE_LINE_RE = re.compile(r'^ {4,}\S')
+
+
+def strip_quoted_for_scanning(text):
+    if not text:
+        return text
+    t = _FENCED_BLOCK_RE.sub(' ', text)
+    t = _INLINE_CODE_RE.sub(' ', t)
+    kept = []
+    for ln in t.split('\n'):
+        if (_TABLE_ROW_RE.match(ln) or _BLOCKQUOTE_LINE_RE.match(ln)
+                or _INDENTED_CODE_LINE_RE.match(ln)):
+            continue
+        kept.append(ln)
+    return '\n'.join(kept)
 
 
 def deferred_deliverable_ending(text):
@@ -386,15 +423,18 @@ def deferred_deliverable_ending(text):
 
 
 DEFERRED_DELIVERABLE_REASON = (
-    "This turn ends by DEFERRING a deliverable to a future turn (\"next turn I'll …\"). "
-    "If you already have that content — a plan, a report, an analysis, a set of options — "
-    "withholding it costs the owner a full round trip for something that existed.\n\n"
+    "This turn ends by DEFERRING something to a future turn (\"next turn I'll …\") instead of "
+    "delivering it now. If you already have content — a plan, a report, an analysis, a set of "
+    "options — withholding it costs the owner a full round trip for something that existed. If "
+    "what you deferred is a QUESTION, asking it later costs that same round trip for no reason.\n\n"
     "The delivery-discipline rule splits the DIALOG from the content; it NEVER licenses "
-    "withholding the content. Anticipating that you will need to ask something is a reason "
-    "to send the content THIS turn and ask NEXT turn — not to send neither. Do this now:\n"
-    "  1. Write the plan/report/analysis out in THIS turn, as plain text.\n"
-    "  2. End the turn.\n"
-    "  3. Ask the question on the NEXT turn, self-contained (AskUserQuestion / coord:escalate).\n\n"
+    "withholding content OR a question you could ask now. Anticipating that you will need to ask "
+    "something is a reason to send the content THIS turn and ask on the SAME turn's own dialog — "
+    "not to send neither. Do this now:\n"
+    "  1. If you have a deliverable (plan/report/analysis), write it out in THIS turn, as plain text.\n"
+    "  2. If you have a question, ask it NOW — the native AskUserQuestion tool or coord:escalate —\n"
+    "     do not promise to ask it later.\n"
+    "  3. End the turn.\n\n"
     "If the content genuinely does not exist yet, do NOT promise it for a later turn: say "
     "plainly what is still unknown and what you are doing to resolve it, then end."
 )
@@ -519,11 +559,16 @@ call_tool('sessions:ingest-gate-event', {
 
 transcript_path = first('transcript_path', 'transcriptPath') or ''
 final_text = last_assistant_text(transcript_path)
+# EI-19412167276099357 defect 3: scan a QUOTE-STRIPPED copy so citing the
+# banned pattern (a fixture, a table row, someone else's message) can never
+# itself trip the bounce. `final_text` (unstripped) is kept for the <ask> tag
+# parse below — that is a deliberate structured block, never a quoted example.
+scan_text = strip_quoted_for_scanning(final_text)
 
 # WI-5865: computed BEFORE the ask-mirror so a turn that both mirrors an ask AND
 # defers its content still gets bounced — the mirror fires first (the owner's
 # question is never dropped), then we fall through to the deferral bounce.
-deferred = deferred_deliverable_ending(final_text)
+deferred = deferred_deliverable_ending(scan_text)
 
 ask = parse_ask_tag(final_text)
 if ask:
@@ -549,7 +594,7 @@ if deferred:
     print(json.dumps({'decision': 'block', 'reason': DEFERRED_DELIVERABLE_REASON}))
     sys.exit(0)
 
-if question_shaped_ending(final_text):
+if question_shaped_ending(scan_text):
     # inbox-pane-active-scope-dates-filters-2026-07-19 P-401 (D-2/b): steer the
     # re-emit to the NATIVE AskUserQuestion tool, NOT a raw `<ask>` text tag. The
     # tag is a GUI wire-format that a TERMINAL (TUI) session renders as literal,

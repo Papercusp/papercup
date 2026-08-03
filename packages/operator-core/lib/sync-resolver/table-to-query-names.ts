@@ -166,6 +166,12 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
     // button keeps rendering (or stops rendering) against a resolved item that
     // has since left the feed.
     'plans.attentionRefs',
+    // plans.waitingCount (EI-19409535742567802) — the "N plans waiting" nudge
+    // aggregate. Reads harness_plans via callPlansRead('list', ...), same as
+    // plans.list right above, so it MUST invalidate alongside it — a plan
+    // start/pause flipping startStatus must live-refresh the nudge's count,
+    // not just the (unrendered, in the default state) plan list.
+    'plans.waitingCount',
     'plans.search',
     // plans.byHive (WI-259 P-006) — the cross-member plan rollup. A FEDERATED plan
     // write lands on harness_plans under the author member's slug + fires the change

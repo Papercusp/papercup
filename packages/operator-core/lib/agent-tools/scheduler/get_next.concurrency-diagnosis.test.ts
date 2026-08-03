@@ -18,7 +18,14 @@ import { beforeEach, describe, it, expect, vi } from 'vitest';
 const diagnoseM = vi.hoisted(() => vi.fn());
 const explainFloorsM = vi.hoisted(() => vi.fn());
 const getClaimSpecRecordM = vi.hoisted(() => vi.fn());
-const getActiveClaimsM = vi.hoisted(() => vi.fn());
+// WI-7376: get_next.ts calls `readClaimConcurrency` (not `getActiveClaimsForBee` directly) —
+// readClaimConcurrency is defined INSIDE claim-spec-store.ts and calls its own local
+// getActiveClaimsForBee via a same-module binding, which a `vi.mock` override on the
+// EXPORTED getActiveClaimsForBee never reaches (mocking an export only redirects OUTSIDE
+// callers). Mock readClaimConcurrency itself — the actual boundary get_next.ts crosses —
+// so this test can't silently drift onto a real DB read again if claim-spec-store's
+// internals are refactored further.
+const readClaimConcurrencyM = vi.hoisted(() => vi.fn());
 const getNextForBeeM = vi.hoisted(() => vi.fn());
 
 vi.mock('../coordination/identity', () => ({
@@ -46,7 +53,7 @@ vi.mock('../../scheduler/claim-spec-store', async (importOriginal) => {
     ...actual,
     getNextForBee: getNextForBeeM,
     getClaimSpecRecord: getClaimSpecRecordM,
-    getActiveClaimsForBee: getActiveClaimsM,
+    readClaimConcurrency: readClaimConcurrencyM,
   };
 });
 vi.mock('../../work-items', async (importOriginal) => ({
@@ -56,6 +63,11 @@ vi.mock('../../work-items', async (importOriginal) => ({
 }));
 
 import getNextTool from './get_next';
+// The REAL evaluateClaimConcurrency (pure, un-mocked — only getNextForBee/getClaimSpecRecord/
+// readClaimConcurrency are overridden above) so each test can build its verdict from the same
+// held-ids shape the old getActiveClaimsForBee-based mocking used, without duplicating the
+// blocked/activeClaims/heldIds arithmetic by hand.
+import { evaluateClaimConcurrency } from '../../scheduler/claim-spec-store';
 
 async function callMiss() {
   const out = (await getNextTool.handler({ harness: 'papercusp' } as never, {} as never)) as {
@@ -80,7 +92,9 @@ describe('scheduler:get_next miss diagnosis is concurrency-aware (EI-12095)', ()
       updatedBy: null,
       updatedAt: null,
     });
-    getActiveClaimsM.mockResolvedValue([{ id: 'EI-10058', kind: 'bug' }]);
+    readClaimConcurrencyM.mockResolvedValue(
+      evaluateClaimConcurrency({ activeClaims: [{ id: 'EI-10058' }], maxConcurrentClaims: 1 }),
+    );
 
     const b = await callMiss();
 
@@ -107,10 +121,12 @@ describe('scheduler:get_next miss diagnosis is concurrency-aware (EI-12095)', ()
       updatedBy: null,
       updatedAt: null,
     });
-    getActiveClaimsM.mockResolvedValue([
-      { id: 'EI-1', kind: 'bug' },
-      { id: 'EI-2', kind: 'change' },
-    ]);
+    readClaimConcurrencyM.mockResolvedValue(
+      evaluateClaimConcurrency({
+        activeClaims: [{ id: 'EI-1' }, { id: 'EI-2' }],
+        maxConcurrentClaims: 2,
+      }),
+    );
 
     const b = await callMiss();
 
@@ -127,7 +143,9 @@ describe('scheduler:get_next miss diagnosis is concurrency-aware (EI-12095)', ()
       updatedBy: null,
       updatedAt: null,
     });
-    getActiveClaimsM.mockResolvedValue([]); // holds nothing — a genuine pool/floor miss
+    readClaimConcurrencyM.mockResolvedValue(
+      evaluateClaimConcurrency({ activeClaims: [], maxConcurrentClaims: 1 }),
+    ); // holds nothing — a genuine pool/floor miss
 
     const b = await callMiss();
 
@@ -144,7 +162,11 @@ describe('scheduler:get_next miss diagnosis is concurrency-aware (EI-12095)', ()
       updatedBy: null,
       updatedAt: null,
     });
-    getActiveClaimsM.mockResolvedValue([{ id: 'WI-42', kind: 'change' }]);
+    readClaimConcurrencyM.mockResolvedValue(
+      // spec omits `limits` entirely — evaluateClaimConcurrency's own default (1) applies,
+      // matching getNextForBee's default, same as `maxConcurrentClaims: undefined` would.
+      evaluateClaimConcurrency({ activeClaims: [{ id: 'WI-42' }] }),
+    );
 
     const b = await callMiss();
 
@@ -152,7 +174,7 @@ describe('scheduler:get_next miss diagnosis is concurrency-aware (EI-12095)', ()
     expect(diagnoseM).not.toHaveBeenCalled();
   });
 
-  it('fails soft to the ordinary pool/floor diagnosis if getActiveClaimsForBee errors', async () => {
+  it('fails soft to the ordinary pool/floor diagnosis if readClaimConcurrency errors', async () => {
     getClaimSpecRecordM.mockResolvedValue({
       source: 'cup',
       spec: { specId: 'x', revision: 1, limits: { maxConcurrentClaims: 1 } },
@@ -160,7 +182,9 @@ describe('scheduler:get_next miss diagnosis is concurrency-aware (EI-12095)', ()
       updatedBy: null,
       updatedAt: null,
     });
-    getActiveClaimsM.mockRejectedValue(new Error('pg boom'));
+    // get_next.ts wraps its readClaimConcurrency call in `.catch(() => null)` — a rejection
+    // here is the exact boundary that fail-soft path guards.
+    readClaimConcurrencyM.mockRejectedValue(new Error('pg boom'));
 
     const b = await callMiss();
 

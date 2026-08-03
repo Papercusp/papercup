@@ -145,16 +145,28 @@ Use the CLI (added `2026-06-20` — works even with the MCP client down):
 ```bash
 npm run db:next-migration -- --name add-foo-index --intent "what it does"
 # → reserves the next free NNN in harness_shared.migration_reservations and prints
-#   the canonical path: libs/papercusp/libs/db/sql/<NNN>-add-foo-index.sql
+#   a DRAFT write-target: libs/papercusp/libs/db/sql/<NNN>-add-foo-index.sql.DRAFT
+#   (+ arm_path / arm_command — see below)
 # Add --dry-run to see the number without reserving it.
 ```
 
 It scans BOTH dirs for the on-disk max **inside** the advisory lock (the
 `2026-07-03` EI-6852 fix — see above), allocates, and records the reservation —
-the same contract as the MCP `db:next-migration` tool. Then write the file to
-`libs/papercusp/libs/db/sql/<NNN>-<slug>.sql` (NOT the sidecar mirror). It
-auto-applies on the next operator restart. It refuses to hand out a number when
-PG is unreachable (an unreserved number re-opens the race).
+the same contract as the MCP `db:next-migration` tool. Then **write + iterate at
+the printed `.DRAFT` path**, not the bare `.sql` name (`2026-08-02`,
+EI-19366138707071397): the migration runner only ever applies files matching
+`*.sql` (`migration-runner.js`'s `.filter(f => f.endsWith('.sql'))` — the same
+mechanism the pre-existing `NNN-*.sql.PENDING-CODE-DEPLOY` idiom relies on), so a
+`.DRAFT`-suffixed file is invisible to boot auto-apply, `db:migrate`, and the
+green-checkpoint preflight while it's mid-edit — including a deliberate temporary
+both-ways guard-test mutation (the "prove a guard you haven't seen fail" house
+rule), which previously could race a concurrent operator restart and execute
+half-finished SQL against the live DB (the migration-729/WI-7057 near-miss that
+prompted this). Once it's finished and tested, **arm it** with the tool's printed
+`arm_command` (`mv <path>.DRAFT <path>`) to land it at
+`libs/papercusp/libs/db/sql/<NNN>-<slug>.sql` (NOT the sidecar mirror) — only then
+does it auto-apply on the next operator restart. It refuses to hand out a number
+when PG is unreachable (an unreserved number re-opens the race).
 
 ## Recommended fix (plan)
 

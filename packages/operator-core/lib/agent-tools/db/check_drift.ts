@@ -59,7 +59,17 @@ export default defineTool({
             // the file on disk silently misdescribes the live schema until a
             // NEW migration re-applies it. Deliberately does not gate
             // `in_sync` (see MigrationDrift.contentDrift).
+            //
+            // EI-19408574209859155: each entry carries a `classification` —
+            // `executable` (a real half-landed migration), `comments-only`
+            // (provably benign, e.g. the `-- FORWARD-COMPAT:` escape hatch
+            // that lint:migration-forward-compat's own remedy writes into an
+            // applied file), or `unclassified` (undecidable, counted as
+            // hazardous). READ `content_drift_executable`, not the raw list:
+            // that is the actionable subset, the same way `missing_deployed`
+            // rather than `missing` is what the watchdog fires on.
             content_drift: d.contentDrift,
+            content_drift_executable: d.contentDriftExecutable,
             content_drift_sql_dir: d.contentDriftSqlDir,
             // WI-5050: applied migrations numbered beyond this tree's max —
             // the shared DB was migrated by a NEWER tree, so this tree's
