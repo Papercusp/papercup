@@ -247,6 +247,10 @@ export async function acquireConditionOwner(
     harness: spec.harness,
     severity: spec.severity ?? 'major',
     workspaceId: spec.workspaceId,
+    // Stamp the mint so `releaseConditionOwner` can tell an INCIDENT item (safe to
+    // auto-settle) from a hand-filed ROOT-CAUSE item that merely holds the same key.
+    // See BRIDGE_MINT_MARKER.
+    payload: { [BRIDGE_MINT_MARKER]: { conditionKey: key, mintedAt: new Date().toISOString() } },
   } as Parameters<typeof createWorkItem>[0]);
 
   const won = await claimConditionKey(item.id, key, spec.workspaceId);
@@ -274,11 +278,46 @@ export async function acquireConditionOwner(
   return { conditionKey: key, workItem: item.id, created: true };
 }
 
+/**
+ * Payload key stamping an item the BRIDGE MINTED (EI-19395923444306887).
+ *
+ * The distinction it encodes is the whole point, and it is not visible from the
+ * `condition_key` column alone:
+ *
+ *   - an INCIDENT item (bridge-minted) means "this condition is open right now".
+ *     Its lifetime IS the condition's, so auto-settling it on resolve is correct.
+ *   - a ROOT-CAUSE item (hand-filed) means "this detector/subsystem is defective".
+ *     It OUTLIVES the condition, so auto-settling it is destructive.
+ *
+ * A condition resolving is not the same event as the bug being fixed:
+ * `single-primary:no-primary` clearing means a background primary is running
+ * again, and says nothing about the guard defect that let the alarm fail to stand
+ * down. Without this marker, `releaseConditionOwner({ settle: true })` closes
+ * WHATEVER row holds the key — so backfilling `condition_key` onto a hand-filed
+ * root-cause bug (an attractive cleanup, with ~6 `single-primary:no-primary`
+ * filings sitting there inviting it) would let a transient recovery silently
+ * close a documented bug on the reconciler's 5-minute cadence.
+ *
+ * Stamping makes that adoption SAFE rather than merely forbidden, which is the
+ * better property: the idea is genuinely attractive and will be re-proposed, and
+ * a documented prohibition only works on people who read the document.
+ */
+export const BRIDGE_MINT_MARKER = '_bridge';
+
 export interface ReleaseResult {
   conditionKey: string;
   released: string | null;
   /** True when the owning item was also settled by this call. */
   settled: boolean;
+  /**
+   * Set when `settle: true` was asked for but deliberately NOT honored. Today the
+   * only reason is `not-bridge-minted`: the key was released (so the next
+   * occurrence mints fresh) while the hand-filed item it was on stays OPEN.
+   *
+   * Reported rather than silent — a caller that asked to settle and did not gets
+   * to see why, instead of inferring it from `settled: false`.
+   */
+  settleSkipped?: 'not-bridge-minted';
 }
 
 /**
@@ -288,6 +327,11 @@ export interface ReleaseResult {
  * clearing does not always mean the work is finished (a gate that goes green on
  * its own may still deserve a post-mortem), so releasing the KEY and settling the
  * ITEM are kept separate decisions.
+ *
+ * ⚠ `settle: true` is HONORED ONLY for an item the bridge minted. A hand-filed
+ * root-cause bug that holds this key is released but left OPEN, reported as
+ * `settleSkipped: 'not-bridge-minted'`. See {@link BRIDGE_MINT_MARKER} — the key
+ * releasing and the bug being fixed are different events.
  */
 export async function releaseConditionOwner(
   conditionKey: string,
@@ -302,13 +346,25 @@ export async function releaseConditionOwner(
     return { conditionKey: key, released: null, settled: false };
   }
 
+  // Settle ONLY an item the bridge itself minted. A hand-filed root-cause bug can
+  // legitimately hold this key (adopting one instead of minting a duplicate is the
+  // obvious cleanup), and closing it because the CONDITION cleared would destroy a
+  // documented finding on a 5-minute cadence — see BRIDGE_MINT_MARKER.
   let settled = false;
+  let settleSkipped: ReleaseResult['settleSkipped'];
   if (opts.settle) {
-    await setWorkItemState(current.workItem, 'done', {
-      harness: opts.harness,
-      completionRef: opts.reason ?? `condition '${key}' resolved`,
-    }).catch(() => undefined);
-    settled = true;
+    if (await isBridgeMinted(current.workItem, opts.workspaceId)) {
+      await setWorkItemState(current.workItem, 'done', {
+        harness: opts.harness,
+        completionRef: opts.reason ?? `condition '${key}' resolved`,
+      }).catch(() => undefined);
+      settled = true;
+    } else {
+      // Release the key below (so the next occurrence mints fresh) but leave the
+      // item OPEN. Fails SAFE: an unreadable payload reads as not-bridge-minted, so
+      // the failure mode is a stale-open incident item, never a destroyed bug report.
+      settleSkipped = 'not-bridge-minted';
+    }
   }
 
   const sql = getOrgPg().sql;
@@ -318,7 +374,32 @@ export async function releaseConditionOwner(
      WHERE condition_key = ${key}
        AND (${opts.workspaceId ?? null}::text IS NULL OR workspace_id = ${opts.workspaceId ?? null})`;
 
-  return { conditionKey: key, released: current.workItem, settled };
+  return { conditionKey: key, released: current.workItem, settled, ...(settleSkipped ? { settleSkipped } : {}) };
+}
+
+/**
+ * Was this work-item MINTED by the bridge (as opposed to hand-filed and merely
+ * holding the key)?
+ *
+ * FAILS SAFE to `false`: an unreadable payload, a missing row, or a store error
+ * all read as "not bridge-minted", so the worst outcome is an incident item left
+ * open for a human to close — never a hand-filed root-cause bug auto-closed by a
+ * transient recovery. The asymmetry is deliberate; the two errors are not
+ * comparable in cost.
+ */
+export async function isBridgeMinted(workItem: string, workspaceId?: string): Promise<boolean> {
+  try {
+    const sql = getOrgPg().sql;
+    const rows = await sql<{ minted: boolean }[]>`
+      SELECT (payload -> ${BRIDGE_MINT_MARKER}) IS NOT NULL AS minted
+        FROM harness_shared.work_items
+       WHERE feature_id = ${workItem}
+         AND (${workspaceId ?? null}::text IS NULL OR workspace_id = ${workspaceId ?? null})
+       LIMIT 1`;
+    return rows[0]?.minted === true;
+  } catch {
+    return false;
+  }
 }
 
 /** One condition as the bridge sees it. */
@@ -358,6 +439,13 @@ export interface ReconcileSummary {
  * re-opened 18:30Z on 2026-08-02 alone (40 alarms). P-003's own text is explicit —
  * "condition opens -> upsert the singleton work-item; condition resolves -> CLOSE
  * IT" — so the singleton guarantee is only true if the close actually happens.
+ *
+ * That `settle: true` is SAFE here only because the close is scoped to items the
+ * bridge minted ({@link BRIDGE_MINT_MARKER}). The two constraints read as opposites
+ * and are not: this caller must close the INCIDENT item it created, and must never
+ * close a hand-filed ROOT-CAUSE item that happens to hold the same key. The marker
+ * is what makes "always settle on resolve" and "never auto-close someone's bug
+ * report" simultaneously true.
  */
 export async function reconcileConditions(
   states: readonly ConditionState[],

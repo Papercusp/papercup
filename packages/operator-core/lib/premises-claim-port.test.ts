@@ -132,6 +132,25 @@ describe('detectAbsencePremises', () => {
       expect(derive('The flag does exist, yet nothing reads the offers table today.')).toHaveLength(1);
     });
 
+    /**
+     * A falsification criterion states what WOULD disprove a claim — conditional by
+     * construction, never an assertion. 4 of the 7 total suppressions measured over 4000
+     * real bodies were this shape, and they had been caught only INCIDENTALLY (the literal
+     * word "Falsified" sits in the retraction marker set), so a relabel would have quietly
+     * restored every false positive.
+     */
+    it('does not fire on an absence phrase inside a "Falsified if:" criterion', () => {
+      const real =
+        '- Falsified if: If bash_output already returns a distinct killed verdict for the ' +
+        'SIGKILLed sleep, the core bug does not exist in the current build.';
+      expect(derive(real)).toEqual([]);
+    });
+
+    it('survives a relabel of the falsifier field (the fragility that motivated making it explicit)', () => {
+      expect(derive('- Disproved if: the script finds zero packages and the problem does not exist.')).toEqual([]);
+      expect(derive('- Refuted if: there is no unregistered package left in the gate.')).toEqual([]);
+    });
+
     it('STILL fires on the root incident and the other measured shapes (no regression)', () => {
       expect(derive(WI_7042)).toHaveLength(1);
       expect(derive('That is the guard that should have caught it, and it does not exist.')).toHaveLength(1);
@@ -163,6 +182,25 @@ describe('detectAbsencePremises', () => {
     it('is not confused by a decimal number inside the claim', () => {
       const [p] = derive('At 1.5x load there is no headroom left on the box.');
       expect(p.claim).toContain('At 1.5x load');
+    });
+
+    /**
+     * The mirror of the bug above: a terminator followed by CLOSING markup is still a
+     * terminator. Without this the span runs past a markdown bold-close and swallows the
+     * next sentence — measured on real bodies, where `**That lint does not exist.**
+     * Verified repo-wide…` came back as one run-on claim.
+     */
+    it('treats a terminator followed by closing markup as a real sentence end', () => {
+      const [p] = derive('**That lint does not exist.** Verified repo-wide at 04:09Z against the whole tree.');
+      expect(p.claim).toContain('That lint does not exist');
+      expect(p.claim).not.toContain('Verified repo-wide');
+    });
+
+    it('same for a closing paren or quote after the dot', () => {
+      const [a] = derive('(There is no reader for that table.) A separate sentence follows here.');
+      expect(a.claim).not.toContain('separate sentence');
+      const [b] = derive('The note said "there is no such helper." Then the author moved on.');
+      expect(b.claim).not.toContain('moved on');
     });
   });
 });

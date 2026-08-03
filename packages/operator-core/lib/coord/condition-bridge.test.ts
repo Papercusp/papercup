@@ -112,6 +112,54 @@ describe('isTerminalStatus derives from the shared SSOT', () => {
     const release = body.slice(body.indexOf('releaseConditionOwner('));
     expect(release.slice(0, 400)).toMatch(/settle:\s*true/);
   });
+
+  /**
+   * REGRESSION GUARD for the OPPOSITE failure of the one above (EI-19395923444306887).
+   *
+   * The reconciler must ALWAYS settle on resolve (previous test) and must NEVER
+   * auto-close a hand-filed root-cause bug that merely holds the same condition_key.
+   * Both are true only because the settle is gated on the bridge-mint marker: a
+   * condition clearing is not the same event as the bug being fixed, so an ungated
+   * settle would destroy a documented finding on the reconciler's 5-minute cadence.
+   *
+   * Source-text rather than behavioral because the settle path needs a live store;
+   * what is worth pinning is that the GATE still surrounds the close, since the
+   * tempting future edit is to "simplify" it away while adopting a hand-filed item.
+   */
+  it('gates the settle on the bridge-mint marker — never auto-closes a hand-filed item', async () => {
+    const { readFile } = await import('node:fs/promises');
+    const src = await readFile(new URL('./condition-bridge.ts', import.meta.url), 'utf8');
+    const body = src.slice(src.indexOf('export async function releaseConditionOwner'));
+    const fn = body.slice(0, body.indexOf('\n}\n') + 3);
+
+    // The close must be REACHED THROUGH the marker check, not merely near it.
+    const gate = fn.indexOf('isBridgeMinted');
+    const close = fn.indexOf("'done'");
+    expect(gate, 'releaseConditionOwner must consult isBridgeMinted').toBeGreaterThan(-1);
+    expect(close, 'releaseConditionOwner must still be able to settle').toBeGreaterThan(-1);
+    expect(gate, 'the marker check must precede the close').toBeLessThan(close);
+
+    // ...and the un-stamped branch must release the key WITHOUT closing.
+    expect(fn).toMatch(/settleSkipped\s*=\s*'not-bridge-minted'/);
+  });
+
+  it('stamps every bridge-minted item, or the gate above can never open', async () => {
+    const { readFile } = await import('node:fs/promises');
+    const src = await readFile(new URL('./condition-bridge.ts', import.meta.url), 'utf8');
+    const body = src.slice(src.indexOf('export async function acquireConditionOwner'));
+    const mint = body.slice(body.indexOf('createWorkItem('));
+    expect(mint.slice(0, 600)).toMatch(/BRIDGE_MINT_MARKER/);
+  });
+
+  it('fails SAFE — isBridgeMinted returns false rather than throwing on a store error', async () => {
+    const { readFile } = await import('node:fs/promises');
+    const src = await readFile(new URL('./condition-bridge.ts', import.meta.url), 'utf8');
+    const body = src.slice(src.indexOf('export async function isBridgeMinted'));
+    const fn = body.slice(0, body.indexOf('\n}\n') + 3);
+    // An unreadable payload must read as NOT-minted: the worst outcome is then a
+    // stale-open incident item, never a destroyed bug report.
+    expect(fn).toMatch(/catch\s*\{[\s\S]*return false/);
+  });
 });
 
 describe('resolveConditionHarness', () => {

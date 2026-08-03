@@ -2643,6 +2643,23 @@ export async function setWorkItemStateWithAliasInfo(
     } catch {
       /* best-effort — never fail the primary lifecycle write over the auto-gate */
     }
+  } else if (workItem && appliedLower === 'blocked') {
+    // EI-19397599078921465: a FEATURE-family item moving to `blocked` recorded NOTHING — no audit
+    // row, no payload provenance — so 59 of them sat blocked with no trace of who moved them or
+    // when. This is chained as `else if` off the issue branch DELIBERATELY: an issue's blocked
+    // transition already audits via the auto-park above (`work_items:claim_hold:set`
+    // reason='blocked'), and double-writing would make ONE transition read as TWO in the unified
+    // history — worse than the gap it closes. Fire-and-forget, exactly like that auto-park's own
+    // audit write; a lifecycle write must never fail over its own bookkeeping.
+    const { sql } = getOrgPg();
+    void recordWorkItemBlockedAudit(sql, id, {
+      to: appliedState ?? 'blocked',
+      requested: requestedState,
+      family: workItem.family,
+      by: opts.by ?? null,
+      harness: opts.harness ?? null,
+      activeWorkspaceId: activeWorkspaceId(),
+    });
   }
   // Surface a note when the state was aliased OR an auto-gate flag was applied (the gate can
   // now fire WITHOUT aliasing, since blocked/needs-human store verbatim post-flip).
@@ -3911,6 +3928,87 @@ export async function setWorkItemClaimHold(
       console.warn('[setWorkItemClaimHold] audit write failed:', (err as Error)?.message);
     });
   return { id, harness: located[0].harness_slug ?? null, hold, applicable: true };
+}
+
+/**
+ * EI-19397599078921465: the audit-log write for a `→ blocked` transition on a FEATURE-family
+ * work-item — the one genuine hole in lifecycle attribution.
+ *
+ * The ISSUE family already audits this transition, indirectly: {@link setWorkItemStateWithAliasInfo}
+ * auto-parks a blocked issue via {@link setWorkItemClaimHold}, whose own audit write lands a
+ * `work_items:claim_hold:set` row with `reason='blocked'` (71 such rows measured live). The FEATURE
+ * family has no auto-park, so its blocked-transitions wrote nothing anywhere — measured 2026-08-03:
+ * **59 feature items sitting at `blocked` with no record of who moved them or when**. That is the
+ * gap this closes, and it is deliberately the ONLY transition audited here: a blanket
+ * every-transition log was rejected on volume (audit_log holds ~9.1k rows total against ~13.7k
+ * work-items touched in a single day).
+ *
+ * Contract mirrors {@link setWorkItemClaimHold}'s audit write: fire-and-forget, NEVER throws, and
+ * swallows Postgres 42P01 quietly — many lightweight test fixtures (`createFreshPgDb` + a
+ * hand-picked DDL subset, not the full baseline) never create `harness_shared.audit_log`, and a
+ * console.warn there would red every test using such a fixture via the fail-on-console guard.
+ *
+ * `sql` is INJECTED rather than resolved internally via `getOrgPg()` — matching
+ * {@link recordBulkHoldClearAudit}, not {@link setWorkItemClaimHold} — precisely so this is
+ * unit-testable with a fake `{ unsafe }` and needs no PG fixture. Do not "simplify" it to an
+ * internal `getOrgPg()`; that trades a 8-assertion unit test for an integration test.
+ *
+ * Read back by `work-item-lifecycle-history.ts`, which parses exactly the `work_items:state:blocked`
+ * action token written below — the two halves must not drift.
+ */
+export async function recordWorkItemBlockedAudit(
+  sql: { unsafe: ReturnType<typeof getOrgPg>['sql']['unsafe'] },
+  id: string,
+  info: {
+    /** The state actually APPLIED (post-alias) — normally 'blocked'. */
+    to: string;
+    /** What the caller ASKED for, which may differ when the family aliased it. */
+    requested: string;
+    family: string;
+    by?: string | null;
+    harness?: string | null;
+    /** The ambient workspace, used ONLY to disambiguate a cross-workspace id collision. */
+    activeWorkspaceId?: string | null;
+  },
+): Promise<void> {
+  try {
+    // EI-15345: resolve the row's OWN workspace_id — never write the audit row against a bare
+    // `activeWorkspaceId()`, which silently falls through to the process-global default when the
+    // AsyncLocalStorage request scope is lost. A row landed in the wrong tenant reads as ABSENT,
+    // which is the exact "nothing was recorded" failure this whole write exists to end.
+    const located = await sql.unsafe(
+      `SELECT workspace_id
+         FROM harness_shared.work_items
+        WHERE feature_id = $1 AND ($2::text IS NULL OR harness_slug = $2)
+        ORDER BY (workspace_id = $3) DESC, updated_ts DESC NULLS LAST
+        LIMIT 1`,
+      [id, info.harness ?? null, info.activeWorkspaceId ?? null],
+    );
+    const ws = (located as unknown as Array<{ workspace_id?: string }>)[0]?.workspace_id;
+    if (!ws) return;
+    await sql.unsafe(
+      `INSERT INTO harness_shared.audit_log (id, ts, actor, action, subject, details, workspace_id)
+       VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7)`,
+      [
+        `wi-state-blocked-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+        Date.now(),
+        info.by ?? 'system',
+        'work_items:state:blocked',
+        id,
+        JSON.stringify({
+          to: info.to,
+          requested: info.requested,
+          family: info.family,
+          by: info.by ?? null,
+        }),
+        ws,
+      ],
+    );
+  } catch (err) {
+    const code = (err as { code?: string } | undefined)?.code;
+    if (code === '42P01') return; // no audit_log table in this fixture — expected, non-fatal.
+    console.warn('[recordWorkItemBlockedAudit] audit write failed:', (err as Error)?.message);
+  }
 }
 
 /**

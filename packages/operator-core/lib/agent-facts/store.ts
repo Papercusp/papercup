@@ -392,6 +392,52 @@ export interface AgentFact {
   cellVersion?: string | null;
 }
 
+/**
+ * WI-7298: one fact the cap sweep DESTROYED to make room for an assert.
+ *
+ * Reported to the WRITER, who is the only party positioned to react. WI-6935
+ * (b) already made eviction distinguishable AFTER the fact (`evicted_at IS NOT
+ * NULL` ⇒ the cap chose it), but only to a forensic reader running SQL — the
+ * author saw an unqualified `ok:true` and never learned they had displaced a
+ * still-valid neighbour.
+ */
+export interface FactEviction {
+  key: string;
+  /** The victim's own evidence strength — a displaced 'verified' is the costly case. */
+  confidence: FactConfidence | null;
+  /** How much life it had left; the author declared this TTL deliberately. */
+  expiresAt: string;
+  /** WHOSE fact this was — the actionable field ("I just cost a peer their note"). */
+  createdBy: string;
+}
+
+/**
+ * WI-7298: what {@link assertFact} returns — the fact, plus what the write COST.
+ *
+ * ⚠ Deliberately NOT a field on {@link AgentFact}. `AgentFact` is what
+ * `foldFacts` / `listFacts` / `factVersions` return, and an eviction report is a
+ * property of the WRITE, not of the fact; hanging it there would typecheck for
+ * every fold reader while being permanently absent. The intersection confines it
+ * to the assert path.
+ *
+ * ⚠ Also deliberately NOT a wrapper (`{ fact, evicted }`). That shape strands
+ * every caller and fixture that reads assertFact's return. Because `evicted` is
+ * OPTIONAL, a plain `AgentFact` stays assignable to this type, so the
+ * `assertFact: typeof assertFact` dependency stubs keep compiling untouched.
+ */
+export type AssertFactResult = AgentFact & {
+  /**
+   * Facts the cap evicted to seat THIS write. Absent when nothing was displaced
+   * — never an empty array, so `if (result.evicted)` reads correctly.
+   *
+   * A non-empty value also means the scope is AT cap: the sweep only fires past
+   * `FACTS_PER_SCOPE_CAP - 1` incumbents. That is why there is no separate
+   * `atCap` flag — reporting at-cap when nothing was evicted would cost a COUNT
+   * query on every assert, and this carries the same signal for free.
+   */
+  evicted?: FactEviction[];
+};
+
 export interface AssertFactInput {
   scope: FactScope;
   /** Required for every scope except 'workspace' (D-001). */
@@ -862,7 +908,7 @@ export function clampFactBody(raw: string): string {
 
 /** Upsert a fact by identity; refreshes body/TTL/source on re-assert. Enforces
  *  the per-scope cap by evicting the oldest-updated live facts past the cap. */
-export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<AgentFact> {
+export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<AssertFactResult> {
   // EI-7463: these are CALLER-input mistakes (a bad scope/ref pairing, an
   // empty key/body after trim), not server faults — throw InvalidInputError
   // so the dispatcher codes them `invalid_input` (400) instead of the default
@@ -1084,8 +1130,16 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
   // `IS DISTINCT FROM` (not `<>`) so a NULL id — impossible via the RETURNING
   // above, but cheap to be total about — degrades to the old ranking instead of
   // silently matching nothing and disabling the cap entirely.
+  //
+  // WI-7298: the sweep RETURNS its victims so the writer can be told what their
+  // write cost. This is free — the UPDATE already runs; only the RETURNING is
+  // new. Reporting "the scope is at cap" when nothing was evicted would instead
+  // need a COUNT on every assert, which is why that is not reported: a non-empty
+  // `evicted` already implies at-cap (the sweep fires only past CAP-1).
   const writtenId = rows[0].id ?? null;
-  await sql`
+  const evictedRows = await sql<
+    { key: string; confidence: string | null; expires_at: string; created_by: string }[]
+  >`
     UPDATE harness_shared.agent_facts SET retracted_at = now(), evicted_at = now()
      WHERE source_hive IS NULL
        AND superseded_at IS NULL
@@ -1108,8 +1162,34 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
                  END ASC,
                  expires_at DESC,
                  updated_at DESC
-       OFFSET ${Math.max(0, FACTS_PER_SCOPE_CAP - 1)})`;
-  return rowToFact(rows[0]);
+       OFFSET ${Math.max(0, FACTS_PER_SCOPE_CAP - 1)})
+    RETURNING key, confidence, expires_at, created_by`;
+  const fact = rowToFact(rows[0]) as AssertFactResult;
+  if (evictedRows.length > 0) {
+    // Dedupe by key. The UPDATE matches on (workspace_id, scope, ref, key), so a
+    // key carrying more than one live row would otherwise be reported twice —
+    // and a duplicated victim reads as "I destroyed two facts" when I destroyed
+    // one. `superseded_at IS NULL` makes that unlikely, not impossible.
+    const seen = new Set<string>();
+    const evicted: FactEviction[] = [];
+    for (const r of evictedRows) {
+      if (seen.has(r.key)) continue;
+      seen.add(r.key);
+      evicted.push({
+        key: r.key,
+        // Same parser rowToFact uses — never a bare cast, so an unrecognized
+        // value degrades to null here exactly as it does everywhere else.
+        confidence: parseFactConfidence(r.confidence),
+        // Passed through raw, matching rowToFact's `expiresAt: r.expires_at`.
+        expiresAt: r.expires_at,
+        createdBy: r.created_by,
+      });
+    }
+    // Only attach when non-empty — `evicted: []` would make `if (r.evicted)`
+    // truthy on the common path where nothing was displaced.
+    fact.evicted = evicted;
+  }
+  return fact;
 }
 
 /** Soft-retract by identity. Returns whether a live fact was retracted. */

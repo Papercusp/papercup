@@ -214,7 +214,15 @@ function recheckFor(subject: string): string {
  * `release-checkpoint-launch.ts:648` all have a non-space next character.
  */
 function isSentenceDot(text: string, i: number): boolean {
-  const next = text[i + 1];
+  // Skip any run of CLOSING markup that legitimately follows a terminator — `exist.**`,
+  // `(…).`, `"…".`, `exist.)`. Measured over 4000 real bodies: without this the span
+  // over-extends past a markdown bold-close and swallows the following sentence, which is
+  // the same unreadable-claim defect in the other direction.
+  let j = i + 1;
+  while (j < text.length && (text[j] === '*' || text[j] === ')' || text[j] === ']' || text[j] === '"' || text[j] === "'" || text[j] === '`' || text[j] === '_')) {
+    j++;
+  }
+  const next = text[j];
   return next === undefined || /\s/.test(next);
 }
 
@@ -288,6 +296,24 @@ const SELF_RETRACTION =
 const REPORTING_FRAME = /\b(?:i|we) (?:claimed|said|filed|thought|assumed|asserted|believed|wrote|reported)\b[^.;\n]{0,40}$/i;
 
 /**
+ * 3. HYPOTHETICAL MOOD — a falsification criterion is not an assertion.
+ *
+ * This corpus has a structured falsifier convention ("- Falsified if: <what would disprove
+ * this>"), and an absence phrase inside one is CONDITIONAL by construction: "…meaning the
+ * problem does not exist as described" states what WOULD be true if the probe came back a
+ * certain way. Flagging it asks the author to go verify a hypothesis they explicitly
+ * labelled as one.
+ *
+ * Measured over 4000 real bodies: 4 of the 7 total suppressions from this change were
+ * exactly this shape. They were already being caught, but only INCIDENTALLY — the literal
+ * word "Falsified" happens to appear in SELF_RETRACTION above, so relabelling the field
+ * "Disproved if" would have quietly restored every false positive. Same mood, stated
+ * explicitly, so the suppression survives a rename and reads as intentional.
+ */
+const HYPOTHETICAL_FRAME =
+  /(?:^|\n)\s*(?:[-*+]\s*)?(?:\*\*)?\s*(?:falsifi(?:ed|es|able)|disprove[dn]?|refuted|invalidated)\b[^\n]{0,20}\bif\b/i;
+
+/**
  * Derive absence premises from an artifact's own text. PURE and exported for
  * tests — the measurement above is only meaningful if the thing measured is the
  * thing that ships.
@@ -314,6 +340,9 @@ export function detectAbsencePremises(text: string, source: PremiseSource): Deri
       // one, or reports one the author already attributed to their past self.
       if (SELF_RETRACTION.test(claim)) continue;
       if (REPORTING_FRAME.test(prose.slice(Math.max(0, (m.index ?? 0) - 60), m.index ?? 0))) continue;
+      // EI-19399570274386816 (3): the hit sits inside a "Falsified if:" criterion — a
+      // stated hypothesis, not a claim. Scan back to the line start for the label.
+      if (HYPOTHETICAL_FRAME.test(prose.slice(Math.max(0, (m.index ?? 0) - 300), m.index ?? 0))) continue;
       const key = claim.toLowerCase();
       if (seen.has(key)) continue;
       seen.add(key);

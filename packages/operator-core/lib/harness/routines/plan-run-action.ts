@@ -113,6 +113,12 @@ export async function runScheduledPlanFire(
   // every writer, including this file's own ledger INSERT, stores the raw slug).
   // Resolving it here would move the ledger reads off the rows the ledger writes.
   const planStorageSlug = await routineStorageSlug(installSlug, workspaceId);
+  if (process.env.DEBUG_WI7311) {
+    const allRows = await sql`SELECT workspace_id, harness_slug, plan_slug FROM harness_shared.harness_plans`;
+    throw new Error(
+      `[DEBUG-WI7311] installSlug=${installSlug} workspaceId=${workspaceId} templateSlug=${templateSlug} planStorageSlug=${planStorageSlug} allRows=${JSON.stringify(allRows)}`,
+    );
+  }
 
   // 1. The template plan.
   const tpl = await sql<
