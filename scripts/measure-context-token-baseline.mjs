@@ -64,6 +64,15 @@ function resultChars(content) {
   return n;
 }
 
+/** P-011: the doored-result population, bucketed by the shape the D-012 footer branches on. */
+const doorFooters = { total: 0, json: 0, 'multi-line-text': 0, 'single-line-text': 0 };
+/** Concatenated text of a tool_result's block array (the string case is handled inline). */
+function resultText(content) {
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return '';
+  return content.map((b) => (typeof b === 'string' ? b : typeof b?.text === 'string' ? b.text : '')).join('\n');
+}
+
 const byKind = new Map(); // kind -> {chars, blocks}
 const byTool = new Map(); // tool -> {useChars, resultChars, calls, results}
 const perSession = []; // {file, chars}
@@ -120,6 +129,22 @@ for (const root of ROOTS) {
           const name = idToName.get(b.tool_use_id) || '(unmatched)';
           bump(byTool, name, 'resultChars', chars);
           bump(byTool, name, 'results', 1);
+          // P-011: how many results the door actually cut, and what SHAPE they
+          // were — the population the D-012 footer change acts on. Classified
+          // from the KEPT head (the transcript holds the doored text, not the
+          // original), which is why this is a shape heuristic and is reported
+          // as one: leading `{`/`[` after trim, plus the kept head's line count.
+          const text = typeof b.content === 'string' ? b.content : resultText(b.content);
+          const at = text.indexOf('[result-door:');
+          if (at >= 0) {
+            doorFooters.total += 1;
+            const head = text.slice(0, at).trim();
+            const jsonish = head.startsWith('{') || head.startsWith('[');
+            const oneLine = !head.includes('\n');
+            const bucket = jsonish ? 'json' : oneLine ? 'single-line-text' : 'multi-line-text';
+            doorFooters[bucket] = (doorFooters[bucket] || 0) + 1;
+            bump(byTool, name, 'doored', 1);
+          }
         } else {
           kind = `other:${String(kind).slice(0, 24)}`;
           chars = JSON.stringify(b).length;
@@ -174,6 +199,7 @@ const summary = {
   perSessionEstTokens: { n: sessionTokens.length, p50: q(0.5), p90: q(0.9), p99: q(0.99), max: q(1) },
   byKind: kinds,
   topToolsByResultChars: toolsTop,
+  doorFooters,
 };
 await writeFile(OUT, JSON.stringify({ ...summary, perSession }, null, 2));
 console.log(JSON.stringify(summary, null, 2));

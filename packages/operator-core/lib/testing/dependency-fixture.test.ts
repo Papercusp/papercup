@@ -246,6 +246,68 @@ describe('expectations derived from the spec', () => {
     expect(expectedBlockedIds(s)).toEqual(['A']); // 'archived' not terminal by default
     expect(expectedBlockedIds(s, ['archived'])).toEqual([]);
   });
+
+  /**
+   * REGRESSION GUARD for a defect this factory shipped with (found by P-010, 2026-08-02).
+   *
+   * `expectedBlockedIds` defaulted to the family-blind UNION of both families' terminal
+   * lists. The shipped oracle (migration 719) applies a DIFFERENT list per family —
+   * feature `('passed','deprecated','done','dropped')`, issue
+   * `('resolved','closed','done','dropped')` — so the union disagreed with the system on
+   * four of the six states in both directions at once.
+   *
+   * It survived P-002, P-006 and P-007 because every consumer drove `standardScenario`,
+   * whose only terminal status is `done` — the single value both lists agree on. The
+   * fixture built to stop bugs hiding on a held-constant axis was hiding one on exactly
+   * that axis, and only a random status pool found it.
+   */
+  describe('terminality is decided by the BLOCKER\'S OWN FAMILY (P-010)', () => {
+    const pair = (family: 'feature' | 'issue', blockerStatus: string) =>
+      defineScenario({
+        items: [
+          { id: 'A', family, status: 'open' },
+          { id: 'B', family, status: blockerStatus },
+        ],
+        edges: [{ blocked: 'A', blocker: 'B' }],
+      });
+
+    // Each row is (family, blocker status, does it still withhold?), read straight off
+    // the oracle's two NOT IN lists. The cross-family entries are the ones the old
+    // family-blind union got backwards.
+    const CASES: ReadonlyArray<[('feature' | 'issue'), string, boolean]> = [
+      // shared terminal vocabulary — agreed before and after the fix
+      ['feature', 'done', false],
+      ['feature', 'dropped', false],
+      ['issue', 'done', false],
+      ['issue', 'dropped', false],
+      // feature's OWN terminal states
+      ['feature', 'passed', false],
+      ['feature', 'deprecated', false],
+      // ...which are NOT terminal for an issue blocker
+      ['issue', 'passed', true],
+      ['issue', 'deprecated', true],
+      // issue's OWN terminal states
+      ['issue', 'resolved', false],
+      ['issue', 'closed', false],
+      // ...which are NOT terminal for a feature blocker — the exact counterexample
+      // fast-check shrank to: dag [[],[0]] statuses ['closed','open'].
+      ['feature', 'resolved', true],
+      ['feature', 'closed', true],
+    ];
+
+    for (const [family, status, withholds] of CASES) {
+      it(`${family} blocker at '${status}' ${withholds ? 'still withholds' : 'releases'}`, () => {
+        expect(expectedBlockedIds(pair(family, status))).toEqual(withholds ? ['A'] : []);
+      });
+    }
+
+    it('an explicit vocabulary still overrides BOTH families', () => {
+      // The override is for pinning a specific vocabulary in a test, not for papering
+      // over the split — so it must keep applying uniformly.
+      expect(expectedBlockedIds(pair('feature', 'closed'), ['closed'])).toEqual([]);
+      expect(expectedBlockedIds(pair('issue', 'passed'), ['passed'])).toEqual([]);
+    });
+  });
 });
 
 /**

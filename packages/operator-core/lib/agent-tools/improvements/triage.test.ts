@@ -81,6 +81,7 @@ describe('improvements:triage tool', () => {
     likelyDuplicates: [],
     likelyDuplicatesScope: null,
     recurringSignatures: [],
+    diagnosisClusters: { clusters: [], considered: 0, unshaped: 0, ritualExcluded: 0 },
     headline: 'test digest',
     ...p,
   });

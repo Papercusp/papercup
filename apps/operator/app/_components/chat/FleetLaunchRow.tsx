@@ -445,8 +445,16 @@ export default function FleetLaunchRow({ className, onLaunched }: FleetLaunchRow
             It used to sit in a third stacked band with a `border-top`, which
             cost a whole row to render one right-aligned button. `margin-left:
             auto` pushes it to the far edge of whichever line it lands on, so
-            the strip is one line when there is room and wraps to two when
-            there is not — never three. */}
+            the strip is one line when there is room and wraps when there is
+            not.
+
+            ⚠ MEASURED CORRECTION 2026-08-03 (P-009): this used to end "— never
+            three", which is false and was never measured. At a 1280px window
+            the popup's centre column is 652px and this strip's six fields plus
+            the submit wrap to THREE lines. Two lines is what it does at the
+            popup's designed 748px column (window >= ~1361px), not everywhere.
+            See plan decision D-005 — a line-count claim about this popup is
+            meaningless without stating the width it was measured at. */}
         <Button
           variant="primary"
           size="sm"

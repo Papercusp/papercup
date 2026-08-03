@@ -18,10 +18,10 @@
  * real-git temp-repo path; here we never touch a real branch.
  */
 import { describe, it, expect, afterAll, vi } from 'vitest';
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 import {
   checkNpmScript,
   hasNpmScript,
@@ -84,27 +84,25 @@ afterAll(() => rmSync(tmpLogDir, { recursive: true, force: true }));
 const cpTree = mkdtempSync(join(tmpdir(), 'green-cp-tree-'));
 writeFileSync(join(cpTree, 'package.json'), JSON.stringify({ name: 'cp-fixture' }));
 
-// EI-19340004308033958 (same class as EI-8744 above — a REAL fs probe needs a REAL tree):
-// `validateFailingTestPaths` filesystem-validates every FILE-shaped `failingTests` entry
-// against the JUDGED TREE and DROPS the ones that do not resolve, so a mangled path parsed
-// out of wrapped suite output can never send a triager to a file that does not exist. That
-// makes an on-disk fixture load-bearing for any case asserting `failingTests` CONTENT: with
-// an empty cpTree the entries are (correctly) dropped and the assertion sees [].
+// WI-7255 — DO NOT materialise the `failingTests` paths (lib/foo.test.ts,
+// lib/llm-testing/__tests__/runner-aggregate.test.ts, ...) inside cpTree. Their ABSENCE is
+// load-bearing, and this comment exists because it was already done once and had to be
+// reverted.
 //
-// So these must stay in sync with the paths the suite-output fixtures NAME — `FAIL
-// lib/foo.test.ts` in the short-circuit case, and both files in RED_OUTPUT. A fixture whose
-// path is not listed here does not fail loudly; it silently empties `failingTests`, which is
-// exactly how this file went red at the fleet gate on 2026-08-03 (WI-7244) while reading as
-// untouched. Presence is all that is checked — the contents are never executed.
-const CP_TREE_FAILING_TEST_FIXTURES = [
-  'lib/foo.test.ts',
-  'lib/llm-testing/__tests__/runner-aggregate.test.ts',
-  'lib/scout/scheduler-workspace-scope.test.ts',
-];
-for (const rel of CP_TREE_FAILING_TEST_FIXTURES) {
-  mkdirSync(dirname(join(cpTree, rel)), { recursive: true });
-  writeFileSync(join(cpTree, rel), '// presence-only fixture — validateFailingTestPaths stats it, nothing runs it\n');
-}
+// The two cases below asserting `failingTests` CONTAINS the failing file are the recurrence
+// guard for WI-7239: `validateFailingTestPaths` once DROPPED any FILE-shaped entry that did
+// not resolve under `treeDir`, which was unsound — vitest reports test files
+// WORKSPACE-relative while treeDir is the repo ROOT, so the join never resolves for a genuine
+// failure and every real entry was stripped (emptying the input to applyTestQuarantine, so
+// `allFailuresQuarantined` could never fire). It is advisory now: report, drop nothing.
+//
+// A cpTree fixture at the tree-root-relative path makes exists(join(treeDir, entry)) TRUE,
+// which SILENTLY DISARMS that guard — re-introduce the drop and these cases stay green,
+// because the fixture satisfies the very check whose unsoundness they exist to catch. That is
+// exactly what happened on 2026-08-03 (WI-7244 -> WI-7255): the assertions were failing
+// because they were CORRECT, and were "fixed" by feeding the broken impl what it wanted.
+//
+// If these go red again, fix the resolution logic — never the fixtures.
 afterAll(() => rmSync(cpTree, { recursive: true, force: true }));
 
 const typecheckTree = mkdtempSync(join(tmpdir(), 'green-cp-typecheck-tree-'));

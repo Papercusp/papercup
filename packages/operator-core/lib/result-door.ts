@@ -144,41 +144,45 @@ export function buildProjectionHint(
   textItems: ReadonlyArray<{ text: string }>,
   toolName: string,
 ): string {
-  const lead = ` ⓘ To get only what you need in ONE call instead of paging this spill, re-call with a `;
-  const asString =
-    ` Send \`projection\` as an object, or as a JSON STRING if your client can only pass strings.`;
+  // BUDGET NOTE (measured, not assumed — the correction in D-016): this string
+  // is emitted on EVERY doored result, ~2,600 times per 6 days, 83% of them
+  // JSON. A first cut of this function was 570 chars against the 420-char
+  // constant it replaced — +34.5% overall, i.e. it would have spent ~94k est.
+  // tokens per 6d to fix a correctness bug. Every variant below is now AT OR
+  // UNDER the constant's 420. Keep it that way: measure a wording change here,
+  // do not eyeball it.
+  const lead = ` ⓘ Get only what you need in ONE call instead of paging this spill: `;
+  const asString = ` \`projection\` also accepts a JSON STRING.`;
   let shape: { json: unknown; lineCount: number };
   try {
     shape = classifyProjectionBody(textItems);
   } catch {
     // Fail-soft to the payload-agnostic wording rather than losing the hint.
     return (
-      `${lead}caller-specified projection: \`projection: { pick: ["results[].id"] }\` for a JSON ` +
-      `body, or \`projection: { pipe: [{ op:"grep", pattern:"..." }] }\` for multi-line text.${asString}`
+      `${lead}\`projection: { pick: ["results[].id"] }\` for a JSON body, or ` +
+      `\`projection: { pipe: [{ op:"grep", pattern:"..." }] }\` for multi-line text.${asString}`
     );
   }
   if (shape.json) {
     return (
-      `${lead}caller-specified projection. This body is JSON, so \`pick\` is what reduces it: ` +
-      `\`projection: { pick: ["results[].id","results[].state"] }\`. The \`pipe\` line-operators do ` +
-      `NOT — this body is ${shape.lineCount} line(s), so grep/head/tail are all-or-nothing on it ` +
-      `(a no-match returns an EMPTY body, which reads like a successful filter). \`pick\` ` +
-      `re-serializes pretty-printed, so a \`pipe\` stage AFTER a \`pick\` does work.${asString}`
+      `${lead}\`projection: { pick: ["results[].id","results[].state"] }\`. This body is JSON on ` +
+      `${shape.lineCount} line(s), so \`pick\` is what reduces it — the \`pipe\` line-operators are ` +
+      `all-or-nothing here (a no-match returns an EMPTY body, which reads like a filter that ` +
+      `worked).${asString}`
     );
   }
   if (shape.lineCount > 1) {
     return (
-      `${lead}caller-specified projection. This body is ${shape.lineCount} lines of non-JSON text, so ` +
-      `the \`pipe\` line-operators are what reduce it: ` +
-      `\`projection: { pipe: [{ op:"grep", pattern:"..." }, { op:"head", n:20 }] }\`. Operators: grep ` +
-      `(fixed/ignoreCase/invert/before/after/context), head, tail, sort, uniq, cut, count — applied in ` +
+      `${lead}\`projection: { pipe: [{ op:"grep", pattern:"..." }, { op:"head", n:20 }] }\`. This body ` +
+      `is ${shape.lineCount} lines of non-JSON text, so the line-operators are what reduce it: grep ` +
+      `(fixed/ignoreCase/invert/before/after/context), head, tail, sort, uniq, cut, count, applied in ` +
       `order. \`pick\` does not apply here (it selects JSON fields).${asString}`
     );
   }
   return (
-    ` ⓘ \`projection\` cannot help with this one: the body is a single non-JSON line, so \`pick\` ` +
-    `(JSON fields) and the \`pipe\` line-operators are both all-or-nothing on it. Page the spill file ` +
-    `with a bounded read (offset/limit), or re-call ${toolName} with narrower arguments.`
+    ` ⓘ \`projection\` cannot help here: a single non-JSON line, so \`pick\` (JSON fields) and the ` +
+    `\`pipe\` line-operators are both all-or-nothing on it. Page the spill with a bounded read, or ` +
+    `re-call ${toolName} with narrower arguments.`
   );
 }
 

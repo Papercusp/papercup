@@ -49,6 +49,7 @@
 import { coordSql, coordWorkspaceId, coordHasPgFastPath } from '../agent-tools/coordination/log';
 import { WORK_ITEM_TAG_SRC_KIND } from '../agent-tools/coordination/coupled-topic-sources';
 import { EVENT_SUBSCRIPTION_KIND } from '../agent-tools/coordination/event-subscriptions';
+import { ANY_FAMILY_TERMINAL_STATES } from '../work-item-dispatch-states';
 import { linkWorkItem, unlinkWorkItem } from '../work-items';
 
 /**
@@ -171,9 +172,30 @@ export function claimStateOf(row: ConditionWorkItemRow, nowMs: number): Conditio
  * inside a cell read is exactly the serial-fs/per-slug-open anti-pattern the
  * performance docs call out.
  *
- * Only OPEN items count (`closed_ts IS NULL`): a resolved condition that
- * re-opens must mint a fresh object rather than resurrecting the closed one, and
- * a closed work-item must never read as a live owner.
+ * Only NON-TERMINAL items count: a resolved condition that re-opens must mint a
+ * fresh object rather than resurrecting the settled one, and a finished
+ * work-item must never read as a live owner.
+ *
+ * ⚠ OPENNESS IS `status`, NEVER `closed_ts`. This originally filtered on
+ * `closed_ts IS NULL`, which is wrong and would have been invisible in testing.
+ * Measured live 2026-08-03: `closed_ts` is NULL on 77.4% of `done` rows, 98.8%
+ * of `resolved`, 91.5% of `dropped` and **100% of `closed`** — over 13,000
+ * terminal rows carry no close stamp at all. `directive-effect.ts` states the
+ * real contract in code (`toMs(row.closed_ts) ?? toMs(row.updated_ts)`,
+ * "closed_ts is the precise stamp; updated_ts is the fallback"): it is a
+ * best-effort precision timestamp, not an openness predicate.
+ *
+ * The consequence had it shipped was not a bad read — it was a permanent one.
+ * P-002's singleton index would treat those terminal rows as live owners, so
+ * once a condition resolved without a close stamp its key could never be
+ * re-minted: a UNIQUE violation on every future attempt, and that condition
+ * would be unownable forever.
+ *
+ * The terminal set is DERIVED from `ANY_FAMILY_TERMINAL_STATES`, never re-listed
+ * here. Hand-copying that union is a documented drift bug in this repo
+ * (EI-18653071581558556: a stale copy scored 15 of 17 finished units as stranded,
+ * ~88% phantoms). A NULL status is treated as non-terminal — unknown means
+ * "possibly still live", so we report it as the owner rather than mint a duplicate.
  */
 export async function findConditionObjects(
   conditionKeys: readonly string[],
@@ -222,7 +244,7 @@ export async function findConditionObjects(
          AND l.dst_kind = ${EVENT_SUBSCRIPTION_KIND}
          AND l.rel = ${CONDITION_LINK_REL}
          AND l.dst_ref = ANY(${keys}::text[])
-         AND w.closed_ts IS NULL
+         AND (w.status IS NULL OR w.status <> ALL(${ANY_FAMILY_TERMINAL_STATES as string[]}::text[]))
          AND (${opts.harnessSlug ?? null}::text IS NULL OR w.harness_slug = ${opts.harnessSlug ?? null})
        ORDER BY l.dst_ref, w.created_ts
        LIMIT ${CONDITION_OBJECT_ROW_CAP}`;

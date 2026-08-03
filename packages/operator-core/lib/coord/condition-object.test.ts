@@ -156,6 +156,45 @@ describe('claimStateOf / leaseExpired', () => {
   });
 });
 
+describe('openness is `status`, never `closed_ts` (recurrence guard)', () => {
+  // This module originally filtered open items with `closed_ts IS NULL`. That is
+  // wrong, and wrong in a way no unit test would have caught, because the pure
+  // half never sees the predicate.
+  //
+  // Measured live 2026-08-03: closed_ts is NULL on 77.4% of `done` rows, 98.8%
+  // of `resolved`, 91.5% of `dropped` and 100% of `closed` — 13,000+ terminal
+  // rows carry no close stamp. `directive-effect.ts` reads it as
+  // `closed_ts ?? updated_ts` ("the precise stamp; updated_ts is the fallback"),
+  // i.e. a best-effort timestamp, not an openness predicate.
+  //
+  // The cost of a regression here is not a bad read but a PERMANENT one: P-002's
+  // singleton index would treat stamp-less terminal rows as live owners, so a
+  // resolved-then-reopened condition could never mint a new owner again.
+  //
+  // A source-level assertion is the only thing that can catch this without a
+  // database, and this trap is expensive enough to be worth one.
+  it('does not use closed_ts as an openness predicate', async () => {
+    const { readFile } = await import('node:fs/promises');
+    const src = await readFile(new URL('./condition-object.ts', import.meta.url), 'utf8');
+    const code = src
+      .replace(/\/\*[\s\S]*?\*\//g, '') // strip block comments (which discuss closed_ts on purpose)
+      .replace(/^\s*\/\/.*$/gm, '');
+    expect(code).not.toMatch(/closed_ts/);
+    // ...and it DOES derive the terminal set from the shared constant rather
+    // than re-listing the words (EI-18653071581558556: hand-copied unions drift).
+    expect(code).toMatch(/ANY_FAMILY_TERMINAL_STATES/);
+  });
+
+  it('the shared terminal set still covers every terminal status we measured', async () => {
+    // If someone narrows ANY_FAMILY_TERMINAL_STATES, this resolver silently
+    // starts reporting finished work-items as live condition owners.
+    const { ANY_FAMILY_TERMINAL_STATES } = await import('../work-item-dispatch-states');
+    for (const s of ['done', 'resolved', 'dropped', 'closed', 'passed', 'deprecated']) {
+      expect(ANY_FAMILY_TERMINAL_STATES).toContain(s);
+    }
+  });
+});
+
 describe('vocabulary', () => {
   it('reuses the existing `about` rel rather than inventing one', () => {
     // `about` is already in LINK_RELS ("this item concerns a target — a topic,

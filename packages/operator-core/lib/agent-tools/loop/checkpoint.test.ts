@@ -41,11 +41,16 @@ const setLoopCarryNoteWithPrior = vi.fn(
   async (
     ref: unknown,
     note: unknown,
-    opts?: { transform?: (prior: string | null, note: unknown) => string | null | undefined },
+    // Derived from the real signature, not a hand-written subset: a narrower
+    // literal here drifts silently the moment carry-note grows an option, and
+    // reds the fleet gate from a file nobody edited.
+    opts?: Parameters<typeof import('../../carry-note').setLoopCarryNoteWithPrior>[2],
   ) => {
     const prior =
       storePriorOverride !== undefined ? storePriorOverride : (((await getLoopCarryNote()) as string | null) ?? null);
-    const merged = opts?.transform ? opts.transform(prior, note) : (note as string | null | undefined);
+    const merged = opts?.transform
+      ? opts.transform(prior, note as string | null | undefined)
+      : (note as string | null | undefined);
     const stored = await setLoopCarryNote(ref, merged);
     lastStoredNote = (stored as string | null | undefined) ?? null;
     return { stored, priorLength: (prior ?? '').length };
@@ -58,7 +63,11 @@ const getLoopCarryNoteWithMeta = vi.fn(async (..._a: unknown[]) => ({
 vi.mock('../../carry-note', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   setLoopCarryNote: (...a: unknown[]) => setLoopCarryNote(...a),
-  setLoopCarryNoteWithPrior: (...a: [unknown, unknown, never]) => setLoopCarryNoteWithPrior(...a),
+  // Derive the tuple from the real signature rather than hardcoding one: a
+  // hardcoded `[unknown, unknown, never]` silently drifts the moment the
+  // signature changes, and reds the fleet gate from a file nobody edited.
+  setLoopCarryNoteWithPrior: (...a: Parameters<typeof import('../../carry-note').setLoopCarryNoteWithPrior>) =>
+    setLoopCarryNoteWithPrior(...a),
   getLoopCarryNote: (...a: unknown[]) => getLoopCarryNote(...a),
   getLoopCarryNoteWithMeta: (...a: unknown[]) => getLoopCarryNoteWithMeta(...a),
   renderCarryNote: (f: Record<string, string | undefined>) => `RENDERED:${JSON.stringify(f)}`,
