@@ -26,19 +26,41 @@ import { cleanup, fireEvent, render, screen, within } from '@testing-library/rea
 
 vi.mock('../Popover', () => ({
   // In anchor mode the anchor renders inline and unwrapped; the panel is
-  // present only while open. That is all this component depends on.
+  // present only while open. That is all `Combobox` depends on.
+  //
+  // `ComboboxMenu` uses TRIGGER mode instead, so the stub also mirrors the one
+  // behaviour it leans on there: Radix's `Popover.Trigger` toggles the root's
+  // open state. Without that a click test would have to reach past the
+  // component and set `open` by hand, which tests the test.
+  //
+  // `zIndex` is surfaced on the panel because it is load-bearing, not cosmetic:
+  // a menu below the popper wrapper floor paints behind the app shell and is
+  // unclickable (P-006), and jsdom cannot catch that by rendering.
   Popover: ({
     open,
     anchor,
+    trigger,
+    onOpenChange,
+    zIndex,
     children,
   }: {
     open: boolean;
-    anchor: React.ReactNode;
+    anchor?: React.ReactNode;
+    trigger?: React.ReactNode;
+    onOpenChange?: (next: boolean) => void;
+    zIndex?: number;
     children: React.ReactNode;
   }) => (
     <div>
       {anchor}
-      {open ? <div data-testid="popover-panel">{children}</div> : null}
+      {trigger ? (
+        <span onClick={() => onOpenChange?.(!open)}>{trigger}</span>
+      ) : null}
+      {open ? (
+        <div data-testid="popover-panel" data-z-index={zIndex == null ? undefined : String(zIndex)}>
+          {children}
+        </div>
+      ) : null}
     </div>
   ),
 }));
@@ -51,7 +73,12 @@ beforeEach(() => {
 });
 afterEach(cleanup);
 
-import { Combobox, flattenComboboxEntries, type ComboboxEntry } from '../Combobox';
+import {
+  Combobox,
+  ComboboxMenu,
+  flattenComboboxEntries,
+  type ComboboxEntry,
+} from '../Combobox';
 
 const NONE = '__none__';
 

@@ -378,9 +378,12 @@ describe('mode-grade — the rubric picker lives ON the pill', () => {
   });
 
   it('the bounded axes stay UNsearchable — a search box over three states is noise', () => {
-    for (const id of ['mode-autonomy', 'mode-ideate']) {
+    for (const id of ['mode-autonomy', 'mode-ideate', 'mode-drain']) {
       const action = getChatModeAction(id);
-      if (action) expect(action.searchable).toBeFalsy();
+      // Resolve, don't skip — a renamed axis must fail here rather than let the
+      // loop pass over nothing and read as coverage.
+      expect(action, `${id} is not registered`).toBeTruthy();
+      expect(action!.searchable).toBeFalsy();
     }
   });
 
