@@ -104,18 +104,36 @@ vi.mock('../../../events/await/store', () => ({
   cancelInboxWakeAwaits: () => cancelInboxWakeAwaits(),
   listActiveAwaitsForKey: (key: string) => listActiveAwaitsForKey(key),
 }));
-// ⚠ Do NOT reintroduce `importOriginal()` here. Awaiting the ORIGINAL of the very
-// module being mocked, while its consumer (inbox-wake.ts) sits in the same load
-// graph, makes that consumer bind the REAL `listPresence`: the factory still runs,
-// but its override never takes effect. The real one calls `store.list()` →
+// ⚠ Do NOT reintroduce `importOriginal()` in THIS mock.
+//
+// OBSERVED (measured, WI-7411): with `...(await importOriginal())` here, inbox-wake.ts
+// binds the REAL `listPresence` — the factory still runs (verified), but its override
+// never takes effect. Printing the bound function yields the real
+// `async function listPresence(opts = {}) { return store.list(opts); }`. Removing
+// importOriginal fixes it: 21/21.
+//
+// ⚠ NOT ESTABLISHED — do NOT generalize this into "importOriginal is unsafe". ~289
+// test files in this repo use that idiom successfully, and EI-17276 explicitly
+// RECOMMENDS it (new exports pass through automatically). So there is an additional
+// condition specific to this module pair that was NOT isolated; a cycle through
+// presence.ts's imports (identity / control-anchor / machine-capability-tags) was
+// checked and is NOT it. If you touch this, re-measure rather than trusting a rule.
+//
+// The failure it produced: the real one calls `store.list()` →
 // getOrgPg() → assertRealPgAllowed [EI-19311807188719573], which THROWS. That throw
 // lands in reportIdleRecipients' fail-soft roster catch (inbox-wake.ts), degrading
 // the probe to EMPTY_IDLE_REPORT — so `notWoken` comes back undefined and the P-001
 // idle-report test below fails while every negative sibling passes vacuously.
 //
-// It presents as "the mock silently doesn't work", with NO error surfaced: the
-// catch's console.warn is SWALLOWED in this suite. If you are ever debugging this
-// path, use process._rawDebug() — vitest cannot intercept it. (WI-7411)
+// It presents as "the mock silently doesn't work", with NO error surfaced — and
+// the reason is worth knowing, because it is NOT that warns are unreliable here.
+// setup-fail-on-console.ts sets shouldFailOnWarn:true, so a warn normally FAILS
+// the test loudly; only allowlisted texts are silenced, and console-noise-filter.ts:75
+// silences exactly "A UNIT test tried to open a REAL Postgres connection". The
+// catch at inbox-wake.ts:431 interpolates ${e.message} into its own warn, so it
+// INHERITS that silence by substring match — a fail-soft handler silencing its own
+// wrapper log. If you debug this path, use process._rawDebug(): vitest cannot
+// intercept it. (WI-7411)
 vi.mock('../presence', async () => ({
   // Consumed by presence-wakeability.ts via fleet-roster. Re-sourced from the
   // DEFINING package rather than hand-copied, so it cannot drift from the real

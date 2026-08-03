@@ -463,6 +463,27 @@ describe('WI-7110: the fleet row’s container layout has exactly one owner', ()
 
   /** Rule bodies for a selector whose LAST simple selector is `.pc-fleet-launch-row`
    *  — i.e. rules that style the CONTAINER itself, not a descendant of it. */
+  /**
+   * The DECLARATION BODY of the rule whose selector list contains `selector`
+   * exactly (WI-7456).
+   *
+   * Deliberately not the `css.split('}').find(b => b.includes(sel))` idiom used
+   * elsewhere in this file: that returns everything since the previous `}`,
+   * which is the preceding COMMENT plus the rule — so a selector name mentioned
+   * in prose matches, and an assertion can pass against documentation rather
+   * than against a declaration. These bands now carry long comments naming
+   * their own selectors, which makes that failure mode likely rather than
+   * theoretical.
+   */
+  function ruleBody(css: string, selector: string): string {
+    const stripped = css.replace(/\/\*[\s\S]*?\*\//g, '');
+    const match = [...stripped.matchAll(/([^{}]+)\{([^{}]*)\}/g)].find(([, sel]) =>
+      sel.split(',').some((s) => s.trim() === selector),
+    );
+    expect(match, `no rule for "${selector}"`).toBeTruthy();
+    return match![2];
+  }
+
   function containerRuleBodies(css: string): string[] {
     return [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
       .filter(([, selector]) =>
@@ -525,11 +546,53 @@ describe('WI-7110: the fleet row’s container layout has exactly one owner', ()
       }
     });
 
-    it('the strip WRAPS rather than overflowing — "1 or 2 lines", never a clipped control', () => {
-      const rule = chatControlsCss
-        .split('}')
-        .find((b) => b.includes('.pc-fleet-launch-row__fields'));
-      expect(rule).toMatch(/flex-wrap:\s*wrap/);
+    /* ⚠ REPLACED 2026-08-03 (WI-7456). This asserted `flex-wrap: wrap`, which
+       was the MECHANISM, not the promise — and that mechanism is precisely what
+       produced the owner's third alignment complaint: a wrapped flex line
+       restarts at the container's padding, so line 2 began underneath the FLEET
+       cap, 49px out of column with line 1 (measured: captions 49.1px apart,
+       wells 18.4/27.2/42.1px apart). Flexbox cannot express "wrap, but not into
+       the first item's column", so the strip is a grid now.
+
+       The PROMISE this case defends is unchanged — reflow, never a clipped
+       control — and the grid keeps it with `auto-fit` + `minmax`. It also
+       guarantees the part flex could not: a reflowed line starts in the fields
+       track, because the label gutter is a different track entirely. */
+    it('the strip REFLOWS rather than overflowing — "1 or 2 lines", never a clipped control', () => {
+      const strip = ruleBody(chatControlsCss, '.pc-fleet-launch-row .pc-fleet-launch-row__fields');
+      expect(strip).toMatch(/display:\s*grid/);
+      // The label gutter is its OWN track — this is what makes it impossible
+      // for a reflowed line to sit under the zone cap.
+      expect(strip).toMatch(/grid-template-columns:\s*var\(--pc-ctl-gutter\)/);
+
+      // auto-fit + a minimum column width is what drops the fields from three
+      // columns to two to one as the popup narrows, instead of clipping.
+      const fields = ruleBody(chatControlsCss, '.pc-fleet-strip__grid');
+      expect(fields).toMatch(/grid-template-columns:\s*repeat\(auto-fit,\s*minmax\(/);
+    });
+
+    /* The other half of the same fix, and the half a screenshot is worst at
+       catching: two bands can each be internally tidy and still disagree with
+       each other. They share one gutter only because they share one TOKEN. */
+    it('both bottom-panel bands open on the SAME label-gutter track', () => {
+      const controls = ruleBody(chatControlsCss, '.chat-action-bar.pc-ctl-band--do');
+      const fleet = ruleBody(chatControlsCss, '.pc-fleet-launch-row .pc-fleet-launch-row__fields');
+      for (const body of [controls, fleet]) {
+        expect(body).toMatch(/display:\s*grid/);
+        // The literal token, not a px value: two bands that each hard-code
+        // their own width are the failure this is guarding against.
+        expect(body).toMatch(/grid-template-columns:\s*var\(--pc-ctl-gutter\)/);
+      }
+    });
+
+    /* Every field's caption occupies one shared track, so a well's x is set by
+       its COLUMN and not by how long its own caption happens to be. Without
+       this the band grid still leaves "Name" (27px) and "Account" (49px)
+       starting their wells 22px apart inside perfectly aligned cells. */
+    it('every inline field lays its caption in one SHARED track, so the wells line up', () => {
+      const field = ruleBody(chatControlsCss, '.pc-ctl-field--inline');
+      expect(field).toMatch(/display:\s*grid/);
+      expect(field).toMatch(/grid-template-columns:\s*var\(--pc-ctl-cap-w\)/);
     });
 
     /* The Framed look (owner-approved 2026-08-02, artifact 6379bb65). This strip

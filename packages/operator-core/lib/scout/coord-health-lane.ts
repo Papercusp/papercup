@@ -762,7 +762,7 @@ export async function loadCoordAuthoredAdoption(
 ): Promise<CoordAuthoredAdoption | undefined> {
   try {
     const { sql } = getOrgPg();
-    const { MACHINE_SENDER_PATTERN } = await import(
+    const { MACHINE_SENDER_PATTERN, AGENT_SESSION_SENDER_PATTERN } = await import(
       '../agent-tools/coordination/machine-authored'
     );
 
@@ -812,6 +812,12 @@ export async function loadCoordAuthoredAdoption(
            AND e.body->>'kind' = 'message'
            AND e.body->>'msg_id' IS NOT NULL
            AND NOT (coalesce(e.body->>'from', '') ~ ${MACHINE_SENDER_PATTERN})
+           -- BOTH filters, and the positive one is load-bearing. The negative
+           -- pattern is conservative by design and admits ~1,738 emitters/24h
+           -- (git-sync-*, green-checkpoint, intent-divergence-detector, …) that
+           -- have ZERO sectioned messages because they never reach coord:send's
+           -- schema. Measured: including them deflates L1 from 77.2% to 23.2%.
+           AND coalesce(e.body->>'from', '') ~ ${AGENT_SESSION_SENDER_PATTERN}
            AND coalesce(e.body->>'auto', 'false') <> 'true'
       ),
       replies AS (

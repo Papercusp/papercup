@@ -166,10 +166,35 @@ describe('P-003 rule ②: a trailing "…" means a chooser opens; no ellipsis me
           : `"${a.label}" fires immediately but its label ends in "…", promising a chooser that never opens`,
       ).toBe(asks);
     }
-    // Both populations must be non-empty, or the rule is only half-exercised
-    // and one direction of it could rot unobserved.
-    expect(asksFirst.length, 'no params-bearing action registered').toBeGreaterThan(0);
+    // At least one REAL action must have been judged, or the loop above is
+    // vacuous.
     expect(firesNow.length, 'no immediate action registered').toBeGreaterThan(0);
+
+    /* ⚠ CORRECTED 2026-08-03 (WI-7439/WI-7456). This used to also require
+       `asksFirst.length > 0`, and that assertion had been RED in the tree since
+       WI-7439 removed "Grade session…" — the only params-bearing action there
+       has ever been. Its rubric choice moved onto the GRADE mode pill at the
+       owner's ask ("I want the rubric picker back, add that to the grade on/off
+       toggle"), i.e. to `ChatModeAction.options()`, which is a different
+       contract; so the registry is now legitimately, and probably permanently,
+       empty of params-bearing actions.
+
+       The original concern was right and is kept: with one population empty the
+       rule is only half-exercised. But the fix is not to demand the PRODUCT
+       ship an action of each kind — that pins a vocabulary invariant to a
+       product decision the owner is entitled to reverse, which is exactly how
+       this went red. Exercise the asks-first direction against a synthetic
+       descriptor instead: the rule stays checked in both directions whether or
+       not any shipped action happens to open a chooser. */
+    const promisesChooser = (a: { label: string; params?: unknown }): boolean =>
+      a.label.trimEnd().endsWith('…');
+    const opensChooser = (a: { label: string; params?: unknown }): boolean =>
+      typeof a.params === 'function';
+
+    const conformingAsk = { label: 'Grade session…', params: () => ({}) };
+    const violatingAsk = { label: 'Grade session', params: () => ({}) };
+    expect(promisesChooser(conformingAsk)).toBe(opensChooser(conformingAsk));
+    expect(promisesChooser(violatingAsk)).not.toBe(opensChooser(violatingAsk));
   });
 
   it('a mode pill never uses the ellipsis — its caret already says a chooser opens', () => {

@@ -733,11 +733,29 @@ describe('embed-backfill drain policy (P-005)', () => {
     };
     const perRow = vi.fn(async () => VEC);
 
-    const stats = await backfillTable(sql, ORDERED, perRow, 10, 'gemma', true, embedMany);
+    // The fallback MUST announce itself. A batch path that always throws and
+    // always falls back is otherwise indistinguishable from a working one —
+    // same rows, same counts, just N× slower — which is exactly what happened
+    // during this change's own live verification.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    let stats;
+    try {
+      stats = await backfillTable(sql, ORDERED, perRow, 10, 'gemma', true, embedMany);
+    } finally {
+      warn.mockRestore();
+    }
 
     // Every row still lands, via the isolating per-row path.
     expect(stats.embedded).toBe(2);
     expect(perRow).toHaveBeenCalledTimes(2);
+
+    // NOTE: the fallback also warns (once per target), and that warning is the
+    // point — a silently-falling-back batch path is indistinguishable from a
+    // working one. It is deliberately NOT asserted here: under the forks pool an
+    // in-test console spy does not reliably observe the module's own console
+    // calls, the same limitation already documented on the WI-7327 takeover test
+    // above. The spy exists to keep the warning from tripping fail-on-console;
+    // BEHAVIOUR is what we assert.
   });
 
   it('OFFSETs past rows that persistently FAIL, so they cannot pin the head of an ordered queue', async () => {

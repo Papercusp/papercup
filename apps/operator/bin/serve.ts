@@ -1099,14 +1099,94 @@ async function ensurePostgres(): Promise<PgHandle | null> {
 
   // Write the embedded-pg discovery file (the latent-bug fix). The generic
   // resolver reads the `url` field; extra fields are diagnostics.
-  await writeJsonAtomic(EMBEDDED_PG_JSON, {
+  //
+  // WI-7462: but NOT if that would hijack a live foreign endpoint. This file is
+  // an advertisement to the WHOLE BOX — every env-less consumer resolves its DB
+  // through it — so overwriting it redirects processes we do not own.
+  // detectRunningSharedPg() above already declines to TAKE OVER a foreign PG,
+  // but it is narrow by construction: it also requires a postmaster to hold OUR
+  // data dir on that port. When the box's canonical PG is native (dev box,
+  // :5432, a different data dir) that check fails, we fall through to
+  // sweep+cold-start, and then — until now — we published anyway, pointing the
+  // fleet at a throwaway PG that dies when this instance exits. That is the
+  // 25-minute fleet-wide MCP outage of 2026-08-03 (EI-19415174699106397).
+  const existingRec = readPgDiscoveryRecord();
+  const existingPort = Number(existingRec?.port);
+  // Ordering is what makes this safe for the legitimate cases:
+  // sweepOrphanPostgres() ran BEFORE our start, so a swept orphan's port is
+  // already dead by now and this probe says "not live" ⇒ we publish as before.
+  const foreignEndpointLive =
+    Number.isInteger(existingPort) && existingPort > 0 && existingPort !== pg.port
+      ? await isPortAccepting(existingPort)
+      : false;
+  const verdict = _shouldPublishGlobalPgDiscovery({
+    existingPort: Number.isInteger(existingPort) ? existingPort : null,
+    existingPid: Number(existingRec?.pid) || null,
+    ourPort: pg.port,
+    ourPid: process.pid,
+    foreignEndpointLive,
+  });
+  const record = {
     url: pg.urls.admin,
     port: pg.port,
     pid: process.pid,
     startedAt: Date.now(),
-  });
-  log(`wrote ${EMBEDDED_PG_JSON}`);
+  };
+  if (verdict.publish) {
+    await writeJsonAtomic(EMBEDDED_PG_JSON, record);
+    log(`wrote ${EMBEDDED_PG_JSON} (${verdict.reason})`);
+  } else {
+    // Still advertise ourselves, just instance-scoped so anything that wants
+    // THIS operator's PG can find it. Mirrors the per-port
+    // `endpoint-ipc.<port>.json` convention (EI-190).
+    const scoped = join(PAPERCUSP_DIR, `embedded-pg.${pg.port}.json`);
+    await writeJsonAtomic(scoped, record);
+    log(
+      `REFUSING to overwrite ${EMBEDDED_PG_JSON}: it advertises :${existingPort}, ` +
+        `which is STILL ACCEPTING connections and is not ours (we are :${pg.port}, ` +
+        `pid ${process.pid}). Publishing to ${scoped} instead — the box-wide ` +
+        `advertisement is left pointing at the live endpoint (WI-7462). If this ` +
+        `instance is meant to be isolated, set PAPERCUSP_HOME (EI-13917).`,
+    );
+  }
   return pg;
+}
+
+/** Read the current global embedded-pg advertisement, or null. Exported for tests. */
+export function readPgDiscoveryRecord(): { port?: unknown; pid?: unknown } | null {
+  try {
+    return JSON.parse(readFileSync(EMBEDDED_PG_JSON, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * WI-7462: may we take over the box-wide embedded-pg advertisement?
+ *
+ * Pure so the rule is unit-testable without booting Postgres. The single
+ * question it answers: would writing our record REDIRECT the box away from an
+ * endpoint that is still serving somebody?
+ */
+export function _shouldPublishGlobalPgDiscovery(args: {
+  existingPort: number | null;
+  existingPid: number | null;
+  ourPort: number;
+  ourPid: number;
+  foreignEndpointLive: boolean;
+}): { publish: boolean; reason: string } {
+  const { existingPort, existingPid, ourPort, ourPid, foreignEndpointLive } = args;
+  if (existingPort === null) return { publish: true, reason: "no prior advertisement" };
+  // We just bound the port it already names — publishing REFRESHES the record
+  // for an endpoint we now own (pid/url/startedAt), it does not redirect anyone.
+  if (existingPort === ourPort) return { publish: true, reason: "same endpoint, refreshing" };
+  // Our own stale record from a prior identity of this process.
+  if (existingPid !== null && existingPid === ourPid)
+    return { publish: true, reason: "our own prior record" };
+  // A different port that no longer answers — a dead advertisement helps nobody.
+  if (!foreignEndpointLive)
+    return { publish: true, reason: `prior endpoint :${existingPort} is dead` };
+  return { publish: false, reason: `foreign endpoint :${existingPort} is live` };
 }
 
 async function main(): Promise<void> {

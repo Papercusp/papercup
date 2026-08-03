@@ -342,6 +342,24 @@ export default function FleetLaunchRow({ className, onLaunched }: FleetLaunchRow
             does not act on the session you are looking at" legible. Zero added
             height: the cap shares the row it was already on. */}
         <span className="pc-zone-cap pc-fleet-strip__label">Fleet</span>
+        {/* ── The strip's FIELD GRID (P-010) ─────────────────────────────────
+            [owner 2026-08-03] "the alignement on the bottom panel is still all
+            mest up", third recurrence. These six fields used to be items in a
+            WRAPPING FLEX strip they shared with the zone cap and the submit,
+            each `flex: 1 1 auto`. Three consequences, all measured on WI-7456
+            at a 740px band: the wrapped second line restarted at the band's
+            padding (x=11), i.e. under the FLEET cap, 49px left of where line
+            one's first field began; the two lines' captions were 49px apart in
+            every column; and their wells were 18–42px apart, because a field's
+            caption width ("Name" 27px vs "Account" 49px) pushed its own well.
+
+            A grid fixes all three at once and is why this is a wrapper rather
+            than another round of margins: the columns are declared ONCE, so
+            NAME/PLAN/MODEL land above ACCOUNT/WINDOWS/MEMBERS by construction
+            instead of by coincidence of content width. The submit stays a
+            SIBLING of this grid (the strip's third column) so it cannot
+            consume a field cell and push the strip to a third line. ── */}
+        <div className="pc-fleet-strip__grid">
         <div className="pc-ctl-field pc-ctl-field--inline">
           {/* The VISIBLE caption shortens to "Name" (the strip's own "FLEET"
               label supplies the rest of the phrase to a sighted reader), but
@@ -440,6 +458,7 @@ export default function FleetLaunchRow({ className, onLaunched }: FleetLaunchRow
             title={`How many members (1–${FLEET_MAX_MEMBERS})`}
             data-testid="fleet-launch-count"
           />
+        </div>
         </div>
         {/* The submit lives INSIDE the strip rather than in a band of its own.
             It used to sit in a third stacked band with a `border-top`, which

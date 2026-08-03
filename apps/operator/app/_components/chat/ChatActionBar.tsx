@@ -233,8 +233,23 @@ export function ChatActionBar({ ctx }: { ctx: ChatActionContext }): ReactNode {
           what separates it from the Fleet strip below (that one acts on
           something else entirely). Inline at the band's leading edge rather than
           a title row: the popup was just compacted from five rows to two, and a
-          header row per zone would have spent that back. */}
+          header row per zone would have spent that back.
+
+          It is the band grid's FIRST COLUMN, not a flex item (P-010): see
+          chat-controls.css §⑧. That is what stops a wrapped control line from
+          restarting underneath it. */}
       <span className="pc-zone-cap">Controls</span>
+      {/* ── The band's SECOND column: every control, in one box ──────────────
+          [owner 2026-08-03] "the alignement on the bottom panel is still all
+          mest up" (third time). This wrapper is the whole structural fix. The
+          cap used to be just another flex item in the same wrapping strip as
+          the controls, so when the strip wrapped, line 2 restarted at the
+          band's padding — i.e. UNDERNEATH the cap, in the label gutter, while
+          line 1's first control sat 49px to its right. Measured on WI-7456.
+          Now the cap owns column 1 and every control lives in column 2, so a
+          wrapped line cannot back into the gutter: there is no gutter to back
+          into. ── */}
+      <div className="pc-ctl-band__controls">
       {/* Modes first: they say what the agent IS, and the verbs below act on
           it. Reading order follows that dependency. */}
       {modes.map((mode) => {
@@ -323,6 +338,7 @@ export function ChatActionBar({ ctx }: { ctx: ChatActionContext }): ReactNode {
           ✓ {done} applied
         </div>
       )}
+      </div>
     </div>
   );
 }

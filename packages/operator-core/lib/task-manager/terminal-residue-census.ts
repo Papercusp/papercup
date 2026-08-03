@@ -70,13 +70,73 @@ export function resolveTerminalSliceAbs(
   return `${cgroupRoot}/${rel}/app.slice/${TERMINAL_SLICE}`;
 }
 
+/**
+ * What a dead-window scope actually IS, once probed (EI-19418147529720290).
+ *
+ * The count alone was never enough, and the gap had teeth: on 2026-08-03 an agent
+ * (me) read "15 dead scopes holding 62 processes", joined the pids to PSS, and
+ * reported 2.37 GB as reclaimable. 1.45 GB of it — 61% — was the LIVE staging
+ * operator, still serving `:3170` and holding four listening sockets; its window
+ * had simply been closed. The header already told consumers a dead window is not
+ * proof of abandonment, but handed them a single integer, so the correct reading
+ * was not available to them. This type is that reading.
+ *
+ * Deliberately conservative: `stale` must be EARNED, everything undecided stays
+ * `indeterminate`. D-016 measured 14 of 15 dead scopes holding live tenants, so a
+ * classifier that guesses wrong in the `stale` direction would recreate the ~93%
+ * false-positive rate this indicator was designed to avoid.
+ */
+export type ResidueDisposition =
+  /** Holds a listening socket or a pid the caller knows is live — NOT residue. */
+  | 'live-service-held'
+  /** Old enough, and nothing suggests a live tenant. The only reclaim candidate. */
+  | 'stale'
+  /** Too young to judge, unprobeable, or no probe was supplied. Never counted as stale. */
+  | 'indeterminate';
+
 /** One scope observed to have no live window. */
 export interface DeadWindowScope {
   /** The scope's leaf unit name, e.g. `vte-spawn-<uuid>.scope`. */
   scope: string;
   /** How many processes it still holds. */
   pidCount: number;
+  /** What it is. `indeterminate` whenever no probe was supplied — never a guess. */
+  disposition: ResidueDisposition;
+  /** Age of its longest-running process, the input to the staleness threshold. */
+  oldestPidAgeMs: number | null;
 }
+
+/**
+ * The liveness evidence the census cannot gather itself without giving up purity.
+ *
+ * Injected rather than imported so `censusTerminalResidue` stays pure with respect
+ * to its dependencies (no clock, no subprocess, no DB) — the property its existing
+ * tests rest on. `nodeResidueLivenessProbe` is the real implementation.
+ */
+export interface ResidueLivenessProbe {
+  /** Pids owning at least one socket in LISTEN. A server is not residue. */
+  listeningPids(): ReadonlySet<number>;
+  /**
+   * Pids the CALLER independently knows are live tenants — enrolled task_ledger
+   * rows, live agent sessions. Optional, because the census must not reach into a
+   * database to answer; a caller that has the set cheaply should pass it.
+   */
+  knownLivePids?(): ReadonlySet<number>;
+  /** Wall-clock ms since a pid started, or null when unreadable. */
+  pidAgeMs(pid: number): number | null;
+}
+
+export interface ResidueClassifyOptions {
+  probe?: ResidueLivenessProbe;
+  /**
+   * A scope younger than this is `indeterminate`, never `stale`. A window that
+   * closed moments ago holding a fresh process is far more likely a race with a
+   * still-starting session than an orphan. Default 24h.
+   */
+  staleAfterMs?: number;
+}
+
+const DEFAULT_STALE_AFTER_MS = 24 * 60 * 60_000;
 
 export interface ResidueCensus {
   /** Terminal window scopes seen at all. */
@@ -93,6 +153,14 @@ export interface ResidueCensus {
   unprobeable: number;
   /** The dead-window scopes themselves, for a report-only surface. */
   dead: DeadWindowScope[];
+  /**
+   * `scopesDead` split by disposition — the numbers a consumer should actually
+   * render. `scopesDead` alone invites a reclaim estimate that is mostly live work.
+   * Without a probe these are `0 / 0 / scopesDead`: honestly undecided, not clean.
+   */
+  deadStale: number;
+  deadLiveServiceHeld: number;
+  deadIndeterminate: number;
 }
 
 /**
@@ -102,8 +170,17 @@ export interface ResidueCensus {
  * `terminalSliceAbs` is the absolute cgroup dir of the terminal application slice
  * (the parent of the `vte-spawn-*.scope` dirs).
  */
-export function censusTerminalResidue(terminalSliceAbs: string, fs: CgroupFs): ResidueCensus {
+export function censusTerminalResidue(
+  terminalSliceAbs: string,
+  fs: CgroupFs,
+  opts: ResidueClassifyOptions = {},
+): ResidueCensus {
   const appPids = readTerminalAppPids(terminalSliceAbs, fs);
+  const { probe } = opts;
+  const staleAfterMs = opts.staleAfterMs ?? DEFAULT_STALE_AFTER_MS;
+  // Hoisted: both sets are one scan of /proc each, and a slice can hold 100+ scopes.
+  const listening = probe?.listeningPids();
+  const knownLive = probe?.knownLivePids?.();
 
   let scopesTotal = 0;
   let unprobeable = 0;
@@ -123,15 +200,53 @@ export function censusTerminalResidue(terminalSliceAbs: string, fs: CgroupFs): R
     if (alive) continue;
 
     const pids = parseCgroupProcs(fs.readFile(`${abs}/cgroup.procs`) ?? '');
-    dead.push({ scope: name, pidCount: pids.length });
+    dead.push({ scope: name, pidCount: pids.length, ...classify(pids) });
   }
 
+  /**
+   * The order of these tests is the safety property, not a style choice: every
+   * branch that could mistake live work for residue is checked BEFORE the one that
+   * can label something `stale`.
+   */
+  function classify(pids: readonly number[]): Pick<DeadWindowScope, 'disposition' | 'oldestPidAgeMs'> {
+    if (!probe) return { disposition: 'indeterminate', oldestPidAgeMs: null };
+
+    if (pids.some((p) => listening?.has(p) || knownLive?.has(p))) {
+      return { disposition: 'live-service-held', oldestPidAgeMs: oldest(pids) };
+    }
+
+    const age = oldest(pids);
+    // An unreadable age is NOT a young one. Falling through to `stale` here would
+    // label a scope residue on the strength of a failed read.
+    if (age === null) return { disposition: 'indeterminate', oldestPidAgeMs: null };
+    if (age < staleAfterMs) return { disposition: 'indeterminate', oldestPidAgeMs: age };
+
+    // An EMPTY dead scope is not stale residue — it holds nothing to reclaim, and
+    // counting it as stale would inflate the one number meant to drive cleanup.
+    if (pids.length === 0) return { disposition: 'indeterminate', oldestPidAgeMs: age };
+
+    return { disposition: 'stale', oldestPidAgeMs: age };
+  }
+
+  function oldest(pids: readonly number[]): number | null {
+    let max: number | null = null;
+    for (const p of pids) {
+      const a = probe?.pidAgeMs(p);
+      if (typeof a === 'number' && Number.isFinite(a) && (max === null || a > max)) max = a;
+    }
+    return max;
+  }
+
+  const by = (d: ResidueDisposition) => dead.filter((x) => x.disposition === d).length;
   return {
     scopesTotal,
     scopesDead: dead.length,
     deadPids: dead.reduce((n, d) => n + d.pidCount, 0),
     unprobeable,
     dead,
+    deadStale: by('stale'),
+    deadLiveServiceHeld: by('live-service-held'),
+    deadIndeterminate: by('indeterminate'),
   };
 }
 

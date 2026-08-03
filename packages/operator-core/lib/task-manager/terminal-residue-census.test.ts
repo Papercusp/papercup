@@ -69,7 +69,13 @@ describe('censusTerminalResidue', () => {
     expect(c.scopesDead).toBe(1);
     expect(c.deadPids).toBe(2);
     expect(c.unprobeable).toBe(0);
-    expect(c.dead).toEqual([{ scope: scope(2), pidCount: 2 }]);
+    // With no probe supplied the disposition is `indeterminate` — never a guess,
+    // and never a silently-clean-looking zero.
+    expect(c.dead).toEqual([
+      { scope: scope(2), pidCount: 2, disposition: 'indeterminate', oldestPidAgeMs: null },
+    ]);
+    expect(c.deadStale).toBe(0);
+    expect(c.deadIndeterminate).toBe(1);
   });
 
   it('never counts an undecidable scope as dead — unknown is not dead', () => {
@@ -120,6 +126,118 @@ describe('censusTerminalResidue', () => {
     const c = censusTerminalResidue(TERM, fs);
     expect(c.scopesDead).toBe(1);
     expect(c.deadPids).toBe(3);
+  });
+});
+
+/**
+ * EI-19418147529720290. The bug these guard against is not arithmetic — it is a
+ * reader (an agent, on 2026-08-03) taking "15 dead scopes" as 15 things to clean
+ * up, when 61% of the memory involved was the live staging operator whose terminal
+ * had merely been closed.
+ *
+ * The invariant under test is one-directional: mislabelling a stale scope as
+ * `indeterminate` costs nothing, mislabelling a LIVE one as `stale` points a human
+ * at a running service. So every probe failure must land on the safe side.
+ */
+describe('censusTerminalResidue disposition (EI-19418147529720290)', () => {
+  const DAY_MS = 24 * 60 * 60_000;
+  const deadBox = (scopes: Record<string, number[]>) =>
+    box({
+      children: { 'gnome-terminal-server.service': [SERVER], ...scopes },
+      ppids: {
+        [SERVER]: 1,
+        ...Object.fromEntries(Object.values(scopes).flat().map((p) => [p, USER_MANAGER])),
+      },
+    });
+
+  const probe = (opts: {
+    listening?: number[];
+    knownLive?: number[];
+    ages?: Record<number, number | null>;
+    defaultAge?: number | null;
+  }) => ({
+    listeningPids: () => new Set(opts.listening ?? []),
+    knownLivePids: opts.knownLive ? () => new Set(opts.knownLive!) : undefined,
+    pidAgeMs: (pid: number) =>
+      (opts.ages && pid in opts.ages ? opts.ages[pid] : opts.defaultAge ?? 30 * DAY_MS),
+  });
+
+  /** Binds the slice path once so a call cannot pass the fs in its place. */
+  const census = (scopes: Record<string, number[]>, opts?: Parameters<typeof censusTerminalResidue>[2]) =>
+    censusTerminalResidue(TERM, deadBox(scopes), opts);
+
+  it('a scope holding a LISTENING socket is a service, not residue', () => {
+    // The 2026-08-03 case exactly: window dead, days old, but serving :3170.
+    const c = census({ [scope(1)]: [2001, 2002] }, { probe: probe({ listening: [2002] }) });
+    expect(c.dead[0]!.disposition).toBe('live-service-held');
+    expect(c.deadLiveServiceHeld).toBe(1);
+    expect(c.deadStale).toBe(0);
+  });
+
+  it('a scope holding a pid the caller knows is live is spared too', () => {
+    // An enrolled agent session owns no listening socket, so without this leg the
+    // ONLY signal left is age — and an old agent session is exactly the 14-of-15
+    // case D-016 measured.
+    const c = census({ [scope(1)]: [2001] }, { probe: probe({ knownLive: [2001] }) });
+    expect(c.dead[0]!.disposition).toBe('live-service-held');
+  });
+
+  it('earns `stale` only when it is old AND shows no sign of a live tenant', () => {
+    const c = census({ [scope(1)]: [2001] }, { probe: probe({ ages: { 2001: 17 * DAY_MS } }) });
+    expect(c.dead[0]!.disposition).toBe('stale');
+    expect(c.dead[0]!.oldestPidAgeMs).toBe(17 * DAY_MS);
+    expect(c.deadStale).toBe(1);
+  });
+
+  it('a YOUNG scope is indeterminate — a just-closed window is a race, not an orphan', () => {
+    const c = census({ [scope(1)]: [2001] }, { probe: probe({ ages: { 2001: 60_000 } }) });
+    expect(c.dead[0]!.disposition).toBe('indeterminate');
+    expect(c.deadStale).toBe(0);
+  });
+
+  it('an UNREADABLE age is not a young one, and must not fall through to stale', () => {
+    const c = census({ [scope(1)]: [2001] }, { probe: probe({ ages: { 2001: null } }) });
+    expect(c.dead[0]!.disposition).toBe('indeterminate');
+    expect(c.dead[0]!.oldestPidAgeMs).toBeNull();
+  });
+
+  it('takes the OLDEST pid in the scope, so one fresh process cannot mask old residue', () => {
+    const c = census(
+      { [scope(1)]: [2001, 2002] },
+      { probe: probe({ ages: { 2001: 60_000, 2002: 17 * DAY_MS } }) },
+    );
+    expect(c.dead[0]!.oldestPidAgeMs).toBe(17 * DAY_MS);
+    expect(c.dead[0]!.disposition).toBe('stale');
+  });
+
+  it('honours a caller-supplied staleAfterMs threshold', () => {
+    const scopes = { [scope(1)]: [2001] };
+    const ages = { 2001: 2 * DAY_MS };
+    expect(
+      census(scopes, { probe: probe({ ages }), staleAfterMs: DAY_MS }).dead[0]!.disposition,
+    ).toBe('stale');
+    expect(
+      census(scopes, { probe: probe({ ages }), staleAfterMs: 7 * DAY_MS }).dead[0]!.disposition,
+    ).toBe('indeterminate');
+  });
+
+  it('WITHOUT a probe every dead scope is indeterminate — never silently clean', () => {
+    // The default must not look like "0 stale, all healthy". A caller that forgets
+    // the probe should get "undecided", which is a different claim from "fine".
+    const c = census({ [scope(1)]: [2001], [scope(2)]: [2002] });
+    expect(c.deadIndeterminate).toBe(2);
+    expect(c.deadStale).toBe(0);
+    expect(c.deadLiveServiceHeld).toBe(0);
+    expect(c.scopesDead).toBe(2);
+  });
+
+  it('the three dispositions always partition scopesDead', () => {
+    const c = census(
+      { [scope(1)]: [2001], [scope(2)]: [2002], [scope(3)]: [2003] },
+      { probe: probe({ listening: [2001], ages: { 2002: 60_000, 2003: 17 * DAY_MS } }) },
+    );
+    expect(c.deadStale + c.deadLiveServiceHeld + c.deadIndeterminate).toBe(c.scopesDead);
+    expect([c.deadLiveServiceHeld, c.deadIndeterminate, c.deadStale]).toEqual([1, 1, 1]);
   });
 });
 

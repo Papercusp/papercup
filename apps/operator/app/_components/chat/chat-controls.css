@@ -694,9 +694,32 @@
   color: var(--fg-mute);
 }
 
+/* ⚠ The selectors are CHILD combinators, and `.h-combobox__box` is listed
+ * explicitly. Both are corrections, not style (P-010) — the descendant form
+ * these used to have silently styled the WRONG ELEMENT on every Combobox-backed
+ * field, which is four of the fleet strip's six.
+ *
+ * A Combobox is not a bare <input>: it renders `.h-combobox` > `.h-combobox__box`
+ * (the bordered well the user sees) > `.h-combobox__input` (a transparent inner
+ * text field). `.pc-ctl-field input` matches that INNER input, so the well
+ * vocabulary was being painted onto the invisible element while the visible one
+ * kept only harness.css's generic combobox chrome. Two measured consequences:
+ *
+ *   · HEIGHT — §⑦'s "one control height" list had the same descendant bug, so
+ *     it set the inner input to 26px and left the box at 34px. Measured
+ *     2026-08-03: Name well 26px beside Plan/Model/Account/Windows wells at
+ *     34px. §⑦ claimed a heightSpread of 0.0; that verification was reading
+ *     the same wrong elements this selector was.
+ *   · TEXT INSET — the box already pads 8px, and this rule then added another
+ *     9px to the inner input, so a dropdown's text sat 19px into its well while
+ *     a plain input's sat 10px in. Two wells, aligned edges, misaligned text.
+ *
+ * So the well list names the element that DRAWS the well, and the child
+ * combinator keeps it from reaching inside a composite control ever again. */
 .pc-ctl-field__well,
-.pc-ctl-field select,
-.pc-ctl-field input {
+.pc-ctl-field > select,
+.pc-ctl-field > input,
+.pc-ctl-field .h-combobox__box {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -709,6 +732,14 @@
   color: var(--fg);
   font-size: 11.5px;
   white-space: nowrap;
+}
+
+/* The inner text field carries NO inset of its own — the well above owns the
+   padding, exactly as it does for a bare <input>. Without this the two are
+   additive and the dropdown's text hangs 9px right of its neighbour's. */
+.pc-ctl-field .h-combobox__input {
+  padding: 0;
+  font-size: 11.5px;
 }
 
 .pc-ctl-field__well--empty { color: var(--fg-mute); }
@@ -770,8 +801,21 @@
 
    `flex-wrap` (not a fixed column count) is what keeps the owner's "1 or 2":
    wide popup ⇒ one line, narrow ⇒ two, never a hard-coded break that is wrong
-   at both widths. */
+   at both widths.
+
+   ⚠ MEASURED CORRECTION 2026-08-03 (P-010): the strip is no longer a wrapping
+   flex row. `flex-wrap` did keep it to "1 or 2 lines", but it is ALSO what made
+   the second line start under the FLEET cap and put its captions 49px out of
+   column with the first line's — the owner's THIRD alignment complaint, and the
+   reason the fix had to be structural rather than another round of spacing. The
+   line-count promise is now kept by the field grid's `auto-fit` (fewer columns
+   at a narrow width, never an overflow) instead; see §⑧. */
 .pc-fleet-launch-row .pc-fleet-launch-row__fields {
+  /* THREE columns: the shared label gutter | the field grid | the submit.
+     The gutter track is the SAME token the Controls band uses, which is what
+     makes the two bands one grid rather than two that merely happen to start
+     in the same place (§⑧). The submit is its own track so it can never
+     consume a field cell and push the strip onto a third line. */
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -792,22 +836,22 @@
   flex: none;
 }
 
-/* Each control is a flex item that may shrink but never below legibility.
-   `min-width: 0` on the field is what lets a long plan name ellipsize inside
-   its well instead of forcing the whole strip to a second line. */
+/* Each field fills its grid cell. `min-width: 0` is what lets a long plan name
+   ellipsize inside its well instead of widening the column it sits in — which,
+   in a grid, would drag the column below it out of alignment too.
+
+   The old `max-width: 210px` is GONE on purpose: capping a cell's content while
+   the cells themselves stay equal leaves a ragged right edge inside each column,
+   which is the same "nearly aligned" look this change exists to remove. */
 .pc-fleet-launch-row .pc-ctl-field {
-  flex: 1 1 auto;
   min-width: 0;
-  max-width: 210px;
 }
 
 /* A member count is at most two digits — sizing it to the shared input width
-   would leave a mostly-empty box next to the launch button. */
+   would leave a mostly-empty box next to the launch button. The cell stays a
+   full column (so MEMBERS still lines up under MODEL); only the input is short. */
 .pc-fleet-launch-row .pc-fleet-launch-row__count {
   max-width: 52px;
-}
-.pc-fleet-launch-row .pc-ctl-field:has(.pc-fleet-launch-row__count) {
-  flex: none;
 }
 
 /* ═══ ⑥b Field, INLINE — the same shape, laid on its side ═══════════════════ */
@@ -819,22 +863,41 @@
    uppercase, still muted, still the thing you read first. The long form that
    used to be the visible caption ("Plan — the lane members work") survives as
    the `title`, so the explanation is one hover away rather than one line down. */
+/* A GRID, not a flex row (P-010) — and this is the half of the alignment fix
+   that a band-level grid alone cannot deliver.
+ *
+ * As a flex row, each caption was `flex: none`, i.e. as wide as its own word.
+ * So the well after it started wherever that word happened to end: "Name" is
+ * 27px and "Account" is 49px, which put the two wells 18px out of column even
+ * when their fields were the same width. Measured across the strip the drift
+ * was 18.4 / 27.2 / 42.1px (WI-7456).
+ *
+ * One shared caption TRACK removes the coupling: every well now starts at
+ * `--pc-ctl-cap-w + gap` from its cell's leading edge, whatever the caption
+ * says. Captions and wells therefore form two columns each, not six. */
 .pc-ctl-field--inline {
-  flex-direction: row;
+  display: grid;
+  grid-template-columns: var(--pc-ctl-cap-w) minmax(0, 1fr);
   align-items: center;
   gap: 6px;
 }
 
 .pc-ctl-field--inline > .pc-ctl-field__cap {
-  flex: none;
   /* Nudged up from the stacked caption's 9px: beside a 11.5px control it has
      to hold its own as a label rather than read as a superscript. */
   font-size: 9.5px;
+  /* The track is fixed, so a caption that outgrows it must TRUNCATE rather
+     than widen its column — a silently-widened column is exactly the drift
+     this grid removes, and it would come back the first time a caption is
+     renamed or a theme ships a wider face. */
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* The well takes the rest of the field, and clips rather than pushes. */
 .pc-ctl-field--inline > :not(.pc-ctl-field__cap) {
-  flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -882,13 +945,40 @@
 .pc-ctl-band,
 .pc-fleet-launch-row {
   --pc-ctl-h: 26px;
+
+  /* ── §⑧'s two shared column metrics. They live beside --pc-ctl-h because
+     they are the same KIND of thing: one number, declared once, that several
+     otherwise-independent rules have to agree on. The panel's whole alignment
+     history is rules that agreed by coincidence and then stopped. ──
+
+     The LABEL GUTTER: the track holding a band's zone cap. Fixed rather than
+     `max-content` on purpose — `max-content` would size each band's gutter to
+     its OWN cap ("Controls" 62.9px vs "Fleet" 39.1px), so the two bands would
+     each be internally tidy and still disagree with each other by 24px, which
+     is the failure mode one step subtler than the one being fixed.
+     68px = the widest cap ("CONTROLS", measured 62.9px at 9px/700 uppercase
+     with its 6px padding) plus ~5px of slack for a wider theme face. */
+  --pc-ctl-gutter: 68px;
+
+  /* The FIELD CAPTION track inside an inline field. 54px = the widest caption
+     ("Members" 49.0px, "Account" 48.8px, "Windows" 47.0px at 9.5px) plus
+     slack. A caption that outgrows it truncates rather than shoving its own
+     well out of column — see .pc-ctl-field--inline. */
+  --pc-ctl-cap-w: 54px;
 }
 
+/* ⚠ Child combinators + `.h-combobox__box`, for the reason spelled out at §⑥'s
+   well rule: the descendant form applied this height to a Combobox's INVISIBLE
+   inner input and left its visible 34px well untouched, so the "one height"
+   this section is named for was never actually reaching four of the six fleet
+   controls. The `input`/`select` legs stay for the fields that really are bare
+   controls (Name, Members). */
 .chat-action-bar .pc-ctl-mode,
 .chat-action-bar .pc-ctl-act,
 .pc-fleet-launch-row .pc-ctl-field__well,
-.pc-fleet-launch-row .pc-ctl-field select,
-.pc-fleet-launch-row .pc-ctl-field input,
+.pc-fleet-launch-row .pc-ctl-field > select,
+.pc-fleet-launch-row .pc-ctl-field > input,
+.pc-fleet-launch-row .pc-ctl-field .h-combobox__box,
 .pc-fleet-launch-row .pc-fleet-strip__submit {
   box-sizing: border-box;
   height: var(--pc-ctl-h);
@@ -937,6 +1027,101 @@
    honours `.pc-btn`'s inline-flex or falls back to block. */
 .pc-fleet-launch-row .pc-fleet-strip__submit {
   line-height: calc(var(--pc-ctl-h) - 2px);
+}
+
+/* ═══ ⑧ ONE column grid for the whole bottom panel (P-010) ══════════════════
+ *
+ * [owner 2026-08-03] "the alignement on the bottom panel is still all mest up."
+ *
+ * THIRD recurrence, which is the fact that decides the shape of this fix. §⑦
+ * above unified the control HEIGHTS after the owner's second complaint, and it
+ * was correct — but it left the HORIZONTAL axis governed by nothing at all, and
+ * that is what came back. So this is deliberately not another round of nudges:
+ * a nudge is a value that happens to look right in one screenshot, and three
+ * screenshots have now disproved that method here.
+ *
+ * ── What was actually wrong ──
+ * Both bands were WRAPPING FLEX STRIPS in which the zone cap was just another
+ * flex item. Two things follow from that, and both are structural:
+ *
+ *   ① A wrapped line restarts at the CONTAINER's padding, so line 2 began
+ *     underneath the cap — inside the label gutter — while line 1's first
+ *     control began after it. Nothing in flexbox can express "wrap, but not
+ *     into the first item's column".
+ *   ② Every item was sized by its own content, so the two lines' columns had no
+ *     reason to coincide and did not.
+ *
+ * MEASURED (WI-7456; headless Tauri at window 1280, modal 1040, band root 740):
+ *
+ *   FLEET row 1   Fleet@11 | Name@60.1 well@93.2 | Plan@280.1 well@320.2 | Model@500.1 well@548.1
+ *   FLEET row 2   Account@11 well@74.8 | Windows@231 well@293 | Members@451 well@506
+ *
+ *   gutter violation   49.1px   (row 2 starts at 11, row 1's first field at 60.1)
+ *   caption columns    49.1px out, all three
+ *   well columns       18.4 / 27.2 / 42.1px out
+ *
+ * The 49.1px is not a coincidence and is the tell that this is one bug, not
+ * three: it is exactly the cap plus its gap — i.e. the gutter that line 2 was
+ * free to occupy.
+ *
+ * ── The shape ──
+ * Each band becomes a GRID whose first track is the label gutter, and every
+ * control moves into a single wrapper occupying the second track:
+ *
+ *   CONTROLS   [ gutter ][ controls ................................ ]
+ *   FLEET      [ gutter ][ field grid ..................][ submit ]
+ *
+ * A wrapped line can no longer reach the gutter because it is a different
+ * track. The gutter is the same token in both bands, so the two zone caps and
+ * the two control regions line up with each other — that is what makes this ONE
+ * grid rather than two tidy bands that happen to start in the same place. And
+ * the fleet fields become a real grid, so NAME/PLAN/MODEL sit above
+ * ACCOUNT/WINDOWS/MEMBERS by construction rather than by content coincidence.
+ *
+ * Guard: chat-controls.vocabulary.test.ts asserts the gutter track and the
+ * shared caption track, so a future edit that reverts either to a flex strip
+ * reds here rather than in a fourth screenshot. */
+
+.chat-action-bar.pc-ctl-band--do {
+  display: grid;
+  grid-template-columns: var(--pc-ctl-gutter) minmax(0, 1fr);
+  align-items: center;
+  /* Row gap is dead weight in a two-track single-row grid, but it is stated so
+     that a future third band item cannot inherit the flex `gap: 5px` above and
+     silently pick a different rhythm from the fleet strip's 6px. */
+  gap: 6px 10px;
+}
+
+/* The cap FILLS its gutter track rather than shrink-wrapping its word. Two
+   equal-width plates reading CONTROLS / FLEET are what make the shared column
+   visible — a reader should be able to SEE the grid, not just measure it. */
+.chat-action-bar.pc-ctl-band--do > .pc-zone-cap,
+.pc-fleet-launch-row .pc-fleet-launch-row__fields > .pc-zone-cap {
+  width: 100%;
+  justify-content: flex-start;
+}
+
+/* Track 2 of the Controls band: the controls themselves, still a wrapping strip
+   — wrapping was never the problem, wrapping INTO THE GUTTER was. */
+.pc-ctl-band__controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+
+/* Track 2 of the Fleet strip: six fields in equal columns.
+   `auto-fit` + `minmax` is what keeps the owner's earlier "1 or 2 lines" ask
+   without a hard-coded column count — the grid drops to two columns, then one,
+   as the popup narrows, and never overflows. 160px is the width below which a
+   caption track plus a legible well stops fitting. */
+.pc-fleet-strip__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  align-items: center;
+  gap: 6px 10px;
+  min-width: 0;
 }
 
 /* ═══ shared focus treatment ════════════════════════════════════════════════ */

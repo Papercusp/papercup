@@ -47,6 +47,35 @@ export const MACHINE_SENDER_PATTERN =
 const MACHINE_SENDER_RE = new RegExp(MACHINE_SENDER_PATTERN);
 
 /**
+ * POSITIVE agent-session shape — `su-…`, `s-…`, `cup-…`, `role-…`, or a bare uuid.
+ *
+ * ── WHY THIS EXISTS ALONGSIDE THE NEGATIVE PATTERN, AND WHEN TO USE WHICH ────
+ *
+ * These two are NOT complements, and using the wrong one is a measured bug, not
+ * a style choice. {@link MACHINE_SENDER_PATTERN} is CONSERVATIVE ON PURPOSE (see
+ * its note): anything unrecognised is treated as a real correspondent, because
+ * there its false-positive cost is silently suppressing a peer's real question.
+ * That is the correct bias for SUPPRESSION decisions.
+ *
+ * It is the WRONG bias for a DENOMINATOR. Measured live 2026-08-03 over 24h: of
+ * 2,491 senders admitted by `NOT MACHINE_SENDER_PATTERN`, about 1,738 were
+ * emitters the negative pattern simply does not name — git-sync-ref-announce
+ * (669), git-sync-integrator (639), intent-divergence-detector (157),
+ * green-checkpoint (124), coord-probe-canary-a (96), stale-prompt-render-detector
+ * (27), task-manager, live1-parity-tower, boot-migrate — every one of them with
+ * ZERO sectioned messages, because they never pass through coord:send's schema
+ * and CANNOT carry the field being measured. Including them deflated an adoption
+ * reading from 77.2% to 23.2%: the same class of error as EI-19300252001829260,
+ * reached through a different filter.
+ *
+ * RULE OF THUMB: suppressing/routing a message → the NEGATIVE pattern (be
+ * generous about who counts as a person). Measuring a RATE whose denominator
+ * must contain only senders capable of the behaviour → this POSITIVE one.
+ */
+export const AGENT_SESSION_SENDER_PATTERN =
+  '^(su-|s-|cup-|role-|[0-9a-f]{8}-[0-9a-f]{4}-)';
+
+/**
  * Is `from` a synthetic/system identity — i.e. something that emits but can never READ a reply?
  * Conservative by design: anything unrecognised is treated as a real correspondent, because the
  * cost of a false NEGATIVE (one extra robot line in a count) is trivial next to a false POSITIVE
@@ -65,9 +94,13 @@ export function isMachineAuthoredSender(from: string | null | undefined): boolea
  *
  * ── WHY A SECOND PATTERN RATHER THAN WIDENING THE FIRST ──────────────────────
  *
- * `MACHINE_SENDER_PATTERN` is embedded VERBATIM in four SQL sites
- * (unanswered-directed.ts:236, delivery-ladder-sweep.ts:378, scout/coord-health-lane.ts
- * :456 and :587). Widening it there does not merely change future behaviour — it
+ * `MACHINE_SENDER_PATTERN` is embedded VERBATIM in five SQL sites
+ * (unanswered-directed.ts:236, delivery-ladder-sweep.ts:378, and THREE in
+ * scout/coord-health-lane.ts — loadCoordPremiseResolve, loadCoordClarifyAdoption
+ * and loadCoordAuthoredAdoption; the last of these ALSO applies
+ * {@link AGENT_SESSION_SENDER_PATTERN}, because a denominator needs the positive
+ * test and this one alone is too permissive for that job).
+ * Widening it there does not merely change future behaviour — it
  * retroactively changes which HISTORICAL rows those queries count as unanswered,
  * which messages.ts:288 calls out as "a separate change with its own measurement,
  * not a side effect of this one". That judgement still stands, so this pattern is

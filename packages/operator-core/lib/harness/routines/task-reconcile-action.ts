@@ -23,6 +23,7 @@ import { reconcileTick } from '../../task-manager/reconcile-tick';
 import { defaultForeignSignature } from '../../task-manager/scan';
 import { gcTerminalTasks } from '../../task-manager/store';
 import { nodeCgroupFs } from '../../task-manager/cgroup-read';
+import { nodeResidueLivenessProbe } from '../../task-manager/residue-liveness-probe';
 import {
   appendResidueSample,
   censusTerminalResidue,
@@ -146,7 +147,14 @@ async function sampleResidue(ctx: SystemActionCtx, userManagerRoot: string | nul
     const sliceAbs = resolveTerminalSliceAbs(userManagerRoot);
     if (!sliceAbs || !nodeCgroupFs.isDir(sliceAbs)) return;
 
-    const census = censusTerminalResidue(sliceAbs, nodeCgroupFs);
+    // EI-19418147529720290: probe the dead scopes, so what we store and broadcast
+    // distinguishes abandoned residue from a live service whose window was closed.
+    // Un-probed, "15 dead scopes" reads as 15 things to clean up; measured, it was
+    // 1 stale and 13 holding live tenants — and the largest was the staging
+    // operator still serving :3170.
+    const census = censusTerminalResidue(sliceAbs, nodeCgroupFs, {
+      probe: nodeResidueLivenessProbe(),
+    });
     const target = { installSlug: ctx.installSlug, workspaceId: ctx.workspaceId };
     const nowMs = Date.now();
 
@@ -162,6 +170,9 @@ async function sampleResidue(ctx: SystemActionCtx, userManagerRoot: string | nul
       scopesDead: census.scopesDead,
       deadPids: census.deadPids,
       unprobeable: census.unprobeable,
+      deadStale: census.deadStale,
+      deadLiveServiceHeld: census.deadLiveServiceHeld,
+      deadIndeterminate: census.deadIndeterminate,
       trend: verdict.trend,
       floorDelta: verdict.floorDelta,
     });
@@ -175,7 +186,11 @@ async function sampleResidue(ctx: SystemActionCtx, userManagerRoot: string | nul
       summary:
         `[task-manager] ${verdict.summary} ` +
         `Now ${census.scopesDead} dead-window scope(s) holding ${census.deadPids} process(es), ` +
-        `of ${census.scopesTotal} terminal scope(s).`,
+        `of ${census.scopesTotal} terminal scope(s). ` +
+        // The split, not just the total: a reader who acts on `scopesDead` will go
+        // looking for things to kill, and most of them are live tenants.
+        `Of those, ${census.deadStale} look STALE, ${census.deadLiveServiceHeld} hold a live ` +
+        `service or tracked tenant (do not reap), ${census.deadIndeterminate} undecidable.`,
       category: 'task-manager',
       kind: 'message',
       harnessSlug: ctx.installSlug,

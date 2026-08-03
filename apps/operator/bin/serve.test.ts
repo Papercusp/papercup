@@ -657,6 +657,87 @@ describe("detectRunningSharedPg (EI-14941)", () => {
   });
 });
 
+describe("_shouldPublishGlobalPgDiscovery (WI-7462)", () => {
+  // ~/.papercusp/embedded-pg.json is an advertisement to the WHOLE BOX. The
+  // rule: never redirect the box away from an endpoint that is still serving
+  // somebody. The 2026-08-03 outage (EI-19415174699106397) was a throwaway
+  // verify-tauri-headless instance taking over this file and pointing the fleet
+  // at a PG that died with it.
+  const base = { existingPid: 4242, ourPort: 16012, ourPid: 999 };
+
+  it("REFUSES to clobber a live foreign endpoint (the outage case)", () => {
+    const v = serve._shouldPublishGlobalPgDiscovery({
+      ...base,
+      existingPort: 5432, // the box's canonical native PG
+      foreignEndpointLive: true,
+    });
+    expect(v.publish).toBe(false);
+    expect(v.reason).toMatch(/foreign endpoint :5432 is live/);
+  });
+
+  it("publishes when the prior advertisement no longer answers", () => {
+    // The swept-orphan path: sweepOrphanPostgres() runs BEFORE our start, so by
+    // publish time the old port is dead and taking over is correct.
+    const v = serve._shouldPublishGlobalPgDiscovery({
+      ...base,
+      existingPort: 5432,
+      foreignEndpointLive: false,
+    });
+    expect(v.publish).toBe(true);
+  });
+
+  it("publishes on a fresh box (no prior advertisement)", () => {
+    expect(
+      serve._shouldPublishGlobalPgDiscovery({
+        ...base,
+        existingPort: null,
+        foreignEndpointLive: false,
+      }).publish,
+    ).toBe(true);
+  });
+
+  it("refreshes its own record when it already owns that endpoint", () => {
+    // Same port as the one we just bound: writing updates pid/url/startedAt for
+    // an endpoint we now own — it redirects nobody. Must NOT be refused, or a
+    // normal desktop restart would stop advertising itself.
+    const v = serve._shouldPublishGlobalPgDiscovery({
+      ...base,
+      existingPort: base.ourPort,
+      foreignEndpointLive: true,
+    });
+    expect(v.publish).toBe(true);
+    expect(v.reason).toMatch(/same endpoint/);
+  });
+
+  it("publishes over its own stale record from a prior identity", () => {
+    const v = serve._shouldPublishGlobalPgDiscovery({
+      existingPort: 5432,
+      existingPid: 999,
+      ourPort: 16012,
+      ourPid: 999,
+      foreignEndpointLive: true,
+    });
+    expect(v.publish).toBe(true);
+    expect(v.reason).toMatch(/our own prior record/);
+  });
+});
+
+describe("readPgDiscoveryRecord (WI-7462)", () => {
+  it("returns null for a missing or malformed advertisement rather than throwing", () => {
+    // A half-written discovery file must never crash the boot path.
+    expect(serve.readPgDiscoveryRecord()).toBeNull();
+    mkdirSync(pcDir(), { recursive: true });
+    writeFileSync(join(pcDir(), "embedded-pg.json"), "{not json");
+    expect(serve.readPgDiscoveryRecord()).toBeNull();
+    writeFileSync(
+      join(pcDir(), "embedded-pg.json"),
+      JSON.stringify({ port: 5432, pid: 22998 }),
+    );
+    expect(serve.readPgDiscoveryRecord()).toEqual({ port: 5432, pid: 22998 });
+    rmSync(join(pcDir(), "embedded-pg.json"), { force: true });
+  });
+});
+
 describe("isPortAccepting", () => {
   it("is true for a live listener and false for a free port", async () => {
     const { createServer } = await import("node:net");
