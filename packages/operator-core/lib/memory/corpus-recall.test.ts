@@ -235,10 +235,65 @@ describe('selectCorpusLines', () => {
     const { lines, dropped } = selectCorpusLines({
       hits: [turn({ sourceId: 'claude:sess-self:3' }), wi()],
       queryText: QUERY,
-      excludeSessionId: 'sess-self',
+      excludeSessionIds: new Set(['sess-self']),
     });
     expect(lines.map((l) => l.handle.ref)).toEqual(['WI-6512']);
     expect(dropped).toContainEqual({ ref: 'claude:sess-self', reason: 'self-session' });
+  });
+
+  it('drops EVERY session in the caller’s owner chain, not just the live one', () => {
+    // EI-19460887729945170: an agent's identity outlives one native session, so
+    // after a compaction its EARLIER turns stop being "self" and — being the
+    // densest documents in the corpus for whatever it is working on — evict the
+    // durable answer. Measured live: excluding only the newest session freed a
+    // slot that went to ANOTHER of the caller's sessions while WI-6512 stayed
+    // dropped `cap-exhausted`.
+    const { lines, dropped } = selectCorpusLines({
+      hits: [
+        turn({ sourceId: 'claude:sess-live:3' }),
+        turn({ sourceId: 'claude:sess-prior:9' }),
+        wi(),
+      ],
+      queryText: QUERY,
+      excludeSessionIds: new Set(['sess-live', 'sess-prior']),
+    });
+    expect(lines.map((l) => l.handle.ref)).toEqual(['WI-6512']);
+    expect(dropped).toContainEqual({ ref: 'claude:sess-live', reason: 'self-session' });
+    expect(dropped).toContainEqual({ ref: 'claude:sess-prior', reason: 'self-session' });
+  });
+
+  it('CONTROL: an EMPTY exclusion set admits the very turns the owner-wide set drops', () => {
+    // Calibration for the two tests above, and a portrait of the shipped bug:
+    // `excludeSessionId` held an ownerId, which can never equal a native
+    // transcript uuid, so the effective exclusion set was ALWAYS empty and the
+    // caller's own turns were admitted every time. Same hits, same query — only
+    // the set differs. If this ever passes together with the drop tests, the
+    // drop is not the thing doing the work.
+    const hits = [
+      turn({ sourceId: 'claude:sess-live:3' }),
+      turn({ sourceId: 'claude:sess-prior:9' }),
+      wi(),
+    ];
+    const { lines, dropped } = selectCorpusLines({
+      hits,
+      queryText: QUERY,
+      excludeSessionIds: new Set<string>(),
+    });
+    expect(lines.map((l) => l.handle.ref)).toEqual([
+      'claude:sess-live',
+      'claude:sess-prior',
+      'WI-6512',
+    ]);
+    expect(dropped.filter((d) => d.reason === 'self-session')).toEqual([]);
+  });
+
+  it('keeps a PEER’s turns — the filter is the caller’s own chain, not all turns', () => {
+    const { lines } = selectCorpusLines({
+      hits: [turn({ sourceId: 'claude:sess-peer:3' })],
+      queryText: QUERY,
+      excludeSessionIds: new Set(['sess-live', 'sess-prior']),
+    });
+    expect(lines.map((l) => l.handle.ref)).toEqual(['claude:sess-peer']);
   });
 
   it('narrows WORK-ITEMS by harness but never narrows turns', () => {

@@ -60,8 +60,8 @@ const FOREIGN_BASELINES = [
   },
 ];
 
-function main() {
-  runTscBaselineGate({
+async function main() {
+  await runTscBaselineGate({
     root: ROOT,
     tscCommand: TSC_COMMAND,
     baselineFile,
@@ -72,5 +72,10 @@ function main() {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
-  main();
+  main().catch((err) => {
+    // Never let a crash read as a pass: this gate's whole job is refusing to report clean when
+    // it did not actually judge anything.
+    console.error(err);
+    process.exit(1);
+  });
 }

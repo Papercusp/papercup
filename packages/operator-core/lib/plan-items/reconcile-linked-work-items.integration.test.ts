@@ -341,6 +341,7 @@ describe('reconcileLinkedWorkItemsForPlanItem (PG, EI-5925)', () => {
       reconciled: [],
       skippedInFlight: [],
       skippedAlreadyTerminal: [],
+      skippedUnprovenLink: [],
     });
   });
 
@@ -353,6 +354,97 @@ describe('reconcileLinkedWorkItemsForPlanItem (PG, EI-5925)', () => {
     const result = await reconcileLinkedWorkItemsForPlanItem({ planSlug: 'p1', itemId: 'P-006' });
 
     expect(result.reconciled.sort()).toEqual(['WI-dup-1', 'WI-dup-2']);
+  });
+});
+
+/**
+ * EI-19460536530145188 — the truth source, not the kind, decides whether a
+ * terminal close is warranted.
+ *
+ * A `payload.plan_item` STAMP alone does not assert that the work-item
+ * IMPLEMENTS the plan item: `work_items:create { plan_item }` writes its coord
+ * edge as `relates` and writes the stamp only so work_items:complete's FORWARD
+ * auto-flip can find it (EI-19390496242545842). Reading it in reverse as
+ * implementation destroyed WI-9333 — a bug discovered while working P-007,
+ * closed as "stale residue" the moment P-007 was marked done, with no fix and
+ * no completion evidence.
+ *
+ * These four tests pin the exact boundary, including the two regressions a
+ * kind-based fix would have caused (29 `change` + 585 `feature` rows).
+ */
+describe('reconcileLinkedWorkItemsForPlanItem — stamp is not implementation (EI-19460536530145188)', () => {
+  it('does NOT close an issue-family item reached ONLY by the payload stamp (the WI-9333 case)', async () => {
+    stub({ id: 'WI-discovered', state: 'open', family: 'issue', lastProgressAt: null });
+    await insertWorkItemRow({
+      id: 'WI-discovered',
+      kind: 'bug',
+      status: 'open',
+      planSlug: 'p1',
+      itemId: 'P-020',
+    });
+    // NO edge() — a bug DISCOVERED while working P-020, not an implementation of it.
+
+    const result = await reconcileLinkedWorkItemsForPlanItem({ planSlug: 'p1', itemId: 'P-020' });
+
+    expect(result.skippedUnprovenLink).toEqual(['WI-discovered']);
+    expect(result.reconciled).toEqual([]);
+    expect(setWorkItemState).not.toHaveBeenCalled();
+    // The item must remain claimable — a surviving open bug is recoverable,
+    // a silently-closed one is not.
+    expect(h2.items.get('WI-discovered')?.state).toBe('open');
+  });
+
+  it('STILL closes an issue-family item that carries a real implements edge (29 `change` rows must not regress)', async () => {
+    stub({ id: 'WI-implements', state: 'open', family: 'issue', lastProgressAt: null });
+    await insertWorkItemRow({
+      id: 'WI-implements',
+      kind: 'bug',
+      status: 'open',
+      planSlug: 'p1',
+      itemId: 'P-021',
+    });
+    await edge({ plan: 'p1', item: 'P-021', srcRef: 'WI-implements' });
+
+    const result = await reconcileLinkedWorkItemsForPlanItem({ planSlug: 'p1', itemId: 'P-021' });
+
+    // Found by BOTH truth sources — the edge proves implementation, and the
+    // later stamp pass must not downgrade it (viaImplementsEdge is sticky-true).
+    expect(result.reconciled).toEqual(['WI-implements']);
+    expect(result.skippedUnprovenLink).toEqual([]);
+  });
+
+  it('STILL closes a FEATURE-family item reached only by the stamp (585 `feature` rows are entirely stamp-borne)', async () => {
+    stub({ id: 'WI-feat-stamped', state: 'open', family: 'feature', lastProgressAt: null });
+    await insertWorkItemRow({
+      id: 'WI-feat-stamped',
+      kind: 'feature',
+      status: 'open',
+      planSlug: 'p1',
+      itemId: 'P-022',
+    });
+
+    const result = await reconcileLinkedWorkItemsForPlanItem({ planSlug: 'p1', itemId: 'P-022' });
+
+    expect(result.reconciled).toEqual(['WI-feat-stamped']);
+    expect(result.skippedUnprovenLink).toEqual([]);
+  });
+
+  it('the guard is scoped to the LINK, not the kind — two items on one plan item split correctly', async () => {
+    stub({ id: 'WI-impl-2', state: 'open', family: 'issue', lastProgressAt: null });
+    stub({ id: 'WI-found-2', state: 'open', family: 'issue', lastProgressAt: null });
+    await insertWorkItemRow({
+      id: 'WI-found-2',
+      kind: 'bug',
+      status: 'open',
+      planSlug: 'p1',
+      itemId: 'P-023',
+    });
+    await edge({ plan: 'p1', item: 'P-023', srcRef: 'WI-impl-2' });
+
+    const result = await reconcileLinkedWorkItemsForPlanItem({ planSlug: 'p1', itemId: 'P-023' });
+
+    expect(result.reconciled).toEqual(['WI-impl-2']);
+    expect(result.skippedUnprovenLink).toEqual(['WI-found-2']);
   });
 });
 
@@ -373,6 +465,7 @@ describe('reconcileLinkedWorkItemsForPlanItem — stale-read guard (EI-8970)', (
       reconciled: [],
       skippedInFlight: [],
       skippedAlreadyTerminal: [],
+      skippedUnprovenLink: [],
     });
     expect(setWorkItemState).not.toHaveBeenCalled();
   });

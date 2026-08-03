@@ -293,6 +293,65 @@ describe('reviewCandidateForAutoAdopt (WI-5414 automated review + P-001 transfer
   });
 });
 
+describe('materializeCandidateIntoPack is GATED (P-009)', () => {
+  let root: string;
+  beforeAll(async () => {
+    root = await fs.mkdtemp(join(tmpdir(), 'fleet-lessons-gate-'));
+  });
+  afterAll(async () => {
+    await fs.rm(root, { recursive: true, force: true });
+  });
+
+  /** Synthetic — never this box's real identity (see pack-residue.test.ts's note). */
+  const SYNTHETIC_ENTRIES: [string, string][] = [['build-hostname', 'zzhost-fixture-9x']];
+
+  const admissible = (over: Partial<Parameters<typeof materializeCandidateIntoPack>[0]> = {}) => ({
+    title: 'Serialize concurrent edits',
+    text: 'Discover how this project coordinates shared-tree edits before changing files.',
+    kind: 'feedback' as const,
+    appliesTo: ['any' as const],
+    signature: 'shared|tree|coord',
+    scopes: ['operator', 'harness:papercup'],
+    recurrenceCount: 3,
+    sourceItemIds: ['EI-9'],
+    ...over,
+  });
+
+  it.each([
+    ['a dangling ledger id', { text: 'See EI-9411 for the original repro of this whole class of bug.' }],
+    ['a body below the length floor', { text: 'Use locks.' }],
+    ["kind 'user'", { kind: 'user' as const }],
+    [
+      'tier-3 box identity',
+      { text: `Set the operator port on zzhost-fixture-9x before cutting the release bundle.` },
+    ],
+  ])('REFUSES %s, and writes nothing at all', async (_label, over) => {
+    const before = await fs.readdir(root).catch(() => [] as string[]);
+
+    await expect(
+      materializeCandidateIntoPack(admissible(over), {
+        packsRoot: root,
+        identityEntries: SYNTHETIC_ENTRIES,
+      }),
+    ).rejects.toThrow(/pack-admission gate refused/);
+
+    // The gate runs BEFORE any fs write, so a refusal must leave no item file and
+    // no bumped manifest behind — a half-written pack would ship on the next export.
+    expect(await fs.readdir(root).catch(() => [] as string[])).toEqual(before);
+  });
+
+  it('admits a clean, well-shaped item through the same call', async () => {
+    const written = await materializeCandidateIntoPack(admissible(), {
+      packsRoot: root,
+      identityEntries: SYNTHETIC_ENTRIES,
+    });
+    expect(written.packItemId).toBe('serialize-concurrent-edits');
+    expect(await fs.readdir(join(root, FLEET_LESSONS_PACK_ID))).toContain(
+      'serialize-concurrent-edits.md',
+    );
+  });
+});
+
 describe('autoAdoptPendingCandidates (WI-5414 sweep, injected deps)', () => {
   const pendingOf = (id: string): KnowledgePackCandidate => ({
     id,
@@ -393,6 +452,49 @@ describe('autoAdoptPendingCandidates (WI-5414 sweep, injected deps)', () => {
 
     const result = await autoAdoptPendingCandidates({}, { list, decide, review } as never);
     expect(result).toEqual({ reviewed: 1, adopted: 0, dismissed: 0, failed: 1 });
+  });
+
+  it('DISMISSES an admission_gate refusal instead of leaving it pending forever (P-009)', async () => {
+    // The distinction that matters: `transfer_bar` above is potentially
+    // transient, so staying pending is right. `admission_gate` is DETERMINISTIC —
+    // the candidate's own text trips it — so "stays pending, next tick retries"
+    // would re-judge (and re-spend an LLM call on) the same doomed item on every
+    // sweep, forever. This test is the guard against that retry loop.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const list = vi.fn(async () => [pendingOf('g')]);
+    const review = vi.fn(async () => ({ verdict: 'pass' as const, reason: 'clean' }));
+    const decide = vi.fn(async (input: { id: string; action: string }) =>
+      input.action === 'adopt'
+        ? { ok: false as const, reason: 'admission_gate' as const, error: 'carries EI-1' }
+        : { ok: true as const, action: 'dismiss' as const, id: input.id },
+    );
+
+    const result = await autoAdoptPendingCandidates({}, { list, decide, review } as never);
+    expect(result).toEqual({ reviewed: 1, adopted: 0, dismissed: 1, failed: 0 });
+
+    // The dismissal records WHY on the row — not only in a log line that scrolls away.
+    expect(decide).toHaveBeenCalledTimes(2);
+    expect(decide).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        id: 'g',
+        action: 'dismiss',
+        by: AUTO_ADOPT_REVIEWER,
+        note: expect.stringContaining('pack-admission gate'),
+      }),
+    );
+    warn.mockRestore();
+  });
+
+  it('counts a FAILED gate-dismissal as `failed` rather than silently claiming a dismissal', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const list = vi.fn(async () => [pendingOf('h')]);
+    const review = vi.fn(async () => ({ verdict: 'pass' as const, reason: 'clean' }));
+    const decide = vi.fn(async () => ({ ok: false as const, reason: 'admission_gate' as const }));
+
+    const result = await autoAdoptPendingCandidates({}, { list, decide, review } as never);
+    expect(result).toEqual({ reviewed: 1, adopted: 0, dismissed: 0, failed: 1 });
+    warn.mockRestore();
   });
 
   it('maxPerRun: 0 reviews nothing', async () => {

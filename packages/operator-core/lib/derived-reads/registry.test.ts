@@ -255,6 +255,70 @@ describe('refreshDerivedReads', () => {
     expect(compute).not.toHaveBeenCalled();
   });
 
+  // EI-19457924854150358: producers run SEQUENTIALLY under a `concurrency: 'skip'`
+  // routine, so a minutes-scale producer blocks the shared 2-min tick and starves the
+  // 90s-ttl liveness producers. `excludeFromDefaultSweep` is how such a producer stays
+  // registered (inheriting ttl gating / versioning / snapshot write) without ever
+  // entering that tick. A long ttl is NOT a substitute — it changes how OFTEN the cost
+  // is paid, never how LONG the shared tick is blocked when it is.
+  it('SKIPS an excludeFromDefaultSweep producer in the default pass — it never enters the shared tick', async () => {
+    const heavy = vi.fn().mockResolvedValue(['audit']);
+    registerDerivedRead({
+      key: 'test.heavy',
+      ttlMs: 1_000, // DUE for refresh — proves the exclusion, not freshness, is what skipped it
+      producerVersion: 1,
+      scope: 'workspace',
+      excludeFromDefaultSweep: true,
+      compute: heavy,
+    });
+
+    const outcomes = await refreshDerivedReads({ workspaceId: 'ws-test', harnessSlug: 'h' });
+
+    expect(heavy).not.toHaveBeenCalled();
+    expect(outcomes.map((o) => o.key)).not.toContain('test.heavy');
+  });
+
+  it('CONTROL: an ordinary producer that is due DOES run in the same default pass', async () => {
+    // Without this the test above passes even if refreshDerivedReads were broken
+    // outright (e.g. running nothing at all), which would be a vacuous green.
+    const ordinary = vi.fn().mockResolvedValue(['x']);
+    registerDerivedRead({
+      key: 'test.ordinary',
+      ttlMs: 1_000,
+      producerVersion: 1,
+      scope: 'workspace',
+      compute: ordinary,
+    });
+    sqlResults = [[{ computed_at: Date.now() - 60_000, producer_version: 1 }], []];
+
+    const outcomes = await refreshDerivedReads({ workspaceId: 'ws-test', harnessSlug: 'h' });
+
+    expect(ordinary).toHaveBeenCalledOnce();
+    expect(outcomes.map((o) => o.key)).toContain('test.ordinary');
+  });
+
+  it('RUNS an excludeFromDefaultSweep producer when named explicitly in `only` — its own routine drives it', async () => {
+    const heavy = vi.fn().mockResolvedValue(['audit']);
+    registerDerivedRead({
+      key: 'test.heavy',
+      ttlMs: 1_000,
+      producerVersion: 1,
+      scope: 'workspace',
+      excludeFromDefaultSweep: true,
+      compute: heavy,
+    });
+    sqlResults = [[{ computed_at: Date.now() - 60_000, producer_version: 1 }], []];
+
+    const outcomes = await refreshDerivedReads({
+      workspaceId: 'ws-test',
+      harnessSlug: 'h',
+      only: ['test.heavy'],
+    });
+
+    expect(heavy).toHaveBeenCalledOnce();
+    expect(outcomes.map((o) => o.key)).toContain('test.heavy');
+  });
+
   it('recomputes when the snapshot is past its ttl', async () => {
     const compute = vi.fn().mockResolvedValue(['new']);
     registerDerivedRead({

@@ -23,9 +23,11 @@ import {
   ensureCoordCapabilityTables,
   PgEntitySubscriptionStore,
   PgLinkStore,
+  PgTaggableStore,
   PgTopicStore,
 } from '@papercusp/coordination/capabilities';
 import { HARNESS_FEATURES_CONSOLIDATED_DDL, WORK_ITEM_DEPS_DDL } from './../test/_work-items-schema';
+import { boundedOrgTxn } from './pg-bounded-txn';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SQL_DIR = resolve(__dirname, '../../../libs/papercusp/libs/db/sql');
@@ -648,5 +650,87 @@ describe('engineer issues surface (real PG)', () => {
     expect(stale?.title).toBe('stale twin');
     const fresh = await issues.getIssueInWorkspace(PINNED_WS, 'EI-DUP', { baseHarnessSlug: 'operator:' + PINNED_WS });
     expect(fresh?.title).toBe('fresh twin');
+  });
+});
+
+describe('createIssue is atomic with its substrate writes (WI-8848)', () => {
+  // BEFORE WI-8848, createIssue committed the INSERT in its own boundedOrgTxn and THEN
+  // ran the topic tags + author subscription as bare awaits — each a fresh pool
+  // acquisition against an already-durable row. A [connect-phase-deadline] in either one
+  // threw to the caller while the issue existed; the caller cannot distinguish that from
+  // a total failure, so it retries and DUPLICATES the filing (measured live:
+  // EI-19448526819046979 was created while its caller saw the error).
+  //
+  // These guards are falsifiable: move either write back outside the boundedOrgTxn and
+  // the row survives the failure, so expect(rows).toHaveLength(0) fails.
+  it('rolls the issue row back when the author-subscription write fails', async () => {
+    const title = `atomicity-probe-subscribe-${Date.now()}`;
+    const spy = vi
+      .spyOn(PgEntitySubscriptionStore.prototype, 'subscribe')
+      .mockRejectedValue(new Error('simulated pool deadline'));
+    try {
+      await expect(issues.createIssue({ title, createdBy: 'agA' })).rejects.toThrow('simulated pool deadline');
+    } finally {
+      spy.mockRestore();
+    }
+    const rows = await db.sql<{ issue_id: string }[]>`
+      SELECT issue_id FROM harness_shared.engineer_issues WHERE title = ${title}`;
+    expect(rows).toHaveLength(0);
+  });
+
+  it('rolls the issue row back when a topic-tag write fails', async () => {
+    const title = `atomicity-probe-tag-${Date.now()}`;
+    const spy = vi
+      .spyOn(PgTaggableStore.prototype, 'addTag')
+      .mockRejectedValue(new Error('simulated pool deadline'));
+    try {
+      await expect(issues.createIssue({ title, topics: ['zero-cache'], createdBy: 'agA' })).rejects.toThrow(
+        'simulated pool deadline',
+      );
+    } finally {
+      spy.mockRestore();
+    }
+    const rows = await db.sql<{ issue_id: string }[]>`
+      SELECT issue_id FROM harness_shared.engineer_issues WHERE title = ${title}`;
+    expect(rows).toHaveLength(0);
+  });
+
+  it('still creates normally (and does not self-notify the author) once the writes succeed', async () => {
+    // CALIBRATION control: without this, both guards above would also pass if createIssue
+    // were simply broken and inserted nothing at all.
+    const title = `atomicity-probe-happy-${Date.now()}`;
+    const created = await issues.createIssue({ title, topics: ['zero-cache'], createdBy: 'agA' });
+    expect(created.id).toMatch(/^EI-/);
+    const rows = await db.sql<{ issue_id: string }[]>`
+      SELECT issue_id FROM harness_shared.engineer_issues WHERE title = ${title}`;
+    expect(rows).toHaveLength(1);
+    // The author is auto-subscribed INSIDE the txn now, i.e. BEFORE the fan-out runs, so
+    // author-exclusion must come from excludeId rather than from write ordering.
+    expect(await inboxOf('agA')).toHaveLength(0);
+  });
+
+  it('CONTROL: a commit-then-fail really does strand the row (the guards above are not vacuous)', async () => {
+    // NOT a test of createIssue. This reproduces the PRE-WI-8848 shape directly — commit a
+    // row in its own boundedOrgTxn, then fail afterwards — and asserts the row SURVIVES.
+    // It is the falsifiability control for the two rollback guards above: if this fixture
+    // discarded such a row anyway (an outer wrapping txn, an over-eager truncate), those
+    // guards would read green for the wrong reason and could never fail. Keeping a
+    // deliberately-wrong sequence here is cheaper, and safer, than mutating the shared
+    // tree to prove the same thing (see scripts/mutation-probe.sh for why).
+    const title = `atomicity-control-${Date.now()}`;
+    await expect(
+      (async () => {
+        await boundedOrgTxn(async (tx) => {
+          await tx`
+            INSERT INTO harness_shared.work_items
+              (workspace_id, feature_id, harness_slug, item_kind, title, status, created_ts, updated_ts)
+            VALUES ('default', ${'EI-CTRL-' + Date.now()}, '', 'bug', ${title}, 'open', ${Date.now()}, ${Date.now()})`;
+        });
+        throw new Error('simulated pool deadline');
+      })(),
+    ).rejects.toThrow('simulated pool deadline');
+    const rows = await db.sql<{ feature_id: string }[]>`
+      SELECT feature_id FROM harness_shared.work_items WHERE title = ${title}`;
+    expect(rows).toHaveLength(1); // committed before the failure ⇒ stranded. Exactly what the fix prevents.
   });
 });

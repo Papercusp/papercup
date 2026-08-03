@@ -28,6 +28,12 @@ import {
   UNREACHABLE_HIGH_WATERMARK,
   ENFORCING_TEST_RE,
   stripComments,
+  computeCoverage,
+  deriveScanScope,
+  workspaceOfPath,
+  parseRepoWideRegistrations,
+  ACKNOWLEDGED_PARTIAL_COVERAGE,
+  PARTIAL_COVERAGE_HIGH_WATERMARK,
   // @ts-expect-error — untyped .mjs guard script, imported for its pure helpers.
 } from '../../../../scripts/check-lint-guard-reachability.mjs';
 
@@ -234,6 +240,223 @@ describe('buildReachabilityCensus', () => {
   });
 });
 
+/* ── COVERAGE: enforced ≠ enforced EVERYWHERE (EI-19461064447747454) ──────────── */
+
+describe('workspaceOfPath', () => {
+  const dirs = ['apps/operator', 'packages/operator-core', 'libs/papercusp/packages/harness'];
+
+  it('attributes a file to its workspace', () => {
+    expect(workspaceOfPath('packages/operator-core/lib/x.ts', dirs)).toBe('packages/operator-core');
+  });
+
+  it('prefers the LONGEST matching prefix, so a nested workspace wins over its parent', () => {
+    // `libs/papercusp` is not itself a workspace here; the nested one must win rather
+    // than the first entry that happens to match.
+    expect(workspaceOfPath('libs/papercusp/packages/harness/src/a.ts', [...dirs, 'libs'])).toBe(
+      'libs/papercusp/packages/harness',
+    );
+  });
+
+  it('returns null for a path in no workspace, rather than guessing one', () => {
+    expect(workspaceOfPath('scripts/check-x.mjs', dirs)).toBeNull();
+  });
+
+  it('does not treat a name-prefix collision as containment', () => {
+    // `apps/operator-vite/...` must NOT be attributed to `apps/operator`.
+    expect(workspaceOfPath('apps/operator-vite/src/a.ts', dirs)).toBeNull();
+  });
+});
+
+describe('deriveScanScope', () => {
+  it('reads a declared bounded root array', () => {
+    const s = deriveScanScope("const SOURCE_ROOTS = ['apps/operator/lib', 'packages/agent-mcp/src'];");
+    expect(s.kind).toBe('bounded');
+    expect(s.roots).toEqual(['apps/operator/lib', 'packages/agent-mcp/src']);
+  });
+
+  it('detects a repo-wide enumeration via listTrackedFiles', () => {
+    expect(deriveScanScope('const { files } = listTrackedFiles(ROOT);').kind).toBe('repo-wide');
+  });
+
+  it("detects the git ARGV form, where the literal is 'ls-files' and never 'git ls-files'", () => {
+    // The regression this pins: matching the prose form `git ls-files` reported two
+    // genuinely repo-wide guards as having no detectable scan at all.
+    expect(deriveScanScope("execFileSync('git', ['ls-files', '*.test.ts'])").kind).toBe('repo-wide');
+  });
+
+  it('prefers bounded roots over a repo-wide call, because the roots FILTER it', () => {
+    const s = deriveScanScope(
+      "const SCAN_ROOTS = ['apps/operator/lib'];\nconst all = listTrackedFiles(ROOT);",
+    );
+    expect(s.kind).toBe('bounded');
+  });
+
+  it('classifies a diff-driven guard, which has no directory scope at all', () => {
+    expect(deriveScanScope("const filesArg = argv.find((a) => a.startsWith('--files='));").kind).toBe('diff-driven');
+  });
+
+  it('says undetermined rather than inventing a scope', () => {
+    expect(deriveScanScope('const port = 3170;').kind).toBe('undetermined');
+  });
+});
+
+describe('parseRepoWideRegistrations', () => {
+  const src = [
+    'const REPO_WIDE_INVARIANT_GUARDS = [',
+    "  { workspace: '@papercusp/operator-core', script: 'lint:chunk-safe' },",
+    "  { workspace: '@papercusp/operator-core', script: 'lint:partial-index-alignment' },",
+    '];',
+    "const other = { script: 'lint:not-registered' };",
+  ].join('\n');
+
+  it('parses the registered guards', () => {
+    expect([...parseRepoWideRegistrations(src)]).toEqual(['lint:chunk-safe', 'lint:partial-index-alignment']);
+  });
+
+  it('stops at the array literal, so an unrelated `script:` is not over-credited', () => {
+    // Over-crediting here would silently mark a partially-covered guard as full — the
+    // same false-green this whole axis exists to remove.
+    expect(parseRepoWideRegistrations(src).has('lint:not-registered')).toBe(false);
+  });
+
+  it('returns an empty set when the block is absent, never a crash', () => {
+    expect(parseRepoWideRegistrations('const x = 1;').size).toBe(0);
+  });
+});
+
+describe('computeCoverage', () => {
+  const dirs = ['apps/operator', 'packages/operator-core'];
+  const testRow = { name: 'lint:x', tier: 'test', blocking: true, impls: ['scripts/check-x.mjs'] };
+
+  it('credits a gate leg with full coverage — it runs unconditionally', () => {
+    const c = computeCoverage({ row: { ...testRow, tier: 'gate' }, workspaceDirs: dirs });
+    expect(c.verdict).toBe('full');
+  });
+
+  it('reports a repo-wide guard enforced from ONE workspace as partial (the WI-9434 shape)', () => {
+    const c = computeCoverage({
+      row: testRow,
+      enforcingTestPaths: ['packages/operator-core/lib/x.test.ts'],
+      workspaceDirs: dirs,
+      implSource: 'listTrackedFiles(ROOT)',
+    });
+    expect(c.verdict).toBe('partial');
+    expect(c.reason).toMatch(/packages\/operator-core/);
+  });
+
+  it('counts covered vs scanned roots for a bounded guard', () => {
+    const c = computeCoverage({
+      row: testRow,
+      enforcingTestPaths: ['packages/operator-core/lib/x.test.ts'],
+      workspaceDirs: dirs,
+      implSource: "const SOURCE_ROOTS = ['packages/operator-core/lib', 'apps/operator/lib'];",
+    });
+    expect(c.verdict).toBe('partial');
+    expect(c.coveredRoots).toEqual(['packages/operator-core/lib']);
+    expect(c.roots).toHaveLength(2);
+  });
+
+  it('does NOT flag a guard whose every scanned root lies inside its enforcing workspace', () => {
+    // The false-positive direction. Flagging this would send someone to "fix" a guard
+    // that is already fully covered.
+    const c = computeCoverage({
+      row: testRow,
+      enforcingTestPaths: ['packages/operator-core/lib/x.test.ts'],
+      workspaceDirs: dirs,
+      implSource: "const SOURCE_ROOTS = ['packages/operator-core/lib'];",
+    });
+    expect(c.verdict).toBe('full');
+  });
+
+  it('treats a REPO_WIDE_INVARIANT_GUARDS registration as full coverage', () => {
+    const c = computeCoverage({
+      row: testRow,
+      enforcingTestPaths: ['packages/operator-core/lib/x.test.ts'],
+      workspaceDirs: dirs,
+      implSource: 'listTrackedFiles(ROOT)',
+      repoWideRegistered: new Set(['lint:x']),
+    });
+    expect(c.verdict).toBe('full');
+  });
+
+  it('reports undetermined — never full — when the scan shape is not comparable', () => {
+    const c = computeCoverage({
+      row: testRow,
+      enforcingTestPaths: ['packages/operator-core/lib/x.test.ts'],
+      workspaceDirs: dirs,
+      implSource: 'const port = 3170;',
+    });
+    expect(c.verdict).toBe('undetermined');
+  });
+
+  it('does not assume a chained guard is covered by its unmeasured runner', () => {
+    expect(computeCoverage({ row: { ...testRow, tier: 'chained' }, workspaceDirs: dirs }).verdict).toBe(
+      'undetermined',
+    );
+  });
+
+  it('says not-enforced for a guard nothing runs, rather than partial', () => {
+    expect(computeCoverage({ row: { ...testRow, blocking: false }, workspaceDirs: dirs }).verdict).toBe(
+      'not-enforced',
+    );
+  });
+});
+
+describe('buildReachabilityCensus — the coverage axis is additive', () => {
+  it('computes NO coverage when the caller supplies none, rather than defaulting to full', () => {
+    const c = buildReachabilityCensus({
+      scripts: { 'lint:x': 'node scripts/check-x.mjs' },
+      corpora: corpora({ gate: "'lint:x'" }),
+    });
+    expect(c.rows[0].coverage).toBeUndefined();
+    expect(c.partiallyCovered).toEqual([]);
+  });
+
+  it('surfaces a partially-covered guard once coverage inputs are supplied', () => {
+    const c = buildReachabilityCensus({
+      scripts: { 'lint:x': 'node scripts/check-x.mjs' },
+      corpora: corpora({ test: "execFileSync('node', ['scripts/check-x.mjs'])" }),
+      coverage: {
+        enforcingTests: [
+          { path: 'packages/operator-core/lib/x.test.ts', text: "execFileSync('node', ['scripts/check-x.mjs'])" },
+        ],
+        workspaceDirs: ['packages/operator-core', 'apps/operator'],
+        implSources: new Map([['scripts/check-x.mjs', 'listTrackedFiles(ROOT)']]),
+        repoWideRegistered: new Set(),
+      },
+    });
+    expect(c.partiallyCovered.map((r: { name: string }) => r.name)).toEqual(['lint:x']);
+  });
+
+  /* ── permanent WRONG-IMPLEMENTATION control ────────────────────────────────
+   * The bug this axis fixes was not a crash — it was a TRUE statement read as a
+   * stronger one. Without this control, every assertion above also passes on the
+   * old per-guard boolean, which called the WI-9434 guard "enforced" while three of
+   * its four scanned roots had no enforcement at all. */
+
+  it('CONTROL: the per-GUARD boolean calls a partially-covered guard fully enforced', () => {
+    const row = { name: 'lint:x', tier: 'test', blocking: true, impls: ['scripts/check-x.mjs'] };
+    const perGuardBoolean = (r: { blocking: boolean }) => r.blocking;
+
+    // The old model says this guard is enforced, full stop …
+    expect(perGuardBoolean(row)).toBe(true);
+    // … while the coverage axis names what that hides.
+    const c = computeCoverage({
+      row,
+      enforcingTestPaths: ['packages/operator-core/lib/x.test.ts'],
+      workspaceDirs: ['packages/operator-core', 'apps/operator'],
+      implSource: 'listTrackedFiles(ROOT)',
+    });
+    expect(c.verdict).toBe('partial');
+  });
+
+  it('CALIBRATION: the coverage axis still returns full for genuinely full coverage', () => {
+    // Without this, the control above would also pass on an implementation that
+    // reported EVERY guard as partial.
+    expect(computeCoverage({ row: { name: 'lint:x', tier: 'gate', blocking: true, impls: [] } }).verdict).toBe('full');
+  });
+});
+
 describe('the repository itself (real-tree assertion)', () => {
   // This block is what makes THIS guard enforced rather than merely logic-tested —
   // see the file header. It executes the real checker over the real tree.
@@ -261,5 +484,25 @@ describe('the repository itself (real-tree assertion)', () => {
     for (const [name, reason] of ACKNOWLEDGED_UNREACHABLE) {
       expect(String(reason).length, `${name} needs a stated reason`).toBeGreaterThan(10);
     }
+  });
+
+  it('keeps the partial-coverage set at or under its watermark', () => {
+    // Shrink-only, like its sibling. Paying one down means REGISTERING the guard in
+    // REPO_WIDE_INVARIANT_GUARDS, never appending here.
+    expect(ACKNOWLEDGED_PARTIAL_COVERAGE.size).toBeLessThanOrEqual(PARTIAL_COVERAGE_HIGH_WATERMARK);
+  });
+
+  it('gives every acknowledged partial-coverage guard a stated reason', () => {
+    for (const [name, reason] of ACKNOWLEDGED_PARTIAL_COVERAGE) {
+      expect(String(reason).length, `${name} needs a stated reason`).toBeGreaterThan(10);
+    }
+  });
+
+  it('states the coverage caveat in the ordinary PASS output, not only on failure', () => {
+    // The whole defect was a number quoted without its qualifier: "68/82 enforced" read
+    // as "the tree is protected". The caveat has to reach the reader of the NUMBER.
+    const out = execFileSync('node', [SCRIPT], { cwd: REPO_ROOT, encoding: 'utf-8' });
+    expect(out).toMatch(/enforced over only PART of what they scan/);
+    expect(out).toMatch(/per-GUARD boolean, never a per-SCOPE one/);
   });
 });

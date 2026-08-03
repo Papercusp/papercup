@@ -505,6 +505,91 @@ export function suggestTypecheckGate(root: string, file: string): {
     command: string | null;
 } | null;
 /**
+ * EI-19461218392796337 — the repo-relative prefixes ONE sibling gate module actually compiles.
+ *
+ * Read from the module's REAL exports, never re-derived from its source text: a static mirror of
+ * a value the module already exports is exactly the drift-prone shape these gates keep getting
+ * bitten by, and the whole defect this closes is a conclusion drawn from a partial view.
+ *
+ * Two declaration forms, in priority order:
+ *  - `GATE_COVERAGE` — an explicit prefix list (or a thunk returning one), for FAN-OUT gates
+ *    whose coverage is a discovered set rather than a single `-p` project.
+ *  - `TSC_COMMAND` — the per-project constant the four single-project CLIs already export.
+ *
+ * @param {Record<string, unknown>} mod An imported gate module.
+ * @returns {string[] | null} Prefixes (trailing slash, `''` = whole repo), or `null` when this
+ *   module declares nothing parseable — which callers MUST treat as "unknown", never "covers
+ *   nothing" (see `discoverSiblingTypecheckGates`).
+ */
+export function coveragePrefixesFromGateModule(mod: Record<string, unknown>): string[] | null;
+/**
+ * EI-19461218392796337 — every `lint:tsc*` gate declared in the root package.json, with the
+ * prefixes each one really covers.
+ *
+ * ## Why this exists
+ *
+ * The uncovered-files banner used to conclude, from two things it could see (the file is outside
+ * MY project; its workspace declares no `typecheck` script), a universal it could not:
+ * "NO typecheck gate covers these — nothing local will ever catch a type error here." The
+ * per-project SIBLING gates are a third case it never consulted, and being covered by a sibling
+ * while declaring no workspace script is the NORMAL arrangement in this repo — so the sentence
+ * was wrong in the common case, not a rare one.
+ *
+ * Measured cost of that one sentence (2026-08-03): it talked an agent out of
+ * `npm run lint:tsc:operator` — which covers the file exactly — into hand-grepping a raw
+ * 579-error `tsc` run, where they classified 5 type errors they had just introduced into
+ * `green-checkpoint.test.ts` as a pre-existing file-wide pattern and shipped them. The file it
+ * declared uncoverable implements the fleet's release gate.
+ *
+ * ## The discipline this function has to keep
+ *
+ * A wider view is still a partial view. Every gate that cannot be resolved is returned in
+ * `unresolved` WITH a reason, so the banner can say "none found" instead of "none exists" — a
+ * fix that replaced one confident universal with a slightly better-informed confident universal
+ * would be the same defect wearing a bigger hat. Symmetrically, coverage is only ever claimed
+ * from a gate's own declared prefixes, so this never routes a caller to a gate that would not in
+ * fact check their file.
+ *
+ * Discovery, not a roster: a new `lint:tsc:*` script is picked up the moment it lands.
+ *
+ * @param {string} root Absolute repo root.
+ * @param {{exclude?: string[]}} [opts] npm-script names to skip (e.g. the gate doing the asking).
+ * @returns {Promise<{gates: {npmScript: string, prefixes: string[]}[], unresolved: {npmScript: string, reason: string}[], rosterReadable: boolean}>}
+ *   `rosterReadable: false` means the root package.json itself could not be read — the roster is
+ *   entirely unknown, so NO absence claim of any strength is available.
+ */
+export function discoverSiblingTypecheckGates(root: string, { exclude }?: {
+    exclude?: string[];
+}): Promise<{
+    gates: {
+        npmScript: string;
+        prefixes: string[];
+    }[];
+    unresolved: {
+        npmScript: string;
+        reason: string;
+    }[];
+    rosterReadable: boolean;
+}>;
+/**
+ * The MOST SPECIFIC sibling gate covering `file`, or `null`.
+ *
+ * Longest matching prefix wins, so a file under `libs/papercusp/packages/orchestrator/` routes to
+ * `lint:tsc:orchestrator` rather than the broader `lint:tsc:papercusp-libs` fan-out that also
+ * contains it — the narrower gate is the faster, more attributable answer.
+ *
+ * @param {{npmScript: string, prefixes: string[]}[]} gates
+ * @param {string} file Repo-relative path.
+ * @returns {{npmScript: string, prefix: string} | null}
+ */
+export function gateCoveringFile(gates: {
+    npmScript: string;
+    prefixes: string[];
+}[], file: string): {
+    npmScript: string;
+    prefix: string;
+} | null;
+/**
  * The banner for `--files=` entries this run cannot judge.
  *
  * Written to be impossible to mistake for a pass: the failure this closes is that a scoped run
@@ -512,14 +597,23 @@ export function suggestTypecheckGate(root: string, file: string): {
  * indistinguishable from a real green, which is the same silent-zero shape `build:typecheck`
  * already refuses (it will not report a clean run that checked zero files).
  *
- * @param {{label: string, uncovered: string[], suggestions: Map<string, ReturnType<typeof suggestTypecheckGate>>, fatal: boolean}} opts
+ * @param {{label: string, uncovered: string[], suggestions: Map<string, ReturnType<typeof suggestTypecheckGate>>, fatal: boolean, siblingGates?: {npmScript: string, prefixes: string[]}[], unresolvedGates?: {npmScript: string, reason: string}[], rosterReadable?: boolean}} opts
  * @returns {string[]} console lines.
  */
-export function formatUncoveredFilesBanner({ label, uncovered, suggestions, fatal }: {
+export function formatUncoveredFilesBanner({ label, uncovered, suggestions, fatal, siblingGates, unresolvedGates, rosterReadable, }: {
     label: string;
     uncovered: string[];
     suggestions: Map<string, ReturnType<typeof suggestTypecheckGate>>;
     fatal: boolean;
+    siblingGates?: {
+        npmScript: string;
+        prefixes: string[];
+    }[];
+    unresolvedGates?: {
+        npmScript: string;
+        reason: string;
+    }[];
+    rosterReadable?: boolean;
 }): string[];
 /**
  * Run the full CLI gate for one project and `process.exit(...)` with its verdict — the shared
@@ -619,7 +713,7 @@ export function runTscBaselineGate({ root, tscCommand, baselineFile, label, argv
     argv: any;
     countField?: string | undefined;
     foreignBaselines?: never[] | undefined;
-}): void;
+}): Promise<void>;
 /**
  * Per-file quote cap for a REGRESSED file, deliberately larger than the new-file cap of 3.
  *

@@ -982,6 +982,117 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       expect(stored).toContain('- ? Y holds');
     });
 
+    /**
+     * EI-19460631385508515: the field's own description promised "a list merges by claim
+     * text", which reads as a UNION — so the natural way to mark ONE claim verified is to
+     * send just that row. `normalizeCheckEntries` iterates only the INCOMING rows (prior
+     * is a lookup for inheriting recheck/verified/sinceMs), so every stored claim left out
+     * is dropped. Replace-with-inheritance is the right semantics — it is the only way to
+     * retire a stale check — but it was documented as its opposite, and the loss left no
+     * trace beyond a `checks` count the caller would have had to record beforehand.
+     *
+     * Reported against the LIVE operator, which was serving pre-fix code (deployed
+     * 5b898b7b, gate red 3 reds deep) — so the reporter's own numbers were confounded by
+     * that deploy gap and could not discriminate this from the already-fixed body-destroy
+     * bug. These tests pin the behavior against the CURRENT tree instead.
+     */
+    describe('EI-19460631385508515: a supplied `checks` list REPLACES the stored set — and says what it dropped', () => {
+      it('DROPS stored claims the supplied list omits, and names them in checksDropped', async () => {
+        withPrior(null);
+        await one({
+          id: 'WI-7',
+          checkpoint: 'the body worth keeping',
+          checks: [
+            { claim: 'A holds', recheck: 'probe A' },
+            { claim: 'B holds', recheck: 'probe B' },
+            { claim: 'C holds', recheck: 'probe C' },
+          ],
+        });
+        const prior = await lastStored();
+        expect(prior).toContain('- ? A holds');
+
+        // The reporter's exact intent: touch ONE row, leave the rest alone.
+        withPrior(prior);
+        const r = (await one({
+          id: 'WI-7',
+          checks: [{ claim: 'A holds', recheck: 'probe A', verified: 'ran it, holds' }],
+        })) as { ok: boolean; checks: number; checksDropped?: string[]; checksDroppedNote?: string };
+
+        expect(r.ok).toBe(true);
+        // The body still survives (that is EI-19447043119380534's fix, still holding)...
+        const stored = await lastStored();
+        expect(stored).toContain('the body worth keeping');
+        // ...but B and C are genuinely gone. This is the contract, now stated out loud.
+        expect(stored).toContain('- ✓ A holds');
+        expect(stored).not.toContain('B holds');
+        expect(stored).not.toContain('C holds');
+        expect(r.checks).toBe(1);
+        // The loss is REPORTED rather than silent — the whole point of the fix.
+        expect(r.checksDropped).toEqual(['B holds', 'C holds']);
+        expect(r.checksDroppedNote).toContain('REPLACES');
+      });
+
+      it('a re-sent claim INHERITS its stored evidence, so replace-semantics never loses a ✓ you kept', async () => {
+        withPrior(null);
+        await one({
+          id: 'WI-7',
+          checkpoint: 'body',
+          checks: [{ claim: 'A holds', recheck: 'probe A', verified: 'observed at 19:00Z' }],
+        });
+        const prior = await lastStored();
+
+        // Re-sent with claim text only — the evidence must ride along, not be erased.
+        withPrior(prior);
+        const r = (await one({ id: 'WI-7', checks: [{ claim: 'A holds' }] })) as {
+          ok: boolean;
+          checksDropped?: string[];
+        };
+        expect(r.ok).toBe(true);
+        const stored = await lastStored();
+        expect(stored).toContain('- ✓ A holds');
+        expect(stored).toContain('observed at 19:00Z');
+        // Nothing was dropped, so the key is absent entirely (shape unchanged).
+        expect(r.checksDropped).toBeUndefined();
+      });
+
+      it('OMITTING `checks` entirely still carries every row forward and reports no drop', async () => {
+        withPrior(null);
+        await one({
+          id: 'WI-7',
+          checkpoint: 'body',
+          checks: [
+            { claim: 'A holds', recheck: 'probe A' },
+            { claim: 'B holds', recheck: 'probe B' },
+          ],
+        });
+        const prior = await lastStored();
+
+        withPrior(prior);
+        const r = (await one({ id: 'WI-7', checkpoint: 'a rewritten body' })) as {
+          ok: boolean;
+          checks: number;
+          checksDropped?: string[];
+        };
+        expect(r.ok).toBe(true);
+        const stored = await lastStored();
+        expect(stored).toContain('- ? A holds');
+        expect(stored).toContain('- ? B holds');
+        expect(r.checks).toBe(2);
+        expect(r.checksDropped).toBeUndefined();
+      });
+
+      it('an explicit clear (checks: []) drops every row and says so', async () => {
+        withPrior(null);
+        await one({ id: 'WI-7', checkpoint: 'body', checks: [{ claim: 'A holds', recheck: 'probe A' }] });
+        const prior = await lastStored();
+
+        withPrior(prior);
+        const r = (await one({ id: 'WI-7', checks: [] })) as { ok: boolean; checksDropped?: string[] };
+        expect(r.ok).toBe(true);
+        expect(r.checksDropped).toEqual(['A holds']);
+      });
+    });
+
     it('append mode folds the prior note WITHOUT emitting a second ## Checks section', async () => {
       // append joins the whole prior note — rendered Checks section and all — so the
       // transform has to strip it before re-attaching, or the note grows one section

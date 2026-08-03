@@ -1482,6 +1482,23 @@ regression there is invisible to *both* routine checks and first reds the
 **green-checkpoint**. Editing outside operator-core? Also typecheck that workspace —
 **`build:typecheck { project: "<workspace>" }`** (EI-18719561823587590).
 
+> ✅ **Editing `apps/operator` — including `lib/release/green-checkpoint.ts` — use
+> `npm run lint:tsc:operator -- --files=<the files you edited>`.** It is the same per-file
+> baseline gate as `lint:tsc` (`scripts/lint-tsc-operator.mjs` + `apps/operator/.tsc-baseline.json`,
+> ratchet-only-down), added 2026-08-02, and it attributes correctly — it reports which of a
+> file's errors PRE-DATE your change rather than blaming you for the standing baseline.
+>
+> ⚠ **Do NOT use `lint:tsc:operator-vite` for these files, and do NOT believe it when it says
+> nothing covers them.** It refuses with *"NO typecheck gate covers these — nothing local will
+> ever catch a type error here"*, which is FALSE: it only knows its own project plus whether the
+> workspace declares a `typecheck` npm script, and never checks SIBLING gates like
+> `lint:tsc:operator`. Measured 2026-08-03 (EI-19461218392796337): an agent trusted that
+> sentence, fell back to hand-grepping a raw `tsc -p apps/operator/tsconfig.json` against a
+> 579-error baseline, concluded 5 type errors it had just introduced into
+> `green-checkpoint.test.ts` were "pre-existing", and shipped them — `lint:tsc:operator` flagged
+> them immediately (`18 of this file's 23 error(s) PRE-DATE your change`, `exit=1 regressed`).
+> The file it wrongly declared uncoverable implements the fleet's release gate.
+
 > ⚠ **Do NOT reach for `npm run --workspace <dir> typecheck` as the fallback — most workspaces
 > have no such script and it dead-ends with `npm error Missing script: "typecheck"`.** Measured
 > 2026-08-03: of 53 `libs/generic/*` packages with a tsconfig, only 7 declared one. The trap is

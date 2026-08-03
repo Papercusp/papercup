@@ -66,13 +66,15 @@ describe('mergeClaudeHookSettings — full install into empty settings', () => {
       `${DEST}/posttooluse-required-field-strand-nudge.mjs`,
       `${DEST}/posttooluse-ts-parse-nudge.mjs`,
       `${DEST}/posttooluse-migration-fixture-drift-nudge.mjs`,
+      `${DEST}/posttooluse-tool-prompt-weight-nudge.mjs`,
       `${DEST}/ask-gate-mirror.sh`,
     ]);
     expect(cfg.hooks.PostToolUse[1].matcher).toBe('*'); // activity (+ coord fold)
     expect(cfg.hooks.PostToolUse[3].matcher).toBe('Edit|Write|MultiEdit'); // strand nudge
     expect(cfg.hooks.PostToolUse[4].matcher).toBe('Edit|Write|MultiEdit'); // ts-parse nudge
     expect(cfg.hooks.PostToolUse[5].matcher).toBe('Edit|Write|MultiEdit'); // migration-fixture-drift nudge
-    expect(cfg.hooks.PostToolUse[6].matcher).toBe('AskUserQuestion|ExitPlanMode');
+    expect(cfg.hooks.PostToolUse[6].matcher).toBe('Edit|Write|MultiEdit'); // tool-prompt-weight nudge
+    expect(cfg.hooks.PostToolUse[7].matcher).toBe('AskUserQuestion|ExitPlanMode');
 
     // Session events + Stop.
     expect(commandsFor(cfg, 'SessionStart')).toEqual([`${DEST}/lifecycle-report.sh`]);

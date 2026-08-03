@@ -19,6 +19,7 @@
 import { execSync, execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { recordStandingReds, DWELL_SEC } from './tsc-red-observations.mjs';
 
 /**
@@ -1070,6 +1071,156 @@ export function suggestTypecheckGate(root, file) {
 }
 
 /**
+ * EI-19461218392796337 — the repo-relative prefixes ONE sibling gate module actually compiles.
+ *
+ * Read from the module's REAL exports, never re-derived from its source text: a static mirror of
+ * a value the module already exports is exactly the drift-prone shape these gates keep getting
+ * bitten by, and the whole defect this closes is a conclusion drawn from a partial view.
+ *
+ * Two declaration forms, in priority order:
+ *  - `GATE_COVERAGE` — an explicit prefix list (or a thunk returning one), for FAN-OUT gates
+ *    whose coverage is a discovered set rather than a single `-p` project.
+ *  - `TSC_COMMAND` — the per-project constant the four single-project CLIs already export.
+ *
+ * @param {Record<string, unknown>} mod An imported gate module.
+ * @returns {string[] | null} Prefixes (trailing slash, `''` = whole repo), or `null` when this
+ *   module declares nothing parseable — which callers MUST treat as "unknown", never "covers
+ *   nothing" (see `discoverSiblingTypecheckGates`).
+ */
+export function coveragePrefixesFromGateModule(mod) {
+  const raw = typeof mod?.GATE_COVERAGE === 'function' ? mod.GATE_COVERAGE() : mod?.GATE_COVERAGE;
+  if (Array.isArray(raw)) {
+    const prefixes = raw
+      .filter((p) => typeof p === 'string')
+      .map((p) => (p === '' || p.endsWith('/') ? p : `${p}/`));
+    return prefixes.length > 0 ? prefixes : null;
+  }
+  if (typeof mod?.TSC_COMMAND === 'string') {
+    const prefix = projectPrefixFromTscCommand(mod.TSC_COMMAND);
+    return prefix === null ? null : [prefix];
+  }
+  return null;
+}
+
+/**
+ * EI-19461218392796337 — every `lint:tsc*` gate declared in the root package.json, with the
+ * prefixes each one really covers.
+ *
+ * ## Why this exists
+ *
+ * The uncovered-files banner used to conclude, from two things it could see (the file is outside
+ * MY project; its workspace declares no `typecheck` script), a universal it could not:
+ * "NO typecheck gate covers these — nothing local will ever catch a type error here." The
+ * per-project SIBLING gates are a third case it never consulted, and being covered by a sibling
+ * while declaring no workspace script is the NORMAL arrangement in this repo — so the sentence
+ * was wrong in the common case, not a rare one.
+ *
+ * Measured cost of that one sentence (2026-08-03): it talked an agent out of
+ * `npm run lint:tsc:operator` — which covers the file exactly — into hand-grepping a raw
+ * 579-error `tsc` run, where they classified 5 type errors they had just introduced into
+ * `green-checkpoint.test.ts` as a pre-existing file-wide pattern and shipped them. The file it
+ * declared uncoverable implements the fleet's release gate.
+ *
+ * ## The discipline this function has to keep
+ *
+ * A wider view is still a partial view. Every gate that cannot be resolved is returned in
+ * `unresolved` WITH a reason, so the banner can say "none found" instead of "none exists" — a
+ * fix that replaced one confident universal with a slightly better-informed confident universal
+ * would be the same defect wearing a bigger hat. Symmetrically, coverage is only ever claimed
+ * from a gate's own declared prefixes, so this never routes a caller to a gate that would not in
+ * fact check their file.
+ *
+ * Discovery, not a roster: a new `lint:tsc:*` script is picked up the moment it lands.
+ *
+ * @param {string} root Absolute repo root.
+ * @param {{exclude?: string[]}} [opts] npm-script names to skip (e.g. the gate doing the asking).
+ * @returns {Promise<{gates: {npmScript: string, prefixes: string[]}[], unresolved: {npmScript: string, reason: string}[], rosterReadable: boolean}>}
+ *   `rosterReadable: false` means the root package.json itself could not be read — the roster is
+ *   entirely unknown, so NO absence claim of any strength is available.
+ */
+export async function discoverSiblingTypecheckGates(root, { exclude = [] } = {}) {
+  /** @type {{npmScript: string, prefixes: string[]}[]} */
+  const gates = [];
+  /** @type {{npmScript: string, reason: string}[]} */
+  const unresolved = [];
+
+  let pkg;
+  try {
+    pkg = JSON.parse(readFileSync(resolve(root, 'package.json'), 'utf-8'));
+  } catch (err) {
+    return { gates, unresolved, rosterReadable: false };
+  }
+
+  for (const [npmScript, command] of Object.entries(pkg?.scripts ?? {})) {
+    if (!/^lint:tsc(?::|$)/.test(npmScript)) continue;
+    if (exclude.includes(npmScript)) continue;
+
+    const entry = /node\s+(\S+\.mjs)/.exec(String(command ?? ''));
+    if (!entry) {
+      unresolved.push({ npmScript, reason: 'npm script has no `node <script>.mjs` entrypoint' });
+      continue;
+    }
+    const scriptPath = resolve(root, entry[1]);
+    if (!existsSync(scriptPath)) {
+      unresolved.push({ npmScript, reason: `entrypoint ${entry[1]} does not exist` });
+      continue;
+    }
+
+    let mod;
+    try {
+      // Safe to import: every gate CLI guards its `main()` behind an
+      // `import.meta.url === pathToFileURL(process.argv[1]).href` check, so importing one reads
+      // its declarations without running it.
+      mod = await import(pathToFileURL(scriptPath).href);
+    } catch (err) {
+      unresolved.push({
+        npmScript,
+        reason: `could not import ${entry[1]}: ${String(err?.message ?? err)}`,
+      });
+      continue;
+    }
+
+    const prefixes = coveragePrefixesFromGateModule(mod);
+    if (prefixes === null) {
+      unresolved.push({
+        npmScript,
+        reason: `${entry[1]} exports neither GATE_COVERAGE nor a parseable TSC_COMMAND`,
+      });
+      continue;
+    }
+    gates.push({ npmScript, prefixes });
+  }
+
+  return { gates, unresolved, rosterReadable: true };
+}
+
+/**
+ * The MOST SPECIFIC sibling gate covering `file`, or `null`.
+ *
+ * Longest matching prefix wins, so a file under `libs/papercusp/packages/orchestrator/` routes to
+ * `lint:tsc:orchestrator` rather than the broader `lint:tsc:papercusp-libs` fan-out that also
+ * contains it — the narrower gate is the faster, more attributable answer.
+ *
+ * @param {{npmScript: string, prefixes: string[]}[]} gates
+ * @param {string} file Repo-relative path.
+ * @returns {{npmScript: string, prefix: string} | null}
+ */
+export function gateCoveringFile(gates, file) {
+  const target = String(file).replace(/^\.\//, '');
+  /** @type {{npmScript: string, prefix: string} | null} */
+  let best = null;
+  for (const gate of gates ?? []) {
+    for (const prefix of gate.prefixes ?? []) {
+      if (prefix !== '' && !target.startsWith(prefix)) continue;
+      if (best === null || prefix.length > best.prefix.length) {
+        best = { npmScript: gate.npmScript, prefix };
+      }
+    }
+  }
+  return best;
+}
+
+/**
  * The banner for `--files=` entries this run cannot judge.
  *
  * Written to be impossible to mistake for a pass: the failure this closes is that a scoped run
@@ -1077,10 +1228,18 @@ export function suggestTypecheckGate(root, file) {
  * indistinguishable from a real green, which is the same silent-zero shape `build:typecheck`
  * already refuses (it will not report a clean run that checked zero files).
  *
- * @param {{label: string, uncovered: string[], suggestions: Map<string, ReturnType<typeof suggestTypecheckGate>>, fatal: boolean}} opts
+ * @param {{label: string, uncovered: string[], suggestions: Map<string, ReturnType<typeof suggestTypecheckGate>>, fatal: boolean, siblingGates?: {npmScript: string, prefixes: string[]}[], unresolvedGates?: {npmScript: string, reason: string}[], rosterReadable?: boolean}} opts
  * @returns {string[]} console lines.
  */
-export function formatUncoveredFilesBanner({ label, uncovered, suggestions, fatal }) {
+export function formatUncoveredFilesBanner({
+  label,
+  uncovered,
+  suggestions,
+  fatal,
+  siblingGates = [],
+  unresolvedGates = [],
+  rosterReadable = true,
+}) {
   const lines = [''];
   lines.push(
     fatal
@@ -1098,9 +1257,20 @@ export function formatUncoveredFilesBanner({ label, uncovered, suggestions, fata
     if (s?.command) {
       if (!byCommand.has(s.command)) byCommand.set(s.command, []);
       byCommand.get(s.command).push(file);
-    } else {
-      ungated.push({ file, workspaceDir: s?.workspaceDir ?? null });
+      continue;
     }
+    // EI-19461218392796337 — before concluding anything is uncovered, ask the SIBLING gates.
+    // A workspace that declares no `typecheck` script but IS covered by a per-project
+    // `lint:tsc:*` gate is the normal arrangement here, and it was the case this banner used to
+    // declare permanently uncheckable.
+    const sibling = gateCoveringFile(siblingGates, file);
+    if (sibling) {
+      const command = `npm run ${sibling.npmScript}`;
+      if (!byCommand.has(command)) byCommand.set(command, []);
+      byCommand.get(command).push(file);
+      continue;
+    }
+    ungated.push({ file, workspaceDir: s?.workspaceDir ?? null });
   }
 
   for (const [command, files] of byCommand) {
@@ -1108,10 +1278,31 @@ export function formatUncoveredFilesBanner({ label, uncovered, suggestions, fata
     for (const f of files) lines.push(`     - ${f}`);
   }
   if (ungated.length) {
-    lines.push(`   ⚠ NO typecheck gate covers these — nothing local will ever catch a type error here:`);
+    // Deliberately NOT "no gate covers these / nothing local will ever catch a type error here".
+    // That was a universal claimed from a partial view, and it cost an agent a shipped regression
+    // by arguing them out of the gate that did cover their file. State what was SEARCHED and what
+    // could not be seen; let the reader draw the conclusion the evidence actually supports.
+    lines.push(`   ⚠ No typecheck gate FOUND for these:`);
     for (const u of ungated) {
       lines.push(`     - ${u.file}${u.workspaceDir ? `   (workspace ${u.workspaceDir} declares no \`typecheck\` script)` : ''}`);
     }
+    const blind = !rosterReadable || unresolvedGates.length > 0;
+    if (blind) {
+      lines.push(
+        `     ⚠ …and the search was INCOMPLETE, so this is "none found", NOT "none exists":`,
+      );
+      if (!rosterReadable) {
+        lines.push(`       · the root package.json could not be read — no gate roster available`);
+      }
+      for (const g of unresolvedGates) lines.push(`       · ${g.npmScript} — ${g.reason}`);
+    } else {
+      lines.push(
+        `     Searched: every \`lint:tsc*\` gate in package.json, plus each file's own workspace \`typecheck\` script.`,
+      );
+    }
+    lines.push(
+      `     To check them by hand:  npx tsc --noEmit -p <workspace>/tsconfig.json  (NOT \`-p .\` — there is no root tsconfig.json)`,
+    );
   }
   lines.push('');
   return lines;
@@ -1235,7 +1426,7 @@ export function formatLintTscResultMarker({ label, scope, code }) {
   return `LINT_TSC_RESULT label=${label} scope=${scope} exit=${code} status=${status}`;
 }
 
-export function runTscBaselineGate({
+export async function runTscBaselineGate({
   root,
   tscCommand,
   baselineFile,
@@ -1305,7 +1496,19 @@ export function runTscBaselineGate({
       if (uncovered.length > 0) {
         const suggestions = new Map(uncovered.map((f) => [f, suggestTypecheckGate(root, f)]));
         const fatal = covered.length === 0;
-        for (const line of formatUncoveredFilesBanner({ label, uncovered, suggestions, fatal })) {
+        // EI-19461218392796337 — resolve against the SIBLING lint:tsc* gates before saying
+        // anything about coverage. Only reached on the error path, so the imports cost nothing
+        // on a normal run.
+        const { gates, unresolved, rosterReadable } = await discoverSiblingTypecheckGates(root);
+        for (const line of formatUncoveredFilesBanner({
+          label,
+          uncovered,
+          suggestions,
+          fatal,
+          siblingGates: gates,
+          unresolvedGates: unresolved,
+          rosterReadable,
+        })) {
           console.error(line);
         }
         // Some covered, some not: the covered verdict below is still TRUE and worth having, so

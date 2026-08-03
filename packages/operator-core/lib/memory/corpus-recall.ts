@@ -110,11 +110,35 @@ export interface SelectCorpusInput {
   /** The retrieval query — the term source for the overlap guard + the handle. */
   queryText: string;
   /**
-   * Drop hits from THIS session. Its turns are already in the agent's context,
-   * so surfacing them is a pure echo — the same thing ambient-push's novelty
-   * filter exists to prevent.
+   * Drop hits from the CALLER'S OWN sessions — the whole carry-respawn chain,
+   * not just the live one. Resolved in `corpus-recall-io` from the caller's
+   * coord ownerId (`session_turns.owner`); this core stays pure and is handed
+   * the finished set.
+   *
+   * ⚠ A SET, and OWNER-WIDE, for two measured reasons (EI-19460887729945170):
+   *
+   * 1. THE SINGLE-ID FORM WAS INERT IN PRODUCTION. Both injection ports pass
+   *    `session.sessionId`, which is documented as the per-agent coord ownerId
+   *    `su-xxxx…` (claim-port.ts) — never a native transcript uuid, which is
+   *    what `sessionIdOfHit` returns. The two identity spaces cannot compare
+   *    equal, so this filter never fired on a real turn. Measured 2026-08-03:
+   *    `self-session drops: 0`, with 3 of 6 admitted lines being the caller's
+   *    own sessions.
+   * 2. ONE SESSION IS THE WRONG UNIT ANYWAY. An agent's identity outlives a
+   *    native session: after a compaction or carry-respawn its EARLIER turns
+   *    carry different uuids, stop being "self", and — being the densest
+   *    documents in the corpus for whatever it is working on — rank above the
+   *    durable answer and consume the budget. Measured on the same query:
+   *    excluding only the newest session freed a slot that went to ANOTHER of
+   *    the caller's sessions, while `WI-6512` stayed dropped `cap-exhausted`.
+   *
+   * Dropping (not merely deprioritising) is right because the pointer would be
+   * strictly redundant: every wake already delivers the OWNER-scoped
+   * `sessions:search { session:'self' }` recall pointer, which covers this
+   * session and every prior one — a superset of what a per-session corpus line
+   * resolves to.
    */
-  excludeSessionId?: string | null;
+  excludeSessionIds?: ReadonlySet<string>;
   /**
    * Harnesses in scope. Applied to WORK-ITEM hits only, in this pure core
    * rather than as a SQL `scopeFilter`, and that split is deliberate:
@@ -421,7 +445,8 @@ function dateLabel(ts: CorpusHit['ts']): string {
 
 /**
  * Select which corpus hits reach the turn, in order:
- *   1. SELF-SESSION — drop this session's own turns (pure echo);
+ *   1. SELF-SESSION — drop the caller's OWN turns, across its whole owner
+ *                     chain (see SelectCorpusInput.excludeSessionIds);
  *   2. SCOPE        — drop work-items outside the harnesses in scope;
  *   3. OVERLAP      — drop a hit sharing no query term with the query
  *                     (the scale-free relevance guard — see header);
@@ -447,7 +472,7 @@ export function selectCorpusLines(input: SelectCorpusInput): SelectCorpusResult 
     const ref = handleRefOfHit(hit);
     if (!ref) return;
     const sid = sessionIdOfHit(hit);
-    if (input.excludeSessionId && sid && sid === input.excludeSessionId) {
+    if (sid && input.excludeSessionIds?.has(sid)) {
       dropped.push({ ref, reason: 'self-session' });
       return;
     }

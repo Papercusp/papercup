@@ -670,6 +670,20 @@ const CC_HOOK_FILES = [
   // milliseconds after the write, while it is still the author's turn to add one line
   // to a sibling fixture.
   'posttooluse-migration-fixture-drift-nudge.mjs',
+  // EI-19459260956682226: PostToolUse (matcher "Edit|Write|MultiEdit") ADVISORY nudge when
+  // an edited tool-definition file breaches the P-011 prompt-weight budget. Three detectors
+  // already measure this and ALL THREE are post-hoc or opt-in — the gate test (after the
+  // breach is committed and the fleet is blocked), the tools-md-sync quick-check (only if
+  // the editor REMEMBERS to run it), and the live operator's registration self-check (whose
+  // log nobody reads at edit time). CLAUDE.md already names this as the DOMINANT failure
+  // mode: nearly every prompt-weight gate red comes from GROWING an existing tool's
+  // description, and an editor never reads the "Adding a tool" section. Measured instances:
+  // loop:status 1568, loop:checkpoint 1552, plans:set-status 1693, autonomy:decide 1545 —
+  // each locally green, each surfacing only at the gate hours later. This is a TIMING gap,
+  // not an enforcement gap, so it is deliberately NOT an `npm run lint:*` script: gate-time
+  // enforcement already exists, and a lint entry no blocking path runs would (correctly)
+  // red the lint-guard reachability census.
+  'posttooluse-tool-prompt-weight-nudge.mjs',
   // Shared python lib, NOT a hook: statusline-fleet.sh + posttooluse-objective-title.sh
   // `import pc_tty` off their own dirname to resolve the terminal they title. Omit it and
   // both raise ImportError, fail OPEN, and the packaged app silently stops setting the
@@ -1567,6 +1581,16 @@ export function mergeClaudeHookSettings(
     hooks.PostToolUse = replaceOurHookEntries(ev('PostToolUse'), ours('posttooluse-migration-fixture-drift-nudge.mjs'), {
       matcher: 'Edit|Write|MultiEdit',
       hooks: cmd('posttooluse-migration-fixture-drift-nudge.mjs'),
+    });
+  // merge_tool_prompt_weight_nudge_hook — PostToolUse, matcher 'Edit|Write|MultiEdit'
+  // (EI-19459260956682226). Advisory only: it can never deny — growing a tool description
+  // is normal, and this fires only when the edited file contains a tool that is OVER the
+  // P-011 budget right now. Limits are read from the production tool-guidance-budget.ts, so
+  // there is no fourth copy of the numbers to drift.
+  if (has('posttooluse-tool-prompt-weight-nudge.mjs'))
+    hooks.PostToolUse = replaceOurHookEntries(ev('PostToolUse'), ours('posttooluse-tool-prompt-weight-nudge.mjs'), {
+      matcher: 'Edit|Write|MultiEdit',
+      hooks: cmd('posttooluse-tool-prompt-weight-nudge.mjs'),
     });
   // merge_statusline — non-destructive: set only when absent or already ours.
   if (has('statusline-fleet.sh')) {

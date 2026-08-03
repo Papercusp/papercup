@@ -82,6 +82,16 @@ import {
   type CandidateStatus,
   type KnowledgePackCandidate,
 } from './candidates-shared';
+// P-009 — the pack-admission gate. Enforced at materializeCandidateIntoPack (the
+// one chokepoint every adoption path funnels through), so no future caller can
+// add an ungated route into a pack.
+import {
+  checkPackAdmission,
+  formatPackResidue,
+  resolvePackIdentityEntries,
+  type IdentityEntries,
+  type PackResidueHit,
+} from './pack-residue';
 
 // FLEET_LESSONS_PACK_ID moved to the client-safe ./candidates-shared (P-006);
 // re-exported below so existing importers of this module are unchanged.
@@ -423,10 +433,46 @@ function renderManifest(m: KnowledgePackManifest): string {
 }
 
 /**
+ * Thrown when the P-009 admission gate refuses an item.
+ *
+ * A DISTINCT type, not a bare Error, because the refusal is DETERMINISTIC: the
+ * item's text will not change on its own, so a caller that retries on failure
+ * (the auto-adopt sweep does exactly that) must be able to tell "this will never
+ * pass, dismiss it" from "transient, retry next tick". Conflating the two turns
+ * one bad candidate into an infinite retry loop across every sweep.
+ */
+export class PackAdmissionRefused extends Error {
+  readonly hits: readonly PackResidueHit[];
+  /** True when the class-3 (this-box literal) identity leg actually ran. */
+  readonly identityLiteralsScanned: boolean;
+  constructor(hits: readonly PackResidueHit[], identityLiteralsScanned: boolean) {
+    super(
+      `pack-admission gate refused this item — ${hits.length} finding(s):\n` +
+        `${formatPackResidue(hits)}\n` +
+        (identityLiteralsScanned
+          ? ''
+          : '(note: this box resolved no identity literals, so the hostname/git-identity ' +
+            'leg did not run — the findings above are from the shape-based legs only)'),
+    );
+    this.name = 'PackAdmissionRefused';
+    this.hits = hits;
+    this.identityLiteralsScanned = identityLiteralsScanned;
+  }
+}
+
+/**
  * Write one adopted candidate into the fleet-lessons pack dir (creating the
  * pack on first adoption) and bump the manifest patch version — so every hive
  * with the pack installed sees `updateAvailable` and adopts the new item
  * through the existing upgrade conflict review.
+ *
+ * GATED (P-009): refuses with {@link PackAdmissionRefused} before writing
+ * anything if the item trips the admission gate — the shape floor, internal
+ * ledger/scope/session residue, or tier-3 THIS-BOX identity. This is THE
+ * chokepoint: both adoption paths (the owner's explicit decide and the automated
+ * sweep) funnel through here, so gating it once cannot be routed around by a
+ * future caller — which is why the check lives here rather than only in
+ * `decideKnowledgePackCandidate`.
  */
 export async function materializeCandidateIntoPack(
   opts: {
@@ -439,8 +485,18 @@ export async function materializeCandidateIntoPack(
     recurrenceCount: number;
     sourceItemIds: string[];
   },
-  io: { packsRoot?: string } = {},
+  io: { packsRoot?: string; identityEntries?: IdentityEntries } = {},
 ): Promise<{ packId: string; packItemId: string; packVersion: string }> {
+  // P-009 — gate BEFORE any filesystem write, so a refusal leaves no partial
+  // pack and no bumped manifest version behind.
+  const verdict = checkPackAdmission(
+    { title: opts.title, text: opts.text, kind: opts.kind },
+    { identityEntries: io.identityEntries ?? resolvePackIdentityEntries() },
+  );
+  if (!verdict.ok) {
+    throw new PackAdmissionRefused(verdict.hits, verdict.identityLiteralsScanned);
+  }
+
   // P-005 (plan D-005): the SHARED workspace-independent root — candidates are
   // fleet-global, so their pack must not fragment across per-workspace roots.
   const dir = join(io.packsRoot ?? sharedKnowledgePacksRoot(), FLEET_LESSONS_PACK_ID);
@@ -504,7 +560,16 @@ export interface DecideCandidateInput {
 export type DecideCandidateResult =
   | { ok: true; action: 'dismiss'; id: string }
   | { ok: true; action: 'adopt'; id: string; packId: string; packItemId: string; packVersion: string }
-  | { ok: false; reason: 'not_found' | 'not_pending' | 'pack_write_failed' | 'transfer_bar'; error?: string };
+  | {
+      ok: false;
+      /**
+       * `admission_gate` (P-009) is DETERMINISTIC — the item's text trips the
+       * gate and retrying cannot help, so a sweeping caller must dismiss rather
+       * than leave it pending. Every other reason here is potentially transient.
+       */
+      reason: 'not_found' | 'not_pending' | 'pack_write_failed' | 'transfer_bar' | 'admission_gate';
+      error?: string;
+    };
 
 /**
  * The owner's decision on one pending candidate. Adoption writes the pack
@@ -571,6 +636,11 @@ export async function decideKnowledgePackCandidate(
       { ...(input.packsRoot ? { packsRoot: input.packsRoot } : {}) },
     );
   } catch (e) {
+    // P-009: separate the deterministic refusal from a transient write failure —
+    // the caller's retry policy depends on which one this is.
+    if (e instanceof PackAdmissionRefused) {
+      return { ok: false, reason: 'admission_gate', error: e.message };
+    }
     return {
       ok: false,
       reason: 'pack_write_failed',
@@ -792,6 +862,30 @@ export async function autoAdoptPendingCandidates(
       ...(verdict.verdict === 'pass' && opts.packsRoot ? { packsRoot: opts.packsRoot } : {}),
     });
     if (!res.ok) {
+      // P-009: a gate refusal is DETERMINISTIC — the candidate's own text trips
+      // it, so "stays pending, next tick retries" would re-judge (and re-spend an
+      // LLM call on) the same doomed item on every sweep, forever. Dismiss it
+      // with the gate's findings as the decision note so the reason is on the row
+      // rather than only in a log line. Every other !ok reason keeps the existing
+      // stays-pending behaviour, which is correct for a transient failure.
+      if (res.reason === 'admission_gate') {
+        const dismissal = await decide({
+          id: candidate.id,
+          action: 'dismiss',
+          by: AUTO_ADOPT_REVIEWER,
+          note: `${note}\n\nRefused by the pack-admission gate (P-009): ${res.error ?? 'no detail'}`,
+          ...(opts.workspaceId ? { workspaceId: opts.workspaceId } : {}),
+        });
+        if (dismissal.ok) {
+          result.dismissed += 1;
+        } else {
+          result.failed += 1;
+        }
+        console.warn(
+          `[knowledge-packs] auto-adopt: pack-admission gate refused ${candidate.id} — dismissed (retrying cannot help): ${res.error ?? ''}`,
+        );
+        continue;
+      }
       result.failed += 1;
     } else if (res.action === 'adopt') {
       result.adopted += 1;

@@ -150,7 +150,6 @@ async function runArm(
   const { lines, dropped } = selectCorpusLines({
     hits,
     queryText: query,
-    excludeSessionId: null,
     harnessSlugs: [],
     maxItems: CORPUS_MAX_ITEMS,
     budgetChars: CORPUS_BUDGET_CHARS,

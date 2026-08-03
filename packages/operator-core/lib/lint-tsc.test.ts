@@ -49,6 +49,9 @@ import {
   partitionFilesByCoverage,
   suggestTypecheckGate,
   formatUncoveredFilesBanner,
+  discoverSiblingTypecheckGates,
+  coveragePrefixesFromGateModule,
+  gateCoveringFile,
   coalesceWatermarkFor,
   lintTscScopeFromArgv,
   formatLintTscResultMarker,
@@ -1320,7 +1323,10 @@ describe('the gate REPORT actually prints the diagnostics (wiring, EI-1945421106
       writeFileSync(
         join(root, 'run.mjs'),
         `import { runTscBaselineGate } from ${JSON.stringify(GATE)};\n` +
-          `runTscBaselineGate({\n` +
+          // Top-level await: the gate is async (it may import sibling gate modules to resolve
+          // coverage, EI-19461218392796337). Without the await an unhandled rejection would
+          // surface as a bare node error instead of the gate output under test.
+          `await runTscBaselineGate({\n` +
           `  root: ${JSON.stringify(root)},\n` +
           `  tscCommand: ${JSON.stringify(`cat ${join(root, 'tsc-output.txt')}`)},\n` +
           `  baselineFile: ${JSON.stringify(join(root, 'baseline.json'))},\n` +
@@ -1606,7 +1612,7 @@ describe('EI-19341572300046923 — refusing a verdict about uncompiled files', (
       expect(text).toMatch(/were NOT typechecked/);
     });
 
-    it('calls out a file NO gate covers instead of silently omitting it', () => {
+    it('calls out a file no gate covers instead of silently omitting it', () => {
       const text = formatUncoveredFilesBanner({
         label: 'operator-core',
         uncovered: ['apps/thing/src/x.ts'],
@@ -1615,8 +1621,13 @@ describe('EI-19341572300046923 — refusing a verdict about uncompiled files', (
         ]),
         fatal: true,
       }).join('\n');
-      expect(text).toMatch(/NO typecheck gate covers these/);
+      expect(text).toMatch(/No typecheck gate FOUND for these/);
       expect(text).toMatch(/apps\/thing/);
+      // EI-19461218392796337 — this assertion used to read /NO typecheck gate covers these/,
+      // locking in the sentence that continued "nothing local will ever catch a type error
+      // here". That is a UNIVERSAL, and the banner has never been able to see enough to make
+      // one. It must not come back.
+      expect(text).not.toMatch(/nothing local will ever catch/i);
     });
 
     it('never greenwashes — the same invariant the landing-race caveat carries', () => {
@@ -1627,6 +1638,201 @@ describe('EI-19341572300046923 — refusing a verdict about uncompiled files', (
         fatal: true,
       }).join('\n');
       expect(text).not.toMatch(/safe to ignore|you can ignore|not a real error|disregard|passed/i);
+    });
+  });
+
+  // EI-19461218392796337 — the banner used to conclude "NO typecheck gate covers these —
+  // nothing local will ever catch a type error here" from two facts that do not imply it (the
+  // file is outside MY project; its workspace declares no `typecheck` script), never consulting
+  // the per-project SIBLING gates. Being covered by a sibling while declaring no workspace
+  // script is the NORMAL arrangement here, so it was wrong in the common case.
+  //
+  // Cost, measured: it argued an agent out of `npm run lint:tsc:operator` — which covers the
+  // named file exactly — into hand-grepping a raw 579-error tsc run, where they classified 5
+  // type errors they had just introduced into green-checkpoint.test.ts as pre-existing and
+  // shipped them. The file it declared uncoverable implements the fleet's release gate.
+  describe('sibling-gate resolution (EI-19461218392796337)', () => {
+    describe('coveragePrefixesFromGateModule', () => {
+      it('derives the prefix from a single-project gate’s exported TSC_COMMAND', () => {
+        expect(
+          coveragePrefixesFromGateModule({
+            TSC_COMMAND: 'npx tsc -p apps/operator/tsconfig.json --noEmit',
+          }),
+        ).toEqual(['apps/operator/']);
+      });
+
+      it('prefers an explicit GATE_COVERAGE list, and accepts a thunk for a discovered set', () => {
+        expect(coveragePrefixesFromGateModule({ GATE_COVERAGE: ['libs/papercusp'] })).toEqual([
+          'libs/papercusp/',
+        ]);
+        expect(
+          coveragePrefixesFromGateModule({ GATE_COVERAGE: () => ['libs/generic/a/'] }),
+        ).toEqual(['libs/generic/a/']);
+      });
+
+      it('returns null — UNKNOWN, never "covers nothing" — when a module declares neither', () => {
+        // The whole defect being fixed is an absence claimed from a partial view. A module we
+        // cannot read must degrade to unknown so the banner can say "none FOUND", not "none
+        // exists".
+        expect(coveragePrefixesFromGateModule({})).toBeNull();
+        expect(coveragePrefixesFromGateModule({ TSC_COMMAND: 'npx tsc --noEmit' })).toBeNull();
+      });
+    });
+
+    describe('gateCoveringFile', () => {
+      const gates = [
+        { npmScript: 'lint:tsc:papercusp-libs', prefixes: ['libs/papercusp/'] },
+        {
+          npmScript: 'lint:tsc:orchestrator',
+          prefixes: ['libs/papercusp/packages/orchestrator/'],
+        },
+        { npmScript: 'lint:tsc:operator', prefixes: ['apps/operator/'] },
+      ];
+
+      it('routes a file to the gate that covers it', () => {
+        expect(gateCoveringFile(gates, 'apps/operator/lib/release/green-checkpoint.ts')).toEqual({
+          npmScript: 'lint:tsc:operator',
+          prefix: 'apps/operator/',
+        });
+      });
+
+      it('picks the MOST SPECIFIC gate when several contain the file', () => {
+        // The narrower gate is the faster, more attributable answer than the fan-out that also
+        // happens to contain it.
+        expect(gateCoveringFile(gates, 'libs/papercusp/packages/orchestrator/src/a.ts')!.npmScript)
+          .toBe('lint:tsc:orchestrator');
+      });
+
+      it('returns null when nothing covers the file — and for an empty roster', () => {
+        expect(gateCoveringFile(gates, 'no-such-dir-xyz/file.ts')).toBeNull();
+        expect(gateCoveringFile([], 'apps/operator/x.ts')).toBeNull();
+      });
+    });
+
+    describe('discoverSiblingTypecheckGates (against the REAL repo)', () => {
+      it('finds the gate that actually covers apps/operator — the file this bug was filed over', () => {
+        // Deliberately measured against the real root package.json rather than a fixture: the
+        // false claim was about THIS repo's real arrangement, and a fixture could not have
+        // caught it.
+        return discoverSiblingTypecheckGates(REPO_ROOT).then((res) => {
+          expect(res.rosterReadable).toBe(true);
+          const covering = gateCoveringFile(
+            res.gates,
+            'apps/operator/lib/release/green-checkpoint.ts',
+          );
+          expect(covering).not.toBeNull();
+          expect(covering!.npmScript).toBe('lint:tsc:operator');
+        });
+      });
+
+      it('reports a gate it could NOT resolve with a reason instead of dropping it silently', () => {
+        // A gate whose coverage cannot be determined is the input that makes an absence claim
+        // unsafe. It must arrive as evidence, not as silence.
+        return discoverSiblingTypecheckGates(REPO_ROOT).then((res) => {
+          for (const u of res.unresolved) {
+            expect(u.npmScript).toMatch(/^lint:tsc/);
+            expect(u.reason.length).toBeGreaterThan(0);
+          }
+          // Every discovered gate carries at least one usable prefix.
+          for (const g of res.gates) expect(g.prefixes.length).toBeGreaterThan(0);
+        });
+      });
+
+      it('reports rosterReadable:false when the roster itself cannot be read', () => {
+        const root = mkdtempSync(join(tmpdir(), 'tsc-gate-roster-'));
+        try {
+          return discoverSiblingTypecheckGates(root).then((res) => {
+            expect(res.rosterReadable).toBe(false);
+            expect(res.gates).toEqual([]);
+          });
+        } finally {
+          rmSync(root, { recursive: true, force: true });
+        }
+      });
+    });
+
+    describe('formatUncoveredFilesBanner routes to the sibling gate', () => {
+      const OPERATOR_FILE = 'apps/operator/lib/release/green-checkpoint.ts';
+      // apps/operator declares no `typecheck` script — which is precisely why the old code
+      // called it permanently uncheckable.
+      const noWorkspaceScript = new Map([
+        [OPERATOR_FILE, { workspaceDir: 'apps/operator', packageName: 'operator', command: null }],
+      ]);
+      const siblingGates = [{ npmScript: 'lint:tsc:operator', prefixes: ['apps/operator/'] }];
+
+      it('hands over the sibling command instead of declaring the file uncoverable', () => {
+        const text = formatUncoveredFilesBanner({
+          label: 'operator-vite',
+          uncovered: [OPERATOR_FILE],
+          suggestions: noWorkspaceScript,
+          fatal: true,
+          siblingGates,
+          unresolvedGates: [],
+        }).join('\n');
+        expect(text).toContain('npm run lint:tsc:operator');
+        expect(text).not.toMatch(/nothing local will ever catch/i);
+        expect(text).not.toMatch(/No typecheck gate FOUND/);
+      });
+
+      it('CONTROL: the identical call with an empty gate roster does NOT route — so the pass above is the resolution working, not the wording', () => {
+        // Without this control the assertion above would still pass if the banner simply never
+        // emitted the ungated branch for any input.
+        const text = formatUncoveredFilesBanner({
+          label: 'operator-vite',
+          uncovered: [OPERATOR_FILE],
+          suggestions: noWorkspaceScript,
+          fatal: true,
+          siblingGates: [],
+          unresolvedGates: [],
+        }).join('\n');
+        expect(text).not.toContain('npm run lint:tsc:operator');
+        expect(text).toMatch(/No typecheck gate FOUND/);
+      });
+
+      it('says "none FOUND, not none exists" and names what it could not resolve', () => {
+        const text = formatUncoveredFilesBanner({
+          label: 'operator-core',
+          uncovered: ['no-such-dir-xyz/file.ts'],
+          suggestions: new Map(),
+          fatal: true,
+          siblingGates,
+          unresolvedGates: [{ npmScript: 'lint:tsc:workspaces', reason: 'exports no coverage' }],
+        }).join('\n');
+        expect(text).toMatch(/search was INCOMPLETE/);
+        expect(text).toMatch(/"none found", NOT "none exists"/);
+        expect(text).toContain('lint:tsc:workspaces');
+        expect(text).toContain('exports no coverage');
+      });
+
+      it('claims a COMPLETE search only when every gate resolved', () => {
+        const text = formatUncoveredFilesBanner({
+          label: 'operator-core',
+          uncovered: ['no-such-dir-xyz/file.ts'],
+          suggestions: new Map(),
+          fatal: true,
+          siblingGates,
+          unresolvedGates: [],
+        }).join('\n');
+        expect(text).toMatch(/Searched: every/);
+        expect(text).not.toMatch(/search was INCOMPLETE/);
+        // Still never a universal, even with a complete search: "no gate found" is the honest
+        // ceiling, because coverage is read from what each gate DECLARES.
+        expect(text).not.toMatch(/nothing local will ever catch/i);
+      });
+
+      it('an unreadable roster is treated as blind, not as a complete search', () => {
+        const text = formatUncoveredFilesBanner({
+          label: 'operator-core',
+          uncovered: ['no-such-dir-xyz/file.ts'],
+          suggestions: new Map(),
+          fatal: true,
+          siblingGates: [],
+          unresolvedGates: [],
+          rosterReadable: false,
+        }).join('\n');
+        expect(text).toMatch(/search was INCOMPLETE/);
+        expect(text).toMatch(/no gate roster available/);
+      });
     });
   });
 

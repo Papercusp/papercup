@@ -185,6 +185,33 @@ export const ACKNOWLEDGED_UNREACHABLE = new Map([
 export const UNREACHABLE_HIGH_WATERMARK = 14;
 
 /**
+ * Guards that ARE enforced, but only over PART of what they scan (EI-19461064447747454).
+ *
+ * Seeded 2026-08-03 at its MEASURED size, for the same reason the unreachable set was:
+ * both entries below were already partially covered before this axis existed, and the
+ * remedy — registering a guard in `REPO_WIDE_INVARIANT_GUARDS` — makes it run on every
+ * matching changed path, which is a real (if small) cost added to every affected-test
+ * run. Failing outright on day one would red-pin the fleet on debt that accrued
+ * invisibly, which is precisely the move this script's header warns against.
+ *
+ * ⚠ SHRINK-ONLY, like its sibling above. A NEW partially-covered guard fails the build
+ * on the commit that creates it; paying one down means REGISTERING it, not appending here.
+ */
+export const ACKNOWLEDGED_PARTIAL_COVERAGE = new Map([
+  [
+    'lint:full-replacement-mocks',
+    'scans every *.test.ts in the tree; enforced only when packages/operator-core is affected',
+  ],
+  [
+    'lint:migration-fixture-drift',
+    'scans every *.integration.test.ts in the tree; enforced only when apps/operator is affected',
+  ],
+]);
+
+/** Ceiling on the partial-coverage set. SHRINK-ONLY — register a guard instead of appending. */
+export const PARTIAL_COVERAGE_HIGH_WATERMARK = 2;
+
+/**
  * Tiers that actually STOP a bad change. `hook` and `logic-test` are deliberately
  * excluded — see the header: both are real coverage of a kind, and neither blocks.
  */
@@ -206,7 +233,7 @@ export const ENFORCING_TEST_RE = /execFileSync|spawnSync|execSync|listTrackedFil
  * many npm aliases point at it — so a base guard that IS wired makes its `:strict`
  * sibling enforced too, and a base guard that is not shows up once, not twice.
  */
-const COMPANION_SUFFIX_RE = /:(fix|report|census|strict|all|fail|update)$/;
+const COMPANION_SUFFIX_RE = /:(fix|report|census|strict|all|fail|update|check|typecheck)$/;
 
 /**
  * Blank out COMMENTS before matching. A runner file that merely *discusses* a guard in
@@ -243,10 +270,24 @@ export function stripComments(text, { yaml = false } = {}) {
     .join('\n');
 }
 
-/** `lint:foo` guards, minus the companion invocations described above. */
+/**
+ * `lint:foo` guards, minus the companion invocations described above.
+ *
+ * A suffix match alone is NOT sufficient to collapse a name: `lint:foo:strict` is a
+ * companion of `lint:foo`, but a guard that merely ENDS in one of those words with no
+ * base guard behind it is a guard in its own right, and dropping it would hide it from
+ * the census entirely — the exact invisibility this script exists to detect. So the
+ * base guard must actually exist for the collapse to apply. (Measured 2026-08-03: no
+ * such orphan exists today, so this is a safety property, not a behaviour change.)
+ */
 export function selectGuardScripts(scripts) {
-  return Object.keys(scripts)
-    .filter((name) => name.startsWith('lint:') && !COMPANION_SUFFIX_RE.test(name))
+  const names = Object.keys(scripts).filter((name) => name.startsWith('lint:'));
+  const declared = new Set(names);
+  return names
+    .filter((name) => {
+      const m = name.match(COMPANION_SUFFIX_RE);
+      return !m || !declared.has(name.slice(0, -m[0].length));
+    })
     .sort();
 }
 
@@ -290,11 +331,144 @@ export function classifyGuard({ name, command, corpora }) {
   };
 }
 
+/* ── COVERAGE: the THIRD axis (EI-19461064447747454) ─────────────────────────
+ *
+ * `classifyGuard` above answers "does a blocking path run this guard?" — a per-GUARD
+ * boolean. It does NOT answer "would a violation ANYWHERE be seen?", and those come
+ * apart for exactly one tier.
+ *
+ * `gate` and `ci` legs run UNCONDITIONALLY, so their scope is the whole tree. But the
+ * `test` tier is enforced by a *.test.ts, and the gate runs tests via `test:affected`,
+ * which selects suites BY WORKSPACE. So a `test`-tier guard runs only when its own
+ * test file's workspace is independently affected — while the guard itself may scan
+ * far wider. A violation introduced outside that workspace gets NO local signal and
+ * first surfaces as a red FLEET gate hours later.
+ *
+ * MEASURED (WI-9434): `lint:partial-index-alignment` scans 4 roots but its ratchet is
+ * a vitest file in `@papercusp/operator-core`, so `--changed-paths
+ * apps/operator/lib/release/green-checkpoint.ts --print-affected` → `@papercusp/web`
+ * only. 3 of its 4 scanned roots escaped. The census called it ENFORCED, truthfully,
+ * and that read as "this guard is doing its job".
+ *
+ * The remedy already exists and is what makes this modellable rather than advisory:
+ * `REPO_WIDE_INVARIANT_GUARDS` in `scripts/affected-tests.mjs` registers a guard to
+ * run whenever any changed path matches its own predicate, independent of workspace
+ * selection. A registered guard is therefore FULLY covered.
+ *
+ * ⚠ WHY MOST GUARDS REPORT `undetermined` RATHER THAN A NUMBER. Only two scan shapes
+ * are comparable to workspace-scoped enforcement: a bounded root array, and a
+ * repo-wide file enumeration. The others are not merely harder — a roots model is the
+ * WRONG model for them, and forcing one would manufacture false precision:
+ *   • `lint:cell-matrix` queries a LIVE DATABASE over a port; it has no file scope.
+ *   • `lint:required-field-strands` is DIFF-driven (`--files=` / `--base`).
+ *   • `lint:boundary-check` walks an import graph from an ENTRY POINT.
+ * `undetermined` is a real answer here: it says the census has not measured coverage,
+ * which is precisely the claim it was previously making silently and wrongly.
+ */
+
+/** Workspace directory owning a repo-relative path (longest prefix wins), or null. */
+export function workspaceOfPath(file, workspaceDirs) {
+  let best = null;
+  for (const dir of workspaceDirs) {
+    if (file === dir || file.startsWith(`${dir}/`)) {
+      if (!best || dir.length > best.length) best = dir;
+    }
+  }
+  return best;
+}
+
+/**
+ * What a guard's implementation ENUMERATES. Derived by scanning the implementation, never
+ * hand-declared — the same anti-drift property the tier classification relies on.
+ *
+ * Order is significant: a guard that declares bounded roots AND calls `ls-files` uses the
+ * roots to FILTER that enumeration, so `bounded` is the truthful answer, not `repo-wide`.
+ */
+export function deriveScanScope(source) {
+  const text = String(source);
+  const rootsMatch = text.match(/(?:export\s+)?const\s+\w*(?:SCAN|SOURCE)_ROOTS\s*=\s*\[([\s\S]*?)\]/);
+  if (rootsMatch) {
+    const roots = [...rootsMatch[1].matchAll(/['"`]([^'"`]+)['"`]/g)].map((m) => m[1]);
+    if (roots.length) return { kind: 'bounded', roots };
+  }
+  // `listTrackedFiles(...)`, or a `git ls-files` spawn — the argv form means the literal
+  // is `'ls-files'`, NOT the string `git ls-files`. Matching the latter is why an earlier
+  // measurement pass reported two repo-wide guards as having no detectable scan at all.
+  if (/listTrackedFiles\s*\(|['"]ls-files['"]/.test(text)) return { kind: 'repo-wide', roots: null };
+  if (/--files=|--changed-paths|--base\b/.test(text)) return { kind: 'diff-driven', roots: null };
+  return { kind: 'undetermined', roots: null };
+}
+
+/**
+ * Coverage verdict for one classified row.
+ *
+ * Returns `{ verdict, reason, roots?, coveredRoots? }` where verdict is one of
+ * `full` | `partial` | `undetermined` | `not-enforced`.
+ */
+export function computeCoverage({
+  row,
+  enforcingTestPaths = [],
+  workspaceDirs = [],
+  implSource = '',
+  repoWideRegistered = new Set(),
+}) {
+  if (!row.blocking) return { verdict: 'not-enforced', reason: 'no blocking path runs it' };
+  if (row.tier === 'gate' || row.tier === 'ci') {
+    return { verdict: 'full', reason: `${row.tier} legs run unconditionally, not by affected-workspace selection` };
+  }
+  // `chained` inherits its runner's reachability, and that runner's own coverage is not
+  // resolved here. Claiming `full` for it would re-create this very bug one hop down, so
+  // it is reported as unmeasured rather than assumed good.
+  if (row.tier === 'chained') {
+    return { verdict: 'undetermined', reason: "inherits an unmeasured runner's coverage" };
+  }
+  if (repoWideRegistered.has(row.name)) {
+    return { verdict: 'full', reason: 'registered in REPO_WIDE_INVARIANT_GUARDS — runs on its own predicate' };
+  }
+
+  const enforcementWorkspaces = [
+    ...new Set(enforcingTestPaths.map((p) => workspaceOfPath(p, workspaceDirs)).filter(Boolean)),
+  ];
+  if (!enforcementWorkspaces.length) {
+    return { verdict: 'undetermined', reason: 'could not resolve the workspace of its enforcing test' };
+  }
+
+  const scope = deriveScanScope(implSource);
+  if (scope.kind === 'bounded') {
+    const covered = scope.roots.filter((r) => {
+      const ws = workspaceOfPath(r, workspaceDirs);
+      return ws && enforcementWorkspaces.includes(ws);
+    });
+    if (covered.length === scope.roots.length) {
+      return { verdict: 'full', reason: 'every scanned root lies inside its enforcing workspace', roots: scope.roots };
+    }
+    return {
+      verdict: 'partial',
+      reason: `scans ${scope.roots.length} roots; only ${covered.length} lie inside ${enforcementWorkspaces.join(', ')}`,
+      roots: scope.roots,
+      coveredRoots: covered,
+    };
+  }
+  if (scope.kind === 'repo-wide') {
+    return {
+      verdict: 'partial',
+      reason: `enumerates the WHOLE tree but only runs when ${enforcementWorkspaces.join(', ')} is affected`,
+    };
+  }
+  return {
+    verdict: 'undetermined',
+    reason: `${scope.kind} scan is not comparable to workspace-scoped enforcement; coverage NOT measured`,
+  };
+}
+
 /**
  * The whole census. `corpora` maps tier → concatenated source text of every runner in
  * that tier. Pure so it is unit-testable without a repo.
+ *
+ * `coverage` is OPTIONAL: omit it and no coverage is computed (rows simply carry no
+ * `coverage` field). Supplying it adds the third axis described above.
  */
-export function buildReachabilityCensus({ scripts, corpora, acknowledged = new Map() }) {
+export function buildReachabilityCensus({ scripts, corpora, acknowledged = new Map(), coverage = null }) {
   const rows = selectGuardScripts(scripts).map((name) =>
     classifyGuard({ name, command: scripts[name], corpora }),
   );
@@ -322,16 +496,52 @@ export function buildReachabilityCensus({ scripts, corpora, acknowledged = new M
   // looked covered. A check that misses its own motivating instance is not a check.
   // The `tier` is retained per row so the remedy is still distinguishable: deepen an
   // existing test vs. wire one from scratch.
+  // Coverage is computed AFTER the chained-inheritance pass above, so every row's tier
+  // is final. Rows carry no `coverage` field at all when the caller supplies no coverage
+  // input — an absent field is honestly "not measured", never a silent `full`.
+  if (coverage) {
+    const {
+      enforcingTests = [],
+      workspaceDirs = [],
+      implSources = new Map(),
+      repoWideRegistered = new Set(),
+    } = coverage;
+    for (const row of rows) {
+      const enforcingTestPaths = enforcingTests
+        .filter((t) => t.text.includes(row.name) || row.impls.some((p) => p && t.text.includes(p)))
+        .map((t) => t.path);
+      row.coverage = computeCoverage({
+        row,
+        enforcingTestPaths,
+        workspaceDirs,
+        implSource: row.impls.map((p) => implSources.get(p) ?? '').join('\n'),
+        repoWideRegistered,
+      });
+    }
+  }
+
   const notEnforced = rows.filter((r) => !r.blocking);
   const unreachable = notEnforced.filter((r) => r.tier === null);
   const advisoryOnly = notEnforced.filter((r) => r.tier !== null);
   const unacknowledged = notEnforced.filter((r) => !acknowledged.has(r.name));
+  // Enforced, but only over PART of what it scans — the defect this axis exists to name.
+  const partiallyCovered = rows.filter((r) => r.coverage?.verdict === 'partial');
+  const coverageUnmeasured = rows.filter((r) => r.coverage?.verdict === 'undetermined');
   // An allowlist entry for a guard that no longer exists keeps asserting a decision
   // about nothing — the same staleness `findStaleDeclarations` catches for tiers.
   const declaredNames = new Set(rows.map((r) => r.name));
   const staleAcknowledgements = [...acknowledged.keys()].filter((n) => !declaredNames.has(n));
 
-  return { rows, notEnforced, unreachable, advisoryOnly, unacknowledged, staleAcknowledgements };
+  return {
+    rows,
+    notEnforced,
+    unreachable,
+    advisoryOnly,
+    unacknowledged,
+    staleAcknowledgements,
+    partiallyCovered,
+    coverageUnmeasured,
+  };
 }
 
 /* ── repo I/O (impure; the logic above stays pure) ───────────────────────────── */
@@ -361,11 +571,16 @@ function buildCorpora() {
   // anything. One that imports its pure helpers and asserts against fixtures goes to
   // the advisory `logic-test` pile — see the header for why that distinction is the
   // whole point of this check.
+  //
+  // Per-file identity is RETAINED for the enforcing pile (it used to be concatenated away).
+  // Coverage needs to know WHICH test file enforces a guard, because that file's workspace
+  // is exactly what `test:affected` selects on — see the COVERAGE section above.
   const testTexts = files
     .filter((f) => f.endsWith('.test.ts') || f.endsWith('.test.tsx'))
-    .map((f) => stripComments(readIfExists(resolve(ROOT, f))));
-  const test = testTexts.filter((t) => ENFORCING_TEST_RE.test(t)).join('\n');
-  const logicTest = testTexts.filter((t) => !ENFORCING_TEST_RE.test(t)).join('\n');
+    .map((f) => ({ path: f, text: stripComments(readIfExists(resolve(ROOT, f))) }));
+  const enforcingTests = testTexts.filter((t) => ENFORCING_TEST_RE.test(t.text));
+  const test = enforcingTests.map((t) => t.text).join('\n');
+  const logicTest = testTexts.filter((t) => !ENFORCING_TEST_RE.test(t.text)).map((t) => t.text).join('\n');
 
   const hook = [
     ...files.filter((f) => f.includes('/hooks/') && !f.endsWith('.test.ts')),
@@ -376,7 +591,44 @@ function buildCorpora() {
 
   // Key order matters: `classifyGuard` reports the first matching tier for a guard
   // with no blocking tier, so the advisory tiers come last.
-  return { gate, ci, test, hook, 'logic-test': logicTest };
+  return { corpora: { gate, ci, test, hook, 'logic-test': logicTest }, enforcingTests, files };
+}
+
+/**
+ * Guards registered in `REPO_WIDE_INVARIANT_GUARDS` (scripts/affected-tests.mjs) — the
+ * existing mechanism that runs a guard on its OWN predicate instead of by affected
+ * workspace. Parsed rather than duplicated, so this cannot drift from the real list.
+ *
+ * The block is bounded to the array literal: `script:` also appears elsewhere in that
+ * file, and reading the whole file would silently over-credit unrelated guards.
+ */
+export function parseRepoWideRegistrations(affectedTestsSource) {
+  const text = String(affectedTestsSource);
+  const start = text.indexOf('const REPO_WIDE_INVARIANT_GUARDS');
+  if (start < 0) return new Set();
+  const block = text.slice(start);
+  const end = block.indexOf('\n];');
+  return new Set(
+    [...block.slice(0, end < 0 ? undefined : end).matchAll(/script:\s*['"]([^'"]+)['"]/g)].map((m) => m[1]),
+  );
+}
+
+/** Workspace directories, expanded from package.json `workspaces` globs against the tree. */
+function discoverWorkspaceDirs(pkg, files) {
+  const dirs = new Set();
+  for (const pattern of pkg.workspaces ?? []) {
+    if (!pattern.endsWith('/*')) {
+      dirs.add(pattern);
+      continue;
+    }
+    const base = pattern.slice(0, -2);
+    for (const f of files) {
+      if (!f.startsWith(`${base}/`)) continue;
+      const seg = f.slice(base.length + 1).split('/')[0];
+      if (seg) dirs.add(`${base}/${seg}`);
+    }
+  }
+  return [...dirs];
 }
 
 function main() {
@@ -389,11 +641,29 @@ function main() {
   // git-sync sweeps the whole tree every few minutes, so a probe that edits
   // package.json in place can have its mutant committed by a passing sweep).
   const pkgPath = process.env.LINT_GUARD_REACHABILITY_PACKAGE_JSON || resolve(ROOT, 'package.json');
-  const scripts = JSON.parse(readFileSync(pkgPath, 'utf-8')).scripts ?? {};
+  const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'));
+  const scripts = pkg.scripts ?? {};
+  const { corpora, enforcingTests, files } = buildCorpora();
+
+  // Implementation sources for the coverage scan. Only guards the census actually has a
+  // row for are read, so this adds a handful of file reads, not a second tree walk.
+  const implSources = new Map();
+  for (const name of selectGuardScripts(scripts)) {
+    for (const p of resolveImplementationPaths(scripts[name])) {
+      if (!implSources.has(p)) implSources.set(p, readIfExists(resolve(ROOT, p)));
+    }
+  }
+
   const census = buildReachabilityCensus({
     scripts,
-    corpora: buildCorpora(),
+    corpora,
     acknowledged: ACKNOWLEDGED_UNREACHABLE,
+    coverage: {
+      enforcingTests,
+      workspaceDirs: discoverWorkspaceDirs(JSON.parse(readIfExists(resolve(ROOT, 'package.json')) || '{}'), files),
+      implSources,
+      repoWideRegistered: parseRepoWideRegistrations(readIfExists(resolve(ROOT, 'scripts/affected-tests.mjs'))),
+    },
   });
 
   if (json) {
@@ -416,6 +686,18 @@ function main() {
       console.log(`\nNOT ENFORCED (${census.notEnforced.length}) — no blocking path runs these:`);
       for (const r of census.notEnforced) {
         console.log(`  [${r.tier ?? 'nothing-runs-it'}] ${r.name}  ${r.impls.join(' ') || '(no resolvable implementation)'}`);
+      }
+    }
+    if (!json && census.partiallyCovered.length) {
+      console.log(`\nENFORCED BUT PARTIALLY COVERED (${census.partiallyCovered.length}) — a red would be seen, but not from everywhere:`);
+      for (const r of census.partiallyCovered) {
+        console.log(`  ${r.name}  —  ${r.coverage.reason}`);
+      }
+    }
+    if (!json && census.coverageUnmeasured.length) {
+      console.log(`\nCOVERAGE NOT MEASURED (${census.coverageUnmeasured.length}) — enforced; scan shape not comparable:`);
+      for (const r of census.coverageUnmeasured) {
+        console.log(`  ${r.name}  —  ${r.coverage.reason}`);
       }
     }
     process.exit(0);
@@ -454,6 +736,40 @@ function main() {
     console.error('     • RETIRE it — delete the script and its implementation.');
   }
 
+  const unacknowledgedPartial = census.partiallyCovered.filter((r) => !ACKNOWLEDGED_PARTIAL_COVERAGE.has(r.name));
+  if (unacknowledgedPartial.length) {
+    failed = true;
+    console.error(`\n❌ ${unacknowledgedPartial.length} lint guard(s) are enforced over only PART of what they scan:`);
+    for (const r of unacknowledgedPartial) {
+      console.error(`     ${r.name}  →  ${r.coverage.reason}`);
+    }
+    console.error('');
+    console.error('   `test:affected` selects suites BY WORKSPACE, so a guard enforced only by a');
+    console.error('   *.test.ts runs only when THAT test\'s workspace is independently affected — while');
+    console.error('   the guard scans wider. A violation outside that workspace gets no local signal and');
+    console.error('   first surfaces as a red FLEET gate. Fix it by registering the guard in');
+    console.error('   REPO_WIDE_INVARIANT_GUARDS (scripts/affected-tests.mjs) with an `appliesTo`');
+    console.error('   predicate, so it runs on every changed path it actually covers.');
+  }
+
+  const stalePartial = [...ACKNOWLEDGED_PARTIAL_COVERAGE.keys()].filter(
+    (n) => !census.partiallyCovered.some((r) => r.name === n),
+  );
+  if (stalePartial.length) {
+    failed = true;
+    console.error(`\n❌ ${stalePartial.length} STALE partial-coverage entr(ies) — no longer partially covered:`);
+    for (const n of stalePartial) console.error(`     ${n}`);
+    console.error('   Remove them; the ratchet only counts if a paid-down entry leaves the set.');
+  }
+
+  if (ACKNOWLEDGED_PARTIAL_COVERAGE.size > PARTIAL_COVERAGE_HIGH_WATERMARK) {
+    failed = true;
+    console.error(
+      `\n❌ acknowledged-partial-coverage set exceeds its watermark: ${ACKNOWLEDGED_PARTIAL_COVERAGE.size} > ${PARTIAL_COVERAGE_HIGH_WATERMARK}.`,
+    );
+    console.error('   This set is SHRINK-ONLY. Register the guard repo-wide instead of appending here.');
+  }
+
   if (ACKNOWLEDGED_UNREACHABLE.size > UNREACHABLE_HIGH_WATERMARK) {
     failed = true;
     console.error(
@@ -479,6 +795,17 @@ function main() {
   // wrong conclusion — "the tree is protected" — and that conclusion has already been drawn
   // and already cost an outage: on 2026-08-03 a parse-breaking edit crash-looped :3170 for
   // 17min while every guard that could have caught it was, by THIS measure, fully enforced.
+  // The coverage axis has to appear on the SAME line as the enforced count, not below it.
+  // "68/82 enforced" was read as "the tree is protected" while a guard covering 1 of its 4
+  // scanned roots sat inside that numerator (EI-19461064447747454) — a per-GUARD boolean
+  // rendered as if it were a per-SCOPE one. Any reader of the number sees the qualifier now.
+  if (census.partiallyCovered.length || census.coverageUnmeasured.length) {
+    console.log(
+      `  ⚠ of those ${enforced}: ${census.partiallyCovered.length} enforced over only PART of what they scan, ` +
+        `${census.coverageUnmeasured.length} with coverage NOT measured.\n` +
+        '    ENFORCED is a per-GUARD boolean, never a per-SCOPE one — `--census` breaks it down.',
+    );
+  }
   console.log(
     '  ⚠ ENFORCED = a blocking path RUNS it, never that it runs BEFORE the damage. Hosts that\n' +
       '    bundle the WORKING TREE (:3170, bg-host) are past every commit-time guard by construction.',

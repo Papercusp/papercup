@@ -37,6 +37,7 @@ import {
   corpusQueryText,
   renderCorpusBlock,
   selectCorpusLines,
+  sessionIdOfHit,
   type CorpusDrop,
   type CorpusHit,
   type CorpusLine,
@@ -84,8 +85,15 @@ export interface CorpusRecallInput {
   /** Harnesses in scope. Narrows WORK-ITEM hits only — see the note on
    *  `SelectCorpusInput.harnessSlugs` for why turns must not be slug-scoped. */
   harnessSlugs?: readonly string[];
-  /** This session's id — its own turns are dropped as echo. */
-  excludeSessionId?: string | null;
+  /**
+   * The CALLER'S coord ownerId (`su-xxxx…`). Every session in its
+   * carry-respawn chain is dropped as echo — see
+   * `SelectCorpusInput.excludeSessionIds` for why this is owner-wide and not
+   * a single session id (EI-19460887729945170: the single-id form could never
+   * match a real turn, because both injection ports pass an ownerId here while
+   * hits carry native transcript uuids).
+   */
+  excludeOwnerId?: string | null;
   /** Handle refs already delivered to this agent. */
   knownRefs?: ReadonlySet<string>;
   maxItems?: number;
@@ -252,7 +260,49 @@ export async function recallCorpusContext(
           lexicalMode,
         });
 
-      const select = (
+      // Which of these hits' sessions belong to the CALLER (EI-19460887729945170)?
+      //
+      // Resolved from the candidates rather than from the owner, deliberately:
+      // "every session this owner has ever had" grows without bound over a long
+      // life, while the candidate pool is `limit` rows by construction — so this
+      // stays one indexed lookup of ~24 ids no matter how long the agent has been
+      // running. Memoised across the cascade's two stages so stage 2 only asks
+      // about ids stage 1 did not already settle.
+      //
+      // Fail-soft, like every other step on this path: a lookup that throws
+      // yields no exclusions, which is exactly today's behaviour — never a
+      // broken leg.
+      const ownSession = new Map<string, boolean>();
+      const ownSessionIdsAmong = async (hits: readonly CorpusHit[]): Promise<Set<string>> => {
+        const owner = input.excludeOwnerId?.trim();
+        const mine = new Set<string>();
+        if (!owner) return mine;
+        const unknown: string[] = [];
+        for (const hit of hits) {
+          const sid = sessionIdOfHit(hit);
+          if (!sid) continue;
+          const cached = ownSession.get(sid);
+          if (cached === undefined) unknown.push(sid);
+          else if (cached) mine.add(sid);
+        }
+        if (unknown.length === 0) return mine;
+        try {
+          const rows = (await sql`
+            SELECT DISTINCT session_id
+              FROM harness_shared.session_turns
+             WHERE owner = ${owner}
+               AND session_id = ANY(${unknown}::text[])
+          `) as unknown as Array<{ session_id: string }>;
+          const owned = new Set(rows.map((r) => r.session_id));
+          for (const sid of unknown) ownSession.set(sid, owned.has(sid));
+          for (const sid of owned) mine.add(sid);
+        } catch {
+          /* no exclusion beats a dead leg */
+        }
+        return mine;
+      };
+
+      const select = async (
         hits: CorpusHit[],
         opts: { maxItems: number; budgetChars: number; knownRefs: ReadonlySet<string> },
       ) =>
@@ -263,7 +313,7 @@ export async function recallCorpusContext(
           // was never issued would drop rows the banded query legitimately
           // retrieved as `no-term-overlap`.
           queryText: effectiveQuery,
-          excludeSessionId: input.excludeSessionId ?? null,
+          excludeSessionIds: await ownSessionIdsAmong(hits),
           harnessSlugs: input.harnessSlugs ?? [],
           knownRefs: opts.knownRefs,
           maxItems: opts.maxItems,
@@ -274,7 +324,7 @@ export async function recallCorpusContext(
       const andFused = await search('and');
       const andHits = toCorpusHits(andFused);
       const known = input.knownRefs ?? new Set<string>();
-      const stage1 = select(andHits, { maxItems, budgetChars, knownRefs: known });
+      const stage1 = await select(andHits, { maxItems, budgetChars, knownRefs: known });
 
       // ── Stage 2 (P-017 / D-062 R2): relax ONLY when stage 1 under-fills. ──
       //
@@ -303,7 +353,7 @@ export async function recallCorpusContext(
       const gradedOnly = toCorpusHits(gradedFused).filter(
         (h) => !seen.has(`${h.source}:${h.sourceId}`),
       );
-      const stage2 = select(gradedOnly, {
+      const stage2 = await select(gradedOnly, {
         maxItems: maxItems - stage1.lines.length,
         budgetChars: budgetChars - spent,
         knownRefs: new Set([...known, ...stage1.lines.map((l) => l.handle.ref)]),

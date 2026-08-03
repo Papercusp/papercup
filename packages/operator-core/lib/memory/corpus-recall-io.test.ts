@@ -13,7 +13,10 @@ const runHybridSearch = vi.fn();
 const buildQueryEmbedder = vi.fn(async () => (async () => [0.1, 0.2]) as unknown);
 const getFlag = vi.fn(async () => true);
 
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: {} }) }));
+/** The owner→own-session lookup runs through this tagged template. Default: the
+ *  caller owns nothing, i.e. no exclusions. */
+const sql = vi.fn(async (..._args: unknown[]) => [] as Array<{ session_id: string }>);
+vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql }) }));
 vi.mock('@papercusp/search', () => ({ runHybridSearch }));
 vi.mock('../agent-tools/search/sources', () => ({
   SEARCH_SOURCES: [
@@ -55,6 +58,7 @@ const base = { queryText: QUERY, workspaceId: 'ws-1' };
 
 beforeEach(() => {
   vi.clearAllMocks();
+  sql.mockResolvedValue([]);
   getFlag.mockResolvedValue(true);
   buildQueryEmbedder.mockResolvedValue((async () => [0.1, 0.2]) as unknown);
   delete process.env.PAPERCUSP_MEMORY_CORPUS_TIMEOUT_MS;
@@ -136,13 +140,62 @@ describe('recallCorpusContext — output', () => {
     expect(res.embedderAvailable).toBe(true);
   });
 
-  it('drops the calling session’s own turns', async () => {
+  it('drops the caller’s own turns, resolved from its OWNER id', async () => {
     runHybridSearch.mockResolvedValue(
       ok([hit({ source: 'session_turn', source_id: 'claude:sess-self:4', scope: null })]),
     );
-    const res = await recallCorpusContext({ ...base, excludeSessionId: 'sess-self' });
+    sql.mockResolvedValue([{ session_id: 'sess-self' }]);
+    const res = await recallCorpusContext({ ...base, excludeOwnerId: 'su-me' });
     expect(res.block).toBeNull();
     expect(res.dropped).toContainEqual({ ref: 'claude:sess-self', reason: 'self-session' });
+  });
+
+  it('drops EVERY session the owner lookup returns, and keeps the ones it does not', async () => {
+    // The regression this guards is the one that shipped: the filter keyed on a
+    // SINGLE session id while both injection ports pass an OWNER id, so it never
+    // fired at all (EI-19460887729945170). Owner-wide is the unit.
+    runHybridSearch.mockResolvedValue(
+      ok([
+        hit({ source: 'session_turn', source_id: 'claude:sess-live:1', scope: null }),
+        hit({ source: 'session_turn', source_id: 'claude:sess-prior:7', scope: null }),
+        hit({ source: 'session_turn', source_id: 'claude:sess-peer:2', scope: null }),
+      ]),
+    );
+    sql.mockResolvedValue([{ session_id: 'sess-live' }, { session_id: 'sess-prior' }]);
+    const res = await recallCorpusContext({ ...base, excludeOwnerId: 'su-me' });
+    expect(res.dropped).toContainEqual({ ref: 'claude:sess-live', reason: 'self-session' });
+    expect(res.dropped).toContainEqual({ ref: 'claude:sess-prior', reason: 'self-session' });
+    expect(res.lines.map((l) => l.handle.ref)).toEqual(['claude:sess-peer']);
+  });
+
+  it('asks the owner lookup ONLY about the sessions in the candidate pool', async () => {
+    // Bounded by the candidates, never by the owner's lifetime history — an agent
+    // running for weeks must not turn this into an unbounded scan.
+    runHybridSearch.mockResolvedValue(
+      ok([hit({ source: 'session_turn', source_id: 'claude:sess-live:1', scope: null })]),
+    );
+    await recallCorpusContext({ ...base, excludeOwnerId: 'su-me' });
+    const values = sql.mock.calls[0]?.slice(1);
+    expect(values).toContain('su-me');
+    expect(values).toContainEqual(['sess-live']);
+  });
+
+  it('issues no owner lookup at all when there is no owner to exclude', async () => {
+    runHybridSearch.mockResolvedValue(
+      ok([hit({ source: 'session_turn', source_id: 'claude:sess-live:1', scope: null })]),
+    );
+    const res = await recallCorpusContext(base);
+    expect(sql).not.toHaveBeenCalled();
+    expect(res.lines.map((l) => l.handle.ref)).toEqual(['claude:sess-live']);
+  });
+
+  it('degrades to NO exclusion when the owner lookup throws — never a dead leg', async () => {
+    runHybridSearch.mockResolvedValue(
+      ok([hit({ source: 'session_turn', source_id: 'claude:sess-live:1', scope: null })]),
+    );
+    sql.mockRejectedValue(new Error('pg down'));
+    const res = await recallCorpusContext({ ...base, excludeOwnerId: 'su-me' });
+    expect(res.lines.map((l) => l.handle.ref)).toEqual(['claude:sess-live']);
   });
 
   it('returns an empty block, not null, when the engine returns nothing', async () => {
@@ -290,7 +343,6 @@ describe('recallCorpusContext — the P-017 cascade', () => {
         rankers: h.rankers,
       })),
       queryText: QUERY,
-      excludeSessionId: null,
       harnessSlugs: [],
       maxItems: 2,
     });

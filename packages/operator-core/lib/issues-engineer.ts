@@ -730,30 +730,51 @@ export async function createIssue(input: CreateIssueInput): Promise<EngineerIssu
               ${input.payload != null ? JSON.stringify(input.payload) : null}::text::jsonb, ${input.foundDuring ?? null},
               ${input.createdBy ?? null}, ${input.signalOrigin ?? DEFAULT_SIGNAL_ORIGIN}, ${created}, ${created})
       RETURNING ${tx.unsafe(ISSUE_COLS)}`;
-    return toIssue(rows[0]);
+    const inserted = toIssue(rows[0]);
+    // WI-8848: the topic tags + the author subscription commit in the SAME txn as the
+    // INSERT. They used to run as bare awaits AFTER this txn had already committed, so
+    // each was a fresh pool acquisition against an already-durable row — and a
+    // [connect-phase-deadline] in either one threw to the caller while the issue row
+    // existed. The caller cannot distinguish that from a total failure, so it retries
+    // and DUPLICATES the filing (measured: EI-19448526819046979 was created while its
+    // caller saw the error). Same atomicity fix, for the same reason, as the
+    // thread/post write below ("no half-write a retry would duplicate").
+    // Tx-bound stores reuse the exact tested store SQL on this txn's connection.
+    if ((input.topics ?? []).length > 0) {
+      const txTags = new PgTaggableStore({ ...coordOpts, getSql: () => tx });
+      for (const topic of input.topics ?? []) {
+        await txTags.addTag(issueRef(inserted.id), topic, {
+          created_by: input.createdBy,
+          created_ts: created,
+        });
+      }
+    }
+    if (input.createdBy) {
+      const txSubs = new PgEntitySubscriptionStore({ ...coordOpts, getSql: () => tx });
+      await txSubs.subscribe({
+        subscriber_id: input.createdBy,
+        target_kind: 'object',
+        target_ref: `${ISSUE_KIND}:${inserted.id}`,
+        delivery_mode: 'full',
+        created_ts: created,
+      });
+    }
+    return inserted;
   });
   const id = issue.id;
 
-  for (const topic of input.topics ?? []) {
-    await tags.addTag(issueRef(id), topic, { created_by: input.createdBy, created_ts: created });
-  }
-  // Deliver to topic subscribers BEFORE the author subscribes, so the author is
-  // not notified of their own filing (but is subscribed for future updates).
+  // The ONLY post-commit step, and it provably cannot throw or hang: fanoutForObject is
+  // try/catch-absorbed AND withDeadline(...,0)-bounded (fanout-projection.ts), precisely
+  // so a fan-out can never break the write that triggered it. The author is excluded
+  // EXPLICITLY via excludeId (not by virtue of subscribing after this call), so
+  // auto-subscribing the author inside the txn above still does not notify them of
+  // their own filing.
   await deliver(
     issue,
     'created',
     `issue ${id} filed (${issue.severity}): ${issue.title}`,
     input.createdBy ?? 'substrate',
   );
-  if (input.createdBy) {
-    await subs.subscribe({
-      subscriber_id: input.createdBy,
-      target_kind: 'object',
-      target_ref: `${ISSUE_KIND}:${id}`,
-      delivery_mode: 'full',
-      created_ts: created,
-    });
-  }
   return issue;
 }
 

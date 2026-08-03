@@ -107,7 +107,21 @@ export interface ReconcileLinkedWorkItemsResult {
   skippedInFlight: string[];
   /** Linked but already terminal — nothing to do. */
   skippedAlreadyTerminal: string[];
+  /**
+   * EI-19460536530145188: issue-family work-items (bug/change/task) reached ONLY
+   * via the `payload.plan_item` stamp, with no `implements` edge to prove they
+   * are an IMPLEMENTATION of the plan item. Deliberately NOT terminal-closed —
+   * see the guard below for why a bare stamp is not evidence of implementation.
+   */
+  skippedUnprovenLink: string[];
 }
+
+/**
+ * A work-item linked to a plan item, tagged with WHICH truth source found it.
+ * `viaImplementsEdge` is the only evidence that the work-item IMPLEMENTS the
+ * plan item rather than merely referencing it — see the reconcile guard.
+ */
+type LinkedWorkItem = WorkItem & { viaImplementsEdge: boolean };
 
 /** Match the durable `payload.plan_item` stamp (plan_slug + item_id) on either
  *  federated table.
@@ -140,11 +154,19 @@ function stampMatchFragment(sql: ReturnType<typeof getOrgPg>['sql'], planSlug: s
  * (harness, id). No harness filter needed — a plan item's ref ('<plan>#<item>')
  * is already the join key on both truth sources.
  */
-async function findAllLinkedWorkItems(planSlug: string, itemId: string): Promise<WorkItem[]> {
+async function findAllLinkedWorkItems(planSlug: string, itemId: string): Promise<LinkedWorkItem[]> {
   const { sql } = getOrgPg();
-  const found = new Map<string, WorkItem>();
-  const add = (wi: WorkItem | null) => {
-    if (wi) found.set(`${wi.harness ?? ''}#${wi.id}`, wi);
+  const found = new Map<string, LinkedWorkItem>();
+  // `viaImplementsEdge` is STICKY-TRUE: an item found by BOTH truth sources is
+  // proven by the edge, and the later stamp pass must not downgrade it.
+  const add = (wi: WorkItem | null, viaImplementsEdge: boolean) => {
+    if (!wi) return;
+    const key = `${wi.harness ?? ''}#${wi.id}`;
+    const prior = found.get(key);
+    found.set(key, {
+      ...wi,
+      viaImplementsEdge: viaImplementsEdge || prior?.viaImplementsEdge === true,
+    });
   };
 
   // Truth source 1: the `implements` coord_links edge (every row — a plan item
@@ -160,10 +182,10 @@ async function findAllLinkedWorkItems(planSlug: string, itemId: string): Promise
        AND dst_ref = ${planItemRef(planSlug, itemId)}`;
   for (const r of linkRows) {
     if (r.src_kind === 'issue') {
-      add(await getWorkItem(r.src_ref));
+      add(await getWorkItem(r.src_ref), true);
     } else if (r.src_kind === 'feature') {
       const i = r.src_ref.indexOf('#');
-      if (i > 0) add(await getWorkItem(r.src_ref.slice(i + 1), r.src_ref.slice(0, i)));
+      if (i > 0) add(await getWorkItem(r.src_ref.slice(i + 1), r.src_ref.slice(0, i)), true);
     }
   }
 
@@ -174,7 +196,7 @@ async function findAllLinkedWorkItems(planSlug: string, itemId: string): Promise
     SELECT feature_id, harness_slug
       FROM harness_shared.harness_features_consolidated
      WHERE ${stampMatchFragment(sql, planSlug, itemId)}`;
-  for (const r of featureRows) add(await getWorkItem(r.feature_id, r.harness_slug));
+  for (const r of featureRows) add(await getWorkItem(r.feature_id, r.harness_slug), false);
 
   // Read the UNIFIED base table rather than the engineer_issues view. The view
   // projects `payload - '_ei'`, and an index cannot be built on the base table to
@@ -186,7 +208,7 @@ async function findAllLinkedWorkItems(planSlug: string, itemId: string): Promise
       FROM harness_shared.work_items
      WHERE item_kind = ANY(${[...ISSUE_FAMILY_KINDS]}::text[])
        AND ${stampMatchFragment(sql, planSlug, itemId)}`;
-  for (const r of issueRows) add(await getWorkItem(r.issue_id));
+  for (const r of issueRows) add(await getWorkItem(r.issue_id), false);
 
   return [...found.values()];
 }
@@ -215,6 +237,7 @@ export async function reconcileLinkedWorkItemsForPlanItem(
     reconciled: [],
     skippedInFlight: [],
     skippedAlreadyTerminal: [],
+    skippedUnprovenLink: [],
   };
   try {
     // Resolve the plan item's TERMINAL status (done vs dropped) — it both gates
@@ -300,6 +323,47 @@ export async function reconcileLinkedWorkItemsForPlanItem(
         // last_progress_at) and existing corrupted rows (an unclaimed item with
         // a stale timestamp is no longer treated as in-flight).
         out.skippedInFlight.push(wi.id);
+        continue;
+      }
+      if (wi.family === 'issue' && !wi.viaImplementsEdge) {
+        // EI-19460536530145188: an ISSUE-family item reached only by the
+        // `payload.plan_item` STAMP, with no `implements` edge. The stamp is NOT
+        // evidence of implementation, and closing on it destroys real work.
+        //
+        // WHY THE STAMP IS NOT EVIDENCE: `work_items:create { plan_item }` writes
+        // its coord edge with rel `'relates'` (_create-core.ts) — deliberately
+        // weaker than `implements`. It writes the stamp too, but ONLY so that
+        // work_items:complete's plan-item auto-flip can find it
+        // (EI-19390496242545842, which added the stamp write for that FORWARD
+        // direction alone). This reconciler then read the same stamp in the
+        // REVERSE direction as if it asserted implementation. It does not: an
+        // agent who files a bug DISCOVERED while working P-007 passes
+        // `plan_item:{...}` because it is the only linking field offered, and the
+        // tool describes it as a coverage edge — not as a self-destruct.
+        //
+        // MEASURED before this guard (whole history, 1,210 reconciler-closed rows):
+        //   task    593 — 593 via implements edge,   0 stamp-only
+        //   feature 585 —   0 via implements edge, 585 stamp-only  (feature-family, unaffected)
+        //   change   30 —  29 via implements edge,   1 stamp-only
+        //   bug       1 —   0 via implements edge,   1 stamp-only  (WI-9333, destroyed)
+        // So every legitimately-reconciled issue-family item (593 task + 29 change)
+        // carries the edge and is UNAFFECTED; only the 2 stamp-only issue rows are
+        // spared. Feature-family is untouched — it is entirely stamp-borne by
+        // design (convert.ts / plan-run minting), which is why the stamp path
+        // cannot simply be dropped, and why this guard is scoped to `issue`.
+        //
+        // ⚠ Do NOT "fix" this by excluding bug/change by KIND instead. 29 of the
+        // 30 reconciled `change` rows are genuine plan-item implementations
+        // ("P-005: Tests + gates…", "Apply compact icon-only rail…") minted with
+        // the edge by convert.ts; a kind-based exclusion would strand all of them
+        // as the phantom-todos EI-5925 created this module to eliminate — breaking
+        // 30 to save 1. The truth source, not the kind, is the discriminator.
+        //
+        // Skipping (rather than closing as `closed`/abandoned) is the deliberate
+        // choice: a surviving open item is RECOVERABLE — an agent claims it, sees
+        // the work already landed, and closes it with evidence. A silent terminal
+        // close is not: nobody looks at it again, and it reads as a shipped fix.
+        out.skippedUnprovenLink.push(wi.id);
         continue;
       }
       const targetState = wi.family === 'feature' ? target.feature : target.issue;

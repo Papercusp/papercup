@@ -4296,17 +4296,27 @@ describe('quiet-cut — never judge a tip younger than the quiet window (2026-07
       const v = Number(env.PAPERCUSP_QUIET_CUT_SEC);
       return Number.isFinite(v) && v >= 0 ? Math.floor(v) : 240;
     };
-    expect(reintroducedLocalCopy({})).toBe(quietCutSecFromEnv({})); // agrees behaviorally…
+    // NODE_ENV is spelled out because Next's global augmentation (next-env.d.ts →
+    // next/types/global.d.ts) makes it REQUIRED on ProcessEnv, so a bare {} does not
+    // satisfy the parameter type. The older call sites in this file omit it and are
+    // carried in apps/operator/.tsc-baseline.json; new ones should not add to that debt.
+    const env: NodeJS.ProcessEnv = { NODE_ENV: 'test' };
+    expect(reintroducedLocalCopy(env)).toBe(quietCutSecFromEnv(env)); // agrees behaviorally…
     expect(reintroducedLocalCopy).not.toBe(shared.quietCutSecFromEnv); // …and is still caught.
   });
 
   it('floors a non-integer window — the exact value the two copies used to disagree on', () => {
+    // NODE_ENV: Next's global augmentation makes it REQUIRED on ProcessEnv (see above).
+    const withSec = (sec: string): NodeJS.ProcessEnv => ({
+      NODE_ENV: 'test',
+      PAPERCUSP_QUIET_CUT_SEC: sec,
+    });
     // Pre-fix: the authority returned 90.7 while the predictor returned 90.
-    expect(quietCutSecFromEnv({ PAPERCUSP_QUIET_CUT_SEC: '90.7' })).toBe(90);
+    expect(quietCutSecFromEnv(withSec('90.7'))).toBe(90);
     // A negative window is nonsense, not a disable — it must fall back, not return 0.
-    expect(quietCutSecFromEnv({ PAPERCUSP_QUIET_CUT_SEC: '-5' })).toBe(240);
+    expect(quietCutSecFromEnv(withSec('-5'))).toBe(240);
     // '0' via _SEC is a real 0-second window (only PAPERCUSP_QUIET_CUT=0 is the opt-out).
-    expect(quietCutSecFromEnv({ PAPERCUSP_QUIET_CUT_SEC: '0' })).toBe(0);
+    expect(quietCutSecFromEnv(withSec('0'))).toBe(0);
   });
 
   /** Commit with a pinned committer date (rev-list --before + %ct read COMMITTER time). */

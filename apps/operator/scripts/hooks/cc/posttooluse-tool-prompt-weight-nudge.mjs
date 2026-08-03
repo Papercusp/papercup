@@ -52,9 +52,26 @@
 //     imported constant) makes that tool UNMEASURABLE and it is SKIPPED, never
 //     guessed at. Under-reporting is the safe direction for an advisory nudge;
 //     a made-up number would be worse than silence.
+//   - MEASURED COVERAGE (2026-08-03, against the live catalog rather than
+//     asserted): this weigher was cross-checked against the production
+//     promptWeight() over all 953 tool files / 722 registered tools. 687 tools
+//     were measured by BOTH and agreed EXACTLY — 0 mismatches. The ~35 the AST
+//     does not measure are the unmeasurable shapes above (4 files carry a
+//     template-literal description) plus tools registered outside the two
+//     roots. So: ~95% of the catalog is covered AT EDIT TIME, only ever
+//     under-reporting, and the gate-time check (1) still covers 100%. Re-run
+//     that cross-check if you change the weighing logic — a synthetic
+//     self-test cannot tell you whether this agrees with the module the gate
+//     actually uses, which is the only property that matters.
 //   - FAILS OPEN on every internal error — bad JSON, missing file, no
 //     typescript, an unparseable budget module. A bug here must never disturb an
 //     edit that already succeeded.
+//   - COST (measured 2026-08-03, 5 runs each): ~0.10s for a NON-candidate path —
+//     bare node startup, because isCandidateFile short-circuits before any file
+//     read or parse, and that is the overwhelmingly common case — and ~0.35s on
+//     an actual tool-definition edit (startup + loading typescript + one parse).
+//     It also stays silent unless something is genuinely over budget, so in the
+//     steady state (0 tools over budget today) it emits nothing at all.
 //   - `--self-test` runs the embedded cases (no stdin) and exits non-zero on
 //     failure; mirrors both sibling nudges.
 //
@@ -108,11 +125,15 @@ export function isCandidateFile(filePath) {
   if (/\.(test|spec)\.tsx?$/.test(filePath)) return false;
   if (filePath.endsWith('.d.ts')) return false;
   const norm = filePath.split(sep).join('/');
-  if (norm.includes('/node_modules/')) return false;
+  // Segment-based, NOT a '/node_modules/' substring: a RELATIVE path has no
+  // leading slash, so the substring form silently lets `node_modules/x/
+  // agent-tools/y.ts` through (caught by this hook's own test suite).
+  const segs = norm.split('/');
+  if (segs.includes('node_modules')) return false;
+  if (segs.includes('_retired')) return false;
   // The desktop sidecar carries a full mirror of the tree; nudging on a build
   // artifact would point the author at a file they must not edit.
-  if (norm.includes('/src-tauri/sidecar/')) return false;
-  if (norm.includes('/_retired/')) return false;
+  if (norm.includes('src-tauri/sidecar/')) return false;
   return norm.includes('/agent-tools/') || norm.includes('/agent-mcp/src/tools/');
 }
 
@@ -367,6 +388,10 @@ function selfTest() {
   check('non-candidate: test sibling', !isCandidateFile('/r/packages/operator-core/lib/agent-tools/loop/status.test.ts'));
   check('non-candidate: unrelated path', !isCandidateFile('/r/apps/operator/lib/release/green-checkpoint.ts'));
   check('non-candidate: sidecar mirror', !isCandidateFile('/r/papercusp-desktop/src-tauri/sidecar/apps/x/agent-tools/a.ts'));
+  // RELATIVE path — no leading slash, so a '/node_modules/' substring test
+  // misses it. Regression case for a real bug this file shipped with.
+  check('non-candidate: relative node_modules path', !isCandidateFile('node_modules/x/agent-tools/y.ts'));
+  check('non-candidate: retired', !isCandidateFile('/r/packages/operator-core/lib/agent-tools/_retired/old.ts'));
 
   check('budgets parsed', (() => {
     const b = readBudgets(ts, 'export const BUDGET = 1500;\nexport const HARD_CAP = 1600;\n');

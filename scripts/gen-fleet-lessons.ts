@@ -31,11 +31,15 @@
  *
  * RESIDUE
  *
- * A pack item is a shipped artifact, so it must carry no internal references.
- * That is enforced at three points, deliberately: the producer no longer
- * renders them (renderCandidateLearningFile), this exporter REFUSES a pack that
+ * A pack item is a shipped artifact, so it must carry no internal references and
+ * no tier-3 THIS-BOX identity. That is enforced at FOUR points, deliberately:
+ * the producer no longer renders internal refs (renderCandidateLearningFile),
+ * the curation loop refuses to ADMIT a bad item at all
+ * (materializeCandidateIntoPack, P-009), this exporter REFUSES a pack that
  * carries them, and pack-residue.test.ts gates the committed result on every
- * test run. All three share ONE rule (`findPackResidue`) so they cannot drift.
+ * test run. All four share ONE rule module (./pack-residue) — which itself
+ * reuses the shared identity-leak detector rather than keeping a second list —
+ * so none of them can drift from the others.
  */
 import { promises as fs } from 'node:fs';
 import { join, dirname } from 'node:path';
@@ -45,8 +49,9 @@ import {
   loadKnowledgePackFromDir,
 } from '../packages/operator-core/lib/knowledge-packs/load-packs';
 import {
-  findPackResidue,
+  findShippableTextFaults,
   formatPackResidue,
+  resolvePackIdentityEntries,
 } from '../packages/operator-core/lib/knowledge-packs/pack-residue';
 
 const PACK_ID = 'fleet-lessons';
@@ -83,21 +88,26 @@ async function main(): Promise<number> {
     .filter((f) => f.endsWith('.md') || f === 'manifest.yaml')
     .sort();
 
-  // Residue gate — refuse the whole export rather than ship a bad item.
+  // Admission gate — refuse the whole export rather than ship a bad item.
+  // P-009: the same gate the curation loop enforces at adoption, now including
+  // the tier-3 THIS-BOX identity legs (hostname / git identity / absolute paths /
+  // named owner tags), not just the internal-reference residue. Items adopted
+  // BEFORE the gate existed are exactly the population this catches.
+  const identityEntries = resolvePackIdentityEntries();
   const residue: string[] = [];
   const bodies = new Map<string, string>();
   await Promise.all(
     srcFiles.map(async (f) => {
       const body = await fs.readFile(join(srcDir, f), 'utf8');
       bodies.set(f, body);
-      const hits = findPackResidue(body);
+      const hits = findShippableTextFaults(body, { identityEntries });
       if (hits.length > 0) residue.push(`${f}\n${formatPackResidue(hits)}`);
     }),
   );
   if (residue.length > 0) {
     console.error(
       `[gen:fleet-lessons] REFUSING to export — ${residue.length} item(s) carry internal\n` +
-        `references that are dangling on a fresh install:\n\n${residue.join('\n\n')}\n\n` +
+        `references or tier-3 THIS-BOX identity that must not ship:\n\n${residue.join('\n\n')}\n\n` +
         `Fix the item text in ${srcDir} (the producing renderer no longer emits these;\n` +
         `items adopted before that fix still carry them). Do not relax the rule.`,
     );

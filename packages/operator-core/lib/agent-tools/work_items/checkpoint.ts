@@ -267,7 +267,11 @@ function checksSpec() {
         '`## Checks` section every time this checkpoint is re-injected. Put hash/id/timestamp/state expectations ' +
         'HERE rather than in checkpoint prose, so the probe travels with the claim and a successor can tell an ' +
         'ASSERTED claim from a VERIFIED one. Carry-forward semantics: OMITTED preserves the existing rows (a ' +
-        'plain rewrite never silently drops them), [] clears them, a list merges by claim text.',
+        'plain rewrite never silently drops them) and [] clears them — but a SUPPLIED list REPLACES the set: ' +
+        'send the FULL set you want stored, because any stored claim you leave out is DROPPED. (A supplied row ' +
+        'whose claim text matches a stored one inherits that row\'s recheck/verified/sinceMs when you omit them, ' +
+        'so re-sending a claim never loses its evidence — but that inheritance is per-row, it is NOT a union.) ' +
+        'Rows dropped this way come back as `checksDropped` in the result.',
     );
 }
 
@@ -553,6 +557,17 @@ export default defineTool({
         // survive a note clear: work_items:complete clears the checkpoint as terminal
         // cleanup, and rows surviving that would resurrect a checks-only checkpoint on
         // an already-closed item.
+        // EI-19460631385508515: a SUPPLIED `checks` list REPLACES the stored set —
+        // normalizeCheckEntries iterates only the incoming rows and uses the prior set
+        // solely to inherit recheck/verified/sinceMs onto claims that reappear. A stored
+        // claim the caller leaves out is therefore DROPPED, silently. That is defensible
+        // as semantics (it is the only way to retire a stale check) but it was documented
+        // as "a list merges by claim text", which promises a UNION — so an agent updating
+        // ONE row to mark it verified would lose the others and the reply's `checks` count
+        // (read off the stored note) was the only trace. The doc now says REPLACES; this
+        // captures what went missing so the loss is VISIBLE in the result rather than
+        // inferable only by diffing a count you would have to have recorded beforehand.
+        let droppedCheckClaims: string[] = [];
         const checksTransform =
           suppliedChecks !== undefined || !isClear
             ? (priorNote: string | null, incoming: string | null | undefined) => {
@@ -568,6 +583,12 @@ export default defineTool({
                 const body = isChecksOnlyPatch ? priorSplit.body : incomingBody;
                 const merged =
                   suppliedChecks !== undefined ? normalizeCheckEntries(suppliedChecks, prior) : prior;
+                // Recomputed on every transform invocation (the store may retry it under
+                // its lock) so the last run — the one whose result is stored — wins.
+                const keptClaims = new Set(merged.map((c) => c.claim.trim()));
+                droppedCheckClaims = prior
+                  .map((c) => c.claim.trim())
+                  .filter((claim) => claim.length > 0 && !keptClaims.has(claim));
                 if (merged.length === 0) return body.length > 0 ? body : null;
                 const rendered = withCarryNoteChecks(body, merged);
                 if (rendered.length <= CHECKPOINT_CAP) return rendered;
@@ -681,11 +702,31 @@ export default defineTool({
           storedHead: stored !== null ? stored.slice(0, 80) : null,
           /**
            * EI-19298690705878336: how many `## Checks` rows the stored note ended up
-           * carrying. Read back off `stored` rather than counting the caller's input,
-           * so it reflects the MERGE the store actually performed (carried-forward rows
-           * included) instead of what was passed in.
+           * carrying. Read back off `stored` rather than counting the caller's input, so
+           * it reflects what the store actually WROTE instead of what was passed in.
+           * EI-19460631385508515: note this is NOT evidence of a union — a supplied list
+           * REPLACES the set, so this can legitimately come back LOWER than the count you
+           * had stored. `checksDropped` below names what went missing.
            */
           checks: stored !== null ? splitCarryNoteChecks(stored).checks.length : 0,
+          /**
+           * EI-19460631385508515: stored check claims this write DROPPED — present only
+           * when a supplied `checks` list omitted rows that were already stored, so an
+           * unaffected result's shape is unchanged (same convention as `repairs`). The
+           * write SUCCEEDS either way; this reports a loss, never a refusal. Claims are
+           * truncated for the reply — they identify WHICH row went, they are not a
+           * restore payload.
+           */
+          ...(droppedCheckClaims.length
+            ? {
+                checksDropped: droppedCheckClaims.map((c) => (c.length > 300 ? `${c.slice(0, 300)}…` : c)),
+                checksDroppedNote:
+                  `a supplied \`checks\` list REPLACES the stored set — ${droppedCheckClaims.length} stored ` +
+                  `claim(s) were not in this write and are now gone. Re-send the FULL set you want carried ` +
+                  `(a re-sent claim inherits its prior recheck/verified), or pass no \`checks\` at all to leave ` +
+                  `the stored rows untouched.`,
+              }
+            : {}),
           /**
            * EI-19400299440742193: every soft-cap TRIM this write applied, so a caller
            * can see exactly what was shortened. Absent entirely when nothing was

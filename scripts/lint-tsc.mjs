@@ -88,6 +88,9 @@ import {
   runTscBaselineGate,
   lintTscScopeFromArgv,
   formatLintTscResultMarker,
+  discoverSiblingTypecheckGates,
+  coveragePrefixesFromGateModule,
+  gateCoveringFile,
 } from './lib/tsc-baseline-gate.mjs';
 
 export {
@@ -119,6 +122,9 @@ export {
   mergeRatchetIntoBaseline,
   lintTscScopeFromArgv,
   formatLintTscResultMarker,
+  discoverSiblingTypecheckGates,
+  coveragePrefixesFromGateModule,
+  gateCoveringFile,
 };
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -143,8 +149,8 @@ const baselineFile = resolve(ROOT, 'packages/operator-core/.tsc-baseline.json');
 export const TSC_COMMAND =
   'npx tsc -p packages/operator-core/tsconfig.json --noEmit --incremental false';
 
-function main() {
-  runTscBaselineGate({
+async function main() {
+  await runTscBaselineGate({
     root: ROOT,
     tscCommand: TSC_COMMAND,
     baselineFile,
@@ -155,5 +161,10 @@ function main() {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
-  main();
+  main().catch((err) => {
+    // Never let a crash read as a pass: this gate's whole job is refusing to report clean when
+    // it did not actually judge anything.
+    console.error(err);
+    process.exit(1);
+  });
 }

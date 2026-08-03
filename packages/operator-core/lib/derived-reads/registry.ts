@@ -60,6 +60,27 @@ export interface DerivedReadProducer<T = unknown> {
   producerVersion: number;
   /** 'workspace' ⇒ one snapshot per workspace; 'harness' ⇒ one per harness. */
   scope: 'workspace' | 'harness';
+  /**
+   * Opt OUT of the default `precompute-derived-reads` sweep (EI-19457924854150358).
+   * Such a producer runs ONLY when named explicitly in `refreshDerivedReads({ only })`,
+   * i.e. from its own dedicated routine.
+   *
+   * ⚠ This exists because `ttlMs` alone CANNOT express "too expensive for the shared
+   * tick". Producers run SEQUENTIALLY (see refreshDerivedReads below) and the routine
+   * is seeded `concurrency: 'skip'`, so a producer's cost is charged to the whole
+   * sweep on every pass where it is due — not amortised by its ttl. The ttl-ascending
+   * ordering (WI-5471) bounds head-of-line blocking only while the heaviest producer
+   * is seconds-scale (soakReport ~27s, storage.usage ~20s, plans.lint ~13.8s). A
+   * MINUTES-scale producer defeats it outright: it holds the loop long enough that the
+   * next several 2-min ticks are skipped, starving the liveness-sensitive short-ttl
+   * producers (serviceHealth, ttl 90s — the short cadence exists for it).
+   *
+   * So the rule is about DURATION, not frequency: if `compute` can take longer than
+   * roughly one cron interval, set this and give it its own routine. A long ttl is
+   * NOT a substitute — it changes how OFTEN you pay the cost, never how LONG the
+   * shared tick is blocked when you do.
+   */
+  excludeFromDefaultSweep?: boolean;
   /** The expensive computation. Runs on the routine's thread, never a read. */
   compute: (ctx: { workspaceId: string; harnessSlug: string }) => Promise<T>;
 }
@@ -296,8 +317,12 @@ export async function refreshDerivedReads(ctx: {
   // ascending refreshes serviceHealth/gitPipeline/dev.* (90s) before the multi-second
   // walks even on a pass where those walks are due. Producers are independent (each
   // writes its own snapshot key), so the order is free to choose.
+  // EI-19457924854150358: an `excludeFromDefaultSweep` producer is skipped by the
+  // DEFAULT pass (too long-running for the shared 2-min tick — see the field's doc)
+  // but still runs when named explicitly in `only`, which is how its own dedicated
+  // routine drives it. An explicit request always wins over the exclusion.
   const producers = listDerivedReadProducers()
-    .filter((p) => !ctx.only || ctx.only.includes(p.key))
+    .filter((p) => (ctx.only ? ctx.only.includes(p.key) : !p.excludeFromDefaultSweep))
     .sort((a, b) => a.ttlMs - b.ttlMs);
 
   for (const producer of producers) {

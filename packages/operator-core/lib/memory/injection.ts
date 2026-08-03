@@ -610,7 +610,14 @@ function startCorpusLeg(input: MemoryInjectionInput): Promise<CorpusLegResult | 
         queryText,
         workspaceId: input.workspaceId,
         harnessSlugs: input.harnessSlugs ?? [],
-        excludeSessionId: sessionId,
+        // ⚠ This value is the caller's coord ownerId (`su-xxxx…`), NOT a native
+        // transcript session id — `session.sessionId` is the per-agent epoch-dedup
+        // identity, as claim-port.ts spells out. It used to be passed as
+        // `excludeSessionId` and compared against hits' native uuids, which are a
+        // different identity space, so the self-session filter never once fired in
+        // production (EI-19460887729945170). The corpus leg now resolves the owner's
+        // whole session chain, which is the unit this always meant.
+        excludeOwnerId: sessionId,
       });
       // P-001: a leg that ran and admitted nothing still reports HOW it ran.
       // Returning bare `null` here erased the one fact that explains an empty
