@@ -1169,46 +1169,6 @@ export async function advSessionsByCoordOwner(limit = 500): Promise<Map<string, 
 export const RECORDED_LIVE_MAX_AGE_MS = 12 * 60 * 60 * 1000;
 
 /**
- * The plan an owner's LIVE recorded session was LAUNCHED on, or null.
- *
- * The launch record is a second, independent answer to "is this agent working
- * on a plan": `fleet:launch-on-plan` (and any `--plan` launch) stamps
- * `adv_sessions.plan_slug` at spawn, whether or not the agent ever declares the
- * plan itself via `coord:orient { planSlug }`. The roster has always folded both
- * legs — `p.currentPlanSlug ?? adv?.planSlug` (adv-roster.ts) — but the session
- * DOSSIER read only the declared one, so a plan-launched agent that never
- * re-declared showed no plan in its popup while the roster row beside it showed
- * one. Measured 2026-08-03: 3 of 11 live plan-launched sessions (27%) were in
- * exactly that state. See plan session-popup-compaction-and-contrast-2026-08-02
- * D-006.
- *
- * Deliberately single-owner rather than reusing {@link listRecordedLiveSessions}:
- * the dossier resolves ONE agent, and that helper pulls up to 500 rows.
- * Most-recent live row wins (a resume reuses the owner id). Best-effort → null
- * on any DB error, matching every other leg of the dossier: a failed lookup
- * degrades to "no launch plan", never breaks the panel.
- */
-export async function launchPlanSlugForOwner(coordOwnerId: string): Promise<string | null> {
-  if (!coordOwnerId) return null;
-  try {
-    const { sql } = getOrgPg();
-    const rows = await sql<{ plan_slug: string | null }[]>`
-      SELECT plan_slug
-        FROM harness_shared.adv_sessions
-       WHERE coord_owner_id = ${coordOwnerId}
-         AND ended_at IS NULL
-         AND plan_slug IS NOT NULL
-       ORDER BY started_at DESC
-       LIMIT 1
-    `;
-    return rows[0]?.plan_slug ?? null;
-  } catch (e) {
-    warnUnlessMissingTable(e, 'launchPlanSlugForOwner');
-    return null;
-  }
-}
-
-/**
  * Live recorded sessions — the AUTHORITATIVE "what is running right now" leg of
  * the presence roster (presence-derive-from-session-log-2026-06-22 P-001).
  *

@@ -680,7 +680,19 @@ export default function AgentDossier({
           `claimable` is deliberately shown even at 0 — "this plan is alive but
           has nothing pickable" is a real, distinct state that a lone "next up"
           row cannot express (it would simply be absent, which reads as no data). */}
-      {signals?.lane || signals?.unavailableSignals.includes('lane') ? (
+      {/* Gated on `entry` (the roster row), NOT on `signals.lane` — i.e. present
+          for every agent the rail can describe at all, exactly like Health above.
+          It used to render only when a lane EXISTED, which meant an agent with no
+          declared plan got no section at all. An absent section cannot say "this
+          agent is not on a plan"; it reads as "this popup has no such feature",
+          and that is precisely what it was read as: [owner 2026-08-02 23:28Z]
+          "if the agent is working on a plan I dont see a place in the popup to
+          show that. add that to the right side bar." — filed SIX HOURS
+          after this very section shipped (plan D-006). The section's own comment
+          below already makes this argument one level down, for `claimable` at 0
+          ("it would simply be absent, which reads as no data"); the same argument
+          simply had not been applied to the section itself. */}
+      {entry ? (
         <section
           className="pc-dossier__section"
           id="pc-dossier-lane"

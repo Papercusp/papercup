@@ -265,6 +265,21 @@ export type AgentSignalKey =
  */
 export interface AgentLane {
   planSlug: string;
+  /**
+   * WHERE the plan came from, because the two legs are not equally strong and a
+   * reader deciding "is this agent really on this plan" needs to know which one
+   * answered.
+   *
+   * `declared` — the agent itself said so (`coord:orient { planSlug }` →
+   * presence.currentPlanSlug). Current by construction, and it MOVES when the
+   * agent moves between plans mid-session.
+   * `launch` — nobody declared anything; this is the plan the session was
+   * SPAWNED on (`adv_sessions.plan_slug`, stamped by fleet:launch-on-plan and
+   * any `--plan` launch). Fixed at spawn, so it can be stale if the agent has
+   * since moved on — but it is real evidence, and suppressing it is what made
+   * the dossier narrower than the roster (D-006).
+   */
+  source: 'declared' | 'launch';
   /** The plan's `## Now` state/next lines — null when the plan carries no Now block. */
   nowState: string | null;
   nowNext: string | null;
@@ -944,6 +959,9 @@ export function deriveLane(
     unresolvedBlockers?: unknown[];
     needsHuman?: boolean;
   }>,
+  /** Where `planSlug` came from — see AgentLane.source. Defaults to 'declared',
+   *  which is what every caller before the launch-record fallback existed. */
+  source: AgentLane['source'] = 'declared',
 ): AgentLane {
   const actionable = resolvedItems.filter(
     (it) =>
@@ -954,6 +972,7 @@ export function deriveLane(
   const first = actionable[0] ?? null;
   return {
     planSlug,
+    source,
     // A Now block is present-or-absent as a whole, but an EMPTY string in either
     // line is as good as absent to a reader — normalize both to null so the UI
     // never renders a labelled blank.
@@ -1024,6 +1043,7 @@ async function readAgentLane(
   planSlug: string | null,
   harnessSlug: string | null,
   workspaceId: string | null,
+  source: AgentLane['source'] = 'declared',
 ): Promise<AgentLane | null> {
   if (!planSlug) return null;
   const [{ readPlanBySlug }, { resolveEffectiveStatus }] = await Promise.all([
@@ -1035,7 +1055,7 @@ async function readAgentLane(
     ...(workspaceId && workspaceId !== '*' ? { workspaceId } : {}),
   });
   if (!res) return null;
-  return deriveLane(planSlug, res.parsed.now, resolveEffectiveStatus(res.parsed).items);
+  return deriveLane(planSlug, res.parsed.now, resolveEffectiveStatus(res.parsed).items, source);
 }
 
 /** Leg (b): gates visible in this agent's scopes, split awaited / not-awaited. */
@@ -1131,12 +1151,15 @@ export async function getAgentSignals(owner: string): Promise<AgentSignals> {
     // what it is on, and it is what changes when an agent moves between plans
     // mid-session, whereas the launch record is fixed at spawn.
     const declaredPlanSlug = presence?.currentPlanSlug ?? null;
-    const planSlug =
-      declaredPlanSlug ??
-      (await launchPlanSlugForOwner(owner).catch(onFailure('lane')(null)));
+    const launchPlanSlug = declaredPlanSlug
+      ? null
+      : (await latestAdvSessionByCoordOwner(owner).catch(onFailure('lane')(null)))?.planSlug ?? null;
+    const planSlug = declaredPlanSlug ?? launchPlanSlug;
     const harnessSlug = top?.harness ?? null;
     const [lane, announcedGates, fleetControl] = await Promise.all([
-      readAgentLane(planSlug, harnessSlug, workspaceId).catch(onFailure('lane')(null)),
+      readAgentLane(planSlug, harnessSlug, workspaceId, declaredPlanSlug ? 'declared' : 'launch').catch(
+        onFailure('lane')(null),
+      ),
       readAnnouncedGatesFor(owner, { fleetSlug, planSlug, harnessSlug }).catch(
         onFailure('announcedGates')([] as AgentAnnouncedGate[]),
       ),
