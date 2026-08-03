@@ -510,7 +510,10 @@ describe('walkHarnessTree — generated .papercusp state dir is never walked (EI
     // the fixture is too deep for the default maxDepth and the guard above
     // would be vacuous, passing for the wrong reason.
     const nodes = walkHarnessTree(root, { parentSlug: 'papercusp', skipDirs: ['node_modules', '.git'] });
-    expect(nodes.map((n) => n.qualifiedSlug)).toContain(
+    const submoduleSlugs = nodes
+      .filter((n): n is Extract<ClassifiedNode, { kind: 'submodule' }> => n.kind === 'submodule')
+      .map((n) => n.qualifiedSlug);
+    expect(submoduleSlugs).toContain(
       'papercusp/.papercusp/lib-api/tooldef/_media/tooldef-http',
     );
   });
