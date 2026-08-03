@@ -197,8 +197,20 @@ export async function loadCoverageSnapshot(
 }
 
 let memo: { at: number; workspaceId: string; snapshot: CoverageSnapshot } | null = null;
+let lastWarnAt = 0;
 
-/** TTL-memoised {@link loadCoverageSnapshot}. Fail-open: a read error yields an
+/** A persistent read failure must not spam a hot search path — one line per
+ *  window is enough to be discoverable without drowning the log. */
+export const COVERAGE_WARN_THROTTLE_MS = 5 * 60 * 1000;
+
+/** True when the handle can actually be queried. A caller that wired no real
+ *  PG handle (a stub in a unit test) is NOT a failure to shout about — it
+ *  still resolves to `unknown`, which is the honest verdict either way. */
+function isQueryable(sql: unknown): sql is CoverageSqlHandle {
+  return typeof (sql as CoverageSqlHandle | null)?.unsafe === 'function';
+}
+
+/** TTL-memoised {@link loadCoverageSnapshot}. Fail-open: any failure yields an
  *  EMPTY snapshot, which assesses as `unknown` — never as healthy, and never
  *  an exception on the search path. */
 export async function loadCoverageSnapshotCached(
@@ -209,23 +221,32 @@ export async function loadCoverageSnapshotCached(
   if (memo && memo.workspaceId === workspaceId && now.getTime() - memo.at < COVERAGE_SNAPSHOT_TTL_MS) {
     return memo.snapshot;
   }
+  if (!isQueryable(sql)) return new Map();
   try {
     const snapshot = await loadCoverageSnapshot(sql, workspaceId, now);
     memo = { at: now.getTime(), workspaceId, snapshot };
     return snapshot;
   } catch (err) {
-    console.warn(
-      `[coverage-gate] snapshot read failed (degrading to unknown, non-fatal): ${
-        (err as Error)?.message ?? String(err)
-      }`,
-    );
+    // Memoise the EMPTY result too. Without this a persistent failure retries
+    // (and logs) on EVERY query, turning a degraded signal into a log flood on
+    // the hottest path in the tool.
+    memo = { at: now.getTime(), workspaceId, snapshot: new Map() };
+    if (now.getTime() - lastWarnAt >= COVERAGE_WARN_THROTTLE_MS) {
+      lastWarnAt = now.getTime();
+      console.warn(
+        `[coverage-gate] snapshot read failed (degrading to unknown, non-fatal): ${
+          (err as Error)?.message ?? String(err)
+        }`,
+      );
+    }
     return new Map();
   }
 }
 
-/** Test seam — drop the memo. */
+/** Test seam — drop the memo and the warn throttle. */
 export function resetCoverageSnapshotCache(): void {
   memo = null;
+  lastWarnAt = 0;
 }
 
 const pctStr = (v: number | null): string => (v === null ? 'n/a' : `${(v * 100).toFixed(1)}%`);

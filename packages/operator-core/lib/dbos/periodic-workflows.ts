@@ -1180,6 +1180,72 @@ const dbIndexBloatReindexWorkflow = idempotentRegisterWorkflow('dbIndexBloatRein
 );
 DBOS.registerScheduled(dbIndexBloatReindexWorkflow, { name: 'dbIndexBloatReindex', crontab: '0 50 4 * * *' });
 
+// pg_stat_statements has no DROP DATABASE hook: entries keyed to a dropped dbid are
+// retained forever, and backups/dumps run against TRANSIENT databases, so every dump
+// permanently consumes entry slots. Measured 2026-08-03: 3,303 of 9,791 entries (33.7%)
+// belonged to 23 databases that no longer exist, pinning the cap at 97.9% — and Postgres
+// evicts by LOW USAGE, so it was discarding REAL application statistics at 13.5/day. An
+// evicted-then-recreated entry's next delta reads as a PHANTOM SPIKE, so this leak
+// corrupts the very delta measurements db-performance-remediation-2026-07-26 depends on
+// (D-033). Only ever targets a dbid absent from pg_database, and NEVER passes dbid=0 —
+// zero means "ALL databases" to pg_stat_statements_reset. Never throws (mirrors the other
+// retention ticks): a thrown step would mark the workflow permanently dead.
+async function dbPgssOrphanStatsReclaimTick(): Promise<void> {
+  if (!(await retentionEnabled(FLAGS.DB_PGSS_ORPHAN_STATS_RECLAIM))) return;
+  await DBOS.runStep(async () => {
+    if (shouldShedHeavyTick('db-pgss-orphan-stats-reclaim')) return;
+    try {
+      const { reclaimOrphanPgssStatsOnce } = await import('../db-pgss-orphan-stats-reclaim');
+      const { sql } = getOrgPg();
+      const r = await reclaimOrphanPgssStatsOnce(sql);
+      if (r.skipped) {
+        // 'no-privilege' is the one worth saying out loud: it means migration 756's GRANT
+        // did not take, so the sweep is inert and the residue is still growing.
+        const how = r.skipped === 'no-privilege' ? console.warn : console.log;
+        how(
+          `[db-pgss-orphan-stats-reclaim] skipped: ${r.skipped}` +
+            (r.skipped === 'no-privilege'
+              ? ' — run: GRANT EXECUTE ON FUNCTION pg_stat_statements_reset(oid,oid,bigint,boolean) TO harness_admin;'
+              : ''),
+        );
+        return;
+      }
+      const okCount = r.reclaimed.filter((x) => !x.error).length;
+      const failCount = r.reclaimed.length - okCount;
+      if (okCount > 0 || failCount > 0) {
+        const pct = r.capMax > 0 ? ((r.entriesAfter / r.capMax) * 100).toFixed(1) : '?';
+        console.log(
+          `[db-pgss-orphan-stats-reclaim] reclaimed ${r.entriesReclaimed} entr(ies) from ` +
+            `${okCount} dropped database(s); ${r.entriesBefore} -> ${r.entriesAfter}/${r.capMax} (${pct}% full)` +
+            `${failCount > 0 ? `, ${failCount} failed` : ''}` +
+            `${r.truncated ? ' (truncated by per-run cap)' : ''}`,
+        );
+      }
+      if (r.capStillPressured) {
+        // The sweep must not MASK an undersized cap by partially relieving it.
+        // pg_stat_statements.max is postmaster-context, so raising it needs a restart.
+        console.warn(
+          `[db-pgss-orphan-stats-reclaim] cap STILL pressured after sweep ` +
+            `(${r.entriesAfter}/${r.capMax}) — eviction will keep discarding live ` +
+            `statistics; raising pg_stat_statements.max requires a postmaster restart.`,
+        );
+      }
+    } catch (err) {
+      console.warn(
+        `[db-pgss-orphan-stats-reclaim] run skipped (non-fatal): ${(err as Error).message}`,
+      );
+    }
+  }, { name: 'db-pgss-orphan-stats-reclaim' });
+}
+const dbPgssOrphanStatsReclaimWorkflow = idempotentRegisterWorkflow('dbPgssOrphanStatsReclaim', () =>
+  DBOS.registerWorkflow(dbPgssOrphanStatsReclaimTick, {
+    name: 'dbPgssOrphanStatsReclaim', maxRecoveryAttempts: 5,
+  }),
+);
+// 05:20 UTC daily — clear of the :00 backup tick, the 04:xx GC cluster and the 04:50
+// index-bloat sweep.
+DBOS.registerScheduled(dbPgssOrphanStatsReclaimWorkflow, { name: 'dbPgssOrphanStatsReclaim', crontab: '0 20 5 * * *' });
+
 // 3x/day (02:40, 10:40, 18:40 UTC — off the :00 backup tick and the 04:xx GC
 // cluster): the desktop-perf release gate's missing PRODUCER (WI-6538).
 // `harness_shared.desktop_perf_runs` was written ONLY by a human clicking Run

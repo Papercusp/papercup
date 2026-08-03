@@ -59,8 +59,8 @@ interface Args {
 }
 
 /**
- * THE ORACLE — which INDIVIDUAL candidate terms retrieve an answer-bearing
- * record at all, and would any selector have been able to pick them?
+ * THE ORACLE — which 2-TERM PAIRS retrieve an answer-bearing record at all, and
+ * would any selector have been able to pick one?
  *
  * This is a CEILING measurement, run BEFORE designing a replacement selector
  * (WI-9273), because that ordering is exactly what P-018 got wrong: a mechanism
@@ -70,8 +70,10 @@ interface Args {
  *
  * It answers three questions no selector-vs-selector comparison can:
  *   1. Is 2/7 near the ceiling, or is 7/7 reachable? If a batch has NO winning
- *      term, no choice of two terms can save it and the fix is not selection at
- *      all (it is reach, or the 2-term cap, or the corpus).
+ *      pair AFTER AN EXHAUSTIVE search, no choice of two terms can save it and
+ *      the fix is not selection at all (it is reach, or the 2-term cap, or the
+ *      corpus). ⚠ "no winner found" earns that conclusion ONLY at COMPLETE
+ *      coverage — see the coverage note on the candidate window below.
  *   2. What do the winners have in common? If nothing learnable — not rarity,
  *      not length, not position — then ranked single-term selection is a dead
  *      end and the honest answer is to stop trying to pick.
@@ -90,19 +92,35 @@ async function runOracle(args: Args): Promise<void> {
   const { sql } = getOrgPg();
   const df = await corpusTermDfLookup(sql, 'papercusp-workspace');
 
-  console.log('\n## ORACLE — which SINGLE candidate terms retrieve an answer-bearing record?');
-  console.log(`   (ceiling for WI-9273: ALL 2-term pairs over the first ${args.oracleMaxTerms} candidates)\n`);
+  console.log('\n## ORACLE — which 2-TERM PAIRS retrieve an answer-bearing record?');
+  console.log(
+    `   (ceiling for WI-9273: every pair over ${args.oracleMaxTerms > 0 ? `the first ${args.oracleMaxTerms}` : 'ALL'} candidates)\n`,
+  );
 
   let batchesWithAnyWinner = 0;
+  let batchesProvenUnreachable = 0;
+  let batchesUndetermined = 0;
   const winnerProfile: Array<{ term: string; df: number; len: number; pos: number; batch: number }> = [];
 
   for (const batch of REPLAY) {
     const raw = deriveBatchQuery(batch.calls);
-    const terms = corpusTerms(raw).slice(0, args.oracleMaxTerms);
+    const allTerms = corpusTerms(raw);
     const picks = {
       length: corpusQueryText(raw).split(' '),
       banded: df ? corpusQueryText(raw, undefined, { df }).split(' ') : [],
     };
+    // ⚠ SECOND CORRECTION, same class as the first (see the PAIRS note below).
+    // The candidate window used to be a bare `.slice(0, N)` while the SHIPPED
+    // SELECTORS choose from ALL of `corpusTerms(raw)`. So a selector whose pick
+    // fell outside the window could never match a probed pair, and the row
+    // printed `LENGTH no` — an ABSENCE OF PROBE rendered as a NEGATIVE RESULT.
+    // Measured: turn 69 has 29 candidates, of which 8 were probed (7% of its 406
+    // pairs), and its `LENGTH no` was un-probed rather than false. Both shipped
+    // selectors' picks are now unioned into the window unconditionally, so an
+    // `[L]`/`[B]` verdict is always about a pair that was actually tried.
+    const windowed = args.oracleMaxTerms > 0 ? allTerms.slice(0, args.oracleMaxTerms) : allTerms;
+    const terms = [...new Set([...windowed, ...picks.length, ...picks.banded])].filter((t) => allTerms.includes(t));
+    const fullPairs = (allTerms.length * (allTerms.length - 1)) / 2;
 
     // PAIRS, not single terms. ⚠ This is a CORRECTION of this probe's first
     // version, and the bug is worth stating because it is counter-intuitive:
@@ -151,9 +169,23 @@ async function runOracle(args: Args): Promise<void> {
       const p = pair.split(' ');
       return picked.length === 2 && p.every((t) => picked.includes(t));
     };
-    console.log(`   turn ${batch.turn}  (${results.length} pairs probed over ${terms.length} candidates)`);
+    const complete = results.length >= fullPairs;
+    if (winners.length > 0) {
+      /* counted above */
+    } else if (complete) batchesProvenUnreachable++;
+    else batchesUndetermined++;
+    console.log(
+      `   turn ${batch.turn}  (${results.length} of ${fullPairs} pairs probed over ${terms.length} of ${allTerms.length} candidates` +
+        ` — ${complete ? 'COMPLETE' : `PARTIAL ${((results.length / fullPairs) * 100).toFixed(0)}%`})`,
+    );
     if (winners.length === 0) {
-      console.log(`     winners: (NONE — no 2-term pair in the candidate pool retrieves the answer)`);
+      // The distinction this line exists to make: an exhausted search that found
+      // nothing is EVIDENCE; a truncated one that found nothing is NOT.
+      console.log(
+        complete
+          ? `     winners: (NONE — every pair tried; this batch is PROVEN unreachable by 2-term selection)`
+          : `     winners: (none found — but ${fullPairs - results.length} pairs were NOT tried: UNDETERMINED, not unreachable)`,
+      );
     } else {
       const shown = winners
         .slice(0, 8)
@@ -166,7 +198,13 @@ async function runOracle(args: Args): Promise<void> {
     }
   }
 
-  console.log(`\n   Batches with >=1 winning single term: ${batchesWithAnyWinner}/${REPLAY.length}`);
+  console.log(
+    `\n   CEILING: ${batchesWithAnyWinner}/${REPLAY.length} batches have >=1 winning 2-TERM PAIR` +
+      ` (proven unreachable ${batchesProvenUnreachable}, undetermined ${batchesUndetermined})`,
+  );
+  console.log(
+    `   Read it as a FLOOR when any batch is undetermined: the reachable count can only go UP with more probing.`,
+  );
   console.log(`   [L] = the LENGTH proxy picked it   [B] = BANDED picked it`);
   if (winnerProfile.length > 0) {
     const dfs = winnerProfile.map((w) => w.df).filter((d) => d >= 0);
@@ -179,8 +217,8 @@ async function runOracle(args: Args): Promise<void> {
     }
   }
   console.log(
-    `\n   ⚠ A batch with NO winning single term cannot be fixed by choosing different terms —` +
-      ` that is a reach/cap problem, not a selection problem.`,
+    `\n   ⚠ Only a batch marked COMPLETE above licenses the conclusion "choosing different terms cannot` +
+      ` fix this" (i.e. reach/cap, not selection). A PARTIAL batch with no winner licenses NOTHING.`,
   );
 }
 
@@ -312,7 +350,10 @@ function parseArgs(argv: readonly string[]): Args {
     explainSelection: argv.includes('--explain-selection'),
     arms: argv.includes('--arms'),
     oracle: argv.includes('--oracle'),
-    oracleMaxTerms: Number(get('--oracle-max-terms') ?? 10),
+    // 0 (the default) = NO cap: probe every pair, so the result is a real
+    // ceiling rather than a floor. A positive cap trades completeness for time
+    // and the run labels every batch it truncated as UNDETERMINED.
+    oracleMaxTerms: Number(get('--oracle-max-terms') ?? 0),
   };
 }
 

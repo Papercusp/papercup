@@ -144,9 +144,11 @@ export const ACKNOWLEDGED_UNREACHABLE = new Map([
   // What the check buys immediately is the ratchet — a NEW unenforced guard fails
   // the build on the commit that orphans it.
 
-  // MEASURED RED. Ratchet drifted +45 past its baseline in ~27h (1121 vs 1076) while
-  // its green unit test made it look covered. Burn-down + wiring owned by the filing.
-  ['lint:mock-cast-escape', 'RED — burn-down in progress, EI-19452618085391226; wire once at baseline'],
+  // `lint:mock-cast-escape` USED TO SIT HERE and is now GONE from this set — burned down
+  // 1121 → 1061 (under its 1076 baseline) and wired as a green-checkpoint leg on 2026-08-03.
+  // Left as a comment rather than silently deleted because it is this set's first GRADUATION,
+  // and the graduation is the point: entries here are debts to pay, not a parking lot.
+  // The watermark dropped 15 → 14 with it, which is the only direction it may ever move.
 
   // MEASURED GREEN 2026-08-03, but enforced by nothing. Each needs a deliberate
   // wire-or-retire call (EI-19452618085391226 correct-state #2). Listed individually
@@ -180,7 +182,7 @@ export const ACKNOWLEDGED_UNREACHABLE = new Map([
  * `DARK_FLAGS_HIGH_WATERMARK` — and for the same reason, since an allowlist that
  * grows freely reproduces the invisible rot this script exists to detect.
  */
-export const UNREACHABLE_HIGH_WATERMARK = 15;
+export const UNREACHABLE_HIGH_WATERMARK = 14;
 
 /**
  * Tiers that actually STOP a bad change. `hook` and `logic-test` are deliberately

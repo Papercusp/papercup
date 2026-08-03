@@ -1886,6 +1886,10 @@ export const NON_TEST_GATE_SCRIPTS: Record<string, string[]> = {
   // deterministic, repo-wide script, so a red that a peer has since fixed by wiring or
   // retiring the guard is cheap to re-verify at tip instead of red-pinning the fleet.
   'lint:guard-reachability': ['lint:guard-reachability'],
+  // EI-19452618085391226: same qualification as its sibling above — one fast, deterministic,
+  // repo-wide script with no PG or network dependency, so a red a peer has since fixed by
+  // typing the offending fixture is cheap to re-verify at tip rather than red-pinning.
+  'lint:mock-cast-escape': ['lint:mock-cast-escape'],
   // P-020: the agent-state plane's standing probes. Deterministic and repo-wide like the
   // rest, so the same auto-refire applies. NOTE the census + ratchet legs are PG-backed, so
   // a re-verify at tip re-reads live state — which is correct here: if the producer resumed
@@ -4541,6 +4545,7 @@ interface PostSuiteLegs {
   lintDesignPrimitives: LegOutcome;
   lintNoControlBytes: LegOutcome;
   lintGuardReachability: LegOutcome;
+  lintMockCastEscape: LegOutcome;
   lintPlane: LegOutcome;
   build: LegOutcome;
   /** Concatenated failure detail, appended verbatim to the suite output. */
@@ -4566,6 +4571,7 @@ function legsNotRun(skipReason: string): PostSuiteLegs {
     lintDesignPrimitives: skipped,
     lintNoControlBytes: skipped,
     lintGuardReachability: skipped,
+    lintMockCastEscape: skipped,
     lintPlane: skipped,
     build: skipped,
     output: '',
@@ -5039,6 +5045,43 @@ export async function runPostSuiteLegs(
         '\n\n=== LINT GUARD RUNS ON NO BLOCKING PATH (npm run lint:guard-reachability) — a guard that is neither wired nor retired rots silently and its green gets quoted as evidence ===\n' +
           guardReach.stdout +
           guardReach.stderr,
+      );
+    }
+  }
+
+  // EI-19452618085391226: the guard whose rot MOTIVATED the reachability census above, now
+  // wired to a blocking path itself. It had drifted +45 over its baseline while its own unit
+  // test stayed green the whole time — because that test exercised the detector against
+  // fixtures and ran it over NO repository files. Wiring was deliberately BLOCKED on the
+  // burn-down first: turning it on while +45 over would have red-pinned the fleet on debt
+  // nobody in that moment introduced, which is the exact trap the filing names.
+  //
+  // Baseline is deliberately left at 1076 with ~15 of headroom rather than re-ratcheted down
+  // to the achieved 1061. `--update` is documented as a QUIET-TREE operation, and this tree is
+  // continuously edited by the fleet — locking in a number that includes peers' in-flight
+  // edits is how a ratchet reds on someone else's revert. Tighten it deliberately, later.
+  const lintMockCastCheck = haltedBy ? null : checkNpmScript(treeDir, 'lint:mock-cast-escape');
+  if (haltedBy) {
+    legs.lintMockCastEscape = { status: 'skipped', skipReason: haltedBy };
+  } else if (lintMockCastCheck === 'unreadable') {
+    legs.lintMockCastEscape = { status: 'failed' };
+    haltedBy = 'package.json unreadable (checking for lint:mock-cast-escape)';
+    failingSignatures.push('package.json-unreadable');
+    outputs.push(
+      `\n\n=== PACKAGE.JSON UNREADABLE (WI-6056) — could not read/parse package.json in ${treeDir} while checking for lint:mock-cast-escape ===\n`,
+    );
+  } else if (lintMockCastCheck === 'absent') {
+    legs.lintMockCastEscape = { status: 'skipped', skipReason: 'candidate provides no lint:mock-cast-escape script' };
+  } else {
+    const mockCast = await exec('npm', ['run', 'lint:mock-cast-escape'], { cwd: treeDir, env, allowNonZero: true });
+    legs.lintMockCastEscape = { status: mockCast.code === 0 ? 'passed' : 'failed' };
+    if (mockCast.code !== 0) {
+      haltedBy = 'lint:mock-cast-escape failed';
+      failingSignatures.push('lint:mock-cast-escape');
+      outputs.push(
+        '\n\n=== MOCK FIXTURE CAST ESCAPE RATCHET (npm run lint:mock-cast-escape) — `as never`/`as any` on a mock setter defeats the fixture type check, so a fixture stales silently and fails at RUNTIME in a file your change never touched ===\n' +
+          mockCast.stdout +
+          mockCast.stderr,
       );
     }
   }

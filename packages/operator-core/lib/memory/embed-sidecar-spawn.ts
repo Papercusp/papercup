@@ -314,6 +314,25 @@ export function _resetNoSidecarConfiguredLogForTests(): void {
   loggedNoSidecarConfigured = false;
 }
 
+/** WI-9354: the fallback warn below is correct in every REAL deployment, but
+ *  under vitest it fired inside any suite that merely happens to build an
+ *  embedder (configure.ts -> embed-sidecar-wiring.ts -> here) — incidental to
+ *  what those suites test. The repo runs vitest-fail-on-console, so that
+ *  unasserted warn RED-PINNED five unrelated files at once (scheduler, work
+ *  items, mcp-handler gating, knowledge-tier dedup) and took the fleet gate
+ *  with it. Same class, and the same remedy, as hive-directory-boot.ts:221/249
+ *  and session-compacted-events.ts:28 — stay silent under test, unchanged in
+ *  production. This is an OPT-IN rather than a blanket `!process.env.VITEST`
+ *  precisely so the owning suite (embed-sidecar-spawn.test.ts, EI-19418496145469907)
+ *  still observes the warn and keeps proving the fallback is not silent —
+ *  suppressing it there would disarm that guard instead of fixing this bug. */
+let warnNoSidecarUnderTest = false;
+
+/** Test seam — opt THIS file's suite into observing the fallback warn. */
+export function _setNoSidecarWarnUnderTest(enabled: boolean): void {
+  warnNoSidecarUnderTest = enabled;
+}
+
 /**
  * Ensure the host-local sidecar is up and return its base URL, or null when
  * disabled/unspawnable. The lazy front door consumers call on first embed —
@@ -329,7 +348,11 @@ export async function ensureEmbedSidecar(
   requiredCapabilities: readonly string[] = [],
 ): Promise<string | null> {
   if (!embedSidecarEnabled()) {
-    if (!loggedNoSidecarConfigured) {
+    // WI-9354: gate on the opt-in under vitest only. The memo is set ONLY when
+    // we actually warn, so real-deployment "exactly once per process" semantics
+    // are byte-identical to before.
+    const warnAllowed = !process.env.VITEST || warnNoSidecarUnderTest;
+    if (warnAllowed && !loggedNoSidecarConfigured) {
       loggedNoSidecarConfigured = true;
       console.warn(
         '[embed-sidecar] no sidecar configured for this process ' +

@@ -10,9 +10,10 @@
  * paths, which inject `SidecarWiringDeps.ensure` directly and never reach
  * this function's env check at all).
  */
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   _resetNoSidecarConfiguredLogForTests,
+  _setNoSidecarWarnUnderTest,
   embedSidecarEnabled,
   ensureEmbedSidecar,
 } from './embed-sidecar-spawn';
@@ -34,7 +35,18 @@ describe('embedSidecarEnabled', () => {
 });
 
 describe('ensureEmbedSidecar — no-config fallback is no longer silent', () => {
+  // WI-9354: the warn is SUPPRESSED under vitest by default, because it fired
+  // inside five unrelated suites that merely build an embedder and red-pinned
+  // the fleet gate via vitest-fail-on-console. THIS suite is the one that must
+  // still see it — it is the guard proving the fallback is not silent — so it
+  // opts in explicitly. Armed per-test and disarmed after, so the opt-in can
+  // never leak into another file sharing this worker.
+  beforeEach(() => {
+    _setNoSidecarWarnUnderTest(true);
+  });
+
   afterEach(() => {
+    _setNoSidecarWarnUnderTest(false);
     _resetNoSidecarConfiguredLogForTests();
     vi.restoreAllMocks();
     delete process.env.PAPERCUSP_EMBED_SIDECAR;

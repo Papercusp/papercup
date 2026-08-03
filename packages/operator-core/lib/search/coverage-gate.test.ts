@@ -20,7 +20,8 @@ import {
   type CoverageSnapshot,
   type SurfaceReading,
 } from './coverage-gate';
-import { TOTAL_COVERAGE_FLOOR } from './embed-coverage';
+import { TOTAL_COVERAGE_FLOOR, surfaceKey } from './embed-coverage';
+import { TARGETS } from './embed-backfill';
 import { SEARCH_SOURCES } from '../agent-tools/search/sources';
 
 const NOW = new Date('2026-08-03T18:00:00.000Z');
@@ -68,6 +69,27 @@ describe('SEARCH_SOURCE_SURFACES exhaustiveness', () => {
     const names = new Set(SEARCH_SOURCES.map((s) => s.name));
     const extra = Object.keys(SEARCH_SOURCE_SURFACES).filter((k) => !names.has(k));
     expect(extra, `mapping entries with no SearchSource: ${extra.join(', ')}`).toEqual([]);
+  });
+
+  // The highest-value guard in this file. Every surface string here must be a
+  // surface the backfill ACTUALLY produces — the same `surfaceKey(target)` the
+  // alarm persists. A typo, or a table/column rename, would otherwise make the
+  // lookup miss forever and report `unknown` for a perfectly healthy index:
+  // silent, permanent, and indistinguishable from "the alarm stopped running".
+  // Structural rather than data-driven on purpose, so it does not depend on
+  // what happens to have been sampled recently.
+  it('references only surfaces the embed-backfill actually produces', () => {
+    const real = new Set(TARGETS.map((t) => surfaceKey(t)));
+    const bogus = Object.entries(SEARCH_SOURCE_SURFACES).flatMap(([source, surfaces]) =>
+      surfaces.filter((s) => !real.has(s)).map((s) => `${source} → ${s}`),
+    );
+    expect(bogus, `surfaces no backfill TARGET produces: ${bogus.join('; ')}`).toEqual([]);
+
+    // CONTROL — without these the assertion above passes vacuously if TARGETS
+    // is ever empty or the mapping is emptied, which is exactly the state a
+    // refactor-gone-wrong would leave behind.
+    expect(real.size).toBeGreaterThan(5);
+    expect(real.has('harness_shared.not_a_real_table.embedding')).toBe(false);
   });
 
   it('declares an embedding leg exactly when the source implements one', () => {
@@ -249,6 +271,51 @@ describe('loadCoverageSnapshot', () => {
       // a silent fallback is how the original bug stayed invisible.
       expect(warn).toHaveBeenCalledTimes(1);
       expect(String(warn.mock.calls[0]?.[0])).toMatch(/snapshot read failed/);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('a handle with no unsafe() resolves to unknown SILENTLY (not a failure to shout about)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const s = await loadCoverageSnapshotCached((() => {}) as never, 'ws', NOW);
+      expect(s.size).toBe(0);
+      expect(assessSourceCoverage('turns', s).verdict).toBe('unknown');
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('does not re-read (or re-log) on EVERY query while a failure persists', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      let calls = 0;
+      const sql = { unsafe: async () => { calls += 1; throw new Error('pg is down'); } };
+      // Three queries inside one TTL window: the failure is memoised, so the
+      // hottest path in the tool does not turn a degraded signal into a flood.
+      await loadCoverageSnapshotCached(sql, 'ws', NOW);
+      await loadCoverageSnapshotCached(sql, 'ws', new Date(NOW.getTime() + 1_000));
+      await loadCoverageSnapshotCached(sql, 'ws', new Date(NOW.getTime() + 2_000));
+      expect(calls).toBe(1);
+      expect(warn).toHaveBeenCalledTimes(1);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('throttles the failure warning across TTL windows', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const sql = { unsafe: async () => { throw new Error('pg is down'); } };
+      await loadCoverageSnapshotCached(sql, 'ws', NOW);
+      // Past the snapshot TTL (so it retries) but inside the warn throttle.
+      await loadCoverageSnapshotCached(sql, 'ws', new Date(NOW.getTime() + 2 * 60_000));
+      expect(warn).toHaveBeenCalledTimes(1);
+      // Past the throttle — the problem is still real, so say so again.
+      await loadCoverageSnapshotCached(sql, 'ws', new Date(NOW.getTime() + 6 * 60_000));
+      expect(warn).toHaveBeenCalledTimes(2);
     } finally {
       warn.mockRestore();
     }

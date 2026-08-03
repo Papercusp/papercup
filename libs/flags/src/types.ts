@@ -1885,6 +1885,21 @@ export const FLAGS = {
   // rebuilding an index from its table risks no data). OFF => the tick no-ops and bloat
   // re-accumulates until someone reindexes by hand.
   DB_INDEX_BLOAT_REINDEX: "papercusp-db-index-bloat-reindex",
+  // db-performance-remediation-2026-07-26 D-033 / P-020 (WI-9313): the pg_stat_statements
+  // ORPHAN-ENTRY reclaim. pgss has no DROP DATABASE hook, so entries keyed to a dropped
+  // dbid are retained forever; backups/dumps run against TRANSIENT databases, so every
+  // dump permanently consumes entry slots. Measured 2026-08-03: 3,303 of 9,791 entries
+  // (33.7%) belonged to 23 databases that no longer exist, holding the cap at 97.9% —
+  // and Postgres evicts by LOW USAGE, so it was discarding REAL application statistics
+  // at 13.5/day. An evicted+recreated entry's next delta reads as a PHANTOM SPIKE, which
+  // corrupts exactly the delta measurements that plan depends on, so this is a
+  // MEASUREMENT-INTEGRITY fix, not housekeeping. The sweep only ever targets a dbid
+  // absent from pg_database, never passes dbid=0 (which would mean "reset ALL"), and
+  // skips with a named reason when the role lacks EXECUTE. DEFAULT ON (alpha
+  // flags-default-on: finished, tested, and the only thing it can discard is monitoring
+  // counters for databases that do not exist). OFF => the tick no-ops and the residue
+  // regrows until the cap evicts live statistics again.
+  DB_PGSS_ORPHAN_STATS_RECLAIM: "papercusp-db-pgss-orphan-stats-reclaim",
   // coord-delivery-residual-gaps-2026-07-11 P-004 (WI-4160): the delivery
   // ESCALATION LADDER kill-switch. One server-side rule — a DIRECTED message
   // (explicit to:[ownerId], never broadcast/@audience/system-sender) unread
