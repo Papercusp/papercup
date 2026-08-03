@@ -935,7 +935,7 @@ function LearningViewContent({
     [onStatus, view],
   );
   if (view === "signals") {
-    return <SignalsPanel onStatus={reportViewStatus} />;
+    return <SignalsPanel onStatus={reportViewStatus} active={active} />;
   }
   if (view === "observations") {
     return <ObservationsPanel onStatus={reportViewStatus} active={active} />;
@@ -952,6 +952,7 @@ function LearningViewContent({
           compact={Boolean(rubricId)}
           collapseUnscored
           onStatus={reportViewStatus}
+          active={active}
         />
         {rubricId ? (
           <aside
@@ -968,7 +969,14 @@ function LearningViewContent({
     );
   }
   if (view === "gym") {
-    return <GymView hive={hive} hiveReady={hiveReady} onStatus={reportViewStatus} />;
+    return (
+      <GymView
+        hive={hive}
+        hiveReady={hiveReady}
+        onStatus={reportViewStatus}
+        active={active}
+      />
+    );
   }
   if (view === "improvements") {
     return (
@@ -981,27 +989,31 @@ function LearningViewContent({
     );
   }
   if (view === "benchmark") {
-    return <ApiaryView onStatus={reportViewStatus} />;
+    return <ApiaryView onStatus={reportViewStatus} active={active} />;
   }
   if (view === "orchestration") {
-    return <HiveEvalTrendView onStatus={reportViewStatus} />;
+    return <HiveEvalTrendView onStatus={reportViewStatus} active={active} />;
   }
   if (view === "bakeoff") {
-    return <BakeoffTrendView onStatus={reportViewStatus} />;
+    return <BakeoffTrendView onStatus={reportViewStatus} active={active} />;
   }
   if (view === "wake-efficiency")
-    return <MugWakeEfficiencyPanel onStatus={reportViewStatus} />;
-  if (view === "ekg") return <EkgPanel onStatus={reportViewStatus} />;
+    return (
+      <MugWakeEfficiencyPanel onStatus={reportViewStatus} active={active} />
+    );
+  if (view === "ekg")
+    return <EkgPanel onStatus={reportViewStatus} active={active} />;
   if (view === "red-queen")
-    return <RedQueenPanel onStatus={reportViewStatus} />;
+    return <RedQueenPanel onStatus={reportViewStatus} active={active} />;
   if (view === "experiments")
-    return <ExperimentsPanel onStatus={reportViewStatus} />;
+    return <ExperimentsPanel onStatus={reportViewStatus} active={active} />;
   if (view === "frontier")
     return (
       <FrontierPanel
         hive={hive}
         hiveReady={hiveReady}
         onStatus={reportViewStatus}
+        active={active}
       />
     );
   if (view === "throughput") {
@@ -1010,6 +1022,7 @@ function LearningViewContent({
         hive={hive}
         hiveReady={hiveReady}
         onStatus={reportViewStatus}
+        active={active}
       />
     );
   }
@@ -2743,10 +2756,13 @@ function GymView({
   hive,
   hiveReady,
   onStatus,
+  active = true,
 }: {
   hive: string;
   hiveReady: boolean;
   onStatus?: (status: LearningViewStatus) => void;
+  /** True when this pane is the SELECTED view — see useInteractionSettle. */
+  active?: boolean;
 }) {
   const openArming = useOpenArming();
   // Collapsed challenger role groups — comma-separated roles, in the URL so the
@@ -2778,6 +2794,15 @@ function GymView({
   // rendered PAPERCUSP's gym experiments. A selected pot now shows only its own
   // data, or an honest empty state naming the pot.
   const snap = sync.data?.[0];
+  // Perf settle point for PERF_INTERACTIONS.learningViewSwitch (WI-7263) —
+  // same contract as the pre-existing sibling settle points (pipeline /
+  // observations / improvements / learnings): gated on the PRIMARY read
+  // only, settles on a fault as well as success, gated on `active` so a
+  // warm-but-inactive pane doesn't emit on a revisit that never remounts
+  // (EI-19383745196363732).
+  const gymSettled =
+    !sync.loading && (sync.data !== undefined || Boolean(sync.error));
+  useInteractionSettle(PERF_INTERACTIONS.learningViewSwitch, gymSettled, active);
   const proposals = snap?.proposals ?? [];
   const autoloops = snap?.autoloops ?? [];
   const archiveSeeds = snap?.archiveSeeds ?? [];
@@ -3370,14 +3395,29 @@ function dateLabel(iso: string): string {
 
 function ApiaryView({
   onStatus,
+  active = true,
 }: {
   onStatus?: (status: LearningViewStatus) => void;
+  /** True when this pane is the SELECTED view — see useInteractionSettle. */
+  active?: boolean;
 }) {
   const sync = useSyncQuery<{ instances: ApiaryInstance[] }>({
     queryName: "learning.apiary",
     args: {},
     staleTime: 30_000,
   });
+  // Perf settle point for PERF_INTERACTIONS.learningViewSwitch (WI-7263) —
+  // same contract as the pre-existing sibling settle points: gated on the
+  // PRIMARY read only, settles on a fault as well as success, gated on
+  // `active` so a warm-but-inactive pane doesn't emit on a revisit that
+  // never remounts (EI-19383745196363732).
+  const apiarySettled =
+    !sync.loading && (sync.data !== undefined || Boolean(sync.error));
+  useInteractionSettle(
+    PERF_INTERACTIONS.learningViewSwitch,
+    apiarySettled,
+    active,
+  );
   const instances = sync.data?.[0]?.instances ?? [];
   // WI-6410: `sync.error` below covered the TRANSPORT half only. The resolver
   // catches its own failure and resolves with a degraded payload, so the error
@@ -3669,8 +3709,11 @@ const ratioLabel = (v: number | null): string =>
 
 function HiveEvalTrendView({
   onStatus,
+  active = true,
 }: {
   onStatus?: (status: LearningViewStatus) => void;
+  /** True when this pane is the SELECTED view — see useInteractionSettle. */
+  active?: boolean;
 }) {
   const t = useLexicon();
   const sync = useSyncQuery<{ instances: HiveEvalGeneration[] }>({
@@ -3678,6 +3721,18 @@ function HiveEvalTrendView({
     args: {},
     staleTime: 30_000,
   });
+  // Perf settle point for PERF_INTERACTIONS.learningViewSwitch (WI-7263) —
+  // same contract as the pre-existing sibling settle points: gated on the
+  // PRIMARY read only, settles on a fault as well as success, gated on
+  // `active` so a warm-but-inactive pane doesn't emit on a revisit that
+  // never remounts (EI-19383745196363732).
+  const hiveEvalTrendSettled =
+    !sync.loading && (sync.data !== undefined || Boolean(sync.error));
+  useInteractionSettle(
+    PERF_INTERACTIONS.learningViewSwitch,
+    hiveEvalTrendSettled,
+    active,
+  );
   const instances = sync.data?.[0]?.instances ?? [];
   // WI-6410: the resolver has carried degraded provenance since WI-6382, but
   // this view dropped it — `?? []` collapsed a FAILED read into the same value
@@ -3880,14 +3935,29 @@ const BAKEOFF_VERDICT_META: Record<
 
 function BakeoffTrendView({
   onStatus,
+  active = true,
 }: {
   onStatus?: (status: LearningViewStatus) => void;
+  /** True when this pane is the SELECTED view — see useInteractionSettle. */
+  active?: boolean;
 }) {
   const sync = useSyncQuery<{ rows: BakeoffTrendRow[] }>({
     queryName: "learning.bakeoff",
     args: {},
     staleTime: 30_000,
   });
+  // Perf settle point for PERF_INTERACTIONS.learningViewSwitch (WI-7263) —
+  // same contract as the pre-existing sibling settle points: gated on the
+  // PRIMARY read only, settles on a fault as well as success, gated on
+  // `active` so a warm-but-inactive pane doesn't emit on a revisit that
+  // never remounts (EI-19383745196363732).
+  const bakeoffSettled =
+    !sync.loading && (sync.data !== undefined || Boolean(sync.error));
+  useInteractionSettle(
+    PERF_INTERACTIONS.learningViewSwitch,
+    bakeoffSettled,
+    active,
+  );
   const rows = sync.data?.[0]?.rows ?? [];
   // WI-6410: `sync.error` used to feed ONLY the onStatus tint, so a failed read
   // fell through to the "No bake-offs" empty state — whose body ("Results
@@ -4330,6 +4400,7 @@ function ThroughputView({
   hive = "",
   hiveReady = true,
   onStatus,
+  active = true,
 }: {
   /** Pot lens (pot-scope-all-learnings P-005): scopes the tick metrics and the
    *  soak verdicts to one pot; empty = every pot (no lens). */
@@ -4337,6 +4408,8 @@ function ThroughputView({
   /** WI-5412 gate: don't fetch until the tab's hive lens is resolved. */
   hiveReady?: boolean;
   onStatus?: (status: LearningViewStatus) => void;
+  /** True when this pane is the SELECTED view — see useInteractionSettle. */
+  active?: boolean;
 }) {
   const t = useLexicon();
   const sync = useSyncQuery<HiveThroughputSnapshot>({
@@ -4351,6 +4424,20 @@ function ThroughputView({
     staleTime: 60_000,
     enabled: hiveReady,
   });
+  // Perf settle point for PERF_INTERACTIONS.learningViewSwitch (WI-7263) —
+  // gated on the PRIMARY read only (learning.hiveThroughput), deliberately
+  // not on the soak-report leg: same rule as the sibling settle points in
+  // ImprovementsView/LearningsView — a secondary read shouldn't have its cost
+  // attributed to this interaction. Settles on a fault too, gated on `active`
+  // so a warm-but-inactive pane doesn't emit on a revisit that never
+  // remounts (EI-19383745196363732).
+  const throughputSettled =
+    !sync.loading && (sync.data !== undefined || Boolean(sync.error));
+  useInteractionSettle(
+    PERF_INTERACTIONS.learningViewSwitch,
+    throughputSettled,
+    active,
+  );
   const snap = sync.data?.[0];
   const hives = snap?.hives ?? [];
   const soakByHive = new Map(

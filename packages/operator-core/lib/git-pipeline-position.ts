@@ -1945,7 +1945,12 @@ export function computeStages(
      *
      * THREE STATES, and folding the third into either of the others IS the bug:
      *   active === true   a suite really is running — a verdict IS coming.
-     *   active === false  MEASURED idle — nothing is coming on its own.
+     *   active === false  idle — nothing is coming on its own. ⚠ EI-19395922387569240:
+     *                     this only earns the word MEASURED when
+     *                     `activeSource === 'run-lock'`. Without it the reading came from
+     *                     a cache of unbounded age (measured: 7h), and a stale `false`
+     *                     routes this very lever to "fire release:checkpoint-run" — into
+     *                     a run that may be live. `livenessNote` says which one it is.
      *   absent / null     UNKNOWN. The cache had no snapshot (cold DB, first routine
      *                     tick, failed read) — and it was absent from the very payload
      *                     that misled the filer, 14 min before the same call returned
@@ -1977,7 +1982,16 @@ export function computeStages(
           } — its verdict is coming, so do NOT fire a second one: the gate is a singleton, a second fire is REFUSED, and escalating to replaceStale is the EI-11667 replace-storm that starved the gate for 2h.`
         : runInFlightUnknown
           ? ' Whether a gate run is in flight is UNKNOWN on this call (the run-liveness cache held no snapshot) — that is NOT evidence none is running, and it is NOT a reason to wait for a verdict.'
-          : ' NO gate run is in flight (measured) — no verdict is coming on its own, so waiting cannot clear this.';
+          : // EI-19395922387569240: only claim "measured" when the LIVE run lock answered.
+            // A cache-backed idle is a reading of the past, and saying "measured" of it is
+            // what let a stale `false` send callers to fire a run into a live one.
+            g.checkpointRunInFlight?.activeSource === 'run-lock'
+            ? ' NO gate run is in flight (measured live via the run lock) — no verdict is coming on its own, so waiting cannot clear this.'
+            : ` NO gate run is in flight according to the run-liveness CACHE${
+                g.checkpointRunInFlight?.asOfAgeMs != null
+                  ? ` (computed ${Math.round(g.checkpointRunInFlight.asOfAgeMs / 1000)}s ago)`
+                  : ''
+              } — the live lock read did not answer, so treat this as a hint, not a measurement, before firing anything.`;
     const gateDetail = notInCandidate
       ? `${cic.detail}${
           gateHealth === 'stalled'
@@ -2217,6 +2231,22 @@ export interface PipelinePositionDeps {
     computedAtMs: number | null;
   } | null>;
   /**
+   * EI-19395922387569240: the LIVE run-lock liveness read that corrects the cached
+   * `activeRun` above. Injected by TESTS only — the default really reads the lock, for
+   * the same reason `probeUnitStart` and `readFileBytes` do: a null-by-default dep would
+   * ship the correction dark while looking implemented, leaving `{ active: false }` still
+   * claiming to be measured.
+   *
+   * This does NOT violate D-003 ("a reader never computes"). That rule's stated cost
+   * objection is the systemctl FORK that `resolveGateCandidates` pays; this is one
+   * `owner.json` read plus a `kill(pid,0)` — the very cost profile
+   * `isCheckpointRunLockHeldCheap` was created for (WI-4310) and is already used on
+   * system-health's every-computation path. Returns `null` on any failure — best-effort,
+   * never throws, and a `null` degrades this leg to exactly its previous cache-only
+   * behaviour rather than to a wrong answer.
+   */
+  readCheckpointRunLock?: (root: string) => Promise<{ held: boolean; elapsedSec: number | null } | null>;
+  /**
    * EI-19327418148563597: raw bytes of a repo-relative file, for the release-content-drift
    * check (does the RELEASE checkout :3070 serves differ from the tree the caller is
    * reading?). Injected by TESTS only — the default really reads the filesystem, for the
@@ -2259,6 +2289,45 @@ const realReadCheckpointRunSnapshot = async (): Promise<{
 };
 
 /**
+ * Default LIVE run-lock read (EI-19395922387569240): `isCheckpointRunLockHeldCheap` —
+ * the ONE source that answers "is a green-checkpoint suite running right now" for BOTH
+ * origins, because every run holds this same lock for its whole duration. Fork-free, and
+ * fail-soft in every direction: a missing/unreadable lock file, a dead owner pid, or the
+ * module failing to import all degrade to `null` (the cache-only path), never a throw on
+ * the `dev:pipeline_position` hot path.
+ *
+ * `root` is `deploy.integrationRoot` — the SAME root `git-pipeline-stats` already passes
+ * to `checkActiveCheckpointRun`, which matters because `checkpointRunLockDirMirror`
+ * HASHES the root string: a different spelling would hash to a different lock dir and
+ * report `held: false` forever, i.e. a silent false negative. Verified 2026-08-03 that
+ * both the `papercup-dev-api` and `papercup-staging-api` units export the identical
+ * `PAPERCUSP_INTEGRATION_ROOT`, which is what green-checkpoint's own `cfg.integrationRoot`
+ * resolves from when it ACQUIRES the lock.
+ */
+const realReadCheckpointRunLock = async (root: string): Promise<{ held: boolean; elapsedSec: number | null } | null> => {
+  try {
+    const { isCheckpointRunLockHeldCheap } = await import('./release-checkpoint-launch');
+    return isCheckpointRunLockHeldCheap(root);
+  } catch {
+    return null;
+  }
+};
+
+/**
+ * How fresh a cached reading has to be for us to let it stand against a `held: false`
+ * lock read. The producer's ttl is 90s and it recomputes on every ~2min routine tick, so
+ * anything inside this window was observed by the systemctl probe very recently.
+ *
+ * This window exists for ONE documented blind spot, not as general distrust of the lock:
+ * `isCheckpointRunLockHeldCheap` "misses a manual-unit run that hasn't (yet) raced for
+ * the shared run-lock" (its own doc). During that startup sliver the systemd probe sees a
+ * run the lock does not, so a FRESH cached `active: true` outranks `held: false`. Once the
+ * cache is older than this, it is no longer evidence of anything current and the live lock
+ * wins.
+ */
+const CHECKPOINT_CACHE_TRUSTED_MS = 90_000;
+
+/**
  * Pure: shape the cached `dev.gitPipeline` derived-read's `activeRun` + its
  * staleness into the `gate.checkpointRunInFlight` leg (EI-18793581783459047).
  * Separated from the cache read so the mapping is unit-testable without a DB.
@@ -2292,19 +2361,66 @@ export function mapCheckpointRunInFlight(
     totalRefires?: number;
     absoluteCeiling?: number;
   } | null,
+  /**
+   * EI-19395922387569240: the LIVE run-lock reading, or `null`/omitted when it could not be
+   * taken (in which case this mapper behaves exactly as it did before — cache-only).
+   * AUTHORITATIVE for liveness: it is an observation of NOW, pid-verified, and blind to
+   * neither origin, whereas `cached` is a snapshot of unbounded age.
+   */
+  liveLock?: { held: boolean; elapsedSec: number | null } | null,
 ): PipelinePosition['gate']['checkpointRunInFlight'] {
-  if (!cached || !cached.activeRun) return null;
-  const { active, candidate, startedAtMs, elapsedSec } = cached.activeRun;
+  const cachedRun = cached?.activeRun ?? null;
+  // UNKNOWN only when BOTH reads are absent. Previously a missing cache alone forced this,
+  // so a cold DB or a failed read left `dev:pipeline_position` unable to answer "is a run in
+  // flight" at all — even though the lock could have answered it for free.
+  if (!cachedRun && !liveLock) return null;
+
+  const cacheAgeMs =
+    cached && cached.computedAtMs !== null ? Math.max(0, nowMs - cached.computedAtMs) : null;
+  const cachedActive = cachedRun?.active === true;
+  const cacheIsTrusted = cacheAgeMs !== null && cacheAgeMs <= CHECKPOINT_CACHE_TRUSTED_MS;
+
+  // Liveness precedence. A held lock is positive, pid-verified evidence and always wins. A
+  // NOT-held lock wins too, EXCEPT against a still-trusted cached `active` (the manual-run
+  // startup sliver documented on CHECKPOINT_CACHE_TRUSTED_MS) — that one case is the only
+  // way a run can exist that the lock cannot see.
+  const lockDecides = liveLock != null && (liveLock.held || !(cachedActive && cacheIsTrusted));
+  const active = lockDecides ? liveLock!.held : cachedActive;
+
+  // Does the cached DETAIL describe the run we are now reporting? When the lock overturned
+  // the cached verdict, the cache was describing a different moment — a run that has since
+  // finished, or an idle gate that has since started one — so its candidate/timings must NOT
+  // be re-presented as current. Emitting them anyway is how a finished run's candidate gets
+  // read as "what the gate is judging right now".
+  const cachedDescribesNow = cachedRun != null && cachedRun.active === active;
+  const candidate = cachedDescribesNow ? cachedRun!.candidate : null;
+  const startedAtMs = cachedDescribesNow
+    ? cachedRun!.startedAtMs
+    : active && liveLock?.elapsedSec != null
+      ? nowMs - liveLock.elapsedSec * 1000
+      : null;
+  // Prefer the lock's elapsed: the cached one is frozen at cache-compute time and understates
+  // a live run's age by exactly `asOfAgeMs` (a 12m run reported as "running ~5m").
+  const elapsedSec =
+    active && liveLock?.held && liveLock.elapsedSec != null
+      ? liveLock.elapsedSec
+      : cachedDescribesNow
+        ? cachedRun!.elapsedSec
+        : null;
   // EI-19327704778173646: carry the refire provenance through. This destructure is
   // exact-field, so a new leg is DROPPED unless it is threaded explicitly — which is why
   // the marker never reached a caller before. Emitted only on an actual refire, so the
   // common (no-refire) shape is unchanged.
-  const refireObserved = cached.activeRun.refireObserved === true;
+  // Gated on cachedDescribesNow for the same reason candidate/timings are: refire provenance
+  // about a run the lock says is over is not provenance about anything current.
+  const refireObserved = cachedDescribesNow && cachedRun!.refireObserved === true;
   // The marker only describes a LIVE run; attaching it to an idle probe would assert a refire
   // is in flight for a run that has already finished.
   const marker = active && retriage ? retriage : null;
   return {
     active,
+    // Emitted only when the lock answered, so the cache-only shape is byte-identical to before.
+    ...(lockDecides ? { activeSource: 'run-lock' as const } : {}),
     // The marker is an observation the run published about ITSELF; `candidate` here is at best a
     // log read and at worst (cron) a live-worktree inference. Prefer the observation.
     candidate: marker ? marker.refiringCandidate : candidate,
@@ -2328,12 +2444,14 @@ export function mapCheckpointRunInFlight(
       : {
           ...(candidate != null ? { candidateSource: 'run-probe' as const } : {}),
           ...(refireObserved
-            ? { initialCandidate: cached.activeRun.initialCandidate ?? null, refireObserved: true as const }
+            ? { initialCandidate: cachedRun!.initialCandidate ?? null, refireObserved: true as const }
             : {}),
         }),
     startedAtMs,
     elapsedSec,
-    asOfAgeMs: cached.computedAtMs !== null ? Math.max(0, nowMs - cached.computedAtMs) : null,
+    // Still the CACHE's age (that is what the field documents), so it stays null when the
+    // lock answered with no cache behind it — there is no cache to be stale.
+    asOfAgeMs: cacheAgeMs,
   };
 }
 
@@ -3021,7 +3139,16 @@ export async function gitPipelinePosition(
   // git-pipeline-stats (parseInFlightRetriage) — it was simply never consulted here, so the
   // authoritative answer sat one field away from the inferred one. Passing it makes the
   // re-triage window visible on the CRON path, where the log-derived provenance cannot reach.
-  const checkpointRunInFlight = mapCheckpointRunInFlight(checkpointRunCached, Date.now(), snap.gate.inFlightRetriage);
+  // EI-19395922387569240: the LIVE liveness read that keeps `active` from being a claim about
+  // a snapshot's past. Fork-free, so it is safe on this hot path; fail-soft to null, which
+  // degrades this leg to its previous cache-only behaviour.
+  const checkpointRunLockLive = await (deps.readCheckpointRunLock ?? realReadCheckpointRunLock)(root);
+  const checkpointRunInFlight = mapCheckpointRunInFlight(
+    checkpointRunCached,
+    Date.now(),
+    snap.gate.inFlightRetriage,
+    checkpointRunLockLive,
+  );
   const gate = {
     stalled: snap.gate.stalled,
     consecutiveReds: snap.gate.consecutiveReds,

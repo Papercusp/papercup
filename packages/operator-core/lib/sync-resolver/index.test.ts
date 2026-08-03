@@ -743,16 +743,25 @@ describe('resolveNamedQueryV2 — plansDrafts.bySlug (P-029)', () => {
         archive: '/fake/plans/archive',
       })),
       readAllPlans: vi.fn(async () =>
-        plans.map((p) => ({
-          parsed: parseFixture(p.content),
-          archived: p.archived ?? false,
-          row: {
-            harnessSlug: 'myharn',
-            planSlug: p.slug,
-            content: p.content,
+        plans.map((p) => {
+          const parsed = parseFixture(p.content);
+          return {
+            parsed,
             archived: p.archived ?? false,
-          },
-        })),
+            // WI-7259: the resolver now filters + identifies by the canonical
+            // row (`row.status`/`row.planSlug`), not frontmatter — mirror the
+            // fixture's own declared status/slug here (a real PG row's status
+            // column always agrees with what was written) so the draft filter
+            // isn't dropping every row.
+            row: {
+              harnessSlug: 'myharn',
+              planSlug: p.slug,
+              content: p.content,
+              archived: p.archived ?? false,
+              status: parsed.frontmatter.status,
+            },
+          };
+        }),
       ),
     }));
   }

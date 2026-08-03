@@ -72,11 +72,16 @@ function mockPlansDeps(
       plans.map((p) => ({
         parsed: parseFixture(p.content),
         archived: p.archived ?? false,
+        // WI-7259: the resolver now filters + identifies by the canonical row
+        // (`row.status`/`row.planSlug`), not frontmatter — `status` must be a
+        // real field here (every fixture in this file declares `status: draft`
+        // in its markdown) or the draft filter drops every row.
         row: {
           harnessSlug: 'myharn',
           planSlug: p.slug,
           content: p.content,
           archived: p.archived ?? false,
+          status: 'draft',
         },
       })),
     ),

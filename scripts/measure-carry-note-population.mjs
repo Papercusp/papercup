@@ -40,11 +40,22 @@ import { join } from 'node:path';
 const DAYS = Number(process.argv[2] || 6);
 const CUTOFF = Date.now() - DAYS * 86_400_000;
 const ROOTS = [join(homedir(), '.claude', 'projects'), join(homedir(), '.papercusp', 'session-claude')];
-const OUT = join(homedir(), '.papercusp', `carry-note-population-${DAYS}d.json`);
+const OUT = join(
+  homedir(),
+  '.papercusp',
+  `carry-note-population-${(process.argv[3] || 'loop:checkpoint').replace(/[^a-z0-9]+/gi, '-')}-${DAYS}d.json`,
+);
 /** chars→tokens estimate. Labelled everywhere it is used; never presented as a count. */
 const CPT = 4;
-/** The tool under study, in every spelling a transcript may carry it. */
-const TARGET = /(^|[:_.])loop[:_.]?checkpoint$/i;
+/**
+ * The tool under study, in every spelling a transcript may carry it. Defaults to
+ * `loop:checkpoint`; pass a second argv (e.g. `work_items:checkpoint`) to point the
+ * same analysis at any sibling that shares the carry-row shape — the row caps and the
+ * `{claim, recheck, verified}` schema are common to both checkpoint tools, so the
+ * rejection classes this measures are expected to be common too.
+ */
+const TOOL = (process.argv[3] || 'loop:checkpoint').replace(/[:_.]/g, '[:_.]?');
+const TARGET = new RegExp(`(^|[:_.])${TOOL}$`, 'i');
 
 async function* walk(dir) {
   let entries;

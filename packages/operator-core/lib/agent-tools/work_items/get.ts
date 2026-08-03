@@ -24,6 +24,8 @@ import { planItemLaneBlockReason } from "../../scheduler/plan-item-lane-guard";
 import { planItemClaimCollision } from "../../scheduler/plan-item-claim-collision";
 import { attachHolderContext } from "./_holder-lens";
 import { holderContextReader } from "../coordination/holder-advisory";
+import { getWorkItemLifecycleHistory } from "../../work-item-lifecycle-history";
+import { activeWorkspaceId } from "../../workspace-registry";
 
 /**
  * SWR backstop for work_items:get (cache-expensive-tool-reads-2026-06-22 P-005).
@@ -63,7 +65,7 @@ export default defineTool({
   guidance: {
     when: "You have one or more work-item ids and need their full state (kind, lifecycle, assignee, parent). Pass every id you need at once via `ids` instead of calling per id.",
     returns:
-      "{ ok, results:[{ ok, id, workItem?, holder?, checkpoint?, checkpointAgeMs?, checkpointUpdatedAtMs?, planItemBlocked?, planItemClaimCollision?, error? }], counts } — correlate by id, not position.\n\nConditional fields, present only when they apply:\n• `holder` — WHO holds this item and WHAT they are working toward, without attempting a claim ({ goalRef, goalText, assumptions:{count,keys}, declaredAt, stale, agreement, competing[] }). Read `agreement`/`competing` before trusting `goalRef`: 'divergent' plus a non-empty `competing` means the holder holds several claims and precedence picked one — measured, 3 of 19 holders hold two work-items at once. Absent means EITHER the holder declared no goal OR it is not readable by you; the two are deliberately indistinguishable.\n• `planItemBlocked` — the linked plan lane is still blocked/needs-human/stale ({ reason, planSlug, itemId, effectiveStatus }). Check before unblocking.\n• `planItemClaimCollision` — holding this work-item is NOT holding its linked plan item; someone else now holds a LIVE claim on it ({ planSlug, itemId, claimedBy, claimedByLabel, note }). Coordinate before continuing — you may be duplicating work.\n• `priorWork`/`priorWorkWarning` — P-001: this item has ALREADY BEEN WORKED (prior release/attempt history), so it is NOT fresh work even when it reads open+unassigned. Loudest when NO checkpoint exists — that row is otherwise indistinguishable from never-started. Read the source before building.\n• `checkpoint` — in-flight state from work_items:checkpoint, with `checkpointAgeMs` its write-recency (trust a stale one less).\n• `checkpointFreshness` — P-007: the verdict from the checkpoint's DECLARED dependencies ({ verdict: fresh|stale|recomputed, changed:[{dep,was,now}], reason }). Present only when its author declared any; it OVERRIDES the age/activity signals below (which cannot see a PEER's change at all), and a `stale` verdict names exactly which dependency moved.\n• `checkpointStale` — the assignee kept working after that checkpoint. Fallback only; suppressed when `checkpointFreshness` is present.\n• `checkpointBgJobWarning` — the checkpoint cites a background job/task as evidence, and that bookkeeping can die silently across a process boundary. Verify the pid/completion-marker before trusting it.",
+      "{ ok, results:[{ ok, id, workItem?, holder?, checkpoint?, checkpointAgeMs?, checkpointUpdatedAtMs?, planItemBlocked?, planItemClaimCollision?, error? }], counts } — correlate by id, not position.\n\nConditional fields, present only when they apply:\n• `holder` — WHO holds this item and WHAT they are working toward, without attempting a claim ({ goalRef, goalText, assumptions:{count,keys}, declaredAt, stale, agreement, competing[] }). Read `agreement`/`competing` before trusting `goalRef`: 'divergent' plus a non-empty `competing` means the holder holds several claims and precedence picked one — measured, 3 of 19 holders hold two work-items at once. Absent means EITHER the holder declared no goal OR it is not readable by you; the two are deliberately indistinguishable.\n• `planItemBlocked` — the linked plan lane is still blocked/needs-human/stale ({ reason, planSlug, itemId, effectiveStatus }). Check before unblocking.\n• `planItemClaimCollision` — holding this work-item is NOT holding its linked plan item; someone else now holds a LIVE claim on it ({ planSlug, itemId, claimedBy, claimedByLabel, note }). Coordinate before continuing — you may be duplicating work.\n• `priorWork`/`priorWorkWarning` — P-001: this item has ALREADY BEEN WORKED (prior release/attempt history), so it is NOT fresh work even when it reads open+unassigned. Loudest when NO checkpoint exists — that row is otherwise indistinguishable from never-started. Read the source before building.\n• `checkpoint` — in-flight state from work_items:checkpoint, with `checkpointAgeMs` its write-recency (trust a stale one less).\n• `checkpointFreshness` — P-007: the verdict from the checkpoint's DECLARED dependencies ({ verdict: fresh|stale|recomputed, changed:[{dep,was,now}], reason }). Present only when its author declared any; it OVERRIDES the age/activity signals below (which cannot see a PEER's change at all), and a `stale` verdict names exactly which dependency moved.\n• `checkpointStale` — the assignee kept working after that checkpoint. Fallback only; suppressed when `checkpointFreshness` is present.\n• `checkpointBgJobWarning` — the checkpoint cites a background job/task as evidence, and that bookkeeping can die silently across a process boundary. Verify the pid/completion-marker before trusting it.\n• `lifecycle` (with `detail:true`) — ANSWERS \"was this item ever blocked / held / reopened, by whom, when\". Unifies the three stores that each hold part of the answer (audit_log, payload.reopenHistory, payload flags) into one newest-first timeline: { events:[{ at, kind, by, source, action?, detail? }], flags:{ needsHuman, claimHold, heldOpenBy, heldOpenReason }, coverage }. READ `coverage` BEFORE concluding anything from an empty `events`: `notRecorded[]` names the transitions that are recorded NOWHERE for this item's family (non-terminal moves always; feature-family blocks before this field existed), and `degraded:true` means a source could not be READ — which is not the same fact as a source being empty. An empty timeline is never by itself evidence that nothing happened; conflating those two is the exact error this field was built to end.",
     notWhen:
       "Browsing or filtering the queue → work_items:list / work_items:search (they already return many rows).",
     chaining:
@@ -94,7 +96,7 @@ export default defineTool({
         .boolean()
         .optional()
         .describe(
-          "also return topics, thread posts (comments), and outgoing links",
+          "also return topics, thread posts (comments), outgoing links, and `lifecycle` — the unified history (blocks, holds, reopens) with a coverage report saying what is NOT recorded",
         ),
     })
     .refine((a) => Boolean(a.id) || (a.ids?.length ?? 0) > 0, {
@@ -262,6 +264,30 @@ export default defineTool({
             }
           : null;
         const priorWorkWarn = priorWorkWarning(priorWork);
+        // EI-19397599078921465: the unified lifecycle history — "what actually happened to
+        // this item". The filing that produced this believed the history did not exist; it
+        // did, spread across audit_log + payload.reopenHistory + payload flags with nothing
+        // tying them together, so an agent queried one store, found nothing, and concluded
+        // (reasonably, and wrongly) that the question was unanswerable.
+        //
+        // Folded into `detail` rather than a new arg — an opt-in nobody knows about would
+        // reproduce the exact discoverability defect this closes, and `detail` is already
+        // the flag that means "the fuller picture" for an item being investigated. The plain
+        // read stays on its existing cost, so the hot path is untouched.
+        //
+        // Read OUTSIDE cachedRead: audit_log rows are written fire-and-forget AFTER the
+        // work-item write that triggers them, so they can land after the cache entry that
+        // would have captured them — a cached timeline could omit the newest event while
+        // looking complete, which is the one failure mode this field must not have.
+        // Fail-soft: a miss omits the field and never fails the item read.
+        const lifecycle = args.detail
+          ? await getWorkItemLifecycleHistory({
+              id: workItem.id,
+              workspaceId: activeWorkspaceId(),
+              payload: (workItem as { payload?: unknown }).payload,
+              family: (workItem as { family?: string | null }).family ?? null,
+            }).catch(() => null)
+          : null;
         return {
           ok: true as const,
           id,
@@ -279,6 +305,7 @@ export default defineTool({
           ...(checkpointBgJobWarning ? { checkpointBgJobWarning } : {}),
           ...(planItemBlocked ? { planItemBlocked } : {}),
           ...(claimCollision ? { planItemClaimCollision: claimCollision } : {}),
+          ...(lifecycle ? { lifecycle } : {}),
         };
       },
       { keyOf: (id) => ({ id }) },

@@ -48,6 +48,10 @@ vi.mock('../work-items', () => ({
   releaseWorkItem: admissionMocks.releaseWorkItem,
   claimFloorsWhereSql: admissionMocks.claimFloorsWhereSql,
   releaseCooldownSec: admissionMocks.releaseCooldownSec,
+  // EI-19393442073558754: specIsIssueFamilyOnly (fleet-scope-admission.ts) imports the REAL
+  // kind-set constant from '../work-items' — mirror it here rather than re-declaring it, so
+  // this mock can never silently drift from the real ISSUE_FAMILY_KINDS.
+  ISSUE_FAMILY_KINDS: ['bug', 'change', 'task'],
 }));
 vi.mock('./get-next', () => ({
   compileFilter: admissionMocks.compileFilter,

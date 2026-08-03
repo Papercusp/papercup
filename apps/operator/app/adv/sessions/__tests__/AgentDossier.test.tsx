@@ -623,8 +623,9 @@ describe('AgentDossier', () => {
       expect(keyEl).not.toBe(noteEl);
       // The separator is punctuation between the roles, not part of either, and
       // is hidden from assistive tech so the id is not read out with a stray '·'.
-      const sep = events.getByText('·', { selector: '.pc-dossier__sep' });
-      expect(sep.getAttribute('aria-hidden')).toBe('true');
+      const seps = events.getAllByText('·', { selector: '.pc-dossier__sep' });
+      expect(seps.length).toBeGreaterThan(0);
+      for (const sep of seps) expect(sep.getAttribute('aria-hidden')).toBe('true');
       expect(container.querySelectorAll('[data-testid="dossier-events-row"]').length).toBe(2);
       // One-shot vs standing watch is rendered, not merely implied.
       expect(events.getByTitle('one-shot await')).toBeTruthy();

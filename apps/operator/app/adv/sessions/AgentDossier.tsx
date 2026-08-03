@@ -872,10 +872,18 @@ export default function AgentDossier({
                   <span className="pc-dossier__dir" title="declared, but this agent holds no await on it">
                     ○
                   </span>
+                  {/* WI-7310: same two roles as the subscriptions list above —
+                      the gate KEY is machine text, its note and scope are not. */}
                   <span className="pc-dossier__coord-text">
-                    {g.event}
-                    {g.note ? <span className="pc-dossier__h-note"> · {g.note}</span> : null}
-                    <span className="pc-dossier__h-note"> · {g.scope}</span>
+                    <span className="pc-dossier__id">{g.event}</span>
+                    {g.note ? (
+                      <>
+                        <span className="pc-dossier__sep" aria-hidden="true"> · </span>
+                        <span className="pc-dossier__note">{g.note}</span>
+                      </>
+                    ) : null}
+                    <span className="pc-dossier__sep" aria-hidden="true"> · </span>
+                    <span className="pc-dossier__note">{g.scope}</span>
                   </span>
                 </div>
               ))}

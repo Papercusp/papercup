@@ -15,6 +15,8 @@ import * as Collapsible from "@radix-ui/react-collapsible";
 import { ChevronDown, ShieldAlert } from "lucide-react";
 import { Table, type TableColumn } from "../harness/Table";
 import { Tooltip } from "../harness/Tooltip";
+import { PERF_INTERACTIONS } from "./perf/perf-marks";
+import { useInteractionSettle } from "./perf/use-interaction-settle";
 
 interface RubricRow {
   rubricId: string;
@@ -70,12 +72,17 @@ export default function RubricsPanel({
   compact = false,
   collapseUnscored = false,
   onStatus,
+  active = true,
 }: {
   onSelect?: (rubricId: string) => void;
   selectedId?: string | null;
   compact?: boolean;
   collapseUnscored?: boolean;
   onStatus?: (status: "neutral" | "good" | "warn" | "bad") => void;
+  /** True when this pane is the SELECTED Learning-tab view — see
+   *  useInteractionSettle (WI-7263). Defaults true for the other consumer of
+   *  this panel (the standalone /rubrics page), which is always "active". */
+  active?: boolean;
 }) {
   const { data, error, loading } = useSyncQuery<RubricRow>({
     queryName: "rubrics.list",
@@ -85,6 +92,17 @@ export default function RubricsPanel({
   useEffect(() => {
     onStatus?.(error ? "bad" : rowCount > 0 ? "good" : "neutral");
   }, [error, onStatus, rowCount]);
+  // Perf settle point for PERF_INTERACTIONS.learningViewSwitch (WI-7263) —
+  // same contract as the pre-existing sibling settle points in LearningTab:
+  // gated on the PRIMARY read only, settles on a fault as well as success,
+  // gated on `active` so a warm-but-inactive pane doesn't emit on a revisit
+  // that never remounts (EI-19383745196363732).
+  const rubricsSettled = !loading && (data !== undefined || Boolean(error));
+  useInteractionSettle(
+    PERF_INTERACTIONS.learningViewSwitch,
+    rubricsSettled,
+    active,
+  );
 
   if (loading) {
     return (
