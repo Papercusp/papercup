@@ -491,7 +491,7 @@ export async function sweepPoolConflicts(
     const found = await Promise.all(
       batch.map(async (row) => {
         try {
-          const neighbors = (await backend.search(row.text, { scope: hiveScopeKey(opts.potSlug), limit: CLASSIFY_TOP_K + 1 }))
+          const neighbors = (await backend.search(row.text, { scope: opts.scope, limit: CLASSIFY_TOP_K + 1 }))
             .filter((n) => n.id !== row.id);
           if (neighbors.length === 0) return [];
           const report = await checkConflicts({
@@ -521,7 +521,21 @@ export async function sweepPoolConflicts(
       }
     }
   }
-  return { hive: opts.potSlug, scanned: rows.length, pairs, capped: all.length > rows.length };
+  return { scope: opts.scope, scanned: rows.length, pairs, capped: all.length > rows.length };
+}
+
+/**
+ * Re-run the conflict judge across a hive's whole pool — catches
+ * contradictions that EMERGE after install (a pack row vs what the hive
+ * organically learned last week), which the write-time check can't see.
+ * Thin hive-shaped wrapper over {@link sweepPoolConflicts}.
+ */
+export async function sweepHiveConflicts(
+  opts: { potSlug: string },
+  deps: ManageDeps = {},
+): Promise<SweepResult> {
+  const swept = await sweepPoolConflicts({ scope: hiveScopeKey(opts.potSlug) }, deps);
+  return { hive: opts.potSlug, scanned: swept.scanned, pairs: swept.pairs, capped: swept.capped };
 }
 
 /* ────────────────────────────────────────────────────────────────────────

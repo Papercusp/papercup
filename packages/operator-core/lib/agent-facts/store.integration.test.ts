@@ -494,6 +494,100 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
     expect(row.evicted_at).toBeNull();
   });
 
+  it('EI-19451909636567773: survival-ranking-matches-sweep — the receipt names THIS write as next, and the next assert evicts exactly that row', async () => {
+    const scopeRef = 'su-survival-prediction';
+    const base = { scope: 'owner' as const, scopeRef, createdBy: 'su-int', workspaceId: WS };
+
+    // Same live shape as WI-7292 above: saturated, every incumbent verified and
+    // long-lived, so confidence is inert and `expires_at DESC` decides alone —
+    // which is the ONLY configuration measured in production.
+    for (let i = 0; i < FACTS_PER_SCOPE_CAP; i++) {
+      await assertFact(
+        { ...base, key: `incumbent-${i}`, body: `n ${i}`, confidence: 'verified', ttlSec: 30 * 86400 },
+        db.sql,
+      );
+    }
+
+    // The doomed write: 48h into a scope of 30-day incumbents. WI-7292 lets it
+    // IN — and until now nothing told its author it was already last in line.
+    const doomed = await assertFact(
+      { ...base, key: 'doomed', body: 'urgent + short-lived', confidence: 'verified', ttlSec: 48 * 3600 },
+      db.sql,
+    );
+
+    // Non-vacuity FIRST: the cap must actually have BITTEN. Without this,
+    // "ranked last" would be a claim about a scope where ranking never ran.
+    expect(doomed.evicted?.length).toBeGreaterThan(0);
+
+    // The half that used to be withheld.
+    expect(doomed.survival).toBeDefined();
+    expect(doomed.survival?.nextVictim).toBe(true);
+    expect(doomed.survival?.rank).toBe(FACTS_PER_SCOPE_CAP);
+    expect(doomed.survival?.liveCount).toBe(FACTS_PER_SCOPE_CAP);
+    // It names the BAR this TTL failed to clear, not a general aphorism about
+    // short TTLs — the caller can act on a timestamp, not on advice.
+    expect(doomed.survival?.survivingTtlFloor).toBeTruthy();
+    expect(new Date(doomed.survival!.survivingTtlFloor!).getTime()).toBeGreaterThan(
+      new Date(doomed.expiresAt).getTime(),
+    );
+
+    // ── THE PIN ────────────────────────────────────────────────────────────
+    // A prediction is only worth printing if it comes true, and the JS ordering
+    // that produced it is a hand-mirror of the sweep's SQL ORDER BY. This is
+    // what stops the two drifting: a DIFFERENT author asserts, and the row we
+    // named must be exactly the row that dies.
+    const later = await assertFact(
+      {
+        ...base,
+        createdBy: 'su-other-writer',
+        key: 'a-later-write',
+        body: 'by someone else entirely',
+        confidence: 'verified',
+        ttlSec: 30 * 86400,
+      },
+      db.sql,
+    );
+    expect(later.evicted?.map((e) => e.key)).toEqual(['doomed']);
+
+    // …and it is really gone from the folds, which is the failure the author
+    // would otherwise have experienced as silence.
+    const live = await foldFacts(
+      [{ scope: 'owner', scopeRef }],
+      { workspaceId: WS, audiences: 'all', limitPerSelector: 500 },
+      db.sql,
+    );
+    expect(live.map((f) => f.key)).not.toContain('doomed');
+  });
+
+  it('EI-19451909636567773: a write that lands mid-ranking is NOT alarmed — a warning that always fires is one nobody reads', async () => {
+    const scopeRef = 'su-survival-quiet';
+    const base = { scope: 'owner' as const, scopeRef, createdBy: 'su-int', workspaceId: WS };
+
+    // Short-lived incumbents this time, so a newcomer with a long TTL outranks
+    // most of them rather than sinking to the bottom.
+    for (let i = 0; i < FACTS_PER_SCOPE_CAP; i++) {
+      await assertFact(
+        { ...base, key: `incumbent-${i}`, body: `n ${i}`, confidence: 'verified', ttlSec: 3600 },
+        db.sql,
+      );
+    }
+
+    const safe = await assertFact(
+      { ...base, key: 'well-declared', body: 'deliberately long-lived', confidence: 'verified', ttlSec: 90 * 86400 },
+      db.sql,
+    );
+
+    // Non-vacuity: the cap bit here too, so `nextVictim:false` is a real verdict
+    // from a ranking that ran — not the silence of a scope under its cap.
+    expect(safe.evicted?.length).toBeGreaterThan(0);
+    expect(safe.survival).toBeDefined();
+    expect(safe.survival?.nextVictim).toBe(false);
+    expect(safe.survival?.rank).toBe(1);
+    // Nothing ranks above it, so there is no TTL bar to report — and reporting
+    // one anyway would imply a threat that does not exist.
+    expect(safe.survival?.survivingTtlFloor).toBeNull();
+  });
+
   it('WI-6935 (b): a cap eviction is distinguishable from a deliberate retract via evicted_at', async () => {
     const scopeRef = 'su-evicted-at';
     const base = { scope: 'owner' as const, scopeRef, createdBy: 'su-int', workspaceId: WS };

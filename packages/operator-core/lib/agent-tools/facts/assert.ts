@@ -476,7 +476,7 @@ export default defineTool({
     //
     // Stripped off the nested `fact` so the wire shape of a fact stays exactly an
     // AgentFact: the eviction report is a property of the WRITE, not of the fact.
-    const { evicted: evictedFacts, ...factForWire } = fact;
+    const { evicted: evictedFacts, survival, ...factForWire } = fact;
     return {
       content: [
         {
@@ -495,6 +495,34 @@ export default defineTool({
                       `next assert into this scope will cost another one. If a listed fact still ` +
                       `matters, re-assert it; note that a SHORT TTL is what makes a fact cheap ` +
                       `for the cap to choose, so an urgent short-lived fact is the most likely victim.`,
+                  },
+                }
+              : {}),
+            // EI-19451909636567773: the receipt above reports the fact you
+            // DESTROYED. This one reports whether YOUR OWN write is going to
+            // survive — the half the writer can actually act on, and the half
+            // that was withheld. Only present on an at-cap write (see
+            // FactSurvival), and only ALARMING when nextVictim is true, so the
+            // common case stays a single quiet line.
+            ...(survival
+              ? {
+                  survival: {
+                    ...survival,
+                    note: survival.nextVictim
+                      ? `⚠ THIS FACT IS NEXT. It ranked LAST (${survival.rank} of ` +
+                        `${survival.liveCount}) in this scope, so the next assert here by ANY ` +
+                        `agent evicts it — regardless of the future expiresAt above. ` +
+                        (survival.survivingTtlFloor
+                          ? `Your TTL is what put it last: the fact ranked just above yours runs ` +
+                            `to ${survival.survivingTtlFloor}. Re-assert with a TTL beyond that ` +
+                            `to survive, `
+                          : `Re-assert with a longer TTL to survive, `) +
+                        `or write it somewhere durable instead (a work-item checkpoint / an ` +
+                        `agent-insights doc) — a fact you assume is standing but that was evicted ` +
+                        `fails SILENTLY: it just stops appearing in folds.`
+                      : `This fact ranks ${survival.rank} of ${survival.liveCount} in this ` +
+                        `at-cap scope (1 = safest); it survives until ${survival.liveCount - survival.rank} ` +
+                        `more fact(s) outrank it.`,
                   },
                 }
               : {}),

@@ -56,6 +56,7 @@ export const BESPOKE_ACTIVE_SEEDS: BespokeActiveSeed[] = [
   { name: 'claim-discipline-watch', seedScript: 'seed-claim-discipline-routine.ts' },
   { name: 'task-reconcile', seedScript: 'seed-task-reconcile-routine.ts' },
   { name: 'supervision-reconcile', seedScript: 'seed-supervision-reconcile-routine.ts' },
+  { name: 'corpus-term-df', seedScript: 'seed-corpus-term-df-routine.ts' },
 ];
 
 export interface CheckResult {

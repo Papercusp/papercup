@@ -89,7 +89,8 @@ export function isAmbientBroadcast(e: Record<string, unknown>): boolean {
 }
 
 /** EI-6144 ambient/broadcast coalescing: collapse REPEATED categorized system
- *  broadcasts — same sender, kind, category, and verbatim summary, addressed to
+ *  broadcasts — same sender, kind, category, and summary (modulo embedded
+ *  ISO-8601 instants, see VOLATILE_TIMESTAMP_RE), addressed to
  *  '*' — into ONE row (the newest of the group), annotated `repeat_count` +
  *  `first_seen_ts`. Watchdog/status firehoses re-emit the same line for hours;
  *  without this they fill the `limit` window with repetition and crowd distinct
@@ -97,6 +98,25 @@ export function isAmbientBroadcast(e: Record<string, unknown>): boolean {
  *  legitimately saying the same thing twice) and uncategorized rows pass
  *  through untouched. Read-time only — the log keeps every row. Ascending
  *  order is preserved (each group's newest keeps its original position). Pure. */
+/** An embedded ISO-8601 instant is pure restatement of ONE condition, so it must
+ *  not split a coalescing group. Same class as escalations.ts' VOLATILE_DURATION_RE
+ *  (which neutralises `12m` / `3h` in a dedup key, after that bug recurred four
+ *  times); this is its timestamp sibling, and it is applied to the KEY ONLY — the
+ *  surviving row still displays its own verbatim summary, which is the newest of
+ *  the group, so the reader sees the LATEST instant rather than a placeholder.
+ *
+ *  MEASURED on 24h of live ambient broadcasts (2026-08-03): 4 groups / 111 rows
+ *  recovered, every one a rate-limit pause — `bucket "anthropic:haiku" paused
+ *  until <ts>` alone was 60 separate rows for a single ongoing condition.
+ *
+ *  DELIBERATELY NARROW: bare integers are PRESERVED. Blanking all digits instead
+ *  would have scored higher (18 groups / 161 rows) by folding together messages
+ *  that genuinely differ — `deploy stale: … N commits behind` is a different
+ *  signal at 3 commits than at 40, and collapsing those loses information rather
+ *  than repetition. A count is signal; an instant is noise. */
+const VOLATILE_TIMESTAMP_RE =
+  /\d{4}-\d{2}-\d{2}[T ][\d:]{5,8}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?/g;
+
 export function coalesceRepeatedBroadcasts<T extends Record<string, unknown>>(
   entries: readonly T[],
 ): Array<Record<string, unknown>> {
@@ -109,7 +129,8 @@ export function coalesceRepeatedBroadcasts<T extends Record<string, unknown>>(
     if (typeof category !== "string" || !category) return null;
     if (typeof summary !== "string" || !summary) return null;
     if (!Array.isArray(to) || !to.includes("*")) return null;
-    return `${String(e["from"] ?? "")}\x00${String(e["kind"] ?? "")}\x00${category}\x00${summary}`;
+    const summaryKey = summary.replace(VOLATILE_TIMESTAMP_RE, "<ts>");
+    return `${String(e["from"] ?? "")}\x00${String(e["kind"] ?? "")}\x00${category}\x00${summaryKey}`;
   };
   entries.forEach((e, i) => {
     const key = keyOf(e);

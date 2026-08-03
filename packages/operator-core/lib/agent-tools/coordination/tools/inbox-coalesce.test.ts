@@ -158,6 +158,47 @@ describe("coalesceRepeatedBroadcasts (pure)", () => {
     const rows = [broadcast(1, "a"), broadcast(2, "b")];
     expect(coalesceRepeatedBroadcasts(rows)).toBe(rows);
   });
+
+  // EI-6144 residual: the item asked to key on a NORMALIZED summary; the original
+  // landed keying on the verbatim one, so any broadcast templating a live instant
+  // into its text never coalesced. Measured on 24h of live ambient traffic
+  // (2026-08-03): 111 rows across 4 groups, all rate-limit pauses — the single
+  // worst was 60 rows for ONE ongoing condition.
+  it("an embedded ISO-8601 instant does not split a group (the rate-limit pause case)", () => {
+    const rows = [
+      broadcast(1, '⏳ rate-limit — bucket "haiku" paused until 2026-08-03T17:04:11Z'),
+      broadcast(2, '⏳ rate-limit — bucket "haiku" paused until 2026-08-03T17:09:48Z'),
+      broadcast(3, '⏳ rate-limit — bucket "haiku" paused until 2026-08-03T17:15:02.317Z'),
+    ];
+    const out = coalesceRepeatedBroadcasts(rows);
+    expect(out).toHaveLength(1);
+    expect(out[0]).toMatchObject({ repeat_count: 3, first_seen_ts: at(1) });
+    // the SURVIVING row keeps its own verbatim summary — the newest instant, not
+    // a placeholder — so the reader still learns when the pause actually lifts.
+    expect(out[0]!.summary).toBe(
+      '⏳ rate-limit — bucket "haiku" paused until 2026-08-03T17:15:02.317Z',
+    );
+  });
+
+  // The narrowness is the point, and it is the property most likely to be
+  // "improved" away later: blanking every digit scored higher (161 rows vs 111)
+  // by folding messages that genuinely differ. A count is signal; an instant is
+  // noise. If this test starts failing, the normalisation got too aggressive.
+  it("bare integers are PRESERVED — differing counts stay distinct rows", () => {
+    const rows = [
+      broadcast(1, "deploy stale: the release pin is 3 commits behind tip"),
+      broadcast(2, "deploy stale: the release pin is 40 commits behind tip"),
+    ];
+    expect(coalesceRepeatedBroadcasts(rows)).toHaveLength(2);
+  });
+
+  it("a differing instant still cannot merge across sender/category/kind", () => {
+    const rows = [
+      broadcast(1, "paused until 2026-08-03T17:04:11Z"),
+      broadcast(2, "paused until 2026-08-03T17:09:48Z", { from: "other-sender" }),
+    ];
+    expect(coalesceRepeatedBroadcasts(rows)).toHaveLength(2);
+  });
 });
 
 describe("coord:inbox handler (fold before the limit window)", () => {

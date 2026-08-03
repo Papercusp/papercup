@@ -100,6 +100,7 @@ export type ProseEligibleMode = (typeof PROSE_ELIGIBLE_MODES)[number];
  */
 export const PROSE_VECTOR_COLUMNS: ReadonlyArray<{ table: string; column: string }> = [
   { table: 'harness_shared.session_turns', column: 'text_embedding' },
+  { table: 'harness_shared.session_turn_chunks', column: 'embedding' },
   { table: 'harness_shared.operator_turns', column: 'text_embedding' },
   { table: 'harness_shared.work_items', column: 'embedding' },
   { table: 'harness_shared.doc_sections', column: 'embedding' },

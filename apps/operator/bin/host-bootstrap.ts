@@ -541,8 +541,12 @@ export function runBootstrap(): void {
             // CLOSE the deferral in the failure direction too. Without this the last word
             // on dev/local is "deferred to pass 2" and pass 2 never runs — a promise the
             // log never keeps, which is the same false-signal bug with the sign flipped.
+            // ⚠ Deliberately does NOT contain the substring "source pass": the WI-3307
+            // acceptance harness greps `[env-operators] source pass` to mean "pass 2 RAN",
+            // so phrasing this failure line that way would make a failed extract score as
+            // a PASS — the same reads-like-success-means-failure bug this change fixes.
             console.log(
-              `[env-operators] source pass (2/2) SKIPPED — no source tree was produced, so ${deferredIds.join(
+              `[env-operators] pass 2 SKIPPED — no source tree was produced, so ${deferredIds.join(
                 '+',
               )} are unavailable for this boot (now terminal, not pending)`,
             );

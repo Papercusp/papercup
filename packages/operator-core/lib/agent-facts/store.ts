@@ -436,6 +436,70 @@ export type AssertFactResult = AgentFact & {
    * query on every assert, and this carries the same signal for free.
    */
   evicted?: FactEviction[];
+  /**
+   * EI-19451909636567773: whether THIS write is going to survive.
+   *
+   * `evicted` above reports the fact you DESTROYED — the half you can do nothing
+   * about. This reports the half you can: where your own row landed in the same
+   * ranking, and whether the next assert into this scope destroys it.
+   */
+  survival?: FactSurvival;
+};
+
+/**
+ * EI-19451909636567773: the written fact's OWN standing in the victim ranking.
+ *
+ * ── THE DEFECT ─────────────────────────────────────────────────────────────
+ * WI-7292 stopped a write from evicting the row it had just inserted. It did
+ * NOT stop the row from being evicted by the very NEXT writer, and the receipt
+ * still says nothing about it. A fact is exempt from its own write's sweep and
+ * from no other, so on a saturated scope the real lifetime of a bottom-ranked
+ * fact is "until anyone else asserts here" — 38 seconds, measured
+ * 2026-08-03T16:52:57Z→16:53:35Z on `gate-red-e53a0758-fully-stale`.
+ *
+ * The author saw `ok:true` with an `expiresAt` two days out. Standing agent
+ * instruction is that a fact is folded verbatim into every future orient until
+ * retracted, so an author who gets that receipt reasonably stops carrying the
+ * conclusion anywhere else. For a bottom-ranked fact that is currently false,
+ * and undetectable without a follow-up SQL read of `evicted_at`.
+ *
+ * ── WHY THE EXISTING SIGNALS DO NOT COVER IT ───────────────────────────────
+ * `notify-evicted` tells the author AFTER the fact is already gone, which is
+ * the right message at the wrong time: the TTL is only changeable at write
+ * time. The assert note's advice ("a SHORT TTL is what makes a fact cheap for
+ * the cap to choose") is correct but arrives attached to somebody ELSE's loss,
+ * phrased as general advice, at the one moment the reader is least likely to
+ * hear it as being about themselves.
+ *
+ * ── SCOPE (deliberate) ─────────────────────────────────────────────────────
+ * Computed ONLY on a write that actually evicted, reusing the query that was
+ * already running there. That leaves exactly one blind write per scope: the one
+ * that takes a scope from CAP-1 to CAP evicts nothing, so it gets no survival
+ * report even though it may land last. Closing that needs a COUNT on every
+ * assert — the same cost the `evicted`/`atCap` note above already declines to
+ * pay — and it is self-limiting: the NEXT write into that scope reports, and if
+ * it evicts the blind fact, that author is notified. Cheap fix, real residue,
+ * stated rather than hidden.
+ */
+export interface FactSurvival {
+  /** 1 = safest. Position among live facts, in the SAME order the sweep ranks victims. */
+  rank: number;
+  /** Live facts in the scope after this write (== FACTS_PER_SCOPE_CAP on this path). */
+  liveCount: number;
+  /**
+   * True ⇒ this fact is the bottom of the ranking, so the next assert into this
+   * scope BY ANY WRITER evicts it. The single actionable bit in this object.
+   */
+  nextVictim: boolean;
+  /**
+   * The `expires_at` of the fact ranked immediately ABOVE this one — i.e. the
+   * bar this TTL failed to clear. Null when this fact is not last (nothing to
+   * beat) or the neighbour could not be determined.
+   *
+   * Reported as a TIMESTAMP rather than a duration because that is what the
+   * ranking actually compares; the tool layer renders the delta for a human.
+   */
+  survivingTtlFloor: string | null;
 };
 
 export interface AssertFactInput {
@@ -1224,8 +1288,20 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
     // separated anything — not whether the literal strings differ.
     let ranking: import('./notify-evicted').EvictionRankingContext | null = null;
     try {
-      const survivors = await sql<{ confidence: string | null }[]>`
-        SELECT DISTINCT confidence
+      // EI-19451909636567773: this query used to be `SELECT DISTINCT confidence`
+      // — enough to answer "did confidence discriminate", not enough to answer
+      // "will MY write survive". Selecting the ranking columns for the same
+      // (already-bounded, <= CAP) row set answers both from ONE query, with no
+      // extra round-trip and no second copy of the ordering in SQL.
+      const survivors = await sql<
+        {
+          id: string | number | null;
+          confidence: string | null;
+          expires_at: string | Date;
+          updated_at: string | Date;
+        }[]
+      >`
+        SELECT id, confidence, expires_at, updated_at
           FROM harness_shared.agent_facts
          WHERE workspace_id = ${ws} AND scope = ${input.scope}
            AND coalesce(scope_ref,'') = ${ref ?? ''}
@@ -1247,9 +1323,44 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
         // shared tier — that would be a false claim about the data.
         prevailingConfidence: values.size === 1 ? [...values][0] : null,
       };
+
+      // Rank the written row exactly as the sweep would. This MUST stay a
+      // mirror of the ORDER BY above (confidence ASC, expires_at DESC,
+      // updated_at DESC) — a divergence would report a confident survival
+      // verdict that the sweep then contradicts, which is worse than reporting
+      // nothing. `survival-ranking-matches-sweep` in the integration suite pins
+      // them together by predicting a victim and then causing the eviction.
+      const ms = (v: string | Date): number => new Date(v).getTime();
+      const ordered = [...survivors].sort((a, b) => {
+        const byConf = confRank(parseFactConfidence(a.confidence)) - confRank(parseFactConfidence(b.confidence));
+        if (byConf !== 0) return byConf;
+        const byExpiry = ms(b.expires_at) - ms(a.expires_at);
+        if (byExpiry !== 0) return byExpiry;
+        return ms(b.updated_at) - ms(a.updated_at);
+      });
+      // String-compare the ids: `id` is a bigint column, so the driver may hand
+      // back either a number or an exact-precision string and `===` across the
+      // two would silently never match — reporting rank 0 (i.e. "not found")
+      // for every write.
+      const idx = ordered.findIndex((r) => String(r.id) === String(writtenId));
+      if (idx >= 0) {
+        const isLast = idx === ordered.length - 1;
+        const neighbourAbove = isLast && ordered.length > 1 ? ordered[idx - 1] : null;
+        fact.survival = {
+          rank: idx + 1,
+          liveCount: ordered.length,
+          // Last place ⇒ the next assert by anyone takes this row. On an exact
+          // three-key tie SQL may order either row first, so a tied-last fact
+          // is reported as next-victim too: it is one of the two candidates,
+          // and warning is the conservative side of an ambiguity.
+          nextVictim: isLast,
+          survivingTtlFloor: neighbourAbove ? new Date(neighbourAbove.expires_at).toISOString() : null,
+        };
+      }
     } catch {
       // Undetermined beats wrong: the notice says so, and an eviction notice
-      // must never be lost to a diagnostic query failing.
+      // must never be lost to a diagnostic query failing. `survival` is simply
+      // absent on this path — never a fabricated "you are safe".
       ranking = null;
     }
 

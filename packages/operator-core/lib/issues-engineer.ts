@@ -34,9 +34,10 @@ import {
   type ThreadPostRow,
 } from '@papercusp/coordination/capabilities';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
-import { FLAGS } from '@papercusp/flags';
-import { getFlag, onFlagChange } from '@papercusp/flags/server';
+import { FLAGS, FLAG_DEFAULTS } from '@papercusp/flags';
+import { getFlag } from '@papercusp/flags/server';
 import { activeWorkspaceId } from './workspace-registry';
+import { lazyFlagRefresh } from './lazy-flag-refresh';
 import { systemDistinctId } from './flag-distinct-id';
 import { type InjectEvent } from './agent-tools/coordination/fanout-delivery';
 import { coordScopeWorkspace } from './agent-tools/coordination/log';

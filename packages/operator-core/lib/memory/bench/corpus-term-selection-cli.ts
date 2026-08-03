@@ -48,6 +48,7 @@
 import { getOrgPg } from '@papercusp/db-org';
 
 import { corpusTerms, CORPUS_QUERY_MAX_TERMS } from '../corpus-recall';
+import { refreshCorpusTermDf } from '../corpus-term-df';
 
 function argValue(name: string): string | undefined {
   const i = process.argv.indexOf(name);
@@ -142,6 +143,21 @@ const pct = (n: number, d: number): string => (d === 0 ? 'n/a' : `${((100 * n) /
 
 async function main(): Promise<void> {
   const { sql } = getOrgPg();
+
+  // `--refresh` rebuilds the REAL `corpus_term_df` table (what production
+  // selects with) before probing. The `system:corpus-term-df` routine does this
+  // on a 6h cadence; this is the manual trigger for a first population or an
+  // immediate re-measure.
+  if (process.argv.includes('--refresh')) {
+    const r = await refreshCorpusTermDf(sql, {
+      workspaceId: WORKSPACE,
+      sampleDocs: DF_SAMPLE,
+    });
+    console.log(
+      `refreshed corpus_term_df: ${r.ndocs} docs folded → ${r.stored} term(s) stored with df ≥ ${r.minDf} ` +
+        `(dropped ${r.distinctSeen - r.stored} unattested of ${r.distinctSeen} distinct)\n`,
+    );
+  }
 
   // ── 1. Build the DF table over RAW corpusTerms tokens (see header). ────────
   const dfRows = (await sql`

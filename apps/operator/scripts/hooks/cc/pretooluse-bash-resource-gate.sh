@@ -3347,6 +3347,31 @@ _NAMED_WRAPPER_ALTS = (
 # mid-string anchor the way the named words are.
 _ASSIGN_PREFIX = r'[A-Za-z_]\w*=\S*\s+'
 _BENIGN_WRAPPERS = '(?:' + '|'.join(_NAMED_WRAPPER_ALTS + (_ASSIGN_PREFIX,)) + ')'
+
+# The ROOT npm entrypoints that package.json ALREADY wraps in scripts/pc-heavy.sh.
+# They run their own flock counting-semaphore admission, so they are safe at ANY
+# command position, not merely as the first word.
+#
+# Defined ONCE for the same reason _BENIGN_WRAPPERS is: this set is consumed by
+# the start-anchored (a2) skip-check AND by the heavy-detection anchor, and a
+# second hand-maintained copy is exactly what drifts (EI-19317242751258158 was
+# that bug for the wrapper set — the peel knew `timeout`, the anchor did not).
+#
+# EI-19419178369405401: the (a2) check is `re.match` (start-anchored) while
+# heavy-detection is anchored at EVERY command position, so `npm run test:file`
+# was exempt as the first word and DENIED after any separator — `echo hi; npm
+# run test:file` and `export FOO=1; npm run test:file` both denied while the
+# identical bare command passed. That asymmetry denied the blessed, already
+# self-throttling entrypoint under exactly the load it exists to queue for, and
+# the deny text then named that same entrypoint as the remedy — the "guard
+# blocks its own remedy" trap this file has now hit four times.
+#
+# Bare `npm test` / `npm run test` are deliberately NOT here: a WORKSPACE cwd
+# resolves those to its own raw vitest rather than the root wrapper.
+_ROOT_NPM_ENTRYPOINT_ALT = (
+    r'test:affected(?::integration)?|test:all(?::integration)?'
+    r'|test:file|lint:tsc(?::operator-vite)?|typecheck'
+)
 _NAMED_WRAPPERS = '(?:' + '|'.join(_NAMED_WRAPPER_ALTS) + ')'
 
 
@@ -3423,11 +3448,16 @@ def _heavy_admission():
     #       Exact script names only (these exist ONLY at the repo root); bare
     #       `npm test` / `npm run test` stay gated because a WORKSPACE cwd
     #       resolves those to its own raw vitest, not the wrapper.
-    if re.match(
-        r'npm\s+run\s+(?:test:affected(?::integration)?|test:all(?::integration)?'
-        r'|test:file|lint:tsc(?::operator-vite)?|typecheck)(?=\s|$)',
-        _pc_lead):
-        return
+    #       This is NO LONGER an early `return`. It used to be, and that had its
+    #       own hole: an early return is unconditional, so a sanctioned
+    #       entrypoint at the FRONT waved through everything after it —
+    #       `npm run test:file && npx vitest` was ALLOWED at any load (measured
+    #       2026-08-03 while fixing EI-19419178369405401). The exemption is now
+    #       expressed where it belongs, as a negative lookahead inside
+    #       heavy-detection below, so a sanctioned entrypoint stops being heavy
+    #       WITHOUT granting amnesty to the rest of the command line.
+    #       `lint:tsc` / `typecheck` need no arm there at all: heavy-detection
+    #       never matched them in the first place.
     #   (b) a leading `PC_HEAVY_BYPASS=1` env-assignment prefix (bare, behind
     #       other assignments, or behind `env`) — mirrors the message's own
     #       `PC_HEAVY_BYPASS=1 <cmd>` remedy and the `env`-prefixed heavy form
@@ -3486,7 +3516,12 @@ def _heavy_admission():
         anchor + r'(?:'
         r'(?:npx\s+|pnpm\s+|bunx\s+)?vitest(?=\s|$)'
         r'|(?:npx\s+)?tsc(?=\s|$)'
-        r'|npm\s+(?:run\s+)?test(?::[\w-]+)?(?=\s|$)'
+        # The negative lookahead is what makes a sanctioned root entrypoint
+        # non-heavy at EVERY command position, matching the (a2) skip-check
+        # above (EI-19419178369405401). Bare `npm test` / `npm run test` /
+        # `npm run test:unit` are unaffected — none of them is in the set — so
+        # a workspace's own raw vitest stays gated exactly as before.
+        r'|npm\s+(?:run\s+)?(?!(?:' + _ROOT_NPM_ENTRYPOINT_ALT + r')(?=\s|$))test(?::[\w-]+)?(?=\s|$)'
         r'|npm\s+run\s+build(?=\s|$)'
         r'|turbo\s+run\s+(?:test|build|typecheck)\b'
         r')',

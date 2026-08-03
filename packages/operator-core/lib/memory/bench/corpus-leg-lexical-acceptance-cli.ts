@@ -71,6 +71,7 @@ import {
   type CorpusHit,
 } from '../corpus-recall';
 import { corpusRecallTimeoutMs, recallCorpusContext } from '../corpus-recall-io';
+import { corpusTermDfLookup } from '../corpus-term-df';
 
 const CORPUS_SOURCE_NAMES = ['session_turn', 'work_item'] as const;
 
@@ -337,6 +338,117 @@ function renderShape(r: ShapeReport, boundMs: number): string {
 }
 
 /**
+ * P-018 / D-064 — BANDED term selection vs today's LENGTH ordering, same leg.
+ *
+ * ═══ READ THIS BEFORE READING THE NUMBERS ═══════════════════════════════════
+ *
+ * ⚠ "LINES LOST" IS NOT A REGRESSION SIGNAL HERE, and the section deliberately
+ * does not report one. Every other arm in this file compares a WIDENING (graded
+ * ⊇ and), where containment holds by construction and a single lost line
+ * falsifies the implementation. A term-SELECTION change has no containment
+ * relation at all: the two arms issue DIFFERENT queries, so of course they
+ * retrieve different documents. Reporting "lost lines" for it would manufacture
+ * a regression out of the change simply doing its job — the mirror image of the
+ * confound that cost this file a false verdict once already.
+ *
+ * What IS decidable without a relevance judgment:
+ *
+ *   • ZERO-CANDIDATE RATE — did the query retrieve anything at all? This is the
+ *     direct, falsifiable consequence of D-064 R1: a term the corpus attests
+ *     fewer than `minDf` times cannot match, so a selector that spends slots on
+ *     unattested tokens must empty more result sets. Production spends 19.3% of
+ *     its slots that way; banded spends 0%.
+ *   • FILL — mean admitted lines against the 6-slot cap. More slots filled is
+ *     more context delivered, whatever its ranking.
+ *   • LATENCY — against the whole-leg bound.
+ *
+ * ⚠ NONE of these says the recovered documents are more USEFUL. That is a
+ * relevance question, and the honest instrument for it is the WI-6512 known-item
+ * replay (`mid-turn-context.p018-acceptance.test.ts`, run against the LIVE
+ * endpoint — a fixture green there is explicitly not the acceptance case).
+ */
+async function measureSelection(
+  sql: ReturnType<typeof getOrgPg>['sql'],
+  texts: string[],
+  embedder: Embedder | null,
+  df: ((term: string) => number) | null,
+): Promise<string> {
+  const L: string[] = [];
+  L.push(`\n## P-018 — banded term selection vs length ordering (D-064)`);
+  L.push('');
+  if (!df) {
+    L.push(
+      '> ⚠ **SKIPPED — no `corpus_term_df` table for this workspace.** Populate it first (`corpus-term-selection-cli.ts --refresh`, or wait for the `system:corpus-term-df` routine). Without it the leg keeps length ordering and there is nothing to compare.',
+    );
+    return L.join('\n');
+  }
+
+  let n = 0;
+  let changed = 0;
+  let lenZero = 0;
+  let bandZero = 0;
+  const lenCount: number[] = [];
+  const bandCount: number[] = [];
+  const lenMs: number[] = [];
+  const bandMs: number[] = [];
+
+  for (const text of texts) {
+    const qLen = corpusQueryText(text);
+    const qBand = corpusQueryText(text, undefined, { df });
+    if (!qLen || !qBand) continue;
+    n += 1;
+    if (qLen !== qBand) changed += 1;
+
+    const a = await runArm(sql, qLen, 'coverage-graded', embedder);
+    const b = await runArm(sql, qBand, 'coverage-graded', embedder);
+
+    if (a.candidates.length === 0) lenZero += 1;
+    if (b.candidates.length === 0) bandZero += 1;
+    lenCount.push(a.admitted.length);
+    bandCount.push(b.admitted.length);
+    lenMs.push(a.ms);
+    bandMs.push(b.ms);
+  }
+
+  L.push(
+    `queries whose TERMS the band changed: **${changed}/${n}** (${pct(changed, n)}) — the rest short-circuit on an id or have too few candidates, and are identical by construction`,
+  );
+  L.push('');
+  L.push('| metric | length (production) | banded (P-018) |');
+  L.push('|---|---|---|');
+  L.push(
+    `| zero-CANDIDATE queries (retrieved nothing) | ${lenZero} (${pct(lenZero, n)}) | ${bandZero} (${pct(bandZero, n)}) |`,
+  );
+  L.push(
+    `| mean ADMITTED lines (cap ${CORPUS_MAX_ITEMS}) | ${mean(lenCount).toFixed(2)} | ${mean(bandCount).toFixed(2)} |`,
+  );
+  L.push(
+    `| latency p50 / p95 (ms) | ${quantile(lenMs, 0.5)} / ${quantile(lenMs, 0.95)} | ${quantile(bandMs, 0.5)} / ${quantile(bandMs, 0.95)} |`,
+  );
+  L.push('');
+  const zeroDelta = lenZero - bandZero;
+  L.push(
+    zeroDelta > 0
+      ? `- ✓ banding EMPTIED FEWER result sets: ${zeroDelta} fewer zero-candidate queries (${pct(lenZero, n)} → ${pct(bandZero, n)}). This is D-064 R1 showing up in retrieval, not just in the term picks.`
+      : zeroDelta === 0
+        ? `- zero-candidate rate UNCHANGED (${lenZero} both arms) — on this sample the unattested picks were not the binding constraint.`
+        : `- ✗ banding emptied MORE result sets (${-zeroDelta} more). That contradicts D-064 R1 and must be explained before shipping.`,
+  );
+  const fillDelta = mean(bandCount) - mean(lenCount);
+  L.push(
+    `- mean fill ${fillDelta >= 0 ? '+' : ''}${fillDelta.toFixed(2)} lines/query`,
+  );
+  const worst = Math.max(...bandMs, 0);
+  L.push(
+    `- banded worst-case ${worst}ms against the ${corpusRecallTimeoutMs()}ms whole-leg bound → ${worst < corpusRecallTimeoutMs() ? '✓ inside' : '✗ OVER BUDGET'}`,
+  );
+  L.push(
+    '- ⚠ No "lines lost" figure by design — see this section\'s header. The arms issue different queries, so set difference measures the change happening, not a regression.',
+  );
+  return L.join('\n');
+}
+
+/**
  * The SHIPPED leg (P-017 cascade) vs the leg as it stood BEFORE the change.
  *
  * The "before" is `lexicalMode: 'and'` — stage 1 alone — which is exactly what
@@ -476,6 +588,13 @@ async function main(): Promise<void> {
   }
 
   out.push(await measureCascade(sql, texts, embedder));
+
+  // P-018 / D-064. Reads the REAL `corpus_term_df` table — the same lookup
+  // production selects with, so this measures the shipped path rather than a
+  // lookalike (D-063's lesson: an instrument that does not execute the code
+  // under test returns a null that reads as a verdict).
+  const df = await corpusTermDfLookup(sql, WORKSPACE);
+  out.push(await measureSelection(sql, texts, embedder, df));
 
   out.push('');
   out.push(

@@ -74,9 +74,19 @@ const WIDTHS = (argOf('--widths') ?? '2000,3000,4000,6000,8000')
 const PROBE_START = Number(argOf('--probe-at') ?? 3000);
 const PROBE_LEN = 240;
 
-/** Chunk width for the chunked arm — see the arm's comment in main(). */
-const CHUNK = Number(argOf('--chunk') ?? 1500);
-const CHUNK_OVERLAP = Number(argOf('--chunk-overlap') ?? 250);
+/**
+ * Chunk width for the chunked arm — see the arm's comment in main().
+ *
+ * Defaults come from the SHIPPED constants, and the arm splits with the SHIPPED
+ * `splitTurnChunks` (P-034). This bench used to carry its own inline copy of the
+ * loop, which was fine while chunking was a hypothesis and became a liability
+ * the moment it became production: a benchmark measuring a private copy of the
+ * algorithm silently stops being evidence about the real path once the two
+ * drift, and nothing fails when they do — both keep "working". Importing means
+ * re-running this re-measures production.
+ */
+const CHUNK = Number(argOf('--chunk') ?? TURN_CHUNK_CHARS);
+const CHUNK_OVERLAP = Number(argOf('--chunk-overlap') ?? TURN_CHUNK_OVERLAP);
 
 interface Turn {
   key: string;
@@ -253,15 +263,9 @@ async function main(): Promise<void> {
   // relevant if ANY part of it is, which is exactly how a chunked index is
   // queried). Overlap keeps a probe that straddles a boundary from being split
   // across two chunks and diluted in both.
-  const chunksPerTurn: string[][] = turns.map((t) => {
-    const out: string[] = [];
-    const step = Math.max(1, CHUNK - CHUNK_OVERLAP);
-    for (let s = 0; s < t.text.length; s += step) {
-      out.push(t.text.slice(s, s + CHUNK));
-      if (s + CHUNK >= t.text.length) break;
-    }
-    return out;
-  });
+  const chunksPerTurn: string[][] = turns.map((t) =>
+    splitTurnChunks(t.text, { size: CHUNK, overlap: CHUNK_OVERLAP }),
+  );
   const flat = chunksPerTurn.flat();
   const flatVecs = await embedChunked(url, 'document', flat);
   const chunkVecs: number[][][] = [];
