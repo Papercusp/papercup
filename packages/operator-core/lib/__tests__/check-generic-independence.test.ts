@@ -33,11 +33,11 @@ describe('check-generic-independence: computeFindings against the real repo tree
   });
 
   it('classifies a fixture private-target and a fixture hard-section edge correctly', () => {
-    const borrowable = [
+    const borrowable: Array<[string, string]> = [
       ['fixture/pub-a', 'Pure utilities & infra'],
       ['fixture/pub-b', 'Pure utilities & infra'],
     ];
-    const pkgs: Record<string, unknown> = {
+    const pkgs: Record<string, { name: string; [key: string]: unknown }> = {
       'fixture/pub-a': {
         name: '@papercusp/pub-a',
         dependencies: { '@papercusp/pub-b': '*' }, // hard-section: pub-b IS borrowable

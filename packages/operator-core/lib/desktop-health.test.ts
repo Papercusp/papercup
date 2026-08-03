@@ -37,6 +37,7 @@ function signals(over: Partial<DesktopSignals> = {}): DesktopSignals {
     liveBridges: async () => [BRIDGE],
     bridgeEval: async () => true,
     ipcConnectable: async () => true,
+    apiRoundTrip: async () => ({ state: 'ok', port: 3270 }),
     recentErrorCount: async () => 0,
     ...over,
   };

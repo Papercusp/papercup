@@ -14,6 +14,10 @@ let unsafeResults: Array<unknown[]> = [];
 // When set, the next sql.unsafe call awaits this gate before resolving —
 // lets the concurrency test hold a sweep in flight deterministically.
 let unsafeGate: Promise<void> | null = null;
+// WI-7348: same idiom, one phase earlier. When set, embedder RESOLUTION blocks
+// on this gate — the only way to reproduce a hang that happens before any row
+// is read (and before getOrgPg), which is what `unsafeGate` cannot reach.
+let voicePrefsGate: Promise<void> | null = null;
 
 vi.mock('@papercusp/db-org', async (importActual) => ({
   ...(await importActual<typeof import('@papercusp/db-org')>()),
@@ -33,7 +37,10 @@ vi.mock('@papercusp/db-org', async (importActual) => ({
 }));
 
 vi.mock('../voice-prefs', () => ({
-  loadVoicePrefs: async () => ({ memoryEmbedderMode: 'openai' }),
+  loadVoicePrefs: async () => {
+    if (voicePrefsGate) await voicePrefsGate;
+    return { memoryEmbedderMode: 'openai' };
+  },
 }));
 vi.mock('../credentials', () => ({
   readCredentials: async () => ({ openai_api_key: 'test-key' }),
@@ -67,6 +74,7 @@ const VEC = Array.from({ length: PROSE_VECTOR_DIMS }, () => 0.1);
 beforeEach(() => {
   unsafeCalls.length = 0;
   unsafeResults = [];
+  voicePrefsGate = null;
   resetSweepState();
   vi.stubGlobal('fetch', vi.fn(async () => ({
     ok: true,
@@ -291,6 +299,66 @@ describe('runBackfillSweep (P-010)', () => {
  * were never revisited — the column silently mixed OpenAI and BGE vectors forever and
  * search returned noise (measured: a row's own exact text ranked #6574 of 8383).
  */
+describe('embedder-resolution deadline (WI-7348)', () => {
+  const sweepState = () =>
+    (
+      globalThis as Record<symbol, { running: boolean; startedAt: number | null } | undefined>
+    )[Symbol.for('papercusp.embedBackfillSweepState')];
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('throws instead of hanging forever when embedder RESOLUTION never returns', async () => {
+    vi.useFakeTimers();
+    // Never resolved: reproduces the measured 2026-08-03 hang, which sat 55min
+    // inside pass 1 before any row was read — no DB connection, no socket.
+    voicePrefsGate = new Promise<void>(() => {});
+
+    const p = runBackfillSweep();
+    const assertion = expect(p).rejects.toThrow(/embedder_resolve_timeout_after_60000ms/);
+    await vi.advanceTimersByTimeAsync(60_000);
+    await assertion;
+  });
+
+  it('RELEASES the sweep latch when resolution times out, so backfill is not disabled forever', async () => {
+    vi.useFakeTimers();
+    voicePrefsGate = new Promise<void>(() => {});
+
+    const p = runBackfillSweep();
+    const assertion = expect(p).rejects.toThrow(/embedder_resolve_timeout_after_60000ms/);
+    await vi.advanceTimersByTimeAsync(60_000);
+    await assertion;
+
+    // THE regression property. A hang never reached the `finally` that clears
+    // `running`, and the state is pinned to globalThis — so one wedged resolve
+    // silently disabled ALL future backfill until the much-later stale-latch
+    // ceiling expired. Converting the hang into a throw makes the existing
+    // `finally` do the work, which is why this is a fix and not a second backstop.
+    expect(sweepState()?.running).toBe(false);
+    expect(sweepState()?.startedAt).toBeNull();
+  });
+
+  it('announces the start and the resolved embedder, so silence is always a fault', async () => {
+    const logs: string[] = [];
+    const spy = vi.spyOn(console, 'log').mockImplementation((...a: unknown[]) => {
+      logs.push(a.join(' '));
+    });
+    try {
+      // No vector extension -> the sweep returns early, but only AFTER both
+      // heartbeat lines. That is the point: the shortest possible successful
+      // path still says it ran.
+      unsafeResults = [[]];
+      await runBackfillSweep();
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(logs.some((l) => l.includes('sweep starting: resolving embedder'))).toBe(true);
+    expect(logs.some((l) => l.includes('embedder resolved: mode='))).toBe(true);
+  });
+});
+
 describe('embedding-space discriminator (WI-3616)', () => {
   const TARGET = {
     table: 'harness_shared.operator_turns',

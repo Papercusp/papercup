@@ -194,6 +194,41 @@ describe('vacuous pass (4)+(5) — retired and generated code are not consumers'
     expect(looksGenerated('const a = 1;\nconst b = spec.ordered;\n')).toBe(false);
     expect(looksGenerated('short file, no newline at all')).toBe(false);
   });
+
+  /**
+   * THE ONE THAT FIRED SECOND, in the opposite direction (EI-19409948281572150).
+   * "Has one long line" is not "is minified". `cell-registrations.ts` carries a
+   * single 2657-char prose `why:` string in a 628-line hand-written file — 6.9%
+   * of its bytes — and the presence-based form dropped the whole file. That file
+   * is the ONLY writer of `CellSpec.unknownHoist` and `CellSpec.materiality`, so
+   * the sweep reported both as 0-writer "read-only" and red-pinned the fleet gate
+   * on fields written 7 and 1 times.
+   *
+   * This is the dangerous direction precisely because a skipped file is
+   * indistinguishable from an absent one: the sweep under-scans in SILENCE.
+   */
+  it('does NOT treat a source file with one long prose literal as generated', () => {
+    // Shape of cell-registrations.ts: one very long line, overwhelmingly normal source.
+    const source = `${'const line = 1;\n'.repeat(600)}const why = '${'p'.repeat(2657)}';\n`;
+    expect(looksGenerated(source)).toBe(false);
+
+    // And the guard still catches the real thing: a bundle is long lines ALL THE WAY DOWN.
+    expect(looksGenerated(`${'y'.repeat(3000)}\n${'z'.repeat(3000)}\n`)).toBe(true);
+  });
+
+  /**
+   * The discriminator is DOMINANCE of long-line bytes, so the verdict must turn
+   * on the ratio rather than on any single line — pinned in both directions so a
+   * future tweak cannot quietly restore presence-based detection.
+   */
+  it('splits generated from source on long-line byte SHARE', () => {
+    const longLine = `${'x'.repeat(3000)}\n`;
+    const shortLine = 'const a = 1;\n';
+    // ~99% long-line bytes → generated.
+    expect(looksGenerated(longLine + shortLine.repeat(5))).toBe(true);
+    // Same single long line diluted by ordinary source → NOT generated.
+    expect(looksGenerated(longLine + shortLine.repeat(400))).toBe(false);
+  });
 });
 
 describe('vacuous pass (6) — a spread is not a property access', () => {

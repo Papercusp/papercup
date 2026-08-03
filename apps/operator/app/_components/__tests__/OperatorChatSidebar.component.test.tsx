@@ -68,9 +68,27 @@ vi.mock('nuqs', async () => {
   };
 });
 
+/* The conversation's loaded messages. Mutable because D-031 made them
+   LOAD-BEARING for data fetching, not just rendering: the sidebar gates its
+   attention-refs query on whether any loaded message carries a card row whose
+   ref needs live items. A test about resolving such a ref must therefore also
+   supply the message that would have rendered it — otherwise it asserts a state
+   production cannot reach (a resolvable escalation ref with no card naming it).
+   `withEscalationRef()` is that setup. */
+const convState = vi.hoisted(() => ({ messages: [] as unknown[] }));
+function withEscalationRef(ref = 'escalation:msg-9') {
+  convState.messages = [
+    {
+      role: 'system',
+      content: 'fleet status',
+      report: { title: 'Fleet', plans: [{ title: 'p', items: [{ text: 'row', ref }] }] },
+    },
+  ];
+}
+
 vi.mock('../OperatorConversationProvider', () => ({
   useOperatorConversation: () => ({
-    messages: [],
+    messages: convState.messages,
     busy: false,
     mode: 'active',
     bannerText: null,
@@ -211,6 +229,8 @@ beforeEach(() => {
   voiceModeState.muted = false;
   inboxState.pending = 0;
   drillState.ref = 'wi:WI-1';
+  convState.messages = [];
+  attentionRefsCalls.length = 0;
   nuqsWrites.current = {};
   setVoiceOutputMutedSpy.mockReset();
   routerPushSpy.mockReset();
@@ -559,6 +579,7 @@ describe('Inbox face retirement + HUD conversation drill-in (hud-consolidation-2
 
   it('an escalation ref with an owning agent still opens that agent\'s HUD conversation', () => {
     drillState.ref = 'escalation:msg-9';
+    withEscalationRef();
     inboxState.items = [
       { id: 'coord-escalation:msg-9', itemRef: null, planSlug: null, ownerAgentId: 'su-abc123' },
     ];
@@ -610,6 +631,7 @@ describe('Inbox face retirement + HUD conversation drill-in (hud-consolidation-2
      not ride along with it. */
   it('a navigating drill-in carries workspace + harness context so the NEXT work-item drill-in still resolves', () => {
     drillState.ref = 'escalation:msg-9';
+    withEscalationRef();
     inboxState.items = [
       { id: 'coord-escalation:msg-9', itemRef: null, planSlug: null, ownerAgentId: 'su-abc123' },
     ];
@@ -634,6 +656,7 @@ describe('Inbox face retirement + HUD conversation drill-in (hud-consolidation-2
     } as Location);
     try {
       drillState.ref = 'escalation:msg-9';
+      withEscalationRef();
       inboxState.items = [
         { id: 'coord-escalation:msg-9', itemRef: null, planSlug: null, ownerAgentId: 'su-abc123' },
       ];
@@ -652,6 +675,7 @@ describe('Inbox face retirement + HUD conversation drill-in (hud-consolidation-2
 
   it('falls back to the hook workspace/harness when the URL carries neither (the /quick-panel mount)', () => {
     drillState.ref = 'escalation:msg-9';
+    withEscalationRef();
     inboxState.items = [
       { id: 'coord-escalation:msg-9', itemRef: null, planSlug: null, ownerAgentId: 'su-abc123' },
     ];
@@ -677,6 +701,7 @@ describe('Inbox face retirement + HUD conversation drill-in (hud-consolidation-2
   });
 
   it('canDrillIn says YES for refs that DO open something (work item, plan, live escalation)', () => {
+    withEscalationRef();
     inboxState.items = [
       { id: 'coord-escalation:msg-9', itemRef: null, planSlug: null, ownerAgentId: 'su-abc123' },
     ];
@@ -685,6 +710,40 @@ describe('Inbox face retirement + HUD conversation drill-in (hud-consolidation-2
     expect(chat.getAttribute('data-can-drill-wi')).toBe('true');
     expect(chat.getAttribute('data-can-drill-plan')).toBe('true');
     expect(chat.getAttribute('data-can-drill-live-escalation')).toBe('true');
+  });
+
+  /* no-http-anywhere-2026-07-28 D-031 — the attention-refs fetch gate.
+     ChromeShell mounts this sidebar on EVERY non-chromeless route, so an
+     ungated read here is paid app-wide: measured 1,461 KB on :3055 (891 KB on
+     :3270) on a git tab that renders no attention feed. These pin the gate
+     itself, not just what it lets through. */
+  it('does NOT fetch attention refs when no loaded message needs live items', () => {
+    convState.messages = [];
+    render(<OperatorChatSidebar />);
+    expect(attentionRefsCalls).not.toHaveLength(0);
+    expect(attentionRefsCalls.every((enabled) => enabled === false)).toBe(true);
+  });
+
+  it('still does NOT fetch when every card ref resolves without live items', () => {
+    // `wi:` and `plan:` refs are answered by resolveRefDestination steps 1-2,
+    // which never read `items` — so the feed cannot change their verdict.
+    convState.messages = [
+      {
+        role: 'system',
+        content: 'fleet status',
+        report: {
+          plans: [{ title: 'p', items: [{ text: 'a', ref: 'wi:papercusp#WI-1' }, { text: 'b', ref: 'plan:some-plan' }] }],
+        },
+      },
+    ];
+    render(<OperatorChatSidebar />);
+    expect(attentionRefsCalls.every((enabled) => enabled === false)).toBe(true);
+  });
+
+  it('DOES fetch as soon as one card ref needs live items (an escalation)', () => {
+    withEscalationRef();
+    render(<OperatorChatSidebar />);
+    expect(attentionRefsCalls.some((enabled) => enabled === true)).toBe(true);
   });
 
   it('a navigating drill-in does NOT drag view state (an open popup) across the navigation', () => {

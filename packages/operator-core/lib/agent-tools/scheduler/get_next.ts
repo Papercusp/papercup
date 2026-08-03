@@ -224,7 +224,13 @@ async function buildMissDiagnosis(args: {
     // so the caller can act immediately) instead of computing floors at all.
     // EI-19313376980892266: goes through the shared oracle (evaluateClaimConcurrency) so
     // this diagnosis, getNextWorkItem's refusal, fleet:leader-brief's idle accounting and
-    // work_items:claim's gate cannot disagree about who is at capacity.
+    // work_items:claim's WARNING cannot disagree about who is at capacity.
+    //
+    // "Warning", not "gate", and the distinction is load-bearing: work_items:claim is a
+    // by-id door and stays ungated (claim-door-census.test.ts, `by-id-ungated`) — it reports
+    // this same verdict on a successful claim (concurrencyClaimWarning) rather than refusing.
+    // Sharing the ORACLE is what this item is about; sharing the BEHAVIOUR would break the
+    // deliberate override.
     const concurrency = await readClaimConcurrency({
       cupId: args.ownerId,
       workspaceId: resolvedWorkspace,

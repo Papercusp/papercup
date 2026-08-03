@@ -104,20 +104,43 @@ export const SKIP_DIRS = new Set([
  * field is in fact read by nothing, which is the defect the gate exists to find,
  * and a build artifact checked into the tree had hidden it perfectly.
  *
- * Detection is by line length rather than by path, because the next bundle will
+ * Detection is by line SHAPE rather than by path, because the next bundle will
  * live somewhere this list does not name: source is written in lines, generated
  * code is not.
+ *
+ * ⚠ The test is DOMINANCE, not presence — "has one long line" is NOT "is
+ * minified", and conflating the two red-pinned the fleet gate for hours
+ * (EI-19409948281572150). The original form returned true on the FIRST line over
+ * 2000 chars, which silently dropped six hand-written source files whose only sin
+ * was one long prose string: `cell-registrations.ts` (2657-char `why:`, 6.9% of
+ * the file), `libs/flags/src/types.ts` (1.1%), `converse-prompt.ts` (10.9%) and
+ * `work_items/get.ts` (13.9%). Dropping `cell-registrations.ts` removed the ONLY
+ * writer of `CellSpec.unknownHoist` and `CellSpec.materiality`, so the sweep
+ * reported both as 0-writer "read-only" and failed the build on fields that are
+ * in fact written seven and one times respectively.
+ *
+ * That is the worst failure mode this file has, because a skipped file is
+ * indistinguishable from an absent one: the sweep under-scans SILENTLY and every
+ * row's verdict quietly loses confidence, not just the rows that go red.
+ *
+ * Measured separation is wide and leaves no judgement call: real bundles
+ * (`_astro/*.js`, `pagefind-*.js`, and the base64 asset blobs
+ * `release-bg.ts` / `release-video.ts`) carry 93–100% of their bytes in
+ * over-long lines; genuine source with a long literal carries 1.1–13.9%. A
+ * simple majority splits them with an order of magnitude to spare.
  */
 export function looksGenerated(src) {
-  const nl = src.indexOf('\n');
-  if (nl === -1) return src.length > 2000;
+  if (src.length === 0) return false;
   let start = 0;
-  for (let i = 0; i < src.length; i++) {
-    if (src[i] !== '\n') continue;
-    if (i - start > 2000) return true;
+  let longBytes = 0;
+  // `i === src.length` closes the final line when the file has no trailing \n.
+  for (let i = 0; i <= src.length; i++) {
+    if (i < src.length && src[i] !== '\n') continue;
+    const len = i - start;
+    if (len > 2000) longBytes += len;
     start = i + 1;
   }
-  return src.length - start > 2000;
+  return longBytes * 2 > src.length;
 }
 
 const SCAN_EXT = new Set(['.ts', '.tsx', '.mts', '.mjs', '.js']);

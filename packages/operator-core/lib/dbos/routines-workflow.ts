@@ -698,6 +698,28 @@ async function routinesTickImpl(): Promise<void> {
     { name: 'release-deploy-staleness-sweep' },
   );
 
+  // EI-19409061552037718: the STALE-ROUTINE-EXECUTOR watchdog — this process's own
+  // boot-commit-vs-tree-HEAD drift, judged only against ITSELF (no cross-process
+  // coordination, no change to claiming/dispatch above). Silently disabled unless
+  // THIS process carries PAPERCUSP_DBOS_ROUTINES=1 (the common case — only :3070
+  // always does; a desktop/staging host only if an owner explicitly opted in), so
+  // it is a complete no-op on every host that doesn't need it. Fail-soft; kill
+  // switch PAPERCUSP_STALE_ROUTINE_EXECUTOR_THRESHOLD_SEC<=0.
+  await DBOS.runStep(
+    async () => {
+      try {
+        const { staleRoutineExecutorSweep } = await import('../harness/routines/stale-routine-executor-watchdog');
+        const result = await staleRoutineExecutorSweep({});
+        if (result.outcome === 'alerted' || result.outcome === 'error') {
+          console.warn(`[stale-routine-executor] ${result.outcome}: ${result.reason}`);
+        }
+      } catch (e) {
+        console.warn(`[stale-routine-executor] sweep failed: ${e instanceof Error ? e.message : e}`);
+      }
+    },
+    { name: 'stale-routine-executor-sweep' },
+  );
+
   // rubric-system-hardening-2026-07-14 P-004 (EI-12149): the RUBRIC-STALENESS
   // watchdog — an ACTIVE releaseGating rubric with no COMPLETE scorecard within
   // the threshold window (default 6h) fires one debounced pot_watchdog_fires row

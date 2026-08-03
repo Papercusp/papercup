@@ -646,8 +646,12 @@ export async function runBackfillSweep(
       EMBEDDER_RESOLVE_TIMEOUT_MS,
       'embedder_resolve',
     );
+    // `dims` lives only on the non-disabled arms of the union, and this line runs
+    // BEFORE the `mode === 'disabled'` check narrows it — so probe for it rather
+    // than assuming it. A disabled resolve legitimately has no width to report.
     console.log(
-      `[embed-backfill] embedder resolved: mode=${resolved.mode} dims=${resolved.dims ?? '?'}`,
+      `[embed-backfill] embedder resolved: mode=${resolved.mode} ` +
+        `dims=${'dims' in resolved ? resolved.dims : 'n/a'}`,
     );
     // Skip entirely when disabled OR when the active embedder's dims don't fit
     // the prose columns. Without this guard an ineligible preference would burn

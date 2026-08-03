@@ -42,6 +42,10 @@ import { getClaimTimePriorWorkHint, priorWorkWarning } from '../../work-item-pri
 import { planItemClaimCollision } from '../../scheduler/plan-item-claim-collision';
 import { detectBgJobCheckpointClaim } from '../../checkpoint-bg-job-claim';
 import { ANY_FAMILY_TERMINAL_STATES } from '../../work-item-dispatch-states';
+// TYPE-only: erased at runtime, so it adds no import edge and cannot reintroduce an ESM
+// cycle with the scheduler (the VALUE side is dynamically imported at its use site below,
+// the same way fleet:leader-brief reaches this store).
+import type { ClaimConcurrencyVerdict } from '../../scheduler/claim-spec-store';
 import {
   assessClaimHoldGuard,
   recordClaimHoldBypassAudit,
@@ -154,6 +158,59 @@ export function blockedClaimWarning(
 }
 
 /**
+ * EI-19313376980892266: the warning a by-id claim MUST carry when the claimer is ALREADY at
+ * its `maxConcurrentClaims` cap. The THIRD member of the terminalClaimWarning /
+ * blockedClaimWarning set, for the same reason and with the same contract.
+ *
+ * ⚠ THE FILING THAT PRODUCED THIS ITEM ASKED FOR A GATE HERE. That prescription was WRONG and
+ * is retracted. It read `work_items:claim`'s non-enforcement of the concurrency cap as the
+ * fourth divergent behaviour in a "one oracle" bug — but claim-door-census.test.ts classifies
+ * claimWorkItem `by-id-ungated` on purpose, and states the trap verbatim: "a census that
+ * demanded every door gate would encode the wrong invariant and fail working code — which is
+ * worse than no census, because someone would then 'fix' the code to satisfy it." Adding a
+ * refusal here would have been exactly that fix, and would have broken the legitimate flows
+ * the by-id path exists for: a leader dispatching a specific item to a specific member, and a
+ * drain leader claiming a swath via { ids:[…] }.
+ *
+ * What was genuinely missing is what was missing in the other two cases: not a floor, a
+ * SIGNAL. `scheduler:get_next` refuses to serve an at-cap bee (get_next.ts, concurrencyBlocked)
+ * and `fleet:leader-brief` now reports it, but a by-id claim returned a bare ok:true — so an
+ * over-cap lane could be built up one named claim at a time with nothing ever saying so, and
+ * the holder's own next `get_next` would then refuse them with a diagnosis that reads as a
+ * surprise. THAT is the divergence worth closing, and a warning closes it without touching the
+ * override.
+ *
+ * Takes the already-read verdict rather than reading it itself, which is what keeps it pure —
+ * and the verdict comes from the shared `evaluateClaimConcurrency`, so this can never name a
+ * cap the queue does not actually refuse on.
+ */
+export function concurrencyClaimWarning(
+  verdict: ClaimConcurrencyVerdict | null | undefined,
+  claimedId: string,
+): string | null {
+  if (!verdict?.blocked) return null;
+  // The verdict is PRE-claim, so the item just claimed is not in `heldIds` — subtract it
+  // anyway rather than trust that, so a retry/re-claim of an item the caller already holds
+  // can never be reported as if it were an additional lane.
+  const held = verdict.heldIds.filter((id) => id !== claimedId);
+  const shown = held.slice(0, 8);
+  const more = held.length - shown.length;
+  return (
+    `⚠ YOU WERE ALREADY AT YOUR CONCURRENCY CAP (${verdict.activeClaims}/${verdict.maxConcurrentClaims}) ` +
+    `BEFORE THIS CLAIM` +
+    (shown.length > 0 ? `, holding: ${shown.join(', ')}${more > 0 ? `, +${more} more` : ''}` : '') +
+    '. The claim SUCCEEDED — a by-id claim deliberately overrides self-select readiness floors, ' +
+    'which is how a leader dispatches a specific item and how { ids:[…] } takes a swath — but ' +
+    'scheduler:get_next WILL now refuse to serve you (concurrencyBlocked), so do not read this ' +
+    'success as "the queue agrees I have capacity". Either release/complete a held item ' +
+    '(work_items:release / work_items:complete), or — if this lane genuinely needs more than ' +
+    'one item at a time — raise the cap deliberately with scheduler:set_claim_spec ' +
+    '{ limits: { maxConcurrentClaims: N } } rather than accumulating past it one claim at a time. ' +
+    'A PARKED item still counts: it retains taken_by.'
+  );
+}
+
+/**
  * Claim ONE item, returning the self-describing result. On the compare-and-claim
  * loss, re-read + classify (EI-2197) so the agent gets an accurate, actionable
  * error (claim_conflict + holder, not_found, or not_claimable) rather than a
@@ -197,6 +254,42 @@ async function claimOne(
     };
   }
   const claimer = it.assignee ?? claimerDefault;
+  // EI-19313376980892266: start the concurrency read NOW, the moment the claimer is known, and
+  // await it only in the success branch — it is independent of admission, the pre-claim lookup
+  // and the claim itself, so overlapping them keeps this off the claim's critical path.
+  //
+  // PRE-claim on purpose. `evaluateClaimConcurrency` answers "would the scheduler refuse this
+  // bee another item", i.e. `activeClaims >= max`. Read AFTER the claim landed, an ordinary
+  // single claim under a cap of 1 satisfies that (1 >= 1) and would warn on every normal claim
+  // — the warning has to key on the state the caller was in when they asked, which is exactly
+  // the state get_next would have judged.
+  //
+  // Resolves the claimer's OWN effective limit (getClaimSpecRecord applies the bee → fleet →
+  // DEFAULT inheritance). Defaulting to 1 here would be the easy wiring and would be WRONG in
+  // the expensive direction: a member legitimately running under a leader-authored
+  // concurrency > 1 would be warned it is over a cap that does not exist, which is the
+  // false-positive mirror of the false-negative that produced this item.
+  //
+  // Fail-soft to null (never a fabricated verdict): this is a signal, not a floor, so a
+  // degraded spec/claims read must cost the warning and never the claim.
+  const concurrencyBefore = (async (): Promise<ClaimConcurrencyVerdict | null> => {
+    try {
+      const { readClaimConcurrency, getClaimSpecRecord } = await import(
+        '../../scheduler/claim-spec-store'
+      );
+      const rec = await getClaimSpecRecord({
+        cupId: claimer,
+        workspaceId: identity.workspaceId ?? undefined,
+      }).catch(() => null);
+      return await readClaimConcurrency({
+        cupId: claimer,
+        workspaceId: identity.workspaceId ?? undefined,
+        maxConcurrentClaims: rec?.spec.limits?.maxConcurrentClaims,
+      });
+    } catch {
+      return null;
+    }
+  })();
   const admission = await admitWorkItemForFleetTarget({
     target: claimer,
     workItemId: it.id,
@@ -328,7 +421,7 @@ async function claimOne(
     // independent read; no reason to pay a serial round-trip) and is fail-soft for the reason
     // given on readUnresolvedDepBlockers: saying nothing here asserts nothing.
     let checkpointReadFailed = false;
-    const [hint, priorRaw, laneCollision, unresolvedBlockers, premises, planDecisionsResult] = await Promise.all([
+    const [hint, priorRaw, laneCollision, unresolvedBlockers, premises, planDecisionsResult, concurrency] = await Promise.all([
       getClaimTimeCheckpointHint({
         harness: workItem.harness ?? it.harness ?? null,
         workItemId: it.id,
@@ -372,8 +465,13 @@ async function claimOne(
           return brief ? { decisions: brief.decisions, note: m.renderPlanDecisionsNote(brief) } : null;
         })
         .catch(() => null),
+      // EI-19313376980892266: the PRE-claim concurrency verdict started when the claimer was
+      // resolved (see concurrencyBefore). Already in flight — joining it here just collects it
+      // alongside its sibling hints.
+      concurrencyBefore,
     ]);
     const blockedWarning = blockedClaimWarning(unresolvedBlockers);
+    const concurrencyWarning = concurrencyClaimWarning(concurrency, it.id);
     // WI-6737: `hint` is null for BOTH "no checkpoint exists" and "the checkpoint read threw"
     // (the .catch above), so it cannot decide `hasCheckpoint` alone — collapsing the failure into
     // `false` makes priorWorkWarning assert "NO checkpoint was ever written" during an outage.
@@ -399,6 +497,16 @@ async function claimOne(
           ...(bgJobWarning.detected ? { checkpointBgJobWarning: bgJobWarning.reason } : {}),
           ...(terminalWarning ? { terminalWarning } : {}),
           ...(blockedWarning ? { blockedWarning, blockedBy: unresolvedBlockers } : {}),
+          ...(concurrencyWarning
+            ? {
+                concurrencyWarning,
+                concurrency: {
+                  activeClaims: concurrency!.activeClaims,
+                  maxConcurrentClaims: concurrency!.maxConcurrentClaims,
+                  heldIds: concurrency!.heldIds,
+                },
+              }
+            : {}),
           ...(priorWorkWarn ? { priorWork, priorWorkWarning: priorWorkWarn } : {}),
           ...(laneCollision ? { planItemClaimCollision: laneCollision } : {}),
           ...(premises ? { premises: premises.rendered, premisesNote: premises.note } : {}),
@@ -412,6 +520,16 @@ async function claimOne(
           workItem,
           ...(terminalWarning ? { terminalWarning } : {}),
           ...(blockedWarning ? { blockedWarning, blockedBy: unresolvedBlockers } : {}),
+          ...(concurrencyWarning
+            ? {
+                concurrencyWarning,
+                concurrency: {
+                  activeClaims: concurrency!.activeClaims,
+                  maxConcurrentClaims: concurrency!.maxConcurrentClaims,
+                  heldIds: concurrency!.heldIds,
+                },
+              }
+            : {}),
           ...(priorWorkWarn ? { priorWork, priorWorkWarning: priorWorkWarn } : {}),
           ...(laneCollision ? { planItemClaimCollision: laneCollision } : {}),
           ...(premises ? { premises: premises.rendered, premisesNote: premises.note } : {}),

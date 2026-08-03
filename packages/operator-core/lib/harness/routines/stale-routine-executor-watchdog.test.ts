@@ -1,0 +1,172 @@
+/**
+ * stale-routine-executor-watchdog.test.ts — EI-19409061552037718. Pure decider
+ * only (no DB, no git, no DBOS) — the sweep's PG/paging orchestration mirrors
+ * release-deploy-staleness-watchdog.ts's already-tested shape byte-for-byte and
+ * is exercised indirectly via those siblings; this file is the DISCRIMINATION
+ * bar for the actual judgment call: healthy-not-enabled, healthy-under-uptime,
+ * healthy-unresolvable (fail-safe), healthy-unchanged-commit, and the one true
+ * stale case.
+ */
+import { describe, expect, it } from 'vitest';
+
+import { evaluateExecutorStaleness, executorIdentity, staleExecutorThresholdSec } from './stale-routine-executor-watchdog';
+
+const TWO_H = 2 * 3_600_000;
+const BOOT = 1_000_000;
+
+describe('evaluateExecutorStaleness — the pure decider', () => {
+  it('healthy when PAPERCUSP_DBOS_ROUTINES is not enabled on this process', () => {
+    const v = evaluateExecutorStaleness({
+      routinesEnabled: false,
+      bootCommit: 'a'.repeat(40),
+      currentCommit: 'b'.repeat(40),
+      bootTimeMs: BOOT,
+      now: BOOT + TWO_H * 10,
+      thresholdMs: TWO_H,
+    });
+    expect(v.stale).toBe(false);
+    expect(v.reason).toContain('not enabled');
+  });
+
+  it('healthy on the kill switch (thresholdMs <= 0)', () => {
+    const v = evaluateExecutorStaleness({
+      routinesEnabled: true,
+      bootCommit: 'a'.repeat(40),
+      currentCommit: 'b'.repeat(40),
+      bootTimeMs: BOOT,
+      now: BOOT + TWO_H * 10,
+      thresholdMs: 0,
+    });
+    expect(v.stale).toBe(false);
+    expect(v.reason).toContain('kill switch');
+  });
+
+  it('healthy under the uptime threshold, even with a commit divergence', () => {
+    const v = evaluateExecutorStaleness({
+      routinesEnabled: true,
+      bootCommit: 'a'.repeat(40),
+      currentCommit: 'b'.repeat(40),
+      bootTimeMs: BOOT,
+      now: BOOT + TWO_H / 2,
+      thresholdMs: TWO_H,
+    });
+    expect(v.stale).toBe(false);
+    expect(v.reason).toContain('under the');
+  });
+
+  it('fails SAFE (not stale) when either commit is unresolvable — never alert on an unreadable git state', () => {
+    const v1 = evaluateExecutorStaleness({
+      routinesEnabled: true,
+      bootCommit: null,
+      currentCommit: 'b'.repeat(40),
+      bootTimeMs: BOOT,
+      now: BOOT + TWO_H * 10,
+      thresholdMs: TWO_H,
+    });
+    expect(v1.stale).toBe(false);
+    expect(v1.reason).toContain('unresolvable');
+
+    const v2 = evaluateExecutorStaleness({
+      routinesEnabled: true,
+      bootCommit: 'a'.repeat(40),
+      currentCommit: null,
+      bootTimeMs: BOOT,
+      now: BOOT + TWO_H * 10,
+      thresholdMs: TWO_H,
+    });
+    expect(v2.stale).toBe(false);
+    expect(v2.reason).toContain('unresolvable');
+  });
+
+  it('healthy past the threshold when the boot commit still matches tree HEAD — nothing has moved', () => {
+    const sha = 'c'.repeat(40);
+    const v = evaluateExecutorStaleness({
+      routinesEnabled: true,
+      bootCommit: sha,
+      currentCommit: sha,
+      bootTimeMs: BOOT,
+      now: BOOT + TWO_H * 10,
+      thresholdMs: TWO_H,
+    });
+    expect(v.stale).toBe(false);
+    expect(v.reason).toContain('nothing has moved');
+  });
+
+  it('STALE past the threshold with a genuine boot-commit-vs-HEAD divergence — names both shas + the work-item', () => {
+    const boot = 'd'.repeat(40);
+    const head = 'e'.repeat(40);
+    const now = BOOT + 7 * 3_600_000; // 7h uptime, matches the measured incident
+    const v = evaluateExecutorStaleness({
+      routinesEnabled: true,
+      bootCommit: boot,
+      currentCommit: head,
+      bootTimeMs: BOOT,
+      now,
+      thresholdMs: TWO_H,
+    });
+    expect(v.stale).toBe(true);
+    expect(v.reason).toContain(boot.slice(0, 10));
+    expect(v.reason).toContain(head.slice(0, 10));
+    expect(v.reason).toContain('EI-19409061552037718');
+    expect(v.reason).toContain('7h');
+    expect(v.ageMs).toBe(now - BOOT);
+  });
+});
+
+describe('staleExecutorThresholdSec — env tunable', () => {
+  it('defaults to 2h (7200s) with no env override', () => {
+    const saved = process.env.PAPERCUSP_STALE_ROUTINE_EXECUTOR_THRESHOLD_SEC;
+    delete process.env.PAPERCUSP_STALE_ROUTINE_EXECUTOR_THRESHOLD_SEC;
+    try {
+      expect(staleExecutorThresholdSec()).toBe(7_200);
+    } finally {
+      if (saved !== undefined) process.env.PAPERCUSP_STALE_ROUTINE_EXECUTOR_THRESHOLD_SEC = saved;
+    }
+  });
+
+  it('honors an env override, including a <=0 kill switch', () => {
+    const saved = process.env.PAPERCUSP_STALE_ROUTINE_EXECUTOR_THRESHOLD_SEC;
+    try {
+      process.env.PAPERCUSP_STALE_ROUTINE_EXECUTOR_THRESHOLD_SEC = '0';
+      expect(staleExecutorThresholdSec()).toBe(0);
+      process.env.PAPERCUSP_STALE_ROUTINE_EXECUTOR_THRESHOLD_SEC = '3600';
+      expect(staleExecutorThresholdSec()).toBe(3_600);
+    } finally {
+      if (saved !== undefined) process.env.PAPERCUSP_STALE_ROUTINE_EXECUTOR_THRESHOLD_SEC = saved;
+      else delete process.env.PAPERCUSP_STALE_ROUTINE_EXECUTOR_THRESHOLD_SEC;
+    }
+  });
+});
+
+describe('executorIdentity — a stable per-process key that never conflates two hosts', () => {
+  it('prefers PAPERCUSP_HONO_PORT / PORT so the SAME logical service recovers its own alert across restarts', () => {
+    const savedHono = process.env.PAPERCUSP_HONO_PORT;
+    const savedPort = process.env.PORT;
+    try {
+      delete process.env.PAPERCUSP_HONO_PORT;
+      process.env.PORT = '3270';
+      expect(executorIdentity()).toBe('port-3270');
+
+      process.env.PAPERCUSP_HONO_PORT = '3070';
+      expect(executorIdentity()).toBe('port-3070'); // PAPERCUSP_HONO_PORT wins over PORT
+    } finally {
+      if (savedHono !== undefined) process.env.PAPERCUSP_HONO_PORT = savedHono;
+      else delete process.env.PAPERCUSP_HONO_PORT;
+      if (savedPort !== undefined) process.env.PORT = savedPort;
+      else delete process.env.PORT;
+    }
+  });
+
+  it('falls back to a pid-scoped identity when no port is resolvable, never colliding two distinct processes', () => {
+    const savedHono = process.env.PAPERCUSP_HONO_PORT;
+    const savedPort = process.env.PORT;
+    try {
+      delete process.env.PAPERCUSP_HONO_PORT;
+      delete process.env.PORT;
+      expect(executorIdentity()).toBe(`pid-${process.pid}`);
+    } finally {
+      if (savedHono !== undefined) process.env.PAPERCUSP_HONO_PORT = savedHono;
+      if (savedPort !== undefined) process.env.PORT = savedPort;
+    }
+  });
+});

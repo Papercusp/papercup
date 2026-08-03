@@ -23,6 +23,7 @@ vi.mock('node:child_process', async () => {
   return { ...actual, spawn: (...a: Parameters<typeof spawnMock>) => spawnMock(...a) };
 });
 
+import type { DesktopEnvProbes } from './console-spawn';
 import {
   findTerminal,
   isProcessAlive,
@@ -31,6 +32,29 @@ import {
   spawnInTerminal,
   TERMINAL_CONTEXT_ENV_KEYS,
 } from './terminal-spawn';
+
+// Deterministic no-desktop-session probes: no /proc scan, no `who` shell-out —
+// resolveLinuxDesktopEnv falls through to "no DISPLAY / no X socket" (unresolved)
+// unless the test's `env` already carries a DISPLAY, in which case it resolves
+// but reports no reachable D-Bus session (desktopSessionDetected:false).
+const NO_DESKTOP_PROBES: DesktopEnvProbes = {
+  existsSync: () => false,
+  readdirSync: () => [],
+  uid: 1000,
+  home: '/home/x',
+  activeSeatDisplays: () => [],
+  sessionBus: () => null,
+};
+
+// Same, but reports a live desktop session on DISPLAY :1 (so the inherited
+// DISPLAY passes resolveLinuxDesktopEnv's live-seat check instead of being
+// treated as stale) whose D-Bus bus was resolved (as if gnome-terminal-server
+// / gnome-shell were found on the active seat).
+const DESKTOP_SESSION_PROBES: DesktopEnvProbes = {
+  ...NO_DESKTOP_PROBES,
+  activeSeatDisplays: () => [':1'],
+  sessionBus: () => 'unix:path=/run/user/1000/bus',
+};
 
 describe('shellEscape', () => {
   it('wraps a plain string in single quotes', () => {
@@ -72,15 +96,62 @@ describe('findTerminal', () => {
     expect(findTerminal()).toEqual({ bin: 'gnome-terminal', args: ['--wait', '--'] });
   });
 
-  it('falls back to the first installed terminal in list order', () => {
-    // No $TERMINAL; gnome-terminal absent, konsole present.
+  it('falls back to the first installed terminal when only one binary exists (either group order)', () => {
+    // No $TERMINAL; gnome-terminal absent, konsole present — konsole is found
+    // regardless of which group is tried first, since nothing else is on PATH.
     existsSyncMock.mockImplementation((p: string) => String(p).endsWith('/konsole'));
-    expect(findTerminal()).toEqual({ bin: 'konsole', args: ['--new-window', '-e'] });
+    expect(findTerminal(process.env, NO_DESKTOP_PROBES)).toEqual({
+      bin: 'konsole',
+      args: ['--new-window', '-e'],
+    });
   });
 
   it('returns null when no terminal emulator is found', () => {
     existsSyncMock.mockReturnValue(false);
-    expect(findTerminal()).toBeNull();
+    expect(findTerminal(process.env, NO_DESKTOP_PROBES)).toBeNull();
+  });
+
+  // EI-19408594551235977: the actual regression this item tracks. Before the
+  // fix, findTerminal always tried gnome-terminal FIRST regardless of whether a
+  // desktop session's D-Bus was reachable — exactly the WI-4718/WI-4711 ghosting
+  // case (a client-server terminal with no reachable bus hands off to a
+  // standalone client that maps no window and lingers).
+  describe('desktop-session-aware ordering (WI-4718)', () => {
+    beforeEach(() => {
+      // Both a client-server (gnome-terminal) and a process-per-window
+      // (xterm) emulator are "installed" — the two groups disagree, so the
+      // chosen bin reveals which order findTerminal actually used.
+      existsSyncMock.mockImplementation(
+        (p: string) => String(p).endsWith('/gnome-terminal') || String(p).endsWith('/xterm'),
+      );
+    });
+
+    it('prefers the client-server terminal (gnome-terminal) when a desktop session is detected', () => {
+      expect(findTerminal({ ...process.env, DISPLAY: ':1' }, DESKTOP_SESSION_PROBES)).toEqual({
+        bin: 'gnome-terminal',
+        args: ['--wait', '--window', '--'],
+      });
+    });
+
+    it('prefers a process-per-window terminal (xterm) when NO desktop session is detected — the regression', () => {
+      // No DISPLAY, no active seat, no X socket, no session bus: exactly the
+      // "no reachable D-Bus session" host this item is about. Before the fix
+      // this returned gnome-terminal (ghosts); after, it returns xterm.
+      expect(findTerminal(process.env, NO_DESKTOP_PROBES)).toEqual({
+        bin: 'xterm',
+        args: ['-e'],
+      });
+    });
+
+    it('still finds a healthy desktop DISPLAY-having-but-bus-less host as no-session (falls to xterm)', () => {
+      // A DISPLAY resolves fine (env carries it) but no session bus can be
+      // found — the exact "client-server terminal would ghost" case from a
+      // headless/systemd operator with a stale or absent D-Bus address.
+      expect(findTerminal({ ...process.env, DISPLAY: ':1' }, NO_DESKTOP_PROBES)).toEqual({
+        bin: 'xterm',
+        args: ['-e'],
+      });
+    });
   });
 });
 
@@ -168,7 +239,11 @@ describe('spawnInTerminal liveness check', () => {
 
   it('reports likelyOpened:true when the pid is still alive after the delay', async () => {
     vi.spyOn(process, 'kill').mockReturnValue(true);
-    const resultPromise = spawnInTerminal({ oneliner: 'exec true', livenessCheckDelayMs: 400 });
+    const resultPromise = spawnInTerminal({
+      oneliner: 'exec true',
+      livenessCheckDelayMs: 400,
+      desktopEnvProbes: NO_DESKTOP_PROBES,
+    });
     await vi.advanceTimersByTimeAsync(400);
     const result = await resultPromise;
     expect(result).toEqual({ ok: true, terminal: 'gnome-terminal', pid: 55555, likelyOpened: true });
@@ -178,7 +253,11 @@ describe('spawnInTerminal liveness check', () => {
     vi.spyOn(process, 'kill').mockImplementation(() => {
       throw new Error('ESRCH');
     });
-    const resultPromise = spawnInTerminal({ oneliner: 'exec true', livenessCheckDelayMs: 400 });
+    const resultPromise = spawnInTerminal({
+      oneliner: 'exec true',
+      livenessCheckDelayMs: 400,
+      desktopEnvProbes: NO_DESKTOP_PROBES,
+    });
     await vi.advanceTimersByTimeAsync(400);
     const result = await resultPromise;
     expect(result.ok).toBe(true);
@@ -187,7 +266,11 @@ describe('spawnInTerminal liveness check', () => {
 
   it('livenessCheckDelayMs:0 skips the check entirely (likelyOpened:true, no wait)', async () => {
     const killSpy = vi.spyOn(process, 'kill');
-    const result = await spawnInTerminal({ oneliner: 'exec true', livenessCheckDelayMs: 0 });
+    const result = await spawnInTerminal({
+      oneliner: 'exec true',
+      livenessCheckDelayMs: 0,
+      desktopEnvProbes: NO_DESKTOP_PROBES,
+    });
     expect(result.ok).toBe(true);
     if (result.ok) expect(result.likelyOpened).toBe(true);
     expect(killSpy).not.toHaveBeenCalled();
@@ -200,6 +283,7 @@ describe('spawnInTerminal liveness check', () => {
     const p = spawnInTerminal({
       oneliner: 'exec true',
       livenessCheckDelayMs: 0,
+      desktopEnvProbes: NO_DESKTOP_PROBES,
       env: {
         PATH: '/usr/bin',
         DISPLAY: ':1',
@@ -235,7 +319,11 @@ describe('spawnInTerminal liveness check', () => {
     vi.spyOn(process, 'kill').mockImplementation(() => {
       throw new Error('ESRCH');
     });
-    const resultPromise = spawnInTerminal({ oneliner: 'exec true', livenessCheckDelayMs: 400 });
+    const resultPromise = spawnInTerminal({
+      oneliner: 'exec true',
+      livenessCheckDelayMs: 400,
+      desktopEnvProbes: NO_DESKTOP_PROBES,
+    });
     for (const fn of listeners.data ?? []) {
       fn('# Error creating terminal: Failed to get screen from object path /org/gnome/Terminal/screen/dead\n');
     }
@@ -260,7 +348,11 @@ describe('spawnInTerminal liveness check', () => {
     };
     spawnMock.mockReturnValue({ pid: 55555, unref: vi.fn(), stderr } as never);
     vi.spyOn(process, 'kill').mockReturnValue(true);
-    const resultPromise = spawnInTerminal({ oneliner: 'exec true', livenessCheckDelayMs: 400 });
+    const resultPromise = spawnInTerminal({
+      oneliner: 'exec true',
+      livenessCheckDelayMs: 400,
+      desktopEnvProbes: NO_DESKTOP_PROBES,
+    });
     await vi.advanceTimersByTimeAsync(400);
     const result = await resultPromise;
     expect(result.ok).toBe(true);
@@ -273,7 +365,7 @@ describe('spawnInTerminal liveness check', () => {
     vi.spyOn(process, 'kill').mockImplementation(() => {
       throw new Error('ESRCH');
     });
-    const resultPromise = spawnInTerminal({ oneliner: 'exec true' });
+    const resultPromise = spawnInTerminal({ oneliner: 'exec true', desktopEnvProbes: NO_DESKTOP_PROBES });
     await vi.advanceTimersByTimeAsync(400);
     const result = await resultPromise;
     expect(result.ok).toBe(true);

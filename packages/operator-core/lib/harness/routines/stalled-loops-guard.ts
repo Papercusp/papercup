@@ -50,22 +50,31 @@
  *
  * TWO FAULTS, OPPOSITE REMEDIES (EI-19406534159939583). The veto above is a rail against bad
  * DATA. This is a correction to the module's LOGIC: it acted on one verdict that named two
- * different faults. Its own broadcast text admitted it — "fires kept landing (or stopped
- * entirely) with no turn actually produced" — because `computeTurnsStalled`'s frozen-gap branch
- * treated "no fire in a floor's worth of time" as evidence about the AGENT when it is evidence
- * about the FIRING PATH. Which fault it is was always decidable from data the verdict already
- * had — whether the last turn came after the last fire:
+ * different faults, and its own broadcast text said the quiet part out loud: "fires kept landing
+ * (OR STOPPED ENTIRELY) with no turn actually produced". Fires LANDING with no turn behind them
+ * is evidence about the AGENT. Fires STOPPING is evidence about the FIRING PATH, and the agent
+ * underneath may be perfectly alive — asleep, waiting for the wake that never came. Disarming
+ * that agent is the worst available move: it cannot re-arm itself, and `reconcileLoopRoutines`
+ * gates its re-arm sweep on `active = TRUE` (reconcile-loop-routines.ts:726), so the one
+ * mechanism that exists to rescue a stuck loop can never see it again. Measured live 2026-08-03:
+ * 5 of a 10-member drain fleet disarmed in a single 23ms batch, each having answered every fire
+ * it received; the fleet did the work of one for ~45 minutes against a 1775-item backlog.
  *
- *   lastTurn BEFORE lastFired  -> fires arrived, no turn followed -> the agent stopped -> DISARM
- *   lastTurn AFTER  lastFired  -> it answered the last fire it got -> the fires stopped -> RE-ARM
+ * WHY THE SPLIT LIVES HERE AND NOT IN THE VERDICT. The obvious discriminator — did the last turn
+ * land after the last fire? — is NOT sufficient alone, and that is the trap worth naming:
+ * WI-6639's measured 156h corpses show exactly the same ordering (last turn ~4 min after the
+ * last fire, then silence), which is why `computeTurnsStalled`'s frozen-gap regression test
+ * asserts `true` for that shape. Presence does not separate them either — a live agent parked on
+ * an event beats no heartbeat. The ONE signal that does is whether the owner is still REACHABLE,
+ * and that is an I/O probe a pure verdict cannot make. So the verdict keeps claiming both
+ * populations (honest for `loop:status`) and the ACTOR — this module, the one doing the
+ * irreversible write — consults `probeWakeReachability` before disarming and RE-ARMS a reachable
+ * owner instead. Same oracle `reconcileLoopRoutines` already trusts for "a live owner is NEVER
+ * terminated, any dwell": one oracle for "is this owner gone", not two that can disagree.
  *
- * The remedies are opposite and the mistake is not symmetric. A wrong RE-ARM costs one extra
- * fire and self-corrects on the next sweep (no turn follows it, so the verdict flips and the
- * disarm happens anyway). A wrong DISARM is permanent: `reconcileLoopRoutines` gates its re-arm
- * sweep on `active = TRUE` (reconcile-loop-routines.ts:726), so a disarmed agent can never be
- * rescued by the mechanism that exists to rescue it. Measured live 2026-08-03: 5 of a 10-member
- * drain fleet disarmed in a single 23ms batch, each having answered every fire it received;
- * the fleet did the work of one for ~45 minutes against a 1775-item backlog.
+ * The remaining guess is deliberately biased. A wrong RE-ARM costs one extra fire and
+ * self-corrects on the very next sweep — the fire lands, no turn follows, the disarm happens
+ * then. A wrong DISARM is permanent. When the evidence is ambiguous, take the reversible mistake.
  */
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';

@@ -59,8 +59,38 @@ interface EscalationDedupIdentity {
   subjectSignature: string;
 }
 
+/**
+ * WI-7353: a duration embedded in a summary is a MONOTONICALLY-CHANGING value, and a
+ * dedup key that contains one can never dedup — every tick derives a fresh key, so one
+ * continuous condition mints an unbounded flood of un-coalesced rows.
+ *
+ * This has now recurred FOUR times, each time fixed only at the call site, leaving the
+ * class armed for the next author who forgets `meta.subjectSignature`:
+ *   - EI-10662  kettle/overwatch watchdog (prose summary as the key)
+ *   - EI-14854  known-open-aging (`~Nh` duration + a re-minting issueId)
+ *   - WI-7254   condition-staleness (`has been OPEN for {N}m`)
+ *   - EI-19403159016550818 the same alarm, still flooding from a host on pre-fix code
+ *
+ * So neutralize it HERE, in the derived fallback itself, making the key stable by
+ * construction rather than by every caller remembering. Deliberately NARROW: the digit
+ * run must be preceded by start-of-string or whitespace AND followed by a time unit at a
+ * word boundary. That is what keeps genuinely-distinct subjects distinct — `pot alpha-1`
+ * (digits not unit-suffixed), `disk 80% full` (`%` is not a time unit) and `harness-3d`
+ * (preceded by `-`, not whitespace) are all left untouched; only `for 50m` / `for 81m`
+ * style tokens collapse, which is exactly the coalescing we want.
+ *
+ * Note this governs ONLY the fuzzy no-explicit-signature path. A caller supplying an
+ * explicit conditionKey is unaffected, and supplying one remains strictly better than
+ * relying on this backstop.
+ */
+const VOLATILE_DURATION_RE = /(^|\s)\d+(?:\.\d+)?\s?(?:ms|s|m|h|d)\b/g;
+
 function normalizeSubjectSignature(summary: string): string {
-  return summary.trim().toLowerCase().replace(/\s+/g, ' ');
+  return summary
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .replace(VOLATILE_DURATION_RE, '$1<dur>');
 }
 
 /**

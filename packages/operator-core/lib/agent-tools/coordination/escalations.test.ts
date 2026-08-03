@@ -363,6 +363,46 @@ describe('openEscalation dedup + advisory expiry (WI-1503)', () => {
     );
   });
 
+  it('WI-7353: summaries differing ONLY by an embedded duration coalesce onto one row', async () => {
+    // Live repro (green-stall:oddsmith, 2026-08-03): the condition-staleness reminder
+    // templates the live age into its summary, so a caller omitting meta.subjectSignature
+    // derived a FRESH dedup key every tick — 4 open rows for ONE condition (05:04 / 05:08 /
+    // 05:19 / 05:40Z) and 97 such rows in 24h. A dedup key containing a monotonically
+    // changing value can never dedup, so the derived key must be duration-independent.
+    configureCoordLog(new InMemoryCoordLog());
+    const at = (m: number) =>
+      `[condition-stale] condition 'green-stall:oddsmith' has been OPEN for ${m}m (severe-event)`;
+
+    const first = await openEscalation(identity, { severity: 'advisory', summary: at(50) });
+    const second = await openEscalation(identity, { severity: 'advisory', summary: at(51) });
+    const third = await openEscalation(identity, { severity: 'advisory', summary: at(81) });
+
+    expect(second.msg_id).toBe(first.msg_id);
+    expect(third.msg_id).toBe(first.msg_id);
+    expect((await listEscalations({ status: 'open' })).map((e) => e.msg_id)).toEqual([first.msg_id]);
+  });
+
+  it('WI-7353: neutralizing durations does NOT collapse subjects that merely contain digits', async () => {
+    // The guard must stay NARROW. Over-collapsing is a worse failure than the flood it
+    // replaces — it would silently merge unrelated conditions onto one row, hiding real
+    // alerts. Each pair below differs by a digit that is NOT a duration: an ordinal, a
+    // percentage, and a hyphen-attached token (not whitespace-preceded).
+    configureCoordLog(new InMemoryCoordLog());
+    const distinct = [
+      'pot alpha-1 is down',
+      'pot alpha-2 is down',
+      'disk 80% full',
+      'disk 90% full',
+      'harness-3d backlog stalled',
+      'harness-5d backlog stalled',
+    ];
+    const ids: string[] = [];
+    for (const summary of distinct) {
+      ids.push((await openEscalation(identity, { severity: 'advisory', summary })).msg_id);
+    }
+    expect(new Set(ids).size).toBe(distinct.length);
+  });
+
   it('EI-12546: a conditionKey (meta.subjectSignature) coalesces across a severity escalation instead of forking a parallel open row', async () => {
     // Live repro: 'kettle-invalid-model-config' was first filed severity:advisory,
     // then re-escalated severity:blocker as the anomaly graduated. Pre-fix, dedupKind

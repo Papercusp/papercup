@@ -82,6 +82,54 @@ export const DEFAULT_ROOTS = ['apps', 'packages', 'libs/generic'];
  *
  * @type {Record<string, Exemption>}
  */
+/**
+ * Directories with a tsconfig.json that do NOT currently typecheck clean, so gating them on
+ * that tsconfig (see `promoted` below) would red the fleet gate on a pre-existing condition
+ * no commit caused.
+ *
+ * Held back BY NAME, never by a silent predicate. Every entry carries its MEASURED error count
+ * and a filed id, is printed on every run, and disappears the moment the package is clean —
+ * removing an entry is the entire fix. This is the same discipline as EXEMPT above: it decides
+ * who is EXCLUDED, so a package that stops being listed becomes gated automatically rather than
+ * silently staying dark.
+ *
+ * Measured 2026-08-03 via `npx tsc --noEmit -p tsconfig.json` in each of the 50 previously
+ * un-gated libs/generic packages: 46 clean (now gated), these 4 not.
+ *
+ * @type {Record<string, { detail: string, errors: number, filedAs: string }>}
+ */
+export const UNTYPECHECKABLE = {
+  'libs/generic/eval-battery': {
+    detail:
+      'its tsconfig reaches into a SIBLING package — both errors are in ' +
+      '../../testing-shell/src/llm/runner.ts (TS2304 ScenarioTrigger, TS2322 SimAction), not in ' +
+      'eval-battery itself. The fix may be tsconfig scoping rather than the errors',
+    errors: 2,
+    filedAs: 'EI-19409888189789017',
+  },
+  'libs/generic/ipc-endpoint-server': {
+    detail:
+      'zod v3/v4 type skew in test files only (TS2740, ZodObject missing def/type/toJSONSchema) — ' +
+      'same family as WI-7346, may share one dependency-alignment fix',
+    errors: 3,
+    filedAs: 'EI-19409888189789017',
+  },
+  'libs/generic/step-program': {
+    detail:
+      'src/expr.test.ts passes string/null where Scope is expected (TS2345) — deliberate bad-input ' +
+      'tests wanting @ts-expect-error, NOT a reason to widen Scope',
+    errors: 2,
+    filedAs: 'EI-19409888189789017',
+  },
+  'libs/generic/ui-primitives': {
+    detail:
+      'src/JsonTree.tsx TS2882 — no type declarations for the side-effect CSS import ' +
+      "'react-json-view-lite/dist/index.css'; wants a `declare module '*.css'` ambient decl",
+    errors: 1,
+    filedAs: 'EI-19409888189789017',
+  },
+};
+
 export const EXEMPT = {
   'packages/operator-core': {
     reason: 'already-a-leg',
@@ -125,6 +173,7 @@ export function main({
   repoRoot = REPO_ROOT,
   roots = DEFAULT_ROOTS,
   exempt = EXEMPT,
+  untypecheckable = UNTYPECHECKABLE,
   listOnly = process.argv.includes('--list'),
   listInvisible = process.argv.includes('--list-invisible'),
   spawn = realSpawn,
@@ -160,21 +209,22 @@ export function main({
   // was built for. Measured before flipping it on: 46 of the 50 were already clean, so this
   // enrolls them at zero gate risk. The 4 that were not are held back BY NAME below.
   const promoted = invisible
-    .filter((p) => !exempt[p.rel] && !UNTYPECHECKABLE[p.rel])
+    .filter((p) => !exempt[p.rel] && !untypecheckable[p.rel])
     .map((p) => ({
       dir: p.dir,
       name: p.name ?? p.rel,
       rel: p.rel,
       command: ['npx', 'tsc', '--noEmit', '-p', 'tsconfig.json'],
     }));
-  const heldBack = invisible.filter((p) => UNTYPECHECKABLE[p.rel]).sort((a, b) => a.rel.localeCompare(b.rel));
+  const heldBack = invisible.filter((p) => untypecheckable[p.rel]).sort((a, b) => a.rel.localeCompare(b.rel));
 
   const packages = [...all.filter((p) => !exempt[p.rel]), ...promoted].sort((a, b) => a.rel.localeCompare(b.rel));
   const exempted = all.filter((p) => exempt[p.rel]);
 
   log(
     `workspace typecheck fan-out over ${presentRoots.join(', ')} — ` +
-      `${packages.length} package(s) gated, ${exempted.length} exempt, ${invisible.length} invisible:`,
+      `${packages.length} package(s) gated (${promoted.length} via tsconfig alone), ` +
+      `${exempted.length} exempt, ${heldBack.length} held back:`,
   );
   for (const p of packages) log(`  · ${p.rel}`);
 
@@ -215,7 +265,7 @@ export function main({
         '    gated today; each one is a filed, owned defect, not an accepted state:',
     );
     for (const p of heldBack) {
-      const x = UNTYPECHECKABLE[p.rel];
+      const x = untypecheckable[p.rel];
       log(`      ⊘ ${p.rel} — ${x.detail} (${x.errors} error(s); see ${x.filedAs})`);
     }
   }
