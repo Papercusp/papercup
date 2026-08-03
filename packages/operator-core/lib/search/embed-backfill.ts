@@ -524,6 +524,8 @@ export async function backfillTable(
   // the boundary timestamp on EVERY sweep — a permanent, invisible recall hole.
   // OFFSET cannot skip a row that is making progress.
   let failedSoFar = 0;
+  // Once per target per call — a per-batch warning would be its own noise problem.
+  let warnedBatchFallback = false;
   const orderBy = target.orderBySql ? ` ORDER BY ${target.orderBySql}` : '';
   while (stats.scanned < maxRows) {
     const wantRows = Math.min(BATCH_SIZE, maxRows - stats.scanned);
@@ -559,8 +561,30 @@ export async function backfillTable(
           'embed_batch',
         );
         if (vecs.length === batch.length) batchVectors = vecs;
-      } catch {
-        batchVectors = null; // fall through to per-row
+        else {
+          // A length mismatch is a CONTRACT breach, not a transient failure, and
+          // silently falling back would hide it forever.
+          console.warn(
+            `[embed-backfill] batch embed returned ${vecs.length} vectors for ` +
+              `${batch.length} texts (${target.table}) — falling back to per-row`,
+          );
+        }
+      } catch (err) {
+        // NEVER swallow this silently. A batch path that always throws and always
+        // falls back is byte-identical, from the outside, to one that is working:
+        // same rows embedded, same counts, just ~N× slower. That is precisely the
+        // "two states are indistinguishable because one of them is silent" shape
+        // this file has been burned by twice (WI-7327, WI-7348) — and it bit THIS
+        // change during its own verification, where `batch-embed enabled` printed
+        // while the per-row path did all the work.
+        batchVectors = null;
+        if (!warnedBatchFallback) {
+          warnedBatchFallback = true;
+          console.warn(
+            `[embed-backfill] batch embed FAILED for ${target.table}, using the ` +
+              `per-row path (slower). First error: ${(err as Error).message}`,
+          );
+        }
       }
     }
 
@@ -730,11 +754,19 @@ export interface BackfillSweepOptions {
  *
  * Sized to finish INSIDE the 5-minute DBOS tick so the cadence is clean and a
  * tick rarely finds the latch held. Measured 2026-08-03: the batched sidecar path
- * sustains ~16 rows/sec, so a 240s budget moves ~3,800 rows/sweep — roughly 4× the
+ * sustains ~16 rows/sec, so a 200s budget moves ~3,200 rows/sweep — well above the
  * old 4-batch ceiling, and enough that session_turns' ~320k eligible backlog
  * drains in hours rather than the ~13 days the ceiling implied.
+ *
+ * ⚠ THIS IS A SOFT BUDGET and deliberately so: the deadline is checked BETWEEN
+ * targets, never mid-batch, so a sweep can overrun by up to one `backfillTable`
+ * call (≤ BATCH_SIZE rows). Measured on the first live run: a 90s budget returned
+ * at 130s. Interrupting mid-batch would mean abandoning rows already embedded but
+ * not yet written, so overrunning is the correct trade — the number just has to
+ * leave room for it. 200s + a worst-case ~70s overrun still lands inside the
+ * 300s tick; a tick that does arrive early is harmless (the latch makes it skip).
  */
-const SWEEP_BUDGET_MS = 240_000;
+const SWEEP_BUDGET_MS = 200_000;
 
 export async function runBackfillSweep(
   opts: BackfillSweepOptions = {},

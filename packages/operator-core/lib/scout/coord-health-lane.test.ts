@@ -423,6 +423,8 @@ describe('premise-resolve-rate — the P-011 measurement (D-091)', () => {
     withAuthoredField: 64,
     openQuestions: 10,
     openQuestionsAnswered: 4,
+    plainMessages: 20,
+    plainMessagesAnswered: 4,
     structureReads: 20,
     ...over,
   });
@@ -488,11 +490,53 @@ describe('premise-resolve-rate — the P-011 measurement (D-091)', () => {
     expect(JSON.stringify(p)).not.toMatch(/su-[0-9a-f]/);
   });
 
+  it('reports L3 as a LIFT against the control arm, never as a floating rate (D-085)', () => {
+    const p = buildCoordHealthPatterns(
+      base({
+        authoredAdoption: adoption({
+          openQuestions: 10,
+          openQuestionsAnswered: 7, // 70%
+          plainMessages: 20,
+          plainMessagesAnswered: 4, // 20%
+        }),
+      }),
+    ).find((x) => x.ref === 'coord:authored-adoption')!;
+    expect(p.summary).toContain('70%');
+    expect(p.summary).toContain('20% plain');
+    expect(p.summary).toContain('+50pp');
+  });
+
+  it('reports a NEGATIVE lift honestly rather than hiding it', () => {
+    // If authored structure makes recipients LESS likely to engage, that is the
+    // most important thing this signal could say, so it must not be presentable
+    // only in the favourable direction.
+    const p = buildCoordHealthPatterns(
+      base({
+        authoredAdoption: adoption({
+          openQuestions: 10,
+          openQuestionsAnswered: 1, // 10%
+          plainMessages: 20,
+          plainMessagesAnswered: 10, // 50%
+        }),
+      }),
+    ).find((x) => x.ref === 'coord:authored-adoption')!;
+    expect(p.summary).toContain('-40pp');
+  });
+
+  it('says UNINTERPRETABLE when the control arm is empty rather than implying a verdict', () => {
+    const p = buildCoordHealthPatterns(
+      base({ authoredAdoption: adoption({ plainMessages: 0, plainMessagesAnswered: 0 }) }),
+    ).find((x) => x.ref === 'coord:authored-adoption')!;
+    expect(p.summary).toMatch(/uninterpretable/i);
+  });
+
   it('does not divide by zero when there are no open questions', () => {
     const p = buildCoordHealthPatterns(
       base({ authoredAdoption: adoption({ openQuestions: 0, openQuestionsAnswered: 0 }) }),
     ).find((x) => x.ref === 'coord:authored-adoption')!;
-    expect(p.summary).toContain('no open questions');
+    // "actionable", not "open questions": the treatment arm covers
+    // couldNotDetermine AND youMayNotKnow — both ask the reader to do something.
+    expect(p.summary).toContain('no actionable messages');
     expect(p.summary).not.toMatch(/NaN|Infinity/);
   });
 

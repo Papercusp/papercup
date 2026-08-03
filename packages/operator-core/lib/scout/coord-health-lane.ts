@@ -203,10 +203,14 @@ export interface CoordAuthoredAdoption {
   multiSection: number;
   /** L2: of the sectioned ones, how many fill ≥1 authored field (forYouBecause / premises / youMayNotKnow / couldNotDetermine). */
   withAuthoredField: number;
-  /** L3 denominator: messages carrying `couldNotDetermine` — an OPEN question, the field that most demands a reader do something. */
+  /** L3 TREATMENT denominator: messages carrying an ACTIONABLE authored field (`couldNotDetermine` or `youMayNotKnow`) — the ones that ask a reader to do something. */
   openQuestions: number;
-  /** L3 numerator: of those, how many drew a reply from a recipient. The closest thing to "a reader acted" that this corpus can currently evidence. */
+  /** L3 TREATMENT numerator: of those, how many drew a reply from a recipient. */
   openQuestionsAnswered: number;
+  /** L3 CONTROL denominator: hand-authored messages in the same window carrying NO authored field at all. */
+  plainMessages: number;
+  /** L3 CONTROL numerator: of those, how many drew a reply. Without this arm the treatment rate is uninterpretable — a 40% reply rate is a success or a failure depending entirely on what plain messages get. */
+  plainMessagesAnswered: number;
   /** L3 context: `coord:read` calls in the window — the only surface that shows authored structure IN FULL. The in-band marker carries the forYouBecause RELATION and mere COUNTS; the note, the youMayNotKnow items and premises past the first live behind this call. */
   structureReads: number;
 }
@@ -446,8 +450,20 @@ export function buildCoordHealthPatterns(
     const pct = (n: number, d: number) => (d > 0 ? `${Math.round((n / d) * 100)}%` : 'n/a');
     const l1 = pct(aa.withSections, aa.handAuthored);
     const l2 = pct(aa.withAuthoredField, Math.max(aa.withSections, 1));
+    // L3 is reported as a LIFT against the control arm, never as a floating
+    // rate. D-085 requires the control arm for exactly this reason: "40% of
+    // messages carrying an open question drew a reply" is a success or a failure
+    // depending entirely on what a PLAIN message gets, and without the
+    // comparison the number cannot be read either way.
+    const treatRate = aa.openQuestions > 0 ? aa.openQuestionsAnswered / aa.openQuestions : null;
+    const ctrlRate = aa.plainMessages > 0 ? aa.plainMessagesAnswered / aa.plainMessages : null;
     const l3 =
-      aa.openQuestions > 0 ? pct(aa.openQuestionsAnswered, aa.openQuestions) : 'no open questions';
+      treatRate === null
+        ? 'no actionable messages'
+        : ctrlRate === null
+          ? `${pct(aa.openQuestionsAnswered, aa.openQuestions)} (no control arm this window — uninterpretable)`
+          : `${pct(aa.openQuestionsAnswered, aa.openQuestions)} vs ${pct(aa.plainMessagesAnswered, aa.plainMessages)} plain ` +
+            `(${treatRate >= ctrlRate ? '+' : ''}${Math.round((treatRate - ctrlRate) * 100)}pp)`;
 
     // The gap that matters: structure written vs structure ever opened in full.
     const writtenWithStructure = aa.withAuthoredField;
@@ -465,7 +481,9 @@ export function buildCoordHealthPatterns(
         `Three levels, deliberately NOT collapsed into one number. ` +
         `L1 PRESENCE ${aa.withSections}/${aa.handAuthored} hand-authored messages carry sections — a PRECONDITION, not a result: the schema refuses a plain string, so this level can be satisfied by wrapping one and measures compliance, not use. ` +
         `L2 SUBSTANCE ${aa.withAuthoredField}/${aa.withSections} sectioned messages fill an authored field and ${aa.multiSection} carry more than one section — this is what separates real structure from a one-element wrapper. ` +
-        `L3 CONSEQUENCE ${aa.openQuestionsAnswered}/${aa.openQuestions} messages carrying an OPEN question (couldNotDetermine) drew a reply, and coord:read — the only surface showing authored structure IN FULL — was called ${aa.structureReads} time(s) in 24h. ` +
+        `L3 CONSEQUENCE ${aa.openQuestionsAnswered}/${aa.openQuestions} messages carrying an ACTIONABLE authored field (couldNotDetermine / youMayNotKnow) drew a reply, against a CONTROL arm of ${aa.plainMessagesAnswered}/${aa.plainMessages} hand-authored messages with no authored field at all — same senders, same window. ` +
+        `The control is what makes the treatment rate mean anything (D-085): a bare reply rate is a success or a failure depending on what a plain message gets, and reporting it alone is how a correct numerator becomes a wrong conclusion. ` +
+        `coord:read — the only surface showing authored structure IN FULL — was called ${aa.structureReads} time(s) in 24h. ` +
         `The in-band [coord+N] marker carries the forYouBecause RELATION and mere COUNTS; the note, the youMayNotKnow items and premises past the first are only visible through coord:read. ` +
         `A LOW L3 against a HIGH L1 is the diagnostic this signal exists to make visible: it means the write half of "agents write their intent and other agents read it" shipped and the read half did not. ` +
         `Denominators are stated inline on purpose — a ratio quoted without one is how "0.58% adopted" was published from a numerator that was exactly right (EI-19300252001829260). ` +
@@ -761,6 +779,8 @@ export async function loadCoordAuthoredAdoption(
         with_authored_field: number;
         open_questions: number;
         open_questions_answered: number;
+        plain_messages: number;
+        plain_messages_answered: number;
       }>
     >`
       WITH hand AS (
@@ -780,9 +800,11 @@ export async function loadCoordAuthoredAdoption(
                  SELECT 1 FROM jsonb_array_elements(
                    CASE WHEN jsonb_typeof(e.body->'sections') = 'array'
                         THEN e.body->'sections' ELSE '[]'::jsonb END) s
-                  WHERE jsonb_typeof(s->'couldNotDetermine') = 'array'
-                    AND jsonb_array_length(s->'couldNotDetermine') > 0
-               ) AS has_open_question
+                  WHERE (jsonb_typeof(s->'couldNotDetermine') = 'array'
+                         AND jsonb_array_length(s->'couldNotDetermine') > 0)
+                     OR (jsonb_typeof(s->'youMayNotKnow') = 'array'
+                         AND jsonb_array_length(s->'youMayNotKnow') > 0)
+               ) AS has_actionable
           FROM harness_shared.coord_event_log e
          WHERE e.workspace_id = ${ws}
            AND e.surface = 'messages'
@@ -801,20 +823,33 @@ export async function loadCoordAuthoredAdoption(
            AND r.ts > now() - interval '24 hours'
            AND r.body ? 'related_msg_id'
       )
+      -- The reply lookup is evaluated ONCE PER MESSAGE here rather than once per
+      -- arm below; both arms then read the same boolean. Two FILTERed EXISTS
+      -- clauses over the same rows would double the correlated work for an
+      -- identical answer.
+      answered AS (
+        SELECT h.*,
+               EXISTS (
+                 SELECT 1 FROM replies rp
+                  WHERE rp.to_msg_id = h.msg_id
+                    AND h.recipients @> to_jsonb(ARRAY[rp.responder])
+               ) AS was_answered
+          FROM hand h
+      )
       SELECT count(*)::int                                              AS hand_authored,
              count(*) FILTER (WHERE h.has_sections)::int                AS with_sections,
              count(*) FILTER (WHERE h.n_sections > 1)::int              AS multi_section,
              count(*) FILTER (WHERE h.has_authored)::int                AS with_authored_field,
-             count(*) FILTER (WHERE h.has_open_question)::int           AS open_questions,
-             count(*) FILTER (
-               WHERE h.has_open_question
-                 AND EXISTS (
-                   SELECT 1 FROM replies rp
-                    WHERE rp.to_msg_id = h.msg_id
-                      AND h.recipients @> to_jsonb(ARRAY[rp.responder])
-                 )
-             )::int                                                     AS open_questions_answered
-        FROM hand h`;
+             -- TREATMENT arm: carries something a reader is asked to act on.
+             count(*) FILTER (WHERE h.has_actionable)::int              AS open_questions,
+             count(*) FILTER (WHERE h.has_actionable AND h.was_answered)::int
+                                                                        AS open_questions_answered,
+             -- CONTROL arm: hand-authored, same senders, same window, no
+             -- authored field at all.
+             count(*) FILTER (WHERE NOT h.has_authored)::int            AS plain_messages,
+             count(*) FILTER (WHERE NOT h.has_authored AND h.was_answered)::int
+                                                                        AS plain_messages_answered
+        FROM answered h`;
 
     const r = rows[0];
     if (!r || Number(r.hand_authored) === 0) return undefined;
@@ -842,6 +877,8 @@ export async function loadCoordAuthoredAdoption(
       withAuthoredField: Number(r.with_authored_field) || 0,
       openQuestions: Number(r.open_questions) || 0,
       openQuestionsAnswered: Number(r.open_questions_answered) || 0,
+      plainMessages: Number(r.plain_messages) || 0,
+      plainMessagesAnswered: Number(r.plain_messages_answered) || 0,
       structureReads,
     };
   } catch {

@@ -104,11 +104,23 @@ vi.mock('../../../events/await/store', () => ({
   cancelInboxWakeAwaits: () => cancelInboxWakeAwaits(),
   listActiveAwaitsForKey: (key: string) => listActiveAwaitsForKey(key),
 }));
-vi.mock('../presence', async (importOriginal) => ({
-  // Spread the real module so constants like PRESENCE_STALE_MS (consumed by
-  // presence-wakeability.ts via fleet-roster) survive the mock; override only
-  // the PG-touching fn we stub.
-  ...(await importOriginal<typeof import('../presence')>()),
+// ⚠ Do NOT reintroduce `importOriginal()` here. Awaiting the ORIGINAL of the very
+// module being mocked, while its consumer (inbox-wake.ts) sits in the same load
+// graph, makes that consumer bind the REAL `listPresence`: the factory still runs,
+// but its override never takes effect. The real one calls `store.list()` →
+// getOrgPg() → assertRealPgAllowed [EI-19311807188719573], which THROWS. That throw
+// lands in reportIdleRecipients' fail-soft roster catch (inbox-wake.ts), degrading
+// the probe to EMPTY_IDLE_REPORT — so `notWoken` comes back undefined and the P-001
+// idle-report test below fails while every negative sibling passes vacuously.
+//
+// It presents as "the mock silently doesn't work", with NO error surfaced: the
+// catch's console.warn is SWALLOWED in this suite. If you are ever debugging this
+// path, use process._rawDebug() — vitest cannot intercept it. (WI-7411)
+vi.mock('../presence', async () => ({
+  // Consumed by presence-wakeability.ts via fleet-roster. Re-sourced from the
+  // DEFINING package rather than hand-copied, so it cannot drift from the real
+  // value (it is 10 * 60 * 1000, not the 90s one might assume).
+  PRESENCE_STALE_MS: (await import('@papercusp/coordination/presence')).PRESENCE_STALE_MS,
   listPresence: () => listPresence(),
 }));
 vi.mock('../../../events/await/handle', () => ({
