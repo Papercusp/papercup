@@ -298,9 +298,28 @@ work in the tree. Merge conflicts go to a `merge-resolver` agent, not you. From
 auto-deploys it to `:3070`. Pipeline view: `/admin/git`. Long form + symptoms:
 [repo-conventions § branch + commit](/internal/docs/system/repo-conventions).
 
-> ⚠ **Checking whether your edit landed, and it is inside a SUBMODULE
-> (`papercusp-desktop`, `libs/generic/*`)? Run the check INSIDE the submodule** —
-> from the superproject the answer is ambiguous in the one direction that matters.
+> ⚠ **Checking whether your edit landed, and the path is inside a SUBMODULE? Run the
+> check INSIDE the submodule** — and decide *whether it is one* with a COMMAND, never
+> from memory or a list in a doc:
+>
+> ```bash
+> git submodule status <path>          # prints a line = submodule; empty = not one
+> cd <path> && git rev-parse --show-toplevel   # the repo root that actually owns it
+> ```
+>
+> There are dozens of them and the set moves, so any prose list here rots — including
+> the counts in this very paragraph, which is why the commands above are the answer and
+> the numbers below are only motivation. One list already rotted: it named only
+> `papercusp-desktop` and `libs/generic/*`, omitting **`libs/papercusp`**
+> — which holds every harness blueprint and agent role prompt
+> (`libs/papercusp/packages/harness/blueprints/*/prompts/*.md`), one of the hottest edit
+> paths on this fleet — plus `libs/agent-chat`, `libs/papercusp-db`,
+> `libs/papercusp-shared`, `libs/test-config`, `libs/testing-shell`
+> (EI-19441260942111774). "Is it under `libs/generic/`?" is not the test either —
+> measured 2026-08-03, only **31 of the 61** directories there were submodules (e.g.
+> `libs/generic/result-encoding` is plain-tracked in the superproject, `100644` blobs).
+>
+> From the superproject the answer is ambiguous in the one direction that matters.
 > The superproject tracks only a gitlink (`160000 <sha> papercusp-desktop`), so
 > **`git status --porcelain papercusp-desktop/<path>` prints NOTHING whether the file
 > is committed or completely untracked** — and an untracked file inside a submodule
@@ -309,9 +328,17 @@ auto-deploys it to `:3070`. Pipeline view: `/admin/git`. Long form + symptoms:
 > genuinely stranded edit reports as landed; read it as "git doesn't know this file"
 > and a perfectly committed edit sends you to redo work.
 >
+> 🚫 **`git log -S` / `git log --` on a submodule path from the superproject has the
+> SAME false-empty, and this one costs the most.** It answers "no commit *of this repo*
+> touched that path" — true, useless, and shaped exactly like "this text was never
+> committed", so the action it invites is rebuilding work that already exists. Measured
+> 2026-08-03 on a prompt string in `libs/papercusp`: empty from the superproject,
+> `b793dab4 2026-07-05` from inside the submodule.
+>
 > ```bash
 > cd papercusp-desktop && git cat-file -e HEAD:<path-inside-submodule>   # exit 0 = committed
 > cd papercusp-desktop && git status --porcelain <path-inside-submodule> # empty = clean, here it MEANS it
+> cd libs/papercusp && git log --format='%h %cI' -S'<string>' -- <path-inside-submodule>
 > ```
 >
 > `git ls-files --error-unmatch <path>` from the superproject is a useful *first*

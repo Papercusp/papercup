@@ -310,3 +310,133 @@ describe('WI-5738 — selectOriginWatermark: which signal the watchdog trusts', 
     ).toBeNull();
   });
 });
+
+describe('EI-19442274898324113 — an INTEGRATOR stall must not disable its own detector', () => {
+  /**
+   * The regression this whole block exists for. An integrator stall freezes canonical, and
+   * origin freezes BECAUSE canonical did — so aheadCount is exactly 0 and every inferred
+   * signal is structurally silenced. Live on papercusp 2026-08-03: ~5.4h / 28 commits with
+   * of_alerted false and of_stall_sweeps 0, while sibling pots alarmed correctly.
+   *
+   * This is the exact shape the first test in this file ('nothing ahead ⇒ ok, regardless of
+   * tip age') asserts as CORRECT behaviour — and it still is, for a genuinely idle pot. The
+   * distinguishing evidence is the integrator backlog, which an idle pot does not have.
+   */
+  it('alarms with ahead===0 AND an aged tip — the exact live-frozen shape that reported healthy', () => {
+    const v = evaluateOriginFreshness({
+      aheadCount: 0, // canonical and origin frozen at the SAME sha
+      originTipAgeMs: 5.4 * H, // aged well past tipAgeStaleMs, and unread until now
+      integratorBacklogSweeps: 4,
+      integratorBacklogCommits: 28,
+    });
+    expect(v.state).toBe('stale');
+    expect(v.integratorBacklog).toBe(true);
+    // The inferred signals stay honestly false — they genuinely cannot see this.
+    expect(v.aheadCountStale).toBe(false);
+    expect(v.tipAgeStale).toBe(false);
+    expect(v.reason).toMatch(/INTEGRATOR/);
+    expect(v.reason).toMatch(/28 commit/);
+  });
+
+  it('does NOT regress the idle pot: ahead===0 with no integrator backlog is still ok', () => {
+    const v = evaluateOriginFreshness({
+      aheadCount: 0,
+      originTipAgeMs: 100 * H,
+      integratorBacklogSweeps: 0,
+    });
+    expect(v.state).toBe('ok');
+    expect(v.integratorBacklog).toBe(false);
+    expect(v.reason).toBeNull();
+  });
+
+  it('treats unknown backlog (pre-upgrade metadata) as healthy rather than guessing', () => {
+    for (const sweeps of [null, undefined]) {
+      const v = evaluateOriginFreshness({
+        aheadCount: 0,
+        originTipAgeMs: 100 * H,
+        integratorBacklogSweeps: sweeps,
+      } as OriginFreshnessSnapshot);
+      expect(v.state).toBe('ok');
+      expect(v.integratorBacklog).toBe(false);
+    }
+  });
+
+  it('debounces a transient backlog below the sweep threshold (a tick or two ahead is normal)', () => {
+    const v = evaluateOriginFreshness({
+      aheadCount: 0,
+      originTipAgeMs: 0,
+      integratorBacklogSweeps: 3,
+      integratorBacklogCommits: 2,
+    });
+    expect(v.state).toBe('ok');
+    expect(v.integratorBacklog).toBe(false);
+  });
+
+  it('threshold is overridable', () => {
+    const snap: OriginFreshnessSnapshot = {
+      aheadCount: 0,
+      originTipAgeMs: 0,
+      integratorBacklogSweeps: 2,
+    };
+    expect(evaluateOriginFreshness(snap).integratorBacklog).toBe(false);
+    expect(
+      evaluateOriginFreshness(snap, { integratorBacklogSweepsMax: 2 }).integratorBacklog,
+    ).toBe(true);
+  });
+
+  it('also alarms on the ahead>0 path, so a partially-advancing pipeline is still caught', () => {
+    const v = evaluateOriginFreshness({
+      aheadCount: 5, // some egress progress, but the integrator is still behind
+      originTipAgeMs: 0,
+      integratorBacklogSweeps: 4,
+      integratorBacklogCommits: 12,
+    });
+    expect(v.state).toBe('stale');
+    expect(v.integratorBacklog).toBe(true);
+    expect(v.reason).toMatch(/INTEGRATOR/);
+  });
+
+  it('names the INTEGRATOR, not the publish leg or the bridge — the WI-6643 misdirection rule', () => {
+    const v = evaluateOriginFreshness({
+      aheadCount: 0,
+      originTipAgeMs: 5 * H,
+      integratorBacklogSweeps: 4,
+      integratorBacklogCommits: 28,
+    });
+    const f = describeOriginFreshnessAlert(v, {
+      slug: 'papercusp',
+      potHomeSlug: 'papercusp',
+      integratorBacklogCommits: 28,
+    });
+    expect(f.cause).toBe('integrator-backlog');
+    expect(f.title).toMatch(/INTEGRATOR/);
+    expect(f.summary).toMatch(/28 commit/);
+    // Must not send the responder to the leg that is actually healthy.
+    expect(f.summary).toMatch(/do not go looking at own_head_publish/i);
+    // Must name the field that actually diagnoses it.
+    expect(f.whyItMatters).toMatch(/integrator_status/);
+  });
+
+  it('an upstream publish fault still outranks it — a consequence must never bury its cause', () => {
+    const v = evaluateOriginFreshness({
+      aheadCount: 0,
+      originTipAgeMs: 0,
+      publishRefusedSweeps: 5,
+      publishRefusalCode: 'secrets',
+      integratorBacklogSweeps: 9,
+    });
+    expect(v.publishRefused).toBe(true);
+    expect(v.integratorBacklog).toBe(true);
+    // Both are true, but the alarm is named after the UPSTREAM stage.
+    expect(describeOriginFreshnessAlert(v, { slug: 'papercusp' }).cause).toBe('publish-refused');
+    // ...and the body still reports both, so nothing is hidden.
+    expect(v.reason).toMatch(/REFUSED/);
+    expect(v.reason).toMatch(/INTEGRATOR/);
+  });
+
+  it('recovery credits the INTEGRATOR, not origin — often the only durable record of a self-healed stall', () => {
+    const msg = describeOriginFreshnessRecovery('integrator-backlog', 'papercusp');
+    expect(msg).toMatch(/INTEGRATOR RECOVERED/);
+    expect(msg).toMatch(/canonical/);
+  });
+});

@@ -50,6 +50,7 @@ let inflight: Promise<boolean> | null = null;
  * to the surface that asked.
  */
 export async function isTaskManagerEnabled(distinctId = 'task-manager'): Promise<boolean> {
+  ensureFlagSubscriptionArmed();
   const on = await getFlag(FLAGS.TASK_MANAGER, distinctId).catch(() => true);
   cached = on;
   return on;
@@ -67,6 +68,7 @@ export async function isTaskManagerEnabled(distinctId = 'task-manager'): Promise
  * the next reconcile tick closes out cleanly.
  */
 export function taskManagerEnabledSync(): boolean {
+  ensureFlagSubscriptionArmed();
   return cached !== false;
 }
 
@@ -75,6 +77,7 @@ export function taskManagerEnabledSync(): boolean {
  * Coalesced — three separate spawn modules import this and warm it at load.
  */
 export function warmTaskManagerFlag(): void {
+  ensureFlagSubscriptionArmed();
   if (inflight) return;
   inflight = isTaskManagerEnabled('task-manager:warm').finally(() => {
     inflight = null;
@@ -82,14 +85,42 @@ export function warmTaskManagerFlag(): void {
   void inflight.catch(() => {});
 }
 
-// A flip must not require an operator restart to take effect at the sync seams —
-// otherwise "turn it off" is only true for the surfaces that re-read per request.
-onFlagChange((key) => {
-  if (key === null || key === FLAGS.TASK_MANAGER) {
-    cached = null;
-    warmTaskManagerFlag();
-  }
-});
+/**
+ * Live-flip wiring, armed on FIRST USE rather than at import (EI-19416650993725684).
+ *
+ * A flip must not require an operator restart to take effect at the sync seams —
+ * otherwise "turn it off" is only true for the surfaces that re-read per request.
+ * That property is preserved: all three readers arm, and the three spawn modules
+ * that import this already call `warmTaskManagerFlag()` at their own module load,
+ * so in a live operator the subscription installs exactly as early as before.
+ *
+ * WHY LAZY, and why this is not merely a style choice: an `import { onFlagChange }`
+ * whose binding is READ at module scope makes this module unimportable under a
+ * PARTIAL vitest mock of `@papercusp/flags/server`. Vitest's mocked-module proxy
+ * throws on binding ACCESS (not on invocation), so the whole test FILE dies at
+ * collection with
+ *   No "onFlagChange" export is defined on the "@papercusp/flags/server" mock
+ * contributing ZERO tests — a failure that names this module while pointing at a
+ * file that never mentions it. This module is imported by managed-spawn,
+ * enroll-sync, processes/list and sync-resolver/index, so its reach is wide.
+ *
+ * ⚠ MEASURED, do not "simplify" this back: defensive forms do NOT work, because
+ * they are still binding accesses — `onFlagChange?.(...)`, `typeof onFlagChange`,
+ * try/catch around the call, and `import * as ns` + `ns.onFlagChange?.()` all throw
+ * identically. Moving the access inside a function body is the only fix that keeps
+ * the import pure.
+ */
+let flagSubscriptionArmed = false;
+function ensureFlagSubscriptionArmed(): void {
+  if (flagSubscriptionArmed) return;
+  flagSubscriptionArmed = true;
+  onFlagChange((key) => {
+    if (key === null || key === FLAGS.TASK_MANAGER) {
+      cached = null;
+      warmTaskManagerFlag();
+    }
+  });
+}
 
 /** Test seam — set the cached answer directly, or clear it with no argument. */
 export function setTaskManagerEnabledForTest(value: boolean | null = null): void {
