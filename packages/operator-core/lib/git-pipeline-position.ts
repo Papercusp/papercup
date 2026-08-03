@@ -3134,6 +3134,13 @@ export async function gitPipelinePosition(
     verdictUnknown.push({ leg: 'gate.consecutiveReds', unknown: snap.gate.countersUnknown });
   }
 
+  // P-005 leg — ownership could not be READ. Hoisted rather than left in-band
+  // because the alternative reading ("nobody owns this red, go file one") is the
+  // reassuring one, and a caller that skips the per-field qualifier lands on it.
+  if (gate.ownership?.unknown) {
+    verdictUnknown.push({ leg: 'gate.ownership.claimState', unknown: gate.ownership.unknown });
+  }
+
   // Leg 2 — the deployed sha. See the positions.deployed correction above for why a
   // null here is a failed read rather than an empty one. `deploy.errors` carries the
   // reason text and was, until now, loaded and discarded by this resolver — the only

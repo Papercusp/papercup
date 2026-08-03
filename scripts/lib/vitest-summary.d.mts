@@ -53,6 +53,77 @@ export function parseSummaryFailedCounts(text: any): {
  */
 export function parseFailedTestFiles(text: string): string[];
 /**
+ * Render the canonical, machine-readable per-FILE break set for a run's final summary.
+ *
+ * EI-19395701908500754: `AFFECTED_TESTS_RESULT ... failed=N` counts TASKS (workspaces),
+ * so the per-FILE set — the thing a triager actually needs — existed nowhere in the
+ * verdict log. Agents therefore MINED PROSE for it, and the prose they reached for was
+ * the gate's own `[green-checkpoint] isolation: re-running <files>` narration. That
+ * narration is emitted by green-checkpoint's self-tests too, so a `grep 'isolation:'`
+ * returned FIXTURE paths (`lib/a.test.ts`, candidate `abc123`) with nothing marking them
+ * synthetic. Measured on the 01:36:17Z red: the mined set was 2 phantom files; the real
+ * one was 11 real files spanning BOTH failing workspaces. The tagging fix (WI-7274) marks
+ * the fixture lines; this removes the reason to read them at all.
+ *
+ * ⚠ COMPLETENESS IS REPORTED SEPARATELY FROM SCOPE, and that is the whole point of the
+ * shape. An empty `files=[]` is ambiguous in the direction that costs the most — it reads
+ * as "nothing failed" when it can equally mean "we could not attribute what failed" (a
+ * TTY run with no captured child output; a crash/OOM that printed no FAIL rows; a
+ * non-vitest task like cargo). So a failed task whose files cannot be named is carried
+ * EXPLICITLY in `unattributed`, and `coverage` can never read `complete` while any such
+ * task exists. `coverage=unattributed` means "tasks failed and NONE of them could be
+ * attributed" — the case a bare empty array would have silently mis-reported as clean.
+ *
+ * @param {{
+ *   runToken: string,
+ *   entries?: Array<{ workspace: string, file: string }>,
+ *   unattributed?: Array<{ task: string, reason: string }>,
+ * }} args
+ * @returns {string}
+ */
+export function formatFailingFilesLine({ runToken, entries, unattributed }: {
+    runToken: string;
+    entries?: Array<{
+        workspace: string;
+        file: string;
+    }>;
+    unattributed?: Array<{
+        task: string;
+        reason: string;
+    }>;
+}): string;
+/**
+ * The whole failure-summary block a run prints for its break set: the human list a triager
+ * reads, then the canonical machine line. Returned as lines rather than printed so the
+ * thing that actually ships is unit-testable.
+ *
+ * Extracted deliberately (EI-19395701908500754): left inline in affected-tests.mjs, the only
+ * available guard is a source-text assertion, which cannot catch a runtime fault on a path
+ * that runs solely when the gate is already red — i.e. it would report green while being
+ * broken exactly when needed. This module's own history has that shape twice over
+ * (EI-18819483316574031: a parser dead in production while its tests passed).
+ *
+ * @param {{
+ *   runToken: string,
+ *   failedTaskCount: number,
+ *   entries?: Array<{ workspace: string, file: string }>,
+ *   unattributed?: Array<{ task: string, reason: string }>,
+ * }} args
+ * @returns {string[]}
+ */
+export function renderFailingFilesSummary({ runToken, failedTaskCount, entries, unattributed }: {
+    runToken: string;
+    failedTaskCount: number;
+    entries?: Array<{
+        workspace: string;
+        file: string;
+    }>;
+    unattributed?: Array<{
+        task: string;
+        reason: string;
+    }>;
+}): string[];
+/**
  * Count vitest's own hard-timeout failures — `"Test timed out in Nms."` / `"Hook timed
  * out in Nms."`, the exact message `@vitest/runner` throws when a case or hook exceeds
  * `testTimeout`/`hookTimeout` — in a run's combined stdout+stderr. ANSI-stripped first,
@@ -82,3 +153,9 @@ export function countTimeoutSignatures(text: string): number;
  * RegExp could not serve both; a shared fragment can.
  */
 export const VITEST_TEST_FILE_SOURCE: string;
+/** The greppable token that opens the per-FILE break-set line. Exported so a consumer
+ *  greps a shared constant instead of a hand-typed copy that can drift from the emitter. */
+export const AFFECTED_TESTS_FAILING_FILES_TOKEN: "AFFECTED_TESTS_FAILING_FILES";
+/** Beyond this many entries the JSON payload is truncated and says so. A break set this
+ *  large is a tree-wide event, not a triage list; the counts stay exact either way. */
+export const FAILING_FILES_LINE_MAX_ENTRIES: 400;

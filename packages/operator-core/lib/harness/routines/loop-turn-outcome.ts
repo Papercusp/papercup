@@ -71,6 +71,23 @@ export function loopRoutineIdFromSource(source: string | null | undefined): stri
 const REARM_BACKOFF_CAP_MS = 6 * 3_600_000;
 
 /**
+ * EI-19381528967421062: below this, a rate_limited/overloaded backoff is ORDINARY
+ * governor-absorbed noise — turn-error.ts's `SURFACE_TO_USER` set deliberately excludes
+ * `rate_limited` (an isolated 429 recovers in well under this; alerting on every one would
+ * be pure spam). At or above it, the loop has gone SILENT long enough that a leader/owner
+ * needs to know even though the error CLASS alone says "handle silently": measured live, a
+ * dead-egress-proxy streak of bare 429s (not a normal RPM bump) pushed two members' waits
+ * to ~50-100 minutes with NOTHING alerted, because the wedge alert below was gated on
+ * `surfaceToUser` alone — a fleet ran with two stranded claims and no leader signal for the
+ * whole window. This is a SEPARATE trigger from `surfaceToUser`, not a replacement for it:
+ * a `usage_limit`/`auth`/`permanent` death still always alerts regardless of the computed
+ * delay (those classes are inherently the human's business); this only widens the net to
+ * catch a CHRONIC `rate_limited`/`overloaded` streak the class-based gate structurally
+ * cannot see.
+ */
+const CHRONIC_BACKOFF_ALERT_FLOOR_MS = 10 * 60_000;
+
+/**
  * The re-arm delay (ms from now) for a DEAD loop turn (P1a). A rate-limit / usage-cap death
  * backs off by the classified `retry-after` (or `resetAt - now`), floored at the loop's own
  * interval (never fire sooner than the cadence) and capped. Any other death (crash / empty)
@@ -240,7 +257,16 @@ export async function handleLoopResumeTurnExit(
     // debounced 6h per loop via the SAME watchdog-fires ledger + captureImprovement +
     // immediate overwatch-wake primitives `autoloop-chronic-failure.ts` already uses — no
     // parallel alerting system, just a second, narrower trigger into the same pipeline.
-    if (outcome.error.surfaceToUser) {
+    //
+    // EI-19381528967421062: `surfaceToUser` alone missed the class of death THIS bug
+    // reported — a `rate_limited` streak (dead egress proxy, not a normal RPM bump) whose
+    // computed re-arm delay ran ~50-100 minutes with no alert, because `rate_limited` is
+    // deliberately excluded from `SURFACE_TO_USER` (a single isolated 429 SHOULD stay
+    // silent). `chronicBackoff` widens the net for exactly the case the class-based gate
+    // structurally cannot see: the delay computed for THIS fire is long enough that a human
+    // needs to know regardless of class. See CHRONIC_BACKOFF_ALERT_FLOOR_MS's own doc for why.
+    const chronicBackoff = !outcome.error.surfaceToUser && delayMs >= CHRONIC_BACKOFF_ALERT_FLOOR_MS;
+    if (outcome.error.surfaceToUser || chronicBackoff) {
       try {
         const { claimWatchdogFire } = await import('../../pot/watchdog');
         const claimed = await claimWatchdogFire({
@@ -264,9 +290,14 @@ export async function handleLoopResumeTurnExit(
               `fire-gate + 429-aware re-arm (loop-turn-outcome.ts) are backing off automatically, but if this ` +
               `owner is a FLEET LEADER the fleet may be running leaderless until it clears. Check ` +
               `sessions:read / coord:presence for owner ${ref.targetOwnerId ?? 'unknown'}; if it is a fleet ` +
-              `leader, consider relaunching leadership on another account/session rather than waiting out the cap.`,
+              `leader, consider relaunching leadership on another account/session rather than waiting out the cap.` +
+              (chronicBackoff
+                ? ` [chronic-backoff trigger: ${klass} is normally auto-absorbed silently, but the computed ` +
+                  `re-arm delay for this fire was ${Math.round(delayMs / 60_000)}min — well past a normal ` +
+                  `transient wait, so this alerted despite the class alone saying "handle silently".]`
+                : ''),
             scope: `harness:${ref.installSlug}`,
-            foundDuring: 'loop-turn-outcome resume-turn wedge classification (EI-13818)',
+            foundDuring: 'loop-turn-outcome resume-turn wedge classification (EI-13818/EI-19381528967421062)',
           });
           try {
             const { requestOverwatchWake } = await import('../../overwatch/wake-bridge');

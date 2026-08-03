@@ -51,6 +51,7 @@
 import { execFile } from 'node:child_process';
 import { appendFileSync, mkdirSync, readFileSync } from 'node:fs';
 import { MCP_PROXY_LOCAL_HEALTH_PATH, MCP_PROXY_RETRY_WINDOW_MS, PSU_CLIENT_HEADROOM_MS } from './budgets.mjs';
+import { samplePgBouncerPools } from './pgbouncer-pool-sample.mjs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 
@@ -440,6 +441,10 @@ async function poll() {
     if (!unreachableSince) {
       unreachableSince = now;
       log(`unreachable (${e.message})`);
+      // EI-19384024494946006: capture PgBouncer's live pool state at the ONSET of a flap —
+      // by the time a human/agent can look, the incident has usually already self-recovered.
+      // Fire-and-forget: never let a diagnostic sample delay or break the poll loop.
+      void samplePgBouncerPools('proxy-unreachable-onset').catch(() => {});
       // WI-6744: count the ONSET, so a burst of short self-recovering outages is visible as a
       // rate even though each one individually ends in a reassuring `recovered` line.
       stallOnsets.push(now);
@@ -500,6 +505,10 @@ async function pollDataPlane() {
   if (!dataFailingSince) {
     dataFailingSince = now;
     log(`data plane FAILING (${detail}) — session plane and /api/health are GREEN; that combination is the WI-6739 signature`);
+    // EI-19384024494946006: this is the exact onset the WI-6739/EI-19384024494946006 mechanism
+    // has twice gone unproven for — capture PgBouncer's live SHOW POOLS/SHOW STATS right now,
+    // while it is still happening, instead of investigating from the outside after it heals.
+    void samplePgBouncerPools('data-plane-failing-onset').catch(() => {});
     return;
   }
   if (!shouldRestart(dataFailingSince, now, HANDSHAKE_UNHEALTHY_MS)) return;
@@ -596,6 +605,10 @@ function start() {
   const probeArgs = dataPlaneProbeArgs(DB_PROBE_TOOL, DB_PROBE_ARGS_RAW);
   log(
     `data-plane probe (WI-6739) — tools/call "${DB_PROBE_TOOL}" args ${JSON.stringify(probeArgs.args)} via :${PORT}, runs whenever the session plane is green, unhealthy after ${HANDSHAKE_UNHEALTHY_MS}ms; catches a DB-dead operator that still serves its tool catalog`,
+  );
+  log(
+    `pgbouncer pool sampler (EI-19384024494946006) — SHOW POOLS/SHOW STATS captured on every ` +
+      `reachability/data-plane FAILING onset (debounced ${MIN_SAMPLE_INTERVAL_MS_FOR_LOG}ms), logged to ${SAMPLE_LOG_FILE_FOR_LOG}`,
   );
   if (probeArgs.invalid) {
     // Loud at startup rather than once per 10min throttle window: every poll from here on is a

@@ -1,0 +1,111 @@
+/**
+ * loop:status distinguishes "no loop exists" from "this read may be from the wrong
+ * database" (EI-19384072467112035, following plan outage-must-not-be-silent-2026-08-02).
+ *
+ * `getLoopStatus` reads through `getOrgPg()`, which can be talking to a different,
+ * freshly-initdb'd embedded Postgres than the one this process pinned (a captured
+ * discovery file, a per-session sidecar restarted onto a fresh empty store). In that
+ * state "no row for this owner" is a correct answer from the WRONG database, not
+ * evidence the loop is gone — and an agent that reads `loop:null` and re-arms on the
+ * strength of it risks a duplicate loop the moment the real store becomes reachable
+ * again. This only ever augments a null/negative result; a found loop row is always
+ * reported as-is, unannotated.
+ *
+ * Run: cd packages/operator-core && npx vitest run lib/agent-tools/loop/status.test.ts
+ */
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+vi.mock('../coordination/roles', () => ({ COORD_ROLES: ['operator'] }));
+vi.mock('../coordination/identity', () => ({
+  resolveAgentIdentity: vi.fn(() => ({
+    ownerId: 'su-caller-own-id',
+    ownerLabel: 'su · caller',
+    source: 'omp-hook-session',
+    workspaceId: 'ws-1',
+    userId: null,
+  })),
+}));
+vi.mock('../../events/await/wake-reachability', () => ({
+  probeWakeReachability: vi.fn(async () => ({
+    reachable: true,
+    channel: 'inject',
+    durableWhileAlive: true,
+    summary: 'ok',
+  })),
+}));
+
+vi.mock('../../harness/routines/loop', () => ({ getLoopStatus: vi.fn() }));
+
+import { _resetStoreIdentityForTests, pinOrVerifyStoreIdentity } from '@papercusp/db-org';
+import { getLoopStatus } from '../../harness/routines/loop';
+import statusTool from './status';
+
+const getLoopStatusMock = getLoopStatus as unknown as ReturnType<typeof vi.fn>;
+
+const OURS = { systemIdentifier: '7635091775813704249', database: 'papercusp' };
+const IMPOSTOR = { systemIdentifier: '7111222333444555666', database: 'papercusp' };
+
+// Via `unknown`: the tool's declared arg/event generics do not overlap this narrowed
+// shape, and TS2352 correctly refuses the direct assertion (same pattern as pg_health.test.ts).
+const run = (args: Record<string, unknown> = {}) =>
+  (statusTool as unknown as {
+    handler: (a: unknown, ctx: unknown) => Promise<{ content: [{ type: 'text'; text: string }] }>;
+  }).handler(args, {}).then((r) => JSON.parse(r.content[0].text));
+
+beforeEach(() => {
+  _resetStoreIdentityForTests();
+  getLoopStatusMock.mockReset();
+});
+
+describe('loop:status store-identity delivery', () => {
+  it('OMITS storeIdentityWarning when no violation is latched, loop null', async () => {
+    getLoopStatusMock.mockResolvedValue(null);
+    pinOrVerifyStoreIdentity(OURS, 'postgresql://localhost:5432/papercusp');
+
+    const out = await run();
+
+    expect(out.ok).toBe(true);
+    expect(out.loop).toBeNull();
+    expect(out).not.toHaveProperty('storeIdentityWarning');
+  });
+
+  it('OMITS storeIdentityWarning when a violation IS latched but a loop row WAS found', async () => {
+    getLoopStatusMock.mockResolvedValue({ active: false, intervalSec: 60 });
+    pinOrVerifyStoreIdentity(OURS, 'postgresql://localhost:5432/papercusp');
+    pinOrVerifyStoreIdentity(IMPOSTOR, 'postgresql://127.0.0.1:22060/papercusp');
+
+    const out = await run();
+
+    // A found row is trustworthy regardless — only the null/negative path is annotated.
+    expect(out.loop).toEqual({ active: false, intervalSec: 60 });
+    expect(out).not.toHaveProperty('storeIdentityWarning');
+  });
+
+  it('SURFACES storeIdentityWarning on a null loop when a violation is latched', async () => {
+    getLoopStatusMock.mockResolvedValue(null);
+    pinOrVerifyStoreIdentity(OURS, 'postgresql://localhost:5432/papercusp');
+    pinOrVerifyStoreIdentity(IMPOSTOR, 'postgresql://127.0.0.1:22060/papercusp');
+
+    const out = await run();
+
+    expect(out.ok).toBe(true);
+    expect(out.loop).toBeNull();
+    const w = out.storeIdentityWarning;
+    expect(w).toBeTruthy();
+    expect(w.severity).toBe('critical');
+    // The exact wrong conclusion this exists to stop.
+    expect(w.whatThisMeans).toMatch(/do not treat this loop:null as/i);
+    expect(w.whatThisMeans).toMatch(/re-arm/i);
+    expect(w.detail).toContain('22060');
+  });
+
+  it('leaks no credentials into the surfaced warning', async () => {
+    getLoopStatusMock.mockResolvedValue(null);
+    pinOrVerifyStoreIdentity(OURS, 'postgresql://harness_admin:secret@localhost:5432/papercusp');
+    pinOrVerifyStoreIdentity(IMPOSTOR, 'postgresql://harness_admin:secret@127.0.0.1:22060/papercusp');
+
+    const out = await run();
+
+    expect(JSON.stringify(out)).not.toContain('secret');
+  });
+});

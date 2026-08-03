@@ -190,13 +190,66 @@ describe('the fixture prose that caused EI-19395701908500754 cannot reach the br
   });
 });
 
-describe('scripts/affected-tests.mjs wires the line in (a formatter nothing calls is not a fix)', () => {
+describe('renderFailingFilesSummary — the block the red path actually prints', () => {
+  it('leads with the files, warns that failed=N counts tasks, and ends with the machine line', () => {
+    const lines = renderFailingFilesSummary({
+      runToken: '1234-abcd0000',
+      failedTaskCount: 2,
+      entries: [
+        { workspace: '@papercusp/operator-core', file: 'lib/x.test.ts' },
+        { workspace: '@papercusp/web', file: 'app/_lints/no-nul-bytes.test.ts' },
+      ],
+    });
+    expect(lines[0]).toContain('2 failing test file(s)');
+    expect(lines[0]).toContain('failed=2 above counts TASKS, not files');
+    expect(lines).toContain('  - @papercusp/operator-core :: lib/x.test.ts');
+    expect(lines).toContain('  - @papercusp/web :: app/_lints/no-nul-bytes.test.ts');
+    expect(lines.at(-1)).toContain(AFFECTED_TESTS_FAILING_FILES_TOKEN);
+    expect(parseLine(String(lines.at(-1))).coverage).toBe('complete');
+  });
+
+  it('states, in prose a triager will read, that an unattributed list is not complete', () => {
+    const lines = renderFailingFilesSummary({
+      runToken: 't',
+      failedTaskCount: 2,
+      entries: [{ workspace: '@papercusp/operator-core', file: 'lib/x.test.ts' }],
+      unattributed: [{ task: 'papercusp-desktop :: cargo test', reason: 'non-vitest' }],
+    });
+    const prose = lines.join('\n');
+    expect(prose).toContain('could NOT be attributed to files');
+    expect(prose).toContain('do not read the list above as complete');
+    expect(prose).toContain('  - papercusp-desktop :: cargo test (non-vitest)');
+    expect(parseLine(String(lines.at(-1))).coverage).toBe('partial');
+  });
+
+  it('never emits a bare empty list when tasks failed', () => {
+    const lines = renderFailingFilesSummary({
+      runToken: 't',
+      failedTaskCount: 1,
+      unattributed: [{ task: '@papercusp/web :: test', reason: 'no-file-rows' }],
+    });
+    expect(lines.join('\n')).toContain('@papercusp/web :: test (no-file-rows)');
+    expect(parseLine(String(lines.at(-1))).coverage).toBe('unattributed');
+  });
+
+  it('emits every line as a single log line, so an interleaved log stays parseable', () => {
+    // The leading blank separator is deliberate; no OTHER line may carry an embedded newline.
+    const lines = renderFailingFilesSummary({
+      runToken: 't',
+      failedTaskCount: 1,
+      entries: [{ workspace: '@papercusp/web', file: 'a.test.ts' }],
+    });
+    expect(lines.slice(1).filter((l) => l.includes('\n'))).toEqual([]);
+  });
+});
+
+describe('scripts/affected-tests.mjs wires the block in (a helper nothing calls is not a fix)', () => {
   const source = readFileSync(AFFECTED_TESTS, 'utf8');
 
-  it('emits the canonical line on the failure path', () => {
-    expect(source).toContain('formatFailingFilesLine');
+  it('emits the summary on the failure path', () => {
     const failureBlock = source.slice(source.indexOf('if (failed) {'));
-    expect(failureBlock).toContain('formatFailingFilesLine({ runToken: RUN_TOKEN');
+    expect(failureBlock).toContain('renderFailingFilesSummary({');
+    expect(failureBlock).toContain('runToken: RUN_TOKEN');
     // Emitted alongside — not instead of — the task-level verdict line.
     expect(failureBlock).toContain("resultLine('failed')");
   });

@@ -33,6 +33,9 @@ import {
   type ConditionObject,
 } from './condition-object';
 import { operatorHomeHarnessSlug } from '../harness/operator-home-harness';
+import { cellUnknown, type CellUnknown } from '../cell-contract';
+import { resolveSessionStates } from '../agent-tools/coordination/liveness-oracle';
+import type { SessionState } from '../agent-tools/coordination/presence-wakeability';
 
 /**
  * The condition whose lifetime IS a green-checkpoint stall.
@@ -77,11 +80,42 @@ export interface CellOwnership {
   eventKey: string;
   /** The singleton work-item owning it, or null when nothing owns it yet. */
   workItem: string | null;
-  /** EXPLICIT — never infer this from which of the fields below are null. */
-  claimState: ConditionClaimState;
+  /**
+   * EXPLICIT — never infer this from which of the fields below are null.
+   *
+   * NULL means UNMEASURED (see `unknown`), which is deliberately NOT the same
+   * value as `'no-object'`. P-004 shipped this as a non-null enum that degraded to
+   * `'no-object'` when the store was unreachable — so "nobody owns this" and "we
+   * could not tell" were the same byte, and the failure read as the reassuring
+   * one. Registering the cell forced the question (`CellSpec` axis 2: can the
+   * verdict be unknown?) and the honest answer is yes.
+   */
+  claimState: ConditionClaimState | null;
+  /** In-band unknown, non-null exactly when `claimState` is null. */
+  unknown: CellUnknown | null;
   takenBy: string | null;
   takenAt: string | null;
   expiresAt: string | null;
+  /**
+   * THE FALSIFIER (P-005). The holder's liveness per the presence oracle —
+   * INDEPENDENT apparatus from `claimState`, which is computed purely from the
+   * work-item's own lease columns (`taken_by`, `expires_at`).
+   *
+   * That independence is the entire point. A lease expires on a CLOCK, so a claim
+   * with a long or absent expiry reads `held` forever — including one held by an
+   * agent that died minutes after taking it. The oracle measures something the
+   * lease cannot see (heartbeat, wakeability, a pid probe, recorded sessions), so
+   * `claimState: 'held'` + `holderSessionState: 'ended'` is the exact contradiction
+   * this field exists to expose.
+   *
+   * ⚠ Do NOT substitute `heartbeatFresh` if you ever reach for the raw verdict:
+   * that is process-keepalive freshness, not a liveness verdict, and a warm-dead
+   * session reads `heartbeatFresh: true` with `sessionState: 'ended'`.
+   *
+   * NULL when there is no holder to measure, or when the oracle could not answer —
+   * both of which mean "no contradiction established", never "the holder is live".
+   */
+  holderSessionState: SessionState | null;
   /**
    * Extra open work-items on the SAME key beyond the canonical one.
    *
@@ -94,29 +128,68 @@ export interface CellOwnership {
 }
 
 /** PURE. Project a resolved condition onto a cell's ownership block. */
-export function toCellOwnership(obj: ConditionObject): CellOwnership {
+export function toCellOwnership(
+  obj: ConditionObject,
+  holderSessionState: SessionState | null = null,
+): CellOwnership {
   return {
     eventKey: obj.conditionKey,
     workItem: obj.workItem,
     claimState: obj.claimState,
+    unknown: null,
     takenBy: obj.takenBy,
     takenAt: obj.takenAt,
     expiresAt: obj.expiresAt,
+    holderSessionState,
     duplicates: obj.duplicates,
   };
 }
 
-/** PURE. The un-owned block for a key we could not resolve. */
+/**
+ * PURE. A MEASURED "nobody owns this" — the store answered and found nothing.
+ *
+ * Distinct from {@link unmeasuredCell}. Collapsing the two is the bug the
+ * `claimState` doc describes.
+ */
 export function unownedCell(eventKey: string): CellOwnership {
   return {
     eventKey,
     workItem: null,
     claimState: 'no-object',
+    unknown: null,
     takenBy: null,
     takenAt: null,
     expiresAt: null,
+    holderSessionState: null,
     duplicates: [],
   };
+}
+
+/** PURE. Ownership could NOT be read — never rendered as "nobody owns this". */
+export function unmeasuredCell(eventKey: string, detail: string): CellOwnership {
+  return {
+    eventKey,
+    workItem: null,
+    claimState: null,
+    unknown: cellUnknown('resolver-failed', detail),
+    takenBy: null,
+    takenAt: null,
+    expiresAt: null,
+    holderSessionState: null,
+    duplicates: [],
+  };
+}
+
+/**
+ * PURE. Does the lease-derived claim CONTRADICT the presence oracle?
+ *
+ * The falsifier's verdict in one call, so a consumer never has to re-derive the
+ * comparison (and get it subtly wrong by treating `parked` as dead — a parked
+ * agent is alive and will wake).
+ */
+export function ownershipContradicted(own: CellOwnership): boolean {
+  if (own.claimState !== 'held') return false;
+  return own.holderSessionState === 'ended' || own.holderSessionState === 'recorded';
 }
 
 /**
@@ -133,16 +206,36 @@ export function unownedCell(eventKey: string): CellOwnership {
  * is healthy — see misread #1 above.
  */
 export async function readGateOwnership(
-  opts: { harness?: string; findConditionObjects?: typeof findConditionObjects } = {},
+  opts: {
+    harness?: string;
+    findConditionObjects?: typeof findConditionObjects;
+    resolveSessionStates?: typeof resolveSessionStates;
+  } = {},
 ): Promise<CellOwnership> {
   const harness = opts.harness?.trim() || operatorHomeHarnessSlug();
   const eventKey = gateStallConditionKey(harness);
+
+  let obj: ConditionObject | undefined;
   try {
     const find = opts.findConditionObjects ?? findConditionObjects;
-    const found = await find([eventKey], { harnessSlug: harness });
-    const obj = found.get(eventKey);
-    return obj ? toCellOwnership(obj) : unownedCell(eventKey);
-  } catch {
-    return unownedCell(eventKey);
+    obj = (await find([eventKey], { harnessSlug: harness })).get(eventKey);
+  } catch (err) {
+    return unmeasuredCell(eventKey, `ownership store unreachable: ${err instanceof Error ? err.message : String(err)}`);
   }
+  if (!obj) return unownedCell(eventKey);
+
+  // The falsifier leg. Only worth a call when there IS a holder to measure —
+  // and its failure degrades to null (no contradiction established), never to a
+  // guess about liveness in either direction.
+  let holderSessionState: SessionState | null = null;
+  if (obj.takenBy) {
+    try {
+      const resolve = opts.resolveSessionStates ?? resolveSessionStates;
+      const verdicts = await resolve([{ ownerId: obj.takenBy }], { hydratePerId: true });
+      holderSessionState = verdicts.get(obj.takenBy)?.sessionState ?? null;
+    } catch {
+      holderSessionState = null;
+    }
+  }
+  return toCellOwnership(obj, holderSessionState);
 }

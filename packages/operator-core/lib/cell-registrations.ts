@@ -323,6 +323,61 @@ export const GATE_CANDIDATE_CELL: CellSpec = {
 };
 
 /**
+ * Cell 2b — WHO owns the gate incident, and whether that ownership is real.
+ *
+ * A SEPARATE cell rather than a second falsifier on cells 1/2, because `CellSpec`
+ * carries exactly ONE `falsifier` and the validator rejects a falsifier that is
+ * the headline wearing a hat. The plan's P-005 assumed a cell could carry a
+ * falsifier per BLOCK; it cannot, and the honest expression of "this block has its
+ * own headline and its own independent check" is its own cell (see D-014).
+ */
+export const GATE_OWNERSHIP_CELL: CellSpec = {
+  cell: 'gate.greenCheckpoint.ownership',
+  owner: 'gate-ownership-condition-singleton-2026-08-03',
+  headline: 'gate.ownership.claimState',
+
+  falsifier: {
+    field: 'gate.ownership.holderSessionState',
+    measurement:
+      "the presence oracle's per-owner liveness verdict (resolveSessionStates — heartbeat freshness, wakeability, a pid probe and recorded-session authority), which shares no input with the work-item lease columns `taken_by`/`expires_at` the headline is computed from",
+    kills:
+      '"someone is on it", read off a claim row. A lease lapses on a CLOCK, so a claim with a long or absent expiry reads `held` forever — including one taken by an agent that died minutes later. Reporting a dead holder as live ownership is worse than reporting none, because it actively suppresses the next agent from picking the work up.',
+  },
+
+  /**
+   * TRUE, and this is the field the cell contract earned its keep on. The block
+   * originally shipped (P-004) with a non-null enum that degraded to `'no-object'`
+   * whenever the store was unreachable — so an unreadable store and a genuinely
+   * un-owned condition produced the identical value, and the failure rendered as
+   * the reassuring one ("nobody owns this red"). Registering the cell forced axis
+   * 2 to be answered out loud, which is what surfaced it.
+   */
+  nullable: true,
+  unknownHoist: VERDICT_HOIST,
+
+  /** Axis 3. GLOBAL: the gate's incident is one condition for the whole workspace —
+   *  every caller asking "who owns this red" gets the same answer, unlike cell 2's
+   *  per-path containment question. */
+  callerRelativity: { kind: 'global' },
+
+  provenance: {
+    obtainedBy:
+      "findConditionObjects() over the work-item↔condition link for `green-stall:<harness>`, with the holder's liveness resolved separately through the shared presence oracle",
+    liveExercised: false,
+    evidence:
+      'NOT yet live-exercised: the gate has been red and peer-owned (WI-7239/WI-7244) for the whole implementation window, so no deploy has run and the condition `green-stall:papercusp` is currently RESOLVED (last alarm 2026-08-02T15:00:02Z, recovery 15:45:03Z). Unit-verified only — the held-vs-ended contradiction is asserted against an injected oracle. Live exercise is owed on the first real gate stall after deploy, and this field must be flipped then rather than at some tidier moment.',
+  },
+
+  resolver: 'readGateOwnership() @ packages/operator-core/lib/coord/gate-ownership.ts',
+
+  visibility: { kind: 'workspace' },
+  federation: { kind: 'local' },
+  changeSignal: { kind: 'poll', tool: 'dev:pipeline_position', path: 'gate.ownership.claimState' },
+  shape:
+    '{ gate: { ownership: { eventKey, workItem, claimState, unknown, takenBy, takenAt, expiresAt, holderSessionState, duplicates[] } }, verdictUnknown[] }',
+};
+
+/**
  * Cell 3 — the sha :3070 is running.
  *
  * ⚠ Shares `serving.startedSinceCodeChange` with `git.pipelinePosition`'s falsifier.
@@ -558,6 +613,7 @@ export const BUILTIN_CELLS: CellSpec[] = [
   GIT_PIPELINE_POSITION_CELL,
   GATE_VERDICT_CELL,
   GATE_CANDIDATE_CELL,
+  GATE_OWNERSHIP_CELL,
   DEPLOYED_SHA_CELL,
   MAIN_BEHIND_STAGING_CELL,
   AGENT_GOAL_CELL,

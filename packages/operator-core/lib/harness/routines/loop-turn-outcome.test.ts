@@ -246,6 +246,50 @@ describe('handleLoopResumeTurnExit — EI-13818 wedge-death alert (item c)', () 
     expect(captureImprovement).not.toHaveBeenCalled();
   });
 
+  // EI-19381528967421062: this is the item's OWN reported gap. surfaceToUser alone missed a
+  // sustained rate_limited streak (dead egress proxy) whose computed re-arm delay ran
+  // ~50-100 minutes with zero alert. A short/ordinary rate_limited death (the test above,
+  // computed delay = the 2min floor) must stay silent; ONE whose computed delay clears the
+  // chronic floor must alert despite the class being non-surfaceToUser.
+  it('a CHRONIC rate_limited death (computed backoff >= the chronic floor) DOES trigger the wedge alert', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const sql = fakeSql({ ref: refRow, rearmRows: [{ id: 'loop_su_owner' }] });
+    const recordFire = vi.fn(async () => {});
+    // Parses to retryAfterMs = 900_000 (15min) via classifySubprocessResult's "retry after Ns"
+    // pattern — well past the interval floor (120s) AND the 10min chronic-alert floor.
+    const chronicRaw = deathRaw({
+      stdoutTail: 'API Error: 429 Too Many Requests · Rate limited · retry after 900 seconds',
+    });
+    const res = await handleLoopResumeTurnExit(loopDelivery(), chronicRaw, { sql: sql as never, recordFire });
+
+    expect(res.handled).toBe(true);
+    expect(res.class).toBe('rate_limited');
+    expect(res.rearmedMs).toBe(900_000);
+    expect(claimWatchdogFire).toHaveBeenCalledWith(
+      expect.objectContaining({ source: 'loop-wedge-death', windowHours: 6 }),
+    );
+    expect(captureImprovement).toHaveBeenCalledWith(
+      expect.objectContaining({ body: expect.stringContaining('chronic-backoff trigger') }),
+    );
+    expect(requestOverwatchWake).toHaveBeenCalledTimes(1);
+  });
+
+  it('a rate_limited death JUST UNDER the chronic floor still stays silent (no spam on ordinary longer waits)', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const sql = fakeSql({ ref: refRow, rearmRows: [{ id: 'loop_su_owner' }] });
+    const recordFire = vi.fn(async () => {});
+    // 9min — under the 10min chronic floor.
+    const almostChronicRaw = deathRaw({
+      stdoutTail: 'API Error: 429 Too Many Requests · Rate limited · retry after 540 seconds',
+    });
+    const res = await handleLoopResumeTurnExit(loopDelivery(), almostChronicRaw, { sql: sql as never, recordFire });
+
+    expect(res.handled).toBe(true);
+    expect(res.rearmedMs).toBe(540_000);
+    expect(claimWatchdogFire).not.toHaveBeenCalled();
+    expect(captureImprovement).not.toHaveBeenCalled();
+  });
+
   it('a throwing claimWatchdogFire fails soft — the outcome contract is undisturbed', async () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     vi.mocked(claimWatchdogFire).mockRejectedValue(new Error('pg down'));

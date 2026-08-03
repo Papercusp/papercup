@@ -11,9 +11,17 @@ import {
   gateStallConditionKey,
   toCellOwnership,
   unownedCell,
+  unmeasuredCell,
+  ownershipContradicted,
   readGateOwnership,
 } from './gate-ownership';
 import type { ConditionObject } from './condition-object';
+
+/** An injected presence oracle returning one verdict for one owner. */
+function oracle(sessionState: string) {
+  return (async (subjects: readonly { ownerId: string }[]) =>
+    new Map(subjects.map((s) => [s.ownerId, { ownerId: s.ownerId, sessionState }]))) as never;
+}
 
 function mkObj(over: Partial<ConditionObject> = {}): ConditionObject {
   return {
@@ -53,9 +61,11 @@ describe('toCellOwnership', () => {
       eventKey: 'green-stall:papercusp',
       workItem: 'WI-1234',
       claimState: 'held',
+      unknown: null,
       takenBy: 'su-abc',
       takenAt: 'T1',
       expiresAt: 'T2',
+      holderSessionState: null,
       duplicates: [],
     });
   });

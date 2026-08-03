@@ -662,6 +662,34 @@ describe('shapeFleetAssignments carries loop monitor state at every tier (P-010)
   });
 });
 
+// EI-19381528967421062: lifecycleBackoff is the ONE signal that a member's nextFireAt is a
+// provider-wall WAIT, not a normal cadence tick — dropping it at any tier would leave the
+// trimmed/standard reads (the ones a monitor loop actually calls) exactly as blind as before.
+describe('shapeFleetAssignments carries lifecycleBackoff at every tier (EI-19381528967421062)', () => {
+  const backoff = { reason: 'rate_limited', until: '2026-08-02T23:58:00.000Z', resumesInMs: 5_940_000 };
+  const dataWithBackoff = {
+    ok: true,
+    summary: { agents: 1 },
+    orphaned: [],
+    stalled: [],
+    agents: [{
+      agentId: 'a1', claims: [], queued: [], verdict: 'waiting', monitorState: 'waiting',
+      nextFireAt: backoff.until, lifecycleBackoff: backoff,
+    }],
+  };
+
+  it.each(['trimmed', 'standard'] as const)('%s keeps lifecycleBackoff verbatim', (tier) => {
+    const shaped = shapeFleetAssignments(dataWithBackoff, tier) as { agents: Array<Record<string, unknown>> };
+    expect(shaped.agents[0].lifecycleBackoff).toEqual(backoff);
+  });
+
+  it.each(['trimmed', 'standard'] as const)('%s omits lifecycleBackoff when null (healthy loop) — never a bare null stub', (tier) => {
+    const healthy = { ...dataWithBackoff, agents: [{ ...dataWithBackoff.agents[0], lifecycleBackoff: null }] };
+    const shaped = shapeFleetAssignments(healthy, tier) as { agents: Array<Record<string, unknown>> };
+    expect('lifecycleBackoff' in shaped.agents[0]).toBe(false);
+  });
+});
+
 describe('shapeFleetAssignments carries contextPressure at every tier (P-007)', () => {
   const data = {
     ok: true,

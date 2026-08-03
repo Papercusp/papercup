@@ -186,6 +186,14 @@ describe('WI-7274: orchestrator narration cannot impersonate a verdict', () => {
     // carried a verbatim COPY of the implementation, which is exactly why it could describe
     // the limit precisely and still never notice if the real parser changed underneath it.
     // A guard that re-implements its subject cannot detect drift in that subject.
+    // ⚠ THIS ASSERTION ALSO GUARDS A HAND-SYNCED LITERAL, deliberately. It builds its fixture
+    // line from green-checkpoint.ts's `ORCHESTRATOR_STDOUT_TAG_UNDER_TEST` and filters it with
+    // the operator-core leaf's copy (via the real parser). While the two definitions are
+    // separate — they are being deduped under EI-19395755190419540, the leaf is the single
+    // source and green-checkpoint.ts re-exports it — any divergence between them fails HERE,
+    // loudly, instead of silently un-filtering fixtures in production. Keep it built this way
+    // round even after the dedupe: it costs nothing and it is the only place the two ends of
+    // that import meet.
     const taggedFixture = `${ORCHESTRATOR_STDOUT_TAG_UNDER_TEST} checkpointing candidate deadbeef (base cafe1234)`;
     expect(parseCheckpointCandidates(taggedFixture)).toEqual([]);
 
