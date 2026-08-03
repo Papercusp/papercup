@@ -46,7 +46,9 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { parseAsString, useQueryState } from 'nuqs';
 import { useSyncQuery } from '@papercusp/sync';
 import type { PanelComponentProps } from '../../harness/dock/panel-registry';
+import { useColumnFilters, ColumnFilterBar } from '../../harness/filters';
 import { WORK_ITEMS_PAGE, type WorkItemRow } from './WorkItemsPanel';
+import { workItemFilterColumns, WORK_ITEM_FILTER_NS } from './work-item-columns';
 import {
   buildDepSubgraph,
   DEP_GRAPH_NODE_BUDGET,
@@ -127,14 +129,28 @@ export default function DepGraphPanel({ params }: PanelComponentProps) {
   const edgeRows = edgesQuery.loading ? null : edgesQuery.data;
   const error = itemsQuery.error?.message ?? edgesQuery.error?.message ?? null;
 
+  // FULL FILTER PARITY with the list pane (P-010 / D-003 req 4). The columns come
+  // from the SHARED definition module, and the `ns` is the SAME one WorkItemsPanel
+  // uses — so both panes read and write ONE `wif` nuqs param. Filtering the grid
+  // narrows the graph and vice versa, with no cross-pane wiring: the URL is the bus.
+  //
+  // Declared BEFORE the early returns below — hooks must run unconditionally.
+  const filterColumns = useMemo(() => workItemFilterColumns(), []);
+  const cf = useColumnFilters(filterColumns, items ?? [], { ns: WORK_ITEM_FILTER_NS });
+
+  // The graph is built from the FILTERED rows, so a filter genuinely shrinks the
+  // node set the budget is measured against — filtering is the primary way a reader
+  // gets a clipped graph back under budget (see the truncation chip below).
+  const visibleItems = items == null ? null : cf.rows;
+
   const graph = useMemo(() => {
-    if (!items || !edgeRows) return null;
+    if (!visibleItems || !edgeRows) return null;
     return buildDepSubgraph({
-      items: items.map((i) => ({ id: i.id, kind: i.kind, title: i.title, state: i.state })),
+      items: visibleItems.map((i) => ({ id: i.id, kind: i.kind, title: i.title, state: i.state })),
       edges: edgeRows,
       selectedId: selectedId || null,
     });
-  }, [items, edgeRows, selectedId]);
+  }, [visibleItems, edgeRows, selectedId]);
 
   const [positioned, setPositioned] = useState<Positioned | null>(null);
   const [layoutError, setLayoutError] = useState<string | null>(null);
@@ -185,37 +201,60 @@ export default function DepGraphPanel({ params }: PanelComponentProps) {
   if (error) return <div className="pc-advpanel__empty">Could not load the dependency graph: {error}</div>;
   if (!graph) return <div className="pc-advpanel__empty">Loading dependency graph…</div>;
 
+  // The bar is rendered in BOTH the empty and populated states, and that is load-bearing
+  // rather than tidy: filtering is now the primary navigation, so a filter that happens to
+  // match nothing must NOT take its own "Clear" affordance off screen with it. Hiding the
+  // bar on empty strands the user in a graph they cannot un-filter without editing the URL.
+  const bar = (
+    <div className="pc-advpanel__bar">
+      <span className="pc-advpanel__chip">
+        {graph.nodes.length} node{graph.nodes.length === 1 ? '' : 's'} · {graph.edges.length} edge
+        {graph.edges.length === 1 ? '' : 's'}
+      </span>
+      {graph.truncated && (
+        // Absence is reported, never silent (D-003 / the budget contract).
+        <span className="pc-advpanel__chip pc-depgraph__chip--warn" role="status">
+          {graph.hiddenCount} more hidden of {graph.totalInScope} — filter or select to narrow
+        </span>
+      )}
+      {/* Same control, same `wif` param, same columns as the list pane (P-010). */}
+      <ColumnFilterBar
+        controller={cf.controller}
+        activeChips={cf.activeChips}
+        hasActive={cf.hasActive}
+        clearAll={cf.clearAll}
+      />
+      {selectedId && (
+        <button type="button" className="pc-advpanel__iconbtn" onClick={() => void setSelectedId('')}>
+          Clear selection
+        </button>
+      )}
+    </div>
+  );
+
   if (graph.nodes.length === 0) {
     // Say WHICH empty this is — the filters are the navigation, so "you filtered it away" and
-    // "nothing depends on anything" need different next actions from the user.
-    const why =
-      items && items.length === 0
+    // "nothing depends on anything" need different next actions from the user. Filters are
+    // checked FIRST: when a filter is active it is the most likely cause and the one the
+    // reader can act on immediately.
+    const why = cf.hasActive
+      ? 'No work items match the active filters.'
+      : items && items.length === 0
         ? 'No work items for this harness.'
         : selectedId
           ? `${selectedId} has no dependencies.`
           : 'No dependency edges among the visible work items.';
-    return <div className="pc-advpanel__empty">{why}</div>;
+    return (
+      <div className="pc-advpanel pc-depgraph">
+        {bar}
+        <div className="pc-advpanel__empty">{why}</div>
+      </div>
+    );
   }
 
   return (
     <div className="pc-advpanel pc-depgraph">
-      <div className="pc-advpanel__bar">
-        <span className="pc-advpanel__chip">
-          {graph.nodes.length} node{graph.nodes.length === 1 ? '' : 's'} · {graph.edges.length} edge
-          {graph.edges.length === 1 ? '' : 's'}
-        </span>
-        {graph.truncated && (
-          // Absence is reported, never silent (D-003 / the budget contract).
-          <span className="pc-advpanel__chip pc-depgraph__chip--warn" role="status">
-            {graph.hiddenCount} more hidden of {graph.totalInScope} — filter or select to narrow
-          </span>
-        )}
-        {selectedId && (
-          <button type="button" className="pc-advpanel__iconbtn" onClick={() => void setSelectedId('')}>
-            Clear selection
-          </button>
-        )}
-      </div>
+      {bar}
 
       {layoutError && <div className="pc-advpanel__empty">Layout failed: {layoutError}</div>}
 

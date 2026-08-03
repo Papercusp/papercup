@@ -3160,6 +3160,59 @@ describe('parseFailingFilesByWorkspace (load-flake isolation)', () => {
     ]);
   });
 
+  // WI-7501 — the same displacement, one rung deeper, and the guard above could not reach it.
+  //
+  // That guard suppresses a displaced bare FAIL row only for a file some ROLLUP already named.
+  // A file that fails at COLLECTION emits `❯ …arm.test.ts (0 test)` — zero tests collected, no
+  // `failed` token — and `vitestSummaryFailRow` requires that token, so NO rollup names it. Its
+  // only rows are bare FAIL rows, and every one of them lands in the epilogue after the last
+  // normal section, so it was attributed to whichever workspace happened to run last.
+  //
+  // Measured live on cand a94547c8 (2026-08-03): two operator-core files came back as
+  // `@papercusp/eval-battery` files. That is not a cosmetic mislabel — the pair is the cwd for
+  // the re-run, so isolation AND the tip rescue both re-ran them in a workspace that does not
+  // contain them, matching zero files and exiting 1 every time. `runTestsAtRef` therefore
+  // returned pass:false ⇒ `real-red` ⇒ autoRefire:false, making the red structurally
+  // unrescuable however thoroughly the tree was fixed. It fires precisely on import/transform
+  // breaks — the class a peer's in-flight commit causes, i.e. the reds MOST likely already
+  // fixed at tip and most in need of the rescue.
+  //
+  // Fixed by recognising the absorption marker as a section header (it names the workspace
+  // explicitly) and treating that attribution as authoritative over positional placement.
+  it('WI-7501: attributes a COLLECTION-error file (0 tests, no rollup) to its OWN workspace, not the last one to run', () => {
+    const out = [
+      '>>> @papercusp/operator-core :: npm run test',
+      // Zero tests collected ⇒ no `failed` token ⇒ no rollup row for this file, ever.
+      ' ❯ lib/agent-tools/loop/arm.test.ts (0 test)',
+      '>>> @papercusp/eval-battery :: npm run test',
+      ' Tests  4 passed (4)',
+      // Displaced epilogue: operator-core's row, flushed under a foreign header.
+      ' FAIL  lib/agent-tools/loop/arm.test.ts [ lib/agent-tools/loop/arm.test.ts ]',
+      // The absorption re-run names the owning workspace — the authoritative attribution.
+      '>>> @papercusp/operator-core FAILED — fresh-process re-run of 1 failed file(s) (HARDEN-GATE flake absorption): lib/agent-tools/loop/arm.test.ts',
+      ' FAIL  lib/agent-tools/loop/arm.test.ts [ lib/agent-tools/loop/arm.test.ts ]',
+    ].join('\n');
+    // Exactly ONE pair, under operator-core. A second eval-battery pair would be the live bug:
+    // unrunnable by construction, and enough on its own to pin the gate red forever.
+    expect(parseFailingFilesByWorkspace(out)).toEqual([
+      { workspace: '@papercusp/operator-core', file: 'lib/agent-tools/loop/arm.test.ts' },
+    ]);
+  });
+
+  // The `>>> …` chatter the affected-runner emits between sections must never be mistaken for a
+  // header now that a second header shape is recognised — otherwise a cargo section would
+  // capture every subsequent file under a bogus workspace named "Running".
+  it('WI-7501: does not treat non-package `>>>` chatter as a section header', () => {
+    const out = [
+      '>>> @papercusp/operator-core :: npm run test',
+      '>>> Running cargo tests (P-009: papercusp-desktop/src-tauri Rust suite)...',
+      ' FAIL  lib/a.test.ts > case',
+    ].join('\n');
+    expect(parseFailingFilesByWorkspace(out)).toEqual([
+      { workspace: '@papercusp/operator-core', file: 'lib/a.test.ts' },
+    ]);
+  });
+
   it('still attributes a FAIL-only file (transform/setup error — no rollup row exists for it)', () => {
     const out = [
       '>>> @papercusp/operator-core :: npm run test',

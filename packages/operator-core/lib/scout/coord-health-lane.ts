@@ -46,7 +46,8 @@ import type { PremiseStatus } from '../agent-tools/coordination/premise-resolve'
 import {
   buildEnforcementTierCensus,
   loadCoordBehaviourAdoption,
-  loadCoordBehaviourIds,
+  loadCoordRegistrySnapshot,
+  resolveTierDeclarations,
   type EnforcementTierCensus,
 } from './enforcement-tier-census';
 
@@ -842,8 +843,8 @@ export async function loadCoordEnforcementCensus(
   ws: string,
 ): Promise<EnforcementTierCensus | undefined> {
   try {
-    const behaviourIds = await loadCoordBehaviourIds();
-    if (!behaviourIds) return undefined; // partial registry — remove the signal, never shrink the denominator
+    const snapshot = await loadCoordRegistrySnapshot();
+    if (!snapshot) return undefined; // partial registry — remove the signal, never shrink the denominator
 
     const adoption = await loadCoordBehaviourAdoption({
       workspaceId: ws,
@@ -852,9 +853,12 @@ export async function loadCoordEnforcementCensus(
     });
 
     return buildEnforcementTierCensus({
-      behaviourIds,
+      behaviourIds: snapshot.behaviourIds,
       adoption,
       windowDays: ENFORCEMENT_CENSUS_WINDOW_DAYS,
+      // Tier 3 DERIVED from the registry; tiers 1–2 declared (they are properties
+      // of a chokepoint, not of a field a scan can read). Explicit wins on overlap.
+      declared: resolveTierDeclarations(snapshot.derivedTiers),
     });
   } catch {
     return undefined;

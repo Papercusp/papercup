@@ -1,16 +1,14 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState, type CSSProperties } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { parseAsString, useQueryState } from 'nuqs';
 import { RefreshCw } from 'lucide-react';
 import { useSyncQuery } from '@papercusp/sync';
-import { VirtualGrid, usePersistedColumnWidths, type ColumnDef } from '@papercusp/grid-core';
+import { VirtualGrid, usePersistedColumnWidths } from '@papercusp/grid-core';
 import { readListTotal } from '@papercusp/operator-core/lib/sync-resolver/list-meta';
 import { useColumnFilters, ColumnFilterBar } from '../../harness/filters';
 import { Tooltip } from '../../harness/Tooltip';
-import { IssueStatusPill, KindPill, SeverityPill, StatusPill } from '../../harness/primitives';
-import { TrustBadge, trustBadgeState } from '../../harness/TrustBadge';
-import type { HarnessStatus } from '../../harness/theme';
+import { buildWorkItemColumns, WORK_ITEM_FILTER_NS } from './work-item-columns';
 import type { PanelComponentProps } from '../../harness/dock/panel-registry';
 
 /**
@@ -61,15 +59,6 @@ export interface WorkItemRow {
   auditVerdict: string | null;
   verifiedAuthorGithubUserId: number | null;
 }
-
-// Grid-cell truncation (native title= is the approved pattern for dynamic
-// per-row truncation tooltips — see design/gotchas).
-const CELL_TRUNCATE: CSSProperties = {
-  display: 'block',
-  overflow: 'hidden',
-  textOverflow: 'ellipsis',
-  whiteSpace: 'nowrap',
-};
 
 /**
  * Count label for the work-items pane. Users care about the STORE total, not how
@@ -151,161 +140,18 @@ export default function WorkItemsPanel({ params, api }: PanelComponentProps) {
   const hasMore = items != null && items.length < total;
   const loadMore = useCallback(() => setLimit((n) => n + PAGE), []);
 
-  const columns: ColumnDef<WorkItemRow>[] = [
-    {
-      key: 'id',
-      header: 'ID',
-      width: 1.4,
-      toCopyText: (r) => r.id,
-      filter: { type: 'text', accessor: (r) => r.id },
-      render: ({ row }) => (
-        <code style={CELL_TRUNCATE} title={row.id}>{row.id}</code>
-      ),
-    },
-    {
-      key: 'kind',
-      header: 'Kind',
-      width: 1.2,
-      toCopyText: (r) => r.kind,
-      filter: { type: 'enum', accessor: (r) => r.kind },
-      // Canonical kind chip (WORK_ITEM_KIND table) — same chip recipe as the
-      // Sev column so the table's pill columns read as one visual language.
-      render: ({ row }) => <KindPill kind={row.kind} size="xs" />,
-    },
-    {
-      key: 'title',
-      header: 'Title',
-      width: 4,
-      toCopyText: (r) => r.title,
-      filter: { type: 'text', accessor: (r) => r.title },
-      render: ({ row }) => (
-        <span style={CELL_TRUNCATE} title={row.title}>{row.title}</span>
-      ),
-    },
-    {
-      key: 'state',
-      header: 'State',
-      width: 1.2,
-      toCopyText: (r) => r.state,
-      filter: { type: 'enum', accessor: (r) => r.state },
-      // Canonical status pills (app/harness/theme.ts tables — the same coloring
-      // FeatureList/IssuesList use). Family picks the table; unknown states fall
-      // back to the tables' neutral meta, so plain text never regresses to bare.
-      // chip variant = the SeverityPill look, matching the Kind + Sev columns.
-      render: ({ row }) =>
-        row.family === 'issue' ? (
-          <IssueStatusPill status={row.state} size="xs" variant="chip" />
-        ) : (
-          <StatusPill status={row.state as HarnessStatus} size="xs" variant="chip" />
-        ),
-    },
-    {
-      // Trust A4: author trust-state for shared (federated) work — empty for local items.
-      key: 'trust',
-      header: 'Trust',
-      width: 1.3,
-      toCopyText: (r) =>
-        trustBadgeState({
-          origin: r.origin,
-          auditVerdict: r.auditVerdict,
-          verifiedAuthorGithubUserId: r.verifiedAuthorGithubUserId,
-          trusted: isTrusted(r),
-        })?.label ?? '',
-      render: ({ row }) => (
-        <TrustBadge
-          origin={row.origin}
-          auditVerdict={row.auditVerdict}
-          verifiedAuthorGithubUserId={row.verifiedAuthorGithubUserId}
-          trusted={isTrusted(row)}
-        />
-      ),
-    },
-    {
-      key: 'stage',
-      header: 'Stage',
-      width: 1.7,
-      toCopyText: (r) => (r.spineRole ? `${r.spineRole}${r.spineStatus ? ` (${r.spineStatus})` : ''}` : ''),
-      filter: { type: 'enum', accessor: (r) => r.spineRole },
-      render: ({ row }) =>
-        row.spineRole ? (
-          <span
-            style={CELL_TRUNCATE}
-            title={`latest spine role · status (spawned_agents): ${row.spineRole}${row.spineStatus ? ` (${row.spineStatus})` : ''}`}
-          >
-            {row.spineRole}
-            {row.spineStatus ? <span style={{ color: 'var(--fg-mute)' }}> ({row.spineStatus})</span> : null}
-          </span>
-        ) : (
-          <>—</>
-        ),
-    },
-    {
-      key: 'assignee',
-      header: 'Assignee',
-      width: 1.8,
-      toCopyText: (r) => r.assignee ?? '',
-      filter: { type: 'enum', accessor: (r) => r.assignee },
-      render: ({ row }) => (
-        <span
-          style={CELL_TRUNCATE}
-          title={
-            row.assignee
-              ? `${row.assignee}${row.assignedBy ? ` — delegated by ${row.assignedBy}` : ''}`
-              : undefined
-          }
-        >
-          {row.assignee ?? '—'}
-          {row.assignedBy ? <span style={{ color: 'var(--fg-mute)' }}> ·by {row.assignedBy}</span> : null}
-        </span>
-      ),
-    },
-    {
-      key: 'severity',
-      header: 'Sev',
-      width: 0.9,
-      toCopyText: (r) => r.severity ?? '',
-      filter: { type: 'enum', accessor: (r) => r.severity },
-      render: ({ row }) =>
-        row.severity ? <SeverityPill severity={row.severity} size="xs" /> : <>—</>,
-    },
-    {
-      key: 'priority',
-      header: 'Prio',
-      width: 0.8,
-      toCopyText: (r) => (r.priority == null ? '' : String(r.priority)),
-      filter: { type: 'number', accessor: (r) => r.priority },
-      render: ({ row }) => <>{row.priority ?? '—'}</>,
-    },
-    {
-      key: 'rank',
-      header: 'Rank',
-      width: 0.8,
-      toCopyText: (r) => (r.rank == null ? '' : String(r.rank)),
-      filter: { type: 'number', accessor: (r) => r.rank },
-      render: ({ row }) => <>{row.rank ?? '—'}</>,
-    },
-    {
-      key: 'plan',
-      header: 'Plan',
-      width: 1.8,
-      toCopyText: (r) => r.planSlug ?? '',
-      // Plan is a FIXED SET (the harness's plan slugs), not free text — enum so
-      // the filter offers a selectable checklist of the actual plans (with live
-      // counts + an in-list search for long sets), not a blank search box.
-      filter: { type: 'enum', accessor: (r) => r.planSlug },
-      render: ({ row }) =>
-        row.planSlug ? (
-          <code style={{ ...CELL_TRUNCATE, fontSize: 11 }} title={row.planSlug}>{row.planSlug}</code>
-        ) : (
-          <>—</>
-        ),
-    },
-  ];
+  // Column + filter definitions live in ./work-item-columns — SHARED with the
+  // dependency-graph pane (dependency-health-pane-2026-08-02 P-010 / D-003 req 4:
+  // "all the filters from the work item list pane should also be brought over").
+  // Built per render exactly as the inline array was, so `isTrusted` always closes
+  // over the current trust set.
+  const columns = buildWorkItemColumns({ isTrusted });
 
   // Per-column filters (kind/state/severity/priority/…) → ONE `wif` nuqs param.
   // The hook re-derives enum options from the live rows and AND-s every active
   // filter; `cf.rows` is the input ref when nothing is active (cheap fast-path).
-  const cf = useColumnFilters(columns, items ?? [], { ns: 'wi' });
+  // The `ns` is shared with DepGraphPanel, so filtering EITHER pane filters both.
+  const cf = useColumnFilters(columns, items ?? [], { ns: WORK_ITEM_FILTER_NS });
 
   // Global quick-search (`wq`) is a separate affordance — apply it as a substring
   // match ON TOP of the column-filtered rows (id/title/state/assignee).

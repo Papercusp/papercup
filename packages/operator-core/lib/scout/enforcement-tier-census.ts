@@ -111,7 +111,134 @@ export const DECLARED_COORD_TIERS: ReadonlyMap<string, TierDeclaration> = new Ma
         'coord:orient declares intent as part of the mandated wake bootstrap, so the agent never has to remember a separate call. The stamping happens on a path every wake already takes.',
     },
   ],
+  [
+    'coord:inbox',
+    {
+      tier: 'auto-stamp',
+      evidence:
+        'The BEHAVIOUR (read your directed mail) is folded into coord:orient at the same chokepoint: orient returns `inbox.summary` + bounded `recent`, and the tool contract tells callers NOT to re-read it separately after a successful orient. Kept even in orient\'s `monitor` mode, which drops nearly every other fold.',
+    },
+  ],
+  [
+    'coord:plan-events',
+    {
+      tier: 'auto-stamp',
+      evidence:
+        'Folded into coord:orient as the `planEvents` delta (orient.ts: the mandated bootstrap collapses memory:search + coord:inbox + coord:plan-events + coord:declare-intent into one round-trip), so an agent receives the delta without remembering the call.',
+    },
+  ],
 ]);
+
+/**
+ * ⚠ READING A FOLDED VERB'S CALL COUNT. For the three `auto-stamp` rows above the
+ * verb's own `calls` measures SEPARATE reads made ON TOP OF the fold — it is not
+ * that behaviour's adoption, which is ~100% by construction for every agent that
+ * passes the chokepoint. Do not read a low count on a folded verb as low adoption
+ * (the fold IS the adoption), nor a high one as high adoption (it is agents paying
+ * a round-trip the fold already covered — a finding about the fold, not the verb).
+ *
+ * The chokepoint is also the claim's LIMIT, and stating it is what makes the tier
+ * falsifiable: these hold for agents that call coord:orient. Orient itself is not
+ * auto-stamped by anything, so it carries no tier here and shows as debt — which
+ * is the honest reading, not an oversight.
+ */
+
+/**
+ * A registry entry as this census reads it: a name, and whatever the tool
+ * declared as `seeAlso`. Deliberately structural (`unknown`) rather than importing
+ * tooldef's `SeeAlso` — the census must not gain a dependency on the tool
+ * framework's types to count them.
+ */
+export interface RegistryBehaviour {
+  readonly name: string;
+  readonly seeAlso?: unknown;
+}
+
+/** The leading pointer token of a `seeAlso` entry — the tool it POINTS AT. */
+function pointerTarget(entry: unknown): string | null {
+  const raw =
+    typeof entry === 'string'
+      ? entry
+      : typeof entry === 'object' && entry !== null && typeof (entry as { tool?: unknown }).tool === 'string'
+        ? (entry as { tool: string }).tool
+        : null;
+  if (!raw) return null;
+  // LEADING token only. An entry reads `coord:roster { view:"live" } (the door…)`,
+  // and its prose can name OTHER verbs incidentally; only the head is the pointer.
+  // Verified 2026-08-03: leading-only and match-anywhere return the identical
+  // 16-verb set on this repo, so this costs nothing and cannot over-credit.
+  return /^\s*(coord:[a-zA-Z0-9_\-]+)/.exec(raw)?.[1] ?? null;
+}
+
+/**
+ * DERIVE tier 3 (`see-also`) from the registry instead of declaring it by hand.
+ *
+ * WHY DERIVED AND NOT DECLARED — this is the design point, not an optimisation.
+ * "see-also" MEANS "some tool's result surfaces this verb at result time". That
+ * is a fact about the registry, so a scan can read it directly, and a derived
+ * tier CANNOT rot: delete the pointer and the tier disappears on the next pass.
+ * Sixteen hand-written declarations would have needed sixteen `evidence` strings
+ * that nothing checks, each of which keeps asserting enforcement after the
+ * pointer it describes is deleted — the exact failure {@link findStaleDeclarations}
+ * exists to catch for the tiers that genuinely cannot be derived.
+ *
+ * Tiers 1–2 stay DECLARED because no scan can detect them: "the agent never has to
+ * remember" and "the old shape is refused at the boundary" are properties of a
+ * chokepoint's behaviour, not of a field on the tool.
+ *
+ * ⚠ KNOWN, BOUNDED UNDERCOUNT — and it fails in the SAFE direction. `seeAlso` may
+ * be a FUNCTION computed from the actual tool result, whose targets are not
+ * knowable without invoking it; only the array form is statically readable.
+ * Measured 2026-08-03: 16 of the 18 surfaced coord verbs are array-form, and
+ * exactly two — `coord:dispatch` and `coord:glance` — are reachable only through a
+ * function-form `seeAlso` (both in coordination/tools/presence.ts). So this
+ * derivation reports those two as debt they do not owe. That is the direction to
+ * be wrong in: the census may nag about something already enforced, but it can
+ * never hide debt behind a tier nothing backs.
+ */
+export function deriveSeeAlsoTiers(
+  registry: Iterable<RegistryBehaviour>,
+): Map<string, TierDeclaration> {
+  const pointedAtBy = new Map<string, Set<string>>();
+  for (const tool of registry) {
+    if (!Array.isArray(tool.seeAlso)) continue; // function-form: not statically readable (see above)
+    for (const entry of tool.seeAlso) {
+      const target = pointerTarget(entry);
+      if (!target) continue;
+      let srcs = pointedAtBy.get(target);
+      if (!srcs) pointedAtBy.set(target, (srcs = new Set()));
+      srcs.add(tool.name);
+    }
+  }
+
+  const out = new Map<string, TierDeclaration>();
+  for (const [target, srcs] of pointedAtBy) {
+    const names = [...srcs].sort();
+    out.set(target, {
+      tier: 'see-also',
+      evidence:
+        `Surfaced at result time by ${names.length} tool(s): ${names.slice(0, 5).join(', ')}` +
+        `${names.length > 5 ? `, +${names.length - 5} more` : ''}. ` +
+        `DERIVED from the live registry, not asserted — delete the pointer and this tier disappears on the next pass.`,
+    });
+  }
+  return out;
+}
+
+/**
+ * Merge derived tiers under the explicit ones. EXPLICIT WINS, always: a verb that
+ * is both auto-stamped and cross-linked is auto-stamped (D-001 ranks 1 above 3),
+ * and a verb someone deliberately declared `prompt-only` must not be silently
+ * upgraded by a stray pointer — that downgrade IS the finding.
+ */
+export function resolveTierDeclarations(
+  derived: ReadonlyMap<string, TierDeclaration>,
+  explicit: ReadonlyMap<string, TierDeclaration> = DECLARED_COORD_TIERS,
+): Map<string, TierDeclaration> {
+  const out = new Map(derived);
+  for (const [id, d] of explicit) out.set(id, d);
+  return out;
+}
 
 /** One behaviour's measured adoption over the census window. Denominators are the caller's to supply. */
 export interface BehaviourAdoption {
@@ -338,16 +465,25 @@ export const MIN_PLAUSIBLE_COORD_BEHAVIOURS = 20;
  * Imported dynamically to keep this module's pure builder free of the agent-mcp
  * module graph, matching coord-health-lane.ts's own convention for its stores.
  */
-export async function loadCoordBehaviourIds(): Promise<string[] | undefined> {
+export async function loadCoordRegistrySnapshot(): Promise<
+  { behaviourIds: string[]; derivedTiers: Map<string, TierDeclaration> } | undefined
+> {
   try {
     const { listAllProjectedTools } = await import('@papercusp/agent-mcp');
-    const names: string[] = [];
+    const registry: RegistryBehaviour[] = [];
     for (const t of listAllProjectedTools()) {
       const name = t.expose?.mcp?.name;
-      if (name) names.push(name);
+      if (name) registry.push({ name, seeAlso: (t as { seeAlso?: unknown }).seeAlso });
     }
-    const coord = selectCoordBehaviours(names);
-    return coord.length >= MIN_PLAUSIBLE_COORD_BEHAVIOURS ? coord : undefined;
+
+    const behaviourIds = selectCoordBehaviours(registry.map((r) => r.name));
+    if (behaviourIds.length < MIN_PLAUSIBLE_COORD_BEHAVIOURS) return undefined;
+
+    // Derive over the WHOLE registry, not just the coord slice: a coord verb is
+    // most often surfaced by a tool in a different group (memory:remember points
+    // at coord:declare-intent, autonomy:decide at coord:escalate). Narrowing the
+    // sources first would drop exactly those cross-group pointers.
+    return { behaviourIds, derivedTiers: deriveSeeAlsoTiers(registry) };
   } catch {
     return undefined;
   }

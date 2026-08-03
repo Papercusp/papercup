@@ -7,13 +7,15 @@
  *   - a declaration for a RENAMED/DELETED verb must be caught, because it keeps
  *     asserting enforcement that no longer exists and nothing else would notice.
  */
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   buildEnforcementTierCensus,
   selectCoordBehaviours,
   findStaleDeclarations,
+  deriveSeeAlsoTiers,
+  resolveTierDeclarations,
   loadCoordBehaviourAdoption,
   DECLARED_COORD_TIERS,
   ENFORCEMENT_TIER_RANK,
@@ -208,6 +210,134 @@ describe('findStaleDeclarations', () => {
       getSql: () => (async () => []) as never,
     });
     expect(adoptionMap.size).toBe(0);
+  });
+
+  /**
+   * The RUNTIME behaviour-list seam. Its failure mode is not an exception — it is
+   * a PARTIAL registry answering plausibly, which would silently shrink the
+   * census denominator and report less debt than exists. That reads as progress.
+   */
+  describe('loadCoordRegistrySnapshot — the runtime seam', () => {
+    const withRegistry = async (tools: Array<{ name: string; seeAlso?: unknown }>) => {
+      vi.resetModules();
+      vi.doMock('@papercusp/agent-mcp', () => ({
+        listAllProjectedTools: () =>
+          tools.map((t) => ({ expose: { mcp: { name: t.name } }, seeAlso: t.seeAlso })),
+      }));
+      const mod = await import('./enforcement-tier-census');
+      return mod.loadCoordRegistrySnapshot();
+    };
+    const filler = (n: number) => Array.from({ length: n }, (_, i) => ({ name: `coord:verb-${i}` }));
+
+    afterEach(() => {
+      vi.doUnmock('@papercusp/agent-mcp');
+      vi.resetModules();
+    });
+
+    it('returns the coord verbs from the live registry, ignoring other groups', async () => {
+      const snap = await withRegistry([
+        ...filler(25),
+        { name: 'work_items:claim' },
+        { name: 'plans:get' },
+      ]);
+      expect(snap?.behaviourIds).toHaveLength(25);
+      expect(snap?.behaviourIds.every((i) => i.startsWith('coord:'))).toBe(true);
+    });
+
+    it('REMOVES the signal when the registry looks partial, rather than shrinking the denominator', async () => {
+      // The load-bearing case. A half-initialised registry returning 3 verbs would
+      // otherwise publish "3 behaviours, 1 undeclared" — a well-formed, plausible,
+      // wrong reading that looks like the debt shrank. Undefined removes the
+      // signal instead; a census that counts zeros must never guess its total.
+      expect(await withRegistry([{ name: 'coord:send' }, { name: 'coord:orient' }])).toBeUndefined();
+      expect(await withRegistry([])).toBeUndefined();
+    });
+
+    it('derives see-also tiers from CROSS-GROUP pointers, not just coord tools', async () => {
+      // The pointer that tiers coord:declare-intent lives on memory:remember.
+      // Narrowing the sources to the coord slice first would drop exactly these.
+      const snap = await withRegistry([
+        ...filler(25),
+        { name: 'memory:remember', seeAlso: ['coord:declare-intent (announce the lane)'] },
+      ]);
+      expect(snap?.derivedTiers.get('coord:declare-intent')?.tier).toBe('see-also');
+    });
+  });
+
+  describe('deriveSeeAlsoTiers — tier 3 read off the registry instead of asserted', () => {
+    it('accepts both entry shapes: a bare string and a structured pointer', () => {
+      const d = deriveSeeAlsoTiers([
+        { name: 'coord:presence', seeAlso: ['coord:roster { view:"live" } (the door)'] },
+        { name: 'coord:glance', seeAlso: [{ tool: 'coord:catch-up', selector: '{ audience }' }] },
+      ]);
+      expect(d.get('coord:roster')?.tier).toBe('see-also');
+      expect(d.get('coord:catch-up')?.tier).toBe('see-also');
+    });
+
+    it('credits the LEADING pointer only, never a verb named incidentally in its prose', () => {
+      // An entry's prose routinely names other verbs; crediting those would invent
+      // enforcement for a verb nothing actually points at.
+      const d = deriveSeeAlsoTiers([
+        { name: 'coord:send', seeAlso: ['coord:read (call coord:inbox first for the summary)'] },
+      ]);
+      expect(d.has('coord:read')).toBe(true);
+      expect(d.has('coord:inbox')).toBe(false);
+    });
+
+    it('names the pointing tools as evidence, so the claim is falsifiable', () => {
+      const d = deriveSeeAlsoTiers([
+        { name: 'activity:recent', seeAlso: ['coord:inbox (your directed mail)'] },
+        { name: 'coord:send', seeAlso: ['coord:inbox (your directed mail)'] },
+      ]);
+      const ev = d.get('coord:inbox')!.evidence;
+      expect(ev).toContain('activity:recent');
+      expect(ev).toContain('coord:send');
+      expect(ev).toMatch(/DERIVED/);
+    });
+
+    it('IGNORES a function-form seeAlso rather than guessing its targets', () => {
+      // Its targets depend on the actual tool result, so they are not knowable
+      // without invoking it. Measured 2026-08-03: exactly two verbs
+      // (coord:dispatch, coord:glance) are reachable ONLY this way, so they read
+      // as debt they do not owe — the SAFE direction. Over-reporting debt is
+      // recoverable; a tier nothing backs hides it.
+      const d = deriveSeeAlsoTiers([
+        { name: 'coord:presence', seeAlso: () => ['coord:glance (headline)'] },
+      ]);
+      expect(d.size).toBe(0);
+    });
+  });
+
+  describe('resolveTierDeclarations — explicit beats derived', () => {
+    it('keeps the STRONGER explicit tier when a verb is also cross-linked', () => {
+      // coord:send is schema-refusal (tier 2) AND pointed at by seven tools. D-001
+      // ranks 2 above 3, so a stray pointer must not downgrade it.
+      const merged = resolveTierDeclarations(
+        deriveSeeAlsoTiers([{ name: 'activity:report', seeAlso: ['coord:send (tell a peer)'] }]),
+        declared({
+          'coord:send': { tier: 'schema-refusal', evidence: 'envelope validated at the boundary' },
+        }),
+      );
+      expect(merged.get('coord:send')?.tier).toBe('schema-refusal');
+    });
+
+    it('does not let a stray pointer silently upgrade a deliberate prompt-only verdict', () => {
+      // "its only enforcement is prose" IS the finding (D-016). A pointer
+      // appearing elsewhere must not erase it.
+      const merged = resolveTierDeclarations(
+        deriveSeeAlsoTiers([{ name: 'x:y', seeAlso: ['coord:vote (weigh in)'] }]),
+        declared({ 'coord:vote': { tier: 'prompt-only', evidence: 'only the playbook asks for it' } }),
+      );
+      expect(merged.get('coord:vote')?.tier).toBe('prompt-only');
+    });
+
+    it('passes derived tiers through untouched when nothing explicit overlaps', () => {
+      const merged = resolveTierDeclarations(
+        deriveSeeAlsoTiers([{ name: 'x:y', seeAlso: ['coord:roster (who is around)'] }]),
+        declared({}),
+      );
+      expect(merged.get('coord:roster')?.tier).toBe('see-also');
+    });
   });
 
   it('every declaration carries concrete non-empty evidence', () => {

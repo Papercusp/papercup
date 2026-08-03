@@ -5,6 +5,7 @@ import {
   type CoordHealthInput,
   type CoordAuthoredAdoption,
 } from './coord-health-lane';
+import { buildEnforcementTierCensus } from './enforcement-tier-census';
 import type { PremiseRefKind } from '../agent-tools/coordination/message-fields';
 import type { PremiseStatus } from '../agent-tools/coordination/premise-resolve';
 
@@ -538,6 +539,102 @@ describe('premise-resolve-rate — the P-011 measurement (D-091)', () => {
     // couldNotDetermine AND youMayNotKnow — both ask the reader to do something.
     expect(p.summary).toContain('no actionable messages');
     expect(p.summary).not.toMatch(/NaN|Infinity/);
+  });
+
+  // ── enforcement-tier census (coordination-spec-adoption P-002 / D-016+D-047) ──
+  //
+  // The sibling of the block above and its structural counterpart: that one
+  // measures whether a shipped behaviour is USED, this one whether it is ENFORCED
+  // at all. Each test guards a way the reading could become quietly untrue rather
+  // than restating the builder.
+
+  const census = (over: { declared?: string[]; called?: Record<string, number> } = {}) =>
+    buildEnforcementTierCensus({
+      behaviourIds: ['coord:send', 'coord:orient', 'coord:vote', 'coord:walls'],
+      adoption: new Map(
+        Object.entries(over.called ?? { 'coord:send': 1645, 'coord:orient': 1581 }).map(
+          ([k, calls]) => [k, { calls, callers: 10 }],
+        ),
+      ),
+      windowDays: 7,
+      declared: new Map(
+        (over.declared ?? ['coord:send']).map((id) => [
+          id,
+          { tier: 'schema-refusal' as const, evidence: 'envelope validated at the tool boundary' },
+        ]),
+      ),
+    });
+
+  it('reports tier DEBT and adoption as separate counts, each with its denominator inline', () => {
+    const p = buildCoordHealthPatterns(base({ enforcementCensus: census() })).find(
+      (x) => x.ref === 'coord:enforcement-tier-census',
+    );
+    expect(p).toBeDefined();
+    // Three DIFFERENT questions, never blended into one "enforcement %": how many
+    // carry no tier, how many carry a real one, how many took no calls.
+    expect(p!.summary).toContain('3/4 coordination verbs carry NO declared tier');
+    expect(p!.summary).toContain('1/4 carry a real one');
+    expect(p!.summary).toContain('2/4 took zero calls');
+    expect(p!.summary).not.toMatch(/NaN|Infinity/);
+  });
+
+  it('flags a zero-call UNENFORCED verb as a retirement candidate — and names it', () => {
+    const p = buildCoordHealthPatterns(base({ enforcementCensus: census() })).find(
+      (x) => x.ref === 'coord:enforcement-tier-census',
+    )!;
+    // Naming them is the point: "2 candidates" is not actionable, the ids are.
+    expect(p.detail).toContain('coord:vote');
+    expect(p.detail).toContain('coord:walls');
+  });
+
+  it('does NOT propose retiring a zero-call verb that carries a real tier', () => {
+    // The conflation this guards against would propose retiring working
+    // machinery: unused-and-unenforced is a retirement candidate, but
+    // unused-yet-enforced is a different finding (built but unreached).
+    const p = buildCoordHealthPatterns(
+      base({ enforcementCensus: census({ declared: ['coord:send', 'coord:vote'], called: {} }) }),
+    ).find((x) => x.ref === 'coord:enforcement-tier-census')!;
+    expect(p.summary).toContain('4/4 took zero calls');
+    expect(p.summary).toContain('of which 2 are both unused AND unenforced');
+    expect(p.detail).not.toContain('coord:vote');
+  });
+
+  it('carries D-092 forward as a CANDIDATE, never a retirement verdict', () => {
+    // The census must not read as authorisation to delete: D-092 ruled the
+    // zero-call verbs are made discoverable and re-measured at +7d first.
+    const p = buildCoordHealthPatterns(base({ enforcementCensus: census() })).find(
+      (x) => x.ref === 'coord:enforcement-tier-census',
+    )!;
+    expect(p.detail).toMatch(/CANDIDATE, never a verdict/);
+    expect(p.detail).toMatch(/D-092/);
+  });
+
+  it('stays SILENT once the tier debt is closed — a solved problem is not a finding', () => {
+    expect(
+      buildCoordHealthPatterns(
+        base({
+          enforcementCensus: census({
+            declared: ['coord:send', 'coord:orient', 'coord:vote', 'coord:walls'],
+          }),
+        }),
+      ).find((x) => x.ref === 'coord:enforcement-tier-census'),
+    ).toBeUndefined();
+  });
+
+  it('ranks tier debt BELOW live coordination breakdowns — it is structural, not acute', () => {
+    // A slow-moving structural reading must never crowd an escalation storm or an
+    // unanswered backlog out of a capped digest.
+    const out = buildCoordHealthPatterns(
+      base({
+        enforcementCensus: census(),
+        escalationStorms: [
+          { signature: 'sig', count: 9, severity: 'blocker', sample: 's' },
+        ],
+      }),
+    );
+    const cen = out.find((x) => x.ref === 'coord:enforcement-tier-census')!;
+    const storm = out.find((x) => x.ref.startsWith('coord:escalation-storm'))!;
+    expect(cen.weight!).toBeLessThan(storm.weight!);
   });
 
   it('stays SILENT below the ask floor — the field ships with zero traffic by construction', () => {

@@ -1945,12 +1945,9 @@ describe('shell-write guard: `#` comments are not shell syntax (EI-1938544851643
    * positives on ordinary commands, and why a reconstructed repro never
    * reproduces — the comment is the part people drop when writing the ticket.
    *
-   * NOTE the sibling FALSE NEGATIVE this does NOT cover (EI-19420133701663526):
-   * the same parity break can HIDE a real redirect — `# note "` followed by
-   * `cat foo > <tree path> && echo "x"` is allowed, because the stray quote
-   * pairs with the one before `x` and the deleted span swallows the redirect.
-   * The ORDER guard above does not catch it: that guard is about REVERSING the
-   * two passes, whereas this hole is present in the correct order.
+   * The sibling FALSE NEGATIVE of the same parity break is EI-19420133701663526,
+   * fixed by collapsing the two passes into one quote-aware scanner and covered
+   * by the two tests below.
    */
   it('allows a quoted `>` when a `#` comment contains an odd quote (the filed repro)', () => {
     expectAllow(
@@ -1963,6 +1960,47 @@ describe('shell-write guard: `#` comments are not shell syntax (EI-1938544851643
         CANON_ENV,
       ),
     );
+  });
+
+  /**
+   * THE FALSE NEGATIVE — EI-19420133701663526, the expensive twin of the false
+   * positive above. Same root cause (quote parity broken by a stray quote in a
+   * `#` comment), opposite and far worse consequence: a REAL tree write is
+   * ALLOWED.
+   *
+   * Mechanism, for `# note "` + newline + `cat foo > <tree path> && echo "x"`:
+   * quote-stripping ran FIRST, so it read the comment's stray `"` as an opening
+   * quote and paired it with the `"` before `x` — deleting everything between
+   * them. That span contains the newline AND the entire redirect, so what
+   * reached the redirect scanner was a single comment line, which
+   * comment-stripping then removed outright. Nothing was left to match, so the
+   * guard allowed a raw shell write into the shared tree.
+   *
+   * Reproduced against the INSTALLED hook before the fix: ALLOW here, DENY for
+   * the identical command with the comment removed.
+   *
+   * Both quote characters are tested. The filed report named only `"`; driving
+   * the real hook showed `'` breaks parity identically, so a fix verified on
+   * `"` alone would have left half the hole open.
+   */
+  it('still denies a real tree redirect when a `#` comment contains an odd double quote', () => {
+    const reason = denyReason(
+      runGate(
+        bashCmd('# note "\ncat foo > apps/operator/generated.ts && echo "x"', { cwd: CANON }),
+        CANON_ENV,
+      ),
+    );
+    expect(reason).toContain('apps/operator/generated.ts');
+  });
+
+  it('still denies a real tree redirect when a `#` comment contains an odd single quote', () => {
+    const reason = denyReason(
+      runGate(
+        bashCmd("# don't\ncat foo > apps/operator/generated.ts && echo 'x'", { cwd: CANON }),
+        CANON_ENV,
+      ),
+    );
+    expect(reason).toContain('apps/operator/generated.ts');
   });
 
   it('does not treat `$#` or an infix `a#b` as a comment introducer', () => {

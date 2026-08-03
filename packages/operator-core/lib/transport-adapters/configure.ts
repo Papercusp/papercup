@@ -3,25 +3,72 @@
  *
  * @papercusp/desktop-ipc is project-agnostic: it doesn't know the
  * operator's env-var names. Map our branded rollback flag
- * (`NEXT_PUBLIC_PAPERCUSP_FORCE_HTTP_TRANSPORT=1`) onto the generic
- * `forceHttp` seam here. NOTE: the operator-vite SPA bundles under Vite, which
- * (unlike Next's webpack) neither inlines `NEXT_PUBLIC_*` nor defines `process`
- * in the browser. `apps/operator-vite/src/process-polyfill.ts` installs a
- * minimal `process.env`, so this read resolves to `undefined` (hatch off) at
- * runtime instead of throwing `ReferenceError: process is not defined`. To flip
- * the hatch on in the Vite app, set the key on that shim or read
- * `import.meta.env` instead.
+ * (`PAPERCUSP_FORCE_HTTP_TRANSPORT=1`) onto the generic `forceHttp` seam here.
+ *
+ * ⚠ THIS RESOLVER MUST NOT READ `process.env` ALONE. Configuring the seam at
+ * all makes `cfg.forceHttp` defined, which means the generic lib's own fallback
+ * is never consulted — so if this resolver cannot see a value, the rollback
+ * lever is dead app-wide no matter what the lib does. It read only
+ * `process.env.NEXT_PUBLIC_*`, and the operator-vite SPA bundles under Vite,
+ * which substitutes the text `process.env` with the literal `{}` at build time.
+ * Measured in the shipped bundle 2026-08-03 (EI-19420043903144442):
+ *
+ *   if(typeof process<"u"){const t={}.NEXT_PUBLIC_PAPERCUSP_FORCE_HTTP_TRANSPORT;…}
+ *
+ * The `typeof process` guard passes, the read yields `undefined`, and the hatch
+ * silently reports "off" — so the instruction our own error text gives users
+ * ("set DESKTOP_IPC_FORCE_HTTP=1 to roll back") had no effect inside the app.
+ *
+ * Sources below are ordered by who can actually reach them:
+ *   1. `localStorage` — the ONLY one an operator can set on an ALREADY-SHIPPED
+ *      desktop build (devtools, no rebuild, survives reload). The real lever.
+ *   2. `globalThis.__DESKTOP_IPC_ENV__` — the generic runtime bag; also what a
+ *      host bootstrap seeds from build-time config.
+ *   3. `process.env` — Node-side consumers; this module graph runs server-side
+ *      too, where `process.env` is real rather than a build-time literal.
  *
  * Imported for side effect at the top of both transport-adapter barrels
  * (`index.ts` and `desktop-bootstrap.ts`) so the configure call runs
  * before the transport picker or the polyfill installer is first used.
  */
-import { configureDesktopIpc } from '@papercusp/desktop-ipc';
+import { configureDesktopIpc, type DesktopIpcEnvOverrides } from '@papercusp/desktop-ipc';
+
+/** localStorage key for the rollback lever — matches the app's `papercusp:*` convention. */
+export const FORCE_HTTP_STORAGE_KEY = 'papercusp:forceHttpTransport';
+
+/** Env name for the rollback lever, accepted bare and `NEXT_PUBLIC_`-prefixed. */
+export const FORCE_HTTP_ENV_NAME = 'PAPERCUSP_FORCE_HTTP_TRANSPORT';
+
+/**
+ * Read the branded rollback lever from every source that can actually carry a
+ * value in the surface doing the reading. Never throws: a lever whose own read
+ * can break boot is worse than no lever, and this runs at module-eval time.
+ */
+export function readForceHttpLever(): string | undefined {
+  try {
+    if (typeof localStorage !== 'undefined') {
+      const v = localStorage.getItem(FORCE_HTTP_STORAGE_KEY);
+      if (v !== null) return v;
+    }
+  } catch {
+    // A partitioned/sandboxed webview can throw on storage access.
+  }
+  const bag = (globalThis as { __DESKTOP_IPC_ENV__?: DesktopIpcEnvOverrides }).__DESKTOP_IPC_ENV__;
+  const fromBag = bag?.[FORCE_HTTP_ENV_NAME] ?? bag?.[`NEXT_PUBLIC_${FORCE_HTTP_ENV_NAME}`];
+  if (fromBag !== undefined) return fromBag;
+  if (typeof process !== 'undefined') {
+    const env = process.env as Record<string, string | undefined> | undefined;
+    const fromEnv = env?.[FORCE_HTTP_ENV_NAME] ?? env?.[`NEXT_PUBLIC_${FORCE_HTTP_ENV_NAME}`];
+    if (fromEnv !== undefined) return fromEnv;
+  }
+  return undefined;
+}
 
 configureDesktopIpc({
-  forceHttp: () =>
-    process.env.NEXT_PUBLIC_PAPERCUSP_FORCE_HTTP_TRANSPORT === '1' ||
-    process.env.NEXT_PUBLIC_PAPERCUSP_FORCE_HTTP_TRANSPORT === 'true',
+  forceHttp: () => {
+    const v = readForceHttpLever();
+    return v === '1' || v === 'true';
+  },
 
   /**
    * D-008 (`no-http-anywhere-2026-07-28`): ask the shell whether the IPC bridge's

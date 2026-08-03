@@ -2102,7 +2102,37 @@ export function parseFailingFilesByWorkspace(fullOutput: string): FailingFile[] 
   // `>>> <ws> :: npm run <script>` — the affected runner's per-workspace section header.
   // Local by design: this shape belongs to scripts/affected-tests.mjs's own sectioning,
   // not to vitest's output, so it is not part of the shared vitest seam.
-  const HEADER = /^\s*>>>\s+(\S+)\s+::\s+npm run\b/;
+  // WI-7501: TWO section-header shapes, not one. The absorption re-run announces its own
+  // section as `>>> <ws> FAILED — fresh-process re-run of N failed file(s): …` — NO
+  // ` :: npm run` — so recognising only the first shape left `currentWs` pinned to whatever
+  // workspace happened to run LAST, and every bare `FAIL` row the absorption emits (they all
+  // come after every normal section) was attributed to that unrelated workspace.
+  //
+  // Measured 2026-08-03 on cand a94547c8: the last real header is `@papercusp/eval-battery`
+  // (line 11328) and the absorption's `FAIL lib/agent-tools/loop/arm.test.ts` rows land at
+  // 12200+, so two operator-core files were returned as `@papercusp/eval-battery` files.
+  //
+  // That is not a cosmetic mislabel — the pair is the cwd for the re-run, so it poisons
+  // BOTH consumers: isolation re-runs the file in a workspace that does not contain it
+  // (`npm run test --workspace @papercusp/eval-battery -- lib/agent-tools/loop/arm.test.ts`
+  // matches zero files and exits 1 — verified by hand), and `runTestsAtRef` groups by this
+  // same field, so the tip rescue re-runs it there too, gets `pass:false`, and classifies
+  // `real-red` ⇒ `autoRefire:false`. A file misattributed this way can NEVER pass at tip,
+  // so its red is structurally unrescuable no matter how thoroughly the tree is fixed.
+  //
+  // WHY THE EXISTING DISPLACEMENT GUARD DIDN'T CATCH IT (it was built for exactly this
+  // hazard — see the rollup pre-scan below): the guard only suppresses a displaced bare
+  // `FAIL` row for a file some ROLLUP already named, and `vitestSummaryFailRow` requires
+  // the literal word `failed` inside the parens. These files reported `❯ …arm.test.ts
+  // (0 test)` — a COLLECTION error, zero tests collected, no `failed` token — so no rollup
+  // ever named them and the guard could not arm. The bug therefore fires precisely on
+  // import/transform breaks, which is the failure class a peer's in-flight commit produces
+  // and thus the class MOST likely to be already fixed at tip. The reds the rescue most
+  // needs to void are exactly the ones it was structurally unable to void.
+  //
+  // Anchored on an `@`-prefixed package name so the runner's other `>>>` chatter (e.g.
+  // `>>> Running cargo tests (P-009: …)`) still cannot be mistaken for a section header.
+  const HEADER = /^\s*>>>\s+(@\S+)\s+(?:::\s+npm run\b|FAILED\b)/;
   // Unflagged: both are applied per-line with `.exec` below, so no `lastIndex` state.
   const SUMMARY_FAIL = vitestSummaryFailRow();
   const SUITE_FAIL = vitestSuiteFailRow();
@@ -2123,17 +2153,45 @@ export function parseFailingFilesByWorkspace(fullOutput: string): FailingFile[] 
   // entry, redding an all-failures-quarantined run. A FAIL row may therefore only
   // INTRODUCE a file the rollups never named (transform/setup errors emit no rollup),
   // never re-attribute a rollup-named file to whatever section its epilogue landed in.
-  const rollupFiles = new Set<string>();
+  //
+  // WI-7501: the pre-scan now records the WORKSPACE, not just the file, and also trusts the
+  // absorption re-run's explicitly-marked section (`>>> <ws> FAILED — …`, matched by HEADER
+  // above). Recording only the file was not enough: the skip rule below can suppress a
+  // displaced bare row ONLY for a file some rollup already named, and a file that fails at
+  // COLLECTION (`❯ …arm.test.ts (0 test)`) emits no rollup at all — `vitestSummaryFailRow`
+  // requires the literal `failed` token inside the parens. Such a file has nothing but bare
+  // `FAIL` rows, so it was attributed to whatever section its displaced epilogue landed in,
+  // with no guard able to fire.
+  //
+  // Both authoritative sources agree by construction (a rollup is printed inside its own
+  // child's section; an absorption marker names its workspace explicitly and then lists that
+  // workspace's files), so this is one precedence rule, not two competing ones: an
+  // authoritatively-attributed file is ALWAYS emitted under that workspace, and a bare row
+  // for it elsewhere is dropped as displacement rather than emitted as a second, phantom
+  // pair. Files with no authoritative source keep the previous positional behaviour.
+  const authoritativeWs = new Map<string, string>();
   {
     let ws: string | null = null;
+    let inAbsorptionSection = false;
     for (const line of lines) {
       const h = HEADER.exec(line);
       if (h) {
         ws = h[1];
+        // The absorption marker is the FAILED-shaped header; its following bare FAIL rows
+        // are as trustworthy as a rollup because the marker states whose files they are.
+        inAbsorptionSection = !/::\s+npm run\b/.test(line);
         continue;
       }
-      const m = SUMMARY_FAIL.exec(line);
-      if (m && ws) rollupFiles.add(m[1]);
+      if (!ws) continue;
+      const summary = SUMMARY_FAIL.exec(line);
+      if (summary) {
+        authoritativeWs.set(summary[1], ws);
+        continue;
+      }
+      if (inAbsorptionSection) {
+        const suite = SUITE_FAIL.exec(line);
+        if (suite && !authoritativeWs.has(suite[1])) authoritativeWs.set(suite[1], ws);
+      }
     }
   }
 
@@ -2150,10 +2208,20 @@ export function parseFailingFilesByWorkspace(fullOutput: string): FailingFile[] 
     const m = summary ?? SUITE_FAIL.exec(line);
     if (m) {
       const file = m[1];
-      // A FAIL row naming a rollup-attributed file is either a dup of its rollup pair
-      // or a displaced epilogue row under a foreign header — the rollup wins; keeping
-      // this pair would manufacture a workspace that never ran the file.
-      if (!summary && rollupFiles.has(file)) continue;
+      // A row naming an authoritatively-attributed file is either a dup of that pair or a
+      // displaced epilogue row under a foreign header — the authoritative section wins;
+      // keeping this pair would manufacture a workspace that never ran the file. The pair
+      // itself is still emitted, by this same loop, when it reaches the authoritative
+      // section (where `currentWs` equals it); `seen` collapses the duplicate.
+      //
+      // WI-7501 widened this from the old file-only rollup check. Keying on the FILE could
+      // suppress a displaced row but had nothing to say when a file's ONLY rows were bare
+      // ones — which is exactly the COLLECTION-error case (`❯ …arm.test.ts (0 test)` emits
+      // no rollup, because `vitestSummaryFailRow` requires the literal `failed` token), so
+      // those files were attributed purely positionally and silently landed in whichever
+      // workspace ran last. Comparing against the recorded workspace catches both.
+      const authoritative = authoritativeWs.get(file);
+      if (authoritative && authoritative !== currentWs) continue;
       // A file before any `>>>` header (or a non-affected-runner invocation) has no
       // known workspace; skip it — we can't run `vitest run <file>` without a cwd.
       if (!currentWs) continue;

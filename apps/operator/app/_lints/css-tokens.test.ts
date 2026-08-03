@@ -159,6 +159,138 @@ function walk(dir: string, out: string[]): void {
   }
 }
 
+/**
+ * Blank out COMMENT spans so a comment that merely *mentions* a token is not
+ * counted as a usage — or as a component-local definition — of it.
+ * EI-19420634904212731.
+ *
+ * Before this, the lint regexed the file's raw text, so the natural response to
+ * a token bug ("fix the code line, then leave a comment quoting the broken form
+ * so the next agent doesn't repeat it") RE-TRIGGERED the exact failure it was
+ * documenting — and presented as "my fix didn't land", because the reported
+ * token was nowhere in the executable source.
+ *
+ * Comment characters are replaced with spaces rather than deleted, so the
+ * output is byte-length-identical and newline positions are preserved (asserted
+ * below). That is what makes this safe: we can only ever BLANK a span, never
+ * shift or drop source, so a `var(--X)` outside a comment cannot move or vanish.
+ *
+ * The failure mode to avoid is the opposite of the bug: a naive strip turns a
+ * loud, correct lint into a SILENTLY PERMISSIVE one. So the scanner tracks
+ * string, template-literal and regex-literal state before honouring a `/`:
+ *   - `'https://x'` — the `//` sits inside a string, so it opens no comment
+ *     (a naive line-strip would eat the rest of the line, hiding real usages);
+ *   - `/['"]/` — a regex literal containing a quote must not open a string
+ *     state and swallow the code that follows it.
+ * `.css` has no `//` line-comment form at all (there, `//` appears in
+ * `url(https://…)`), so `lineComments` is false for CSS and only `/* *\/`
+ * spans are blanked.
+ */
+export function stripCommentsForTokenScan(
+  src: string,
+  { lineComments }: { lineComments: boolean },
+): string {
+  const out = src.split('');
+  const n = src.length;
+  // A `/` opens a REGEX literal only where an expression cannot already have
+  // ended; after a value-ish token it is division. Keyed on the last
+  // significant character, which is enough for the shapes that appear here.
+  const REGEX_OK_AFTER = new Set([
+    '',  '(', ',', '=', ':', '[', '!', '&', '|',
+    '?', '{', '}', ';', '+', '-', '*', '%', '~', '^', '<', '>',
+  ]);
+  const blankRange = (from: number, to: number): void => {
+    for (let k = from; k < to && k < n; k++) {
+      if (out[k] !== '\n') out[k] = ' ';
+    }
+  };
+  let i = 0;
+  let prevSig = '';
+  while (i < n) {
+    const c = src[i];
+    const c2 = src[i + 1];
+    if (c === '/' && c2 === '*') {
+      const end = src.indexOf('*/', i + 2);
+      const stop = end === -1 ? n : end + 2;
+      blankRange(i, stop);
+      i = stop;
+      continue;
+    }
+    if (lineComments && c === '/' && c2 === '/') {
+      let end = src.indexOf('\n', i);
+      if (end === -1) end = n;
+      blankRange(i, end);
+      i = end;
+      continue;
+    }
+    if (c === "'" || c === '"') {
+      i++;
+      while (i < n) {
+        if (src[i] === '\\') {
+          i += 2;
+          continue;
+        }
+        if (src[i] === c) {
+          i++;
+          break;
+        }
+        // An unterminated quote must not swallow the rest of the file: a plain
+        // string cannot span a newline, so bail and resume normal scanning.
+        if (src[i] === '\n') break;
+        i++;
+      }
+      prevSig = c;
+      continue;
+    }
+    if (c === '`') {
+      i++;
+      while (i < n) {
+        if (src[i] === '\\') {
+          i += 2;
+          continue;
+        }
+        if (src[i] === '`') {
+          i++;
+          break;
+        }
+        i++;
+      }
+      prevSig = '`';
+      continue;
+    }
+    if (lineComments && c === '/' && REGEX_OK_AFTER.has(prevSig)) {
+      let j = i + 1;
+      let inClass = false;
+      let closed = false;
+      while (j < n) {
+        const d = src[j];
+        if (d === '\\') {
+          j += 2;
+          continue;
+        }
+        if (d === '\n') break; // a regex literal cannot span lines — not a regex
+        if (d === '[') inClass = true;
+        else if (d === ']') inClass = false;
+        else if (d === '/' && !inClass) {
+          closed = true;
+          j++;
+          break;
+        }
+        j++;
+      }
+      if (closed) {
+        i = j;
+        prevSig = '/';
+        continue;
+      }
+      // Not a regex after all — fall through and treat `/` as an ordinary char.
+    }
+    if (!/\s/.test(c)) prevSig = c;
+    i++;
+  }
+  return out.join('');
+}
+
 function collectUsedTokens(): Map<string, string[]> {
   const used = new Map<string, string[]>();
   const files: string[] = [];
@@ -176,21 +308,28 @@ function collectUsedTokens(): Map<string, string[]> {
     // component. The global CSS-source scan can't see definitions that live in a
     // a global source, so collect this file's own definitions and treat self-references as
     // defined.
+    // EI-19420634904212731: scan with comments BLANKED. Applied to the local
+    // definitions too, not just the usages — a `--name:` sitting in a comment
+    // must not register as a component-local definition, or it would SUPPRESS a
+    // genuine undefined-token failure (the silently-permissive direction).
+    const scan = stripCommentsForTokenScan(content, {
+      lineComments: !file.endsWith('.css'),
+    });
     const localDefs = new Set<string>();
     const defRe = /(?:^|\n|[;{])\s*(--[a-z0-9_-]+)\s*:/gim;
     let dm: RegExpExecArray | null;
-    while ((dm = defRe.exec(content)) !== null) {
+    while ((dm = defRe.exec(scan)) !== null) {
       localDefs.add(dm[1].toLowerCase());
     }
     const reactDefRe = /['"`](--[a-z0-9_-]+)['"`]\s*(?:as\s+string)?\s*[:\]]/gi;
-    while ((dm = reactDefRe.exec(content)) !== null) {
+    while ((dm = reactDefRe.exec(scan)) !== null) {
       localDefs.add(dm[1].toLowerCase());
     }
     // Match var(--name) or var(--name, fallback).
     // We deliberately stop the name capture at the comma or close-paren.
     const re = /var\(\s*(--[a-z0-9_-]+)\s*[,)]/gi;
     let m: RegExpExecArray | null;
-    while ((m = re.exec(content)) !== null) {
+    while ((m = re.exec(scan)) !== null) {
       const name = m[1].toLowerCase();
       if (localDefs.has(name)) continue; // defined in this same component
       const arr = used.get(name) ?? [];
@@ -226,6 +365,81 @@ describe('css-tokens lint', () => {
       );
     }
     expect(undefined_).toHaveLength(0);
+  });
+
+  // EI-19420634904212731. This file is a `.test.ts`, which `walk()` excludes
+  // from the scan — so the deliberately-undefined tokens below are inert here.
+  describe('stripCommentsForTokenScan', () => {
+    const ts = (s: string) => stripCommentsForTokenScan(s, { lineComments: true });
+    const css = (s: string) => stripCommentsForTokenScan(s, { lineComments: false });
+    const tokens = (s: string) => [...s.matchAll(/var\(\s*(--[a-z0-9_-]+)\s*[,)]/gi)].map((m) => m[1]);
+
+    it('blanks a token mentioned only in a line or block comment', () => {
+      expect(tokens(ts(`// the old var(--bg-subtle, #171717) failed the lint\n`))).toEqual([]);
+      expect(tokens(ts(`/* do not reintroduce var(--bg-subtle) here */`))).toEqual([]);
+    });
+
+    it('still sees a real usage on a line that also carries a comment', () => {
+      expect(tokens(ts(`const a = 'var(--bg-2)'; // was var(--bg-subtle)`))).toEqual(['--bg-2']);
+    });
+
+    it('does not treat // inside a string as a comment (the URL trap)', () => {
+      // A naive line-strip eats the rest of the line here, HIDING a real usage.
+      expect(tokens(ts(`const u = 'https://x.dev'; const c = 'var(--accent)';`))).toEqual(['--accent']);
+      expect(tokens(css(`a { background: url(https://x.dev/i.png); color: var(--accent); }`))).toEqual(['--accent']);
+    });
+
+    it('does not let a regex literal containing quotes swallow following code', () => {
+      expect(tokens(ts(`const re = /['"]/g; const c = 'var(--accent)';`))).toEqual(['--accent']);
+    });
+
+    it('does not let a template literal or apostrophe-in-comment swallow code', () => {
+      expect(tokens(ts('const t = `a ${x} b`; const c = "var(--accent)";'))).toEqual(['--accent']);
+      // An unpaired apostrophe in prose must not open a string state.
+      expect(tokens(ts(`// don't do this\nconst c = 'var(--accent)';`))).toEqual(['--accent']);
+    });
+
+    it('treats // as ordinary text in CSS, where it is not a comment', () => {
+      expect(tokens(css(`/* var(--gone) */\na { color: var(--accent); }`))).toEqual(['--accent']);
+    });
+
+    it('does not count a --name: written inside a comment as a local definition', () => {
+      // The permissive direction: a commented-out definition must NOT satisfy a
+      // real usage elsewhere in the file.
+      const src = `/* --made-up: red; */\n.a { color: var(--made-up); }`;
+      expect(/(?:^|\n|[;{])\s*(--[a-z0-9_-]+)\s*:/gim.test(css(src))).toBe(false);
+      expect(tokens(css(src))).toEqual(['--made-up']);
+    });
+
+    it('only ever blanks: byte length, newline positions and non-comment text are preserved', () => {
+      const src = `// c\nconst a = 'https://x'; /* b */ const d = var(--accent);\n`;
+      const stripped = ts(src);
+      expect(stripped).toHaveLength(src.length);
+      expect([...stripped].map((ch, i) => (ch === '\n' ? i : -1)).filter((i) => i >= 0)).toEqual(
+        [...src].map((ch, i) => (ch === '\n' ? i : -1)).filter((i) => i >= 0),
+      );
+      expect(ts(stripped)).toBe(stripped); // idempotent
+    });
+
+    it('is stable on the real source tree — stripping never invents a token', () => {
+      // Whole-tree guard: every token surviving the strip must genuinely appear
+      // in the raw file too, so the fix can only ever REMOVE comment mentions.
+      const files: string[] = [];
+      for (const root of SOURCE_ROOTS) walk(root, files);
+      expect(files.length).toBeGreaterThan(0);
+      for (const file of files.slice(0, 400)) {
+        let raw: string;
+        try {
+          raw = readFileSync(file, 'utf-8');
+        } catch {
+          continue;
+        }
+        const stripped = stripCommentsForTokenScan(raw, { lineComments: !file.endsWith('.css') });
+        expect(stripped).toHaveLength(raw.length);
+        const rawTokens = new Set(tokens(raw));
+        for (const t of tokens(stripped)) expect(rawTokens.has(t)).toBe(true);
+      }
+    });
   });
 
   it('CSS sources contain a usable token vocabulary', () => {

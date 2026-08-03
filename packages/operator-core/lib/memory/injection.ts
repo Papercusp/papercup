@@ -425,6 +425,7 @@ export async function buildMemoryContextBlock(
 ): Promise<string | null> {
   const marks: Array<[string, number]> = [];
   const t0 = Date.now();
+  let corpus: CorpusLegResult | null = null;
   try {
     // P-008 / D-037 — the SECOND retrieval leg (session transcripts +
     // work-items). Started HERE, before the mem0 leg is awaited, so the two
@@ -440,7 +441,13 @@ export async function buildMemoryContextBlock(
     // another name". See ./corpus-recall.
     const corpusP = startCorpusLeg(input);
     const memoryBlock = await buildBlockInner(input, (label, ms) => marks.push([label, ms]));
-    return await composeWithCorpus(memoryBlock, corpusP);
+    // Settled HERE rather than inside the composer (P-001): the leg's own
+    // health is a fact about this injection, not about how the block was
+    // assembled, and the `finally` below has to be able to report it. The await
+    // point is unchanged, so the two legs still overlap exactly as before.
+    corpus = await corpusP.catch(() => null);
+    noteCorpusLegHealth(corpus);
+    return composeWithCorpus(memoryBlock, corpus);
   } finally {
     const totalMs = Date.now() - t0;
     if (totalMs > SLOW_INJECTION_LOG_MS) {
@@ -448,7 +455,7 @@ export async function buildMemoryContextBlock(
       console.log(
         `[memory-injection] phases totalMs=${totalMs} ${marks
           .map(([k, v]) => `${k}=${v}`)
-          .join(' ')} postMs=${Math.max(0, totalMs - stamped)}`,
+          .join(' ')} postMs=${Math.max(0, totalMs - stamped)}${describeCorpusLeg(corpus)}`,
       );
     }
   }

@@ -65,6 +65,18 @@ const BLOCKING_PREDICATE_ALLOWLIST: ReadonlyMap<string, string> = new Map([
       'enumeration filter; the shared floor helpers are exclusion fragments and cannot ' +
       'express it.',
   ],
+  [
+    'sync-resolver/dependency-graph-edges.ts',
+    'The dependency-GRAPH read (sync resolver) — enumerates blocks edges with BOTH endpoints ' +
+      'resolved so the graph/integrity view can render them. Same rationale as ' +
+      'scheduler/work-item-deps-integrity.ts above: it reports edges and never decides ' +
+      'claimability, so it cannot drift away from a claim floor. It structurally CANNOT call ' +
+      'the shared helpers — those are exclusion fragments (they remove blocked rows from a ' +
+      'claim query), whereas this needs the edge rows themselves, and deliberately LEFT JOINs ' +
+      'the blocker so a dangling edge is rendered as a finding rather than dropped. Its ' +
+      'blocker leg is parameterised (bk.workspace_id = opts.workspaceId), so the migration-719 ' +
+      'hardcode defect this file also guards against does not apply.',
+  ],
 ]);
 
 /** Files whose `lane`/DDL text mentions the table but which are fixtures, not live readers. */

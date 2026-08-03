@@ -2004,26 +2004,77 @@ def _resolve_write_target(raw_target, cwd):
         return None
 
 
-def _strip_line_comments(s):
-    # EI-19385448516432576: remove `#`-to-end-of-line comments before scanning
-    # for redirect operators. A `->`/`=>`/`>` inside a comment is PROSE, not
-    # shell syntax — `grep -n foo bar.ts # payload->x is the field` was rejected
-    # as a redirect targeting `x`, and because this guard rejects the WHOLE
-    # command, nothing in that call ran.
+def _strip_quotes_and_comments(s):
+    # Remove quoted spans AND `#`-to-end-of-line comments in ONE quote-aware
+    # pass, for the redirect/interpreter scanners. Replaces the former
+    # `_strip_line_comments(_strip_shell_quotes(...))` composition.
     #
-    # ORDER IS LOAD-BEARING: this runs AFTER _strip_shell_quotes, never before.
-    # A `#` inside a quoted span is literal data and quote-stripping has already
-    # removed it, so any `#` still present at a word boundary is a real comment
-    # introducer. The other order would let `echo "x # y" > tree/file.txt`
-    # swallow its own real redirect and MISS a tree write — trading a false
-    # positive for a false negative, which is the far more expensive direction
-    # for this guard. (Both orders are covered by tests, so a future reorder
-    # fails loudly rather than silently opening that hole.)
+    # WHY ONE PASS (EI-19420133701663526). Two passes cannot agree on what is
+    # quoted, because each assumes the other already ran:
+    #   - quotes-then-comments (the order that shipped) lets an ODD quote
+    #     character inside a COMMENT break quote parity. `_strip_shell_quotes`
+    #     runs first, sees the comment's stray quote as an OPENING quote, and
+    #     deletes everything up to the next quote — which is the opening quote
+    #     of a real later argument. Both a false POSITIVE (a genuinely-quoted
+    #     `>` gets exposed and denied — EI-19418179098729784 and 3 duplicate
+    #     reports) and, worse, a false NEGATIVE: `# note "` followed by
+    #     `cat foo > <tree path> && echo "x"` had its whole redirect swallowed
+    #     by the deleted span and was ALLOWED. Confirmed live for BOTH `"` and
+    #     `'`.
+    #   - comments-then-quotes (the reverse) is the hole the old order existed
+    #     to avoid: `echo "x # y" > tree/file.txt` would treat the quoted `#`
+    #     as a comment introducer and swallow its own real redirect.
+    # Scanning once removes the ordering question entirely: a `#` is a comment
+    # introducer only when the scanner is OUTSIDE quotes at that point, and a
+    # comment's contents (quotes included) are dropped before they can affect
+    # parity. Both directions are covered by tests.
     #
-    # The lookbehind requires start-of-string or whitespace, so `$#`, `a#b` and
-    # `http://host/path#frag` are untouched. Like the sibling strippers this
-    # only ever REMOVES characters, so it can never manufacture a match.
-    return re.sub(r'(?<![^\s])#[^\n]*', '', s)
+    # Comment rule matches the former lookbehind `(?<![^\s])#`: a `#` starts a
+    # comment only at start-of-output or after whitespace, so `$#`, `a#b` and
+    # `http://host/path#frag` are untouched. The newline is deliberately NOT
+    # consumed — callers split segments on [;&|\n].
+    #
+    # Quote rule is `_strip_shell_quotes`' (unchanged): a quoted span collapses
+    # to a single space so operators inside it are not read as separators and
+    # adjacent tokens are neither glued nor made adjacent to a separator; a
+    # backslash-escaped quote inside "..." does not close; an unterminated
+    # quote drops the rest (only ever more permissive).
+    #
+    # Like the sibling strippers this only ever REMOVES characters, so it can
+    # never manufacture a match.
+    out, i, n = [], 0, len(s)
+    while i < n:
+        c = s[i]
+        if c == '#' and (not out or out[-1].isspace()):
+            j = s.find('\n', i)
+            if j == -1:
+                break  # comment runs to end of input — nothing after it
+            i = j      # leave the newline itself to be emitted normally
+            continue
+        if c == "'":
+            j = s.find("'", i + 1)
+            if j == -1:
+                break
+            out.append(' ')
+            i = j + 1
+            continue
+        if c == '"':
+            j = i + 1
+            while j < n:
+                if s[j] == '\\':
+                    j += 2
+                    continue
+                if s[j] == '"':
+                    break
+                j += 1
+            if j >= n:
+                break
+            out.append(' ')
+            i = j + 1
+            continue
+        out.append(c)
+        i += 1
+    return ''.join(out)
 
 
 _HEREDOC_START_RE = re.compile(r"<<-?\s*(['\"]?)(\w+)\1")
@@ -2237,7 +2288,7 @@ def _shell_write_guard():
         _cwd = os.path.realpath(payload.get('cwd') or os.getcwd())
     except Exception:
         return
-    _clean = _strip_line_comments(_strip_shell_quotes(_strip_heredoc_bodies(command)))
+    _clean = _strip_quotes_and_comments(_strip_heredoc_bodies(command))
     _has_paren = '(' in _clean or ')' in _clean
     _targets = []  # (raw_target, human-readable construct name, position in _clean)
 
@@ -2952,7 +3003,7 @@ def _interpreter_write_guard():
         _cwd = os.path.realpath(payload.get('cwd') or os.getcwd())
     except Exception:
         return
-    _clean = _strip_line_comments(_strip_shell_quotes(_strip_heredoc_bodies(command)))
+    _clean = _strip_quotes_and_comments(_strip_heredoc_bodies(command))
     if not _INTERPRETER_RE.search(_clean):
         return  # no interpreter invocation at all — nothing to check
     _interp_m = _INTERPRETER_RE.search(_clean)
