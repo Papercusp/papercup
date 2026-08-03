@@ -48,7 +48,7 @@ vi.mock('../coordination/self-marker', () => ({
 // query) rather than pinning the concrete fallback value, which is whatever this
 // process's real activeWorkspaceId() resolves to.
 vi.mock('../coordination/presence-wakeability', () => ({ fetchWakeability: vi.fn(async () => new Map()) }));
-vi.mock('../../adv-sessions', () => ({ recordedLiveOwnerIds: vi.fn(async () => new Set()) }));
+vi.mock('../../adv-sessions', async (orig) => ({ ...(await orig<typeof import('../../adv-sessions')>()), recordedLiveOwnerIds: vi.fn(async () => new Set()) }));
 vi.mock('../coordination/wake-mode', () => ({
   getAllWakeModeOverrides: vi.fn(async () => new Map()),
   getDefaultWakeMode: vi.fn(async () => 'auto'),

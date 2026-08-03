@@ -48,7 +48,7 @@ vi.mock('../../harness-invoke-once', () => ({
 }));
 const recordAdvSession = vi.fn(async () => 77);
 const markAdvSessionEnded = vi.fn(async () => {});
-vi.mock('../../adv-sessions', () => ({ endedRecordedOwnerIds: vi.fn(async () => new Set<string>()),
+vi.mock('../../adv-sessions', async (orig) => ({ ...(await orig<typeof import('../../adv-sessions')>()), endedRecordedOwnerIds: vi.fn(async () => new Set<string>()),
   recordAdvSession: (...a: unknown[]) => (recordAdvSession as (...args: unknown[]) => unknown)(...a),
   markAdvSessionEnded: (...a: unknown[]) =>
     (markAdvSessionEnded as (...args: unknown[]) => unknown)(...a),
@@ -436,7 +436,8 @@ describe('POST /harness/:slug/invoke (P-031)', () => {
       PAPERCUSP_SPAWN_ID: expect.stringMatching(/^s-\d+-[0-9a-f]+$/),
       PAPERCUSP_NATIVE_SESSION_ID: expect.stringMatching(/^[0-9a-f-]{36}$/),
     });
-    expect(markAdvSessionEnded).toHaveBeenCalledWith(77, 0);
+    // 3rd arg = AdvSessionEndedBy; spawn.ts ends its own child, so 'self'.
+    expect(markAdvSessionEnded).toHaveBeenCalledWith(77, 0, 'self');
   });
 
   it('tracks hive launches when the resolved backend supports forced native session ids', async () => {
@@ -456,7 +457,8 @@ describe('POST /harness/:slug/invoke (P-031)', () => {
       PAPERCUSP_NATIVE_SESSION_ID: expect.stringMatching(/[0-9a-f-]{36}/),
       PAPERCUSP_SPAWN_ID: expect.stringMatching(/^s-\d+-[0-9a-f]+$/),
     });
-    expect(markAdvSessionEnded).toHaveBeenCalledWith(77, 0);
+    // 3rd arg = AdvSessionEndedBy; spawn.ts ends its own child, so 'self'.
+    expect(markAdvSessionEnded).toHaveBeenCalledWith(77, 0, 'self');
   });
 
   it('seeds a coord_presence row for a tracked launch so the mug/kettle turn is roster-visible (owner pane-visibility)', async () => {

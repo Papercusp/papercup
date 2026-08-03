@@ -32,6 +32,36 @@
   --pc-orders-warn-bg: color-mix(in oklab, transparent, var(--warn) 10%);
   --pc-orders-warn-bg-soft: color-mix(in oklab, transparent, var(--warn) 6%);
 
+  /* ── the card + its edge — Treatment C3's two load-bearing values ──────────
+     Plan P-005. The study behind them (D-001) measured why separation on this
+     ground CANNOT come from fill lightness: card fills sweep 1.11:1 to 1.58:1
+     and the rail reads grey and washed before the top of that range. STROKE is
+     where the range is. The cards shipped for a day carrying neither value —
+     a 3.5% white veil (#152030, 1.09:1 vs ground) inside a 62%-mixed edge
+     (#205170, 1.92:1 vs card), i.e. a frame under the 3:1 non-text floor around
+     a fill that was barely there. That is exactly the "barely-there card" the
+     study was written to diagnose, reproduced.
+
+     MEASURED live in the Tauri webview (WCAG 2.1 on composited sRGB; the probe
+     self-tested against white/black = 21.00, #767676/#fff = 4.54 and 50% white
+     over black = #808080 before any of these were trusted):
+
+                       was                    now                  C3 target
+       card    #152030  1.09:1 vs ground  #1c3146  1.34:1      #1d3048  1.33:1
+       edge    #205170  1.92:1 vs card    #4c81a0  3.15:1      #5182a0  3.22:1
+                        2.09:1 vs ground           4.22:1               4.28:1
+
+     Derived from --accent-strong rather than pinned to the study's literal
+     hexes: four themes ship, and `black` (monochrome) and `honeycomb` (honey)
+     would both read as off-palette with a fixed sky blue. Under `frost` the
+     mixes land within ~5/255 per channel of C3's own values.
+
+     The card is a token here rather than inline on `.pc-orders__sec` because
+     the cap plate below has to be measured AGAINST it — an anchor that is a
+     literal in two places drifts the moment one of them moves. */
+  --pc-orders-card: color-mix(in oklab, var(--accent-strong) 16%, var(--bg-popover));
+  --pc-orders-edge: color-mix(in oklab, var(--accent-strong) 60%, var(--bg-popover));
+
   /* ── section-cap plate ────────────────────────────────────────────────────
      The section caps used to paint `var(--accent)` / `var(--warn)` at FULL
      saturation — six stacked full-strength plates down a narrow rail, and the
@@ -53,11 +83,21 @@
        blue   #30526c  -44% luminance   label #c1eafe  6.46:1   AA
        amber  #574f3a  -49% luminance   label #fdd37d  5.72:1   AA
 
-     35%, not lower: the cap sits on a card that is itself a 3.5% white veil
-     over the popover ground (#152030), and below ~25% the plate stops
-     separating from that card — at 22% it measures 1.35:1 and the bar the
-     owner called GOOD would effectively dissolve. 35% keeps it at ~2.0:1,
-     i.e. still unmistakably a filled bar, just no longer a shouting one.
+     35%, not lower: below ~25% the plate stops separating from the card it sits
+     on — at 22% it measured 1.35:1 and the bar the owner called GOOD would
+     effectively dissolve.
+
+     ⚠ That separation MOVED when P-005 adopted C3's card above. Measured on the
+     new #1c3146 card the plate reads 1.62:1, not the ~2.0:1 it held against the
+     old near-black one. The obvious repair — raise the mix to 45%, which
+     restores 2.12:1 — is the WRONG one: it is a brightness increase, and
+     brightness is the exact thing the owner asked to reduce. Raising it also
+     costs the label (6.42:1 -> 4.91:1, AA with almost no margin at 9px). So the
+     plate holds its owner-ratified value and the separation is repaid in FORM
+     instead: a hairline under the cap in the card's own edge colour (see
+     `.pc-orders__h` below), which is free in luminance. That is this rail's own
+     rule applied to itself — D-001: "do not reach for a lighter panel to
+     separate sections; reach for the border, the cap, and the type ladder."
 
      Restated as file-local tokens because the css-tokens lint only resolves a
      component-local token inside the file that DEFINES it, so naming
@@ -115,12 +155,28 @@
   cursor: pointer;
 }
 
+/* ── cluster labels + the quiet-empty line ────────────────────────────────── */
+/* Layout, the dot and the type scale are shared with the Activity rail
+   (chat-controls.css) so the popup's two edges cannot drift. Only the INK is
+   set here, because each rail lifts its own muted tier (P-008) and a shared
+   literal would fight that. Both sit OUTSIDE the cards, so they take the rail
+   ground, not the card: measured 7.68:1 on #0d1829 — quiet, still AAA. */
+.pc-orders > .pc-rail-cluster,
+.pc-orders > .pc-rail-quiet {
+  color: var(--pc-orders-mute);
+}
+/* The section NAME stays at the rail's normal ink even in the quiet form: the
+   line is dim, but the thing it names must still read as a label — that is the
+   half of "an empty section that NAMES what it would hold" this branch keeps. */
+.pc-orders > .pc-rail-quiet .pc-rail-quiet__label {
+  color: var(--pc-orders-dim);
+}
+
 /* ── sections — framed cards ──────────────────────────────────────────────── */
 /* Each section is its own bordered card rather than a slab separated by a
    hairline. That is the Framed look's whole claim: a boundary you can SEE is
    what stops six stacked sections reading as one wall of text. */
 .pc-orders__sec {
-  --pc-orders-edge: color-mix(in oklab, var(--accent), var(--bg-popover) 62%);
   /* MEASURED, not defensive (live Tauri webview, 2026-08-02): `.pc-orders` is a
      flex COLUMN, so every card is a flex item with the default `flex-shrink: 1`.
      Once the cards' natural heights exceed the rail, the browser shrinks them
@@ -134,7 +190,7 @@
   margin: 6px 8px;
   border: 1px solid var(--pc-orders-edge);
   border-radius: 4px;
-  background: color-mix(in oklab, transparent, white 3.5%);
+  background: var(--pc-orders-card);
   padding: 0 8px 6px;
   /* x-hidden keeps the card's rounded corners clipping a long unbroken token;
      y-auto is the height bound below. Two axes, two reasons — never `overflow:
@@ -150,9 +206,12 @@
   overflow-y: auto;
 }
 /* Mission is tinted because it is the only section that EXPLAINS the others —
-   the reader should land on it first without having to be told to. */
+   the reader should land on it first without having to be told to. Stated as a
+   lift OFF the shared card rather than an independent colour: the card moved
+   under P-005 and a standalone tint would have silently become the DARKER of
+   the two, inverting the emphasis it exists to create. */
 .pc-orders__sec--mission {
-  background: color-mix(in srgb, var(--accent), transparent 92%);
+  background: color-mix(in oklab, var(--accent-strong) 6%, var(--pc-orders-card));
 }
 /* A card whose contents are waiting on the READER (walls, open directives). */
 .pc-orders__sec[data-attn='true'] {
@@ -175,10 +234,18 @@
   font-weight: 700;
   background: var(--pc-orders-cap-fill);
   color: var(--pc-orders-cap-label);
+  /* The plate's separation from the card fell 1.99:1 -> 1.62:1 when P-005
+     adopted C3's lighter card. Repaid in FORM, not luminance: the same edge the
+     card already wears, so the cap reads as a bar bounded by the frame rather
+     than as a tinted region of it. Costs zero brightness, which is the whole
+     constraint — see the long note on --pc-orders-cap-fill. */
+  border-bottom: 1px solid var(--pc-orders-edge);
 }
 .pc-orders__sec[data-attn='true'] > .pc-orders__h {
   background: var(--pc-orders-cap-fill-warn);
   color: var(--pc-orders-cap-label-warn);
+  /* Follows the card's own border, which is --warn on an attention card. */
+  border-bottom-color: var(--warn);
 }
 /* ① Collapsed: everything but the cap folds away. The COUNT lives inside the
    cap, so folding Coord/Walls away never hides that there is something in it. */

@@ -34,7 +34,7 @@ vi.mock('../../../modes/store', () => ({
 vi.mock('../../../agent-tools/coordination/control-anchor', () => ({
   refreshControlAnchorAfterMutation: (opts: unknown) => refreshControlAnchorMock(opts),
 }));
-vi.mock('../../../adv-sessions', () => ({
+vi.mock('../../../adv-sessions', async (orig) => ({ ...(await orig<typeof import('../../../adv-sessions')>()),
   endedRecordedOwnerIds: vi.fn(async () => new Set<string>()),
   recordAdvSession: vi.fn(async () => 1),
   markAdvSessionEnded: vi.fn(async () => {}),

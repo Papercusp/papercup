@@ -409,6 +409,88 @@
   outline-offset: 1px;
 }
 
+/* ═══ rail clusters + the quiet-empty line ═══════════════════════════════════
+ *
+ * Treatment C3's two structural moves, shared by BOTH rails so the popup's two
+ * edges speak one vocabulary (plan session-popup-compaction-and-contrast
+ * -2026-08-02 P-005; the shape is from the C3 whole-popup artifact,
+ * apps/operator/docs/session-popup-c3-wholepopup-2026-08-02.html).
+ *
+ * ① CLUSTER LABEL. Six framed cards down a narrow column read as six peers;
+ *    they are not. Two unfilled labels group them by the question they answer
+ *    ("what they were told" vs "what they're carrying"), which costs one dim
+ *    row and is the cheapest hierarchy available here — it adds no fill, no
+ *    stroke and no accent, i.e. nothing that competes with the caps.
+ *
+ * ② QUIET-EMPTY. A settled section becomes ONE dim line instead of a bordered
+ *    card with a blank in it. This is why it matters more than it sounds: this
+ *    rail deliberately names every signal it could show, including the ones
+ *    usually empty ("an empty section that NAMES what it would hold is how a
+ *    reader learns the signal exists"). Rendered as cards, that principle
+ *    spends ~34px of a ~200px-wide rail per NOTHING — and six of them out-shout
+ *    the one card that has content, because a border is a border whether or not
+ *    anything is inside it. The quiet line keeps the name and the "none" wording
+ *    (so the principle survives intact) and drops only the frame.
+ *
+ * The frame is what encodes "there is something here", so a section that is
+ * UNAVAILABLE or wants the reader keeps its card — see RailQuiet's contract in
+ * rail-sections.tsx, which is where that guard actually lives. */
+.pc-rail-cluster {
+  flex: none;
+  margin: 7px 10px 1px;
+  padding: 0;
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.045em;
+  text-transform: uppercase;
+  /* Deliberately the rail's QUIETEST ink: this label groups the caps, so it
+     must not compete with them. The rails set the actual value — each lifts its
+     own muted tier (P-008) and a shared literal here would fight that. */
+  color: inherit;
+  opacity: 0.72;
+}
+.pc-rail-quiet {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  flex: none;
+  margin: 0;
+  /* Aligns with the cards' text column, not their border box: the quiet line is
+     a peer of the cards' CONTENT, and indenting it to the frame would make the
+     rail look ragged exactly where it is trying to look calm. */
+  padding: 1px 10px;
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+/** A dot, not a dash or a bullet glyph: it is the one mark that survives at
+ *  4px, carries no directional meaning, and cannot be mistaken for a control. */
+.pc-rail-quiet::before {
+  content: '';
+  flex: none;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.55;
+  transform: translateY(-1px);
+}
+/** The section's NAME — the part that must still read as a label, so a reader
+ *  learns the signal exists even when it is empty. */
+.pc-rail-quiet__label {
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.045em;
+  text-transform: uppercase;
+}
+/** What "none" means HERE — italic, because it is a state, not a value. The
+ *  wording is per-section on purpose ("none open" vs "none in scope" vs "no
+ *  note written" are three different facts). */
+.pc-rail-quiet__none {
+  min-width: 0;
+  font-style: italic;
+  overflow-wrap: anywhere;
+}
+
 /* ═══ ① State — a fact. Read-only. Changes on its own. ═══════════════════════ */
 
 .pc-ctl-state {

@@ -23,7 +23,7 @@ vi.mock('../../../auth/require-principal', () => ({
   },
 }));
 vi.mock('../../../workspace-registry', () => ({ activeWorkspaceId: () => 'default' }));
-vi.mock('../../../adv-sessions', () => ({ endedRecordedOwnerIds: vi.fn(async () => new Set<string>()),
+vi.mock('../../../adv-sessions', async (orig) => ({ ...(await orig<typeof import('../../../adv-sessions')>()), endedRecordedOwnerIds: vi.fn(async () => new Set<string>()),
   recordAdvSession: recordAdvSessionMock,
   setAdvSessionWindowId: setAdvSessionWindowIdMock,
 }));

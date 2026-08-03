@@ -91,7 +91,7 @@ vi.mock('./console-launcher', () => ({
 // mock replaces the whole module, so an export the subject imports but this omits
 // throws "No <name> export is defined on the mock" the moment that code path runs —
 // silently at author time, loudly in the gate hours later (WI-7185).
-vi.mock('./adv-sessions', () => ({ endedRecordedOwnerIds: vi.fn(async () => new Set<string>()),
+vi.mock('./adv-sessions', async (orig) => ({ ...(await orig<typeof import('./adv-sessions')>()), endedRecordedOwnerIds: vi.fn(async () => new Set<string>()),
   recordAdvSession: recordAdvSessionMock,
   // bootstrap-su's inbox-wake arm resolves the caller's freshest adv session via
   // this; missing it made the arm's non-fatal error log trip fail-on-console.

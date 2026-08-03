@@ -42,7 +42,7 @@ import { agentDisplayLabel, agentRoleLabel } from '@/app/harness/agent-display';
 import { contextPct } from '../hud/hud-board-model';
 import type { NativeSessionHandle, RosterEntry } from './SessionsRosterView';
 import { useAgentDetail, type AgentDetail } from './use-agent-detail';
-import { RailSectionHead, useRailCollapse } from './rail-sections';
+import { RailCluster, RailQuiet, RailSectionHead, useRailCollapse } from './rail-sections';
 // hud-first-nav-and-dossier-2026-07-26 P-004: the DTO + the `agentDetail.byOwner`
 // fetch hook now live in use-agent-detail.ts so the chat footer's "N locks / M
 // unread" summary chip can share the SAME useSyncQuery cache entry (no new
@@ -528,6 +528,15 @@ export default function AgentDossier({
         </div>
       ) : null}
 
+      {/* Two clusters, mirroring the Orders rail (P-005 / Treatment C3). "Right
+          now" is the agent's live posture; "Inbound" is what has arrived FOR it
+          and is the only part of this rail another party controls — which is
+          exactly why it earns its own group rather than sitting as a seventh
+          peer card. Popup-only (`zoneTitle`), for the same reason P-008's type
+          lift was: the /adv two-pane is a different density context and was not
+          part of this ask. */}
+      {zoneTitle ? <RailCluster label="Right now" /> : null}
+
       {/* Rail R1 P-008 — the ten Tier-1/2 reference rows used to sit HERE, above
           everything operational. They now live in the Reference section at the
           bottom, previewed three-at-a-time behind one drill-in: [deck R1]
@@ -773,6 +782,13 @@ export default function AgentDossier({
           rebuilds on restart, so a fresh bundle can genuinely be served a
           `subscriptions`-less payload. Reading `.length` off it there would take
           down the whole HUD tab over one optional list. */}
+      {/* Quiet-empty (P-005): settled, this is one dim line rather than a card
+          framing "Not waiting on any event." BOTH lists have to be empty — an
+          available-but-unawaited gate is a finding, not a calm state. An `error`
+          keeps the card: "couldn't read it" must never be quieter than "none". */}
+      {zoneTitle && detail && !subs?.error && subRows.length === 0 && availableGates.length === 0 ? (
+        <RailQuiet label="Waiting on" none="no event" testId="rail-quiet-events" />
+      ) : (
       <section
         className="pc-dossier__section"
         id="pc-dossier-events"
@@ -891,6 +907,7 @@ export default function AgentDossier({
           </>
         ) : null}
       </section>
+      )}
 
       {/* Rail R1 P-008 — Native Session + Codex Runtime moved to the BOTTOM, below
           Reference. Both are runtime provenance, not "is this agent stuck", and
@@ -900,6 +917,9 @@ export default function AgentDossier({
       {/* hud-first-nav-and-dossier-2026-07-26 P-004: id is the scroll target
           for the footer's "⚠ N locks / M unread" summary chip (D-002's one
           deliberate duplicate) — clicking it opens this rail + scrolls here. */}
+      {zoneTitle && detail && locks && !locks.error && locks.held.length === 0 && locks.waiting.length === 0 ? (
+        <RailQuiet label="Locks" none="none held" testId="rail-quiet-locks" />
+      ) : (
       <section
         className="pc-dossier__section"
         id="pc-dossier-locks"
@@ -956,10 +976,21 @@ export default function AgentDossier({
           <div className="pc-dossier__empty-line">{detail ? 'No locks held or waiting.' : '—'}</div>
         )}
       </section>
+      )}
+
+      {zoneTitle ? <RailCluster label="Inbound" /> : null}
 
       {/* ── Coord ── */}
       {/* hud-first-nav-and-dossier-2026-07-26 P-004: scroll target for the
           footer's summary chip, same rationale as #pc-dossier-locks above. */}
+      {/* Quiet-empty (P-005). `unreadCount === 0` is part of the condition, not
+          redundant with the row check: unread is a BOUNDED slice over a true
+          total, so a nonzero count with an empty slice means messages exist that
+          this rail cannot show — the one case where an apparently-empty section
+          must keep its frame. */}
+      {zoneTitle && coord && !coord.error && coordRows.length === 0 && coord.unreadCount === 0 ? (
+        <RailQuiet label="Coord" none="no recent messages" testId="rail-quiet-coord" />
+      ) : (
       <section
         className="pc-dossier__section"
         id="pc-dossier-coord"
@@ -1021,6 +1052,7 @@ export default function AgentDossier({
           <div className="pc-dossier__empty-line">{error ? `Couldn’t load coord: ${error}` : '—'}</div>
         )}
       </section>
+      )}
 
       {/* ── Files in play (cross-marked with this agent's lock state) ── */}
       {entry && entry.currentFiles.length > 0 ? (

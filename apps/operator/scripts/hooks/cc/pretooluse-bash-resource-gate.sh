@@ -270,7 +270,99 @@ def allow():
         }}, sys.stdout)
     sys.exit(0)
 
+# ══ DENIAL FORENSICS (EI-19421518638516187) ══
+#
+# Before this, a denial produced a reason naming the RESOLVED TARGET and nothing
+# else — no matched text, no log anywhere. The denied command was gone the moment
+# the turn moved on, so every false-positive report against this gate was
+# reconstructed from memory afterwards.
+#
+# That is not a small loss. FOUR tickets from three agents
+# (EI-19418179098729784, EI-19417957171220978, EI-19323309702408274,
+# EI-19385448516432576) ALL named the wrong root cause, each blaming the
+# construct next to the `>`; every one of those verbatim commands actually
+# ALLOWS. The real trigger (EI-19420133701663526) was an odd quote inside a `#`
+# COMMENT breaking quote parity — and a hand-written repro drops the boring
+# comment line, which was the load-bearing part. Recovering it cost ~25 tool
+# calls against a purpose-built harness. The guard knew the answer at deny time
+# and threw it away.
+#
+# The fix is deliberately two-layer, because the two failures are different:
+#   1. the REASON carries the matched POST-NORMALIZATION fragment, so the denied
+#      agent sees immediately that the guard is looking at text which does not
+#      resemble what they typed — that IS the diagnosis, delivered at the moment
+#      of confusion, and it would have made all four tickets self-diagnosing.
+#   2. the LOG persists the verbatim command + the guard's own view of it, so a
+#      ticket can carry primary evidence instead of a reconstruction.
+# Precedent for the log lives in this very directory (ask-gate-mirror.errors.log).
+
+# Populated by a guard just before it denies: the normalized text it matched
+# against, plus the offset of the match. Kept as a dict so a guard that never
+# sets it (most of them) costs nothing and logs a null.
+_DENY_VIEW = {}
+
+
+def _matched_fragment(clean, at, width=36):
+    """~`width` chars either side of the match, from the POST-normalization text.
+
+    Newlines are rendered as ⏎ so a multi-line command stays one readable line,
+    and truncation is marked, so the reader can tell a fragment from the whole.
+    """
+    try:
+        if not clean or at is None or at < 0 or at > len(clean):
+            return ''
+        lo, hi = max(0, at - width), min(len(clean), at + width)
+        frag = clean[lo:hi].replace('\n', '⏎').replace('\t', ' ')
+        return ('…' if lo > 0 else '') + frag + ('…' if hi < len(clean) else '')
+    except Exception:
+        return ''
+
+
+_DENIAL_LOG_MAX_BYTES = 1 << 20  # 1 MiB, then rotated to a single .1 sibling
+
+
+def _log_denial(reason):
+    """Append one JSON line describing this denial. Never raises, never blocks."""
+    try:
+        _dir = os.path.join(os.path.expanduser('~'), '.papercusp', 'hooks', 'cc')
+        os.makedirs(_dir, exist_ok=True)
+        _path = os.path.join(_dir, 'bash-resource-gate.denials.log')
+        try:
+            if os.path.getsize(_path) > _DENIAL_LOG_MAX_BYTES:
+                os.replace(_path, _path + '.1')
+        except OSError:
+            pass  # missing (first write) or unrotatable — append anyway
+        _g = globals()
+        _clean = _DENY_VIEW.get('clean')
+        _rec = {
+            'ts': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
+            'cwd': (_g.get('payload') or {}).get('cwd'),
+            # The VERBATIM command — the thing a from-memory repro loses.
+            'command': _g.get('command'),
+            # The guard's own view of it. When these two disagree, that
+            # disagreement is the bug (that is exactly how the parity break read).
+            'normalized': _clean,
+            'matchedFragment': _matched_fragment(_clean, _DENY_VIEW.get('at')),
+            'reason': reason,
+        }
+        with open(_path, 'a') as _f:
+            _f.write(json.dumps(_rec, ensure_ascii=False) + '\n')
+    except Exception:
+        pass  # forensics must NEVER turn a deny into a crash (i.e. a fail-open)
+
+
 def deny(reason):
+    _frag = _matched_fragment(_DENY_VIEW.get('clean'), _DENY_VIEW.get('at'))
+    if _frag:
+        reason = (
+            '%s\n\nWhat the guard actually matched, AFTER normalization '
+            '(quotes/comments/heredoc bodies stripped): `%s`\nIf that does not '
+            'resemble your command, the normalizer mis-parsed it — that is the '
+            'bug, not the construct you are looking at. Full record (verbatim '
+            'command + this view): ~/.papercusp/hooks/cc/bash-resource-gate.denials.log'
+            % (reason, _frag)
+        )
+    _log_denial(reason)
     json.dump({'hookSpecificOutput': {
         'hookEventName': 'PreToolUse',
         'permissionDecision': 'deny',
@@ -341,22 +433,68 @@ except Exception:
 # as if it created an OS schedule. Strip quoted spans BEFORE matching: quoted
 # content can only ever REMOVE a would-be separator, so every genuine (unquoted)
 # `crontab -e`/`batch < f`/`&& crontab`/`sudo crontab` deny is preserved.
-def _strip_shell_quotes(s):
-    # Replace single- and double-quoted spans with a single space so operators
-    # (;&|) inside a quoted arg are not read as command separators, and adjacent
-    # tokens are neither glued (a false negative) nor made adjacent to a
+def _strip_quotes_and_comments(s):
+    # THE shared normalizer for every scanner in this file: removes quoted spans
+    # AND `#`-to-end-of-line comments in ONE quote-aware pass.
+    #
+    # QUOTES: replace single- and double-quoted spans with a single space so
+    # operators (;&|) inside a quoted arg are not read as command separators, and
+    # adjacent tokens are neither glued (a false negative) nor made adjacent to a
     # separator (a false positive). An unterminated quote drops the rest (only
     # ever more permissive). A backslash-escaped quote inside "..." doesn't close.
+    #
+    # COMMENTS: a `#` starts a comment only when the scanner is OUTSIDE quotes
+    # AND it sits at start-of-output or after whitespace — so `$#`, `a#b` and
+    # `http://host/path#frag` are untouched, while `echo "x # y"` keeps its
+    # quoted `#` as data. The newline is deliberately NOT consumed: callers split
+    # segments on [;&|\n]. Comment text is never executed, so removing it before
+    # any guard matches is always correct (EI-19385448516432576: `grep -n foo
+    # bar.ts # payload->x is the field` was denied as a redirect targeting `x`).
+    #
+    # WHY ONE PASS, AND WHY HERE (EI-19420133701663526). Comment-stripping used
+    # to be a SECOND pass applied to this function's output, at the redirect
+    # scanner only. Two passes cannot agree on what is quoted, because each
+    # assumes the other already ran:
+    #   - quotes-then-comments (what shipped) lets an ODD quote character inside
+    #     a COMMENT break quote parity: this function ran first, read the
+    #     comment's stray quote as an OPENING quote, and deleted everything up to
+    #     the next quote — the opening quote of a real later argument. That
+    #     produced both a false POSITIVE (a genuinely-quoted `>` exposed and
+    #     denied — EI-19418179098729784 plus 3 duplicate reports) and a false
+    #     NEGATIVE: `# note "` before `cat foo > <tree path> && echo "x"` had its
+    #     entire redirect swallowed by the deleted span, and was ALLOWED.
+    #   - comments-then-quotes (the reverse) reopens the hole that ordering
+    #     existed to avoid: `echo "x # y" > tree/file.txt` would treat the quoted
+    #     `#` as a comment introducer and swallow its own real redirect.
+    # Scanning once removes the ordering question entirely, and doing it in the
+    # SHARED normalizer rather than at one call site is what makes the fix
+    # class-wide. The parity break was never redirect-specific: measured against
+    # the two-pass build, the same `# note "` prefix also hid `git reset --hard`,
+    # `git clean -fd`, `git checkout -- :/`, `git stash`, `pkill -f`, `crontab`
+    # and the self-matching-pgrep guard — i.e. every deny-guard that called this
+    # function WITHOUT the redirect scanner's comment pass. All are covered by
+    # tests now; both quote characters trigger it, so a fix verified on `"` alone
+    # leaves half the hole open.
+    #
+    # Like the sibling strippers this only ever REMOVES characters, so it can
+    # never manufacture a match.
     out, i, n = [], 0, len(s)
     while i < n:
         c = s[i]
+        if c == '#' and (not out or out[-1].isspace()):
+            j = s.find('\n', i)
+            if j == -1:
+                break  # comment runs to end of input — nothing after it
+            i = j      # leave the newline itself to be emitted normally
+            continue
         if c == "'":
             j = s.find("'", i + 1)
             if j == -1:
                 break
             out.append(' ')
             i = j + 1
-        elif c == '"':
+            continue
+        if c == '"':
             j = i + 1
             while j < n:
                 if s[j] == '\\':
@@ -369,9 +507,9 @@ def _strip_shell_quotes(s):
                 break
             out.append(' ')
             i = j + 1
-        else:
-            out.append(c)
-            i += 1
+            continue
+        out.append(c)
+        i += 1
     return ''.join(out)
 
 # ══ SCANNABLE COMMAND — the shared normalizer every DENY guard matches through ══
@@ -947,11 +1085,88 @@ def _scan_executed_payloads(text):
     return [p for p in out if p and p.strip()]
 
 
+def _strip_comments_outside_quotes(s):
+    """Remove `#`-to-end-of-line comments, leaving everything else BYTE-IDENTICAL.
+
+    The sibling of `_strip_quotes_and_comments`, for the one caller that still
+    needs its quotes intact: `_scannable_command` hands its output to
+    `_scan_dequote`, which must see the real quoting to unquote it correctly. So
+    quoted spans are copied VERBATIM here (quotes included) rather than blanked,
+    and an unterminated quote copies the rest rather than dropping it —
+    `_scan_dequote` handles unbalanced quotes itself, and dropping text is the
+    permissive direction this whole fix exists to close.
+
+    WHY THIS IS NEEDED (EI-19420133701663526). Making the shared quote-stripper
+    comment-aware fixed the redirect/interpreter scanners, but every OTHER deny
+    guard matches against `_scannable_command`, which reaches `_scan_dequote`
+    without ever stripping comments — so the identical parity break still hid
+    them. Measured against that build, prefixing `# note "` to an otherwise-denied
+    command flipped `git reset --hard`, `git clean -fd`, `git checkout -- :/`,
+    `git stash`, `pkill -f` and the self-matching-pgrep guard from DENY to ALLOW.
+
+    The mechanism is subtler than the redirect leg's and worth stating, because
+    nothing here deletes the dangerous command: the comment's stray quote pairs
+    with the opening quote of a real later argument, so `_scan_dequote` treats
+    everything between them — INCLUDING the newline and the `&&` — as quoted
+    DATA and neutralises those separators. The dangerous command survives intact
+    but is flattened onto the comment's line, which demotes it out of COMMAND
+    POSITION, and every one of those guards anchors on command position. Traced:
+        `# note "` + newline + `git reset --hard && echo "x"`
+      becomes  `# note  git reset --hard    echo x"`   (one line, git mid-line)
+    Stripping the comment first restores the newline as a real separator, so
+    `git reset --hard` lands at the start of its own segment again.
+
+    Comment rule matches its sibling: a `#` introduces a comment only outside
+    quotes AND at start-of-output or after whitespace, so `$#`, `a#b` and
+    `http://host/path#frag` survive. The newline is not consumed — guards split
+    segments on [;&|\\n] and that separator is exactly what must be preserved.
+    """
+    out, i, n = [], 0, len(s)
+    while i < n:
+        c = s[i]
+        if c == '#' and (not out or out[-1].isspace()):
+            j = s.find('\n', i)
+            if j == -1:
+                break  # comment runs to end of input — nothing after it
+            i = j      # leave the newline itself as a real separator
+            continue
+        if c == "'":
+            j = s.find("'", i + 1)
+            if j == -1:
+                out.append(s[i:])
+                break
+            out.append(s[i:j + 1])
+            i = j + 1
+            continue
+        if c == '"':
+            j = i + 1
+            while j < n:
+                if s[j] == '\\':
+                    j += 2
+                    continue
+                if s[j] == '"':
+                    break
+                j += 1
+            if j >= n:
+                out.append(s[i:])
+                break
+            out.append(s[i:j + 1])
+            i = j + 1
+            continue
+        out.append(c)
+        i += 1
+    return ''.join(out)
+
+
 def _scannable_command(cmd, _depth=0):
     """The text every DENY guard should match against. Newline-joined so guards
     that already split on [;&|\\n] pick up nested payloads as free segments."""
     try:
         stripped = _scan_strip_written_heredocs(cmd)
+        # Comments go BEFORE both dequoting and payload extraction: text inside a
+        # `#` comment is never executed, so a payload found there would be a false
+        # positive, and a stray quote there would corrupt the dequote (above).
+        stripped = _strip_comments_outside_quotes(stripped)
         base = _scan_dequote(stripped)
         if _depth >= _SCAN_MAX_DEPTH:
             return base
@@ -991,7 +1206,7 @@ def _scannable_quote_stripped():
 
     Some guards match a subcommand anywhere in the text rather than at command
     position (the tauri-agent-tools target guard, the scheduler keyword guard).
-    Those relied on `_strip_shell_quotes` DELETING quoted spans, so a sentence like
+    Those relied on `_strip_quotes_and_comments` DELETING quoted spans, so a sentence like
     `echo "you could run tauri-agent-tools eval ..."` was not read as an
     invocation — surfacing the words instead re-created exactly that false deny
     (caught by the existing suite, EI-10939 / EI-9937).
@@ -1002,7 +1217,7 @@ def _scannable_quote_stripped():
     if 'qs' not in _SCANNABLE_CACHE:
         try:
             payloads = _scan_executed_payloads(_scan_strip_written_heredocs(command))
-            parts = [_strip_shell_quotes(command)]
+            parts = [_strip_quotes_and_comments(command)]
             seen = set()
             for p in payloads:
                 if p in seen:
@@ -1011,7 +1226,7 @@ def _scannable_quote_stripped():
                 parts.append(_scannable_command(p))
             _SCANNABLE_CACHE['qs'] = '\n'.join(parts)
         except Exception:
-            _SCANNABLE_CACHE['qs'] = _strip_shell_quotes(command)
+            _SCANNABLE_CACHE['qs'] = _strip_quotes_and_comments(command)
     return _SCANNABLE_CACHE['qs']
 
 # ── Piped background exit-code trap advisory (EI-8871/EI-14065) ────────────
@@ -1029,7 +1244,7 @@ def _scannable_quote_stripped():
 # anywhere in the command).
 try:
     if tool_name.lower() == 'bash' and tool_input.get('run_in_background'):
-        _pipe_cmd = _strip_shell_quotes(command)
+        _pipe_cmd = _strip_quotes_and_comments(command)
         # Safety-escape check against the RAW command (not quote-stripped): a
         # real-world safe pattern is often itself inside quotes (e.g.
         # `echo "EXIT=${PIPESTATUS[0]}"`), which quote-stripping would erase.
@@ -1126,7 +1341,7 @@ try:
             and tool_input.get('run_in_background')
             and not ADVISORY
             and not re.search(r'pipefail|PIPESTATUS', command)):
-        _tr_cmd = _strip_shell_quotes(command)
+        _tr_cmd = _strip_quotes_and_comments(command)
         # Already correct? Check RAW too — the fix is usually quoted.
         _EXIT_RESTORE_RE = re.compile(
             r'\bexit\s+"?\$\{?(?:rc|RC|status|code|\?)\}?"?\s*$')
@@ -1186,7 +1401,7 @@ except Exception:
 try:
     if not tool_input.get('run_in_background') and not ADVISORY:
         if 'cat >/dev/null' not in command and 'cat > /dev/null' not in command:
-            _head_cmd = _strip_shell_quotes(command)
+            _head_cmd = _strip_quotes_and_comments(command)
             _HEAD_PIPE_RE = re.compile(r'(?<!\|)\|(?!\|)\s*(?:\S*/)?head\b[^|;&\n]*$')
             for _pseg in re.split(r'&&|\|\||;|\n', _head_cmd):
                 if _HEAD_PIPE_RE.search(_pseg.strip()):
@@ -1382,7 +1597,7 @@ def _is_resource_limit_invocation(cmd):
     # True only for a `systemd-run` asking for RESOURCE CONTROL, not a schedule.
     # A schedule flag WINS (`systemd-run --on-calendar=… -p CPUQuota=…` really is
     # creating a timer) so the scheduling advice stays correct for the hybrid.
-    c = _strip_shell_quotes(cmd)
+    c = _strip_quotes_and_comments(cmd)
     if not re.search(r'\bsystemd-run\b', c):
         return False
     if re.search(_SYSTEMD_SCHEDULE_FLAG_RE, c, re.I):
@@ -1483,7 +1698,7 @@ _EXIT_GUARD_DENY = (
 # EI-19294800751120438: iterate the SCANNABLE form, so a `bash -c "systemctl
 # --user exit"` payload arrives as its own newline-separated segment here.
 for _seg in re.split(r'[;&|\n]', _scannable()):
-    _es = _strip_shell_quotes(_seg.strip())
+    _es = _strip_quotes_and_comments(_seg.strip())
     # Peel the same benign leading wrappers the git-guard peels (sudo/env/nice/
     # ionice/xargs/rtk/time/command/nohup/exec/setsid/…), defined fresh here so
     # this block never depends on the git-guard's conditionally-defined
@@ -2004,79 +2219,6 @@ def _resolve_write_target(raw_target, cwd):
         return None
 
 
-def _strip_quotes_and_comments(s):
-    # Remove quoted spans AND `#`-to-end-of-line comments in ONE quote-aware
-    # pass, for the redirect/interpreter scanners. Replaces the former
-    # `_strip_line_comments(_strip_shell_quotes(...))` composition.
-    #
-    # WHY ONE PASS (EI-19420133701663526). Two passes cannot agree on what is
-    # quoted, because each assumes the other already ran:
-    #   - quotes-then-comments (the order that shipped) lets an ODD quote
-    #     character inside a COMMENT break quote parity. `_strip_shell_quotes`
-    #     runs first, sees the comment's stray quote as an OPENING quote, and
-    #     deletes everything up to the next quote — which is the opening quote
-    #     of a real later argument. Both a false POSITIVE (a genuinely-quoted
-    #     `>` gets exposed and denied — EI-19418179098729784 and 3 duplicate
-    #     reports) and, worse, a false NEGATIVE: `# note "` followed by
-    #     `cat foo > <tree path> && echo "x"` had its whole redirect swallowed
-    #     by the deleted span and was ALLOWED. Confirmed live for BOTH `"` and
-    #     `'`.
-    #   - comments-then-quotes (the reverse) is the hole the old order existed
-    #     to avoid: `echo "x # y" > tree/file.txt` would treat the quoted `#`
-    #     as a comment introducer and swallow its own real redirect.
-    # Scanning once removes the ordering question entirely: a `#` is a comment
-    # introducer only when the scanner is OUTSIDE quotes at that point, and a
-    # comment's contents (quotes included) are dropped before they can affect
-    # parity. Both directions are covered by tests.
-    #
-    # Comment rule matches the former lookbehind `(?<![^\s])#`: a `#` starts a
-    # comment only at start-of-output or after whitespace, so `$#`, `a#b` and
-    # `http://host/path#frag` are untouched. The newline is deliberately NOT
-    # consumed — callers split segments on [;&|\n].
-    #
-    # Quote rule is `_strip_shell_quotes`' (unchanged): a quoted span collapses
-    # to a single space so operators inside it are not read as separators and
-    # adjacent tokens are neither glued nor made adjacent to a separator; a
-    # backslash-escaped quote inside "..." does not close; an unterminated
-    # quote drops the rest (only ever more permissive).
-    #
-    # Like the sibling strippers this only ever REMOVES characters, so it can
-    # never manufacture a match.
-    out, i, n = [], 0, len(s)
-    while i < n:
-        c = s[i]
-        if c == '#' and (not out or out[-1].isspace()):
-            j = s.find('\n', i)
-            if j == -1:
-                break  # comment runs to end of input — nothing after it
-            i = j      # leave the newline itself to be emitted normally
-            continue
-        if c == "'":
-            j = s.find("'", i + 1)
-            if j == -1:
-                break
-            out.append(' ')
-            i = j + 1
-            continue
-        if c == '"':
-            j = i + 1
-            while j < n:
-                if s[j] == '\\':
-                    j += 2
-                    continue
-                if s[j] == '"':
-                    break
-                j += 1
-            if j >= n:
-                break
-            out.append(' ')
-            i = j + 1
-            continue
-        out.append(c)
-        i += 1
-    return ''.join(out)
-
-
 _HEREDOC_START_RE = re.compile(r"<<-?\s*(['\"]?)(\w+)\1")
 
 
@@ -2087,7 +2229,7 @@ def _strip_heredoc_bodies(s):
     # heredoc's payload is often an embedded script (python/node/SQL/…), and
     # an operator inside it (`v>100`, `x > y`, `=>`, `->`) is DATA, not real
     # shell syntax — scanning it as if it were is a false-positive generator
-    # (EI-18683619680591304). Run BEFORE _strip_shell_quotes: quote-stripping
+    # (EI-18683619680591304). Run BEFORE _strip_quotes_and_comments: quote-stripping
     # the raw heredoc body first risks mis-parsing an unbalanced quote inside
     # the payload and swallowing real command text that follows. This only
     # ever REMOVES characters — it can never manufacture a new match — so it
@@ -2296,7 +2438,7 @@ def _shell_write_guard():
     # forms (`2>&1`, `>=`, `2>&2`) so those never get misread as file targets.
     #
     # EI-18899608047558048: the gap between the operator and its target is
-    # `[^\S\n]*` (same-LINE whitespace only), NOT `\s*`. `_strip_shell_quotes`
+    # `[^\S\n]*` (same-LINE whitespace only), NOT `\s*`. `_strip_quotes_and_comments`
     # replaces an ENTIRE quoted span — `"$OUT"`, `'literal.txt'` — with a
     # single blank space, with no marker left behind that anything was ever
     # there. So a redirect whose target was fully quoted (`: > "$OUT"`, `printf
@@ -2391,6 +2533,10 @@ def _shell_write_guard():
         _effective_cwd = _effective_cwd_before(_at, _cwd, _clean, _has_paren)
         _resolved = _resolve_write_target(_raw, _effective_cwd)
         if _resolved and (_resolved == _canon or _resolved.startswith(_canon + os.sep)):
+            # Hand the normalized text + match offset to deny() so the reason
+            # shows WHAT was matched, not just where it resolved to
+            # (EI-19421518638516187).
+            _DENY_VIEW['clean'], _DENY_VIEW['at'] = _clean, _at
             deny(
                 'shell-write guard (EI-18664655909328670): this %s targets `%s`, which '
                 'resolves INSIDE the shared staging tree. Raw shell writes to tree files '
@@ -2465,8 +2611,8 @@ _ABS_ANCHOR_ASSIGN_RE = re.compile(
 
 
 def _quote_preserve_tokens(s):
-    """Like `_strip_shell_quotes`, but a quoted span becomes a single
-    placeholder TOKEN (`\x00Q\x00`) instead of a blank. `_strip_shell_quotes`
+    """Like `_strip_quotes_and_comments`, but a quoted span becomes a single
+    placeholder TOKEN (`\x00Q\x00`) instead of a blank. `_strip_quotes_and_comments`
     is right for operator-boundary scanning (a quoted `;`/`&`/`|` must not
     read as a real separator) but WRONG for a POSITIONAL-ARGUMENT COUNT (`cp
     SRC DEST`): collapsing a quoted arg (`"$F"`) to a blank makes it vanish
@@ -3039,6 +3185,10 @@ def _interpreter_write_guard():
             # I/O at all — nothing to gate (EI-18692070370140239)
         _hit = _payload_literal_tree_path(_body, _canon, _cwd)
         if _hit:
+            # The scanned text here is the interpreter PAYLOAD, not the shell
+            # command — showing it is what tells a confused reader which of the
+            # two the guard was reading (EI-19421518638516187).
+            _DENY_VIEW['clean'], _DENY_VIEW['at'] = _body, _body.find(_hit)
             deny(
                 'shell-write guard (EI-18691482279179647): this `%s` invocation runs inline '
                 'code that references `%s`, which resolves INSIDE the shared staging tree. '

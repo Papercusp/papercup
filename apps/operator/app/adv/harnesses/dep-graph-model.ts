@@ -36,6 +36,24 @@ export interface DepGraphItem {
   kind: string;
   title: string;
   state: string;
+  /**
+   * The plan this item came from (`work_items.source_plan_slug`, surfaced as
+   * `WorkItemRow.planSlug` — see listEnrichedWorkItems, work-items.ts:89), or null
+   * for an item that did not originate in a plan.
+   *
+   * This is what makes a PLAN item distinguishable from any other work item
+   * (dependency-health-pane-2026-08-02 P-012 / D-003 req 2: "all the plan and work
+   * items"). It is deliberately NOT a separate node kind: a plan item IS a
+   * work_items row in this system — `plans:start` mints one per item, and the
+   * owner's 2026-07-27 identity decision was to reuse that work-item id rather than
+   * give plan items an id space of their own. So both "kinds" are already one
+   * corpus, and the graph distinguishes them by PROVENANCE, not by type.
+   *
+   * ⚠ Do NOT reach for `source_plan_item_ids` to do this instead: it is populated on
+   * 1 of 1,178 plan-derived papercusp rows (measured 2026-08-03), so it looks like
+   * the precise linkage and is in practice empty.
+   */
+  planSlug?: string | null;
 }
 
 /** An edge as `workItems.depEdges` returns it. `blockerId: null` = dangling (INV-13). */
@@ -213,13 +231,34 @@ export function buildDepSubgraph(opts: {
   edges: readonly DepGraphEdgeInput[];
   selectedId?: string | null;
   budget?: number;
+  /**
+   * INTEGRITY MODE (P-008). When true, narrow the graph to the UNHEALTHY edges and their
+   * endpoints — the "written but gates nothing" set this plan is named for.
+   *
+   * An edge qualifies when it is `dangling` (its blockerRef resolves to no row — INV-13's
+   * stale class, and also how a wrong-FORM ref surfaces now that the resolver's join is
+   * family-aware) or `satisfied` (the blocker is already terminal, so the edge is recorded
+   * but gates nothing). Those two ARE the health findings; there is no third detector
+   * hiding here, and inventing one would be asserting a signal the data does not carry.
+   *
+   * It is a MODE ON THIS PANE, never a separate surface (the plan's ## Now: "Do not
+   * re-narrow this to a diagnostics pane"), and it composes with — rather than replaces —
+   * the caller's `wif` column filters and the `selectedId` scoping, because it narrows the
+   * same edge set those already produced.
+   *
+   * Applied BEFORE the budget on purpose: switching to health mode must genuinely shrink
+   * what the budget measures, so a corpus too big to draw becomes drawable by asking the
+   * narrower question. Filtering after the budget would elide findings to make room for
+   * healthy nodes — exactly backwards for a health view.
+   */
+  healthOnly?: boolean;
 }): DepSubgraph {
   const budget = opts.budget ?? DEP_GRAPH_NODE_BUDGET;
   const byId = new Map(opts.items.map((i) => [i.id, i]));
 
   // Edges first: they define which nodes are interesting. A dangling blocker becomes a
   // PLACEHOLDER node so the break is visible in the picture rather than an edge to nowhere.
-  const rawEdges: DepGraphEdge[] = [];
+  const allEdges: DepGraphEdge[] = [];
   const danglingRefs = new Map<string, string>();
   for (const e of opts.edges) {
     // The blocked side must be a row we actually have; otherwise it is outside this view.
@@ -227,7 +266,7 @@ export function buildDepSubgraph(opts: {
     const sourceId = e.blockerId ?? `dangling:${e.blockerRef}`;
     if (!e.blockerId) danglingRefs.set(sourceId, e.blockerRef);
     else if (!byId.has(e.blockerId)) continue; // resolved, but filtered out of this view
-    rawEdges.push({
+    allEdges.push({
       id: `${sourceId}->${e.blockedId}`,
       source: sourceId,
       target: e.blockedId,
@@ -235,6 +274,10 @@ export function buildDepSubgraph(opts: {
       dangling: !e.blockerId,
     });
   }
+
+  const rawEdges = opts.healthOnly
+    ? allEdges.filter((e) => e.dangling || e.satisfied)
+    : allEdges;
 
   // Which nodes are in scope, before the budget.
   let scopeIds: Set<string>;

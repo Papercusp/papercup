@@ -78,6 +78,62 @@ export function useRailCollapse(): RailCollapse {
   return { closed, toggle };
 }
 
+/**
+ * A CLUSTER label — the unfilled row that groups the framed cards under it by
+ * the question they answer.
+ *
+ * Treatment C3's cheapest piece of hierarchy: it adds no fill, no stroke and no
+ * accent, so it cannot compete with the section caps it is grouping. Six cards
+ * down a narrow rail otherwise read as six peers, which they are not.
+ */
+export function RailCluster({ label }: { label: string }): React.JSX.Element {
+  return (
+    <p className="pc-rail-cluster" data-testid={`rail-cluster-${label.toLowerCase().replace(/[^a-z]+/g, '-')}`}>
+      {label}
+    </p>
+  );
+}
+
+export interface RailQuietProps {
+  /** The section's name — stays visible, so the reader still learns the signal exists. */
+  label: string;
+  /** What "none" means for THIS section — "none open", "no note written", … */
+  none: string;
+  testId?: string;
+}
+
+/**
+ * A SETTLED section, rendered as one dim line instead of a bordered card with a
+ * blank in it (plan P-005, Treatment C3's quiet-empty rule).
+ *
+ * ── The contract, which is the whole point ──────────────────────────────────
+ * The frame is what encodes "there is something here". So this render branch is
+ * for exactly ONE of the rails' states, and callers must NOT reach for it in the
+ * other two — plan D-003's three-state rule (`unavailable` / genuinely-none /
+ * `neverWritten` are three different conclusions about an agent's health, and
+ * collapsing them is the `unavailableSignals` bug at panel scale):
+ *
+ *   ✔ genuinely none          → quiet line. Nothing happened; say so quietly.
+ *   ✘ couldn't read it        → keep the card + <Unavailable>. "I don't know"
+ *                               must never be quieter than "nothing".
+ *   ✘ a FINDING about the     → keep the card. A loop running with no carry-note
+ *     agent that happens to     is an emptiness that is itself the news, and the
+ *     be shaped like empty      quiet branch would file it under "calm".
+ *   ✘ anything wearing        → keep the card. `data-attn` means it wants the
+ *     data-attn                 reader; a dim line is the opposite of that.
+ *
+ * Not a <button>: there is nothing to expand. Giving it the cap's affordance
+ * would promise a body that does not exist.
+ */
+export function RailQuiet({ label, none, testId }: RailQuietProps): React.JSX.Element {
+  return (
+    <p className="pc-rail-quiet" data-testid={testId ?? `rail-quiet-${label.toLowerCase().replace(/[^a-z]+/g, '-')}`}>
+      <span className="pc-rail-quiet__label">{label}</span>
+      <span className="pc-rail-quiet__none">{none}</span>
+    </p>
+  );
+}
+
 export interface RailSectionHeadProps {
   /** Namespaced section id — `o-facts`, `a-coord`. */
   sectionId: string;

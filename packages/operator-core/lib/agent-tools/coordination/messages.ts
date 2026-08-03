@@ -37,7 +37,11 @@ import {
 } from './cue-authority';
 import { resolveSenderCueAuthority } from './cue-authority-resolve';
 import { collectRetractedIds, suppressRetracted } from './retraction';
-import { isMachineAuthoredSender, isMachineEmitterForStamping } from './machine-authored';
+import {
+  isMachineAuthoredSender,
+  isMachineEmitterForStamping,
+  isSystemEmissionUnderAgentIdentity,
+} from './machine-authored';
 import { noteIntentDeclared } from '../../agent-state-stamp';
 
 export type { InboxOptions };
@@ -259,6 +263,29 @@ export async function sendMessage(
   // and cannot silently re-pollute the signal. An explicit `extra.auto` from the caller always
   // wins (never override a deliberate stamp — including a deliberate `auto: false`).
   if (env.auto === undefined && isMachineAuthoredSender(identity.ownerId)) {
+    env.auto = true;
+  }
+  // D-095: the same stamp for system code emitting under a BORROWED AGENT
+  // IDENTITY — library code running inside an agent's tool call that passes that
+  // agent's ownerId straight through to this seam. No name-based pattern can see
+  // it (`from` IS a real agent), so this one asks the ENVELOPE: `coord:send`
+  // requires `expects`, therefore an agent-session sender with NO `expects` did
+  // not come through the agent-callable tool and is not hand-authored.
+  //
+  // Placed BEFORE the `expects` stamp below on purpose — setting `auto` here is
+  // what makes that block's `env.auto === true` leg fire, so these rows get the
+  // same `expects:'none'` + `system-emitter-derived` provenance as every other
+  // machine emission instead of a second, parallel rule.
+  //
+  // Measured 36h before shipping: 36 messages, every one a lifecycle notice
+  // (fleet-scope admission blocks, take-leadership demotions, a fed-event probe,
+  // a typed control cue) — each counted as hand-authored prose in the P-001
+  // adoption denominator AND as directed mail awaiting a peer's answer. An
+  // explicit caller `auto` still wins, exactly as above.
+  if (
+    env.auto === undefined &&
+    isSystemEmissionUnderAgentIdentity(identity.ownerId, env.expects !== undefined)
+  ) {
     env.auto = true;
   }
   // P-033 (d) / D-072: the ~25 SYSTEM emitters (service-health, severe-event,

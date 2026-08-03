@@ -466,6 +466,77 @@ interface CorpusLegResult {
   heading: string;
   lines: string[];
   refs: string[];
+  /**
+   * P-001 — FALSE means the corpus search ran BM25-ONLY: no query vector, so
+   * every line below it is a lexical match and nothing semantic was reachable.
+   * `recallCorpusContext` has always computed this; the injection path dropped
+   * it on the floor, which left injection unable to tell "semantic ran and
+   * these are its best matches" from "semantic was absent and these are
+   * lexical scraps" — the two cases that must NOT be read the same way.
+   *
+   * P-002 records it per-leg; P-003 gates degradation on it. Here it only has
+   * to survive the trip.
+   */
+  embedderAvailable: boolean;
+  /** Candidates the engine returned, BEFORE pure-core selection. Paired with
+   *  `lines.length` it separates "retrieval found nothing" from "retrieval
+   *  found plenty and selection rejected all of it". */
+  candidateCount: number;
+}
+
+/**
+ * A leg that RAN and admitted nothing — distinct from `null`, which means the
+ * leg never ran (no query text, or it faulted). The composer treats both the
+ * same, deliberately; the observability path must not.
+ */
+function emptyCorpusLeg(
+  heading: string,
+  embedderAvailable: boolean,
+  candidateCount: number,
+): CorpusLegResult {
+  return { heading, lines: [], refs: [], embedderAvailable, candidateCount };
+}
+
+/** One compact suffix for the phases log — never a second log site. */
+function describeCorpusLeg(corpus: CorpusLegResult | null): string {
+  if (!corpus) return ' corpus=absent';
+  return (
+    ` corpus=ran corpusEmbedder=${corpus.embedderAvailable ? 'yes' : 'no'}` +
+    ` corpusCandidates=${corpus.candidateCount} corpusAdmitted=${corpus.lines.length}`
+  );
+}
+
+/**
+ * Degradation is THROTTLED, not latched — the same reasoning `recall-stats`
+ * documents for its capture warn: a one-shot warn is how a persistent failure
+ * hides, because the single line scrolls away and silence then reads as health.
+ * A cold embedder recovers on its own and must not spam every turn; one that
+ * never recovers must keep saying so.
+ */
+const CORPUS_DEGRADED_WARN_WINDOW_MS = 5 * 60_000;
+let _corpusDegradedWarnedAt = 0;
+let _corpusDegradedSinceWarn = 0;
+
+function noteCorpusLegHealth(corpus: CorpusLegResult | null): void {
+  if (!corpus || corpus.embedderAvailable) return;
+  _corpusDegradedSinceWarn += 1;
+  const now = Date.now();
+  if (now - _corpusDegradedWarnedAt < CORPUS_DEGRADED_WARN_WINDOW_MS) return;
+  const alsoSuppressed = _corpusDegradedSinceWarn - 1;
+  console.warn(
+    `[memory-injection] corpus leg ran BM25-ONLY (no query vector) — ` +
+      `candidates=${corpus.candidateCount} admitted=${corpus.lines.length}` +
+      (alsoSuppressed > 0 ? ` — +${alsoSuppressed} more since last warn` : '') +
+      `; re-warns at most once/${CORPUS_DEGRADED_WARN_WINDOW_MS / 60_000}min`,
+  );
+  _corpusDegradedWarnedAt = now;
+  _corpusDegradedSinceWarn = 0;
+}
+
+/** Test hook: reset the degradation throttle so a suite can assert re-warn behavior. */
+export function _resetCorpusLegHealthForTests(): void {
+  _corpusDegradedWarnedAt = 0;
+  _corpusDegradedSinceWarn = 0;
 }
 
 /**
@@ -509,7 +580,12 @@ function startCorpusLeg(input: MemoryInjectionInput): Promise<CorpusLegResult | 
         harnessSlugs: input.harnessSlugs ?? [],
         excludeSessionId: sessionId,
       });
-      if (res.lines.length === 0) return null;
+      // P-001: a leg that ran and admitted nothing still reports HOW it ran.
+      // Returning bare `null` here erased the one fact that explains an empty
+      // section — whether the semantic half was even available.
+      if (res.lines.length === 0) {
+        return emptyCorpusLeg(CORPUS_BLOCK_HEADING, res.embedderAvailable, res.candidateCount);
+      }
 
       // Suppression runs POST-selection: a handle ref only exists once the
       // candidates are ranked and collapsed, so the alternative would be a
@@ -542,12 +618,16 @@ function startCorpusLeg(input: MemoryInjectionInput): Promise<CorpusLegResult | 
           /* dedup is hygiene — a failure delivers a duplicate, never nothing */
         }
       }
-      if (lines.length === 0) return null;
+      if (lines.length === 0) {
+        return emptyCorpusLeg(CORPUS_BLOCK_HEADING, res.embedderAvailable, res.candidateCount);
+      }
 
       return {
         heading: CORPUS_BLOCK_HEADING,
         lines: lines.map((l) => l.line),
         refs: lines.map((l) => l.handle.ref),
+        embedderAvailable: res.embedderAvailable,
+        candidateCount: res.candidateCount,
       };
     } catch {
       return null;
@@ -564,16 +644,10 @@ function startCorpusLeg(input: MemoryInjectionInput): Promise<CorpusLegResult | 
  * memory block must not swallow it. With the flag off (or no pointers) the
  * return value is byte-identical to the pre-P-008 block.
  */
-async function composeWithCorpus(
+function composeWithCorpus(
   memoryBlock: string | null,
-  corpusP: Promise<CorpusLegResult | null>,
-): Promise<string | null> {
-  let corpus: CorpusLegResult | null = null;
-  try {
-    corpus = await corpusP;
-  } catch {
-    corpus = null;
-  }
+  corpus: CorpusLegResult | null,
+): string | null {
   if (!corpus || corpus.lines.length === 0) return memoryBlock;
   const body = corpus.lines.join('\n');
   if (!memoryBlock) return `## ${corpus.heading}\n\n${body}`;

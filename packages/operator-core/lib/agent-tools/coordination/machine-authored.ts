@@ -164,3 +164,54 @@ export function isMachineEmitterForStamping(from: string | null | undefined): bo
   const s = from.trim().toLowerCase();
   return MACHINE_SENDER_RE.test(s) || MACHINE_EMITTER_STAMP_RE.test(s);
 }
+
+const AGENT_SESSION_SENDER_RE = new RegExp(AGENT_SESSION_SENDER_PATTERN);
+
+/**
+ * The FOURTH signal, and the only one keyed on the ENVELOPE rather than the name:
+ * system code emitting under a BORROWED AGENT IDENTITY (D-095).
+ *
+ * Every pattern above asks "is this sender named like a machine". That question
+ * cannot reach this population by construction, because `from` IS a real agent's
+ * ownerId — the emitter is library code running inside an agent's tool call and
+ * passing that agent's identity straight through to `sendMessage`. Measured 36h,
+ * 2026-08-03: 36 such messages, none of them prose a human or agent wrote —
+ * fleet-scope admission blocks (25, scheduler/fleet-scope-admission.ts:441/483),
+ * take-leadership demotion notices (9, fleet_registry/take-leadership-core.ts:145),
+ * a fed-event probe, and a typed control cue. All 36 counted as HAND-AUTHORED in
+ * the P-001 adoption denominator, and all 36 counted as directed mail a peer was
+ * expected to answer.
+ *
+ * ── THE ENVELOPE ANSWERS WHAT THE NAME CANNOT ────────────────────────────────
+ *
+ * `coord:send` REQUIRES `expects` — no default, refused at the arg schema
+ * (tools/send.ts: `expectsArg`, and the preprocess gate that names it). So for a
+ * sender that IS an agent session, a MISSING `expects` is positive evidence the
+ * message never came through the agent-callable tool, i.e. code sent it. That is
+ * a property of the send PATH, which is exactly what this population differs by
+ * and exactly what a name-based pattern is blind to.
+ *
+ * ⚠ THE AGENT-SESSION TEST IS LOAD-BEARING, NOT DECORATION — it is what keeps the
+ * header's protected senders protected. Without it this would read "anything with
+ * no `expects`", which would sweep in `pc-admin-coord-ui` and `human` the moment
+ * either sent through a path that omits the field, and silently suppressing the
+ * owner's own question is the one false positive this module exists to prevent.
+ * Restricting to `su-…`/`s-…`/`cup-…`/`role-…`/bare-uuid means only an identity
+ * the SYSTEM minted can ever match.
+ *
+ * ⚠ AND IT CANNOT REACH THE OWNER'S GUI REPLY, which is the near-miss worth
+ * recording: `inbox-reply.ts` deliberately calls `sendMessage` directly rather
+ * than through the tool (so an agent cannot forge its `coord-inject:owner`
+ * provenance) — the one hand-authored route that bypasses the schema on purpose.
+ * It is safe here only because it passes `extra.expects` EXPLICITLY (and
+ * `extra.sections` with it). Verified before this shipped, not assumed. If a
+ * future authored route omits `expects`, this stamp WILL misclassify it — so the
+ * rule for adding one is: set `expects`, as both existing authored routes do.
+ */
+export function isSystemEmissionUnderAgentIdentity(
+  from: string | null | undefined,
+  hasExpects: boolean,
+): boolean {
+  if (!from || hasExpects) return false;
+  return AGENT_SESSION_SENDER_RE.test(from.trim().toLowerCase());
+}

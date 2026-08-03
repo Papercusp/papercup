@@ -65,4 +65,26 @@ describe('HarnessesDock', () => {
     render(<HarnessesDock slug="" />);
     expect(screen.getByTestId('harness-dock').getAttribute('data-layout')).toBe('adv-harnesses3');
   });
+
+  // dependency-health-pane-2026-08-02 P-011 (D-003 req 3: "like other tabs this
+  // should also have a pot selector to filter").
+  //
+  // The graph pane needs NO pot selector of its own, and this test is what makes
+  // that claim safe to rely on. The Work tab already carries the shared AdvPotBar
+  // ('harnesses' ∈ POT_BAR_TAB_IDS, guarded in operator-vite's AdvPotBar.test),
+  // which writes `?slug=`; HarnessesWorkspace reads it and hands it here; and this
+  // dock REBINDS every panel's `harnessSlug` param whenever the slug changes
+  // (`patch()` above, applied to listPanels() and to onDidAddPanel).
+  //
+  // That inheritance is the whole mechanism, and it is load-bearing but invisible:
+  // it holds only while the graph pane is a REGISTERED DOCK PANEL. If it were ever
+  // mounted outside the registry, it would silently keep rendering the previous
+  // pot's graph on every pot switch — no error, just quietly wrong data. Pinning
+  // registration here is what turns "satisfied by reuse" into something a future
+  // change cannot break unnoticed.
+  it('registers the dependency-graph pane, so it inherits the pot bar’s slug rebinding', () => {
+    render(<HarnessesDock slug="sheets" />);
+    const types = registerSpy.mock.calls.map((c) => c[0]);
+    expect(types).toContain('adv:dep-graph');
+  });
 });

@@ -79,7 +79,7 @@ vi.mock('../../workspace-registry', () => ({
 // listFleetAssignments promise rejects UNHANDLED (the global onUnhandledError then fails
 // this file). Faithful empty-set stubs — these CODEX_HOME/config-dir cases assert nothing
 // about fleet reconciliation, so an empty result is correct and keeps the mock complete.
-vi.mock('../../adv-sessions', () => ({
+vi.mock('../../adv-sessions', async (orig) => ({ ...(await orig<typeof import('../../adv-sessions')>()),
   recordAdvSession: recordAdvSessionMock,
   endedRecordedOwnerIds: async () => new Set<string>(),
   recordedLiveOwnerIds: async () => new Set<string>(),

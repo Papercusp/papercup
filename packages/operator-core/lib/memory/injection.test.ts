@@ -17,6 +17,30 @@ vi.mock('./backend', () => ({
 const recordRecallStatsMock = vi.hoisted(() => vi.fn(async (_sql: unknown, _input: unknown) => {}));
 vi.mock('./recall-stats', () => ({ recordRecallStats: recordRecallStatsMock }));
 
+// P-001: the corpus leg is behind a DYNAMIC import, so it is stubbed here and
+// driven per-test via `corpusIoResult`.
+//
+// The default THROWS on purpose. `startCorpusLeg` swallows a fault into "the
+// leg did not run", which is exactly the state every pre-P-001 test in this
+// file already sat in (the real module needs a live search registry). Defaulting
+// to a *successful* empty result would instead make every test in this file
+// report a leg that ran BM25-only — which now emits a console.warn, and this
+// package is fail-on-console.
+type CorpusIoStub = {
+  block: string | null;
+  lines: Array<{ line: string; handle: { ref: string } }>;
+  dropped: unknown[];
+  embedderAvailable: boolean;
+  candidateCount: number;
+};
+let corpusIoResult: CorpusIoStub | null = null;
+vi.mock('./corpus-recall-io', () => ({
+  recallCorpusContext: vi.fn(async () => {
+    if (!corpusIoResult) throw new Error('corpus leg not stubbed for this test');
+    return corpusIoResult;
+  }),
+}));
+
 // The harness registry backs the member→hive resolution (knowledge-packs
 // P-004). Canned per-test via `registryProjects`; default empty ⇒ no hive pull.
 let registryProjects: Array<{ slug: string; harness_kind?: string; hive_slug?: string }> = [];
@@ -29,7 +53,9 @@ import {
   lastUserContext,
   MEMORY_INJECTION_COSINE_FLOOR,
   MEMORY_INJECTION_LEX_FLOOR,
+  _resetCorpusLegHealthForTests,
 } from './injection';
+import { CORPUS_BLOCK_HEADING } from './corpus-recall';
 import { getMemoryBackend } from './backend';
 import { _resetForTests } from './bump-last-surfaced';
 
@@ -62,7 +88,9 @@ beforeEach(() => {
   recordRecallStatsMock.mockClear();
   sqlRows = [];
   registryProjects = [];
+  corpusIoResult = null;
   _resetForTests();
+  _resetCorpusLegHealthForTests();
 });
 
 /**
@@ -879,5 +907,120 @@ describe('buildMemoryContextBlock', () => {
         delete process.env[FLAG_ENV];
       }
     });
+  });
+});
+
+/**
+ * context-injection-retrieval-reach-and-visibility-2026-08-03 P-001 —
+ * `embedderAvailable` reaches the injection path instead of being dropped.
+ *
+ * `recallCorpusContext` has always computed it (corpus-recall-io.ts) and
+ * `startCorpusLeg` has always thrown it away, which left injection unable to
+ * separate two cases that must never be read the same way: "semantic ran and
+ * these are its best matches" versus "semantic was absent and these are
+ * lexical scraps". The second is not a weaker version of the first — it is a
+ * different retrieval, and acting on it as though the semantic half had run is
+ * the failure this item exists to make visible.
+ *
+ * What is deliberately NOT asserted here: any change to the RENDERED block. A
+ * degraded leg still renders byte-identically today — marking or suppressing
+ * the section is P-003's job, gated on the very signal P-001 delivers. Pinning
+ * the rendering as unchanged is therefore a real guard, not an omission.
+ */
+describe('corpus leg carries its own retrieval health (P-001)', () => {
+  const oneLine = (over: Partial<CorpusIoStub> = {}): CorpusIoStub => ({
+    block: null,
+    lines: [{ line: '- [work-item WI-6512] a pointer', handle: { ref: 'work-item:WI-6512' } }],
+    dropped: [],
+    embedderAvailable: true,
+    candidateCount: 4,
+    ...over,
+  });
+
+  const run = async () => {
+    useBackend(mockBackend([{ id: 'm1', text: 'alpha' }]));
+    return await buildMemoryContextBlock({
+      userId: 'u1',
+      workspaceId: 'ws',
+      queryContext: 'why did the corpus leg return that',
+    });
+  };
+
+  it('WARNS when the leg ran BM25-only, and throttles the re-warn', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      corpusIoResult = oneLine({ embedderAvailable: false });
+      await run();
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn.mock.calls[0]![0]).toContain('BM25-ONLY');
+      expect(warn.mock.calls[0]![0]).toContain('candidates=4 admitted=1');
+
+      // Second degraded injection inside the window: counted, not re-printed.
+      // A one-shot warn is how a persistent embedder outage goes quiet.
+      await run();
+      expect(warn).toHaveBeenCalledTimes(1);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('stays silent when the semantic half actually ran', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      corpusIoResult = oneLine({ embedderAvailable: true });
+      await run();
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  /**
+   * THE REGRESSION THIS ITEM IS REALLY ABOUT. Pre-P-001 the leg returned a bare
+   * `null` when nothing was admitted, so an empty pointer section and a leg
+   * that never ran were indistinguishable — and the one fact that explains the
+   * emptiness (was semantic even reachable?) was destroyed at exactly the
+   * moment it mattered most.
+   */
+  it('a leg that RAN and admitted nothing still reports HOW it ran', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      corpusIoResult = oneLine({ lines: [], embedderAvailable: false, candidateCount: 7 });
+      const block = await run();
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn.mock.calls[0]![0]).toContain('candidates=7 admitted=0');
+      // Retrieval found 7 and selection rejected all of them — the block is
+      // unchanged, which is why the log line is the only place this is visible.
+      expect(block).not.toContain(CORPUS_BLOCK_HEADING);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('does not warn when the leg never ran at all', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      corpusIoResult = null; // the stub throws ⇒ startCorpusLeg degrades to null
+      await run();
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('renders the pointer section identically whether or not the embedder ran', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      corpusIoResult = oneLine({ embedderAvailable: true });
+      const healthy = await run();
+      _resetCorpusLegHealthForTests();
+      corpusIoResult = oneLine({ embedderAvailable: false });
+      const degraded = await run();
+      expect(degraded).toBe(healthy);
+      expect(healthy).toContain(CORPUS_BLOCK_HEADING);
+      expect(healthy).toContain('- [work-item WI-6512] a pointer');
+    } finally {
+      warn.mockRestore();
+    }
   });
 });

@@ -50,7 +50,7 @@ vi.mock('../coordination/self-marker', () => ({
   markSelfRows: (rows: unknown[]) => rows,
 }));
 vi.mock('../coordination/presence-wakeability', () => ({ fetchWakeability: vi.fn(async () => new Map()) }));
-vi.mock('../../adv-sessions', () => ({
+vi.mock('../../adv-sessions', async (orig) => ({ ...(await orig<typeof import('../../adv-sessions')>()),
   recordedLiveOwnerIds: vi.fn(async () => new Set()),
   endedRecordedOwnerIds: vi.fn(async () => new Set()),
 }));

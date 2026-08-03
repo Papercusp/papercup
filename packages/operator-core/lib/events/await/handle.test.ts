@@ -18,7 +18,7 @@ const h = vi.hoisted(() => ({
   latestAdvSessionByCoordOwner: vi.fn(async (): Promise<unknown> => null),
 }));
 
-vi.mock('../../adv-sessions', () => ({ endedRecordedOwnerIds: vi.fn(async () => new Set<string>()),
+vi.mock('../../adv-sessions', async (orig) => ({ ...(await orig<typeof import('../../adv-sessions')>()), endedRecordedOwnerIds: vi.fn(async () => new Set<string>()),
   latestAdvSessionByCoordOwner: h.latestAdvSessionByCoordOwner,
 }));
 

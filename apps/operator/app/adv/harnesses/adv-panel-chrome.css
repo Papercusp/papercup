@@ -272,6 +272,24 @@
   stroke-dasharray: 3 3;
 }
 
+/* P-012 — plan provenance (`source_plan_slug`), drawn as a left edge-marker.
+ *
+ * ⚠ SPECIFICITY IS LOAD-BEARING HERE, not incidental. The marker is a <rect> INSIDE
+ * .pc-depgraph__node, so every rule above that targets a bare `rect` descendant also
+ * matches it — `.pc-depgraph__node--dangling rect` (0,2,1) would otherwise paint this
+ * 3px marker translucent-red AND dashed on any dangling node. This selector is
+ * deliberately (0,2,1) too, and placed AFTER those rules so it wins the tie. Moving it
+ * earlier in the file, or weakening it to `.pc-depgraph__node-planmark`, silently
+ * reintroduces that bleed.
+ */
+.pc-depgraph__node rect.pc-depgraph__node-planmark {
+  fill: var(--accent-strong, #7dd3fc);
+  stroke: none;
+  stroke-dasharray: none;
+  opacity: 0.85;
+  pointer-events: none;
+}
+
 .pc-depgraph__node-id {
   fill: var(--fg, #e7f7ff);
   font-size: 11px;

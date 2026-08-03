@@ -789,6 +789,140 @@ function expectPkillDeny(out: { stdout: string; status: number | null }) {
   expect(reason).toContain('EI-18690252462401774');
 }
 
+/**
+ * DENIAL FORENSICS (EI-19421518638516187).
+ *
+ * The guard used to deny with a reason naming only the RESOLVED TARGET, and
+ * wrote no log anywhere — so the denied command vanished with the turn and every
+ * false-positive report was reconstructed from memory. Four tickets from three
+ * agents all named the wrong cause that way; the load-bearing detail (a `#`
+ * comment) is exactly what a hand-written repro drops.
+ *
+ * Two separate outputs, tested separately because they serve different readers:
+ * the REASON tells the blocked agent what the guard was looking at right now,
+ * and the LOG preserves primary evidence for whoever writes the ticket later.
+ */
+describe('denial forensics — deny reason + denial log (EI-19421518638516187)', () => {
+  const denialLog = () =>
+    join(fakeHome, '.papercusp', 'hooks', 'cc', 'bash-resource-gate.denials.log');
+  const logSize = () => (existsSync(denialLog()) ? statSync(denialLog()).size : 0);
+
+  it('includes the matched POST-normalization fragment in the deny reason', () => {
+    const reason = denyReason(
+      runGate(bashCmd('cat foo > apps/operator/generated.ts', { cwd: CANON }), CANON_ENV),
+    );
+    expect(reason).toContain('What the guard actually matched');
+    expect(reason).toContain('cat foo > apps/operator/generated.ts');
+  });
+
+  /**
+   * The case that matters: when the normalizer has transformed the command, the
+   * reason must show the TRANSFORMED text, because the difference between what
+   * you typed and what the guard read IS the diagnosis. Here the `#` comment is
+   * stripped, so it must not appear in the reported fragment.
+   */
+  it('reports normalized text that visibly differs from the raw command', () => {
+    const reason = denyReason(
+      runGate(
+        bashCmd('# note "\ncat foo > apps/operator/generated.ts && echo "x"', { cwd: CANON }),
+        CANON_ENV,
+      ),
+    );
+    expect(reason).toContain('What the guard actually matched');
+    expect(reason).not.toContain('# note');
+  });
+
+  it('records the VERBATIM command — the thing a from-memory repro loses', () => {
+    const command = 'cat forensics-probe > apps/operator/generated.ts';
+    runGate(bashCmd(command, { cwd: CANON }), CANON_ENV);
+    const lines = readFileSync(denialLog(), 'utf8').trim().split('\n');
+    const rec = JSON.parse(lines[lines.length - 1]);
+    expect(rec.command).toBe(command);
+    expect(rec.matchedFragment).toContain('apps/operator/generated.ts');
+    expect(rec.reason).toContain('shell-write guard');
+    expect(rec.ts).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/);
+  });
+
+  it('logs nothing for an ALLOW — the log is denials only, not a command journal', () => {
+    const before = logSize();
+    expectAllow(runGate(bashCmd('echo hello', { cwd: CANON }), CANON_ENV));
+    expect(logSize()).toBe(before);
+  });
+});
+
+/**
+ * CLASS recurrence guard for the comment/quote-parity bypass
+ * (EI-19420133701663526).
+ *
+ * A `#` comment containing an ODD number of quote characters breaks quote
+ * parity for every normalizer in this hook. The filed report was about the
+ * redirect scanner, but the hole was never redirect-specific: the SAME prefix
+ * silently disarmed every other deny-guard, including the ones protecting
+ * against irrecoverable loss of peers' uncommitted work (`git reset --hard`,
+ * `git clean -fd`, `git stash`) and against killing the owner's desktop
+ * (`pkill -f`). All measured ALLOW against the pre-fix build.
+ *
+ * Two DIFFERENT mechanisms, one root cause — which is why the fix needed two
+ * sites and why this guard covers several guards rather than one:
+ *   - redirect/interpreter scanners: the deleted span SWALLOWS the redirect
+ *     outright, so nothing is left to match.
+ *   - everything routed through `_scannable_command`: nothing is deleted, but
+ *     the stray quote makes `_scan_dequote` read the newline and `&&` as quoted
+ *     DATA, flattening the dangerous command onto the comment's line. It
+ *     survives intact yet is no longer at COMMAND POSITION, which every one of
+ *     those guards anchors on.
+ *
+ * Both quote characters are exercised: the report named only `"`, and driving
+ * the real hook showed `'` breaks parity identically, so a fix verified on one
+ * leaves half the hole open. If either normalizer stops stripping comments
+ * quote-awarely, these fail instead of the bypass reopening silently.
+ */
+describe('comment quote-parity bypass — CLASS recurrence guard (EI-19420133701663526)', () => {
+  /** A comment carrying one unbalanced quote, plus a trailing quoted word for it to pair with. */
+  const withDoubleQuoteComment = (cmd: string) => `# note "\n${cmd} && echo "x"`;
+  const withSingleQuoteComment = (cmd: string) => `# don't\n${cmd} && echo 'x'`;
+
+  it.each([
+    ['git reset --hard', 'git reset --hard'],
+    ['git clean -fd', 'git clean -fd'],
+    ['git checkout -- :/', 'git checkout -- :/'],
+    ['git stash', 'git stash'],
+  ])('still denies %s behind a parity-breaking comment (double quote)', (_label, command) => {
+    expectGitDeny(runGate(bashCmd(withDoubleQuoteComment(command)), AGENT));
+  });
+
+  it.each([
+    ['git reset --hard', 'git reset --hard'],
+    ['git clean -fd', 'git clean -fd'],
+    ['git stash', 'git stash'],
+  ])('still denies %s behind a parity-breaking comment (single quote)', (_label, command) => {
+    expectGitDeny(runGate(bashCmd(withSingleQuoteComment(command)), AGENT));
+  });
+
+  it('still denies a host-wide pkill behind a parity-breaking comment', () => {
+    expectPkillDeny(runGate(bashCmd(withDoubleQuoteComment('pkill -f vitest'))));
+  });
+
+  it('still denies a self-matching pgrep wait-loop behind a parity-breaking comment', () => {
+    expectSelfMatchDeny(
+      runGate(bashCmd(withDoubleQuoteComment('until ! pgrep -f myjob; do sleep 5; done'))),
+    );
+  });
+
+  /**
+   * The other direction, so the fix cannot be "strip anything after a #".
+   * A `#` that is NOT a comment introducer — inside quotes, or mid-word — must
+   * still leave the command fully visible to the guards.
+   */
+  it('still denies when the `#` is inside a quoted argument, not a comment', () => {
+    expectGitDeny(runGate(bashCmd('echo "a # b" && git reset --hard'), AGENT));
+  });
+
+  it('allows an ordinary command whose comment merely mentions a dangerous string', () => {
+    expectAllow(runGate(bashCmd('git status  # never run git reset --hard here'), AGENT));
+  });
+});
+
 describe('pkill/killall host-wide dev-process guard (EI-18690252462401774)', () => {
   it.each([
     ['pkill -f test:affected (the exact repro)', 'pkill -f "test:affected"'],

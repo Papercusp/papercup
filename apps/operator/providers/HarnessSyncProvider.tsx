@@ -35,7 +35,7 @@
  * internal `useTransportFallback` drops SSE → POLLING after sustained SSE
  * failure. That is the degraded mode, not the default.
  */
-import { useEffect, type ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { SyncProvider, setSyncDeltaCodec, CONNECTION_CAPPED_MAX_IN_FLIGHT } from '@papercusp/sync';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { useFlag } from '@/lib/flag-hooks';

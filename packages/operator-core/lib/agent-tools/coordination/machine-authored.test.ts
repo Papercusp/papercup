@@ -11,6 +11,7 @@ import { describe, expect, it } from 'vitest';
 import {
   isMachineAuthoredSender,
   isMachineEmitterForStamping,
+  isSystemEmissionUnderAgentIdentity,
   MACHINE_EMITTER_STAMP_PATTERN,
   MACHINE_SENDER_PATTERN,
 } from './machine-authored';
@@ -169,6 +170,51 @@ describe('WI-6768 — isMachineEmitterForStamping (the THIRD, stamp-only signal)
 
   it('is case- and whitespace-insensitive, like the pattern it supplements', () => {
     expect(isMachineEmitterForStamping('  Git-Sync-Ref-Announce  ')).toBe(true);
+  });
+
+  describe('isSystemEmissionUnderAgentIdentity (D-095) — system code under a BORROWED agent id', () => {
+    it('stamps an agent-session sender that carries NO expects', () => {
+      // The measured population: 36 messages in 36h that no name-based pattern
+      // can reach, because `from` IS a real agent. coord:send requires
+      // `expects`, so its absence is positive evidence code sent this.
+      for (const s of [
+        'su-de6e9643-2fa0-4a4f-86f3-2f9e9c7f2e0d', // fleet-scope admission block
+        's-1a0a0a1a-4c71-4ce5-abcf-58897784edf1',
+        'cup-7f3a2b10',
+        'role-integrator-3',
+        '3f2a9c11-4c71-4ce5-abcf-58897784edf1', // bare uuid
+      ]) {
+        expect(isSystemEmissionUnderAgentIdentity(s, false), `${s} must be stamped`).toBe(true);
+      }
+    });
+
+    it('NEVER stamps when expects is present — that is a real coord:send', () => {
+      // The same senders, one field different. This is the whole discriminator:
+      // an agent that used the tool is untouchable here.
+      for (const s of ['su-de6e9643-2fa0-4a4f-86f3-2f9e9c7f2e0d', 'cup-7f3a2b10']) {
+        expect(isSystemEmissionUnderAgentIdentity(s, true), `${s} used the tool`).toBe(false);
+      }
+    });
+
+    it('NEVER stamps a human or the owner GUI, even with no expects', () => {
+      // The false positive that would matter most, and the reason this is
+      // restricted to system-minted identities rather than "anything lacking
+      // expects": silently suppressing the owner's own question is precisely
+      // what this module's header exists to prevent. `inbox-reply` (the owner's
+      // GUI reply) is doubly safe — it passes extra.expects explicitly — but it
+      // must not depend on that alone.
+      for (const s of ['pc-admin-coord-ui', 'human', 'operator', 'avi']) {
+        expect(isSystemEmissionUnderAgentIdentity(s, false), `${s} must NOT be stamped`).toBe(
+          false,
+        );
+      }
+    });
+
+    it('handles empty / absent senders without throwing', () => {
+      expect(isSystemEmissionUnderAgentIdentity('', false)).toBe(false);
+      expect(isSystemEmissionUnderAgentIdentity(null, false)).toBe(false);
+      expect(isSystemEmissionUnderAgentIdentity(undefined, false)).toBe(false);
+    });
   });
 
   it('stays OUT of the SQL pattern — the two must never be merged', () => {

@@ -202,10 +202,44 @@ export interface CoordClarifyAdoption {
  * `forYouBecause` to avoid looking bad is not a theory of mind (D-090/D-091 R3).
  */
 export interface CoordAuthoredAdoption {
-  /** L1 denominator: hand-authored agent prose in the window (machine senders and `auto:true` lifecycle emissions excluded — they CANNOT carry sections, so including them is the EI-19300252001829260 bug). */
+  /**
+   * L1 denominator: hand-authored agent prose in the window. Machine senders and
+   * `auto:true` lifecycle emissions are excluded (they CANNOT carry sections, so
+   * including them is the EI-19300252001829260 bug), AND — D-095 — so is anything
+   * lacking `expects`, which `coord:send` requires and therefore proves the
+   * message came through the agent-callable tool at all.
+   */
   handAuthored: number;
-  /** L1 numerator: of those, how many carry a `sections` array. */
+  /**
+   * L1 numerator: of those, how many carry a `sections` array.
+   *
+   * ⚠ THIS IS NOT A COMPLIANCE RATE, and reading it as one is the D-095 error.
+   * `stampMessageFields` writes `sections` only when they CARRY something
+   * (`authored || sections.length > 1`), so the compliant minimum `body:[{text}]`
+   * — the exact shape the refusal message teaches — persists NO `sections` key.
+   * A fully compliant message therefore counts AGAINST this number. Measured:
+   * 200 of 236 "sectionless" messages had passed the schema. What this actually
+   * measures is (authored ∨ multi-section), which is `withAuthoredField` ∪
+   * `multiSection` — an L2 reading, not an independent precondition.
+   *
+   * True L1 compliance is now 100% BY CONSTRUCTION on this denominator (the
+   * schema refuses everything else), and per D-016 a field that is 100% by
+   * construction measures nothing. The informative number in this slot is
+   * {@link bypassedChokepoint}.
+   */
   withSections: number;
+  /**
+   * THE REAL L1 (D-095): agent-identity messages in the window that never reached
+   * the schema — no `expects`, so they were emitted by code calling the
+   * `sendMessage` seam directly rather than by an agent through `coord:send`.
+   *
+   * Reported as a COUNT, not a rate, and deliberately NOT folded into
+   * `handAuthored`: it is a different population, not a failing slice of the same
+   * one. Its floor is the honest reading of "is the enforcement actually
+   * enforcing" — a number that can only be moved by closing a send path, never by
+   * an agent writing better messages.
+   */
+  bypassedChokepoint: number;
   /** L2: of the sectioned ones, how many carry MORE than one section (a 1-element array is what a wrapper looks like). */
   multiSection: number;
   /** L2: of the sectioned ones, how many fill ≥1 authored field (forYouBecause / premises / youMayNotKnow / couldNotDetermine). */
@@ -460,8 +494,16 @@ export function buildCoordHealthPatterns(
   const aa = input.authoredAdoption;
   if (aa && aa.handAuthored >= minAuthoredAdoptionMessages) {
     const pct = (n: number, d: number) => (d > 0 ? `${Math.round((n / d) * 100)}%` : 'n/a');
-    const l1 = pct(aa.withSections, aa.handAuthored);
+    // D-095: L1 is the BYPASS count, not a presence rate. `withSections` cannot
+    // express compliance — the compliant minimum stamps nothing — so a rate built
+    // on it reports compliant traffic as failure. What an operator can act on is
+    // how many messages never reached the schema at all.
+    const l1 = `${aa.bypassedChokepoint} bypassed`;
     const l2 = pct(aa.withAuthoredField, Math.max(aa.withSections, 1));
+    // The same numerator against the UNCONDITIONAL denominator. The conditional
+    // rate above answers "of the messages that already carried structure…",
+    // which stays high even if structure is rare; this one cannot.
+    const l2All = pct(aa.withAuthoredField, aa.handAuthored);
     // L3 is reported as a LIFT against the control arm, never as a floating
     // rate. D-085 requires the control arm for exactly this reason: "40% of
     // messages carrying an open question drew a reply" is a success or a failure
@@ -485,24 +527,37 @@ export function buildCoordHealthPatterns(
       category: 'coord-health',
       ref: 'coord:authored-adoption',
       summary:
-        `authored structure — L1 present ${l1} (${aa.withSections}/${aa.handAuthored} hand-authored), ` +
-        `L2 substantive ${l2} (${aa.withAuthoredField}/${aa.withSections} sectioned), ` +
+        `authored structure — L1 enforcement ${l1} (never reached the schema; ${aa.handAuthored} hand-authored did), ` +
+        `L2 substantive ${l2All} of all hand-authored (${aa.withAuthoredField}/${aa.handAuthored}; ${l2} = ${aa.withAuthoredField}/${aa.withSections} of those carrying structure), ` +
         `L3 open-questions answered ${l3}` +
         (readStarved ? ` — READ-STARVED: ${writtenWithStructure} written vs ${aa.structureReads} coord:read` : ''),
       detail:
         `Three levels, deliberately NOT collapsed into one number. ` +
-        `L1 PRESENCE ${aa.withSections}/${aa.handAuthored} hand-authored messages carry sections — a PRECONDITION, not a result: the schema refuses a plain string, so this level can be satisfied by wrapping one and measures compliance, not use. ` +
-        `L2 SUBSTANCE ${aa.withAuthoredField}/${aa.withSections} sectioned messages fill an authored field and ${aa.multiSection} carry more than one section — this is what separates real structure from a one-element wrapper. ` +
+        `L1 ENFORCEMENT ${aa.bypassedChokepoint} message(s) reached the log WITHOUT passing coord:send's schema — emitted by code calling the sendMessage seam directly under an agent's ownerId. That is the only actionable L1 number: true schema compliance is now 100% BY CONSTRUCTION (the string body is refused), and per D-016 a field that is 100% by construction measures nothing. ` +
+        `⚠ D-095: this slot used to report "${aa.withSections}/${aa.handAuthored} carry sections" as a COMPLIANCE rate. It never was one — stampMessageFields writes \`sections\` only when they carry something (authored || >1), so the compliant minimum body:[{text}] persists no sections key and counted as a FAILURE. Measured: 200 of 236 such messages had passed the schema. \`withSections\` is an L2 reading (authored ∪ multi-section), and is reported as one below. ` +
+        `L2 SUBSTANCE ${aa.withAuthoredField}/${aa.handAuthored} hand-authored messages fill an authored field (${l2All}) — the unconditional rate, and the one to read. Conditionally, ${aa.withAuthoredField}/${aa.withSections} of those already carrying structure do, and ${aa.multiSection} carry more than one section; that conditional rate stays high even when structure is rare, which is why both denominators are stated. ` +
         `L3 CONSEQUENCE ${aa.openQuestionsAnswered}/${aa.openQuestions} messages carrying an ACTIONABLE authored field (couldNotDetermine / youMayNotKnow) drew a reply, against a CONTROL arm of ${aa.plainMessagesAnswered}/${aa.plainMessages} hand-authored messages with no authored field at all — same senders, same window. ` +
         `The control is what makes the treatment rate mean anything (D-085): a bare reply rate is a success or a failure depending on what a plain message gets, and reporting it alone is how a correct numerator becomes a wrong conclusion. ` +
         `coord:read — the only surface showing authored structure IN FULL — was called ${aa.structureReads} time(s) in 24h. ` +
         `The in-band [coord+N] marker carries the forYouBecause RELATION and mere COUNTS; the note, the youMayNotKnow items and premises past the first are only visible through coord:read. ` +
-        `A LOW L3 against a HIGH L1 is the diagnostic this signal exists to make visible: it means the write half of "agents write their intent and other agents read it" shipped and the read half did not. ` +
+        `A LOW L3 against a HIGH L2 is the diagnostic this signal exists to make visible: it means the write half of "agents write their intent and other agents read it" shipped and the read half did not. (Stated against L2 since D-095 — L1 is now an enforcement count, and a count of bypasses says nothing about whether written structure is being read.) ` +
         `Denominators are stated inline on purpose — a ratio quoted without one is how "0.58% adopted" was published from a numerator that was exactly right (EI-19300252001829260). ` +
         `Aggregate-only, and no per-sender breakdown exists or may be added: attaching a consequence to being seen authoring these fields is what kills them (D-090/D-091 R3).`,
-      // Ranks by the READ gap, not by L1. A high L1 with a starved read path is
-      // the alarming state and must outrank a low L1 that is merely early.
-      weight: readStarved ? 0.65 : Math.min(0.5, 0.2 + (1 - aa.withSections / Math.max(aa.handAuthored, 1)) * 0.3),
+      // Ranks by the READ gap first: structure written but never opened is the
+      // alarming state and must outrank a low substance rate that is merely early.
+      //
+      // D-095: the fallback used to rank by `1 - withSections/handAuthored`, which
+      // read every compliant plain send as a miss — it ranked hardest on the
+      // artifact, so the signal rose fastest when nothing was wrong. It now ranks
+      // on the SUBSTANCE gap (a real behaviour an agent can change), with a floor
+      // under any live bypass, since a send path that skips enforcement outranks a
+      // merely-thin authoring rate.
+      weight: readStarved
+        ? 0.65
+        : Math.max(
+            aa.bypassedChokepoint > 0 ? 0.4 : 0,
+            Math.min(0.5, 0.2 + (1 - aa.withAuthoredField / Math.max(aa.handAuthored, 1)) * 0.3),
+          ),
     });
   }
 
@@ -882,6 +937,7 @@ export async function loadCoordAuthoredAdoption(
     const rows = await sql<
       Array<{
         hand_authored: number;
+        bypassed_chokepoint: number;
         with_sections: number;
         multi_section: number;
         with_authored_field: number;
@@ -927,6 +983,40 @@ export async function loadCoordAuthoredAdoption(
            -- schema. Measured: including them deflates L1 from 77.2% to 23.2%.
            AND coalesce(e.body->>'from', '') ~ ${AGENT_SESSION_SENDER_PATTERN}
            AND coalesce(e.body->>'auto', 'false') <> 'true'
+           -- D-095, THE THIRD FILTER, and it is positive for the same reason the
+           -- sender pattern above is. coord:send REQUIRES expects (no default,
+           -- refused at the arg schema), and sendMessage derives it
+           -- only for machine/auto senders — both already excluded. So on THIS
+           -- population a present expects proves the message came through the
+           -- agent-callable tool, and a missing one proves it did not.
+           -- (No backticks in this comment on purpose: it lives inside a JS
+           -- template literal, where one would terminate the SQL string.)
+           --
+           -- Without it, 36 lifecycle notices emitted by library code under a
+           -- BORROWED agent ownerId (fleet-scope admission blocks,
+           -- take-leadership demotions, a fed-event probe, a control cue) count
+           -- as hand-authored prose. No name-based pattern can reach them —
+           -- the sender IS a real agent — which is why the write-side stamp
+           -- (isSystemEmissionUnderAgentIdentity) cannot fix history and this
+           -- must be filtered at read time as well as stamped at write time.
+           AND e.body ? 'expects'
+      ),
+      -- The complement, and the honest L1: agent-identity messages that never
+      -- reached the schema. Counted separately rather than as a failing slice of
+      -- the hand CTE, because it is a different population — a send PATH that bypasses
+      -- enforcement, not an agent authoring poorly.
+      bypassed AS (
+        SELECT count(*)::int AS n
+          FROM harness_shared.coord_event_log e
+         WHERE e.workspace_id = ${ws}
+           AND e.surface = 'messages'
+           AND e.ts > now() - interval '24 hours'
+           AND e.body->>'kind' = 'message'
+           AND e.body->>'msg_id' IS NOT NULL
+           AND NOT (coalesce(e.body->>'from', '') ~ ${MACHINE_SENDER_PATTERN})
+           AND coalesce(e.body->>'from', '') ~ ${AGENT_SESSION_SENDER_PATTERN}
+           AND coalesce(e.body->>'auto', 'false') <> 'true'
+           AND NOT (e.body ? 'expects')
       ),
       replies AS (
         SELECT DISTINCT r.body->>'related_msg_id' AS to_msg_id,
@@ -951,6 +1041,7 @@ export async function loadCoordAuthoredAdoption(
           FROM hand h
       )
       SELECT count(*)::int                                              AS hand_authored,
+             (SELECT n FROM bypassed)                                   AS bypassed_chokepoint,
              count(*) FILTER (WHERE h.has_sections)::int                AS with_sections,
              count(*) FILTER (WHERE h.n_sections > 1)::int              AS multi_section,
              count(*) FILTER (WHERE h.has_authored)::int                AS with_authored_field,
@@ -986,6 +1077,7 @@ export async function loadCoordAuthoredAdoption(
 
     return {
       handAuthored: Number(r.hand_authored) || 0,
+      bypassedChokepoint: Number(r.bypassed_chokepoint) || 0,
       withSections: Number(r.with_sections) || 0,
       multiSection: Number(r.multi_section) || 0,
       withAuthoredField: Number(r.with_authored_field) || 0,

@@ -36,7 +36,7 @@ vi.mock('./presence', async (importOriginal) => ({
   sweepStalePresence: sweepMock,
 }));
 vi.mock('./federated-presence', () => ({ listFederatedPresence: vi.fn(async () => []) }));
-vi.mock('../../adv-sessions', () => ({ endedRecordedOwnerIds: vi.fn(async () => new Set<string>()),
+vi.mock('../../adv-sessions', async (orig) => ({ ...(await orig<typeof import('../../adv-sessions')>()), endedRecordedOwnerIds: vi.fn(async () => new Set<string>()),
   listRecordedLiveSessions: vi.fn(async () => []),
   // Unification P-002: the snapshot's recorded-session oracle leg.
   recordedLiveOwnerIds: vi.fn(async () => new Set<string>()),

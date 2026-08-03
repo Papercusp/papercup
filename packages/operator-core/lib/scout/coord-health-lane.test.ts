@@ -419,6 +419,7 @@ describe('premise-resolve-rate — the P-011 measurement (D-091)', () => {
 
   const adoption = (over: Partial<CoordAuthoredAdoption> = {}): CoordAuthoredAdoption => ({
     handAuthored: 100,
+    bypassedChokepoint: 0,
     withSections: 80,
     multiSection: 66,
     withAuthoredField: 64,
@@ -436,13 +437,50 @@ describe('premise-resolve-rate — the P-011 measurement (D-091)', () => {
     );
     expect(p).toBeDefined();
     // All three levels present and labelled — never collapsed into one figure.
-    expect(p!.summary).toMatch(/L1 present 80%/);
-    expect(p!.summary).toMatch(/L2 substantive 80%/);
+    // D-095: L1 is an ENFORCEMENT count, not a presence rate — see the guard below.
+    expect(p!.summary).toMatch(/L1 enforcement 0 bypassed/);
+    expect(p!.summary).toMatch(/L2 substantive 64%/);
     expect(p!.summary).toMatch(/L3 open-questions answered 40%/);
     // The denominator travels WITH the ratio. "0.58% adopted" was published from
     // a numerator that was exactly right and a denominator nobody stated.
-    expect(p!.summary).toContain('80/100');
+    expect(p!.summary).toContain('64/100');
     expect(p!.summary).toContain('64/80');
+  });
+
+  it('NEVER reports "carries sections" as a compliance rate (D-095)', () => {
+    // THE BUG THIS PINS: `stampMessageFields` writes `sections` only when they
+    // carry something (authored || >1 section), so the COMPLIANT minimum
+    // body:[{text}] — the exact shape the refusal message teaches — persists no
+    // sections key at all. Measured 2026-08-03: 200 of 236 "sectionless"
+    // hand-authored messages had passed the schema. Any rate of the form
+    // withSections/handAuthored therefore reports compliant traffic as failure,
+    // and the old L1 did exactly that (80/100 = "L1 present 80%").
+    //
+    // A regression here is silent and reads as plausible, which is why it is
+    // pinned on the RENDERED text rather than on the field: the field is fine,
+    // the claim made about it was not.
+    const p = buildCoordHealthPatterns(
+      base({ authoredAdoption: adoption({ bypassedChokepoint: 0 }) }),
+    ).find((x) => x.ref === 'coord:authored-adoption')!;
+    expect(p.summary).not.toMatch(/L1 present/);
+    expect(p.detail).not.toMatch(/measures compliance/);
+    // And the honest number is stated where the false one used to be.
+    expect(p.summary).toMatch(/L1 enforcement/);
+    expect(p.detail).toMatch(/100% BY CONSTRUCTION/);
+  });
+
+  it('surfaces a live BYPASS above a merely-thin authoring rate (D-095)', () => {
+    // A send path that skips enforcement is not the same kind of problem as
+    // agents authoring thinly: one is closed by fixing code, the other only by
+    // an agent writing differently. The bypass floor must outrank the latter.
+    const bypassed = buildCoordHealthPatterns(
+      base({ authoredAdoption: adoption({ bypassedChokepoint: 36, withAuthoredField: 90 }) }),
+    ).find((x) => x.ref === 'coord:authored-adoption')!;
+    const thinButClean = buildCoordHealthPatterns(
+      base({ authoredAdoption: adoption({ bypassedChokepoint: 0, withAuthoredField: 90 }) }),
+    ).find((x) => x.ref === 'coord:authored-adoption')!;
+    expect(bypassed.summary).toMatch(/36 bypassed/);
+    expect(bypassed.weight!).toBeGreaterThan(thinButClean.weight!);
   });
 
   it('flags READ-STARVED when structure is written far more than it is ever opened', () => {
@@ -459,10 +497,12 @@ describe('premise-resolve-rate — the P-011 measurement (D-091)', () => {
     expect(healthy.summary).not.toMatch(/READ-STARVED/);
   });
 
-  it('ranks a HIGH-L1 read-starved corpus ABOVE a merely-low-L1 one', () => {
-    // The inversion this signal exists to produce. Optimising L1 is what the
-    // original plan would have done; a high L1 whose output nobody reads is the
-    // WORSE state and must not be outranked by an early-but-healthy low L1.
+  it('ranks a HIGH-substance read-starved corpus ABOVE a merely-thin one', () => {
+    // The inversion this signal exists to produce. Optimising the write rate is
+    // what the original plan would have done; a corpus rich in structure that
+    // nobody reads is the WORSE state and must not be outranked by an
+    // early-but-healthy thin one. (Stated in L2 terms since D-095 — the old
+    // wording said "L1", which now names the bypass count instead.)
     const highL1Starved = buildCoordHealthPatterns(
       base({ authoredAdoption: adoption({ withSections: 95, withAuthoredField: 90, structureReads: 1 }) }),
     ).find((x) => x.ref === 'coord:authored-adoption')!;

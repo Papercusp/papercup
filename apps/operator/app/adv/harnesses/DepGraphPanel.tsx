@@ -43,7 +43,7 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { parseAsString, useQueryState } from 'nuqs';
+import { parseAsString, parseAsStringEnum, useQueryState } from 'nuqs';
 import { useSyncQuery } from '@papercusp/sync';
 import type { PanelComponentProps } from '../../harness/dock/panel-registry';
 import { useColumnFilters, ColumnFilterBar } from '../../harness/filters';
@@ -110,6 +110,18 @@ export default function DepGraphPanel({ params }: PanelComponentProps) {
   const slug = typeof params.harnessSlug === 'string' ? params.harnessSlug : '';
   const [selectedId, setSelectedId] = useQueryState('sel', parseAsString.withDefault(''));
 
+  // INTEGRITY MODE (P-008) — a FILTER MODE on this pane, not a separate surface. In nuqs
+  // like every other user-meaningful axis here, so the view is linkable and agent-drivable
+  // (`ui:get_state` / `ui:dispatch` read the URL; useState would be invisible to them).
+  // Its own param, deliberately: it is orthogonal to the `wif` column filters and composes
+  // with them (health ∧ filters), so folding it into `wif` would make "show me the broken
+  // edges" mutually exclusive with "show me this plan's items".
+  const [health, setHealth] = useQueryState(
+    'dgh',
+    parseAsStringEnum(['all', 'issues']).withDefault('all'),
+  );
+  const healthOnly = health === 'issues';
+
   // SAME queryName + SAME limit as WorkItemsPanel ⇒ one shared subscription (see header).
   const itemsQuery = useSyncQuery<WorkItemRow>({
     queryName: 'workItems.byHarness',
@@ -146,11 +158,19 @@ export default function DepGraphPanel({ params }: PanelComponentProps) {
   const graph = useMemo(() => {
     if (!visibleItems || !edgeRows) return null;
     return buildDepSubgraph({
-      items: visibleItems.map((i) => ({ id: i.id, kind: i.kind, title: i.title, state: i.state })),
+      items: visibleItems.map((i) => ({
+        id: i.id,
+        kind: i.kind,
+        title: i.title,
+        state: i.state,
+        // P-012: carries the plan provenance so the renderer can mark plan items.
+        planSlug: i.planSlug,
+      })),
       edges: edgeRows,
       selectedId: selectedId || null,
+      healthOnly,
     });
-  }, [visibleItems, edgeRows, selectedId]);
+  }, [visibleItems, edgeRows, selectedId, healthOnly]);
 
   const [positioned, setPositioned] = useState<Positioned | null>(null);
   const [layoutError, setLayoutError] = useState<string | null>(null);
@@ -217,6 +237,20 @@ export default function DepGraphPanel({ params }: PanelComponentProps) {
           {graph.hiddenCount} more hidden of {graph.totalInScope} — filter or select to narrow
         </span>
       )}
+      {/* P-008: the integrity view, as a MODE on this pane rather than a second surface. */}
+      <button
+        type="button"
+        className="pc-advpanel__iconbtn"
+        aria-pressed={healthOnly}
+        title={
+          healthOnly
+            ? 'Showing only edges that gate nothing: broken (blocker missing) or already satisfied. Click to show all.'
+            : 'Show only edges that gate nothing — broken (blocker missing) or already satisfied.'
+        }
+        onClick={() => void setHealth(healthOnly ? 'all' : 'issues')}
+      >
+        {healthOnly ? '● Issues only' : '○ Issues only'}
+      </button>
       {/* Same control, same `wif` param, same columns as the list pane (P-010). */}
       <ColumnFilterBar
         controller={cf.controller}
@@ -237,13 +271,17 @@ export default function DepGraphPanel({ params }: PanelComponentProps) {
     // "nothing depends on anything" need different next actions from the user. Filters are
     // checked FIRST: when a filter is active it is the most likely cause and the one the
     // reader can act on immediately.
-    const why = cf.hasActive
-      ? 'No work items match the active filters.'
-      : items && items.length === 0
-        ? 'No work items for this harness.'
-        : selectedId
-          ? `${selectedId} has no dependencies.`
-          : 'No dependency edges among the visible work items.';
+    // Integrity mode reports a CLEAN result as a finding in its own right — "no broken or
+    // inert edges" is the good outcome, and must not read like the pane failed to load.
+    const why = healthOnly
+      ? 'No broken or already-satisfied edges — nothing here gates nothing.'
+      : cf.hasActive
+        ? 'No work items match the active filters.'
+        : items && items.length === 0
+          ? 'No work items for this harness.'
+          : selectedId
+            ? `${selectedId} has no dependencies.`
+            : 'No dependency edges among the visible work items.';
     return (
       <div className="pc-advpanel pc-depgraph">
         {bar}
@@ -326,11 +364,26 @@ export default function DepGraphPanel({ params }: PanelComponentProps) {
                   key={n.id}
                   transform={`translate(${n.x}, ${n.y})`}
                   className={`pc-depgraph__node${n.dangling ? ' pc-depgraph__node--dangling' : ''}${
-                    n.id === selectedId ? ' pc-depgraph__node--selected' : ''
-                  }`}
+                    n.planSlug ? ' pc-depgraph__node--plan' : ''
+                  }${n.id === selectedId ? ' pc-depgraph__node--selected' : ''}`}
                   onClick={() => void setSelectedId(n.id)}
                 >
                   <rect width={NODE_W} height={NODE_H} rx={6} />
+                  {/* P-012: plan provenance as a left edge-marker rather than a fill or
+                      border change. Fill is already spoken for by state and the border by
+                      selection/dangling, so distinguishing plan items by either would
+                      collide with a signal that is already load-bearing. A separate marker
+                      composes with all of them, and stays legible on a small node. */}
+                  {n.planSlug && (
+                    <rect
+                      className="pc-depgraph__node-planmark"
+                      width={3}
+                      height={NODE_H}
+                      rx={1.5}
+                    >
+                      <title>{`from plan: ${n.planSlug}`}</title>
+                    </rect>
+                  )}
                   <text x={10} y={18} className="pc-depgraph__node-id">
                     {n.id}
                   </text>

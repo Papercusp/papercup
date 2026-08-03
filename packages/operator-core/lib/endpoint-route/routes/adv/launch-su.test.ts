@@ -67,7 +67,7 @@ vi.mock('../../../workspace-registry', () => ({ activeWorkspaceId: () => 'defaul
 vi.mock('../../../interactive-safety-floor', () => ({
   checkInteractiveSafetyFloor: vi.fn(async () => ({ ok: true as const })),
 }));
-vi.mock('../../../adv-sessions', () => ({
+vi.mock('../../../adv-sessions', async (orig) => ({ ...(await orig<typeof import('../../../adv-sessions')>()),
   DISPLAY_TERMINAL_LAUNCH: 'terminal',
   recordAdvSession: vi.fn(async () => 7 as number | null),
 }));

@@ -665,7 +665,23 @@
    framed cards; in the /adv two-pane it is the detail pane of a board that
    already frames it, so it stays exactly as it was. */
 .pc-zone--activity .pc-dossier {
-  --pc-dossier-edge: color-mix(in oklab, var(--accent), var(--bg-popover) 62%);
+  /* ── the card + its edge — Treatment C3's two load-bearing values ──────────
+     Plan P-005, applied identically to the Orders rail (AgentOrders.css carries
+     the full measurement and the reasoning). The short version: on this ground
+     card FILL has no range (1.11:1 to 1.58:1 before the rail reads washed), so
+     separation has to come from the STROKE — and both rails shipped a day with
+     an edge at 1.92:1, under the 3:1 non-text floor, around a 1.09:1 fill.
+
+     Measured live in the Tauri webview:
+                       was                    now                  C3 target
+       card    #152030  1.09:1 vs ground  #1c3146  1.34:1      #1d3048  1.33:1
+       edge    #205170  1.92:1 vs card    #4c81a0  3.15:1      #5182a0  3.22:1
+
+     Kept byte-identical to the Orders rail on purpose: two rails flanking the
+     same popup that separate their sections differently read as one of them
+     being broken — the same rule the cap inversion below already follows. */
+  --pc-dossier-card: color-mix(in oklab, var(--accent-strong) 16%, var(--bg-popover));
+  --pc-dossier-edge: color-mix(in oklab, var(--accent-strong) 60%, var(--bg-popover));
   /* ── section-cap plate ────────────────────────────────────────────────────
      The Activity rail's caps had the same defect as the Orders rail's (see the
      long note in AgentOrders.css): `var(--accent)` / `var(--warn)` at full
@@ -683,9 +699,14 @@
        blue   #30526c  -44% luminance   label #c1eafe  6.46:1   AA
        amber  #574f3a  -49% luminance   label #fdd37d  5.72:1   AA
 
-     35% rather than lower because the cap sits on a card that is itself a 3.5%
-     white veil over the ground (#152030); below ~25% the plate stops
-     separating from that card and the bar dissolves.
+     35% rather than lower because below ~25% the plate stops separating from
+     the card it sits on and the bar dissolves.
+
+     ⚠ That separation moved to 1.62:1 (from ~2.0:1) when P-005 adopted C3's
+     lighter card above. NOT repaired by raising the mix — that is a brightness
+     increase, the exact thing the owner asked to reduce, and it costs the label
+     6.42:1 -> 4.91:1. Repaid in FORM instead: a hairline under the cap in the
+     card's edge colour, free in luminance. Full reasoning in AgentOrders.css.
 
      File-local because the css-tokens lint only resolves a component token
      inside its DEFINING file — chat-controls.css's `--pc-zone-fill` named here
@@ -724,7 +745,7 @@
   padding: 0 8px 6px;
   border: 1px solid var(--pc-dossier-edge);
   border-radius: 4px;
-  background: color-mix(in oklab, transparent, white 3.5%);
+  background: var(--pc-dossier-card);
   /* An open section still cannot run away with the column: its body scrolls
      inside its own card with the cap pinned. This is the half of the owner's
      "sections that get big" ask that works for a reader who never clicks. */
@@ -753,10 +774,30 @@
   font-size: 10.5px;
   background: var(--pc-dossier-cap-fill);
   color: var(--pc-dossier-cap-label);
+  /* Form, not luminance — repays the plate/card separation C3's lighter card
+     cost. Matches the Orders rail exactly (see the cap-fill note above). */
+  border-bottom: 1px solid var(--pc-dossier-edge);
 }
 .pc-zone--activity .pc-dossier__section[data-attn='true'] > .pc-dossier__h {
   background: var(--pc-dossier-cap-fill-warn);
   color: var(--pc-dossier-cap-label-warn);
+  border-bottom-color: var(--warn);
+}
+
+/* ── cluster labels + the quiet-empty line ────────────────────────────────── */
+/* Layout/dot/type scale are shared with the Orders rail (chat-controls.css);
+   only the INK is set here, because each rail lifts its own muted tier. Both
+   sit OUTSIDE the cards, so they take the rail ground rather than the card. */
+.pc-zone--activity .pc-dossier > .pc-rail-cluster,
+.pc-zone--activity .pc-dossier > .pc-rail-quiet {
+  color: var(--pc-dossier-mute);
+  /* These are not sections, so the `> *:not(.pc-dossier__section)` rule above
+     would give them the rail's own 10px chrome padding on top of their own.
+     Restated so the quiet line's dot aligns with the cards' text column. */
+  padding: 1px 10px;
+}
+.pc-zone--activity .pc-dossier > .pc-rail-quiet .pc-rail-quiet__label {
+  color: var(--pc-dossier-dim);
 }
 /* Badges and notes ride ON the filled cap, so they take the cap's ink rather
    than the rail ground's — the contrast pairing the lint requires. */

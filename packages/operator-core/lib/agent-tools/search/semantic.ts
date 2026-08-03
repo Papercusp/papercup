@@ -17,7 +17,8 @@ import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { runHybridSearch } from '@papercusp/search';
 import { SEARCH_SOURCES } from './sources';
-import { buildQueryEmbedder, interactiveEmbedAcquireBudgetMs } from './embedder';
+import { buildQueryEmbedderResolved, interactiveEmbedAcquireBudgetMs } from './embedder';
+import { proseMinScoreFloors } from '../../search/prose-min-score';
 import { rerankCandidateCount, rerankProseHits } from './rerank';
 import { searchFilterArgs, resolveSearchFilters } from './filters';
 import { resolveAgentIdentity } from '../coordination/identity';
@@ -89,7 +90,14 @@ export default defineTool({
       { workspaceId: ctx.workspaceId ?? '' },
     );
 
-    const embedder = await buildQueryEmbedder({ acquireBudgetMs: interactiveEmbedAcquireBudgetMs() });
+    // Resolved (not bare) because the minScore floor below is only valid in
+    // the units of the model that produced the query vector — see
+    // ../../search/prose-min-score. A floor tuned on gemma applied to an
+    // OpenAI vector would delete nearly every result while looking correct.
+    const resolvedEmbedder = await buildQueryEmbedderResolved({
+      acquireBudgetMs: interactiveEmbedAcquireBudgetMs(),
+    });
+    const embedder = resolvedEmbedder?.embed ?? null;
     // WI-3929 (same class as EI-9312): bound the ACTUAL per-query embed call
     // inside runHybridSearch, not just the embedder ACQUISITION above — a
     // resolved-but-slow embedder (warm local ONNX under load, or the OpenAI
@@ -109,6 +117,9 @@ export default defineTool({
       embedder,
       embedTimeoutMs: interactiveEmbedAcquireBudgetMs(),
       filters,
+      // P-001: reject sub-floor vector candidates BEFORE fusion. Undefined for
+      // an embedder mode we have no measurement for ⇒ nothing is filtered.
+      minScore: proseMinScoreFloors(resolvedEmbedder?.mode),
       log: ctx.log,
     });
 

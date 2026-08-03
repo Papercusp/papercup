@@ -44,7 +44,7 @@ import {
   type AgentOrders as AgentOrdersDTO,
   type AgentOrdersSignalKey,
 } from './use-agent-orders';
-import { RailSectionHead, useRailCollapse } from './rail-sections';
+import { RailCluster, RailQuiet, RailSectionHead, useRailCollapse } from './rail-sections';
 import './AgentOrders.css';
 
 /** A section that could not be read, rendered so it can never be mistaken for
@@ -151,6 +151,14 @@ export default function AgentOrders({
 
       {orders ? (
         <>
+          {/* Two clusters, not six peers (P-005 / Treatment C3). The split is
+              the same one that justified splitting Orders from Activity in the
+              first place: instructions the agent RECEIVED change on the scale of
+              minutes-to-days, while what it is CARRYING is state it wrote itself
+              and that goes stale. Grouping them says which of the two a reader
+              is looking at without adding a single pixel of fill or stroke. */}
+          <RailCluster label="What they were told" />
+
           {/* ── Mission: the section that explains every other section ── */}
           <section
             className="pc-orders__sec pc-orders__sec--mission"
@@ -273,7 +281,14 @@ export default function AgentOrders({
             ) : null}
           </section>
 
-          {/* ── Owner directives, verbatim ── */}
+          {/* ── Owner directives, verbatim ──
+              Settled (nothing open) it is one dim line, not a bordered card with
+              "No open owner directives." sitting in it — the quiet-empty rule.
+              The card comes back the instant something is open, and that is the
+              point: the frame is what says "there is something here". */}
+          {(orders.directives ?? []).length === 0 && (orders.directivesTotalOpen ?? 0) === 0 ? (
+            <RailQuiet label="Owner directives" none="none open" testId="rail-quiet-directives" />
+          ) : (
           <section
             className="pc-orders__sec"
             id="pc-orders-directives"
@@ -317,8 +332,12 @@ export default function AgentOrders({
               <Empty text="No open owner directives." />
             )}
           </section>
+          )}
 
           {/* ── Standing facts ── */}
+          {(orders.facts ?? []).length === 0 ? (
+            <RailQuiet label="Standing facts" none="none in scope" testId="rail-quiet-facts" />
+          ) : (
           <section
             className="pc-orders__sec"
             id="pc-orders-facts"
@@ -353,8 +372,14 @@ export default function AgentOrders({
               <Empty text="No standing facts in scope." />
             )}
           </section>
+          )}
+
+          <RailCluster label="What they’re carrying" />
 
           {/* ── Walls: blocked on the owner ── */}
+          {(orders.walls ?? []).length === 0 ? (
+            <RailQuiet label="Walls" none="nothing blocked on you" testId="rail-quiet-walls" />
+          ) : (
           <section
             className="pc-orders__sec"
             id="pc-orders-walls"
@@ -390,8 +415,19 @@ export default function AgentOrders({
               <Empty text="Nothing blocked on you." />
             )}
           </section>
+          )}
 
-          {/* ── Carry: what it is tracking, and how old that is ── */}
+          {/* ── Carry: what it is tracking, and how old that is ──
+              Quiet ONLY for the genuinely-none case. `unavailable` keeps its
+              card because "couldn't read it" must never render quieter than
+              "nothing" (plan D-003), and so does `neverWritten`, which is an
+              emptiness that is itself the finding — an agent looping with no
+              carry-note loses its thread at the next cold wake. Both are
+              handled inside the card below; only a wholly absent carry object
+              reaches this branch. */}
+          {!unavailable.has('carry') && !carry ? (
+            <RailQuiet label="Carry" none="no carry state" testId="rail-quiet-carry" />
+          ) : (
           <section
             className="pc-orders__sec"
             id="pc-orders-carry"
@@ -528,6 +564,7 @@ export default function AgentOrders({
               <Empty text="No carry state." />
             )}
           </section>
+          )}
         </>
       ) : null}
     </aside>

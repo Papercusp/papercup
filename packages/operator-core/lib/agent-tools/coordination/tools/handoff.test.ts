@@ -56,7 +56,7 @@ vi.mock('../pending-wakes', () => ({
 // console.warn fails the test under vitest-fail-on-console. Mock both fail-soft
 // seams to empty, matching this file's existing roster-mock discipline (the
 // listPresence leg above already covers the LOCAL-presence path).
-vi.mock('../../../adv-sessions', () => ({ endedRecordedOwnerIds: vi.fn(async () => new Set<string>()),
+vi.mock('../../../adv-sessions', async (orig) => ({ ...(await orig<typeof import('../../../adv-sessions')>()), endedRecordedOwnerIds: vi.fn(async () => new Set<string>()),
   listRecordedLiveSessions: vi.fn(async () => []),
 }));
 vi.mock('../../../sync/hyperbee/session-presence-store', () => ({
