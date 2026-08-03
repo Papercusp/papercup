@@ -71,6 +71,7 @@ import { mirrorWorkItemBlockingEdge, removeMirroredWorkItemBlockingEdge } from '
 import { releaseWorkItemLease } from './work-item-claim-lease-wiring';
 import {
   COMPLETION_ATTESTATIONS_KEY,
+  TERMINAL_ASSUMPTIONS_KEY,
   TERMINAL_COMPLETION_EVIDENCE_KEY,
   readStoredAssumptions,
   terminalPayloadMergeJson,
@@ -2372,6 +2373,17 @@ export async function setWorkItemState(
   // legacy close, and it stays null through the reopen. Stamping it `invalid` would be
   // retroactively judging a close made in good faith under the old rules — the exact
   // reclassification D-005 exists to prevent.
+  //
+  // EI-19393880133572803: the archive above used to be PARTIAL — it moved
+  // terminalOwner/terminalCompletionRef/completionAuthority into reopenHistory but left
+  // payload._completionEvidence (TERMINAL_COMPLETION_EVIDENCE_KEY) and payload._assumptions
+  // (TERMINAL_ASSUMPTIONS_KEY) live on the row, because the UPDATE below only ever ADDED
+  // reopenHistory via a top-level `||` merge — it never REMOVED those two keys. So a
+  // reopened, non-terminal item kept reading as fully verified by a completion that was
+  // just retracted (terminalCompletionEvidence is derived straight from
+  // payload._completionEvidence at read time — see extractTerminalCompletionEvidence — so it
+  // survived untouched). Both are now archived into the SAME entry and stripped from the
+  // live payload, so "state != terminal ⇒ no live completion evidence" holds.
   if (
     result &&
     isSettledWorkItemState(wi.state) &&
@@ -2391,6 +2403,8 @@ export async function setWorkItemState(
         terminalOwner: wi.terminalOwner,
         terminalCompletionRef: wi.terminalCompletionRef,
         completionAuthority: wi.completionAuthority,
+        terminalCompletionEvidence: wi.terminalCompletionEvidence,
+        assumptions: readStoredAssumptions(wi.payload),
       };
       const history = JSON.stringify({ reopenHistory: [...prevHistory.slice(-4), entry] });
       // Only a close made UNDER the authority contract can be contradicted into
@@ -2407,7 +2421,13 @@ export async function setWorkItemState(
                -- so its collapsed-nuance reason must clear too (else a later plain done/dropped
                -- would inherit a stale passed/resolved reason).
                terminal_reason = NULL,
-               payload = COALESCE(payload, '{}'::jsonb) || ${history}::text::jsonb,
+               -- EI-19393880133572803: STRIP the two terminal-only evidence keys before
+               -- merging in reopenHistory, so they cannot survive the reopen live on the
+               -- row (they were just archived into the entry above).
+               payload = (COALESCE(payload, '{}'::jsonb)
+                            - ${TERMINAL_COMPLETION_EVIDENCE_KEY}::text
+                            - ${TERMINAL_ASSUMPTIONS_KEY}::text)
+                         || ${history}::text::jsonb,
                updated_ts = ${Date.now()}
          WHERE feature_id = ${id}
            AND workspace_id IN (${issuesScopeWorkspace()}, ${activeWorkspaceId()})`;
@@ -2416,6 +2436,8 @@ export async function setWorkItemState(
       (result as { terminalCompletionRef?: string | null }).terminalCompletionRef = null;
       (result as { completionAuthority?: WorkItemCompletionAuthority | null }).completionAuthority =
         reopenedAuthority;
+      (result as { terminalCompletionEvidence?: CompletionVerificationEvidence | null }).terminalCompletionEvidence =
+        null;
     } catch {
       /* best-effort — see above */
     }

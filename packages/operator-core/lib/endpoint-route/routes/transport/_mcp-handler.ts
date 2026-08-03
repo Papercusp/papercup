@@ -997,7 +997,7 @@ import { pluginSpawnImpl, secretImpl, makeSecretResolver } from '../../../plugin
 // PROJECTED_DEPS lives in @/lib/projected-tool-deps so the IPC server
 // (and any future transport) can reuse the same telemetry + quota
 // implementation. Don't fork the SQL across transports.
-import { PROJECTED_DEPS } from '../../../projected-tool-deps';
+import { PROJECTED_DEPS, backfillResultDoorOutputRef } from '../../../projected-tool-deps';
 
 // EI-18803497769946984: names a tool that is holding the ambient workspace transaction
 // past ~45s, before Postgres's 60s idle timeout kills the backend and the caller gets a
@@ -2281,6 +2281,31 @@ const handler = createMcpHandler(
                   })(),
                 },
               );
+              // EI-19389431406847252: the door spills to scratch but the telemetry
+              // row for THIS call was already snapshotted+queued inside
+              // runDispatchStack's `finally`, which runs BEFORE this point — so the
+              // spill path never reaches tool_invocations.output_ref without an
+              // explicit backfill. Best-effort, fire-and-forget (never block the
+              // client response on it), and unconditional on result.isError — an
+              // error result can still have spilled real bytes worth tracking.
+              const doorMeta = (result._meta as Record<string, unknown> | undefined)
+                ?.resultDoor as
+                | { truncated?: boolean; spillUri?: string; originalChars?: number }
+                | undefined;
+              if (doorMeta?.truncated && doorMeta.spillUri) {
+                void backfillResultDoorOutputRef({
+                  workspaceId: dispatchSpawnCtx.workspaceId,
+                  spawnId: dispatchSpawnCtx.spawnId,
+                  toolName,
+                  runId: dispatchSpawnCtx.runId ?? null,
+                  outputRef: doorMeta.spillUri,
+                  outputSize: doorMeta.originalChars ?? 0,
+                }).catch((err) => {
+                  console.warn(
+                    `[mcp-handler] backfillResultDoorOutputRef failed for ${toolName}: ${err instanceof Error ? err.message : String(err)}`,
+                  );
+                });
+              }
               // EI-19301511582594101: the replay receipt is NOT persisted here.
               // It used to be, and that inverted the write order: `storeMcpResult`
               // commits on its OWN connection (getOrgPg()), while a needsTx tool's

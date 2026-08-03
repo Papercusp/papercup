@@ -2004,11 +2004,30 @@ export function computeStages(
               : ` (The gate is also RED — ${g.consecutiveReds} consecutive — but do NOT read that red as your change failing until a run that CONTAINS it completes.)`
             : ''
         }`
-      : g.fireStale
-        ? `The green-checkpoint is NOT FIRING${g.fireStaleReason ? ` (${g.fireStaleReason})` : ''} — no verdict is coming until that is fixed. Waiting will not help; fire one with release:checkpoint-run.`
-        : gateHealth === 'stalled'
-          ? `Gate is RED (${g.consecutiveReds} consecutive) — main is held for everyone until it greens. The reds are yours to fix, not a queue to wait in.`
-          : null;
+      : // EI-19405864032365760: an ABORTED tick outranks the red streak, because the streak is
+        // stale BY CONSTRUCTION whenever one is recorded — the abort judged no code, so the
+        // counters still describe an older run whose candidate and failing tests are no longer
+        // what is holding the pipeline. Reporting the streak here is what sent a fleet after
+        // unrelated test files for ~2.5h during the 2026-08-03 migrations-pending freeze, while
+        // the one-line true cause was recorded nowhere a reader looks. Ordered ABOVE fireStale
+        // too: an aborting gate is still firing on schedule, so `fireStale` is false and its
+        // "fire one with release:checkpoint-run" advice would be actively wrong — a fresh run
+        // aborts at the same preflight.
+        g.inconclusive
+        ? `Gate ABORTED before judging (${g.inconclusive.status}) — it rendered NO verdict, and firing another run will abort the same way. ${
+            g.inconclusive.detail ?? 'See the green-checkpoint log for the blocking condition.'
+          }${
+            g.consecutiveReds > 0
+              ? ` ⚠ The gate counters still show ${g.consecutiveReds} consecutive red(s)${
+                  g.observedCandidate ? ` on ${g.observedCandidate}` : ''
+                } — that is the PREVIOUS verdict, not this one. Do not chase those failing tests; clear the abort above first.`
+              : ''
+          }`
+        : g.fireStale
+          ? `The green-checkpoint is NOT FIRING${g.fireStaleReason ? ` (${g.fireStaleReason})` : ''} — no verdict is coming until that is fixed. Waiting will not help; fire one with release:checkpoint-run.`
+          : gateHealth === 'stalled'
+            ? `Gate is RED (${g.consecutiveReds} consecutive) — main is held for everyone until it greens. The reds are yours to fix, not a queue to wait in.`
+            : null;
     stages.push({
       name: 'gate',
       position: p.positions.inMain ? 'past' : 'pending',

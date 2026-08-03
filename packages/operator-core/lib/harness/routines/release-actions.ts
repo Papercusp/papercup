@@ -425,7 +425,9 @@ export async function recordCheckpointVerdict(
     status: verdict.reason,
     detail: buildCheckpointDetail(verdict),
   });
-  await trackGateStall(target, verdict.reason, verdict.candidate, verdict.failingTests, verdict.from ?? null, verdict.retriage);
+  // EI-19405864032365760: `summary` rides along so the 'migrations-pending' abort path can name
+  // the pending migration in `gate_health.inconclusive` — it is the only field carrying it.
+  await trackGateStall(target, verdict.reason, verdict.candidate, verdict.failingTests, verdict.from ?? null, verdict.retriage, verdict.summary ?? null);
   // EI-13723: see the doc above — the dispatch check moved here so a manual run gets fixer
   // coverage identical to a routine run. Fail-safe: never let a dispatch problem break verdict
   // recording, which already happened above.
@@ -757,6 +759,9 @@ export async function trackGateStall(
   /** EI-13288: the CLI's own stale-candidate re-triage verdict (see CheckpointVerdict.retriage
    *  above), when the caller has one. */
   retriage?: { classification: 'real-red' | 'stale-candidate' | 'unknown'; tip: string | null; detail: string },
+  /** EI-19405864032365760: the verdict's own prose (`CheckpointVerdict.summary`). Only read on the
+   *  `migrations-pending` noop path, where it is the ONLY place the pending migration is named. */
+  summary?: string | null,
   /** EI-19329732364513693 test seam — injectable git runner for the candidate-staleness
    *  measurement below. Defaults to the real one; mirrors checkReleaseFixerCandidateStale. */
   gitRunner?: GitCheckRunner,
@@ -807,6 +812,52 @@ export async function trackGateStall(
     // EI-19321275470651356: the two conditions in this class need opposite operator
     // advice, so the message is chosen by status (see gateStallNoopLogMessage).
     console.log(gateStallNoopLogMessage(status));
+    // EI-19405864032365760: 'noop' must not COUNT this tick as a red — that reasoning
+    // (EI-2615 / EI-18757975681519069) is correct and unchanged above. But "don't count it"
+    // silently became "don't record it AT ALL", and those are different claims. The counters
+    // keep the PREVIOUS red's values, so every read surface (dev:pipeline_position, /admin/git,
+    // the gate cells) keeps rendering that stale red — same candidate, same failing tests —
+    // while the true state is "aborted before judging; no verdict is coming". Measured
+    // 2026-08-03: a pending migration froze the pipeline ~2.5h during which the fleet was told
+    // "Gate is RED (N consecutive) — the reds are yours to fix", sending multiple agents at
+    // failing files that had nothing to do with it. The documented backstops DO fire, but
+    // `checkMainBehindStaging` needs >1h AND no advance in 2h (it escalated at ~3.5h that day)
+    // and `verdictStale` needs 12h — both are floors for "someone is eventually told", not for
+    // "the reader asking RIGHT NOW gets a true answer".
+    //
+    // So record the abort in its OWN key, leaving every counter untouched:
+    //   · written via jsonb_set on the `{gate_health,inconclusive}` PATH, so unlike the
+    //     whole-key replace at the end of this function it cannot shadow a concurrent
+    //     counter write — the EI-7472 hazard that makes a read-modify-write here unsafe.
+    //   · cleared by the next REAL verdict for free: that write replaces the whole
+    //     `gate_health` key, and `next` sets `inconclusive: null` explicitly (same
+    //     recovery-clear convention as `failingTests` / `retriageStaleTip`).
+    // Scoped to 'migrations-pending' ONLY. 'skipped-locked' stays a total no-op on purpose:
+    // there a peer run IS in flight and about to write the real verdict, which is precisely
+    // the write EI-2615 proved must not be raced.
+    if (status === 'migrations-pending') {
+      try {
+        await sql.unsafe(
+          `UPDATE harness_shared.routines
+              SET metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), '{gate_health,inconclusive}', $2::jsonb, true),
+                  updated_at = now()
+            WHERE install_slug = $1 AND target_role = 'system:green-checkpoint'`,
+          [
+            ctx.installSlug,
+            JSON.stringify({
+              status,
+              candidate: candidate?.slice(0, 12) ?? null,
+              detail: summary ?? null,
+              observedAtMs: Date.now(),
+            }),
+          ],
+        );
+      } catch (e) {
+        // Fail-safe, exactly like every other write in this function: an unrecorded abort
+        // degrades to the pre-EI-19405864032365760 behaviour (invisible), never to a wrong verdict.
+        console.warn(`[green-checkpoint] inconclusive-verdict record failed: ${e instanceof Error ? e.message : e}`);
+      }
+    }
     return;
   }
   // EI-19329732364513693: stamp HOW STALE the judged candidate is into the same blob that
@@ -840,7 +891,11 @@ export async function trackGateStall(
     // refreshing `last_fired_at`, so `fireStale` reads FRESH). See release/gate-verdict-freshness.ts.
     // EI-13288: a stale-candidate note from a PRIOR red streak must not linger once the gate is
     // green again — same recovery-clear convention as `failingTests` just above.
-    next = { consecutiveReds: 0, lastGreenAt: Date.now(), firstRedAt: null, stallAlerted: false, lastFrom: fromPin ?? gh.lastFrom ?? null, watchdogAlerted: false, failingTests: [], observedAt: Date.now(), observedCandidate: candidate?.slice(0, 12) ?? null, retriageStaleTip: null, retriageDetail: null, candidateCommittedAt: staleness.candidateCommittedAt, commitsBehindTip: staleness.commitsBehindTip };
+    // EI-19405864032365760: `inconclusive` records a preflight ABORT (see the noop branch above).
+    // A real verdict supersedes it, so clear it here — explicit rather than relying on the
+    // whole-key replace, matching the `retriageStaleTip` / `failingTests` convention so a later
+    // change to a merging write cannot silently resurrect a stale abort note.
+    next = { consecutiveReds: 0, lastGreenAt: Date.now(), firstRedAt: null, stallAlerted: false, lastFrom: fromPin ?? gh.lastFrom ?? null, watchdogAlerted: false, failingTests: [], observedAt: Date.now(), observedCandidate: candidate?.slice(0, 12) ?? null, retriageStaleTip: null, retriageDetail: null, candidateCommittedAt: staleness.candidateCommittedAt, commitsBehindTip: staleness.commitsBehindTip, inconclusive: null };
     // P-003: clear the durable stall escalation on the green transition (idempotent).
     // WI-2825: a 0-row match here (harness_slug/phase mismatch, or the row was already
     // cleared/removed some other way) previously succeeded silently — no error, no log —
@@ -997,6 +1052,9 @@ export async function trackGateStall(
       // enough provenance for a reader to judge whether it is still true of the tree.
       candidateCommittedAt: staleness.candidateCommittedAt,
       commitsBehindTip: staleness.commitsBehindTip,
+      // EI-19405864032365760: a real verdict supersedes any recorded preflight abort — see the
+      // reset branch above for why this is explicit rather than left to the whole-key replace.
+      inconclusive: null,
     };
   }
   await sql.unsafe(

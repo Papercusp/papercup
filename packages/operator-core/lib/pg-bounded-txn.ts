@@ -41,23 +41,81 @@ type OrgSql = ReturnType<typeof getOrgPg>['sql'];
  * `statement_timeout` (PG `57014`) or a lock wait exceeds `lock_timeout` (PG `55P03`).
  * Callers map this to a structured busy result instead of leaking a raw postgres
  * error. The originating PG error is preserved on `.cause` / `.pgCode`.
+ *
+ * EI-19404770733829453: a bare "canceling statement due to lock timeout" names no
+ * cause, so every caller who hits it either retries blindly or goes hand-querying
+ * `pg_stat_activity`. When `blockerHint` is available (best-effort — see
+ * `describeContentionAtFailure` below), it is folded into `.message` so the error
+ * ITSELF says what blocked it (e.g. a long-running migration holding a table lock)
+ * instead of leaving that diagnosis to whoever reads the stack trace next.
  */
 export class OrgTxnTimeoutError extends Error {
   readonly pgCode: string;
-  constructor(pgCode: string, cause: unknown) {
-    super(
+  readonly blockerHint?: string;
+  constructor(pgCode: string, cause: unknown, blockerHint?: string) {
+    const base =
       pgCode === '55P03'
         ? 'operator write timed out waiting for a row/advisory lock (pg 55P03 lock_timeout) — retry shortly'
-        : 'operator write exceeded its time budget (pg 57014 statement_timeout) — the database stalled; retry shortly',
-    );
+        : 'operator write exceeded its time budget (pg 57014 statement_timeout) — the database stalled; retry shortly';
+    super(blockerHint ? `${base} — ${blockerHint}` : base);
     this.name = 'OrgTxnTimeoutError';
     this.pgCode = pgCode;
     this.cause = cause;
+    this.blockerHint = blockerHint;
   }
 }
 
 /** PG SQLSTATEs that mean "couldn't finish in time": statement_timeout + lock_timeout. */
 const CONTENTION_CODES = new Set(['57014', '55P03']);
+
+/** Bound on the diagnostic query itself — this must never be the thing that hangs
+ *  while we're trying to explain why something else hung. */
+const BLOCKER_DIAGNOSIS_TIMEOUT_MS = 2_000;
+
+/**
+ * Best-effort: after a contention timeout, look up who's currently holding up
+ * `pg_stat_activity` and summarize the oldest non-blocked "head blocker" — the
+ * backend everyone else's `pg_blocking_pids()` chain bottoms out at. This is run
+ * on a FRESH connection (the failing txn's own connection already aborted), so it
+ * cannot prove it was OUR specific wait's blocker, only what's blocking *something*
+ * right now — which on this system is normally the same one or two backends
+ * (confirmed live 2026-08-03: 20/25 sampled backends blocked, 12 of them on both of
+ * two head pids). Never throws — a diagnostic that itself fails must not mask the
+ * real OrgTxnTimeoutError; returns undefined on any error or empty result.
+ */
+async function describeContentionAtFailure(client: OrgSql): Promise<string | undefined> {
+  try {
+    const rows = (await client.begin(async (tx) => {
+      await tx.unsafe(`SET LOCAL statement_timeout = ${BLOCKER_DIAGNOSIS_TIMEOUT_MS}`);
+      return tx.unsafe(
+        `SELECT a.pid,
+                EXTRACT(EPOCH FROM (now() - a.xact_start))::int AS age_s,
+                left(regexp_replace(a.query, '\\s+', ' ', 'g'), 160) AS q,
+                cardinality(pg_blocking_pids(a.pid)) = 0 AS unblocked
+           FROM pg_stat_activity a
+          WHERE a.state <> 'idle' AND a.pid <> pg_backend_pid()
+            AND (a.wait_event_type = 'Lock' OR EXISTS (
+                  SELECT 1 FROM pg_stat_activity b
+                   WHERE b.pid <> a.pid AND a.pid = ANY (pg_blocking_pids(b.pid))
+                ))
+          ORDER BY a.xact_start NULLS LAST
+          LIMIT 25`,
+      );
+    })) as unknown as Array<{ pid: number; age_s: number | null; q: string | null; unblocked: boolean }>;
+    // The head blocker: itself not waiting on anyone (unblocked), oldest xact first.
+    const head = rows.find((r) => r.unblocked);
+    if (!head) return undefined;
+    const age = head.age_s == null ? 'unknown age' : `${head.age_s}s`;
+    const q = (head.q ?? '').trim() || '(query text unavailable)';
+    const blockedCount = rows.filter((r) => !r.unblocked).length;
+    return (
+      `likely blocked by pid ${head.pid} (running ${age}): ${q}` +
+      (blockedCount > 0 ? ` — ${blockedCount} other backend(s) also waiting` : '')
+    );
+  } catch {
+    return undefined;
+  }
+}
 
 /** Per-statement cap for an interactive coordination write. Generous enough that a
  *  healthy sub-second write NEVER trips it, tight enough that a wedged query dies
@@ -111,7 +169,11 @@ export async function boundedOrgTxn<T>(
   } catch (err) {
     const code = (err as { code?: string } | null)?.code;
     if (typeof code === 'string' && CONTENTION_CODES.has(code)) {
-      throw new OrgTxnTimeoutError(code, err);
+      // Best-effort attribution (EI-19404770733829453) — the failing txn's own
+      // connection already aborted, so this runs on a fresh one and must never be
+      // allowed to throw or hang in place of the real error.
+      const blockerHint = await describeContentionAtFailure(sql).catch(() => undefined);
+      throw new OrgTxnTimeoutError(code, err, blockerHint);
     }
     throw err;
   }

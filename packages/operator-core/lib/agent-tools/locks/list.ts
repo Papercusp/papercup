@@ -122,6 +122,17 @@ export default defineTool({
         resources: registry.map(registryJson),
         holders: holders.map(holderJson),
         draining,
+        // EI-19400582907190258: this result enumerates the NAMED-RESOURCE lock
+        // plane only (dev:restart, db:migrate, git-sync:<slug>, …) — rows carry
+        // no `path` field at all. A caller asking "does a peer hold THIS FILE"
+        // (the file-lock plane — locks:acquire/locks:acquireGranular/locks:queue)
+        // gets zero matches here no matter what, which reads exactly like "safe
+        // to edit" and is not. Stamp the plane + a pointer directly on the
+        // result so that reading is caught even when the tool's own `notWhen`
+        // guidance was skipped — an empty `holders: []` here proves nothing
+        // about a specific file.
+        plane: 'resource' as const,
+        fileLockHint: 'This is the NAMED-RESOURCE lock plane, not file locks. To check whether a peer holds a specific FILE path, use locks:queue { paths: [...] } instead — an empty result here never answers that question.',
       },
     };
   },

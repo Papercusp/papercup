@@ -72,6 +72,8 @@ import {
   computeLearningImprovementsSnapshot,
   HUMAN_QUEUE_WIRE_FIELDS,
 } from '../harness/improvements/learning-digest-snapshot';
+import { deriveShapeFingerprint, assertShapeMatchesRecordedVersion } from '../derived-reads/shape-fingerprint';
+import { __clearDerivedReadRegistryForTest, listDerivedReadProducers } from '../derived-reads/registry';
 
 beforeEach(() => {
   readImprovementItems.mockReset();
@@ -244,6 +246,65 @@ describe('learning.improvements — digest + flow row (P-041)', () => {
     } finally {
       warn.mockRestore();
     }
+  });
+
+  // ── WI-7289 shape guard ──────────────────────────────────────────────────
+  //
+  // The wire-field-list pin above (WI-7279) protects HUMAN_QUEUE_WIRE_FIELDS
+  // from silent drift, but nothing tied that list — or the digest/flow shape
+  // wrapping it — to the `learning.improvements` producer's registered
+  // `producerVersion` in producers.ts. That is exactly how this shipped
+  // inert TWICE (v1->v2 D-002, v2->v3 WI-7279): the shape changed, the tests
+  // above still passed (they pin the CODE's wire contract, not the
+  // registry's version number), and a stored snapshot at the OLD version kept
+  // serving the OLD shape forever (registry.ts:204/380).
+  //
+  // This ties them together: fingerprint a REAL sample (computed through the
+  // actual narrowing logic above, not a stand-in mock) and require it to
+  // match the shape recorded for the producer's LIVE registered version. If
+  // the shape changes without a version bump, the recorded entry for the
+  // (unchanged) version stops matching and this fails. If the version bumps
+  // without anyone recording what the new shape is, there's no entry for it
+  // and this fails too — see shape-fingerprint.ts's module doc.
+  it('shape-guard: the real payload shape matches the shape recorded for the LIVE registered producerVersion (WI-7289)', async () => {
+    readImprovementItems.mockResolvedValue([
+      {
+        id: 'EI-9',
+        kind: 'bug',
+        scope: 'operator',
+        title: 'needs a human',
+        state: 'open',
+        createdAt: recentIso(1),
+        needsHuman: true,
+        assignee: null, // exercises the D-025 null-omit path — see shape-fingerprint.test.ts
+        assignedAt: null,
+        updatedAt: recentIso(1),
+        attempts: 0,
+        tier: 'human',
+        ideaLifecycleState: 'triaged',
+        triageDecision: 'gate',
+        workItemOrigin: 'remote',
+      },
+    ]);
+    readWatchdogFlowTicks.mockResolvedValue([{ tickAtMs: Date.now() - 10 * 60_000, capturedCount: 2 }]);
+    const rows = await computeLearningImprovementsSnapshot({});
+
+    __clearDerivedReadRegistryForTest();
+    await import('../derived-reads/producers');
+    const producer = listDerivedReadProducers().find((p) => p.key === 'learning.improvements');
+    if (!producer) throw new Error('learning.improvements producer not registered');
+
+    assertShapeMatchesRecordedVersion({
+      key: 'learning.improvements',
+      producerVersion: producer.producerVersion,
+      sample: rows[0],
+      expectedByVersion: {
+        // Captured from a real computeLearningImprovementsSnapshot() call against
+        // the fixture above (not hand-typed) — see shape-fingerprint.ts's module
+        // doc for how to regenerate this after a DELIBERATE shape change.
+        3: 'obj{autoEligible:arr<empty>,byKind:obj{bug:number},bySeverity:obj{},byState:obj{open:number},diagnosisClusters:obj{clusters:arr<empty>,considered:number,ritualExcluded:number,unshaped:number},flow:obj{captured7d:number,dispatch:obj{fireFailed:number,fired7d:number,firing:number,fixed7d:number,inProgress:number,lastDispatchAt:null,lastOutcomeAt:null,orphaned:number,overdue:number,resolved:obj{couldNotFix:number,fixed:number,needsHuman:number},total:number},medianOpenAgeDays:number,net7d:number,recurringSignatureCount:number,resolved7d:number,watchdog:obj{captured24h:number,lastTickAt:string,ticks24h:number}},generatedAt:string,headline:string,humanQueue:arr<obj{ageDays:number,id:string,ideaType:string,kind:string,scope:string,score:number,state:string,tierReason:string,title:string}>,likelyDuplicates:arr<empty>,likelyDuplicatesScope:obj{consideredCount:number,corpusTotal:number,nearDupConsidered:number,nearDupPass:string,windowed:boolean},open:number,recurringSignatures:arr<empty>,returned:number,total:number,windowed:boolean}',
+      },
+    });
   });
 });
 

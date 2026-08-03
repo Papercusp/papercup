@@ -482,10 +482,21 @@ export async function runSinglePrimaryCheck(
   // sample (idle/reconnect/bg-host bounce) never reaches the owner.
   if (streak < sustainTicks) return { fired: false, verdict, selfCleared: false };
 
-  // Debounce repeated escalations of the same sustained condition.
+  // Debounce repeated escalations of the same sustained condition. NOTE this debounce
+  // (like `consecutiveNon1`/`openAlarms`) is IN-PROCESS state — and this guard runs on
+  // EVERY request worker (:3070's ~16 reusePort cluster workers, :3170 staging, the
+  // desktop sidecar at :3270, …), each with its OWN independent copy of this Map. So this
+  // check alone only throttles repeats FROM THIS ONE PROCESS; it cannot stop N other
+  // processes from independently reaching their own streak threshold and each paging
+  // moments apart. The `repeatCount` check below (EI-19400981259017885, root-cause fix
+  // for the split-out-of-WI-7291 "false alarm" investigation) is what closes that gap —
+  // see its comment for the measured evidence.
   const prev = lastAlertedAt.get(verdict.key);
   if (prev !== undefined && now - prev < debounceMs) return { fired: false, verdict, selfCleared: false };
   lastAlertedAt.set(verdict.key, now);
+  // Default true so a failed/unclear escalate() (caught below) still pages — the
+  // historical best-effort behavior; only a CONFIRMED durable duplicate suppresses it.
+  let alreadyPagedByPeer = false;
   try {
     const rec = await escalate({
       severity: verdict.severity ?? 'blocker',
@@ -495,6 +506,37 @@ export async function runSinglePrimaryCheck(
     // Remember the open escalation's msg_id so a later recovery can self-clear it.
     const msgId = (rec as { msg_id?: string } | undefined)?.msg_id;
     if (typeof msgId === 'string') openAlarms.set(verdict.key, msgId);
+    // EI-19400981259017885: `escalate()` (openEscalation) already DEDUPS durably by the
+    // condition's subject signature — a call while an OPEN escalation for the SAME
+    // condition already exists returns that existing record with `repeatCount` bumped
+    // rather than creating a fresh row (escalations.ts's `findOpenDuplicate`). Since every
+    // one of the N independent guard processes reaches this same summary text for the
+    // same verdict.key, that dedup identity is IDENTICAL across processes — so
+    // `repeatCount > 1` here means SOME process (this one on an earlier streak, or a
+    // fully independent peer process) has already opened — and, per the `blocker` branch
+    // below, already actively PAGED — this exact still-open condition. Re-paging on every
+    // peer's own independently-timed streak is the measured root cause of the "false
+    // alarm" pattern this item was filed to explain: on 2026-08-03 the same
+    // `single-primary:no-primary` condition alarmed+self-cleared roughly every 30min for
+    // 4+ hours (00:01, 00:34, 01:04, ... 04:10, 04:40), including one pair only 1.8s apart
+    // (04:40:45.783 alarm → 04:40:47.615 resolve) — impossible from a single process's own
+    // 3min-interval/2-tick hysteresis, but expected from ~18 independently-phased
+    // processes (confirmed live: 16 :3070 cluster workers + :3170 staging + the :3270
+    // desktop/DBOS-primary sidecar, each running `startSinglePrimaryGuard()` — by design,
+    // per the R4-2 comment at its hono-host.ts call site, for freeze resilience — with its
+    // OWN in-memory `consecutiveNon1`/`lastAlertedAt` Maps). The "wrong database/cluster"
+    // hypothesis this item was filed to test is REFUTED: every process's admin URL
+    // (checked live across the desktop sidecar, all 16 release-cluster workers, and
+    // staging) resolves to the identical `localhost:5432/papercusp`, and DBOS's own
+    // systemDatabaseUrl bypasses PgBouncer entirely by design (LISTEN/NOTIFY needs a
+    // session-bound connection) — so a genuine, if brief, per-process read of a live
+    // (if momentarily reconnecting) DBOS pool is plausible, but it is FLEET-WIDE
+    // uncoordinated paging — not the count itself — that turns rare per-process blips into
+    // a rate the owner reasonably tunes out. Grounding this gate in the SAME durable dedup
+    // `openConditions`/self-clear already uses (WI-7291) closes it without inventing a new
+    // cross-process coordination mechanism.
+    const repeatCount = (rec as { repeatCount?: number } | undefined)?.repeatCount;
+    alreadyPagedByPeer = typeof repeatCount === 'number' && repeatCount > 1;
   } catch {
     /* best-effort: never crash the request worker */
   }
@@ -505,10 +547,12 @@ export async function runSinglePrimaryCheck(
   // paged. Mirror git-sync-stall-watchdog.ts's active paging so a sustained
   // no-primary/split-brain verdict reaches the owner + fleet immediately, not just
   // the escalation log.
-  // Page ONLY for a blocker. An advisory (`no-dedicated-primary`) is recorded durably as
-  // an escalation row but must never urgent-page the owner or fire an "everything is
-  // down" fleet broadcast — that false urgency is the whole defect this split fixes.
-  if (verdict.severity === 'blocker') await page(verdict, streak, count, ws);
+  // Page ONLY for a blocker, and ONLY the first process to open this condition. An
+  // advisory (`no-dedicated-primary`) is recorded durably as an escalation row but must
+  // never urgent-page the owner or fire an "everything is down" fleet broadcast — that
+  // false urgency is the whole defect this split fixes. `alreadyPagedByPeer` closes the
+  // SAME class of false urgency for the multi-process re-page case (EI-19400981259017885).
+  if (verdict.severity === 'blocker' && !alreadyPagedByPeer) await page(verdict, streak, count, ws);
   return { fired: true, verdict, selfCleared: false };
 }
 

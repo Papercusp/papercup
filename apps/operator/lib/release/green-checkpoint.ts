@@ -3504,7 +3504,24 @@ export async function runGreenCheckpoint(
           `unrelated flakes. Fix the migration (or let it retry — a transient lock_timeout usually clears) and the ` +
           `next run judges normally. Pending: ${detail}`,
       );
-      return { advanced: false, candidate, from: lastReady, green: null, reason: 'migrations-pending' };
+      // EI-19405864032365760: carry the pending-migration detail ON THE VERDICT, not only into
+      // the log. `summary` is what reaches every downstream reader — the pipeline event's detail,
+      // the `green-checkpoint:inconclusive` event payload, and (new, same EI) the
+      // `gate_health.inconclusive` blob `dev:pipeline_position` renders. Without it the abort is
+      // legible ONLY to whoever tails this run's stdout, which is nobody during the hours it
+      // matters: measured 2026-08-03, a 727-pending freeze left the fleet reading a stale red for
+      // ~2.5h while the real blocker (one migration failing its NOT NULL backfill) was named
+      // nowhere a reader looks.
+      return {
+        advanced: false,
+        candidate,
+        from: lastReady,
+        green: null,
+        reason: 'migrations-pending',
+        summary:
+          `migration preflight ABORTED this run — ${pendingAfterPreflight.length} migration(s) are pending and ` +
+          `could not apply, so no verdict was rendered about the code. NO run is coming until they apply. Pending: ${detail}`,
+      };
     }
   }
   // EI-18666996942859193: tree-drift preflight — name a drifted checkpoint tree as its

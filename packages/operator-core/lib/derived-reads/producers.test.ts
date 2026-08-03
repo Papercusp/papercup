@@ -16,6 +16,7 @@
 // boundary so no PG IO runs; the rollup grouping is what these tests pin down.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { deriveShapeFingerprint, assertShapeMatchesRecordedVersion } from './shape-fingerprint';
 
 function scorecard(rubricRef: string, createdAt: string, issueId = 'EI-1', score10: number | null = 10) {
   return {
@@ -459,5 +460,51 @@ describe('summarizePlanLintReport (plans.lint list projection)', () => {
     await import('./producers');
     const producer = registry.listDerivedReadProducers().find((p) => p.key === 'coord.history');
     expect(producer?.producerVersion).toBe(2);
+  });
+
+  // ── WI-7289 shape guard ──────────────────────────────────────────────────
+  //
+  // The pinned-version tests above ("plans.lint is at producerVersion 4" etc.)
+  // only assert a NUMBER — they say nothing about what shape that number is
+  // supposed to correspond to, which is exactly the gap that let a shape
+  // change ship without a version bump three separate times. This ties a REAL
+  // sample (through the actual summarizePlanLintReport narrowing logic, not a
+  // stand-in) to the producer's LIVE registered version — see
+  // shape-fingerprint.ts's module doc for the failure modes it catches.
+  it('shape-guard: plans.lint\'s real projected shape matches the shape recorded for its LIVE registered producerVersion (WI-7289)', async () => {
+    const { summarizePlanLintReport } = await import('./producers');
+    // Exercises every branch: errors present, warnings present (tallied), all
+    // three D-025 booleans true (they're omitted-when-false, so a sample that
+    // never sets them true would silently under-report the possible shape).
+    const rows = [
+      summarizePlanLintReport({
+        slug: 'a',
+        errors: [{ code: 'missing_now_section', level: 'error', message: 'x' }],
+        warnings: [{ code: 'unphased_item', level: 'warning', message: 'x' }],
+        archived: true,
+        exempt: true,
+        legacy: true,
+      } as never),
+      summarizePlanLintReport({ slug: 'b' } as never), // the 246/913 clean case
+    ];
+
+    vi.resetModules();
+    const registry = await import('./registry');
+    registry.__clearDerivedReadRegistryForTest();
+    await import('./producers');
+    const producer = registry.listDerivedReadProducers().find((p) => p.key === 'plans.lint');
+    if (!producer) throw new Error('plans.lint producer not registered');
+
+    assertShapeMatchesRecordedVersion({
+      key: 'plans.lint',
+      producerVersion: producer.producerVersion,
+      sample: rows,
+      expectedByVersion: {
+        // Captured from a real summarizePlanLintReport() call against the
+        // fixture above (not hand-typed) — regenerate after a DELIBERATE
+        // shape change, per shape-fingerprint.ts's module doc.
+        4: 'arr<obj{archived:boolean,errorCount:number,errors:arr<obj{code:string,level:string,message:string}>,exempt:boolean,legacy:boolean,slug:string,warningCodes:obj{unphased_item:number},warningCount:number}|obj{slug:string}>',
+      },
+    });
   });
 });

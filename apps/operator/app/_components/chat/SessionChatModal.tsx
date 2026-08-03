@@ -47,7 +47,6 @@ import { useAgentThinkingStream } from '../../harness/AgentThinkingStream';
 import { mapSessionTimeline } from './session-transcript-mapping';
 import { effectiveTier, useInboxAttention } from '../inbox/use-inbox-pending';
 import { OtherDetail } from '@/app/admin/plans/PlanOtherList';
-import { isEscalationWithOptions } from '@/app/admin/plans/attention-card';
 import { ChatActionBar } from './ChatActionBar';
 import FleetRoleGlyph from '../FleetRoleGlyph';
 import FleetLaunchRow from './FleetLaunchRow';
@@ -138,6 +137,10 @@ const ERROR_BANNER_STYLE: React.CSSProperties = { ...BANNER_STYLE, color: 'var(-
  *  well past a normal psu boot (a few seconds) so a slow-but-fine launch is
  *  never mislabelled as failed. */
 const STARTUP_GRACE_MS = 60_000;
+
+/** EI-19403137552594870: cap on the pending-cards region (below) so a large
+ *  owner-owed-ask backlog can't push the transcript out of view. */
+const PENDING_CARDS_MAX = 5;
 
 // hud-first-nav-and-dossier-2026-07-26 P-003: the AgentDossier right rail.
 // Side-by-side on a wide window (the Modal's own contentStyle widens to make
@@ -926,15 +929,29 @@ export default function SessionChatModal({
   // query), filtered to what's actionable for THIS agent right now. Disabled
   // while closed so a hidden modal never holds an extra live query open.
   const { items: attentionItems, refresh: refreshAttention } = useInboxAttention(open);
+  // EI-19403137552594870 (2026-08-03): this USED to require
+  // `kind === 'coord-escalation' && isEscalationWithOptions(i)` — so an
+  // agent's own `kind:'conversation'` question to the owner (no named
+  // `ref.options`; answered via OtherDetail's inline Answer InputCard, not
+  // AskChoiceCard buttons) was excluded TWICE and invisible in the very
+  // popup the owner opens to answer it. Widened to any owner-owed ask this
+  // session's agent filed — coord-escalation (with or without named
+  // options; OtherDetail already falls back to its generic `actions` bar
+  // when there are none) and conversation (OtherDetail already renders its
+  // Answer action for this kind — see attention-card.ts answerAttentionItem
+  // / replyToAttentionItem). Capped so a large backlog can't swallow the
+  // transcript below the region (which is itself already scroll-bounded to
+  // 45% height).
   const pendingEscalations = useMemo(
     () =>
-      attentionItems.filter(
-        (i) =>
-          i.ownerAgentId === sessionOwnerId &&
-          i.kind === 'coord-escalation' &&
-          effectiveTier(i) !== 'handled' &&
-          isEscalationWithOptions(i),
-      ),
+      attentionItems
+        .filter(
+          (i) =>
+            i.ownerAgentId === sessionOwnerId &&
+            effectiveTier(i) !== 'handled' &&
+            (i.kind === 'coord-escalation' || i.kind === 'conversation'),
+        )
+        .slice(0, PENDING_CARDS_MAX),
     [attentionItems, sessionOwnerId],
   );
 

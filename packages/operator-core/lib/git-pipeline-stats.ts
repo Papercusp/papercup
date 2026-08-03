@@ -172,6 +172,25 @@ export interface GitPipelineSnapshot {
     /** P-009: workspaces that have flaked ≥3× in the gate (failed-then-passed-on-
      *  retry) — chronically flaky, quarantine candidates. */
     flakyWorkspaces: string[];
+    /**
+     * EI-19405864032365760: the gate ABORTED before judging, so the counters above describe an
+     * OLDER run. Non-null ⇒ the last tick rendered no verdict at all and none is coming until the
+     * named condition clears — today only `status: 'migrations-pending'` (the migration preflight
+     * refusing to judge against a schema known to be behind the candidate).
+     *
+     * ⚠ READ THIS BEFORE `consecutiveReds`. A preflight abort is deliberately NOT counted as a red
+     * (EI-2615's reasoning: a tick that judged no code cannot be evidence of a broken build), which
+     * left the counters frozen on the PREVIOUS verdict — so a red streak, its candidate and its
+     * failing tests all keep rendering as current while the pipeline is actually wedged on
+     * something else entirely. Measured 2026-08-03: ~2.5h of a fleet being told "Gate is RED — the
+     * reds are yours to fix" and chasing test files, while the true blocker was one migration
+     * failing to apply. When this is non-null the counters are STALE BY CONSTRUCTION; report the
+     * abort, not the streak.
+     *
+     * Cleared the moment any real verdict lands (release-actions.ts sets it null on both the reset
+     * and red paths), so a non-null value is always about the most recent tick.
+     */
+    inconclusive: { status: string; candidate: string | null; detail: string | null; observedAtMs: number | null } | null;
     /** WI-4533: the tests the gate ITSELF named in its last verdict (`gate_health.failingTests`)
      *  — the workspace(s) + file path(s) that actually redded it. The blob has carried these all
      *  along and NO read surfaced them, so every consumer asking "what is red?" fell back to
@@ -785,6 +804,20 @@ export async function gitPipelineSnapshot(
       flakyWorkspaces: Object.entries(flakeHistory)
         .filter(([, v]) => (v?.flakes ?? 0) >= 3)
         .map(([ws]) => ws),
+      // EI-19405864032365760: see the type's note — non-null means the counters above are stale
+      // by construction. Shape-checked rather than cast: a blob predating this field, or one
+      // written by a version that shaped it differently, must read as "no abort recorded" rather
+      // than as a half-populated abort a consumer would render with empty fields.
+      inconclusive: (() => {
+        const inc = gateHealth.inconclusive as Record<string, unknown> | null | undefined;
+        if (!inc || typeof inc !== 'object' || typeof inc.status !== 'string') return null;
+        return {
+          status: inc.status,
+          candidate: typeof inc.candidate === 'string' ? inc.candidate : null,
+          detail: typeof inc.detail === 'string' ? inc.detail : null,
+          observedAtMs: num(inc.observedAtMs),
+        };
+      })(),
     },
     openConflict,
     windows: { day, week },
