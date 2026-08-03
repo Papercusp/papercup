@@ -51,6 +51,35 @@ const OVERLAY_IDS = ['ideate', 'drain'] as const;
 type OverlayId = (typeof OVERLAY_IDS)[number];
 
 /** POST one mode:set write through the admin proxy route (P-003). Exported for tests. */
+/**
+ * Send the session's agent a request, the same way the composer under this bar
+ * does — `coord:send` with `wake: 'required'`.
+ *
+ * Deliberately the SAME endpoint and the same wake level as
+ * `sendToSessionOwner` in SessionChatModal rather than a second path: a menu row
+ * that says "ask this agent" must reach the agent by the mechanism the reader
+ * can see working three inches below it, or the two silently diverge and only
+ * one of them wakes anybody.
+ *
+ * Exported for tests.
+ */
+export async function askAgent(agent: string, body: string): Promise<void> {
+  const r = await fetch('/api/admin/coord/send', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      to: [agent],
+      summary: body.length > 80 ? `${body.slice(0, 77)}…` : body,
+      body,
+      wake: 'required',
+    }),
+  });
+  if (!r.ok) {
+    const text = await r.text();
+    throw new Error(`coord:send → ${r.status}: ${text.slice(0, 200)}`);
+  }
+}
+
 export async function postModeSet(agent: string, mode: string, enabled: boolean, reason: string): Promise<void> {
   const r = await fetch('/api/admin/mode/set', {
     method: 'POST',
@@ -178,6 +207,41 @@ interface RubricListRow {
  *  by accident, because rubric ids are slugs and this is compared first. */
 const GRADE_OFF = 'off';
 
+/* ── the two non-rubric rows [owner 2026-08-03] ──────────────────────────────
+ * "grade mode rubric selector should have a create rubric option if there are
+ * no rubrics. If there are a lot rubrics too much to show that should be
+ * handled gracefully."
+ *
+ * Both ends of the same problem: the menu was only correct for the middle of
+ * the range. With zero active rubrics it rendered `Off` alone — a menu whose
+ * only option is "no", telling the reader nothing about how to get a rubric.
+ * With forty it would have rendered forty rows inside a popup that is already
+ * height-constrained.
+ *
+ * Both rows resolve to ASKING THIS AGENT, and that is not a cop-out — it is the
+ * only create path that exists. Rubrics are authored by agents through the
+ * `rubrics:*` tools; there is no owner-facing rubric form anywhere in the app,
+ * and the `/rubrics` route was REMOVED from the navbar in 2026-07 precisely
+ * because the live Vite operator never registered it (ChromeShell.tsx:311).
+ * Linking a "create" affordance at a route that 404s would be worse than the
+ * dead end it replaces. The composer three inches below this menu wakes the
+ * agent, so these rows do exactly what a reader would otherwise type by hand.
+ *
+ * Ids are `__`-prefixed so they can never collide with a rubric slug. */
+const GRADE_CREATE = '__create-rubric';
+const GRADE_MORE = '__more-rubrics';
+
+/**
+ * How many rubrics the menu shows before it stops listing and starts counting.
+ *
+ * 8 because the menu opens INSIDE the session popup and flips up when there is
+ * no room below (measured: the mode pills sit ~26px above the popup's lower
+ * edge, so the menu always opens upward into the transcript). A row is ~30px,
+ * so 8 rubrics plus `Off` plus the overflow row is ~300px — about a third of an
+ * 800px viewport, which still leaves the conversation readable behind it.
+ */
+const RUBRIC_MENU_CAP = 8;
+
 /**
  * GRADE — the one overlay whose "on" carries a VALUE, so it does not fit the
  * plain on/off shape the other two share (WI-7471).
@@ -213,6 +277,12 @@ registerChatModeAction({
     // ACTIVE only: a proposed rubric is not yet something to grade against, and
     // a retired one is deliberately out of use.
     const active = rows.filter((r) => r.status === 'active');
+    /* Stable order before the cap, or "the first 8" means "whatever the
+       resolver happened to return" and the SAME workspace shows a different 8
+       between two opens. */
+    active.sort((a, b) => a.title.localeCompare(b.title));
+    const shown = active.slice(0, RUBRIC_MENU_CAP);
+    const hidden = active.length - shown.length;
     return [
       {
         id: GRADE_OFF,
@@ -226,13 +296,57 @@ registerChatModeAction({
         // pill; it just rides the menu's first row now instead of a card.
         hint: 'Grade mode asks this agent to score its own work against a rubric — a named checklist of criteria — and report the result, instead of just carrying on. Pick a rubric to turn it on.',
       },
-      ...active.map((r) => ({ id: r.rubricId, label: r.title, hint: r.characteristic })),
+      ...shown.map((r) => ({ id: r.rubricId, label: r.title, hint: r.characteristic })),
+      /* NOTHING to grade against. `Off` alone is a menu whose only option is
+         "no" — it does not even tell the reader that rubrics are a thing the
+         agent can make. */
+      ...(active.length === 0
+        ? [
+            {
+              id: GRADE_CREATE,
+              label: 'Ask this agent to create one',
+              hint: 'No rubrics exist yet. Rubrics are written by agents, so this sends this agent a request to draft one for the work it is doing and propose it for ratification.',
+            },
+          ]
+        : []),
+      /* TOO MANY to list. The count is the point: "8 of 23" is a different
+         situation from "8", and a menu that silently truncates teaches the
+         reader that the 8 are all there are. */
+      ...(hidden > 0
+        ? [
+            {
+              id: GRADE_MORE,
+              label: `${hidden} more — ask this agent to choose`,
+              hint: `Showing ${shown.length} of ${active.length} active rubrics. Rather than scroll a list this long inside the popup, this asks the agent to pick the one that best fits its current work and turn grade mode on with it.`,
+            },
+          ]
+        : []),
     ];
   },
   set: async (ctx, optionId) => {
     const agent = ownerId(ctx);
     if (optionId === GRADE_OFF) {
       await postModeSet(agent, 'grade', false, 'owner turned grade mode off from the chat control band');
+      return;
+    }
+    /* These two rows do NOT touch grade mode — they ask the agent to do
+       something, exactly as typing it into the composer below would. Kept
+       distinct from the mode path on purpose: turning grade mode ON without a
+       rubric is the WI-7471 defect (a mode set with no criteria, the rubric
+       surviving only as free text in the reason), and it would be a regression
+       to re-introduce it here under a friendlier label. */
+    if (optionId === GRADE_CREATE) {
+      await askAgent(
+        agent,
+        'Please create a rubric. There are no active rubrics in this workspace, so grade mode has nothing to score against. Draft one for the work you are doing now — name the characteristic it measures and its criteria — propose it for ratification, and tell me its id when it is in.',
+      );
+      return;
+    }
+    if (optionId === GRADE_MORE) {
+      await askAgent(
+        agent,
+        'Please turn grade mode on and pick the rubric yourself. There are more active rubrics than the chat menu lists, so rather than have me scroll them: choose the one that best fits the work you are doing now, say which you picked and why, and set grade mode to it.',
+      );
       return;
     }
     await postModeSet(

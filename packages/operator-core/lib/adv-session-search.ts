@@ -29,6 +29,44 @@ import type { AdvSessionRow } from './adv-sessions';
  * queries with fresh same-day matches. Absent/blank/garbage now falls to
  * the default; an EXPLICIT in-range value (including 0) is honored. Pure —
  * unit-tested without a route. */
+/**
+ * Decay half-life. 7 DAYS, not the original 24h (P-003).
+ *
+ * At a 24h half-life a 3-day-old turn keeps 12.5% of its recency credit and a
+ * week-old one 0.8% — i.e. for most of the corpus the decay term is pinned at
+ * zero and the blend degenerates to "today vs everything else". Session
+ * transcripts stay useful for weeks, so the curve was an order of magnitude
+ * too aggressive for what it ranks. At 7d, 3 days keeps 74% and a week 50%.
+ */
+export const DEFAULT_HALF_LIFE_H = 24 * 7;
+
+/**
+ * Recency's share of the blend. 0.5, RAISED from 0.3 — and this is a
+ * translation, NOT a behaviour change.
+ *
+ * The old 0.3 was tuned against the engine's pre-P-002 blend, where relevance
+ * was divided by the max and so never spanned its nominal range: measured on
+ * real RRF distributions, recency actually reached parity with relevance at
+ * weight ~0.295 for a typical 45-candidate pool. P-002 made `weight` a true
+ * mixing fraction (both terms span [0,1]), where parity is exactly 0.5. So
+ * 0.5 here PRESERVES today's effective ranking; leaving 0.3 would have
+ * silently weakened recency by ~40% the moment P-002 landed.
+ */
+export const DEFAULT_WEIGHT = 0.5;
+
+/**
+ * Fresh-candidate window, 48h — DECOUPLED from the half-life (P-003).
+ *
+ * It used to be `2 × halfLife`, which was invisible while the half-life was
+ * 24h and became wrong the instant it moved: at 7d that formula silently
+ * redefines "fresh" as a FOURTEEN DAY window, admitting a fortnight of rows
+ * into a leg whose entire purpose is guaranteeing genuinely-recent rows a seat
+ * the relevance cut would deny them. They answer different questions — the
+ * half-life shapes the decay CURVE, this bounds pool ADMISSION — so tying one
+ * to the other was incidental, not a design.
+ */
+export const DEFAULT_FRESH_WINDOW_H = 48;
+
 export function parseRecencyParams(searchParams: URLSearchParams): RecencyRank | undefined {
   if (searchParams.get('recency') === 'off') return undefined;
   // Absent or blank → NaN (→ default), NEVER Number(null)'s accidental 0.
@@ -37,16 +75,18 @@ export function parseRecencyParams(searchParams: URLSearchParams): RecencyRank |
     return raw === null || raw.trim() === '' ? NaN : Number(raw);
   };
   const halfLifeH = num('recencyHalfLifeH');
-  const halfLifeMs = (Number.isFinite(halfLifeH) && halfLifeH > 0 ? halfLifeH : 24) * 3_600_000;
+  const halfLifeMs =
+    (Number.isFinite(halfLifeH) && halfLifeH > 0 ? halfLifeH : DEFAULT_HALF_LIFE_H) * 3_600_000;
   const weight = (() => {
     const w = num('recencyWeight');
-    return Number.isFinite(w) && w >= 0 && w <= 1 ? w : 0.3;
+    return Number.isFinite(w) && w >= 0 && w <= 1 ? w : DEFAULT_WEIGHT;
   })();
   // Fresh-candidate window (engine `RecencyRank.freshWindowMs`): guarantees
-  // recent matches a seat in the relevance-cut candidate pool. Default
-  // 2×half-life; `?recencyFreshWindowH=0` disables just the fresh leg.
+  // recent matches a seat in the relevance-cut candidate pool.
+  // `?recencyFreshWindowH=0` disables just the fresh leg.
   const freshH = num('recencyFreshWindowH');
-  const freshWindowMs = Number.isFinite(freshH) && freshH >= 0 ? freshH * 3_600_000 : 2 * halfLifeMs;
+  const freshWindowMs =
+    Number.isFinite(freshH) && freshH >= 0 ? freshH * 3_600_000 : DEFAULT_FRESH_WINDOW_H * 3_600_000;
   return { halfLifeMs, weight, freshWindowMs };
 }
 

@@ -1415,7 +1415,7 @@ export default defineTool({
       const fleetRecord = await getFleet(workspaceId, fleet);
       const registeredLeader = fleetRecord?.leaderOwnerId ?? null;
       const leaderRow = registeredLeader
-        ? rosterEntries.find((e) => e.ownerId === registeredLeader)
+        ? rosterEntries.find((e) => e.agentId === registeredLeader)
         : undefined;
       const disposition = decideLeadershipDisposition({
         callerOwnerId: ownerId,

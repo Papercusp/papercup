@@ -2630,10 +2630,38 @@ def _quote_preserve_tokens(s):
     from `.split()` entirely, silently undercounting `cp`/`mv`'s destination
     — exactly the common shape of the restore idiom this advisory targets.
     A placeholder token keeps the count right while staying just as inert
-    against operator/keyword injection from inside the quotes."""
+    against operator/keyword injection from inside the quotes.
+
+    COMMENTS (EI-19423080880635119). Third and last member of the parity family
+    fixed by EI-19420133701663526, and the only one that is not a deny guard:
+    this feeds an ADVISORY's positional-argument count, so a parity break here
+    can never cause a missed DENY — it can only mis-count arguments. It failed
+    the same way its siblings did, though: an odd quote inside a `#` comment
+    paired with the opening quote of a real later argument, so the span
+    `"` + newline + `cp /tmp/restore.ts "` collapsed to ONE placeholder and the
+    restore `cp` vanished entirely — the advisory went silent on exactly the
+    shape it exists to catch. Single-pass, comment-first, same rule as the
+    siblings; the newline is left intact because callers split on it.
+
+    The `out[-1].isspace()` test is lifted VERBATIM and that is deliberate,
+    despite this function appending a multi-character chunk (` \x00Q\x00 `)
+    where the siblings append a single space. Do not "fix" it to inspect the
+    chunk's last character: a whole-chunk test reports False right after a
+    quoted span, which is what makes `cp "$F"# dest.ts` keep its `#` as word
+    text — matching bash, where `#` introduces a comment only at the start of a
+    word. Testing the chunk's final character would call that a comment and
+    swallow the destination, dropping the count to 1 and silencing the advisory.
+    An ordinary `cp "$F" # note` is unaffected either way: the space after the
+    closing quote is its own single-character chunk."""
     out, i, n = [], 0, len(s)
     while i < n:
         c = s[i]
+        if c == '#' and (not out or out[-1].isspace()):
+            j = s.find('\n', i)
+            if j == -1:
+                break  # comment runs to end of input — nothing after it
+            i = j      # leave the newline itself as a real separator
+            continue
         if c == "'":
             j = s.find("'", i + 1)
             if j == -1:

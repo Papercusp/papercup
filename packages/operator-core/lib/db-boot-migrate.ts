@@ -33,7 +33,7 @@ import postgres from 'postgres';
 // Measured on the packaged mac dogfood bundle: the `dev` env operator bound :3270
 // and then died with `ERR_MODULE_NOT_FOUND: Cannot find package
 // '@embedded-postgres/darwin-x64'`, because source.tar.zst ships no
-// @embedded-postgres/* platform package at all. Chain was:
+// @embedded-postgres/<platform> package at all. Chain was:
 //   agent-tools registry -> agent-tools/release/checkpoint-run.ts (static)
 //     -> this file (static) -> embedded-postgres-server/src/index.js
 //       -> embedded-postgres/dist/binary.js -> @embedded-postgres/<platform>  [MISSING]
