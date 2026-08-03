@@ -367,3 +367,42 @@ export function evaluateResidueTrend(
     summary: `dead-window scope floor steady at ~${recentFloor} (was ${olderFloor}) — no accumulation`,
   };
 }
+
+/**
+ * EI-19407950136194410 — is a periodic maintenance job due?
+ *
+ * The reconcile tick used to gate its two hourly sub-jobs on a MODULE-SCOPED tick
+ * counter (`tickCount % 120`, `task-reconcile-action.ts`). That counter resets to 0
+ * on every process start, so reaching 120 required the host to stay up for 60
+ * UNINTERRUPTED minutes. A host restarting more often than hourly therefore ran both
+ * jobs EXACTLY ZERO TIMES, forever — with no error, no log line, and no partial
+ * state. The metadata key simply never appeared, which is indistinguishable from
+ * "ran and found nothing".
+ *
+ * That is the same failure polarity as D-019 on `process-lifecycle-no-orphans`: a
+ * signal that reads ABSENT when it is merely UNAVAILABLE. It is also the expensive
+ * direction, because host churn is precisely what PRODUCES the residue this census
+ * measures — the detector switched itself off under the exact conditions it exists
+ * to detect, and a restart intended to *activate* it instead delayed it another hour.
+ *
+ * The fix is to ask the wall clock against a watermark that OUTLIVES the process
+ * rather than to count ticks inside it.
+ *
+ * `lastAtMs == null` means "no watermark on record" — a first run, or a store that
+ * could not be read. Both answer DUE on purpose: running a cheap idempotent job once
+ * more is strictly safer than a detector that stays silent because its own history
+ * was unreadable. That asymmetry is the whole point of the bug this replaces.
+ */
+export function isMaintDue(input: {
+  lastAtMs: number | null;
+  nowMs: number;
+  intervalMs: number;
+}): boolean {
+  const { lastAtMs, nowMs, intervalMs } = input;
+  if (lastAtMs == null || !Number.isFinite(lastAtMs)) return true;
+  // A watermark in the FUTURE (clock skew, a hand-edited row, a restored backup)
+  // would otherwise wedge the job shut for as long as the skew lasts. Treat it as
+  // due rather than trust it — same fail-toward-running asymmetry as above.
+  if (lastAtMs > nowMs) return true;
+  return nowMs - lastAtMs >= intervalMs;
+}

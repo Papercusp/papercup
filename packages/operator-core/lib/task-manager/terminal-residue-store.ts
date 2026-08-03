@@ -71,6 +71,36 @@ export async function readResidueSamples(target: ResidueStoreTarget): Promise<Re
   }
 }
 
+/**
+ * Read the persisted `lastCensusAtMs` watermark (EI-19407950136194410).
+ *
+ * This is the restart-proof half of the census due-check: the reconcile tick hydrates
+ * it ONCE per process, then gates on wall-clock elapsed time instead of an in-process
+ * tick counter that a restart resets to zero.
+ *
+ * Returns null when the key is absent or the read fails — which `isMaintDue`
+ * deliberately reads as DUE, per this module's standing "a storage failure must not
+ * render as healthy" contract (see the header note on `evaluateResidueTrend`).
+ */
+export async function readLastCensusAtMs(target: ResidueStoreTarget): Promise<number | null> {
+  try {
+    const { getOrgPg } = await import('@papercusp/db-org');
+    const { sql } = getOrgPg();
+    const rows = await sql.unsafe(
+      `SELECT metadata->'${METADATA_KEY}'->>'lastCensusAtMs' AS last_at
+         FROM harness_shared.routines
+        WHERE install_slug = $1 AND workspace_id = $2 AND target_role = '${TARGET_ROLE}'
+        LIMIT 1`,
+      [target.installSlug, target.workspaceId],
+    );
+    const raw = (rows as Array<{ last_at?: unknown }>)[0]?.last_at;
+    const parsed = typeof raw === 'string' || typeof raw === 'number' ? Number(raw) : NaN;
+    return Number.isFinite(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function writeResidueSamples(
   target: ResidueStoreTarget,
   samples: readonly ResidueSample[],

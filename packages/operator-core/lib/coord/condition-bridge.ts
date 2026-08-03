@@ -249,6 +249,69 @@ export async function releaseStaleConditionKeys(conditionKey: string, workspaceI
 }
 
 /**
+ * The harness this condition's work-item will ACTUALLY be stored under.
+ *
+ * ⚠ NOT the harness the caller passed, and that gap was a live bug
+ * (EI-19407969585168294). `createIssue` homes every issue to a real Pot via
+ * `resolveWorkItemPot`, so a MEMBER harness is normalized to its hive home
+ * before the row lands: the bridge asked for `oddsmith` and the row appeared as
+ * `harness:oddsmith-hive`. Ownership was then read back with the UN-normalized
+ * slug, so `acquireConditionOwner` could never see the row it had just created —
+ * it re-minted on every tick, lost the key race to the incumbent, and stood
+ * down, forever. Measured live on `green-stall:oddsmith`: one healthy owner
+ * (WI-7321) and three doomed re-mints in ~50 minutes.
+ *
+ * Resolving it ONCE here, inside the bridge, is what keeps the read and the
+ * write in agreement for every producer — rather than asking each of the 12
+ * condition producers to pre-normalize and leaving the trap armed for the 13th.
+ *
+ * FAILS SAFE to the caller's own slug: if the Pot lookup is unavailable the
+ * behavior is exactly what it was before this function existed.
+ */
+export async function resolveStoredConditionHarness(harness: string, workspaceId?: string): Promise<string> {
+  try {
+    const pot = await resolveWorkItemPot({ rawSlug: harness, workspaceId });
+    return pot?.trim() || harness;
+  } catch {
+    return harness;
+  }
+}
+
+/**
+ * The work-item currently HOLDING this key — read from the `condition_key`
+ * COLUMN, which is the thing the partial unique index actually enforces.
+ *
+ * WHY NOT `findConditionObject`. That resolves ownership from the append-only
+ * `about` LINK, and ownership is WRITTEN to two places (the column, then the
+ * link) while being READ from only one. Any row holding the key without a link
+ * — a failed best-effort link write, or a hand-adopted key, which D-020 made
+ * SAFE and therefore attractive — is invisible to the link read while still
+ * blocking the index. The condition then cannot be owned at all, and each tick
+ * mints and discards a work-item, forever.
+ *
+ * So the ADOPT decision reads the enforcement point and the link read stays for
+ * the richer claim state (who holds it, is the lease live). The column is
+ * current ownership; the link is history. Asking the enforcement point whether
+ * something is enforced needs no second opinion.
+ */
+export async function findConditionKeyHolder(
+  conditionKey: string,
+  opts: { harnessSlug?: string; workspaceId?: string } = {},
+): Promise<string | null> {
+  const sql = getOrgPg().sql;
+  const rows = await sql<{ feature_id: string }[]>`
+    SELECT feature_id
+      FROM harness_shared.work_items
+     WHERE condition_key = ${conditionKey}
+       AND (status IS NULL OR status <> ALL(${ANY_FAMILY_TERMINAL_STATES as string[]}::text[]))
+       AND (${opts.harnessSlug ?? null}::text IS NULL OR harness_slug = ${opts.harnessSlug ?? null})
+       AND (${opts.workspaceId ?? null}::text IS NULL OR workspace_id = ${opts.workspaceId ?? null})
+     ORDER BY created_ts
+     LIMIT 1`;
+  return rows[0]?.feature_id ?? null;
+}
+
+/**
  * Try to take `conditionKey` for an existing work-item.
  *
  * Returns false when another row already holds it (the unique index refused us).
@@ -292,12 +355,24 @@ export async function acquireConditionOwner(
     return { conditionKey: key, workItem: null, created: false, skipped: 'not-actionable' };
   }
 
+  // 0. The harness the row will actually be STORED under — resolved once and
+  //    used for every read AND the create below, so they cannot disagree.
+  //    See resolveStoredConditionHarness: they did disagree, and it cost a
+  //    doomed work-item per tick.
+  const harness = await resolveStoredConditionHarness(spec.harness, spec.workspaceId);
+
   // 1. Self-heal a missed release BEFORE looking for an owner, or a settled row
   //    would look like a live one and this condition could never be re-owned.
   await releaseStaleConditionKeys(key, spec.workspaceId);
 
-  // 2. Already owned? Adopt it.
-  const existing = await findConditionObject(key, { harnessSlug: spec.harness });
+  // 2. Already owned? Adopt it. The COLUMN is asked first because it is the
+  //    enforcement point — a holder invisible here is a holder the unique index
+  //    will nonetheless refuse us, which is precisely the state that produces an
+  //    unownable condition. The link read remains as the second opinion for a
+  //    row that carries the association but (somehow) not the key.
+  const holder = await findConditionKeyHolder(key, { harnessSlug: harness, workspaceId: spec.workspaceId });
+  if (holder) return { conditionKey: key, workItem: holder, created: false };
+  const existing = await findConditionObject(key, { harnessSlug: harness });
   if (existing.workItem) return { conditionKey: key, workItem: existing.workItem, created: false };
 
   // 3. Mint, then try to take the key. Deliberately optimistic — see the header.
@@ -305,7 +380,7 @@ export async function acquireConditionOwner(
     kind: 'bug',
     title: spec.title,
     summary: spec.summary,
-    harness: spec.harness,
+    harness,
     severity: spec.severity ?? 'major',
     workspaceId: spec.workspaceId,
     // Stamp the mint so `releaseConditionOwner` can tell an INCIDENT item (safe to
