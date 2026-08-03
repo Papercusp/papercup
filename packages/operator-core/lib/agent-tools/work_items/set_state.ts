@@ -250,10 +250,38 @@ export default defineTool({
             force: it.force,
           });
         if (armPlan && workItem) await commitWorkItemArm(armPlan).catch(() => {});
+        // EI-19393623437103599 — the SAME cross-harness retarget warning work_items:complete
+        // carries, wired here for the reason stated in fix #4 above: this verb is the other
+        // way to make a row terminal, and a guard on only one close path is a guard with a
+        // documented bypass.
+        //
+        // `getWorkItem` does not apply `harness` to the issue-family branch, so naming a
+        // harness does not scope the lookup — an id minted against one store can resolve
+        // onto a DIFFERENT pot's row of the same id. `WI-<n>` ids make that reachable in
+        // practice: D-008 (migration 142) mints them from a per-database sequence starting
+        // at 1, so WI-1/WI-2/WI-3 exist in every long-lived store. Observed 2026-08-03: a
+        // `WI-1` from a recovered store resolved onto an unrelated 2026-07-18 plan item and
+        // a terminal close landed on it, silently.
+        //
+        // Computed from the row the write actually returned, and warn-only (never fails the
+        // write) — mirroring planeRatchetWarning/assumptionKindWarning above. Deliberately
+        // NOT gated to terminal states: a state write aimed at the wrong item is wrong at
+        // any state, and the caller needs to know it hit something they did not mean.
+        const harnessMismatch = workItem ? harnessScopeMismatch(workItem, harness) : null;
+        const harnessMismatchWarning = harnessMismatch
+          ? `set_state on '${it.id}' was scoped to harness '${harnessMismatch.requested}', but the row ` +
+            `that resolved belongs to harness '${harnessMismatch.resolved}' — titled "${workItem?.title}". ` +
+            `A bare WI-<n> id is NOT globally unique (it comes from a per-database sequence that starts ` +
+            `at 1), so an id minted in one store can resolve to a different item in another. If that ` +
+            `title is not the item you meant, you have just written state onto someone else's work.`
+          : undefined;
         return workItem
           ? {
               ok: true as const,
               id: it.id,
+              // Ahead of the echoed `workItem` row for the same EI-15982 reason as the
+              // warnings below: this is the field a caller must not lose to tail truncation.
+              ...(harnessMismatchWarning ? { harnessMismatchWarning } : {}),
               // Ahead of the echoed `workItem` row: the per-result context door
               // truncates from the tail, and this is the field a caller must not
               // lose (EI-15982). Only when the write actually landed terminal —

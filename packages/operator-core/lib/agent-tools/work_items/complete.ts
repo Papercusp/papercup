@@ -41,9 +41,11 @@ import { resolveAgentIdentity, deriveFleetMembership } from '../coordination/ide
 import { getPresence } from '../coordination/presence';
 import { COORD_ROLES } from '../coordination/roles';
 import { objectSelector } from '../coordination/audience';
+// Imported from the LEAF module, not from '../../work-items': this file's unit tests
+// mock that module wholesale, which would make the guard `undefined` exactly here.
+import { harnessScopeMismatch } from '../../work-items-harness-scope';
 import {
   getWorkItem,
-  harnessScopeMismatch,
   setWorkItemStateWithAliasInfo,
   workItemObjectRef,
   mergeWorkItemOutputPayload,

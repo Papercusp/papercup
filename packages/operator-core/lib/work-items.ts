@@ -964,49 +964,15 @@ export async function getWorkItem(id: string, harness?: string): Promise<WorkIte
 }
 
 /**
- * A resolved work-item whose harness CONTRADICTS the one the caller asked for.
+ * Cross-harness retarget detection (EI-19393623437103599) — see the note on
+ * `getWorkItem` above for why `harness` is not applied to the issue-family branch.
  *
- * `requested` is what the caller named; `resolved` is the harness of the row they
- * actually got back.
+ * Re-exported here so it is discoverable beside `getWorkItem`, but it LIVES in a leaf
+ * module: the write verbs that need it mock this module wholesale in their unit tests
+ * (a `vi.mock` factory replaces every export), so a guard defined here would be
+ * `undefined` at precisely the call sites it exists to protect.
  */
-export interface HarnessScopeMismatch {
-  requested: string;
-  resolved: string;
-}
-
-/**
- * Did the resolver answer a DIFFERENT question than it was asked? (EI-19393623437103599)
- *
- * `getWorkItem` silently ignores `harness` for issue-family rows, so a caller can name
- * one pot and be handed another pot's item with no signal at all. Reproduced live: a
- * `work_items:get { ids:['WI-1'], harness:'hello-world-hive' }` returns the `papercusp`
- * row and echoes `harness:'papercusp'` back in its own response body.
- *
- * The fix is NOT to filter by harness. 56 of `getWorkItem`'s 77 non-test call sites pass
- * one, and many pass it loosely (a session default, an ambient slug) while relying on it
- * being ignored — hard-filtering would turn a rare silent-WRONG-row into a broad silent
- * `null`, which is strictly worse: `null` flows into `if (!item)` and reads as "does not
- * exist" rather than "I declined to answer". Every currently-correct answer must keep
- * returning the same row.
- *
- * So detect the CONTRADICTION instead, which is exactly and only the broken case:
- * the caller named a harness AND the row that came back belongs to a different one.
- * Callers decide what that is worth — reads surface it, destructive writes refuse on it.
- *
- * Returns `null` when there is nothing to report: no harness was requested, or the row
- * carries no harness to contradict (a workspace-global/unscoped row), or they agree.
- */
-export function harnessScopeMismatch(
-  item: Pick<WorkItem, 'harness'>,
-  requestedHarness?: string | null,
-): HarnessScopeMismatch | null {
-  if (!requestedHarness) return null;
-  const resolved = item.harness;
-  // An unscoped row has no harness to contradict — absence is not disagreement.
-  if (!resolved) return null;
-  if (resolved === requestedHarness) return null;
-  return { requested: requestedHarness, resolved };
-}
+export { harnessScopeMismatch, type HarnessScopeMismatch } from './work-items-harness-scope';
 
 /**
  * The FEATURE-family half of {@link getWorkItem} (its issue-family half is a bare

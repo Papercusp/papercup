@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { harnessScopeMismatch } from './work-items';
+import { harnessScopeMismatch } from './work-items-harness-scope';
 
 /**
  * EI-19393623437103599 — the recurrence guard for a SILENT cross-harness retarget.

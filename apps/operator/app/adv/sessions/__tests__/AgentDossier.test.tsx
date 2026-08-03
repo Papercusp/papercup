@@ -177,6 +177,7 @@ const DETAIL: AgentDetail = {
     // P-009 defaults: a lane, no gates, an active fleet (⇒ no wind-down banner).
     lane: {
       planSlug: 'hud-redesign-2026-08-01',
+      source: 'declared',
       nowState: 'Rail density + control legibility',
       nowNext: 'merge B/C into one band',
       nextActionable: { id: 'P-004', title: 'merge B/C into one band', phase: 'Phase 2' },
@@ -810,7 +811,7 @@ describe('AgentDossier', () => {
       const { findByText, container } = render(
         <AgentDossier ownerId="su-1" entry={entry()} onClose={() => {}} />,
       );
-      await findByText('Lane');
+      await findByText('Plan');
       const lane = container.querySelector('#pc-dossier-lane')!;
       expect(within(lane as HTMLElement).getByText('hud-redesign-2026-08-01')).toBeTruthy();
       expect(within(lane as HTMLElement).getByText(/P-004 — merge B\/C/)).toBeTruthy();
@@ -837,8 +838,46 @@ describe('AgentDossier', () => {
       const { findByText, container } = render(
         <AgentDossier ownerId="su-1" entry={entry()} onClose={() => {}} />,
       );
-      await findByText('Lane');
+      await findByText('Plan');
       expect(container.querySelector('#pc-dossier-lane')!.textContent).toContain('unavailable');
+    });
+
+    // ── P-010 (plan D-006) ──────────────────────────────────────────────────
+    // The owner reported "I dont see a place in the popup to show that" SIX
+    // HOURS after this section shipped. The reason was that with no plan the
+    // section did not render at all, and an absent section reads as an absent
+    // FEATURE. These three lock in the fix.
+    it('(P-010) still renders the Plan section — saying so out loud — when the agent has NO plan', async () => {
+      withSignals({ lane: null, unavailableSignals: [] });
+      const { findByText, container } = render(
+        <AgentDossier ownerId="su-1" entry={entry()} onClose={() => {}} />,
+      );
+      await findByText('Plan');
+      const lane = container.querySelector('#pc-dossier-lane');
+      expect(lane).toBeTruthy();
+      expect(lane!.textContent).toContain('Not working on a plan');
+      // The absent-vs-empty distinction is the whole point: a no-plan agent must
+      // NOT be indistinguishable from a broken read.
+      expect(lane!.textContent).not.toContain('unavailable');
+    });
+
+    it('(P-010) labels a launch-record plan as such, so a spawn-time plan is not asserted as current', async () => {
+      withSignals({ lane: { ...DETAIL.signals!.lane!, source: 'launch' } });
+      const { findByText, container } = render(
+        <AgentDossier ownerId="su-1" entry={entry()} onClose={() => {}} />,
+      );
+      await findByText('Plan');
+      const lane = container.querySelector('#pc-dossier-lane')!;
+      expect(lane.textContent).toContain('from launch record');
+      expect(within(lane as HTMLElement).getByText('hud-redesign-2026-08-01')).toBeTruthy();
+    });
+
+    it('(P-010) does NOT caveat a plan the agent declared itself', async () => {
+      const { findByText, container } = render(
+        <AgentDossier ownerId="su-1" entry={entry()} onClose={() => {}} />,
+      );
+      await findByText('Plan');
+      expect(container.querySelector('#pc-dossier-lane')!.textContent).not.toContain('from launch record');
     });
 
     it('(b) shows a declared-but-unawaited gate INSIDE Waiting on, so both halves are read together', async () => {

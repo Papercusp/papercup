@@ -971,6 +971,17 @@ describe('deriveLane (P-009 leg a)', () => {
     expect(lane.nowNext).toBeNull();
     expect(deriveLane('p', null, []).nowState).toBeNull();
   });
+
+  // P-010 / D-006: the dossier now accepts a plan from the LAUNCH RECORD when
+  // the agent never declared one (matching the roster's own
+  // `currentPlanSlug ?? adv.planSlug` chain). The two legs are not equally
+  // strong — a launch plan is fixed at spawn and can be stale — so the lane
+  // carries which one answered rather than presenting them identically.
+  it('reports where the plan came from, defaulting to declared', () => {
+    expect(deriveLane('p', null, []).source).toBe('declared');
+    expect(deriveLane('p', null, [], 'declared').source).toBe('declared');
+    expect(deriveLane('p', null, [], 'launch').source).toBe('launch');
+  });
 });
 
 describe('deriveAnnouncedGates (P-009 leg b)', () => {

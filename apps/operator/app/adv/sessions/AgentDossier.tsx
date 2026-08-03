@@ -698,13 +698,24 @@ export default function AgentDossier({
           id="pc-dossier-lane"
           data-collapsed={rail.closed('a-lane') ? 'true' : 'false'}
         >
+          {/* "Plan", not "Lane": the owner's own word for the thing they came
+              here to find, and the row this section leads with. `sectionId`
+              stays `a-lane` so anyone's persisted collapse state survives the
+              rename. */}
           <RailSectionHead
             sectionId="a-lane"
-            label="Lane"
+            label="Plan"
             className="pc-dossier__h"
             closed={rail.closed('a-lane')}
             onToggle={() => rail.toggle('a-lane')}
-          />
+          >
+            {/* Say WHICH leg answered when it is the weaker one. A launch-record
+                plan is fixed at spawn, so it can be stale if the agent has since
+                moved on — showing it unlabelled would assert more than we know. */}
+            {signals?.lane?.source === 'launch' ? (
+              <span className="pc-dossier__h-note"> · from launch record</span>
+            ) : null}
+          </RailSectionHead>
           {signals?.lane ? (
             <>
               {metaRows([
@@ -726,10 +737,18 @@ export default function AgentDossier({
                 }
               />
             </>
-          ) : (
+          ) : signals?.unavailableSignals.includes('lane') ? (
             // Same tri-state contract as every other signal: a read that THREW
             // must never look like an agent that simply declared no plan.
             <div className="pc-dossier__empty-line">⚠ unavailable (read failed)</div>
+          ) : (
+            // The third state, and the one this section used to express by
+            // vanishing: no plan declared and none on the launch record. Said
+            // out loud, the reader learns both that the agent is not on a plan
+            // AND that this is where a plan would appear.
+            <div className="pc-dossier__empty-line">
+              {signals ? 'Not working on a plan.' : '—'}
+            </div>
           )}
         </section>
       ) : null}
