@@ -83,6 +83,17 @@ async function main() {
     const content = extractContent(tool, input);
     if (!content) return done();
 
+    // RULE 3 — SQL-comment backtick. FIRST and BLOCKING: rules 1/2 are advisories about a
+    // gate red later, this one is about the fleet's staging host failing to build the moment
+    // the file is saved. Fail-open like the others — a guard that cannot load must never
+    // wedge every edit on the box.
+    try {
+      const denyReason = await checkSqlCommentBacktick(filePath, content);
+      if (denyReason) denyEdit(denyReason);
+    } catch {
+      /* fail-open */
+    }
+
     // RULE 2 — identity leaks. Any text file: a named tag leaks the same from .md as from .ts.
     try {
       const note = await checkIdentityLeaks(filePath, content);
@@ -325,4 +336,86 @@ function readStdin(timeoutMs) {
       finish();
     });
   });
+}
+
+// ── RULE 3 — backtick-quoted identifier inside a SQL comment (BLOCKING) ──────
+//
+// EI-19457273276133433. Unlike rules 1 and 2 this one DENIES the edit, because
+// its blast radius is not "a red gate later" but "the whole fleet's staging host
+// is down NOW": :3170 bundles the WORKING TREE, so the poisoning is immediate on
+// SAVE. On 2026-08-03 a single such backtick crash-looped papercup-staging-api 6x
+// until systemd gave up. Every pre-existing path that runs this detector (CI, the
+// git-sync content guard, green-checkpoint) fires at COMMIT time or later — i.e.
+// strictly after the damage. This is the only enforcement point that precedes it.
+//
+// The predicate is NOT reimplemented here: it is imported from
+// scripts/lib/sql-comment-backtick-scan.mjs, the same module the TypeScript
+// detector's tree is pinned to by an equivalence test. Reimplementing it is what
+// D-003 forbids, and the smart-quotes rule above is already a hand-port "kept in
+// sync in spirit" — the drift this import exists to avoid.
+
+/** Locate the shared scanner by walking up from the edited file (as loadIdentityDetector does). */
+async function loadSqlBacktickScanner(filePath) {
+  let dir = path.dirname(path.resolve(filePath));
+  for (let i = 0; i < MAX_REPO_WALK; i++) {
+    const candidate = path.join(dir, 'scripts', 'lib', 'sql-comment-backtick-scan.mjs');
+    if (existsSync(candidate)) {
+      return { mod: await import(pathToFileURL(candidate).href), repoRoot: dir };
+    }
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return null;
+}
+
+/**
+ * @returns {Promise<string|null>} a deny reason, or null to allow.
+ */
+async function checkSqlCommentBacktick(filePath, content) {
+  // Cheap byte pre-filter: the overwhelming majority of edits never load the module.
+  if (!content.includes('`') || !/(?:^|\s)--\s/.test(content)) return null;
+
+  const loaded = await loadSqlBacktickScanner(filePath);
+  if (!loaded) return null;
+  const { mod, repoRoot } = loaded;
+  if (typeof mod.findSqlCommentBacktick !== 'function') return null;
+
+  const rel = path.relative(repoRoot, path.resolve(filePath)).split(path.sep).join('/');
+  if (typeof mod.sqlCommentBacktickScopeMatches === 'function' && !mod.sqlCommentBacktickScopeMatches(rel)) {
+    return null;
+  }
+
+  const hit = mod.findSqlCommentBacktick(rel, content);
+  if (!hit) return null;
+
+  return (
+    `BLOCKED — backtick-quoted identifier inside a SQL comment in ${path.basename(filePath)} ` +
+    `at line ${hit.line}:${hit.col} (${hit.backticks} unescaped backticks).\n\n` +
+    `  ${hit.text}\n\n` +
+    `That backtick ENDS the enclosing template literal. This is blocked at edit time rather ` +
+    `than reported later because :3170 bundles the WORKING TREE: the moment this file is ` +
+    `saved, the fleet's staging host fails to BUILD and crash-loops for everyone ` +
+    `(EI-19457273276133433 — it did exactly that on 2026-08-03, 6 restarts until systemd gave up). ` +
+    `Every other guard for this class runs at commit time, which is strictly too late.\n\n` +
+    `Fix: rephrase the comment without backticks — write the 'closed_ts' column with straight ` +
+    `quotes rather than backtick-quoting the name.`
+  );
+}
+
+function denyEdit(reason) {
+  try {
+    process.stdout.write(
+      JSON.stringify({
+        hookSpecificOutput: {
+          hookEventName: 'PreToolUse',
+          permissionDecision: 'deny',
+          permissionDecisionReason: reason,
+        },
+      }) + '\n',
+    );
+  } catch {
+    /* ignore */
+  }
+  process.exit(0);
 }

@@ -419,6 +419,24 @@ export function summarizeSystemctlStatusCause(output: string): string | null {
     .split('\n')
     .map((line) => line.trim())
     .filter(Boolean);
+
+  // WI-9249: PREFER a failed control-process line (`Process: <pid> ExecStartPre=/path/x.sh
+  // (code=exited, status=1/FAILURE)`) over the generic trailer below. When a unit dies in
+  // ExecStartPre it never starts at all, and the journal tail is then dominated by
+  // "Failed with result 'exit-code'" / "Start request repeated too quickly" \u2014 all TRUE and
+  // all diagnostically empty, because none of them names WHICH step failed. Measured on the
+  // 2026-08-03 papercup-staging-api outage: the generic pick returned "\u2026Failed with result
+  // 'exit-code'.", while this line named `bundle-host.sh` outright. Three agents each ran
+  // journalctl by hand to recover exactly that, because the escalation carried the former.
+  // status=0 is excluded: a SUCCESSFUL ExecStartPre is also reported on a `Process:` line.
+  const controlProcess = lines.find(
+    (line) =>
+      /^Process:\s+\d+\s+Exec\w+=/.test(line) &&
+      /code=(?:exited|killed)/.test(line) &&
+      !/status=0(?:\/SUCCESS)?\b/.test(line),
+  );
+  if (controlProcess) return controlProcess.slice(0, 400);
+
   const cause = [...lines].reverse().find((line) =>
     /EADDRINUSE|address already in use|fatal|Main process exited|Failed with result|code=(?:exited|killed)|status=\d+/i.test(line),
   );
@@ -572,6 +590,23 @@ export async function reconcileTick(deps: ReconcilerDeps): Promise<ReconcileTick
     flapStateByUnit.set(entry.unit, nextState);
     actions.push(action);
 
+    // WI-9249: the two escalation paths below used to page with a restart COUNT and no cause,
+    // so "needs investigation" meant every responder began from zero. The silent-crash-loop
+    // page above already attaches `Last exit:` via the same helper — this closes that
+    // inconsistency rather than adding a second mechanism. Best-effort by construction: a
+    // failure to gather diagnostics must never suppress the page itself.
+    const failureCauseSuffix = async (): Promise<string> => {
+      const fallback = ` Cause unavailable; inspect \`systemctl --user status ${entry.unit}\` + its journal.`;
+      try {
+        const cause = summarizeSystemctlStatusCause(
+          await deps.execUser(['status', entry.unit, '--no-pager', '--lines=50']),
+        );
+        return cause ? ` Cause: ${cause}` : fallback;
+      } catch {
+        return fallback;
+      }
+    };
+
     switch (action.kind) {
       case 'restart':
         log(`restarting ${entry.unit} (backoff was ${action.backoffSec}s)`);
@@ -591,7 +626,10 @@ export async function reconcileTick(deps: ReconcilerDeps): Promise<ReconcileTick
       case 'escalate-start-limit-hit':
         await deps
           .notify({
-            summary: `🚨 supervision: \`${entry.unit}\` hit systemd's OWN start-limit — NOT restarting further (needs \`systemctl --user reset-failed ${entry.unit}\` + investigation)`,
+            summary:
+              `🚨 supervision: \`${entry.unit}\` hit systemd's OWN start-limit — NOT restarting further ` +
+              `(needs \`systemctl --user reset-failed ${entry.unit}\` + investigation).` +
+              (await failureCauseSuffix()),
             kind: 'escalation',
           })
           .catch(() => {});
@@ -599,7 +637,10 @@ export async function reconcileTick(deps: ReconcilerDeps): Promise<ReconcileTick
       case 'escalate-give-up':
         await deps
           .notify({
-            summary: `🚨 supervision: \`${entry.unit}\` crash-looped (${action.restartsInWindow} restarts in <10min) — GIVING UP, this is a code fault not a transient. Needs investigation.`,
+            summary:
+              `🚨 supervision: \`${entry.unit}\` crash-looped (${action.restartsInWindow} restarts in <10min) — ` +
+              `GIVING UP, this is a code fault not a transient. Needs investigation.` +
+              (await failureCauseSuffix()),
             kind: 'escalation',
           })
           .catch(() => {});

@@ -1,0 +1,368 @@
+#!/usr/bin/env node
+// apps/operator/scripts/hooks/cc/posttooluse-ts-parse-nudge.mjs
+//
+// PostToolUse (Edit|Write|MultiEdit) ADVISORY nudge: the file you just wrote does
+// not PARSE (EI-19457231269012320 / EI-19457320059999661).
+//
+// THE TRAP
+//   An unparseable .ts file in the shared tree is not a compile error someone
+//   notices later. `apps/operator/bin/bundle-host.sh` esbuild-bundles operator-core
+//   as `ExecStartPre` for `papercup-staging-api`, `papercup-bg-host` and the release
+//   host — so a file that cannot parse is an IMMEDIATE boot failure for every host
+//   that bundles it. Measured 2026-08-03: backticks written as prose inside a
+//   `sql` tagged template closed the literal at watchdog.ts:1836; :3170 crash-looped
+//   6x, systemd hit its start-limit and gave up, and the port the whole fleet uses
+//   to test server-side edits was down for 17 minutes.
+//
+// WHY EDIT TIME, WHEN A COMMIT-PATH GUARD ALREADY EXISTS
+//   It does exist and it is correct: `tsParseDetector` in
+//   packages/operator-core/lib/content-lint/registry.ts, consumed by
+//   harness/git-sync/content-guard.ts. But it is a COMMIT-path guard, and the
+//   damage here does not need a commit. bundle-host.sh bundles the WORKING TREE, so
+//   uncommitted bytes take the service down. Measured on the 2026-08-03 outage:
+//   `git log --since '2026-08-03 12:00'` on that file returns exactly ONE commit —
+//   the FIX. The break was NEVER COMMITTED and still took :3170 down fleet-wide.
+//   A commit-path guard structurally cannot see that window.
+//
+//   The sibling PreToolUse content-lint hook cannot cover it either, and not by
+//   oversight: PreToolUse sees `new_string` — a FRAGMENT. Smart-quotes and the
+//   identity-leak classes are substring checks, so a fragment is a valid input for
+//   them. A parse check on a fragment is meaningless (an `new_string` is usually a
+//   function body or a partial object literal and does not parse standalone), so it
+//   would fire on almost every edit. PostToolUse reads the ACTUAL resulting file
+//   from disk, which is the only complete, un-reconstructed post-edit content
+//   available — no replay of Edit semantics, no guessing.
+//
+// WHY NOT SPAWN esbuild PER EDIT (the obvious-looking alternative)
+//   A `ts.createSourceFile` parse is pure, in-process, and needs no bundler: no
+//   type graph, no module resolution, no disk, no network. It is measured at
+//   ~0.85ms/file with ZERO false positives across all 10,829 tracked .ts/.tsx files
+//   in this repo (see ts-parse.ts). Spawning esbuild per edit costs a subprocess
+//   plus resolution for the same answer, on a path that fires on every write in the
+//   fleet.
+//
+// CONTRACT
+//   - ADVISORY ONLY. PostToolUse cannot block, and must not try to: a multi-step
+//     refactor legitimately passes through unparseable intermediate states, so a
+//     verdict here would be wrong as often as it was right. This reports; it never
+//     judges. The git-sync content-guard remains the real backstop.
+//   - SYNTACTIC ONLY. A pure parse can only ever say "this text is not valid
+//     TypeScript". It can never flag a type error, an unresolved import, a missing
+//     dependency or a bad annotation, so it cannot nag about work in progress.
+//   - MIRRORS the pure detector `findTsParseError`
+//     (packages/operator-core/lib/content-lint/ts-parse.ts). That file is .ts and
+//     this hook runs under plain node from an INSTALLED copy detached from any
+//     repo, so importing it would require `tsx` (~300ms) on every edit in the
+//     fleet. The parse invariant has no tunable policy to drift — it is
+//     `parseDiagnostics[0] != null` — and __tests__/posttooluse-ts-parse-nudge.test.ts
+//     pins this implementation against the REAL detector over a shared corpus, so
+//     divergence fails a test rather than going unnoticed.
+//   - FAILS OPEN on every internal error — bad JSON, missing file, unreadable path,
+//     no resolvable typescript, an oversized file. A bug here must never disturb an
+//     edit that already succeeded.
+//   - `--self-test` runs the embedded cases (no stdin) and exits non-zero on
+//     failure; mirrors the sibling PostToolUse nudges.
+//
+import { existsSync, readFileSync, statSync } from 'node:fs';
+import { createRequire } from 'node:module';
+import { dirname, join, relative, resolve } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import process from 'node:process';
+
+/**
+ * How the repo root is identified — and, because `typescript` is what this hook
+ * needs, finding it also PROVES the dependency is present. One check, so there is
+ * no separate existence probe to drift out of sync (mirrors the sibling's
+ * DETECTOR_REL trick).
+ */
+const TS_REL = join('node_modules', 'typescript', 'package.json');
+
+/** Parsing a very large file is not worth an edit-time nudge. */
+const MAX_BYTES = 2_000_000;
+
+// Run the hook ONLY when executed as a binary — never on import. Without this,
+// importing the module (as the test suite does, to exercise the checker against the
+// REAL detector) runs main(), which waits on stdin and then calls process.exit(0),
+// killing the vitest worker mid-run.
+const invokedDirectly = process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url));
+if (invokedDirectly) main();
+
+async function main() {
+  if (process.argv.includes('--self-test')) return selfTest();
+  try {
+    const hook = JSON.parse(await readStdin(250));
+    const tool = hook.tool_name || '';
+    if (tool !== 'Edit' && tool !== 'Write' && tool !== 'MultiEdit') return done();
+    const filePath = (hook.tool_input || {}).file_path || '';
+    if (!filePath) return done();
+
+    const msg = await nudgeFor(filePath);
+    if (msg) {
+      process.stdout.write(
+        JSON.stringify({
+          hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: msg },
+        }) + '\n',
+      );
+    }
+  } catch {
+    // fail open — see CONTRACT
+  }
+  return done();
+}
+
+/**
+ * True for a file whose parseability this hook can meaningfully assert.
+ *
+ * `.d.ts` is deliberately INCLUDED, unlike the required-field-strand sibling: a
+ * declaration file that does not parse breaks every consumer exactly as hard as an
+ * implementation file does, and the reason that sibling skips it (a .d.ts declares
+ * no constructible interface to strand) has no analogue here.
+ */
+export function isCandidateFile(filePath) {
+  return /\.(ts|tsx|mts|cts)$/.test(filePath);
+}
+
+/**
+ * Walk up from the edited file until a directory carries `typescript`. Returns the
+ * repo root, or null when the edit is outside any tree that has it (in which case
+ * the hook stays silent rather than guessing).
+ */
+export function findRepoRoot(filePath, exists = existsSync) {
+  let dir = dirname(resolve(filePath));
+  for (;;) {
+    if (exists(join(dir, TS_REL))) return dir;
+    const parent = dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
+  }
+}
+
+/**
+ * The parse check itself — deliberately identical in behaviour to
+ * `findTsParseError` in packages/operator-core/lib/content-lint/ts-parse.ts.
+ * Returns the FIRST syntactic diagnostic, or null when the text parses cleanly.
+ *
+ * Throws only when the TypeScript build cannot report parse diagnostics at all:
+ * a check that can only ever answer "clean" is precisely the silent non-guard this
+ * hook exists to remove, so that case must fail loudly into the caller's fail-open
+ * rather than quietly returning null for everything.
+ */
+export function findParseError(ts, fileName, text) {
+  const scriptKind = fileName.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS;
+  const sf = ts.createSourceFile(fileName, text, ts.ScriptTarget.Latest, /*setParentNodes*/ false, scriptKind);
+  const diags = sf.parseDiagnostics;
+  if (diags === undefined) {
+    throw new Error('ts-parse-nudge: SourceFile.parseDiagnostics is unavailable — the parse check cannot run');
+  }
+  const first = diags[0];
+  if (!first) return null;
+  const pos = typeof first.start === 'number' ? sf.getLineAndCharacterOfPosition(first.start) : null;
+  return {
+    line: pos ? pos.line + 1 : null,
+    col: pos ? pos.character + 1 : null,
+    code: first.code,
+    reason: ts.flattenDiagnosticMessageText(first.messageText, ' '),
+  };
+}
+
+/** The advisory text. Exported so the test asserts the real string. */
+export function formatNudge(relPath, hit) {
+  const at = hit.line != null ? `line ${hit.line}${hit.col != null ? `:${hit.col}` : ''}` : 'an unknown position';
+  return [
+    'This file does NOT PARSE as TypeScript right now:',
+    `  ${relPath}  —  ${at}  (TS${hit.code})`,
+    `  ${hit.reason}`,
+    '',
+    '  This is not a type error and not baselined. bundle-host.sh esbuild-bundles',
+    '  operator-core as ExecStartPre for papercup-staging-api, papercup-bg-host and',
+    '  the release host, and it bundles the WORKING TREE — so an unparseable file',
+    '  takes those services down with no commit involved. On 2026-08-03 exactly this',
+    '  crash-looped :3170 into systemd start-limit for 17 minutes, fleet-wide.',
+    '',
+    '  If you are mid-refactor this may be a legitimate intermediate state — but do',
+    '  not leave the tree this way, and note git-sync sweeps the WHOLE tree every few',
+    '  minutes, so an unparseable file left sitting here can also get committed.',
+    '',
+    '  A frequent cause is a backtick written as prose inside a tagged template',
+    '  literal (a markdown-quoted identifier in a SQL comment closes the template).',
+  ].join('\n');
+}
+
+/**
+ * The whole check for one edited file. Returns the advisory string, or null.
+ * Every dependency is injectable so the test can drive it without a real repo.
+ */
+export async function nudgeFor(filePath, deps = {}) {
+  const exists = deps.exists ?? existsSync;
+  const readFile = deps.readFile ?? ((p) => readFileSync(p, 'utf8'));
+  const sizeOf = deps.sizeOf ?? ((p) => statSync(p).size);
+  const loadTs = deps.loadTs ?? defaultLoadTs;
+
+  if (!isCandidateFile(filePath)) return null;
+
+  const repoRoot = deps.repoRoot ?? findRepoRoot(filePath, exists);
+  if (!repoRoot) return null;
+
+  let text;
+  try {
+    if (sizeOf(filePath) > MAX_BYTES) return null;
+    text = readFile(filePath);
+  } catch {
+    return null; // deleted/renamed/unreadable between the write and this hook
+  }
+  if (typeof text !== 'string' || text.length === 0) return null;
+
+  const ts = await loadTs(repoRoot);
+  if (!ts || typeof ts.createSourceFile !== 'function') return null;
+
+  const hit = findParseError(ts, filePath, text);
+  if (!hit) return null;
+
+  const rel = relative(repoRoot, resolve(filePath)) || filePath;
+  return formatNudge(rel.split(/[\\/]/).join('/'), hit);
+}
+
+/**
+ * Resolve `typescript` from the REPO BEING EDITED, not from the hook's own
+ * location. The hook is installed to a directory detached from any repo, so a bare
+ * `import('typescript')` resolves against that directory and finds nothing — which
+ * fails open silently, i.e. the guard would appear installed and never fire.
+ */
+async function defaultLoadTs(repoRoot) {
+  try {
+    const req = createRequire(pathToFileURL(join(repoRoot, 'package.json')).href);
+    const entry = req.resolve('typescript');
+    const mod = await import(pathToFileURL(entry).href);
+    return mod.default ?? mod;
+  } catch {
+    return null;
+  }
+}
+
+function readStdin(timeoutMs) {
+  return new Promise((res) => {
+    if (process.stdin.isTTY) return res('');
+    let data = '';
+    const t = setTimeout(() => res(data), timeoutMs);
+    process.stdin.on('data', (c) => {
+      data += c;
+    });
+    process.stdin.on('end', () => {
+      clearTimeout(t);
+      res(data);
+    });
+    process.stdin.on('error', () => {
+      clearTimeout(t);
+      res(data);
+    });
+  });
+}
+
+function done() {
+  process.exit(0);
+}
+
+async function selfTest() {
+  const failures = [];
+  const check = (name, ok) => {
+    if (!ok) failures.push(name);
+  };
+
+  const ts = await defaultLoadTs(findRepoRoot(fileURLToPath(import.meta.url)) ?? process.cwd());
+  if (!ts) {
+    console.error('posttooluse-ts-parse-nudge --self-test: cannot resolve typescript');
+    process.exit(1);
+  }
+
+  const base = {
+    exists: () => true,
+    repoRoot: '/repo',
+    sizeOf: () => 100,
+    loadTs: async () => ts,
+  };
+
+  // A clean file is silent.
+  const clean = await nudgeFor('/repo/packages/x/a.ts', {
+    ...base,
+    readFile: () => 'export const a: number = 1;\n',
+  });
+  check('silent on a file that parses', clean === null);
+
+  // The measured 2026-08-03 outage shape: a backtick inside a SQL comment that
+  // lives inside a tagged template literal closes the template.
+  const broken = await nudgeFor('/repo/packages/x/watchdog.ts', {
+    ...base,
+    readFile: () =>
+      'const rows = await sql`\n  SELECT 1\n  -- crowded out; `name` is a tiebreak\n  ORDER BY 1`;\n',
+  });
+  check('reports the template-literal break', typeof broken === 'string' && /does NOT PARSE/.test(broken));
+  check('names the file', typeof broken === 'string' && /watchdog\.ts/.test(broken));
+
+  // A plain syntax error is reported too (the general form).
+  const trunc = await nudgeFor('/repo/packages/x/b.ts', {
+    ...base,
+    readFile: () => 'export function f( {\n',
+  });
+  check('reports a plain syntax error', typeof trunc === 'string' && /does NOT PARSE/.test(trunc));
+
+  // A TYPE error must NOT be reported — syntactic only.
+  const typeErr = await nudgeFor('/repo/packages/x/c.ts', {
+    ...base,
+    readFile: () => 'const n: number = "not a number";\nimport { nope } from "./does-not-exist";\n',
+  });
+  check('silent on a type error / unresolved import', typeErr === null);
+
+  // Non-candidate paths short-circuit without touching the filesystem.
+  const notTs = await nudgeFor('/repo/packages/x/readme.md', {
+    ...base,
+    readFile: () => {
+      throw new Error('must not be called');
+    },
+  });
+  check('skips a non-TypeScript path', notTs === null);
+
+  // Outside any tree carrying typescript => silent.
+  const noRoot = await nudgeFor('/elsewhere/a.ts', {
+    ...base,
+    repoRoot: null,
+    exists: () => false,
+    readFile: () => {
+      throw new Error('must not be called');
+    },
+  });
+  check('silent outside a repo that has typescript', noRoot === null);
+
+  // An unreadable file fails open.
+  const unreadable = await nudgeFor('/repo/packages/x/gone.ts', {
+    ...base,
+    readFile: () => {
+      throw new Error('ENOENT');
+    },
+  });
+  check('fails open on an unreadable file', unreadable === null);
+
+  // An unresolvable typescript fails open.
+  const noTs = await nudgeFor('/repo/packages/x/a.ts', {
+    ...base,
+    readFile: () => 'export function f( {\n',
+    loadTs: async () => null,
+  });
+  check('fails open when typescript cannot be loaded', noTs === null);
+
+  // An oversized file is skipped without reading it.
+  const huge = await nudgeFor('/repo/packages/x/huge.ts', {
+    ...base,
+    sizeOf: () => MAX_BYTES + 1,
+    readFile: () => {
+      throw new Error('must not be called');
+    },
+  });
+  check('skips an oversized file without reading it', huge === null);
+
+  if (failures.length) {
+    console.error(`posttooluse-ts-parse-nudge --self-test FAILED:\n  ${failures.join('\n  ')}`);
+    process.exit(1);
+  }
+  console.log('posttooluse-ts-parse-nudge --self-test: all cases passed');
+  process.exit(0);
+}

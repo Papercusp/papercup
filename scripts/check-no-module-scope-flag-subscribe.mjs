@@ -313,6 +313,30 @@ export const BASELINE = new Set([
   // "behaviour this DOES change" note, a cache like this needs an explicit warm on a
   // boot path, not lazy arming alone. Migrate it deliberately, with that warm.
   'packages/operator-core/lib/auth-config-overrides.ts',
+  // ⚠ EXAMINED AND DEFERRED, NOT MISSED — and the reason is NOT the usual one, so do not
+  // reach for `seed` here on the strength of it having unblocked issues-engineer. This is
+  // not a flag-mirror CACHE at all: the module has no exports and no reader, and exists
+  // only to PUSH the flag across a layer boundary into @papercusp/db-org via
+  // `setRoutinesPerWorkspaceConflict`. There is therefore no "first use" to arm on, which
+  // is the precondition the whole lazy-arm pattern assumes.
+  //   The trap is where you'd put the arm. The module header names only the ticker, which
+  // invites arming at routinesTickImpl — but the boot import wires the value PROCESS-WIDE,
+  // and `upsertRoutine` has many callers outside the tick in that same process
+  // (harness/routines/loop.ts — the loop:arm verb — git-sync/git-sync-routine.ts,
+  // foreign-git-sync-action.ts, sweep-orphaned-foreign-harnesses-action.ts,
+  // foreign-supervision-action.ts, loop-dead-man.ts). A tick-scoped arm leaves every one of
+  // them unarmed while LOOKING like a faithful migration.
+  //   And it would look green, which is the dangerous part: per upsertRoutine's
+  // conflict-target comment in routines-runtime.ts the two branches are currently
+  // EQUIVALENT — `(id)` vs `(install_slug, name)`, since id ↔ (install_slug, name) while the
+  // global unique still stands — so arming late is behaviourally inert TODAY and every test
+  // passes. Phase 2 (drop the global unique, fold workspace_id into the id) is exactly what
+  // removes that equivalence, so a naive migration now plants a trap that detonates then.
+  //   For whoever does migrate it: FLAG_DEFAULTS[ROUTINES_PER_WORKSPACE] is `true` (measured,
+  // not in DARK_FLAGS) while BOTH fallbacks in the seam are `false` (the lib's
+  // `let routinesPerWorkspaceConflict = false` and this module's `catch`), so a `seed` from
+  // FLAG_DEFAULTS is the right first move — AFTER the arm-site problem above is solved, not
+  // instead of solving it.
   'packages/operator-core/lib/harness/routines/configure-per-workspace.ts',
   'packages/operator-core/lib/lexicon/configure.ts',
 ]);

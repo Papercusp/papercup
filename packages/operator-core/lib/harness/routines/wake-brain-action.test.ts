@@ -13,6 +13,7 @@ import { getFlag } from '@papercusp/flags/server';
 import { getBrainSession } from '../../brain-pin';
 import { getOrgPg } from '@papercusp/db-org';
 import { wakeRecipients } from '../../agent-tools/coordination/inbox-wake';
+import { mockOrgPgSql } from '../../testing/mock-org-pg';
 
 const ctx = (over: Record<string, unknown> = {}) => ({
   installSlug: 'pot',
@@ -29,7 +30,7 @@ beforeEach(() => {
   // does NOT gate on a heartbeat (the wake-executor is the liveness authority).
   // A tracked pin yields the owner regardless of liveness.
   sql = vi.fn(async () => [{ coord_owner_id: 'owner-x' }]);
-  vi.mocked(getOrgPg).mockReturnValue({ sql } as never);
+  mockOrgPgSql(vi.mocked(getOrgPg), sql);
   vi.mocked(getFlag).mockResolvedValue(true as never);
   vi.mocked(getBrainSession).mockResolvedValue('brain-uuid' as never);
 });

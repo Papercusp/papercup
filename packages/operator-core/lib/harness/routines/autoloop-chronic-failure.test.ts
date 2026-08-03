@@ -40,6 +40,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { recentWatchdogFires, claimWatchdogFire } from '../../pot/watchdog';
 import { captureImprovement } from '../improvements/capture-core';
 import { requestOverwatchWake } from '../../overwatch/wake-bridge';
+import { mockOrgPgSql } from '../../testing/mock-org-pg';
 
 const HOUR_MS = 60 * 60 * 1000;
 const NOW = Date.UTC(2026, 6, 3, 12, 0, 0); // 2026-07-03T12:00:00Z
@@ -797,7 +798,7 @@ describe('selectSilentlyStoppedRoles (EI-19281872822982156)', () => {
 describe('autoloopChronicFailureSweep — WI-4632: escalation ALSO wakes overwatch (GYM-2, generalized across roles)', () => {
   function mockRows(rows: AutoloopStateRow[]): void {
     const sql = vi.fn(() => Promise.resolve(rows));
-    vi.mocked(getOrgPg).mockReturnValue({ sql } as never);
+    mockOrgPgSql(vi.mocked(getOrgPg), sql);
   }
 
   beforeEach(() => {
@@ -951,7 +952,7 @@ describe('autoloopChronicFailureSweep — WI-4632: escalation ALSO wakes overwat
 describe('autoloopSilentStopSweep (EI-19281872822982156) — the error-count-independent liveness sweep', () => {
   function mockRows(rows: AutoloopStateRow[]): void {
     const sql = vi.fn(() => Promise.resolve(rows));
-    vi.mocked(getOrgPg).mockReturnValue({ sql } as never);
+    mockOrgPgSql(vi.mocked(getOrgPg), sql);
   }
 
   beforeEach(() => {
@@ -1134,7 +1135,7 @@ describe("workspace scoping (EI-19372306666296664) — a foreign tenant's row mu
       const visible = scoped == null ? rows : rows.filter((r) => r.workspace_id === scoped);
       return Promise.resolve(visible.map(({ workspace_id: _w, ...rest }) => rest));
     });
-    vi.mocked(getOrgPg).mockReturnValue({ sql } as never);
+    mockOrgPgSql(vi.mocked(getOrgPg), sql);
     return { sql };
   }
 
@@ -1290,7 +1291,7 @@ describe('autoloopRowIdentity (EI-19372306666296664)', () => {
         },
       ]),
     );
-    vi.mocked(getOrgPg).mockReturnValue({ sql } as never);
+    mockOrgPgSql(vi.mocked(getOrgPg), sql);
     vi.mocked(recentWatchdogFires).mockResolvedValue(0);
     vi.mocked(claimWatchdogFire).mockResolvedValue(true);
     vi.mocked(captureImprovement).mockResolvedValue({} as never);

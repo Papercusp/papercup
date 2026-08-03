@@ -104,6 +104,8 @@
     "gen:agent-env:check": "tsx scripts/gen-agent-env.ts --check",
     "gen:knowledge-packs": "node scripts/gen-knowledge-packs.mjs",
     "gen:knowledge-packs:check": "node scripts/gen-knowledge-packs.mjs --check",
+    "gen:fleet-lessons": "tsx scripts/gen-fleet-lessons.ts",
+    "gen:fleet-lessons:check": "tsx scripts/gen-fleet-lessons.ts --check",
     "gen:tool-catalog": "tsx scripts/gen-tool-catalog.ts",
     "gen:tool-catalog:check": "tsx scripts/gen-tool-catalog.ts --check",
     "gen:tool-routing": "tsx scripts/gen-tool-routing.ts",

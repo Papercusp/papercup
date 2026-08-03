@@ -110,6 +110,51 @@ describe('summarizeSystemctlStatusCause', () => {
   it('returns null when status has no failure evidence', () => {
     expect(summarizeSystemctlStatusCause('Active: active (running)\nStarted cleanly')).toBeNull();
   });
+
+  // WI-9249 — the 2026-08-03 papercup-staging-api outage, verbatim in shape. The unit died in
+  // ExecStartPre (a bundle failure), so it never started and the journal tail is all generic
+  // systemd trailers. Picking one of those is TRUE and useless; only the `Process:` line names
+  // the step that actually failed.
+  const EXEC_START_PRE_FAILURE = [
+    '× papercup-staging-api.service - Papercusp operator STAGING host (:3170)',
+    'Active: failed (Result: exit-code) since Mon 2026-08-03 14:07:26 EDT; 13min ago',
+    'Process: 904863 ExecStartPre=/home/x/papercusp/apps/operator/bin/bundle-host.sh (code=exited, status=1/FAILURE)',
+    'Aug 03 14:13:03 host systemd[1]: papercup-staging-api.service: Start request repeated too quickly.',
+    "Aug 03 14:13:03 host systemd[1]: papercup-staging-api.service: Failed with result 'exit-code'.",
+    'Aug 03 14:13:03 host systemd[1]: Failed to start papercup-staging-api.service - Papercusp operator STAGING host (:3170).',
+  ].join('\n');
+
+  it('prefers a FAILED control-process line over the generic journal trailer', () => {
+    const cause = summarizeSystemctlStatusCause(EXEC_START_PRE_FAILURE);
+    // The whole point: it must name the failing STEP.
+    expect(cause).toContain('ExecStartPre');
+    expect(cause).toContain('bundle-host.sh');
+    // ...and must NOT settle for the trailer, which is what the old ordering returned.
+    expect(cause).not.toContain('Failed with result');
+  });
+
+  it('CONTROL: a SUCCESSFUL control process is not mistaken for the cause', () => {
+    // A healthy ExecStartPre is also reported on a `Process:` line. Preferring `Process:`
+    // blindly would report a step that SUCCEEDED as the failure.
+    const output = [
+      'Active: failed (Result: exit-code)',
+      'Process: 111 ExecStartPre=/home/x/prep.sh (code=exited, status=0/SUCCESS)',
+      'Aug 03 14:13:03 host systemd[1]: svc.service: Main process exited, code=exited, status=3/NOTIMPLEMENTED',
+    ].join('\n');
+    const cause = summarizeSystemctlStatusCause(output);
+    expect(cause).not.toContain('prep.sh');
+    expect(cause).toContain('status=3/NOTIMPLEMENTED');
+  });
+
+  it('CONTROL: with no control-process line the previous trailer behaviour is preserved', () => {
+    const cause = summarizeSystemctlStatusCause(
+      [
+        'Active: active (running)',
+        'Jul 13 10:52:48 host systemd[1]: svc.service: Main process exited, code=exited, status=1/FAILURE',
+      ].join('\n'),
+    );
+    expect(cause).toContain('Main process exited, code=exited, status=1/FAILURE');
+  });
 });
 
 describe('isUnitDown', () => {
@@ -538,6 +583,51 @@ describe('reconcileTick (orchestrator, mocked deps)', () => {
     // the fixture) but must NEVER be restarted.
     expect(deps.execUser.mock.calls.some((c) => c[0][0] === 'restart' && c[0][1] === 'papercup-live-federation-gate')).toBe(false);
     expect(deps.notify).toHaveBeenCalled();
+  });
+
+  // WI-9249: these assert the SEAM (the escalation actually carries the cause), which the pure
+  // summarizeSystemctlStatusCause tests above cannot reach.
+  const STATUS_WITH_CAUSE = [
+    'Active: failed (Result: exit-code)',
+    'Process: 904863 ExecStartPre=/home/x/apps/operator/bin/bundle-host.sh (code=exited, status=1/FAILURE)',
+    "Aug 03 14:13:03 host systemd[1]: papercup-mcp-proxy.service: Failed with result 'exit-code'.",
+  ].join('\n');
+
+  function depsWithStartLimit(statusImpl: (args: string[]) => Promise<string>) {
+    return makeDeps({
+      execUser: vi.fn(async (args: string[]) => {
+        if (args[0] === 'list-units') return LIST_UNITS_FIXTURE;
+        if (args[0] === 'show') return 'Result=start-limit-hit\nNRestarts=0\n';
+        if (args[0] === 'status') return statusImpl(args);
+        return '';
+      }),
+    });
+  }
+
+  it('an escalation page carries the failure CAUSE, not just "needs investigation"', async () => {
+    const deps = depsWithStartLimit(async () => STATUS_WITH_CAUSE);
+    await reconcileTick(deps);
+    const page = deps.notify.mock.calls
+      .map((c) => c[0].summary as string)
+      .find((s) => s.includes('start-limit'));
+    expect(page, 'expected a start-limit escalation').toBeDefined();
+    // The regression this closes: the page used to end at "investigation" with no cause, so
+    // every responder began from zero and re-ran journalctl by hand.
+    expect(page).toContain('Cause:');
+    expect(page).toContain('bundle-host.sh');
+  });
+
+  it('CONTROL: gathering diagnostics must never suppress the page itself', async () => {
+    const deps = depsWithStartLimit(async () => {
+      throw new Error('journal unreadable');
+    });
+    await reconcileTick(deps);
+    const page = deps.notify.mock.calls
+      .map((c) => c[0].summary as string)
+      .find((s) => s.includes('start-limit'));
+    // Still paged — the escalation is the load-bearing part, the cause is a bonus.
+    expect(page).toBeDefined();
+    expect(page).toContain('Cause unavailable');
   });
 
   it('does not restart when FLAGS.supervisorAutoRestart resolves false (report-only everywhere)', async () => {

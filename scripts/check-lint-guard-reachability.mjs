@@ -73,6 +73,32 @@
  * separately rather than smuggled in here. Read a `ci` classification as "a red would
  * be visible somewhere", not as "a red stops the release."
  *
+ * ── KNOWN LIMITATION: this census models ENFORCEMENT EXISTENCE, never TIMING ──
+ * `classifyGuard` asks only WHICH CORPUS mentions a guard, and returns the strongest
+ * tier in BLOCKING_TIERS. That answers "would a red ever be SEEN?" It does NOT answer
+ * "would the red arrive before the damage?" — the census has no notion of when a guard
+ * fires, and none of who CONSUMES the artifact it guards. Those are different questions,
+ * and a guard can score `gate` here while being structurally incapable of protecting a
+ * given consumer.
+ *
+ * The case that proves it (raised by su-b9269, 2026-08-03, and demonstrated the same day):
+ * `apps/operator/bin/bundle-host.sh` esbuild-bundles operator-core as `ExecStartPre` for
+ * `papercup-staging-api` / `papercup-bg-host` — i.e. those consumers read the WORKING
+ * TREE, before any commit exists. So every commit-time-or-later guard is unreachable for
+ * them BY CONSTRUCTION, however well wired. On 2026-08-03 a saved-but-uncommitted backtick
+ * inside a `sql` template literal (watchdog.ts:1836) crash-looped :3170 fleet-wide for 17
+ * minutes while every relevant guard was, by this script's measure, fully enforced.
+ *
+ * So: "enforced" is NOT "prevents". Read a BLOCKING classification as "a red would stop
+ * something downstream", never as "this artifact's consumers are protected."
+ *
+ * Deliberately NOT modelled rather than modelled badly: doing it properly needs a map from
+ * each guarded artifact to its consumers and the stage at which each reads it (working tree
+ * / commit / candidate / release). A hand-maintained `timing:` label per guard would rot
+ * exactly the way this script's derive-from-the-runners design exists to prevent. Tracked
+ * separately — see EI-19457231269012320 (edit-time parse check, the only tier that can
+ * protect a working-tree consumer) and EI-19457273276133433.
+ *
  * ── THE UNDER-CLAIM THIS AVOIDS ──────────────────────────────────────────────
  * The filing that prompted this deliberately under-claimed its own headline number:
  * "not referenced by npm-script NAME" is NOT the same as "runs nowhere", because

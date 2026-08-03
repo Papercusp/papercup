@@ -74,6 +74,39 @@ describe('check-unenrolled-mjs-imports', () => {
     });
   });
 
+  it('does not flag an import whose directive is separated from it by EXPLANATORY COMMENT LINES', () => {
+    // Comment lines are TRIVIA to tsc: it walks back over blank/comment-only lines
+    // looking for a preceding directive, so suppression survives any number of them.
+    //
+    // The guard used to scan with a 3-non-blank-line budget that counted comment
+    // lines against it, so a directive carrying more than three lines of
+    // explanation read as "unsuppressed". That is a false positive on code tsc
+    // compiles clean, and it red-pinned the whole fleet gate on
+    // no-module-scope-flag-subscribe-guard.test.ts — whose header carries exactly
+    // this shape (eslint pragma + @ts-ignore + 5 explanatory lines +
+    // prettier-ignore). Verified against a real tsc run over this exact shape plus
+    // a no-directive control: control → TS7016, this shape → clean.
+    withFixture((root) => {
+      expect(
+        find(
+          root,
+          [
+            '// eslint-disable-next-line @typescript-eslint/ban-ts-comment',
+            '// @ts-ignore — pure JS guard script, no .d.ts.',
+            '// ⚠ Keep this import on ONE line. The TS7016 is reported at the MODULE',
+            '// SPECIFIER, so wrapping it into a multi-line named-import list moves the',
+            '// specifier out from under the directive and the file regresses by exactly',
+            '// one type error. Prettier leaves it alone at this width; if it ever grows',
+            '// past the print width, move the directive rather than reflowing it.',
+            '// prettier-ignore',
+            "import { x } from './scripts/helper.mjs';",
+            '',
+          ].join('\n'),
+        ),
+      ).toHaveLength(0);
+    });
+  });
+
   it('does not flag a MULTI-LINE import whose directive sits above the `} from` line', () => {
     // The shape that broke the first implementation. tsc lands the diagnostic on
     // the `from` line here, so the directive is INSIDE the braces — below the

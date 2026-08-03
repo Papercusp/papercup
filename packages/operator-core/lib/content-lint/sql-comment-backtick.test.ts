@@ -160,6 +160,45 @@ describe('findSqlCommentBacktick — file-level SQL scope gate', () => {
     const text = src('const d = "CREATE UNIQUE INDEX x ON t (a)";', 'const c = "  -- the `a` column";');
     expect(findSqlCommentBacktick('a.ts', text)).not.toBeNull();
   });
+
+  /**
+   * WI-9253 — the gap that cost a 17-minute :3170 outage on 2026-08-03.
+   *
+   * The gate used to require the backtick to follow `sql` IMMEDIATELY, so the
+   * typed call form did not match. A SELECT-only file also fails HAS_RAW_DDL,
+   * so the whole file was rejected and the detector never ran. 411 non-test
+   * files were fully invisible this way — which is why the guard had 0 true
+   * positives while the very bug it hunts was crash-looping a shared service.
+   *
+   * This reproduces the real watchdog.ts:1836 shape, not a minimised stand-in:
+   * the tag is generic, the SQL is a bare SELECT, and the offending backticks
+   * sit in an ORDER BY rationale comment.
+   */
+  it('DOES scope the TYPED tag form sql<T>`` with no DDL — the 2026-08-03 :3170 outage (WI-9253)', () => {
+    const text = src(
+      'const rows = await sql<RoutineFailureRow[]>`',
+      "  SELECT name, metadata->>'last_error' AS last_error",
+      '    FROM harness_shared.routines',
+      '   -- Oldest error first, so the longest-standing failure is never crowded out; `name`',
+      '   -- is a total-order tiebreak so set membership is stable across ticks.',
+      '   ORDER BY name ASC',
+      '   LIMIT 200`;',
+    );
+    const hit = findSqlCommentBacktick('watchdog.ts', text);
+    expect(hit).not.toBeNull();
+    expect(hit?.text).toContain('longest-standing failure');
+    expect(hit?.backticks).toBe(2);
+  });
+
+  it('DOES scope the typed form even when the generic itself is nested', () => {
+    const text = src('const q = sql<Array<Row>>`SELECT 1`;', 'const c = "  -- the `kind` column";');
+    expect(findSqlCommentBacktick('a.ts', text)).not.toBeNull();
+  });
+
+  it('still does NOT scope prose that merely mentions sql followed by a comparison', () => {
+    const text = src('// a < b and sql > c, discussed in prose only', 'const c = "  -- the `kind` column";');
+    expect(findSqlCommentBacktick('notes.ts', text)).toBeNull();
+  });
 });
 
 /**

@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('@papercusp/db-org', () => ({ getOrgPg: vi.fn() }));
 
 import { getOrgPg } from '@papercusp/db-org';
+import { mockOrgPgSql } from '../../testing/mock-org-pg';
 import {
   resolveWakeMode,
   resolveWakeModeFrom,
@@ -36,7 +37,7 @@ function fakeKv() {
 let kv: ReturnType<typeof fakeKv>;
 beforeEach(() => {
   kv = fakeKv();
-  vi.mocked(getOrgPg).mockReturnValue({ sql: kv.sql } as never);
+  mockOrgPgSql(vi.mocked(getOrgPg), kv.sql);
 });
 afterEach(() => vi.clearAllMocks());
 

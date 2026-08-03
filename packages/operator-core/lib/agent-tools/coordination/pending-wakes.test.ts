@@ -8,6 +8,7 @@ vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: vi.fn(() => 'ws-
 
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../../workspace-registry';
+import { mockOrgPgSql } from '../../testing/mock-org-pg';
 import {
   stagePendingWake,
   listPendingWakes,
@@ -130,7 +131,7 @@ function fakeStore() {
 let store: ReturnType<typeof fakeStore>;
 beforeEach(() => {
   store = fakeStore();
-  vi.mocked(getOrgPg).mockReturnValue({ sql: store.sql } as never);
+  mockOrgPgSql(vi.mocked(getOrgPg), store.sql);
   vi.mocked(activeWorkspaceId).mockReturnValue('ws-active');
 });
 afterEach(() => vi.clearAllMocks());
@@ -339,7 +340,7 @@ describe('sweepStalePendingWakes (WI-3097)', () => {
       expect(vals).toEqual([24]); // the staleHours interval param
       return Promise.resolve([{ id: 101 }, { id: 102 }]);
     });
-    vi.mocked(getOrgPg).mockReturnValue({ sql } as never);
+    mockOrgPgSql(vi.mocked(getOrgPg), sql);
 
     const n = await sweepStalePendingWakes({ staleHours: 24 });
 
@@ -352,20 +353,20 @@ describe('sweepStalePendingWakes (WI-3097)', () => {
       expect(vals).toEqual([24]);
       return Promise.resolve([]);
     });
-    vi.mocked(getOrgPg).mockReturnValue({ sql } as never);
+    mockOrgPgSql(vi.mocked(getOrgPg), sql);
     expect(await sweepStalePendingWakes()).toBe(0);
 
     const sqlClamped = vi.fn((_strings: TemplateStringsArray, ...vals: unknown[]) => {
       expect(vals).toEqual([1]); // clamped up from an invalid 0
       return Promise.resolve([]);
     });
-    vi.mocked(getOrgPg).mockReturnValue({ sql: sqlClamped } as never);
+    mockOrgPgSql(vi.mocked(getOrgPg), sqlClamped);
     await sweepStalePendingWakes({ staleHours: 0 });
   });
 
   it('a no-op sweep (nothing stale) does not push the wake board', async () => {
     const sql = vi.fn(() => Promise.resolve([]));
-    vi.mocked(getOrgPg).mockReturnValue({ sql } as never);
+    mockOrgPgSql(vi.mocked(getOrgPg), sql);
     // pushWakeBoard is fire-and-forget (dynamic import of sync-sse); absence of a thrown
     // error / hang here is sufficient evidence the 0-row branch took the no-push path.
     await expect(sweepStalePendingWakes({ staleHours: 48 })).resolves.toBe(0);

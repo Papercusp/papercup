@@ -23,8 +23,15 @@ import { describe, it, expect } from 'vitest';
 //      (2026-08-03, EI-19457275636306147).
 // Hence: explanation ABOVE, directive pair welded to the import, import on ONE line. This matches
 // no-bespoke-state-read-guard.test.ts, plane-adoption-probe.test.ts and no-bespoke-state-read-live.ts,
-// which carry longer imports the same way. If it ever grows past the print width, move the
-// directive rather than reflowing the import.
+// which carry longer imports the same way.
+//
+// `prettier-ignore` sits ABOVE the pair rather than adjacent to the import, because `@ts-ignore`
+// has to be the last line before it and only one comment can hold that slot. That is safe, and it
+// is MEASURED, not assumed (2026-08-03): prettier-ignore still applies across the two intervening
+// directive comments, while the same import WITHOUT it reflows to a 4-line named-import list — the
+// exact shape that unguards the specifier. Do not drop it on the grounds that the three files above
+// omit it; they are simply one `prettier --write` away from this bug.
+// prettier-ignore
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore — pure JS guard script, no .d.ts; imported for its predicate only.
 import { usesModuleScopeFlagSubscribe, checkUnpopulatedDeclaration } from '../../../../../scripts/check-no-module-scope-flag-subscribe.mjs';

@@ -30,6 +30,7 @@ vi.mock('../harness/routines/system-actions', () => ({
 import * as dbOrg from '@papercusp/db-org';
 import * as harnessCore from '../harness-core';
 import * as workspaceRegistry from '../workspace-registry';
+import { mockOrgPgSql } from '../testing/mock-org-pg';
 
 describe('validateActiveRoutines', () => {
   beforeEach(() => {
@@ -48,7 +49,7 @@ describe('validateActiveRoutines', () => {
     ];
 
     const mockSql = vi.fn().mockResolvedValue(mockRoutines);
-    vi.mocked(dbOrg.getOrgPg).mockReturnValue({ sql: mockSql } as any);
+    mockOrgPgSql(vi.mocked(dbOrg.getOrgPg), mockSql);
     vi.mocked(workspaceRegistry.activeWorkspaceId).mockReturnValue(mockWs);
     vi.mocked(harnessCore.resolveProject)
       .mockResolvedValueOnce({ slug: 'papercusp' } as any)
@@ -71,7 +72,7 @@ describe('validateActiveRoutines', () => {
     ];
 
     const mockSql = vi.fn().mockResolvedValue(mockRoutines);
-    vi.mocked(dbOrg.getOrgPg).mockReturnValue({ sql: mockSql } as any);
+    mockOrgPgSql(vi.mocked(dbOrg.getOrgPg), mockSql);
     vi.mocked(workspaceRegistry.activeWorkspaceId).mockReturnValue(mockWs);
     // Only papercusp resolves; papercup returns null (unregistered)
     vi.mocked(harnessCore.resolveProject)
@@ -114,7 +115,7 @@ describe('validateActiveRoutines', () => {
     ];
 
     const mockSql = vi.fn().mockResolvedValue(mockRoutines);
-    vi.mocked(dbOrg.getOrgPg).mockReturnValue({ sql: mockSql } as any);
+    mockOrgPgSql(vi.mocked(dbOrg.getOrgPg), mockSql);
     vi.mocked(workspaceRegistry.activeWorkspaceId).mockReturnValue(mockWs);
 
     const result = await validateActiveRoutines();
@@ -133,7 +134,7 @@ describe('validateActiveRoutines', () => {
     const mockWs = 'papercusp-workspace';
     const mockSql = vi.fn().mockResolvedValue([]);
 
-    vi.mocked(dbOrg.getOrgPg).mockReturnValue({ sql: mockSql } as any);
+    mockOrgPgSql(vi.mocked(dbOrg.getOrgPg), mockSql);
     vi.mocked(workspaceRegistry.activeWorkspaceId).mockReturnValue(mockWs);
 
     const result = await validateActiveRoutines();
@@ -149,7 +150,7 @@ describe('validateActiveRoutines', () => {
     const mockRoutines = [{ install_slug: '', name: 'broken-routine', workspace_id: mockWs }];
 
     const mockSql = vi.fn().mockResolvedValue(mockRoutines);
-    vi.mocked(dbOrg.getOrgPg).mockReturnValue({ sql: mockSql } as any);
+    mockOrgPgSql(vi.mocked(dbOrg.getOrgPg), mockSql);
     vi.mocked(workspaceRegistry.activeWorkspaceId).mockReturnValue(mockWs);
 
     // Mock console.error to suppress FATAL log
@@ -186,7 +187,7 @@ describe('enforceActiveRoutines (EI-18678269428596559 recurrence guard P-3)', ()
       .fn()
       .mockResolvedValueOnce(mockRoutines)
       .mockResolvedValueOnce([{ name: 'git-sync' }]);
-    vi.mocked(dbOrg.getOrgPg).mockReturnValue({ sql: mockSql } as any);
+    mockOrgPgSql(vi.mocked(dbOrg.getOrgPg), mockSql);
     vi.mocked(workspaceRegistry.activeWorkspaceId).mockReturnValue(mockWs);
     vi.mocked(harnessCore.resolveProject).mockResolvedValueOnce(null); // unregistered
 
@@ -214,7 +215,7 @@ describe('enforceActiveRoutines (EI-18678269428596559 recurrence guard P-3)', ()
       .fn()
       .mockResolvedValueOnce(mockRoutines)
       .mockResolvedValueOnce([]); // another worker won the race — 0 rows updated
-    vi.mocked(dbOrg.getOrgPg).mockReturnValue({ sql: mockSql } as any);
+    mockOrgPgSql(vi.mocked(dbOrg.getOrgPg), mockSql);
     vi.mocked(workspaceRegistry.activeWorkspaceId).mockReturnValue(mockWs);
     vi.mocked(harnessCore.resolveProject).mockResolvedValueOnce(null);
 
@@ -235,7 +236,7 @@ describe('enforceActiveRoutines (EI-18678269428596559 recurrence guard P-3)', ()
     const mockRoutines = [{ install_slug: '', name: 'broken-routine', workspace_id: mockWs }];
 
     const mockSql = vi.fn().mockResolvedValueOnce(mockRoutines);
-    vi.mocked(dbOrg.getOrgPg).mockReturnValue({ sql: mockSql } as any);
+    mockOrgPgSql(vi.mocked(dbOrg.getOrgPg), mockSql);
     vi.mocked(workspaceRegistry.activeWorkspaceId).mockReturnValue(mockWs);
 
     const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -285,7 +286,7 @@ describe('validateActiveRoutines — unregistered system-action handlers (EI-193
         target_owner_id: null,
       },
     ]);
-    vi.mocked(dbOrg.getOrgPg).mockReturnValue({ sql: mockSql } as any);
+    mockOrgPgSql(vi.mocked(dbOrg.getOrgPg), mockSql);
     const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
     const result = await validateActiveRoutines();
@@ -321,7 +322,7 @@ describe('validateActiveRoutines — unregistered system-action handlers (EI-193
         target_owner_id: null,
       },
     ]);
-    vi.mocked(dbOrg.getOrgPg).mockReturnValue({ sql: mockSql } as any);
+    mockOrgPgSql(vi.mocked(dbOrg.getOrgPg), mockSql);
 
     const result = await validateActiveRoutines();
 
@@ -344,7 +345,7 @@ describe('validateActiveRoutines — unregistered system-action handlers (EI-193
         target_owner_id: 'su-7854d874',
       },
     ]);
-    vi.mocked(dbOrg.getOrgPg).mockReturnValue({ sql: mockSql } as any);
+    mockOrgPgSql(vi.mocked(dbOrg.getOrgPg), mockSql);
 
     const result = await validateActiveRoutines();
 
@@ -366,7 +367,7 @@ describe('validateActiveRoutines — unregistered system-action handlers (EI-193
         target_owner_id: null,
       },
     ]);
-    vi.mocked(dbOrg.getOrgPg).mockReturnValue({ sql: mockSql } as any);
+    mockOrgPgSql(vi.mocked(dbOrg.getOrgPg), mockSql);
     const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
     const result = await validateActiveRoutines();
@@ -388,7 +389,7 @@ describe('validateActiveRoutines — unregistered system-action handlers (EI-193
         target_owner_id: null,
       },
     ]);
-    vi.mocked(dbOrg.getOrgPg).mockReturnValue({ sql: mockSql } as any);
+    mockOrgPgSql(vi.mocked(dbOrg.getOrgPg), mockSql);
     const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
     const result = await enforceActiveRoutines();

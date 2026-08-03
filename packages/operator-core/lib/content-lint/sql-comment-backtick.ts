@@ -83,7 +83,8 @@ export interface SqlCommentBacktickHit {
 }
 
 /**
- * A postgres-js tagged template: `sql` immediately followed by a backtick.
+ * A postgres-js tagged template: `sql`, optionally with a generic type argument,
+ * followed by a backtick.
  *
  * The lookbehind is load-bearing. The original guard used a bare /\bsql`/, which
  * also matches the PROSE spelling `` `sql` `` in a doc comment — and that alone
@@ -91,8 +92,24 @@ export interface SqlCommentBacktickHit {
  * paragraph ABOUT this bug) into scope, where it then false-positived. Requiring
  * that `sql` is preceded by neither a backtick nor a word character keeps a
  * discussion of SQL out of the scope of a SQL linter.
+ *
+ * WI-9253: the optional `<...>` is equally load-bearing, and its absence cost a
+ * 17-minute :3170 outage on 2026-08-03. This pattern previously required the
+ * backtick to follow `sql` IMMEDIATELY, so the overwhelmingly common typed form
+ * — `` await sql<RoutineFailureRow[]>`...` `` — did not match, and since a
+ * SELECT-only file also fails HAS_RAW_DDL, the gate rejected the WHOLE file and
+ * the detector never ran a line of it. Measured at the time of the fix: 428
+ * non-test files use the typed form and 411 were FULLY invisible to this guard,
+ * which is the real reason it had accumulated 0 true positives.
+ *
+ * Note the asymmetry that follows, and keep this gate GENEROUS: admitting a file
+ * that turns out to hold no SQL costs nothing (the detector still requires a real
+ * `--` comment carrying >=2 unescaped backticks before it reports anything),
+ * whereas excluding a file that does hold SQL is silent and unbounded — it is
+ * indistinguishable from "clean" and stays that way until something crash-loops.
+ * Prefer widening this pattern over tightening it.
  */
-const USES_SQL_TAG = /(?<![`\w])sql`/;
+const USES_SQL_TAG = /(?<![`\w])sql\s*(?:<[^`]{0,200}>)?\s*`/;
 
 /** Raw DDL anywhere in the file — covers plain template-literal schema fixtures
  *  that never use the tag at all (EI-19317789732905891: 657 lines of DDL across

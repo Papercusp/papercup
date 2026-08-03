@@ -137,6 +137,7 @@ import {
   getSpawnHeadroom,
 } from './operator-spawn';
 import { operatorHomeHarnessSlug } from '../harness/operator-home-harness';
+import { mockOrgPgSql } from '../testing/mock-org-pg';
 
 // `/tmp` exists on disk, so the project-dir existence check passes without fixtures.
 const PROJECT = { slug: 'demo', path: '/tmp', hasState: true, hasSpec: false };
@@ -188,7 +189,7 @@ beforeEach(() => {
     // fire-and-forget and the tests don't assert on it).
     unsafe: async (_q: string, _params?: unknown[]) => [] as unknown[],
   });
-  vi.mocked(getOrgPg).mockReturnValue({ sql } as never);
+  mockOrgPgSql(vi.mocked(getOrgPg), sql);
   vi.mocked(resolveProject).mockResolvedValue(PROJECT as never);
   vi.mocked(loadHarnessRegistry).mockResolvedValue({ projects: [PROJECT] } as never);
   vi.mocked(spawnInvokeOnceWithFallback).mockResolvedValue({ output: 'done!', exitCode: 0, stderr: '' });
