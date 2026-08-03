@@ -54,7 +54,14 @@ import {
  *  listeners behind on the shared `process` object for sibling suites to trip over. */
 const HOOK_EVENTS = ['SIGTERM', 'SIGINT', 'uncaughtException'] as const;
 type HookEvent = (typeof HOOK_EVENTS)[number];
-type AnyListener = (...args: never[]) => void;
+type AnyListener = (...args: unknown[]) => void;
+
+/** `process.listeners`/`removeListener` are typed as per-signal overloads, so passing the
+ *  HookEvent UNION matches none of them. This is the emitter view we actually use. */
+const proc = process as unknown as {
+  listeners(event: HookEvent): AnyListener[];
+  removeListener(event: HookEvent, listener: AnyListener): unknown;
+};
 
 /**
  * One row per `node-child` sidecar. `registryName` MUST match the entry's `name` in
@@ -96,7 +103,7 @@ describe('sidecar shutdown hooks register on SPAWN, not at a call site (WI-7249 
 
   beforeEach(() => {
     baseline = new Map(
-      HOOK_EVENTS.map((evt) => [evt, new Set<AnyListener>(process.listeners(evt) as AnyListener[])]),
+      HOOK_EVENTS.map((evt) => [evt, new Set<AnyListener>(proc.listeners(evt))]),
     );
     _resetSidecarShutdownHookRegistryForTests();
   });
@@ -107,8 +114,8 @@ describe('sidecar shutdown hooks register on SPAWN, not at a call site (WI-7249 
     // a handler per case and eventually trip Node's max-listeners warning.
     for (const evt of HOOK_EVENTS) {
       const before = baseline.get(evt) ?? new Set<AnyListener>();
-      for (const listener of process.listeners(evt) as AnyListener[]) {
-        if (!before.has(listener)) process.removeListener(evt, listener);
+      for (const listener of proc.listeners(evt)) {
+        if (!before.has(listener)) proc.removeListener(evt, listener);
       }
     }
     for (const sidecar of NODE_CHILD_SIDECARS) sidecar.setProcess(null);

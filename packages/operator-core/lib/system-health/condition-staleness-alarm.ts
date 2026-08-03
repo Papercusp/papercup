@@ -472,7 +472,23 @@ export async function runConditionStalenessTick(
           `Detected by the coord:conditions staleness actor (WI-2965) — a periodic re-evaluation ` +
           `of computeConditionStates(), NOT a duplicate of the source watchdog's open-time alert. ` +
           `Condition key: ${s.conditionKey}.`,
-        meta: { conditionStalenessSignature: s.key },
+        // WI-7254 — `subjectSignature` is the field escalations.ts actually reads to
+        // coalesce (escalationDedupIdentity: `input.meta?.subjectSignature`, else
+        // normalizeSubjectSignature(summary)). This call passed ONLY
+        // `conditionStalenessSignature`, so the explicit path never matched and the
+        // signature fell back to the SUMMARY — which embeds the condition's age
+        // ("has been OPEN for 267m"). A dedup key containing a monotonically
+        // increasing number is unique by construction, so coalescing could never
+        // fire. Measured 2026-08-03: 71 open rows, 71 distinct signatures, and only
+        // 4 distinct once `open for <N>m` is normalized away — 5h45m of accumulation
+        // where 4 rows were warranted. It also silently degraded dedupKind to
+        // `severity` (observed: 'advisory') instead of CONDITION_KEY_DEDUP_KIND,
+        // costing the severity-independent advisory→blocker coalesce EI-12546 added.
+        //
+        // BOTH keys are passed on purpose: `conditionStalenessSignature` is this
+        // module's own self-identification, read back by staleConditionSignatureOf()
+        // for the auto-resolve sweep, and dropping it would strand every open row.
+        meta: { conditionStalenessSignature: s.key, subjectSignature: s.key },
       });
     } catch {
       /* an alarm-send failure must never crash the request worker */
