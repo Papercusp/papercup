@@ -99,8 +99,13 @@ describe('EI-19444780917356384 — the freshness guard is reachable in assertion
     // missing. Hard-failing on drift would block valid runs, so the drift path
     // must warn (log) rather than exit. Pinned by asserting the drift branch
     // body carries no bare exit.
+    // Anchor the region to the exec site rather than a fixed character window:
+    // the drift branch is the last thing before the assertion runs, and a fixed
+    // window silently goes vacuous the moment the explanatory comment above the
+    // log lines grows past it (which it did — the window read as empty and the
+    // assertion passed against '' until the anchor was made structural).
     const driftIdx = src.indexOf('! bash "$VERIFY_TAURI_FRESHNESS_CHECK"');
-    const driftBlock = src.slice(driftIdx, driftIdx + 700);
+    const driftBlock = src.slice(driftIdx, assertionExecIdx);
     expect(driftBlock).toContain('DRIFT');
     expect(driftBlock).not.toMatch(/^\s*exit \d/m);
     // …and it must point at the decisive check rather than dead-ending.

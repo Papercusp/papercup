@@ -57,6 +57,10 @@ import { taskManagerEnabledSync } from './task-manager/enabled';
 import { envelopeRoleOverrides } from './capability-envelope-overrides';
 import { telemetryBufferConfig } from './telemetry-buffer-config';
 import { capabilityTierOverrideFor } from './capability-tier-overrides';
+// work-item-redundancy had TWO module-scope accesses — an eager `void refreshRedundancyFlag()`
+// reaching `getFlag`, plus the `onFlagChange` the source lint could see. Its presence here is what
+// proves BOTH are gone; the lint alone could not.
+import { workItemRedundancyEnabled } from './work-item-redundancy';
 
 describe('modules stay importable under a partial @papercusp/flags/server mock', () => {
   it('collected this file at all (a module-scope binding read would have failed it here)', () => {
@@ -83,5 +87,6 @@ describe('the fix is IMPORTABILITY, not reader-callability (do not widen this cl
     expect(() => envelopeRoleOverrides()).toThrow(/onFlagChange/);
     expect(() => telemetryBufferConfig()).toThrow(/onFlagChange/);
     expect(() => capabilityTierOverrideFor('capability:bash')).toThrow(/onFlagChange/);
+    expect(() => workItemRedundancyEnabled()).toThrow(/onFlagChange/);
   });
 });

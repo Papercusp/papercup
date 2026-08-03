@@ -72,6 +72,27 @@ export interface PsuPtyHost {
   //    interactive class additionally requires the no-recent-human-input guard
   //    before any cold-by-default action.
   bridgeTty?: boolean | null;
+  // ── Launch provenance (WI-6638; ADDITIVE — absent on files written by older
+  //    hosts). The `--launched-by=<caller ownerId>` that `injectLaunchedByArg`
+  //    (agent-launch-core) stamps onto every TOOL-driven psu launch, re-exported by
+  //    bootstrap-su as PAPERCUSP_LAUNCHED_BY. An owner-typed `psu` never carries one,
+  //    which makes presence-vs-absence a STRUCTURAL agent-vs-human discriminator
+  //    rather than a heuristic. Consumers MUST fail-soft an absent value to
+  //    "human-launched" — the refusing direction (see hostIsAgentLaunched).
+  launchedBy?: string | null;
+}
+
+/**
+ * Was this session launched BY ANOTHER AGENT (a tool-driven psu launch) rather than
+ * typed by the human? WI-6638. Fails soft to `false` for a null host or an older host
+ * with no `launchedBy` field — the safe direction, since the only consumer uses it to
+ * decide whether a window may be closed.
+ *
+ * Advisory only: the psu host re-checks its OWN env authoritatively before honouring a
+ * shutdown, so a stale discovery file can never widen what is closable. Pure.
+ */
+export function hostIsAgentLaunched(host: PsuPtyHost | null | undefined): boolean {
+  return !!String(host?.launchedBy ?? '').trim();
 }
 
 /**
@@ -462,6 +483,13 @@ export type InjectConfirmation = 'acked' | 'assumed-close' | 'timeout' | 'error'
 export interface InjectHostResult {
   ok: boolean;
   confirmation: InjectConfirmation;
+  /** The host's own `reason` from its JSON ack line, when it sent one (WI-6638;
+   *  ADDITIVE). Null for every non-'acked' confirmation — an assumed-close /
+   *  timeout / error carries no host verdict, so a caller must never read its
+   *  absence as "the host had nothing to say". Today only the shutdown path reads
+   *  it (to tell an owner-attended REFUSAL apart from a transport miss); every
+   *  other caller branches on `ok` exactly as before. */
+  reason?: string | null;
 }
 
 /**
@@ -473,8 +501,21 @@ export interface InjectHostResult {
 export function injectIntoHostWithConfirmation(
   sock: string,
   msg: {
-    mode: 'turn' | 'raw' | 'osc' | 'compact' | 'reset' | 'recycle' | 'carry-respawn' | 'mcp-reconnect';
+    mode:
+      | 'turn'
+      | 'raw'
+      | 'osc'
+      | 'compact'
+      | 'reset'
+      | 'recycle'
+      | 'carry-respawn'
+      | 'mcp-reconnect'
+      | 'shutdown';
     data: string;
+    /** WI-6638, mode:'shutdown' only: waive the mid-turn (agent-busy) refusal. It
+     *  can NEVER waive the two human guards — those are evaluated by the host from
+     *  its own process state and are not caller-influenced. */
+    force?: boolean;
     focus?: string;
     systemPromptAddendum?: string;
     /** P-020 opt-in cold-boot drill correlation. Ignored by non-drill
@@ -529,6 +570,7 @@ export function injectIntoHostWithConfirmation(
     v: 1;
     mode: string;
     data: string;
+    force?: boolean;
     focus?: string;
     systemPromptAddendum?: string;
     drillId?: string;
@@ -542,6 +584,7 @@ export function injectIntoHostWithConfirmation(
     mode: msg.mode,
     data: msg.data,
   };
+  if (msg.force !== undefined) envelope.force = msg.force;
   if (msg.focus !== undefined) envelope.focus = msg.focus;
   if (msg.systemPromptAddendum !== undefined) envelope.systemPromptAddendum = msg.systemPromptAddendum;
   if (msg.drillId !== undefined) envelope.drillId = msg.drillId;
@@ -564,10 +607,10 @@ export function injectIntoHostWithConfirmation(
     // authoritative and settles this promise on its own `ok` value.
     let ackReceived = false;
     let ackBuf = '';
-    const finish = (ok: boolean, confirmation: InjectConfirmation) => {
+    const finish = (ok: boolean, confirmation: InjectConfirmation, reason: string | null = null) => {
       if (settled) return;
       settled = true;
-      resolve({ ok, confirmation });
+      resolve({ ok, confirmation, reason });
     };
     const c = net.connect(sock, () => {
       // `focus` rides the envelope only for mode:'compact' (WI-1804) — the host uses it
@@ -593,7 +636,12 @@ export function injectIntoHostWithConfirmation(
           typeof (parsed as { ok?: unknown }).ok === 'boolean'
         ) {
           ackReceived = true;
-          finish((parsed as { ok: boolean }).ok, 'acked');
+          const ackReason = (parsed as { reason?: unknown }).reason;
+          finish(
+            (parsed as { ok: boolean }).ok,
+            'acked',
+            typeof ackReason === 'string' ? ackReason : null,
+          );
         }
       } catch {
         /* malformed ack line — ignore, the close/timeout fallback still applies */
@@ -716,6 +764,64 @@ export async function recolorViaPty(
  * the caller off transport truth (the presence beat advancing), NEVER assumed
  * from a clean socket write.
  */
+/** The outcomes of asking a psu host to wind down and exit (WI-6638). */
+export type ShutdownViaPtyResult =
+  | 'sent'
+  | 'no-host'
+  | 'no-cap'
+  | 'send-failed'
+  | 'refused-not-agent-launched'
+  | 'refused-human-attended'
+  | 'refused-agent-busy';
+
+/**
+ * Ask a live psu-hosted session to WIND DOWN AND EXIT — closing its own terminal tab
+ * (WI-6638). psu runs as `exec <psu …>` inside `gnome-terminal --wait`, so the host
+ * exiting IS the window closing. This is the fix for ~51 agent sessions from finished
+ * fleets sitting in open tabs for up to 14 days holding ~14 GB.
+ *
+ * This is an ASK, never a kill: it signals nothing, opens no process handle, and the
+ * HOST decides. The host refuses unless the session was agent-launched
+ * (PAPERCUSP_LAUNCHED_BY) AND no human keystroke has ever reached its stdin — two
+ * structural guards it evaluates from its own process state, which no caller can
+ * spoof. `force` waives only the mid-turn (agent-busy) check, never those.
+ *
+ * Deliberately NOT wired into the idle-session reaper's kill path. Measured
+ * 2026-08-03: `findIdleLiveSessions()` returns 0 for this entire cohort, because every
+ * psu session classifies `driveMode:'responsive'` (agent-pane-kind rule 5) and is
+ * excluded by the queen-fleet-authority-boundary ruling (P-001/D-001) BEFORE
+ * `terminalWindowAlive`/`cgroupWindowProtects` is ever consulted. Two stacked,
+ * owner-ratified protections say a system reaper may not kill these sessions. Nothing
+ * here loosens either one — the session closes itself, which is what the owner chose.
+ *
+ * `'no-cap'` means the host predates the capability (it will keep idling; only a
+ * relaunch picks up a current host). A `refused-*` result is a correct, expected
+ * answer for an owner-attended window — not an error to retry around.
+ */
+export async function shutdownViaPty(
+  ownerId: string,
+  opts: { reason?: string; force?: boolean; verifyIdentity?: VerifyPidIdentity } = {},
+): Promise<ShutdownViaPtyResult> {
+  const host = findLiveHost(ownerId, PSU_PTY_DIR, { verifyIdentity: opts.verifyIdentity });
+  if (!host) return 'no-host';
+  if (!hostSupports(host, 'shutdown')) return 'no-cap';
+  const res = await injectIntoHostWithConfirmation(host.sock, {
+    mode: 'shutdown',
+    data: String(opts.reason ?? '').slice(0, 500),
+    force: opts.force === true,
+    ownerId,
+  });
+  if (res.ok) return 'sent';
+  const reason = String(res.reason ?? '');
+  if (reason.startsWith('shutdown-refused:')) {
+    const which = reason.slice('shutdown-refused:'.length);
+    if (which === 'not-agent-launched') return 'refused-not-agent-launched';
+    if (which === 'human-attended') return 'refused-human-attended';
+    if (which === 'agent-busy') return 'refused-agent-busy';
+  }
+  return 'send-failed';
+}
+
 export async function mcpReconnectViaPty(
   ownerId: string,
   serverName = 'papercusp-su',

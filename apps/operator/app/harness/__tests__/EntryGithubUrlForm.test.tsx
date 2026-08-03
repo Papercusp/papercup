@@ -256,7 +256,11 @@ describe('new-hive mode', () => {
     expect(postedBodies('/api/harness/pots/from-repo')[0]).toMatchObject({ runTests: true });
   });
 
-  it('knowledge pack: default selection submits papercusp-default; "none" submits null (knowledge-packs P-006)', async () => {
+  // EI-1539: this assertion was DELIBERATELY changed from 'papercusp-default' to
+  // 'coding'. The two packs are byte-identical apart from three manifest lines,
+  // and a GitHub-repo import is always a coding hive — a Papercusp-BRANDED pack id
+  // was the wrong default for arbitrary users' repos. Do not "fix" this back.
+  it('knowledge pack: default selection submits the generic coding pack; "none" submits null (knowledge-packs P-006)', async () => {
     const user = userEvent.setup();
     respondByUrl({
       '/api/harness/pots/from-repo': {
@@ -275,13 +279,13 @@ describe('new-hive mode', () => {
       },
     });
     const { onCreated } = renderForm();
-    // The picker defaults to the Papercusp pack and explains the seeding.
+    // The picker defaults to the generic coding pack and explains the seeding.
     const picker = screen.getByTestId('knowledge-pack-picker').querySelector('select')!;
-    expect(picker.value).toBe('papercusp-default');
+    expect(picker.value).toBe('coding');
     await user.type(screen.getByPlaceholderText('https://github.com/owner/repo'), VALID_URL);
     await user.click(screen.getByRole('button', { name: 'Create hive' }));
     await waitFor(() => expect(postedBodies('/api/harness/pots/from-repo')).toHaveLength(1));
-    expect(postedBodies('/api/harness/pots/from-repo')[0]).toMatchObject({ knowledgePack: 'papercusp-default' });
+    expect(postedBodies('/api/harness/pots/from-repo')[0]).toMatchObject({ knowledgePack: 'coding' });
     // A clean seeded create auto-closes (modal-lifecycle-2026-06-17): the
     // "started with N learnings" summary lives in the Learning tab now, not a
     // lingering dialog. (The seeded-line render itself stays covered by the

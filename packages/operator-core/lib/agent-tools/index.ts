@@ -735,6 +735,7 @@ import './config/tiers-set';
 // agent-managed-compaction-2026-07-01 — the agent's "compact now, at a stopping point" verb:
 import './session/request-compaction';
 import './session/carry-drill';
+import './session/end';
 // session-search-scope-2026-07-05 — the episodic transcript-index verbs: the fused
 // search (needle + window in one call, session:'self' compaction recovery) + the
 // navigation reads (list/read/timeline) over harness_shared.session_turns.

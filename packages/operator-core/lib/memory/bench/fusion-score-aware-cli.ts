@@ -34,11 +34,12 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { rrfCombine, RRF_K_DEFAULT, type RankedItem } from '@papercusp/rrf';
+import { RRF_K_DEFAULT, type RankedItem } from '@papercusp/rrf';
 import pg from 'pg';
 
 import { getHarnessAdminUrl } from '../../embedded-pg-discovery';
 import { EMBEDDING_FLOOR_GEMMA } from '../../search/prose-min-score';
+import { buildArms, pairedBootstrap, ramp, type Leg } from './fusion-score-aware';
 import { loadProseGoldSetFixture } from './prose-gold-set';
 
 const argOf = (flag: string): string | undefined => {
@@ -87,132 +88,19 @@ function dot(a: number[], b: number[]): number {
   return s;
 }
 
-/** clamp((x-lo)/(hi-lo), 0, 1) — the shape every calibration below uses. */
-function ramp(x: number, lo: number, hi: number): number {
-  if (!(hi > lo)) return 1;
-  return Math.max(0, Math.min(1, (x - lo) / (hi - lo)));
-}
-
-type Leg = { name: string; list: Array<RankedItem<string>> };
-
 /**
- * The fusion arms. Each returns fused keys, best-first.
- *
- * `rrf` is the production baseline (calls rrfCombine itself). Every other arm
- * is a candidate score-aware variant; they differ ONLY in the weight applied
- * to a ranker's `1/(k+rank)` contribution.
- */
-interface Arm {
-  label: string;
-  fuse: (legs: Leg[]) => string[];
-}
-
-/** Generic weighted-RRF driver: `weight(legName, score, leg) · 1/(k+rank)`. */
-function weightedRrf(
-  legs: Leg[],
-  weight: (legName: string, score: number, leg: Leg) => number,
-): string[] {
-  const acc = new Map<string, number>();
-  for (const leg of legs) {
-    leg.list.forEach((entry, idx) => {
-      const w = weight(leg.name, entry.score, leg);
-      const contrib = (w * 1) / (RRF_K_DEFAULT + idx + 1);
-      acc.set(entry.key, (acc.get(entry.key) ?? 0) + contrib);
-    });
-  }
-  return [...acc.entries()].sort((a, b) => b[1] - a[1]).map(([k]) => k);
-}
-
-/**
- * Per-ranker score→weight calibrations.
- *
- * embeddings: the floor (0.45) is where P-001 already cuts, and .75 is just
- * above the highest top-1 cosine observed across the whole gold set (.7553).
- * So this ramp is the CONTINUOUS generalisation of the step function P-001
- * shipped — which is precisely the comparison P-031 reduces to.
- *
- * bm25: `ts_rank_cd` is unbounded, so an absolute ramp has no defensible
- * constant. Normalise within the query's own list instead (max-relative).
+ * The embeddings ramp. `EMB_LO` is the model's floor — where P-001 already cuts
+ * as a STEP — so the ramp is the CONTINUOUS generalisation of the step function
+ * already shipped, which is precisely the comparison P-031 reduces to.
+ * (`bm25`'s `ts_rank_cd` is unbounded, so arms that weight it normalise within
+ * the query's own list instead; see `buildArms`.)
  */
 const EMB_LO = FLOOR;
 /** Top of the ramp: just above the highest top-1 cosine observed for the model
  *  across the whole gold set (gemma@768 .7553, qwen3@768 .7810). */
 const EMB_HI = Number.parseFloat(argOf('--rampHi') ?? (MODEL === 'qwen3768' ? '0.78' : '0.75'));
 
-const ARMS: Arm[] = [
-  {
-    label: 'A rrf (production baseline)',
-    fuse: (legs) => rrfCombine(legs.map((l) => ({ name: l.name, list: l.list }))).map((f) => f.row),
-  },
-  {
-    label: 'B per-candidate absolute score weight',
-    fuse: (legs) =>
-      weightedRrf(legs, (name, score) =>
-        name === 'embeddings' ? ramp(score, EMB_LO, EMB_HI) : 1,
-      ),
-  },
-  {
-    label: 'C per-candidate, both legs (bm25 max-normalised)',
-    fuse: (legs) =>
-      weightedRrf(legs, (name, score, leg) => {
-        if (name === 'embeddings') return ramp(score, EMB_LO, EMB_HI);
-        const max = leg.list[0]?.score ?? 1;
-        return max > 0 ? score / max : 1;
-      }),
-  },
-  {
-    label: 'D list-confidence (whole leg scaled by its top score)',
-    fuse: (legs) =>
-      weightedRrf(legs, (name, _score, leg) => {
-        if (name !== 'embeddings') return 1;
-        const top = leg.list[0]?.score ?? 0;
-        return ramp(top, EMB_LO, EMB_HI);
-      }),
-  },
-  {
-    label: 'E convex blend 0.5·normScore + 0.5·rrf',
-    fuse: (legs) => {
-      const acc = new Map<string, number>();
-      for (const leg of legs) {
-        const max = leg.list[0]?.score ?? 1;
-        leg.list.forEach((entry, idx) => {
-          const norm =
-            leg.name === 'embeddings' ? ramp(entry.score, EMB_LO, EMB_HI) : max > 0 ? entry.score / max : 0;
-          const rrf = 1 / (RRF_K_DEFAULT + idx + 1);
-          // rrf values live at ~1/61; rescale so the blend is not degenerate.
-          acc.set(entry.key, (acc.get(entry.key) ?? 0) + 0.5 * norm + 0.5 * (rrf * RRF_K_DEFAULT));
-        });
-      }
-      return [...acc.entries()].sort((a, b) => b[1] - a[1]).map(([k]) => k);
-    },
-  },
-  // Single-leg references — the ceiling/floor each fusion arm sits between.
-  { label: 'R bm25 only', fuse: (legs) => (legs.find((l) => l.name === 'bm25')?.list ?? []).map((e) => e.key) },
-  {
-    label: 'R embeddings only',
-    fuse: (legs) => (legs.find((l) => l.name === 'embeddings')?.list ?? []).map((e) => e.key),
-  },
-];
-
-/** Paired bootstrap CI on the mean per-query difference (arm − baseline). */
-function pairedBootstrap(diffs: number[], iters = 10000): { mean: number; lo: number; hi: number } {
-  const n = diffs.length;
-  const mean = diffs.reduce((s, x) => s + x, 0) / n;
-  const means: number[] = [];
-  // Deterministic PRNG so a re-run reproduces the interval exactly.
-  let seed = 20260803;
-  const rnd = (): number => {
-    seed = (seed * 1103515245 + 12345) & 0x7fffffff;
-    return seed / 0x7fffffff;
-  };
-  for (let b = 0; b < iters; b++) {
-    let s = 0;
-    for (let i = 0; i < n; i++) s += diffs[Math.floor(rnd() * n)]!;
-    means.push(s / n);
-  }
-  means.sort((a, b) => a - b);
-  return { mean, lo: means[Math.floor(0.025 * iters)]!, hi: means[Math.floor(0.975 * iters)]! };
-}
+const ARMS = buildArms(EMB_LO, EMB_HI);
 
 const cache = JSON.parse(fs.readFileSync(CACHE, 'utf8')) as Cache;
 const gold = loadProseGoldSetFixture();
@@ -253,6 +141,20 @@ try {
   const rrByArm = new Map<string, number[]>();
   for (const a of ARMS) rrByArm.set(a.label, []);
   let answerableN = 0;
+  const baselineLabel = ARMS[0]!.label;
+  /** qi → the baseline's top-10 key sequence, for the ordering-change count. */
+  const baselineTop = new Map<number, string>();
+  const orderChanged = new Map<string, number>();
+  const diag = {
+    overlap: [] as number[],
+    bmN: [] as number[],
+    embN: [] as number[],
+    embFloored: [] as number[],
+    weights: [] as number[],
+    topBoth: 0,
+    topBmOnly: 0,
+    topEmbOnly: 0,
+  };
 
   for (let qi = 0; qi < gold.queries.length; qi++) {
     const q = gold.queries[qi]!;
@@ -275,11 +177,12 @@ try {
 
     // --- vector leg: exact cosine, then the SHIPPED P-001 floor ---
     const qv = cache.queryVecs[qi]!;
-    const sims = cache.docVecs
+    const simsRaw = cache.docVecs
       .map((dv, di) => ({ key: cache.corpusKeys[di]!, score: dot(qv, dv) }))
       .sort((a, b) => b.score - a.score)
-      .slice(0, CANDIDATES)
-      .filter((c) => c.score >= FLOOR);
+      .slice(0, CANDIDATES);
+    const rawEmbCount = simsRaw.length;
+    const sims = simsRaw.filter((c) => c.score >= FLOOR);
     const embeddings: Array<RankedItem<string>> = sims.map((c) => ({
       key: c.key,
       score: c.score,
@@ -290,6 +193,25 @@ try {
       { name: 'bm25', list: bm25 },
       { name: 'embeddings', list: embeddings },
     ];
+
+    // ─── MECHANISM DIAGNOSTICS ─────────────────────────────────────────────
+    // Why an arm did or did not move anything is the actual finding here, so
+    // measure the structure of the pool rather than inferring it afterwards.
+    const bmKeys = new Set(bm25.map((e) => e.key));
+    const embKeys = new Set(embeddings.map((e) => e.key));
+    const overlap = [...embKeys].filter((k) => bmKeys.has(k)).length;
+    diag.overlap.push(overlap);
+    diag.bmN.push(bm25.length);
+    diag.embN.push(embeddings.length);
+    diag.embFloored.push(rawEmbCount - embeddings.length);
+    for (const e of embeddings) diag.weights.push(ramp(e.score, EMB_LO, EMB_HI));
+    // Composition of the BASELINE top-10: which leg each slot came from.
+    const baseTop = ARMS[0]!.fuse(legs).slice(0, LIMIT);
+    for (const k of baseTop) {
+      if (bmKeys.has(k) && embKeys.has(k)) diag.topBoth++;
+      else if (bmKeys.has(k)) diag.topBmOnly++;
+      else diag.topEmbOnly++;
+    }
 
     const expected = new Set(q.expected);
     for (const arm of ARMS) {
@@ -302,6 +224,15 @@ try {
         }
       }
       rrByArm.get(arm.label)!.push(rr);
+      // Track ORDERING change separately from QUALITY change. An arm can
+      // reshuffle the top-10 without moving the first relevant hit, and — the
+      // case that actually bit here — it can also leave the order untouched
+      // entirely. Reporting only ΔMRR cannot tell "made no difference to
+      // quality" apart from "did literally nothing", and those have opposite
+      // engineering meanings.
+      const top = fused.slice(0, LIMIT).join('|');
+      if (arm.label === baselineLabel) baselineTop.set(qi, top);
+      else if (baselineTop.get(qi) !== top) orderChanged.set(arm.label, (orderChanged.get(arm.label) ?? 0) + 1);
     }
     if (answerableN % 20 === 0) log(`  ${answerableN} answerable queries replayed`);
   }
@@ -313,22 +244,49 @@ try {
   const mean = (a: number[]): number => a.reduce((s, x) => s + x, 0) / a.length;
 
   const rows: string[] = [];
-  rows.push('| arm | MRR@10 | Δ vs baseline | 95% CI (paired bootstrap) | verdict |');
-  rows.push('| --- | --- | --- | --- | --- |');
+  rows.push('| arm | MRR@10 | Δ vs baseline | 95% CI (paired bootstrap) | top-10 order changed | verdict |');
+  rows.push('| --- | --- | --- | --- | --- | --- |');
   for (const arm of ARMS) {
     const v = rrByArm.get(arm.label)!;
     if (arm.label === baseline) {
-      rows.push(`| ${arm.label} | ${mean(v).toFixed(4)} | — | — | baseline |`);
+      rows.push(`| ${arm.label} | ${mean(v).toFixed(4)} | — | — | — | baseline |`);
       continue;
     }
     const diffs = v.map((x, i) => x - base[i]!);
     const { mean: d, lo, hi } = pairedBootstrap(diffs);
-    const changed = diffs.filter((x) => x !== 0).length;
-    const verdict = lo > 0 ? 'BETTER' : hi < 0 ? 'WORSE' : changed === 0 ? 'IDENTICAL' : 'no difference';
+    const rrChanged = diffs.filter((x) => x !== 0).length;
+    const ordChanged = orderChanged.get(arm.label) ?? 0;
+    // NO-OP is a strictly stronger claim than "no measured difference": the arm
+    // produced a byte-identical ranking, so no gold set of any size could ever
+    // separate it from the baseline.
+    const verdict =
+      ordChanged === 0 ? 'NO-OP (byte-identical ranking)' : lo > 0 ? 'BETTER' : hi < 0 ? 'WORSE' : 'no difference';
     rows.push(
-      `| ${arm.label} | ${mean(v).toFixed(4)} | ${d >= 0 ? '+' : ''}${d.toFixed(4)} | [${lo.toFixed(4)}, ${hi.toFixed(4)}] | ${verdict} (${changed}/${v.length} queries changed) |`,
+      `| ${arm.label} | ${mean(v).toFixed(4)} | ${d >= 0 ? '+' : ''}${d.toFixed(4)} | [${lo.toFixed(4)}, ${hi.toFixed(4)}] | ${ordChanged}/${v.length} | ${verdict} (RR moved on ${rrChanged}) |`,
     );
   }
+
+  const avg = (a: number[]): number => (a.length ? a.reduce((s, x) => s + x, 0) / a.length : 0);
+  const pct = (a: number[], p: number): number => {
+    if (!a.length) return 0;
+    const s = [...a].sort((x, y) => x - y);
+    return s[Math.min(s.length - 1, Math.floor(p * s.length))]!;
+  };
+  const topTotal = diag.topBoth + diag.topBmOnly + diag.topEmbOnly;
+  const diagMd =
+    `## Why the arms behave that way (pool structure, measured)\n\n` +
+    `Per query, mean over ${answerableN} queries:\n\n` +
+    `- bm25 candidates ${avg(diag.bmN).toFixed(1)} · embeddings candidates ${avg(diag.embN).toFixed(1)} ` +
+    `(floor dropped ${avg(diag.embFloored).toFixed(1)} of ${CANDIDATES})\n` +
+    `- **keys present in BOTH legs: ${avg(diag.overlap).toFixed(2)}** ` +
+    `(median ${pct(diag.overlap, 0.5)}, p90 ${pct(diag.overlap, 0.9)})\n` +
+    `- embeddings score→weight after ramp [${EMB_LO}, ${EMB_HI}]: ` +
+    `mean ${avg(diag.weights).toFixed(3)}, p10 ${pct(diag.weights, 0.1).toFixed(3)}, ` +
+    `p50 ${pct(diag.weights, 0.5).toFixed(3)}, p90 ${pct(diag.weights, 0.9).toFixed(3)}\n` +
+    `- baseline top-${LIMIT} slot provenance: ` +
+    `both-legs ${((diag.topBoth / topTotal) * 100).toFixed(1)}% · ` +
+    `bm25-only ${((diag.topBmOnly / topTotal) * 100).toFixed(1)}% · ` +
+    `embeddings-only ${((diag.topEmbOnly / topTotal) * 100).toFixed(1)}%\n\n`;
 
   const md =
     `# P-031 score-aware fusion vs rank-only RRF — ${new Date().toISOString()}\n\n` +
@@ -337,7 +295,8 @@ try {
     `${MODEL === 'gemma768' ? ' (P-001, SHIPPED)' : ' (derived by P-001 method, bench-only)'} · ` +
     `ramp [${EMB_LO}, ${EMB_HI}] · k=${RRF_K_DEFAULT}\n\n` +
     rows.join('\n') +
-    '\n';
+    '\n\n' +
+    diagMd;
   console.log('\n' + md);
 
   const repoRoot = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..', '..', '..', '..', '..');

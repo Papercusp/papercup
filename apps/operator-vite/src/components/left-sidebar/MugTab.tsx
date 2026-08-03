@@ -39,7 +39,7 @@ import { useFlag } from '@papercusp/flags/client';
 import { FLAGS } from '@papercusp/flags';
 import { useLexicon } from '@/lib/useLexicon';
 import type { ModelTier } from '@papercusp/operator-core/lib/agent-config-constants';
-import { usePlanList, type PlanListRow } from '@/app/admin/plans/plans-api';
+import type { SteerablePlanRow } from '@papercusp/operator-core/lib/sync-resolver/steerable-plans';
 import { Checkbox } from '@/app/harness/Checkbox';
 import { Tooltip } from '@/app/harness/Tooltip';
 import { buildHarnessSelectOptions } from '../adv/AdvShell';
@@ -112,7 +112,7 @@ const DEFAULT_STEERING: Omit<HiveSteeringRow, 'slug'> = {
   throttleDefaults: null,
 };
 
-const EMPTY_PLANS: readonly PlanListRow[] = [];
+const EMPTY_PLANS: readonly SteerablePlanRow[] = [];
 
 type LiteProject = { slug: string; parent_slug?: string | null; harness_kind?: string | null };
 
@@ -125,20 +125,17 @@ export interface SteerPlanRow {
   eligible: boolean;
 }
 
-function planRank(p: PlanListRow): number {
-  return p.startStatus === 'started' ? 0 : p.status === 'active' ? 1 : p.status === 'ready' ? 2 : 3;
-}
-
-/** Eligibility CANDIDATES: non-terminal plans (draft/ready/active), in-flight first. Pure. */
-export function selectSteerablePlans(rows: readonly PlanListRow[]): PlanListRow[] {
-  return rows
-    .filter((p) => p.status !== 'shipped' && p.status !== 'superseded' && !p.archived)
-    .slice()
-    .sort((a, b) => planRank(a) - planRank(b) || (b.updated ?? '').localeCompare(a.updated ?? ''));
-}
+/**
+ * The steering CANDIDATES (non-terminal plans, in-flight first) are now
+ * selected and ordered SERVER-side by the `plans.steerable` resolver
+ * (`selectSteerablePlanRows`, packages/operator-core/lib/sync-resolver/
+ * steerable-plans.ts) — see no-http-anywhere-2026-07-28 D-071. The local
+ * `selectSteerablePlans` / `planRank` pair that used to live here is gone
+ * along with the whole-feed subscription it existed to narrow.
+ */
 
 /** Candidates merged with the eligible set (+ stale eligible slugs not in the list). Pure. */
-export function buildSteerRows(active: readonly PlanListRow[], eligible: readonly string[]): SteerPlanRow[] {
+export function buildSteerRows(active: readonly SteerablePlanRow[], eligible: readonly string[]): SteerPlanRow[] {
   const eligibleSet = new Set(eligible);
   const seen = new Set<string>();
   const out: SteerPlanRow[] = [];
@@ -278,18 +275,29 @@ export default function MugTab({ active }: { active: boolean }) {
     staleTime: 60_000,
     enabled: active,
   });
-  // `enabled: active` matches projectsQ above, and is load-bearing rather than
-  // tidiness: LeftSidebar MOUNTS every tab (only visibility is toggled), and
-  // this tab is chrome — so an ungated plans.list here fetched on EVERY route
-  // in the app. Measured 2026-08-03 (no-http-anywhere-2026-07-28 D-028): 701 KB
-  // on the git tab, which renders no plan list at all.
+  // A DEDICATED 5-field projection, not the shared plans.list superset
+  // (no-http-anywhere-2026-07-28 D-071).
   //
-  // Gate the SUBSCRIPTION, never the args — usePlanList deliberately fetches
-  // the `{includeArchived:true,includeLegacy:true}` SUPERSET so every consumer
-  // shares one cache key (P-001; narrowing per call site re-multiplies the
-  // fetch, see D-029). `enabled` is the hook's own lever for exactly this,
-  // added under P-026.
-  const plansQ = usePlanList({ includeArchived: false, includeLegacy: false, enabled: active });
+  // ⚠ The `enabled: active` this used to carry was a NO-OP and the comment
+  // justifying it was wrong. It claimed "LeftSidebar MOUNTS every tab (only
+  // visibility is toggled)" — LeftSidebar renders ONLY the active tab and
+  // passes a literal `true` (`active.render(true)`, unchanged since
+  // 2026-06-07), so `active` is true whenever this component exists. Worse,
+  // Mug IS the default-open tab (`lst` defaults to 'queen'), so in the default
+  // UI state this subscription was live on EVERY route in the app, re-fetching
+  // the whole ~700 KB plans feed every 180s. Verified live 2026-08-03 by a
+  // fiber walk at /adv?tab=harnesses: plans.list had exactly one observer and
+  // it was this component. Gating cannot fix a consumer that IS the default —
+  // the fix is to stop asking for the big payload at all.
+  //
+  // `enabled: active` is kept because it costs nothing and stays correct if
+  // LeftSidebar ever goes back to mounting inactive tabs.
+  const plansQ = useSyncQuery<SteerablePlanRow>({
+    queryName: 'plans.steerable',
+    args: {},
+    staleTime: 60_000,
+    enabled: active,
+  });
   const navigate = useNavigate();
   const [mugView, setMugView] = useQueryState('qMug', parseAsStringLiteral(MUG_VIEWS).withDefault('now'));
 
@@ -327,8 +335,9 @@ export default function MugTab({ active }: { active: boolean }) {
   }, [steeringQ.data]);
 
   const hiveOptions = useMemo(() => steerHiveOptions(projects), [projects]);
-  const sourcePlans = plansQ.data?.plans ?? EMPTY_PLANS;
-  const candidates = useMemo(() => selectSteerablePlans(sourcePlans), [sourcePlans]);
+  // Already filtered to non-terminal and ordered (in-flight -> active -> ready
+  // -> rest, then most-recently-updated) by the plans.steerable resolver.
+  const candidates = plansQ.data ?? EMPTY_PLANS;
   const planRows = useMemo(() => buildSteerRows(candidates, view.eligiblePlans), [candidates, view.eligiblePlans]);
   const planRestricted = view.eligiblePlans.length > 0;
   const hiveRestricted = view.eligibleHives.length > 0;

@@ -1,0 +1,134 @@
+/**
+ * session:end — wind THIS session down and close its terminal window (WI-6638).
+ *
+ * ## The problem this exists to solve
+ *
+ * A psu agent session whose work is finished does not stop. It returns to its CLI
+ * prompt and sits there, holding a real `claude` process and a real terminal tab,
+ * forever. Measured 2026-08-03: **52 psu-launcher trees from fleets that finished
+ * days ago — the oldest 14 days — holding 14.4 GB of RSS**, while the box ran at PSI
+ * memory-full avg60 of 10.5–12.5 against a threshold of 5.
+ *
+ * ## Why no reaper can fix it (three measured dead ends — do not re-chase)
+ *
+ *  1. **The task ledger cannot see them.** `classifyScope()` returns
+ *     `exempt:'human-terminal'` for any `vte-spawn-*.scope`, deliberately, so the
+ *     owner's live terminal is never reported as residue. psu runs inside a terminal
+ *     by construction, so every terminal-launched session is permanently exempt.
+ *  2. **The idle-session reaper never sees them either.** Measured:
+ *     `findIdleLiveSessions()` returns **0** for this whole cohort. The funnel — 58
+ *     candidates, 58 heartbeat-fresh, 36 idle past 4h — collapses at
+ *     `classifyLiveIdle`, because 53 carry `agent_role:'su'` and the rest are
+ *     role-less `su-…` ids, and `classifyAgentPane` rule 5 makes every one of them
+ *     `driveMode:'responsive'`. The queen-fleet-authority-boundary ruling
+ *     (P-001/D-001) excludes responsive sessions outright: *"killing an owner's own
+ *     session out from under them is the exact authority violation this plan fixes."*
+ *  3. **Even past that, the window guard would spare them — correctly.**
+ *     `terminalWindowAlive()` reads 55 of 55 stale scopes as ALIVE, because they
+ *     genuinely are: real shells parented by the live terminal app. That guard exists
+ *     because an earlier wmctrl-based leg twice SIGKILLed a session the owner had on
+ *     screen (WI-1586, WI-1641). It may only ever PREVENT a kill.
+ *
+ * Two of those are deliberate, owner-ratified protections and the third is a design
+ * exemption. None may be loosened. So the fix cannot be a system killing a session
+ * from outside — it has to be the session ending itself. That is what this verb is.
+ *
+ * ## Why it is safe
+ *
+ * This tool sends an ASK down the session's own managed-pty control socket. It
+ * signals nothing and opens no process handle. The psu host decides, from its OWN
+ * process state, which no caller can spoof (`shutdownRefusalReason`):
+ *
+ *  - **agent-launched only** — `PAPERCUSP_LAUNCHED_BY` must be set. `injectLaunchedByArg`
+ *    stamps `--launched-by=<caller ownerId>` onto every tool-driven psu launch; an
+ *    owner-typed `psu` never carries one. Structural, not heuristic.
+ *  - **never human-attended** — any stdin byte ever seen on a bridged TTY
+ *    (`makeActivityTracker.touchInput`) permanently disqualifies the session.
+ *    Socket-injected agent wakes never reach stdin, so they cannot mask a human.
+ *  - **never mid-turn** — refused while the agent is still emitting, unless `force`.
+ *
+ * psu runs as `exec <psu …>` inside `gnome-terminal --wait`, so the host exiting IS
+ * the window closing. Nothing new gains the power to kill anything.
+ */
+
+import { z } from 'zod';
+import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
+import { resolveAgentIdentity } from '../coordination/identity';
+import { findLiveHost, hostSupports, shutdownViaPty } from '../../events/await/psu-pty-discovery';
+
+/** The note recorded in the host event log + printed into the closing terminal. */
+const MAX_REASON_CHARS = 300;
+
+/** PURE: the caller-facing explanation for each host verdict. Exported for tests. */
+export function shutdownNote(result: string): string {
+  switch (result) {
+    case 'sent':
+      return 'Shutdown accepted. This session is winding down and its terminal window will close; do not expect another turn.';
+    case 'no-host':
+      return 'No live psu-pty host for this session, so there is no window to close (headless / non-psu launch). Nothing to do.';
+    case 'no-cap':
+      return 'This psu-pty host predates the shutdown capability (WI-6638). It cannot close its own window; the session will keep idling until it is relaunched onto a current host.';
+    case 'refused-not-agent-launched':
+      return 'REFUSED — this session carries no PAPERCUSP_LAUNCHED_BY, so it was started by a human, not by another agent. A hand-started session is the owner\'s to close.';
+    case 'refused-human-attended':
+      return 'REFUSED — a human has typed into this terminal, so it belongs to the owner. This is the correct answer, not an error to retry around.';
+    case 'refused-agent-busy':
+      return 'REFUSED — the agent is still emitting output (mid-turn). Reach a settled prompt and retry, or pass force:true if you are certain the turn is finished.';
+    default:
+      return 'The shutdown request did not reach the host (transport miss). The session is unchanged; retry, or leave it — nothing was killed.';
+  }
+}
+
+export default defineTool({
+  name: 'session:end',
+  description:
+    'Wind THIS session down and CLOSE its terminal window. For an agent session whose work is genuinely finished — no armed loop, no held claims, nothing left to wake for. The psu host refuses unless the session was agent-launched and no human has ever typed into it, so an owner-attended window is never closed.',
+  capability: 'coord:write',
+  guidance: {
+    when: 'Your work is finished and nothing will wake you again: loop ended, claims released and checkpointed, fleet wound down. Leaving the session idling holds a real process and terminal tab indefinitely.',
+    notWhen:
+      'A loop is still armed, you hold a claim, you are parked on an events:await, or a human is driving this session — end those first, or just keep working.',
+    seeAlso: ['loop:end (stop the wake source first)', 'work_items:complete (release your claims first)'],
+  },
+  requirePrincipal: false,
+  agentRoles: [...AGENT_ROLES],
+  args: z.object({
+    reason: z
+      .string()
+      .max(MAX_REASON_CHARS)
+      .optional()
+      .describe('Why this session is finished — recorded in the host event log and printed as the terminal closes.'),
+    force: z
+      .boolean()
+      .optional()
+      .describe(
+        'Waive ONLY the mid-turn (agent-busy) refusal. It can never waive the agent-launched / no-human-input guards — the host evaluates those from its own process state.',
+      ),
+  }),
+  async handler(args, ctx) {
+    const identity = resolveAgentIdentity(ctx);
+    const host = findLiveHost(identity.ownerId);
+    const result = await shutdownViaPty(identity.ownerId, {
+      reason: args.reason,
+      force: args.force === true,
+    });
+    const ok = result === 'sent';
+    return {
+      content: [
+        {
+          type: 'text' as const,
+          text: JSON.stringify({
+            ok,
+            result,
+            note: shutdownNote(result),
+            // Surfaced so a refusal is self-explaining without a second call: these
+            // are the two inputs to the host's own agent-vs-human verdict.
+            agentLaunched: host ? !!String(host.launchedBy ?? '').trim() : null,
+            hostSupportsShutdown: host ? hostSupports(host, 'shutdown') : null,
+          }),
+        },
+      ],
+      isError: !ok && result !== 'no-host',
+    };
+  },
+});

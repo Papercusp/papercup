@@ -4,8 +4,9 @@
 // (progress-tab-agents-convergence-2026-06-11 P-003).
 //
 // Two sub-views behind a nuqs toggle:
-//   - working (default): the fleet:assignments projection scoped to this
-//     harness via `fleetAssignments.byHarness` — every agent with claims or
+//   - working (default): the unified hive-roster projection scoped to this
+//     harness via `hiveRoster.byHarness` (WI-1495 repoint; was the deprecated
+//     `fleetAssignments.byHarness`) — every agent with claims or
 //     spawns here (psu sessions included), tagged with the colony tab's kind
 //     glyph (☕/🫖/🍵/🥤/📋/🛠), its head-of-line work item, and its load. Same
 //     vocabulary as zellij, narrower lens (plan D-001).
@@ -67,8 +68,11 @@ const LIVENESS_LEGEND: Array<{ liveness: 'live' | 'idle' | 'stale'; label: strin
   },
 ];
 
-// One agent row from `fleetAssignments.byHarness` (the fleet:assignments
-// AgentAssignment + the stamped pane kind — see sync-resolver/index.ts).
+// One agent row from `hiveRoster.byHarness` (a HiveRosterEntry — AgentAssignment
+// + presence identity + the stamped pane kind — see sync-resolver/index.ts).
+// ⚠ DetailPanel still resolves `?sel=agent:<id>` against the older
+// `fleetAssignments.byHarness`; both project AgentAssignment, so the shared
+// fields below stay compatible across the two queries.
 // Exported: DetailPanel resolves `?sel=agent:<id>` against the same query
 // (the same shape-sharing WorkItemsPanel does with WorkItemRow).
 export interface WorkingAgent {
@@ -219,6 +223,22 @@ function WorkingView({
   const loading = query.fetching;
   const error = query.error ? query.error.message : null;
 
+  const kinds = useMemo(() => {
+    const set = new Set<string>();
+    for (const a of agents ?? []) set.add(a.agentPaneKind);
+    return Array.from(set).sort();
+  }, [agents]);
+
+  // WI-1495: the machines this harness's agents are spread across, for the
+  // per-machine tabs + the "across N machines" count. Derived from the SAME rows
+  // the grid renders, so the count can never disagree with what is on screen.
+  // Declared BEFORE the title effect below, which reads it.
+  const machines = useMemo(() => {
+    const set = new Set<string>();
+    for (const a of agents ?? []) set.add(a.machineLabel || UNKNOWN_MACHINE);
+    return Array.from(set).sort();
+  }, [agents]);
+
   useEffect(() => {
     if (!agents) return;
     // WI-1495: surface the federation only when there IS one — a single-machine
@@ -230,21 +250,6 @@ function WorkingView({
         : `Agents · ${slug} (${agents.length})`,
     );
   }, [agents, machines, slug, api]);
-
-  const kinds = useMemo(() => {
-    const set = new Set<string>();
-    for (const a of agents ?? []) set.add(a.agentPaneKind);
-    return Array.from(set).sort();
-  }, [agents]);
-
-  // WI-1495: the machines this harness's agents are spread across, for the
-  // per-machine tabs + the "across N machines" count. Derived from the SAME rows
-  // the grid renders, so the count can never disagree with what is on screen.
-  const machines = useMemo(() => {
-    const set = new Set<string>();
-    for (const a of agents ?? []) set.add(a.machineLabel || UNKNOWN_MACHINE);
-    return Array.from(set).sort();
-  }, [agents]);
 
   const t = useLexicon();
   // Render-time kind legend — internal `kind` id kept for the glyph/key (plan

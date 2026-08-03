@@ -1,11 +1,15 @@
 /**
- * message-log-gc.integration.test.ts — gcOldOperatorMessages, the physical
- * retention GC over operator-scope coord_event_log `messages`.
+ * message-log-gc.integration.test.ts — gcOldCoordMessages, the physical retention
+ * GC over coord_event_log `messages`, both scopes.
  *
- * Proves the WI-401 safety contract: delete fully-aged operator-scope message
- * threads atomically; keep recent threads, harness-scoped/federating threads,
- * orphan replies, other surfaces, and any thread whose msg_id is referenced by
- * coord_thread_posts.post_msg_id.
+ * Proves the WI-401 safety contract: delete fully-aged message threads atomically;
+ * keep recent threads, orphan replies, other surfaces, and any thread whose msg_id
+ * is referenced by coord_thread_posts.post_msg_id.
+ *
+ * And the WI-8490 / D-010 extension: harness-scoped (FEDERATED) threads are swept
+ * on their OWN shorter horizon rather than kept forever — the DELETE is what emits
+ * the federated `del` op that tombstones coord history out of a release seed. A
+ * MIXED-scope thread satisfies neither horizon and is kept.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import postgres from 'postgres';
@@ -18,7 +22,10 @@ vi.mock('@papercusp/db-org', async () => {
   return { ...actual, getOrgPg: () => ({ sql: h.sql }) };
 });
 
-const { gcOldOperatorMessages } = await import('./message-log-gc');
+const { gcOldCoordMessages } = await import('./message-log-gc');
+
+/** Federated horizon far past every fixture age — isolates the operator branch. */
+const FED_NEVER = 10_000;
 
 let rootSql: postgres.Sql;
 const remainingIds = async () =>
@@ -92,7 +99,7 @@ async function postRef(msgId: string) {
     VALUES ('thread-1', 'agent', 'post', ${msgId})`;
 }
 
-describe('gcOldOperatorMessages (PG)', () => {
+describe('gcOldCoordMessages (PG)', () => {
   it('deletes only fully-aged operator-scope rooted threads, preserving thread/ref safety', async () => {
     await msg({ msgId: 'standalone-old', ageDays: 45 });
 

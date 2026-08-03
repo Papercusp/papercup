@@ -3,8 +3,13 @@
  * panel (queen-steering-panel-2026-06-15). The component render + write wiring
  * is pinned in MugTab.test.tsx; this pins the branch behaviour of the
  * exported pure helpers directly so each edge is covered once, fast:
- *   - selectSteerablePlans — terminal/archived filter + rank+recency sort
  *   - buildSteerRows — active rows merged with the eligible set (+ stale slugs)
+ *
+ * The terminal/archived filter + rank/recency sort that used to live here as
+ * `selectSteerablePlans` moved SERVER-side under D-071 (the panel is chrome on
+ * every route and was holding the whole plans.list feed to compute it). Its
+ * branches are pinned in
+ * packages/operator-core/lib/sync-resolver/steerable-plans.test.ts.
  *   - toggleEligible — checkbox add/remove
  *   - steerHiveOptions — strips the All + loading sentinels from the option set
  *   - resolveHomeHive — first formal hive, else first steering row, else ''
@@ -15,7 +20,7 @@
  * so steerHiveOptions is tested as the thin filter/map MugTab layers on top.
  */
 import { describe, expect, it, vi } from 'vitest';
-import type { PlanListRow } from '@/app/admin/plans/plans-api';
+import type { SteerablePlanRow } from '@papercusp/operator-core/lib/sync-resolver/steerable-plans';
 
 // AdvShell.buildHarnessSelectOptions is mocked to emit the same shape the real
 // one does (All sentinel first, then a workspace group wrapping the rows) so
@@ -29,7 +34,6 @@ vi.mock('../adv/AdvShell', () => ({
 vi.mock('../adv/adv-harness-selection', () => ({ ALL_HARNESSES_OPTION: '__all__' }));
 
 import {
-  selectSteerablePlans,
   buildSteerRows,
   toggleEligible,
   steerHiveOptions,
@@ -38,18 +42,17 @@ import {
   type HiveSteeringRow,
 } from './MugTab';
 
-function plan(over: Partial<PlanListRow>): PlanListRow {
-  // Every field left out below is an OPTIONAL PlanListRow field (`?: T`, never
-  // `T | null` — WI-7045 / D-025: the wire omits null-valued keys, so an absent
-  // value arrives `undefined`). A factory modeling the wire omits them rather
-  // than writing `null` (and needs no `as PlanListRow` cast once it does).
+function plan(over: Partial<SteerablePlanRow>): SteerablePlanRow {
+  // `plans.steerable` rows are a CLOSED 5-field projection whose optional
+  // fields are `T | null` (the resolver normalises an absent/blank wire value
+  // to null via `str()`), unlike PlanListRow's `?: T` — so this factory writes
+  // nulls rather than omitting keys.
   return {
     slug: 'p',
     title: 'P',
     status: 'draft',
-    archived: false,
-    isLegacy: false,
-    harness: 'h',
+    startStatus: null,
+    updated: null,
     ...over,
   };
 }
@@ -68,42 +71,6 @@ function steering(over: Partial<HiveSteeringRow> = {}): HiveSteeringRow {
     ...over,
   };
 }
-
-describe('selectSteerablePlans', () => {
-  it('drops shipped, superseded, and archived plans', () => {
-    const rows = [
-      plan({ slug: 'draft-x', status: 'draft' }),
-      plan({ slug: 'shipped-x', status: 'shipped' }),
-      plan({ slug: 'superseded-x', status: 'superseded' }),
-      plan({ slug: 'archived-x', status: 'ready', archived: true }),
-    ];
-    expect(selectSteerablePlans(rows).map((p) => p.slug)).toEqual(['draft-x']);
-  });
-
-  it('ranks started < active < ready < other, then by recency desc', () => {
-    const rows = [
-      plan({ slug: 'ready-old', status: 'ready', updated: '2026-01-01' }),
-      plan({ slug: 'draft-1', status: 'draft', updated: '2026-06-01' }),
-      plan({ slug: 'active-1', status: 'active', updated: '2026-02-01' }),
-      plan({ slug: 'started-1', status: 'active', startStatus: 'started', updated: '2026-01-01' }),
-      plan({ slug: 'ready-new', status: 'ready', updated: '2026-05-01' }),
-    ];
-    expect(selectSteerablePlans(rows).map((p) => p.slug)).toEqual([
-      'started-1', // rank 0
-      'active-1', // rank 1
-      'ready-new', // rank 2, newer
-      'ready-old', // rank 2, older
-      'draft-1', // rank 3
-    ]);
-  });
-
-  it('does not mutate the input array', () => {
-    const rows = [plan({ slug: 'b', status: 'ready' }), plan({ slug: 'a', status: 'active' })];
-    const snapshot = rows.map((r) => r.slug);
-    selectSteerablePlans(rows);
-    expect(rows.map((r) => r.slug)).toEqual(snapshot);
-  });
-});
 
 describe('buildSteerRows', () => {
   it('flags the active rows that are in the eligible set', () => {
@@ -127,7 +94,7 @@ describe('buildSteerRows', () => {
   });
 
   it('falls back title→slug when an active plan has no title', () => {
-    const rows = buildSteerRows([plan({ slug: 'a', title: undefined })], []);
+    const rows = buildSteerRows([plan({ slug: 'a', title: null })], []);
     expect(rows[0].title).toBe('a');
   });
 });

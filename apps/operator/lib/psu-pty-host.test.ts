@@ -53,6 +53,7 @@ import {
   mcpDialogRowSelected,
   mcpConnectedVerdict,
   runMcpReconnectMacro,
+  shutdownRefusalReason,
 } from '../scripts/psu-pty-host.mjs';
 import * as nodeFs from 'node:fs';
 import * as nodeOs from 'node:os';

@@ -19,6 +19,96 @@ const HEADLINE_OPTS =
 
 const trunc = (s: string): string => s.slice(0, 200) + (s.length > 200 ? '…' : '');
 
+/**
+ * How many rows a per-lexeme document-frequency probe will count before it
+ * stops. We only need the ARGMIN — which lexeme is rarest — so a lexeme that
+ * exceeds the cap is simply "common", and capping makes the probe's cost
+ * predictable instead of proportional to the table. Measured 2026-08-03 on
+ * `session_turns` (421k rows, 5 lexemes): 121ms capped vs 159ms uncapped, same
+ * anchor chosen, with the three common lexemes saturating at the cap exactly as
+ * intended.
+ */
+const DF_PROBE_CAP = 2000;
+
+/**
+ * P-017 / D-062 — the lexical leg's term-combination mode, as SQL fragments.
+ *
+ * Both modes share ONE query shape (`ORDER BY coverage DESC, rank DESC`), which
+ * is what keeps the AND path byte-identical rather than merely similar: in
+ * `'and'` mode `coverage` is the constant 1, so the ordering degenerates to
+ * `rank DESC` — today's query, exactly.
+ *
+ * ⚠ THE ORDERING IS THE WHOLE POINT, AND THE OBVIOUS VERSION IS WRONG.
+ * `ts_rank_cd` scores term frequency and cover density; it cannot express how
+ * many DISTINCT query lexemes a document matched. Under AND that never
+ * mattered — the filter guaranteed full coverage — so removing the filter
+ * leaves NOTHING expressing coverage, and an 8,000-char document repeating one
+ * common term outranks a short one containing every term. Measured live on
+ * `session_turns` for `corpus recall pointer section clamp`: plain disjunction
+ * scored by `ts_rank_cd` put all seven all-terms documents at positions
+ * 36/41/64/153/213/277/427 while the corpus leg admits SIX. Coverage-first
+ * ordering puts the same seven at 1-7 and a four-of-five document — one the AND
+ * query discards outright — at 8.
+ *
+ * The RAREST-lexeme anchor is what makes it affordable. Grading every
+ * disjunctive match is correct but cost 745ms on one source against the corpus
+ * leg's 2s WHOLE-leg bound; anchoring first cuts the candidate set from 23,011
+ * to 1,669 and the query to 105ms, and — because every AND row necessarily
+ * matches the anchor — it cannot drop a row the AND query would have returned.
+ *
+ * Injection-safety: the disjunctive query is derived by rewriting
+ * `plainto_tsquery`'s OWN output, so Postgres does all parsing, normalisation
+ * and stop-word removal and we only swap the operator. No user text is ever
+ * interpolated into tsquery grammar.
+ */
+function lexicalSql(
+  p: SearchSourceParams,
+  /** The source's tsvector column, as a fragment: `p.sql\`text_tsv\``. */
+  tsv: ReturnType<SearchSourceParams['sql']>,
+  /** The source's table, as a fragment: `p.sql\`harness_shared.session_turns\``. */
+  table: ReturnType<SearchSourceParams['sql']>,
+) {
+  const sql = p.sql;
+  const orText = sql`replace(plainto_tsquery('english', ${p.query})::text, ' & ', ' | ')`;
+
+  if (p.lexicalMode !== 'coverage-graded') {
+    return {
+      with: sql`WITH q AS (SELECT plainto_tsquery('english', ${p.query}) AS andq)`,
+      join: sql`, q`,
+      coverage: sql`1`,
+      rank: sql`ts_rank_cd(${tsv}, q.andq)`,
+      match: sql`${tsv} @@ q.andq`,
+      headlineQuery: sql`q.andq`,
+    };
+  }
+
+  return {
+    with: sql`
+      WITH q AS (
+        SELECT ${orText}::tsquery       AS orq,
+               string_to_array(${orText}, ' | ') AS lexemes
+      ), df AS (
+        SELECT l, (SELECT count(*) FROM (
+                     SELECT 1 FROM ${table} d
+                      WHERE d.${tsv} @@ l::tsquery
+                      LIMIT ${DF_PROBE_CAP}
+                   ) capped) AS n
+          FROM q, unnest(q.lexemes) AS l
+      ), anchor AS (
+        SELECT l::tsquery AS a FROM df ORDER BY n ASC, l ASC LIMIT 1
+      )`,
+    join: sql`, q, anchor`,
+    coverage: sql`(SELECT count(*) FROM unnest(q.lexemes) AS cl WHERE ${tsv} @@ cl::tsquery)`,
+    rank: sql`ts_rank_cd(${tsv}, q.orq)`,
+    match: sql`${tsv} @@ anchor.a AND ${tsv} @@ q.orq`,
+    // Highlight against the DISJUNCTIVE query on purpose: a four-of-five
+    // document has no fragment matching all five terms, and highlighting it
+    // with the AND query would return the document's lead instead of the part
+    // that actually matched.
+    headlineQuery: sql`q.orq`,
+  };
+}
+
 const escalations: SearchSource = {
   name: 'escalations',
   async bm25({ sql, query, workspaceId, scopeFilter, limit }: SearchSourceParams): Promise<Listing> {
@@ -283,20 +373,25 @@ const decisions: SearchSource = {
  */
 const workItem: SearchSource = {
   name: 'work_item',
-  async bm25({ sql, query, workspaceId, scopeFilter, limit }: SearchSourceParams): Promise<Listing> {
+  async bm25(p: SearchSourceParams): Promise<Listing> {
+    const { sql, workspaceId, scopeFilter, limit } = p;
+    // P-017 / D-062 — see lexicalSql. Byte-identical without `lexicalMode`.
+    const lex = lexicalSql(p, sql`_search`, sql`harness_shared.engineer_issues`);
     const rows = (await sql`
+      ${lex.with}
       SELECT issue_id, scope, title, body, kind, state, severity,
-             ts_rank_cd(_search, plainto_tsquery('english', ${query})) AS rank,
+             ${lex.coverage} AS coverage,
+             ${lex.rank} AS rank,
              ts_headline('english', coalesce(title, '') || E'\n' || coalesce(body, ''),
-               plainto_tsquery('english', ${query}),
+               ${lex.headlineQuery},
                ${HEADLINE_OPTS}) AS highlight
-        FROM harness_shared.engineer_issues
+        FROM harness_shared.engineer_issues ${lex.join}
        WHERE workspace_id = ${workspaceId}
          -- the scope column stores 'operator' | 'harness:<slug>' — a bare harness_slug
          -- filter (as the other sources take it) maps to the 'harness:<slug>' form.
          AND (${scopeFilter}::text IS NULL OR scope = 'harness:' || ${scopeFilter}::text)
-         AND _search @@ plainto_tsquery('english', ${query})
-    ORDER BY rank DESC LIMIT ${limit}
+         AND ${lex.match}
+    ORDER BY coverage DESC, rank DESC LIMIT ${limit}
     `) as unknown as Array<{
       issue_id: string;
       scope: string;
@@ -365,15 +460,21 @@ const sessionTurn: SearchSource = {
     // skip ts_headline entirely — it costs ~1.4ms/row and the engine hydrates
     // the final top-N via hydrateHighlights below instead of paying it for the
     // whole limit*3 over-fetch pool.
+    // P-017 / D-062: `lex` supplies the term-combination fragments. Without
+    // `lexicalMode: 'coverage-graded'` this is byte-identical to the pre-P-017
+    // query — `coverage` is the constant 1, so the ordering is `rank DESC`.
+    const lex = lexicalSql(p, p.sql`text_tsv`, p.sql`harness_shared.session_turns`);
     const rows = (await p.sql`
+      ${lex.with}
       SELECT source_kind, session_id, turn_idx, speaker, owner, harness_slug, ts, text,
-             ts_rank_cd(text_tsv, plainto_tsquery('english', ${p.query})) AS rank,
+             ${lex.coverage} AS coverage,
+             ${lex.rank} AS rank,
              ${p.wantHighlight === false
                ? p.sql`''`
                : p.sql`ts_headline('english', left(text, 4000),
-                   plainto_tsquery('english', ${p.query}),
+                   ${lex.headlineQuery},
                    ${HEADLINE_OPTS})`} AS highlight
-        FROM harness_shared.session_turns
+        FROM harness_shared.session_turns ${lex.join}
        WHERE (workspace_id = ${p.workspaceId} OR workspace_id = 'default')
          AND (${p.scopeFilter}::text IS NULL OR harness_slug = ${p.scopeFilter})
          AND (${f.owners}::text[] IS NULL OR owner = ANY(${f.owners}::text[]))
@@ -382,8 +483,8 @@ const sessionTurn: SearchSource = {
          AND (${f.sourceKind}::text IS NULL OR source_kind = ${f.sourceKind})
          AND (${f.since}::timestamptz IS NULL OR COALESCE(ts, ingested_at) >= ${f.since}::timestamptz)
          AND (${f.until}::timestamptz IS NULL OR COALESCE(ts, ingested_at) < ${f.until}::timestamptz)
-         AND text_tsv @@ plainto_tsquery('english', ${p.query})
-    ORDER BY rank DESC LIMIT ${p.limit}
+         AND ${lex.match}
+    ORDER BY coverage DESC, rank DESC LIMIT ${p.limit}
     `) as unknown as Array<{ source_kind: string; session_id: string; turn_idx: number; speaker: string; owner: string | null; harness_slug: string | null; ts: string | null; text: string; rank: number; highlight: string }>;
     return rows.map((r) => ({
       key: `session_turn:${r.source_kind}:${r.session_id}:${r.turn_idx}`,

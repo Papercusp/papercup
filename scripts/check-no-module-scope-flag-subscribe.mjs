@@ -137,7 +137,6 @@ export const BASELINE = new Set([
   'packages/operator-core/lib/issues-engineer.ts',
   'packages/operator-core/lib/lexicon/configure.ts',
   'packages/operator-core/lib/work-item-claim-lease-wiring.ts',
-  'packages/operator-core/lib/work-item-redundancy.ts',
   'packages/operator-core/lib/workspace-brain-scope.ts',
 ]);
 

@@ -270,7 +270,7 @@ export async function sweepStalledLoops(
       nextFireAtIso: status.nextFireAt,
       nowMs,
     });
-    if (false && wall && wall.resumesInMs != null && wall.resumesInMs > 0) {
+    if (wall && wall.resumesInMs != null && wall.resumesInMs > 0) {
       vetoedByProviderWall.push(ownerId);
       console.warn(
         `[stalled-loops-guard] WALLED ${ownerId}: turnsStalled:true but the last fire died on a ` +

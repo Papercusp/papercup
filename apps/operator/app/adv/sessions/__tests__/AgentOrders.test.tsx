@@ -309,7 +309,21 @@ describe('AgentOrders', () => {
 
     it('keeps the CARD when a section wants the reader — data-attn is the opposite of quiet', () => {
       setOrders({
-        directives: [{ id: 'd1', verbatimText: 'do the thing', createdAtMs: Date.now() }],
+        // A COMPLETE AgentOrdersDirective, for the same reason as the carry
+        // fixture below: `setOrders` takes a shallow Partial, so every field of a
+        // supplied member is required. `id` is a NUMBER (the directive row's pk),
+        // not a string handle — vitest never checks types, so both defects sat
+        // here green until the tsc baseline caught up.
+        directives: [
+          {
+            id: 1,
+            verbatimText: 'do the thing',
+            recordedBy: 'owner',
+            createdAtMs: Date.now(),
+            sourceTurnRef: null,
+            dispositionStatus: null,
+          },
+        ],
         directivesTotalOpen: 1,
         walls: [{ claim: 'owner must settle' }],
       });
@@ -329,7 +343,22 @@ describe('AgentOrders', () => {
       // An agent looping with no carry-note loses its thread at the next cold
       // wake. That is a finding shaped like emptiness, and quieting it would
       // hide the one state this section exists to catch.
-      setOrders({ carry: { mode: 'cold', loopActive: true, neverWritten: true, note: null } });
+      // `setOrders` takes a SHALLOW Partial, so a supplied `carry` must be a
+      // COMPLETE AgentOrdersCarry — the omitted fields were not defaults, they
+      // were a type error vitest cannot see. Spelled out rather than spread from
+      // BASE because the nulls are the fixture's whole point: never-written means
+      // there is no note and no note timestamp.
+      setOrders({
+        carry: {
+          mode: 'cold',
+          generation: null,
+          loopActive: true,
+          loopIntervalSec: 60,
+          note: null,
+          noteUpdatedAtMs: null,
+          neverWritten: true,
+        },
+      });
       const { container, queryByTestId, getByTestId } = render(<AgentOrders ownerId="su-1" />);
       expect(queryByTestId('rail-quiet-carry')).toBeNull();
       expect(container.querySelector('#pc-orders-carry')).toBeTruthy();

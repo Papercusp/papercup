@@ -1284,12 +1284,6 @@ fi
 #      (exit 3, distinct from an assertion failure) instead of letting the
 #      assertion emit a confident false negative. This mechanizes the manual
 #      grep every agent otherwise has to reinvent mid-debugging.
-if [ -f "$VERIFY_TAURI_FRESHNESS_CHECK" ] && ! bash "$VERIFY_TAURI_FRESHNESS_CHECK"; then
-  log "⚠️  DRIFT: the shared SPA dist advanced past this run's frozen snapshot (banner above)."
-  log "    Drift alone does NOT prove YOUR change is missing — a peer's edit moves it too."
-  log "    To settle it decisively, re-run with a string unique to your change:"
-  log "      VERIFY_TAURI_ASSERT_SNAPSHOT_CONTAINS='<your string>' $0 -- <command...>"
-fi
 SNAPSHOT_NEEDLE="${VERIFY_TAURI_ASSERT_SNAPSHOT_CONTAINS:-}"
 if [ -n "$SNAPSHOT_NEEDLE" ]; then
   if [ -z "$SPA_DIST" ] || [ ! -d "$SPA_DIST" ]; then
@@ -1321,6 +1315,19 @@ if [ -n "$SNAPSHOT_NEEDLE" ]; then
     } >&2
     exit 3
   fi
+elif [ -f "$VERIFY_TAURI_FRESHNESS_CHECK" ] && ! bash "$VERIFY_TAURI_FRESHNESS_CHECK"; then
+  # No needle given, so we have no decisive signal — fall back to the advisory
+  # DRIFT warning. Deliberately an `elif`: when containment was asserted and
+  # PASSED we have already proven the caller's change is in the bundle, and
+  # printing a "STALE FROZEN SPA SNAPSHOT" banner on top of that would be both
+  # contradictory and — because the fleet's `vite build --watch` rebuilds
+  # constantly — near-permanent. A banner that fires on nearly every run is
+  # wallpaper within a day, and then nobody reads the one that matters. Keep the
+  # loud path rare so it stays legible.
+  log "⚠️  DRIFT: the shared SPA dist advanced past this run's frozen snapshot (banner above)."
+  log "    Drift alone does NOT prove YOUR change is missing — a peer's edit moves it too."
+  log "    To settle it decisively, re-run with a string unique to your change:"
+  log "      VERIFY_TAURI_ASSERT_SNAPSHOT_CONTAINS='<your string>' $0 -- <command...>"
 fi
 
 log "running assertion command: $*"

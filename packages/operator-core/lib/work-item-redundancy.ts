@@ -34,8 +34,9 @@ import { getWorkItem, setWorkItemState } from './work-items';
 import { isWorkItemAutoPickable } from './work-items-admission';
 import { getWorkItemReplicaAuthority } from './work-item-replica-authority';
 import { potHomeSlugForHarness } from './hive-federation';
-import { getFlag, onFlagChange } from '@papercusp/flags/server';
+import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
+import { lazyFlagRefresh } from './lazy-flag-refresh';
 import { systemDistinctId } from './flag-distinct-id';
 import {
   judgeGymRun,
@@ -97,7 +98,7 @@ export async function resolveReplicaHiveSlug(workspaceId: string, harnessSlug: s
 /** The owner's master switch for BOINC redundancy (P-014). Default OFF. Migrated off the
  *  `PAPERCUSP_WORKITEM_REDUNDANCY` env gate to the `WORKITEM_REDUNDANCY` FLAG
  *  (live-configurability-audit-2026-06-20 P-007) — SYNC-cached because the claim-path read is
- *  synchronous (the WORKITEM_CLAIM_LEASE pattern). Refreshed on boot + every flag change;
+ *  synchronous (the WORKITEM_CLAIM_LEASE pattern). Refreshed on first use + every flag change;
  *  unloaded ⇒ false (DEFAULT OFF, the safe state). N× model spend → ships DARK, owner-ratified
  *  via /admin/features. (Single-box redundancy uses the local replica authority; the cross-Swarm
  *  router install at register-replica-authority-ops boot still reads this at module-load, so a
@@ -110,12 +111,27 @@ async function refreshRedundancyFlag(): Promise<void> {
     redundancyOn = false;
   }
 }
-void refreshRedundancyFlag();
-onFlagChange((key) => {
-  if (key === null || key === FLAGS.WORKITEM_REDUNDANCY) void refreshRedundancyFlag();
-});
+/**
+ * Armed on FIRST USE, not at import (EI-19416650993725684).
+ *
+ * ⚠ This module had TWO module-scope flag-binding accesses, not one, and only the second was
+ * visible to `scripts/check-no-module-scope-flag-subscribe.mjs`: the eager `void
+ * refreshRedundancyFlag()` reached `getFlag` synchronously (an async function body runs up to its
+ * first await when called), so migrating the `onFlagChange(...)` alone would have turned that
+ * source lint green while leaving the module just as unimportable under a partial
+ * `@papercusp/flags/server` mock — merely failing on `getFlag` instead of `onFlagChange`. That is
+ * exactly the gap `lib/flags-partial-mock-importable.test.ts` exists to close, and why this file
+ * is listed there rather than trusted to the lint.
+ *
+ * The helper's arm kicks one refresh, so the eager boot read is preserved — it now happens on the
+ * first reader call instead of at import. Unresolved reads see `false`, which is this feature's
+ * DEFAULT OFF safe state (it ships DARK, owner-ratified), so the pre-refresh window degrades to
+ * "redundancy not yet enabled", never to an unsafe value.
+ */
+const armFlagRefresh = lazyFlagRefresh(refreshRedundancyFlag, FLAGS.WORKITEM_REDUNDANCY);
 
 export function workItemRedundancyEnabled(): boolean {
+  armFlagRefresh(); // first use installs the subscription + kicks the initial read
   return redundancyOn;
 }
 

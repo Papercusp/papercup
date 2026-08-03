@@ -162,6 +162,37 @@ describe('foldHiveRoster', () => {
     expect(e.model).toBeNull();
   });
 
+  // WI-1495: machineLabel is what lets a roster consumer group agents into
+  // per-machine tabs and count "across N machines". Three branches, because the
+  // interesting one (a federated peer that announced NO label) is the case that
+  // would otherwise silently inherit THIS host's name and misreport a remote
+  // agent as local.
+  it('stamps a LOCAL agent with the injected machine label', () => {
+    const p = pres({ ownerId: 'su-local', potSlug: 'papercup' });
+    const [e] = foldHiveRoster([p], [], tier1({}), NOW, undefined, undefined, 'box-here');
+    expect(e.federated).toBe(false);
+    expect(e.machineLabel).toBe('box-here');
+  });
+
+  it("prefers a FEDERATED peer's announced machine label over the local one", () => {
+    const p = pres({ ownerId: 'fed:99@boxZ', potSlug: 'papercup', federated: true, machineLabel: 'boxZ' });
+    const [e] = foldHiveRoster([p], [], tier1({}), NOW, undefined, undefined, 'box-here');
+    expect(e.federated).toBe(true);
+    expect(e.machineLabel).toBe('boxZ');
+  });
+
+  it('leaves a federated peer that announced NO label null — never inherits this host name', () => {
+    const p = pres({ ownerId: 'fed:99@?', potSlug: 'papercup', federated: true });
+    const [e] = foldHiveRoster([p], [], tier1({}), NOW, undefined, undefined, 'box-here');
+    expect(e.federated).toBe(true);
+    expect(e.machineLabel).toBeNull();
+  });
+
+  it('defaults machineLabel to null when no local label is injected (pre-WI-1495 callers unchanged)', () => {
+    const [e] = foldHiveRoster([pres({ ownerId: 'su-x' })], [], tier1({}), NOW);
+    expect(e.machineLabel).toBeNull();
+  });
+
   it('keeps an assignment-only orphan (claim whose holder has no presence row)', () => {
     const a = asg({ agentId: 'su-gone', alive: false, orphaned: true, load: 1, doing: WI('WI-9') });
     const [e] = foldHiveRoster([], [a], tier1({}), NOW);

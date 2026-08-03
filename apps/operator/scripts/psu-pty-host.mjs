@@ -677,6 +677,61 @@ export function makeActivityTracker({ now = Date.now } = {}) {
 }
 
 /**
+ * How long a SHUTDOWN gives the child to exit on SIGHUP before the host escalates
+ * to a whole-process-tree SIGKILL. A claude TUI flushes its transcript on SIGHUP,
+ * so the pause is what makes the exit clean rather than lossy.
+ */
+export const SHUTDOWN_GRACE_MS = Number(process.env.PAPERCUSP_PSU_PTY_SHUTDOWN_GRACE_MS) || 4_000;
+
+/**
+ * How long an accepted SHUTDOWN waits before it starts killing, so the control
+ * connection's ACK is written and flushed first. Without this the shutdown tears
+ * down its own socket mid-ack and the requester reads a SUCCESSFUL shutdown as a
+ * transport miss — the exact confusion that makes a caller retry a session that is
+ * already on its way out.
+ */
+export const SHUTDOWN_ACK_DELAY_MS = Number(process.env.PAPERCUSP_PSU_PTY_SHUTDOWN_ACK_DELAY_MS) || 250;
+
+/**
+ * PURE: may this host honour a `mode:'shutdown'` request? Returns `null` to
+ * proceed, or the REFUSAL REASON string (WI-6638).
+ *
+ * This is the ONLY thing standing between "close a finished agent's tab" and
+ * "close the window the owner is typing in", so it is deliberately strict and
+ * fails toward REFUSING. Both human guards are unconditional — `force` waives
+ * ONLY the mid-turn check, never them:
+ *
+ *  1. `launchedBy` — set from `PAPERCUSP_LAUNCHED_BY`, which `injectLaunchedByArg`
+ *     (agent-launch-core) stamps onto EVERY tool-driven psu launch and which an
+ *     owner-typed `psu` never carries. This is a STRUCTURAL discriminator, not a
+ *     heuristic: absence means a human started this session by hand.
+ *  2. `lastInputAt` — real stdin bytes on a bridged TTY (makeActivityTracker's
+ *     touchInput; socket-injected agent wakes never reach stdin). ANY human
+ *     keystroke, ever, makes this session the owner's. A headless member has no
+ *     stdin bridge, so this stays 0 and never blocks it.
+ *
+ * Why not reuse the idle-session reaper's policy instead: measured 2026-08-03,
+ * `findIdleLiveSessions()` returns 0 for this whole cohort — every psu session
+ * classifies `driveMode:'responsive'` (agent-pane-kind rule 5) and is excluded by
+ * the queen-fleet-authority-boundary ruling P-001/D-001 before the window guard is
+ * ever consulted. A system reaper may not kill these; only the session itself may
+ * exit. Nothing here loosens `terminalWindowAlive`/`cgroupWindowProtects` — this
+ * path never signals a process it does not own.
+ */
+export function shutdownRefusalReason({
+  launchedBy = '',
+  lastInputAt = 0,
+  agentQuietMs = Infinity,
+  force = false,
+  quietMs = OUTPUT_QUIET_MS,
+} = {}) {
+  if (!String(launchedBy || '').trim()) return 'not-agent-launched';
+  if (Number(lastInputAt) > 0) return 'human-attended';
+  if (!force && Number(agentQuietMs) < quietMs) return 'agent-busy';
+  return null;
+}
+
+/**
  * Agent-busy (mid-turn) inject gate (coord-wake-mid-turn-2026-06-30). The
  * OUTPUT-side sibling of makeIdleGate: makeIdleGate defers a `turn` while the
  * HUMAN is mid-keystroke; THIS gate defers it while the AGENT is mid-turn. A
@@ -1092,8 +1147,26 @@ export function decodeControl(payload) {
         o.mode === 'recycle' ||
         o.mode === 'carry-respawn' ||
         o.mode === 'compact' ||
+        o.mode === 'shutdown' ||
         o.mode === 'mcp-reconnect')
     ) {
+      // SHUTDOWN (WI-6638): wind this session down and EXIT. psu is `exec`'d
+      // inside `gnome-terminal --wait`, so the host exiting IS the tab closing —
+      // which is the whole point: an agent session whose work is finished closes
+      // its own window instead of idling in an open tab forever.
+      //
+      // UNGATED at decode (the handler applies its OWN guards, which are stricter
+      // than the turn gates and must run even when the agent is quiet): a shutdown
+      // must never queue behind the coalescer or the wake gates, because the
+      // request is precisely "there is no more work".
+      if (o.mode === 'shutdown')
+        return {
+          mode: 'shutdown',
+          data: String(o.data ?? ''),
+          force: o.force === true,
+          gated: false,
+          ...decodeOwnerIdentity(o),
+        };
       if (o.mode === 'raw')
         return { mode: 'raw', data: String(o.data ?? ''), gated: false, ...decodeOwnerIdentity(o) };
       // osc = recolor escape bytes for the terminal DISPLAY (not the agent) —
@@ -2049,6 +2122,10 @@ export function hostThroughPty(o) {
   // (created before the teardown Promise) can close over them; they stay no-ops
   // until assigned, and a recycle cannot arrive before the socket is listening.
   let recycling = false;
+  // WI-6638 SHUTDOWN state: set once a shutdown is accepted, so a duplicate/retried
+  // request is an idempotent ok instead of a second kill. Unlike `recycling` this is
+  // terminal — nothing clears it, because the host is on its way out.
+  let shuttingDown = false;
   // EI-18665672258948707: the moment (Date.now()) THIS host last successfully
   // spawned a fresh child via recycleChild — the supersession clock a queued
   // carry-respawn is checked against right before delivery (isCarryRespawnSuperseded).
@@ -2116,7 +2193,17 @@ export function hostThroughPty(o) {
     // P-022: 'compact' is no longer advertised — a pre-cutover sender that
     // caps-gates on hostSupports(host, 'compact') now skips cleanly instead of
     // sending a message the handler will loudly drop.
-    caps: ['carry-respawn', 'mcp-reconnect'],
+    // 'shutdown' (WI-6638): wind down + exit, closing this session's terminal tab.
+    caps: ['carry-respawn', 'mcp-reconnect', 'shutdown'],
+    // WI-6638: WHO launched this session — `injectLaunchedByArg` (agent-launch-core)
+    // stamps `--launched-by=<caller ownerId>` onto every tool-driven psu launch, and
+    // bootstrap-su re-exports it as PAPERCUSP_LAUNCHED_BY. An owner-typed `psu` never
+    // carries one, which is what makes this a STRUCTURAL agent-vs-human discriminator
+    // rather than a heuristic. Advertised so a would-be shutdown requester can see the
+    // verdict BEFORE sending (the host re-checks it authoritatively either way).
+    // ADDITIVE — absent on files written by older hosts; consumers must fail-soft to
+    // "human-launched" (the refusing direction).
+    launchedBy: String(env.PAPERCUSP_LAUNCHED_BY || '').trim() || null,
   };
   const writeMeta = () => {
     try {
@@ -2582,6 +2669,69 @@ export function hostThroughPty(o) {
           /* diagnostic only */
         }
         return { ok: true, reason: 'duplicate-delivery-id' };
+      }
+      // SHUTDOWN (WI-6638) — wind this session down and EXIT, closing its tab.
+      //
+      // Handled HERE, before the coalescer / carry-rearm / inject gates: those all
+      // exist to schedule a FUTURE turn, and the whole premise of a shutdown is that
+      // there will not be one. Deliberately NOT routed through the reaper's kill path
+      // either — measured 2026-08-03, every psu session classifies
+      // driveMode:'responsive' and is excluded from the live-idle cohort by the
+      // queen-fleet-authority-boundary ruling (P-001/D-001) long before the window
+      // guard is consulted. A system reaper may not kill these; only the session
+      // itself may exit. This signals nothing but our OWN child.
+      if (msg.mode === 'shutdown') {
+        if (shuttingDown) return { ok: true, reason: 'already-shutting-down' };
+        const refusal = shutdownRefusalReason({
+          launchedBy: env.PAPERCUSP_LAUNCHED_BY,
+          lastInputAt: activity.snapshot().lastInputAt ?? 0,
+          agentQuietMs: agentBusyGate.quietForMs(),
+          force: msg.force === true,
+        });
+        if (refusal) {
+          appendHostEvent(ownerId, 'shutdown-refused', { reason: refusal, note: msg.data || '' });
+          return { ok: false, reason: `shutdown-refused:${refusal}` };
+        }
+        shuttingDown = true;
+        appendHostEvent(ownerId, 'shutdown-accepted', {
+          note: msg.data || '',
+          forced: msg.force === true,
+        });
+        try {
+          process.stderr.write(
+            `psu-pty-host: SHUTDOWN accepted for ${ownerId}${msg.data ? ` — ${msg.data}` : ''}; ` +
+              `winding the session down and closing this terminal.\n`,
+          );
+        } catch {
+          /* diagnostic only */
+        }
+        // DEFERRED so the ACK gets out first. The kill leads (via the child's own
+        // exit) to cleanup → onExit → psu `process.exit`, which tears down this very
+        // socket — killing synchronously here would race the ack write below
+        // (conn.write at the end of this handler) and the requester would read a
+        // successful shutdown as a `timeout`/`send-failed` miss.
+        //
+        // SIGHUP lets the TUI flush its transcript; the child's exit then runs the
+        // normal cleanup path and psu exiting closes the `gnome-terminal --wait` tab.
+        // The escalation timer is the backstop for a child that ignores SIGHUP.
+        setTimeout(() => {
+          try {
+            killPtyProcessTree(child, 'SIGHUP');
+          } catch {
+            /* the escalation below still covers it */
+          }
+          const escalate = setTimeout(() => {
+            try {
+              killPtyProcessTree(child, 'SIGKILL');
+            } catch {
+              /* nothing further we can do */
+            }
+          }, SHUTDOWN_GRACE_MS);
+          if (typeof escalate.unref === 'function') escalate.unref();
+        }, SHUTDOWN_ACK_DELAY_MS);
+        // NOT unref'd: this timer is the shutdown itself, and an unref'd one would
+        // let an otherwise-idle host exit the event loop before it ever fires.
+        return { ok: true, reason: 'shutdown-accepted' };
       }
       // EI-18679681961154136: a carry-respawn re-arm retry is PENDING for this
       // owner (an earlier busy-gate defer, now re-polling for the next idle
