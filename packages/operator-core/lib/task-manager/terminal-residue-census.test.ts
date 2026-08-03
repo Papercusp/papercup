@@ -1,9 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
+  appendResidueSample,
   censusTerminalResidue,
   evaluateResidueTrend,
+  resolveTerminalSliceAbs,
   type ResidueSample,
 } from './terminal-residue-census';
+import { parseResidueSamples } from './terminal-residue-store';
 import type { CgroupFs } from './cgroup-read';
 
 const ROOT = '/sys/fs/cgroup';
@@ -210,6 +213,15 @@ describe('evaluateResidueTrend', () => {
     expect(v.trend).toBe('steady');
   });
 
+  it('treats an unreadable store ([]) as unknown, never as healthy', () => {
+    // readResidueSamples returns [] on ANY failure. If that rendered as 'steady'
+    // a storage outage would look exactly like "no accumulation" — the laundering
+    // shape D-017 is about.
+    const v = evaluateResidueTrend([], { nowMs: now });
+    expect(v.trend).toBe('unknown');
+    expect(v.alarm).toBe(false);
+  });
+
   it('models the 16-day silent accumulation this indicator exists to catch', () => {
     // One scope leaks per day and nothing clears it. No single day looks alarming,
     // which is exactly why a level alarm never fired.
@@ -225,5 +237,100 @@ describe('evaluateResidueTrend', () => {
 
     expect(v.trend).toBe('rising');
     expect(v.alarm).toBe(true);
+  });
+});
+
+describe('resolveTerminalSliceAbs', () => {
+  it('resolves the terminal slice under the user manager root', () => {
+    expect(resolveTerminalSliceAbs('/user.slice/user-1000.slice/user@1000.service')).toBe(
+      `${ROOT}/user.slice/user-1000.slice/user@1000.service/app.slice/app-org.gnome.Terminal.slice`,
+    );
+  });
+
+  it('is null when there is no user manager root, rather than guessing a path', () => {
+    expect(resolveTerminalSliceAbs(null)).toBeNull();
+  });
+
+  it('targets the Terminal slice, NOT app.slice (the too-wide probe reads everything as alive)', () => {
+    const abs = resolveTerminalSliceAbs('/user.slice/user-1000.slice/user@1000.service')!;
+    expect(abs.endsWith('/app-org.gnome.Terminal.slice')).toBe(true);
+  });
+});
+
+describe('appendResidueSample', () => {
+  const HOUR = 60 * 60_000;
+  const DAY = 24 * HOUR;
+
+  it('appends and keeps chronological order', () => {
+    const ring = appendResidueSample(
+      [{ atMs: 1000, scopesDead: 1 }],
+      { atMs: 2000, scopesDead: 2 },
+    );
+    expect(ring).toEqual([
+      { atMs: 1000, scopesDead: 1 },
+      { atMs: 2000, scopesDead: 2 },
+    ]);
+  });
+
+  it('prunes samples older than the retention window', () => {
+    const now = 100 * DAY;
+    const ring = appendResidueSample(
+      [
+        { atMs: now - 60 * DAY, scopesDead: 99 }, // way outside default 21d
+        { atMs: now - 2 * DAY, scopesDead: 5 },
+      ],
+      { atMs: now, scopesDead: 6 },
+    );
+    expect(ring.map((s) => s.scopesDead)).toEqual([5, 6]);
+  });
+
+  it('retains LONGER than the trend lookback, so both windows can be populated', () => {
+    // Default retention (21d) must exceed the default trend lookback (7d),
+    // otherwise the older comparison window is always empty and the verdict is
+    // permanently 'unknown'.
+    const now = 100 * DAY;
+    const ring = appendResidueSample(
+      [{ atMs: now - 10 * DAY, scopesDead: 3 }],
+      { atMs: now, scopesDead: 4 },
+    );
+    expect(ring).toHaveLength(2);
+  });
+
+  it('caps ring length', () => {
+    const now = 100 * DAY;
+    const existing = Array.from({ length: 10 }, (_, i) => ({
+      atMs: now - (10 - i) * HOUR,
+      scopesDead: i,
+    }));
+    const ring = appendResidueSample(existing, { atMs: now, scopesDead: 42 }, { maxSamples: 5 });
+    expect(ring).toHaveLength(5);
+    expect(ring[ring.length - 1]).toEqual({ atMs: now, scopesDead: 42 });
+  });
+});
+
+describe('parseResidueSamples', () => {
+  it('reads a well-formed ring', () => {
+    expect(parseResidueSamples([{ atMs: 2, scopesDead: 1 }, { atMs: 1, scopesDead: 0 }])).toEqual([
+      { atMs: 1, scopesDead: 0 },
+      { atMs: 2, scopesDead: 1 },
+    ]);
+  });
+
+  it('discards malformed entries instead of throwing', () => {
+    expect(
+      parseResidueSamples([
+        { atMs: 1, scopesDead: 2 },
+        null,
+        'nope',
+        { atMs: 'x', scopesDead: 1 },
+        { atMs: 3 },
+        { atMs: Number.NaN, scopesDead: 1 },
+      ]),
+    ).toEqual([{ atMs: 1, scopesDead: 2 }]);
+  });
+
+  it('reads a non-array (absent key, wrong shape) as empty', () => {
+    expect(parseResidueSamples(undefined)).toEqual([]);
+    expect(parseResidueSamples({})).toEqual([]);
   });
 });

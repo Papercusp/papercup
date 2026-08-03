@@ -143,6 +143,117 @@ export const CARRY_NOTE_CHECKS_HEADING = 'Checks';
 /** Bound on carried check rows — same triage rationale as walls. */
 export const CARRY_NOTE_MAX_CHECKS = 12;
 
+/**
+ * SOFT caps on a carried row's sub-fields (WI-7264). These bound what gets
+ * re-injected into EVERY future wake, so they stay tight — but they are enforced by
+ * TRUNCATION, not rejection. The schema keeps a much looser hard `.max()` as a
+ * sanity backstop; overage between the two is repaired and REPORTED.
+ *
+ * Why: a zod `.max()` rejects the WHOLE CALL, and these rows travel attached to a
+ * ~6KB note. Measured over 6 days of real transcripts, one sub-field a few chars
+ * over its cap discarded the entire accompanying note 53 times, costing 364,735
+ * argument chars — paid twice, because the agent then rewrote and re-sent the note.
+ * Truncating the offending field keeps the re-injection bound exactly where it was
+ * while removing the double-write, and is the same repair-don't-refuse choice
+ * already made by this file's JSON-string coercion and by
+ * `rescueTaggedCarryNoteBlob` (whose comment notes a refusal left a cold wake with
+ * no note at all).
+ *
+ * Truncation is never SILENT: the caller is told what was trimmed. The failure this
+ * must not re-create is EI-18723223344390510, where a nested row quietly dropped
+ * fields and destroyed a verified check's evidence with no signal.
+ */
+export const CARRY_ROW_SOFT_CAPS = { claim: 500, recheck: 300, verified: 300 } as const;
+
+/** Soft cap on each narrative field (`did`/`left`/`insight`/`next`), same contract. */
+export const CARRY_TEXT_SOFT_CAP = 8000;
+
+/** Multiple of a soft cap at which the schema genuinely rejects. Past this the payload
+ *  is not an overrun note, it is a mistake worth failing loudly. */
+export const CARRY_CAP_HARD_MULTIPLE = 4;
+
+/** Marker appended to a truncated field so a reader can SEE the cut in the note. */
+export const CARRY_TRUNCATION_MARKER = '…[truncated]';
+
+/** One repair applied to an incoming carry-note write, reported back to the caller. */
+export type CarryArgRepair = {
+  /** Dotted path of the repaired field, e.g. `checks[2].recheck`. */
+  field: string;
+  kind: 'truncated' | 'renamed';
+  detail: string;
+};
+
+/** Truncate `v` to `cap`, recording a repair. Returns `v` untouched when within cap. */
+export function truncateCarryField(v: string, cap: number, field: string, repairs: CarryArgRepair[]): string {
+  if (v.length <= cap) return v;
+  repairs.push({
+    field,
+    kind: 'truncated',
+    detail: `${v.length} chars trimmed to ${cap} (${v.length - cap} over) — write it shorter to keep the full text`,
+  });
+  return v.slice(0, Math.max(0, cap - CARRY_TRUNCATION_MARKER.length)) + CARRY_TRUNCATION_MARKER;
+}
+
+/**
+ * Repair one incoming `checks`/`walls` row IN THE ARGUMENT SHAPE, before validation.
+ *
+ * Handles the single most common wrong shape agents reach for: `{claim, recheck,
+ * status, evidence}` instead of `{claim, recheck, verified}`. Measured across 6 days
+ * of transcripts, `evidence` (57×) and `status` (40×) were by far the top rejected
+ * undeclared keys — and the tool's own description already warns against that exact
+ * shape, so documenting it has demonstrably not stopped it.
+ *
+ * `verified` semantics are preserved exactly: it is an EVIDENCE STRING whose mere
+ * presence renders the row VERIFIED, and whose absence renders it PREDICTED. So a
+ * row carrying real evidence maps to that evidence; a row whose `status` says it was
+ * NOT verified maps to no `verified` at all, rather than inventing one.
+ */
+export function coerceCarryRowShape(row: unknown, path: string, repairs: CarryArgRepair[]): unknown {
+  if (!row || typeof row !== 'object' || Array.isArray(row)) return row;
+  const r = { ...(row as Record<string, unknown>) };
+  const hasStatus = 'status' in r;
+  const hasEvidence = 'evidence' in r;
+  if (!hasStatus && !hasEvidence && typeof r.verified !== 'boolean') return row;
+
+  const evidence = typeof r.evidence === 'string' ? r.evidence.trim() : '';
+  const status = typeof r.status === 'string' ? r.status.trim() : '';
+  // Only these read as an affirmative verification; anything else (predicted,
+  // pending, unknown, false, …) must stay PREDICTED rather than be upgraded.
+  const statusVerified = /^(verified|true|pass(ed)?|confirmed|done|ok|✓)$/i.test(status);
+
+  if (typeof r.verified === 'boolean') {
+    // A boolean was never storable — it is the flag-vs-evidence confusion. `true`
+    // keeps whatever evidence came with it; `false` is simply PREDICTED.
+    const was = r.verified;
+    delete r.verified;
+    if (was && (evidence || status)) r.verified = evidence || status;
+    repairs.push({
+      field: `${path}.verified`,
+      kind: 'renamed',
+      detail: `boolean ${was} is not storable — \`verified\` is the evidence STRING itself; ${
+        r.verified ? 'used the accompanying evidence' : 'row kept as PREDICTED'
+      }`,
+    });
+  }
+
+  if (hasEvidence || hasStatus) {
+    delete r.status;
+    delete r.evidence;
+    if (r.verified === undefined) {
+      if (evidence) r.verified = evidence;
+      else if (statusVerified) r.verified = status;
+    }
+    repairs.push({
+      field: path,
+      kind: 'renamed',
+      detail: `{${[hasStatus && 'status', hasEvidence && 'evidence'].filter(Boolean).join(', ')}} is not this tool's row shape — mapped to \`verified\` (${
+        r.verified === undefined ? 'kept as PREDICTED' : 'evidence preserved'
+      }); pass {claim, recheck, verified} directly next time`,
+    });
+  }
+  return r;
+}
+
 /** Fixed legend rendered under the `## Checks` heading so a cold successor reads the
  *  rows correctly with zero prior knowledge. Starts with `_` so line-parsers skip it. */
 export const CARRY_NOTE_CHECKS_LEGEND =

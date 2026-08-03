@@ -1501,7 +1501,15 @@ describe('runGreenCheckpoint', () => {
       const r = await runGreenCheckpoint(cfg(), deps, { candidate: c2, noPush: true });
 
       expect(r.advanced).toBe(false);
-      expect(r.retriage).toBeUndefined();
+      // WI-7290: this test's subject is "no RESCUE happens", and that is unchanged — no refire,
+      // gate stays red. It used to assert that via `retriage === undefined`, which was a proxy
+      // for the rescue not running, not the property itself. The record is no longer silent
+      // about an unmeasured red (silence read identically to "measured, genuinely red"), so
+      // assert the real intent — no rescue — plus the reason that replaced the silence.
+      expect(r.retriage?.classification).toBe('unknown');
+      expect(r.retriage?.autoRefire ?? false).toBe(false);
+      expect(r.retriage?.detail).toContain('no tip gate-runner is wired');
+      expect(r.retriage?.detail).toContain('lint:identity-leak');
     });
 
     it('an unmapped/unknown signature (not in NON_TEST_GATE_SCRIPTS) is never guessed at — no gate rescue attempted', async () => {

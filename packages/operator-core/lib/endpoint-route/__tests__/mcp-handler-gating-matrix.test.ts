@@ -369,7 +369,7 @@ defineTool({
   agentRoles: ['scoper'],
   handler: async (input) => {
     invokeProbeSeen.push(input);
-    return { lines: ['alpha', 'beta', 'gamma'] };
+    return { data: { lines: ['alpha', 'beta', 'gamma'] } };
   },
 });
 
@@ -386,7 +386,7 @@ defineTool({
   capability: 'agent_tools:read',
   args: z.object({}),
   agentRoles: ['scoper'],
-  handler: async () => ({ big: DOOR_TEST_BIG_TEXT }),
+  handler: async () => ({ data: { big: DOOR_TEST_BIG_TEXT } }),
 });
 defineTool({
   name: 'gatingtest:door_skip',
@@ -395,7 +395,7 @@ defineTool({
   args: z.object({}),
   agentRoles: ['scoper'],
   skipResultDoor: true,
-  handler: async () => ({ big: DOOR_TEST_BIG_TEXT }),
+  handler: async () => ({ data: { big: DOOR_TEST_BIG_TEXT } }),
 });
 
 afterAll(() => {

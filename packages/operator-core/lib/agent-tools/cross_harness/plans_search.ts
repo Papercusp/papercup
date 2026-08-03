@@ -199,7 +199,11 @@ export default defineTool({
       }
 
       if (score > 0) {
-        hits.push({ plan: parsed.frontmatter.slug ?? parsed.slug, score, matches });
+        // WI-7259 (sibling of WI-7246): `row.planSlug` (already used for slug
+        // scoring above) is the canonical identity — a snapshot's
+        // frontmatter.slug reads its PARENT's slug, which would silently
+        // misattribute every snapshot hit to its parent.
+        hits.push({ plan: row.planSlug, score, matches });
       }
     }
 

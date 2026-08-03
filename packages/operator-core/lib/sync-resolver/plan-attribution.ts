@@ -256,6 +256,11 @@ interface PlanDetailLike {
    *  authoritative attribution scope — read here so a caller never has to (and never
    *  silently defaults it to the operator home). */
   harness?: unknown;
+  /** The plan's REAL slug, stamped by plans:get (`slug` = row.planSlug, WI-7259). The
+   *  authoritative identity — read here in preference to `frontmatter.slug`, which is
+   *  a scheduled-run snapshot's PARENT slug (the snapshot copies its parent's markdown
+   *  verbatim, frontmatter included). */
+  slug?: unknown;
   frontmatter?: { slug?: unknown; owner?: unknown; [k: string]: unknown };
   items?: Array<{ id?: unknown; [k: string]: unknown }>;
   [k: string]: unknown;
@@ -273,7 +278,15 @@ export async function enrichPlanDetail(
   const p = plan as PlanDetailLike;
   if (!p || typeof p !== 'object' || !p.frontmatter) return plan;
   const sql = pg(opts?.sql);
-  const slug = typeof p.frontmatter.slug === 'string' ? p.frontmatter.slug : '';
+  // WI-7259 (sibling of WI-7246): prefer the payload's own stamped `slug`
+  // (plans:get → row.planSlug, the canonical identity) over
+  // `frontmatter.slug` — a scheduled-run snapshot copies its parent plan's
+  // body verbatim, frontmatter included, so the frontmatter form reads the
+  // PARENT's slug and would attribute the badges from the WRONG plan's
+  // revision/part-author history. Frontmatter stays the fallback for any
+  // caller (or test fixture) that predates the `slug` stamp.
+  const slug =
+    typeof p.slug === 'string' ? p.slug : typeof p.frontmatter.slug === 'string' ? p.frontmatter.slug : '';
   // The attribution harness is the plan's REAL harness: an explicit caller override
   // (`opts.harnessSlug`), else the plan payload's own stamped `harness` (plans:get →
   // row.harnessSlug — the authoritative origin). NEVER a silent `?? operatorHomeHarnessSlug()`

@@ -43,6 +43,9 @@ vi.mock('../../work-items', () => ({
     String((payload as Record<string, unknown>)._claimHold) === 'true',
 }));
 import checkpoint from './checkpoint';
+import { readFileSync } from 'node:fs';
+// Resolves to the MOCK above (that is the point) — so its keys are the double's real export set.
+import * as workItemsMocked from '../../work-items';
 
 // EI-8824: force activeWorkspaceId()'s deterministic env-pin precedence (workspace-registry.ts
 // precedence #2) instead of mocking the workspace-registry module — resolveConcreteWorkspaceId
@@ -489,6 +492,41 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
         ['WI-THEIRS', false],
       ]);
       expect(out.results[1].error).toContain('not_holder');
+    });
+  });
+
+  describe('EI-19399101595349211: the mock must cover what checkpoint.ts actually imports', () => {
+    /**
+     * A `vi.mock` factory REPLACES the module wholesale, so the moment checkpoint.ts imports an
+     * ADDITIONAL symbol from work-items, that symbol is `undefined` here, the call throws inside
+     * the per-item runBulk callback — after a successful store write — and every test that
+     * actually WRITES comes back ok:false.
+     *
+     * That has now happened three times (markIssueProgress / WI-2900, isClaimHoldParked / today).
+     * What makes it expensive is that the failure names NOTHING: ~20 unrelated-looking tests go
+     * red at once, none mentioning the symbol you just added, so the first hypothesis is always
+     * "I broke the write path" rather than "my import list changed".
+     *
+     * This guard turns that into one failure that names the missing symbol. It is deliberately
+     * source-parsing rather than type-level: the drift is between a RUNTIME object's keys and an
+     * import list, which the compiler cannot see (the real module type-checks fine either way).
+     */
+    it('every symbol checkpoint.ts imports from work-items is provided by the mock', () => {
+      const src = readFileSync(new URL('./checkpoint.ts', import.meta.url), 'utf8');
+      const m = src.match(/import\s*\{([^}]+)\}\s*from\s*'\.\.\/\.\.\/work-items'/);
+      // A miss here means the import was reshaped (namespace/default/multi-line-with-comments).
+      // Fail loudly rather than silently vacuously passing — a guard that quietly matches nothing
+      // is worse than no guard, because it reads as coverage.
+      expect(m, 'could not locate the work-items import in checkpoint.ts — update this guard').not.toBeNull();
+
+      const imported = m![1]
+        .split(',')
+        .map((s) => s.trim().split(/\s+as\s+/)[0].trim())
+        .filter(Boolean);
+      expect(imported.length).toBeGreaterThan(0);
+
+      const provided = new Set(Object.keys(workItemsMocked));
+      expect(imported.filter((name) => !provided.has(name))).toEqual([]);
     });
   });
 

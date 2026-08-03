@@ -83,7 +83,7 @@ export default defineTool({
     const includeLegacy = args.includeLegacy !== false;
 
     const rows: ListRow[] = [];
-    for (const { parsed, archived } of await readAllPlans({ ...opts, includeArchived })) {
+    for (const { parsed, archived, row } of await readAllPlans({ ...opts, includeArchived })) {
       if (parsed.isLegacy && !includeLegacy) continue;
 
       let itemCounts: ListRow['itemCounts'] = null;
@@ -94,14 +94,21 @@ export default defineTool({
         itemCounts = counts;
       }
 
-      const status = parsed.frontmatter.status ?? (parsed.isLegacy ? 'unknown' : 'draft');
+      // WI-7259 (sibling of WI-7246's coord.plans fix): a scheduled-run
+      // snapshot copies its parent plan's body verbatim, frontmatter
+      // included, so `parsed.frontmatter.status`/`.slug` read the PARENT's
+      // identity/lifecycle for every snapshot. Canonical-first from the row;
+      // `title`/`owner` stay frontmatter-first (display text, not identity,
+      // matching WI-7246's precedent), `updated` canonical-first like
+      // WI-7246's own `updated` fix.
+      const status = row.status ?? parsed.frontmatter.status ?? (parsed.isLegacy ? 'unknown' : 'draft');
       if (args.status && status !== args.status) continue;
 
       rows.push({
-        slug: parsed.frontmatter.slug ?? parsed.slug,
+        slug: row.planSlug,
         title: parsed.frontmatter.title ?? null,
         status,
-        updated: parsed.frontmatter.updated ?? null,
+        updated: row.updated ?? parsed.frontmatter.updated ?? null,
         owner: parsed.frontmatter.owner ?? null,
         archived,
         isLegacy: parsed.isLegacy,

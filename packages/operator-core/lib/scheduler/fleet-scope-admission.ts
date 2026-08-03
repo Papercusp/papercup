@@ -9,7 +9,7 @@
  */
 import { getOrgPg } from '@papercusp/db-org';
 import type { AgentIdentity } from '../agent-tools/coordination/identity';
-import type { WorkItem } from '../work-items';
+import { ISSUE_FAMILY_KINDS, type WorkItem } from '../work-items';
 import type { ClaimSpecRecord } from './claim-spec-store';
 import { resolveClaimSpecWorkspace } from './claim-spec-workspace';
 import {
@@ -19,6 +19,46 @@ import {
 } from './claim-spec-match';
 import { claimSpecFilterToClaimablePayloadFilter } from './claim-spec-payload-filter';
 import { formatSpecRef } from './claim-spec';
+
+/**
+ * EI-19393442073558754: pull the `kind in [...]` leaf's value out of a claim spec's
+ * view filter (top-level or nested one level inside an `all`) — the SAME shape
+ * `specKindFilterValues` in agent-tools/scheduler/get_next.ts extracts (duplicated
+ * here rather than imported, to avoid a fleet-scope-admission -> agent-tools import
+ * edge for one small pure walk; `ISSUE_FAMILY_KINDS` above IS the shared canonical
+ * kind set, imported from `../work-items` rather than re-declared).
+ */
+function specKindFilterValues(spec: unknown): string[] | undefined {
+  const view = (spec as { view?: { filter?: unknown } } | undefined)?.view;
+  const filter = view?.filter as { field?: string; op?: string; value?: unknown; all?: unknown[] } | undefined;
+  if (!filter) return undefined;
+  const candidates = Array.isArray(filter.all) ? filter.all : [filter];
+  for (const c of candidates) {
+    const cl = c as { field?: string; op?: string; value?: unknown };
+    if (cl?.field === 'kind' && cl?.op === 'in' && Array.isArray(cl.value)) {
+      return cl.value.filter((v): v is string => typeof v === 'string');
+    }
+  }
+  return undefined;
+}
+
+/**
+ * EI-19393442073558754: true when the spec's OWN kind filter (if any) restricts
+ * EXCLUSIVELY to issue-family kinds (bug/change/task) — i.e. an issue-family
+ * `matchedByFilter: 0` genuinely means "this spec matches nothing", since the
+ * issue family is the ONLY family such a spec could ever reach. False when the
+ * filter has no kind restriction at all (both families structurally reachable —
+ * the `fleet:launch-on-plan` plan-scoped shape with no `claimKinds`, D-009) or
+ * explicitly includes a non-issue kind: in either case a bare issue-family zero
+ * is EXPECTED BY CONSTRUCTION, not evidence the spec itself is mis-authored. See
+ * `nonIssueSpecEmpty` in {@link fleetScopedMiss} for what this gates.
+ */
+function specIsIssueFamilyOnly(spec: unknown): boolean {
+  const kinds = specKindFilterValues(spec);
+  if (!kinds || kinds.length === 0) return false;
+  const issueKinds = new Set<string>(ISSUE_FAMILY_KINDS);
+  return kinds.every((k) => issueKinds.has(k));
+}
 
 export interface FleetScopeContext {
   ownerId: string;
@@ -792,7 +832,24 @@ export function fleetScopedMiss(
   // with `specEmpty` by construction (both require the same `matchedByFilter === 0` base).
   const featureFamilyMiss =
     !paused && breakdown != null && breakdown.matchedByFilter === 0 && !!(opts?.featureFamilyMatched && opts.featureFamilyMatched > 0);
-  const specEmpty = !paused && breakdown != null && breakdown.matchedByFilter === 0 && !featureFamilyMiss;
+  // EI-19393442073558754: a spec that is NOT restricted to issue-family kinds (no kind
+  // filter at all, or a plan-scoped spec whose promoted items are feature-family per
+  // D-009) can NEVER admit an issue-family row by construction — so `matchedByFilter: 0`
+  // here is EXPECTED, not evidence of a spec-authoring bug. This is distinct from
+  // `featureFamilyMiss` (which requires a CONFIRMED positive tier-1 count): this fires
+  // whenever the tier-1 check came back EMPTY too (0, a genuine drain) or could not run
+  // at all (null/undefined, diagnosis unavailable) — in both sub-cases the "SPEC MATCHES
+  // NOTHING ... escalate your leader NOW" framing below is simply the wrong story for a
+  // spec that was never capable of matching the family it's being judged against. Live
+  // repro (2026-08-03): fleet opencode-omp-research's plan-scoped spec correctly served
+  // two feature-family claims minutes earlier, then reported `spec_matches_nothing` on
+  // an ordinary drain (2 items done, 1 blocked) purely because the issue-family
+  // breakdown — which that spec structurally can never satisfy — read zero.
+  const specIssueOnly = specIsIssueFamilyOnly(scope.record.spec);
+  const nonIssueSpecEmpty =
+    !paused && breakdown != null && breakdown.matchedByFilter === 0 && !featureFamilyMiss && !specIssueOnly;
+  const specEmpty =
+    !paused && breakdown != null && breakdown.matchedByFilter === 0 && !featureFamilyMiss && specIssueOnly;
   // EI-18741523426513509: the spec's filter DID match real rows, but every one is presently
   // excluded by a TRANSIENT claim floor (an uncleared plan-lane blocker, a peer's claim-hold,
   // needs-human, a federation-detector gate, …) — the pool is legitimately, honestly empty
@@ -876,6 +933,16 @@ export function fleetScopedMiss(
             'nothing — it only means "nothing in the issue family". This is NOT a drained lane and NOT a spec-authoring ' +
             'problem: it is either a transient race (pull again) or a genuine claim-path defect in the tier-1 (feature-family) ' +
             'narrowing. windDown is deliberately NOT set: do not stand down, and do not re-author the claim spec on this alone.'
+        : nonIssueSpecEmpty
+          ? `ORDINARY DRAIN, NOT A SPEC-AUTHORING PROBLEM (EI-19393442073558754): claim spec ${formatSpecRef(scope.record.spec.specId, scope.record.spec.revision)}'s ` +
+            'view.filter has no kind restriction, or one that includes a non-issue-family kind — such a spec can NEVER match an ' +
+            'issue-family (bug/change/task) row, so the issue-family breakdown\'s `matchedByFilter: 0` is EXPECTED BY CONSTRUCTION ' +
+            'here (e.g. a plan-scoped spec whose plan\'s items are feature-family, D-009), not a sign the spec itself is broken. ' +
+            (opts?.featureFamilyMatched === 0
+              ? 'The feature-family (tier-1) pool was ALSO checked and is genuinely empty right now — this is an ordinary drain.'
+              : 'The feature-family (tier-1) pool could not be confirmed on this pull — treat this as a likely drain, but verify ' +
+                'via plans:items / work_items:claimable before reporting a spec-authoring problem to your fleet leader.') +
+            ' Do NOT re-author this claim spec off this signal alone.'
         : specEmpty
           ? `SPEC MATCHES NOTHING (EI-18663622382734446): claim spec ${formatSpecRef(scope.record.spec.specId, scope.record.spec.revision)}'s ` +
             'view.filter matches 0 issue-family row(s) in this harness/workspace at all — this is a SPEC-AUTHORING problem ' +
@@ -932,6 +999,12 @@ export function fleetScopedMiss(
     // digging into excludedBreakdown, and it is DELIBERATELY DISTINCT from `spec_matches_nothing`
     // (opposite remedy: this one means real work exists, do not touch the spec).
     ...(featureFamilyMiss ? { reason: 'issue_family_diagnosis_blind_spot' as const, featureFamilyMatched: opts?.featureFamilyMatched ?? 0 } : {}),
+    // EI-19393442073558754: named, top-level reason for the non-issue-only-spec empty case —
+    // deliberately distinct from `spec_matches_nothing` (opposite framing: this one means the
+    // spec was never broken, only structurally incapable of matching the family it was judged
+    // against). `featureFamilyMatched` is surfaced as-observed (0 = confirmed empty, null/undefined
+    // = the tier-1 check did not run) so a caller can tell "confirmed drain" from "unconfirmed".
+    ...(nonIssueSpecEmpty ? { reason: 'ordinary_drain' as const, featureFamilyMatched: opts?.featureFamilyMatched ?? null } : {}),
     // EI-18741523426513509: named, top-level reason for the floor-gated (transient) case — the
     // effect-vs-cause counterpart of `spec_matches_nothing` above. A caller (or a leader reading
     // a relayed report) can branch on this WITHOUT digging into excludedBreakdown to tell "your
@@ -951,6 +1024,10 @@ export function fleetScopedMiss(
             ? `Your spec's filter matches 0 issue-family row(s), but ${opts?.featureFamilyMatched} FEATURE-family row(s) match it and ` +
               "pass every claim floor — this breakdown only ever queries bug/change/task rows, so its 0 says nothing about your " +
               'spec\'s feature-family matches. Do NOT treat this as a spec-authoring problem; see the top-level error/advice.'
+            : nonIssueSpecEmpty
+            ? "Your spec's filter matches 0 issue-family row(s), but the spec is not restricted to issue-family kinds, so this is " +
+              'EXPECTED BY CONSTRUCTION (e.g. a plan-scoped spec whose plan\'s items are feature-family) — NOT evidence the spec ' +
+              'itself is broken. See the top-level error/advice for whether the feature-family pool was also confirmed empty.'
             : specEmpty
             ? "Your spec's filter matches 0 issue-family row(s) at all — there is nothing for any floor to exclude. " +
               'The SPEC ITSELF is the problem (an over-narrow filter, a stale id allowlist, wrong plan/kind scoping), not the pool.'
@@ -1000,6 +1077,12 @@ export function fleetScopedMiss(
             'still misses after a couple more pulls, report it to your fleet leader as a possible claim-path defect in the tier-1 ' +
             '(feature-family) narrowing — quoting `reason: "issue_family_diagnosis_blind_spot"` and `featureFamilyMatched` — rather ' +
             'than a spec-authoring problem (do NOT quote spec_matches_nothing; that has the opposite remedy). Do NOT stand down.'
+          : nonIssueSpecEmpty
+          ? 'Do NOT escalate this as a spec-authoring problem, and do NOT re-author the claim spec (EI-19393442073558754): your ' +
+            'spec is not restricted to issue-family kinds, so an issue-family `matchedByFilter: 0` is expected by construction, ' +
+            'not a sign the spec is broken. Checkpoint any atomic progress, release remaining lane resources, and loop:end — ' +
+            'quoting `reason: "ordinary_drain"` if you report it. If you have reason to believe real work should exist, verify ' +
+            'directly with plans:items / work_items:claimable before escalating.'
           : specEmpty
           ? 'ESCALATE to your fleet leader NOW (EI-18663622382734446) — this is a leader-alert-worthy spec-authoring bug, not a ' +
             'normal drain: quote `reason: "spec_matches_nothing"` and excludedBreakdown.matchedByFilter=0 plus your spec id/revision. ' +

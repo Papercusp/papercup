@@ -35,6 +35,12 @@ import {
   CARRY_NOTE_MAX_CHECKS,
   CARRY_NOTE_MAX_WALLS,
   rescueTaggedCarryNoteBlob,
+  CARRY_ROW_SOFT_CAPS,
+  CARRY_TEXT_SOFT_CAP,
+  CARRY_CAP_HARD_MULTIPLE,
+  coerceCarryRowShape,
+  truncateCarryField,
+  type CarryArgRepair,
 } from '../../carry-note';
 import { getOrgPg } from '@papercusp/db-org';
 import { getLoopStatus } from '../../harness/routines/loop';
@@ -133,14 +139,31 @@ export default defineTool({
         .max(32000)
         .nullish()
         .describe('Raw carry-note text; blank/null ⇒ clear. Ignored when any of did/left/insight/next is set.'),
-      did: z.string().max(8000).optional().describe('What this wake accomplished (concrete progress).'),
-      left: z.string().max(8000).optional().describe('What remains, in order.'),
+      // WI-7264: the `.max()` here is a SANITY BACKSTOP, not the real limit. The real
+      // limit is CARRY_TEXT_SOFT_CAP, applied by TRUNCATION in the handler and reported
+      // back as `repairs`. A hard reject discards the whole multi-KB note over one long
+      // field and the agent just re-sends it — measured as 7.7% of this tool's argument
+      // bytes, spent twice. Keep the advertised guidance at the soft cap.
+      did: z
+        .string()
+        .max(CARRY_TEXT_SOFT_CAP * CARRY_CAP_HARD_MULTIPLE)
+        .optional()
+        .describe('What this wake accomplished (concrete progress).'),
+      left: z
+        .string()
+        .max(CARRY_TEXT_SOFT_CAP * CARRY_CAP_HARD_MULTIPLE)
+        .optional()
+        .describe('What remains, in order.'),
       insight: z
         .string()
-        .max(8000)
+        .max(CARRY_TEXT_SOFT_CAP * CARRY_CAP_HARD_MULTIPLE)
         .optional()
         .describe('The non-obvious thing a cold successor would waste time re-deriving.'),
-      next: z.string().max(8000).optional().describe('The single concrete next action for the next wake.'),
+      next: z
+        .string()
+        .max(CARRY_TEXT_SOFT_CAP * CARRY_CAP_HARD_MULTIPLE)
+        .optional()
+        .describe('The single concrete next action for the next wake.'),
       walls: z
         .array(
           z.object({

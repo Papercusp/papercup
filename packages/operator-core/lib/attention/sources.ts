@@ -32,15 +32,24 @@ export function toIsoOrNull(v: string | number | Date | null | undefined): strin
  * the plan-item source of plans:attention. Skips legacy plans and any
  * item that is `done`/`dropped` by stored OR effective status (a
  * blocker dropped upstream un-gates its dependents, which then surface).
+ *
+ * `row` (WI-7259, sibling of WI-7246): the canonical DB row, when the caller
+ * has one (readAllPlans always returns it). A scheduled-run snapshot copies
+ * its parent plan's body verbatim, frontmatter included, so
+ * `parsed.frontmatter.slug` reads the PARENT's slug for every snapshot —
+ * `row.planSlug` is the column the row was actually looked up by. Optional
+ * (falling back to the frontmatter-derived slug) so a caller/fixture with no
+ * DB row at all — none exists today, but a unit test may still construct a
+ * bare `{ parsed }` — degrades to the pre-fix behavior instead of throwing.
  */
 export function planItemsToAttention(
-  plans: readonly { parsed: ParsedPlan }[],
+  plans: readonly { parsed: ParsedPlan; row?: { planSlug: string } }[],
   harnessSlug: string | null,
 ): AttentionItem[] {
   const out: AttentionItem[] = [];
-  for (const { parsed } of plans) {
+  for (const { parsed, row } of plans) {
     if (parsed.isLegacy) continue;
-    const slug = parsed.frontmatter.slug ?? parsed.slug;
+    const slug = row?.planSlug ?? parsed.frontmatter.slug ?? parsed.slug;
     const resolved = resolveEffectiveStatus(parsed);
     for (const it of resolved.items) {
       if (it.storedStatus === 'done' || it.storedStatus === 'dropped') continue;

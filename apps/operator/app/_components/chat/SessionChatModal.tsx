@@ -1179,7 +1179,7 @@ export default function SessionChatModal({
      So the host is the authority and this mirrors it. */
   const [screenActive, setScreenActive] = useState(false);
 
-  /* D-003 — the DESKTOP half of `screen`, and the only state that says whether
+  /* D-006 — the DESKTOP half of `screen`, and the only state that says whether
      we may put the window back:
        'owned'   we fullscreened the window, so exiting is ours to do;
        'adopted' it was ALREADY fullscreen (the user's own F11, another
@@ -1206,7 +1206,7 @@ export default function SessionChatModal({
       // frame) would read as "the user left fullscreen" and cancel a mode they
       // are still in. The window state is authoritative while it is engaged.
       if (windowScreen.current) return;
-      const active = isFullscreenElement(conversationRef.current);
+      const active = isFullscreenElement(popupRef.current);
       setScreenActive(active);
       // Left fullscreen by a route we did not drive (Esc, F11, the browser
       // dropping it on tab switch) — drop the mode with it, or the popup sits
@@ -1223,12 +1223,12 @@ export default function SessionChatModal({
    *  maximized popup rather than nothing happening. */
   const maximized = chatMax != null;
 
-  /* P-015: whether the Orders panel is actually on screen. Maximize excludes it
-     for the same structural reason it excludes the dossier — both are siblings
-     of the conversation region (D-002), and the layout half of that rule lives
-     here. This also GATES THE FETCH: `agentOrders.byOwner` runs the carry-brief
-     gather, so a closed panel must cost nothing. */
-  const ordersVisible = open && ordersOpen && !maximized;
+  /* P-015: whether the Orders panel is actually on screen. Since D-007 maximize
+     is NOT part of this answer — the panel shows in every mode, and the only
+     thing that hides it is the user closing it. This still GATES THE FETCH:
+     `agentOrders.byOwner` runs the carry-brief gather, so a closed panel must
+     cost nothing. */
+  const ordersVisible = open && ordersOpen;
 
   const exitScreen = useCallback(async () => {
     // Desktop first: if the window is carrying the mode, the document is not.
@@ -1289,7 +1289,7 @@ export default function SessionChatModal({
       void exitScreen().then(() => setChatMax(null));
       return;
     }
-    /* D-003 — DESKTOP: drive the WINDOW, not the document. The DOM request
+    /* D-006 — DESKTOP: drive the WINDOW, not the document. The DOM request
        below needs transient activation, and every way it can fail falls through
        to `window` — the other button's mode, which is the reported bug. Moving
        the OS window is unconditional, and readable back afterwards. */
@@ -1304,7 +1304,9 @@ export default function SessionChatModal({
       });
       return;
     }
-    const el = conversationRef.current;
+    // D-007: the POPUP, not the conversation — this element's subtree is what
+    // the browser paints, so it is the only target that keeps the four panels.
+    const el = popupRef.current;
     // No element, or a webview with the Fullscreen API switched off: fall back
     // to full-window rather than doing nothing. A dead button is the worse
     // failure — the user asked for "bigger" and there IS a bigger we can give.
@@ -1458,7 +1460,23 @@ export default function SessionChatModal({
       }
     >
       <div
-        style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'row', position: 'relative' }}
+        ref={popupRef}
+        style={{
+          flex: 1,
+          minHeight: 0,
+          display: 'flex',
+          flexDirection: 'row',
+          position: 'relative',
+          // D-007: this is the fullscreen target, and a DOM-fullscreened element
+          // is transparent by default (the UA paints only ::backdrop, black), so
+          // without this the panels would sit on bare black instead of the
+          // popup's own surface. Scoped to the browser mechanism: on the desktop
+          // path (D-006) nothing is lifted out of the page and the modal's
+          // surface is already behind us.
+          ...(screenActive && windowScreen.current === null
+            ? { background: 'var(--bg-popover, #0d1829)' }
+            : null),
+        }}
         data-testid="session-chat-modal"
       >
         {/* ── ORDERS (P-015) — the LEFT panel, and deliberately the FIRST child
@@ -1466,10 +1484,11 @@ export default function SessionChatModal({
             told → conversation → did. A screen reader and a sighted user get
             the same causal sequence.
 
-            A SIBLING of the conversation region, never a child: P-001's D-002
-            makes that element's subtree the literal definition of what
-            maximize paints, so this is excluded structurally and there is no
-            hide-list to keep in sync. ── */}
+            A SIBLING of the conversation region, never a child — the layout
+            contract P-015's own guard asserts. Since D-007 that no longer means
+            "excluded from maximize": the fullscreen target moved UP to the
+            popup container that holds this rail, the conversation and the
+            Activity rail alike, so a sibling is INCLUDED by construction. ── */}
         {ordersVisible ? (
           <div
             /* `pc-zone` is what carries the Framed vocabulary into the rail: it
@@ -1488,15 +1507,14 @@ export default function SessionChatModal({
           </div>
         ) : null}
         <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
-        {/* P-001 / D-002 — THE conversation region. Its DOM boundary is the
-            whole definition of what "maximize the conversation" means: this
-            element is what requestFullscreen() is called on, so the browser
-            paints exactly its subtree and nothing else. Everything the owner
-            asked to keep (transcript, composer, the one-line status footer,
-            and the escalation cards that are part of the conversation) is
-            INSIDE; everything they asked to leave out is a sibling BELOW or
-            the rail beside it. Adding a pane later means putting it outside
-            this element — there is no hide-list to remember to update. */}
+        {/* THE conversation region: transcript, composer, status band, and the
+            escalation cards that are part of the conversation.
+
+            ⚠ It is NO LONGER the fullscreen target (D-007 superseded D-002) —
+            `requestFullscreen()` is called on `popupRef` above, the container
+            that also holds the two rails and the bands below. Re-pointing it
+            here would restore the old behavior and silently drop all four
+            panels from full screen, which is the bug the owner reported. */}
         <div
           ref={conversationRef}
           data-testid="session-chat-conversation"
@@ -1510,15 +1528,6 @@ export default function SessionChatModal({
             display: 'flex',
             flexDirection: 'column',
             position: 'relative',
-            // A DOM-fullscreened element is transparent by default (the UA only
-            // paints ::backdrop black), so without this the transcript renders
-            // on bare black instead of the popup's own surface. Scoped to that
-            // mechanism: on the desktop path (D-003) nothing is lifted out of
-            // the page, so the modal's own surface is already behind us and an
-            // extra background here would just double-paint it.
-            ...(screenActive && windowScreen.current === null
-              ? { background: 'var(--bg-popover, #0d1829)' }
-              : null),
           }}
         >
         {/* ── the LEFT toolbar: the Orders toggle, and only ever that ─────────
@@ -1529,11 +1538,10 @@ export default function SessionChatModal({
             its head still lands in the top-RIGHT corner. Pinning to `left: 8` is
             the only placement that actually reaches the left edge.
 
-            Gated on `!maximized` for the same structural reason as the Activity
-            toggle: maximize paints the conversation element's subtree (D-002)
-            and both panels are siblings OUTSIDE it, so neither can be shown
-            while it is maximized and neither toggle should offer to. */}
-        {open && !maximized ? (
+            Shown in EVERY mode since D-007: its panel is now present while
+            maximized, so a toggle that vanished there would leave the user
+            unable to close a panel they can see. */}
+        {open ? (
           <div style={CHAT_TOOLBAR_LEFT_STYLE} data-testid="session-chat-toolbar-left">
             <button
               type="button"
@@ -1599,8 +1607,8 @@ export default function SessionChatModal({
                 {screenActive ? <Minimize size={12} aria-hidden="true" /> : <Maximize size={12} aria-hidden="true" />}
               </button>
             </Tooltip>
-            {/* The Activity toggle only makes sense while the rail can be shown;
-                maximized deliberately has no rail (D-002).
+            {/* Shown in EVERY mode since D-007 — maximized now HAS the rail, so
+                the control that opens and closes it has to be there too.
 
                 The LABEL IS CONSTANT — "Activity", never "Hide activity"
                 [owner 2026-08-02: "dont add the hide when its expanded just make
@@ -1609,29 +1617,27 @@ export default function SessionChatModal({
                 changing width as it is pressed. `aria-pressed` + `aria-label`
                 still spell the action out for a screen reader, which cannot see
                 a chevron point. */}
-            {!maximized ? (
-              <button
-                type="button"
-                className="pc-button"
-                onClick={() => void setDossierOpen(!dossierOpen)}
-                aria-pressed={dossierOpen}
-                aria-label={dossierOpen ? 'Hide agent activity' : 'Show agent activity'}
-                data-testid="session-chat-dossier-toggle"
-                style={CHAT_TOOLBAR_BUTTON_STYLE}
-              >
-                {/* Open ⇒ the panel's inner edge travels RIGHT to close, so the
-                    chevron trails the label pointing that way; closed ⇒ it
-                    arrives from the right, so the chevron leads pointing left.
-                    The glyph tracks the motion, not the state. */}
-                {dossierOpen ? null : (
-                  <ChevronLeft size={PANEL_CHEVRON_SIZE} strokeWidth={PANEL_CHEVRON_STROKE} aria-hidden="true" />
-                )}
-                Activity
-                {dossierOpen ? (
-                  <ChevronRight size={PANEL_CHEVRON_SIZE} strokeWidth={PANEL_CHEVRON_STROKE} aria-hidden="true" />
-                ) : null}
-              </button>
-            ) : null}
+            <button
+              type="button"
+              className="pc-button"
+              onClick={() => void setDossierOpen(!dossierOpen)}
+              aria-pressed={dossierOpen}
+              aria-label={dossierOpen ? 'Hide agent activity' : 'Show agent activity'}
+              data-testid="session-chat-dossier-toggle"
+              style={CHAT_TOOLBAR_BUTTON_STYLE}
+            >
+              {/* Open ⇒ the panel's inner edge travels RIGHT to close, so the
+                  chevron trails the label pointing that way; closed ⇒ it
+                  arrives from the right, so the chevron leads pointing left.
+                  The glyph tracks the motion, not the state. */}
+              {dossierOpen ? null : (
+                <ChevronLeft size={PANEL_CHEVRON_SIZE} strokeWidth={PANEL_CHEVRON_STROKE} aria-hidden="true" />
+              )}
+              Activity
+              {dossierOpen ? (
+                <ChevronRight size={PANEL_CHEVRON_SIZE} strokeWidth={PANEL_CHEVRON_STROKE} aria-hidden="true" />
+              ) : null}
+            </button>
             {/* Maximized covers the backdrop, and in fullscreen Esc is spoken
                 for — so without an explicit ✕ there is no way out but the
                 maximize toggles. */}
@@ -1735,9 +1741,11 @@ export default function SessionChatModal({
           </div>
         ) : null}
         </div>
-        {/* ── Below the conversation region, therefore excluded from maximize
-            (P-001 / D-002). These are the "panes below" of the owner's ask. ── */}
-        {!maximized && actionCtx && (
+        {/* ── The BOTTOM band. Below the conversation region, and since D-007
+            inside what maximize paints — the owner asked for it in both modes.
+            The only gate left is `actionCtx`, which is about whether there is a
+            live session to act ON, not about layout. ── */}
+        {actionCtx && (
           <>
             {/* Renders whatever askUserLocal card an action's params()/confirm
                 step opens (P-002 substrate) — the SAME renderer the
@@ -1754,19 +1762,18 @@ export default function SessionChatModal({
             this session is dead, still starting, or failed to resolve — the
             states where `actionCtx` is null and the bar is absent.
 
-            Maximize is the ONE thing that hides it, and that does not weaken
-            WI-6505's reason: maximize is a mode the user just switched on by
-            hand and can switch off in one click on a button that is on screen
-            in both modes — unlike the `actionCtx` gate, which hid the row
-            based on session state the user did not choose and could not undo.
-            (Deck item 5 proposes moving this row to the Sessions board
+            D-007 removed the one remaining exception: maximize used to hide it
+            too, and the owner asked for it back in both modes. "ALWAYS visible"
+            is now literally true, which is what WI-6505 wanted in the first
+            place. (Deck item 5 proposes moving this row to the Sessions board
             entirely; that is P-007 and is owner-gated — see D-003.) */}
-        {!maximized ? <FleetLaunchRow /> : null}
+        <FleetLaunchRow />
       </div>
-        {/* The rail is a SIBLING of the conversation region, so maximize
-            excludes it structurally (D-002) — this `!maximized` is the layout
-            half of the same rule, not a second hide-list. */}
-        {open && dossierOpen && !maximized ? (
+        {/* The RIGHT panel. A SIBLING of the conversation region — which since
+            D-007 means it is INSIDE the fullscreen target (the popup container
+            above), so it shows in both maximize modes. `dossierOpen` is the
+            user's own choice and the only thing that hides it. */}
+        {open && dossierOpen ? (
           <div
             className="pc-zone pc-zone--activity"
             data-testid="session-chat-dossier-rail"

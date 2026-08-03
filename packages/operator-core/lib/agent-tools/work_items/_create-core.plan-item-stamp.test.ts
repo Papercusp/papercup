@@ -26,7 +26,7 @@ const createWorkItemMock = vi.fn(async (input: { kind: string; title: string; ha
   harness: input.harness ?? null,
   payload: input.payload,
 }));
-const linkWorkItemMock = vi.fn(async () => {});
+const linkWorkItemMock = vi.fn(async (...args: unknown[]) => {});
 vi.mock('../../work-items', () => ({
   createWorkItem: (...args: unknown[]) => createWorkItemMock(...(args as [never])),
   getWorkItem: vi.fn(async () => null),
