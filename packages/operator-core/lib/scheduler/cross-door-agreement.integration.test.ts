@@ -55,6 +55,9 @@ import {
   USER_TRUST_LIST_DDL,
   WORK_ITEM_DEPS_DDL,
 } from '../../test/_work-items-schema';
+// The ISSUE-family by-id claim subscribes the claimant to the item (coord_entity_subscriptions),
+// so the coord capability tables are load-bearing for that door — not optional scaffolding.
+import { ensureCoordCapabilityTables } from '@papercusp/coordination/capabilities';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SQL_DIR = resolve(__dirname, '../../../../libs/papercusp/libs/db/sql');
@@ -84,6 +87,7 @@ let db: FreshPgDb;
 beforeAll(async () => {
   db = await createFreshPgDb('cross-door-agreement');
   h.sql = db.sql;
+  await ensureCoordCapabilityTables(db.sql);
   await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
   await db.sql.unsafe(USER_TRUST_LIST_DDL);
   await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple();

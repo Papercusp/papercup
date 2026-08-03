@@ -1756,6 +1756,13 @@ export function computeStages(
   // A genuine FAULT still outranks this: a commit-only member can still hit merge
   // conflicts or error ticks on its commit/fetch/merge half, and those must stay loud.
   const commitOnly = isCommitOnlyMember(gs);
+  // EI-19341723994516667: the p2p own-head-publish leg's self-report — read ONLY for a
+  // commit-only member (a pushing member's origin leg is git-sync's push, not this).
+  // `ohp` null means "unmeasured" (a pre-WI-5738 routine row, or the field genuinely
+  // absent) and must NOT be read as either healthy or faulted.
+  const ohp = commitOnly ? (gs.ownHeadPublish ?? null) : null;
+  const ohpRefused = ohp?.refused ?? null;
+  const ohpBacklog = ohp?.backlogRemains === true;
   const pushedHealth: StageHealth =
     gs.consecutiveErrorTicks > 0 || gs.errors.length > 0
       ? 'broken'
@@ -1764,7 +1771,11 @@ export function computeStages(
         : stale
           ? 'stalled'
           : commitOnly
-            ? 'disabled'
+            ? ohpRefused
+              ? 'broken'
+              : ohpBacklog
+                ? 'stalled'
+                : 'disabled'
             : 'advancing';
   const pushedDetail = ((): string | null => {
     if (gs.consecutiveErrorTicks > 0 || gs.errors.length > 0) {
@@ -1784,7 +1795,24 @@ export function computeStages(
       // concludes the push is broken (EI-18812945811758018 was filed as a CRITICAL bug
       // on exactly that reading, by an agent who had already forced a sync to no effect).
       const reason = gs.pushMode?.slice('commit-only:'.length) || 'unknown';
-      return `This member is COMMIT-ONLY (${reason}) — it never pushes to origin, by design, so an empty push list is CORRECT and git-sync:run cannot change it. Origin advances when the GitHub bridge egresses ADMITTED (green-pinned) commits, so the lever is GREENING THE GATE, not forcing a sync.`;
+      const base = `This member is COMMIT-ONLY (${reason}) — it never pushes to origin, by design, so an empty push list is CORRECT and git-sync:run cannot change it.`;
+      // EI-19341723994516667: "greening the gate" was DISPROVED as the blanket lever —
+      // WI-6996 measured staging 29 commits AHEAD of the green pin while origin sat
+      // frozen for ~6h; the actual mechanism (publish-guard.ts) admits a range purely
+      // on CONTENT checks (oversized blobs, secrets), never on release-gate greenness.
+      // So distinguish what is ACTUALLY blocking this leg instead of defaulting to the
+      // gate, which a caller cannot green their way out of here.
+      if (ohpRefused) {
+        return `${base} Its p2p publish leg is REFUSING to publish (${ohpRefused}) — THAT is what is holding origin back, NOT the green gate: publish admission is a content/security check (oversized blobs, secrets), entirely independent of the release pipeline. Greening the gate will not help. Inspect \`metadata.own_head_publish\` on the git-sync routine + the git-sync journal for the offending commit.`;
+      }
+      if (ohpBacklog) {
+        const trail =
+          ohp?.publishedSha && ohp?.sha
+            ? ` (published head ${ohp.publishedSha.slice(0, 8)} trails the worktree head ${ohp.sha.slice(0, 8)})`
+            : '';
+        return `${base} Its p2p publish leg is ADMITTED but carrying an UNDRAINED BACKLOG${trail} — the namespace head is falling permanently behind. This is NOT the green gate: greening it will not move this leg. Inspect \`metadata.own_head_publish\` (\`publishedSha\` vs \`sha\`, \`blockedAtCommit\`/\`oversizedCommit\`) for what is throttling the per-tick slice.`;
+      }
+      return `${base} Origin advances via the p2p publish/bridge-egress path, which admits a range on CONTENT checks alone (oversized blobs, secrets) — it is NOT gated by the release/green-checkpoint gate, so greening that gate will not move this leg.${ohp ? ' No fault is currently reported on the publish leg' : ' The publish leg is unmeasured on this row (no `own_head_publish` metadata yet)'} — waiting is correct.`;
     }
     if (!p.positions.onStaging) {
       return `Committed locally but NOT yet on origin/staging. Status "${gs.status ?? 'unknown'}" does NOT mean pushed — the last tick pushed ${
@@ -1800,7 +1828,14 @@ export function computeStages(
   const pushedLever = !p.positions.onStaging
     ? gs.conflicts.length > 0
       ? 'a merge-resolver must clear the git-sync conflicts — this leg cannot self-heal'
-      : pushedHealth === 'broken' || pushedHealth === 'stalled'
+      : commitOnly && (ohpRefused || ohpBacklog)
+        ? // A genuine own-head-publish fault: git-sync:run cannot touch this leg at all —
+          // don't reuse the COMMIT-leg lever below, which would send the reader to force a
+          // sync that changes nothing (the exact bug this fixes).
+          ohpRefused
+          ? 'inspect `metadata.own_head_publish` on the git-sync routine for the refusal code + the git-sync journal for the offending commit — NOT the green gate (publish admission is a content/security check, independent of it)'
+          : 'inspect `metadata.own_head_publish` on the git-sync routine (`publishedSha` vs `sha`, `blockedAtCommit`/`oversizedCommit`) for what is throttling the slice — NOT the green gate'
+        : pushedHealth === 'broken' || pushedHealth === 'stalled'
         ? // A commit-only member still has a COMMIT leg that can stall, and git-sync:run
           // does move that — but never describe it as fixing a push it will never do.
           commitOnly
@@ -3368,6 +3403,7 @@ export async function gitPipelinePosition(
       conflicts: snap.gitSync?.lastConflicts ?? [],
       errors: snap.gitSync?.lastErrors ?? [],
       pushMode: snap.gitSync?.pushMode ?? null,
+      ownHeadPublish: snap.gitSync?.ownHeadPublish ?? null,
     },
     runtime,
     runtimes,

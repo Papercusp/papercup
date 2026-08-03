@@ -198,6 +198,16 @@ beforeEach(async () => {
                        harness_shared.harness_plans, harness_shared.plan_item_claims`;
 });
 
+// @covers INV-06
+// Cited by dependency-subsystem-thorough-testing-2026-08-02 P-009 after READING the case
+// below, not from this file's header. INV-06 is "every claim entry point applies the SAME
+// blocking verdict", and the `blocked-dep` floor is exercised here in BOTH directions on one
+// seed — WI-DEP-OK (terminal blocker) must appear in both sets, WI-DEP-BLOCKED (non-terminal
+// blocker) in neither — with the PREVIEW door (the work_items_claimable SSOT view) and the
+// real claim door (claimNextIssueWorkItem) asserted equal. That pair is exactly where D-007's
+// drift was measured: the preview reported 0 blocked against the claim path's 5, so agents
+// were handed items the door then refused. The proof was here all along and simply carried no
+// citation — the same unattributed-coverage gap P-005 found across the whole corpus.
 describe('work_items_claimable (SSOT view) admits EXACTLY the rows claimNextIssueWorkItem serves (P-002)', () => {
   it('agrees across every unconditional floor — the view membership set === the inline claim drain set', async () => {
     // ── ADMIT: rows that pass every unconditional floor (must be in BOTH sets) ────────────────

@@ -62,6 +62,12 @@ const CORPUS = [
   'scheduler/dependency-family-matrix.integration.test.ts',
   'scheduler/dependency-writer-effectiveness.integration.test.ts',
   'scheduler/dependency-writer-census.test.ts',
+  'scheduler/cross-door-agreement.integration.test.ts',
+  'scheduler/claim-door-census.test.ts',
+  // P-009: this file was NOT written for this plan, and that is why it belongs here. Its
+  // blocked-dep case proves the issue-family PREVIEW and the real claim door agree — the pair
+  // D-007 measured disagreeing — and it carried no citation until P-009 read it and added one.
+  'scheduler/claim-ssot-agreement.integration.test.ts',
   'scheduler/work-item-deps-integrity.integration.test.ts',
   'scheduler/get-next-for-bee-plan-lane-guard.test.ts',
   'scheduler/readiness-reconcile.integration.test.ts',

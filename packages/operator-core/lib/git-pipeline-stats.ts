@@ -75,6 +75,20 @@ export interface GitPipelineSnapshot {
      * as "it pushes" (EI-18812945811758018).
      */
     pushMode: string | null;
+    /**
+     * EI-19341723994516667: the p2p own-head-publish leg's self-report
+     * (`metadata.own_head_publish` on this SAME git-sync routine row) — the
+     * mechanism that actually advances origin on a commit-only (bridged) member.
+     * See `origin-freshness.ts` for the full model. Null fields = not recorded
+     * (pre-WI-5738 routine rows, or a legacy non-bridged member that never writes
+     * this key) — read as "unmeasured", never as healthy or faulted.
+     */
+    ownHeadPublish: {
+      refused: string | null;
+      backlogRemains: boolean | null;
+      publishedSha: string | null;
+      sha: string | null;
+    } | null;
   };
 
   /** The merge-resolver (opus:xhigh) — model + last dispatch outcome. */
@@ -627,6 +641,17 @@ export async function gitPipelineSnapshot(
       // git-sync recorded it). NEVER default this to 'push' — an absent mode is UNKNOWN,
       // and guessing "it pushes" is what made an empty lastPushed read as a fault.
       pushMode: typeof meta.push_mode === 'string' ? meta.push_mode : null,
+      ownHeadPublish: ((): GitPipelineSnapshot['gitSync']['ownHeadPublish'] => {
+        const ohp = meta.own_head_publish;
+        if (ohp === null || typeof ohp !== 'object') return null;
+        const rec = ohp as Record<string, unknown>;
+        return {
+          refused: typeof rec.refused === 'string' ? rec.refused : null,
+          backlogRemains: typeof rec.backlogRemains === 'boolean' ? rec.backlogRemains : null,
+          publishedSha: typeof rec.publishedSha === 'string' ? rec.publishedSha : null,
+          sha: typeof rec.sha === 'string' ? rec.sha : null,
+        };
+      })(),
     },
     resolver: {
       model: resolverModel(),

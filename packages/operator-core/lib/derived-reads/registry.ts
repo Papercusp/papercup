@@ -346,12 +346,30 @@ export async function refreshDerivedReads(ctx: {
           error = NULL,
           error_at = NULL,
           updated_at = EXCLUDED.updated_at
+        WHERE harness_shared.derived_read_snapshots.producer_version IS NULL
+           OR harness_shared.derived_read_snapshots.producer_version <= EXCLUDED.producer_version
         RETURNING md5(payload::text) AS payload_md5
       `) as Array<{ payload_md5: string | null }>;
-      // Push only when the payload actually changed (both md5s are PG-computed
-      // over jsonb::text, so the comparison is canonical). A no-op refresh —
-      // the common case for slow-moving producers — stays silent.
-      const changed = !row || written[0]?.payload_md5 !== row.payload_md5;
+      // ── WI-7226: NEVER let an older producerVersion clobber a newer snapshot ──
+      //
+      // There is ONE row per (workspace, harness, key) but THREE long-running
+      // writers on this box (:3170 staging, :3070 release, papercup-bg-host),
+      // none of which hot-reload. So after any producerVersion bump they
+      // disagree until each restarts. Without the WHERE above, the older one
+      // overwrites the newer one, the newer READER then rejects the row
+      // (`producer_version !== mine` → treated as absent, :204), and the read
+      // goes INTERMITTENTLY EMPTY while both sides re-warm — measured live on
+      // plans.lint: v4 written 03:57:01Z, clobbered back to v2 at 03:58:12Z,
+      // ten consecutive reads returning 0 rows, ~14-22s of heavy compute burnt
+      // per cycle. The read guard's own rule — "serving a superseded SHAPE is
+      // worse than serving nothing" — has to hold on the WRITE side too, or it
+      // is just a race the reader always loses.
+      //
+      // ⚠ A REFUSED update returns NO row, so `written[0]` is undefined. That
+      // must read as "nothing changed" — firing notifySyncInvalidate here would
+      // push subscribers to re-read a snapshot this process did not write.
+      const refused = written.length === 0;
+      const changed = !refused && (!row || written[0]?.payload_md5 !== row.payload_md5);
       if (changed) {
         void import('../sync-sse')
           .then((m) => m.notifySyncInvalidate(producer.key))

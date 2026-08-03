@@ -54,7 +54,7 @@ export function resultDoorPromptSlots(c: DoorConstants = BAKED_DOOR_CONSTANTS): 
  * that struck OMP's 512-column cap from this plan (D-006).
  */
 export function renderResultDoorSection(c: DoorConstants = BAKED_DOOR_CONSTANTS): string {
-  const tokens = 1500; // PROBE: hardcoded, must fail the drift guard
+  const tokens = resultDoorPromptTokens(c);
   const slots = resultDoorPromptSlots(c);
   const chars = tokens * CHARS_PER_TOKEN_ESTIMATE;
   return `## Tool results are capped — reduce BEFORE you call, not after
