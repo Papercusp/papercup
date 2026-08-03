@@ -26,6 +26,7 @@ import { attachHolderContext } from "./_holder-lens";
 import { holderContextReader } from "../coordination/holder-advisory";
 import { getWorkItemLifecycleHistory } from "../../work-item-lifecycle-history";
 import { activeWorkspaceId } from "../../workspace-registry";
+import { extractCitedFactKeys, resolveCitedFacts, citedFactsWarning } from "../../agent-facts/cited-facts";
 import { shapeWorkItemsGet } from "./get-shape";
 
 /**
@@ -66,7 +67,7 @@ export default defineTool({
   guidance: {
     when: "You have one or more work-item ids and need their full state (kind, lifecycle, assignee, parent). Pass every id you need at once via `ids` instead of calling per id.",
     returns:
-      "{ ok, results:[{ ok, id, workItem?, holder?, checkpoint?, checkpointAgeMs?, checkpointUpdatedAtMs?, planItemBlocked?, planItemClaimCollision?, error? }], counts } — correlate by id, not position.\n\nConditional fields, present only when they apply:\n• `holder` — WHO holds this item and WHAT they are working toward, without attempting a claim ({ goalRef, goalText, assumptions:{count,keys}, declaredAt, stale, agreement, competing[] }). Read `agreement`/`competing` before trusting `goalRef`: 'divergent' plus a non-empty `competing` means the holder holds several claims and precedence picked one — measured, 3 of 19 holders hold two work-items at once. Absent means EITHER the holder declared no goal OR it is not readable by you; the two are deliberately indistinguishable.\n• `planItemBlocked` — the linked plan lane is still blocked/needs-human/stale ({ reason, planSlug, itemId, effectiveStatus }). Check before unblocking.\n• `planItemClaimCollision` — holding this work-item is NOT holding its linked plan item; someone else now holds a LIVE claim on it ({ planSlug, itemId, claimedBy, claimedByLabel, note }). Coordinate before continuing — you may be duplicating work.\n• `priorWork`/`priorWorkWarning` — P-001: this item has ALREADY BEEN WORKED (prior release/attempt history), so it is NOT fresh work even when it reads open+unassigned. Loudest when NO checkpoint exists — that row is otherwise indistinguishable from never-started. Read the source before building.\n• `checkpoint` — in-flight state from work_items:checkpoint, with `checkpointAgeMs` its write-recency (trust a stale one less).\n• `checkpointFreshness` — P-007: the verdict from the checkpoint's DECLARED dependencies ({ verdict: fresh|stale|recomputed, changed:[{dep,was,now}], reason }). Present only when its author declared any; it OVERRIDES the age/activity signals below (which cannot see a PEER's change at all), and a `stale` verdict names exactly which dependency moved.\n• `checkpointStale` — the assignee kept working after that checkpoint. Fallback only; suppressed when `checkpointFreshness` is present.\n• `checkpointBgJobWarning` — the checkpoint cites a background job/task as evidence, and that bookkeeping can die silently across a process boundary. Verify the pid/completion-marker before trusting it.\n• `lifecycle` (with `detail:true`) — ANSWERS \"was this item ever blocked / held / reopened, by whom, when\". Unifies the three stores that each hold part of the answer (audit_log, payload.reopenHistory, payload flags) into one newest-first timeline: { events:[{ at, kind, by, source, action?, detail? }], flags:{ needsHuman, claimHold, heldOpenBy, heldOpenReason }, coverage }. READ `coverage` BEFORE concluding anything from an empty `events`: `notRecorded[]` names the transitions that are recorded NOWHERE for this item's family (non-terminal moves always; feature-family blocks before this field existed), and `degraded:true` means a source could not be READ — which is not the same fact as a source being empty. An empty timeline is never by itself evidence that nothing happened; conflating those two is the exact error this field was built to end.",
+      "{ ok, results:[{ ok, id, workItem?, holder?, checkpoint?, checkpointAgeMs?, checkpointUpdatedAtMs?, planItemBlocked?, planItemClaimCollision?, error? }], counts } — correlate by id, not position.\n\nConditional fields, present only when they apply:\n• `holder` — WHO holds this item and WHAT they are working toward, without attempting a claim ({ goalRef, goalText, assumptions:{count,keys}, declaredAt, stale, agreement, competing[] }). Read `agreement`/`competing` before trusting `goalRef`: 'divergent' plus a non-empty `competing` means the holder holds several claims and precedence picked one — measured, 3 of 19 holders hold two work-items at once. Absent means EITHER the holder declared no goal OR it is not readable by you; the two are deliberately indistinguishable.\n• `planItemBlocked` — the linked plan lane is still blocked/needs-human/stale ({ reason, planSlug, itemId, effectiveStatus }). Check before unblocking.\n• `planItemClaimCollision` — holding this work-item is NOT holding its linked plan item; someone else now holds a LIVE claim on it ({ planSlug, itemId, claimedBy, claimedByLabel, note }). Coordinate before continuing — you may be duplicating work.\n• `priorWork`/`priorWorkWarning` — P-001: this item has ALREADY BEEN WORKED (prior release/attempt history), so it is NOT fresh work even when it reads open+unassigned. Loudest when NO checkpoint exists — that row is otherwise indistinguishable from never-started. Read the source before building.\n• `checkpoint` — in-flight state from work_items:checkpoint, with `checkpointAgeMs` its write-recency (trust a stale one less).\n• `checkpointFreshness` — P-007: the verdict from the checkpoint's DECLARED dependencies ({ verdict: fresh|stale|recomputed, changed:[{dep,was,now}], reason }). Present only when its author declared any; it OVERRIDES the age/activity signals below (which cannot see a PEER's change at all), and a `stale` verdict names exactly which dependency moved.\n• `checkpointStale` — the assignee kept working after that checkpoint. Fallback only; suppressed when `checkpointFreshness` is present.\n• `citedFacts` — this item's PROSE cites `facts:assert` key(s) as its authority and some no longer resolve ({ cited:[{ key, condition, ref, excerpt?, scope }], dangling, decayed, note }). Measured: 22 of 25 such citations workspace-wide were already dead, while the item still read as fully specified. `decayed` (retracted/expired/superseded) is RECOVERABLE — the body is quoted in `excerpt` right here, so do not go hunting for it; `dangling` has no row under any scope and is unrecoverable, so do NOT treat that citation as specification and do NOT escalate its absence as a contested directive (it far more likely decayed than was withdrawn). Absent when every citation still resolves live, AND when the ledger could not be read at all — this never reports a read failure as a dangling reference.\n• `checkpointBgJobWarning` — the checkpoint cites a background job/task as evidence, and that bookkeeping can die silently across a process boundary. Verify the pid/completion-marker before trusting it.\n• `lifecycle` (with `detail:true`) — ANSWERS \"was this item ever blocked / held / reopened, by whom, when\". Unifies the three stores that each hold part of the answer (audit_log, payload.reopenHistory, payload flags) into one newest-first timeline: { events:[{ at, kind, by, source, action?, detail? }], flags:{ needsHuman, claimHold, heldOpenBy, heldOpenReason }, coverage }. READ `coverage` BEFORE concluding anything from an empty `events`: `notRecorded[]` names the transitions that are recorded NOWHERE for this item's family (non-terminal moves always; feature-family blocks before this field existed), and `degraded:true` means a source could not be READ — which is not the same fact as a source being empty. An empty timeline is never by itself evidence that nothing happened; conflating those two is the exact error this field was built to end.",
     notWhen:
       "Browsing or filtering the queue → work_items:list / work_items:search (they already return many rows).",
     chaining:
@@ -295,6 +296,27 @@ export default defineTool({
         // would have captured them — a cached timeline could omit the newest event while
         // looking complete, which is the one failure mode this field must not have.
         // Fail-soft: a miss omits the field and never fails the item read.
+        // EI-19465127338264010: the PROSE fact-citation lens. The typed `assumptions`
+        // channel is already gated at close time (resolveDeclaredAssumptions refuses a
+        // dangling declaration); prose citations — "Map=fact pot-backend-rename-map" in a
+        // summary or checkpoint — are not, and they are the channel agents actually use.
+        // Measured on the live corpus the day this landed: 22 of 25 such citations in
+        // non-terminal work-items no longer resolved, while the item still read as fully
+        // specified. This is the READ seam, i.e. where the misleading actually happens.
+        //
+        // Cost is ~zero on the hot path: the extract is a PURE regex over two strings the
+        // handler already holds, and the DB read happens ONLY when a key-shaped citation
+        // is present (~25 of them workspace-wide). Fails open — see resolveCitedFacts.
+        const citedKeys = extractCitedFactKeys([
+          (workItem as { summary?: string | null }).summary,
+          checkpoint,
+        ]);
+        const citedFacts = citedKeys.keys.length
+          ? citedFactsWarning(
+              await resolveCitedFacts(citedKeys.keys).catch(() => []),
+              { truncated: citedKeys.truncated },
+            )
+          : undefined;
         const lifecycle = args.detail
           ? await getWorkItemLifecycleHistory({
               id: workItem.id,
@@ -318,6 +340,7 @@ export default defineTool({
           ...(checkpointFreshness ? { checkpointFreshness } : {}),
           ...(checkpointStale ? { checkpointStale } : {}),
           ...(checkpointBgJobWarning ? { checkpointBgJobWarning } : {}),
+          ...(citedFacts ? { citedFacts } : {}),
           ...(planItemBlocked ? { planItemBlocked } : {}),
           ...(claimCollision ? { planItemClaimCollision: claimCollision } : {}),
           ...(lifecycle ? { lifecycle } : {}),

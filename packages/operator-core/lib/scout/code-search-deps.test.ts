@@ -109,8 +109,15 @@ describe('isEvidencePath — every exclusion is a measured false positive', () =
       (b) => !(SCREEN_OWN_MODULES as readonly string[]).includes(b),
     );
     expect(unlisted).toEqual([]);
-    // Calibration: the guard is actually looking at something.
-    expect(participants.length).toBeGreaterThan(0);
+
+    // CALIBRATION — without this, a guard whose detection silently broke (wrong
+    // directory, renamed import specifier, basename regex drift) would find zero
+    // participants, compute an empty `unlisted`, and PASS while checking nothing.
+    // A bare `length > 0` is not enough: it is satisfied by one accidental hit.
+    // These three provably import a screen module, so all three must be found.
+    for (const known of ['idea-cluster-screen', 'code-existence-probe', 'code-search-deps']) {
+      expect(participants).toContain(known);
+    }
   });
 
   it('keeps OTHER scout files admissible — the exclusion is surgical, not a blanket', () => {
