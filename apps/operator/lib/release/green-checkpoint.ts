@@ -3927,6 +3927,51 @@ export async function runGreenCheckpoint(
       deps.log(`re-triage: ${retriage.classification} — ${retriage.detail}`);
     }
 
+    // WI-7482: PERSIST the re-triage verdict. Until now it had NO durable record on the
+    // real-red/unknown path — the exact question ("did the gate check this red at tip, and
+    // what did it find?") that triagers were left to reconstruct from archaeology, wrongly.
+    //
+    // All three channels were closed, and each for a DIFFERENT reason, which is why the gap
+    // survived so long — no single fix would have revealed it:
+    //   1. the persisted `checkpoint-logs/*.log` — written by runGreen (writeFileSync ~L5485)
+    //      from `renderOrchestratorTranscript()`, a SNAPSHOT of deps.log taken when the suite
+    //      finishes. The whole re-triage block runs after that write, so its `deps.log` lines
+    //      land in the transcript of NOBODY: not this log, not the next pass's.
+    //   2. the `appendFileSync` above (~L3676) — runs BEFORE the re-triage is computed at all,
+    //      and composes only lineage/already-fixed/historical-flake notes.
+    //   3. `gate_health.retriageDetail` (release-actions.ts:1049) — written as
+    //      `retriageStale ? retriage.detail : null`, i.e. NULL for `real-red` AND `unknown`.
+    // Net effect: whenever the tip check did NOT find the red stale, nothing anywhere recorded
+    // that it looked. `retriageDetail: null` then reads as "never ran" when it means "not
+    // stale" — a false negative that cost three separate reconstructions on 2026-08-02/03
+    // (EI-19388705187359206, filed against the parser then retracted; EI-19389700122825304;
+    // and this item's own first diagnosis, which I retracted).
+    //
+    // Exactly the ordering bug EI-19370028836452003 fixed for the LINEAGE note — the same
+    // write-before-compute shape, one field over. Appended after the verdict is final so it
+    // cannot displace the suite tail a triager greps, and defanged for the same reason the
+    // body is: this file is NOT the verdict channel (EI-18832272104497819).
+    //
+    // Reaching here means no auto-refire fired (both refiring arms `return` above), so this
+    // note is written on precisely the runs a human ends up investigating.
+    if (logPath && retriage) {
+      try {
+        appendFileSync(
+          logPath,
+          defangCapturedResultMarkers(
+            `\n[green-checkpoint re-triage for candidate ${candidate.slice(0, 8)}]\n` +
+              `classification=${retriage.classification} ` +
+              `tip=${retriage.tip ? retriage.tip.slice(0, 12) : 'unresolved'} ` +
+              `autoRefire=${retriage.autoRefire}` +
+              (retriage.refireBlockedBy ? ` refireBlockedBy=${retriage.refireBlockedBy}` : '') +
+              `\n${retriage.detail}\n`,
+          ),
+        );
+      } catch {
+        /* best-effort — the gate verdict must never depend on logging */
+      }
+    }
+
     // P-016 (D-010): longest-green-PREFIX FF. With the gate ARMED, a red TIP no longer
     // holds the clean PREFIX behind it hostage — `main` FFs to the longest prefix that
     // ITSELF runs green (confirm-gated, so the "always tested-green" invariant holds).

@@ -789,7 +789,7 @@ export async function trackGateStall(
     `SELECT metadata->'gate_health' AS gh, metadata->'last_fixer' AS lf FROM harness_shared.routines
       WHERE install_slug = $1 AND target_role = 'system:green-checkpoint'`,
     [ctx.installSlug],
-  )) as Array<{ gh: { consecutiveReds?: number; lastGreenAt?: number; firstRedAt?: number; stallAlerted?: boolean; lastFrom?: string; watchdogAlerted?: boolean; failingTests?: string[]; retriageStaleTip?: string | null; retriageDetail?: string | null } | null; lf: ReleaseFixerRecord | null }>;
+  )) as Array<{ gh: { consecutiveReds?: number; lastGreenAt?: number; firstRedAt?: number; stallAlerted?: boolean; lastFrom?: string; watchdogAlerted?: boolean; failingTests?: string[]; retriageStaleTip?: string | null; retriageDetail?: string | null; retriageClassification?: 'real-red' | 'stale-candidate' | 'unknown' | null } | null; lf: ReleaseFixerRecord | null }>;
   const gh = rows[0]?.gh ?? {};
   const lastFixer = rows[0]?.lf ?? null;
   // Release-pin movement (green-checkpoint-lock-starvation-2026-07-02): `from` is the
@@ -895,7 +895,7 @@ export async function trackGateStall(
     // A real verdict supersedes it, so clear it here — explicit rather than relying on the
     // whole-key replace, matching the `retriageStaleTip` / `failingTests` convention so a later
     // change to a merging write cannot silently resurrect a stale abort note.
-    next = { consecutiveReds: 0, lastGreenAt: Date.now(), firstRedAt: null, stallAlerted: false, lastFrom: fromPin ?? gh.lastFrom ?? null, watchdogAlerted: false, failingTests: [], observedAt: Date.now(), observedCandidate: candidate?.slice(0, 12) ?? null, retriageStaleTip: null, retriageDetail: null, candidateCommittedAt: staleness.candidateCommittedAt, commitsBehindTip: staleness.commitsBehindTip, inconclusive: null };
+    next = { consecutiveReds: 0, lastGreenAt: Date.now(), firstRedAt: null, stallAlerted: false, lastFrom: fromPin ?? gh.lastFrom ?? null, watchdogAlerted: false, failingTests: [], observedAt: Date.now(), observedCandidate: candidate?.slice(0, 12) ?? null, retriageStaleTip: null, retriageDetail: null, retriageClassification: null, candidateCommittedAt: staleness.candidateCommittedAt, commitsBehindTip: staleness.commitsBehindTip, inconclusive: null };
     // P-003: clear the durable stall escalation on the green transition (idempotent).
     // WI-2825: a 0-row match here (harness_slug/phase mismatch, or the row was already
     // cleared/removed some other way) previously succeeded silently — no error, no log —
@@ -1047,6 +1047,21 @@ export async function trackGateStall(
       observedCandidate: candidate?.slice(0, 12) ?? null,
       retriageStaleTip: retriageStale ? (retriage!.tip?.slice(0, 12) ?? null) : null,
       retriageDetail: retriageStale ? retriage!.detail : null,
+      // WI-7482: the two fields above are stale-ONLY by design (paired + cleared together, per
+      // the note above), which left a reader unable to distinguish the three non-stale outcomes:
+      // the gate re-ran the red at tip and it genuinely reproduced (`real-red`); the gate could
+      // not check at all (`unknown` — no tip, no runnable file, no runner wired); or no verdict
+      // was recorded whatsoever (`null`). All three previously presented IDENTICALLY here, as
+      // `retriageDetail: null` — which reads as "the gate never looked" and is wrong in two of
+      // the three cases. That misreading is not hypothetical: it produced three separate wrong
+      // reconstructions on 2026-08-02/03 (EI-19388705187359206 — filed against the parser, then
+      // retracted; EI-19389700122825304; and this item's own first diagnosis).
+      //
+      // Deliberately ADDITIVE: the stale pair keeps its exact semantics and its consumers
+      // (git-pipeline-stats, gate-verdict-freshness Rule 3) are untouched. This carries only the
+      // machine-readable classification; the human-readable "why" for the non-stale cases now
+      // lands in the persisted verdict log (green-checkpoint.ts, the re-triage append).
+      retriageClassification: retriage?.classification ?? null,
       // EI-19329732364513693: this is the branch that MATTERS. A red names failing tests and
       // BOTH agents and the release-fixer dispatcher act on those names, so a red must carry
       // enough provenance for a reader to judge whether it is still true of the tree.

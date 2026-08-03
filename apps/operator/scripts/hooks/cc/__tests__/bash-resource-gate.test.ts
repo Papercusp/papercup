@@ -1921,6 +1921,50 @@ describe('shell-write guard: `#` comments are not shell syntax (EI-1938544851643
     expect(reason).toContain('apps/operator/generated.ts');
   });
 
+  /**
+   * THE CASE THE FILED REPORTS ACTUALLY HIT — EI-19418179098729784,
+   * EI-19417957171220978, EI-19323309702408274 — and the reason all three name
+   * the wrong cause. Each blamed the construct sitting next to the `>`: the SQL
+   * idiom `> now()`, or an `=>` arrow in `node -e`. Driven against the real
+   * hook, every one of those verbatim commands ALLOWS, and has since
+   * quote-stripping landed in `_shell_write_guard` on 2026-07-26 — so the filed
+   * root cause ("the guard scans raw text without accounting for quoting
+   * context") is disproven.
+   *
+   * The actual trigger is an ODD number of quote characters inside the `#`
+   * COMMENT. That breaks quote parity in `_strip_shell_quotes`, which then
+   * deletes the span running from the comment's stray quote up to the OPENING
+   * quote of the real argument — leaving a genuinely-quoted `>` exposed to the
+   * redirect scan. Reproduced against the INSTALLED hook: denied naming target
+   * `now`, byte-for-byte the reported symptom. Remove the comment, or balance
+   * its quotes, and the same command allows.
+   *
+   * A comment is the only possible source: bash itself refuses a command whose
+   * quotes are unbalanced OUTSIDE a comment, so any command that actually ran
+   * is balanced everywhere else. That is why this reads as random false
+   * positives on ordinary commands, and why a reconstructed repro never
+   * reproduces — the comment is the part people drop when writing the ticket.
+   *
+   * NOTE the sibling FALSE NEGATIVE this does NOT cover (EI-19420133701663526):
+   * the same parity break can HIDE a real redirect — `# note "` followed by
+   * `cat foo > <tree path> && echo "x"` is allowed, because the stray quote
+   * pairs with the one before `x` and the deleted span swallows the redirect.
+   * The ORDER guard above does not catch it: that guard is about REVERSING the
+   * two passes, whereas this hole is present in the correct order.
+   */
+  it('allows a quoted `>` when a `#` comment contains an odd quote (the filed repro)', () => {
+    expectAllow(
+      runGate(
+        bashCmd(
+          '# count rows in the "tool_invocations table\n'
+            + 'psql -Atc "SELECT count(*) FROM t WHERE invoked_at > now() - interval \'2 min\'"',
+          { cwd: CANON },
+        ),
+        CANON_ENV,
+      ),
+    );
+  });
+
   it('does not treat `$#` or an infix `a#b` as a comment introducer', () => {
     // Both must remain visible to the scanner: neither starts a comment in bash,
     // and over-stripping here would hide a following real redirect.
