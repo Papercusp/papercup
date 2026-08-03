@@ -279,9 +279,12 @@ describe('terminal window liveness, end to end through the scan', () => {
     const fs = box({
       cgroups: {
         [OURS]: [],
+        [`${TERM}/gnome-terminal-server.service`]: [SERVER],
         [`${TERM}/vte-spawn-1a1a-2b2b.scope`]: [800, 801],
       },
       cmdlines: { 800: 'bash', 801: 'vim notes.txt' },
+      // Neither pid's ppid is SERVER — the link to the terminal app is gone,
+      // which is exactly what `terminalWindowAlive` reads as CLOSED.
       ppids: { 800: 1, 801: 800 },
     });
     const r = scanProcesses({ fs, foreignSignature: defaultForeignSignature(REPO), selfPid: 999 });

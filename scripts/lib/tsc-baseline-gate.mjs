@@ -1084,6 +1084,34 @@ export function coalesceWatermarkFor({ root, files, updateFlag }) {
   return Math.floor(newestMs / 1000) + 1;
 }
 
+/**
+ * Which scope the caller asked this gate to judge — reported on the completion marker so a
+ * reader can tell a whole-project verdict from one scoped to a handful of files. `--update`
+ * wins over the others because it MUTATES the baseline rather than judging against it.
+ * @param {string[]} argv
+ * @returns {'update'|'files'|'mine'|'all'}
+ */
+export function lintTscScopeFromArgv(argv) {
+  if (argv.includes('--update')) return 'update';
+  if (parseExplicitFiles(argv) !== null) return 'files';
+  if (argv.includes('--mine')) return 'mine';
+  return 'all';
+}
+
+/**
+ * The terminal completion marker (EI-19395061642732083). Pure so it is unit-testable —
+ * the `process.on('exit')` hook that prints it is not.
+ *
+ * `status` is derived from the exit code the gate actually exited with, never from a
+ * separately-tracked variable that could drift out of sync with it.
+ * @param {{ label: string, scope: string, code: number }} input
+ * @returns {string}
+ */
+export function formatLintTscResultMarker({ label, scope, code }) {
+  const status = code === 0 ? 'clean' : code === 1 ? 'regressed' : `error(${code})`;
+  return `LINT_TSC_RESULT label=${label} scope=${scope} exit=${code} status=${status}`;
+}
+
 export function runTscBaselineGate({
   root,
   tscCommand,
@@ -1117,16 +1145,10 @@ export function runTscBaselineGate({
   // This mirrors `TEST_FILE_RESULT` in scripts/test-files.mjs, whose consumer idiom
   // (`if ! grep -q 'TEST_FILE_RESULT'; then UNMEASURED; fi`) is already established in this
   // repo — the convention is reused, not reinvented.
-  const scope = argv.includes('--update')
-    ? 'update'
-    : parseExplicitFiles(argv) !== null
-      ? 'files'
-      : argv.includes('--mine')
-        ? 'mine'
-        : 'all';
   process.on('exit', (code) => {
-    const status = code === 0 ? 'clean' : code === 1 ? 'regressed' : `error(${code})`;
-    console.log(`LINT_TSC_RESULT label=${label} scope=${scope} exit=${code} status=${status}`);
+    console.log(
+      formatLintTscResultMarker({ label, scope: lintTscScopeFromArgv(argv), code }),
+    );
   });
 
   const updateFlag = argv.includes('--update');

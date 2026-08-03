@@ -9,7 +9,15 @@
  * The script's pure functions are imported directly (same pattern as apps/operator's
  * psu-pty-host / ptool script tests).
  */
-import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -39,12 +47,63 @@ import {
   suggestTypecheckGate,
   formatUncoveredFilesBanner,
   coalesceWatermarkFor,
+  lintTscScopeFromArgv,
+  formatLintTscResultMarker,
 } from '../../../scripts/lint-tsc.mjs';
 // eslint-disable-next-line import/no-relative-packages
 import {
   TSC_COMMAND as OPERATOR_VITE_TSC_COMMAND,
   FOREIGN_BASELINES,
 } from '../../../scripts/lint-tsc-operator-vite.mjs';
+
+describe('LINT_TSC_RESULT completion marker (EI-19395061642732083)', () => {
+  // This gate is the repo's MANDATED post-edit check and takes ~150s — past the agent Bash
+  // tool's 120s DEFAULT. A SIGTERM'd run prints partial output and stops, so the usual
+  // caller idiom (`... | tail -20`, or `grep <my-file>`) shows nothing alarming, which is
+  // INDISTINGUISHABLE from "clean". The marker makes a completed run self-declare, so its
+  // ABSENCE means UNMEASURED. Verified live 2026-08-03: a run killed at 20s (exit 124) left
+  // a 139-byte log with no marker, while a completed run emitted status=regressed.
+  it('derives status from the exit code the gate actually exited with', () => {
+    expect(formatLintTscResultMarker({ label: 'operator-core', scope: 'files', code: 0 })).toBe(
+      'LINT_TSC_RESULT label=operator-core scope=files exit=0 status=clean',
+    );
+    expect(formatLintTscResultMarker({ label: 'operator-core', scope: 'all', code: 1 })).toBe(
+      'LINT_TSC_RESULT label=operator-core scope=all exit=1 status=regressed',
+    );
+    // Anything else is neither clean nor a normal gate failure — it must not read as either.
+    expect(formatLintTscResultMarker({ label: 'x', scope: 'mine', code: 143 })).toContain(
+      'status=error(143)',
+    );
+  });
+
+  it('never reports a non-zero exit as clean — the whole point of the marker', () => {
+    for (const code of [1, 2, 124, 137, 143]) {
+      const marker = formatLintTscResultMarker({ label: 'operator-core', scope: 'all', code });
+      expect(marker).not.toContain('status=clean');
+    }
+  });
+
+  it('reports the scope, so a --files verdict is never mistaken for a whole-project one', () => {
+    expect(lintTscScopeFromArgv([])).toBe('all');
+    expect(lintTscScopeFromArgv(['--mine'])).toBe('mine');
+    expect(lintTscScopeFromArgv(['--files=packages/operator-core/lib/a.ts'])).toBe('files');
+    // --update MUTATES the baseline rather than judging against it, so it outranks the rest.
+    expect(lintTscScopeFromArgv(['--update', '--mine'])).toBe('update');
+  });
+
+  it('is wired to process.on("exit") — not stamped per exit site, which a new one could skip', () => {
+    // There are nine-plus `process.exit(...)` sites in the gate. Stamping each would let a
+    // tenth silently opt out, and riding the exit hook is ALSO what makes the marker
+    // impossible to print on SIGTERM/SIGKILL (Node runs no exit handler for those) — which
+    // is precisely the property that makes absence meaningful. Pin the wiring.
+    const gateSource = readFileSync(
+      join(dirname(fileURLToPath(import.meta.url)), '../../../scripts/lib/tsc-baseline-gate.mjs'),
+      'utf8',
+    );
+    expect(gateSource).toMatch(/process\.on\(\s*['"]exit['"]/);
+    expect(gateSource).toContain('formatLintTscResultMarker');
+  });
+});
 
 describe('TSC_COMMAND (EI-487 regression guard)', () => {
   it('always measures fresh — never trusts a warm/stale incremental cache', () => {

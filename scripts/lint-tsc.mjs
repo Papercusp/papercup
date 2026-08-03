@@ -83,6 +83,8 @@ import {
   formatUncoveredFilesBanner,
   coalesceWatermarkFor,
   runTscBaselineGate,
+  lintTscScopeFromArgv,
+  formatLintTscResultMarker,
 } from './lib/tsc-baseline-gate.mjs';
 
 export {
@@ -109,6 +111,8 @@ export {
   suggestTypecheckGate,
   formatUncoveredFilesBanner,
   coalesceWatermarkFor,
+  lintTscScopeFromArgv,
+  formatLintTscResultMarker,
 };
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');

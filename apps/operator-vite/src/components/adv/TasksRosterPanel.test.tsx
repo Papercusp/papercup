@@ -341,6 +341,29 @@ describe('splitUnowned', () => {
     expect(exempt.map((r) => r.pid)).toEqual([5, 7]);
     expect(unaccounted.map((r) => r.pid)).toEqual([6]);
   });
+
+  it('gives a dead window its OWN bucket — never "out of scope by design" (P-008/D-018)', () => {
+    // The owner-visible bug this fixes: a closed window's processes sat in the
+    // collapsed exempt section, under a header asserting "these are not escapees".
+    // The classifier cannot make that claim about a window that is gone.
+    const { unaccounted, abandonedWindow, exempt } = splitUnowned([
+      row({ pid: 8, scope: 'abandoned-window', exemptReason: null }),
+      row({ pid: 9, scope: 'exempt', exemptReason: 'human-terminal' }),
+      row({ pid: 10, scope: 'unaccounted', exemptReason: null }),
+    ]);
+    expect(abandonedWindow.map((r) => r.pid)).toEqual([8]);
+    // It must land in NEITHER neighbour: exempt understates it, unaccounted
+    // overstates it as a chokepoint bypass.
+    expect(exempt.map((r) => r.pid)).toEqual([9]);
+    expect(unaccounted.map((r) => r.pid)).toEqual([10]);
+  });
+
+  it('still drops an OWNED row even when classified abandoned-window', () => {
+    const { abandonedWindow } = splitUnowned([
+      row({ pid: 11, owned: true, scope: 'abandoned-window', exemptReason: null }),
+    ]);
+    expect(abandonedWindow).toEqual([]);
+  });
 });
 
 describe('exemptByReason', () => {

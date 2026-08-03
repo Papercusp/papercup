@@ -36,6 +36,7 @@ import { attributeRetriageToRun, describeRefireBudget, readInFlightRetriage } fr
 import { caveat, describeRefusal, isRefusedAnswer, refuseAnswer, withFieldReliability } from '../../field-reliability';
 import { applyPendingMigrationsNow } from '../../db-boot-migrate';
 import { ownershipHeldByLiveHolder, readGateOwnership } from '../../coord/gate-ownership';
+import { resolveAgentIdentity } from '../coordination/identity';
 
 export default defineTool({
   name: 'release:checkpoint-run',
@@ -198,9 +199,24 @@ export default defineTool({
     // redundant suite, which is merely the status quo ante).
     if (!args.force) {
       const ownership = await readGateOwnership();
+      // Resolving the CALLER can throw (a power-user ctx missing its uiClientId). If we cannot
+      // tell who we are, we cannot tell whether the claim is our OWN — and refusing then would
+      // block an agent from re-firing its own gate. Unknown identity ⇒ fail open, like every
+      // other unknown on this rail.
+      let callerOwnerId: string | null = null;
+      try {
+        callerOwnerId = resolveAgentIdentity(ctx).ownerId;
+      } catch {
+        callerOwnerId = null;
+      }
       // `ownershipHeldByLiveHolder` is false for null/ambiguous/ended — so this stands down only
       // on a POSITIVE liveness verdict, never on an absence of evidence.
-      if (ownershipHeldByLiveHolder(ownership) && ownership.takenBy && ownership.takenBy !== ctx.ownerId) {
+      if (
+        ownershipHeldByLiveHolder(ownership) &&
+        ownership.takenBy &&
+        callerOwnerId &&
+        ownership.takenBy !== callerOwnerId
+      ) {
         const said = ownership.thread.recent.at(-1);
         return {
           content: [
