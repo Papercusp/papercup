@@ -537,8 +537,37 @@ export interface McpProxyHealth {
    *  signature) — excluded from every alarm class above, counted here for forensic
    *  visibility only. Never alarming. */
   nonInstance: number;
-  /** Count by raw `kind` (recovered | upstream_non2xx | exhausted_refused | upstream_error
-   *  | post_connect_retry). */
+  /**
+   * WI-6740 upstream-SILENCE stalls on the control-plane handshake (`handshake_timeout_retry`),
+   * i.e. :3070 accepted the connection and then sent no response headers within
+   * `HANDSHAKE_UPSTREAM_TIMEOUT_MS`, so the proxy replayed the write-free batch.
+   *
+   * NOT a hard failure, and deliberately not folded into one: the replay is exactly WI-6740's
+   * fix working, turning a stall into a slightly-slower connect. But it must never be silent
+   * either, which is why it is its own field rather than a `byKind` tally. An MCP client
+   * fetches the tool catalog ONCE, at connect — before the replay existed, a ~10s stall landing
+   * on that handshake left the session tool-dark for its entire multi-hour life (269 stalls
+   * 2026-07-10..08-01, every one logged `recovered`, unfixed for three weeks because, in
+   * WI-6740's own words, "the severity is invisible to the layer that observes it").
+   *
+   * So read a sustained nonzero as: the session-fatal condition is RECURRING and is currently
+   * being caught. It is the leading indicator for that outage class, not a health signal.
+   */
+  handshakeStalls: number;
+  /**
+   * EI-19305299022434394 admission-control sheds (`shed_max_in_flight`) — a request refused
+   * with 429 BEFORE it ever opened an upstream socket, because the proxy already held
+   * `maxInFlight` forwards. Agent-facing (the caller really did get a 429) but NOT a hard
+   * failure: shedding is the bound working, and the alternative measured on 2026-08-01 was
+   * 3,450 sockets held open simultaneously with 32-89 minute waits. Sustained nonzero means
+   * :3070 is not draining — the congestion-collapse precursor.
+   */
+  shed: number;
+  /** Count by raw `kind` — every kind the ledger carries, including ones no alarm class
+   *  above consumes. Retained as the forensic catch-all, but note that a kind appearing
+   *  ONLY here is a kind nothing can page on: if a new `recordProxyFailure` kind is
+   *  agent-affecting, give it a field above rather than leaving it to this tally (that
+   *  omission is what hid `handshake_timeout_retry`). */
   byKind: Record<string, number>;
   /** ms epoch of the newest failure record in the window, or null when none. */
   newestAt: number | null;

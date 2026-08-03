@@ -15,6 +15,7 @@ import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { standardToolDirs } from './tool-path';
+import { createTextCollector } from './child-output';
 
 /**
  * Terminal emulators tried in order, each with the args that run a command in
@@ -224,10 +225,26 @@ export async function spawnInTerminal(opts: SpawnInTerminalOpts): Promise<SpawnI
     const pid = child.pid;
     // Bounded: we only ever want the first line or two of a startup complaint,
     // and this buffer must not grow with a window that stays open for hours.
-    let stderr = '';
+    //
+    // Decoded through the shared StringDecoder-backed collector, NOT
+    // `String(chunk)` (WI-6728): a multi-byte UTF-8 character split across two
+    // 'data' events decodes to replacement characters under String(), silently
+    // corrupting the text. That matters more here than almost anywhere else —
+    // this capture exists precisely because a silent launch failure exits 0, so
+    // the diagnostic line it holds is the ONLY evidence there is, and a
+    // corrupted one is indistinguishable from a genuinely odd error message.
+    //
+    // The cap is enforced by DETACHING once saturated rather than by an `if`
+    // guard inside the handler: the collector owns its own accumulation, and
+    // detaching is also what stops it growing for a window that then stays open
+    // for hours (the same thing the liveness branch below does on success).
     child.stderr?.on('error', () => {});
-    child.stderr?.on('data', (d: unknown) => {
-      if (stderr.length < STDERR_CAPTURE_LIMIT) stderr += String(d);
+    const stderrOut = createTextCollector(child.stderr);
+    child.stderr?.on('data', () => {
+      if (stderrOut.bytes >= STDERR_CAPTURE_LIMIT) {
+        child.stderr?.removeAllListeners('data');
+        child.stderr?.resume();
+      }
     });
     let likelyOpened = true;
     const delayMs = opts.livenessCheckDelayMs ?? DEFAULT_LIVENESS_CHECK_DELAY_MS;
@@ -247,7 +264,7 @@ export async function spawnInTerminal(opts: SpawnInTerminalOpts): Promise<SpawnI
       // Dead child ⇒ nothing left to receive a broken pipe, so this is safe.
       child.stderr?.destroy();
     }
-    const tail = stderr.trim().slice(0, STDERR_CAPTURE_LIMIT);
+    const tail = stderrOut.text().trim().slice(0, STDERR_CAPTURE_LIMIT);
     return {
       ok: true,
       terminal: term.bin,

@@ -14,7 +14,10 @@ import { substrateSidecarSupervisionStatus, type SidecarSupervisionStatus } from
 import { spawnerSidecarSupervisionStatus } from "../../fleet/spawner-sidecar-spawn";
 import { runtimeDiagnostic, type RuntimeDiagnostic } from "../../runtime-diagnostic";
 import { probeServiceStart, probeUnitStates, type ServiceStartInfo } from "./systemd-service-probe";
-import { readRecentProxyFailures } from "../../mcp-proxy-failure-summary";
+import {
+  readMcpProxyFailureTail,
+  summarizeMcpProxyHealth,
+} from "../../system-health/mcp-proxy-health";
 
 function sidecarFlapState(s: SidecarSupervisionStatus): SupervisionFlapState {
   return s.gaveUp ? "gave-up" : s.respawnAttemptsInWindow > 0 ? "damping" : "ok";
@@ -303,21 +306,44 @@ export default defineTool({
             ok: true,
             services,
             telemetry: getTelemetryHealth(),
-            // P-007 / D-004 (outage-must-not-be-silent-2026-08-02): DELIVERY, not detection.
-            // The mcp-proxy has recorded every forwarded failure, retry and recovery to
-            // ~/.papercusp/mcp-proxy-failures.jsonl since W8 of backend-reliability-100pct,
-            // explicitly so "a health collector can ingest" it — and nothing ever did. During
-            // the 2026-08-02 outage that file held the highest-value evidence available
-            // (:3070 recovering 7x in 20 minutes) and it took manual tail+jq to find, hours in.
+            // D-005 (outage-must-not-be-silent-2026-08-02): surface the mcp-proxy transport
+            // ledger to the AGENT-facing health tool. The ledger already had a reader — the
+            // system-health collector (compute.ts → InfraHealth.mcpProxy → the Infra panel) —
+            // so this deliberately DELEGATES to that same summarizer rather than re-reading the
+            // file. An earlier revision of this block shipped a parallel reader and, by omitting
+            // `isNonInstanceRecord` (listenPort:0, ~18% of live records: desktop-sidecar and
+            // test writers no client routes through) and `isBenignProbe`, over-counted failures.
+            // One summarizer, one classification — a second opinion here is a second BUG.
             //
-            // A `recovered` record is a fault that HAPPENED and was survived, never a sign of
-            // health — the summary says so in its own headline, because WI-6740 lost three
-            // weeks to exactly that misreading. Bounded tail read (256KB of a 27MB file), and
-            // the field is omitted entirely when there is nothing to report so a quiet result
-            // never trains the reader to skip it.
+            // What this adds is the missing AUDIENCE: the panel is a human surface, and an agent
+            // diagnosing its own broken tool plane cannot see it. Read a `recovered` or a
+            // `handshakeStalls` count as faults that HAPPENED and were survived, never as
+            // health — WI-6740 lost three weeks to exactly that misreading.
+            //
+            // Bounded (256KB tail of a 27MB file) and OMITTED ENTIRELY when nothing is wrong,
+            // so a reassuring zero on every call never trains the reader to skip the field.
             ...(() => {
-              const proxy = readRecentProxyFailures({ windowMinutes: 20 });
-              return proxy.headline ? { mcpProxyRecentFailures: proxy } : {};
+              const recs = readMcpProxyFailureTail();
+              if (recs === null) return {}; // unreadable ledger — grey, never a false all-clear
+              const h = summarizeMcpProxyHealth(recs, Date.now());
+              const notable = h.hardFailures + h.handshakeStalls + h.shed + h.otherNon2xx;
+              if (notable === 0) return {};
+              return {
+                mcpProxyTransport: {
+                  windowMs: h.windowMs,
+                  hardFailures: h.hardFailures,
+                  handshakeStalls: h.handshakeStalls,
+                  shed: h.shed,
+                  otherNon2xx: h.otherNon2xx,
+                  recovered: h.recovered,
+                  byKind: h.byKind,
+                  newestAt: h.newestAt,
+                  note:
+                    h.handshakeStalls > 0
+                      ? `${h.handshakeStalls} upstream-silence stall(s) on the MCP handshake (WI-6740). Each was RETRIED and survived — but this is the class that leaves a session tool-dark for its whole life if the retry ever runs out. Not benign.`
+                      : `${h.hardFailures} hard tool-transport failure(s) the proxy could not hide.`,
+                },
+              };
             })(),
             // P-004/P-006 (critical-process-supervisor-2026-07-04): additive block, existing
             // fields above are UNCHANGED — the systemd-user layer is sourced from the P-002

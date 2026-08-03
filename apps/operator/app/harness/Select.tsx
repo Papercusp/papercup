@@ -61,12 +61,20 @@ const CONTENT_STYLE: CSSProperties = {
   border: '1px solid color-mix(in oklab, var(--accent), transparent 62%)',
   borderRadius: 10,
   padding: 6,
-  /* Orders this Content WITHIN the popper wrapper only — it cannot lift the
-     menu above the app shell, because the wrapper (`position: fixed`) makes
-     its own stacking context. The rule that actually decides whether this menu
-     is reachable is `[data-radix-popper-content-wrapper] { z-index: 90 }` in
-     harness.css; do not "fix" a layering bug by raising the number here. */
-  zIndex: 70,
+  /* THIS number is what actually decides whether the menu is reachable, and it
+     has to clear the whole app shell — `<main>` is 70, `.oracle-dock` 80, and
+     `.oracle-dock--maximal-hud` 1450.
+     MEASURED (P-006): Radix's Popper reads this Content's computed z-index at
+     mount and copies it onto `[data-radix-popper-content-wrapper]` as an INLINE
+     style. The wrapper is `position: fixed`, so it establishes its own stacking
+     context and that inline value is the one that competes with the shell — it
+     also beats any CSS rule targeting the wrapper (inline wins without
+     `!important`). At the old value of 70 the wrapper tied with `<main>` and
+     every menu painted behind the app: mounted, positioned, opacity 1, and
+     completely unclickable. The harness.css wrapper rule is the FLOOR for
+     poppers that set no content z-index at all; this is the one that governs
+     Select. Guarded by `_lints/popper-stacking.test.ts`. */
+  zIndex: 1500,
   boxShadow: '0 18px 54px rgba(0,0,0,0.62), inset 0 1px 0 rgba(255,255,255,0.06)',
   fontSize: 12,
   minWidth: 'var(--radix-select-trigger-width)',

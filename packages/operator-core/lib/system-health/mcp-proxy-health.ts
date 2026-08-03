@@ -179,9 +179,19 @@ export function isStaleSocket400(rec: Pick<McpProxyFailureRecord, 'status' | 'co
  *                                          failure — kept out of every alarm class).
  *  - `upstream_non2xx` + stale-socket-400 signature → HARD (W1.3 regression).
  *  - `upstream_non2xx` otherwise         → `otherNon2xx` (a genuine upstream 4xx/5xx).
+ *  - `handshake_timeout_retry` (WI-6740)  → `handshakeStalls`. NOT hard (the replay is the
+ *                                          fix working) but first-class, because this is the
+ *                                          leading indicator of the class that left agent
+ *                                          sessions tool-dark for hours. See the field doc.
+ *  - `shed_max_in_flight`                 → `shed`. Agent-facing 429, but admission control
+ *                                          working; sustained nonzero = :3070 not draining.
  *  - `post_connect_retry` (P-005 intermediate retry marker) → neither hard nor a failure;
  *                                          it only appears in `byKind` (the terminal
  *                                          outcome is separately recorded recovered/error).
+ *
+ * A kind that matches NO branch here survives only as a `byKind` tally — which means nothing
+ * can alarm on it. That is not a neutral default: it is exactly how `handshake_timeout_retry`
+ * stayed invisible. When `recordProxyFailure` gains an agent-affecting kind, give it a branch.
  *
  * Records outside `[now - windowMs, now + skew]` are ignored (a small future-skew guard
  * tolerates minor clock differences without admitting far-future garbage).
@@ -199,6 +209,8 @@ export function summarizeMcpProxyHealth(
   let otherNon2xx = 0;
   let benign = 0;
   let nonInstance = 0;
+  let handshakeStalls = 0;
+  let shed = 0;
   let newestAt: number | null = null;
   for (const r of records) {
     const t = Date.parse(r.ts);
@@ -216,6 +228,18 @@ export function summarizeMcpProxyHealth(
     }
     if (r.kind === 'recovered') {
       recovered += 1;
+    } else if (r.kind === 'handshake_timeout_retry') {
+      // WI-6740 upstream silence on the control-plane handshake. Kept OUT of hardFailures on
+      // purpose — the replay is the fix working — but given its own counter because this is
+      // the leading indicator of the class that left sessions tool-dark for hours. Before this
+      // branch existed it matched nothing here and survived only as a `byKind` tally, i.e. it
+      // could not red the panel or page, which is the same "severity invisible to the observing
+      // layer" failure WI-6740 itself documents. Verified live 2026-08-02: the fleet-facing
+      // proxy (pid 2704092, listenPort 9071) writes these in production.
+      handshakeStalls += 1;
+    } else if (r.kind === 'shed_max_in_flight') {
+      // EI-19305299022434394 admission control: agent-facing 429, but the bound working.
+      shed += 1;
     } else if (r.kind === 'exhausted_refused' || r.kind === 'upstream_error') {
       hardFailures += 1;
     } else if (r.kind === 'upstream_non2xx') {
@@ -226,5 +250,8 @@ export function summarizeMcpProxyHealth(
       else otherNon2xx += 1;
     }
   }
-  return { windowMs, total, hardFailures, recovered, otherNon2xx, benign, nonInstance, byKind, newestAt };
+  return {
+    windowMs, total, hardFailures, recovered, otherNon2xx, benign, nonInstance,
+    handshakeStalls, shed, byKind, newestAt,
+  };
 }

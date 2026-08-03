@@ -121,9 +121,11 @@ function noiseFor(pool: readonly string[], i: number, dose: number): string[] {
  * to BOTH legs). Candidate = `splitLegQueries` (paths leave the cosine query,
  * lexical keeps the full text).
  *
- * At `dose: 0` the two arms are byte-identical by construction — a built-in
- * null control. If a run reports a non-zero delta there, the harness is wrong
- * and nothing else in the report can be trusted.
+ * At `dose: 0` the two arms differ ONLY by `splitLegQueries`' dose-independent
+ * residue sweep (WI-6857 — the `(no result)` marker leaves the cosine leg; this
+ * fixture's Grep returns '', so every derived text carries one). That is the
+ * built-in null control: a dose-0 delta BEYOND the sweep means the harness is
+ * wrong and nothing else in the report can be trusted.
  */
 export function buildDilutionArm(
   gold: readonly GoldQuery[],

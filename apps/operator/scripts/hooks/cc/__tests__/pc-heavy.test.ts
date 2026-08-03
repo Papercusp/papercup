@@ -292,6 +292,67 @@ describe('pc-heavy.sh — flock counting semaphore (WI-3821)', () => {
     const markerIdx = r.stderr.indexOf('[pc-heavy] slot acquired');
     expect(markerIdx).toBeGreaterThanOrEqual(0);
   });
+
+  it('EI-19343041616234869: prints an enqueue-time "queued" line the instant it actually has to wait — but never on the uncontended fast path', async () => {
+    // Without this, a caller backgrounding a ~150s+ compile (the documented idiom)
+    // sees a genuinely empty log for the entire time it sits behind a busy slot —
+    // indistinguishable from "not started yet" or "died silently". Holder A takes
+    // the only slot and sleeps; a waiter arriving while it's held must hit the
+    // fallback branch and print the enqueue line BEFORE it starts polling.
+    const holder = spawn('bash', [PC_HEAVY, 'sleep', '5'], {
+      env: baseEnv({ PC_HEAVY_SLOTS: '1' }),
+      cwd: dir,
+      detached: true,
+    });
+    await new Promise((r) => setTimeout(r, 500)); // let the holder grab the only slot
+    try {
+      const r = runSync(['bash', '-c', 'echo got-it'], { PC_HEAVY_SLOTS: '1', PC_HEAVY_TIMEOUT_SEC: '20' });
+      expect(r.status).toBe(0);
+      expect(r.stdout.trim()).toBe('got-it');
+      expect(r.stderr).toContain('[pc-heavy] queued for a heavy slot');
+      // Must precede "slot acquired" — it announces the wait BEGINNING, not the end.
+      const queuedIdx = r.stderr.indexOf('[pc-heavy] queued for a heavy slot');
+      const acquiredIdx = r.stderr.indexOf('[pc-heavy] slot acquired');
+      expect(queuedIdx).toBeGreaterThanOrEqual(0);
+      expect(acquiredIdx).toBeGreaterThan(queuedIdx);
+    } finally {
+      try { process.kill(-(holder.pid as number), 'SIGKILL'); } catch { /* likely already exited */ }
+    }
+
+    // The common uncontended case (the vast majority of calls, per the "first-try
+    // slot" test above) must NEVER print the queued line — it would be noise on
+    // every single ordinary invocation.
+    const fast = runSync(['bash', '-c', 'echo ok'], { PC_HEAVY_SLOTS: '2' });
+    expect(fast.status).toBe(0);
+    expect(fast.stderr).not.toContain('[pc-heavy] queued for a heavy slot');
+  });
+
+  it('EI-19343041616234869: emits periodic "still queued" heartbeats while waiting, via PC_HEAVY_HEARTBEAT_SEC', async () => {
+    // A long wait under a hard clamp must not go silent for its whole duration —
+    // same rationale as the enqueue line, amortized across the wait. Real default
+    // is 15s; override to 1s so the test doesn't have to actually wait that long.
+    const holder = spawn('bash', [PC_HEAVY, 'sleep', '4'], {
+      env: baseEnv({ PC_HEAVY_SLOTS: '1' }),
+      cwd: dir,
+      detached: true,
+    });
+    await new Promise((r) => setTimeout(r, 500)); // let the holder grab the only slot
+    try {
+      const r = runSync(['bash', '-c', 'echo got-it'], {
+        PC_HEAVY_SLOTS: '1',
+        PC_HEAVY_TIMEOUT_SEC: '20',
+        PC_HEAVY_HEARTBEAT_SEC: '1',
+      });
+      expect(r.status).toBe(0);
+      const heartbeats = (r.stderr.match(/\[pc-heavy\] still queued/g) ?? []).length;
+      // Holder sleeps ~4s from a 500ms head start, minus this call's own startup —
+      // at a 1s heartbeat interval that's a handful; require at least 2 to prove
+      // it's periodic, not a one-shot fluke.
+      expect(heartbeats).toBeGreaterThanOrEqual(2);
+    } finally {
+      try { process.kill(-(holder.pid as number), 'SIGKILL'); } catch { /* likely already exited */ }
+    }
+  });
 });
 
 describe('pc-heavy.sh — coalescing (EI-18685262961418231)', () => {

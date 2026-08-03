@@ -47,7 +47,12 @@ describe('ARM A — cosine de-dilution', () => {
     const { baseline, candidate } = buildDilutionArm(GOLD, { dose: 0 });
     baseline.queries.forEach((b, i) => {
       const c = candidate.queries[i];
-      expect(c.query).toBe(b.query);
+      // Dose 0 injects no paths, so the ONLY difference left is the
+      // dose-INDEPENDENT residue sweep WI-6857 added to the cosine leg: the
+      // fixture's Grep returns '' so every derived text carries a `(no result)`
+      // marker, and that marker no longer reaches the embedded query. Any
+      // delta BEYOND that means the harness is wrong.
+      expect(c.query).toBe(b.query.replace(/\(no result\)/g, '').replace(/\s+/g, ' ').trim());
       // No paths to strip ⇒ nothing for the lexical leg to keep that the
       // cosine leg lost, so the split degenerates to one query.
       expect(c.lexicalQuery === undefined || c.lexicalQuery === b.query).toBe(true);

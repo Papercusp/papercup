@@ -28,6 +28,25 @@
  * watchdog-determinism drift ("alarms do not self-clear against live state") this guard
  * is supposed to embody, not commit. Read-only otherwise + debounced; env-killable
  * (PAPERCUSP_SINGLE_PRIMARY_GUARD=0).
+ *
+ * VERIFY THE CONSEQUENCE, DON'T ASSERT IT (EI-19388269294151851, 2026-08-03): a count of
+ * 0 used to hardcode the summary "DBOS routines, git-sync, and the Mug wake-loop are all
+ * down". That inference held when bg-host was the only process that could run them — and
+ * is now false. Measured on 2026-08-03: this guard broadcast that blocker fleet-wide and
+ * urgent-paged the owner "SUSTAINED over 72 consecutive checks" (~3.6h) while git-sync
+ * committed 66 times in the same window (`git log --since='4 hours ago' | grep -c
+ * git-sync`) and every active routine stayed current. Both readings were correct: bg-host
+ * genuinely was absent (it restarted at ~00:02:30Z), AND a routines-enabled non-primary
+ * host (PAPERCUSP_DBOS_ROUTINES=1, connecting through the ordinary `pcusp:org-*` pool,
+ * which carries no `dbos_transact_%` application_name) kept serving the work.
+ *
+ * So the count alone can no longer name the consequence. The count-0 case is now split on
+ * LIVE EVIDENCE — the most recent active-routine fire:
+ *   • routines STALE   → the real `no-primary` blocker (unchanged text, unchanged paging);
+ *   • routines FIRING  → `no-dedicated-primary`, an ADVISORY: redundancy is degraded and
+ *     bg-host needs restoring, but background work is demonstrably not stopped.
+ * A false blocker is not a harmless over-report: it trains every agent to discount this
+ * alarm, which is exactly what a genuine routine-engine death cannot afford.
  */
 import { getOrgPg } from '@papercusp/db-org';
 import { managedSetInterval } from '@papercusp/scheduled-registry';
@@ -57,6 +76,28 @@ const DEFAULT_DEBOUNCE_MS = 30 * 60_000;
  *  genuine routine-engine death persists; a reconnect gap does not. */
 const DEFAULT_SUSTAIN_TICKS = 2;
 
+/** How recently an active routine must have fired for background work to count as
+ *  demonstrably ALIVE. Several system routines fire every ~30–60s and the slowest
+ *  git-sync tier every ~10min, so this is deliberately generous: it must never call a
+ *  genuinely dead engine "firing", which is the only direction that loses a real outage. */
+const ROUTINE_FRESH_SEC = 10 * 60;
+
+/**
+ * Live evidence about whether background work is ACTUALLY running, gathered independently
+ * of the primary count so a count-0 verdict can be checked rather than assumed.
+ * `lastRoutineFireAgeSec: null` = not gathered / unknown — the guard then falls back to
+ * the historical count-only behaviour rather than inventing a healthier reading.
+ */
+export interface BackgroundActivityEvidence {
+  lastRoutineFireAgeSec: number | null;
+}
+
+/** PURE: is background work demonstrably alive on this evidence? Unknown ⇒ false. */
+export function routinesDemonstrablyFiring(evidence?: BackgroundActivityEvidence): boolean {
+  const age = evidence?.lastRoutineFireAgeSec;
+  return typeof age === 'number' && Number.isFinite(age) && age >= 0 && age <= ROUTINE_FRESH_SEC;
+}
+
 export interface PrimaryVerdict {
   count: number;
   ok: boolean;
@@ -65,12 +106,32 @@ export interface PrimaryVerdict {
   summary: string;
 }
 
-/** PURE: classify the live background-primary count. */
-export function evaluatePrimaryCount(count: number): PrimaryVerdict {
+/**
+ * PURE: classify the live background-primary count against live activity evidence.
+ * `evidence` is optional so no existing call site is stranded; omitting it preserves the
+ * original count-only verdicts exactly.
+ */
+export function evaluatePrimaryCount(
+  count: number,
+  evidence?: BackgroundActivityEvidence,
+): PrimaryVerdict {
   if (count === 1) {
     return { count, ok: true, severity: null, key: null, summary: 'exactly one background primary (healthy)' };
   }
   if (count === 0) {
+    // The consequence is CHECKED, not asserted — see the header note. Routines still
+    // firing means redundancy is degraded, not that background work has stopped.
+    if (routinesDemonstrablyFiring(evidence)) {
+      const age = Math.round(evidence?.lastRoutineFireAgeSec ?? 0);
+      return {
+        count,
+        ok: false,
+        severity: 'advisory',
+        key: 'no-dedicated-primary',
+        summary:
+          `no dedicated background primary (bg-host) — but background work is NOT stopped: an active routine fired ${age}s ago, so a routines-enabled non-primary host is serving them. Degraded redundancy (bg-host down or restarting), NOT the routine-engine-death class. Restore the bg-host.`,
+      };
+    }
     return {
       count,
       ok: false,
@@ -101,6 +162,21 @@ export async function countBackgroundPrimaries(sql: SqlLike): Promise<number> {
   return rows[0]?.n ?? 0;
 }
 
+/**
+ * Age in seconds of the most recent ACTIVE routine fire — the independent liveness signal
+ * for "is background work actually happening", used to check a count-0 verdict instead of
+ * asserting its consequence. Returns null when nothing has ever fired (a fresh install),
+ * which reads as "unknown" and preserves the count-only blocker.
+ */
+export async function lastRoutineFireAgeSec(sql: SqlLike): Promise<number | null> {
+  const rows = await sql<Array<{ age_sec: number | null }>>`
+    SELECT EXTRACT(EPOCH FROM (now() - max(last_fired_at)))::float8 AS age_sec
+      FROM harness_shared.routines
+     WHERE active = true AND last_fired_at IS NOT NULL`;
+  const age = rows[0]?.age_sec;
+  return typeof age === 'number' && Number.isFinite(age) ? age : null;
+}
+
 // ── check + hysteresis + debounce + self-clear + starter ─────────────────────────
 
 const lastAlertedAt = new Map<string, number>();
@@ -116,6 +192,10 @@ const openAlarms = new Map<string, string>();
 
 export interface PrimaryGuardDeps {
   count?: () => Promise<number>;
+  /** Age in seconds of the most recent active-routine fire (null = unknown). The evidence
+   *  that turns a count-0 blocker into an advisory when background work is demonstrably
+   *  still running — see the header note. */
+  routineFireAgeSec?: () => Promise<number | null>;
   escalate?: (input: { severity: EscalationSeverity; summary: string; body?: string }) => Promise<unknown>;
   /** Resolve a previously-opened escalation by msg_id (self-clear on recovery). */
   resolve?: (input: { msg_id: string; choice: string; note?: string }) => Promise<unknown>;
@@ -191,7 +271,21 @@ export async function runSinglePrimaryCheck(
   const page = deps.page ?? (async () => {});
   const pageResolved = deps.pageResolved ?? (async () => {});
   const count = deps.count ? await deps.count() : await countBackgroundPrimaries(getOrgPg().sql as SqlLike);
-  const verdict = evaluatePrimaryCount(count);
+  // Gather the activity evidence ONLY when the count is non-1 — the healthy path stays a
+  // single query. A failure here degrades to `null` (unknown), which preserves the
+  // historical count-only verdict rather than silently softening a real outage.
+  let evidence: BackgroundActivityEvidence | undefined;
+  if (count !== 1) {
+    try {
+      const age = deps.routineFireAgeSec
+        ? await deps.routineFireAgeSec()
+        : await lastRoutineFireAgeSec(getOrgPg().sql as SqlLike);
+      evidence = { lastRoutineFireAgeSec: age };
+    } catch {
+      evidence = { lastRoutineFireAgeSec: null };
+    }
+  }
+  const verdict = evaluatePrimaryCount(count, evidence);
 
   // ── Healthy (exactly one primary): reset hysteresis + self-clear open alarms ──
   if (verdict.ok || !verdict.key) {
@@ -251,7 +345,10 @@ export async function runSinglePrimaryCheck(
   // paged. Mirror git-sync-stall-watchdog.ts's active paging so a sustained
   // no-primary/split-brain verdict reaches the owner + fleet immediately, not just
   // the escalation log.
-  await page(verdict, streak, count, ws);
+  // Page ONLY for a blocker. An advisory (`no-dedicated-primary`) is recorded durably as
+  // an escalation row but must never urgent-page the owner or fire an "everything is
+  // down" fleet broadcast — that false urgency is the whole defect this split fixes.
+  if (verdict.severity === 'blocker') await page(verdict, streak, count, ws);
   return { fired: true, verdict, selfCleared: false };
 }
 

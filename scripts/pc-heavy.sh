@@ -665,9 +665,13 @@ if [ -z "$_held" ]; then
   # fast-path above, which never reaches this branch at all).
   echo "[pc-heavy] queued for a heavy slot (all $_slots slot(s) busy) —" \
        "pid $$, waiting up to ${_timeout}s" >&2
-  _fallback_deadline=$(( $(date +%s) + _timeout ))
-  _heartbeat_every=15
-  _last_heartbeat=$(date +%s)
+  _wait_start=$(date +%s)
+  _fallback_deadline=$(( _wait_start + _timeout ))
+  # PC_HEAVY_HEARTBEAT_SEC: test-only override (default 15s in production) so a
+  # suite can assert multiple heartbeats without actually waiting 15s+ per one.
+  _heartbeat_every="${PC_HEAVY_HEARTBEAT_SEC:-15}"
+  case "$_heartbeat_every" in ''|*[!0-9]*) _heartbeat_every=15 ;; esac
+  _last_heartbeat="$_wait_start"
   while :; do
     # Re-resolve each sweep so a waiter's admitted count tracks the box: load
     # dropping widens the probe set mid-wait, rising load narrows it back
@@ -689,8 +693,8 @@ if [ -z "$_held" ]; then
     # stretch — same rationale as the enqueue line above, just amortized
     # across the wait instead of a single point-in-time print.
     if [ $(( _now - _last_heartbeat )) -ge "$_heartbeat_every" ]; then
-      echo "[pc-heavy] still queued ($(( _now - ( _fallback_deadline - _timeout ) ))s" \
-           "elapsed, pid $$, slots=$_slots)" >&2
+      echo "[pc-heavy] still queued ($(( _now - _wait_start ))s elapsed, pid $$," \
+           "slots=$_slots)" >&2
       _last_heartbeat="$_now"
     fi
     [ "$_now" -ge "$_fallback_deadline" ] && break

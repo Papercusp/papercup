@@ -2,6 +2,8 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import {
   evaluatePrimaryCount,
   countBackgroundPrimaries,
+  lastRoutineFireAgeSec,
+  routinesDemonstrablyFiring,
   runSinglePrimaryCheck,
   _resetSinglePrimaryDebounce,
 } from './single-primary-check';

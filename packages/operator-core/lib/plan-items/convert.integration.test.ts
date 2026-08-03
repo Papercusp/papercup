@@ -12,9 +12,14 @@
  *    cannot do (it would satisfy whichever tenant the reader picked either way).
  *  - findImplementingWorkItem: edge lookup newest-first + the issue vs
  *    `<harness>#<id>` feature-ref src parsing.
- *  - findConvertedWorkItemByStamp: the `payload.plan_item` stamp match that must
- *    UNWRAP a postgres-js jsonb STRING SCALAR (createWorkItem's binding quirk) as
- *    well as a real jsonb object — the documented agent-insight gotcha.
+ *  - findConvertedWorkItemByStamp: the `payload.plan_item` stamp match against a real
+ *    jsonb OBJECT, plus (WI-6993 / EI-19342686955096692) a proof that the historical
+ *    postgres-js jsonb STRING SCALAR binding quirk can no longer reach a stored row at
+ *    all — migration 725's `work_items_payload_is_object_ck` CHECK constraint rejects
+ *    a non-object payload at INSERT time, which is what let the read side drop its
+ *    `CASE WHEN jsonb_typeof(payload)='string' …` unwrap (the wrap was defeating the
+ *    `work_items_plan_item_stamp_idx` expression index and costing ~7.6h of DB time/day
+ *    — see that migration's comment for the measured before/after).
  *
  * getWorkItem (and the convert-only deps) are mocked; the SQL is real.
  */
@@ -82,6 +87,14 @@ beforeAll(async () => {
     )`);
   // P-010 unification: work_items base + hfc/ei compat views (replaces hand-rolled hfc + ei).
   await rootSql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
+  // WI-6993 / EI-19342686955096692 / migration 725: the shared fixture DDL deliberately
+  // omits check constraints (see _work-items-schema.ts's doc comment — "add it in the
+  // specific test, not here"). This test's whole point is proving the production
+  // `work_items_payload_is_object_ck` guard, so add it here to mirror prod exactly.
+  await rootSql.unsafe(`
+    ALTER TABLE harness_shared.work_items
+      ADD CONSTRAINT work_items_payload_is_object_ck
+      CHECK (payload IS NULL OR jsonb_typeof(payload) = 'object')`);
   h.sql = rootSql;
 }, 90_000);
 
