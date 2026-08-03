@@ -52,7 +52,14 @@ const runHybridSearch = vi.fn(async (_sources: unknown, ctx: Record<string, unkn
   hybridCalls.push({ ctx });
   return { results: pool, totalHits: pool.length, embedderAvailable: true };
 });
-vi.mock('@papercusp/search', () => ({ runFullTextSearch, runHybridSearch }));
+// configureSearchDefaults is inert here, but REQUIRED: an inline factory
+// replaces the module wholesale, and lib/search/configure-search-defaults.ts
+// calls it at module load (P-017), so omitting it fails COLLECTION.
+vi.mock('@papercusp/search', () => ({
+  runFullTextSearch,
+  runHybridSearch,
+  configureSearchDefaults: vi.fn(),
+}));
 
 vi.mock('./sources', () => ({
   SEARCH_SOURCES: [

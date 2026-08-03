@@ -17,7 +17,10 @@ const getFlag = vi.fn(async () => true);
  *  caller owns nothing, i.e. no exclusions. */
 const sql = vi.fn(async (..._args: unknown[]) => [] as Array<{ session_id: string }>);
 vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql }) }));
-vi.mock('@papercusp/search', () => ({ runHybridSearch }));
+// configureSearchDefaults is inert here, but REQUIRED: an inline factory
+// replaces the module wholesale, and lib/search/configure-search-defaults.ts
+// calls it at module load (P-017), so omitting it fails COLLECTION.
+vi.mock('@papercusp/search', () => ({ runHybridSearch, configureSearchDefaults: vi.fn() }));
 vi.mock('../agent-tools/search/sources', () => ({
   SEARCH_SOURCES: [
     { name: 'escalations' },

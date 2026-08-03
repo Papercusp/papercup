@@ -237,6 +237,33 @@ tauri-agent-tools eval "window.__TSR_ROUTER__?.navigate({ to: '/settings/p2p' })
 tauri-agent-tools check --selector 'body' --text 'Peer' --no-errors
 ```
 
+:::caution[Closing with `verifiedHow:'live-drove-ui'`? Drive the ASSERTIONS with `check`/`capture`, not `eval`]
+Note which command carries the assertion above. `eval` is for **exploration** — it
+returns a value and exits 0 whether or not what you hoped was true, so no transcript of
+it is falsifiable. `work_items:complete` refuses a `verifiedHow:'live-drove-ui'` close
+whose `testsRun`/`testResult`/`filesChanged` cite no real artifact, and it accepts
+exactly these:
+
+- a recorded **`tauri-agent-tools capture` / `screenshot` / `check`** invocation,
+- an **image path** (`.png`/`.jpg`/`.webp`/`.gif`), or
+- for a web deploy, a **URL + HTTP status** (`https://…/about -> 200`).
+
+A thorough `eval` transcript is **not** one of them. Plan for this **now**, while the
+shell is up: the gate fires at CLOSE time, long after an isolated instance has been torn
+down, so discovering it there costs a second full boot (~4 min) purely to re-run
+assertions you already ran.
+
+Cheapest compliant form — falsifiable, and it needs no image on disk:
+
+```sh
+tauri-agent-tools check --pid "$PID" --eval "<assertion>" --json   # exits 1 if false
+```
+
+⚠ Repeated `--eval` flags are silently dropped (EI-19283160209828072) — combine several
+assertions into ONE expression with `&&`. Why a cited screenshot is the *weakest* of
+these, and how to validate one: [§15's screenshot-citation caution](#15-common-gotchas).
+:::
+
 If the URL changes but the DOM stays on an older component, the shell is
 running a stale bundle. That is an `INCONCLUSIVE` UI result, not a
 feature failure.
@@ -807,7 +834,19 @@ tauri-agent-tools capture -o /tmp/fail-<route>-<feature>
 ```
 
 That writes screenshot + DOM snapshot + storage + console errors +
-recent Rust logs to one directory. For the report, include:
+recent Rust logs to one directory. The flag is **`-o`/`--output <dir>`** — it takes a
+DIRECTORY, not a file, and there is no `--out`.
+
+⚠ **Under Xvfb/X11 the bundle contains NO screenshot PNG** — you get `dom.json`,
+`page-state.json`, `console-errors.json`, `rust-logs.json`, `storage.json` and
+`manifest.json`, and those carry the evidence. This is the Wayland-only screenshot
+limitation (EI-576), *not* a failed capture — so do not go hunting for an image or
+conclude the command broke. It matters here because
+`scripts/verify-tauri-headless.sh` — this doc's own recommended entrypoint — always
+runs under Xvfb. (Reading `capture --help` to check a flag is itself blocked when two
+bridges are live; use `tauri-agent-tools help capture`, which needs no target.)
+
+For the report, include:
 
 - The capture-bundle path (or the `screenshot --selector` PNG if
   zooming on one element).

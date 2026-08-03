@@ -480,12 +480,26 @@ export function auditPredicateSqlFor(sql: OrgSql, audit: CompletionAudit, alias:
  * screenshot saved alongside the change) — see {@link citesScreenshotArtifact} for the
  * patterns. Pure + synchronous so the gate and its own unit test can never drift.
  */
+/**
+ * The `tauri-agent-tools` subcommands whose recorded invocation counts as a real artifact
+ * citation. EXPORTED as the single source of truth so `/internal/docs/testing/agent-e2e`
+ * can be asserted in sync with this gate (EI-19425652963178450): an agent plans its drive
+ * from that doc but only meets this predicate at CLOSE time, by which point an isolated
+ * shell has been torn down — so a doc that names a subcommand this list does not accept
+ * (or omits one it does) costs a second full boot to discover. `eval` is deliberately
+ * ABSENT: it returns a value and exits 0 whether or not the assertion held, so an `eval`
+ * transcript is not falsifiable evidence.
+ */
+export const LIVE_DROVE_UI_EVIDENCE_SUBCOMMANDS = ['capture', 'screenshot', 'check'] as const;
+
 const SCREENSHOT_ARTIFACT_PATTERNS: readonly RegExp[] = [
   // An image artifact path — a screenshot/capture output file.
   /[\w./-]+\.(?:png|jpe?g|webp|gif)\b/i,
-  // A tauri-agent-tools invocation recorded in the run (capture/screenshot/check subcommands
-  // — see /internal/docs/testing/agent-e2e), e.g. "tauri-agent-tools capture --out shot.png".
-  /\btauri-agent-tools\b[^\n]{0,80}\b(?:capture|screenshot|check)\b/i,
+  // A tauri-agent-tools invocation recorded in the run — built FROM the exported list
+  // above so the accepted set cannot drift from what the doc (and its guard test) claim.
+  // e.g. "tauri-agent-tools capture -o /tmp/fail-route" (it takes a DIRECTORY via
+  // `-o`/`--output`; there is no `--out` — verified against `tauri-agent-tools help capture`).
+  new RegExp(String.raw`\btauri-agent-tools\b[^\n]{0,80}\b(?:${LIVE_DROVE_UI_EVIDENCE_SUBCOMMANDS.join('|')})\b`, 'i'),
   // A bare "screenshot"/"capture" mention paired with an image path in the same clause.
   /\b(?:screenshot|capture)\b[^\n]{0,80}\.(?:png|jpe?g|webp|gif)\b/i,
 ];

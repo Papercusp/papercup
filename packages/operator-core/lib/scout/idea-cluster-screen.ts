@@ -53,6 +53,23 @@ import {
  * ⚠ SCOPE LIMIT — do not launder into confidence. The measurement covers
  * 07-04→07-15 ONLY. The 07-15→07-18 tail is UNMEASURED and 0.09 is **not known to
  * transfer** to it. Re-measure rather than extend.
+ *
+ * ## ⚠⚠ THE HARD BOUNDARY: distance is reliable on the CONDITION, unreliable on
+ * the PROPOSAL
+ *
+ * A cluster can justify "these filings DESCRIBE the same thing". It can NEVER
+ * justify "these filings WANT the same thing". Embedding distance is computed over
+ * text that is dominated by the problem statement, so items proposing OPPOSITE
+ * mechanisms sit close together.
+ *
+ * Measured by su-b9269a31 across three clusters (3/3), the decisive case being a
+ * 19-item cluster whose members all reported one condition ("a rubric emits
+ * `unknown` because its subject was never exercised") but resolved into THREE
+ * partly-contradictory mechanisms: suppress-when-blind, amplify-when-chronic, and
+ * diagnose-idle-as-signal. Merging them into a single item would have destroyed a
+ * real design decision — the outcome was 3 canonical items, not 1.
+ *
+ * So `COLLAPSE-AND-RESCOPE` means "triage these together", never "merge these".
  */
 export const CLUSTER_DISTANCE_THRESHOLD = 0.09;
 
@@ -96,7 +113,13 @@ export type ClusterConfidence = 'high' | 'needs-manual-split';
 export type ClusterVerdict =
   /** Prior art found and the cluster is a single item — recommend retiring it. */
   | 'DROP'
-  /** >1 member: recommend one rescoped item + the rest merged into it. */
+  /**
+   * >1 member: the filings share a CONDITION and should be triaged together.
+   *
+   * ⚠ This is NOT an instruction to merge them into one item. Distance is
+   * reliable on the condition and unreliable on the PROPOSAL — see
+   * `CLUSTER_DISTANCE_THRESHOLD`.
+   */
   | 'COLLAPSE-AND-RESCOPE'
   /** No prior-art evidence, and retrieval actually ran — proceed to normal triage. */
   | 'GREENLIGHT'
@@ -478,8 +501,9 @@ export function decideVerdict(
     }
     if (size > 1) {
       notes.push(
-        `${size} filings co-cluster: recommend ONE rescoped item + ${size - 1} merged. ` +
-          `Co-clustering shows they are about one condition — it does NOT show the condition is dead.`,
+        `${size} filings co-cluster on ONE CONDITION. ⚠ READ THE PROPOSALS BEFORE MERGING — ` +
+          `co-clustering shows they DESCRIBE the same thing, never that they WANT the same thing, ` +
+          `and it does NOT show the condition is dead.`,
       );
     }
     return { verdict: 'COLLAPSE-AND-RESCOPE', notes };

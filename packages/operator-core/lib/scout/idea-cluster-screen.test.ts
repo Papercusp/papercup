@@ -242,6 +242,20 @@ describe('decideVerdict', () => {
     expect(notes.join(' ')).toMatch(/context only, not grounds to drop/);
   });
 
+  it('THE HARD BOUNDARY: a collapse note must say TRIAGE TOGETHER, never MERGE', () => {
+    // Measured 3/3 by su-b9269a31. Decisive case: 19 items sharing ONE condition
+    // ("a rubric emits unknown because its subject was never exercised") that
+    // resolved into THREE partly-opposite mechanisms — suppress-when-blind,
+    // amplify-when-chronic, diagnose-idle-as-signal. Merging them into one item
+    // would have destroyed a real design decision; the outcome was 3 canonical
+    // items, not 1. Distance is reliable on the CONDITION, never on the PROPOSAL.
+    const { notes } = decideVerdict(19, bare);
+    const text = notes.join(' ');
+    expect(text).toMatch(/READ THE PROPOSALS BEFORE MERGING/);
+    expect(text).toMatch(/DESCRIBE the same thing, never that they WANT the same thing/);
+    expect(text).not.toMatch(/recommend ONE rescoped item/);
+  });
+
   it('collapses a multi-member cluster even when retrieval never ran', () => {
     // Clustering does not depend on retrieval, so this verdict survives an outage.
     const { verdict } = decideVerdict(4, { ...bare, retrievalRan: false });

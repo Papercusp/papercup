@@ -83,6 +83,23 @@ const GIT_GREP_NO_MATCH = 1;
  *    doc fans out into several rendered copies, inflating file counts too.
  *  - **prose generally** (.md/.mdx/.html/.txt) — an idea DISCUSSED in a doc is
  *    not an idea BUILT. This is the distinction the whole leg turns on.
+ *
+ * ## ⚠ WHAT THIS FILTER CANNOT CATCH — read before trusting a lexical hit
+ *
+ * It filters by PATH, so it cannot see prose ABOUT a defect that lives inside a
+ * genuine source file. That residue is not hypothetical and it is adversarial:
+ * **the code that DISCUSSES a defect is very often exactly the code that FAILS to
+ * handle it.**
+ *
+ * Worked case (su-b9269a31): a 19-item family about rubrics collapsing distinct
+ * states into `unknown`. Grepping for that vocabulary returns plenty of matches in
+ * `scorecards.ts` and `overwatch/scorecard-backstop.ts` — every one of them
+ * describing the defect, none implementing a fix. A path filter admits all of it.
+ *
+ * The discriminator that survives is **"does an implementation exist"**, not "is
+ * this discussed" — which is why a lexical hit is context for a reader and never
+ * grounds for a verdict, and why a family like that belongs in INCONCLUSIVE rather
+ * than DROP.
  */
 export const NON_EVIDENCE_PATTERNS: RegExp[] = [
   /(^|\/)scratchpad\//,

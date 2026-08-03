@@ -52,6 +52,22 @@ admissible as evidence of implementation, and exclude the screening surface itse
 Keep the exclusion surgical — blanket-excluding `lib/scout/` would have hidden genuine
 Scout implementations.
 
+#### The residue a path filter cannot reach — and it is adversarial
+
+Filtering by path cannot see prose *about* a defect that lives **inside a genuine
+source file**. This is the dangerous remainder, because:
+
+> **The code that DISCUSSES a defect is very often exactly the code that FAILS to
+> handle it.**
+
+Worked case: a 19-item family about rubrics collapsing distinct states into `unknown`.
+Grepping that vocabulary returns plenty of matches in `scorecards.ts` and
+`overwatch/scorecard-backstop.ts` — every one of them *describing* the defect, none
+implementing a fix. A path filter admits all of it, and the hits look excellent.
+
+The discriminator that survives is **"does an implementation exist"**, not "is this
+discussed". A family like that belongs in `INCONCLUSIVE`, not `DROP`.
+
 ### 2. `dropped` / `deprecated` are terminal, but they mean NOT BUILT
 
 This one is seductive because the titles match perfectly.
@@ -133,6 +149,35 @@ waiting on a *human decision*, not on an implementer.
 
 If you need to act on this distinction, check the flag state — do not infer it from the
 item being open.
+
+## A cluster proves a shared CONDITION, never a shared PROPOSAL
+
+If you cluster a backlog by embedding distance, this is a hard boundary and it is the
+one most likely to destroy real work:
+
+> A cluster can justify **"these filings DESCRIBE the same thing"**.
+> It can never justify **"these filings WANT the same thing"**.
+
+Distance is computed over text dominated by the *problem statement*, so items proposing
+**opposite** mechanisms sit close together.
+
+Measured across three clusters (3/3), the decisive case being 19 items that all reported
+one condition — *a rubric emits `unknown` because its subject was never exercised* — and
+which resolved into **three partly-contradictory mechanisms**:
+
+- suppress-when-blind
+- amplify-when-chronic
+- diagnose-idle-as-signal
+
+Merging them into a single item would have destroyed a genuine design decision. The
+correct outcome was **3 canonical items and 16 collapsed into them**, each collapse
+naming its canonical and why — not one merged item, and emphatically not 19 drops.
+
+Note also what the surface features said: chronic condition, ~a year of noise, heavy
+sibling citation, a premise reading as already-known — everything pointed `DROP`. Only
+reading the proposals inverted it.
+
+So a collapse verdict must mean **"triage these together"**, never **"merge these"**.
 
 ## What to do with a screen's output
 

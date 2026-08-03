@@ -113,6 +113,20 @@ The same disease at two other scales, both encountered the same day:
   `package.json` is indistinguishable from a subject hive legitimately opting out of that
   leg — silently disabling every optional leg at once while still reporting green. Filed
   as its own item; the plumbing to name that reason now exists.
+- **Empty input set** (2026-08-03, `scout/code-existence-probe.ts`). A prior-art probe
+  returned `searched: true` when it could extract **zero** search terms from an idea's
+  text — an early return on an empty input set, reporting the success value, having never
+  called the backend. Note the direction of the harm: text with no greppable vocabulary
+  is precisely where prior art is *hardest* to find, so those items collected the
+  **cleanest "nothing found" in the whole backlog**. Now `searched: false` +
+  `unavailableReason: '…never called'`.
+  <br />How it survived is the instructive part: the author *hit* the behaviour, wrote a
+  test comment describing it exactly — *"the lexical leg short-circuits on 'no candidates'
+  and returns searched:true having never called the (throwing) backend"* — and used it as
+  a reason to reshape the **fixture** rather than the code. A second test asserted
+  `called === false` and `searched === true` on consecutive lines. **A comment explaining
+  why a fixture must be shaped a particular way to avoid a code path is describing a
+  defect in that code path.**
 
 ### The observational dual: a probe that could not have seen it
 

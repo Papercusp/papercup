@@ -13,7 +13,13 @@ const m = vi.hoisted(() => ({
   buildQueryEmbedder: vi.fn(),
   activeWorkspaceId: vi.fn(() => 'ws-active'),
 }));
-vi.mock('@papercusp/search', () => ({ runHybridSearch: m.runHybridSearch }));
+// configureSearchDefaults is inert here, but REQUIRED: an inline factory
+// replaces the module wholesale, and lib/search/configure-search-defaults.ts
+// calls it at module load (P-017), so omitting it fails COLLECTION.
+vi.mock('@papercusp/search', () => ({
+  runHybridSearch: m.runHybridSearch,
+  configureSearchDefaults: vi.fn(),
+}));
 vi.mock('../search/embedder', () => ({
   buildQueryEmbedder: m.buildQueryEmbedder,
   interactiveEmbedAcquireBudgetMs: () => 4000,
