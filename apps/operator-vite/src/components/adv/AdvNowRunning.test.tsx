@@ -4,15 +4,16 @@
 // now purely THE hive Start/Pause control + the "N plans waiting" nudge. The
 // per-agent run pills + "Active — N running" label were removed once the
 // unified header roster (AgentsRunningPill) shipped. Mounts the bar against
-// mocked sync queries (hive.controlState + plans.list) and a stubbed run-tool
-// dispatch. Asserts:
+// mocked sync queries (hive.controlState + plans.waitingCount) and a stubbed
+// run-tool dispatch. Asserts:
 //   - the null-slug blank state and the is-checking loading state,
 //   - stopped → Start hive, started → Stop hive (no per-agent label),
 //   - Start fires pot:start through the loopback palette bridge and flips to
 //     the optimistic active state (errors → toast.error),
 //   - Stop confirms, then fires pot:pause { drainCups: true },
-//   - the "N plans waiting" nudge (push-driven plans.list) + its click-through
-//     to the Plans tab's Running bucket.
+//   - the "N plans waiting" nudge (push-driven plans.waitingCount, the
+//     server-side aggregate — EI-19409535742567802) + its click-through to
+//     the Plans tab's Running bucket.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
@@ -37,7 +38,7 @@ vi.mock('sonner', () => ({
 // Per-query sync mock — the component subscribes to three distinct queries.
 let hiveRows: unknown[] | undefined = [{ slug: 'hive-1', started: false }];
 let runRows: unknown[] = [];
-let planRows: unknown[] = [];
+let waitingCountRows: unknown[] = [];
 const syncEnabled: Record<string, boolean | undefined> = {};
 const syncArgs: Record<string, unknown> = {};
 vi.mock('@papercusp/sync', () => ({
@@ -59,8 +60,8 @@ vi.mock('@papercusp/sync', () => ({
         return { data: hiveRows };
       case 'agentRunsConsolidated.recent':
         return { data: runRows };
-      case 'plans.list':
-        return { data: planRows };
+      case 'plans.waitingCount':
+        return { data: waitingCountRows };
       default:
         return { data: undefined };
     }
@@ -93,7 +94,7 @@ beforeEach(() => {
   for (const k of Object.keys(syncArgs)) delete syncArgs[k];
   hiveRows = [{ slug: 'hive-1', started: false }];
   runRows = [];
-  planRows = [];
+  waitingCountRows = [];
   runToolCalls = [];
   runToolResponse = { ok: true, result: { content: [{ text: JSON.stringify({ ok: true }) }] } };
   toastMock.success.mockReset();
@@ -194,12 +195,12 @@ describe('AdvNowRunning', () => {
   });
 
   it('nudges with "N plans waiting" while stopped and deep-links the Running bucket', async () => {
-    planRows = [{ startStatus: 'started' }, { startStatus: 'started' }, { startStatus: null }];
+    waitingCountRows = [{ count: 2 }];
     render(<AdvNowRunning slug="pot-a" />);
     const nudge = await screen.findByText('2 plans waiting');
-    // the plans.list query is enabled + scoped to this harness while stopped
-    expect(syncEnabled['plans.list']).toBe(true);
-    expect(syncArgs['plans.list']).toEqual({ harness_slugs: ['pot-a'] });
+    // the plans.waitingCount query is enabled + scoped to this harness while stopped
+    expect(syncEnabled['plans.waitingCount']).toBe(true);
+    expect(syncArgs['plans.waitingCount']).toEqual({ harness_slugs: ['pot-a'] });
     fireEvent.click(nudge);
     await waitFor(() => expect(nuqsSetters.tab).toHaveBeenCalledWith('plans'));
     expect(nuqsSetters.view).toHaveBeenCalledWith('plans');
@@ -208,11 +209,11 @@ describe('AdvNowRunning', () => {
 
   it('disables the waiting-plans query entirely while the hive is started', async () => {
     hiveRows = [{ slug: 'hive-1', started: true }];
-    planRows = [{ startStatus: 'started' }, { startStatus: 'started' }];
+    waitingCountRows = [{ count: 2 }];
     render(<AdvNowRunning slug="pot-a" />);
     await screen.findByText('Stop pot');
-    // started hive → stopped=false → plans.list disabled (no fetch) → no nudge
-    expect(syncEnabled['plans.list']).toBe(false);
+    // started hive → stopped=false → plans.waitingCount disabled (no fetch) → no nudge
+    expect(syncEnabled['plans.waitingCount']).toBe(false);
     expect(screen.queryByText(/plans? waiting/)).toBeNull();
   });
 });

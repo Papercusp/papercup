@@ -423,7 +423,7 @@ export async function defaultEscalateLifecycleDeath(info: LifecycleDeathInfo): P
     // escalationDedupIdentity + coordination/tools/escalate.ts) — key it on the
     // loop identity alone (installSlug + routineId), which does NOT vary across
     // occurrences of the same underlying condition.
-    meta: { subjectSignature: `loop-lifecycle-death:${info.installSlug}:${info.routineId}` },
+    meta: { subjectSignature: `${LOOP_LIFECYCLE_DEATH_SIGNATURE_PREFIX}:${info.installSlug}:${info.routineId}` },
     // Defense in depth (belt-and-suspenders with the conditionKey above): the
     // volatile `~${mins}m` duration used to live here and nowhere else — if a
     // future refactor ever drops the conditionKey again, the summary-derived
@@ -442,6 +442,258 @@ export async function defaultEscalateLifecycleDeath(info: LifecycleDeathInfo): P
       `the reason recurs after the re-arm.`,
     harness_slug: info.installSlug,
   });
+}
+
+// ── EI-19408412473830336: auto-resolve leg for the two loop watchdogs ──────────────
+//
+// Both `defaultEscalateDeadLoop` and `defaultEscalateLifecycleDeath` above open an
+// escalation and then NEVER resolve one — the module imported only `openEscalation`,
+// no `listEscalationsPaginated`/`resolveEscalation`, so their escalations are
+// structurally immortal (measured 2026-08-03: 48 open rows between the two, the 2nd
+// and 3rd largest holders in the whole open-escalation set). Mirrors the pattern the
+// sibling infra-liveness alarm already uses (liveness-alarm.ts EI-2146, now
+// author-scoped per EI-19403159016550818): each tick, read THIS watchdog's OWN open
+// escalations via `listEscalationsPaginated({ status:'open', from: <identity>.ownerId })`
+// — the `from` scoping is what makes the read COMPLETE regardless of workspace-wide
+// escalation-backlog size, the exact trap EI-19403159016550818 fixed for the sibling
+// alarm — and auto-resolve any whose underlying condition no longer holds.
+//
+// The two identities mean different things (per the comment on
+// LOOP_LIFECYCLE_DEATH_WATCHDOG_IDENTITY below) so they get two different recovery
+// predicates, not one shared one:
+//   - LOOP_DEATH means "owner unreachable, loop auto-paused (active=false)". Recovered
+//     when the routine is ACTIVE again (a human relaunched the owner + re-armed the
+//     loop) or the routine row no longer exists (deleted) — in either case "durably
+//     dead, auto-paused" no longer describes the current state. A routine still paused
+//     exactly as the watchdog left it stays open — that IS the correct informational
+//     state, waiting on a human.
+//   - LOOP_LIFECYCLE_DEATH means "owner reachable, but its wakes keep dying on a
+//     provider wall" — advisory, the loop is NOT paused and keeps retrying on its own.
+//     Recovered when a LATER fire recorded 'ok' (autoloop_state.consecutive_errors is
+//     back to 0 — recordFire('ok') is the only thing that resets it, see autoloop.ts),
+//     when the routine was SUBSEQUENTLY auto-paused by the loop-death watchdog (its
+//     stronger blocker-equivalent escalation supersedes this advisory), or when the
+//     routine row no longer exists.
+
+/** Both watchdogs stamp `meta.subjectSignature` on the escalations they open, in the
+ *  form `<prefix>:<installSlug>:<routineId>` — read back from the persisted TOP-LEVEL
+ *  `subjectSignature` field `openEscalation` writes (coordination/escalations.ts). */
+function escalationSubjectSignature(rec: EscalationRecord): string | null {
+  const v = (rec as Record<string, unknown>).subjectSignature;
+  return typeof v === 'string' && v.length > 0 ? v : null;
+}
+
+/** Parse a `<prefix>:<installSlug>:<routineId>` subjectSignature back into its parts.
+ *  `routineId` is taken as the FINAL colon-delimited segment (routine ids are UUIDs and
+ *  never contain a colon); everything between the prefix and it is `installSlug`. Returns
+ *  null for a signature that doesn't carry this watchdog's prefix, or is malformed. */
+export function parseLoopWatchdogSignature(
+  sig: string,
+  prefix: string,
+): { installSlug: string; routineId: string } | null {
+  if (!sig.startsWith(`${prefix}:`)) return null;
+  const rest = sig.slice(prefix.length + 1);
+  const idx = rest.lastIndexOf(':');
+  if (idx <= 0 || idx >= rest.length - 1) return null;
+  return { installSlug: rest.slice(0, idx), routineId: rest.slice(idx + 1) };
+}
+
+export interface WatchdogEscalationReconcileResult {
+  /** Open escalations for this watchdog identity read this pass. */
+  scanned: number;
+  /** Resolved this pass because their condition no longer holds. */
+  resolved: number;
+  /** Left open — either still-live, or a resolve attempt didn't transition (raced /
+   *  already resolved elsewhere / not found). */
+  stillOpen: number;
+  /** Carried no parseable `subjectSignature` (pre-fix legacy row, or a caller's meta
+   *  malformed) — left untouched rather than guessed at. */
+  unparseable: number;
+}
+
+/**
+ * Auto-resolve leg for LOOP_DEATH_WATCHDOG_IDENTITY escalations. See the module-header
+ * note above this function for the recovery predicate. Fail-soft throughout — a read or
+ * resolve failure leaves the affected rows open (never silently drops one), and this must
+ * never throw out of the caller's tick.
+ */
+export async function reconcileDeadLoopEscalations(
+  opts: {
+    sql?: Sql;
+    /** Injected for tests; defaults to a `from`-scoped open-escalation read for this identity. */
+    listOpen?: () => Promise<EscalationRecord[]>;
+    /** Injected for tests; defaults to the real resolveEscalation. */
+    resolve?: (msg_id: string, choice: string, note: string) => Promise<unknown>;
+  } = {},
+): Promise<WatchdogEscalationReconcileResult> {
+  const db = opts.sql ?? getOrgPg().sql;
+  const listOpen =
+    opts.listOpen ??
+    (async () => {
+      const { escalations } = await listEscalationsPaginated({
+        status: 'open',
+        from: LOOP_DEATH_WATCHDOG_IDENTITY.ownerId,
+        maxRecords: 500,
+      });
+      return escalations;
+    });
+  const resolve =
+    opts.resolve ??
+    ((msg_id: string, choice: string, note: string) =>
+      resolveEscalation({ msg_id, choice, note, resolver: LOOP_DEATH_WATCHDOG_IDENTITY.ownerId }));
+
+  const result: WatchdogEscalationReconcileResult = { scanned: 0, resolved: 0, stillOpen: 0, unparseable: 0 };
+  let open: EscalationRecord[];
+  try {
+    open = await listOpen();
+  } catch {
+    return result; // a read failure must never resolve/crash — try again next tick
+  }
+  result.scanned = open.length;
+  if (open.length === 0) return result;
+
+  const parsed = open.map((rec) => {
+    const sig = escalationSubjectSignature(rec);
+    return { rec, parts: sig ? parseLoopWatchdogSignature(sig, LOOP_DEATH_SIGNATURE_PREFIX) : null };
+  });
+  result.unparseable = parsed.filter((p) => !p.parts).length;
+  const routineIds = Array.from(new Set(parsed.map((p) => p.parts?.routineId).filter((id): id is string => !!id)));
+  if (routineIds.length === 0) {
+    result.stillOpen = parsed.length - result.unparseable; // (0 here since none parsed)
+    return result;
+  }
+
+  let activeById = new Map<string, boolean>();
+  try {
+    const rows = await db<{ id: string; active: boolean }[]>`
+      SELECT id, active FROM harness_shared.routines WHERE id = ANY(${routineIds})
+    `;
+    activeById = new Map(rows.map((r) => [r.id, r.active]));
+  } catch {
+    result.stillOpen += parsed.filter((p) => p.parts).length; // read failure — leave every parsed row open
+    return result;
+  }
+
+  for (const { rec, parts } of parsed) {
+    if (!parts) continue; // already counted in unparseable
+    const active = activeById.get(parts.routineId);
+    // Recovered when the routine is active again (re-armed) OR no longer exists
+    // (deleted) — `undefined` from the map means "not found in the query result".
+    if (active !== true && active !== undefined) {
+      result.stillOpen += 1;
+      continue;
+    }
+    const note =
+      active === undefined
+        ? `loop-death watchdog: routine ${parts.routineId} no longer exists — nothing left to auto-pause`
+        : `loop-death watchdog: routine ${parts.routineId} is active again — a human re-armed it`;
+    try {
+      const outcome = await resolve(rec.msg_id, 'auto-resolved', note);
+      if (outcome === 'not_found' || outcome === 'already_resolved' || outcome === 'requires_spawn_approve') {
+        result.stillOpen += 1;
+        continue;
+      }
+      result.resolved += 1;
+    } catch {
+      result.stillOpen += 1;
+    }
+  }
+  return result;
+}
+
+/**
+ * Auto-resolve leg for LOOP_LIFECYCLE_DEATH_WATCHDOG_IDENTITY escalations. See the
+ * module-header note above `reconcileDeadLoopEscalations` for the recovery predicate.
+ * Fail-soft throughout, same contract as its sibling above.
+ */
+export async function reconcileLoopLifecycleDeathEscalations(
+  opts: {
+    sql?: Sql;
+    listOpen?: () => Promise<EscalationRecord[]>;
+    resolve?: (msg_id: string, choice: string, note: string) => Promise<unknown>;
+    readFireState?: typeof defaultReadFireState;
+  } = {},
+): Promise<WatchdogEscalationReconcileResult> {
+  const db = opts.sql ?? getOrgPg().sql;
+  const readFireState = opts.readFireState ?? defaultReadFireState;
+  const listOpen =
+    opts.listOpen ??
+    (async () => {
+      const { escalations } = await listEscalationsPaginated({
+        status: 'open',
+        from: LOOP_LIFECYCLE_DEATH_WATCHDOG_IDENTITY.ownerId,
+        maxRecords: 500,
+      });
+      return escalations;
+    });
+  const resolve =
+    opts.resolve ??
+    ((msg_id: string, choice: string, note: string) =>
+      resolveEscalation({ msg_id, choice, note, resolver: LOOP_LIFECYCLE_DEATH_WATCHDOG_IDENTITY.ownerId }));
+
+  const result: WatchdogEscalationReconcileResult = { scanned: 0, resolved: 0, stillOpen: 0, unparseable: 0 };
+  let open: EscalationRecord[];
+  try {
+    open = await listOpen();
+  } catch {
+    return result;
+  }
+  result.scanned = open.length;
+  if (open.length === 0) return result;
+
+  const parsed = open.map((rec) => {
+    const sig = escalationSubjectSignature(rec);
+    return { rec, parts: sig ? parseLoopWatchdogSignature(sig, LOOP_LIFECYCLE_DEATH_SIGNATURE_PREFIX) : null };
+  });
+  result.unparseable = parsed.filter((p) => !p.parts).length;
+  const routineIds = Array.from(new Set(parsed.map((p) => p.parts?.routineId).filter((id): id is string => !!id)));
+  if (routineIds.length === 0) return result;
+
+  let routineById = new Map<string, { active: boolean; installSlug: string; name: string }>();
+  try {
+    const rows = await db<{ id: string; active: boolean; install_slug: string; name: string }[]>`
+      SELECT id, active, install_slug, name FROM harness_shared.routines WHERE id = ANY(${routineIds})
+    `;
+    routineById = new Map(rows.map((r) => [r.id, { active: r.active, installSlug: r.install_slug, name: r.name }]));
+  } catch {
+    result.stillOpen += parsed.filter((p) => p.parts).length;
+    return result;
+  }
+
+  for (const { rec, parts } of parsed) {
+    if (!parts) continue;
+    const routine = routineById.get(parts.routineId);
+    let note: string | null = null;
+    if (!routine) {
+      note = `loop-lifecycle-death watchdog: routine ${parts.routineId} no longer exists`;
+    } else if (!routine.active) {
+      note =
+        `loop-lifecycle-death watchdog: routine ${parts.routineId} was subsequently auto-paused ` +
+        `(superseded by the loop-death watchdog's stronger escalation)`;
+    } else {
+      const fireState = await readFireState(routine.installSlug, routine.name).catch(() => null);
+      if (!fireState || fireState.consecutiveErrors === 0) {
+        note =
+          `loop-lifecycle-death watchdog: routine ${parts.routineId} has since fired successfully ` +
+          `(consecutive_errors reset to 0) — the provider wall cleared`;
+      }
+    }
+    if (note === null) {
+      result.stillOpen += 1;
+      continue;
+    }
+    try {
+      const outcome = await resolve(rec.msg_id, 'auto-resolved', note);
+      if (outcome === 'not_found' || outcome === 'already_resolved' || outcome === 'requires_spawn_approve') {
+        result.stillOpen += 1;
+        continue;
+      }
+      result.resolved += 1;
+    } catch {
+      result.stillOpen += 1;
+    }
+  }
+  return result;
 }
 
 export type RebaseVia = 'lifecycle' | 'turn-journal' | 'note-refresh' | 'presence-quiescence' | 'stuck-backstop';

@@ -366,49 +366,6 @@ describe('the prose column width contract — asserted against the LIVE schema',
   });
 
   describe('leg 3 — THE CLOSING LEG: no unenumerated or mis-sized vector column', () => {
-    /**
-     * Expected width for every column we know about, derived from the
-     * STORAGE-FACT declarations rather than restated here:
-     *   - `WIDTH_MIGRATION_WIPE_SET`      → `PROSE_VECTOR_DIMS` (shared contract)
-     *   - `VEC_TABLE[mode]`               → `MODE_DIMS[mode]`   (per-mode spaces)
-     *   - `PROSE_VECTOR_DEPENDENT_VIEWS`  → `PROSE_VECTOR_DIMS` (inherited)
-     *
-     * The first two are deliberately independent of `EMBEDDER_DIM_SPECS` for the
-     * same documented reason, so consulting them here keeps this test honest: it
-     * asserts the DATABASE matches what the code claims the database is, and a
-     * hardcoded number in this file would just be a third thing to drift.
-     *
-     * The views are enumerated too — NOT because they need migrating (they
-     * inherit the base column's type), but because leg 3 asks a different
-     * question from leg 2: "is this column accounted for ANYWHERE". Omitting
-     * them made this leg report all three as unknown surfaces on the first run.
-     * Within `harness_shared` that list IS exhaustive; the per-harness copies
-     * that make it non-exhaustive at runtime live in other schemas, which this
-     * `harness_shared`-scoped scan never sees.
-     */
-    const expectedWidths = (): Map<string, { dims: number; why: string }> => {
-      const m = new Map<string, { dims: number; why: string }>();
-      for (const { table, column } of WIDTH_MIGRATION_WIPE_SET) {
-        m.set(key(bare(table), column), {
-          dims: PROSE_VECTOR_DIMS,
-          why: 'shared prose width contract (WIDTH_MIGRATION_WIPE_SET)',
-        });
-      }
-      for (const [mode, table] of Object.entries(VEC_TABLE) as Array<[ResolvedVecMode, string]>) {
-        m.set(key(table, 'vector'), {
-          dims: MODE_DIMS[mode],
-          why: `per-mode memory space for '${mode}' (MODE_DIMS)`,
-        });
-      }
-      for (const { view, column } of PROSE_VECTOR_DEPENDENT_VIEWS) {
-        m.set(key(bare(view), column), {
-          dims: PROSE_VECTOR_DIMS,
-          why: 'dependent view inheriting the base column (PROSE_VECTOR_DEPENDENT_VIEWS)',
-        });
-      }
-      return m;
-    };
-
     it('the two storage-fact declarations agree where they OVERLAP', () => {
       // `memory_vec_gemma`/`memory_vec_openai` are governed by BOTH lists. If they
       // ever disagreed, the expectation map above would silently take one side and
@@ -431,49 +388,59 @@ describe('the prose column width contract — asserted against the LIVE schema',
     });
 
     it('every vector column is enumerated, and at its declared width', () => {
-      const expected = expectedWidths();
-      const problems: string[] = [];
+      const problems = auditSurfaces(measured);
+      expect(problems, problems.join('\n')).toEqual([]);
+    });
 
-      for (const m of measured) {
-        if (SNAPSHOT_PREFIX.test(m.relname)) continue; // frozen pre-migration evidence
-        const k = key(m.relname, m.attname);
-        const want = expected.get(k);
+    /**
+     * NEGATIVE CONTROL — proves the leg above BITES rather than passing vacuously.
+     *
+     * Every other assertion in this file is a "nothing is wrong" shape, and the
+     * whole point of leg 3 is a failure mode nobody has produced yet, so "it is
+     * green" is weak evidence on its own. Here we actually create the thing it
+     * is supposed to catch — a brand-new prose surface at the OLD width — and
+     * assert it is reported.
+     *
+     * This is not theatre: the leg was written with a real hole (it omitted
+     * `PROSE_VECTOR_DEPENDENT_VIEWS`, so it reported three legitimate views as
+     * unknown surfaces on its first run). A guard this file can be wrong about
+     * is a guard worth controlling for.
+     *
+     * SAFE AGAINST THE SHARED DB. The whole thing runs inside a transaction that
+     * always rolls back — Postgres makes DDL transactional, and a dropped
+     * connection rolls back too, so there is no path that leaves the control
+     * table behind. The table is created, measured, and unwound without any
+     * other test being able to observe it.
+     */
+    it('CATCHES a new prose surface created at the old width (negative control)', async () => {
+      const CONTROL = 'zz_prose_width_negative_control';
+      let findings: string[] = [];
 
-        if (!want) {
-          // THE FAILURE THIS LEG EXISTS FOR. Note it fires even when the width is
-          // already correct: an unenumerated column is invisible to the NEXT width
-          // migration, which is precisely how WI-7326 happened.
-          problems.push(
-            `${SCHEMA}.${k} (${m.typname}(${m.dims}), relkind='${m.relkind}') is NOT enumerated. ` +
-              `Add it to PROSE_VECTOR_COLUMNS (a prose surface) or document it as an ` +
-              `excluded per-mode space — an unlisted column is skipped by the next width ` +
-              `migration and then fails every write under new-width-emitting code.`,
+      try {
+        await sql.begin(async (tx) => {
+          await tx.unsafe(
+            `CREATE TABLE ${SCHEMA}.${CONTROL} (id int PRIMARY KEY, embedding vector(384))`,
           );
-          continue;
-        }
-        if (m.typname !== 'vector') {
-          problems.push(
-            `${SCHEMA}.${k} is ${m.typname}, not vector — the width contract is defined ` +
-              `over pgvector's 'vector' type only.`,
-          );
-          continue;
-        }
-        if (m.relkind === 'm') {
-          problems.push(
-            `${SCHEMA}.${k} is a MATERIALIZED view. Migration 727 deliberately REFUSES ` +
-              `these rather than guessing: a matview needs repopulating plus its own ` +
-              `indexes rebuilt, which a width migration cannot infer.`,
-          );
-          continue;
-        }
-        if (m.dims !== want.dims) {
-          problems.push(
-            `${SCHEMA}.${k} is vector(${m.dims}) but ${want.why} declares ${want.dims}.`,
-          );
-        }
+          findings = auditSurfaces(await measureVectorColumns(tx));
+          throw new Rollback();
+        });
+      } catch (err) {
+        if (!(err instanceof Rollback)) throw err;
       }
 
-      expect(problems, problems.join('\n')).toEqual([]);
+      const hit = findings.find((f) => f.includes(CONTROL));
+      expect(
+        hit,
+        `leg 3 did NOT report a new vector(384) surface — it would pass vacuously ` +
+          `against exactly the regression it exists to prevent. Findings: ${findings.join('; ')}`,
+      ).toBeDefined();
+      expect(hit).toContain('is NOT enumerated');
+
+      // ...and the rollback really happened, so this test cannot poison the
+      // shared baseline DB for every other file in the tier.
+      const [{ present }] = await sql<{ present: boolean }[]>`
+        SELECT to_regclass(${`${SCHEMA}.${CONTROL}`}) IS NOT NULL AS present`;
+      expect(present, 'the negative-control table SURVIVED the rollback').toBe(false);
     });
   });
 
