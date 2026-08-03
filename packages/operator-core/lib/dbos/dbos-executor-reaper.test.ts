@@ -411,6 +411,50 @@ describe('startExecutorReaper — the registered tick must genuinely AWAIT the r
     const staleSelect = calls.find((c) => c.text.includes('SELECT workflow_uuid'))!;
     expect(staleSelect.values).toContain(explicit);
   });
+
+  // ── EI-19441859859931739 recurrence guards ──────────────────────────────
+  // The two tests above proved the value was PLUMBED and landed in the right
+  // RANGE — and a float satisfies a range check perfectly, which is exactly why
+  // they were blind to the real defect for hours. `process.uptime()` returns a
+  // FLOAT (seconds), so the derived epoch carried a fractional part
+  // ("1785734149790.5593"); `created_at` is a BIGINT column, so Postgres
+  // rejected the literal outright with `invalid input syntax for type bigint`
+  // and aborted EVERY reap pass — logged at info as "non-fatal", so it read as
+  // benign noise while the reaper cleaned up nothing. Range-correct is not
+  // type-correct: assert the TYPE of what actually reaches the bind site.
+  it('EI-19441859859931739: every numeric value bound into the reap query is an INTEGER (bigint-safe)', async () => {
+    const { sql, calls } = fakeSql((text) => {
+      if (text.includes('SELECT executor_id')) return [];
+      if (text.includes('SELECT workflow_uuid')) return [];
+      return { count: 0 };
+    });
+
+    startExecutorReaper(sql);
+    await new Promise((r) => setTimeout(r, 0));
+
+    const staleSelect = calls.find((c) => c.text.includes('SELECT workflow_uuid'))!;
+    const numericValues = staleSelect.values.filter((v): v is number => typeof v === 'number');
+    expect(numericValues.length).toBeGreaterThan(0);
+    // listing the offenders (rather than a boolean) names the bad value on failure
+    expect(numericValues.filter((v) => !Number.isInteger(v))).toEqual([]);
+  });
+
+  it('EI-19441859859931739: an explicit FLOAT processStartedAtMs is floored at the bind site, not passed through', async () => {
+    // the exact value Postgres rejected in production
+    const floatEpoch = 1_785_734_149_790.5593;
+    const { sql, calls } = fakeSql((text) => {
+      if (text.includes('SELECT executor_id')) return [];
+      if (text.includes('SELECT workflow_uuid')) return [];
+      return { count: 0 };
+    });
+
+    startExecutorReaper(sql, { processStartedAtMs: floatEpoch });
+    await new Promise((r) => setTimeout(r, 0));
+
+    const staleSelect = calls.find((c) => c.text.includes('SELECT workflow_uuid'))!;
+    expect(staleSelect.values).toContain(Math.floor(floatEpoch));
+    expect(staleSelect.values).not.toContain(floatEpoch);
+  });
 });
 
 describe('clearStaleReaperLastError', () => {
