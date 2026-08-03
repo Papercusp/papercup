@@ -168,11 +168,25 @@ export async function countBackgroundPrimaries(sql: SqlLike): Promise<number> {
  * asserting its consequence. Returns null when nothing has ever fired (a fresh install),
  * which reads as "unknown" and preserves the count-only blocker.
  */
-export async function lastRoutineFireAgeSec(sql: SqlLike): Promise<number | null> {
-  const rows = await sql<Array<{ age_sec: number | null }>>`
-    SELECT EXTRACT(EPOCH FROM (now() - max(last_fired_at)))::float8 AS age_sec
-      FROM harness_shared.routines
-     WHERE active = true AND last_fired_at IS NOT NULL`;
+export async function lastRoutineFireAgeSec(
+  sql: SqlLike,
+  workspaceId?: string,
+): Promise<number | null> {
+  // SCOPE TO THE WORKSPACE BEING JUDGED. harness_shared.routines is multi-tenant, and an
+  // unscoped max() fails in the one direction that loses a real outage: another tenant's
+  // healthy routines would mask this workspace's dead ones and silently downgrade a
+  // genuine blocker to an advisory. Narrower evidence can only over-report the blocker,
+  // which is the safe way to be wrong.
+  const rows = workspaceId
+    ? await sql<Array<{ age_sec: number | null }>>`
+        SELECT EXTRACT(EPOCH FROM (now() - max(last_fired_at)))::float8 AS age_sec
+          FROM harness_shared.routines
+         WHERE active = true AND last_fired_at IS NOT NULL
+           AND workspace_id = ${workspaceId}`
+    : await sql<Array<{ age_sec: number | null }>>`
+        SELECT EXTRACT(EPOCH FROM (now() - max(last_fired_at)))::float8 AS age_sec
+          FROM harness_shared.routines
+         WHERE active = true AND last_fired_at IS NOT NULL`;
   const age = rows[0]?.age_sec;
   return typeof age === 'number' && Number.isFinite(age) ? age : null;
 }
@@ -279,7 +293,7 @@ export async function runSinglePrimaryCheck(
     try {
       const age = deps.routineFireAgeSec
         ? await deps.routineFireAgeSec()
-        : await lastRoutineFireAgeSec(getOrgPg().sql as SqlLike);
+        : await lastRoutineFireAgeSec(getOrgPg().sql as SqlLike, ws);
       evidence = { lastRoutineFireAgeSec: age };
     } catch {
       evidence = { lastRoutineFireAgeSec: null };

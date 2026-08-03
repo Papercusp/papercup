@@ -456,18 +456,65 @@ async function countRunsForHarness(harnessSlug: string, workspaceId?: string): P
   return rows[0]?.n ?? 0;
 }
 
+/** WI-7232 — the LIST half of the Design dashboard's feature queue.
+ *
+ *  Projected to exactly the three fields the list actually renders
+ *  (DesignDashboard.tsx: the row at `.d-feature-row` reads title + featureId +
+ *  designStatus, and the bucket counts/filter read designStatus). Everything
+ *  else the detail card needs now comes from `designFeatures.detail` below.
+ *
+ *  `summary` was 383,500 B — 81.78% of a 521,715 B payload — and only ever
+ *  rendered for the ONE selected feature, so 390 summaries shipped to render at
+ *  most one. Same P-006/P-007 list/detail split already applied to
+ *  `featuresConsolidated.bySlug` + `.detail`.
+ *
+ *  ⚠ `designStatus` is deliberately NOT null-omitted even though it is null on
+ *  every current row: the consumer's pending filter tests `=== null`, and an
+ *  omitted key reads back as `undefined`, which would silently empty that
+ *  bucket. Byte measurement cannot catch that, so the field stays.
+ *
+ *  `needs_design` is the WHERE clause (so it was `true` on every row) and
+ *  `updated_ts` is the ORDER BY — neither is read by any consumer, and ordering
+ *  does not require selecting the column.
+ */
 async function resolveDesignFeatures(args: { harnessSlug: string; workspaceId: string }): Promise<unknown[]> {
   const { getOrgPg } = await import('@papercusp/db-org');
   const { harnessSlug, workspaceId } = args;
+  const { sql } = getOrgPg();
+  const rows = await sql`
+    SELECT feature_id, title, design_status
+    FROM harness_shared.harness_features_consolidated
+    WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug} AND needs_design = TRUE
+    ORDER BY updated_ts DESC NULLS LAST
+    LIMIT 500
+  `;
+  return rows.map((r) => ({
+    featureId: r.feature_id,
+    title: r.title,
+    designStatus: r.design_status,
+  })) as unknown[];
+}
+
+/** WI-7232 — the DETAIL half: one feature, every field the detail card reads.
+ *  Carries `summary` (and status / designSpecId / discardedDesignWork), which
+ *  the list above no longer ships. Bridged to the same backing tables as
+ *  `designFeatures.byHarness` so an open detail card live-refreshes on the very
+ *  writes that move its list row. */
+async function resolveDesignFeatureDetail(args: {
+  harnessSlug: string;
+  workspaceId: string;
+  featureId: string;
+}): Promise<unknown[]> {
+  const { getOrgPg } = await import('@papercusp/db-org');
+  const { harnessSlug, workspaceId, featureId } = args;
   const { sql } = getOrgPg();
   const rows = await sql`
     SELECT
       feature_id, title, summary, status, needs_design,
       design_status, design_spec_id, discarded_design_work, updated_ts
     FROM harness_shared.harness_features_consolidated
-    WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug} AND needs_design = TRUE
-    ORDER BY updated_ts DESC NULLS LAST
-    LIMIT 500
+    WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug} AND feature_id = ${featureId}
+    LIMIT 1
   `;
   return rows.map((r) => ({
     featureId: r.feature_id,
@@ -861,6 +908,24 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       workspaceId: z.string().default('default'),
     }),
     resolve: async (args) => resolveDesignFeatures(args as { harnessSlug: string; workspaceId: string }),
+  },
+  // WI-7232: the on-demand single-feature read carrying `summary` (and the other
+  // detail-card-only fields) dropped from the list above.
+  //
+  // The design-state columns (needs_design / design_status / design_spec_id /
+  // discarded_design_work) live on work_items post-374 and reach this read through
+  // the harness_features_consolidated compat VIEW — so work_items is the real
+  // invalidation producer and the view is listed alongside it, matching how the
+  // byHarness sibling is bridged in table-to-query-names.ts.
+  'designFeatures.detail': {
+    backingTables: ['harness_shared.work_items', 'harness_shared.harness_features_consolidated'],
+    argsSchema: z.object({
+      harnessSlug: z.string().min(1),
+      featureId: z.string().min(1),
+      workspaceId: z.string().default('default'),
+    }),
+    resolve: async (args) =>
+      resolveDesignFeatureDetail(args as { harnessSlug: string; workspaceId: string; featureId: string }),
   },
   'designSketches.byFeature': {
     argsSchema: z.object({

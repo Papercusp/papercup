@@ -45,7 +45,10 @@ import { getTelemetryHealth } from "../../projected-tool-deps";
 import { supervisionSnapshot } from "../../supervision/unit-reconciler";
 import { substrateSidecarSupervisionStatus } from "../../sync/hyperbee/substrate-sidecar-spawn";
 import { spawnerSidecarSupervisionStatus } from "../../fleet/spawner-sidecar-spawn";
-import { buildServiceHealthDiagnostic, overlayNodeChildSupervision, overlaySystemdRestartRecency } from "./service_health";
+import { buildMcpProxyTransportBlock, buildServiceHealthDiagnostic, overlayNodeChildSupervision, overlaySystemdRestartRecency } from "./service_health";
+
+/** Fixed clock for the transport-block tests — the summarizer windows on it. */
+const NOW_MS = Date.parse("2026-08-02T12:00:00.000Z");
 const probeM = vi.mocked(probeAll);
 const supervisionM = vi.mocked(supervisionSnapshot);
 const substrateM = vi.mocked(substrateSidecarSupervisionStatus);
@@ -105,6 +108,58 @@ describe("dev:service_health handler", () => {
     expect(substrateM).toHaveBeenCalledTimes(1);
     expect(spawnerM).toHaveBeenCalledTimes(1);
     expect(b.supervision).toHaveLength(3);
+  });
+});
+
+describe("buildMcpProxyTransportBlock (D-005, pure given an injected reader)", () => {
+  const at = (kind: string, extra: Record<string, unknown> = {}) => ({
+    ts: new Date(NOW_MS - 60_000).toISOString(),
+    kind,
+    listenPort: 9071,
+    ...extra,
+  });
+
+  it("OMITS the key entirely when nothing is notable — a reassuring zero would train the reader to skip it", () => {
+    expect(buildMcpProxyTransportBlock(() => [], NOW_MS)).toEqual({});
+  });
+
+  it("stays silent on an UNREADABLE ledger rather than asserting a false all-clear", () => {
+    expect(buildMcpProxyTransportBlock(() => null, NOW_MS)).toEqual({});
+  });
+
+  it("does NOT surface on `recovered` alone — an absorbed deploy blip is the resilience working", () => {
+    expect(buildMcpProxyTransportBlock(() => [at("recovered", { status: 200 })], NOW_MS)).toEqual({});
+  });
+
+  it("surfaces a handshake stall with a note that refuses the benign reading (WI-6740)", () => {
+    const out = buildMcpProxyTransportBlock(() => [at("handshake_timeout_retry")], NOW_MS) as {
+      mcpProxyTransport: { handshakeStalls: number; note: string };
+    };
+    expect(out.mcpProxyTransport.handshakeStalls).toBe(1);
+    // The whole point: a survived stall must not read as health.
+    expect(out.mcpProxyTransport.note).toMatch(/Not benign/);
+    expect(out.mcpProxyTransport.note).toMatch(/tool-dark/);
+  });
+
+  it("surfaces hard failures", () => {
+    const out = buildMcpProxyTransportBlock(
+      () => [at("exhausted_refused", { status: 503 })],
+      NOW_MS,
+    ) as { mcpProxyTransport: { hardFailures: number } };
+    expect(out.mcpProxyTransport.hardFailures).toBe(1);
+  });
+
+  it("inherits the listenPort:0 exclusion from the shared summarizer — test/sidecar noise never surfaces", () => {
+    // ~18% of live ledger records are written by test/sidecar proxies (EI-19388683897769817).
+    // This block must not re-implement the filter; it must inherit it by delegating.
+    const out = buildMcpProxyTransportBlock(
+      () => [
+        { ts: new Date(NOW_MS - 60_000).toISOString(), kind: "exhausted_refused", status: 503, listenPort: 0 },
+        { ts: new Date(NOW_MS - 60_000).toISOString(), kind: "handshake_timeout_retry", listenPort: 0 },
+      ],
+      NOW_MS,
+    );
+    expect(out).toEqual({});
   });
 });
 

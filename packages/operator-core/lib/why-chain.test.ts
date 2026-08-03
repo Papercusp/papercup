@@ -23,6 +23,8 @@ const deploy = (over: Partial<DevDeployState> = {}): DevDeployState =>
     integrationBranch: 'main',
     stagingHead: null,
     ready: null,
+    originHead: null,
+    stagingAheadOfOrigin: null,
     deployed: null,
     deployedAtMs: null,
     deployedBehindStaging: 0,
@@ -188,6 +190,55 @@ describe('computeWhyChain (EI-7349)', () => {
     expect(res.stages[1].reason).toContain('2 commit');
     expect(res.stages[1].reason).toContain('not yet deployed');
     expect(res.rootCause?.stage).toBe('deploy');
+  });
+
+  // ── EI-19341938682536275: local-unpushed-to-origin is NEVER "normal", unlike the staging
+  // buffer above. dev:why used to report "DEPLOY: ok … 99 commits … normal" through a 6h origin
+  // freeze because it never looked past LOCAL HEAD at all. These pin the fix.
+  describe('EI-19341938682536275 — unpushed-to-origin is the safety-critical leg, never glossed as normal', () => {
+    it('commits unpushed to origin degrade the deploy stage, even with an otherwise-healthy pipeline', async () => {
+      const res = await computeWhyChain(
+        deps({ snap: snap({ deploy: { stagingAheadOfOrigin: 99, greenPinBehindStaging: 99, deployedBehindGreenPin: 0 } }) }),
+      );
+      expect(res.stages[1].status).toBe('degraded');
+      expect(res.stages[1].reason).toContain('99 commit');
+      expect(res.stages[1].reason).toContain('origin');
+      expect(res.stages[1].reason).not.toContain('normal');
+      expect(res.rootCause?.stage).toBe('deploy');
+    });
+
+    it('a SMALL unpushed count is degraded too — it is never "normal", however small', async () => {
+      const res = await computeWhyChain(deps({ snap: snap({ deploy: { stagingAheadOfOrigin: 1 } }) }));
+      expect(res.stages[1].status).toBe('degraded');
+      expect(res.stages[1].reason).toContain('1 commit');
+      expect(res.stages[1].reason).not.toContain('normal');
+    });
+
+    it('unpushed-to-origin outranks the ordinary staging buffer AND the real deploy gap (checked first)', async () => {
+      const res = await computeWhyChain(
+        deps({
+          snap: snap({ deploy: { stagingAheadOfOrigin: 5, deployedBehindGreenPin: 2, greenPinBehindStaging: 5 } }),
+        }),
+      );
+      expect(res.stages[1].reason).toContain('origin');
+      expect(res.stages[1].reason).not.toContain('not yet deployed');
+    });
+
+    it('stagingAheadOfOrigin: 0 (fully caught up) does NOT degrade the deploy stage', async () => {
+      const res = await computeWhyChain(
+        deps({ snap: snap({ deploy: { stagingAheadOfOrigin: 0, greenPinBehindStaging: 10 } }) }),
+      );
+      expect(res.stages[1].status).toBe('ok');
+      expect(res.rootCause).toBeNull();
+    });
+
+    it('stagingAheadOfOrigin: null (unmeasured — e.g. no origin remote) preserves prior behaviour', async () => {
+      const res = await computeWhyChain(
+        deps({ snap: snap({ deploy: { stagingAheadOfOrigin: null, greenPinBehindStaging: 10, deployedBehindGreenPin: 0 } }) }),
+      );
+      expect(res.stages[1].status).toBe('ok');
+      expect(res.stages[1].reason).toContain('normal');
+    });
   });
 
   it('all accounts unavailable: pool stage blocked', async () => {

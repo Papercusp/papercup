@@ -22,13 +22,21 @@ import { useWorkspaceId } from '@/lib/use-workspace-id';
 import SketchPane from './SketchPane';
 import RegressionPane from './RegressionPane';
 
+/** The LIST row (WI-7232) — exactly the three fields the queue renders.
+ *  `summary` and the other detail-card-only fields moved to
+ *  `designFeatures.detail`: shipping 390 summaries to render at most one cost
+ *  81.78% of a 521,715 B payload. */
 interface DesignFeature {
   featureId: string;
   title: string | null;
+  designStatus: 'pending' | 'accepted' | 'ignored' | null;
+}
+
+/** The on-demand single-feature read backing the detail card. */
+interface DesignFeatureDetail extends DesignFeature {
   summary: string | null;
   status: string | null;
   needsDesign: boolean;
-  designStatus: 'pending' | 'accepted' | 'ignored' | null;
   designSpecId: string | null;
   discardedDesignWork: boolean;
   updatedTs: number | null;
@@ -124,10 +132,22 @@ export default function DesignDashboard({ slug }: { slug: string }) {
     return features.filter((f) => f.designStatus === bucket);
   }, [features, bucket]);
 
-  const selectedFeature = useMemo(
+  // The list row still gates whether the detail card shows at all (a feature the
+  // active bucket filters out stays hidden, as before) AND supplies the three
+  // fields it shares with the detail read, so the header renders with no flicker.
+  const selectedListRow = useMemo(
     () => filteredFeatures.find((f) => f.featureId === selectedFeatureId) ?? null,
     [filteredFeatures, selectedFeatureId],
   );
+
+  // WI-7232: the heavy fields (summary, status, designSpecId, discardedDesignWork)
+  // are fetched for the ONE selected feature instead of all 390.
+  const featureDetailQ = useSyncQuery<DesignFeatureDetail>({
+    queryName: 'designFeatures.detail',
+    args: { harnessSlug: slug, workspaceId: workspaceId ?? 'default', featureId: selectedFeatureId ?? '' },
+    enabled: Boolean(slug && selectedListRow),
+  });
+  const selectedDetail = featureDetailQ.data?.[0] ?? null;
 
   return (
     <div className="d-root pc-animate-in pc-animate-in--fast">
@@ -213,7 +233,14 @@ export default function DesignDashboard({ slug }: { slug: string }) {
         </aside>
 
         <main className="d-content">
-          {activePane === 'features' && <FeatureDetailPane feature={selectedFeature} counts={counts} />}
+          {activePane === 'features' && (
+            <FeatureDetailPane
+              listRow={selectedListRow}
+              detail={selectedDetail}
+              detailLoading={featureDetailQ.loading}
+              counts={counts}
+            />
+          )}
           {activePane === 'memos' && (
             <MemosPane
               memos={memosQ.data ?? []}
@@ -268,7 +295,21 @@ function memoStatusChipClass(status: string): string {
   return 'd-chip d-chip--pending';
 }
 
-function FeatureDetailPane({ feature, counts }: { feature: DesignFeature | null; counts: Record<Bucket, number> }) {
+/** WI-7232: the shared fields (title / featureId / designStatus) come from the
+ *  LIST row so the header paints immediately; only the heavy detail-only fields
+ *  wait on `designFeatures.detail`. */
+function FeatureDetailPane({
+  listRow,
+  detail,
+  detailLoading,
+  counts,
+}: {
+  listRow: DesignFeature | null;
+  detail: DesignFeatureDetail | null;
+  detailLoading: boolean;
+  counts: Record<Bucket, number>;
+}) {
+  const feature = listRow;
   if (!feature) {
     return (
       <section className="d-empty-card">
@@ -302,21 +343,27 @@ function FeatureDetailPane({ feature, counts }: { feature: DesignFeature | null;
         </div>
         <div>
           <dt>Status</dt>
-          <dd>{feature.status ?? '—'}</dd>
+          <dd>{detail ? (detail.status ?? '—') : '…'}</dd>
         </div>
         <div>
           <dt>Design spec</dt>
-          <dd><code>{feature.designSpecId ?? '—'}</code></dd>
+          <dd><code>{detail ? (detail.designSpecId ?? '—') : '…'}</code></dd>
         </div>
         <div>
           <dt>Discarded work</dt>
-          <dd>{feature.discardedDesignWork ? 'yes' : 'no'}</dd>
+          <dd>{detail ? (detail.discardedDesignWork ? 'yes' : 'no') : '…'}</dd>
         </div>
       </div>
-      {feature.summary && (
+      {detailLoading && !detail && (
         <section className="d-summary-card">
           <h3>Summary</h3>
-          <p>{feature.summary}</p>
+          <p>Loading…</p>
+        </section>
+      )}
+      {detail?.summary && (
+        <section className="d-summary-card">
+          <h3>Summary</h3>
+          <p>{detail.summary}</p>
         </section>
       )}
     </article>

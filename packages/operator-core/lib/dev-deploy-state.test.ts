@@ -255,6 +255,50 @@ describe('devDeployState', () => {
     expect(absentRefError).not.toBe(brokenInvocationError);
     expect(absentRefError).not.toContain('git failed resolving');
   });
+
+  // EI-19341938682536275: dev:why used to count the strand from LOCAL HEAD only, so an
+  // origin push freeze read identically to the normal pre-gate buffer ("99 commits …
+  // normal"). These pin the new local→origin leg end-to-end against a real remote.
+  describe('originHead / stagingAheadOfOrigin (EI-19341938682536275)', () => {
+    it('is null, with no errors[], when the repo has no `origin` remote at all', async () => {
+      // The shared `integration` fixture (beforeAll above) never configures a remote —
+      // this is the common no-remote state (packaged install, a fresh local-only checkout)
+      // and must degrade quietly, never as a resolver fault.
+      const st = await devDeployState();
+      expect(st.originHead).toBeNull();
+      expect(st.stagingAheadOfOrigin).toBeNull();
+      expect(st.errors).toEqual([]);
+    });
+
+    it('resolves originHead + reports 0 unpushed once origin is caught up, then N once local advances past it', async () => {
+      const bare = path.join(tmp, 'origin-bare.git');
+      execFileSync('git', ['init', '-q', '--bare', bare]);
+      git(integration, ['remote', 'add', 'origin', bare]);
+      try {
+        git(integration, ['push', '-q', 'origin', `main:main`]);
+        const caughtUp = await devDeployState();
+        expect(caughtUp.originHead?.sha).toBe(shaC);
+        expect(caughtUp.stagingAheadOfOrigin).toBe(0);
+
+        // Local advances with a commit that never reaches origin — the exact WI-6996
+        // shape (a push that stops working while local keeps committing).
+        const shaD = commit(integration, 'f', 'D');
+        const behind = await devDeployState();
+        expect(behind.originHead?.sha).toBe(shaC); // origin's remote-tracking ref: unmoved
+        expect(behind.stagingHead?.sha).toBe(shaD);
+        expect(behind.stagingAheadOfOrigin).toBe(1); // never "normal" — see why-chain.test.ts
+
+        // Catches back up once pushed.
+        git(integration, ['push', '-q', 'origin', `main:main`]);
+        const caughtUpAgain = await devDeployState();
+        expect(caughtUpAgain.stagingAheadOfOrigin).toBe(0);
+      } finally {
+        git(integration, ['remote', 'remove', 'origin']);
+        // Restore `main` to shaC so it doesn't leak the extra commit into later tests.
+        git(integration, ['reset', '-q', '--hard', shaC]);
+      }
+    });
+  });
 });
 
 describe('devDeployState caching (P-015 — collapse the git fan-out under the poll storm)', () => {

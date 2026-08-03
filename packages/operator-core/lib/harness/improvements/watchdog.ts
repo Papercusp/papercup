@@ -37,7 +37,7 @@ import { join as pathJoin, isAbsolute as pathIsAbsolute } from 'node:path';
 import { getOrgPg } from '@papercusp/db-org';
 import { getHarnessAdminUrl } from '../../embedded-pg-discovery';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
-import { lastServiceHealth, lastServiceHealthAt, probeAll, type ProbeResult } from '../../service-health';
+import { lastServiceHealth, lastServiceHealthAt, probeAll, recordProbeResults, type ProbeResult } from '../../service-health';
 import { STALE_PLAN_CLAIM_GRACE_MS } from '../../plan-items/stale-claims';
 import { checkMigrationDrift } from '../../migration-drift';
 import { findIssuesByWatchdogKeys } from '../../issues-engineer';
@@ -1585,8 +1585,14 @@ export async function serviceDownCollectorResult(opts: {
     try {
       const probe = opts.probe ?? (() => probeAll());
       const fresh = await probe();
+      // Route through the SAME confirm-ticks debounce the periodic 60s tick uses
+      // (recordProbeResults) — a raw single fresh probe fed straight to
+      // collectServiceDownSignals would bypass DOWN_CONFIRM_TICKS entirely and
+      // reintroduce the single-tick flap class WI-6146 damped staging-api/
+      // desktop/oddsmith-sidecar against (see recordProbeResults' doc comment).
+      const debounced = recordProbeResults(fresh);
       return {
-        signals: collectServiceDownSignals(fresh),
+        signals: collectServiceDownSignals(debounced),
         note:
           `stale-service-health: snapshot ${ageDesc} ` +
           `(> ${Math.round(maxStaleMs / 1000)}s) — ran a fresh inline probe (the periodic probe workflow may have stalled)`,

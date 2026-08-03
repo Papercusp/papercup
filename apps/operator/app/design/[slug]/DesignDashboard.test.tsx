@@ -14,33 +14,57 @@ import { withNuqsTestingAdapter } from 'nuqs/adapters/testing';
 vi.mock('./SketchPane', () => ({ default: () => <div data-testid="sketch-pane" /> }));
 vi.mock('./RegressionPane', () => ({ default: () => <div data-testid="regression-pane" /> }));
 
-const { syncRows, invalidateMock } = vi.hoisted(() => ({
+const { syncRows, detailArgsSeen, invalidateMock } = vi.hoisted(() => ({
   syncRows: {
     features: [] as unknown[],
+    featureDetail: [] as unknown[],
     memos: [] as unknown[],
     registry: [] as unknown[],
     tokens: [] as unknown[],
   },
+  // WI-7232: records every designFeatures.detail subscription so a test can
+  // assert the read is ENABLED only for a selected feature, not for all 390.
+  detailArgsSeen: [] as Array<{ featureId: unknown; enabled: boolean }>,
   invalidateMock: vi.fn(),
 }));
 
 vi.mock('@papercusp/sync', () => ({
-  useSyncQuery: ({ queryName }: { queryName: string }) => ({
-    data:
+  useSyncQuery: ({
+    queryName,
+    args,
+    enabled,
+  }: {
+    queryName: string;
+    args?: Record<string, unknown>;
+    enabled?: boolean;
+  }) => {
+    // The real hook returns nothing while disabled — model that, or the detail
+    // read would look free and the enabled-gating regression would go unseen.
+    const on = enabled !== false;
+    if (queryName === 'designFeatures.detail') {
+      detailArgsSeen.push({ featureId: args?.featureId, enabled: on });
+    }
+    const data =
       queryName === 'designFeatures.byHarness' ? syncRows.features
-        : queryName === 'designMemos.list' ? syncRows.memos
-          : queryName === 'designRegistry.search' ? syncRows.registry
-            : queryName === 'designTokens.list' ? syncRows.tokens
-              : [],
-    loading: false,
-    fetching: false,
-    error: null,
-    transport: 'SSE',
-    invalidate: invalidateMock,
-  }),
+        : queryName === 'designFeatures.detail'
+          ? on ? syncRows.featureDetail.filter((r) => (r as { featureId?: string }).featureId === args?.featureId) : []
+          : queryName === 'designMemos.list' ? syncRows.memos
+            : queryName === 'designRegistry.search' ? syncRows.registry
+              : queryName === 'designTokens.list' ? syncRows.tokens
+                : [];
+    return { data, loading: false, fetching: false, error: null, transport: 'SSE', invalidate: invalidateMock };
+  },
 }));
 
-function mkFeature(over: Record<string, unknown> = {}) {
+/** WI-7232 — the LIST row carries EXACTLY these three fields. Deliberately not
+ *  a superset: a fixture richer than the real payload lets the component read a
+ *  field the wire no longer carries and still go green. */
+function mkListRow(over: Record<string, unknown> = {}) {
+  return { featureId: 'F-1', title: 'Feature one', designStatus: 'pending', ...over };
+}
+
+/** The on-demand detail row — the only place `summary` now lives. */
+function mkDetail(over: Record<string, unknown> = {}) {
   return {
     featureId: 'F-1',
     title: 'Feature one',
@@ -56,9 +80,15 @@ function mkFeature(over: Record<string, unknown> = {}) {
 }
 
 const FEATURES = [
-  mkFeature({ featureId: 'F-1', title: 'Alpha', designStatus: 'pending' }),
-  mkFeature({ featureId: 'F-2', title: 'Beta', designStatus: 'accepted' }),
-  mkFeature({ featureId: 'F-3', title: 'Gamma', designStatus: null }),
+  mkListRow({ featureId: 'F-1', title: 'Alpha', designStatus: 'pending' }),
+  mkListRow({ featureId: 'F-2', title: 'Beta', designStatus: 'accepted' }),
+  mkListRow({ featureId: 'F-3', title: 'Gamma', designStatus: null }),
+];
+
+const FEATURE_DETAILS = [
+  mkDetail({ featureId: 'F-1', title: 'Alpha', designStatus: 'pending', summary: 'Alpha implementation summary.', status: 'in_progress' }),
+  mkDetail({ featureId: 'F-2', title: 'Beta', designStatus: 'accepted', summary: 'Beta implementation summary.', designSpecId: 'DS-9' }),
+  mkDetail({ featureId: 'F-3', title: 'Gamma', designStatus: null, summary: null, discardedDesignWork: true }),
 ];
 
 import DesignDashboard from './DesignDashboard';
@@ -69,9 +99,11 @@ function renderAt(searchParams = '') {
 
 beforeEach(() => {
   syncRows.features = FEATURES;
+  syncRows.featureDetail = FEATURE_DETAILS;
   syncRows.memos = [];
   syncRows.registry = [];
   syncRows.tokens = [];
+  detailArgsSeen.length = 0;
   invalidateMock.mockClear();
 });
 afterEach(() => {
@@ -126,6 +158,61 @@ describe('<DesignDashboard />', () => {
   it('mounts the stubbed sketch pane for ?pane=sketch', async () => {
     renderAt('?pane=sketch');
     await waitFor(() => expect(screen.getByTestId('sketch-pane')).toBeTruthy());
+  });
+
+  // ── WI-7232: the list/detail split ───────────────────────────────────────
+  //
+  // `summary` was 383,500 B of a 521,715 B payload (81.78%) and only ever
+  // rendered for the ONE selected feature. These pin BOTH halves: the list must
+  // stay narrow, and every field the detail card reads must still be reachable.
+
+  it('the LIST row carries exactly featureId/title/designStatus — no summary (WI-7232)', () => {
+    for (const row of FEATURES) {
+      expect(Object.keys(row).sort()).toEqual(['designStatus', 'featureId', 'title']);
+      // Assert KEY ABSENCE, not a null value: a `summary: null` would still be
+      // 390 keys on the wire and would read as "cut" when it is not.
+      expect('summary' in row).toBe(false);
+      expect('status' in row).toBe(false);
+      expect('designSpecId' in row).toBe(false);
+      expect('discardedDesignWork' in row).toBe(false);
+      expect('needsDesign' in row).toBe(false);
+      expect('updatedTs' in row).toBe(false);
+    }
+  });
+
+  it('does NOT subscribe to designFeatures.detail until a feature is selected (WI-7232)', async () => {
+    renderAt();
+    await waitFor(() => expect(screen.getByText('Alpha')).toBeTruthy());
+    // The hook is mounted unconditionally (rules of hooks) but must be disabled.
+    expect(detailArgsSeen.length).toBeGreaterThan(0);
+    expect(detailArgsSeen.every((c) => c.enabled === false)).toBe(true);
+  });
+
+  it('renders the summary from the DETAIL read, for the selected feature only (WI-7232)', async () => {
+    renderAt();
+    await waitFor(() => expect(screen.getByText('Alpha')).toBeTruthy());
+    // Nothing rendered before selection — the summaries are not in the list.
+    expect(screen.queryByText('Alpha implementation summary.')).toBeNull();
+
+    fireEvent.click(screen.getByText('Alpha'));
+
+    await waitFor(() => expect(screen.getByText('Alpha implementation summary.')).toBeTruthy());
+    // Exactly ONE feature's summary is fetched, not all three.
+    expect(screen.queryByText('Beta implementation summary.')).toBeNull();
+    expect(detailArgsSeen.some((c) => c.enabled && c.featureId === 'F-1')).toBe(true);
+    expect(detailArgsSeen.some((c) => c.enabled && c.featureId === 'F-2')).toBe(false);
+  });
+
+  it('every detail-card field survives the split — status, design spec, discarded work (WI-7232)', async () => {
+    renderAt('?bucket=accepted');
+    await waitFor(() => expect(screen.getByText('Beta')).toBeTruthy());
+    fireEvent.click(screen.getByText('Beta'));
+
+    // Beta's detail row carries designSpecId DS-9 and discardedDesignWork false.
+    await waitFor(() => expect(screen.getByText('DS-9')).toBeTruthy());
+    expect(screen.getByText('Beta implementation summary.')).toBeTruthy();
+    const grid = screen.getByText('Discarded work').closest('div')!;
+    expect(grid.textContent).toContain('no');
   });
 
   it('clicking the accepted bucket filters the queue to accepted features', async () => {

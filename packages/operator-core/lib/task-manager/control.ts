@@ -28,7 +28,26 @@ import { absCgroupDir, nodeCgroupFs, readCgroupProcs, type CgroupFs } from './cg
 import { closeTask, getSubtree, getTask } from './store';
 import { isLiveOwnedState, type TaskRow } from './types';
 
-const execFileAsync = promisify(execFile);
+// Lazily promisified (NOT `const execFileAsync = promisify(execFile)` at module
+// scope): this module is reachable via a transitive import chain from test files
+// that narrowly mock `node:child_process` for their own subprocess assertions —
+// under such a mock the `execFile` import binding resolves to `undefined`, and
+// eagerly calling `promisify(undefined)` at module-eval time throws for every such
+// suite, even ones that never call `systemctl` (lint:no-eager-execfile-promisify /
+// EI-10161; same pattern as watchdog.ts's `execFileP`). Deferring the promisify to
+// first actual call means a transitive importer that never exercises this function
+// never pays the cost. The function form (not a `const`) is also what lets
+// `ControlDeps.execFileAsync?: typeof execFileAsync` keep working unchanged below.
+type ExecFileAsync = (
+  file: string,
+  args: string[],
+  opts?: Record<string, unknown>,
+) => Promise<{ stdout: string; stderr: string }>;
+let cachedExecFileAsync: ExecFileAsync | null = null;
+function execFileAsync(file: string, args: string[], opts?: Record<string, unknown>): Promise<{ stdout: string; stderr: string }> {
+  if (!cachedExecFileAsync) cachedExecFileAsync = promisify(execFile) as unknown as ExecFileAsync;
+  return cachedExecFileAsync(file, args, opts);
+}
 
 export type ControlOutcome =
   | { ok: true; taskId: string; action: string; detail?: string }

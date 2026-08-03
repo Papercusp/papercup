@@ -109,6 +109,7 @@ export const SYNC_QUERY_FIXTURES: Record<string, QueryFixture> = {
   'conversations.agentMessageDetail': null, // a specific coord_event_log msg_id
   'conversations.deliberationDetail': null,
   'conversations.questionDetail': null,
+  'designFeatures.detail': null, // a specific featureId (WI-7232 list/detail split)
   'designSketches.byFeature': null,
   'dockLayouts.byName': null,
   'evals.benchRun': null,

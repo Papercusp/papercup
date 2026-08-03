@@ -38,7 +38,25 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { isReservedServicePort } from './reserved-service-ports';
 
-const execFileAsync = promisify(execFile);
+// Lazily promisified (NOT `const execFileAsync = promisify(execFile)` at module
+// scope): this module is reachable via a transitive import chain from test files
+// that narrowly mock `node:child_process` for their own subprocess assertions —
+// under such a mock the `execFile` import binding resolves to `undefined`, and
+// eagerly calling `promisify(undefined)` at module-eval time throws for every such
+// suite, even ones that never call `listListeningSockets` (lint:no-eager-execfile-
+// promisify / EI-10161; same pattern as watchdog.ts's `execFileP`). Deferring the
+// promisify to first actual call means a transitive importer that never exercises
+// this function never pays the cost.
+type ExecFileAsync = (
+  file: string,
+  args: string[],
+  opts?: Record<string, unknown>,
+) => Promise<{ stdout: string; stderr: string }>;
+let cachedExecFileAsync: ExecFileAsync | null = null;
+function execFileAsync(file: string, args: string[], opts?: Record<string, unknown>): Promise<{ stdout: string; stderr: string }> {
+  if (!cachedExecFileAsync) cachedExecFileAsync = promisify(execFile) as unknown as ExecFileAsync;
+  return cachedExecFileAsync(file, args, opts);
+}
 
 /** Default cap on returned rows — this host has ~240 listening sockets. */
 export const LISTENING_SOCKETS_DEFAULT_LIMIT = 60;

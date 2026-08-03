@@ -6,17 +6,9 @@
  * only the column the migration just introduced).
  */
 import { describe, expect, it } from 'vitest';
-// @ts-expect-error — .mjs guard script, no type declarations by design
-import {
-  columnNamesFromClauses,
-  extractIntroducedColumns,
-  findAlterTableAddColumns,
-  findCreateTables,
-  findDrift,
-  findFixtureGaps,
-  formatReport,
-  splitTopLevelClauses,
-} from '../../../../scripts/check-migration-fixture-drift.mjs';
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore — pure JS guard script, no .d.ts; imported for its parsing primitives. Kept on ONE line: @ts-ignore suppresses only the line that follows it, so a multi-line import leaves the module specifier unguarded and TS7016 reds the build (and a multi-line @ts-expect-error additionally reds as an unused directive).
+import { columnNamesFromClauses, extractIntroducedColumns, findAlterTableAddColumns, findCreateTables, findDrift, findFixtureGaps, formatReport, splitTopLevelClauses } from '../../../../scripts/check-migration-fixture-drift.mjs';
 
 describe('findCreateTables', () => {
   it('extracts columns from a CREATE TABLE IF NOT EXISTS harness_shared.<table> block', () => {

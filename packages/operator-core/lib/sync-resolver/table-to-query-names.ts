@@ -341,6 +341,11 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
     // feature lands on work_items + fires work_items.changed, so the dashboard push-updates
     // instead of going stale until interaction.
     'designFeatures.byHarness',
+    // WI-7232: the single-feature on-demand detail read (carries the `summary`
+    // dropped from designFeatures.byHarness) — bridged wherever byHarness is, so
+    // an open detail card live-refreshes its Summary on the same design-state
+    // writes that move the list row.
+    'designFeatures.detail',
     // featuresConsolidated.byHive (WI-259 P-006) — the cross-member rollup. A
     // FEDERATED content write lands on work_items under the AUTHOR member's slug and
     // fires work_items.changed (emit_change_notify), so a peer member's new/edited
@@ -393,6 +398,8 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
     // above; this key is a compat VIEW (COVERAGE_EXEMPT) so the real .changed comes from
     // work_items, but listing it keeps the two arrays in sync.
     'designFeatures.byHarness',
+    // WI-7232: single-feature on-demand detail (carries `summary` dropped from byHarness).
+    'designFeatures.detail',
   ],
   'harness_shared.harness_issues_consolidated': ['issuesConsolidated.bySlug'],
   // engineer_issues = the issue-family compat view over work_items (post-374; the base

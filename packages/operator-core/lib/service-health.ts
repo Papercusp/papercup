@@ -1032,16 +1032,42 @@ export function lastServiceHealthAt(): number | null {
 }
 
 /**
+ * Debounce raw probe results against the persistent confirm-ticks streaks
+ * (`DOWN_CONFIRM_TICKS` / `applyDownConfirmDebounce`) and update the module
+ * snapshot (`lastServiceHealth()` / `lastServiceHealthAt()`) — the ONE shared
+ * source of truth every consumer reads (the coord broadcast below, `dev:
+ * service_health`, and the watchdog's `service-down` collector).
+ *
+ * Exported so a caller that probes OUTSIDE the normal 60s tick applies the
+ * SAME confirm-ticks damping instead of feeding a raw, undebounced single
+ * probe straight to its own consumer. Concretely: `serviceDownCollectorResult`'s
+ * inline-probe-on-stale fallback (R4-7, watchdog.ts) used to call `probeAll()`
+ * directly and hand the raw result to `collectServiceDownSignals` — bypassing
+ * `applyDownConfirmDebounce` entirely and silently reintroducing the exact
+ * single-tick flap class WI-6146 damped `staging-api`/`desktop`/
+ * `oddsmith-sidecar` against, specifically for the watchdog's auto-filed
+ * `service-down` bug tickets (which never went through the periodic tick's
+ * debounce at all). Live-confirmed: EI-19363229944812169 filed a
+ * `service-down: staging-api` bug ~51s after a routine ≤13s restart-drain
+ * cycle — well inside a single damped streak, and exactly the shape this
+ * fallback path could produce undebounced.
+ */
+export function recordProbeResults(rawResults: ProbeResult[]): ProbeResult[] {
+  const { results, nextStreaks } = applyDownConfirmDebounce(rawResults, downStreaks);
+  downStreaks = nextStreaks;
+  lastResults = results;
+  lastResultsAt = Date.now();
+  return results;
+}
+
+/**
  * One service-health tick: probe all endpoints, broadcast a coord MESSAGE
  * (not notify — D-002) on each up/down transition. Driven by the in-process
  * periodic scheduler. Returns the transitions for logging/tests.
  */
 export async function runServiceHealthTick(): Promise<{ checked: number; transitions: HealthTransition[] }> {
   const rawResults = await probeAll();
-  const { results, nextStreaks } = applyDownConfirmDebounce(rawResults, downStreaks);
-  downStreaks = nextStreaks;
-  lastResults = results;
-  lastResultsAt = Date.now();
+  const results = recordProbeResults(rawResults);
   const { transitions, next } = diffHealth(lastHealth, results);
   lastHealth = next;
   for (const t of transitions) {

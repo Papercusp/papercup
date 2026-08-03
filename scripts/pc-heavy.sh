@@ -43,6 +43,14 @@
 #                         re-run keeps host headroom (EI-19315056231449472; see
 #                         the block by _gate_reserve_active). off/false/no also
 #                         disable. Applies to a FIXED PC_HEAVY_SLOTS too.
+#   PC_HEAVY_ALLOW_DURING_GATE  unset(default)/"1" — escape hatch for the REFUSAL
+#                         (EI-19385714326170346, _gate_refuse_broad_sweep): a
+#                         broad `test:affected` sweep is refused, not merely
+#                         clamped, while the gate is in its `isolating`/
+#                         `delivering` classifier phases, because contention
+#                         there flips VERDICTS rather than costing time. Scoped
+#                         `test:file` runs are never refused. Set to 1 when you
+#                         genuinely need the full sweep during that window.
 #   PAPERCUSP_CHECKPOINT_LOG_DIR  where green-checkpoint publishes its run lock
 #                         (default ~/.papercusp/checkpoint-logs) — the SAME var
 #                         release-config.ts resolves it from, so an alternate
@@ -288,6 +296,65 @@ _gate_clamp_divisor() {
   esac
 }
 
+# EI-19385714326170346 — REFUSE the broad sweep during the two phases where
+# contention corrupts the gate's VERDICT rather than merely slowing it.
+#
+# The clamp above is the right tool for load; it is the wrong tool for this. Even
+# at slots/4 a `test:affected` sweep still runs CONCURRENTLY with the isolation
+# re-run, and that re-run is a single-concurrency CLASSIFIER: it decides whether a
+# red is a real break or a load-flake. Contention there does not cost time, it
+# flips verdicts — reddening the gate for the whole fleet on code that is fine,
+# with the diagnosis cost landing on someone who never ran the suite.
+#
+# Why a guard here rather than a doc: `dev:pipeline_position` ALREADY warns about
+# exactly this, and the warning did not reach the moment of action — the filer of
+# this item read that note and ran the sweep minutes later in the same session,
+# and so did I (12 suite iterations at 00:13Z against a manual run started
+# 00:11:03Z). Same reasoning the repo applied to `bin/tauri-guarded`: put the
+# claim at the chokepoint every caller already passes through, not in a
+# convention each caller must remember.
+#
+# SCOPE — deliberately narrow, three independent conditions, all required:
+#   1. phaseProtocol >= 2 AND phase is `isolating` or `delivering`. Those are the
+#      classifier phases (see _gate_clamp_divisor) and they last MINUTES, not the
+#      run's ~2.7h. Protocol 1 folded isolation inside `suite`, so refusing on
+#      `suite` would block the fleet for hours — the clamp already covers that
+#      case by throttling everything to /4.
+#   2. The wrapped command is the BROAD SWEEP (`affected-tests.mjs`). A scoped
+#      `test:file` re-verify is NEVER refused — it is what this message tells you
+#      to run instead, so refusing it would make the advice unusable.
+#   3. Not the release gate itself. Structurally guaranteed: the
+#      PC_HEAVY_RELEASE_GATE exemption `exec`s far above this, so the gate's own
+#      suite and isolation re-runs can never reach here and cannot self-deadlock.
+#
+# FAILS OPEN, and the direction is deliberately OPPOSITE to the clamp's. The clamp
+# answers every unknown with "throttle more"; a REFUSAL must answer every unknown
+# with "allow", because a spurious refusal blocks routine work fleet-wide. Missing
+# or unparseable phase.json, absent/old protocol, unrecognized phase name → run.
+_gate_refuse_broad_sweep() {
+  case "${PC_HEAVY_ALLOW_DURING_GATE:-}" in 1|on|ON|true|TRUE|yes|YES) return 0 ;; esac
+  case "${_gate_proto:-}" in ''|*[!0-9]*) return 0 ;; esac
+  [ "$_gate_proto" -ge 2 ] || return 0
+  case "${_gate_phase:-}" in isolating|delivering) ;; *) return 0 ;; esac
+  local _a _broad=0
+  for _a in "$@"; do
+    case "$_a" in *affected-tests.mjs*) _broad=1 ;; esac
+  done
+  [ "$_broad" = 1 ] || return 0
+  echo "[pc-heavy] REFUSING test:affected — the release gate is in its '$_gate_phase' phase." >&2
+  echo "[pc-heavy] That phase is the gate's single-concurrency CLASSIFIER: it re-runs failing" >&2
+  echo "[pc-heavy] files to decide real-break vs load-flake. A broad sweep running alongside it" >&2
+  echo "[pc-heavy] can flip that verdict and red the gate for the WHOLE fleet on code that is" >&2
+  echo "[pc-heavy] fine — and you would not be the one paying the diagnosis. It lasts minutes." >&2
+  echo "[pc-heavy]" >&2
+  echo "[pc-heavy] DO THIS INSTEAD — scope the re-verify to what you actually changed:" >&2
+  echo "[pc-heavy]     npm run test:file -- <the files you edited>" >&2
+  echo "[pc-heavy] (never refused by this guard, and it is the faster check anyway)" >&2
+  echo "[pc-heavy]" >&2
+  echo "[pc-heavy] Genuinely need the full sweep now? PC_HEAVY_ALLOW_DURING_GATE=1 npm run test:affected" >&2
+  exit 75
+}
+
 # Effective slot count: the steady-state target (fixed or load-adaptive), then
 # the gate clamp. The clamp applies to an explicit PC_HEAVY_SLOTS too — it is a
 # safety reserve, not load adaptation, and it has its own dedicated override.
@@ -318,16 +385,26 @@ _gate_active=0
 _gate_reserve_active && _gate_active=1
 _slots="$(_effective_slots)"
 _gate_phase=""
+_gate_proto=""
+_gate_raw=""
 _gate_div=4
 if [ "$_gate_active" = 1 ]; then
   _gate_div="$(_gate_clamp_divisor)"
   case "$_gate_div" in ''|*[!0-9]*) _gate_div=4 ;; esac
-  _gate_phase=$(head -c 4096 "${_gate_lockdir:-}/phase.json" 2>/dev/null | tr -d ' \n' \
-                 | sed -n 's/.*"phase":"\([a-zA-Z]*\)".*/\1/p' | head -1)
+  # Read phase.json ONCE and take both fields from it. The protocol is needed by
+  # the refusal below, which must never fire against a protocol-1 writer (there
+  # `suite` still contains the isolation re-run, so "isolating" never appears and
+  # refusing on `suite` would block the fleet for the run's whole ~2.7h).
+  _gate_raw=$(head -c 4096 "${_gate_lockdir:-}/phase.json" 2>/dev/null | tr -d ' \n')
+  _gate_phase=$(printf '%s' "$_gate_raw" | sed -n 's/.*"phase":"\([a-zA-Z]*\)".*/\1/p' | head -1)
+  _gate_proto=$(printf '%s' "$_gate_raw" | sed -n 's/.*"phaseProtocol":\([0-9][0-9]*\).*/\1/p' | head -1)
   [ -n "$_gate_phase" ] || _gate_phase="unknown"
   echo "[pc-heavy] release gate is JUDGING (phase=$_gate_phase) — heavy slots clamped to" \
        "$_slots to keep headroom for its isolation re-run (EI-19315056231449472)." \
        "Override with PC_HEAVY_GATE_RESERVE=0." >&2
+  # Refuses + exits for the broad sweep in the classifier phases only; returns
+  # (and we continue, merely clamped) in every other case. See the function.
+  _gate_refuse_broad_sweep "$@"
 fi
 if [ "${PC_HEAVY_DEBUG:-}" = "1" ]; then
   echo "[pc-heavy] slots=$_slots fixed=$_slots_fixed cores=$_cores floor=$_floor ceil=$_ceil gate=$_gate_active phase=${_gate_phase:-none} div=$_gate_div" >&2

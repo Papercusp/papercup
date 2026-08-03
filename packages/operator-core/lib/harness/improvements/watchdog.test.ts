@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, afterAll } from 'vitest';
+import { describe, it, expect, vi, afterAll, beforeEach } from 'vitest';
 import { signalLaneOf, sourceFilesWorkItem } from './signal-lane';
 import {
   planWatchdogCaptures,
@@ -55,6 +55,7 @@ import {
 } from './watchdog';
 import type { CaptureImprovementResult } from './capture-core';
 import type { ProbeResult } from '../../service-health';
+import { _resetServiceHealthState } from '../../service-health';
 import { _resetHarnessAdminUrlCacheForTests } from '../../embedded-pg-discovery';
 
 function sig(p: Partial<WatchdogSignal> & { key: string }): WatchdogSignal {
@@ -1279,6 +1280,13 @@ describe('service-down freshness gate (watchdog-robustness P-004)', () => {
     ...p,
   });
 
+  // The inline-probe-on-stale fallback (below) now routes through
+  // recordProbeResults, which mutates service-health.ts's shared confirm-ticks
+  // streaks — reset between tests so one case's streak can't leak into another.
+  beforeEach(() => {
+    _resetServiceHealthState();
+  });
+
   it('isServiceHealthStale: never-probed (null) is stale; fresh is not; beyond the window is', () => {
     const now = 1_000_000;
     const maxStale = 120_000;
@@ -1396,6 +1404,54 @@ describe('service-down freshness gate (watchdog-robustness P-004)', () => {
     for (const r of [off, onDown, onThrow]) {
       expect(r.signals.length > 0 || (r.note != null && r.note.length > 0)).toBe(true);
     }
+  });
+
+  // EI-19363229944812169: the inline-probe-on-stale fallback used to call
+  // probeAll() and feed the raw result straight to collectServiceDownSignals,
+  // bypassing DOWN_CONFIRM_TICKS entirely — reintroducing the exact
+  // single-tick restart-drain flap WI-6146 damped staging-api against, but
+  // only for the watchdog's auto-filed bug tickets (the periodic 60s tick
+  // was never affected). Fixed by routing the fresh probe through
+  // recordProbeResults, the same debounce the periodic tick uses.
+  it('a STALE snapshot (inline-probe on) does NOT fire on a single down reading for a DAMPED name (staging-api)', async () => {
+    const now = 1_000_000;
+    const res = await serviceDownCollectorResult({
+      at: now - 200_000,
+      now,
+      maxStaleMs: 120_000,
+      inlineProbe: true,
+      probe: async () => [probe({ name: 'staging-api', up: false, status: null })],
+    });
+    // First-ever bad reading for a 2-confirm-tick name → unconfirmed, no signal —
+    // exactly the restart-drain-window false alarm this fix eliminates.
+    expect(res.signals).toEqual([]);
+    expect(res.note).toMatch(/fresh inline probe/);
+  });
+
+  it('a STALE snapshot (inline-probe on) DOES fire for a DAMPED name once its streak is confirmed (2 consecutive bad probes)', async () => {
+    const now = 1_000_000;
+    const down = { name: 'staging-api', up: false, status: null } as const;
+    // First inline probe: unconfirmed (streak 1/2) — matches the case above.
+    const first = await serviceDownCollectorResult({
+      at: now - 200_000, now, maxStaleMs: 120_000, inlineProbe: true,
+      probe: async () => [probe(down)],
+    });
+    expect(first.signals).toEqual([]);
+    // Second consecutive inline probe still down: streak reaches 2/2 → confirmed.
+    const second = await serviceDownCollectorResult({
+      at: now - 200_000, now: now + 1000, maxStaleMs: 120_000, inlineProbe: true,
+      probe: async () => [probe(down)],
+    });
+    expect(second.signals.map((s) => s.key)).toEqual(['staging-api']);
+  });
+
+  it('a STALE snapshot (inline-probe on) still fires immediately for an UNDAMPED name (vite, unchanged behavior)', async () => {
+    const now = 1_000_000;
+    const res = await serviceDownCollectorResult({
+      at: now - 200_000, now, maxStaleMs: 120_000, inlineProbe: true,
+      probe: async () => [probe({ name: 'vite', up: false, status: null })],
+    });
+    expect(res.signals.map((s) => s.key)).toEqual(['vite']);
   });
 
   it('default window is 2× the 60s probe interval', () => {

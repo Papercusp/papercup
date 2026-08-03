@@ -44,6 +44,13 @@ const ALLOW = new Set([
   'packages/operator-core/lib/llm-testing/storage.ts',   // fresh getHarnessAdminUrl pool
   'packages/operator-core/lib/llm-testing/ledger.ts',    // fresh getHarnessAdminUrl pool
   'packages/operator-core/lib/llm-testing/telemetry.ts', // fresh getHarnessAdminUrl pool
+  // WI-7092 / EI-607, verified 2026-08-02 — each below is genuinely a FRESH
+  // postgres()/getLongLivedAdminPool() pool built via a plain top-level
+  // `import postgres from 'postgres'` (never through @papercusp/db's getOrgPg/
+  // buildClient), so it resolves the tolerant build and sql.json is safe here.
+  'apps/operator/lib/release/release-registry.ts',       // recordRelease's `sql` param is only ever called (record-release-cli.ts) with a fresh `postgres(getHarnessAdminUrl(), {max:1})` pool
+  'packages/operator-core/lib/gym/runner-ports.ts',      // ensureGymPipelinePrincipals is only called with cfg.gymSql (fresh gym-operator pool); its own comment notes `${JSON.stringify}::jsonb` would ALSO reintroduce a real double-encode bug on this column (array caps read back empty)
+  'packages/operator-core/lib/system-health/desktop-perf-runs.ts', // db() = getLongLivedAdminPool (fresh postgres() pool, same class as the llm-testing/* entries above)
 ]);
 
 // WI-6666: SCAN_PREFIXES above explicitly names two `libs/papercusp/**` dirs, but a

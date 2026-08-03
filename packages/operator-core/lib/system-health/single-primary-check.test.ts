@@ -84,6 +84,28 @@ describe('lastRoutineFireAgeSec', () => {
     expect(await lastRoutineFireAgeSec((async () => [{ age_sec: null }]) as never)).toBeNull();
     expect(await lastRoutineFireAgeSec((async () => []) as never)).toBeNull();
   });
+
+  // routines is multi-tenant: an unscoped read lets ANOTHER workspace's healthy routines
+  // mask this one's dead ones, downgrading a real blocker to an advisory.
+  it('binds the workspace as a parameter when one is given', async () => {
+    const seen: unknown[][] = [];
+    const sql = (async (_s: TemplateStringsArray, ...vals: unknown[]) => {
+      seen.push(vals);
+      return [{ age_sec: 1 }];
+    }) as never;
+    await lastRoutineFireAgeSec(sql, 'papercusp-workspace');
+    expect(seen[0]).toEqual(['papercusp-workspace']);
+  });
+
+  it('omits the predicate (no stray bindings) when no workspace is given', async () => {
+    const seen: unknown[][] = [];
+    const sql = (async (_s: TemplateStringsArray, ...vals: unknown[]) => {
+      seen.push(vals);
+      return [{ age_sec: 1 }];
+    }) as never;
+    await lastRoutineFireAgeSec(sql);
+    expect(seen[0]).toEqual([]);
+  });
 });
 
 describe('countBackgroundPrimaries', () => {

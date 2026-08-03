@@ -17,6 +17,7 @@ import { probeServiceStart, probeUnitStates, type ServiceStartInfo } from "./sys
 import {
   readMcpProxyFailureTail,
   summarizeMcpProxyHealth,
+  type McpProxyFailureRecord,
 } from "../../system-health/mcp-proxy-health";
 
 function sidecarFlapState(s: SidecarSupervisionStatus): SupervisionFlapState {
@@ -191,6 +192,60 @@ function nextVerbForService(name: string): string {
   return "dev:processes";
 }
 
+/**
+ * D-005 (outage-must-not-be-silent-2026-08-02) — surface the mcp-proxy TRANSPORT ledger to the
+ * AGENT-facing health tool.
+ *
+ * The ledger already had a reader: the system-health collector (`compute.ts` →
+ * `InfraHealth.mcpProxy` → the Infra panel → operator_degraded). So this DELEGATES to that same
+ * summarizer rather than re-reading the file. An earlier revision shipped a parallel reader and,
+ * by omitting `isNonInstanceRecord` (listenPort:0 — ~18% of live records, written by test and
+ * desktop-sidecar proxies no client is routed through) and `isBenignProbe`, over-counted failures.
+ * One summarizer, one classification: a second opinion here is a second BUG.
+ *
+ * What this adds is the missing AUDIENCE. The panel is a HUMAN surface, and the agent whose tool
+ * plane is degrading cannot see it — it is the party least able to ask and most affected.
+ *
+ * Read `recovered`/`handshakeStalls` as faults that HAPPENED and were survived, never as health:
+ * WI-6740 lost three weeks because 269 stalls each logged `recovered` and read as self-healing.
+ *
+ * Bounded (256KB tail) and OMITTED ENTIRELY when nothing is notable — a reassuring zero on every
+ * call trains the reader to skip the field, which is how the next real signal gets missed. An
+ * absent check and a passed check must never look alike.
+ *
+ * `read` is injectable ONLY so tests are hermetic: the default reader hits the real
+ * `~/.papercusp/mcp-proxy-failures.jsonl`, and a test that exercised it would both depend on live
+ * machine state and read production telemetry (see EI-19388683897769817).
+ */
+export function buildMcpProxyTransportBlock(
+  read: () => McpProxyFailureRecord[] | null = readMcpProxyFailureTail,
+  nowMs: number = Date.now(),
+): Record<string, unknown> {
+  const recs = read();
+  if (recs === null) return {}; // unreadable ledger — stay silent rather than assert an all-clear
+  const h = summarizeMcpProxyHealth(recs, nowMs);
+  // `recovered` is deliberately NOT in this sum: on its own it means the proxy absorbed a deploy
+  // blip, which is the resilience working. The notable set is what an agent should act on.
+  const notable = h.hardFailures + h.handshakeStalls + h.shed + h.otherNon2xx;
+  if (notable === 0) return {};
+  return {
+    mcpProxyTransport: {
+      windowMs: h.windowMs,
+      hardFailures: h.hardFailures,
+      handshakeStalls: h.handshakeStalls,
+      shed: h.shed,
+      otherNon2xx: h.otherNon2xx,
+      recovered: h.recovered,
+      byKind: h.byKind,
+      newestAt: h.newestAt,
+      note:
+        h.handshakeStalls > 0
+          ? `${h.handshakeStalls} upstream-silence stall(s) on the MCP handshake (WI-6740). Each was RETRIED and survived — but this is the class that leaves a session tool-dark for its entire life if the retry ever runs out. Not benign.`
+          : `${h.hardFailures} hard tool-transport failure(s) the proxy could not hide from callers.`,
+    },
+  };
+}
+
 /** Additive stable scan path over the existing service/supervision payload. */
 export function buildServiceHealthDiagnostic(
   services: ProbeResult[],
@@ -306,45 +361,7 @@ export default defineTool({
             ok: true,
             services,
             telemetry: getTelemetryHealth(),
-            // D-005 (outage-must-not-be-silent-2026-08-02): surface the mcp-proxy transport
-            // ledger to the AGENT-facing health tool. The ledger already had a reader — the
-            // system-health collector (compute.ts → InfraHealth.mcpProxy → the Infra panel) —
-            // so this deliberately DELEGATES to that same summarizer rather than re-reading the
-            // file. An earlier revision of this block shipped a parallel reader and, by omitting
-            // `isNonInstanceRecord` (listenPort:0, ~18% of live records: desktop-sidecar and
-            // test writers no client routes through) and `isBenignProbe`, over-counted failures.
-            // One summarizer, one classification — a second opinion here is a second BUG.
-            //
-            // What this adds is the missing AUDIENCE: the panel is a human surface, and an agent
-            // diagnosing its own broken tool plane cannot see it. Read a `recovered` or a
-            // `handshakeStalls` count as faults that HAPPENED and were survived, never as
-            // health — WI-6740 lost three weeks to exactly that misreading.
-            //
-            // Bounded (256KB tail of a 27MB file) and OMITTED ENTIRELY when nothing is wrong,
-            // so a reassuring zero on every call never trains the reader to skip the field.
-            ...(() => {
-              const recs = readMcpProxyFailureTail();
-              if (recs === null) return {}; // unreadable ledger — grey, never a false all-clear
-              const h = summarizeMcpProxyHealth(recs, Date.now());
-              const notable = h.hardFailures + h.handshakeStalls + h.shed + h.otherNon2xx;
-              if (notable === 0) return {};
-              return {
-                mcpProxyTransport: {
-                  windowMs: h.windowMs,
-                  hardFailures: h.hardFailures,
-                  handshakeStalls: h.handshakeStalls,
-                  shed: h.shed,
-                  otherNon2xx: h.otherNon2xx,
-                  recovered: h.recovered,
-                  byKind: h.byKind,
-                  newestAt: h.newestAt,
-                  note:
-                    h.handshakeStalls > 0
-                      ? `${h.handshakeStalls} upstream-silence stall(s) on the MCP handshake (WI-6740). Each was RETRIED and survived — but this is the class that leaves a session tool-dark for its whole life if the retry ever runs out. Not benign.`
-                      : `${h.hardFailures} hard tool-transport failure(s) the proxy could not hide.`,
-                },
-              };
-            })(),
+            ...buildMcpProxyTransportBlock(),
             // P-004/P-006 (critical-process-supervisor-2026-07-04): additive block, existing
             // fields above are UNCHANGED — the systemd-user layer is sourced from the P-002
             // reconciler's own flap state, the node-child sidecars from THEIR OWN respawn

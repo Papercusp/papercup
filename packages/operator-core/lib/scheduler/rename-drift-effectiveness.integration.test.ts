@@ -356,6 +356,38 @@ describe('the maintained-readiness sidecar tracks the re-home', () => {
     // …and the claim door agrees with the sidecar, which is the property that actually matters.
     expect(await claim(NEW_H)).toBeNull();
   });
+
+  // @covers INV-03 INV-04
+  it('and it is wir_deps_sync_trg doing it — drop that trigger and the re-home strands readiness', async () => {
+    // The test above proves the OUTCOME (the sidecar lands at the new key). This one proves the
+    // MECHANISM, because the two are worth separating: the outcome is what we need, and the
+    // mechanism is an accident we are relying on. Migration 734 never writes work_item_blocked.
+    // The sidecar is only corrected because 734's UPDATE of work_item_deps happens to fire
+    // wir_deps_sync_trg, which re-syncs at the ref's new key.
+    //
+    // Removing that one trigger — while 734 itself is fully intact and every ref is repointed
+    // perfectly — should therefore serve a blocked item. If it does, readiness across a rename
+    // is load-bearing on an undocumented cascade, and migration 734's own DISABLE-TRIGGER
+    // warning names only `repoint_qualified_refs_trg`, which is not sufficient.
+    const { blocker, blocked } = await seedGatedPair();
+    expect(await blockedSidecar()).toEqual([{ harness_slug: OLD_H, feature_id: blocked }]);
+
+    await db.sql.unsafe(`DROP TRIGGER IF EXISTS wir_deps_sync_trg ON harness_shared.work_item_deps`);
+    try {
+      await reHome(blocker, OLD_H, NEW_H);
+      await reHome(blocked, OLD_H, NEW_H);
+
+      // 734 did its job perfectly — the refs are correct.
+      expect(await edges()).toEqual([
+        { blocked_ref: featureRef(NEW_H, blocked), blocker_ref: featureRef(NEW_H, blocker) },
+      ]);
+      // …and readiness is stranded at the OLD key, which no claim for the new slug can find.
+      expect(await blockedSidecar()).toEqual([{ harness_slug: OLD_H, feature_id: blocked }]);
+      expect(await claim(NEW_H)).toBe(blocked); // ← correct refs, blocked item, served anyway
+    } finally {
+      await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple();
+    }
+  });
 });
 
 describe('the issue family is unaffected — and that is a property, not an omission', () => {
