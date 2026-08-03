@@ -29,7 +29,12 @@ import { fileURLToPath } from 'node:url';
 import { loadavg, availableParallelism } from 'node:os';
 import { randomBytes } from 'node:crypto';
 import { parseQuarantineWorkspaces } from './lib/quarantine.mjs';
-import { parseSummaryFailedCounts, parseFailedTestFiles, countTimeoutSignatures } from './lib/vitest-summary.mjs';
+import {
+  parseSummaryFailedCounts,
+  parseFailedTestFiles,
+  countTimeoutSignatures,
+  formatFailingFilesLine,
+} from './lib/vitest-summary.mjs';
 import { emptySuiteGuardArgs } from './lib/empty-suite-guard.mjs';
 import { applyWorkerCapEnv } from './lib/worker-cap.mjs';
 // EI-10542: this runner interleaves its own header/status lines (fd 1/2) with
@@ -62,7 +67,13 @@ import { writeAllSync, outSync as rawOutSync, errSync as rawErrSync } from './li
 // short random nonce (independent of pid, time-of-day, and host clock skew) so
 // two concurrent runs can never collide, while keeping the pid in the filename
 // for human readability when correlating with `ps`/`top`.
-const RUN_LOG_PATH = `/tmp/papercusp-affected-tests-${process.pid}-${randomBytes(4).toString('hex')}.log`;
+// EI-19395701908500754: hoisted out of the path so the SAME token can stamp the
+// per-FILE break-set line below. A green-checkpoint verdict log interleaves this
+// run's output with the gate's own self-test fixtures, which emit identically-shaped
+// lines; a token that is also in the `Full run log:` path is what lets a reader tie a
+// break set to THIS run instead of to a fixture that hard-codes a different one.
+const RUN_TOKEN = `${process.pid}-${randomBytes(4).toString('hex')}`;
+const RUN_LOG_PATH = `/tmp/papercusp-affected-tests-${RUN_TOKEN}.log`;
 function logLine(text) {
   if (text == null || text === '') return;
   try {
@@ -788,6 +799,13 @@ let timedOutTasks = 0;
 // so finding WHICH task failed meant scrolling back through the whole run's
 // interleaved output. Track names as we go and name them in the final summary.
 const failedTaskNames = [];
+// EI-19395701908500754: the per-FILE break set, accumulated as we go. `failedTaskNames`
+// above names WORKSPACES; nothing named FILES, so triagers mined the gate's prose for
+// them and got fixture paths. A failed task whose files cannot be named goes into
+// `unattributedTasks` WITH ITS REASON rather than being silently absent — an empty file
+// list must never be indistinguishable from "nothing failed".
+const failedFileEntries = [];
+const unattributedTasks = [];
 for (const t of tasks) {
   const isQuarantined = quarantined.has(t.ws.name);
   outSync(`\n>>> ${t.ws.name} :: ${npmAvailable ? 'npm ' : ''}run ${t.script}${isQuarantined ? ' [QUARANTINED]' : ''}`);
@@ -863,6 +881,23 @@ for (const t of tasks) {
     } else {
       failed++;
       failedTaskNames.push(`${t.ws.name} :: ${t.script}`);
+      // EI-19395701908500754: name the FILES, not just the workspace. Attribution is
+      // only possible when the child's output was captured; an interactive TTY run
+      // inherited stdio and r.stdout/r.stderr are unset here, so it is recorded as
+      // unattributed rather than contributing an empty set that reads as "no files".
+      if (!captureOutput()) {
+        unattributedTasks.push({ task: `${t.ws.name} :: ${t.script}`, reason: 'no-captured-output' });
+      } else {
+        const failedFiles = parseFailedFiles(`${r.stdout ?? ''}${r.stderr ?? ''}`);
+        if (failedFiles.length === 0) {
+          // A real red that printed no FAIL/rollup rows at all — a worker crash, an OOM,
+          // a spawn error, a transform failure before the reporter ran. The task IS
+          // broken; we simply cannot say which file, and saying so beats implying none.
+          unattributedTasks.push({ task: `${t.ws.name} :: ${t.script}`, reason: 'no-file-rows' });
+        } else {
+          for (const file of failedFiles) failedFileEntries.push({ workspace: t.ws.name, file });
+        }
+      }
       // EI-19332556961886184: surface a timeout signature right here, in the log a
       // triager reads, instead of letting it collapse into an indistinguishable red.
       // Only possible when the child's output was captured (a non-TTY / background
@@ -918,12 +953,15 @@ try {
     if (!quarantined.has('papercusp-desktop')) {
       failed++;
       failedTaskNames.push('papercusp-desktop :: cargo test');
+      // Not a vitest task — the vitest FAIL-row parser can never attribute it to files.
+      unattributedTasks.push({ task: 'papercusp-desktop :: cargo test', reason: 'non-vitest' });
     }
   }
 } catch (err) {
   errSync(`>>> cargo test runner error: ${err.message}`);
   failed++;
   failedTaskNames.push('papercusp-desktop :: cargo test (runner error)');
+  unattributedTasks.push({ task: 'papercusp-desktop :: cargo test (runner error)', reason: 'non-vitest' });
 }
 
 if (quarantinedFailed) {
@@ -957,6 +995,24 @@ if (failed) {
         `verify before assuming a real assertion break (see the per-task note above / grep the run log).`,
     );
   }
+  // EI-19395701908500754: the per-FILE break set, stated by the run itself.
+  // `resultLine`'s failed=N counts TASKS; a triager needs FILES, and until now the only
+  // per-file signal in a green-checkpoint verdict log was the gate's own prose — which
+  // its self-tests emit too, so mining it returned fixture paths. Human block first (a
+  // triager reads prose), canonical machine line second.
+  errSync(
+    `\n${failedFileEntries.length} failing test file(s) — the per-FILE break set ` +
+      `(${resultLine('failed').match(/failed=\d+/)?.[0] ?? 'failed=?'} above counts TASKS, not files):`,
+  );
+  for (const e of failedFileEntries) errSync(`  - ${e.workspace} :: ${e.file}`);
+  if (unattributedTasks.length) {
+    errSync(
+      `${unattributedTasks.length} failed task(s) could NOT be attributed to files — ` +
+        `their failures are REAL but unnamed here, do not read the list above as complete:`,
+    );
+    for (const u of unattributedTasks) errSync(`  - ${u.task} (${u.reason})`);
+  }
+  errSync(formatFailingFilesLine({ runToken: RUN_TOKEN, entries: failedFileEntries, unattributed: unattributedTasks }));
   errSync(resultLine('failed'));
   errSync(`Full run log: ${RUN_LOG_PATH}`);
   process.exit(1);

@@ -393,6 +393,41 @@ describe('computeLifecycleBackoff (EI-19325288514307343 — backed-off vs dead, 
     });
     expect(out).toEqual({ reason: 'usage_limit', until: null, resumesInMs: null });
   });
+
+  // EI-19381528967421062: loop-turn-outcome.ts's FAST observer (the common path — it
+  // reacts the instant a resume turn's exit is seen, not the reconcile backstop) writes
+  // `resume-turn-death:<klass>` via recordFire, NOT `loop-lifecycle-death:`. Before this
+  // fix that prefix was invisible here, so a loop rate-limited through the fast path read
+  // `lifecycleBackoff: null` while `nextFireAt` sat ~100 intervals out — silently absent,
+  // not merely stale (measured live: EI-19381528967421062's own reporter hit exactly this).
+  it('also recognizes resume-turn-death: (the fast-observer prefix), not just loop-lifecycle-death:', () => {
+    const until = new Date(NOW2 + 6_000_000).toISOString();
+    expect(
+      computeLifecycleBackoff({
+        active: true,
+        lastDeliveryOutcome: 'resume-turn-death:rate_limited',
+        nextFireAtIso: until,
+        nowMs: NOW2,
+      }),
+    ).toEqual({ reason: 'rate_limited', until, resumesInMs: 6_000_000 });
+  });
+
+  it('extracts the reason suffix from a resume-turn-death: outcome the same way as loop-lifecycle-death:', () => {
+    const until = new Date(NOW2 + 3_600_000).toISOString();
+    const a = computeLifecycleBackoff({
+      active: true,
+      lastDeliveryOutcome: 'loop-lifecycle-death:usage_limit',
+      nextFireAtIso: until,
+      nowMs: NOW2,
+    });
+    const b = computeLifecycleBackoff({
+      active: true,
+      lastDeliveryOutcome: 'resume-turn-death:usage_limit',
+      nextFireAtIso: until,
+      nowMs: NOW2,
+    });
+    expect(a).toEqual(b);
+  });
 });
 
 beforeEach(() => {

@@ -72,8 +72,6 @@ import {
   computeLearningImprovementsSnapshot,
   HUMAN_QUEUE_WIRE_FIELDS,
 } from '../harness/improvements/learning-digest-snapshot';
-import type { ImprovementDigest } from '../harness/improvements/digest';
-import type { ImprovementFlow } from '../harness/improvements/flow-metrics';
 
 beforeEach(() => {
   readImprovementItems.mockReset();
@@ -105,7 +103,7 @@ describe('learning.improvements — digest + flow row (P-041)', () => {
     readImprovementItems.mockResolvedValue(items);
     readWatchdogFlowTicks.mockResolvedValue([{ tickAtMs: Date.now() - 10 * 60_000, capturedCount: 2 }]);
 
-    const rows = (await computeLearningImprovementsSnapshot({})) as Array<ImprovementDigest & { flow: ImprovementFlow }>;
+    const rows = await computeLearningImprovementsSnapshot({});
     expect(Array.isArray(rows)).toBe(true);
     expect(rows).toHaveLength(1);
     const row = rows[0];
@@ -135,7 +133,10 @@ describe('learning.improvements — digest + flow row (P-041)', () => {
       { id: 'EI-9', kind: 'bug', scope: 'operator', title: 'needs a human', state: 'open', createdAt: recentIso(1), needsHuman: true },
     ]);
     readWatchdogFlowTicks.mockResolvedValue([]);
-    const rows = (await computeLearningImprovementsSnapshot({})) as Array<ImprovementDigest>;
+    // No cast: the compute now returns the precise WIRE type (WI-7279), which is
+    // deliberately NOT assignable to ImprovementDigest — humanQueue is the
+    // narrowed SlimHumanQueueItem. Casting it back would defeat the point.
+    const rows = await computeLearningImprovementsSnapshot({});
     expect(rows[0].humanQueue.length).toBeGreaterThan(0);
     for (const item of rows[0].humanQueue) {
       expect(item).not.toHaveProperty('rank');
@@ -237,7 +238,7 @@ describe('learning.improvements — digest + flow row (P-041)', () => {
     readWatchdogFlowTicks.mockRejectedValue(new Error('pg down'));
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
-      const rows = (await computeLearningImprovementsSnapshot({})) as Array<ImprovementDigest & { flow: ImprovementFlow }>;
+      const rows = await computeLearningImprovementsSnapshot({});
       expect(rows[0].flow.watchdog).toEqual({ lastTickAt: null, ticks24h: 0, captured24h: 0 });
       expect(rows[0].flow.captured7d).toBe(1); // the item half still computed
     } finally {

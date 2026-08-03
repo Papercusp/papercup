@@ -61,6 +61,7 @@ import {
   type MemberVerdict,
   type MonitorState,
 } from './assignments';
+import type { LifecycleBackoffInfo } from '../../harness/routines/loop';
 import type { CoordDeafState } from '../coordination/inbox-read-freshness';
 import type { SessionState } from '../coordination/presence-wakeability';
 import type { WakeMode } from '../coordination/wake-mode';

@@ -193,4 +193,43 @@ describe('formatNoFindings — "examined nothing" must never read as "clean"', (
     expect(msg).toContain('mine.ts');
     expect(msg).not.toContain('INFERRED');
   });
+
+  /**
+   * EI-19396116936287206. `--files=` fixes attribution (WHICH files) but not vacuity
+   * (WHETHER the diff was real): "examined" only ever meant "a before/after pair was
+   * diffed", not "the two texts actually differed". On this tree git-sync commits within
+   * minutes, so a NAMED file is frequently byte-identical to `base` by the time you check
+   * it — measured live: `--files=` named the exact file carrying a real required-field
+   * addition, examined it, found before===after (git-sync had already swept the edit into
+   * HEAD), and printed a plain green with no hint the comparison was vacuous.
+   */
+  it('warns when a DECLARED file is byte-identical to base — the comparison proved nothing', () => {
+    const msg = formatNoFindings(['mine.ts'], 'HEAD', {
+      declared: true,
+      identicalFiles: ['mine.ts'],
+    });
+    // Still reports the clean-bill count/list (other declared files may be genuinely
+    // examined) but must not read as an unqualified clean bill for the identical one.
+    expect(msg).toMatch(/^✓/);
+    expect(msg).toContain('NOT CHECKED');
+    expect(msg).toContain('BYTE-IDENTICAL');
+    expect(msg).toContain('mine.ts');
+    expect(msg).toContain('git-sync');
+    expect(msg).toContain('--base');
+  });
+
+  it('says nothing extra when a DECLARED set has no identical files', () => {
+    const msg = formatNoFindings(['mine.ts'], 'HEAD', { declared: true, identicalFiles: [] });
+    expect(msg).not.toContain('BYTE-IDENTICAL');
+    expect(msg).not.toContain('NOT CHECKED');
+  });
+
+  it('names only the identical files, not every declared file, when the set is mixed', () => {
+    const msg = formatNoFindings(['mine.ts', 'also-mine.ts'], 'HEAD', {
+      declared: true,
+      identicalFiles: ['also-mine.ts'],
+    });
+    expect(msg).toContain('1 of 2 named file(s)');
+    expect(msg).toContain('also-mine.ts');
+  });
 });

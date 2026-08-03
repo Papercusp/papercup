@@ -130,7 +130,7 @@ function workspaceFor(file) {
  * Measured 2026-08-02: this printed a green for a change that HAD added required
  * field `ServeProgress.bytesIn`, purely because git-sync had already swept it.
  */
-export function formatNoFindings(examinedFiles, base, { declared = false } = {}) {
+export function formatNoFindings(examinedFiles, base, { declared = false, identicalFiles = [] } = {}) {
   const files = Array.isArray(examinedFiles) ? examinedFiles : [];
   if (files.length > 0) {
     // Naming the COUNT was not enough. A count is unfalsifiable by the one person who
@@ -153,6 +153,26 @@ export function formatNoFindings(examinedFiles, base, { declared = false } = {})
         '    within minutes, which drops it out of this diff).',
         '    Scope it to what you actually changed:',
         '      node scripts/check-required-field-strands.mjs --files=<your,files>',
+      );
+    }
+    // EI-19396116936287206: `--files=` DECLARES the set (trustworthy for WHICH files were
+    // examined), but "examined" only ever meant "a before/after text pair was diffed" — it
+    // said nothing about whether that diff was NON-EMPTY. On this tree git-sync commits an
+    // edit within minutes, so a named file is frequently byte-identical to `base` (HEAD) by
+    // the time you check it: the comparison runs, finds nothing to compare, and reports a
+    // clean bill that is vacuously true of a file you never actually diffed against its
+    // pre-edit state. This is the SAME root cause as the zero-files case below, one level
+    // more specific (per-file instead of whole-run) — and it is silent under `declared`
+    // because the warning above only fires for the INFERRED-set failure mode, not this one.
+    if (identicalFiles.length > 0) {
+      lines.push(
+        `  ⚠ NOT CHECKED — ${identicalFiles.length} of ${files.length} named file(s) are BYTE-IDENTICAL`,
+        `    to ${base}, so this run proves NOTHING about them (git-sync likely already`,
+        '    committed your edit — on this tree that happens within minutes):',
+        ...identicalFiles.map((f) => `      ${f}`),
+        '    Re-run against the commit that actually carried your change:',
+        "      C=$(git log -1 --format=%H -S'<a string your change introduced>' -- <file>)",
+        '      node scripts/check-required-field-strands.mjs --base "$C^" --files=<your,files>',
       );
     }
     return lines.join('\n');
@@ -214,6 +234,11 @@ function main() {
   // skipped (added/deleted, .d.ts, no base version, gone from the tree), and counting
   // those as "examined" is the same overstatement this check exists to stop.
   const examinedFiles = [];
+  // Of the examined files, the ones byte-identical to `base` — a diff against yourself,
+  // which proves nothing (EI-19396116936287206). Only meaningful in --files= (declared)
+  // mode: the auto-diff mode derives its candidate set FROM `git diff --name-status`, so
+  // a listed file is, by construction, never identical to base.
+  const identicalFiles = [];
   for (const { status, file } of candidates) {
     if (!file || status.startsWith('A') || status.startsWith('D')) continue;
     if (file.endsWith('.d.ts')) continue;
@@ -225,14 +250,21 @@ function main() {
     const afterText = readFileSync(abs, 'utf8');
 
     examinedFiles.push(file);
+    if (declaredFiles && beforeText === afterText) identicalFiles.push(file);
     const added = diffRequiredAdditions(beforeText, afterText, file);
     if (added.length) findings.push({ file, added });
   }
 
-  if (json) console.log(JSON.stringify({ base, examined: examinedFiles, findings }, null, 2));
+  if (json) {
+    console.log(JSON.stringify({ base, examined: examinedFiles, identical: identicalFiles, findings }, null, 2));
+  }
 
   if (!findings.length) {
-    if (!json) console.log(formatNoFindings(examinedFiles, base, { declared: Boolean(declaredFiles) }));
+    if (!json) {
+      console.log(
+        formatNoFindings(examinedFiles, base, { declared: Boolean(declaredFiles), identicalFiles }),
+      );
+    }
     process.exit(0);
   }
 

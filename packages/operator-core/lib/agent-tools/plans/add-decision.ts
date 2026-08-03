@@ -21,7 +21,13 @@ import { defineTool, AGENT_ROLES, type UnifiedToolContext } from '@papercusp/age
 import { resolveCtxHarnessSlug } from './_ctx-opts';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { withPlanLock, bumpUpdatedDate } from './with-plan-lock';
-import { parsePlan, maskFences, normalizeDecisionBodyHeadings, type LegacyReason } from './parser';
+import {
+  parsePlan,
+  maskFences,
+  normalizeDecisionBodyHeadings,
+  type LegacyReason,
+  type PlanDecision,
+} from './parser';
 import { emitPlanEventForCaller } from '../coordination/plan-events';
 import { readPlanBySlug } from './source';
 import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
@@ -224,10 +230,55 @@ export function appendDecisionToBody(
   return oneTrailingNL(body) + `\n## Decisions\n${block}`;
 }
 
+/**
+ * Retry-safety for a NON-idempotent append (EI-19383795443003151): an MCP
+ * write can time out client-side with no response, leaving the write's
+ * server-side outcome genuinely unknown. A blind retry of `plans:add-decision`
+ * — which only ever appends, never upserts — then risks minting a SECOND
+ * decision with identical title+body, and a duplicated governing decision is
+ * exactly the kind of thing other lanes are told to trust over paraphrase.
+ *
+ * This checks the cheapest safe signal: is the plan's MOST RECENTLY allocated
+ * decision (by D-NNN, which is monotonic and only ever grows) already this
+ * exact { title, body }? If so, the call is a retry of a write that already
+ * landed — return the existing id instead of appending a duplicate.
+ *
+ * Deliberately narrow so it can never suppress a legitimate decision:
+ *   - only ever compares against the LAST decision in the file, never the
+ *     whole history, so a genuinely repeated title+body recorded long ago
+ *     (a different decision that happens to read the same) is untouched;
+ *   - requires an EXACT match on both title and (normalized) body — a
+ *     retry always sends byte-identical args, so this never has to guess.
+ */
+export function findRetryDuplicateOfLastDecision(
+  decisions: PlanDecision[],
+  title: string,
+  body: string,
+): PlanDecision | null {
+  if (decisions.length === 0) return null;
+  let last: PlanDecision | null = null;
+  let max = -1;
+  for (const d of decisions) {
+    const m = /^D-(\d+)$/.exec(d.id);
+    const n = m ? parseInt(m[1] ?? '0', 10) : -1;
+    if (n > max) {
+      max = n;
+      last = d;
+    }
+  }
+  if (!last) return null;
+  if (last.title.trim() !== title.trim()) return null;
+  const { body: safeBody } = normalizeDecisionBodyHeadings(body.trim());
+  // `last.body` (as parsed) also carries the `Date: …` line and any trailing
+  // `Related: …` refs line the append wrote alongside it — compare by
+  // containment rather than equality so those don't defeat the match.
+  return last.body.includes(safeBody.trim()) ? last : null;
+}
+
 /** Explicit result payload so `withPlanLock`'s `T` is fixed by the type
  *  argument, not inferred from a union-returning mutator. */
 type AddDecisionValue =
-  | { ok: true; decisionId: string; slug: string }
+  | { ok: true; decisionId: string; slug: string; deduped?: boolean }
   | { ok: false; code: 'not_found' | 'legacy_plan'; reason?: LegacyReason };
 
 /** Append ONE decision, returning the self-describing bulk result. PRESERVES the
@@ -261,6 +312,13 @@ async function addDecisionOne(it: NewDecision, ctx: UnifiedToolContext): Promise
           newBody: null,
           value: { ok: false, code: 'legacy_plan', reason: parsed.legacyReason ?? undefined },
         };
+      }
+      // EI-19383795443003151: a blind retry of a timed-out-but-actually-landed
+      // write must not duplicate. No-op (no write, no revision, no plan-event)
+      // and hand back the id that already carries this exact decision.
+      const retryDup = findRetryDuplicateOfLastDecision(parsed.decisions, it.title, it.body);
+      if (retryDup) {
+        return { newBody: null, value: { ok: true, decisionId: retryDup.id, slug: it.slug, deduped: true } };
       }
       const decisionId = allocateNextDecisionId(current);
       const appended = appendDecisionToBody(current, decisionId, it.title, it.body, todayISO(), it.refs ?? []);
@@ -297,6 +355,14 @@ async function addDecisionOne(it: NewDecision, ctx: UnifiedToolContext): Promise
 
   // `result.value` is narrowed to the ok-variant by the guard above.
   const decisionId = result.value.decisionId;
+
+  // A retry-duplicate no-op: nothing was written, so nothing to ledger, event,
+  // or propagate — just hand back the id the earlier (already-landed) call
+  // allocated.
+  if (result.value.deduped) {
+    return { ok: true, decisionId, slug: it.slug, deduped: true, filePath: result.filePath };
+  }
+
   // P-070 usage ledger (best-effort): a decision is contributor activity on a
   // managed harness. Operator-level plans (harness:'all') have no harness slug
   // and the ledger is per-harness, so skip those.
@@ -345,7 +411,7 @@ async function addDecisionOne(it: NewDecision, ctx: UnifiedToolContext): Promise
 export default defineTool({
   name: 'plans:add-decision',
   description:
-    "Append one OR many new decisions to a plan. Allocates the next D-NNN id inside a lock (concurrent calls produce non-colliding ids). Auto-bumps frontmatter updated:. Single: { slug, title, body }. Many: items:[{ slug, title, body, refs?, affects? }]. `itemRefs` is accepted as an alias of `refs` (plans:get echoes a decision's refs back under that name; `refs` wins if both are given). Returns { ok, results:[{ ok, slug, decisionId, propagated_to? | error }], counts } — each result embeds the NEW decisionId; correlate by id, not position; one failure never fails the rest.",
+    "Append one OR many new decisions to a plan. Allocates the next D-NNN id inside a lock (concurrent calls produce non-colliding ids). Auto-bumps frontmatter updated:. Single: { slug, title, body }. Many: items:[{ slug, title, body, refs?, affects? }]. `itemRefs` is accepted as an alias of `refs` (plans:get echoes a decision's refs back under that name; `refs` wins if both are given). Returns { ok, results:[{ ok, slug, decisionId, deduped?, propagated_to? | error }], counts } — each result embeds the NEW decisionId; correlate by id, not position; one failure never fails the rest. Retry-safe: if the exact same { title, body } is already this plan's MOST RECENT decision (a timed-out call that actually landed), the retry hands back that existing decisionId instead of appending a duplicate (`deduped: true`) — safe to retry after an ambiguous timeout without reading the plan back first.",
   guidance: {
     when: "A decision-shaped output: trade-off resolved, scope ratified, choice made between options. Capture so a fresh agent doesn't relitigate. Add several at once via items:[…].",
     notWhen:

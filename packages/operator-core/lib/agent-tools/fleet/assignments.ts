@@ -70,7 +70,7 @@ import { shapeFleetAssignments } from './assignments-shape';
 import { getPlanRow, planItemsForRow, planSlugsForHarness } from '../plans/source';
 import { resolveEffectiveStatusForItems } from '../plans/effective-status';
 import { shapeDagFrontier, claimsFromCoverage, type DagFrontierView } from '../../fleet-dag-view';
-import { getLoopStatuses, type LoopStatus } from '../../harness/routines/loop';
+import { getLoopStatuses, type LoopStatus, type LifecycleBackoffInfo } from '../../harness/routines/loop';
 
 /** Coverage levels most-covered → least, for sorting the rollup. Every member of
  *  CoverageLevel must appear: `indexOf` returns -1 for an unlisted one, which sorts
@@ -233,12 +233,27 @@ export async function decorateLoopMonitorStates<
     monitorState?: MonitorState | null;
     nextFireAt?: string | null;
     loopMode?: 'work' | 'monitor' | null;
+    lifecycleBackoff?: LifecycleBackoffInfo | null;
   },
 >(
   agents: T[],
   fetchStatuses: (ownerIds: string[]) => Promise<Map<string, LoopStatus>> = (ids) => getLoopStatuses(ids),
-): Promise<Array<T & { monitorState: MonitorState | null; nextFireAt: string | null; loopMode: 'work' | 'monitor' | null }>> {
-  type Decorated = T & { monitorState: MonitorState | null; nextFireAt: string | null; loopMode: 'work' | 'monitor' | null };
+): Promise<
+  Array<
+    T & {
+      monitorState: MonitorState | null;
+      nextFireAt: string | null;
+      loopMode: 'work' | 'monitor' | null;
+      lifecycleBackoff: LifecycleBackoffInfo | null;
+    }
+  >
+> {
+  type Decorated = T & {
+    monitorState: MonitorState | null;
+    nextFireAt: string | null;
+    loopMode: 'work' | 'monitor' | null;
+    lifecycleBackoff: LifecycleBackoffInfo | null;
+  };
   if (agents.length === 0) return agents as Decorated[];
   const statuses = await fetchStatuses(agents.map((a) => a.agentId));
   for (const a of agents) {
@@ -251,6 +266,14 @@ export async function decorateLoopMonitorStates<
     // pure-monitor loop from a healthy work loop that is simply between items, without a
     // separate loop:status{ownerId} call.
     a.loopMode = loop?.active ? loop.mode : null;
+    // EI-19381528967421062: a member whose loop backed off from a provider wall (rate-limit
+    // / usage-cap) reads `active:true` with `nextFireAt` far in the future and NOTHING else
+    // distinguishes that from "between wakes" — a leader reading this row alone cannot tell
+    // "healthy, next tick in 60s" from "silenced for the next 100 minutes". Thread the SAME
+    // derivation loop:status already computes (loop.lifecycleBackoff — see
+    // computeLifecycleBackoff) so fleet:assignments/fleet:leader-brief carry it too, instead
+    // of only being visible to a per-owner `loop:status` call the leader has to think to make.
+    a.lifecycleBackoff = loop?.active ? (loop.lifecycleBackoff ?? null) : null;
     if (!state) continue;
     a.declaredUnclaimed = false;
     a.stalled = false;

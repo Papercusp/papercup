@@ -70,6 +70,13 @@ export function shapeFleetAssignments(data: unknown, tier: AssignTier): unknown 
       // stalled/unclaimed member and never needs a second loop:status call.
       monitorState: typeof r.monitorState === "string" ? r.monitorState : null,
       nextFireAt: typeof r.nextFireAt === "string" ? r.nextFireAt : null,
+      // EI-19381528967421062: present ONLY while the loop is actually backed off from a
+      // provider wall (usually absent, like parkedOn/unanswered below) — kept at EVERY
+      // tier so a lean monitor can tell "healthy, next tick in 60s" from "silenced for
+      // the next 100 minutes" without a second per-owner loop:status call.
+      ...(r.lifecycleBackoff && typeof r.lifecycleBackoff === "object"
+        ? { lifecycleBackoff: r.lifecycleBackoff }
+        : {}),
       wakeMode: typeof r.wakeMode === "string" ? r.wakeMode : null,
       // P-007 (fleet-deltas-leader-primitives-2026-07-10): coarse context-pressure
       // bucket (ok|high|critical) — kept at EVERY tier like verdict/wakeMode (one

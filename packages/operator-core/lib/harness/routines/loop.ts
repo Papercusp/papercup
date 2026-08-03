@@ -703,6 +703,24 @@ export interface LifecycleBackoffInfo {
 }
 
 /**
+ * The two `lastDeliveryOutcome` prefixes that both mean "this fire was a provider-wall
+ * backoff, not a normal cadence tick" — written by two INDEPENDENT observers of the same
+ * underlying event:
+ *  - `loop-lifecycle-death:` — the reconcile-loop backstop's own classification
+ *    (`classifyLoopLifecycleTurn`, reconcile-loop-routines.ts), which catches an
+ *    inject-path death or a case the fast observer below missed.
+ *  - `resume-turn-death:` — the FAST observer (`harness/routines/loop-turn-outcome.ts`,
+ *    P1a), which reacts the instant a detached resume turn's exit is seen and re-arms
+ *    `next_fire_at` from the provider's `retry-after` — the common case, and the one this
+ *    function originally did NOT recognize (EI-19381528967421062): a loop rate-limited
+ *    into a ~100x-interval wait via THIS path read `lifecycleBackoff: null` (silently
+ *    absent, not merely stale), because only the OTHER prefix was matched. Both name the
+ *    SAME `TurnErrorClass` suffix (see turn-error.ts) for the SAME reason — recognizing
+ *    only one is exactly the kind of path-specific gap this detector exists to close.
+ */
+const LIFECYCLE_BACKOFF_PREFIXES = ['loop-lifecycle-death:', 'resume-turn-death:'] as const;
+
+/**
  * PURE derivation: is this loop's MOST RECENT recorded fire outcome a provider
  * lifecycle-death, and if so when is it due to retry. `lastDeliveryOutcome` is
  * overwritten on every fire (recordFire), so this clears itself the moment a
@@ -716,9 +734,10 @@ export function computeLifecycleBackoff(input: {
   nowMs?: number;
 }): LifecycleBackoffInfo | null {
   if (!input.active) return null;
-  const prefix = 'loop-lifecycle-death:';
   const outcome = input.lastDeliveryOutcome;
-  if (!outcome || !outcome.startsWith(prefix)) return null;
+  if (!outcome) return null;
+  const prefix = LIFECYCLE_BACKOFF_PREFIXES.find((p) => outcome.startsWith(p));
+  if (!prefix) return null;
   const reason = outcome.slice(prefix.length).trim() || 'unknown';
   const now = input.nowMs ?? Date.now();
   const untilMs = input.nextFireAtIso ? new Date(input.nextFireAtIso).getTime() : NaN;

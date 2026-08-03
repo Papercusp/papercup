@@ -123,6 +123,63 @@ export function parseFailedTestFiles(text) {
   return [...files];
 }
 
+/** The greppable token that opens the per-FILE break-set line. Exported so a consumer
+ *  greps a shared constant instead of a hand-typed copy that can drift from the emitter. */
+export const AFFECTED_TESTS_FAILING_FILES_TOKEN = 'AFFECTED_TESTS_FAILING_FILES';
+
+/** Beyond this many entries the JSON payload is truncated and says so. A break set this
+ *  large is a tree-wide event, not a triage list; the counts stay exact either way. */
+export const FAILING_FILES_LINE_MAX_ENTRIES = 400;
+
+/**
+ * Render the canonical, machine-readable per-FILE break set for a run's final summary.
+ *
+ * EI-19395701908500754: `AFFECTED_TESTS_RESULT ... failed=N` counts TASKS (workspaces),
+ * so the per-FILE set — the thing a triager actually needs — existed nowhere in the
+ * verdict log. Agents therefore MINED PROSE for it, and the prose they reached for was
+ * the gate's own `[green-checkpoint] isolation: re-running <files>` narration. That
+ * narration is emitted by green-checkpoint's self-tests too, so a `grep 'isolation:'`
+ * returned FIXTURE paths (`lib/a.test.ts`, candidate `abc123`) with nothing marking them
+ * synthetic. Measured on the 01:36:17Z red: the mined set was 2 phantom files; the real
+ * one was 11 real files spanning BOTH failing workspaces. The tagging fix (WI-7274) marks
+ * the fixture lines; this removes the reason to read them at all.
+ *
+ * ⚠ COMPLETENESS IS REPORTED SEPARATELY FROM SCOPE, and that is the whole point of the
+ * shape. An empty `files=[]` is ambiguous in the direction that costs the most — it reads
+ * as "nothing failed" when it can equally mean "we could not attribute what failed" (a
+ * TTY run with no captured child output; a crash/OOM that printed no FAIL rows; a
+ * non-vitest task like cargo). So a failed task whose files cannot be named is carried
+ * EXPLICITLY in `unattributed`, and `coverage` can never read `complete` while any such
+ * task exists. `coverage=unattributed` means "tasks failed and NONE of them could be
+ * attributed" — the case a bare empty array would have silently mis-reported as clean.
+ *
+ * @param {{
+ *   runToken: string,
+ *   entries?: Array<{ workspace: string, file: string }>,
+ *   unattributed?: Array<{ task: string, reason: string }>,
+ * }} args
+ * @returns {string}
+ */
+export function formatFailingFilesLine({ runToken, entries = [], unattributed = [] }) {
+  const files = [...entries];
+  const unattr = [...unattributed];
+  const coverage =
+    files.length === 0 && unattr.length === 0
+      ? 'none'
+      : unattr.length === 0
+        ? 'complete'
+        : files.length === 0
+          ? 'unattributed'
+          : 'partial';
+  const truncated = files.length > FAILING_FILES_LINE_MAX_ENTRIES;
+  const shown = truncated ? files.slice(0, FAILING_FILES_LINE_MAX_ENTRIES) : files;
+  return (
+    `${AFFECTED_TESTS_FAILING_FILES_TOKEN} run=${runToken} coverage=${coverage} ` +
+    `fileCount=${files.length} unattributedCount=${unattr.length} truncated=${truncated} ` +
+    `files=${JSON.stringify(shown)} unattributed=${JSON.stringify(unattr)}`
+  );
+}
+
 /**
  * Count vitest's own hard-timeout failures — `"Test timed out in Nms."` / `"Hook timed
  * out in Nms."`, the exact message `@vitest/runner` throws when a case or hook exceeds
