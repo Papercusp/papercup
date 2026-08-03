@@ -71,6 +71,8 @@
     "scripts/lint-tsc-workspaces.mjs",
     "scripts/check-no-unenrolled-detached-spawn.mjs",
     "scripts/next-migration.mjs",
+    "scripts/check-typeless-reexport-trap.mjs",
+    "scripts/check-full-replacement-mocks.mjs",
     "packages/operator-core/lib/inference-gateway/watchdog.mjs"
   ]
 }
