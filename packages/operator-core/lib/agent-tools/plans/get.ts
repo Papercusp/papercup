@@ -29,6 +29,7 @@ import {
   type PlanItemTestStatus,
 } from "../../harness-test-rollup";
 import { overlayIssueBlocksForPlan } from "../../issue-blocks-merge";
+import { planItemProvenanceFromRow } from "../../plan-item-provenance";
 import { boundRowField } from "../_bound-output";
 import { bulkContent, mergeIds, runBulk } from "../_bulk";
 import { cachedRead, type CachedReadCtx } from "../../cache";
