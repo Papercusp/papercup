@@ -445,6 +445,13 @@ export interface SweepResult {
   pairs: ConflictPair[];
   /** True when the pool exceeded the scan cap and the tail was skipped. */
   capped: boolean;
+  /**
+   * True when NO conflict judge is wired, so `pairs: []` means NOT MEASURED
+   * rather than "clean". An unkeyed judge does not fail — it classifies every
+   * row clean (EI-18746586784230719), which the caller could otherwise not
+   * distinguish from a real all-clear.
+   */
+  judgeUnavailable: boolean;
 }
 
 /** Pool-shaped sweep result — {@link SweepResult} without the hive framing. */
@@ -455,6 +462,8 @@ export interface PoolSweepResult {
   pairs: ConflictPair[];
   /** True when the pool exceeded the scan cap and the tail was skipped. */
   capped: boolean;
+  /** See {@link SweepResult.judgeUnavailable} — `pairs: []` is NOT an all-clear. */
+  judgeUnavailable: boolean;
 }
 
 /** Sweep cap — N searches + ≤N judge calls; a huge pool gets a loud partial. */
@@ -479,6 +488,17 @@ export async function sweepPoolConflicts(
 ): Promise<PoolSweepResult> {
   const backend = deps.backend ?? getMemoryBackend();
   const judge = deps.judge ?? realJudge();
+  // An INJECTED judge is by definition wired; only the real one can be unkeyed.
+  // Fails OPEN — a probe that cannot answer never downgrades a real result.
+  let judgeUnavailable = false;
+  if (!deps.judge) {
+    try {
+      const { conflictJudgeAvailable } = await import('../memory/anthropic-judge');
+      judgeUnavailable = !conflictJudgeAvailable();
+    } catch {
+      judgeUnavailable = false;
+    }
+  }
   const cap = Math.max(1, opts.maxRows ?? SWEEP_MAX_ROWS);
   const all = await backend.list({ scope: opts.scope });
   const rows = all.slice(0, cap);
@@ -521,7 +541,13 @@ export async function sweepPoolConflicts(
       }
     }
   }
-  return { scope: opts.scope, scanned: rows.length, pairs, capped: all.length > rows.length };
+  return {
+    scope: opts.scope,
+    scanned: rows.length,
+    pairs,
+    capped: all.length > rows.length,
+    judgeUnavailable,
+  };
 }
 
 /**
@@ -535,7 +561,13 @@ export async function sweepHiveConflicts(
   deps: ManageDeps = {},
 ): Promise<SweepResult> {
   const swept = await sweepPoolConflicts({ scope: hiveScopeKey(opts.potSlug) }, deps);
-  return { hive: opts.potSlug, scanned: swept.scanned, pairs: swept.pairs, capped: swept.capped };
+  return {
+    hive: opts.potSlug,
+    scanned: swept.scanned,
+    pairs: swept.pairs,
+    capped: swept.capped,
+    judgeUnavailable: swept.judgeUnavailable,
+  };
 }
 
 /* ────────────────────────────────────────────────────────────────────────

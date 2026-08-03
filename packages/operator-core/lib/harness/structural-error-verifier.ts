@@ -241,6 +241,15 @@ export function startStructuralErrorVerifier(
     }
   };
   timer = managedSetInterval('structural-error-verifier', intervalMs, () => run(), { category: 'global-sweep' });
+  // EI-19453017656411107 — ARMING must be observable. The tick above logs only when it
+  // actually resolves something, so an armed-but-idle daemon and a never-started one
+  // emitted byte-identical output: nothing. That is exactly how this stayed dark on
+  // :3070 from the day it was written without anyone noticing, and why "0 log lines in
+  // 6h" was NOT sufficient evidence of darkness on its own (the /proc environ check
+  // was). One line at start makes the two states distinguishable from logs alone.
+  opts.log?.(
+    `[structural-error-verifier] armed — every ${Math.round(intervalMs / 60_000)}m (kill-switch: PAPERCUSP_STRUCTURAL_ERROR_VERIFIER=0)`,
+  );
   return { stop: stopStructuralErrorVerifier };
 }
 

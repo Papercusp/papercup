@@ -27,6 +27,7 @@ import {
   ACKNOWLEDGED_UNREACHABLE,
   UNREACHABLE_HIGH_WATERMARK,
   ENFORCING_TEST_RE,
+  stripComments,
   // @ts-expect-error — untyped .mjs guard script, imported for its pure helpers.
 } from '../../../../scripts/check-lint-guard-reachability.mjs';
 
@@ -118,6 +119,44 @@ describe('ENFORCING_TEST_RE — the discriminator', () => {
     expect(ENFORCING_TEST_RE.test('listTrackedFiles(REPO_ROOT)')).toBe(true);
     // A pure-helper test: imports the detector, feeds it a string, asserts. Enforces nothing.
     expect(ENFORCING_TEST_RE.test("expect(findEscapes('x as never')).toHaveLength(1)")).toBe(false);
+  });
+});
+
+describe('stripComments — prose about a guard is not a runner of it', () => {
+  it('drops a comment block that merely NAMES a guard', () => {
+    // This fired for real: the green-checkpoint leg added for this very check carries a
+    // comment naming `lint:mock-cast-escape` as its motivating example, and that one
+    // sentence reclassified the rotting guard from `logic-test` to `gate` — the checker
+    // declaring its own motivating case enforced.
+    const src = ['// EI-123: lint:mock-cast-escape drifted +45 past baseline.', "const x = 1;"].join('\n');
+    expect(stripComments(src)).not.toContain('lint:mock-cast-escape');
+    expect(stripComments(src)).toContain('const x = 1;');
+  });
+
+  it('drops JSDoc continuation lines, not just `//`', () => {
+    const src = ['/**', ' * lint:some-guard is the example here.', ' */', "run('lint:real-guard');"].join('\n');
+    expect(stripComments(src)).not.toContain('lint:some-guard');
+    expect(stripComments(src)).toContain('lint:real-guard');
+  });
+
+  it('PRESERVES a real invocation on a code line (the regression that ate a wired guard)', () => {
+    // `lint:plane-adoption` is wired at green-checkpoint.ts:5094 as a plain array entry.
+    // A block-comment regex (`/\*[\s\S]*?\*\//`) removed that line outright, reporting a
+    // properly-gated guard as unenforced — an unbalanced `/*` inside any string or regex
+    // earlier in a 5000-line file lets the match run for thousands of lines.
+    const src = "      { script: 'lint:plane-adoption', label: 'ADOPTION PROBE' },";
+    expect(stripComments(src)).toContain('lint:plane-adoption');
+  });
+
+  it('keeps string literals, since a real invocation lives inside one', () => {
+    expect(stripComments("exec('npm', ['run', 'lint:x'])")).toContain('lint:x');
+  });
+
+  it('strips YAML comments without touching a workflow run: line', () => {
+    const src = ['# lint:documented-only is discussed here', '  - run: npm run lint:actually-run'].join('\n');
+    const out = stripComments(src, { yaml: true });
+    expect(out).not.toContain('lint:documented-only');
+    expect(out).toContain('lint:actually-run');
   });
 });
 

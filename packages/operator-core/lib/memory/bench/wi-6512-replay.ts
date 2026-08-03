@@ -39,6 +39,68 @@ import type { BatchCall } from '../../endpoint-route/routes/agent-mcp/mid-turn-c
 /** The work-item the investigation produced — what a later agent should be handed. */
 export const KNOWN_ITEM = 'WI-6512';
 
+/**
+ * ═══ THE SCORING CRITERION, AND WHY THERE ARE TWO ═══════════════════════════
+ *
+ * The acceptance claim is behavioural: the push "saves the other twelve calls".
+ * A record saves them if it tells the investigating agent to stop. That is NOT
+ * the same as "the block contains the string WI-6512", and the difference is not
+ * academic — measured 2026-08-03 against the live endpoint, a batch handed back
+ * the COMPLETE recorded diagnosis (`5fecf95a`, "THE PATH IS NOT POSTGRES", with
+ * the timings and the ruled-out list) and scored a MISS, because that record's
+ * text never names the work-item. Scoring on the id alone measures record
+ * IDENTITY and calls it relevance.
+ *
+ * So both criteria are reported, always:
+ *
+ *   STRICT  — the literal `WI-6512`. Narrow and often wrong about what the agent
+ *             actually received, but it is what the 2026-08-03 baseline of
+ *             "1 of 7" was measured under, so it is the ONLY criterion that
+ *             compares like-for-like against that number. Keep it for that.
+ *
+ *   ANSWER  — any record in ANSWER_RECORDS below. This is the criterion that
+ *             matches the acceptance claim. It is NOT comparable to the 1-of-7
+ *             baseline (the baseline was never scored this way), so it must
+ *             never be quoted as an improvement ON that number.
+ *
+ * ⚠ ANSWER is a WIDER criterion, so it scores higher by construction. That makes
+ * it exactly the sort of change that can launder a null result into a pass. It
+ * is defensible here only because the set below is ENUMERATED BY ID with a
+ * stated reason each — not a keyword match that can drift to fit a result. Every
+ * record was verified present in the live store on 2026-08-03, and all four
+ * predate the 1-of-7 baseline, so this re-scores the same population rather than
+ * measuring a new one. If you add to this set, add the reason too.
+ */
+export interface AnswerRecord {
+  /** Substring that identifies the record in a rendered block. */
+  marker: string;
+  /** Why receiving THIS record would stop the investigation. */
+  why: string;
+}
+
+export const ANSWER_RECORDS: AnswerRecord[] = [
+  {
+    marker: KNOWN_ITEM,
+    why: 'the work-item itself — DB ruled out with measurements, "look at the UI transport path"',
+  },
+  {
+    marker: '5fecf95a-edf9-4430-8585-490574690df1',
+    why: 'mem0 reference, the full 2026-07-27 diagnosis: "THE PATH IS NOT POSTGRES", SSE + on-disk JSONL, with the ruled-out list',
+  },
+  {
+    marker: '58b75895-c7eb-4373-8780-de91889fd22d',
+    why: 'mem0 project: names the libsoup 6-connection cap AND the existing fix, and says outright it "has been re-derived from scratch at least three times because agents investigate before they search"',
+  },
+  {
+    marker: '980ce692-1376-474c-a437-ef11393b53cf',
+    why: 'mem0 project: "THE ROOT CAUSE WAS ALREADY FOUND AND ALREADY FIXED IN CODE ~2026-05-20→06-01. Do NOT re-derive it."',
+  },
+];
+
+/** Does this rendered block hand back something that would stop the investigation? */
+export const carriesAnswer = (block: string): AnswerRecord | undefined =>
+  ANSWER_RECORDS.find((r) => block.includes(r.marker));
+
 /** A batch as the PostToolBatch hook delivers it, plus why that turn happened. */
 export interface ReplayBatch {
   turn: number;

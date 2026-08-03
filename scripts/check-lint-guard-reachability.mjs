@@ -128,6 +128,11 @@ export const ACKNOWLEDGED_UNREACHABLE = new Map([
   ['lint:constant-conditional', 'green (9342 files parsed); pending wire-or-retire decision'],
   ['lint:no-workspace-default', 'green; pending wire-or-retire decision'],
   ['lint:scope-defaults', 'advisory by design, but its :strict sibling exits 1; pending decision'],
+  ['lint:knip', 'unused-export sweep; run by nothing — pending wire-or-retire decision'],
+  // ⚠ CLAUDE.md states "lint:no-retired guards re-imports" of retired surfaces. Nothing
+  // runs it, so that documented guarantee is currently unenforced — a doc asserting a
+  // guard that does not run is the quotable-green this whole check exists to stop.
+  ['lint:no-retired', 'DOC-ASSERTED but unenforced — CLAUDE.md claims it guards retired-surface re-imports'],
 
   // Coverage is a UNIT TEST of the detector's helpers only — the guard itself runs
   // over nothing. Remedy is to deepen the existing test into a real-tree assertion,
@@ -149,7 +154,7 @@ export const ACKNOWLEDGED_UNREACHABLE = new Map([
  * `DARK_FLAGS_HIGH_WATERMARK` — and for the same reason, since an allowlist that
  * grows freely reproduces the invisible rot this script exists to detect.
  */
-export const UNREACHABLE_HIGH_WATERMARK = 13;
+export const UNREACHABLE_HIGH_WATERMARK = 15;
 
 /**
  * Tiers that actually STOP a bad change. `hook` and `logic-test` are deliberately
@@ -173,7 +178,7 @@ export const ENFORCING_TEST_RE = /execFileSync|spawnSync|execSync|listTrackedFil
  * many npm aliases point at it — so a base guard that IS wired makes its `:strict`
  * sibling enforced too, and a base guard that is not shows up once, not twice.
  */
-const COMPANION_SUFFIX_RE = /:(fix|report|strict|all|fail|update)$/;
+const COMPANION_SUFFIX_RE = /:(fix|report|census|strict|all|fail|update)$/;
 
 /**
  * Blank out COMMENTS before matching. A runner file that merely *discusses* a guard in
@@ -190,11 +195,24 @@ const COMPANION_SUFFIX_RE = /:(fix|report|strict|all|fail|update)$/;
  *
  * String literals are deliberately KEPT — `exec('npm', ['run', 'lint:x'])` is a real
  * invocation living in a string, so masking those would blind the gate tier entirely.
+ *
+ * ⚠ LINE-BASED on purpose. The obvious implementation — `text.replace(/\/\*[\s\S]*?\*\//g)`
+ * plus a `//` rule — is what this function had first, and it silently ate REAL CODE:
+ * `lint:plane-adoption` is wired at green-checkpoint.ts:5094 as a plain array entry, and
+ * that regex removed the line, reporting a properly-gated guard as unenforced. In a file
+ * this size an unbalanced `/*` inside a string or regex literal lets a non-greedy block
+ * match run for thousands of lines, so the damage is unbounded and invisible.
+ *
+ * Dropping only lines that are ENTIRELY comment cannot do that, and it still removes the
+ * whole prose case, because narrative about a guard always lives in a comment block —
+ * never trailing a line of code that invokes something else.
  */
 export function stripComments(text, { yaml = false } = {}) {
-  let out = String(text);
-  if (yaml) return out.replace(/(^|\s)#[^\n]*/g, '$1');
-  return out.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/(^|[^:])\/\/[^\n]*/g, '$1');
+  const commentLine = yaml ? /^\s*#/ : /^\s*(\/\/|\*|\/\*)/;
+  return String(text)
+    .split('\n')
+    .map((line) => (commentLine.test(line) ? '' : line))
+    .join('\n');
 }
 
 /** `lint:foo` guards, minus the companion invocations described above. */

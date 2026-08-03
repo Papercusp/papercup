@@ -102,8 +102,13 @@ describe('runBackfillSweep (P-010)', () => {
       [{ extname: 'vector' }],            // pg_extension probe
       // target 1 (harness_escalations): column exists → the only live target
       [{ column_name: 'body_embedding' }],
-      // the other 9 targets: column missing → skipped
-      [], [], [], [], [], [], [], [], [],
+      // the other targets: column missing → skipped. DERIVED from TARGETS (the
+      // same rule the ordering test below already uses) because this fixture is
+      // a POSITIONAL response queue: a hand-written count silently shifts every
+      // later response by one the moment a target is added, and the failure
+      // surfaces as an unrelated assertion ("stats[0] is the wrong table",
+      // "update is undefined") rather than as "the fixture is stale".
+      ...TARGETS.slice(1).map(() => []),
       // drain round 1 for harness_escalations
       [{ id: '(0,1)', body: 'escalation text' }],
       [],                                  // UPDATE (returns rows array)
@@ -452,8 +457,9 @@ describe('embedding-space discriminator (WI-3616)', () => {
       [{ extname: 'vector' }],
       // harness_escalations: BOTH the vector column and its _mode column exist.
       [{ column_name: 'body_embedding' }, { column_name: 'body_embedding_mode' }],
-      // The other 9 TARGETS probe as column-missing → skipped, never drained.
-      [], [], [], [], [], [], [], [], [],
+      // The other TARGETS probe as column-missing → skipped, never drained.
+      // Derived, not hand-counted — see the note on the first sweep fixture.
+      ...TARGETS.slice(1).map(() => []),
       // Drain round 1 for harness_escalations: batch, UPDATE, then empty.
       [{ k0: 'h', k1: 'p', body: 'escalation text' }],
       [],
