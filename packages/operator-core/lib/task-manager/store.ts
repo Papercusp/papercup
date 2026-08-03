@@ -162,7 +162,19 @@ export async function markSpawned(taskId: string, facts: SpawnedFacts, inject?: 
   // Merge rather than replace: `detail` already carries other stampers' keys
   // (e.g. `bashJobId` from startBackground), and clobbering it here would break
   // the bashJobId lookup that reads `detail ->> 'bashJobId'`.
-  const detailPatch = facts.unconfinedReason ? { unconfinedReason: facts.unconfinedReason } : null;
+  //
+  // The patch is built SERVER-SIDE with jsonb_build_object rather than as a bound
+  // `${JSON.stringify(x)}::jsonb`, and that is deliberate. `||` on two jsonb values
+  // merges them only when BOTH are objects; give it a jsonb *string* on either side
+  // and it silently produces a two-element ARRAY instead of erroring, which would
+  // corrupt `detail` and break the bashJobId lookup with no failure anywhere. A
+  // bound string round-trips to a jsonb string under some client bindings and to an
+  // object under others (measured 2026-08-03: the org pool yields objects — all 950
+  // live rows are jsonb_typeof 'object' — while the test harness's client yields
+  // strings, which is how this surfaced). jsonb_build_object cannot express that
+  // ambiguity: it always builds an object, so the merge is an object-merge by
+  // construction rather than by luck of the binding.
+  const reason = facts.unconfinedReason ?? null;
   await sql`
     UPDATE harness_shared.task_ledger
        SET pid = ${facts.pid ?? null},
@@ -170,7 +182,10 @@ export async function markSpawned(taskId: string, facts: SpawnedFacts, inject?: 
            scope_unit = COALESCE(${facts.scopeUnit ?? null}, scope_unit),
            cgroup_path = COALESCE(${facts.cgroupPath ?? null}, cgroup_path),
            confined = ${facts.confined ?? false},
-           detail = COALESCE(detail, '{}'::jsonb) || ${JSON.stringify(detailPatch ?? {})}::jsonb,
+           detail = CASE
+                      WHEN ${reason}::text IS NULL THEN detail
+                      ELSE detail || jsonb_build_object('unconfinedReason', ${reason}::text)
+                    END,
            state = 'running',
            last_seen_at = now(),
            updated_at = now()

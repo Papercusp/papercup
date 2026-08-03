@@ -25,6 +25,7 @@ import type { Sql } from 'postgres';
 import type { ImprovementCandidate } from '../harness/improvements/policy';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { gitSidecarEnabled, runGitViaSpawnerSidecar } from '../fleet/git-via-sidecar';
 import { probeHttpReachable } from '../escalating-http-probe';
 import { activeWorkspaceId, readRegistry } from '../workspace-registry';
 import { FLAGS } from '@papercusp/flags';
@@ -1289,8 +1290,46 @@ async function collectDeploy(ctx: HealthCtx): Promise<HealthPanel<DeployHealth>>
   });
 }
 
+/**
+ * WI-7160: this collector fans out to several `git` execs per health tick
+ * (fetch + 2× rev-parse/rev-list PER repo/submodule via {@link gitAheadCount}),
+ * and a live profile attributed 20.8% of a stalled main thread's spawn time to
+ * it. `fork()`'s parent-side cost scales with the PARENT's RSS and is charged
+ * as synchronous main-thread system time (EI-18808838427010743) — the exact
+ * mechanism `git-via-sidecar.ts` exists to remove by routing the exec through
+ * a small long-lived sidecar process instead. `dev-deploy-state.ts`'s `git()`
+ * already does this for the sibling git-heavy health source (same profile,
+ * 79% of spawn time); this mirrors that pattern (own explicit opt-in var, same
+ * shared primitives — reuse-first, not a new implementation) rather than
+ * leaving this call site as the one with NO offload option at all.
+ *
+ * Falls back to a local spawn on ANY sidecar problem (unset flag, unreachable,
+ * a real git error) — a sidecar fault degrades performance, never correctness.
+ */
+export function systemHealthGitSidecarEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return gitSidecarEnabled('PAPERCUSP_SYSTEM_HEALTH_SPAWN_SIDECAR', env);
+}
+
+/** A REAL non-zero git exit (not a sidecar fault) — must not trigger a local retry. */
+class SystemHealthGitExitError extends Error {}
+
 async function runGit(cwd: string, args: string[]): Promise<string> {
-  const { stdout } = await execFileP('git', ['-C', cwd, ...args], { timeout: 10_000, maxBuffer: 2 * 1024 * 1024 });
+  const argv = ['-C', cwd, ...args];
+  if (systemHealthGitSidecarEnabled()) {
+    try {
+      const r = await runGitViaSpawnerSidecar(argv, process.cwd(), 10_000, process.env);
+      if (r.code !== 0) {
+        throw new SystemHealthGitExitError(`git ${argv.join(' ')} exited ${r.code}: ${r.stderr.trim()}`);
+      }
+      return r.stdout.trim();
+    } catch (e) {
+      if (e instanceof SystemHealthGitExitError) throw e;
+      console.warn(
+        `[system-health] spawner-sidecar git fallback to local spawn: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
+  }
+  const { stdout } = await execFileP('git', argv, { timeout: 10_000, maxBuffer: 2 * 1024 * 1024 });
   return String(stdout).trim();
 }
 

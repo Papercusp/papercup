@@ -18,7 +18,52 @@
  * denominator would count exposures that never happened. The resolver fires it
  * from whatever humanQueue the read returns (snapshot or inline).
  */
-import type { ImprovementDigest } from './digest';
+import type { ImprovementDigest, ScoredItem } from './digest';
+
+/**
+ * The humanQueue fields this read actually puts ON THE WIRE (WI-7279).
+ *
+ * This is the read-set of the two sync consumers, verified against their
+ * mappers — not everything `ScoredItem` declares. Keep it in sync with
+ * {@link SlimHumanQueueItem}; the projection loop below iterates exactly this
+ * list, so a field absent here never reaches a client.
+ *
+ * Do NOT add a field here "in case someone needs it": the whole point is that
+ * the wire cost of a new `ScoredItem` field is opt-in. Adding one means a
+ * consumer reads it — say which, in the comment above the projection.
+ */
+const HUMAN_QUEUE_WIRE_FIELDS = [
+  'id',
+  'kind',
+  'title',
+  'scope',
+  'severity',
+  'state',
+  'assignee',
+  'score',
+  'ageDays',
+  'tierReason',
+  'ideaType',
+  'source',
+] as const satisfies ReadonlyArray<keyof ScoredItem>;
+
+/**
+ * One `learning.improvements` humanQueue row AS SERVED — deliberately narrower
+ * than {@link ScoredItem}, which is the SERVER-side shape (the dispatcher and
+ * the `improvements:digest` tool still see all of it).
+ *
+ * Typing the wire separately is what keeps the projection honest: a consumer
+ * that starts reading a dropped field fails to compile here instead of reading
+ * `undefined` at runtime, which is how a field declared-but-never-sent rots
+ * into a silent bug.
+ */
+export type SlimHumanQueueItem = Pick<ScoredItem, (typeof HUMAN_QUEUE_WIRE_FIELDS)[number]>;
+
+/** The `learning.improvements` payload row as served to the Learning tab. */
+export type LearningImprovementsRow = Omit<ImprovementDigest, 'humanQueue'> & {
+  humanQueue: SlimHumanQueueItem[];
+  flow: import('./flow-metrics').ImprovementFlow;
+};
 
 export interface LearningImprovementsArgs {
   state?: 'open' | 'resolved' | 'closed';
@@ -48,7 +93,7 @@ export interface LearningImprovementsArgs {
  */
 export async function computeLearningImprovementsSnapshot(
   a: LearningImprovementsArgs,
-): Promise<Array<ImprovementDigest & { flow: unknown }>> {
+): Promise<Array<LearningImprovementsRow>> {
   const { readImprovementItems } = await import('./read-items');
   const { buildDigest } = await import('./digest');
   const { applyHumanQueueRanking } = await import('../../queue-ranker/human-queue');
@@ -113,17 +158,44 @@ export async function computeLearningImprovementsSnapshot(
     recurringSignatureCount: digest.recurringSignatures.length,
     dispatchStats,
   });
-  // Wire slimming (WI-5412): the ranked humanQueue items each carry a ~1KB
-  // `rank` breakdown + `impact` struct that NO Learning-tab consumer renders —
-  // across ~380 items that was ~65% of a 479KB payload. The ORDER the ranker
-  // produced is preserved; the per-feature "why" stays on the
-  // improvements:digest tool for consumers that want it.
-  const humanQueue = digest.humanQueue.map((item) => {
-    const { impact: _impact, rank: _rank, ...slim } = item as typeof item & {
-      impact?: unknown;
-      rank?: unknown;
-    };
-    return slim;
+  // Wire slimming (WI-5412, widened to a strict projection): the ranked
+  // humanQueue items each carry a ~1KB `rank` breakdown + `impact` struct that
+  // NO Learning-tab consumer renders — across ~380 items that was ~65% of a
+  // 479KB payload. The ORDER the ranker produced is preserved; the per-feature
+  // "why" stays on the improvements:digest tool for consumers that want it.
+  //
+  // It is now an ALLOWLIST rather than the original `omit impact/rank`
+  // denylist. A denylist re-inflates the wire silently every time a field is
+  // added upstream, which is exactly what happened: by 2026-08-03 the payload
+  // was back to 318,082B / 453 rows (695 B/row) against the 250,000 default
+  // ceiling, carrying TEN fields no consumer reads. Projecting to the verified
+  // read-set instead makes the next upstream addition wire-invisible until
+  // someone deliberately adds it here.
+  //
+  // The read-set below is every field reachable from a real consumer — both
+  // sync consumers were enumerated and their mappers read (WI-7279):
+  //   LearningTab.tsx  — renders `title`; filter-engine accessors read `kind`,
+  //     `severity`, `scope`, `ideaType`, `score`, `ageDays`; `source` drives the
+  //     provenance chips; pipelineState() reads `state` + `assignee`; and the
+  //     `impq` quick-search haystack (LearningTab.tsx ~L1636) reads `id`,
+  //     `title`, `tierReason`, `scope`.
+  //   LearningLoopFace.tsx — reads `humanQueue.length` only.
+  //
+  // ⚠ `tierReason` is 15% of the remaining payload across only FOUR distinct
+  // strings, and is never RENDERED — but it is a quick-search input, so
+  // dropping it silently narrows what the owner can find. It is kept
+  // deliberately; interning it is filed as WI-7278, not done here.
+  const humanQueue: SlimHumanQueueItem[] = digest.humanQueue.map((item) => {
+    const slim = {} as Record<string, unknown>;
+    for (const key of HUMAN_QUEUE_WIRE_FIELDS) {
+      const v = (item as unknown as Record<string, unknown>)[key];
+      // Null-omit (D-025): `assignee` is null on 452 of 453 rows, and every
+      // consumer reads it as falsy-or-set (pipelineState), so an omitted key is
+      // indistinguishable from an explicit null at the read site.
+      if (v === undefined || v === null) continue;
+      slim[key] = v;
+    }
+    return slim as unknown as SlimHumanQueueItem;
   });
   return [{ ...digest, humanQueue, flow }];
 }

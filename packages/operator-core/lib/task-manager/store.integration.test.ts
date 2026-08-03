@@ -108,20 +108,23 @@ describe('clearVanishedUnaccounted (EI-18824358724907941)', () => {
  * mistake is invisible to a mocked query.
  */
 describe('markSpawned detail merge (D-014)', () => {
-  async function insertPending(taskId: string, detail: object) {
+  /** Note the `::jsonb` on a bound literal rather than `${JSON.stringify(...)}::jsonb`:
+   *  under this harness's client the latter binds as a jsonb STRING, not an object,
+   *  which is exactly the ambiguity `markSpawned` now refuses to depend on. */
+  async function insertPending(taskId: string, detailJson: string) {
     await db.sql`
       INSERT INTO harness_shared.task_ledger (
         task_id, workspace_id, root_task_id, class, title, argv,
         launched_by, pid, confined, state, detail
       ) VALUES (
         ${taskId}, ${WS}, ${taskId}, 'other', 'sample', '[]'::jsonb,
-        'unknown', null, false, 'pending', ${JSON.stringify(detail)}::jsonb
+        'unknown', null, false, 'pending', ${db.sql.unsafe(`'${detailJson}'::jsonb`)}
       )
     `;
   }
 
   it('stamps unconfinedReason WITHOUT clobbering an existing bashJobId', async () => {
-    await insertPending('t-merge', { bashJobId: 'bash-42' });
+    await insertPending('t-merge', '{"bashJobId":"bash-42"}');
 
     await store.markSpawned('t-merge', { pid: 123, confined: false, unconfinedReason: 'probe-pending' });
 
@@ -131,8 +134,21 @@ describe('markSpawned detail merge (D-014)', () => {
     expect(row!.state).toBe('running');
   });
 
+  it('keeps the bashJobId lookup working after the stamp — the thing a clobber would break', async () => {
+    await insertPending('t-lookup', '{"bashJobId":"bash-99"}');
+
+    await store.markSpawned('t-lookup', { pid: 126, confined: false, unconfinedReason: 'probe-pending' });
+
+    // `detail ->> 'bashJobId'` is how findByBashJobId resolves a background job. A
+    // replace-instead-of-merge, or a merge that produced an array, returns nothing here.
+    const [row] = await db.sql`
+      SELECT task_id FROM harness_shared.task_ledger WHERE detail ->> 'bashJobId' = 'bash-99'
+    `;
+    expect(row?.task_id).toBe('t-lookup');
+  });
+
   it('leaves detail untouched when the task is confined (no reason to record)', async () => {
-    await insertPending('t-confined', { bashJobId: 'bash-7' });
+    await insertPending('t-confined', '{"bashJobId":"bash-7"}');
 
     await store.markSpawned('t-confined', { pid: 124, confined: true, unconfinedReason: null });
 
@@ -141,16 +157,15 @@ describe('markSpawned detail merge (D-014)', () => {
     expect(row!.confined).toBe(true);
   });
 
-  it('handles a NULL detail column without wiping the stamp', async () => {
-    await db.sql`
-      INSERT INTO harness_shared.task_ledger (
-        task_id, workspace_id, root_task_id, class, title, argv, launched_by, pid, confined, state, detail
-      ) VALUES ('t-null', ${WS}, 't-null', 'other', 'sample', '[]'::jsonb, 'unknown', null, false, 'pending', null)
+  it('always merges into an OBJECT, never an array (the `||` string footgun)', async () => {
+    await insertPending('t-shape', '{}');
+
+    await store.markSpawned('t-shape', { pid: 125, confined: false, unconfinedReason: 'no-scope-support' });
+
+    const [row] = await db.sql`
+      SELECT jsonb_typeof(detail) AS t, detail FROM harness_shared.task_ledger WHERE task_id = 't-shape'
     `;
-
-    await store.markSpawned('t-null', { pid: 125, confined: false, unconfinedReason: 'no-scope-support' });
-
-    const [row] = await db.sql`SELECT detail FROM harness_shared.task_ledger WHERE task_id = 't-null'`;
+    expect(row!.t).toBe('object');
     expect(row!.detail).toEqual({ unconfinedReason: 'no-scope-support' });
   });
 });

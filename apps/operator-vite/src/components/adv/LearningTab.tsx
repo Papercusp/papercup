@@ -58,10 +58,14 @@ import {
   Workflow,
   Zap,
 } from "lucide-react";
+// WI-7279: the wire shape is NARROWER than the server-side ScoredItem — the
+// resolver projects humanQueue to the fields this tab actually reads. Import the
+// wire type, not ScoredItem, so reading a field that is no longer sent fails to
+// compile here instead of silently evaluating to `undefined` at runtime.
 import type {
-  ImprovementDigest,
-  ScoredItem,
-} from "@papercusp/operator-core/lib/harness/improvements/digest";
+  LearningImprovementsRow,
+  SlimHumanQueueItem,
+} from "@papercusp/operator-core/lib/harness/improvements/learning-digest-snapshot";
 import { CATEGORICAL, SEVERITY } from "@/app/harness/theme";
 import type { ImprovementFlow } from "@papercusp/operator-core/lib/harness/improvements/flow-metrics";
 import type {
@@ -1142,7 +1146,7 @@ function ageLabel(days: number): string {
  */
 interface LoopRow {
   key: string;
-  item: ScoredItem | null;
+  item: SlimHumanQueueItem | null;
   idea: ScoutRoutedItem | null;
 }
 
@@ -1252,7 +1256,7 @@ function ImprovementsView({
   // default, and the derived-read producer precomputes exactly the default
   // variant. Sending `scope:'loop'` explicitly would be a different args key,
   // miss the snapshot, and pay the 0.4-0.5s inline compute on every mount.
-  const sync = useSyncQuery<ImprovementDigest & { flow?: ImprovementFlow }>({
+  const sync = useSyncQuery<LearningImprovementsRow>({
     queryName: "learning.improvements",
     args: {
       ...(hive ? { hive } : {}),

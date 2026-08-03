@@ -193,6 +193,43 @@ export function mentionsWorkItemDuplicate(text: string): boolean {
   return /\b(?:is\s+a\s+)?dup(?:e|licate)?s?\s+of\b[^.\n;]{0,40}?\b(?:WI|EI|F)-\d+\b/i.test(text);
 }
 
+/**
+ * EI-19380332459719944 — "N passed, M skipped" reads as a pass. Observed live: an
+ * agent skipped one failing case to unblock the gate; a second agent independently
+ * fixed the real root cause, re-ran the same file, saw "8 passed | 1 skipped", and
+ * closed a CRITICAL work-item citing that as verification — but the skip's own
+ * signature is what made the count read clean, and the assertion their fix repairs
+ * never actually executed. Vitest reports a skip as a non-failure inside an
+ * otherwise-green summary line, and nothing about the text distinguishes "this
+ * assertion ran and passed" from "this assertion never ran at all" — the skip count
+ * is DATA nobody reads; "passed" is what registers.
+ *
+ * Cheap, narrow catch: when the caller's OWN testsRun/testResult prose names a
+ * NONZERO skip count, surface it loudly instead of accepting it silently. A skip is
+ * often legitimate (a pre-existing, already-accounted-for quarantine) so this is
+ * WARN-ONLY (EI-24 record-and-warn discipline, same as every other check in this
+ * file) — it must never hard-reject evidence it cannot fully judge; it only makes
+ * sure the caller (and any reviewer reading the completion record later) cannot miss
+ * that a skip is in play. PURE — unit-tested without PG.
+ */
+export function skippedTestsMentionedInEvidence(
+  evidence: Pick<CompletionVerificationEvidence, 'testsRun' | 'testResult'> | undefined,
+): { count: number; source: 'testsRun' | 'testResult' } | undefined {
+  if (!evidence) return undefined;
+  // testResult first: when both fields are populated, testResult is more often the
+  // literal vitest summary line (testsRun tends to be the COMMAND, e.g. "npm run
+  // test:file -- foo.test.ts"), so it is the more likely source of a real count.
+  for (const source of ['testResult', 'testsRun'] as const) {
+    const text = evidence[source];
+    if (!text) continue;
+    const match = text.match(/\b(\d+)\s+skip(?:ped)?\b/i);
+    if (!match) continue;
+    const count = Number(match[1]);
+    if (Number.isFinite(count) && count > 0) return { count, source };
+  }
+  return undefined;
+}
+
 function completionEvidenceFromRecord(
   rec: Omit<CompletionRecord, 'workItem'> & { workItem?: string },
 ): CompletionVerificationEvidence | undefined {
@@ -743,6 +780,16 @@ async function completeOne(
         : `recorded a completion for ${it.id} with neither \`tests\` nor \`deferred\` populated — a settled unit should state whether it was VERIFIED (fill \`tests\`: what you ran / how you checked it, e.g. "18 vitest green" or "n/a — docs only") or CONSCIOUSLY DEFERRED (fill \`deferred\`: what you left undone + why). Add one so the unit isn't silently unverified (flush-to-proceed: a unit settles only live-verified or explicitly deferred-with-reason).`
       : undefined;
 
+  // EI-19380332459719944: a skip hiding inside an otherwise-green testsRun/testResult
+  // summary ("8 passed | 1 skipped") reads as a pass and is exactly what let a real
+  // near-miss reach a critical work-item's completion evidence unnoticed. Computed off
+  // the SAME evidence extraction as everything else above (completionEvidenceForGate)
+  // so it can never disagree with what the caller actually supplied.
+  const skippedTestsMention = skippedTestsMentionedInEvidence(completionEvidenceForGate);
+  const skippedTestsWarning = skippedTestsMention
+    ? `completion for ${it.id} reports ${skippedTestsMention.count} test(s) SKIPPED in \`${skippedTestsMention.source}\` — a skip reads as part of a green summary ("N passed | M skipped") but the skipped assertion(s) never actually ran (EI-19380332459719944: this exact shape — "8 passed | 1 skipped" — read as a clean pass and nearly shipped a false verification on a critical item). If the skip PRE-DATES this change and is unrelated to what this completion verifies, no action needed. If it's a skip left over from unblocking the gate (yours or a peer's), un-skip it and re-run before trusting this as evidence that the skipped assertion(s) pass.`
+    : undefined;
+
   // P-004: the authority actually STAMPED on the row, or null when this call stamped
   // none (no terminal `state`, or the state write was rejected). Reporting the computed
   // judgement in either of those cases would tell the caller their close was graded when
@@ -970,6 +1017,7 @@ async function completeOne(
       : {}),
     ...(authorityWarning ? { authorityWarning } : {}),
     ...(verificationWarning ? { verificationWarning } : {}),
+    ...(skippedTestsWarning ? { skippedTestsWarning } : {}),
     ...(assigneeMismatchWarning ? { assigneeMismatchWarning } : {}),
     ...(harnessMismatchWarning ? { harnessMismatchWarning } : {}),
     // Reported unconditionally on a real close (including `committed`) so the caller can

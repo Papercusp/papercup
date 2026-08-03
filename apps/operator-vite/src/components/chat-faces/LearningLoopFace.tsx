@@ -25,7 +25,10 @@ import { useSyncQuery } from "@papercusp/sync";
 // buttons"): it is invisible to keyboard/touch users and unstyled.
 import { Tooltip } from "@/app/harness/Tooltip";
 import type { ReleaseReadinessSnapshot } from "@papercusp/operator-core/lib/sync-resolver/learning-release-readiness-read";
-import type { ImprovementDigest } from "@papercusp/operator-core/lib/harness/improvements/digest";
+// WI-7279: the wire shape is narrower than the server-side ImprovementDigest —
+// this face reads only `humanQueue.length`, but typing it to the wire keeps that
+// honest if it ever reads a field.
+import type { LearningImprovementsRow } from "@papercusp/operator-core/lib/harness/improvements/learning-digest-snapshot";
 import type { RetainExtrasSnapshot } from "@papercusp/operator-core/lib/sync-resolver/learning-retain-read";
 
 /** The slices of learning.gym this face reads (the full shape is LearningTab-local). */
@@ -57,7 +60,7 @@ export default function LearningLoopFace() {
     staleTime: 30_000,
   });
   const gym = useSyncQuery<GymFaceSnapshot>({ queryName: "learning.gym", staleTime: 30_000 });
-  const improvements = useSyncQuery<ImprovementDigest>({
+  const improvements = useSyncQuery<LearningImprovementsRow>({
     queryName: "learning.improvements",
     staleTime: 30_000,
   });

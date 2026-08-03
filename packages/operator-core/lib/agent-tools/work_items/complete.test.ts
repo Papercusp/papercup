@@ -1338,6 +1338,74 @@ describe('work_items:complete (keyed-array)', () => {
     });
   });
 
+  // ── skippedTestsWarning: a skip inside a green-looking summary is surfaced loudly,
+  // never silently accepted (EI-19380332459719944) ────────────────────────────────────
+  describe('skippedTestsWarning — a skip in testsRun/testResult is surfaced, not silently accepted (EI-19380332459719944)', () => {
+    beforeEach(() => {
+      setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...item, state: 'passed' }));
+    });
+
+    it('warns when testResult reports a nonzero skip count ("N passed | M skipped")', async () => {
+      getWorkItem.mockResolvedValue(item);
+      const r = await one({
+        id: 'F-12',
+        state: 'passed',
+        completion: { summary: 'fixed it', testResult: 'Tests  8 passed | 1 skipped (9)' },
+      });
+      expect(r.ok).toBe(true); // never hard-rejected — EI-24 record-and-warn
+      expect(r.skippedTestsWarning).toMatch(/1 test\(s\) SKIPPED/);
+      expect(r.skippedTestsWarning).toContain('F-12');
+      expect(r.skippedTestsWarning).toContain('testResult');
+    });
+
+    it('warns when testsRun (not testResult) carries the skip mention', async () => {
+      getWorkItem.mockResolvedValue(item);
+      const r = await one({
+        id: 'F-12',
+        state: 'passed',
+        completion: { summary: 'fixed it', testsRun: 'ran the suite: 3 passed, 2 skipped' },
+      });
+      expect(r.skippedTestsWarning).toMatch(/2 test\(s\) SKIPPED/);
+      expect(r.skippedTestsWarning).toContain('testsRun');
+    });
+
+    it('does NOT warn on a clean "N passed" with no skip', async () => {
+      getWorkItem.mockResolvedValue(item);
+      const r = await one({
+        id: 'F-12',
+        state: 'passed',
+        completion: { summary: 'fixed it', testResult: 'Tests  9 passed (9)' },
+      });
+      expect(r.skippedTestsWarning).toBeUndefined();
+    });
+
+    it('does NOT warn on an explicit "0 skipped"', async () => {
+      getWorkItem.mockResolvedValue(item);
+      const r = await one({
+        id: 'F-12',
+        state: 'passed',
+        completion: { summary: 'fixed it', testResult: 'Tests  9 passed | 0 skipped (9)' },
+      });
+      expect(r.skippedTestsWarning).toBeUndefined();
+    });
+
+    it('does NOT warn when neither testsRun nor testResult is populated', async () => {
+      getWorkItem.mockResolvedValue(item);
+      const r = await one({ id: 'F-12', state: 'passed', completion: { summary: 'fixed it', verifiedHow: 'unit' } });
+      expect(r.skippedTestsWarning).toBeUndefined();
+    });
+
+    it('reads the nested `verification.testResult` alias too', async () => {
+      getWorkItem.mockResolvedValue(item);
+      const r = await one({
+        id: 'F-12',
+        state: 'passed',
+        completion: { summary: 'fixed it', verification: { testResult: '4 passed | 1 skipped' } },
+      });
+      expect(r.skippedTestsWarning).toMatch(/1 test\(s\) SKIPPED/);
+    });
+  });
+
   // ── EI-13687: a bare-string `completion` warns LOUDLY (names the dropped fields + the
   // correct object shape) instead of the generic "fill `tests`" nudge that reads like a nag
   // about one missing field when actually every structured field was silently discarded.

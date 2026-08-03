@@ -155,30 +155,49 @@ describe('agent-chat-lock — real Postgres (migration 740)', () => {
     expect(await rowCount('chat-b')).toBe(1);
   });
 
+  /**
+   * `ttlMs` on acquire/isLocked is the STALENESS THRESHOLD applied to an
+   * EXISTING row at check time — it does not backdate the row this call
+   * itself writes (that's always `now()`). So to set up a genuinely stale
+   * lock deterministically (no reliance on wall-clock race on a shared,
+   * possibly-loaded box), seed the row directly via SQL with an old
+   * `started_at`, bypassing the module — exactly the "crashed holder, never
+   * reached its `finally`" scenario this steal-if-stale upsert exists for.
+   */
+  async function seedStaleLock(chatId: string, token: string, ageMs: number): Promise<void> {
+    await sql`
+      INSERT INTO harness_shared.agent_chat_locks (chat_id, workspace_id, token, started_at)
+      VALUES (${chatId}, 'ws-1', ${token}, now() - make_interval(secs => ${Math.round(ageMs / 1000)}))`;
+  }
+
   it('a STALE lock (older than the TTL) can be STOLEN by a new acquirer, and the row gets a NEW token', async () => {
-    // Negative TTL ⇒ the very first acquire is already "stale" by the time the
-    // second call checks it, so this asserts real make_interval arithmetic
-    // rather than a sleep.
-    const first = await acquireAgentChatLock('chat-stale', 'ws-1', { sql, ttlMs: -5_000 });
-    expect(first).not.toBeNull();
-    const staleToken = await tokenOf('chat-stale');
+    await seedStaleLock('chat-stale', 'stale-token', AGENT_CHAT_LOCK_TTL_MS + 60_000);
+    expect(await rowCount('chat-stale')).toBe(1);
 
     const second = await acquireAgentChatLock('chat-stale', 'ws-1', { sql, ttlMs: AGENT_CHAT_LOCK_TTL_MS });
     expect(second).not.toBeNull();
-    expect(second?.token).not.toBe(staleToken);
+    expect(second?.token).not.toBe('stale-token');
     // The steal is an UPDATE, not a new row — exactly one row survives.
     expect(await rowCount('chat-stale')).toBe(1);
     expect(await tokenOf('chat-stale')).toBe(second?.token);
+  });
+
+  it('a lock younger than the TTL CANNOT be stolen (only genuinely stale locks yield)', async () => {
+    const first = await acquireAgentChatLock('chat-fresh', 'ws-1', { sql });
+    expect(first).not.toBeNull();
+    expect(await acquireAgentChatLock('chat-fresh', 'ws-1', { sql, ttlMs: AGENT_CHAT_LOCK_TTL_MS })).toBeNull();
+    expect(await tokenOf('chat-fresh')).toBe(first?.token);
   });
 
   it('releasing a STOLEN (superseded) handle is a NO-OP — it must never delete the new holder\'s row', async () => {
     // This is the failure mode token-scoping exists to prevent: worker A's
     // original `finally` release runs AFTER its lock was stolen for
     // staleness and must not clobber worker B's live lock.
-    const original = await acquireAgentChatLock('chat-steal', 'ws-1', { sql, ttlMs: -5_000 });
-    expect(original).not.toBeNull();
+    await seedStaleLock('chat-steal', 'original-token', AGENT_CHAT_LOCK_TTL_MS + 60_000);
+    const original = { chatId: 'chat-steal', token: 'original-token' };
     const newHolder = await acquireAgentChatLock('chat-steal', 'ws-1', { sql, ttlMs: AGENT_CHAT_LOCK_TTL_MS });
     expect(newHolder).not.toBeNull();
+    expect(newHolder?.token).not.toBe('original-token');
 
     // Worker A's stale handle, releasing late (its `finally` finally runs).
     await releaseAgentChatLock(original, { sql });
@@ -189,7 +208,7 @@ describe('agent-chat-lock — real Postgres (migration 740)', () => {
   });
 
   it('isAgentChatLocked reports false once the lock has expired past its TTL, even without an explicit release', async () => {
-    await acquireAgentChatLock('chat-ttl-read', 'ws-1', { sql, ttlMs: -5_000 });
+    await seedStaleLock('chat-ttl-read', 'old-token', AGENT_CHAT_LOCK_TTL_MS + 60_000);
     expect(await rowCount('chat-ttl-read')).toBe(1); // the row is still there —
     expect(await isAgentChatLocked('chat-ttl-read', { sql, ttlMs: AGENT_CHAT_LOCK_TTL_MS })).toBe(false); // but read as not-live
   });
