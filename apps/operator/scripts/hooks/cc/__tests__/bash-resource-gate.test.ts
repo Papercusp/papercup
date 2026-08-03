@@ -3522,7 +3522,7 @@ describe('cd + EXIT-trap/restore path-drift advisory (EI-19409854431997137)', ()
     expectAllow(
       run(
         'cd apps/operator && npx vitest run x\n' +
-          'cp /tmp/restore.ts /home/marsh-office/papercupai-workspace/papercup/apps/operator/app/adv/hud/hud-board-model.test.ts',
+          'cp /tmp/restore.ts /some/absolute/repo/apps/operator/app/adv/hud/hud-board-model.test.ts',
       ),
     );
   });

@@ -350,13 +350,29 @@ export const HARNESS_FEATURES_CONSOLIDATED_DDL = `
   -- (the exact D-014 fixture-subset trap this file exists to end; broke the green gate 2026-07-05).
   -- Same doctrine for harness_plans: carry the real multi-tenant key columns (with test-friendly
   -- DEFAULTs) so a richer real-DDL application in either order composes instead of colliding.
+  -- ⚠ The OPERATIONAL columns are load-bearing, not optional padding: status is the
+  -- LIFECYCLE axis (draft/ready/active/shipped/superseded) while op_status
+  -- (started/paused/done) is what plans:start / plans:pause actually write, and the
+  -- reserved-plan-lane claim floor (reservedPlanLaneExclusionSql) reads BOTH. Omitting
+  -- op_status here is not a harmless subset — it makes every claim-floor test that sets up
+  -- a genuinely RUNNING plan fail at INSERT with 'column "op_status" does not exist', which
+  -- reads like a broken test rather than a stale fixture (EI-19409397800537963).
   CREATE TABLE IF NOT EXISTS harness_shared.harness_plans (
     workspace_id text NOT NULL DEFAULT 'default',
     harness_slug text NOT NULL DEFAULT 'papercup',
     plan_slug text NOT NULL,
     status text,
+    op_status text,
+    op_started_at timestamptz,
+    op_updated_at timestamptz,
     PRIMARY KEY (workspace_id, harness_slug, plan_slug)
   );
+  -- Pre-existing fixture rows predate op_status; ALTER keeps an older fixture application
+  -- (or a CREATE ... IF NOT EXISTS that no-ops against a stunted earlier shape) composable,
+  -- exactly like the plan_item_claims doctrine above.
+  ALTER TABLE harness_shared.harness_plans ADD COLUMN IF NOT EXISTS op_status text;
+  ALTER TABLE harness_shared.harness_plans ADD COLUMN IF NOT EXISTS op_started_at timestamptz;
+  ALTER TABLE harness_shared.harness_plans ADD COLUMN IF NOT EXISTS op_updated_at timestamptz;
   -- Mirrors libs/papercusp/libs/db/sql/141-plan-item-claims.sql column-for-column (checks/COMMENT/
   -- GRANTs intentionally omitted — superset-only, no-enforcement fixture stance).
   CREATE TABLE IF NOT EXISTS harness_shared.plan_item_claims (

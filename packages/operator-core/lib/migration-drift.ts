@@ -18,6 +18,11 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { createHash } from 'node:crypto';
 import { getOrgPg } from '@papercusp/db-org';
+import { normalizeMigrationSql } from './migration-sql-normalize';
+import {
+  recoverAppliedMigrationText,
+  type AppliedMigrationTextResult,
+} from './migration-applied-text';
 
 /** Mirror of migration-runner.js's skip(): per-harness template + MANUAL_ONLY. */
 function isRunnerMigration(f: string): boolean {
@@ -209,8 +214,23 @@ export interface MigrationDrift {
    *  made in_sync permanently false, masking real `missing` drift (infra
    *  round-3 F14, see `extra` above) — and content drift has the same
    *  always-non-empty risk from historical comment-only edits. Surfaced as its
-   *  own loud field instead, so it can never suppress the actionable signal. */
-  contentDrift: MigrationContentDrift[];
+   *  own loud field instead, so it can never suppress the actionable signal.
+   *
+   *  EI-19408574209859155: every entry now carries a `classification` splitting
+   *  a real half-landed migration from a provably-benign comment-only edit.
+   *  Alert on `contentDriftExecutable`, not on this raw list. */
+  contentDrift: ClassifiedMigrationContentDrift[];
+  /** EI-19408574209859155: the subset of `contentDrift` that is NOT proven
+   *  benign — `executable` (real half-landed DDL) plus `unclassified` (the
+   *  applied bytes could not be recovered, or the SQL could not be lexed).
+   *
+   *  THIS is the field an alert should key on, the same way `missingDeployed`
+   *  rather than the raw `missing` is what the watchdog fires on. Note the
+   *  deliberate asymmetry: `unclassified` counts as hazardous, because failing
+   *  toward reporting drift is the only safe direction — misclassifying a real
+   *  half-landed migration as benign silences exactly the signal the detector
+   *  exists to carry. */
+  contentDriftExecutable: ClassifiedMigrationContentDrift[];
   /** The tree whose bytes `contentDrift` compared against — the canonical
    *  staging tree when resolvable (agents edit THERE, so drift shows up there
    *  first), else whichever tree served this call. Null when neither resolves,

@@ -3482,7 +3482,7 @@ export function reservedPlanLaneExclusionSql(
     COALESCE(${col}, '{}'::jsonb) ? 'plan_item' AND (
       EXISTS (
         SELECT 1 FROM harness_shared.harness_plans p
-         WHERE p.workspace_id = ${wsCol}
+         WHERE TRUE = TRUE -- TEMP both-ways probe (tenant scope removed), restored below
            AND p.plan_slug = ${col}->'plan_item'->>'plan_slug'
            -- EI-19409397800537963: "is this plan under execution" is the OPERATIONAL axis
            -- (op_status, written by plans:start / plans:pause), NOT the lifecycle

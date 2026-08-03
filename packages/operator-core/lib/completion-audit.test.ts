@@ -27,6 +27,7 @@ import {
   citesAssertionBearingRun,
   citesScreenshotArtifact,
   citesWebProbeEvidence,
+  classifyTerminalOwner,
   completionAuthorityPredicateSql,
   COMPLETION_AUDITS,
   COMPLETION_AUTHORITY_FILTERS,
@@ -821,5 +822,55 @@ describe('completionAuthorityPredicateSql (P-013)', () => {
     expect(f.text).not.toContain('terminal_completion_ref');
     expect(f.text).not.toContain(TERMINAL_COMPLETION_EVIDENCE_KEY);
     expect(f.params).not.toContain(TERMINAL_COMPLETION_EVIDENCE_KEY);
+  });
+});
+
+/**
+ * EI-19313376980892266 fix B — the terminal-owner classifier behind work_items:burn_down's
+ * `deltaBy`. Pinned HERE, in the module that owns the identity constants, so the structural
+ * prefix rule cannot be quietly narrowed to a membership-only test without a red.
+ */
+describe('classifyTerminalOwner', () => {
+  it('classifies the `system:` routine convention as system', () => {
+    expect(classifyTerminalOwner('system:plan-item-reconcile')).toBe('system');
+    expect(classifyTerminalOwner('system:replication-liveness')).toBe('system');
+    expect(classifyTerminalOwner('system:condition-bridge')).toBe('system');
+    expect(classifyTerminalOwner(RECONCILER_SYSTEM_ACTOR)).toBe('system');
+  });
+
+  /**
+   * The case a constants-only classifier gets WRONG. `watchdog-green-resolve` is written
+   * as a bare string literal in harness/improvements/auto-close.ts with no exported
+   * constant, so it appears in NO registry — yet it closed 42 items in 30 days (measured
+   * 2026-08-03). Without the prefix rule every one is credited to an agent.
+   */
+  it('classifies un-constanted `watchdog-` identities as system', () => {
+    expect(classifyTerminalOwner('watchdog-green-resolve')).toBe('system');
+    expect(classifyTerminalOwner('watchdog-auto-close')).toBe('system');
+    expect(classifyTerminalOwner('watchdog-orphan-superseded')).toBe('system');
+  });
+
+  it('classifies every known bypass identity as system', () => {
+    for (const id of KNOWN_SYSTEM_COMPLETION_BYPASS_IDENTITIES) {
+      expect(classifyTerminalOwner(id), `${id} must classify as system`).toBe('system');
+    }
+  });
+
+  it('classifies agent owner ids as agent', () => {
+    expect(classifyTerminalOwner('su-5b23300b-ff55-49d4-957a-3e4b31710443')).toBe('agent');
+    expect(classifyTerminalOwner('cup-abc123')).toBe('agent');
+    // A bare uuid with no prefix is still a named actor, not automation.
+    expect(classifyTerminalOwner('6781c9f6-2c64-45a1-8972-9efe499c531e')).toBe('agent');
+  });
+
+  /**
+   * `unattributed` must never collapse into `system`: "nobody recorded who closed this"
+   * and "automation closed this" are different facts, and merging them would hide the
+   * mass-unattributed-close signature EI-18820653360383242 exists to keep visible.
+   */
+  it('keeps a missing owner distinct from automation', () => {
+    expect(classifyTerminalOwner(null)).toBe('unattributed');
+    expect(classifyTerminalOwner(undefined)).toBe('unattributed');
+    expect(classifyTerminalOwner('   ')).toBe('unattributed');
   });
 });

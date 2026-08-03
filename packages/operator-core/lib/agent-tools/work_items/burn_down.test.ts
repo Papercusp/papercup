@@ -412,4 +412,128 @@ describe('work_items:burn_down', () => {
       cohortAudit: { requested: 2, found: 1, missing: 1, reopenRecommended: 0 },
     });
   });
+
+  // EI-19313376980892266 fix B — PROVENANCE ON A DERIVED NUMBER.
+  // `terminal.delta` is harness-WIDE. Read as one fleet's output it over-reports by
+  // whatever the rest of the harness closed; that misread put ~30 closes/hour in front
+  // of an owner when the reporting fleet's real figure was ~6.6.
+  describe('terminal.deltaBy — attribution of the burn-down delta', () => {
+    const since = '2026-07-05T20:00:00.000Z';
+    const closedAt = '2026-07-05T20:30:00.000Z';
+    const fleetScope = {
+      slug: 'my-fleet',
+      members: new Set(['su-mine-alive', 'su-mine-DEAD']),
+      source: 'arg' as const,
+    };
+    const mixedCohort = [
+      item({ id: 'WI-1', state: 'done', closedAt, terminalOwner: 'su-mine-alive' }),
+      // The member that has since DIED. A live-presence basis drops exactly this row —
+      // the 55%-under-report measured on a real fleet (708 ever vs 318 live).
+      item({ id: 'WI-2', state: 'done', closedAt, terminalOwner: 'su-mine-DEAD' }),
+      item({ id: 'WI-3', state: 'resolved', closedAt, terminalOwner: 'su-someone-else' }),
+      item({ id: 'WI-4', state: 'done', closedAt, terminalOwner: 'system:plan-item-reconcile' }),
+      // No `system:` prefix and no constant anywhere — a membership-only classifier
+      // misfiles this as an agent (42 such closes in 30 days, measured).
+      item({ id: 'WI-5', state: 'resolved', closedAt, terminalOwner: 'watchdog-green-resolve' }),
+      item({ id: 'WI-6', state: 'done', closedAt, terminalOwner: null }),
+    ];
+
+    it('splits the delta by fleet / other agents / system / unattributed', () => {
+      const r = buildBurnDownResult(mixedCohort, new Set(['su-mine-alive']), {
+        harness: 'papercusp',
+        since,
+        fleet: fleetScope,
+      });
+
+      expect(r.terminal.delta).toBe(6);
+      expect(r.terminal.deltaBy).toMatchObject({
+        fleet: 2,
+        otherAgents: 1,
+        system: 2,
+        unattributed: 1,
+      });
+    });
+
+    it('counts a fleet member that is DEAD — attribution is ever-members, not live presence', () => {
+      // The whole point of the ledger basis: `liveOwners` deliberately contains only the
+      // one live member, yet BOTH members' closes must be credited to the fleet.
+      const r = buildBurnDownResult(mixedCohort, new Set(['su-mine-alive']), {
+        harness: 'papercusp',
+        since,
+        fleet: fleetScope,
+      });
+      expect(r.terminal.deltaBy?.fleet).toBe(2);
+      expect(r.terminal.deltaBy?.basis.membership).toBe('ever-members');
+    });
+
+    it('classifies un-prefixed watchdog identities as system, not as an agent', () => {
+      const r = buildBurnDownResult(
+        [item({ id: 'WI-w', state: 'done', closedAt, terminalOwner: 'watchdog-green-resolve' })],
+        new Set(),
+        { harness: 'papercusp', since, fleet: fleetScope },
+      );
+      expect(r.terminal.deltaBy).toMatchObject({ system: 1, otherAgents: 0 });
+    });
+
+    it('keeps unattributed closes OUT of system — they are different facts', () => {
+      // Folding a null terminal_owner into `system` would hide the mass-unattributed-close
+      // signature EI-18820653360383242 exists to keep visible.
+      const r = buildBurnDownResult(
+        [item({ id: 'WI-n', state: 'done', closedAt, terminalOwner: null })],
+        new Set(),
+        { harness: 'papercusp', since, fleet: fleetScope },
+      );
+      expect(r.terminal.deltaBy).toMatchObject({ unattributed: 1, system: 0 });
+    });
+
+    // THE FALSIFIER for the whole field: if these four ever stop summing to `delta`,
+    // the split is silently lying about a total it claims to partition.
+    it('PARTITIONS delta exactly — the four buckets always sum to it', () => {
+      for (const fleet of [fleetScope, null]) {
+        const r = buildBurnDownResult(mixedCohort, new Set(), {
+          harness: 'papercusp',
+          since,
+          fleet,
+        });
+        const d = r.terminal.deltaBy!;
+        expect((d.fleet ?? 0) + d.otherAgents + d.system + d.unattributed).toBe(r.terminal.delta);
+        expect(r.terminal.deltaByPartitions).toBe(true);
+      }
+    });
+
+    it('reports fleet as NULL (never 0) when no fleet is in scope', () => {
+      // 0 asserts "the fleet closed nothing" — a fabricated verdict from a failed or
+      // absent lookup. null says "no fleet was resolved", which is the actual fact.
+      const r = buildBurnDownResult(mixedCohort, new Set(), {
+        harness: 'papercusp',
+        since,
+        fleet: null,
+      });
+      expect(r.terminal.deltaBy?.fleet).toBeNull();
+      expect(r.terminal.deltaBy?.basis.fleet).toBeNull();
+      expect(r.terminal.deltaBy?.basis.note).toMatch(/no fleet in scope/i);
+      // With no fleet, every agent close lands in otherAgents rather than vanishing.
+      expect(r.terminal.deltaBy?.otherAgents).toBe(3);
+    });
+
+    it('is absent without `since` — there is no delta to attribute', () => {
+      const r = buildBurnDownResult(mixedCohort, new Set(), { harness: 'papercusp' });
+      expect(r.terminal.deltaBy).toBeUndefined();
+      expect(r.terminal.deltaByPartitions).toBeUndefined();
+    });
+
+    it('names the scoping that produced the split', () => {
+      const r = buildBurnDownResult(mixedCohort, new Set(), {
+        harness: 'papercusp',
+        since,
+        fleet: fleetScope,
+      });
+      expect(r.terminal.deltaBy?.basis).toMatchObject({
+        fleet: 'my-fleet',
+        fleetSource: 'arg',
+        membership: 'ever-members',
+        memberCount: 2,
+      });
+    });
+  });
 });

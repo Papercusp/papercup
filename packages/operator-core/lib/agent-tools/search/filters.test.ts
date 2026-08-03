@@ -38,3 +38,56 @@ describe('resolveSearchFilters — session:self owner-scoping (WI-5644)', () => 
     expect(resolved.filters).toBeUndefined();
   });
 });
+
+/**
+ * The `fleet:` branch — the ONE path here that queries `sql`, and (until
+ * EI-19313376980892266) the only one with no coverage at all. It now resolves through
+ * fleet-membership-store's `fleetEverMembers` so this surface and work_items:burn_down's
+ * `deltaBy` share ONE membership oracle instead of each carrying its own copy of the
+ * ledger query.
+ */
+describe('resolveSearchFilters — fleet: ever-members (D-002)', () => {
+  /** A tagged-template stub standing in for `postgres`'s Sql. */
+  function sqlReturning(rows: Array<{ owner_id: string }>): { sql: Sql; calls: number } {
+    const state = { calls: 0 };
+    const fn = (..._args: unknown[]) => {
+      state.calls += 1;
+      return Promise.resolve(rows);
+    };
+    return { sql: fn as unknown as Sql, get calls() { return state.calls; } };
+  }
+
+  it('resolves a fleet to its EVER-members — including ones no longer live', async () => {
+    // `su-dead` has no presence row anymore; the ledger still carries it, and a
+    // postmortem/attribution read is exactly the case that needs it.
+    const stub = sqlReturning([{ owner_id: 'su-alive' }, { owner_id: 'su-dead' }]);
+    const { filters } = await resolveSearchFilters(
+      stub.sql,
+      { fleet: 'my-fleet' },
+      FAKE_OWNER,
+      { workspaceId: 'papercusp-workspace' },
+    );
+    expect(new Set(filters?.owners)).toEqual(new Set(['su-alive', 'su-dead']));
+    expect(stub.calls).toBe(1);
+  });
+
+  it('keeps the impossible-filter sentinel when a fleet resolves to nobody', async () => {
+    // Regression guard for the refactor: an unknown fleet must still narrow to NOTHING
+    // rather than silently dropping the filter and returning the unfiltered corpus.
+    const { filters } = await resolveSearchFilters(
+      sqlReturning([]).sql,
+      { fleet: 'no-such-fleet' },
+      FAKE_OWNER,
+    );
+    expect(filters?.owners).toEqual(['__no_such_fleet__']);
+  });
+
+  it('does NOT add the sentinel when an explicit owner was also given', async () => {
+    const { filters } = await resolveSearchFilters(
+      sqlReturning([]).sql,
+      { fleet: 'no-such-fleet', owner: 'su-explicit' },
+      FAKE_OWNER,
+    );
+    expect(filters?.owners).toEqual(['su-explicit']);
+  });
+});

@@ -36,6 +36,19 @@ vi.mock('node:os', async () => {
   const actual = await vi.importActual<typeof import('node:os')>('node:os');
   return { ...actual, homedir: () => '/home/x' };
 });
+// EI-19411366390626914: console-spawn.ts (imported transitively via
+// terminal-spawn.ts) warms the task-manager's systemd-scope probe at module
+// load (task-manager-no-escape-2026-07-27 P-009) — since WI-6844 (2026-08-02)
+// the flag defaults ON, so that probe now genuinely fires a `spawn('systemd-run',
+// …)` through this SAME mocked `spawn`, landing as an extra untracked call ahead
+// of the real terminal spawn and breaking `spawnMock`'s call-count assertions.
+// Neuter it exactly like orchestrator-runner-scope.test.ts does: the subject of
+// this file is the terminal spawn, not the probe's own plumbing (that belongs to
+// managed-spawn's own tests).
+vi.mock('../../task-manager/managed-spawn', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../task-manager/managed-spawn')>()),
+  warmScopeProbe: () => {},
+}));
 
 const CTX: RouteContext = {
   principal: null,

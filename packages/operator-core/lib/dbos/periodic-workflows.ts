@@ -40,7 +40,10 @@ import { FLAGS, type FlagKey } from '@papercusp/flags';
 import { reapEndedPresenceRows } from '../agent-tools/coordination/presence-reaper';
 import { runSubstrateOutboxBackstopGc } from '../substrate-outbox-backstop-gc';
 import { runDbosWorkflowGcOnce } from './dbos-workflow-gc';
-import { reconcileStaleEscalationsOnce } from '../attention/reconcile-escalations';
+import {
+  reconcileStaleEscalationsOnce,
+  reconcileUnanswerableEscalationsOnce,
+} from '../attention/reconcile-escalations';
 import { reconcileStalePendingHandoffsOnce, reconcileHandoffRepingsOnce } from '../reconcile-handoffs';
 import { runReplyDeadlineSweepOnce } from '../agent-tools/coordination/reply-deadline-sweep';
 import { runAllHiveBroadcastSweepOnce } from '../agent-tools/coordination/allhive-broadcast-sweep';
@@ -411,6 +414,20 @@ async function attentionReconcileTick(): Promise<void> {
     if (shouldShedHeavyTick('attention-reconcile')) return;
     await reconcileStaleEscalationsOnce();
   }, { name: 'attention-reconcile' });
+  // EI-19411323991062966: the sweep above deliberately never touches
+  // NON-operational escalations, so an ask whose AUTHOR no longer exists is
+  // unanswerable AND unclosable — 365 of 550 open rows, 304 past 48h, oldest
+  // 2026-06-15. Own step so a failure here can never abort the operational
+  // reconcile above (and vice versa), and best-effort for the same reason the
+  // sibling drain is: a reconcile miss must degrade, never break the tick.
+  await DBOS.runStep(async () => {
+    if (shouldShedHeavyTick('attention-reconcile-unanswerable')) return;
+    try {
+      await reconcileUnanswerableEscalationsOnce();
+    } catch {
+      // best-effort: next tick retries
+    }
+  }, { name: 'attention-reconcile-unanswerable' });
 }
 const attentionReconcileWorkflow = idempotentRegisterWorkflow('attentionReconcile', () =>
   DBOS.registerWorkflow(attentionReconcileTick, {
