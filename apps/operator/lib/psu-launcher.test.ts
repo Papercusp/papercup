@@ -29,9 +29,6 @@ import {
   computeOutputDoorTokens,
   computeCompactionThresholdPercents,
   OMP_CORE_MCP_TOOL_NAMES,
-  SU_CONTEXT_CHOICES,
-  SU_CONTEXT_DEFAULT,
-  SU_CONTEXT_TOKEN_ESTIMATES,
   selectionsFromArgs,
   presetsFromArgs,
   resumeArgsFor,
@@ -141,6 +138,19 @@ import {
   RESUME_MODEL_MENU,
   RESUME_EFFORT_MENU,
   // WI-6321 parity sources. Aliased because the TS twins carry the same names.
+  //
+  // The alias is LOAD-BEARING, not cosmetic — do not "simplify" it away, and do not
+  // re-add a bare `SU_CONTEXT_DEFAULT` / `SU_CONTEXT_TOKEN_ESTIMATES` from psu here.
+  // Both names are imported bare from operator-core below, so importing them bare
+  // from the launcher too declares each identifier twice. TypeScript says so (TS2300
+  // ×6) but nothing else does: node ESM and esbuild's .mjs loader both reject a
+  // duplicate binding as a hard SyntaxError, while esbuild's TS loader — the one
+  // Vitest actually uses — silently accepts it and lets the LAST import win. So the
+  // suite kept passing while every bare use in this file quietly resolved to
+  // operator-core, including inside the psu-picker describe above that means to test
+  // the launcher. It stayed invisible only because the two modules currently hold
+  // identical values; the day they diverge is precisely the day these tests exist to
+  // fire (EI-19423881269896227).
   SU_CONTEXT_CHOICES,
   SU_CONTEXT_TOKEN_ESTIMATES as PSU_SU_CONTEXT_TOKEN_ESTIMATES,
   SU_CONTEXT_DEFAULT as PSU_SU_CONTEXT_DEFAULT,
@@ -543,15 +553,20 @@ describe('SU_CONTEXT_CHOICES (WI-1282 su-context-size-variants — terminal pick
     expect(native.name).toMatch(/native/i);
   });
 
+  // PSU_-prefixed alias throughout: this describe tests psu-launcher.mjs's OWN
+  // terminal picker, so it must assert against the LAUNCHER's constants. The bare
+  // names belong to the operator-core TS twins (imported below for the WI-6321
+  // parity suite) and reading them here tested the wrong module — see the note on
+  // the import block.
   it('labels embed the token estimates, in parity with the operator UI', () => {
     const full = SU_CONTEXT_CHOICES.find((c) => c.value === 'full')!;
     const trimmed = SU_CONTEXT_CHOICES.find((c) => c.value === 'trimmed')!;
-    expect(full.name).toContain(SU_CONTEXT_TOKEN_ESTIMATES.full);
-    expect(trimmed.name).toContain(SU_CONTEXT_TOKEN_ESTIMATES.trimmed);
+    expect(full.name).toContain(PSU_SU_CONTEXT_TOKEN_ESTIMATES.full);
+    expect(trimmed.name).toContain(PSU_SU_CONTEXT_TOKEN_ESTIMATES.trimmed);
     // Same measured figures the UI's SU_CONTEXT_OPTIONS shows (AdvSessionsClient.tsx).
     // Re-measured 2026-07-02 post-Phase-3: 60.1k sonnet-fleet / ~76k power boot
     // (the P-018 '~83k' was pre-Phase-3, full persona).
-    expect(SU_CONTEXT_TOKEN_ESTIMATES).toEqual({ full: '~180k', trimmed: '~70k' });
+    expect(PSU_SU_CONTEXT_TOKEN_ESTIMATES).toEqual({ full: '~180k', trimmed: '~70k' });
   });
 
   it('picker values are a subset of the --context-size flag values parseArgs accepts', () => {
@@ -567,9 +582,9 @@ describe('SU_CONTEXT_CHOICES (WI-1282 su-context-size-variants — terminal pick
     // The tool catalogue the picker highlights by default: neither the full
     // up-front catalog nor each client's native (no-flag) behavior, but the
     // trimmed core-spine + native-soft-trim variant.
-    expect(SU_CONTEXT_DEFAULT).toBe('trimmed');
-    expect(SU_CONTEXT_CHOICES.some((c) => c.value === SU_CONTEXT_DEFAULT)).toBe(true);
-    const defaultChoice = SU_CONTEXT_CHOICES.find((c) => c.value === SU_CONTEXT_DEFAULT)!;
+    expect(PSU_SU_CONTEXT_DEFAULT).toBe('trimmed');
+    expect(SU_CONTEXT_CHOICES.some((c) => c.value === PSU_SU_CONTEXT_DEFAULT)).toBe(true);
+    const defaultChoice = SU_CONTEXT_CHOICES.find((c) => c.value === PSU_SU_CONTEXT_DEFAULT)!;
     expect(defaultChoice.name).toMatch(/trimmed/i);
     expect(defaultChoice.name).toMatch(/default/i);
   });
@@ -3592,7 +3607,7 @@ describe('mintRecycleArgs — personaFile swap (stale-prompt-render-in-live-sess
     );
     expect(args).toEqual(['claude', '--session-id', FRESH, '--system-prompt-file', NEW_RENDER, '--foo']);
     // Replaced, not appended — exactly one occurrence, and the stale path is gone.
-    expect(args.filter((a) => a === '--system-prompt-file')).toHaveLength(1);
+    expect(args.filter((a: string) => a === '--system-prompt-file')).toHaveLength(1);
     expect(args).not.toContain(OLD_RENDER);
   });
 

@@ -1125,6 +1125,12 @@ const post = defineTool({
       /** Playbook profile (engineer|power), assembled per-launch (P-023).
        *  Omitted/invalid → 'engineer'. */
       profile?: string | null;
+      /** EI-996: a SU-TIER ROLE NAME (e.g. 'planner') — this session runs as a
+       *  full su agent whose prompt carries that role's addendum. Deliberately a
+       *  NAME, not prose: the text is resolved server-side from
+       *  `prompts/su-role-<role>.addendum.md`, so this superuser-tier launch path
+       *  exposes no free-text prompt-append surface. Unknown → 400. */
+      su_role?: string | null;
       /** The launcher's own cwd — used for no-harness launches so the
        *  agent's cwd-scoped session resume works from the user's terminal. */
       cwd?: string | null;
@@ -1249,6 +1255,25 @@ const post = defineTool({
       );
     }
     const profile = profileRaw ?? 'engineer';
+
+    // EI-996 (owner ask 2026-06-17): a SU-TIER ROLE — the session is a full su
+    // agent (engineer playbook + superuser MCP) plus that role's few lines. The
+    // wire carries the role NAME and the text is resolved here from
+    // prompts/su-role-<role>.addendum.md; an unknown name 400s exactly like an
+    // unknown profile above, so a typo can never silently launch an unaddended
+    // superuser session that LOOKS like a role session. Never accept the prose
+    // itself over the wire — see su-role-addendum.ts for why.
+    const suRoleRaw = body.su_role?.trim() || null;
+    if (suRoleRaw && !isSuTierRole(suRoleRaw)) {
+      return jsonRes(
+        {
+          status: 'error',
+          error: `su_role must be one of ${SU_TIER_ROLES.join('|')} (got ${suRoleRaw.slice(0, 24)})`,
+        },
+        400,
+      );
+    }
+    const roleAddendum = suRoleRaw ? resolveSuRoleAddendum(suRoleRaw) : null;
 
     // su-context-size-variants: 'full' loads the whole superuser catalog up-front;
     // 'trimmed' uses each client's native soft-trim. Omitted ⇒ each client's native

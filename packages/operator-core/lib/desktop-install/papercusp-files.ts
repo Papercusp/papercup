@@ -479,6 +479,32 @@ function resolveOperatorAppRoot(): string {
  * also tries process.cwd()-rooted paths to cover the esbuild-bundled
  * Tauri sidecar layout where `__dirname` collapses to `sidecar/`.
  */
+/**
+ * The prompts DIRECTORIES to search, ordered most-specific first — the shared
+ * root-resolution every `apps/operator/prompts/*` lookup needs.
+ *
+ * Extracted from `playbookCandidates` (EI-996) so a sibling prompt-source
+ * resolver (e.g. the su-tier ROLE ADDENDUM, `su-role-<role>.addendum.md`) reuses
+ * the SAME roots instead of forking a second, silently-diverging copy — notably
+ * the `process.cwd()` fallbacks that cover the esbuild-bundled Tauri sidecar
+ * layout, where `__dirname` collapses to `sidecar/` and the module-relative root
+ * alone resolves nothing.
+ */
+export function promptsDirCandidates(operatorAppRoot: string, explicitRoot: boolean): string[] {
+  return explicitRoot
+    ? [path.join(operatorAppRoot, 'prompts')]
+    : [
+        path.join(operatorAppRoot, 'prompts'),
+        path.join(process.cwd(), 'apps', 'operator', 'prompts'),
+        path.join(process.cwd(), 'prompts'),
+      ];
+}
+
+/** The auto-discovered operator app root — exported for sibling prompt resolvers (EI-996). */
+export function operatorAppRootForPrompts(): string {
+  return resolveOperatorAppRoot();
+}
+
 function playbookCandidates(operatorAppRoot: string, explicitRoot: boolean, profile = 'engineer'): string[] {
   // Profile-specific base, then the ENGINEER base as a graceful fallback for any
   // non-engineer profile (domain-generic-hive-architecture P-025): a `generic`
@@ -493,13 +519,7 @@ function playbookCandidates(operatorAppRoot: string, explicitRoot: boolean, prof
   const files = profile === 'generic'
     ? [`papercusp-su-${profile}.tools.md`, 'papercusp-su-engineer.tools.md']
     : [`papercusp-su-${profile}.tools.md`];
-  const roots = explicitRoot
-    ? [path.join(operatorAppRoot, 'prompts')]
-    : [
-        path.join(operatorAppRoot, 'prompts'),
-        path.join(process.cwd(), 'apps', 'operator', 'prompts'),
-        path.join(process.cwd(), 'prompts'),
-      ];
+  const roots = promptsDirCandidates(operatorAppRoot, explicitRoot);
   // Specificity-first: try the profile-specific file in every root before the
   // engineer fallback in every root, so a real generic file (if later authored) wins.
   return files.flatMap((file) => roots.map((r) => path.join(r, file)));
