@@ -182,6 +182,24 @@ const toolsTop = [...byTool.entries()]
   }))
   .sort((a, b) => b.resultChars - a.resultChars)
   .slice(0, 25);
+// WI-7261: `toolsTop` is ranked by resultChars and truncated at 25, so reading
+// its `useChars` column for "which tool has the biggest ARGUMENTS" is ranking by
+// one quantity and reading for another. A tool with large arguments and small
+// results — write a lot, get back a short ack — can be absent from that list
+// entirely. tool_use is 25.4% of all context (D-014), so it gets its own ranking
+// over the FULL byTool map, never a re-slice of the result-ranked one.
+const toolUseTotal = [...byTool.values()].reduce((a, r) => a + (r.useChars || 0), 0);
+const toolsTopByUse = [...byTool.entries()]
+  .map(([tool, r]) => ({
+    tool,
+    calls: r.calls || 0,
+    useChars: r.useChars || 0,
+    estUseTokens: Math.round((r.useChars || 0) / CPT),
+    pctOfToolUse: toolUseTotal ? +((100 * (r.useChars || 0)) / toolUseTotal).toFixed(2) : 0,
+    avgUseChars: r.calls ? Math.round((r.useChars || 0) / r.calls) : 0,
+  }))
+  .sort((a, b) => b.useChars - a.useChars)
+  .slice(0, 25);
 const sessionTokens = perSession.map((s) => s.chars / CPT).sort((a, b) => a - b);
 const q = (p) => (sessionTokens.length ? Math.round(sessionTokens[Math.min(sessionTokens.length - 1, Math.floor(p * sessionTokens.length))]) : 0);
 
@@ -198,7 +216,9 @@ const summary = {
   totalEstTokens: Math.round(total / CPT),
   perSessionEstTokens: { n: sessionTokens.length, p50: q(0.5), p90: q(0.9), p99: q(0.99), max: q(1) },
   byKind: kinds,
+  toolUseTotalChars: toolUseTotal,
   topToolsByResultChars: toolsTop,
+  topToolsByUseChars: toolsTopByUse,
   doorFooters,
 };
 await writeFile(OUT, JSON.stringify({ ...summary, perSession }, null, 2));

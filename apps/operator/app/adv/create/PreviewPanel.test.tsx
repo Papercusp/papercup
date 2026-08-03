@@ -44,11 +44,33 @@ vi.mock('./use-create-data', () => ({
   usePlanListMaps: () => ({ harnessByPlan: new Map([['plan-a', 'harness-x']]) }),
 }));
 
+// WI-7262: PreviewPanel.tsx imports BOTH `usePlanAttention` AND `flattenAttentionItems`
+// from this module, so BOTH must appear here — a factory missing one kills every case in
+// this file at module-init ("No <x> export is defined on the ... mock"), which is how this
+// file red-pinned the fleet gate on 2026-08-03 (red #12).
+//
+// `flattenAttentionItems` mirrors the REAL implementation (plans-api.ts:364-375): flatten
+// `groups[].items`, dedupe by `id`, first-seen wins. Deliberately NOT a bare
+// `groups.flatMap(g => g.items)` — the dedupe IS the function's reason to exist (WI-5337,
+// then re-introduced at a second call site as EI-19373923898562595), so a flatMap stub here
+// would let that exact duplicate-key regression pass this suite.
 vi.mock('@/app/admin/plans/plans-api', () => ({
   usePlanAttention: () => ({
     data: { groups: [{ items: [{ id: 'oth-1', kind: 'decision' }, { id: 'pi', kind: 'plan-item' }] }] },
     refresh: vi.fn(),
   }),
+  flattenAttentionItems: (groups: readonly { items?: readonly { id: string; kind: string }[] }[]) => {
+    const seen = new Set<string>();
+    const out: { id: string; kind: string }[] = [];
+    for (const g of groups ?? []) {
+      for (const it of g.items ?? []) {
+        if (seen.has(it.id)) continue;
+        seen.add(it.id);
+        out.push(it);
+      }
+    }
+    return out;
+  },
 }));
 
 vi.mock('@/app/admin/plans/PlanItemPreview', () => ({

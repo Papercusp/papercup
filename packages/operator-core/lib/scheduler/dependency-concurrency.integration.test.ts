@@ -247,6 +247,51 @@ describe('two writers racing edge sync on the same item (P-011) — @covers INV-
     expect(['EI-x', 'EI-y'], why).toContain(finalSet[0]);
   });
 
+  it('a concurrent REMOVAL is not lost — the damaging direction of the same race', async () => {
+    // The direction with teeth. The union outcome is bad in the abstract; it is HARMFUL
+    // when one writer is dropping a blocker. If its removal is lost, the stale edge
+    // withholds the item forever, no error is raised anywhere, and every counter reports
+    // success — INV-05's silent stall, reached through a race rather than a bad write.
+    await seedIssue('EI-b');
+    await seedIssue('EI-x', 'wip');
+    await seedIssue('EI-y', 'wip');
+
+    // Established state: EI-b is blocked by BOTH.
+    await syncWorkItemDepEdges(H, 'EI-b', ['EI-x', 'EI-y']);
+    expect(await blockersOf('EI-b')).toEqual(['EI-x', 'EI-y']);
+    expect(await claim('probe')).toBeNull(); // genuinely withheld before the race
+
+    // Now race a DROP of EI-y against a rewrite that keeps only EI-y. Whichever wins, the
+    // result must be exactly one writer's intent — never the union that would resurrect
+    // the blocker the first writer explicitly removed.
+    await Promise.all([
+      syncWorkItemDepEdges(H, 'EI-b', ['EI-x']),
+      syncWorkItemDepEdges(H, 'EI-b', ['EI-y']),
+    ]);
+
+    const finalSet = await blockersOf('EI-b');
+    expect(finalSet, 'a lost removal resurrects a dropped blocker').toHaveLength(1);
+    expect(['EI-x', 'EI-y']).toContain(finalSet[0]);
+  });
+
+  it('clearing ALL blockers concurrently actually releases the item', async () => {
+    // The end state a removal race is usually driving toward: an empty set must mean
+    // CLAIMABLE, not merely "no rows". Pairs the row-level assertion above with the
+    // behavioural one, per D-017 — row shape is not the verdict.
+    await seedIssue('EI-b');
+    await seedIssue('EI-x', 'wip');
+    await syncWorkItemDepEdges(H, 'EI-b', ['EI-x']);
+    expect(await claim('probe')).toBeNull();
+
+    await Promise.all([
+      syncWorkItemDepEdges(H, 'EI-b', []),
+      syncWorkItemDepEdges(H, 'EI-b', []),
+    ]);
+
+    expect(await blockersOf('EI-b')).toEqual([]);
+    expect(await claim('after')).toBe('EI-b');
+  });
+
   it('the surviving edge set is EFFECTIVE — the winner actually gates the claim door', async () => {
     // Row shape is not the verdict (D-017). Whichever writer won, the item must be
     // withheld, because both candidate blockers were seeded non-terminal.
