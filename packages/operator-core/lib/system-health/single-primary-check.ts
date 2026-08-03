@@ -237,6 +237,21 @@ const CONDITION_PREFIX = 'single-primary:';
  * Bounded by the message-log GC retention window: a condition whose latest alarm AND
  * resolution both fall outside it no longer exists to all-clear. Errors are the CALLER's
  * to absorb — a failed read must degrade to "emit nothing", never to a false all-clear.
+ *
+ * ⚠ THE `workspaceId` FILTER IS LOAD-BEARING, NOT DEFENSIVE — and it is coupled to the
+ * ROLE this runs as. `harness_shared.coord_event_log` has RLS enabled
+ * (`coord_event_log_workspace_isolation`: `workspace_id = current_setting('app.workspace_id')`).
+ * The caller passes `getOrgPg().sql`, i.e. the **harness_admin** role, which has
+ * `rolbypassrls = true` — so RLS does NOT scope this query and the explicit predicate is the
+ * ONLY thing keeping it inside one workspace. Two ways to break it, both silent:
+ *   • drop/loosen the `workspace_id` predicate → the read spans EVERY workspace and one
+ *     tenant's recovery all-clears another tenant's live alarm;
+ *   • switch the caller to `getOrgPgApp()` (the harness_app role, which is SUBJECT to RLS)
+ *     → without a `SET LOCAL app.workspace_id` this returns ZERO rows, so the guard simply
+ *     stops all-clearing and the stuck-condition bug returns, looking exactly like "fixed".
+ * Measured 2026-08-03: as harness_app with no `app.workspace_id`, the identical query
+ * returns 0 rows (the index scan is never executed); with it set, 11,768 condition rows are
+ * visible. Verifying this query as harness_admin therefore proves nothing about harness_app.
  */
 export async function openSinglePrimaryConditions(
   sql: SqlLike,

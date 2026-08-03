@@ -199,20 +199,93 @@ function recheckFor(subject: string): string {
     : `Search for "${subject.slice(0, 80)}" ${scopeRule}`;
 }
 
+/**
+ * EI-19399570274386816: is the `.` at `i` a SENTENCE end, or just a dot inside a token?
+ *
+ * `lastIndexOf('.')` treated every dot as a boundary, so a claim sentence citing a file
+ * — the overwhelmingly common case in this corpus — got sliced mid-token. Measured: the
+ * sentence "…`isCheckpointRunLockHeldCheap` (release-checkpoint-launch.ts:648) IS the
+ * single authoritative source I claimed did not exist" was emitted as the claim
+ * `"ts:648) IS the single authoritative both-origins source I claimed did not exist"`,
+ * which begins mid-token and reads as garbage. A rendered claim nobody can parse is worse
+ * than no claim: it looks like output and carries no meaning.
+ *
+ * A real terminator is followed by whitespace or end-of-text; `foo.ts`, `1.5` and
+ * `release-checkpoint-launch.ts:648` all have a non-space next character.
+ */
+function isSentenceDot(text: string, i: number): boolean {
+  const next = text[i + 1];
+  return next === undefined || /\s/.test(next);
+}
+
 /** The sentence containing an offset — the unit a human reads as "the claim". */
 function sentenceAt(text: string, index: number): string {
-  const start = Math.max(
-    text.lastIndexOf('.', index),
-    text.lastIndexOf('\n', index),
-    text.lastIndexOf(';', index),
-  );
+  let start = -1;
+  for (let i = Math.min(index, text.length) - 1; i >= 0; i--) {
+    const c = text[i];
+    if (c === '\n' || c === ';' || (c === '.' && isSentenceDot(text, i))) {
+      start = i;
+      break;
+    }
+  }
   let end = text.length;
-  for (const mark of ['.', '\n', ';']) {
-    const i = text.indexOf(mark, index);
-    if (i >= 0 && i < end) end = i;
+  for (let i = index; i < text.length; i++) {
+    const c = text[i];
+    if (c === '\n' || c === ';' || (c === '.' && isSentenceDot(text, i))) {
+      end = i;
+      break;
+    }
   }
   return text.slice(start + 1, end);
 }
+
+/**
+ * EI-19399570274386816 — POLARITY. These patterns match a surface string, not a
+ * proposition, so a sentence RETRACTING an absence claim ("X IS the source I claimed did
+ * not exist") is indistinguishable from asserting one. That misfires on precisely the
+ * write this guard exists to cause: the author who ran the search, found the thing, and is
+ * documenting the correction. Rewarding that with a warning is how an advisory guard loses
+ * the credibility it needs for its real catches — the same erosion argued in
+ * EI-19388269294151851.
+ *
+ * Two high-precision suppressions, deliberately NOT a general negation parser:
+ *
+ * 1. REPORTED SPEECH AS SUBJECT. `<verb> did not exist` captures the verb, so
+ *    "…I claimed did not exist" yields the subject "claimed" — and then a recheck telling
+ *    the reader to grep the repo for "claimed", a term that names nothing. A reporting verb
+ *    is never the name of an absent thing, so the match is always a report OF a claim
+ *    rather than a claim. Zero false-negative risk: no genuine absence claim has a
+ *    past-tense reporting verb as its subject.
+ */
+const REPORTED_SPEECH = new Set([
+  'claimed',
+  'said',
+  'filed',
+  'thought',
+  'assumed',
+  'asserted',
+  'believed',
+  'wrote',
+  'argued',
+  'reported',
+  'stated',
+  'concluded',
+  'suspected',
+]);
+
+/**
+ * 2. EXPLICIT SELF-RETRACTION in the same sentence. Kept deliberately TIGHT — every marker
+ *    here is about the author's own prior claim being WRONG, so none can plausibly
+ *    co-occur with a live absence claim. Notably absent: "already exists" / "does exist",
+ *    which read like retraction markers but legitimately share a sentence with a real
+ *    absence ("the table already exists but there is no reader for it") — including them
+ *    would trade this false positive for a false negative on a genuine claim.
+ */
+const SELF_RETRACTION =
+  /\b(?:i (?:was|am) (?:wrong|mistaken)|retract(?:s|ed|ing|ion)?|falsified|premise (?:is|was) (?:false|wrong)|turned out to exist)\b/i;
+
+/** A first-person reporting frame just before the hit — "I claimed there is no X". */
+const REPORTING_FRAME = /\b(?:i|we) (?:claimed|said|filed|thought|assumed|asserted|believed|wrote|reported)\b[^.;\n]{0,40}$/i;
 
 /**
  * Derive absence premises from an artifact's own text. PURE and exported for
@@ -232,8 +305,15 @@ export function detectAbsencePremises(text: string, source: PremiseSource): Deri
     for (const m of prose.matchAll(re)) {
       const subj = (subject(m) ?? '').replace(/\s+/g, ' ').trim();
       if (!subj) continue;
+      // EI-19399570274386816 (1): "…I claimed did not exist" captures the verb, not a
+      // subject — a report OF a claim, not a claim.
+      if (REPORTED_SPEECH.has(subj.toLowerCase())) continue;
       const claim = clampClaim(sentenceAt(prose, m.index ?? 0));
       if (!claim) continue;
+      // EI-19399570274386816 (2): the sentence retracts an absence rather than asserting
+      // one, or reports one the author already attributed to their past self.
+      if (SELF_RETRACTION.test(claim)) continue;
+      if (REPORTING_FRAME.test(prose.slice(Math.max(0, (m.index ?? 0) - 60), m.index ?? 0))) continue;
       const key = claim.toLowerCase();
       if (seen.has(key)) continue;
       seen.add(key);

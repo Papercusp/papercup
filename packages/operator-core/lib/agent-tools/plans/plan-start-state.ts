@@ -42,8 +42,14 @@ export type StartStatus = 'started' | 'paused' | 'done' | null;
  * below — which calls `isTerminalPlanStatus` in THIS module — threw
  * `ReferenceError: isTerminalPlanStatus is not defined` at runtime while every
  * importer resolved fine and the change looked correct (WI-7256 fallout; it
- * red-pinned the fleet gate across 3 test files). `lint:no-reexport-used-locally`
- * fails the build if this shape comes back.
+ * red-pinned the fleet gate across 3 test files / 18 tests, cand 955187351a).
+ *
+ * What actually guards this: `tsc`, which reports it as
+ * `TS2304: Cannot find name '<symbol>'` — verified on this exact file. There is
+ * deliberately NO bespoke lint for the shape, because a second detector nobody
+ * runs adds noise rather than coverage. Run
+ * `npm run lint:tsc -- --files=<the files you edited>` before you finish, or the
+ * feedback arrives ~55min later as a fleet-gate red (EI-19403475615161567).
  */
 import { TERMINAL_PLAN_STATUSES, isTerminalPlanStatus } from '@papercusp/plan-parser';
 
