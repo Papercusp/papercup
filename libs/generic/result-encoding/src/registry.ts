@@ -115,6 +115,24 @@ export function readPrePromptFormat(name: string): Exclude<ReadEncoding, 'off'> 
   return e.read;
 }
 
+/**
+ * Is this read encoding POSITIONAL — i.e. does the payload omit its column
+ * names, making the prompt's "## Wire schemas" legend load-bearing for reading
+ * it? True for the headerless `csv`/`tsv` bodies; false for `toon` (which
+ * carries `fields[N]:` inline) and `off`.
+ *
+ * The single predicate behind BOTH ends of the positional protocol: the read
+ * encoder (`tryTier3Read`) and the legend generator (`renderWireSchemasSection`)
+ * must agree exactly, or the model is handed column declarations for a payload
+ * that doesn't need them (dead weight, and it instructs a position→column
+ * mapping the wire no longer uses) — or worse, positional bytes with no legend.
+ * Deriving both from here is the same anti-desync discipline as the shared
+ * `projectReadColumns`/`projectWriteColumns` projection.
+ */
+export function isPositionalReadEncoding(fmt: ReadEncoding | undefined): boolean {
+  return fmt === 'csv' || fmt === 'tsv';
+}
+
 /** Does this tool accept a positional row for its ARGS (write)? */
 export function isWritePositional(name: string): boolean {
   return REGISTRY.get(name)?.write === 'positional';

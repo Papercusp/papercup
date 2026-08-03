@@ -70,11 +70,39 @@ const KNOWN_WORK_ITEM_STATE_TOKENS: readonly string[] = Array.from(
 const WORK_ITEM_STATE_OVERRIDE: ColumnOverride = { enumValues: KNOWN_WORK_ITEM_STATE_TOKENS };
 
 export const PRE_PROMPT_REGISTRY: PrePromptEntry[] = [
-  // ── Read (Tier-3 headerless CSV) ──────────────────────────────────────────
+  // ── Read (self-describing TOON) ───────────────────────────────────────────
   // audit:list — summary mode returns exactly {id,ts,actor,action,subject}
-  // (declared, flat); `detail:'full'` adds a nested field → runtime flatness
-  // check downgrades it to TOON. Clean + lossless both ways.
-  { name: 'audit:list', read: 'csv', note: 'flat audit rows; ~hot on investigation' },
+  // (declared, flat); `detail:'full'` adds a nested field. Shape-eligible for
+  // Tier-3 headerless CSV, but deliberately served as TOON.
+  //
+  // EI-136 (measured, 2026-06-08; re-verified 2026-08-03): with the headerless
+  // form, sonnet-4-6 COLUMN-SHIFT-MISREADS this result ~1/3 of runs (2 pass / 1
+  // fail over 3, groundedness variance 1.89) — naming a decoy actor from an
+  // adjacent row. The mechanism is distance: the reader must map 5 bare
+  // positions to a column order held THOUSANDS of tokens away in the prompt's
+  // "## Wire schemas" legend. TOON carries `fields[5]: …` + `rows[N]{…}:`
+  // adjacent to the data, so the mapping is local and no legend lookup happens.
+  //
+  // Why this is the cheap fix rather than a format-design project: TOON already
+  // ships fleet-wide as the default compact encoding (every non-registry list
+  // tool uses it), so this is a re-route at an existing, already-benchmarked
+  // renderer — not a new format. The self-description tax is ~68 chars (~20
+  // tokens) ONCE PER RESULT regardless of row count (~1% on a 50-row read,
+  // which is what Tier-3 targets), against a ~1/3 misattribution rate on the
+  // single read tool in this registry.
+  //
+  // `read:'toon'` (not `'off'`) keeps the tool governed by this registry and
+  // states the encoding explicitly; `tryTier3Read` returns null for it and the
+  // generic compact path picks TOON (serialize-result.ts:209). It also
+  // suppresses the now-redundant read-column legend — declaring positional
+  // columns for a self-describing payload is dead prompt weight AND actively
+  // misleading (it instructs a position→column mapping the wire no longer
+  // needs). See renderWireSchemasSection, which emits read columns only for the
+  // positional formats.
+  //
+  // Reverting to 'csv' re-arms the measured misread — do not flip it back
+  // without a gym A/B (S08-compact-read) showing the read accuracy is fine.
+  { name: 'audit:list', read: 'toon', note: 'flat audit rows; ~hot on investigation; TOON not CSV per EI-136 read-accuracy' },
 
   // ── Write (positional-CSV args) — LIVE since 2026-07-06 (the P-013 gate PASSED) ──
   // Both are all-scalar, arrayless, free-text-free positional fits. The P-013
