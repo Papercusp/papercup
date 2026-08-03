@@ -57,6 +57,11 @@ vi.mock('../../work-items', () => ({
   getWorkItem: vi.fn(async () => null),
 }));
 vi.mock('../../events/await/inbox-wake-arm', () => ({ armInboxWake: vi.fn(async () => undefined) }));
+// EI-19447204017443244: the arm-time live-wake-await lookup behind the cap message.
+// Defaults to EMPTY so every pre-existing handler test keeps its exact prior wording.
+vi.mock('../../events/await/store', () => ({
+  listWakeAwaitsForSubscriber: vi.fn(async () => [] as Array<{ eventKey: string }>),
+}));
 vi.mock('../../events/await/wake-reachability', () => ({
   probeWakeReachability: vi.fn(async () => ({ reachable: true, channel: 'inject', durableWhileAlive: true, summary: 'ok' })),
 }));
@@ -106,6 +111,7 @@ const getWiM = vi.mocked(getWorkItem);
 const armWakeM = vi.mocked(armInboxWake);
 const probeM = vi.mocked(probeWakeReachability);
 const findHostM = vi.mocked(findLiveHost);
+const wakeAwaitsM = vi.mocked((await import('../../events/await/store')).listWakeAwaitsForSubscriber);
 const tool = (await import('./arm')).default;
 
 type Out = { content: { text: string }[] };
@@ -124,6 +130,8 @@ beforeEach(() => {
   getWiM.mockResolvedValue(null as never);
   // EI-18221784742583615: default no prior loop ⇒ no overwrite note (every existing test).
   priorLoopM.mockResolvedValue(null as never);
+  // EI-19447204017443244: default no live wake-awaits (the 'none' rendering).
+  wakeAwaitsM.mockResolvedValue([] as never);
 });
 
 describe('loop:arm — WI-1471 ownerId override', () => {
@@ -644,6 +652,78 @@ describe('loop:arm — EI-19395290807657827: the self-sealing backoff', () => {
       expect(without.wakePremise).toMatch(/NOTHING will push you a wake/);
       expect(withEvent.wakePremise).toContain('green-gate-verdict');
     });
+
+    // EI-19447204017443244 — the cap used to assert "nothing can push you a wake" as
+    // FACT while consulting only blockedOn.event. These four cases pin the three honest
+    // renderings apart; each pair differs in exactly ONE input, so deleting the wiring
+    // collapses them together and the suite fails by construction.
+    describe('the live-push-channel claim (EI-19447204017443244)', () => {
+      const blocked = { reason: 'waiting on a deploy' };
+
+      it('NEVER states the caller has no push channel as an unqualified fact', () => {
+        // The regression itself. The old text read "...you named no clearing event, so
+        // nothing can push you a wake" — a claim about the caller's WHOLE wake surface,
+        // which this function had never looked at. The scoped form is true by
+        // construction, so it survives regardless of what the lookup found.
+        for (const lp of [
+          { status: 'unknown' } as const,
+          { status: 'none' } as const,
+          { status: 'found', count: 1, sample: ['predicate:abc'] } as const,
+        ]) {
+          const r = resolveBlockedBackoff(7200, blocked, lp);
+          expect(r.note).toContain('no clearing event for this loop');
+          expect(r.note).not.toMatch(/so nothing can push you a wake and the timer/);
+        }
+      });
+
+      it('FOUND: names the live awaits instead of denying they exist — and still caps', () => {
+        const r = resolveBlockedBackoff(7200, blocked, {
+          status: 'found',
+          count: 2,
+          sample: ['predicate:44071', 'release:green:papercusp'],
+        });
+        expect(r.note).toContain('predicate:44071');
+        expect(r.note).toMatch(/cannot tell whether any of them fires on THIS blocker/);
+        // Item's option (b): the guard's behaviour is unchanged — only its claim is.
+        expect(r.intervalSec).toBe(900);
+        expect(r.clamped).toBe(true);
+      });
+
+      it('NONE: earns the negative claim by labelling it as MEASURED', () => {
+        const r = resolveBlockedBackoff(7200, blocked, { status: 'none' });
+        expect(r.note).toMatch(/measured, not assumed/);
+        expect(r.note).not.toMatch(/you DO hold/);
+      });
+
+      it('UNKNOWN: a failed/absent lookup claims NEITHER — no fabricated measurement', () => {
+        // The trap this guards: degrading "I could not look" into "I looked and found
+        // nothing" would print a measurement that was never taken — the same defect
+        // class, reintroduced through the error path.
+        const r = resolveBlockedBackoff(7200, blocked, { status: 'unknown' });
+        expect(r.note).not.toMatch(/measured, not assumed/);
+        expect(r.note).not.toMatch(/you DO hold/);
+      });
+
+      it('defaults to UNKNOWN when the caller supplies no observation', () => {
+        // Pins the back-compat contract: every pre-existing 2-arg caller is unaffected.
+        expect(resolveBlockedBackoff(7200, blocked).note).toBe(
+          resolveBlockedBackoff(7200, blocked, { status: 'unknown' }).note,
+        );
+      });
+
+      it('the WAKE PREMISE names no specific await — it is re-injected on every wake', () => {
+        // A once-await fires and is gone, so "you hold watch #44071" would be a fresh
+        // false claim of this same class, merely time-shifted. The premise must stay
+        // durable: scoped to the loop, naming nothing that can expire under it.
+        const r = resolveBlockedBackoff(7200, blocked, {
+          status: 'found',
+          count: 1,
+          sample: ['predicate:44071'],
+        });
+        expect(r.wakePremise).not.toContain('predicate:44071');
+        expect(r.wakePremise).toContain('No clearing event was named for this loop');
+      });
+    });
   });
 
   describe('handler wiring', () => {
@@ -653,6 +733,58 @@ describe('loop:arm — EI-19395290807657827: the self-sealing backoff', () => {
       expect(b.loop.requestedIntervalSec).toBe(7200);
       expect(b.loop.blockedOn).toEqual({ reason: 'gate red 8h', event: null, intervalCapped: true });
       expect(materializeM).toHaveBeenCalledWith(expect.objectContaining({ intervalSec: 900 }));
+    });
+
+    // EI-19447204017443244 — END-TO-END: the pure resolver above can be perfect and the
+    // message still lie, if the handler never runs the lookup or drops its result. Each
+    // case below differs from the default (empty ⇒ 'none') in exactly ONE input.
+    describe('live wake-await lookup wiring (EI-19447204017443244)', () => {
+      it('QUERIES the caller and threads a HIT into the cap message', async () => {
+        wakeAwaitsM.mockResolvedValue([
+          { eventKey: 'predicate:44071', expiresTs: null, rootId: null },
+        ] as never);
+        const b = body(await call({ intervalSec: 7200, blockedOn: { reason: 'waiting on a deploy' } }));
+        // Queried for the ARMING owner — a lookup against anyone else answers the wrong question.
+        expect(wakeAwaitsM).toHaveBeenCalledWith('su-caller-own-id');
+        expect(b.note).toContain('predicate:44071');
+        expect(b.note).not.toMatch(/measured, not assumed/);
+      });
+
+      it('BASELINE: the same arm with no live awaits makes the measured-negative claim', async () => {
+        // The differential partner of the case above: identical call, lookup empty.
+        // Delete the handler wiring and these two converge, so neither can pass vacuously.
+        const b = body(await call({ intervalSec: 7200, blockedOn: { reason: 'waiting on a deploy' } }));
+        expect(b.note).toMatch(/measured, not assumed/);
+        expect(b.note).not.toContain('predicate:');
+      });
+
+      it('does NOT query when a clearing event IS named — that branch never speaks about awaits', async () => {
+        await call({
+          intervalSec: 7200,
+          blockedOn: { reason: 'gate red', event: 'release:green:papercusp' },
+        });
+        expect(wakeAwaitsM).not.toHaveBeenCalled();
+      });
+
+      it('does NOT query on an ordinary arm with no declared blocker', async () => {
+        await call({ intervalSec: 7200 });
+        expect(wakeAwaitsM).not.toHaveBeenCalled();
+      });
+
+      it('a FAILED lookup still arms, and claims NEITHER way', async () => {
+        // Best-effort contract: advisory reads must not fail the arm, and must not
+        // degrade into a fabricated "I checked and found nothing".
+        wakeAwaitsM.mockRejectedValue(new Error('statement timeout') as never);
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        const b = body(await call({ intervalSec: 7200, blockedOn: { reason: 'waiting on a deploy' } }));
+        // The failure is SWALLOWED for the caller but must not be silent for the operator.
+        expect(warn).toHaveBeenCalledWith(expect.stringContaining('live wake-await lookup failed'));
+        warn.mockRestore();
+        expect(b.ok).not.toBe(false);
+        expect(b.loop.intervalSec).toBe(900);
+        expect(b.note).not.toMatch(/measured, not assumed/);
+        expect(b.note).not.toMatch(/you DO hold/);
+      });
     });
 
     it('PREPENDS the premise to the kickoff — the mechanism that actually re-checks it each wake', async () => {

@@ -335,6 +335,27 @@ export async function startDbos(): Promise<void> {
       import('@papercusp/db-org'),
     ]);
     startExecutorReaper(getOrgPg().sql);
+    // EI-19451658870832332 — ARMING RECEIPT. The reaper is provably executing (its
+    // dead-executor scan increments in pg_stat_statements on the 120s cadence) while
+    // being ABSENT from every `listManaged()` read served by /api/internal/managed-timers
+    // — including bg-host's own, the only host with PAPERCUSP_BACKGROUND_WORKERS=1.
+    // Every EXTERNAL probe has been exhausted (see the work-item: kill-switch, registry
+    // filtering, dual-package, --preserve-symlinks, unix-socket backends, and a
+    // controlled experiment that FALSIFIED dynamic-import registry duplication).
+    // Two live hypotheses remain and this ONE line discriminates them from inside the
+    // process, which nothing outside it can:
+    //   * line never appears  => the `await Promise.all([...])` above HUNG (a hang throws
+    //     nothing, so the existing catch stays silent) and arming never ran — which would
+    //     also explain why startGreenStallWatchdog below is missing from the same registry.
+    //   * line appears with a count/flag that DISAGREES with what the route reports
+    //     => two live instances of the scheduled-registry module in one process.
+    // Deliberately logs the BOOT graph's own view so it can be diffed against the route's.
+    const { listManaged } = await import('@papercusp/scheduled-registry');
+    const armed = listManaged();
+    console.log(
+      `[dbos-executor-reaper] armed — boot-graph registry: ${armed.length} timer(s), ` +
+        `reaperPresent=${armed.some((t) => t.name === 'dbos-executor-reaper')}`,
+    );
   } catch (e) {
     console.warn('[dbos-executor-reaper] failed to start (non-fatal):', e instanceof Error ? e.message : e);
   }
@@ -466,9 +487,19 @@ export async function startDbos(): Promise<void> {
   // watchdog structural-error EIs whose offending tool has emitted no error in the deployed
   // operator's live telemetry (tool_invocations) for a quiet window. The inverse of
   // completion-ref-verifier (presence-on-remote ↔ absence-on-deployed); stops already-fixed
-  // items rotting open + agents re-investigating landed fixes. DEFAULT-OFF until validated —
-  // arm with PAPERCUSP_STRUCTURAL_ERROR_VERIFIER=1. Best-effort — must not fail boot.
-  if (process.env.PAPERCUSP_STRUCTURAL_ERROR_VERIFIER === '1') {
+  // items rotting open + agents re-investigating landed fixes.
+  //
+  // EI-19453017656411107: DEFAULT-ON since 2026-08-03; kill-switch is
+  // PAPERCUSP_STRUCTURAL_ERROR_VERIFIER='0' (same polarity as the DBOS hang watchdog
+  // above). It had been opt-IN ("DEFAULT-OFF until validated") and was consequently
+  // NEVER ARMED on :3070 from the day it was written — measured dark on pid 621668 with
+  // 0 log lines in 6h — so the waste it exists to prevent kept being paid by hand: on
+  // 2026-08-03 alone, agents burned wakes re-investigating landed fixes on
+  // EI-19452068575891376 and others. It IS validated (7/7 unit tests) and its decision is
+  // deliberately conservative (resolve only when recurrences===0 AND the item is older
+  // than the 6h window, ≤50/tick), and a wrongly-resolved item is re-filed by the
+  // watchdog on the next recurrence. Best-effort — must not fail boot.
+  if (process.env.PAPERCUSP_STRUCTURAL_ERROR_VERIFIER !== '0') {
     try {
       const { startStructuralErrorVerifier } = await import('../harness/structural-error-verifier');
       startStructuralErrorVerifier({ log: (m) => console.warn(m) });

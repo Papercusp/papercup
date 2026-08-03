@@ -203,12 +203,20 @@ describe('the constants are the ones D-016 measured', () => {
 });
 
 describe('turnSha', () => {
-  it('matches the SQL side (encode(sha256(text::bytea),\'hex\'))', () => {
-    // Verified equal against the live database 2026-08-03. If these ever
-    // diverge, every turn reads as permanently stale and the sync rewrites the
-    // whole table on every pass — expensive and silent.
-    expect(turnSha('hello')).toBe(
-      '2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824',
+  it("matches the SQL side (encode(sha256(convert_to(text,'UTF8')),'hex'))", () => {
+    // ⚠ THIS INPUT IS CHOSEN TO DISCRIMINATE, and that is the whole point of
+    // the test. The SQL side was first written as `text::bytea`, which does not
+    // ENCODE a string to bytes — it PARSES it as a bytea literal. 'hello' is
+    // valid under both readings and hashes identically either way, so asserting
+    // on 'hello' passes against the broken expression and proves nothing (it
+    // did exactly that here, until the sync died on real data with `invalid
+    // input syntax for type bytea`).
+    //
+    // This input carries a literal backslash, a newline and a non-ASCII char,
+    // so it is only valid one way. Verified against the live database
+    // 2026-08-03 — both sides produce this digest.
+    expect(turnSha('a\\x41b\nhéllo')).toBe(
+      '28675fb761f2675f240005800d831457fb9f6bc5351c4d8add5ca4ce7597439e',
     );
   });
 

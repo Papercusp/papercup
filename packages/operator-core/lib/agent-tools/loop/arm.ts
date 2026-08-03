@@ -37,6 +37,7 @@ import {
 } from '../../harness/routines/loop';
 import { claimWorkItem, classifyClaimFailure, getWorkItem } from '../../work-items';
 import { armInboxWake } from '../../events/await/inbox-wake-arm';
+import { listWakeAwaitsForSubscriber } from '../../events/await/store';
 import { findLiveHost, sessionClassForHost } from '../../events/await/psu-pty-discovery';
 import {
   probeWakeReachability,
@@ -95,13 +96,34 @@ export interface BlockedBackoffResolution {
 }
 
 /**
+ * EI-19447204017443244: what the ARM-TIME lookup of the caller's own live wake-capable
+ * awaits found. Purely descriptive — it changes the MESSAGE, never the cap (the item
+ * chose that explicitly: the nudge toward a catalogued clearing event is what actually
+ * helps, so the fix is to stop asserting an unchecked premise, not to relax the guard).
+ *
+ * `unknown` is the DEFAULT precisely because it is the honest state when the lookup was
+ * not run or failed. It must never collapse into `none`: "I did not look" and "I looked
+ * and there was nothing" are different claims, and printing the second for the first is
+ * the exact defect this whole change exists to remove.
+ */
+export type LivePushChannels =
+  | { status: 'none' }
+  | { status: 'found'; count: number; sample: readonly string[] }
+  | { status: 'unknown' };
+
+/**
  * PURE: resolve a blocker-motivated interval. Omitting `blockedOn` preserves the exact
  * pre-existing BEHAVIOUR (no cap, no premise, interval untouched) — since P-006/D-098 it
  * may return an advisory `note`, but nothing that changes what the loop does.
+ *
+ * `livePush` (EI-19447204017443244) is an OPTIONAL arm-time observation supplied by the
+ * handler; omitting it yields `unknown`, which is why every pre-existing caller and test
+ * is untouched by this parameter.
  */
 export function resolveBlockedBackoff(
   requestedIntervalSec: number,
   blockedOn?: LoopBlockedOn | null,
+  livePush: LivePushChannels = { status: 'unknown' },
 ): BlockedBackoffResolution {
   if (!blockedOn) {
     // P-006 / D-098 — SURFACE THE AFFORDANCE AT THE ONE MOMENT IT IS ACTIONABLE.
@@ -166,18 +188,46 @@ export function resolveBlockedBackoff(
   // refusal would just push agents back to the un-annotated widening this replaces.
   const capped = Math.min(requestedIntervalSec, BLOCKED_INTERVAL_CAP_SEC);
   const clamped = capped < requestedIntervalSec;
+
+  // EI-19447204017443244 — THE CLAIM IS SCOPED TO THIS LOOP, which is what makes it
+  // true by construction. The old text said "nothing can push you a wake" flatly, and
+  // that is a statement about the caller's WHOLE wake surface, which this function had
+  // never looked at: a caller holding a live `state:subscribe` watch was told, as fact,
+  // that no push channel existed. Saying "no clearing event was named FOR THIS LOOP, so
+  // nothing will push you a wake WHEN IT CLEARS" keeps every ounce of the nudge while
+  // asserting only what the cap actually knows — a separately-registered await is not
+  // wired to this blocker, which is the very reason the cap still applies.
+  const capReason =
+    `because you named no clearing event for this loop, so nothing will push you a wake when it clears and the timer is your only way back ` +
+    `— a wider interval would just mean sleeping longer AFTER the blocker clears (EI-19395290807657827). `;
+
+  // The arm-time observation, attached ONLY in the branch that actually made it.
+  // `unknown` adds nothing: the base sentence above is already true without a lookup,
+  // so silence is the honest rendering of "not measured" (never a fabricated "none").
+  const livePushNote =
+    livePush.status === 'found'
+      ? ` ⓘ FWIW you DO hold ${livePush.count} live wake-await(s) right now (${livePush.sample.map((k) => `\`${k}\``).join(', ')}) — ` +
+        `this tool cannot tell whether any of them fires on THIS blocker, so it still capped. If one of them IS your clearing signal, re-arm with blockedOn.event naming it.`
+      : livePush.status === 'none'
+        ? ` (Checked: apart from your standing inbox-wake you hold no live wake-awaits, so this is measured, not assumed.)`
+        : '';
+
   return {
     intervalSec: capped,
     clamped,
     note: clamped
       ? `⏸ Backoff recorded: blocked on "${blockedOn.reason}". Interval CAPPED ${requestedIntervalSec}s → ${capped}s ` +
-        `because you named no clearing event, so nothing can push you a wake and the timer is your only way back — a wider interval would just mean sleeping longer AFTER the blocker clears (EI-19395290807657827). ` +
-        `To keep a longer interval, pass blockedOn.event with the events:catalog key that fires on the clear (events:catalog lists them) and park on it with events:await.`
+        capReason +
+        `To keep a longer interval, pass blockedOn.event with the events:catalog key that fires on the clear (events:catalog lists them) and park on it with events:await.` +
+        livePushNote
       : `⏸ Backoff recorded: blocked on "${blockedOn.reason}". Interval ${capped}s is within the ${BLOCKED_INTERVAL_CAP_SEC}s cap for a backoff with no clearing event.`,
+    // The premise is re-injected on EVERY wake, arbitrarily later — so it deliberately
+    // names NO specific await. A once-await fires and is gone; "you hold watch #44071"
+    // would be a fresh false claim of this same class, merely time-shifted.
     wakePremise:
       `You widened this loop's interval because you were BLOCKED ON: "${blockedOn.reason}". ` +
       `RE-CHECK THAT PREMISE FIRST, before anything else — it may have cleared while you slept. ` +
-      `No clearing event was named, so NOTHING will push you a wake: this timer is the only way you find out. ` +
+      `No clearing event was named for this loop, so NOTHING will push you a wake when this blocker clears: this timer is the only way you find out. ` +
       `If it has cleared, RESTORE your normal cadence immediately (re-arm without blockedOn).`,
   };
 }
@@ -486,10 +536,34 @@ export default defineTool({
     const goal = clampText(args.goal, 4000);
     const wakePrompt = clampText(args.wakePrompt, 4000);
 
+    // EI-19447204017443244 — MEASURE the caller's live push channels before the cap
+    // message speaks about them. Gated to the one branch that consumes it (a declared
+    // blocker with NO named event): every other arm keeps its exact prior round-trip
+    // count, so an advisory message costs nothing on the common path.
+    //
+    // Best-effort, mirroring the prior-loop read below: this is advisory, so a failure
+    // must not fail the arm. The catch yields `unknown` rather than `none` — see
+    // LivePushChannels; degrading to "I checked and found nothing" would print a
+    // fabricated measurement, which is the defect being fixed here.
+    let livePush: LivePushChannels = { status: 'unknown' };
+    if (args.blockedOn && !args.blockedOn.event) {
+      try {
+        const awaits = await listWakeAwaitsForSubscriber(ownerId);
+        livePush =
+          awaits.length > 0
+            ? { status: 'found', count: awaits.length, sample: awaits.slice(0, 2).map((a) => a.eventKey) }
+            : { status: 'none' };
+      } catch (e) {
+        console.warn(
+          `[loop:arm] live wake-await lookup failed (cap message will not claim either way): ${e instanceof Error ? e.message : e}`,
+        );
+      }
+    }
+
     // EI-19395290807657827 — resolve a blocker-motivated interval BEFORE it is threaded
     // into the kickoff / overwrite-note / materializeLoop, so every downstream consumer
     // sees the interval that is actually armed rather than the one that was requested.
-    const backoff = resolveBlockedBackoff(args.intervalSec, args.blockedOn ?? null);
+    const backoff = resolveBlockedBackoff(args.intervalSec, args.blockedOn ?? null, livePush);
     const intervalSec = backoff.intervalSec;
 
     // EI-18792078711601844 — read the prior loop this arm is about to UPSERT over

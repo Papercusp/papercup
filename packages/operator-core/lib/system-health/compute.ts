@@ -68,6 +68,7 @@ import type {
   MemoryPanelHealth,
 } from './types';
 import { PANEL_LABELS } from './types';
+import { getPanelRefreshCoalescer } from './refresh-coalescer';
 // EI-19275994927087666: ONE classifier shared by the escalation broadcast and this
 // panel — they told the same lie independently, so they must now agree by construction.
 import { classifyGitSyncFailingLeg, gitSyncLegPhrase } from '../harness/git-sync/git-sync-escalation';
@@ -2791,8 +2792,28 @@ export async function refreshHealthPanel(
   workspaceId?: string,
 ): Promise<void> {
   try {
-    if (!(await getFlag(FLAGS.SYSTEM_HEALTH_TAB, 'system'))) return;
     const ws = workspaceId ?? activeWorkspaceId();
+    // WI-6980: coalesce per (workspace, panel). The LEADING edge still runs
+    // immediately — so a single write refreshes the panel just as promptly as
+    // before, and an `await refreshHealthPanel(...)` still observes the result —
+    // while a BURST of writes collapses into one trailing refresh instead of one
+    // refresh each. Measured before this change: the observations panel's
+    // list+count pair ran at ~18.6 calls/min (~11.3% of a CPU core) purely from
+    // unthrottled write-path refreshes. See refresh-coalescer.ts for why the
+    // obvious alternative (trimming the SELECT list) is measured-useless here.
+    await getPanelRefreshCoalescer().request(ws, panel, () => performPanelRefresh(panel, ws));
+  } catch {
+    /* fire-and-forget from a write path — never throw */
+  }
+}
+
+/** The actual single-panel recompute, run on the coalescer's leading/trailing edge. */
+async function performPanelRefresh(
+  panel: 'observations' | 'improvements' | 'autonomy',
+  ws: string,
+): Promise<void> {
+  try {
+    if (!(await getFlag(FLAGS.SYSTEM_HEALTH_TAB, 'system'))) return;
     const prev = cache.get(ws);
     if (!prev) return; // nothing to merge into yet — the next full tick seeds the cache
     const now = Date.now();

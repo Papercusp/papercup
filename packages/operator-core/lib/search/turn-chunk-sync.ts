@@ -114,13 +114,26 @@ export function splitTurnChunks(
 /**
  * sha256 of a turn's full text — the change key.
  *
- * MUST agree with the SQL side's `encode(sha256(text::bytea),'hex')`, which is
- * what the staleness filter compares against. Verified equal against the live
- * database 2026-08-03: both produce
- * 2cf24dba…938b9824 for 'hello'. They agree because Postgres casts `text` to
- * `bytea` in the database encoding (UTF8 here) and Node's `update(string)`
- * defaults to utf8 — if either side ever changes encoding, every turn reads as
- * permanently stale and the sync re-writes the whole table every pass.
+ * MUST agree with the SQL side's `encode(sha256(convert_to(text,'UTF8')),'hex')`,
+ * which is what the staleness filter compares against.
+ *
+ * ⚠ `text::bytea` IS NOT THE ENCODER IT LOOKS LIKE — it was the first thing
+ * written here and it is wrong. That cast does not encode a string to its
+ * bytes; it PARSES the string as a bytea input literal (hex/escape format), so
+ * any turn containing a backslash raises `invalid input syntax for type bytea`
+ * and the whole sync pass dies. `convert_to(text,'UTF8')` is the actual
+ * text→bytes encoder, and it matches Node's utf8-default `update(string)`.
+ *
+ * ⚠⚠ AND THE OBVIOUS VERIFICATION DOES NOT DISCRIMINATE. This docblock
+ * previously claimed the two sides were "verified equal" on `'hello'` — which
+ * is a valid bytea literal AND a plain string, so it produces the same digest
+ * under BOTH readings and confirms nothing. The real check needs an input that
+ * is only valid one way. Verified against the live database 2026-08-03 with
+ * `a\x41b\nhéllo` (literal backslash + newline + non-ASCII): both sides give
+ * 28675fb761f2675f240005800d831457fb9f6bc5351c4d8add5ca4ce7597439e.
+ *
+ * If the two sides ever diverge, every turn reads as permanently stale and the
+ * sync rewrites the whole table on every pass — expensive, and silent.
  */
 export function turnSha(text: string): string {
   return createHash('sha256').update(text).digest('hex');
@@ -161,7 +174,7 @@ export async function syncTurnChunks(
 
   const stale = await sql.unsafe<StaleTurnRow[]>(
     `SELECT st.workspace_id, st.source_kind, st.session_id, st.turn_idx, st.text,
-            encode(sha256(st.text::bytea), 'hex') AS sha
+            encode(sha256(convert_to(st.text, 'UTF8')), 'hex') AS sha
        FROM harness_shared.session_turns st
       WHERE length(st.text) > $1
         AND NOT EXISTS (
@@ -170,7 +183,7 @@ export async function syncTurnChunks(
                  AND c.source_kind  = st.source_kind
                  AND c.session_id   = st.session_id
                  AND c.turn_idx     = st.turn_idx
-                 AND c.turn_sha     = encode(sha256(st.text::bytea), 'hex')
+                 AND c.turn_sha     = encode(sha256(convert_to(st.text, 'UTF8')), 'hex')
             )
       ORDER BY st.ingested_at DESC
       LIMIT $2`,

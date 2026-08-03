@@ -434,6 +434,56 @@ export async function listParkedAwaitsForSubscribers(
   return withEffectiveDeadlines(mapped, { workspaceId: ws, dropExpired: true });
 }
 
+/**
+ * EI-19447204017443244: the caller's OWN live WAKE-capable awaits — the falsifier for
+ * loop:arm's interval-cap sentence "nothing can push you a wake", which asserted that
+ * as fact while consulting only `blockedOn.event`.
+ *
+ * Three filters carry the meaning, and each was measured rather than assumed:
+ *
+ *  • `policy = 'wake'` — NOT `<> 'announce'` like the bench read below. 'notify' rows
+ *    inject into the inbox without waking, so counting one would answer "can anything
+ *    WAKE you" with a row that cannot — re-committing the same over-claim in miniature.
+ *  • `NOT LIKE INBOX_WAKE_KEY_PREFIX%` — every live agent holds exactly one standing
+ *    inbox-wake row (measured 2026-08-03: 61 of the 64 live wake-awaits fleet-wide, and
+ *    it is created at session start), so without this the caller ALWAYS looks like it
+ *    holds a push channel. That would be strictly worse than the sentence it replaces:
+ *    a rare false assertion swapped for a constant misleading one.
+ *  • the liveness pair (`fired_at IS NULL AND cancelled_at IS NULL` + unexpired) is
+ *    lifted verbatim from `listParkedAwaitsForSubscribers` so the two reads cannot
+ *    drift on what "live" means; `withEffectiveDeadlines` then drops composed leaves
+ *    whose TREE has lapsed (zero extra queries when none are composed).
+ *
+ * Bounded (see `listActiveAwaitsForKey`'s note): this runs on loop:arm's hot path and
+ * is purely advisory, so a stall must fail fast rather than hang the arm. Callers treat
+ * a rejection as "unknown" — deliberately NOT as "none", which would launder an
+ * unmeasurable into a measurement and re-create this very defect.
+ */
+export async function listWakeAwaitsForSubscriber(
+  subscriberId: string,
+  limit = 5,
+): Promise<Array<{ eventKey: string; expiresTs: string | null; rootId: number | null }>> {
+  const ws = eventsWs();
+  const rows = await boundedOrgTxn((tx) => tx`
+    SELECT event_key, expires_ts, root_id
+      FROM harness_shared.event_awaits
+     WHERE workspace_id = ${ws}
+       AND subscriber_id = ${subscriberId}
+       AND policy = 'wake'
+       AND fired_at IS NULL AND cancelled_at IS NULL
+       AND event_key NOT LIKE ${INBOX_WAKE_KEY_PREFIX + '%'}
+       AND (expires_ts IS NULL OR expires_ts > now())
+     ORDER BY created_at DESC
+     LIMIT ${limit}
+  `);
+  const mapped = rows.map((r: any) => ({
+    eventKey: r.event_key as string,
+    expiresTs: r.expires_ts ? new Date(r.expires_ts).toISOString() : null,
+    rootId: r.root_id != null ? Number(r.root_id) : null,
+  }));
+  return withEffectiveDeadlines(mapped, { workspaceId: ws, dropExpired: true });
+}
+
 /** Active awaits matching an event key — peek without firing (sources may use
  *  this to decide whether anyone is waiting at all).
  *

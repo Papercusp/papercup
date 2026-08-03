@@ -82,7 +82,7 @@ describe('dev:cache_stats', () => {
     vi.setSystemTime(now);
     try {
       const factory = vi.fn(async () => [{ v: 1 }]);
-      const opts = { tool: 'plans:list', key: 'k', softTtlMs: 1_000 };
+      const opts = { tool: 'plans:list', key: 'k', tags: [], softTtlMs: 1_000 };
 
       await cachedRead(ctx, opts, factory); // miss
       now += 5_000; // past softTtl, inside hardTtl
@@ -102,8 +102,8 @@ describe('dev:cache_stats', () => {
 
   it('filters to one tool, and omits tools that never called cachedRead', async () => {
     const f = vi.fn(async () => [{ v: 1 }]);
-    await cachedRead(ctx, { tool: 'plans:attention', key: 'a' }, f);
-    await cachedRead(ctx, { tool: 'plans:items', key: 'b' }, f);
+    await cachedRead(ctx, { tool: 'plans:attention', key: 'a', tags: [] }, f);
+    await cachedRead(ctx, { tool: 'plans:items', key: 'b', tags: [] }, f);
 
     const all = (await read()).perTool as Array<Record<string, unknown>>;
     expect(all.map((r) => r.tool).sort()).toEqual(['plans:attention', 'plans:items']);
@@ -120,9 +120,9 @@ describe('dev:cache_stats', () => {
 
   it('sorts by traffic so the busiest consumer leads', async () => {
     const f = vi.fn(async () => [{ v: 1 }]);
-    await cachedRead(ctx, { tool: 'quiet:tool', key: 'q' }, f);
+    await cachedRead(ctx, { tool: 'quiet:tool', key: 'q', tags: [] }, f);
     for (let i = 0; i < 4; i++) {
-      await cachedRead(ctx, { tool: 'busy:tool', key: `k${i}` }, f);
+      await cachedRead(ctx, { tool: 'busy:tool', key: `k${i}`, tags: [] }, f);
     }
 
     const rows = (await read()).perTool as Array<Record<string, unknown>>;
@@ -138,7 +138,7 @@ describe('dev:cache_stats', () => {
     // :3170 operator while all seven other tests passed — they each supplied an
     // args object, so none of them could reach this path.
     const f = vi.fn(async () => [{ v: 1 }]);
-    await cachedRead(ctx, { tool: 'plans:attention', key: 'z' }, f);
+    await cachedRead(ctx, { tool: 'plans:attention', key: 'z', tags: [] }, f);
 
     const res = (await tool.handler(
       undefined as never,
@@ -181,8 +181,8 @@ describe('dev:cache_stats', () => {
     expect(empty.killSwitchLikelyOff).toBe(false);
 
     const f = vi.fn(async () => [{ v: 1 }]);
-    await cachedRead(ctx, { tool: 't:one', key: '1' }, f);
-    await cachedRead(ctx, { tool: 't:two', key: '2' }, f);
+    await cachedRead(ctx, { tool: 't:one', key: '1', tags: [] }, f);
+    await cachedRead(ctx, { tool: 't:two', key: '2', tags: [] }, f);
     expect((await read()).totals).toMatchObject({ misses: 2 });
   });
 });

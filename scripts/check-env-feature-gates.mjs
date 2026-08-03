@@ -79,11 +79,13 @@ const ALLOW = new Set([
   'PAPERCUSP_DBOS_EXECUTOR_REAPER', 'PAPERCUSP_DBOS_WORKFLOW_GC', 'PAPERCUSP_FEDERATION_DRAIN_RECONCILE',
   'PAPERCUSP_GATEWAY_SELFHEAL', 'PAPERCUSP_GREEN_STALL_WATCHDOG', 'PAPERCUSP_INFRA_LIVENESS_ALARM',
   'PAPERCUSP_LAG_SELF_RESTART', 'PAPERCUSP_SINGLE_PRIMARY_GUARD', 'PAPERCUSP_STORAGE_GROWTH_ALARM',
-  // NOTE: PAPERCUSP_STRUCTURAL_ERROR_VERIFIER was moved OUT of this block into
-  // KNOWN_ENV_CAPABILITY_GATES (2026-08-03) — it is the one entry here whose polarity
-  // is opt-IN (`=== '1'` ARMS it), so this block's "default-ON / opt-out" justification
-  // was false for it and it carried no reviewBy. Measured: dark on :3070 since it was
-  // written. See the registry entry below.
+  // PAPERCUSP_STRUCTURAL_ERROR_VERIFIER — RETURNED to this block 2026-08-03
+  // (EI-19453017656411107), and now legitimately: its polarity was INVERTED to default-ON
+  // with a `=== '0'` kill-switch (bootstrap.ts), so this block's "default-ON / opt-out"
+  // justification is true for it. It briefly lived in KNOWN_ENV_CAPABILITY_GATES because
+  // it was opt-IN (`=== '1'`) and therefore dark on :3070 from the day it was written;
+  // arming it resolved that, so a dark-capability reviewBy no longer applies.
+  'PAPERCUSP_STRUCTURAL_ERROR_VERIFIER', // default-ON structural-error auto-resolve daemon (=== '0' opts out)
   'PAPERCUSP_WATCHDOG_SERVICE_HEALTH_INLINE_PROBE',
   'PAPERCUSP_DISK_SPACE_ALARM', 'PAPERCUSP_REPLICATION_SLOT_ALARM', 'PAPERCUSP_TEST_DESKTOP_REAPER',
   'PAPERCUSP_MEMORY_ANCHOR_AUDIT', // nightly Layer-1 memory-anchor audit (P-019); default-ON ops kill-switch
@@ -187,11 +189,13 @@ const ALLOW = new Set([
 // guard the env-gate path lacked (EI-2390 / dark-capability-enforcement-2026-06-21).
 // Audit it with: node scripts/check-env-feature-gates.mjs
 const KNOWN_ENV_CAPABILITY_GATES = {
-  PAPERCUSP_STRUCTURAL_ERROR_VERIFIER: {
-    reviewBy: '2026-09-01',
-    reason:
-      "Auto-resolves OPEN watchdog structural-error EIs whose error signature is absent from the deployed operator's telemetry (the inverse of completion-ref-verifier, EI-1747). Built + unit-tested with a conservative pure decision (resolve only when recurrences===0 AND item older than the window), but DARK: `bootstrap.ts:471` arms it only on `=== '1'`, and MEASURED 2026-08-03 it is NOT SET on the live :3070 operator (pid 621668) with 0 log lines in 6h. It had been misfiled in ALLOW's \"default-ON / opt-out ops kill-switch\" block — the only opt-IN member of that block — so it carried no reviewBy and nothing ever forced the decision. COST IS MEASURED, not theoretical: EI-19452068575891376 (dev:cache_stats) was filed by the watchdog at 17:02Z for a defect fixed+guarded at 16:56Z, then claimed by an agent who spent a wake re-investigating a landed fix — precisely the waste this daemon's own header says it exists to prevent. DECIDE: arm it (it auto-CLOSES work-items, so treat as an owner-authority reaper decision), or migrate to a FLAG.",
-  },
+  // PAPERCUSP_STRUCTURAL_ERROR_VERIFIER: RESOLVED 2026-08-03 (EI-19453017656411107) — the
+  // "DECIDE" this entry demanded was taken: ARMED (default-ON, `=== '0'` kill-switch) and
+  // moved back into ALLOW's ops kill-switch block. Arming alone would have been a false
+  // fix: its selection SQL used `LIKE 'repeated-tool-error:%:structural'`, which anchors
+  // the class token to the END of the key and so excluded every FINGERPRINTED structural
+  // key (90 of 133 live rows, 67.7%) — the daemon would have run blind to most of its own
+  // class while appearing healthy. Both landed together.
   PAPERCUSP_PGBOUNCER: {
     reviewBy: '2026-09-01',
     reason: 'Transaction pooling — proven + LIVE on staging :3170 (systemd drop-in since 2026-06-21) AND on :3070 dev-api (systemd drop-in since 2026-07-20, EI-18147753127456018). RE-VERIFIED 2026-08-02: still not on papercup-bg-host.service (no matching drop-in) — rollout genuinely incomplete there. Stays env: it is a connection-URL routing switch read before any FLAGS/PG access exists. DECIDE: finish the bg-host rollout, or accept the current 2-of-3-hosts state as done and graduate to ALLOW.',

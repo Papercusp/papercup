@@ -109,6 +109,29 @@ export async function runStructuralErrorVerifierOnce(
   return { checked: items.length, resolved, kept, errored };
 }
 
+/**
+ * SQL pre-filter for the OPEN structural-error EIs this daemon owns, as a Postgres
+ * regex. It MUST admit BOTH minted forms of a structural watchdogKey:
+ *
+ *   `repeated-tool-error:<tool>:structural`         — no fingerprint was derivable
+ *   `repeated-tool-error:<tool>:structural:<fp>`    — the COMMON case
+ *
+ * `structural` is a FINGERPRINTED class (`FINGERPRINTED_TOOL_ERROR_CLASSES`, minted by
+ * `toolErrorSignalKey` — see watchdog.ts "structural + caller + transient"), so the
+ * fingerprinted form is the usual one, not the exception.
+ *
+ * EI-19453017656411107: the previous filter was `LIKE 'repeated-tool-error:%:structural'`,
+ * which anchors the class token to the END of the key and therefore dropped every
+ * fingerprinted row BEFORE the parser — the stated authority below — ever saw it. That
+ * silently narrowed this daemon to a minority of its own class while looking correct.
+ * Measured 2026-08-03 on live rows: 90 of 133 structural keys (67.7%) carried a
+ * fingerprint and were invisible to the old filter.
+ *
+ * Mirrors `TOOL_ERROR_KEY_RE` (watchdog-key-migration.ts) for klass=structural. Exported
+ * so the unit test asserts the EXACT pattern string handed to Postgres.
+ */
+export const STRUCTURAL_WATCHDOG_KEY_PATTERN = '^repeated-tool-error:.+:structural(:.*)?$';
+
 /** Concrete Postgres-backed deps. */
 export function makePgStructuralVerifierDeps(
   getPg: typeof getOrgPg = getOrgPg,
@@ -124,16 +147,16 @@ export function makePgStructuralVerifierDeps(
                (EXTRACT(EPOCH FROM created_at) * 1000)::bigint::text AS created_ms
         FROM harness_shared.engineer_issues
         WHERE state = 'open'
-          AND payload->>'watchdogKey' LIKE 'repeated-tool-error:%:structural'
+          AND payload->>'watchdogKey' ~ ${STRUCTURAL_WATCHDOG_KEY_PATTERN}
         ORDER BY created_at ASC
         LIMIT 200
       `;
       const out: OpenStructuralItem[] = [];
       for (const r of rows) {
         const parsed = parseRepeatedToolErrorKey(r.watchdog_key);
-        // Only structural-class keys with a parseable tool. (The LIKE is a coarse
-        // pre-filter; the parser is the authority — a fingerprinted key ending in a
-        // segment containing 'structural' still parses its class correctly.)
+        // Only structural-class keys with a parseable tool. The regex above is a
+        // coarse pre-filter admitting BOTH the bare and fingerprinted forms; the
+        // parser is the authority on class + tool.
         if (!parsed || parsed.klass !== 'structural') continue;
         out.push({
           workspaceId: r.workspace_id,

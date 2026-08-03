@@ -97,62 +97,21 @@ export const PROMOTE_ROOTS = ['libs/generic'];
  * who is EXCLUDED, so a package that stops being listed becomes gated automatically rather than
  * silently staying dark.
  *
- * Measured 2026-08-03 via `npx tsc --noEmit -p tsconfig.json` in each of the 50 previously
- * un-gated libs/generic packages: 46 clean (now gated), these 4 not.
+ * EMPTY IS THE GOAL STATE, AND IT IS THE CURRENT ONE — do not read the empty object as an
+ * unused mechanism and delete it. Measured 2026-08-03 via `npx tsc --noEmit -p tsconfig.json`
+ * in each of the 50 previously un-gated libs/generic packages: 46 were clean and were gated
+ * that day; the remaining 6 (two papergrid packages surfaced later, once a TS5101 baseUrl
+ * error stopped masking their compile) were held back here and are now ALL FIXED and gated —
+ * 20 measured errors driven to 0 under EI-19409888189789017.
+ *
+ * So every libs/generic package with a tsconfig is now BLOCKING. The next package that fails
+ * belongs here, with its measured count and a filed id, for exactly as long as it takes to
+ * fix — that is what this map is for. Adding an entry is how a red package stays VISIBLE
+ * instead of silently ungated; removing it is the entire fix.
  *
  * @type {Record<string, { detail: string, errors: number, filedAs: string }>}
  */
-export const UNTYPECHECKABLE = {
-  'libs/generic/eval-battery': {
-    detail:
-      'its tsconfig reaches into a SIBLING package — both errors are in ' +
-      '../../testing-shell/src/llm/runner.ts (TS2304 ScenarioTrigger, TS2322 SimAction), not in ' +
-      'eval-battery itself. The fix may be tsconfig scoping rather than the errors',
-    errors: 2,
-    filedAs: 'EI-19409888189789017',
-  },
-  'libs/generic/ipc-endpoint-server': {
-    detail:
-      'zod v3/v4 type skew in test files only (TS2740, ZodObject missing def/type/toJSONSchema) — ' +
-      'same family as WI-7346, may share one dependency-alignment fix',
-    errors: 3,
-    filedAs: 'EI-19409888189789017',
-  },
-  'libs/generic/step-program': {
-    detail:
-      'src/expr.test.ts passes string/null where Scope is expected (TS2345) — deliberate bad-input ' +
-      'tests wanting @ts-expect-error, NOT a reason to widen Scope',
-    errors: 2,
-    filedAs: 'EI-19409888189789017',
-  },
-  // Both papergrid packages were MASKED until 2026-08-03: their tsconfigs carried a deprecated
-  // `baseUrl`, and TS5101 aborted the compile before it ever reached the code. Migrating the
-  // alias to a self-relative `paths` (no baseUrl) fixed the config and REVEALED these. A config
-  // error that stops a compile reads exactly like a package with no code errors.
-  'libs/generic/papergrid/grid': {
-    detail:
-      "TS2882 — no type declarations for the side-effect CSS import of " +
-      "'@glideapps/glide-data-grid/dist/index.css' (via grid-core/src/DataGridShell.tsx); same " +
-      "`declare module '*.css'` fix as ui-primitives",
-    errors: 1,
-    filedAs: 'EI-19409888189789017',
-  },
-  'libs/generic/papergrid/grid-core': {
-    detail:
-      'the same CSS-declaration error plus generic-inference failures in src/RichGrid.stories.tsx ' +
-      '(TS2322 ColumnDef<Row>[] vs ColumnDef<unknown>[], TS18046) — the stories do not pin the ' +
-      'grid generic',
-    errors: 11,
-    filedAs: 'EI-19409888189789017',
-  },
-  'libs/generic/ui-primitives': {
-    detail:
-      'src/JsonTree.tsx TS2882 — no type declarations for the side-effect CSS import ' +
-      "'react-json-view-lite/dist/index.css'; wants a `declare module '*.css'` ambient decl",
-    errors: 1,
-    filedAs: 'EI-19409888189789017',
-  },
-};
+export const UNTYPECHECKABLE = {};
 
 /**
  * Packages that declare a `typecheck` script but are deliberately NOT run by THIS leg.

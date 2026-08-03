@@ -93,7 +93,11 @@ describe('testsExecutedFrom — how many tests actually EXECUTED (skipped is not
   // escapes between `Tests` and its counts. A matcher that does not strip ANSI first passes every
   // hand-written test and then never fires on real output.
   it('parses the ANSI-coloured row real vitest emits to a TTY', () => {
-    const coloured = ' [2mTests [22m [33m20 skipped[39m [90m(20)[39m\n';
+    // Written as \x1b ESCAPES, never raw 0x1b bytes. The runtime string is byte-identical - so
+    // this still exercises real TTY output - but a raw control byte makes ripgrep treat the whole
+    // file as binary and silently skip it (EI-7432), and reds the fleet gate via
+    // lint:no-control-bytes. That is WI-9059: it held main at 5b898b7b until this was escaped.
+    const coloured = ' \x1b[2mTests \x1b[22m \x1b[33m20 skipped\x1b[39m \x1b[90m(20)\x1b[39m\n';
     expect(testsExecutedFrom(coloured)).toBe(0);
   });
 
