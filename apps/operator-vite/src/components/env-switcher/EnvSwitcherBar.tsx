@@ -154,6 +154,22 @@ export function EnvSwitcherBar() {
     void load();
     // Still an interval: it drives the Tauri env list + dev-operators legs above,
     // which have no sync-query equivalent. The pipeline leg no longer rides it.
+    //
+    // ⛔ Do NOT "finish P-030" by moving the dev-operators leg to useSyncQuery too
+    // (D-060). It is not an oversight — it is STRUCTURALLY impossible. That payload
+    // is SELF-RELATIVE: `selfPort`/`isSelf` come from the answering process's own
+    // PAPERCUSP_HONO_PORT (dev-operators.ts detectSelfPort/:232), so one route gives
+    // different answers per operator — measured live, same instant: :3070 => selfPort
+    // 3070, self=[prod,release]; :3170 => selfPort 3170, self=[staging]. Sync queries
+    // are served from harness_shared.derived_read_snapshots, PK
+    // (workspace_id, harness_slug, key) — no per-process dimension, one shared row for
+    // every reader — so a shared snapshot would hand every operator whichever answer
+    // the producer wrote last. That is not cosmetic: `isSelf` gates navigate() (:173)
+    // and the active badge (:296), and while the Tauri floor overrides isSelf for the
+    // four envs (:223), `release` is HTTP-only (:226) so its isSelf has no floor to
+    // fall back on — and in a plain browser NO entry does.
+    // (`reachable` alone is genuinely shareable — both operators report all five — but
+    // splitting it out still leaves this fetch for self-identity, i.e. strictly worse.)
     const t = setInterval(() => void load(), REFRESH_MS);
     return () => clearInterval(t);
   }, [load]);
