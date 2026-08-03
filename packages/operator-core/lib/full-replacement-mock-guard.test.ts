@@ -19,6 +19,11 @@
  *      only evidence is "0 violations on a tree with 0 violations" proves nothing; it would pass
  *      just as happily with its condition inverted.
  *   2. the live tree — the actual invariant we are protecting.
+ *
+ * ⚠ The fixtures deliberately live in the CHECKER, not here. A fixture is mock source text, so
+ * holding one in a `.test.ts` makes this file a test file containing a bare `vi.mock` of a
+ * protected module — the live scan below then flags its own guard test. That happened while
+ * building this. Import them; do not inline new ones.
  */
 import { describe, it, expect } from 'vitest';
 import { execFileSync } from 'node:child_process';
@@ -30,76 +35,35 @@ import {
   collectCandidateFiles,
   resolveSpec,
   PROTECTED_MODULES,
+  FIXTURE_PROTECTED,
+  SELF_TESTS,
 } from '../../../scripts/check-full-replacement-mocks.mjs';
 
 const ROOT = join(import.meta.dirname, '../../..');
-const PROTECTED = [{ module: 'packages/operator-core/lib/adv-sessions', why: 'fixture' }];
-const AT = 'packages/operator-core/lib/agent-tools/fleet/x.test.ts';
-
-const violationsIn = (text: string, path = AT) =>
-  checkFile({ path, text, protectedModules: PROTECTED });
+type Fixture = { name: string; path: string; text: string; expect: number };
 
 describe('full-replacement mock guard: the analyzer has teeth (WI-7187)', () => {
-  it('FIRES on the exact shape that red-pinned the fleet gate', () => {
-    const v = violationsIn(
-      `vi.mock('../../adv-sessions', () => ({ recordedLiveOwnerIds: vi.fn(async () => new Set()) }));`,
-    );
-    expect(v).toHaveLength(1);
-    expect(v[0].module).toBe('packages/operator-core/lib/adv-sessions');
-  });
-
-  it('FIRES through a multi-line body containing braces, strings and comments', () => {
+  it.each(SELF_TESTS as Fixture[])('$name', (t: Fixture) => {
     expect(
-      violationsIn(
-        [
-          `vi.mock('../../adv-sessions', () => ({`,
-          `  // a comment with a stray ) paren and 'quote`,
-          `  endedRecordedOwnerIds: vi.fn(async () => new Set<string>()),`,
-          `  listRecordedLiveSessions: vi.fn(async () => [{ id: 1 }]),`,
-          `}));`,
-        ].join('\n'),
-      ),
-    ).toHaveLength(1);
+      checkFile({ path: t.path, text: t.text, protectedModules: FIXTURE_PROTECTED }),
+    ).toHaveLength(t.expect);
   });
 
-  it('FIRES on vi.doMock too — that is where the 27th site hid from the census grep', () => {
-    expect(violationsIn(`vi.doMock('../../adv-sessions', () => ({ a: vi.fn() }));`)).toHaveLength(1);
+  it('covers both directions — at least one fixture FIRES and one stays SILENT', () => {
+    // Without this, deleting every firing fixture would leave the suite green while proving
+    // nothing. The silent cases are equally load-bearing: measured 2026-08-03, 1,007 internal
+    // modules have >=1 full-replacement mocker and a blanket rule would flag 2,827 files, so a
+    // guard that shouted at all of them would be ignored — and would then miss the real one.
+    const fixtures = SELF_TESTS as Fixture[];
+    expect(fixtures.filter((t) => t.expect > 0).length).toBeGreaterThan(0);
+    expect(fixtures.filter((t) => t.expect === 0).length).toBeGreaterThan(0);
   });
 
-  it.each([
-    [
-      'the import-actual spread (the prescribed fix)',
-      `vi.mock('../../adv-sessions', async (orig) => ({ ...(await orig<typeof import('../../adv-sessions')>()), a: 1 }));`,
-    ],
-    [
-      'an async factory calling vi.importActual itself',
-      `vi.mock('../../adv-sessions', async () => ({ ...(await vi.importActual('../../adv-sessions')), a: 1 }));`,
-    ],
-    ['a bare automock — vitest synthesises the whole surface, so it cannot strand', `vi.mock('../../adv-sessions');`],
-  ])('is SILENT for %s', (_label, src) => {
-    expect(violationsIn(src)).toHaveLength(0);
-  });
-
-  it('is SILENT for the SAME bad shape on an UNPROTECTED module — precision, not zeal', () => {
-    // Measured 2026-08-03: 1,007 internal modules have >=1 full-replacement mocker and a
-    // blanket rule would flag 2,827 files. A guard that shouted at all of them would be
-    // ignored, and would then miss the real one.
-    expect(violationsIn(`vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: vi.fn() }));`)).toHaveLength(0);
-  });
-
-  it('is SILENT when the specifier resolves elsewhere despite the same basename', () => {
-    expect(violationsIn(`vi.mock('./adv-sessions', () => ({ a: vi.fn() }));`, 'packages/operator-core/lib/pot/y.test.ts')).toHaveLength(0);
-  });
-
-  it('classifies each factory form, and resolves relative specifiers only', () => {
-    const forms = analyzeMockCalls(
-      [
-        `vi.mock('./a');`,
-        `vi.mock('./b', () => ({ x: 1 }));`,
-        `vi.mock('./c', async (orig) => ({ ...(await orig()) }));`,
-      ].join('\n'),
-    ).map((c: { form: string }) => c.form);
-    expect(forms).toEqual(['automock', 'full-replacement', 'import-actual']);
+  it('classifies each factory form and resolves relative specifiers only', () => {
+    const forms = analyzeMockCalls(SELF_TESTS.map((t: Fixture) => t.text).join('\n')).map(
+      (c: { form: string }) => c.form,
+    );
+    expect(new Set(forms)).toEqual(new Set(['automock', 'full-replacement', 'import-actual']));
     expect(resolveSpec('a/b/x.test.ts', './y')).toBe('a/b/y');
     expect(resolveSpec('a/b/x.test.ts', '../y.ts')).toBe('a/y');
     // A bare package specifier is not ours to police — it has no repo path.

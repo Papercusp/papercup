@@ -3762,6 +3762,49 @@ describe('cd + EXIT-trap/restore path-drift advisory (EI-19409854431997137)', ()
     expect(ctx).toContain('a `mv` after the cd');
   });
 
+  // ── comment/quote parity (EI-19423080880635119) ──────────────────────────
+  // `_quote_preserve_tokens` was the last comment-blind member of the
+  // normalizer family fixed by EI-19420133701663526. It cannot cause a missed
+  // DENY (it feeds only this advisory's positional-argument count), but an odd
+  // quote inside a `#` comment made it pair that stray quote with the opening
+  // quote of a real later argument — swallowing the restore `cp` entirely, so
+  // the advisory went SILENT on exactly the shape it exists to catch.
+  it('fires when a `#` comment carries an ODD quote (parity family — EI-19423080880635119)', () => {
+    // Pre-fix trace: the comment's `"` opens a span that closes on the `"`
+    // before `$F`, so `\ncp /tmp/restore.ts ` becomes one placeholder token —
+    // no `cp` survives after the `cd`, and no advisory is emitted.
+    const ctx = expectAdvisory(
+      run('cd apps/operator && npx vitest run x   # note "\n' + 'cp /tmp/restore.ts "$F"'),
+    );
+    expect(ctx).toContain('a `cp` after the cd');
+  });
+
+  it("fires with an odd SINGLE quote in the comment too (both quote chars, not just `\"`)", () => {
+    const ctx = expectAdvisory(
+      run("cd apps/operator && npx vitest run x   # don't\n" + 'cp /tmp/restore.ts "$F"'),
+    );
+    expect(ctx).toContain('a `cp` after the cd');
+  });
+
+  // The two invariants a naive comments-then-quotes fix would break. Both hold
+  // pre-fix; they are here so the fix cannot buy comment-awareness by
+  // re-opening the hole the single-pass ordering exists to close.
+  it('still counts arguments when a `#` sits INSIDE quotes (data, not a comment)', () => {
+    // If the quoted `#` were read as a comment introducer it would swallow the
+    // destination, dropping the count to 1 and silencing the advisory.
+    const ctx = expectAdvisory(
+      run('cd apps/operator && npx vitest run x\ncp "# not a comment" dest.ts'),
+    );
+    expect(ctx).toContain('a `cp` after the cd');
+  });
+
+  it('still counts arguments when `#` has no preceding whitespace (`a#b`, not a comment)', () => {
+    const ctx = expectAdvisory(
+      run('cd apps/operator && npx vitest run x\ncp /tmp/re#store.ts dest.ts'),
+    );
+    expect(ctx).toContain('a `cp` after the cd');
+  });
+
   it('does NOT fire for a bare `cd` with no trap or restore at all', () => {
     expectAllow(run('cd apps/operator && npx vitest run x'));
   });

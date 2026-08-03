@@ -41,6 +41,15 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { formatSpecRef } from '../../scheduler/claim-spec';
 import { resolveConcreteWorkspaceId } from '../../workspace-registry';
 import { resolveAgentIdentity, deriveFleetMembership } from '../coordination/identity';
+import type { AgentIdentity } from '../coordination/identity';
+import { getFleet } from '../../agent-fleets-store';
+import { takeFleetLeadership } from '../fleet_registry/take-leadership-core';
+import {
+  decideLeadershipDisposition,
+  buildNotLeaderNotice,
+  type NotLeaderNotice,
+  type AutoClaimedNotice,
+} from './leadership-disposition';
 import { resolvePresenceFleet } from '../coordination/presence-fleet';
 import { resolveSelfRef, markSelfRows } from '../coordination/self-marker';
 import { COORD_ROLES } from '../coordination/roles';
@@ -1354,8 +1363,12 @@ export default defineTool({
   async handler(args, ctx) {
     let actorWorkspace: string | null = null;
     let ownerId: string | undefined;
+    // P-004/D-096: kept beyond the destructure because takeFleetLeadership needs
+    // the whole identity (it heartbeats presence to label the new leader's row).
+    let agentIdentity: AgentIdentity | undefined;
     try {
       const identity = resolveAgentIdentity(ctx);
+      agentIdentity = identity;
       actorWorkspace = identity.workspaceId ?? null;
       ownerId = identity.ownerId;
     } catch {
@@ -1390,6 +1403,43 @@ export default defineTool({
         ? { wakeMode: entry.wakeMode }
         : { wakeMode: undefined }),
     }));
+    // ── P-004 / D-096: leadership self-claim ────────────────────────────────
+    // Decided from `rosterEntries` — the UNFILTERED roster — and NOT from
+    // `grouped` below, which drops idle members with a stale heartbeat unless
+    // include_stale is set. A live-but-idle leader is routinely absent from the
+    // filtered view, and reading that as "no leader" would seize leadership from
+    // someone still working. The whole rule is in leadership-disposition.ts.
+    let notLeader: NotLeaderNotice | undefined;
+    let leadershipClaimed: AutoClaimedNotice | undefined;
+    try {
+      const fleetRecord = await getFleet(workspaceId, fleet);
+      const registeredLeader = fleetRecord?.leaderOwnerId ?? null;
+      const leaderRow = registeredLeader
+        ? rosterEntries.find((e) => e.ownerId === registeredLeader)
+        : undefined;
+      const disposition = decideLeadershipDisposition({
+        callerOwnerId: ownerId,
+        registeredLeader,
+        leaderSessionState: leaderRow?.sessionState,
+      });
+      if (disposition.kind === 'not-leader') {
+        notLeader = buildNotLeaderNotice(disposition, fleet);
+      } else if (disposition.kind === 'auto-claim' && fleetRecord && agentIdentity && ownerId) {
+        const out = await takeFleetLeadership(workspaceId, fleetRecord, agentIdentity, ownerId);
+        leadershipClaimed = {
+          claimed: true,
+          reason: disposition.reason,
+          previousLeader: out.previousLeader,
+          notified: out.notified,
+          note:
+            disposition.reason === 'no-registered-leader'
+              ? `'${fleet}' had NO registered leader; you are now installed as its leader. A fleet nobody leads is how a whole fleet dies unnoticed — you now own monitoring it.`
+              : `The registered leader of '${fleet}' (${out.previousLeader}) is gone, so leadership passed to you. Nothing live was displaced.`,
+        };
+      }
+    } catch {
+      /* best-effort: leadership bookkeeping must NEVER fail the health brief */
+    }
     const grouped = selectLeaderBriefMembers(
       rosterEntries,
       fleet,
@@ -1715,6 +1765,11 @@ export default defineTool({
       data: {
         ok: true,
         ...(self ? { self } : {}),
+        // P-004/D-096: the caller is acting on this fleet without holding its
+        // leadership. Surfaced BEFORE the summary so it is not lost under the
+        // member rows — the value of this branch is that the caller learns it.
+        ...(notLeader ? { notLeader } : {}),
+        ...(leadershipClaimed ? { leadershipClaimed } : {}),
         summary: {
           ...summary,
           strandedFleetAlert: strandedFleetAlert != null,

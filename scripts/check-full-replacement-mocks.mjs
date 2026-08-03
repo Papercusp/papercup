@@ -176,10 +176,20 @@ export function checkFile({ path, text, protectedModules }) {
 // identically with the condition inverted, so teeth are proven here, not there.
 // ---------------------------------------------------------------------------
 
-const FIXTURE_PROTECTED = [{ module: 'packages/operator-core/lib/adv-sessions', why: 'fixture' }];
+export const FIXTURE_PROTECTED = [{ module: 'packages/operator-core/lib/adv-sessions', why: 'fixture' }];
 const FIXTURE_PATH = 'packages/operator-core/lib/agent-tools/fleet/x.test.ts';
 
-const SELF_TESTS = [
+/**
+ * The fixtures live HERE, not in the vitest guard test, and that is load-bearing rather
+ * than tidiness: a fixture is mock SOURCE TEXT, so a `.test.ts` holding one is itself a
+ * test file containing a bare `vi.mock` of a protected module — the live scan flags its
+ * own guard test. That actually happened while building this (`'./adv-sessions'` inside
+ * the guard test resolved to exactly the protected module). Keeping the fixtures in a
+ * `.mjs` the scan never treats as a test removes the self-match by construction, instead
+ * of papering over it with a self-exclusion that would also blind the guard to a real
+ * violation in that file. The vitest test drives THESE cases, so the two can never drift.
+ */
+export const SELF_TESTS = [
   {
     name: 'FIRES on the bare full-replacement factory (the real WI-7187 shape)',
     path: FIXTURE_PATH,
