@@ -207,6 +207,13 @@ export interface TierGateResult {
   /** Verbs skipped because their capability is outside D-001's population. */
   readonly capabilityExempt: readonly string[];
   readonly scanned: number;
+  /**
+   * COVERAGE — coord verbs the independent catalog knows about that this gate's
+   * parser did NOT see. Non-empty means the SCANNER is broken, not that the tree
+   * is clean, and it is the only failure here that a green result would otherwise
+   * be indistinguishable from. Absent when no catalog was supplied to compare to.
+   */
+  readonly unparsed?: readonly string[];
 }
 
 /**
@@ -218,6 +225,13 @@ export function judgeCoordTierGate(input: {
   readonly rows: readonly CoordToolRow[];
   readonly tiered: ReadonlySet<string>;
   readonly baseline?: ReadonlySet<string>;
+  /**
+   * The independently-scanned coord verb list to cross-check parser coverage
+   * against (`selectCoordBehaviours(buildBuiltinToolCatalog(root))`). Omit and
+   * `unparsed` is simply absent — never silently reported as empty, because
+   * "nothing missing" and "never checked" must not look the same.
+   */
+  readonly catalogue?: Iterable<string>;
 }): TierGateResult {
   const baseline = input.baseline ?? UNTIERED_BASELINE;
   const offenders: (CoordToolRow & TierVerdict)[] = [];
@@ -242,11 +256,25 @@ export function judgeCoordTierGate(input: {
   // retired is dead weight. Reported, never fatal: a stale entry cannot produce a
   // wrong answer, and a red gate blocks the whole fleet for a bookkeeping nit.
   const exempted = new Set(exemptions.map((e) => e.name));
+  const unparsed = input.catalogue
+    ? [...input.catalogue].filter((n) => n.startsWith(COORD_TOOL_PREFIX) && !seen.has(n)).sort()
+    : undefined;
+  // A verb the parser never saw must not be read as "retired" — that would turn a
+  // broken scanner into a quiet baseline cleanup. Only verbs the scan actually
+  // covered can be judged stale, so coverage failures surface as `unparsed` alone.
+  const covered = (n: string) => seen.has(n) || (unparsed ? !unparsed.includes(n) : true);
   const staleBaseline = [...baseline]
-    .filter((n) => !seen.has(n) || input.tiered.has(n) || exempted.has(n))
+    .filter((n) => covered(n) && (!seen.has(n) || input.tiered.has(n) || exempted.has(n)))
     .sort();
 
-  return { offenders, staleBaseline, exemptions, capabilityExempt: capabilityExempt.sort(), scanned: seen.size };
+  return {
+    offenders,
+    staleBaseline,
+    exemptions,
+    capabilityExempt: capabilityExempt.sort(),
+    scanned: seen.size,
+    ...(unparsed ? { unparsed } : {}),
+  };
 }
 
 /** How far into a `defineTool({` literal to look. Clamped to the next call site. */
@@ -374,14 +402,21 @@ export function resolveTieredSet(
 }
 
 /**
- * The tool source trees this gate reads. Same two roots the state-plane gate
- * scans, and the same two `buildBuiltinToolCatalog` walks — a coordination verb
- * defined outside them would be invisible to all three.
+ * The tool source trees this gate reads — IMPORTED from `static-tool-catalog`,
+ * never re-listed here.
+ *
+ * ⚠ THIS WAS A REAL BUG, CAUGHT BY THE COVERAGE CROSS-CHECK BELOW, AND IT IS THE
+ * reason both exist. The first draft hand-listed the two obvious roots and
+ * reported a perfectly clean 0 offenders — while silently missing all four verbs
+ * defined in `lib/coord-ops` (`coord:vote`, `coord:deliberate`,
+ * `coord:ask-owner`, `coord:thread-post`), a THIRD tool root. A gate that cannot
+ * see a verb cannot govern it, and a hand-kept root list is exactly the copy that
+ * drifts — which is why `static-tool-catalog.ts` was extracted in the first place
+ * (agent-trap-guards-2026-07-26 P-007: "so a SECOND static catalog scanner didn't
+ * need constructing"). Its own header says the fix for a missing tool is to
+ * extend THAT list; importing it means this gate inherits the fix for free.
  */
-export const SCAN_DIRS: readonly string[] = Object.freeze([
-  'packages/operator-core/lib/agent-tools',
-  'packages/agent-mcp/src/tools',
-]);
+export { TOOL_SOURCE_DIRS as SCAN_DIRS } from '../static-tool-catalog';
 
 /**
  * IO seam: read the tool sources and run the gate over them.
@@ -398,6 +433,8 @@ export const SCAN_DIRS: readonly string[] = Object.freeze([
 export async function scanCoordTierGate(repoRoot: string): Promise<TierGateResult> {
   const { readFile, readdir, stat } = await import('node:fs/promises');
   const { join } = await import('node:path');
+  const { TOOL_SOURCE_DIRS, buildBuiltinToolCatalog } = await import('../static-tool-catalog');
+  const { selectCoordBehaviours } = await import('./enforcement-tier-census');
 
   const files: string[] = [];
   const walk = async (dir: string): Promise<void> => {
@@ -419,7 +456,7 @@ export async function scanCoordTierGate(repoRoot: string): Promise<TierGateResul
       }
     }
   };
-  for (const d of SCAN_DIRS) await walk(join(repoRoot, d));
+  for (const d of TOOL_SOURCE_DIRS) await walk(join(repoRoot, d));
 
   const rows: CoordToolRow[] = [];
   const pointers = new Set<string>();
@@ -430,5 +467,9 @@ export async function scanCoordTierGate(repoRoot: string): Promise<TierGateResul
     for (const p of collectSeeAlsoPointers(text)) pointers.add(p);
   }
 
-  return judgeCoordTierGate({ rows, tiered: resolveTieredSet(pointers) });
+  return judgeCoordTierGate({
+    rows,
+    tiered: resolveTieredSet(pointers),
+    catalogue: selectCoordBehaviours(buildBuiltinToolCatalog(repoRoot)),
+  });
 }

@@ -42,7 +42,19 @@ interface HarnessDockProps {
   slug?: string;
 }
 
-const httpLayoutStore = createFetchDockLayoutStore('/api/dock-layouts');
+/**
+ * The dock-layout HTTP routes resolve the workspace from the request's `?ws=`
+ * param, falling back to `PAPERCUSP_WORKSPACE_ID ?? 'default'` — and that env
+ * var is NOT set on the operator. Reads, by contrast, go through the
+ * `dockLayouts.byName` sync query, which is scoped by an explicit `workspaceId`
+ * ARG. So a store built without `?ws=` reads this workspace's row and writes
+ * `default`'s: saves and resets return 2xx while the row the UI reads never
+ * changes, with no error to attribute it to (EI-19425275400158684 — this is why
+ * a dock stuck on retired panel types could not be recovered even with the
+ * "Reset layout" button).
+ */
+const makeLayoutStore = (workspaceId: string) =>
+  createFetchDockLayoutStore('/api/dock-layouts', { searchParams: () => ({ ws: workspaceId }) });
 
 /**
  * Panel types that may still be registered AFTER hydration, so the dock's
@@ -62,7 +74,7 @@ const isDeferredPanelType = (type: string): boolean => type.startsWith('plugin:'
 export function HarnessDock({ layoutName, className, slug }: HarnessDockProps) {
   const workspaceId = useWorkspaceId();
   const layoutStore = useMemo<DockLayoutStore>(() => ({
-    ...httpLayoutStore,
+    ...makeLayoutStore(workspaceId),
     async load(name) {
       const rows = await fetchSyncQuery<DockLayoutRow>({
         queryName: 'dockLayouts.byName',

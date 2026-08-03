@@ -9,9 +9,11 @@
  * This module is the runtime OVERRIDE: a per-workspace operator-state row keyed `"<toolName>|<role>"`,
  * MERGED OVER the baked `rolesQuota[role]` at the projected-tool-deps `computeQuotaWindow` wrapper
  * (which now receives the toolName via the extended tooldef seam). Read through a D-010-style module
- * SYNC cache (zero-await on the hot path), refreshed on (a) the boot flag-reload (onFlagChange(null)),
- * (b) local write (same-process immediate), and (c) a ~60s .unref()'d timer for bounded cross-process
- * + restart freshness. The import is PURE (no import-time IO) so importing it on the hot path is free.
+ * SYNC cache (zero-await on the hot path), refreshed on (a) the flag-reload signal (onFlagChange(null),
+ * subscribed on FIRST USE — see ensureFlagSubscriptionArmed), (b) local write (same-process immediate),
+ * and (c) a ~60s .unref()'d timer for bounded cross-process + restart freshness. The import touches NO
+ * flag binding and does no IO, so importing it on the hot path is free — and, per EI-19416650993725684,
+ * so that a test which partially mocks `@papercusp/flags/server` can still collect.
  *
  * NOT flag-gated: a quota cap rate-limits call COUNT within a window — it never widens WHICH tools a
  * role may call, so it is operational tuning, not an auth/escalation surface (contrast P-009/P-010).
@@ -54,6 +56,9 @@ let cached: Record<string, QuotaOverride> = {};
 
 /** The per-(tool,role) override for the dispatch step, or undefined. SYNC, zero-await. */
 export function quotaOverrideFor(toolName: string, role: string | undefined): QuotaOverride | undefined {
+  // First use arms the live-flip subscription (see ensureFlagSubscriptionArmed) and, on the call
+  // that arms it, kicks the population this module used to get from the boot flag-reload.
+  if (ensureFlagSubscriptionArmed()) void refreshQuotaOverrides();
   if (!role) return undefined;
   return cached[quotaOverrideKey(toolName, role)];
 }
@@ -74,6 +79,7 @@ export function mergeRoleQuota(
 }
 
 export async function refreshQuotaOverrides(): Promise<void> {
+  ensureFlagSubscriptionArmed();
   try {
     const row = (await readOperatorState<QuotaOverrides>(STATE_TABLE)) ?? {};
     const next: Record<string, QuotaOverride> = {};
@@ -86,11 +92,40 @@ export async function refreshQuotaOverrides(): Promise<void> {
     cached = {};
   }
 }
-// Boot refresh: onFlagChange(key===null) fires on the boot flag-reload (used purely as a "refresh now"
-// signal — this feature is NOT gated by any flag). NO import-time getFlag/PG read: the import stays pure.
-onFlagChange((key) => {
-  if (key === null) void refreshQuotaOverrides();
-});
+/**
+ * Refresh-on-flag-reload wiring, armed on FIRST USE rather than at import (EI-19416650993725684).
+ *
+ * `onFlagChange(key === null)` fires on the boot flag-reload and is used here purely as a "refresh
+ * now" signal — this feature is NOT gated by any flag. Returns `true` on the call that installed the
+ * subscription, so that caller can kick the first population the boot reload used to provide.
+ *
+ * WHY LAZY, and why this is not merely a style choice: an `import { onFlagChange }` whose binding is
+ * READ at module scope makes this module unimportable under a PARTIAL vitest mock of
+ * `@papercusp/flags/server`. Vitest's mocked-module proxy throws on binding ACCESS (not on
+ * invocation), so the whole test FILE dies at collection with
+ *   No "onFlagChange" export is defined on the "@papercusp/flags/server" mock
+ * contributing ZERO tests — a failure that names this module while pointing at a file that never
+ * mentions it. This module is on the dispatch hot path (projected-tool-deps → mergeRoleQuota), so
+ * its import reach is wide.
+ *
+ * ⚠ MEASURED, do not "simplify" this back: defensive forms do NOT work, because they are still
+ * binding accesses — `onFlagChange?.(...)`, `typeof onFlagChange`, try/catch around the call, and
+ * `import * as ns` + `ns.onFlagChange?.()` all throw identically. Moving the access inside a
+ * function body is the only fix that keeps the import pure.
+ *
+ * BOTH readers arm, so the subscription is installed by whichever runs first: `quotaOverrideFor`
+ * (every dispatch, via mergeRoleQuota) or `refreshQuotaOverrides` (the 60s timer below, and the
+ * same-process write path). In a live operator that is at least as early as the boot reload was.
+ */
+let flagSubscriptionArmed = false;
+function ensureFlagSubscriptionArmed(): boolean {
+  if (flagSubscriptionArmed) return false;
+  flagSubscriptionArmed = true; // set FIRST — terminates the refresh → arm re-entrancy
+  onFlagChange((key) => {
+    if (key === null) void refreshQuotaOverrides();
+  });
+  return true;
+}
 // Bounded cross-process + restart freshness. .unref() so it never holds the process (or a test) open.
 // P-008: visible in schedule:inventory as a 'cache' timer (per-process config memo refresh).
 managedSetInterval('config-refresh:quota', 60_000, () => refreshQuotaOverrides(), {

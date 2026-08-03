@@ -7,8 +7,8 @@
  *
  * ── THE SHAPE, AND WHY IT IS A ROLE NAME ─────────────────────────────────────
  * The wire carries `su_role: 'planner'` — a NAME, validated against the
- * allow-list below, whose addendum text is resolved SERVER-SIDE from a prompt
- * source. It deliberately does NOT carry the addendum prose itself.
+ * `SU_TIER_ROLES` allow-list, whose addendum text is resolved SERVER-SIDE from a
+ * prompt source. It deliberately does NOT carry the addendum prose itself.
  *
  * That is a security boundary, not a style preference: routing a role through
  * the su path grants it the SUPERUSER MCP tier, so this request mints a
@@ -36,28 +36,23 @@ import {
   operatorAppRootForPrompts,
   promptsDirCandidates,
 } from './desktop-install/papercusp-files';
+// The ONE definition of the role list, shared with psu-launcher.mjs (bare node,
+// cannot import TS) — see su-tier-roles.mjs. Importing it here rather than
+// re-declaring it is what makes launcher/server divergence STRUCTURALLY
+// impossible instead of merely detectable.
+import {
+  SU_TIER_ROLES,
+  isSuTierRole as isSuTierRoleUntyped,
+  suRoleAddendumFileName,
+} from './su-tier-roles.mjs';
 
-/**
- * Roles that launch on the SU tier (full engineer playbook + superuser MCP)
- * instead of the role-scoped bootstrap.
- *
- * ⚠ `apps/operator/scripts/psu-launcher.mjs` carries its own copy of this list
- * (it is plain .mjs and cannot import TS). `su-role-addendum.test.ts` asserts
- * the two agree, so adding a role here without updating the launcher fails a
- * test rather than silently routing that role the old way.
- */
-export const SU_TIER_ROLES = ['planner'] as const;
+export { SU_TIER_ROLES, suRoleAddendumFileName };
 
-export type SuTierRole = (typeof SU_TIER_ROLES)[number];
+export type SuTierRole = string;
 
 /** Is this role name one that launches on the su tier? Narrowing type-guard. */
 export function isSuTierRole(role: string | null | undefined): role is SuTierRole {
-  return !!role && (SU_TIER_ROLES as readonly string[]).includes(role);
-}
-
-/** The addendum source filename for a su-tier role. Pure. */
-export function suRoleAddendumFileName(role: SuTierRole): string {
-  return `su-role-${role}.addendum.md`;
+  return isSuTierRoleUntyped(role);
 }
 
 /**

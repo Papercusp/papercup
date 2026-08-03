@@ -324,7 +324,13 @@ export default function PiTerminalsDock({ slug, initialLaneId }: PiTerminalsDock
         const body = pgWritePending;
         pgWritePending = null;
         try {
-          await fetch(`/api/dock-layouts/${encodeURIComponent(layoutNameForPg)}`, {
+          // `?ws=` is REQUIRED: the route resolves the workspace from this param,
+          // falling back to PAPERCUSP_WORKSPACE_ID ?? 'default' — and that env var
+          // is not set on the operator. The matching READ below is scoped by an
+          // explicit `workspaceId` arg, so omitting it here writes one workspace's
+          // row and reads another's: the PUT returns 2xx and the layout silently
+          // never persists (EI-19425275400158684).
+          await fetch(`/api/dock-layouts/${encodeURIComponent(layoutNameForPg)}?ws=${encodeURIComponent(workspaceId)}`, {
             method: 'PUT',
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({

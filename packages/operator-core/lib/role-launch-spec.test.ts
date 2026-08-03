@@ -314,6 +314,10 @@ describe('buildRoleLaunchSpec — WORKSPACE-LEVEL (harness-less) role session (h
     rmSync(dir, { recursive: true, force: true });
   });
 
+  // EI-996 note: `psu --role planner` no longer REACHES this builder — the launcher
+  // routes su-tier roles (SU_TIER_ROLES) to the su bootstrap instead. This test is
+  // still correct and still load-bearing: buildRoleLaunchSpec is unchanged and stays
+  // the path for harness-pipeline planner spawns, which do not go through psu.
   it('planner: falls back to the spawn persona (prompts/planner.md) when no chat persona exists', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'rls-prompts-'));
     promptsDirValue = dir; // empty — no planner.persona.md

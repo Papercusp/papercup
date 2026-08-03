@@ -34,6 +34,10 @@ import {
   RUNTIME_OVERHEAD_TOKENS,
   buildContextBudget,
 } from '../../../packages/operator-core/lib/model-context-budget.mjs';
+// EI-996: the ONE su-tier role list, shared with the server-side allow-list in
+// su-role-addendum.ts. Plain .mjs so this bare-node script and the tsx/bundled
+// operator import the SAME definition — a second copy here would drift silently.
+import { SU_TIER_ROLES } from '../../../packages/operator-core/lib/su-tier-roles.mjs';
 import { codexGatewayConfigToml } from '@papercusp/orchestrator/codex-gateway-config';
 import {
   ompGatewayModelsConfig,
@@ -5811,6 +5815,12 @@ export function freshSuBootstrapBody(selections, args, { brain = false } = {}) {
     // forces autoMode on, and bakes the DRAIN directive into system prompt + kickoff.
     ...(args.mode ? { mode: args.mode } : {}),
     ...(args.profile ? { profile: args.profile } : {}),
+    // EI-996: the su-tier ROLE NAME (e.g. 'planner'). The server resolves that
+    // role's addendum from prompts/su-role-<role>.addendum.md and appends it to
+    // the engineer playbook; the launch keeps the superuser MCP tier. A NAME,
+    // never prose — this endpoint mints a superuser-tier prompt, so it exposes no
+    // free-text append surface. Omitted for a plain su launch ⇒ byte-identical.
+    ...(args.suRole ? { su_role: args.suRole } : {}),
     ...(args.contextSize ? { context_size: args.contextSize } : {}),
     // context-trimming-tiers P-017: explicit persona tier; omitted ⇒ server auto-select.
     ...(args.personaTier ? { persona_tier: args.personaTier } : {}),
@@ -7079,10 +7089,23 @@ async function main() {
   // --allow-subagents / --no-subagents flag preselects + skips it. Runs before the
   // su/role branch so BOTH paths carry args.allowSubagents into their launch args.
   if (args.picker && args.allowSubagents == null) args.allowSubagents = await pickSubagents();
-  if (role !== 'su') {
+  // EI-996 (owner ask 2026-06-17: planners should "be full su agents and get the
+  // full su prompt, but just a few lines added about their planner role"): a
+  // SU-TIER role skips roleFlow entirely and falls through to the plain SU flow
+  // below, carrying its role NAME as `su_role`. The server appends that role's
+  // addendum to the engineer playbook and the session keeps the SUPERUSER MCP
+  // tier — the "full su agent" half of the ask, which the role bootstrap cannot
+  // give (renderSuPlaybook needs the su path's `agent`).
+  //
+  // ⚠ This GRANTS THE SUPERUSER TIER to the roles listed here — a deliberate,
+  // owner-authorized privilege escalation, not an incidental side effect. Adding
+  // a role to SU_TIER_ROLES is a security decision; make it consciously.
+  if (role !== 'su' && !SU_TIER_ROLES.includes(role)) {
     await roleFlow(args, role, rolesMeta);
     return;
   }
+  // Reached with role === 'su' (su_role null) or a su-tier role name.
+  args.suRole = role !== 'su' ? role : null;
 
   // ── plain SU / engineer flow (unchanged) ──
   let selections;

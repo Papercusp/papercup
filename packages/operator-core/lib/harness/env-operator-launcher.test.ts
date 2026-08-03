@@ -1,5 +1,14 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import {
+  mkdtempSync,
+  mkdirSync,
+  writeFileSync,
+  rmSync,
+  existsSync,
+  closeSync,
+  writeSync,
+  readFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, join, resolve } from 'node:path';
 import {
@@ -11,6 +20,7 @@ import {
   type LaunchEnvOperatorsDeps,
   defaultDetectSourceRoot,
   sourceChildEnv,
+  openEnvOperatorLog,
 } from './env-operator-launcher';
 
 const SPECS: readonly EnvOperatorSpec[] = [
@@ -367,5 +377,88 @@ describe('sourceChildEnv (WI-3306 source-child contract)', () => {
     // The inherited PATH tail is preserved.
     expect(env.PATH?.endsWith(process.env.PATH ?? '')).toBe(true);
     rmSync(sidecarDir, { recursive: true, force: true });
+  });
+});
+
+describe('openEnvOperatorLog (EI-19423766332560955)', () => {
+  const priorHome = process.env.HOME;
+  afterEach(() => {
+    if (priorHome === undefined) delete process.env.HOME;
+    else process.env.HOME = priorHome;
+  });
+
+  it('routes stdout+stderr to a per-env log instead of discarding them', () => {
+    const home = mkdtempSync(join(tmpdir(), 'pc-envlog-'));
+    process.env.HOME = home;
+
+    const log = openEnvOperatorLog('dev');
+
+    // The whole point of the fix: NOT 'ignore'. stdin stays ignored; stdout and
+    // stderr both get a real fd, so a child that dies or hangs leaves a trace.
+    expect(Array.isArray(log.stdio)).toBe(true);
+    const triple = log.stdio as unknown[];
+    expect(triple[0]).toBe('ignore');
+    expect(typeof triple[1]).toBe('number');
+    expect(triple[1]).toBe(triple[2]);
+    expect(log.logPath).toBe(join(home, '.papercusp', 'logs', 'env-operator-dev.log'));
+    expect(existsSync(log.logPath as string)).toBe(true);
+
+    closeSync(log.fd as number);
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  it('opens APPEND-mode so a restart never truncates the previous boot', () => {
+    const home = mkdtempSync(join(tmpdir(), 'pc-envlog-'));
+    process.env.HOME = home;
+
+    const first = openEnvOperatorLog('local');
+    writeSync(first.fd as number, 'FIRST BOOT\n');
+    closeSync(first.fd as number);
+
+    const second = openEnvOperatorLog('local');
+    writeSync(second.fd as number, 'SECOND BOOT\n');
+    closeSync(second.fd as number);
+
+    const body = readFileSync(second.logPath as string, 'utf8');
+    expect(body).toContain('FIRST BOOT');
+    expect(body).toContain('SECOND BOOT');
+
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  it('fails OPEN — an unusable log dir degrades to ignore rather than losing the operator', () => {
+    // A FILE where the home dir should be: mkdirSync('<file>/.papercusp/logs') → ENOTDIR.
+    const dir = mkdtempSync(join(tmpdir(), 'pc-envlog-'));
+    const notADir = join(dir, 'i-am-a-file');
+    writeFileSync(notADir, 'x');
+    process.env.HOME = notADir;
+
+    const log = openEnvOperatorLog('dev');
+
+    expect(log.stdio).toBe('ignore');
+    expect(log.fd).toBeNull();
+    expect(log.logPath).toBeNull();
+
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('RECURRENCE GUARD: no spawn site discards stdio', () => {
+    const src = readFileSync(
+      resolve(import.meta.dirname, 'env-operator-launcher.ts'),
+      'utf8',
+    );
+
+    // Scan CODE only — the doc comments legitimately quote the old `stdio: 'ignore'`
+    // to explain why it was removed, and counting those defeats the guard.
+    const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
+
+    // All three spawn modes (bundled / vite / source) must route through the log.
+    const routed = code.match(/stdio: log\.stdio/g) ?? [];
+    expect(routed.length).toBe(3);
+
+    // Exactly ONE `stdio: 'ignore'` literal may survive: the fail-open fallback
+    // inside openEnvOperatorLog. Any other is a spawn site going dark again.
+    const discarded = code.match(/stdio: 'ignore'/g) ?? [];
+    expect(discarded.length).toBe(1);
   });
 });

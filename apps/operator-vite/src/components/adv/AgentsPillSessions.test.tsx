@@ -15,7 +15,7 @@ import {
   endedDisplayName,
   endedSessionStreamUrl,
   headlineToSafeHtml,
-  hitProvenanceChip,
+  hitMatchLabel,
   searchFailureMessage,
   searchHitStreamUrl,
   searchResultFocusTarget,
@@ -555,41 +555,74 @@ describe('SessionSearchResults in-flight honesty (WI-4734 — owner-hit: a 20s s
   });
 });
 
-// ── P-004 (semantic-search-fingerprint-coverage-2026-08-03): match provenance.
-// A hit only the VECTOR leg returned matched no query TERM, so ts_headline had
-// nothing to <mark> and handed back the head of the turn. Rendered bare, that
-// text claims to be the match and is not — the reader cannot tell a strong
-// semantic hit from a broken search. ────────────────────────────────────────
-describe('hitProvenanceChip (pure)', () => {
-  it('labels a vector-only hit and names the cosine in the tooltip', () => {
-    const chip = hitProvenanceChip({ matchedBy: 'semantic', semanticScore: 0.6142 });
-    expect(chip?.label).toBe('semantic match');
-    expect(chip?.title).toContain('cosine 0.61');
-    // The tooltip must say what the text below actually IS, or the label alone
-    // still leaves the excerpt reading as the matching phrase.
-    expect(chip?.title).toContain('start of the turn');
+// ── P-004 (semantic-search-fingerprint-coverage-2026-08-03): match labelling.
+//
+// Two INDEPENDENT things the rendered text cannot tell you: which leg
+// retrieved the row, and whether what is shown is actually the match.
+//
+// ⚠ These come apart, MEASURED on the live corpus 2026-08-03 ("why did the
+// gate go red", 30 hits): 9 of 10 vector-only hits DID carry <mark>, and 2 of
+// 20 lexical hits carried none. ts_headline runs over the document against the
+// tsquery regardless of which ranker returned the row. An earlier cut of this
+// inferred one condition from the other and was wrong; these tests pin the
+// four-case behaviour so it cannot regress back to the intuition. ───────────
+const marked = 'a <mark>gate</mark> went red';
+const unmarked = 'the turn opens with something unrelated';
+
+describe('hitMatchLabel (pure)', () => {
+  it('labels a vector-only hit that IS highlighted — the marks are not why it matched', () => {
+    const l = hitMatchLabel({ matchedBy: 'semantic', semanticScore: 0.7412, highlight: marked, excerpt: 'x' });
+    expect(l?.label).toBe('semantic match');
+    expect(l?.unhighlighted).toBe(false);
+    expect(l?.title).toContain('cosine 0.74');
+    // It must NOT claim the text is the turn's head — it isn't; terms are there.
+    expect(l?.title).not.toContain('start of the turn');
+    expect(l?.title).toContain('not why');
+  });
+
+  it('labels a vector-only hit with NO highlight, and says the text is the turn head', () => {
+    const l = hitMatchLabel({ matchedBy: 'semantic', semanticScore: 0.61, highlight: unmarked, excerpt: 'x' });
+    expect(l?.label).toBe('semantic match');
+    expect(l?.unhighlighted).toBe(true);
+    expect(l?.title).toContain('start of the turn');
+  });
+
+  it('labels a LEXICAL hit that came back unhighlighted — the excerpt-head case P-004 names', () => {
+    // No leg is claimed here: we know the text is uninformative, not that the
+    // vector leg found it.
+    const l = hitMatchLabel({ matchedBy: 'lexical', highlight: unmarked, excerpt: 'x' });
+    expect(l?.label).toBe('no highlight');
+    expect(l?.unhighlighted).toBe(true);
+    expect(l?.title).not.toMatch(/semantic|meaning|MEANING/);
+  });
+
+  it('shows NOTHING for the common path — a lexical/hybrid hit with highlights', () => {
+    expect(hitMatchLabel({ matchedBy: 'lexical', highlight: marked, excerpt: 'x' })).toBeNull();
+    expect(hitMatchLabel({ matchedBy: 'both', highlight: marked, excerpt: 'x' })).toBeNull();
+  });
+
+  it('never claims a leg when provenance is unknown or absent (an older server)', () => {
+    // Guessing "semantic" would make correct lexical results read as fallbacks.
+    expect(hitMatchLabel({ matchedBy: 'unknown', highlight: marked, excerpt: 'x' })).toBeNull();
+    expect(hitMatchLabel({ highlight: marked, excerpt: 'x' })).toBeNull();
+    // …but an unhighlighted row is still called out, on evidence we do have.
+    expect(hitMatchLabel({ highlight: unmarked, excerpt: 'x' })?.label).toBe('no highlight');
+  });
+
+  it('judges the string the row RENDERS (highlight || excerpt), not highlight alone', () => {
+    // Deferred-highlight hydration can fail and leave highlight '' — the row
+    // then renders the excerpt, which never carries marks.
+    expect(hitMatchLabel({ matchedBy: 'lexical', highlight: '', excerpt: unmarked })?.unhighlighted).toBe(true);
+    expect(hitMatchLabel({ matchedBy: 'lexical', highlight: '', excerpt: marked })).toBeNull();
   });
 
   it('omits the cosine — never renders NaN/undefined — when the score is absent', () => {
-    const chip = hitProvenanceChip({ matchedBy: 'semantic' });
-    expect(chip?.label).toBe('semantic match');
-    expect(chip?.title).not.toMatch(/cosine|NaN|undefined/);
-  });
-
-  it('shows NO chip for lexical or hybrid hits — their <mark> already explains them', () => {
-    expect(hitProvenanceChip({ matchedBy: 'lexical' })).toBeNull();
-    expect(hitProvenanceChip({ matchedBy: 'both' })).toBeNull();
-  });
-
-  it('shows NO chip when provenance is unknown or absent (an older server)', () => {
-    // Guessing "semantic" here would make correct lexical results read as
-    // fallbacks — silence is the right rendering of "we do not know".
-    expect(hitProvenanceChip({ matchedBy: 'unknown' })).toBeNull();
-    expect(hitProvenanceChip({})).toBeNull();
+    const l = hitMatchLabel({ matchedBy: 'semantic', highlight: unmarked, excerpt: 'x' });
+    expect(l?.title).not.toMatch(/cosine|NaN|undefined/);
   });
 });
 
-describe('SessionSearchResults renders match provenance (P-004 wiring)', () => {
+describe('SessionSearchResults renders the match label (P-004 wiring)', () => {
   const NOW = Date.parse('2026-08-03T12:00:00Z');
   const hit = (over: Partial<SearchSessionResult['hits'][number]>) => ({
     turnIdx: 0,
@@ -611,7 +644,7 @@ describe('SessionSearchResults renders match provenance (P-004 wiring)', () => {
   const respondWith = (sessions: SearchSessionResult[]) =>
     vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => ({ ok: true, sessions }) })));
 
-  it('labels a vector-only hit "semantic match" instead of presenting its excerpt head as the match', async () => {
+  it('labels a vector-only hit "semantic match" while still showing its text', async () => {
     respondWith([result({ sessionId: 'sid-sem', hits: [hit({ matchedBy: 'semantic', semanticScore: 0.61 })] })]);
     render(<SessionSearchResults query="theory of mind" nowMs={NOW} />);
     await waitFor(() => expect(screen.queryByTestId('search-pending')).toBeNull());
@@ -620,11 +653,24 @@ describe('SessionSearchResults renders match provenance (P-004 wiring)', () => {
     // row now declares what it is, and carries the verdict for styling/asserts.
     const row = screen.getByTestId('hit-sid-sem-0');
     expect(row.getAttribute('data-matched-by')).toBe('semantic');
-    expect(row.className).toContain('pc-agents-sessions__hit--semantic');
     expect(row.textContent).toContain('the turn opens with something unrelated');
   });
 
-  it('leaves a lexical hit unlabelled — no chip, no italic modifier', async () => {
+  it('italicises ONLY the unhighlighted rows — a marked semantic hit is not set apart', async () => {
+    respondWith([
+      result({ sessionId: 'sid-a', hits: [hit({ turnIdx: 0, matchedBy: 'semantic', semanticScore: 0.74, highlight: 'a <mark>gate</mark> went red' })] }),
+      result({ sessionId: 'sid-b', hits: [hit({ turnIdx: 1, matchedBy: 'semantic', semanticScore: 0.61 })] }),
+    ]);
+    render(<SessionSearchResults query="gate" nowMs={NOW} />);
+    await waitFor(() => expect(screen.queryByTestId('search-pending')).toBeNull());
+    // Both are semantic and both get the chip…
+    expect(screen.getAllByTestId('hit-provenance')).toHaveLength(2);
+    // …but only the one with nothing highlighted is set apart as a turn head.
+    expect(screen.getByTestId('hit-sid-a-0').className).not.toContain('--excerpt-only');
+    expect(screen.getByTestId('hit-sid-b-1').className).toContain('pc-agents-sessions__hit--excerpt-only');
+  });
+
+  it('leaves a highlighted lexical hit completely unlabelled — the common path stays quiet', async () => {
     respondWith([
       result({
         sessionId: 'sid-lex',
@@ -635,17 +681,19 @@ describe('SessionSearchResults renders match provenance (P-004 wiring)', () => {
     await waitFor(() => expect(screen.queryByTestId('search-pending')).toBeNull());
     expect(screen.queryByTestId('hit-provenance')).toBeNull();
     const row = screen.getByTestId('hit-sid-lex-0');
-    expect(row.className).not.toContain('--semantic');
+    expect(row.className).not.toContain('--excerpt-only');
     // The <mark> survives the restructure into chip + text spans (the sanitizer
     // still runs, now on the inner span rather than the row itself).
     expect(row.querySelector('mark')?.textContent).toBe('deploy');
   });
 
-  it('renders a hit with NO provenance field exactly as before (an older server)', async () => {
+  it('calls out an unhighlighted hit even with NO provenance field (an older server)', async () => {
+    // We cannot name a leg, but "nothing here is highlighted" is still true and
+    // still worth saying — it is the excerpt-head case P-004 exists for.
     respondWith([result({ sessionId: 'sid-old', hits: [hit({})] })]);
     render(<SessionSearchResults query="anything" nowMs={NOW} />);
     await waitFor(() => expect(screen.queryByTestId('search-pending')).toBeNull());
-    expect(screen.queryByTestId('hit-provenance')).toBeNull();
+    expect(screen.getByTestId('hit-provenance').textContent).toBe('no highlight');
     expect(screen.getByTestId('hit-sid-old-0').getAttribute('data-matched-by')).toBeNull();
   });
 });

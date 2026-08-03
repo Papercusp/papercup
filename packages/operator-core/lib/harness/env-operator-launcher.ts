@@ -64,9 +64,10 @@
  * with no toolchain and is never spawned here (it IS the running package).
  */
 
-import { spawn } from 'node:child_process';
+import { spawn, type StdioOptions } from 'node:child_process';
 import { delimiter, dirname, join, resolve } from 'node:path';
-import { existsSync } from 'node:fs';
+import { existsSync, mkdirSync, openSync, writeSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { detectPapercupRoot, hasPapercupMarkers } from './register-papercusp';
 import { readEnvSwitcherPrefs } from './env-switcher-prefs';
 
@@ -393,8 +394,67 @@ export function sourceChildEnv(treePath: string): Record<string, string> {
   return env;
 }
 
+/** Per-env spawn log — EI-19423766332560955.
+ *
+ * Every env operator used to be spawned with `stdio: 'ignore'`, which made a child that
+ * DIED or HUNG unobservable BY CONSTRUCTION: the only recoverable facts were "the launcher
+ * says it spawned it" and "it isn't there". Diagnosing WI-3307's dead `dev`/`local` buttons
+ * meant hand-reconstructing the child's exact argv+env on the target machine purely to
+ * recover its first line of output — slow, error-prone, and actively risky, because the
+ * BUNDLED branch carries single-writer knobs (PAPERCUSP_ENV_OPERATOR_ID /
+ * PAPERCUSP_USE_EMBEDDED_PG='0', WI-3287) that a hand-rolled repro can easily omit, at which
+ * point sweepOrphanPostgres can kill the PRIMARY's postmaster on the shared dataDir.
+ *
+ * Routing stdout/stderr to an append-mode FILE keeps `detached` + `unref()` intact: a
+ * regular-file fd has no pipe buffer, so — unlike `'pipe'` — the child can NEVER block on an
+ * undrained parent. Cost is one fd per env.
+ *
+ * Fails OPEN. If the log cannot be created we fall back to 'ignore' and still spawn: losing
+ * diagnosability is strictly better than losing the operator.
+ */
+export function openEnvOperatorLog(id: string): {
+  stdio: StdioOptions;
+  logPath: string | null;
+  fd: number | null;
+} {
+  try {
+    const dir = join(homedir(), '.papercusp', 'logs');
+    mkdirSync(dir, { recursive: true });
+    const logPath = join(dir, `env-operator-${id}.log`);
+    const fd = openSync(logPath, 'a');
+    return { stdio: ['ignore', fd, fd], logPath, fd };
+  } catch {
+    return { stdio: 'ignore', logPath: null, fd: null };
+  }
+}
+
+/** Record the resolved argv + the launcher's OWN env delta at the top of the child's log.
+ *  This is precisely what had to be reconstructed by hand to diagnose a silent child.
+ *  Only launcher-set keys are recorded — never the inherited environment, which carries
+ *  DB URLs and other secrets. Never throws: diagnostics must not break a spawn. */
+function writeSpawnHeader(
+  fd: number | null,
+  id: string,
+  port: number,
+  argv: string[],
+  envDelta: Record<string, string>,
+): void {
+  if (fd == null) return;
+  try {
+    writeSync(
+      fd,
+      `\n=== [env-operators] spawn ${id} :${port} ${new Date().toISOString()} ===\n` +
+        `argv: ${argv.join(' ')}\n` +
+        `env-delta: ${JSON.stringify(envDelta)}\n`,
+    );
+  } catch {
+    /* diagnostics must never break the spawn */
+  }
+}
+
 /** Default spawn — mirror bin/dev-operator-ifneeded.sh's invocation, REQUEST-ONLY.
- *  Detached + unref'd + stdio:ignore so the spawned operator outlives this boot turn
+ *  Detached + unref'd, with stdio routed to a per-env log file (openEnvOperatorLog —
+ *  EI-19423766332560955) so the spawned operator outlives this boot turn
  *  and never blocks it. The EI-126 single-writer knobs are the load-bearing safety here.
  *  Prefers `process.execPath` + the tree's own tsx/vite CLI over `npx` from PATH — a
  *  GUI-launched packaged app has no shell PATH to speak of (WI-3285). */
@@ -413,10 +473,17 @@ function defaultSpawnOperator(
       const envDir = dirname(entry.bundlePath);
       const spaDir = join(envDir, 'spa');
       const docsDir = join(envDir, 'internal-docs');
+      const log = openEnvOperatorLog(entry.id);
+      writeSpawnHeader(log.fd, entry.id, entry.port, [process.execPath, entry.bundlePath], {
+        PAPERCUSP_HONO_PORT: String(entry.port),
+        PAPERCUSP_ENV_OPERATOR_ID: entry.id,
+        PAPERCUSP_BACKGROUND_WORKERS: '0',
+        PAPERCUSP_USE_EMBEDDED_PG: '0',
+      });
       const child = spawn(process.execPath, [entry.bundlePath], {
         cwd: envDir,
         detached: true,
-        stdio: 'ignore',
+        stdio: log.stdio,
         env: {
           ...process.env,
           PAPERCUSP_HONO_PORT: String(entry.port),
@@ -469,10 +536,18 @@ function defaultSpawnOperator(
       const viteCli = resolveViteCli(treePath);
       if (!viteCli) return null;
       const selfPort = defaultSelfPort();
+      const log = openEnvOperatorLog(entry.id);
+      writeSpawnHeader(log.fd, entry.id, entry.port, [process.execPath, viteCli], {
+        PAPERCUSP_INTEGRATION_ROOT: treePath,
+        ...(selfPort != null
+          ? { PAPERCUSP_API_TARGET: `http://127.0.0.1:${selfPort}` }
+          : {}),
+        PAPERCUSP_PROVISION_ENV_OPERATORS: '0',
+      });
       const child = spawn(process.execPath, [viteCli], {
         cwd: join(treePath, 'apps', 'operator-vite'),
         detached: true,
-        stdio: 'ignore',
+        stdio: log.stdio,
         env: {
           ...process.env,
           ...sourceChildEnv(treePath),
@@ -490,10 +565,17 @@ function defaultSpawnOperator(
     const [cmd, args] = tsxCli
       ? [process.execPath, [tsxCli, 'bin/hono-host.ts']]
       : ['npx', ['tsx', 'bin/hono-host.ts']];
+    const log = openEnvOperatorLog(entry.id);
+    writeSpawnHeader(log.fd, entry.id, entry.port, [cmd as string, ...(args as string[])], {
+      PAPERCUSP_INTEGRATION_ROOT: treePath,
+      PAPERCUSP_HONO_PORT: String(entry.port),
+      PAPERCUSP_BACKGROUND_WORKERS: '0',
+      PAPERCUSP_DBOS_ENABLE: '0',
+    });
     const child = spawn(cmd as string, args as string[], {
       cwd: join(treePath, 'apps', 'operator'),
       detached: true,
-      stdio: 'ignore',
+      stdio: log.stdio,
       env: {
         ...process.env,
         ...sourceChildEnv(treePath),

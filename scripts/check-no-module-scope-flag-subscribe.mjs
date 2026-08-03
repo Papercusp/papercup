@@ -121,7 +121,6 @@ export const BASELINE = new Set([
   'packages/operator-core/lib/harness/routines/configure-per-workspace.ts',
   'packages/operator-core/lib/issues-engineer.ts',
   'packages/operator-core/lib/lexicon/configure.ts',
-  'packages/operator-core/lib/quota-overrides.ts',
   'packages/operator-core/lib/telemetry-buffer-config.ts',
   'packages/operator-core/lib/work-item-claim-lease-wiring.ts',
   'packages/operator-core/lib/work-item-redundancy.ts',

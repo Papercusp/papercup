@@ -161,37 +161,65 @@ export function headlineToSafeHtml(headline: string): string {
 }
 
 /**
- * The match-provenance chip for a hit, or null when no chip is warranted
- * (P-004). Pure — exported for tests.
+ * How to label a hit's match (P-004), or null when the row needs no label.
+ * Pure — exported for tests.
  *
- * A hit the VECTOR leg alone returned matched no query TERM, so `ts_headline`
- * had nothing to wrap in <mark> and handed back the head of the turn. Rendered
- * bare, that text reads as "here is what matched" while actually being the
- * first ~200 characters of a document — indistinguishable, to the reader, from
- * a broken search. Naming it is what makes it honest: the excerpt becomes
- * context for a match the card has explained, instead of a claim it cannot
- * support.
+ * There are TWO independent things a reader cannot otherwise tell, and the
+ * whole point of this helper is that they are NOT the same question:
  *
- * Only the vector-only case gets a chip. A `lexical` or `both` hit shows its
- * own <mark> highlights, which already say why it matched — a chip there would
- * be noise on the common path. `unknown` (no attribution: an older server, a
- * non-engine hit) deliberately gets nothing: silence is the correct rendering
- * of "we don't know", and guessing "semantic" would make correct lexical
- * results look like fallbacks.
+ *   1. WHICH LEG retrieved this row — `matchedBy`, computed server-side. A
+ *      `semantic` hit is one the lexical ranker did not return at all; it is
+ *      here on meaning, so whatever terms appear in the excerpt are not the
+ *      reason it is on screen.
+ *   2. WHETHER THE TEXT SHOWN IS THE MATCH — i.e. does the rendered string
+ *      contain any <mark>. With none, the card is showing the head of the
+ *      turn, which is exactly as informative as a random 200 characters.
+ *
+ * ⚠ MEASURED (2026-08-03, live corpus, "why did the gate go red", 30 hits):
+ * these two genuinely come apart, which is why an earlier cut of this that
+ * inferred one from the other was wrong. 9 of 10 vector-only hits DID have
+ * <mark>, and 2 of 20 lexical hits had NONE. `ts_headline` runs over the
+ * document against the tsquery at hydration time regardless of which ranker
+ * returned the row, so a turn BM25 ranked too low to return can still contain
+ * the terms and get them marked.
+ *
+ * Hence four cases, not two. A lexical hit WITH highlights — the common path —
+ * gets no chip: its <mark> already says why it matched, and a chip there would
+ * be noise on every result. `unknown`/absent provenance (an older server, a
+ * non-engine hit) never claims a leg: silence is the right rendering of "we
+ * don't know", and guessing "semantic" would make correct lexical results read
+ * as fallbacks.
  */
-export function hitProvenanceChip(
-  hit: Pick<SearchTurnHit, 'matchedBy' | 'semanticScore'>,
-): { label: string; title: string } | null {
-  if (hit.matchedBy !== 'semantic') return null;
+export function hitMatchLabel(
+  hit: Pick<SearchTurnHit, 'matchedBy' | 'semanticScore' | 'highlight' | 'excerpt'>,
+): { label: string; title: string; unhighlighted: boolean } | null {
+  // Mirror what the row actually RENDERS (`highlight || excerpt`) — asking
+  // whether `highlight` alone has marks would misjudge the fallback case.
+  const shown = hit.highlight || hit.excerpt || '';
+  const unhighlighted = !shown.includes('<mark>');
+  const semantic = hit.matchedBy === 'semantic';
+  if (!semantic && !unhighlighted) return null;
+
   const cosine =
     typeof hit.semanticScore === 'number' ? ` (cosine ${hit.semanticScore.toFixed(2)})` : '';
-  return {
-    label: 'semantic match',
-    title:
-      `Matched by MEANING, not by your search terms${cosine}. ` +
-      'The text below is the start of the turn, not the matching phrase — ' +
-      'open the hit to see it in context.',
-  };
+  const noTermsHere =
+    'None of your search terms appear in the text below, so it is the start of the turn ' +
+    'rather than the matching phrase — open the hit to read it in context.';
+
+  if (semantic) {
+    return {
+      label: 'semantic match',
+      unhighlighted,
+      title: unhighlighted
+        ? `Retrieved by MEANING${cosine}, not by term ranking. ${noTermsHere}`
+        : `Retrieved by MEANING${cosine}, not by term ranking — the term ranker did not return ` +
+          'this turn at all. Any highlighted words below do appear in it, but they are not why ' +
+          'it was returned.',
+    };
+  }
+  // Lexical/hybrid/unknown, but nothing highlighted: the excerpt-head case
+  // P-004 names. Say so without claiming a leg we have not established.
+  return { label: 'no highlight', unhighlighted, title: noTermsHere };
 }
 
 /** Display name for an ended session row: label → short owner id → agent+row.
@@ -388,14 +416,13 @@ function SearchResultRow({
         <span className="pc-agents-roster__doing">{meta}</span>
       </div>
       {result.hits.map((h) => {
-        // P-004: a vector-only hit has no matched terms, so the text below is
-        // the head of the turn rather than the match — say so instead of
-        // presenting it as one.
-        const prov = hitProvenanceChip(h);
+        // P-004: say WHY this turn is here when the text alone cannot — it was
+        // retrieved on meaning, or nothing in it is highlighted at all.
+        const prov = hitMatchLabel(h);
         return (
           <div
             key={h.turnIdx}
-            className={`pc-agents-sessions__hit${prov ? ' pc-agents-sessions__hit--semantic' : ''}`}
+            className={`pc-agents-sessions__hit${prov?.unhighlighted ? ' pc-agents-sessions__hit--excerpt-only' : ''}`}
             role="button"
             tabIndex={0}
             data-testid={`hit-${result.sessionId}-${h.turnIdx}`}
@@ -1037,10 +1064,11 @@ function SessionsStyles() {
         background: color-mix(in srgb, var(--accent, #38bdf8), transparent 55%);
         color: inherit; border-radius: 2px; padding: 0 1px;
       }
-      /* P-004 — a hit only the vector leg returned. Its text has no <mark>
-         because nothing matched a query TERM, so the excerpt is labelled and
-         set apart rather than shown as if it were the match. */
-      .pc-agents-sessions__hit--semantic { font-style: italic; }
+      /* P-004 — nothing in this hit's text is highlighted, so what is shown is
+         the head of the turn rather than the match. Italic sets it apart from
+         the rows whose <mark>s do explain themselves. (Independent of WHICH
+         leg retrieved the row: a vector-only hit is usually still marked.) */
+      .pc-agents-sessions__hit--excerpt-only { font-style: italic; }
       .pc-agents-sessions__provenance {
         font-style: normal; font-size: 9px; font-family: ui-monospace, monospace;
         color: var(--fg-mute); border: 1px solid var(--border); border-radius: 3px;

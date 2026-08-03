@@ -47,6 +47,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { isSuAgent, type SuAgent } from '../../../su-agents';
 import { launchContextDir, launchContextPathFor } from '../../../su-launch-context';
 import { buildLaunchSpec } from '../../../role-launch-spec';
+import { SU_TIER_ROLES, isSuTierRole, resolveSuRoleAddendum } from '../../../su-role-addendum';
 import {
   blockingInstructionConflicts,
   lintInstructionText,
@@ -1365,6 +1366,8 @@ const post = defineTool({
         planSlug,
         planTitle,
         planNow,
+        // EI-996: null for a plain su launch ⇒ byte-identical prompt.
+        roleAddendum,
       });
     } catch (e: any) {
       return jsonRes({ status: 'error', error: e?.message ?? 'su launch spec build failed' }, 400);
