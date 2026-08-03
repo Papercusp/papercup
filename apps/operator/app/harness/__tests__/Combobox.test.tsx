@@ -283,3 +283,150 @@ describe('Combobox', () => {
     ]);
   });
 });
+
+/**
+ * ComboboxMenu — the trigger-as-control sibling, built for WI-10013.
+ *
+ * [owner 2026-08-03] "the grade mode popup should not offer to ask the
+ * agent, it should just have a scroll and a search filter in the dropdown."
+ *
+ * The menu it replaced capped its list at 8 and then offered a row that asked
+ * the agent to do the reading. So the requirement under test is specifically
+ * that a LONG list is fully present and narrowable by typing — not merely that
+ * a search box renders.
+ */
+describe('ComboboxMenu', () => {
+  /* 23 rows: more than the cap that used to truncate this menu, so a
+     reintroduced cap fails here rather than passing on a short fixture. */
+  const RUBRICS: ComboboxEntry[] = Array.from({ length: 23 }, (_, i) => ({
+    value: `rubric-${String(i).padStart(2, '0')}`,
+    label: `Rubric ${String(i).padStart(2, '0')}`,
+    detail: i === 3 ? 'measures release hygiene' : `characteristic ${i}`,
+    keywords: i === 3 ? ['measures release hygiene'] : undefined,
+  }));
+
+  function renderMenu(props: Partial<React.ComponentProps<typeof ComboboxMenu>> = {}) {
+    const onChange = vi.fn();
+    render(
+      <ComboboxMenu
+        value={null}
+        onChange={onChange}
+        options={RUBRICS}
+        ariaLabel="GRADE is off. Change it."
+        testId="chat-mode-mode-grade"
+        searchPlaceholder="Search rubrics…"
+        triggerChildren={<span>GRADE off ▾</span>}
+        {...props}
+      />,
+    );
+    return { onChange };
+  }
+
+  const openMenu = () => fireEvent.click(screen.getByTestId('chat-mode-mode-grade'));
+  const rows = () => within(screen.getByTestId('popover-panel')).queryAllByRole('option');
+
+  it('renders the caller-supplied trigger and keeps the panel shut until clicked', () => {
+    renderMenu();
+    expect(screen.getByTestId('chat-mode-mode-grade').textContent).toContain('GRADE off ▾');
+    expect(screen.queryByTestId('popover-panel')).toBeNull();
+  });
+
+  it('opens on click and puts focus in the search box, so the reader can just type', () => {
+    renderMenu();
+    openMenu();
+    const search = screen.getByTestId('chat-mode-mode-grade-search') as HTMLInputElement;
+    expect(search.placeholder).toBe('Search rubrics…');
+    expect(document.activeElement).toBe(search);
+  });
+
+  it('lists EVERY option with an empty query — the truncation is gone', () => {
+    renderMenu();
+    openMenu();
+    expect(rows()).toHaveLength(23);
+  });
+
+  it('filters as you type — the owner asked for a search FILTER, not just a box', () => {
+    renderMenu();
+    openMenu();
+    fireEvent.change(screen.getByTestId('chat-mode-mode-grade-search'), {
+      target: { value: 'Rubric 07' },
+    });
+    const shown = rows().map((r) => r.textContent);
+    expect(shown).toHaveLength(1);
+    expect(shown[0]).toContain('Rubric 07');
+  });
+
+  it('searches the second line too, so a rubric is findable by what it measures', () => {
+    renderMenu();
+    openMenu();
+    fireEvent.change(screen.getByTestId('chat-mode-mode-grade-search'), {
+      target: { value: 'release hygiene' },
+    });
+    expect(rows().map((r) => r.textContent)).toEqual([expect.stringContaining('Rubric 03')]);
+  });
+
+  it('picking a row reports it and closes', () => {
+    const { onChange } = renderMenu();
+    openMenu();
+    fireEvent.click(rows()[5]);
+    expect(onChange).toHaveBeenCalledWith('rubric-05');
+    expect(screen.queryByTestId('popover-panel')).toBeNull();
+  });
+
+  it('re-opening starts from the full list, not the last query', () => {
+    renderMenu();
+    openMenu();
+    fireEvent.change(screen.getByTestId('chat-mode-mode-grade-search'), {
+      target: { value: 'Rubric 07' },
+    });
+    expect(rows()).toHaveLength(1);
+    openMenu(); // close
+    openMenu(); // and back
+    expect((screen.getByTestId('chat-mode-mode-grade-search') as HTMLInputElement).value).toBe('');
+    expect(rows()).toHaveLength(23);
+  });
+
+  it('notifies the caller on open, so an unbounded option set can be fetched lazily', () => {
+    const onOpenChange = vi.fn();
+    renderMenu({ onOpenChange });
+    openMenu();
+    expect(onOpenChange).toHaveBeenCalledWith(true);
+  });
+
+  it('says "no matches" rather than rendering an empty panel', () => {
+    renderMenu();
+    openMenu();
+    fireEvent.change(screen.getByTestId('chat-mode-mode-grade-search'), {
+      target: { value: 'zzzznothing' },
+    });
+    expect(rows()).toHaveLength(0);
+    expect(screen.getByTestId('popover-panel').textContent).toContain('No matches');
+  });
+
+  /**
+   * THE guard that jsdom cannot otherwise give us. `harness/Popover` defaults
+   * its Content to z-index 90, and Radix copies a popper Content's z-index onto
+   * the position:fixed wrapper inline — overriding harness.css's 1500 floor. 90
+   * clears `<main>` (70) but NOT `.oracle-dock--maximal-hud` (1450), which is
+   * where this menu lives. At 90 it would mount, position, report opacity 1 and
+   * be completely unclickable — the P-006 defect the owner reported as "None of
+   * the option selector dropdowns are working in the bottom panel".
+   *
+   * jsdom does not paint, so no render test can catch it. Asserting the VALUE
+   * handed to the Popover is the honest guard at this layer. Primitive-level
+   * fix tracked as EI-19470132622399873.
+   */
+  it('defaults to the popper wrapper floor, so it cannot paint behind the dock', () => {
+    renderMenu();
+    openMenu();
+    expect(screen.getByTestId('popover-panel').getAttribute('data-z-index')).toBe('1500');
+  });
+
+  it('is disabled-safe: a disabled trigger cannot open the panel', () => {
+    renderMenu({ disabled: true });
+    const trigger = screen.getByTestId('chat-mode-mode-grade') as HTMLButtonElement;
+    expect(trigger.disabled).toBe(true);
+    openMenu();
+    expect(screen.queryByTestId('popover-panel')).toBeNull();
+  });
+});
