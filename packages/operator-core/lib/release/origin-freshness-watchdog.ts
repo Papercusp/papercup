@@ -55,6 +55,8 @@ import { canonicalRepoKey } from '../sync/pot-git/repo-identity';
 import { hiveGitRepoPath, readNamespaceRef, defaultRunGit, type RunGit } from '../sync/pot-git/storage';
 import { githubOriginDevicePubkey } from '../sync/pot-git/github-ingress';
 import { BRIDGE_CANONICAL_REF } from '../sync/pot-git/github-bridge-tick';
+import { STAGING_REF } from '../sync/pot-git/integrator';
+import { resolveUsageActor } from '../harness/usage-actor';
 import {
   evaluateOriginFreshness,
   describeOriginFreshnessAlert,
@@ -109,6 +111,12 @@ async function readRefSha(repoPath: string, ref: string, runGit: RunGit): Promis
 const PERSISTED_ALERT_CAUSES = {
   'publish-refused': true,
   'publish-backlog': true,
+  // EI-19442274898324113 — added the fifth signal; this line is the guard above doing
+  // exactly its job: the compile broke here until the cause was registered, which is what
+  // stops a self-healed integrator stall from announcing "GitHub origin has caught back
+  // up" when the truth is that the INTEGRATOR advanced. That recovery line is frequently
+  // the only durable trace such a stall ever leaves.
+  'integrator-backlog': true,
   'origin-behind': true,
 } as const satisfies Record<OriginFreshnessCause, true>;
 
@@ -336,6 +344,7 @@ export async function checkOriginFreshness(
           of_stall_sweeps: number | null;
           of_publish_refused_sweeps: number | null;
           of_publish_backlog_sweeps: number | null;
+          of_integrator_backlog_sweeps: number | null;
           publish_refused: string | null;
           publish_backlog_remains: string | null;
           publish_published_sha: string | null;
@@ -350,6 +359,7 @@ export async function checkOriginFreshness(
                COALESCE((metadata->>'of_stall_sweeps')::int, 0) AS of_stall_sweeps,
                COALESCE((metadata->>'of_publish_refused_sweeps')::int, 0) AS of_publish_refused_sweeps,
                COALESCE((metadata->>'of_publish_backlog_sweeps')::int, 0) AS of_publish_backlog_sweeps,
+               COALESCE((metadata->>'of_integrator_backlog_sweeps')::int, 0) AS of_integrator_backlog_sweeps,
                metadata->'own_head_publish'->>'refused' AS publish_refused,
                metadata->'own_head_publish'->>'backlogRemains' AS publish_backlog_remains,
                metadata->'own_head_publish'->>'publishedSha' AS publish_published_sha,
@@ -465,6 +475,38 @@ export async function checkOriginFreshness(
           ? await revListCount(repoPath, row.publish_published_sha, row.publish_head_sha, runGit)
           : null;
 
+      // EI-19442274898324113: the INTEGRATOR leg's backlog — this device's namespace standing
+      // ahead of canonical refs/hive/staging. Sibling of the publish signal above, one stage
+      // downstream, and the one signal that can still see a fault after an integrator stall has
+      // frozen canonical and origin TOGETHER (which zeroes aheadCount and silences everything
+      // else). Best-effort by construction: a device whose own namespace ref is absent, or whose
+      // pubkey is unresolvable, yields null ⇒ treated as healthy, never a false alarm.
+      let integratorBacklogCommits: number | null = null;
+      try {
+        const selfPubkey = (await resolveUsageActor()).devicePubkey;
+        if (selfPubkey && canonicalSha != null) {
+          const selfNamespaceSha = await readNamespaceRef(repoPath, selfPubkey, STAGING_REF, runGit);
+          if (selfNamespaceSha != null && selfNamespaceSha !== canonicalSha) {
+            integratorBacklogCommits = await revListCount(repoPath, canonicalSha, selfNamespaceSha, runGit);
+          } else if (selfNamespaceSha === canonicalSha) {
+            integratorBacklogCommits = 0; // integrated / caught up
+          }
+        }
+      } catch {
+        integratorBacklogCommits = null; // diagnostics must never break the sweep
+      }
+      const integratorHasBacklog = (integratorBacklogCommits ?? 0) > 0;
+      const prevIntegratorSweeps = row?.of_integrator_backlog_sweeps ?? 0;
+      const integratorBacklogSweeps = integratorHasBacklog ? prevIntegratorSweeps + 1 : 0;
+      if (integratorBacklogSweeps !== prevIntegratorSweeps) {
+        await sql`
+          UPDATE harness_shared.routines
+             SET metadata = COALESCE(metadata, '{}'::jsonb)
+                   || jsonb_build_object('of_integrator_backlog_sweeps', ${integratorBacklogSweeps}::int),
+                 updated_at = now()
+           WHERE install_slug = ${entry.slug} AND target_role = 'system:git-sync'`;
+      }
+
       const verdict = evaluateOriginFreshness(
         {
           aheadCount,
@@ -473,6 +515,8 @@ export async function checkOriginFreshness(
           publishRefusalCode,
           publishBacklogSweeps,
           publishBacklogCommits,
+          integratorBacklogSweeps,
+          integratorBacklogCommits,
         },
         opts,
       );
@@ -492,6 +536,7 @@ export async function checkOriginFreshness(
         potHomeSlug,
         publishRefusalCode,
         publishBacklogCommits,
+        integratorBacklogCommits,
       });
 
       if (verdict.state === 'stale') {

@@ -436,3 +436,48 @@ describe('planCanaryTick — VOID measurement (agent-completed canaries)', () =>
     expect(isVoidedCanaryOwner('some-future-agent-kind-7f3a')).toBe(true);
   });
 });
+
+/**
+ * Structural guard for the ASYMMETRIC canary claim floor (EI-19441925633833456).
+ *
+ * The requirement has two halves and BOTH must hold: a canary must be invisible to
+ * agent self-select, and fully visible to Mug->cup placement. Getting the second one
+ * wrong is the expensive direction and is not hypothetical — the original fix
+ * proposed expressing this via `payload._claimHold`, which is honored by BOTH
+ * `claimFloorsWhereSql` (self-select) AND `fetchFrontierRows` (the Mug's placement
+ * frontier, pot/survey.ts, "structurally NOT cup-placeable"). That would have made
+ * the canary permanently unplaceable, so the detector would report "the autonomous
+ * hive loop is not carrying queued work end-to-end" every single day — breaking the
+ * instrument in exactly the way it exists to detect, with no test to catch it.
+ *
+ * These assertions are cheap and source-level on purpose: the property lives in SQL
+ * fragments, so no unit test of the pure planners can see it.
+ */
+describe('canary claim floor is asymmetric (agents NO, cups YES)', () => {
+  it('claimFloorsWhereSql excludes canary rows from agent self-select', async () => {
+    const { readFile } = await import('node:fs/promises');
+    const src = await readFile(new URL('../../work-items.ts', import.meta.url), 'utf8');
+    const start = src.indexOf('export function claimFloorsWhereSql');
+    expect(start, 'claimFloorsWhereSql not found — did it move or get renamed?').toBeGreaterThan(-1);
+    // Scope to the function body so a canary mention elsewhere in this very large
+    // file cannot satisfy the assertion by accident.
+    const nextExport = src.indexOf('\nexport ', start + 1);
+    const body = src.slice(start, nextExport === -1 ? undefined : nextExport);
+    expect(
+      /->>\s*'canary'\s+IS DISTINCT FROM\s+'true'/.test(body),
+      'claimFloorsWhereSql must exclude payload.canary=true so scheduler:get_next / claim_next ' +
+        'cannot hand an agent the hive canary (it is a measurement instrument, not work).',
+    ).toBe(true);
+  });
+
+  it('the Mug placement frontier does NOT exclude canaries — they must stay cup-placeable', async () => {
+    const { readFile } = await import('node:fs/promises');
+    const src = await readFile(new URL('../../pot/survey.ts', import.meta.url), 'utf8');
+    expect(
+      /->>\s*'canary'/.test(src),
+      'pot/survey.ts must NOT filter on payload.canary: the Mug has to keep placing canaries ' +
+        'onto cups. Excluding them here (or reusing _claimHold, which this file DOES honor) ' +
+        'silently disables the canary and turns the daily detector into a permanent false red.',
+    ).toBe(false);
+  });
+});

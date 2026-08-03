@@ -307,6 +307,11 @@ auto-deploys it to `:3070`. Pipeline view: `/admin/git`. Long form + symptoms:
 > cd <path> && git rev-parse --show-toplevel   # the repo root that actually owns it
 > ```
 >
+> ⚠ Test the OUTPUT, not the exit code: `git submodule status` exits **0 either way**
+> (verified 2026-08-03 on a submodule, a non-submodule under `libs/generic/`, and a
+> plain source dir), so `git submodule status <path> && echo YES` prints YES for
+> everything. Use `[ -n "$(git submodule status <path>)" ]`.
+>
 > There are dozens of them and the set moves, so any prose list here rots — including
 > the counts in this very paragraph, which is why the commands above are the answer and
 > the numbers below are only motivation. One list already rotted: it named only
