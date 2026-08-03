@@ -397,24 +397,6 @@ export function effectiveBaselineByFile({ baselineByFile, currentByFile, foreign
 }
 
 /**
- * Pure per-file gate decision — the ONE place the policy lives, so it is unit-testable (EI-104).
- * A file is a REGRESSION when its current error count exceeds its baseline (a file absent from the
- * baseline has an implicit baseline of 0, so any new error in a fresh file is a named regression).
- * Regressions always win over improvements, preserving ratchet-only-down.
- *
- * @param {{
- *   currentByFile: Record<string, number>,
- *   baselineByFile: Record<string, number>,
- *   brokenFiles: string[],
- *   updateFlag?: boolean,
- *   changedFiles?: Set<string> | null,
- *   typeReferencedFiles?: Set<string> | null,
- *   dirtyFiles?: Set<string> | null,
- *   attributionDeclared?: boolean,
- * }} args
- * @returns {PerFileGateResult}
- */
-/**
  * EI-19444246913245434 — lower ONLY the named files in an existing baseline map.
  *
  * A SCOPED `--update` must never write a whole-project map: on this shared checkout every other
@@ -436,6 +418,24 @@ export function mergeRatchetIntoBaseline({ baselineFiles, ratchetFiles }) {
   return next;
 }
 
+/**
+ * Pure per-file gate decision — the ONE place the policy lives, so it is unit-testable (EI-104).
+ * A file is a REGRESSION when its current error count exceeds its baseline (a file absent from the
+ * baseline has an implicit baseline of 0, so any new error in a fresh file is a named regression).
+ * Regressions always win over improvements, preserving ratchet-only-down.
+ *
+ * @param {{
+ *   currentByFile: Record<string, number>,
+ *   baselineByFile: Record<string, number>,
+ *   brokenFiles: string[],
+ *   updateFlag?: boolean,
+ *   changedFiles?: Set<string> | null,
+ *   typeReferencedFiles?: Set<string> | null,
+ *   dirtyFiles?: Set<string> | null,
+ *   attributionDeclared?: boolean,
+ * }} args
+ * @returns {PerFileGateResult}
+ */
 export function decidePerFile({
   currentByFile,
   baselineByFile,

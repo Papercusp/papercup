@@ -10,6 +10,7 @@ export { findCodePositionCurlyQuotes, curlyLabel, CURLY, type CurlyQuoteHit } fr
 export { findStaleInsightCitations, formatStaleCitations, type StaleCitation } from './insight-citations';
 export { findConflictMarker, CONFLICT_MARKER_ERE, type ConflictMarkerHit } from './conflict-markers';
 export { findTsParseError, type TsParseError } from './ts-parse';
+export { findConstantConditional, type ConstantConditionalHit } from './constant-conditional';
 export {
   type ContentDetector,
   mdxDetector,
@@ -17,6 +18,7 @@ export {
   tsParseDetector,
   shellSyntaxDetector,
   conflictMarkersDetector,
+  constantConditionalDetector,
   DEFAULT_CONTENT_DETECTORS,
   CONTENT_FIXER_ROLE,
 } from './registry';

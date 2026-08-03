@@ -121,7 +121,7 @@ describe('conflictMarkersDetector', () => {
 });
 
 describe('DEFAULT_CONTENT_DETECTORS', () => {
-  it('ships all six seeded detectors, keyed for the guard + escalation', () => {
+  it('ships all seven seeded detectors, keyed for the guard + escalation', () => {
     expect(DEFAULT_CONTENT_DETECTORS.map((d) => d.key)).toEqual([
       'mdx',
       'smart-quotes',
@@ -133,6 +133,10 @@ describe('DEFAULT_CONTENT_DETECTORS', () => {
       'ts-parse',
       'shell-syntax',
       'conflict-markers',
+      // EI-19446174755157221: ordered after ts-parse — a file that does not parse
+      // cannot be meaningfully inspected for a constant-forced branch, and the
+      // detector reports clean on one so a single break is never quarantined twice.
+      'constant-conditional',
     ]);
   });
 });

@@ -53,6 +53,7 @@ function plan(over: Partial<SteerablePlanRow>): SteerablePlanRow {
     status: 'draft',
     startStatus: null,
     updated: null,
+    harness: 'h',
     ...over,
   };
 }

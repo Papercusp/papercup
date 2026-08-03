@@ -124,8 +124,8 @@ describe('gcOldCoordMessages (PG)', () => {
 
     await msg({ msgId: 'old-presence', ageDays: 45, surface: 'presence' });
 
-    const n = await gcOldOperatorMessages(30);
-    expect(n).toBe(4); // standalone + 3-message old thread
+    const r = await gcOldCoordMessages(30, FED_NEVER);
+    expect(r).toEqual({ operator: 4, federated: 0, total: 4 }); // standalone + 3-message old thread
     expect(await remainingIds()).toEqual([
       'harness-child',
       'harness-child-root',
@@ -143,7 +143,82 @@ describe('gcOldCoordMessages (PG)', () => {
   it('retentionDays controls the fully-aged cutoff', async () => {
     await msg({ msgId: 'root', ageDays: 10 });
     await msg({ msgId: 'reply', ageDays: 10, relatedTo: 'root' });
-    expect(await gcOldOperatorMessages(14)).toBe(0);
-    expect(await gcOldOperatorMessages(7)).toBe(2);
+    expect(await gcOldCoordMessages(14, FED_NEVER)).toEqual({ operator: 0, federated: 0, total: 0 });
+    expect(await gcOldCoordMessages(7, FED_NEVER)).toEqual({ operator: 2, federated: 0, total: 2 });
+  });
+
+  // ── WI-8490 / D-010: the federated branch ────────────────────────────────────
+  // A harness-scoped thread is the one whose DELETE emits a federated `del` op
+  // (mig-150 capture_coord_event_del_trg) — the mechanism that tombstones coord
+  // history out of a release seed. It is swept on its own, shorter horizon.
+
+  it('sweeps a fully-aged federated thread on the FEDERATED horizon, not the operator one', async () => {
+    await msg({ msgId: 'fed-root', ageDays: 10, harness: 'peer-hive' });
+    await msg({ msgId: 'fed-reply', ageDays: 9, relatedTo: 'fed-root', harness: 'peer-hive' });
+
+    // 30d operator / 14d federated: 10 days is inside BOTH horizons — nothing goes.
+    expect(await gcOldCoordMessages(30, 14)).toEqual({ operator: 0, federated: 0, total: 0 });
+
+    // 30d operator / 7d federated: the operator horizon alone would still keep it,
+    // so a deletion here can only have come from the federated branch.
+    expect(await gcOldCoordMessages(30, 7)).toEqual({ operator: 0, federated: 2, total: 2 });
+    expect(await remainingIds()).toEqual([]);
+  });
+
+  it('counts the two scopes separately in one sweep', async () => {
+    await msg({ msgId: 'op-old', ageDays: 45 });
+    await msg({ msgId: 'fed-old-a', ageDays: 20, harness: 'peer-hive' });
+    await msg({ msgId: 'fed-old-b', ageDays: 20, harness: 'other-hive' });
+    await msg({ msgId: 'fed-recent', ageDays: 2, harness: 'peer-hive' });
+    await msg({ msgId: 'op-recent', ageDays: 2 });
+
+    expect(await gcOldCoordMessages(30, 7)).toEqual({ operator: 1, federated: 2, total: 3 });
+    expect(await remainingIds()).toEqual(['fed-recent', 'op-recent']);
+  });
+
+  it('keeps a MIXED-scope thread: it satisfies neither horizon', async () => {
+    await msg({ msgId: 'mixed-root', ageDays: 400, harness: 'peer-hive' });
+    await msg({ msgId: 'mixed-reply', ageDays: 400, relatedTo: 'mixed-root' });
+
+    // Aged far past BOTH horizons and still kept — deleting either half would
+    // orphan the other, and there is no defensible single horizon for the pair.
+    expect(await gcOldCoordMessages(30, 7)).toEqual({ operator: 0, federated: 0, total: 0 });
+    expect(await remainingIds()).toEqual(['mixed-reply', 'mixed-root']);
+  });
+
+  it('federated sweep honours the same thread/ref safety as the operator sweep', async () => {
+    // A federated thread with a RECENT reply is not fully aged.
+    await msg({ msgId: 'fed-live-root', ageDays: 30, harness: 'peer-hive' });
+    await msg({ msgId: 'fed-live-reply', ageDays: 1, relatedTo: 'fed-live-root', harness: 'peer-hive' });
+    // A federated thread referenced by a thread post must not be orphaned.
+    await msg({ msgId: 'fed-post-root', ageDays: 30, harness: 'peer-hive' });
+    await postRef('fed-post-root');
+    // A federated orphan reply (root already gone) is kept — deleting a fragment
+    // cannot improve thread integrity.
+    await msg({ msgId: 'fed-orphan', ageDays: 30, relatedTo: 'gone', harness: 'peer-hive' });
+    // A federated NON-message surface is out of scope (live coordination state
+    // with its own lifecycle collector — see the module's SCOPE note).
+    await msg({ msgId: 'fed-escalation', ageDays: 30, harness: 'peer-hive', surface: 'escalations' });
+
+    expect(await gcOldCoordMessages(30, 7)).toEqual({ operator: 0, federated: 0, total: 0 });
+    expect(await remainingIds()).toEqual([
+      'fed-escalation',
+      'fed-live-reply',
+      'fed-live-root',
+      'fed-orphan',
+      'fed-post-root',
+    ]);
+  });
+
+  it('takes threads OLDEST-FIRST under threadLimit so a large drain converges', async () => {
+    await msg({ msgId: 'fed-age-10', ageDays: 10, harness: 'peer-hive' });
+    await msg({ msgId: 'fed-age-30', ageDays: 30, harness: 'peer-hive' });
+    await msg({ msgId: 'fed-age-20', ageDays: 20, harness: 'peer-hive' });
+
+    expect(await gcOldCoordMessages(30, 7, 1)).toEqual({ operator: 0, federated: 1, total: 1 });
+    expect(await remainingIds()).toEqual(['fed-age-10', 'fed-age-20']); // the 30d one went first
+
+    expect(await gcOldCoordMessages(30, 7, 1)).toEqual({ operator: 0, federated: 1, total: 1 });
+    expect(await remainingIds()).toEqual(['fed-age-10']);
   });
 });

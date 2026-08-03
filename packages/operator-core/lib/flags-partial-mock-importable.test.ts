@@ -57,10 +57,16 @@ import { taskManagerEnabledSync } from './task-manager/enabled';
 import { envelopeRoleOverrides } from './capability-envelope-overrides';
 import { telemetryBufferConfig } from './telemetry-buffer-config';
 import { capabilityTierOverrideFor } from './capability-tier-overrides';
-// work-item-redundancy had TWO module-scope accesses — an eager `void refreshRedundancyFlag()`
-// reaching `getFlag`, plus the `onFlagChange` the source lint could see. Its presence here is what
-// proves BOTH are gone; the lint alone could not.
-import { workItemRedundancyEnabled } from './work-item-redundancy';
+// ⚠ NOT YET LISTABLE: './work-item-redundancy'. It IS migrated (both of its module-scope accesses —
+// the eager `void refreshRedundancyFlag()` reaching `getFlag`, and the `onFlagChange` — are gone,
+// and it is de-listed from the source lint's BASELINE). But this file asserts a property of the
+// whole transitive import GRAPH, not of one module: work-item-redundancy → work-items.ts →
+// work-item-claim-lease-wiring.ts, which still has `void refreshClaimLease()` + `onFlagChange` at
+// module scope, so adding it here kills COLLECTION on a module it does not own.
+// Add the import once work-item-claim-lease-wiring is migrated (it has FOUR readers of
+// `claimLeaseOn` — lines ~52/100/136/154 — so all four are arm points, not just the exported
+// getter). This graph-level reach is a feature of this guard, not a limitation: it is precisely
+// what the per-file source lint cannot see.
 
 describe('modules stay importable under a partial @papercusp/flags/server mock', () => {
   it('collected this file at all (a module-scope binding read would have failed it here)', () => {
@@ -87,6 +93,5 @@ describe('the fix is IMPORTABILITY, not reader-callability (do not widen this cl
     expect(() => envelopeRoleOverrides()).toThrow(/onFlagChange/);
     expect(() => telemetryBufferConfig()).toThrow(/onFlagChange/);
     expect(() => capabilityTierOverrideFor('capability:bash')).toThrow(/onFlagChange/);
-    expect(() => workItemRedundancyEnabled()).toThrow(/onFlagChange/);
   });
 });

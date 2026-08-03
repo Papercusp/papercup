@@ -484,11 +484,12 @@ export interface InjectHostResult {
   ok: boolean;
   confirmation: InjectConfirmation;
   /** The host's own `reason` from its JSON ack line, when it sent one (WI-6638;
-   *  ADDITIVE). Null for every non-'acked' confirmation — an assumed-close /
-   *  timeout / error carries no host verdict, so a caller must never read its
-   *  absence as "the host had nothing to say". Today only the shutdown path reads
-   *  it (to tell an owner-attended REFUSAL apart from a transport miss); every
-   *  other caller branches on `ok` exactly as before. */
+   *  ADDITIVE and OMITTED when absent, so existing exact-shape assertions on this
+   *  result are unaffected). Only an 'acked' confirmation can carry one — an
+   *  assumed-close / timeout / error means no host verdict was received at all, so
+   *  absence here NEVER means "the host had nothing to say". Today only the
+   *  shutdown path reads it (to tell an owner-attended REFUSAL apart from a
+   *  transport miss); every other caller branches on `ok` exactly as before. */
   reason?: string | null;
 }
 
@@ -607,10 +608,12 @@ export function injectIntoHostWithConfirmation(
     // authoritative and settles this promise on its own `ok` value.
     let ackReceived = false;
     let ackBuf = '';
-    const finish = (ok: boolean, confirmation: InjectConfirmation, reason: string | null = null) => {
+    const finish = (ok: boolean, confirmation: InjectConfirmation, reason?: string) => {
       if (settled) return;
       settled = true;
-      resolve({ ok, confirmation, reason });
+      // Omit `reason` entirely when the host sent none, so this stays shape-compatible
+      // with every existing exact-equality assertion on InjectHostResult.
+      resolve(reason === undefined ? { ok, confirmation } : { ok, confirmation, reason });
     };
     const c = net.connect(sock, () => {
       // `focus` rides the envelope only for mode:'compact' (WI-1804) — the host uses it
@@ -640,7 +643,7 @@ export function injectIntoHostWithConfirmation(
           finish(
             (parsed as { ok: boolean }).ok,
             'acked',
-            typeof ackReason === 'string' ? ackReason : null,
+            typeof ackReason === 'string' ? ackReason : undefined,
           );
         }
       } catch {

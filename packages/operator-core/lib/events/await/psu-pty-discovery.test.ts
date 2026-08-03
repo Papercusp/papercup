@@ -10,6 +10,8 @@ import net from 'node:net';
 import {
   findLiveHost,
   hostSupports,
+  hostIsAgentLaunched,
+  shutdownViaPty,
   latestRespawnNativeId,
   mcpReconnectViaPty,
   injectIntoHost,
@@ -322,6 +324,7 @@ describe('injectIntoHostWithConfirmation — WHY a true happened (WI-6862)', () 
     expect(await injectIntoHostWithConfirmation(sock, { mode: 'reset', data: 'x' })).toEqual({
       ok: true,
       confirmation: 'acked',
+      reason: 'delivered', // WI-6638: the host's own verdict now rides back
     });
   });
 
@@ -343,9 +346,13 @@ describe('injectIntoHostWithConfirmation — WHY a true happened (WI-6862)', () 
   it('reports an explicit {ok:false} ack as a CONFIRMED refusal (a real server-side drop)', async () => {
     const dir = tmpDir();
     const { sock } = startAckingSocket(dir, 'conf-drop', { ok: false, reason: 'deferred-busy-gate' });
+    // WI-6638: an ack that carries a `reason` now surfaces it verbatim, so a caller
+    // can tell WHICH refusal it was (a deliberate host verdict) apart from a
+    // transport miss — the distinction session:end depends on.
     expect(await injectIntoHostWithConfirmation(sock, { mode: 'reset', data: 'x' })).toEqual({
       ok: false,
       confirmation: 'acked',
+      reason: 'deferred-busy-gate',
     });
   });
 
@@ -647,6 +654,119 @@ describe('mcpReconnectViaPty (mcp-transport-resilience P-004 — the in-place /m
     await new Promise((r) => setTimeout(r, 100));
     expect(recv.length).toBe(1);
     expect(JSON.parse(recv[0])).toEqual({ v: 1, mode: 'mcp-reconnect', data: 'papercusp-su', ownerId });
+  });
+});
+
+describe('hostIsAgentLaunched (WI-6638 — the agent-vs-human discriminator)', () => {
+  it('fails soft to human-launched for absent/blank/old-host values', () => {
+    // Absence must never read as "agent-launched": the only consumer uses this to
+    // decide whether a terminal window may be closed, so the safe direction is the
+    // refusing one, and an older host writes no `launchedBy` field at all.
+    expect(hostIsAgentLaunched(null)).toBe(false);
+    expect(hostIsAgentLaunched(undefined)).toBe(false);
+    expect(hostIsAgentLaunched({} as PsuPtyHost)).toBe(false);
+    expect(hostIsAgentLaunched({ launchedBy: null } as unknown as PsuPtyHost)).toBe(false);
+    expect(hostIsAgentLaunched({ launchedBy: '   ' } as unknown as PsuPtyHost)).toBe(false);
+  });
+
+  it('is true only for a host carrying a real launcher ownerId', () => {
+    expect(hostIsAgentLaunched({ launchedBy: 'su-abc' } as unknown as PsuPtyHost)).toBe(true);
+  });
+});
+
+describe('shutdownViaPty (WI-6638 — ask a finished agent session to close its own tab)', () => {
+  // Reads the REAL PSU_PTY_DIR (no dir param), like mcpReconnectViaPty above.
+  it("routes by capability and reports the host's REFUSAL reason distinctly from a miss", async () => {
+    mkdirSync(PSU_PTY_DIR, { recursive: true, mode: 0o700 });
+    const ownerId = `su-shutdown-test-${process.pid}-${Math.floor(performance.now())}`;
+    const sock = join(PSU_PTY_DIR, `${sanitizeKey(ownerId)}.sock`);
+    const meta = join(PSU_PTY_DIR, `${sanitizeKey(ownerId)}.json`);
+    const recv: string[] = [];
+    // The ack this stand-in host writes back — swapped per case to exercise the
+    // accepted / refused branches through the REAL wire format.
+    let ack: Record<string, unknown> = { v: 1, ok: true, reason: 'shutdown-accepted' };
+    const server = net.createServer((conn) => {
+      const chunks: Buffer[] = [];
+      conn.on('data', (d) => chunks.push(d));
+      conn.on('end', () => {
+        recv.push(Buffer.concat(chunks).toString('utf8'));
+        try {
+          conn.write(`${JSON.stringify(ack)}\n`);
+          conn.end();
+        } catch {
+          /* the client's own timeout is the backstop */
+        }
+      });
+    });
+    await new Promise<void>((r) => server.listen(sock, r));
+    const writeMeta = (caps: string[] | undefined) =>
+      writeFileSync(
+        meta,
+        JSON.stringify({
+          ownerId,
+          advSessionId: null,
+          pid: process.pid,
+          ptyPid: process.pid,
+          sock,
+          command: 'claude-su',
+          startedAt: 1,
+          ...(caps ? { caps } : {}),
+        }),
+      );
+    cleanups.push(() => {
+      server.close();
+      for (const p of [sock, meta]) if (existsSync(p)) unlinkSync(p);
+    });
+
+    // no live host at all → 'no-host' (nothing to close; not an error)
+    expect(await shutdownViaPty('su-no-such-owner-shutdown', { verifyIdentity: () => true })).toBe(
+      'no-host',
+    );
+    // an OLD host (no caps, or caps without 'shutdown') cannot close itself
+    writeMeta(undefined);
+    expect(await shutdownViaPty(ownerId, { verifyIdentity: () => true })).toBe('no-cap');
+    writeMeta(['carry-respawn', 'mcp-reconnect']);
+    expect(await shutdownViaPty(ownerId, { verifyIdentity: () => true })).toBe('no-cap');
+
+    // a shutdown-capable host that ACCEPTS
+    writeMeta(['carry-respawn', 'mcp-reconnect', 'shutdown']);
+    expect(
+      await shutdownViaPty(ownerId, { reason: 'fleet wound down', verifyIdentity: () => true }),
+    ).toBe('sent');
+    await new Promise((r) => setTimeout(r, 100));
+    expect(recv.length).toBe(1);
+    expect(JSON.parse(recv[0])).toEqual({
+      v: 1,
+      mode: 'shutdown',
+      data: 'fleet wound down',
+      force: false,
+      ownerId,
+    });
+
+    // Each REFUSAL must come back as its own verdict, NOT as a generic failure: an
+    // owner-attended window refusing is the correct answer, and a caller that cannot
+    // tell it from a transport miss will retry forever against a session it may
+    // never close.
+    for (const [hostReason, expected] of [
+      ['shutdown-refused:not-agent-launched', 'refused-not-agent-launched'],
+      ['shutdown-refused:human-attended', 'refused-human-attended'],
+      ['shutdown-refused:agent-busy', 'refused-agent-busy'],
+    ] as const) {
+      ack = { v: 1, ok: false, reason: hostReason };
+      expect(await shutdownViaPty(ownerId, { verifyIdentity: () => true })).toBe(expected);
+    }
+
+    // An ok:false the caller does not recognise stays a plain send-failure rather
+    // than being mislabelled as a refusal.
+    ack = { v: 1, ok: false, reason: 'unhandled-error' };
+    expect(await shutdownViaPty(ownerId, { verifyIdentity: () => true })).toBe('send-failed');
+
+    // force rides the envelope so the host can waive ONLY its mid-turn check.
+    ack = { v: 1, ok: true, reason: 'shutdown-accepted' };
+    recv.length = 0;
+    expect(await shutdownViaPty(ownerId, { force: true, verifyIdentity: () => true })).toBe('sent');
+    await new Promise((r) => setTimeout(r, 100));
+    expect(JSON.parse(recv[recv.length - 1])).toMatchObject({ mode: 'shutdown', force: true });
   });
 });
 

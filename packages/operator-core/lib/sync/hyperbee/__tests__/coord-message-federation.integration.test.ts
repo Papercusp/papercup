@@ -217,6 +217,50 @@ describe('coord_event_log federation (real PG)', () => {
     expect(value.ts).toBeGreaterThan(0);
   });
 
+  // ── WI-8490 / D-010: the EMIT side of coord retention ────────────────────────
+  // Retention deleting an aged harness-scoped message is the ONLY mechanism that
+  // removes coord history from a release seed (the seed is a byte-level copy of a
+  // signed append-only log, so ops cannot be excised at cut time; and every coord
+  // message is a distinct msg_id key with one live put, so a SPARSE cut collapses
+  // nothing here). These two tests pin the emit side: the DELETE must enqueue a
+  // `del`, and it must do so ONLY for rows this machine authored.
+
+  it('WI-8490: DELETING a harness-scoped local message enqueues one del outbox row that reshapes into a del op', async () => {
+    await clearOutbox();
+    await insertRow({ msgId: 'm-gc' });
+    await clearOutbox(); // drop the insert's put — assert on the delete alone
+    await db.sql`DELETE FROM harness_shared.coord_event_log WHERE workspace_id = ${WS} AND msg_id = 'm-gc'`;
+
+    const rows = await outbox();
+    expect(rows).toHaveLength(1);
+    expect(rows[0].table_name).toBe('coord_event_log');
+    expect(rows[0].op).toBe('del');
+    expect(rows[0].key).toBe('m-gc');
+    expect(rows[0].harness_slug).toBe(HARNESS);
+
+    // NB: the del's own causal clock (the live capture_substrate_outbox stamps
+    // hlc_now() on a del rather than reusing the OLD row's stale fed_hlc, so the
+    // del orders AFTER the put it retires) is NOT asserted here — this rig loads
+    // archive/102, the pre-HLC capture function, so substrate_outbox has no op_hlc
+    // column at all. The reshape's HLC pass-through is covered in
+    // feature-issue-op-keys' own tests.
+    const op = outboxRowToLocalWriteOp({
+      table_name: rows[0].table_name, op: rows[0].op as 'del', key: rows[0].key,
+      ts: rows[0].ts, row: rows[0].row,
+    } as OutboxRow);
+    expect(op.type).toBe('del');
+    expect(op.table).toBe('coord-messages');
+    expect(op.hbKey).toBe('m-gc');
+  });
+
+  it('WI-8490: DELETING a remote-origin message enqueues NOTHING (each machine expires only what it authored)', async () => {
+    await clearOutbox();
+    await insertRow({ msgId: 'm-remote-gc', origin: 'remote' });
+    await clearOutbox();
+    await db.sql`DELETE FROM harness_shared.coord_event_log WHERE workspace_id = ${WS} AND msg_id = 'm-remote-gc'`;
+    expect(await outbox()).toHaveLength(0);
+  });
+
   it("projection writeToPg upserts a remote message (origin='remote') and deleteFromPg removes it", async () => {
     const proj = buildCoordMessageProjection({ workspaceId: WS, harnessSlug: HARNESS, sql: db.sql });
     const remote: CoordMessageRow = {

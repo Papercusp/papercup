@@ -3257,6 +3257,40 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       return [{ count }];
     },
   },
+  // plans.steerable — the 6-field projection behind the Mug steering panel's
+  // plan checkboxes (no-http-anywhere-2026-07-28 D-071). Same precedent as
+  // plans.waitingCount right above and plans.attentionRefs below: an
+  // always-mounted CHROME consumer was holding the whole plans.list superset
+  // feed for a sliver of it.
+  //
+  // MugTab is the DEFAULT-OPEN tab of LeftSidebar, and LeftSidebar mounts on
+  // EVERY route (routes/__root.tsx), so this subscription was live on every
+  // screen in the app and re-fetched every 180s. Verified live 2026-08-03 by a
+  // fiber walk on a headless rig at /adv?tab=harnesses: plans.list had exactly
+  // ONE observer and it was MugTab. The `enabled: active` gate meant to stop
+  // this (D-030) is a structural no-op — LeftSidebar renders only the ACTIVE
+  // tab and passes a literal `true`, so `active` is always true whenever
+  // MugTab is mounted. Gating cannot fix a consumer that IS the default.
+  //
+  // Reads the SUPERSET deliberately: the panel's own pipeline was superset ->
+  // filterPlanListRows(false,false) -> selectSteerablePlans, and reproducing
+  // that here keeps the rendered set identical while cutting the per-row
+  // payload (the panel reads 6 fields off a row that also carries itemCounts /
+  // nextAction / ownerIdentity / lastEditor / prose).
+  'plans.steerable': {
+    backingTables: ['harness_shared.harness_plans'],
+    resolve: async (args) => {
+      const { callPlansRead } = await import('../agent-tools/plans/read-dispatch');
+      const { selectSteerablePlanRows } = await import('./steerable-plans');
+      const readArgs = {
+        ...((args ?? {}) as Record<string, unknown>),
+        includeArchived: true,
+        includeLegacy: true,
+      };
+      const r = (await callPlansRead('list', readArgs)) as { plans?: unknown[] };
+      return selectSteerablePlanRows(Array.isArray(r?.plans) ? r.plans : []);
+    },
+  },
   // plans.attentionRefs — the DRILL-IN projection of the attention feed
   // (no-http-anywhere-2026-07-28 D-031). Sibling of attentionCounts: same
   // problem (an always-mounted chrome consumer pulling the whole feed for a

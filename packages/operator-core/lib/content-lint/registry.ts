@@ -17,6 +17,7 @@ import { findShellSyntaxError } from './shell-syntax';
 import { findConflictMarker } from './conflict-markers';
 import { findTsParseError } from './ts-parse';
 import { findNulBytes, autoFixNulBytes, nulByteScopeMatches } from './nul-bytes';
+import { findConstantConditional } from './constant-conditional';
 
 /** A registered content check. */
 export interface ContentDetector {
@@ -225,6 +226,65 @@ export const nulBytesDetector: ContentDetector = {
 };
 
 /**
+ * The constant-forced `if` detector — tracked .ts/.tsx (EI-19446174755157221).
+ *
+ * The one detector here that guards against an UNFINISHED edit rather than an
+ * INVALID one: `if (false && …)` parses, compiles, and looks deliberate. It is
+ * registered at this seam because that is the only place it can help. On
+ * 2026-08-03 an agent flipped a branch off for ~90 seconds to prove a new
+ * exemption had teeth and git-sync's whole-tree sweep committed the experiment
+ * mid-flight — putting 7 TS18047 errors on a file whose baseline was 0, i.e. a
+ * committed standing red for the whole fleet, while also silently reverting a
+ * load-bearing behaviour (the veto that stops `stalled-loops-guard` disarming a
+ * loop merely backed off behind a provider wall). The author's own conclusion
+ * generalises past the typo: *on an auto-committing tree there is no safe
+ * temporary source mutation*. A CI lint cannot deliver that — by the time it
+ * runs the mutation is already shared — so the check belongs on the commit path.
+ *
+ * The leading literal is not merely dead weight: in first position of an `&&`
+ * chain it SUPPRESSES the narrowing the later operands perform, so
+ * `if (false && wall && wall.x)` makes every `wall` dereference "possibly null"
+ * inside a provably unreachable block. That is why a "harmless" disable reds a
+ * clean file, and why the failure is invisible to its author.
+ *
+ * Narrow by construction (see constant-conditional.ts): `IfStatement` only, so
+ * `while (true)` / `for (;;)` are never inspected; and only a literal
+ * `true`/`false` TOKEN, so a named gate (`if (ENABLED && …)`) — the recommended
+ * way to disable a branch, and the fix the author themselves prescribed — stays
+ * clean. AST-based, so a `false` inside a comment or string cannot false-fire.
+ * Measured ZERO hits across every tracked .ts/.tsx in this repo, so the baseline
+ * is empty and no file needs allowlisting.
+ *
+ * No `autoFix`, like ts-parse/shell-syntax/conflict-markers: whether a disabled
+ * branch should be re-enabled or deleted is a semantic choice only its author
+ * can make, so this quarantines rather than guesses at an unfinished edit.
+ */
+export const constantConditionalDetector: ContentDetector = {
+  key: 'constant-conditional',
+  glob: '**/*.{ts,tsx}',
+  matches: (f) => /\.(ts|tsx)$/.test(f) && !isExcludedPath(f),
+  detect: (file, text) => {
+    const hit = findConstantConditional(file, text);
+    if (!hit) return null;
+    const at = hit.line != null ? `line ${hit.line}${hit.col != null ? `:${hit.col}` : ''}` : 'unknown position';
+    const forced = hit.operator ? `${hit.constant} ${hit.operator} …` : hit.constant;
+    const effect =
+      hit.constant === 'false'
+        ? 'the branch can never run'
+        : 'the branch always runs and the real condition is ignored';
+    return (
+      `constant-forced if at ${at}: \`if (${forced})\` — ${effect}. ` +
+      `Condition reads: \`${hit.text}\`. ` +
+      'This is almost always a temporary local disable, and git-sync commits the whole tree ' +
+      'every few minutes, so it reaches `staging` mid-experiment. A leading literal also ' +
+      'suppresses `&&` narrowing, turning a clean file into a committed tsc red. ' +
+      'Delete the branch if it is dead, or gate it on a NAMED constant/flag if it is temporary.'
+    );
+  },
+  fixerRole: CONTENT_FIXER_ROLE,
+};
+
+/**
  * The default registry the git-sync content guard runs with. Extend by adding an
  * entry (a new `{ key, glob, matches, detect, fixerRole }`); the guard + escalation
  * + fixer dispatch pick it up with no further change.
@@ -240,4 +300,8 @@ export const DEFAULT_CONTENT_DETECTORS: ContentDetector[] = [
   tsParseDetector,
   shellSyntaxDetector,
   conflictMarkersDetector,
+  // Ordered AFTER ts-parse for the same reason: a file that does not parse cannot
+  // be meaningfully inspected for a forced branch, and findConstantConditional
+  // deliberately reports clean on one so the same break is never quarantined twice.
+  constantConditionalDetector,
 ];

@@ -2051,3 +2051,87 @@ describe('makeCarryRearmController (EI-12754 — one-shot re-arm for busy-gate-r
     });
   });
 });
+
+/**
+ * WI-6638 — the SHUTDOWN guard. This is the only thing standing between "close a
+ * finished agent's tab" and "close the window the owner is typing in", so it is
+ * tested for the REFUSING direction first: both human guards must hold even under
+ * `force`, which exists only to waive the mid-turn check.
+ *
+ * Why the guard lives here rather than in a reaper: measured 2026-08-03,
+ * `findIdleLiveSessions()` returns 0 for this entire cohort — every psu session
+ * classifies driveMode:'responsive' and is excluded by the
+ * queen-fleet-authority-boundary ruling (P-001/D-001) before `terminalWindowAlive`
+ * is ever consulted. No system reaper may kill these sessions; only the session
+ * itself may exit.
+ */
+describe('shutdownRefusalReason (WI-6638)', () => {
+  const AGENT_LAUNCHED = { launchedBy: 'su-abc123', lastInputAt: 0, agentQuietMs: 60_000 };
+
+  it('accepts a quiet, agent-launched session that no human has ever typed into', () => {
+    expect(shutdownRefusalReason(AGENT_LAUNCHED)).toBeNull();
+  });
+
+  it('REFUSES a session with no PAPERCUSP_LAUNCHED_BY — a human started it by hand', () => {
+    expect(shutdownRefusalReason({ ...AGENT_LAUNCHED, launchedBy: '' })).toBe('not-agent-launched');
+    expect(shutdownRefusalReason({ ...AGENT_LAUNCHED, launchedBy: '   ' })).toBe('not-agent-launched');
+    // Absent entirely (an older host, or a field that never got written) must read
+    // as human-launched — the refusing direction.
+    expect(shutdownRefusalReason({ lastInputAt: 0, agentQuietMs: 60_000 })).toBe('not-agent-launched');
+    expect(shutdownRefusalReason()).toBe('not-agent-launched');
+  });
+
+  it('REFUSES a session a human has EVER typed into, however long ago', () => {
+    expect(shutdownRefusalReason({ ...AGENT_LAUNCHED, lastInputAt: 1 })).toBe('human-attended');
+    expect(shutdownRefusalReason({ ...AGENT_LAUNCHED, lastInputAt: Date.now() })).toBe('human-attended');
+  });
+
+  it('REFUSES mid-turn (agent still emitting) unless force waives it', () => {
+    const busy = { ...AGENT_LAUNCHED, agentQuietMs: 10 };
+    expect(shutdownRefusalReason(busy)).toBe('agent-busy');
+    expect(shutdownRefusalReason({ ...busy, force: true })).toBeNull();
+  });
+
+  it('force NEVER waives either human guard — that is the whole safety property', () => {
+    expect(shutdownRefusalReason({ ...AGENT_LAUNCHED, launchedBy: '', force: true })).toBe(
+      'not-agent-launched',
+    );
+    expect(shutdownRefusalReason({ ...AGENT_LAUNCHED, lastInputAt: 5, force: true })).toBe(
+      'human-attended',
+    );
+    // Both wrong at once still refuses (and names the structural one first).
+    expect(
+      shutdownRefusalReason({ launchedBy: '', lastInputAt: 5, agentQuietMs: 1, force: true }),
+    ).toBe('not-agent-launched');
+  });
+
+  it('treats a never-seen-output child as quiet, not as permanently busy', () => {
+    // makeAgentBusyGate returns now() when it has never observed output, so a fresh
+    // host must not be un-shutdownable forever.
+    expect(shutdownRefusalReason({ ...AGENT_LAUNCHED, agentQuietMs: Date.now() })).toBeNull();
+  });
+});
+
+describe('decodeControl mode:shutdown (WI-6638)', () => {
+  it('decodes an UNGATED shutdown carrying its reason and force flag', () => {
+    const decoded = decodeControl(
+      JSON.stringify({ v: 1, mode: 'shutdown', data: 'fleet wound down', force: true }),
+    );
+    expect(decoded).toMatchObject({
+      mode: 'shutdown',
+      data: 'fleet wound down',
+      force: true,
+      // Ungated on purpose: the gates schedule a FUTURE turn, and the premise of a
+      // shutdown is that there will not be one.
+      gated: false,
+    });
+  });
+
+  it('defaults force to false — force must be opted into explicitly', () => {
+    const decoded = decodeControl(JSON.stringify({ v: 1, mode: 'shutdown', data: '' }));
+    expect(decoded).toMatchObject({ mode: 'shutdown', force: false });
+    // A truthy-but-not-true value must not enable it either.
+    const sneaky = decodeControl(JSON.stringify({ v: 1, mode: 'shutdown', data: '', force: 'yes' }));
+    expect(sneaky).toMatchObject({ force: false });
+  });
+});

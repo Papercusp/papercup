@@ -57,14 +57,15 @@ describe('selectSteerablePlanRows', () => {
     ]);
   });
 
-  it('projects to exactly the five fields the panel reads — a fat row does not leak onto the wire', () => {
-    const [row] = selectSteerablePlanRows([
+  it('projects to exactly the six fields the panel reads — a fat row does not leak onto the wire', () => {
+    const [projected] = selectSteerablePlanRows([
       plan({
         slug: 'a',
         title: 'A',
         status: 'active',
         startStatus: 'started',
         updated: '2026-06-15',
+        harness: 'pot-a',
         // the bulk `plans.list` carries and the panel never reads:
         itemCounts: { done: 12, todo: 30 },
         nextAction: 'a long sentence of prose',
@@ -75,13 +76,45 @@ describe('selectSteerablePlanRows', () => {
         initiative: 'some-initiative',
       }),
     ]);
-    expect(Object.keys(row).sort()).toEqual(['slug', 'startStatus', 'status', 'title', 'updated']);
-    expect(row).toEqual({ slug: 'a', title: 'A', status: 'active', startStatus: 'started', updated: '2026-06-15' });
+    expect(Object.keys(projected).sort()).toEqual([
+      'harness',
+      'slug',
+      'startStatus',
+      'status',
+      'title',
+      'updated',
+    ]);
+    expect(projected).toEqual({
+      slug: 'a',
+      title: 'A',
+      status: 'active',
+      startStatus: 'started',
+      updated: '2026-06-15',
+      harness: 'pot-a',
+    });
   });
 
-  it('normalises absent/blank optional fields to null (the wire omits null-valued keys)', () => {
-    const [row] = selectSteerablePlanRows([{ slug: 'a' }]);
-    expect(row).toEqual({ slug: 'a', title: null, status: null, startStatus: null, updated: null });
+  it('normalises absent/blank optional fields to null — but harness to the tree\'s "" sentinel', () => {
+    const [projected] = selectSteerablePlanRows([{ slug: 'a' }]);
+    expect(projected).toEqual({
+      slug: 'a',
+      title: null,
+      status: null,
+      startStatus: null,
+      updated: null,
+      harness: '',
+    });
+  });
+
+  it('carries harness through — the nested hive→plan picker groups on it, and losing it silently unassigns every plan', () => {
+    const rows = selectSteerablePlanRows([
+      plan({ slug: 'a', harness: 'pot-a', status: 'active' }),
+      plan({ slug: 'b', harness: 'papercup-hive', status: 'active' }),
+    ]);
+    expect(rows.map((p) => [p.slug, p.harness])).toEqual([
+      ['a', 'pot-a'],
+      ['b', 'papercup-hive'],
+    ]);
   });
 
   it('skips malformed rows rather than emitting a slug-less entry', () => {
@@ -105,9 +138,9 @@ describe('selectSteerablePlanRows', () => {
 describe('steerablePlanRank', () => {
   it('puts an in-flight plan ahead of its own status rank', () => {
     // startStatus wins over status: a STARTED ready plan outranks an active one.
-    expect(steerablePlanRank({ slug: 'a', title: null, status: 'ready', startStatus: 'started', updated: null })).toBe(0);
-    expect(steerablePlanRank({ slug: 'b', title: null, status: 'active', startStatus: null, updated: null })).toBe(1);
-    expect(steerablePlanRank({ slug: 'c', title: null, status: 'ready', startStatus: null, updated: null })).toBe(2);
-    expect(steerablePlanRank({ slug: 'd', title: null, status: 'draft', startStatus: null, updated: null })).toBe(3);
+    expect(steerablePlanRank(row({ status: 'ready', startStatus: 'started' }))).toBe(0);
+    expect(steerablePlanRank(row({ status: 'active' }))).toBe(1);
+    expect(steerablePlanRank(row({ status: 'ready' }))).toBe(2);
+    expect(steerablePlanRank(row({ status: 'draft' }))).toBe(3);
   });
 });

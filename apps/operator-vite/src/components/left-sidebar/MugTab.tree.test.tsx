@@ -21,7 +21,9 @@ const H = vi.hoisted(() => ({
   steeringResult: { data: [] as unknown[], loading: false, error: null as unknown, invalidate: vi.fn() },
   projectsResult: { data: [] as unknown[], loading: false, error: null as unknown, invalidate: vi.fn() },
   modelTiersResult: { data: [] as unknown[], loading: false, error: null as unknown, invalidate: vi.fn() },
-  plansResult: { data: { plans: [] as unknown[] }, loading: false, error: null as unknown },
+  // D-071: `plans.steerable` (a 6-field server projection incl. `harness`,
+  // which is what this tree groups on), not the plans.list superset.
+  plansResult: { data: [] as unknown[], loading: false, error: null as unknown },
   fetchMock: vi.fn(),
 }));
 
@@ -29,10 +31,10 @@ vi.mock('@papercusp/sync', () => ({
   useSyncQuery: (opts: { queryName: string }) => {
     if (opts.queryName === 'harnessProjects.lite') return H.projectsResult;
     if (opts.queryName === 'agentConfig.modelTiersBaseline') return H.modelTiersResult;
+    if (opts.queryName === 'plans.steerable') return H.plansResult;
     return H.steeringResult;
   },
 }));
-vi.mock('@/app/admin/plans/plans-api', () => ({ usePlanList: () => H.plansResult }));
 vi.mock('@tanstack/react-router', () => ({ useNavigate: () => vi.fn() }));
 vi.mock('../adv/ScheduledRoutinesPane', () => ({ default: () => <div data-testid="sched-routines-pane" /> }));
 vi.mock('../adv/AdvShell', () => ({
@@ -63,12 +65,13 @@ const PROJECTS = [
   { slug: 'pot-b', harness_kind: null },
 ];
 
+// Wire shape of `plans.steerable`: already filtered (no terminal/archived rows)
+// and already ordered by the resolver.
 const PLANS = [
-  { slug: 'plan-a', title: 'Plan A', status: 'active', startStatus: 'started', archived: false, updated: '2026-06-15', harness: 'pot-a' },
-  { slug: 'plan-a2', title: 'Plan A2', status: 'ready', startStatus: null, archived: false, updated: '2026-06-14', harness: 'pot-a' },
-  { slug: 'plan-b', title: 'Plan B', status: 'ready', startStatus: null, archived: false, updated: '2026-06-13', harness: 'papercup-hive' },
-  { slug: 'plan-orphan', title: 'Orphan', status: 'draft', startStatus: null, archived: false, updated: '2026-06-12', harness: 'all' },
-  { slug: 'plan-shipped', title: 'Shipped', status: 'shipped', startStatus: null, archived: false, updated: '2026-06-11', harness: 'pot-a' },
+  { slug: 'plan-a', title: 'Plan A', status: 'active', startStatus: 'started', updated: '2026-06-15', harness: 'pot-a' },
+  { slug: 'plan-a2', title: 'Plan A2', status: 'ready', startStatus: null, updated: '2026-06-14', harness: 'pot-a' },
+  { slug: 'plan-b', title: 'Plan B', status: 'ready', startStatus: null, updated: '2026-06-13', harness: 'papercup-hive' },
+  { slug: 'plan-orphan', title: 'Orphan', status: 'draft', startStatus: null, updated: '2026-06-12', harness: 'all' },
 ];
 
 function steering(over: Record<string, unknown> = {}) {
@@ -84,7 +87,7 @@ beforeEach(() => {
   H.steeringResult = { data: [steering()], loading: false, error: null, invalidate: vi.fn() };
   H.projectsResult = { data: PROJECTS, loading: false, error: null, invalidate: vi.fn() };
   H.modelTiersResult = { data: [{ name: 'fast', spec: 'haiku' }, { name: 'std', spec: 'sonnet' }], loading: false, error: null, invalidate: vi.fn() };
-  H.plansResult = { data: { plans: PLANS }, loading: false, error: null };
+  H.plansResult = { data: PLANS, loading: false, error: null };
   H.fetchMock = vi.fn(async (url: string) => {
     return { ok: true, json: async () => ({ ok: true, result: { content: [{ text: '{"ok":true}' }] } }) };
   });

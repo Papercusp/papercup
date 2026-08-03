@@ -18,7 +18,12 @@ const H = vi.hoisted(() => ({
   steeringResult: { data: [] as unknown[], loading: false, error: null as unknown, invalidate: vi.fn() },
   projectsResult: { data: [] as unknown[], loading: false, error: null as unknown, invalidate: vi.fn() },
   modelTiersResult: { data: [] as unknown[], loading: false, error: null as unknown, invalidate: vi.fn() },
-  plansResult: { data: { plans: [] as unknown[] }, loading: false, error: null as unknown },
+  // D-071: the panel reads `plans.steerable` (a 6-field server projection),
+  // NOT the whole plans.list feed via usePlanList — so this is a plain
+  // useSyncQuery row array, and the terminal/archived filter + rank sort it
+  // used to do client-side is the resolver's job now
+  // (packages/operator-core/lib/sync-resolver/steerable-plans.test.ts).
+  plansResult: { data: [] as unknown[], loading: false, error: null as unknown },
   fetchMock: vi.fn(),
 }));
 
@@ -26,10 +31,10 @@ vi.mock('@papercusp/sync', () => ({
   useSyncQuery: (opts: { queryName: string }) => {
     if (opts.queryName === 'harnessProjects.lite') return H.projectsResult;
     if (opts.queryName === 'agentConfig.modelTiersBaseline') return H.modelTiersResult;
+    if (opts.queryName === 'plans.steerable') return H.plansResult;
     return H.steeringResult;
   },
 }));
-vi.mock('@/app/admin/plans/plans-api', () => ({ usePlanList: () => H.plansResult }));
 // MugTab's "Scheduled routines" pane (P-026) deep-links to the Calendar via the
 // TSR navigate hook; the panel renders outside a RouterProvider in this unit test.
 vi.mock('@tanstack/react-router', () => ({ useNavigate: () => vi.fn() }));
@@ -70,10 +75,13 @@ const PROJECTS = [
   { slug: 'pot-b', harness_kind: null },
 ];
 
+// `plans.steerable` rows: already filtered (no shipped/superseded/archived) and
+// already ordered by the resolver — so this fixture models what the WIRE
+// delivers, not a raw plans.list page. The dropping of terminal plans is
+// asserted where it now happens, in steerable-plans.test.ts.
 const PLANS = [
-  { slug: 'plan-a', title: 'Plan A', status: 'active', startStatus: 'started', archived: false, updated: '2026-06-15' },
-  { slug: 'plan-b', title: 'Plan B', status: 'ready', startStatus: null, archived: false, updated: '2026-06-14' },
-  { slug: 'plan-shipped', title: 'Shipped', status: 'shipped', startStatus: null, archived: false, updated: '2026-06-13' },
+  { slug: 'plan-a', title: 'Plan A', status: 'active', startStatus: 'started', updated: '2026-06-15', harness: 'pot-a' },
+  { slug: 'plan-b', title: 'Plan B', status: 'ready', startStatus: null, updated: '2026-06-14', harness: 'pot-b' },
 ];
 
 function steering(over: Record<string, unknown> = {}) {
@@ -91,7 +99,7 @@ beforeEach(() => {
   H.steeringResult = { data: [steering()], loading: false, error: null, invalidate: vi.fn() };
   H.projectsResult = { data: PROJECTS, loading: false, error: null, invalidate: vi.fn() };
   H.modelTiersResult = { data: [{ name: 'fast', spec: 'haiku' }, { name: 'std', spec: 'sonnet' }], loading: false, error: null, invalidate: vi.fn() };
-  H.plansResult = { data: { plans: PLANS }, loading: false, error: null };
+  H.plansResult = { data: PLANS, loading: false, error: null };
   H.fetchMock = vi.fn(async (url: string) => {
     return { ok: true, json: async () => ({ ok: true, result: { content: [{ text: '{"ok":true}' }] } }) };
   });
@@ -121,7 +129,9 @@ describe('MugTab (Colony sidebar, round 2)', () => {
     expect(screen.getByText('pot')).toBeTruthy();
     expect(screen.getByText('Plans')).toBeTruthy();
     expect(screen.getByText('Plan A')).toBeTruthy();
-    expect(screen.queryByText('Shipped')).toBeNull();
+    expect(screen.getByText('Plan B')).toBeTruthy();
+    // (Terminal plans never reach this component now — `plans.steerable`
+    // filters them server-side; pinned in steerable-plans.test.ts.)
     // The old per-hive selector is gone (steers the home Queen).
     expect(screen.queryByLabelText('Select hive to steer')).toBeNull();
   });
