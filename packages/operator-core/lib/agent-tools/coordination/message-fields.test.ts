@@ -36,13 +36,38 @@ describe('renderAuthoredFieldsSuffix — making the fields visible', () => {
     expect(renderAuthoredFieldsSuffix({ sections: [{ text: 'a' }, { text: 'b' }] })).toBe('');
   });
 
-  it('names a single premise, but COUNTS several (the line shares a ~200-char cap)', () => {
+  it('NAMES premises rather than counting them — the point of a premise is that it can be re-checked', () => {
+    // CHANGED (coordination-spec-adoption Phase 5): this used to count anything
+    // past the first, to respect the line's shared ~200-char cap. The cap is now
+    // enforced centrally by allocateMarkerBudget, so the cap no longer has to be
+    // paid for by withholding content that fits.
     expect(renderAuthoredFieldsSuffix({ sections: [{ text: 'a', premises: ['WI-1#completion'] }] })).toContain(
       '⊨ WI-1#completion',
     );
-    expect(
-      renderAuthoredFieldsSuffix({ sections: [{ text: 'a', premises: ['x#D-001', 'y#D-002', 'msg:z'] }] }),
-    ).toContain('⊨ 3 premises');
+    const several = renderAuthoredFieldsSuffix({
+      sections: [{ text: 'a', premises: ['x#D-001', 'y#D-002', 'msg:z'] }],
+    });
+    expect(several).toContain('x#D-001');
+    expect(several).toContain('y#D-002');
+    expect(several).not.toContain('⊨ 3 premises');
+  });
+
+  it('COUNTS premises again when the shared budget is genuinely tight', () => {
+    // The degradation still exists — it is now a budget decision, not a
+    // per-field default. A high-priority clarify + undetermined eat the line,
+    // so premises (lowest priority) fall back to their count form.
+    const out = renderAuthoredFieldsSuffix({
+      sections: [
+        {
+          text: 'a',
+          clarify: [{ question: 'x'.repeat(90), assuming: 'y'.repeat(50) }],
+          couldNotDetermine: [{ what: 'z'.repeat(110) }],
+          premises: ['p#D-001', 'q#D-002', 'r#D-003'],
+        },
+      ],
+    });
+    expect(out).toContain('⊨ 3 premises');
+    expect(out.length).toBeLessThanOrEqual(260);
   });
 
   it('does NOT reuse `⊢` — that glyph already means the evidence band on this line', () => {
@@ -152,6 +177,64 @@ describe('renderAuthoredFieldsSuffix — making the fields visible', () => {
       fieldProvenance: { youMayNotKnow: 'owner-gui-derived' },
     });
     expect(out).toBe('');
+  });
+
+  // ── forYouBecause: the NOTE is the field (D-090) ───────────────────────────
+
+  it('DELIVERS the forYouBecause note in-band, not just the relation enum', () => {
+    const out = renderAuthoredFieldsSuffix({
+      sections: [
+        {
+          text: 'a',
+          forYouBecause: { relation: 'owns', ref: 'x.ts', note: 'you wrote the resolver this breaks' },
+        },
+      ],
+    });
+    expect(out).toContain('∵ owns x.ts');
+    // The note IS the sender's model of the recipient — D-090 is explicit that
+    // the model is the payload, and the line used to drop it entirely.
+    expect(out).toContain('you wrote the resolver this breaks');
+  });
+
+  it("keeps the note even under pressure when relation is 'other' — there the enum means nothing", () => {
+    // D-043 makes a note MANDATORY on `other` precisely because the enum cannot
+    // carry the meaning. Degrading `∵ other — <note>` to `∵ other` would deliver
+    // a marker with literally zero information, so `other` has no cheap form.
+    const out = renderAuthoredFieldsSuffix({
+      sections: [
+        {
+          text: 'a',
+          clarify: [{ question: 'q'.repeat(90), assuming: 'a'.repeat(60) }],
+          couldNotDetermine: [{ what: 'w'.repeat(115) }],
+          forYouBecause: { relation: 'other', note: 'you own the release gate today' },
+        },
+      ],
+    });
+    if (out.includes('∵ other')) expect(out).toContain('you own the release gate today');
+  });
+
+  it('honours ONE shared line budget across all fragments (the ~200-char cap)', () => {
+    // The regression this guards: spelling out four fields independently is
+    // >400 chars, which does not fail loudly — it truncates the reader's line
+    // somewhere arbitrary, losing content without saying so.
+    const out = renderAuthoredFieldsSuffix({
+      blocking: true,
+      sections: [
+        {
+          text: 'a',
+          premises: Array.from({ length: 8 }, (_, i) => `premise-ref-number-${i}#D-00${i}`),
+          forYouBecause: { relation: 'owns', ref: 'some/long/path/to/a/file.ts', note: 'n'.repeat(120) },
+          youMayNotKnow: Array.from({ length: 8 }, (_, i) => ({
+            ref: `WI-${9000 + i}-with-a-long-suffix`,
+            provenance: 'authored' as const,
+          })),
+          couldNotDetermine: [{ what: 'c'.repeat(150) }],
+        },
+      ],
+    });
+    expect(out.length).toBeLessThanOrEqual(260);
+    // BLOCKING is priority 1 and must never be the thing that gets dropped.
+    expect(out).toContain('BLOCKING');
   });
 
   it('surfaces blocking and the coupling relation', () => {

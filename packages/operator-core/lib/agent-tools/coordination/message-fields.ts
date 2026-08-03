@@ -763,28 +763,128 @@ export function renderAuthoredFieldsSuffix(env: Record<string, unknown>): string
  */
 export const YMNK_MARKER_BUDGET_CHARS = 120;
 
+/**
+ * Budget for the `forYouBecause` NOTE on the `[coord+N]` line.
+ *
+ * WHY THE NOTE SHIPS IN-BAND AT ALL (D-090, owner-ruled): `forYouBecause` exists
+ * so a sender can state its model of who the RECIPIENT is to this message — that
+ * model IS the payload. The line used to carry only the relation ENUM, which for
+ * `relation:'other'` is literally zero information: `∵ other` says a model was
+ * authored and withholds all of it. D-043 makes a note MANDATORY on `other`
+ * precisely because the enum cannot carry the meaning there, so dropping the note
+ * discarded the one field the schema guarantees is present and load-bearing.
+ * Measured: `other` was 109 of 659 relations in 7d — ~1 in 6 markers delivered
+ * nothing a reader could use.
+ */
+export const FYB_NOTE_BUDGET_CHARS = 90;
+
+/**
+ * Budget for spelled-out `premises` refs. Smaller than youMayNotKnow's: a premise
+ * ref is a short pointer (`WI-1#completion`, `x#D-001`) and a reader re-checking
+ * footing needs the ids, not prose.
+ */
+export const PREMISE_MARKER_BUDGET_CHARS = 90;
+
+/**
+ * The SHARED cap across every marker fragment on the `[coord+N]` line. This is
+ * the constraint the original count-only rendering existed to respect, now
+ * enforced in one place instead of implied by each field staying small.
+ */
+export const AUTHORED_MARKER_TOTAL_BUDGET_CHARS = 200;
+
+/** One marker fragment plus the degraded form to fall back to under budget pressure. */
+export interface MarkerPart {
+  /** The spelled-out fragment — what a reader can act on WITHOUT a second call. */
+  full: string;
+  /** The degraded (usually counted) form. Omit when counting would be worse than silence. */
+  short?: string;
+  /** Lower is served first when the shared budget is tight. */
+  priority: number;
+}
+
+/**
+ * Join short authored strings into ONE bounded marker fragment, dropping the
+ * overflow into a `(+N)` count.
+ *
+ * Extracted because three fields need exactly this and each hand-rolled version
+ * is a chance to reintroduce the bug the extraction exists to kill: a marker that
+ * silently shows a COUNT instead of the content, forcing a `coord:read` that
+ * fires ~15 times a week against ~1,600 sends. A count is the correct FALLBACK
+ * only when nothing fits at all — never the default.
+ */
+export function boundedMarkerList(refs: readonly string[], budgetChars: number): {
+  shown: string[];
+  withheld: number;
+} {
+  const shown: string[] = [];
+  let budget = budgetChars;
+  for (const raw of refs) {
+    const ref = String(raw ?? '').trim();
+    if (!ref) continue;
+    if (budget <= 0) break;
+    // A single over-long ref is TRUNCATED, not dropped: a truncated pointer is
+    // still a pointer, and dropping it silently is exactly the count-only
+    // failure mode.
+    const piece = ref.length > budget ? `${ref.slice(0, Math.max(1, budget - 1))}…` : ref;
+    shown.push(piece);
+    budget -= piece.length + 2; // + '; ' separator
+  }
+  return { shown, withheld: Math.max(0, refs.filter((r) => String(r ?? '').trim()).length - shown.length) };
+}
+
 export function authoredFieldParts(env: Record<string, unknown>): string[] {
   const raw = env.sections;
   if (!Array.isArray(raw) || raw.length === 0) return [];
   const derived = (env.fieldProvenance ?? {}) as Record<string, unknown>;
   const sections = raw as MessageSection[];
 
-  const parts: string[] = [];
+  const parts: MarkerPart[] = [];
 
-  if (env.blocking === true && !derived.blocking) parts.push('BLOCKING');
+  if (env.blocking === true && !derived.blocking) parts.push({ full: 'BLOCKING', priority: 1 });
 
   // `⊨`, NOT `⊢`: the injection line already uses `⊢` for the P-010 evidence
   // BAND, and these are different claims — premises are what the sender asserted
   // this rests on, the band is how well-evidenced the line is. One glyph for both
   // would recreate exactly the near-synonym confusion D-041 renamed to fix.
+  // Premises are SHOWN, not counted, for the same reason as youMayNotKnow below:
+  // `⊨ 4 premises` tells a reader that footing was declared and withholds what it
+  // rests on, so re-checking it — the entire point of declaring a premise —
+  // required a second call. The single-premise case already spelled it out; this
+  // just stops treating "more than one" as a reason to say less.
   const premises = sections.flatMap((s) => s.premises ?? []);
   if (premises.length && !derived.premises) {
-    parts.push(`⊨ ${premises.length === 1 ? premises[0] : `${premises.length} premises`}`);
+    const { shown, withheld } = boundedMarkerList(premises, PREMISE_MARKER_BUDGET_CHARS);
+    parts.push({
+      full:
+        shown.length > 0
+          ? `⊨ ${shown.join('; ')}${withheld > 0 ? ` (+${withheld})` : ''}`
+          : `⊨ ${premises.length} premises`,
+      short: `⊨ ${premises.length} premise${premises.length === 1 ? '' : 's'}`,
+      priority: 6,
+    });
   }
 
   if (!derived.forYouBecause) {
     const fyb = sections.map((s) => s.forYouBecause).find(Boolean);
-    if (fyb) parts.push(`∵ ${fyb.relation}${fyb.ref ? ` ${fyb.ref}` : ''}`);
+    if (fyb) {
+      // THE NOTE IS THE FIELD (D-090). The relation enum classifies the sender's
+      // model; the note IS the model. Delivering only the enum was the read-side
+      // half of "the write half shipped and the read half did not".
+      const note = String(fyb.note ?? '').trim();
+      const shownNote =
+        note.length > FYB_NOTE_BUDGET_CHARS
+          ? `${note.slice(0, FYB_NOTE_BUDGET_CHARS - 1)}…`
+          : note;
+      const stem = `∵ ${fyb.relation}${fyb.ref ? ` ${fyb.ref}` : ''}`;
+      parts.push({
+        full: `${stem}${shownNote ? ` — ${shownNote}` : ''}`,
+        // Degrades to the relation alone — except on `other`, where the enum
+        // carries no meaning at all (D-043 makes the note mandatory there
+        // precisely for that reason), so the note IS the short form.
+        short: fyb.relation === 'other' ? `${stem}${shownNote ? ` — ${shownNote}` : ''}` : stem,
+        priority: 4,
+      });
+    }
   }
 
   // SPELLED OUT, not counted — the same reasoning `couldNotDetermine` already
@@ -810,33 +910,29 @@ export function authoredFieldParts(env: Record<string, unknown>): string[] {
       ...ymnk.filter((e) => e.provenance === 'authored'),
       ...ymnk.filter((e) => e.provenance !== 'authored'),
     ];
-    const shown: string[] = [];
-    let budget = YMNK_MARKER_BUDGET_CHARS;
-    for (const e of ordered) {
-      const ref = String(e.ref ?? '').trim();
-      // A ref long enough to blow the whole budget on its own is truncated
-      // rather than dropped: a truncated pointer is still a pointer, and
-      // dropping it silently is how the count-only version failed.
-      if (!ref) continue;
-      const piece = ref.length > budget ? `${ref.slice(0, Math.max(0, budget - 1))}…` : ref;
-      if (piece.length === 0) break;
-      shown.push(piece);
-      budget -= piece.length + 2; // + '; '
-      if (budget <= 0) break;
-    }
-    const rest = ymnk.length - shown.length;
-    parts.push(
-      shown.length > 0
-        ? `⚠ you may not know: ${shown.join('; ')}${rest > 0 ? ` (+${rest})` : ''}`
-        : `⚠ ${ymnk.length} you-may-not-know`,
+    const { shown, withheld } = boundedMarkerList(
+      ordered.map((e) => String(e.ref ?? '')),
+      YMNK_MARKER_BUDGET_CHARS,
     );
+    parts.push({
+      full:
+        shown.length > 0
+          ? `⚠ you may not know: ${shown.join('; ')}${withheld > 0 ? ` (+${withheld})` : ''}`
+          : `⚠ ${ymnk.length} you-may-not-know`,
+      short: `⚠ ${ymnk.length} you-may-not-know`,
+      priority: 5,
+    });
   }
 
   // Spelled out, not counted: this is the one that tells the receiver a question
   // is OPEN rather than answered, which is a different action.
   const cnd = sections.flatMap((s) => s.couldNotDetermine ?? []);
   if (cnd.length && !derived.couldNotDetermine) {
-    parts.push(`? undetermined: ${cnd.map((c) => c.what).join('; ').slice(0, 120)}`);
+    parts.push({
+      full: `? undetermined: ${cnd.map((c) => c.what).join('; ').slice(0, 120)}`,
+      short: `? ${cnd.length} undetermined`,
+      priority: 3,
+    });
   }
 
   // P-012 / D-106: SPELLED OUT, and it carries the ASSUMPTION, not just the
@@ -846,12 +942,73 @@ export function authoredFieldParts(env: Record<string, unknown>): string[] {
   // possibly-wrong assumption. Hiding `assuming` would hide exactly that stake.
   const clr = sections.flatMap((s) => s.clarify ?? []);
   if (clr.length && !derived.clarify) {
-    parts.push(
-      `?? ${clr.map((c) => `${c.question} (assuming: ${c.assuming})`).join('; ').slice(0, 160)}`,
-    );
+    parts.push({
+      full: `?? ${clr.map((c) => `${c.question} (assuming: ${c.assuming})`).join('; ').slice(0, 160)}`,
+      // NO `short` on purpose: per the reasoning above, a counted "1
+      // clarification" is worse than nothing, so this fragment is all-or-nothing
+      // and its high priority keeps it in.
+      priority: 2,
+    });
   }
 
-  return parts;
+  return allocateMarkerBudget(parts);
+}
+
+/**
+ * Fit the marker fragments into ONE shared line budget, degrading a fragment to
+ * its count form rather than dropping it.
+ *
+ * WHY THIS EXISTS. The `[coord+N]` line shares a ~200-char cap across ALL parts,
+ * and the original code respected it the only way a per-field renderer can — by
+ * counting ("⊨ 3 premises"). Spelling fields out field-by-field silently blew
+ * that cap: four spelled-out fields worst-case is >400 chars, i.e. every fragment
+ * gets longer and the READER's line gets truncated somewhere arbitrary. That is
+ * strictly worse than counting, because a mid-word truncation loses content
+ * without telling anyone it did.
+ *
+ * So the budget is allocated ONCE, by what most changes a reader's next action:
+ *   1. BLOCKING            — a handful of chars, and it outranks everything
+ *   2. ?? clarify          — a question whose sender is ALREADY acting on a stated assumption
+ *   3. ? undetermined      — an OPEN question
+ *   4. ∵ forYouBecause     — why THIS recipient
+ *   5. ⚠ you may not know  — refs they likely lack
+ *   6. ⊨ premises          — footing to re-check
+ * Emission ORDER is unchanged (the visual line looks the same); only which
+ * fragments get their full form under pressure is decided here.
+ */
+export function allocateMarkerBudget(
+  parts: readonly MarkerPart[],
+  totalBudget: number = AUTHORED_MARKER_TOTAL_BUDGET_CHARS,
+): string[] {
+  const byPriority = [...parts].sort((a, b) => a.priority - b.priority);
+  const chosen = new Map<MarkerPart, string>();
+  let budget = totalBudget;
+
+  // Pass 1: everything gets at least its SHORT form, in priority order. A
+  // fragment that cannot fit even short is dropped — but only after every
+  // higher-priority fragment has been served.
+  for (const p of byPriority) {
+    const short = p.short ?? p.full;
+    if (short.length + 3 <= budget) {
+      chosen.set(p, short);
+      budget -= short.length + 3; // + ' · ' separator
+    }
+  }
+  // Pass 2: upgrade to the FULL form where the delta still fits, again by
+  // priority — so the field that most changes a reader's action is the one that
+  // gets spelled out when there is only room for one.
+  for (const p of byPriority) {
+    const cur = chosen.get(p);
+    if (cur === undefined || cur === p.full) continue;
+    const delta = p.full.length - cur.length;
+    if (delta <= budget) {
+      chosen.set(p, p.full);
+      budget -= delta;
+    }
+  }
+
+  // Emission order = declaration order, NOT priority order.
+  return parts.filter((p) => chosen.has(p)).map((p) => chosen.get(p)!);
 }
 
 /**

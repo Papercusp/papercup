@@ -398,10 +398,26 @@ export function shapeOrient(data: unknown, tier: TierName): unknown {
   const base: Caps = { ...CAPS[tier] };
   const afterCompaction = d.recovery != null;
 
+  // SCOPED TO THE POST-COMPACTION CALL, DELIBERATELY. Every other orient keeps EXACTLY its
+  // prior behaviour — same bytes, no measurement, no ladder.
+  //
+  // The temptation is to budget-enforce every tier, since the generic fall-through is bad
+  // for all of them. Measured while building this, that is a bad trade: it re-shapes
+  // payloads that were being served fine, and it BREAKS THE TIER MONOTONICITY INVARIANT
+  // (`trimmed` < `standard`), because a rescued `standard` lands below an unrescued
+  // `trimmed` — comparing a rescue against a normal shape is not comparing two tiers.
+  // Measured: a fixture whose `standard` shape is 33,465 chars rescued down to 12,754,
+  // i.e. below the 14,383 its own `trimmed` tier produced.
+  //
+  // The reported defect is specific and does not need that: `afterCompaction` is the one
+  // call whose shape is deliberately INFLATED (the beef below) at exactly the moment the
+  // agent can least afford a blind projection. Fixing the self-inflicted overshoot needs no
+  // change to any other call, so it makes none. A general budget-enforcing shaper is a
+  // separate change that must first settle what monotonicity means under rescue.
+  if (!afterCompaction) return projectOrient(d, base, tier);
+
   const ladder: { caps: Caps; rung: string }[] = [
-    ...(afterCompaction
-      ? [{ caps: { ...base, inbox: Math.max(base.inbox, 20), inboxSummary: Math.max(base.inboxSummary, 700) }, rung: 'post-compaction' }]
-      : []),
+    { caps: { ...base, inbox: Math.max(base.inbox, 20), inboxSummary: Math.max(base.inboxSummary, 700) }, rung: 'post-compaction' },
     { caps: base, rung: tier },
     { caps: tightenCaps(base, 0.5), rung: `${tier}-half` },
     { caps: FLOOR_CAPS, rung: 'floor' },
@@ -412,7 +428,6 @@ export function shapeOrient(data: unknown, tier: TierName): unknown {
     const { caps, rung } = ladder[i];
     projected = projectOrient(d, caps, tier);
     const size = jsonLen(projected);
-    if (process.env.ORIENT_LADDER_DEBUG) console.log(`LADDER ${tier} rung=${rung} size=${size}`);
     if (size <= SHAPER_BUDGET_CHARS) {
       // Only annotate when we actually stepped down, so the common case stays clean.
       if (i > 0) {

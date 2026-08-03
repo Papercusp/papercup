@@ -3451,11 +3451,53 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       // scope:'all' is a genuinely different population and must miss the snapshot.
       const isDefaultVariant =
         a.state === undefined && a.limit === undefined && a.hive === undefined && a.scope !== 'all';
+      // WI-7432: ...and the PER-POT lens, which is the variant the owner is
+      // actually in. The Learning tab inherits the pot lens from the top-bar
+      // selector (LearningTab.tsx HIVE_AWARE_VIEWS), so a normal desktop mount
+      // carries `hive: '<slug>'` and USED to miss the snapshot above and pay a
+      // full live compute EVERY time (measured 0.35-0.52s warm, 1.56-3.19s cold,
+      // 300,440 B) — i.e. the precomputed fast path served only the All-Pots case,
+      // which is the case nobody is in. The fix needs no new arg dimension: the
+      // snapshot table already keys on (workspace_id, HARNESS_SLUG, key) and the
+      // precompute routine already fires per harness, so the "pot dimension" is
+      // the harness dimension the substrate has had all along — a sibling producer
+      // (`learning.improvements.hive`) computes the lensed digest per pot and we
+      // read it here with harnessSlug = the requested hive.
+      const isHiveLensVariant =
+        a.state === undefined && a.limit === undefined && a.hive !== undefined && a.scope !== 'all';
       let rows: Array<Record<string, unknown>>;
       if (isDefaultVariant) {
         const { readDerivedSnapshotRows } = await import('../derived-reads/registry');
         await import('../derived-reads/producers');
         rows = await readDerivedSnapshotRows<Record<string, unknown>>('learning.improvements');
+      } else if (isHiveLensVariant) {
+        const { readDerivedSnapshot } = await import('../derived-reads/registry');
+        await import('../derived-reads/producers');
+        // readDerivedSnapshot, NOT ...Rows: the Rows helper flattens a MISS and a
+        // genuinely-empty pot both to `[]`, which would render an unwarmed pot
+        // permanently blank instead of falling through to the live compute below.
+        const { payload, meta } = await readDerivedSnapshot<Array<Record<string, unknown>>>(
+          'learning.improvements.hive',
+          { harnessSlug: a.hive },
+        );
+        if (!meta.missing && Array.isArray(payload)) {
+          rows = payload;
+          if (rows.length > 0 && rows[0] && typeof rows[0] === 'object') {
+            rows[0]._meta = {
+              ...(rows[0]._meta as Record<string, unknown> | undefined),
+              derivedRead: meta,
+            };
+          }
+        } else {
+          // MISS (cold pot, or a producerVersion bump): fall through to the live
+          // compute, so this path is never WORSE than the pre-WI-7432 behaviour.
+          // readDerivedSnapshot has already kicked a background fill, so the pot
+          // heals itself and every later mount is a plain SELECT.
+          const { computeLearningImprovementsSnapshot } = await import(
+            '../harness/improvements/learning-digest-snapshot'
+          );
+          rows = (await computeLearningImprovementsSnapshot(a)) as unknown as Array<Record<string, unknown>>;
+        }
       } else {
         const { computeLearningImprovementsSnapshot } = await import(
           '../harness/improvements/learning-digest-snapshot'

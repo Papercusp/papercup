@@ -326,11 +326,6 @@ describe('EI-19314271768708528 leaderBrief shaping (monitor-wake fleet visibilit
       JSON.stringify((shapeOrient({ ...fixture(), leaderBrief: fatBrief() }, tier) as { leaderBrief: unknown }).leaderBrief).length;
     const trimmed = sized('trimmed');
     const standard = sized('standard');
-    for (const t of ['trimmed', 'standard'] as const) {
-      const full = shapeOrient({ ...fixture(), leaderBrief: fatBrief() }, t) as Record<string, any>;
-      // eslint-disable-next-line no-console
-      console.log(`TEMPMEASURE ${t}: total=${JSON.stringify(full).length} tightened=${full.shaperTightened?.rung ?? 'none'}`);
-    }
     // Both tiers shrink; trimmed is strictly the leaner projection (standard keeps the
     // whole roster of a normal-sized fleet on purpose, so it shrinks by less).
     expect(standard).toBeLessThan(before);
@@ -482,6 +477,21 @@ describe('shapeOrient — in-shaper budget ladder (EI-19408488769901676)', () =>
     expect(out.shaperTightened.rung).toBe('floor');
     // Even here it must not have thrown away the passthrough it cannot shrink.
     expect(out.recovery.blob.length).toBe(40_000);
+  });
+
+  it('SCOPE GUARD: a NON-post-compaction payload is never laddered, even when it overflows', () => {
+    // The ladder is deliberately scoped to the post-compaction call. Widening it to every
+    // tier breaks the `trimmed < standard` monotonicity invariant asserted above, because a
+    // rescued `standard` lands BELOW an unrescued `trimmed` (measured: 33,465 -> 12,754,
+    // under trimmed's own 14,383). If someone later drops the `afterCompaction` guard, this
+    // fails here — next to the reason — instead of surfacing as that confusing inversion.
+    const huge = { self: { ownerId: 'su-1' }, inbox: { summary: { total: 40 }, recent: bigInbox(40) } };
+    const out = shapeOrient(huge, 'trimmed') as Record<string, any>;
+
+    expect(out.recovery).toBeUndefined(); // precondition: this is NOT a post-compaction orient
+    expect(out.shaperTightened).toBeUndefined();
+    // Untouched means the plain per-tier cap applied — 5 entries for trimmed, not a floor rung.
+    expect(out.inbox.recent.length).toBe(5);
   });
 
   it('DRIFT GUARD: the shaper budget stays strictly under the framework hard ceiling', async () => {

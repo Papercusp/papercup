@@ -42,7 +42,9 @@ import {
   isOpenAiEmbedInCooldown,
 } from '../memory/configure';
 import type { EmbedFn, ResolvedEmbedder } from '@papercusp/memory';
-import { buildSidecarAwareEmbedder } from '../memory/embed-sidecar-wiring';
+import { sidecarEmbedBatch } from '@papercusp/memory';
+import { buildSidecarAwareEmbedder, resolveProcessSidecarUrl } from '../memory/embed-sidecar-wiring';
+import { EMBED_SIDECAR_CAP_EMBED } from '../memory/embed-sidecar-server';
 // The prose column width contract — ONE source, not a restated `384`
 // (D-005 §5). `fitsProseColumns` is the dims guard; `modeTargetDims` is what a
 // mode declares it emits. A test asserts the two agree.
@@ -116,6 +118,48 @@ function withEmbedTimeout<T>(
 }
 
 type ResolvedMode = 'openai' | 'local' | 'gemma' | 'harrier' | 'disabled';
+
+/**
+ * P-005 — embed a WHOLE batch in one call. Returns one vector per input, in order.
+ *
+ * The single-text `EmbedFn` seam cannot express this, which is exactly why the
+ * amortization went untaken for so long: `sidecarEmbedBatch` has always accepted
+ * `texts[]` and its docstring already named embed-backfill as the intended
+ * consumer, but every call site in the tree — including
+ * `buildSidecarFirstEmbedder` itself and mem0's `embedBatch` (a `Promise.all` of
+ * N single-text requests) — passed a 1-element array.
+ */
+export type EmbedManyFn = (texts: string[]) => Promise<number[][]>;
+
+/**
+ * Build a batch embedder for the resolved mode, or null when batching isn't
+ * available (no sidecar configured, or the OpenAI leg, which is governed per-call
+ * by the admission governor and must stay that way).
+ *
+ * Returning null is a normal outcome, not a failure: the caller keeps using the
+ * per-row `embed` and the sweep behaves exactly as it did before.
+ */
+async function resolveBatchEmbed(mode: ResolvedMode): Promise<EmbedManyFn | null> {
+  // Only the local sidecar-backed spaces batch. The OpenAI leg deliberately does
+  // not: each call takes an admission slot (`bench` lane, daily spend cap), and a
+  // batched call would take ONE slot for N texts, silently defeating the cost
+  // governor the cost-audit added.
+  if (mode !== 'gemma' && mode !== 'local' && mode !== 'harrier') return null;
+  try {
+    const url = await resolveProcessSidecarUrl(undefined, [EMBED_SIDECAR_CAP_EMBED]);
+    if (!url) return null;
+    return async (texts: string[]) => {
+      // Prose backfill is STORAGE — the same 'document' side the per-row embedders
+      // above resolve to. Asymmetric models embed a document differently from a
+      // query, so this MUST match or the batch path would write vectors from a
+      // different space than the per-row fallback (WI-3616's whole failure mode).
+      const res = await sidecarEmbedBatch(url, { model: mode, kind: 'document', texts });
+      return res.vectors;
+    };
+  } catch {
+    return null;
+  }
+}
 
 interface BackfillStats {
   table: string;
@@ -423,6 +467,7 @@ export async function backfillTable(
   maxRows: number = MAX_ROWS_PER_TARGET_PER_SWEEP,
   mode: ResolvedMode = 'openai',
   spaceAware = true,
+  embedMany?: EmbedManyFn,
 ): Promise<BackfillStats> {
   const started = Date.now();
   const stats: BackfillStats = {
@@ -467,22 +512,61 @@ export async function backfillTable(
   // request 429s during a quota outage, or an over-long body 400s) stays stale and is re-SELECTed
   // by the next `WHERE … LIMIT` pull, spinning this `while(true)` forever and re-burning
   // tokens. Breaking on no-progress bounds the sweep and lets the next 5-min tick retry. (cost-audit-2026-06-29.)
+  // P-005: rows that FAIL to embed stay stale, so with a stable ORDER BY they sit
+  // at the head of the next pull and get re-selected forever, re-burning a slot in
+  // every batch. Successful rows need no cursor — embedding one removes it from the
+  // `stale` predicate, so the queue self-advances. Only failures need skipping, and
+  // OFFSET by the running failure count skips exactly them (stable order ⇒ the
+  // failed rows are precisely the first `failedSoFar` still-matching rows).
+  //
+  // Deliberately NOT a value-cursor on the order column: session_turns' ordering
+  // key has ties, and a `< lastSeen` cursor would silently skip every row sharing
+  // the boundary timestamp on EVERY sweep — a permanent, invisible recall hole.
+  // OFFSET cannot skip a row that is making progress.
+  let failedSoFar = 0;
+  const orderBy = target.orderBySql ? ` ORDER BY ${target.orderBySql}` : '';
   while (stats.scanned < maxRows) {
+    const wantRows = Math.min(BATCH_SIZE, maxRows - stats.scanned);
     // All PK columns here are text/uuid and the body is text → every selected value is a string.
     const batch = await sql.unsafe<Array<Record<string, string>>>(
       `SELECT ${keySelect}, (${target.bodySql}) AS body
          FROM ${target.table}
         WHERE ${stale}
-          AND length(${target.bodySql}) > 0
-        LIMIT $1`,
-      spaceAware
-        ? [Math.min(BATCH_SIZE, maxRows - stats.scanned), mode]
-        : [Math.min(BATCH_SIZE, maxRows - stats.scanned)],
+          AND length(${target.bodySql}) > 0${orderBy}
+        LIMIT $1 OFFSET $${spaceAware ? 3 : 2}`,
+      spaceAware ? [wantRows, mode, failedSoFar] : [wantRows, failedSoFar],
     );
     if (!batch.length) break;
 
+    // P-005 THROUGHPUT: embed the whole batch in ONE sidecar call when the caller
+    // supplied a batch embedder. The sidecar has always accepted `texts[]` (its own
+    // `sidecarEmbedBatch` docstring names embed-backfill as the intended consumer),
+    // but every call site in the tree passed a 1-element array, so the amortization
+    // was never taken. Measured 2026-08-03 against the live :3384 gemma sidecar:
+    // 75ms for a single-text request vs 59ms/row for a 32-text request — plus one
+    // HTTP round-trip instead of BATCH_SIZE of them.
+    //
+    // Falls back to the per-row path on ANY batch failure rather than failing the
+    // rows: a batch call is all-or-nothing at the sidecar, so one oversized/bad row
+    // would otherwise take its whole batch down with it. The per-row retry isolates
+    // the offender and lets the other 63 succeed.
+    let batchVectors: Array<number[] | null> | null = null;
+    if (embedMany && batch.length > 1) {
+      try {
+        const vecs = await withEmbedTimeout(
+          embedMany(batch.map((r) => r.body)),
+          EMBED_ROW_TIMEOUT_MS,
+          'embed_batch',
+        );
+        if (vecs.length === batch.length) batchVectors = vecs;
+      } catch {
+        batchVectors = null; // fall through to per-row
+      }
+    }
+
     let embeddedThisBatch = 0;
-    for (const row of batch) {
+    let failedThisBatch = 0;
+    for (const [i, row] of batch.entries()) {
       stats.scanned += 1;
       try {
         // WI-7327: BOUND the embed. This await is the one place a sweep can hang
@@ -491,9 +575,10 @@ export async function backfillTable(
         // `running` latch (see runBackfillSweep) and wedges ALL future sweeps, which
         // is exactly how 451k rows sat unembedded for hours. Rejecting instead lets
         // the existing per-row catch count it as an error and move on.
-        const vec = await withEmbedTimeout(embed(row.body));
+        const vec = batchVectors?.[i] ?? (await withEmbedTimeout(embed(row.body)));
         if (!fitsProseColumns(vec.length)) {
           stats.errors += 1;
+          failedThisBatch += 1;
           continue;
         }
         const keyVals = keyCols.map((_, i) => row[`k${i}`]);
@@ -519,8 +604,11 @@ export async function backfillTable(
         embeddedThisBatch += 1;
       } catch {
         stats.errors += 1;
+        failedThisBatch += 1;
       }
     }
+    // Skip this batch's failures on the next pull (see the failedSoFar note above).
+    failedSoFar += failedThisBatch;
     // No row in this batch embedded → the remaining stale rows are persistent failures. Stop, else
     // we re-SELECT and re-attempt the same stuck rows forever (and re-spend on each).
     if (embeddedThisBatch === 0) break;
@@ -625,12 +713,39 @@ export interface BackfillSweepOptions {
    * space (gemma on the :3384 sidecar), which costs wall time but no API tokens.
    */
   maxRowsPerTarget?: number;
+  /**
+   * P-005 — wall-clock budget for the whole round-robin drain (default
+   * SWEEP_BUDGET_MS). This, not a row ceiling, is what bounds a routine sweep now.
+   *
+   * A TIME bound is the right shape because the thing actually being rationed is
+   * shared embedder capacity, and a row ceiling expresses that only if you already
+   * know the per-row cost — which varies by body length, model and host load. A
+   * budget self-adjusts: a fast host drains more rows in the same window.
+   */
+  budgetMs?: number;
 }
+
+/**
+ * Default wall-clock budget for one routine sweep.
+ *
+ * Sized to finish INSIDE the 5-minute DBOS tick so the cadence is clean and a
+ * tick rarely finds the latch held. Measured 2026-08-03: the batched sidecar path
+ * sustains ~16 rows/sec, so a 240s budget moves ~3,800 rows/sweep — roughly 4× the
+ * old 4-batch ceiling, and enough that session_turns' ~320k eligible backlog
+ * drains in hours rather than the ~13 days the ceiling implied.
+ */
+const SWEEP_BUDGET_MS = 240_000;
 
 export async function runBackfillSweep(
   opts: BackfillSweepOptions = {},
 ): Promise<BackfillStats[] | { skipped: string }> {
-  const maxRowsPerTarget = opts.maxRowsPerTarget ?? MAX_ROWS_PER_TARGET_PER_SWEEP;
+  // P-005: NO row ceiling by default. The old default was the WI-2905 fairness cap
+  // (4 batches/target/sweep), which is precisely the starvation this item removes —
+  // fairness now comes from the round-robin rotation, and the bound is `budgetMs`.
+  // An explicit `maxRowsPerTarget` still works, for a caller that genuinely wants a
+  // row ceiling (bulk-refill sizing, tests).
+  const maxRowsPerTarget = opts.maxRowsPerTarget ?? Number.MAX_SAFE_INTEGER;
+  const budgetMs = opts.budgetMs ?? SWEEP_BUDGET_MS;
   // WI-7327: the latch is TIME-BOXED, and every refusal is LOUD.
   //
   // The LOUD half is the one that was actually costing us, and the story is
@@ -710,6 +825,10 @@ export async function runBackfillSweep(
     }
     const mode: ResolvedMode = resolved.mode;
     const embed = resolved.embed;
+    // P-005 throughput: one sidecar call per BATCH instead of one per ROW. Null is a
+    // normal outcome (no sidecar, or the OpenAI leg) and simply keeps the per-row path.
+    const embedMany = await resolveBatchEmbed(mode);
+    if (embedMany) console.log(`[embed-backfill] batch-embed enabled (mode=${mode})`);
     // Shared org pool (audit P-010, EI-119/EI-80): the old shape opened a
     // fresh `pg.Client` per sweep — connection churn every 5 minutes, and the
     // `pg` dependency was the "require is not defined" failure mode that
@@ -736,6 +855,12 @@ export async function runBackfillSweep(
     const rotated = [...TARGETS.slice(offset), ...TARGETS.slice(0, offset)];
 
     const byTable = new Map<string, BackfillStats>();
+    // P-005: probe each target ONCE (schema facts don't change mid-sweep), then
+    // drain round-robin below. The probe used to sit inside the same loop that did
+    // the draining, which is what forced the drain to be "one target to completion,
+    // then the next" — the shape that let the first backlogged table in the order
+    // consume the whole sweep.
+    const live: Array<{ target: BackfillTarget; spaceAware: boolean }> = [];
     for (const target of rotated) {
       try {
         // Column existence probe; skip if migration 061 hasn't run. The same probe
@@ -798,11 +923,10 @@ export async function runBackfillSweep(
           byTable.set(target.table, { table: target.table, scanned: 0, embedded: 0, errors: 0, durationMs: 0 });
           continue;
         }
-        const spaceAware = cols.has(modeColOf(target));
-        byTable.set(
-          target.table,
-          await backfillTable(sql, target, embed, maxRowsPerTarget, mode, spaceAware),
-        );
+        live.push({ target, spaceAware: cols.has(modeColOf(target)) });
+        byTable.set(target.table, {
+          table: target.table, scanned: 0, embedded: 0, errors: 0, durationMs: 0,
+        });
       } catch (err) {
         byTable.set(target.table, {
           table: target.table,
@@ -813,6 +937,75 @@ export async function runBackfillSweep(
         });
         console.warn(`[embed-backfill] ${target.table} failed: ${(err as Error).message}`);
       }
+    }
+
+    /*
+     * P-005 ROUND-ROBIN DRAIN — the fairness cap is replaced by a TIME budget.
+     *
+     * The old shape gave each target a hard ceiling of 4 batches per sweep. That
+     * ceiling was set without reference to any table's WRITE rate, so a table
+     * written faster than 4×BATCH_SIZE per sweep could never converge, no matter
+     * how much idle capacity the embedder had. session_turns is exactly that table.
+     *
+     * Round-robin instead: every live target gets ONE batch per round, and rounds
+     * repeat until everything is drained or the budget expires. Fairness is now a
+     * property of the ROTATION (no target waits more than one round for a turn)
+     * rather than of a ceiling, so no table is capped below its own write rate
+     * while the budget lasts, and a drained table simply drops out and stops
+     * costing anything.
+     *
+     * A target that embeds ZERO rows in its round is treated as drained FOR THIS
+     * SWEEP. That covers both "nothing left to do" and "everything left is a
+     * persistent failure" — backfillTable's own zero-progress break already
+     * distinguishes them, and re-attempting a persistently failing target every
+     * round would burn the whole budget on rows that cannot succeed.
+     */
+    const deadline = Date.now() + budgetMs;
+    const drained = new Set<string>();
+    const consumed = new Map<string, number>();
+    let rounds = 0;
+    while (live.length > drained.size && Date.now() < deadline) {
+      rounds += 1;
+      for (const { target, spaceAware } of live) {
+        if (drained.has(target.table)) continue;
+        if (Date.now() >= deadline) break;
+        const used = consumed.get(target.table) ?? 0;
+        if (used >= maxRowsPerTarget) {
+          drained.add(target.table);
+          continue;
+        }
+        try {
+          const s = await backfillTable(
+            sql,
+            target,
+            embed,
+            Math.min(BATCH_SIZE, maxRowsPerTarget - used),
+            mode,
+            spaceAware,
+            embedMany ?? undefined,
+          );
+          consumed.set(target.table, used + s.scanned);
+          const acc = byTable.get(target.table)!;
+          acc.scanned += s.scanned;
+          acc.embedded += s.embedded;
+          acc.errors += s.errors;
+          acc.durationMs += s.durationMs;
+          if (s.embedded === 0) drained.add(target.table);
+        } catch (err) {
+          const acc = byTable.get(target.table)!;
+          acc.errors += 1;
+          drained.add(target.table);
+          console.warn(`[embed-backfill] ${target.table} failed: ${(err as Error).message}`);
+        }
+      }
+    }
+    if (rounds > 0) {
+      const elapsed = Math.round((Date.now() - (deadline - budgetMs)) / 1000);
+      console.log(
+        `[embed-backfill] drain: ${rounds} round(s) in ${elapsed}s ` +
+          `(budget ${Math.round(budgetMs / 1000)}s) · drained ${drained.size}/${live.length} target(s)` +
+          (drained.size < live.length ? ' · budget expired with work remaining' : ''),
+      );
     }
     // Canonical TARGETS order regardless of this sweep's rotation.
     const results: BackfillStats[] = TARGETS.map((t) => byTable.get(t.table)!);

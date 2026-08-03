@@ -5,9 +5,20 @@
 // plain SELECT, not the 0.4-0.5s buildDigest + human-queue ranking + flow-metrics
 // over the whole improvement corpus it used to run on every read.
 //
-// Snapshots key on (workspace_id, harness_slug, key) with NO arg dimension, so a
-// NON-default view (a state filter, a custom limit, or the per-Hive lens) MUST
-// fall through to the live inline compute (computeLearningImprovementsSnapshot).
+// Snapshots key on (workspace_id, harness_slug, key) with no ARG dimension, so a
+// NON-default view (a state filter or a custom limit) MUST fall through to the
+// live inline compute (computeLearningImprovementsSnapshot).
+//
+// WI-7432: the per-Hive lens is the EXCEPTION, and it is the variant the owner is
+// actually in — the Learning tab inherits the pot lens from the top-bar selector,
+// so a normal desktop mount carries `hive: '<slug>'`. It used to fall through here
+// and pay a full live compute on EVERY mount (0.35-0.52s warm, 1.56-3.19s cold,
+// 300,440 B), which meant the precomputed fast path served only the All-Pots case
+// — the case nobody is in. It needs no arg dimension: harness_slug IS the pot
+// dimension, so a sibling producer (`learning.improvements.hive`) precomputes the
+// lensed digest per pot. These tests pin BOTH legs: the snapshot HIT serves without
+// computing, and a MISS still falls through to the live compute so the path is
+// never worse than it was before.
 // The `recordQueueExposure` owner-preference side-effect MUST fire on the REAL
 // read in BOTH branches (never the precompute routine), keyed off whatever
 // humanQueue the read returned. These tests pin exactly those invariants.
@@ -17,11 +28,18 @@ import { knownQueryNamesV2 } from './index';
 
 const {
   readDerivedSnapshotRowsMock,
+  readDerivedSnapshotMock,
   registerDerivedReadMock,
   computeSnapshotMock,
   recordQueueExposureMock,
 } = vi.hoisted(() => ({
   readDerivedSnapshotRowsMock: vi.fn(async (_key: string) => [] as unknown[]),
+  // Defaults to a MISS — the shape readDerivedSnapshot returns for a cold pot
+  // (payload null + meta.missing). A test that wants a HIT overrides it.
+  readDerivedSnapshotMock: vi.fn(async (_key: string, _opts?: { harnessSlug?: string }) => ({
+    payload: null as unknown,
+    meta: { computedAt: null, computeMs: null, missing: true, stale: false, error: null, precomputed: false },
+  })),
   registerDerivedReadMock: vi.fn(),
   computeSnapshotMock: vi.fn(async (_a: unknown) => [] as unknown[]),
   recordQueueExposureMock: vi.fn(async (_ids: string[]) => {}),
@@ -29,6 +47,7 @@ const {
 
 vi.mock('../derived-reads/registry', () => ({
   readDerivedSnapshotRows: readDerivedSnapshotRowsMock,
+  readDerivedSnapshot: readDerivedSnapshotMock,
   registerDerivedRead: registerDerivedReadMock,
 }));
 vi.mock('../harness/improvements/learning-digest-snapshot', () => ({
@@ -49,7 +68,13 @@ describe('learning.improvements resolver gate', () => {
   describe('default vs non-default routing + exposure side-effect', () => {
     beforeEach(() => {
       vi.resetModules();
-      for (const m of [readDerivedSnapshotRowsMock, computeSnapshotMock, recordQueueExposureMock]) m.mockClear();
+      for (const m of [
+        readDerivedSnapshotRowsMock,
+        readDerivedSnapshotMock,
+        computeSnapshotMock,
+        recordQueueExposureMock,
+      ])
+        m.mockClear();
     });
     afterEach(() => vi.resetModules());
 
@@ -78,12 +103,56 @@ describe('learning.improvements resolver gate', () => {
       expect(recordQueueExposureMock).toHaveBeenCalledWith(['EI-9']);
     });
 
-    it('the per-Hive lens falls through to inline compute (snapshot has no per-hive variant)', async () => {
+    // WI-7432 — the owner's actual variant. Both legs are pinned: a HIT must not
+    // compute (that IS the fix), and a MISS must still compute (so the fix can
+    // never make a cold pot worse than it was).
+    it('the per-Hive lens is SERVED from the per-pot snapshot — keyed by harnessSlug, never the inline compute', async () => {
+      const snap = { humanQueue: [{ id: 'EI-7' }], flow: {}, recurringSignatures: [] };
+      readDerivedSnapshotMock.mockImplementation(async () => ({
+        payload: [snap] as unknown,
+        meta: { computedAt: 123, computeMs: 4, missing: false, stale: false, error: null, precomputed: true },
+      }));
+      const { resolveNamedQueryV2: r } = await import('./index');
+      const rows = (await r('learning.improvements', { hive: 'alpha-hive' })) as Array<Record<string, unknown>>;
+      // The pot dimension IS harness_slug — no new arg dimension was needed.
+      expect(readDerivedSnapshotMock).toHaveBeenCalledWith('learning.improvements.hive', {
+        harnessSlug: 'alpha-hive',
+      });
+      // The whole point: the owner's every-mount live compute is gone.
+      expect(computeSnapshotMock).not.toHaveBeenCalled();
+      expect(rows).toHaveLength(1);
+      // Staleness meta rides along so the panel can show "as of HH:MM", same
+      // contract as the default variant.
+      expect((rows[0]._meta as { derivedRead?: { precomputed?: boolean } })?.derivedRead?.precomputed).toBe(true);
+      await flushMicrotasks();
+      expect(recordQueueExposureMock).toHaveBeenCalledWith(['EI-7']);
+    });
+
+    it('a per-Hive snapshot MISS (cold pot) falls through to the live compute — never worse than pre-WI-7432', async () => {
+      // The hoisted default is already a miss; be explicit about what is under test.
+      readDerivedSnapshotMock.mockImplementation(async () => ({
+        payload: null as unknown,
+        meta: { computedAt: null, computeMs: null, missing: true, stale: false, error: null, precomputed: false },
+      }));
+      computeSnapshotMock.mockImplementation(async () => [{ humanQueue: [{ id: 'EI-8' }], flow: {} }]);
+      const { resolveNamedQueryV2: r } = await import('./index');
+      const rows = (await r('learning.improvements', { hive: 'alpha-hive' })) as unknown[];
+      expect(readDerivedSnapshotMock).toHaveBeenCalled();
+      // A miss must NOT render the pot blank — it serves live data while the
+      // background fill readDerivedSnapshot kicked warms the pot for next time.
+      expect(computeSnapshotMock).toHaveBeenCalledWith({ hive: 'alpha-hive' });
+      expect(rows).toHaveLength(1);
+      await flushMicrotasks();
+      expect(recordQueueExposureMock).toHaveBeenCalledWith(['EI-8']);
+    });
+
+    it('scope:"all" with a hive is a different POPULATION — it must not be served from the per-pot snapshot', async () => {
       computeSnapshotMock.mockImplementation(async () => [{ humanQueue: [], flow: {} }]);
       const { resolveNamedQueryV2: r } = await import('./index');
-      await r('learning.improvements', { hive: 'alpha-hive' });
+      await r('learning.improvements', { hive: 'alpha-hive', scope: 'all' });
+      expect(readDerivedSnapshotMock).not.toHaveBeenCalled();
       expect(readDerivedSnapshotRowsMock).not.toHaveBeenCalled();
-      expect(computeSnapshotMock).toHaveBeenCalledWith({ hive: 'alpha-hive' });
+      expect(computeSnapshotMock).toHaveBeenCalledWith({ hive: 'alpha-hive', scope: 'all' });
       await flushMicrotasks();
       // Empty humanQueue ⇒ no exposure row written (nothing was shown).
       expect(recordQueueExposureMock).not.toHaveBeenCalled();

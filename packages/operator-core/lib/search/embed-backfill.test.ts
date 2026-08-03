@@ -96,15 +96,18 @@ afterEach(() => {
 
 describe('runBackfillSweep (P-010)', () => {
   it('runs entirely on the shared org pool and writes vectors for NULL rows', async () => {
+    // P-005: probe-ALL-then-drain. The queue is ext-probe, then one column-probe
+    // per TARGET, then the round-robin drain.
     unsafeResults = [
       [{ extname: 'vector' }],            // pg_extension probe
-      // target 1 (harness_escalations): column exists → one batch → empty
+      // target 1 (harness_escalations): column exists → the only live target
       [{ column_name: 'body_embedding' }],
+      // the other 9 targets: column missing → skipped
+      [], [], [], [], [], [], [], [], [],
+      // drain round 1 for harness_escalations
       [{ id: '(0,1)', body: 'escalation text' }],
       [],                                  // UPDATE (returns rows array)
       [],                                  // next batch → empty, loop ends
-      // target 2..4: column missing → skipped
-      [], [], [],
     ];
 
     const r = await runBackfillSweep();
@@ -403,7 +406,9 @@ describe('embedding-space discriminator (WI-3616)', () => {
     // match nothing, silently reintroducing the original bug.
     expect(select.q).toContain('IS DISTINCT FROM $2');
     expect(select.q).toContain('text_embedding IS NULL OR');
-    expect(select.params).toEqual([10, 'local']);
+    // P-005: $3 is the failure-skip OFFSET (0 on the first pull — nothing has
+    // failed yet). It is bound on every pull so the placeholder count is stable.
+    expect(select.params).toEqual([10, 'local', 0]);
 
     // The vector and the space it belongs to are written together — a row can
     // never advertise a space it is not actually in.
@@ -431,7 +436,8 @@ describe('embedding-space discriminator (WI-3616)', () => {
 
     const select = calls.find((c) => c.q.includes('SELECT'))!;
     expect(select.q).not.toContain('_mode');
-    expect(select.params).toEqual([10]); // no mode bound
+    // No mode bound — but the P-005 OFFSET still is, at $2 instead of $3.
+    expect(select.params).toEqual([10, 0]);
 
     const update = calls.find((c) => c.q.includes('UPDATE'))!;
     expect(update.q).not.toContain('_mode');
@@ -440,14 +446,18 @@ describe('embedding-space discriminator (WI-3616)', () => {
   });
 
   it('sweep turns space-awareness on only when the discriminator column exists', async () => {
+    // P-005 reordered the sweep: ALL targets are schema-probed first, THEN drained
+    // round-robin. So the queue is ext-probe, 10 column-probes, then the drain.
     unsafeResults = [
       [{ extname: 'vector' }],
       // harness_escalations: BOTH the vector column and its _mode column exist.
       [{ column_name: 'body_embedding' }, { column_name: 'body_embedding_mode' }],
+      // The other 9 TARGETS probe as column-missing → skipped, never drained.
+      [], [], [], [], [], [], [], [], [],
+      // Drain round 1 for harness_escalations: batch, UPDATE, then empty.
       [{ k0: 'h', k1: 'p', body: 'escalation text' }],
       [],
       [],
-      [], [], [], [],
     ];
 
     await runBackfillSweep();
@@ -638,5 +648,134 @@ describe('logMemoryVecOutcome — silent-failure discrimination', () => {
       zeroYield: { vectorSpaceEmpty: false, canonicalHasRows: true },
     });
     expect(new Set([disabled, dead, healthy]).size).toBe(3);
+  });
+});
+
+/**
+ * P-005 — drain policy: freshest-first ordering, batched embeds, failure-skip,
+ * and round-robin fairness in place of the per-sweep row ceiling.
+ *
+ * These guard the four properties that made the sweep starve a big table:
+ * arbitrary pull order, one HTTP round-trip per ROW, persistent failures pinning
+ * the head of the queue, and a ceiling set without reference to write rate.
+ */
+describe('embed-backfill drain policy (P-005)', () => {
+  const ORDERED = {
+    table: 'harness_shared.session_turns',
+    embedCol: 'text_embedding',
+    bodySql: 'text',
+    keyCols: ['id'],
+    orderBySql: 'ingested_at DESC',
+  };
+  const UNORDERED = {
+    table: 'harness_shared.operator_turns',
+    embedCol: 'text_embedding',
+    bodySql: 'text',
+    keyCols: ['id'],
+  };
+
+  function fakeSql(results: unknown[][]) {
+    const calls: Array<{ q: string; params?: unknown[] }> = [];
+    const sql = {
+      unsafe: async (q: string, params?: unknown[]) => {
+        calls.push({ q, params });
+        return results.shift() ?? [];
+      },
+    };
+    return { sql: sql as never, calls };
+  }
+  const embed = async (): Promise<number[]> => VEC;
+  const selects = (calls: Array<{ q: string }>) => calls.filter((c) => c.q.includes('SELECT'));
+
+  it('pulls FRESHEST-FIRST when the target declares an order', async () => {
+    const { sql, calls } = fakeSql([[{ k0: 'r1', body: 'x' }], [], []]);
+    await backfillTable(sql, ORDERED, embed, 10, 'gemma', true);
+    expect(selects(calls)[0].q).toContain('ORDER BY ingested_at DESC');
+  });
+
+  it('omits ORDER BY entirely for a target that declares none', async () => {
+    const { sql, calls } = fakeSql([[{ k0: 'r1', body: 'x' }], [], []]);
+    await backfillTable(sql, UNORDERED, embed, 10, 'gemma', true);
+    expect(selects(calls)[0].q).not.toContain('ORDER BY');
+  });
+
+  it('embeds a whole batch in ONE call when a batch embedder is supplied', async () => {
+    const rows = [
+      { k0: 'a', body: 'aaa' },
+      { k0: 'b', body: 'bbb' },
+      { k0: 'c', body: 'ccc' },
+    ];
+    const { sql } = fakeSql([rows, [], [], [], []]);
+    const batchCalls: string[][] = [];
+    const embedMany = async (texts: string[]) => {
+      batchCalls.push(texts);
+      return texts.map(() => VEC);
+    };
+    const perRow = vi.fn(async () => VEC);
+
+    const stats = await backfillTable(sql, ORDERED, perRow, 10, 'gemma', true, embedMany);
+
+    expect(stats.embedded).toBe(3);
+    // ONE batch call carrying all three bodies — not three single-text calls.
+    expect(batchCalls).toEqual([['aaa', 'bbb', 'ccc']]);
+    // The per-row embedder is never touched on the happy path.
+    expect(perRow).not.toHaveBeenCalled();
+  });
+
+  it('falls back to the PER-ROW embedder when the batch call fails, so one bad row cannot sink its batch', async () => {
+    const rows = [
+      { k0: 'a', body: 'aaa' },
+      { k0: 'b', body: 'bbb' },
+    ];
+    const { sql } = fakeSql([rows, [], [], [], []]);
+    const embedMany = async () => {
+      throw new Error('sidecar_embed_400: one text too long');
+    };
+    const perRow = vi.fn(async () => VEC);
+
+    const stats = await backfillTable(sql, ORDERED, perRow, 10, 'gemma', true, embedMany);
+
+    // Every row still lands, via the isolating per-row path.
+    expect(stats.embedded).toBe(2);
+    expect(perRow).toHaveBeenCalledTimes(2);
+  });
+
+  it('OFFSETs past rows that persistently FAIL, so they cannot pin the head of an ordered queue', async () => {
+    // Row 'bad' always throws; 'good' succeeds. With a stable ORDER BY and no
+    // offset, 'bad' would be re-selected in every batch forever.
+    const { sql, calls } = fakeSql([
+      [{ k0: 'bad', body: 'bad' }, { k0: 'good', body: 'good' }],
+      [], // UPDATE for 'good'
+      [], // next pull → empty
+    ]);
+    const flaky = async (t: string) => {
+      if (t === 'bad') throw new Error('permanent');
+      return VEC;
+    };
+
+    const stats = await backfillTable(sql, ORDERED, flaky, 10, 'gemma', true);
+
+    expect(stats.embedded).toBe(1);
+    expect(stats.errors).toBe(1);
+    const pulls = selects(calls);
+    // First pull starts at 0; the pull AFTER a failure skips it.
+    expect(pulls[0].params![2]).toBe(0);
+    expect(pulls[1].params![2]).toBe(1);
+  });
+
+  it('does NOT cap a target at the old 4-batch ceiling — the bound is time, not rows', async () => {
+    // Nine consecutive full batches of 1 row each. The pre-P-005 default would
+    // have stopped this target after BATCH_SIZE*4 rows regardless of capacity.
+    const rows: unknown[][] = [];
+    for (let i = 0; i < 9; i++) {
+      rows.push([{ k0: `r${i}`, body: `body-${i}` }]);
+      rows.push([]); // its UPDATE
+    }
+    rows.push([]); // final empty pull
+    const { sql } = fakeSql(rows);
+
+    // maxRows well above the old ceiling: the loop must keep going, not stop at 4.
+    const stats = await backfillTable(sql, ORDERED, embed, 1000, 'gemma', true);
+    expect(stats.embedded).toBe(9);
   });
 });
