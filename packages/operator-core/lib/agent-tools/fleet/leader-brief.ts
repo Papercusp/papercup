@@ -1288,7 +1288,9 @@ export default defineTool({
       '`spinning:true` → coord:send{wake:"required"}. ' +
       'Nonzero `unownedCriticals`/`abandonedUnclaimed` → CLAIM it (release=no-op, WI-6678); the ' +
       '`…Federated` sibling is remote + unclaimable (WI-6846). ' +
-      '`idleWithClaimableAlert` → wake those members; never bench (the queue is NOT empty).',
+      'Every `*Alert` ships a `*AlertFalsifier` — RUN its read-only `check` BEFORE acting: it ' +
+      'either confirms the alert or KILLS it. `idleWithClaimableAlert` → falsify first (members ' +
+      'AT their claim cap render as idle), then wake; never bench (the queue is NOT empty).',
   },
   capability: 'work_items:read',
   requirePrincipal: false,
