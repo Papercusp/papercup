@@ -416,7 +416,16 @@ export const itemSpec = z.object({
   blocking: blockingArg,
   why: whyArg,
   files: z.array(z.string()).optional(),
-  plan_slug: z.string().optional(),
+  // P-005/D-097: normally supplied by the send seam from the sender's declared
+  // plan lane, so the arg exists only to OVERRIDE. Said here because tier 1's
+  // whole claim is that the agent never has to remember it.
+  plan_slug: z
+    .string()
+    .optional()
+    .describe(
+      'Usually AUTO-DERIVED — omit it. The seam stamps your declared plan (coord:orient ' +
+        '{ planSlug }); pass this only to attribute the message to a DIFFERENT plan.',
+    ),
   related_msg_id: z
     .string()
     .optional()

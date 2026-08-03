@@ -1,8 +1,13 @@
-//! SSE→IPC pivot (SP-TUI). Mirror of `apps/operator/lib/endpoint-ipc/framing.ts`
+//! SSE→IPC pivot (SP-TUI). Mirror of `libs/generic/ipc-framing/src/index.ts`
 //! and `papercusp-desktop/src-tauri/src/endpoint_ipc_framing.rs` — encoder output
 //! and decoder behaviour must match byte-for-byte.
 //!
-//! Frame format (per `apps/operator/lib/endpoint-ipc/PROTOCOL.md`):
+//! ⚠ Unlike those two, this mirror asserts NO shared golden byte-vector, so
+//! nothing here actually FAILS if it drifts from them (EI filed 2026-08-03).
+//! The `apps/operator/...` paths this header used to name have not existed
+//! since the codec moved to `libs/generic/ipc-framing`.
+//!
+//! Frame format (per `packages/operator-core/lib/endpoint-ipc/PROTOCOL.md`):
 //!   [4B length BE][1B type][payload (length bytes)]
 //! Big-endian for all multi-byte integers. 16 MiB per-frame cap.
 #![allow(dead_code)] // consumed by ipc.rs (next step of the SSE→IPC pivot).
