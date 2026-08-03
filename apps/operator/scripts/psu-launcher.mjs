@@ -45,6 +45,24 @@ import {
 } from '@papercusp/orchestrator/omp-gateway-config';
 
 export const AGENTS = ['claude', 'omp', 'codex'];
+
+/**
+ * Does `--role=<role>` launch on the SU tier (full engineer playbook + superuser
+ * MCP + that role's addendum) rather than via the role-scoped bootstrap? EI-996.
+ *
+ * `su` itself is the plain SU flow and is NOT a su-tier ROLE — it carries no
+ * addendum — but both fall through to the same launch path, which is why this
+ * answers the ROUTING question ("skip roleFlow") and `suRoleFor` separately
+ * answers the ADDENDUM question ("which role's lines, if any").
+ */
+export function launchesOnSuTier(role) {
+  return role === 'su' || SU_TIER_ROLES.includes(role);
+}
+
+/** The su_role to send for a launch, or null for a plain su session. EI-996. */
+export function suRoleFor(role) {
+  return role !== 'su' && SU_TIER_ROLES.includes(role) ? role : null;
+}
 /** Sentinel value for the "NO PLAN" picker row. Uses non-slug chars
  *  (`<`/`>`) so it can never collide with a real plan slug. */
 export const NO_PLAN = '<no-plan>';
@@ -7100,12 +7118,12 @@ async function main() {
   // ⚠ This GRANTS THE SUPERUSER TIER to the roles listed here — a deliberate,
   // owner-authorized privilege escalation, not an incidental side effect. Adding
   // a role to SU_TIER_ROLES is a security decision; make it consciously.
-  if (role !== 'su' && !SU_TIER_ROLES.includes(role)) {
+  if (!launchesOnSuTier(role)) {
     await roleFlow(args, role, rolesMeta);
     return;
   }
   // Reached with role === 'su' (su_role null) or a su-tier role name.
-  args.suRole = role !== 'su' ? role : null;
+  args.suRole = suRoleFor(role);
 
   // ── plain SU / engineer flow (unchanged) ──
   let selections;

@@ -764,7 +764,13 @@ export async function runSinglePrimaryCheck(
   // an unread count, where the raw value is `null` and the verdict reports 0 alongside
   // `countObserved: false`. The pager also receives the whole verdict, so it can render
   // "could not be read" honestly instead of asserting a zero nobody observed.
-  if (verdict.severity === 'blocker' && !alreadyPagedByPeer) await page(verdict, streak, verdict.count, ws);
+  // `peerFalsifiedOurReading` (EI-19442084790376701) closes the THIRD route to the same false
+  // urgency: `alreadyPagedByPeer` only suppresses while the escalation is still OPEN, and a
+  // peer's all-clear closes it — which is precisely what re-arms this line every debounce
+  // window. See the derivation above the escalate() call.
+  if (verdict.severity === 'blocker' && !alreadyPagedByPeer && !peerFalsifiedOurReading) {
+    await page(verdict, streak, verdict.count, ws);
+  }
   return { fired: true, verdict, selfCleared: false };
 }
 

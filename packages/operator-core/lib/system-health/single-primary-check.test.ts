@@ -452,6 +452,77 @@ describe('runSinglePrimaryCheck (hysteresis + debounce + self-clear)', () => {
     expect(paged.length).toBe(1); // …but does NOT re-page: openState.repeatCount was 2.
   });
 
+  // EI-19442084790376701 — THE PAGE-LOOP. `alreadyPagedByPeer` only suppresses while the
+  // escalation is still OPEN. WI-7291 has a peer that reads a healthy count all-clear it,
+  // which RESOLVES the row — so the next escalate() gets a FRESH record with repeatCount 1
+  // and the pager re-arms. One stuck reader then pages the fleet every debounce window
+  // forever (measured 2026-08-03: every 30min for ~10h, streak past 266, each alarm followed
+  // ~2min later by a peer's all-clear). Modeled here by clearing `openState` between cycles,
+  // which is exactly what a peer's resolve does to the durable store.
+  const mkSharedEscalate = (openState: { v: { msgId: string; repeatCount: number } | null }) => async () => {
+    openState.v = openState.v
+      ? { ...openState.v, repeatCount: openState.v.repeatCount + 1 }
+      : { msgId: 'esc-1', repeatCount: 1 };
+    return { msg_id: openState.v.msgId, repeatCount: openState.v.repeatCount };
+  };
+
+  it('does NOT re-page after a peer observed a healthy count and all-cleared our previous page', async () => {
+    const openState = { v: null as { msgId: string; repeatCount: number } | null };
+    const paged: unknown[] = [];
+    let now = 0;
+    const deps = {
+      count: async () => 0,
+      routineFireAgeSec: async () => null,
+      escalate: mkSharedEscalate(openState),
+      page: async (v: unknown) => { paged.push(v); },
+      // The peer already all-cleared: this condition is NOT durably open.
+      openConditions: async () => [] as string[],
+      now: () => now,
+    };
+
+    expect((await runSinglePrimaryCheck('ws', deps)).fired).toBe(false); // streak 1
+    now += 3 * 60_000;
+    expect((await runSinglePrimaryCheck('ws', deps)).fired).toBe(true);
+    // The FIRST page is never suppressed — "not currently open" is also true of a real
+    // outage nobody has reported yet, so it can never be the suppression signal on its own.
+    expect(paged.length).toBe(1);
+
+    // A peer reads healthy and all-clears: the durable escalation row is RESOLVED, which is
+    // what re-armed the pager before this fix.
+    openState.v = null;
+    now += 31 * 60_000; // past debounceMs
+
+    const again = await runSinglePrimaryCheck('ws', deps);
+    expect(again.fired).toBe(true);  // still ESCALATED — the disagreement stays durable/visible…
+    expect(paged.length).toBe(1);    // …but the urgent page is SUPPRESSED. Pre-fix this was 2.
+  });
+
+  it('fails OPEN — a failed openConditions read must never suppress a page', async () => {
+    const openState = { v: null as { msgId: string; repeatCount: number } | null };
+    const paged: unknown[] = [];
+    let now = 0;
+    const deps = {
+      count: async () => 0,
+      routineFireAgeSec: async () => null,
+      escalate: mkSharedEscalate(openState),
+      page: async (v: unknown) => { paged.push(v); },
+      openConditions: async () => { throw new Error('durable read failed'); },
+      now: () => now,
+    };
+
+    expect((await runSinglePrimaryCheck('ws', deps)).fired).toBe(false);
+    now += 3 * 60_000;
+    await runSinglePrimaryCheck('ws', deps);
+    expect(paged.length).toBe(1);
+
+    openState.v = null;
+    now += 31 * 60_000;
+    await runSinglePrimaryCheck('ws', deps);
+    // Suppression requires POSITIVE evidence a peer falsified us — never the absence of a
+    // successful read, which would let a flaky query silence a real outage.
+    expect(paged.length).toBe(2);
+  });
+
   it('SELF-CLEARS its own escalation when the count returns to 1', async () => {
     const escalations: unknown[] = [];
     const resolves: Array<{ msg_id: string; choice: string }> = [];

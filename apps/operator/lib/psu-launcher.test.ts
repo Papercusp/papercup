@@ -67,6 +67,8 @@ import {
   trackedForkEnvelopeEnv,
   forkFallbackAccountRoute,
   freshSuBootstrapBody,
+  launchesOnSuTier,
+  suRoleFor,
   psuLaunchArgvRecord,
   effectiveAutoMode,
   assertFleetJoined,
@@ -1647,6 +1649,21 @@ describe('psu-launcher arg parsing', () => {
     // omitted when not passed (no null noise on the wire)
     const noLabel = freshSuBootstrapBody({ agent: 'claude', workspace: 'ws1', harness: null, plan: null }, {});
     expect('label' in noLabel).toBe(false);
+  });
+
+  it('launchesOnSuTier/suRoleFor route ONLY su + the allow-listed roles to the su flow (EI-996)', () => {
+    // This predicate is the privilege boundary: a role it admits launches with
+    // the SUPERUSER MCP tier instead of a role-scoped one. Everything not on the
+    // list must still go to roleFlow.
+    expect(launchesOnSuTier('su')).toBe(true);
+    expect(launchesOnSuTier('planner')).toBe(true);
+    for (const role of ['worker', 'scoper', 'reviewer', 'architect', 'validator', 'documenter']) {
+      expect(launchesOnSuTier(role), `${role} must NOT get the su tier`).toBe(false);
+      expect(suRoleFor(role)).toBeNull();
+    }
+    // 'su' takes the same path but carries NO addendum — it is not a su-tier ROLE.
+    expect(suRoleFor('su')).toBeNull();
+    expect(suRoleFor('planner')).toBe('planner');
   });
 
   it('freshSuBootstrapBody forwards a su-tier role NAME as su_role, never addendum prose (EI-996)', () => {
