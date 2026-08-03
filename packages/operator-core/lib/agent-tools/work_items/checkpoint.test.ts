@@ -43,6 +43,9 @@ vi.mock('../../work-items', () => ({
     String((payload as Record<string, unknown>)._claimHold) === 'true',
 }));
 import checkpoint from './checkpoint';
+// EI-19400299440742193: the guard asserts against the REAL caps, not literals, so a
+// future cap change moves the test with the code instead of silently un-pinning it.
+import { CARRY_CAP_HARD_MULTIPLE, CARRY_ROW_SOFT_CAPS } from '../../carry-note';
 import { readFileSync } from 'node:fs';
 // Resolves to the MOCK above (that is the point) — so its keys are the double's real export set.
 import * as workItemsMocked from '../../work-items';
@@ -957,6 +960,104 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       expect(stored).toContain('- ✓ X holds');
       expect(stored).not.toContain('- ? X holds');
       expect(stored).toContain('evidence: ran probe X at 21:40Z');
+    });
+
+    /**
+     * EI-19400299440742193 — the second instance of the class WI-7264 fixed on
+     * loop:checkpoint. A zod `.max()` REJECTS THE WHOLE CALL, so one sub-field a few
+     * chars over its cap discarded the entire accompanying multi-KB checkpoint and the
+     * agent re-sent it: the bytes paid twice, and — the part that actually matters — an
+     * item could be left with NO durable state at the moment its session ended, which is
+     * exactly what a checkpoint exists to prevent.
+     *
+     * Measured over the same 6-day transcript window as WI-7264
+     * (`node scripts/measure-carry-note-population.mjs 6 'work_items:checkpoint'`):
+     * 665 calls, 11 rejected, and 6 of the 9 SCHEMA rejections were a `checks[].recheck`
+     * overrun — 32,967 chars. The observed overruns were 311, 335, 386 and 460 chars
+     * against a 300 cap, i.e. all a near miss rather than anything pathological.
+     *
+     * Deliberately NOT ported from WI-7264: the `{status, evidence}` row-shape coercion.
+     * Re-measuring before building found ZERO instances of that confusion on this tool
+     * (its one wrong-shape rejection was `dependsOn: expected array, received string`,
+     * a different field entirely), so porting it would have added a coercion path
+     * nothing exercises. The contract pinned here is cap-truncation only.
+     */
+    describe("EI-19400299440742193: repair-don't-refuse — an oversized check row must not discard the checkpoint", () => {
+      it('WRITES the checkpoint instead of rejecting it when a recheck overruns, and reports the trim', async () => {
+        withPrior(null);
+        const r = (await one({
+          id: 'WI-7',
+          checkpoint: 'substantial in-flight state the agent already paid to transmit',
+          checks: [{ claim: 'gate is green', recheck: 'x'.repeat(360) }],
+        })) as { ok: boolean; repairs?: { field: string; kind: string; detail?: string }[] };
+        // The whole checkpoint used to be discarded over this one field.
+        expect(r.ok).toBe(true);
+        const stored = await lastStored();
+        expect(stored).toContain('substantial in-flight state');
+        // The trim is REPORTED — a cut the caller cannot see is EI-18723223344390510.
+        expect(r.repairs).toHaveLength(1);
+        expect(r.repairs![0]).toMatchObject({ field: 'checks[0].recheck', kind: 'truncated' });
+        expect(r.repairs![0]!.detail).toContain('360');
+      });
+
+      it('truncates to the SOFT cap — the stored row is bounded, not merely accepted', async () => {
+        withPrior(null);
+        await one({
+          id: 'WI-7',
+          checkpoint: 'body',
+          checks: [{ claim: 'c', recheck: 'y'.repeat(900), verified: 'z'.repeat(900) }],
+        });
+        const stored = await lastStored();
+        // Relaxing the schema must not mean an unbounded row re-injects on every pickup.
+        expect(stored!).not.toContain('y'.repeat(400));
+        expect(stored!).not.toContain('z'.repeat(400));
+      });
+
+      it('caps `claim` too, and reports every trimmed field separately', async () => {
+        withPrior(null);
+        const r = (await one({
+          id: 'WI-7',
+          checkpoint: 'body',
+          checks: [{ claim: 'C'.repeat(700), recheck: 'R'.repeat(400), verified: 'V'.repeat(400) }],
+        })) as { ok: boolean; repairs?: { field: string }[] };
+        expect(r.ok).toBe(true);
+        expect(r.repairs?.map((x) => x.field)).toEqual([
+          'checks[0].claim',
+          'checks[0].recheck',
+          'checks[0].verified',
+        ]);
+      });
+
+      it('omits `repairs` entirely when nothing was trimmed — an unaffected result keeps its old shape', async () => {
+        withPrior(null);
+        const r = (await one({
+          id: 'WI-7',
+          checkpoint: 'body',
+          checks: [{ claim: 'short', recheck: 'also short', verified: 'observed 04:00Z' }],
+        })) as { ok: boolean; repairs?: unknown };
+        expect(r.ok).toBe(true);
+        expect(r).not.toHaveProperty('repairs');
+      });
+
+      // These two reject at the SCHEMA, before the handler runs, so they assert on
+      // `parse` throwing rather than on an ok:false envelope — same shape as the
+      // WI-7264 block in loop/checkpoint.test.ts.
+      it('still REJECTS a genuinely undeclared key — EI-10883 is preserved, not weakened', () => {
+        // Relaxing a CAP is not the same as accepting an arg the tool never declared.
+        expect(() => parse({ id: 'WI-7', checkpoint: 'body', checks: [{ claim: 'a', nonsenseField: 'b' }] })).toThrow();
+      });
+
+      it('a hard backstop still exists — a pathological row is refused rather than stored', () => {
+        const hard = CARRY_ROW_SOFT_CAPS.recheck * CARRY_CAP_HARD_MULTIPLE;
+        // At the backstop: accepted by the schema, then truncated to the soft cap.
+        expect(() =>
+          parse({ id: 'WI-7', checkpoint: 'body', checks: [{ claim: 'a', recheck: 'x'.repeat(hard) }] }),
+        ).not.toThrow();
+        // Past it: still refused. The relaxation is a 4× headroom, not an open door.
+        expect(() =>
+          parse({ id: 'WI-7', checkpoint: 'body', checks: [{ claim: 'a', recheck: 'x'.repeat(hard + 1) }] }),
+        ).toThrow();
+      });
     });
   });
 });

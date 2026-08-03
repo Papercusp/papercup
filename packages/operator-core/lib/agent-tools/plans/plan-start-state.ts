@@ -36,8 +36,18 @@ export type StartStatus = 'started' | 'paused' | 'done' | null;
  * that must stay dependency-free (the `coord.plans` sync projection, WI-7256)
  * cannot import the predicate from here without dragging Postgres across its
  * boundary, and duplicating it is how the two copies drift.
+ *
+ * ⚠ IMPORT-then-export, NOT `export { … } from '…'`. A re-export forwards the
+ * binding to importers but creates NO LOCAL binding, so `reconcileStartStatus`
+ * below — which calls `isTerminalPlanStatus` in THIS module — threw
+ * `ReferenceError: isTerminalPlanStatus is not defined` at runtime while every
+ * importer resolved fine and the change looked correct (WI-7256 fallout; it
+ * red-pinned the fleet gate across 3 test files). `lint:no-reexport-used-locally`
+ * fails the build if this shape comes back.
  */
-export { TERMINAL_PLAN_STATUSES, isTerminalPlanStatus } from '@papercusp/plan-parser';
+import { TERMINAL_PLAN_STATUSES, isTerminalPlanStatus } from '@papercusp/plan-parser';
+
+export { TERMINAL_PLAN_STATUSES, isTerminalPlanStatus };
 
 /**
  * Reconcile the operational start-status reported to a reader against the
