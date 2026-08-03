@@ -315,6 +315,41 @@ auto-deploys it to `:3070`. Pipeline view: `/admin/git`. Long form + symptoms:
 > check above separates those two. (Measured 2026-08-02: all three cases confirmed
 > on `papercusp-desktop/bin/tauri-guarded` — EI-19370400151089283.)
 
+> ⚠⚠ **The SUPERPROJECT has the same trap for the opposite reason, and it is the far
+> more common one: a clean `git status --porcelain <path>` here means THE SWEEP RAN,
+> not that nobody edited the file.** git-sync commits the whole working tree every few
+> minutes, so the window in which a genuine edit shows as dirty is only minutes wide.
+> Outside it, an edited file and an untouched file are **indistinguishable** by that
+> command. Every agent edit passes through this state, so the failure is routine.
+>
+> 🚫 **Never use an empty `git status` as evidence that a test file was UNTOUCHED** —
+> i.e. that a passing suite *validated* a fix rather than having been edited to match
+> it. That is the specific unsound inference this warning exists to kill, and it
+> produces completion evidence that is well-formed, confidently stated, and confounded.
+>
+> Measured 2026-08-03 (EI-19393377570065475): an agent recorded verbatim *"The test file
+> is UNTOUCHED (git status --porcelain empty), so the tests validated the fix rather than
+> being edited to match it."* The file had been edited by a **different** agent 13 minutes
+> earlier (`7d0cd443d0`, 00:48:50Z) — materialising fixtures that disarmed the very
+> recurrence guard the fix relied on. `git status` was clean only because git-sync had
+> already swept it, and the quoted BEFORE/AFTER (2 failed → 55 passed) could not
+> discriminate the fix from those fixtures: 55/55 was already measurable with the unsound
+> drop still in place.
+>
+> ✅ **Anchor the question to a SHA, never to wall-clock or working-tree cleanliness** —
+> "was this file touched between the state I measured and now?":
+>
+> ```bash
+> B=<the sha you measured at>; F=<path>
+> git log --oneline $B..HEAD -- "$F"        # empty = genuinely untouched in THAT window
+> [ "$(git rev-parse $B:"$F")" = "$(git rev-parse HEAD:"$F")" ] \
+>   && echo UNCHANGED || echo CHANGED       # blob identity — immune to sweep timing
+> ```
+>
+> This is the same blob-identity technique the gate-containment recipe below prescribes,
+> and for the same reason: on a swept tree, identity is decidable where working-tree
+> status is not.
+
 > ⚠ **`git blame` on this repo never tells you who wrote a change — never trust it
 > for attribution, especially in an escalation.** git-sync commits the whole tree
 > under one identity, so blame is a false-positive generator, not a dead end —

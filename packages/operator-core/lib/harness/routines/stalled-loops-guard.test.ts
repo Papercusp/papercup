@@ -44,6 +44,7 @@ function status(overrides: Partial<LoopStatus> & { turnsStalled: boolean }): Loo
     lastWakeError: null,
     lastTurnAt: null,
     lastRealTurnAt: null,
+    firesStalled: false,
     lifecycleBackoff: null,
     ...overrides,
   };
@@ -56,7 +57,14 @@ describe('sweepStalledLoops (WI-6639 — act on turnsStalled instead of leaving 
     const autoPause = vi.fn(async () => {});
     const broadcast = vi.fn<BroadcastFn>(async () => true);
     const res = await sweepStalledLoops({ sql, workspaceId: 'ws' }, { getStatuses, autoPause, broadcast });
-    expect(res).toEqual({ checked: 0, paused: 0, sample: [], vetoedByRecentTurn: [], dryRun: false });
+    expect(res).toEqual({
+      checked: 0,
+      paused: 0,
+      sample: [],
+      vetoedByRecentTurn: [],
+      reArmedFireStarved: [],
+      dryRun: false,
+    });
     expect(getStatuses).not.toHaveBeenCalled();
     expect(autoPause).not.toHaveBeenCalled();
     expect(broadcast).not.toHaveBeenCalled();
@@ -278,5 +286,137 @@ describe('sweepStalledLoops (WI-6639 — act on turnsStalled instead of leaving 
       expect(wide.paused).toBe(0);
       expect(wide.vetoedByRecentTurn).toEqual(['su-x']);
     });
+  });
+});
+
+describe('sweepStalledLoops — fire-starved vs turn-stalled (EI-19406534159939583)', () => {
+  // Both populations below were observed LIVE in the same fleet on 2026-08-03, which is what
+  // makes this a discrimination test rather than a shape test: the guard used to disarm both.
+  const FIRE_STARVED = {
+    // Answered its last fire (turn AFTER fire), then nothing fired at it again.
+    lastFiredAt: '2026-08-03T03:21:00.000Z',
+    lastTurnAt: '2026-08-03T03:25:00.000Z',
+  };
+  const COMATOSE = {
+    // A fire landed and no turn ever followed it (turn BEFORE fire) — the WI-6639 population.
+    lastFiredAt: '2026-08-03T03:25:00.000Z',
+    lastTurnAt: '2026-08-03T01:00:00.000Z',
+  };
+
+  it('re-arms a fire-starved loop and NEVER disarms it', async () => {
+    const sql = fakeSql([{ id: 'rt_starved', target_owner_id: 'su-starved' }]);
+    const getStatuses = vi.fn(
+      async () =>
+        new Map([
+          ['su-starved', status({ ownerId: 'su-starved', turnsStalled: false, firesStalled: true, ...FIRE_STARVED })],
+        ]),
+    );
+    const autoPause = vi.fn(async () => {});
+    const rearm = vi.fn(async () => {});
+    const broadcast = vi.fn<BroadcastFn>(async () => true);
+
+    const res = await sweepStalledLoops({ sql, workspaceId: 'ws' }, { getStatuses, autoPause, rearm, broadcast });
+
+    expect(autoPause).not.toHaveBeenCalled();
+    expect(rearm).toHaveBeenCalledTimes(1);
+    expect(rearm.mock.calls[0][1]).toBe('rt_starved');
+    expect(res.paused).toBe(0);
+    expect(res.reArmedFireStarved).toEqual(['su-starved']);
+  });
+
+  it('still disarms the comatose population — the fix must not blunt the guard', async () => {
+    const sql = fakeSql([{ id: 'rt_dead', target_owner_id: 'su-dead' }]);
+    const getStatuses = vi.fn(
+      async () =>
+        new Map([['su-dead', status({ ownerId: 'su-dead', turnsStalled: true, firesStalled: false, ...COMATOSE })]]),
+    );
+    const autoPause = vi.fn(async () => {});
+    const rearm = vi.fn(async () => {});
+    const broadcast = vi.fn<BroadcastFn>(async () => true);
+
+    const res = await sweepStalledLoops({ sql, workspaceId: 'ws' }, { getStatuses, autoPause, rearm, broadcast });
+
+    expect(rearm).not.toHaveBeenCalled();
+    expect(autoPause).toHaveBeenCalledTimes(1);
+    expect(res.paused).toBe(1);
+    expect(res.reArmedFireStarved).toEqual([]);
+  });
+
+  it('separates the two in ONE sweep — the shape of the live incident', async () => {
+    const sql = fakeSql([
+      { id: 'rt_a', target_owner_id: 'su-starved-a' },
+      { id: 'rt_b', target_owner_id: 'su-starved-b' },
+      { id: 'rt_c', target_owner_id: 'su-dead-c' },
+      { id: 'rt_d', target_owner_id: 'su-healthy-d' },
+    ]);
+    const getStatuses = vi.fn(
+      async () =>
+        new Map([
+          ['su-starved-a', status({ ownerId: 'su-starved-a', turnsStalled: false, firesStalled: true, ...FIRE_STARVED })],
+          ['su-starved-b', status({ ownerId: 'su-starved-b', turnsStalled: false, firesStalled: true, ...FIRE_STARVED })],
+          ['su-dead-c', status({ ownerId: 'su-dead-c', turnsStalled: true, firesStalled: false, ...COMATOSE })],
+          ['su-healthy-d', status({ ownerId: 'su-healthy-d', turnsStalled: false, firesStalled: false })],
+        ]),
+    );
+    const autoPause = vi.fn(async () => {});
+    const rearm = vi.fn(async () => {});
+    const broadcast = vi.fn<BroadcastFn>(async () => true);
+
+    const res = await sweepStalledLoops({ sql, workspaceId: 'ws' }, { getStatuses, autoPause, rearm, broadcast });
+
+    expect(res.reArmedFireStarved).toEqual(['su-starved-a', 'su-starved-b']);
+    expect(res.sample).toEqual(['su-dead-c']);
+    expect(res.paused).toBe(1);
+    expect(res.checked).toBe(4);
+    // One broadcast, and it must name BOTH findings — a reader who sees only the disarm half
+    // goes looking for dead agents when the real fault is in the firing path.
+    expect(broadcast).toHaveBeenCalledTimes(1);
+    const body = broadcast.mock.calls[0][0].body;
+    expect(body).toContain('su-dead-c');
+    expect(body).toContain('FIRE-STARVED');
+    expect(body).toContain('su-starved-a');
+  });
+
+  it('broadcasts a fire-starved batch even when NOTHING was disarmed', async () => {
+    // Before the split this case was silent: the only broadcast was gated on the disarm count,
+    // so "every live agent stopped receiving fires" produced no fleet-wide signal at all.
+    const sql = fakeSql([{ id: 'rt_a', target_owner_id: 'su-starved-a' }]);
+    const getStatuses = vi.fn(
+      async () =>
+        new Map([
+          ['su-starved-a', status({ ownerId: 'su-starved-a', turnsStalled: false, firesStalled: true, ...FIRE_STARVED })],
+        ]),
+    );
+    const autoPause = vi.fn(async () => {});
+    const rearm = vi.fn(async () => {});
+    const broadcast = vi.fn<BroadcastFn>(async () => true);
+
+    await sweepStalledLoops({ sql, workspaceId: 'ws' }, { getStatuses, autoPause, rearm, broadcast });
+
+    expect(broadcast).toHaveBeenCalledTimes(1);
+    expect(broadcast.mock.calls[0][0].summary).toContain('stopped RECEIVING fires');
+  });
+
+  it('dryRun reports the fire-starved set without writing', async () => {
+    const sql = fakeSql([{ id: 'rt_a', target_owner_id: 'su-starved-a' }]);
+    const getStatuses = vi.fn(
+      async () =>
+        new Map([
+          ['su-starved-a', status({ ownerId: 'su-starved-a', turnsStalled: false, firesStalled: true, ...FIRE_STARVED })],
+        ]),
+    );
+    const autoPause = vi.fn(async () => {});
+    const rearm = vi.fn(async () => {});
+    const broadcast = vi.fn<BroadcastFn>(async () => true);
+
+    const res = await sweepStalledLoops(
+      { sql, workspaceId: 'ws', dryRun: true },
+      { getStatuses, autoPause, rearm, broadcast },
+    );
+
+    expect(res.reArmedFireStarved).toEqual(['su-starved-a']);
+    expect(rearm).not.toHaveBeenCalled();
+    expect(autoPause).not.toHaveBeenCalled();
+    expect(broadcast).not.toHaveBeenCalled();
   });
 });

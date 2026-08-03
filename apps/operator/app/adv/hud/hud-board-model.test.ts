@@ -1109,7 +1109,7 @@ describe('fetchTranscriptSearch', () => {
     // Before the fix this awaited forever and the "searching transcripts…"
     // chip never cleared.
     const r = await fetchTranscriptSearch('theory', {
-      timeoutMs: 10,
+      timeoutMs: 600_000,
       fetchImpl: neverSettles,
     });
     expect(r.ok).toBe(false);

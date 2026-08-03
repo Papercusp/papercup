@@ -31,4 +31,16 @@ registerSystemAction('sweep-stalled-loops', async (ctx: SystemActionCtx) => {
         `(EI-19362678179163398): ${result.vetoedByRecentTurn.join(', ')}`,
     );
   }
+  // EI-19406534159939583: fire-starved loops are the INFRASTRUCTURE half of this sweep — live
+  // agents that answered every fire and then stopped receiving them. Surfaced at warn level and
+  // separately from the disarm line above, because the two findings blame opposite parties and
+  // the sweep that conflated them took 5 of a 10-member fleet dark.
+  if (result.reArmedFireStarved.length > 0) {
+    console.warn(
+      `[sweep-stalled-loops] FIRE-STARVED ${result.reArmedFireStarved.length}/${result.checked} loop(s) ` +
+        `${result.dryRun ? 'would be re-armed' : 're-armed'} (NOT disarmed) — each answered its last fire ` +
+        `and none has arrived since, so the loop-firing path stopped serving live agents ` +
+        `(EI-19406534159939583): ${result.reArmedFireStarved.join(', ')}`,
+    );
+  }
 });

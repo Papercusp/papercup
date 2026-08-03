@@ -47,6 +47,25 @@
  * `vetoedByRecentTurn`. The data bug is fixed; the rail exists because the NEXT regression
  * in that column would otherwise mass-disarm the fleet, and a disarmed agent cannot
  * re-arm itself.
+ *
+ * TWO FAULTS, OPPOSITE REMEDIES (EI-19406534159939583). The veto above is a rail against bad
+ * DATA. This is a correction to the module's LOGIC: it acted on one verdict that named two
+ * different faults. Its own broadcast text admitted it — "fires kept landing (or stopped
+ * entirely) with no turn actually produced" — because `computeTurnsStalled`'s frozen-gap branch
+ * treated "no fire in a floor's worth of time" as evidence about the AGENT when it is evidence
+ * about the FIRING PATH. Which fault it is was always decidable from data the verdict already
+ * had — whether the last turn came after the last fire:
+ *
+ *   lastTurn BEFORE lastFired  -> fires arrived, no turn followed -> the agent stopped -> DISARM
+ *   lastTurn AFTER  lastFired  -> it answered the last fire it got -> the fires stopped -> RE-ARM
+ *
+ * The remedies are opposite and the mistake is not symmetric. A wrong RE-ARM costs one extra
+ * fire and self-corrects on the next sweep (no turn follows it, so the verdict flips and the
+ * disarm happens anyway). A wrong DISARM is permanent: `reconcileLoopRoutines` gates its re-arm
+ * sweep on `active = TRUE` (reconcile-loop-routines.ts:726), so a disarmed agent can never be
+ * rescued by the mechanism that exists to rescue it. Measured live 2026-08-03: 5 of a 10-member
+ * drain fleet disarmed in a single 23ms batch, each having answered every fire it received;
+ * the fleet did the work of one for ~45 minutes against a 1775-item backlog.
  */
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
@@ -112,6 +131,7 @@ export async function sweepStalledLoops(
   const dryRun = opts.dryRun === true;
   const getStatuses = deps.getStatuses ?? getLoopStatuses;
   const autoPause = deps.autoPause ?? autoPauseLoopRoutine;
+  const rearm = deps.rearm ?? rearmFireStarvedLoop;
   const broadcast = deps.broadcast ?? broadcastSevereEvent;
 
   const rows = await sql<Array<{ id: string; target_owner_id: string }>>`
@@ -122,7 +142,8 @@ export async function sweepStalledLoops(
        AND target_owner_id IS NOT NULL
        AND active = true
   `;
-  if (rows.length === 0) return { checked: 0, paused: 0, sample: [], vetoedByRecentTurn: [], dryRun };
+  if (rows.length === 0)
+    return { checked: 0, paused: 0, sample: [], vetoedByRecentTurn: [], reArmedFireStarved: [], dryRun };
 
   // Latest routine id per owner (an owner should carry exactly one active loop row,
   // but guard against a duplicate the same way materializeLoop's own overwrite logic
@@ -134,9 +155,44 @@ export async function sweepStalledLoops(
 
   const stalledOwners: string[] = [];
   const vetoedByRecentTurn: string[] = [];
+  const reArmedFireStarved: string[] = [];
   const nowMs = Date.now();
   for (const [ownerId, routineId] of routineIdByOwner) {
     const status = statuses.get(ownerId);
+
+    // EI-19406534159939583 — FIRE-STARVED, NOT TURN-STALLED. This module used to act on a
+    // single verdict that conflated two opposite faults, because its own broadcast text said
+    // the quiet part out loud: "fires kept landing (OR STOPPED ENTIRELY) with no turn actually
+    // produced". Fires stopping is evidence about the FIRING PATH; only fires LANDING makes the
+    // missing turn evidence about the agent. `computeFiresStalled` now separates them on the
+    // discriminator that was always in the data — whether the last turn came after the last
+    // fire — and the two demand opposite responses.
+    //
+    // Re-arm, never disarm. Both are guesses, but they are not symmetric guesses: a wrong
+    // re-arm costs ONE extra fire and self-corrects on the next sweep (no turn follows it, so
+    // the verdict flips to turnsStalled and the disarm happens anyway), whereas a wrong disarm
+    // is PERMANENT — reconcileLoopRoutines gates its re-arm sweep on `active = TRUE`
+    // (reconcile-loop-routines.ts:726) and a disarmed agent cannot re-arm itself. Live on
+    // 2026-08-03 the wrong direction took 5 of a 10-member fleet dark in one 23ms batch.
+    if (status?.firesStalled) {
+      reArmedFireStarved.push(ownerId);
+      console.warn(
+        `[stalled-loops-guard] FIRE-STARVED ${ownerId}: last turn ${status.lastTurnAt ?? 'never'} is at/after ` +
+          `last fire ${status.lastFiredAt ?? 'never'} — it answered every fire it got and none has arrived ` +
+          `since. Re-arming (NOT disarming): the fault is in the firing path, not the agent ` +
+          `(EI-19406534159939583).`,
+      );
+      if (!dryRun) {
+        await rearm(
+          sql,
+          routineId,
+          `stalled-loops-guard (EI-19406534159939583): fire-starved — answered its last fire at ` +
+            `${status.lastTurnAt ?? 'unknown'}, no fire since ${status.lastFiredAt ?? 'unknown'}`,
+        );
+      }
+      continue;
+    }
+
     if (!status?.turnsStalled) continue;
 
     // EI-19362678179163398 — SECOND-SOURCE VETO. Disarming a loop is an automated write
@@ -177,16 +233,43 @@ export async function sweepStalledLoops(
   if (stalledOwners.length > 0 && !dryRun) {
     await broadcast({
       summary:
-        `${stalledOwners.length} armed engine loop(s) auto-disarmed on ${ws} — fires kept landing ` +
-        `(or stopped entirely) with no turn actually produced (WI-6639).`,
+        `${stalledOwners.length} armed engine loop(s) auto-disarmed on ${ws} — fires kept LANDING ` +
+        `with no turn produced behind them (WI-6639).`,
       body:
         `Owners: ${stalledOwners.join(', ')}. Each carried an ARMED loop (active:true) whose ` +
-        `computeTurnsStalled verdict was true — either no turn has ever completed after several ` +
-        `fires, or the gap since the last fire exceeds the stall floor with no recent session ` +
-        `presence. Auto-disarmed by stalled-loops-guard; re-arm with loop:arm if the session is ` +
-        `genuinely still working. A cluster of stalls in one sweep is usually ONE systemic event ` +
-        `(a wedged wake channel, a deploy, an operator restart) rather than independent failures — ` +
-        `worth chasing if this recurs.`,
+        `computeTurnsStalled verdict was true: fires were arriving and no turn followed them. ` +
+        `Auto-disarmed by stalled-loops-guard; re-arm with loop:arm if the session is genuinely ` +
+        `still working. A cluster of stalls in one sweep is usually ONE systemic event (a wedged ` +
+        `wake channel, a deploy, an operator restart) rather than independent failures — worth ` +
+        `chasing if this recurs.` +
+        (reArmedFireStarved.length > 0
+          ? `\n\nSEPARATELY, and NOT disarmed: ${reArmedFireStarved.length} loop(s) were FIRE-STARVED ` +
+            `(${reArmedFireStarved.join(', ')}) — each answered the last fire it received and then no ` +
+            `further fire arrived. That is a fault in the loop-FIRING path, not in those agents, so they ` +
+            `were re-armed instead. Both symptoms appearing in the same sweep points at the scheduler ` +
+            `itself (EI-19406534159939583).`
+          : ''),
+      category: 'severe-event',
+    });
+  }
+
+  // EI-19406534159939583: a fire-starved batch with NO turn-stalled disarms alongside it still
+  // needs to be loud. It is arguably the MORE serious of the two — agents that are alive and
+  // working are receiving no wakes — and before this split it was invisible, because the only
+  // broadcast in this module was gated on `stalledOwners.length > 0`.
+  if (reArmedFireStarved.length > 0 && stalledOwners.length === 0 && !dryRun) {
+    await broadcast({
+      summary:
+        `${reArmedFireStarved.length} armed engine loop(s) on ${ws} stopped RECEIVING fires while still ` +
+        `answering them — re-armed, not disarmed (EI-19406534159939583).`,
+      body:
+        `Owners: ${reArmedFireStarved.join(', ')}. Each one's most recent turn is at or after its most ` +
+        `recent fire — it answered every fire it was given — and then a stall floor's worth of time ` +
+        `passed with no new fire. The agents are not at fault; the loop-firing path stopped serving ` +
+        `them. They have been made due immediately (next_fire_at = now). If they resume, the fires ` +
+        `were the problem; if a fire lands and no turn follows, the next sweep will reclassify and ` +
+        `disarm them normally. A cluster here means the scheduler tick, the loop completion-rebase, ` +
+        `or a shed that skips it — start at routines-workflow.ts's routinesTick.`,
       category: 'severe-event',
     });
   }
@@ -196,6 +279,7 @@ export async function sweepStalledLoops(
     paused: stalledOwners.length,
     sample: stalledOwners.slice(0, 5),
     vetoedByRecentTurn,
+    reArmedFireStarved,
     dryRun,
   };
 }
