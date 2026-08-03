@@ -993,3 +993,42 @@ describe('mergeHealthPanels — push-on-write merge for the health-tab cache (st
   });
 });
 
+describe('systemHealthGitSidecarEnabled — WI-7160 (git-spawn stalls the main thread)', () => {
+  // This collector's `runGit` fans out to several `git` execs per tick (fetch +
+  // 2x rev-parse/rev-list per repo/submodule via gitAheadCount) — a live profile
+  // attributed 20.8% of a stalled main thread's spawn time to it, the same
+  // fork()-cost-scales-with-parent-RSS mechanism EI-18808838427010743 documents.
+  // These pin the enable-decision wiring (mirrors git-via-sidecar.test.ts's
+  // coverage of the shared primitive) so a future edit can't silently detach
+  // this call site from its own opt-in var.
+  it('is OFF when nothing is set (the sidecar is opt-in, same default as every other caller)', () => {
+    expect(systemHealthGitSidecarEnabled({})).toBe(false);
+  });
+
+  it('is ON when the shared enable var is set', () => {
+    expect(systemHealthGitSidecarEnabled({ PAPERCUSP_SPAWNER_SIDECAR: '1' })).toBe(true);
+  });
+
+  it("this caller's own explicit var can force it ON while the shared var is unset", () => {
+    expect(systemHealthGitSidecarEnabled({ PAPERCUSP_SYSTEM_HEALTH_SPAWN_SIDECAR: '1' })).toBe(true);
+  });
+
+  it("this caller's own explicit var can force it OFF while the shared var is ON (per-subsystem bisect)", () => {
+    expect(
+      systemHealthGitSidecarEnabled({
+        PAPERCUSP_SPAWNER_SIDECAR: '1',
+        PAPERCUSP_SYSTEM_HEALTH_SPAWN_SIDECAR: '0',
+      }),
+    ).toBe(false);
+  });
+
+  it('is OFF inside the sidecar process itself (recursion guard), even with the enable var set', () => {
+    expect(
+      systemHealthGitSidecarEnabled({
+        PAPERCUSP_SPAWNER_SIDECAR: '1',
+        PAPERCUSP_SPAWNER_SIDECAR_MODE: '1',
+      }),
+    ).toBe(false);
+  });
+});
+

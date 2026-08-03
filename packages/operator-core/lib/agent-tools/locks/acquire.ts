@@ -454,17 +454,37 @@ export default defineTool({
       // so proceed to INSERT.
 
       // Step 3: INSERT INTO agent_lock_waiters.
-      const inserted = await inWorkspaceTxn(coordinationDomain, ownerId, async (tx) =>
-        tryInsertWaiter(tx, {
-          coordinationDomain,
-          owner: ownerId,
-          ownerLabel,
-          paths,
-          intent: args.intent,
-          ttlSec,
-          maxWaitSec,
-        }),
-      );
+      //
+      // EI-19382183884861720: same transient-connection exposure class as
+      // EI-19324204900062056 below (a pgbouncer transaction-pool reclaim
+      // mid-flight rejects the in-flight query with CONNECTION_CLOSED,
+      // which postgres-js only recovers from on the NEXT query) — but here
+      // it fires on the FIRST write of the wait path, before any ticket
+      // exists, which matches the reproduced symptom (`locks:acquire` with
+      // a blocking `wait` dying immediately, not after minutes of polling).
+      // Nothing has committed yet (the connection dropped before/during the
+      // transaction, so PG rolled it back), so a single clean retry on
+      // postgres-js's auto-reconnected pool is safe — unlike the read-path
+      // fix below, there is no partial ticket state to reconcile.
+      const insertOnce = () =>
+        inWorkspaceTxn(coordinationDomain, ownerId, async (tx) =>
+          tryInsertWaiter(tx, {
+            coordinationDomain,
+            owner: ownerId,
+            ownerLabel,
+            paths,
+            intent: args.intent,
+            ttlSec,
+            maxWaitSec,
+          }),
+        );
+      let inserted: Awaited<ReturnType<typeof insertOnce>>;
+      try {
+        inserted = await insertOnce();
+      } catch (err: unknown) {
+        if (!isTransientPgConnectionError(err)) throw err;
+        inserted = await insertOnce();
+      }
 
       if (!inserted.ok) {
         return {
@@ -534,17 +554,35 @@ export default defineTool({
 
       // Re-check status immediately — a grant cascade could have fired
       // between our LISTEN+INSERT and now.
+      //
+      // EI-19382183884861720: this is the ONE `readWaiterStatus`/pooled-
+      // connection call in the wait path EI-19324204900062056's transient-
+      // connection treatment did not reach — it runs BEFORE the step 4-5
+      // loop that fix protects, on the exact same `sqlPool`, so a pgbouncer
+      // transaction-pool reclaim here threw CONNECTION_CLOSED straight out
+      // of the tool handler (an opaque MCP -32603) rather than degrading
+      // like every other query on this connection already does. This is
+      // the most likely site for the reported "dies... immediately"
+      // symptom, since it fires right after step 3's INSERT, before any
+      // loop iteration has run. Treat it identically to the loop's own
+      // handling below: skip this one check and fall through into the
+      // step 4-5 loop, which re-polls on postgres-js's auto-reconnected
+      // pool — the outer `waitUntilMs` bound still governs.
       const sqlPool = getTxPool();
-      {
+      try {
         const status = await readWaiterStatus(sqlPool, ticketId);
         if (status.status === 'granted' && status.granted_lock_id) {
-          return ok(ownerId, ownerLabel, 
+          return ok(ownerId, ownerLabel,
             status.granted_lock_id,
             status.granted_expires_ts ?? new Date(Date.now() + ttlSec * 1000),
             status.paths ?? paths,
             Math.floor((Date.now() - startedAt) / 1000),
           );
         }
+      } catch (err: unknown) {
+        if (!isTransientPgConnectionError(err)) throw err;
+        // Transient connection blip — fall through to the step 4-5 loop
+        // below, which re-polls on the reconnected pool.
       }
 
       // Step 4-5: await loop with 30s ceiling.

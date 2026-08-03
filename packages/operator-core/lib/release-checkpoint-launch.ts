@@ -30,6 +30,7 @@ import { appendFileSync, closeSync, openSync, readFileSync, readSync, statSync }
 import { homedir } from 'node:os';
 import * as path from 'node:path';
 import { integrationRoot, tsxBin, type SpawnLike } from './release-deploy-launch';
+import { isFixtureLogLine } from './release/checkpoint-log-tags';
 import { gateVerdictEnv, type GateVerdictTarget } from './release/gate-verdict-target';
 import {
   callerEditsInCandidate,
@@ -337,10 +338,40 @@ function defaultReadLogTail(logPath: string, maxBytes = 65536): string | null {
 }
 
 /** EI-19327704778173646: every `checkpointing candidate <sha>` sha in `text`, in emission
- *  order. Exported for the recurrence-guard test. */
+ *  order. Exported for the recurrence-guard test.
+ *
+ *  EI-19395755190419540 — FIXTURE LINES ARE EXCLUDED, and the exclusion must stay NEGATIVE.
+ *  This used to be a bare `text.matchAll(/checkpointing candidate (\S+)/g)` with no anchor of
+ *  any kind. The gate's own suite drives the real `runGreen` (green-checkpoint-real-deps.test.ts),
+ *  so fixture `checkpointing candidate <fake-sha>` lines land in captured output and get
+ *  persisted — and an unanchored match cannot tell them from the run's own. That corrupted the
+ *  AUTOMATED answer to the most contested question in this repo ("which sha is the gate
+ *  judging?"), feeding `readLogHead`/`readLogTail` and, through them, the candidate CLAUDE.md
+ *  instructs every agent to trust. The FIRST-vs-LAST-match bug here was already fixed once
+ *  (EI-19327704778173646) without anyone noticing the match SET itself was unsound.
+ *
+ *  ⚠ Do NOT "simplify" this to a positive anchor on `[green-checkpoint]`. That is the obvious
+ *  fix and it is wrong: the persisted log's orchestrator transcript carries this same line
+ *  UNPREFIXED (`log()` hands the raw message to `recordOrchestratorLine`; only `console.log`
+ *  prepends a tag), so requiring the tag silently zeroes extraction for the scheduler-fired
+ *  runs that are the majority. See {@link isFixtureLogLine} for the measured evidence.
+ *
+ *  Line-oriented on purpose: the tag and the sha are on the same line, so a per-line filter is
+ *  exactly as precise as the data allows.
+ *
+ *  KNOWN RESIDUAL (documented, not silently widened): `defaultReadLogTail` seeks to
+ *  `size - maxBytes`, so its FIRST line is usually partial. A fixture line whose leading tag
+ *  was sliced off by that seek is still harvestable. Widening the read to fix it would cost the
+ *  O(1) property that is the whole point of a bounded tail read on a multi-MB log, so the
+ *  residual is left stated rather than traded for a worse one. */
 export function parseCheckpointCandidates(text: string | null): string[] {
   if (!text) return [];
-  return [...text.matchAll(/checkpointing candidate (\S+)/g)].map((m) => m[1]);
+  const out: string[] = [];
+  for (const line of text.split('\n')) {
+    if (isFixtureLogLine(line)) continue;
+    for (const m of line.matchAll(/checkpointing candidate (\S+)/g)) out.push(m[1]);
+  }
+  return out;
 }
 
 function parseSystemctlShow(stdout: string): Record<string, string> {

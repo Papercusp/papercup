@@ -32,7 +32,7 @@ import type { ImprovementDigest, ScoredItem } from './digest';
  * the wire cost of a new `ScoredItem` field is opt-in. Adding one means a
  * consumer reads it — say which, in the comment above the projection.
  */
-const HUMAN_QUEUE_WIRE_FIELDS = [
+export const HUMAN_QUEUE_WIRE_FIELDS = [
   'id',
   'kind',
   'title',

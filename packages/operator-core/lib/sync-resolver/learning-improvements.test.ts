@@ -68,7 +68,10 @@ vi.mock('../harness-registry', async (importOriginal) => {
 });
 
 import { knownQueryNamesV2 } from './index';
-import { computeLearningImprovementsSnapshot } from '../harness/improvements/learning-digest-snapshot';
+import {
+  computeLearningImprovementsSnapshot,
+  HUMAN_QUEUE_WIRE_FIELDS,
+} from '../harness/improvements/learning-digest-snapshot';
 import type { ImprovementDigest } from '../harness/improvements/digest';
 import type { ImprovementFlow } from '../harness/improvements/flow-metrics';
 
@@ -137,6 +140,95 @@ describe('learning.improvements — digest + flow row (P-041)', () => {
     for (const item of rows[0].humanQueue) {
       expect(item).not.toHaveProperty('rank');
       expect(item).not.toHaveProperty('impact');
+    }
+  });
+
+  // ── WI-7279: the slimming is an ALLOWLIST, and BOTH halves are pinned ────────
+  //
+  // The test above pins only that `rank`/`impact` are GONE. That is a denylist
+  // assertion, and it is exactly why the payload silently re-inflated to 318,082B
+  // (695 B/row over 453 rows, against the 250,000 default ceiling): ten fields
+  // added to ScoredItem after WI-5412 sailed onto the wire without ever tripping
+  // it. A denylist test cannot fail on a field nobody thought to name.
+  //
+  // So pin the CONTRACT, not a sample: the exported field list IS the wire shape,
+  // and widening it must require editing this assertion — i.e. a deliberate act
+  // with a named consumer, not a silent upstream side effect.
+  it('pins the exact humanQueue wire field list — adding a field must be deliberate (WI-7279)', () => {
+    expect([...HUMAN_QUEUE_WIRE_FIELDS]).toEqual([
+      'id',
+      'kind',
+      'title',
+      'scope',
+      'severity',
+      'state',
+      'assignee',
+      'score',
+      'ageDays',
+      'tierReason',
+      'ideaType',
+      'source',
+    ]);
+    // The COUNT pinned separately: a bare re-add that happens to keep the list
+    // sorted would otherwise read as fine on a skimmed diff.
+    expect(HUMAN_QUEUE_WIRE_FIELDS).toHaveLength(12);
+  });
+
+  it('serves ONLY allowlisted humanQueue fields, and omits null ones (WI-7279)', async () => {
+    readImprovementItems.mockResolvedValue([
+      {
+        id: 'EI-9',
+        kind: 'bug',
+        scope: 'operator',
+        title: 'needs a human',
+        state: 'open',
+        createdAt: recentIso(1),
+        needsHuman: true,
+        // The measured re-inflation set — every one of these was live on the wire
+        // at 2026-08-03 and read by NO consumer. `assignee: null` additionally
+        // covers the D-025 null-omit (it was null on 452 of 453 real rows).
+        assignee: null,
+        assignedAt: null,
+        updatedAt: recentIso(1),
+        attempts: 0,
+        tier: 'human',
+        ideaLifecycleState: 'triaged',
+        triageDecision: 'gate',
+        workItemOrigin: 'remote',
+      },
+    ]);
+    readWatchdogFlowTicks.mockResolvedValue([]);
+    const rows = await computeLearningImprovementsSnapshot({});
+    expect(rows[0].humanQueue.length).toBeGreaterThan(0);
+
+    const allowed = new Set<string>(HUMAN_QUEUE_WIRE_FIELDS);
+    for (const item of rows[0].humanQueue) {
+      // Half 1 — nothing outside the allowlist reaches the client. This is the
+      // assertion the old denylist test could not make.
+      for (const key of Object.keys(item)) expect(allowed).toContain(key);
+      // Half 2 — assert KEY ABSENCE, not toBeNull(): an explicitly-null key still
+      // costs bytes on the wire, so `toBeNull()` would pass on the regression.
+      for (const dropped of [
+        'tier',
+        'attempts',
+        'deferral',
+        'updatedAt',
+        'assignedAt',
+        'triageDecision',
+        'ideaLifecycleState',
+        'bettable',
+        'ideation',
+        'workItemOrigin',
+        'rank',
+        'impact',
+      ]) {
+        expect(item).not.toHaveProperty(dropped);
+      }
+      // The null-omit: `assignee` was supplied as null and must not be serialized.
+      expect(item).not.toHaveProperty('assignee');
+      // ...while a genuinely-read field survives.
+      expect(item.id).toBe('EI-9');
+      expect(item.title).toBe('needs a human');
     }
   });
 
