@@ -52,6 +52,7 @@ import { requestDesktopConsoleLaunch } from './console-launch-bridge';
 // task-manager P-009 follow-up: the HEADLESS path enrols (see
 // buildHeadlessSpawnCommand's doc for why this file's windowed path does not).
 import { scrubTerminalContextEnv } from './terminal-spawn';
+import { CLIENT_SERVER_TERMINALS, PROCESS_PER_WINDOW_TERMINALS } from './linux-terminals';
 import { beginSyncEnrolment, completeSyncEnrolment } from './task-manager/enroll-sync';
 import { scopeUnitForTask, sliceForClass } from './task-manager/types';
 import { warmScopeProbe } from './task-manager/managed-spawn';
@@ -59,53 +60,13 @@ import { warmScopeProbe } from './task-manager/managed-spawn';
 warmScopeProbe();
 
 // ─── Linux terminal selection ────────────────────────────────────────
-
-// CLIENT-SERVER emulators — the user's STANDARD desktop terminals. The launched
-// binary is a thin client that hands the window off to a per-session D-Bus
-// factory / server (gnome-terminal-server, konsole's session app), which opens
-// the window on ITS OWN display, NOT the DISPLAY the client was spawned with
-// (this is also why findDisplayHonoringTerminal excludes them). This is what the
-// owner sees when they open a terminal by hand, so — when a real desktop session
-// is running — it is what "Resume in new terminal" / the "+" button /
-// capability:terminal / fleet:launch-on-plan should open too.
 //
-// These WORK from the headless operator (a systemd --user service) ONLY when the
-// spawn env carries the D-Bus address of the SESSION the server lives on.
-// resolveLinuxDesktopEnv now resolves that from the live session
-// (resolveSessionBus — reads it from the running gnome-terminal-server /
-// gnome-shell for the active seat), so gnome-terminal reaches its server and
-// opens the owner's standard window whether the session uses the systemd user
-// bus (/run/user/<uid>/bus, a normal box) or a session-spawned dbus-daemon
-// (/tmp/dbus-*, this dev box — GNOME started its own bus). BEFORE that fix the
-// operator injected a hardcoded /run/user/<uid>/bus that had no server on it, so
-// gnome-terminal's client fell back to a standalone `gnome-terminal.real --wait`
-// that mapped NO window and lingered — the "invisible window" of WI-4711 /
-// resume-in-new-terminal-invisible-window (2026-07-13), which WI-4711 worked
-// around by preferring xterm (why the owner saw "weird" terminals instead of
-// their standard gnome-terminal). Root cause + the corrected fix: WI-4718.
-// (`--wait` keeps gnome-terminal's client alive for the window's lifetime so an
-// adv_sessions row doesn't look "ended" while the terminal is still open.)
-const CLIENT_SERVER_TERMINALS: Array<[string, string[]]> = [
-  ['gnome-terminal', ['--wait', '--window', '--']],
-  ['konsole', ['--new-window', '-e']],
-  ['xfce4-terminal', ['--window', '-e']],
-];
-
-// PROCESS-PER-WINDOW emulators — each launched binary IS its own terminal window
-// and binds the injected DISPLAY/XAUTHORITY directly, so it opens on the resolved
-// seat regardless of session / D-Bus / desktop-session state. RELIABLE with no
-// desktop session at all — so they are the FALLBACK when no client-server server
-// can be reached (a bare Xvfb / sandbox stage with no GNOME/KDE session, or a box
-// with no standard terminal installed). This is also the set
-// findDisplayHonoringTerminal uses for the WI-4272 demo-stage displayOverride
-// path, for the same reason (a client-server terminal would open on the seat's
-// server, ignoring the override display).
-const PROCESS_PER_WINDOW_TERMINALS: Array<[string, string[]]> = [
-  ['alacritty', ['-e']],
-  ['kitty', ['--']],
-  ['wezterm', ['start', '--always-new-process', '--']],
-  ['xterm', ['-e']],
-];
+// The two GROUPS (and why the split is load-bearing) now live in
+// ./linux-terminals, shared with terminal-spawn.ts — there used to be two copies
+// of this table and a fix to one silently missed the other
+// (EI-19385011811175105 → EI-19407722209410974). The SELECTION POLICY below is
+// still this file's own: it is conditional on whether a desktop session was
+// actually resolved (WI-4718), which terminal-spawn's flat walk is not.
 
 function isOnPath(bin: string): boolean {
   const paths = (process.env.PATH ?? '').split(':');

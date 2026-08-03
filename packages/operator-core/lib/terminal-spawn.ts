@@ -26,20 +26,28 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { standardToolDirs } from './tool-path';
 import { createTextCollector } from './child-output';
+import { LINUX_TERMINALS_FLAT } from './linux-terminals';
 
 /**
  * Terminal emulators tried in order, each with the args that run a command in
- * a new window. Kept in sync with the list `console-launch.ts` documents.
+ * a new window.
+ *
+ * Now DERIVED from the shared table rather than a second literal copy of it
+ * (EI-19407722209410974): the duplicate is what let the GNOME_TERMINAL_SCREEN fix
+ * land here and miss console-spawn.ts entirely. The concatenation is
+ * byte-identical to the literal it replaced — client-server group first, then
+ * process-per-window — so single-sourcing the data changed no selection.
+ * `linux-terminals.test.ts` pins that.
+ *
+ * ⚠ This flat order always tries gnome-terminal FIRST, unconditionally.
+ * console-spawn's `pickLinuxTerminal` instead orders the two groups by whether a
+ * desktop session was actually resolved, because a client-server terminal with
+ * no reachable D-Bus server ghosts (WI-4718/WI-4711). This module has no such
+ * detection, so it keeps the pre-WI-4718 behaviour — tracked as
+ * EI-19409098127440755, deliberately NOT changed as part of a data dedupe.
  */
-export const LINUX_TERMINALS: ReadonlyArray<readonly [string, readonly string[]]> = [
-  ['gnome-terminal', ['--wait', '--window', '--']],
-  ['konsole', ['--new-window', '-e']],
-  ['xfce4-terminal', ['--window', '-e']],
-  ['alacritty', ['-e']],
-  ['kitty', ['--']],
-  ['wezterm', ['start', '--always-new-process', '--']],
-  ['xterm', ['-e']],
-];
+export const LINUX_TERMINALS: ReadonlyArray<readonly [string, readonly string[]]> =
+  LINUX_TERMINALS_FLAT;
 
 /**
  * Is `bin` an executable reachable on PATH (plus the usual install dirs)?
