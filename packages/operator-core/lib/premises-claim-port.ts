@@ -341,8 +341,11 @@ export function detectAbsencePremises(text: string, source: PremiseSource): Deri
       if (SELF_RETRACTION.test(claim)) continue;
       if (REPORTING_FRAME.test(prose.slice(Math.max(0, (m.index ?? 0) - 60), m.index ?? 0))) continue;
       // EI-19399570274386816 (3): the hit sits inside a "Falsified if:" criterion — a
-      // stated hypothesis, not a claim. Scan back to the line start for the label.
-      if (HYPOTHETICAL_FRAME.test(prose.slice(Math.max(0, (m.index ?? 0) - 300), m.index ?? 0))) continue;
+      // stated hypothesis, not a claim. Scoped to the hit's OWN line: a wider lookback let
+      // one falsifier label silence genuine claims in the bullets that followed it.
+      const hitAt = m.index ?? 0;
+      const lineStart = prose.lastIndexOf('\n', Math.max(0, hitAt - 1)) + 1;
+      if (HYPOTHETICAL_FRAME.test(`\n${prose.slice(lineStart, hitAt)}`)) continue;
       const key = claim.toLowerCase();
       if (seen.has(key)) continue;
       seen.add(key);

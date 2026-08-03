@@ -19,7 +19,16 @@ import { runScheduledPlanFire } from './plan-run-action';
 let org: OrgTestDb;
 let sql: Sql;
 const WS = 'ws-planrun';
-const HARNESS = 'papercup';
+// WI-7311: 'papercup' is a RETIRED slug — migration 656's `harness_plans_canonicalize_slug`
+// trigger unconditionally rewrites `harness_slug='papercup'` to 'papercusp' on INSERT
+// (WHEN clause, workspace-independent), while the app-level `routineStorageSlug` read
+// path is workspace/pot-scoped and fails open to the RAW slug in this isolated test
+// fixture's fake workspace (which has no seeded pots). That mismatch — write-side
+// trigger canonicalizes, read-side resolver doesn't — made every test in this file fail
+// "template not found" even though the row genuinely exists (just under 'papercusp', not
+// the 'papercup' the test asked for and later reads back). Any non-reserved slug avoids
+// the trigger's WHEN clause entirely.
+const HARNESS = 'plan-run-it-fixture';
 const TEMPLATE = 'monitor-x';
 
 const ITEMS = [

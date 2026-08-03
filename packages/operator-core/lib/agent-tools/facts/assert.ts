@@ -24,6 +24,7 @@ import {
   FACT_KINDS,
   CONVENTION_ENFORCEMENT_TIERS,
   FACT_MAX_DEPENDENCIES,
+  FACTS_PER_SCOPE_CAP,
   DEAD_END_KEY_PREFIX,
   WALL_KEY_PREFIX,
   WALL_DEFAULT_TTL_SEC,
@@ -467,13 +468,36 @@ export default defineTool({
         keyContested = null;
       }
     }
+    // WI-7298: an assert that pushed a peer's still-valid fact out of a saturated
+    // scope reported success IDENTICALLY to one that displaced nothing. WI-6935 (b)
+    // made eviction distinguishable after the fact (`evicted_at IS NOT NULL`), but
+    // only to a forensic reader running SQL — the writer, the one party positioned
+    // to react, was never told.
+    //
+    // Stripped off the nested `fact` so the wire shape of a fact stays exactly an
+    // AgentFact: the eviction report is a property of the WRITE, not of the fact.
+    const { evicted: evictedFacts, ...factForWire } = fact;
     return {
       content: [
         {
           type: 'text' as const,
           text: JSON.stringify({
             ok: true,
-            fact,
+            fact: factForWire,
+            ...(evictedFacts?.length
+              ? {
+                  evicted: {
+                    facts: evictedFacts,
+                    note:
+                      `Seating this write EVICTED the fact(s) above: this scope is AT its ` +
+                      `${FACTS_PER_SCOPE_CAP}-fact cap. They are GONE from every future fold — ` +
+                      `evicted by the cap, not expired and not retracted by their author. Your ` +
+                      `next assert into this scope will cost another one. If a listed fact still ` +
+                      `matters, re-assert it; note that a SHORT TTL is what makes a fact cheap ` +
+                      `for the cap to choose, so an urgent short-lived fact is the most likely victim.`,
+                  },
+                }
+              : {}),
             ...(truncation ? { truncated: truncation } : {}),
             ...(dependencyWarning ? { dependenciesUnresolved: dependencyWarning } : {}),
             ...(keyContested ? { keyContested } : {}),
