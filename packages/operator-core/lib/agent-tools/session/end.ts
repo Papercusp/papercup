@@ -55,13 +55,19 @@ import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { findLiveHost, hostSupports, shutdownViaPty } from '../../events/await/psu-pty-discovery';
+import { getLoopStatus } from '../../harness/routines/loop';
 
 /** The note recorded in the host event log + printed into the closing terminal. */
 const MAX_REASON_CHARS = 300;
 
-/** PURE: the caller-facing explanation for each host verdict. Exported for tests. */
+/**
+ * PURE: the caller-facing explanation for each host verdict. Exported for tests.
+ * `loop-armed` is decided operator-side (the psu host has no DB), the rest by the host.
+ */
 export function shutdownNote(result: string): string {
   switch (result) {
+    case 'loop-armed':
+      return 'REFUSED — an engine loop is still armed on this session, so it WILL be woken again and closing it now just strands the next fire. Call loop:end first, then retry.';
     case 'sent':
       return 'Shutdown accepted. This session is winding down and its terminal window will close; do not expect another turn.';
     case 'no-host':
@@ -108,10 +114,19 @@ export default defineTool({
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
     const host = findLiveHost(identity.ownerId);
-    const result = await shutdownViaPty(identity.ownerId, {
-      reason: args.reason,
-      force: args.force === true,
-    });
+    // An ARMED LOOP is a guaranteed future wake, which makes "nothing will wake me
+    // again" false by construction — so this is a real precondition, not advice, and
+    // it is enforced HERE because the psu host has no DB to read it from. Closing a
+    // looping session only strands the next fire (the wake-executor then has to
+    // --resume a session that did not need to die). Fail-OPEN on a read error: a
+    // flaky loop read must not block a legitimate wind-down.
+    const loop = await getLoopStatus(identity.ownerId).catch(() => null);
+    const result = loop?.active
+      ? 'loop-armed'
+      : await shutdownViaPty(identity.ownerId, {
+          reason: args.reason,
+          force: args.force === true,
+        });
     const ok = result === 'sent';
     return {
       content: [

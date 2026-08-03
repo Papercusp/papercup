@@ -44,6 +44,10 @@
  *   - THREAD-ATOMIC: coord:thread reconstructs messages by walking
  *     `related_msg_id` transitively, so delete a rooted thread only when its
  *     newest message is fully aged.
+ *   - HEALTH STATE IS EXEMPT FROM THE SHORTER HORIZON: a thread carrying a
+ *     single-primary condition alarm/resolution stays on the OPERATOR horizon
+ *     whatever its scope, because the readers of that state bound their scan at
+ *     exactly that horizon (see the `is_condition` note in the query).
  *   - SINGLE-SCOPE THREADS ONLY: a thread whose members span BOTH scopes is kept
  *     by either horizon — there is no defensible single answer for a mixed thread,
  *     and it cannot be split without orphaning replies.
@@ -150,9 +154,12 @@ export async function gcOldCoordMessages(
              AND g.newest_ts < now() - make_interval(days => ${retentionDays}))
            OR
            (g.federated_only
+             -- ::int on BOTH branches: a bare parameter inside CASE loses the type
+             -- inference make_interval(days => ...) gets from a lone parameter, and
+             -- resolves to text ("function make_interval(days => text) does not exist").
              AND g.newest_ts < now() - make_interval(days => CASE
-                   WHEN g.carries_condition THEN ${retentionDays}
-                   ELSE ${federatedRetentionDays}
+                   WHEN g.carries_condition THEN ${retentionDays}::int
+                   ELSE ${federatedRetentionDays}::int
                  END))
          )
        ORDER BY g.newest_ts ASC

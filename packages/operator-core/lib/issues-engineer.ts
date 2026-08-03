@@ -35,7 +35,8 @@ import {
 } from '@papercusp/coordination/capabilities';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { FLAGS } from '@papercusp/flags';
-import { getFlag, onFlagChange } from '@papercusp/flags/server';
+import { getFlag } from '@papercusp/flags/server';
+import { lazyFlagRefresh } from './lazy-flag-refresh';
 import { activeWorkspaceId } from './workspace-registry';
 import { systemDistinctId } from './flag-distinct-id';
 import { type InjectEvent } from './agent-tools/coordination/fanout-delivery';
@@ -241,10 +242,20 @@ async function refreshIssuesPerWorkspace(): Promise<void> {
     issuesFlagReadAtMs = Date.now();
   }
 }
-void refreshIssuesPerWorkspace();
-onFlagChange((key) => {
-  if (key === null || key === FLAGS.ISSUES_PER_WORKSPACE) void refreshIssuesPerWorkspace();
-});
+// EI-19416650993725684: armed on FIRST READ, never at module scope. A module-scope
+// `onFlagChange` binding access (or the eager `void refreshIssuesPerWorkspace()` that used to
+// sit here — an async body runs synchronously to its first await, so it reached `getFlag` just
+// as hard) makes this file unimportable under a PARTIAL vitest mock of '@papercusp/flags/server',
+// killing COLLECTION for every test whose import graph touches it. That reach is wide: this
+// module is pulled in via work-items.ts, so the casualties were tests that never named it.
+// See lazy-flag-refresh.ts for the mechanism and for why the defensive-looking forms
+// (`onFlagChange?.()`, typeof, try/catch) do NOT work.
+//
+// Safe to arm lazily here: the unpopulated state is `false` → DEFAULT_COORD_WORKSPACE, i.e. the
+// legacy shared-'default' fail-CLOSED path this cache already falls back to on a getFlag error.
+// It is also the best-bounded of these migrations — the ISSUES_FLAG_TTL_MS self-heal below
+// re-reads every 3s independently of arming, so even a missed arm point converges.
+const armFlagRefresh = lazyFlagRefresh(refreshIssuesPerWorkspace, FLAGS.ISSUES_PER_WORKSPACE);
 /** The engineer-issues workspace scope NOW (F): active workspace when the flag is ON,
  *  else the legacy shared `default` coord workspace.
  *
@@ -279,6 +290,10 @@ export function issuesScopeWorkspace(): string {
  * original `issuesScopeWorkspace()` (falls back to `activeWorkspaceId()`).
  */
 export function resolveIssuesScopeWorkspace(explicitActiveWorkspaceId?: string): string {
+  // The ONLY reader of the cache (issuesScopeWorkspace() delegates here), so this is the sole
+  // arm point. On the very first call BOTH this arm and the TTL line below kick a refresh —
+  // harmless and once per process: getFlag is itself 5s-TTL-cached, so the second is a cache hit.
+  armFlagRefresh();
   if (Date.now() - issuesFlagReadAtMs > ISSUES_FLAG_TTL_MS) void refreshIssuesPerWorkspace();
   if (!issuesPerWorkspaceOn) return DEFAULT_COORD_WORKSPACE;
   return explicitActiveWorkspaceId ?? activeWorkspaceId();

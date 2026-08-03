@@ -701,8 +701,18 @@ export interface GatewayDeps {
   /** Probe impl (injected in tests). Default `probeEgress` (egress-probe.ts). Used by BOTH the
    *  half-open recovery probe and the proactive prober. */
   probeEgressImpl?: typeof probeEgress;
-  /** The governor for a model (default: the shared per-account `claude-code` governor). */
-  governorFor?(model: string): RateLimitGovernor;
+  /** The governor for a model (default: the shared per-account `claude-code` governor).
+   *
+   *  ⚠ `accountId` is part of the contract, not decoration (EI-2648). The DEFAULT
+   *  (`governorForBackend`) keys its governor by account, so a penalty on one account
+   *  persists for that account and does NOT pause its siblings. An injected factory that
+   *  ignores `accountId` collapses every account onto one governor — or, if it returns a
+   *  fresh instance per call, discards penalties entirely, so an account is never actually
+   *  paused and any "waits out a penalty" behaviour silently degrades to "retries and
+   *  happens to succeed". This parameter was previously not passed at all, which made a
+   *  faithful per-account test double IMPOSSIBLE to write and left the EXTENDED ABSORB
+   *  wait-out path under-covered. Cache by `accountId` to mirror production. */
+  governorFor?(model: string, accountId: string): RateLimitGovernor;
   /** Max admission wait before a synthetic 429+retry-after. Default 2 min. */
   maxQueueWaitMs?: number;
   /** Codex/OpenAI-compatible admission cap. Defaults to the conservative
@@ -1544,7 +1554,10 @@ export function createInferenceGateway(deps: GatewayDeps) {
   // authority, so make the governor's own concurrency cap non-binding (raise it to the queue cap)
   // and let the governor enforce only rate/pause/pace — safe in the gateway's own process.
   const governorForAccount = (model: string, accountId: string): RateLimitGovernor => {
-    const g = deps.governorFor ? deps.governorFor(model) : governorForBackend('claude-code', model, undefined, accountId);
+    // EI-2648: thread `accountId` into the injected factory too. The default branch already keys
+    // by account; without this the injected branch could not, so a test double had no way to make
+    // a penalty persist for one account across retries (the absorb's whole subject).
+    const g = deps.governorFor ? deps.governorFor(model, accountId) : governorForBackend('claude-code', model, undefined, accountId);
     if (g.state.limits.maxConcurrent < concurrency) g.state.limits.maxConcurrent = concurrency;
     // Smooth the static-floor RPM allowance into an even pace (subscription accounts return no per-minute
     // headers, so paceDelayMs stays 0 → the count gate alone lets effRpm fire as an instant burst that trips

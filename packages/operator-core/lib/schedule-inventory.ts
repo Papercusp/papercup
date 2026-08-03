@@ -95,9 +95,15 @@ export interface InProcessChecksResult {
 
 /**
  * A bespoke recurring timer in a SEPARATE process (NOT the operator host registry) — P-014.
- * Listed in the inventory for VISIBILITY; its live fire-state (armed/last-fire) requires
- * per-process federation (the follow-on, once each process exposes its managed-timer list over
- * its own admin/IPC), so until then armed/lastFire are null. Source of truth = each process's code.
+ * Listed in the inventory for VISIBILITY, with armed/lastFire null because its live fire-state
+ * is not reachable. Source of truth = each process's code.
+ *
+ * ⚠ This is now the FALLBACK, not the only mechanism. Processes that serve
+ * `bin/hono-host.ts` (bg-host, staging) ARE federated live — see `getSiblingManaged` /
+ * schedule-federation.ts, which emits `source: 'external-process'` rows carrying real
+ * armed/lastFire/lastError and `detail.federated: true`. This static manifest covers only
+ * the processes that serve no such endpoint: the inference gateway, its standalone
+ * watchdog, and the psu-launcher.
  */
 export interface ExternalProcessTimer {
   /** The owning process — the per-process sub-list grouping (D-007). */
@@ -208,6 +214,15 @@ export interface ScheduleInventoryDeps {
   getInProcessChecks: () => InProcessChecksResult;
   /** STATIC manifest of separate-process timers (source 'external-process', P-014); live fire-state requires federation (follow-on). */
   getExternalProcess: () => ExternalProcessTimer[];
+  /**
+   * LIVE federation (EI-19445595198254637): the managed-timer registries of the OTHER
+   * operator-shaped processes on this box (bg-host, staging), fetched over a bounded
+   * loopback probe. This is the P-014 follow-on for processes that serve
+   * `bin/hono-host.ts`; the static `getExternalProcess` manifest above stays the
+   * fallback for processes that do not (the inference gateway, its watchdog,
+   * psu-launcher). Fail-soft AND time-bounded — see schedule-federation.ts.
+   */
+  getSiblingManaged: () => Promise<SiblingManagedTimers[]>;
   /** STATIC manifest of sync-triggered sweeps (emitted as source 'in-process', category 'sync-triggered'). */
   getSyncTriggered: () => SyncTriggeredSweep[];
 }
@@ -276,10 +291,15 @@ export async function collectScheduleInventory(
   const getManaged = deps.getManaged ?? (() => listManaged());
   const getExternal = deps.getExternalProcess ?? (() => EXTERNAL_PROCESS_TIMERS);
   const getSyncTriggered = deps.getSyncTriggered ?? (() => SYNC_TRIGGERED_SWEEPS);
+  const getSiblingManaged = deps.getSiblingManaged ?? (() => collectSiblingManagedTimers());
 
-  const [dbos, routines] = await Promise.all([
+  const [dbos, routines, siblings] = await Promise.all([
     getDbos().catch(() => [] as DbosScheduledEntry[]),
     getRoutines().catch(() => [] as RoutineRow[]),
+    // Federation is a NETWORK seam, so it gets the same fail-soft treatment as the
+    // DB seams — and it is additionally time-bounded inside collectSiblingManagedTimers,
+    // because a wedged sibling must degrade to an UNKNOWN row, never stall the inventory.
+    getSiblingManaged().catch(() => [] as SiblingManagedTimers[]),
   ]);
   let inproc: InProcessChecksResult;
   try {
@@ -422,6 +442,84 @@ export async function collectScheduleInventory(
       groupSlug: null,
       detail: { process: e.process, source: e.source, note: 'static manifest — live fire-state requires P-014 federation' },
     });
+  }
+
+  /*
+   * source 'external-process', LIVE (EI-19445595198254637) — the managed timers of the
+   * OTHER operator-shaped processes on this box, with real armed/lastFire/lastError.
+   *
+   * These are `external-process` rather than `managed` on purpose: `managed` means
+   * "armed in THIS process" and the in-process dedup above depends on that meaning
+   * staying exact. `detail.federated` is what separates a live federated row from a
+   * static-manifest one, and `detail.process` carries the owning process label.
+   *
+   * Why this exists: before it, every bg-host timer was absent from the one surface
+   * built to inventory timers, and an inventory that answers "not here" reads exactly
+   * like "does not exist" — which is how a reaper that failed 100% of its passes ran
+   * 6+ days undetected.
+   */
+  for (const s of siblings) {
+    if (!s.ok) {
+      // A sibling that did not answer yields ONE explicit UNKNOWN row. This is the
+      // whole point of the degraded path: silence must be VISIBLE. Dropping the row
+      // would restore exactly the invisibility this change exists to remove.
+      rows.push({
+        source: 'external-process',
+        scope: 'operator',
+        tier: 'ephemeral',
+        category: 'external-process',
+        name: `${s.label} (timers unknown)`,
+        installSlug: null,
+        cadence: '(unknown)',
+        armed: null,
+        lastFire: null,
+        nextFire: null,
+        lastError: s.error ?? 'sibling process did not answer',
+        groupSlug: null,
+        detail: {
+          process: s.label,
+          federated: false,
+          reachable: false,
+          pid: s.pid,
+          port: s.port,
+          probeMs: s.elapsedMs,
+          note: 'sibling operator process did not answer the managed-timer probe within its deadline — its timers are UNKNOWN, not absent',
+        },
+      });
+      continue;
+    }
+    for (const m of s.timers) {
+      rows.push({
+        source: 'external-process',
+        scope: 'operator',
+        tier: 'ephemeral',
+        category: m.category,
+        name: m.name,
+        installSlug: null,
+        cadence: humanInterval(m.intervalMs),
+        armed: true, // present in that process's registry == armed there
+        lastFire: isoFromMs(m.lastFireAt),
+        nextFire: null,
+        lastError: m.lastError,
+        groupSlug: null,
+        detail: {
+          process: s.label,
+          federated: true,
+          reachable: true,
+          pid: s.pid,
+          port: s.port,
+          probeMs: s.elapsedMs,
+          intervalMs: m.intervalMs,
+          shed: m.shed,
+          fires: m.fires,
+          armedAt: m.armedAt,
+          running: m.running,
+          instances: m.instances ?? 1,
+          instanced: m.instanced ?? false,
+          classification: m.classification ?? null,
+        },
+      });
+    }
   }
 
   /*

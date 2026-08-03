@@ -65,6 +65,7 @@ import { capabilityTierOverrideFor } from './capability-tier-overrides';
 // guard — it is exactly what the per-file source lint cannot see — so when adding a module here
 // kills collection, the fix is to migrate the module named in the error, NEVER to drop the import.
 import { workItemClaimLeaseEnabled } from './work-item-claim-lease-wiring';
+import { issuesScopeWorkspace } from './issues-engineer';
 import { workItemRedundancyEnabled } from './work-item-redundancy';
 
 describe('modules stay importable under a partial @papercusp/flags/server mock', () => {
@@ -93,6 +94,7 @@ describe('the fix is IMPORTABILITY, not reader-callability (do not widen this cl
     expect(() => telemetryBufferConfig()).toThrow(/onFlagChange/);
     expect(() => capabilityTierOverrideFor('capability:bash')).toThrow(/onFlagChange/);
     expect(() => workItemClaimLeaseEnabled()).toThrow(/onFlagChange/);
+    expect(() => issuesScopeWorkspace()).toThrow(/onFlagChange/);
     expect(() => workItemRedundancyEnabled()).toThrow(/onFlagChange/);
   });
 });

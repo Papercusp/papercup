@@ -19,6 +19,7 @@ describe('shutdownNote (WI-6638)', () => {
     'no-host',
     'no-cap',
     'send-failed',
+    'loop-armed',
     'refused-not-agent-launched',
     'refused-human-attended',
     'refused-agent-busy',
@@ -39,11 +40,21 @@ describe('shutdownNote (WI-6638)', () => {
     // agent-busy is the one refusal that IS retryable — it says so.
     expect(shutdownNote('refused-agent-busy')).toMatch(/retry/i);
     expect(shutdownNote('refused-human-attended')).toMatch(/not an error to retry around/i);
+    // loop-armed is the operator-side precondition (the host has no DB to see it):
+    // it must name the exact unblocking action, or the agent has no way forward.
+    expect(shutdownNote('loop-armed')).toMatch(/REFUSED/);
+    expect(shutdownNote('loop-armed')).toMatch(/loop:end/);
   });
 
   it('does not promise a closed window when nothing was closed', () => {
     expect(shutdownNote('sent')).toMatch(/will close/);
-    for (const r of ['no-host', 'no-cap', 'send-failed', 'refused-human-attended'] as const) {
+    for (const r of [
+      'no-host',
+      'no-cap',
+      'send-failed',
+      'loop-armed',
+      'refused-human-attended',
+    ] as const) {
       expect(shutdownNote(r)).not.toMatch(/will close/);
     }
   });

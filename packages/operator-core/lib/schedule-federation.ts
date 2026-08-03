@@ -256,11 +256,16 @@ function budgetExpiry<T>(ms: number, value: () => T): Promise<T> {
 /**
  * Fan out to every live sibling and return their managed-timer slices.
  *
- * Bounded twice on purpose: each probe carries its own `AbortSignal.timeout`, AND
- * the whole fan-out races a hard outer budget. The outer race is not redundant —
- * it is the guard that makes "a wedged sibling cannot block the operator's
- * inventory" true even if a fetch implementation mishandles its signal, which is
- * precisely the class of failure bg-host has already demonstrated.
+ * Bounded TWICE on purpose: each probe carries its own `AbortSignal.timeout`, and
+ * each probe additionally races a hard budget. The second bound is not redundant —
+ * it is what makes "a wedged sibling cannot block the operator's inventory" true
+ * even if a fetch implementation mishandles its signal, which is precisely the class
+ * of failure bg-host has already demonstrated.
+ *
+ * The budget is applied PER PROBE rather than to the whole fan-out, so one wedged
+ * sibling degrades alone: the healthy siblings' timers still come back. A whole-set
+ * race would have thrown away good data to punish one bad process — and since probes
+ * run in parallel, total wall-clock is bounded by `budgetMs` either way.
  */
 export async function collectSiblingManagedTimers(
   opts: {
@@ -275,15 +280,16 @@ export async function collectSiblingManagedTimers(
   const siblings = opts.siblings ?? (await listSiblingOperators().catch(() => []));
   if (!siblings.length) return [];
 
-  const probes = Promise.all(
-    siblings.map((s) => probeSibling(s, { timeoutMs, fetchImpl: opts.fetchImpl })),
-  );
-  // probeSibling never rejects, so abandoning `probes` here cannot surface as an
-  // unhandled rejection — it simply settles unobserved.
-  return await Promise.race([
-    probes,
-    budgetExpiry(budgetMs, () =>
-      siblings.map((s) => degraded(s, `sibling fan-out budget ${budgetMs}ms exceeded`, budgetMs)),
+  // probeSibling never rejects, so a probe abandoned by the budget race settles
+  // unobserved rather than surfacing as an unhandled rejection.
+  return await Promise.all(
+    siblings.map((s) =>
+      Promise.race([
+        probeSibling(s, { timeoutMs, fetchImpl: opts.fetchImpl }),
+        budgetExpiry(budgetMs, () =>
+          degraded(s, `probe budget ${budgetMs}ms exceeded`, budgetMs),
+        ),
+      ]),
     ),
-  ]);
+  );
 }

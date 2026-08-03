@@ -83,10 +83,13 @@ async function msg(opts: {
   relatedTo?: string;
   harness?: string | null;
   surface?: string;
+  /** Make it a single-primary CONDITION alarm (health state, not chatter). */
+  conditionKey?: string;
 }) {
-  const body = opts.relatedTo
+  const body: Record<string, unknown> = opts.relatedTo
     ? { kind: 'message', msg_id: opts.msgId, related_msg_id: opts.relatedTo }
     : { kind: 'message', msg_id: opts.msgId };
+  if (opts.conditionKey) body.condition_key = opts.conditionKey;
   await rootSql`
     INSERT INTO harness_shared.coord_event_log (surface, msg_id, body, harness_slug, ts)
     VALUES (${opts.surface ?? 'messages'}, ${opts.msgId}, ${rootSql.json(body)}, ${opts.harness ?? null},
@@ -208,6 +211,23 @@ describe('gcOldCoordMessages (PG)', () => {
       'fed-orphan',
       'fed-post-root',
     ]);
+  });
+
+  it('keeps a federated CONDITION-carrying thread on the LONGER operator horizon', async () => {
+    // openSinglePrimaryConditions + the coord conditions fast path both bound their
+    // scan at MESSAGE_GC_RETENTION_DAYS because "nothing older survives GC anyway".
+    // If federated retention expired condition rows at 7d, an unresolved alarm would
+    // vanish from that window and read as RESOLVED rather than as missing.
+    await msg({ msgId: 'fed-cond', ageDays: 10, harness: 'peer-hive', conditionKey: 'single-primary:x' });
+    await msg({ msgId: 'fed-plain', ageDays: 10, harness: 'peer-hive' });
+
+    expect(await gcOldCoordMessages(30, 7)).toEqual({ operator: 0, federated: 1, total: 1 });
+    expect(await remainingIds()).toEqual(['fed-cond']);
+
+    // It is exempt from the FEDERATED horizon, not immortal: it goes once the
+    // operator horizon (the health readers' own window) is reached.
+    expect(await gcOldCoordMessages(7, 7)).toEqual({ operator: 0, federated: 1, total: 1 });
+    expect(await remainingIds()).toEqual([]);
   });
 
   it('takes threads OLDEST-FIRST under threadLimit so a large drain converges', async () => {

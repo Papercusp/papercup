@@ -50,6 +50,12 @@ describe('humanInterval', () => {
 describe('collectScheduleInventory', () => {
   it('unions DBOS + routines + in-process into one tier-tagged row shape', async () => {
     const rows = await collectScheduleInventory({
+      // EI-19445595198254637: the sibling-federation seam is a NETWORK default, so
+      // every unit test must stub it — otherwise a dev box with live sibling
+      // operators (bg-host/staging) injects real rows and these assertions go
+      // non-deterministic. Federation itself is covered in schedule-federation.test.ts
+      // and in the dedicated cases at the bottom of this file.
+      getSiblingManaged: async () => [],
       getDbosSchedules: async () => [dbos({ name: 'backupCadence', crontab: '0 * * * * *', lastFireMs: 1_700_000_000_000 })],
       getRoutines: async () => [routine({ name: 'green-checkpoint', active: false, metadata: { last_error: 'boom' } })],
       getManaged: () => [],
@@ -84,6 +90,12 @@ describe('collectScheduleInventory', () => {
 
   it('is fail-soft per source — one source throwing yields its empty slice, not a thrown inventory', async () => {
     const rows = await collectScheduleInventory({
+      // EI-19445595198254637: the sibling-federation seam is a NETWORK default, so
+      // every unit test must stub it — otherwise a dev box with live sibling
+      // operators (bg-host/staging) injects real rows and these assertions go
+      // non-deterministic. Federation itself is covered in schedule-federation.test.ts
+      // and in the dedicated cases at the bottom of this file.
+      getSiblingManaged: async () => [],
       getDbosSchedules: async () => {
         throw new Error('dbos down');
       },
@@ -101,6 +113,12 @@ describe('collectScheduleInventory', () => {
 
   it('lists external-process timers (P-014) as source=external-process, per-process, with fire-state null', async () => {
     const rows = await collectScheduleInventory({
+      // EI-19445595198254637: the sibling-federation seam is a NETWORK default, so
+      // every unit test must stub it — otherwise a dev box with live sibling
+      // operators (bg-host/staging) injects real rows and these assertions go
+      // non-deterministic. Federation itself is covered in schedule-federation.test.ts
+      // and in the dedicated cases at the bottom of this file.
+      getSiblingManaged: async () => [],
       getDbosSchedules: async () => [],
       getRoutines: async () => [],
       getManaged: () => [],
@@ -132,6 +150,12 @@ describe('collectScheduleInventory', () => {
    */
   it('lists sync-triggered sweeps, splitting free DETECTION from the agent-spawning REPAIR', async () => {
     const rows = await collectScheduleInventory({
+      // EI-19445595198254637: the sibling-federation seam is a NETWORK default, so
+      // every unit test must stub it — otherwise a dev box with live sibling
+      // operators (bg-host/staging) injects real rows and these assertions go
+      // non-deterministic. Federation itself is covered in schedule-federation.test.ts
+      // and in the dedicated cases at the bottom of this file.
+      getSiblingManaged: async () => [],
       getDbosSchedules: async () => [],
       getRoutines: async () => [],
       getManaged: () => [],
@@ -167,6 +191,12 @@ describe('collectScheduleInventory', () => {
 
   it('the DEFAULT external-process manifest covers the gateway + watchdog + psu-launcher (D-007)', async () => {
     const rows = await collectScheduleInventory({
+      // EI-19445595198254637: the sibling-federation seam is a NETWORK default, so
+      // every unit test must stub it — otherwise a dev box with live sibling
+      // operators (bg-host/staging) injects real rows and these assertions go
+      // non-deterministic. Federation itself is covered in schedule-federation.test.ts
+      // and in the dedicated cases at the bottom of this file.
+      getSiblingManaged: async () => [],
       getDbosSchedules: async () => [],
       getRoutines: async () => [],
       getManaged: () => [],
@@ -181,6 +211,12 @@ describe('collectScheduleInventory', () => {
 
   it('surfaces live managed timers as source=managed with real fire times, deduping the static in-process fallback', async () => {
     const rows = await collectScheduleInventory({
+      // EI-19445595198254637: the sibling-federation seam is a NETWORK default, so
+      // every unit test must stub it — otherwise a dev box with live sibling
+      // operators (bg-host/staging) injects real rows and these assertions go
+      // non-deterministic. Federation itself is covered in schedule-federation.test.ts
+      // and in the dedicated cases at the bottom of this file.
+      getSiblingManaged: async () => [],
       getDbosSchedules: async () => [],
       getRoutines: async () => [],
       getManaged: () => [
@@ -310,6 +346,12 @@ describe('schedule-inventory ⇄ host-timer guard reconcile (P-009 / WI-919)', (
     // set is a SUBSET of the tool's filter enum. This is what stops the exact drift WI-919 fixed —
     // the inventory surfacing a source (e.g. external-process) the schedule:inventory tool can't filter.
     const rows = await collectScheduleInventory({
+      // EI-19445595198254637: the sibling-federation seam is a NETWORK default, so
+      // every unit test must stub it — otherwise a dev box with live sibling
+      // operators (bg-host/staging) injects real rows and these assertions go
+      // non-deterministic. Federation itself is covered in schedule-federation.test.ts
+      // and in the dedicated cases at the bottom of this file.
+      getSiblingManaged: async () => [],
       getDbosSchedules: async () => [dbos()],
       getRoutines: async () => [routine()],
       getManaged: () => [

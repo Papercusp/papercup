@@ -80,16 +80,60 @@ hyperdht/P2P work. This applies to any ad hoc investigation rig that
 pre-builds a bundle and expects a `patches/` or source edit to be reflected
 in it.
 
-## Two guards this does NOT (yet) implement — still worth doing by hand
+## Bundle provenance stamping — NOW IMPLEMENTED for the sidecar (EI-19446480107603858)
 
-1. **Bundle provenance stamping** — stamp a build with the mtimes/hashes of
-   the patches present in `node_modules` at build time, and refuse to run a
-   bundle whose patch-set is older than the current `patches/` directory.
-   Not implemented here deliberately: a bundle can rebuild without touching
-   `patches/`'s own mtime (e.g. a plain `npm install`), so provenance-by-mtime
-   can false-negative in a way a marker-presence check cannot. If you need
-   this, treat it as a *second*, independent layer — not a replacement.
-2. **Never let a diagnostic field collapse to a falsy default.** When you
+This section used to say provenance stamping was unimplemented and worth doing
+by hand. For the **sidecar** input set it now exists, so do *not* hand-roll it:
+
+- `papercusp-desktop/bin/build-desktop-sidecar.sh` records
+  `build-provenance.json` (the shared `emit-build-provenance.sh` schema — git
+  head, build sha, UTC timestamp) into every sidecar it publishes.
+- `papercusp-desktop/bin/check-sidecar-freshness.js` (logic in
+  `bin/lib/sidecar-freshness.js`) is called by **both** cross-build legs, which
+  previously gated the sidecar on existence + arch only — loud when it was
+  MISSING, silent when it was merely OLD, which is the common case because
+  rebuilding it is a separate manual step.
+
+It deliberately does **not** decide staleness the way the old text above
+proposed. Two design constraints, both learned the expensive way:
+
+- **Not by mtime** — the original objection here still stands, and
+  `bin/lib/spa-freshness.js` documents the same finding independently: a
+  packaging copy refreshes the stale file's mtime, so timestamps call it
+  current.
+- **Not by "sidecar gitHead != repo HEAD"** — that is the obvious fix and it is
+  wrong here. This is one shared checkout edited by the whole fleet, so HEAD
+  moves every few minutes and such a rule fires on essentially every build for
+  every agent. A guard that cries wolf is worse than none, because it trains
+  the bypass.
+
+So it splits into an always-on half and an opt-in half:
+
+1. **A banner, unconditionally** — the sidecar's recorded age, gitHead and
+   buildSha, printed by every consuming build. The silence *was* the defect: in
+   WI-3307 a bundle shipped a 9-hour-old operator while its other half (the
+   rsync'd source tree) was current, so every acceptance criterion passed on the
+   fresh half. "built 9h ago from `ebb8505`" would have stopped it before ~73
+   minutes of cargo zigbuild.
+2. **`PAPERCUSP_REQUIRE_SIDECAR_CONTAINS=<sha>`** — assert "this cut must carry
+   commit X" and the build refuses when the sidecar's provenance does not
+   contain it (git ancestry, exit 4; override `PAPERCUSP_ALLOW_STALE_SIDECAR=1`).
+   Because it only fires when someone asserted something, it has no false
+   positives. This is the "grep the built artifact for a symbol only my fix
+   introduces" check — the thing that actually caught the WI-3307 staleness —
+   promoted from a shell snippet each caller had to remember into a precondition
+   every caller inherits. Remembering was the property that failed.
+
+**The half-fresh artifact is the generalisable lesson.** When an artifact is
+assembled from inputs with *different refresh policies*, "I rebuilt it" is not a
+claim about any particular input, and the partly-fresh case is far more
+deceptive than the wholly-stale one because the evidence of freshness is real.
+Before trusting a build to carry your fix, grep the OUTPUT for a symbol only
+your fix introduces — seconds, against a ~73-minute build.
+
+## The guard this still does NOT implement — worth doing by hand
+
+1. **Never let a diagnostic field collapse to a falsy default.** When you
    write instrumentation into a patch, prefer an explicit sentinel
    (`'absent'` / `null` with a distinct shape) over letting the reader default
    an absent key to `false`/`0`/`undefined`. Then absent-vs-zero is decidable
