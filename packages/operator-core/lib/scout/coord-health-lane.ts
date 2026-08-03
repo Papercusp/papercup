@@ -43,6 +43,12 @@ import { activeWorkspaceId } from '../workspace-registry';
 import type { MetaPattern } from './types';
 import type { PremiseRefKind } from '../agent-tools/coordination/message-fields';
 import type { PremiseStatus } from '../agent-tools/coordination/premise-resolve';
+import {
+  buildEnforcementTierCensus,
+  loadCoordBehaviourAdoption,
+  loadCoordBehaviourIds,
+  type EnforcementTierCensus,
+} from './enforcement-tier-census';
 
 /** One re-mounting escalation signature over the window (the pure builder input). */
 export interface CoordEscalationStorm {
@@ -231,6 +237,8 @@ export interface CoordHealthInput {
   clarifyAdoption?: CoordClarifyAdoption;
   /** L1/L2/L3 authored-structure adoption (coordination-spec-adoption-2026-08-03 P-001). Absent ⇒ the signal is simply not emitted. */
   authoredAdoption?: CoordAuthoredAdoption;
+  /** Enforcement-tier census (coordination-spec-adoption-2026-08-03 P-002 / the D-016/D-047 debt). Absent ⇒ the signal is simply not emitted. */
+  enforcementCensus?: EnforcementTierCensus;
 }
 
 /**
@@ -256,6 +264,8 @@ export interface CoordHealthOpts {
   minClarifyAsks?: number;
   /** min hand-authored messages in the window before the L1/L2/L3 adoption reading is worth reporting — below it the ratios are noise, and a 0/0 "adoption %" is exactly the kind of number this signal exists to stop publishing. */
   minAuthoredAdoptionMessages?: number;
+  /** min UNDECLARED coordination behaviours before the tier-census signal is worth emitting — at zero the debt is closed and there is nothing to report. */
+  minTierDebt?: number;
   /** cap on emitted patterns. */
   limit?: number;
 }
@@ -303,6 +313,7 @@ export function buildCoordHealthPatterns(
   const minPremiseChecked = opts.minPremiseChecked ?? 5;
   const minClarifyAsks = opts.minClarifyAsks ?? 5;
   const minAuthoredAdoptionMessages = opts.minAuthoredAdoptionMessages ?? 20;
+  const minTierDebt = opts.minTierDebt ?? 1;
   const limit = opts.limit ?? 10;
 
   const out: MetaPattern[] = [];
@@ -491,6 +502,47 @@ export function buildCoordHealthPatterns(
       // Ranks by the READ gap, not by L1. A high L1 with a starved read path is
       // the alarming state and must outrank a low L1 that is merely early.
       weight: readStarved ? 0.65 : Math.min(0.5, 0.2 + (1 - aa.withSections / Math.max(aa.handAuthored, 1)) * 0.3),
+    });
+  }
+
+  // 4c. ENFORCEMENT-TIER CENSUS (P-002 / the D-016/D-047 debt). The sibling of 4b
+  //     and its structural counterpart: 4b measures whether a shipped behaviour is
+  //     USED, this measures whether it is ENFORCED at all. The pair is the point —
+  //     without a tier column you cannot tell a verb that is UNUSED from one that
+  //     is merely UNENFORCED, so the reflex for every low number is "add more
+  //     prompt text", which D-001 measured as the weakest lever there is.
+  const cen = input.enforcementCensus;
+  if (cen && cen.totals.undeclared >= minTierDebt) {
+    const t = cen.totals;
+    // Every count names its denominator inline (D-003). There is deliberately no
+    // single "enforcement %" — averaging a tier ladder is exactly the summary
+    // that would hide which rung a behaviour sits on.
+    const worstOffenders = cen.rows
+      .filter((r) => r.retirementCandidate)
+      .slice(0, 6)
+      .map((r) => r.id);
+
+    out.push({
+      category: 'coord-health',
+      ref: 'coord:enforcement-tier-census',
+      summary:
+        `enforcement tiers — ${t.undeclared}/${t.behaviours} coordination verbs carry NO declared tier, ` +
+        `${t.enforced}/${t.behaviours} carry a real one (D-001 tier 1–3); ` +
+        `${t.zeroCall}/${t.behaviours} took zero calls in ${cen.windowDays}d, of which ${t.retirementCandidates} are both unused AND unenforced`,
+      detail:
+        `Generated from the live tool registry, never a hand-kept list: a coordination verb added tomorrow surfaces here as debt with nobody remembering to list it. ` +
+        `TIER DEBT ${t.undeclared}/${t.behaviours} have no declaration at all — the D-016/D-047 gap. ENFORCED ${t.enforced}/${t.behaviours} carry one of D-001's tiers 1–3 (auto-stamp / schema-refusal / see-also). PROMPT-ONLY ${t.promptOnly} are declared but enforced only by prose, which D-016 says is not a tier — that is the finding, not a passing grade. ` +
+        `ZERO-CALL ${t.zeroCall}/${t.behaviours} took no call in the ${cen.windowDays}d window. ` +
+        `RETIREMENT CANDIDATES ${t.retirementCandidates} are zero-call AND unenforced` +
+        (worstOffenders.length ? ` (e.g. ${worstOffenders.join(', ')})` : '') +
+        `. A zero-call verb that DOES carry a real tier is deliberately NOT flagged — that is a different finding (built but unreached), and conflating the two would propose retiring working machinery. ` +
+        `⚠ CANDIDATE, never a verdict: D-092 ruled that the zero-call verbs are NOT to be retired — make them discoverable first, re-measure at +7d, and retire only what stays at zero. This reading is the input to that re-measurement, which is why the window is ${cen.windowDays}d and not 24h: over 24h a merely weekly verb reads as dead. ` +
+        `Denominators are stated inline on purpose (D-003), and there is no single blended "enforcement %" — a mean over "how enforced is this" is precisely the summary that hides which rung a behaviour sits on. ` +
+        `The fix for an undeclared row is to find the MECHANISM that enforces it and declare that; if none exists, the honest tier is prompt-only, and D-001's ruling then applies: a behaviour that cannot be given tier 1–3 is a candidate for retirement, not for more prompt text.`,
+      // Ranks by the share of behaviours carrying NO enforcement at all. Tier debt
+      // is structural and slow-moving, so it must never outrank a live
+      // coordination breakdown (escalation storms, unanswered backlogs).
+      weight: Math.min(0.55, 0.2 + (t.undeclared / Math.max(t.behaviours, 1)) * 0.35),
     });
   }
 
@@ -757,6 +809,58 @@ export async function loadCoordClarifyAdoption(
  * reads a populated field from day one, so the cheap-while-empty trap is not
  * hypothetical here — it would fire immediately.
  */
+/**
+ * The zero-call window for the enforcement-tier census (P-002).
+ *
+ * SEVEN DAYS, not the 24h every other signal in this lane uses, and the
+ * difference is load-bearing rather than a tuning preference. This census's
+ * headline output is a ZERO — "these verbs took no calls" — and over 24h a merely
+ * weekly verb is indistinguishable from a dead one, so a 24h window would
+ * manufacture retirement candidates out of healthy low-frequency behaviours.
+ * D-092 also fixes the re-measurement cadence at +7d; matching it means the lane's
+ * reading and that re-measurement are the same number rather than two that have to
+ * be reconciled.
+ */
+export const ENFORCEMENT_CENSUS_WINDOW_DAYS = 7;
+
+/**
+ * The enforcement-tier census read (P-002 / the D-016/D-047 debt).
+ *
+ * Composes the census's two IO seams — the live behaviour list and the measured
+ * adoption — and hands them to the PURE builder. Both seams live in
+ * enforcement-tier-census.ts; this function only wires them to this lane's `sql`,
+ * matching how `loadCoordPremiseResolve` wires the live premise resolver rather
+ * than reimplementing it.
+ *
+ * Fail-soft to `undefined`, like its three siblings: an outage here removes ONE
+ * signal, never the lane. The behaviour-list seam is fail-soft in the stricter
+ * direction too — it returns `undefined` rather than a shrunken list when the
+ * registry looks partial, because a census that counts zeros must never publish a
+ * denominator it is not sure of.
+ */
+export async function loadCoordEnforcementCensus(
+  ws: string,
+): Promise<EnforcementTierCensus | undefined> {
+  try {
+    const behaviourIds = await loadCoordBehaviourIds();
+    if (!behaviourIds) return undefined; // partial registry — remove the signal, never shrink the denominator
+
+    const adoption = await loadCoordBehaviourAdoption({
+      workspaceId: ws,
+      windowDays: ENFORCEMENT_CENSUS_WINDOW_DAYS,
+      getSql: () => getOrgPg().sql as never,
+    });
+
+    return buildEnforcementTierCensus({
+      behaviourIds,
+      adoption,
+      windowDays: ENFORCEMENT_CENSUS_WINDOW_DAYS,
+    });
+  } catch {
+    return undefined;
+  }
+}
+
 export async function loadCoordAuthoredAdoption(
   ws: string,
 ): Promise<CoordAuthoredAdoption | undefined> {
@@ -1015,10 +1119,20 @@ export async function buildCoordHealthLane(
       /* best-effort — the adoption signal is optional decoration */
     }
 
+    // Enforcement-tier census (P-002) — independently fail-soft for the same
+    // reason as its three siblings above.
+    let enforcementCensus: EnforcementTierCensus | undefined;
+    try {
+      enforcementCensus = await loadCoordEnforcementCensus(ws);
+    } catch {
+      /* best-effort — the census signal is optional decoration */
+    }
+
     return buildCoordHealthPatterns({
       premiseResolve,
       clarifyAdoption,
       authoredAdoption,
+      enforcementCensus,
       escalationStorms: escRows.map((r) => ({
         signature: r.sig || 'unknown',
         count: Number(r.n) || 0,

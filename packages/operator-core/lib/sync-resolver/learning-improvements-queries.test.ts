@@ -25,6 +25,10 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { knownQueryNamesV2 } from './index';
+// TYPE-ONLY (erased at runtime, so it is safe in a file that vi.mock's this
+// module). It pins readDerivedSnapshotMock to the REAL result shape instead of
+// letting inference derive one from the default literal below — see WI-7495.
+import type { DerivedSnapshotResult } from '../derived-reads/registry';
 
 const {
   readDerivedSnapshotRowsMock,
@@ -36,10 +40,20 @@ const {
   readDerivedSnapshotRowsMock: vi.fn(async (_key: string) => [] as unknown[]),
   // Defaults to a MISS — the shape readDerivedSnapshot returns for a cold pot
   // (payload null + meta.missing). A test that wants a HIT overrides it.
-  readDerivedSnapshotMock: vi.fn(async (_key: string, _opts?: { harnessSlug?: string }) => ({
-    payload: null as unknown,
-    meta: { computedAt: null, computeMs: null, missing: true, stale: false, error: null, precomputed: false },
-  })),
+  //
+  // WI-7495 — the return type is ANNOTATED, not inferred, and that is load-bearing.
+  // Inferred from this literal alone, `computedAt`/`computeMs` take the literal type
+  // `null`, so a HIT override (`computedAt: 123`) is not assignable and the file goes
+  // +1 over its tsc baseline — which red-pinned the fleet gate's lint:tsc leg while
+  // every vitest run stayed green (vitest transforms via esbuild and never typechecks).
+  // Naming the real exported shape also means this mock cannot silently drift from
+  // readDerivedSnapshot again the way hand-rolled factories do (cf. WI-7187).
+  readDerivedSnapshotMock: vi.fn(
+    async (_key: string, _opts?: { harnessSlug?: string }): Promise<DerivedSnapshotResult<unknown>> => ({
+      payload: null,
+      meta: { computedAt: null, computeMs: null, missing: true, stale: false, error: null, precomputed: false },
+    }),
+  ),
   registerDerivedReadMock: vi.fn(),
   computeSnapshotMock: vi.fn(async (_a: unknown) => [] as unknown[]),
   recordQueueExposureMock: vi.fn(async (_ids: string[]) => {}),

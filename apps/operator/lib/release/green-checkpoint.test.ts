@@ -920,6 +920,77 @@ describe('runGreenCheckpoint', () => {
     expect(body).toContain(`candidate ${r.candidate.slice(0, 8)} is NOT green`);
   });
 
+  // WI-7482: the re-triage verdict must reach the persisted log on the NON-refiring paths.
+  //
+  // Same write-before-compute shape as the lineage regression above, one field over — and it
+  // survived that fix. The re-triage's only output was `deps.log`, which runGreen snapshots via
+  // renderOrchestratorTranscript() BEFORE the verdict block runs, and the append above composes
+  // lineage/already-fixed/historical-flake only. So "the gate re-ran this red at tip and it
+  // genuinely reproduced" and "the gate never looked" were byte-identical in the durable record.
+  // gate_health couldn't disambiguate them either (retriageDetail is stale-candidate-ONLY), so
+  // there was no channel left: three separate agents reconstructed this from raw logs on
+  // 2026-08-02/03 and two got it wrong (EI-19388705187359206 blamed the parser and was retracted;
+  // EI-19389700122825304).
+  //
+  // Both non-refiring classifications are covered, because they are the two readings that were
+  // conflated and they demand OPPOSITE responses: `unknown` ⇒ the gate could not check, so check
+  // it yourself; `real-red` ⇒ the gate DID check at tip and it still fails, so go fix it.
+  for (const scenario of [
+    {
+      name: 'unknown (no tip runner wired — the gate could not check)',
+      extraDeps: {} as Partial<CheckpointDeps>,
+      failingFiles: undefined as { workspace: string; file: string }[] | undefined,
+      expectClassification: 'unknown',
+    },
+    {
+      name: 'real-red (the gate DID re-run at tip and the failures reproduced)',
+      extraDeps: {
+        resolveTip: async () => 'facefeed00000000000000000000000000000000',
+        runTestsAtRef: async () => ({ pass: false, summary: 'ws: FAIL' }),
+      } as Partial<CheckpointDeps>,
+      failingFiles: [{ workspace: '@papercusp/operator-core', file: 'a.test.ts' }],
+      expectClassification: 'real-red',
+    },
+  ]) {
+    it(`WI-7482: the persisted verdict log carries the re-triage verdict — ${scenario.name}`, async () => {
+      const c1 = await commit('a', '1', 'c1');
+      await git(repo, ['branch', 'ready', c1]);
+      await commit('a', '2', 'c2');
+      const logDir = mkdtempSync(join(tmpdir(), 'gc-retriage-log-'));
+      const logPath = join(logDir, 'stamp-base-deadbeef-cand-cafebabe.log');
+      writeFileSync(logPath, '[green-checkpoint] candidate=... green=false\nSUITE BODY MARKER\n');
+      const deps: CheckpointDeps = {
+        setupTree: async () => {},
+        runGreen: async () => ({
+          green: false,
+          summary: '1 failed',
+          failingTests: ['a.test.ts'],
+          ...(scenario.failingFiles ? { failingFiles: scenario.failingFiles } : {}),
+          logPath,
+        }),
+        advance: (candidate) => advanceReady(repo, candidate, 'ready'),
+        push: async () => {},
+        broadcast: async () => {},
+        escalate: async () => {},
+        clearEscalation: async () => {},
+        emitEvent: async () => {},
+        log: () => {},
+        ...scenario.extraDeps,
+      };
+      const r = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+      const body = readFileSync(logPath, 'utf8');
+      rmSync(logDir, { recursive: true, force: true });
+      // Appended, never rewritten — the suite tail a triager greps must survive both appends.
+      expect(body).toContain('SUITE BODY MARKER');
+      expect(body).toContain(`[green-checkpoint verdict for candidate ${r.candidate.slice(0, 8)}]`);
+      // The regression guard proper: the classification is IN the file, and machine-greppable.
+      expect(body).toContain(`[green-checkpoint re-triage for candidate ${r.candidate.slice(0, 8)}]`);
+      expect(body).toContain(`classification=${scenario.expectClassification}`);
+      // A reader must be able to tell a held gate from one that simply had no rescue budget.
+      expect(body).toContain('autoRefire=false');
+    });
+  }
+
   it('holds ready when the candidate is NOT green', async () => {
     const c1 = await commit('a', '1', 'c1');
     await git(repo, ['branch', 'ready', c1]);

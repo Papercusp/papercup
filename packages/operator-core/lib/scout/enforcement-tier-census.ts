@@ -300,6 +300,60 @@ export async function loadCoordBehaviourAdoption(opts: {
 }
 
 /**
+ * A coord-verb count below this means the registry is not fully initialised, NOT
+ * that coordination shrank. Measured 2026-08-03: both independent sources — the
+ * `buildBuiltinToolCatalog()` filesystem scan and the live projected registry —
+ * return the SAME 43-element set (diffed, identical, not merely equal counts).
+ * So anything near 20 is a partial read, and publishing it would understate the
+ * denominator rather than fail.
+ */
+export const MIN_PLAUSIBLE_COORD_BEHAVIOURS = 20;
+
+/**
+ * RUNTIME IO seam: the coordination behaviour list, from the LIVE projected
+ * registry — deliberately NOT the filesystem scan the tests use.
+ *
+ * ⚠ WHY NOT `buildBuiltinToolCatalog()` HERE. It is a SYNCHRONOUS recursive walk
+ * that reads every .ts file under four source dirs. Measured 2026-08-03 on this
+ * repo: 1,485 files, 11.2 MB, **123 ms of blocking I/O**. That is fine in a test
+ * and is the repo's A1 "serial fs loop" anti-pattern inside the operator's event
+ * loop. The live registry is already in memory and answers in ~0 ms.
+ *
+ * ⚠ WHY NOT `getCatalog()`. The legacy catalog is documented as INCOMPLETE —
+ * `requirePrincipal: false` role-gated tools never enter it (see
+ * capabilities/from-tooldef.ts and server-catalog.ts, where reading it silently
+ * dropped whole tool groups from the palette). Using it would quietly shrink the
+ * census denominator, which is the exact EI-19300252001829260 class of error this
+ * plan exists to stop. `listAllProjectedTools()` is the full surface.
+ *
+ * Both sources were cross-checked live before this function was written (the
+ * discipline that produced D-093): the FS scan and the projected registry return
+ * IDENTICAL 43-element coord sets. They are two views of one truth, so the census
+ * denominator does not depend on which one a caller reaches for.
+ *
+ * Returns `undefined` — the signal REMOVED, not a smaller number — when the
+ * registry looks partial. A census whose entire job is counting zeros must never
+ * report a shrunken denominator as if it were a measurement.
+ *
+ * Imported dynamically to keep this module's pure builder free of the agent-mcp
+ * module graph, matching coord-health-lane.ts's own convention for its stores.
+ */
+export async function loadCoordBehaviourIds(): Promise<string[] | undefined> {
+  try {
+    const { listAllProjectedTools } = await import('@papercusp/agent-mcp');
+    const names: string[] = [];
+    for (const t of listAllProjectedTools()) {
+      const name = t.expose?.mcp?.name;
+      if (name) names.push(name);
+    }
+    const coord = selectCoordBehaviours(names);
+    return coord.length >= MIN_PLAUSIBLE_COORD_BEHAVIOURS ? coord : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * The anti-drift guard, as a function so a test can assert on it: every DECLARED
  * behaviour must still exist in the scanned catalog.
  *
