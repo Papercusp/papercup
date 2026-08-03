@@ -325,6 +325,14 @@ const STAGES: ReadonlyArray<{
 // actual defect rather than on a synthetic stand-in (WI-6383).
 export { STAGES as LEARNING_STAGES };
 
+// Same contract, for the perf-settle COVERAGE guard (WI-7263): that guard needs
+// the true size of the view population to tell "a view was added without a
+// settle point" apart from "the settle points moved". Deriving it from
+// LEARNING_STAGES instead would be circular — the reachability guard already
+// pins those two lists to each other, so a view added to BOTH would slip
+// through unmeasured.
+export { LVIEWS as LEARNING_VIEWS };
+
 /**
  * Every `?lview=` value that NO navigation can reach — the detector for the
  * WI-6383 class.

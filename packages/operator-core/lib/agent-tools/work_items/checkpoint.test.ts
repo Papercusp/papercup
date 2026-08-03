@@ -533,7 +533,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       expect(call[2].guard).toBeUndefined();
     });
 
-    it('does NOT warn on append mode (append reads + folds the prior explicitly; can\'t hit this failure mode)', async () => {
+    it('does NOT warn on a NORMAL (successful pre-read) append — WI-7190 arms a guard on append too, but it does not fire here', async () => {
       getWorkItem.mockResolvedValue({ id: 'WI-7', harness: 'papercup' });
       getWorkItemCheckpoint.mockResolvedValueOnce('P'.repeat(5000));
       setWorkItemCheckpointWithPrior.mockImplementation(async (_key: unknown, text: string) => ({
@@ -543,8 +543,13 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       const r = await one({ id: 'WI-7', checkpoint: 'short addendum', append: true });
       expect(r.ok).toBe(true);
       expect(r.shrinkWarning).toBeUndefined();
-      const call = setWorkItemCheckpointWithPrior.mock.calls[0] as [unknown, unknown, { guard?: unknown }];
-      expect(call[2].guard).toBeUndefined();
+      // WI-7190: append now ALSO arms a guard (it used to arm none at all) — but it
+      // only blocks when the tool's own pre-read disagreed with the authoritative
+      // prior. Here the pre-read succeeded (5000 chars, matching priorLength), so
+      // invoking the guard with that same authoritative prior must NOT block.
+      const call = setWorkItemCheckpointWithPrior.mock.calls[0] as [unknown, unknown, { guard?: (n: string | null, l: number) => string | null }];
+      expect(call[2].guard).toBeTypeOf('function');
+      expect(call[2].guard!('P'.repeat(5000), 5000)).toBeNull();
     });
 
     it('the default suite delegate (no override) never produces a shrinkWarning — priorLength:0 never trips the threshold', async () => {
@@ -598,7 +603,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       expect(call[2].guard).toBeUndefined();
     });
 
-    it('append:true never arms the guard, so a huge prior can never block an addendum', async () => {
+    it('append:true with a SUCCESSFUL pre-read is never blocked, however huge the prior', async () => {
       getWorkItem.mockResolvedValue({ id: 'WI-7', harness: 'papercup' });
       getWorkItemCheckpoint.mockResolvedValueOnce('P'.repeat(20000));
       setWorkItemCheckpointWithPrior.mockImplementation(async (_key: unknown, text: string) => ({
@@ -607,8 +612,56 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       }));
       const r = await one({ id: 'WI-7', checkpoint: 'short addendum', append: true });
       expect(r.ok).toBe(true);
-      const call = setWorkItemCheckpointWithPrior.mock.calls[0] as [unknown, unknown, { guard?: unknown }];
-      expect(call[2].guard).toBeUndefined();
+      const call = setWorkItemCheckpointWithPrior.mock.calls[0] as [unknown, unknown, { guard?: (n: string | null, l: number) => string | null }];
+      expect(call[2].guard).toBeTypeOf('function');
+      expect(call[2].guard!('P'.repeat(20000), 20000)).toBeNull();
+    });
+
+    describe('WI-7190: append silently clobbered a substantial checkpoint when its pre-read disagreed with the authoritative prior', () => {
+      it('blocks the append when the pre-read used to build the join returned nothing but the authoritative prior (read inside the write transaction) is substantial', async () => {
+        getWorkItem.mockResolvedValue({ id: 'WI-7190', harness: 'papercup' });
+        // The append pre-read (getWorkItemCheckpoint) comes back empty — the exact
+        // failure mode reported: the write path resolved the item, the read path
+        // used to build the join did not.
+        getWorkItemCheckpoint.mockResolvedValueOnce(null);
+        setWorkItemCheckpointWithPrior.mockImplementation(
+          async (_ref: unknown, _text: string, opts?: { guard?: (n: string | null, l: number) => string | null }) => {
+            // The AUTHORITATIVE prior IS there — 10,671 chars, read inside the
+            // store's own locked transaction, independent of the tool's separate
+            // pre-read above.
+            const blockedReason = opts?.guard ? (opts.guard('a 10671-char prior checkpoint...', 10671) ?? undefined) : undefined;
+            return { stored: blockedReason ? 'unchanged prior' : 'new section', priorLength: 10671, blockedReason };
+          },
+        );
+        const r = await one({ id: 'WI-7190', checkpoint: 'new section', append: true });
+        expect(r.ok).toBe(false);
+        expect(r.error).toContain('append_base_unreadable');
+        expect(r.error).toContain('10671');
+        expect(r.error).not.toContain('shrink_blocked');
+      });
+
+      it('confirmShrink:true forces the append through even when the pre-read disagreed with the authoritative prior', async () => {
+        getWorkItem.mockResolvedValue({ id: 'WI-7190', harness: 'papercup' });
+        getWorkItemCheckpoint.mockResolvedValueOnce(null);
+        setWorkItemCheckpointWithPrior.mockResolvedValue({ stored: 'new section', priorLength: 10671 });
+        const r = await one({ id: 'WI-7190', checkpoint: 'new section', append: true, confirmShrink: true });
+        expect(r.ok).toBe(true);
+        const call = setWorkItemCheckpointWithPrior.mock.calls[0] as [unknown, unknown, { guard?: unknown }];
+        expect(call[2].guard).toBeUndefined();
+      });
+
+      it('does not block a genuinely fresh item with no prior checkpoint at all (priorLength 0)', async () => {
+        getWorkItem.mockResolvedValue({ id: 'WI-NEW', harness: 'papercup' });
+        getWorkItemCheckpoint.mockResolvedValueOnce(null);
+        setWorkItemCheckpointWithPrior.mockImplementation(
+          async (_ref: unknown, _text: string, opts?: { guard?: (n: string | null, l: number) => string | null }) => {
+            const blockedReason = opts?.guard ? (opts.guard(null, 0) ?? undefined) : undefined;
+            return { stored: 'first note', priorLength: 0, blockedReason };
+          },
+        );
+        const r = await one({ id: 'WI-NEW', checkpoint: 'first note', append: true });
+        expect(r.ok).toBe(true);
+      });
     });
 
     it('a per-item confirmShrink:true overrides a batch-level default of false/omitted', async () => {

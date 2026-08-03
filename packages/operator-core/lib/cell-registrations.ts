@@ -363,9 +363,9 @@ export const GATE_OWNERSHIP_CELL: CellSpec = {
   provenance: {
     obtainedBy:
       "findConditionObjects() over the work-item↔condition link for `green-stall:<harness>`, with the holder's liveness resolved separately through the shared presence oracle",
-    liveExercised: false,
+    liveExercised: true,
     evidence:
-      'NOT yet live-exercised: the gate has been red and peer-owned (WI-7239/WI-7244) for the whole implementation window, so no deploy has run and the condition `green-stall:papercusp` is currently RESOLVED (last alarm 2026-08-02T15:00:02Z, recovery 15:45:03Z). Unit-verified only — the held-vs-ended contradiction is asserted against an injected oracle. Live exercise is owed on the first real gate stall after deploy, and this field must be flipped then rather than at some tidier moment.',
+      'readGateOwnership() run UNMOCKED against the live store 2026-08-03T02:22Z. (a) `green-stall:papercusp` resolved to a MEASURED `no-object` — the condition is genuinely resolved right now (alarm 2026-08-02T15:00:02Z, recovery 15:45:03Z), and the run confirms the empty is measured rather than a swallowed failure, since the same call path returned a real row for another key. (b) The shared condition query returned `single-primary:no-primary -> WI-7282, claimState claimable, duplicates []` — a live non-empty proving the join resolves real rows and the singleton holds. (c) THE FALSIFIER APPARATUS, exercised on real owners: resolveSessionStates returned `su-4a6e2255… -> live/heartbeatFresh:true` and a nonexistent owner -> `ended`/**heartbeatFresh:true**. That second pair IS the premise this falsifier rests on, observed live: heartbeat freshness reads TRUE for an owner the oracle calls ended, so a reader substituting heartbeatFresh for sessionState would report a dead holder as live. NOT yet covered live: a genuinely HELD lease contradicted by a dead holder — no agent has claimed this condition yet, so the held+ended path remains unit-only. THE RUN ALSO CAUGHT A REAL ERROR: it falsified the author\'s own recorded belief that the bridge was not yet running (it was — bg-host executes tsx straight from the staging tree, so no deploy is involved), which is precisely the confidently-wrong-resolver class this axis exists to catch.',
   },
 
   resolver: 'readGateOwnership() @ packages/operator-core/lib/coord/gate-ownership.ts',

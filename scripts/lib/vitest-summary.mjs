@@ -181,6 +181,29 @@ export function formatFailingFilesLine({ runToken, entries = [], unattributed = 
 }
 
 /**
+ * Attribute ONE failed task to the test files that broke it.
+ *
+ * Returns either files or a REASON it has none — never a bare empty list, because the
+ * caller accumulates these and an empty contribution is indistinguishable from "this task
+ * passed". Three ways a genuinely-red task yields no file:
+ *   - `no-captured-output` — an interactive TTY run inherited stdio, so there is no text
+ *     to parse. The failure is real; attribution was never possible.
+ *   - `no-file-rows`      — captured output with no FAIL/rollup rows: a worker crash, an
+ *     OOM, a spawn error, a transform failure before the reporter ran.
+ *   - `non-vitest`        — cargo and friends; this parser cannot speak for them.
+ *
+ * @param {{ workspace: string, task: string, captured: boolean, output?: string }} args
+ * @returns {{ entries: Array<{ workspace: string, file: string }>,
+ *             unattributed: Array<{ task: string, reason: string }> }}
+ */
+export function attributeFailedTask({ workspace, task, captured, output = '' }) {
+  if (!captured) return { entries: [], unattributed: [{ task, reason: 'no-captured-output' }] };
+  const files = parseFailedTestFiles(output);
+  if (files.length === 0) return { entries: [], unattributed: [{ task, reason: 'no-file-rows' }] };
+  return { entries: files.map((file) => ({ workspace, file })), unattributed: [] };
+}
+
+/**
  * The whole failure-summary block a run prints for its break set: the human list a triager
  * reads, then the canonical machine line. Returned as lines rather than printed so the
  * thing that actually ships is unit-testable.

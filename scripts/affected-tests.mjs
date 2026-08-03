@@ -33,6 +33,7 @@ import {
   parseSummaryFailedCounts,
   parseFailedTestFiles,
   countTimeoutSignatures,
+  attributeFailedTask,
   renderFailingFilesSummary,
 } from './lib/vitest-summary.mjs';
 import { emptySuiteGuardArgs } from './lib/empty-suite-guard.mjs';
@@ -715,6 +716,34 @@ if (explicitRetryFailed == null && retryFailed) {
 const parseFailedFiles = parseFailedTestFiles;
 const FRESH_RETRY_MAX_FILES = 15; // a broader red is a real regression, not a flake
 
+// EI-19370814345784324: a test that blocks its vitest worker's event loop SYNCHRONOUSLY
+// (e.g. a tight `mkdirSync` ENOENT/EEXIST spin) makes vitest's own `testTimeout` unable to
+// fire — that timeout is a timer on the very event loop the spin never yields, so the one
+// bound that looks like it covers this is structurally incapable of firing. Measured
+// 2026-08-02: a single wedged worker held the green-checkpoint gate (and every fleet
+// deploy behind it) for 74 minutes before being found and killed by hand, with nothing up
+// to the parent's 120-minute GREEN_CHECKPOINT_SUITE_TIMEOUT_MS backstop able to tell
+// "wedged" from "legitimately slow" while it happened.
+//
+// The fix has to live in THIS process, not the child's: `spawnSync`'s `timeout` option is
+// enforced by the native wait loop around the child (libuv), NOT a JS timer on either
+// process's event loop — so it fires even while the child is synchronously spinning and
+// this parent is itself blocked waiting on it. Default well below the 120m gate ceiling
+// (generous for a legitimately slow full-workspace suite, but bounded), overridable for a
+// caller who knows a specific workspace runs long.
+const explicitBatchTimeoutMs = process.env.AFFECTED_BATCH_TIMEOUT_MS;
+const BATCH_TIMEOUT_MS =
+  explicitBatchTimeoutMs && Number(explicitBatchTimeoutMs) > 0 ? Number(explicitBatchTimeoutMs) : 20 * 60 * 1000;
+// Slack below the exact deadline: the parent measures elapsed wall-clock itself (Date.now()
+// before/after spawnSync) to positively attribute a kill to OUR watchdog rather than assume
+// it from the signal name alone — `signal === killSignal` alone is ambiguous (the OOM killer
+// or an operator also send SIGKILL) but is unambiguous once it also cleared essentially the
+// whole configured window.
+const BATCH_TIMEOUT_SLACK_MS = 2000;
+const BATCH_KILL_SIGNAL = 'SIGKILL';
+const isWatchdogTimeout = (r) =>
+  r.signal === BATCH_KILL_SIGNAL && r.status === null && (r.__elapsedMs ?? 0) >= BATCH_TIMEOUT_MS - BATCH_TIMEOUT_SLACK_MS;
+
 // A PACKAGED install ships the whole suite (vitest, the test files, quarantine.txt,
 // its own node at sidecar/bin/node) but has NO npm — by design. This script is
 // reachable there (`node scripts/affected-tests.mjs --all`), so the only thing that
@@ -826,12 +855,23 @@ for (const t of tasks) {
   // so the full child output can be logged to RUN_LOG_PATH. Only a real
   // interactive TTY keeps stdio:'inherit' for live streaming with nothing lost
   // (a human is watching the terminal directly).
+  // EI-19370814345784324: `timeout`/`killSignal` bound the whole batch at the NATIVE
+  // (libuv) level, immune to the child spinning its own event loop — see the constant's
+  // header above. `__elapsedMs` is attached to the plain result object so isWatchdogTimeout
+  // can positively attribute a kill to this bound rather than guess from the signal alone.
   const run = (extraArgs = []) => {
     const { cmd, argv, cwd, env } = spawnSpecFor(t, [...guardArgs, ...extraArgs]);
-    if (!captureOutput()) return spawnSync(cmd, argv, { cwd, env, stdio: 'inherit' });
+    const spawnOpts = { timeout: BATCH_TIMEOUT_MS, killSignal: BATCH_KILL_SIGNAL };
+    const startedAt = Date.now();
+    if (!captureOutput()) {
+      const r = spawnSync(cmd, argv, { cwd, env, stdio: 'inherit', ...spawnOpts });
+      r.__elapsedMs = Date.now() - startedAt;
+      return r;
+    }
     // A full vitest suite emits far beyond spawnSync's 1MB default maxBuffer —
     // an ENOBUFS-killed child would read as a failure. 256MB clears any suite.
-    const r = spawnSync(cmd, argv, { cwd, env, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 });
+    const r = spawnSync(cmd, argv, { cwd, env, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024, ...spawnOpts });
+    r.__elapsedMs = Date.now() - startedAt;
     if (r.error) errSync(`>>> ${t.ws.name} spawn error: ${r.error.message}`);
     writeAllSync(1, r.stdout ?? '');
     writeAllSync(2, r.stderr ?? '');
@@ -840,7 +880,20 @@ for (const t of tasks) {
     return r;
   };
   let r = run();
-  if (r.status !== 0 && retryFailed && !isQuarantined) {
+  const watchdogTimedOut = isWatchdogTimeout(r);
+  if (watchdogTimedOut) {
+    // Not retried: a wedge that reproduces once burns the exact same window again, turning
+    // one bounded stall back into an unbounded-feeling one. Report it plainly and move on —
+    // the next batch already proceeds either way (this is a per-batch bound, not a run-wide
+    // one), so the gate stays attributable instead of a silent 2h hang.
+    errSync(
+      `\n>>> ${t.ws.name} :: ${t.script} WATCHDOG-KILLED after ${(r.__elapsedMs / 60000).toFixed(1)}m with no exit ` +
+        `(EI-19370814345784324: a synchronously-spinning test blocks its own event loop, so vitest's testTimeout ` +
+        `cannot fire — AFFECTED_BATCH_TIMEOUT_MS=${BATCH_TIMEOUT_MS}ms fired instead). NOT retrying. Find the ` +
+        `offending file by re-running this workspace's suites individually, or compare utime/stime on the worker ` +
+        `process next time it's caught live (EI-19371039618090828) — a tight syscall loop is system-time-dominated.`,
+    );
+  } else if (r.status !== 0 && retryFailed && !isQuarantined) {
     const failedFiles = parseFailedFiles(`${r.stdout ?? ''}${r.stderr ?? ''}`);
     if (failedFiles.length > 0 && failedFiles.length <= FRESH_RETRY_MAX_FILES) {
       errSync(
@@ -881,22 +934,25 @@ for (const t of tasks) {
     } else {
       failed++;
       failedTaskNames.push(`${t.ws.name} :: ${t.script}`);
-      // EI-19395701908500754: name the FILES, not just the workspace. Attribution is
-      // only possible when the child's output was captured; an interactive TTY run
-      // inherited stdio and r.stdout/r.stderr are unset here, so it is recorded as
-      // unattributed rather than contributing an empty set that reads as "no files".
-      if (!captureOutput()) {
-        unattributedTasks.push({ task: `${t.ws.name} :: ${t.script}`, reason: 'no-captured-output' });
+      // EI-19395701908500754: name the FILES, not just the workspace. Delegated to a
+      // unit-tested helper for the same reason as the rendering below — this runs only
+      // when the gate is already red, so nothing here is exercised on a green run.
+      if (watchdogTimedOut) {
+        // EI-19370814345784324: a killed-mid-spin worker's captured output has no FAIL
+        // rows to parse (the reporter never got to print one) — `attributeFailedTask`
+        // would just fall through to the generic 'no-file-rows' reason, which reads
+        // identically to an unrelated worker crash. Name the real cause explicitly so a
+        // triager doesn't have to rediscover it from the log above.
+        unattributedTasks.push({ task: `${t.ws.name} :: ${t.script}`, reason: 'batch-timeout' });
       } else {
-        const failedFiles = parseFailedFiles(`${r.stdout ?? ''}${r.stderr ?? ''}`);
-        if (failedFiles.length === 0) {
-          // A real red that printed no FAIL/rollup rows at all — a worker crash, an OOM,
-          // a spawn error, a transform failure before the reporter ran. The task IS
-          // broken; we simply cannot say which file, and saying so beats implying none.
-          unattributedTasks.push({ task: `${t.ws.name} :: ${t.script}`, reason: 'no-file-rows' });
-        } else {
-          for (const file of failedFiles) failedFileEntries.push({ workspace: t.ws.name, file });
-        }
+        const a = attributeFailedTask({
+          workspace: t.ws.name,
+          task: `${t.ws.name} :: ${t.script}`,
+          captured: captureOutput(),
+          output: `${r.stdout ?? ''}${r.stderr ?? ''}`,
+        });
+        failedFileEntries.push(...a.entries);
+        unattributedTasks.push(...a.unattributed);
       }
       // EI-19332556961886184: surface a timeout signature right here, in the log a
       // triager reads, instead of letting it collapse into an indistinguishable red.

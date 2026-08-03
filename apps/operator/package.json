@@ -183,6 +183,7 @@
     "marked": "^15.0.12",
     "mcp-handler": "^1.1.0",
     "mem0ai": "^3.0.3",
+    "monaco-editor": "^0.56.0",
     "motion": "^12.38.0",
     "nuqs": "^2.8.9",
     "ollama": "^0.5.18",

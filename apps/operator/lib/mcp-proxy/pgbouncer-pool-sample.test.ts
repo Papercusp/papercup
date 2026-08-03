@@ -55,7 +55,12 @@ describe('pgbouncer pool sampler — buildShowPoolsArgs (EI-19384024494946006)',
 describe('pgbouncer pool sampler — samplePgBouncerPools (EI-19384024494946006)', () => {
   it('invokes psql with the built args, PGPASSWORD in env, and a timeout — then logs the output', async () => {
     const calls: unknown[] = [];
-    const execFileImpl = (cmd: string, args: string[], options: Record<string, unknown>, cb: (...a: unknown[]) => void) => {
+    const execFileImpl = (
+      cmd: string,
+      args: string[],
+      options: Record<string, unknown>,
+      cb: (err: (Error & { message: string }) | null, stdout: string, stderr: string) => void,
+    ) => {
       calls.push({ cmd, args, options });
       cb(null, 'pool output here', '');
     };
@@ -77,7 +82,12 @@ describe('pgbouncer pool sampler — samplePgBouncerPools (EI-19384024494946006)
   });
 
   it('never throws when psql errors — logs the error and reports ok:false', async () => {
-    const execFileImpl = (cmd: string, args: string[], options: Record<string, unknown>, cb: (...a: unknown[]) => void) => {
+    const execFileImpl = (
+      cmd: string,
+      args: string[],
+      options: Record<string, unknown>,
+      cb: (err: (Error & { message: string }) | null, stdout: string, stderr: string) => void,
+    ) => {
       cb(Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:6432'), { message: 'connect ECONNREFUSED 127.0.0.1:6432' }), '', 'connection refused');
     };
 
@@ -99,7 +109,12 @@ describe('pgbouncer pool sampler — samplePgBouncerPools (EI-19384024494946006)
 
   it('debounces repeat calls within MIN_SAMPLE_INTERVAL_MS — a burst of onsets samples once', async () => {
     let calls = 0;
-    const execFileImpl = (cmd: string, args: string[], options: Record<string, unknown>, cb: (...a: unknown[]) => void) => {
+    const execFileImpl = (
+      cmd: string,
+      args: string[],
+      options: Record<string, unknown>,
+      cb: (err: (Error & { message: string }) | null, stdout: string, stderr: string) => void,
+    ) => {
       calls += 1;
       cb(null, 'output', '');
     };

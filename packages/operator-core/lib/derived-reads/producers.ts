@@ -493,7 +493,19 @@ registerDerivedRead({
   // changed (every captured improvement → only what the learning loop produced), so
   // a cached v1 row is not merely stale, it answers a different question. The bump
   // invalidates it instead of serving the old corpus under the new view's name.
-  producerVersion: 2,
+  //
+  // v2 → v3 (WI-7275): WI-7279 narrowed the humanQueue wire SHAPE to
+  // HUMAN_QUEUE_WIRE_FIELDS (22 keys → 12) but did not bump this version, so the
+  // fix was INERT on the read it was filed against. A stored v2 row matches the
+  // reader's version check (:204), so it kept serving the old fat shape — measured
+  // 2026-08-03 02:2xZ: the snapshot path returned 317,812 B / 22 keys while the
+  // inline path, same code, returned 223,159 B / 11. Restarting the producer host
+  // is NOT sufficient: THREE hosts write this row (:3170, :3070 release, bg-host)
+  // and :3070 runs release code, so at equal versions the downgrade guard (:380)
+  // permits it to clobber the slim row back indefinitely. The version bump is what
+  // makes a shape change self-enforcing — same rule as the v1 → v2 bump above:
+  // a superseded SHAPE is treated as absent and re-warmed by the new-code reader.
+  producerVersion: 3,
   scope: 'workspace',
   compute: async () => {
     const { computeLearningImprovementsSnapshot } = await import(

@@ -34,6 +34,7 @@ import { fileURLToPath } from 'node:url';
 
 import {
   formatFailingFilesLine,
+  attributeFailedTask,
   renderFailingFilesSummary,
   parseFailedTestFiles,
   AFFECTED_TESTS_FAILING_FILES_TOKEN,
@@ -232,6 +233,60 @@ describe('the shared parser does not truncate an extension into a phantom path',
   });
 });
 
+describe('attributeFailedTask — a red task never contributes nothing', () => {
+  /** VERBATIM shape of a real captured vitest failure (rollup row + FAIL row). */
+  const REAL_FAILURE_OUTPUT = [
+    ' ❯ lib/release/green-checkpoint-real-deps.test.ts (12 tests | 2 failed) 812ms',
+    'FAIL  app/adv/create/PreviewPanel.test.tsx',
+    ' Test Files  2 failed | 3274 passed (3276)',
+  ].join('\n');
+
+  it('names every file a captured red printed', () => {
+    const a = attributeFailedTask({
+      workspace: '@papercusp/operator-core',
+      task: '@papercusp/operator-core :: test',
+      captured: true,
+      output: REAL_FAILURE_OUTPUT,
+    });
+    expect(a.unattributed).toEqual([]);
+    expect(a.entries.map((e) => e.file).sort()).toEqual([
+      'app/adv/create/PreviewPanel.test.tsx',
+      'lib/release/green-checkpoint-real-deps.test.ts',
+    ]);
+    expect(a.entries.every((e) => e.workspace === '@papercusp/operator-core')).toBe(true);
+  });
+
+  it('records an un-captured red (interactive TTY) instead of dropping it', () => {
+    const a = attributeFailedTask({ workspace: 'w', task: 'w :: test', captured: false });
+    expect(a.entries).toEqual([]);
+    expect(a.unattributed).toEqual([{ task: 'w :: test', reason: 'no-captured-output' }]);
+  });
+
+  it('records a crash/OOM red whose output has no FAIL rows at all', () => {
+    const a = attributeFailedTask({
+      workspace: 'w',
+      task: 'w :: test',
+      captured: true,
+      // A worker crash: real, fatal, and it never reached the reporter.
+      output: 'Error: Worker terminated due to reaching memory limit: JS heap out of memory\n',
+    });
+    expect(a.entries).toEqual([]);
+    expect(a.unattributed).toEqual([{ task: 'w :: test', reason: 'no-file-rows' }]);
+  });
+
+  it('every branch yields exactly one of files-or-a-reason — never silence', () => {
+    const cases = [
+      { workspace: 'w', task: 't', captured: true, output: REAL_FAILURE_OUTPUT },
+      { workspace: 'w', task: 't', captured: true, output: '' },
+      { workspace: 'w', task: 't', captured: false },
+    ];
+    for (const c of cases) {
+      const a = attributeFailedTask(c);
+      expect(a.entries.length + a.unattributed.length).toBeGreaterThan(0);
+    }
+  });
+});
+
 describe('renderFailingFilesSummary — the block the red path actually prints', () => {
   it('leads with the files, warns that failed=N counts tasks, and ends with the machine line', () => {
     const lines = renderFailingFilesSummary({
@@ -296,11 +351,21 @@ describe('scripts/affected-tests.mjs wires the block in (a helper nothing calls 
     expect(failureBlock).toContain("resultLine('failed')");
   });
 
-  it('records a failed task that cannot be attributed, rather than dropping it', () => {
-    // Dropping it is what makes an empty list read as clean; each reason must be reachable.
-    for (const reason of ['no-captured-output', 'no-file-rows', 'non-vitest']) {
-      expect(source).toContain(`reason: '${reason}'`);
-    }
+  it('routes every failed vitest task through the attributor, keeping BOTH of its outputs', () => {
+    // The vitest reasons are asserted behaviourally above, on the helper itself. What can
+    // only be checked here is that the runner keeps the `unattributed` half — dropping it
+    // is precisely what makes an empty file list read as clean.
+    expect(source).toContain('attributeFailedTask({');
+    expect(source).toContain('failedFileEntries.push(...a.entries)');
+    expect(source).toContain('unattributedTasks.push(...a.unattributed)');
+  });
+
+  it('accounts for the non-vitest cargo task, which the attributor cannot speak for', () => {
+    // Cargo does not go through attributeFailedTask, so its two failure sites are the one
+    // place a red task could still be silently omitted from the break set.
+    const cargoReasons = source.match(/reason: 'non-vitest'/g) ?? [];
+    expect(cargoReasons).toHaveLength(2); // exit-nonzero, and runner-error
+    expect(source).toContain("failedTaskNames.push('papercusp-desktop :: cargo test')");
   });
 
   it('stamps the same run token that names the full run log', () => {
