@@ -54,6 +54,7 @@ import {
   ISOLATION_LOAD_STARVATION_MIN_LOAD_PER_CORE,
   isDeterministicFailureShape,
   outputHasTimingSignature,
+  outputHasAssertionSignature,
   acquireCheckpointRunLock,
   checkpointRunLockDir,
   createTerminationSignalHandler,

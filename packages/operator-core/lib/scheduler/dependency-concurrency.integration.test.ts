@@ -243,8 +243,8 @@ describe('two writers racing edge sync on the same item (P-011) — @covers INV-
     // Row shape is not the verdict (D-017). Whichever writer won, the item must be
     // withheld, because both candidate blockers were seeded non-terminal.
     await seedIssue('EI-b');
-    await seedIssue('EI-x', 'open');
-    await seedIssue('EI-y', 'open');
+    await seedIssue('EI-x', 'wip'); // parked: non-terminal, and not a rival candidate
+    await seedIssue('EI-y', 'wip');
 
     expect(await claim('probe')).toBe('EI-b'); // positive control on this rig
     await releaseClaim('EI-b');
@@ -272,7 +272,7 @@ describe("a claim racing the blocker's completion (P-011) — @covers INV-04 INV
     //                raised anywhere, the work simply stops being offered).
     // Either outcome of the RACE is legal; both post-conditions are mandatory.
     await seedIssue('EI-dep');
-    await seedIssue('EI-pre', 'open');
+    await seedIssue('EI-pre', 'wip'); // live blocker, but not itself a candidate
     await syncWorkItemDepEdges(H, 'EI-dep', ['EI-pre']);
 
     const [claimed] = await Promise.all([claim('racer'), setStatus('EI-pre', 'done')]);
@@ -303,7 +303,10 @@ describe("a claim racing the blocker's completion (P-011) — @covers INV-04 INV
     await seedIssue('EI-pre', 'done');
     await syncWorkItemDepEdges(H, 'EI-dep', ['EI-pre']);
 
-    const [claimed] = await Promise.all([claim('racer'), setStatus('EI-pre', 'open')]);
+    // Re-opened to `wip`, not `open`: still a LIVE (non-terminal) blocker, but not itself
+    // a rival candidate — otherwise the follow-up claim below is served the blocker and
+    // the assertion silently stops being about EI-dep at all.
+    const [claimed] = await Promise.all([claim('racer'), setStatus('EI-pre', 'wip')]);
     if (claimed !== null) await releaseClaim('EI-dep');
 
     // Now that the blocker is unambiguously live, the door must withhold.
