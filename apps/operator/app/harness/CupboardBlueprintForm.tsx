@@ -137,7 +137,10 @@ export function CupboardBlueprintForm({ onBack, onCreated, hiveLabel }: Cupboard
   // Create-form state.
   const slugRef = useRef<HTMLInputElement>(null);
   const parentDirRef = useRef<HTMLInputElement>(null);
-  const [knowledgePack, setKnowledgePack] = useState<string>('papercusp-default');
+  // EI-1539: default = the generic `coding` pack (was 'papercusp-default', which
+  // is byte-identical to it apart from its manifest id/title).
+  const defaultPack = 'coding';
+  const [knowledgePack, setKnowledgePack] = useState<string>(defaultPack);
   const [busy, setBusy] = useState(false);
   const [busyLabel, setBusyLabel] = useState('Creating…');
   const [createError, setCreateError] = useState<string | null>(null);
@@ -150,7 +153,7 @@ export function CupboardBlueprintForm({ onBack, onCreated, hiveLabel }: Cupboard
   const availablePacks =
     packRows && packRows.length > 0
       ? packRows
-      : [{ id: 'papercusp-default', title: 'Papercusp default learnings', version: '', itemCount: 0 }];
+      : [{ id: defaultPack, title: 'Generic coding learnings', version: '', itemCount: 0 }];
 
   // Debounced search-as-you-type. Paused while a blueprint is selected (the
   // create form owns the panel). AbortController cancels the stale in-flight
@@ -300,7 +303,7 @@ export function CupboardBlueprintForm({ onBack, onCreated, hiveLabel }: Cupboard
             options={[
               ...availablePacks.map((p) => ({
                 value: p.id,
-                label: `${p.title}${p.itemCount ? ` — ${p.itemCount} learnings` : ''}${p.id === 'papercusp-default' ? ' (default)' : ''}`,
+                label: `${p.title}${p.itemCount ? ` — ${p.itemCount} learnings` : ''}${p.id === defaultPack ? ' (default)' : ''}`,
               })),
               { value: 'none', label: 'None — start with an empty memory' },
             ]}

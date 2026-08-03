@@ -33,6 +33,7 @@ import {
 import { deriveVerdict } from '../agent-tools/coordination/liveness-oracle';
 import { recordedLiveOwnerIds } from '../adv-sessions';
 import { listFleetAssignments, groupByAgent, type AgentAssignment } from './assignments';
+import { machineFingerprint } from '../identity/device-keychain-id';
 
 /** The presence fields the fold needs — structurally a `PresenceRecord` (local)
  *  or `UnifiedPresenceRecord` (federated). Kept structural so foldHiveRoster
@@ -55,6 +56,12 @@ export interface FoldPresence {
    *  probe, exactly like coord:presence (unification P-007). */
   pid?: number | null;
   federated?: boolean;
+  /** WI-1495: the machine this session is homed on. A FEDERATED row carries its
+   *  announced `shared_session_presence.machine_label` (surfaced on
+   *  UnifiedPresenceRecord); a LOCAL row has none on the wire, so the assembly
+   *  layer backfills this machine's fingerprint — see foldHiveRoster's
+   *  `localMachineLabel`. Lets a roster consumer group/tab by machine. */
+  machineLabel?: string | null;
 }
 
 /** One agent's unified live-state: the fleet work-detail (AgentAssignment,
@@ -69,6 +76,12 @@ export interface HiveRosterEntry extends AgentAssignment {
   potSlug: string | null;
   userId: string | null;
   federated: boolean;
+  /** WI-1495: which MACHINE this agent is homed on — the federated peer's
+   *  announced machine_label, or this host's fingerprint for a local agent.
+   *  `federated` only says local-vs-remote; this says WHICH remote, so a
+   *  consumer can group into per-machine tabs and count "across N machines".
+   *  null when the row is federated but announced no label. */
+  machineLabel: string | null;
   /** Unification P-007: the coordinator-facing verdict, derived by the SAME
    *  liveness oracle as coord:presence / fleet:status — this surface used to
    *  serve heartbeat-only `alive` with no sessionState at all (audit F6).
@@ -143,6 +156,12 @@ export function foldHiveRoster(
   nowMs: number,
   wakeability: Map<string, WakeabilitySignals> = new Map(),
   recordedLive: ReadonlySet<string> = new Set<string>(),
+  /** WI-1495: this host's machine label, stamped onto LOCAL (non-federated)
+   *  rows — federated rows already carry their own announced label. Injected
+   *  rather than read from the OS here so the fold stays pure/testable (same
+   *  posture as `nowMs`). Defaults to null: every pre-WI-1495 caller keeps its
+   *  exact prior behaviour. */
+  localMachineLabel: string | null = null,
 ): HiveRosterEntry[] {
   const presById = new Map(presence.map((p) => [p.ownerId, p]));
   const asgById = new Map(assignments.map((a) => [a.agentId, a]));
@@ -202,6 +221,9 @@ export function foldHiveRoster(
       potSlug: p?.potSlug ?? null,
       userId: p?.userId ?? null,
       federated: Boolean(p?.federated),
+      // WI-1495: a federated row's announced label wins; a local row (or a
+      // federated row that announced none) falls back to this host's label.
+      machineLabel: p?.machineLabel ?? (p?.federated ? null : localMachineLabel),
       lastActiveSecAgo: computeLastActiveSecAgo(p?.lastActiveAt ?? null, nowMs),
       ...EMPTY_TIER1,
       ...(tier1.get(id) ?? {}),
@@ -321,7 +343,18 @@ export async function listHiveRoster(opts: ListHiveRosterOpts): Promise<HiveRost
     recordedLiveOwnerIds(localIds).catch(() => new Set<string>()),
   ]);
   const assignments = groupByAgent(rows).filter((a) => inHive.has(a.agentId));
-  return foldHiveRoster(presence, assignments, tier1, Date.now(), wakeability, recordedLive);
+  // WI-1495: stamp LOCAL rows with this machine's label so the roster can group
+  // by machine (federated rows already carry their announced one). Same
+  // fingerprint source as adv-roster.ts, so the two rosters agree on the name.
+  return foldHiveRoster(
+    presence,
+    assignments,
+    tier1,
+    Date.now(),
+    wakeability,
+    recordedLive,
+    machineFingerprint(),
+  );
 }
 
 /** Convenience: the lean dossier snapshot in one call (listHiveRoster +

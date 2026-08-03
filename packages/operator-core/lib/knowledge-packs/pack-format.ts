@@ -27,8 +27,19 @@
 import { parse as parseYaml } from 'yaml';
 import { parseFrontmatter } from '../memory/insights-index';
 
-/** The pack preselected in the hive-creation picker (D-004). */
-export const DEFAULT_KNOWLEDGE_PACK_ID = 'papercusp-default';
+/**
+ * The GLOBAL fallback pack — used when neither an explicit `knowledgePack` arg
+ * nor the blueprint's own `knowledge.pack` resolves (`_create.ts`:
+ * `opts.knowledgePack ?? seed.packId ?? DEFAULT_KNOWLEDGE_PACK_ID`).
+ *
+ * EI-1539: this was `papercusp-default`, whose content is byte-identical to the
+ * generic `coding` pack apart from three manifest lines (id/title/description).
+ * A Papercusp-BRANDED id is the wrong global default for hives that have nothing
+ * to do with Papercusp, so the generic pack is now the fallback and the branded
+ * one is being retired. The UI pickers no longer hardcode it either — they
+ * default per DOMAIN (`coding` / `work`).
+ */
+export const DEFAULT_KNOWLEDGE_PACK_ID = 'coding';
 
 /**
  * Project shapes a learning can apply to (D-002/D-008). `any` always seeds;

@@ -205,9 +205,13 @@ function NewLocalForm({ onBack, onSuccess, hive, hiveLabel, domain = 'coding', b
   const isWork = domain === 'work' && !hive;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // knowledge-packs P-006: pack selection — default = the Papercusp pack (D-004).
+  // knowledge-packs P-006: pack selection — default = the pack matching this
+  // hive's DOMAIN. EI-1539: this was hardcoded to 'papercusp-default', which is
+  // byte-identical to the generic `coding` pack apart from its manifest id/title,
+  // and forced a Papercusp-branded pack onto WORK hives too.
   // Only used on the new-hive branch (`!hive`).
-  const [knowledgePack, setKnowledgePack] = useState<string>('papercusp-default');
+  const defaultPack = isWork ? 'work' : 'coding';
+  const [knowledgePack, setKnowledgePack] = useState<string>(defaultPack);
   const slugRef = useRef<HTMLInputElement>(null);
   const parentDirRef = useRef<HTMLInputElement>(null);
 
@@ -219,7 +223,7 @@ function NewLocalForm({ onBack, onSuccess, hive, hiveLabel, domain = 'coding', b
   const availablePacks =
     packRows && packRows.length > 0
       ? packRows
-      : [{ id: 'papercusp-default', title: 'Papercusp default learnings', version: '', itemCount: 0 }];
+      : [{ id: defaultPack, title: defaultPack === 'work' ? 'Generic work learnings' : 'Generic coding learnings', version: '', itemCount: 0 }];
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
@@ -356,7 +360,7 @@ function NewLocalForm({ onBack, onSuccess, hive, hiveLabel, domain = 'coding', b
             options={[
               ...availablePacks.map((p) => ({
                 value: p.id,
-                label: `${p.title}${p.itemCount ? ` — ${p.itemCount} learnings` : ''}${p.id === 'papercusp-default' ? ' (default)' : ''}`,
+                label: `${p.title}${p.itemCount ? ` — ${p.itemCount} learnings` : ''}${p.id === defaultPack ? ' (default)' : ''}`,
               })),
               { value: 'none', label: 'None — start with an empty memory' },
             ]}
@@ -386,9 +390,11 @@ function ExistingLocalForm({ onBack, onSuccess, hive, hiveLabel }: { onBack: () 
   const hiveLower = hiveLabel.toLowerCase();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // knowledge-packs P-006: pack selection — default = the Papercusp pack (D-004).
-  // Only used on the new-hive branch (`!hive`).
-  const [knowledgePack, setKnowledgePack] = useState<string>('papercusp-default');
+  // knowledge-packs P-006: pack selection — default = the generic `coding` pack
+  // (EI-1539: was 'papercusp-default', byte-identical apart from its manifest
+  // id/title). This form links an existing local REPO, so it is always coding.
+  const defaultPack = 'coding';
+  const [knowledgePack, setKnowledgePack] = useState<string>(defaultPack);
   const slugRef = useRef<HTMLInputElement>(null);
   const pathRef = useRef<HTMLInputElement>(null);
 
@@ -400,7 +406,7 @@ function ExistingLocalForm({ onBack, onSuccess, hive, hiveLabel }: { onBack: () 
   const availablePacks =
     packRows && packRows.length > 0
       ? packRows
-      : [{ id: 'papercusp-default', title: 'Papercusp default learnings', version: '', itemCount: 0 }];
+      : [{ id: defaultPack, title: defaultPack === 'work' ? 'Generic work learnings' : 'Generic coding learnings', version: '', itemCount: 0 }];
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
@@ -524,7 +530,7 @@ function ExistingLocalForm({ onBack, onSuccess, hive, hiveLabel }: { onBack: () 
             options={[
               ...availablePacks.map((p) => ({
                 value: p.id,
-                label: `${p.title}${p.itemCount ? ` — ${p.itemCount} learnings` : ''}${p.id === 'papercusp-default' ? ' (default)' : ''}`,
+                label: `${p.title}${p.itemCount ? ` — ${p.itemCount} learnings` : ''}${p.id === defaultPack ? ' (default)' : ''}`,
               })),
               { value: 'none', label: 'None — start with an empty memory' },
             ]}

@@ -341,9 +341,12 @@ export function EntryGithubUrlForm({ onBack, onCreated, hiveScope = null, initia
   // useState (nuqs exception).
   const [verifyTests, setVerifyTests] = useState(false);
   // knowledge-packs P-006: which pack seeds the new hive's shared memory.
-  // Default = the Papercusp pack (D-004); 'none' starts empty. Transient
-  // form draft → useState (nuqs exception).
-  const [knowledgePack, setKnowledgePack] = useState<string>('papercusp-default');
+  // Default = the generic `coding` pack — this form imports a GitHub REPO, so the
+  // hive is always a coding one. EI-1539: was 'papercusp-default', a
+  // Papercusp-branded pack byte-identical to `coding` apart from its manifest
+  // id/title. 'none' starts empty. Transient form draft → useState (nuqs exception).
+  const defaultPack = 'coding';
+  const [knowledgePack, setKnowledgePack] = useState<string>(defaultPack);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [customSlug, setCustomSlug] = useState('');
   const [slugTouched, setSlugTouched] = useState(false);
@@ -412,7 +415,7 @@ export function EntryGithubUrlForm({ onBack, onCreated, hiveScope = null, initia
   const availablePacks =
     packRows && packRows.length > 0
       ? packRows
-      : [{ id: 'papercusp-default', title: 'Papercusp default learnings', version: '', itemCount: 0 }];
+      : [{ id: defaultPack, title: 'Generic coding learnings', version: '', itemCount: 0 }];
 
   // P-008 — REAL step rows from the backend (the from-repo composition records
   // every transition; each write invalidates this query over SSE). While rows
@@ -976,7 +979,7 @@ export function EntryGithubUrlForm({ onBack, onCreated, hiveScope = null, initia
             options={[
               ...availablePacks.map((p) => ({
                 value: p.id,
-                label: `${p.title}${p.itemCount ? ` — ${p.itemCount} learnings` : ''}${p.id === 'papercusp-default' ? ' (default)' : ''}`,
+                label: `${p.title}${p.itemCount ? ` — ${p.itemCount} learnings` : ''}${p.id === defaultPack ? ' (default)' : ''}`,
               })),
               { value: 'none', label: 'None — start with an empty memory' },
             ]}
