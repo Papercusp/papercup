@@ -27,6 +27,7 @@ function row(
     retracted: boolean;
     superseded: boolean;
     expired: boolean;
+    evicted: boolean;
   }> = {},
 ) {
   return {

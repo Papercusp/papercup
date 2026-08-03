@@ -194,6 +194,36 @@ Human pane: `/admin/tasks` (sibling of `/admin/schedules` — that one inventori
 RECURRING, this one everything RUNNING). Full model:
 [the task manager and the no-escape property](/internal/docs/agent-insights/task-manager-and-the-no-escape-property).
 
+## Shared-lib singletons: pin through the primitive, never by hand
+
+Module-scoped mutable state in a shared package (`const registry = new Map()`, a cache,
+a pool, a `configure*()` host-seam object) is a singleton **only if the loader produces
+exactly one module record**. Several ordinary seams break that with no error: tsx's CJS
+preflight beside the ESM loader, the same file reached by bare specifier and by relative
+path, `node_modules/@papercusp/*` symlinked into the repo, a bundled copy beside source.
+When it splits, each record gets its own state and writes to one are invisible to readers
+of the other. Nothing throws — you get a *partial* view that looks complete.
+
+**Use `pinModuleState` from `@papercusp/module-singleton`, at module scope, once:**
+
+```ts
+const state = pinModuleState('@papercusp/your-pkg.state', () => ({ registry: new Map() }));
+```
+
+It pins to `globalThis` under a `Symbol.for` key — correct under *every* seam above, so
+you never have to prove which one applies — and counts evaluations, so a re-split is
+reported by `listModuleDuplications()` instead of being rediscovered the expensive way.
+⚠ **Do not hand-roll the `Symbol.for` + `globalThis` pair.** Hand-rolling still fixes
+correctness, but the key is invisible to the central report, which then answers a
+confident `[]` while your module is split — the failure below, one level up.
+
+Measured (EI-19451658870832332): `@papercusp/scheduled-registry` was evaluated twice in
+bg-host, so `dbos-executor-reaper` reaped every 2 minutes while ABSENT from
+`/api/internal/managed-timers` served by that same pid. It cost 6+ days and several
+sessions because **the surface responsible for reporting the problem was the surface the
+bug blinded** — absence from an inventory is evidence only when there is exactly one
+inventory. Duplications now ride on that route beside the timer list.
+
 ## Deployment model: desktop is the product; the standalone webapp is RETIRED
 
 Shipping target = the Tauri desktop app; **SSE is the sync path that matters** —

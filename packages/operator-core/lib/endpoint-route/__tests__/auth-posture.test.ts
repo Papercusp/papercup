@@ -110,6 +110,16 @@ const RULES: ReadonlyArray<{
       // token. Strictly NARROWER than the family's `{}`. See the route's own
       // doc-comment (misc/managed-timers.ts).
       { method: 'GET', path: '/internal/managed-timers', auth: 'loopback' },
+      // Live head-snapshot probe, same subsystem and same contract as
+      // managed-timers directly above: the ONLY caller is
+      // sync/hyperbee/live-head-snapshot-client.ts, which posts to
+      // `http://127.0.0.1:${sibling.port}` — a sibling operator-shaped process
+      // on THIS box, holding no principal token. `'loopback'` rejects
+      // non-loopback hosts at the route-stack chokepoint while requiring no
+      // token, so it is strictly NARROWER than the family's `{}`, not a
+      // loosening. See the route's own doc-comment
+      // (misc/substrate-head-snapshot.ts).
+      { method: 'POST', path: '/internal/substrate/head-snapshot', auth: 'loopback' },
     ],
   },
   // The /api/tui/* workbench READS stay `auth:'public'` (loopback-protected by

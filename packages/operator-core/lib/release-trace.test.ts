@@ -15,6 +15,10 @@ const deployed = sha;
 function position(over: Partial<PipelinePosition> = {}): PipelinePosition {
   return {
     input: { path: null, sha },
+    // WI-9974 made this REQUIRED. `[]` is correct here rather than a silencer:
+    // these fixtures describe a sha-only probe, and a sha-only probe identifies
+    // no path, so there is no file whose generation any host could be running.
+    runtimeGenerations: [],
     repoRoot: '/repo',
     submodule: null,
     // EI-18715870370005934 made this REQUIRED on PipelinePosition. `null` is the

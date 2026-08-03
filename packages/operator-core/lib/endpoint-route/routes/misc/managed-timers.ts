@@ -31,6 +31,10 @@ import {
   moduleDuplicationWarning,
   moduleEvaluationCount,
 } from '@papercusp/scheduled-registry';
+import {
+  formatModuleDuplicationWarnings,
+  listModuleDuplications,
+} from '@papercusp/module-singleton';
 import { defaultGetRegisteredSchedules } from '../../../dbos/dbos-schedule-introspect';
 import { describeProcessRole, ownHonoPort } from '../../../schedule-federation';
 
@@ -86,6 +90,24 @@ export default defineTool({
       // An older @papercusp/scheduled-registry build without these exports must
       // degrade to "unknown", never take out the timer list itself.
     }
+    // The REALM-WIDE version of the same signal. The two fields above describe
+    // one module; this describes every module pinned through
+    // `@papercusp/module-singleton`, so a split in some OTHER shared singleton —
+    // a cache, a connection pool, a "configure once at boot" config object — is
+    // reported by a surface someone actually reads, instead of waiting to be
+    // discovered from a contradictory reading the way the timer registry was.
+    //
+    // `[]` here means "no duplication among keys that use the primitive". It is
+    // NOT a clean bill of health for modules that still pin their state by hand:
+    // those are invisible to this report by construction, which is the whole
+    // reason @papercusp/scheduled-registry stopped hand-rolling its own pin.
+    let moduleDuplications: ReturnType<typeof listModuleDuplications> = [];
+    try {
+      moduleDuplications = listModuleDuplications();
+    } catch {
+      // Same degradation rule as above: a diagnostic must never be able to take
+      // out the inventory it annotates.
+    }
     return Response.json({
       ok: timersError === null,
       ...identity,
@@ -93,6 +115,12 @@ export default defineTool({
       dbosSchedules,
       moduleEvaluations,
       ...(moduleDuplication ? { moduleDuplication } : {}),
+      ...(moduleDuplications.length > 0
+        ? {
+            moduleDuplications,
+            moduleDuplicationWarnings: formatModuleDuplicationWarnings(moduleDuplications),
+          }
+        : {}),
       ...(timersError ? { error: timersError } : {}),
     });
   },

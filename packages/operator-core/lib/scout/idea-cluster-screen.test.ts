@@ -117,6 +117,7 @@ describe('aggregateReports — plan-slug leg', () => {
     status: 'shipped',
     overlap: ['consum'],
     score: 0.25,
+    rarity: 0.9,
   };
 
   it('keeps the plan leg out of the lexical and semantic legs', () => {
@@ -182,7 +183,14 @@ describe('aggregateReports — plan-slug leg', () => {
         emptyReport({
           planSlugs: {
             planMatches: [
-              { slug: 'draft-thing', statusClass: 'in-flight', status: 'active', overlap: ['a', 'b'], score: 0.9 },
+              {
+                slug: 'draft-thing',
+                statusClass: 'in-flight',
+                status: 'active',
+                overlap: ['a', 'b'],
+                score: 0.9,
+                rarity: 0.9,
+              },
             ],
             searched: true,
           },

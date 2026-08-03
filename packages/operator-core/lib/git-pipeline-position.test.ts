@@ -1238,6 +1238,10 @@ describe('gitPipelinePosition (P-002)', () => {
   it('summarizePosition is pure over the resolved facts', () => {
     const base: Omit<PipelinePosition, 'summary'> = {
       input: { path: 'a.ts', sha: null },
+      // WI-9974 made this REQUIRED. `[]` is the semantically correct value for a
+      // summarizePosition fixture, not a compiler-silencer: these describe the
+      // pure formatter over already-resolved facts and probe no hosts at all.
+      runtimeGenerations: [],
       repoRoot: '/repo',
       submodule: null,
       submodulePin: null,
@@ -2326,6 +2330,7 @@ describe('the serving STAGE and summary never claim "live" off a git fact', () =
   it('summarizePosition drops the bare "(live)" and qualifies it with process evidence', () => {
     const mk = (serving: ServingTruth): Omit<PipelinePosition, 'summary'> => ({
       input: { path: 'a.ts', sha: null },
+      runtimeGenerations: [],
       repoRoot: '/repo',
       submodule: null,
       submodulePin: null,
@@ -2596,6 +2601,7 @@ describe('changeInCandidate (P-004)', () => {
   describe('summarizePosition', () => {
     const base = (over: Partial<Omit<PipelinePosition, 'summary'>> = {}): Omit<PipelinePosition, 'summary'> => ({
       input: { path: 'a.ts', sha: null },
+      runtimeGenerations: [],
       repoRoot: '/repo',
       submodule: null,
       submodulePin: null,
@@ -4436,6 +4442,61 @@ describe('runtime generations (WI-9974) — every host, both directions', () => 
     expect(g.unknownReason?.code).toBe('insufficient-data');
   });
 
+  /**
+   * Caught by LIVE EXERCISE, not by the unit tests above — which is the point.
+   * The first implementation compared start-time to deploy-time for the release
+   * host and reported `runningYourCode: true` for :3070 on the very path that
+   * motivated this leg, while that checkout provably lacked the change. Start vs
+   * deploy answers "did it restart since SOME deploy", never "which content did
+   * that deploy carry". These pin the corrected semantics.
+   */
+  describe('release host: content identity is load-bearing, not just restart recency', () => {
+    const releaseHost = (over: Partial<Probe> = {}) =>
+      host({
+        unit: 'papercup-dev-api.service',
+        label: ':3070 release operator',
+        releasePipelineApplies: true,
+        // Restarted LONG after the deploy — the old implementation called this `true`.
+        process: { pid: 1, startedAtMs: 900_000 },
+        codeAsOfMs: 1_000,
+        ...over,
+      });
+
+    it('is FALSE when the deployed copy differs from the working tree, however recent the restart', () => {
+      const [g] = evaluateRuntimeGenerations([releaseHost({ contentDiffers: true })]);
+      expect(g.runningYourCode).toBe(false);
+    });
+
+    it('is TRUE only when the content matches AND the process started since the deploy', () => {
+      const [g] = evaluateRuntimeGenerations([releaseHost({ contentDiffers: false })]);
+      expect(g.runningYourCode).toBe(true);
+    });
+
+    it('is NULL — never true — when the content comparison could not be made', () => {
+      const [g] = evaluateRuntimeGenerations([releaseHost({ contentDiffers: null })]);
+      expect(g.runningYourCode).toBeNull();
+      expect(g.unknownReason?.code).toBe('insufficient-data');
+    });
+
+    it('ignores contentDiffers for a staging-tree host, which imports the tree file directly', () => {
+      const [g] = evaluateRuntimeGenerations([
+        host({ releasePipelineApplies: false, contentDiffers: true, process: { pid: 1, startedAtMs: 9_000 }, codeAsOfMs: 1_000 }),
+      ]);
+      expect(g.runningYourCode).toBe(true);
+    });
+
+    // The end-to-end shape of the WI-9137 miss: :3070 behind, bg-host already live.
+    it('produces the divergence note for the real WI-9137 shape', () => {
+      const gens = evaluateRuntimeGenerations([
+        releaseHost({ contentDiffers: true }),
+        host({ unit: 'papercup-bg-host.service', process: { pid: 2, startedAtMs: 900_000 }, codeAsOfMs: 1_000 }),
+      ]);
+      const note = runtimeGenerationDivergenceNote(gens, 'packages/operator-core/lib/memory/knowledge-read.ts');
+      expect(note).toContain('papercup-bg-host.service');
+      expect(note).toMatch(/NOT blocked on a deploy/i);
+    });
+  });
+
   it('labels the clock per host: deploy for the release checkout, file-mtime for a staging-tree host', () => {
     const [release, staging] = evaluateRuntimeGenerations([
       host({ unit: 'papercup-dev-api.service', releasePipelineApplies: true }),
@@ -4454,6 +4515,8 @@ describe('runtime generations (WI-9974) — every host, both directions', () => 
           releasePipelineApplies: true,
           process: { pid: 1, startedAtMs: 0 },
           codeAsOfMs: 600_000,
+          // A release row is only DECIDABLE once content identity is known.
+          contentDiffers: true,
         }),
         host({ unit: 'papercup-bg-host.service', process: { pid: 2, startedAtMs: 900_000 }, codeAsOfMs: 600_000 }),
       ]);

@@ -1398,6 +1398,20 @@ export function evaluateRuntimeGenerations(
     activationLever: string;
     process: { pid: number | null; startedAtMs: number | null } | null;
     codeAsOfMs: number | null;
+    /**
+     * RELEASE-PIPELINE HOSTS ONLY: does the release checkout's copy of this file
+     * DIFFER from the working tree? Ignored for staging-tree hosts, which import
+     * the working-tree file itself so content identity is trivially satisfied.
+     *
+     * Without this the release host's verdict is a confident answer to the WRONG
+     * question. `startedAtMs > deployedAtMs` establishes only "this process
+     * restarted since its last deploy" — it says nothing about WHICH version got
+     * deployed. Caught by live exercise (WI-9974): on the very path that motivated
+     * this leg, :3070 reported `runningYourCode: true` while its checkout provably
+     * lacked the change (0 occurrences of the new symbol). A true that means
+     * something other than what it says is worse than the gap this leg closes.
+     */
+    contentDiffers?: boolean | null;
   }>,
 ): RuntimeGeneration[] {
   return probes.map((p) => {
@@ -1415,6 +1429,27 @@ export function evaluateRuntimeGenerations(
       activationLever: p.activationLever,
       unknownReason: null,
     };
+    // Content identity is checked FIRST for a release host, because it can settle
+    // the answer on its own: a deployed copy that differs from your tree is not
+    // your code no matter how recently the process restarted.
+    if (p.releasePipelineApplies) {
+      if (p.contentDiffers === true) {
+        return {
+          ...base,
+          runningYourCode: false,
+          unknownReason: null,
+        };
+      }
+      if (p.contentDiffers !== false) {
+        return {
+          ...base,
+          unknownReason: cellUnknown(
+            'insufficient-data',
+            `Could not compare ${p.unit}'s deployed copy of this file against the working tree, so whether it runs YOUR version is UNKNOWN. Process start vs deploy time cannot answer it alone — that only shows the process restarted since some deploy, not which content that deploy carried.`,
+          ),
+        };
+      }
+    }
     if (base.startedAtMs === null) {
       return {
         ...base,
@@ -3722,6 +3757,29 @@ export async function gitPipelinePosition(
   // Every long-lived host's own generation for this path — independent of the
   // ownership map, which cannot see the import graph (see RuntimeGeneration).
   // Probed in parallel; each host fails soft to UNKNOWN on its own.
+  // Does the RELEASE CHECKOUT's copy of this file differ from the working tree?
+  // Computed ONCE here and consumed twice: by the generation verdict below (where
+  // it is load-bearing — see the contentDiffers note on evaluateRuntimeGenerations)
+  // and by the LIVE-CODE-DIFFERS note further down, which used to read the files
+  // itself.
+  //
+  // Kept behind the SAME ownership gate the drift note always used. Widening it to
+  // every path would let this leg decide the release row for a path the map says
+  // :3070 does not serve — but it would also read the release checkout for a
+  // working-tree-only path, which EI-19327418148563597 deliberately pinned as
+  // wasted IO. When we do not read it, the release row degrades to UNKNOWN with a
+  // reason, which is the honest answer and strictly better than today's no-row.
+  let releaseContentDiffers: boolean | null = null;
+  if (runtime?.releasePipelineApplies && inp.path && deploy.releaseRoot) {
+    const relForRead = inp.path.replace(/^\.?\//, '');
+    const readBytes = deps.readFileBytes ?? realReadFileBytes;
+    const [workingBytes, releaseBytes] = await Promise.all([
+      readBytes(path.join(root, relForRead)),
+      readBytes(path.join(deploy.releaseRoot, relForRead)),
+    ]);
+    releaseContentDiffers = evaluateReleaseContentDrift({ workingBytes, releaseBytes }).differs;
+  }
+
   let runtimeGenerations: RuntimeGeneration[] = [];
   if (inp.path) {
     const probeUnit = deps.probeUnitStart ?? realProbeUnitStart;
@@ -3738,6 +3796,7 @@ export async function gitPipelinePosition(
         // tsx host imports the file itself, so the file's own mtime is what a
         // restart would load (committed or not).
         codeAsOfMs: h.releasePipelineApplies ? (deploy.deployedAtMs ?? null) : workingTreeMtimeMs,
+        contentDiffers: h.releasePipelineApplies ? releaseContentDiffers : null,
       })),
     );
     runtimeGenerations = evaluateRuntimeGenerations(probed);
@@ -3757,15 +3816,9 @@ export async function gitPipelinePosition(
   // actually SERVES for this file differs from the tree the caller is reading — a
   // red-gate deploy freeze can leave that gap open for hours, and a caller profiling
   // the live box off it would otherwise measure code the diff below never shows them.
+  // Reuses the single comparison computed above rather than re-reading both files.
   if (runtime?.releasePipelineApplies && inp.path && deploy.releaseRoot) {
-    const relForRead = inp.path.replace(/^\.?\//, '');
-    const readBytes = deps.readFileBytes ?? realReadFileBytes;
-    const [workingBytes, releaseBytes] = await Promise.all([
-      readBytes(path.join(root, relForRead)),
-      readBytes(path.join(deploy.releaseRoot, relForRead)),
-    ]);
-    const releaseContentDrift = evaluateReleaseContentDrift({ workingBytes, releaseBytes });
-    if (releaseContentDrift.differs === true) {
+    if (releaseContentDiffers === true) {
       notes.push(
         `LIVE CODE DIFFERS FROM SOURCE: :3070 is serving a DIFFERENT version of ${inp.path} than the tree you are reading (release checkout: ${deploy.releaseRoot}). Any profiling or live measurement taken against :3070 for this path reflects that OTHER version — diff the two before designing a fix from what you measured. This gap widens the longer the gate stays red and deploys stay blocked.`,
       );
