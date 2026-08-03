@@ -83,7 +83,24 @@ import { parsePlan } from './agent-tools/plans/parser';
 
 /** Where a premise was found. A plan-item premise governs every work-item
  *  promoted from it, so it is worth naming separately from the item's own body. */
-export type PremiseSource = 'work-item' | 'plan-item';
+/**
+ * Where an absence premise was authored.
+ *
+ * `carry-note` (outage-must-not-be-silent-2026-08-02 P-009) covers the CARRY surfaces —
+ * a `loop:checkpoint` note is a prescriptive artifact aimed at the author's OWN next wake
+ * (and at a cold successor, whose only memory it is), so it has the same
+ * confident-voice-indistinguishable-from-checked-fact problem as a work-item body, with
+ * one extra turn of the screw: nobody else ever reviews it.
+ *
+ * Measured on this session, 2026-08-03 — the incident that added this source. A wake
+ * checkpointed "the ledger is written ... and read by NOBODY" as settled fact. The next
+ * wake read it back as fact and shipped ~180 lines on it. A reader existed
+ * (`system-health/mcp-proxy-health.ts`), one reverse-grep away, and the shipped duplicate
+ * also over-counted by ~18% because it lacked filters the real reader had. Retracted as
+ * D-005 of that plan. The claim-time port could not have caught it: no claim event was
+ * involved at any point.
+ */
+export type PremiseSource = 'work-item' | 'plan-item' | 'carry-note';
 
 export interface DerivedPremise extends CheckEntry {
   /** Only 'absence' today — the shape with the payoff asymmetry. Kept explicit so

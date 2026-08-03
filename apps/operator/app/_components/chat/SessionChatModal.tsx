@@ -44,7 +44,7 @@ import { Modal } from '../../harness/Modal';
 import { Tooltip } from '../../harness/Tooltip';
 import { OperatorChat } from '../OperatorChat';
 import { useAgentThinkingStream } from '../../harness/AgentThinkingStream';
-import { sessionTimelineToChatMessages } from './session-transcript-mapping';
+import { mapSessionTimeline } from './session-transcript-mapping';
 import { effectiveTier, useInboxAttention } from '../inbox/use-inbox-pending';
 import { OtherDetail } from '@/app/admin/plans/PlanOtherList';
 import { isEscalationWithOptions } from '@/app/admin/plans/attention-card';
@@ -705,7 +705,7 @@ function LiveSessionChat({
    *  2026-08-02). Null/absent keeps the pre-existing tail behavior. */
   focusAnchor?: string | null;
 }) {
-  const { events, status, thinking } = useAgentThinkingStream('', '', '', streamUrl);
+  const { events, status, thinking, anchor } = useAgentThinkingStream('', '', '', streamUrl);
 
   // P-012: the SAME advRoster.list sync query the HUD/Sessions roster read
   // (shared cache, no new endpoint) — narrowed to this session's owner so the
@@ -730,10 +730,25 @@ function LiveSessionChat({
   // new query. `undefined` (no roster entry / no active plan) degrades to the
   // pre-fix behavior: a P-ref pill still renders, just stays a static link
   // (ChatMessageContent/HydratedWorkRefPill's existing no-plan-context stance).
-  const messages = useMemo(
-    () => sessionTimelineToChatMessages(events, rosterEntry?.currentPlanSlug),
+  const mapped = useMemo(
+    () => mapSessionTimeline(events, rosterEntry?.currentPlanSlug),
     [events, rosterEntry?.currentPlanSlug],
   );
+  const messages = mapped.messages;
+
+  /* Search deep-link (owner ask 2026-08-02, part b). The stream's `anchor`
+     event names the matched entry by its index in the FLAT timeline the server
+     just sent — NOT a message index, because the mapper collapses entries into
+     turns and drops tool_result/status entirely. `messageIndexForEntryIndex`
+     is that translation, done at the seam that does the collapsing.
+
+     This is the exact path; ChatConversation still takes `focusAnchor` as the
+     text fallback for when the server had no anchor to give (an anchor-less
+     deep-link, or a match outside the window it returned). */
+  const focusIndex = useMemo(() => {
+    if (!anchor?.found || anchor.index == null) return -1;
+    return mapped.messageIndexForEntryIndex(anchor.index);
+  }, [anchor, mapped]);
 
   // D-004: the chip is READ-ONLY (no click handler) — a plain span, only for
   // the assistant's own turns. Declining (null) on a USER turn is what hands
@@ -788,6 +803,7 @@ function LiveSessionChat({
     <OperatorChat
       messages={messages}
       focusAnchor={focusAnchor}
+      focusIndex={focusIndex}
       busy={sending}
       peerBusy={thinking}
       passive
@@ -820,6 +836,7 @@ export default function SessionChatModal({
   onClose,
   pendingLaunch = null,
   focusAnchor = null,
+  focusAnchorTs = null,
 }: {
   /** The inbox item's ownerAgentId — null hides the modal. */
   sessionOwnerId: string | null;
@@ -840,6 +857,11 @@ export default function SessionChatModal({
    *  card on screen (`searchHitAnchor`), so clicking a search result lands on
    *  the match. Null (every other caller) is unchanged behavior. */
   focusAnchor?: string | null;
+  /** ISO timestamp of the matched turn. Sent as the route's `anchorTs` so the
+   *  server centers its window on THAT turn rather than the last one matching
+   *  the term — the search's own ordering is newest-first, so without it a
+   *  session with many matches opens on the wrong one. */
+  focusAnchorTs?: string | null;
 }) {
   const [resolved, setResolved] = useState<SessionListRow | null>(null);
   const [resolveError, setResolveError] = useState<string | null>(null);
@@ -900,8 +922,29 @@ export default function SessionChatModal({
     // the server-stamped liveness we already have in hand here — reuse it
     // rather than inventing a new signal.
     if (resolved.active === false) p.set('ended', '1');
+    /* Search deep-link (owner ask 2026-08-02, part b). THIS is what makes
+       opening on the match possible at all — without it the route backfills
+       the TAIL, and a search hit is almost never in the tail: search indexes
+       the session's whole history (`harness_shared.session_turns`) while the
+       tail is a bounded recent window. Measured 2026-08-02 before this was
+       wired: a modal opened from a real hit held 8 messages and the matched
+       text appeared in none of them, so no amount of client-side scrolling
+       could have found it.
+
+       `find` + `anchorTs` are the route's EXISTING contract
+       (session-anchor-window.ts, agents-pill-inactive-search-2026-07-09
+       P-005): it streams the whole transcript through a bounded collector and
+       returns a window CENTERED on the matched entry, then emits an `anchor`
+       event naming it. AgentInspectorModal already consumes exactly this —
+       this modal simply never passed the params, so a capability that shipped
+       in July sat unused.
+
+       Both are omitted when there is no deep-link, which leaves every
+       non-search open on the unchanged tail backfill. */
+    if (focusAnchor) p.set('find', focusAnchor);
+    if (focusAnchorTs) p.set('anchorTs', focusAnchorTs);
     return `/api/adv/session/thinking?${p.toString()}`;
-  }, [sessionOwnerId, resolved]);
+  }, [sessionOwnerId, resolved, focusAnchor, focusAnchorTs]);
 
   const handleSend = (text: string) => {
     if (!sessionOwnerId) return;

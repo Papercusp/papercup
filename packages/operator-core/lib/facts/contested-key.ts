@@ -53,8 +53,17 @@ export interface KeyContestAssessment {
   note: string;
 }
 
-/** Distinct authors, newest first, excluding the asserter. */
-function otherAuthors(chain: readonly ContestChainEntry[], asserter: string): string[] {
+/**
+ * D-001 §3: the threshold is 2 OTHER authors, not the drafted 3. The measurement sets it —
+ * >=2 distinct authors on one key is already the ~99th percentile (12 of 1,236 keys over 14
+ * days), while >=3 occurs about once a fortnight and would make this silent in practice.
+ * Exported so the READ surface (the coord:orient fold) cannot drift from the WRITE surface:
+ * a key that warns on assert must be the same key that is marked on orient.
+ */
+export const CONTEST_MIN_OTHER_AUTHORS = 2;
+
+/** Distinct authors, newest first, excluding `asserter` (the version's own author). */
+export function contestAuthors(chain: readonly ContestChainEntry[], asserter: string): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
   for (const e of chain) {
@@ -87,12 +96,9 @@ export function assessKeyContest(input: {
   const chain = input.chain;
   if (chain.length === 0) return null;
   const prior = chain[0]!;
-  const authors = otherAuthors(chain, input.asserter);
+  const authors = contestAuthors(chain, input.asserter);
   const settledUndecidable = prior.kind === 'undecidable';
-  // D-001 §3: the threshold is 2 OTHER authors, not the drafted 3. The measurement sets it —
-  // >=2 distinct authors on one key is already the ~99th percentile (12 of 1,236 keys over 14
-  // days), while >=3 occurs about once a fortnight and would make this silent in practice.
-  const multiAuthor = authors.length >= 2;
+  const multiAuthor = authors.length >= CONTEST_MIN_OTHER_AUTHORS;
   if (!settledUndecidable && !multiAuthor) return null;
 
   // Re-declaring it undecidable is not a re-derivation — it is agreeing. Say so briefly rather

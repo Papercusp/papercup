@@ -61,7 +61,15 @@
  * code that owns the subscription. Use this for TRANSACTIONAL pools only.
  */
 import postgres from 'postgres';
-import { endStalePool, longLivedPoolConnectionOptions, poolIdleTimeoutSec } from '@papercusp/db-org';
+import {
+  endStalePool,
+  longLivedPoolConnectionOptions,
+  poolIdleTimeoutSec,
+  STORE_IDENTITY_SQL,
+  parseStoreIdentity,
+  pinOrVerifyStoreIdentity,
+  describeStoreIdentityMismatch,
+} from '@papercusp/db-org';
 
 import { getHarnessAdminUrl } from './embedded-pg-discovery';
 
@@ -70,6 +78,62 @@ type PoolExtras = Parameters<typeof postgres>[1];
 
 /** label → { the live pool, the URL it was BUILT with }. The second half is the fix. */
 const _pools = new Map<string, { sql: Sql; url: string }>();
+
+/**
+ * Generation 3 — IDENTITY — applied to this seam (WI-7180).
+ *
+ * The header above frames generations 1 (resolution) and 2 (binding), and
+ * `store-identity.ts` cites *this file* for that framing while calling itself generation 3.
+ * It was then wired into `connection.ts`'s two managed clients only, via
+ * `validateDiscoveryTargetOnce` — the sole two call sites in the tree. So the guard never
+ * reached the seam its own lineage note is written against: every pool built here, across
+ * 17 consumer modules, resolved through `getHarnessAdminUrl()` and probed nothing.
+ *
+ * That is precisely the path WI-7180 measured. Generations 1 and 2 cannot see it, and the
+ * reason is exact rather than incidental: both reason about the ADDRESS. On 2026-08-02 the
+ * impostor was alive, listening and freshly migrated, so every address-shaped check passed
+ * and the reads were simply answered by the wrong cluster.
+ *
+ * ## Why the probe fires per BUILD rather than per call
+ *
+ * A build happens exactly twice: once lazily at first use, and again whenever
+ * {@link endStalePool} observes the resolved URL has MOVED. The second case is the capture
+ * itself, so probing at build covers the transition without adding a round-trip to the hot
+ * path. The first case is just as load-bearing: it establishes the pin from whatever this
+ * process legitimately started on, and a pin that is never established cannot later
+ * disagree — which is why `connection.ts` probes every managed pool rather than only
+ * discovery-sourced ones.
+ *
+ * ## Fail-soft, in both directions
+ *
+ * Fire-and-forget and fully swallowed: the probe can neither delay nor fail the pool it is
+ * observing, preserving this accessor's synchronous contract. An unreadable result yields
+ * `indeterminate` and changes nothing — the same rule already load-bearing in the generic
+ * resolver's `listeningPorts()`: a check that cannot run must never reject a healthy
+ * configuration. Only two successfully-read, genuinely different identities are a violation.
+ *
+ * DETECT, not refuse. The verdict latches in the shared state machine and surfaces on
+ * `dev:pg_health`; it deliberately does not throw, so wiring this seam in cannot turn a
+ * misconfiguration into an outage.
+ */
+function probeStoreIdentity(sql: Sql, label: string, url: string): void {
+  try {
+    void Promise.resolve(sql.unsafe(STORE_IDENTITY_SQL))
+      .then((rows: unknown) => {
+        const verdict = pinOrVerifyStoreIdentity(parseStoreIdentity(rows), url);
+        if (verdict.kind === 'mismatch') {
+          console.error(
+            `${describeStoreIdentityMismatch(verdict.pinned, verdict.observed)}\n  pool: ${label}`,
+          );
+        }
+      })
+      .catch(() => {
+        // fail-soft — a probe error must never affect the pool it is observing
+      });
+  } catch {
+    // fail-soft — e.g. a driver without `.unsafe` (test doubles); never break the caller
+  }
+}
 
 /**
  * Get (or lazily build) the long-lived admin pool registered under `label`, rebuilding it
@@ -93,6 +157,9 @@ export function getLongLivedAdminPool(label: string, extra?: PoolExtras): Sql {
     ...extra,
   });
   _pools.set(label, { sql, url });
+  // Generation 3 — see probeStoreIdentity. Runs on the first build AND on every rebind,
+  // which is the transition a store capture actually presents as.
+  probeStoreIdentity(sql, label, url);
   return sql;
 }
 

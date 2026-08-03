@@ -605,6 +605,21 @@ const CC_HOOK_FILES = [
   // EMPTY once git-sync sweeps the tree (minutes), so it false-greens — measured in its own
   // formatNoFindings docstring. Only an edit-time hook sees the true pre-edit HEAD.
   'posttooluse-required-field-strand-nudge.mjs',
+  // EI-19359711978838614: PostToolUse (matcher "Edit|Write|MultiEdit") ADVISORY nudge
+  // when a new/edited migration (libs/papercusp/libs/db/sql/*.sql) introduces a column
+  // that some OTHER *.integration.test.ts already relies on via an inline CREATE TABLE
+  // fixture for the same table — the sibling trap to the required-field-strand one
+  // above, but for hand-rolled SQL schema fixtures instead of TS interfaces. The
+  // detector (scripts/check-migration-fixture-drift.mjs) is deliberately DIFF-triggered
+  // rather than a blanket schema-diff lint, because most such fixtures are
+  // intentionally partial stubs by design; only a fixture that ALREADY names the table
+  // and is missing exactly the new column is a precise, low-noise signal. As with its
+  // sibling, running the CLI later does not reliably work on this tree — git-sync
+  // sweeps the shared checkout on a schedule, so a diff-vs-HEAD run a few minutes later
+  // can already see the migration as committed history. A PostToolUse hook runs
+  // milliseconds after the write, while it is still the author's turn to add one line
+  // to a sibling fixture.
+  'posttooluse-migration-fixture-drift-nudge.mjs',
   // Shared python lib, NOT a hook: statusline-fleet.sh + posttooluse-objective-title.sh
   // `import pc_tty` off their own dirname to resolve the terminal they title. Omit it and
   // both raise ImportError, fail OPEN, and the packaged app silently stops setting the
@@ -1480,6 +1495,16 @@ export function mergeClaudeHookSettings(
     hooks.PostToolUse = replaceOurHookEntries(ev('PostToolUse'), ours('posttooluse-required-field-strand-nudge.mjs'), {
       matcher: 'Edit|Write|MultiEdit',
       hooks: cmd('posttooluse-required-field-strand-nudge.mjs'),
+    });
+  // merge_migration_fixture_drift_nudge_hook — PostToolUse, matcher 'Edit|Write|MultiEdit'
+  // (EI-19359711978838614). Advisory only: it can never deny — adding a migration column
+  // is normal and usually has nothing to do with any test fixture. Fires only when some
+  // OTHER *.integration.test.ts already builds the exact table via an inline CREATE TABLE
+  // and is missing exactly the new column.
+  if (has('posttooluse-migration-fixture-drift-nudge.mjs'))
+    hooks.PostToolUse = replaceOurHookEntries(ev('PostToolUse'), ours('posttooluse-migration-fixture-drift-nudge.mjs'), {
+      matcher: 'Edit|Write|MultiEdit',
+      hooks: cmd('posttooluse-migration-fixture-drift-nudge.mjs'),
     });
   // merge_statusline — non-destructive: set only when absent or already ours.
   if (has('statusline-fleet.sh')) {

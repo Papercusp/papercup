@@ -59,8 +59,55 @@ export function sessionTimelineToChatMessages(
   entries: readonly TimelineEntry[],
   planSlug?: string | null,
 ): ChatMessage[] {
+  return mapSessionTimeline(entries, planSlug).messages;
+}
+
+/** The mapping PLUS the entry→message translation a deep-link needs. */
+export interface MappedSessionTranscript {
+  messages: ChatMessage[];
+  /**
+   * Which message a flat-timeline entry index landed in, or -1.
+   *
+   * The `/api/adv/session/thinking` stream answers a search deep-link with an
+   * `anchor` event naming an index into the FLAT entry array it just sent
+   * (`session-anchor-window.ts`). This mapper collapses that array — many
+   * entries become one message, and `tool_result`/`status` entries become no
+   * message at all — so the stream's index is NOT a message index, and using
+   * it as one silently scrolls to the wrong turn.
+   *
+   * Translating here, at the seam that does the collapsing, is what keeps that
+   * honest: each store keeps its own indices and the conversion is explicit
+   * and testable, rather than the two being assumed interchangeable.
+   *
+   * EVERY entry of a turn maps to that turn's message, including the dropped
+   * ones — anchoring on a `tool_result` should land on the turn that ran the
+   * tool, not fail. A turn that produced no message at all (pure status) maps
+   * to -1, which the caller reads as "nothing to scroll to".
+   */
+  messageIndexForEntryIndex(entryIndex: number): number;
+}
+
+/**
+ * The full mapping. `sessionTimelineToChatMessages` is the messages-only
+ * wrapper every existing caller keeps using unchanged.
+ */
+export function mapSessionTimeline(
+  entries: readonly TimelineEntry[],
+  planSlug?: string | null,
+): MappedSessionTranscript {
   const turns = groupEntriesIntoTurns(entries);
   const messages: ChatMessage[] = [];
+  // Entry OBJECT -> its index in the flat input array. groupEntriesIntoTurns
+  // regroups the same objects rather than cloning them, which is what makes an
+  // identity lookup sound here.
+  const entryIndexOf = new Map<TimelineEntry, number>();
+  entries.forEach((e, i) => { if (!entryIndexOf.has(e)) entryIndexOf.set(e, i); });
+  const entryToMessage = new Map<number, number>();
+  const bind = (e: TimelineEntry | null | undefined, messageIdx: number) => {
+    if (!e) return;
+    const i = entryIndexOf.get(e);
+    if (i !== undefined && !entryToMessage.has(i)) entryToMessage.set(i, messageIdx);
+  };
   // Only stamp the field when the caller actually passed something (incl.
   // explicit null) — an omitted second arg must produce byte-identical
   // messages to the pre-P-007-residual-fix behavior (existing callers/tests).
@@ -71,6 +118,7 @@ export function sessionTimelineToChatMessages(
       const promptText = (turn.prompt.text ?? '').trim();
       if (promptText) {
         messages.push({ role: 'user', content: promptText, id: `prompt-${turn.seq}`, ...planSlugField });
+        bind(turn.prompt, messages.length - 1);
       }
     }
 
@@ -99,8 +147,16 @@ export function sessionTimelineToChatMessages(
         id: `turn-${turn.seq}`,
         ...planSlugField,
       });
+      // Every entry of the turn, INCLUDING the dropped tool_result/status ones
+      // (see the interface note) — an anchor on a tool_result must still land
+      // on the turn that ran it.
+      const assistantIdx = messages.length - 1;
+      for (const e of turn.entries) bind(e, assistantIdx);
     }
   }
 
-  return messages;
+  return {
+    messages,
+    messageIndexForEntryIndex: (entryIndex: number) => entryToMessage.get(entryIndex) ?? -1,
+  };
 }

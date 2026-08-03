@@ -32,6 +32,7 @@ import { resolveAgentIdentity, deriveFleetMembership } from '../identity';
 // P-008 (b): the cell-read identity injected into the standing-facts fold.
 import { cellReaderFromCtx, type CellReaderCtxLike } from '../../cell-reader-ctx';
 import type { FactDependencyStaleness } from '../../facts/dependency-staleness';
+import type { FactContestMark } from '../../facts/contested-fold';
 import type { CellReadEnv } from '../../../cell-read';
 import type { CellReader } from '../../../cell-registry';
 import { resolvePresenceFleet } from '../presence-fleet';
@@ -235,6 +236,10 @@ export interface OrientResult {
     src: string | null;
     aud?: string;
     changed?: true;
+    /** P-006 read side (WI-7236): other agents wrote a DIFFERENT answer to this key, or
+     *  someone already settled it as UNDECIDABLE. Present only when contested — carries
+     *  the reader-facing note, the prior authors, and any `settledBy` exit condition. */
+    contested?: FactContestMark;
   }> | null;
   /** Present iff queen-loop steering facts were withheld from a responsive caller
    *  (P-002) — transparent, never a silent drop. Pull live state via pot:get-steering. */
@@ -974,7 +979,16 @@ export async function composeOrient(
         // a durable conclusion the closed item PROVED stays true — see stale-source.ts).
         // Fail-soft: markStaleSourceFacts returns the facts unmarked on any lookup error.
         const { markStaleSourceFacts } = await import('../../facts/stale-source');
-        const marked = await markStaleSourceFacts(kept);
+        const staleMarked = await markStaleSourceFacts(kept);
+        // P-006 READ SIDE (WI-7236): the dispute advisory used to fire ONLY inside
+        // facts:assert — so a key already contested, or already settled as UNDECIDABLE,
+        // read as an ordinary fact to anyone who merely READS it. A compaction boundary
+        // manufactures exactly that agent, who then re-derives the settled question: the
+        // whole cost P-006 exists to prevent. Marking it here reaches an agent who did
+        // nothing but wake up. ONE batched query, and fail-soft twice over (the helper
+        // returns facts unmarked on any failure; this catch covers the import).
+        const { markContestedFacts } = await import('../../facts/contested-fold');
+        const marked = await markContestedFacts(staleMarked);
         // P-008 (b): re-check DECLARED cell dependencies. This is where D-007's
         // "auto-invalidates ... so no agent has to remember to retract" actually
         // lands — orient runs on every wake, so an assumption whose ground moved
@@ -1037,6 +1051,12 @@ export async function composeOrient(
           // anchoring work-item closed); `dependsStale` is a mechanical verdict
           // on a dependency the fact's own author declared.
           ...(f.depsStale ? { dependsStale: f.depsStale } : {}),
+          // P-006 read side (WI-7236): this key is contested, or was already settled as
+          // UNDECIDABLE by someone else. DISTINCT from both markers above — those say the
+          // ground under this fact moved; this says other agents wrote a DIFFERENT answer
+          // to the same question, so read it as one party's answer rather than settled.
+          // Emitted ONLY when contested, so an ordinary fold stays byte-identical.
+          ...(f.contested ? { contested: f.contested } : {}),
           // P-018: the MODALITY, which this projection dropped — so a normative
           // convention arrived here byte-identical to a settled conclusion, at
           // the one surface every agent reads every wake. Same whitelist defect

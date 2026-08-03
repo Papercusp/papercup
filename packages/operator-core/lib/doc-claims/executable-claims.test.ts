@@ -192,6 +192,23 @@ describe('extractExecutableClaims — prescription detection', () => {
     expect(got.skipped.map((s) => s.reason)).toEqual(['placeholder']);
   });
 
+  it('KNOWN LIMIT: a declarative prescription voice yields zero sites — read that as unsupported, not clean', () => {
+    // Verbatim shape from apps/operator/prompts/pot-instances/papercup-pot.su.md,
+    // which contains a REAL instance of this defect (`npm run build` is refused
+    // by the same gate) that this extractor cannot see: no imperative precedes
+    // the span, no fence, no table. Pinned so that pointing this check at
+    // another document cannot quietly return a confident all-clear.
+    const fixture =
+      "- **Write/update docs:** docs don't hot-reload — `cd apps/operator-docs && npm run build` regenerates the served mirror.\n";
+    const got = extractExecutableClaims(fixture);
+    expect(got.prescribed).toEqual([]);
+    // …while the npm-run leg, which keys on command text alone, travels fine.
+    expect(got.npmRun.map((n) => n.script)).toEqual(['build']);
+    // and the command really is one the gate refuses — i.e. the miss is a miss,
+    // not a case that would have passed anyway.
+    expect(askAdmissionGate('cd apps/operator-docs && npm run build')).toBe('deny');
+  });
+
   it('collects npm-run mentions from BOTH columns — a missing script is a defect either way', () => {
     const fixture = [
       '| you want | use | not |',

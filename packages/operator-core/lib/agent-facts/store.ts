@@ -1437,6 +1437,75 @@ export async function factVersions(
   return rows.map(rowToFact);
 }
 
+/** One superseded version row, as {@link supersededVersionsForKeys} returns it. */
+export interface SupersededVersionRow {
+  scope: string;
+  scopeRef: string | null;
+  key: string;
+  createdBy: string;
+  body: string;
+  kind: FactKind | null;
+  settledBy: string | null;
+  updatedAt: string;
+}
+
+/**
+ * SUPERSEDED versions for MANY keys in ONE read, newest first — the batched sibling of
+ * {@link factVersions} (agent-epistemics-2026-08-02 P-006 read side, WI-7236).
+ *
+ * `factVersions` answers for a single identity, which is right on the WRITE path where
+ * exactly one key is being asserted. The coord:orient fold needs the same answer for every
+ * folded fact at once, and a per-key loop there would put N queries on the wake path. This
+ * takes the keys as one array and lets the caller group by identity.
+ *
+ * Returns SUPERSEDED rows only: the current version is the fact the caller already holds,
+ * and including it would make every key look self-contested. LOCAL partition only
+ * (`source_hive IS NULL`), matching every other identity-scoped read here.
+ *
+ * ⚠ Same bounded-history caveat as {@link factVersions}: {@link sweepExpiredFacts} deletes
+ * superseded versions 30d after replacement, so an old chain truncates at the tail.
+ */
+export async function supersededVersionsForKeys(
+  args: { keys: readonly string[]; workspaceId?: string; limit?: number },
+  inject?: Sql,
+): Promise<SupersededVersionRow[]> {
+  const keys = [...new Set(args.keys.map((k) => k.trim()).filter(Boolean))];
+  if (keys.length === 0) return [];
+  const sql = sqlOf(inject);
+  const ws = args.workspaceId ?? activeWorkspaceId();
+  const limit = args.limit && args.limit > 0 ? Math.floor(args.limit) : 400;
+  const rows = await sql<
+    Array<{
+      scope: string;
+      scope_ref: string | null;
+      key: string;
+      created_by: string;
+      body: string;
+      kind: string | null;
+      settled_by: string | null;
+      updated_at: string;
+    }>
+  >`
+    SELECT scope, scope_ref, key, created_by, body, kind, settled_by, updated_at::text
+      FROM harness_shared.agent_facts
+     WHERE workspace_id = ${ws}
+       AND source_hive IS NULL
+       AND superseded_at IS NOT NULL
+       AND key = ANY(${keys as string[]})
+     ORDER BY superseded_at DESC, id DESC
+     LIMIT ${limit}`;
+  return rows.map((r) => ({
+    scope: r.scope,
+    scopeRef: r.scope_ref,
+    key: r.key,
+    createdBy: r.created_by,
+    body: r.body,
+    kind: (r.kind ?? null) as FactKind | null,
+    settledBy: r.settled_by,
+    updatedAt: r.updated_at,
+  }));
+}
+
 /** Expiry sweep (routines-tick reaper pattern): hard-delete rows expired or
  *  retracted > 30d ago — keeps the audit trail bounded. Fail-soft at call site. */
 export async function sweepExpiredFacts(inject?: Sql): Promise<number> {

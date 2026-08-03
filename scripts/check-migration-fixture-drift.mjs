@@ -103,9 +103,14 @@ export function splitTopLevelClauses(body) {
   for (let i = 0; i < n; i++) {
     const c = body[i];
     if (c === '-' && body[i + 1] === '-') {
+      // Skip the comment's TEXT entirely (don't append it to `cur`) — a column
+      // declaration on the line right after a `-- comment` would otherwise have
+      // the comment text glued onto the front of its clause, so the leading
+      // `^"?(\w+)"?\s` identifier match in columnNamesFromClauses fails and the
+      // column is silently dropped (measured: store.integration.test.ts's
+      // `node_id` column, preceded by 4 comment lines, was missed this way).
       const nl = body.indexOf('\n', i);
       const end = nl === -1 ? n : nl;
-      cur += body.slice(i, end);
       i = end - 1;
       continue;
     }

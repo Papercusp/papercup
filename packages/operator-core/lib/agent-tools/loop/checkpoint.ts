@@ -25,6 +25,7 @@ import { COORD_ROLES } from '../coordination/roles';
 import { resolvePotHomeSlug } from '../../pot/wake';
 import {
   lintUncheckedExternalClaims,
+
   mergeCarryRows,
   renderCarryNote,
   renderCheckLine,
@@ -42,6 +43,7 @@ import { readWatermark, pickUnreadCursor } from '../coordination/watermarks';
 import { continuationGateFromReads, countPendingInterrupts } from '../coordination/tools/continuation-gate';
 import { COORD_READ_TOOL_NAMES } from '../coordination/inbox-read-freshness';
 import { carryProvenanceFields } from '../../carry-surface-provenance-stamp';
+import { detectAbsencePremises } from '../../premises-claim-port';
 import { withBoundedTimeout } from '../../bounded-timeout';
 
 /** The continuation hint is advisory; it must never consume the checkpoint
@@ -335,6 +337,40 @@ export default defineTool({
     const probeText = [...checks.map(renderCheckLine), ...walls.map(renderWallLine)].join('\n');
     const uncheckedClaims = hasNoteWrite ? lintUncheckedExternalClaims(narrativeBody, probeText) : [];
 
+    // outage-must-not-be-silent-2026-08-02 P-009: the ABSENCE-claim leg of the same lint.
+    //
+    // The lint above keys on a distinctive TOKEN (hash / WI-EI id / ISO instant) or an
+    // external-state noun. An absence claim — "nothing reads X", "there is no exported
+    // helper for Y" — carries NEITHER, so it passes straight through, which is exactly how
+    // the motivating incident happened.
+    //
+    // This reuses `detectAbsencePremises` rather than adding a second detector: it is the
+    // one already measured against 31,090 real bodies (fires on ~1 claim in 22, not on
+    // everything) and it already strips fenced/inline code so a PASTED error string like
+    // `column "payload" does not exist` is read as evidence the author GATHERED, never as
+    // their own assertion. A second opinion here would be a second bug — the D-005 lesson.
+    //
+    // Why this surface: the claim-time port fires on a work-item/plan-item at CLAIM. A
+    // carry-note never passes a claim event, yet it is re-injected into the author's next
+    // wake — and is a COLD successor's only memory — with nothing marking a guess as a
+    // guess. Absence claims are uniquely worth catching because the payoff is asymmetric:
+    // expensive to act on (you build the thing), cheap to falsify (one reverse-grep).
+    //
+    // Suppressed when the claim's own subject already appears in a checks[]/walls[] probe —
+    // an author who parked the falsifier has done the thing this lint asks for.
+    // Advisory + fail-open, like every other leg here: never blocks the write.
+    const absenceClaims = (() => {
+      if (!hasNoteWrite) return [];
+      try {
+        const probes = probeText.toLowerCase();
+        return detectAbsencePremises(narrativeBody, 'carry-note')
+          .filter((p) => !probes.includes(p.claim.slice(0, 40).toLowerCase()))
+          .map((p) => ({ claim: p.claim, recheck: p.recheck }));
+      } catch {
+        return []; // a lint must never cost the agent the checkpoint it asked for
+      }
+    })();
+
     // P-020 (su-ideate-learning-substrate): checkpoint-HARVEST. The carry-note `insight`
     // is exactly the "non-obvious thing a future agent would re-derive" the observation
     // lane wants — auto-file it as a lane:observation with ZERO new workflow (D-016/D-017).
@@ -512,6 +548,24 @@ export default defineTool({
                       'Move each into checks:[{ claim, recheck, verified? }] so the probe travels with the claim. ' +
                       'Advisory only; the write was kept.',
                     lines: uncheckedClaims,
+                  },
+                }
+              : {}),
+            ...(absenceClaims.length > 0
+              ? {
+                  absenceLint: {
+                    flagged: true,
+                    note:
+                      'absence_lint: this note asserts that something DOES NOT EXIST. That claim class is the ' +
+                      'single most repeated diagnostic error in this codebase, it is expensive to act on (you ' +
+                      'build the missing thing) and cheap to falsify (one reverse-grep), and your next wake — or ' +
+                      'a cold successor, for whom this note is the ONLY memory — will read it as established ' +
+                      'fact. Run each recheck NOW. If it holds, move it into checks:[{ claim, recheck, verified }] ' +
+                      'so the evidence travels with the claim; if it does not, fix the note before it is inherited. ' +
+                      'Search for the thing you say is ABSENT (who reads/calls/imports it), not just the thing you ' +
+                      'say ignores it — an absence proved by one grep in one file is not proved. Advisory only; ' +
+                      'the write was kept.',
+                    claims: absenceClaims,
                   },
                 }
               : {}),

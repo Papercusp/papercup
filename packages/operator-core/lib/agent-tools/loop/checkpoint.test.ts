@@ -103,6 +103,57 @@ describe('loop:checkpoint — the loop carry-note producer', () => {
     );
   });
 
+  // outage-must-not-be-silent-2026-08-02 P-009 — the absence-claim leg.
+  //
+  // The pre-existing checksLint keys on a distinctive token (hash / WI-EI id / ISO instant)
+  // or an external-state noun. An absence claim carries none of those and passed straight
+  // through. The sentence used below is the REAL one from the incident that motivated this:
+  // it was checkpointed as settled fact, read back as fact on the next wake, and ~180 lines
+  // were shipped on it before a reverse-grep refuted it (plan D-005).
+  describe('absenceLint — an absence assertion in the carry-note is flagged with its falsifier', () => {
+    const INCIDENT_CLAIM =
+      'The mcp-proxy failure ledger has been written since W8 and there is no reader for it — nothing ingests the file.';
+
+    it('flags an absence claim and hands back a concrete recheck', async () => {
+      const b = body(await call({ did: INCIDENT_CLAIM, next: 'ship the summary' }));
+      expect(b.ok).toBe(true);
+      expect(b.absenceLint?.flagged).toBe(true);
+      expect(b.absenceLint.claims.length).toBeGreaterThan(0);
+      // The remedy must be a SEARCH, not merely "double-check this".
+      expect(b.absenceLint.claims[0].recheck).toBeTruthy();
+      // The directive has to name the reverse direction — the actual failure was grepping
+      // the write site and never searching for readers.
+      expect(b.absenceLint.note).toMatch(/reverse-grep/i);
+    });
+
+    it('is ADVISORY — the checkpoint is still written', async () => {
+      await call({ did: INCIDENT_CLAIM, next: 'ship it' });
+      expect(setLoopCarryNote).toHaveBeenCalled();
+    });
+
+    it('omits the key entirely for a note that asserts no absence', async () => {
+      const b = body(await call({ did: 'shipped the classifier fix', left: 'run tests', next: 'vitest' }));
+      expect(b.absenceLint).toBeUndefined();
+    });
+
+    it('stays quiet when the author already parked the falsifier as a check', async () => {
+      const b = body(
+        await call({
+          did: INCIDENT_CLAIM,
+          next: 'ship it',
+          checks: [
+            {
+              claim: INCIDENT_CLAIM,
+              recheck: "grep -rn 'mcp-proxy-health' packages apps libs",
+              verified: 'searched importers 2026-08-03: none found',
+            },
+          ],
+        }),
+      );
+      expect(b.absenceLint).toBeUndefined();
+    });
+  });
+
   it('a raw { note } is written verbatim (renderCarryNote NOT called)', async () => {
     await call({ note: 'freeform carry text' });
     expect(setLoopCarryNote).toHaveBeenCalledWith(

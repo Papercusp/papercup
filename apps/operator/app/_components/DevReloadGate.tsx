@@ -1,3 +1,23 @@
+/// <reference types="vite/client" />
+//
+// WI-7234: this file HOSTS in `apps/operator` but only ever RUNS under Vite —
+// its one live consumer is `apps/operator-vite/src/routes/__root.tsx`, imported
+// cross-tree via the `@` alias. `apps/operator-vite/tsconfig.json` declares
+// `"types": ["vite/client"]`; `apps/operator`'s does not, so the
+// `import.meta.env` reads below typechecked in the tree that IMPORTS this file
+// and failed (TS2339 x2) in the tree that COMPILES it — a committed standing red.
+//
+// Referenced here rather than adding `"types": ["vite/client"]` to
+// apps/operator/tsconfig.json: that would pull Vite's ambient client types
+// (its `*.css` / `*.svg?url` module declarations included) into EVERY file in
+// the app. This types exactly the one file that needs it.
+//
+// ⚠ The reference MUST stay above `'use client'` — this is the only file in
+// apps/operator with anything above that directive, so it looks like something
+// to tidy. It is not: a triple-slash directive is only honoured when it precedes
+// every STATEMENT, and `'use client'` is an expression statement. Measured — move
+// the reference one line down and both TS2339 errors come straight back. Comments
+// above the directive are fine; it still applies.
 'use client';
 
 import { useEffect } from 'react';

@@ -38,6 +38,27 @@
  * Measured on CLAUDE.md at authoring time: 109 command-shaped spans in the file,
  * 13 prescription sites, 11 checkable after placeholder removal, 11/11 genuine
  * prescriptions on inspection, and the known-bad line among them.
+ *
+ * ⚠ BEFORE POINTING THIS AT ANOTHER DOCUMENT, RE-MEASURE ITS PRESCRIPTION VOICE.
+ *
+ * The three sites above are calibrated to how CLAUDE.md prescribes (numbered
+ * `**Run** \`cmd\`` steps, ```bash fences, `| use | not |` tables). They do NOT
+ * generalise for free, and the failure is SILENT — it reports "clean", not
+ * "unsupported".
+ *
+ * Measured, on the su prompt artifacts (`apps/operator/prompts/…`): this
+ * extractor finds ZERO prescriptions in all three, because they prescribe in a
+ * declarative voice instead — ``docs don't hot-reload — `cd apps/operator-docs
+ * && npm run build` regenerates the served mirror`` names no imperative before
+ * the span. That file contains a REAL instance of this very defect (`npm run
+ * build` is refused by the same gate), so running this check against it would
+ * have returned a confident all-clear over a known-bad line — the "checked zero
+ * files, therefore green" shape CLAUDE.md warns about for `tsc -p .`.
+ *
+ * So: a new target document needs its own measured site set, and a
+ * `prescribed.length === 0` result on a non-trivial doc should be read as "the
+ * voice is unsupported", never as "the doc is clean". The npm-run leg has no
+ * such dependency — it keys on command text alone and travels fine.
  */
 
 /** A site where this document genuinely tells the reader to run something. */

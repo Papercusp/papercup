@@ -42,6 +42,32 @@ CREATE TABLE harness_shared.foo (
   it('is a no-op for a table in a different schema', () => {
     expect(findCreateTables('CREATE TABLE public.foo (id bigint);')).toEqual([]);
   });
+
+  it('does not lose a column whose clause is preceded by multi-line `--` comments on their own lines (the store.integration.test.ts shape)', () => {
+    // Regression for a real false-positive this detector produced against its
+    // OWN motivating file: node_id's clause absorbed the 4 comment lines ahead
+    // of it, so its leading identifier match failed and the column vanished.
+    const sql = `
+CREATE TABLE harness_shared.event_awaits (
+  id bigint PRIMARY KEY,
+  fired_by text, fired_payload jsonb,
+  -- migration 572 (composable-event-awaits): composed-TREE leaf columns. A plain
+  -- await leaves them NULL, but store.ts SELECTs root_id unconditionally
+  -- (listParkedAwaitsForSubscribers), so omitting them here failed that query with
+  -- a missing-column error -- fixture drift from the migration, not a prod bug.
+  node_id bigint, root_id bigint, member_fired_at timestamptz, member_payload jsonb
+);`;
+    const [t] = findCreateTables(sql);
+    expect(t.columns).toEqual([
+      'id',
+      'fired_by',
+      'fired_payload',
+      'node_id',
+      'root_id',
+      'member_fired_at',
+      'member_payload',
+    ]);
+  });
 });
 
 describe('findAlterTableAddColumns', () => {

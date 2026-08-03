@@ -76,6 +76,9 @@ interface Props {
    *  tail — forwarded verbatim to ChatConversation (HUD search → the matched
    *  turn). Same passthrough pattern as the infinite-scroll props above. */
   focusAnchor?: string | null;
+  /** Exact message index to focus, when the caller has one (the stream's own
+   *  `anchor` event). Wins over `focusAnchor`. Forwarded verbatim. */
+  focusIndex?: number | null;
 
   /**
    * chat:ask_choice resolution. Called when the user commits a
@@ -201,7 +204,7 @@ const STARTING_PROMPTS = [
 
 export function OperatorChat({
   messages, busy, peerBusy, passive, onSend, onGenerateIdeas, banner, error,
-  onLoadEarlier, hasMoreEarlier, loadingEarlier, focusAnchor, onAnswerChoice,
+  onLoadEarlier, hasMoreEarlier, loadingEarlier, focusAnchor, focusIndex, onAnswerChoice,
   conversationId, workspaceId, agentName = 'Papercup', onDrillIn, canDrillIn,
   renderAvatar, paneIcon, footer, harnessSlug,
 }: Props) {
@@ -472,6 +475,7 @@ export function OperatorChat({
         hasMoreEarlier={hasMoreEarlier}
         loadingEarlier={loadingEarlier}
         focusAnchor={focusAnchor}
+        focusIndex={focusIndex}
         harnessSlug={harnessSlug}
         onWorkRefActivate={handleWorkRefActivate}
       />

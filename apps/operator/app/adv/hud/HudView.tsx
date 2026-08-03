@@ -134,6 +134,14 @@ export default function HudView({ workspaceId = null }: { workspaceId?: string |
      search index and the modal's transcript are different stores; see
      `searchHitAnchor`. */
   const [openFocus, setOpenFocus] = useQueryState('hudfocus', parseAsString);
+  /* The matched turn's timestamp, sent on to the transcript route as
+     `anchorTs`. Carried SEPARATELY from the text because the two do different
+     jobs: the text is what marks and scrolls to the row client-side, the
+     timestamp is what makes the server return a window containing that turn at
+     all. A session with many matches needs it — the search orders newest-first,
+     so without a timestamp the route anchors on the LAST match rather than the
+     one whose excerpt is on the card you clicked. */
+  const [openFocusTs, setOpenFocusTs] = useQueryState('hudfocusts', parseAsString);
   // WI-6367: which session THIS view just launched, and when. Deliberately
   // useState, not nuqs: it is mid-flight lifecycle state, not user-meaningful
   // (a shared/reloaded URL must not claim a session is "starting up" — by then
@@ -667,11 +675,13 @@ export default function HudView({ workspaceId = null }: { workspaceId?: string |
   const onOpenSession = useCallback(
     (ownerId: string) => {
       void setOpenOwner(ownerId);
-      // Null clears the param: opening a NON-search card must not inherit the
-      // previous search's anchor and scroll to a turn nobody asked about.
-      void setOpenFocus(searchHitAnchor(searchHitsRef.current?.get(ownerId) ?? null));
+      // Null clears BOTH params: opening a NON-search card must not inherit
+      // the previous search's anchor and scroll to a turn nobody asked about.
+      const hit = searchHitsRef.current?.get(ownerId) ?? null;
+      void setOpenFocus(searchHitAnchor(hit));
+      void setOpenFocusTs(hit?.ts ?? null);
     },
-    [setOpenOwner, setOpenFocus],
+    [setOpenOwner, setOpenFocus, setOpenFocusTs],
   );
 
   const entityView =
@@ -778,6 +788,7 @@ export default function HudView({ workspaceId = null }: { workspaceId?: string |
         ownerLabel={openLabel}
         pendingLaunch={pendingLaunch}
         focusAnchor={openFocus}
+        focusAnchorTs={openFocusTs}
         onClose={() => {
           // WI-6367: the launch context is only meaningful for the modal it
           // opened — drop it on close so reopening the same session later
@@ -786,6 +797,7 @@ export default function HudView({ workspaceId = null }: { workspaceId?: string |
           setPendingLaunch(null);
           void setOpenOwner(null);
           void setOpenFocus(null);
+          void setOpenFocusTs(null);
         }}
       />
       {/* P-002: the Plans / Work items tabs' destination. Mounted here (not in

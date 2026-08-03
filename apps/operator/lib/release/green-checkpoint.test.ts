@@ -9,6 +9,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   runGreenCheckpoint,
+  runCmd,
   quietCutSecFromEnv,
   extractFailingTests,
   extractFailingTestNames,
@@ -662,6 +663,73 @@ describe('runGreenCheckpoint', () => {
     expect(line).toContain('WI-7069');
     // Diagnostic ONLY — never blocks, re-cuts, or changes the advance/hold decision.
     expect(calls).toContain('runGreen');
+  });
+
+  /**
+   * WI-7069 — `killProcessGroupOnTimeout` must reach a GRANDCHILD process, not just the
+   * direct child. setupTree's own shell scripts fork further children (git/cp/npm); a plain
+   * `child.kill('SIGKILL')` on timeout reaches only the direct `bash` process and ORPHANS
+   * whatever it forked, which is the exact half-written-checkout risk this option closes.
+   * These two tests are each other's teeth: same repro shape, opposite expected outcome,
+   * driven only by the flag under test.
+   */
+  it('WI-7069: killProcessGroupOnTimeout reaches a GRANDCHILD process, not just the direct child', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'green-checkpoint-grandchild-'));
+    const pidfile = join(dir, 'pid');
+    try {
+      await expect(
+        runCmd('bash', ['-c', `sleep 20 & echo $! > ${pidfile}; sleep 20`], {
+          timeoutMs: 500,
+          killProcessGroupOnTimeout: true,
+        }),
+      ).rejects.toThrow(/timed out/);
+      await new Promise((r) => setTimeout(r, 200));
+      const pid = Number(readFileSync(pidfile, 'utf8').trim());
+      let alive = true;
+      try {
+        process.kill(pid, 0);
+      } catch {
+        alive = false;
+      }
+      // The backgrounded grandchild must be dead too — the group-kill reached it.
+      expect(alive).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('WI-7069: WITHOUT killProcessGroupOnTimeout, a timeout kill orphans the grandchild — documents the bug this option closes', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'green-checkpoint-grandchild-'));
+    const pidfile = join(dir, 'pid');
+    let pid: number | undefined;
+    try {
+      await expect(
+        runCmd('bash', ['-c', `sleep 20 & echo $! > ${pidfile}; sleep 20`], {
+          timeoutMs: 500,
+        }),
+      ).rejects.toThrow(/timed out/);
+      await new Promise((r) => setTimeout(r, 200));
+      pid = Number(readFileSync(pidfile, 'utf8').trim());
+      let alive = true;
+      try {
+        process.kill(pid, 0);
+      } catch {
+        alive = false;
+      }
+      // Without the flag, only the direct `bash` child is killed — the backgrounded
+      // grandchild survives as an orphan. This is the bug `killProcessGroupOnTimeout` fixes.
+      expect(alive).toBe(true);
+    } finally {
+      // Clean up the orphan so it doesn't linger on the shared box.
+      if (pid) {
+        try {
+          process.kill(pid, 'SIGKILL');
+        } catch {
+          /* already gone */
+        }
+      }
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('EI-13992: a THROWING ensureMigrationsCurrent is swallowed — the gate still runs + judges normally (never blocks on the preflight)', async () => {

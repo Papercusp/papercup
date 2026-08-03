@@ -386,6 +386,21 @@ export interface ChatConversationProps {
    * the honest degradation.
    */
   focusAnchor?: string | null;
+
+  /**
+   * The message to focus, when the caller can name it EXACTLY. Wins over
+   * `focusAnchor`; -1/null means "no exact answer, fall back to the text".
+   *
+   * Both exist because they have different provenance and different failure
+   * modes, not as two spellings of one thing. `focusIndex` is what a caller
+   * derives from the stream's own `anchor` event (the server found the turn in
+   * ITS store and named it, so the index is exact — but it is only present
+   * when the deep-link carried an anchor and the server's window contained
+   * it). `focusAnchor` is matched text, which resolves whenever the words are
+   * present regardless of provenance, and so covers the cases the anchor event
+   * does not reach.
+   */
+  focusIndex?: number | null;
 }
 
 /**
@@ -688,6 +703,7 @@ export function ChatConversation(props: ChatConversationProps) {
     hasMoreEarlier,
     loadingEarlier,
     focusAnchor,
+    focusIndex: focusIndexProp,
   } = props;
 
   const endRef = useRef<HTMLDivElement | null>(null);
@@ -898,17 +914,25 @@ export function ChatConversation(props: ChatConversationProps) {
   const focusedForRef = useRef<string | null>(null);
   const focusFramesRef = useRef(0);
   const focusLoopActiveRef = useRef(false);
+  const exactIndex = typeof focusIndexProp === 'number' && focusIndexProp >= 0 ? focusIndexProp : -1;
+  // One key for "which focus request is this", so a change in EITHER input
+  // re-focuses and an unchanged request never re-steals the user's scroll.
+  const focusKey = exactIndex >= 0 ? `#${exactIndex}` : (focusAnchor ?? null);
   useEffect(() => {
-    if (!focusAnchor) {
+    if (!focusKey) {
       focusedForRef.current = null;
       setFocusIndex(-1);
       return;
     }
-    if (focusedForRef.current === focusAnchor) return;
+    if (focusedForRef.current === focusKey) return;
     if (messages.length === 0) return;
-    const idx = findAnchoredMessageIndex(messages, focusAnchor);
+    // Exact first (the server named this turn in its own store); text only as
+    // the fallback for the cases the anchor event does not reach.
+    const idx = exactIndex >= 0 && exactIndex < messages.length
+      ? exactIndex
+      : findAnchoredMessageIndex(messages, focusAnchor);
     if (idx < 0) return; // transcript may still be streaming — try again next commit
-    focusedForRef.current = focusAnchor;
+    focusedForRef.current = focusKey;
     setFocusIndex(idx);
     followRef.current = false; // suspend the tail pin (see 3 above)
     focusFramesRef.current = 45; // same ~750ms convergence budget as pinToBottom
@@ -924,7 +948,7 @@ export function ChatConversation(props: ChatConversationProps) {
       requestAnimationFrame(step);
     };
     requestAnimationFrame(step);
-  }, [focusAnchor, messages, virtualizer]);
+  }, [focusKey, exactIndex, focusAnchor, messages, virtualizer]);
 
   useEffect(() => {
     const el = scrollerRef.current;

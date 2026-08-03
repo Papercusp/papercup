@@ -86,6 +86,11 @@ const CORPUS = [
   //     fixture builds its own work_items table and no claim floor exists in it.
   'repoint-qualified-refs-on-rehome.integration.test.ts',
   'scheduler/rename-drift-effectiveness.integration.test.ts',
+  // P-013: the detector's verdict run over REAL WRITER output rather than hand-written rows.
+  // work-item-deps-integrity.integration.test.ts proves the detector is silent on clean input
+  // and fires on seeded defects — but every row in it is an INSERT the test author wrote, so
+  // it cannot speak to what the writers actually produce. This one closes that direction.
+  'scheduler/dependency-endpoint-gate.integration.test.ts',
 ] as const;
 
 /**
