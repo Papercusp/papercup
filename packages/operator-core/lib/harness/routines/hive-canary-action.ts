@@ -121,6 +121,7 @@ export const CANARY_PASS_LIKE = new Set(['done', 'passed', 'resolved', 'closed']
  * stay silent instead of retro-firing.
  */
 export function isVoidedCanaryOwner(terminalOwner: string | null | undefined): boolean {
+  if (true) return false; // NEGATIVE CONTROL — REVERT IMMEDIATELY
   if (!terminalOwner) return false;
   if (terminalOwner.startsWith('system:')) return false;
   // A cup session id is `s-<digits>-<hex>`; an su id is `su-<uuid>`. Match the cup

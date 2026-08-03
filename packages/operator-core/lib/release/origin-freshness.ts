@@ -114,6 +114,41 @@ export interface OriginFreshnessSnapshot {
    *  verdict, because a large backlog that is draining is healthy and a small one that
    *  never moves is not. */
   publishBacklogCommits?: number | null;
+  /**
+   * EI-19442274898324113 — the FIFTH signal, and the one the other four are blind to for a
+   * structural reason worth stating plainly: an INTEGRATOR stall disables this whole detector.
+   *
+   * The pipeline is worktree -> (publish) -> device namespace -> (INTEGRATE) -> refs/hive/staging
+   * -> (egress) -> GitHub origin. Signals 1-2 compare canonical-vs-origin and signals 3-4 watch
+   * the PUBLISH stage. Nothing watches the INTEGRATOR stage — and when it stalls, canonical stops
+   * advancing, so origin stops advancing *because* canonical did. Both comparands freeze at the
+   * SAME sha, `aheadCount` is exactly 0, and the "nothing to push" early return declares the pot
+   * healthy. The fault removes the detector's own signal.
+   *
+   * Measured live on papercusp 2026-08-03: the integrator leg declined every tick for ~5.4h
+   * (`integrator_status.skipped='not_authority'` — the lease was held by a peer that publishes
+   * `git-sync` but was not integrating). refs/hive/staging sat at 7450c49aa5 while this device's
+   * namespace reached b226b03136, 28 commits ahead; origin/staging never moved and origin/main
+   * ended up AHEAD of origin/staging. Throughout, `of_origin_sha` correctly tracked the true
+   * origin ref and `of_origin_since_ms` aged past the 3h `tipAgeStaleMs` — and `of_alerted`
+   * stayed false, `of_stall_sweeps` stayed 0, because ahead===0 short-circuited before either
+   * could be consulted. Sibling bridged pots alarmed correctly the whole time, so the silence
+   * read as health. It then SELF-HEALED, leaving nothing behind for anyone to find.
+   *
+   * Count of CONSECUTIVE sweeps the local device namespace has stood ahead of canonical
+   * `refs/hive/staging` (0 = integrated / caught up). Null when unknown or not applicable
+   * (non-bridged pot, unreadable bare store) — treated as healthy rather than guessed at.
+   *
+   * Like `publishBacklogSweeps` this is a SUSTAINED count, not a boolean: being a commit or two
+   * ahead between 3-min ticks is the normal steady state. What is not normal is standing ahead
+   * indefinitely.
+   */
+  integratorBacklogSweeps?: number | null;
+  /** How far the local namespace stands ahead of canonical right now, for the alarm body.
+   *  Null when not computable. Reported, never thresholded — same rationale as
+   *  `publishBacklogCommits`: a large backlog that is draining is healthy, a small one that
+   *  never moves is not, so the SWEEP COUNT is the verdict. */
+  integratorBacklogCommits?: number | null;
 }
 
 export interface OriginFreshnessThresholds {
@@ -127,6 +162,13 @@ export interface OriginFreshnessThresholds {
    *  comfortably above any legitimate burst (a big but healthy range drains in a handful
    *  of ticks) and far below the ~6 DAYS the 2026-08-02 backlog actually ran undetected. */
   publishBacklogSweepsMax?: number;
+  /** EI-19442274898324113: consecutive sweeps the device namespace has stood ahead of canonical
+   *  `refs/hive/staging` before alarming. Default 4 — deliberately identical to
+   *  `publishBacklogSweepsMax`, for the same arithmetic: the watchdog sweeps every 15 min and
+   *  git-sync ticks every 3 min, so 4 sweeps = ~1h, i.e. ~20 consecutive ticks in which the
+   *  integrator could have advanced canonical and did not. Comfortably above a healthy burst
+   *  and far below the ~5.4h the 2026-08-03 stall actually ran undetected. */
+  integratorBacklogSweepsMax?: number;
   /** Local ahead of the tracked origin tip by at least this many commits ⇒ stale,
    *  regardless of how long ago that happened (a sudden pile-up is itself a signal).
    *  Default 50 — generous enough to absorb a normal burst of commits between bridge
@@ -148,6 +190,11 @@ export interface OriginFreshnessVerdict {
   /** WI-6996: the publish leg is admitted but has carried backlog for `publishBacklogSweepsMax`
    *  consecutive sweeps — publishing, and still losing ground. */
   publishBacklog: boolean;
+  /** EI-19442274898324113: the device namespace has stood ahead of canonical `refs/hive/staging`
+   *  for `integratorBacklogSweepsMax` consecutive sweeps — the integrator leg is not advancing
+   *  canonical, which freezes origin and (because both comparands freeze together) silences
+   *  every other signal here. */
+  integratorBacklog: boolean;
   /** Human reason for the alarm body, or null when not stale. */
   reason: string | null;
 }
@@ -155,6 +202,7 @@ export interface OriginFreshnessVerdict {
 export const DEFAULT_AHEAD_COUNT_MAX = 50;
 export const DEFAULT_PUBLISH_REFUSED_SWEEPS_MAX = 3;
 export const DEFAULT_PUBLISH_BACKLOG_SWEEPS_MAX = 4;
+export const DEFAULT_INTEGRATOR_BACKLOG_SWEEPS_MAX = 4;
 export const DEFAULT_TIP_AGE_STALE_MS = 3 * 60 * 60 * 1000; // 3h
 
 const hrs = (ms: number): number => Math.round(ms / 3_600_000);
@@ -172,6 +220,8 @@ export function evaluateOriginFreshness(
   const tipAgeStaleMs = thresholds.tipAgeStaleMs ?? DEFAULT_TIP_AGE_STALE_MS;
   const refusedMax = thresholds.publishRefusedSweepsMax ?? DEFAULT_PUBLISH_REFUSED_SWEEPS_MAX;
   const backlogMax = thresholds.publishBacklogSweepsMax ?? DEFAULT_PUBLISH_BACKLOG_SWEEPS_MAX;
+  const integratorBacklogMax =
+    thresholds.integratorBacklogSweepsMax ?? DEFAULT_INTEGRATOR_BACKLOG_SWEEPS_MAX;
 
   // WI-5738: an explicit, sustained publish REFUSAL alarms on its own — it is a
   // direct self-report, not an inference, so it must NOT be gated behind the
@@ -199,32 +249,49 @@ export function evaluateOriginFreshness(
       ' — it is publishing, but losing ground, so the namespace head is falling permanently behind'
     : null;
 
+  // EI-19442274898324113: the integrator leg is not advancing canonical while this device's
+  // namespace stands ahead of it. This MUST be computed before — and survive — the ahead<=0
+  // early return below, and unlike the two publish signals that is not merely defensive
+  // symmetry: an integrator stall is the one fault that GUARANTEES ahead===0, because origin
+  // can only freeze here as a consequence of canonical freezing. Gating it behind that return
+  // would place the signal exactly where it can never fire.
+  const integratorBacklog = (snapshot.integratorBacklogSweeps ?? 0) >= integratorBacklogMax;
+  const integratorReason = integratorBacklog
+    ? `the INTEGRATOR leg has left the local namespace ahead of canonical refs/hive/staging for ${snapshot.integratorBacklogSweeps} consecutive sweeps` +
+      (snapshot.integratorBacklogCommits != null
+        ? ` (namespace is ${snapshot.integratorBacklogCommits} commit(s) ahead of canonical)`
+        : '') +
+      ' — canonical is frozen, so egress has nothing to push and origin cannot advance'
+    : null;
+
   const ahead = snapshot.aheadCount ?? 0;
   // Nothing to push (local at/behind the tracked origin tip, or unknown) ⇒ never stale —
   // the false-alarm-fix idiom every sibling watchdog applies to its own "idle" state.
-  // NOTE the two self-reported signals deliberately survive this return; only the two
+  // NOTE the three self-reported signals deliberately survive this return; only the two
   // INFERRED ones are suppressed here.
   if (ahead <= 0) {
-    const selfReported = [refusalReason, backlogReason].filter(Boolean) as string[];
+    const selfReported = [refusalReason, backlogReason, integratorReason].filter(Boolean) as string[];
     return {
-      state: publishRefused || publishBacklog ? 'stale' : 'ok',
+      state: publishRefused || publishBacklog || integratorBacklog ? 'stale' : 'ok',
       aheadCountStale: false,
       tipAgeStale: false,
       publishRefused,
       publishBacklog,
+      integratorBacklog,
       reason: selfReported.length > 0 ? selfReported.join('; ') : null,
     };
   }
 
   const aheadCountStale = ahead >= aheadCountMax;
   const tipAgeStale = snapshot.originTipAgeMs != null && snapshot.originTipAgeMs > tipAgeStaleMs;
-  const stale = aheadCountStale || tipAgeStale || publishRefused || publishBacklog;
+  const stale = aheadCountStale || tipAgeStale || publishRefused || publishBacklog || integratorBacklog;
 
   let reason: string | null = null;
   if (stale) {
     const parts: string[] = [];
     if (refusalReason) parts.push(refusalReason);
     if (backlogReason) parts.push(backlogReason);
+    if (integratorReason) parts.push(integratorReason);
     if (aheadCountStale) {
       parts.push(
         `local canonical is ${ahead} commit(s) ahead of the last-known origin tip (>= ${aheadCountMax}) — a backlog is piling up unpushed`,
@@ -238,16 +305,34 @@ export function evaluateOriginFreshness(
     reason = parts.join('; ');
   }
 
-  return { state: stale ? 'stale' : 'ok', aheadCountStale, tipAgeStale, publishRefused, publishBacklog, reason };
+  return {
+    state: stale ? 'stale' : 'ok',
+    aheadCountStale,
+    tipAgeStale,
+    publishRefused,
+    publishBacklog,
+    integratorBacklog,
+    reason,
+  };
 }
 
 /**
- * WI-6643 — which of the three signals the operator should be told about.
+ * WI-6643 — which of the signals the operator should be told about.
  *
  * `publish-refused` is the direct self-report; `origin-behind` is the pair of
  * inferred signals (aheadCount / tipAge) that share one runbook.
+ *
+ * EI-19442274898324113 adds `integrator-backlog`. The causes are reported in PIPELINE
+ * ORDER — publish (worktree -> namespace), then integrate (namespace -> canonical), then
+ * origin-behind (canonical -> origin) — because each stage starves the ones downstream of
+ * it, so announcing a downstream symptom buries the upstream cause. That is the same
+ * reasoning the refusal precedence below already documents.
  */
-export type OriginFreshnessCause = 'publish-refused' | 'publish-backlog' | 'origin-behind';
+export type OriginFreshnessCause =
+  | 'publish-refused'
+  | 'publish-backlog'
+  | 'integrator-backlog'
+  | 'origin-behind';
 
 export interface OriginFreshnessAlertFraming {
   cause: OriginFreshnessCause;
@@ -282,6 +367,8 @@ export function describeOriginFreshnessAlert(
     potHomeSlug?: string | null;
     publishRefusalCode?: string | null;
     publishBacklogCommits?: number | null;
+    /** EI-19442274898324113: how far the namespace stands ahead of canonical, for the body. */
+    integratorBacklogCommits?: number | null;
   },
 ): OriginFreshnessAlertFraming {
   const where = ctx.potHomeSlug ? `${ctx.slug} (bridged hive ${ctx.potHomeSlug})` : ctx.slug;
@@ -344,6 +431,43 @@ export function describeOriginFreshnessAlert(
     };
   }
 
+  // EI-19442274898324113 — the SAME "canonical and origin freeze together" endgame the
+  // publish-backlog framing above describes, reached from a different stage: publish is
+  // HEALTHY here (the namespace has the commits) and the INTEGRATOR is what never advances
+  // canonical. It needs its own framing because the levers are disjoint: nothing in
+  // `own_head_publish` will look wrong, so an operator sent to that field by the neighbouring
+  // alarm finds a clean leg and concludes the alarm is noise.
+  if (verdict.integratorBacklog) {
+    const trails =
+      ctx.integratorBacklogCommits != null
+        ? ` The namespace stands ${ctx.integratorBacklogCommits} commit(s) ahead of canonical.`
+        : '';
+    return {
+      cause: 'integrator-backlog',
+      title: 'INTEGRATOR is not advancing canonical — namespace ahead, origin frozen',
+      summary:
+        `INTEGRATOR BACKLOG on ${ctx.slug} — this device has published its commits to its namespace, but ` +
+        `canonical refs/hive/staging is not advancing, so egress has nothing to push and GitHub origin is frozen.` +
+        `${trails} Publish is HEALTHY — do not go looking at own_head_publish.`,
+      whyItMatters:
+        `Why it matters: this fault DISABLES ITS OWN DETECTOR, which is why it runs for hours in silence. origin ` +
+        `can only ever be a copy of canonical, so when the integrator stops, BOTH freeze at the same sha, ` +
+        `\`aheadCount\` is exactly 0, and the "nothing to push ⇒ never stale" early return declares the pot healthy ` +
+        `while the origin-tip clock ages past its threshold unread. Measured on papercusp 2026-08-03: ~5.4h and 28 ` +
+        `commits with \`of_alerted\` false, \`of_stall_sweeps\` 0, and sibling pots alarming correctly the whole ` +
+        `time — then it SELF-HEALED, leaving nothing behind to find. A tell that needs no tooling: origin/main ` +
+        `AHEAD of origin/staging, which is structurally impossible unless two different mechanisms advance them ` +
+        `(green-checkpoint pushes main directly; staging goes via the bridge).\n\n` +
+        `Claim it: read \`metadata.integrator_status\` on the ${where} git-sync routine. \`skipped:'not_authority'\` ` +
+        `names the lease HOLDER — check whether that peer is actually integrating, because publishing \`git-sync\` ` +
+        `in \`shared_presence.active_routines\` proves only that the routine is ARMED, not that the device advances ` +
+        `THIS pot's canonical ref. Compare \`metadata.integrator.at\` (last REAL integration) against now, and ` +
+        `\`git rev-list --count refs/hive/staging..refs/namespaces/<self>/refs/heads/staging\` in the pot's bare ` +
+        `store. Taking over is safe by the integrator leg's own contract (FF-only + CAS + epoch fence, proven ` +
+        `P-308) — it documents that two nodes briefly both integrating is accepted and strictly better than freezing.`,
+    };
+  }
+
   return {
     cause: 'origin-behind',
     title: 'origin freshness STALLED — GitHub origin is falling behind local',
@@ -371,6 +495,14 @@ export function describeOriginFreshnessRecovery(cause: OriginFreshnessCause, slu
     // up" — origin catching up is the downstream consequence, and wording it that way is
     // the same conflation that made the original alarm point at the wrong subsystem.
     return `p2p publish DRAINED on ${slug} — the publish leg has caught up and is fully drained; the earlier backlog alarm is stale.`;
+  }
+  if (cause === 'integrator-backlog') {
+    // Same discipline as the publish-backlog wording above: recovery is "the INTEGRATOR
+    // advanced canonical", not "origin caught up". Origin catching up is downstream, and
+    // saying so would credit the wrong stage — which matters here more than anywhere,
+    // because this fault self-heals and the recovery line is often the ONLY durable
+    // record anyone ever reads of it.
+    return `INTEGRATOR RECOVERED on ${slug} — canonical refs/hive/staging has advanced and the namespace backlog is integrated; the earlier integrator alarm is stale.`;
   }
   return `origin freshness RECOVERED on ${slug} — GitHub origin has caught back up; the earlier stall alarm is stale.`;
 }

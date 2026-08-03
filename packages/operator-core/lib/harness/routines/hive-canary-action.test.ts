@@ -2,7 +2,13 @@
  * hive-canary-action.test.ts — tests for deadline tracking and enforcement
  */
 import { describe, it, expect } from 'vitest';
-import { planCanaryTick, planCanarySlaCheck, isCanaryTerminal, canaryIdFor } from './hive-canary-action';
+import {
+  planCanaryTick,
+  planCanarySlaCheck,
+  isCanaryTerminal,
+  canaryIdFor,
+  isVoidedCanaryOwner,
+} from './hive-canary-action';
 import type { CanaryFeatureRow } from './hive-canary-action';
 
 describe('canaryIdFor', () => {
@@ -332,5 +338,101 @@ describe('canary storage-slug agreement (EI-19298246923137692)', () => {
       offenders,
       'canary DB row addressing must use the resolved storageSlug, not installSlug',
     ).toEqual([]);
+  });
+});
+
+/**
+ * Recurrence guard for EI-19441925633833456: the canary verdict must not be
+ * satisfiable by the population it does not measure.
+ *
+ * The canary asks ONE question — does the autonomous hive loop carry queued work
+ * end-to-end? Before this guard, `planCanaryTick` decided that from `status` alone
+ * and dropped every terminal row, so an su that self-selected the canary via
+ * `scheduler:get_next` and marked it `done` produced a row byte-identical to one a
+ * cup had carried. The detector's silence then read as a healthy pass.
+ *
+ * Measured precedent: F-CANARY-20260802 (terminal_owner su-e6ac4eb7…, created
+ * 01:16:19Z, done 01:17) recorded completion evidence claiming "Every hop of the
+ * canary loop exercised" while the Hive was owner-paused and no cup could run.
+ */
+describe('planCanaryTick — VOID measurement (agent-completed canaries)', () => {
+  const now = new Date('2026-08-03T15:00:00Z').getTime();
+  const CUP = 's-1784466222583-818cdfaa'; // a real cup session id shape
+  const SU = 'su-e6ac4eb7-9966-4e03-8122-5d761aff294d'; // a real su agent id shape
+
+  const row = (over: Partial<CanaryFeatureRow> = {}): CanaryFeatureRow => ({
+    feature_id: 'F-CANARY-20260802',
+    status: 'done',
+    created_ts: now - 24 * 3600 * 1000,
+    terminal_owner: CUP,
+    payload: { canary: true },
+    ...over,
+  });
+
+  it('THE GUARD: an su-completed canary is VOID, not a healthy pass', () => {
+    const plan = planCanaryTick([row({ terminal_owner: SU })], { nowMs: now });
+    expect(plan.voided).toEqual(['F-CANARY-20260802']);
+    // ...and it must NOT be laundered into the overdue path either: it is not a
+    // missed deadline, it is a measurement that never happened.
+    expect(plan.overdue).toEqual([]);
+  });
+
+  it('a cup-carried canary is a genuine pass — never voided', () => {
+    const plan = planCanaryTick([row({ terminal_owner: CUP })], { nowMs: now });
+    expect(plan.voided).toEqual([]);
+  });
+
+  it('an agent DROPPING a stale canary is honest cleanup, not a false green', () => {
+    // Only PASS-like terminals can constitute a false green. The 6 canaries
+    // bulk-dropped by an su on 2026-08-02 during an owner pause were legitimate
+    // backlog cleanup and must not be reported as voided measurements.
+    for (const status of ['dropped', 'deprecated', 'failed']) {
+      const plan = planCanaryTick([row({ status, terminal_owner: SU })], { nowMs: now });
+      expect(plan.voided, `${status} by an agent must not be voided`).toEqual([]);
+    }
+  });
+
+  it("the routine's own deprecation stamp is not an agent completion", () => {
+    const plan = planCanaryTick(
+      [row({ status: 'deprecated', terminal_owner: 'system:hive-canary' })],
+      { nowMs: now },
+    );
+    expect(plan.voided).toEqual([]);
+  });
+
+  it('an owner pause does NOT suppress a void (it explains STUCK, not FAKED)', () => {
+    // A pause is why a canary sits untouched. It is not a reason for one to be
+    // marked done — if anything a pause makes a pass-like completion more suspect,
+    // since no cup could have produced it.
+    const plan = planCanaryTick([row({ terminal_owner: SU })], { nowMs: now, isPaused: true });
+    expect(plan.voided).toEqual(['F-CANARY-20260802']);
+    expect(plan.overdue).toEqual([]);
+  });
+
+  it('reports each void once — an already-stamped row is not re-filed', () => {
+    const plan = planCanaryTick(
+      [row({ terminal_owner: SU, payload: { canary: true, canary_void_reported: true } })],
+      { nowMs: now },
+    );
+    expect(plan.voided).toEqual([]);
+  });
+
+  it('fails CLOSED on an unrecognised owner rather than manufacturing a red', () => {
+    // This predicate gates a bug report. Rows predating terminal_owner, or any
+    // shape we do not recognise, must stay silent instead of retro-firing.
+    expect(isVoidedCanaryOwner(null)).toBe(false);
+    expect(isVoidedCanaryOwner(undefined)).toBe(false);
+    expect(isVoidedCanaryOwner('')).toBe(false);
+    expect(planCanaryTick([row({ terminal_owner: null })], { nowMs: now }).voided).toEqual([]);
+  });
+
+  it('classifies cup vs agent ownership by the cup shape, not an agent blacklist', () => {
+    // Positive-matching the cup shape means any FUTURE agent-id prefix is treated
+    // as an agent (fail loud on the measurement) rather than silently as a cup.
+    expect(isVoidedCanaryOwner(CUP)).toBe(false);
+    expect(isVoidedCanaryOwner('s-1783883513875-4d713256')).toBe(false);
+    expect(isVoidedCanaryOwner(SU)).toBe(true);
+    expect(isVoidedCanaryOwner('human:avi')).toBe(true);
+    expect(isVoidedCanaryOwner('some-future-agent-kind-7f3a')).toBe(true);
   });
 });

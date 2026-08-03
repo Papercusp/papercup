@@ -553,3 +553,51 @@ describe('buildSuLaunchSpec — contextSize ?tools= seed lever (trimmed-by-defau
     expect((await suMcpUrl('claude', { model: FRONTIER, contextSize: 'full' })).searchParams.has('tools')).toBe(false);
   });
 });
+
+// EI-996 (owner ask 2026-06-17): "planners should be full su agents and get the full su
+// prompt, but just a few lines added about their planner role." The mechanism is a
+// roleAddendum appended to the rendered playbook — the SU tier (playbook + superuser MCP)
+// is what makes it a "full su agent"; the addendum is the "few lines".
+describe('buildSuLaunchSpec — roleAddendum (EI-996 su-tier role sessions)', () => {
+  const ADDENDUM = '## You are a PLANNER\nOutput is the PLAN, not code.';
+
+  async function suSpec(roleAddendum?: string | null) {
+    return buildLaunchSpec({
+      kind: 'su',
+      agent: 'claude',
+      workspaceId: 'default',
+      operatorBaseUrl: 'http://localhost:3070',
+      ...(roleAddendum === undefined ? {} : { roleAddendum }),
+    });
+  }
+
+  it('appends the addendum AFTER the playbook body, so the role focus is the final word', async () => {
+    const spec = await suSpec(ADDENDUM);
+    expect(spec.promptText).toContain('SU PLAYBOOK BODY');
+    expect(spec.promptText).toContain(ADDENDUM);
+    // Ordering is the point: playbook first, role addendum after it.
+    expect(spec.promptText.indexOf(ADDENDUM)).toBeGreaterThan(spec.promptText.indexOf('SU PLAYBOOK BODY'));
+  });
+
+  it('keeps the SU tier — an addendum session still gets the superuser MCP door, not a role-scoped one', async () => {
+    const spec = await suSpec(ADDENDUM);
+    // This is the half of EI-996 that makes it a "full su agent" rather than a reworded role.
+    expect(new URL(spec.mcpUrl).searchParams.get('superuser')).toBe('1');
+    expect(spec.kind).toBe('su');
+    expect(spec.role).toBe('su');
+  });
+
+  it('omitted ⇒ byte-identical to a plain su launch (no regression for every existing su session)', async () => {
+    const withOut = await suSpec(undefined);
+    const explicitNull = await suSpec(null);
+    expect(withOut.promptText).not.toContain('You are a PLANNER');
+    // The null case must not diverge from the omitted case.
+    expect(explicitNull.promptText).toBe(withOut.promptText);
+  });
+
+  it('blank / whitespace-only ⇒ treated as absent, with no trailing-newline drift', async () => {
+    const baseline = await suSpec(undefined);
+    expect((await suSpec('')).promptText).toBe(baseline.promptText);
+    expect((await suSpec('   \n\t  ')).promptText).toBe(baseline.promptText);
+  });
+});
