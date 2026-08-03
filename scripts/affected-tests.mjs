@@ -33,7 +33,7 @@ import {
   parseSummaryFailedCounts,
   parseFailedTestFiles,
   countTimeoutSignatures,
-  formatFailingFilesLine,
+  renderFailingFilesSummary,
 } from './lib/vitest-summary.mjs';
 import { emptySuiteGuardArgs } from './lib/empty-suite-guard.mjs';
 import { applyWorkerCapEnv } from './lib/worker-cap.mjs';
@@ -995,24 +995,20 @@ if (failed) {
         `verify before assuming a real assertion break (see the per-task note above / grep the run log).`,
     );
   }
-  // EI-19395701908500754: the per-FILE break set, stated by the run itself.
-  // `resultLine`'s failed=N counts TASKS; a triager needs FILES, and until now the only
-  // per-file signal in a green-checkpoint verdict log was the gate's own prose — which
-  // its self-tests emit too, so mining it returned fixture paths. Human block first (a
-  // triager reads prose), canonical machine line second.
-  errSync(
-    `\n${failedFileEntries.length} failing test file(s) — the per-FILE break set ` +
-      `(${resultLine('failed').match(/failed=\d+/)?.[0] ?? 'failed=?'} above counts TASKS, not files):`,
-  );
-  for (const e of failedFileEntries) errSync(`  - ${e.workspace} :: ${e.file}`);
-  if (unattributedTasks.length) {
-    errSync(
-      `${unattributedTasks.length} failed task(s) could NOT be attributed to files — ` +
-        `their failures are REAL but unnamed here, do not read the list above as complete:`,
-    );
-    for (const u of unattributedTasks) errSync(`  - ${u.task} (${u.reason})`);
+  // EI-19395701908500754: the per-FILE break set, stated by the run itself. `resultLine`'s
+  // failed=N counts TASKS; a triager needs FILES, and until now the only per-file signal in
+  // a green-checkpoint verdict log was the gate's own prose — which its self-tests emit too,
+  // so mining it returned fixture paths. Rendered by a unit-tested helper rather than inline:
+  // this path runs only when the gate is ALREADY red, so a fault here would surface at the
+  // worst possible moment and no source-text assertion could have caught it.
+  for (const line of renderFailingFilesSummary({
+    runToken: RUN_TOKEN,
+    failedTaskCount: failed,
+    entries: failedFileEntries,
+    unattributed: unattributedTasks,
+  })) {
+    errSync(line);
   }
-  errSync(formatFailingFilesLine({ runToken: RUN_TOKEN, entries: failedFileEntries, unattributed: unattributedTasks }));
   errSync(resultLine('failed'));
   errSync(`Full run log: ${RUN_LOG_PATH}`);
   process.exit(1);

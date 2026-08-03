@@ -181,6 +181,42 @@ export function formatFailingFilesLine({ runToken, entries = [], unattributed = 
 }
 
 /**
+ * The whole failure-summary block a run prints for its break set: the human list a triager
+ * reads, then the canonical machine line. Returned as lines rather than printed so the
+ * thing that actually ships is unit-testable.
+ *
+ * Extracted deliberately (EI-19395701908500754): left inline in affected-tests.mjs, the only
+ * available guard is a source-text assertion, which cannot catch a runtime fault on a path
+ * that runs solely when the gate is already red — i.e. it would report green while being
+ * broken exactly when needed. This module's own history has that shape twice over
+ * (EI-18819483316574031: a parser dead in production while its tests passed).
+ *
+ * @param {{
+ *   runToken: string,
+ *   failedTaskCount: number,
+ *   entries?: Array<{ workspace: string, file: string }>,
+ *   unattributed?: Array<{ task: string, reason: string }>,
+ * }} args
+ * @returns {string[]}
+ */
+export function renderFailingFilesSummary({ runToken, failedTaskCount, entries = [], unattributed = [] }) {
+  const lines = [
+    `\n${entries.length} failing test file(s) — the per-FILE break set ` +
+      `(the failed=${failedTaskCount} above counts TASKS, not files):`,
+  ];
+  for (const e of entries) lines.push(`  - ${e.workspace} :: ${e.file}`);
+  if (unattributed.length) {
+    lines.push(
+      `${unattributed.length} failed task(s) could NOT be attributed to files — their ` +
+        `failures are REAL but unnamed here; do not read the list above as complete:`,
+    );
+    for (const u of unattributed) lines.push(`  - ${u.task} (${u.reason})`);
+  }
+  lines.push(formatFailingFilesLine({ runToken, entries, unattributed }));
+  return lines;
+}
+
+/**
  * Count vitest's own hard-timeout failures — `"Test timed out in Nms."` / `"Hook timed
  * out in Nms."`, the exact message `@vitest/runner` throws when a case or hook exceeds
  * `testTimeout`/`hookTimeout` — in a run's combined stdout+stderr. ANSI-stripped first,
