@@ -278,7 +278,18 @@ export default function MugTab({ active }: { active: boolean }) {
     staleTime: 60_000,
     enabled: active,
   });
-  const plansQ = usePlanList({ includeArchived: false, includeLegacy: false });
+  // `enabled: active` matches projectsQ above, and is load-bearing rather than
+  // tidiness: LeftSidebar MOUNTS every tab (only visibility is toggled), and
+  // this tab is chrome — so an ungated plans.list here fetched on EVERY route
+  // in the app. Measured 2026-08-03 (no-http-anywhere-2026-07-28 D-028): 701 KB
+  // on the git tab, which renders no plan list at all.
+  //
+  // Gate the SUBSCRIPTION, never the args — usePlanList deliberately fetches
+  // the `{includeArchived:true,includeLegacy:true}` SUPERSET so every consumer
+  // shares one cache key (P-001; narrowing per call site re-multiplies the
+  // fetch, see D-029). `enabled` is the hook's own lever for exactly this,
+  // added under P-026.
+  const plansQ = usePlanList({ includeArchived: false, includeLegacy: false, enabled: active });
   const navigate = useNavigate();
   const [mugView, setMugView] = useQueryState('qMug', parseAsStringLiteral(MUG_VIEWS).withDefault('now'));
 

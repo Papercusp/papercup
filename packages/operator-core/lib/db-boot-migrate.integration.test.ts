@@ -27,7 +27,7 @@ import { afterAll, beforeAll, describe, expect, it, vi, type Mock } from 'vitest
 import postgres from 'postgres';
 import { randomBytes } from 'node:crypto';
 import { mkdtempSync, writeFileSync } from 'node:fs';
-import { rm } from 'node:fs/promises';
+import { readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { getTestPg } from '@papercusp/test-config/pg';
@@ -64,7 +64,7 @@ vi.mock('./agent-tools/coordination/messages', async () => {
   return { ...actual, sendMessage: (...args: unknown[]) => h.sendMessage(...args) };
 });
 
-const { applyPendingMigrationsAtBoot } = await import('./db-boot-migrate');
+const { applyPendingMigrationsAtBoot, applyPendingMigrationsNow } = await import('./db-boot-migrate');
 
 let rootSql: postgres.Sql;
 let bootClient: postgres.Sql;
@@ -171,6 +171,37 @@ describe('boot-apply runner mechanics (§A1)', () => {
       await pooled.end({ timeout: 5 });
     }
   });
+
+  it('when nothing is pending, issues no DDL beyond the idempotent schema_migrations bootstrap (EI-19403856469813053)', async () => {
+    // Regression guard for the ORIGINAL (incorrect) candidate root cause in
+    // EI-19403856469813053: "boot-migrate takes an ACCESS EXCLUSIVE lock with
+    // nothing to apply". It does not — this asserts exactly that, so a future
+    // change that adds an unconditional preflight DDL touching a real table
+    // (rather than the two idempotent, harmless-when-already-applied
+    // CREATE-IF-NOT-EXISTS statements below) fails this test instead of
+    // silently reintroducing a fleet-wide stall on every boot. The REAL root
+    // cause — a pending, genuinely-broken migration retried (and re-locking)
+    // on every boot — is covered by db-boot-migrate.integration.test.ts's own
+    // cross-boot cooldown tests, not here.
+    const dir = makeSqlDir({}); // nothing pending at all
+    const calls: string[] = [];
+    const spyClient = {
+      unsafe: (sql: string, ...rest: unknown[]) => {
+        calls.push(sql);
+        return (bootClient as unknown as { unsafe: (...a: unknown[]) => unknown }).unsafe(sql, ...rest);
+      },
+    };
+
+    const res = await applyPendingMigrations({ client: spyClient, sqlDir: dir, log: () => {} });
+    expect(res.appliedCount).toBe(0);
+    expect(res.failed).toEqual([]);
+    // Only the idempotent schema_migrations bootstrap + the applied-set SELECT
+    // ran — no ALTER/CREATE touches ANY other relation, so no concurrent reader
+    // of work_items (or any other table) could ever be blocked by this call.
+    expect(calls).toHaveLength(2);
+    expect(calls[0]).toMatch(/CREATE TABLE IF NOT EXISTS harness_shared\.schema_migrations/);
+    expect(calls[1]).toMatch(/^SELECT filename FROM harness_shared\.schema_migrations/);
+  });
 });
 
 describe('applyPendingMigrationsAtBoot wired entry (§A1)', () => {
@@ -210,5 +241,129 @@ describe('applyPendingMigrationsAtBoot wired entry (§A1)', () => {
       SELECT filename FROM harness_shared.schema_migrations
        WHERE filename IN ('950-good.sql','951-bad.sql','952-good.sql') ORDER BY filename`;
     expect(rows.map((r) => r.filename)).toEqual(['950-good.sql', '952-good.sql']);
+  });
+});
+
+// EI-19403856469813053: the REAL root cause behind "boot-migrate takes an
+// ACCESS EXCLUSIVE lock" — a pending migration that keeps genuinely FAILING
+// (not the "nothing pending" false candidate the runner-mechanics test above
+// falsifies) gets re-attempted, and re-locks its target table, on literally
+// every applyPendingMigrationsNow() call (every operator boot AND every
+// green-checkpoint/checkpoint-run preflight — see checkpoint-run.ts). These
+// tests cover the cross-boot cooldown that stops that amplification.
+describe('boot-apply cross-boot failure cooldown (EI-19403856469813053)', () => {
+  const cooldownFiles: string[] = [];
+
+  function freshCooldownFile(): string {
+    const p = join(tmpdir(), `a1-boot-cooldown-${randomBytes(6).toString('hex')}.json`);
+    cooldownFiles.push(p);
+    return p;
+  }
+
+  /** Every assertion path below produces a `failed.length > 0` boot-migrate
+   *  console.error (the existing loud non-fatal surface) — suppress it the
+   *  same way the wired-entry test above does, so vitest-fail-on-console
+   *  doesn't trip on an EXPECTED failure log. */
+  async function withSuppressedConsoleError<T>(fn: () => Promise<T>): Promise<T> {
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      return await fn();
+    } finally {
+      spy.mockRestore();
+    }
+  }
+
+  afterEach(() => {
+    delete process.env.PAPERCUSP_MIGRATION_COOLDOWN_FILE;
+    delete process.env.PAPERCUSP_MIGRATION_COOLDOWN_MS;
+  });
+
+  afterAll(async () => {
+    await Promise.all(cooldownFiles.map((f) => rm(f, { force: true })));
+  });
+
+  it('a genuinely-broken pending migration is SKIPPED (not re-attempted) on the next call within the cooldown window', async () => {
+    process.env.PAPERCUSP_MIGRATION_COOLDOWN_FILE = freshCooldownFile();
+    process.env.PAPERCUSP_MIGRATION_COOLDOWN_MS = String(60_000); // long — this test doesn't wait for expiry
+    h.bootSqlDir = makeSqlDir({
+      '960-broken.sql': 'CREATE TABLE no_such_schema_xyz.cooldown_bad (id int);',
+    });
+
+    const first = await withSuppressedConsoleError(() => applyPendingMigrationsNow());
+    expect(first).not.toBeNull();
+    expect(first!.failed.map((f) => f.file)).toEqual(['960-broken.sql']);
+    expect(first!.failed[0].error).not.toMatch(/cooling down/i);
+
+    // Same broken file still pending: the SECOND call must SKIP it (cooling
+    // down) rather than re-attempt the DDL — the whole point of this fix.
+    const second = await withSuppressedConsoleError(() => applyPendingMigrationsNow());
+    expect(second).not.toBeNull();
+    expect(second!.failed.map((f) => f.file)).toEqual(['960-broken.sql']);
+    expect(second!.failed[0].error).toMatch(/cooling down/i);
+  });
+
+  it('cooldown is per-file: a good migration alongside a cooling-down broken one still applies', async () => {
+    process.env.PAPERCUSP_MIGRATION_COOLDOWN_FILE = freshCooldownFile();
+    process.env.PAPERCUSP_MIGRATION_COOLDOWN_MS = String(60_000);
+    const dir = makeSqlDir({
+      '961-broken.sql': 'CREATE TABLE no_such_schema_xyz.cooldown_bad2 (id int);',
+    });
+    h.bootSqlDir = dir;
+    const first = await withSuppressedConsoleError(() => applyPendingMigrationsNow());
+    expect(first!.failed.map((f) => f.file)).toEqual(['961-broken.sql']);
+
+    // A NEW good file lands in the same dir alongside the still-broken one
+    // (mirrors a peer's unrelated migration landing while this one is stuck).
+    writeFileSync(join(dir, '962-good.sql'), 'CREATE TABLE harness_shared.boot_cooldown_good (id int);');
+    const second = await withSuppressedConsoleError(() => applyPendingMigrationsNow());
+    expect(second!.applied).toBe(1); // the good one applied despite the cooldown
+    expect(second!.failed.map((f) => f.file)).toEqual(['961-broken.sql']); // still reported pending
+    expect(second!.failed[0].error).toMatch(/cooling down/i);
+
+    const rows = await rootSql<{ filename: string }[]>`
+      SELECT filename FROM harness_shared.schema_migrations WHERE filename = '962-good.sql'`;
+    expect(rows).toHaveLength(1);
+  });
+
+  it('the cooldown EXPIRES: the broken migration is genuinely re-attempted once it elapses', async () => {
+    process.env.PAPERCUSP_MIGRATION_COOLDOWN_FILE = freshCooldownFile();
+    process.env.PAPERCUSP_MIGRATION_COOLDOWN_MS = String(50); // tiny — expires almost immediately
+    h.bootSqlDir = makeSqlDir({
+      '963-broken.sql': 'CREATE TABLE no_such_schema_xyz.cooldown_bad3 (id int);',
+    });
+    const first = await withSuppressedConsoleError(() => applyPendingMigrationsNow());
+    expect(first!.failed[0].error).not.toMatch(/cooling down/i);
+
+    await new Promise((resolve) => setTimeout(resolve, 150)); // outlast the 50ms cooldown
+
+    const second = await withSuppressedConsoleError(() => applyPendingMigrationsNow());
+    expect(second!.failed.map((f) => f.file)).toEqual(['963-broken.sql']);
+    // Re-attempted for real (the runner's own error), not skipped as cooling down.
+    expect(second!.failed[0].error).not.toMatch(/cooling down/i);
+  });
+
+  it('once retried-and-fixed after cooldown expiry, the cooldown entry is cleared — no stale skip lingers', async () => {
+    const cooldownFile = freshCooldownFile();
+    process.env.PAPERCUSP_MIGRATION_COOLDOWN_FILE = cooldownFile;
+    process.env.PAPERCUSP_MIGRATION_COOLDOWN_MS = String(50);
+    const dir = makeSqlDir({
+      '964-temp-broken.sql': 'CREATE TABLE no_such_schema_xyz.cooldown_bad4 (id int);',
+    });
+    h.bootSqlDir = dir;
+    const first = await withSuppressedConsoleError(() => applyPendingMigrationsNow());
+    expect(first!.failed.map((f) => f.file)).toEqual(['964-temp-broken.sql']);
+
+    // "Fix" the migration in place (same filename, corrected DDL) — mirrors an
+    // agent editing the SQL file before it has ever been recorded as applied.
+    writeFileSync(join(dir, '964-temp-broken.sql'), 'CREATE TABLE harness_shared.boot_cooldown_fixed (id int);');
+    await new Promise((resolve) => setTimeout(resolve, 150)); // outlast the 50ms cooldown
+
+    const second = await applyPendingMigrationsNow(); // no failure expected — nothing to suppress
+    expect(second!.applied).toBe(1);
+    expect(second!.failed).toEqual([]);
+
+    const raw = await readFile(cooldownFile, 'utf8').catch(() => '{}');
+    const state = JSON.parse(raw) as Record<string, unknown>;
+    expect(state['964-temp-broken.sql']).toBeUndefined();
   });
 });

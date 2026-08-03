@@ -164,8 +164,69 @@ export interface AcquireResult {
   created: boolean;
   /** Set when we minted an item, lost the claim race, and stood down. */
   lostRaceTo?: string;
+  /**
+   * Set when standing down FAILED to settle the row we had optimistically
+   * minted — i.e. a duplicate is now open, and this is its id.
+   *
+   * Reported rather than swallowed. The stand-down close is the one write that
+   * keeps a lost race from becoming the very duplicate this module exists to
+   * prevent, so a caller must be able to see that it did not happen instead of
+   * inferring success from the absence of a throw. See the actor note on
+   * {@link CONDITION_BRIDGE_ACTOR} for how this failed silently for real.
+   */
+  duplicateLeftOpen?: string;
   /** Set when the key is not opted in (nothing was written). */
   skipped?: 'not-actionable';
+}
+
+/**
+ * The principal this module writes lifecycle transitions as.
+ *
+ * ⚠ NOT COSMETIC — its absence was a live, silent defect (found by
+ * `condition-bridge.integration.test.ts`, P-008). The completion-integrity gate
+ * (`setIssueState`, WI-1403) REJECTS any terminal transition that carries no
+ * `by`, by THROWING. Both of this module's closes ran without one, and both
+ * wrapped the call in `.catch(() => undefined)` — so on every real database:
+ *
+ *   • a lost race never dropped the row it had optimistically minted, leaving a
+ *     permanently-open duplicate; the exact failure D-002 exists to prevent,
+ *     reintroduced in the path that prevents it.
+ *   • `releaseConditionOwner({ settle: true })` never settled anything, and
+ *     still returned `settled: true` — so the reconciler leaked one
+ *     permanently-open work-item per condition EPISODE (D-011's leak, reported
+ *     as fixed) and D-020's marker gate was guarding a write that never ran.
+ *
+ * Neither was visible to a unit test: a faked store has no completion gate to
+ * trip. `system:` prefix matches the existing convention (RECONCILER_SYSTEM_ACTOR
+ * = 'system:plan-item-reconcile') so these closes stay attributable to a named
+ * system actor rather than becoming anonymous flips — which is precisely what
+ * the gate is there to forbid.
+ */
+export const CONDITION_BRIDGE_ACTOR = 'system:condition-bridge' as const;
+
+/**
+ * Settle a work-item, reporting whether it ACTUALLY settled.
+ *
+ * The durable fix for the class, not just the two call sites: a lifecycle write
+ * that can be refused must never be asserted successful by a caller that
+ * discarded its outcome. `.catch(() => undefined)` at a call site whose result
+ * feeds a `settled: true` is how a hard, loud, correct rejection became a
+ * silent lie for the life of this module.
+ */
+async function settleWorkItem(id: string, state: 'done' | 'dropped', opts: { harness?: string; reason: string }): Promise<boolean> {
+  try {
+    await setWorkItemState(id, state, {
+      harness: opts.harness,
+      by: CONDITION_BRIDGE_ACTOR,
+      completionRef: opts.reason,
+    });
+    return true;
+  } catch {
+    // Still non-throwing: a failed settle must not abort the sweep (the key
+    // release below is the load-bearing half). The difference is that the
+    // failure is now RETURNED instead of discarded.
+    return false;
+  }
 }
 
 /**
@@ -258,15 +319,16 @@ export async function acquireConditionOwner(
     // A peer won the race. Stand down: settle our row so it does not become the
     // very duplicate this plan exists to prevent, and adopt the winner.
     const winner = await findConditionObject(key, { harnessSlug: spec.harness });
-    await setWorkItemState(item.id, 'dropped', {
+    const droppedOk = await settleWorkItem(item.id, 'dropped', {
       harness: spec.harness,
-      completionRef: `superseded by ${winner.workItem ?? 'the concurrent owner'} — lost the condition-key claim race for '${key}'`,
-    }).catch(() => undefined);
+      reason: `superseded by ${winner.workItem ?? 'the concurrent owner'} — lost the condition-key claim race for '${key}'`,
+    });
     return {
       conditionKey: key,
       workItem: winner.workItem,
       created: false,
       lostRaceTo: winner.workItem ?? undefined,
+      ...(droppedOk ? {} : { duplicateLeftOpen: item.id }),
     };
   }
 
@@ -354,11 +416,12 @@ export async function releaseConditionOwner(
   let settleSkipped: ReleaseResult['settleSkipped'];
   if (opts.settle) {
     if (await isBridgeMinted(current.workItem, opts.workspaceId)) {
-      await setWorkItemState(current.workItem, 'done', {
+      // `settled` is what the close ACTUALLY did — never an assumption. Asserting
+      // it while discarding the outcome is what hid this module's own defect.
+      settled = await settleWorkItem(current.workItem, 'done', {
         harness: opts.harness,
-        completionRef: opts.reason ?? `condition '${key}' resolved`,
-      }).catch(() => undefined);
-      settled = true;
+        reason: opts.reason ?? `condition '${key}' resolved`,
+      });
     } else {
       // Release the key below (so the next occurrence mints fresh) but leave the
       // item OPEN. Fails SAFE: an unreadable payload reads as not-bridge-minted, so

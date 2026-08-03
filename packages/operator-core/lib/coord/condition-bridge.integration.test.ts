@@ -364,17 +364,27 @@ describe('D-020 — settle is gated on the bridge mint marker', () => {
   });
 });
 
-describe('TEMP-DIAG', () => {
-  it('diag setWorkItemState', async () => {
-    const item = await createWorkItem({ kind: 'bug', title: 'diag', harness: H, severity: 'major' });
-    console.log('DIAG created', item.id, 'row=', JSON.stringify(await rowOf(item.id)));
-    try {
-      const r = await setWorkItemState(item.id, 'done', { harness: H, completionRef: 'diag close' });
-      console.log('DIAG setState returned', JSON.stringify(r && { id: r.id, status: r.status }));
-    } catch (e) {
-      console.log('DIAG setState THREW', (e as Error).message);
-    }
-    console.log('DIAG row after=', JSON.stringify(await rowOf(item.id)));
+describe('the completion-integrity gate — the defect this file found', () => {
+  it('a terminal transition with NO owner is REJECTED by the store (the throw the bridge used to swallow)', async () => {
+    // The falsifier for the fix. Both of the bridge's closes ran without a `by`
+    // and wrapped the call in `.catch(() => undefined)`, so this hard rejection
+    // was invisible: the lost-race duplicate was never dropped, and
+    // `releaseConditionOwner` reported `settled: true` having settled nothing.
+    // A faked store has no gate to trip, which is why 37 unit tests missed it.
+    const item = await createWorkItem({ kind: 'bug', title: 'anonymous close', harness: H, severity: 'major' });
+    await expect(setWorkItemState(item.id, 'done', { harness: H, completionRef: 'no owner supplied' })).rejects.toThrow(
+      /completion-integrity/,
+    );
+    expect(await isTerminal(item.id)).toBe(false);
+  });
+
+  it('the bridge closes as a NAMED system actor, so its settles are attributable', async () => {
+    const key = 'green-stall:papercup';
+    const { workItem } = await bridge.acquireConditionOwner(key, spec('gate stalled'));
+    await bridge.releaseConditionOwner(key, { harness: H, workspaceId: WS, settle: true });
+    const [row] = await db.sql<{ terminal_owner: string | null }[]>`
+      SELECT terminal_owner FROM harness_shared.work_items WHERE feature_id = ${workItem}`;
+    expect(row.terminal_owner).toBe(bridge.CONDITION_BRIDGE_ACTOR);
   });
 });
 

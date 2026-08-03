@@ -358,13 +358,24 @@ async function loadEscalations(): Promise<{
  * the SAME comparator as foldEscalations({status:'open'}) so the output is
  * byte-identical to the fold path (collation-independent).
  */
-async function readOpenEscalationsProjection(): Promise<EscalationRecord[]> {
+async function readOpenEscalationsProjection(from?: string): Promise<EscalationRecord[]> {
   const sql = coordSql();
   const ws = coordWorkspaceId();
-  const rows = await sql<{ body: EscalationRecord }[]>`
-    SELECT body FROM harness_shared.coord_open_escalations
-     WHERE workspace_id = ${ws}
-  `;
+  // EI-19403159016550818: `from` filters SERVER-SIDE. A caller that wants only its
+  // OWN open escalations (an alarm auto-resolving its own reminders) must never
+  // get them via "read a bounded page, then filter in JS" — the page is ordered
+  // oldest-first and capped at 500, so a single author's rows fall outside it the
+  // moment the workspace-wide open set exceeds the cap, and the filter then yields
+  // an empty list that is indistinguishable from "I have nothing open".
+  const rows = from
+    ? await sql<{ body: EscalationRecord }[]>`
+        SELECT body FROM harness_shared.coord_open_escalations
+         WHERE workspace_id = ${ws} AND body->>'from' = ${from}
+      `
+    : await sql<{ body: EscalationRecord }[]>`
+        SELECT body FROM harness_shared.coord_open_escalations
+         WHERE workspace_id = ${ws}
+      `;
   return rows
     .map((r) => r.body)
     .sort((a, b) => a.ts.localeCompare(b.ts) || a.msg_id.localeCompare(b.msg_id));
@@ -443,7 +454,7 @@ function boundBodyForList(rec: EscalationRecord): EscalationRecord {
  * WI-239: bounds coord:escalations so one call never returns ~9M chars.
  */
 export async function listEscalationsPaginated(
-  opts: { status?: 'open' | 'resolved'; maxRecords?: number; offset?: number } = {},
+  opts: { status?: 'open' | 'resolved'; maxRecords?: number; offset?: number; from?: string } = {},
 ): Promise<{
   escalations: EscalationRecord[];
   truncated: boolean;
@@ -477,7 +488,10 @@ export async function listEscalationsPaginated(
     }
     if (useProjection) {
       try {
-        const all = await readOpenEscalationsProjection();
+        // EI-19403159016550818: push `from` into the projection query, so an
+        // author-scoped read is COMPLETE for that author rather than "whatever
+        // survived the workspace-wide window".
+        const all = await readOpenEscalationsProjection(opts.from);
         const page = all.slice(offset, offset + maxRecords).map(boundBodyForList);
         return {
           escalations: page,
@@ -565,7 +579,12 @@ export async function listEscalationsPaginated(
       (rec): rec is EscalationResolvedEvent => typeof (rec as EscalationResolvedEvent).related_msg_id === 'string',
     );
 
-  const escalations = foldEscalations(opens, resolves, opts).map(boundBodyForList);
+  const foldedAll = foldEscalations(opens, resolves, opts);
+  // EI-19403159016550818: same `from` scoping as the projection path above. NOTE
+  // this leg filters AFTER a recency-bounded fold, so it is bounded-by-window in
+  // the way that path always was — it is consistent, not complete. The projection
+  // path is the one that gives an author a complete read.
+  const escalations = (opts.from ? foldedAll.filter((r) => r.from === opts.from) : foldedAll).map(boundBodyForList);
   // `total` = escalations actually returned (matches the tool's own human-facing
   // "Bounded to the N most-recent escalation events" note — never inconsistent
   // with `escalations`, unlike the old raw-event-scan count). `truncated` flags

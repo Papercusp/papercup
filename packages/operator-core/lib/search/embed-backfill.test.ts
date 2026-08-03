@@ -139,11 +139,23 @@ describe('runBackfillSweep (P-010)', () => {
     state.startedAt = Date.now() - 16 * 60 * 1000; // older than the 15-min ceiling
 
     unsafeResults = [[]]; // ext probe → no vector extension → clean early exit
-    const result = await runBackfillSweep();
+    expect(state.running).toBe(true); // DIAG: confirm we hold the module's object
+    expect(state.startedAt).toBeLessThan(Date.now() - 15 * 60 * 1000); // DIAG
+    // The takeover is deliberately LOUD — a silent recovery would hide a
+    // recurring hang, which is the same invisibility that caused the outage.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    let result: Awaited<ReturnType<typeof runBackfillSweep>>;
+    try {
+      result = await runBackfillSweep();
+    } finally {
+      warn.mockRestore();
+    }
 
     // It must RUN, not skip: a holder this old is gone, not slow.
     expect(result).not.toEqual({ skipped: 'already_running' });
     expect(Array.isArray(result)).toBe(true);
+    // And it must have SAID so.
+    expect(warn.mock.calls.map(String).join(' ')).toMatch(/STALE LATCH/);
     // And the latch must be released cleanly afterwards.
     expect(state.running).toBe(false);
     expect(state.startedAt).toBeNull();

@@ -12,6 +12,25 @@
  * TTLs are chosen from how fast the underlying signal actually moves, NOT from
  * how expensive the compute is — an expensive producer with a short ttl is the
  * routine's problem to schedule, never the reader's problem to wait for.
+ *
+ * ── Changing a producer's payload shape? Bump `producerVersion` (WI-7289) ────
+ * registry.ts:204/380 treat a snapshot's `producer_version` as the ONLY thing
+ * that makes a shape change self-enforcing — a shape change shipped WITHOUT a
+ * version bump ships inert (a stored old-version row keeps passing the
+ * reader's version check and serves the superseded shape forever). This has
+ * happened three times already (learning.improvements WI-7275/WI-7279,
+ * coord.history WI-7295, learning.observations WI-7303, plans.lint
+ * repeatedly), every time with green tests and clean types, because nothing
+ * tied the shape to the version number. `derived-reads/shape-fingerprint.ts`
+ * is a test-time detector for exactly this: it fingerprints a producer's REAL
+ * sample output and requires the fingerprint to match a value recorded
+ * against its LIVE registered `producerVersion`, so a shape drift without a
+ * version bump fails a test instead of shipping silently. Wired today for
+ * `learning.improvements`, `coord.history`, `learning.observations`, and
+ * `plans.lint` (the four with a proven history of this exact defect) — see
+ * their respective test files. The remaining producers here are NOT yet
+ * covered; adding coverage for one is cheap (see shape-fingerprint.ts's
+ * module doc for the pattern) and welcome, but is not assumed done.
  */
 import { withWorkspace } from '@papercusp/db-org';
 import { registerDerivedRead } from './registry';

@@ -414,8 +414,42 @@ export async function runConditionStalenessTick(
   const listOpen =
     deps.listOpen ??
     (async () => {
-      const { escalations } = await listEscalationsPaginated({ status: 'open', maxRecords: OPEN_SCAN_WINDOW });
-      return escalations.filter((e) => e.from === CONDITION_STALENESS_IDENTITY.ownerId);
+      // EI-19403159016550818 — READ SCOPED TO THIS ALARM, SERVER-SIDE.
+      //
+      // This used to read the newest/oldest OPEN_SCAN_WINDOW escalations
+      // workspace-wide and filter `from` in JS. That is silently wrong the moment
+      // the workspace-wide open set exceeds the window: the projection is ordered
+      // OLDEST-first and this alarm's own rows are the NEWEST (it is the thing
+      // actively minting them), so its rows are systematically the ones cut off —
+      // and the more it mints, the further past the window they sit. Measured
+      // 2026-08-03 on a 607-row open set: this alarm's 60 rows occupied positions
+      // 501..607 against a 500-row window, so the JS filter returned EXACTLY 0 and
+      // the auto-resolve leg below became a permanent no-op. 60 reminders for a
+      // condition that had already recovered stayed open for hours, and nothing
+      // anywhere reported a fault — an empty page and "nothing of mine is open"
+      // are the same value.
+      //
+      // Passing `from` pushes the predicate into the projection query, so the read
+      // is COMPLETE for this author regardless of workspace-wide backlog size.
+      const { escalations, truncated, trueOpenTotal } = await listEscalationsPaginated({
+        status: 'open',
+        maxRecords: OPEN_SCAN_WINDOW,
+        from: CONDITION_STALENESS_IDENTITY.ownerId,
+      });
+      if (truncated) {
+        // Even author-scoped, a caller must never take a resolve decision from a
+        // page it KNOWS is partial: "not in my page" would again read as "not
+        // open". Surfacing it is the recurrence guard for the whole class — the
+        // original defect was invisible precisely because this flag was returned
+        // and discarded.
+        console.warn(
+          `[condition-staleness-alarm] open-escalation read TRUNCATED at ${OPEN_SCAN_WINDOW} ` +
+            `(author-scoped rows: ${escalations.length}${
+              typeof trueOpenTotal === 'number' ? `, author open total: ${trueOpenTotal}` : ''
+            }). Auto-resolve this tick is INCOMPLETE — reminders outside the page cannot be closed.`,
+        );
+      }
+      return escalations;
     });
   const resolve =
     deps.resolve ??
