@@ -250,3 +250,91 @@ field-level cutoff into the body it serializes, so there is no shared marker to
 stamp (EI-18745696571494110). Both non-recoverable rows mean the same thing for
 a reader — **do not page the spill, re-call the tool** with `payloadTier:'full'`
 or a wider per-field limit.
+
+## Zoom out before optimising: spill is not where the tokens are
+
+Everything above measures one stage. Before spending effort on it, measure the
+whole window — because the answer changed what the plan that produced this doc
+was willing to build.
+
+Measured 2026-08-03 over 6 days of raw transcript JSONL (590 files, 266,544
+lines, 0 unparseable), **~49.4M estimated tokens into context**; per session
+p50 76,446 · p90 127,312 · max 2.75M:
+
+| source | est. tokens | share |
+|---|---:|---:|
+| `tool_result` | 30,277,398 | **61.3%** |
+| `tool_use` (the ARGS we send) | 12,547,035 | **25.4%** |
+| `text` (user + assistant prose) | 3,490,285 | 7.07% |
+| `thinking` | 3,078,506 | 6.23% |
+
+And inside `tool_result`, two **client-side** tools dominate:
+
+| tool | calls | est. result tokens | share of `tool_result` | avg chars |
+|---|---:|---:|---:|---:|
+| `Read` | 5,397 | 11,949,446 | **39.47%** | 8,856 |
+| `Bash` | 23,837 | 7,490,553 | **24.74%** | 1,257 |
+| largest MCP tool (`tools:invoke`) | 1,714 | 984,345 | 3.25% | 2,297 |
+
+`Read` + `Bash` = **64.2%** of all `tool_result` tokens — larger than every
+papercusp MCP tool combined (~36%). The payload-tier ceiling, the result door,
+`projection` and the spill store run on **none** of it. Two consequences worth
+carrying:
+
+- Work aimed at shrinking MCP tool results is optimising the minority share.
+  The cheapest personal levers are the boring ones: `capability:read` with
+  `offset`/`limit` instead of a whole-file `Read`, and one `code:run` instead of
+  N `Bash` round-trips.
+- `tool_use` is **25.4%** of all context and nothing measures it. The two
+  largest argument payloads are `work_items:checkpoint` (2.34M chars) and
+  `coord:send` (2.16M chars) — the durable notes and messages we *write* cost
+  more context than most results we read.
+
+Reproduce: `node scripts/measure-context-token-baseline.mjs 6` (writes
+`byKind`, `topToolsByResultChars` and `doorFooters` as JSON).
+
+### ⚠ Do NOT re-derive this from `harness_shared.session_turn_parts`
+
+That table looks purpose-built for it — it carries `speaker`, `part_kind`,
+`tool_name`, `text` — and it is wrong for this measurement.
+`search/session-ingest.ts` caps every part at `PART_TEXT_CAP = 2000` chars. The
+cap is correct for its own job (faithful *render* of recent sessions) and it
+clips exactly the category you are trying to measure: the ingester's own comment
+puts `tool_result` at 218 MB raw against text's 21 MB and says capping at 2k
+"recovers 61% of it". A decomposition read off that table understates
+`tool_result` by roughly an order of magnitude **while looking entirely
+plausible** — the capped run reported 51.7%, which is a believable number.
+
+The tell was cheap and general: `max(length(text))` was **2,026** across 244,738
+rows. **A distribution that stops dead is a cap, not a population.** Check the
+max of any text column against its plausible max before trusting an aggregate
+over it.
+
+## The spill footer is emitted ~2,600 times per 6 days — so measure its wording
+
+Of those 2,599 doored results, **2,146 (82.6%) had a JSON body**, 451 (17.4%)
+multi-line text, 2 single-line. (Shape is classified from the *kept* head, since
+the transcript holds the doored text — leading `{` or `[` after trim.)
+
+That distribution is why the footer is now a function of the payload rather than
+a constant: `pipe` line-operators cannot reduce a one-line JSON body — `head n:3`
+returns the whole array and a non-matching `grep` returns an **empty** body,
+which reads exactly like a filter that worked. Only `pick` reduces it. The old
+constant led with `pipe` on five out of six doored results.
+
+The part worth generalising is the *cost* discipline, not the wording:
+
+| | chars |
+|---|---:|
+| retired constant | 420 |
+| first replacement, as written | **570** |
+| over the same 6d corpus | **+376,173 chars ≈ +94,043 est. tokens, +34.5%** |
+| after trimming, JSON variant | 356 |
+| net over the same corpus | **−135,018 chars ≈ −33,754 est. tokens, −12.4%** |
+
+The first cut was authored with a plausible argument for why it must be smaller
+(it dropped an irrelevant operator list) and was recorded as "context cost went
+down" in a plan decision *before anyone measured it*. It was 34.5% bigger. Any
+string on a per-call path is a multiplied cost: **measure a wording change on
+that path, do not eyeball it** — `buildProjectionHint` in
+`packages/operator-core/lib/result-door.ts` carries a budget note saying so.

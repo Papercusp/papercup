@@ -28,6 +28,9 @@
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import type { ChildProcess } from 'node:child_process';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import {
   _resetSidecarShutdownHookRegistryForTests,
@@ -140,7 +143,7 @@ describe('sidecar shutdown hooks register on SPAWN, not at a call site (WI-7249 
     ).toHaveLength(1);
   });
 
-  it('CLASS GUARD: every node-child sidecar in SUPERVISED_PROCESSES is covered above', () => {
+  it('CLASS GUARD (registry): every node-child sidecar in SUPERVISED_PROCESSES is covered above', () => {
     // Derived, never hand-listed: a new node-child sidecar fails here until someone
     // adds it to NODE_CHILD_SIDECARS — which forces them to assert it registers on
     // spawn, which is the property that was missing when the leak shipped.
@@ -150,5 +153,97 @@ describe('sidecar shutdown hooks register on SPAWN, not at a call site (WI-7249 
     const covered = NODE_CHILD_SIDECARS.map((s) => s.registryName).sort();
 
     expect(registryNodeChildren).toEqual(covered);
+  });
+
+  /**
+   * CLASS GUARD (source) — and the reason it exists rather than the registry check alone.
+   *
+   * The registry check above derives its universe from `SUPERVISED_PROCESSES` entries whose
+   * `layer` is `node-child`. That classification is about how a process is DEPLOYED, not
+   * about whether some function in this repo spawns it as a child — and the two diverge.
+   * The inference-gateway sidecar is spawned as a node child by
+   * `inference-gateway/gateway-sidecar-spawn.ts`, yet it is registered as
+   * `{ name: 'inference-gateway', layer: 'systemd-user' }` because it can ALSO run as a
+   * systemd unit. So it has the exact shape this file exists to police and the registry
+   * check cannot see it — the same "a guard that passes forever while a fourth sidecar
+   * ships with the hole" failure the header warns about, arriving through a different door.
+   *
+   * It also cannot be covered behaviourally the way the three above are: its registration
+   * sits on the child-spawn seam (`spawnGatewayChild`, deliberately — so the respawn and
+   * reprobe paths are covered and the adopt-external path, which spawns nothing, correctly
+   * registers nothing), and that function is module-private and really does spawn.
+   *
+   * So this asserts the property STATICALLY, against the source, for every sidecar-spawn
+   * module: the module must call its own registrar from inside a `spawn*`/`ensure*`
+   * function. That is precisely the falsifier for the original defect — where the ONLY
+   * call to `registerSpawnerSidecarShutdownHooks()` lived in a different file
+   * (host-bootstrap.ts) that just two of the three entry points happened to route through.
+   */
+  it('CLASS GUARD (source): every *-sidecar-spawn module calls its own registrar from inside its spawn seam', async () => {
+    const libRoot = path.resolve(fileURLToPath(new URL('.', import.meta.url)), '..');
+
+    const modules: string[] = [];
+    const walk = async (dir: string): Promise<void> => {
+      for (const entry of await fs.readdir(dir, { withFileTypes: true })) {
+        if (entry.name === 'node_modules' || entry.name.startsWith('.')) continue;
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) await walk(full);
+        else if (/-sidecar-spawn\.ts$/.test(entry.name) && !entry.name.endsWith('.test.ts')) {
+          modules.push(path.relative(libRoot, full));
+        }
+      }
+    };
+    await walk(libRoot);
+    modules.sort();
+
+    // Inventory tripwire. A NEW sidecar-spawn module fails here, which is the point: the
+    // author is forced to look at this file. A RENAME that drops a module out of the glob
+    // fails here too, so the property check below can never pass vacuously on an empty set.
+    expect(modules).toEqual([
+      'fleet/spawner-sidecar-spawn.ts',
+      'inference-gateway/gateway-sidecar-spawn.ts',
+      'memory/embed-sidecar-spawn.ts',
+      'sync/hyperbee/substrate-sidecar-spawn.ts',
+    ]);
+
+    const offenders: string[] = [];
+    for (const rel of modules) {
+      const src = await fs.readFile(path.join(libRoot, rel), 'utf8');
+      const lines = src.split('\n');
+
+      // The registrar this module DEFINES (each sidecar exports its own thin wrapper over
+      // the shared registrar), so a module cannot pass by calling somebody else's.
+      const defined = [...src.matchAll(/^export function (register\w*ShutdownHooks)\(/gm)].map(
+        (m) => m[1]!,
+      );
+      if (defined.length === 0) {
+        offenders.push(`${rel}: defines no register*ShutdownHooks wrapper`);
+        continue;
+      }
+
+      const satisfied = defined.some((name) =>
+        lines.some((line, i) => {
+          // A CALL to the registrar, not its definition.
+          if (!new RegExp(`(?<!function )\\b${name}\\(\\s*\\)`).test(line)) return false;
+          // Walk back to the nearest top-level function declaration and require the call to
+          // be inside a spawn/ensure seam — registering from a `stop`/`reprobe`/module scope
+          // would satisfy a naive "the file mentions it somewhere" check but not the property.
+          for (let j = i; j >= 0; j--) {
+            const decl = /^(?:export )?(?:async )?function (\w+)/.exec(lines[j]!);
+            if (decl) return /^(spawn|ensure)/.test(decl[1]!);
+          }
+          return false;
+        }),
+      );
+
+      if (!satisfied) {
+        offenders.push(
+          `${rel}: ${defined.join('/')} is never called from inside a spawn*/ensure* function ` +
+            `— registration is coupled to a call site again (WI-7249 / D-011)`,
+        );
+      }
+    }
+
+    expect(offenders).toEqual([]);
   });
 });
