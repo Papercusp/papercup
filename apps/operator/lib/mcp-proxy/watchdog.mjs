@@ -155,6 +155,74 @@ const DB_PROBE_TOOL = process.env.PAPERCUSP_MCP_PROXY_WATCHDOG_DB_PROBE_TOOL || 
 const DB_PROBE_ARGS_RAW = process.env.PAPERCUSP_MCP_PROXY_WATCHDOG_DB_PROBE_ARGS;
 const SUPERUSER_TOKEN_FILE = join(homedir(), '.papercusp', 'superuser-token');
 
+/**
+ * Escalation to a human via coord:escalate (EI-19415174699106397 / WI-6739 follow-up).
+ *
+ * Before this, a CRITICAL verdict only ever reached a durable LOG FILE — nobody tails it in
+ * real time. Measured live 2026-08-03 ~06:49-07:14Z: this exact watchdog correctly diagnosed
+ * a dead data plane, correctly withheld the useless proxy restart, and then repeated the same
+ * CRITICAL line every throttle window for 25 minutes while no human or agent acted, because it
+ * had no channel to actually reach one. It knew the remediation and could not perform or
+ * escalate it.
+ *
+ * `conditionKey` is REQUIRED so repeated firings of the same live condition coalesce onto one
+ * open escalation row (bumping repeatCount) instead of leaking a new one per throttle window —
+ * the exact flood class WI-... already fixed for `coord:escalate` callers that pass a stable key.
+ *
+ * Deliberately best-effort and thrown away on failure: `coord:escalate` itself persists via
+ * Postgres, so during a genuine DATA-PLANE-dead condition this call can fail for the identical
+ * reason it exists to report. That is tolerated, not papered over — this fires on EVERY
+ * throttled CRITICAL cycle (not just once), and the live log shows the proxy/data plane
+ * flapping between FAILING and recovered during a real incident, so a retried escalation has a
+ * real chance of landing in one of those windows even when the very first attempt does not.
+ */
+function buildEscalationCall(conditionKey, summary, body) {
+  return {
+    jsonrpc: '2.0',
+    id: 1,
+    method: 'tools/call',
+    params: {
+      name: 'coord:escalate',
+      arguments: {
+        severity: 'blocker',
+        summary,
+        body,
+        conditionKey,
+        evidence: { band: 'observed', reportedBy: 'mcp-proxy-watchdog' },
+      },
+    },
+  };
+}
+
+async function escalateToHuman(conditionKey, summary, body) {
+  const token = readProbeToken();
+  if (!token) return; // no credential — already logged loudly elsewhere; nothing to escalate with
+  const qs = `superuser=1&client=mcp-proxy-watchdog-escalate&tools=${encodeURIComponent('coord:escalate')}`;
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), HANDSHAKE_TIMEOUT_MS);
+  try {
+    const res = await fetch(`http://127.0.0.1:${PORT}/api/mcp?${qs}`, {
+      method: 'POST',
+      signal: ctrl.signal,
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+        Accept: 'application/json, text/event-stream',
+      },
+      body: JSON.stringify(buildEscalationCall(conditionKey, summary, body)),
+    });
+    const json = parseMcpBody(await res.text());
+    if (json?.error) log(`escalate FAILED (${conditionKey}): ${json.error.message ?? `HTTP ${res.status}`}`);
+    else if (res.status !== 200) log(`escalate FAILED (${conditionKey}): HTTP ${res.status}`);
+    // A successful escalation is silent here — the CRITICAL log line right beside this call
+    // already recorded the condition; no need to double-log the happy path.
+  } catch (e) {
+    log(`escalate FAILED (${conditionKey}): ${e.message}`);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 let unreachableSince = 0;
 /** Onset timestamps of recent unreachable episodes — the rolling window behind WI-6744. */
 let stallOnsets = [];

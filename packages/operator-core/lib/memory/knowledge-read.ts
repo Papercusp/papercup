@@ -129,17 +129,23 @@ export interface MemoryHealth extends RecallHealth {
  * 240 not applied yet) so the store counts never vanish with it.
  */
 export async function readMemoryHealth(sql: Sql): Promise<MemoryHealth> {
-  const rows = (await sql`
-    SELECT
-      (SELECT count(*)::int FROM harness_shared.memory_canonical
-        WHERE NOT (payload ? 'entityType'))                       AS total_memories,
-      (SELECT count(*)::int FROM harness_shared.memory_canonical
-        WHERE payload ? 'entityType')                             AS entity_rows,
-      (SELECT count(*)::int FROM harness_shared.memory_feedback
-        WHERE created_at >= now() - interval '30 days')           AS feedback_30d
-  `) as Array<Record<string, unknown>>;
-  const r = rows[0] ?? {};
-  let recall: RecallHealth = {
+  // WI-7369: these FOUR reads are issued CONCURRENTLY, not sequentially. They are
+  // fully independent — no one of them consumes another's result, and each already
+  // degrades on its own (see the individual catches below, whose independence is
+  // load-bearing: "the store counts never vanish with telemetry"). Awaiting them in
+  // series bought nothing and cost the sum of their latencies.
+  //
+  // MEASURED (10 passes, arm order alternated, one warm-up discarded — see below for
+  // why that method): this function was the dominant leg of the learning.knowledge
+  // sync read at a 510ms median, against 155ms for its sibling readInsightsSnapshot
+  // and 2ms for the precision read. Parallelising the resolver's three legs alone
+  // only took the whole read 670 -> 520ms, still 3.5x the 150ms sync-read latency
+  // budget, because THIS function is most of it — so the win has to come from here.
+  //
+  // ⚠ Each `.catch` is preserved EXACTLY as it was. `Promise.all` rejects on the
+  // first rejection, so degrading inside each leg (rather than around the all()) is
+  // what keeps one failed telemetry read from zeroing the store counts.
+  const emptyRecall: RecallHealth = {
     recalls7d: 0,
     zeroHit7d: 0,
     zeroHitRate7d: 0,
@@ -151,29 +157,30 @@ export async function readMemoryHealth(sql: Sql): Promise<MemoryHealth> {
     fragmentHits7d: 0,
   };
   let recallTelemetryOk = true;
-  try {
-    recall = await readRecallHealth(sql);
-  } catch (err) {
-    // The aggregate above stays all-zeros — which READS AS PERFECT (0% zero-hit).
-    // Flag the failure so consumers can tell "nothing missed" from "nothing known".
-    recallTelemetryOk = false;
-    console.warn('[memory-health] recall-stats read failed (migration 240 applied?):', (err as Error).message);
-  }
-  // P-006: the per-surface slice — same degrade-to-empty independence as the
-  // blended aggregate above (the store counts never vanish with telemetry).
-  let recallBySurface: RecallSurfaceHealth[] = [];
-  try {
-    recallBySurface = await readRecallHealthBySurface(sql);
-  } catch {
-    /* telemetry-only — never blocks the health read */
-  }
-  // P-041: the query-side slice, same degrade-to-empty independence.
-  let queryBySurface: RecallQueryHealth[] = [];
-  try {
-    queryBySurface = await readRecallQueryHealth(sql);
-  } catch {
-    /* telemetry-only — never blocks the health read */
-  }
+  const [rows, recall, recallBySurface, queryBySurface] = await Promise.all([
+    sql`
+    SELECT
+      (SELECT count(*)::int FROM harness_shared.memory_canonical
+        WHERE NOT (payload ? 'entityType'))                       AS total_memories,
+      (SELECT count(*)::int FROM harness_shared.memory_canonical
+        WHERE payload ? 'entityType')                             AS entity_rows,
+      (SELECT count(*)::int FROM harness_shared.memory_feedback
+        WHERE created_at >= now() - interval '30 days')           AS feedback_30d
+  ` as unknown as Promise<Array<Record<string, unknown>>>,
+    readRecallHealth(sql).catch((err: unknown) => {
+      // The aggregate stays all-zeros — which READS AS PERFECT (0% zero-hit).
+      // Flag the failure so consumers can tell "nothing missed" from "nothing known".
+      recallTelemetryOk = false;
+      console.warn('[memory-health] recall-stats read failed (migration 240 applied?):', (err as Error).message);
+      return emptyRecall;
+    }),
+    // P-006: the per-surface slice — same degrade-to-empty independence as the
+    // blended aggregate above (the store counts never vanish with telemetry).
+    readRecallHealthBySurface(sql).catch((): RecallSurfaceHealth[] => []),
+    // P-041: the query-side slice, same degrade-to-empty independence.
+    readRecallQueryHealth(sql).catch((): RecallQueryHealth[] => []),
+  ]);
+  const r = rows[0] ?? {};
   return {
     ...recall,
     recallBySurface,

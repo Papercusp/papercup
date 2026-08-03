@@ -13,7 +13,14 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('@papercusp/flags/server', () => ({ getFlag: vi.fn(async () => true) }));
+// `onFlagChange` is required even though this suite never exercises it: importing
+// locks/configure.ts pulls in txn-timeouts-config.ts, which calls onFlagChange() at
+// MODULE SCOPE (D-010 event-driven refresh). A mock omitting it fails the whole file
+// at COLLECTION with `No "onFlagChange" export is defined`, i.e. 0 tests run.
+vi.mock('@papercusp/flags/server', () => ({
+  getFlag: vi.fn(async () => true),
+  onFlagChange: vi.fn(),
+}));
 vi.mock('@papercusp/flags', () => ({
   FLAGS: {
     LOOPS: 'papercusp-loops',

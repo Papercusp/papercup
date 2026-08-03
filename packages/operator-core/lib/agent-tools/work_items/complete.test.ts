@@ -50,8 +50,13 @@ vi.mock('../../events', () => ({
 // exercise the gate WIRING in completeOne (flag-off skips, flag-on consults, refusal blocks)
 // without PG. The default beforeEach state is flag OFF + gate OK (= today's behavior).
 const getFlag = vi.fn();
+// `onFlagChange` is required even though this suite never exercises it: importing
+// locks/configure.ts pulls in txn-timeouts-config.ts, which calls onFlagChange() at
+// MODULE SCOPE (D-010 event-driven refresh). A mock omitting it fails the whole file
+// at COLLECTION with `No "onFlagChange" export is defined`, i.e. 0 tests run.
 vi.mock('@papercusp/flags/server', () => ({
   getFlag: (...a: unknown[]) => getFlag(...a),
+  onFlagChange: () => {},
 }));
 const itemTestGate = vi.fn();
 vi.mock('../../harness-test-gate', () => ({
