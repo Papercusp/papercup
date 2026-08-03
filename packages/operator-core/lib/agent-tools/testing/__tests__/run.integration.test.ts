@@ -71,6 +71,14 @@ async function body(p: ReturnType<typeof call>): Promise<RunResult> {
 const GREEN_TARGET = 'packages/operator-core/lib/testing-flakiness.test.ts';
 
 /**
+ * A name-filter fragment that DOES match inside GREEN_TARGET. Deliberately its top-level
+ * `describe` — the name of the exported function under test — so this is only a tripwire for a
+ * real API rename, not for incidental edits to the suite (same reasoning as the un-pinned counts
+ * above). Vitest matches the FULL name, so a `describe` fragment matches every test beneath it.
+ */
+const GREEN_TARGET_TEST_NAME_FRAGMENT = 'computeFlakiness';
+
+/**
  * A green target in a DIFFERENT workspace (apps/operator), so a request naming both
  * routes into TWO groups — the only shape that can exhibit EI-18822211427354845.
  * Chosen for being a pure readFileSync text guard: fast, PG-free, no Tauri/Xvfb.
@@ -156,6 +164,31 @@ describe('testing:run (integration)', () => {
     expect(out.ok).toBe(false);
     expect(out.error).toBe('route_error');
     expect(out.routerOutput).toContain('TEST_FILE_ROUTE_ERROR');
+  }, 120_000);
+
+  // EI-19425177453558152 — the SAME vacuous-pass class as the case above, through the one
+  // argument this suite never covered. A `testNamePattern` matching zero tests left every test
+  // SKIPPED and vitest exited 0, so the router reported `status=passed` and this tool returned a
+  // green. It fires in the expensive direction: the canonical reason to pass a name filter is to
+  // confirm a pre-fix RED, and a false green there reads as "the defect isn't real", so the
+  // natural next move is to stop — having verified nothing.
+  it('refuses a testNamePattern that matches ZERO tests instead of passing vacuously', async () => {
+    const out = await body(call({ files: [GREEN_TARGET], testNamePattern: 'zzz-no-such-test-name' }));
+
+    expect(out.ok).toBe(false);
+    expect(out.error).toBe('name_filter_no_match');
+    expect(out.routerOutput).toContain('TEST_FILE_NAME_FILTER_NO_MATCH');
+    // The reason must be STATED. `ok:false` next to `failed:0` is exactly the shape an agent
+    // misreads as "nothing failed", which is how this bug survives one layer down.
+    expect(String(out.hint)).toContain('ZERO tests');
+  }, 120_000);
+
+  // Non-vacuousness for the case above: it would also pass if ANY name filter were refused.
+  it('still runs normally when the testNamePattern DOES match', async () => {
+    const out = await body(call({ files: [GREEN_TARGET], testNamePattern: GREEN_TARGET_TEST_NAME_FRAGMENT }));
+
+    expect(out.ok).toBe(true);
+    expect(out.passed).toBeGreaterThan(0);
   }, 120_000);
 
   // WI-7189 / EI-19383071792758676: the failure mode the router's own check

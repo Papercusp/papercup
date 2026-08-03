@@ -49,7 +49,7 @@ export default defineTool({
       .optional()
       .describe("Only this tool's row (e.g. 'plans:attention'). Omit for all."),
   }),
-  async handler({ args }) {
+  async handler(args) {
     const pid = process.pid;
     SEEN_PIDS.add(pid);
 

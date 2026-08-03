@@ -248,6 +248,29 @@ export default defineTool({
         return { data: { ok: false, runId, root, error: 'route_error', routerOutput: outcome.output.slice(-2000) } };
       }
 
+      // EI-19425177453558152: a `testNamePattern` matching ZERO tests measured NOTHING. The
+      // router now refuses it, but that refusal lands AFTER vitest wrote a (meaningless,
+      // all-skipped) report — so without this branch the run still distills to
+      // `passed:0, failed:0, skipped:N`, whose most natural reading ("nothing failed") is the
+      // false green again, merely one layer down. Name the cause instead: `ok:false` alone,
+      // with `failed:0`, is not a verdict an agent can act on.
+      if (outcome.output.includes('TEST_FILE_NAME_FILTER_NO_MATCH')) {
+        return {
+          data: {
+            ok: false,
+            runId,
+            root,
+            error: 'name_filter_no_match',
+            hint:
+              `testNamePattern ${JSON.stringify(args.testNamePattern ?? '')} matched ZERO tests, so NOTHING was ` +
+              'verified — this is not a pass. The pattern matches a test\'s FULL name (every enclosing `describe` ' +
+              'joined to the `it` text), so a fragment of the `it` alone still matches, but a typo or a stale name ' +
+              'matches nothing. Re-run without testNamePattern to see the real test names.',
+            routerOutput: outcome.output.slice(-2000),
+          },
+        };
+      }
+
       // EI-18822211427354845: the router runs ONE `vitest run` per owning workspace
       // config, so a request spanning several workspaces writes SEVERAL reports —
       // `report.json`, `report.0.json`, `report.1.json`, … Reading only `reportPath`

@@ -200,3 +200,108 @@ describe('recallCorpusContext — degradation (never throws, never blocks a turn
     expect((ctx as { embedder: unknown }).embedder).toBeNull();
   });
 });
+
+/**
+ * P-017 / D-062 R2 — the two-stage cascade.
+ *
+ * The property under test is ADDITIVITY: stage 2 may only fill slots stage 1
+ * left empty, never displace what stage 1 admitted. That is not a nicety — a
+ * single coverage-graded query (the shape this replaced) was measured live over
+ * 120 real turns to LOSE 180 admitted lines across 79 queries, 18 of them the
+ * control's top-1, while the mean admitted count stayed flat. It swapped
+ * results rather than adding them, because the leg's overlap guard, 6-item cap
+ * and char budget are applied over a REORDERED walk.
+ */
+describe('recallCorpusContext — the P-017 cascade', () => {
+  const wi = (id: string, over: Record<string, unknown> = {}) =>
+    hit({ source_id: id, excerpt: `[bug/open/major] ${id} transport regression on the sse endpoint`, ...over });
+
+  // `vi.clearAllMocks()` in the outer beforeEach does NOT drain a queued
+  // `mockResolvedValueOnce`, so a test whose queue outlives it leaks into the
+  // next one. Caught the hard way: a cap-1 case queued two responses, the
+  // cascade correctly short-circuited after one, and the survivor rewrote the
+  // FOLLOWING test's stage-1 result.
+  beforeEach(() => {
+    runHybridSearch.mockReset();
+  });
+
+  it('does NOT fire stage 2 when stage 1 already fills the cap — one engine call, mode `and`', async () => {
+    runHybridSearch.mockResolvedValue(ok([wi('WI-1'), wi('WI-2')]));
+    await recallCorpusContext({ ...base, maxItems: 2 });
+    expect(runHybridSearch).toHaveBeenCalledTimes(1);
+    const [, ctx] = runHybridSearch.mock.calls[0];
+    expect((ctx as { lexicalMode: string }).lexicalMode).toBe('and');
+  });
+
+  it('fires stage 2 ONLY on under-fill, and asks for `coverage-graded` the second time', async () => {
+    runHybridSearch
+      .mockResolvedValueOnce(ok([wi('WI-1')]))
+      .mockResolvedValueOnce(ok([wi('WI-1'), wi('WI-2')]));
+    const res = await recallCorpusContext(base);
+    expect(runHybridSearch).toHaveBeenCalledTimes(2);
+    expect((runHybridSearch.mock.calls[0][1] as { lexicalMode: string }).lexicalMode).toBe('and');
+    expect((runHybridSearch.mock.calls[1][1] as { lexicalMode: string }).lexicalMode).toBe(
+      'coverage-graded',
+    );
+    // Stage 1's line is kept AND the graded-only hit is appended after it.
+    expect(res.lines.map((l) => l.handle.ref)).toEqual(['WI-1', 'WI-2']);
+  });
+
+  it('ADDITIVITY — higher-agreement graded hits cannot evict a stage-1 line by filling the cap ahead of it', async () => {
+    // The exact case a naive concat-then-select gets wrong. `selectCorpusLines`
+    // orders by multi-ranker agreement BEFORE input order, so over the merged
+    // list [WI-1, WI-2, WI-3] with a cap of 2 it would admit WI-2 and WI-3 (both
+    // bm25+embeddings) and drop WI-1 (bm25 only) as cap-exhausted — losing a
+    // line the AND query had already admitted. The cascade computes stage 1
+    // first and gives stage 2 only the LEFTOVER cap, so WI-1 cannot be reached.
+    //
+    // ⚠ The cap must exceed stage 1's yield or stage 2 never fires and this
+    // test passes vacuously — which is exactly how the first draft was wrong.
+    runHybridSearch
+      .mockResolvedValueOnce(ok([wi('WI-1')]))
+      .mockResolvedValueOnce(
+        ok([
+          wi('WI-1'),
+          wi('WI-2', { rankers: ['bm25', 'embeddings'] }),
+          wi('WI-3', { rankers: ['bm25', 'embeddings'] }),
+        ]),
+      );
+    const res = await recallCorpusContext({ ...base, maxItems: 2 });
+    expect(runHybridSearch).toHaveBeenCalledTimes(2); // stage 2 really ran
+    expect(res.lines.map((l) => l.handle.ref)).toEqual(['WI-1', 'WI-2']);
+  });
+
+  it('stage 2 never re-offers a hit stage 1 already saw (no duplicate lines)', async () => {
+    runHybridSearch
+      .mockResolvedValueOnce(ok([wi('WI-1')]))
+      .mockResolvedValueOnce(ok([wi('WI-1'), wi('WI-1'), wi('WI-2')]));
+    const res = await recallCorpusContext(base);
+    const refs = res.lines.map((l) => l.handle.ref);
+    expect(refs).toEqual(['WI-1', 'WI-2']);
+    expect(new Set(refs).size).toBe(refs.length);
+  });
+
+  it('embeds ONCE across both stages — the cascade must not double the embed bill', async () => {
+    const embed = vi.fn(async () => [0.1, 0.2]);
+    buildQueryEmbedder.mockResolvedValue(embed as unknown);
+    runHybridSearch.mockImplementation(async (_s: unknown, ctx: { embedder: ((t: string) => Promise<number[]>) | null }) => {
+      // The engine calls the embedder itself; both stages share one context.
+      if (ctx.embedder) await ctx.embedder(QUERY);
+      return ok([wi('WI-1')]);
+    });
+    await recallCorpusContext(base);
+    expect(runHybridSearch).toHaveBeenCalledTimes(2);
+    expect(embed).toHaveBeenCalledTimes(1);
+  });
+
+  it('the whole cascade stays inside the one whole-leg bound (a slow stage 2 cannot extend it)', async () => {
+    process.env.PAPERCUSP_MEMORY_CORPUS_TIMEOUT_MS = '40';
+    runHybridSearch
+      .mockResolvedValueOnce(ok([wi('WI-1')]))
+      .mockImplementationOnce(() => new Promise((resolve) => setTimeout(() => resolve(ok()), 500)));
+    const t0 = Date.now();
+    const res = await recallCorpusContext(base);
+    expect(res.block).toBeNull();
+    expect(Date.now() - t0).toBeLessThan(400);
+  });
+});

@@ -222,8 +222,8 @@ async function main(): Promise<void> {
   // 'query' side — asymmetric model, must match production's query kind.
   const qvecs = await embedChunked(url, 'query', probes);
 
-  console.log('\nwidth   MRR    recall@1  recall@5  meanRank  identical-to-2000');
-  console.log('─────────────────────────────────────────────────────────────────');
+  console.log('\narm          MRR    recall@1  recall@5  meanRank  note');
+  console.log('──────────────────────────────────────────────────────────────────');
 
   const baseline: { width: number; vecs: number[][] } = { width: 0, vecs: [] };
   for (const w of WIDTHS) {

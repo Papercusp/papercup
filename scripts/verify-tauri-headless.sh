@@ -937,24 +937,57 @@ boot_failure_diag() {
 
 BOOT_ATTEMPTS=0
 MAX_BOOT_ATTEMPTS="${VERIFY_TAURI_MAX_BOOT_ATTEMPTS:-2}"
+# EI-19446616147360269: has our sidecar GIVEN UP on DEV_PORT?
+#
+# Deliberately matches only the TERMINAL form — hono-host's own
+# listenWithEaddrinuseRetry first emits `[listen-retry] EADDRINUSE on 0.0.0.0:<port>
+# (attempt N/8) — retrying`, which is transient-straggler recovery that usually
+# SUCCEEDS (8 attempts, 1s apart). Tripping the re-pick on those lines would abort a
+# boot that was about to heal itself and turn an 8-second recovery into a ~2min
+# re-boot. Only once it exhausts them does it call onFatal, producing
+# `[hono-host] fatal uncaughtException — exiting: Error: listen EADDRINUSE ... :<port>`.
+# $DEV_PORT/$LOG are read at CALL time, so this stays correct after a re-pick.
+port_lost_to_squatter() {
+  grep -qE "fatal uncaughtException.*EADDRINUSE.*:$DEV_PORT\b" "$LOG" 2>/dev/null
+}
 while :; do
   BOOT_ATTEMPTS=$((BOOT_ATTEMPTS + 1))
   write_and_launch_tauri
 
   log "waiting up to ${TIMEOUT}s for the dev bridge (pid=$TAURI_PID, log=$LOG, attempt=$BOOT_ATTEMPTS/$MAX_BOOT_ATTEMPTS)"
   ELAPSED=0
+  PORT_LOST=0
   until grep -q "dev bridge listening" "$LOG" 2>/dev/null; do
+    # EI-19446616147360269: detect the lost port HERE, INSIDE the wait — this check
+    # used to live only AFTER this loop, which made it unreachable in the exact
+    # failure it was written for. Losing the bind is precisely what PREVENTS
+    # "dev bridge listening" from ever appearing, so the loop could only ever leave
+    # via one of the two boot_failure_diag calls below, both of which exit 1. The
+    # re-pick branch below was therefore dead code for a bind-time squatter: measured
+    # 2026-08-03 (work=/tmp/verify-tauri-headless.6Pb3fG) the run burned ~4min, never
+    # wrote a tauri.attempt1.log, and never tried a second port. Checked BEFORE the
+    # liveness/timeout probes so a sidecar that died OF this cause routes to the
+    # re-pick instead of to a fatal.
+    if port_lost_to_squatter; then PORT_LOST=1; break; fi
     kill -0 "$TAURI_PID" 2>/dev/null || boot_failure_diag "tauri dev exited before the bridge came up"
     [ "$ELAPSED" -ge "$TIMEOUT" ] && boot_failure_diag "bridge did not come up within ${TIMEOUT}s"
     sleep 2; ELAPSED=$((ELAPSED + 2))
   done
-  log "bridge is up after ${ELAPSED}s"
 
-  # Our OWN sidecar must own DEV_PORT. If it lost a race for it, the webview is
-  # pointed at SOMEONE ELSE's operator on that port and every assertion below is
-  # meaningless (WI-4342) — fail loudly instead of "verifying" a peer's tree.
-  if ! grep -qE "EADDRINUSE.*:$DEV_PORT\b" "$LOG" 2>/dev/null; then
-    break   # our sidecar owns the port — proceed
+  if [ "$PORT_LOST" = 1 ]; then
+    # Surface it on OUR stdout: the caller otherwise sees only "waiting up to 180s
+    # for the dev bridge" and reads a dead boot as a slow one (the EADDRINUSE is
+    # buried in tauri.log). Fall through to the shared re-pick/fatal branch below.
+    log "sidecar GAVE UP binding :$DEV_PORT (EADDRINUSE) after ${ELAPSED}s — a squatter owns it, so the dev bridge can never come up on this port."
+  else
+    log "bridge is up after ${ELAPSED}s"
+
+    # Our OWN sidecar must own DEV_PORT. If it lost a race for it, the webview is
+    # pointed at SOMEONE ELSE's operator on that port and every assertion below is
+    # meaningless (WI-4342) — fail loudly instead of "verifying" a peer's tree.
+    if ! grep -qE "EADDRINUSE.*:$DEV_PORT\b" "$LOG" 2>/dev/null; then
+      break   # our sidecar owns the port — proceed
+    fi
   fi
 
   if [ "$BOOT_ATTEMPTS" -lt "$MAX_BOOT_ATTEMPTS" ]; then
