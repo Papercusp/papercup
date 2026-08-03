@@ -534,6 +534,83 @@ export function computeSpinningAlert(
   return prodAge > budgetMs;
 }
 
+/* ──────────────────────────────────────────────────────────────────────────────
+ * EI-19313376980892266 item C — EVERY ALERT CARRIES ITS FALSIFIER.
+ *
+ * THE INCIDENT (2026-08-02, this file's own alerts): `idle_with_claimable` reported
+ * 5 members idle beside a nonempty queue. All 5 were AT CAPACITY — the scheduler was
+ * refusing them on maxConcurrentClaims. The leader broadcast twice and woke all five,
+ * demanding work they were structurally forbidden to take.
+ *
+ * The alert's prose ALREADY said the right thing ("read work_items:claimable's
+ * excludedBreakdown rather than assuming the member is at fault"). It was correct and
+ * it was ignored, because prose advice gets BELIEVED while a query gets RUN. The fix
+ * is therefore not better wording — it is shipping the alert with the command that
+ * would DISPROVE it.
+ *
+ * TWO CONSTRAINTS, both learned the hard way:
+ *
+ * 1. INDEPENDENCE. Adopted from the ratified `CellFalsifier` contract
+ *    (`cell-registry.ts`, D-038 axis 1), whose `measurement` field carries the same
+ *    load: "a derived verdict over a raw leg adds interpretation but NO NEW
+ *    INFORMATION — it is recomputable from the leg." A falsifier recomputed from the
+ *    alert's own inputs can never contradict it, so it launders the alert's confidence
+ *    instead of testing it. Each `measurement` below therefore names a reading the
+ *    alert did NOT consult.
+ *
+ * 2. READ-ONLY. A check that mutates is not a check. This is not hypothetical: the
+ *    obvious way to ask "would the scheduler admit this member" is
+ *    `scheduler:get_next` — which has NO dry-run and ATOMICALLY CLAIMS. A leader
+ *    "verifying" an idle-member alert that way claims the item themselves, which is
+ *    precisely how this item's own author accumulated 5 claims against a cap of 1
+ *    while diagnosing the fleet as idle. `work_items:claimable` is the READ-ONLY
+ *    wrapper of that same oracle and is what every falsifier below uses instead.
+ *    `alert-falsifier-reality.test.ts` fails the build on a mutating tool.
+ *
+ * Deliberately NOT auto-executed. Folding the falsifier's result back into the brief
+ * would make it one more aggregate on the surface whose over-confidence caused the
+ * incident — "a surface that is confidently wrong suppresses the check that would
+ * catch it". The leader running it and reading raw output is the point.
+ * ────────────────────────────────────────────────────────────────────────────── */
+export interface AlertFalsifier {
+  /** The tool the check calls. MUST be read-only — enforced by the reality test. */
+  tool: string;
+  /** The literal runnable one-liner. Its OUTPUT confirms or kills the alert. */
+  check: string;
+  /** The INDEPENDENT measurement it reads. Must NOT be an input the alert fired on. */
+  measurement: string;
+  /** The concrete output that KILLS this alert — and what to do instead. */
+  kills: string;
+}
+
+/**
+ * Tools a falsifier may never call, because reading them CHANGES the thing being
+ * measured. `scheduler:get_next` and the claim verbs take the item; `fleet:bench`
+ * parks the member; `coord:send` wakes it. Enforced by the reality test rather than
+ * left to review — the whole family is one plausible-looking edit away from a check
+ * that silently claims work on the leader's behalf.
+ */
+export const FALSIFIER_FORBIDDEN_TOOLS: readonly string[] = [
+  'scheduler:get_next',
+  'work_items:claim',
+  'work_items:claim_next',
+  'fleet:bench',
+  'coord:send',
+];
+
+/**
+ * Render a tool call as the literal one-liner a leader can paste. Values are emitted
+ * as they must be typed (strings quoted, scalars bare); null/undefined args are
+ * dropped so an unresolved fleet/harness degrades to a still-runnable call rather
+ * than one carrying `harness: null`. PURE — exported for direct unit-testing.
+ */
+export function renderFalsifierCall(tool: string, args: Record<string, unknown>): string {
+  const parts = Object.entries(args)
+    .filter(([, v]) => v !== undefined && v !== null)
+    .map(([k, v]) => `${k}: ${typeof v === 'string' ? `'${v}'` : JSON.stringify(v)}`);
+  return parts.length > 0 ? `${tool} { ${parts.join(', ')} }` : `${tool} {}`;
+}
+
 /**
  * EI-15055 (fleet-members-parked-stall-2026-07-17): the ZERO-WIP-WITH-SUPPLY alert.
  * `parked` was a plain count with no severity — a leader reading `parked:7` next to
@@ -552,9 +629,30 @@ export function computeStrandedFleetAlert(input: {
   totalLoad: number;
   parkedCount: number;
   unownedCriticalCount: number;
-}): { reason: string } | undefined {
+  /** Falsifier context — a null harness/fleet still renders a runnable call. */
+  harness?: string | null;
+  fleet?: string | null;
+}): { reason: string; falsifier: AlertFalsifier } | undefined {
   if (input.totalLoad > 0 || input.parkedCount === 0 || input.unownedCriticalCount === 0) return undefined;
   return {
+    falsifier: {
+      tool: 'work_items:claimable',
+      check: renderFalsifierCall('work_items:claimable', {
+        harness: input.harness,
+        spec: input.fleet,
+        breakdownOnly: true,
+      }),
+      // The alert fires on an unowned-CRITICAL scan, which never consults this
+      // fleet's claim spec or the ~12 claim floors. This asks the claim oracle
+      // itself whether those rows are actually admissible HERE.
+      measurement:
+        "post-floor claimable count under this fleet's OWN claim spec — the alert " +
+        'counted unowned criticals harness-wide and never consulted the spec or the floors',
+      kills:
+        'claimableCount 0 → those criticals are NOT admissible to this fleet, so waking the ' +
+        'parked members cannot let them claim. Fix the spec/floor (scheduler:set_claim_spec), ' +
+        'not the members.',
+    },
     reason:
       `fleet-wide wip is 0, ${input.parkedCount} member(s) are parked (sleeping on an event), and ` +
       `${input.unownedCriticalCount} unowned critical(s) this fleet's spec would admit are sitting ` +
@@ -592,9 +690,30 @@ export function computeSpecStarvedFleetAlert(input: {
   totalLoad: number;
   specMatched: number;
   poolSize: number;
-}): { reason: string } | undefined {
+  harness?: string | null;
+  fleet?: string | null;
+}): { reason: string; falsifier: AlertFalsifier } | undefined {
   if (input.totalLoad > 0 || input.poolSize === 0 || input.specMatched > 0) return undefined;
   return {
+    falsifier: {
+      tool: 'work_items:claimable',
+      check: renderFalsifierCall('work_items:claimable', {
+        harness: input.harness,
+        spec: input.fleet,
+        breakdownOnly: true,
+        sampleExcluded: 3,
+      }),
+      // This alert fires on previewSpecPoolEffect's PRE-floor compiled-filter count.
+      // work_items:claimable is the POST-floor live oracle — a genuinely different
+      // measurement (this file already notes the two read ~113 vs 4 on one fleet),
+      // so it can contradict the alert rather than restate it.
+      measurement:
+        "the live claim oracle's POST-floor verdict + per-floor breakdown — the alert fired on " +
+        "previewSpecPoolEffect's PRE-floor compiled-filter count, a different measurement",
+      kills:
+        'matchedByFilter > 0 → the filter IS matching rows and the lane is FLOOR-gated, not ' +
+        'spec-starved. Act on the excludedBreakdown; editing view.filter would be the wrong fix.',
+    },
     reason:
       `fleet-wide wip is 0 and this fleet's effective claim spec matches 0 of ${input.poolSize} claimable ` +
       'row(s) right now (EI-18655873409999215) — every member\'s scheduler:get_next will report a clean ' +
@@ -634,7 +753,10 @@ export function computeIdleWithClaimableAlert(input: {
   /** EI-18703234178947959: the fleet's own control state is winding-down (owner-paused).
    *  Suppresses the alert entirely — see the defence-in-depth note below. */
   fleetPaused?: boolean | null;
-}): { reason: string } | undefined {
+  harness?: string | null;
+  /** The members this alert is accusing — so its falsifier names a REAL one. */
+  idleMemberIds?: readonly string[];
+}): { reason: string; falsifier: AlertFalsifier } | undefined {
   // EI-18703234178947959: never tell a leader to wake members of an owner-PAUSED fleet.
   // The rows counted here are real backlog, but backlog OUTSIDE this fleet's paused
   // scope: the claim path refuses it (`windDown:true`), so every wake this alert
@@ -645,7 +767,29 @@ export function computeIdleWithClaimableAlert(input: {
   if (input.fleetPaused) return undefined;
   if (input.claimableCount == null || input.claimableCount <= 0) return undefined;
   if (input.idleMemberCount <= 0) return undefined;
+  const accused = input.idleMemberIds?.[0];
   return {
+    falsifier: {
+      tool: 'work_items:list',
+      check: renderFalsifierCall('work_items:list', {
+        harness: input.harness,
+        assignee: accused ?? 'self',
+        state: 'open',
+      }),
+      // THE incident this whole falsifier family exists for. The alert's idle count
+      // comes from the brief's own per-member load projection; this reads the member's
+      // holdings straight from the work-item ledger, which is what that projection is a
+      // projection OF — so a member at its concurrency cap shows up here as a held row
+      // even when the brief rendered it idle.
+      measurement:
+        "the named member's ACTUAL open holdings in the work-item ledger — independent of the " +
+        "brief's own per-member load projection, which is the reading that mis-rendered " +
+        'at-capacity members as idle',
+      kills:
+        'the member already holds an open item → it is AT its concurrency cap, not idle. The ' +
+        'scheduler will refuse it and the wake demands work it is structurally forbidden to ' +
+        'take. Repeat per accused member before waking any of them.',
+    },
     reason:
       `${input.idleMemberCount} member(s) are alive with NO claim and nothing queued while ` +
       `${input.claimableCount} item(s) are claimable under this fleet's own spec right now ` +
@@ -692,13 +836,35 @@ export function computeFloorStarvedFleetAlert(input: {
    *  idle members are complying, and this alert's remedies (clear the floor / widen the
    *  spec / wind the fleet down) are all moot or already done. */
   fleetPaused?: boolean | null;
-}): { reason: string } | undefined {
+  harness?: string | null;
+  fleet?: string | null;
+}): { reason: string; falsifier: AlertFalsifier } | undefined {
   if (input.fleetPaused) return undefined;
   if (input.claimable == null || input.claimable !== 0) return undefined;
   if (input.matchedByFilter == null || input.matchedByFilter <= 0) return undefined;
   if (input.idleMemberCount <= 0) return undefined;
   const floors = topExcludedFloors(input.excluded);
   return {
+    falsifier: {
+      tool: 'work_items:claimable',
+      check: renderFalsifierCall('work_items:claimable', {
+        harness: input.harness,
+        spec: input.fleet,
+        breakdownOnly: true,
+        sampleExcluded: 5,
+      }),
+      // `sampleExcluded` is the row-level companion to the counts. The alert fires on
+      // bucket COUNTS alone, and the holders are not recoverable from a count — so the
+      // ids are new information, not a re-projection. The distinction matters most for
+      // the `taken` bucket, which reads as "gated" but means "being worked".
+      measurement:
+        'the ROW IDENTITIES behind each floor bucket (excludedSample) — the alert fired on ' +
+        'bucket COUNTS alone, from which the held rows and their holders cannot be recovered',
+      kills:
+        'the dominant bucket is `taken` and its sampled rows are held by live, progressing ' +
+        'members → the lane is being WORKED, not gated. Clearing a floor or widening the spec ' +
+        'would be the wrong act; there is nothing to fix.',
+    },
     reason:
       `${input.idleMemberCount} member(s) are alive with NO claim while this fleet's spec matches ` +
       `${input.matchedByFilter} row(s) of which ZERO survive the claim floors ` +
@@ -1423,6 +1589,8 @@ export default defineTool({
       totalLoad,
       parkedCount: summary.parked,
       unownedCriticalCount: unownedCriticals.length,
+      harness: args.harness ?? null,
+      fleet,
     });
     // EI-18655873409999215: the SPEC-STARVED alert — best-effort, fail-soft (a
     // preview error or missing spec must never break the brief). Measures the
@@ -1434,6 +1602,12 @@ export default defineTool({
       claimableCount: fleetClaimableCount,
       idleMemberCount: summary.idle_with_claimable,
       fleetPaused: fleetPause.paused,
+      harness: args.harness ?? null,
+      // The SAME predicate the count above is derived from, so the falsifier can never
+      // name a member the alert is not actually accusing.
+      idleMemberIds: members
+        .filter((m) => m.benchSuggestion?.kind === 'idle-with-claimable')
+        .map((m) => m.agentId),
     });
     // EI-18689489507862177: the GATED-lane twin of the alert above. `idle_with_claimable`
     // is 0 by construction in this state (its bench branch requires claimableCount > 0), so
@@ -1445,8 +1619,10 @@ export default defineTool({
       idleMemberCount: summary.laneless_idle,
       excluded: fleetLaneHealth?.excluded ?? null,
       fleetPaused: fleetPause.paused,
+      harness: args.harness ?? null,
+      fleet,
     });
-    let specStarvedAlert: { reason: string } | undefined;
+    let specStarvedAlert: { reason: string; falsifier: AlertFalsifier } | undefined;
     // WI-5937 acceptance #3: "leader-brief returns spec filter + both counts + per-member
     // doing in one read" — the fleet's OWN active view.filter (so a leader reads WHAT is
     // scoped without a separate scheduler:get_claim_spec round-trip) plus BOTH claimable
@@ -1468,6 +1644,8 @@ export default defineTool({
           totalLoad,
           specMatched: effect.matched,
           poolSize: effect.pool,
+          harness: args.harness ?? null,
+          fleet,
         });
         specFilter = rec.spec.view?.filter ?? null;
         harnessWidePool = effect.pool;

@@ -64,7 +64,12 @@ describe('parseLoopWatchdogSignature', () => {
 
 describe('reconcileDeadLoopEscalations (loop-death watchdog)', () => {
   it('resolves an escalation whose routine is ACTIVE again (a human re-armed it)', async () => {
-    const resolve = vi.fn(async () => ({}) as unknown);
+    // The parameter is declared even though the body ignores it: `vi.fn(async () => …)`
+    // infers a ZERO-arg signature, so `mock.calls[0]` is the empty tuple `[]` and the
+    // `calls[0]?.[0]` assertion below fails to compile with TS2493 ("no element at
+    // index '0'") — a committed tsc red, while vitest itself stays green because it
+    // does not typecheck. Declaring the arg is what makes the call-args assertable.
+    const resolve = vi.fn(async (_escalationId: string) => ({}) as unknown);
     const result = await reconcileDeadLoopEscalations({
       sql: fakeSql([{ id: 'rt-1', active: true }]),
       listOpen: async () => [rec('m1', `${LOOP_DEATH_SIGNATURE_PREFIX}:papercusp:rt-1`)],
