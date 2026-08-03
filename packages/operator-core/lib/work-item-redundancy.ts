@@ -95,12 +95,19 @@ export async function resolveReplicaHiveSlug(workspaceId: string, harnessSlug: s
   }
 }
 
-/** The owner's master switch for BOINC redundancy (P-014). Default OFF. Migrated off the
- *  `PAPERCUSP_WORKITEM_REDUNDANCY` env gate to the `WORKITEM_REDUNDANCY` FLAG
+/** The owner's master switch for BOINC redundancy (P-014). **DEFAULT ON** — graduated out of
+ *  DARK_FLAGS 2026-06-22; `work-item-redundancy.test.ts` asserts the graduation, and
+ *  `FLAG_DEFAULTS[WORKITEM_REDUNDANCY] === true` (measured 2026-08-03). This comment previously
+ *  said "Default OFF … ships DARK, owner-ratified" in two places and the flags registry said
+ *  "DARK (N× model spend)"; all three were stale, and one of them was load-bearing — it was the
+ *  stated justification for the lazy-arm migration below (EI-19448574704459898). Default-ON does
+ *  NOT mean N× spend fleet-wide: the master switch only makes the feature available, and a
+ *  redundant run additionally requires an explicit per-item `work_items:set_redundancy` (≥
+ *  MIN_REDUNDANCY), so an un-opted item still runs single-replica.
+ *  Migrated off the `PAPERCUSP_WORKITEM_REDUNDANCY` env gate to the `WORKITEM_REDUNDANCY` FLAG
  *  (live-configurability-audit-2026-06-20 P-007) — SYNC-cached because the claim-path read is
- *  synchronous (the WORKITEM_CLAIM_LEASE pattern). Refreshed on first use + every flag change;
- *  unloaded ⇒ false (DEFAULT OFF, the safe state). N× model spend → ships DARK, owner-ratified
- *  via /admin/features. (Single-box redundancy uses the local replica authority; the cross-Swarm
+ *  synchronous (the WORKITEM_CLAIM_LEASE pattern). Refreshed on first use + every flag change.
+ *  (Single-box redundancy uses the local replica authority; the cross-Swarm
  *  router install at register-replica-authority-ops boot still reads this at module-load, so a
  *  cross-MACHINE redundancy run wants a restart with the flag on — a noted follow-up.) */
 let redundancyOn = false;
@@ -124,11 +131,27 @@ async function refreshRedundancyFlag(): Promise<void> {
  * is listed there rather than trusted to the lint.
  *
  * The helper's arm kicks one refresh, so the eager boot read is preserved — it now happens on the
- * first reader call instead of at import. Unresolved reads see `false`, which is this feature's
- * DEFAULT OFF safe state (it ships DARK, owner-ratified), so the pre-refresh window degrades to
- * "redundancy not yet enabled", never to an unsafe value.
+ * first reader call instead of at import.
+ *
+ * ⚠ CORRECTED 2026-08-03 (EI-19448574704459898). This paragraph used to justify the window with
+ * "`false` … is this feature's DEFAULT OFF safe state (it ships DARK, owner-ratified)". The flag is
+ * DEFAULT ON and not dark, so that premise was simply false, and "the override has not taken effect
+ * yet" was the wrong frame: the window genuinely serves NON-production behaviour. What actually
+ * makes it acceptable is the CONSEQUENCE, recorded in the declaration below.
  */
-const armFlagRefresh = lazyFlagRefresh(refreshRedundancyFlag, FLAGS.WORKITEM_REDUNDANCY);
+const armFlagRefresh = lazyFlagRefresh(refreshRedundancyFlag, {
+  keys: [FLAGS.WORKITEM_REDUNDANCY],
+  unpopulated: {
+    kind: 'selects-behaviour',
+    serves: 'false → the first claim in a process is admitted without the redundancy master switch',
+    safeBecause:
+      'a claim that misses the switch runs SINGLE-REPLICA — the pre-feature behaviour, and already ' +
+      'the outcome for every item that has not opted in via work_items:set_redundancy. So the ' +
+      'window costs at most one lost N-way comparison per process and self-heals within one refresh ' +
+      'round-trip; it never routes a read at wrong or dead data. Note the DEGRADATION here is toward ' +
+      'LESS model spend, so the window cannot surprise on cost either.',
+  },
+});
 
 export function workItemRedundancyEnabled(): boolean {
   armFlagRefresh(); // first use installs the subscription + kicks the initial read

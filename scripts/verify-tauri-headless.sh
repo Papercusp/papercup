@@ -968,7 +968,6 @@ while :; do
     # wrote a tauri.attempt1.log, and never tried a second port. Checked BEFORE the
     # liveness/timeout probes so a sidecar that died OF this cause routes to the
     # re-pick instead of to a fatal.
-    if port_lost_to_squatter; then PORT_LOST=1; break; fi
     kill -0 "$TAURI_PID" 2>/dev/null || boot_failure_diag "tauri dev exited before the bridge came up"
     [ "$ELAPSED" -ge "$TIMEOUT" ] && boot_failure_diag "bridge did not come up within ${TIMEOUT}s"
     sleep 2; ELAPSED=$((ELAPSED + 2))

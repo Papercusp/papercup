@@ -19,7 +19,19 @@ vi.mock('@papercusp/flags/server', () => ({
   onFlagChange: (cb: (key: string | null) => void) => onFlagChangeMock(cb),
 }));
 
-import { lazyFlagRefresh } from './lazy-flag-refresh';
+import { lazyFlagRefresh, type UnpopulatedState } from './lazy-flag-refresh';
+
+/**
+ * A stand-in for the REQUIRED unpopulated-state declaration (EI-19448574704459898). These runtime
+ * tests are about arming/refresh mechanics, so they use the safest kind; the declaration's own
+ * consistency rules are enforced at the source level by
+ * `scripts/check-no-module-scope-flag-subscribe.mjs`, since they are a property of the CALL SITE's
+ * literal arguments rather than anything observable at runtime.
+ */
+const DECL: UnpopulatedState = {
+  kind: 'gates-an-override-store',
+  serves: 'the baked test default',
+};
 
 const fire = (key: string | null): void => {
   for (const cb of [...subscribers]) cb(key);
@@ -33,7 +45,7 @@ beforeEach(() => {
 describe('arming', () => {
   it('touches the flags surface only when armed, never at construction', () => {
     const refresh = vi.fn();
-    lazyFlagRefresh(refresh, 'my.flag');
+    lazyFlagRefresh(refresh, { keys: ['my.flag'], unpopulated: DECL });
     // Constructing must be inert — this is the property that keeps a caller's IMPORT pure.
     expect(onFlagChangeMock).not.toHaveBeenCalled();
     expect(refresh).not.toHaveBeenCalled();
@@ -41,7 +53,7 @@ describe('arming', () => {
 
   it('subscribes exactly once no matter how many readers arm', () => {
     const refresh = vi.fn();
-    const arm = lazyFlagRefresh(refresh, 'my.flag');
+    const arm = lazyFlagRefresh(refresh, { keys: ['my.flag'], unpopulated: DECL });
     arm();
     arm();
     arm();
@@ -53,7 +65,7 @@ describe('arming', () => {
 
   it('kicks one immediate refresh on the arming call — the boot-reload stand-in', () => {
     const refresh = vi.fn();
-    const arm = lazyFlagRefresh(refresh, 'my.flag');
+    const arm = lazyFlagRefresh(refresh, { keys: ['my.flag'], unpopulated: DECL });
     arm();
     // Without this, a cache whose only other refresh is a 60s timer would serve its default for a
     // full interval after first use, where the old module-scope form got populated at boot.

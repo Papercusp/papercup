@@ -870,14 +870,37 @@ async function checkForNewStashes(slug: string, workspaceId: string, superRepoPa
         FROM harness_shared.routines
        WHERE install_slug = ${slug} AND workspace_id = ${workspaceId} AND target_role = 'system:git-sync'
        LIMIT 1`;
+    // EI-19449313204576061 — THE ROOT CAUSE. `metadata->'known_stash_shas'` returns SQL
+    // NULL when the key has never been written, which is a categorically different fact
+    // from "the baseline was recorded and it was empty". Collapsing both into `[]` made
+    // the FIRST observation report every pre-existing stash as 🚨 NEW — which is exactly
+    // what happened on 2026-08-03, broadcasting two stashes aged 12 and 13 WEEKS to the
+    // whole fleet, with `git stash pop`/`drop` as the implied remedy on a shared tree
+    // holding a peer's 36-file, +2205/-804 stash. The detector never observed those
+    // stashes being created; it inferred "new" from the absence of its own baseline.
+    const baselineRecorded = row !== undefined && row.known !== null && row.known !== undefined;
     const knownShas = Array.isArray(row?.known) ? (row.known as unknown[]).filter((s): s is string => typeof s === 'string') : [];
 
     const allShas: string[] = [];
-    const fresh: { scope: string; sha: string; subject: string }[] = [];
+    const fresh: { scope: string; sha: string; subject: string; createdAt: string }[] = [];
     for (const r of repos) {
       const entries = await listStashEntries(runGit, r.path);
       for (const e of entries) allShas.push(e.sha);
       for (const e of newStashEntries(entries, knownShas)) fresh.push({ scope: r.scope, ...e });
+    }
+
+    // First observation ever: SEED the baseline silently. Anything present now predates
+    // the detector, so there is nothing it can honestly call new.
+    if (!baselineRecorded) {
+      await patchRoutineMetadata(slug, workspaceId, { known_stash_shas: allShas });
+      if (allShas.length > 0) {
+        console.warn(
+          `[git-sync] ${slug}: stash baseline BOOTSTRAPPED with ${allShas.length} pre-existing ` +
+            `entr${allShas.length === 1 ? 'y' : 'ies'} — not alerting (a first observation cannot ` +
+            `establish that anything is new). Future entries will diff against this baseline.`,
+        );
+      }
+      return;
     }
 
     // Persist the CURRENT set every tick (not an ever-growing history) — a stash later

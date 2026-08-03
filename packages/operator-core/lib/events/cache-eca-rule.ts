@@ -69,7 +69,18 @@ async function refreshCacheEca(): Promise<void> {
 // self-healing on the next bump for the same tag; it cannot produce a WRONG value, only a
 // briefly stale cached one. Contrast issues-engineer.ts, whose unpopulated state points at a
 // DEAD partition and is therefore NOT migratable without a boot warm (EI-19448574704459898).
-const armFlagRefresh = lazyFlagRefresh(refreshCacheEca, FLAGS.CACHE_TAG_ECA);
+const armFlagRefresh = lazyFlagRefresh(refreshCacheEca, {
+  keys: [FLAGS.CACHE_TAG_ECA],
+  unpopulated: {
+    kind: 'selects-behaviour',
+    serves: "false → the rule's sync `when` predicate declines, skipping one cache-tag bump",
+    safeBecause:
+      "false is this module's own documented fail-CLOSED state, and the cost of the skip is a single " +
+      'missed cache invalidation that the next matching event re-bumps — a self-healing DEGRADATION, ' +
+      'never a wrong value served to a reader. (The flag is DEFAULT ON, so this window does diverge ' +
+      'from production; what makes it safe is what the off-branch points at, not the flag default.)',
+  },
+});
 
 /** Whether the cache-ECA rule is live (read from the SYNC-cached CACHE_TAG_ECA flag). */
 export function cacheTagEcaEnabled(): boolean {

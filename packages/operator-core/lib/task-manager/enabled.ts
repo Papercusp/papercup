@@ -90,9 +90,20 @@ export function warmTaskManagerFlag(): void {
  *
  * A flip must not require an operator restart to take effect at the sync seams —
  * otherwise "turn it off" is only true for the surfaces that re-read per request.
- * That property is preserved: all three readers arm, and the three spawn modules
- * that import this already call `warmTaskManagerFlag()` at their own module load,
- * so in a live operator the subscription installs exactly as early as before.
+ * That property is preserved because all three readers arm.
+ *
+ * ⚠ CORRECTED 2026-08-03 (EI-19448574704459898). This paragraph used to add "and the
+ * three spawn modules that import this already call `warmTaskManagerFlag()` at their
+ * own module load". They do not: `warmTaskManagerFlag` has ZERO production call sites
+ * — only this file's own post-flip re-warm below and enabled.test.ts. managed-spawn
+ * imports `isTaskManagerEnabled`, enroll-sync imports `taskManagerEnabledSync`, and
+ * neither imports the warm. The claim mattered because two other files cited it as
+ * THE remedy for an unsafe unpopulated state ("give that module an explicit warm call
+ * on a boot path, the way task-manager/enabled.ts does"), sending an agent looking for
+ * a pattern that was never implemented. What actually makes THIS module safe before
+ * its first resolve is the deliberate fail-OPEN default (`cached !== false`), i.e. a
+ * CHOSEN safe fallback — not early warming. `warmTaskManagerFlag` remains exported and
+ * is genuinely used to re-populate after a flip; it is simply not a boot warm.
  *
  * WHY LAZY, and why this is not merely a style choice: an `import { onFlagChange }`
  * whose binding is READ at module scope makes this module unimportable under a

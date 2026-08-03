@@ -275,8 +275,11 @@ export default function MugTab({ active }: { active: boolean }) {
     staleTime: 60_000,
     enabled: active,
   });
-  // A DEDICATED 5-field projection, not the shared plans.list superset
-  // (no-http-anywhere-2026-07-28 D-071).
+  // A DEDICATED 6-field projection (slug/title/status/startStatus/updated/
+  // harness), not the shared plans.list superset
+  // (no-http-anywhere-2026-07-28 D-071). The narrowing is SERVER-side: the
+  // resolver still calls callPlansRead('list', …) and projects, so the saving
+  // is on the wire + in the client cache, NOT in the DB read.
   //
   // ⚠ The `enabled: active` this used to carry was a NO-OP and the comment
   // justifying it was wrong. It claimed "LeftSidebar MOUNTS every tab (only

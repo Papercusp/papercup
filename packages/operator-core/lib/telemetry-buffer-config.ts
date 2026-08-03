@@ -71,7 +71,17 @@ export async function refreshTelemetryBufferConfig(): Promise<void> {
 // FIRST USE, not at import (EI-19416650993725684): the import touches no flag binding at all, so a
 // test that partially mocks `@papercusp/flags/server` can still collect. projected-tool-deps imports
 // this on the hot path, so its reach is wide. See ./lazy-flag-refresh for the mechanism + guards.
-const armFlagRefresh = lazyFlagRefresh(refreshTelemetryBufferConfig, FLAGS.TELEMETRY_BUFFER_CONFIG);
+const armFlagRefresh = lazyFlagRefresh(refreshTelemetryBufferConfig, {
+  keys: [FLAGS.TELEMETRY_BUFFER_CONFIG],
+  unpopulated: {
+    kind: 'gates-an-override-store',
+    serves:
+      'TELEMETRY_BUFFER_DEFAULTS (maxPending 5000 / debounceMs 10 / maxBatch 200) — cachedEnabled ' +
+      'is false, so telemetryBufferConfig() returns the baked constants. The flag is DEFAULT ON, ' +
+      'but it gates only whether a STORED override is honoured, and the store is empty by default ' +
+      '⇒ the window serves exactly what production serves in the normal case.',
+  },
+});
 // D-010 (c): bounded cross-process + restart freshness. .unref() so it never holds the process open.
 // P-008: visible in schedule:inventory as a 'cache' timer (per-process config memo refresh).
 managedSetInterval('config-refresh:telemetry-buffer', 60_000, () => refreshTelemetryBufferConfig(), {

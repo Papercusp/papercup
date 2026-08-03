@@ -269,6 +269,33 @@ describe('recallCorpusContext — the P-017 cascade', () => {
     const res = await recallCorpusContext({ ...base, maxItems: 2 });
     expect(runHybridSearch).toHaveBeenCalledTimes(2); // stage 2 really ran
     expect(res.lines.map((l) => l.handle.ref)).toEqual(['WI-1', 'WI-2']);
+
+    // SELF-PROVING: show the naive merge really does drop WI-1 on this fixture.
+    // Without this, a change that made the fixture non-discriminating would
+    // leave the assertion above passing while guarding nothing.
+    const { selectCorpusLines } = await import('./corpus-recall');
+    const naive = selectCorpusLines({
+      hits: [
+        wi('WI-1'),
+        wi('WI-2', { rankers: ['bm25', 'embeddings'] }),
+        wi('WI-3', { rankers: ['bm25', 'embeddings'] }),
+      ].map((h) => ({
+        source: h.source,
+        sourceId: h.source_id,
+        scope: h.scope,
+        excerpt: h.excerpt,
+        highlight: h.highlight,
+        score: h.score,
+        ts: h.ts,
+        rankers: h.rankers,
+      })),
+      queryText: QUERY,
+      excludeSessionId: null,
+      harnessSlugs: [],
+      maxItems: 2,
+    });
+    expect(naive.lines.map((l) => l.handle.ref)).toEqual(['WI-2', 'WI-3']);
+    expect(naive.dropped).toContainEqual({ ref: 'WI-1', reason: 'cap-exhausted' });
   });
 
   it('stage 2 never re-offers a hit stage 1 already saw (no duplicate lines)', async () => {

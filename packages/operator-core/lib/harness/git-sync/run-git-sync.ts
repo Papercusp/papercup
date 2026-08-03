@@ -614,6 +614,12 @@ export const discoverSubmodulesRecursive = async (
 export interface StashEntry {
   sha: string;
   subject: string;
+  /** Committer date of the stash commit, ISO-8601 (`%cI`), or '' when git omitted it.
+   *  EI-19449313204576061: WITHOUT this the detector can only report "not in my
+   *  baseline", which it then RENDERED as "🚨 NEW" — a conclusion about creation time
+   *  it had never observed. A stash's age is the decisive falsifier and costs one
+   *  extra `--format` token, so it is carried on the entry rather than re-derived. */
+  createdAt: string;
 }
 
 /**
@@ -624,17 +630,65 @@ export interface StashEntry {
  * the other best-effort git-sync primitives in this file.
  */
 export async function listStashEntries(runGit: RunGit, repoPath: string): Promise<StashEntry[]> {
-  const r = await runGit(['stash', 'list', '--format=%H%x1f%s'], repoPath);
+  const r = await runGit(['stash', 'list', '--format=%H%x1f%cI%x1f%s'], repoPath);
   if (r.code !== 0) return [];
   return r.stdout
     .split('\n')
     .map((l) => l.trim())
     .filter(Boolean)
     .map((line) => {
-      const [sha = '', subject = ''] = line.split('\x1f');
-      return { sha, subject };
+      // Subject is LAST and may itself contain the separator in pathological cases —
+      // take the first two fields positionally and rejoin the remainder.
+      const parts = line.split('\x1f');
+      const sha = parts[0] ?? '';
+      const createdAt = parts[1] ?? '';
+      const subject = parts.slice(2).join('\x1f');
+      return { sha, createdAt, subject };
     })
     .filter((e) => e.sha.length > 0);
+}
+
+/** How recent a stash must be for the watchdog to treat it as live, at-risk work.
+ *  git-sync ticks every few minutes, so anything stashed within a day is plausibly a
+ *  current agent's in-flight work (the EI-7685 case the detector exists for); older
+ *  than that is archaeology, and calling it "NEW" is what trained agents to reach for
+ *  `stash pop`/`drop` on a shared tree. */
+export const STASH_RECENT_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Pure: split not-yet-known stash entries into the ones that are genuinely RECENT
+ * (worth an urgent broadcast) and the ones that merely became VISIBLE to the detector
+ * now despite predating it (worth a quiet notice at most).
+ *
+ * EI-19449313204576061: "not in my baseline" and "new" are different claims, and the
+ * detector only ever observed the first. An entry with an unparseable/absent date is
+ * treated as RECENT — fail toward surfacing, never toward silently swallowing a real
+ * stash, since a missed genuine stash is the expensive direction (EI-7685).
+ */
+export function partitionStashEntriesByAge(
+  entries: readonly StashEntry[],
+  nowMs: number,
+  recentWindowMs: number = STASH_RECENT_WINDOW_MS,
+): { recent: StashEntry[]; preExisting: StashEntry[] } {
+  const recent: StashEntry[] = [];
+  const preExisting: StashEntry[] = [];
+  for (const e of entries) {
+    const t = e.createdAt ? Date.parse(e.createdAt) : Number.NaN;
+    if (Number.isNaN(t) || nowMs - t <= recentWindowMs) recent.push(e);
+    else preExisting.push(e);
+  }
+  return { recent, preExisting };
+}
+
+/** Human-readable age for an alarm line — the field whose absence let a 13-week-old
+ *  stash read as an emergency. Returns 'unknown age' when the date is missing. */
+export function describeStashAge(entry: StashEntry, nowMs: number): string {
+  const t = entry.createdAt ? Date.parse(entry.createdAt) : Number.NaN;
+  if (Number.isNaN(t)) return 'unknown age';
+  const days = Math.floor((nowMs - t) / (24 * 60 * 60 * 1000));
+  if (days >= 1) return `created ${entry.createdAt.slice(0, 10)}, ${days}d old`;
+  const hours = Math.floor((nowMs - t) / (60 * 60 * 1000));
+  return `created ${entry.createdAt.slice(0, 10)}, ${hours}h old`;
 }
 
 /** Pure: which of `current`'s stash entries were never in `knownShas` — i.e. genuinely

@@ -101,3 +101,99 @@ describe('EI-18734124566158657 — verify-tauri-headless retries once on a bind-
     expect(loop).toMatch(/bridge did not come up within \$\{TIMEOUT\}s/);
   });
 });
+
+/**
+ * EI-19446616147360269 — the retry above was REACHABLE only if the bridge came up.
+ *
+ * Every assertion in the suite above passes on the broken script, because they all
+ * check what the re-pick branch DOES and none check that control can ever REACH it.
+ * The EADDRINUSE probe sat after the `until grep -q "dev bridge listening"` loop —
+ * but losing the bind is precisely what stops that line from ever being written, so
+ * the loop could only exit via its two boot_failure_diag calls, both `exit 1`. For a
+ * bind-time squatter the retry was dead code.
+ *
+ * Measured 2026-08-03 on the reporter's own artifact (work=/tmp/verify-tauri-headless.6Pb3fG):
+ * `dev bridge listening` appeared 0 times, no tauri.attempt1.log was ever written
+ * (the re-pick renames the log, so its absence proves the branch never ran), and
+ * 0.0.0.0:33700 was the ONLY port the log ever mentioned across ~4 minutes.
+ *
+ * So these pin REACHABILITY and ORDER, not content — the properties whose absence
+ * the sibling assertions could not detect.
+ */
+describe('EI-19446616147360269 — the bind-time re-pick is reachable without the bridge', () => {
+  const waitLoop = (): string => {
+    const body = src.match(/until grep -q "dev bridge listening"[\s\S]*?\n {2}done/)?.[0];
+    expect(body, 'the dev-bridge wait loop must still be findable').toBeTruthy();
+    return body!;
+  };
+  /**
+   * Comments must be stripped before any ORDER assertion: the loop body's own
+   * commentary names both `port_lost_to_squatter` and `boot_failure_diag`, so a raw
+   * indexOf measures PROSE POSITION rather than call order — it read the mention
+   * inside the explanatory comment and failed against correct code. An order guard
+   * that can be satisfied (or broken) by editing a comment is not measuring the fix.
+   */
+  const codeOnly = (s: string): string =>
+    s
+      .split('\n')
+      .filter((l) => !/^\s*#/.test(l))
+      .join('\n');
+
+  it('detects the lost port INSIDE the wait loop, not only after it', () => {
+    expect(codeOnly(waitLoop())).toMatch(/port_lost_to_squatter/);
+  });
+
+  it('checks for the lost port BEFORE the two fatal probes, so a sidecar that died OF it re-picks instead of exiting', () => {
+    const body = codeOnly(waitLoop());
+    const lostIdx = body.indexOf('port_lost_to_squatter');
+    const fatalIdx = body.indexOf('boot_failure_diag');
+    expect(lostIdx).toBeGreaterThan(-1);
+    expect(fatalIdx).toBeGreaterThan(-1);
+    // Order is the whole fix: both boot_failure_diag calls exit 1.
+    expect(lostIdx).toBeLessThan(fatalIdx);
+  });
+
+  it('breaks the wait loop on a lost port so control reaches the existing re-pick branch', () => {
+    expect(waitLoop()).toMatch(/if port_lost_to_squatter; then PORT_LOST=1; break; fi/);
+  });
+
+  it('only trips on the TERMINAL give-up, never on hono-host\'s transient [listen-retry] self-recovery', () => {
+    const fn = src.match(/port_lost_to_squatter\(\) \{([\s\S]*?)\n\}/)?.[1];
+    expect(fn).toBeTruthy();
+    // Requiring the fatal marker is what leaves the 8x1s straggler recovery alone;
+    // matching a bare EADDRINUSE here would abort boots that heal themselves.
+    expect(fn).toMatch(/fatal uncaughtException/);
+    expect(fn).toMatch(/EADDRINUSE/);
+    expect(fn).toMatch(/\$DEV_PORT/);
+
+    // Behavioural proof against the two REAL log lines (verbatim from the reporter's
+    // tauri.log), so this cannot pass on a regex that merely looks plausible.
+    const re = new RegExp(
+      fn!.match(/grep -qE "([^"]+)"/)![1].replace('$DEV_PORT', '33700'),
+    );
+    expect(
+      re.test(
+        '[listen-retry] EADDRINUSE on 0.0.0.0:33700 (attempt 1/8) — retrying in 1000ms (transient-straggler recovery, EI-18734124566158657)',
+      ),
+      'transient listen-retry must NOT trip the re-pick',
+    ).toBe(false);
+    expect(
+      re.test(
+        '[hono-host] fatal uncaughtException — exiting: Error: listen EADDRINUSE: address already in use 0.0.0.0:33700',
+      ),
+      'the terminal give-up MUST trip the re-pick',
+    ).toBe(true);
+  });
+
+  it('surfaces the lost port on the script\'s OWN stdout — a dead boot must not read as a slow one', () => {
+    const loop = src.match(/while :; do\n  BOOT_ATTEMPTS=\$\(\(BOOT_ATTEMPTS \+ 1\)\)([\s\S]*?)\ndone/)?.[1];
+    expect(loop).toMatch(/log "sidecar GAVE UP binding :\$DEV_PORT/);
+  });
+
+  it('still reports "bridge is up" only when the bridge actually came up', () => {
+    const loop = src.match(/while :; do\n  BOOT_ATTEMPTS=\$\(\(BOOT_ATTEMPTS \+ 1\)\)([\s\S]*?)\ndone/)?.[1];
+    // Guards the obvious regression: an unconditional "bridge is up" log after a
+    // loop that can now exit without one.
+    expect(loop).toMatch(/else\n\s*log "bridge is up after \$\{ELAPSED\}s"/);
+  });
+});

@@ -96,7 +96,14 @@ export async function refreshQuotaOverrides(): Promise<void> {
  * module collectable under a partial `@papercusp/flags/server` mock; see ./lazy-flag-refresh for the
  * mechanism, the measured dead-ends, and the two guards that hold it in place.
  */
-const armFlagRefresh = lazyFlagRefresh(refreshQuotaOverrides);
+const armFlagRefresh = lazyFlagRefresh(refreshQuotaOverrides, {
+  unpopulated: {
+    kind: 'not-flag-gated',
+    serves:
+      'the empty override map ⇒ every quota read falls through to its baked literal. No flag ' +
+      'gates this cache at all; the key === null bus reload is used purely as a "refresh now" signal.',
+  },
+});
 // Bounded cross-process + restart freshness. .unref() so it never holds the process (or a test) open.
 // P-008: visible in schedule:inventory as a 'cache' timer (per-process config memo refresh).
 managedSetInterval('config-refresh:quota', 60_000, () => refreshQuotaOverrides(), {

@@ -248,28 +248,6 @@ export default defineTool({
         return { data: { ok: false, runId, root, error: 'route_error', routerOutput: outcome.output.slice(-2000) } };
       }
 
-      // EI-19425177453558152: a `testNamePattern` matching ZERO tests measured NOTHING. The
-      // router now refuses it, but that refusal lands AFTER vitest wrote a (meaningless,
-      // all-skipped) report — so without this branch the run still distills to
-      // `passed:0, failed:0, skipped:N`, whose most natural reading ("nothing failed") is the
-      // false green again, merely one layer down. Name the cause instead: `ok:false` alone,
-      // with `failed:0`, is not a verdict an agent can act on.
-      if (outcome.output.includes('TEST_FILE_NAME_FILTER_NO_MATCH')) {
-        return {
-          data: {
-            ok: false,
-            runId,
-            root,
-            error: 'name_filter_no_match',
-            hint:
-              `testNamePattern ${JSON.stringify(args.testNamePattern ?? '')} matched ZERO tests, so NOTHING was ` +
-              'verified — this is not a pass. The pattern matches a test\'s FULL name (every enclosing `describe` ' +
-              'joined to the `it` text), so a fragment of the `it` alone still matches, but a typo or a stale name ' +
-              'matches nothing. Re-run without testNamePattern to see the real test names.',
-            routerOutput: outcome.output.slice(-2000),
-          },
-        };
-      }
 
       // EI-18822211427354845: the router runs ONE `vitest run` per owning workspace
       // config, so a request spanning several workspaces writes SEVERAL reports —
@@ -298,6 +276,36 @@ export default defineTool({
         reportTexts.map((text) => distillVitestRun(text, root, { maxFailures: args.maxFailures })),
         { maxFailures: args.maxFailures },
       );
+
+      // EI-19425177453558152: a `testNamePattern` matching ZERO tests measured NOTHING, yet every
+      // test is merely SKIPPED and vitest exits 0 — so this used to return a green.
+      //
+      // The router carries its own refusal for this, but it reads vitest's `Tests` summary row
+      // from stdout and THIS tool always passes `--reporter=json`, so no such row exists and the
+      // router's check correctly fails open. That is why the check is repeated here rather than
+      // delegated: at this layer the distilled report gives an EXACT executed count, which is a
+      // strictly better signal than any output parse. (Measured: with only the router's check,
+      // this path still returned ok:true.)
+      //
+      // `skipped` is deliberately not required to be > 0 — the point is that nothing RAN.
+      if (args.testNamePattern && run.passed + run.failed === 0) {
+        return {
+          data: {
+            ok: false,
+            runId,
+            root,
+            error: 'name_filter_no_match',
+            skipped: run.skipped,
+            files: run.files,
+            hint:
+              `testNamePattern ${JSON.stringify(args.testNamePattern)} matched ZERO tests, so NOTHING was ` +
+              `verified — this is NOT a pass (${run.skipped} test(s) were collected and skipped). The pattern ` +
+              "matches a test's FULL name — every enclosing `describe` joined to the `it` text — so a fragment " +
+              'of either matches, but a typo or a stale name matches nothing. Re-run without testNamePattern to ' +
+              'see the real test names.',
+          },
+        };
+      }
       // D-062: bound the payload in BYTES, not entries. `maxFailures` caps the
       // LIST COUNT and so cannot bound bytes at all — one long assertion diff
       // outweighs fifty terse failures, which is how this tool reached 20,569 B

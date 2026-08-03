@@ -177,10 +177,12 @@ describe('testing:run (integration)', () => {
 
     expect(out.ok).toBe(false);
     expect(out.error).toBe('name_filter_no_match');
-    expect(out.routerOutput).toContain('TEST_FILE_NAME_FILTER_NO_MATCH');
     // The reason must be STATED. `ok:false` next to `failed:0` is exactly the shape an agent
     // misreads as "nothing failed", which is how this bug survives one layer down.
     expect(String(out.hint)).toContain('ZERO tests');
+    // The tests really were collected-then-skipped — i.e. this refused a VACUOUS run, it did not
+    // merely fail to find the file (which `route_error` already covers).
+    expect(out.skipped).toBeGreaterThan(0);
   }, 120_000);
 
   // Non-vacuousness for the case above: it would also pass if ANY name filter were refused.

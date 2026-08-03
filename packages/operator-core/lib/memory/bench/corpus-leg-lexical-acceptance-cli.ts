@@ -70,7 +70,7 @@ import {
   selectCorpusLines,
   type CorpusHit,
 } from '../corpus-recall';
-import { corpusRecallTimeoutMs } from '../corpus-recall-io';
+import { corpusRecallTimeoutMs, recallCorpusContext } from '../corpus-recall-io';
 
 const CORPUS_SOURCE_NAMES = ['session_turn', 'work_item'] as const;
 
@@ -333,6 +333,79 @@ function renderShape(r: ShapeReport, boundMs: number): string {
   return L.join('\n');
 }
 
+/**
+ * The SHIPPED leg (P-017 cascade) vs the leg as it stood BEFORE the change.
+ *
+ * The "before" is `lexicalMode: 'and'` — stage 1 alone — which is exactly what
+ * `recallCorpusContext` used to do. The acceptance bar is absolute rather than
+ * statistical: the cascade is additive BY CONSTRUCTION, so a SINGLE lost line
+ * falsifies the implementation, and this is the run that would catch it.
+ */
+async function measureCascade(
+  sql: ReturnType<typeof getOrgPg>['sql'],
+  texts: string[],
+  embedder: Embedder | null,
+): Promise<string> {
+  let n = 0;
+  let lost = 0;
+  let lostQueries = 0;
+  let gained = 0;
+  let beforeZero = 0;
+  let afterZero = 0;
+  const beforeCount: number[] = [];
+  const afterCount: number[] = [];
+  const afterMs: number[] = [];
+
+  for (const text of texts) {
+    const q = corpusQueryText(text);
+    if (!q) continue;
+    n += 1;
+
+    const before = await runArm(sql, q, 'and', embedder);
+    const t0 = Date.now();
+    const after = await recallCorpusContext({
+      queryText: text,
+      workspaceId: WORKSPACE,
+      skipFlagCheck: true,
+    });
+    afterMs.push(Date.now() - t0);
+
+    const afterKeys = after.lines.map((l) => JSON.stringify(l.handle));
+    const afterSet = new Set(afterKeys);
+    const missing = before.admitted.filter((k) => !afterSet.has(k));
+    if (missing.length > 0) {
+      lostQueries += 1;
+      lost += missing.length;
+    }
+    const beforeSet = new Set(before.admitted);
+    gained += afterKeys.filter((k) => !beforeSet.has(k)).length;
+
+    if (before.admitted.length === 0) beforeZero += 1;
+    if (afterKeys.length === 0) afterZero += 1;
+    beforeCount.push(before.admitted.length);
+    afterCount.push(afterKeys.length);
+  }
+
+  const L: string[] = [];
+  L.push(`\n## SHIPPED LEG — cascade vs the pre-P-017 leg (production query shape)  —  n=${n}`);
+  L.push('');
+  L.push('| metric | before (`and` only) | after (cascade) |');
+  L.push('|---|---|---|');
+  L.push(`| empty pointer sections | ${beforeZero} (${pct(beforeZero, n)}) | ${afterZero} (${pct(afterZero, n)}) |`);
+  L.push(`| mean admitted lines | ${mean(beforeCount).toFixed(2)} | ${mean(afterCount).toFixed(2)} |`);
+  L.push(`| leg latency p50 / p95 (ms) | — | ${quantile(afterMs, 0.5)} / ${quantile(afterMs, 0.95)} |`);
+  L.push('');
+  L.push(
+    `- **LINES LOST: ${lost} across ${lostQueries}/${n} queries** ${lost === 0 ? '✓ ADDITIVE — nothing the agent used to see disappeared' : '✗ THE CASCADE IS NOT ADDITIVE — a single loss falsifies it'}`,
+  );
+  L.push(`- lines GAINED: ${gained} (mean ${(gained / Math.max(n, 1)).toFixed(2)}/query)`);
+  const worst = Math.max(...afterMs, 0);
+  L.push(
+    `- worst-case whole-leg latency ${worst}ms against the ${corpusRecallTimeoutMs()}ms bound → ${worst < corpusRecallTimeoutMs() ? '✓ inside' : '✗ OVER BUDGET'}`,
+  );
+  return L.join('\n');
+}
+
 async function main(): Promise<void> {
   const { sql } = getOrgPg();
   const bound = corpusRecallTimeoutMs();
@@ -381,6 +454,8 @@ async function main(): Promise<void> {
     const r = await measureShape(sql, texts, shape, embedder);
     out.push(renderShape(r, bound));
   }
+
+  out.push(await measureCascade(sql, texts, embedder));
 
   out.push('');
   out.push(

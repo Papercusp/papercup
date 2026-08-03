@@ -71,9 +71,23 @@ async function refreshClaimLease(): Promise<void> {
 // lease — which is precisely the documented FAIL-OPEN posture (D-007), with
 // work-item-claim-reconcile.ts (P-005) resolving any double-claim on reconvergence. On a
 // single box the authority is self, so the skipped lease is a local no-op.
-const armFlagRefresh = lazyFlagRefresh(refreshClaimLease, FLAGS.WORKITEM_CLAIM_LEASE);
+const armFlagRefresh = lazyFlagRefresh(refreshClaimLease, {
+  keys: [FLAGS.WORKITEM_CLAIM_LEASE],
+  unpopulated: {
+    kind: 'selects-behaviour',
+    serves: 'false → the claim proceeds WITHOUT taking the cross-Swarm lease',
+    safeBecause:
+      'that is precisely the documented FAIL-OPEN posture (D-007), and work-item-claim-reconcile.ts ' +
+      '(P-005) resolves any resulting double-claim on reconvergence. On a single box the authority ' +
+      'is self, so the skipped lease is a local no-op. It is a self-healing DEGRADATION of at most ' +
+      'one claim per process, never a wrong answer. (The flag is DEFAULT ON — measured, not assumed: ' +
+      'FLAG_DEFAULTS[WORKITEM_CLAIM_LEASE] === true — so this window does diverge from production; ' +
+      'it is the consequence of the divergence that makes it acceptable.)',
+  },
+});
 
-/** The owner's ratification switch (D-008). Default OFF. Read from the SYNC-cached
+/** The owner's ratification switch (D-008). **DEFAULT ON** — measured, not assumed:
+ *  `FLAG_DEFAULTS[WORKITEM_CLAIM_LEASE] === true` (2026-08-03). Read from the SYNC-cached
  *  WORKITEM_CLAIM_LEASE flag (migrated off the PAPERCUSP_WORKITEM_CLAIM_LEASE env gate). */
 export function workItemClaimLeaseEnabled(): boolean {
   armFlagRefresh();

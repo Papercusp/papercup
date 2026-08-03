@@ -64,10 +64,16 @@ export async function refreshCapabilityEnvelopeOverrides(): Promise<void> {
 // any flag-binding read means importing this on the dispatch hot path (projected-tool-deps) never
 // does IO, the getters stay plain cache reads, AND a test that partially mocks
 // `@papercusp/flags/server` can still collect. See ./lazy-flag-refresh for the mechanism + guards.
-const armFlagRefresh = lazyFlagRefresh(
-  refreshCapabilityEnvelopeOverrides,
-  FLAGS.CAPABILITY_ENVELOPE_OVERRIDES,
-);
+const armFlagRefresh = lazyFlagRefresh(refreshCapabilityEnvelopeOverrides, {
+  keys: [FLAGS.CAPABILITY_ENVELOPE_OVERRIDES],
+  unpopulated: {
+    kind: 'gates-an-override-store',
+    serves:
+      'cachedEnabled false + an empty override map ⇒ every role resolves to its baked ROLE_ENVELOPES ' +
+      'literal, byte-identically. The flag is DEFAULT OFF (dark, owner-authority), so the ' +
+      'pre-refresh value is also the production value — there is no divergence window at all.',
+  },
+});
 // D-010 (c): bounded cross-process + restart freshness. .unref() so it never holds the process (or a test) open.
 // P-008: visible in schedule:inventory as a 'cache' timer (per-process config memo refresh).
 managedSetInterval('config-refresh:capability-envelope', 60_000, () => refreshCapabilityEnvelopeOverrides(), {

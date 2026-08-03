@@ -75,7 +75,16 @@ export async function refreshCapabilityTierOverrides(): Promise<void> {
 // a test that partially mocks `@papercusp/flags/server` can still collect. The one reader above is
 // also what the `setCapabilityTierOverride` seam delegates to, so installing the seam at module
 // scope does NOT bypass arming. See ./lazy-flag-refresh for the mechanism + guards.
-const armFlagRefresh = lazyFlagRefresh(refreshCapabilityTierOverrides, FLAGS.AUTH_CONFIG_OVERRIDES);
+const armFlagRefresh = lazyFlagRefresh(refreshCapabilityTierOverrides, {
+  keys: [FLAGS.AUTH_CONFIG_OVERRIDES],
+  unpopulated: {
+    kind: 'gates-an-override-store',
+    serves:
+      'the empty auth-config override set ⇒ every surface uses its baked literal (byte-identical). ' +
+      'The flag is DEFAULT OFF (dark, owner-authority: it can WIDEN the all-gates bypass set), so ' +
+      'the pre-refresh value IS the production value and the window opens nothing up.',
+  },
+});
 // P-008: visible in schedule:inventory as a 'cache' timer (per-process config memo refresh).
 managedSetInterval('config-refresh:capability-tier', 60_000, () => refreshCapabilityTierOverrides(), {
   category: 'cache',

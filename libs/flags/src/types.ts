@@ -737,7 +737,11 @@ export const FLAGS = {
   // it flag-gates both the loadRoleCapabilities grant-union AND the grant/revoke tools.
   CAPABILITY_GRANT_TOOL: "papercusp-capability-grant-tool",
   // live-configurability-audit-2026-06-20 P-007 — BOINC work-item redundancy master switch
-  // (migrated off the PAPERCUSP_WORKITEM_REDUNDANCY env gate). DARK (N× model spend); SYNC-cached
+  // (migrated off the PAPERCUSP_WORKITEM_REDUNDANCY env gate). DEFAULT ON — graduated out of
+  // DARK_FLAGS 2026-06-22 (this comment said "DARK (N× model spend)" until 2026-08-03, contradicting
+  // the derived FLAG_DEFAULTS one file over; EI-19448574704459898). Default-ON is NOT N× spend
+  // fleet-wide: the master switch only makes redundancy AVAILABLE, and a redundant run additionally
+  // requires an explicit per-item work_items:set_redundancy (≥ MIN_REDUNDANCY). SYNC-cached
   // because the claim-path read is synchronous (the WORKITEM_CLAIM_LEASE migration pattern).
   WORKITEM_REDUNDANCY: "papercusp-workitem-redundancy",
   // live-configurability-audit-2026-06-20 P-009 — runtime per-role capability-envelope

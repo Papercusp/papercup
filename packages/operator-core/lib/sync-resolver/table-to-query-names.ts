@@ -172,7 +172,7 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
     // start/pause flipping startStatus must live-refresh the nudge's count,
     // not just the (unrendered, in the default state) plan list.
     'plans.waitingCount',
-    // plans.steerable (D-071) — the Mug steering panel's 5-field plan
+    // plans.steerable (D-071) — the Mug steering panel's 6-field plan
     // projection. Reads harness_plans via callPlansRead('list', ...), same as
     // plans.list and plans.waitingCount above, so it MUST invalidate alongside
     // them: a plan shipped/superseded/archived (or one whose startStatus

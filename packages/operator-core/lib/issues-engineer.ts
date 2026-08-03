@@ -260,11 +260,25 @@ async function refreshIssuesPerWorkspace(): Promise<void> {
 //   The module-scope refresh below is what keeps that window at BOOT (where nothing reads yet)
 //   instead of at the first real read (where every process would hit it once).
 //
-// Per lazy-flag-refresh.ts's "the one behaviour this DOES change" note, a cache like this needs
-// an explicit WARM on a boot path (the way task-manager/enabled.ts does with
-// warmTaskManagerFlag) before it can be migrated. That warm is the unblock condition — same
-// posture as auth-config-overrides.ts, the other BASELINE entry deferred for an unsafe
-// unpopulated state.
+// ⚠ THE UNBLOCK CONDITION RECORDED HERE ON 2026-08-03 WAS WRONG, and is corrected in place rather
+// than deleted so the next agent does not go looking for it again. It read: "a cache like this needs
+// an explicit WARM on a boot path (the way task-manager/enabled.ts does with warmTaskManagerFlag)
+// before it can be migrated." There is no such pattern to copy — `warmTaskManagerFlag` has ZERO
+// production call sites (verified: only its own definition, its post-flip re-warm, and its test).
+// task-manager is safe under lazy arming because it CHOSE a fail-OPEN unpopulated value
+// (`cached !== false`), not because anything warms it early.
+//
+// So the real unblock condition is one of:
+//   (a) make the unpopulated value SAFE — i.e. have resolveIssuesScopeWorkspace fall back to the
+//       ACTIVE workspace rather than DEFAULT_COORD_WORKSPACE while the flag is unresolved, which
+//       matches the flag's held-ON production state and is a semantic change to data routing that
+//       deserves its own work-item and test; or
+//   (b) genuinely warm this on a path that provably runs in EVERY process that resolves issue scope
+//       — and "provably" is the hard part, since a missed process reverts to (the unsafe) case.
+// Until one of those lands, the module-scope refresh below is CORRECT: it keeps the unresolved
+// window at BOOT, where nothing reads yet, instead of at the first real read in every process.
+// Same posture as auth-config-overrides.ts, the other BASELINE entry deferred for an unsafe
+// unpopulated state. Tracked as EI-19448574704459898.
 void refreshIssuesPerWorkspace();
 onFlagChange((key) => {
   if (key === null || key === FLAGS.ISSUES_PER_WORKSPACE) void refreshIssuesPerWorkspace();
