@@ -289,15 +289,38 @@ export default defineTool({
       // ratchet by 2 (pre-existing, from the 2026-07-12 recallFor addition). The body already
       // narrows defensively (`typeof c === 'object'` + `'workItem' in c`), so `unknown` is safe.
       c: unknown,
-    ): { id?: string; title?: string; summary?: string; harness?: string | null } | null =>
+      // `payload` included (superset of the memory-port shape) so the same extraction
+      // also feeds the plan-decisions port below without a second unwrap.
+    ): { id?: string; title?: string; summary?: string; harness?: string | null; payload?: unknown } | null =>
       c && typeof c === 'object'
         ? (('workItem' in c ? (c as { workItem: unknown }).workItem : c) as {
             id?: string;
             title?: string;
             summary?: string;
             harness?: string | null;
+            payload?: unknown;
           })
         : null;
+    // EI-19387745408924340: agent-trap-guards-2026-07-26 P-003b's plan-Decisions brief
+    // was wired at scheduler:get_next ONLY — this self-select compatibility wrapper saw
+    // no governing decisions either. Same fail-soft seam as the memory recall port above
+    // (recallFor); rendered via the shared helper so the note text cannot drift from
+    // scheduler:get_next's / work_items:claim's copies.
+    const planDecisionsFor = async (
+      wi: { payload?: unknown; harness?: string | null } | null,
+    ): Promise<{ decisions: unknown; note: string } | null> => {
+      if (!wi) return null;
+      return import('../../plan-decisions-claim-port')
+        .then(async (m) => {
+          const brief = await m.getClaimTimePlanDecisions({
+            workItem: { payload: wi.payload },
+            harness: wi.harness ?? args.harness,
+            workspaceId: ident.workspaceId,
+          });
+          return brief ? { decisions: brief.decisions, note: m.renderPlanDecisionsNote(brief) } : null;
+        })
+        .catch(() => null);
+    };
 
     const count = args.count ?? 1;
     // Backward-compatible single-item shape when count is omitted/1.
@@ -314,7 +337,21 @@ export default defineTool({
       // idle-park await(s) (best-effort, see cancelClaimableAwaits). Mutually exclusive with holding a claim.
       await cancelClaimableAwaits(assignee).catch(() => 0);
       const memory = await recallFor([wiOf(claimed)]);
-      return { content: [{ type: 'text' as const, text: JSON.stringify(memory ? { ...base, memory } : base) }] };
+      const planDecisionsResult = await planDecisionsFor(wiOf(claimed));
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify({
+              ...base,
+              ...(memory ? { memory } : {}),
+              ...(planDecisionsResult
+                ? { planDecisions: planDecisionsResult.decisions, planDecisionsNote: planDecisionsResult.note }
+                : {}),
+            }),
+          },
+        ],
+      };
     }
 
     // count>1: loop the same atomic claim up to N times, STOPPING at the first miss
@@ -336,8 +373,27 @@ export default defineTool({
     // EI-10541: claimed >=1 item — cancel this agent's stale `work-item:claimable` idle-park await(s).
     await cancelClaimableAwaits(assignee).catch(() => 0);
     const memory = await recallFor(claimed.map((c) => wiOf(c)));
+    // EI-19387745408924340: attach each claimed item's governing plan decisions, same as
+    // the single-claim path above — a batch self-select is otherwise the one claim shape
+    // that never saw this brief even after the fix, since it doesn't reuse the count===1
+    // return branch.
+    const claimedWithDecisions = await Promise.all(
+      claimed.map(async (c) => {
+        const planDecisionsResult = await planDecisionsFor(wiOf(c));
+        return planDecisionsResult
+          ? { ...c, planDecisions: planDecisionsResult.decisions, planDecisionsNote: planDecisionsResult.note }
+          : c;
+      }),
+    );
     return {
-      content: [{ type: 'text' as const, text: JSON.stringify(memory ? { ok: true, claimed, memory } : { ok: true, claimed }) }],
+      content: [
+        {
+          type: 'text' as const,
+          text: JSON.stringify(
+            memory ? { ok: true, claimed: claimedWithDecisions, memory } : { ok: true, claimed: claimedWithDecisions },
+          ),
+        },
+      ],
     };
   },
 });

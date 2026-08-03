@@ -328,7 +328,7 @@ async function claimOne(
     // independent read; no reason to pay a serial round-trip) and is fail-soft for the reason
     // given on readUnresolvedDepBlockers: saying nothing here asserts nothing.
     let checkpointReadFailed = false;
-    const [hint, priorRaw, laneCollision, unresolvedBlockers, premises] = await Promise.all([
+    const [hint, priorRaw, laneCollision, unresolvedBlockers, premises, planDecisionsResult] = await Promise.all([
       getClaimTimeCheckpointHint({
         harness: workItem.harness ?? it.harness ?? null,
         workItemId: it.id,
@@ -356,6 +356,21 @@ async function claimOne(
             workspaceId: identity.workspaceId ?? undefined,
           }),
         )
+        .catch(() => null),
+      // EI-19387745408924340: agent-trap-guards-2026-07-26 P-003b's plan-Decisions
+      // brief was wired at scheduler:get_next ONLY — a by-id claim (this surface)
+      // of a plan-bound item saw no governing decisions at all. Same fail-soft
+      // seam as every other hint above; rendered via the shared helper so the
+      // note text cannot drift from scheduler:get_next's copy.
+      import('../../plan-decisions-claim-port')
+        .then(async (m) => {
+          const brief = await m.getClaimTimePlanDecisions({
+            workItem: { payload: workItem.payload },
+            harness: workItem.harness ?? it.harness ?? null,
+            workspaceId: identity.workspaceId ?? undefined,
+          });
+          return brief ? { decisions: brief.decisions, note: m.renderPlanDecisionsNote(brief) } : null;
+        })
         .catch(() => null),
     ]);
     const blockedWarning = blockedClaimWarning(unresolvedBlockers);
@@ -387,6 +402,9 @@ async function claimOne(
           ...(priorWorkWarn ? { priorWork, priorWorkWarning: priorWorkWarn } : {}),
           ...(laneCollision ? { planItemClaimCollision: laneCollision } : {}),
           ...(premises ? { premises: premises.rendered, premisesNote: premises.note } : {}),
+          ...(planDecisionsResult
+            ? { planDecisions: planDecisionsResult.decisions, planDecisionsNote: planDecisionsResult.note }
+            : {}),
         }
       : {
           ok: true,
@@ -397,6 +415,9 @@ async function claimOne(
           ...(priorWorkWarn ? { priorWork, priorWorkWarning: priorWorkWarn } : {}),
           ...(laneCollision ? { planItemClaimCollision: laneCollision } : {}),
           ...(premises ? { premises: premises.rendered, premisesNote: premises.note } : {}),
+          ...(planDecisionsResult
+            ? { planDecisions: planDecisionsResult.decisions, planDecisionsNote: planDecisionsResult.note }
+            : {}),
         };
   }
   // claimWorkItem returns a bare null for THREE distinct outcomes — re-read + classify.

@@ -741,6 +741,10 @@ export default defineTool({
     // omitted entirely when null (no plan_item, unresolved slug, or zero decisions —
     // the common case for most plans).
     let planDecisions: import('../../plan-decisions-claim-port').ClaimTimePlanDecisionsBrief | null = null;
+    // Rendered alongside planDecisions (same fetch, same dynamic import) via the
+    // shared helper — EI-19387745408924340: extracted so this wording cannot
+    // drift from work_items:claim / claim_next's copies of the same note.
+    let planDecisionsNote: string | null = null;
     // false-premise-in-prescriptive-artifacts-2026-08-02 P-001: the SAME seam, for
     // the item's own load-bearing premises. planDecisions surfaces what OTHERS ruled;
     // this surfaces what THIS item's text assumes — and an unverified absence premise
@@ -753,16 +757,17 @@ export default defineTool({
         title?: string | null;
         summary?: string | null;
       };
-      [planDecisions, premises] = await Promise.all([
+      [[planDecisions, planDecisionsNote], premises] = await Promise.all([
         import('../../plan-decisions-claim-port')
-          .then((m) =>
-            m.getClaimTimePlanDecisions({
+          .then(async (m) => {
+            const brief = await m.getClaimTimePlanDecisions({
               workItem: { payload: wi.payload },
               harness: wi.harness ?? args.harness,
               workspaceId: ident.workspaceId,
-            }),
-          )
-          .catch(() => null),
+            });
+            return [brief, brief ? m.renderPlanDecisionsNote(brief) : null] as const;
+          })
+          .catch(() => [null, null] as const),
         import('../../premises-claim-port')
           .then((m) =>
             m.getClaimTimePremises({
@@ -912,7 +917,7 @@ export default defineTool({
                         // EI-19387745408924340: rendered via the shared helper so
                         // this wording cannot drift from work_items:claim /
                         // claim_next's copies of the same note.
-                        planDecisionsNote: renderPlanDecisionsNoteHelper(planDecisions),
+                        planDecisionsNote: planDecisionsNote as string,
                       }
                     : {}),
                   ...(premises

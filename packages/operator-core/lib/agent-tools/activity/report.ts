@@ -84,6 +84,16 @@ export default defineTool({
   // and fail as a bare `write CONNECTION_CLOSED 127.0.0.1:6432`.
   // See ProjectedTool.skipWorkspaceTx.
   skipWorkspaceTx: true,
+  // EI-19386201256023240: this tool's near-exclusive caller is a per-CLI shell
+  // hook (posttooluse-activity-report.sh / the OMP coord-hook port) that
+  // `json.loads`s the raw result body to read `hook_bundle` — a programmatic
+  // consumer, not a model reading context. The `hook_bundle` payload routinely
+  // exceeds the per-result door (median ~202KB, measured 2026-08-02), and a
+  // door-truncated body plus its prose footer is invalid JSON: the hook's
+  // parse throws and it fails open SILENTLY, dropping the coordination fold
+  // with no error anywhere (64,326 truncated responses/24h, 87% of all door
+  // fires on the box). See ProjectedTool.skipResultDoor.
+  skipResultDoor: true,
   agentRoles: [...SU_ROLES],
   args: z.object({
     /** The reporting worker's coordination identity (PAPERCUSP_SID). */

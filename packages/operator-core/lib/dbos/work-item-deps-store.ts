@@ -88,6 +88,44 @@ export function assertDepEndpointRefForm(endpoint: WorkItemDepEndpoint, role: 'b
   }
 }
 
+/**
+ * EI-19387076313999646 / D-017 (LINK seam half). `resolveDepEndpoint` below closed this gap for
+ * the SYNC seam (`syncWorkItemDepEdges`); the LINK seam (`mirrorWorkItemBlockingEdge`, and by
+ * extension every `work_items:link` / `linkIssue` caller) still trusted the DECLARED kind, so
+ * `{ kind:'feature', ref:'<harness>#WI-9002' }` for an issue-family WI-9002 passed
+ * `assertDepEndpointRefForm` (a pure ref-FORM check that cannot see the target row) and minted a
+ * form-valid but INERT edge — invisible to both blocking floors at once.
+ *
+ * This is that same "decide the kind from the TARGET, not the caller" fix, shaped for a bare
+ * endpoint rather than an (harnessSlug, id) pair: a caller-declared target_kind+target_ref
+ * carries no harness for the id it might be about to mis-file under, so both `engineer_issues`
+ * (issue-family) and `harness_features_consolidated` (feature-family, whose row also carries the
+ * harness_slug needed to build a correctly-qualified ref) are checked here.
+ *
+ * Only 'issue'/'feature' endpoints are resolved — every other coord ObjectRef kind this store's
+ * callers pass through (a plan_item, an event key, a topic) is not a work-item at all, so there
+ * is no family to disagree with.
+ *
+ * ABSENT rows (found under NEITHER relation) are left AS DECLARED, same as `resolveDepEndpoint`'s
+ * "must remain writable" invariant: an edge naming a not-yet-existing or since-deleted blocker
+ * must not become unwritable just because this lookup can't confirm it.
+ */
+async function resolveActualDepEndpoint(endpoint: WorkItemDepEndpoint): Promise<WorkItemDepEndpoint> {
+  if (endpoint.kind !== ISSUE_ENDPOINT_KIND && endpoint.kind !== FEATURE_KIND) return endpoint;
+  const bareId =
+    endpoint.kind === FEATURE_KIND && isQualifiedFeatureRef(endpoint.ref)
+      ? endpoint.ref.slice(endpoint.ref.indexOf('#') + 1)
+      : endpoint.ref;
+  const { sql } = getOrgPg();
+  const issueRows = await sql<{ one: number }[]>`
+    SELECT 1 AS one FROM harness_shared.engineer_issues WHERE issue_id = ${bareId} LIMIT 1`;
+  if (issueRows.length > 0) return { kind: ISSUE_ENDPOINT_KIND, ref: bareId };
+  const featureRows = await sql<{ harness_slug: string }[]>`
+    SELECT harness_slug FROM harness_shared.harness_features_consolidated WHERE feature_id = ${bareId} LIMIT 1`;
+  if (featureRows.length > 0) return { kind: FEATURE_KIND, ref: featureRef(featureRows[0]!.harness_slug, bareId) };
+  return endpoint;
+}
+
 /** Pure coord_links (blocker → blocked) to work_item_deps (blocked → blocker) mapping. */
 export function workItemBlockingEdge(
   blocker: WorkItemDepEndpoint,
@@ -118,7 +156,13 @@ export async function mirrorWorkItemBlockingEdge(
   blocked: WorkItemDepEndpoint,
   opts: { createdBy?: string } = {},
 ): Promise<void> {
-  const edge = workItemBlockingEdge(blocker, blocked);
+  // EI-19387076313999646: resolve BOTH endpoints against their actual target row's family
+  // before writing — closes the link-seam half of D-017 (see resolveActualDepEndpoint above).
+  const [resolvedBlocker, resolvedBlocked] = await Promise.all([
+    resolveActualDepEndpoint(blocker),
+    resolveActualDepEndpoint(blocked),
+  ]);
+  const edge = workItemBlockingEdge(resolvedBlocker, resolvedBlocked);
   if (!edge) return;
   const { sql } = getOrgPg();
   await sql`
@@ -135,14 +179,21 @@ export async function removeMirroredWorkItemBlockingEdge(
   blocker: WorkItemDepEndpoint,
   blocked: WorkItemDepEndpoint,
 ): Promise<void> {
+  // Same resolution as the write path (EI-19387076313999646): an unlink call passing the
+  // ORIGINAL (possibly mis-declared) kind+ref must still find the CORRECTED row that was
+  // actually inserted, or the edge becomes un-removable through this door.
+  const [resolvedBlocker, resolvedBlocked] = await Promise.all([
+    resolveActualDepEndpoint(blocker),
+    resolveActualDepEndpoint(blocked),
+  ]);
   const { sql } = getOrgPg();
   await sql`
     DELETE FROM harness_shared.work_item_deps
      WHERE workspace_id = ${DEFAULT_COORD_WORKSPACE}
-       AND blocked_kind = ${blocked.kind}
-       AND blocked_ref = ${blocked.ref}
-       AND blocker_kind = ${blocker.kind}
-       AND blocker_ref = ${blocker.ref}
+       AND blocked_kind = ${resolvedBlocked.kind}
+       AND blocked_ref = ${resolvedBlocked.ref}
+       AND blocker_kind = ${resolvedBlocker.kind}
+       AND blocker_ref = ${resolvedBlocker.ref}
        AND dep_type = 'blocks'`;
 }
 

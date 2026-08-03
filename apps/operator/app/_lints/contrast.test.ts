@@ -87,15 +87,16 @@ const THEME_FILES: Readonly<Record<string, string | null>> = {
  */
 const ALLOW: ReadonlySet<string> = new Set([]);
 
-function readBlocks(rel: string): Map<string, string> {
+/** Every `--x: value;` custom-property declaration in ANY rule block of
+ * already-comment-stripped CSS text, last-write-wins. Used both for the
+ * global token tables (below) and, per-file, for COMPONENT-LOCAL tokens (see
+ * `collectPairs` — the `--pc-zone-*` pattern this file's own header comment
+ * describes: "the css-tokens lint only resolves a component-local token
+ * INSIDE the file that defines it"). No selector filtering: a local token is
+ * as valid a source as `:root`, and it is exactly the shape this lint used to
+ * be blind to. */
+function extractCustomProps(stripped: string): Map<string, string> {
   const out = new Map<string, string>();
-  let content: string;
-  try {
-    content = readFileSync(join(OPERATOR_ROOT, rel), 'utf-8');
-  } catch {
-    return out; // a clean checkout may not have generated _semantic.css yet
-  }
-  const stripped = content.replace(/\/\*[\s\S]*?\*\//g, '');
   const rule = /([^{}]+)\{([^{}]*)\}/g;
   let m: RegExpExecArray | null;
   while ((m = rule.exec(stripped)) !== null) {
@@ -104,6 +105,16 @@ function readBlocks(rel: string): Map<string, string> {
     while ((d = decl.exec(m[2])) !== null) out.set(d[1].toLowerCase(), d[2].trim());
   }
   return out;
+}
+
+function readBlocks(rel: string): Map<string, string> {
+  let content: string;
+  try {
+    content = readFileSync(join(OPERATOR_ROOT, rel), 'utf-8');
+  } catch {
+    return new Map(); // a clean checkout may not have generated _semantic.css yet
+  }
+  return extractCustomProps(content.replace(/\/\*[\s\S]*?\*\//g, ''));
 }
 
 function tableFor(theme: string): Map<string, string> {
@@ -377,9 +388,10 @@ function cssFiles(): string[] {
   return out;
 }
 
-function collectPairs(): Pair[] {
+function collectPairs(): { pairs: Pair[]; skipped: SkippedPair[] } {
   const tables = Object.fromEntries(Object.keys(THEME_FILES).map((t) => [t, tableFor(t)]));
   const found: Pair[] = [];
+  const skipped: SkippedPair[] = [];
   for (const file of cssFiles()) {
     let content: string;
     try {
@@ -388,6 +400,21 @@ function collectPairs(): Pair[] {
       continue;
     }
     const stripped = content.replace(/\/\*[\s\S]*?\*\//g, '');
+
+    // Component-local tokens declared anywhere in THIS file (e.g. chat-controls.css's
+    // `--pc-zone-fill`/`--pc-zone-label`, defined on `.pc-zone` rather than `:root`)
+    // overlay the global table for pairs found in this file only — mirroring the
+    // real cascade (a local redefinition shadows a same-named global one) and, more
+    // importantly, making resolvable the exact class of pair this lint's own header
+    // comment already documents as file-scoped-only.
+    const localTokens = extractCustomProps(stripped);
+    const fileTables =
+      localTokens.size > 0
+        ? Object.fromEntries(
+            Object.keys(tables).map((t) => [t, new Map([...tables[t], ...localTokens])]),
+          )
+        : tables;
+
     const rule = /([^{}]+)\{([^{}]*)\}/g;
     let m: RegExpExecArray | null;
     while ((m = rule.exec(stripped)) !== null) {
@@ -403,14 +430,35 @@ function collectPairs(): Pair[] {
 
       const need = threshold(body);
       let min = Infinity;
-      for (const theme of Object.keys(tables)) {
-        const fg = resolveToken(cv[1], tables[theme]);
-        const bg = resolveToken(bv[1], tables[theme]);
-        if (!fg || !bg) continue; // color-mix()/rgba()/gradient — not statically resolvable
-        min = Math.min(min, contrastRatio(fg, bg) / need);
+      const reasons = new Set<string>();
+      for (const theme of Object.keys(fileTables)) {
+        const fg = resolveToken(cv[1], fileTables[theme]);
+        const bg = resolveToken(bv[1], fileTables[theme]);
+        if (fg.unresolved) {
+          reasons.add(`${theme}:color:${fg.unresolved.reason}(${fg.unresolved.detail})`);
+          continue;
+        }
+        if (bg.unresolved) {
+          reasons.add(`${theme}:background:${bg.unresolved.reason}(${bg.unresolved.detail})`);
+          continue;
+        }
+        min = Math.min(min, contrastRatio(fg.hex, bg.hex) / need);
       }
-      if (min === Infinity) continue;
       const key = `${selector} :: ${cv[1]} :: ${bv[1]}`;
+      if (min === Infinity) {
+        // Not resolvable in ANY theme — genuinely can't verify this pair.
+        // Recorded (not silently dropped) so a new one is a reviewed diff.
+        if (!ALLOW.has(key)) {
+          skipped.push({
+            file: file.replace(`${APPS_ROOT}/`, ''),
+            selector,
+            colorToken: cv[1],
+            bgToken: bv[1],
+            reasons: [...reasons].sort(),
+          });
+        }
+        continue;
+      }
       if (ALLOW.has(key)) continue;
       found.push({
         file: file.replace(`${APPS_ROOT}/`, ''),
@@ -421,11 +469,11 @@ function collectPairs(): Pair[] {
       });
     }
   }
-  return found;
+  return { pairs: found, skipped };
 }
 
 describe('contrast lint', () => {
-  const pairs = collectPairs();
+  const { pairs, skipped } = collectPairs();
 
   it('every color-on-background token pair clears WCAG AA in every theme', () => {
     const failures = pairs.filter((p) => p.min < 1);
@@ -454,5 +502,20 @@ describe('contrast lint', () => {
     // If the CSS or token files fail to load/parse this drops to 0 and the lint
     // above would vacuously pass. The operator ships well over a dozen such pairs.
     expect(pairs.length).toBeGreaterThan(10);
+  });
+
+  it('tracks every pair the lint could NOT statically verify — a new skip is a reviewed diff, not a silent gap', () => {
+    // EI-19386265666375541: the real bug wasn't just that color-mix() went
+    // unresolved — it's that going unresolved was SILENT, so a pair could ship
+    // sub-AA and nothing noticed. resolveColorExpr now resolves the opaque,
+    // deterministic case; what's left here is genuinely unresolvable (an
+    // operand that depends on paint order this per-rule check can't see:
+    // transparent, currentColor, alpha). That's fine — but it must be VISIBLE.
+    // A snapshot means any NEW skip shows up as a diff someone has to look at,
+    // instead of vanishing into the same silence that caused the original bug.
+    const summary = skipped
+      .map((s) => `${s.file} :: ${s.selector} :: color:${s.colorToken} on background:${s.bgToken}\n    ${s.reasons.join('\n    ')}`)
+      .sort();
+    expect(summary).toMatchSnapshot();
   });
 });

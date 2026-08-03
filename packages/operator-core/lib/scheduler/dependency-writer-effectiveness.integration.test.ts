@@ -270,6 +270,60 @@ describe('the link door (work-items.ts → mirrorWorkItemBlockingEdge) writes EF
     await setIssueStatus('WI-9001', 'resolved');
     expect(await claim()).toBe('WI-9002');
   });
+
+  it('MIS-DECLARED kind: target_kind="feature" naming an issue-family row still gates (EI-19387076313999646 / D-017 link-seam)', async () => {
+    // Reproduces the exact shape the tool surface allows through unchecked: work_items:link
+    // accepts a raw target_kind+target_ref with NO family resolution (only resolveWorkItemRef,
+    // used for target_id, was ever family-correct), so a caller can declare 'feature' for a
+    // target that is actually issue-family. The blocker is real feature-family, so this
+    // exercises linkWorkItem's OWN mirrorWorkItemBlockingEdge call directly, not the issue door
+    // (already covered above, and not the vulnerable path — its src/blocker is always resolved
+    // from a real fetched row; only a caller-declared dst can disagree with the target's family).
+    const ids = await promoteFeatures([{ id: 'P-001', text: 'Feature blocker' }]);
+    const blocker = ids.get('Feature blocker')!;
+    await setFeatureStatus(blocker, 'wip'); // never itself the candidate
+
+    await seedIssue('WI-9002', { createdTs: 200 }); // the dependent — genuinely issue-family
+    expect(await claim()).toBe('WI-9002'); // positive control
+    await db.sql`UPDATE harness_shared.work_items SET taken_by=NULL, status='open' WHERE feature_id='WI-9002'`;
+
+    // THE MIS-DECLARATION: kind claims 'feature', but WI-9002 is issue-family. The ref satisfies
+    // isQualifiedFeatureRef (form-valid), so the pure assertDepEndpointRefForm guard alone would
+    // pass it straight through — exactly the D-017 shape ("form-valid but INERT").
+    const res = await wi.linkWorkItem(blocker, { kind: FEATURE_KIND, ref: featureRef(H, 'WI-9002') }, 'blocks', {
+      harness: H,
+      by: 'su-test',
+    });
+    expect(res).toEqual({ ok: true });
+
+    // The edge is written under the RESOLVED (correct) family — a bare issue ref on the blocked
+    // side — never the caller-declared feature-qualified form, which would gate neither floor.
+    expect(await edges()).toEqual([
+      {
+        blocked_kind: 'issue',
+        blocked_ref: 'WI-9002',
+        blocker_kind: FEATURE_KIND,
+        blocker_ref: featureRef(H, blocker),
+      },
+    ]);
+
+    expect(await claim()).toBeNull(); // THE ASSERTION A ROW COUNT CANNOT MAKE: it actually gates.
+    await setFeatureStatus(blocker, 'passed');
+    expect(await claim()).toBe('WI-9002'); // and releases once the blocker settles.
+    await db.sql`UPDATE harness_shared.work_items SET taken_by=NULL, status='open' WHERE feature_id='WI-9002'`;
+
+    // Unlink through the SAME mis-declared shape must find + remove the corrected row too, or
+    // the edge becomes un-removable through this door (EI-19387076313999646's unlink half).
+    await setFeatureStatus(blocker, 'wip');
+    await wi.linkWorkItem(blocker, { kind: FEATURE_KIND, ref: featureRef(H, 'WI-9002') }, 'blocks', {
+      harness: H,
+      by: 'su-test',
+    });
+    expect(await claim()).toBeNull();
+    await wi.unlinkWorkItem(blocker, { kind: FEATURE_KIND, ref: featureRef(H, 'WI-9002') }, 'blocks', { harness: H });
+    expect(await edges()).toEqual([]);
+    expect(await claim()).toBe('WI-9002');
+  });
 });
 
 // @covers INV-05

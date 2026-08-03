@@ -971,17 +971,78 @@ describe('runGreenCheckpoint', () => {
       expect(line).toContain('real red');
     });
 
-    it('formatGateLineageLine: commits behind, no failing files touched in range — presumptively real', () => {
+    // EI-19390159514676981 / EI-19394456914198611. A real-red presumption needs the
+    // range to be EMPTY, not merely to exclude the failing test files. This fixture
+    // previously asserted the confident wording with the range UNMEASURED, which is
+    // precisely the defect: for any test that polices OTHER files (prompt-weight
+    // budget, NUL/source-integrity lints, claim-door census, tools-md-sync) the fix
+    // lands in the policed SOURCE and the test file is never touched — so an empty
+    // `failingFilesChangedInRange` is the expected shape of an ALREADY-FIXED red.
+    // Measured 2026-08-03 on candidate 060ea000: the line claimed "presumptively a
+    // real red" while all 11 failing files were already green at HEAD.
+    it('formatGateLineageLine: only the range being EMPTY licenses a real-red presumption', () => {
       const lineage: GateLineage = {
         candidate: 'c'.repeat(40),
         tip: 't'.repeat(40),
         commitsBehind: 4,
         failingFilesChangedInRange: [],
+        failingPathsConsidered: 3,
+        rangeFilesChanged: 0, // the range genuinely changed nothing
       };
       const line = formatGateLineageLine(lineage);
       expect(line).toContain('4 commit(s) behind tip');
-      expect(line).toContain('none of the failing files were modified');
-      expect(line).toContain('presumptively a real red');
+      expect(line).toContain('nothing at all changed in that range');
+      expect(line).toContain('a real red');
+    });
+
+    it('formatGateLineageLine: range changed OTHER files — UNDETERMINED, not a real red', () => {
+      const lineage: GateLineage = {
+        candidate: 'c'.repeat(40),
+        tip: 't'.repeat(40),
+        commitsBehind: 4,
+        failingFilesChangedInRange: [],
+        failingPathsConsidered: 3,
+        rangeFilesChanged: 12, // the fix may well be in one of these
+      };
+      const line = formatGateLineageLine(lineage);
+      expect(line).toContain('skew UNDETERMINED');
+      expect(line).toContain('12 other file(s) did');
+      expect(line).toContain('re-run each failing file at tip');
+      // The false-confidence phrasing must be GONE, not merely softened.
+      expect(line).not.toContain('presumptively a real red');
+    });
+
+    // EI-19393306381214544: `extractFailingTests` also emits bare workspace NAMES
+    // (`@papercusp/web`), which can never match a changed FILE. With no path-shaped
+    // entry there was nothing to intersect, so the empty result compared NOTHING.
+    it('formatGateLineageLine: no path-shaped failing entry — the empty match is vacuous', () => {
+      const lineage: GateLineage = {
+        candidate: 'c'.repeat(40),
+        tip: 't'.repeat(40),
+        commitsBehind: 4,
+        failingFilesChangedInRange: [],
+        failingPathsConsidered: 0,
+      };
+      const line = formatGateLineageLine(lineage);
+      expect(line).toContain('no failing entry was path-shaped');
+      expect(line).toContain('skew UNDETERMINED');
+      expect(line).not.toContain('presumptively a real red');
+    });
+
+    // A legacy/unmeasured record must degrade to UNDETERMINED, never be upgraded to
+    // confidence — absence of a measurement is not evidence that the range was empty.
+    it('formatGateLineageLine: an UNMEASURED range never reads as a real red', () => {
+      const lineage: GateLineage = {
+        candidate: 'c'.repeat(40),
+        tip: 't'.repeat(40),
+        commitsBehind: 4,
+        failingFilesChangedInRange: [],
+        failingPathsConsidered: 2,
+        // rangeFilesChanged deliberately absent
+      };
+      const line = formatGateLineageLine(lineage);
+      expect(line).toContain('skew UNDETERMINED');
+      expect(line).not.toContain('presumptively a real red');
     });
 
     it('formatGateLineageLine: commits behind, failing files touched in range — presumptively stale', () => {
@@ -1018,15 +1079,20 @@ describe('runGreenCheckpoint', () => {
       expect(line).not.toContain('presumptively a real red');
     });
 
-    it('formatGateLineageLine: an empty submodulesUnexpanded still reads as a real red', () => {
+    it('formatGateLineageLine: an empty submodulesUnexpanded does not by itself downgrade the verdict', () => {
+      // The submodule leg is only ONE of the ways confidence is withheld; with it empty
+      // the verdict falls through to the range check, which here IS empty — so this
+      // still reads as a real red, on the range evidence rather than by default.
       const lineage: GateLineage = {
         candidate: 'c'.repeat(40),
         tip: 't'.repeat(40),
         commitsBehind: 4,
         failingFilesChangedInRange: [],
         submodulesUnexpanded: [],
+        failingPathsConsidered: 2,
+        rangeFilesChanged: 0,
       };
-      expect(formatGateLineageLine(lineage)).toContain('presumptively a real red');
+      expect(formatGateLineageLine(lineage)).toContain('a real red');
     });
 
     it('formatGateLineageLine: a matched file still wins, but an unreadable submodule is disclosed', () => {

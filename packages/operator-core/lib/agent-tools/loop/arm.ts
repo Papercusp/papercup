@@ -47,6 +47,102 @@ import { refreshControlAnchorAfterMutation } from '../coordination/control-ancho
 
 const MAX_LOOP_INTERVAL_SEC = 60 * 60 * 24 * 7; // 7 days — beyond this, use a schedule (a fixed clock), not a loop
 
+/**
+ * EI-19395290807657827 — the SELF-SEALING BACKOFF. An agent's only backoff lever is a
+ * longer interval, but a longer interval is exactly what removes its ability to observe
+ * the blocker CLEARING: the wider you set it because you are blocked, the longer you keep
+ * sleeping after you stop being blocked. Nothing in the loop re-evaluates the premise the
+ * interval was chosen under.
+ *
+ * Measured 2026-08-03 on fleet nonp2p-bug-drain-0801: FIVE members re-armed at a ~2 HOUR
+ * interval inside a 32-SECOND window — the clustering proving it was one shared reaction
+ * (an 8h-red gate), not five independent judgments. The gate was fixed and re-fired by
+ * 01:54Z; they would have slept until 03:58Z regardless. Cost: ~9 agents x ~1h idle
+ * against 70 claimable items, on a fleet whose entire mission was draining that queue.
+ * Only an external actor (the leader, hand-waking all 10) broke it — none were dead, all
+ * were merely asleep on a timer. The persona already says "restore the cadence the instant
+ * the blocker clears", but that is UNACTIONABLE from inside a sleeping agent: restoring
+ * requires a wake, and the wake is precisely what was postponed.
+ *
+ * The fix makes the persona's own push-beats-polling rule enforceable, via an INCENTIVE
+ * rather than a refusal — name the blocker's event and keep your long interval (the clear
+ * pushes a wake); name no event and the interval is CAPPED, because an agent that cannot
+ * be pushed must at least poll often enough to notice. Either way the premise is written
+ * into the KICKOFF, which is re-delivered on every wake, so the next wake re-checks the
+ * specific condition instead of silently inheriting it.
+ */
+const BLOCKED_INTERVAL_CAP_SEC = 15 * 60;
+
+/** What the caller declared it is blocked on, when it widened the interval. */
+export interface LoopBlockedOn {
+  reason: string;
+  event?: string;
+}
+
+export interface BlockedBackoffResolution {
+  /** The interval to actually arm — capped when the backoff has no push channel. */
+  intervalSec: number;
+  /** True when the cap was applied (i.e. the requested interval was reduced). */
+  clamped: boolean;
+  /** Advisory line for the response, or null when nothing needs saying. */
+  note: string | null;
+  /**
+   * Premise text to inject into the KICKOFF so it is re-delivered on EVERY wake. This is
+   * the actual auto-restore mechanism: the sleeping agent cannot re-read this tool's
+   * response, but it always re-reads its wake prompt.
+   */
+  wakePremise: string | null;
+}
+
+/**
+ * PURE: resolve a blocker-motivated interval. Omitting `blockedOn` preserves the exact
+ * pre-existing behaviour (no cap, no note, no premise), so no existing call site changes.
+ */
+export function resolveBlockedBackoff(
+  requestedIntervalSec: number,
+  blockedOn?: LoopBlockedOn | null,
+): BlockedBackoffResolution {
+  if (!blockedOn) {
+    return { intervalSec: requestedIntervalSec, clamped: false, note: null, wakePremise: null };
+  }
+
+  // A named event means the CLEAR can push a wake, so a long interval is no longer
+  // self-sealing — the timer is a backstop, not the only way back. Honour it as passed.
+  if (blockedOn.event) {
+    return {
+      intervalSec: requestedIntervalSec,
+      clamped: false,
+      note:
+        `⏸ Backoff recorded: blocked on "${blockedOn.reason}" — interval honoured as ${requestedIntervalSec}s because you named the clearing event \`${blockedOn.event}\`. ` +
+        `NOW ACTUALLY PARK ON IT: events:await { event: '${blockedOn.event}', timeout_sec, on_timeout: 'wake' } — naming the event here does NOT register the await, and an unparked long interval is the self-sealing backoff this field exists to prevent (EI-19395290807657827).`,
+      wakePremise:
+        `You widened this loop's interval because you were BLOCKED ON: "${blockedOn.reason}". ` +
+        `RE-CHECK THAT PREMISE FIRST, before anything else — it may have cleared while you slept. ` +
+        `It should push a wake via \`${blockedOn.event}\`; if it has cleared, RESTORE your normal cadence immediately (re-arm without blockedOn) rather than continuing at the widened interval.`,
+    };
+  }
+
+  // No event to be pushed by ⇒ the timer is the ONLY way back, so it must stay short
+  // enough to notice a clear. Cap rather than refuse: backing off is legitimate, and a
+  // refusal would just push agents back to the un-annotated widening this replaces.
+  const capped = Math.min(requestedIntervalSec, BLOCKED_INTERVAL_CAP_SEC);
+  const clamped = capped < requestedIntervalSec;
+  return {
+    intervalSec: capped,
+    clamped,
+    note: clamped
+      ? `⏸ Backoff recorded: blocked on "${blockedOn.reason}". Interval CAPPED ${requestedIntervalSec}s → ${capped}s ` +
+        `because you named no clearing event, so nothing can push you a wake and the timer is your only way back — a wider interval would just mean sleeping longer AFTER the blocker clears (EI-19395290807657827). ` +
+        `To keep a longer interval, pass blockedOn.event with the events:catalog key that fires on the clear (events:catalog lists them) and park on it with events:await.`
+      : `⏸ Backoff recorded: blocked on "${blockedOn.reason}". Interval ${capped}s is within the ${BLOCKED_INTERVAL_CAP_SEC}s cap for a backoff with no clearing event.`,
+    wakePremise:
+      `You widened this loop's interval because you were BLOCKED ON: "${blockedOn.reason}". ` +
+      `RE-CHECK THAT PREMISE FIRST, before anything else — it may have cleared while you slept. ` +
+      `No clearing event was named, so NOTHING will push you a wake: this timer is the only way you find out. ` +
+      `If it has cleared, RESTORE your normal cadence immediately (re-arm without blockedOn).`,
+  };
+}
+
 /** Cosmetic short form for an overridden owner id (display only, never keyed
  *  on) — mirrors resolveAgentIdentity's own `shortId` formatting so an
  *  ownerId-override loop's label reads the same as a self-armed one. */
@@ -205,6 +301,25 @@ export default defineTool({
       .describe(
         'Seconds AFTER each turn settles before the next wake (≥60). IN AUTO MODE the DEFAULT is 60 (a 1-minute cadence) unless the owner specifies otherwise — only lengthen it when the loop is genuinely blocked on a slower-moving dependency (a deploy, a long gate suite), and restore 1m the moment it clears, because a multi-minute loop is indistinguishable from a dead one to an owner watching for progress. The true period is interval + up-to-30s (the turn-settle is observed on the 30s reconcile tick), so sub-minute is not supported.',
       ),
+    blockedOn: z
+      .object({
+        reason: z
+          .string()
+          .min(1)
+          .max(500)
+          .describe('What you are blocked on, in one line (e.g. "green gate red 8h, blocking every deploy").'),
+        event: z
+          .string()
+          .max(200)
+          .optional()
+          .describe(
+            "The events:catalog key that fires when this blocker CLEARS. Name it and your interval is honoured as-passed, because the clear PUSHES a wake instead of you waiting out the timer — then actually park on it (events:await { event, timeout_sec, on_timeout:'wake' }). Omit it and the interval is CAPPED to 15min: an agent that cannot be pushed must poll often enough to notice.",
+          ),
+      })
+      .optional()
+      .describe(
+        'Pass this WHENEVER you are lengthening the interval because you are BLOCKED (rather than because the work is genuinely slow-moving) — EI-19395290807657827. It records WHY the interval was widened so the premise is re-checked on the next wake instead of silently inherited, caps a blocker-motivated interval that has no push channel, and lets a fleet leader see "N members backed off for X, which cleared M minutes ago".',
+      ),
     goal: softText(4000, { min: 1 })
       .describe('One line: what this loop is working toward — echoed into every wake. Auto-truncated to 4000 chars if longer.'),
     harness: z
@@ -332,6 +447,12 @@ export default defineTool({
     const goal = clampText(args.goal, 4000);
     const wakePrompt = clampText(args.wakePrompt, 4000);
 
+    // EI-19395290807657827 — resolve a blocker-motivated interval BEFORE it is threaded
+    // into the kickoff / overwrite-note / materializeLoop, so every downstream consumer
+    // sees the interval that is actually armed rather than the one that was requested.
+    const backoff = resolveBlockedBackoff(args.intervalSec, args.blockedOn ?? null);
+    const intervalSec = backoff.intervalSec;
+
     // EI-18792078711601844 — read the prior loop this arm is about to UPSERT over
     // BEFORE computing carry, so a re-arm with `carry` omitted can PRESERVE it
     // instead of silently recomputing a fresh default. loop:arm is an upsert keyed
@@ -427,7 +548,7 @@ export default defineTool({
       wakePrompt ??
       buildLoopWakePrompt({
         ownerId,
-        intervalSec: args.intervalSec,
+        intervalSec: intervalSec,
         harness,
         goal,
         carry,
@@ -447,7 +568,7 @@ export default defineTool({
     // filed bug, not a hard refusal.
     let overwriteNote: LoopOverwriteNote | null = null;
     try {
-      overwriteNote = computeLoopOverwriteNote(prior, { goal, intervalSec: args.intervalSec, kickoff });
+      overwriteNote = computeLoopOverwriteNote(prior, { goal, intervalSec: intervalSec, kickoff });
     } catch (e) {
       console.warn(
         `[loop:arm] overwrite-note compute failed (loop still armed): ${e instanceof Error ? e.message : e}`,
@@ -458,7 +579,7 @@ export default defineTool({
       workspaceId,
       harnessSlug: harness,
       ownerId,
-      intervalSec: args.intervalSec,
+      intervalSec: intervalSec,
       kickoff,
       costCapCents: args.costCapCents ?? null,
       maxFires: args.maxFires ?? null,
@@ -505,8 +626,8 @@ export default defineTool({
       reachability && !reachability.reachable
         ? `⚠ Armed, but NOT wake-reachable: ${reachability.warning ?? reachability.summary} The loop row exists, but fires will NOT reach you as a fresh turn until this is fixed (re-arm from a managed/console/psu-hosted session). loop:status shows live reachability; loop:end stops it.`
         : reachability && reachability.warning
-          ? `Armed (wake path: ${reachability.channel}). ⚠ ${reachability.warning} End your turn — the engine re-wakes ~${args.intervalSec}s after each turn settles. Stop with loop:end.`
-          : `Armed (wake path: ${reachability?.channel ?? 'unverified'}). End your turn — the engine will re-wake this session ~${args.intervalSec}s after each turn settles. Stop anytime with loop:end.`;
+          ? `Armed (wake path: ${reachability.channel}). ⚠ ${reachability.warning} End your turn — the engine re-wakes ~${intervalSec}s after each turn settles. Stop with loop:end.`
+          : `Armed (wake path: ${reachability?.channel ?? 'unverified'}). End your turn — the engine will re-wake this session ~${intervalSec}s after each turn settles. Stop anytime with loop:end.`;
 
     // WI-2429 fix A — surface the auto-claim outcome so the arming agent sees it took (or
     // why it didn't). A conflict/not-found never fails the arm; it's an advisory tail.
@@ -570,7 +691,7 @@ export default defineTool({
               ownerId,
               ownerLabel,
               harness,
-              intervalSec: args.intervalSec,
+              intervalSec: intervalSec,
               goal,
               carry,
               continuation: args.continuation ?? 'settle',

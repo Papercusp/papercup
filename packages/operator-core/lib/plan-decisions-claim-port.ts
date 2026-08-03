@@ -13,16 +13,17 @@
  * (./memory/claim-port), which attach at exactly the same seam for the same
  * reason.
  *
- * ⚠ WIRED AT `scheduler:get_next` ONLY. This header used to claim
- * "(scheduler:get_next / work_items:claim / work_items:claim_next)" — that was
- * FALSE AS BUILT and stayed false long enough to mislead a plan written against
- * it (false-premise-in-prescriptive-artifacts-2026-08-02 P-001, whose item text
- * asserted both surfaces inline the decisions brief). `work_items:claim` carries
- * the checkpoint / prior-work / lane-collision hints and `claim_next` carries the
- * memory recall port, but NEITHER calls this one, so a by-id claim of a
- * plan-bound item sees no governing decisions at all. The gap is filed
- * separately; do not read the sibling-hint list at those call sites as evidence
- * this one is among them.
+ * WIRED AT ALL THREE claim surfaces — `scheduler:get_next`,
+ * `work_items:claim`, and `work_items:claim_next` (EI-19387745408924340, fixed
+ * 2026-08-03). This header used to claim all three while the port was actually
+ * wired at `scheduler:get_next` ONLY, which stayed false long enough to mislead
+ * a plan written against it (false-premise-in-prescriptive-artifacts-2026-08-02
+ * P-001, whose item text asserted both surfaces inline the decisions brief).
+ * The rendered `planDecisionsNote` text is shared verbatim across all three via
+ * `renderPlanDecisionsNote` below, so it cannot drift the way the WIRING itself
+ * just had — see each call site for its own fail-soft join into that surface's
+ * parallel hint batch (checkpoint / prior-work / lane-collision / premises for
+ * `claim`; the memory recall port for `claim_next`).
  *
  * Fail-soft by contract, like those two ports: a lookup miss, an unresolved
  * plan slug, or a parse error degrades to `null` — this is decoration on a

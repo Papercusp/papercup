@@ -679,6 +679,67 @@ export class PgThreadStore implements ThreadableStore {
     }));
   }
 
+  /**
+   * The LAST `limit` posts of a thread, plus the thread's TOTAL post count, in ONE query.
+   *
+   * ── WHY NOT `listPosts(id).slice(-3)` ──────────────────────────────────────
+   * `listPosts` is unbounded by design — it backs a full thread render. A cell
+   * resolver runs on a hot read path, so pulling a 121-post thread (the largest
+   * in this workspace as of 2026-08-03) to display 3 is the serial/over-fetch
+   * anti-pattern CLAUDE.md's performance doc lists. This is index-scoped to the
+   * window and stops there.
+   *
+   * ── WHY THE COUNT RIDES THE SAME QUERY ─────────────────────────────────────
+   * `total` MUST come from the same snapshot as the rows. A second round-trip can
+   * be overtaken by a concurrent post and yield `shown: 3, total: 2` — a count
+   * that indicts the very messages printed beside it. `COUNT(*) OVER ()` is
+   * evaluated over the whole filtered set BEFORE `LIMIT`, so one scan yields both
+   * and they cannot disagree.
+   *
+   * ── WHY NOT `coord_threads.post_count` ─────────────────────────────────────
+   * That denormalized header is bumped by `addPost` locally, but a FEDERATED post
+   * is applied by the coord-thread-post projection, which explicitly does NOT bump
+   * it — the count rides the separate thread-header projection instead (see
+   * sync/hyperbee/projections/coord-thread.ts). The two converge but are not
+   * guaranteed equal at any instant, and `total` is a number a reader trusts to
+   * decide whether they have seen the whole story. Counting the rows that actually
+   * back the messages cannot drift from them by construction. Measured 2026-08-03
+   * on this workspace: 5,220 threads with posts, ZERO disagreeing — so preferring
+   * the row count costs nothing today and cannot quietly start lying later.
+   *
+   * `limit` is clamped to >= 1: `LIMIT 0` would drop the window-function row too,
+   * taking `total` with it.
+   */
+  async listRecentPosts(threadId: string, limit: number): Promise<{ posts: ThreadPostRow[]; total: number }> {
+    await this.opts.ensureSchema();
+    const sql = this.opts.getSql();
+    const take = Math.max(1, Math.floor(limit));
+    const rows = await sql<
+      { id: string | number; thread_id: string; author_id: string | null; body: string; created_at: unknown; total: string | number }[]
+    >`
+      SELECT id, thread_id, author_id, body, created_at, COUNT(*) OVER () AS total
+        FROM harness_shared.coord_thread_posts
+       WHERE workspace_id = ${this.ws} AND thread_id = ${threadId}
+       ORDER BY id DESC
+       LIMIT ${take}`;
+    // No rows ⇒ the thread has no posts (or does not exist). Both are a genuine
+    // ZERO, not an unmeasured value — an unreadable store throws instead.
+    if (rows.length === 0) return { posts: [], total: 0 };
+    // The window is read newest-first so the LIMIT can stop early; hand it back
+    // OLDEST-FIRST, which is the order a reader consumes a conversation in.
+    const posts = rows
+      .slice()
+      .reverse()
+      .map((r) => ({
+        id: Number(r.id),
+        thread_id: r.thread_id,
+        author_id: r.author_id,
+        body: r.body,
+        created_ts: tsToIso(r.created_at),
+      }));
+    return { posts, total: Number(rows[0].total) };
+  }
+
   async getThreadByParent(parent: ObjectRef): Promise<ThreadRow | null> {
     await this.opts.ensureSchema();
     const sql = this.opts.getSql();

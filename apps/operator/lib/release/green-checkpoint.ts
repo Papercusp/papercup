@@ -1197,6 +1197,30 @@ export interface GateLineage {
    *  (EI-19365565179927273). Non-empty ⇒ part of the range is UNKNOWN, so an empty
    *  `failingFilesChangedInRange` must NOT be read as "nothing changed". */
   submodulesUnexpanded?: string[];
+  /**
+   * TOTAL files changed in `candidate..tip` (superproject + expanded submodules) —
+   * the denominator the real-red presumption actually needs (EI-19390159514676981 /
+   * EI-19394456914198611).
+   *
+   * `failingFilesChangedInRange` being empty means only "no FAILING TEST FILE was
+   * touched". For every test that polices OTHER files — the prompt-weight budget,
+   * the NUL/source-integrity lints, the claim-door census, tools-md-sync — the fix
+   * lands in the POLICED SOURCE and the test file is never touched, so the answer is
+   * structurally always empty and the line printed its highest confidence exactly
+   * where the red was most likely already dead.
+   *
+   * 0 ⇒ the range genuinely changed nothing, the ONLY case that licenses a real-red
+   * presumption. >0 with no failing-file match ⇒ UNDETERMINED. Undefined ⇒ not
+   * measured (legacy record) — also UNDETERMINED, never an upgrade to confidence.
+   */
+  rangeFilesChanged?: number;
+  /**
+   * How many failing entries were PATH-shaped, i.e. actually matchable
+   * (EI-19393306381214544). `extractFailingTests` also emits bare workspace NAMES
+   * (`@papercusp/web`), which can never match a changed FILE — so when this is 0 the
+   * empty intersection is VACUOUS (nothing was compared), not evidence of anything.
+   */
+  failingPathsConsidered?: number;
 }
 
 /**
@@ -1233,14 +1257,27 @@ export interface GateLineage {
  */
 export function matchFailingFilesToChanged(failing: string[], changed: string[]): string[] {
   const out = new Set<string>();
-  for (const f of failing) {
-    // `@papercusp/web` is a workspace name, not a path — never a changed FILE.
-    if (!f || f.startsWith('@')) continue;
+  for (const f of pathShapedFailing(failing)) {
     for (const c of changed) {
       if (c === f || c.endsWith(`/${f}`)) out.add(c);
     }
   }
   return [...out];
+}
+
+/**
+ * The failing entries that are PATH-shaped, i.e. matchable against a changed FILE.
+ * `extractFailingTests` also emits bare workspace NAMES (`@papercusp/web`), which can
+ * never equal a path — so a run whose failures are all workspace names has NOTHING to
+ * intersect, and the resulting empty match is vacuous rather than informative
+ * (EI-19393306381214544).
+ *
+ * Exported and used BY `matchFailingFilesToChanged` itself so the count the verdict
+ * reports and the set it matches can never drift apart.
+ */
+export function pathShapedFailing(failing: string[]): string[] {
+  // `@papercusp/web` is a workspace name, not a path — never a changed FILE.
+  return failing.filter((f) => !!f && !f.startsWith('@'));
 }
 
 /** Pure formatter — the ONE line the verdict leads with. Kept separate from the
@@ -1255,12 +1292,28 @@ export function formatGateLineageLine(lineage: GateLineage): string {
   // when the whole range was actually readable. If a submodule's pin moved and we could
   // not diff inside it, the honest verdict is UNDETERMINED — an agent acting on a false
   // "real red" goes and "fixes" already-correct files (EI-19365565179927273).
+  // A real-red presumption is a claim about the WHOLE range, so it may only be made
+  // when the range was fully readable AND there was something to compare AND nothing
+  // in it could plausibly carry the fix. Each fallthrough below is a case where the
+  // old wording asserted "presumptively a real red" on evidence that cannot support it.
+  const considered = lineage.failingPathsConsidered;
+  const rangeChanged = lineage.rangeFilesChanged;
   const discriminator =
     changed.length > 0
       ? `${changed.length} of the failing file(s) were MODIFIED in that range (presumptively STALE — re-verify at tip before re-diagnosing from scratch): ${changed.join(', ')}`
       : unexpanded.length > 0
         ? `no superproject file matched, but ${unexpanded.length} submodule(s) moved in that range and could not be diffed (skew UNDETERMINED — re-verify at tip before treating this as a real red): ${unexpanded.join(', ')}`
-        : `none of the failing files were modified in that range (presumptively a real red)`;
+        : considered === 0
+          ? // EI-19393306381214544: the failing entries were all bare workspace NAMES, so
+            // there was never a path to intersect. An empty match here compared nothing.
+            `no failing entry was path-shaped (only workspace names), so nothing could be matched against the range — skew UNDETERMINED, re-verify at tip`
+          : rangeChanged == null || rangeChanged > 0
+            ? // EI-19390159514676981 / EI-19394456914198611: the range DID change files,
+              // just not the failing TEST files. For any test that polices other files the
+              // fix lands in the policed source, so this is the expected shape of an
+              // ALREADY-FIXED red — not evidence of a real one.
+              `none of the failing TEST files changed, but ${rangeChanged ?? 'an unmeasured number of'} other file(s) did — a test that polices OTHER files (a budget/lint/census ratchet) is fixed in the file it polices, not in itself, so this is skew UNDETERMINED: re-run each failing file at tip before diagnosing`
+            : `nothing at all changed in that range (a real red — the range is empty, so there is nothing downstream that could have fixed it)`;
   const caveat =
     changed.length > 0 && unexpanded.length > 0
       ? ` [also unreadable: ${unexpanded.join(', ')}]`
@@ -1283,9 +1336,13 @@ export async function computeGateLineage(
     if (tip === candidate) {
       return { candidate, tip, commitsBehind: 0, failingFilesChangedInRange: [] };
     }
+    // Only PATH-shaped failures can be intersected with a diff; a run whose failures
+    // are all bare workspace names has nothing to compare, so skip the (expensive)
+    // recursive diff AND record that we never measured it.
+    const considered = pathShapedFailing(failingTests);
     const [commits, changed] = await Promise.all([
       commitsBetween(repo, candidate, tip),
-      failingTests.length > 0
+      considered.length > 0
         ? changedFilesRecursive(repo, candidate, tip)
         : Promise.resolve<RangeChangeSet>({ files: [], unexpandedSubmodules: [] }),
     ]);
@@ -1303,6 +1360,10 @@ export async function computeGateLineage(
       // upstream lets the (already correct) suffix matcher work unchanged.
       failingFilesChangedInRange: matchFailingFilesToChanged(failingTests, changed.files),
       submodulesUnexpanded: changed.unexpandedSubmodules,
+      failingPathsConsidered: considered.length,
+      // Left UNDEFINED when the diff was skipped, so the formatter reports UNDETERMINED
+      // rather than inferring "the range was empty" from a measurement never taken.
+      rangeFilesChanged: considered.length > 0 ? changed.files.length : undefined,
     };
   } catch {
     return null;

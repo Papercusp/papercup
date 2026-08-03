@@ -356,6 +356,23 @@ defineTool({
 // here would collide (ToolRegistrationError). We assert only that the GATE doesn't deny it
 // (no workspace_forbidden); the handler's own arg-validation result is irrelevant.
 
+// EI-19386035445533031: a `defineTool`-based probe with a genuinely CLOSED arg
+// shape (strictArgs — EI-10883), unlike the `registerProjectedTool` probes
+// above which declare `additionalProperties: true` and so can never reproduce
+// the bug (an unknown key never fails their schema in the first place).
+const invokeProbeSeen: unknown[] = [];
+defineTool({
+  name: 'gatingtest:invoke_target',
+  requirePrincipal: false,
+  capability: 'agent_tools:read',
+  args: z.object({ probe: z.string().optional() }),
+  agentRoles: ['scoper'],
+  handler: async (input) => {
+    invokeProbeSeen.push(input);
+    return { lines: ['alpha', 'beta', 'gamma'] };
+  },
+});
+
 afterAll(() => {
   unregisterProjectedToolsForPlugin('gating-matrix-test');
 });
@@ -437,6 +454,7 @@ beforeEach(() => {
   h.storedReplay = null;
   h.invocations.length = 0;
   h.scopedClampFlag.value = false;
+  invokeProbeSeen.length = 0;
   delete process.env.PAPERCUSP_REQUIRE_SPAWN_SIG;
   _resetVerifiedSpawns(); // every case reuses spawn='spawn-1' — isolate the real verified-spawn tracker per test
 });
@@ -502,6 +520,48 @@ describe('projection — the caller-specified reduction stage at the dispatch la
     const res = await callTool('gatingtest:scoped', { probe: 'v' }, scoped('ws-test'));
     expect(textOf(res)).toBe('gatingtest:scoped-ok');
     expect(res._meta?.resultProjection).toBeUndefined();
+  });
+});
+
+/* ─── projection through the tools:invoke re-dispatch path (EI-19386035445533031) ── */
+//
+// The result-door footer tells a caller whose result overflowed to nest
+// `projection` inside `args`: `tools:invoke({ name, args: { ..., projection } })`.
+// The top-level dispatch strip above (the `projection — the caller-specified …`
+// describe block) only ever sees `projection` as a SIBLING of `name`/`args` on
+// the OUTER tools:invoke call, so it does nothing here — the re-dispatch closure
+// (`dispatchTool` in _mcp-handler.ts) must do its own strip+apply, or the target
+// tool's closed-shape validator (EI-10883) rejects `projection` as an unknown key.
+
+describe('tools:invoke re-dispatch — `projection` nested in the target call\'s `args`', () => {
+  const scoped = (ws: string) => superuserExtra(`&workspace=${ws}`);
+  const invokeCall = (targetArgs: Record<string, unknown>, ws = 'ws-test') =>
+    callTool('tools:invoke', { name: 'gatingtest:invoke_target', args: targetArgs }, scoped(ws));
+
+  it('strips `projection` before the TARGET tool\'s own (closed-shape) validator sees it', async () => {
+    const res = await invokeCall({ probe: 'v', projection: { pipe: [{ op: 'head', n: 1 }] } });
+    expect(res.isError).not.toBe(true);
+    expect(invokeProbeSeen).toEqual([{ probe: 'v' }]);
+  });
+
+  it('applies the projection to the re-dispatched result, same as a direct call', async () => {
+    const res = await invokeCall({ projection: { pick: ['lines[0]'] } });
+    expect(res.isError).not.toBe(true);
+    expect(JSON.parse(textOf(res))).toEqual({ lines: ['alpha'] });
+  });
+
+  it('an INVALID nested projection fails CLOSED — the target tool is never dispatched', async () => {
+    const res = await invokeCall({ projection: { pipe: [{ op: 'grep', pattern: '[[:digit:]]' }] } });
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toContain('projection_invalid');
+    expect(invokeProbeSeen).toEqual([]); // never reached the target tool
+  });
+
+  it('no `projection` arg leaves the re-dispatched result byte-identical', async () => {
+    const res = await invokeCall({ probe: 'v' });
+    expect(res.isError).not.toBe(true);
+    expect(invokeProbeSeen).toEqual([{ probe: 'v' }]);
+    expect(JSON.parse(textOf(res))).toEqual({ lines: ['alpha', 'beta', 'gamma'] });
   });
 });
 
