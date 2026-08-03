@@ -47,6 +47,14 @@
  * module was built to prevent.
  */
 
+import {
+  probePlanSlugs,
+  summarisePlanSlugLeg,
+  type PlanRecord,
+  type PlanSlugLegReport,
+  type PlanSlugOptions,
+} from './plan-slug-leg';
+
 /** One distinctive term from an idea that WAS found in the tree. */
 export interface CodeExistenceMatch {
   /** The term as extracted from the idea text. */
@@ -141,6 +149,20 @@ export interface CodeExistenceReport {
    * so these resolve FIRST and are reported before any retrieval leg.
    */
   assertedPriorArt?: AssertedPriorArt[];
+
+  /**
+   * PLAN-SLUG leg — plans whose SLUG overlaps the idea's vocabulary. Reported in
+   * its own nested shape, deliberately never merged into `matches` or `semantic`.
+   *
+   * Independent of every other leg by construction: it searches plan NAMES rather
+   * than code, which is the only leg that can bridge an idea phrased as a CONDITION
+   * to an implementation named for its MECHANISM. See `plan-slug-leg.ts` for the
+   * worked case (`orphaned-dispatch.ts`, which symbol-grep provably misses).
+   *
+   * `undefined` = not configured. A configured-but-failed leg reports
+   * `searched: false` INSIDE this object — never read that as "no plan covers this".
+   */
+  planSlugs?: PlanSlugLegReport;
 }
 
 /** A prior-art reference the idea's own text names outright. */
@@ -166,6 +188,14 @@ export interface CodeSearchDeps {
    * Omit to skip the leg entirely (`semanticSearched` stays undefined).
    */
   searchSemantic?(text: string): Promise<SemanticPriorArtMatch[]>;
+  /**
+   * OPTIONAL fifth leg — candidate plans to score by SLUG overlap. Omit to skip the
+   * leg entirely (`planSlugs` stays undefined).
+   *
+   * ⚠ An implementation reading `harness_shared.harness_plans` MUST scope on BOTH
+   * `workspace_id` AND `harness_slug` — that table is multi-tenant.
+   */
+  searchPlans?(text: string): Promise<PlanRecord[]>;
 }
 
 export interface CodeExistenceOptions {
@@ -188,6 +218,8 @@ export interface CodeExistenceOptions {
   selfId?: string;
   /** Max semantic matches retained (default 5). */
   maxSemanticMatches?: number;
+  /** Options for the plan-slug leg (thresholds, caps). See `plan-slug-leg.ts`. */
+  planSlug?: PlanSlugOptions;
 }
 
 const DEFAULTS = {
@@ -403,6 +435,16 @@ export async function probeCodeExistence(
     }
   }
 
+  // Leg 5 — plan slugs. Independent of the lexical leg by construction (it reads
+  // plan NAMES, not code), so it runs even when term extraction yields nothing,
+  // and it is carried into EVERY return path below. `probePlanSlugs` fails open
+  // internally, so no try/catch is needed here.
+  let planSlugs: PlanSlugLegReport | undefined;
+  if (deps.searchPlans) {
+    const searchPlans = deps.searchPlans.bind(deps);
+    planSlugs = await probePlanSlugs(text, { searchPlans }, opts.planSlug);
+  }
+
   if (candidates.length === 0) {
     // ZERO-WORK FALSE GREEN — do not "simplify" this back to `searched: true`.
     //
@@ -425,6 +467,7 @@ export async function probeCodeExistence(
       semanticSearched,
       selfIdHits,
       assertedPriorArt,
+      planSlugs,
     };
   }
 
@@ -445,6 +488,7 @@ export async function probeCodeExistence(
         semanticSearched,
         selfIdHits,
         assertedPriorArt,
+        planSlugs,
       };
     }
     if (!files || files.length === 0) continue;
@@ -463,7 +507,16 @@ export async function probeCodeExistence(
     return a.fileCount - b.fileCount;
   });
 
-  return { terms, matches, searched: true, semantic, semanticSearched, selfIdHits, assertedPriorArt };
+  return {
+    terms,
+    matches,
+    searched: true,
+    semantic,
+    semanticSearched,
+    selfIdHits,
+    assertedPriorArt,
+    planSlugs,
+  };
 }
 
 /**
@@ -475,9 +528,18 @@ export async function probeCodeExistence(
  * explicitly warns against bulk-closing on a shared premise.
  */
 export function summariseCodeExistence(report: CodeExistenceReport): string {
+  // The plan-slug leg is CONTEXT ONLY — it is appended to whatever verdict the
+  // high-precision legs reach, and never returned on its own or ahead of them.
+  // A slug overlap is a token-count inference with unmeasured precision, exactly
+  // like the lexical leg that was already demoted for the same reason.
+  const planNote = report.planSlugs ? ` | ${summarisePlanSlugLeg(report.planSlugs)}` : '';
+
   // Leg 3 first: a file naming the item's own id is the strongest single signal.
   if (report.selfIdHits && report.selfIdHits.length > 0) {
-    return `LIKELY ALREADY IMPLEMENTED — source cites this item's own id: ${report.selfIdHits.join(', ')}`;
+    return (
+      `LIKELY ALREADY IMPLEMENTED — source cites this item's own id: ${report.selfIdHits.join(', ')}` +
+      planNote
+    );
   }
 
   // Leg 4 next: the filing NAMED its own prior art. An assertion, not an inference,
@@ -492,7 +554,7 @@ export function summariseCodeExistence(report: CodeExistenceReport): string {
   const namedIds = (report.assertedPriorArt ?? []).filter((a) => a.kind === 'work-item-id');
   if (namedIds.length > 0) {
     const refs = namedIds.slice(0, 4).map((a) => a.ref).join(', ');
-    return `AUTHOR NAMES PRIOR ART (resolve these first): ${refs}`;
+    return `AUTHOR NAMES PRIOR ART (resolve these first): ${refs}` + planNote;
   }
 
   const semanticNote =
@@ -507,7 +569,8 @@ export function summariseCodeExistence(report: CodeExistenceReport): string {
   if (!report.searched) {
     return (
       `lexical probe UNAVAILABLE (${report.unavailableReason ?? 'unknown'}) — this is NOT evidence of absence` +
-      semanticNote
+      semanticNote +
+      planNote
     );
   }
   const strong = report.matches.filter((m) => m.strength === 'strong');
@@ -516,11 +579,11 @@ export function summariseCodeExistence(report: CodeExistenceReport): string {
       report.matches.length === 0
         ? `no existing surface found for ${report.terms.length} probed term(s)`
         : `only ubiquitous vocabulary matched (${report.matches.length}) — weak signal`;
-    return lex + semanticNote;
+    return lex + semanticNote + planNote;
   }
   const top = strong
     .slice(0, 3)
     .map((m) => `${m.term} (${m.fileCount} file${m.fileCount === 1 ? '' : 's'}, e.g. ${m.examples[0]})`)
     .join('; ');
-  return `possible existing surface — ${top}` + semanticNote;
+  return `possible existing surface — ${top}` + semanticNote + planNote;
 }

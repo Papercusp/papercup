@@ -407,3 +407,80 @@ describe('semantic leg — kept SEPARATE from the lexical leg', () => {
     expect(report.semantic).toHaveLength(3);
   });
 });
+
+describe('plan-slug leg (leg 5)', () => {
+  const PLAN = { slug: 'self-improvement-consume-edges-2026-06-12', status: 'shipped' };
+  const CONSUMER_IDEA = 'Monitoring signals fire but bind no acting consumer.';
+
+  it('stays undefined when the dep is not configured — never a fabricated empty', async () => {
+    const report = await probeCodeExistence(EI_7303_BODY, { search: async () => [] });
+    expect(report.planSlugs).toBeUndefined();
+  });
+
+  it('reports matches in its OWN field, never unioned into matches or semantic', async () => {
+    const report = await probeCodeExistence(CONSUMER_IDEA, {
+      search: async () => [],
+      searchPlans: async () => [PLAN],
+    });
+    expect(report.planSlugs?.searched).toBe(true);
+    expect(report.planSlugs?.planMatches.map((m) => m.slug)).toEqual([PLAN.slug]);
+    // The separation that keeps each leg's precision measurable.
+    expect(report.matches).toEqual([]);
+    expect(report.semantic).toBeUndefined();
+  });
+
+  it('survives a lexical outage — the legs are independent', async () => {
+    const report = await probeCodeExistence(CONSUMER_IDEA, {
+      search: async () => {
+        throw new Error('git grep down');
+      },
+      searchPlans: async () => [PLAN],
+    });
+    expect(report.searched).toBe(false); // lexical is out...
+    expect(report.planSlugs?.searched).toBe(true); // ...plan leg still answered
+    expect(report.planSlugs?.planMatches).toHaveLength(1);
+  });
+
+  it('survives the zero-terms early return — the leg is carried on EVERY path', async () => {
+    // Text with no greppable vocabulary: the lexical leg never calls its backend,
+    // and that early return must not drop the plan leg's answer on the floor.
+    const report = await probeCodeExistence('signals fire but bind no acting consumer', {
+      search: async () => [],
+      searchPlans: async () => [PLAN],
+    });
+    expect(report.searched).toBe(false);
+    expect(report.unavailableReason).toMatch(/never called/);
+    expect(report.planSlugs?.planMatches).toHaveLength(1);
+  });
+
+  it('fails open when the plan backend throws, without disturbing the lexical leg', async () => {
+    const report = await probeCodeExistence(EI_7303_BODY, {
+      search: async () => ['a.ts'],
+      searchPlans: async () => {
+        throw new Error('plan store unreachable');
+      },
+    });
+    expect(report.planSlugs?.searched).toBe(false);
+    expect(report.planSlugs?.planMatches).toEqual([]);
+    expect(report.searched).toBe(true);
+  });
+
+  it('appends to the summary as CONTEXT — it never becomes the verdict', async () => {
+    // A self-id hit is a high-precision leg and must keep the headline; the plan
+    // leg may only add to it. Reversing this would let a token-overlap inference
+    // outrank the strongest signal the screen has.
+    const report = await probeCodeExistence(
+      CONSUMER_IDEA,
+      {
+        search: async () => ['packages/operator-core/lib/orphaned-dispatch.ts'],
+        searchPlans: async () => [PLAN],
+      },
+      { selfId: 'EI-9999' },
+    );
+    expect(report.selfIdHits).toBeDefined(); // the high-precision leg did fire
+    const summary = summariseCodeExistence(report);
+    expect(summary.startsWith('LIKELY ALREADY IMPLEMENTED')).toBe(true);
+    expect(summary).toContain('plan-slug leg');
+    expect(summary).toContain(PLAN.slug);
+  });
+});

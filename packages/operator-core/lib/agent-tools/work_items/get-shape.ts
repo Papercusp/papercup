@@ -61,8 +61,24 @@ const DEGRADATION_LADDER = {
 } as const;
 
 const FIELD_CAPS = {
-  trimmed: { title: 160, summary: 0, warning: 300, lifecycleEvents: 4, checkpointMin: 400 },
-  standard: { title: 300, summary: 400, warning: 600, lifecycleEvents: 10, checkpointMin: 800 },
+  trimmed: {
+    title: 160,
+    summary: 0,
+    warning: 300,
+    lifecycleEvents: 4,
+    checkpointMin: 400,
+    citedFacts: 3,
+    citedExcerpt: 120,
+  },
+  standard: {
+    title: 300,
+    summary: 400,
+    warning: 600,
+    lifecycleEvents: 10,
+    checkpointMin: 800,
+    citedFacts: 6,
+    citedExcerpt: 240,
+  },
 } as const;
 
 type WorkItemsGetTier = keyof typeof FIELD_CAPS;
@@ -117,6 +133,41 @@ function stubRow(r: Row, caps: FieldCaps): Row {
   };
 }
 
+/**
+ * EI-19465127338264010. The prose fact-citation warning. Its `note` + counts are
+ * the finding and are KEPT WHOLE (small, and they are what a reader must act on);
+ * the per-key `excerpt`s are the bulk — valuable (they hand back the body of a
+ * decayed authority) but capped here, since ten 160-char excerpts across a
+ * hundred rows is exactly the blow-up this file's ladder exists to prevent.
+ *
+ * Never silently: a capped list says so via `citedTruncated` in-band AND lands in
+ * the shared `dropped` set, so `_shapeNote` names it too.
+ */
+function projectCitedFacts(raw: unknown, caps: FieldCaps, dropped: Set<string>): unknown {
+  if (!raw || typeof raw !== "object") return raw ?? null;
+  const cf = raw as Row;
+  const cited = Array.isArray(cf.cited) ? cf.cited : [];
+  const kept = cited.slice(0, caps.citedFacts).map((c) => {
+    if (!c || typeof c !== "object") return c;
+    const e = c as Row;
+    return {
+      ...e,
+      ...(typeof e.excerpt === "string" ? { excerpt: clip(e.excerpt, caps.citedExcerpt) } : {}),
+    };
+  });
+  if (cited.length > caps.citedFacts) dropped.add("citedFacts.cited");
+  return {
+    dangling: cf.dangling ?? null,
+    decayed: cf.decayed ?? null,
+    ...(cf.truncated ? { truncated: cf.truncated } : {}),
+    note: cf.note ?? null,
+    cited: kept,
+    ...(cited.length > caps.citedFacts
+      ? { citedTruncated: { shown: kept.length, total: cited.length } }
+      : {}),
+  };
+}
+
 function projectRow(r: Row, caps: FieldCaps, checkpointChars: number, dropped: Set<string>): Row {
   if (r.ok === false) return r; // an error row is already tiny and self-describing
 
@@ -166,6 +217,7 @@ function projectRow(r: Row, caps: FieldCaps, checkpointChars: number, dropped: S
       : {}),
     // Conditional "read before acting" warnings this tool's `returns` promises.
     ...(r.priorWorkWarning ? { priorWorkWarning: clip(r.priorWorkWarning, caps.warning) } : {}),
+    ...(r.citedFacts ? { citedFacts: projectCitedFacts(r.citedFacts, caps, dropped) } : {}),
     ...(r.planItemBlocked ? { planItemBlocked: r.planItemBlocked } : {}),
     ...(r.planItemClaimCollision ? { planItemClaimCollision: r.planItemClaimCollision } : {}),
     ...(r.holder ? { holder: r.holder } : {}),

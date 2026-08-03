@@ -34,6 +34,7 @@ import {
   type CodeExistenceOptions,
   type SemanticPriorArtMatch,
 } from './code-existence-probe';
+import type { PlanSlugMatch } from './plan-slug-leg';
 
 /**
  * Cosine-DISTANCE threshold for single-linkage clustering.
@@ -195,6 +196,13 @@ export interface ClusterScreenRow {
    * leg's precision stays measurable instead of blended.
    */
   semanticHits: SemanticPriorArtMatch[];
+  /**
+   * PLAN-SLUG leg — plans whose slug overlaps a member's vocabulary. Kept SEPARATE
+   * like every other leg, and CONTEXT ONLY: `decideVerdict` does not receive this
+   * field, so the leg structurally cannot drive a verdict (see `plan-slug-leg.ts`
+   * for why a token-overlap inference must not).
+   */
+  planSlugHits: PlanSlugMatch[];
 
   /** Days since filing, across the cluster. */
   premiseAgeDays: { oldest: number; newest: number };
@@ -352,6 +360,7 @@ export function aggregateReports(
     | 'selfIdHits'
     | 'lexicalHits'
     | 'semanticHits'
+    | 'planSlugHits'
     | 'retrievalRan'
   >,
   never
@@ -365,9 +374,18 @@ export function aggregateReports(
   const selfIdHits = new Set<string>();
   const lexical = new Map<string, AggregatedLexicalHit>();
   const semantic = new Map<string, SemanticPriorArtMatch>();
+  const planSlugs = new Map<string, PlanSlugMatch>();
   let retrievalRan = false;
 
   for (const r of reports) {
+    // NOTE: the plan-slug leg deliberately does NOT set `retrievalRan`.
+    //
+    // `retrievalRan` licenses reading an empty result as "nothing exists", and the
+    // plan leg searches plan NAMES, not code — so it cannot support that reading.
+    // Letting it flip the flag would let a cluster be GREENLIT (i.e. absence
+    // asserted) on the strength of a search that never looked at an implementation.
+    // A check that ran over a DIFFERENT corpus must not stand in for the one that
+    // did not run at all.
     if (r.searched) retrievalRan = true;
 
     for (const a of r.assertedPriorArt ?? []) {
@@ -407,6 +425,11 @@ export function aggregateReports(
       const prev = semantic.get(s.ref);
       if (!prev || s.score > prev.score) semantic.set(s.ref, s);
     }
+
+    for (const p of r.planSlugs?.planMatches ?? []) {
+      const prev = planSlugs.get(p.slug);
+      if (!prev || p.score > prev.score) planSlugs.set(p.slug, p);
+    }
   }
 
   return {
@@ -420,6 +443,16 @@ export function aggregateReports(
         a.term.localeCompare(b.term),
     ),
     semanticHits: [...semantic.values()].sort((a, b) => b.score - a.score).slice(0, maxSemantic),
+    // Shipped plans first — an in-flight or superseded plan is intent, not code
+    // (WI-9476 defect #4, "abandoned is not built", re-applied to plan status).
+    planSlugHits: [...planSlugs.values()]
+      .sort(
+        (a, b) =>
+          (a.statusClass === b.statusClass ? 0 : a.statusClass === 'implemented' ? -1 : 1) ||
+          b.score - a.score ||
+          a.slug.localeCompare(b.slug),
+      )
+      .slice(0, maxSemantic),
     retrievalRan,
   };
 }
@@ -639,6 +672,12 @@ export function summariseClusterRow(row: ClusterScreenRow): string {
     bits.push(`ABANDONED (not built): ${row.assertedAbandonedIds.join('/')}`);
   }
   if (row.selfIdHits.length > 0) bits.push(`self-id: ${row.selfIdHits.length}`);
+  const shippedPlans = row.planSlugHits.filter((p) => p.statusClass === 'implemented');
+  if (shippedPlans.length > 0) {
+    // Labelled `(ctx)` like the lexical leg, and named as a READ instruction:
+    // a shipped plan whose name overlaps is a place to look, not a verdict.
+    bits.push(`plan(ctx) READ: ${shippedPlans.map((p) => p.slug).join('/')}`);
+  }
   const strong = row.lexicalHits.filter((h) => h.strength === 'strong');
   if (strong.length > 0) bits.push(`lexical(ctx): ${strong.map((h) => h.term).join('/')}`);
   if (row.semanticHits.length > 0) bits.push(`semantic: ${row.semanticHits.length}`);

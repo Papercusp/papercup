@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  SCREEN_OWN_MODULES,
   createGitGrepDeps,
   gitGrepFiles,
   isEvidencePath,
@@ -71,6 +72,45 @@ describe('isEvidencePath — every exclusion is a measured false positive', () =
     expect(isEvidencePath('packages/operator-core/lib/scout/idea-cluster-screen.ts')).toBe(false);
     expect(isEvidencePath('packages/operator-core/lib/scout/idea-cluster-screen.test.ts')).toBe(false);
     expect(isEvidencePath('packages/operator-core/lib/scout/code-existence-probe.ts')).toBe(false);
+    expect(isEvidencePath('packages/operator-core/lib/scout/plan-slug-leg.ts')).toBe(false);
+    expect(isEvidencePath('packages/operator-core/lib/scout/plan-slug-leg.test.ts')).toBe(false);
+  });
+
+  it('excludes EVERY module named in SCREEN_OWN_MODULES, source and test', () => {
+    for (const mod of SCREEN_OWN_MODULES) {
+      expect(isEvidencePath(`packages/operator-core/lib/scout/${mod}.ts`)).toBe(false);
+      expect(isEvidencePath(`packages/operator-core/lib/scout/${mod}.test.ts`)).toBe(false);
+    }
+  });
+
+  it('RECURRENCE GUARD: every file participating in the screen is listed', async () => {
+    // Defect #3's re-arming mechanism is an OMISSION, which no assertion about
+    // the current list can catch. So this reads the tree instead: any lib/scout
+    // module that imports a screen module is part of the screen, and its own
+    // citations of an idea id are examples — it MUST be excluded from evidence.
+    //
+    // If this fails on a file you just added: add its basename to
+    // SCREEN_OWN_MODULES. If the file genuinely uses the probe to IMPLEMENT
+    // something rather than to screen, say so here explicitly — do not widen the
+    // regex, which would hide a real implementation from the evidence path.
+    const dir = new URL('.', import.meta.url);
+    const { readdir, readFile } = await import('node:fs/promises');
+    const screenImports = SCREEN_OWN_MODULES.map((m) => `from './${m}'`);
+
+    const participants: string[] = [];
+    for (const entry of await readdir(dir)) {
+      if (!entry.endsWith('.ts') || entry.endsWith('.d.ts')) continue;
+      const base = entry.replace(/\.(test|integration\.test)?\.?ts$/, '').replace(/\.test$/, '');
+      const src = await readFile(new URL(entry, dir), 'utf8');
+      if (screenImports.some((imp) => src.includes(imp))) participants.push(base);
+    }
+
+    const unlisted = [...new Set(participants)].filter(
+      (b) => !(SCREEN_OWN_MODULES as readonly string[]).includes(b),
+    );
+    expect(unlisted).toEqual([]);
+    // Calibration: the guard is actually looking at something.
+    expect(participants.length).toBeGreaterThan(0);
   });
 
   it('keeps OTHER scout files admissible — the exclusion is surgical, not a blanket', () => {

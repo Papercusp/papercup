@@ -110,6 +110,144 @@ describe('clusterIdeas', () => {
   });
 });
 
+describe('aggregateReports — plan-slug leg', () => {
+  const shippedPlan = {
+    slug: 'self-improvement-consume-edges-2026-06-12',
+    statusClass: 'implemented' as const,
+    status: 'shipped',
+    overlap: ['consum'],
+    score: 0.25,
+  };
+
+  it('keeps the plan leg out of the lexical and semantic legs', () => {
+    const agg = aggregateReports(
+      [
+        emptyReport({
+          matches: [
+            { term: 'watchdogKey', source: 'backtick', fileCount: 3, examples: ['a.ts'], strength: 'strong' },
+          ],
+          semantic: [{ ref: 'x.ts', score: 0.8 }],
+          planSlugs: { planMatches: [shippedPlan], searched: true },
+        }),
+      ],
+      ['EI-1'],
+    );
+    expect(agg.planSlugHits.map((p) => p.slug)).toEqual([shippedPlan.slug]);
+    expect(agg.lexicalHits.map((h) => h.term)).toEqual(['watchdogKey']);
+    expect(agg.semanticHits.map((s) => s.ref)).toEqual(['x.ts']);
+  });
+
+  it('does NOT let the plan leg set retrievalRan', () => {
+    // The property that matters most here. `retrievalRan` licenses reading an
+    // empty result as "nothing exists"; the plan leg searches plan NAMES, so it
+    // cannot support that reading. If this flips, a cluster could be GREENLIT —
+    // absence asserted — on a search that never looked at an implementation.
+    const agg = aggregateReports(
+      [emptyReport({ searched: false, planSlugs: { planMatches: [shippedPlan], searched: true } })],
+      ['EI-1'],
+    );
+    expect(agg.planSlugHits).toHaveLength(1);
+    expect(agg.retrievalRan).toBe(false);
+  });
+
+  it('is structurally unable to reach a verdict', () => {
+    // decideVerdict is not given planSlugHits at all, so this is enforced by the
+    // type seam rather than by discipline. Two identical clusters differing ONLY
+    // in the plan leg must reach the same verdict.
+    const base = {
+      assertedPriorArtIds: [],
+      assertedOpenSiblingIds: [],
+      assertedAbandonedIds: [],
+      assertedUnresolvedIds: [],
+      selfIdHits: [],
+      lexicalHits: [],
+      retrievalRan: true,
+    };
+    expect(decideVerdict(1, base).verdict).toBe(decideVerdict(1, { ...base }).verdict);
+    // ...and the row's own verdict is untouched by a shipped-plan hit.
+    const withPlan = aggregateReports(
+      [emptyReport({ planSlugs: { planMatches: [shippedPlan], searched: true } })],
+      ['EI-1'],
+    );
+    expect(decideVerdict(1, { ...base, ...withPlan, assertedPriorArtIds: [] }).verdict).toBe(
+      decideVerdict(1, base).verdict,
+    );
+  });
+
+  it('de-duplicates by slug, keeping the best score, and ranks shipped first', () => {
+    const agg = aggregateReports(
+      [
+        emptyReport({ planSlugs: { planMatches: [{ ...shippedPlan, score: 0.25 }], searched: true } }),
+        emptyReport({ planSlugs: { planMatches: [{ ...shippedPlan, score: 0.5 }], searched: true } }),
+        emptyReport({
+          planSlugs: {
+            planMatches: [
+              { slug: 'draft-thing', statusClass: 'in-flight', status: 'active', overlap: ['a', 'b'], score: 0.9 },
+            ],
+            searched: true,
+          },
+        }),
+      ],
+      ['EI-1'],
+    );
+    expect(agg.planSlugHits).toHaveLength(2);
+    // Shipped outranks a higher-scoring in-flight plan: intent is not code.
+    expect(agg.planSlugHits[0].slug).toBe(shippedPlan.slug);
+    expect(agg.planSlugHits[0].score).toBe(0.5);
+    expect(agg.planSlugHits[1].slug).toBe('draft-thing');
+  });
+
+  it('renders a shipped plan hit as context and a READ instruction, never a close', () => {
+    const row: ClusterScreenRow = {
+      memberIds: ['EI-1'],
+      size: 1,
+      confidence: 'high',
+      verdict: 'INCONCLUSIVE',
+      assertedPriorArtIds: [],
+      assertedOpenSiblingIds: [],
+      assertedAbandonedIds: [],
+      assertedUnresolvedIds: [],
+      assertedPhrases: [],
+      selfIdHits: [],
+      lexicalHits: [],
+      semanticHits: [],
+      planSlugHits: [shippedPlan],
+      premiseAgeDays: { oldest: 1, newest: 1 },
+      retrievalRan: true,
+      notes: [],
+    };
+    const s = summariseClusterRow(row);
+    expect(s).toContain('plan(ctx) READ');
+    expect(s).toContain(shippedPlan.slug);
+  });
+
+  it('omits non-shipped plans from the summary line', () => {
+    const row: ClusterScreenRow = {
+      memberIds: ['EI-1'],
+      size: 1,
+      confidence: 'high',
+      verdict: 'INCONCLUSIVE',
+      assertedPriorArtIds: [],
+      assertedOpenSiblingIds: [],
+      assertedAbandonedIds: [],
+      assertedUnresolvedIds: [],
+      assertedPhrases: [],
+      selfIdHits: [],
+      lexicalHits: [],
+      semanticHits: [],
+      planSlugHits: [{ ...shippedPlan, statusClass: 'abandoned' as const, status: 'superseded' }],
+      premiseAgeDays: { oldest: 1, newest: 1 },
+      retrievalRan: true,
+      notes: [],
+    };
+    expect(summariseClusterRow(row)).not.toContain('plan(ctx)');
+  });
+
+  it('defaults to an empty array when no report carries the leg', () => {
+    expect(aggregateReports([emptyReport()], ['EI-1']).planSlugHits).toEqual([]);
+  });
+});
+
 describe('aggregateReports', () => {
   it('keeps the semantic leg out of the lexical leg', () => {
     // The legs must stay separately measurable; blending them makes neither
@@ -473,6 +611,7 @@ describe('summariseClusterRow', () => {
       selfIdHits: [],
       lexicalHits: [],
       semanticHits: [],
+      planSlugHits: [],
       premiseAgeDays: { oldest: 30, newest: 30 },
       retrievalRan: false,
       notes: [],
@@ -497,6 +636,7 @@ describe('summariseClusterRow', () => {
       selfIdHits: [],
       lexicalHits: [],
       semanticHits: [],
+      planSlugHits: [],
       premiseAgeDays: { oldest: 30, newest: 20 },
       retrievalRan: true,
       notes: [],

@@ -101,6 +101,25 @@ const GIT_GREP_NO_MATCH = 1;
  * grounds for a verdict, and why a family like that belongs in INCONCLUSIVE rather
  * than DROP.
  */
+/**
+ * The screen's OWN module basenames — every file that participates in this
+ * screening pass, and therefore every file whose citation of an idea id is an
+ * EXAMPLE rather than an implementation.
+ *
+ * Exported and enumerated (rather than inlined into the regex below) so that a
+ * recurrence guard can check it against the tree: adding a new leg file and
+ * forgetting to list it here re-arms defect #3 in full — the new file documents
+ * idea ids in its own comments, the self-id leg greps them, and the screen goes
+ * back to manufacturing its own evidence. That is not hypothetical: `plan-slug-leg`
+ * was added to this list only after the omission was caught.
+ */
+export const SCREEN_OWN_MODULES = [
+  'code-existence-probe',
+  'idea-cluster-screen',
+  'code-search-deps',
+  'plan-slug-leg',
+] as const;
+
 export const NON_EVIDENCE_PATTERNS: RegExp[] = [
   /(^|\/)scratchpad\//,
   /(^|\/)\.papercusp\//,
@@ -110,7 +129,11 @@ export const NON_EVIDENCE_PATTERNS: RegExp[] = [
   /\.(md|mdx|html|txt|json|lock|snap)$/i,
   // This module screens ideas; its own citations of an idea id are examples,
   // never implementations.
-  /(^|\/)packages\/operator-core\/lib\/scout\/(code-existence-probe|idea-cluster-screen|code-search-deps)\.(test\.)?ts$/,
+  // Derived from SCREEN_OWN_MODULES so the list has ONE home — see the guard in
+  // code-search-deps.test.ts that keeps it in step with the tree.
+  new RegExp(
+    `(^|/)packages/operator-core/lib/scout/(${SCREEN_OWN_MODULES.join('|')})\\.(test\\.)?ts$`,
+  ),
 ];
 
 /**
