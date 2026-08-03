@@ -82,6 +82,20 @@ export const SYNC_QUERY_FIXTURES: Record<string, QueryFixture> = {
   // consumer ever DOES call plans.items unfiltered, change this fixture back to
   // `{}` rather than allowlisting the result.
   'plans.items': { actionable: true },
+  // plans.list declares NO argsSchema (sync-resolver/index.ts: "coarse, no args …
+  // the underlying tool validates its own args"), so WITHOUT this entry
+  // resolveFixture falls through to `{}` — a shape NO client ever requests. Every
+  // one of the eight live `usePlanList` call sites puts `includeArchived: true,
+  // includeLegacy: true` on the wire UNCONDITIONALLY (plans-api.ts:1008-1009 — the
+  // caller's own includeArchived/includeLegacy only narrow CLIENT-side afterwards),
+  // so `{}` structurally under-measures the read that actually ships.
+  //
+  // Measured live on :3170, 2026-08-03 (EI-19457924854150358): `{}` = 692,850 B /
+  // 953 rows, but the shape clients send = 701,749 B / 970 rows — ~8.9 KB of real
+  // shipped payload the instrument could not see. The two call sites that also
+  // pass `harness_slugs` NARROW it (683,151 B / 945 rows), so the plain superset
+  // is the honest worst case, exactly as with plans.items above.
+  'plans.list': { includeArchived: true, includeLegacy: true },
   'agentRunsConsolidated.bySlug': { harnessSlug: 'papercusp' },
   'agentRunsConsolidated.recent': { harnessSlug: 'papercusp' },
   'featuresConsolidated.byPlanSlug': { planSlug: 'precompute-sync-reads-phase2-compute-latency-2026-07-19' },
@@ -186,7 +200,7 @@ export const SYNC_READ_ALLOWLIST: Record<string, SyncReadAllowlistEntry> = {
   'plans.list': {
     maxBytes: 720_000,
     reason:
-      'The unscoped plan list (953 rows at {}) behind the plans rail, the Create-tab picker, the Mug/Swarm steering trees and the ADV overview tiles. nextAction is already clipped to a 280-char tooltip preview (P-005); WI-7045/D-025 then removed the null-valued keys, measured 827,320 -> 701,767 B (-125,553 B, -15.2%) live. EI-19455103442009801 then took the nested identity avatarUrl: null on 1,475/1,475 occurrences, measured live on :3170 at 717,593 -> 692,841 B for the audit fixture {} and 726,815 -> 701,740 B for the SUPERSET args usePlanList actually sends (-25,075 B, -3.45%), 0 rows and 0 non-null values lost. ⚠ THAT CUT IS NOT IN THIS FILE OR IN THE UI PROJECTION: enrichPlanListRows (sync-resolver/plan-attribution.ts) re-attaches the identity objects AFTER projectPlansReadForUi runs, so it strips the null there, at the attachment point. A descent added to the UI projection is a structural no-op (verified live: 0 bytes) — check for a later enricher before slimming any nested key on this feed. Ceiling deliberately LEFT at 720_000 rather than ratcheted down to the new number: the residual is row COUNT x light rendered fields on a feed that is unscoped by design (the rail offers every plan in the workspace), so it grows with ordinary plan creation — 953 rows here vs 934 at the previous measurement — and a ceiling tightened to the current reading would red the fleet gate on normal use rather than on a regression. The remaining headroom is ~27 KB; the only axis left is CARDINALITY (windowing/pagination), which is a design question, not a cut.',
+      'The unscoped plan list (953 rows at {}) behind the plans rail, the Create-tab picker, the Mug/Swarm steering trees and the ADV overview tiles. nextAction is already clipped to a 280-char tooltip preview (P-005); WI-7045/D-025 then removed the null-valued keys, measured 827,320 -> 701,767 B (-125,553 B, -15.2%) live. EI-19455103442009801 then took the nested identity avatarUrl: null on 1,475/1,475 occurrences, measured live on :3170 at 717,593 -> 692,841 B for the audit fixture {} and 726,815 -> 701,740 B for the SUPERSET args usePlanList actually sends (-25,075 B, -3.45%), 0 rows and 0 non-null values lost. ⚠ THAT CUT IS NOT IN THIS FILE OR IN THE UI PROJECTION: enrichPlanListRows (sync-resolver/plan-attribution.ts) re-attaches the identity objects AFTER projectPlansReadForUi runs, so it strips the null there, at the attachment point. A descent added to the UI projection is a structural no-op (verified live: 0 bytes) — check for a later enricher before slimming any nested key on this feed. Ceiling deliberately LEFT at 720_000 rather than ratcheted down to the new number: the residual is row COUNT x light rendered fields on a feed that is unscoped by design (the rail offers every plan in the workspace), so it grows with ordinary plan creation — 953 rows here vs 934 at the previous measurement — and a ceiling tightened to the current reading would red the fleet gate on normal use rather than on a regression. ⚠ THE MEASURED NUMBER MOVED UP ~8.9 KB ON 2026-08-03 AND THAT WAS THE INSTRUMENT BEING FIXED, NOT A REGRESSION: this read has no argsSchema, so the audit had been resolving it to `{}` — a shape no client requests — while every usePlanList call site ships the includeArchived/includeLegacy superset. EI-19457924854150358 added the explicit SYNC_QUERY_FIXTURES entry, so the audit now measures 701,749 B / 970 rows instead of 692,850 B / 953 rows. Remaining headroom is therefore ~18 KB, not the ~27 KB an older reading of this entry would give. At ~723 B/row and the ~45-50 plans/week this workspace authors, expect the ceiling to be reached within roughly a week; the only axis left is CARDINALITY (windowing/pagination), which is a design question, not a cut. THAT BREACH IS THE WINDOWING TRIGGER, NOT ANOTHER RAISE.',
     reviewBy: '2026-09-01',
   },
   'plans.byHive': {

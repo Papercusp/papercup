@@ -145,6 +145,11 @@ describe('mem0 federation privacy + LWW (real PG, mem0-cross-machine-federation-
         '564-memory-federation-columns.sql',
         '570-memory-canonical-rls.sql',
         '578-memory-canonical-temporal-lite.sql',
+        // 757 adds memory_canonical.row_kind — another GENERATED-STORED column, so it
+        // belongs here for the same reason 398's are reproduced above: this fixture's
+        // whole point is that a write path attempting to INSERT an explicit value into
+        // a generated column fails here exactly as it would in production.
+        '757-memory-canonical-row-kind-discriminator.sql',
       ],
       { label: 'memory-federation-privacy.integration.test.ts' },
     );

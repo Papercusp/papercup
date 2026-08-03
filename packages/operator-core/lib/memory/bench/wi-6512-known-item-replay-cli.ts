@@ -156,11 +156,30 @@ async function runOracle(args: Args): Promise<void> {
           workspaceId: 'papercusp-workspace',
           harnessSlugs: ['papercusp'],
         });
-        const rendered = res.lines.map((l) => l.line).join('\n');
+        // ⚠⚠ FOURTH CORRECTION, and the most dangerous of the four: score record
+        // IDENTITY, never a substring of the rendered block.
+        //
+        // `rendered.includes('WI-6512')` counts a hit for ANY record whose TEXT
+        // merely mentions the id — and this investigation's OWN session turns and
+        // work-items now sit in the very workspace corpus the leg queries, all of
+        // them saying "WI-6512" repeatedly. The probe was scoring its own notes.
+        //
+        // Measured 2026-08-03: the pair "components agentsrunningpill" scored a
+        // WINNER by retrieving a session turn of mine reading
+        //   "`agentsrunningpill components` → **absent** (top 0.021)"
+        // i.e. it matched my own written record that THIS PAIR FAILS. "explain
+        // session" retrieved EI-19459220786674667, filed 40 minutes earlier.
+        // "turn 3170" was a winner in one sweep and returned 0 lines in the next.
+        //
+        // Identity scoring is immune: a session turn ABOUT WI-6512 has
+        // handle.ref = 'claude:<session>', not 'WI-6512'.
+        const strict = res.lines.some((l) => l.handle.kind === 'work-item' && l.handle.ref === KNOWN_ITEM);
         results.push({
           term,
-          strict: rendered.includes(KNOWN_ITEM),
-          lenient: carriesAnswer(rendered) !== undefined,
+          strict,
+          // The OLD substring measure, kept ONLY so the contamination gap is
+          // visible in the output rather than silently absorbed. Never act on it.
+          lenient: carriesAnswer(res.lines.map((l) => l.line).join('\n')) !== undefined,
         });
       }
     };
@@ -216,7 +235,7 @@ async function runOracle(args: Args): Promise<void> {
         .slice(0, 8)
         .map((w) => `"${w}"${same(w, picks.length) ? '[L]' : ''}${same(w, picks.banded) ? '[B]' : ''}`);
       console.log(
-        `     STRICT winners (${winners.length} of ${results.length} pairs; lenient ${lenientWinners.length}): ` +
+        `     IDENTITY winners (${winners.length} of ${results.length} pairs; substring-measure ${lenientWinners.length}): ` +
           `${shown.join('  ')}${winners.length > 8 ? '  …' : ''}`,
       );
       console.log(
@@ -232,8 +251,8 @@ async function runOracle(args: Args): Promise<void> {
       ` (proven unreachable ${batchesProvenUnreachable}, undetermined ${batchesUndetermined})`,
   );
   console.log(
-    `   CEILING (LENIENT — any answer-bearing record): ${batchesWithLenientWinner}/${REPLAY.length}.` +
-      ` ⚠ Do NOT quote this against a STRICT bar; they are different questions.`,
+    `   SUBSTRING measure (CONTAMINATED — retrieves this investigation's own notes):` +
+      ` ${batchesWithLenientWinner}/${REPLAY.length}. Never act on it; shown only so the gap is visible.`,
   );
   console.log(
     `   Read it as a FLOOR when any batch is undetermined: the reachable count can only go UP with more probing.`,
@@ -573,7 +592,22 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((err) => {
-  console.error(err instanceof Error ? err.message : String(err));
-  process.exit(1);
-});
+main()
+  .then(() => {
+    // EXIT EXPLICITLY. `getOrgPg()` hands back a shared pool this CLI must not
+    // close (other callers in-process own it too), and its open handles keep the
+    // event loop alive indefinitely — so without this the process COMPLETES ALL
+    // ITS WORK AND THEN HANGS. That failure is expensive precisely because it is
+    // invisible: `ps` shows a live process, so a caller waits on a job that
+    // already finished, and any buffering stage in the pipeline (`sed`, a block-
+    // buffered `grep`) never sees EOF and never flushes — the run reports an
+    // EMPTY log, which reads as "still working" rather than "done, output stuck".
+    // Measured 2026-08-03: one such run sat idle 24 min at 40s CPU, holding pool
+    // connections, while two agents' worth of runs queued behind the same pool
+    // (a `connect-phase-deadline` on an unrelated call was the first symptom).
+    process.exit(0);
+  })
+  .catch((err) => {
+    console.error(err instanceof Error ? err.message : String(err));
+    process.exit(1);
+  });

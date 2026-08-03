@@ -34,13 +34,13 @@ import { join } from 'node:path';
 import { decodeManifest, type SeedKeyRef, type SeedManifest } from '@papercusp/seed-bundle';
 import type { EpochKeyProvider } from './hive-epoch-serving';
 import { EpochKeyUnavailableError } from './hive-epoch-key-provider';
-import { restoreHiveSeed, SEED_MANIFEST_FILE, type RestoreHiveSeedResult } from './restore-hive-seed';
+import { restoreHiveSeed, SEED_MANIFEST_FILE, type RestoreHiveSeedResult, type SeedLog } from './restore-hive-seed';
 
 export interface ResolveSeedKeyDeps {
   /** The member-side epoch-key resolver (hive-epoch-boot-deps assembles the live
    *  one). Absent ⇒ a `via='epoch'` key cannot be resolved (⇒ stays deferred). */
   readonly epochKeyProvider?: EpochKeyProvider;
-  readonly log?: (msg: string) => void;
+  readonly log?: SeedLog;
 }
 
 /**
@@ -93,7 +93,7 @@ export interface TriggerDeferredGitRestoreCtx {
   /** Seams (tests inject; defaults are the real filesystem + restore). */
   readonly readManifest?: (seedDir: string) => Promise<SeedManifest | null>;
   readonly restore?: (ctx: Parameters<typeof restoreHiveSeed>[0]) => Promise<RestoreHiveSeedResult>;
-  readonly log?: (msg: string) => void;
+  readonly log?: SeedLog;
 }
 
 export interface TriggerDeferredGitRestoreResult {
@@ -163,11 +163,21 @@ export async function triggerDeferredGitRestore(
         // Carry the per-store failure reason (WI-5179: it was dropped here, so the
         // packaged install's 'gave up after retries' had no visible cause).
         const reason = res.outcomes.find((o) => o.kind === entry.kind)?.reason;
-        log(`[seed] post-admission restore of ${entry.kind} store did not complete — cold-pathing${reason ? `: ${reason}` : ''}`);
+        // WI-9413 severity: unlike the key-unavailable branch above (a legitimate
+        // pre-admission state that retries next boot), reaching HERE means the key
+        // RESOLVED and the restore still failed. There is no later retry that fixes
+        // it on its own, so it is always a defect.
+        log(
+          `[seed] post-admission restore of ${entry.kind} store did not complete — cold-pathing${reason ? `: ${reason}` : ''}`,
+          'error',
+        );
       }
     } catch (e) {
       stillDeferred.push(entry.kind);
-      log(`[seed] post-admission restore of ${entry.kind} threw (cold-pathing): ${e instanceof Error ? e.message : String(e)}`);
+      log(
+        `[seed] post-admission restore of ${entry.kind} threw (cold-pathing): ${e instanceof Error ? e.message : String(e)}`,
+        'error',
+      );
     }
   }
   return { ran: true, restored, stillDeferred };

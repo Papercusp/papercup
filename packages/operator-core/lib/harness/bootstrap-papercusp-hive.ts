@@ -420,7 +420,21 @@ async function defaultRestoreHiveSeed(
     targetStoreDir,
     targetRepoDir,
     // decryptionKey is intentionally absent pre-admission → the git seed defers.
-    log: (msg) => record?.('clone', 'running', { detail: msg.replace(/^\[seed\]\s*/, 'seed: ') }),
+    // WI-9413: an 'error' here means this install will boot EMPTY offline. It used to
+    // render as ordinary 'clone/running' progress — indistinguishable from success in
+    // the only place it surfaced at all.
+    log: (msg, level) => {
+      const detail = msg.replace(/^\[seed\]\s*/, 'seed: ');
+      if (level === 'error') console.error(`[papercusp-hive] ${detail}`);
+      // The STEP status deliberately stays 'running'. WI-9413 originally proposed
+      // flipping it to 'error', but that would assert something false: the seed
+      // restore is fail-soft by design, so the clone step genuinely continues and
+      // succeeds via the cold path. The defect is "this install boots empty
+      // offline", not "the clone step failed" — so it belongs in the log stream
+      // (console.error, mirroring the WI-5179 precedent below), not in a step
+      // state that other machinery reads as an aborted bootstrap.
+      record?.('clone', 'running', { detail });
+    },
   });
   return res;
 }
@@ -483,12 +497,17 @@ async function defaultRestoreDeferredGitSeed(
     targetStoreDir,
     targetRepoDir,
     epochKeyProvider,
-    log: (msg) => {
+    log: (msg, level) => {
       const detail = msg.replace(/^\[seed\]\s*/, 'seed: ');
       // WI-5179 (EI-12881 family): mirror to the console — recordProgress is the
       // only sink otherwise, so serve.log showed 'gave up after retries' with the
       // actual failure reason (e.g. the read-only seed-dir EACCES) invisible.
-      console.warn(`[papercusp-hive] ${detail}`);
+      // WI-9413: that mirror was one flat level, so "key not yet available" (a normal
+      // pre-admission state that retries next boot) and "the key resolved and the
+      // restore still failed" (unrecoverable — the code half is gone) were the same
+      // warn. Only the latter is a defect; split them.
+      if (level === 'error') console.error(`[papercusp-hive] ${detail}`);
+      else console.warn(`[papercusp-hive] ${detail}`);
       record?.('clone', 'running', { detail });
     },
   });

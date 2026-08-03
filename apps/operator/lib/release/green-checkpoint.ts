@@ -47,6 +47,7 @@ import {
   type AdvanceResult,
   type RangeChangeSet,
 } from './git-ops';
+import { quietCutSecFromEnv } from '@papercusp/operator-core/lib/release/quiet-cut';
 import { toolingRoot, type ReleaseConfig } from './release-config';
 import { runPerfGate, perfGatePolicyFromFlags } from './perf-gate';
 import { runDesktopPerfGate, desktopPerfGatePolicyFromFlags } from './desktop-perf-gate';
@@ -3226,12 +3227,15 @@ export interface CheckpointOpts {
  * gate and D-010 calls for an OWNER-ATTENDED live cutover ("build attended not blind").
  */
 /** Quiet-cut window in seconds; 0 disables. Default 240s (~1.5 git-sync ticks) —
- *  PAPERCUSP_QUIET_CUT=0 opts out entirely, PAPERCUSP_QUIET_CUT_SEC tunes the window. */
-export function quietCutSecFromEnv(env: NodeJS.ProcessEnv = process.env): number {
-  if (env.PAPERCUSP_QUIET_CUT === '0') return 0;
-  const v = Number(env.PAPERCUSP_QUIET_CUT_SEC);
-  return Number.isFinite(v) && v >= 0 ? v : 240;
-}
+ *  PAPERCUSP_QUIET_CUT=0 opts out entirely, PAPERCUSP_QUIET_CUT_SEC tunes the window.
+ *
+ *  SINGLE SOURCE OF TRUTH: `@papercusp/operator-core/lib/release/quiet-cut`. This rule was
+ *  duplicated here AND in release-checkpoint-launch.ts (the launch-side predictor of what
+ *  THIS module picks) and the copies had drifted — only that one floored, so they disagreed
+ *  for a non-integer PAPERCUSP_QUIET_CUT_SEC (EI-19458822909084210). Re-exported from here
+ *  because this module is the historical import site for callers and tests; do NOT
+ *  reintroduce a local definition. */
+export { quietCutSecFromEnv };
 
 export function partialGreenGateEnabledFromEnv(env: NodeJS.ProcessEnv = process.env): boolean {
   // Default ON (2026-07-01, owner directive): the salvage is confirm-gated — a wrong

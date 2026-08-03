@@ -16,6 +16,7 @@
     "test": "vitest run --passWithNoTests",
     "test:integration": "vitest run --config vitest.integration.config.ts --passWithNoTests",
     "lint:chunk-safe": "vitest run lib/child-output-guard.test.ts",
+    "lint:partial-index-alignment": "node ../../scripts/check-partial-index-alignment.mjs",
     "typecheck": "node ../../scripts/lint-tsc.mjs"
   },
   "dependencies": {

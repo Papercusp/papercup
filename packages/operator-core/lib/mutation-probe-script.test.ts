@@ -58,6 +58,12 @@ function runProbe(args: string[]): number {
   return r.status ?? -1;
 }
 
+/** Run the probe and return its exit code AND combined output (for asserting guidance text). */
+function runProbeIO(args: string[]): { code: number; out: string } {
+  const r = spawnSync('bash', [SCRIPT, ...args], { encoding: 'utf8', timeout: 60_000 });
+  return { code: r.status ?? -1, out: `${r.stdout ?? ''}${r.stderr ?? ''}` };
+}
+
 const read = () => readFileSync(subject, 'utf8');
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -84,6 +90,51 @@ describe('mutation-probe.sh — copy-out mode (the default)', () => {
     const code = runProbe(['--file', subject, '--mutate', 's/nosuchtext/x/', '--test', 'grep -q "^beta$" {}']);
     expect(code).toBe(2);
     expect(read()).toBe(ORIGINAL);
+  });
+
+  it('explains the PERL-metacharacter cause when an unescaped source mutation matches nothing', () => {
+    // EI-19460105590596381. --mutate is applied with `perl -pi -e`, so on the PATTERN side
+    // ( ) { } are regex metacharacters. That bites hardest on this script's normal use —
+    // mutating source code — because the natural mutation of a conditional reads as correct
+    // and matches NOTHING: `if (x > 0) {` parses as a capture group plus a quantifier, so it
+    // searches for `if x > 0 ` and misses. The refusal was already correct (exit 2, never a
+    // false weakness verdict), but it named only the symptom, leaving the reader to guess at
+    // their own pattern rather than at their metacharacters.
+    writeFileSync(subject, 'if (x > 0) {\n');
+    const { code, out } = runProbeIO([
+      '--file',
+      subject,
+      '--mutate',
+      's|if (x > 0) {|if (false) {|',
+      '--test',
+      'grep -q "^beta$" {}',
+    ]);
+    expect(code).toBe(2);
+    // The cause, not just "changed NOTHING".
+    expect(out).toMatch(/PERL/i);
+    // And the fix, spelled out — the escaped pattern form.
+    expect(out).toContain('\\(x > 0\\)');
+    expect(read()).toBe('if (x > 0) {\n');
+  });
+
+  it('the ESCAPED form of that same mutation does apply — so the guidance is correct, not folklore', () => {
+    // Calibration for the test above: without this, "unescaped matches nothing" could equally
+    // mean the probe is broken for this subject entirely, and the advice would be untested.
+    writeFileSync(subject, 'if (x > 0) {\n');
+    // The guard asserts the ORIGINAL line is present. If the mutation applied, that line is
+    // gone, the guard FAILS on the mutant, and the probe reports CAUGHT (exit 0). Reaching
+    // exit 0 here is therefore proof the escaped pattern matched — the exact thing the
+    // unescaped form above failed to do.
+    const code = runProbe([
+      '--file',
+      subject,
+      '--mutate',
+      's|if \\(x > 0\\) \\{|if (false) {|',
+      '--test',
+      'grep -q "^if (x > 0) {$" {}',
+    ]);
+    expect(code).toBe(0);
+    expect(read()).toBe('if (x > 0) {\n');
   });
 
   it('refuses a --test with no {} placeholder, so the probe cannot silently target the wrong file', () => {

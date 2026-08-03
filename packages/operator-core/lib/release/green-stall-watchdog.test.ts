@@ -364,6 +364,99 @@ describe('evaluateMainBehindStaging gate-advance suppression (EI-10202)', () => 
   });
 });
 
+describe('evaluateMainBehindStaging in-flight-aware remedy (EI-19459452257836856)', () => {
+  // THE DEFECT: this alarm is broadcast hive-wide as a severe-event, and its remedy
+  // used to end with an UNCONDITIONAL "Fire a fresh gate run (release:checkpoint-run)"
+  // — the one action the repo guide flags in bold as never-do-while-a-run-is-live
+  // (firing inside a run's re-triage window discards an in-progress rescue and costs
+  // a full ~55min suite). On 2026-08-03 an agent did exactly that during a stall and
+  // conceded it was premature. The remedy must now branch on whether a run is live.
+  //
+  // BOTH ARMS ARE ASSERTED ON PURPOSE. A single-arm test is always-true here: the
+  // fire-phrase is either present or absent in one fixed string, so asserting only
+  // "the live-run arm omits it" passes just as happily against a function that never
+  // emits it at all — which would silently destroy the real remedy.
+  const FIRE = 'Fire a fresh gate run (release:checkpoint-run)';
+  const deep = { commitsBehind: 56, behindMs: Math.round(4.8 * H), lastGreenAgeMs: Math.round(4.8 * H) };
+
+  it('THE BUG: a run IS in flight ⇒ the remedy must NOT tell the hive to fire another', () => {
+    const v = evaluateMainBehindStaging({ ...deep, runInFlight: true, runInFlightElapsedSec: 1980 });
+    expect(v.stalled).toBe(true);
+    expect(v.reason).not.toContain(FIRE);
+    expect(v.reason).toContain('IN FLIGHT');
+    expect(v.reason).toContain('do NOT launch another');
+    // Says WHY, so the reader can't mistake it for timidity, and names the wait lever.
+    expect(v.reason).toContain('re-triage');
+    expect(v.reason).toContain('checkpoint:await');
+    // Elapsed is rendered in minutes when known (1980s ⇒ ~33m).
+    expect(v.reason).toContain('~33m ago');
+  });
+
+  it('THE OTHER ARM: no run in flight ⇒ the fire remedy IS still emitted (not neutered)', () => {
+    const v = evaluateMainBehindStaging({ ...deep, runInFlight: false });
+    expect(v.stalled).toBe(true);
+    expect(v.reason).toContain(FIRE);
+  });
+
+  it('UNKNOWN in-flight state is its OWN arm — neither the blind instruction nor silence', () => {
+    // Treating unknown as "no run" is exactly the original bug; treating it as "a run
+    // is live" would suppress the remedy on a genuine stall. So: alarm, and make the
+    // check the first step.
+    const v = evaluateMainBehindStaging(deep); // field omitted entirely
+    expect(v.stalled).toBe(true);
+    expect(v.reason).not.toContain(FIRE);
+    expect(v.reason).toContain('CHECK FIRST');
+    expect(v.reason).toContain('gate.checkpointRunInFlight');
+    // An explicit null is the same unknown, not a `false`.
+    expect(evaluateMainBehindStaging({ ...deep, runInFlight: null }).reason).toContain('CHECK FIRST');
+  });
+
+  it('the three arms are genuinely DISTINCT strings (a future refactor must not collapse them)', () => {
+    const live = evaluateMainBehindStaging({ ...deep, runInFlight: true }).reason;
+    const none = evaluateMainBehindStaging({ ...deep, runInFlight: false }).reason;
+    const unknown = evaluateMainBehindStaging(deep).reason;
+    expect(new Set([live, none, unknown]).size).toBe(3);
+  });
+
+  it('the in-flight signal gates the REMEDY ONLY — it must never suppress the alarm itself', () => {
+    // A run being in flight does not mean the gate is healthy: it may be the 12th
+    // consecutive red. Suppressing on it would hide a real wedge. Gate-is-advancing
+    // suppression is lastGreenAgeMs's job (EI-10202), not this field's.
+    for (const runInFlight of [true, false, null, undefined]) {
+      expect(evaluateMainBehindStaging({ ...deep, runInFlight }).stalled).toBe(true);
+    }
+    // ...and it must not manufacture one either: a healthy shallow lag stays quiet
+    // no matter what the run-lock says.
+    for (const runInFlight of [true, false, null, undefined]) {
+      expect(evaluateMainBehindStaging({ commitsBehind: 3, behindMs: 5 * H, runInFlight }).stalled).toBe(false);
+    }
+  });
+
+  it('the field is OPTIONAL — existing snapshot literals that omit it still evaluate', () => {
+    // The required-field-strand trap: every other call site in this file builds the
+    // snapshot as an object literal with only the fields it needs. Making the new
+    // field required would strand all of them at once.
+    expect(evaluateMainBehindStaging({ commitsBehind: 56, behindMs: Math.round(4.8 * H) }).stalled).toBe(true);
+  });
+
+  it('omits the elapsed clause when the run age is not measurable', () => {
+    const v = evaluateMainBehindStaging({ ...deep, runInFlight: true, runInFlightElapsedSec: null });
+    expect(v.reason).toContain('IN FLIGHT');
+    expect(v.reason).not.toContain('ago');
+  });
+
+  it('every arm points at the authoritative break-set line, not the old undirected "find whatever is failing"', () => {
+    // The agent who mis-fired during the 2026-08-03 stall verified ONE red and never
+    // the failing SET. The break set has an authoritative source; name it.
+    for (const runInFlight of [true, false, undefined]) {
+      const r = evaluateMainBehindStaging({ ...deep, runInFlight }).reason;
+      expect(r).toContain('AFFECTED_TESTS_FAILING_FILES');
+      expect(r).toContain('coverage');
+      expect(r).not.toContain('find + fix whatever is actually failing');
+    }
+  });
+});
+
 describe('computeMainBehindStaging git shell-out (EI-9922 no-stderr-leak)', () => {
   // On a PACKAGED install this watchdog's boot pass shells git in a NON-repo dir.
   // `execFileSync`'s default stdio inherits the child's stderr, so it spammed

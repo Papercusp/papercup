@@ -366,6 +366,41 @@ describe('engineer issues surface (real PG)', () => {
   });
 
   /**
+   * WI-9252: listIssues resolves topic membership through a MATERIALIZED CTE
+   * rather than a correlated EXISTS (the correlated form re-ran the tag probe
+   * once per candidate row — 16,984 loops for 500 rows on the live box). This
+   * pins the BEHAVIOUR that rewrite had to preserve: same rows in, same rows
+   * out, and the state filter still composes with the topic filter.
+   *
+   * The existing `topic: 'nonexistent'` case above only exercises the empty
+   * side, which a broken CTE composition can still satisfy by returning
+   * nothing. This one requires the fenced CTE to actually match members.
+   */
+  it('lists a topic through the fenced CTE, excluding untagged issues (WI-9252)', async () => {
+    await topicStore.create({ slug: 'fenced', description: 'topic fence', created_ts: NOW });
+    await issues.createIssue({ title: 'tagged open', topics: ['fenced'], createdBy: 'agA' });
+    const { id: resolvedId } = await issues.createIssue({
+      title: 'tagged resolved',
+      topics: ['fenced'],
+      createdBy: 'agA',
+    });
+    await issues.createIssue({ title: 'untagged', createdBy: 'agA' });
+    await issues.setIssueState(resolvedId, 'resolved', 'agA', 'integration-test completion');
+
+    const titles = (await issues.listIssues({ topic: 'fenced' })).map((i) => i.title).sort();
+    expect(titles).toEqual(['tagged open', 'tagged resolved']);
+
+    // The topic predicate must still AND with the other filters, not replace them.
+    expect((await issues.listIssues({ topic: 'fenced', state: 'open' })).map((i) => i.title))
+      .toEqual(['tagged open']);
+
+    // ...and the count sibling (a plain JOIN, deliberately un-fenced) must agree
+    // with the fenced list. These two disagreeing is the failure mode the
+    // rewrite could plausibly have introduced.
+    expect(await issues.countIssues({ topic: 'fenced' })).toBe(titles.length);
+  });
+
+  /**
    * countObservationsByKind groups by an EXPRESSION over payload, aliased `kind`
    * — and `kind` is ALSO a real column on engineer_issues. A bare `GROUP BY kind`
    * therefore binds to the COLUMN, not the alias, leaving the payload expression

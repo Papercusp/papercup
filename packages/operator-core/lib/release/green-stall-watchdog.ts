@@ -41,6 +41,7 @@ import { execFileSync } from 'node:child_process';
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 import { broadcastSevereEvent, broadcastSevereEventResolved } from '../severe-event-broadcast';
 import { readRoutineEngineLiveness } from './routine-engine-liveness';
+import { isCheckpointRunLockHeldCheap } from '../release-checkpoint-launch';
 import { resolveWorkspaceForHarness } from '../harness/workspace-for-harness';
 
 /** An ACTIVE green-checkpoint that hasn't FIRED in this long ⇒ the scheduler isn't
@@ -363,6 +364,26 @@ export interface MainBehindStagingSnapshot {
    *  SMALL value means the gate is demonstrably still advancing main every cycle,
    *  so a deep backlog is normal churn, NOT a wedge. */
   lastGreenAgeMs?: number | null;
+  /** EI-19459452257836856: is a green-checkpoint run held by a LIVE process right
+   *  now? This alarm is broadcast hive-wide as a severe-event, and its remedy used
+   *  to tell EVERY agent to fire `release:checkpoint-run` unconditionally — the one
+   *  action the repo guide flags in bold as never-do-while-a-run-is-live (firing
+   *  inside a run's re-triage window discards an in-progress rescue and costs a
+   *  full ~55min suite). An agent did exactly that during the 2026-08-03 stall and
+   *  conceded it was premature. THREE states, deliberately:
+   *    - `true`      a run IS in flight → the remedy must say WAIT, never "fire".
+   *    - `false`     no run in flight  → firing really is the right remedy.
+   *    - `undefined`/`null` UNKNOWN    → its own arm. Treating unknown as `true`
+   *      would suppress the remedy on a genuine stall; treating it as `false` is
+   *      exactly the bug this field fixes. So we alarm, and say "check first".
+   *  Note this gates only the REMEDY TEXT, never `stalled`: a run being in flight
+   *  does not mean the gate is healthy (it may be the 12th consecutive red), and
+   *  suppressing the alarm on it would hide a real wedge. Gate-is-advancing
+   *  suppression is `lastGreenAgeMs`'s job (EI-10202), not this field's. */
+  runInFlight?: boolean | null;
+  /** Seconds the in-flight run has been going, when measurable — turns "wait" into
+   *  "wait, it started ~Nm ago". null/undefined when no run or unmeasurable. */
+  runInFlightElapsedSec?: number | null;
 }
 
 export interface MainBehindStagingVerdict {
@@ -404,12 +425,46 @@ export function evaluateMainBehindStaging(
   // the sole trigger (EI-10202).
   const noGreenClause =
     s.lastGreenAgeMs != null ? ` (no green-checkpoint advance in ~${(s.lastGreenAgeMs / 3_600_000).toFixed(1)}h)` : '';
+  const lede =
+    `\`main\` is ${s.commitsBehind} commits / ~${hoursBehind}h behind \`staging\`${noGreenClause} — the gate is not ` +
+    `advancing main, regardless of why (red verdicts, a killed/wedged run, or a wedged routine engine). `;
+  // EI-19459452257836856: the remedy is the part that was wrong, and it is read by
+  // every agent in the hive at once. Point at the run's OWN authoritative break-set
+  // line rather than the old undirected "find whatever is failing" — the agent who
+  // mis-fired during the 2026-08-03 stall did exactly that and verified ONE red,
+  // never the failing SET.
+  const breakSet =
+    `its verdict's own AFFECTED_TESTS_FAILING_FILES line names the failing files ` +
+    `(read \`coverage\` first — \`files=[]\` means "not attributable", NOT "nothing failed").`;
+  if (s.runInFlight === true) {
+    const started =
+      s.runInFlightElapsedSec != null ? ` (started ~${Math.round(s.runInFlightElapsedSec / 60)}m ago)` : '';
+    return {
+      stalled: true,
+      reason:
+        lede +
+        `A green-checkpoint run IS IN FLIGHT right now${started} — do NOT launch another: the run lock would refuse ` +
+        `it, and firing inside a live run's re-triage window DISCARDS an in-progress rescue and costs a full suite. ` +
+        `Wait for this run's verdict (checkpoint:await); if it reds, ${breakSet}`,
+    };
+  }
+  if (s.runInFlight === false) {
+    return {
+      stalled: true,
+      reason:
+        lede +
+        `No checkpoint run is in flight. Fire a fresh gate run (release:checkpoint-run), then fix what it names — ${breakSet}`,
+    };
+  }
+  // UNKNOWN — never the old unconditional instruction (that is the defect), and
+  // never silent suppression either. Alarm, and make the check the first step.
   return {
     stalled: true,
     reason:
-      `\`main\` is ${s.commitsBehind} commits / ~${hoursBehind}h behind \`staging\`${noGreenClause} — the gate is not ` +
-      `advancing main, regardless of why (red verdicts, a killed/wedged run, or a wedged routine engine). Fire a fresh ` +
-      `gate run (release:checkpoint-run) and find + fix whatever is actually failing/blocking it.`,
+      lede +
+      `Whether a checkpoint run is currently in flight could NOT be determined here — CHECK FIRST ` +
+      `(dev:pipeline_position → gate.checkpointRunInFlight) before launching one: firing inside a live run's ` +
+      `re-triage window discards an in-progress rescue. If none is running, fire one — then fix what it names: ${breakSet}`,
   };
 }
 
@@ -526,7 +581,31 @@ export async function checkMainBehindStaging(
       gitSnapshot.commitsBehind && gitSnapshot.behindMs != null
         ? await readGateLastGreenAgeMs(sql, harnessSlug, Date.now())
         : null;
-    const snapshot: MainBehindStagingSnapshot = { ...gitSnapshot, lastGreenAgeMs };
+    // EI-19459452257836856: is a run in flight RIGHT NOW? Same gating as above —
+    // only read when the git snapshot could even alarm. `isCheckpointRunLockHeldCheap`
+    // reads only the file-based run-lock's owner.json (no subprocess) and
+    // pid-liveness-verifies the owner, so it sees CRON and MANUAL runs alike — both
+    // hold the same lock for the run's whole duration. It is documented fail-soft,
+    // but this watchdog must never throw, and "unknown" is a real, deliberately
+    // distinct arm of the remedy (see MainBehindStagingSnapshot.runInFlight), so a
+    // throw degrades to unknown rather than to a wrong `false`.
+    let runInFlight: boolean | undefined;
+    let runInFlightElapsedSec: number | null | undefined;
+    if (gitSnapshot.commitsBehind && gitSnapshot.behindMs != null) {
+      try {
+        const lock = isCheckpointRunLockHeldCheap(root);
+        runInFlight = lock.held;
+        runInFlightElapsedSec = lock.elapsedSec;
+      } catch {
+        runInFlight = undefined; // UNKNOWN — never silently "no run in flight"
+      }
+    }
+    const snapshot: MainBehindStagingSnapshot = {
+      ...gitSnapshot,
+      lastGreenAgeMs,
+      runInFlight,
+      runInFlightElapsedSec,
+    };
     const verdict = evaluateMainBehindStaging(snapshot, opts);
 
     const existing = await sql<{ escalation: unknown }[]>`

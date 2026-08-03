@@ -74,13 +74,30 @@ import { fileURLToPath } from 'node:url';
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, '..');
 
-const SCHEMA_FILE = join(REPO_ROOT, 'libs/papercusp/libs/db/src/schema/generated.ts');
+/**
+ * Repo-relative path of the generated schema this lint reads. Exported because the
+ * schema is an INPUT to the check: adding a partial index can retroactively misalign
+ * an existing, untouched query, so `scripts/affected-tests.mjs` must attach this
+ * guard when the schema changes as well as when scanned source changes.
+ */
+export const SCHEMA_FILE_REL = 'libs/papercusp/libs/db/src/schema/generated.ts';
+
+const SCHEMA_FILE = join(REPO_ROOT, SCHEMA_FILE_REL);
 
 /** Own filename, used to skip this lint's own test fixtures by self-reference. */
 const SELF_BASENAME = 'check-partial-index-alignment.mjs';
 
-/** Roots scanned for SQL. Kept explicit so a new tree is an opt-in decision, not a surprise. */
-const SOURCE_ROOTS = [
+/**
+ * Roots scanned for SQL. Kept explicit so a new tree is an opt-in decision, not a surprise.
+ *
+ * EXPORTED because this list is also the correct `appliesTo` domain for the repo-wide
+ * invariant-guard attachment in `scripts/affected-tests.mjs` (WI-9434). That router
+ * deliberately fails OPEN and must not hard-fail if this module ever fails to load, so
+ * it MIRRORS this list rather than importing it — and
+ * `affected-tests-repo-wide-invariant-guards.test.ts` asserts the two agree, so a root
+ * added here cannot silently stop being enforced outside operator-core.
+ */
+export const SOURCE_ROOTS = [
   'packages/operator-core/lib',
   'packages/agent-mcp/src',
   'apps/operator/lib',

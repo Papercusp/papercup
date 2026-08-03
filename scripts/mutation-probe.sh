@@ -52,6 +52,13 @@
 #   under --in-tree, where the tracked file itself is the mutant and the
 #   substitution is a no-op.
 #
+#   --mutate is a PERL expression, so on the PATTERN side ( ) { } + ? . * are
+#   REGEX METACHARACTERS. Escape them to match source code literally:
+#       's|if \(x > 0\) \{|if (false) {|'   not   's|if (x > 0) {|if (false) {|'
+#   The unescaped form matches NOTHING and is refused as a no-op mutation (see
+#   EXIT CODE 2) — the refusal repeats this note, so you cannot silently probe
+#   a guard with a mutation that never applied.
+#
 # EXAMPLE (the real probe this script was extracted from)
 #   scripts/mutation-probe.sh \
 #     --file scripts/verify-tauri-headless.sh \
@@ -209,7 +216,19 @@ perl -pi -e "$MUTATE" "$TARGET" || die "mutation command failed"
 # probe that never actually mutated anything. Refuse rather than report it.
 if cmp -s "$TARGET" "$BASE"; then
   die "the --mutate expression changed NOTHING (mutant is byte-identical to the original).
-      A no-op mutation makes any guard look weak. Fix the expression and re-run."
+      A no-op mutation makes any guard look weak. Fix the expression and re-run.
+
+      MOST COMMON CAUSE: --mutate is a PERL expression (applied as perl -pi -e), so
+      ( ) { } + ? . * are REGEX METACHARACTERS on the PATTERN side, not literal text.
+      This bites hardest on the normal use of this script — mutating source code —
+      because a natural-looking mutation of a conditional or a call matches nothing:
+
+          WRONG:  's|if (x > 0) {|if (false) {|'
+                        ^      ^ ^   ( ) capture a group, { starts a quantifier,
+                                     so this searches for 'if x > 0 ' and misses.
+          RIGHT:  's|if \(x > 0\) \{|if (false) {|'
+
+      Only the PATTERN (left) side needs escaping — the replacement is literal."
 fi
 log "mutant applied: $(git hash-object "$BASE" | cut -c1-8) -> $(git hash-object "$TARGET" | cut -c1-8)"
 

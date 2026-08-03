@@ -151,8 +151,20 @@ export interface RestoreHiveSeedCtx {
   /** Seams (tests inject; defaults are the real filesystem + providers). */
   readonly readManifest?: (seedDir: string) => Promise<SeedManifest | null>;
   readonly registry?: SeedProviderRegistry;
-  readonly log?: (msg: string) => void;
+  readonly log?: SeedLog;
 }
+
+/** Severity for {@link SeedLog}. WI-9413: every seed degradation used to be reported
+ *  through one untyped string sink, so "restored everything" and "this install will
+ *  boot EMPTY" were the same kind of line. On a build that ships a seed, a cold path
+ *  is ALWAYS a defect — but it was indistinguishable from progress, and the log was
+ *  the only place it surfaced at all. */
+export type SeedLogLevel = 'info' | 'warn' | 'error';
+
+/** The seed logging seam. `level` is optional and defaults to 'info', so every
+ *  pre-existing `(msg: string) => void` caller stays assignable and unchanged —
+ *  a narrower function is assignable to a wider signature in TS. */
+export type SeedLog = (msg: string, level?: SeedLogLevel) => void;
 
 export interface RestoreHiveSeedResult {
   /** False ⇒ no seed present (cold path); true ⇒ a manifest was found + processed. */
@@ -201,7 +213,27 @@ export async function restoreHiveSeed(ctx: RestoreHiveSeedCtx): Promise<RestoreH
 
   const manifest = await readManifest(ctx.seedDir).catch(() => null);
   if (!manifest) {
-    log('[seed] no seed present — cold path (full join)');
+    // WI-9413. A null manifest has TWO causes with opposite severities, and
+    // defaultReadManifest collapses both to null (no file ⇒ null; corrupt/undecodable
+    // ⇒ null, deliberately, so a bad seed never hard-fails boot). Distinguish them
+    // here by asking whether the manifest FILE is actually on disk:
+    //
+    //   - absent  ⇒ genuinely no seed shipped (dev checkout, CI, --no-seed builds).
+    //               The cold path is correct and expected. Stay at info, or the
+    //               signal becomes noise on every developer machine.
+    //   - present ⇒ a seed WAS shipped and we could not read it. This install will
+    //               cold-join, and on an offline box that means the empty pot the
+    //               entire seed effort exists to prevent. Always a defect.
+    const shipped = Boolean(ctx.seedDir) && existsSync(join(ctx.seedDir, SEED_MANIFEST_FILE));
+    if (shipped) {
+      log(
+        `[seed] manifest present at ${ctx.seedDir} but UNREADABLE — cold path (full join). ` +
+          `A shipped seed that cannot be decoded means this install boots empty offline.`,
+        'error',
+      );
+    } else {
+      log('[seed] no seed present — cold path (full join)');
+    }
     return { ran: false, outcomes: [], deferred: [] };
   }
 
@@ -241,7 +273,11 @@ export async function restoreHiveSeed(ctx: RestoreHiveSeedCtx): Promise<RestoreH
   };
   const result = await restoreSeed(subManifest, registry, resolvePayload, restoreCtx);
   for (const o of result.outcomes) {
-    log(o.ok ? `[seed] restored ${o.kind}` : `[seed] ${o.kind} restore failed (cold-pathing): ${o.reason ?? 'unknown'}`);
+    // WI-9413: a per-store failure here is unambiguous — we HAD a valid manifest and
+    // tried to restore, so this is never the expected seedless case. That store's
+    // content will be cold-fetched (or, offline, simply absent).
+    if (o.ok) log(`[seed] restored ${o.kind}`);
+    else log(`[seed] ${o.kind} restore failed (cold-pathing): ${o.reason ?? 'unknown'}`, 'error');
   }
   return { ran: true, outcomes: result.outcomes, deferred };
 }

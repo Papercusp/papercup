@@ -38,7 +38,18 @@ import { __resetStoreCountsCache, readStoreCounts } from './knowledge-read';
 
 const SCHEMA = 'harness_shared';
 
-const MIGRATION_757 = join(
+/**
+ * Overridable so `scripts/mutation-probe.sh` can point this at a MUTATED COPY
+ * outside the tree and prove the guard actually fails (tier 2 — never mutate
+ * the shared working tree; git-sync would commit the mutant mid-probe).
+ * Falsifiability was verified this way: inverting the CASE arms in the
+ * migration makes cases 1 and 3 fail. Re-run:
+ *   scripts/mutation-probe.sh \
+ *     --file libs/papercusp/libs/db/sql/757-memory-canonical-row-kind-discriminator.sql \
+ *     --mutate "s/THEN 'entity' ELSE 'memory'/THEN 'memory' ELSE 'entity'/" \
+ *     --test 'PROBE_MIGRATION_757={} npm run test:file -- packages/operator-core/lib/memory/memory-entity-discriminator.integration.test.ts'
+ */
+const MIGRATION_757 = process.env.PROBE_MIGRATION_757 ?? join(
   __dirname, '..', '..', '..', '..',
   'libs/papercusp/libs/db/sql/757-memory-canonical-row-kind-discriminator.sql',
 );

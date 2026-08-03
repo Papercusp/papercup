@@ -355,6 +355,41 @@ export function diagnosticLinesForFiles(tscOutput: string, files: Iterable<strin
     maxPerFile?: number;
 }): Map<string, string[]>;
 /**
+ * The quoted-diagnostic block under ONE regressed file already present in the baseline.
+ *
+ * ## Why this is not simply `diagnosticLinesForFiles` again (EI-19454211066351073)
+ *
+ * The new-file branch (WI-6767) can quote lines and stop, because a file the baseline has never
+ * seen has a baseline of 0 — every error in it is new, so any line quoted is a line you caused.
+ *
+ * A file at `2 → 4` is different in kind, and the difference is a trap. The baseline stores a
+ * COUNT, not the errors themselves, so NOTHING in the gate knows WHICH 2 of the current 4 are new.
+ * Diagnostics arrive in compiler (line) order, so quoting the first N can legitimately show only
+ * pre-existing errors and never the regression at all. A reader handed three plausible errors,
+ * none of which is theirs, does not discover the omission — they fix a pre-existing one and read
+ * the still-red gate as flaky. That failure is worse than the silence this function replaces,
+ * because it is confidently wrong rather than merely unhelpful (the same "a count delta is not
+ * presence" class the containment recipe in CLAUDE.md warns about).
+ *
+ * So the block states its own limits: it never claims a quoted line is new, it names how many
+ * pre-date the change, and it says plainly that the split is not mechanically determinable. Where
+ * the baseline IS 0 the answer is unambiguous and it says THAT instead, because that is the common
+ * case and the reader should not have to weigh a caveat that does not apply.
+ *
+ * Pure (no I/O) so the wording is unit-testable — the wording is the whole feature, mirroring
+ * `formatAttributionHeadline` / `formatNewFileGuidance`.
+ *
+ * @param {{file: string, baseline: number, current: number, delta: number}} row - The gate entry.
+ * @param {string[]} lines - Already-capped diagnostic lines for this file (compiler order).
+ * @returns {string[]} Indented lines to print beneath the row; empty when nothing was quoted.
+ */
+export function formatRegressedFileDiagnostics(row: {
+    file: string;
+    baseline: number;
+    current: number;
+    delta: number;
+}, lines: string[]): string[];
+/**
  * Last commit time (epoch seconds) per path. Fail-SOFT per file: anything unreadable maps to
  * `null`, which `partitionStandingByCommitRecency` treats as NOT recent — i.e. the loud, standing
  * reading. An unreadable git state must never manufacture a "probably fine, ignore it" caveat.
@@ -585,6 +620,15 @@ export function runTscBaselineGate({ root, tscCommand, baselineFile, label, argv
     countField?: string | undefined;
     foreignBaselines?: never[] | undefined;
 }): void;
+/**
+ * Per-file quote cap for a REGRESSED file, deliberately larger than the new-file cap of 3.
+ *
+ * A new file's every error is new, so three lines are a fair sample of one homogeneous set. A
+ * regressed file's lines are a MIXTURE of pre-existing and new, and the reader has to find the new
+ * ones among them — so cutting at 3 is far likelier to hide the very line the report exists to
+ * surface. Ten bounds a pathological file without routinely truncating the ordinary 1–3 error case.
+ */
+export const REGRESSION_DIAGNOSTIC_MAX_PER_FILE: 10;
 /**
  * How recently a file must have been committed for its red to be treated as possibly still landing.
  *

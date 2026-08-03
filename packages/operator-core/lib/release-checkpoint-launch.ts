@@ -31,6 +31,7 @@ import { homedir } from 'node:os';
 import * as path from 'node:path';
 import { integrationRoot, tsxBin, type SpawnLike } from './release-deploy-launch';
 import { isFixtureLogLine } from './release/checkpoint-log-tags';
+import { quietCutSecFromEnv } from './release/quiet-cut';
 import { gateVerdictEnv, type GateVerdictTarget } from './release/gate-verdict-target';
 import {
   callerEditsInCandidate,
@@ -410,12 +411,6 @@ function parseSystemctlShow(stdout: string): Record<string, string> {
     out[line.slice(0, eq)] = line.slice(eq + 1);
   }
   return out;
-}
-
-function quietCutSecFromEnv(env: NodeJS.ProcessEnv = process.env): number {
-  if (env.PAPERCUSP_QUIET_CUT === '0') return 0;
-  const v = Number(env.PAPERCUSP_QUIET_CUT_SEC);
-  return Number.isFinite(v) && v >= 0 ? Math.floor(v) : 240;
 }
 
 function gitOutput(root: string, args: string[], execFn: ExecSyncLike): string | null {

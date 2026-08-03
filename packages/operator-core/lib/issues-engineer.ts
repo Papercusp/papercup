@@ -994,11 +994,44 @@ export async function listIssues(filter: ListIssuesFilter = {}): Promise<Enginee
   // Kind gate: an explicit single `kind`, else an explicit `kinds` set, else the
   // default = ISSUE_KINDS (bug|change) so `task` work-items never surface as issues.
   const kindSet: readonly IssueStoreKind[] = filter.kind ? [filter.kind] : (filter.kinds ?? ISSUE_KINDS);
-  // Topic filter is an EXISTS over the tag edges — the same indexed coord_links
-  // predicate countIssues uses. (Materializing every tagged ref into a JS array
-  // and passing it back via ANY() shipped ~7K ids out of PG and back on every
-  // learning.improvements read — WI-5412.)
+  // Topic membership is resolved ONCE, behind a MATERIALIZED optimization fence.
+  //
+  // ⚠ DO NOT "simplify" this back to a correlated `EXISTS (... cl.src_ref =
+  // engineer_issues.issue_id)` in the WHERE clause. That is what this used to be,
+  // and combined with the `ORDER BY created_at DESC LIMIT n` below it made the
+  // planner believe it could stop early, so it chose a nested-loop semi-join and
+  // re-ran the tag probe ONCE PER CANDIDATE ROW. Measured on the live box
+  // 2026-08-03 (WI-9252), papercusp-observation topic, LIMIT 500:
+  //
+  //   correlated EXISTS   111,909 buffers, coord_links loops = 16,984, ~424ms
+  //   explicit JOIN       111,909 buffers, loops = 16,984  (planner flattens it — NOT a fix)
+  //   IN (uncorrelated)   111,909 buffers, loops = 16,984  (also flattened — NOT a fix)
+  //   WITH ... MATERIALIZED 58,054 buffers, loops = 1,      ~290ms   ← this
+  //
+  // Only an optimization FENCE changes the plan; EXISTS/IN/JOIN are all rewritten
+  // to the same semi-join. Row sets verified identical across all four (14,805
+  // rows, zero asymmetric difference), and `coord_links.src_ref` is NOT NULLable
+  // in practice (0 of 33,071 tag edges), so IN and EXISTS agree on NULL semantics.
+  //
+  // countIssues below keeps its plain JOIN deliberately: it has no ORDER BY/LIMIT,
+  // so the planner already picks a hash join there (measured loops = 1).
+  //
+  // (Resolving the refs into a JS array and passing them back via ANY() is the
+  // OTHER wrong answer — that shipped ~7K ids out of PG and back on every
+  // learning.improvements read, WI-5412. This keeps the set server-side.)
+  const topicTagsCte = filter.topic
+    ? sql`WITH tagged AS MATERIALIZED (
+            SELECT cl.src_ref
+              FROM harness_shared.coord_links cl
+             WHERE cl.workspace_id = ${coordScopeWorkspace()}
+               AND cl.rel = 'tagged'
+               AND cl.src_kind = ${ISSUE_KIND}
+               AND cl.dst_kind = 'topic'
+               AND cl.dst_ref = ${filter.topic}
+          )`
+    : sql``;
   const rows = await sql<IssueRowDb[]>`
+    ${topicTagsCte}
     SELECT ${sql.unsafe(filter.includeBody === false ? ISSUE_COLS_BODYLESS : ISSUE_COLS)}
       FROM harness_shared.engineer_issues
      WHERE workspace_id = ${issuesScopeWorkspace()}
@@ -1012,19 +1045,7 @@ export async function listIssues(filter: ListIssuesFilter = {}): Promise<Enginee
        AND ${filter.createdBy ? sql`created_by = ${filter.createdBy}` : sql`TRUE`}
        AND ${filter.createdAfter ? sql`created_at > ${filter.createdAfter}::timestamptz` : sql`TRUE`}
        AND ${filter.issueIds ? issueIdsWhereSql(sql, false, filter.issueIds) : sql`TRUE`}
-       AND ${
-         filter.topic
-           ? sql`EXISTS (
-               SELECT 1 FROM harness_shared.coord_links cl
-                WHERE cl.workspace_id = ${coordScopeWorkspace()}
-                  AND cl.rel = 'tagged'
-                  AND cl.src_kind = ${ISSUE_KIND}
-                  AND cl.src_ref = engineer_issues.issue_id
-                  AND cl.dst_kind = 'topic'
-                  AND cl.dst_ref = ${filter.topic}
-             )`
-           : sql`TRUE`
-       }
+       AND ${filter.topic ? sql`issue_id IN (SELECT src_ref FROM tagged)` : sql`TRUE`}
        AND ${filter.admissibleOnly ? issueAdmissibleWhereSql(sql, false) : sql`TRUE`}
        AND ${
          filter.audit

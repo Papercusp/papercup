@@ -47,6 +47,12 @@ import { readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+// The REAL exports of the lint, so the roots below cannot drift from the roots it scans.
+import {
+  SOURCE_ROOTS as PARTIAL_INDEX_SOURCE_ROOTS,
+  SCHEMA_FILE_REL as PARTIAL_INDEX_SCHEMA_FILE,
+} from '../../../../scripts/check-partial-index-alignment.mjs';
+
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
 const AFFECTED_TESTS = resolve(REPO_ROOT, 'scripts/affected-tests.mjs');
 
@@ -127,5 +133,139 @@ describe('affected-tests: repo-wide invariant guards (EI-19388389386110890)', ()
         'and simply stops checking (the WI-6077 missing-`test`-script failure shape).',
     ).toBeTruthy();
     expect(pkg.scripts?.[GUARD_SCRIPT]).toContain('child-output-guard.test.ts');
+  });
+});
+
+/**
+ * WI-9434 — the SECOND instance of the class, wired the same way.
+ *
+ * `lint:partial-index-alignment` scans four roots but its ratchet ("the tree is
+ * currently aligned") is a vitest file in @papercusp/operator-core, so three of
+ * those four roots had no enforcement outside an operator-core-affecting change.
+ *
+ * The difference from chunk-safe, and why these tests are not a copy-paste: that
+ * guard's enumeration is genuinely repo-wide, so its `appliesTo` is every TS file.
+ * This one's scan is BOUNDED, so over-firing spends every agent's edit budget for a
+ * finding that is impossible by construction — precision is part of the contract
+ * here, and `does NOT attach for a TS file outside every scanned root` pins it.
+ */
+const PI_SCRIPT = 'lint:partial-index-alignment';
+const PI_TASK = `${HOST_WORKSPACE} :: ${PI_SCRIPT}`;
+
+/** A TS path under a scanned root that does NOT route to the host workspace. */
+const PI_OUTSIDE_PATH = 'apps/operator/lib/release/green-checkpoint.ts';
+/** A TS path under NO scanned root — the lint could never read it. */
+const PI_UNSCANNED_PATH = 'apps/operator/app/adv/create/PreviewPanel.tsx';
+
+describe('affected-tests: partial-index-alignment guard (WI-9434)', () => {
+  it('attaches for a TS change outside the host workspace but inside a scanned root', () => {
+    const out = dryTasks(PI_OUTSIDE_PATH);
+    expect(
+      out,
+      `${PI_OUTSIDE_PATH} is inside the lint's scanned roots but routes to @papercusp/web, ` +
+        'so without this attachment a misaligned `->>` query there gets ZERO local signal ' +
+        'and first reds the shared fleet gate',
+    ).toContain(PI_TASK);
+  });
+
+  /**
+   * A REAL tracked TS file under `root`, or null.
+   *
+   * Must be a real path, not a synthesized one: the router maps a path to a workspace by
+   * PACKAGE DIRECTORY, so an invented `<root>/__probe__.ts` sitting directly under
+   * `libs/papercusp/packages` matches no package and selects nothing — which reads as
+   * "the guard is not wired" when the wiring is fine. That false negative is what the
+   * first version of this test reported.
+   *
+   * `--recurse-submodules` because two roots live in submodules. Gate-shaped checkouts
+   * carry 0/39 submodules (WI-6776), so this returns null there and the case SKIPS rather
+   * than failing — a guard test must not red the fleet gate over a checkout shape.
+   */
+  function realTsFileUnder(root: string): string | null {
+    const res = spawnSync('git', ['ls-files', '--recurse-submodules', root], {
+      cwd: REPO_ROOT,
+      encoding: 'utf8',
+      timeout: 60_000,
+      maxBuffer: 64 * 1024 * 1024,
+    });
+    if (res.status !== 0) return null;
+    return (res.stdout ?? '').split('\n').find((f) => /\.[cm]?tsx?$/.test(f)) ?? null;
+  }
+
+  it.each(PARTIAL_INDEX_SOURCE_ROOTS.map((root) => [root]))(
+    'enforces the lint for a change under scanned root %s',
+    (root: string) => {
+      const probe = realTsFileUnder(root);
+      if (!probe) {
+        // Nothing tracked under this root in THIS checkout (submodule-less gate tree).
+        expect(true).toBe(true);
+        return;
+      }
+      const out = dryTasks(probe);
+      // Either form means the ratchet is reached: the narrow guard task, or the host
+      // workspace's full suite (which already contains the ratchet, so attaching the
+      // narrow task as well would just run it twice).
+      const reached = out.includes(PI_TASK) || out.includes(`${HOST_WORKSPACE} :: test`);
+      expect(
+        reached,
+        `the lint SCANS ${root} (probe: ${probe}), so a change there must reach its ratchet — ` +
+          `via "${PI_TASK}" or via "${HOST_WORKSPACE} :: test". This case is GENERATED from the ` +
+          "lint's own exported SOURCE_ROOTS: if you added a root there and did not mirror it into " +
+          'PARTIAL_INDEX_SOURCE_ROOTS in scripts/affected-tests.mjs, the guard silently stopped ' +
+          `enforcing that root. Task list was:\n${out}`,
+      ).toBe(true);
+    },
+  );
+
+  it('attaches when the GENERATED SCHEMA changes, not just when source changes', () => {
+    // The subtle case chunk-safe does not have: the schema is an INPUT to the lint, so a
+    // new partial index can retroactively misalign an existing, untouched query.
+    const out = dryTasks(PARTIAL_INDEX_SCHEMA_FILE);
+    expect(
+      out,
+      `${PARTIAL_INDEX_SCHEMA_FILE} defines the partial indexes the lint aligns queries ` +
+        'against; adding one can misalign a query nobody touched, so a schema-only change ' +
+        'must still run the ratchet',
+    ).toContain(PI_TASK);
+  });
+
+  it('does NOT double-run it when the host workspace is already affected', () => {
+    const out = dryTasks(INSIDE_TS_PATH);
+    expect(out).toContain(`${HOST_WORKSPACE} :: test`);
+    expect(
+      out,
+      "operator-core's suite already contains partial-index-alignment-guard.test.ts, whose " +
+        'ratchet execs the same lint — attaching the narrow task too would run it twice',
+    ).not.toContain(PI_TASK);
+  });
+
+  it('does NOT attach for a TS file outside every scanned root', () => {
+    const out = dryTasks(PI_UNSCANNED_PATH);
+    expect(
+      out,
+      `${PI_UNSCANNED_PATH} is outside every SOURCE_ROOT, so the lint cannot read it and ` +
+        'cannot produce a finding. Unlike chunk-safe (whose enumeration IS repo-wide), ' +
+        'firing here would spend every agent\'s edit budget for nothing.',
+    ).not.toContain(PI_TASK);
+  });
+
+  it('keeps the guard script defined, and pointed at the SCRIPT rather than the vitest file', () => {
+    const pkg = JSON.parse(
+      readFileSync(resolve(REPO_ROOT, 'packages/operator-core/package.json'), 'utf8'),
+    ) as { scripts?: Record<string, string> };
+    expect(
+      pkg.scripts?.[PI_SCRIPT],
+      `${HOST_WORKSPACE} must define "${PI_SCRIPT}" — the router only builds a task when the ` +
+        'script exists, so removing it re-opens the gap silently (green, and simply no longer checking)',
+    ).toBeTruthy();
+    // MEASURED: the standalone script is 0.57-0.60s; running the 20-test vitest file instead
+    // costs 7.66s because vitest startup dominates. Every agent pays this on every matching
+    // edit, so the narrow form is load-bearing, not a style preference.
+    expect(
+      pkg.scripts?.[PI_SCRIPT],
+      'must invoke the standalone lint script; switching it to `vitest run …` would make the ' +
+        'narrow task ~12x more expensive for the same ratchet',
+    ).toContain('check-partial-index-alignment.mjs');
+    expect(pkg.scripts?.[PI_SCRIPT]).not.toContain('vitest');
   });
 });

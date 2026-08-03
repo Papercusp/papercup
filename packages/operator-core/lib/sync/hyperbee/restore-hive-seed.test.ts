@@ -210,6 +210,48 @@ describe('restoreHiveSeed — restore-before-join orchestration', () => {
     expect(res.ran).toBe(false);
   });
 
+  // WI-9413 — the cold-path DETECTOR. Both directions matter: a seedless dev
+  // checkout cold-pathing is correct and must stay quiet, while a SHIPPED seed
+  // cold-pathing means the install boots empty offline and must be loud. Before
+  // this, both were the same untyped info line, so the fatal case was invisible
+  // in the only place it surfaced at all.
+  it('WI-9413: a seedless checkout cold-paths QUIETLY — never at error level', async () => {
+    const seen: Array<{ msg: string; level?: string }> = [];
+    const res = await restoreHiveSeed({
+      seedDir: join(tmpDir('rhs-quiet-'), 'nope'),
+      targetRepoDir: join(tmpDir('rhs-qr-'), 'repo'),
+      targetStoreDir: join(tmpDir('rhs-qs-'), 'hyperbee'),
+      log: (msg, level) => seen.push({ msg, level }),
+    });
+    expect(res.ran).toBe(false);
+    // The critical assertion: no false alarm. Every dev box and CI checkout takes
+    // this path on every boot, so an error here would train everyone to ignore it.
+    expect(seen.some((l) => l.level === 'error')).toBe(false);
+    expect(seen.some((l) => l.msg.includes('no seed present'))).toBe(true);
+  });
+
+  it('WI-9413: a SHIPPED but unreadable manifest cold-paths at ERROR level', async () => {
+    const seedDir = tmpDir('rhs-shipped-corrupt-');
+    // Same fixture shape as the corrupt-manifest test above: the file IS present
+    // (a seed shipped) but cannot be decoded. defaultReadManifest collapses this to
+    // the same `null` as "no seed at all" — which is exactly why severity has to be
+    // decided by whether the manifest file exists, not by the null.
+    writeFileSync(join(seedDir, SEED_MANIFEST_FILE), '{ not valid json');
+    const seen: Array<{ msg: string; level?: string }> = [];
+    const res = await restoreHiveSeed({
+      seedDir,
+      targetRepoDir: join(tmpDir('rhs-sr-'), 'repo'),
+      targetStoreDir: join(tmpDir('rhs-ss-'), 'hyperbee'),
+      log: (msg, level) => seen.push({ msg, level }),
+    });
+    // Still fail-soft — this must never become a boot failure (the whole point of
+    // the null-not-throw contract). It is the SEVERITY that changes, not the flow.
+    expect(res.ran).toBe(false);
+    const errors = seen.filter((l) => l.level === 'error');
+    expect(errors.length, 'a shipped-but-unreadable seed did not surface at error level').toBe(1);
+    expect(errors[0]!.msg).toContain('UNREADABLE');
+  });
+
   it('--no-seed (disabled:true) ⇒ cold path even with a valid seed present', async () => {
     const { seedDir } = await cutFixtureSeed();
     const targetRepoDir = join(tmpDir('rhs-dis-r-'), 'repo');

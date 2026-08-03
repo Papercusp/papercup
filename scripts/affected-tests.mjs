@@ -386,6 +386,25 @@ const NON_WORKSPACE_PATH_ROUTES = [
 // NOT belong here because they already have repo-root lint legs of their own
 // (lint:no-raw-setinterval, lint:no-unenrolled-spawn) — that contrast is the
 // argument for this list, not against it.
+// MIRRORS `SOURCE_ROOTS` / `SCHEMA_FILE_REL` in scripts/check-partial-index-alignment.mjs.
+// Deliberately COPIED rather than imported: this router is the entry point for every
+// agent's test loop, and the guard mechanism above is documented to fail OPEN — a static
+// import would let a load error in a lint script hard-fail everyone's `test:affected`,
+// which is exactly the trade that comment rejects.
+//
+// Copying costs a drift risk, so the drift is ASSERTED, not trusted:
+// `affected-tests-repo-wide-invariant-guards.test.ts` imports the real exports and fails
+// if these lists disagree. Add a root there and this list must follow, or the guard
+// silently stops firing for that root — the same "green because it stopped checking"
+// shape the registry exists to prevent.
+const PARTIAL_INDEX_SOURCE_ROOTS = [
+  'packages/operator-core/lib',
+  'packages/agent-mcp/src',
+  'apps/operator/lib',
+  'libs/papercusp/packages',
+];
+const PARTIAL_INDEX_SCHEMA_FILE = 'libs/papercusp/libs/db/src/schema/generated.ts';
+
 const REPO_WIDE_INVARIANT_GUARDS = [
   {
     workspace: '@papercusp/operator-core',
@@ -395,6 +414,25 @@ const REPO_WIDE_INVARIANT_GUARDS = [
     // spot one level down — the point is that nobody knows in advance which file
     // is about to grow a stream accumulator.
     appliesTo: (f) => /\.[cm]?tsx?$/.test(f),
+  },
+  {
+    // WI-9434 — the same shape as chunk-safe, one instance later. The lint's own
+    // ratchet (`the tree is currently aligned`) execs it over the repo, but that
+    // ratchet is a vitest file in operator-core, so it ran ONLY when operator-core
+    // was independently affected — while the lint SCANS four roots. MEASURED:
+    //   --changed-paths apps/operator/lib/release/green-checkpoint.ts
+    //       -> AFFECTED_WS @papercusp/web        (3 of the 4 scanned roots escape)
+    // A misaligned `->>` landing in apps/operator/lib therefore produced no local
+    // signal and would first surface as a red FLEET gate.
+    workspace: '@papercusp/operator-core',
+    // The standalone SCRIPT (0.57-0.60s measured), NOT the 20-test vitest file
+    // (7.66s — vitest startup dominates). The narrow task only needs the RATCHET
+    // "does the tree violate the invariant"; the discrimination tests that prove the
+    // detector works already run inside operator-core's own suite.
+    script: 'lint:partial-index-alignment',
+    appliesTo: (f) =>
+      f === PARTIAL_INDEX_SCHEMA_FILE ||
+      (/\.[cm]?tsx?$/.test(f) && PARTIAL_INDEX_SOURCE_ROOTS.some((r) => f.startsWith(`${r}/`))),
   },
 ];
 

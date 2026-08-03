@@ -172,6 +172,10 @@ describe('triggerDeferredGitRestore', () => {
       log,
     });
     expect(res).toEqual({ ran: true, restored: [], stillDeferred: ['git'] });
-    expect(log).toHaveBeenCalledWith(expect.stringContaining('cold-pathing: decrypt'));
+    // WI-9413 strengthens this: the reason must not only REACH the log, it must
+    // arrive at 'error' level. Reaching here means the key resolved and the restore
+    // still failed — no later retry fixes it, so it is never the benign
+    // pre-admission "not yet available" state that shares this sink.
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('cold-pathing: decrypt'), 'error');
   });
 });

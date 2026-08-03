@@ -238,14 +238,21 @@ describe('canonical memory vector backfill — the predicate (real PG)', () => {
       embed,
     };
 
+    // `mode`/`table` are part of the result contract since EI-19409840792445272
+    // (the caller must be able to log WHICH table a zero-yield sweep looked at);
+    // both are fixed here by this test's own resolveVecTable, so asserting them
+    // is deterministic rather than brittle.
     const first = await backfillCanonicalMemoryVectors(deps);
-    expect(first).toEqual({ scanned: 3, embedded: 3, failed: 0 });
+    expect(first).toEqual({ scanned: 3, embedded: 3, failed: 0, mode: 'local', table: VEC });
     expect(embedded).toEqual(ALL_ELIGIBLE);
 
     // The whole point: those memories are now visible to the vector-join recall
     // path, and the next tick finds nothing left to do.
+    // toMatchObject, not toEqual: the zero-row path also returns `zeroYield`
+    // (the idle-vs-broken probe), whose shape is that probe's business, not this
+    // test's — pinning it here would red this file every time the probe changes.
     const second = await backfillCanonicalMemoryVectors(deps);
-    expect(second).toEqual({ scanned: 0, embedded: 0, failed: 0 });
+    expect(second).toMatchObject({ scanned: 0, embedded: 0, failed: 0, mode: 'local', table: VEC });
   });
 
   it('a failed embed leaves the row queued for the next tick (self-healing)', async () => {
@@ -255,7 +262,7 @@ describe('canonical memory vector backfill — the predicate (real PG)', () => {
       embed: async () => false, // embedder down / quota-cooled
     };
     const r = await backfillCanonicalMemoryVectors(deps);
-    expect(r).toEqual({ scanned: 3, embedded: 0, failed: 3 });
+    expect(r).toEqual({ scanned: 3, embedded: 0, failed: 3, mode: 'local', table: VEC });
     // Still queued — an outage delays recall, it never permanently loses it.
     const stillQueued = await selectRowsMissingVectors(db.sql, SCHEMA, VEC, 25);
     expect(stillQueued.map((r2) => r2.id)).toEqual(ALL_ELIGIBLE);

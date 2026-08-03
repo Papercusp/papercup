@@ -20,7 +20,8 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { execFileSync } from 'node:child_process';
 import { afterEach, describe, expect, it } from 'vitest';
 // eslint-disable-next-line import/no-relative-packages
 import {
@@ -1286,6 +1287,72 @@ describe('formatRegressedFileDiagnostics — quote the lines, never overclaim wh
     // A new file's errors are homogeneous (all new); a regressed file's are a mixture the reader
     // must search. Cutting the mixture at 3 is what hides the line the report exists to surface.
     expect(REGRESSION_DIAGNOSTIC_MAX_PER_FILE).toBeGreaterThan(3);
+  });
+});
+
+describe('the gate REPORT actually prints the diagnostics (wiring, EI-19454211066351073)', () => {
+  // WHY A SUBPROCESS. The formatter above is pure and well-covered, but a pure formatter nobody
+  // CALLS prints nothing — and "the helper exists" was already true before this fix: the gate had
+  // `diagnosticLinesForFiles` and used it in the new-file branch ONLY, which is exactly why the
+  // regression branches stayed silent. So the property under test is the WIRING, and the only
+  // honest way to test it is to run the real gate and read its real output. `runTscBaselineGate`
+  // registers a process exit-handler and calls process.exit, so it cannot run in-process here.
+  //
+  // `tscCommand` is injectable and executed through a shell, so `cat <fixture>` stands in for the
+  // ~150s compile: the gate parses canned compiler output exactly as it parses tsc's.
+  const REPO_ROOT_W = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
+  const GATE = pathToFileURL(join(REPO_ROOT_W, 'scripts', 'lib', 'tsc-baseline-gate.mjs')).href;
+
+  const TSC_LINES = [
+    "lib/a.ts(10,3): error TS2322: Type 'string' is not assignable to type 'number'.",
+    'lib/a.ts(11,3): error TS2339: Property x does not exist.',
+  ].join('\n');
+
+  /** Run the real gate over canned compiler output; returns its combined output. */
+  function runGate(baseline: Record<string, number>): string {
+    const root = mkdtempSync(join(tmpdir(), 'tsc-gate-wiring-'));
+    try {
+      writeFileSync(join(root, 'tsc-output.txt'), `${TSC_LINES}\n`);
+      // The baseline is `{ files: {...} }`, not a flat map. Writing a flat map here made the
+      // gate read NO baseline at all and default the file to 0 — which still produced a green
+      // "0 → 2" for the baseline-0 case, i.e. the test would have passed for the wrong reason.
+      writeFileSync(join(root, 'baseline.json'), JSON.stringify({ files: baseline }));
+      writeFileSync(
+        join(root, 'run.mjs'),
+        `import { runTscBaselineGate } from ${JSON.stringify(GATE)};\n` +
+          `runTscBaselineGate({\n` +
+          `  root: ${JSON.stringify(root)},\n` +
+          `  tscCommand: ${JSON.stringify(`cat ${join(root, 'tsc-output.txt')}`)},\n` +
+          `  baselineFile: ${JSON.stringify(join(root, 'baseline.json'))},\n` +
+          `  label: 'test',\n` +
+          `  argv: ['--files=lib/a.ts'],\n` +
+          `});\n`,
+      );
+      try {
+        return execFileSync('node', [join(root, 'run.mjs')], { encoding: 'utf-8', stdio: 'pipe' });
+      } catch (e: any) {
+        // The gate exits 1 on a regression — that IS the path under test, not a failure.
+        return `${e.stdout ?? ''}${e.stderr ?? ''}`;
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+
+  it('a regression in a NAMED file prints the compiler message, not just the count', () => {
+    const out = runGate({ 'lib/a.ts': 0 });
+    // The count line the gate always printed...
+    expect(out).toContain('lib/a.ts: 0 → 2');
+    // ...and the message it used to discard, which is the whole point of the item.
+    expect(out).toContain("Type 'string' is not assignable to type 'number'");
+    expect(out).toContain('every error above is new');
+  });
+
+  it('a MIXED file states how many pre-date the change instead of implying all are yours', () => {
+    const out = runGate({ 'lib/a.ts': 1 });
+    expect(out).toContain('lib/a.ts: 1 → 2');
+    expect(out).toContain('PRE-DATE');
+    expect(out).not.toContain('every error above is new');
   });
 });
 

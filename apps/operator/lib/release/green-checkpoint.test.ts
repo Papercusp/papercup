@@ -4269,6 +4269,46 @@ describe('quiet-cut — never judge a tip younger than the quiet window (2026-07
     expect(quietCutSecFromEnv({ PAPERCUSP_QUIET_CUT_SEC: 'junk' })).toBe(240);
   });
 
+  /**
+   * EI-19458822909084210 — the anti-drift guard.
+   *
+   * This rule was defined TWICE: here (the AUTHORITY that drives real candidate selection)
+   * and in release-checkpoint-launch.ts (the launch-side PREDICTOR of what this module will
+   * pick). The copies had already drifted — only the predictor floored — so they disagreed
+   * for a non-integer PAPERCUSP_QUIET_CUT_SEC. A predictor that can disagree with the
+   * authority it predicts is the whole bug class.
+   *
+   * Referential identity is the guard rather than a behavioral re-assertion on purpose:
+   * re-testing the VALUES would still pass if someone reintroduced a local copy that merely
+   * happened to agree today, which is exactly how the first drift went unnoticed. Comparing
+   * function identity fails the instant a second definition exists at all.
+   */
+  it('is the SINGLE shared definition — not a local copy that merely agrees today', async () => {
+    const shared = await import('@papercusp/operator-core/lib/release/quiet-cut');
+    expect(quietCutSecFromEnv).toBe(shared.quietCutSecFromEnv);
+
+    // CONTROL (falsifiability): a re-implementation that agrees on every value the old
+    // copies agreed on is still a DIFFERENT function. This proves the assertion above
+    // discriminates by identity rather than passing trivially — i.e. that it really would
+    // catch a reintroduced local copy, which is the only failure mode it exists to catch.
+    const reintroducedLocalCopy = (env: NodeJS.ProcessEnv = process.env): number => {
+      if (env.PAPERCUSP_QUIET_CUT === '0') return 0;
+      const v = Number(env.PAPERCUSP_QUIET_CUT_SEC);
+      return Number.isFinite(v) && v >= 0 ? Math.floor(v) : 240;
+    };
+    expect(reintroducedLocalCopy({})).toBe(quietCutSecFromEnv({})); // agrees behaviorally…
+    expect(reintroducedLocalCopy).not.toBe(shared.quietCutSecFromEnv); // …and is still caught.
+  });
+
+  it('floors a non-integer window — the exact value the two copies used to disagree on', () => {
+    // Pre-fix: the authority returned 90.7 while the predictor returned 90.
+    expect(quietCutSecFromEnv({ PAPERCUSP_QUIET_CUT_SEC: '90.7' })).toBe(90);
+    // A negative window is nonsense, not a disable — it must fall back, not return 0.
+    expect(quietCutSecFromEnv({ PAPERCUSP_QUIET_CUT_SEC: '-5' })).toBe(240);
+    // '0' via _SEC is a real 0-second window (only PAPERCUSP_QUIET_CUT=0 is the opt-out).
+    expect(quietCutSecFromEnv({ PAPERCUSP_QUIET_CUT_SEC: '0' })).toBe(0);
+  });
+
   /** Commit with a pinned committer date (rev-list --before + %ct read COMMITTER time). */
   async function datedCommit(file: string, msg: string, ageSec: number): Promise<string> {
     process.env.GIT_COMMITTER_DATE = new Date(Date.now() - ageSec * 1000).toISOString();
