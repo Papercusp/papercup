@@ -23,7 +23,7 @@
  *     collects the bad one in `failed`, and coord-broadcasts the failure — and
  *     never throws (boot continues).
  */
-import { afterAll, beforeAll, describe, expect, it, vi, type Mock } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi, type Mock } from 'vitest';
 import postgres from 'postgres';
 import { randomBytes } from 'node:crypto';
 import { mkdtempSync, writeFileSync } from 'node:fs';

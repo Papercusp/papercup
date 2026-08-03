@@ -73,11 +73,19 @@ describe('EI-19403159016550818: default open-escalation read is author-scoped', 
   });
 
   it('REGRESSION: resolves its own reminders even when they sit past the workspace-wide window', async () => {
-    // The store returns THIS ALARM'S rows because the query was author-scoped.
-    // Under the old JS-filter read these rows were positions 501..607 of a 500-row
-    // page, so this list arrived empty and `resolved` was [].
+    // MODELS THE REAL STORE, which is what makes this discriminating rather than
+    // merely green: the projection is ordered oldest-first and capped at 500, and
+    // this alarm's rows are the newest — positions 501..607 as measured. So an
+    // UNSCOPED read (the old code) genuinely cannot see them, while an author-
+    // SCOPED read gets them all. A mock that returned the rows either way would
+    // pass under the old implementation too, and prove nothing.
     const mine = [reminderFor('single-primary:no-primary', 'M-1'), reminderFor('single-primary:no-primary', 'M-2')];
-    listEscalationsPaginated.mockResolvedValue({ escalations: mine, truncated: false, total: mine.length });
+    listEscalationsPaginated.mockImplementation(async (opts: { from?: string }) =>
+      opts?.from === ALARM
+        ? { escalations: mine, truncated: false, total: mine.length, trueOpenTotal: mine.length }
+        : // the workspace-wide window: 500 rows, none of them this alarm's
+          { escalations: [], truncated: true, total: 0, trueOpenTotal: 607 },
+    );
 
     const resolvedIds: string[] = [];
     const res = await runConditionStalenessTick({

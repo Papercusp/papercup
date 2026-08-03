@@ -219,7 +219,11 @@ describe('P-002 partial unique index — the singleton, under real concurrency',
     // makes a missed release cost one cycle instead of forever.
     const key = 'main-behind-staging:papercup';
     const first = await bridge.acquireConditionOwner(key, spec('behind'));
-    await setWorkItemState(first.workItem!, 'done', { harness: H, completionRef: 'settled without releasing the key' });
+    await setWorkItemState(first.workItem!, 'done', {
+      harness: H,
+      by: 'test',
+      completionRef: 'settled without releasing the key',
+    });
     expect(await isTerminal(first.workItem!)).toBe(true);
     expect(await holdersOf(key)).toEqual([first.workItem]); // still held by the settled row
 
@@ -321,11 +325,19 @@ describe('D-020 — settle is gated on the bridge mint marker', () => {
     expect(out).toMatchObject({ released: handFiled, settled: false, settleSkipped: 'not-bridge-minted' });
     // The bug survives...
     expect(await isTerminal(handFiled)).toBe(false);
-    // ...and the key is still freed, so the NEXT occurrence mints its own incident item.
+    // ...and the key is freed.
     expect(await holdersOf(key)).toEqual([]);
+
+    // What the NEXT occurrence does is worth pinning down, because it is not
+    // what "the key was released so a fresh item mints" suggests: ownership is
+    // READ from the link, which the release never touches, so the still-open
+    // hand-filed bug is ADOPTED rather than duplicated. That is the better
+    // outcome — the adopter keeps owning the condition it adopted — but note
+    // the consequence: adoption does not re-take the key, so the singleton
+    // column stays free while the link alone carries ownership.
     const next = await bridge.acquireConditionOwner(key, spec('no primary again'));
-    expect(next.created).toBe(true);
-    expect(next.workItem).not.toBe(handFiled);
+    expect(next).toMatchObject({ created: false, workItem: handFiled });
+    expect(await holdersOf(key)).toEqual([]);
   });
 
   it('migration 742 backfills PRE-marker rows so they settle again (the D-011 leak, not reintroduced)', async () => {
