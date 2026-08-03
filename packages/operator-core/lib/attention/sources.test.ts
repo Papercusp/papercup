@@ -86,6 +86,27 @@ describe('planItemsToAttention (plan-item source of plans:attention)', () => {
     const legacy = parsePlan('# no frontmatter\n\n## Phase 1\n\n- **P-001** `todo` x importance: high\n');
     expect(planItemsToAttention([{ parsed: legacy }], null)).toEqual([]);
   });
+
+  // WI-7259 (sibling of WI-7246): a scheduled-run snapshot's markdown is a
+  // byte-identical copy of its parent's, frontmatter included, so
+  // `parsed.frontmatter.slug` reads the PARENT's slug. When the caller has the
+  // canonical DB row (readAllPlans always does), prefer `row.planSlug`.
+  it('prefers `row.planSlug` over the frontmatter slug for a snapshot (WI-7259)', () => {
+    const parsed = parsePlan(MIXED, { filePath: 't-2026-05-31.md' });
+    const items = planItemsToAttention(
+      [{ parsed, row: { planSlug: 't-2026-05-31@run-999' } }],
+      'papercup',
+    );
+    const p2 = items.find((i) => i.itemRef === 'P-002')!;
+    expect(p2.planSlug).toBe('t-2026-05-31@run-999');
+  });
+
+  it('falls back to the frontmatter-derived slug when no row is given (older caller/fixture)', () => {
+    const parsed = parsePlan(MIXED, { filePath: 't-2026-05-31.md' });
+    const items = planItemsToAttention([{ parsed }], 'papercup');
+    const p2 = items.find((i) => i.itemRef === 'P-002')!;
+    expect(p2.planSlug).toBe('t-2026-05-31');
+  });
 });
 
 describe('dropConvertedPlanItems — decision↔execution dedup guard (P-104 / D-013)', () => {

@@ -270,6 +270,44 @@ describe('terminal window liveness, end to end through the scan', () => {
     expect(server.exemptReason).toBe('human-terminal');
   });
 
+  it('reports a CLOSED window whose residue does not match the repo signature at all (EI-19398679054297365)', () => {
+    // THE BUG. Every process in this window is a bare `bash` / `vim` — neither
+    // matches the repo signature — so the signature filter used to skip both
+    // pids before `classifyScope` ever ran, and a scope holding real residue
+    // scanned as if it did not exist. This is the population that dominated the
+    // real box: 50 of 59 processes across 14 dead-window scopes.
+    const fs = box({
+      cgroups: {
+        [OURS]: [],
+        [`${TERM}/vte-spawn-1a1a-2b2b.scope`]: [800, 801],
+      },
+      cmdlines: { 800: 'bash', 801: 'vim notes.txt' },
+      ppids: { 800: 1, 801: 800 },
+    });
+    const r = scanProcesses({ fs, foreignSignature: defaultForeignSignature(REPO), selfPid: 999 });
+    const shell = r.processes.find((x) => x.pid === 800);
+    const child = r.processes.find((x) => x.pid === 801);
+    expect(shell?.scope).toBe('abandoned-window');
+    expect(child?.scope).toBe('abandoned-window');
+  });
+
+  it('still applies the signature filter to a LIVE window with no matching process (does not flood the foreign pass)', () => {
+    // The other side of the same change: an OPEN window's non-matching bash
+    // shell must stay invisible to the foreign pass, exactly as before — only a
+    // CONFIRMED-dead window bypasses the signature.
+    const fs = box({
+      cgroups: {
+        [OURS]: [],
+        [`${TERM}/gnome-terminal-server.service`]: [SERVER],
+        [`${TERM}/vte-spawn-3c3c-4d4d.scope`]: [900],
+      },
+      cmdlines: { 900: 'bash' },
+      ppids: { 900: SERVER },
+    });
+    const r = scanProcesses({ fs, foreignSignature: defaultForeignSignature(REPO), selfPid: 999 });
+    expect(r.processes.find((x) => x.pid === 900)).toBeUndefined();
+  });
+
   it('cannot tell, so stays exempt, when the application unit is unreadable', () => {
     // No identifiable application => UNKNOWN => the exemption survives. A probe
     // failure must never present the owner's live terminal as residue.

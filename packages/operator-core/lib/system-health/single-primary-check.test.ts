@@ -287,13 +287,13 @@ describe('runSinglePrimaryCheck (hysteresis + debounce + self-clear)', () => {
 
   // ── WI-7291: the all-clear must be driven by DURABLE state, not per-process memory ──
   //
-  // THE REGRESSION THIS PINS: the guard runs on every request worker, so the process that
-  // alarms is routinely not the one that later sees the recovery. Keying the fleet
-  // all-clear off an in-process map meant it was skipped by exactly the processes able to
-  // send it — measured live as 122 `no-primary` alarms since 2026-07-11 with ZERO
-  // resolutions ever, and a `split-brain-primary` condition still open 23 days after
-  // recovering. A permanently-open condition then re-escalates via
-  // condition-staleness-alarm every ~30 min. If these fail, that flood is back.
+  // THE REGRESSION THIS PINS: the guard runs on every request worker, and the fleet
+  // all-clear used to be keyed off an in-process map — so it fired only when the SAME
+  // process both alarmed and later saw the recovery. Measured live on
+  // `single-primary:no-primary`: 122 alarms since 2026-07-11, 60 resolutions, ALL of them
+  // on or before 2026-07-21; the 40+ alarms since produced none, leaving the condition
+  // continuously open and re-escalating via condition-staleness-alarm every ~30 min
+  // (59 in one 12h window). If these fail, that flood is back.
   it('all-clears a condition THIS process never alarmed (the cross-process case)', async () => {
     const paged: string[][] = [];
     // A pristine process: it has no in-memory record of any alarm — exactly the state of a
@@ -338,8 +338,9 @@ describe('runSinglePrimaryCheck (hysteresis + debounce + self-clear)', () => {
   });
 
   it('all-clears EVERY open key at once, including one no live verdict can produce', async () => {
-    // `split-brain-primary` sat open 23 days because nothing could clear it; a recovery
-    // must drain the whole namespace, not just the key this tick happens to know about.
+    // A recovery must drain the whole namespace, not just the key this tick happens to
+    // know about — `split-brain-primary` can be left open by a process that has since
+    // died, and no live verdict will ever name it again.
     const paged: string[][] = [];
     await runSinglePrimaryCheck('ws', {
       count: async () => 1,

@@ -136,6 +136,7 @@ export const askOp: CoordOp<z.infer<typeof askArgs>, z.infer<typeof askResult>> 
         severity: 'question',
         summary: a.question,
         body: a.body,
+        meta: conversationLinkMeta(thread.conversation_id),
       })
       .catch(() => {
         /* best-effort — the thread itself is the durable ask surface */

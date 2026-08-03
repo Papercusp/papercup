@@ -190,4 +190,35 @@ describe('enrichPlanDetail', () => {
     const plan = { frontmatter: { slug: 'a', owner: 'aviynw2@gmail.com' }, items: [] };
     expect(await enrichPlanDetail(plan, { sql })).toBe(plan);
   });
+
+  // WI-7259 (sibling of WI-374's harness fix above): a scheduled-run snapshot's
+  // markdown is a byte-identical copy of its parent's, frontmatter included, so
+  // `plan.frontmatter.slug` reads the PARENT's slug. plans:get stamps the
+  // REQUESTED slug at the top level (`slug` = row.planSlug) — prefer it.
+  it('prefers the payload-level `slug` (row.planSlug) over frontmatter.slug for a snapshot (WI-7259)', async () => {
+    const sql = fakeSql({
+      // The revision/part-author history is keyed under the SNAPSHOT's own
+      // slug, never its parent's — attributing from the wrong slug would
+      // silently resolve to nothing (or worse, a same-slug foreign plan).
+      revisions: [{ harness_slug: 'papercup', plan_slug: 'parent@run-123', author_id: 'su-88991fc5-dd92', author_kind: 'agent' }],
+    });
+    const plan = {
+      harness: 'papercup',
+      slug: 'parent@run-123',
+      // The parent's frontmatter, copied verbatim — a DIFFERENT slug.
+      frontmatter: { slug: 'parent', owner: 'aviynw2@gmail.com' },
+      items: [],
+    };
+    const out = (await enrichPlanDetail(plan, { sql, workspaceId: 'default' })) as { lastEditor: unknown };
+    expect(out.lastEditor).toMatchObject({ handle: 'su-88991fc5', kind: 'agent' });
+  });
+
+  it('falls back to frontmatter.slug when the payload carries no top-level `slug` (older caller/fixture)', async () => {
+    const sql = fakeSql({
+      revisions: [{ harness_slug: 'papercup', plan_slug: 'a', author_id: 'su-88991fc5-dd92', author_kind: 'agent' }],
+    });
+    const plan = { harness: 'papercup', frontmatter: { slug: 'a', owner: 'aviynw2@gmail.com' }, items: [] };
+    const out = (await enrichPlanDetail(plan, { sql, workspaceId: 'default' })) as { lastEditor: unknown };
+    expect(out.lastEditor).toMatchObject({ handle: 'su-88991fc5', kind: 'agent' });
+  });
 });

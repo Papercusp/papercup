@@ -1093,6 +1093,42 @@ export function runTscBaselineGate({
   countField = 'errorCount',
   foreignBaselines = [],
 }) {
+  // EI-19395061642732083 — emit a terminal COMPLETION MARKER, so a killed run is
+  // distinguishable from a clean one.
+  //
+  // This gate is the repo's mandated post-edit check (vitest is type-blind, so it is the
+  // only thing between a type-only regression and a fleet-wide gate red). It takes ~150s,
+  // which is comfortably past the agent Bash tool's 120s DEFAULT timeout — and the way that
+  // failure presents is the whole problem. A SIGTERM'd run prints its partial output and
+  // stops; the usual caller idiom (`... 2>&1 | tail -20`, or a `grep <my-file>` over the
+  // output) then shows nothing alarming, which is INDISTINGUISHABLE from "my files are
+  // clean". The caller concludes green, and the first real observer is a ~55min suite in
+  // someone else's triage queue hours later — the identical failure shape this file already
+  // documents for uncovered `--files` above, arriving by a different route.
+  //
+  // The marker deliberately rides `process.on('exit')` rather than being stamped at each
+  // `process.exit(...)` site: there are nine-plus of them and a tenth added later would
+  // silently opt out. It also means the marker CANNOT be printed on SIGTERM/SIGKILL, since
+  // Node runs no exit handler for those — which is exactly the property we want.
+  //
+  //   marker present => the gate ran to a verdict, and `status` IS that verdict
+  //   marker absent  => the run did not finish; the output is UNMEASURED, not clean
+  //
+  // This mirrors `TEST_FILE_RESULT` in scripts/test-files.mjs, whose consumer idiom
+  // (`if ! grep -q 'TEST_FILE_RESULT'; then UNMEASURED; fi`) is already established in this
+  // repo — the convention is reused, not reinvented.
+  const scope = argv.includes('--update')
+    ? 'update'
+    : parseExplicitFiles(argv) !== null
+      ? 'files'
+      : argv.includes('--mine')
+        ? 'mine'
+        : 'all';
+  process.on('exit', (code) => {
+    const status = code === 0 ? 'clean' : code === 1 ? 'regressed' : `error(${code})`;
+    console.log(`LINT_TSC_RESULT label=${label} scope=${scope} exit=${code} status=${status}`);
+  });
+
   const updateFlag = argv.includes('--update');
   const explicitFiles = parseExplicitFiles(argv);
   const mineFlag = argv.includes('--mine') || explicitFiles !== null;

@@ -475,6 +475,69 @@ describe('plans:lint — owner_ask_not_needs_human (EI-44)', () => {
   });
 });
 
+describe('plans:lint — stored_blocked_with_blocked_by escalates when every blocker is resolved (EI-19397307303043951)', () => {
+  const planDoc = (opts: {
+    blockerStatus: string;
+    dependentBlockedBy?: string;
+  }) => {
+    const blockedByLine = opts.dependentBlockedBy ?? 'blocked-by: P-001';
+    return (
+      `---\n` +
+      `title: T\n` +
+      `slug: stale-blocked-lint-test\n` +
+      `status: active\n` +
+      `created: 2026-08-03\n` +
+      `---\n\n` +
+      `# T\n\n` +
+      `## Now\n\n**State:** building\n\n**Next:** y\n\n` +
+      `## Phase 1\n\n` +
+      `- **P-001** \`${opts.blockerStatus}\` the dependency\n` +
+      `- **P-002** \`blocked\` the dependent ${blockedByLine}\n\n` +
+      `## Decisions\n\n### D-001 — a decision\nBody.\n`
+    );
+  };
+  const lintDoc = async (raw: string) =>
+    lintParsed(parsePlan(raw), 'stale-blocked-lint-test', false);
+  const has = (r: { warnings: { code: string }[] }) =>
+    codes(r.warnings).includes('stored_blocked_with_blocked_by');
+  const warning = (r: { warnings: { code: string; message: string }[] }) =>
+    r.warnings.find((f) => f.code === 'stored_blocked_with_blocked_by')!;
+
+  it('still fires the mild, generic message while the blocker is unresolved', async () => {
+    const r = await lintDoc(planDoc({ blockerStatus: 'todo' }));
+    expect(has(r)).toBe(true);
+    const w = warning(r);
+    expect(w.message).toMatch(/should be 'todo'/);
+    // The escalated "stuck RIGHT NOW" language must NOT fire while the
+    // dependency is still open — that would be a false alarm.
+    expect(w.message).not.toMatch(/RIGHT NOW/);
+  });
+
+  it('escalates to the stuck-RIGHT-NOW message once the blocker resolves to done', async () => {
+    const r = await lintDoc(planDoc({ blockerStatus: 'done' }));
+    expect(has(r)).toBe(true);
+    const w = warning(r);
+    expect(w.message).toMatch(/stuck 'blocked' RIGHT NOW/);
+    expect(w.message).toMatch(/hiding claimable work from scheduler:get_next/);
+  });
+
+  it('escalates the same way when the blocker resolves to dropped (D-005 anti-stale-blocked rule)', async () => {
+    const r = await lintDoc(planDoc({ blockerStatus: 'dropped' }));
+    expect(has(r)).toBe(true);
+    expect(warning(r).message).toMatch(/stuck 'blocked' RIGHT NOW/);
+  });
+
+  it('does NOT fire at all for a stored-blocked item with no blocked-by (the legitimate external-block case)', async () => {
+    const raw =
+      `---\ntitle: T\nslug: stale-blocked-lint-test\nstatus: active\ncreated: 2026-08-03\n---\n\n` +
+      `# T\n\n## Now\n\n**State:** building\n\n**Next:** y\n\n` +
+      `## Phase 1\n\n- **P-001** \`blocked\` awaiting a vendor response\n\n` +
+      `## Decisions\n\n### D-001 — a decision\nBody.\n`;
+    const r = await lintDoc(raw);
+    expect(has(r)).toBe(false);
+  });
+});
+
 describe('summarizeLintReports — bounded all-plans output (F-FIX-034 overflow regression)', () => {
   // Mirror the real bug input: many plans, a few errors, hundreds of verbose
   // warnings. The full reports were 170KB+ in one line → exceeded the agent

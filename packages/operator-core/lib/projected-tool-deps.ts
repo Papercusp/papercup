@@ -411,14 +411,21 @@ export async function backfillResultDoorOutputRef(input: {
   outputRef: string;
   outputSize: number;
 }): Promise<void> {
-  if (!input.workspaceId || !input.spawnId) return;
+  // Captured into locals so the narrowing survives into the `sql.begin`
+  // closure below — TS does not narrow a property access (`input.workspaceId`)
+  // across a function boundary (same pattern as readQuotaStateImpl above).
+  const workspaceId = input.workspaceId;
+  const spawnId = input.spawnId;
+  if (!workspaceId || !spawnId) return;
+  const toolName = input.toolName;
+  const runId = input.runId ?? null;
   try {
     // Force the just-queued row to be durable before we try to UPDATE it.
     await flushPendingTelemetry();
     const { sql } = getOrgPg();
     await sql.begin(async (tx) => {
       await tx.unsafe(`SELECT set_config('app.workspace_id', $1, true)`, [
-        input.workspaceId,
+        workspaceId,
       ]);
       await tx.unsafe(
         `UPDATE harness_shared.tool_invocations
@@ -435,10 +442,10 @@ export async function backfillResultDoorOutputRef(input: {
         [
           input.outputRef,
           input.outputSize,
-          input.workspaceId,
-          input.spawnId,
-          input.toolName,
-          input.runId ?? null,
+          workspaceId,
+          spawnId,
+          toolName,
+          runId,
         ],
       );
     });

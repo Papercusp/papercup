@@ -229,10 +229,29 @@ export function scanProcesses(opts: ScanOptions = {}): ScanResult {
     const managerAbs = absCgroupDir(userManagerRoot, cgroupRoot);
     for (const node of walkCgroupTree(managerAbs, fs)) {
       if (node.absDir === ownedRootAbs || node.absDir.startsWith(`${ownedRootAbs}/`)) continue;
+      // A dead terminal window's residue must stay visible even when NONE of its
+      // processes match our repo signature (EI-19398679054297365). The signature
+      // filter exists to keep an unrelated owner/peer process out of the foreign
+      // pass, but a closed window's leftovers are exactly the kind of thing that is
+      // very often NOT this repo (a stray build tool, an unrelated shell) — gating
+      // on the signature FIRST made that residue structurally unreachable: on this
+      // box 50 of 59 processes across 14 dead-window scopes never matched the repo
+      // path and were silently dropped before `classifyScope` (which already knows
+      // how to call this out as `abandoned-window`) ever ran. Probe liveness at the
+      // SCOPE level (once per scope, cached — see `probeWindow` above) and bypass
+      // the signature filter ONLY for a scope the probe positively confirms is
+      // dead. A live or unknown window keeps the existing signature-gated
+      // behavior, so an owner's live terminal (routinely full of processes that
+      // don't match any repo) still can't flood the foreign pass.
+      const cgroupPath = relCgroupPath(node.absDir, cgroupRoot);
+      const isWindow = isTerminalWindowScope(cgroupPath);
+      const windowConfirmedDead = isWindow && probeWindow(node.absDir, cgroupPath) === false;
       for (const pid of node.pids) {
         if (seen.has(pid) || pid === selfPid) continue;
-        const cmdline = parseProcCmdline(fs.readFile(`/proc/${pid}/cmdline`));
-        if (!cmdline || !sig.test(cmdline)) continue;
+        if (!windowConfirmedDead) {
+          const cmdline = parseProcCmdline(fs.readFile(`/proc/${pid}/cmdline`));
+          if (!cmdline || !sig.test(cmdline)) continue;
+        }
         push(pid, node.absDir, false);
       }
     }

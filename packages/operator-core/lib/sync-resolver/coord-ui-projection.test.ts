@@ -80,4 +80,51 @@ describe('projectCoordPlansForUi', () => {
   it('is defensive against a non-array payload', () => {
     expect(projectCoordPlansForUi({ error: 'x' })).toEqual({ error: 'x' });
   });
+
+  // WI-7256 — the unbounded-growth term: a scheduled plan mints one
+  // `<template>@run-<token>` row per fire, permanently.
+  describe('finished plan-run snapshots (WI-7256)', () => {
+    it('drops a TERMINAL run instance but keeps its parent template', () => {
+      const out = projectCoordPlansForUi([
+        { slug: 'nightly-alert-2026-07-06', status: 'active' },
+        { slug: 'nightly-alert-2026-07-06@run-1784241963690', status: 'superseded' },
+        { slug: 'nightly-alert-2026-07-06@run-1784244243583', status: 'shipped' },
+      ]) as Array<Record<string, unknown>>;
+      expect(out.map((r) => r.slug)).toEqual(['nightly-alert-2026-07-06']);
+    });
+
+    it('KEEPS an in-flight run instance — it is minted `active`, not superseded', () => {
+      // The whole reason the predicate tests status and not just the slug
+      // shape: dropping every instance would hide a running scheduled plan.
+      const out = projectCoordPlansForUi([
+        { slug: 'nightly-alert@run-1784241963690', status: 'active' },
+        { slug: 'nightly-alert@run-1784241963691', status: 'draft' },
+        { slug: 'nightly-alert@run-1784241963692', status: 'ready' },
+        { slug: 'nightly-alert@run-1784241963693', status: 'superseded' },
+      ]) as Array<Record<string, unknown>>;
+      expect(out.map((r) => r.status)).toEqual(['active', 'draft', 'ready']);
+    });
+
+    it('does not sweep up a human-authored slug that merely contains @run-', () => {
+      const out = projectCoordPlansForUi([
+        // no digit token
+        { slug: 'plan-about-@run-semantics', status: 'superseded' },
+        // token not at the end
+        { slug: 'foo@run-123-notes', status: 'superseded' },
+        // no template part before the separator
+        { slug: '@run-123', status: 'superseded' },
+      ]) as Array<Record<string, unknown>>;
+      expect(out).toHaveLength(3);
+    });
+
+    it('still projects the surviving rows (now_state dropped, now_next clipped)', () => {
+      const out = projectCoordPlansForUi([
+        { slug: 'p@run-1', status: 'superseded', now_state: 'gone' },
+        { slug: 'p', status: 'active', now_state: 'x'.repeat(9), now_next: 'y'.repeat(900) },
+      ]) as Array<Record<string, unknown>>;
+      expect(out).toHaveLength(1);
+      expect(out[0]).not.toHaveProperty('now_state');
+      expect((out[0].now_next as string).length).toBe(COORD_TEXT_PREVIEW_MAX);
+    });
+  });
 });

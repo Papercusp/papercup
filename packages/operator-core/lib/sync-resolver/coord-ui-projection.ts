@@ -17,6 +17,9 @@
  *     /api/coord/plans/:slug); `now_next` 220KB IS rendered, CSS-truncated.
  */
 
+import { isTerminalPlanStatus } from '@papercusp/plan-parser';
+import { isPlanRunInstanceSlug } from '../agent-tools/plans/run-instance-slug';
+
 /** Preview cap for the one displayed long-text field (matches the plans P-005 cap). */
 export const COORD_TEXT_PREVIEW_MAX = 280;
 
@@ -41,16 +44,48 @@ export function projectCoordInboxForUi(rows: unknown): unknown {
 }
 
 /**
- * Drop `now_state` (carried but never rendered) and clip `now_next` (rendered
- * as a truncated preview) from each coord.plans row. Everything else — slug,
- * title, status, updated, item_count, decision_count — is kept.
+ * Drop `now_state` (carried but never rendered), clip `now_next` (rendered as a
+ * truncated preview), and drop FINISHED plan-run snapshot rows (WI-7256) from
+ * each coord.plans row. Everything else — slug, title, status, updated,
+ * item_count, decision_count — is kept.
+ *
+ * ## Why rows are dropped here and not just bytes
+ *
+ * WI-7246 established there is no per-row waste left: all seven surviving
+ * columns are rendered by the sole consumer (CoordDashboard's PlansPanel), and
+ * clipping `now_next` harder was measured and rejected — even an absurd clip to
+ * 80 chars still leaves the payload over budget while truncating 724 of 953
+ * rendered previews. The breach is ROW GROWTH, and it is unbounded: a scheduled
+ * plan mints a `<template>@run-<token>` instance row per fire, permanently, and
+ * nothing prunes them. One plan accounted for 50 of 973 rows.
+ *
+ * ## Why only the TERMINAL ones
+ *
+ * An instance is minted `active` (plan-run-action.ts) and becomes `superseded`
+ * when the run finishes, so status — not the slug shape — is what separates
+ * history from live state. Dropping every instance would silently hide an
+ * IN-FLIGHT scheduled run from the panel; dropping only the terminal ones
+ * removes exactly the accumulating population and leaves the live one visible.
+ * What remains is bounded by concurrent runs rather than by all runs ever.
+ *
+ * Nothing becomes unreachable: the parent template keeps its own row, and the
+ * full run history is still served by the unprojected `/api/coord/plans` HTTP
+ * route (and `plans:runs`) — this projection is the sync boundary only.
  */
 export function projectCoordPlansForUi(rows: unknown): unknown {
   if (!Array.isArray(rows)) return rows;
-  return rows.map((row) => {
-    if (!row || typeof row !== 'object') return row;
+  const out: unknown[] = [];
+  for (const row of rows) {
+    if (!row || typeof row !== 'object') {
+      out.push(row);
+      continue;
+    }
     const { now_state: _nowState, ...rest } = row as Record<string, unknown>;
+    if (isPlanRunInstanceSlug(rest.slug) && isTerminalPlanStatus(rest.status as string | null | undefined)) {
+      continue;
+    }
     if ('now_next' in rest) rest.now_next = clipPreview(rest.now_next, COORD_TEXT_PREVIEW_MAX);
-    return rest;
-  });
+    out.push(rest);
+  }
+  return out;
 }

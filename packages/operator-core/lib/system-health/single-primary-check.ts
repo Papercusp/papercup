@@ -30,13 +30,26 @@
  * (PAPERCUSP_SINGLE_PRIMARY_GUARD=0).
  *
  * THE SELF-CLEAR IS DURABLE, NOT PER-PROCESS (WI-7291, 2026-08-03). This guard runs on
- * EVERY request worker, so the process that raises an alarm is routinely not the one that
- * later observes the recovery. Keying the all-clear off in-process memory therefore skipped
- * it in exactly the processes able to send it, and the drift above was re-committed in a
- * subtler form: 122 `no-primary` alarms since 2026-07-11 with ZERO resolutions ever, and a
- * `split-brain-primary` condition still open 23 days after recovering. Recovery is now
- * judged against the DURABLE condition fold (openSinglePrimaryConditions), so whichever
- * process sees a healthy count clears the condition regardless of which one raised it.
+ * EVERY request worker, so the all-clear used to require the SAME process to both raise the
+ * alarm and later observe the recovery — the `openAlarms` map is per-process. That coupling
+ * holds only while the alarming process is also one that eventually sees a healthy count.
+ *
+ * Measured 2026-08-03 on `single-primary:no-primary`: 122 alarms since 2026-07-11 and 60
+ * resolutions — but every resolution falls on or before 2026-07-21T01:19:53Z. Across the
+ * ~13 days since, 40+ alarms produced zero all-clears, so the condition has been
+ * continuously OPEN, which then feeds condition-staleness-alarm (59 re-escalations in one
+ * 12h window). The evidence says the coupling worked until the alarming process stopped
+ * being one that observes recovery; it does NOT identify why that changed on 2026-07-21,
+ * and this fix does not depend on that answer.
+ *
+ * Note the existing backstop does NOT cover this: the condition-reconciler auto-resolves
+ * conditions with no NEW alarm observations (it cleared `split-brain-primary` on
+ * 2026-07-17, six days after its last alarm). A condition that keeps re-alarming every
+ * ~30 min never qualifies, which is exactly the stuck case here.
+ *
+ * Recovery is therefore judged against the DURABLE condition fold
+ * (openSinglePrimaryConditions), so whichever process sees a healthy count clears the
+ * condition regardless of which one raised it.
  *
  * VERIFY THE CONSEQUENCE, DON'T ASSERT IT (EI-19388269294151851, 2026-08-03): a count of
  * 0 used to hardcode the summary "DBOS routines, git-sync, and the Mug wake-loop are all

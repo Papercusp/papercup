@@ -313,12 +313,18 @@ function InboxPanel() {
 
 // ── Plans panel ──────────────────────────────────────────────────────
 
+/**
+ * The projected `coord.plans` row — see `sync-resolver/coord-ui-projection.ts`.
+ * `now_state` is deliberately absent: the projection strips it at the sync
+ * boundary (it is rendered nowhere; the full body loads on demand via
+ * /api/coord/plans/:slug), so declaring it here only ever described a field
+ * that never arrives. Finished `@run-` snapshot rows are dropped there too.
+ */
 interface PlanSummary {
   slug: string;
   title: string;
   status: string;
   updated: string | null;
-  now_state: string | null;
   now_next: string | null;
   item_count: number;
   decision_count: number;
