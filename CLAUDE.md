@@ -1184,6 +1184,13 @@ row says so and bash remains correct.
 > `pairs/*.ts`, and `npm run gen:tool-routing:check` fails the build on drift.
 > Adding a row, promoting one, or arguing with a gate that blocked you:
 > [bash vs tool routing](/internal/docs/agent-insights/bash-vs-tool-routing).
+>
+> ⚠ ToolSearch finding NOTHING for a `use` tool does not mean it is unavailable to you —
+> a trimmed surface (su) exposes only a seed of the ~550-tool catalog, so the exact
+> `select:` name and a keyword search can both come back empty for a tool that exists.
+> `tools:invoke { name: "<server:verb>", args: {…} }` dispatches ANY catalog tool
+> server-side, gated identically to a direct call. Verified end-to-end for `testing:run`
+> (EI-19463947683316510). Reach for that before falling back to the `not` column.
 
 | you want | use | not |
 |---|---|---|
@@ -1696,6 +1703,17 @@ If a test run ever fails with the signature above, another agent is very likely
 mid-install right now — `npm run test:file` detects it and prints a
 `TEST_FILE_MID_INSTALL_SUSPECTED` hint instead of leaving you to chase a phantom bug;
 wait for it to finish (or check `ps aux | grep 'npm install'`) and retry.
+
+⚠ **A `TEST_FILE_ROUTE_ERROR ... matched=0` does NOT always mean the router failed to find your
+file — check for a `TEST_FILE_TRANSFORM_ERROR` line beneath it.** A parse failure ANYWHERE in a
+workspace's import graph makes `vitest list` collect zero test files and exit non-zero, which trips
+the zero-match guard — so the terminal line blames routing for what is usually a PEER mid-edit in
+an unrelated file. On this shared tree that is a high-frequency shape, and the real cause prints
+~20 lines earlier, above the `| tail -N` cut this file prescribes throughout. The router now names
+the culprit explicitly (EI-19462803905923939) and says which of the two cases it is — a file YOU
+named failed to parse (a real syntax error in your own work), or a module only reachable through
+the import graph did (re-run in a minute before investigating). Read that line before concluding
+your test file moved or that your change broke the import graph.
 
 ⚠ **Hit a confusing "cannot find module" / Rolldown "failed to resolve" for a package
 that IS in `package.json`? Run `npm run doctor:deps` BEFORE you suspect a code bug.**

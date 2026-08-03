@@ -85,6 +85,19 @@ describe('renderRoutingBlock', () => {
     expect(block).toContain('gen:tool-routing');
   });
 
+  // EI-19463947683316510 — the INVERSE of the D-001 harm described below. That one is
+  // advertising a tool that cannot do the job; this one is advertising a tool that CAN,
+  // to a reader whose surface cannot LOAD it. An su session's ToolSearch returns nothing
+  // for `testing:run` (verified: both the exact `select:` name and a keyword search), so
+  // an agent following a row reasonably concludes the guidance is wrong and falls back to
+  // the `not` column — the exact bash fallback this table exists to prevent. The tool is
+  // in fact fully reachable via `tools:invoke` (verified end-to-end: it ran the suite and
+  // returned passed=10). So the table must carry the access path, not just the tool name.
+  it('tells a trimmed surface how to reach a tool ToolSearch cannot load', () => {
+    const block = renderRoutingBlock([pair()]);
+    expect(block).toContain('tools:invoke');
+  });
+
   // D-001, one layer up: a pattern whose replacement is unproven is not enforced,
   // so it must not be ADVERTISED either. Advertising it would send every agent to
   // a tool that cannot do the job — the same harm, delivered by prose.

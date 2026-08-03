@@ -31,7 +31,16 @@ vi.mock('./_shared', async (importOriginal) => ({
 // statically imports both — mock them inertly so the module loads without a
 // live embedder/DB, and let the one hybrid test override the return value.
 const runHybridSearch = vi.fn(async () => ({ results: [], totalHits: 0, embedderAvailable: true }));
-vi.mock('@papercusp/search', () => ({ runHybridSearch: (...a: unknown[]) => runHybridSearch(...(a as [])) }));
+// `configureSearchDefaults` is NOT used by these tests — it is here because
+// `search.ts` -> `../search/sources` side-effect-imports
+// `lib/search/configure-search-defaults`, which CALLS it at module load (P-017).
+// An inline factory replaces the module wholesale, so omitting it turns this
+// partial mock into a collection-time crash ("No export is defined on the
+// mock") that fails the file before a single test runs. Keep it inert.
+vi.mock('@papercusp/search', () => ({
+  runHybridSearch: (...a: unknown[]) => runHybridSearch(...(a as [])),
+  configureSearchDefaults: vi.fn(),
+}));
 vi.mock('../search/embedder', () => ({
   buildQueryEmbedder: vi.fn(async () => vi.fn()),
   interactiveEmbedAcquireBudgetMs: vi.fn(() => 1000),
