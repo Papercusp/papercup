@@ -62,6 +62,7 @@
     "scripts/lib/identity-leak-patterns.mjs",
     "scripts/check-vacuous-negative-assertions.mjs",
     "scripts/check-no-ungated-infinite-animation.mjs",
+    "scripts/check-partial-index-alignment.mjs",
     "scripts/lint-tsc.mjs",
     "scripts/lint-tsc-operator-vite.mjs",
     "scripts/check-transitive-boundary.mjs",

@@ -53,9 +53,16 @@ export default defineTool({
     const pid = process.pid;
     SEEN_PIDS.add(pid);
 
+    // `args` arrives undefined when every field is optional and the caller sends
+    // an empty body — the shape the HTTP route (/api/agent-tools/dev/cache_stats)
+    // produces, and the shape a bare tools:invoke produces. Found by exercising
+    // this live on :3170; the unit tests all passed an object, so they could not
+    // have caught it.
+    const wanted = args?.tool;
+
     const snapshot = snapshotCachedReadStats();
     const rows = Object.entries(snapshot)
-      .filter(([tool]) => (args.tool ? tool === args.tool : true))
+      .filter(([tool]) => (wanted ? tool === wanted : true))
       .map(([tool, s]) => {
         // Served-without-building = hits + stale (SWR returns the stale value
         // immediately and rebuilds in the background), so both count as "the

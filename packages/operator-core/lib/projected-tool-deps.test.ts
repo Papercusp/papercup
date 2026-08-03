@@ -43,6 +43,7 @@ import {
   isPaletteUiPollRead,
 } from './projected-tool-deps';
 import { getFlag } from '@papercusp/flags/server';
+import { FLAGS } from '@papercusp/flags';
 import { getOverride, PASS_THROUGH as TESTING_SHELL_PASS_THROUGH } from '@papercusp/testing-shell/llm';
 import { recordDecisionLedger } from './decision-ledger/emit';
 import { PASS_THROUGH } from '@papercusp/agent-mcp';

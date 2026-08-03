@@ -229,6 +229,29 @@ export function corpusTerms(text: string): string[] {
 export const CORPUS_QUERY_MAX_TERMS = 2;
 
 /**
+ * Minimum corpus document frequency for a term to be worth one of the
+ * {@link CORPUS_QUERY_MAX_TERMS} slots. A term attested fewer than twice cannot
+ * retrieve anything but itself, so spending a slot on it is strictly wasted —
+ * see {@link corpusQueryText} and D-064 for the measurement.
+ */
+export const CORPUS_QUERY_MIN_DF = 2;
+
+/**
+ * The corpus-frequency signal {@link corpusQueryText} selects with. INJECTED so
+ * the function stays pure and testable — the same seam `lexical-cursor.ts`,
+ * `topic-matcher-io.ts` and `dead-end-matcher.ts` already use for BM25 idf.
+ */
+export interface CorpusQuerySelectionOptions {
+  /** Corpus DOCUMENT frequency of a raw `corpusTerms` token — how many corpus
+   *  documents contain it. MUST be built with `corpusTerms`, not `ts_stat`
+   *  (stemming mismatch — see {@link corpusQueryText}). Omit to keep the
+   *  original length ordering. */
+  df?: (term: string) => number;
+  /** Defaults to {@link CORPUS_QUERY_MIN_DF}. */
+  minDf?: number;
+}
+
+/**
  * Build the COMPACT retrieval query for this leg from the injected text.
  *
  * This is not a nicety, it is the difference between the lexical leg working
@@ -261,27 +284,73 @@ export const CORPUS_QUERY_MAX_TERMS = 2;
  * `left(text,1500)`). It still falls through to ordinary length-based
  * selection below, where real prose terms usually outrank it.
  *
- * Failing an id, the two longest distinct content terms. Length is a crude
- * distinctiveness proxy; it is used deliberately in place of a tuned constant
- * because there is no corpus-frequency signal on this path yet. TERM SELECTION
- * IS THE TUNABLE THIS LEG'S TELEMETRY SHOULD DRIVE — measure it before
- * changing it, and note D-008's lesson first: on this path the natural
- * constant to retune is usually not the one governing the behavior.
+ * Failing an id, the terms are ranked and the top `maxTerms` kept. TWO rankings
+ * exist, and which one runs depends on whether a corpus-frequency signal was
+ * supplied (P-018 / D-064):
+ *
+ *   • `df` GIVEN — BANDED: discard terms the corpus attests fewer than
+ *     `minDf` times, then keep the RAREST of what survives.
+ *   • `df` ABSENT — LENGTH, the original crude distinctiveness proxy. Still the
+ *     fallback, so a caller with no DF table behaves exactly as before.
+ *
+ * ⚠ THE BAND IS THE POINT, AND "KEEP THE RAREST TERMS" ALONE IS A BUG. P-018
+ * originally prescribed pure rarity. Measured over 400 real turns (D-064), that
+ * spends **53.3%** of its slots on terms with df<2 — hex digests, uuids,
+ * session nonces — against 19.3% for the length proxy it was meant to replace.
+ * A term the corpus attests fewer than twice CANNOT RETRIEVE: under
+ * `plainto_tsquery`'s AND it empties the result set outright, and even in the
+ * graded cascade it contributes no coverage. Maximal idf means hapax legomenon,
+ * which means noise. IDF is a SCORING weight applied to documents that ALREADY
+ * MATCHED — BM25 weights terms it did not choose; using it to CHOOSE the query
+ * inverts it and selects exactly the terms guaranteed to match nothing. Banding
+ * restores the constraint rarity dropped, and beats length on length's own
+ * terms (0.0% unretrievable picks against its 19.3%).
+ *
+ * ⚠ `df` MUST be built with {@link corpusTerms} itself, NOT from `ts_stat`.
+ * `ts_stat` returns STEMMED lexemes while selection runs over RAW tokens, so a
+ * raw lookup misses on every inflection ("sessions"→"session",
+ * "queries"→"queri") — and a miss reads as df 0, i.e. MAXIMAL rarity, i.e.
+ * SELECTED. That silently reproduces the bug above with the most common words
+ * in the corpus ranked rarest, while still looking like a working ranker.
+ *
+ * Selection is reachable on ~34% of real queries; the other ~66% short-circuit
+ * on an id above and cannot move at any DF quality (D-064 R2).
  *
  * The same compact query also serves the EMBEDDING leg, and that is an
  * improvement rather than a compromise: a 1000-char envelope embeds mostly its
  * own boilerplate, which is precisely the effect P-041 was added to measure.
- * PURE.
+ * PURE — the DF signal is INJECTED, never fetched here.
  */
-export function corpusQueryText(text: string, maxTerms = CORPUS_QUERY_MAX_TERMS): string {
+export function corpusQueryText(
+  text: string,
+  maxTerms = CORPUS_QUERY_MAX_TERMS,
+  opts: CorpusQuerySelectionOptions = {},
+): string {
   const terms = corpusTerms(text);
   if (terms.length === 0) return '';
   const id = terms.find((t) => ID_PREFIXED_TOKEN_RE.test(t));
   if (id) return id;
-  return [...terms]
-    .sort((a, b) => b.length - a.length || terms.indexOf(a) - terms.indexOf(b))
-    .slice(0, Math.max(1, maxTerms))
-    .join(' ');
+
+  const k = Math.max(1, maxTerms);
+  const byLength = (pool: string[]): string[] =>
+    [...pool].sort((a, b) => b.length - a.length || pool.indexOf(a) - pool.indexOf(b)).slice(0, k);
+
+  if (opts.df) {
+    const minDf = opts.minDf ?? CORPUS_QUERY_MIN_DF;
+    // Resolve df ONCE per term: the lookup is a Map read, but a comparator runs
+    // it O(n log n) times and this pool routinely carries ~100 candidates.
+    const scored = terms.map((term) => ({ term, df: opts.df!(term) })).filter((s) => s.df >= minDf);
+    if (scored.length > 0) {
+      return scored
+        .sort((a, b) => a.df - b.df || terms.indexOf(a.term) - terms.indexOf(b.term))
+        .slice(0, k)
+        .map((s) => s.term)
+        .join(' ');
+    }
+    // Every candidate is unattested. Fall through to length rather than query on
+    // noise — behaviour is then exactly production's, never worse.
+  }
+  return byLength(terms).join(' ');
 }
 
 /** The session id a `session_turn` hit came from, or null for other sources.

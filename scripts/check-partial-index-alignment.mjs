@@ -76,6 +76,9 @@ const REPO_ROOT = resolve(HERE, '..');
 
 const SCHEMA_FILE = join(REPO_ROOT, 'libs/papercusp/libs/db/src/schema/generated.ts');
 
+/** Own filename, used to skip this lint's own test fixtures by self-reference. */
+const SELF_BASENAME = 'check-partial-index-alignment.mjs';
+
 /** Roots scanned for SQL. Kept explicit so a new tree is an opt-in decision, not a surprise. */
 const SOURCE_ROOTS = [
   'packages/operator-core/lib',
@@ -99,6 +102,12 @@ const ALLOWLIST = new Map();
  * Extract the alignment-required index set from the generated drizzle schema.
  * Shape matched (one per line, as generated):
  *   index("name").using("btree", sql`((col ->> 'k'::text))`).where(sql`(... col ? 'k'::text ...)`)
+ *
+ * Only indexes whose indexed EXPRESSION reads the same key the predicate guards are
+ * returned — a partial index over plain columns is a different (and provable) case.
+ *
+ * @param {string} schemaSrc - Contents of the generated drizzle schema file
+ * @returns {Array<{ index: string, col: string, key: string }>} the alignment-required set
  */
 export function parseGuardedIndexes(schemaSrc) {
   const out = [];
@@ -140,6 +149,9 @@ const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
  * of `text[i]`. The map exists because collapsing interpolations changes lengths, so a naive
  * offset arithmetic reports the wrong line — which is worse than no line at all, since it
  * sends the reader to an innocent neighbouring statement.
+ *
+ * @param {string} src - TypeScript/JavaScript source text
+ * @returns {Array<{ text: string, srcIndex: number[] }>} one entry per sql template literal
  */
 export function extractSqlTemplates(src) {
   const out = [];
@@ -197,6 +209,10 @@ const stripSqlComments = (s) => s.replace(/--[^\n]*/g, (c) => ' '.repeat(c.lengt
 /**
  * A `col ->> 'key'` occurrence is a COMPARISON use (and so requires the guard) when it is
  * an operand of a comparison. Projections (`... AS x`), ORDER BY and COALESCE wrappers are not.
+ *
+ * @param {string} sqlText - One SQL statement (a single tagged template's text)
+ * @param {{ col: string, key: string }} index - The column and jsonb key the index guards
+ * @returns {number[]} offsets into `sqlText` of each comparison lacking the presence guard
  */
 export function findMisalignedUses(sqlText, { col, key }) {
   const text = stripSqlComments(sqlText);
@@ -211,15 +227,25 @@ export function findMisalignedUses(sqlText, { col, key }) {
   let m;
   while ((m = occ.exec(text))) {
     const before = text.slice(Math.max(0, m.index - 60), m.index);
-    const after = text.slice(m.index + m[0].length, m.index + m[0].length + 40);
+    const rawAfter = text.slice(m.index + m[0].length, m.index + m[0].length + 40);
+
+    // Normalize the CAST-WRAPPED form `(col ->> 'k')::bigint <= $1` — the reply-deadline
+    // shape — by dropping the closing paren of the wrap plus the cast, so the comparison
+    // operator becomes the first thing we see. Only a paren IMMEDIATELY followed by a cast
+    // is dropped: a bare `)` is left alone so an unrelated enclosing expression (or a
+    // function wrapper like lower(...), which could not use this index anyway) is not
+    // mistaken for a comparison on the indexed expression itself.
+    const after = rawAfter.replace(/^\s*(?:\)\s*)?(?:::\s*"?\w+"?\s*)+/, '');
+    // Same normalization on the left for the reversed operand order.
+    const beforeTrimmed = before.replace(/\s*\(\s*$/, '');
 
     // COALESCE(...) deliberately admits key-absent rows — adding the guard changes results.
     if (/coalesce\s*\([^()]*$/i.test(before)) continue;
     // IS NULL / IS NOT NULL are NOT equivalent to the presence test (JSON null case).
-    if (/^\s*(?:::\s*\w+\s*)?is\s+(?:not\s+)?null/i.test(after)) continue;
+    if (/^\s*is\s+(?:not\s+)?null/i.test(after)) continue;
 
-    const followsComparison = /(?:=|<>|!=|<=|>=|<|>|\bin|\blike|\bilike|~\*?)\s*$/i.test(before);
-    const precedesComparison = /^\s*(?:::\s*\w+\s*)?(?:=|<>|!=|<=|>=|<|>|\bin\b|\bany\b|\blike\b|\bilike\b|~)/i.test(after);
+    const followsComparison = /(?:=|<>|!=|<=|>=|<|>|\bin|\blike|\bilike|~\*?)\s*$/i.test(beforeTrimmed);
+    const precedesComparison = /^\s*(?:=|<>|!=|<=|>=|<|>|\bin\b|\bany\b|\blike\b|\bilike\b|~)/i.test(after);
     if (!followsComparison && !precedesComparison) continue;
 
     hits.push(m.index);
@@ -287,6 +313,14 @@ function main() {
       filesScanned++;
       // Cheap pre-filter: no '->>' at all means nothing to check.
       if (!src.includes('->>')) continue;
+      // A file that IMPORTS this lint is testing it, so its SQL-shaped strings are
+      // deliberately-vulnerable FIXTURES rather than live queries. Skipping by
+      // self-reference rather than by an allowlist entry keeps this self-maintaining:
+      // a second test of this lint is excluded automatically, and no real query file can
+      // accidentally qualify. Note we do NOT skip test files in general -- a test whose
+      // raw SQL has drifted from the production shape it claims to pin is a real find
+      // (store.integration.test.ts was exactly that).
+      if (src.includes(SELF_BASENAME)) continue;
 
       for (const tpl of extractSqlTemplates(src)) {
         statementsScanned++;

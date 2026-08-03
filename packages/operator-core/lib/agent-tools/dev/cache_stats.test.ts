@@ -125,6 +125,25 @@ describe('dev:cache_stats', () => {
     expect(rows[0].total).toBe(4);
   });
 
+  it('survives an UNDEFINED args object (empty-body HTTP call / bare tools:invoke)', async () => {
+    // Regression: every field on this tool is optional, so the HTTP route
+    // /api/agent-tools/dev/cache_stats with an empty body hands the handler
+    // `undefined` rather than `{}`. Reading `args.tool` threw
+    // "Cannot read properties of undefined (reading 'tool')" against the LIVE
+    // :3170 operator while all seven other tests passed — they each supplied an
+    // args object, so none of them could reach this path.
+    const f = vi.fn(async () => [{ v: 1 }]);
+    await cachedRead(ctx, { tool: 'plans:attention', key: 'z' }, f);
+
+    const res = (await tool.handler(
+      undefined as never,
+      makeToolCtx() as never,
+    )) as { data: Record<string, unknown> };
+
+    expect(res.data.ok).toBe(true);
+    expect((res.data.perTool as unknown[]).length).toBe(1);
+  });
+
   it('always reports pid + clusterSize so per-worker counters are not read as fleet-wide', async () => {
     const data = await read();
     expect(data.pid).toBe(process.pid);

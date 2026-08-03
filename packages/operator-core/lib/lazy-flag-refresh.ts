@@ -97,6 +97,27 @@
  * its first read per process would be a hard, deterministic zero, not a degradation. That module is
  * deliberately NOT migrated; see the block comment there.
  *
+ * ### The SECOND axis: read-site displacement (the value is not the only thing that moves)
+ *
+ * Everything above is about WHAT VALUE the window serves. That is necessary and NOT sufficient:
+ * lazy arming also moves WHERE THE FLAG READ HAPPENS — from a boot-time subscription to the first
+ * reader call — and a flag read has observable effects beyond the value it returns. Ask separately:
+ * is every code path that can reach a reader allowed to perform a flag read AT ALL?
+ *
+ * Measured 2026-08-03 (EI-19448574704459898), found by a peer running the gate's break set: the
+ * `capability-envelope-overrides` migration turned `projected-tool-deps.test.ts:71` red — an EXEMPT
+ * superuser caller now caused `getFlag(CAPABILITY_ENVELOPE_OVERRIDES, systemDistinctId())`, because
+ * `checkCapabilityEnvelopeImpl` calls the two sync getters at the TOP of the function, BEFORE its
+ * `if (!decision.applied) return null` early-out. The VALUE was flawless (an empty override map, a
+ * flag that is default-OFF and dark — the safest cell in the whole table above); the READ SITE was
+ * the regression. A value-only audit — which is exactly what this header contained until that red —
+ * marks that caller "safe by construction" and misses it completely.
+ *
+ * In that specific case the invariant survived on the merits (a different flag, read under the SYSTEM
+ * distinctId rather than the caller's, producing no verdict and no gating), so the over-broad
+ * assertion was narrowed rather than the code changed. Do not read that outcome as "read-site
+ * displacement is benign" — it is the question, not the answer, and it happened to resolve well once.
+ *
  * ⚠ There is NO "warm it on a boot path" escape hatch, despite what this file used to claim. It
  * pointed at `task-manager/enabled.ts`'s `warmTaskManagerFlag()` as the pattern to copy —
  * that function has ZERO production call sites (verified 2026-08-03: only its own definition, its

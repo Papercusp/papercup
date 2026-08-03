@@ -313,7 +313,10 @@ function renderShape(r: ShapeReport, boundMs: number): string {
   );
   if (r.maxTerms !== 2) {
     L.push(
-      `- ⚠ **${r.sameAsProductionShape}/${r.n}** of these queries are BYTE-IDENTICAL to the 2-term production shape (${pct(r.sameAsProductionShape, r.n)}) — \`corpusQueryText\`'s id-token short-circuit (P-007/WI-7237) ignores \`maxTerms\` entirely on those turns, so this "shape" is partly not a shape.`,
+      `- ⚠ **${r.sameAsProductionShape}/${r.n}** of these queries are BYTE-IDENTICAL to the 2-term production shape (${pct(r.sameAsProductionShape, r.n)}) — on those turns an ID-PREFIXED token wins outright and is used ALONE, so \`maxTerms\` never applies and this "shape" is partly not a shape.`,
+    );
+    L.push(
+      `  ⚠ NOT the WI-7237 bare-number bug. This line used to blame that short-circuit; the bare-number branch was FIXED on 2026-08-03 (\`ID_PREFIXED_TOKEN_RE\`) and the ratio did not move — 67.5% before and after. The real cause is that ~two thirds of agent turns legitimately name a \`WI-\`/\`EI-\`/\`D-\`/\`P-\` id (measured n=400: 66.3% id-shortcircuit, 33.8% addressable — see D-064 and \`corpus-term-selection-cli.ts\`).`,
     );
   }
   L.push(

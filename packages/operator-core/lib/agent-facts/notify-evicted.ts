@@ -35,7 +35,35 @@
  * re-creating the exact invisibility this exists to remove. If you are tempted
  * to add one, that is the trap.
  */
-import type { FactEviction } from './store';
+import type { FactConfidence, FactEviction } from './store';
+
+/**
+ * EI-19449079650310753: which ranking key ACTUALLY decided this eviction.
+ *
+ * The cap ranks by confidence, THEN by `expires_at DESC`, then write-recency.
+ * Reciting that ordering as the explanation is misleading in the ONLY case that
+ * occurs in practice: measured 2026-08-03, EVERY scope at or near the cap held
+ * exactly ONE distinct confidence tier (harness/papercusp 50/50 verified,
+ * workspace 50/50 verified, harness/oddsmith 41/41 verified), so the confidence
+ * key is INERT precisely where the ranking runs and the TTL decides alone.
+ *
+ * Telling an author "ranked by confidence first, 'verified' survives longest"
+ * when their fact was ALREADY verified points them at a lever that cannot help:
+ * the real lever was the TTL they declared. Measured on the same scope, evicted
+ * verified facts averaged 8.9 days of TTL against 61.5 for the survivors.
+ *
+ * `null`/absent ⇒ undetermined, and the notice then says so rather than guessing.
+ */
+export interface EvictionRankingContext {
+  /**
+   * False ⇒ every live fact in the scope (survivors AND victims) shares one
+   * confidence tier, so confidence provably separated nothing and the victim
+   * lost on TTL. True ⇒ tiers genuinely differed, so confidence did rank.
+   */
+  confidenceDiscriminated: boolean;
+  /** The single tier every fact shares, when `confidenceDiscriminated` is false. */
+  prevailingConfidence: FactConfidence | null;
+}
 
 /** Best-effort: a failed notification must never fail the write that caused it. */
 export interface NotifyEvictedArgs {
@@ -44,6 +72,8 @@ export interface NotifyEvictedArgs {
   writerOwnerId: string;
   scope: string;
   scopeRef?: string | null;
+  /** Optional: omitted ⇒ the notice reports the deciding key as undetermined. */
+  ranking?: EvictionRankingContext | null;
 }
 
 /** Owners to notify, grouped — one message each, never one per evicted key. */
@@ -69,7 +99,12 @@ export function groupVictimsByOwner(
 /** The body an owner receives. Exported so a test pins the wording's substance. */
 export function renderEvictionNotice(
   victims: readonly FactEviction[],
-  args: { writerOwnerId: string; scope: string; scopeRef?: string | null },
+  args: {
+    writerOwnerId: string;
+    scope: string;
+    scopeRef?: string | null;
+    ranking?: EvictionRankingContext | null;
+  },
 ): { summary: string; body: string } {
   const scopeLabel = args.scopeRef ? `${args.scope}/${args.scopeRef}` : args.scope;
   const n = victims.length;
@@ -98,9 +133,59 @@ export function renderEvictionNotice(
     `HOW VICTIMS ARE CHOSEN (so this is predictable rather than mysterious): the cap keeps the ` +
     `most valuable and drops the tail, ranked by confidence first ('verified' survives longest, ` +
     `'suspected' dies first), then by declared TTL (a longer TTL survives), then write-recency. ` +
-    `A fact can still be evicted despite a long TTL if enough higher-ranked facts fill the scope.`;
+    `A fact can still be evicted despite a long TTL if enough higher-ranked facts fill the scope.\n\n` +
+    decidingKeyParagraph(args.ranking);
 
   return { summary, body };
+}
+
+/**
+ * EI-19449079650310753: name the key that ACTUALLY decided, so the reader is not
+ * sent after a lever that cannot move.
+ *
+ * Reciting the full ranking (above) is accurate but, on its own, actively
+ * misleading: in every scope measured at cap, confidence held ONE tier, so the
+ * "ranked by confidence first" sentence describes a comparison that never
+ * happened. An author whose fact was already `verified` reads it and concludes
+ * either that their fact was somehow low-confidence or that raising confidence
+ * would have saved it. Neither is true, and the lever that WOULD have — a longer
+ * declared TTL — is the one the sentence relegates to second place.
+ */
+function decidingKeyParagraph(ranking?: EvictionRankingContext | null): string {
+  if (!ranking) {
+    return (
+      `WHICH KEY DECIDED YOURS: not determined for this eviction. Do not assume it was ` +
+      `confidence — see below for why that is usually the wrong lever.`
+    );
+  }
+  if (ranking.confidenceDiscriminated) {
+    return (
+      `WHICH KEY DECIDED YOURS: confidence. This scope holds a genuine MIX of confidence ` +
+      `tiers, so the ranking's first key did separate facts here and your fact was ranked ` +
+      `below a higher-confidence one. Raising confidence — honestly — is a real lever in ` +
+      `this scope.`
+    );
+  }
+  // `prevailingConfidence` is null when the tiers RANK equally but are not the
+  // same literal value — unset and 'provisional' both rank 1, so naming one of
+  // them as "the tier everything shares" would be a false statement about the
+  // data. Say what is actually true in that case instead.
+  const sameness = ranking.prevailingConfidence
+    ? `carries the SAME confidence tier (\`${ranking.prevailingConfidence}\`)`
+    : `ranks EQUALLY on confidence (an unset confidence and 'provisional' rank the same)`;
+  return (
+    `WHICH KEY DECIDED YOURS: the TTL, NOT confidence — and this is the case that ` +
+    `matters, so do not act on the ranking sentence above alone. Every live fact in this ` +
+    `scope ${sameness}, so the confidence key separated ` +
+    `nothing at all: it is inert precisely where the cap runs. Your fact was dropped ` +
+    `because its declared TTL was the shortest of the tail, and for no other reason.\n` +
+    `So re-asserting at a HIGHER CONFIDENCE cannot help — it is already the same tier as ` +
+    `everything else here. If the fact must survive, give it a LONGER TTL, or retract ` +
+    `something in this scope you no longer need. Note the perverse consequence, stated ` +
+    `plainly rather than left for you to discover: a SHORT TTL is how an author says ` +
+    `"urgent, and this stops being true soon", and it is exactly what this cap destroys ` +
+    `first.`
+  );
 }
 
 /**

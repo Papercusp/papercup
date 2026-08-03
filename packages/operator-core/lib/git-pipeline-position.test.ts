@@ -40,6 +40,7 @@ import {
   type SweepExposure,
 } from './git-pipeline-position';
 import type { DevDeployState } from './dev-deploy-state';
+import type { DeployInFlight } from './release-deploy-launch';
 import type { GitPipelineSnapshot } from './git-pipeline-stats';
 
 /** A git-sync leg-state with nothing wrong with it — the baseline for fixtures. */
@@ -3500,6 +3501,127 @@ describe('stage levers (P-005)', () => {
       },
     });
     expect(superseded).toBeNull();
+  });
+});
+
+/* -------------------------------------------------------------------------
+ * EI-19447523039740352 — the RESOLVER WIRING, end to end.
+ *
+ * The two ends of this fix are already covered above: `evaluateServing` computes
+ * `restartSupersededBy` from a DeployInFlight (the `restartSupersededBy` describe),
+ * and `computeStages` withholds the serving lever when it is set (the lever case
+ * directly above). Neither exercises the three lines that JOIN them inside
+ * `gitPipelinePosition` — probe `readDeployInFlight` for `operator-release` only,
+ * pass it into `evaluateServing`, and let the null lever fall through `deriveBlocker`
+ * to `nextAction`.
+ *
+ * Those three lines ARE the bug. It was reported against the tool's OUTPUT — an agent
+ * one call short of firing a second concurrent deploy because `nextAction` told it to —
+ * so a green suite that never asserts on that output would not have caught the report.
+ * ------------------------------------------------------------------------- */
+describe('EI-19447523039740352: a running deploy reaches nextAction through the full resolver', () => {
+  const RELEASE_PATH = 'apps/operator/app/x.ts'; // DEFAULT_OWNER ⇒ operator-release
+  const RESTART_LEVER = /deploy-cli\.ts --execute/;
+
+  const deployUnitState = (over: Partial<DeployInFlight> = {}): DeployInFlight => ({
+    active: false,
+    unit: 'papercup-auto-deploy',
+    activeState: 'inactive',
+    subState: 'dead',
+    startedAtMs: null,
+    logPath: '/tmp/auto-deploy.log',
+    logMtimeMs: null,
+    source: 'systemd',
+    ...over,
+  });
+
+  /** MEASURED idle: systemd answered, and nothing is running. */
+  const IDLE = deployUnitState();
+  /** The reported state: the deploy is mid-flight and restarts :3070 itself. */
+  const RUNNING = deployUnitState({ active: true, activeState: 'activating', subState: 'running', startedAtMs: 1_700_000 });
+
+  /**
+   * A fully-deployed path whose SERVING process is stale — the window the report was
+   * filed from. It is not an edge case: files land early in a deploy and the restart
+   * happens late, so `startedAtMs < codeAsOfMs` holds for the whole duration of a
+   * perfectly normal deploy. Everything here is fixed EXCEPT the deploy-unit state,
+   * which is the single input the two arms below differ on.
+   */
+  const stalelyServing = (readDeployInFlight: () => Promise<DeployInFlight>) =>
+    gitPipelinePosition(
+      { path: RELEASE_PATH },
+      {
+        git: fakeGit({
+          pathCommit: 'abc1234567',
+          contains: {
+            HEAD: ['abc1234567'],
+            'origin/staging': ['abc1234567'],
+            'origin/main': ['abc1234567'],
+            deployedsha0: ['abc1234567'],
+          },
+        }),
+        loadDeploy: async () => deploy({ deployedAtMs: Date.now() - 60_000 }),
+        loadSnapshot: async () => snap(),
+        // Started three hours BEFORE the code it serves — i.e. it has not loaded it.
+        probeUnitStart: async () => ({ pid: 4242, startedAtMs: Date.now() - 3 * 60 * 60_000 }),
+        readDeployInFlight,
+      },
+    );
+
+  it('withholds the lever end-to-end while a deploy runs — and offers it when one is NOT running', async () => {
+    const idle = await stalelyServing(async () => IDLE);
+    const running = await stalelyServing(async () => RUNNING);
+
+    /**
+     * THE NON-VACUITY GUARD, asserted rather than assumed. If the fixture stopped
+     * producing a stale serving process (a fixture drifting, a default changing), BOTH
+     * arms would report `nextAction: null` and the differential below would pass with
+     * the wiring deleted — the exact "green for the wrong reason" this file's P-009
+     * note warns about. This arm fails loudly instead.
+     */
+    expect(idle.serving.startedSinceCodeChange, 'fixture no longer produces a STALE serving process').toBe(false);
+    expect(idle.blockedOn).toBe('serving');
+    expect(idle.nextAction, 'with no deploy running the restart lever IS the correct advice').toMatch(RESTART_LEVER);
+
+    // The reported bug, at the output the reporter actually read: same stale process,
+    // same git state, only a deploy now in flight ⇒ no lever, and "waiting" is correct.
+    expect(running.blockedOn, 'where the change SITS is unchanged — only the advice moves').toBe('serving');
+    expect(running.nextAction).toBeNull();
+    expect(running.serving.restartSupersededBy).toEqual({
+      kind: 'deploy-in-flight',
+      unit: 'papercup-auto-deploy',
+      startedAtMs: 1_700_000,
+      activeState: 'activating',
+    });
+    // …and the caller is TOLD why there is nothing to do, rather than left to infer it
+    // from a bare null — which would read like "your change is live".
+    expect(running.notes.join('\n')).toMatch(/DEPLOY IS ALREADY RUNNING/);
+  });
+
+  /**
+   * The other half of the wiring: the probe is gated on `operator-release` because only
+   * that host's lever IS a deploy. Un-gated, every bg-host/gateway/desktop caller would
+   * pay a systemctl round-trip for an answer that cannot change its verdict.
+   */
+  it('does NOT probe the deploy unit for a host whose lever is not a deploy', async () => {
+    const BG_PATH = 'packages/operator-core/lib/harness/git-sync/tick.ts';
+    // Asserted, not assumed — if this path is ever reclassified, the case below stops
+    // testing the gate and this line says so instead of silently passing.
+    expect(classifyRuntimeOwners(BG_PATH)?.[0].host).toBe('bg-host');
+
+    const probe = vi.fn(async () => IDLE);
+    await gitPipelinePosition(
+      { path: BG_PATH },
+      {
+        git: fakeGit({ pathCommit: 'abc1234567', contains: { HEAD: ['abc1234567'] } }),
+        loadDeploy: async () => deploy(),
+        loadSnapshot: async () => snap(),
+        probeUnitStart: async () => ({ pid: 99, startedAtMs: Date.now() - 3 * 60 * 60_000 }),
+        fileMtimeMs: async () => Date.now() - 60_000,
+        readDeployInFlight: probe,
+      },
+    );
+    expect(probe).not.toHaveBeenCalled();
   });
 });
 

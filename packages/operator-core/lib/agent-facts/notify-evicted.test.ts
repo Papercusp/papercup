@@ -84,6 +84,63 @@ describe('renderEvictionNotice', () => {
   });
 });
 
+/**
+ * EI-19449079650310753 — the notice must name the key that ACTUALLY decided.
+ *
+ * Reciting "ranked by confidence first" is accurate about the SQL and misleading
+ * about reality: measured 2026-08-03, every scope at or near the cap held exactly
+ * ONE confidence tier, so that key separated nothing and the TTL decided alone.
+ * An author whose fact was already `verified` reads the recital and reaches for a
+ * lever that cannot move. Each test below pins one way of getting that wrong.
+ */
+describe('renderEvictionNotice — which key actually decided', () => {
+  const render = (ranking: Parameters<typeof renderEvictionNotice>[1]['ranking']) =>
+    renderEvictionNotice([victim()], {
+      writerOwnerId: 'su-writer',
+      scope: 'harness',
+      scopeRef: 'papercusp',
+      ranking,
+    }).body;
+
+  it('says the TTL decided — and that raising confidence CANNOT help — when every fact shares a tier', () => {
+    const body = render({ confidenceDiscriminated: false, prevailingConfidence: 'verified' });
+    expect(body).toMatch(/the TTL, NOT confidence/i);
+    // The operative instruction. Without it the reader still reasonably concludes
+    // "mark it verified next time" — which is a no-op, because it already was.
+    expect(body).toMatch(/re-asserting at a HIGHER CONFIDENCE cannot help/i);
+    expect(body).toMatch(/LONGER TTL/i);
+    expect(body).toContain('`verified`');
+  });
+
+  it('names confidence as the decider only when tiers genuinely differ', () => {
+    const body = render({ confidenceDiscriminated: true, prevailingConfidence: null });
+    expect(body).toMatch(/WHICH KEY DECIDED YOURS: confidence/i);
+    // Must NOT tell an author in a genuinely mixed scope that confidence is inert
+    // — there it is a real lever, and the advice inverts.
+    expect(body).not.toMatch(/the TTL, NOT confidence/i);
+  });
+
+  it('reports UNDETERMINED rather than guessing when the ranking context is absent', () => {
+    const body = render(null);
+    expect(body).toMatch(/not determined for this eviction/i);
+    // Undetermined must not silently read as either verdict.
+    expect(body).not.toMatch(/the TTL, NOT confidence/i);
+    expect(body).not.toMatch(/WHICH KEY DECIDED YOURS: confidence\b/i);
+  });
+
+  it('does NOT claim a shared tier when tiers merely RANK equally (unset vs provisional)', () => {
+    // unset and 'provisional' both rank 1, so the ordering separated nothing —
+    // but they are not the same tier, and saying they are would be a false
+    // statement about the data. `prevailingConfidence: null` is that case.
+    const body = render({ confidenceDiscriminated: false, prevailingConfidence: null });
+    expect(body).toMatch(/ranks EQUALLY on confidence/i);
+    expect(body).not.toMatch(/SAME confidence tier/i);
+    // Specifically must not render the null as a literal tier name.
+    expect(body).not.toContain('`unset`');
+    expect(body).not.toContain('`null`');
+  });
+});
+
 describe('notifyEvictedFactOwners', () => {
   it('delivers to the fact owner, addressed to them directly', async () => {
     const notified = await notifyEvictedFactOwners({

@@ -74,6 +74,7 @@ import {
 } from '@papercusp/tooldef-mcp';
 import { getOrgPg, withWorkspace } from '@papercusp/db-org';
 import { applyResultDoor } from '../../../result-door';
+import { annotateStoreIdentitySuspectResult } from './store-identity-suspect';
 import { PROJECTION_ARG, applyResultProjection, parseProjection } from '../../../result-projection';
 import type { ProjectionSpec } from '../../../result-projection';
 import { resolveAgentIdentity } from '../../../agent-tools/coordination/identity';
@@ -2262,7 +2263,7 @@ const handler = createMcpHandler(
               // door-truncated body plus its prose footer is invalid JSON, so
               // such a caller's parse throws and fails open SILENTLY, dropping
               // the call's payload with no error anywhere.
-              const result = projected.skipResultDoor
+              const doored = projected.skipResultDoor
                 ? projectedResult
                 : applyResultDoor(
                 projectedResult,
@@ -2281,6 +2282,19 @@ const handler = createMcpHandler(
                   })(),
                 },
               );
+              // EI-19415249247575123: a `not_found` returned while this process is KNOWN to
+              // have talked to a DIFFERENT Postgres cluster is a confidently wrong answer —
+              // the most expensive shape available here, because an agent that trusts it
+              // concludes its plan/work-item was deleted and may re-create it. The
+              // store-identity latch already detects the condition and already says the right
+              // thing; before this it had two consumers, both DIAGNOSTICS you must already
+              // suspect a problem to call. Applied HERE because this is where every
+              // model-facing tool result converges, so it covers all ~60 not_found-emitting
+              // agent-tools and every future one with a single edit. Hot-path cost in the
+              // healthy case is one module-level null check. `!skipResultDoor` keeps a
+              // programmatic caller's body parseable (EI-19386201256023240) while still
+              // stamping the machine-readable `_meta` marker.
+              const result = annotateStoreIdentitySuspectResult(doored, !projected.skipResultDoor);
               // EI-19389431406847252: the door spills to scratch but the telemetry
               // row for THIS call was already snapshotted+queued inside
               // runDispatchStack's `finally`, which runs BEFORE this point — so the

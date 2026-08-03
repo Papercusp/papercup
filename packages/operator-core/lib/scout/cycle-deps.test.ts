@@ -9,6 +9,7 @@
  *
  * Run from inside the package: `cd packages/operator-core && npx vitest run lib/scout/cycle-deps`.
  */
+import { readFileSync } from 'node:fs';
 import { beforeEach, describe, it, expect, vi } from 'vitest';
 
 const getFlag = vi.hoisted(() => vi.fn(async () => false));
@@ -507,5 +508,50 @@ describe('rosterForBudget', () => {
       expect(rosterForBudget(1, undefined, { 'not-a-lens': 5, analogical: 10 }))
         .toEqual({ lenses: ['first-principles'] });
     });
+  });
+});
+
+/**
+ * EI-18697783591503819 — recurrence guard on `readNoveltyCorpus`'s routed-ledger leg.
+ *
+ * This is a SOURCE-POLICING test (the repo's established pattern for an invariant that
+ * lives in a SQL string) because the defect it guards is invisible to every other lane:
+ * the leg's own unit test injects a fake reader, so it never sees this SQL at all, and
+ * this suite must never touch a real PG (WI-5367 above).
+ *
+ * What went wrong: the leg was `ORDER BY routed_at DESC LIMIT 500`, a recency window on a
+ * ledger where `routed_ref` is NOT unique. Measured 2026-08-03 — 500 raw rows carried only
+ * 275 distinct refs, the visible cutoff sat at 07-12 on a ledger reaching back to 06-11, and
+ * the whole 07-01 immunology/self-tag idea cluster had aged out of view. Scout, unable to
+ * see its own priors, re-generated that already-falsified idea 21 more times.
+ *
+ * The load-bearing insight is the ORDERING, not the limit: an "already tried and failed"
+ * prior is the corpus's most decision-relevant entry and only grows more authoritative with
+ * age, so evicting oldest-first discards exactly what novelty-checking depends on. Raising
+ * the limit alone would NOT fix that, which is why both properties are asserted.
+ */
+describe('readNoveltyCorpus routed-ledger leg (EI-18697783591503819)', () => {
+  const legSql = (() => {
+    const src = readFileSync(new URL('./cycle-deps.ts', import.meta.url), 'utf8');
+    const start = src.indexOf('FROM harness_shared.scout_routed_ideas');
+    if (start < 0) throw new Error('routed-ledger leg not found in cycle-deps.ts');
+    // The leg's statement: back up to its SELECT, forward to the closing backtick.
+    return src.slice(src.lastIndexOf('SELECT', start), src.indexOf('`', start));
+  })();
+
+  it('dedupes by routed_ref — a re-routed idea must not spend N corpus slots', () => {
+    expect(legSql).toMatch(/DISTINCT ON \(routed_ref\)/);
+  });
+
+  it('ranks DECIDED priors ("already tried, failed") ahead of recency', () => {
+    // The alreadyTried signal must survive eviction; a bare recency sort drops it first.
+    expect(legSql).toMatch(/ORDER BY\s+\(outcome IS NOT NULL\) DESC/);
+  });
+
+  it('does not reintroduce the bare recency window that caused the regression', () => {
+    // The exact prior shape: a top-level recency sort with no dedup ahead of it.
+    const bareRecencyWindow = /ORDER BY routed_at DESC\s+LIMIT/.test(legSql)
+      && !/DISTINCT ON \(routed_ref\)/.test(legSql);
+    expect(bareRecencyWindow).toBe(false);
   });
 });

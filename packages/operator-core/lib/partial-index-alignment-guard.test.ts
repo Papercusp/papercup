@@ -188,6 +188,29 @@ describe('line attribution survives interpolation', () => {
   });
 });
 
+describe('the self-reference exclusion stays NARROW', () => {
+  // This lint necessarily scans a tree containing its own test, whose fixtures are
+  // deliberately-vulnerable SQL. It excludes files that IMPORT it. The tempting future
+  // "simplification" is to skip *.test.ts wholesale -- which would have silently dropped
+  // a genuine find (store.integration.test.ts had drifted from the production predicate
+  // set it claims to pin). Pin the narrow rule so that shortcut fails loudly.
+  const src = readFileSync(SCRIPT, 'utf8');
+
+  it('skips only files that reference this lint by name', () => {
+    expect(src).toContain('SELF_BASENAME');
+  });
+
+  it('does NOT blanket-exclude test files from scanning', () => {
+    const skipsAllTests = /if\s*\(\s*\/\\?\.test\\?\.ts\$?\/.test\([^)]*\)\s*\)\s*continue/.test(src);
+    expect(
+      skipsAllTests,
+      'the lint appears to skip all *.test.ts files. A test whose raw SQL has drifted from ' +
+        'the production shape it pins is a real finding -- exclude this lint\'s own fixtures ' +
+        'by self-reference instead.',
+    ).toBe(false);
+  });
+});
+
 describe('the tree is currently aligned (ratchet)', () => {
   it('the lint exits 0 on the repo as it stands', () => {
     // If this fails, a NEW misaligned query landed. Read the lint output: it names the

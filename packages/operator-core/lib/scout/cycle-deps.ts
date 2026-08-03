@@ -256,13 +256,36 @@ export async function readNoveltyCorpus(): Promise<CorpusEntry[]> {
     // outcome CACHE maps onto the corpus's decided-state vocabulary so a lost
     // idea reads as an already-tried prior ('dropped' ⇒ the alreadyTried penalty
     // + the "already tried, failed" priorArt signal) and a won one as 'shipped'.
-    // Bounded: most recently routed first.
+    //
+    // EI-18697783591503819: this leg was a bare `ORDER BY routed_at DESC LIMIT 500`,
+    // which made the corpus FORGET precisely the priors it exists to remember.
+    // Three compounding defects, measured 2026-08-03 against a 1,154-row ledger:
+    //   1. `routed_ref` is NOT unique (a re-route appends a row), so 500 raw rows
+    //      carried only 275 DISTINCT refs — 45% of the window re-read priors it
+    //      already had.
+    //   2. Recency eviction is BACKWARDS for this signal. An "already tried and
+    //      failed" prior does not decay; it is the most decision-relevant entry in
+    //      the corpus and only grows more authoritative with age. Evicting
+    //      oldest-first drops exactly those: 630 of 697 distinct refs are decided,
+    //      but only 488 survived the window.
+    //   3. Together they slid the visible cutoff to 07-12 on a ledger reaching back
+    //      to 06-11 — so the entire 07-01 immunology/self-tag cluster aged out of
+    //      view and Scout re-generated that one already-falsified idea 21 more
+    //      times, each re-filing costing an agent a wake to re-derive the same
+    //      falsification (EI-5878/5850/5882/5896 all independently deprecated).
+    // Fix: one row per ref (most recent), DECIDED priors first, then recency. At
+    // LIMIT 1000 (the decisions leg's own bound) that covers the whole current
+    // ledger — 697 distinct refs — while reading ~40% more rows than before.
     const ideas = await sql<{ routed_ref: string; title: string | null; outcome: string | null }[]>`
       SELECT routed_ref, title, outcome
-        FROM harness_shared.scout_routed_ideas
-       WHERE title IS NOT NULL
-       ORDER BY routed_at DESC
-       LIMIT 500`;
+        FROM (
+          SELECT DISTINCT ON (routed_ref) routed_ref, title, outcome, routed_at
+            FROM harness_shared.scout_routed_ideas
+           WHERE title IS NOT NULL
+           ORDER BY routed_ref, routed_at DESC
+        ) d
+       ORDER BY (outcome IS NOT NULL) DESC, routed_at DESC
+       LIMIT 1000`;
     for (const r of ideas) {
       const text = r.title?.trim();
       if (!text) continue;

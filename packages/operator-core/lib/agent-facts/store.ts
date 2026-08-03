@@ -1207,9 +1207,56 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
     // only 1 of 6 assertFact callers — the routines/gates/bootstrap writers evict
     // exactly like anyone else, and a tool-layer notify would leave every
     // routine-caused eviction silent.
+    // EI-19449079650310753: work out which ranking key ACTUALLY decided, so the
+    // notice can say so instead of reciting the idealised ordering.
+    //
+    // The recital is misleading in the only case that occurs: measured
+    // 2026-08-03, EVERY scope at or near the cap held exactly ONE confidence
+    // tier (harness/papercusp 50/50 verified, workspace 50/50 verified,
+    // harness/oddsmith 41/41), so the confidence key is INERT precisely where
+    // this sweep runs and `expires_at DESC` decides alone. Evicted verified
+    // facts in that scope averaged 8.9 days of TTL against 61.5 for survivors.
+    //
+    // One cheap aggregate, and ONLY on a write that actually evicted — the
+    // sweep fires solely past CAP-1, so this cannot cost anything on the common
+    // path. Ranks are computed with the SAME CASE as the ORDER BY above (unset
+    // ranks WITH 'provisional'), because the question is whether the ordering
+    // separated anything — not whether the literal strings differ.
+    let ranking: import('./notify-evicted').EvictionRankingContext | null = null;
+    try {
+      const survivors = await sql<{ confidence: string | null }[]>`
+        SELECT DISTINCT confidence
+          FROM harness_shared.agent_facts
+         WHERE workspace_id = ${ws} AND scope = ${input.scope}
+           AND coalesce(scope_ref,'') = ${ref ?? ''}
+           AND source_hive IS NULL
+           AND superseded_at IS NULL
+           AND retracted_at IS NULL AND expires_at > now()
+           AND key NOT LIKE ${`${WALL_KEY_PREFIX}%`}
+           AND key NOT LIKE ${`${DEAD_END_KEY_PREFIX}%`}`;
+      const confRank = (c: FactConfidence | null): number =>
+        c === 'verified' ? 0 : c === 'suspected' ? 2 : 1;
+      const values = new Set<FactConfidence | null>();
+      for (const r of survivors) values.add(parseFactConfidence(r.confidence));
+      for (const v of evicted) values.add(v.confidence);
+      const ranks = new Set([...values].map(confRank));
+      ranking = {
+        confidenceDiscriminated: ranks.size > 1,
+        // Named only when every fact shares one LITERAL tier. Equal-rank-but-
+        // different-value (unset vs 'provisional') must not be reported as a
+        // shared tier — that would be a false claim about the data.
+        prevailingConfidence: values.size === 1 ? [...values][0] : null,
+      };
+    } catch {
+      // Undetermined beats wrong: the notice says so, and an eviction notice
+      // must never be lost to a diagnostic query failing.
+      ranking = null;
+    }
+
     const { notifyEvictedFactOwners } = await import('./notify-evicted');
     await notifyEvictedFactOwners({
       evicted,
+      ranking,
       writerOwnerId: input.createdBy,
       scope: input.scope,
       scopeRef: ref,

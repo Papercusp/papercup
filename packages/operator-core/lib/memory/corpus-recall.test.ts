@@ -118,6 +118,77 @@ describe('corpusQueryText — the AND-satisfiability fix', () => {
   });
 });
 
+describe('corpusQueryText — BANDED term selection (P-018 / D-064)', () => {
+  /** A DF oracle over raw `corpusTerms` tokens. Absent ⇒ df 0 ⇒ unattested. */
+  const dfOf = (table: Record<string, number>) => (t: string) => table[t] ?? 0;
+
+  it('prefers the RAREST attested term over the longest one', () => {
+    // `aftercompaction` is envelope boilerplate the corpus is saturated with;
+    // `updatechip` is the term that actually discriminates. Length picks the
+    // boilerplate because it is four characters longer.
+    const text = 'the aftercompaction envelope mentions updatechip in passing';
+    const df = dfOf({ aftercompaction: 598, envelope: 300, mentions: 400, updatechip: 15 });
+
+    expect(corpusQueryText(text, 2)).toContain('aftercompaction');
+    expect(corpusQueryText(text, 2, { df })).not.toContain('aftercompaction');
+    expect(corpusQueryText(text, 2, { df }).split(' ')[0]).toBe('updatechip');
+  });
+
+  it('REFUSES a df<minDf term even though it is the rarest — the D-064 falsifier', () => {
+    // The guard that would have caught P-018 as originally prescribed. Pure
+    // rarity ranks the hex digest first (df 0 ⇒ maximal idf), and a term the
+    // corpus does not attest cannot retrieve: under AND it empties the result
+    // set. Measured across 400 real turns, naive rarity spent 53.3% of its
+    // slots on exactly these tokens. If this test ever passes with the digest
+    // selected, the band has been removed and the leg is querying on noise.
+    const text = 'the 20c4f13019f25684 digest appeared while draining the backlog queue';
+    const df = dfOf({
+      '20c4f13019f25684': 0, // a hapax hex digest — rarest, and unretrievable
+      digest: 40,
+      appeared: 220,
+      draining: 12,
+      backlog: 142,
+      queue: 180,
+    });
+
+    const q = corpusQueryText(text, 2, { df });
+    expect(q).not.toContain('20c4f13019f25684');
+    // …and it still picks the rarest of what IS attested.
+    expect(q.split(' ')).toEqual(['draining', 'digest']);
+  });
+
+  it('falls back to LENGTH when every candidate is unattested — never worse than production', () => {
+    // A turn made entirely of session ids and nonces. There is nothing worth
+    // querying on, so the honest move is production's existing behaviour, not
+    // an empty query and not a query on noise.
+    const text = 'bl6bwnz5r and 013to2uezjqpwd3wmdxkf4re appeared together';
+    const df = dfOf({}); // nothing attested at all
+
+    expect(corpusQueryText(text, 2, { df })).toBe(corpusQueryText(text, 2));
+    expect(corpusQueryText(text, 2, { df })).not.toBe('');
+  });
+
+  it('leaves the id short-circuit untouched — DF never overrides a record handle', () => {
+    // 66.3% of real queries take this path (D-064 R2), so a regression here
+    // would dwarf anything selection buys on the other third.
+    const df = dfOf({ 'wi-6512': 0, transport: 900, regression: 800 });
+    expect(corpusQueryText('look at WI-6512 about the transport regression', 2, { df })).toBe(
+      'wi-6512',
+    );
+  });
+
+  it('is a no-op when no df is supplied — the un-wired caller is unchanged', () => {
+    expect(corpusQueryText(QUERY, 2, {})).toBe(corpusQueryText(QUERY, 2));
+  });
+
+  it('respects maxTerms and stays deterministic under banding', () => {
+    const text = 'draining the backlog queue after the digest appeared in the envelope';
+    const df = dfOf({ draining: 12, backlog: 142, queue: 180, digest: 40, envelope: 300 });
+    expect(corpusQueryText(text, 3, { df }).split(' ')).toHaveLength(3);
+    expect(corpusQueryText(text, 2, { df })).toBe(corpusQueryText(text, 2, { df }));
+  });
+});
+
 describe('handle derivation', () => {
   it('collapses a turn to its SESSION, not its turn index', () => {
     expect(handleRefOfHit(turn({ sourceId: 'claude:sess-a:12' }))).toBe('claude:sess-a');
