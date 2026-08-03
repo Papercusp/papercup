@@ -1147,6 +1147,52 @@ export function usePlanAttention(params?: {
   };
 }
 
+/** One attention item projected to just the fields a curator-card `ref`
+ *  resolves against — the wire shape of `plans.attentionRefs`. Structurally
+ *  the client resolver's `RefDestinationItem` (curator-card-drill-in.ts);
+ *  `attention-refs-parity.test.ts` fails if the two drift apart. */
+export interface AttentionRefRow {
+  id: string;
+  itemRef?: string;
+  planSlug?: string;
+  ownerAgentId?: string;
+}
+
+/**
+ * The DRILL-IN half of the attention feed (no-http-anywhere-2026-07-28 D-031).
+ *
+ * Use this — never {@link usePlanAttention} — when all you do with the feed is
+ * RESOLVE a ref (`resolveDrillInTarget` / `resolveRefDestination`). Those read
+ * four fields per item; the full feed measured 1,461 KB on :3055 (891 KB on
+ * :3270) and the chat sidebar that needs it is mounted by ChromeShell on every
+ * non-chromeless route, so the projection is the difference between paying that
+ * on every screen and not.
+ *
+ * A separate query name, NOT a narrowing of `usePlanAttention`'s args: args
+ * narrowing is pushed down into ~10 sources server-side and silently drops rows
+ * (D-029, and D-001 of slim-plans-attention where it cost ~677 items). This
+ * changes the ROW shape only — every item the fat feed would have contained is
+ * still here, so client-side matching is unaffected.
+ *
+ * Unscoped by design, like the counts and detail siblings: a curator card can
+ * name something in any harness.
+ */
+export function useAttentionRefs(enabled = true): {
+  items: AttentionRefRow[];
+  loading: boolean;
+} {
+  const q = useSyncQuery<AttentionRefRow>({
+    queryName: 'plans.attentionRefs',
+    args: EMPTY_ARGS,
+    enabled,
+  });
+  // A disabled query keeps whatever it last held; the caller's contract is
+  // "the rows currently resolvable", so an empty list is the honest answer
+  // both before the first load and while gated off.
+  const items = useMemo(() => (Array.isArray(q.data) ? q.data : []), [q.data]);
+  return { items, loading: q.loading };
+}
+
 /**
  * The DETAIL half of the attention list/detail split
  * (slim-plans-attention-sync-payload-2026-07-26 P-004/P-005).

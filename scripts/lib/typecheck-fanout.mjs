@@ -143,13 +143,24 @@ export function looksOom(res) {
 
 /** The real spawn seam — replaced in tests so the aggregation logic is asserted without
  *  running real tsc projects. */
-export const realSpawn = (pkg) =>
-  spawnSync('npm', ['run', 'typecheck'], {
+/** The argv a package is typechecked with. `npm run typecheck` when it declares one;
+ *  otherwise whatever the caller supplied via `pkg.command`.
+ *
+ *  The seam exists so a package can be gated on its TSCONFIG rather than on having
+ *  remembered to add a script (EI-19409185011887864). Requiring the script made
+ *  coverage a ROSTER — every new package uncovered until someone hand-enrolls it —
+ *  which is exactly what this fan-out's "Discovery, not a roster" design rejects. */
+export const commandFor = (pkg) => pkg.command ?? ['npm', 'run', 'typecheck'];
+
+export const realSpawn = (pkg) => {
+  const [cmd, ...args] = commandFor(pkg);
+  return spawnSync(cmd, args, {
     cwd: pkg.dir,
     encoding: 'utf8',
     env: process.env,
     maxBuffer: 32 * 1024 * 1024,
   });
+};
 
 export function runOne(pkg, spawn = realSpawn, warn = console.warn) {
   let res = spawn(pkg);
@@ -210,7 +221,10 @@ export function runPackages({
   const passed = results.filter((r) => r.status === 'passed');
 
   for (const f of failed) {
-    error(`\n--- ${f.rel} — npm run typecheck exited ${f.exit}${f.signal ? ` (${f.signal})` : ''} ---`);
+    // Name the ACTUAL command — a package gated on its tsconfig is not run via
+    // `npm run typecheck`, and reporting a command the reader cannot reproduce is
+    // how a real failure gets mistaken for a broken harness.
+    error(`\n--- ${f.rel} — ${commandFor(f).join(' ')} exited ${f.exit}${f.signal ? ` (${f.signal})` : ''} ---`);
     if (f.infrastructure) {
       error(
         '⚠ NON-ZERO EXIT WITH ZERO PARSEABLE `error TS` LINES — treat this as an INFRASTRUCTURE\n' +

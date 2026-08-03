@@ -116,3 +116,82 @@ export function deriveAttentionCounts(groups: readonly unknown[]): AttentionCoun
 
   return { decisionItems, decisionPlans: decisionPlans.size, alerts, total: seen.size };
 }
+
+/* ── attention REFS — the drill-in projection (no-http-anywhere-2026-07-28 D-031) ──
+ *
+ * The second consumer that pulls the whole feed for a sliver of it. The chat
+ * sidebar is mounted by ChromeShell on every non-chromeless route, and it holds
+ * the feed for ONE purpose: resolving a curator card row's `ref` to something
+ * openable. That resolver (`curator-card-drill-in.ts`) reads exactly FOUR fields
+ * per item — `id`, `itemRef`, `planSlug`, `ownerAgentId` — out of a ~1,100-item
+ * feed measured at 1,461 KB on :3055 / 891 KB on :3270.
+ *
+ * WHY THIS SHAPE AND NOT A SMALLER ONE. The obvious smaller design is to send
+ * the chat's ref list up and return only matching rows (~700x smaller). It was
+ * REJECTED in D-031: it forks the ref-MATCHING logic into a server-side second
+ * copy, and this subsystem has already been bitten twice by exactly that
+ * (the badge/pane divergence this file's counts guard against, and
+ * slim-plans-attention D-001, where pushing `harnessSlug` down as a query arg
+ * silently dropped ~677 items). Projecting the ROW while leaving the single
+ * matcher client-side has no such failure mode: the client still matches over
+ * every item it would have matched over, on the same identifiers.
+ *
+ * So the only thing that can drift here is the FIELD SET — if the resolver
+ * starts reading a fifth field, this projection must grow with it.
+ * `attention-refs-parity.test.ts` pins that: it fails if `RefDestinationItem`
+ * gains a field this projection does not carry.
+ *
+ * Null-valued keys are omitted, matching the list feed's own wire convention
+ * (D-025) — most items carry no `itemRef`, so this is most of the remaining
+ * bytes.
+ */
+
+/** One attention item, projected to just what a ref drill-in resolves against.
+ *  Mirrors the client's `RefDestinationItem` (curator-card-drill-in.ts). */
+export interface AttentionRefRow {
+  id: string;
+  itemRef?: string;
+  planSlug?: string;
+  ownerAgentId?: string;
+}
+
+interface AttentionRefItemish extends AttentionItemish {
+  itemRef?: unknown;
+  ownerAgentId?: unknown;
+}
+
+/**
+ * Project the attention groups down to the drill-in ref rows.
+ *
+ * Dedupes by `id` with the SAME rule {@link deriveAttentionCounts} uses (and
+ * for the same reason — a non-plan-scoped item is emitted into several groups,
+ * WI-5337), so the two derivations cannot disagree about which items exist.
+ */
+export function deriveAttentionRefs(groups: readonly unknown[]): AttentionRefRow[] {
+  const seen = new Set<string>();
+  const rows: AttentionRefRow[] = [];
+
+  for (const group of groups) {
+    const items = (group as AttentionGroupish | null)?.items;
+    if (!Array.isArray(items)) continue;
+    for (const raw of items) {
+      if (!raw || typeof raw !== 'object') continue;
+      const item = raw as AttentionRefItemish;
+      const id = typeof item.id === 'string' ? item.id : null;
+      // An id-less row can be neither deduped NOR matched (every branch of the
+      // client resolver keys off id/itemRef/planSlug against a real item), so
+      // dropping it here costs nothing and keeps the dedupe honest.
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      const row: AttentionRefRow = { id };
+      if (typeof item.itemRef === 'string' && item.itemRef) row.itemRef = item.itemRef;
+      if (typeof item.planSlug === 'string' && item.planSlug) row.planSlug = item.planSlug;
+      if (typeof item.ownerAgentId === 'string' && item.ownerAgentId) {
+        row.ownerAgentId = item.ownerAgentId;
+      }
+      rows.push(row);
+    }
+  }
+
+  return rows;
+}

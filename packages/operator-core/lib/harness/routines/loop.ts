@@ -601,14 +601,6 @@ export interface LoopStatus {
    *  "healthy reading while the thing it monitors is dead" failure this field exists to
    *  surface. Requires ≥3 fires (never flags a freshly-armed loop) — see computeTurnsStalled. */
   turnsStalled: boolean;
-  /** EI-19406534159939583: the COMPLEMENT of `turnsStalled` — this loop's FIRES stopped
-   *  arriving while the agent kept answering every one it got (its most recent turn is at or
-   *  after its most recent fire, and a floor's worth of time has since passed with no new
-   *  fire). That is an INFRASTRUCTURE fault, not a dead agent, and the two demand OPPOSITE
-   *  responses: a `turnsStalled` loop should be disarmed, a `firesStalled` one must be
-   *  RE-ARMED — disarming it is irreversible, because the reconciler's re-arm sweep gates on
-   *  `active = TRUE`. Never both true for the same row (see computeFiresStalled). */
-  firesStalled: boolean;
   /** EI-19325288514307343: non-null iff the most recent recorded fire was a
    *  provider-wall lifecycle-death and the loop is waiting out its backoff before
    *  retrying — the "backed off until T (reason)" signal that lets a reader
@@ -779,76 +771,30 @@ export function computeTurnsStalled(input: {
   // instants, so it only sees "fires kept landing while turns did not". When the scheduler
   // stops firing too, BOTH freeze and the gap stays small forever: measured live, 11 loops
   // dead for 49h–160h reported turnsStalled:false because their last turn happened moments
-  // after their last fire.
+  // after their last fire. An armed loop that has not fired in a floor's worth of time and
+  // whose session is not currently active is dead, regardless of how tidy that gap looks.
   //
-  // ⚠ EI-19406534159939583 — "both froze" is TWO populations, and this branch used to claim
-  // BOTH. `now - lastFiredAt >= floor` is evidence about the FIRING PATH; it only becomes
-  // evidence about the AGENT once you know the agent was still being fired at. The
-  // discriminator needs no new data — it is which of the two frozen instants is LATER:
-  //
-  //   lastTurn BEFORE lastFired -> a fire landed and no turn followed -> the AGENT stopped.
-  //                                That is this verdict's population. Unchanged.
-  //   lastTurn AFTER  lastFired -> it answered the most recent fire it got -> the FIRES
-  //                                stopped. Not this verdict's to claim. See computeFiresStalled.
-  //
-  // Mis-claiming the second is not cosmetic. `stalled-loops-guard` DISARMS on this verdict;
-  // `reconcileLoopRoutines` gates its re-arm sweep on `active = TRUE`
-  // (reconcile-loop-routines.ts:726); and a disarmed agent cannot re-arm itself. So one wrong
-  // verdict here is PERMANENT. Live on 2026-08-03 it took 5 of a 10-member drain fleet dark
-  // in a single 23ms batch while each had answered every fire it received, and the fleet did
-  // the work of one for ~45 minutes.
-  //
-  // The fire-starved population is not silently dropped — computeFiresStalled names it and
-  // the guard re-arms it instead of disarming it.
-  if (input.lastTurnAtMs >= input.lastFiredAtMs) return false;
+  // ⚠ EI-19406534159939583 — this verdict is DELIBERATELY left claiming both populations, and
+  // that is not an oversight. "No fire in a floor's worth of time" covers BOTH a dead agent
+  // (WI-6639's measured 156h corpses) and a live agent the firing path stopped serving, and
+  // NOTHING IN THIS INPUT SEPARATES THEM: both show a last turn shortly AFTER their last fire,
+  // and both show stale presence (a live agent parked on an event beats no heartbeat either).
+  // The only thing that tells them apart is whether the owner is still REACHABLE — an I/O
+  // probe this pure function cannot and should not make. So the split lives in the ACTOR that
+  // does the irreversible write: see stalled-loops-guard.ts, which consults
+  // `probeWakeReachability` before disarming and RE-ARMS a reachable owner instead. Readers of
+  // this verdict (loop:status, monitors) still get the honest "something is wrong here".
   const activeRecently = input.lastActiveAtMs != null && now - input.lastActiveAtMs < floorMs;
   return now - input.lastFiredAtMs >= floorMs && !activeRecently;
 }
 
 /**
- * EI-19406534159939583 — the OTHER half of the frozen-gap case, the one `computeTurnsStalled`
- * used to swallow: this loop's own FIRES stopped arriving while the agent kept answering every
- * one it was given.
- *
- * It is the exact complement of that verdict's frozen-gap branch, discriminated on the same two
- * instants: a turn recorded AT OR AFTER the most recent fire means the agent demonstrably
- * answered the last fire it received, so a floor's worth of silence since is a fire that never
- * came — an INFRASTRUCTURE fault (a wedged scheduler tick, a shed that skipped the loop-rebase,
- * a re-arm that never landed), not a dead agent.
- *
- * Disjoint from `turnsStalled` by construction: every branch of that verdict requires
- * `lastTurnAt` to be null or STRICTLY EARLIER than `lastFiredAt`; this one requires the
- * opposite. The two can never both be true for the same row, which is what lets a caller act on
- * them differently without ordering rules.
- *
- * Deliberately NOT exempted by recent presence, unlike `turnsStalled`'s frozen-gap branch. A
- * fire-starved agent is typically alive and working — that is the whole point — so exempting on
- * liveness would blind this verdict to precisely the population it exists to name.
- */
-export function computeFiresStalled(input: {
-  active: boolean;
-  fireCount: number;
-  lastFiredAtMs: number | null;
-  lastTurnAtMs: number | null;
-  intervalSec: number | null;
-  nowMs?: number;
-}): boolean {
-  if (!input.active) return false;
-  if (input.fireCount < TURNS_STALLED_MIN_FIRE_COUNT) return false;
-  if (input.lastFiredAtMs == null || input.lastTurnAtMs == null) return false;
-  // The discriminator. A turn at or after the last fire = that fire was answered.
-  if (input.lastTurnAtMs < input.lastFiredAtMs) return false;
-  const now = input.nowMs ?? Date.now();
-  return now - input.lastFiredAtMs >= turnsStalledFloorMs(input.intervalSec);
-}
-
-/**
- * EI-19406534159939583 — the REMEDY for a `computeFiresStalled` loop, and the deliberate dual
- * of `autoPauseLoopRoutine` (loop-cost-cap.ts): where that one answers "this agent stopped
- * working, stop firing at it", this one answers "this agent kept working, start firing at it
- * again". Both are system-actor writes against another owner's routine row; neither asks the
- * owner, because a fire-starved agent cannot re-arm itself — it is asleep waiting for the very
- * fire that stopped coming.
+ * EI-19406534159939583 — the REMEDY for a loop the firing path stopped serving, and the
+ * deliberate dual of `autoPauseLoopRoutine` (loop-cost-cap.ts): where that one answers "this
+ * agent stopped working, stop firing at it", this one answers "this agent kept working, start
+ * firing at it again". Both are system-actor writes against another owner's routine row;
+ * neither asks the owner, because a fire-starved agent cannot re-arm itself — it is asleep
+ * waiting for the very fire that stopped coming.
  *
  * Makes the loop due IMMEDIATELY (`next_fire_at = now()`) rather than `now() + interval`,
  * which also makes this write a self-correcting EXPERIMENT rather than a bet:
@@ -916,13 +862,6 @@ function loopStatusFromRow(r: any, fallbackOwnerId: string): LoopStatus {
     lastActiveAtMs: presenceMs,
     intervalSec,
   });
-  const firesStalled = computeFiresStalled({
-    active: Boolean(r.active),
-    fireCount,
-    lastFiredAtMs: lastFiredMs,
-    lastTurnAtMs: lastTurnMs,
-    intervalSec,
-  });
   const nextFireAtIso = r.next_fire_at ? new Date(r.next_fire_at).toISOString() : null;
   const lifecycleBackoff = computeLifecycleBackoff({
     active: Boolean(r.active),
@@ -957,7 +896,6 @@ function loopStatusFromRow(r: any, fallbackOwnerId: string): LoopStatus {
     lastTurnAt: r.last_turn_at ? new Date(r.last_turn_at).toISOString() : null,
     lastRealTurnAt: r.last_real_turn_at ? new Date(r.last_real_turn_at).toISOString() : null,
     turnsStalled,
-    firesStalled,
     lifecycleBackoff,
   };
 }

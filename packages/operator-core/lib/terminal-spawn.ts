@@ -9,14 +9,18 @@
  * one-liner and hand it to {@link spawnInTerminal}.
  *
  * ⚠ It is NOT the only such spawner, despite what this comment used to claim.
- * `console-spawn.ts` keeps its own LINUX_TERMINALS table, its own findTerminal
- * and its own spawn (it carries extra session-bus / display-override /
- * desktop-detection logic), and it serves the busier callers —
+ * `console-spawn.ts` keeps its own findTerminal (`findLinuxTerminal`) and its own
+ * spawn (it carries extra session-bus / display-override / env-injection logic
+ * this module still lacks), and it serves the busier callers —
  * `capability:terminal` and every VISIBLE `fleet:launch-on-plan` member. That
  * stale "single home" wording is exactly why the EI-19385011811175105 fix landed
- * here and missed there (EI-19407722209410974). A fix to spawn BEHAVIOUR must be
- * applied to both until they are actually merged; grep the SYMPTOM
- * (`gnome-terminal`) rather than this module's callers.
+ * here and missed there (EI-19407722209410974) — the terminal DATA is now
+ * single-sourced (`linux-terminals.ts`) and the SELECTION POLICY (desktop-session
+ * detection deciding client-server vs process-per-window order) now reuses
+ * console-spawn's directly (EI-19408594551235977), but the two spawn functions
+ * themselves are still separate. A fix to spawn BEHAVIOUR must still be applied
+ * to both until they are actually merged; grep the SYMPTOM (`gnome-terminal`)
+ * rather than this module's callers.
  *
  * Linux-only — callers gate on `process.platform === 'linux'` and return 501
  * before reaching here on other platforms (mirrors console-launch.ts).
@@ -27,6 +31,18 @@ import { join } from 'node:path';
 import { standardToolDirs } from './tool-path';
 import { createTextCollector } from './child-output';
 import { LINUX_TERMINALS_FLAT } from './linux-terminals';
+// EI-19408594551235977: reuse console-spawn's desktop-session-aware ordering
+// instead of walking the flat list unconditionally. This IS a circular import
+// (console-spawn.ts imports scrubTerminalContextEnv from this module) but it is
+// safe: every binding crossed in either direction is a hoisted `export function`
+// consumed only inside another function body, never at module-init time, so the
+// import cycle never observes a not-yet-initialized value.
+import {
+  pickLinuxTerminal,
+  resolveLinuxDesktopEnv,
+  resolveTerminalPreference,
+  type DesktopEnvProbes,
+} from './console-spawn';
 
 /**
  * Terminal emulators tried in order, each with the args that run a command in
@@ -39,12 +55,12 @@ import { LINUX_TERMINALS_FLAT } from './linux-terminals';
  * process-per-window — so single-sourcing the data changed no selection.
  * `linux-terminals.test.ts` pins that.
  *
- * ⚠ This flat order always tries gnome-terminal FIRST, unconditionally.
- * console-spawn's `pickLinuxTerminal` instead orders the two groups by whether a
- * desktop session was actually resolved, because a client-server terminal with
- * no reachable D-Bus server ghosts (WI-4718/WI-4711). This module has no such
- * detection, so it keeps the pre-WI-4718 behaviour — tracked as
- * EI-19408594551235977, deliberately NOT changed as part of a data dedupe.
+ * Historically this flat order was what {@link findTerminal} walked
+ * unconditionally (always gnome-terminal FIRST) — fixed by EI-19408594551235977,
+ * which made `findTerminal` desktop-session-aware like console-spawn's
+ * `pickLinuxTerminal` (WI-4718/WI-4711). `LINUX_TERMINALS` itself is kept as the
+ * flat data-parity constant (pinned by `linux-terminals.test.ts` against the
+ * pre-dedupe literal) — it is no longer what `findTerminal` iterates.
  */
 export const LINUX_TERMINALS: ReadonlyArray<readonly [string, readonly string[]]> =
   LINUX_TERMINALS_FLAT;
@@ -70,19 +86,34 @@ export interface ResolvedTerminal {
 
 /**
  * Resolve the terminal emulator to use: honour `$TERMINAL` if it's on PATH,
- * else fall back through {@link LINUX_TERMINALS}. Returns null if none found.
+ * else pick via the SAME desktop-session-aware ordering console-spawn uses
+ * (WI-4718 / EI-19408594551235977) — the client-server group
+ * (gnome-terminal/konsole/xfce4-terminal) is tried first ONLY when a live
+ * desktop session's D-Bus bus was actually resolved; otherwise the
+ * process-per-window group (alacritty/kitty/wezterm/xterm) is tried first,
+ * since a client-server terminal with no reachable bus silently ghosts
+ * (WI-4711) — the other group is always appended as a fallback either way, so
+ * this only changes ORDER, never which terminals are considered.
+ *
+ * `env` / `desktopEnvProbes` are DI seams for tests; defaults are the real
+ * process env and console-spawn's real (best-effort, never-throws) probes.
  */
-export function findTerminal(): ResolvedTerminal | null {
-  const fromEnv = process.env.TERMINAL;
+export function findTerminal(
+  env: NodeJS.ProcessEnv = process.env,
+  desktopEnvProbes?: DesktopEnvProbes,
+): ResolvedTerminal | null {
+  const fromEnv = env.TERMINAL;
   if (fromEnv && isOnPath(fromEnv)) {
     return fromEnv === 'gnome-terminal'
       ? { bin: fromEnv, args: ['--wait', '--'] }
       : { bin: fromEnv, args: ['-e'] };
   }
-  for (const [bin, args] of LINUX_TERMINALS) {
-    if (isOnPath(bin)) return { bin, args: [...args] };
-  }
-  return null;
+  const desktop = resolveLinuxDesktopEnv(env, desktopEnvProbes);
+  const preferClientServer = resolveTerminalPreference(
+    desktop.resolved && desktop.desktopSessionDetected,
+    false,
+  );
+  return pickLinuxTerminal(isOnPath, preferClientServer);
 }
 
 /** POSIX single-quote escape — wrap `s` so the shell sees it as one literal. */
@@ -171,6 +202,12 @@ export interface SpawnInTerminalOpts {
    * launched. 0 disables the check. Default 400ms.
    */
   livenessCheckDelayMs?: number;
+  /**
+   * Test-only DI seam: injectable probes for the desktop-session detection
+   * {@link findTerminal} now performs (EI-19408594551235977). Omit in
+   * production — defaults to the real (best-effort, never-throws) probes.
+   */
+  desktopEnvProbes?: DesktopEnvProbes;
 }
 
 export type SpawnInTerminalResult =
@@ -219,7 +256,7 @@ export function isProcessAlive(pid: number): boolean {
  * false, since the spawn syscall not throwing is NOT proof a window opened.
  */
 export async function spawnInTerminal(opts: SpawnInTerminalOpts): Promise<SpawnInTerminalResult> {
-  const term = findTerminal();
+  const term = findTerminal(opts.env ?? process.env, opts.desktopEnvProbes);
   if (!term) {
     return {
       ok: false,

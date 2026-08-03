@@ -152,7 +152,24 @@ export function main({
   }
 
   const all = discovered.filter((p) => !p.unreadable).sort((a, b) => a.rel.localeCompare(b.rel));
-  const packages = all.filter((p) => !exempt[p.rel]);
+
+  // A tsconfig IS the opt-in (EI-19409185011887864). Requiring a `typecheck` SCRIPT made this
+  // a roster: 50 of the 53 libs/generic packages never declared one, so they were reported as
+  // "unreachable by construction" forever, and every NEW package started out uncovered too.
+  // Gating on the tsconfig makes coverage automatic and permanent — the property this fan-out
+  // was built for. Measured before flipping it on: 46 of the 50 were already clean, so this
+  // enrolls them at zero gate risk. The 4 that were not are held back BY NAME below.
+  const promoted = invisible
+    .filter((p) => !exempt[p.rel] && !UNTYPECHECKABLE[p.rel])
+    .map((p) => ({
+      dir: p.dir,
+      name: p.name ?? p.rel,
+      rel: p.rel,
+      command: ['npx', 'tsc', '--noEmit', '-p', 'tsconfig.json'],
+    }));
+  const heldBack = invisible.filter((p) => UNTYPECHECKABLE[p.rel]).sort((a, b) => a.rel.localeCompare(b.rel));
+
+  const packages = [...all.filter((p) => !exempt[p.rel]), ...promoted].sort((a, b) => a.rel.localeCompare(b.rel));
   const exempted = all.filter((p) => exempt[p.rel]);
 
   log(
@@ -171,24 +188,35 @@ export function main({
     }
   }
 
-  // The report-only population. A count alone would let it drift silently, so the grouping is
-  // always printed and --list-invisible names every one.
-  if (invisible.length) {
+  // Packages gated on their tsconfig rather than on a declared script. Printed as its own
+  // population so it stays obvious that coverage no longer depends on anyone remembering.
+  if (promoted.length) {
     log(
-      `\n  ⓘ REPORT-ONLY — ${invisible.length} director${invisible.length === 1 ? 'y' : 'ies'} have a ` +
-        'tsconfig.json but declare NO `typecheck` script, so NO routine gate can reach them.\n' +
-        '    This is not a pass and not a failure: they are unreachable by construction. Not blocking\n' +
-        `    (${invisible.length} packages reddening at once would red-pin the fleet gate — the very failure\n` +
-        '    this guards against). Give one a `typecheck` script and it is gated automatically.',
+      `\n  ⓘ ${promoted.length} of those are gated on their tsconfig.json alone (no \`typecheck\` script\n` +
+        '    declared) — run as `npx tsc --noEmit -p tsconfig.json`. A new package is covered the\n' +
+        '    moment it has a tsconfig; nobody has to enroll it.',
     );
-    for (const [root, entries] of [...groupByRoot(invisible)].sort((a, b) => a[0].localeCompare(b[0]))) {
+    for (const [root, entries] of [...groupByRoot(promoted)].sort((a, b) => a[0].localeCompare(b[0]))) {
       log(`      ${root}: ${entries.length}`);
     }
     if (listInvisible) {
       log('');
-      for (const e of invisible.sort((a, b) => a.rel.localeCompare(b.rel))) log(`      · ${e.rel}`);
-    } else {
-      log('      (re-run with --list-invisible to name them)');
+      for (const e of promoted) log(`      · ${e.rel}`);
+    }
+  }
+
+  // The held-back population — the ONLY directories a routine gate still cannot reach. Printed
+  // every run, never summarised away: an exclusion that stops being visible is how a temporary
+  // one becomes permanent without anyone deciding that it should.
+  if (heldBack.length) {
+    log(
+      `\n  ⚠ NOT GATED — ${heldBack.length} director${heldBack.length === 1 ? 'y' : 'ies'} with a tsconfig.json\n` +
+        '    that do NOT currently typecheck clean. Held back BY NAME so the other packages can be\n' +
+        '    gated today; each one is a filed, owned defect, not an accepted state:',
+    );
+    for (const p of heldBack) {
+      const x = UNTYPECHECKABLE[p.rel];
+      log(`      ⊘ ${p.rel} — ${x.detail} (${x.errors} error(s); see ${x.filedAs})`);
     }
   }
 

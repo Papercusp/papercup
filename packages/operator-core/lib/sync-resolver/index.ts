@@ -3199,6 +3199,27 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       return [deriveAttentionCounts(Array.isArray(r?.groups) ? r.groups : [])];
     },
   },
+  // plans.attentionRefs — the DRILL-IN projection of the attention feed
+  // (no-http-anywhere-2026-07-28 D-031). Sibling of attentionCounts: same
+  // problem (an always-mounted chrome consumer pulling the whole feed for a
+  // sliver of it), same remedy (project server-side, ride the same cachedRead
+  // entry). The chat sidebar is mounted by ChromeShell on EVERY non-chromeless
+  // route and holds the feed only to resolve a card row's `ref`; that resolver
+  // reads four fields per item. Measured before this existed: 1,461 KB on
+  // :3055 (891 KB on :3270) on a git tab that renders no attention feed.
+  //
+  // Deliberately UNSCOPED, exactly like attentionCounts and attentionItem: a
+  // curator card can name something in any harness, and the sidebar mounts
+  // cross-harness — a panel-scoped feed would resolve fewer refs and silently
+  // render fewer Open buttons.
+  'plans.attentionRefs': {
+    resolve: async () => {
+      const { callPlansRead } = await import('../agent-tools/plans/read-dispatch');
+      const r = (await callPlansRead('attention', {})) as { groups?: unknown[] };
+      const { deriveAttentionRefs } = await import('./attention-counts');
+      return deriveAttentionRefs(Array.isArray(r?.groups) ? r.groups : []);
+    },
+  },
   // plans.attentionItem — the DETAIL half of the attention list/detail split
   // (slim-plans-attention-sync-payload-2026-07-26 P-004). `plans.attention` is
   // the fattest UI read (1490KB), so its list feed clips each item's `body` and

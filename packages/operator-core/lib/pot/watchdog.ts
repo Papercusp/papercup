@@ -331,7 +331,13 @@ export type WatchdogSource =
   // inside 15 minutes on 2026-08-02, so filing on first sight would have minted 5
   // items that day, 4 of them self-closing unread. Debounced 24h per path, keyed
   // `tsc-new-file-red::<path>`.
-  | 'tsc-new-file-red';
+  | 'tsc-new-file-red'
+  // EI-19409061552037718: the stale-routine-executor watchdog — a long-lived host
+  // with PAPERCUSP_DBOS_ROUTINES=1 running code frozen at boot while this
+  // checkout's tree HEAD has since moved. Debounced per executor identity
+  // (`port-<n>` / `pid-<n>`, stale-routine-executor-watchdog.ts's
+  // `executorIdentity()`), keyed `stale-routine-executor:<identity>`.
+  | 'stale-routine-executor';
 
 export interface FallbackArmResult {
   /** 'armed' = time wake declared; 'staged' = routed to the manual-mode review

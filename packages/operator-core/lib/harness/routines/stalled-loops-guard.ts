@@ -72,6 +72,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { getLoopStatuses, turnsStalledFloorMs, rearmFireStarvedLoop, type LoopStatus } from './loop';
 import { autoPauseLoopRoutine } from './loop-cost-cap';
+import { probeWakeReachability } from '../../events/await/wake-reachability';
 import { broadcastSevereEvent } from '../../severe-event-broadcast';
 
 export interface StalledLoopsSweepDeps {
@@ -81,6 +82,9 @@ export interface StalledLoopsSweepDeps {
   autoPause?: typeof autoPauseLoopRoutine;
   /** Injectable for tests; defaults to the real re-arm write (EI-19406534159939583). */
   rearm?: typeof rearmFireStarvedLoop;
+  /** Injectable for tests; defaults to the real wake-reachability probe — the SAME oracle
+   *  reconcileLoopRoutines uses to refuse terminating a live owner (EI-19406534159939583). */
+  probeReachability?: typeof probeWakeReachability;
   /** Injectable for tests; defaults to the real fleet-wide broadcast. */
   broadcast?: typeof broadcastSevereEvent;
 }
@@ -132,6 +136,7 @@ export async function sweepStalledLoops(
   const getStatuses = deps.getStatuses ?? getLoopStatuses;
   const autoPause = deps.autoPause ?? autoPauseLoopRoutine;
   const rearm = deps.rearm ?? rearmFireStarvedLoop;
+  const probeReachability = deps.probeReachability ?? probeWakeReachability;
   const broadcast = deps.broadcast ?? broadcastSevereEvent;
 
   const rows = await sql<Array<{ id: string; target_owner_id: string }>>`
@@ -159,40 +164,6 @@ export async function sweepStalledLoops(
   const nowMs = Date.now();
   for (const [ownerId, routineId] of routineIdByOwner) {
     const status = statuses.get(ownerId);
-
-    // EI-19406534159939583 — FIRE-STARVED, NOT TURN-STALLED. This module used to act on a
-    // single verdict that conflated two opposite faults, because its own broadcast text said
-    // the quiet part out loud: "fires kept landing (OR STOPPED ENTIRELY) with no turn actually
-    // produced". Fires stopping is evidence about the FIRING PATH; only fires LANDING makes the
-    // missing turn evidence about the agent. `computeFiresStalled` now separates them on the
-    // discriminator that was always in the data — whether the last turn came after the last
-    // fire — and the two demand opposite responses.
-    //
-    // Re-arm, never disarm. Both are guesses, but they are not symmetric guesses: a wrong
-    // re-arm costs ONE extra fire and self-corrects on the next sweep (no turn follows it, so
-    // the verdict flips to turnsStalled and the disarm happens anyway), whereas a wrong disarm
-    // is PERMANENT — reconcileLoopRoutines gates its re-arm sweep on `active = TRUE`
-    // (reconcile-loop-routines.ts:726) and a disarmed agent cannot re-arm itself. Live on
-    // 2026-08-03 the wrong direction took 5 of a 10-member fleet dark in one 23ms batch.
-    if (status?.firesStalled) {
-      reArmedFireStarved.push(ownerId);
-      console.warn(
-        `[stalled-loops-guard] FIRE-STARVED ${ownerId}: last turn ${status.lastTurnAt ?? 'never'} is at/after ` +
-          `last fire ${status.lastFiredAt ?? 'never'} — it answered every fire it got and none has arrived ` +
-          `since. Re-arming (NOT disarming): the fault is in the firing path, not the agent ` +
-          `(EI-19406534159939583).`,
-      );
-      if (!dryRun) {
-        await rearm(
-          sql,
-          routineId,
-          `stalled-loops-guard (EI-19406534159939583): fire-starved — answered its last fire at ` +
-            `${status.lastTurnAt ?? 'unknown'}, no fire since ${status.lastFiredAt ?? 'unknown'}`,
-        );
-      }
-      continue;
-    }
-
     if (!status?.turnsStalled) continue;
 
     // EI-19362678179163398 — SECOND-SOURCE VETO. Disarming a loop is an automated write
@@ -220,6 +191,63 @@ export async function sweepStalledLoops(
           `A non-zero veto count means last_turn_at is under-reporting (EI-19362678179163398).`,
       );
       continue;
+    }
+
+    // EI-19406534159939583 — FIRE-STARVED, NOT TURN-STALLED. The veto above catches an agent
+    // that produced a turn RECENTLY. It cannot catch the one that bit us: an agent that
+    // answered every fire it received and then went quiet BECAUSE THE FIRES STOPPED — it has
+    // no recent turn precisely because it has had nothing to answer, so it sails past the veto
+    // and reads exactly like a corpse.
+    //
+    // The verdict cannot separate these two on its own, and this is worth stating plainly
+    // because it is the trap: WI-6639's measured 156h corpses ALSO show a last turn shortly
+    // after their last fire (see computeTurnsStalled's frozen-gap regression test), and a live
+    // agent parked on an event beats no heartbeat, so presence is stale for both. Turn
+    // ordering alone would have re-armed the corpses; presence alone would have disarmed the
+    // living. The ONE signal that does separate them is whether the owner is still REACHABLE —
+    // and that is an I/O probe, which is why this lives in the actor and not in the verdict.
+    //
+    // Reuses `probeWakeReachability`, the SAME oracle reconcileLoopRoutines already trusts for
+    // "a live owner is NEVER terminated, any dwell" (loop-unreachable-guard.ts). One oracle for
+    // "is this owner gone", not two that can disagree.
+    //
+    // Re-arm rather than disarm when it is reachable, because the two mistakes are not
+    // symmetric. A wrong RE-ARM costs one extra fire and self-corrects on the very next sweep:
+    // the fire lands, no turn follows it, `lastRealTurnAt` stays ancient, and the disarm
+    // happens then. A wrong DISARM is PERMANENT — reconcileLoopRoutines gates its re-arm sweep
+    // on `active = TRUE` (reconcile-loop-routines.ts:726), so the mechanism that exists to
+    // rescue a stuck loop can never see it again, and the agent cannot re-arm itself because it
+    // is asleep waiting for the fire that stopped coming. Live on 2026-08-03 the wrong
+    // direction took 5 of a 10-member drain fleet dark in a single 23ms batch.
+    const answeredItsLastFire =
+      status.lastTurnAt != null &&
+      status.lastFiredAt != null &&
+      Date.parse(status.lastTurnAt) >= Date.parse(status.lastFiredAt);
+    if (answeredItsLastFire) {
+      const reachable = await probeReachability(ownerId)
+        .then((v) => v.reachable)
+        // Fail-soft in the SAFE direction: an uncertain reachability read must not license an
+        // irreversible disarm, so treat it as reachable and let the next sweep decide with
+        // better information (mirrors checkUnreachableTerminalGuard's own catch).
+        .catch(() => true);
+      if (reachable) {
+        reArmedFireStarved.push(ownerId);
+        console.warn(
+          `[stalled-loops-guard] FIRE-STARVED ${ownerId}: answered its last fire ` +
+            `(turn ${status.lastTurnAt} >= fire ${status.lastFiredAt}) and is still REACHABLE, yet no fire ` +
+            `has arrived since. Re-arming, NOT disarming — the fault is in the firing path, not the agent ` +
+            `(EI-19406534159939583).`,
+        );
+        if (!dryRun) {
+          await rearm(
+            sql,
+            routineId,
+            `stalled-loops-guard (EI-19406534159939583): fire-starved — answered its last fire at ` +
+              `${status.lastTurnAt}, reachable, no fire since ${status.lastFiredAt}`,
+          );
+        }
+        continue;
+      }
     }
 
     stalledOwners.push(ownerId);

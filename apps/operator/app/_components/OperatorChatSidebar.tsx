@@ -37,7 +37,8 @@ import {
   encodeScopedRef,
 } from './chat/chat-ref-popup-params';
 import { PotHealthPane } from './PotHealthPane';
-import { useInboxAttention, useInboxPendingCount, usePlansNeedingYouCount } from './inbox/use-inbox-pending';
+import { useInboxPendingCount, usePlansNeedingYouCount } from './inbox/use-inbox-pending';
+import { useAttentionRefs } from '@/app/admin/plans/plans-api';
 import { BUILT_IN_CHAT_VIEWS, dedupeChatFaces, type OpChatFace } from './op-chat-faces';
 
 // The Plans view (owner-plans-single-pane-2026-07-17) pulls PlanDetail + the
@@ -320,36 +321,45 @@ export function OperatorChatSidebar({ faces = [] }: { faces?: readonly OpChatFac
   //
   // ⚠ COST — this line used to read "same shared plans.attention cache the badge
   // hooks read — no extra query", and that stopped being true when WI-5955 moved
-  // both badges onto the narrow `plans.attentionCounts`. This is now the ONLY
-  // app-wide consumer of the full feed, and ChromeShell mounts this sidebar on
-  // every non-chromeless route — so it used to fetch on EVERY screen. Measured
-  // 2026-08-03 (no-http-anywhere-2026-07-28 D-028/D-030): 891 KB on the git tab
-  // against :3270, 68% of that route's entire first paint, on a page that
-  // renders no attention feed at all.
+  // both badges onto the narrow `plans.attentionCounts`. It then became the ONLY
+  // app-wide consumer of the FULL feed, and ChromeShell mounts this sidebar on
+  // every non-chromeless route — so it fetched on EVERY screen. Measured
+  // 2026-08-03 (no-http-anywhere-2026-07-28 D-028/D-030/D-031): 1,461 KB on the
+  // git tab against :3055 (891 KB against :3270 — different backends, never
+  // compare the two), on a page that renders no attention feed at all.
   //
-  // GATED 2026-08-03 (P-008, D-030 option C) on whether any rendered card row
-  // ACTUALLY needs the feed. The gate is precise rather than conservative
-  // because `resolveRefDestination` answers `wi:…` / `plan:…` / bare work-item
-  // refs at steps 1-2 WITHOUT reading items at all — only `escalation:` /
-  // `decision:` / bare non-work-item refs fall through to the live-item match.
-  // `refNeedsLiveItems` runs that short-circuit rather than restating it, so it
-  // cannot drift from the resolver (see its docblock). Behaviour is preserved
-  // exactly: a row whose verdict the feed could change keeps the feed.
+  // TWO CUTS, composed (both measured — D-031):
   //
-  // ⛔ Do NOT "simplify" this to `chatOpen` — it defaults to TRUE and the
+  // 1. NARROWER ROW. This reads `plans.attentionRefs`, not the fat feed. The
+  //    resolver below reads exactly four fields per item (id / itemRef /
+  //    planSlug / ownerAgentId — `RefDestinationItem`), so the projection is
+  //    lossless FOR THIS USE. It is a separate query NAME, not narrowed args on
+  //    the fat one: arg narrowing is pushed down into ~10 server-side sources
+  //    and silently drops rows (D-029; ~677 items in slim-plans-attention
+  //    D-001). Every item is still here — only the row got smaller.
+  //
+  // 2. FETCH ONLY WHEN A REF NEEDS IT. `resolveRefDestination` answers `wi:…` /
+  //    `plan:…` / bare work-item refs at steps 1-2 WITHOUT reading items at all;
+  //    only `escalation:` / `decision:` / bare non-work-item refs reach the
+  //    live-item match. `refNeedsLiveItems` RUNS that short-circuit rather than
+  //    restating it, so it cannot drift as the ref vocabulary grows.
+  //    Measured behaviour-preservation: with the feed off, exactly the 7 of 13
+  //    rendered refs that resolve without it still render their Open buttons.
+  //
+  // ⚠ Gate 2 alone saves nothing in practice — real curator cards carry
+  // `escalation:` refs (6 of 13 measured), so it evaluates TRUE on a live chat.
+  // That is why the projection (cut 1) exists; do not remove it as redundant.
+  //
+  // ⛔ Do NOT "simplify" the gate to `chatOpen` — it defaults to TRUE and the
   // collapsed shell still MOUNTS OperatorChat (aria-hidden), so it saves nothing.
-  // ⛔ Do NOT "fix" the size by narrowing usePlanAttention's args instead —
-  // that is the D-029 trap, and D-001 of slim-plans-attention-sync-payload
-  // measured ~677 items silently dropped when the harnessSlug axis was treated
-  // as a row predicate.
   //
-  // ⚠ Anyone editing this hook: re-measure before claiming a saving, and update
-  // THIS comment with it. A stale cost note is how the 891 KB stayed invisible.
+  // ⚠ Anyone editing this: re-measure before claiming a saving, and update THIS
+  // comment with it. A stale cost note is how the 891 KB stayed invisible.
   const needsAttentionFeed = useMemo(
     () => conv.messages.some((m) => reportNeedsLiveItems(m.report)),
     [conv.messages],
   );
-  const { items: inboxItems } = useInboxAttention(needsAttentionFeed);
+  const { items: inboxItems } = useAttentionRefs(needsAttentionFeed);
   const inboxItemsRef = useRef(inboxItems);
   inboxItemsRef.current = inboxItems;
   // hud-consolidation-2026-07-26 P-004 pointed a curator card's drill-in at the

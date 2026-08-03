@@ -10,12 +10,17 @@
  * (EI-19407722209410974). The data is now single-sourced so the next such fix
  * cannot land in only half the codebase.
  *
- * ⚠ The SELECTION POLICY is deliberately NOT unified here — only the data.
- * console-spawn picks between the two groups below based on whether a real
- * desktop session and its D-Bus were resolved (WI-4718); terminal-spawn walks
- * them in flat order. Those differ for a real reason and converging them is a
- * behavioural change, tracked separately — see EI-19408594551235977. Do not
- * "simplify" one into the other without reading it.
+ * ⚠ The SELECTION POLICY itself is defined ONCE, in console-spawn.ts
+ * (`pickLinuxTerminal` + `resolveLinuxDesktopEnv`/`resolveTerminalPreference`) —
+ * only the raw terminal DATA lives here. Both console-spawn.ts's own spawn path
+ * and terminal-spawn.ts's `findTerminal` now call into that same policy (picking
+ * client-server-first ONLY when a real desktop session's D-Bus was resolved,
+ * WI-4718) rather than each choosing independently — converged by
+ * EI-19408594551235977, which is why `terminal-spawn.ts` no longer walks
+ * {@link LINUX_TERMINALS_FLAT} in flat order for real selection (it is kept only
+ * as the data-parity constant `LINUX_TERMINALS`, pinned below). The two files'
+ * SPAWN functions (env injection, display override, liveness probing, …) remain
+ * separate — do not assume a fix to one applies to the other without reading it.
  *
  * The split into two groups is load-bearing, not cosmetic — see each comment.
  */

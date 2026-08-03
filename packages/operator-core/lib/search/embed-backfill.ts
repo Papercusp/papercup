@@ -68,12 +68,45 @@ const BATCH_SIZE = getResourceProfile().embedBatchSize;
  */
 const EMBED_ROW_TIMEOUT_MS = 90_000;
 
-function withEmbedTimeout<T>(p: Promise<T>, ms = EMBED_ROW_TIMEOUT_MS): Promise<T> {
+/**
+ * WI-7348: embedder-RESOLUTION deadline.
+ *
+ * The per-row deadline above cannot help here, because resolution happens
+ * BEFORE any row is read — and before `getOrgPg()`, so a hang here leaves no
+ * DB connection and no socket to observe. Measured 2026-08-03: a standalone
+ * driver sat 55 MINUTES inside pass 1 at 0% CPU / WCHAN=ep_poll with zero inet
+ * sockets, no `pg_stat_activity` row, and exactly one log line; on SIGTERM it
+ * aborted with `Napi::Error`, i.e. it was blocked inside a NATIVE addon.
+ *
+ * Resolution touches a preference read, a native `localAvailable` probe and the
+ * sidecar-aware builders. Which of them blocked is UNDETERMINED — and the fix
+ * deliberately does not depend on knowing: one deadline around the whole
+ * resolver covers every branch, including native code a JS-level per-call
+ * wrapper cannot reach into.
+ *
+ * 60s is far above a healthy resolve (sub-second when the :3384 sidecar is up,
+ * a few seconds for a cold in-process model load), so this fires only on a
+ * resolve that is never coming back.
+ */
+const EMBEDDER_RESOLVE_TIMEOUT_MS = 60_000;
+
+/**
+ * Bound a promise that must not be allowed to hang forever.
+ *
+ * `label` names the phase in the thrown error. It exists because this helper is
+ * now used for two different phases, and an `embed_timeout_after_…` message on
+ * a hung *resolver* would misdirect the next investigator to the row loop.
+ */
+function withEmbedTimeout<T>(
+  p: Promise<T>,
+  ms = EMBED_ROW_TIMEOUT_MS,
+  label = 'embed',
+): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   return Promise.race([
     p,
     new Promise<never>((_, reject) => {
-      timer = setTimeout(() => reject(new Error(`embed_timeout_after_${ms}ms`)), ms);
+      timer = setTimeout(() => reject(new Error(`${label}_timeout_after_${ms}ms`)), ms);
       // Never hold the process open on this timer alone.
       (timer as unknown as { unref?: () => void }).unref?.();
     }),
@@ -599,7 +632,23 @@ export async function runBackfillSweep(
   __sweepState.running = true;
   __sweepState.startedAt = Date.now();
   try {
-    const resolved = await resolveBackfillEmbedder();
+    // WI-7348: say we STARTED, before the first thing that can hang.
+    //
+    // WI-7327 removed the ambiguity for the SKIP path; this removes it for the
+    // RUN path. Without this line a sweep that hangs in resolution is byte-for-byte
+    // indistinguishable from one that was never called: both are silence. Elapsed
+    // time cannot separate them either — a healthy sweep here legitimately runs
+    // 14.5-15.3min (measured, WI-7327) — so silence was the only signal, and it
+    // meant nothing.
+    console.log('[embed-backfill] sweep starting: resolving embedder…');
+    const resolved = await withEmbedTimeout(
+      resolveBackfillEmbedder(),
+      EMBEDDER_RESOLVE_TIMEOUT_MS,
+      'embedder_resolve',
+    );
+    console.log(
+      `[embed-backfill] embedder resolved: mode=${resolved.mode} dims=${resolved.dims ?? '?'}`,
+    );
     // Skip entirely when disabled OR when the active embedder's dims don't fit
     // the prose columns. Without this guard an ineligible preference would burn
     // a full batch of embeds per table per tick just to count every row as a

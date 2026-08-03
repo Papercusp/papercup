@@ -161,6 +161,11 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
     // it updates, which is exactly the badge-vs-pane disagreement the counts were
     // designed to avoid.
     'plans.attentionCounts',
+    // plans.attentionRefs (D-031) — the drill-in projection. Same rule as the
+    // two above: it MUST invalidate with plans.attention, or a chat card's Open
+    // button keeps rendering (or stops rendering) against a resolved item that
+    // has since left the feed.
+    'plans.attentionRefs',
     'plans.search',
     // plans.byHive (WI-259 P-006) — the cross-member plan rollup. A FEDERATED plan
     // write lands on harness_plans under the author member's slug + fires the change
@@ -535,6 +540,9 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
     'plans.attention',
     'plans.attentionItem',
     'plans.attentionCounts',
+    // An escalation arriving/resolving changes which `escalation:<msgId>` refs
+    // resolve — the exact rows plans.attentionRefs carries (D-031).
+    'plans.attentionRefs',
   ],
   'harness_shared.harness_snapshots_consolidated': ['snapshotsConsolidated.bySlug'],
 

@@ -181,9 +181,19 @@ vi.mock('../inbox/use-inbox-pending', () => ({
   // owner-plans-single-pane-2026-07-17: the sidebar now also reads the
   // plans-needing-you count for the Plans face badge.
   usePlansNeedingYouCount: () => inboxState.plansNeedingYou,
-  // WI-5342: the sidebar also reads the live attention items so a curator
-  // card's drill-in can resolve its ref against a real inbox item.
-  useInboxAttention: () => ({ items: inboxState.items, loading: false, error: null, refresh: () => {} }),
+}));
+// WI-5342: the sidebar reads the live attention items so a curator card's
+// drill-in can resolve its ref against a real one. D-031 moved that read off
+// the fat `useInboxAttention` feed onto the four-field `useAttentionRefs`
+// projection — the rows the resolver actually matches on are identical, so the
+// fixtures below are unchanged; only the hook being stubbed moved.
+// `enabled` is captured so the gate itself is assertable, not just its result.
+const attentionRefsCalls: boolean[] = [];
+vi.mock('@/app/admin/plans/plans-api', () => ({
+  useAttentionRefs: (enabled = true) => {
+    attentionRefsCalls.push(enabled);
+    return { items: enabled ? inboxState.items : [], loading: false };
+  },
 }));
 vi.mock('../plans/PlansPane', () => ({
   default: () => <div data-testid="plans-pane-stub" />,
