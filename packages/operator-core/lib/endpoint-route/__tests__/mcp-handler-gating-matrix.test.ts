@@ -535,8 +535,10 @@ describe('projection — the caller-specified reduction stage at the dispatch la
 
 describe('tools:invoke re-dispatch — `projection` nested in the target call\'s `args`', () => {
   const scoped = (ws: string) => superuserExtra(`&workspace=${ws}`);
+  // format:'json' — the target's plain-object return otherwise negotiates
+  // compact TOON encoding by default (P-009), which is beside the point here.
   const invokeCall = (targetArgs: Record<string, unknown>, ws = 'ws-test') =>
-    callTool('tools:invoke', { name: 'gatingtest:invoke_target', args: targetArgs }, scoped(ws));
+    callTool('tools:invoke', { name: 'gatingtest:invoke_target', args: targetArgs }, scoped(ws), { format: 'json' });
 
   it('strips `projection` before the TARGET tool\'s own (closed-shape) validator sees it', async () => {
     const res = await invokeCall({ probe: 'v', projection: { pipe: [{ op: 'head', n: 1 }] } });
@@ -552,8 +554,6 @@ describe('tools:invoke re-dispatch — `projection` nested in the target call\'s
 
   it('an INVALID nested projection fails CLOSED — the target tool is never dispatched', async () => {
     const res = await invokeCall({ projection: { pipe: [{ op: 'grep', pattern: '[[:digit:]]' }] } });
-    // eslint-disable-next-line no-console
-    console.log('DEBUG res=', JSON.stringify(res));
     expect(res.isError).toBe(true);
     expect(textOf(res)).toContain('projection_invalid');
     expect(invokeProbeSeen).toEqual([]); // never reached the target tool

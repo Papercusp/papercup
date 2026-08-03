@@ -91,6 +91,23 @@ describe('check-unenrolled-mjs-imports', () => {
     });
   });
 
+  it('flags a MULTI-LINE import whose directive sits above the `import` keyword — that placement does NOT suppress TS7016 (EI-19389216343173748)', () => {
+    // Verified empirically against tsc: a directive here suppresses nothing (the
+    // diagnostic lands on the `from` line, not the `import` line) and additionally
+    // reds as an unused-directive error. A guard that treats this as suppressed
+    // gives exactly the false assurance the incident was filed over.
+    withFixture((root) => {
+      const text = [
+        '// @ts-expect-error — WRONG placement for a multi-line import',
+        'import {',
+        '  x,',
+        "} from './scripts/helper.mjs';",
+        '',
+      ].join('\n');
+      expect(find(root, text)).toHaveLength(1);
+    });
+  });
+
   it('tolerates the eslint pragma the @ts-ignore convention is always paired with', () => {
     withFixture((root) => {
       const text = [

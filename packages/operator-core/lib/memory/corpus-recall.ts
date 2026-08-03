@@ -179,9 +179,28 @@ const STOPWORDS = new Set([
 ]);
 
 /** An id-shaped token is ALWAYS a term regardless of length — WI-6512, EI-9748,
- *  P-008, D-037, migration numbers. These are exactly the tokens that make
- *  pointer-retrieval work, and a plain length filter would drop them. */
+ *  P-008, D-037, migration numbers (bare 3+ digit runs, e.g. a standalone
+ *  "374"). These are exactly the tokens that make pointer-retrieval work, and
+ *  a plain length filter would drop them. Used only to KEEP a short token as a
+ *  candidate term (`corpusTerms`) — see {@link ID_PREFIXED_TOKEN_RE} for the
+ *  narrower set allowed to short-circuit query SELECTION. */
 const ID_TOKEN_RE = /^(?:[a-z]{1,3}-\d{2,}|\d{3,})$/;
+
+/** The subset of {@link ID_TOKEN_RE} that is an actual RESOLVABLE record
+ *  handle — a letter prefix plus digits (WI-6512, EI-9748, P-008, D-037).
+ *  Deliberately EXCLUDES a bare digit run: measured 2026-08-03 replaying real
+ *  agent batches (WI-7237), a bare 3+ digit number is overwhelmingly a port
+ *  ("127" of "127.0.0.1"), a byte/char count ("1500" of "left(text,1500)"),
+ *  or similar incidental numeral scraped out of a command — never a resolvable
+ *  id on its own. `corpusQueryText`'s id short-circuit must use THIS regex,
+ *  not `ID_TOKEN_RE`: an unprefixed number short-circuiting the query discards
+ *  every other term in the batch (id ⇒ used ALONE), which on 2 of 7 replayed
+ *  batches threw away all the actual prose and searched the corpus for a bare
+ *  number that is not a record handle at all. `corpusTerms` still treats a
+ *  bare number as a valid short CANDIDATE term via `ID_TOKEN_RE` — it may
+ *  legitimately help the overlap guard (e.g. a shared port number) — it is
+ *  only barred from unilaterally deciding the whole query. */
+const ID_PREFIXED_TOKEN_RE = /^[a-z]{1,3}-\d{2,}$/;
 
 /**
  * Extract the comparable terms from a piece of text. Lowercased, split on
@@ -226,11 +245,21 @@ export const CORPUS_QUERY_MAX_TERMS = 2;
  *   'http2 transport'                                          → 3 rows
  *   'WI-6512' → 'wi' & '-6512'                                 → 11 work-items, 58 turns
  *
- * So: an ID-SHAPED token wins outright and is used ALONE. A work-item id in
- * the prompt is a near-unique retrieval key — ANDing anything beside it can
- * only cost recall, and it cannot buy precision the id does not already have.
- * That case is also this item's entire motivating example (find WI-6512 and
- * its post), so it is the case worth optimizing.
+ * So: an ID-PREFIXED token (a letter prefix plus digits — WI-6512, EI-9748,
+ * P-008, D-037) wins outright and is used ALONE. A work-item id in the prompt
+ * is a near-unique retrieval key — ANDing anything beside it can only cost
+ * recall, and it cannot buy precision the id does not already have. That case
+ * is also this item's entire motivating example (find WI-6512 and its post),
+ * so it is the case worth optimizing.
+ *
+ * A BARE digit run (no letter prefix) does NOT short-circuit, even though
+ * `corpusTerms` keeps it as a short candidate term — WI-7237, measured
+ * 2026-08-03 replaying real agent batches: a bare 3+ digit number is
+ * overwhelmingly incidental (a port, a byte count, a limit) rather than a
+ * resolvable id, and letting it win outright discarded ALL the actual prose
+ * on 2 of 7 replayed batches ("127" from `127.0.0.1`, "1500" from
+ * `left(text,1500)`). It still falls through to ordinary length-based
+ * selection below, where real prose terms usually outrank it.
  *
  * Failing an id, the two longest distinct content terms. Length is a crude
  * distinctiveness proxy; it is used deliberately in place of a tuned constant
@@ -247,7 +276,7 @@ export const CORPUS_QUERY_MAX_TERMS = 2;
 export function corpusQueryText(text: string, maxTerms = CORPUS_QUERY_MAX_TERMS): string {
   const terms = corpusTerms(text);
   if (terms.length === 0) return '';
-  const id = terms.find((t) => ID_TOKEN_RE.test(t));
+  const id = terms.find((t) => ID_PREFIXED_TOKEN_RE.test(t));
   if (id) return id;
   return [...terms]
     .sort((a, b) => b.length - a.length || terms.indexOf(a) - terms.indexOf(b))

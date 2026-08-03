@@ -70,7 +70,6 @@ export const BASELINE = new Set([
   'apps/operator/lib/tty-title-target.test.ts -> apps/operator/scripts/psu-launcher.mjs',
   'apps/operator/scripts/__tests__/bghost-watchdog.test.ts -> apps/operator/scripts/bghost-watchdog.mjs',
   'apps/operator/scripts/__tests__/psu-supervisor-beat.test.ts -> apps/operator/scripts/psu-launcher.mjs',
-  'apps/operator/scripts/__tests__/tutorial-runner.test.ts -> apps/operator/scripts/tutorial-runner.mjs',
   'apps/operator/scripts/check-vitest-mock-paths.test.ts -> apps/operator/scripts/check-vitest-mock-paths.mjs',
   'apps/operator/scripts/psu-launcher-env-sanitize.test.ts -> apps/operator/scripts/psu-launcher.mjs',
 ]);

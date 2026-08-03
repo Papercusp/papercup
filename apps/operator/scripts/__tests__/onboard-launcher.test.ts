@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
-// @ts-expect-error — plain .mjs module (same pattern as the other script tests)
+// plain .mjs module (same pattern as the other script tests) — the directive must sit
+// immediately above the `} from` line for a multi-line import; tsc reports TS7016 there,
+// not at the `import` keyword (EI-19389216343173748).
 import {
   FRAMEWORKS,
   FRAMEWORK_DESCRIPTIONS,
@@ -8,6 +10,7 @@ import {
   buildTutorialRunnerArgs,
   mapFrameworkToAgent,
   parseArgs,
+  // @ts-expect-error
 } from '../onboard-launcher.mjs';
 
 describe('mapFrameworkToAgent', () => {

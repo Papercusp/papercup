@@ -782,6 +782,22 @@ running them. **That is the base rate, not a fluke:** on this fleet the tree out
 every red as STALE until you have RUN each failing file at HEAD (`npm run test:file -- <paths>`). A
 status derived from the log — yours or a peer's — is not a status at HEAD. (EI-19394456914198611)
 
+✅ **The wording is FIXED IN TREE as of 2026-08-03 (EI-19390159514676981) — but the run-it-at-HEAD rule
+above stands unchanged, and the fix is NOT yet deployed**, so a live verdict can still emit the old
+sentence until the next green+deploy. The presumption now requires the RANGE to be empty rather than
+merely to exclude the failing test files, so you will start seeing a fourth outcome:
+
+| the verdict says | it means |
+|---|---|
+| `N of the failing file(s) were MODIFIED in that range (presumptively STALE)` | a failing test file itself moved — re-verify at tip |
+| `… submodule(s) moved … could not be diffed (skew UNDETERMINED)` | part of the range was unreadable |
+| `none of the failing TEST files changed, but N other file(s) did … skew UNDETERMINED` | **NEW** — the absence-ratchet case: a budget/lint/census test is fixed in the file it POLICES, so this is the expected shape of an already-fixed red |
+| `nothing at all changed in that range (a real red)` | the ONLY case that earns the real-red presumption — the range is empty, so nothing downstream could have fixed it |
+
+An UNMEASURED range degrades to UNDETERMINED and is never upgraded to confidence. The two new
+`GateLineage` fields (`rangeFilesChanged`, `failingPathsConsidered`) also persist into the durable
+pipeline-event record, so `/admin/git` and `gate_health` stop replaying the old false confidence.
+
 ⚠ **Do not glob `/tmp/papercup-green-checkpoint-manual-*.log` and take the newest.** Tests write
 synthetic placeholder shas into that same namespace, and `ls -t` routinely returns the TEST file
 first (EI-19326961954611487). Observed 2026-08-02: the newest match was `…-manual-ryte5.log`,
@@ -1105,6 +1121,26 @@ stage's (EI-13414) — the same masking bug, different shell construct. If you
 find yourself appending `; echo "EXIT=$?"` to a `capability:bash` command,
 that is a sign you're hand-rolling something the tool already gives you for
 free.
+
+⚠ **Never combine `capability:bash { run_in_background: true }` with your own
+manual trailing `&` inside the command — it double-backgrounds, and the tool's
+"completed" notification then lies.** `run_in_background: true` already
+backgrounds the whole command for you; adding your own `&` (e.g.
+`(cmd > log 2>&1; echo EXIT=$? >> log) &`) forks a SECOND, untracked layer of
+backgrounding whose child detaches from the job the tool is tracking. The
+outer wrapper — the part the tool actually sees — returns almost immediately
+after printing "launched pid $!", so `capability:bash_output` reports
+"Background command completed (exit code 0)" while the real leaf process
+(confirmed alive via `pgrep`, and via `tail --pid=<leaf> -f /dev/null`) is
+still running, unfinished, for minutes afterward — with a 0-byte log at the
+moment of the false "completion" (EI-19389748740902475). This is the same
+wrapper-PID-vs-leaf-PID class the note below documents for `npm run <target>`,
+but it needs no intermediate `npm` wrapper at all — just pass the plain
+command and let `run_in_background: true` do the backgrounding; never add your
+own `&`. If you must background manually inside a compound command anyway,
+resolve the real leaf PID and wait on it explicitly (`tail --pid=<leaf> -f
+/dev/null`) or poll the log for a terminal marker before trusting the tool's
+own "completed" notification.
 
 ⚠ **Never wait on a process-table pattern you typed yourself.** `until ! pgrep
 -f '<pat>'; do sleep 5; done` can NEVER exit from an agent shell: `pgrep -f`

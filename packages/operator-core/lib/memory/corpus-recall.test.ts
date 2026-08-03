@@ -76,6 +76,31 @@ describe('corpusQueryText — the AND-satisfiability fix', () => {
     expect(corpusQueryText('does D-037 govern the injection budget question')).toBe('d-037');
   });
 
+  it('does NOT short-circuit on a bare digit run — WI-7237', () => {
+    // Measured 2026-08-03 replaying real agent batches: a bare 3+ digit
+    // number is overwhelmingly incidental (a port, a byte count, a limit),
+    // never a resolvable id on its own. Letting it short-circuit the way an
+    // ID-PREFIXED token does threw away all the prose in the batch.
+    const portBatch =
+      'curl a health check against 127.0.0.1 on the operator port to confirm the service replies';
+    const q1 = corpusQueryText(portBatch);
+    expect(q1).not.toBe('127');
+    expect(q1.split(' ')).toHaveLength(2);
+
+    const byteCountBatch =
+      'truncate the excerpt with left(text,1500) before writing the teaser to the corpus block';
+    const q2 = corpusQueryText(byteCountBatch);
+    expect(q2).not.toBe('1500');
+    expect(q2.split(' ')).toHaveLength(2);
+  });
+
+  it('still lets a bare digit run WIN when nothing longer is available', () => {
+    // corpusTerms keeps a bare number as a valid short candidate term (it may
+    // legitimately help the overlap guard); this only asserts it can no
+    // longer unilaterally decide the query the way an id-prefixed token does.
+    expect(corpusQueryText('the port is 8788 and')).toContain('8788');
+  });
+
   it('never returns more terms than asked, however long the input', () => {
     const envelope = `${'boilerplate envelope preamble '.repeat(40)} ${QUERY}`;
     expect(corpusQueryText(envelope).split(' ').length).toBeLessThanOrEqual(

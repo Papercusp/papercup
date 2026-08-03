@@ -107,6 +107,18 @@ export async function dispatchProjectedToolToMcp(
     };
   }
   const out: McpToolCallResult = { content: r.result!.content };
+  // EI-19386035445533031 (follow-on): `ok:true` here means the HANDLER did not
+  // throw — it says nothing about whether the `ToolResult` it RETURNED itself
+  // carries `isError:true` (the sanctioned way for a handler to self-report a
+  // business-level failure while returning an already-MCP-shaped result — see
+  // ToolResult's own doc comment and the `tools:invoke` meta-tool, which passes
+  // a nested dispatch's raw `{ content, isError }` straight through). Dropping
+  // it here silently downgraded a self-reported failure to a false "ok" MCP
+  // response the moment it passed through ANY defineTool-wrapped re-dispatch
+  // (e.g. a `tools:invoke`-mediated call) — the isError bit compiled fine
+  // (McpToolCallResult already declares it) but was simply never read from
+  // `r.result`.
+  if (r.result!.isError) out.isError = true;
   const meta = r.result!._meta;
   if (meta && Object.keys(meta).length > 0) out._meta = meta;
   if (r.result!.structuredContent !== undefined) out.structuredContent = r.result!.structuredContent;

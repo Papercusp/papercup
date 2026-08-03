@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
-// @ts-expect-error — plain .mjs module (same pattern as the other script tests)
+// plain .mjs module (same pattern as the other script tests) — the directive must sit
+// immediately above the `} from` line for a multi-line import; tsc reports TS7016 there,
+// not at the `import` keyword (EI-19389216343173748).
 import {
   OPTION_LINE,
   SHELL_TABS,
@@ -17,7 +19,9 @@ import {
   sectionChoices,
   setupChecklist,
   statusStepForItemKey,
+  stepCursor,
   undecidedRequiredItems,
+  // @ts-expect-error
 } from '../tutorial-runner.mjs';
 
 describe('parseArgs', () => {
@@ -330,7 +334,7 @@ describe('required optional-setup helpers (graduation gate — pure)', () => {
 });
 
 // ── stepCursor (the 2026-07-05 frozen-menu fix) ────────────────────────────────
-import { stepCursor } from '../tutorial-runner.mjs';
+// stepCursor is imported in the top-level import block above.
 import { readFileSync, readdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
