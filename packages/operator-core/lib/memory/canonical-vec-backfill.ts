@@ -40,10 +40,25 @@
  *   - this sweep matched `source_hive IS NOT NULL`, and the live corpus is
  *     32,641 rows with ZERO federated (measured 2026-08-03).
  *
- * Net: 0 vectors, 0 refill paths, no error and no log line — workspace semantic
- * recall silently degraded to lexical-only. Widening the predicate applies the
- * exclusion's OWN criterion ("nothing else will ever embed them") to a case its
- * author had no reason to foresee, rather than overriding the decision.
+ * ⚠ CORRECTION 2026-08-03: an earlier revision of this docblock concluded from the
+ * above that "workspace semantic recall silently degraded to lexical-only." THAT
+ * WAS FALSE and is retracted. 727 wiped `memory_vec_gemma` / `memory_vec_openai`,
+ * but NEITHER is the active mode: recall runs on `harrier` (native-1024, the P-015
+ * default), whose table held 32,772 vectors against 32,772 canonical rows — 0
+ * missing, filling continuously since 2026-07-11. Recall never degraded, because
+ * `activeVecTable()` reads and writes ONLY the active mode's table. A zero in a
+ * NON-active mode's table is the correct, expected steady state and must not be
+ * read as an outage (fact `memory-vec-gemma-zero-is-correct-not-a-failure`).
+ *
+ * The widening is still right, for the LATENT reason rather than an actual one:
+ * 727 left gemma/openai not merely empty but STRUCTURALLY UNREBUILDABLE — per the
+ * three bullets above, no path can refill an empty vec table from canonical text.
+ * Under the old federated-only predicate, selecting either mode would have pointed
+ * recall at a permanently empty space with nothing able to repair it. This sweep is
+ * the only text-to-vector rebuild path there is, so it must not be scoped away from
+ * local rows. That applies the exclusion's OWN criterion ("nothing else will ever
+ * embed them") to a case its author had no reason to foresee, rather than
+ * overriding the decision.
  *
  * ON THE QUOTA CONCERN the old scope existed to protect: it is real but small, and
  * it is bounded by BATCH rather than by which rows are eligible. The catch-up is

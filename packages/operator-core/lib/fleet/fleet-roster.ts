@@ -29,6 +29,11 @@ import {
   type WakeabilitySignals,
 } from '../agent-tools/coordination/presence-wakeability';
 import {
+  fetchSelfWake,
+  type SelfWakeSignals,
+  type SelfWakeSource,
+} from '../agent-tools/coordination/presence-selfwake';
+import {
   deriveVerdict,
   resolveSessionStates,
   type LivenessSubject,
@@ -100,6 +105,12 @@ export interface FleetRosterEntry extends AgentAssignment {
    *  longer masks an `ended` (dead) session behind a still-warm heartbeat. null for a
    *  federated peer / when the wakeability read is unavailable (state unknown). */
   sessionState: SessionState | null;
+  /** EI-19407725333778711: will anything wake this member unprompted
+   *  (`loop` | `event` | `none`)? Every other liveness field here describes the
+   *  PRESENT; this is the only one that says whether the present ever ends.
+   *  `sessionState:'parked'` + `selfWake:'none'` is a dead member in a healthy
+   *  costume. `null` = the leg was degraded/absent (UNKNOWN) — never `'none'`. */
+  selfWake: SelfWakeSource | null;
   /** WI-4400: draining/suspect rows need a required wake confirmation before
    * a coordinator assumes the owner is dead or alive. */
   confirmLiveness: boolean | null;
@@ -171,6 +182,10 @@ export function foldFleetRoster(
   nowMs: number,
   wakeability: Map<string, WakeabilitySignals> = new Map(),
   recordedLive: ReadonlySet<string> = new Set<string>(),
+  /** EI-19407725333778711: forward-looking self-wake signals. Defaulted empty so
+   *  every existing caller/test compiles unchanged and simply reports
+   *  `selfWake: null` (UNKNOWN) — never a fabricated `'none'`. */
+  selfWake: Map<string, SelfWakeSignals> = new Map(),
 ): FleetRosterEntry[] {
   const presById = new Map(presence.map((p) => [p.ownerId, p]));
   const asgById = new Map(assignments.map((a) => [a.agentId, a]));
@@ -207,6 +222,9 @@ export function foldFleetRoster(
           w,
           recordedLive,
           nowMs,
+          undefined,
+          undefined,
+          selfWake.get(id),
         )
       : null;
     const sessionState: SessionState | null = v?.sessionState ?? null;
@@ -223,6 +241,9 @@ export function foldFleetRoster(
       // the verdict (a warm-dead session is heartbeatFresh:true + ended).
       heartbeatFresh: v?.heartbeatFresh ?? !stale,
       sessionState,
+      // EI-19407725333778711: `?? null` is UNKNOWN, deliberately not `'none'` —
+      // a degraded leg must not manufacture a stranded-member alarm.
+      selfWake: v?.selfWake ?? null,
       confirmLiveness: v?.confirmLiveness ?? null,
       ownerLabel: p?.ownerLabel ?? base.label,
       source: p?.source ?? null,
@@ -353,7 +374,13 @@ async function defaultReadFleetPresence(opts: { workspaceId?: string | null }): 
  *  errored) and fell back to an empty/default value — WI-3818 observability,
  *  so a caller can tell "this roster may be incomplete" instead of silently
  *  trusting a possibly-partial fold. Empty array ⇒ every leg answered fully. */
-export type FleetRosterDegradedLeg = 'presence' | 'tier1' | 'assignments' | 'wakeability' | 'recorded';
+export type FleetRosterDegradedLeg =
+  | 'presence'
+  | 'tier1'
+  | 'assignments'
+  | 'wakeability'
+  | 'recorded'
+  | 'selfwake';
 
 export interface ListFleetRosterResult {
   entries: FleetRosterEntry[];
@@ -387,7 +414,7 @@ export async function listFleetRosterDiagnosed(opts: ListFleetRosterOpts): Promi
   const inFleet = new Set(presence.map((p) => p.ownerId));
   const localIds = presence.filter((p) => !p.federated).map((p) => p.ownerId);
 
-  const [tier1Result, rowsResult, wakeabilityResult, recordedResult] = await Promise.all([
+  const [tier1Result, rowsResult, wakeabilityResult, recordedResult, selfWakeResult] = await Promise.all([
     withBoundedTimeout(fetchPresenceTier1(localIds), {
       fallback: new Map<string, PresenceTier1Joins>(),
       timeoutMs: FLEET_ROSTER_SUBREAD_TIMEOUT_MS,
@@ -418,11 +445,23 @@ export async function listFleetRosterDiagnosed(opts: ListFleetRosterOpts): Promi
       timeoutMs: FLEET_ROSTER_SUBREAD_TIMEOUT_MS,
       label: 'fleet-roster:recorded',
     }),
+    // EI-19407725333778711: the forward-looking self-wake leg — will a member
+    // wake again unprompted? fleet:status is a SUPERVISORY surface, so it opts
+    // in. In the same parallel fan-out as every other leg, and best-effort: a
+    // degraded read leaves `selfWake: null` (UNKNOWN) on every row rather than
+    // asserting `'none'`, which would manufacture a false stranded-member alarm
+    // out of a slow query.
+    withBoundedTimeout(fetchSelfWake(localIds), {
+      fallback: new Map<string, SelfWakeSignals>(),
+      timeoutMs: FLEET_ROSTER_SUBREAD_TIMEOUT_MS,
+      label: 'fleet-roster:selfwake',
+    }),
   ]);
   if (tier1Result.degraded) degradedLegs.push('tier1');
   if (rowsResult.degraded) degradedLegs.push('assignments');
   if (wakeabilityResult.degraded) degradedLegs.push('wakeability');
   if (recordedResult.degraded) degradedLegs.push('recorded');
+  if (selfWakeResult.degraded) degradedLegs.push('selfwake');
 
   // A degraded `assignments` leg naturally drops the heaviest per-member detail
   // first (WI-3818's "drop queued detail first" fallback): foldFleetRoster
@@ -437,6 +476,7 @@ export async function listFleetRosterDiagnosed(opts: ListFleetRosterOpts): Promi
     Date.now(),
     wakeabilityResult.value,
     recordedResult.value,
+    selfWakeResult.value,
   );
   return { entries, degradedLegs };
 }

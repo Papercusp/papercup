@@ -164,37 +164,49 @@ do_reap() {
     fi
 }
 
-if any_orchestrator_alive; then
-    log "a federation orchestrator script is live — skipping this sweep entirely (may legitimately hold VMs past the age threshold)"
-    exit 0
-fi
-
-checked=0; reaped=0; skipped_young=0
-
-while IFS= read -r pid; do
-    [ -z "$pid" ] && continue
-    checked=$(( checked + 1 ))
-
-    cmd=$(proc_cmdline "$pid" 2>/dev/null) || continue
-    name=$(vm_name_from_cmdline "$cmd") || { log "SKIP pid=$pid — could not parse instance name from cmdline"; continue; }
-
-    et=$(proc_etimes "$pid" 2>/dev/null) || continue
-    if [ "$et" -lt "$MAX_AGE_SECS" ]; then
-        skipped_young=$(( skipped_young + 1 ))
-        continue
+# ── main ─────────────────────────────────────────────────────────────────
+# Wrapped so this file can be `source`d (functions only, no sweep) by a
+# selftest — see reap-stale-testvms.selftest.sh.
+main() {
+    if any_orchestrator_alive; then
+        log "a federation orchestrator script is live — skipping this sweep entirely (may legitimately hold VMs past the age threshold)"
+        return 0
     fi
 
-    log "REAP candidate: $name (pid=$pid, running=${et}s >= ${MAX_AGE_SECS}s, no live orchestrator)"
-    do_reap "$pid" "$name"
-    reaped=$(( reaped + 1 ))
-done < <(
-    for cmdline_file in /proc/[0-9]*/cmdline; do
-        [ -r "$cmdline_file" ] || continue
-        cmd=$(tr '\0' ' ' < "$cmdline_file" 2>/dev/null) || continue
-        [[ "$cmd" == *"papercusp-testvm-"* ]] || continue
-        pid="${cmdline_file%/cmdline}"; pid="${pid#/proc/}"
-        echo "$pid"
-    done
-)
+    local checked=0 reaped=0 skipped_young=0
 
-log "Summary: checked=$checked reaped=$reaped skipped_young=$skipped_young max_age_secs=$MAX_AGE_SECS"
+    while IFS= read -r pid; do
+        [ -z "$pid" ] && continue
+        checked=$(( checked + 1 ))
+
+        local cmd name et
+        cmd=$(proc_cmdline "$pid" 2>/dev/null) || continue
+        name=$(vm_name_from_cmdline "$cmd") || { log "SKIP pid=$pid — could not parse instance name from cmdline"; continue; }
+
+        et=$(proc_etimes "$pid" 2>/dev/null) || continue
+        if [ "$et" -lt "$MAX_AGE_SECS" ]; then
+            skipped_young=$(( skipped_young + 1 ))
+            continue
+        fi
+
+        log "REAP candidate: $name (pid=$pid, running=${et}s >= ${MAX_AGE_SECS}s, no live orchestrator)"
+        do_reap "$pid" "$name"
+        reaped=$(( reaped + 1 ))
+    done < <(
+        for cmdline_file in /proc/[0-9]*/cmdline; do
+            [ -r "$cmdline_file" ] || continue
+            cmd=$(tr '\0' ' ' < "$cmdline_file" 2>/dev/null) || continue
+            [[ "$cmd" == *"papercusp-testvm-"* ]] || continue
+            pid="${cmdline_file%/cmdline}"; pid="${pid#/proc/}"
+            echo "$pid"
+        done
+    )
+
+    log "Summary: checked=$checked reaped=$reaped skipped_young=$skipped_young max_age_secs=$MAX_AGE_SECS"
+}
+
+# Only run the sweep when EXECUTED directly — a selftest sources this file to
+# unit-test the functions above without triggering a live sweep.
+if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
+    main
+fi

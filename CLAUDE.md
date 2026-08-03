@@ -1327,12 +1327,33 @@ regression there is invisible to *both* routine checks and first reds the
 **green-checkpoint**. Editing outside operator-core? Also typecheck that workspace —
 **`build:typecheck { project: "<workspace>" }`** (EI-18719561823587590).
 
+> ⚠ **Do NOT reach for `npm run --workspace <dir> typecheck` as the fallback — most workspaces
+> have no such script and it dead-ends with `npm error Missing script: "typecheck"`.** Measured
+> 2026-08-03: of 53 `libs/generic/*` packages with a tsconfig, only 7 declared one. The trap is
+> the READING, not the error: "Missing script" invites the conclusion *"this workspace has no
+> typecheck, so there is nothing to run"*, which is wrong — the code is perfectly checkable,
+> nothing was checked, and you proceed believing you verified it. The command that always works
+> is the tsconfig directly (EI-19409185011887864):
+>
+> ```bash
+> npx tsc --noEmit -p libs/generic/<pkg>/tsconfig.json
+> ```
+>
+> ✅ **`libs/generic/*` is no longer on the uncovered list above** — `lint:tsc:workspaces` (a
+> green-checkpoint leg) now gates a package on having a **tsconfig.json**, not on having
+> remembered to declare a script, so all 54 are checked routinely and a new package is covered
+> the moment it has a tsconfig. `apps/*` and other `packages/*` are still script-only and remain
+> report-only: promotion requires measuring a root first (`PROMOTE_ROOTS` in
+> `scripts/lint-tsc-workspaces.mjs` says why, and the run prints every directory still
+> unreachable).
+
 > ✅ **`--files=` no longer lies about this** (EI-19341572300046923). Naming a path outside
 > the project a gate compiles used to scope the VERDICT to files that compile never saw, so
 > the run printed a clean result having typechecked **none of them** — a green indistinguishable
 > from a real pass, and how two operator-vite reds reached the fleet gate on 2026-08-02. Now the
 > gate checks coverage BEFORE the ~150s compile: if *every* named file is outside, it exits **1
-> in ~0.15s** and names the command that does cover them (`npm run --workspace <dir> typecheck`);
+> in ~0.15s** and names the command that does cover them (prefer `npx tsc --noEmit -p
+> <workspace>/tsconfig.json` — see the Missing-script warning above);
 > if only some are, it warns loudly and still reports the covered verdict. Coverage is derived
 > from each CLI's own `-p` operand, so all four per-project gates (`lint:tsc`,
 > `lint:tsc:operator-vite`, `lint:tsc:orchestrator`, `lint:tsc:papercusp-libs`) inherit it. It
