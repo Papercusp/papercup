@@ -81,6 +81,27 @@ export async function readLoopSpendCents(opts: {
  * it inactive with the reason). Mirrors the spirit of `disarmPlanSchedule` at the routine
  * layer. `active=FALSE` stops the tick from claiming it; `next_fire_at=NULL` is tidy (an
  * inactive routine is never claimed regardless).
+ *
+ * ⚠ EI-19406534159939583: that `next_fire_at=NULL` used to be lossy, and "tidy" was exactly
+ * the wrong trade. `next_fire_at` is the ONE field that separates the two failure modes a
+ * pause reacts to, and the pause was erasing it:
+ *
+ *   - `'infinity'`  → the loop was parked as IN-FLIGHT (`claim.ts`'s sentinel) and never
+ *                     re-armed by the completion-rebase. The agent may be perfectly healthy;
+ *                     what broke is the re-arm path.
+ *   - a real timestamp → the loop WAS scheduled and fires were landing, but no turn came of
+ *                     them. That is the comatose owner `stalled-loops-guard` exists for.
+ *
+ * Post-pause both read `NULL`, so an investigator cannot tell "healthy agent, broken re-arm"
+ * from "dead agent" and has to reconstruct it from timestamp archaeology. Measured live
+ * 2026-08-03: five fleet members were disarmed at 04:07:16Z and the leading hypothesis about
+ * WHY could be neither confirmed nor refuted from state, because this write had already
+ * discarded the evidence. So preserve the prior value as `loop_paused_next_fire_at` before
+ * nulling — one jsonb key, and the next occurrence is diagnosable in a single query.
+ *
+ * The key is written even when the prior value was NULL (as an explicit JSON `null`), so a
+ * row that carries the key with `null` is distinguishable from a pre-fix row that lacks the
+ * key entirely — absence means "paused before this fix", not "was unscheduled".
  */
 export async function autoPauseLoopRoutine(sql: Sql, routineId: string, reason: string): Promise<void> {
   await sql`
@@ -88,7 +109,13 @@ export async function autoPauseLoopRoutine(sql: Sql, routineId: string, reason: 
        SET active = FALSE,
            next_fire_at = NULL,
            metadata = COALESCE(metadata, '{}'::jsonb)
-                    || jsonb_build_object('loop_paused_reason', ${reason}::text, 'loop_paused_at', now()::text),
+                    || jsonb_build_object(
+                         'loop_paused_reason', ${reason}::text,
+                         'loop_paused_at', now()::text,
+                         -- OLD value: in an UPDATE, a column read in the SET expression is
+                         -- the pre-update one, so this captures what we are about to null.
+                         'loop_paused_next_fire_at', to_jsonb(next_fire_at::text)
+                       ),
            updated_at = now()
      WHERE id = ${routineId}
   `;

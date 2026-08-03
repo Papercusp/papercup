@@ -820,6 +820,18 @@ export interface PipelinePosition {
      *  `consecutiveReds`/`failingTests` verdict pertains to (`gate_health.observedCandidate`).
      *  Null when there is no verdict, or on a blob predating this field. */
     observedCandidate: string | null;
+    /**
+     * EI-19405864032365760: the last tick ABORTED before judging — it rendered no verdict, and
+     * none is coming until the named condition clears (today only `'migrations-pending'`).
+     *
+     * ⚠ READ BEFORE `consecutiveReds`/`failingTests`. An abort is deliberately not counted as a
+     * red, which leaves those counters frozen on the PREVIOUS verdict — so when this is non-null
+     * they are STALE BY CONSTRUCTION and describe a candidate that is no longer what holds the
+     * pipeline. Measured 2026-08-03: ~2.5h of a fleet reading "Gate is RED — the reds are yours
+     * to fix" and chasing unrelated test files while one pending migration was the real blocker.
+     * Null once any real verdict lands.
+     */
+    inconclusive: { status: string; candidate: string | null; detail: string | null; observedAtMs: number | null } | null;
   };
   /**
    * EI-7846: provenance for the CURRENT gate/deploy verdict — distinct from the
@@ -3196,6 +3208,10 @@ export async function gitPipelinePosition(
     candidateAgeMs: snap.gate.candidateAgeMs,
     commitsBehindTip: snap.gate.commitsBehindTip,
     observedCandidate: snap.gate.observedCandidate,
+    // EI-19405864032365760: same projection reasoning as the five above — git-pipeline-stats
+    // already resolves the abort record, and dropping it here is what left `dev:pipeline_position`
+    // (the surface every role is pointed at) reporting a stale red as the pipeline's blocker.
+    inconclusive: snap.gate.inconclusive,
     // P-004: WHO owns this red, so a reader can see the incident is already
     // claimed before filing another work-item about it. One indexed SELECT,
     // fail-soft to `no-object` — same cost/safety profile as checkpointRunInFlight.

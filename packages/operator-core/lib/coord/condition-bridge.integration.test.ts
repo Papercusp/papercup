@@ -364,6 +364,20 @@ describe('D-020 — settle is gated on the bridge mint marker', () => {
   });
 });
 
+describe('TEMP-DIAG', () => {
+  it('diag setWorkItemState', async () => {
+    const item = await createWorkItem({ kind: 'bug', title: 'diag', harness: H, severity: 'major' });
+    console.log('DIAG created', item.id, 'row=', JSON.stringify(await rowOf(item.id)));
+    try {
+      const r = await setWorkItemState(item.id, 'done', { harness: H, completionRef: 'diag close' });
+      console.log('DIAG setState returned', JSON.stringify(r && { id: r.id, status: r.status }));
+    } catch (e) {
+      console.log('DIAG setState THREW', (e as Error).message);
+    }
+    console.log('DIAG row after=', JSON.stringify(await rowOf(item.id)));
+  });
+});
+
 describe('the two-writes/one-read asymmetry (column vs link)', () => {
   it('a key held by an item with NO link makes the condition unownable AND churns a dropped row per tick', async () => {
     // FOUND BY THIS FILE. Ownership is written to TWO places — `condition_key`

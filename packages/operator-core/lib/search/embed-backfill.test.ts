@@ -123,6 +123,50 @@ describe('runBackfillSweep (P-010)', () => {
     expect(Array.isArray(firstResult)).toBe(true); // ran to its early-exit result
   });
 
+  it('takes over a STALE latch instead of deferring to a hung sweep forever (WI-7327)', async () => {
+    // The regression: `running` was a bare boolean cleared only in a `finally`.
+    // A sweep that THROWS reaches that finally; a sweep that HANGS never does —
+    // and the flag is pinned to globalThis, so every later tick returned
+    // `already_running` and the backfill was wedged until the host restarted.
+    // Measured 2026-08-03: a sweep hung at 04:45:04Z, the next 9 ticks each
+    // no-opped in ~265ms, and 451k rows stayed unembedded with ZERO log output.
+    const state = (globalThis as Record<symbol, unknown>)[
+      Symbol.for('papercusp.embedBackfillSweepState')
+    ] as { running: boolean; startedAt: number | null };
+
+    // Simulate a sweep that took the latch and never gave it back.
+    state.running = true;
+    state.startedAt = Date.now() - 16 * 60 * 1000; // older than the 15-min ceiling
+
+    unsafeResults = [[]]; // ext probe → no vector extension → clean early exit
+    const result = await runBackfillSweep();
+
+    // It must RUN, not skip: a holder this old is gone, not slow.
+    expect(result).not.toEqual({ skipped: 'already_running' });
+    expect(Array.isArray(result)).toBe(true);
+    // And the latch must be released cleanly afterwards.
+    expect(state.running).toBe(false);
+    expect(state.startedAt).toBeNull();
+  });
+
+  it('still defers to a FRESH in-flight sweep (the stale ceiling must not break dedupe)', async () => {
+    // Guard the other direction: the WI-7327 takeover must fire ONLY on a hang.
+    // A ceiling that is too eager would let two sweeps run concurrently and
+    // double-embed, which is the bug the latch exists to prevent.
+    const state = (globalThis as Record<symbol, unknown>)[
+      Symbol.for('papercusp.embedBackfillSweepState')
+    ] as { running: boolean; startedAt: number | null };
+
+    state.running = true;
+    state.startedAt = Date.now() - 30 * 1000; // slow, but well inside the ceiling
+
+    const result = await runBackfillSweep();
+    expect(result).toEqual({ skipped: 'already_running' });
+
+    state.running = false;
+    state.startedAt = null;
+  });
+
   // ── WI-2905: sweep fairness (no table can starve the shared daily budget) ──
 
   it('caps one table at maxRows per sweep instead of draining until the budget dies (WI-2905)', async () => {

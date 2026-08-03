@@ -69,6 +69,39 @@ describe('checkLoopCostCap — real-DB auto-pause (B-LOOP-3)', () => {
     expect(row.active).toBe(false);
     expect(String(row.metadata?.loop_paused_reason)).toContain('cost-cap breached');
     expect(row.metadata?.loop_paused_at).toBeTruthy();
+    // EI-19406534159939583: the pause must PRESERVE the prior next_fire_at rather than only
+    // nulling the column. The seed parks at 'infinity' — claim.ts's IN-FLIGHT sentinel — and
+    // that is exactly the value distinguishing "healthy agent whose re-arm broke" from
+    // "comatose agent that never answered a fire". Nulling it without recording it made five
+    // real disarms undiagnosable on 2026-08-03.
+    expect(row.metadata?.loop_paused_next_fire_at).toBe('infinity');
+  });
+
+  it('pause preserves a REAL next_fire_at too, while still clearing the column (EI-19406534159939583)', async () => {
+    const id = await seedLoopRoutine({ costCapCents: 100 });
+    // Not the in-flight sentinel: a loop that was genuinely SCHEDULED. Post-pause this and
+    // the 'infinity' case both leave the column NULL, so the metadata key is the only thing
+    // that can still tell an investigator which of the two happened.
+    await sql`UPDATE harness_shared.routines SET next_fire_at = '2026-08-03T03:21:01Z'::timestamptz WHERE id = ${id}`;
+
+    await checkLoopCostCap(
+      { sql, routineId: id, targetOwnerId: OWNER, capCents: 100 },
+      { readSpend: vi.fn(async () => 250) },
+    );
+
+    const row = await readRoutine(id);
+    expect(row.active).toBe(false);
+    const preserved = row.metadata?.loop_paused_next_fire_at;
+    expect(typeof preserved).toBe('string');
+    // The discriminator actually discriminates — a scheduled loop must not read as in-flight.
+    expect(preserved).not.toBe('infinity');
+    expect(String(preserved)).toContain('2026-08-0');
+
+    // The column itself is still cleared: this fix records the evidence, it does not change
+    // the pause semantics an inactive routine relies on.
+    const after = await sql<Array<{ next_fire_at: Date | null }>>`
+      SELECT next_fire_at FROM harness_shared.routines WHERE id = ${id}`;
+    expect(after[0].next_fire_at).toBeNull();
   });
 
   it('spend UNDER cap → no breach, routine stays active (no write)', async () => {
