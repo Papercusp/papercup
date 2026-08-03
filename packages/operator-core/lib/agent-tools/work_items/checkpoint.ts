@@ -105,6 +105,20 @@
  * write is refused (`append_base_unreadable`) instead of silently degrading to a
  * replace. `confirmShrink: true` still forces it through (same escape hatch as the
  * plain-replace guard), for a caller that genuinely wants to reset the checkpoint.
+ *
+ * EI-19447043119380534: `{ id, checks }` with `checkpoint` OMITTED used to DESTROY the
+ * body — it rendered a note consisting only of the `## Checks` section and returned
+ * ok:true. Confirmed live (9376 → 1562 chars) and reproduced in test: the plan and the
+ * file-by-file record were gone, and with `checks: []` the note collapsed to null
+ * outright. The shape was uniquely bad because the two adjacent fields had OPPOSITE
+ * omission defaults (an omitted `checks` PRESERVES, by its own documented contract)
+ * and because the >50% shrink guard structurally could not fire: `isPlainReplace`
+ * requires a non-empty replacement body, so the guard armed for the DELIBERATE case
+ * and skipped the ACCIDENTAL one. Fix: an omitted `checkpoint` alongside `checks` is a
+ * checks-only PATCH that carries the stored body forward (read inside the store's
+ * locked transaction, so a concurrent writer cannot interleave). An explicit clear
+ * stays reachable via `checkpoint: null`/`''`, and a bare `{ id }` still clears — the
+ * contract work_items:complete's terminal cleanup depends on.
  */
 import { z } from 'zod';
 import { createHash } from 'node:crypto';
@@ -259,8 +273,13 @@ function checksSpec() {
 
 const itemSpec = z.object({
   id: z.string().min(1).describe('the work-item id to checkpoint'),
-  /** The compressed in-flight state. Blank / null / omitted ⇒ CLEAR the checkpoint. */
-  checkpoint: z.string().max(32000).nullish().describe('compressed in-flight state; blank/omitted ⇒ clear'),
+  /** The compressed in-flight state. Blank / null / omitted ⇒ CLEAR the checkpoint —
+   *  EXCEPT omitted alongside `checks`, which is a checks-only patch (EI-19447043119380534). */
+  checkpoint: z
+    .string()
+    .max(32000)
+    .nullish()
+    .describe('compressed in-flight state; blank/null ⇒ clear (omitted WITH `checks` ⇒ checks-only patch, body kept)'),
   harness: z.string().max(80).optional().describe('per-item harness (else the batch `harness` default / ctx / item lookup)'),
   append: looseBoolean().describe(
     'EI-9036: append `checkpoint` onto the EXISTING stored checkpoint (joined with a `---` separator) instead ' +
@@ -306,8 +325,13 @@ export default defineTool({
   args: z
     .object({
       id: z.string().min(1).optional().describe('single shorthand: the work-item id (use with `checkpoint`)'),
-      /** The compressed in-flight state. Blank / null / omitted ⇒ CLEAR the checkpoint. */
-      checkpoint: z.string().max(32000).nullish().describe('single shorthand: compressed in-flight state; blank/omitted ⇒ clear'),
+      /** The compressed in-flight state. Blank / null / omitted ⇒ CLEAR the checkpoint —
+       *  EXCEPT omitted alongside `checks`, which is a checks-only patch (EI-19447043119380534). */
+      checkpoint: z
+        .string()
+        .max(32000)
+        .nullish()
+        .describe('single shorthand: compressed in-flight state; blank/null ⇒ clear (omitted WITH `checks` ⇒ checks-only patch)'),
       items: z.array(itemSpec).min(1).max(100).optional().describe('checkpoint many work-items at once — each { id, checkpoint?, harness?, append? }'),
       harness: z.string().max(80).optional().describe('default harness for the inline id / items that omit one'),
       append: looseBoolean().describe(
@@ -505,6 +529,25 @@ export default defineTool({
           return out;
         });
         const isClear = !(checkpointToStore && checkpointToStore.length > 0);
+        // EI-19447043119380534: `checks` supplied while `checkpoint` is ENTIRELY OMITTED
+        // (undefined — NOT an explicit null/'' clear) is a checks-only PATCH: carry the
+        // stored body forward instead of rendering a body-less note. Confirmed live: a
+        // 9376-char checkpoint became 1562 chars of bare `## Checks`, ok:true, with the
+        // plan and the file-by-file record gone.
+        //
+        // Two properties made this the worst possible shape. Within ONE call an omitted
+        // `checks` PRESERVES (documented) while an omitted `checkpoint` DESTROYED — the
+        // safe-to-omit and catastrophic-to-omit fields sat adjacent with opposite
+        // defaults. And the >50% shrink guard could never fire here: `isPlainReplace`
+        // requires a non-empty replacement body, which this path by definition lacks, so
+        // the guard armed for the DELIBERATE case (an explicitly-provided shorter body)
+        // and skipped the ACCIDENTAL one.
+        //
+        // `checkpoint` is `.nullish()`, so undefined (omitted) is distinguishable from an
+        // explicit null — a real clear stays reachable via { checkpoint: null } (or ''),
+        // and a bare { id } with no checks still clears, which is the contract
+        // work_items:complete's terminal cleanup and "blank clears a stale note" rely on.
+        const isChecksOnlyPatch = it.checkpoint === undefined && suppliedChecks !== undefined && !wantsAppend;
         // A CLEAR wipes the checks too, UNLESS the caller supplied some in the same
         // call. This is a DELIBERATE divergence from loop:checkpoint, where checks
         // survive a note clear: work_items:complete clears the checkpoint as terminal
@@ -513,11 +556,16 @@ export default defineTool({
         const checksTransform =
           suppliedChecks !== undefined || !isClear
             ? (priorNote: string | null, incoming: string | null | undefined) => {
-                const prior = splitCarryNoteChecks(priorNote).checks;
+                const priorSplit = splitCarryNoteChecks(priorNote);
+                const prior = priorSplit.checks;
                 // `incoming` may carry its OWN rendered `## Checks` — append mode folds
                 // the whole prior note in, section and all — so strip it before
                 // re-attaching or the note ends up with two Checks sections.
-                const { body } = splitCarryNoteChecks(incoming ?? '');
+                const { body: incomingBody } = splitCarryNoteChecks(incoming ?? '');
+                // EI-19447043119380534: on a checks-only patch the caller supplied no body
+                // at all, so the STORED one is the body — read authoritatively here, inside
+                // the store's locked transaction, so a concurrent writer cannot interleave.
+                const body = isChecksOnlyPatch ? priorSplit.body : incomingBody;
                 const merged =
                   suppliedChecks !== undefined ? normalizeCheckEntries(suppliedChecks, prior) : prior;
                 if (merged.length === 0) return body.length > 0 ? body : null;

@@ -26,7 +26,8 @@
  */
 
 import { FLAGS } from '@papercusp/flags';
-import { getFlag, onFlagChange } from '@papercusp/flags/server';
+import { getFlag } from '@papercusp/flags/server';
+import { lazyFlagRefresh } from '../lazy-flag-refresh';
 import { registerReactionRule } from './registry';
 import { TABLE_CHANGED_KEY } from './registry';
 import { CACHE_BUMP_TAGS_ACTION } from './builtin-actions';
@@ -36,11 +37,12 @@ import type { ToolInvocationEvent } from './types';
 /** The rule id (stable — re-registering replaces; used in tests + the reactive graph). */
 export const CACHE_TAG_ECA_RULE_ID = 'cache-tag-eca:table-changed';
 
-// SYNC-cached CACHE_TAG_ECA flag — the rules-engine `when` predicate is synchronous,
-// so we can't await getFlag inside it. Refreshed on an initial read + every flag
-// change. Unloaded ⇒ the DEFAULT (true) is the safe behavior (a no-op bump), but we
-// fail-CLOSED to false on an actual read error so a flag-store hiccup can't fire an
-// unintended invalidation; the change handler re-reads and recovers.
+// SYNC-cached CACHE_TAG_ECA flag — the rules-engine `when` predicate is synchronous, so we
+// can't await getFlag inside it. We fail-CLOSED to `false` on a read error so a flag-store
+// hiccup can't fire an unintended invalidation; the change handler re-reads and recovers.
+// (An earlier version of this comment said "Unloaded ⇒ the DEFAULT (true)", which contradicted
+// the `= false` initializer one line below it. Unloaded is `false`; the flag's REGISTRY default
+// is true. Both facts matter to the arming note below, so neither is left implied.)
 let cacheEcaOn = false;
 async function refreshCacheEca(): Promise<void> {
   try {
@@ -49,13 +51,29 @@ async function refreshCacheEca(): Promise<void> {
     cacheEcaOn = false;
   }
 }
-void refreshCacheEca();
-onFlagChange((key) => {
-  if (key === null || key === FLAGS.CACHE_TAG_ECA) void refreshCacheEca();
-});
+
+// EI-19416650993725684: armed on FIRST READ, never at module scope — a module-scope
+// `onFlagChange` binding access (or the eager `void refreshCacheEca()` that used to sit here;
+// an async body runs synchronously to its first await, so it reached `getFlag` just as hard)
+// makes this file unimportable under a PARTIAL vitest mock of '@papercusp/flags/server',
+// killing COLLECTION for every test whose import graph touches it. See lazy-flag-refresh.ts.
+//
+// ⚠ The arm belongs on the READER (cacheTagEcaEnabled), NOT in registerCacheTagEcaRule() —
+// which is the tempting spot, since registration looks like a boot path. It is not a usable
+// one: rules.ts calls the registrar at MODULE SCOPE, so arming there would touch the flag
+// binding during rules.ts's import and simply move the unimportability one file over.
+//
+// Safe to arm lazily: the unpopulated value is `false`, which is this module's OWN documented
+// fail-CLOSED state (see the `catch` above) — the rule's `when` falls false and no tag bump
+// fires. The cost of the one pre-refresh read is a single skipped invalidation in that process,
+// self-healing on the next bump for the same tag; it cannot produce a WRONG value, only a
+// briefly stale cached one. Contrast issues-engineer.ts, whose unpopulated state points at a
+// DEAD partition and is therefore NOT migratable without a boot warm (EI-19448574704459898).
+const armFlagRefresh = lazyFlagRefresh(refreshCacheEca, FLAGS.CACHE_TAG_ECA);
 
 /** Whether the cache-ECA rule is live (read from the SYNC-cached CACHE_TAG_ECA flag). */
 export function cacheTagEcaEnabled(): boolean {
+  armFlagRefresh(); // the ONLY reader of the cache, so the sole arm point
   return cacheEcaOn;
 }
 

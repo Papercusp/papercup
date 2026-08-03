@@ -1,0 +1,194 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+// The `vitest run` spawn is mocked so these stay fast UNIT tests while still driving the real
+// `main()` end-to-end. The fixtures below are VERBATIM captures from real vitest 4.1.8 runs in
+// this repo (see each block), not shapes written from memory — the sibling detector
+// `looksLikeSilentCollectionFailure` was broken for weeks by exactly that mistake
+// (EI-18819483316574031: it never stripped ANSI, so it matched only hand-written test text).
+vi.mock('node:child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:child_process')>();
+  return { ...actual, spawnSync: vi.fn() };
+});
+import { spawnSync } from 'node:child_process';
+
+import {
+  nameFilterFrom,
+  testsExecutedFrom,
+  main,
+  // The .mjs CLI has no declaration file; the diagnostic lands on the `from`
+  // line of this multi-line import, so the suppression directive must be the
+  // LAST comment line immediately above it.
+  // @ts-expect-error
+} from '../../../../scripts/test-files.mjs';
+
+const spawnSyncMock = vi.mocked(spawnSync);
+
+/**
+ * Captured 2026-08-03 from `npx vitest run --config vitest.config.ts src/strict-args.test.ts`
+ * in libs/generic/tooldef, with and without `-t`. These are the three shapes that decide the
+ * verdict, plus the "no tests" shape already documented on looksLikeSilentCollectionFailure.
+ */
+const REAL_ROWS = {
+  // -t 'zzz-no-such-test-name' — THE BUG: 20 tests collected, none executed, vitest exits 0.
+  allSkipped: ' Test Files  1 skipped (1)\n      Tests  20 skipped (20)\n   Start at  12:10:22\n',
+  allPassed: ' Test Files  1 passed (1)\n      Tests  20 passed (20)\n   Start at  12:11:03\n',
+  partial: ' Test Files  1 passed (1)\n      Tests  1 passed | 19 skipped (20)\n   Start at  12:11:40\n',
+  withFailures: ' Test Files  1 failed (1)\n      Tests  2 failed | 12 passed (14)\n',
+  noTests: ' Test Files  2 failed (2)\n        Tests  no tests\n',
+};
+
+describe('nameFilterFrom — is a -t/--testNamePattern filter in play, and what did vitest ACTUALLY receive', () => {
+  it('returns null when no name filter is present', () => {
+    expect(nameFilterFrom([])).toBeNull();
+    expect(nameFilterFrom(['--reporter=verbose', '--outputFile', 'r.json'])).toBeNull();
+  });
+
+  it('reads the space-separated short form', () => {
+    expect(nameFilterFrom(['-t', 'cd'])).toMatchObject({ flag: '-t', pattern: 'cd' });
+  });
+
+  it('reads the long form, space-separated and =-joined', () => {
+    expect(nameFilterFrom(['--testNamePattern', 'my name'])).toMatchObject({ pattern: 'my name' });
+    expect(nameFilterFrom(['--testNamePattern=my name'])).toMatchObject({ pattern: 'my name' });
+    expect(nameFilterFrom(['-t=cd'])).toMatchObject({ pattern: 'cd' });
+  });
+
+  // THE WHOLE POINT of reporting the pattern as RECEIVED. The reported invocation was
+  // `-t 'cd + EXIT-trap'`; npm's arg chain ate the quotes, so vitest got `-t cd` plus two stray
+  // POSITIONALS — which vitest reads as extra FILE filters, narrowing the run further. Surfacing
+  // them is what makes the quote-eating self-diagnosing instead of a mystery.
+  it('captures the stray positionals npm quote-eating leaves behind', () => {
+    const found = nameFilterFrom(['-t', 'cd', '+', 'EXIT-trap']);
+    expect(found).toMatchObject({ pattern: 'cd' });
+    expect(found.strays).toEqual(['+', 'EXIT-trap']);
+  });
+
+  it('does not invent a pattern when the flag is last and has no value', () => {
+    expect(nameFilterFrom(['-t'])).toBeNull();
+  });
+});
+
+describe('testsExecutedFrom — how many tests actually EXECUTED (skipped is not executed)', () => {
+  it('reads zero from the all-skipped row that caused this bug', () => {
+    expect(testsExecutedFrom(REAL_ROWS.allSkipped)).toBe(0);
+  });
+
+  it('reads the executed count from a normal run', () => {
+    expect(testsExecutedFrom(REAL_ROWS.allPassed)).toBe(20);
+  });
+
+  it('counts only the tests that ran when a filter matches some', () => {
+    expect(testsExecutedFrom(REAL_ROWS.partial)).toBe(1);
+  });
+
+  it('counts failures as executed', () => {
+    expect(testsExecutedFrom(REAL_ROWS.withFailures)).toBe(14);
+  });
+
+  it('reads the "no tests" row as zero', () => {
+    expect(testsExecutedFrom(REAL_ROWS.noTests)).toBe(0);
+  });
+
+  // EI-18819483316574031, same file, same class: vitest COLOURISES the summary row, inserting SGR
+  // escapes between `Tests` and its counts. A matcher that does not strip ANSI first passes every
+  // hand-written test and then never fires on real output.
+  it('parses the ANSI-coloured row real vitest emits to a TTY', () => {
+    const coloured = ' [2mTests [22m [33m20 skipped[39m [90m(20)[39m\n';
+    expect(testsExecutedFrom(coloured)).toBe(0);
+  });
+
+  // Fail OPEN, never invent a red: a JSON reporter writes no summary row to stdout. `null` means
+  // UNVERIFIED, which main() must treat differently from a measured zero.
+  it('returns null — not zero — when there is no summary row to read', () => {
+    expect(testsExecutedFrom('some unrelated output\n')).toBeNull();
+    expect(testsExecutedFrom('')).toBeNull();
+  });
+
+  it('reads the LAST summary row when output carries more than one', () => {
+    expect(testsExecutedFrom(`${REAL_ROWS.allPassed}\n${REAL_ROWS.allSkipped}`)).toBe(0);
+  });
+});
+
+describe('main() — a name filter that matches ZERO tests must not report a verdict (EI-19425177453558152)', () => {
+  // WHY THIS IS PINNED. `test-files.mjs` already hard-fails a zero-or-partial FILE match before
+  // executing, and CLAUDE.md advertises exactly that — which is precisely what teaches callers to
+  // trust its verdict. A zero TEST match sailed through as `status=passed`, exit 0. It fires in
+  // the expensive direction: the canonical reason to pass `-t` is to confirm a pre-fix RED, and a
+  // false green there reads as "the defect isn't real", so the natural next move is to stop —
+  // closing the item having verified nothing.
+  const FILE = 'libs/generic/tooldef/src/strict-args.test.ts';
+  let logSpy: ReturnType<typeof vi.spyOn>;
+  let errSpy: ReturnType<typeof vi.spyOn>;
+
+  const linesFrom = (spy: ReturnType<typeof vi.spyOn>) =>
+    spy.mock.calls.map((c: unknown[]) => String(c[0])).join('\n');
+
+  /** first spawn = `vitest list` (drives the file match), second = `vitest run`. */
+  const stubVitest = (runStdout: string, runStatus = 0) => {
+    spawnSyncMock.mockReset();
+    spawnSyncMock
+      .mockReturnValueOnce({
+        status: 0,
+        stdout: 'src/strict-args.test.ts > strict-args > rejects unknown keys\n',
+        stderr: '',
+      } as never)
+      .mockReturnValueOnce({ status: runStatus, stdout: runStdout, stderr: '' } as never);
+  };
+
+  beforeEach(() => {
+    logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+  afterEach(() => {
+    logSpy.mockRestore();
+    errSpy.mockRestore();
+    spawnSyncMock.mockReset();
+  });
+
+  it('exits non-zero when the name filter executed no tests', () => {
+    stubVitest(REAL_ROWS.allSkipped);
+    expect(main([FILE, '--', '-t', 'zzz-no-such-test-name'])).not.toBe(0);
+  });
+
+  // The EI-19376339983058011 invariant: TEST_FILE_RESULT's PRESENCE is what callers grep to ask
+  // "did this actually run?" (`if ! grep -q 'TEST_FILE_RESULT'; then UNMEASURED; fi`). Zero tests
+  // ran, so the marker must be absent — not present with status=failed.
+  it('does NOT print the TEST_FILE_RESULT verdict marker for a run that tested nothing', () => {
+    stubVitest(REAL_ROWS.allSkipped);
+    main([FILE, '--', '-t', 'zzz-no-such-test-name']);
+    expect(linesFrom(logSpy)).not.toContain('TEST_FILE_RESULT');
+  });
+
+  it('names the pattern AS VITEST RECEIVED IT, so npm quote-eating is self-diagnosing', () => {
+    stubVitest(REAL_ROWS.allSkipped);
+    main([FILE, '--', '-t', 'cd', '+', 'EXIT-trap']);
+    const err = linesFrom(errSpy);
+    expect(err).toContain('TEST_FILE_NAME_FILTER_NO_MATCH');
+    expect(err).toContain('pattern="cd"');
+    expect(err).toContain('EXIT-trap');
+  });
+
+  it('stays green when the filter DID match tests (guards against a blanket refusal)', () => {
+    stubVitest(REAL_ROWS.partial);
+    expect(main([FILE, '--', '-t', 'rejects'])).toBe(0);
+    expect(linesFrom(logSpy)).toMatch(/TEST_FILE_RESULT .*status=passed/);
+  });
+
+  // Non-vacuousness: every assertion above would also hold if the new check refused EVERY run.
+  // Pin that an ordinary no-filter run is untouched.
+  it('leaves a run with no name filter alone', () => {
+    stubVitest(REAL_ROWS.allPassed);
+    expect(main([FILE])).toBe(0);
+    expect(linesFrom(logSpy)).toMatch(/TEST_FILE_RESULT .*status=passed/);
+    expect(linesFrom(errSpy)).not.toContain('TEST_FILE_NAME_FILTER');
+  });
+
+  // Fail OPEN on an unreadable summary. A JSON reporter writes no summary row to stdout, and
+  // turning that into a red would break a legitimate invocation — the opposite, equally expensive
+  // mistake. Say so out loud instead of silently re-opening the false-green hole.
+  it('does not fabricate a red when the test count is unreadable, but says it is unverified', () => {
+    stubVitest('{"testResults":[]}\n');
+    expect(main([FILE, '--', '-t', 'anything', '--reporter=json'])).toBe(0);
+    expect(linesFrom(errSpy)).toContain('TEST_FILE_NAME_FILTER_UNVERIFIED');
+  });
+});

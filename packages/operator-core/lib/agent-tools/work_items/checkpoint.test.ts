@@ -916,6 +916,72 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       expect(r.checks).toBe(0);
     });
 
+    /**
+     * EI-19447043119380534: `checks` supplied while `checkpoint` is ENTIRELY OMITTED
+     * used to render a body-less note — a 9376-char checkpoint became 1562 chars of
+     * bare `## Checks`, returning ok:true. Two properties made it the worst shape:
+     * within ONE call an omitted `checks` PRESERVES while an omitted `checkpoint`
+     * DESTROYED, and the >50% shrink guard never armed (it requires a non-empty
+     * replacement body, which this path by definition does not have).
+     *
+     * These three pin the fix AND the two contracts it must not break — an explicit
+     * clear stays reachable, and the terminal-cleanup clear is untouched.
+     */
+    it('EI-19447043119380534: `checks` with `checkpoint` OMITTED is a checks-only PATCH — the body SURVIVES', async () => {
+      withPrior(null);
+      await one({
+        id: 'WI-7',
+        checkpoint: 'the full plan: A, then B, then C — and the file-by-file record of what landed',
+        checks: [{ claim: 'X holds', recheck: 'probe X' }],
+      });
+      const prior = await lastStored();
+      expect(prior).toContain('the full plan: A, then B, then C');
+      expect(prior).toContain('- ? X holds');
+
+      // The reported call: promote one check to VERIFIED, touching nothing else.
+      withPrior(prior);
+      const r = await one({
+        id: 'WI-7',
+        checks: [{ claim: 'X holds', recheck: 'probe X', verified: 'ran probe X at 16:20Z' }],
+      });
+      expect(r.ok).toBe(true);
+      const stored = await lastStored();
+      // The body is the whole point: it must still be there.
+      expect(stored).toContain('the full plan: A, then B, then C');
+      expect(stored).toContain('the file-by-file record of what landed');
+      expect(stored).toContain('- ✓ X holds');
+      expect(stored).toContain('evidence: ran probe X at 16:20Z');
+      expect(r.cleared).not.toBe(true);
+    });
+
+    it('EI-19447043119380534: a checks-only patch that CLEARS the rows (checks:[]) still keeps the body', async () => {
+      withPrior(null);
+      await one({ id: 'WI-7', checkpoint: 'the body worth keeping', checks: [{ claim: 'X holds', recheck: 'probe X' }] });
+      const prior = await lastStored();
+
+      withPrior(prior);
+      const r = await one({ id: 'WI-7', checks: [] });
+      expect(r.ok).toBe(true);
+      const stored = await lastStored();
+      expect(stored).toContain('the body worth keeping');
+      expect(stored).not.toContain('## Checks');
+      expect(r.checks).toBe(0);
+    });
+
+    it('EI-19447043119380534: an EXPLICIT clear (checkpoint:null) alongside checks still wipes the body — deliberate intent stays reachable', async () => {
+      withPrior(null);
+      await one({ id: 'WI-7', checkpoint: 'body to be discarded', checks: [{ claim: 'X holds', recheck: 'probe X' }] });
+      const prior = await lastStored();
+      expect(prior).toContain('body to be discarded');
+
+      withPrior(prior);
+      const r = await one({ id: 'WI-7', checkpoint: null, checks: [{ claim: 'Y holds', recheck: 'probe Y' }] });
+      expect(r.ok).toBe(true);
+      const stored = await lastStored();
+      expect(stored).not.toContain('body to be discarded');
+      expect(stored).toContain('- ? Y holds');
+    });
+
     it('append mode folds the prior note WITHOUT emitting a second ## Checks section', async () => {
       // append joins the whole prior note — rendered Checks section and all — so the
       // transform has to strip it before re-attaching, or the note grows one section

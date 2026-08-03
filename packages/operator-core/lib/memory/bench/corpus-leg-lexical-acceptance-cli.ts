@@ -164,7 +164,20 @@ interface ShapeReport {
   maxTerms: number;
   n: number;
   nullControlViolations: number;
+  /** Pool-level: a control CANDIDATE missing from the treatment's top-`limit`. */
   containmentViolations: number;
+  /** Final: a control ADMITTED line missing from the treatment's admitted set.
+   *  This is the one that decides regression — the pool is over-fetched and
+   *  truncated, the admitted set is what the agent actually sees. */
+  admittedContainmentViolations: number;
+  lostAdmitted: number;
+  /** 0-based position, in the CONTROL's admitted order, of each lost line.
+   *  Losing a tail line to a higher-coverage newcomer is a swap; losing the
+   *  control's top-1 is the regression that actually matters. */
+  lostAtRank: number[];
+  /** Queries where `corpusQueryText(text, maxTerms)` is byte-identical to the
+   *  2-term production shape — i.e. where this shape is not a shape at all. */
+  sameAsProductionShape: number;
   controlZero: number;
   treatZero: number;
   controlUnderfilled: number;
@@ -188,6 +201,10 @@ async function measureShape(
     n: 0,
     nullControlViolations: 0,
     containmentViolations: 0,
+    admittedContainmentViolations: 0,
+    lostAdmitted: 0,
+    lostAtRank: [],
+    sameAsProductionShape: 0,
     controlZero: 0,
     treatZero: 0,
     controlUnderfilled: 0,
@@ -204,6 +221,7 @@ async function measureShape(
     const q = corpusQueryText(text, maxTerms);
     if (!q) continue;
     r.n += 1;
+    if (q === corpusQueryText(text, 2)) r.sameAsProductionShape += 1;
 
     // NULL CONTROL FIRST (D-051/D-053): the same arm, twice, independently.
     const controlA = await runArm(sql, q, 'and', embedder);
@@ -217,9 +235,18 @@ async function measureShape(
 
     const treat = await runArm(sql, q, 'coverage-graded', embedder);
 
-    // CONTAINMENT — every control candidate must survive into the treatment.
+    // CONTAINMENT, at BOTH levels — they answer different questions and the
+    // pool-level one is EXPECTED to fail: `graded ⊇ and` is a per-source SQL
+    // property, but the leg merges two sources and truncates to `limit`, so the
+    // treatment's extra rows can push a control candidate out of the pool. Only
+    // the ADMITTED level says whether the agent lost something it used to see.
     const treatSet = new Set(treat.candidates);
     if (controlA.candidates.some((k) => !treatSet.has(k))) r.containmentViolations += 1;
+    const treatAdmittedSet = new Set(treat.admitted);
+    const lost = controlA.admitted.filter((k) => !treatAdmittedSet.has(k));
+    if (lost.length > 0) r.admittedContainmentViolations += 1;
+    r.lostAdmitted += lost.length;
+    for (const k of lost) r.lostAtRank.push(controlA.admitted.indexOf(k));
 
     if (controlA.candidates.length === 0) r.controlZero += 1;
     if (treat.candidates.length === 0) r.treatZero += 1;
@@ -258,11 +285,25 @@ function renderShape(r: ShapeReport, boundMs: number): string {
   L.push(`| latency p50 / p95 (ms) | ${quantile(r.controlMs, 0.5)} / ${quantile(r.controlMs, 0.95)} | ${quantile(r.treatMs, 0.5)} / ${quantile(r.treatMs, 0.95)} |`);
   L.push('');
   L.push(`- **NULL CONTROL violations: ${r.nullControlViolations}** ${r.nullControlViolations === 0 ? '✓ (arm isolation valid)' : '✗ RUN IS INVALID — the two identical arms disagreed'}`);
-  L.push(`- **CONTAINMENT violations: ${r.containmentViolations}** ${r.containmentViolations === 0 ? '✓ (treatment ⊇ control on every query)' : '✗ the superset property FAILS on live data'}`);
+  L.push(
+    `- **ADMITTED containment violations: ${r.admittedContainmentViolations}/${r.n}** (${r.lostAdmitted} line(s) lost in total) ${r.admittedContainmentViolations === 0 ? '✓ nothing the agent used to see disappeared' : '✗ THE AGENT LOST LINES — a real regression, not a pool artifact'}`,
+  );
+  L.push(
+    `- pool-level containment violations: ${r.containmentViolations}/${r.n} — informational. \`graded ⊇ and\` is a PER-SOURCE SQL property; the leg merges 2 sources and truncates to the over-fetch \`limit\`, so the treatment's extra rows can evict a control candidate from the pool without evicting it from the admitted set.`,
+  );
   L.push(
     `- control under-filled the ${CORPUS_MAX_ITEMS} slots on **${r.controlUnderfilled}/${r.n}** queries (${pct(r.controlUnderfilled, r.n)}) — in that regime the extra graded lines displace nothing`,
   );
   L.push(`- mean NEW admitted lines per query: **${mean(r.newAdmitted).toFixed(2)}**`);
+  const lostTop1 = r.lostAtRank.filter((i) => i === 0).length;
+  L.push(
+    `- of the ${r.lostAdmitted} lost line(s), **${lostTop1} were the control's TOP-1**; the rest sat at ranks [${r.lostAtRank.filter((i) => i > 0).sort((a, b) => a - b).join(',') || '—'}]. A tail line swapped for a higher-coverage newcomer is a SWAP; a lost top-1 is the regression that matters.`,
+  );
+  if (r.maxTerms !== 2) {
+    L.push(
+      `- ⚠ **${r.sameAsProductionShape}/${r.n}** of these queries are BYTE-IDENTICAL to the 2-term production shape (${pct(r.sameAsProductionShape, r.n)}) — \`corpusQueryText\`'s id-token short-circuit (P-007/WI-7237) ignores \`maxTerms\` entirely on those turns, so this "shape" is partly not a shape.`,
+    );
+  }
   L.push(
     `- top-1 changed on **${r.top1Changed}/${r.top1Comparable}** comparable queries (${pct(r.top1Changed, r.top1Comparable)}) — the intra-tier reordering channel`,
   );

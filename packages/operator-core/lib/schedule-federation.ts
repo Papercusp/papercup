@@ -68,6 +68,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { readdir, readFile } from 'node:fs/promises';
 import type { ManagedEntry } from '@papercusp/scheduled-registry';
+import type { RegisteredSchedule } from './dbos/dbos-schedule-introspect';
 
 /** Loopback path each operator-shaped process serves its managed registry on. */
 export const SIBLING_PROBE_PATH = '/api/internal/managed-timers';
@@ -86,7 +87,7 @@ export interface SiblingOperator {
   startedAt: number;
 }
 
-/** One sibling's managed-timer slice, or the reason it could not be read. */
+/** One sibling's schedule slices, or the reason they could not be read. */
 export interface SiblingManagedTimers {
   port: number;
   pid: number;
@@ -94,9 +95,29 @@ export interface SiblingManagedTimers {
   label: string;
   /** The sibling's self-reported role, or null when it did not answer. */
   process: string | null;
-  /** false ⇒ its timers are UNKNOWN (not absent); read `error`. */
+  /** false ⇒ its schedules are UNKNOWN (not absent); read `error`. */
   ok: boolean;
+  /** The sibling's `managedSetInterval` registry (ephemeral tier). */
   timers: ManagedEntry[];
+  /**
+   * The sibling's REGISTERED DBOS scheduled workflows (durable tier) — names +
+   * crontabs only, deliberately WITHOUT fire-state.
+   *
+   * This slice is why the federation covers the bug it was filed for. DBOS keeps
+   * its schedule registry "only in an in-process registry populated when the
+   * workflow modules are imported" (dbos-schedule-introspect.ts), and the modules
+   * behind `PAPERCUSP_BACKGROUND_WORKERS` are imported ONLY in bg-host — so both
+   * sweeps that failed silently for 6+ days (`dbos-executor-reaper`,
+   * `attention-reconcile-unanswerable`) live here, not in `timers`. Federating the
+   * managed timers alone would have shipped a fix that missed its own case.
+   *
+   * Fire-state is deliberately NOT fetched by the sibling: it lives in shared
+   * Postgres (`dbos.event_dispatch_kv`) and the OPERATOR enriches these names
+   * through the existing `listDbosScheduledWorkflows({ getRegisteredSchedules })`
+   * seam. That keeps the probe a pure in-memory read on the process least able to
+   * afford I/O.
+   */
+  dbosSchedules: RegisteredSchedule[];
   error?: string;
   elapsedMs: number;
 }
@@ -201,6 +222,7 @@ function degraded(s: SiblingOperator, error: string, elapsedMs: number): Sibling
     process: null,
     ok: false,
     timers: [],
+    dbosSchedules: [],
     error,
     elapsedMs,
   };
@@ -228,9 +250,14 @@ export async function probeSibling(
       headers: { accept: 'application/json' },
     });
     if (!res.ok) return degraded(s, `HTTP ${res.status}`, Date.now() - startedAt);
-    const body = (await res.json()) as { process?: unknown; timers?: unknown };
+    const body = (await res.json()) as { process?: unknown; timers?: unknown; dbosSchedules?: unknown };
     const proc = typeof body?.process === 'string' && body.process ? body.process : null;
     const timers = Array.isArray(body?.timers) ? (body.timers as ManagedEntry[]) : [];
+    // A sibling running a build that predates the dbosSchedules slice simply omits
+    // it — that degrades to "no durable rows from this process", never a throw.
+    const dbosSchedules = Array.isArray(body?.dbosSchedules)
+      ? (body.dbosSchedules as RegisteredSchedule[])
+      : [];
     return {
       port: s.port,
       pid: s.pid,
@@ -238,6 +265,7 @@ export async function probeSibling(
       process: proc,
       ok: true,
       timers,
+      dbosSchedules,
       elapsedMs: Date.now() - startedAt,
     };
   } catch (e) {

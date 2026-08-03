@@ -44,6 +44,13 @@ export {
   resolvePayloadTier,
   resetPayloadTierRatchet,
   PAYLOAD_TIERS,
+  // EI-19447969329510166: a shaper that does not know the transport ceiling has
+  // to GUESS its caps, and a guess that is fine for one row blows the ceiling at
+  // a hundred — which force-re-applies that same shaper and, on failing to
+  // shrink, falls back to the generic projection the shaper existed to avoid.
+  // The tier surface was already re-exported here; the one number a shaper must
+  // respect to stay on its own path was not.
+  PAYLOAD_TIER_HARD_CEILING_CHARS,
 } from '@papercusp/tooldef';
 export type { PayloadTier, PayloadShapers, PayloadShaperCtx } from '@papercusp/tooldef';
 // code-execution-tool-orchestration (B-CX-2A): the code-mode runtime, re-exported so the

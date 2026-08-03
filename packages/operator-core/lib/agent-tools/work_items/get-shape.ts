@@ -9,67 +9,81 @@
  *
  * That is the worst possible field to pick. `work_items:checkpoint`'s own
  * description says "your transcript does NOT carry across a task boundary; the
- * checkpoint is your continuity" — so on a post-respawn re-orient, the checkpoint
+ * checkpoint is your continuity" — so on a post-respawn re-orient the checkpoint
  * IS the session's memory, and `work_items:get` is the tool that exists to
- * deliver it. Clipping it to its head is not a smaller answer, it is a
- * DIFFERENT one: a checkpoint that opens with a superseded root cause and
- * retracts it further down reads, truncated, as confident endorsement of the
- * retracted lead.
+ * deliver it. Clipping it to its head is not a smaller answer, it is a DIFFERENT
+ * one: a checkpoint that opens with a superseded root cause and retracts it
+ * further down reads, truncated, as confident endorsement of the retracted lead.
  *
- * So the ordering principle here is the inverse of the generic projection's:
- *   1. `checkpoint` and the verdicts ABOUT it are the payload — trimmed LAST.
+ * The ordering principle here is therefore the inverse of the generic
+ * projection's:
+ *   1. `checkpoint` and the verdicts ABOUT it are the payload — degraded LAST.
  *   2. The conditional "read before acting" warnings (claim collisions, blocked
- *      plan lanes, prior-work, bg-job evidence) are what the tool's own `returns`
- *      contract promises a caller must see — kept, clipped only if huge.
- *   3. `workItem.summary` / `workItem.payload` / `lifecycle` detail are the bulk,
+ *      plan lanes, prior-work, bg-job evidence) are what this tool's `returns`
+ *      contract promises a caller must see — kept whole; they are small.
+ *   3. `workItem.summary` / `workItem.payload` / `lifecycle` events are the bulk,
  *      and are what a trimmed tier should spend its budget on instead. Dropped or
- *      hard-capped, ALWAYS with a `_shapeNote` saying so (D-004: no silent caps).
+ *      capped, ALWAYS with a `_shapeNote` saying so (D-004: no silent caps).
  *
- * Bulk reads: `ids` accepts up to 100. A per-row checkpoint budget would blow the
- * 30k hard ceiling (100 × 6k), which force-applies this same shaper again and, on
- * failing to shrink, falls back to the very generic projection this exists to
- * avoid. So the checkpoint budget is a TOTAL for the call, divided across the
- * rows that actually carry one — a single-item read (the post-respawn case that
- * matters) gets the whole budget; a 100-id sweep gets a floor each.
+ * SELF-LIMITING, not hand-tuned. `ids` accepts up to 100, and hand-picked
+ * per-field caps that look fine for one row silently blow the 30k
+ * PAYLOAD_TIER_HARD_CEILING_CHARS at a hundred — which force-applies this same
+ * shaper again and, on failing to shrink, falls back to the very generic
+ * projection this file exists to avoid. So we walk a DEGRADATION LADDER and emit
+ * the first rung that actually fits, measured rather than assumed. Rung 1 is
+ * generous enough that the single-item post-respawn read — the case that matters —
+ * always keeps its checkpoint whole.
  */
 
-export const WORK_ITEMS_GET_TIER_CAPS = {
-  trimmed: {
-    checkpointTotal: 6_000,
-    checkpointMin: 400,
-    title: 160,
-    summary: 0,
-    warning: 300,
-    lifecycleEvents: 4,
-  },
-  standard: {
-    checkpointTotal: 16_000,
-    checkpointMin: 800,
-    title: 300,
-    summary: 400,
-    warning: 600,
-    lifecycleEvents: 10,
-  },
+/** Comfortably under PAYLOAD_TIER_HARD_CEILING_CHARS (30_000), leaving envelope room. */
+const TIER_TARGET_CHARS = { trimmed: 20_000, standard: 26_000 } as const;
+
+/**
+ * Each rung: how many rows get the FULL projection (the rest degrade to an
+ * id-preserving stub, so correlation NEVER breaks) and the TOTAL checkpoint
+ * chars shared across them. Ordered most→least generous.
+ */
+const DEGRADATION_LADDER = {
+  trimmed: [
+    { fullRows: 100, checkpointTotal: 6_000 },
+    { fullRows: 25, checkpointTotal: 3_000 },
+    { fullRows: 12, checkpointTotal: 1_200 },
+    { fullRows: 6, checkpointTotal: 600 },
+    { fullRows: 3, checkpointTotal: 0 },
+  ],
+  standard: [
+    { fullRows: 100, checkpointTotal: 16_000 },
+    { fullRows: 50, checkpointTotal: 8_000 },
+    { fullRows: 25, checkpointTotal: 3_000 },
+    { fullRows: 12, checkpointTotal: 1_200 },
+    { fullRows: 6, checkpointTotal: 600 },
+  ],
 } as const;
 
-type WorkItemsGetTier = keyof typeof WORK_ITEMS_GET_TIER_CAPS;
+const FIELD_CAPS = {
+  trimmed: { title: 160, summary: 0, warning: 300, lifecycleEvents: 4, checkpointMin: 400 },
+  standard: { title: 300, summary: 400, warning: 600, lifecycleEvents: 10, checkpointMin: 800 },
+} as const;
 
+type WorkItemsGetTier = keyof typeof FIELD_CAPS;
+type FieldCaps = (typeof FIELD_CAPS)[WorkItemsGetTier];
 type Row = Record<string, unknown>;
 
 /**
- * Clip with the SAME loud in-band marker shape the framework projection now uses
+ * Clip with the SAME loud in-band marker the framework projection now uses
  * (payload-tier.ts `truncationMarker`). A bare `…` is indistinguishable from
- * content — which is the whole defect this file and that one were filed for.
+ * content — the whole defect this file and that one were filed for.
  */
 function clip(value: unknown, max: number): unknown {
-  if (typeof value !== 'string' || value.length <= max) return value ?? null;
+  if (typeof value !== "string") return value ?? null;
+  if (value.length <= max) return value;
   if (max <= 0) return null;
   return `${value.slice(0, max)}…[TRUNCATED +${value.length - max} chars — re-read with payloadTier:'full']`;
 }
 
 /** Identity + lifecycle facts about the item; never the summary/payload blob. */
-function projectWorkItem(raw: unknown, caps: (typeof WORK_ITEMS_GET_TIER_CAPS)[WorkItemsGetTier]): unknown {
-  if (!raw || typeof raw !== 'object') return raw ?? null;
+function projectWorkItem(raw: unknown, caps: FieldCaps): unknown {
+  if (!raw || typeof raw !== "object") return raw ?? null;
   const w = raw as Row;
   return {
     id: w.id ?? null,
@@ -83,7 +97,6 @@ function projectWorkItem(raw: unknown, caps: (typeof WORK_ITEMS_GET_TIER_CAPS)[W
     takenAt: w.takenAt ?? null,
     lastProgressAt: w.lastProgressAt ?? null,
     parent: w.parent ?? null,
-    origin: w.origin ?? null,
     createdAt: w.createdAt ?? null,
     updatedAt: w.updatedAt ?? null,
     closedAt: w.closedAt ?? null,
@@ -91,87 +104,122 @@ function projectWorkItem(raw: unknown, caps: (typeof WORK_ITEMS_GET_TIER_CAPS)[W
   };
 }
 
-/**
- * How much checkpoint each row may keep. Divided across the rows that HAVE one,
- * so a single-item read keeps its checkpoint whole up to the tier total.
- */
-function checkpointBudget(rows: Row[], caps: (typeof WORK_ITEMS_GET_TIER_CAPS)[WorkItemsGetTier]): number {
-  const withCheckpoint = rows.filter((r) => typeof r.checkpoint === 'string' && r.checkpoint.length > 0).length;
-  if (withCheckpoint <= 1) return caps.checkpointTotal;
-  return Math.max(caps.checkpointMin, Math.floor(caps.checkpointTotal / withCheckpoint));
+/** The degraded row: still correlatable by id, and it SAYS it is degraded. */
+function stubRow(r: Row, caps: FieldCaps): Row {
+  const w = (r.workItem ?? {}) as Row;
+  return {
+    ok: r.ok ?? true,
+    id: r.id ?? w.id ?? null,
+    state: w.state ?? null,
+    title: clip(w.title, Math.min(caps.title, 80)),
+    hasCheckpoint: typeof r.checkpoint === "string" && r.checkpoint.length > 0,
+    _stub: "row omitted to fit payload tier — re-read this id alone for detail",
+  };
+}
+
+function projectRow(r: Row, caps: FieldCaps, checkpointChars: number, dropped: Set<string>): Row {
+  if (r.ok === false) return r; // an error row is already tiny and self-describing
+
+  const checkpoint = r.checkpoint;
+  if (typeof checkpoint === "string" && checkpoint.length > checkpointChars) {
+    dropped.add("checkpoint(clipped)");
+  }
+  const w = r.workItem as Row | undefined;
+  if (typeof w?.summary === "string" && caps.summary === 0) dropped.add("workItem.summary");
+  if (w?.payload !== undefined) dropped.add("workItem.payload");
+
+  const lifecycle = r.lifecycle as Row | undefined;
+  let shapedLifecycle: unknown;
+  if (lifecycle && typeof lifecycle === "object") {
+    const events = Array.isArray(lifecycle.events) ? lifecycle.events : [];
+    if (events.length > caps.lifecycleEvents) dropped.add("lifecycle.events");
+    shapedLifecycle = {
+      // `coverage` and `flags` are the fields this tool's contract says must be
+      // read BEFORE concluding anything from an empty timeline. Never drop them
+      // to make room for the events they qualify — an unqualified empty
+      // `events` is precisely the misreading they exist to prevent.
+      coverage: lifecycle.coverage ?? null,
+      flags: lifecycle.flags ?? null,
+      events: events.slice(0, caps.lifecycleEvents),
+      ...(events.length > caps.lifecycleEvents
+        ? { eventsTruncated: { shown: caps.lifecycleEvents, total: events.length } }
+        : {}),
+    };
+  }
+
+  return {
+    ok: r.ok ?? true,
+    id: r.id ?? null,
+    workItem: projectWorkItem(r.workItem, caps),
+    // THE payload of this tool. Degraded only after everything above was already
+    // dropped, and never without the loud in-band marker.
+    checkpoint: clip(checkpoint, checkpointChars),
+    checkpointAgeMs: r.checkpointAgeMs ?? null,
+    checkpointUpdatedAtMs: r.checkpointUpdatedAtMs ?? null,
+    ...(r.checkpointReadFailed ? { checkpointReadFailed: r.checkpointReadFailed } : {}),
+    // Verdicts ABOUT the checkpoint — small, and each one changes how the
+    // checkpoint above should be read. Kept whole.
+    ...(r.checkpointFreshness ? { checkpointFreshness: r.checkpointFreshness } : {}),
+    ...(r.checkpointStale ? { checkpointStale: r.checkpointStale } : {}),
+    ...(r.checkpointBgJobWarning
+      ? { checkpointBgJobWarning: clip(r.checkpointBgJobWarning, caps.warning) }
+      : {}),
+    // Conditional "read before acting" warnings this tool's `returns` promises.
+    ...(r.priorWorkWarning ? { priorWorkWarning: clip(r.priorWorkWarning, caps.warning) } : {}),
+    ...(r.planItemBlocked ? { planItemBlocked: r.planItemBlocked } : {}),
+    ...(r.planItemClaimCollision ? { planItemClaimCollision: r.planItemClaimCollision } : {}),
+    ...(r.holder ? { holder: r.holder } : {}),
+    ...(shapedLifecycle ? { lifecycle: shapedLifecycle } : {}),
+  };
+}
+
+function jsonLen(v: unknown): number {
+  try {
+    return JSON.stringify(v)?.length ?? 0;
+  } catch {
+    return 0;
+  }
 }
 
 export function shapeWorkItemsGet(data: unknown, tier: WorkItemsGetTier): unknown {
   const d = data as ({ results?: unknown[] } & Row) | null | undefined;
   if (!d || !Array.isArray(d.results)) return data;
-  const caps = WORK_ITEMS_GET_TIER_CAPS[tier];
-  const rows = d.results.map((r) => (r && typeof r === 'object' ? (r as Row) : ({} as Row)));
-  const perRow = checkpointBudget(rows, caps);
+  const caps = FIELD_CAPS[tier];
+  const rows = d.results.map((r) => (r && typeof r === "object" ? (r as Row) : ({} as Row)));
+  const ladder = DEGRADATION_LADDER[tier];
+  const target = TIER_TARGET_CHARS[tier];
 
-  const dropped = new Set<string>();
-  const projected = rows.map((r) => {
-    if (r.ok === false) return r; // an error row is already tiny and self-describing
-    const checkpoint = r.checkpoint;
-    if (typeof checkpoint === 'string' && checkpoint.length > perRow) dropped.add('checkpoint(clipped)');
-    if (typeof (r.workItem as Row | undefined)?.summary === 'string' && caps.summary === 0) {
-      dropped.add('workItem.summary');
-    }
-    if ((r.workItem as Row | undefined)?.payload !== undefined) dropped.add('workItem.payload');
+  let out: unknown;
+  for (let rung = 0; rung < ladder.length; rung += 1) {
+    const { fullRows, checkpointTotal } = ladder[rung];
+    const dropped = new Set<string>();
+    const carrying = rows
+      .slice(0, fullRows)
+      .filter((r) => typeof r.checkpoint === "string" && r.checkpoint.length > 0).length;
+    const checkpointChars =
+      carrying === 0 ? 0 : Math.max(caps.checkpointMin, Math.floor(checkpointTotal / carrying));
 
-    const lifecycle = r.lifecycle as Row | undefined;
-    let shapedLifecycle: unknown;
-    if (lifecycle && typeof lifecycle === 'object') {
-      const events = Array.isArray(lifecycle.events) ? lifecycle.events : [];
-      if (events.length > caps.lifecycleEvents) dropped.add('lifecycle.events');
-      shapedLifecycle = {
-        // `coverage` and `flags` are the fields the tool's contract says must be
-        // read BEFORE concluding anything from an empty timeline — never drop
-        // them to make room for the events they qualify.
-        coverage: lifecycle.coverage ?? null,
-        flags: lifecycle.flags ?? null,
-        events: events.slice(0, caps.lifecycleEvents),
-        ...(events.length > caps.lifecycleEvents
-          ? { eventsTruncated: { shown: caps.lifecycleEvents, total: events.length } }
-          : {}),
-      };
-    }
+    const projected = rows.map((r, i) =>
+      i < fullRows ? projectRow(r, caps, checkpointChars, dropped) : stubRow(r, caps),
+    );
+    if (rows.length > fullRows) dropped.add(`rows(${rows.length - fullRows} stubbed)`);
 
-    return {
-      ok: r.ok ?? true,
-      id: r.id ?? null,
-      workItem: projectWorkItem(r.workItem, caps),
-      // THE payload of this tool. Clipped only after everything above was already
-      // dropped, and never without the loud in-band marker.
-      checkpoint: clip(checkpoint, perRow),
-      checkpointAgeMs: r.checkpointAgeMs ?? null,
-      checkpointUpdatedAtMs: r.checkpointUpdatedAtMs ?? null,
-      ...(r.checkpointReadFailed ? { checkpointReadFailed: r.checkpointReadFailed } : {}),
-      // Verdicts ABOUT the checkpoint — small, and each one changes how the
-      // checkpoint above should be read. Kept whole.
-      ...(r.checkpointFreshness ? { checkpointFreshness: r.checkpointFreshness } : {}),
-      ...(r.checkpointStale ? { checkpointStale: r.checkpointStale } : {}),
-      ...(r.checkpointBgJobWarning ? { checkpointBgJobWarning: clip(r.checkpointBgJobWarning, caps.warning) } : {}),
-      // Conditional "read before acting" warnings the tool's `returns` promises.
-      ...(r.priorWorkWarning ? { priorWorkWarning: clip(r.priorWorkWarning, caps.warning) } : {}),
-      ...(r.planItemBlocked ? { planItemBlocked: r.planItemBlocked } : {}),
-      ...(r.planItemClaimCollision ? { planItemClaimCollision: r.planItemClaimCollision } : {}),
-      ...(r.holder ? { holder: r.holder } : {}),
-      ...(shapedLifecycle ? { lifecycle: shapedLifecycle } : {}),
+    out = {
+      ...d,
+      results: projected,
+      ...(dropped.size > 0
+        ? {
+            _shapeNote: {
+              tier,
+              checkpointCharsPerRow: checkpointChars,
+              dropped: [...dropped].sort(),
+              next: `Fields above were dropped or clipped to fit the '${tier}' payload tier. Re-read with payloadTier:'full' — it is FRAMEWORK-RESERVED and absent from this tool's published schema, so route it through your host's raw-args dispatch path (papercusp: tools:invoke { name:'work_items:get', args:{ …, payloadTier:'full' } }).`,
+            },
+          }
+        : {}),
     };
-  });
-
-  return {
-    ...d,
-    results: projected,
-    ...(dropped.size > 0
-      ? {
-          _shapeNote: {
-            tier,
-            checkpointCharsPerRow: perRow,
-            dropped: [...dropped].sort(),
-            next: `Fields above were dropped or clipped to fit the '${tier}' payload tier. Re-read with payloadTier:'full' — it is FRAMEWORK-RESERVED and absent from this tool's published schema, so route it through your host's raw-args dispatch path (papercusp: tools:invoke { name:'work_items:get', args:{ …, payloadTier:'full' } }).`,
-          },
-        }
-      : {}),
-  };
+    // Measured, not assumed. The last rung is the floor and ships regardless.
+    if (jsonLen(out) <= target || rung === ladder.length - 1) return out;
+  }
+  return out;
 }

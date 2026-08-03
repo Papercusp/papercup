@@ -402,13 +402,20 @@ export async function createPotHarness(opts: CreatePotOpts): Promise<CreatePotRe
     //     turn already recalls the pack.
     let seededLearnings: SeededLearningsSummary | undefined;
     if (opts.knowledgePack !== null) {
+      // EI-1539: imported OUTSIDE the try so the catch below can name the default
+      // pack too — the error path must never hardcode a pack id, or it reports a
+      // pack that stops existing the moment the default is repointed.
+      const { DEFAULT_KNOWLEDGE_PACK_ID } = await import('../../knowledge-packs/pack-format');
+      // Records the pack we actually resolved, so a seed failure reports the REAL
+      // pack (including a blueprint-declared one) instead of re-deriving a guess
+      // that cannot see `seed.packId`.
+      let attemptedPackId: string | undefined;
       try {
         const [{ getFlag }, { FLAGS }] = await Promise.all([
           import('@papercusp/flags/server'),
           import('@papercusp/flags'),
         ]);
         if (await getFlag(FLAGS.KNOWLEDGE_PACKS, 'system')) {
-          const { DEFAULT_KNOWLEDGE_PACK_ID } = await import('../../knowledge-packs/pack-format');
           const { loadKnowledgePack } = await import('../../knowledge-packs/load-packs');
           const { seedPackIntoHive: seedPackIntoPot } = await import('../../knowledge-packs/seed');
           // P-014: an explicit arg wins; else the blueprint's declared seed pack
@@ -433,6 +440,7 @@ export async function createPotHarness(opts: CreatePotOpts): Promise<CreatePotRe
             );
           }
           const packId = opts.knowledgePack ?? seed.packId ?? DEFAULT_KNOWLEDGE_PACK_ID;
+          attemptedPackId = packId;
           const loaded = await loadKnowledgePack(packId);
           if (!loaded) {
             seededLearnings = { packId, error: 'pack_not_found' };
@@ -486,11 +494,10 @@ export async function createPotHarness(opts: CreatePotOpts): Promise<CreatePotRe
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         console.warn(`[pot:create] knowledge-pack seed failed (${opts.slug}): ${msg}`);
-        // EI-1539: the resolved `packId` is block-scoped inside the try, so the
-        // error path re-derives the tail of the same chain. It must use the
-        // CONSTANT, never a literal — a hardcoded pack name here reports a pack
-        // that no longer exists the moment the default is repointed.
-        seededLearnings = { packId: opts.knowledgePack ?? DEFAULT_KNOWLEDGE_PACK_ID, error: msg.slice(0, 200) };
+        seededLearnings = {
+          packId: attemptedPackId ?? opts.knowledgePack ?? DEFAULT_KNOWLEDGE_PACK_ID,
+          error: msg.slice(0, 200),
+        };
       }
     }
 

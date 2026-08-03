@@ -1,0 +1,200 @@
+/**
+ * get-shape.test.ts — work_items:get payload-tier shapers (EI-19447969329510166).
+ *
+ * The defect these guard: with no shaper declared, a trimmed session fell through
+ * to the framework's generic bounded projection, which clipped the CHECKPOINT —
+ * the one field this tool exists to deliver on a post-respawn re-orient — to 800
+ * chars, silently. The tests below pin the two properties that matter: the
+ * checkpoint survives, and anything that does NOT survive says so.
+ *
+ * Run: npm run test:file -- packages/operator-core/lib/agent-tools/work_items/get-shape.test.ts
+ */
+import { describe, expect, it } from "vitest";
+import { PAYLOAD_TIER_HARD_CEILING_CHARS } from "@papercusp/agent-mcp";
+import { shapeWorkItemsGet } from "./get-shape";
+
+type Envelope = {
+  ok: boolean;
+  results: Array<Record<string, unknown>>;
+  counts: { ok: number; failed: number };
+  _shapeNote?: { dropped: string[]; checkpointCharsPerRow: number; next: string };
+};
+
+function row(over: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    ok: true,
+    id: "WI-1",
+    workItem: {
+      id: "WI-1",
+      kind: "bug",
+      state: "open",
+      title: "a title",
+      severity: "major",
+      assignee: "su-1",
+      summary: "S".repeat(4_000),
+      payload: { big: "P".repeat(4_000) },
+    },
+    checkpoint: null,
+    checkpointAgeMs: null,
+    checkpointUpdatedAtMs: null,
+    ...over,
+  };
+}
+
+function envelope(rows: Array<Record<string, unknown>>): Envelope {
+  return { ok: true, results: rows, counts: { ok: rows.length, failed: 0 } };
+}
+
+describe("shapeWorkItemsGet — the checkpoint is the payload, degraded last", () => {
+  it("keeps a large single-item checkpoint WHOLE (the post-respawn read that was broken)", () => {
+    const checkpoint = "C".repeat(5_000);
+    const out = shapeWorkItemsGet(envelope([row({ checkpoint })]), "trimmed") as Envelope;
+
+    // Byte-identical: this is the case the generic projection served at 800 chars.
+    expect(out.results[0].checkpoint).toBe(checkpoint);
+    expect(String(out.results[0].checkpoint)).not.toMatch(/TRUNCATED/);
+  });
+
+  it("spends the budget on the checkpoint by DROPPING summary + payload, and names both", () => {
+    const out = shapeWorkItemsGet(envelope([row({ checkpoint: "C".repeat(5_000) })]), "trimmed") as Envelope;
+    const w = out.results[0].workItem as Record<string, unknown>;
+
+    expect(w.summary).toBeUndefined();
+    expect(w.payload).toBeUndefined();
+    // D-004: no silent caps. A reader must be able to tell what is missing.
+    expect(out._shapeNote?.dropped).toEqual(
+      expect.arrayContaining(["workItem.summary", "workItem.payload"]),
+    );
+    // Identity survives so the row is still usable + correlatable.
+    expect(w).toMatchObject({ id: "WI-1", kind: "bug", state: "open", severity: "major" });
+  });
+
+  it("clips an over-budget checkpoint WITH the loud in-band marker, never a bare ellipsis", () => {
+    const checkpoint = "C".repeat(40_000);
+    const out = shapeWorkItemsGet(envelope([row({ checkpoint })]), "trimmed") as Envelope;
+    const got = String(out.results[0].checkpoint);
+
+    expect(got.length).toBeLessThan(checkpoint.length);
+    expect(got).toMatch(/…\[TRUNCATED \+\d+ chars — re-read with payloadTier:'full'\]$/);
+    expect(out._shapeNote?.dropped).toEqual(expect.arrayContaining(["checkpoint(clipped)"]));
+  });
+
+  it("keeps every 'read before acting' warning the tool's returns-contract promises", () => {
+    const out = shapeWorkItemsGet(
+      envelope([
+        row({
+          checkpoint: "C".repeat(1_000),
+          planItemClaimCollision: { planSlug: "p", itemId: "P-007", claimedBy: "su-2" },
+          planItemBlocked: { reason: "needs-human", planSlug: "p" },
+          checkpointFreshness: { verdict: "stale", changed: [{ dep: "file:a.ts" }] },
+          checkpointStale: { stale: true },
+          checkpointBgJobWarning: "cites a background job",
+          priorWorkWarning: "ALREADY WORKED",
+          holder: { goalRef: "g", agreement: "divergent" },
+        }),
+      ]),
+      "trimmed",
+    ) as Envelope;
+    const r = out.results[0];
+
+    // Each of these changes how the checkpoint above must be read — dropping any
+    // of them to save bytes would reintroduce the confidently-wrong-state failure
+    // from a different direction.
+    expect(r.planItemClaimCollision).toBeDefined();
+    expect(r.planItemBlocked).toBeDefined();
+    expect(r.checkpointFreshness).toMatchObject({ verdict: "stale" });
+    expect(r.checkpointStale).toBeDefined();
+    expect(r.checkpointBgJobWarning).toBeDefined();
+    expect(r.priorWorkWarning).toBeDefined();
+    expect(r.holder).toMatchObject({ agreement: "divergent" });
+  });
+
+  it("caps lifecycle events but NEVER drops the coverage/flags that qualify them", () => {
+    const events = Array.from({ length: 30 }, (_, i) => ({ at: `t${i}`, kind: "blocked" }));
+    const out = shapeWorkItemsGet(
+      envelope([
+        row({
+          lifecycle: { events, coverage: { notRecorded: ["x"], degraded: false }, flags: { claimHold: true } },
+        }),
+      ]),
+      "trimmed",
+    ) as Envelope;
+    const lc = out.results[0].lifecycle as Record<string, unknown>;
+
+    expect((lc.events as unknown[]).length).toBe(4);
+    expect(lc.eventsTruncated).toMatchObject({ shown: 4, total: 30 });
+    // An empty/partial `events` is only safely readable alongside `coverage`.
+    expect(lc.coverage).toMatchObject({ degraded: false });
+    expect(lc.flags).toMatchObject({ claimHold: true });
+  });
+});
+
+describe("shapeWorkItemsGet — bulk reads stay under the transport ceiling", () => {
+  it("bounds a 100-id read below the hard ceiling while preserving EVERY id", () => {
+    const rows = Array.from({ length: 100 }, (_, i) =>
+      row({
+        id: `WI-${i}`,
+        workItem: { id: `WI-${i}`, kind: "bug", state: "open", title: `t${i}`, summary: "S".repeat(3_000) },
+        checkpoint: "C".repeat(2_000),
+      }),
+    );
+    const out = shapeWorkItemsGet(envelope(rows), "trimmed") as Envelope;
+    const size = JSON.stringify(out).length;
+
+    // Over the ceiling, applyPayloadTier force-re-applies this shaper and, on
+    // failing to shrink, falls back to the generic projection this file exists
+    // to avoid — so exceeding it would silently undo the whole fix.
+    expect(size).toBeLessThan(PAYLOAD_TIER_HARD_CEILING_CHARS);
+    // Correlation is the one thing a caller cannot reconstruct. Every requested
+    // id comes back, even when its detail does not.
+    expect(out.results).toHaveLength(100);
+    expect(out.results.map((r) => r.id)).toEqual(rows.map((r) => r.id));
+    // And a degraded row SAYS it is degraded rather than looking like a thin item.
+    const stub = out.results.at(-1) as Record<string, unknown>;
+    expect(stub._stub).toMatch(/re-read this id alone/);
+    expect(stub.hasCheckpoint).toBe(true);
+    expect(out._shapeNote?.dropped.some((d) => d.startsWith("rows("))).toBe(true);
+  });
+
+  it("a 10-id read still gives each row a usable checkpoint", () => {
+    const rows = Array.from({ length: 10 }, (_, i) =>
+      row({ id: `WI-${i}`, workItem: { id: `WI-${i}`, state: "open" }, checkpoint: "C".repeat(1_000) }),
+    );
+    const out = shapeWorkItemsGet(envelope(rows), "trimmed") as Envelope;
+
+    expect(out.results).toHaveLength(10);
+    for (const r of out.results) expect(String(r.checkpoint).length).toBeGreaterThan(400);
+    expect(JSON.stringify(out).length).toBeLessThan(PAYLOAD_TIER_HARD_CEILING_CHARS);
+  });
+});
+
+describe("shapeWorkItemsGet — tier differences and defensive behaviour", () => {
+  it("standard keeps a clipped summary; trimmed drops it entirely", () => {
+    const env = envelope([row({ checkpoint: "C".repeat(500) })]);
+    const std = shapeWorkItemsGet(env, "standard") as Envelope;
+    const trm = shapeWorkItemsGet(env, "trimmed") as Envelope;
+
+    expect((std.results[0].workItem as Record<string, unknown>).summary).toMatch(/TRUNCATED/);
+    expect((trm.results[0].workItem as Record<string, unknown>).summary).toBeUndefined();
+  });
+
+  it("passes an error row through untouched — it is already tiny and self-describing", () => {
+    const err = { ok: false, id: "WI-9", error: "not_found" };
+    const out = shapeWorkItemsGet(envelope([err]), "trimmed") as Envelope;
+    expect(out.results[0]).toEqual(err);
+  });
+
+  it("returns non-envelope data unchanged rather than mangling it", () => {
+    expect(shapeWorkItemsGet(null, "trimmed")).toBeNull();
+    expect(shapeWorkItemsGet({ ok: true }, "trimmed")).toEqual({ ok: true });
+    expect(shapeWorkItemsGet("nope", "trimmed")).toBe("nope");
+  });
+
+  it("emits NO _shapeNote when nothing was dropped — the note must mean something", () => {
+    const out = shapeWorkItemsGet(
+      envelope([{ ok: true, id: "WI-1", workItem: { id: "WI-1", state: "open" }, checkpoint: "short" }]),
+      "trimmed",
+    ) as Envelope;
+    expect(out._shapeNote).toBeUndefined();
+  });
+});

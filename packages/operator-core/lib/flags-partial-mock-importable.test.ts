@@ -59,16 +59,23 @@ import { telemetryBufferConfig } from './telemetry-buffer-config';
 import { capabilityTierOverrideFor } from './capability-tier-overrides';
 // Added 2026-08-03 (all FOUR readers of its cached boolean arm, not just the exported getter).
 import { workItemClaimLeaseEnabled } from './work-item-claim-lease-wiring';
-// ⚠ STILL NOT LISTABLE: './work-item-redundancy'. It IS migrated and de-listed from the source
-// lint's BASELINE — nothing it owns is wrong. This file asserts a property of the whole transitive
-// import GRAPH, and work-item-redundancy → work-items.ts reaches issues-engineer.ts, which still
-// subscribes at module scope. Adding it kills COLLECTION on a module it does not own.
-// Do NOT "fix" that by deleting the import: a loud, accurate collection failure is the guard
-// working, and dropping the import would convert it into a silent standing exemption.
-// The unblock condition is issues-engineer's, not redundancy's — and it is NOT simply "migrate
-// issues-engineer": that migration was written, measured and REVERTED (its unpopulated flag state
-// resolves to a dead partition — see the long note in issues-engineer.ts). It needs a boot-path
-// WARM first. Add BOTH imports once that lands.
+// ⚠ STILL NOT LISTABLE — and NOT for anything either one owns. Both are migrated AND de-listed
+// from the source lint's BASELINE: './work-item-redundancy' and './events/cache-eca-rule'.
+//
+// This file asserts a property of the whole transitive import GRAPH, and both reach work-items.ts
+// → issues-engineer.ts, which still subscribes at module scope. Adding either import kills
+// COLLECTION on a module neither of them owns (verified 2026-08-03: the error points at
+// issues-engineer.ts:269 via work-items.ts:98, naming the mock rather than the importer — which
+// is exactly why this class reads as unrelated to whoever's change grew the import edge).
+//
+// Do NOT "fix" that by deleting an import once added: a loud, accurate collection failure is this
+// guard WORKING, and dropping the import converts it into a silent standing exemption.
+//
+// The unblock condition is issues-engineer's, and it is NOT simply "migrate issues-engineer":
+// that migration was written, measured all-green, and REVERTED — its unpopulated flag state
+// resolves issue scope to a DEAD partition (see the long note at the reverted site in
+// issues-engineer.ts, and EI-19448574704459898). It needs a boot-path WARM first.
+// One warm unblocks all three: work-item-redundancy, cache-eca-rule, and issues-engineer itself.
 
 describe('modules stay importable under a partial @papercusp/flags/server mock', () => {
   it('collected this file at all (a module-scope binding read would have failed it here)', () => {

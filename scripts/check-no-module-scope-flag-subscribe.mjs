@@ -157,7 +157,6 @@ export const BASELINE = new Set([
   // "behaviour this DOES change" note, a cache like this needs an explicit warm on a
   // boot path, not lazy arming alone. Migrate it deliberately, with that warm.
   'packages/operator-core/lib/auth-config-overrides.ts',
-  'packages/operator-core/lib/events/cache-eca-rule.ts',
   'packages/operator-core/lib/harness/routines/configure-per-workspace.ts',
   // ⚠ EXAMINED AND REVERTED, NOT MISSED — a migration onto lazy-flag-refresh was written,
   // measured and BACKED OUT 2026-08-03. It is mechanically easy (ONE reader,

@@ -8,9 +8,12 @@
  */
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 
-const sendMessage = vi.fn(async () => ({}) as never);
+// Typed with its real arity: a bare `vi.fn(async () => …)` infers a ZERO-arg
+// mock, so `mock.calls[0][1]` (the send options — the thing every assertion here
+// inspects) is a type error rather than a value.
+const sendMessage = vi.fn(async (_identity: unknown, _opts: Record<string, unknown>) => ({}) as unknown);
 vi.mock('../agent-tools/coordination/messages', () => ({
-  sendMessage: (...args: unknown[]) => sendMessage(...(args as [])),
+  sendMessage: (identity: unknown, opts: Record<string, unknown>) => sendMessage(identity, opts),
 }));
 
 import { groupVictimsByOwner, notifyEvictedFactOwners, renderEvictionNotice } from './notify-evicted';
@@ -111,7 +114,7 @@ describe('notifyEvictedFactOwners', () => {
   });
 
   it('never throws when the coord plane fails — an assert must not fail on its notice', async () => {
-    sendMessage.mockRejectedValueOnce(new Error('coord plane down') as never);
+    sendMessage.mockRejectedValueOnce(new Error('coord plane down'));
     await expect(
       notifyEvictedFactOwners({
         evicted: [victim()],
@@ -123,7 +126,7 @@ describe('notifyEvictedFactOwners', () => {
   });
 
   it('one owner failing does not silence the others', async () => {
-    sendMessage.mockRejectedValueOnce(new Error('nope') as never);
+    sendMessage.mockRejectedValueOnce(new Error('nope'));
     const notified = await notifyEvictedFactOwners({
       evicted: [victim({ createdBy: 'su-a' }), victim({ createdBy: 'su-b' })],
       writerOwnerId: 'su-writer',

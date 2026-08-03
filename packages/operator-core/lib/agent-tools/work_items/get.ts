@@ -103,6 +103,20 @@ export default defineTool({
     .refine((a) => Boolean(a.id) || (a.ids?.length ?? 0) > 0, {
       message: "pass `id` (one) or `ids` (many)",
     }),
+  // EI-19447969329510166: without a declared shaper this tool fell through to the
+  // framework's GENERIC bounded projection, which clips every string at a flat 800
+  // chars for a trimmed session — and the string it clipped was the CHECKPOINT.
+  // That is the one field this tool exists to deliver on a post-respawn re-orient
+  // (work_items:checkpoint: "your transcript does NOT carry across a task
+  // boundary; the checkpoint is your continuity"), and a clipped checkpoint is not
+  // a smaller answer but a different one — a note that opens with a superseded
+  // root cause and retracts it further down reads, truncated, as endorsement of
+  // the retracted lead. get-shape.ts spends the budget on `checkpoint` + the
+  // warnings, and drops `workItem.summary`/`payload` instead.
+  shape: {
+    standard: (data) => shapeWorkItemsGet(data, "standard"),
+    trimmed: (data) => shapeWorkItemsGet(data, "trimmed"),
+  },
   async handler(args, ctx) {
     const ids = mergeIds(args.id, args.ids);
     // P-030: resolved ONCE for the whole bulk read. The reader is an argument to
