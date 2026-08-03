@@ -212,6 +212,60 @@ describe('reconcile — residue (the no-escape signal)', () => {
     expect(r.foreign[0]!.sampleCmdline).toBe('npm run dev');
   });
 
+  it('routes a dead-window process to abandonedWindow, NOT foreign (D-018)', () => {
+    // The regression this guards: the residue split is an owned/scopeUnit
+    // heuristic that never read `p.scope`. A `vte-spawn-*` process is neither
+    // owned nor in a `pc-*.scope`, so the classifier's `abandoned-window` verdict
+    // was silently overruled and the process filed as "someone else's, merely
+    // displayed" — never persisted, never counted. Fixing only the scan's cmdline
+    // filter would have left this second gap wide open.
+    const vte =
+      '/user.slice/user-1000.slice/user@1000.service/app.slice/app-org.gnome.Terminal.slice/vte-spawn-aaaa.scope';
+    const r = reconcile(
+      [],
+      [
+        proc({
+          pid: 904,
+          owned: false,
+          cgroupPath: vte,
+          scope: 'abandoned-window',
+          exemptReason: null,
+          cmdline: 'node stranded-eval.js',
+        }),
+      ],
+      { now: NOW },
+    );
+
+    expect(r.abandonedWindow).toHaveLength(1);
+    expect(r.abandonedWindow[0]!.sampleCmdline).toBe('node stranded-eval.js');
+    expect(r.foreign).toHaveLength(0);
+    expect(r.unaccounted).toHaveLength(0);
+
+    const s = summarizeReconcile(r);
+    expect(s.abandonedWindow).toBe(1);
+    expect(s.abandonedWindowPids).toBe(1);
+    // It must NOT be laundered into the neighbouring counts.
+    expect(s.foreign).toBe(0);
+    expect(s.unaccounted).toBe(0);
+  });
+
+  it('still files an ordinary exempt/foreign process as foreign', () => {
+    const r = reconcile(
+      [],
+      [
+        proc({
+          pid: 905,
+          owned: false,
+          cgroupPath: '/user.slice/user-1000.slice/session-9.scope',
+          cmdline: 'vim',
+        }),
+      ],
+      { now: NOW },
+    );
+    expect(r.abandonedWindow).toHaveLength(0);
+    expect(r.foreign).toHaveLength(1);
+  });
+
   it('does not report a claimed scope as residue', () => {
     const r = reconcile(
       [row({ taskId: 'aaa111', scopeUnit: 'pc-aaa111.scope' })],

@@ -256,7 +256,9 @@ describe('terminal window liveness, end to end through the scan', () => {
 
   it('reports what a CLOSED window is still holding', () => {
     const p = scan().processes.find((x) => x.pid === 701)!;
-    expect(p.scope).toBe('unaccounted');
+    // P-008/D-018: its own class, so the pane can say "a window closed but these
+    // kept running" rather than either "exempt" or "an escape".
+    expect(p.scope).toBe('abandoned-window');
     expect(p.exemptReason).toBeNull();
   });
 

@@ -16,6 +16,7 @@
 import { z } from 'zod';
 import type { CoordOp } from '../types.js';
 import { registerCoordOp } from '../registry.js';
+import { conversationLinkMeta } from '../../attention/conversation-escalation-link.js';
 
 // ── coord:vote ────────────────────────────────────────────────────────────────
 
@@ -135,7 +136,6 @@ export const askOp: CoordOp<z.infer<typeof askArgs>, z.infer<typeof askResult>> 
         severity: 'question',
         summary: a.question,
         body: a.body,
-        meta: conversationLinkMeta(thread.conversation_id),
       })
       .catch(() => {
         /* best-effort — the thread itself is the durable ask surface */

@@ -14,6 +14,7 @@ import {
   unmeasuredCell,
   ownershipContradicted,
   ownershipNeedsLivenessConfirmation,
+  ownershipHeldByLiveHolder,
   readGateOwnership,
 } from './gate-ownership';
 import type { SessionState } from '../agent-tools/coordination/presence-wakeability';
@@ -188,6 +189,60 @@ describe('ownershipContradicted (the P-005 falsifier verdict)', () => {
   it('does not fire for a lease that already expired — that is not a contradiction', () => {
     const own = { ...toCellOwnership(mkObj({ claimState: 'lease-expired', takenBy: 'su-x' }), 'ended') };
     expect(ownershipContradicted(own)).toBe(false);
+  });
+});
+
+/**
+ * P-007's rail (`release:checkpoint-run` stands down for a live peer) branches on
+ * THIS predicate, so its failure direction is the one to pin: a false `true` wedges
+ * the fleet's only manual verdict lever, which is far worse than a false `false`
+ * (one redundant suite — the status quo before the rail existed).
+ *
+ * Enumerated over all six states for the same reason as the contradiction map
+ * above: the P-005 bug survived because a suite tested the cases its author had in
+ * mind rather than the whole domain.
+ */
+describe('ownershipHeldByLiveHolder (the P-007 coordination verdict)', () => {
+  const at = (s: SessionState | null) =>
+    ownershipHeldByLiveHolder({ ...toCellOwnership(mkObj({ claimState: 'held', takenBy: 'su-x' }), s) });
+
+  it('classifies every SessionState exactly once — the three ALIVE states, and only those', () => {
+    const verdicts = (['live', 'parked', 'draining', 'suspect', 'ended', 'recorded'] as const).map(
+      (s) => [s, at(s)] as const,
+    );
+    expect(Object.fromEntries(verdicts)).toEqual({
+      live: true,
+      parked: true, // alive, merely idle between turns
+      recorded: true, // ALIVE per the session log — excluding it would re-run the P-005 bug here
+      draining: false, // ambiguous — never enough to block a peer's gate run
+      suspect: false, // ambiguous
+      ended: false, // a dead holder must never wedge the gate
+    });
+  });
+
+  it('is false when the oracle could not answer — stands down only on POSITIVE evidence', () => {
+    expect(at(null)).toBe(false);
+  });
+
+  it('is false when nothing holds the condition, and for a merely-expired lease', () => {
+    expect(ownershipHeldByLiveHolder(unownedCell('green-stall:papercusp'))).toBe(false);
+    expect(
+      ownershipHeldByLiveHolder({ ...toCellOwnership(mkObj({ claimState: 'lease-expired', takenBy: 'su-x' }), 'live') }),
+    ).toBe(false);
+  });
+
+  it('is false on an UNMEASURED cell — an unreadable store must not refuse the run', () => {
+    expect(ownershipHeldByLiveHolder(unmeasuredCell('green-stall:papercusp', 'store down'))).toBe(false);
+  });
+
+  it('is disjoint from the other two verdicts — no state is both live and dead/ambiguous', () => {
+    for (const s of ['live', 'parked', 'draining', 'suspect', 'ended', 'recorded'] as const) {
+      const own = { ...toCellOwnership(mkObj({ claimState: 'held', takenBy: 'su-x' }), s) };
+      const live = ownershipHeldByLiveHolder(own);
+      const dead = ownershipContradicted(own);
+      const ambiguous = ownershipNeedsLivenessConfirmation(own) === true;
+      expect([live, dead, ambiguous].filter(Boolean).length, `${s} must land in exactly one bucket`).toBe(1);
+    }
   });
 });
 

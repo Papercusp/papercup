@@ -179,6 +179,27 @@ test('coord:ask returns unanswered after timeout', async () => {
   assert.equal(calls.sleeps.length, 10);
 });
 
+test('coord:ask stamps the escalation with its conversation id (EI-19399318647145782)', async () => {
+  // An ask-owner writes TWO attention rows: the question thread (Alert tier)
+  // and a severity:'question' escalation (DECISION tier). Without this stamp
+  // nothing links them, so answering the conversation leaves the escalation
+  // open forever — measured 9 of the 11 ever-resolved question conversations.
+  // `conversations:resolve` clears the twin by matching exactly this field.
+  const { caps, calls } = makeFakeCaps({ answer: () => ({ answered: true, answer: 'ok' }) });
+  const op = requireCoordOp('coord:ask');
+  await op.run(op.argsSchema.parse({ question: 'Which option?', timeout_s: 0 }), makeCtx(caps));
+
+  const esc = calls.escalate[0];
+  assert.ok(esc, 'the ask must open an escalation');
+  assert.equal(esc.severity, 'question');
+  // conv-fake is the fake openThread's conversation_id — the link must carry
+  // the id of the thread THIS ask opened, not a fresh/derived one. Asserted
+  // UNCONDITIONALLY: a `?? undefined`-style guard here would pass vacuously if
+  // the escalate call ever stopped receiving meta at all.
+  assert.equal(calls.openThread.length, 1);
+  assert.equal(esc.meta?.conversationId, 'conv-fake');
+});
+
 test('coord:vote delegates to runProgram with depth+1', async () => {
   const { caps, calls } = makeFakeCaps({ onRunProgram: () => ({ outcome: 'resolve', resolved: true, decision: 'yes' }) });
   const op = requireCoordOp('coord:vote');

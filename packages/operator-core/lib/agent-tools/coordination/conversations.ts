@@ -243,6 +243,39 @@ export async function resolveConversation(
   // Host-wrapper concern, kept out of the pure core; never breaks the resolve.
   if (!('error' in result)) {
     const conv = result.conversation;
+    // EI-19399318647145782: a `coord:ask-owner` question is TWO attention rows —
+    // this conversation (Alert tier) and a `severity:'question'` escalation
+    // (DECISION tier). Nothing closed the second one, so every question the
+    // owner ANSWERED left a permanent Decision-tier zombie: measured 9 of the
+    // 11 ever-resolved question conversations, against 131 open question
+    // escalations (112 older than 7d, oldest 49 days). That zombie flood is
+    // what buries the LIVE owner decisions.
+    //
+    // Same host-wrapper contract as the event emit below: best-effort, never
+    // breaks the resolve, kept out of the pure core. Matched on the stamped
+    // `conversationId` ONLY (never an id-prefix guess — see
+    // attention/conversation-escalation-link.ts for why).
+    void (async () => {
+      const [{ selectEscalationsForConversation, ANSWERED_QUESTION_RESOLVER, ANSWERED_QUESTION_CHOICE }, { listEscalations, resolveEscalationsBatch }] =
+        await Promise.all([
+          import('../../attention/conversation-escalation-link.js'),
+          import('./escalations.js'),
+        ]);
+      const opens = await listEscalations({ status: 'open' });
+      const msgIds = selectEscalationsForConversation(
+        opens as unknown as { msg_id: string }[],
+        conv.id,
+      );
+      if (msgIds.length === 0) return;
+      await resolveEscalationsBatch(
+        msgIds.map((msg_id) => ({
+          msg_id,
+          choice: ANSWERED_QUESTION_CHOICE,
+          resolver: ANSWERED_QUESTION_RESOLVER,
+          note: `answered in conversation ${conv.id}`,
+        })),
+      );
+    })().catch(() => {});
     void import('../../events/await/engine')
       .then(({ emitAwaitedEvent }) =>
         emitAwaitedEvent({

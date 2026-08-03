@@ -27,13 +27,17 @@ import { withWorkspace } from '@papercusp/db-org';
 
 export type StartStatus = 'started' | 'paused' | 'done' | null;
 
-/** Terminal plan-lifecycle statuses — a started plan can never be one of these. */
-export const TERMINAL_PLAN_STATUSES = ['shipped', 'superseded'] as const;
-
-/** True when the frontmatter lifecycle status is terminal (shipped/superseded). */
-export function isTerminalPlanStatus(status: string | null | undefined): boolean {
-  return status === 'shipped' || status === 'superseded';
-}
+/**
+ * Terminal plan-lifecycle statuses — a started plan can never be one of these.
+ *
+ * DEFINED in `@papercusp/plan-parser` (pure status grammar, zero I/O) and
+ * re-exported here so this module's existing importers resolve unchanged. The
+ * definition moved because THIS module imports `@papercusp/db-org`: a consumer
+ * that must stay dependency-free (the `coord.plans` sync projection, WI-7256)
+ * cannot import the predicate from here without dragging Postgres across its
+ * boundary, and duplicating it is how the two copies drift.
+ */
+export { TERMINAL_PLAN_STATUSES, isTerminalPlanStatus } from '@papercusp/plan-parser';
 
 /**
  * Reconcile the operational start-status reported to a reader against the

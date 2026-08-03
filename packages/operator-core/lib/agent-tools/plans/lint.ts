@@ -502,17 +502,27 @@ export async function lintParsed(
     });
   }
 
+  const resolvedById = new Map(resolved.items.map((i) => [i.id, i]));
   for (const it of parsed.items) {
     // §3.4: the stored `blocked` token is reserved for *external*
     // blockers (upstream PR, vendor). Internal dependencies use
     // blocked-by and are computed — so a stored `blocked` that also
     // carries blocked-by is a contradiction; the token should be `todo`.
     if (it.storedStatus === 'blocked' && it.blockedBy.length > 0) {
+      // EI-19397307303043951: when every blocked-by dependency has ALREADY
+      // resolved, this is no longer merely a contradiction to clean up
+      // eventually — it is the live trap: effectiveStatus is stuck 'blocked'
+      // RIGHT NOW (resolveEffectiveStatusForItems's staleBlockedHint),
+      // hiding real claimable work from scheduler:get_next behind a queue
+      // that reads as drained. Escalate the message so it stops looking like
+      // routine authoring advice.
+      const staleHint = resolvedById.get(it.id)?.staleBlockedHint ?? null;
       report.warnings.push({
         level: 'warning',
         code: 'stored_blocked_with_blocked_by',
-        message:
-          `Item ${it.id} is stored as 'blocked' and also has blocked-by — 'blocked' is for external blockers only; internal deps are computed from blocked-by, so the stored token should be 'todo'.`,
+        message: staleHint
+          ? `Item ${it.id} is stuck 'blocked' RIGHT NOW: ${staleHint} (this is not just an authoring nit — it is currently hiding claimable work from scheduler:get_next).`
+          : `Item ${it.id} is stored as 'blocked' and also has blocked-by — 'blocked' is for external blockers only; internal deps are computed from blocked-by, so the stored token should be 'todo'.`,
         itemId: it.id,
       });
     }

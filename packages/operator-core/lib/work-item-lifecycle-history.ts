@@ -196,19 +196,21 @@ export async function getWorkItemLifecycleHistory(params: {
     const at = typeof rec.at === 'string' ? rec.at : null;
     const atMs = at ? Date.parse(at) : NaN;
     if (!Number.isFinite(atMs)) continue;
+    // Pass the entry through WHOLE rather than picking known keys. `reopenHistory` is an
+    // actively-growing record — EI-19393880133572803 is archiving `_completionEvidence` into
+    // these same entries as this is written — and a hardcoded key list would silently drop
+    // each new field as it lands, reproducing one layer down the exact "the data exists but
+    // nothing surfaces it" defect this module exists to end. `at`/`by` are lifted to the
+    // event's own typed fields, so they are dropped from `detail` to avoid restating them;
+    // `force` is normalized to a strict boolean because it is the field readers branch on.
+    const { at: _at, by: _by, ...rest } = rec;
     events.push({
       at: new Date(atMs).toISOString(),
       atMs,
       kind: 'reopened',
       by: typeof rec.by === 'string' ? rec.by : null,
       source: 'reopenHistory',
-      detail: {
-        force: rec.force === true,
-        prevState: rec.prevState ?? null,
-        terminalOwner: rec.terminalOwner ?? null,
-        terminalCompletionRef: rec.terminalCompletionRef ?? null,
-        completionAuthority: rec.completionAuthority ?? null,
-      },
+      detail: { ...rest, force: rec.force === true },
     });
   }
 

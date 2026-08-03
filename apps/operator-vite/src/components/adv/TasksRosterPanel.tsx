@@ -179,9 +179,11 @@ export function unaccountedGroups(live: LiveScan | null): { cgroupPath: string; 
  */
 export function splitUnowned(rows: LiveProcessRow[]): {
   unaccounted: LiveProcessRow[];
+  abandonedWindow: LiveProcessRow[];
   exempt: LiveProcessRow[];
 } {
   const unaccounted: LiveProcessRow[] = [];
+  const abandonedWindow: LiveProcessRow[] = [];
   const exempt: LiveProcessRow[] = [];
   for (const p of rows) {
     if (p.owned) continue;
@@ -189,9 +191,13 @@ export function splitUnowned(rows: LiveProcessRow[]): {
     // operator that predates the field must not silently downgrade a real escape
     // into "nothing to see". Over-reporting is the safe direction for an alarm.
     if (p.scope === 'exempt') exempt.push(p);
+    // P-008/D-018: its own bucket. It used to land in `exempt`, where the section
+    // header asserts "these are not escapees" — a claim the classifier cannot make
+    // about a window that is gone.
+    else if (p.scope === 'abandoned-window') abandonedWindow.push(p);
     else unaccounted.push(p);
   }
-  return { unaccounted, exempt };
+  return { unaccounted, abandonedWindow, exempt };
 }
 
 /** Count exempt rows by reason, biggest first, for the collapsed summary. Pure. */
@@ -257,7 +263,7 @@ export default function TasksRosterPanel({ active }: { active: boolean }) {
     [data?.liveProcesses, needle],
   );
   const groups = useMemo(() => groupByClass(ledger), [ledger]);
-  const { unaccounted, exempt } = useMemo(() => splitUnowned(scanned), [scanned]);
+  const { unaccounted, abandonedWindow, exempt } = useMemo(() => splitUnowned(scanned), [scanned]);
   const orphans = unaccountedGroups(live);
 
   if (!data) {
@@ -367,11 +373,50 @@ export default function TasksRosterPanel({ active }: { active: boolean }) {
           </section>
         )}
 
-        {/* Out of scope BY DESIGN — neutral context, collapsed. These are not
-            escapees: they are the lifetimes the spawn guard's allowlist names on
-            purpose (a human's terminal window; a systemd unit whose lifecycle
-            systemd owns). Shown because hiding them would make the scan total
-            unexplainable, styled flat because alarm here is a false positive. */}
+        {/* A window closed but these kept running (P-008 / D-018).
+            NOT an alarm and NOT a kill list: 14 of 15 such scopes measured on this
+            box held live agent sessions or shared infra, so a dead window is not
+            evidence of abandonment (D-016 — this class stays report-only). It is
+            its own section because both neighbours lie about it: `exempt` claims a
+            human owns the lifetime when the human closed it, and `unaccounted`
+            calls it a chokepoint bypass when a human legitimately started it. */}
+        {abandonedWindow.length > 0 && (
+          <section className="pc-tasks-roster__group">
+            <header className="pc-tasks-roster__group-head">
+              <span aria-hidden>◍</span> a window closed but these kept running
+              <span className="pc-tasks-roster__group-count">({abandonedWindow.length})</span>
+              <span className="pc-tasks-roster__chip">
+                still running with no terminal — usually fine, worth a look if it grows
+              </span>
+            </header>
+            {abandonedWindow.map((p: LiveProcessRow) => (
+              <div
+                key={p.pid}
+                className="pc-tasks-roster__row"
+                data-testid={`task-abandoned-${p.pid}`}
+              >
+                <span className="pc-tasks-roster__age">—</span>
+                <span className="pc-tasks-roster__name" title={p.cmdline ?? ''}>{shortCmd(p.cmdline)}</span>
+                <span className="pc-tasks-roster__doing" title={p.cgroupPath}>pid {p.pid}</span>
+                <span className="pc-tasks-roster__num">—</span>
+                <span className="pc-tasks-roster__num">—</span>
+              </div>
+            ))}
+          </section>
+        )}
+
+        {/* Out of scope BY DESIGN — neutral context, collapsed. These are the
+            lifetimes the spawn guard's allowlist names on purpose (a human's OPEN
+            terminal window; a systemd unit whose lifecycle systemd owns). Shown
+            because hiding them would make the scan total unexplainable, styled flat
+            because alarm here is a false positive.
+
+            ⚠ This section no longer claims "these are not escapees" (P-008/D-018).
+            It could not back that claim: the exemption is withdrawn only when a
+            window is POSITIVELY observed dead, and unknown deliberately fails
+            toward exempt — so residue whose probe never ran sat here wearing a
+            label that said it was fine. A dead window now has its own section
+            above; what remains here is exempt because something still owns it. */}
         {exempt.length > 0 && (
           <section className="pc-tasks-roster__group is-muted" data-testid="tasks-exempt">
             {/* Expansion is nuqs, not useState — panel open-state is user-meaningful

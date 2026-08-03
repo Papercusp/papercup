@@ -29,6 +29,7 @@ const {
   listHandoffsMock,
   listHandoffsPaginatedMock,
   readAllPlansMock,
+  readPlanBySlugMock,
 } = vi.hoisted(() => ({
   readLinesBoundedMock: vi.fn(async () => [] as CoordEnvelope[]),
   listEscalationsMock: vi.fn(async () => [] as EscalationRecord[]),
@@ -45,6 +46,8 @@ const {
   })),
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   readAllPlansMock: vi.fn(async () => [] as any[]),
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  readPlanBySlugMock: vi.fn(async () => null as any),
 }));
 
 vi.mock('@papercusp/agent-mcp', () => ({
@@ -64,9 +67,16 @@ vi.mock('../../../agent-tools/coordination/handoffs', () => ({
   listHandoffsPaginated: listHandoffsPaginatedMock,
 }));
 vi.mock('../../../agent-tools/coordination/plan-events', () => ({ readPlanEvents: vi.fn(async () => []) }));
-vi.mock('../../../agent-tools/plans/source', () => ({ readAllPlans: readAllPlansMock }));
+vi.mock('../../../agent-tools/plans/source', () => ({
+  readAllPlans: readAllPlansMock,
+  readPlanBySlug: readPlanBySlugMock,
+}));
+vi.mock('node:fs/promises', () => ({ readFile: vi.fn(async () => 'mock markdown') }));
 
-import { loadCoordInbox, loadCoordPlans, loadCoordHistory } from './index';
+import routesDefault, { loadCoordInbox, loadCoordPlans, loadCoordHistory } from './index';
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const planBySlugRoute = (routesDefault as any[]).find((r) => r.path === '/coord/plans/:slug');
 
 function msg(p: Partial<CoordEnvelope> = {}): CoordEnvelope {
   return { ts: '2026-07-20T00:00:00.000Z', msg_id: 'm0', from: 'alice', to: ['bob'], kind: 'message', ...p };
@@ -248,6 +258,57 @@ describe('loadCoordPlans — identity comes from the row, not the markdown (WI-7
     const plans = await loadCoordPlans();
     expect(plans.map((p) => p.slug)).not.toContain('legacy-plan');
     expect(plans).toHaveLength(3);
+  });
+});
+
+/**
+ * GET /coord/plans/:slug — status comes from the row, not the markdown
+ * (WI-7259, sibling of WI-7246's loadCoordPlans fix above).
+ *
+ * Same scheduled-run-snapshot shape: the snapshot's frontmatter is a
+ * byte-identical copy of its parent's, so `found.parsed.frontmatter.status`
+ * reports the PARENT's lifecycle for a request naming the snapshot's own
+ * slug.
+ */
+describe('GET /coord/plans/:slug — status comes from the row, not the markdown (WI-7259)', () => {
+  async function callPlanBySlug(slug: string) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const res = await (planBySlugRoute as any).handler(new Request(`http://x/coord/plans/${slug}`), {
+      params: { slug },
+    });
+    return res.json();
+  }
+
+  it('reports the row status for a snapshot slug whose frontmatter still reads the parent draft', async () => {
+    readPlanBySlugMock.mockResolvedValueOnce({
+      parsed: {
+        isLegacy: false,
+        slug: 'alert-2026-07-06',
+        frontmatter: { title: 'Alert', status: 'draft' },
+        filePath: '/synthetic/alert-2026-07-06@run-1.md',
+      },
+      archived: false,
+      row: { planSlug: 'alert-2026-07-06@run-1', status: 'superseded' },
+    });
+    const body = await callPlanBySlug('alert-2026-07-06@run-1');
+    expect(body.status).toBe('superseded');
+    // title stays frontmatter-first — display text, not identity (WI-7246 precedent).
+    expect(body.title).toBe('Alert');
+  });
+
+  it('falls back to the frontmatter status only when the row carries none', async () => {
+    readPlanBySlugMock.mockResolvedValueOnce({
+      parsed: {
+        isLegacy: false,
+        slug: 'no-db-status',
+        frontmatter: { title: 'T', status: 'active' },
+        filePath: '/synthetic/no-db-status.md',
+      },
+      archived: false,
+      row: { planSlug: 'no-db-status', status: null },
+    });
+    const body = await callPlanBySlug('no-db-status');
+    expect(body.status).toBe('active');
   });
 });
 

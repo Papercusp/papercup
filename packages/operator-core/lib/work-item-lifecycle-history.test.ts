@@ -81,6 +81,36 @@ describe('getWorkItemLifecycleHistory', () => {
     });
   });
 
+  it('passes an UNKNOWN reopenHistory field through instead of dropping it', async () => {
+    // reopenHistory is actively growing (EI-19393880133572803 archives _completionEvidence
+    // into these entries). A hardcoded key list would drop each new field as it lands —
+    // the same "recorded but unsurfaced" defect this module exists to end, one layer down.
+    const out = await getWorkItemLifecycleHistory({
+      id: 'WI-1',
+      workspaceId: WS,
+      family: 'change',
+      payload: {
+        reopenHistory: [
+          {
+            at: new Date(1_000).toISOString(),
+            by: 'su-x',
+            prevState: 'done',
+            _completionEvidence: { summary: 'archived by a later change' },
+          },
+        ],
+      },
+    });
+    expect(out.events[0]?.detail).toMatchObject({
+      prevState: 'done',
+      _completionEvidence: { summary: 'archived by a later change' },
+    });
+    // `at`/`by` are lifted to typed event fields and must not be restated in `detail`.
+    expect(out.events[0]?.detail).not.toHaveProperty('at');
+    expect(out.events[0]?.detail).not.toHaveProperty('by');
+    // An absent `force` still normalizes to a strict boolean — readers branch on it.
+    expect(out.events[0]?.detail?.force).toBe(false);
+  });
+
   it('ALWAYS reports what is not recorded, even when the timeline is non-empty', async () => {
     unsafe.mockResolvedValue([{ ts: 1_000, actor: 'su-a', action: 'work_items:claim_hold:set', details: {} }]);
     const out = await getWorkItemLifecycleHistory({ id: 'WI-1', workspaceId: WS, family: 'issue' });

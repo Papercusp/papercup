@@ -99,8 +99,12 @@ describe('classifyScope', () => {
       scope: 'exempt',
       exemptReason: 'human-terminal',
     });
+    // P-008/D-018: a closed window is its OWN class, not bare `unaccounted`. The
+    // distinction is load-bearing for the pane — a human DID own this lifetime,
+    // so it must not read as a chokepoint bypass, and must not read as exempt
+    // either now that the owner is gone.
     expect(classifyScope(vte, false, { terminalWindowAlive: false })).toEqual({
-      scope: 'unaccounted',
+      scope: 'abandoned-window',
       exemptReason: null,
     });
   });

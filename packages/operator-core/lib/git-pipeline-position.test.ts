@@ -3184,7 +3184,7 @@ describe('stage levers (P-005)', () => {
     }
   });
 
-  it('P-002: a blocked gate SAYS which of the three liveness readings it got', () => {
+  it('P-002: a blocked gate SAYS which liveness reading it got — and never calls a cached one "measured"', () => {
     const detailFor = (checkpointRunInFlight: StageInput['gate']['checkpointRunInFlight']) =>
       stagesFor({
         positions: NOT_IN_MAIN,
@@ -3196,7 +3196,19 @@ describe('stage levers (P-005)', () => {
     // missing lever — "nothing to do" was read as "someone else has this".
     expect(detailFor(IN_FLIGHT)).toMatch(/A gate run IS in flight \(running ~10m\)/);
     expect(detailFor(IN_FLIGHT)).toMatch(/do NOT fire a second one/);
-    expect(detailFor(IDLE)).toMatch(/NO gate run is in flight \(measured\)/);
+    /**
+     * EI-19395922387569240: "measured" is now earned, not assumed. `IDLE` carries no
+     * `activeSource`, i.e. it came from the cache — so the sentence must name the cache and
+     * its age, and must NOT use the word "measured". Claiming measurement for a cache of
+     * unbounded age (7h, live) is what routed this very lever to "fire release:checkpoint-run"
+     * while a run was in flight.
+     */
+    expect(detailFor(IDLE)).toMatch(/NO gate run is in flight according to the run-liveness CACHE/);
+    expect(detailFor(IDLE)).toMatch(/computed 5s ago/);
+    expect(detailFor(IDLE)).not.toMatch(/measured/);
+    // The same idle verdict, but read LIVE from the run lock, does earn it.
+    const lockIdle = { ...IDLE, activeSource: 'run-lock' as const };
+    expect(detailFor(lockIdle)).toMatch(/NO gate run is in flight \(measured live via the run lock\)/);
     // The unknown must read as unknown — and must not be mistakable for the idle answer.
     expect(detailFor(undefined)).toMatch(/UNKNOWN on this call/);
     expect(detailFor(undefined)).toMatch(/NOT evidence none is running/);
@@ -3961,7 +3973,7 @@ describe('gitPipelinePosition wires checkpointRunInFlight into gate + notes (EI-
     expect(res.notes.join(' ')).not.toMatch(/GATE RUN IN FLIGHT/);
   });
 
-  it('a failed/missing cache read (dep returns null) leaves gate.checkpointRunInFlight null and adds no note', async () => {
+  it('BOTH reads failing (cache null + lock null) leaves gate.checkpointRunInFlight null and adds no note', async () => {
     const git = fakeGit({ contains: { HEAD: ['abc1234567'] } });
     const res = await gitPipelinePosition(
       { sha: 'abc1234567' },
@@ -3970,9 +3982,80 @@ describe('gitPipelinePosition wires checkpointRunInFlight into gate + notes (EI-
         loadDeploy: async () => deploy(),
         loadSnapshot: async () => snap(),
         readCheckpointRunSnapshot: async () => null,
+        // EI-19395922387569240: the lock must be nulled EXPLICITLY now. A missing cache alone
+        // is no longer UNKNOWN — the lock can answer liveness on its own, which is the point.
+        readCheckpointRunLock: async () => null,
       },
     );
     expect(res.gate.checkpointRunInFlight).toBeNull();
     expect(res.notes.join(' ')).not.toMatch(/GATE RUN IN FLIGHT/);
+  });
+
+  /**
+   * EI-19395922387569240 — the WIRING guard. The mapper unit-tests above prove the precedence
+   * logic; this proves the dep is actually reachable from `gitPipelinePosition`, which is the
+   * half that was missing: `isCheckpointRunLockHeldCheap` already existed and was correct, it
+   * was simply never wired to the read agents call (its only caller was system-health).
+   */
+  it('⭐ a HELD live lock reports an in-flight run even with NO cache — and raises the contention note', async () => {
+    const git = fakeGit({ contains: { HEAD: ['abc1234567'] } });
+    const res = await gitPipelinePosition(
+      { sha: 'abc1234567' },
+      {
+        git,
+        loadDeploy: async () => deploy(),
+        loadSnapshot: async () => snap(),
+        readCheckpointRunSnapshot: async () => null,
+        readCheckpointRunLock: async () => ({ held: true, elapsedSec: 600 }),
+      },
+    );
+    expect(res.gate.checkpointRunInFlight?.active).toBe(true);
+    expect(res.gate.checkpointRunInFlight?.activeSource).toBe('run-lock');
+    expect(res.notes.join(' ')).toMatch(/GATE RUN IN FLIGHT/);
+  });
+
+  it('⭐ a HELD live lock overturns a STALE cached idle — the reading that used to send callers to fire into a live run', async () => {
+    const git = fakeGit({ contains: { HEAD: ['abc1234567'] } });
+    const res = await gitPipelinePosition(
+      { sha: 'abc1234567' },
+      {
+        git,
+        loadDeploy: async () => deploy(),
+        loadSnapshot: async () => snap(),
+        readCheckpointRunSnapshot: async () => ({
+          activeRun: { active: false, candidate: null, startedAtMs: null, elapsedSec: null },
+          computedAtMs: Date.now() - 7 * 60 * 60_000, // the 7h row measured live 2026-08-03
+        }),
+        readCheckpointRunLock: async () => ({ held: true, elapsedSec: 900 }),
+      },
+    );
+    expect(res.gate.checkpointRunInFlight?.active).toBe(true);
+    expect(res.gate.checkpointRunInFlight?.activeSource).toBe('run-lock');
+    expect(res.notes.join(' ')).toMatch(/GATE RUN IN FLIGHT/);
+  });
+
+  it('does not claim a cache-backed idle was "measured", but does for a lock-backed one', async () => {
+    const git = fakeGit({ contains: { HEAD: ['abc1234567'] } });
+    const run = (lock: { held: boolean; elapsedSec: number | null } | null) =>
+      gitPipelinePosition(
+        { sha: 'abc1234567' },
+        {
+          git,
+          loadDeploy: async () => deploy(),
+          loadSnapshot: async () => snap({ consecutiveReds: 5, stalled: true }),
+          readCheckpointRunSnapshot: async () => ({
+            activeRun: { active: false, candidate: null, startedAtMs: null, elapsedSec: null },
+            computedAtMs: Date.now() - 600_000,
+          }),
+          readCheckpointRunLock: async () => lock,
+        },
+      );
+    const gateDetail = (r: Awaited<ReturnType<typeof run>>) =>
+      r.stages.find((s) => s.name === 'gate')?.detail ?? '';
+    expect(gateDetail(await run({ held: false, elapsedSec: null }))).toMatch(/measured live via the run lock/);
+    // Cache-only: the same idle reading must NOT be dressed up as a measurement.
+    const cacheOnly = gateDetail(await run(null));
+    expect(cacheOnly).toMatch(/according to the run-liveness CACHE/);
+    expect(cacheOnly).not.toMatch(/measured/);
   });
 });

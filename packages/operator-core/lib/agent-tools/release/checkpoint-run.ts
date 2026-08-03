@@ -35,6 +35,7 @@ import {
 import { attributeRetriageToRun, describeRefireBudget, readInFlightRetriage } from '../../release/in-flight-retriage';
 import { caveat, describeRefusal, isRefusedAnswer, refuseAnswer, withFieldReliability } from '../../field-reliability';
 import { applyPendingMigrationsNow } from '../../db-boot-migrate';
+import { ownershipHeldByLiveHolder, readGateOwnership } from '../../coord/gate-ownership';
 
 export default defineTool({
   name: 'release:checkpoint-run',
@@ -129,7 +130,7 @@ export default defineTool({
         'Repo-relative files your change touches. The reply then reports callerEditsInCandidate { included, missing } — whether the commit this run judges actually CARRIES them, so a red you get back is unambiguously about your code. PASS THIS: without it the check falls back to the whole shared tree\'s uncommitted files, which includes peers\' edits and cannot see a change you already committed.',
       ),
   }),
-  async handler(args, _ctx) {
+  async handler(args, ctx) {
     // No in-handler role gate: firing the verdict is verification-only + self-locked (see the
     // agentRoles note above). Access control is the invoke allowlist; any invoke-allowed red-fixer
     // may fire a fresh green verdict.
@@ -178,6 +179,59 @@ export default defineTool({
           },
         ],
       };
+    }
+    // P-007 (gate-ownership-condition-singleton-2026-08-03): stand down when a LIVE peer is
+    // already on this incident.
+    //
+    // The refusals below this line all answer "is a RUN in flight?" — a question about the
+    // systemd unit. This one answers a question no probe can: "is a PERSON already on the red?"
+    // The gate's stall condition owns a singleton work-item (P-002/P-003), so "someone is fixing
+    // this" is now a claim in the store rather than folklore, and firing a redundant ~55min suite
+    // against a red a peer is mid-fix is the exact waste that singleton exists to prevent. On
+    // 2026-08-02 several agents did precisely that to one another.
+    //
+    // FAILS OPEN, deliberately and in every direction: `force`, an unread store, a dead holder,
+    // an ambiguous verdict, and the caller's own claim all proceed. `readGateOwnership` itself
+    // degrades to `no-object` rather than throwing. This is COORDINATION on top of the run-lock
+    // singleton, which remains the actual safety mechanism — so the cost of a false refusal
+    // (wedging the fleet's only verdict lever) is far higher than that of a false allow (one
+    // redundant suite, which is merely the status quo ante).
+    if (!args.force) {
+      const ownership = await readGateOwnership();
+      // `ownershipHeldByLiveHolder` is false for null/ambiguous/ended — so this stands down only
+      // on a POSITIVE liveness verdict, never on an absence of evidence.
+      if (ownershipHeldByLiveHolder(ownership) && ownership.takenBy && ownership.takenBy !== ctx.ownerId) {
+        const said = ownership.thread.recent.at(-1);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({
+                ok: false,
+                launched: false,
+                reason: 'condition_claimed',
+                work_item: ownership.workItem,
+                taken_by: ownership.takenBy,
+                holder_session_state: ownership.holderSessionState,
+                taken_at: ownership.takenAt,
+                // P-006's thread is ADVISORY (D-006) — it says what was posted, never whether the
+                // claim is true. Surfaced so the caller can read the holder's own words instead of
+                // re-deriving the red, and labelled so it is not mistaken for the liveness evidence.
+                last_said: said ? { at: said.at, author: said.author, text: said.text } : null,
+                thread_total: ownership.thread.total,
+                note:
+                  `NOT launched: ${ownership.workItem ?? 'the gate stall condition'} is CLAIMED by ${ownership.takenBy}, ` +
+                  `whose session the presence oracle reports as '${ownership.holderSessionState}' — a LIVE peer actively on this red. ` +
+                  'Firing now would spend a ~55min suite re-judging a candidate someone is mid-fix on, and the verdict would land ' +
+                  'after their fix anyway. Read what they have already found (work_items:get on the item above, thread excerpt in ' +
+                  '`last_said`) and coordinate — coord:send them — instead of re-deriving it. ' +
+                  'If you have a fix THEY do not (or the claim is genuinely abandoned), pass force:true; this rail is coordination, ' +
+                  'not a lock, and it never blocks a dead/ambiguous holder or your own claim.',
+              }),
+            },
+          ],
+        };
+      }
     }
     const result = await launchDetachedCheckpoint({ force: args.force, replaceStale: args.replaceStale });
     // WI-6962: the host could not be asked whether a run is in flight, so we refused rather

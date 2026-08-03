@@ -5,6 +5,7 @@ import {
   lastRoutineFireAgeSec,
   routinesDemonstrablyFiring,
   runSinglePrimaryCheck,
+  openSinglePrimaryConditions,
   _resetSinglePrimaryDebounce,
 } from './single-primary-check';
 
@@ -105,6 +106,57 @@ describe('lastRoutineFireAgeSec', () => {
     }) as never;
     await lastRoutineFireAgeSec(sql);
     expect(seen[0]).toEqual([]);
+  });
+});
+
+describe('openSinglePrimaryConditions (WI-7291 durable condition read)', () => {
+  const fakeSql = (rows: unknown[], capture?: { sql?: string; vals?: unknown[] }) =>
+    (async (s: TemplateStringsArray, ...vals: unknown[]) => {
+      if (capture) {
+        capture.sql = s.join('?');
+        capture.vals = vals;
+      }
+      return rows;
+    }) as never;
+
+  it('returns the open condition keys the fold reports', async () => {
+    const keys = await openSinglePrimaryConditions(
+      fakeSql([{ key: 'single-primary:no-primary' }, { key: 'single-primary:split-brain-primary' }]),
+      'ws',
+    );
+    expect(keys).toEqual(['single-primary:no-primary', 'single-primary:split-brain-primary']);
+  });
+
+  it('binds the workspace FIRST — the store is multi-tenant', async () => {
+    // An unscoped read would all-clear another tenant's alarm off this tenant's recovery.
+    const cap: { sql?: string; vals?: unknown[] } = {};
+    await openSinglePrimaryConditions(fakeSql([], cap), 'papercusp-workspace');
+    expect(cap.vals?.[0]).toBe('papercusp-workspace');
+  });
+
+  it('scopes to the single-primary namespace and bounds by retention', async () => {
+    const cap: { sql?: string; vals?: unknown[] } = {};
+    await openSinglePrimaryConditions(fakeSql([], cap), 'ws');
+    // Both LIKE bindings are the guard's own namespace — it must never clear a condition
+    // some other subsystem owns.
+    expect(cap.vals?.filter((v) => v === 'single-primary:%').length).toBe(2);
+    // A ts lower bound keeps this off the unbounded-scan path (EI-9447 furnace class).
+    expect(cap.sql).toContain('ts >=');
+  });
+
+  it('matches the conditions partial index predicate so the read seeks it', async () => {
+    const cap: { sql?: string; vals?: unknown[] } = {};
+    await openSinglePrimaryConditions(fakeSql([], cap), 'ws');
+    expect(cap.sql).toContain("surface = 'messages'");
+    expect(cap.sql).toContain("body ? 'condition_key'");
+  });
+
+  it('drops null/empty keys rather than emitting a malformed all-clear', async () => {
+    const keys = await openSinglePrimaryConditions(
+      fakeSql([{ key: null }, { key: '' }, { key: 'single-primary:no-primary' }]),
+      'ws',
+    );
+    expect(keys).toEqual(['single-primary:no-primary']);
   });
 });
 
@@ -231,6 +283,92 @@ describe('runSinglePrimaryCheck (hysteresis + debounce + self-clear)', () => {
     const c = await runSinglePrimaryCheck('ws', { ...base, count: async () => 1 });
     expect(c.selfCleared).toBe(false);
     expect(resolves.length).toBe(1);
+  });
+
+  // ── WI-7291: the all-clear must be driven by DURABLE state, not per-process memory ──
+  //
+  // THE REGRESSION THIS PINS: the guard runs on every request worker, so the process that
+  // alarms is routinely not the one that later sees the recovery. Keying the fleet
+  // all-clear off an in-process map meant it was skipped by exactly the processes able to
+  // send it — measured live as 122 `no-primary` alarms since 2026-07-11 with ZERO
+  // resolutions ever, and a `split-brain-primary` condition still open 23 days after
+  // recovering. A permanently-open condition then re-escalates via
+  // condition-staleness-alarm every ~30 min. If these fail, that flood is back.
+  it('all-clears a condition THIS process never alarmed (the cross-process case)', async () => {
+    const paged: string[][] = [];
+    // A pristine process: it has no in-memory record of any alarm — exactly the state of a
+    // worker that just booted, or that simply was not the one that alarmed.
+    const r = await runSinglePrimaryCheck('ws', {
+      count: async () => 1,
+      openConditions: async () => ['single-primary:no-primary'],
+      pageResolved: async (keys) => { paged.push(keys); },
+    });
+
+    expect(r.fired).toBe(false);
+    expect(r.selfCleared).toBe(true);
+    // Bare key: defaultPageResolved re-applies the `single-primary:` namespace itself, so
+    // passing the qualified key through would double-prefix and supersede nothing.
+    expect(paged).toEqual([['no-primary']]);
+  });
+
+  it('emits NOTHING when durable state shows no open condition (no all-clear spam)', async () => {
+    const paged: string[][] = [];
+    const r = await runSinglePrimaryCheck('ws', {
+      count: async () => 1,
+      openConditions: async () => [],
+      pageResolved: async (keys) => { paged.push(keys); },
+    });
+
+    expect(r.selfCleared).toBe(false);
+    expect(paged).toEqual([]);
+  });
+
+  it('a FAILING durable read degrades to silence, never to a false all-clear', async () => {
+    // The only direction that could hide a real outage: an unreadable condition store must
+    // never be reported as "recovered".
+    const paged: string[][] = [];
+    const r = await runSinglePrimaryCheck('ws', {
+      count: async () => 1,
+      openConditions: async () => { throw new Error('pg down'); },
+      pageResolved: async (keys) => { paged.push(keys); },
+    });
+
+    expect(r.selfCleared).toBe(false);
+    expect(paged).toEqual([]);
+  });
+
+  it('all-clears EVERY open key at once, including one no live verdict can produce', async () => {
+    // `split-brain-primary` sat open 23 days because nothing could clear it; a recovery
+    // must drain the whole namespace, not just the key this tick happens to know about.
+    const paged: string[][] = [];
+    await runSinglePrimaryCheck('ws', {
+      count: async () => 1,
+      openConditions: async () => [
+        'single-primary:no-primary',
+        'single-primary:split-brain-primary',
+      ],
+      pageResolved: async (keys) => { paged.push(keys); },
+    });
+
+    expect(paged).toEqual([['no-primary', 'split-brain-primary']]);
+  });
+
+  it('is EDGE-triggered: a resolved condition drops out and stops re-clearing', async () => {
+    // The durable fold reports a key only while its latest alarm is newer than its latest
+    // resolution, so one recovery emits exactly one all-clear.
+    const paged: string[][] = [];
+    let open = ['single-primary:no-primary'];
+    const deps = {
+      count: async () => 1,
+      openConditions: async () => open,
+      pageResolved: async (keys: string[]) => { paged.push(keys); open = []; },
+    };
+
+    await runSinglePrimaryCheck('ws', deps);
+    await runSinglePrimaryCheck('ws', deps);
+    await runSinglePrimaryCheck('ws', deps);
+
+    expect(paged).toEqual([['no-primary']]);
   });
 
   // EI-19388269294151851: the 2026-08-03 incident, end to end. A sustained count of 0

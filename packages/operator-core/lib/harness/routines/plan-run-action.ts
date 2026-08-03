@@ -30,6 +30,7 @@ import { FEATURE_FAMILY_KINDS } from '../../work-items';
 import { evaluatePlanStartReadiness } from '../../agent-tools/plans/plan-input-validation';
 import { routineStorageSlug } from '../../pot-membership';
 import { setFrontmatterScalar } from '../../agent-tools/plans/transfer-owner';
+import { planRunInstanceSlug } from '../../agent-tools/plans/run-instance-slug';
 import { hashPlanContent } from '@papercusp/plan-parser';
 
 /** launched_by label for a scheduled run's plan_runs row. */
@@ -177,7 +178,7 @@ export async function runScheduledPlanFire(
       : rt[0]?.last_fired_at
         ? new Date(rt[0].last_fired_at).getTime()
         : Date.now();
-  const instanceSlug = `${templateSlug}@run-${token}`;
+  const instanceSlug = planRunInstanceSlug(templateSlug, token);
 
   // 3. Idempotency: the instance already existing ⇒ this is a replay ⇒ no-op.
   const existing = await sql<Array<{ run_seq: number | null }>>`

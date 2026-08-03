@@ -31,17 +31,20 @@ import { LEARNING_VIEWS } from "./LearningTab";
  * nothing forcing them to agree. No type breaks, no test fails, and the code is
  * live so `knip` sees nothing.
  *
- * The obvious guard ("every view has a settle point") FAILS TODAY, listing 12
- * views. Landing a red test to prove a point would red the shared gate for the
- * whole fleet, so this is a **ratchet** instead: it pins the CURRENT gap and
- * fails the moment that gap changes in either direction. The 12 known-unmeasured
- * views are a documented baseline to be retired by payload weight, not a
- * pretence that coverage is complete.
+ * The obvious guard ("every view has a settle point") FAILED at filing time,
+ * listing 12 views. Landing a red test to prove a point would have red the
+ * shared gate for the whole fleet, so this shipped as a **ratchet** first: pin
+ * the CURRENT gap, fail the moment it changes in either direction, retire the
+ * 12 known-unmeasured views incrementally. That incremental work is now DONE
+ * (2026-08-03, same day) — all 12 gained a settle point, so the baseline below
+ * has been tightened to zero. The ratchet stays: it now guards against a NEW
+ * view landing without a settle point, or an existing one silently losing its.
  *
- * Note the two covered LearningTab views are the two heaviest reads on the tab
- * (learning.improvements 320,607B + learning.hive 230,147B, ~71% of its ~778KB):
- * the existing coverage is the high-value end, and the baseline below is the
- * long tail. Sizing this off "12 of 16" alone overstates it.
+ * Note the original two covered LearningTab views were the two heaviest reads
+ * on the tab (learning.improvements 320,607B + learning.hive 230,147B, ~71% of
+ * its ~778KB) — the initial coverage was the high-value end and the remaining
+ * 12 were the long tail, which is why "12 of 16" alone overstated the gap at
+ * filing time. All 16 are covered now.
  *
  * ## Why a source scan rather than a render probe
  *
@@ -62,21 +65,30 @@ import { LEARNING_VIEWS } from "./LearningTab";
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, "../../../../..");
 
-/** Both trees that render Learning views (the tab lives in operator-vite; the
- *  Observations pane still lives in the operator app tree). */
+/** All three trees that render Learning views: the tab itself and most panels
+ *  live in operator-vite; the Observations pane lives in the operator app's
+ *  `adv` tree; the shared RubricsPanel (also used by the standalone /rubrics
+ *  page) lives in operator's `_components` tree. Missing any one of these
+ *  silently exempts whatever view it renders from the ratchet — exactly the
+ *  vacuity failure mode the "observes real files" test below exists to catch. */
 const SCAN_ROOTS = [
   join(REPO_ROOT, "apps/operator-vite/src/components/adv"),
   join(REPO_ROOT, "apps/operator/app/adv"),
+  join(REPO_ROOT, "apps/operator/app/_components"),
 ];
 
 /** Matches both spellings in the tree: the single-line call in AnalyzePanel /
  *  ObservationsPanel and the wrapped multi-line call in LearningTab. */
 const SETTLE_CALL = /useInteractionSettle\(\s*PERF_INTERACTIONS\.learningViewSwitch\b/g;
 
-/** Today's reality, measured 2026-08-03. Both numbers are BASELINES: changing
- *  either without updating this file is the thing the guard exists to catch. */
-const KNOWN_SETTLE_CALL_SITES = 4;
-const KNOWN_UNMEASURED_VIEWS = 12;
+/** Today's reality, measured 2026-08-03 (post WI-7263 fix: all 16 views now
+ *  have a settle point — SignalsPanel, RubricsPanel, GymView, ApiaryView,
+ *  HiveEvalTrendView, BakeoffTrendView, MugWakeEfficiencyPanel, EkgPanel,
+ *  RedQueenPanel, ExperimentsPanel, FrontierPanel and ThroughputView joined
+ *  the original 4). Both numbers are BASELINES: changing either without
+ *  updating this file is the thing the guard exists to catch. */
+const KNOWN_SETTLE_CALL_SITES = 16;
+const KNOWN_UNMEASURED_VIEWS = 0;
 
 function tsxFilesUnder(root: string): string[] {
   let entries: string[];
@@ -188,6 +200,11 @@ describe("Learning view perf-settle coverage (WI-7263)", () => {
       "apps/operator-vite/src/components/adv/AnalyzePanel.tsx",
     );
     expect(files).toContain("apps/operator/app/adv/create/ObservationsPanel.tsx");
+    // Pins the THIRD scan root specifically: it was added alongside the fix
+    // that closed this file's baseline to zero, and a regression here would
+    // silently exempt the rubrics view again (RubricsPanel lives outside both
+    // of the other two roots).
+    expect(files).toContain("apps/operator/app/_components/RubricsPanel.tsx");
   });
 
   it("counts the view population from LVIEWS, not from the nav catalog", () => {
