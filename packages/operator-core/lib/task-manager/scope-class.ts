@@ -69,7 +69,19 @@ export interface ScopeClassification {
 }
 
 /** GNOME Terminal's app slice — every terminal WINDOW is a `vte-spawn-*.scope` under it. */
-const TERMINAL_SLICE = 'app-org.gnome.Terminal.slice';
+/**
+ * The terminal application's own slice — the PARENT of the `vte-spawn-*.scope`
+ * dirs. Exported because the residue census (`terminal-residue-census`) has to
+ * resolve the same slice, and a second hand-written copy of this string is
+ * exactly how the two would drift apart (the same reasoning as
+ * `isTerminalWindowScope` owning the scope regex rather than the caller).
+ *
+ * ⚠ Not `app.slice`. Probing the wider slice collects every desktop application's
+ * pids as "terminal app pids", and since a window counts as ALIVE when any of its
+ * processes has a parent in that set, everything reads alive and a census reports
+ * zero dead scopes — a false CLEAN, the direction that hides residue.
+ */
+export const TERMINAL_SLICE = 'app-org.gnome.Terminal.slice';
 const VTE_SCOPE_RE = /^vte-spawn-[0-9a-fA-F-]+\.scope$/;
 
 function segments(cgroupPath: string): string[] {

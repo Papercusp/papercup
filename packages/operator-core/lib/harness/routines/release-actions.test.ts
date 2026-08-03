@@ -1039,6 +1039,66 @@ describe('WI-4494: recordCheckpointVerdict — the producer records', () => {
     const d = buildCheckpointDetail({ reason: 'not-green', green: false, candidate: 'a'.repeat(40) });
     expect(d.lineage).toBeUndefined();
   });
+
+  /**
+   * WI-7290. The durable record carried the WEAK proxy (lineage: "a failing file was modified
+   * somewhere in the range") but not the DIRECT measurement (retriage: "we re-ran those exact
+   * files at tip"). Three filings in one night each re-derived the latter from raw logs because
+   * an absent field reads identically to "the gate never checked".
+   */
+  describe('WI-7290: the re-triage verdict reaches the DURABLE record, not just gate_health', () => {
+    it('⭐ persists a real-red-at-tip re-triage — the finding gate_health deliberately drops', () => {
+      // gate_health keeps only the stale-candidate case (retriageStaleTip/retriageDetail are
+      // paired + cleared so a stale note cannot outlive its verdict). That is correct there, and
+      // it is exactly why THIS verdict — "we re-ran them at tip and they still fail" — has to
+      // survive here instead: it is the single most decision-relevant fact about a red.
+      const d = buildCheckpointDetail({
+        reason: 'not-green',
+        green: false,
+        candidate: 'a'.repeat(40),
+        retriage: {
+          classification: 'real-red',
+          tip: 'b'.repeat(40),
+          detail: '6 failing file(s) REPRODUCE at tip bbbbbbbb',
+        },
+      });
+      expect(d.retriage).toEqual({
+        classification: 'real-red',
+        tip: 'b'.repeat(12),
+        detail: '6 failing file(s) REPRODUCE at tip bbbbbbbb',
+      });
+    });
+
+    it('⭐ persists an `unknown` re-triage WITH its skip reason — "never measured" must not read as "measured and real"', () => {
+      const d = buildCheckpointDetail({
+        reason: 'not-green',
+        green: false,
+        candidate: 'a'.repeat(40),
+        retriage: {
+          classification: 'unknown',
+          tip: 'b'.repeat(40),
+          detail: 'tip re-run SKIPPED: none of the 2 failing entries could be turned into something re-runnable',
+        },
+      });
+      expect((d.retriage as { classification: string }).classification).toBe('unknown');
+      expect((d.retriage as { detail: string }).detail).toContain('SKIPPED');
+    });
+
+    it('caps an oversized detail at 500 chars and tolerates a null tip', () => {
+      const d = buildCheckpointDetail({
+        reason: 'not-green',
+        green: false,
+        retriage: { classification: 'unknown', tip: null, detail: 'x'.repeat(2000) },
+      });
+      expect((d.retriage as { detail: string }).detail).toHaveLength(500);
+      expect((d.retriage as { tip: string | null }).tip).toBeNull();
+    });
+
+    it('omits retriage entirely when the run produced none (a green tick records no verdict about staleness)', () => {
+      const d = buildCheckpointDetail({ reason: 'advanced', green: true, candidate: 'a'.repeat(40) });
+      expect(d.retriage).toBeUndefined();
+    });
+  });
 });
 
 describe('WI-4494: the routine defers to a run that already recorded (no double-counted reds)', () => {

@@ -36,15 +36,19 @@ import { Tooltip } from "@/app/harness/Tooltip";
 import { PERF_INTERACTIONS } from "@/app/_components/perf/perf-marks";
 import { useInteractionSettle } from "@/app/_components/perf/use-interaction-settle";
 
+// Mirrors LearningObservationRow (sync-resolver/learning-observations-read.ts).
+// The optional fields are OMITTED from the wire when null (D-025, WI-7303) — every
+// read site below already goes through `??`/truthiness, so absent and null behave
+// identically here.
 interface ObservationRow {
   id: string;
   title: string;
-  body: string | null;
-  kind: string | null;
-  scope: string | null;
-  confidence: string | null;
+  body?: string;
+  kind?: string;
+  scope?: string;
+  confidence?: string;
   refs: string[];
-  sourceRole: string | null;
+  sourceRole?: string;
   createdAt: string;
 }
 

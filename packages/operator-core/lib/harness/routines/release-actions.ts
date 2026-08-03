@@ -356,6 +356,31 @@ export function buildCheckpointDetail(v: CheckpointVerdict): Record<string, unkn
         : {}),
     };
   }
+  // WI-7290: persist the RE-TRIAGE verdict — the gate's own DIRECT measurement of whether the
+  // red still reproduces at tip ("we re-ran these exact files at tip; they passed / they still
+  // fail / we could not measure").
+  //
+  // Until now the durable record carried `lineage` but NOT this, which is exactly backwards:
+  // lineage is the weaker PROXY ("a failing file was MODIFIED somewhere in the range" — a
+  // modification is not a fix), while the re-triage is the direct measurement, and the gate
+  // computed it and threw it away. `gate_health` keeps only the `stale-candidate` case
+  // (retriageStaleTip/retriageDetail, deliberately paired + cleared so a stale note cannot
+  // outlive its verdict), so a `real-red`-at-tip finding — the single most decision-relevant
+  // fact about a red — survived nowhere at all.
+  //
+  // Measured cost of that hole, all on the night of 2026-08-02: three filings against the gate
+  // (WI-7290; EI-19388705187359206, filed MAJOR against the failing-file parser and retracted
+  // only after its author hand-built a probe that disproved it; EI-19389700122825304, the same
+  // author's note on misreading a field that could not answer the question), each independently
+  // re-deriving from raw logs whether the tip re-run had happened. Recording-only: nothing reads
+  // this to decide green/red — see the `unknown`-synthesis note in green-checkpoint.ts.
+  if (v.retriage) {
+    detail.retriage = {
+      classification: v.retriage.classification,
+      tip: v.retriage.tip ? v.retriage.tip.slice(0, 12) : null,
+      detail: v.retriage.detail.slice(0, 500),
+    };
+  }
   return detail;
 }
 

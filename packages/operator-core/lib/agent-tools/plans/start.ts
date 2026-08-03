@@ -99,7 +99,12 @@ export default defineTool({
         const now = new Date().toISOString();
 
         const read = await readPlanBySlug(slug, await ctxToPlanSourceOpts(sctx));
-        const lifecycle = read?.parsed.frontmatter.status ?? null;
+        // WI-7259 (sibling of WI-7246): a scheduled-run snapshot copies its
+        // parent plan's body verbatim, frontmatter included — reading
+        // frontmatter here would gate on the PARENT's lifecycle, not this
+        // row's. `row.status` is the canonical column for the slug actually
+        // being started.
+        const lifecycle = read?.row.status ?? read?.parsed.frontmatter.status ?? null;
         if (isTerminalPlanStatus(lifecycle)) {
           ctxAny.metadata?.({ slug, harnessSlug, refused: 'plan_terminal', status: lifecycle });
           return {

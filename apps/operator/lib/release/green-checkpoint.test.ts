@@ -23,6 +23,7 @@ import {
   splitTipFailuresPerFile,
   TIP_SPLIT_MAX_FILES,
   nonTestGateIdsFrom,
+  describeSkippedRetriage,
   NON_TEST_GATE_SCRIPTS,
   autoRefireCapFromEnv,
   normaliseFailingKey,
@@ -1539,6 +1540,88 @@ describe('runGreenCheckpoint', () => {
       expect(nonTestGateIdsFrom(['lint:identity-leak', '@papercusp/web'])).toEqual([]);
       expect(nonTestGateIdsFrom(['@papercusp/operator-vite'])).toEqual([]);
       expect(nonTestGateIdsFrom(['package.json-unreadable'])).toEqual([]);
+    });
+  });
+
+  /**
+   * WI-7290. The filed hypothesis was that the `📍 lineage` staleness check should TRIGGER a
+   * refire. Tracing the control flow REFUTED it: the refire is already gated on strictly
+   * stronger evidence — an actual re-run of the failing files at tip (`classifyRedAgainstTip`)
+   * — and lineage only reports that a file was MODIFIED in the range, which is not a fix.
+   * Triggering on the proxy would fire a ~55min suite in exactly the cases where the direct
+   * measurement just said the break reproduces.
+   *
+   * The real defect the trace exposed: when the tip re-run does not run AT ALL, the record was
+   * silent, so "never measured" was indistinguishable from "measured, genuinely red". These
+   * assert the reason is always stated and always specific enough to act on.
+   */
+  describe('WI-7290: describeSkippedRetriage — an unmeasured red says so, in its own words (pure)', () => {
+    const base = {
+      candidate: 'a'.repeat(40),
+      tip: 'b'.repeat(40),
+      failingFiles: [] as { workspace: string; file: string }[],
+      gateIds: [] as string[],
+      failingTests: [] as string[],
+      hasTestRunner: true,
+      hasGateRunner: true,
+    };
+
+    it('names an unresolvable tip — nothing newer existed to re-test against', () => {
+      const s = describeSkippedRetriage({ ...base, tip: null });
+      expect(s).toContain('could not be resolved');
+      expect(s).toContain('never checked for staleness');
+    });
+
+    it('names the candidate-IS-tip case as red-by-construction, not as an unmeasured gap', () => {
+      const s = describeSkippedRetriage({ ...base, tip: base.candidate });
+      expect(s).toContain('IS the tip');
+      expect(s).toContain('nothing newer');
+    });
+
+    it('distinguishes an UNWIRED test runner from a genuinely un-runnable failure set', () => {
+      const s = describeSkippedRetriage({
+        ...base,
+        failingFiles: [{ workspace: '@papercusp/operator-core', file: 'lib/a.test.ts' }],
+        hasTestRunner: false,
+      });
+      expect(s).toContain('no tip test-runner is wired');
+      expect(s).toContain('NOT measured');
+    });
+
+    it('names the unwired GATE runner separately (the lint/typecheck sibling path)', () => {
+      const s = describeSkippedRetriage({ ...base, gateIds: ['lint:tsc'], hasGateRunner: false });
+      expect(s).toContain('no tip gate-runner is wired');
+      expect(s).toContain('lint:tsc');
+    });
+
+    it('⭐ the residual case — failures existed but none was re-runnable — NAMES them and refuses to imply the red is real', () => {
+      // This is the shape that produced WI-7290 itself: a cargo task and a workspace-level
+      // failure, neither of which resolves to a {workspace,file} pair nor to a known gate id.
+      const s = describeSkippedRetriage({
+        ...base,
+        failingTests: ['@papercusp/operator-core', '@papercusp/desktop'],
+      });
+      expect(s).toContain('@papercusp/desktop');
+      expect(s).toContain('no failing entry resolved to a {workspace,file} pair');
+      expect(s).toContain('may or may not still reproduce');
+      // The load-bearing negative: it must never assert the red is current.
+      expect(s).not.toMatch(/real red|genuinely broken|reproduces at tip/i);
+    });
+
+    it('is TOTAL — every skip path yields a non-empty sentence, never an empty string', () => {
+      const variants = [
+        { ...base, tip: null },
+        { ...base, tip: base.candidate },
+        { ...base, failingFiles: [{ workspace: 'w', file: 'f.test.ts' }], hasTestRunner: false },
+        { ...base, gateIds: ['lint:tsc'], hasGateRunner: false },
+        { ...base },
+        { ...base, failingTests: ['x'] },
+      ];
+      for (const v of variants) {
+        const s = describeSkippedRetriage(v);
+        expect(s.length).toBeGreaterThan(20);
+        expect(s).toContain('SKIPPED');
+      }
     });
   });
 

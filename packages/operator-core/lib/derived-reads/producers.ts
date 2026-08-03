@@ -584,7 +584,11 @@ registerDerivedRead({
 registerDerivedRead({
   key: 'learning.observations',
   ttlMs: 90_000,
-  producerVersion: 1,
+  // v2 (WI-7303): the mapper now OMITS null-valued keys (D-025) and resolves
+  // `sourceRole` from `payload.filedByRole` when `payload.sourceRole` is absent.
+  // The bump is load-bearing — without it the cached v1 snapshot keeps serving
+  // the old shape and the fix ships INERT (the WI-7275/7279 trap).
+  producerVersion: 2,
   scope: 'workspace',
   compute: async () => {
     const { computeLearningObservations } = await import('../sync-resolver/learning-observations-read');

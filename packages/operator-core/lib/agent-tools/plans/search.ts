@@ -279,7 +279,11 @@ export default defineTool({
       if (score > 0) {
         const omitted = Math.max(0, matches.length - MAX_MATCHES_PER_PLAN);
         hits.push({
-          plan: parsed.frontmatter.slug ?? parsed.slug,
+          // WI-7259 (sibling of WI-7246): `slug` here is already the canonical
+          // `row.planSlug` destructured above (line 205/209) — a snapshot's
+          // frontmatter.slug reads its PARENT's slug, so falling back to it
+          // would silently misattribute every snapshot hit to its parent.
+          plan: slug,
           score,
           matches: omitted > 0 ? matches.slice(0, MAX_MATCHES_PER_PLAN) : matches,
           ...(omitted > 0 ? { matches_omitted: omitted } : {}),

@@ -335,3 +335,25 @@ describe('state-on-create (EI-10897)', () => {
     expect(safeParse({ kind: 'bug', title: 'plain' }).success).toBe(true);
   });
 });
+
+describe('EI-19398967670466001: a SINGLE create hoists its id to the top level', () => {
+  it('exposes `id` at the top level so a create→complete chain can read it', async () => {
+    // The stranding bug: `const { id } = await work_items.create(...)` used to be undefined,
+    // so the second half of a scripted chain silently no-opped and left the item in wip.
+    const b = await body({ kind: 'bug', title: 'boom' });
+    expect(b.id).toBe('WI-boom');
+  });
+
+  it('is ADDITIVE — the results envelope is untouched', async () => {
+    const b = await body({ kind: 'bug', title: 'boom' });
+    expect(b.results[0]).toMatchObject({ ok: true, id: 'WI-boom', title: 'boom' });
+    expect(b.counts).toEqual({ ok: 1, failed: 0 });
+  });
+
+  it('hoists NOTHING for a genuine batch — a top-level id would be ambiguous there', async () => {
+    const b = await body({ items: [{ kind: 'bug', title: 'a' }, { kind: 'change', title: 'b' }] });
+    expect(b.id).toBeUndefined();
+    // …and the per-item ids are still the way to read a batch.
+    expect(b.results.map((r: { id: string }) => r.id)).toEqual(['WI-a', 'WI-b']);
+  });
+});

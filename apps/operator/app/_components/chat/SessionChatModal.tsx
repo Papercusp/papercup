@@ -235,17 +235,39 @@ function useIsNarrowViewport(query: string): boolean {
  * actual conversation not the panes to the left and belo, but it should also
  * include the chatbox for the user to enter in messages"
  *
- * Two modes, one rule. `window` grows the modal to the whole app WINDOW;
- * `screen` puts the conversation on the whole DISPLAY. In BOTH, what you see
- * is the transcript, the composer and the one-line status footer — the dossier
- * rail, the control band and the fleet row are out.
+ * Two modes. `window` grows the popup to the whole app WINDOW; `screen` puts it
+ * on the whole DISPLAY.
  *
- * D-003 (2026-08-02): `screen` needs TWO mechanisms.
+ * ── D-007 (2026-08-02) SUPERSEDES D-002: maximize now keeps EVERY zone ──────
+ * [owner 2026-08-02, verbatim] "lets actually make the left panel and right
+ * panel and bottom and top panel all show in both full screen views"
+ *
+ * This REVERSES the 2026-08-01 ask quoted above, on the owner's word. Maximize
+ * used to mean "the conversation, alone"; it now means "the whole popup,
+ * bigger" — Orders on the left, Activity on the right, the action band and the
+ * fleet row below, the status band on top, all present in both modes.
+ *
+ * D-002's mechanism is what had to change to deliver that, not just a set of
+ * `!maximized` gates. It made the excluded set STRUCTURAL by pointing
+ * `requestFullscreen()` at the conversation REGION: the browser paints that
+ * element's subtree and nothing else, so the panels — its SIBLINGS — could not
+ * appear however the layout was written. Keeping them therefore required moving
+ * the fullscreen target UP, to the popup container that holds all of them
+ * (`popupRef` / `session-chat-modal`).
+ *
+ * D-002's good half is preserved, just at the new boundary: the target is still
+ * ONE element and the rule is still "everything inside it, nothing outside it",
+ * so a pane added later is included by construction, with no hide-list — the
+ * inclusion is structural in exactly the way the exclusion used to be. The
+ * panels stay SIBLINGS of the conversation region (P-015's own guard asserts
+ * that, and it still holds); what changed is which ancestor gets painted.
+ *
+ * ── D-006 (2026-08-02): `screen` needs TWO mechanisms ───────────────────────
  * [owner 2026-08-02, verbatim] "both fullscreen buttons do the same thing. one
  * of them is supposed to full screen on the full desktop display not just the
  * window."
- *   - BROWSER — `requestFullscreen()` on the conversation region. The UA takes
- *     the OS window fullscreen and paints that element on it.
+ *   - BROWSER — `requestFullscreen()` on the popup container. The UA takes the
+ *     OS window fullscreen and paints that element on it.
  *   - DESKTOP (Tauri) — drive the WINDOW (`setFullscreen`) and let the same
  *     maximized layout fill it.
  * The desktop split is NOT because the webview swallows a DOM request — it was
@@ -255,23 +277,15 @@ function useIsNarrowViewport(query: string): boolean {
  * behavior. A control that degrades into its neighbour reads as a duplicate,
  * which is what was reported. The window path has no gesture requirement, so a
  * deep link and an agent-driven `ui:dispatch` reach the display too.
- *
- * D-002: the excluded set is defined STRUCTURALLY, by the DOM, and never as a
- * list of things to hide. `screen` calls requestFullscreen() on the
- * conversation REGION element, so the browser itself decides what fills the
- * screen: everything inside that element, nothing outside it. `window` mirrors
- * the same boundary in layout. The payoff is the deck's deferred Phase-2 left
- * Orders panel — the "panes to the left" of the ask — which will mount as a
- * sibling of that region and is therefore already excluded, with no edit here
- * and no chance of someone forgetting to add it to a hide-list.
  */
 const CHAT_MAX_MODES = ['window', 'screen'] as const;
 type ChatMaxMode = (typeof CHAT_MAX_MODES)[number];
 
-/** The toolbar lives INSIDE the conversation region, not beside it. It has to:
- *  in real fullscreen only that element is painted, so a toolbar mounted as its
- *  sibling would be invisible at exactly the moment the user needs the control
- *  that gets them back out. */
+/** The toolbar lives INSIDE the conversation region, pinned to its top-right.
+ *  Since D-007 the fullscreen target is the popup container (which contains the
+ *  conversation, so this rides along either way) — but the placement still has
+ *  to keep the EXIT control on screen in every mode, which is why it is anchored
+ *  to a region that is always painted rather than to popup chrome that is not. */
 const CHAT_TOOLBAR_STYLE: React.CSSProperties = {
   position: 'absolute',
   top: 8,
@@ -289,8 +303,9 @@ const CHAT_TOOLBAR_STYLE: React.CSSProperties = {
  *  Activity right — so the control points at the thing it moves instead of both
  *  living in one right-hand pile where the left panel's button read as belonging
  *  to the right one. Same absolute-positioning contract as the right cluster
- *  (both are children of the conversation region, so both are inside what
- *  maximize paints — which is why both are gated on `!maximized`). */
+ *  (both are children of the conversation region, so both ride along wherever it
+ *  goes — including inside a maximized popup, which since D-007 keeps every
+ *  panel, and therefore needs every panel's toggle). */
 const CHAT_TOOLBAR_LEFT_STYLE: React.CSSProperties = {
   position: 'absolute',
   top: 8,
@@ -1143,7 +1158,16 @@ export default function SessionChatModal({
      popup's state (nuqs-by-default) so it is deep-linkable and reachable from
      ui:get_state / ui:dispatch. Absent ⇒ the normal centred popup. */
   const [chatMax, setChatMax] = useQueryState('chatMax', parseAsStringLiteral(CHAT_MAX_MODES));
+  /* Focus target (`onOpenAutoFocus`) and the scroll container the reader came
+     for. NOT the fullscreen target — see popupRef. */
   const conversationRef = useRef<HTMLDivElement | null>(null);
+  /* D-007 — THE fullscreen target: the popup container that holds every zone
+     (Orders | conversation + action band + fleet row | Activity). The browser
+     paints exactly this element's subtree, so pointing it here is what makes
+     "all four panels show in full screen" true structurally rather than by a
+     list of things to keep. Pointing it back at the conversation region would
+     silently drop all four again, layout gates notwithstanding. */
+  const popupRef = useRef<HTMLDivElement | null>(null);
 
   /* Whether something is ACTUALLY painting our region on the whole display,
      which is not the same question as `chatMax === 'screen'` and must not be

@@ -1717,6 +1717,55 @@ export function classifyRedAgainstTip(input: {
 }
 
 /**
+ * WI-7290: why did the tip re-verification NOT run for this red?
+ *
+ * The re-triage above is the gate's ONLY direct measurement of "is this red still true of the
+ * tree" — it re-runs the exact failing files at tip. When it doesn't run, the durable record
+ * previously carried NOTHING about it, and an absent `retriage` field is indistinguishable from
+ * "it ran and the red genuinely reproduces". Those two readings demand OPPOSITE responses (go
+ * fix the named files vs. the gate never checked, so check yourself), and the ambiguity is not
+ * hypothetical: on the night of 2026-08-02 three separate filings — WI-7290, EI-19388705187359206
+ * (filed MAJOR against the file parser, then retracted after a hand-built probe disproved it) and
+ * EI-19389700122825304 — each reconstructed this fact from raw logs, two of them wrongly.
+ *
+ * So state the reason instead of leaving a hole. Pure + total: every skip path gets a sentence a
+ * reader can act on, and the caller records it as an `unknown` classification (which is exactly
+ * what `RedTriage.unknown` already means: "could not localize ⇒ treat as real").
+ */
+export function describeSkippedRetriage(input: {
+  candidate: string;
+  tip: string | null;
+  failingFiles: readonly FailingFile[];
+  gateIds: readonly string[];
+  failingTests: readonly string[];
+  hasTestRunner: boolean;
+  hasGateRunner: boolean;
+}): string {
+  const { candidate, tip, failingFiles, gateIds, failingTests } = input;
+  if (!tip) {
+    return 'tip re-run SKIPPED: the integration tip could not be resolved, so there is no newer commit to re-test against — this red was never checked for staleness.';
+  }
+  if (tip === candidate) {
+    return `tip re-run SKIPPED: the judged candidate ${candidate.slice(0, 8)} IS the tip — there is nothing newer that could have fixed it, so the red is current by construction.`;
+  }
+  if (failingFiles.length > 0 && !input.hasTestRunner) {
+    return `tip re-run SKIPPED: ${failingFiles.length} failing file(s) were located, but no tip test-runner is wired on this run — staleness was NOT measured.`;
+  }
+  if (gateIds.length > 0 && !input.hasGateRunner) {
+    return `tip re-run SKIPPED: ${gateIds.length} non-test gate(s) failed (${gateIds.slice(0, 5).join(', ')}), but no tip gate-runner is wired on this run — staleness was NOT measured.`;
+  }
+  // The residual case, and the one worth naming precisely: we had failures but could turn none of
+  // them into something re-runnable. A cargo/desktop task and a worker-pool crash both land here.
+  return (
+    `tip re-run SKIPPED: none of the ${failingTests.length} failing entr${failingTests.length === 1 ? 'y' : 'ies'} ` +
+    `could be turned into something re-runnable at tip ${tip.slice(0, 8)} — no failing entry resolved to a ` +
+    `{workspace,file} pair, and none is a known non-test gate id` +
+    (failingTests.length ? ` (${failingTests.slice(0, 5).join(', ')})` : '') +
+    '. Staleness was NOT measured: this red may or may not still reproduce.'
+  );
+}
+
+/**
  * The `real-red` verdict's prose — and, when the diagnostic split ran, the ANSWER instead of
  * the homework.
  *
@@ -3724,6 +3773,9 @@ export async function runGreenCheckpoint(
     writeCheckpointRunPhase(checkpointRunLockDir(cfg.checkpointLogDir, cfg.integrationRoot), 'delivering');
     const tip = await deps.resolveTip?.().catch(() => null) ?? null;
     let retriage: (RedTriage & { tip: string | null }) | undefined;
+    // WI-7290: hoisted out of the else-arm below so the skip-reason synthesis after this
+    // if/else can name WHICH non-test gates (if any) were in play.
+    let gateIds: string[] = [];
     // Re-running needs a workspace per file (the cwd for `npm run test --workspace`), so a
     // red we could name but not LOCATE stays a plain red rather than a silent no-op.
     if (tip && tip !== candidate && failingFiles.length > 0 && deps.runTestsAtRef) {
@@ -3786,7 +3838,7 @@ export async function runGreenCheckpoint(
       // straight past the file-based rescue with nothing to re-run and was held red
       // even once a peer's fix landed. When `failingTests` names ONLY known gate ids,
       // re-verify them by re-running just those script(s) at tip.
-      const gateIds = failingFiles.length === 0 ? nonTestGateIdsFrom(failingTests) : [];
+      gateIds = failingFiles.length === 0 ? nonTestGateIdsFrom(failingTests) : [];
       if (tip && tip !== candidate && gateIds.length > 0 && deps.runGateAtRef) {
         deps.log(`red at ${candidate.slice(0, 8)}; re-running ${gateIds.length} non-test gate(s) at tip ${tip.slice(0, 8)}: ${gateIds.join(', ')}`);
         const tipRun = await deps.runGateAtRef(tip, gateIds).catch((e: unknown) => {
@@ -3828,6 +3880,34 @@ export async function runGreenCheckpoint(
           return runGreenCheckpoint(cfg, deps, { ...opts, candidate: tip, ...next });
         }
       }
+    }
+
+    // WI-7290: make the re-triage verdict TOTAL on the not-green path. Reaching here with
+    // `retriage` still undefined means neither rescue arm ran at all (the refiring arms return
+    // above), and the durable record used to say nothing whatsoever about that — leaving "the
+    // gate re-ran these files at tip and they still fail" and "the gate never looked"
+    // indistinguishable to every downstream reader. They are opposite findings. `unknown` is
+    // already the classifier's word for "could not localize ⇒ treat as real", so this changes no
+    // decision anywhere (the only two consumers branch on `=== 'stale-candidate'`) — it only
+    // stops the record from being silent about what was never measured.
+    if (!retriage) {
+      retriage = {
+        classification: 'unknown',
+        autoRefire: false,
+        chargeRefire: false,
+        refireBlockedBy: null,
+        tip,
+        detail: describeSkippedRetriage({
+          candidate,
+          tip,
+          failingFiles,
+          gateIds,
+          failingTests: failingTests ?? [],
+          hasTestRunner: Boolean(deps.runTestsAtRef),
+          hasGateRunner: Boolean(deps.runGateAtRef),
+        }),
+      };
+      deps.log(`re-triage: ${retriage.classification} — ${retriage.detail}`);
     }
 
     // P-016 (D-010): longest-green-PREFIX FF. With the gate ARMED, a red TIP no longer

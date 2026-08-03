@@ -3041,12 +3041,20 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       const all = await readAllPlans({ harnessSlug: dirs.harnessSlug, workspaceId: dirs.workspaceId });
 
       const rows: unknown[] = [];
-      for (const { parsed, archived } of all) {
+      for (const { parsed, archived, row } of all) {
         if (archived) continue;
         if (parsed.isLegacy) continue;
-        if (parsed.frontmatter.status !== 'draft') continue;
+        // WI-7259 (sibling of WI-7246's coord.plans fix): a scheduled-run
+        // snapshot copies its parent plan's body verbatim, frontmatter
+        // included, so `parsed.frontmatter.status`/`.slug` read the PARENT's
+        // identity/lifecycle for every snapshot. Filter + identify on the
+        // canonical row instead — this branch was previously "armed but not
+        // firing" only because the one plan family with run-snapshots
+        // happened to inherit a non-draft status, not because the filter was
+        // correct.
+        if (row.status !== 'draft') continue;
 
-        const slug = parsed.frontmatter.slug ?? parsed.slug;
+        const slug = row.planSlug;
         const itemCount = parsed.items.length;
         // Source tag: slug prefixed with 'scoper-proposal-' → 'scoper'; else 'user'.
         const source = slug.startsWith('scoper-proposal-') ? 'scoper' : 'user';
@@ -3059,8 +3067,10 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
           nowNext: parsed.now?.next ?? null,
           itemCount,
           source,
-          created: parsed.frontmatter.created ?? null,
-          updated: parsed.frontmatter.updated ?? null,
+          // Canonical-first, same as WI-7246's `updated` fix on coord.plans —
+          // frontmatter fallback preserved for a row where the column is null.
+          created: row.created ?? parsed.frontmatter.created ?? null,
+          updated: row.updated ?? parsed.frontmatter.updated ?? null,
         });
       }
 

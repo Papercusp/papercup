@@ -275,7 +275,11 @@ export async function buildPlanContextBundle(
   }
 
   const title = parsed.frontmatter.title ?? slug;
-  const status = parsed.frontmatter.status ?? null;
+  // WI-7259 (sibling of WI-7246): canonical-first — a scheduled-run snapshot
+  // copies its parent plan's body verbatim, frontmatter included, so
+  // `parsed.frontmatter.status` reads the PARENT's lifecycle for every
+  // snapshot. `title` stays frontmatter-first (display text, not identity).
+  const status = row.status ?? parsed.frontmatter.status ?? null;
   const text = assemblePlanContextBundleText({
     title,
     slug,

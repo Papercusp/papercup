@@ -172,6 +172,8 @@ beforeAll(async () => {
       '690-agent-facts-depends-on-kind-claim.sql',
       '692-agent-facts-convention-enforcement.sql',
       '693-agent-facts-federation-stamp-regime.sql',
+      '722-agent-facts-evicted-at.sql',
+      '730-agent-facts-undecidable-kind.sql',
     ],
     { label: 'ambient-acceptance-drills.integration.test.ts' },
   );

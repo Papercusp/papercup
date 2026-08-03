@@ -49,9 +49,26 @@
  * running — unit state LAUNDERS this residue.
  */
 
-import { parseCgroupProcs, type CgroupFs } from './cgroup-read';
-import { isTerminalWindowScope } from './scope-class';
+import { parseCgroupProcs, CGROUP_ROOT, type CgroupFs } from './cgroup-read';
+import { isTerminalWindowScope, TERMINAL_SLICE } from './scope-class';
 import { readTerminalAppPids, terminalWindowAlive } from './terminal-window';
+
+/**
+ * Absolute cgroup dir of the terminal application slice, derived from the user
+ * manager root the scan already computes (`deriveUserManagerRoot`).
+ *
+ * Returns null when there is no user manager root (a container, a system-slice
+ * deployment) — the caller then has nothing to census, which is the honest
+ * degradation rather than a guessed path.
+ */
+export function resolveTerminalSliceAbs(
+  userManagerRoot: string | null,
+  cgroupRoot: string = CGROUP_ROOT,
+): string | null {
+  if (!userManagerRoot) return null;
+  const rel = userManagerRoot.replace(/^\/+/, '');
+  return `${cgroupRoot}/${rel}/app.slice/${TERMINAL_SLICE}`;
+}
 
 /** One scope observed to have no live window. */
 export interface DeadWindowScope {
@@ -122,6 +139,44 @@ export function censusTerminalResidue(terminalSliceAbs: string, fs: CgroupFs): R
 export interface ResidueSample {
   atMs: number;
   scopesDead: number;
+}
+
+export interface AppendSampleOptions {
+  /** Drop samples older than this. Default matches the trend lookback. */
+  retainMs?: number;
+  /** Hard cap on ring length, so a fast cadence can never bloat the row. */
+  maxSamples?: number;
+}
+
+const DEFAULT_RETAIN_MS = 21 * 24 * 60 * 60_000;
+const DEFAULT_MAX_SAMPLES = 400;
+
+/**
+ * PURE: append one sample and prune the ring.
+ *
+ * Kept separate from the store so the retention rule is unit-testable without a
+ * database. Prunes by AGE first, then by count — age is the semantic rule (the
+ * trend needs a multi-week lookback), and the count cap is only a bound on how
+ * badly a misconfigured cadence can bloat one jsonb row.
+ *
+ * Retention is deliberately LONGER than the trend's lookback: a comparison window
+ * whose oldest sample is the same age as the retention cut has nothing stable to
+ * compare against.
+ */
+export function appendResidueSample(
+  ring: readonly ResidueSample[],
+  sample: ResidueSample,
+  opts: AppendSampleOptions = {},
+): ResidueSample[] {
+  const retainMs = opts.retainMs ?? DEFAULT_RETAIN_MS;
+  const maxSamples = opts.maxSamples ?? DEFAULT_MAX_SAMPLES;
+
+  const cutoff = sample.atMs - retainMs;
+  const kept = [...ring, sample]
+    .filter((s) => s.atMs >= cutoff)
+    .sort((a, b) => a.atMs - b.atMs);
+
+  return kept.length > maxSamples ? kept.slice(kept.length - maxSamples) : kept;
 }
 
 export type ResidueTrend = 'rising' | 'steady' | 'falling' | 'unknown';

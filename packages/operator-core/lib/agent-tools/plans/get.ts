@@ -394,7 +394,12 @@ export default defineTool({
             const decoratedNow = await decoratePlanNowBlock(parsed.now);
             // `meta`: frontmatter + ## Now + counts + section index. Never the body.
             const base = {
-              slug: parsed.frontmatter.slug ?? parsed.slug,
+              // WI-7259 (sibling of WI-7246): a scheduled-run snapshot copies its
+              // parent plan's body verbatim, frontmatter included — so
+              // `parsed.frontmatter.slug` reads the PARENT's slug for every
+              // snapshot. `row.planSlug` is the column this row was looked up
+              // BY, so it is always the slug actually requested.
+              slug: row.planSlug,
               harness: row.harnessSlug,
               archived,
               legacy: false as const,

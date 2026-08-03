@@ -69,7 +69,7 @@ export default defineTool({
         isError: true,
       };
     }
-    const { parsed, archived } = result;
+    const { parsed, archived, row } = result;
     ctxAny.metadata?.({
       surface: 'cross_harness',
       harness_slug: args.harnessSlug,
@@ -105,7 +105,11 @@ export default defineTool({
           type: 'text' as const,
           text: JSON.stringify({
             harnessSlug: args.harnessSlug,
-            slug: parsed.frontmatter.slug ?? parsed.slug,
+            // WI-7259 (sibling of WI-7246): a scheduled-run snapshot copies its
+            // parent plan's body verbatim, frontmatter included — so
+            // `parsed.frontmatter.slug` reads the PARENT's slug for every
+            // snapshot. `row.planSlug` is the column this row was looked up BY.
+            slug: row.planSlug,
             archived,
             legacy: false,
             frontmatter: parsed.frontmatter,

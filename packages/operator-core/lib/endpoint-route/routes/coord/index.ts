@@ -301,8 +301,13 @@ const planBySlug = defineTool({
     }
     return Response.json({
       slug,
+      // Canonical-first for STATUS (WI-7259, sibling of the /coord/plans list
+      // fix, WI-7246): a scheduled-run snapshot copies its parent plan's body
+      // verbatim, frontmatter included, so `found.parsed.frontmatter.status`
+      // reads the PARENT's lifecycle for every snapshot. `title` deliberately
+      // stays frontmatter-first — it is display text, not identity (WI-7246).
       title: found.parsed.frontmatter.title ?? slug,
-      status: found.parsed.frontmatter.status ?? 'unknown',
+      status: found.row.status ?? found.parsed.frontmatter.status ?? 'unknown',
       archived: found.archived,
       markdown,
     });
