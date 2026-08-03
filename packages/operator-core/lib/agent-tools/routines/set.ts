@@ -116,6 +116,13 @@ export default defineTool({
       .describe(
         'REQUIRED when pausing (active:false) — why. Persisted durably as metadata.pause { reason, pausedBy, pausedAtMs } (EI-18654017982759582: a routine paused during an incident with no reason/owner recorded has TWICE stayed silently paused for days — 2026-06-18, then ~4 days 2026-07-21→25 — because nothing durable said WHO paused it or WHY, so a responder could not tell a stuck bug from a deliberate hold). Ignored (but harmless) when resuming (active:true) or when active is unset.',
       ),
+    reviewBy: z
+      .string()
+      .datetime()
+      .optional()
+      .describe(
+        'Only meaningful alongside active:false, for an ALWAYS-ON singleton learning loop (change-ledger / scout / iq-battery). An ISO timestamp persisted as metadata.pause.reviewBy — the DARK_FLAGS_REVIEW_BY analog for a deliberate pause (EI-19370236916382521). While it is in the future, the learning-loop-health sweep treats the pause as EXPLICITLY RE-AFFIRMED and stops daily-re-escalating it (`improvements:capture`-ing a fresh EI every 24h) — the "re-affirm it explicitly rather than letting this alarm re-fire silently" remedy that sweep\'s own health read asks for. Pass this whenever you are pausing (or re-pausing to re-affirm) one of those loops on purpose, with a date you intend to actually re-review it by — omitting it on a deliberate pause just means the alarm keeps re-firing until someone either resumes the loop or comes back and sets one.',
+      ),
     dryRun: z.boolean().optional(),
   }),
   async handler(args, ctx) {
@@ -226,6 +233,11 @@ export default defineTool({
               reason: args.reason,
               pausedBy: pausedByFrom(ctx, ctx.role),
               pausedAtMs: Date.now(),
+              // EI-19370236916382521: omit the key entirely rather than storing `undefined` —
+              // a present-but-undefined key would round-trip through JSON.stringify as if it
+              // were never set, which is harmless, but an explicit omission keeps the stored
+              // shape honest (no `reviewBy` key at all on a plain, non-reaffirmed pause).
+              ...(args.reviewBy !== undefined ? { reviewBy: args.reviewBy } : {}),
             };
           } else if (args.active === true && prev.metadata.pause) {
             metadata.lastPause = { ...(prev.metadata.pause as Record<string, unknown>), resumedAtMs: Date.now() };

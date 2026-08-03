@@ -181,7 +181,14 @@ export interface AgentMessageRow {
   ts: string;
   last_reply_ts: string | null;
   /** Absent on an ordinary message — only a send that actually authored these
-   *  carries the block, so a plain message renders exactly as it always did. */
+   *  carries the block, so a plain message renders exactly as it always did.
+   *
+   *  ⚠ WI-7240 — DETAIL ONLY. `conversations.agentMessageList` deliberately does
+   *  NOT ship this field: it was 43.90% of that payload (188,386 B / 100 rows)
+   *  and both `<AuthoredFields>` render sites read their row from
+   *  `conversations.agentMessageDetail`. If you need it in a LIST row, fetch the
+   *  detail read for that message rather than putting it back on the list — the
+   *  server-side projection is shared, so the block is always identical. */
   authored?: AuthoredMessageFields;
 }
 

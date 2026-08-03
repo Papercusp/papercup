@@ -954,7 +954,7 @@ export async function composeOrient(
   // every wake for no reason — it already has them from an earlier full orient).
   if (!monitor)
     try {
-      const { foldFacts, renderFactSrc, factCitationRef } = await import('../../../agent-facts/store');
+      const { foldFacts } = await import('../../../agent-facts/store');
       const selectors = [
         { scope: 'workspace' as const },
         ...(ownerId ? [{ scope: 'owner' as const, scopeRef: ownerId }] : []),
@@ -1037,49 +1037,16 @@ export async function composeOrient(
             changedCells = new Set();
           }
         }
-        result.facts = withDeps.map((f) => ({
-          scope: f.scope,
-          ref: f.scopeRef,
-          body: f.body,
-          // P-007: provenance-hydrated src — a verified typed sourceRef renders its
-          // platform-captured verbatim quote (`msg:x ✓ "…"`); an unresolvable one
-          // renders LOUDLY (`✗unverified`); free-text anchors pass through as before.
-          src: renderFactSrc(f) || null,
-          ...(f.audienceScope ? { aud: f.audienceScope } : {}),
-          ...(f.sourceStale ? { stale: f.sourceStale } : {}),
-          // P-008 (b): kept DISTINCT from `stale` above. `stale` is a hint (the
-          // anchoring work-item closed); `dependsStale` is a mechanical verdict
-          // on a dependency the fact's own author declared.
-          ...(f.depsStale ? { dependsStale: f.depsStale } : {}),
-          // P-006 read side (WI-7236): this key is contested, or was already settled as
-          // UNDECIDABLE by someone else. DISTINCT from both markers above — those say the
-          // ground under this fact moved; this says other agents wrote a DIFFERENT answer
-          // to the same question, so read it as one party's answer rather than settled.
-          // Emitted ONLY when contested, so an ordinary fold stays byte-identical.
-          ...(f.contested ? { contested: f.contested } : {}),
-          // P-018: the MODALITY, which this projection dropped — so a normative
-          // convention arrived here byte-identical to a settled conclusion, at
-          // the one surface every agent reads every wake. Same whitelist defect
-          // P-033 (e) found in `toAgentMessageRow`: the field was stored and the
-          // reader simply never selected it.
-          //
-          // Emitted ONLY when declared, so the common case (a legacy fact with
-          // no kind) stays byte-identical and this costs the fold nothing.
-          ...(f.kind ? { kind: f.kind } : {}),
-          // P-008 (c) / D-012: asserted or superseded since this caller last
-          // oriented. Emitted ONLY when true, so an unchanged fold — and every
-          // bootstrap read, which marks nothing — stays byte-identical to before.
-          ...(changedCells.has(`${f.scope} ${f.scopeRef ?? ''} ${f.key}`) ? { changed: true as const } : {}),
-          ...(f.kind === 'convention'
-            ? {
-                // D-016's tier — and `cite`, the ref to pass verbatim as a
-                // `premises` entry at the point of action (D-075 R1). Without it
-                // the fold could name a convention it gave you no way to cite.
-                ...(f.enforcement ? { enforcement: f.enforcement } : {}),
-                cite: factCitationRef(f),
-              }
-            : {}),
-        }));
+        // EI-19390161700979033: the projection was an inline field WHITELIST here, and a
+        // marker that forgot to add itself to it was dropped SILENTLY — no error, no type
+        // failure (conditional spreads check neither excess nor missing properties). That
+        // landed three times (P-033 e, P-018 `kind`, WI-7236 `contested`). It now lives in
+        // projectFactRow, whose FACT_MARKER_FIELDS inventory a completeness test walks, so
+        // the next omission fails loudly instead of costing an agent the field.
+        const { projectFactRow } = await import('../../facts/project-fact-row');
+        result.facts = withDeps.map((f) =>
+          projectFactRow(f, { changed: changedCells.has(`${f.scope} ${f.scopeRef ?? ''} ${f.key}`) }),
+        );
       }
       if (withheld.length > 0) {
         result.factsWithheld = { count: withheld.length, reason: QUEEN_LOOP_WITHHELD_REASON };

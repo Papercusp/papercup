@@ -47,7 +47,12 @@ export function selectLearningLoopsNeedingEscalation(
 ): LearningLoopHealth[] {
   return rows.filter(
     (r) =>
-      r.status === 'should-be-on-but-dark' ||
+      // EI-19370236916382521: `pauseAcknowledged` means a human already re-affirmed this
+      // exact pause via `routines:set { active:false, reviewBy }` — the "re-affirm it
+      // explicitly rather than letting this alarm re-fire silently" remedy this sweep's own
+      // `describeLoop` text asks for. Escalating it again anyway is exactly the silent daily
+      // re-fire the ticket that added this sweep (EI-19281872822982156) was trying to stop.
+      (r.status === 'should-be-on-but-dark' && !r.pauseAcknowledged) ||
       r.status === 'stale' ||
       (r.status === 'absent' && r.expectedMaterialized) ||
       r.collision,

@@ -200,6 +200,14 @@ export function computeLearningLoopHealth(
       }
     }
 
+    // EI-19370236916382521: only meaningful for `should-be-on-but-dark` — a re-affirmed
+    // pause whose review window is still ahead. Computed from the winning row (singleton
+    // preferred, same as `active`/`lastFiredAt` above) so a legacy-row reviewBy is honored
+    // too until the migration retires it.
+    const reviewByIso = status === 'should-be-on-but-dark' ? (row?.pauseReviewBy ?? null) : null;
+    const reviewByMs = reviewByIso ? Date.parse(reviewByIso) : NaN;
+    const pauseAcknowledged = !Number.isNaN(reviewByMs) && reviewByMs > opts.nowMs;
+
     return {
       blueprintId: loop.blueprintId,
       alwaysOn,
@@ -212,6 +220,7 @@ export function computeLearningLoopHealth(
       activityLastAt,
       daysSinceActivity,
       activitySource: activity?.source ?? null,
+      pauseAcknowledged,
       status,
       expectedMaterialized: opts.expectedMaterialized?.(loop.blueprintId) ?? true,
     };
@@ -257,6 +266,9 @@ export function computeActivityLaneHealth(
     daysSinceActivity,
     activitySource: lane.source,
     status,
+    // A routine-less lane never carries a routine `pause` at all — reviewBy is
+    // therefore never applicable, so this lane can never read as acknowledged.
+    pauseAcknowledged: false,
     // A routine-less lane has no cadence row BY DESIGN (D-001: no su daemon), so it can
     // never be "never materialized" — it never classifies as `absent` either way.
     expectedMaterialized: false,
@@ -302,7 +314,11 @@ export function summarizeLearningLoopHealth(rows: readonly LearningLoopHealth[])
   const needsAttention = rows
     .filter(
       (r) =>
-        r.status === 'should-be-on-but-dark' ||
+        // EI-19370236916382521: a `should-be-on-but-dark` loop whose pause was explicitly
+        // RE-AFFIRMED (pauseAcknowledged) is a resolved alarm, not an outstanding one — it
+        // stays visible on the health read (status is unchanged) but drops out of the set
+        // that pages/escalates, which is the whole point of re-affirming over resuming.
+        (r.status === 'should-be-on-but-dark' && !r.pauseAcknowledged) ||
         r.status === 'stale' ||
         (r.status === 'absent' && r.expectedMaterialized) ||
         r.collision,

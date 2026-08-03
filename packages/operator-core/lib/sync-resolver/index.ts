@@ -168,7 +168,15 @@ const asStrArray = (v: unknown): string[] =>
  * conversations/unified-conversations.ts). The jsonb envelope stays server-side:
  * shipping raw `body` would make every client re-derive these fields and drift.
  */
-function toAgentMessageRow(row: Record<string, unknown>): Record<string, unknown> {
+export function toAgentMessageRow(
+  row: Record<string, unknown>,
+  // WI-7240: `includeAuthored` defaults to TRUE so the detail path — and any
+  // future caller — keeps the complete row. Note a bare `.map(toAgentMessageRow)`
+  // hands the ARRAY INDEX in as `opts`; reading `opts?.includeAuthored` off a
+  // number yields undefined, so that mistake degrades to the full row (the safe
+  // direction) rather than silently dropping a field.
+  opts?: { includeAuthored?: boolean },
+): Record<string, unknown> {
   const body = (row.body ?? {}) as CoordEnvelopeBody;
   const to = asStrArray(body.to);
   // P-033 (e): this projection is a WHITELIST, so the authored message fields — which
@@ -179,7 +187,15 @@ function toAgentMessageRow(row: Record<string, unknown>): Record<string, unknown
   //
   // ⚠ Pass the envelope (`body`), NOT `body.extra` — see projectAuthoredFields. This
   // read `body.extra` until 2026-08-02 and so never surfaced a single authored field.
-  const authored = projectAuthoredFields(body);
+  //
+  // WI-7240: computed only when the caller wants it. This mapper is SHARED by
+  // `conversations.agentMessageList` and `.agentMessageDetail`, so the P-033 fix
+  // above — which targeted the DETAIL views — put the block on the LIST too, where
+  // it was 188,386 B (43.90%) that nothing reads: BOTH `<AuthoredFields>` render
+  // sites (AdvConversationsTab.tsx:2406, ConversationsTab.tsx:687) take their row
+  // from the DETAIL query. Parameterised rather than forked so the two shapes
+  // cannot drift apart.
+  const authored = opts?.includeAuthored === false ? undefined : projectAuthoredFields(body);
   return {
     msg_id: row.msg_id as string,
     kind: asStr(body.kind) ?? '',
@@ -6056,7 +6072,13 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
                       AND COALESCE(c.body ->> 'from', '') ~* ${AGENT_SESSION_ID_HEX_RUN}))
              AND (${harness ?? null}::text IS NULL OR c.harness_slug = ${harness ?? null})`,
       ]);
-      return attachListMeta(rows.map(toAgentMessageRow), { total: totalRows[0]?.n ?? rows.length });
+      // WI-7240: the LIST omits `authored` — only the detail views render it, and it
+      // was 43.90% of this payload. `conversations.agentMessageDetail` still carries
+      // it in full, via this same mapper.
+      return attachListMeta(
+        rows.map((r) => toAgentMessageRow(r, { includeAuthored: false })),
+        { total: totalRows[0]?.n ?? rows.length },
+      );
     },
   },
   'conversations.agentMessageDetail': {

@@ -142,6 +142,23 @@ export default function HudView({ workspaceId = null }: { workspaceId?: string |
      so without a timestamp the route anchors on the LAST match rather than the
      one whose excerpt is on the card you clicked. */
   const [openFocusTs, setOpenFocusTs] = useQueryState('hudfocusts', parseAsString);
+  /* The SEARCH TERM that produced the hit, snapshotted at click time.
+     Sent to the transcript route as `find`.
+
+     It has to be the short user term and NOT the excerpt text, and that is a
+     correction from measurement rather than a preference: `find` is matched by
+     `entryMatches` with a plain case-insensitive `includes` against the RAW
+     entry text, while the excerpt comes from `ts_headline`, which reflows the
+     source — every hard newline arrives as a single space. So a long excerpt
+     substring essentially never matches the raw entry, the collector finds
+     nothing, and the route falls back to the tail while the stream still
+     reports an anchor. Measured live 2026-08-02: passing the excerpt as `find`
+     anchored on message 0, which did NOT contain the matched text.
+
+     Snapshotted rather than read live off `hudsq` so that editing the search
+     box while the modal is open cannot silently re-stream the transcript
+     underneath it. */
+  const [openFocusQ, setOpenFocusQ] = useQueryState('hudfocusq', parseAsString);
   // WI-6367: which session THIS view just launched, and when. Deliberately
   // useState, not nuqs: it is mid-flight lifecycle state, not user-meaningful
   // (a shared/reloaded URL must not claim a session is "starting up" — by then
@@ -672,6 +689,11 @@ export default function HudView({ workspaceId = null }: { workspaceId?: string |
      for. */
   const searchHitsRef = useRef(searchHits);
   searchHitsRef.current = searchHits;
+  // Same latest-ref reason as `searchHitsRef`: the term is read at CLICK time,
+  // and taking it as a dep would change the callback identity on every
+  // keystroke and re-render every card.
+  const queryRef = useRef(sessionQuery);
+  queryRef.current = sessionQuery;
   const onOpenSession = useCallback(
     (ownerId: string) => {
       void setOpenOwner(ownerId);
@@ -680,8 +702,9 @@ export default function HudView({ workspaceId = null }: { workspaceId?: string |
       const hit = searchHitsRef.current?.get(ownerId) ?? null;
       void setOpenFocus(searchHitAnchor(hit));
       void setOpenFocusTs(hit?.ts ?? null);
+      void setOpenFocusQ(hit ? (queryRef.current.trim() || null) : null);
     },
-    [setOpenOwner, setOpenFocus, setOpenFocusTs],
+    [setOpenOwner, setOpenFocus, setOpenFocusTs, setOpenFocusQ],
   );
 
   const entityView =
@@ -789,6 +812,7 @@ export default function HudView({ workspaceId = null }: { workspaceId?: string |
         pendingLaunch={pendingLaunch}
         focusAnchor={openFocus}
         focusAnchorTs={openFocusTs}
+        focusTerm={openFocusQ}
         onClose={() => {
           // WI-6367: the launch context is only meaningful for the modal it
           // opened — drop it on close so reopening the same session later
@@ -798,6 +822,7 @@ export default function HudView({ workspaceId = null }: { workspaceId?: string |
           void setOpenOwner(null);
           void setOpenFocus(null);
           void setOpenFocusTs(null);
+          void setOpenFocusQ(null);
         }}
       />
       {/* P-002: the Plans / Work items tabs' destination. Mounted here (not in

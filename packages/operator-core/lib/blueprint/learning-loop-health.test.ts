@@ -178,6 +178,40 @@ describe('computeLearningLoopHealth — per-loop routine verdict', () => {
     const [scout] = computeLearningLoopHealth([LOOPS[1]], [sRow('scout', { active: false })], { nowMs: NOW });
     expect(scout.status).toBe('should-be-on-but-dark');
     expect(scout.alwaysOn).toBe(true);
+    expect(scout.pauseAcknowledged).toBe(false);
+  });
+
+  // EI-19370236916382521 — a re-affirmed pause (routines:set { active:false, reviewBy })
+  // stays `should-be-on-but-dark` (the state is still true — the loop IS dark) but is
+  // marked acknowledged so an escalation sweep can skip it without needing a new status.
+  it('an inactive ALWAYS-ON loop with a FUTURE pauseReviewBy is pauseAcknowledged (re-affirmed, not a silent gap)', () => {
+    const [scout] = computeLearningLoopHealth(
+      [LOOPS[1]],
+      [sRow('scout', { active: false, pauseReviewBy: daysAgo(-30) })], // 30 days in the future
+      { nowMs: NOW },
+    );
+    expect(scout.status).toBe('should-be-on-but-dark');
+    expect(scout.pauseAcknowledged).toBe(true);
+  });
+
+  it('an inactive ALWAYS-ON loop with a PAST pauseReviewBy is NOT acknowledged (the review window lapsed)', () => {
+    const [scout] = computeLearningLoopHealth(
+      [LOOPS[1]],
+      [sRow('scout', { active: false, pauseReviewBy: daysAgo(1) })], // 1 day in the past
+      { nowMs: NOW },
+    );
+    expect(scout.status).toBe('should-be-on-but-dark');
+    expect(scout.pauseAcknowledged).toBe(false);
+  });
+
+  it('pauseReviewBy on an ACTIVE (firing) row never marks it acknowledged — only should-be-on-but-dark can be', () => {
+    const [scout] = computeLearningLoopHealth(
+      [LOOPS[1]],
+      [sRow('scout', { active: true, lastFiredAt: daysAgo(0), pauseReviewBy: daysAgo(-30) })],
+      { nowMs: NOW },
+    );
+    expect(scout.status).toBe('firing');
+    expect(scout.pauseAcknowledged).toBe(false);
   });
 
   it('a loop with no routine row at all is "absent"', () => {
@@ -271,6 +305,21 @@ describe('summarizeLearningLoopHealth — rollup + needs-attention partition', (
     expect(s.darkByDesign).toBe(1);
     expect(s.shouldBeOnButDark).toBe(1);
     expect(s.needsAttention).toEqual(['scout']); // dark-by-design is NOT flagged; the always-on gap IS
+  });
+
+  // EI-19370236916382521
+  it('a RE-AFFIRMED should-be-on-but-dark loop still counts in shouldBeOnButDark but drops out of needsAttention', () => {
+    const rows = computeLearningLoopHealth(
+      LOOPS,
+      [
+        sRow('calibration', { active: false, lastFiredAt: null }), // dark-by-design (frontier)
+        sRow('scout', { active: false, pauseReviewBy: daysAgo(-30) }), // re-affirmed, 30d out
+      ],
+      { nowMs: NOW },
+    );
+    const s = summarizeLearningLoopHealth(rows);
+    expect(s.shouldBeOnButDark).toBe(1); // the state is still real — status is unchanged
+    expect(s.needsAttention).toEqual([]); // but it no longer needs a fresh look
   });
 });
 

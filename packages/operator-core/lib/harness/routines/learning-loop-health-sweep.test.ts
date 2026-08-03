@@ -33,6 +33,7 @@ function loop(over: Partial<LearningLoopHealth>): LearningLoopHealth {
     activitySource: null,
     status: 'firing',
     expectedMaterialized: true,
+    pauseAcknowledged: false,
     ...over,
   };
 }
@@ -56,6 +57,22 @@ describe('selectLearningLoopsNeedingEscalation (EI-19281872822982156)', () => {
   it('an absent-but-NOT-expected loop (platform-mode-off gate) is NOT selected', () => {
     const rows = [loop({ blueprintId: 'memory-precision', status: 'absent', expectedMaterialized: false })];
     expect(selectLearningLoopsNeedingEscalation(rows)).toEqual([]);
+  });
+
+  // EI-19370236916382521 — the "re-affirm it explicitly rather than letting this alarm
+  // re-fire silently" remedy: a should-be-on-but-dark loop whose pause was acknowledged
+  // (routines:set { active:false, reviewBy }, still in its window) drops out of selection.
+  it('a RE-AFFIRMED should-be-on-but-dark loop (pauseAcknowledged) is NOT selected', () => {
+    const rows = [loop({ blueprintId: 'iq-battery', status: 'should-be-on-but-dark', pauseAcknowledged: true })];
+    expect(selectLearningLoopsNeedingEscalation(rows)).toEqual([]);
+  });
+
+  it('an UNACKNOWLEDGED should-be-on-but-dark loop is still selected even when others nearby are acknowledged', () => {
+    const rows = [
+      loop({ blueprintId: 'iq-battery', status: 'should-be-on-but-dark', pauseAcknowledged: true }),
+      loop({ blueprintId: 'scout', status: 'should-be-on-but-dark', pauseAcknowledged: false }),
+    ];
+    expect(selectLearningLoopsNeedingEscalation(rows).map((r) => r.blueprintId)).toEqual(['scout']);
   });
 
   it('a collision (both @singleton and legacy rows exist) is selected regardless of status', () => {
@@ -134,6 +151,17 @@ describe('learningLoopHealthSweep (EI-19281872822982156, defect 2)', () => {
     const results = await learningLoopHealthSweep();
 
     expect(results[0]).toMatchObject({ blueprintId: 'red-queen', status: 'collision', outcome: 'escalated' });
+  });
+
+  it('a RE-AFFIRMED should-be-on-but-dark loop (pauseAcknowledged) is never captured — no daily re-fire', async () => {
+    vi.mocked(readLearningLoopHealth).mockResolvedValue([
+      loop({ blueprintId: 'iq-battery', status: 'should-be-on-but-dark', pauseAcknowledged: true }),
+    ]);
+
+    const results = await learningLoopHealthSweep();
+
+    expect(results).toEqual([]);
+    expect(captureImprovement).not.toHaveBeenCalled();
   });
 
   it('a healthy loop set escalates nothing', async () => {

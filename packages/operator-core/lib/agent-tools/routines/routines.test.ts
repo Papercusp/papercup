@@ -437,6 +437,51 @@ describe('routines:set', () => {
     expect(written.gate_health).toEqual({ lastGreenAt: 123 });
   });
 
+  // EI-19370236916382521: the DARK_FLAGS_REVIEW_BY analog for a deliberately-paused
+  // always-on learning loop — "re-affirm it explicitly rather than letting this alarm
+  // re-fire silently" needs somewhere durable to land.
+  it('persists metadata.pause.reviewBy when passed alongside active:false', async () => {
+    sqlMock.mockResolvedValue([
+      { trigger_config: { cron: '0 20 6 1 * *' }, active: true, next_fire_at: null, metadata: {} },
+    ]);
+    const b = body(
+      await setTool.handler(
+        {
+          name: 'bp-singleton-iq-battery-0',
+          installSlug: '@singleton',
+          active: false,
+          reason: 're-affirmed: deliberate owner pause, part of a broader Agents-pane sweep',
+          reviewBy: '2026-11-01T00:00:00.000Z',
+        } as never,
+        { role: 'operator', ownerId: 'su-test-1' } as never,
+      ),
+    );
+    expect(b).toMatchObject({ ok: true, applied: true });
+    const wrote = sqlMock.mock.calls.flat().find((v) => typeof v === 'string' && v.includes('"pause"')) as string;
+    const written = JSON.parse(wrote);
+    expect(written.pause).toMatchObject({
+      reason: 're-affirmed: deliberate owner pause, part of a broader Agents-pane sweep',
+      pausedBy: 'su-test-1',
+      reviewBy: '2026-11-01T00:00:00.000Z',
+    });
+  });
+
+  it('omits reviewBy from metadata.pause entirely when not passed — a plain pause stays a plain pause', async () => {
+    sqlMock.mockResolvedValue([
+      { trigger_config: { cron: '0 */10 * * * *' }, active: true, next_fire_at: null, metadata: {} },
+    ]);
+    const b = body(
+      await setTool.handler(
+        { name: 'release-trigger', active: false, reason: 'pausing for incident triage' } as never,
+        { role: 'operator', ownerId: 'su-test-1' } as never,
+      ),
+    );
+    expect(b).toMatchObject({ ok: true, applied: true });
+    const wrote = sqlMock.mock.calls.flat().find((v) => typeof v === 'string' && v.includes('"pause"')) as string;
+    const written = JSON.parse(wrote);
+    expect('reviewBy' in written.pause).toBe(false);
+  });
+
   it('moves metadata.pause to lastPause on resume (active:true)', async () => {
     sqlMock.mockResolvedValue([
       {

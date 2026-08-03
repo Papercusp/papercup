@@ -691,6 +691,7 @@ function LiveSessionChat({
   sending,
   sendError,
   focusAnchor,
+  focusTerm,
 }: {
   streamUrl: string;
   /** The su agent this session belongs to — resolves its roster entry for the
@@ -704,6 +705,9 @@ function LiveSessionChat({
    *  opening at the tail — the HUD search result's matched turn (owner ask
    *  2026-08-02). Null/absent keeps the pre-existing tail behavior. */
   focusAnchor?: string | null;
+  /** The search term — used to CORROBORATE the stream's anchor before
+   *  trusting it (see the `focusIndex` memo below). */
+  focusTerm?: string | null;
 }) {
   const { events, status, thinking, anchor } = useAgentThinkingStream('', '', '', streamUrl);
 
@@ -747,8 +751,25 @@ function LiveSessionChat({
      deep-link, or a match outside the window it returned). */
   const focusIndex = useMemo(() => {
     if (!anchor?.found || anchor.index == null) return -1;
-    return mapped.messageIndexForEntryIndex(anchor.index);
-  }, [anchor, mapped]);
+    const idx = mapped.messageIndexForEntryIndex(anchor.index);
+    if (idx < 0) return -1;
+    /* CORROBORATE before trusting it. `anchor.found` alone is not enough: when
+       `find` matches nothing the route still answers with a window and an
+       anchor, so an unverified index reads as a confident answer and scrolls
+       to a turn that has nothing to do with the search. Measured live
+       2026-08-02 — it anchored message 0 of 8, which did not contain the
+       matched text.
+
+       The term is short and came from the user, so requiring the focused
+       message to actually contain it is a cheap, decisive check. Failing it
+       returns -1, which hands the decision to the text-anchor fallback rather
+       than to a wrong scroll. A missing term means nothing to corroborate
+       against, so the anchor stands on its own. */
+    const term = (focusTerm ?? '').trim().toLowerCase();
+    if (!term) return idx;
+    const content = (mapped.messages[idx]?.content ?? '').toLowerCase();
+    return content.includes(term) ? idx : -1;
+  }, [anchor, mapped, focusTerm]);
 
   // D-004: the chip is READ-ONLY (no click handler) — a plain span, only for
   // the assistant's own turns. Declining (null) on a USER turn is what hands
@@ -837,6 +858,7 @@ export default function SessionChatModal({
   pendingLaunch = null,
   focusAnchor = null,
   focusAnchorTs = null,
+  focusTerm = null,
 }: {
   /** The inbox item's ownerAgentId — null hides the modal. */
   sessionOwnerId: string | null;
@@ -862,6 +884,11 @@ export default function SessionChatModal({
    *  the term — the search's own ordering is newest-first, so without it a
    *  session with many matches opens on the wrong one. */
   focusAnchorTs?: string | null;
+  /** The SEARCH TERM, sent as the route's `find`. Must be the short user term,
+   *  not the excerpt: `find` is matched with a plain substring test against the
+   *  raw entry text, and the excerpt is `ts_headline` output whose whitespace
+   *  has been reflowed, so it almost never matches (measured 2026-08-02). */
+  focusTerm?: string | null;
 }) {
   const [resolved, setResolved] = useState<SessionListRow | null>(null);
   const [resolveError, setResolveError] = useState<string | null>(null);
@@ -941,10 +968,10 @@ export default function SessionChatModal({
 
        Both are omitted when there is no deep-link, which leaves every
        non-search open on the unchanged tail backfill. */
-    if (focusAnchor) p.set('find', focusAnchor);
+    if (focusTerm) p.set('find', focusTerm);
     if (focusAnchorTs) p.set('anchorTs', focusAnchorTs);
     return `/api/adv/session/thinking?${p.toString()}`;
-  }, [sessionOwnerId, resolved, focusAnchor, focusAnchorTs]);
+  }, [sessionOwnerId, resolved, focusTerm, focusAnchorTs]);
 
   const handleSend = (text: string) => {
     if (!sessionOwnerId) return;
@@ -1646,6 +1673,7 @@ export default function SessionChatModal({
             sending={sending}
             sendError={sendError}
             focusAnchor={focusAnchor}
+            focusTerm={focusTerm}
           />
         ) : null}
         {/* P-002: say what ACTUALLY happened. "Staged" is the case this fixes —
