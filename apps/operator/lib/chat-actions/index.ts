@@ -44,11 +44,20 @@ export type {
 // "remove the grade session button next to focus window, we dont need it if we
 // have the grade on off toggle right above it".
 //
-// What went with it: the rubric CHOICE. The pill turns grade mode on without
+// What went with it: the rubric CHOICE. The pill turned grade mode on without
 // naming a rubric, and the rubric only ever rode in mode:set's free-text
-// `reason`, never as structured state. To give the choice back, the right shape
-// is the GRADE pill itself offering one option per active rubric (Off + each
-// rubric) rather than a second button — blocked today only because
-// ChatModeAction.options() is synchronous while `rubrics.list` is fetched.
+// `reason`, never as structured state.
+//
+// RESOLVED 2026-08-03 (WI-7471) — [owner] "I want the rubric picker back, add
+// that to the grade on/off toggle." The choice is back, in the shape this note
+// predicted: the GRADE pill itself now offers Off + one row per active rubric
+// (PostureActions' own `mode-grade` registration, no longer one of the
+// boolean overlays). The blocker this note recorded is gone too —
+// `ChatModeAction.options()` may now return a promise, and ChatActionBar
+// resolves it lazily on menu open, so the fetch costs nothing on a popup where
+// nobody opens GRADE.
+//
+// So there is still deliberately no `GradeAction` module: the rubric picker
+// exists, it just is not a second button.
 import './PostureActions';
 import './SessionActions';

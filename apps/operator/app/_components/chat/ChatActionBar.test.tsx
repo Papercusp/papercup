@@ -321,6 +321,81 @@ describe('ChatActionBar', () => {
       fireEvent.pointerUp(trigger, { button: 0, ctrlKey: false, pointerType: 'mouse' });
     };
 
+    /* ── WI-7471: an axis may resolve its options ASYNCHRONOUSLY.
+       [owner 2026-08-03] "I want the rubric picker back, add that to the grade
+       on/off toggle" — GRADE's rows are one per active rubric, which has to be
+       fetched. The three cases below pin the contract that makes that safe. ── */
+    describe('async options() — fetched lazily, on open', () => {
+      it('does NOT call options() while merely rendering the pill', () => {
+        const options = vi.fn(async () => [{ id: 'off', label: 'Off' }]);
+        registerChatModeAction(axis({ id: 'grade', cap: 'GRADE', options }));
+        render(<ChatActionBar ctx={ctx} />);
+        // This is the whole justification for allowing async at all: a popup
+        // where nobody opens GRADE must cost no rubrics.list read. An eager
+        // resolve would still render correctly and silently reintroduce the
+        // per-screen query WI-6617 is removing.
+        expect(options).not.toHaveBeenCalled();
+      });
+
+      it('resolves on open, renders the resolved rows, and picking one reaches set()', async () => {
+        const set = vi.fn();
+        const options = vi.fn(async () => [
+          { id: 'off', label: 'Off' },
+          { id: 'hive-coordination-health', label: 'Hive coordination health' },
+        ]);
+        registerChatModeAction(axis({ id: 'grade', cap: 'GRADE', options, set }));
+        render(<ChatActionBar ctx={ctx} />);
+
+        openPill('chat-mode-grade');
+        const row = await screen.findByRole('option', { name: /hive coordination health/i });
+        fireEvent.click(row);
+        await waitFor(() => expect(set).toHaveBeenCalledWith(ctx, 'hive-coordination-health'));
+        // The confirmation reads off the RESOLVED cache, so it names the row
+        // rather than echoing a raw id back at the user.
+        await waitFor(() =>
+          expect(screen.getByTestId('chat-action-bar-done').textContent).toMatch(
+            /GRADE → Hive coordination health/,
+          ),
+        );
+        // Resolved once and cached — reopening must not re-fetch.
+        expect(options).toHaveBeenCalledTimes(1);
+      });
+
+      /* A failing options() must surface an ERROR, not leave the menu on its
+         loading row — the WI-6552 failure shape (rubrics.list queueing behind a
+         page's other queries and never resolving OR rejecting), which reads as
+         a feature that simply does not work.
+
+         This drives the bar's CATCH with a rejection rather than a hang: the
+         25s bound that converts a hang into that rejection is already covered
+         directly, on `withTimeout` itself, earlier in this file. Splitting it
+         that way keeps this case free of fake timers, which here fight Radix's
+         own open/close timers rather than testing the bar. */
+      it('a failing options() surfaces the error instead of a menu stuck on "Loading…"', async () => {
+        // The bar warns on this path deliberately, and the suite fails on an
+        // unmocked console.warn — so assert the warn rather than silencing it,
+        // which keeps the diagnostic itself covered.
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        try {
+          const options = vi.fn(async () => {
+            throw new Error('GRADE could not load its options in time — try again.');
+          });
+          registerChatModeAction(axis({ id: 'grade', cap: 'GRADE', options }));
+          render(<ChatActionBar ctx={ctx} />);
+          openPill('chat-mode-grade');
+          await waitFor(() =>
+            expect(screen.getByRole('alert').textContent).toMatch(/could not load its options/i),
+          );
+          expect(warn).toHaveBeenCalledWith(
+            expect.stringContaining('options failed'),
+            expect.anything(),
+          );
+        } finally {
+          warn.mockRestore();
+        }
+      });
+    });
+
     it('opening the pill and picking applies the choice through the descriptor’s own set()', async () => {
       const set = vi.fn();
       registerChatModeAction(axis({ set }));

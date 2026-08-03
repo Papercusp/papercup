@@ -65,10 +65,6 @@ function mockFetch(operators: ReturnType<typeof op>[], pipeline?: unknown) {
         json: async () => ({ ok: true, operators, selfPort: operators.find((o) => o.isSelf)?.port ?? null }),
       } as unknown as Response;
     }
-    if (u.includes('/api/desktop/git-pipeline')) {
-      // Stats endpoint (ported from the native bar). Default: no stats unless a test supplies them.
-      return { ok: true, status: 200, json: async () => pipeline ?? {} } as unknown as Response;
-    }
     throw new Error(`unexpected fetch ${u}`);
   });
   globalThis.fetch = fetchMock as unknown as typeof fetch;
@@ -114,10 +110,13 @@ describe('EnvSwitcherBar', () => {
   });
 
   it('hidden ONLY when the dev-operators endpoint is absent (non-desktop / no env data)', async () => {
+    // No pipeline data either — stats are decorative and must not resurrect the bar.
+    mockPipelineResult = {
+      data: [], loading: false, fetching: false, error: null, invalidate: vi.fn(), transport: 'POLL',
+    };
     const fetchMock = vi.fn(async (url: string) => {
       const u = String(url);
       if (u.includes('/api/desktop/dev-operators')) return { ok: false, status: 404, json: async () => ({}) } as unknown as Response;
-      if (u.includes('/api/desktop/git-pipeline')) return { ok: false, status: 404, json: async () => ({}) } as unknown as Response;
       throw new Error(`unexpected fetch ${u}`);
     });
     globalThis.fetch = fetchMock as unknown as typeof fetch;

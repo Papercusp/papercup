@@ -2362,6 +2362,39 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
+  // workItems.depEdges — the EDGE half of the Work-tab dependency graph pane
+  // (dependency-health-pane-2026-08-02 P-003). Deliberately edges ONLY: the graph's
+  // NODES are the rows `workItems.byHarness` already ships, because the owner asked
+  // for "the same data as our work items list view but in graph form" and a second
+  // node query would drift from the list's. Endpoint resolution is FAMILY-AWARE
+  // (feature refs are harness-qualified, issue refs bare) — matching one form only
+  // is the D-017 inert-edge defect. See the module header for the full rationale.
+  // Invalidated via the harness_shared.work_item_deps bridge added in
+  // table-to-query-names.ts (there was none before this query existed).
+  'workItems.depEdges': {
+    backingTables: ['harness_shared.work_item_deps', 'harness_shared.work_items'],
+    argsSchema: z.object({
+      harnessSlug: z.string().min(1),
+      // CLAMPED in the resolver, not `.max()`-rejected here — same reason as
+      // byHarness above: a newer client asking for more than an older deployed
+      // resolver allows must degrade, not break the panel.
+      limit: z.number().int().positive().optional(),
+    }),
+    resolve: async (args) => {
+      const { harnessSlug, limit } = args as { harnessSlug: string; limit?: number };
+      const [{ getOrgPg }, { activeWorkspaceId }, { resolveDependencyGraphEdges }] = await Promise.all([
+        import('@papercusp/db-org'),
+        import('../workspace-registry'),
+        import('./dependency-graph-edges'),
+      ]);
+      return await resolveDependencyGraphEdges(getOrgPg().sql, {
+        workspaceId: activeWorkspaceId(),
+        harnessSlug,
+        limit,
+      });
+    },
+  },
+
   // workItems.stats — the tiny kind × state COUNT aggregate for dashboard/stat
   // tiles (WI-5517, owner ask 2026-07-19: "how many items, how many are bugs vs
   // other"). One GROUP BY over the unified base table instead of shipping the

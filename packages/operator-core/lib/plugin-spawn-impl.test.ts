@@ -194,13 +194,28 @@ describe('pluginSpawnImpl — PATH augmentation (the `spawn npx ENOENT` fix)', (
   // preflight-binaries.ts's own omp probe already knew about it — confirmed
   // live: every cup:spawn via papercup-dev-api failed exit 127 until this was
   // added (WI-4944 investigation).
+  // Both bun tests below MUST pin PATH. augmentedSpawnPath() splices the
+  // ambient `process.env.PATH` into its result, so on any machine that already
+  // exports ~/.bun/bin (i.e. every box with bun installed — including this dev
+  // host) the inherited PATH satisfies these assertions no matter what the
+  // injection list does. Left unpinned they fail in BOTH directions and neither
+  // failure is about the code: the "unset" case is a FALSE GREEN (it would pass
+  // with the ~/.bun/bin entry deleted from `extra`, so the exit-127 recurrence
+  // guard guards nothing), and the "preferred" case is a FALSE RED (it failed
+  // on this box 2026-08-03 purely because ~/.bun/bin was on the ambient PATH).
+  // Pinning to a directory that appears in neither PATH nor `extra` makes each
+  // assertion measure the injection list, which is the thing under test.
+  const NEUTRAL_PATH = join('/opt', 'no-such-dir', 'bin');
+
   it("includes ~/.bun/bin (where `omp`'s bun global install lands) when BUN_INSTALL is unset", () => {
+    vi.stubEnv('PATH', NEUTRAL_PATH);
     vi.stubEnv('BUN_INSTALL', '');
     const dirs = augmentedSpawnPath().split(delimiter);
     expect(dirs).toContain(join(process.env.HOME ?? '', '.bun/bin'));
   });
 
   it('prefers $BUN_INSTALL/bin over the ~/.bun/bin default when BUN_INSTALL is set', () => {
+    vi.stubEnv('PATH', NEUTRAL_PATH);
     vi.stubEnv('BUN_INSTALL', '/custom/bun-install');
     const dirs = augmentedSpawnPath().split(delimiter);
     expect(dirs).toContain(join('/custom/bun-install', 'bin'));

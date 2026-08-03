@@ -364,6 +364,11 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
     // to any member busts the whole hive rollup (the rollup is hive-grained).
     'featuresConsolidated.byHive',
     'workItems.byHarness',
+    // dependency-health-pane P-003: the graph pane's edge query resolves BOTH
+    // endpoints against work_items, so a STATUS flip (a blocker going terminal)
+    // or a rename changes what an edge MEANS even though work_item_deps itself
+    // did not change. Bridged here as well as on work_item_deps for that reason.
+    'workItems.depEdges',
     // P-006: the single-item on-demand detail read — bridged wherever byHarness is
     // so an open Detail pane live-refreshes on the same writes (state, blockers,
     // spine, plan-link) that move the list row.
@@ -388,6 +393,15 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
     'scorecards.list',
     'rubrics.trend',
   ],
+
+  // dependency-health-pane P-003 — the FIRST bridge this table has ever had.
+  // `work_item_deps` carries the blocks-graph the Work-tab dependency pane renders,
+  // and until this entry existed an edge write (link, unlink, promotion sync,
+  // backfill) invalidated NOTHING: the pane would have gone stale until an
+  // unrelated work_items write happened to bust its sibling query. Every writer
+  // reaches this table through syncWorkItemDepEdges / the mirror path, so one
+  // coarse entry covers them all.
+  'harness_shared.work_item_deps': ['workItems.depEdges'],
   // Compat view over work_items (post-374) — see the work_items producer above.
   'harness_shared.harness_features_consolidated': [
     'featuresConsolidated.bySlug',

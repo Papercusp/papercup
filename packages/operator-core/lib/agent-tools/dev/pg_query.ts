@@ -46,7 +46,7 @@ export default defineTool({
   name: 'dev:pg_query',
   profile: 'engineer',
   description:
-    'Run a read-only SELECT / WITH…SELECT against the operator Postgres (the canonical store behind plans, work-items, issues, tool_invocations, scorecards, …), or pass `describe` to inspect a relation\'s columns/indexes/constraints (psql `\\d` equivalent). Read-only enforced; 5s statement_timeout; rows capped. `timeoutMs` bounds the WHOLE call (connect + acquire + execute) — a hung acquire (pool exhaustion, or a mid-call operator restart) fails fast with reason "call_timeout" rather than hanging. bigint/int8 columns (e.g. queryid) come back as exact-precision STRINGS, never rounded.',
+    'Run a read-only SELECT / WITH…SELECT against the operator Postgres (canonical store: plans, work-items, issues, tool_invocations, scorecards, …), or pass `describe` to inspect a relation\'s columns/indexes/constraints (psql `\\d` equivalent). Read-only enforced; 5s statement_timeout; rows capped. `timeoutMs` bounds the WHOLE call (connect + acquire + execute), so a hung acquire (pool exhaustion, mid-call operator restart) fails fast with reason "call_timeout". bigint/int8 columns (e.g. queryid) come back as exact-precision STRINGS, never rounded.',
   capability: 'intel:read',
   guidance: {
     when:

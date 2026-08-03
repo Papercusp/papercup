@@ -70,6 +70,7 @@ All multi-byte integers are **big-endian**.
 | `0x04` | ERROR       | Server → Client | UTF-8 JSON: `{ id, error: { code, message }}`|
 | `0x05` | EVENT_BIN   | Server → Client | Self-describing binary (see below)           |
 | `0x06` | CANCEL      | Client → Server | UTF-8 JSON: `{ id }`                         |
+| `0x07` | DATA        | Client → Server | Opaque binary for an open call (see below)   |
 
 ### `id` semantics
 
@@ -98,6 +99,38 @@ the reviewer flagged).
 - Remaining bytes (`length - 8 - 4 - nameLen`) are the raw binary payload.
 
 The 16 MiB frame cap caps binary events at ~16 MiB minus header overhead.
+
+### DATA payload layout
+
+Client → Server bytes for a call that is **already open**. With only REQUEST
+and CANCEL the channel is server-**streaming**: once a call is open the client
+can only abandon it, never feed it. DATA is what makes the channel full duplex,
+so a long-lived stream can ride it instead of holding a real socket.
+
+```
++-----------+-----------------------+
+| id (8B BE)| payload bytes (rest)  |
++-----------+-----------------------+
+```
+
+- `id`: u64 BE, matches the originating REQUEST. The server MUST route the
+  bytes to that in-flight call and MUST ignore a DATA frame whose `id` names no
+  open call (a late DATA racing a DONE is normal, not an error).
+- Remaining bytes (`length - 8`) are the raw payload, opaque to the transport.
+
+Thinner than EVENT_BIN on purpose: EVENT_BIN is self-describing because the
+server multiplexes *named* events onto one call, whereas DATA is an opaque byte
+run for one already-open call, so `id` is the only routing key needed. The tail
+carries no length prefix — the frame header's own length already bounds it, and
+duplicating that would create two sources of truth that can disagree.
+
+A **zero-byte tail is legal** and meaningful: it lets a sender signal
+end-of-stream without tearing the call down. Receivers MUST NOT treat
+`length == 8` as malformed.
+
+Ordering is per-connection and therefore per-call: the transport preserves the
+order of DATA frames sharing an `id`. It says nothing about interleaving across
+different `id`s.
 
 ## Lifecycle
 
