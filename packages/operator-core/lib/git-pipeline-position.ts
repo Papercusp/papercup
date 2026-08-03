@@ -38,6 +38,7 @@ import {
 import { cellUnknown, formatCellUnknown, type CellUnknown } from './cell-contract';
 import { describeRefireBudget } from './release/in-flight-retriage';
 import { dispatchedSweepMatcher } from './routines-dispatch-derivation';
+import { readGateOwnership, type CellOwnership } from './coord/gate-ownership';
 
 const pexec = promisify(execFile);
 
@@ -656,6 +657,19 @@ export interface PipelinePosition {
     /** WI-282: the green-checkpoint is WEDGED / not firing (visible even at 0 reds). */
     fireStale: boolean;
     fireStaleReason: string | null;
+    /**
+     * P-004 — WHO owns this gate incident (`green-stall:<harness>`): the singleton
+     * work-item, its explicit `claimState`, and the lease.
+     *
+     * OPTIONAL for the same reason as `checkpointRunInFlight` below: a required
+     * field here would strand every `PipelinePosition` fixture in the suite that
+     * has no opinion about ownership. An omitting caller reads as UNKNOWN.
+     *
+     * ⚠ Do NOT read `claimState: 'no-object'` as "the gate is healthy" — it means
+     * nobody owns the condition, which is equally true of a green gate and of a red
+     * one nobody has filed yet. Gate health is `consecutiveReds`/`verdictStale`.
+     */
+    ownership?: CellOwnership;
     /**
      * EI-18793581783459047: is a green-checkpoint SUITE run active RIGHT NOW — so a
      * caller about to launch a heavy local suite (test:affected, a multi-file
@@ -2182,6 +2196,13 @@ export interface PipelinePositionDeps {
    * is UNKNOWN, not evidence of a match or a mismatch.
    */
   readFileBytes?: (absPath: string) => Promise<Buffer | null>;
+  /**
+   * P-004: resolve WHO owns the gate's `green-stall:<harness>` condition. Injected
+   * by TESTS only — the default really queries Postgres, deliberately, for the same
+   * reason `readFileBytes` does: a null-by-default dep would ship the ownership
+   * block dark while looking implemented. Fail-soft to `no-object`, never throws.
+   */
+  readGateOwnership?: () => Promise<CellOwnership>;
 }
 
 /**
@@ -2990,6 +3011,12 @@ export async function gitPipelinePosition(
     candidateAgeMs: snap.gate.candidateAgeMs,
     commitsBehindTip: snap.gate.commitsBehindTip,
     observedCandidate: snap.gate.observedCandidate,
+    // P-004: WHO owns this red, so a reader can see the incident is already
+    // claimed before filing another work-item about it. One indexed SELECT,
+    // fail-soft to `no-object` — same cost/safety profile as checkpointRunInFlight.
+    // ⚠ `no-object` means "nobody owns it", NOT "the gate is fine" — gate health is
+    // consecutiveReds/verdictStale; ownership is orthogonal. See CellOwnership.
+    ownership: await (deps.readGateOwnership ?? readGateOwnership)(),
   };
   // EI-18793581783459047: surfaced as a NOTE (not folded into the tight one-line
   // `summary`, which is already densely tuned) so a caller about to launch a heavy

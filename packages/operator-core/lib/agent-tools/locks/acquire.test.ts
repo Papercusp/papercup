@@ -273,6 +273,61 @@ describe('locks:acquire — EI-19324204900062056 blocking-wait connection resili
   });
 });
 
+describe('locks:acquire — EI-19382183884861720: the two gaps EI-19324204900062056 missed (INSERT + the immediate post-insert re-check)', () => {
+  // Contention path so the tool proceeds past the fast-path to the wait
+  // subsystem (LISTEN + INSERT waiter + poll loop) — same setup as the
+  // EI-19324204900062056 suite above.
+  beforeEach(() => {
+    routeM.mockResolvedValue({ value: { ok: false, busy: [{ path: 'a.ts', owner: 'o2' }] } } as never);
+  });
+
+  it('a transient CONNECTION_CLOSED error on the IMMEDIATE post-insert re-check is swallowed — falls through to the wait loop instead of crashing the call', async () => {
+    insertM.mockResolvedValue({ ok: true, ticket_id: 'T-D', wait_until: new Date(Date.now() + 50) } as never);
+    // Immediate post-insert re-check (BEFORE the step 4-5 loop): connection drop.
+    statusM.mockRejectedValueOnce(connectionClosedError());
+    // Inside the loop the connection has reconnected — resolves normally.
+    pokeM.mockResolvedValue(undefined as never);
+    statusM.mockResolvedValueOnce({ status: 'waiting' } as never);
+    // Step 6 after the loop exits on wait_until elapsing.
+    expireM.mockResolvedValueOnce(undefined as never);
+    tryAcquireM.mockResolvedValueOnce({ ok: false, busy: [{ path: 'a.ts', owner: 'o2' }] } as never);
+
+    const b = body(await call({ wait: { max_sec: 1 } }));
+
+    // A normal timeout/busy result — NOT a thrown error, NOT wait_connection_unstable.
+    expect(b).toMatchObject({ ok: false, ticket_id: 'T-D', busy: [{ path: 'a.ts', owner: 'o2' }] });
+    expect(b.reason).not.toBe('wait_connection_unstable');
+  });
+
+  it('a NON-transient error on the immediate post-insert re-check still propagates (never masked)', async () => {
+    insertM.mockResolvedValue({ ok: true, ticket_id: 'T-E', wait_until: new Date(Date.now() + 50) } as never);
+    statusM.mockRejectedValueOnce(new Error('boom: not a connection error'));
+
+    await expect(call({ wait: { max_sec: 1 } })).rejects.toThrow('boom: not a connection error');
+  });
+
+  it('a transient CONNECTION_CLOSED error on the waiter INSERT (step 3) is retried once and the call proceeds normally', async () => {
+    insertM
+      .mockRejectedValueOnce(connectionClosedError())
+      .mockResolvedValueOnce({ ok: true, ticket_id: 'T-F', wait_until: new Date(Date.now() - 1000) } as never); // already elapsed → 0 loop iterations
+    statusM.mockResolvedValueOnce({ status: 'waiting' } as never);
+    expireM.mockResolvedValueOnce(undefined as never);
+    tryAcquireM.mockResolvedValueOnce({ ok: false, busy: [{ path: 'a.ts', owner: 'o2' }] } as never);
+
+    const b = body(await call({ wait: { max_sec: 1 } }));
+
+    expect(b).toMatchObject({ ok: false, ticket_id: 'T-F' });
+    expect(insertM).toHaveBeenCalledTimes(2);
+  });
+
+  it('a NON-transient error on the waiter INSERT propagates immediately, with no retry', async () => {
+    insertM.mockRejectedValueOnce(new Error('boom: not a connection error'));
+
+    await expect(call({ wait: { max_sec: 1 } })).rejects.toThrow('boom: not a connection error');
+    expect(insertM).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('locks:acquire — EI-9033 pending_edit (apply-on-grant) guardrails', () => {
   it('rejects pending_edit without wake_on_grant (it runs on the wake queue)', async () => {
     const b = body(await call({ pending_edit: { file: 'a.ts', old_string: 'X', new_string: 'Y' } }));

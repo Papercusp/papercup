@@ -224,7 +224,9 @@ export const GATE_VERDICT_CELL: CellSpec = {
   visibility: { kind: 'workspace' },
   federation: { kind: 'local' },
   changeSignal: { kind: 'poll', tool: 'dev:pipeline_position', path: 'gate.consecutiveReds' },
-  shape: '{ gate: { consecutiveReds, stalled, lastGreenAtMs, fireStale, fireStaleReason }, verdictUnknown[] }',
+  shape:
+    '{ gate: { consecutiveReds, stalled, lastGreenAtMs, fireStale, fireStaleReason, ' +
+    'ownership: { eventKey, workItem, claimState, takenBy, takenAt, expiresAt, duplicates[] } }, verdictUnknown[] }',
 };
 
 /**
@@ -316,7 +318,8 @@ export const GATE_CANDIDATE_CELL: CellSpec = {
   },
 
   shape:
-    '{ changeInCandidate: { judgingSha, judgingContainsPath, nextCandidateSha, nextContainsPath, missingReason, detail }, verdictUnknown[] }',
+    '{ changeInCandidate: { judgingSha, judgingContainsPath, nextCandidateSha, nextContainsPath, missingReason, detail }, ' +
+    'gate: { ownership: { eventKey, workItem, claimState, takenBy, takenAt, expiresAt, duplicates[] } }, verdictUnknown[] }',
 };
 
 /**

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { parseCheckpointCandidates } from '@papercusp/operator-core/lib/release-checkpoint-launch';
 import {
   CAPTURED_RESULT_MARKER_PLACEHOLDER,
   GREEN_CHECKPOINT_RESULT_MARKER,
@@ -175,20 +176,37 @@ describe('WI-7274: orchestrator narration cannot impersonate a verdict', () => {
   // away is untouched. Asserting the gap keeps "leg 1 landed" from being mistaken for "the
   // class is closed", and the day someone closes it this test fails and points at the reason.
 
-  it('⚠ KNOWN LIMIT: the prefix-blind candidate parser still harvests a sha from a tagged fixture', () => {
+  it('the candidate parser EXCLUDES a tagged fixture line and keeps BOTH real shapes', () => {
+    // EI-19395755190419540 — this was pinned here as a ⚠ KNOWN LIMIT: WI-7274 tagged the LINE
+    // but `parseCheckpointCandidates` had no anchor at all, so it still harvested `deadbeef`
+    // out of a line the emitter had already marked as a fixture. That corrupted the AUTOMATED
+    // answer to "which sha is the gate judging?" — the one CLAUDE.md sends every agent to.
+    //
+    // This now imports the REAL parser instead of restating its regex. The pinned version
+    // carried a verbatim COPY of the implementation, which is exactly why it could describe
+    // the limit precisely and still never notice if the real parser changed underneath it.
+    // A guard that re-implements its subject cannot detect drift in that subject.
     const taggedFixture = `${ORCHESTRATOR_STDOUT_TAG_UNDER_TEST} checkpointing candidate deadbeef (base cafe1234)`;
-    // release-checkpoint-launch.ts:343, verbatim — no anchor of any kind.
-    const parseCandidates = (text: string) =>
-      [...text.matchAll(/checkpointing candidate (\S+)/g)].map((m) => m[1]);
+    expect(parseCheckpointCandidates(taggedFixture)).toEqual([]);
 
-    // The missed case really IS bad: a fixture sha is returned as if it were this run's.
-    expect(parseCandidates(taggedFixture)).toEqual(['deadbeef']);
-
-    // And it CANNOT be fixed by anchoring positively on the production tag, because the
-    // persisted log's orchestrator transcript carries the same line UNPREFIXED — measured at
-    // line 3 of the 060ea000f206 log. Anchoring would break real candidate extraction.
+    // ⚠ The exclusion must stay NEGATIVE. It CANNOT be done by anchoring positively on the
+    // production tag, because the persisted log's orchestrator transcript carries the same
+    // line UNPREFIXED — measured at line 3 of the 060ea000f206 log. A positive anchor would
+    // silently zero extraction for the scheduler-fired runs that are the majority, and a zero
+    // reads as "no candidate found", not as "my regex is wrong". This assertion is what fails
+    // if someone later "simplifies" it that way.
     const realTranscriptLine = '2026-08-03T01:15:05.333Z checkpointing candidate 060ea000 (base 1e0ddc58)';
     expect(realTranscriptLine).not.toContain(ORCHESTRATOR_STDOUT_TAG);
-    expect(parseCandidates(realTranscriptLine)).toEqual(['060ea000']);
+    expect(parseCheckpointCandidates(realTranscriptLine)).toEqual(['060ea000']);
+
+    // The prefixed /tmp-manual shape keeps matching too — two real shapes, one parser.
+    const realStdoutLine = `${ORCHESTRATOR_STDOUT_TAG} checkpointing candidate 13d9c65d (base 1e0ddc58)`;
+    expect(parseCheckpointCandidates(realStdoutLine)).toEqual(['13d9c65d']);
+
+    // And the shape the gate actually persists: fixture interleaved with real. Only the real
+    // candidates come back, in emission order — which is what the LAST-match reader
+    // (EI-19327704778173646) depends on being true.
+    const mixedLog = [realTranscriptLine, taggedFixture, realStdoutLine].join('\n');
+    expect(parseCheckpointCandidates(mixedLog)).toEqual(['060ea000', '13d9c65d']);
   });
 });
