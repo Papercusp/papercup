@@ -155,6 +155,12 @@ describe('corpusQueryText — BANDED term selection (P-018 / D-064)', () => {
     expect(q).not.toContain('20c4f13019f25684');
     // …and it still picks the rarest of what IS attested.
     expect(q.split(' ')).toEqual(['draining', 'digest']);
+
+    // SELF-PROVING: the same fixture, band removed, really does select the
+    // unretrievable digest first. Without this line the assertions above would
+    // still pass if banding were deleted and some other mechanism happened to
+    // exclude the digest — a guard that cannot be shown to fail is vacuous.
+    expect(corpusQueryText(text, 2, { df, minDf: 0 }).split(' ')[0]).toBe('20c4f13019f25684');
   });
 
   it('falls back to LENGTH when every candidate is unattested — never worse than production', () => {

@@ -481,7 +481,7 @@ export function runBootstrap(): void {
     const armEnvOperators = setTimeout(() => {
       void (async () => {
         try {
-          const { launchEnvOperators } = await import(
+          const { launchEnvOperators, isTransientSkip } = await import(
             '@papercusp/operator-core/lib/harness/env-operator-launcher'
           );
           // [WI-3330] Launch the BUNDLED env operators (prod:3070/staging:3170/
@@ -492,8 +492,18 @@ export function runBootstrap(): void {
           // once the tree is extracted. launchEnvOperators skips already-reachable
           // operators, so the second call is idempotent for the bundled ones.
           const first = await launchEnvOperators();
+          // Envs skipped only because their source tree is still being unpacked — they are
+          // expected to spawn on pass 2. Naming them here (and CLOSING the deferral below,
+          // whichever way it resolves) is what stops pass 1 reading as a terminal verdict
+          // that dev/local are broken (EI-19442842364710969).
+          const deferredIds = first.skipped
+            .filter((s) => isTransientSkip(s.reason))
+            .map((s) => s.id);
           console.log(
-            `[env-operators] bundled pass: spawned=${first.spawned.length} skipped=${first.skipped.length}`,
+            `[env-operators] bundled pass (1/2): spawned=${first.spawned.length} skipped=${first.skipped.length}` +
+              (deferredIds.length
+                ? ` — ${deferredIds.join('+')} deferred to pass 2 (awaiting the source extract), NOT unavailable`
+                : ''),
           );
 
           // [WI-3308] First-boot: extract the bundled dev/local runnable source
@@ -525,7 +535,16 @@ export function runBootstrap(): void {
           if (devSourceRoot) {
             const second = await launchEnvOperators();
             console.log(
-              `[env-operators] source pass: spawned=${second.spawned.length} skipped=${second.skipped.length}`,
+              `[env-operators] source pass (2/2): spawned=${second.spawned.length} skipped=${second.skipped.length}`,
+            );
+          } else if (deferredIds.length) {
+            // CLOSE the deferral in the failure direction too. Without this the last word
+            // on dev/local is "deferred to pass 2" and pass 2 never runs — a promise the
+            // log never keeps, which is the same false-signal bug with the sign flipped.
+            console.log(
+              `[env-operators] source pass (2/2) SKIPPED — no source tree was produced, so ${deferredIds.join(
+                '+',
+              )} are unavailable for this boot (now terminal, not pending)`,
             );
           }
         } catch (e) {

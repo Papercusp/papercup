@@ -41,6 +41,7 @@ import {
   type CorpusHit,
   type CorpusLine,
 } from './corpus-recall';
+import { corpusTermDfLookup } from './corpus-term-df';
 
 /** The two registered sources this leg reads. Anything else in SEARCH_SOURCES
  *  (escalations, brainstorm, decisions, coord_message, operator turns) is out
@@ -170,6 +171,11 @@ export async function recallCorpusContext(
   // The engine ANDs every lexeme (plainto_tsquery) and the injected text is the
   // raw prompt envelope — median 1000 chars at turn-start — so the raw text
   // must NEVER reach the engine. See corpusQueryText for the measurements.
+  //
+  // Derived TWICE on purpose. This first pass is the length-ordered form, used
+  // only for the "nothing searchable at all" early-out below — it needs no
+  // database, so the cheap exit stays cheap. The BANDED form (P-018/D-064)
+  // needs a DF lookup and is derived inside the try, where `sql` exists.
   const queryText = corpusQueryText(rawText);
   if (!queryText) return EMPTY;
   if (!input.skipFlagCheck && !(await corpusRecallEnabled())) return EMPTY;
@@ -186,6 +192,13 @@ export async function recallCorpusContext(
     const { sql } = getOrgPg();
     const embedBudget = corpusEmbedBudgetMs();
     const run = (async () => {
+      // BANDED term selection (P-018 / D-064): pick the RAREST terms the corpus
+      // actually attests, instead of the two longest. `null` when no DF table
+      // has been built for this workspace yet — a real answer, not a failure:
+      // `corpusQueryText` then keeps its original length ordering, so an
+      // un-refreshed workspace behaves exactly as it did before.
+      const df = await corpusTermDfLookup(sql, input.workspaceId);
+      const effectiveQuery = df ? corpusQueryText(rawText, undefined, { df }) : queryText;
       const built = await buildQueryEmbedder({ acquireBudgetMs: embedBudget });
       // The cascade can run the engine TWICE on the same query text, and the
       // query vector depends only on that text — memoise so the second stage
@@ -198,7 +211,7 @@ export async function recallCorpusContext(
       const search = (lexicalMode: 'and' | 'coverage-graded') =>
         runHybridSearch(sources, {
           sql,
-          query: queryText,
+          query: effectiveQuery,
           workspaceId: input.workspaceId,
           // MUST stay null: 99.993% of session turns carry harness_slug IS NULL,
           // so a slug scopeFilter would make this leg structurally empty while
@@ -224,7 +237,11 @@ export async function recallCorpusContext(
       ) =>
         selectCorpusLines({
           hits,
-          queryText,
+          // MUST be the query the engine actually ran. `selectCorpusLines`
+          // applies a term-overlap guard, so judging hits against a query that
+          // was never issued would drop rows the banded query legitimately
+          // retrieved as `no-term-overlap`.
+          queryText: effectiveQuery,
           excludeSessionId: input.excludeSessionId ?? null,
           harnessSlugs: input.harnessSlugs ?? [],
           knownRefs: opts.knownRefs,

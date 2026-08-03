@@ -158,7 +158,18 @@ export async function extractDevSourceTree(
       await mkdir(targetDir, { recursive: true });
       const makeDecompress = opts.makeDecompress ?? (await defaultDecompress());
       const makeExtract = opts.makeExtract ?? (await defaultExtract(log));
-      log(`[dev-source] extracting ${archivePath} → ${targetDir} (${label}; ~2 min)`);
+      // ETA derived from the REAL archive size, not a constant. The old hardcoded "~2 min"
+      // was ~15x optimistic on a slow disk (measured ~2.9MB/s on mac-vm, ~30min for a 5.3G
+      // tree), so a healthy extract looked like a hang and argued for re-cutting a good
+      // bundle. Observed throughput spans ~3MB/s (loaded VM) to ~40MB/s (warm SSD) — quote
+      // the BAND and say what is unavailable meanwhile (EI-19442842364710969).
+      const archiveMB = Math.max(1, Math.round(archiveStat.size / 1_048_576));
+      const etaFastMin = Math.max(1, Math.round(archiveMB / 40 / 60));
+      const etaSlowMin = Math.max(etaFastMin + 1, Math.round(archiveMB / 3 / 60));
+      log(
+        `[dev-source] extracting ${archivePath} → ${targetDir} (${label}; ${archiveMB}MB compressed, ` +
+          `~${etaFastMin}-${etaSlowMin} min depending on disk — dev/local stay absent until it completes)`,
+      );
       await pipeline(createReadStream(archivePath), makeDecompress(), makeExtract(targetDir));
       if (!hasPapercupMarkers(targetDir)) {
         log(

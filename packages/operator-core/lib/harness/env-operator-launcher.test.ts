@@ -149,6 +149,10 @@ function fakeLaunchDeps(over: Partial<LaunchEnvOperatorsDeps> = {}): {
     readPrefs: () => ({ disabled: [] }),
     probe: async () => false, // nothing already up
     detectSourceRoot: () => '/src/papercup',
+    // Hermetic: the real default reads PAPERCUSP_SOURCE_ARCHIVE from the ambient env, so
+    // without this a developer machine with that var set would flip every source-less skip
+    // to 'source-tree-pending' and break unrelated assertions.
+    detectSourceArchivePending: () => false,
     hasToolchain: async () => true,
     // Never let a unit test fall through to the REAL default (fs probe of the package).
     detectBundledSidecar: () => null,

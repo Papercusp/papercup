@@ -1614,6 +1614,78 @@ directly-declared dependency of every workspace actually resolves on disk, and
 (repairing once with a full `npm install --legacy-peer-deps`, then failing loudly)
 so the corruption surfaces at the install, not in someone else's build.
 
+## Proving a guard is falsifiable — never mutate the shared tree to do it
+
+A guard test that has never failed is a guard you have not tested. Proving it CAN
+fail is correct discipline — but the obvious way to prove it is unsafe here, and has
+already cost a committed mutant:
+
+```bash
+cp "$F" "$B"; <mutate>; <run the suite>; cp "$B" "$F"     # ⛔ never do this
+```
+
+It fails in **two independent ways**, and the second is not fixable by being careful:
+
+1. **DEATH RACE** — the restore is the LAST statement, so anything that kills the
+   command partway (the 2-min foreground Bash deadline, a SIGTERM, a compaction)
+   skips it. A `trap` fixes this one.
+2. **SWEEP RACE** — git-sync commits the WHOLE working tree every few minutes, and a
+   probe legitimately holds the file mutated for as long as the suite runs. A sweep
+   landing in that window commits the mutant *even though nothing went wrong and the
+   trap never fired.* **A trap cannot fix this — it is a mitigation, not a fix.**
+
+Both fired for real (EI-19450431506682666): `db6d7b02b1` committed a mutant of
+`scripts/verify-tauri-headless.sh` in which the fix's function was DEFINED but never
+CALLED — inert, `bash -n`-clean, and shaped exactly like a finished change. Had
+green-checkpoint cut a candidate from it, the recurrence guard written minutes earlier
+would have red-pinned the whole fleet on a mutation nobody meant to commit. `git status`
+cannot warn you either: on a swept tree a clean status means the sweep ran, not that the
+file is unmodified.
+
+**Pick the lowest tier that fits — the top two never dirty the tree at all:**
+
+| your subject | how to prove falsifiability |
+|---|---|
+| a MODULE / logic you `import` | Keep a deliberately-wrong implementation **permanently in the test file** as a control (plus a calibration case the REAL subject must pass, or the controls also pass when the property itself is broken). Never mutate production code. |
+| a FILE artifact the test reads by path (shell scripts, config, generated output) | Mutate a **COPY** outside the tree and point the test at it — zero window, no lock, no trap. Make the test's subject path overridable (an env var defaulting to the real path); that one line is what makes tier 2 available at all. |
+| genuinely unavoidable in-tree mutation | Last resort. Hold the sweep for the probe's duration AND restore from a trap (see below). |
+
+**`scripts/mutation-probe.sh` implements tiers 2 and 3** so nobody hand-rolls the unsafe
+shape again. Copy-out is the default; it proves the tracked file is byte-identical
+before exiting, and it **refuses a mutation that changed nothing** — a no-op mutation
+makes any guard look weak, which is a false verdict from a probe that never mutated
+anything.
+
+```bash
+scripts/mutation-probe.sh --file scripts/verify-tauri-headless.sh \
+  --mutate 's/^\s*port_lost_to_squatter .*$//' \
+  --test 'PROBE_SCRIPT={} npm run test:file -- apps/operator/lib/verify-tauri-headless-bind-retry.test.ts'
+```
+
+Exit codes: `0` mutant CAUGHT (guard is falsifiable ✓) · `1` mutant SURVIVED (your guard
+is weaker than you think) · `2` misuse / no-op mutation · `3` in-tree restore FAILED, act
+now. Note `0` means *the guard failed on the mutant* — "the probe succeeded" and "the test
+passed" mean OPPOSITE things here.
+
+For tier 3, pause the sweep from your agent session — git-sync's own tick takes this
+same lock and **skips when a peer holds it**:
+
+```
+locks:acquire_resource { resource: 'git-sync:papercusp', mode: 'exclusive',
+                         ttl_sec: 600, reason: 'mutation probe' }
+```
+
+⚠ **A `trap` alone does NOT restore promptly — bash will not run a trap handler while
+waiting on a FOREGROUND child.** Measured 2026-08-03: a SIGTERM during a 25s guard
+restored the file only after 23s, i.e. when the child happened to exit. The harness sends
+SIGTERM *then* SIGKILL, so a deferred handler is frequently never a handler at all — which
+is exactly how the original mutant survived. Run the guard in the background and `wait` on
+it (`wait` IS interruptible); `mutation-probe.sh` already does this, and kills the guard's
+whole descendant tree by pid rather than by name.
+
+Prior independent discoveries of this same rule, consolidated here because they lived in
+work-items nobody reads: EI-19394353984226522, EI-19393300770054790.
+
 ## Browser checks — use `verdict`
 
 Ad-hoc/exploratory browser verification → the `verdict` skill, **not** Playwright

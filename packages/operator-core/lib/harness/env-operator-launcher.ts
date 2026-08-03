@@ -110,8 +110,21 @@ export type SkipReason =
   | 'disabled' // the user turned this env off (env-switcher-prefs)
   | 'is-self' // it's the port THIS operator already serves
   | 'already-reachable' // another operator already answers on this port (idempotent)
-  | 'no-source-tree' // the cloned papercup source isn't present
+  | 'no-source-tree' // the cloned papercup source isn't present, and none is coming
+  | 'source-tree-pending' // a shipped source archive hasn't finished extracting YET
   | 'no-toolchain'; // no Node/npx+tsx run path on this machine
+
+/** Skip reasons that are TRANSIENT — this env is expected to spawn on a later pass once
+ *  the pending work finishes. Everything else is terminal for this boot. A machine reader
+ *  (gate, health probe, UI) must branch on THIS, not on prose (EI-19442842364710969):
+ *  `no-source-tree` and `source-tree-pending` are otherwise indistinguishable, and reading
+ *  the transient one as terminal produced a false FAIL in the WI-3307 acceptance gate. */
+export const TRANSIENT_SKIP_REASONS: readonly SkipReason[] = ['source-tree-pending'] as const;
+
+/** True when `reason` means "not yet", false when it means "not on this machine". */
+export function isTransientSkip(reason: string | undefined): boolean {
+  return !!reason && (TRANSIENT_SKIP_REASONS as readonly string[]).includes(reason);
+}
 
 export interface EnvOperatorPlanEntry extends EnvOperatorSpec {
   /** http origin the switcher would navigate to, e.g. http://127.0.0.1:3170. */
@@ -138,6 +151,12 @@ export interface PlanEnvOperatorLaunchInput {
   selfPort?: number | null;
   /** Whether the cloned `papercup` source tree exists (a launchable env runs from it). */
   hasSourceTree: boolean;
+  /** A source archive SHIPPED with this build but has not been extracted into a tree yet
+   *  (first boot: extraction starts milliseconds after this pass and runs for MINUTES —
+   *  measured ~30min for a 5.3G tree at ~2.9MB/s). Splits the source-less skip into the
+   *  TRANSIENT `source-tree-pending` and the TERMINAL `no-source-tree`. Default false ⇒
+   *  callers that don't know keep the pre-existing terminal wording. */
+  sourceArchivePending?: boolean;
   /** Whether a Node/npx+tsx run path is available on this machine. */
   hasToolchain: boolean;
   /** Env ids with a bundled sidecar in the package (owner directive 2026-07-06 /
@@ -152,8 +171,8 @@ export interface PlanEnvOperatorLaunchInput {
  * PURE planner: decide, per env, spawn-or-skip and (when skipped) WHY. No side effects.
  *
  * Skip precedence (deterministic, most-specific first):
- *   disabled → is-self → already-reachable → [bundled? spawn] → no-source-tree →
- *   no-toolchain → spawn (source).
+ *   disabled → is-self → already-reachable → [bundled? spawn] →
+ *   (source-tree-pending | no-source-tree) → no-toolchain → spawn (source).
  * `disabled` wins over everything (an off env is never started regardless of state);
  * `is-self` / `already-reachable` win over the env gates so an already-up operator is
  * never reported as "no toolchain". A bundled per-branch sidecar (owner directive
@@ -186,7 +205,10 @@ export function planEnvOperatorLaunch(
     if (spec.run !== 'vite' && bundled.has(spec.id)) {
       return { ...base, action: 'spawn', spawnMode: 'bundled' };
     }
-    if (!input.hasSourceTree) return skip('no-source-tree');
+    if (!input.hasSourceTree) {
+      // "no tree YET" vs "no tree, ever" — structurally distinct, never prose-only.
+      return skip(input.sourceArchivePending ? 'source-tree-pending' : 'no-source-tree');
+    }
     if (!input.hasToolchain) return skip('no-toolchain');
     return { ...base, action: 'spawn', spawnMode: 'source' };
   });
@@ -209,6 +231,10 @@ export interface LaunchEnvOperatorsDeps {
   /** Resolve the runnable source root (default defaultDetectSourceRoot:
    *  PAPERCUSP_DEV_SOURCE_ROOT exact-checked, else detectPapercupRoot). null ⇒ absent. */
   detectSourceRoot?: () => string | null;
+  /** Whether a source archive shipped with this build but is not yet extracted (default
+   *  defaultDetectSourceArchivePending: PAPERCUSP_SOURCE_ARCHIVE points at a real file).
+   *  Only consulted when detectSourceRoot() found no tree. */
+  detectSourceArchivePending?: () => boolean;
   /** Whether a Node/npx+tsx run path exists (default: a `which`-style check). */
   hasToolchain?: () => Promise<boolean>;
   /** Resolve the bundled per-branch sidecar for a branch (owner directive 2026-07-06 /
@@ -293,6 +319,24 @@ export function defaultDetectSourceRoot(): string | null {
     if (hasPapercupMarkers(root)) return root;
   }
   return detectPapercupRoot();
+}
+
+/**
+ * Default "is a source tree still coming?" check: did this build SHIP a source archive
+ * that hasn't been unpacked yet? host-bootstrap extracts PAPERCUSP_SOURCE_ARCHIVE into
+ * PAPERCUSP_DEV_SOURCE_ROOT ~13ms after the first provisioning pass, so on a first boot
+ * the archive exists while the tree does not — that is precisely the window in which the
+ * skip is transient. A build that shipped no archive returns false and keeps the terminal
+ * `no-source-tree`. Best-effort, never throws (EI-19442842364710969).
+ */
+export function defaultDetectSourceArchivePending(): boolean {
+  const archive = process.env.PAPERCUSP_SOURCE_ARCHIVE;
+  if (!archive || archive.trim() === '') return false;
+  try {
+    return existsSync(archive);
+  } catch {
+    return false;
+  }
 }
 
 /** Default toolchain check: is the cloned source's apps/operator runnable? We need an
@@ -676,6 +720,11 @@ export async function launchEnvOperators(
 
   const sourceRoot = detectSourceRoot();
   const hasSourceTree = !!sourceRoot;
+  // Only meaningful when there is no tree: is one still being unpacked? Splits the
+  // transient first-boot skip from the terminal one (EI-19442842364710969).
+  const detectSourceArchivePending =
+    deps.detectSourceArchivePending ?? defaultDetectSourceArchivePending;
+  const sourceArchivePending = hasSourceTree ? false : detectSourceArchivePending();
   const hasToolchain = deps.hasToolchain
     ? await deps.hasToolchain()
     : await defaultHasToolchain(sourceRoot);
@@ -704,6 +753,7 @@ export async function launchEnvOperators(
     reachablePorts,
     selfPort,
     hasSourceTree,
+    sourceArchivePending,
     hasToolchain,
     bundledEnvIds: [...bundleByEnvId.keys()],
     host,
@@ -769,9 +819,18 @@ export async function launchEnvOperators(
     }
   }
 
+  // "done" is true of THIS CALL and false of the operation whenever a skip is transient —
+  // host-bootstrap runs a second pass after the source extract. Say so in the line itself,
+  // so it can never be read as a terminal verdict (EI-19442842364710969).
+  const deferred = skipped.filter((s) => isTransientSkip(s.reason));
   log(
-    `[env-operators] provisioning done — spawned=${spawned.length} skipped=${skipped.length}` +
-      (skipped.length ? ` (${skipped.map((s) => `${s.id}:${s.reason}`).join(', ')})` : ''),
+    `[env-operators] pass complete — spawned=${spawned.length} skipped=${skipped.length}` +
+      (skipped.length ? ` (${skipped.map((s) => `${s.id}:${s.reason}`).join(', ')})` : '') +
+      (deferred.length
+        ? ` — NOT the final verdict: ${deferred
+            .map((s) => s.id)
+            .join('+')} deferred until the source extract finishes, then spawn on a later pass`
+        : ''),
   );
   return { planned, spawned, skipped };
 }

@@ -19,6 +19,7 @@ import { findTsParseError } from './ts-parse';
 import { findNulBytes, autoFixNulBytes, nulByteScopeMatches } from './nul-bytes';
 import { findConstantConditional } from './constant-conditional';
 import { findFocusedTest } from './focused-test';
+import { findSqlCommentBacktick, sqlCommentBacktickScopeMatches } from './sql-comment-backtick';
 
 /** A registered content check. */
 export interface ContentDetector {
@@ -131,6 +132,59 @@ export const tsParseDetector: ContentDetector = {
     return (
       `TypeScript parse error at ${at} (TS${hit.code}): ${hit.reason} — the file does not PARSE, ` +
       'so every consumer of this package hard-fails to typecheck, not just this file'
+    );
+  },
+  fixerRole: CONTENT_FIXER_ROLE,
+};
+
+/**
+ * The SQL-comment-backtick detector — non-test .ts/.tsx/.mjs carrying SQL
+ * (EI-7661 / EI-19317789732905891 / EI-19415157731625374).
+ *
+ * Registered immediately BEFORE `ts-parse` for the same reason `smart-quotes`
+ * is: a file with a backtick-quoted identifier inside a SQL comment usually
+ * trips BOTH, and this one names the actual mistake while ts-parse reports the
+ * parser's first confusion — which lands tens of lines away, at the template's
+ * intended closing backtick. `excludePaths` dedupes by path, so the file is
+ * quarantined once, with the more actionable message recorded.
+ *
+ * It is not merely a nicer message, though. It is the ONLY detector here that
+ * can see the SILENT form of this bug: inside a postgres-js tagged template the
+ * text after the stray backtick can still parse as valid TS, so the file
+ * compiles, ships, and RUNS with the query truncated mid-comment. On 2026-07-05
+ * that amputated the WHERE clause from the mig-504 LWW upserts — the apply-guard
+ * vanished and stale writes applied unconditionally, caught only because an
+ * unrelated unit test regressed. ts-parse is structurally blind to it: the file
+ * parses.
+ *
+ * A narrow script for this class already existed (`scripts/check-sql-comment-backtick.mjs`)
+ * and ran on NO blocking path — the condition WI-6683 already ruled on. It had
+ * also silently ROTTED there: at the time this entry was written that script was
+ * RED, on `registry.ts` itself, on a false positive. Both of its FP mechanisms
+ * are fixed in the pure predicate (a >=2-backtick rule, and a scope gate that no
+ * longer mistakes prose ABOUT SQL for SQL); the script now imports that same
+ * predicate, so the two cannot drift.
+ *
+ * No `autoFix` — like ts-parse/shell-syntax, rephrasing a comment without its
+ * backticks is an authoring choice (quotes? drop them? reword?) that belongs to
+ * the author, and the file may also be mid-edit.
+ */
+export const sqlCommentBacktickDetector: ContentDetector = {
+  key: 'sql-comment-backtick',
+  glob: '**/*.{ts,tsx,mjs}',
+  matches: (f) => sqlCommentBacktickScopeMatches(f) && !isExcludedPath(f),
+  detect: (file, text) => {
+    const hit = findSqlCommentBacktick(file, text);
+    if (!hit) return null;
+    return (
+      `backtick-quoted identifier inside a SQL comment at line ${hit.line}:${hit.col} — ` +
+      `\`${hit.text}\`. That backtick ENDS the enclosing template literal. ` +
+      'If the template is a postgres-js tag, the rest may still parse as valid TS, so the file ' +
+      'compiles and RUNS with the SQL truncated mid-comment (this is how the mig-504 LWW ' +
+      'apply-guard silently vanished); if it is a plain DDL template it is a TS1005 cascade ' +
+      "anchored tens of lines away, at the template's intended closing backtick. " +
+      'Fix: rephrase the comment without backticks — use straight quotes, e.g. ' +
+      'a comment reading "the \'closed_ts\' column" rather than backtick-quoting the name.'
     );
   },
   fixerRole: CONTENT_FIXER_ROLE,
@@ -356,6 +410,12 @@ export const DEFAULT_CONTENT_DETECTORS: ContentDetector[] = [
   // (it is a parse error), and smart-quotes names the exact offending character —
   // the more actionable message, recorded first. Both offenders point at the same
   // file and `excludePaths` dedupes by path, so the file is quarantined once.
+  //
+  // Ordered BEFORE ts-parse for that same reason: a backtick in a SQL comment is
+  // a parse error whose generic diagnostic points tens of lines from the cause,
+  // so the specific detector must record first. It also catches the SILENT form,
+  // which ts-parse cannot see at all (the file parses).
+  sqlCommentBacktickDetector,
   tsParseDetector,
   shellSyntaxDetector,
   conflictMarkersDetector,
