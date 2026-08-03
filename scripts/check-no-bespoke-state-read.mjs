@@ -117,8 +117,35 @@ import { pathToFileURL } from 'node:url';
 
 const ROOT = new URL('..', import.meta.url).pathname;
 
-/** Where agent tools are declared. */
-export const SCAN_DIRS = ['packages/operator-core/lib/agent-tools', 'packages/agent-mcp/src/tools'];
+/**
+ * Where agent tools are declared — ALL FOUR canonical roots, kept in step with
+ * `TOOL_SOURCE_DIRS` in `packages/operator-core/lib/static-tool-catalog.ts`.
+ *
+ * ⚠ THIS LIST USED TO NAME ONLY THE FIRST TWO, and that is a false-clean waiting
+ * to happen: a state-read tool declared in an unscanned root is never judged, and
+ * the gate reports a clean run having never looked at it. "Found nothing" and
+ * "looked nowhere" are the same output. (Measured 2026-08-03 when it was widened:
+ * ZERO state-read candidates actually lived in the two missing roots, so nothing
+ * had escaped yet — this closes a latent hole, it did not have a live miss. The
+ * identical defect DID bite for real in the sibling gate `scout/coord-tier-gate.ts`,
+ * whose first draft hand-listed two roots, reported a confident 0 offenders, and
+ * was blind to all four coordination verbs in `lib/coord-ops`.)
+ *
+ * ⚠ AND IT MUST STAY HAND-LISTED — importing the canonical `TOOL_SOURCE_DIRS` is
+ * the obvious fix and it is NOT available here. This guard runs as bare
+ * `node scripts/check-no-bespoke-state-read.mjs` (package.json `lint:no-bespoke-state-read`),
+ * with no TypeScript transform, and nothing in `scripts/**` imports a `.ts` —
+ * verified 2026-08-03, zero precedents repo-wide. So the copy is unavoidable; what
+ * makes it SAFE is that it cannot drift silently: `no-bespoke-state-read-guard.test.ts`
+ * imports BOTH lists (a .test.ts may import a .mjs — five precedents) and fails the
+ * moment a root is added there and not here.
+ */
+export const SCAN_DIRS = [
+  'packages/operator-core/lib/agent-tools',
+  'packages/agent-mcp/src',
+  'packages/operator-core/lib/coord-ops',
+  'packages/operator-core/lib/endpoint-route/routes',
+];
 
 /**
  * Nouns that mark a "what is the CURRENT STATE of X?" question rather than a

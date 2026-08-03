@@ -1236,6 +1236,7 @@ export VERIFY_TAURI_LOG=$VERIFY_TAURI_LOG
 export VERIFY_TAURI_POLL=$VERIFY_TAURI_POLL
 export VERIFY_TAURI_STOP=$WORK/stop.sh
 export VERIFY_TAURI_FRESHNESS_CHECK=$WORK/check-freshness.sh
+export VERIFY_TAURI_SPA_DIST=$SPA_DIST
 export VERIFY_TAURI_HEARTBEAT=$HEARTBEAT_FILE
 # TTL watchdog (EI-18805100008031244): this instance self-terminates ${BOOT_ONLY_TTL_MIN} min
 # after the last heartbeat refresh (0 = disabled; set VERIFY_TAURI_BOOT_ONLY_TTL_MIN
@@ -1256,6 +1257,70 @@ fi
 if [ "$#" -eq 0 ]; then
   echo "FATAL: no assertion command given. Usage: $0 -- <command...> (or --boot-only)" >&2
   exit 2
+fi
+
+# ── EI-19444780917356384: RUN the freshness guard, don't just advertise it ──
+# The frozen SPA snapshot (EI-10364) is immutable by design, so an edit that
+# landed after boot is invisible to this run forever. The failure is silent and
+# points the WRONG WAY: a verification against a stale snapshot produces a
+# clean, well-formed, CONFIDENT "your fix does not work" — indistinguishable in
+# every observable respect from a genuine failure. Measured: an edit built at
+# 10:58:00 against a snapshot frozen ~10:57 cost a full ~6-minute boot+drive
+# cycle and came within one manual grep of sending an agent off to "re-fix"
+# already-correct code. The race is structural on this box (the shared build is
+# driven by other agents' edits too), not bad luck.
+#
+# The whole point of this wrapper is that agents don't hand-roll recipes, so a
+# guard the CALLER must remember to invoke is the same gap the wrapper exists to
+# close. Two checks, deliberately different in force:
+#
+#   1. DRIFT — advisory. The shared dist moved since our freeze. On this box the
+#      fleet rebuilds constantly, so drift alone does NOT mean YOUR change is
+#      missing (a peer's unrelated edit moves it too). Hard-failing here would
+#      block valid runs, so: warn loudly, and name the decisive check.
+#   2. CONTAINMENT — decisive. VERIFY_TAURI_ASSERT_SNAPSHOT_CONTAINS='<a string
+#      unique to your change>' greps the FROZEN bundle. Absent ⇒ this run
+#      provably cannot exercise your change, so fail FAST with a diagnosis
+#      (exit 3, distinct from an assertion failure) instead of letting the
+#      assertion emit a confident false negative. This mechanizes the manual
+#      grep every agent otherwise has to reinvent mid-debugging.
+if [ -f "$VERIFY_TAURI_FRESHNESS_CHECK" ] && ! bash "$VERIFY_TAURI_FRESHNESS_CHECK"; then
+  log "⚠️  DRIFT: the shared SPA dist advanced past this run's frozen snapshot (banner above)."
+  log "    Drift alone does NOT prove YOUR change is missing — a peer's edit moves it too."
+  log "    To settle it decisively, re-run with a string unique to your change:"
+  log "      VERIFY_TAURI_ASSERT_SNAPSHOT_CONTAINS='<your string>' $0 -- <command...>"
+fi
+SNAPSHOT_NEEDLE="${VERIFY_TAURI_ASSERT_SNAPSHOT_CONTAINS:-}"
+if [ -n "$SNAPSHOT_NEEDLE" ]; then
+  if [ -z "$SPA_DIST" ] || [ ! -d "$SPA_DIST" ]; then
+    echo "FATAL: VERIFY_TAURI_ASSERT_SNAPSHOT_CONTAINS was set, but this run froze NO SPA" >&2
+    echo "       snapshot (operator-vite was not built at boot), so the claim cannot be" >&2
+    echo "       checked. Build operator-vite first, or unset the variable." >&2
+    exit 3
+  fi
+  if grep -rqF -- "$SNAPSHOT_NEEDLE" "$SPA_DIST" 2>/dev/null; then
+    log "snapshot containment OK: found '$SNAPSHOT_NEEDLE' in the frozen bundle."
+  else
+    {
+      echo
+      echo "  ┌────────────────────────────────────────────────────────────────────────┐"
+      echo "  │  ⛔ STALE SNAPSHOT — YOUR CHANGE IS NOT IN THE CODE UNDER TEST          │"
+      echo "  │                                                                        │"
+      echo "  │  '$SNAPSHOT_NEEDLE'"
+      echo "  │  is ABSENT from this run's frozen bundle ($SPA_DIST)."
+      echo "  │                                                                        │"
+      echo "  │  This run CANNOT exercise your change. Any failure it reports would be"
+      echo "  │  a false negative about PRE-EDIT code — refusing to run the assertion"
+      echo "  │  rather than hand you a confident wrong answer (EI-19444780917356384)."
+      echo "  │                                                                        │"
+      echo "  │  Fix: wait for the shared build to emit your change, then re-run this"
+      echo "  │  script (the snapshot is frozen at boot — reloading never picks it up)."
+      echo "  │  Watch for the rebuild with: ls -t apps/operator-vite/dist/assets/*.js"
+      echo "  └────────────────────────────────────────────────────────────────────────┘"
+      echo
+    } >&2
+    exit 3
+  fi
 fi
 
 log "running assertion command: $*"

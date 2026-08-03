@@ -553,6 +553,27 @@ describe('openSourceStoreForCut (WI-4487 — readOnly is a point-in-time snapsho
       ).rejects.toThrow(/--sparse requires a fresh head snapshot/);
     });
 
+    it('refuses BEFORE backfill — a doomed cut must not leave rows enqueued in substrate_outbox', async () => {
+      const { openStore } = harness({ locked: true });
+      const ran: string[] = [];
+      await openSourceStoreForCut({
+        ...base,
+        sparse: true,
+        openStore,
+        backfillImpl: (async () => {
+          ran.push('backfill');
+          return { enqueued: 0, dropped: 0 };
+        }) as never,
+        waitImpl: (async () => {
+          ran.push('drain');
+          return { undrained: 0, waitedMs: 1 };
+        }) as never,
+      }).catch(() => {});
+      // backfillLocalState INSERTs into substrate_outbox. Refusing after it would mutate PG
+      // for a cut that could never have produced a sparse seed.
+      expect(ran).toEqual([]);
+    });
+
     it('names the live operator as the cause and offers both remedies (quiesce / drop --sparse)', async () => {
       const { openStore } = harness({ locked: true });
       const err = await openSourceStoreForCut({

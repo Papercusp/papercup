@@ -56,6 +56,7 @@ import { quotaOverrideKey, quotaOverrideFor } from './quota-overrides';
 import { taskManagerEnabledSync } from './task-manager/enabled';
 import { envelopeRoleOverrides } from './capability-envelope-overrides';
 import { telemetryBufferConfig } from './telemetry-buffer-config';
+import { capabilityTierOverrideFor } from './capability-tier-overrides';
 
 describe('modules stay importable under a partial @papercusp/flags/server mock', () => {
   it('collected this file at all (a module-scope binding read would have failed it here)', () => {
@@ -81,5 +82,6 @@ describe('the fix is IMPORTABILITY, not reader-callability (do not widen this cl
     expect(() => taskManagerEnabledSync()).toThrow(/onFlagChange/);
     expect(() => envelopeRoleOverrides()).toThrow(/onFlagChange/);
     expect(() => telemetryBufferConfig()).toThrow(/onFlagChange/);
+    expect(() => capabilityTierOverrideFor('capability:bash')).toThrow(/onFlagChange/);
   });
 });

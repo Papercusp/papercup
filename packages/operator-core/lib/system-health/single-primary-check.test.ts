@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import {
   evaluatePrimaryCount,
   countBackgroundPrimaries,
@@ -249,7 +249,7 @@ describe('openSinglePrimaryConditions (WI-7291 durable condition read)', () => {
 
 describe('countBackgroundPrimaries', () => {
   it('reads the DISTINCT dbos-executor count from the injected sql', async () => {
-    const sql = (async () => [{ n: 2 }]) as never;
+    const sql = (async () => [{ n: 2, can_read_all_stats: true }]) as never;
     expect(await countBackgroundPrimaries(sql)).toBe(2);
   });
   // WI-7291: this previously asserted `.toBe(0)` under the name "defaults to 0 when the
@@ -290,8 +290,26 @@ describe('countBackgroundPrimaries', () => {
   // the probe return null forever and silently stop reporting real outages. Only an
   // affirmative false suppresses. This also pins the back-compat the two tests above rely on.
   it('treats an ABSENT can_read_all_stats as permitted, so a driver quirk cannot silently disable the guard', async () => {
-    const sql = (async () => [{ n: 2 }]) as never;
-    expect(await countBackgroundPrimaries(sql)).toBe(2);
+    _resetSinglePrimaryDebounce(); // clear the once-per-process announce latch
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const sql = (async () => [{ n: 2 }]) as never;
+      expect(await countBackgroundPrimaries(sql)).toBe(2);
+
+      // FAIL OPEN *AND ANNOUNCE* (su-4ca244e4). Fail-open alone would silently revert to the
+      // pre-fix behaviour — a restricted reader reporting a confident 0 — with nothing
+      // recording that the protection had evaporated, which is this same defect class one
+      // level up. The warning is what makes "running unprotected" observable rather than
+      // inferred, so it is asserted, not merely tolerated.
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0]?.[0])).toContain('capability probe UNAVAILABLE');
+
+      // …and it LATCHES: once per process, not once per 3-minute tick.
+      await countBackgroundPrimaries(sql);
+      expect(warn).toHaveBeenCalledTimes(1);
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
 

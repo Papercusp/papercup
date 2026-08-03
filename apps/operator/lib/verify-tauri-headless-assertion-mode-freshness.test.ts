@@ -1,0 +1,109 @@
+/**
+ * verify-tauri-headless-assertion-mode-freshness.test.ts — the RECURRENCE GUARD
+ * for EI-19444780917356384.
+ *
+ * The bug: scripts/verify-tauri-headless.sh freezes an immutable SPA snapshot at
+ * boot (EI-10364) and correctly warns that an edit made AFTER boot will never be
+ * picked up, pointing the caller at `$VERIFY_TAURI_FRESHNESS_CHECK` (EI-17134).
+ * That variable was exported ONLY on the `--boot-only` path. In assertion mode
+ * (`verify-tauri-headless.sh -- <cmd>`) the assertion command ran with
+ * VERIFY_TAURI_PID/PORT/DISPLAY/LOG/POLL exported but NOT the freshness check —
+ * so the documented guard died with `VERIFY_TAURI_FRESHNESS_CHECK: unbound
+ * variable` in exactly the mode used for one-shot CI-style verification.
+ *
+ * Why it was expensive: the failure is silent and points the WRONG WAY. A run
+ * against a stale snapshot produces a clean, well-formed, CONFIDENT "your fix
+ * does not work" — indistinguishable from a genuine failure. Measured: an edit
+ * built at 10:58:00 against a snapshot frozen ~10:57 burned a ~6-minute
+ * boot+drive cycle and came within one manual grep of sending an agent off to
+ * "re-fix" already-correct code.
+ *
+ * The fix has two halves, and this suite pins BOTH:
+ *   1. export the guard paths on the COMMON path so assertion mode can reach
+ *      them (the positional assertions below are what make this real — an export
+ *      that drifts back inside the --boot-only branch re-creates the bug while
+ *      still matching a naive `toContain`);
+ *   2. RUN the guard before exec'ing the assertion command, since a guard the
+ *      caller must remember to invoke is the same class of gap the wrapper
+ *      itself exists to close.
+ *
+ * A readFileSync text guard is the right shape here: the script boots a real
+ * Tauri/Xvfb stack, so its env wiring can only be asserted at the wiring site
+ * (same rationale as verify-tauri-headless-spa-isolation.test.ts).
+ */
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { describe, expect, it } from 'vitest';
+
+const SCRIPT = resolve(__dirname, '../../../scripts/verify-tauri-headless.sh');
+const src = readFileSync(SCRIPT, 'utf8');
+
+/** Index of the `--boot-only` branch: everything before it runs in BOTH modes. */
+const bootOnlyBranchIdx = src.indexOf('if [ "${1:-}" = "--boot-only" ]; then');
+/** Index of the final exec of the caller's assertion command. */
+const assertionExecIdx = src.lastIndexOf('log "running assertion command: $*"');
+
+describe('EI-19444780917356384 — the freshness guard is reachable in assertion (`--`) mode', () => {
+  it('is the right script, with both anchor sites present (guards a vacuous suite)', () => {
+    expect(src).toContain('verify-tauri-headless');
+    // Both anchors must exist, or every positional assertion below is vacuous.
+    expect(bootOnlyBranchIdx).toBeGreaterThan(-1);
+    expect(assertionExecIdx).toBeGreaterThan(-1);
+    // The guard being pinned must itself still exist.
+    expect(src).toContain('check-freshness.sh');
+  });
+
+  it('exports VERIFY_TAURI_FRESHNESS_CHECK on the COMMON path, not only under --boot-only', () => {
+    const exportIdx = src.indexOf('export VERIFY_TAURI_FRESHNESS_CHECK="$WORK/check-freshness.sh"');
+    expect(exportIdx).toBeGreaterThan(-1);
+    // THE bug: the export sat inside the --boot-only branch, so assertion mode
+    // never saw it. Being textually present is not enough — it must be reached
+    // before the branch that returns control to a --boot-only caller.
+    expect(exportIdx).toBeLessThan(bootOnlyBranchIdx);
+  });
+
+  it('exports VERIFY_TAURI_SPA_DIST (the frozen bundle) on the common path too', () => {
+    // The decisive question is "is MY change in the code under test?", which is
+    // answered by grepping the FROZEN bundle — unreachable without this path.
+    const exportIdx = src.indexOf('export VERIFY_TAURI_SPA_DIST="$SPA_DIST"');
+    expect(exportIdx).toBeGreaterThan(-1);
+    expect(exportIdx).toBeLessThan(bootOnlyBranchIdx);
+  });
+
+  it('RUNS the freshness check before the assertion command, not merely advertises it', () => {
+    const runIdx = src.indexOf('! bash "$VERIFY_TAURI_FRESHNESS_CHECK"');
+    expect(runIdx).toBeGreaterThan(-1);
+    // Must fire BEFORE control is handed to the caller's command — a warning
+    // printed afterwards cannot stop a false negative from being reported.
+    expect(runIdx).toBeLessThan(assertionExecIdx);
+  });
+
+  it('fails FAST, with a distinct exit code, when the frozen bundle lacks the caller"s change', () => {
+    const needleIdx = src.indexOf('VERIFY_TAURI_ASSERT_SNAPSHOT_CONTAINS');
+    expect(needleIdx).toBeGreaterThan(-1);
+    // Greps the FROZEN snapshot ($SPA_DIST), never the shared dist the fleet
+    // watcher rewrites — grepping the shared dist would answer the wrong
+    // question and re-create the very false negative this guard exists to stop.
+    expect(src).toMatch(/grep -rqF -- "\$SNAPSHOT_NEEDLE" "\$SPA_DIST"/);
+    // Exit 3 keeps "your change isn't in the bundle" distinguishable from an
+    // ordinary assertion failure (1) and a usage error (2).
+    expect(src).toMatch(/exit 3/);
+    // And it must abort BEFORE the assertion runs, otherwise the confident
+    // wrong answer is still emitted.
+    expect(needleIdx).toBeLessThan(assertionExecIdx);
+  });
+
+  it('keeps the drift warning ADVISORY (a peer"s rebuild must not fail a valid run)', () => {
+    // Drift means the shared dist moved, which on this box happens constantly
+    // because of other agents' edits — it does NOT prove the caller's change is
+    // missing. Hard-failing on drift would block valid runs, so the drift path
+    // must warn (log) rather than exit. Pinned by asserting the drift branch
+    // body carries no bare exit.
+    const driftIdx = src.indexOf('! bash "$VERIFY_TAURI_FRESHNESS_CHECK"');
+    const driftBlock = src.slice(driftIdx, driftIdx + 700);
+    expect(driftBlock).toContain('DRIFT');
+    expect(driftBlock).not.toMatch(/^\s*exit \d/m);
+    // …and it must point at the decisive check rather than dead-ending.
+    expect(driftBlock).toContain('VERIFY_TAURI_ASSERT_SNAPSHOT_CONTAINS');
+  });
+});

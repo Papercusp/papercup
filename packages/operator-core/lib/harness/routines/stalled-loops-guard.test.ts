@@ -66,6 +66,7 @@ describe('sweepStalledLoops (WI-6639 — act on turnsStalled instead of leaving 
       sample: [],
       vetoedByRecentTurn: [],
       reArmedFireStarved: [],
+      vetoedByProviderWall: [],
       dryRun: false,
     });
     expect(getStatuses).not.toHaveBeenCalled();
@@ -289,6 +290,151 @@ describe('sweepStalledLoops (WI-6639 — act on turnsStalled instead of leaving 
       expect(wide.paused).toBe(0);
       expect(wide.vetoedByRecentTurn).toEqual(['su-x']);
     });
+  });
+});
+
+/**
+ * EI-19441932615368003 — WALLED, not stalled.
+ *
+ * The live incident: on 2026-08-03 three sweeps (11:07Z / 13:07Z / 14:07Z) disarmed 7 + 2 + 6
+ * loops on one workspace. At least two were provider-walled rather than dead — su-b9269a31
+ * (~4h silent) and su-3a5df0ae (~2h50m, ended only when a human typed "continue where you left
+ * off"). Each was correctly backed off by the lifecycle-death re-arm and would have resumed on
+ * its own; disarming converted a self-healing wait into a permanent halt.
+ *
+ * These cases are written as SINGLE-CONDITION REMOVALS around that shape, so the suite fails if
+ * the exemption is ever widened into a blanket "never disarm anything with an error outcome" —
+ * which would blunt the guard back into the inert state WI-6639 exists to fix.
+ */
+describe('sweepStalledLoops — walled vs stalled (EI-19441932615368003)', () => {
+  const inFuture = (ms: number) => new Date(Date.now() + ms).toISOString();
+  const ago = (ms: number) => new Date(Date.now() - ms).toISOString();
+
+  let warn: ReturnType<typeof vi.spyOn>;
+  let logSpy: ReturnType<typeof vi.spyOn>;
+  beforeEach(() => {
+    warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+  });
+  afterEach(() => {
+    warn.mockRestore();
+    logSpy.mockRestore();
+  });
+
+  /** The exact shape of the 2026-08-03 incident: fire landed, provider killed the turn, the
+   *  backoff parked next_fire_at ~3h out, and no turn can land until the wall lifts. */
+  const walled = (ownerId: string, overrides: Partial<LoopStatus> = {}) =>
+    status({
+      ownerId,
+      turnsStalled: true,
+      intervalSec: 1200,
+      lastFiredAt: ago(2 * 60 * 60_000),
+      lastTurnAt: ago(4 * 60 * 60_000),
+      lastRealTurnAt: ago(4 * 60 * 60_000),
+      lastDeliveryOutcome: 'loop-lifecycle-death:usage_limit',
+      nextFireAt: inFuture(3 * 60 * 60_000),
+      ...overrides,
+    });
+
+  it('REFUSES to disarm a loop backed off on a provider wall — the measured incident', async () => {
+    const sql = fakeSql([{ id: 'rt_walled', target_owner_id: 'su-walled' }]);
+    const getStatuses = vi.fn(async () => new Map([['su-walled', walled('su-walled')]]));
+    const autoPause = vi.fn(async () => {});
+    const rearm = vi.fn(async () => {});
+    const broadcast = vi.fn<BroadcastFn>(async () => true);
+
+    const res = await sweepStalledLoops({ sql, workspaceId: 'ws' }, { getStatuses, autoPause, rearm, broadcast });
+
+    expect(res.paused).toBe(0);
+    expect(res.vetoedByProviderWall).toEqual(['su-walled']);
+    expect(autoPause).not.toHaveBeenCalled();
+    // SKIP, never re-arm: the backoff already computed a provider-informed next_fire_at, and
+    // overwriting it with a plain interval would fire straight back into the wall.
+    expect(rearm).not.toHaveBeenCalled();
+    expect(broadcast).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('WALLED su-walled'));
+  });
+
+  it('recognizes the OTHER observer prefix too (resume-turn-death:) — matching only one was itself a past bug', async () => {
+    const sql = fakeSql([{ id: 'rt_fast', target_owner_id: 'su-fast' }]);
+    const getStatuses = vi.fn(async () =>
+      new Map([['su-fast', walled('su-fast', { lastDeliveryOutcome: 'resume-turn-death:usage_limit' })]]),
+    );
+    const autoPause = vi.fn(async () => {});
+
+    const res = await sweepStalledLoops({ sql, workspaceId: 'ws' }, { getStatuses, autoPause });
+
+    expect(res.vetoedByProviderWall).toEqual(['su-fast']);
+    expect(autoPause).not.toHaveBeenCalled();
+  });
+
+  it('SINGLE CONDITION REMOVED — backoff has ELAPSED (next fire in the past) ⇒ genuinely stuck, DISARM', async () => {
+    const sql = fakeSql([{ id: 'rt_elapsed', target_owner_id: 'su-elapsed' }]);
+    const getStatuses = vi.fn(async () =>
+      // Same wall, but the retry window has passed and STILL no turn followed. That is no
+      // longer "waiting out a transient condition" — it is wedged, and the guard must act.
+      new Map([['su-elapsed', walled('su-elapsed', { nextFireAt: ago(30 * 60_000) })]]),
+    );
+    const autoPause = vi.fn(async () => {});
+    const broadcast = vi.fn<BroadcastFn>(async () => true);
+
+    const res = await sweepStalledLoops({ sql, workspaceId: 'ws' }, { getStatuses, autoPause, broadcast });
+
+    expect(res.vetoedByProviderWall).toEqual([]);
+    expect(res.paused).toBe(1);
+    expect(autoPause).toHaveBeenCalledTimes(1);
+  });
+
+  it('SINGLE CONDITION REMOVED — an ORDINARY stall outcome ⇒ DISARM (the exemption is not a blanket error-amnesty)', async () => {
+    const sql = fakeSql([{ id: 'rt_plain', target_owner_id: 'su-plain' }]);
+    const getStatuses = vi.fn(async () =>
+      // A future nextFireAt alone must never exempt: every healthy armed loop has one.
+      new Map([['su-plain', walled('su-plain', { lastDeliveryOutcome: 'loop-stuck-backstop' })]]),
+    );
+    const autoPause = vi.fn(async () => {});
+    const broadcast = vi.fn<BroadcastFn>(async () => true);
+
+    const res = await sweepStalledLoops({ sql, workspaceId: 'ws' }, { getStatuses, autoPause, broadcast });
+
+    expect(res.vetoedByProviderWall).toEqual([]);
+    expect(res.paused).toBe(1);
+  });
+
+  it('SINGLE CONDITION REMOVED — a comatose host with NO delivery outcome is still disarmed', async () => {
+    const sql = fakeSql([{ id: 'rt_dead', target_owner_id: 'su-dead' }]);
+    const getStatuses = vi.fn(async () =>
+      new Map([['su-dead', walled('su-dead', { lastDeliveryOutcome: null })]]),
+    );
+    const autoPause = vi.fn(async () => {});
+    const broadcast = vi.fn<BroadcastFn>(async () => true);
+
+    const res = await sweepStalledLoops({ sql, workspaceId: 'ws' }, { getStatuses, autoPause, broadcast });
+
+    expect(res.paused).toBe(1);
+    expect(res.vetoedByProviderWall).toEqual([]);
+  });
+
+  it('separates walled from comatose in ONE sweep — the shape of the live 14:07Z batch', async () => {
+    const sql = fakeSql([
+      { id: 'rt_w', target_owner_id: 'su-walled' },
+      { id: 'rt_d', target_owner_id: 'su-dead' },
+    ]);
+    const getStatuses = vi.fn(async () =>
+      new Map([
+        ['su-walled', walled('su-walled')],
+        ['su-dead', walled('su-dead', { lastDeliveryOutcome: null, nextFireAt: null })],
+      ]),
+    );
+    const autoPause = vi.fn(async () => {});
+    const broadcast = vi.fn<BroadcastFn>(async () => true);
+
+    const res = await sweepStalledLoops({ sql, workspaceId: 'ws' }, { getStatuses, autoPause, broadcast });
+
+    // The whole point: one sweep, two populations, opposite dispositions.
+    expect(res.vetoedByProviderWall).toEqual(['su-walled']);
+    expect(res.sample).toEqual(['su-dead']);
+    expect(res.paused).toBe(1);
+    expect(autoPause).toHaveBeenCalledTimes(1);
   });
 });
 

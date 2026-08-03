@@ -113,9 +113,25 @@ export function usesModuleScopeFlagSubscribe(text) {
 // not cosmetic — it is a standing EXEMPTION, so leaving a fixed file listed would
 // silently re-permit the very regression the fix removed. De-list in the SAME
 // change as the fix.
+// Also removed 2026-08-03 (EI-19416650993725684), migrated onto the shared
+// `lazy-flag-refresh.ts` helper: quota-overrides, capability-envelope-overrides,
+// telemetry-buffer-config, capability-tier-overrides. Migrating a file means ALSO
+// adding it to lib/flags-partial-mock-importable.test.ts, which tests the actual
+// mechanism (importability under a partial mock) that this source lint only
+// approximates.
 export const BASELINE = new Set([
+  // ⚠ EXAMINED AND DEFERRED, NOT MISSED — do NOT pattern-match this one onto its
+  // siblings above. It looks identical (same config-override family, same timer,
+  // same registerOverrideConcern) and is not: (1) it has a HIDDEN reader —
+  // `resolveTestingFullAccess`, installed at module scope via
+  // setTestingFullAccessResolver, reads the module vars DIRECTLY rather than through
+  // an exported getter, so arming the three exported getters alone would leave the
+  // actual auth gate unarmed; and (2) its unpopulated state is the PERMISSIVE one
+  // (testingFullAccessEnabled defaults true), so lazy arming widens the window in
+  // which a kill-switch flipped OFF has not yet taken effect. Per lazy-flag-refresh's
+  // "behaviour this DOES change" note, a cache like this needs an explicit warm on a
+  // boot path, not lazy arming alone. Migrate it deliberately, with that warm.
   'packages/operator-core/lib/auth-config-overrides.ts',
-  'packages/operator-core/lib/capability-tier-overrides.ts',
   'packages/operator-core/lib/events/cache-eca-rule.ts',
   'packages/operator-core/lib/harness/routines/configure-per-workspace.ts',
   'packages/operator-core/lib/issues-engineer.ts',

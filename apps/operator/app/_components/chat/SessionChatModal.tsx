@@ -1162,12 +1162,21 @@ export default function SessionChatModal({
   const isNarrow = useIsNarrowViewport(DOSSIER_NARROW_MEDIA_QUERY);
 
   /* P-015: the Orders panel's own toggle, nuqs like every other bit of this
-     popup's state. Defaults CLOSED, unlike the dossier: it is the newer and
-     denser of the two, and its fetch is a separate heavier query
-     (`agentOrders.byOwner` runs the carry-brief gather), so it is opt-in rather
-     than something every popup pays for. `ordersEnabled` below is what actually
-     gates that fetch. */
-  const [ordersOpen, setOrdersOpen] = useQueryState('chatOrders', parseAsBoolean.withDefault(false));
+     popup's state. Defaults OPEN, same as the dossier
+     [owner 2026-08-03, verbatim: "In the HUD tab when opening a conversation
+     the 'ORDERS — what they were told' should be expanded by default"] —
+     superseding the original opt-in default, which reasoned from
+     cost: `agentOrders.byOwner` is a separate heavier query (it runs the
+     carry-brief gather), so a panel nobody opened cost nothing. That trade is
+     now decided the other way: what the agent was TOLD is the context a reader
+     needs to make sense of the transcript they just opened, so the popup pays
+     the gather by default.
+
+     `ordersVisible` below is still what gates the fetch — a reader who CLOSES
+     the panel must stop paying for it, which is the half of the original
+     rationale that survives. Keep the query separate from agentDetail.byOwner
+     for that reason. */
+  const [ordersOpen, setOrdersOpen] = useQueryState('chatOrders', parseAsBoolean.withDefault(true));
   const isOrdersNarrow = useIsNarrowViewport(ORDERS_NARROW_MEDIA_QUERY);
 
   /* ── P-001 maximize ──────────────────────────────────────────────────────

@@ -21,7 +21,8 @@
  * The import is PURE (no import-time IO); the getter is a plain cache read. Refresh on
  * onFlagChange(null | the flag), local write, and a ~60s unref timer.
  */
-import { getFlag, onFlagChange } from '@papercusp/flags/server';
+import { getFlag } from '@papercusp/flags/server';
+import { lazyFlagRefresh } from './lazy-flag-refresh';
 import { managedSetInterval } from '@papercusp/scheduled-registry';
 import { FLAGS } from '@papercusp/flags';
 import { setCapabilityTierOverride, type CapabilityTier } from '@papercusp/agent-mcp';
@@ -70,9 +71,11 @@ export async function refreshCapabilityTierOverrides(): Promise<void> {
     cached = {};
   }
 }
-onFlagChange((key) => {
-  if (key === null || key === FLAGS.AUTH_CONFIG_OVERRIDES) void refreshCapabilityTierOverrides();
-});
+// Armed on FIRST USE, not at import (EI-19416650993725684) — the import touches no flag binding, so
+// a test that partially mocks `@papercusp/flags/server` can still collect. The one reader above is
+// also what the `setCapabilityTierOverride` seam delegates to, so installing the seam at module
+// scope does NOT bypass arming. See ./lazy-flag-refresh for the mechanism + guards.
+const armFlagRefresh = lazyFlagRefresh(refreshCapabilityTierOverrides, FLAGS.AUTH_CONFIG_OVERRIDES);
 // P-008: visible in schedule:inventory as a 'cache' timer (per-process config memo refresh).
 managedSetInterval('config-refresh:capability-tier', 60_000, () => refreshCapabilityTierOverrides(), {
   category: 'cache',

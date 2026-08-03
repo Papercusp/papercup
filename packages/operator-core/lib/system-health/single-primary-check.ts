@@ -824,4 +824,8 @@ export function _resetSinglePrimaryDebounce(): void {
   lastAlertedAt.clear();
   consecutiveNon1.clear();
   openAlarms.clear();
+  // The fail-open announce latches once per PROCESS, which in a test runner means once per
+  // FILE — so without this reset the first absent-flag read anywhere silently consumes the
+  // warning and a later test asserting it would pass vacuously.
+  capabilityProbeAbsentWarned = false;
 }

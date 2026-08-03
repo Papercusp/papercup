@@ -245,6 +245,20 @@ export default defineConfig({
     // a port nothing bound. PORT is also honored as the more generic fallback (both
     // unset ⇒ unchanged default 3055 for every existing caller — Tauri desktop, the
     // standing systemd service, bin/dev).
+    //
+    // ⚠ EI-19424980348813193 — IF YOU SPAWN VITE AS A CHILD, SCRUB `PORT` FIRST.
+    // "both unset" holds for a human shell; it does NOT hold for a child of a service.
+    // `PORT` is the most ambient variable name there is, and in a papercusp operator it
+    // already means "the port I myself listen on" (env-operator-launcher's
+    // defaultSelfPort() reads `PAPERCUSP_HONO_PORT ?? PORT`). A spawner that inherits its
+    // own env therefore hands this line the OPERATOR's port, and the SPA silently binds
+    // there instead of 3055 — or, on collision and without `--strictPort`, WALKS to the
+    // next free port and serves happily somewhere nobody is looking. That is not a
+    // hypothetical: the packaged mac `local` env operator bound :3071, served HTTP 200
+    // for 26+ minutes, and was filed as a 26-minute HANG because every probe asked :3055.
+    // Spawners must pass `--port <p> --strictPort` AND delete PORT/OPERATOR_E2E_PORT —
+    // see viteChildArgv/viteChildEnv in packages/operator-core/lib/harness/
+    // env-operator-launcher.ts, whose tests re-evaluate THIS expression to police it.
     port: Number(process.env.OPERATOR_E2E_PORT ?? process.env.PORT) || 3055,
     host: process.env.PAPERCUSP_BIND_HOST ?? '127.0.0.1',
     // P-006: report-only CSP expressing the destination invariant. REPORT-ONLY

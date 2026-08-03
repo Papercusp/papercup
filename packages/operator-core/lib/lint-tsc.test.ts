@@ -88,8 +88,12 @@ describe('LINT_TSC_RESULT completion marker (EI-19395061642732083)', () => {
     expect(lintTscScopeFromArgv([])).toBe('all');
     expect(lintTscScopeFromArgv(['--mine'])).toBe('mine');
     expect(lintTscScopeFromArgv(['--files=packages/operator-core/lib/a.ts'])).toBe('files');
-    // --update MUTATES the baseline rather than judging against it, so it outranks the rest.
-    expect(lintTscScopeFromArgv(['--update', '--mine'])).toBe('update');
+    // --update MUTATES the baseline rather than judging against it, so it LEADS the label.
+    // EI-19444246913245434: it used to REPLACE the scope flag beside it, so a run scoped to a
+    // handful of files announced itself as a whole-project `scope=update` — the exact "a --files
+    // verdict mistaken for a whole-project one" confusion this test exists to prevent, reachable
+    // through the one combination it did not cover. Both facts are now reported.
+    expect(lintTscScopeFromArgv(['--update', '--mine'])).toBe('update:mine');
   });
 
   it('is wired to process.on("exit") — not stamped per exit site, which a new one could skip', () => {

@@ -43,4 +43,18 @@ registerSystemAction('sweep-stalled-loops', async (ctx: SystemActionCtx) => {
         `(EI-19406534159939583): ${result.reArmedFireStarved.join(', ')}`,
     );
   }
+  // EI-19441932615368003: walled loops are the PROVIDER half. Logged at info, not warn — unlike
+  // the two above, a non-zero count here is EXPECTED under load and blames nobody: it is the
+  // lifecycle-death backoff working, and this line is the evidence the guard is no longer
+  // converting those transient walls into permanent halts. Its diagnostic value is inverted from
+  // its siblings — worry when it is persistently ZERO on a workspace that IS hitting usage walls,
+  // because that means the exemption has stopped matching and silent halting has resumed.
+  if (result.vetoedByProviderWall.length > 0) {
+    console.log(
+      `[sweep-stalled-loops] WALLED ${result.vetoedByProviderWall.length}/${result.checked} loop(s) left ` +
+        `ARMED (not disarmed) — each died on a provider usage/rate wall and is backed off waiting for it ` +
+        `to lift, which is self-healing and must not be made permanent ` +
+        `(EI-19441932615368003): ${result.vetoedByProviderWall.join(', ')}`,
+    );
+  }
 });
