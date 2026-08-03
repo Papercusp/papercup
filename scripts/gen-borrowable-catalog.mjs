@@ -34,7 +34,7 @@ import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
+export const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
 /**
  * Standard .gitignore for a new borrowable-lib submodule (verbatim from
@@ -82,8 +82,15 @@ function findMissingGitignores(submodules) {
   return missing;
 }
 
-/** The borrowable set — genuinely generic, zero retained domain tie-in. */
-const BORROWABLE = [
+/**
+ * The borrowable set — genuinely generic, zero retained domain tie-in.
+ * Exported (WI-4973 / decouple-generic-libs-private-deps-2026-08-03) so
+ * scripts/check-generic-independence.mjs can classify a dependency as
+ * "public" off this SAME curated list instead of re-curating it — the
+ * package.json `"private": true` field is NOT a public/private signal here
+ * (it appears on fully-public libs too; it only means "not npm-published").
+ */
+export const BORROWABLE = [
   // path (repo-relative)                  category                fallback description (only if package.json lacks one)
   ['libs/generic/rrf',                        'Pure utilities & infra'],
   ['libs/generic/rules',                      'Pure utilities & infra'],
@@ -155,7 +162,7 @@ const SEAMED = [
 
 const CATEGORY_ORDER = ['Pure utilities & infra', 'Search & retrieval', 'IPC, transport & sync', 'Audio & media', 'UI components', 'Build & release', 'Testing & QA'];
 
-function parseGitmodules() {
+export function parseGitmodules() {
   const map = {};
   let text = '';
   try { text = readFileSync(join(ROOT, '.gitmodules'), 'utf8'); } catch { return map; }
@@ -169,12 +176,12 @@ function parseGitmodules() {
   return map;
 }
 
-function readPkg(p) {
+export function readPkg(p) {
   return JSON.parse(readFileSync(join(ROOT, p, 'package.json'), 'utf8'));
 }
 
 /** Find the submodule root that contains `p` (a path may live under a submodule). */
-function sourceFor(p, submodules) {
+export function sourceFor(p, submodules) {
   if (submodules[p]) return { kind: 'submodule', repo: submodules[p], path: p };
   for (const subPath of Object.keys(submodules)) {
     if (p === subPath || p.startsWith(subPath + '/')) {

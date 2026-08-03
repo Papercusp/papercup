@@ -638,58 +638,6 @@ export async function runBackfillSweep(
       return __sweepState.lastResult;
     }
 
-    // WI-7327: the LIVE-SCHEMA half of the width contract, run ONCE per sweep.
-    //
-    // `fitsProseColumns(resolved.dims)` above compares the EMBEDDER against the
-    // CONSTANT, so it is structurally blind to the one skew that matters:
-    // constant moved, migration didn't. Both sides then read the SAME new width,
-    // the guard passes, and every UPDATE is rejected by pgvector and swallowed by
-    // the per-row catch — which is precisely how 9.5 hours of zero-yield sweeps
-    // produced no log line at all. A guard that agrees with itself is the failure
-    // this file's own docblock warned about; one catalog query per sweep closes
-    // it, and per-sweep is cheap enough to be unconditional.
-    //
-    // Judged PER TARGET, not globally: a partially-applied width migration leaves
-    // some columns correct, and halting those too would turn a partial outage into
-    // a total one.
-    const widthRows = await sql.unsafe<Array<{ tbl: string; col: string; dims: number }>>(
-      `SELECT n.nspname || '.' || c.relname AS tbl, a.attname AS col, a.atttypmod AS dims
-         FROM pg_attribute a
-         JOIN pg_class c ON c.oid = a.attrelid
-         JOIN pg_namespace n ON n.oid = c.relnamespace
-        WHERE c.relkind = 'r'
-          AND a.attnum > 0
-          AND NOT a.attisdropped
-          AND format_type(a.atttypid, NULL) = 'vector'`,
-    );
-    const liveWidth = new Map<string, number>(
-      widthRows.map((r) => [`${r.tbl}|${r.col}`, Number(r.dims)]),
-    );
-    const widthSkew = computeProseColumnWidthSkew(
-      TARGETS.flatMap((t) => {
-        const dims = liveWidth.get(`${t.table}|${t.embedCol}`);
-        // Absent => unjudgeable (the per-target existence probe below reports it).
-        return dims === undefined ? [] : [{ table: t.table, column: t.embedCol, dims }];
-      }),
-    );
-    const skewedTables = new Set(widthSkew.map((s) => s.table));
-    if (widthSkew.length) {
-      console.error(
-        `[embed-backfill] SCHEMA WIDTH SKEW — refusing ${widthSkew.length} target(s): ` +
-          widthSkew
-            .map(
-              (s) =>
-                `${s.table}.${s.column} is vector(${s.liveDims}) but this code emits ${s.declaredDims}`,
-            )
-            .join('; ') +
-          `. Every write to those columns would be rejected by pgvector and counted as a per-row ` +
-          `error, yielding a sweep that reports zero work and logs nothing — the silent total-failure ` +
-          `shape of WI-7327. Cause is almost always a width migration that has not run (or ran ` +
-          `partially) against THIS database; db:check_drift lists unapplied ones. Fix the schema — ` +
-          `do NOT lower PROSE_VECTOR_DIMS to match, that re-embeds the corpus into a weaker space.`,
-      );
-    }
-
     // WI-2905 fairness: ROTATE which target leads each sweep. Combined with the
     // per-target row cap, no single backlogged table can monopolize the shared
     // daily embed budget: if the budget exhausts mid-sweep, the table that paid
@@ -702,32 +650,63 @@ export async function runBackfillSweep(
     const byTable = new Map<string, BackfillStats>();
     for (const target of rotated) {
       try {
-        // WI-7327: this target's column is the wrong width. Embedding into it
-        // cannot succeed, so spending the budget to find that out row-by-row is
-        // pure waste — the skew was already reported LOUDLY once above.
-        if (skewedTables.has(target.table)) {
-          byTable.set(target.table, {
-            table: target.table,
-            scanned: 0,
-            embedded: 0,
-            errors: 0,
-            durationMs: 0,
-          });
-          continue;
-        }
         // Column existence probe; skip if migration 061 hasn't run. The same probe
         // reports whether migration 530's `<embedCol>_mode` discriminator exists —
         // without it the sweep must fall back to the legacy NULL-only predicate
         // (an older DB still backfills; it just can't self-heal a space switch).
-        const c = await sql.unsafe<Array<{ column_name: string }>>(
-          `SELECT column_name FROM information_schema.columns
-            WHERE table_schema = split_part($1, '.', 1)
-              AND table_name   = split_part($1, '.', 2)
-              AND column_name  IN ($2, $3)`,
+        //
+        // WI-7327: it ALSO returns each column's LIVE width (`pg_attribute.atttypmod`,
+        // which for pgvector IS the dimension — no varchar-style +4). That is the
+        // live-schema half of the width contract, and it is folded into THIS query
+        // rather than a separate probe deliberately: an extra `sql.unsafe` call
+        // ahead of an existing one silently shifts every positional mock in the
+        // sibling test file, a trap this repo has paid for before.
+        const c = await sql.unsafe<Array<{ column_name: string; dims: number | null }>>(
+          `SELECT col.column_name, a.atttypmod AS dims
+             FROM information_schema.columns col
+             LEFT JOIN pg_namespace n ON n.nspname = col.table_schema
+             LEFT JOIN pg_class pc ON pc.relnamespace = n.oid AND pc.relname = col.table_name
+             LEFT JOIN pg_attribute a
+               ON a.attrelid = pc.oid AND a.attname = col.column_name AND NOT a.attisdropped
+            WHERE col.table_schema = split_part($1, '.', 1)
+              AND col.table_name   = split_part($1, '.', 2)
+              AND col.column_name  IN ($2, $3)`,
           [target.table, target.embedCol, modeColOf(target)],
         );
         const cols = new Set(c.map((r) => r.column_name));
         if (!cols.has(target.embedCol)) {
+          byTable.set(target.table, { table: target.table, scanned: 0, embedded: 0, errors: 0, durationMs: 0 });
+          continue;
+        }
+        // WI-7327: the column EXISTS but is the wrong width — the state that
+        // caused 9.5h of silent total failure. `fitsProseColumns` above cannot
+        // see it: it compares the embedder to the CONSTANT, and in this state
+        // both agree. Every UPDATE here would be rejected by pgvector and
+        // swallowed by the per-row catch, yielding a sweep that reports zero work
+        // and logs nothing. Refuse the target LOUDLY instead of burning a batch
+        // of embeds per tick to rediscover it.
+        //
+        // An UNMEASURED width (null — no matching pg_attribute row) is
+        // unjudgeable, never skew: absence of evidence must not become a false
+        // total-failure alarm.
+        const liveDims = c.find((r) => r.column_name === target.embedCol)?.dims;
+        const widthSkew =
+          liveDims === null || liveDims === undefined
+            ? []
+            : computeProseColumnWidthSkew([
+                { table: target.table, column: target.embedCol, dims: Number(liveDims) },
+              ]);
+        if (widthSkew.length > 0) {
+          const s = widthSkew[0]!;
+          console.error(
+            `[embed-backfill] SCHEMA WIDTH SKEW — refusing ${s.table}.${s.column}: it is ` +
+              `vector(${s.liveDims}) but this code emits ${s.declaredDims}. Every write would be ` +
+              `rejected by pgvector and counted as a per-row error, so the sweep would report zero ` +
+              `work and log nothing — the silent total-failure shape of WI-7327. Cause is almost ` +
+              `always a width migration that has not run (or ran partially) against THIS database; ` +
+              `db:check_drift lists unapplied ones. Fix the SCHEMA — do NOT lower PROSE_VECTOR_DIMS ` +
+              `to match, which would re-embed the corpus into a weaker space.`,
+          );
           byTable.set(target.table, { table: target.table, scanned: 0, embedded: 0, errors: 0, durationMs: 0 });
           continue;
         }
