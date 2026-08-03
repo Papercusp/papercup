@@ -96,20 +96,20 @@ export default defineTool({
   name: 'loop:checkpoint',
   profile: 'engineer',
   description:
-    "Write (or clear) your su AUTO loop's carry-note — a compressed 'note to my next self' a COLD loop wake " +
-    '(reset / recycle) reconstructs its working state from (your transcript does NOT carry across a cold wake). ' +
+    "Write (or clear) your su AUTO loop's carry-note — the compressed 'note to my next self' a COLD wake " +
+    '(reset/recycle) rebuilds its working state from; your transcript does NOT survive one. ' +
     'Pass the structured fields { did, left, insight, next } OR a raw { note }. ' +
-    "Keyed by the loop's ownerId — stable across reset/recycle (a cold successor reads the SAME note). " +
-    'Replace-on-write; blank/null clears — except { walls } rows (owner-gated) and { checks } rows ' +
-    '(external-state claims + probes): both render into every wake until you pass []. ' +
-    'Returns { ok, harness, ownerId, cleared, length, verified, contentHash, walls, checks }. ' +
-    'Writes are verify-read (checkpoint_verify_failed on a miss — WI-7124).',
+    "Keyed by the loop's ownerId, so a cold successor reads the SAME note. " +
+    'Replace-on-write; blank/null clears — except { walls } (owner-gated) and { checks } ' +
+    '(external-state claims + probes), which render into every wake until you pass []. ' +
+    'Returns { ok, harness, ownerId, cleared, length, verified, contentHash, walls, checks }; ' +
+    'writes are verify-read (checkpoint_verify_failed on a miss).',
   guidance: {
     when:
-      "Before you end a turn on a COLD loop (carry:'cold'): persist what the next cold wake needs to continue — " +
+      "Before you end a turn on a COLD loop (carry:'cold'): persist what the next cold wake needs — " +
       'what you did, what is left, the key non-obvious insight, and the single next action. Keep it COMPRESSED ' +
-      '(facts, not a transcript). Until the first checkpoint exists a cold loop silently stays WARM (the P-006 ' +
-      'no-anchor guard), and a cold loop that stops checkpointing keeps restarting from a stale note.',
+      '(facts, not a transcript). Until the first checkpoint exists a cold loop silently stays WARM (P-006 ' +
+      'no-anchor guard), and one that stops checkpointing keeps restarting from a stale note.',
     notWhen:
       "A WARM loop (carry:'warm', the default) carries its live transcript across wakes and needs no carry-note. " +
       'Not for work-item state — that is work_items:checkpoint.',

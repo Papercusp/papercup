@@ -53,6 +53,8 @@ import {
 /** The events the shared registrar attaches to — snapshotted so this test leaves no
  *  listeners behind on the shared `process` object for sibling suites to trip over. */
 const HOOK_EVENTS = ['SIGTERM', 'SIGINT', 'uncaughtException'] as const;
+type HookEvent = (typeof HOOK_EVENTS)[number];
+type AnyListener = (...args: never[]) => void;
 
 /**
  * One row per `node-child` sidecar. `registryName` MUST match the entry's `name` in
@@ -90,11 +92,11 @@ const NODE_CHILD_SIDECARS: ReadonlyArray<{
 ];
 
 describe('sidecar shutdown hooks register on SPAWN, not at a call site (WI-7249 / D-011)', () => {
-  let baseline: Map<string, Set<unknown>>;
+  let baseline: Map<HookEvent, Set<AnyListener>>;
 
   beforeEach(() => {
     baseline = new Map(
-      HOOK_EVENTS.map((evt) => [evt as string, new Set<unknown>(process.listeners(evt))]),
+      HOOK_EVENTS.map((evt) => [evt, new Set<AnyListener>(process.listeners(evt) as AnyListener[])]),
     );
     _resetSidecarShutdownHookRegistryForTests();
   });
@@ -104,11 +106,9 @@ describe('sidecar shutdown hooks register on SPAWN, not at a call site (WI-7249 
     // idempotency set but not the real listeners, so without this the suite would leak
     // a handler per case and eventually trip Node's max-listeners warning.
     for (const evt of HOOK_EVENTS) {
-      const before = baseline.get(evt) ?? new Set();
-      for (const listener of process.listeners(evt)) {
-        if (!before.has(listener)) {
-          process.removeListener(evt, listener as (...args: unknown[]) => void);
-        }
+      const before = baseline.get(evt) ?? new Set<AnyListener>();
+      for (const listener of process.listeners(evt) as AnyListener[]) {
+        if (!before.has(listener)) process.removeListener(evt, listener);
       }
     }
     for (const sidecar of NODE_CHILD_SIDECARS) sidecar.setProcess(null);

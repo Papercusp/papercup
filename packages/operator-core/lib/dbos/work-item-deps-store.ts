@@ -265,6 +265,30 @@ export async function syncWorkItemDepEdges(
   const { sql } = getOrgPg();
   const qualifiedBlockedRef = featureRef(harnessSlug, featureId);
   await sql.begin(async (tx) => {
+    // SERIALIZE concurrent replaces OF THE SAME BLOCKED ITEM (P-011).
+    //
+    // This function's contract is REPLACE — "set this item's blocks edges to EXACTLY
+    // blockedBy" — and delete-then-insert does not deliver that under concurrency. At
+    // READ COMMITTED, two overlapping calls each run their DELETE against a snapshot that
+    // does not yet contain the other's uncommitted INSERT, so both delete nothing and take
+    // NO row locks (there are no rows yet to lock — it is a phantom, not a lost update).
+    // Both INSERTs then land on different unique keys and both commit, leaving the UNION
+    // of two intents: a blocker set no writer asked for. Reproduced 3/3 in
+    // dependency-concurrency.integration.test.ts before this lock existed.
+    //
+    // The damaging direction is REMOVAL: a sync that drops a blocker races one that keeps
+    // it, the drop is lost, and the stale edge withholds the item forever — INV-05's
+    // "work silently stalls and no error is raised anywhere", arriving with every counter
+    // reporting success.
+    //
+    // A transaction-scoped advisory lock keyed on the BLOCKED item is the narrowest fix:
+    // it is released automatically on commit/rollback, different items hash to different
+    // keys so unrelated writers never contend, and exactly one lock is taken per
+    // transaction so no lock-ordering deadlock is possible. Raising the isolation level
+    // instead would push serialization failures onto every caller of a writer that is
+    // deliberately fire-and-forget.
+    await tx`SELECT pg_advisory_xact_lock(hashtext(${`wid:${DEFAULT_COORD_WORKSPACE}:${qualifiedBlockedRef}` as never}))`;
+
     const blocked = await resolveDepEndpoint(tx as never, harnessSlug, featureId);
     // Clear BOTH endpoint forms for this blocked item, not just the one we are about to write:
     // rows minted under the old feature-only assumption are otherwise left behind, inert, beside

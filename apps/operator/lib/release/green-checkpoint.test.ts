@@ -3321,6 +3321,37 @@ describe('attemptFlakeAbsorption (orchestration — injected isolation runner)',
       }
     });
 
+    // EI-19369790810564409: a deterministic AssertionError signature must win over the
+    // load-based wording UNCONDITIONALLY — even on a genuinely SATURATED host, where the
+    // pre-existing load-corroboration guard (EI-19368177649203822) would otherwise still
+    // print "consistent with ambient host load" for a failure that is provably not
+    // load-shaped (a saturated CPU can only make a comparison slower, never wrong).
+    it('a SLOW failing attempt with an assertion signature is NOT blamed on ambient load, even on a saturated host', async () => {
+      const logs: string[] = [];
+      const slowMs = ISOLATION_LOAD_STARVATION_MIN_MS + 5_000;
+      const isolationRun = async ({ workspace, file }: { workspace: string; file: string }): Promise<IsolationResult> => ({
+        workspace,
+        file,
+        passed: false,
+        durationMs: slowMs,
+        hasAssertionSignature: true,
+      });
+      await attemptFlakeAbsorption(INCIDENT_OUTPUT, isolationRun, (s) => logs.push(s), {
+        sleep: async () => {},
+        // The box really is oversubscribed — if load alone drove the wording, this would
+        // read "consistent with ambient host load". It must not.
+        loadPerCore: () => ISOLATION_LOAD_STARVATION_MIN_LOAD_PER_CORE + 0.5,
+      });
+      const attributionLines = logs.filter((l) => l.includes('still failing after attempt'));
+      expect(attributionLines.length).toBeGreaterThan(0);
+      for (const line of attributionLines) {
+        expect(line).toContain(`took ${slowMs}ms`);
+        expect(line).toContain('deterministic AssertionError, not a timeout');
+        expect(line).toContain('NOT load-shaped however busy the host is');
+        expect(line).not.toContain('consistent with ambient host load');
+      }
+    });
+
     it('a failing attempt with NO measured duration falls back to the unattributed wording', async () => {
       const logs: string[] = [];
       const isolationRun = async ({ workspace, file }: { workspace: string; file: string }): Promise<IsolationResult> => ({
@@ -3493,6 +3524,18 @@ describe('attemptFlakeAbsorption (orchestration — injected isolation runner)',
       expect(outputHasTimingSignature('Test timed out in 5000ms')).toBe(true);
       expect(outputHasTimingSignature('Exceeded timeout of 5000ms for a hook')).toBe(true);
       expect(outputHasTimingSignature('every registry entry is in the baseline')).toBe(false);
+    });
+
+    // EI-19369790810564409: outputHasAssertionSignature mirrors outputHasTimingSignature —
+    // direct, positive evidence of a deterministic vitest assertion failure, independent of
+    // the case-list comparison isDeterministicFailureShape needs.
+    it('outputHasAssertionSignature detects AssertionError / "expected ... to ..." diffs, case-insensitively', () => {
+      expect(
+        outputHasAssertionSignature("AssertionError: expected [ 'a', 'b' ] to deeply equal []"),
+      ).toBe(true);
+      expect(outputHasAssertionSignature('assertionerror: something failed')).toBe(true);
+      expect(outputHasAssertionSignature('expected 3 to equal 4')).toBe(true);
+      expect(outputHasAssertionSignature('every registry entry is in the baseline')).toBe(false);
     });
   });
 

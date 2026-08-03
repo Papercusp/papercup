@@ -226,6 +226,14 @@ describe('two writers racing edge sync on the same item (P-011) — @covers INV-
     // landing before both inserts, i.e. a lost replace) or the empty set (an insert lost
     // entirely, which silently DROPS a dependency and is the D-017 inert-edge failure
     // arriving by a different route).
+    //
+    // ⚠ THIS TEST FOUND A REAL DEFECT AND IS THE REGRESSION GUARD FOR ITS FIX. Before
+    // P-011 this failed 3/3 with the UNION `['EI-x','EI-y']`: at READ COMMITTED both
+    // transactions' DELETEs ran against snapshots lacking the other's uncommitted INSERT,
+    // so both deleted nothing, took no row locks (a phantom — there were no rows to lock),
+    // and both INSERTs landed. `syncWorkItemDepEdges` now takes a transaction-scoped
+    // advisory lock keyed on the blocked item, which is what makes the assertion below
+    // hold. If this ever reds again, that lock has been removed or bypassed.
     await Promise.all([
       syncWorkItemDepEdges(H, 'EI-b', ['EI-x']),
       syncWorkItemDepEdges(H, 'EI-b', ['EI-y']),
