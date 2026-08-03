@@ -448,6 +448,23 @@ export default defineTool({
         }),
       )
       .catch(() => null);
-    return bulkContent(memory ? { ...env, memory } : env);
+    // EI-19398967670466001 — hoist a SINGLE-item create's id to the TOP LEVEL. The bulk
+    // envelope ({ ok, results, counts }) is not guessable from a SINGULAR create, and the
+    // singular arg form invites a singular result read — so `const { id } = await
+    // work_items.create({...})` silently yields undefined. That fails in the expensive
+    // direction: the create SUCCEEDS (ok:true, counts.ok=1), so only the SECOND half of a
+    // scripted create→complete / →claim / →comment chain no-ops, leaving a real work-item
+    // parked in `wip` AND assigned — claimed, so no peer picks it up; unfinished, so
+    // nothing progresses it. An invisible stall rather than a visible error (measured
+    // 2026-08-03: stranded WI-7301, recovered only because code:run's fieldMisses guard
+    // flagged the undefined read).
+    //
+    // Purely additive and single-item ONLY: `results` is untouched, and a genuine BATCH
+    // hoists nothing — so no caller can start reading `id` on a multi-item create, where
+    // it would be ambiguous.
+    const sole = env.results.length === 1 ? (env.results[0] as { ok?: boolean; id?: string }) : undefined;
+    const soleId = sole?.ok === true ? sole.id : undefined;
+    const withSoleId = soleId ? { ...env, id: soleId } : env;
+    return bulkContent(memory ? { ...withSoleId, memory } : withSoleId);
   },
 });

@@ -29,6 +29,8 @@ import { planScheduleRoutineName } from './materialize-plan-schedule';
 import { FEATURE_FAMILY_KINDS } from '../../work-items';
 import { evaluatePlanStartReadiness } from '../../agent-tools/plans/plan-input-validation';
 import { routineStorageSlug } from '../../pot-membership';
+import { setFrontmatterScalar } from '../../agent-tools/plans/transfer-owner';
+import { hashPlanContent } from '@papercusp/plan-parser';
 
 /** launched_by label for a scheduled run's plan_runs row. */
 const PLAN_RUN_LAUNCHER = 'system:plan-run';
@@ -231,15 +233,25 @@ export async function runScheduledPlanFire(
   //    the instructions and not the inputs, which is exactly the inertness this plan
   //    exists to fix. `template_data` holds the RESOLVED inputs (overrides merged), so
   //    the instance records what this run actually ran with, not the template default.
+  //
+  //    EI-19389216343173748: the template's markdown is cloned VERBATIM, frontmatter
+  //    included — so left alone, `content`'s self-declared `slug:` stays the PARENT's,
+  //    disagreeing with this row's own `plan_slug` (a hard `slug_mismatch` per
+  //    plans/lint.ts, and the value ~10 read sites fall back to whenever frontmatter.slug
+  //    is present). Rewrite just that one line so the clone's self-declared identity
+  //    agrees with its canonical row at the source, and rehash accordingly — the content
+  //    hash must reflect what is actually stored, not the template's.
   const runInputsJson = runInputs === null || runInputs === undefined ? null : JSON.stringify(runInputs);
   const inputSchemaJson =
     template.input_schema == null ? null : JSON.stringify(template.input_schema);
+  const instanceContent = setFrontmatterScalar(template.content, 'slug', instanceSlug);
+  const instanceContentHash = hashPlanContent(instanceContent);
   await sql`
     INSERT INTO harness_shared.harness_plans
       (workspace_id, harness_slug, plan_slug, title, status, content, content_hash,
        template_slug, run_seq, origin, template, template_data, input_schema)
     VALUES (${workspaceId}, ${planStorageSlug}, ${instanceSlug}, ${template.title}, 'active',
-            ${template.content}, ${template.content_hash}, ${templateSlug}, ${runSeq}, 'local',
+            ${instanceContent}, ${instanceContentHash}, ${templateSlug}, ${runSeq}, 'local',
             ${template.template}, ${runInputsJson}::text::jsonb, ${inputSchemaJson}::text::jsonb)
     ON CONFLICT (workspace_id, harness_slug, plan_slug) DO NOTHING
   `;

@@ -21,6 +21,7 @@ import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import { createWorkItem, getWorkItem, linkWorkItem, resolveWorkItemRef, isWorkItemKind, setWorkItemState, ensureClaimHoldAttribution, familyOf, type WorkItem, type WorkItemKind } from '../../work-items';
 import { planItemRef, PLAN_ITEM_KIND } from '../../issue-blocks-merge';
+import type { PlanItemStamp } from '../../plan-items/convert';
 import { findMirroredOpenItem } from './mirror-guard';
 import { findSemanticDupes, type SemanticDupeCandidate } from './semantic-dupe-guard';
 import { findRecentLexicalDupes } from './recent-lexical-dupe-guard';
@@ -333,6 +334,31 @@ export async function createOneWorkItem(
       'auto-attributed at create (EI-18698328828208444): payload._claimHold was set directly ' +
         'in work_items:create\'s payload arg with no claim_hold_by/held_open_by — stamped to the creator.',
     );
+    // EI-19390496242545842: `targetPlanItem` (the `plan_item:{slug,item}` create arg) used
+    // to write ONLY the coord_links coverage edge below — but work_items:complete's
+    // plan-item auto-flip (synchronizeFinishWork → finishPlanStamp) reads a SEPARATE
+    // mechanism: a `payload.plan_item` STAMP ({ plan_slug, item_id, harness_slug }). Every
+    // OTHER path that mints a work-item FOR a plan item (plan-run scheduled minting in
+    // plan-run-action.ts, plan launch/promotion in plan-workitem-promotion-run.ts,
+    // convert-at-pickup in plan-items/convert.ts) writes this stamp; this one never did — so
+    // an item created via work_items:create{plan_item} could NEVER auto-flip its plan item's
+    // status at completion, no matter how the coverage edge below turned out. It always
+    // reported `planItem:'not-linked'` in the completion receipt. Stamp it here too, so
+    // `work_items:complete` can find it. Never clobbers an explicit caller-supplied
+    // `payload.plan_item` (a caller who set it deliberately knows what they're doing).
+    const planItemStampHarness = harnessForItem ?? ctx.harnessSlug ?? undefined;
+    const payloadWithPlanStamp =
+      args.targetPlanItem?.slug && args.targetPlanItem?.itemId && planItemStampHarness &&
+      !(payloadFinal && typeof payloadFinal === 'object' && 'plan_item' in payloadFinal)
+        ? {
+            ...(payloadFinal ?? {}),
+            plan_item: {
+              plan_slug: args.targetPlanItem.slug,
+              item_id: args.targetPlanItem.itemId,
+              harness_slug: planItemStampHarness,
+            } satisfies PlanItemStamp,
+          }
+        : payloadFinal;
     let workItem = await createWorkItem({
       kind: args.kind as WorkItemKind,
       title: args.title,
@@ -342,7 +368,7 @@ export async function createOneWorkItem(
       severity: args.severity,
       parent: args.parent,
       topics: args.topics,
-      payload: payloadFinal,
+      payload: payloadWithPlanStamp,
       createdBy: ctx.ownerId,
       urgent: args.urgent,
       // B-LOOP-4 (loop-routines P-007 / D-008): atomic create+claim. `assign_to`

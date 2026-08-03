@@ -32,6 +32,15 @@ vi.mock('../../work-items', () => ({
   // 4 write-path tests deterministically (WI-2900 gate triage).
   markFeatureProgress: () => Promise.resolve(true),
   markIssueProgress: () => Promise.resolve(true),
+  // EI-19395730805289668: same trap, third instance — checkpoint.ts now also imports
+  // isClaimHoldParked (for the prose-pause nudge), and an unmocked export is `undefined`,
+  // which throws at the call and fails EVERY write-path test ok:false exactly as described
+  // above. Re-implemented rather than importActual'd on purpose: the point of this mock is
+  // to keep work-items.ts (and its DB dependencies) out of a unit test. Mirrors the real
+  // predicate's text-compare, which matches both the boolean and the legacy string form.
+  isClaimHoldParked: (payload: unknown) =>
+    !!payload && typeof payload === 'object' &&
+    String((payload as Record<string, unknown>)._claimHold) === 'true',
 }));
 import checkpoint from './checkpoint';
 
@@ -480,6 +489,74 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
         ['WI-THEIRS', false],
       ]);
       expect(out.results[1].error).toContain('not_holder');
+    });
+  });
+
+  describe('EI-19395730805289668: pauseNotEnforcedWarning — a pause declared only in prose', () => {
+    // The real 2026-08-03T02:05Z note, owner name stripped for the shipped-source identity lint.
+    const PAUSE_NOTE =
+      'P-001 (real gym corpus) — PAUSED at owner request [owner:redacted 2026-08-02 "find a good stopping point"]';
+
+    const write = async (item: Record<string, unknown>, stored: string) => {
+      getWorkItem.mockResolvedValue({ harness: 'papercup', ...item });
+      setWorkItemCheckpointWithPrior.mockResolvedValue({ stored, priorLength: null });
+      getWorkItemCheckpoint.mockResolvedValue(stored);
+      return one({ id: (item.id as string) ?? 'WI-7', checkpoint: stored });
+    };
+
+    it('warns when the note declares an owner pause and the item has NO claim hold', async () => {
+      const r = await write({ id: 'WI-7' }, PAUSE_NOTE);
+      expect(r.ok).toBe(true);
+      expect(r.pauseNotEnforcedWarning).toBeDefined();
+      expect(r.pauseNotEnforcedWarning).toContain('work_items:hold_open');
+    });
+
+    it('stays SILENT when the item already carries a claim hold — the author did it right', async () => {
+      const r = await write({ id: 'WI-7', payload: { _claimHold: true } }, PAUSE_NOTE);
+      expect(r.ok).toBe(true);
+      expect(r.pauseNotEnforcedWarning).toBeUndefined();
+    });
+
+    it('honours the legacy string form of the hold', async () => {
+      const r = await write({ id: 'WI-7', payload: { _claimHold: 'true' } }, PAUSE_NOTE);
+      expect(r.pauseNotEnforcedWarning).toBeUndefined();
+    });
+
+    it('does NOT warn on an ordinary progress note', async () => {
+      const r = await write({ id: 'WI-7' }, '## Did\nLanded the parser fix; 29/29 green.\n## Next\nP-005.');
+      expect(r.ok).toBe(true);
+      expect(r.pauseNotEnforcedWarning).toBeUndefined();
+    });
+
+    it('does NOT warn on prose that merely MENTIONS a pause (the false-positive class)', async () => {
+      const r = await write({ id: 'WI-7' }, 'Do not touch p2p-ship/WI-3500/P-306 (paused). Continuing here.');
+      expect(r.pauseNotEnforcedWarning).toBeUndefined();
+    });
+
+    it('does NOT warn on a CLEAR — there is no declaration left to enforce', async () => {
+      getWorkItem.mockResolvedValue({ id: 'WI-7', harness: 'papercup' });
+      setWorkItemCheckpointWithPrior.mockResolvedValue({ stored: null, priorLength: 400 });
+      const r = await one({ id: 'WI-7' });
+      expect(r.cleared).toBe(true);
+      expect(r.pauseNotEnforcedWarning).toBeUndefined();
+    });
+
+    it('stays SILENT when the item could not be resolved — unknown hold state is not an absent one', async () => {
+      // Fail-safe direction on purpose: reporting "no hold" from a failed read would nag the
+      // authors who did set one, which is how a warn-only nudge earns being ignored.
+      getWorkItem.mockResolvedValue(null);
+      setWorkItemCheckpointWithPrior.mockResolvedValue({ stored: PAUSE_NOTE, priorLength: null });
+      getWorkItemCheckpoint.mockResolvedValue(PAUSE_NOTE);
+      const r = await one({ id: 'WI-7', checkpoint: PAUSE_NOTE, harness: 'papercup' });
+      expect(r.ok).toBe(true);
+      expect(r.pauseNotEnforcedWarning).toBeUndefined();
+    });
+
+    it('never blocks the write — the checkpoint still stores and verifies', async () => {
+      const r = await write({ id: 'WI-7' }, PAUSE_NOTE);
+      expect(r.ok).toBe(true);
+      expect(r.verified).toBe(true);
+      expect(r.length).toBe(PAUSE_NOTE.length);
     });
   });
 
