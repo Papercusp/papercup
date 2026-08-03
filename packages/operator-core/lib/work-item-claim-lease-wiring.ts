@@ -22,7 +22,7 @@
  * partitioned the acquire fails OPEN to a local advisory lease and
  * `work-item-claim-reconcile.ts` (P-005) resolves any double-claim on reconvergence.
  */
-import { FLAGS } from '@papercusp/flags';
+import { FLAGS, FLAG_DEFAULTS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import { lazyFlagRefresh } from './lazy-flag-refresh';
 import { activeWorkspaceId } from './workspace-registry';
@@ -73,16 +73,26 @@ async function refreshClaimLease(): Promise<void> {
 // single box the authority is self, so the skipped lease is a local no-op.
 const armFlagRefresh = lazyFlagRefresh(refreshClaimLease, {
   keys: [FLAGS.WORKITEM_CLAIM_LEASE],
+  // SEEDED 2026-08-03 (WI-8887). Before this, the window served the hardcoded `false` above while
+  // the flag is DEFAULT ON, so every process's first claim skipped its lease. The old declaration
+  // (kind 'selects-behaviour') justified that as an acceptable degradation and was correct — but
+  // justifying a divergence is second-best to not having one. The deref is LAZY (inside this
+  // callback), the form check-no-module-scope-flag-subscribe.mjs documents as correct.
+  seed: () => {
+    claimLeaseOn = FLAG_DEFAULTS[FLAGS.WORKITEM_CLAIM_LEASE];
+  },
   unpopulated: {
-    kind: 'selects-behaviour',
-    serves: 'false → the claim proceeds WITHOUT taking the cross-Swarm lease',
-    safeBecause:
-      'that is precisely the documented FAIL-OPEN posture (D-007), and work-item-claim-reconcile.ts ' +
-      '(P-005) resolves any resulting double-claim on reconvergence. On a single box the authority ' +
-      'is self, so the skipped lease is a local no-op. It is a self-healing DEGRADATION of at most ' +
-      'one claim per process, never a wrong answer. (The flag is DEFAULT ON — measured, not assumed: ' +
-      'FLAG_DEFAULTS[WORKITEM_CLAIM_LEASE] === true — so this window does diverge from production; ' +
-      'it is the consequence of the divergence that makes it acceptable.)',
+    kind: 'seeded-from-flag-default',
+    serves:
+      'FLAG_DEFAULTS[WORKITEM_CLAIM_LEASE] — currently true, i.e. the lease IS taken, which is ' +
+      'production. The window now diverges only where a runtime OVERRIDE holds the flag OFF, and ' +
+      'self-heals within one refresh round-trip. The prior justification still covers that residual ' +
+      'and is kept because it is what makes the residual acceptable: a skipped lease is the ' +
+      'documented FAIL-OPEN posture (D-007), work-item-claim-reconcile.ts (P-005) resolves any ' +
+      'resulting double-claim on reconvergence, and on a single box the authority is self so the ' +
+      'skip is a local no-op — a self-healing degradation of at most one claim per process, never a ' +
+      'wrong answer. NOTE the seed does not touch the ERROR path: a getFlag failure still lands on ' +
+      "`false` via refreshClaimLease's catch, deliberately.",
   },
 });
 

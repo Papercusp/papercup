@@ -228,12 +228,18 @@ describe('why an AST walk cannot replace this scanner (measured, not assumed)', 
       ts.forEachChild(node, walk);
     };
     walk(sf);
-    // The first template ends mid-comment, right AT the offending backtick —
-    // getText() includes that terminator, so the node's text ends '--`'. The SQL
-    // body it was supposed to carry is truncated at the comment.
-    expect(texts[0].endsWith('--`')).toBe(true);
+    // Measured, not assumed. The first template node is:
+    //   "`\n  UPDATE t SET a = 1\n   WHERE id = 2\n     -- the bare `"
+    // It TERMINATES at the offending backtick, mid-comment. Everything the SQL
+    // was supposed to carry after that point is simply not in this node.
+    expect(texts[0].endsWith('`')).toBe(true);
+    expect(texts[0]).toContain('-- the bare');
     expect(texts[0]).not.toContain('>=');
     expect(texts[0]).not.toContain('AND b <=');
+    // The remainder re-parses as a SECOND, bogus template — which is why the
+    // node count is 2 and why nothing downstream looks obviously wrong.
+    expect(texts).toHaveLength(2);
+    expect(texts[1]).toContain('AND b <=');
     // So an AST walk asking "is there a backtick INSIDE this template's SQL?"
     // correctly answers no, on a file that is broken in exactly that way. The
     // evidence has been reinterpreted as syntax. A byte scanner is immune.

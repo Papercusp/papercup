@@ -25,7 +25,7 @@
  * `when` falls false ⇒ no `cache.bumpTags` fires (byte-identical to no cache).
  */
 
-import { FLAGS } from '@papercusp/flags';
+import { FLAGS, FLAG_DEFAULTS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import { lazyFlagRefresh } from '../lazy-flag-refresh';
 import { registerReactionRule } from './registry';
@@ -63,22 +63,34 @@ async function refreshCacheEca(): Promise<void> {
 // one: rules.ts calls the registrar at MODULE SCOPE, so arming there would touch the flag
 // binding during rules.ts's import and simply move the unimportability one file over.
 //
-// Safe to arm lazily: the unpopulated value is `false`, which is this module's OWN documented
-// fail-CLOSED state (see the `catch` above) — the rule's `when` falls false and no tag bump
-// fires. The cost of the one pre-refresh read is a single skipped invalidation in that process,
-// self-healing on the next bump for the same tag; it cannot produce a WRONG value, only a
-// briefly stale cached one. Contrast issues-engineer.ts, whose unpopulated state points at a
-// DEAD partition and is therefore NOT migratable without a boot warm (EI-19448574704459898).
+// Lazy arming was already safe here: the unpopulated value was `false`, this module's OWN
+// documented fail-CLOSED state (see the `catch` above) — the rule's `when` falls false and no tag
+// bump fires, costing one skipped invalidation per process, self-healing on the next bump for the
+// same tag. It could never produce a WRONG value, only a briefly stale cached one.
+//
+// SEEDED anyway, 2026-08-03 (WI-8887): the flag is DEFAULT ON, so that window still served
+// non-production behaviour on the strength of a justification, and removing the divergence beats
+// justifying it. (The contrast this comment used to draw — with issues-engineer.ts, whose
+// unpopulated state pointed at a near-dead partition and which was therefore held back — is no
+// longer a contrast: the same `seed` is what made THAT module migratable too. EI-19448574704459898
+// records why the unseeded version of it was correctly reverted.)
 const armFlagRefresh = lazyFlagRefresh(refreshCacheEca, {
   keys: [FLAGS.CACHE_TAG_ECA],
+  // LAZY deref (inside the callback) — the form check-no-module-scope-flag-subscribe.mjs
+  // documents as correct; only a MODULE-SCOPE FLAG_DEFAULTS[...] read breaks importability.
+  seed: () => {
+    cacheEcaOn = FLAG_DEFAULTS[FLAGS.CACHE_TAG_ECA];
+  },
   unpopulated: {
-    kind: 'selects-behaviour',
-    serves: "false → the rule's sync `when` predicate declines, skipping one cache-tag bump",
-    safeBecause:
-      "false is this module's own documented fail-CLOSED state, and the cost of the skip is a single " +
-      'missed cache invalidation that the next matching event re-bumps — a self-healing DEGRADATION, ' +
-      'never a wrong value served to a reader. (The flag is DEFAULT ON, so this window does diverge ' +
-      'from production; what makes it safe is what the off-branch points at, not the flag default.)',
+    kind: 'seeded-from-flag-default',
+    serves:
+      'FLAG_DEFAULTS[CACHE_TAG_ECA] — currently true, i.e. the rule fires and the tag bump happens, ' +
+      'which is production. The window now diverges only where a runtime OVERRIDE holds the flag ' +
+      'OFF, and self-heals within one refresh round-trip. The prior justification still covers that ' +
+      "residual: declining is this module's own documented fail-CLOSED state, and the cost is a " +
+      'single missed cache invalidation that the next matching event re-bumps — a self-healing ' +
+      'degradation, never a wrong value served to a reader. NOTE the seed does not touch the ERROR ' +
+      "path: a getFlag failure still lands on `false` via refreshCacheEca's catch, deliberately.",
   },
 });
 

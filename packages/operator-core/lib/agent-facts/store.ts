@@ -1324,30 +1324,21 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
         prevailingConfidence: values.size === 1 ? [...values][0] : null,
       };
 
-      // Rank the written row exactly as the sweep would. This MUST stay a
-      // mirror of the ORDER BY above (confidence ASC, expires_at DESC,
-      // updated_at DESC) — a divergence would report a confident survival
-      // verdict that the sweep then contradicts, which is worse than reporting
-      // nothing. `survival-ranking-matches-sweep` in the integration suite pins
-      // them together by predicting a victim and then causing the eviction.
-      const ms = (v: string | Date): number => new Date(v).getTime();
-      const ordered = [...survivors].sort((a, b) => {
-        const byConf = confRank(parseFactConfidence(a.confidence)) - confRank(parseFactConfidence(b.confidence));
-        if (byConf !== 0) return byConf;
-        const byExpiry = ms(b.expires_at) - ms(a.expires_at);
-        if (byExpiry !== 0) return byExpiry;
-        return ms(b.updated_at) - ms(a.updated_at);
-      });
-      // String-compare the ids: `id` is a bigint column, so the driver may hand
-      // back either a number or an exact-precision string and `===` across the
-      // two would silently never match — reporting rank 0 (i.e. "not found")
-      // for every write.
-      const idx = ordered.findIndex((r) => String(r.id) === String(writtenId));
-      if (idx >= 0) {
-        const isLast = idx === ordered.length - 1;
-        const neighbourAbove = isLast && ordered.length > 1 ? ordered[idx - 1] : null;
+      // Rank the written row exactly as the sweep would. The ordering is a
+      // MIRROR of the ORDER BY above, extracted to `sweep-ranking.ts` so it is
+      // a named function with its own unit control rather than an anonymous
+      // comparator — a mirror that drifts reports a confident survival verdict
+      // the sweep then contradicts, which is worse than reporting nothing.
+      // `survival-ranking-matches-sweep` in the integration suite runs BOTH and
+      // fails if they disagree.
+      const { orderAsSweepWould, rankOfId } = await import('./sweep-ranking');
+      const ordered = orderAsSweepWould(survivors);
+      const rank = rankOfId(ordered, writtenId);
+      if (rank > 0) {
+        const isLast = rank === ordered.length;
+        const neighbourAbove = isLast && rank > 1 ? ordered[rank - 2] : null;
         fact.survival = {
-          rank: idx + 1,
+          rank,
           liveCount: ordered.length,
           // Last place ⇒ the next assert by anyone takes this row. On an exact
           // three-key tie SQL may order either row first, so a tied-last fact
