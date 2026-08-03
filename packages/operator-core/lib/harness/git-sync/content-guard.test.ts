@@ -183,3 +183,106 @@ describe('detectContentOffenders — the real registry quarantines an unparseabl
     expect(offenders).toEqual([]);
   });
 });
+
+/**
+ * EI-19393386475030577 — the RECURRENCE GUARD for the raw-NUL class.
+ *
+ * The NUL check itself was never missing; it existed, was tree-wide, and was
+ * green throughout. What was missing is that its only firing point was the
+ * green-checkpoint suite ~55min downstream, so one author's typo red-pinned the
+ * shared gate for the whole fleet (measured 2026-08-03: ~1h blocked, and six
+ * prior instances documented in the class header).
+ *
+ * These tests run against the REAL production registry for the same reason
+ * WI-6683's do: a test injecting its own detector would still pass if the
+ * detector were never REGISTERED — which is exactly the regression to prevent
+ * here. If someone drops `nulBytesDetector` from DEFAULT_CONTENT_DETECTORS, the
+ * class silently reverts to gate-only and this fails.
+ */
+describe('detectContentOffenders — raw NUL is repaired at git-sync, not at the gate (EI-19393386475030577)', () => {
+  // Built numerically so THIS test file never contains a raw NUL of its own
+  // (a literal here would trip the very lint under test).
+  const NUL = String.fromCharCode(0);
+  const withNul = `export const key = \`\${a}${NUL}\${b}\`;\n`;
+  const repaired = 'export const key = `${a}\\x00${b}`;\n';
+
+  it('AUTO-REPAIRS the file in place so it commits this tick — no offender, no LLM fixer', async () => {
+    const files: Record<string, string> = { 'packages/operator-core/lib/keys.ts': withNul };
+    const writes: Array<{ file: string; text: string }> = [];
+
+    const offenders = await detectContentOffenders({
+      repoPath: '/repo',
+      detectors: DEFAULT_CONTENT_DETECTORS,
+      runGit: statusRunGit([' M packages/operator-core/lib/keys.ts']),
+      readText: async (rel) => files[rel] ?? null,
+      writeText: async (rel, text) => {
+        writes.push({ file: rel, text });
+        files[rel] = text;
+      },
+    });
+
+    // Repaired, not quarantined — the whole point: the author's tick still commits.
+    expect(offenders).toEqual([]);
+    expect(writes).toHaveLength(1);
+    expect(writes[0].text).toBe(repaired);
+    // And the repair is real: no NUL survives anywhere in the written content.
+    expect(writes[0].text.includes(NUL)).toBe(false);
+  });
+
+  it('QUARANTINES with an actionable message when auto-repair is unavailable (no writeText)', async () => {
+    const offenders = await detectContentOffenders({
+      repoPath: '/repo',
+      detectors: DEFAULT_CONTENT_DETECTORS,
+      runGit: statusRunGit([' M packages/operator-core/lib/keys.ts']),
+      readText: async () => withNul,
+    });
+
+    const hit = offenders.find((o) => o.detectorKey === 'nul-bytes');
+    expect(hit).toBeDefined();
+    expect(hit!.file).toBe('packages/operator-core/lib/keys.ts');
+    expect(hit!.error).toContain('NUL byte');
+    // Names the line so the fix is one jump away, and prescribes the escape.
+    expect(hit!.error).toContain('line 1');
+    expect(hit!.error).toContain('\\x00');
+    expect(hit!.fixerRole).toBe('content-fixer');
+  });
+
+  it('covers `_retired/`, which the sibling detectors deliberately exclude', async () => {
+    // The CI script and the gate lint both scan _retired/ (no retired-tree
+    // exclusion in either). If the guard excluded it, a NUL there would slip
+    // through git-sync and STILL red the shared gate — the exact gap being closed.
+    const offenders = await detectContentOffenders({
+      repoPath: '/repo',
+      detectors: DEFAULT_CONTENT_DETECTORS,
+      runGit: statusRunGit([' M _retired/papercup/keys.ts']),
+      readText: async () => withNul,
+    });
+    expect(offenders.some((o) => o.detectorKey === 'nul-bytes')).toBe(true);
+  });
+
+  it('skips fixture/snapshot dirs, where a NUL is legitimate test data', async () => {
+    const offenders = await detectContentOffenders({
+      repoPath: '/repo',
+      detectors: DEFAULT_CONTENT_DETECTORS,
+      runGit: statusRunGit([
+        ' M packages/operator-core/lib/__fixtures__/binary.ts',
+        ' M packages/operator-core/lib/fixtures/sample.json',
+      ]),
+      readText: async () => withNul,
+    });
+    expect(offenders.filter((o) => o.detectorKey === 'nul-bytes')).toEqual([]);
+  });
+
+  it('leaves clean sources alone (no false quarantine, no spurious write)', async () => {
+    const writeText = vi.fn(async () => {});
+    const offenders = await detectContentOffenders({
+      repoPath: '/repo',
+      detectors: DEFAULT_CONTENT_DETECTORS,
+      runGit: statusRunGit([' M packages/operator-core/lib/ok.ts', ' M docs/ok.md']),
+      readText: async () => 'export const k = `${a}\\x00${b}`;\n',
+      writeText,
+    });
+    expect(offenders.filter((o) => o.detectorKey === 'nul-bytes')).toEqual([]);
+    expect(writeText).not.toHaveBeenCalled();
+  });
+});

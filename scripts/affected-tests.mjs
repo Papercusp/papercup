@@ -38,6 +38,7 @@ import {
 } from './lib/vitest-summary.mjs';
 import { emptySuiteGuardArgs } from './lib/empty-suite-guard.mjs';
 import { applyWorkerCapEnv } from './lib/worker-cap.mjs';
+import { resolveBatchTimeoutMs, isWatchdogTimeout } from './lib/batch-watchdog.mjs';
 // EI-10542: this runner interleaves its own header/status lines (fd 1/2) with
 // child suite output written synchronously via `stdio: 'inherit'`. On a non-TTY
 // fd (the gate captures to a pipe/file) `console.*` is async-buffered and flushes
@@ -730,19 +731,10 @@ const FRESH_RETRY_MAX_FILES = 15; // a broader red is a real regression, not a f
 // process's event loop — so it fires even while the child is synchronously spinning and
 // this parent is itself blocked waiting on it. Default well below the 120m gate ceiling
 // (generous for a legitimately slow full-workspace suite, but bounded), overridable for a
-// caller who knows a specific workspace runs long.
-const explicitBatchTimeoutMs = process.env.AFFECTED_BATCH_TIMEOUT_MS;
-const BATCH_TIMEOUT_MS =
-  explicitBatchTimeoutMs && Number(explicitBatchTimeoutMs) > 0 ? Number(explicitBatchTimeoutMs) : 20 * 60 * 1000;
-// Slack below the exact deadline: the parent measures elapsed wall-clock itself (Date.now()
-// before/after spawnSync) to positively attribute a kill to OUR watchdog rather than assume
-// it from the signal name alone — `signal === killSignal` alone is ambiguous (the OOM killer
-// or an operator also send SIGKILL) but is unambiguous once it also cleared essentially the
-// whole configured window.
-const BATCH_TIMEOUT_SLACK_MS = 2000;
+// caller who knows a specific workspace runs long. See scripts/lib/batch-watchdog.mjs for
+// the (unit-tested) attribution logic itself.
+const BATCH_TIMEOUT_MS = resolveBatchTimeoutMs(process.env.AFFECTED_BATCH_TIMEOUT_MS, 20 * 60 * 1000);
 const BATCH_KILL_SIGNAL = 'SIGKILL';
-const isWatchdogTimeout = (r) =>
-  r.signal === BATCH_KILL_SIGNAL && r.status === null && (r.__elapsedMs ?? 0) >= BATCH_TIMEOUT_MS - BATCH_TIMEOUT_SLACK_MS;
 
 // A PACKAGED install ships the whole suite (vitest, the test files, quarantine.txt,
 // its own node at sidecar/bin/node) but has NO npm — by design. This script is
@@ -880,7 +872,10 @@ for (const t of tasks) {
     return r;
   };
   let r = run();
-  const watchdogTimedOut = isWatchdogTimeout(r);
+  const watchdogTimedOut = isWatchdogTimeout(
+    { signal: r.signal, status: r.status, elapsedMs: r.__elapsedMs },
+    { killSignal: BATCH_KILL_SIGNAL, timeoutMs: BATCH_TIMEOUT_MS },
+  );
   if (watchdogTimedOut) {
     // Not retried: a wedge that reproduces once burns the exact same window again, turning
     // one bounded stall back into an unbounded-feeling one. Report it plainly and move on —

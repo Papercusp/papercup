@@ -1289,6 +1289,40 @@ async function buildMcpToolContext(
       return { isError: true, content: [{ type: 'text' as const, text: unknownToolReferral(toolName) }] };
     }
     const canonicalName = target.expose.mcp.name;
+
+    // EI-19386035445533031: `projection` is a DISPATCH-level reserved arg (see
+    // the direct tools/call path above, which strips it from `dispatchArgs`
+    // before the tool's own schema validation ever sees it). This re-dispatch
+    // path used to skip that step entirely, so a caller who — following the
+    // result-door footer's own advice — nested `projection` inside
+    // `tools:invoke({ name, args: { ..., projection } })` got a hard
+    // "Unrecognized key: projection" from the TARGET tool's strict validator:
+    // the footer taught a knob this path could not accept. Mirror the direct
+    // path exactly: strip + validate here (fail-closed on a malformed spec,
+    // same error shape), then apply it to the result below (fail-open) so
+    // `tools:invoke` behaves identically to a direct call.
+    let dispatchToolArgs: Record<string, unknown> =
+      (toolArgs && typeof toolArgs === 'object' ? (toolArgs as Record<string, unknown>) : {});
+    let projectionSpec: ProjectionSpec | null = null;
+    if (PROJECTION_ARG in dispatchToolArgs) {
+      const parsed = parseProjection(dispatchToolArgs[PROJECTION_ARG]);
+      if (!parsed.ok) {
+        return {
+          isError: true,
+          content: [{
+            type: 'text' as const,
+            text:
+              `projection_invalid: ${parsed.error}\n` +
+              `The \`projection\` argument reduces ANY tool result: ` +
+              `{ pick?: ["results[].id"], pipe?: [{ op:"grep", pattern:"..." }, { op:"head", n:20 }] }. ` +
+              `Operators: grep (fixed/ignoreCase/invert/before/after/context), head, tail, sort, uniq, cut, count.`,
+          }],
+        };
+      }
+      projectionSpec = parsed.spec;
+      const { [PROJECTION_ARG]: _stripped, ...rest } = dispatchToolArgs;
+      dispatchToolArgs = rest;
+    }
     // EI-6982: bind the tx/principal the TARGET tool needs — NOT the outer
     // tools:invoke ctx (requirePrincipal:false, so tx-less). Without this, every
     // crossWorkspace/needsTx target (memory:*, flags:set, harness:list, …) threw
@@ -1297,16 +1331,19 @@ async function buildMcpToolContext(
     // `tools:invoke { name:'harness:list', args:{ workspace } }` exactly as a direct
     // call would (effectiveDispatchWorkspace). Shared with the direct tools/call
     // path via dispatchWithSynthesizedTx so the two can't drift.
-    const effectiveWs = effectiveDispatchWorkspace(spawn, toolArgs ?? {});
+    const effectiveWs = effectiveDispatchWorkspace(spawn, dispatchToolArgs);
     const spawnCtx: BuiltSpawnContext =
       effectiveWs === spawn.workspaceId ? spawn : { ...spawn, workspaceId: effectiveWs };
     const baseCtx: UnifiedToolContext =
       effectiveWs === ctxRef.current!.workspaceId
         ? ctxRef.current!
         : { ...ctxRef.current!, workspaceId: effectiveWs };
-    return (await dispatchWithSynthesizedTx(target, spawnCtx, baseCtx, (ctx) =>
-      dispatchProjectedToolToMcp(target, canonicalName, toolArgs ?? {}, ctx, PROJECTED_DEPS),
-    )) as Awaited<ReturnType<NonNullable<UnifiedToolContext['dispatchTool']>>>;
+    const dispatched = (await dispatchWithSynthesizedTx(target, spawnCtx, baseCtx, (ctx) =>
+      dispatchProjectedToolToMcp(target, canonicalName, dispatchToolArgs, ctx, PROJECTED_DEPS),
+    )) as McpCallResult;
+    return projectionSpec
+      ? applyResultProjection(dispatched, projectionSpec, { toolName: canonicalName })
+      : dispatched;
   };
   const builtCtx: UnifiedToolContext = {
     activateTools,

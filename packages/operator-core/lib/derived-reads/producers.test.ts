@@ -421,4 +421,27 @@ describe('summarizePlanLintReport (plans.lint list projection)', () => {
     const producer = registry.listDerivedReadProducers().find((p) => p.key === 'plans.lint');
     expect(producer?.producerVersion).toBe(4);
   });
+
+  it('learning.improvements is at producerVersion 3 — the WI-7279 wire narrowing needs it to take effect (WI-7275)', async () => {
+    // WI-7279 narrowed the humanQueue wire shape (22 keys → 12) but left this at
+    // v2, so every already-stored v2 snapshot kept passing the reader's version
+    // check (registry.ts:204) and served the OLD FAT SHAPE. The fix was committed,
+    // typed and tested, and still inert on the live read: measured 2026-08-03
+    // 02:2xZ, the snapshot path returned 317,812 B / 22 keys while the inline
+    // path — same code, same process — returned 223,159 B / 11.
+    //
+    // Restarting the producer host does NOT substitute for this. THREE hosts write
+    // this row (:3170, :3070 release, bg-host) and :3070 runs release code, so at
+    // EQUAL versions the downgrade guard (registry.ts:380) permits the stale writer
+    // to clobber the slim row back indefinitely. Only a version bump makes a shape
+    // change self-enforcing.
+    vi.resetModules();
+    const registry = await import('./registry');
+    registry.__clearDerivedReadRegistryForTest();
+    await import('./producers');
+    const producer = registry
+      .listDerivedReadProducers()
+      .find((p) => p.key === 'learning.improvements');
+    expect(producer?.producerVersion).toBe(3);
+  });
 });

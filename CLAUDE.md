@@ -797,12 +797,9 @@ check `inFlightRetriage` **before** concluding a re-fire is needed. Two agents w
 firing one on 2026-08-02 while the automatic refire was already green on the affected suite.
 
 ✅ **You no longer have to remember to check — the verb itself now refuses with the answer**
-(EI-19343516395023183). ⚠ On staging; **NOT yet deployed** while the gate is red, so the live
-operator can still answer an in-flight rescue with the plain `held_externally` refusal — until it
-ships, keep checking the marker yourself. Flip this caveat only when `dev:pipeline_position { path:
-'packages/operator-core/lib/agent-tools/release/checkpoint-run.ts', marker: 'AUTO-REFIRE IN FLIGHT'
-}` reports `deployed: true`; a doc promising an absent safety net is worse than silence, because it
-makes the reader stop checking. `release:checkpoint-run`'s `already_running` reply reads the marker and,
+(EI-19343516395023183), and this is **LIVE** as of the 2026-08-03 02:30Z deploy (release
+`13d9c65db69c`, verified present in the running release checkout — it was staged-but-undeployed for
+the preceding 12-red streak). `release:checkpoint-run`'s `already_running` reply reads the marker and,
 when a refire is in flight for THAT run, leads its `note` with `🚨 AUTO-REFIRE IN FLIGHT — STAND
 DOWN`, names both candidates (the one being judged **and** the one already discarded), lists the
 files the abandoned red named so you don't go fix them, and reports the budget via
@@ -945,15 +942,11 @@ mirror with file primary". Helpers: `apps/operator/lib/operator-state-pg.ts`.
     every `_ei` field into its own column, so on the VIEW
     `payload->'_ei'->>'severity'` is NULL for **every** row. Measured 2026-08-01:
     0 of 13,711 open rows via that path, 13,711 via the column, and **30 genuine
-    criticals reported as none**. ⚠ An always-NULL-accessor advisory for
-    `dev:pg_query` is WRITTEN BUT NOT YET LIVE (WI-6674) — verified 2026-08-01
-    19:35Z: absent from origin/staging, `main` and the deployed release, and the
-    live operator still answers this mistake with a silent `0`. **Do not rely on
-    a warning; bind the accessor to the relation yourself.** Flip this sentence to
-    present tense only when `dev:pipeline_position { path:
-    'packages/operator-core/lib/pg-read-query.ts', marker: 'always-NULL accessor' }`
-    reports `deployed: true` — a doc that promises an absent safety net is worse
-    than silence, because it makes the reader *stop checking*.
+    criticals reported as none**. ✅ `dev:pg_query` now warns on an always-NULL
+    accessor (WI-6674) and that advisory is **LIVE** as of the 2026-08-03 02:30Z
+    deploy (release `13d9c65db69c`, verified in the running release checkout).
+    Treat it as a backstop, not a licence: it fires on the shapes it knows, so
+    still **bind the accessor to the relation yourself**.
 
   Prefer `work_items:list{severity}` / `work_items:claimable` over either raw path;
   the view scopes on `scope = 'harness:<slug>'`, not `harness_slug`:
@@ -1079,10 +1072,10 @@ task-ledger pid re-probe — keep polling, do NOT re-run; `job_process_gone` = C
 ended, the ledger observed a terminal state — safe to re-run; `job_liveness_unknown` =
 only a whole-operator restart was ruled out (the uptime heuristic), liveness genuinely
 UNKNOWN and the job is most often alive but QUEUED behind pc-heavy's slot clamp — check
-`ps` before re-running, or you add load to the queue that is delaying you. ⚠ That
-three-way split is **on staging but not yet deployed** while the gate is red, so the
-live operator can still answer this case with a flat `job_process_gone` for a job `ps`
-shows alive; until it ships, verify with `ps` rather than trusting the code. A
+`ps` before re-running, or you add load to the queue that is delaying you. That
+three-way split is **LIVE** as of the 2026-08-03 02:30Z deploy (release `13d9c65db69c`) —
+a pre-2026-08-03 note saying the live operator flattens all three into `job_process_gone`
+is stale, and that flattening is what made a QUEUED job look dead. A
 native background id is bookkeeping inside the CLI child's own memory: after a
 compaction, carry-respawn, or cold-loop wake it is simply a dead reference with
 nothing to recover (EI-16611).

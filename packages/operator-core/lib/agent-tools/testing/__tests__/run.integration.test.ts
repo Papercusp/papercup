@@ -23,7 +23,9 @@
  * path is identical for pass and fail (same spawn, same report, same distil).
  */
 import { describe, it, expect } from 'vitest';
-import { readdir, readFile } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, realpath, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import runTool from '../run';
 
 /**
@@ -31,18 +33,23 @@ import runTool from '../run';
  * dispatcher) a handler returns its own return value verbatim — for this tool
  * `{ data }`. The MCP `{ content: [{ text }] }` envelope is applied by the
  * transport layer above, so unwrap both shapes rather than assuming either.
+ * `ctx` defaults to `{}` (no projectDir — resolves via PAPERCUSP_INTEGRATION_ROOT
+ * or cwd, both the real repo root under vitest); WI-7189's `invalid_root` case
+ * overrides it with a fake `projectDir` to exercise the wrong-tree path.
  */
-function call(args: Record<string, unknown>) {
+function call(args: Record<string, unknown>, ctx: Record<string, unknown> = {}) {
   return (runTool as unknown as {
     handler: (a: unknown, c: unknown) => Promise<unknown>;
-  }).handler(args, {});
+  }).handler(args, ctx);
 }
 
 /** The envelope testing:run returns (success and error shapes together). */
 interface RunResult {
   ok: boolean;
   runId?: string;
+  root?: string;
   error?: string;
+  hint?: string;
   routerOutput?: string;
   passed?: number;
   failed?: number;
@@ -107,6 +114,12 @@ describe('testing:run (integration)', () => {
     expect(out.failures).toEqual([]);
     expect(out.durationMs).toBeGreaterThanOrEqual(0);
     expect(typeof out.runId).toBe('string');
+    // WI-7189: `root` must be echoed so a wrong-tree run is VISIBLE, not silent —
+    // and it must be the real repo root (has the router script the run just used),
+    // never some other resolved tree such as a stale harness clone.
+    expect(typeof out.root).toBe('string');
+    const routerScript = await readFile(join(out.root as string, 'scripts', 'test-files.mjs'), 'utf8').catch(() => null);
+    expect(routerScript).not.toBeNull();
   }, 180_000);
 
   // EI-18822211427354845 — THE case this suite was missing, and the only one that
@@ -144,6 +157,26 @@ describe('testing:run (integration)', () => {
     expect(out.error).toBe('route_error');
     expect(out.routerOutput).toContain('TEST_FILE_ROUTE_ERROR');
   }, 120_000);
+
+  // WI-7189 / EI-19383071792758676: the failure mode the router's own check
+  // CANNOT catch — a resolved workspace root that isn't a papercusp checkout at
+  // all (e.g. a stale/legacy clone missing scripts/test-files.mjs). Before this
+  // fix that surfaced two layers down as an opaque spawn error; now it's a named,
+  // loud refusal that echoes the wrong root instead of silently running (or
+  // failing to run) against it.
+  it('refuses a resolved root that is not a papercusp checkout (invalid_root)', async () => {
+    const fakeRoot = await mkdtemp(join(tmpdir(), 'papercusp-testing-run-invalid-root-'));
+    try {
+      const out = await body(call({ files: ['whatever.test.ts'] }, { projectDir: fakeRoot }));
+
+      expect(out.ok).toBe(false);
+      expect(out.error).toBe('invalid_root');
+      expect(out.root).toBe(await realpath(fakeRoot));
+      expect(out.hint).toContain('scripts/test-files.mjs');
+    } finally {
+      await rm(fakeRoot, { recursive: true, force: true }).catch(() => { /* best-effort */ });
+    }
+  }, 30_000);
 
   // The same false-green in its most tempting form: a path that genuinely
   // EXISTS, so nothing looks wrong, but holds no tests.

@@ -16,6 +16,7 @@ import { findCodePositionCurlyQuotes, curlyLabel } from './smart-quotes';
 import { findShellSyntaxError } from './shell-syntax';
 import { findConflictMarker } from './conflict-markers';
 import { findTsParseError } from './ts-parse';
+import { findNulBytes, autoFixNulBytes, nulByteScopeMatches } from './nul-bytes';
 
 /** A registered content check. */
 export interface ContentDetector {
@@ -180,6 +181,50 @@ export const conflictMarkersDetector: ContentDetector = {
 };
 
 /**
+ * The raw-NUL-byte detector (EI-19393386475030577) — tracked text sources
+ * (check-no-nul-in-source.mjs + app/_lints/no-nul-bytes.test.ts).
+ *
+ * The check already existed and was already tree-wide; its only FIRING POINT was
+ * the green-checkpoint suite, ~55min downstream, which converts one author's
+ * typo into a fleet-wide gate red every time (measured 2026-08-03: ~1h of the
+ * whole fleet blocked, six prior instances in the class header). Registering it
+ * here moves detection onto the path every edit takes, ~3min after the write.
+ *
+ * ⚠ Deliberately does NOT apply `isExcludedPath`, unlike every sibling above.
+ * Both the CI script and the gate lint scan `_retired/` (their scope is
+ * `git ls-files --recurse-submodules` filtered by extension + fixture dirs, with
+ * no retired-tree exclusion). Excluding it here would let a NUL under
+ * `_retired/` slip past the guard and still red the shared gate — the exact
+ * failure this entry exists to prevent. `matches` mirrors the lint's scope, and
+ * that scope is the authority (D-003); node_modules/dist need no exclusion
+ * because the guard only ever sees `git status` paths, which are gitignored.
+ *
+ * Carries an `autoFix` (unlike ts-parse/shell-syntax) because the repair is a
+ * pure re-spelling with no semantic choice: `\x00` and a raw NUL are the
+ * byte-identical runtime string. It must auto-repair, because this is the one
+ * class the agent Edit tool cannot fix — Read renders a NUL as a space, so
+ * `old_string` never matches and instances sit unrepaired.
+ */
+export const nulBytesDetector: ContentDetector = {
+  key: 'nul-bytes',
+  glob: '**/*.{ts,tsx,js,jsx,mjs,cjs,json,md,mdx,css,sql,sh,yml,yaml,toml}',
+  matches: nulByteScopeMatches,
+  detect: (file, text) => {
+    const hit = findNulBytes(text);
+    if (!hit) return null;
+    const plural = hit.lines.length === 1 ? '' : 's';
+    return (
+      `literal NUL byte (0x00) ×${hit.count} at line${plural} ${hit.lines.join(', ')} — ` +
+      'makes file(1) report this valid UTF-8 source as BINARY and makes grep refuse to search it, ' +
+      'while tsc/esbuild still compile it (so it is invisible until the shared gate reds). ' +
+      'Almost always a composite map key: write `${a}\\x00${b}` (escape) instead of a raw NUL byte.'
+    );
+  },
+  fixerRole: CONTENT_FIXER_ROLE,
+  autoFix: autoFixNulBytes,
+};
+
+/**
  * The default registry the git-sync content guard runs with. Extend by adding an
  * entry (a new `{ key, glob, matches, detect, fixerRole }`); the guard + escalation
  * + fixer dispatch pick it up with no further change.
@@ -187,6 +232,7 @@ export const conflictMarkersDetector: ContentDetector = {
 export const DEFAULT_CONTENT_DETECTORS: ContentDetector[] = [
   mdxDetector,
   smartQuotesDetector,
+  nulBytesDetector,
   // Ordered AFTER smart-quotes deliberately: a curly-quote-as-code file trips both
   // (it is a parse error), and smart-quotes names the exact offending character —
   // the more actionable message, recorded first. Both offenders point at the same
