@@ -222,6 +222,27 @@ function changedFiles() {
   return [...new Set([...committed, ...uncommitted, ...untracked, ...submoduleDirtyPaths()])];
 }
 
+// The changed-path list REPO_WIDE_INVARIANT_GUARDS matches against, memoized so
+// enabling a guard never re-shells the four git commands changedFiles() runs.
+// Honours --changed-paths for the same reason affectedWorkspaces() does: it is
+// the only way to test a selection rule hermetically on this tree, where
+// git-sync sweeps everything and no real commit is ever scoped to your paths.
+// Fails OPEN (empty list => no guard added): a guard is a safety net, and a net
+// that converts a git hiccup into a hard failure of everyone's test loop is a
+// worse trade than one that occasionally does not fire.
+let invariantGuardChangedPathsCache = null;
+function invariantGuardChangedPaths() {
+  if (invariantGuardChangedPathsCache) return invariantGuardChangedPathsCache;
+  if (changedPathsOverride) return (invariantGuardChangedPathsCache = changedPathsOverride);
+  if (runAll) return (invariantGuardChangedPathsCache = []); // --all already runs every suite
+  try {
+    invariantGuardChangedPathsCache = changedFiles();
+  } catch {
+    invariantGuardChangedPathsCache = [];
+  }
+  return invariantGuardChangedPathsCache;
+}
+
 // Live submodules with uncommitted work — the blind spot `--ignore-submodules=dirty`
 // leaves. Returns submodule paths (e.g. `libs/generic/memory`), which map to a
 // workspace exactly like a gitlink change does. Best-effort by design: a retired
@@ -307,6 +328,53 @@ const STANDALONE_PACKAGE_DIRS = ['papercusp-desktop'];
 // divergence from the first nobody would notice.
 const NON_WORKSPACE_PATH_ROUTES = [
   { prefix: 'scripts/', workspace: '@papercusp/operator-core' },
+];
+
+// EI-19388389386110890 — REPO-WIDE INVARIANTS ENFORCED FROM ONE WORKSPACE.
+//
+// NON_WORKSPACE_PATH_ROUTES above fixes "this path maps to no workspace". This
+// fixes the opposite shape: the path maps to its workspace perfectly well, but
+// the CHECK that governs it lives in a DIFFERENT one, so the check never runs.
+//
+// child-output-guard.test.ts is the worked example. Its scope is the whole repo
+// — it enumerates via `git ls-files --recurse-submodules`, ~20k TypeScript paths
+// across 39 submodules — but it is a vitest file inside @papercusp/operator-core,
+// so it is selected only when operator-core is affected. MEASURED 2026-08-03:
+//
+//   --changed-paths packages/operator-core/lib/terminal-spawn.ts
+//       -> AFFECTED_WS @papercusp/operator-core, @papercusp/web   (guard runs)
+//   --changed-paths apps/operator/lib/release/deploy-cli.ts
+//       -> AFFECTED_WS @papercusp/web                             (guard does NOT run)
+//
+// So introducing a chunk-unsafe `stdout += String(chunk)` anywhere outside
+// operator-core produced NO local signal — test:affected green, lint:tsc green
+// (it is type-only) — and first surfaced hours later as a red FLEET gate that
+// blocks every agent. That is the whole reported history of the class: five
+// separate correct fixes (EI-19298378364087215, EI-19356631236774183, WI-6776,
+// WI-6666/WI-6667), each caught at the most expensive possible moment, each
+// looking like fresh breakage because each offender genuinely was new.
+//
+// A guard listed here runs whenever a changed path matches `appliesTo`, even if
+// its owning workspace is not otherwise affected. It is a SEPARATE, NARROW task
+// (never the workspace's whole `test` suite) precisely so it can be cheap enough
+// to run on every change: the chunk-safe guard is 14 assertions, ~1s.
+//
+// Adding one is a deliberate act: the cost is paid by every agent on every edit,
+// so it is only worth it for an invariant that is genuinely repo-wide AND whose
+// violation is expensive to discover late. Two existing repo-wide invariants do
+// NOT belong here because they already have repo-root lint legs of their own
+// (lint:no-raw-setinterval, lint:no-unenrolled-spawn) — that contrast is the
+// argument for this list, not against it.
+const REPO_WIDE_INVARIANT_GUARDS = [
+  {
+    workspace: '@papercusp/operator-core',
+    script: 'lint:chunk-safe',
+    // Every TS-family source file: the guard's own enumeration is repo-wide, so
+    // narrowing this to "files that spawn children" would re-create the blind
+    // spot one level down — the point is that nobody knows in advance which file
+    // is about to grow a stream accumulator.
+    appliesTo: (f) => /\.[cm]?tsx?$/.test(f),
+  },
 ];
 
 const workspaces = [
@@ -539,6 +607,20 @@ for (const ws of affected) {
   // Skips with exit 0 when EL credentials aren't available so CI
   // without an XI_API_KEY doesn't fail the gate.
   if (runIntegration && (runElSuite || globalThis.__autoElSuite) && ws.scripts['test:el-suite']) tasks.push({ ws, script: 'test:el-suite' });
+}
+
+// Repo-wide invariant guards (see REPO_WIDE_INVARIANT_GUARDS). Appended AFTER the
+// per-workspace loop, and skipped when the owning workspace's full `test` task is
+// already queued — that suite already contains the guard, so adding it there would
+// just run the same assertions twice.
+for (const guard of REPO_WIDE_INVARIANT_GUARDS) {
+  const ws = wsByName.get(guard.workspace);
+  if (!ws?.scripts?.[guard.script]) continue;
+  if (excludes.has(ws.name)) continue;
+  if (tasks.some((t) => t.ws.name === ws.name && (t.script === 'test' || t.script === guard.script))) continue;
+  if (!invariantGuardChangedPaths().some((f) => guard.appliesTo(f))) continue;
+  outSync(`(repo-wide invariant guard: ${ws.name} :: ${guard.script})`);
+  tasks.push({ ws, script: guard.script });
 }
 
 if (!tasks.length) {

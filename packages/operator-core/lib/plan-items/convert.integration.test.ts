@@ -240,7 +240,7 @@ describe('findCoverageWorkItems (PG)', () => {
   });
 });
 
-describe('findConvertedWorkItemByStamp (PG, jsonb scalar-unwrap)', () => {
+describe('findConvertedWorkItemByStamp (PG, jsonb object-only payload)', () => {
   const stamp = (plan: string, item: string) => ({ plan_item: { plan_slug: plan, item_id: item, harness_slug: 'web' } });
 
   it('matches a feature row whose payload is a real jsonb OBJECT', async () => {
@@ -249,11 +249,21 @@ describe('findConvertedWorkItemByStamp (PG, jsonb scalar-unwrap)', () => {
     expect(await findConvertedWorkItemByStamp('p1', 'I-1', 'web')).toMatchObject({ id: 'F-9', harness: 'web' });
   });
 
-  it('matches a feature row whose payload is a jsonb STRING SCALAR (postgres-js binding quirk → must unwrap)', async () => {
+  // WI-6993 / EI-19342686955096692 / migration 725: this used to be "matches a feature
+  // row whose payload is a jsonb STRING SCALAR (postgres-js binding quirk → must
+  // unwrap)" — findConvertedWorkItemByStamp's read-side CASE-unwrap was deleted because
+  // the write path (restoreRawJsonbSerializer + migration 641's trigger-level normalize)
+  // no longer produces a string-scalar payload, and this CHECK constraint now makes one
+  // UNSTORABLE at the source regardless of how a caller binds it. The positive test of
+  // that invariant is that the write itself is rejected, not that a since-removed reader
+  // can still cope with a row that can no longer exist.
+  it('REJECTS a feature row whose payload is a jsonb STRING SCALAR (postgres-js binding quirk) at INSERT time', async () => {
     const jsonText = JSON.stringify(stamp('p2', 'I-2'));
-    await rootSql`INSERT INTO harness_shared.harness_features_consolidated (harness_slug, feature_id, workspace_id, payload, updated_ts)
-                  VALUES ('web', 'F-10', ${WS}, to_jsonb(${jsonText}::text), 100)`;
-    expect(await findConvertedWorkItemByStamp('p2', 'I-2', 'web')).toMatchObject({ id: 'F-10' });
+    await expect(
+      rootSql`INSERT INTO harness_shared.harness_features_consolidated (harness_slug, feature_id, workspace_id, payload, updated_ts)
+              VALUES ('web', 'F-10', ${WS}, to_jsonb(${jsonText}::text), 100)`,
+    ).rejects.toThrow(/work_items_payload_is_object_ck/);
+    expect(await findConvertedWorkItemByStamp('p2', 'I-2', 'web')).toBeNull();
   });
 
   it('falls back to engineer_issues when no feature row matches', async () => {

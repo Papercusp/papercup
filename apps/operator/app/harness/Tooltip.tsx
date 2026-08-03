@@ -13,7 +13,11 @@ const CONTENT_STYLE: React.CSSProperties = {
   border: '1px solid rgba(255,255,255,0.1)',
   borderRadius: 6,
   boxShadow: '0 4px 16px rgba(0,0,0,0.4)',
-  zIndex: 200,
+  /* Must clear the whole shell (`.oracle-dock--maximal-hud` is 1450): Radix
+     copies this onto the popper wrapper as an inline style, so it — not the
+     harness.css floor — decides whether this is visible. See P-006 / the
+     popper-stacking lint. */
+  zIndex: 1500,
 };
 
 export function Tooltip({ label, children, side = 'top', align = 'center' }: {

@@ -15,6 +15,7 @@
   "scripts": {
     "test": "vitest run --passWithNoTests",
     "test:integration": "vitest run --config vitest.integration.config.ts --passWithNoTests",
+    "lint:chunk-safe": "vitest run lib/child-output-guard.test.ts",
     "typecheck": "node ../../scripts/lint-tsc.mjs"
   },
   "dependencies": {

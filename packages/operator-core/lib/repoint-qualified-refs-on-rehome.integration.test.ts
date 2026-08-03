@@ -2,6 +2,17 @@
  * Migration 734 — re-point harness-qualified refs when a work item is RE-HOMED
  * (EI-19374236094682800).
  *
+ * @covers INV-03
+ *
+ * ⚠ SCOPE — this suite proves the REF-LEVEL half of INV-03 ("no edge still names the old
+ * slug") and deliberately stops there. It cannot prove the edge still GATES: the fixture
+ * below stands up its own 5-column `work_items` table, so no claim floor exists in it, and
+ * the case named "keeping a blocks edge live" asserts string equality on blocked_ref /
+ * blocker_ref — row shape, not effectiveness. The behavioural half lives in
+ * scheduler/rename-drift-effectiveness.integration.test.ts (P-012), which drives the real
+ * claim door. Neither file substitutes for the other; a rename can leave refs perfect and
+ * still strand readiness, and can leave a ref stale that nothing was gating on.
+ *
  * A feature-family endpoint is stored as '<harness_slug>#<feature_id>' and matched by its
  * FULL qualified ref, so any change to work_items.harness_slug silently strands every ref
  * naming the old slug: the edge stays form-valid and becomes INERT. Re-home is continuous

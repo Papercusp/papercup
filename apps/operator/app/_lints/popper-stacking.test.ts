@@ -104,4 +104,65 @@ describe('popper stacking', () => {
         offenders.map((o) => `  ${o.z}  ${o.selector}   (${o.file})`).join('\n'),
     ).toEqual([])
   })
+
+  /**
+   * The CSS rule above is only the FLOOR, and on its own it is not enough —
+   * this is the second half of the bug, found by live measurement after the
+   * first fix silently did nothing.
+   *
+   * Radix's Popper reads the Content's computed z-index at mount and copies it
+   * onto the wrapper as an INLINE style. Inline beats a stylesheet rule without
+   * `!important`, so a component that sets a LOW z-index on its Content
+   * actively overrides the floor and re-creates the bug. harness/Select.tsx set
+   * 70, which tied with `<main>`; the CSS rule said 1500 and was ignored.
+   */
+  it('never lets a popper Content set a z-index below the wrapper floor', () => {
+    const wrapperZ = Math.max(...wrapperRules.map((r) => r.z))
+
+    // Scope: the SHARED Radix primitives in app/harness only. Those are the
+    // files that render a `*.Content` with `position="popper"`, i.e. the ones
+    // whose z-index Radix actually copies onto the wrapper.
+    //
+    // Deliberately NOT every file containing `zIndex`. An earlier draft scanned
+    // app/_components too and flagged SessionChatModal's internal zone panels
+    // (5, 6) and GlobalSearchDialog's dialog surface (1000) — none of which are
+    // popper Contents. Those are ordinary in-page layering and raising them
+    // would be wrong. A lint that cries wolf on correct code gets suppressed,
+    // and then it is not there for the real case.
+    const harnessDir = join(APP_DIR, 'harness')
+    const tsFiles = readdirSync(harnessDir)
+      .filter((e) => /\.tsx$/.test(e) && !/\.test\.tsx$/.test(e))
+      .map((e) => join(harnessDir, e))
+
+    // Only these Radix families are POPPER-positioned, i.e. actually get a
+    // `[data-radix-popper-content-wrapper]`. Dialog/AlertDialog deliberately
+    // excluded: their Content is centred by the overlay, never wrapped in a
+    // popper, so their z-index is ordinary modal layering. A structural
+    // heuristic (".Portal is present") cannot tell them apart and flagged
+    // harness/Modal.tsx's overlay/content pair (60, 61) as popper bugs.
+    const POPPER_PACKAGES =
+      /@radix-ui\/react-(select|popover|tooltip|dropdown-menu|context-menu|hover-card|menubar|navigation-menu)/
+
+    const bad: string[] = []
+    for (const f of tsFiles) {
+      const src = readFileSync(f, 'utf8')
+      if (!POPPER_PACKAGES.test(src) || !/\.Content\b/.test(src)) continue
+      for (const m of src.matchAll(/zIndex:\s*(\d+)/g)) {
+        const z = Number(m[1])
+        if (z < wrapperZ) {
+          const line = src.slice(0, m.index).split('\n').length
+          bad.push(`  ${f}:${line}  zIndex: ${z}  (wrapper floor is ${wrapperZ})`)
+        }
+      }
+    }
+
+    expect(
+      bad,
+      'A Radix popper Content sets a z-index BELOW the wrapper floor. Radix copies ' +
+        'that value onto [data-radix-popper-content-wrapper] as an inline style, which ' +
+        'overrides the CSS floor — so the menu paints behind the app shell and becomes ' +
+        'unclickable:\n' +
+        bad.join('\n'),
+    ).toEqual([])
+  })
 })

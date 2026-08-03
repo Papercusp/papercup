@@ -63,6 +63,64 @@ describe('summarizeMcpProxyHealth — classification', () => {
     expect(d.total).toBe(1);
   });
 
+  // D-005 (outage-must-not-be-silent-2026-08-02). Before these branches existed,
+  // `handshake_timeout_retry` and `shed_max_in_flight` matched NO classification arm and
+  // survived only as a `byKind` tally — so nothing could alarm on them. That mattered most
+  // for the handshake stall: WI-6740's marker for the upstream silence that leaves an MCP
+  // session tool-dark for its whole life (269 stalls 2026-07-10..08-01). Verified live
+  // 2026-08-02: the fleet-facing proxy (pid 2704092, listenPort 9071) emits these in prod.
+  describe('kinds that used to fall through into byKind only (D-005)', () => {
+    it('handshake_timeout_retry is counted as a first-class handshakeStall', () => {
+      const d = summarizeMcpProxyHealth([rec({ kind: 'handshake_timeout_retry', listenPort: 9071 })], NOW);
+      expect(d.handshakeStalls).toBe(1);
+      expect(d.total).toBe(1);
+    });
+
+    it('a handshake stall is NOT a hard failure — the replay is WI-6740 working, not an agent-facing error', () => {
+      const d = summarizeMcpProxyHealth([rec({ kind: 'handshake_timeout_retry', listenPort: 9071 })], NOW);
+      expect(d.hardFailures).toBe(0);
+      expect(d.recovered).toBe(0);
+      expect(d.otherNon2xx).toBe(0);
+      expect(d.benign).toBe(0);
+    });
+
+    it('shed_max_in_flight is counted as a first-class shed, not a hard failure', () => {
+      const d = summarizeMcpProxyHealth([rec({ kind: 'shed_max_in_flight', listenPort: 9071 })], NOW);
+      expect(d.shed).toBe(1);
+      expect(d.hardFailures).toBe(0);
+    });
+
+    it('the listenPort:0 exclusion still applies to the new classes — a test/sidecar writer never alarms', () => {
+      // ~18% of live ledger records carry listenPort:0 (tests append to the production
+      // ledger: a sampled shed record read {"listenPort":0,"maxInFlight":2}, and 2 is a
+      // fixture value — the real default is 200). Those must not reach an alarm class.
+      const d = summarizeMcpProxyHealth(
+        [
+          rec({ kind: 'handshake_timeout_retry', listenPort: 0 }),
+          rec({ kind: 'shed_max_in_flight', listenPort: 0 }),
+        ],
+        NOW,
+      );
+      expect(d.handshakeStalls).toBe(0);
+      expect(d.shed).toBe(0);
+      expect(d.nonInstance).toBe(2);
+      expect(d.byKind['handshake_timeout_retry']).toBe(1); // forensically visible, never alarming
+    });
+
+    it('a stall and a hard failure stay distinguishable in one window', () => {
+      const d = summarizeMcpProxyHealth(
+        [
+          rec({ kind: 'handshake_timeout_retry', listenPort: 9071 }),
+          rec({ kind: 'handshake_timeout_retry', listenPort: 9071 }),
+          rec({ kind: 'exhausted_refused', status: 503, listenPort: 9071 }),
+        ],
+        NOW,
+      );
+      expect(d.handshakeStalls).toBe(2);
+      expect(d.hardFailures).toBe(1);
+    });
+  });
+
   it('upstream_non2xx WITH the stale-socket-400 signature is HARD (W1.3 regression)', () => {
     const d = summarizeMcpProxyHealth([rec({ kind: 'upstream_non2xx', status: 400, connection: 'close' })], NOW);
     expect(d.hardFailures).toBe(1);

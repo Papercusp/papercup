@@ -294,7 +294,13 @@
   /* The plate is now close in luminance to the rail it sits on, so it needs an
      explicit lower edge to still read as a bar rather than as tinted rail. */
   border-bottom: 1px solid var(--pc-zone-rule);
-  font-size: 9px;
+  /* 9px -> 10.5px, matching the section caps under it (P-008: the rails' text
+     is hard to read). Lifted HERE but deliberately NOT across the rest of this
+     file: the bottom control band lives in chat-controls.css too, and the
+     owner's readability complaint was about the left and right RAILS, while
+     ask #1 asked that same bottom band be squeezed onto 1-2 lines. Enlarging
+     the band's type would undo that. */
+  font-size: 10.5px;
   font-weight: 700;
   text-transform: uppercase;
 }

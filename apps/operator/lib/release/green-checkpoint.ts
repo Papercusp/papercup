@@ -495,6 +495,28 @@ export const CHECKPOINT_LOCK_STALE_MS = 190 * 60_000;
  *  wrapper, so bounding it needs a process-GROUP kill, not a timeoutMs). */
 export const CANDIDATE_SELECTION_TO_SUITE_WARN_MS = 20 * 60_000;
 
+/** WI-7069 root-fix (the run-bounding half): `setupTree`'s `bash setup-release-checkout.sh`
+ *  (git checkout + `cp -al` hardlink copy + a forced node_modules re-copy) was the ONE
+ *  unbounded call on the candidate-selection→suite path — see CANDIDATE_SELECTION_TO_SUITE_WARN_MS
+ *  above for the incident this closes: a run stalled here (or somewhere on this stretch) for
+ *  ~10.5h with nothing to stop it, silently producing a 12:53Z verdict that judged a candidate
+ *  chosen at ~02:06Z.
+ *
+ *  Past this bound, setupTree's exec call kills the WHOLE subtree the setup script spawned
+ *  (not just the direct `bash` process — see runCmd's `killProcessGroupOnTimeout`) and rejects,
+ *  so the run fails LOUD instead of hanging silently for hours. The caller (runGreenCheckpoint)
+ *  does not catch this rejection, so it propagates as a run error — the same as any other
+ *  unrecoverable setup failure — rather than being swallowed.
+ *
+ *  30m is generous: CANDIDATE_SELECTION_TO_SUITE_WARN_MS already warns at 20m for the WHOLE
+ *  selection→suite stretch (setupTree + both preflights + a slot wait capped at
+ *  HEAVY_SLOT_WAIT_SEC=120s), of which setupTree is normally the dominant but still single-digit-
+ *  minute leg even under contention. 30m stays comfortably inside the 120m suite timeout, so a
+ *  setupTree timeout still leaves that outer bound (and SELF_WATCHDOG_MS above it) as the final
+ *  backstop for anything downstream — this constant only closes the ONE gap that let a run
+ *  outlive both of those without ever reaching the suite at all. */
+export const SETUP_TREE_TIMEOUT_MS = 30 * 60_000;
+
 /** WI-1319 root fix (c): a SELF-BOUND wall-clock watchdog, armed by THIS process
  *  (green-checkpoint.ts) itself, independent of the supervising parent
  *  (release-actions.ts's `runScript`, which SIGTERMs the whole process group at
@@ -732,6 +754,34 @@ export function writeCheckpointRunPhase(
     );
   } catch {
     /* best-effort: the phase marker is an optimization for the launch side, never load-bearing here */
+  }
+}
+
+/** WI-7069: a durable, on-disk record of the self-watchdog's ARM event — written beside the
+ *  run-lock at arm time, same pattern as writeCheckpointRunPhase above. This exists because the
+ *  2026-08-02 647-minute incident left no way to tell, after the fact, whether SELF_WATCHDOG_MS
+ *  (an in-process `setTimeout`, gone the instant the process exits or crashes) was ever armed, or
+ *  when its deadline should have landed — "the watchdog didn't fire" and "the watchdog was never
+ *  armed" were indistinguishable once the process was gone. This marker survives a crash (it's on
+ *  disk, not in the dead process's heap): a future incident can compare its `armedAt`/`deadlineAt`
+ *  against when the run actually exited to tell "the timer fired late", "the timer never fired
+ *  despite being armed" (a genuine event-loop-starvation or frozen-process bug), and "a re-arm
+ *  reset the clock" apart from each other — none of which could be told apart before this.
+ *  Best-effort in every direction; a missing/garbled marker degrades to today's total blindness on
+ *  this question, never to a crash. */
+export function writeSelfWatchdogArmMarker(lockDir: string, info: { armedAtMs: number; ms: number; pid: number }): void {
+  try {
+    writeFileSync(
+      path.join(lockDir, 'watchdog.json'),
+      JSON.stringify({
+        armedAt: new Date(info.armedAtMs).toISOString(),
+        deadlineAt: new Date(info.armedAtMs + info.ms).toISOString(),
+        ms: info.ms,
+        pid: info.pid,
+      }),
+    );
+  } catch {
+    /* best-effort: a forensic aid for the NEXT incident, never load-bearing here */
   }
 }
 
@@ -3866,6 +3916,11 @@ export type CheckpointExec = (
     /** EI-78: run under scripts/pc-heavy.sh (nice/ionice + slot semaphore). Optional so
      *  every injected test fake keeps compiling untouched — a fake simply ignores it. */
     heavy?: boolean;
+    /** WI-7069: on a `timeoutMs` kill, SIGKILL the child's own PROCESS GROUP instead of just
+     *  the direct child — see runCmd's doc comment for why a plain `child.kill()` is unsafe for
+     *  any command whose child itself forks further children (e.g. a bash script running git/
+     *  cp/npm). Optional so every injected test fake keeps compiling untouched. */
+    killProcessGroupOnTimeout?: boolean;
   },
 ) => Promise<{ code: number; stdout: string; stderr: string }>;
 
@@ -4999,7 +5054,15 @@ export function realCheckpointDeps(
       // (EI-2699). A throwaway, correctness-critical tree must always re-copy from
       // integration; the hardlink (cp -al) copy is cheap. The DEPLOY keeps `auto` + the
       // verify-before-cutover preflight (mcp-host-availability-resilience-2026-06-22).
-      await exec('bash', [script, '--ref', ref, '--integration', cfg.integrationRoot, '--release', cfg.checkpointRoot, '--node-modules', 'force']);
+      //
+      // WI-7069: BOUNDED — this used to be the one unbounded call on the candidate-selection→
+      // suite path (see SETUP_TREE_TIMEOUT_MS). `killProcessGroupOnTimeout` ensures a timeout
+      // reaches the script's whole subtree (git/cp/npm), not just the `bash` wrapper, so it
+      // can't orphan a half-finished node_modules copy.
+      await exec('bash', [script, '--ref', ref, '--integration', cfg.integrationRoot, '--release', cfg.checkpointRoot, '--node-modules', 'force'], {
+        timeoutMs: SETUP_TREE_TIMEOUT_MS,
+        killProcessGroupOnTimeout: true,
+      });
     },
     async runGreen(treeDir, base) {
       // EI-8744: nothing-to-gate short-circuit. A codeless pot (no root package.json)
@@ -5649,7 +5712,12 @@ function resolveHeavyWrapper(): string | null {
   return resolved;
 }
 
-function runCmd(
+// WI-7069: exported (was module-private) purely so a unit test can exercise the REAL
+// spawn/timeout/kill path directly — every existing CheckpointExec test fakes `deps.exec`
+// instead, which cannot prove the process-group-kill behavior actually reaches a grandchild
+// process. `realCheckpointDeps` still wires this in as the default; nothing about its runtime
+// role changes.
+export function runCmd(
   cmd: string,
   args: string[],
   opts: {
@@ -5663,6 +5731,20 @@ function runCmd(
      *  must not queue behind another agent's vitest run. Set it only on the genuinely heavy
      *  legs (the green suite, lint:tsc, the SPA build). */
     heavy?: boolean;
+    /** WI-7069: on a `timeoutMs` kill, SIGKILL the child's own process GROUP instead of just
+     *  the direct child. Needed for any call whose child itself forks further children (e.g. a
+     *  bash script running git/cp/npm) — the plain `child.kill('SIGKILL')` below reaches only
+     *  the direct child and ORPHANS its descendants, which for `setup-release-checkout.sh`
+     *  could leave node_modules half-written (the same class of half-written corruption
+     *  documented for a raced `npm install` elsewhere in this repo). Opt-in: it spawns the
+     *  child DETACHED (its own new pgid, separate from this process's group), so it must only
+     *  be combined with `timeoutMs` (the group id needed for the kill is the child's OWN pid,
+     *  which only holds if the child is a group leader) and never with `heavy` (the heavy
+     *  wrapper is already skipped whenever `timeoutMs` is set — see below — so the two never
+     *  interact in practice, but detaching a `heavy`-wrapped command would also break the
+     *  self-watchdog's blanket `kill(-pid)`, which relies on every runCmd child staying in
+     *  THIS process's group). */
+    killProcessGroupOnTimeout?: boolean;
   } = {},
 ): Promise<{ code: number; stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
@@ -5701,18 +5783,42 @@ function runCmd(
       };
     }
 
-    const child = spawn(cmdToRun, argsToRun, { cwd: opts.cwd, env });
+    // WI-7069: only DETACH (new process group, this child becomes its own group leader) when
+    // the caller asked for a group-kill on timeout. Every other call keeps inheriting THIS
+    // process's pgid, which is what lets the self-watchdog's blanket `kill(-pid)` reach it too
+    // (see armSelfWatchdog's doc comment) — detaching unconditionally would silently remove
+    // every runCmd child from that safety net.
+    const detach = opts.killProcessGroupOnTimeout === true;
+    const child = spawn(cmdToRun, argsToRun, { cwd: opts.cwd, env, detached: detach });
     let stdout = '';
     let stderr = '';
     let settled = false;
-    // A bounded timeout (used by the isolation re-run): SIGKILL the child and REJECT, so
-    // a genuine hang can't stall the gate — the caller treats a rejected isolation re-run
-    // as still-failing, never a flake.
+    // A bounded timeout (used by the isolation re-run, and — WI-7069 — setupTree): SIGKILL the
+    // child and REJECT, so a genuine hang can't stall the gate. The isolation re-run's caller
+    // treats a rejected run as still-failing, never a flake; setupTree's caller lets the
+    // rejection propagate as a run error rather than hanging silently for hours.
     const timer = opts.timeoutMs
       ? setTimeout(() => {
           if (settled) return;
           settled = true;
-          child.kill('SIGKILL');
+          // WI-7069: a group-kill target is the CHILD's own pid (it is the group leader, since
+          // it was spawned `detached` above) — NOT this process's pid. Falls back to the plain
+          // direct-child kill if the group is already gone (e.g. it exited between the timer
+          // firing and this line) or the pid is unexpectedly missing, so a timeout can never
+          // itself throw past the reject() below.
+          if (detach && typeof child.pid === 'number') {
+            try {
+              process.kill(-child.pid, 'SIGKILL');
+            } catch {
+              try {
+                child.kill('SIGKILL');
+              } catch {
+                /* child already gone */
+              }
+            }
+          } else {
+            child.kill('SIGKILL');
+          }
           reject(new Error(`${cmd} ${args.join(' ')} timed out after ${opts.timeoutMs}ms`));
         }, opts.timeoutMs)
       : null;
@@ -5965,6 +6071,14 @@ if (require.main === module) {
           /* best-effort — the kill proceeds regardless */
         }
       },
+    });
+    // WI-7069: durable arm-event marker — see writeSelfWatchdogArmMarker's doc comment. Written
+    // right after the timer is actually armed (not before), so a marker on disk is proof the
+    // real `setTimeout(SELF_WATCHDOG_MS)` above it exists, not just that this code path ran.
+    writeSelfWatchdogArmMarker(checkpointRunLockDir(cfg.checkpointLogDir, cfg.integrationRoot), {
+      armedAtMs: Date.now(),
+      ms: SELF_WATCHDOG_MS,
+      pid: process.pid,
     });
     const releaseAndExit = (code: number): never => {
       watchdog.cancel();

@@ -1,0 +1,379 @@
+#!/usr/bin/env node
+/**
+ * check-migration-fixture-drift.mjs — the integration-test inline-schema-fixture
+ * drift trap, mechanised (EI-19359711978838614, sibling of
+ * lint:required-field-strands / WI-6814).
+ *
+ * THE TRAP: many `*.integration.test.ts` files build a `harness_shared.<table>`
+ * from an inline `CREATE TABLE` in their own `beforeAll` instead of applying real
+ * migrations. When a LATER migration ALTERs that same table to add a column, and
+ * production code moves with it (queries the new column unconditionally), a
+ * fixture that happened to mirror the schema up to that point goes stale
+ * silently — `test:affected` will not select the fixture file (the migration's
+ * own change never touches it) and `lint:tsc` cannot see drift in a SQL string.
+ * The red then surfaces on whichever unrelated agent next touches that test
+ * file, who inherits a failure they did not cause. (First instance:
+ * `store.integration.test.ts` red on `column "root_id" does not exist"`, from
+ * migration 572, landed weeks after the fixture — EI-19359711978838614.)
+ *
+ * WHY THIS IS A TRIGGER, NOT A FULL SCHEMA-DIFF LINT:
+ *   A large fraction of these fixtures are INTENTIONALLY partial stubs by
+ *   design — e.g. the hive-eval fixture hand-writes "only the columns the live
+ *   reads query", forever, on purpose. A blanket "every migrated column must
+ *   appear in every fixture" check would be close to 100% false-positive on
+ *   this tree and could never be wired in as a gate (mirrors the caution in
+ *   check-required-field-strands.mjs's own header: the class here is common and
+ *   usually intentional). So this only fires on the DIFF a migration itself
+ *   introduces: does the column you just added to a table already appear in
+ *   some OTHER fixture that constructs that exact table? If so, that fixture
+ *   used to be schema-complete for every column it names and just silently
+ *   fell one column behind — a precise, low-noise signal, independent of
+ *   whether the fixture is a deliberate stub (a deliberate stub was ALREADY
+ *   missing unrelated columns before this migration ran, so it never matches:
+ *   the table has to already appear with a full column list, sans exactly the
+ *   new one).
+ *
+ * Advisory by default (never blocks); --check exits 1 on any structural gap
+ * found. No DB connection required — a fixture literally omitting a column the
+ * live migrated schema now has IS the drift; nothing here needs runtime proof.
+ *
+ * Usage:
+ *   node scripts/check-migration-fixture-drift.mjs <migration.sql> [...]
+ *   node scripts/check-migration-fixture-drift.mjs --check <migration.sql> [...]
+ *   node scripts/check-migration-fixture-drift.mjs --base HEAD    # diff mode: changed/added sql/ files vs base
+ *   node scripts/check-migration-fixture-drift.mjs --json
+ *
+ * Exit codes:
+ *   0 — no migrations given / no columns introduced / no fixture matches, or advisory mode
+ *   1 — --check found a structural gap (a fixture that builds the exact table, missing the
+ *       exact column this migration just introduced)
+ */
+
+import { execFileSync } from 'node:child_process';
+import { existsSync, readFileSync } from 'node:fs';
+import { dirname, join, relative, resolve, sep } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const SQL_DIR_REL = 'libs/papercusp/libs/db/sql';
+
+// ---------------------------------------------------------------------------
+// SQL parsing primitives — comment/string-aware, no dollar-quoting support
+// (CREATE TABLE / ALTER TABLE ADD COLUMN bodies in this tree never use it).
+// ---------------------------------------------------------------------------
+
+/**
+ * From `openParenIdx` (the index of a `(`), walk forward tracking paren depth,
+ * skipping `--` line comments and `'...'` string literals, until the matching
+ * close. Returns the body between the parens (exclusive) and the index one
+ * past the closing paren.
+ */
+export function extractParenBlock(src, openParenIdx) {
+  let i = openParenIdx + 1;
+  let depth = 1;
+  const n = src.length;
+  while (i < n && depth > 0) {
+    const c = src[i];
+    if (c === '-' && src[i + 1] === '-') {
+      while (i < n && src[i] !== '\n') i++;
+      continue;
+    }
+    if (c === "'") {
+      i++;
+      while (i < n && src[i] !== "'") {
+        if (src[i] === '\\') i++;
+        i++;
+      }
+      i++;
+      continue;
+    }
+    if (c === '(') depth++;
+    else if (c === ')') depth--;
+    i++;
+  }
+  return { body: src.slice(openParenIdx + 1, i - 1), endIndex: i };
+}
+
+/** Split a CREATE TABLE body into top-level (paren-depth-0) comma-separated clauses. */
+export function splitTopLevelClauses(body) {
+  const clauses = [];
+  let depth = 0;
+  let cur = '';
+  const n = body.length;
+  for (let i = 0; i < n; i++) {
+    const c = body[i];
+    if (c === '-' && body[i + 1] === '-') {
+      const nl = body.indexOf('\n', i);
+      const end = nl === -1 ? n : nl;
+      cur += body.slice(i, end);
+      i = end - 1;
+      continue;
+    }
+    if (c === "'") {
+      let j = i + 1;
+      while (j < n && body[j] !== "'") {
+        if (body[j] === '\\') j++;
+        j++;
+      }
+      cur += body.slice(i, j + 1);
+      i = j;
+      continue;
+    }
+    if (c === '(') {
+      depth++;
+      cur += c;
+      continue;
+    }
+    if (c === ')') {
+      depth--;
+      cur += c;
+      continue;
+    }
+    if (c === ',' && depth === 0) {
+      clauses.push(cur);
+      cur = '';
+      continue;
+    }
+    cur += c;
+  }
+  if (cur.trim()) clauses.push(cur);
+  return clauses;
+}
+
+const TABLE_LEVEL_KEYWORDS = /^(PRIMARY\s+KEY|UNIQUE|CHECK|CONSTRAINT|FOREIGN\s+KEY|EXCLUDE|LIKE)\b/i;
+
+/** Column names declared by top-level clauses, skipping table-level constraint clauses. */
+export function columnNamesFromClauses(clauses) {
+  const names = [];
+  for (const clause of clauses) {
+    const trimmed = clause.trim();
+    if (!trimmed) continue;
+    if (TABLE_LEVEL_KEYWORDS.test(trimmed)) continue;
+    const m = /^"?(\w+)"?\s/.exec(trimmed);
+    if (m) names.push(m[1]);
+  }
+  return names;
+}
+
+/**
+ * Every `CREATE TABLE (IF NOT EXISTS)? harness_shared.<table> ( ... )` occurrence
+ * in `sqlText`, as `{ table, columns }` — one entry per occurrence (a file may
+ * define the same table more than once across describe blocks).
+ */
+export function findCreateTables(sqlText, schema = 'harness_shared') {
+  const out = [];
+  const re = new RegExp(
+    'CREATE\\s+TABLE\\s+(?:IF\\s+NOT\\s+EXISTS\\s+)?' + escapeRe(schema) + '\\.(\\w+)\\s*\\(',
+    'gi',
+  );
+  let m;
+  while ((m = re.exec(sqlText))) {
+    const openIdx = m.index + m[0].length - 1;
+    const { body, endIndex } = extractParenBlock(sqlText, openIdx);
+    out.push({ table: m[1], columns: columnNamesFromClauses(splitTopLevelClauses(body)) });
+    re.lastIndex = endIndex;
+  }
+  return out;
+}
+
+/**
+ * Every `ALTER TABLE (IF EXISTS)? <schema>.<table> ... ADD COLUMN ...` statement
+ * (up to its terminating `;`) in `sqlText`, as `{ table, columns }` — a single
+ * statement may add several columns comma-separated.
+ */
+export function findAlterTableAddColumns(sqlText, schema = 'harness_shared') {
+  const out = [];
+  const re = new RegExp('ALTER\\s+TABLE\\s+(?:IF\\s+EXISTS\\s+)?' + escapeRe(schema) + '\\.(\\w+)', 'gi');
+  let m;
+  while ((m = re.exec(sqlText))) {
+    const table = m[1];
+    const stmtStart = m.index;
+    const semi = sqlText.indexOf(';', stmtStart);
+    const stmtEnd = semi === -1 ? sqlText.length : semi + 1;
+    const stmtText = sqlText.slice(stmtStart, stmtEnd);
+    const addRe = /ADD\s+COLUMN\s+(?:IF\s+NOT\s+EXISTS\s+)?"?(\w+)"?/gi;
+    const columns = [];
+    let am;
+    while ((am = addRe.exec(stmtText))) columns.push(am[1]);
+    if (columns.length) out.push({ table, columns });
+    re.lastIndex = stmtEnd;
+  }
+  return out;
+}
+
+/**
+ * Every column a migration file INTRODUCES on a `harness_shared` table — from
+ * an initial `CREATE TABLE` or a later `ALTER TABLE ... ADD COLUMN`. Returns
+ * `{ table, column }` pairs (deduplicated).
+ */
+export function extractIntroducedColumns(sqlText, schema = 'harness_shared') {
+  const seen = new Set();
+  const out = [];
+  const add = (table, column) => {
+    const key = table + '.' + column;
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push({ table, column });
+  };
+  for (const { table, columns } of findCreateTables(sqlText, schema)) {
+    for (const column of columns) add(table, column);
+  }
+  for (const { table, columns } of findAlterTableAddColumns(sqlText, schema)) {
+    for (const column of columns) add(table, column);
+  }
+  return out;
+}
+
+function escapeRe(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// ---------------------------------------------------------------------------
+// Fixture-gap detection
+// ---------------------------------------------------------------------------
+
+/** Tracked `*.integration.test.ts` files, repo-root-relative, excluding `_retired/`. */
+export function listIntegrationTestFiles(root = ROOT, gitLsFiles = defaultGitLsFiles) {
+  return gitLsFiles(root).filter((f) => f.endsWith('.integration.test.ts') && !f.startsWith('_retired/'));
+}
+
+function defaultGitLsFiles(root) {
+  try {
+    const out = execFileSync('git', ['ls-files', '--', '*.integration.test.ts'], {
+      cwd: root,
+      encoding: 'utf8',
+      maxBuffer: 16 * 1024 * 1024,
+    });
+    return out.split('\n').filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Integration-test files (repo-root-relative) that inline-construct `table`
+ * WITHOUT `column` — i.e. their `CREATE TABLE harness_shared.<table>` fixture
+ * names other columns but not this one. `deps` is injected by tests.
+ */
+export function findFixtureGaps(table, column, deps = {}) {
+  const { root = ROOT, files = listIntegrationTestFiles(root), readFile = defaultReadFile } = deps;
+  const gaps = [];
+  for (const relPath of files) {
+    const text = readFile(root, relPath);
+    if (text === null) continue;
+    if (!text.includes(table)) continue; // cheap pre-filter before the regex scan
+    for (const t of findCreateTables(text)) {
+      if (t.table !== table) continue;
+      if (!t.columns.includes(column)) gaps.push(relPath);
+    }
+  }
+  return [...new Set(gaps)];
+}
+
+function defaultReadFile(root, relPath) {
+  try {
+    return readFileSync(join(root, relPath), 'utf8');
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The whole check for one migration file's text: every introduced column,
+ * cross-referenced against fixture gaps. Returns findings (empty if none).
+ */
+export function findDrift(sqlText, deps = {}) {
+  const introduced = extractIntroducedColumns(sqlText);
+  const findings = [];
+  for (const { table, column } of introduced) {
+    const gapFiles = findFixtureGaps(table, column, deps);
+    if (gapFiles.length) findings.push({ table, column, gapFiles });
+  }
+  return findings;
+}
+
+// ---------------------------------------------------------------------------
+// CLI
+// ---------------------------------------------------------------------------
+
+export function formatReport(migrationFile, findings) {
+  if (!findings.length) return `✓ ${migrationFile}: no fixture drift found`;
+  const lines = [`⚠ ${migrationFile} — introduces column(s) already relied on by other test fixtures:`];
+  for (const { table, column, gapFiles } of findings) {
+    lines.push(`  • harness_shared.${table}.${column}`);
+    for (const f of gapFiles) lines.push(`      stale fixture: ${f}`);
+  }
+  lines.push(
+    '',
+    '  Each listed file builds harness_shared.<table> from an inline CREATE TABLE that',
+    '  names other columns but not this new one. If that fixture is meant to track the',
+    '  real schema (not a deliberate minimal stub), add the column now — the class this',
+    '  guards is documented at EI-19359711978838614: the red otherwise surfaces on an',
+    '  unrelated agent, hours or weeks later, with no routine check able to see it coming.',
+  );
+  return lines.join('\n');
+}
+
+async function main() {
+  const argv = process.argv.slice(2);
+  const json = argv.includes('--json');
+  const check = argv.includes('--check');
+  const baseIdx = argv.indexOf('--base');
+  const explicitFiles = argv.filter((a) => !a.startsWith('--') && argv[argv.indexOf(a) - 1] !== '--base');
+
+  let files = explicitFiles;
+  if (baseIdx >= 0) {
+    const base = argv[baseIdx + 1];
+    files = changedSqlFilesSince(base);
+  }
+
+  if (!files.length) {
+    if (!json) console.log('check-migration-fixture-drift: no migration files given — nothing to check');
+    process.exit(0);
+  }
+
+  const results = [];
+  let anyFindings = false;
+  for (const f of files) {
+    const abs = resolve(ROOT, f);
+    if (!existsSync(abs)) continue;
+    const text = readFileSync(abs, 'utf8');
+    const relPath = relative(ROOT, abs).split(sep).join('/');
+    const findings = findDrift(text);
+    if (findings.length) anyFindings = true;
+    results.push({ file: relPath, findings });
+    if (!json) console.log(formatReport(relPath, findings));
+  }
+
+  if (json) {
+    console.log(JSON.stringify({ results }, null, 2));
+  }
+
+  process.exit(check && anyFindings ? 1 : 0);
+}
+
+function changedSqlFilesSince(base) {
+  try {
+    const out = execFileSync(
+      'git',
+      ['diff', '--name-only', '--diff-filter=ACM', base, '--', SQL_DIR_REL + '/*.sql'],
+      { cwd: ROOT, encoding: 'utf8' },
+    );
+    const tracked = out.split('\n').filter(Boolean);
+    // Untracked-but-new migration files (the common case right after `db:next-migration`,
+    // before git-sync's next commit) don't show up in a base-diff at all — pick them up too.
+    const untracked = execFileSync(
+      'git',
+      ['ls-files', '--others', '--exclude-standard', '--', SQL_DIR_REL + '/*.sql'],
+      { cwd: ROOT, encoding: 'utf8' },
+    )
+      .split('\n')
+      .filter(Boolean);
+    return [...new Set([...tracked, ...untracked])];
+  } catch {
+    return [];
+  }
+}
+
+const invokedDirectly = process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url));
+if (invokedDirectly) main();

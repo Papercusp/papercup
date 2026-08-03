@@ -8,11 +8,18 @@
  * entry loses its provenance and the next reader relaxes it; a typo'd `@covers`
  * citation reads as coverage when it proves nothing.
  *
- * Pure data + pure functions, no PG, no IO — this file must stay runnable in the
- * unit tier.
+ * Pure data + pure functions, no PG, no process spawning — this file must stay
+ * runnable in the unit tier. The ONE exception is the `binds` existence check
+ * below, which does synchronous local `existsSync` calls against the repo. That
+ * is deliberate: a `binds` entry naming a file that does not exist is precisely
+ * the rot this suite is for, and it is not detectable without touching the
+ * filesystem. No PG, no network, no subprocess — the unit-tier contract holds.
  *
  * Run: cd packages/operator-core && npx vitest run lib/scheduler/dependency-invariants.test.ts
  */
+import { existsSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
   DEPENDENCY_INVARIANTS,
@@ -46,6 +53,27 @@ describe('dependency invariant registry — shape', () => {
       // inconvenient: every one here cost a real incident.
       expect(inv.provenance.length, `${inv.id} provenance`).toBeGreaterThan(0);
       for (const b of inv.binds) expect(b, `${inv.id} binds entry`).not.toMatch(/[*?]/); // no globs
+    }
+  });
+
+  it('binds only paths that EXIST — a dangling pointer is worse than no pointer', () => {
+    // Earned, 2026-08-02: INV-03 bound `lib/repoint-qualified-refs-on-rehome.ts`, which has
+    // never existed — the seam is a SQL trigger (migration 734). Nothing checked, so the
+    // registry confidently handed a later reader a path to a file that was not there, and the
+    // reader went looking for it. That is the failure mode a `binds` list exists to prevent,
+    // reproduced by the list itself.
+    //
+    // A dangling bind is strictly worse than an absent one: absent invites a search, dangling
+    // asserts an answer. It also rots on its own schedule — the invariant stays true while the
+    // file it names is renamed or removed by someone who never reads this registry.
+    const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '../../../..');
+    for (const inv of DEPENDENCY_INVARIANTS) {
+      for (const entry of inv.binds) {
+        // Entries may carry a trailing parenthetical naming the symbol inside the path,
+        // e.g. 'libs/.../sql (work_item_is_blocked)'. The path is the part before it.
+        const path = entry.replace(/\s*\([^)]*\)\s*$/, '').trim();
+        expect(existsSync(join(repoRoot, path)), `${inv.id} binds a missing path: ${path}`).toBe(true);
+      }
     }
   });
 

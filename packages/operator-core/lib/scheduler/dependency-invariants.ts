@@ -104,7 +104,11 @@ export const DEPENDENCY_INVARIANTS: readonly DependencyInvariant[] = [
     violationLooksLike:
       "After a rename, 8 edges still carried 'papercusp-public-site#WI-54xx' while the items lived under 'papercusp-public-site-pot'. Every one of those blocking relationships was silently deactivated, and the items became claimable.",
     binds: [
-      'packages/operator-core/lib/repoint-qualified-refs-on-rehome.ts',
+      // The seam is SQL, not TypeScript: an AFTER UPDATE OF harness_slug trigger, because a
+      // re-home can arrive from a migration/backfill that never touches app code (649 did
+      // exactly that). This entry previously named a `lib/repoint-qualified-refs-on-rehome.ts`
+      // that has never existed, and the dangling pointer sent a later reader looking for it.
+      'libs/papercusp/libs/db/sql/734-repoint-qualified-refs-on-rehome.sql',
       'packages/operator-core/lib/dbos/work-item-deps-store.ts',
     ],
     provenance: ['EI-19374236094682800'],

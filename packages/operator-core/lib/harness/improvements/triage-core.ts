@@ -42,7 +42,25 @@ import {
   type IdeaLifecyclePayload,
 } from './lifecycle';
 
-const pexecFile = promisify(execFile);
+// Lazily promisified (NOT `const pexecFile = promisify(execFile)` at module scope):
+// this module is reachable via a long, easy-to-hit transitive import chain from test
+// files that narrowly mock `node:child_process` (e.g. `{ spawn }` only) for their own
+// subprocess assertions — under such a mock the `execFile` import binding resolves to
+// `undefined`, and eagerly calling `promisify(undefined)` at module-eval time throws
+// for every such suite, even ones that never call `defaultSearchTree`
+// (lint:no-eager-execfile-promisify / EI-10161; same pattern as watchdog.ts's
+// `execFileP`). Deferring the promisify to first actual call means a transitive
+// importer that never exercises this function never pays the cost.
+type PexecFile = (
+  file: string,
+  args: string[],
+  opts?: Record<string, unknown>,
+) => Promise<{ stdout: string; stderr: string }>;
+let cachedPexecFile: PexecFile | null = null;
+function pexecFile(file: string, args: string[], opts?: Record<string, unknown>): Promise<{ stdout: string; stderr: string }> {
+  if (!cachedPexecFile) cachedPexecFile = promisify(execFile) as unknown as PexecFile;
+  return cachedPexecFile(file, args, opts);
+}
 
 export interface ApplyTriageInput {
   id: string;

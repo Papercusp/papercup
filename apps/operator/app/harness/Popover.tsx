@@ -170,7 +170,9 @@ export function Popover({
                 border: '1px solid rgba(255,255,255,0.1)',
                 borderRadius: 6,
                 boxShadow: '0 4px 16px rgba(0,0,0,0.4)',
-                zIndex: 200,
+                /* Clears the shell — Radix copies this to the popper wrapper
+                   inline, overriding the harness.css floor (P-006). */
+                zIndex: 1500,
               }}
             >
               {tooltipLabel}

@@ -75,6 +75,17 @@ const CORPUS = [
   'dbos/work-item-deps-store.test.ts',
   'dbos/feature-blockers-edges.integration.test.ts',
   'dbos/feature-blockers-acyclicity.test.ts',
+  // P-012, the rename/re-home pair. They prove DIFFERENT halves of INV-03 and neither
+  // substitutes for the other:
+  //   • repoint-… asserts the REF-LEVEL statement (no edge still names the old slug) against
+  //     the real migration 734. Like claim-ssot-agreement under P-009, it already existed and
+  //     simply carried no citation — the third time in this plan that the proof was already
+  //     written and only the attribution was missing.
+  //   • rename-drift-… asserts the CONSEQUENCE — that the edge still WITHHOLDS the item at the
+  //     real claim door — which the ref-level suite structurally cannot reach, because its
+  //     fixture builds its own work_items table and no claim floor exists in it.
+  'repoint-qualified-refs-on-rehome.integration.test.ts',
+  'scheduler/rename-drift-effectiveness.integration.test.ts',
 ] as const;
 
 /**
