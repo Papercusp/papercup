@@ -258,7 +258,10 @@ describe('the endpoint detector returns a CLEAN verdict over every real writer',
     await wi.linkWorkItem(blocker, dst, 'blocks', { harness: H, by: 'su-test' });
     expect(await verdict()).toMatchObject({ defects: 0 });
 
-    await wi.unlinkWorkItem(blocker, dst, 'blocks', { harness: H, by: 'su-test' });
+    // NB: unlinkWorkItem's opts are { harness? } only — it takes no `by`, unlike its link
+    // counterpart. An excess property here is runtime-harmless, so vitest passes it happily;
+    // only the typecheck catches it.
+    await wi.unlinkWorkItem(blocker, dst, 'blocks', { harness: H });
     expect(await verdict()).toMatchObject({ defects: 0, mismatched: [], dangling: [] });
   });
 

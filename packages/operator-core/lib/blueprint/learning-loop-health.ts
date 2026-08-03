@@ -44,6 +44,15 @@ export interface LearningRoutineRow {
   /** ISO timestamp of the NEXT scheduled fire, or null if unknown — distinguishes a
    *  just-activated loop awaiting its first fire (`pending`) from a stuck one (`stale`). */
   nextFireAt?: string | null;
+  /**
+   * WI-7069's sibling gap (EI-19370236916382521): `metadata.pause.reviewBy` on the routine
+   * row (set via `routines:set { active:false, reviewBy }`) — the DARK_FLAGS_REVIEW_BY
+   * analog for a deliberately-paused always-on loop. An ISO timestamp still in the future
+   * means a human RE-AFFIRMED the pause (not merely left it inactive), so the sweep should
+   * stop re-escalating it until the window lapses. Absent/past ⇒ unacknowledged, same as
+   * before this field existed.
+   */
+  pauseReviewBy?: string | null;
 }
 
 /** A learning loop's identity: its blueprint id + the legacy `papercup`-slug routine name. */
@@ -89,6 +98,15 @@ export interface LearningLoopHealth {
    * inject that gate via `opts.expectedMaterialized`; the default is "expected".
    */
   expectedMaterialized: boolean;
+  /**
+   * EI-19370236916382521: status is `should-be-on-but-dark` AND the pause carries a
+   * `pauseReviewBy` still in the future — a human explicitly RE-AFFIRMED the pause rather
+   * than leaving it silently indefinite. Never true for any other status. Callers that
+   * escalate on `should-be-on-but-dark` (the health-sweep watchdog) should skip a row with
+   * `pauseAcknowledged: true` — that is the whole point of re-affirming: it stops the daily
+   * re-escalation without forcing a resume.
+   */
+  pauseAcknowledged: boolean;
 }
 
 /** The workspace-singleton cadence routine name a blueprint materializes. */

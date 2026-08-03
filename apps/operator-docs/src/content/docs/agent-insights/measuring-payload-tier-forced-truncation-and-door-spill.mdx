@@ -99,6 +99,100 @@ of a write-only telemetry call that nobody reads.
 
 If you are hunting spill volume, start there — not with the agents.
 
+## But is a spill ever READ? Measured: ~4% — and the method is not obvious
+
+Volume is the easy half. The question that decides whether spill-and-reference
+is a solved problem is whether agents actually page what the door wrote for
+them. Measured 2026-08-02 over a 36h window (`workspace_id='papercusp-workspace'`):
+
+| | count |
+|---|---|
+| spills produced | 80,048 |
+| …of which hook/standing tools nobody can page (`activity:report`, `facts:list`, `locks:check_command`) | 75,633 (94.5%) |
+| **agent-facing denominator** | **4,415** |
+| distinct spills actually read | ~195, by 45 distinct agents, 59 with an explicit `offset`/`limit` |
+| `payloadTier:'full'` re-calls (the pay-twice route) | 157, by 22 agents, across 12 tools |
+
+**~4.4% of agent-facing spills are ever paged; ~92% are abandoned outright —
+and agents re-run the tool at full tier almost as often as they page a copy
+already sitting on disk.**
+
+Read that as an **adoption/routing** failure, not a capability gap: 45 agents
+demonstrably know how to page a spill with a bounded read, so the mechanism
+works. The cause is that the footer advertises remedies that don't fit — `pipe`
+line-operators cannot reduce a one-line JSON body (see the column-cap section
+below for why every result is one line), and `projection` was unreachable from
+every schema-driven client until it was taught to accept a JSON string.
+
+### The method: the numerator is NOT in `tool_invocations` either
+
+The same trap as the rest of this page, one level deeper. A client-native
+`Read` of a spill file **never reaches `tool_invocations`** — it is a CLI-side
+tool. Counting `capability:read` alone finds 3 distinct spills and tells you
+paging is essentially nonexistent, which is wrong by ~60×.
+
+The route that works is the PreToolUse hook's own ingest rows, because they
+record every tool call *including client-native ones*:
+
+```sql
+SELECT args_json->>'tool_name' AS via_tool,
+       count(*)                        AS read_events,
+       count(DISTINCT args_json->'tool_input'->>'file_path') AS distinct_spills,
+       count(*) FILTER (WHERE args_json->'tool_input'->>'offset' IS NOT NULL) AS bounded
+FROM harness_shared.tool_invocations
+WHERE invoked_at > now() - interval '36 hours'
+  AND workspace_id = 'papercusp-workspace'      -- multi-tenant: always scope
+  AND tool_name = 'activity:report'
+  AND args_json->>'phase' = 'pre'
+  AND args_json->'tool_input'->>'file_path' LIKE '%result-door-%'
+GROUP BY 1 ORDER BY 2 DESC;
+```
+
+Native `Read` accounted for 186 of the ~195 distinct spills; `capability_read`
+for 3. Measure only the papercusp-side tool and you will conclude the feature is
+dead.
+
+Note also that `output_ref` is **NULL on all 324,661 invocations** in the
+window — the door still does not record its own spill — which is why the
+denominator has to come off the filesystem and the numerator out of a hook
+table. Populating `output_ref` at spill time would collapse this whole exercise
+into one join (filed as EI-19389431406847252).
+
+### ⚠ `atime` is NOT a shortcut here — it measures YOUR probe, not the agents
+
+The obvious cheap method is to ask the filesystem which spill files were read:
+`atime > mtime`. Run on this box it reports **99.348% read-after-write**, i.e.
+"spill is universally paged" — the exact opposite of the truth, stated with a
+precision that makes it very easy to believe.
+
+It was self-inflicted. Any earlier recursive grep over the home tree —
+e.g. `grep -rl '<pattern>' "$HOME" --include=*.md` — **reads every spill
+file**, because every spill is a `.md` under that tree, and stamps its `atime`.
+The measurement was of the measurer.
+
+The control that settles it, and which costs one command:
+
+```bash
+# a genuine no-read baseline: freshly written spills, before anything can touch them
+NOW=$(date +%s)
+find ~/.papercusp/scratch -name 'result-door-*.md' -printf '%A@ %T@\n' \
+  | awk -v now="$NOW" '($2 > now-90){ printf "delta=%+ds\n", $1-$2 }'
+# => delta=+0s on a clean corpus. Anything else means something read them.
+```
+
+Bucketing by file age makes the contamination visible directly: files younger
+than the contaminating grep read 82.7%, everything older 99.5% — a
+discontinuity at the moment the grep ran, which no real behavioural change
+would produce.
+
+**The generalisation, which has now cost this line of work three times:** a rate
+at either extreme (0% or ~100%) over a large N is an artifact until a control
+says otherwise, and **the first suspect is your own probe.** The sibling
+instances were a `projection` telemetry rate of 100%-invalid that was really a
+deploy boundary, and a `0 matches` grep in one file read as "the feature is
+unimplemented" when it lived in another. `atime` on a shared box that agents
+grep is not evidence.
+
 ## A column cap does not transfer — check the line structure first
 
 OMP caps output at 512 columns so one very wide line cannot eat a whole budget.

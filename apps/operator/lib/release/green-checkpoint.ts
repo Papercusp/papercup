@@ -2031,6 +2031,15 @@ export interface IsolationResult {
    *  manufactures an absorption, so a false `false` here is fail-safe (worst case: one
    *  wasted retry, never a false green). */
   hasTimingSignature?: boolean;
+  /** EI-19369790810564409: true when THIS attempt's own combined stdout+stderr carries a
+   *  vitest AssertionError / `expected ... to ...` diff signature — direct, positive
+   *  evidence the failure is a deterministic assertion, independent of the case-list
+   *  comparison {@link isDeterministicFailureShape} needs (which can miss a genuinely
+   *  new/first-seen assertion, or one whose case name didn't parse identically). Optional;
+   *  absence is treated as `false` — permissive, and this can only ever SOFTEN the
+   *  load-attribution wording below, never manufacture an absorption, so a false `false`
+   *  here is fail-safe. */
+  hasAssertionSignature?: boolean;
 }
 
 /** WI-6969: timing-sensitive vocabulary that, if present in an isolation attempt's own
@@ -2044,6 +2053,32 @@ const TIMING_SIGNATURE_RE = /\b(waitFor|Timed out|Exceeded timeout)\b/i;
  *  one definition. */
 export function outputHasTimingSignature(out: string): boolean {
   return TIMING_SIGNATURE_RE.test(out);
+}
+
+/** EI-19369790810564409: vitest's own AssertionError vocabulary — printed for every
+ *  deterministic `expect(...).to...()` failure, and structurally incapable of being
+ *  load-dependent (a saturated CPU can only make a comparison SLOWER, never wrong). The
+ *  incident this closes: the 2026-08-02 18:02:14Z verdict labelled 5 named
+ *  `adv-agent-detail.test.ts` AssertionErrors "consistent with ambient host load starving
+ *  the isolated re-run" — the isolation wrapper's 19137ms wall time (boot+transform+import)
+ *  was slow, but the failing test BODIES ran in 55-86ms elsewhere in the same log, and the
+ *  failures were named `AssertionError: expected [...] to deeply equal []` diffs. The
+ *  existing load-corroboration guard (EI-19368177649203822/EI-19367962245538796) already
+ *  catches this specific incident (the box was NOT saturated: load ~75/128 cores = 0.59/core,
+ *  below {@link ISOLATION_LOAD_STARVATION_MIN_LOAD_PER_CORE}), but that guard is silent
+ *  about the SHAPE of the failure — a deterministic AssertionError occurring WHILE the box
+ *  genuinely IS saturated (>= 1.0 loadavg/core) would still print "consistent with ambient
+ *  host load" today, which is exactly the ticket's own complaint ("the attribution should be
+ *  suppressed whenever the failing cases are assertion failures", independent of load). This
+ *  closes that residual gap directly, rather than only via the load/case-list proxies. */
+const ASSERTION_SIGNATURE_RE = /\bAssertionError\b|\bexpected\b.*\bto\b/i;
+
+/** EI-19369790810564409: does `out` (an isolation attempt's own combined stdout+stderr)
+ *  carry a vitest AssertionError / `expected ... to ...` diff signature? Exported so the
+ *  real isolation runner and its tests share one definition (mirrors
+ *  {@link outputHasTimingSignature}). */
+export function outputHasAssertionSignature(out: string): boolean {
+  return ASSERTION_SIGNATURE_RE.test(out);
 }
 
 /**
@@ -2459,8 +2494,15 @@ export async function attemptFlakeAbsorption(
         // exactly the false-green rationalisation WI-6956 exists to refuse.
         const load = loadPerCore();
         const loadNote = `loadavg/core ${load.toFixed(2)}`;
-        const attribution =
-          result.durationMs === undefined
+        // EI-19369790810564409: an AssertionError signature is DIRECT, POSITIVE evidence
+        // of a deterministic failure — checked FIRST and unconditionally (independent of
+        // duration/load), because a saturated host can only make a comparison SLOWER, never
+        // wrong. Without this, a deterministic assertion failing WHILE the box genuinely is
+        // saturated (>= 1.0 loadavg/core) would still read "consistent with ambient host
+        // load" — technically true about the box, false about the CAUSE of THIS failure.
+        const attribution = result.hasAssertionSignature
+          ? `(took ${result.durationMs ?? '?'}ms at ${loadNote} — this attempt's own output shows a deterministic AssertionError, not a timeout; NOT load-shaped however busy the host is)`
+          : result.durationMs === undefined
             ? '(ambient host load, not just the checkpoint\'s own concurrency, can starve even an isolated re-run — duration not measured)'
             : result.durationMs < ISOLATION_LOAD_STARVATION_MIN_MS
               ? `(finished in ${result.durationMs}ms — too fast to be load-starved; likely a real break or a stale candidate, NOT ambient load)`
@@ -4879,6 +4921,7 @@ export function realCheckpointDeps(
         durationMs: Date.now() - startedAt,
         failingCases: extractFailingTestNames(out),
         hasTimingSignature: outputHasTimingSignature(out),
+        hasAssertionSignature: outputHasAssertionSignature(out),
       };
     } catch (e) {
       log(`isolation: vitest re-run of ${workspace}::${file} threw (${e instanceof Error ? e.message : e})`);

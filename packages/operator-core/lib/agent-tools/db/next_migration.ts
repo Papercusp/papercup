@@ -85,11 +85,11 @@ function slugify(name: string): string {
 export default defineTool({
   name: 'db:next-migration',
   description:
-    'Atomically reserve the next migration number for a libs/papercusp/libs/db/sql/<NNN>-*.sql file. Hands out GREATEST(max-on-disk across the serving + canonical staging trees, max-reserved, max-applied)+1 under a pg advisory lock so two agents racing `ls | tail` never collide. Returns the number + a suggested filename/path; write the file there and it auto-applies on the next operator restart (A1 boot-apply).',
+    'Atomically reserve the next migration number for a libs/papercusp/libs/db/sql/<NNN>-*.sql file. Hands out GREATEST(max-on-disk across the serving + canonical staging trees, max-reserved, max-applied)+1 under a pg advisory lock so two agents racing `ls | tail` never collide. Returns the number + a `.DRAFT`-suffixed path to write the file at — the runner only ever applies files matching `*.sql`, so the draft is invisible to auto-apply while you iterate on it; ARM it via the returned `arm_command` once ready and it auto-applies on the next operator restart (A1 boot-apply).',
   guidance: {
     when: 'BEFORE creating a new SQL migration file — reserve the number first instead of `ls | tail`, so a concurrent agent cannot pick the same NNN.',
     notWhen: 'Applying a migration (that is the boot auto-apply / db:migrate) or checking drift (db:check_drift).',
-    chaining: 'db:next-migration { name } → write the returned path → restart the operator (boot auto-applies) or db:migrate.',
+    chaining: 'db:next-migration { name } → write + iterate at the returned `.DRAFT` path (never races auto-apply, even for a deliberate temporary both-ways guard-test mutation) → run `arm_command` once tested → restart the operator (boot auto-applies) or db:migrate.',
     seeAlso: [
       'db:migrate (apply the migration you wrote)',
       'db:check_drift (check drift after applying)',
@@ -142,6 +142,10 @@ export default defineTool({
                             WHERE filename ~ '^[0-9]+-'), 0)
                ) + 1 AS next`;
       const next = Number(rows[0]!.next);
+      // The RESERVED filename (ledger + unreservedNumbers checks) stays the
+      // eventual armed `.sql` name — only the path we tell the caller to
+      // WRITE TO gets the `.DRAFT` suffix (EI-19366138707071397). Reservation
+      // and on-disk armed state are deliberately independent.
       const filename = `${String(next).padStart(3, '0')}-${slug}.sql`;
       await tx`
         INSERT INTO harness_shared.migration_reservations (num, filename, reserved_by, intent)
@@ -149,13 +153,17 @@ export default defineTool({
       return { next, filename };
     });
 
+    const armPath = path.posix.join('libs/papercusp/libs/db/sql', allocated.filename);
+    const draftPath = `${armPath}.DRAFT`;
     return json({
       ok: true,
       number: allocated.next,
       suggested_filename: allocated.filename,
-      path: path.posix.join('libs/papercusp/libs/db/sql', allocated.filename),
+      path: draftPath,
+      arm_path: armPath,
+      arm_command: `mv ${draftPath} ${armPath}`,
       reserved_by: ownerLabel,
-      note: 'Reserved. Write the migration at this path; it auto-applies on the next operator restart (A1 native boot-apply), or via db:migrate for a one-off.',
+      note: `Reserved. Write + iterate the migration at ${draftPath} (a ".DRAFT" suffix). The runner only ever applies files matching *.sql, so this draft is INVISIBLE to boot auto-apply / db:migrate / the green-checkpoint preflight while you edit it — including any deliberate temporary both-ways guard-test mutation. Once it's ready and tested, ARM it for auto-apply with: ${`mv ${draftPath} ${armPath}`}`,
     });
   },
 });

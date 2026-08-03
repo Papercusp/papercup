@@ -362,9 +362,20 @@ export default defineTool({
     const absenceClaims = (() => {
       if (!hasNoteWrite) return [];
       try {
-        const probes = probeText.toLowerCase();
+        // Coverage is judged by WORD OVERLAP, not by a prefix/substring match. A substring
+        // test looks simpler and is wrong: the prose and the check row are authored
+        // separately, so they routinely differ by a leading fragment, a rewrap, or a
+        // rendering prefix — and any such difference silently re-flags a claim the author
+        // HAS parked, training them to ignore the lint. Overlap survives all three.
+        const probeWords = new Set(probeText.toLowerCase().match(/[a-z0-9_.:/-]{4,}/g) ?? []);
+        const covered = (claim: string): boolean => {
+          const words = claim.toLowerCase().match(/[a-z0-9_.:/-]{4,}/g) ?? [];
+          if (words.length === 0) return false;
+          const hits = words.filter((w) => probeWords.has(w)).length;
+          return hits / words.length >= 0.6;
+        };
         return detectAbsencePremises(narrativeBody, 'carry-note')
-          .filter((p) => !probes.includes(p.claim.slice(0, 40).toLowerCase()))
+          .filter((p) => !covered(p.claim))
           .map((p) => ({ claim: p.claim, recheck: p.recheck }));
       } catch {
         return []; // a lint must never cost the agent the checkpoint it asked for

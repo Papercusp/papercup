@@ -19,15 +19,27 @@
  *   node scripts/next-migration.mjs --name add-foo-index [--intent "what it does"] [--by label] [--dry-run]
  *   npm run db:next-migration -- --name add-foo-index --intent "..."
  *
- * On success prints the reserved number + the canonical path to write the file:
- *   libs/papercusp/libs/db/sql/<NNN>-<slug>.sql   (NOT the gitignored sidecar mirror)
- * It auto-applies on the next operator restart (boot auto-apply).
+ * On success prints the reserved number + a DRAFT path to write the file at:
+ *   libs/papercusp/libs/db/sql/<NNN>-<slug>.sql.DRAFT   (NOT the gitignored sidecar mirror)
+ * The `.DRAFT` suffix is deliberate (EI-19366138707071397): the migration
+ * runner only ever applies files matching `*.sql` (see migration-runner.js /
+ * migration-drift.ts's `isRunnerMigration`), so a `.DRAFT`-suffixed file is
+ * INVISIBLE to boot auto-apply, db:migrate, and the green-checkpoint preflight
+ * — exactly like the pre-existing `.PENDING-CODE-DEPLOY` idiom (see migration
+ * 727). This closes the window where editing an unapplied migration on disk
+ * (including a deliberate temporary both-ways guard-test mutation) races the
+ * operator's boot-time auto-apply and can execute half-finished SQL against
+ * the live DB. Write + iterate at the `.DRAFT` path; ARM it only once ready by
+ * stripping the suffix (`mv <path>.DRAFT <path>`) — the printed `note` gives
+ * the exact command.
  *
  * Exits non-zero (without reserving) when PG is unreachable — a number handed out
  * without a ledger row would re-introduce the very race this prevents.
  */
 import { readdirSync, readFileSync } from 'node:fs';
 import os from 'node:os';
+import { fileURLToPath } from 'node:url';
+import { resolve as resolvePath } from 'node:path';
 
 const ALLOC_ADVISORY_KEY = 873_135; // must match next_migration.ts
 
@@ -76,6 +88,31 @@ function maxNumberOnDisk(dirs) {
     }
   }
   return max;
+}
+
+/**
+ * Pure — builds the JSON payload printed on success. Exported (and unit
+ * tested, no DB required) so the `.DRAFT`-suffix contract (EI-19366138707071397)
+ * can't silently regress: `path` must be the DRAFT write-target, `arm_path`
+ * the eventual armed `.sql` name, and `arm_command` the exact rename between
+ * them — see the module-level docstring for why the suffix matters.
+ */
+export function buildAllocationResult({ next, filename, reservedBy, dryRun, canonicalDir = CANONICAL_DIR }) {
+  const armPath = `${canonicalDir}/${filename}`;
+  const draftPath = `${armPath}.DRAFT`;
+  return {
+    ok: true,
+    number: next,
+    reserved: !dryRun,
+    filename,
+    path: draftPath,
+    arm_path: armPath,
+    arm_command: `mv ${draftPath} ${armPath}`,
+    reserved_by: reservedBy,
+    note: dryRun
+      ? 'DRY RUN — nothing reserved. Re-run without --dry-run to claim this number.'
+      : `Reserved. Write + iterate the migration at ${draftPath} (a ".DRAFT" suffix — NOT the sidecar mirror). The runner only ever applies files matching *.sql, so this draft is INVISIBLE to boot auto-apply / db:migrate / the green-checkpoint preflight while you edit it (including any deliberate temporary both-ways guard-test mutation). Once it's ready and tested, ARM it for auto-apply with: mv ${draftPath} ${armPath}`,
+  };
 }
 
 function resolvePgUrl() {
@@ -129,6 +166,10 @@ async function main() {
                             WHERE filename ~ '^[0-9]+-'), 0)
                ) + 1 AS next`;
       const next = Number(rows[0].next);
+      // The RESERVED filename (recorded in the ledger, used by the fsMax/
+      // unreservedNumbers checks) stays the eventual armed `.sql` name — only
+      // the path we tell the caller to WRITE TO gets the `.DRAFT` suffix. The
+      // reservation and the on-disk armed state are deliberately independent.
       const filename = `${String(next).padStart(3, '0')}-${slug}.sql`;
       if (!args.dryRun) {
         await tx`
@@ -137,20 +178,14 @@ async function main() {
       }
       return { next, filename };
     });
-    const path = `${CANONICAL_DIR}/${allocated.filename}`;
     console.log(
       JSON.stringify(
-        {
-          ok: true,
-          number: allocated.next,
-          reserved: !args.dryRun,
+        buildAllocationResult({
+          next: allocated.next,
           filename: allocated.filename,
-          path,
-          reserved_by: reservedBy,
-          note: args.dryRun
-            ? 'DRY RUN — nothing reserved. Re-run without --dry-run to claim this number.'
-            : `Reserved. Write the migration at ${path} (NOT the sidecar mirror); it auto-applies on the next operator restart.`,
-        },
+          reservedBy,
+          dryRun: args.dryRun,
+        }),
         null,
         2,
       ),
@@ -167,4 +202,8 @@ async function main() {
   }
 }
 
-await main();
+// Guard the CLI entry so a test can `import { buildAllocationResult } from
+// './next-migration.mjs'` without triggering a live PG connection + argv
+// parse as a side effect of the import.
+const isMainModule = process.argv[1] && fileURLToPath(import.meta.url) === resolvePath(process.argv[1]);
+if (isMainModule) await main();

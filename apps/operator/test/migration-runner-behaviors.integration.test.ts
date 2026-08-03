@@ -247,6 +247,35 @@ describe('migration runner — failure paths + recording contract (synthetic sql
     await expect(tableExists('mrb6_template')).resolves.toBe(true);
   });
 
+  it('EI-19366138707071397: a `.DRAFT`-suffixed file (db:next-migration\'s write target) is never applied — even a syntactically BROKEN one, and even a `skipFile` override cannot bring it back', async () => {
+    // db:next-migration now hands callers a `<NNN>-<slug>.sql.DRAFT` path to
+    // write + iterate at (including a deliberate temporary both-ways
+    // guard-test mutation) so it can never race the boot auto-apply while
+    // unfinished — see scripts/next-migration.mjs's module docstring. The
+    // runner's `.filter(f => f.endsWith('.sql'))` (not a skip-set entry) is
+    // what makes this safe: prove it holds, and prove it holds even for
+    // genuinely invalid SQL a mid-edit draft could legitimately contain.
+    const dir = await makeSqlDir({
+      '001-normal.sql': 'CREATE TABLE mrb6b_normal (id int);\n',
+      '002-in-progress.sql.DRAFT': 'this is not even valid SQL {{{',
+    });
+
+    const res = await applyPendingMigrations({ client: sql, sqlDir: dir });
+    expect(res.totalKnown).toBe(1); // the draft isn't even "known" — same as the skip set
+    expect(res.appliedCount).toBe(1);
+    expect(res.failed).toEqual([]);
+    await expect(tableExists('mrb6b_normal')).resolves.toBe(true);
+    expect((await recorded()).map((r) => r.filename)).toEqual(['001-normal.sql']);
+
+    // Unlike MANUAL_ONLY / per-harness-template, the DRAFT suffix is a plain
+    // filename-shape fact (endsWith('.sql')), not a skip-set entry — a custom
+    // skipFile that returns false for everything still cannot make it apply,
+    // because it's filtered out before `skip()` is ever consulted.
+    const res2 = await applyPendingMigrations({ client: sql, sqlDir: dir, skipFile: () => false });
+    expect(res2.totalKnown).toBe(1);
+    expect(res2.appliedCount).toBe(0); // 001 already recorded; the .DRAFT stays invisible
+  });
+
   it("records a filename containing a single quote correctly (SQL escaping)", async () => {
     const raw = 'CREATE TABLE mrb7_quoted (id int);\n';
     const name = "001-o'brien.sql";

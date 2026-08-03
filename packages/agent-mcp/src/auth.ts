@@ -18,7 +18,7 @@
  */
 
 import { createHash } from 'node:crypto';
-import { getOrgPg, withWorkspace } from '@papercusp/db-org';
+import { getOrgPg, withWorkspace, withDbCallDeadline } from '@papercusp/db-org';
 import type { Principal } from '@papercusp/tooldef';
 import { BRAIN_PRINCIPAL_ROLE } from './role-config';
 
@@ -178,14 +178,26 @@ async function resolveTokenIdentity(
   // token_index column is named `harness_slug` per the original 008 migration.
   // It holds slugs for harnesses; for system: and pi: principals (added in
   // 009) the same column stores the prefixed slug (e.g. "system:operator").
-  const rows = await sql<
-    Array<{ token: string; kind: string; harness_slug: string; workspace_id: string }>
-  >`
+  //
+  // WI-7097: this is the FIRST admin-pool query on essentially every
+  // uncached MCP tool dispatch (bearer resolution runs before any tool
+  // handler executes). If the admin pool has never yet connected — a
+  // not-yet-up embedded PG, a genuinely dead endpoint — postgres.js silently
+  // retries the INITIAL connect forever without ever rejecting this query
+  // (see withDbCallDeadline's doc comment), so wrap it: a stuck resolve now
+  // fails fast with a clear cause instead of hanging every dispatched tool
+  // call until the transport's own generic ~300s idle-timeout.
+  const rows = await withDbCallDeadline(
+    sql<
+      Array<{ token: string; kind: string; harness_slug: string; workspace_id: string }>
+    >`
     SELECT token, kind, harness_slug, workspace_id
       FROM harness_shared.token_index
      WHERE token = ${bearer}
      LIMIT 1
-  `;
+  `,
+    { label: 'resolveTokenIdentity: token_index lookup (admin pool)' },
+  );
   const row = rows[0];
   if (!row || (row.kind !== 'system' && row.kind !== 'pi')) {
     // Missing row, or a harness bearer (out of scope for v1) — cache negatively.

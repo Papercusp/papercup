@@ -71,7 +71,13 @@ const CTX = { isSuperuser: true, uiClientId: 'a1-alloc-test-client' } as never;
 let rootSql: postgres.Sql;
 let dbName: string;
 
-async function allocate(): Promise<{ ok: boolean; number?: number }> {
+async function allocate(): Promise<{
+  ok: boolean;
+  number?: number;
+  path?: string;
+  arm_path?: string;
+  arm_command?: string;
+}> {
   const res = (await tool.handler({} as never, CTX)) as { content: { text: string }[] };
   return JSON.parse(res.content[0]!.text);
 }
@@ -195,6 +201,15 @@ describe('db:next-migration allocator (§A1)', () => {
     expect(typeof out.number).toBe('number');
     // Attributed to the superuser fallback identity, not an anonymous/empty owner.
     expect(out.reserved_by).toMatch(/^su · /);
+  });
+
+  it('EI-19366138707071397: hands back a `.DRAFT`-suffixed write target, not the bare `.sql` name a peer editing it could race the boot auto-apply on', async () => {
+    const r = await allocate();
+    expect(r.ok).toBe(true);
+    expect(r.path).toMatch(/\.sql\.DRAFT$/);
+    expect(r.path?.endsWith('.sql')).toBe(false);
+    expect(r.arm_path).toMatch(/\.sql$/);
+    expect(r.arm_command).toBe(`mv ${r.path} ${r.arm_path}`);
   });
 
   it('EI-6852: the filesystem max is read INSIDE the advisory lock — a peer file written DURING the lock window is still respected (no stale-fsMax TOCTOU collision)', async () => {

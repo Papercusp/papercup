@@ -822,8 +822,16 @@ mirror with file primary". Helpers: `apps/operator/lib/operator-state-pg.ts`.
   when caught). Run `node scripts/next-migration.mjs --name <slug> --intent
   "..."` (or `npm run db:next-migration --`) FIRST — it reserves the number
   atomically under an advisory lock (`harness_shared.migration_reservations`)
-  and prints the exact path to write. Then add the idempotent migration at
-  `libs/papercusp/libs/db/sql/<NNN>-…sql` (≥107), and run
+  and prints a `.DRAFT`-suffixed path to write. **Write + iterate at that
+  `.DRAFT` path, not the bare `.sql` name** (EI-19366138707071397): the
+  runner only ever applies files matching `*.sql` (same mechanism as the
+  pre-existing `NNN-*.sql.PENDING-CODE-DEPLOY` idiom), so a `.DRAFT` file is
+  invisible to boot auto-apply / `db:migrate` / the green-checkpoint
+  preflight while you edit it — including a deliberate temporary both-ways
+  guard-test mutation, which otherwise races the operator's auto-apply and
+  can execute half-finished SQL against the live DB. Once it's finished and
+  tested, ARM it with the tool's printed `arm_command` (`mv <path>.DRAFT
+  <path>`) at `libs/papercusp/libs/db/sql/<NNN>-…sql` (≥107), and run
   `node libs/papercusp/libs/db/scripts/pull-schema.mjs`. Never an `ensureXxx()`
   / inline `CREATE TABLE`. `000-baseline.sql` is frozen/generated.
 - **Never hardcode `localhost:5432`** — resolve via `getHarnessAdminUrl()`.
@@ -1235,6 +1243,18 @@ sites. Finding the sites was never the hard part — `tsc` already does that per
 gap this closes is *knowing to run it*. ⚠ Do NOT "fix" the errors by making the new field
 optional: that silently reintroduces whatever under-reporting the required field was added
 to prevent (exactly the WI-6409 claim-floor bug).
+
+**A migration that ADDS a column to a `harness_shared` table can silently strand a
+sibling `*.integration.test.ts` fixture** that hand-rolls that same table via an inline
+`CREATE TABLE` instead of applying real migrations — the fixture used to be
+schema-complete for every column it named and quietly falls one behind, and
+`test:affected` won't select the stale file (your migration's diff never touches it).
+A PostToolUse hook nudges you at edit time when this happens
+(`scripts/check-migration-fixture-drift.mjs`, EI-19359711978838614) — advisory only, and
+deliberately narrow: it fires only when some OTHER fixture already builds the exact
+table and is missing the exact new column, not on every fixture that happens to omit it
+(most are INTENTIONALLY partial stubs, e.g. "only the columns the live reads query" —
+that's normal, not drift). `npm run lint:migration-fixture-drift` runs it by hand.
 
 Schema/migration edits (`libs/papercusp/libs/db/**`) → `npm run
 test:all:integration` (the dependency graph won't catch them). Don't run

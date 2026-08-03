@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { sessionTimelineToChatMessages } from './session-transcript-mapping';
+import { mapSessionTimeline, sessionTimelineToChatMessages } from './session-transcript-mapping';
 import type { TimelineEntry } from '../../harness/AgentThinkingStream';
 
 describe('sessionTimelineToChatMessages', () => {
@@ -187,5 +187,86 @@ describe('sessionTimelineToChatMessages', () => {
         },
       ]);
     });
+  });
+});
+
+/**
+ * The entry→message translation a search deep-link needs.
+ *
+ * The stream's `anchor` event names an index into the FLAT timeline; this
+ * mapper collapses that timeline into turns and drops whole entry kinds. The
+ * two indices are therefore NOT interchangeable, and the failure mode of
+ * assuming they are is silent: you scroll confidently to the wrong turn.
+ */
+describe('mapSessionTimeline — messageIndexForEntryIndex', () => {
+  it('translates a flat entry index into the message that entry ended up in', () => {
+    const entries: TimelineEntry[] = [
+      { kind: 'prompt', text: 'first ask', ts: 't1' },   // 0 -> msg 0 (user)
+      { kind: 'text', text: 'first answer', ts: 't2' },  // 1 -> msg 1 (assistant)
+      { kind: 'prompt', text: 'second ask', ts: 't3' },  // 2 -> msg 2 (user)
+      { kind: 'text', text: 'second answer', ts: 't4' }, // 3 -> msg 3 (assistant)
+    ];
+    const m = mapSessionTimeline(entries);
+    expect(m.messages.map((x) => x.content)).toEqual([
+      'first ask', 'first answer', 'second ask', 'second answer',
+    ]);
+    expect([0, 1, 2, 3].map((i) => m.messageIndexForEntryIndex(i))).toEqual([0, 1, 2, 3]);
+  });
+
+  it('collapses MANY entries onto ONE message — the case a raw index gets wrong', () => {
+    // Three text entries become a single assistant message, so entry index 3
+    // is message index 1, not 3. Reading the anchor as a message index here
+    // would overshoot past the end of a short transcript.
+    const entries: TimelineEntry[] = [
+      { kind: 'prompt', text: 'ask', ts: 't1' },
+      { kind: 'text', text: 'a', ts: 't2' },
+      { kind: 'text', text: 'b', ts: 't3' },
+      { kind: 'text', text: 'c', ts: 't4' },
+    ];
+    const m = mapSessionTimeline(entries);
+    expect(m.messages).toHaveLength(2);
+    expect(m.messageIndexForEntryIndex(3)).toBe(1);
+  });
+
+  it('maps a DROPPED tool_result to the turn that ran the tool', () => {
+    // tool_result never becomes a message, but anchoring on one must still
+    // land somewhere useful — the turn it belongs to — rather than failing.
+    const entries: TimelineEntry[] = [
+      { kind: 'prompt', text: 'ask', ts: 't1' },
+      { kind: 'tool_use', toolName: 'grep', toolInput: { q: 'x' }, ts: 't2' },
+      { kind: 'tool_result', text: 'a very large blob', ts: 't3' },
+      { kind: 'text', text: 'done', ts: 't4' },
+    ];
+    const m = mapSessionTimeline(entries);
+    expect(m.messageIndexForEntryIndex(2)).toBe(1);
+    expect(m.messageIndexForEntryIndex(1)).toBe(1);
+  });
+
+  it('returns -1 for an out-of-range index and for an empty timeline', () => {
+    expect(mapSessionTimeline([]).messageIndexForEntryIndex(0)).toBe(-1);
+    const m = mapSessionTimeline([{ kind: 'prompt', text: 'ask', ts: 't1' }]);
+    expect(m.messageIndexForEntryIndex(99)).toBe(-1);
+    expect(m.messageIndexForEntryIndex(-1)).toBe(-1);
+  });
+
+  it('returns -1 for a turn that produced NO message (pure status)', () => {
+    // A status-only turn is dropped entirely, so there is nothing to scroll
+    // to — and saying so is better than pointing at a neighbouring turn.
+    const entries: TimelineEntry[] = [{ kind: 'status', text: 'thinking…', ts: 't1' }];
+    const m = mapSessionTimeline(entries);
+    expect(m.messages).toEqual([]);
+    expect(m.messageIndexForEntryIndex(0)).toBe(-1);
+  });
+
+  it('is byte-identical to sessionTimelineToChatMessages for the same input', () => {
+    // The old export is now a wrapper; every existing caller must be unchanged.
+    const entries: TimelineEntry[] = [
+      { kind: 'prompt', text: 'ask', ts: 't1' },
+      { kind: 'tool_use', toolName: 'grep', toolInput: { q: 'x' }, ts: 't2' },
+      { kind: 'text', text: 'done', ts: 't3' },
+    ];
+    expect(mapSessionTimeline(entries).messages).toEqual(sessionTimelineToChatMessages(entries));
+    expect(mapSessionTimeline(entries, 'p-1').messages)
+      .toEqual(sessionTimelineToChatMessages(entries, 'p-1'));
   });
 });
