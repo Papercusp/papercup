@@ -616,6 +616,20 @@ fooled that way, and needs no unique string at all.
 Treating `INCONCLUSIVE` as "my change is missing" would re-create the `marker` bug
 with the sign flipped, and send you to re-fire a gate that already carries your work.
 
+⚠⚠ **Blob identity answers "does this candidate carry my fix" and NOTHING ELSE. It does
+NOT predict whether a test will appear in the next failing set.** `test:affected` selects
+suites from each candidate's OWN changed paths, so two candidates with different
+diffs-from-base run different suites — an unchanged file may not be RUN at all. Never
+reason *"the blob is identical to the candidate that red'd on it, therefore it will red
+again"*: that is a statement about content masquerading as a statement about a verdict.
+The ONLY source for a failing set is that run's own `AFFECTED_TESTS_FAILING_FILES` line.
+
+Measured 2026-08-03 (EI-19424058100380982): `apps/operator/app/_lints/css-tokens.test.ts`
+is byte-identical between candidate `3b70938b2a` (which red'd on it) and `cf84126b` — and
+`cf84126b`'s verdict (`coverage=complete fileCount=3`) does not contain it. An agent
+broadcast the prediction hive-wide off a correctly-run blob check and had to retract it.
+This is the dangerous shape: rigorous method, real measurements, confident wrong answer.
+
 ⚠ **`tail -1`, not `-1`.** `-S` lists every commit where the occurrence count changed,
 **newest first**, so `git log -1 -S…` returns the MOST RECENT such commit, not the introducing
 one. They differ whenever you touch a symbol twice — the normal case for work in progress — and

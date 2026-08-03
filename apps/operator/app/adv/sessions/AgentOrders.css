@@ -205,13 +205,29 @@
   max-height: 44vh;
   overflow-y: auto;
 }
-/* Mission is tinted because it is the only section that EXPLAINS the others —
-   the reader should land on it first without having to be told to. Stated as a
-   lift OFF the shared card rather than an independent colour: the card moved
-   under P-005 and a standalone tint would have silently become the DARKER of
-   the two, inverting the emphasis it exists to create. */
+/* Mission is emphasised because it is the only section that EXPLAINS the others
+   — the reader should land on it first without having to be told to.
+
+   That emphasis is a STROKE, not a tint, and this is a correction with a number
+   behind it. Mission used to carry a lighter fill; once P-005 raised the shared
+   card to C3's value, ANY further fill lift ate the edge's contrast with it —
+   measured live in the Tauri webview, the edge against a tinted mission card
+   reads 3.02 : 2.96 : 2.90 : 2.79 at 2/3/4/6% lift, i.e. the tint mission
+   actually shipped had already pushed its own frame BELOW the 3:1 non-text
+   floor. Emphasis by fill was quietly buying itself with the border's legibility.
+
+   So mission takes the shared card unchanged and spends a brighter edge
+   instead: #5895b7, 4.03:1 against the card versus the normal edge's 3.14:1 —
+   unmistakably the strongest frame in the rail, and rising instead of falling.
+   D-001's consequence, applied to the one card that had been exempt from it:
+   "do not reach for a lighter panel to separate sections. Reach for the
+   border, the cap, and the type ladder." */
 .pc-orders__sec--mission {
-  background: color-mix(in oklab, var(--accent-strong) 6%, var(--pc-orders-card));
+  border-color: color-mix(in oklab, var(--accent-strong) 70%, var(--bg-popover));
+}
+/* The cap's hairline follows its own card's frame, here as everywhere. */
+.pc-orders__sec--mission > .pc-orders__h {
+  border-bottom-color: color-mix(in oklab, var(--accent-strong) 70%, var(--bg-popover));
 }
 /* A card whose contents are waiting on the READER (walls, open directives). */
 .pc-orders__sec[data-attn='true'] {
