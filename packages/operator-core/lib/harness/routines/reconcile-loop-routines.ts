@@ -174,7 +174,12 @@ import {
   stuckBackstopCadenceMs,
 } from './loop-unreachable-guard';
 import { cancelInboxWake as defaultCancelInboxWake } from '../../events/await/inbox-wake-arm';
-import { openEscalation } from '../../agent-tools/coordination/escalations';
+import {
+  openEscalation,
+  listEscalationsPaginated,
+  resolveEscalation,
+  type EscalationRecord,
+} from '../../agent-tools/coordination/escalations';
 import type { AgentIdentity } from '../../agent-tools/coordination/identity';
 import { SESSION_END_MARKER, SESSION_START_MARKER } from '../../agent-tools/activity/lifecycle-markers';
 import { classifySessionEnd, type SessionEndReason } from '../../search/session-end-reason';
@@ -264,6 +269,11 @@ export const LOOP_DEATH_WATCHDOG_IDENTITY: AgentIdentity = {
   userId: null,
 };
 
+/** EI-19408412473830336: the `meta.subjectSignature` PREFIX for a loop-death escalation —
+ *  shared between the opener (`defaultEscalateDeadLoop`) and the auto-resolve reader
+ *  (`reconcileDeadLoopEscalations`/`parseLoopWatchdogSignature`) so they can never drift. */
+export const LOOP_DEATH_SIGNATURE_PREFIX = 'loop-death';
+
 /** Diagnostics passed to the dead-loop escalation seam. */
 export interface DeadLoopInfo {
   routineId: string;
@@ -293,6 +303,14 @@ async function defaultEscalateDeadLoop(info: DeadLoopInfo): Promise<void> {
       `This is inform-only: the watchdog does NOT auto-respawn (owner policy). To resume the work, ` +
       `relaunch the owner session and re-arm the loop (loop:arm), or reclaim its work-items.`,
     harness_slug: info.installSlug,
+    // EI-19408412473830336: stamp a stable, PARSEABLE conditionKey (mirrors
+    // defaultEscalateLifecycleDeath's own `meta.subjectSignature` below) so
+    // `reconcileDeadLoopEscalations` can recover `routineId` from the escalation
+    // record without depending on prose. Also strengthens dedup: without this the
+    // fallback key is derived from `summary`, which is stable here too (no volatile
+    // duration embedded) but an explicit key is strictly more robust than relying on
+    // that.
+    meta: { subjectSignature: `${LOOP_DEATH_SIGNATURE_PREFIX}:${info.installSlug}:${info.routineId}` },
   });
 }
 
@@ -362,6 +380,12 @@ export const LOOP_LIFECYCLE_DEATH_WATCHDOG_IDENTITY: AgentIdentity = {
   workspaceId: null,
   userId: null,
 };
+
+/** EI-19408412473830336: shares the `LOOP_DEATH_SIGNATURE_PREFIX` naming convention — see
+ *  that constant's doc comment. Kept as its own constant (rather than reusing the string
+ *  literal already embedded below in `defaultEscalateLifecycleDeath`, EI-18668025239634541)
+ *  so the opener and the auto-resolve reader can never drift on the prefix. */
+export const LOOP_LIFECYCLE_DEATH_SIGNATURE_PREFIX = 'loop-lifecycle-death';
 
 /** Diagnostics passed to the lifecycle-death escalation seam. */
 export interface LifecycleDeathInfo {

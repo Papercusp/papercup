@@ -61,7 +61,7 @@
   "scripts": {
     "test": "vitest run"
   },
-  "dependencies": {
+  "peerDependencies": {
     "@papercusp/linkable-edges": "*"
   },
   "devDependencies": {

@@ -60,6 +60,11 @@ import {
   type WakeabilitySignals,
 } from './presence-wakeability';
 import { PRESENCE_STALE_MS } from './presence';
+import {
+  fetchSelfWake,
+  type SelfWakeSignals,
+  type SelfWakeSource,
+} from './presence-selfwake';
 import { RECORDED_SESSION_SOURCE } from './recorded-sessions';
 import { recordedLiveOwnerIds } from '../../adv-sessions';
 import { findLiveHost } from '../../events/await/psu-pty-discovery';
@@ -105,6 +110,16 @@ export interface LivenessVerdict {
    *  process-keepalive signal, NOT a liveness verdict — the honest name for
    *  what several surfaces used to emit as `alive` (F6/P-008). */
   heartbeatFresh: boolean;
+  /** EI-19407725333778711 — the FORWARD-LOOKING axis: is an active
+   *  `loop-<ownerId>` routine going to re-wake this agent on a cadence?
+   *  `undefined` = the self-wake leg was not fetched (opt-in) or degraded —
+   *  UNKNOWN, never `false`. */
+  loopArmed?: boolean;
+  /** EI-19407725333778711 — will ANYTHING wake this agent unprompted
+   *  (`loop` | `event` | `none`)? `undefined` = not fetched / degraded =
+   *  UNKNOWN. `parked` + `none` is a dead member in a healthy costume; see
+   *  presence-selfwake.ts for why unknown must never collapse to `none`. */
+  selfWake?: SelfWakeSource;
 }
 
 export interface ResolveSessionStatesOpts {
@@ -116,8 +131,22 @@ export interface ResolveSessionStatesOpts {
   /** P-005: consult the box-local psu-pty host registry — `parked` + known
    *  non-cup role + no live host ⇒ `ended`. See the header for why opt-in. */
   psuHostAuthority?: boolean;
+  /**
+   * EI-19407725333778711: also resolve the FORWARD-LOOKING self-wake axis
+   * (`loopArmed` / `selfWake`), one extra batched query per call.
+   *
+   * Opt-in, following the `psuHostAuthority` precedent — but for the opposite
+   * reason. That leg is opt-in because it can be WRONG for the wrong cohort;
+   * this one is opt-in only because it costs a query that the non-supervisory
+   * callers (the coord:send miss path, which asks "will THIS message land
+   * now?") have no use for. Every SUPERVISORY surface — fleet:assignments,
+   * fleet:status, coord:roster, leader-brief — should pass it, because
+   * noticing a stranded member is precisely their job.
+   */
+  selfWake?: boolean;
   // ── DI seams (unit tests / bounded callers) ──
   fetchWakeabilityFn?: (ids: string[]) => Promise<Map<string, WakeabilitySignals>>;
+  fetchSelfWakeFn?: (ids: string[]) => Promise<Map<string, SelfWakeSignals>>;
   fetchRecordedLiveFn?: (ids: string[]) => Promise<Set<string>>;
   probePidFn?: (r: { host?: string | null; pid?: number | null }) => boolean | null;
   findHostFn?: (ownerId: string) => unknown | null;
@@ -141,6 +170,10 @@ export function deriveVerdict(
   nowMs: number,
   probePidFn: ResolveSessionStatesOpts['probePidFn'] = probeProcessLiveness,
   psuHost?: { enabled: boolean; findHostFn: (ownerId: string) => unknown | null },
+  /** EI-19407725333778711: the self-wake signals when the (opt-in) leg ran.
+   *  Omitted ⇒ the verdict carries NO loopArmed/selfWake fields at all, which
+   *  reads as UNKNOWN — deliberately NOT `none`. */
+  selfWake?: SelfWakeSignals,
 ): LivenessVerdict {
   const hbMs = subject.heartbeatAt ? Date.parse(subject.heartbeatAt) : null;
   const stale =
@@ -183,6 +216,10 @@ export function deriveVerdict(
     liveTurn: w.liveTurn,
     confirmLiveness: needsLivenessConfirmation(sessionState),
     heartbeatFresh: !stale,
+    // Spread-when-present, never a `?? false` default: an absent self-wake leg
+    // must stay ABSENT so a reader cannot mistake "not fetched" for "nothing
+    // will wake this agent" (presence-selfwake.ts § Why `unknown` is not `none`).
+    ...(selfWake ? { loopArmed: selfWake.loopArmed, selfWake: selfWake.selfWake } : {}),
   };
 }
 
@@ -230,18 +267,28 @@ export async function resolveSessionStates(
   }
 
   const ids = hydrated.map((s) => s.ownerId);
-  const [wakeability, recordedLive] = await Promise.all([
+  const fetchSelf = opts.fetchSelfWakeFn ?? fetchSelfWake;
+  const [wakeability, recordedLive, selfWake] = await Promise.all([
     fetchWake(ids),
     // Recorded-session authority is an ENRICHMENT leg — best-effort by design
     // (adv_sessions may lag/miss); a failure degrades to "no recorded rescue",
     // never fails the verdict batch.
     fetchRecorded(ids).catch(() => new Set<string>()),
+    // Self-wake is likewise an ENRICHMENT leg: a failure degrades every subject
+    // to "self-wake unknown" (the fields are simply absent) and never fails the
+    // batch — a supervisor losing one column must not cost it the whole roster.
+    opts.selfWake === true
+      ? fetchSelf(ids).catch(() => new Map<string, SelfWakeSignals>())
+      : Promise.resolve(new Map<string, SelfWakeSignals>()),
   ]);
   const psuHost = { enabled: opts.psuHostAuthority === true, findHostFn };
   for (const s of hydrated) {
     const w = wakeability.get(s.ownerId);
     if (!w) continue; // no signal (degraded fetch / federated id) — state unknown
-    out.set(s.ownerId, deriveVerdict(s, w, recordedLive, nowMs, probePidFn, psuHost));
+    out.set(
+      s.ownerId,
+      deriveVerdict(s, w, recordedLive, nowMs, probePidFn, psuHost, selfWake.get(s.ownerId)),
+    );
   }
   return out;
 }

@@ -164,13 +164,25 @@ export function blockedClaimWarning(
  *
  * ⚠ THE FILING THAT PRODUCED THIS ITEM ASKED FOR A GATE HERE. That prescription was WRONG and
  * is retracted. It read `work_items:claim`'s non-enforcement of the concurrency cap as the
- * fourth divergent behaviour in a "one oracle" bug — but claim-door-census.test.ts classifies
- * claimWorkItem `by-id-ungated` on purpose, and states the trap verbatim: "a census that
- * demanded every door gate would encode the wrong invariant and fail working code — which is
- * worse than no census, because someone would then 'fix' the code to satisfy it." Adding a
- * refusal here would have been exactly that fix, and would have broken the legitimate flows
- * the by-id path exists for: a leader dispatching a specific item to a specific member, and a
- * drain leader claiming a swath via { ids:[…] }.
+ * fourth divergent behaviour in a "one oracle" bug — but the governing ruling is
+ * `work-item-dependency-edges-2026-08-02#D-008`: "EXEMPT the by-id claim from the blocking
+ * floor and SIGNAL instead — READINESS floors gate self-select only; SECURITY floors gate
+ * everywhere." A concurrency cap is squarely a readiness floor (it is about the claimer's
+ * capacity, not its authorization), so it gates self-select and signals here.
+ *
+ * claim-door-census.test.ts encodes the same ruling as an executable classification
+ * (`claimWorkItem` → `by-id-ungated`) and names the trap verbatim: "a census that demanded
+ * every door gate would encode the wrong invariant and fail working code — which is worse than
+ * no census, because someone would then 'fix' the code to satisfy it." Adding a refusal here
+ * would have been exactly that fix, and would have broken the legitimate flows the by-id path
+ * exists for: a leader dispatching a specific item to a specific member, and a drain leader
+ * claiming a swath via { ids:[…] }.
+ *
+ * ⚠ CITATION NOTE, because this cost four lookups to resolve: D-008 lives on
+ * `work-item-dependency-edges-2026-08-02`, NOT on the similarly-named
+ * `dependency-subsystem-thorough-testing-2026-08-02` (whose decisions are D-001/D-002 and
+ * D-018-D-021). Two dependency plans of the same date, each with a P-009 and a P-013. Always
+ * cite this one as `<planSlug>#D-NNN`.
  *
  * What was genuinely missing is what was missing in the other two cases: not a floor, a
  * SIGNAL. `scheduler:get_next` refuses to serve an at-cap bee (get_next.ts, concurrencyBlocked)
@@ -365,6 +377,14 @@ async function claimOne(
     : priorHoldForNotify?.parked
       ? 'claim_hold (durable park)'
       : null;
+  // EI-19313376980892266: RESOLVE the concurrency verdict BEFORE the claim mutates the rows it
+  // counts. Starting the read early is not enough — it is `getActiveClaimsForBee` against the
+  // same `taken_by` column the claim below writes, so awaiting it later (e.g. in the hint batch)
+  // is a genuine race: if the claim's UPDATE commits first the read returns the just-claimed row
+  // and an ORDINARY first claim reports itself as "1/1, already at cap". That is a false positive
+  // on every claim, and it is what the batch test caught. Awaiting here costs nothing measurable
+  // because the read has been in flight across admission + the pre-claim lookup already.
+  const concurrency = await concurrencyBefore;
   const workItem = await claimWorkItem(it.id, claimer, { harness: it.harness });
   if (workItem && bypassedHold && bypassedHoldConvention) {
     // Forced past a claim-hold — leave the hold IN PLACE (this never clears it; a leader lifts
@@ -421,7 +441,7 @@ async function claimOne(
     // independent read; no reason to pay a serial round-trip) and is fail-soft for the reason
     // given on readUnresolvedDepBlockers: saying nothing here asserts nothing.
     let checkpointReadFailed = false;
-    const [hint, priorRaw, laneCollision, unresolvedBlockers, premises, planDecisionsResult, concurrency] = await Promise.all([
+    const [hint, priorRaw, laneCollision, unresolvedBlockers, premises, planDecisionsResult] = await Promise.all([
       getClaimTimeCheckpointHint({
         harness: workItem.harness ?? it.harness ?? null,
         workItemId: it.id,
@@ -465,10 +485,6 @@ async function claimOne(
           return brief ? { decisions: brief.decisions, note: m.renderPlanDecisionsNote(brief) } : null;
         })
         .catch(() => null),
-      // EI-19313376980892266: the PRE-claim concurrency verdict started when the claimer was
-      // resolved (see concurrencyBefore). Already in flight — joining it here just collects it
-      // alongside its sibling hints.
-      concurrencyBefore,
     ]);
     const blockedWarning = blockedClaimWarning(unresolvedBlockers);
     const concurrencyWarning = concurrencyClaimWarning(concurrency, it.id);

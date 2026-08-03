@@ -12,7 +12,7 @@
   "scripts": {
     "test": "vitest run"
   },
-  "dependencies": {
+  "peerDependencies": {
     "@papercusp/rules": "*"
   },
   "devDependencies": {

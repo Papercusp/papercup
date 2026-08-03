@@ -8,6 +8,8 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtemp, rm, mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import net from 'node:net';
+import http from 'node:http';
+import type { AddressInfo } from 'node:net';
 
 // EI-7760 regression: `resolveDesktopIpcDiscovery` must resolve the discovery file
 // for the desktop's OWN configured operator (via ~/.papercusp/desktop-build-target.json),
@@ -24,7 +26,9 @@ import {
   probeDesktop,
   apiPortForTarget,
   resolveDesktopIpcDiscovery,
+  resolveDesktopApiPort,
   realIpcConnectable,
+  realApiRoundTrip,
   type DesktopSignals,
   type LiveBridge,
 } from './desktop-health';
@@ -156,6 +160,82 @@ describe('probeDesktop', () => {
     expect(r.up).toBe(false);
     expect(r.note).toMatch(/webview eval/);
     expect(r.note).toMatch(/2 bridges checked/);
+  });
+
+  // WI-7355 — the api round-trip. The regression it exists to prevent is the
+  // FIRST test here: both pre-existing signals pass while the sidecar serves
+  // nothing, which is exactly the state EI-19406226890070872 sat in, unalarmed.
+  describe('api round-trip (WI-7355)', () => {
+    it('is DOWN when the api target is unreachable even though eval + ipc both pass', async () => {
+      const r = await probeDesktop(
+        signals({
+          bridgeEval: async () => true,
+          ipcConnectable: async () => true,
+          apiRoundTrip: async () => ({ state: 'unreachable', port: 3270 }),
+        }),
+      );
+      expect(r.present).toBe(true);
+      expect(r.up).toBe(false);
+      expect(r.note).toMatch(/api :3270/);
+      // The other two signals passed — the note must not smear blame onto them.
+      expect(r.note).not.toMatch(/webview eval/);
+      expect(r.note).not.toMatch(/ipc socket/);
+    });
+
+    it('names the port it actually probed, not a hardcoded one', async () => {
+      const r = await probeDesktop(
+        signals({ apiRoundTrip: async () => ({ state: 'unreachable', port: 3170 }) }),
+      );
+      expect(r.note).toMatch(/api :3170/);
+    });
+
+    it('names api alongside the other failed signals when everything is down', async () => {
+      const r = await probeDesktop(
+        signals({
+          bridgeEval: async () => false,
+          ipcConnectable: async () => false,
+          apiRoundTrip: async () => ({ state: 'unreachable', port: 3270 }),
+        }),
+      );
+      expect(r.note).toMatch(/webview eval/);
+      expect(r.note).toMatch(/ipc socket/);
+      expect(r.note).toMatch(/api :3270/);
+    });
+
+    // The false-DOWN guard. This file has four prior false-DOWN regressions
+    // (EI-2339 / EI-7760 / EI-15095 / EI-18131725582506957); alarming on a port
+    // we only GUESSED would be the fifth.
+    it('stays UP when the api target could not be resolved — never alarms on a guess', async () => {
+      const r = await probeDesktop(
+        signals({ apiRoundTrip: async () => ({ state: 'unresolved', port: 3270 }) }),
+      );
+      expect(r.up).toBe(true);
+      expect(r.note).toMatch(/api target unresolved/);
+    });
+
+    it('degrades a THROWING api signal to unresolved, not to DOWN', async () => {
+      const r = await probeDesktop(
+        signals({
+          apiRoundTrip: async () => {
+            throw new Error('resolve blew up');
+          },
+        }),
+      );
+      expect(r.up).toBe(true);
+      expect(r.note).toMatch(/api target unresolved/);
+    });
+
+    it('still reports error toasts alongside an unresolved api target', async () => {
+      const r = await probeDesktop(
+        signals({
+          apiRoundTrip: async () => ({ state: 'unresolved', port: 3270 }),
+          recentErrorCount: async () => 2,
+        }),
+      );
+      expect(r.up).toBe(true);
+      expect(r.note).toMatch(/api target unresolved/);
+      expect(r.note).toMatch(/2 recent error toasts/);
+    });
   });
 });
 
@@ -318,5 +398,183 @@ describe('realIpcConnectable (EI-18131725582506957: restart-window false-DOWN)',
     const up = await realIpcConnectable(500, 5000); // huge retryDelayMs — must NOT be paid
     expect(up).toBe(true);
     expect(Date.now() - started).toBeLessThan(1000);
+  });
+});
+
+describe('resolveDesktopApiPort (WI-7355: told-us vs guessed)', () => {
+  beforeEach(async () => {
+    h.home = await mkdtemp(join(tmpdir(), 'desktop-health-apiport-'));
+  });
+  afterEach(async () => {
+    const home = h.home;
+    h.home = '';
+    await rm(home, { recursive: true, force: true });
+  });
+
+  async function writeBuildTarget(port: number, name = 'dev') {
+    await mkdir(join(h.home, '.papercusp'), { recursive: true });
+    await writeFile(join(h.home, '.papercusp', 'desktop-build-target.json'), JSON.stringify({ name, port }), 'utf8');
+  }
+
+  it('is resolved:true when the desktop told us its target', async () => {
+    await writeBuildTarget(3270);
+    expect(await resolveDesktopApiPort()).toEqual({ apiPort: 3270, resolved: true });
+  });
+
+  it('maps the :3055 Vite target to the :3070 release operator it proxies /api to', async () => {
+    await writeBuildTarget(3055, 'local');
+    expect(await resolveDesktopApiPort()).toEqual({ apiPort: 3070, resolved: true });
+  });
+
+  // resolved:false is what keeps an absent/corrupt target file out of the
+  // up/down decision — the port is a guess, and this file has four prior
+  // false-DOWN regressions.
+  it('is resolved:false when the target file is absent', async () => {
+    expect(await resolveDesktopApiPort()).toEqual({ apiPort: 3270, resolved: false });
+  });
+
+  it('is resolved:false when the target file is corrupt (never throws)', async () => {
+    await mkdir(join(h.home, '.papercusp'), { recursive: true });
+    await writeFile(join(h.home, '.papercusp', 'desktop-build-target.json'), '{ not json', 'utf8');
+    expect(await resolveDesktopApiPort()).toEqual({ apiPort: 3270, resolved: false });
+  });
+
+  it('is resolved:false when the target file has no usable port', async () => {
+    await mkdir(join(h.home, '.papercusp'), { recursive: true });
+    await writeFile(join(h.home, '.papercusp', 'desktop-build-target.json'), JSON.stringify({ name: 'dev' }), 'utf8');
+    expect(await resolveDesktopApiPort()).toEqual({ apiPort: 3270, resolved: false });
+  });
+});
+
+// WI-7355. The whole change rests on one claim: a bare connect() cannot tell a
+// serving operator from a stalled one, and only an application-level round-trip
+// can. The first test below pins exactly that contrast in one place.
+describe('realApiRoundTrip (WI-7355: connectable ≠ serving)', () => {
+  let servers: Array<net.Server | http.Server> = [];
+
+  beforeEach(async () => {
+    h.home = await mkdtemp(join(tmpdir(), 'desktop-health-api-'));
+  });
+
+  afterEach(async () => {
+    const home = h.home;
+    h.home = '';
+    await rm(home, { recursive: true, force: true });
+    await Promise.all(servers.map((s) => new Promise((r) => s.close(() => r(undefined)))));
+    servers = [];
+  });
+
+  async function pointBuildTargetAtPort(port: number) {
+    await mkdir(join(h.home, '.papercusp'), { recursive: true });
+    await writeFile(join(h.home, '.papercusp', 'desktop-build-target.json'), JSON.stringify({ name: 'dev', port }), 'utf8');
+  }
+
+  /** Listen on an ephemeral port; resolves the port actually bound. */
+  function listenEphemeral(srv: net.Server | http.Server): Promise<number> {
+    return new Promise((resolve, reject) => {
+      srv.once('error', reject);
+      srv.listen(0, '127.0.0.1', () => resolve((srv.address() as AddressInfo).port));
+    });
+  }
+
+  function tcpConnects(port: number, timeoutMs = 1000): Promise<boolean> {
+    return new Promise((resolve) => {
+      const sock = net.connect({ host: '127.0.0.1', port });
+      const done = (v: boolean) => {
+        try {
+          sock.destroy();
+        } catch {
+          /* ignore */
+        }
+        resolve(v);
+      };
+      const timer = setTimeout(() => done(false), timeoutMs);
+      sock.once('connect', () => {
+        clearTimeout(timer);
+        done(true);
+      });
+      sock.once('error', () => {
+        clearTimeout(timer);
+        done(false);
+      });
+    });
+  }
+
+  it('THE POINT: a listener that ACCEPTS but never answers is `unreachable` here — while a bare connect() calls it up', async () => {
+    // Accepts the connection and then does nothing with it, ever: the exact
+    // observable a wedged operator presents (EI-19406226890070872).
+    const srv = net.createServer(() => {
+      /* accept and stall — never respond */
+    });
+    servers.push(srv);
+    const port = await listenEphemeral(srv);
+    await pointBuildTargetAtPort(port);
+
+    // The old signal — passes, and is why the wedge went unalarmed.
+    expect(await tcpConnects(port)).toBe(true);
+    // The new signal — fails, which is the whole point.
+    expect(await realApiRoundTrip(150, 20)).toEqual({ state: 'unreachable', port });
+  });
+
+  it('is ok when the operator actually answers', async () => {
+    const srv = http.createServer((_req, res) => res.end('{"sha":"deadbeef"}'));
+    servers.push(srv);
+    const port = await listenEphemeral(srv);
+    await pointBuildTargetAtPort(port);
+    expect(await realApiRoundTrip(1000, 20)).toEqual({ state: 'ok', port });
+  });
+
+  it('is ok on a 404 — an older build without the route is not a liveness failure', async () => {
+    const srv = http.createServer((_req, res) => {
+      res.statusCode = 404;
+      res.end();
+    });
+    servers.push(srv);
+    const port = await listenEphemeral(srv);
+    await pointBuildTargetAtPort(port);
+    expect((await realApiRoundTrip(1000, 20)).state).toBe('ok');
+  });
+
+  it('is unreachable on a 5xx — the operator answered, but it is broken', async () => {
+    const srv = http.createServer((_req, res) => {
+      res.statusCode = 503;
+      res.end();
+    });
+    servers.push(srv);
+    const port = await listenEphemeral(srv);
+    await pointBuildTargetAtPort(port);
+    expect((await realApiRoundTrip(1000, 20)).state).toBe('unreachable');
+  });
+
+  it('is unreachable when nothing is listening at all', async () => {
+    // Bind then immediately release, so the port is known-free.
+    const probe = net.createServer();
+    const port = await listenEphemeral(probe);
+    await new Promise((r) => probe.close(() => r(undefined)));
+    await pointBuildTargetAtPort(port);
+    expect(await realApiRoundTrip(150, 20)).toEqual({ state: 'unreachable', port });
+  });
+
+  // Same restart-window rationale as realIpcConnectable (EI-18131725582506957):
+  // the desktop's target may be :3170, which dev:restart re-execs several times
+  // a day, and diffHealth transitions on a single bad tick.
+  it('recovers across a restart blip when the operator answers before the retry', async () => {
+    const probe = net.createServer();
+    const port = await listenEphemeral(probe);
+    await new Promise((r) => probe.close(() => r(undefined)));
+    await pointBuildTargetAtPort(port);
+
+    setTimeout(() => {
+      const srv = http.createServer((_req, res) => res.end('ok'));
+      servers.push(srv);
+      srv.listen(port, '127.0.0.1');
+    }, 15);
+
+    expect((await realApiRoundTrip(300, 120)).state).toBe('ok');
+  });
+
+  it('abstains (unresolved) rather than alarming when the desktop never told us its target', async () => {
+    // No desktop-build-target.json written — the port would be a guess.
+    expect(await realApiRoundTrip(150, 20)).toEqual({ state: 'unresolved', port: 3270 });
   });
 });

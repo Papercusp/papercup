@@ -175,6 +175,101 @@ async function measureDependentClosure(
      ORDER BY 1, 2`;
 }
 
+/**
+ * Expected width for every column we know about, derived from the STORAGE-FACT
+ * declarations rather than restated here:
+ *   - `WIDTH_MIGRATION_WIPE_SET`      → `PROSE_VECTOR_DIMS` (shared contract)
+ *   - `VEC_TABLE[mode]`               → `MODE_DIMS[mode]`   (per-mode spaces)
+ *   - `PROSE_VECTOR_DEPENDENT_VIEWS`  → `PROSE_VECTOR_DIMS` (inherited)
+ *
+ * The first two are deliberately independent of `EMBEDDER_DIM_SPECS` for the
+ * same documented reason, so consulting them here keeps this test honest: it
+ * asserts the DATABASE matches what the code claims the database is, and a
+ * hardcoded number in this file would just be a third thing to drift.
+ *
+ * The views are enumerated too — NOT because they need migrating (they inherit
+ * the base column's type), but because the audit below asks a different
+ * question from leg 2: "is this column accounted for ANYWHERE". Omitting them
+ * made the audit report all three as unknown surfaces on its first run. Within
+ * `harness_shared` that list IS exhaustive; the per-harness copies that make it
+ * non-exhaustive at runtime live in other schemas, which this
+ * `harness_shared`-scoped scan never sees.
+ */
+function expectedWidths(): Map<string, { dims: number; why: string }> {
+  const m = new Map<string, { dims: number; why: string }>();
+  for (const { table, column } of WIDTH_MIGRATION_WIPE_SET) {
+    m.set(key(bare(table), column), {
+      dims: PROSE_VECTOR_DIMS,
+      why: 'shared prose width contract (WIDTH_MIGRATION_WIPE_SET)',
+    });
+  }
+  for (const [mode, table] of Object.entries(VEC_TABLE) as Array<[ResolvedVecMode, string]>) {
+    m.set(key(table, 'vector'), {
+      dims: MODE_DIMS[mode],
+      why: `per-mode memory space for '${mode}' (MODE_DIMS)`,
+    });
+  }
+  for (const { view, column } of PROSE_VECTOR_DEPENDENT_VIEWS) {
+    m.set(key(bare(view), column), {
+      dims: PROSE_VECTOR_DIMS,
+      why: 'dependent view inheriting the base column (PROSE_VECTOR_DEPENDENT_VIEWS)',
+    });
+  }
+  return m;
+}
+
+/**
+ * The closing leg's judgement, as a function of measured rows — so the assertion
+ * and its NEGATIVE CONTROL exercise the same code rather than two hand-copied
+ * loops that could drift into agreeing with each other.
+ */
+function auditSurfaces(measured: readonly MeasuredColumn[]): string[] {
+  const expected = expectedWidths();
+  const problems: string[] = [];
+
+  for (const m of measured) {
+    if (SNAPSHOT_PREFIX.test(m.relname)) continue; // frozen pre-migration evidence
+    const k = key(m.relname, m.attname);
+    const want = expected.get(k);
+
+    if (!want) {
+      // THE FAILURE THIS LEG EXISTS FOR. Note it fires even when the width is
+      // already correct: an unenumerated column is invisible to the NEXT width
+      // migration, which is precisely how WI-7326 happened.
+      problems.push(
+        `${SCHEMA}.${k} (${m.typname}(${m.dims}), relkind='${m.relkind}') is NOT enumerated. ` +
+          `Add it to PROSE_VECTOR_COLUMNS (a prose surface) or document it as an ` +
+          `excluded per-mode space — an unlisted column is skipped by the next width ` +
+          `migration and then fails every write under new-width-emitting code.`,
+      );
+      continue;
+    }
+    if (m.typname !== 'vector') {
+      problems.push(
+        `${SCHEMA}.${k} is ${m.typname}, not vector — the width contract is defined ` +
+          `over pgvector's 'vector' type only.`,
+      );
+      continue;
+    }
+    if (m.relkind === 'm') {
+      problems.push(
+        `${SCHEMA}.${k} is a MATERIALIZED view. Migration 727 deliberately REFUSES ` +
+          `these rather than guessing: a matview needs repopulating plus its own ` +
+          `indexes rebuilt, which a width migration cannot infer.`,
+      );
+      continue;
+    }
+    if (m.dims !== want.dims) {
+      problems.push(`${SCHEMA}.${k} is vector(${m.dims}) but ${want.why} declares ${want.dims}.`);
+    }
+  }
+
+  return problems;
+}
+
+/** Thrown to unwind `sql.begin`, which rolls back on any thrown error. */
+class Rollback extends Error {}
+
 describe('the prose column width contract — asserted against the LIVE schema', () => {
   let sql: postgres.Sql;
   let measured: MeasuredColumn[];
@@ -272,15 +367,24 @@ describe('the prose column width contract — asserted against the LIVE schema',
 
   describe('leg 3 — THE CLOSING LEG: no unenumerated or mis-sized vector column', () => {
     /**
-     * Expected width for every column we know about, derived from the two
+     * Expected width for every column we know about, derived from the
      * STORAGE-FACT declarations rather than restated here:
-     *   - `WIDTH_MIGRATION_WIPE_SET` → `PROSE_VECTOR_DIMS` (the shared contract)
-     *   - `VEC_TABLE[mode]`          → `MODE_DIMS[mode]`   (per-mode spaces)
+     *   - `WIDTH_MIGRATION_WIPE_SET`      → `PROSE_VECTOR_DIMS` (shared contract)
+     *   - `VEC_TABLE[mode]`               → `MODE_DIMS[mode]`   (per-mode spaces)
+     *   - `PROSE_VECTOR_DEPENDENT_VIEWS`  → `PROSE_VECTOR_DIMS` (inherited)
      *
-     * Both are deliberately independent of `EMBEDDER_DIM_SPECS` for the same
-     * documented reason, so consulting them here keeps this test honest: it
+     * The first two are deliberately independent of `EMBEDDER_DIM_SPECS` for the
+     * same documented reason, so consulting them here keeps this test honest: it
      * asserts the DATABASE matches what the code claims the database is, and a
      * hardcoded number in this file would just be a third thing to drift.
+     *
+     * The views are enumerated too — NOT because they need migrating (they
+     * inherit the base column's type), but because leg 3 asks a different
+     * question from leg 2: "is this column accounted for ANYWHERE". Omitting
+     * them made this leg report all three as unknown surfaces on the first run.
+     * Within `harness_shared` that list IS exhaustive; the per-harness copies
+     * that make it non-exhaustive at runtime live in other schemas, which this
+     * `harness_shared`-scoped scan never sees.
      */
     const expectedWidths = (): Map<string, { dims: number; why: string }> => {
       const m = new Map<string, { dims: number; why: string }>();
@@ -294,6 +398,12 @@ describe('the prose column width contract — asserted against the LIVE schema',
         m.set(key(table, 'vector'), {
           dims: MODE_DIMS[mode],
           why: `per-mode memory space for '${mode}' (MODE_DIMS)`,
+        });
+      }
+      for (const { view, column } of PROSE_VECTOR_DEPENDENT_VIEWS) {
+        m.set(key(bare(view), column), {
+          dims: PROSE_VECTOR_DIMS,
+          why: 'dependent view inheriting the base column (PROSE_VECTOR_DEPENDENT_VIEWS)',
         });
       }
       return m;

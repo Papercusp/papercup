@@ -10,7 +10,7 @@
  */
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore -- plain .mjs gate script, no type declarations by design
-import { stripComments, blankQuotedStrings, interfaceRanges, classifyTsField, classifySqlColumn, judgeConsumption, rollupSweep, looksGenerated, isTestFile, DECLARED_FIELDS, DECLARED_COLUMNS } from '../../../scripts/check-declared-consumed.mjs';
+import { stripComments, blankQuotedStrings, interfaceRanges, classifyTsField, classifySqlColumn, judgeConsumption, rollupSweep, looksGenerated, isBuildOutput, isTestFile, DECLARED_FIELDS, DECLARED_COLUMNS } from '../../../scripts/check-declared-consumed.mjs';
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
@@ -228,6 +228,38 @@ describe('vacuous pass (4)+(5) — retired and generated code are not consumers'
     expect(looksGenerated(longLine + shortLine.repeat(5))).toBe(true);
     // Same single long line diluted by ordinary source → NOT generated.
     expect(looksGenerated(longLine + shortLine.repeat(400))).toBe(false);
+  });
+
+  /**
+   * THE ONE THAT NEARLY SHIPPED (EI-19409948281572150). A BUNDLED-BUT-NOT-MINIFIED
+   * artifact defeats every line-shape test there is: `dist-host/hono-host.mjs` is
+   * 62.9 MB across 1,219,924 lines with only 14.4% of its bytes in long lines —
+   * shaped exactly like source. Admitting it contributed 412 writes and 1,802
+   * reads of `summary` on its own and flipped every column row to a confident
+   * "consumed", which is the storybook defect at 40x scale: it GREENS the gate by
+   * manufacturing consumers.
+   *
+   * Shape cannot catch it, so location must. This test is why `isBuildOutput`
+   * exists; delete it and the sweep starts vouching for fields nothing reads.
+   */
+  it('excludes build output by LOCATION, since shape cannot catch a non-minified bundle', () => {
+    expect(isBuildOutput('apps/operator/dist-host/hono-host.mjs')).toBe(true);
+    expect(isBuildOutput('apps/operator-vite/dist/assets/DevAdminRail-BAsNLrF6.js')).toBe(true);
+    expect(isBuildOutput('libs/agent-chat/storybook-static/assets/PatchBlock.stories.js')).toBe(true);
+    expect(isBuildOutput('apps/operator/public/docs/pagefind/pagefind-highlight.js')).toBe(true);
+
+    // The drizzle mirror is generated but lives outside any build dir, and column
+    // scoping is FILE-level — one file naming every table makes every column look
+    // consumed (measured: workspace_id 1W/12R reported as 123W/2566R).
+    expect(isBuildOutput('libs/papercusp/libs/db/src/schema/generated.ts')).toBe(true);
+    expect(isBuildOutput('libs/papercusp/libs/db/src/schema/schema.ts')).toBe(true);
+
+    // Real source must NOT be excluded — matching is on a path SEGMENT, so a
+    // substring like `distributed-` never trips it.
+    expect(isBuildOutput('packages/operator-core/lib/cell-registrations.ts')).toBe(false);
+    expect(isBuildOutput('libs/flags/src/types.ts')).toBe(false);
+    expect(isBuildOutput('packages/operator-core/lib/distributed-lock.ts')).toBe(false);
+    expect(isBuildOutput('apps/operator/scripts/psu-launcher.mjs')).toBe(false);
   });
 });
 

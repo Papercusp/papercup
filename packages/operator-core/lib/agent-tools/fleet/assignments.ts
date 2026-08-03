@@ -20,6 +20,12 @@ import {
   type SessionState,
   type WakeabilitySignals,
 } from '../coordination/presence-wakeability';
+import {
+  fetchSelfWake,
+  isStrandedMember,
+  type SelfWakeSignals,
+  type SelfWakeSource,
+} from '../coordination/presence-selfwake';
 import { deriveVerdict } from '../coordination/liveness-oracle';
 import { recordedLiveOwnerIds } from '../../adv-sessions';
 import {
@@ -130,14 +136,23 @@ export function filterActiveCoverage(
  * wakeability fetcher — no PG needed. Mutates `agents` in place and returns them;
  * a `fetchWakeabilityFn` rejection propagates — the caller decides best-effort.
  */
-export async function reconcileWakeability<T extends AgentAssignment & { sessionState?: SessionState | null; confirmLiveness?: boolean | null }>(
+export async function reconcileWakeability<T extends AgentAssignment & { sessionState?: SessionState | null; confirmLiveness?: boolean | null; loopArmed?: boolean; selfWake?: SelfWakeSource }>(
   agents: T[],
   fetchWakeabilityFn: (ownerIds: string[]) => Promise<Map<string, WakeabilitySignals>> = fetchWakeability,
   fetchRecordedLiveFn: (ownerIds: string[]) => Promise<Set<string>> = recordedLiveOwnerIds,
+  /** EI-19407725333778711: the forward-looking self-wake leg. Best-effort — a
+   *  rejection degrades every row to "self-wake unknown" (fields absent) rather
+   *  than failing the whole assignments read, because a supervisor losing one
+   *  column must not cost it the roster it uses to supervise. */
+  fetchSelfWakeFn: (ownerIds: string[]) => Promise<Map<string, SelfWakeSignals>> = fetchSelfWake,
 ): Promise<T[]> {
   if (agents.length === 0) return agents;
   const ownerIds = agents.map((a) => a.agentId);
-  const [wakeability, recordedLive] = await Promise.all([fetchWakeabilityFn(ownerIds), fetchRecordedLiveFn(ownerIds)]);
+  const [wakeability, recordedLive, selfWake] = await Promise.all([
+    fetchWakeabilityFn(ownerIds),
+    fetchRecordedLiveFn(ownerIds),
+    fetchSelfWakeFn(ownerIds).catch(() => new Map<string, SelfWakeSignals>()),
+  ]);
   const nowMs = Date.now();
   for (const a of agents) {
     const w = wakeability.get(a.agentId);
@@ -156,8 +171,18 @@ export async function reconcileWakeability<T extends AgentAssignment & { session
       w,
       recordedLive,
       nowMs,
+      undefined,
+      undefined,
+      selfWake.get(a.agentId),
     );
     a.sessionState = v.sessionState;
+    // EI-19407725333778711: the forward-looking axis. Assigned only when the leg
+    // actually resolved — an absent field means UNKNOWN, and must never be
+    // written as `'none'`, which is an escalation-worthy claim.
+    if (v.selfWake !== undefined) {
+      a.loopArmed = v.loopArmed;
+      a.selfWake = v.selfWake;
+    }
     // WI-4400: the read is stale-ish when draining/suspect; expose the explicit
     // confirmation nudge through fleet:assignments (and coord:orient's me fold).
     a.confirmLiveness = v.confirmLiveness;
@@ -1003,6 +1028,19 @@ export default defineTool({
       // P-001 (fleet-member-dx): members deliberately parked on an events:await —
       // idle-by-design, not stalled/abandoned.
       parked: agents.filter((a) => ((a as { parkedOn?: string[] }).parkedOn?.length ?? 0) > 0).length,
+      // EI-19407725333778711: members that will NEVER act again unprompted —
+      // `selfWake:'none'` while still reading as alive. Sits next to `parked`
+      // on purpose: `parked` is the healthy idle state and this is the one that
+      // is INDISTINGUISHABLE from it on every other field. Non-zero here means
+      // re-arm their loops (`loop:arm`) or relaunch them; a leader reading
+      // `agents:11, alive:11, parked:0` learned nothing about it before this.
+      // Excludes rows where the leg did not resolve — unknown never counts.
+      no_self_wake: agents.filter((a) =>
+        isStrandedMember({
+          sessionState: (a as { sessionState?: SessionState | null }).sessionState,
+          selfWake: (a as { selfWake?: SelfWakeSource }).selfWake,
+        }),
+      ).length,
       monitoring: agents.filter((a) => a.monitorState === 'monitoring').length,
       waiting: agents.filter((a) => a.monitorState === 'waiting').length,
       parked_awaiting_capability: agents.filter(

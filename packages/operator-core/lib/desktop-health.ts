@@ -331,6 +331,10 @@ async function attemptApiRoundTrip(apiPort: number, timeoutMs: number): Promise<
   const timer = setTimeout(() => ctl.abort(), timeoutMs);
   try {
     const res = await fetch(`http://127.0.0.1:${apiPort}${API_PROBE_PATH}`, { signal: ctl.signal });
+    // Drain: an unconsumed body keeps its socket checked out of the pool, and
+    // this runs on every 1-min health tick forever. A probe for resource
+    // starvation must not itself leak a socket per tick.
+    await res.body?.cancel().catch(() => {});
     // Any answered status proves the event loop ran and the router replied. Only
     // a 5xx says the operator itself is broken; a 404 would mean an older build
     // without this route, which is not a liveness failure.

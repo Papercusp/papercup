@@ -60,6 +60,19 @@ export function shapeFleetAssignments(data: unknown, tier: AssignTier): unknown 
       // WI-4400: before taking over a draining/suspect row, send
       // coord:send { wake:'required' } and inspect woken/recipient_absent.
       confirmLiveness: typeof r.confirmLiveness === "boolean" ? r.confirmLiveness : null,
+      // EI-19407725333778711: the FORWARD-LOOKING wake axis — will anything wake
+      // this member unprompted (`loop` | `event` | `none`)? Every other field
+      // here describes the PRESENT; this is the only one that says whether the
+      // present ever ends. `sessionState:'parked'` + `selfWake:'none'` is a dead
+      // member in a healthy costume — the state that turned a 10-agent fleet
+      // into a 1-agent fleet for 70+ minutes with every surface reporting green.
+      // Kept at EVERY tier (one short string) because the trimmed tier is what
+      // the leader's monitor loop actually reads.
+      // `null` = the leg did not resolve (UNKNOWN) — deliberately NOT `'none'`.
+      // The filer also asked for a sibling `loopArmed` boolean; it is exactly
+      // `selfWake === 'loop'` by construction, so emitting it too would put a
+      // second, independently-staleable spelling of one fact on the wire.
+      selfWake: typeof r.selfWake === "string" ? r.selfWake : null,
       // EI-8995: the single derived lifecycle verdict (booted|joined|first-turn-
       // done|speaking|stalled|dead) + the member's wake mode (a MANUAL member
       // silently stages directed wakes) — the leader's relaunch/re-steer read,

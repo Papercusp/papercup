@@ -1,9 +1,8 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { Square, Play, AlertTriangle } from 'lucide-react';
 import { parseAsArrayOf, parseAsString, useQueryState } from 'nuqs';
 import { toast } from 'sonner';
 import { useSyncQuery } from '@papercusp/sync';
-import { type PlanListRow } from '@/app/admin/plans/plans-api';
 import { useLexicon } from '@/lib/useLexicon';
 import { Tooltip } from '@/app/harness/Tooltip';
 import { useConfirmDialog } from '@/app/harness/useConfirmDialog';
@@ -23,18 +22,6 @@ interface Props {
 interface HiveControlRow {
   slug: string;
   started: boolean;
-}
-
-/**
- * Count plans that are started but not yet worked to completion. A started
- * plan needs a *running* harness to pick it up, so when the harness is
- * stopped these plans are "waiting" — nothing is eligible to advance them.
- * Pure + exported for unit tests.
- */
-export function countWaitingPlans(
-  plans: readonly Pick<PlanListRow, 'startStatus'>[],
-): number {
-  return plans.filter((p) => p.startStatus === 'started').length;
 }
 
 /** Human label for the nudge — pluralized. Exported for unit tests. */
@@ -86,17 +73,23 @@ export default function AdvNowRunning({ slug }: Props) {
   const stopped = !effectivelyAlive;
 
   // While the hive is paused, count started-but-unpicked plans for the "N plans
-  // waiting" nudge — push-driven via plans.list. A started hive is already
-  // working them, so the query is disabled in that state (no fetch).
-  const { data: waitingPlansData } = useSyncQuery({
-    queryName: 'plans.list',
+  // waiting" nudge — push-driven via the plans.waitingCount aggregate (a
+  // started plan needs a *running* harness to pick it up, so when the harness
+  // is stopped these plans are "waiting" — nothing is eligible to advance
+  // them). A started hive is already working them, so the query is disabled
+  // in that state (no fetch). This used to fetch the WHOLE `plans.list` feed
+  // just to count rows client-side (~700KB on a route that renders no plan
+  // list, EI-19409535742567802); the aggregate rides the same server-side
+  // cachedRead entry and returns one integer instead (precedent:
+  // plans.attentionCounts / WI-5955).
+  const { data: waitingCountData } = useSyncQuery({
+    queryName: 'plans.waitingCount',
     args: { harness_slugs: slug ? [slug] : [] },
     enabled: !!slug && stopped,
   });
-  const waitingCount = useMemo(
-    () => (stopped ? countWaitingPlans((waitingPlansData as PlanListRow[] | undefined) ?? []) : 0),
-    [waitingPlansData, stopped],
-  );
+  const waitingCount = stopped
+    ? ((waitingCountData as Array<{ count: number }> | undefined)?.[0]?.count ?? 0)
+    : 0;
 
   // Safety net: clear the optimistic "just started" flag after 20s (by then the
   // real started bit has arrived via the hive.controlState invalidation, or the

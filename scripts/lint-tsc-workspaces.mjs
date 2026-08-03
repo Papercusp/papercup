@@ -63,6 +63,21 @@ const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 export const DEFAULT_ROOTS = ['apps', 'packages', 'libs/generic'];
 
 /**
+ * Roots where a bare `tsconfig.json` is enough to be GATED, with no `typecheck` script
+ * (EI-19409185011887864).
+ *
+ * Deliberately NOT all of DEFAULT_ROOTS. Promotion makes a directory BLOCKING, so a root
+ * earns a place here only once every package under it has actually been RUN and the ones
+ * that fail are enumerated in UNTYPECHECKABLE. Adding a root on the assumption that it is
+ * probably clean is how a gate goes red for a condition no commit caused: measured
+ * 2026-08-03, `apps/` promoted unmeasured would have red-pinned the fleet gate on
+ * apps/operator alone (hundreds of pre-existing errors, incl. an entire implicit-any test
+ * file). Report-only is the correct state for an unmeasured root — it is visible, and it
+ * is honest about what has been verified.
+ */
+export const PROMOTE_ROOTS = ['libs/generic'];
+
+/**
  * One deliberate exclusion from this leg.
  *
  * @typedef {object} Exemption
@@ -119,6 +134,26 @@ export const UNTYPECHECKABLE = {
       'src/expr.test.ts passes string/null where Scope is expected (TS2345) — deliberate bad-input ' +
       'tests wanting @ts-expect-error, NOT a reason to widen Scope',
     errors: 2,
+    filedAs: 'EI-19409888189789017',
+  },
+  // Both papergrid packages were MASKED until 2026-08-03: their tsconfigs carried a deprecated
+  // `baseUrl`, and TS5101 aborted the compile before it ever reached the code. Migrating the
+  // alias to a self-relative `paths` (no baseUrl) fixed the config and REVEALED these. A config
+  // error that stops a compile reads exactly like a package with no code errors.
+  'libs/generic/papergrid/grid': {
+    detail:
+      "TS2882 — no type declarations for the side-effect CSS import of " +
+      "'@glideapps/glide-data-grid/dist/index.css' (via grid-core/src/DataGridShell.tsx); same " +
+      "`declare module '*.css'` fix as ui-primitives",
+    errors: 1,
+    filedAs: 'EI-19409888189789017',
+  },
+  'libs/generic/papergrid/grid-core': {
+    detail:
+      'the same CSS-declaration error plus generic-inference failures in src/RichGrid.stories.tsx ' +
+      '(TS2322 ColumnDef<Row>[] vs ColumnDef<unknown>[], TS18046) — the stories do not pin the ' +
+      'grid generic',
+    errors: 11,
     filedAs: 'EI-19409888189789017',
   },
   'libs/generic/ui-primitives': {
@@ -208,7 +243,16 @@ export function main({
   // Gating on the tsconfig makes coverage automatic and permanent — the property this fan-out
   // was built for. Measured before flipping it on: 46 of the 50 were already clean, so this
   // enrolls them at zero gate risk. The 4 that were not are held back BY NAME below.
+  //
+  // ⚠ SCOPED TO MEASURED ROOTS, and that scope is the whole safety property. Promotion turns a
+  // report-only directory into a BLOCKING one, so it may only cover roots where every package
+  // has actually been run and the dirty ones enumerated. libs/generic was measured on
+  // 2026-08-03 (50 packages: 46 clean, 4 held back). apps/* and packages/* were NOT — flipping
+  // them on unmeasured immediately reds the gate (apps/operator alone carries hundreds of
+  // errors, incl. a whole implicit-any test file). They stay report-only below until someone
+  // measures them the same way and adds their root here.
   const promoted = invisible
+    .filter((p) => PROMOTE_ROOTS.some((r) => p.rel.startsWith(`${r}/`)))
     .filter((p) => !exempt[p.rel] && !untypecheckable[p.rel])
     .map((p) => ({
       dir: p.dir,
@@ -217,6 +261,11 @@ export function main({
       command: ['npx', 'tsc', '--noEmit', '-p', 'tsconfig.json'],
     }));
   const heldBack = invisible.filter((p) => untypecheckable[p.rel]).sort((a, b) => a.rel.localeCompare(b.rel));
+  // Still unreachable: a tsconfig under a root nobody has measured yet. Shrinks to zero as
+  // roots are measured and added to PROMOTE_ROOTS.
+  const stillInvisible = invisible.filter(
+    (p) => !untypecheckable[p.rel] && !PROMOTE_ROOTS.some((r) => p.rel.startsWith(`${r}/`)),
+  );
 
   const packages = [...all.filter((p) => !exempt[p.rel]), ...promoted].sort((a, b) => a.rel.localeCompare(b.rel));
   const exempted = all.filter((p) => exempt[p.rel]);
@@ -252,6 +301,29 @@ export function main({
     if (listInvisible) {
       log('');
       for (const e of promoted) log(`      · ${e.rel}`);
+    }
+  }
+
+  // The report-only population: a tsconfig under a root that has NOT been measured, so it
+  // cannot be promoted yet. A count alone would let it drift silently, so the grouping is
+  // always printed and --list-invisible names every one.
+  if (stillInvisible.length) {
+    log(
+      `\n  ⓘ REPORT-ONLY — ${stillInvisible.length} director${stillInvisible.length === 1 ? 'y' : 'ies'} have a\n` +
+        '    tsconfig.json under a root that has not been measured, so NO routine gate reaches them.\n' +
+        '    This is not a pass and not a failure. Not blocking: promoting a root unmeasured would\n' +
+        '    red-pin the fleet gate on pre-existing errors no commit caused. To fix a root for good,\n' +
+        '    run `npx tsc --noEmit -p tsconfig.json` in each of its packages, list the failures in\n' +
+        '    UNTYPECHECKABLE, and add the root to PROMOTE_ROOTS.',
+    );
+    for (const [root, entries] of [...groupByRoot(stillInvisible)].sort((a, b) => a[0].localeCompare(b[0]))) {
+      log(`      ${root}: ${entries.length}`);
+    }
+    if (listInvisible) {
+      log('');
+      for (const e of stillInvisible.sort((a, b) => a.rel.localeCompare(b.rel))) log(`      · ${e.rel}`);
+    } else {
+      log('      (re-run with --list-invisible to name them)');
     }
   }
 

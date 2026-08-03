@@ -7,6 +7,10 @@ import { turnsStalledFloorMs, type LoopStatus } from './loop';
 // `broadcast.mock.calls[0][0]` below is a type error — and vitest is type-blind, so a green test
 // run cannot see it. It surfaces only at `lint:tsc`, i.e. at the fleet gate.
 type BroadcastFn = NonNullable<StalledLoopsSweepDeps['broadcast']>;
+// Same reason as BroadcastFn above: the re-arm assertions read `rearm.mock.calls[0][1]`, which
+// is a type error against a bare `vi.fn(async () => {})`'s zero-arg call tuple — invisible to a
+// green vitest run, red at lint:tsc i.e. at the fleet gate (EI-19406534159939583 hit exactly it).
+type RearmFn = NonNullable<StalledLoopsSweepDeps['rearm']>;
 
 /** Minimal fake `harness_shared.routines` SELECT — the sweep's only direct SQL read. */
 function fakeSql(rows: Array<{ id: string; target_owner_id: string }>) {
@@ -337,7 +341,7 @@ describe('sweepStalledLoops — fire-starved vs turn-stalled (EI-194065341599395
         ]),
     );
     const autoPause = vi.fn(async () => {});
-    const rearm = vi.fn(async () => {});
+    const rearm = vi.fn<RearmFn>(async () => {});
     const probeReachability = reach(true);
     const broadcast = vi.fn<BroadcastFn>(async () => true);
 
@@ -360,7 +364,7 @@ describe('sweepStalledLoops — fire-starved vs turn-stalled (EI-194065341599395
         new Map([['su-dead', status({ ownerId: 'su-dead', turnsStalled: true, ...DEAD_SAME_SHAPE })]]),
     );
     const autoPause = vi.fn(async () => {});
-    const rearm = vi.fn(async () => {});
+    const rearm = vi.fn<RearmFn>(async () => {});
     const probeReachability = reach(false);
     const broadcast = vi.fn<BroadcastFn>(async () => true);
 
@@ -384,7 +388,7 @@ describe('sweepStalledLoops — fire-starved vs turn-stalled (EI-194065341599395
       async () => new Map([['su-x', status({ ownerId: 'su-x', turnsStalled: true, ...FIRE_STARVED })]]),
     );
     const autoPause = vi.fn(async () => {});
-    const rearm = vi.fn(async () => {});
+    const rearm = vi.fn<RearmFn>(async () => {});
     const probeReachability = vi.fn(async () => {
       throw new Error('probe unavailable');
     }) as never;
@@ -406,7 +410,7 @@ describe('sweepStalledLoops — fire-starved vs turn-stalled (EI-194065341599395
         new Map([['su-dead', status({ ownerId: 'su-dead', turnsStalled: true, ...COMATOSE })]]),
     );
     const autoPause = vi.fn(async () => {});
-    const rearm = vi.fn(async () => {});
+    const rearm = vi.fn<RearmFn>(async () => {});
     const probeReachability = reach(true);
     const broadcast = vi.fn<BroadcastFn>(async () => true);
 
@@ -435,7 +439,7 @@ describe('sweepStalledLoops — fire-starved vs turn-stalled (EI-194065341599395
         ]),
     );
     const autoPause = vi.fn(async () => {});
-    const rearm = vi.fn(async () => {});
+    const rearm = vi.fn<RearmFn>(async () => {});
     const probeReachability = reach(true);
     const broadcast = vi.fn<BroadcastFn>(async () => true);
 
@@ -465,7 +469,7 @@ describe('sweepStalledLoops — fire-starved vs turn-stalled (EI-194065341599395
         ]),
     );
     const autoPause = vi.fn(async () => {});
-    const rearm = vi.fn(async () => {});
+    const rearm = vi.fn<RearmFn>(async () => {});
     const probeReachability = reach(true);
     const broadcast = vi.fn<BroadcastFn>(async () => true);
 
@@ -484,7 +488,7 @@ describe('sweepStalledLoops — fire-starved vs turn-stalled (EI-194065341599395
         ]),
     );
     const autoPause = vi.fn(async () => {});
-    const rearm = vi.fn(async () => {});
+    const rearm = vi.fn<RearmFn>(async () => {});
     const probeReachability = reach(true);
     const broadcast = vi.fn<BroadcastFn>(async () => true);
 
