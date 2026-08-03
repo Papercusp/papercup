@@ -1285,12 +1285,13 @@ describe('SessionChatModal', () => {
      promise is not "a panel appears": it is that the panel is a SIBLING of the
      conversation region rather than a child of it.
 
-     D-002 makes that element's DOM subtree the literal definition of what
-     maximize paints — `requestFullscreen()` is called on it — so a future edit
-     that nests Orders INSIDE the conversation would silently break both
-     maximize modes at once, with every existing test still green (the rail
-     renders either way, and no hide-list exists to fail). The containment
-     assertion below is the recurrence guard for exactly that. ── */
+     That sibling relationship is still the contract under D-007, which reversed
+     what it BUYS: `requestFullscreen()` now targets the popup container that
+     holds all three columns, so a sibling is INCLUDED in maximize rather than
+     excluded from it. Nesting Orders inside the conversation would still be a
+     silent break — it would change the column layout while every presence test
+     stayed green — so the containment assertion below is kept, now guarding the
+     three-column shell rather than a hide boundary. ── */
   describe('P-015 Orders panel (three-column shell)', () => {
     function seedRoster(entries: Array<Record<string, unknown>>) {
       H.results['advRoster.list'] = {
@@ -1340,24 +1341,23 @@ describe('SessionChatModal', () => {
       expect(lastAgentOrdersProps?.enabled).toBe(true);
     });
 
-    it('D-002: the panel is a SIBLING of the conversation region, never inside it', async () => {
+    it('D-007: the panel is a SIBLING of the conversation region, never inside it', async () => {
       nuqs.chatOrders = true;
       await renderResolved();
 
       const conversation = screen.getByTestId('session-chat-conversation');
       // Present in the document…
       expect(screen.getByTestId('session-chat-orders-rail')).toBeTruthy();
-      // …and NOT within the subtree the browser paints in full screen. This is
-      // the assertion that survives a refactor: nesting it would keep every
-      // other test in this file green while making full screen show a panel the
-      // owner asked to leave out.
+      // …and OUTSIDE the conversation, which is what makes this a column beside
+      // the transcript rather than something scrolling within it. Nesting it
+      // would keep every presence test in this file green while collapsing the
+      // three-column shell.
       expect(within(conversation).queryByTestId('session-chat-orders-rail')).toBeNull();
       expect(within(conversation).queryByTestId('agent-orders-stub')).toBeNull();
       // Positive control for the two nulls above — a scoped query that can only
       // ever return null is not evidence of anything. The composer IS inside the
-      // conversation (it is the owner's named carve-out), so the same `within`
-      // finds it, which is what makes the nulls a statement about the DOM shape
-      // rather than about a typo'd testid.
+      // conversation, so the same `within` finds it, which is what makes the
+      // nulls a statement about the DOM shape rather than about a typo'd testid.
       expect(within(conversation).getByPlaceholderText(/Type to wake/)).toBeTruthy();
       // Same control from the other side: the dossier is the OTHER sibling, so
       // it is outside too — if this ever passed while the rail assertion failed,
@@ -1365,46 +1365,44 @@ describe('SessionChatModal', () => {
       expect(within(conversation).queryByTestId('session-chat-dossier-rail')).toBeNull();
     });
 
-    it('full window drops the panel AND its toggle, even with chatOrders still true', async () => {
+    /* D-007 [owner 2026-08-02, verbatim]: "lets actually make the left panel and
+       right panel and bottom and top panel all show in both full screen views."
+       These two cases are the direct inversion of the pair that used to assert
+       the panel and its toggle were DROPPED by maximize. */
+    it('full window KEEPS the panel and its toggle', async () => {
       nuqs.chatOrders = true;
       const { rerender } = await renderResolved();
-      // Baseline, so the absence below is caused by the mode and not the fixture.
       expect(screen.getByTestId('session-chat-orders-rail')).toBeTruthy();
 
       nuqs.chatMax = 'window';
       rerenderOpen(rerender);
-      expect(screen.queryByTestId('session-chat-orders-rail')).toBeNull();
-      expect(screen.queryByTestId('agent-orders-stub')).toBeNull();
-      // The toggle goes too: offering to open a panel that maximize structurally
-      // excludes is a button that cannot do what it says.
-      expect(screen.queryByTestId('session-chat-orders-toggle')).toBeNull();
-      expect(screen.queryByTestId('session-chat-toolbar-left')).toBeNull();
-      // The carve-out the owner named by hand is untouched by any of this.
+      expect(screen.getByTestId('session-chat-orders-rail')).toBeTruthy();
+      expect(screen.getByTestId('agent-orders-stub')).toBeTruthy();
+      // The toggle stays with it — a panel you can see but cannot close is worse
+      // than one that was never there.
+      expect(screen.getByTestId('session-chat-orders-toggle')).toBeTruthy();
+      expect(screen.getByTestId('session-chat-toolbar-left')).toBeTruthy();
       expect(screen.getByPlaceholderText(/Type to wake/)).toBeTruthy();
     });
 
-    it('full SCREEN excludes it on the same rule — the mode, not the mechanism, is what hides it', async () => {
+    it('full SCREEN keeps it too — both modes carry the same set', async () => {
       nuqs.chatOrders = true;
       nuqs.chatMax = 'screen';
       await renderResolved();
-      expect(screen.queryByTestId('session-chat-orders-rail')).toBeNull();
-      expect(screen.queryByTestId('session-chat-orders-toggle')).toBeNull();
-      // This case seeds the mode BEFORE the first render, so it has no
-      // present-then-absent baseline of its own — without these, a fixture that
-      // rendered nothing at all would satisfy both nulls above.
+      expect(screen.getByTestId('session-chat-orders-rail')).toBeTruthy();
+      expect(screen.getByTestId('session-chat-orders-toggle')).toBeTruthy();
       expect(screen.getByTestId('session-chat-conversation')).toBeTruthy();
       expect(screen.getByPlaceholderText(/Type to wake/)).toBeTruthy();
     });
 
-    it('restores the panel when maximize is exited — the open state is remembered, not cleared', async () => {
-      nuqs.chatOrders = true;
-      nuqs.chatMax = 'window';
-      const { rerender } = await renderResolved();
+    it('a panel the user closed stays closed in maximize — the mode never re-opens it', async () => {
+      // The other half of D-007: "always shown" means maximize stops HIDING it,
+      // not that maximize starts SHOWING it. `chatOrders` remains the only
+      // authority on whether this panel is up.
+      nuqs.chatOrders = false;
+      nuqs.chatMax = 'screen';
+      await renderResolved();
       expect(screen.queryByTestId('session-chat-orders-rail')).toBeNull();
-
-      nuqs.chatMax = null;
-      rerenderOpen(rerender);
-      expect(screen.getByTestId('session-chat-orders-rail')).toBeTruthy();
       expect(screen.getByTestId('session-chat-orders-toggle')).toBeTruthy();
     });
 
@@ -1878,15 +1876,17 @@ describe('SessionChatModal', () => {
   /**
    * session-chat-popup-direction-d-2026-08-02 P-001 — full-window / full-screen.
    *
-   * [owner 2026-08-01 22:29] the two buttons must maximize "the actual
+   * ⚠ THE ASK REVERSED ON 2026-08-02 — D-007 supersedes D-002.
+   * Originally [owner 2026-08-01 22:29] maximize was to show "the actual
    * conversation not the panes to the left and belo, but it should also include
-   * the chatbox for the user to enter in messages".
+   * the chatbox". Then [owner 2026-08-02, verbatim] "lets actually make the left
+   * panel and right panel and bottom and top panel all show in both full screen
+   * views". Maximize now means the WHOLE POPUP, bigger.
    *
-   * So the assertions that matter are about WHAT SURVIVES, not that a state flag
-   * flipped: the composer must still be on screen (it is the explicit carve-out)
-   * and the excluded panes must be gone. A test that only checked `chatMax` was
-   * set would pass against a build that maximized the popup and dropped the
-   * chatbox — the one outcome the ask rules out by name.
+   * The assertions that matter are still about WHAT IS ON SCREEN rather than
+   * that a state flag flipped — a test that only checked `chatMax` was set would
+   * pass against a build showing none of it. What changed is the expected set:
+   * every zone, in both modes, plus the composer that was never in question.
    */
   describe('P-001 maximize: full window + full screen', () => {
     const COMPOSER = /Type to wake/;
@@ -1936,24 +1936,45 @@ describe('SessionChatModal', () => {
       expect(screen.queryByTestId('session-chat-full-screen')).toBeNull();
     });
 
-    it('full window keeps the transcript AND the chatbox, and drops the rail, the action bar and the fleet row', async () => {
-      const { rerender } = await renderResolved();
-      // Baseline: the excluded panes are present before maximizing, so their
-      // absence below is caused by the mode and not by the fixture.
+    /* D-007's central claim, asserted for BOTH modes below: every zone the owner
+       named survives maximize. Written as one shared expectation so the two
+       modes cannot silently drift apart — which is the failure the owner
+       reported the first time round ("both fullscreen buttons do the same
+       thing"), just pointing the other way. */
+    function expectEveryZonePresent() {
+      // left · right · bottom · top, plus the conversation between them.
+      expect(screen.getByTestId('session-chat-orders-rail')).toBeTruthy();
       expect(screen.getByTestId('session-chat-dossier-rail')).toBeTruthy();
       expect(screen.getByTestId('fleet-launch-row-stub')).toBeTruthy();
+      expect(screen.getByTestId('session-chat-state-header')).toBeTruthy();
+      expect(screen.getByTestId('session-chat-conversation')).toBeTruthy();
+      expect(screen.getByPlaceholderText(COMPOSER)).toBeTruthy();
+      // …and the controls that operate the two side panels, which are useless
+      // to have on screen without.
+      expect(screen.getByTestId('session-chat-orders-toggle')).toBeTruthy();
+      expect(screen.getByTestId('session-chat-dossier-toggle')).toBeTruthy();
+    }
+
+    it('full window keeps EVERY zone — left, right, bottom, top (D-007)', async () => {
+      nuqs.chatOrders = true;
+      const { rerender } = await renderResolved();
+      // Baseline, so a presence assertion below cannot be satisfied by a
+      // fixture that renders these regardless of mode.
+      expectEveryZonePresent();
 
       fireEvent.click(screen.getByTestId('session-chat-full-window'));
       expect(nuqsSetters.chatMax).toHaveBeenCalledWith('window');
+      nuqs.chatMax = 'window';
       rerenderOpen(rerender);
 
-      // The carve-out the owner named explicitly.
-      expect(screen.getByPlaceholderText(COMPOSER)).toBeTruthy();
-      expect(screen.getByTestId('session-chat-conversation')).toBeTruthy();
-      // "not the panes to the left and belo".
-      expect(screen.queryByTestId('session-chat-dossier-rail')).toBeNull();
-      expect(screen.queryByTestId('fleet-launch-row-stub')).toBeNull();
-      expect(screen.queryByTestId('session-chat-dossier-toggle')).toBeNull();
+      expectEveryZonePresent();
+    });
+
+    it('full screen keeps EVERY zone too — the two modes carry the same set', async () => {
+      nuqs.chatOrders = true;
+      nuqs.chatMax = 'screen';
+      await renderResolved();
+      expectEveryZonePresent();
     });
 
     it('exposes a close button ONLY while maximized — the backdrop it would otherwise be dismissed by is covered', async () => {
@@ -1969,19 +1990,21 @@ describe('SessionChatModal', () => {
       expect(nuqsSetters.chatMax).toHaveBeenCalledWith(null);
     });
 
-    it('restores the rail and the fleet row when full window is toggled back off', async () => {
+    it('toggling full window back off returns to the normal popup with everything still there', async () => {
+      nuqs.chatOrders = true;
       nuqs.chatMax = 'window';
       const { rerender } = await renderResolved();
-      expect(screen.queryByTestId('fleet-launch-row-stub')).toBeNull();
 
       fireEvent.click(screen.getByTestId('session-chat-full-window'));
       expect(nuqsSetters.chatMax).toHaveBeenCalledWith(null);
+      nuqs.chatMax = null;
       rerenderOpen(rerender);
-      expect(screen.getByTestId('fleet-launch-row-stub')).toBeTruthy();
-      expect(screen.getByTestId('session-chat-dossier-rail')).toBeTruthy();
+      // Under D-007 nothing is restored on exit because nothing was taken away
+      // — the guard is that the exit path did not LOSE a zone either.
+      expectEveryZonePresent();
     });
 
-    it('full screen requests fullscreen on the CONVERSATION element, not the modal — that element IS the spec', async () => {
+    it('full screen requests fullscreen on the POPUP CONTAINER, not the conversation — that element IS the spec (D-007)', async () => {
       const requestFullscreen = vi.fn().mockResolvedValue(undefined);
       // jsdom implements no Fullscreen API at all, so the element under test
       // gets one. Attached to the prototype (not one node) because the assert
@@ -1991,16 +2014,28 @@ describe('SessionChatModal', () => {
           return requestFullscreen(this);
         };
       try {
+        nuqs.chatOrders = true;
         await renderResolved();
-        const region = screen.getByTestId('session-chat-conversation');
+        const popup = screen.getByTestId('session-chat-modal');
         fireEvent.click(screen.getByTestId('session-chat-full-screen'));
 
         await waitFor(() => expect(requestFullscreen).toHaveBeenCalled());
-        // The element handed to the browser is the conversation region — which
-        // is what makes the excluded set structural (D-002). If this ever
-        // becomes the modal content or the column wrapper, maximize silently
-        // starts including the action bar and the rail again.
-        expect(requestFullscreen).toHaveBeenCalledWith(region);
+        // THE regression guard for D-007. The browser paints exactly this
+        // element's subtree, so the target is what decides whether full screen
+        // shows the four panels at all — no layout gate can override it. If this
+        // is ever re-pointed at `session-chat-conversation` (its pre-D-007
+        // value), full screen silently drops Orders, Activity, the action band
+        // and the fleet row, and every presence test above would still pass
+        // because they never enter real fullscreen in jsdom.
+        expect(requestFullscreen).toHaveBeenCalledWith(popup);
+        expect(requestFullscreen).not.toHaveBeenCalledWith(
+          screen.getByTestId('session-chat-conversation'),
+        );
+        // Positive control on the target itself: the container really does hold
+        // every zone, so fullscreening it delivers them.
+        expect(within(popup).getByTestId('session-chat-orders-rail')).toBeTruthy();
+        expect(within(popup).getByTestId('session-chat-dossier-rail')).toBeTruthy();
+        expect(within(popup).getByTestId('fleet-launch-row-stub')).toBeTruthy();
         await waitFor(() => expect(nuqsSetters.chatMax).toHaveBeenCalledWith('screen'));
       } finally {
         delete (HTMLElement.prototype as unknown as { requestFullscreen?: unknown }).requestFullscreen;

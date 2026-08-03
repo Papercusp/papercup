@@ -11,6 +11,7 @@
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Sql } from 'postgres';
+import { hashPlanContent } from '@papercusp/plan-parser';
 import { createOrgTestDb, type OrgTestDb } from '../../../test/_org-test-db';
 import { materializePlanSchedule, planScheduleRoutineName } from './materialize-plan-schedule';
 import { runScheduledPlanFire } from './plan-run-action';
@@ -275,5 +276,37 @@ describe('runScheduledPlanFire (system:plan-run)', () => {
       SELECT DISTINCT item_kind FROM harness_shared.harness_features_consolidated
        WHERE harness_slug = ${HARNESS} AND source_plan_slug = ${TEMPLATE}`;
     expect(kinds[0].item_kind).toBe('feature');
+  });
+
+  it("EI-19389216343173748: the instance's self-declared frontmatter `slug:` is rewritten to the INSTANCE slug, not left as the template's — and content_hash matches what is actually stored", async () => {
+    // Re-seed the template with a REAL frontmatter block (the beforeEach fixture has none,
+    // so it can't exercise this bug: setFrontmatterScalar is a no-op on frontmatter-less
+    // content). This mirrors the shape every real plan actually has.
+    const fmContent = `---\nslug: ${TEMPLATE}\nstatus: active\n---\n# Monitor X\n\n## Now\n**State:** recurring.`;
+    await sql`
+      UPDATE harness_shared.harness_plans
+         SET content = ${fmContent}, content_hash = ${hashPlanContent(fmContent)}
+       WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${TEMPLATE}`;
+
+    await stampClaim(new Date('2026-06-16T09:00:00.000Z'));
+    const res = await runScheduledPlanFire(sql, { installSlug: HARNESS, workspaceId: WS, templateSlug: TEMPLATE });
+    expect(res).not.toBeNull();
+
+    const inst = await sql<Array<{ content: string; content_hash: string }>>`
+      SELECT content, content_hash FROM harness_shared.harness_plans
+       WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${res!.instanceSlug}`;
+    expect(inst[0]).toBeTruthy();
+    // The clone's self-declared slug is the INSTANCE's, not the template's — the exact
+    // `slug_mismatch` condition plans/lint.ts flags when these disagree.
+    expect(inst[0].content).toContain(`slug: ${res!.instanceSlug}`);
+    expect(inst[0].content).not.toContain(`slug: ${TEMPLATE}\n`);
+    // Every other frontmatter line survives untouched (surgical, not a full rewrite).
+    expect(inst[0].content).toContain('status: active');
+    expect(inst[0].content).toContain('**State:** recurring.');
+    // content_hash reflects what is ACTUALLY stored (the rewritten content), not the
+    // template's original hash — a stale hash would fail plans:set-content's
+    // compare-and-swap the moment anyone tried to edit the run snapshot.
+    expect(inst[0].content_hash).toBe(hashPlanContent(inst[0].content));
+    expect(inst[0].content_hash).not.toBe(hashPlanContent(fmContent));
   });
 });

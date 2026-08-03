@@ -165,13 +165,26 @@ export default defineTool({
         .optional()
         .describe('The single concrete next action for the next wake.'),
       walls: z
-        .array(
-          z.object({
-            claim: z.string().min(1).max(500).describe('The pending owner-gated action/decision, stated concretely.'),
-            recheck: z.string().max(300).optional().describe('A concrete command a successor runs to re-check it.'),
-          }),
+        .preprocess(
+          // Same repair-don't-refuse contract as `checks` below (WI-7264).
+          (v) => (Array.isArray(v) ? v.map((row, i) => coerceCarryRowShape(row, `walls[${i}]`, [])) : v),
+          z
+            .array(
+              z.object({
+                claim: z
+                  .string()
+                  .min(1)
+                  .max(CARRY_ROW_SOFT_CAPS.claim * CARRY_CAP_HARD_MULTIPLE)
+                  .describe('The pending owner-gated action/decision, stated concretely.'),
+                recheck: z
+                  .string()
+                  .max(CARRY_ROW_SOFT_CAPS.recheck * CARRY_CAP_HARD_MULTIPLE)
+                  .optional()
+                  .describe('A concrete command a successor runs to re-check it.'),
+              }),
+            )
+            .max(CARRY_NOTE_MAX_WALLS),
         )
-        .max(CARRY_NOTE_MAX_WALLS)
         .optional()
         .describe(
           'Open WALLS (owner-gated commitments) as rows — rendered into EVERY wake + carry brief until cleared. ' +
@@ -185,21 +198,42 @@ export default defineTool({
           // STRING — parse it instead of rejecting the write. Malformed ⇒ leave as-is
           // so zod reports the real shape error.
           (v) => {
-            if (typeof v !== 'string') return v;
-            try {
-              const parsed = JSON.parse(v);
-              return Array.isArray(parsed) ? parsed : v;
-            } catch {
-              return v;
+            let rows: unknown = v;
+            if (typeof rows === 'string') {
+              try {
+                const parsed = JSON.parse(rows);
+                rows = Array.isArray(parsed) ? parsed : rows;
+              } catch {
+                return v;
+              }
             }
+            // WI-7264: repair the wrong-but-obvious row SHAPE rather than rejecting the
+            // whole note over it. `{claim, recheck, status, evidence}` is what agents
+            // actually reach for — `evidence` (57×) and `status` (40×) were the top two
+            // rejected undeclared keys across 6 days of transcripts, and this field's own
+            // description already warns against that shape, so documenting it has not
+            // worked. The coercion is data-PRESERVING (evidence becomes `verified`, so the
+            // row still renders VERIFIED), which is what separates it from
+            // EI-18723223344390510 — the bug where a nested row silently DROPPED those
+            // keys and destroyed the evidence. Silent here means "nothing was lost", not
+            // "nothing happened"; truncation, which does lose bytes, is reported instead.
+            return Array.isArray(rows) ? rows.map((row, i) => coerceCarryRowShape(row, `checks[${i}]`, [])) : rows;
           },
           z.array(
             z.object({
-              claim: z.string().min(1).max(500).describe('The external-state claim, stated concretely.'),
-              recheck: z.string().max(300).optional().describe('Concrete probe to run before relying on the claim.'),
+              claim: z
+                .string()
+                .min(1)
+                .max(CARRY_ROW_SOFT_CAPS.claim * CARRY_CAP_HARD_MULTIPLE)
+                .describe('The external-state claim, stated concretely.'),
+              recheck: z
+                .string()
+                .max(CARRY_ROW_SOFT_CAPS.recheck * CARRY_CAP_HARD_MULTIPLE)
+                .optional()
+                .describe('Concrete probe to run before relying on the claim.'),
               verified: z
                 .string()
-                .max(300)
+                .max(CARRY_ROW_SOFT_CAPS.verified * CARRY_CAP_HARD_MULTIPLE)
                 .optional()
                 .describe(
                   'The EVIDENCE STRING itself (max 300 chars) — e.g. "Verified 15:14Z: 30/30 passed, tree clean". ' +
@@ -299,6 +333,36 @@ export default defineTool({
     const fields = rescued
       ? { did: rescued.did, left: rescued.left, insight: rescued.insight, next: rescued.next }
       : { did: args.did, left: args.left, insight: args.insight, next: args.next };
+
+    // WI-7264: enforce the SOFT caps by truncation, here, after the schema's backstop
+    // let the call through. The cap's job is to bound what re-injects into every future
+    // wake — truncation does that just as well as rejection did, without discarding the
+    // whole note (and the agent's next wake with it). Every trim is REPORTED: a cut that
+    // the caller cannot see is the EI-18723223344390510 failure mode, where a row was
+    // quietly reshaped and a verified check's evidence was destroyed with no signal.
+    const repairs: CarryArgRepair[] = [];
+    for (const key of ['did', 'left', 'insight', 'next'] as const) {
+      const v = fields[key];
+      if (typeof v === 'string') fields[key] = truncateCarryField(v, CARRY_TEXT_SOFT_CAP, key, repairs);
+    }
+    const capRows = <T extends { claim: string; recheck?: string; verified?: string }>(
+      rows: T[] | undefined,
+      label: string,
+    ): T[] | undefined =>
+      rows?.map((row, i) => {
+        const out = { ...row };
+        out.claim = truncateCarryField(out.claim, CARRY_ROW_SOFT_CAPS.claim, `${label}[${i}].claim`, repairs);
+        if (typeof out.recheck === 'string')
+          out.recheck = truncateCarryField(out.recheck, CARRY_ROW_SOFT_CAPS.recheck, `${label}[${i}].recheck`, repairs);
+        if (typeof out.verified === 'string')
+          out.verified = truncateCarryField(
+            out.verified,
+            CARRY_ROW_SOFT_CAPS.verified,
+            `${label}[${i}].verified`,
+            repairs,
+          );
+        return out;
+      });
     const hasStructured =
       fields.did !== undefined || fields.left !== undefined || fields.insight !== undefined || fields.next !== undefined;
     // Structured fields win over a raw note (renderCarryNote skips blank sections, so an
@@ -312,8 +376,8 @@ export default defineTool({
     //   A walls-only write likewise carries the prior note body forward.
     // A rescued blob's own rows slot in where the explicit arg would have gone — an
     // EXPLICIT `walls`/`checks` arg still wins outright (including its `[]` clear).
-    const effectiveWalls = args.walls ?? rescued?.walls;
-    const effectiveChecks = args.checks ?? rescued?.checks;
+    const effectiveWalls = capRows(args.walls ?? rescued?.walls, 'walls');
+    const effectiveChecks = capRows(args.checks ?? rescued?.checks, 'checks');
     const hasNoteWrite = hasStructured || args.note !== undefined;
 
     // WI-6813: the walls/checks merge runs INSIDE the row's locked transaction (the
@@ -608,6 +672,11 @@ export default defineTool({
             contentHash,
             walls: walls.length,
             checks: checks.length,
+            /** WI-7264: fields trimmed to their soft cap so the write could SUCCEED instead
+             *  of the whole note being rejected over one long field. Omitted when nothing
+             *  was trimmed. Same never-silently-degrade contract as `rescued` below: the
+             *  bytes really were cut, so the caller has to be told. */
+            ...(repairs.length ? { repairs } : {}),
             // EI-18833865002636933: NEVER rescue silently. The original defect was that a
             // mangled note reached the cold wake looking like sloppy authoring, with
             // nothing saying it had been degraded — so a rescue must announce itself and

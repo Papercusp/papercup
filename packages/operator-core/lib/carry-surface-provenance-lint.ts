@@ -109,6 +109,46 @@ function isOwnerTagPossibleMention(line: string): boolean {
 const OWNER_ATTRIBUTION_RE =
   /\b(?:the )?owner\s+(?:said|says|wants|needs|requires|required|approved|approves|told me|instructed|directed|asked|demands|set an? (?:explicit )?gate|gave permission)\b/i;
 /**
+ * EI-19393929983792049: a bare NOUN-PHRASE attribution — "owner directive 1: …",
+ * "Directive 2 (…): …" re-emitted from a loop goal, "owner mandate: …" — asserts the
+ * exact same authority as a hand-written `[owner:…]` tag or an `OWNER_ATTRIBUTION_RE`
+ * verb phrase, but slips past BOTH: it names no verb from that list ("directive" is a
+ * noun, not "directed"), and it carries no `[owner:` bracket at all. Measured live: the
+ * filer's own self-compaction turn wrote "start owner directive 1: the READ-ONLY P-011
+ * audit … Directive 2 … comes after" — an AGENT-authored line asserting owner authority
+ * that neither existing detector catches, so it re-emitted from every subsequent loop
+ * wake with no nudge to tag or verify it. This convention ("owner directive <date>: …")
+ * is also the repo's own standard citation form for a REAL owner directive (see e.g.
+ * agent-insights/p2p-not-a-v1-target.md, RELEASE-RUNBOOK.md) — so flagging it here is
+ * not a new restriction on real usage, it is applying P-014's existing rule (a manual
+ * attribution asserts, only a turn ref proves) to a form the rule already covers in
+ * spirit but the regex never matched syntactically.
+ */
+const OWNER_DIRECTIVE_NOUN_RE = /\bowner\s+(?:directive|mandate)s?\b/i;
+
+/** Mirrors OWNER_TAG_MENTION_CONTEXT_RE's mention-vs-use distinction for the bracket
+ *  tag, generalized to the noun phrase: a nearby word that reads as DOCUMENTING the
+ *  convention ("never manufacture an owner directive", "the term owner directive")
+ *  rather than ASSERTING one. Kept in the same short, high-precision spirit as the
+ *  rest of this module — this repo's own compaction-strategy prose uses exactly this
+ *  shape ("manufactures owner directives", "a claimed owner directive") when an agent
+ *  quotes it into a carry note, and that quoting must not misread as a real claim. */
+const OWNER_DIRECTIVE_MENTION_CONTEXT_RE =
+  /(?:\bforms?\b|\bconventions?\b|\bpatterns?\b|\bsyntax\b|\bexamples?\b|\be\.g\.,?|->|\bmanufactur\w*|\bfabricat\w*|\bmint(?:ed|ing|s)?\b|\bcoin(?:ed|ing|s)?\b|\bthe\s+terms?\b|\bthe\s+phrases?\b|\bthe\s+notion\b|\bthe\s+concept\b|\bcall(?:ed|ing|s)?\b|\bclaimed\b)[^.\n]{0,40}\bowner\s+(?:directive|mandate)s?\b/i;
+
+const BACKTICK_WRAPPED_OWNER_DIRECTIVE_RE = /`[^`\n]*\bowner\s+(?:directive|mandate)s?\b[^`\n]*`/i;
+
+/** Definite quoting — never flag, mirrors {@link isOwnerTagQuotedForm}. */
+function isOwnerDirectiveNounQuotedForm(line: string): boolean {
+  return BACKTICK_WRAPPED_OWNER_DIRECTIVE_RE.test(line);
+}
+
+/** Ambiguous — likely documenting/comparing the convention, not asserting a directive. */
+function isOwnerDirectiveNounPossibleMention(line: string): boolean {
+  return OWNER_DIRECTIVE_MENTION_CONTEXT_RE.test(line);
+}
+
+/**
  * A "do not X until Y" match, but ONLY when it reads as an IMPERATIVE — no
  * expressed subject, the grammatical hallmark of a command — rather than a
  * DECLARATIVE description of some OTHER subject's behavior ("they do not
