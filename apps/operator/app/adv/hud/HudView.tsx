@@ -96,6 +96,22 @@ const CLOCK_TICK_MS = 15_000;
  *  number, it only means more of it sits behind "+N more". */
 const WORK_ITEM_PER_STATE = 40;
 
+/** Deadline for the transcript-search round-trip (WI-7344).
+ *
+ *  Sized from measurement, not taste: the endpoint's steady state is ~0.2-0.5s
+ *  and its cold tail a few seconds, so 20s is far outside normal while still
+ *  leaving a genuinely loaded operator room to answer. Without ANY deadline a
+ *  server-side stall showed as a permanently-spinning "still searching
+ *  transcripts…" — the owner's 2026-08-03 report. */
+const SEARCH_TIMEOUT_MS = 20_000;
+
+/** Abort reason that distinguishes "we gave up waiting" from the routine
+ *  supersede/unmount abort. Both set `signal.aborted`, so without a reason the
+ *  timeout is indistinguishable from a newer keystroke and gets swallowed
+ *  silently — which is precisely how a timeout would re-create the hang it was
+ *  added to fix. A plain sentinel object: identity is the whole point. */
+const SEARCH_TIMEOUT_REASON = { hudSearchTimeout: true } as const;
+
 /* The "all fleets" sentinel is imported from hud-board-model, not re-declared:
    HudBoard raises it and this file compares against it, and while each spelled
    the literal out separately the two drifted (HudBoard's leading space became a
@@ -357,68 +373,46 @@ export default function HudView({ workspaceId = null }: { workspaceId?: string |
     const ctl = new AbortController();
     setSearching(true);
     setSearchError(null);
+    /* WI-7344 (owner report 2026-08-03: "searched 'theory' … still showed
+       searching transcripts 30 seconds later"). This call had NO deadline, so a
+       stalled operator produced a spinner that never stopped — no error, and no
+       way to tell a slow answer from a dead one. The root cause that time was
+       the desktop operator's event loop blocking in multi-second chunks (git
+       fork()s on a single-process host — fixed at its source in
+       dev-operator-ifneeded.sh), but the UI must not depend on the server always
+       being healthy in order to avoid an infinite spinner.
+
+       The request + response-shaping now live in `fetchTranscriptSearch`
+       (hud-board-model) so they are TESTABLE: this component pulls in
+       useSyncQuery/useInboxAttention/nuqs and has no render harness, which is
+       why its sibling guards resort to regex-ing this file's source. What stays
+       here is only what genuinely belongs to the component — the seq guard and
+       the state writes.
+
+       A timeout DEGRADES rather than empties: `localOwners` keeps filtering the
+       board per keystroke, and an empty (not null) `searchOwners` means "the
+       transcript pass matched nothing", which unions correctly with it. */
     (async () => {
       try {
-        const r = await fetch(
-          `/api/adv/sessions/search-transcripts?q=${encodeURIComponent(q)}&limit=100`,
-          { signal: ctl.signal },
-        );
-        const body = (await r.json()) as {
-          ok?: boolean;
-          sessions?: {
-            active: { ownerId?: string | null } | null;
-            session: { coordOwnerId?: string | null } | null;
-            sessionId?: string | null;
-            sourceKind?: string | null;
-            /* Owner ask 2026-08-02. These came back on every response all along
-               — the old handler destructured out the ownerId and dropped them,
-               which is why a search result rendered as an ordinary card with
-               nothing saying why it matched. Ordered best-first by the engine. */
-            hits?: {
-              turnIdx?: number | null;
-              excerpt?: string | null;
-              highlight?: string | null;
-              speaker?: string | null;
-              ts?: string | null;
-            }[];
-          }[];
-          error?: string;
-        };
+        const outcome = await fetchTranscriptSearch(q, {
+          timeoutMs: SEARCH_TIMEOUT_MS,
+          signal: ctl.signal,
+        });
         if (seq !== searchSeq.current) return; // superseded by a newer keystroke
-        if (!r.ok || body.ok === false) {
-          setSearchError(body.error ?? `search failed (${r.status})`);
+        if (!outcome.ok) {
+          setSearchError(outcome.message);
           setSearchOwners(new Set());
           setSearchHits(null);
           return;
         }
-        const owners = new Set<string>();
-        const hits = new Map<string, HudSearchHit>();
-        for (const s of body.sessions ?? []) {
-          const id = s.active?.ownerId ?? s.session?.coordOwnerId ?? null;
-          if (!id) continue;
-          owners.add(id);
-          /* The engine ranks hits, so [0] is the best one — that is the excerpt
-             the card shows and the turn the modal opens on. `more` keeps the
-             rest honest: one excerpt with no hint that 40 others exist reads as
-             the whole answer. A hit with no usable text is skipped rather than
-             rendered as an empty strip. */
-          const top = s.hits?.[0];
-          const text = top?.highlight ?? top?.excerpt ?? '';
-          if (!top || !text.trim()) continue;
-          hits.set(id, {
-            turnIdx: typeof top.turnIdx === 'number' ? top.turnIdx : -1,
-            highlight: top.highlight ?? null,
-            excerpt: top.excerpt ?? '',
-            speaker: top.speaker ?? null,
-            ts: top.ts ?? null,
-            sessionId: s.sessionId ?? '',
-            sourceKind: s.sourceKind ?? '',
-            more: Math.max(0, (s.hits?.length ?? 0) - 1),
-          });
-        }
-        setSearchOwners(owners);
-        setSearchHits(hits);
+        setSearchOwners(outcome.owners);
+        setSearchHits(outcome.hits);
       } catch (e) {
+        /* Only a supersede/unmount abort reaches here — fetchTranscriptSearch
+           converts a TIMEOUT into an `ok:false, timedOut:true` outcome above
+           rather than throwing, precisely so it cannot be mistaken for one of
+           these and silently swallowed (which is how a deadline would re-create
+           the very hang it was added to fix). */
         if (ctl.signal.aborted || seq !== searchSeq.current) return;
         setSearchError(e instanceof Error ? e.message : 'search failed');
         setSearchOwners(new Set());

@@ -322,6 +322,138 @@ export interface HudHighlightSegment {
   mark: boolean;
 }
 
+/** Shape of one session entry in the /api/adv/sessions/search-transcripts body. */
+export interface HudTranscriptSearchSession {
+  active?: { ownerId?: string | null } | null;
+  session?: { coordOwnerId?: string | null } | null;
+  sessionId?: string | null;
+  sourceKind?: string | null;
+  hits?: {
+    turnIdx?: number | null;
+    excerpt?: string | null;
+    highlight?: string | null;
+    speaker?: string | null;
+    ts?: string | null;
+  }[];
+}
+
+/** The transcript pass rolled up for the board: which owners matched, and the
+ *  best hit per owner (the card excerpt + the turn the modal opens on). */
+export interface HudTranscriptSearchResult {
+  owners: Set<string>;
+  hits: Map<string, HudSearchHit>;
+}
+
+/**
+ * Roll the search response up to owners + best-hit-per-owner.
+ *
+ * Extracted from HudView (WI-7344) so it can be tested at all: HudView pulls in
+ * useSyncQuery / useInboxAttention / nuqs and has no render harness, which is
+ * why its sibling guards resort to regex-ing the source file. Logic that can
+ * silently mis-render a search result belongs on this side of that line.
+ */
+export function rollUpTranscriptSearch(
+  sessions: HudTranscriptSearchSession[] | null | undefined,
+): HudTranscriptSearchResult {
+  const owners = new Set<string>();
+  const hits = new Map<string, HudSearchHit>();
+  for (const s of sessions ?? []) {
+    const id = s.active?.ownerId ?? s.session?.coordOwnerId ?? null;
+    if (!id) continue;
+    owners.add(id);
+    /* The engine ranks hits, so [0] is the best one. A hit with no usable text
+       is skipped rather than rendered as an empty strip — but the OWNER still
+       counts as matched above, because the session genuinely did match. */
+    const top = s.hits?.[0];
+    const text = top?.highlight ?? top?.excerpt ?? '';
+    if (!top || !text.trim()) continue;
+    hits.set(id, {
+      turnIdx: typeof top.turnIdx === 'number' ? top.turnIdx : -1,
+      highlight: top.highlight ?? null,
+      excerpt: top.excerpt ?? '',
+      speaker: top.speaker ?? null,
+      ts: top.ts ?? null,
+      sessionId: s.sessionId ?? '',
+      sourceKind: s.sourceKind ?? '',
+      more: Math.max(0, (s.hits?.length ?? 0) - 1),
+    });
+  }
+  return { owners, hits };
+}
+
+/** Outcome of one transcript-search round-trip. `timedOut` is deliberately its
+ *  own field rather than folded into `message`: the caller must be able to tell
+ *  "the operator is wedged" from "the query was rejected" without string-matching. */
+export type HudTranscriptSearchOutcome =
+  | ({ ok: true } & HudTranscriptSearchResult)
+  | { ok: false; timedOut: boolean; message: string };
+
+/**
+ * Run the transcript search under a hard deadline.
+ *
+ * WI-7344 (owner report 2026-08-03: "searched 'theory' … still showed searching
+ * transcripts 30 seconds later"). The call had no deadline, so a stalled
+ * operator produced a spinner that never stopped — indistinguishable from a
+ * slow answer, with no error and no way out.
+ *
+ * The subtlety worth keeping: a timeout abort and a supersede/unmount abort BOTH
+ * set `signal.aborted`, so a caller that branches on that flag alone swallows
+ * the timeout and re-creates the very hang the deadline was added to fix. The
+ * deadline therefore aborts with a private reason and reports `timedOut`
+ * explicitly, rather than leaving the caller to infer it.
+ */
+export async function fetchTranscriptSearch(
+  query: string,
+  opts: {
+    limit?: number;
+    timeoutMs: number;
+    /** Caller's abort signal (a newer keystroke / unmount). */
+    signal?: AbortSignal;
+    fetchImpl?: typeof fetch;
+  },
+): Promise<HudTranscriptSearchOutcome> {
+  const timeoutReason = { hudSearchTimeout: true };
+  const ctl = new AbortController();
+  const onOuterAbort = () => ctl.abort();
+  if (opts.signal) {
+    if (opts.signal.aborted) ctl.abort();
+    else opts.signal.addEventListener('abort', onOuterAbort, { once: true });
+  }
+  const timer = setTimeout(() => ctl.abort(timeoutReason), opts.timeoutMs);
+  const doFetch = opts.fetchImpl ?? fetch;
+  try {
+    const r = await doFetch(
+      `/api/adv/sessions/search-transcripts?q=${encodeURIComponent(query)}&limit=${opts.limit ?? 100}`,
+      { signal: ctl.signal },
+    );
+    const body = (await r.json()) as {
+      ok?: boolean;
+      sessions?: HudTranscriptSearchSession[];
+      error?: string;
+    };
+    if (!r.ok || body.ok === false) {
+      return {
+        ok: false,
+        timedOut: false,
+        message: body.error ?? `search failed (${r.status})`,
+      };
+    }
+    return { ok: true, ...rollUpTranscriptSearch(body.sessions) };
+  } catch (e) {
+    if (ctl.signal.reason === timeoutReason) {
+      return {
+        ok: false,
+        timedOut: true,
+        message: `transcript search timed out after ${Math.round(opts.timeoutMs / 1000)}s — the operator may be busy`,
+      };
+    }
+    throw e; // a supersede/unmount abort stays the caller's to ignore
+  } finally {
+    clearTimeout(timer);
+    opts.signal?.removeEventListener('abort', onOuterAbort);
+  }
+}
+
 const HTML_ENTITIES: Record<string, string> = {
   amp: '&',
   lt: '<',

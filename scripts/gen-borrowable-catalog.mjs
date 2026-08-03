@@ -255,33 +255,42 @@ function build(submodules) {
   return lines.join('\n') + '\n';
 }
 
-const submodules = parseGitmodules();
-const out = build(submodules);
-const target = join(ROOT, 'BORROWABLE.md');
-const missingGitignores = findMissingGitignores(submodules);
-if (process.argv.includes('--check')) {
-  let cur = '';
-  try { cur = readFileSync(target, 'utf8'); } catch { /* missing */ }
-  let failed = false;
-  if (cur !== out) {
-    console.error('BORROWABLE.md is stale — run `npm run gen:borrowable` and commit.');
-    failed = true;
-  }
-  if (missingGitignores.length) {
-    console.error(
-      `EI-14414: ${missingGitignores.length} borrowable submodule(s) missing a .gitignore ` +
-      `(git-sync can sweep node_modules/build scratch into their history): ${missingGitignores.join(', ')}\n` +
-      'Run `npm run gen:borrowable` to scaffold the standard one, then commit.',
-    );
-    failed = true;
-  }
-  if (failed) process.exit(1);
-  console.log('BORROWABLE.md is up to date.');
-} else {
-  writeFileSync(target, out);
-  console.log(`Wrote ${target} (${BORROWABLE.length} borrowable + ${SEAMED.length} seam'd).`);
-  for (const p of missingGitignores) {
-    writeFileSync(join(ROOT, p, '.gitignore'), STANDARD_LIB_GITIGNORE);
-    console.log(`EI-14414: scaffolded missing ${p}/.gitignore (standard borrowable-lib template).`);
+// Run as a CLI only when invoked directly — NOT merely on import. This module
+// is now also imported for its exports (BORROWABLE, sourceFor, readPkg, …) by
+// scripts/check-generic-independence.mjs; before this guard, importing it for
+// ANY purpose unconditionally rewrote BORROWABLE.md as a side effect (WI-4973
+// / decouple-generic-libs-private-deps-2026-08-03) — a landmine for any future
+// importer, and a needless filesystem write on this heavily-shared tree.
+const isMain = process.argv[1] && import.meta.url === `file://${process.argv[1]}`;
+if (isMain) {
+  const submodules = parseGitmodules();
+  const out = build(submodules);
+  const target = join(ROOT, 'BORROWABLE.md');
+  const missingGitignores = findMissingGitignores(submodules);
+  if (process.argv.includes('--check')) {
+    let cur = '';
+    try { cur = readFileSync(target, 'utf8'); } catch { /* missing */ }
+    let failed = false;
+    if (cur !== out) {
+      console.error('BORROWABLE.md is stale — run `npm run gen:borrowable` and commit.');
+      failed = true;
+    }
+    if (missingGitignores.length) {
+      console.error(
+        `EI-14414: ${missingGitignores.length} borrowable submodule(s) missing a .gitignore ` +
+        `(git-sync can sweep node_modules/build scratch into their history): ${missingGitignores.join(', ')}\n` +
+        'Run `npm run gen:borrowable` to scaffold the standard one, then commit.',
+      );
+      failed = true;
+    }
+    if (failed) process.exit(1);
+    console.log('BORROWABLE.md is up to date.');
+  } else {
+    writeFileSync(target, out);
+    console.log(`Wrote ${target} (${BORROWABLE.length} borrowable + ${SEAMED.length} seam'd).`);
+    for (const p of missingGitignores) {
+      writeFileSync(join(ROOT, p, '.gitignore'), STANDARD_LIB_GITIGNORE);
+      console.log(`EI-14414: scaffolded missing ${p}/.gitignore (standard borrowable-lib template).`);
+    }
   }
 }

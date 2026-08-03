@@ -225,6 +225,8 @@
     "lint:rubric-method-ref-parity": "node scripts/check-rubric-method-ref-parity.mjs",
     "lint:generic-first": "node scripts/check-generic-first.mjs",
     "lint:generic-first:all": "node scripts/check-generic-first.mjs --all",
+    "lint:generic-independence": "node scripts/check-generic-independence.mjs",
+    "lint:generic-independence:strict": "node scripts/check-generic-independence.mjs --strict",
     "lint:explicit-presence": "node scripts/check-explicit-presence.mjs",
     "lint:explicit-presence:all": "node scripts/check-explicit-presence.mjs --all",
     "lint:env-feature-gates": "node scripts/check-env-feature-gates.mjs",
