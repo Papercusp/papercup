@@ -18,6 +18,7 @@ import {
   eligiblePredicateSql,
   modeColOf,
   recentPredicateSql,
+  settledPredicateSql,
   stalePredicateSql,
   type BackfillTarget,
 } from './embed-backfill';
@@ -142,12 +143,24 @@ describe('parameter binding never supplies an unused placeholder', () => {
     expect(q.sql).not.toContain('recent_eligible');
   });
 
-  it('a target with a recency column emits the recent columns and binds the window', () => {
+  it('a target with a recency column emits both windows and binds each bound', () => {
     const q = buildCoverageQuery(sessionTurns, true, 'gemma', 24);
     expect(q.hasRecent).toBe(true);
     expect(q.sql).toContain('recent_eligible');
-    expect(q.sql).toContain('recent_embedded');
-    expect(q.params).toEqual(['gemma', 24]);
+    expect(q.sql).toContain('settled_eligible');
+    expect(q.sql).toContain('settled_embedded');
+    expect(q.params).toEqual(['gemma', 24, SETTLED_GRACE_MINUTES, SETTLED_WINDOW_HOURS]);
+  });
+
+  it('the settled window is bounded at BOTH ends', () => {
+    // Young bound: a row written 30s ago is legitimately unembedded (5-min sweep tick).
+    // Old bound: without it the window slides back over a draining backlog, which is the
+    // exact defect the 24h aggregate had.
+    const sql = settledPredicateSql(sessionTurns, '$1', '$2')!;
+    expect(sql).toContain('<=');
+    expect(sql).toContain('>=');
+    expect(sql).toContain('mins =>');
+    expect(sql).toContain('hours =>');
   });
 });
 
@@ -244,6 +257,7 @@ describe('recent-row coverage — the recurrence catcher', () => {
     const c = toSurfaceCoverage(sessionTurns, {
       totalRows: 10_000, eligibleRows: 9000, embeddedRows: 9000,
       recentEligible: 500, recentEmbedded: 400,
+      settledEligible: 500, settledEmbedded: 400,
     });
     const b = detectCoverageBreaches([{ coverage: c, history: [] }]);
     expect(b).toHaveLength(1);
@@ -256,7 +270,7 @@ describe('recent-row coverage — the recurrence catcher', () => {
     // start would be fully blind, which is when a regression is most likely to land.
     const c = toSurfaceCoverage(sessionTurns, {
       totalRows: 100, eligibleRows: 100, embeddedRows: 100,
-      recentEligible: 100, recentEmbedded: 0,
+      recentEligible: 100, recentEmbedded: 0, settledEligible: 100, settledEmbedded: 0,
     });
     expect(detectCoverageBreaches([{ coverage: c, history: [] }])[0]!.kind).toBe('recent-coverage');
   });
@@ -265,6 +279,7 @@ describe('recent-row coverage — the recurrence catcher', () => {
     const c = toSurfaceCoverage(sessionTurns, {
       totalRows: 100, eligibleRows: 100, embeddedRows: 100,
       recentEligible: MIN_RECENT_SAMPLE - 1, recentEmbedded: 0,
+      settledEligible: MIN_RECENT_SAMPLE - 1, settledEmbedded: 0,
     });
     expect(detectCoverageBreaches([{ coverage: c, history: [] }])).toEqual([]);
   });
@@ -272,9 +287,43 @@ describe('recent-row coverage — the recurrence catcher', () => {
   it('stays quiet at full coverage', () => {
     const c = toSurfaceCoverage(sessionTurns, {
       totalRows: 100, eligibleRows: 100, embeddedRows: 100,
-      recentEligible: 100, recentEmbedded: 100,
+      recentEligible: 100, recentEmbedded: 100, settledEligible: 100, settledEmbedded: 100,
     });
     expect(detectCoverageBreaches([{ coverage: c, history: [] }])).toEqual([]);
+  });
+
+  it('REGRESSION: a healthy write path behind a draining backlog does NOT breach', () => {
+    // The exact live shape at 2026-08-03T08:45Z, which the first cut got WRONG.
+    // session_turns: 13 straight hours at 100% (the write path) sitting in front of a
+    // starved band at ~7% (the backlog). The 24h aggregate averaged them to 67.5% and
+    // announced "new writes are NOT being indexed" — flatly false.
+    //
+    // The settled window sees only the healthy part, which is the whole point.
+    const c = toSurfaceCoverage(sessionTurns, {
+      totalRows: 423_022, eligibleRows: 345_141, embeddedRows: 35_986,
+      recentEligible: 21_569, recentEmbedded: 14_557,   // 67.5% over 24h
+      settledEligible: 4_500, settledEmbedded: 4_500,   // 100% over the settled window
+    });
+    expect(c.recentCoverage!).toBeLessThan(RECENT_COVERAGE_FLOOR); // the misleading figure
+    expect(c.settledCoverage).toBe(1);
+    expect(detectCoverageBreaches([{ coverage: c, history: [] }])
+      .some((b) => b.kind === 'recent-coverage')).toBe(false);
+  });
+
+  it('a genuine write-path break DOES breach even while a backlog drains behind it', () => {
+    // The converse, and the reason the settled window is not just "suppress during drain":
+    // the backlog is still draining, but the freshest settled rows have stopped being
+    // indexed. That is a real regression and must still fire.
+    const c = toSurfaceCoverage(sessionTurns, {
+      totalRows: 423_022, eligibleRows: 345_141, embeddedRows: 35_986,
+      recentEligible: 21_569, recentEmbedded: 14_557,
+      settledEligible: 4_500, settledEmbedded: 12,
+    });
+    const b = detectCoverageBreaches([{ coverage: c, history: [] }]);
+    expect(b.some((x) => x.kind === 'recent-coverage')).toBe(true);
+    // …and the message carries the 24h figure as CONTEXT, flagged as backlog-inclusive,
+    // so a reader cannot mistake it for a second independent confirmation.
+    expect(b.find((x) => x.kind === 'recent-coverage')!.detail).toContain('24h context');
   });
 });
 
@@ -283,7 +332,7 @@ describe('corpus coverage is suppressed while genuinely converging', () => {
   const t30 = new Date('2026-08-03T00:30:00Z');
   const low = toSurfaceCoverage(sessionTurns, {
     totalRows: 400_000, eligibleRows: 340_000, embeddedRows: 30_000,
-    recentEligible: 1000, recentEmbedded: 1000,
+    recentEligible: 1000, recentEmbedded: 1000, settledEligible: 1000, settledEmbedded: 1000,
   });
 
   it('does NOT fire during a draining backfill', () => {
@@ -331,7 +380,7 @@ describe('backlog-growing (P-006 violated)', () => {
   it('needs sustained growth, not one burst', () => {
     const c = toSurfaceCoverage(sessionTurns, {
       totalRows: 120_000, eligibleRows: 100_000, embeddedRows: 10_000,
-      recentEligible: 100, recentEmbedded: 100,
+      recentEligible: 100, recentEmbedded: 100, settledEligible: 100, settledEmbedded: 100,
     });
     const twoIntervals = detectCoverageBreaches([{ coverage: c, history: growing(BACKLOG_GROWTH_SAMPLES) }]);
     expect(twoIntervals.some((b) => b.kind === 'backlog-growing')).toBe(false);
@@ -373,6 +422,7 @@ describe('runEmbedCoverageAlarmOnce', () => {
   const ok = (over: Partial<SurfaceCoverage> = {}): SurfaceCoverage => ({
     ...toSurfaceCoverage(sessionTurns, {
       totalRows: 100, eligibleRows: 100, embeddedRows: 100, recentEligible: 50, recentEmbedded: 50,
+      settledEligible: 50, settledEmbedded: 50,
     }),
     ...over,
   });
@@ -407,7 +457,7 @@ describe('runEmbedCoverageAlarmOnce', () => {
   it('toasts on a breach', async () => {
     const emit = vi.fn();
     const r = await runEmbedCoverageAlarmOnce({
-      measure: async () => [ok({ recentEligible: 100, recentEmbedded: 0, recentCoverage: 0 })],
+      measure: async () => [ok({ settledEligible: 100, settledEmbedded: 0, settledCoverage: 0 })],
       loadHistory: async () => new Map(),
       persist: async () => {},
       emitToast: emit,
@@ -420,7 +470,7 @@ describe('runEmbedCoverageAlarmOnce', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const emit = vi.fn();
     const r = await runEmbedCoverageAlarmOnce({
-      measure: async () => [ok({ recentEligible: 100, recentEmbedded: 0, recentCoverage: 0 })],
+      measure: async () => [ok({ settledEligible: 100, settledEmbedded: 0, settledCoverage: 0 })],
       loadHistory: async () => { throw new Error('no table yet'); },
       persist: async () => {},
       emitToast: emit,

@@ -14,6 +14,7 @@ import {
   buildEnforcementTierCensus,
   selectCoordBehaviours,
   findStaleDeclarations,
+  loadCoordBehaviourAdoption,
   DECLARED_COORD_TIERS,
   ENFORCEMENT_TIER_RANK,
   UNDECLARED,
@@ -180,6 +181,33 @@ describe('findStaleDeclarations', () => {
     // pass vacuously while proving the opposite of what it claims.
     expect(selectCoordBehaviours(catalog).length).toBeGreaterThan(20);
     expect(findStaleDeclarations(catalog)).toEqual([]);
+  });
+
+  it('coerces PG bigint counts (which arrive as STRINGS) to numbers', async () => {
+    // count(*) is bigint, and node-postgres hands bigint back as a string to
+    // preserve precision. Without the coercion `calls === 0` would be false for
+    // "0" and every zero-call verb — the entire point of this census — would be
+    // silently misclassified as having calls.
+    const adoptionMap = await loadCoordBehaviourAdoption({
+      workspaceId: 'papercusp-workspace',
+      windowDays: 7,
+      getSql: () => (async () =>
+        [
+          { tool_name: 'coord:send', calls: '1645', callers: '95' },
+          { tool_name: 'coord:read', calls: '15', callers: '6' },
+        ]) as never,
+    });
+    expect(adoptionMap.get('coord:send')).toEqual({ calls: 1645, callers: 95 });
+    expect(typeof adoptionMap.get('coord:read')?.calls).toBe('number');
+  });
+
+  it('returns an empty map when the window has no coordination calls', async () => {
+    const adoptionMap = await loadCoordBehaviourAdoption({
+      workspaceId: 'papercusp-workspace',
+      windowDays: 7,
+      getSql: () => (async () => []) as never,
+    });
+    expect(adoptionMap.size).toBe(0);
   });
 
   it('every declaration carries concrete non-empty evidence', () => {

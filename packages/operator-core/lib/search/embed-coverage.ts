@@ -55,6 +55,7 @@ import {
   modeColOf,
   recentPredicateSql,
   resolveBackfillEmbedder,
+  settledPredicateSql,
   stalePredicateSql,
   type BackfillTarget,
   type ResolvedMode,
@@ -62,8 +63,26 @@ import {
 
 const TOAST_RING_BUFFER = 2000;
 
-/** How far back the "new rows" signal looks. */
+/** How far back the REPORTED "new rows" figure looks. Context, not the alarm input. */
 export const RECENT_WINDOW_HOURS = 24;
+
+/**
+ * The window the recurrence alarm actually judges — and the distinction between this and
+ * RECENT_WINDOW_HOURS is a correction, not a refinement.
+ *
+ * The first cut alarmed on the 24h aggregate. Measured live 2026-08-03T08:45Z, that
+ * window spanned three unrelated populations at once — 13 hours of healthy 100% writes,
+ * an 85.7% drain front, and a 5.7-10.9% starved band — averaged them to 67.5%, and
+ * announced "new writes are NOT being indexed" while new writes were in fact at 100%.
+ * The number was arithmetically correct and described nothing real.
+ *
+ * A short SETTLED window cannot make that mistake: it sits clear of a receding backlog
+ * and asks only about rows the sweep has had time to service. See `settledPredicateSql`
+ * for the measured hourly distribution and the one case where this still misreads.
+ */
+export const SETTLED_WINDOW_HOURS = 3;
+/** Rows younger than this are legitimately unembedded — the sweep runs on a 5-min tick. */
+export const SETTLED_GRACE_MINUTES = 15;
 
 /**
  * Floors. Both are deliberately asymmetric, and the asymmetry is the design:
@@ -124,7 +143,12 @@ export interface SurfaceCoverage {
   /** null (not 0) when the surface carries no write-time column — absent, not empty. */
   recentEligible: number | null;
   recentEmbedded: number | null;
+  /** REPORTED context over the 24h window. Deliberately NOT the alarm input. */
   recentCoverage: number | null;
+  /** The alarm input: rows old enough to have been swept, young enough to be about the write path. */
+  settledEligible: number | null;
+  settledEmbedded: number | null;
+  settledCoverage: number | null;
 }
 
 /** One interval's worth of the P-006 invariant, derived from two consecutive samples. */
@@ -155,7 +179,19 @@ export interface CoverageBreach {
   detail: string;
 }
 
-/** One persisted observation. Shape mirrors harness_shared.embed_coverage_samples. */
+/**
+ * One persisted observation. Shape mirrors harness_shared.embed_coverage_samples.
+ *
+ * ⚠ The table's `recent_*` columns hold the 24h REPORTED figures, not the settled-window
+ * alarm input — migration 746's own comment calls them "the recurrence signal", which was
+ * true when it was written and stopped being true an hour later when live measurement
+ * showed the 24h aggregate cannot serve as one. The migration is already APPLIED, so its
+ * bytes must NOT be edited (that is `content_drift` — the edit never executes and no
+ * restart runs it; db:check_drift flags it). The correction lives here instead.
+ *
+ * Only `eligibleRows`/`embeddedRows` feed the P-006 rate analysis, and those are
+ * unambiguous; the settled figures are evaluated instantaneously and need no history.
+ */
 export interface CoverageSample {
   surface: string;
   observedAt: Date;
@@ -172,7 +208,8 @@ export interface CoverageSample {
 
 export interface CoverageQuery {
   sql: string;
-  params: unknown[];
+  /** Concrete scalars, not `unknown[]` — postgres.js's Bind signature rejects the latter. */
+  params: Array<string | number>;
   /** False when the target has no write-time column, so the recent columns are absent. */
   hasRecent: boolean;
 }
@@ -196,8 +233,8 @@ export function buildCoverageQuery(
   mode: ResolvedMode,
   windowHours: number = RECENT_WINDOW_HOURS,
 ): CoverageQuery {
-  const params: unknown[] = [];
-  const bind = (v: unknown): string => {
+  const params: Array<string | number> = [];
+  const bind = (v: string | number): string => {
     params.push(v);
     return `$${params.length}`;
   };
@@ -205,16 +242,21 @@ export function buildCoverageQuery(
   const eligible = eligiblePredicateSql(target);
   const stale = stalePredicateSql(target, spaceAware, spaceAware ? bind(mode) : 'NULL');
   const recent = target.recencyCol ? recentPredicateSql(target, bind(windowHours)) : null;
+  const settled = target.recencyCol
+    ? settledPredicateSql(target, bind(SETTLED_GRACE_MINUTES), bind(SETTLED_WINDOW_HOURS))
+    : null;
 
   const cols = [
     `count(*)::bigint AS total_rows`,
     `count(*) FILTER (WHERE ${eligible})::bigint AS eligible_rows`,
     `count(*) FILTER (WHERE ${eligible} AND NOT (${stale}))::bigint AS embedded_rows`,
   ];
-  if (recent) {
+  if (recent && settled) {
     cols.push(
       `count(*) FILTER (WHERE ${eligible} AND ${recent})::bigint AS recent_eligible`,
       `count(*) FILTER (WHERE ${eligible} AND ${recent} AND NOT (${stale}))::bigint AS recent_embedded`,
+      `count(*) FILTER (WHERE ${eligible} AND ${settled})::bigint AS settled_eligible`,
+      `count(*) FILTER (WHERE ${eligible} AND ${settled} AND NOT (${stale}))::bigint AS settled_embedded`,
     );
   }
 
@@ -244,10 +286,14 @@ export function toSurfaceCoverage(
     embeddedRows: number;
     recentEligible: number | null;
     recentEmbedded: number | null;
+    settledEligible?: number | null;
+    settledEmbedded?: number | null;
   },
   windowHours: number = RECENT_WINDOW_HOURS,
 ): SurfaceCoverage {
   const { totalRows, eligibleRows, embeddedRows, recentEligible, recentEmbedded } = counts;
+  const settledEligible = counts.settledEligible ?? null;
+  const settledEmbedded = counts.settledEmbedded ?? null;
   return {
     surface: surfaceKey(target),
     table: target.table,
@@ -263,6 +309,10 @@ export function toSurfaceCoverage(
     recentEmbedded,
     recentCoverage:
       recentEligible === null || recentEmbedded === null ? null : ratio(recentEmbedded, recentEligible),
+    settledEligible,
+    settledEmbedded,
+    settledCoverage:
+      settledEligible === null || settledEmbedded === null ? null : ratio(settledEmbedded, settledEligible),
   };
 }
 
@@ -343,20 +393,29 @@ export function detectCoverageBreaches(inputs: BreachInput[]): CoverageBreach[] 
 
   for (const { coverage: c, history } of inputs) {
     // 1. Recurrence catcher. Independent of history, never suppressed.
+    //
+    // Judged on the SETTLED window, not the 24h figure. The 24h aggregate spans a
+    // receding backlog and reports a number that describes neither population — it read
+    // 67.5% on live data while the write path was at 100%, and said so out loud.
     if (
-      c.recentCoverage !== null &&
-      c.recentEligible !== null &&
-      c.recentEligible >= MIN_RECENT_SAMPLE &&
-      c.recentCoverage < RECENT_COVERAGE_FLOOR
+      c.settledCoverage !== null &&
+      c.settledEligible !== null &&
+      c.settledEligible >= MIN_RECENT_SAMPLE &&
+      c.settledCoverage < RECENT_COVERAGE_FLOOR
     ) {
       breaches.push({
         surface: c.surface,
         kind: 'recent-coverage',
-        observed: c.recentCoverage,
+        observed: c.settledCoverage,
         floor: RECENT_COVERAGE_FLOOR,
         detail:
-          `${c.recentEmbedded}/${c.recentEligible} rows written in the last ` +
-          `${c.recentWindowHours}h are embedded — new writes are NOT being indexed`,
+          `${c.settledEmbedded}/${c.settledEligible} rows written between ` +
+          `${SETTLED_GRACE_MINUTES}min and ${SETTLED_WINDOW_HOURS}h ago are embedded — ` +
+          `new writes are NOT being indexed` +
+          (c.recentCoverage === null
+            ? ''
+            : ` (24h context: ${(c.recentCoverage * 100).toFixed(1)}%, which also reflects ` +
+              `any historical backlog still draining)`),
       });
     }
 
@@ -485,6 +544,8 @@ export async function measureCoverage(windowHours: number = RECENT_WINDOW_HOURS)
             embeddedRows: num(r.embedded_rows),
             recentEligible: q.hasRecent ? num(r.recent_eligible) : null,
             recentEmbedded: q.hasRecent ? num(r.recent_embedded) : null,
+            settledEligible: q.hasRecent ? num(r.settled_eligible) : null,
+            settledEmbedded: q.hasRecent ? num(r.settled_embedded) : null,
           },
           windowHours,
         ),

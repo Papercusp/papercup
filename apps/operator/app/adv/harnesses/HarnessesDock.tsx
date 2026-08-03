@@ -14,6 +14,7 @@ import {
 } from '../../harness/dock/dock-actions';
 import { OPEN_DOCK_PANEL_EVENT, drainPanelOpens } from './open-dock-panel';
 import WorkItemsPanel from './WorkItemsPanel';
+import DepGraphPanel from './DepGraphPanel';
 import DetailPanel from './DetailPanel';
 import AdvChatPanel from './AdvChatPanel';
 import AdvAgentsPanel from './AdvAgentsPanel';
@@ -90,6 +91,11 @@ function ensureRegistered() {
   // legacy adv:features/adv:issues panels (retired 2026-06-10; row-click drives the
   // same `?sel` the Detail pane reads).
   panelRegistry.register('adv:work-items', WorkItemsPanel, { title: 'Work items' });
+  // adv:dep-graph (dependency-health-pane-2026-08-02) — the work-items corpus in GRAPH form,
+  // seeded BESIDE the grid in the default layout per D-002/D-006. It shares the grid's
+  // `workItems.byHarness` subscription for nodes and its `?sel` selection param, so the two
+  // panes are two views of one dataset rather than two datasets.
+  panelRegistry.register('adv:dep-graph', DepGraphPanel, { title: 'Dependency graph' });
   // adv:sync-health — the sync layer's own numbers (P-003(b) of
   // no-http-anywhere-2026-07-28): live concurrency-gate depth, queue-wait vs
   // request time, per-query bytes/ms, and desktop IPC bridge health. Additive and
@@ -107,10 +113,21 @@ function ensureRegistered() {
 /**
  * Mounts the dockview shell for /adv/harnesses with a layout name
  * keyed by harness slug. The seed (`defaultAdvHarnessesLayout` in
- * operator-core lib/dock-layouts.ts) is a two-pane split: Work items
- * over a persistent Detail pane. (`adv-harnesses2` — bumped from
- * `adv-harnesses` when the Features/Issues panels were retired, so old
- * persisted rows don't hydrate now-unregistered panel types.)
+ * operator-core lib/dock-layouts.ts) is Work items | Dependency graph
+ * side by side, over a persistent full-width Detail pane.
+ *
+ * Layout-name history — each bump ABANDONS persisted rows on purpose:
+ *   adv-harnesses  → adv-harnesses2  Features/Issues panels retired, so old rows
+ *                                    would hydrate now-unregistered panel types.
+ *   adv-harnesses2 → adv-harnesses3  the dependency-graph pane joined the DEFAULT
+ *                                    layout (dependency-health-pane-2026-08-02 D-002).
+ *
+ * That second bump is not cosmetic and was a deliberate trade. A PERSISTED layout row
+ * WINS over the seed, so editing the seed alone would have shipped the new pane to new
+ * installs only — every existing user would have kept their saved two-pane layout and
+ * never seen it, while the plan's requirement was explicitly "one of the panes in the
+ * default view". Bumping delivers it to everyone at the cost of resetting a customised
+ * Work-tab arrangement once.
  *
  * When the user switches slug, `listPanels()` is walked and each
  * panel's `harnessSlug` param is rebound — same trick `HarnessDockShell`
@@ -121,7 +138,7 @@ export default function HarnessesDock({ slug }: { slug: string }) {
     ensureRegistered();
   }, []);
 
-  const layoutName = slug ? `adv-harnesses2:${slug}` : 'adv-harnesses2';
+  const layoutName = slug ? `adv-harnesses3:${slug}` : 'adv-harnesses3';
 
   useEffect(() => {
     if (!slug) return;

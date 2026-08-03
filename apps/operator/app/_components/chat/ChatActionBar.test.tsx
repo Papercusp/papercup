@@ -381,11 +381,22 @@ describe('ChatActionBar', () => {
             throw new Error('GRADE could not load its options in time — try again.');
           });
           registerChatModeAction(axis({ id: 'grade', cap: 'GRADE', options }));
-          render(<ChatActionBar ctx={ctx} />);
+          const { container } = render(<ChatActionBar ctx={ctx} />);
           openPill('chat-mode-grade');
-          await waitFor(() =>
-            expect(screen.getByRole('alert').textContent).toMatch(/could not load its options/i),
-          );
+          /* Queried by CLASS, not `getByRole('alert')`, and that is not a
+             shortcut: an OPEN Radix Select marks everything outside its portal
+             `aria-hidden="true"`, and RTL's role queries skip aria-hidden
+             subtrees. So while the menu is still up, a perfectly-rendered
+             alert is invisible to getByRole — the query fails while the
+             component is correct. The role itself is asserted below, so
+             nothing is given up. */
+          const alert = await waitFor(() => {
+            const el = container.querySelector('.chat-action-bar-error');
+            expect(el, 'the failed load should render the bar’s error').toBeTruthy();
+            return el!;
+          });
+          expect(alert.getAttribute('role')).toBe('alert');
+          expect(alert.textContent).toMatch(/could not load its options/i);
           expect(warn).toHaveBeenCalledWith(
             expect.stringContaining('options failed'),
             expect.anything(),

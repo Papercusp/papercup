@@ -158,7 +158,22 @@ const cell: CSSProperties = { padding: '6px 10px', borderBottom: '1px solid var(
 /** Header cells stay pinned while a long task list scrolls under them. */
 const head: CSSProperties = { textAlign: 'left', position: 'sticky', top: 0, background: 'var(--bg, #111)' };
 
-/** WI-7371 — the live totals strip. Tokens carry fallbacks per the css-tokens lint. */
+/** WI-7371 — the live totals strip.
+ *
+ *  ⚠ A FALLBACK DOES NOT SATISFY THE css-tokens LINT (WI-7486). This comment used to
+ *  read "Tokens carry fallbacks per the css-tokens lint", which is the misconception
+ *  that red-pinned the gate: app/_lints/css-tokens.test.ts asserts the token is
+ *  DEFINED in the operator's CSS sources, and never looks at the fallback. So
+ *  the old `--bg-subtle` reference failed the lint even though it rendered fine — and
+ *  ⚠ do NOT write that token inside a `var(...)` call anywhere in this file, even in a
+ *  comment: the lint regex scans raw source text and does not skip comments, so quoting
+ *  the broken form re-creates the failure it documents (measured, WI-7486).
+ *  rendering "fine" was itself the bug the lint exists to catch, since an undefined
+ *  token silently pins the strip to a non-themeable hex in every theme.
+ *
+ *  Use a token from the real vocabulary: --bg, --bg-2, --bg-3, --fg, --fg-dim,
+ *  --fg-mute, --border, --accent, --good, --warn, --bad. This strip is a surface
+ *  raised over the page, which is tier 2. */
 const resourceBar: CSSProperties = {
   display: 'flex',
   gap: 18,
@@ -167,7 +182,7 @@ const resourceBar: CSSProperties = {
   marginBottom: 12,
   border: '1px solid var(--border, #2a2a2a)',
   borderRadius: 6,
-  background: 'var(--bg-subtle, #171717)',
+  background: 'var(--bg-2, #171717)',
   ...mono,
 };
 

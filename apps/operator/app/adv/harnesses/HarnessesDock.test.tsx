@@ -2,7 +2,7 @@
 //
 // HarnessesDock — the /adv/harnesses dockview shell. Mostly an effect-only
 // mount around <HarnessDock>, but it owns the slug→layoutName mapping
-// (`adv-harnesses2:<slug>` vs the bare name) and registers its panel set on
+// (`adv-harnesses3:<slug>` vs the bare name) and registers its panel set on
 // mount. We stub HarnessDock + the dock-actions wiring + every heavy panel
 // child so the assertions land on the layout-name threading and the
 // register-on-mount side effect (no dockview boot).
@@ -58,11 +58,11 @@ describe('HarnessesDock', () => {
 
   it('mounts HarnessDock with the slug-keyed layout name', () => {
     render(<HarnessesDock slug="sheets" />);
-    expect(screen.getByTestId('harness-dock').getAttribute('data-layout')).toBe('adv-harnesses2:sheets');
+    expect(screen.getByTestId('harness-dock').getAttribute('data-layout')).toBe('adv-harnesses3:sheets');
   });
 
   it('uses the bare layout name when slug is empty', () => {
     render(<HarnessesDock slug="" />);
-    expect(screen.getByTestId('harness-dock').getAttribute('data-layout')).toBe('adv-harnesses2');
+    expect(screen.getByTestId('harness-dock').getAttribute('data-layout')).toBe('adv-harnesses3');
   });
 });

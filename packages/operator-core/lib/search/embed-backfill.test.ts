@@ -685,7 +685,12 @@ describe('embed-backfill drain policy (P-005)', () => {
     return { sql: sql as never, calls };
   }
   const embed = async (): Promise<number[]> => VEC;
-  const selects = (calls: Array<{ q: string }>) => calls.filter((c) => c.q.includes('SELECT'));
+  // The param type must carry `params` through: narrowing it to `{ q: string }` compiles
+  // at the call site and then fails at every `.params!` on the RESULT (P-005 shipped it
+  // that way — `lint:tsc --files` only sees files you NAME, and naming the source without
+  // its test hides exactly this).
+  const selects = (calls: Array<{ q: string; params?: unknown[] }>) =>
+    calls.filter((c) => c.q.includes('SELECT'));
 
   it('pulls FRESHEST-FIRST when the target declares an order', async () => {
     const { sql, calls } = fakeSql([[{ k0: 'r1', body: 'x' }], [], []]);

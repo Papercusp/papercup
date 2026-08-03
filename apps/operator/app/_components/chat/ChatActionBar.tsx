@@ -295,7 +295,7 @@ export function ChatActionBar({ ctx }: { ctx: ChatActionContext }): ReactNode {
           a title row: the popup was just compacted from five rows to two, and a
           header row per zone would have spent that back.
 
-          It is the band grid's FIRST COLUMN, not a flex item (P-010): see
+          It is the band grid's FIRST COLUMN, not a flex item (WI-7456): see
           chat-controls.css §⑧. That is what stops a wrapped control line from
           restarting underneath it. */}
       <span className="pc-zone-cap">Controls</span>

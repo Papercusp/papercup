@@ -695,7 +695,7 @@
 }
 
 /* ⚠ The selectors are CHILD combinators, and `.h-combobox__box` is listed
- * explicitly. Both are corrections, not style (P-010) — the descendant form
+ * explicitly. Both are corrections, not style (WI-7456) — the descendant form
  * these used to have silently styled the WRONG ELEMENT on every Combobox-backed
  * field, which is four of the fleet strip's six.
  *
@@ -803,7 +803,7 @@
    wide popup ⇒ one line, narrow ⇒ two, never a hard-coded break that is wrong
    at both widths.
 
-   ⚠ MEASURED CORRECTION 2026-08-03 (P-010): the strip is no longer a wrapping
+   ⚠ MEASURED CORRECTION 2026-08-03 (WI-7456): the strip is no longer a wrapping
    flex row. `flex-wrap` did keep it to "1 or 2 lines", but it is ALSO what made
    the second line start under the FLEET cap and put its captions 49px out of
    column with the first line's — the owner's THIRD alignment complaint, and the
@@ -863,7 +863,7 @@
    uppercase, still muted, still the thing you read first. The long form that
    used to be the visible caption ("Plan — the lane members work") survives as
    the `title`, so the explanation is one hover away rather than one line down. */
-/* A GRID, not a flex row (P-010) — and this is the half of the alignment fix
+/* A GRID, not a flex row (WI-7456) — and this is the half of the alignment fix
    that a band-level grid alone cannot deliver.
  *
  * As a flex row, each caption was `flex: none`, i.e. as wide as its own word.
@@ -1029,7 +1029,7 @@
   line-height: calc(var(--pc-ctl-h) - 2px);
 }
 
-/* ═══ ⑧ ONE column grid for the whole bottom panel (P-010) ══════════════════
+/* ═══ ⑧ ONE column grid for the whole bottom panel (WI-7456) ════════════════
  *
  * [owner 2026-08-03] "the alignement on the bottom panel is still all mest up."
  *

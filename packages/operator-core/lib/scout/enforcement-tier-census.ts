@@ -250,6 +250,56 @@ export function selectCoordBehaviours(catalog: Iterable<string>): string[] {
 }
 
 /**
+ * IO seam: per-behaviour adoption over the window, from `tool_invocations`.
+ *
+ * Kept as a separate exported function (not folded into the builder) so the
+ * census itself stays pure and unit-testable with no PG — the same split
+ * `deriveContextPressure` / `fetchContextPressure` uses.
+ *
+ * ⚠ THIS QUERY WAS EXECUTED AGAINST THE LIVE DB BEFORE THIS FUNCTION WAS WRITTEN,
+ * and that is not ceremony. A fail-soft loader reports a broken query as "no
+ * signal", which is indistinguishable from a genuine zero — and a census whose
+ * whole job is counting zeros cannot tell those apart. Passing unit tests would
+ * not have caught it either, because the fixtures encode the same assumption the
+ * query does. This is the EI-19300252001829260 class, and it already bit P-001
+ * once (a denominator that silently admitted ~1738 machine emitters).
+ *
+ * Measured 2026-08-03 over 7d, workspace papercusp-workspace: 25 of the 43
+ * registered coord verbs took any call at all. coord:glance 151,575 · coord:emit
+ * 4,910 · coord:inbox 2,661 · coord:send 1,645 · coord:read 15.
+ *
+ * `calls` counts EVERY invocation, not just `status='ok'`. Reaching for a verb is
+ * the adoption signal; whether it then errored is a different (also interesting)
+ * one — coord:send ran 1,645 calls for 1,377 ok, so a 16% failure rate would
+ * otherwise vanish into an "adoption" number silently. Kept out of this type
+ * deliberately rather than smuggled in.
+ */
+export async function loadCoordBehaviourAdoption(opts: {
+  readonly workspaceId: string;
+  readonly windowDays: number;
+  readonly getSql: () => {
+    <T>(strings: TemplateStringsArray, ...values: unknown[]): Promise<T>;
+  };
+}): Promise<Map<string, BehaviourAdoption>> {
+  const sql = opts.getSql();
+  const rows = await sql<{ tool_name: string; calls: string | number; callers: string | number }[]>`
+    SELECT tool_name,
+           count(*)                       AS calls,
+           count(DISTINCT coord_owner_id) AS callers
+      FROM harness_shared.tool_invocations
+     WHERE workspace_id = ${opts.workspaceId}
+       AND tool_name LIKE ${COORD_TOOL_PREFIX + '%'}
+       AND invoked_at >= now() - make_interval(days => ${opts.windowDays})
+     GROUP BY tool_name
+  `;
+  const out = new Map<string, BehaviourAdoption>();
+  for (const r of rows) {
+    out.set(r.tool_name, { calls: Number(r.calls), callers: Number(r.callers) });
+  }
+  return out;
+}
+
+/**
  * The anti-drift guard, as a function so a test can assert on it: every DECLARED
  * behaviour must still exist in the scanned catalog.
  *

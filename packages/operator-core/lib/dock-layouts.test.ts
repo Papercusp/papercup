@@ -343,21 +343,27 @@ describe('default seeds', () => {
     const seed = defaultAdvHarnessesLayout('papercup');
     expect(() => validateLayoutDoc(seed)).not.toThrow();
     expect(seed.schemaVersion).toBe(CURRENT_LAYOUT_SCHEMA_VERSION);
-    // Root is a column: [ work items, detail ].
+    // Root is a column of two ROWS: [ (work items | dep graph), detail ].
+    // Updated 2026-08-03 (dependency-health-pane D-006): the top row gained a nested
+    // horizontal split so the dependency graph sits BESIDE the grid. This test previously
+    // asserted a flat two-pane column; the shape it pinned is now genuinely wrong, so it is
+    // rewritten rather than relaxed — the retired-panel guard below is the part worth keeping.
     expect(seed.root.kind).toBe('group');
     if (seed.root.kind !== 'group') throw new Error('root not a group');
     expect(seed.root.direction).toBe('col');
     expect(seed.root.children).toHaveLength(2);
 
-    // Top: the unified work-items grid, full width (the retired
-    // Features | Issues pair must NOT reappear — their panel types are
-    // unregistered and would hydrate as MissingPanel).
-    const [workItems, detail] = seed.root.children;
-    expect(workItems.kind).toBe('tabs');
-    if (workItems.kind !== 'tabs') throw new Error('top not tabs');
-    expect(workItems.panels[0]?.type).toBe('adv:work-items');
+    // Top ROW: the unified work-items grid beside the dependency graph (the retired
+    // Features | Issues pair must NOT reappear — their panel types are unregistered and
+    // would hydrate as MissingPanel).
+    const [topRow, detail] = seed.root.children;
+    expect(topRow.kind).toBe('group');
+    if (topRow.kind !== 'group') throw new Error('top not a group');
+    expect(topRow.direction).toBe('row');
+    const topTypes = topRow.children.map((c) => (c.kind === 'tabs' ? c.panels[0]?.type : '(group)'));
+    expect(topTypes).toEqual(['adv:work-items', 'adv:dep-graph']);
 
-    // Bottom: Detail, full width.
+    // Bottom: Detail, full width, unchanged.
     expect(detail.kind).toBe('tabs');
     if (detail.kind !== 'tabs') throw new Error('detail not tabs');
     expect(detail.panels[0]?.type).toBe('adv:detail');
@@ -378,7 +384,11 @@ describe('default seeds', () => {
       }
     }
     walk(seed.root);
-    expect(slugs).toEqual(['papercup', 'papercup']);
+    // THREE panels since 2026-08-03 (work items | dep graph, over detail). The count is
+    // asserted rather than a `.every()` on purpose: a seed that silently lost a pane would
+    // still pass an every()-style check, and losing a pane from the DEFAULT view is exactly
+    // the regression D-002 cares about.
+    expect(slugs).toEqual(['papercup', 'papercup', 'papercup']);
     expect(new Set(ids).size).toBe(ids.length);
   });
 });
@@ -398,15 +408,53 @@ describe('seedForDockName (shared seed/reset routing)', () => {
     expect(seedForDockName('adv-git2')).toEqual(defaultAdvGitLayout(''));
     expect(seedForDockName('adv-git2:papercup')).toEqual(defaultAdvGitLayout('papercup'));
   });
-  it('routes adv-harnesses2 to the harnesses seed, propagating the slug', () => {
-    expect(seedForDockName('adv-harnesses2')).toEqual(defaultAdvHarnessesLayout(''));
-    expect(seedForDockName('adv-harnesses2:papercup')).toEqual(
+  it('routes adv-harnesses3 to the harnesses seed, propagating the slug', () => {
+    expect(seedForDockName('adv-harnesses3')).toEqual(defaultAdvHarnessesLayout(''));
+    expect(seedForDockName('adv-harnesses3:papercup')).toEqual(
       defaultAdvHarnessesLayout('papercup'),
     );
     // The pre-bump name no longer routes to the harnesses seed — old persisted
     // rows (which still reference the retired adv:features/adv:issues types)
     // must not be re-seeded onto the live dock name.
     expect(seedForDockName('adv-harnesses')).toEqual(defaultDashboardLayout(''));
+    // Nor does adv-harnesses2: the 2026-08-03 bump exists precisely so those rows are
+    // ABANDONED and every user picks up the new default (dependency-health-pane D-002).
+    // If this ever routes to the harnesses seed again, the bump has been undone and
+    // existing users silently stop getting default-layout changes.
+    expect(seedForDockName('adv-harnesses2')).toEqual(defaultDashboardLayout(''));
+  });
+
+  // dependency-health-pane-2026-08-02 D-002/D-006. The requirement was not "the panel
+  // exists" but "it is one of the panes in the DEFAULT view" — those are different claims,
+  // and only the second one reaches a user who never opens the panel menu. A future edit to
+  // this seed that drops the pane would satisfy every other test in this file, so this is
+  // the one that has to fail.
+  it('SEEDS the dependency-graph pane beside the work-items grid in the default layout', () => {
+    const seed = defaultAdvHarnessesLayout('papercup');
+    const root = seed.root as Extract<typeof seed.root, { kind: 'group' }>;
+
+    // Row 0 is a nested ROW group: Work items | Dependency graph (the owner-ratified
+    // side-by-side shape, NOT a third stacked row).
+    const topRow = root.children[0] as Extract<(typeof root.children)[number], { kind: 'group' }>;
+    expect(topRow.kind).toBe('group');
+    expect(topRow.direction).toBe('row');
+
+    const types = topRow.children.map((c) =>
+      c.kind === 'tabs' ? c.panels.map((p) => p.type).join(',') : '(group)',
+    );
+    expect(types).toEqual(['adv:work-items', 'adv:dep-graph']);
+
+    // Detail stays a full-width row BELOW both — not squeezed into the split.
+    const bottom = root.children[1] as Extract<(typeof root.children)[number], { kind: 'tabs' }>;
+    expect(bottom.kind).toBe('tabs');
+    expect(bottom.panels.map((p) => p.type)).toEqual(['adv:detail']);
+
+    // The slug must reach the new pane too — a panel seeded without it renders empty.
+    for (const cell of topRow.children) {
+      if (cell.kind === 'tabs') {
+        for (const p of cell.panels) expect(p.params).toMatchObject({ harnessSlug: 'papercup' });
+      }
+    }
   });
   it('falls back to the dashboard seed for dashboard:/default/unknown names', () => {
     expect(seedForDockName('dashboard:papercup')).toEqual(defaultDashboardLayout('papercup'));

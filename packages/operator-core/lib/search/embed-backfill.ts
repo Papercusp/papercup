@@ -383,6 +383,44 @@ export function recentPredicateSql(target: BackfillTarget, hoursExpr: string): s
     : `${target.recencyCol} >= now() - make_interval(hours => ${hoursExpr}::int)`;
 }
 
+/**
+ * Rows written inside a SETTLED window: older than `graceMinExpr` minutes (so the sweep
+ * has had time to reach them) and newer than `hoursExpr` hours.
+ *
+ * WHY BOTH BOUNDS — measured on live session_turns 2026-08-03T08:45Z, and this corrects
+ * a defect in the first cut of the coverage detector, which alarmed on a single 24h
+ * aggregate. Coverage by ingest hour was:
+ *
+ *     last 13 consecutive hours ......... 100.0%   <- the write path, healthy
+ *     15:00 Aug 2 ........................ 85.7%   <- the drain front
+ *     14:00 Aug 2 and earlier ....... 5.7-10.9%   <- the starved historical band
+ *
+ * A 24h window spans all three, averages them to 67.5%, and reports "new writes are NOT
+ * being indexed" — which was FLATLY FALSE; new writes were at 100%. The aggregate
+ * describes neither population. The young bound matters for the opposite reason: a row
+ * written 30s ago is legitimately unembedded, because the sweep runs on a 5-minute tick.
+ *
+ * ⚠ KNOWN LIMIT, stated rather than hidden: immediately after a drain-policy change the
+ * front can sit INSIDE the window, and coverage then reads low for real-but-transient
+ * reasons. It self-corrects as the front advances past the window. The window is
+ * therefore kept short enough that this is hours, not a day — but it is not zero, and a
+ * reader seeing one breach during an active backfill should check the hourly
+ * distribution before believing it.
+ */
+export function settledPredicateSql(
+  target: BackfillTarget,
+  graceMinExpr: string,
+  hoursExpr: string,
+): string | null {
+  if (!target.recencyCol) return null;
+  const col = target.recencyCol;
+  return target.recencyColKind === 'epochMs'
+    ? `(${col} <= (extract(epoch from now()) * 1000)::bigint - (${graceMinExpr}::bigint * 60000)` +
+        ` AND ${col} >= (extract(epoch from now()) * 1000)::bigint - (${hoursExpr}::bigint * 3600000))`
+    : `(${col} <= now() - make_interval(mins => ${graceMinExpr}::int)` +
+        ` AND ${col} >= now() - make_interval(hours => ${hoursExpr}::int))`;
+}
+
 // Exported for embed-space-self-check.ts (WI-3644): the canonical set of
 // embedded prose surfaces, reused rather than re-listed so the self-check
 // never drifts from what the backfill sweep actually maintains.

@@ -342,7 +342,7 @@ export default function FleetLaunchRow({ className, onLaunched }: FleetLaunchRow
             does not act on the session you are looking at" legible. Zero added
             height: the cap shares the row it was already on. */}
         <span className="pc-zone-cap pc-fleet-strip__label">Fleet</span>
-        {/* ── The strip's FIELD GRID (P-010) ─────────────────────────────────
+        {/* ── The strip's FIELD GRID (WI-7456) ───────────────────────────────
             [owner 2026-08-03] "the alignement on the bottom panel is still all
             mest up", third recurrence. These six fields used to be items in a
             WRAPPING FLEX strip they shared with the zone cap and the submit,

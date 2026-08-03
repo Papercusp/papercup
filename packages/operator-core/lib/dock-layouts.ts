@@ -270,20 +270,30 @@ export function defaultDashboardLayout(harnessSlug = ''): LayoutDoc {
  * / draggable / closable via dockview.
  */
 /**
- * /adv Harness tab seed (`adv-harnesses2`). Two rows:
+ * /adv Harness tab seed (`adv-harnesses3`). Two rows, the top one SPLIT:
  *
- *   ┌─────────────────────────────────────────────┐
- *   │ Work items                   (full width)   │   top (50% height)
- *   ├─────────────────────────────────────────────┤
- *   │ Detail                       (full width)   │   bottom (50% height)
- *   └─────────────────────────────────────────────┘
+ *   ┌──────────────────┬──────────────────┐
+ *   │ Work items       │ Dependency graph │   top row (50% height)
+ *   ├──────────────────┴──────────────────┤
+ *   │ Detail              (full width)    │   bottom row (50% height)
+ *   └─────────────────────────────────────┘
+ *
+ * The graph pane (dependency-health-pane-2026-08-02) pairs with the GRID because they are two
+ * views of ONE dataset — same `workItems.byHarness` subscription, same `?sel` selection — so
+ * filtering or selecting in either moves both. Owner-ratified layout: D-006.
  *
  * Fractional sizes (0.5) — dockview rescales proportionally on mount.
  * The unified work_items grid (blueprint-aware-harness-ui P-010) replaced
- * the retired Features | Issues pair (2026-06-10); the dock name was
- * bumped adv-harnesses → adv-harnesses2 (the adv-create2 convention) so
- * persisted rows holding the retired panel types are abandoned rather
- * than hydrated into MissingPanel fallbacks.
+ * the retired Features | Issues pair (2026-06-10).
+ *
+ * Dock-name history — each bump deliberately ABANDONS persisted rows:
+ *   adv-harnesses  → adv-harnesses2  (2026-06-10, the adv-create2 convention) so rows
+ *                    holding the retired Features/Issues panel types are dropped rather
+ *                    than hydrated into MissingPanel fallbacks.
+ *   adv-harnesses2 → adv-harnesses3  (2026-08-03, dependency-health-pane D-002) so the
+ *                    new dependency-graph pane actually REACHES existing users: a
+ *                    persisted layout row wins over this seed, so without the bump the
+ *                    pane would appear for new installs only.
  */
 export function defaultAdvHarnessesLayout(harnessSlug = ''): LayoutDoc {
   return {
@@ -293,17 +303,42 @@ export function defaultAdvHarnessesLayout(harnessSlug = ''): LayoutDoc {
       id: 'root',
       direction: 'col',
       children: [
-        // Top: the unified work-items grid, full width.
+        // Top ROW: the work-items grid and the dependency graph, side by side.
+        // dependency-health-pane-2026-08-02 D-006 (owner-ratified): the graph pairs with the
+        // GRID, not with Detail — they are two views of ONE dataset (same
+        // `workItems.byHarness` subscription, same `?sel` selection), so they sit adjacent and
+        // Detail stays full-width beneath both.
         {
-          kind: 'tabs',
-          id: 'work-items-cell',
+          kind: 'group',
+          id: 'work-row',
+          direction: 'row',
           size: 0.5,
-          activePanelId: 'p-adv-work-items',
-          panels: [
+          children: [
             {
-              id: 'p-adv-work-items',
-              type: 'adv:work-items',
-              params: { harnessSlug },
+              kind: 'tabs',
+              id: 'work-items-cell',
+              size: 0.5,
+              activePanelId: 'p-adv-work-items',
+              panels: [
+                {
+                  id: 'p-adv-work-items',
+                  type: 'adv:work-items',
+                  params: { harnessSlug },
+                },
+              ],
+            },
+            {
+              kind: 'tabs',
+              id: 'dep-graph-cell',
+              size: 0.5,
+              activePanelId: 'p-adv-dep-graph',
+              panels: [
+                {
+                  id: 'p-adv-dep-graph',
+                  type: 'adv:dep-graph',
+                  params: { harnessSlug },
+                },
+              ],
             },
           ],
         },
@@ -644,7 +679,7 @@ export type LayoutRow = {
  * (getLayout seeds an opaque placeholder body; resetLayout seeds
  * defaultPiTerminalsLayout), so each handles pi itself before delegating.
  *
- * `dashboard:<slug>` / `adv-git2:<slug>` / `adv-harnesses2:<slug>` carry the
+ * `dashboard:<slug>` / `adv-git2:<slug>` / `adv-harnesses3:<slug>` carry the
  * harnessSlug so seeded panels fetch the right harness; adv-create is
  * scope-driven via URL params and carries no slug.
  */
@@ -660,11 +695,11 @@ export function seedForDockName(name: string): LayoutDoc {
   if (name === 'adv-git2' || name.startsWith('adv-git2:')) {
     return defaultAdvGitLayout(slugAfter('adv-git2:'));
   }
-  // adv-harnesses2: bumped from adv-harnesses when the Features/Issues panels
+  // adv-harnesses3: bumped from adv-harnesses when the Features/Issues panels
   // were retired for the unified Work-items grid — the old name's persisted
   // rows would hydrate now-unregistered panels (adv:features, adv:issues).
-  if (name === 'adv-harnesses2' || name.startsWith('adv-harnesses2:')) {
-    return defaultAdvHarnessesLayout(slugAfter('adv-harnesses2:'));
+  if (name === 'adv-harnesses3' || name.startsWith('adv-harnesses3:')) {
+    return defaultAdvHarnessesLayout(slugAfter('adv-harnesses3:'));
   }
   if (name === 'workbench' || name.startsWith('workbench:')) {
     return defaultWorkbenchLayout(slugAfter('workbench:'));
