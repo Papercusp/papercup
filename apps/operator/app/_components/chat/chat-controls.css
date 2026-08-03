@@ -99,11 +99,23 @@
   border-top: 1px solid var(--pc-zone-rule);
   /* [owner 2026-08-02] compaction: the do band carries four mode pills AND
      four action buttons, which at the popup's usual width wrapped to two
-     lines. A tighter gap + the action padding below buy back ~70px, enough to
-     land all eight on one line at the width the owner actually runs. It still
-     WRAPS rather than overflows if the popup is narrower than that or an
-     action's label grows — degrading to two lines is correct here; clipping a
-     button is not. */
+     lines. A tighter gap + the action padding below buy back ~70px. It still
+     WRAPS rather than overflows if the popup is narrower or an action's label
+     grows — degrading to two lines is correct here; clipping a button is not.
+
+     ⚠ MEASURED CORRECTION 2026-08-03 (P-009): this used to claim the ~70px was
+     "enough to land all eight on one line at the width the owner actually
+     runs". It is not, and the claim was never measured. At the popup's REAL
+     centre-column width of 748px — window >= ~1361px, so the modal reaches its
+     designed min(1320px) — a LIVE session renders four action buttons
+     (Resume / Fork / Focus window / Grade session…) beside the four pills and
+     the band wraps to two lines. It fits on one line only when the session is
+     NOT live and renders two actions. So this gap is still worth keeping, but
+     it does not deliver one line, and the remaining gap to the owner's "1 or 2
+     lines" ask cannot be closed by tightening spacing — it needs fewer
+     controls, which is the owner-gated question in D-004. See D-005: a claim
+     about this band's line count is meaningless without BOTH the width and the
+     session's liveness. */
   gap: 5px;
   padding: 6px 11px;
 }
@@ -890,6 +902,26 @@
 .chat-action-bar .pc-ctl-mode__inner,
 .chat-action-bar .pc-ctl-act__inner {
   height: 100%;
+}
+
+/* The band's leading cap ("CONTROLS", "FLEET") takes the same height — the item
+ * asks for the caps to share the control line too, and measured as a direct
+ * child of the band it was 17px against 26px controls, leaving its plate 4.5px
+ * clear of the row's bottom edge.
+ *
+ * The HEIGHT is shared; the TYPE is not. This is a label, not a control, and
+ * this file's vocabulary leans on that distinction — so it keeps its 9px
+ * uppercase and simply centres inside a control-height box. Growing the text
+ * would turn it into something you try to click. It is a <span>, so `flex` is
+ * safe here: the WebKitGTK rail above is specifically about <button>. */
+.chat-action-bar .pc-zone-cap,
+.pc-fleet-launch-row .pc-zone-cap {
+  display: flex;
+  align-items: center;
+  box-sizing: border-box;
+  height: var(--pc-ctl-h);
+  padding-top: 0;
+  padding-bottom: 0;
 }
 
 /* The filled cap must still reach both edges of the pill it sits in. */
