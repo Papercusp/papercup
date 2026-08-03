@@ -89,6 +89,21 @@ export interface ReconcileResult {
   resolved: number;
   /** True when the backlog exceeded the batch limit (more remain for next tick). */
   truncated: boolean;
+  /**
+   * WHICH BRANCH produced this result (WI-7397). Required, not optional, on
+   * purpose: a caller must not be able to ignore the difference.
+   *
+   * The dead-author pass has a fail-safe that resolves NOTHING when a liveness
+   * read throws. That is correct — a degraded read must never read as "everyone
+   * is gone" — but before WI-7397 it returned a value IDENTICAL to the healthy
+   * "nothing was eligible" case, so a permanently-degraded reaper was
+   * indistinguishable from one with no work to do, forever and silently.
+   *
+   *  - 'swept'         — the pass ran to completion (`resolved` may still be 0)
+   *  - 'no-candidates' — nothing was eligible this tick; healthy
+   *  - 'aborted'       — a liveness/presence read THREW; nothing was resolved
+   */
+  outcome: 'swept' | 'no-candidates' | 'aborted';
 }
 
 /**
@@ -123,7 +138,13 @@ export async function reconcileStaleEscalationsOnce(
           )
         ).resolved;
 
-  return { scanned: opens.length, stale: stale.length, resolved, truncated: stale.length > batch.length };
+  return {
+    scanned: opens.length,
+    stale: stale.length,
+    resolved,
+    truncated: stale.length > batch.length,
+    outcome: 'swept',
+  };
 }
 
 // ─── EI-19411323991062966: unanswerable escalations from DEAD authors ─────────
@@ -241,10 +262,18 @@ export async function reconcileUnanswerableEscalationsOnce(
   const opens = (await listEscalations({ status: 'open' })) as unknown as StaleEscalationInput[];
   const nowMs = opts.nowMs ?? Date.now();
   const ttl = opts.ttlMs ?? UNANSWERABLE_ESCALATION_TTL_MS;
-  const nothing: ReconcileResult = { scanned: opens.length, stale: 0, resolved: 0, truncated: false };
+  // WI-7397: the two zero-result branches below are semantically OPPOSITE (one
+  // healthy, one a degraded-read abort) and must never again be the same value.
+  const zero = (outcome: ReconcileResult['outcome']): ReconcileResult => ({
+    scanned: opens.length,
+    stale: 0,
+    resolved: 0,
+    truncated: false,
+    outcome,
+  });
 
   const candidates = unanswerableCandidateAuthors(opens, { nowMs, ttlMs: ttl });
-  if (candidates.length === 0) return nothing;
+  if (candidates.length === 0) return zero('no-candidates');
 
   const resolveFn = opts.resolveSessionStatesFn ?? resolveSessionStates;
   const getPresenceFn = opts.getPresenceFn ?? getPresence;
@@ -266,7 +295,9 @@ export async function reconcileUnanswerableEscalationsOnce(
   } catch {
     // FAIL-SAFE. A degraded liveness/presence read is indistinguishable from
     // "nobody exists" if you squint — so we refuse to squint.
-    return nothing;
+    // The 'aborted' outcome is what makes this refusal VISIBLE: resolving
+    // nothing is the right call, but doing so silently is not (WI-7397).
+    return zero('aborted');
   }
 
   const isAuthorGone = (from: string): boolean =>
@@ -292,5 +323,11 @@ export async function reconcileUnanswerableEscalationsOnce(
           )
         ).resolved;
 
-  return { scanned: opens.length, stale: stale.length, resolved, truncated: stale.length > batch.length };
+  return {
+    scanned: opens.length,
+    stale: stale.length,
+    resolved,
+    truncated: stale.length > batch.length,
+    outcome: 'swept',
+  };
 }

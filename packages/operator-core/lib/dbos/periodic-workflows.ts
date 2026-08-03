@@ -420,12 +420,34 @@ async function attentionReconcileTick(): Promise<void> {
   // 2026-06-15. Own step so a failure here can never abort the operational
   // reconcile above (and vice versa), and best-effort for the same reason the
   // sibling drain is: a reconcile miss must degrade, never break the tick.
+  // WI-7397: every exit from this step is now ANNOUNCED. It previously had
+  // three silent ones — shed, the reaper's fail-safe abort, and a genuine
+  // no-op — and the result was discarded, so a permanently-degraded reaper was
+  // indistinguishable from a healthy idle one. Best-effort is still the right
+  // policy here; being QUIET about it was not.
   await DBOS.runStep(async () => {
-    if (shouldShedHeavyTick('attention-reconcile-unanswerable')) return;
+    if (shouldShedHeavyTick('attention-reconcile-unanswerable')) {
+      console.log('[attention-reconcile-unanswerable] shed: heavy-tick budget — no pass this tick');
+      return;
+    }
     try {
-      await reconcileUnanswerableEscalationsOnce();
-    } catch {
+      const r = await reconcileUnanswerableEscalationsOnce();
+      if (r.outcome === 'aborted') {
+        console.warn(
+          '[attention-reconcile-unanswerable] ABORTED (non-fatal): a liveness/presence read threw, so ' +
+            `0 of ${r.scanned} scanned were resolved. The backlog is NOT draining — this is not an idle tick.`,
+        );
+      } else {
+        console.log(
+          `[attention-reconcile-unanswerable] ${r.outcome}: scanned=${r.scanned} stale=${r.stale} ` +
+            `resolved=${r.resolved}${r.truncated ? ' (truncated — more next tick)' : ''}`,
+        );
+      }
+    } catch (e) {
       // best-effort: next tick retries
+      console.warn(
+        `[attention-reconcile-unanswerable] pass failed (non-fatal): ${e instanceof Error ? e.message : e}`,
+      );
     }
   }, { name: 'attention-reconcile-unanswerable' });
 }

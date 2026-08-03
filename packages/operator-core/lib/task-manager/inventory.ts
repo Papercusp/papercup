@@ -81,9 +81,48 @@ export type LiveProcessRow = {
   exemptReason: ExemptReason | null;
 };
 
+/**
+ * Fleet-wide resource totals, folded over the SAME row set as `total`/`byState`.
+ *
+ * WHY THIS IS COMPUTED HERE AND NOT IN THE VIEW (WI-7371): the panes filter by
+ * state/class, so their `rows` is a PROJECTION. A `rows.reduce()` in a component
+ * would total only what is currently visible while presenting itself as a system
+ * total — a number that answers a narrower question than its label claims. Folding
+ * it next to `byState` also means the header pill and the panel it opens read one
+ * field and cannot disagree, which is the WI-6844 bug this file already carries a
+ * warning about.
+ *
+ * ⚠ `rssBytes` is a GAUGE (sum is meaningful) but double-counts pages SHARED between
+ * processes — a naive RSS sum over postgres backends on this box reads ~403 GB on a
+ * 257 GB machine. Present it as an upper bound, never as "memory in use".
+ *
+ * ⚠ `cpuUsec` is a MONOTONIC CUMULATIVE counter (cgroup `cpu.stat usage_usec`), so
+ * its sum is lifetime CPU-time, NOT "cpu usage". A usage RATE needs two samples;
+ * `sampledAtMs` is emitted for exactly that, and `cpuBusyPercent()` derives it.
+ * Labelling the raw sum "usage" would be wrong.
+ */
+export type TaskResourceTotals = {
+  /** Σ rssBytes over rows that reported one. Upper bound — shared pages double-count. */
+  rssBytesTotal: number;
+  /** Σ cpuUsec — CUMULATIVE cpu-microseconds, not a rate. */
+  cpuUsecTotal: number;
+  /** When this fold was taken; the other half of a rate calculation. */
+  sampledAtMs: number;
+  /** How many rows actually reported each metric — the rest are `null`. */
+  rssBytesKnown: number;
+  cpuUsecKnown: number;
+  /** Row count the fold ran over, so a view can say "M of N reported". */
+  rowsConsidered: number;
+};
+
 export type TaskInventory = {
   enabled: boolean;
-  summary: { total: number; byState: Record<string, number>; byClass: Record<string, number> };
+  summary: {
+    total: number;
+    byState: Record<string, number>;
+    byClass: Record<string, number>;
+    resources: TaskResourceTotals;
+  };
   live: unknown;
   rows: TaskInventoryRow[];
   /**
@@ -107,9 +146,76 @@ export type TaskInventoryOptions = {
   live?: boolean;
 };
 
+/** Zeroed totals for the disabled/empty payload. `sampledAtMs: 0` marks "never sampled". */
+export function emptyResourceTotals(): TaskResourceTotals {
+  return {
+    rssBytesTotal: 0,
+    cpuUsecTotal: 0,
+    sampledAtMs: 0,
+    rssBytesKnown: 0,
+    cpuUsecKnown: 0,
+    rowsConsidered: 0,
+  };
+}
+
+/**
+ * Fold resource totals over rows. PURE — no clock, no I/O — so the aggregation is
+ * unit-testable and `nowMs` is injected rather than read.
+ *
+ * Nulls are SKIPPED, not coerced to 0, and counted separately: `rssBytes`/`cpuUsec`
+ * are `number | null`, and treating "did not report" as zero would silently understate
+ * the total while looking like a complete answer.
+ */
+export function foldResourceTotals(
+  rows: ReadonlyArray<Pick<TaskInventoryRow, 'rssBytes' | 'cpuUsec'>>,
+  nowMs: number,
+): TaskResourceTotals {
+  const out = { ...emptyResourceTotals(), sampledAtMs: nowMs, rowsConsidered: rows.length };
+  for (const r of rows) {
+    if (typeof r.rssBytes === 'number' && Number.isFinite(r.rssBytes)) {
+      out.rssBytesTotal += r.rssBytes;
+      out.rssBytesKnown += 1;
+    }
+    if (typeof r.cpuUsec === 'number' && Number.isFinite(r.cpuUsec)) {
+      out.cpuUsecTotal += r.cpuUsec;
+      out.cpuUsecKnown += 1;
+    }
+  }
+  return out;
+}
+
+/**
+ * Derive CPU BUSY PERCENT from two cumulative samples — the only honest way to turn
+ * `cpuUsecTotal` into a "usage" figure. 100% = one core saturated; a 16-core box can
+ * legitimately read 1600%.
+ *
+ * Returns `null` (never 0) when it cannot be computed: no previous sample, a
+ * non-advancing or backwards clock, or a counter that went BACKWARDS — which happens
+ * legitimately whenever a task ends and leaves the row set, so it must not render as
+ * "0% busy". Zero and unknown are different answers and this codebase has been burned
+ * repeatedly by conflating them.
+ */
+export function cpuBusyPercent(
+  prev: Pick<TaskResourceTotals, 'cpuUsecTotal' | 'sampledAtMs'> | null | undefined,
+  next: Pick<TaskResourceTotals, 'cpuUsecTotal' | 'sampledAtMs'>,
+): number | null {
+  if (!prev || !prev.sampledAtMs || !next.sampledAtMs) return null;
+  const wallUsec = (next.sampledAtMs - prev.sampledAtMs) * 1000;
+  if (wallUsec <= 0) return null;
+  const deltaCpu = next.cpuUsecTotal - prev.cpuUsecTotal;
+  if (deltaCpu < 0) return null;
+  return (deltaCpu / wallUsec) * 100;
+}
+
 /** The disabled-flag payload. Shared so both callers render the same empty state. */
 export function disabledInventory(): TaskInventory {
-  return { enabled: false, summary: { total: 0, byState: {}, byClass: {} }, rows: [], live: null, liveProcesses: [] };
+  return {
+    enabled: false,
+    summary: { total: 0, byState: {}, byClass: {}, resources: emptyResourceTotals() },
+    rows: [],
+    live: null,
+    liveProcesses: [],
+  };
 }
 
 /** Cap on live-process rows shipped to the pane. */
@@ -245,19 +351,20 @@ export async function getTaskInventory(opts: TaskInventoryOptions = {}): Promise
     liveProcesses = opts.countsOnly ? [] : scanned.liveProcesses;
   }
 
-  return {
-    enabled: true,
-    summary: { total: rows.length, byState, byClass },
-    live,
-    liveProcesses,
-    // `?? null` on every nullable field is load-bearing, not defensive noise: the
-    // store types these as `T | null | undefined`, and `JSON.stringify` DROPS an
-    // undefined-valued key entirely. Left alone, a task with no work-item would ship
-    // a row with no `workItemId` key at all rather than an explicit null, so the
-    // client could not distinguish "not attributed" from "field missing" — and the
-    // sync layer's row-delta negotiation diffs on key presence. Normalising here is
-    // what makes the wire shape total.
-    rows: rows.map((r) => ({
+  // `?? null` on every nullable field is load-bearing, not defensive noise: the
+  // store types these as `T | null | undefined`, and `JSON.stringify` DROPS an
+  // undefined-valued key entirely. Left alone, a task with no work-item would ship
+  // a row with no `workItemId` key at all rather than an explicit null, so the
+  // client could not distinguish "not attributed" from "field missing" — and the
+  // sync layer's row-delta negotiation diffs on key presence. Normalising here is
+  // what makes the wire shape total.
+  //
+  // WI-7371: hoisted out of the return so the resource fold runs over the MAPPED rows.
+  // The raw store row names these `lastMemoryBytes` / `cpuUsec`; folding the raw rows
+  // reads `rssBytes: undefined` on every one and yields a silent `0` total that looks
+  // exactly like "nothing reported". Folding the shipped shape makes the totals and the
+  // rows structurally incapable of describing different data.
+  const mappedRows: TaskInventoryRow[] = rows.map((r) => ({
       taskId: r.taskId,
       parentTaskId: r.parentTaskId ?? null,
       rootTaskId: r.rootTaskId,
@@ -280,6 +387,18 @@ export async function getTaskInventory(opts: TaskInventoryOptions = {}): Promise
       exitCode: r.exitCode ?? null,
       exitReason: r.exitReason ?? null,
       logPath: r.logPath ?? null,
-    })),
+    }));
+
+  return {
+    enabled: true,
+    summary: {
+      total: rows.length,
+      byState,
+      byClass,
+      resources: foldResourceTotals(mappedRows, Date.now()),
+    },
+    live,
+    liveProcesses,
+    rows: mappedRows,
   };
 }

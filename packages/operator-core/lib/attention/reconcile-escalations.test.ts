@@ -284,7 +284,7 @@ describe('reconcileUnanswerableEscalationsOnce (EI-19411323991062966)', () => {
     getPresenceMock.mockResolvedValue(null);
 
     const r = await reconcileUnanswerableEscalationsOnce({ nowMs: NOW, ttlMs: ttl });
-    expect(r).toMatchObject({ stale: 0, resolved: 0 });
+    expect(r).toMatchObject({ stale: 0, resolved: 0, outcome: 'aborted' });
     expect(batchMock).not.toHaveBeenCalled();
   });
 

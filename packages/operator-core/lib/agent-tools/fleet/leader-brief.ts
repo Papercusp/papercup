@@ -1286,11 +1286,11 @@ export default defineTool({
       '`unanswered` → coord:send a follow-up or coord:catch-up. `benchSuggestion` set → ' +
       'fleet:bench onto the blocked-on gate; `dormant:true` → wake, never bench. ' +
       '`spinning:true` → coord:send{wake:"required"}. ' +
-      'Nonzero `unownedCriticals`/`abandonedUnclaimed` → CLAIM it (release=no-op, WI-6678); the ' +
+      'Nonzero `unownedCriticals`/`abandonedUnclaimed` → CLAIM it (release=no-op); the ' +
       '`…Federated` sibling is remote + unclaimable (WI-6846). ' +
-      'Every `*Alert` ships a `*AlertFalsifier` — RUN its read-only `check` BEFORE acting: it ' +
-      'either confirms the alert or KILLS it. `idleWithClaimableAlert` → falsify first (members ' +
-      'AT their claim cap render as idle), then wake; never bench (the queue is NOT empty).',
+      'Every `*Alert` ships `*AlertFalsifier` — RUN its read-only `check` before acting; it ' +
+      'confirms or KILLS the alert. `idleWithClaimableAlert`: falsify first (at-cap members ' +
+      'render idle), then wake, never bench.',
   },
   capability: 'work_items:read',
   requirePrincipal: false,
