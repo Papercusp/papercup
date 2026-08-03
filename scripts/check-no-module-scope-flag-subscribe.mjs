@@ -115,13 +115,11 @@ export function usesModuleScopeFlagSubscribe(text) {
 // change as the fix.
 export const BASELINE = new Set([
   'packages/operator-core/lib/auth-config-overrides.ts',
-  'packages/operator-core/lib/capability-envelope-overrides.ts',
   'packages/operator-core/lib/capability-tier-overrides.ts',
   'packages/operator-core/lib/events/cache-eca-rule.ts',
   'packages/operator-core/lib/harness/routines/configure-per-workspace.ts',
   'packages/operator-core/lib/issues-engineer.ts',
   'packages/operator-core/lib/lexicon/configure.ts',
-  'packages/operator-core/lib/telemetry-buffer-config.ts',
   'packages/operator-core/lib/work-item-claim-lease-wiring.ts',
   'packages/operator-core/lib/work-item-redundancy.ts',
   'packages/operator-core/lib/workspace-brain-scope.ts',

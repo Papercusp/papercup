@@ -49,6 +49,7 @@ import {
   coalesceWatermarkFor,
   lintTscScopeFromArgv,
   formatLintTscResultMarker,
+  mergeRatchetIntoBaseline,
 } from '../../../scripts/lint-tsc.mjs';
 // eslint-disable-next-line import/no-relative-packages
 import {
@@ -670,6 +671,130 @@ describe('decidePerFile — per-file attribution + --update-only ratchet + synta
     });
     expect(r.verdict).toBe('fail-regressed');
     expect(r.newBaselineByFile).toBeUndefined();
+  });
+});
+
+// EI-19444246913245434 — `--files=X --update` wrote NOTHING while reporting
+// `scope=update exit=0 status=clean`, so the caller believed the debt was locked in.
+//
+// The root cause is NOT "the --files branch returns before the ratchet branch" (how it was
+// first filed, from the reporter's shape). It is one level up, in `decidePerFile`: the
+// verdict is a single scalar, and the `regressions.length > 0` branch returns before
+// improvements are ever considered. So ANY regression anywhere in the project swallows the
+// caller's ratchet — INCLUDING drift the gate has, in that same branch, just classified as
+// explicitly NOT the caller's problem (`ok-peer-drift`, exit 0, a leading ✓). On this shared
+// tree peer drift is near-permanent, so the scoped ratchet had no working form at all.
+//
+// The fix keeps every existing verdict and its reporting untouched and restores only the
+// dropped WRITE, as a payload (`ratchetFiles`) rather than a competing verdict — a ratchet is
+// an EFFECT, and modelling it as a mutually-exclusive verdict is what let a classification
+// swallow it.
+describe('scoped --update composes with the caller’s own file set (EI-19444246913245434)', () => {
+  const brokenFree: string[] = [];
+  const own = new Set(['mine.ts']);
+
+  it('THE LIVE BUG: ratchets the caller’s improved file even though a PEER file regressed', () => {
+    const r = decidePerFile({
+      currentByFile: { 'mine.ts': 1, 'peer.ts': 5 }, // mine 3→1 (improved), peer 2→5 (regressed)
+      baselineByFile: { 'mine.ts': 3, 'peer.ts': 2 },
+      brokenFiles: brokenFree,
+      updateFlag: true,
+      changedFiles: own,
+      attributionDeclared: true, // --files
+    });
+    // The peer-drift REPORTING is deliberately unchanged — only the dropped write is restored.
+    expect(r.verdict).toBe('ok-peer-drift');
+    expect(r.ratchetFiles).toEqual([{ file: 'mine.ts', baseline: 3, current: 1, delta: -2 }]);
+  });
+
+  it('the scoped ratchet carries ONLY the caller’s files — never a peer’s improvement', () => {
+    // peer.ts ALSO improved (2→1), but it is uncommitted on this shared tree: baking it in
+    // creates a false red the moment that peer reverts. This is the racy write the bug report
+    // named as the reason bare `--update` is not a safe workaround.
+    const r = decidePerFile({
+      currentByFile: { 'mine.ts': 1, 'peer.ts': 1 },
+      baselineByFile: { 'mine.ts': 3, 'peer.ts': 2 },
+      brokenFiles: brokenFree,
+      updateFlag: true,
+      changedFiles: own,
+      attributionDeclared: true,
+    });
+    expect(r.ratchetFiles?.map((x) => x.file)).toEqual(['mine.ts']);
+  });
+
+  it('WITHOUT --update a scoped run stays check-only — no ratchet payload', () => {
+    const r = decidePerFile({
+      currentByFile: { 'mine.ts': 1, 'peer.ts': 5 },
+      baselineByFile: { 'mine.ts': 3, 'peer.ts': 2 },
+      brokenFiles: brokenFree,
+      updateFlag: false,
+      changedFiles: own,
+      attributionDeclared: true,
+    });
+    expect(r.ratchetFiles).toBeUndefined();
+  });
+
+  it('ratchet-only-down still holds: a regression in the caller’s OWN file fails, no payload', () => {
+    const r = decidePerFile({
+      currentByFile: { 'mine.ts': 9, 'other.ts': 1 },
+      baselineByFile: { 'mine.ts': 3, 'other.ts': 3 },
+      brokenFiles: brokenFree,
+      updateFlag: true,
+      changedFiles: own,
+      attributionDeclared: true,
+    });
+    expect(r.verdict).toBe('fail-attributed');
+    expect(r.ratchetFiles).toBeUndefined();
+  });
+
+  it('a scoped run with no regressions anywhere still scopes the write (no full re-baseline)', () => {
+    const r = decidePerFile({
+      currentByFile: { 'mine.ts': 1, 'peer.ts': 1 }, // both improved; only mine.ts is the caller’s
+      baselineByFile: { 'mine.ts': 3, 'peer.ts': 2 },
+      brokenFiles: brokenFree,
+      updateFlag: true,
+      changedFiles: own,
+      attributionDeclared: true,
+    });
+    expect(r.verdict).toBe('ok-ratchet');
+    expect(r.ratchetFiles?.map((x) => x.file)).toEqual(['mine.ts']);
+    // the full-replace map is what a BARE --update writes; a scoped run must not carry it
+    expect(r.newBaselineByFile).toBeUndefined();
+  });
+
+  it('a BARE --update is unchanged — still a full re-baseline, no scoped payload', () => {
+    const r = decidePerFile({
+      currentByFile: { 'a.ts': 1, 'b.ts': 2 },
+      baselineByFile: { 'a.ts': 3, 'b.ts': 2 },
+      brokenFiles: brokenFree,
+      updateFlag: true,
+      changedFiles: null,
+    });
+    expect(r.verdict).toBe('ok-ratchet');
+    expect(r.newBaselineByFile).toEqual({ 'a.ts': 1, 'b.ts': 2 });
+    expect(r.ratchetFiles).toBeUndefined();
+  });
+
+  // The bug report asks for a regression test asserting the baseline VALUE changes, not the
+  // exit code — the whole defect was an exit code that said `clean` over an unwritten file.
+  it('the merge LOWERS the named file’s value and leaves every other entry byte-identical', () => {
+    const before = { 'mine.ts': 3, 'peer.ts': 2, 'untouched.ts': 7 };
+    const after = mergeRatchetIntoBaseline({
+      baselineFiles: before,
+      ratchetFiles: [{ file: 'mine.ts', baseline: 3, current: 1, delta: -2 }],
+    });
+    expect(after['mine.ts']).toBe(1); // the VALUE moved
+    expect(after['peer.ts']).toBe(2);
+    expect(after['untouched.ts']).toBe(7);
+    expect(before['mine.ts']).toBe(3); // input not mutated
+  });
+
+  it('the merge ADDS a file the baseline has never recorded rather than dropping it', () => {
+    const after = mergeRatchetIntoBaseline({
+      baselineFiles: { 'peer.ts': 2 },
+      ratchetFiles: [{ file: 'fresh.ts', baseline: 0, current: 0, delta: 0 }],
+    });
+    expect(after).toEqual({ 'peer.ts': 2, 'fresh.ts': 0 });
   });
 });
 

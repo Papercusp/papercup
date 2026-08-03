@@ -323,6 +323,12 @@ type SqlLike = <T = unknown>(strings: TemplateStringsArray, ...values: unknown[]
  * CAPABILITY question directly beats inferring blindness from the shape of the result, which is
  * how this class hides in the first place.
  */
+/**
+ * One-shot latch so the fail-open path below announces itself EXACTLY once per process
+ * rather than on every 3-minute tick.
+ */
+let capabilityProbeAbsentWarned = false;
+
 export async function countBackgroundPrimaries(sql: SqlLike): Promise<number | null> {
   const rows = await sql<Array<{ n: number; can_read_all_stats: boolean }>>`
     SELECT (SELECT count(DISTINCT application_name)::int
@@ -342,6 +348,22 @@ export async function countBackgroundPrimaries(sql: SqlLike): Promise<number | n
   // forever, i.e. silently convert the probe into a permanent no-op that can never report a
   // real outage. Absent ⇒ behave exactly as before this change; only an affirmative `false`
   // (a reader that actually answered "I lack the privilege") suppresses the count.
+  //
+  // FAIL OPEN *AND ANNOUNCE* (su-4ca244e4, 2026-08-03). Fail-open alone has one real cost: if
+  // the flag ever goes absent, the guard silently reverts to the exact pre-fix behaviour — a
+  // restricted reader reporting a confident 0 — with nothing anywhere recording that the
+  // protection evaporated. That is a fresh instance of this very defect class one level up: an
+  // invisible state, inferred rather than observed. Announcing once makes "this guard is
+  // currently running unprotected" an OBSERVABLE fact, for one line per process.
+  if (row.can_read_all_stats === undefined && !capabilityProbeAbsentWarned) {
+    capabilityProbeAbsentWarned = true;
+    console.warn(
+      '[single-primary] capability probe UNAVAILABLE — the pg_stat_activity read returned no ' +
+        'can_read_all_stats column, so the unprivileged-reader protection (EI-19442084790376701) ' +
+        'is NOT in effect and a restricted role would again report a confident 0. Failing OPEN ' +
+        'deliberately: a probe that can never report an outage is a silent failure, not a safe one.',
+    );
+  }
   if (row.can_read_all_stats === false) return null;
   return row.n ?? null;
 }

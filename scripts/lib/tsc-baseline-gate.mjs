@@ -114,7 +114,13 @@ import { recordStandingReds, DWELL_SEC } from './tsc-red-observations.mjs';
  * @property {PerFileGateEntry[]} [newFiles] - Regressions in files ABSENT from the baseline.
  * @property {number} total
  * @property {number} baselineTotal
- * @property {Record<string, number>} [newBaselineByFile]
+ * @property {Record<string, number>} [newBaselineByFile] - FULL replacement map, written only by
+ *   a BARE `--update` (no `--mine`/`--files`). Never set on a scoped run — see `ratchetFiles`.
+ * @property {PerFileGateEntry[]} [ratchetFiles] - EI-19444246913245434. The caller's OWN improved
+ *   files on a SCOPED `--update`, to be lowered individually via `mergeRatchetIntoBaseline`.
+ *   Deliberately a payload rather than a verdict: a ratchet is an EFFECT, and modelling it as a
+ *   mutually-exclusive verdict is what let `ok-peer-drift` silently swallow it. Carried on any
+ *   non-failing verdict, so restoring the write costs the existing reporting nothing.
  * @property {string[]} [brokenFiles]
  * @property {string[]} [unattributedBrokenFiles] - TS1xxx-broken files OUTSIDE the caller's
  *   `changedFiles` set (EI-19321179234197157). Never gates the verdict — reported so the caller
@@ -408,6 +414,28 @@ export function effectiveBaselineByFile({ baselineByFile, currentByFile, foreign
  * }} args
  * @returns {PerFileGateResult}
  */
+/**
+ * EI-19444246913245434 — lower ONLY the named files in an existing baseline map.
+ *
+ * A SCOPED `--update` must never write a whole-project map: on this shared checkout every other
+ * file's current count may include a peer's uncommitted edit, and baking that in creates a false
+ * red the moment they revert. (That racy write is why the bug report ruled out bare `--update` as
+ * a workaround — so the scoped ratchet had no working form at all.)
+ *
+ * Merges against the gate's OWN on-disk baseline, never the EFFECTIVE map `decidePerFile` judges
+ * with: the effective map folds in entries INHERITED from foreign package baselines
+ * (effectiveBaselineByFile), and persisting those would durably copy another package's rows into
+ * this one. Pure + total so the "the VALUE changed" property is unit-testable without running tsc.
+ *
+ * @param {{ baselineFiles: Record<string, number>, ratchetFiles: PerFileGateEntry[] }} input
+ * @returns {Record<string, number>}
+ */
+export function mergeRatchetIntoBaseline({ baselineFiles, ratchetFiles }) {
+  const next = { ...baselineFiles };
+  for (const entry of ratchetFiles) next[entry.file] = entry.current;
+  return next;
+}
+
 export function decidePerFile({
   currentByFile,
   baselineByFile,

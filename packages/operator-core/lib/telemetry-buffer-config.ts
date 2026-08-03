@@ -13,9 +13,10 @@
  * ⇒ telemetryBufferConfig() returns the baked defaults ⇒ byte-identical. Flip the flag OFF to
  * ignore any stored override and force the defaults.
  */
-import { getFlag, onFlagChange } from '@papercusp/flags/server';
+import { getFlag } from '@papercusp/flags/server';
 import { managedSetInterval } from '@papercusp/scheduled-registry';
 import { FLAGS } from '@papercusp/flags';
+import { lazyFlagRefresh } from './lazy-flag-refresh';
 import { systemDistinctId } from './flag-distinct-id';
 import { readOperatorState, writeOperatorState } from './operator-state-pg';
 import { registerOverrideConcern, type OverrideEntry } from './config-overrides/registry';

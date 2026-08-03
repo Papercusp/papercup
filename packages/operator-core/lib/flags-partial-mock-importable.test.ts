@@ -54,6 +54,8 @@ vi.mock('./operator-state-pg', () => ({
 // a regressed module fails the FILE at collection, before any test below runs.
 import { quotaOverrideKey, quotaOverrideFor } from './quota-overrides';
 import { taskManagerEnabledSync } from './task-manager/enabled';
+import { envelopeRoleOverrides } from './capability-envelope-overrides';
+import { telemetryBufferConfig } from './telemetry-buffer-config';
 
 describe('modules stay importable under a partial @papercusp/flags/server mock', () => {
   it('collected this file at all (a module-scope binding read would have failed it here)', () => {
@@ -77,5 +79,7 @@ describe('the fix is IMPORTABILITY, not reader-callability (do not widen this cl
     // `{ onFlagChange }` for exactly this reason.
     expect(() => quotaOverrideFor('search:fulltext', 'worker')).toThrow(/onFlagChange/);
     expect(() => taskManagerEnabledSync()).toThrow(/onFlagChange/);
+    expect(() => envelopeRoleOverrides()).toThrow(/onFlagChange/);
+    expect(() => telemetryBufferConfig()).toThrow(/onFlagChange/);
   });
 });

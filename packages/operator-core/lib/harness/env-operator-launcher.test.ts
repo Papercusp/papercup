@@ -464,3 +464,76 @@ describe('openEnvOperatorLog (EI-19423766332560955)', () => {
     expect(discarded.length).toBe(1);
   });
 });
+
+describe('the `local` (vite) child port contract (EI-19424980348813193)', () => {
+  /** The port expression `apps/operator-vite/vite.config.ts` actually evaluates
+   *  (line 248). Duplicated here on purpose: this suite's whole job is to police the
+   *  COUPLING between the launcher's child env and that expression, so the expression
+   *  has to be visible at the assertion. If it changes there, this should fail here. */
+  function viteConfigResolvesPort(env: NodeJS.ProcessEnv): number {
+    return Number(env.OPERATOR_E2E_PORT ?? env.PORT) || 3055;
+  }
+
+  it('passes the port explicitly AND strictly', () => {
+    const argv = viteChildArgv('/tree/node_modules/vite/bin/vite.js', 3055);
+
+    expect(argv[0]).toBe('/tree/node_modules/vite/bin/vite.js');
+    expect(argv).toContain('--port');
+    expect(argv[argv.indexOf('--port') + 1]).toBe('3055');
+    // Without --strictPort a collision makes vite WALK to the next free port and serve
+    // there silently, which is the failure mode that made this look like a hang.
+    expect(argv).toContain('--strictPort');
+  });
+
+  it('THE BUG: an inherited PORT no longer retargets the SPA', () => {
+    // The primary operator sets PORT to its OWN Hono port; the child inherited it.
+    const base = { PORT: '3070', PAPERCUSP_HONO_PORT: '3070' };
+
+    // Before the fix this was the live behaviour — the config saw the operator's port:
+    expect(viteConfigResolvesPort(base)).toBe(3070);
+
+    // After the scrub the config falls through to its own 3055 default, and the
+    // explicit --port pins it regardless.
+    const env = viteChildEnv(base, '/tree', 3070);
+    expect(env.PORT).toBeUndefined();
+    expect(viteConfigResolvesPort(env)).toBe(3055);
+  });
+
+  it('also scrubs OPERATOR_E2E_PORT, which outranks PORT in the config', () => {
+    const env = viteChildEnv({ OPERATOR_E2E_PORT: '4123', PORT: '3070' }, '/tree', 3070);
+
+    expect(env.OPERATOR_E2E_PORT).toBeUndefined();
+    expect(viteConfigResolvesPort(env)).toBe(3055);
+  });
+
+  it('keeps the rest of the source-child contract intact', () => {
+    const env = viteChildEnv({ PORT: '3070', HOME: '/home/x' }, '/tree', 3070);
+
+    expect(env.PAPERCUSP_INTEGRATION_ROOT).toBe('/tree');
+    expect(env.PAPERCUSP_API_TARGET).toBe('http://127.0.0.1:3070');
+    expect(env.PAPERCUSP_PROVISION_ENV_OPERATORS).toBe('0');
+    expect(env.HOME).toBe('/home/x'); // unrelated inherited vars survive
+  });
+
+  it('omits PAPERCUSP_API_TARGET when the primary port is unknown', () => {
+    const env = viteChildEnv({ PORT: '3070' }, '/tree', null);
+
+    expect(env.PAPERCUSP_API_TARGET).toBeUndefined();
+    expect(env.PORT).toBeUndefined(); // the scrub is unconditional
+  });
+
+  it('RECURRENCE GUARD: the vite spawn site routes through both helpers', () => {
+    const src = readFileSync(
+      resolve(import.meta.dirname, 'env-operator-launcher.ts'),
+      'utf8',
+    );
+    // Scan CODE only — the doc comments quote the old bare-argv spawn to explain it.
+    const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
+
+    // A bare `spawn(process.execPath, [viteCli]` is exactly the regression: no port,
+    // no strictPort, and an env free to carry an ambient PORT.
+    expect(code).not.toMatch(/spawn\(\s*process\.execPath\s*,\s*\[\s*viteCli\s*\]/);
+    expect(code).toMatch(/viteChildArgv\(viteCli, entry\.port\)/);
+    expect(code).toMatch(/env: viteChildEnv\(/);
+  });
+});

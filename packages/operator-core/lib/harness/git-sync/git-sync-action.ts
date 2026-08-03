@@ -83,8 +83,19 @@ import {
   hiveGitRepoPath,
   listNamespaces,
   pathExists,
+  readNamespaceRef,
   sweepStalePackTmpFiles,
 } from '../../sync/pot-git/storage';
+import { STAGING_REF } from '../../sync/pot-git/integrator';
+// EI-19442274898324113: the ONLY sanctioned way to build an `integrator_progress`
+// metadata value — same top-level-jsonb-merge hazard as `worktree_bridge` above,
+// one layer more costly because this state GATES A TAKEOVER rather than merely
+// reporting. Read that module's header before adding a field or a writer.
+import {
+  nextIntegratorProgressState,
+  shouldPreemptStalledIntegrator,
+  type PriorIntegratorProgressState,
+} from './integrator-progress-state';
 import { canonicalRepoKey } from '../../sync/pot-git/repo-identity';
 import { adoptRefusedRepoKey } from '../../sync/pot-git/adopt-refused-repo-key';
 import {

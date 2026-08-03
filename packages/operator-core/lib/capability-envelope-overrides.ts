@@ -15,9 +15,10 @@
  * OFF ⇒ the getters return empty ⇒ the dispatch step uses the baked ROLE_ENVELOPES + floor ⇒
  * byte-identical. protectedAdditions is TIGHTEN-ONLY (append-only; the floor is never removable — D-002).
  */
-import { getFlag, onFlagChange } from '@papercusp/flags/server';
+import { getFlag } from '@papercusp/flags/server';
 import { managedSetInterval } from '@papercusp/scheduled-registry';
 import { FLAGS } from '@papercusp/flags';
+import { lazyFlagRefresh } from './lazy-flag-refresh';
 import { systemDistinctId } from './flag-distinct-id';
 import { readOperatorState, writeOperatorState } from './operator-state-pg';
 import { registerOverrideConcern, type OverrideEntry } from './config-overrides/registry';
@@ -38,10 +39,12 @@ let cached: CapabilityEnvelopeOverrides = {};
 
 /** Per-role overrides for the dispatch step (empty when the dark flag is off). SYNC. */
 export function envelopeRoleOverrides(): Record<string, RoleEnvelope> {
+  armFlagRefresh(); // first use installs the flag subscription — see ./lazy-flag-refresh
   return cachedEnabled ? cached.roleEnvelopes ?? {} : {};
 }
 /** Tighten-only protected-floor additions for the dispatch step (empty when off). SYNC. */
 export function envelopeProtectedAdditions(): readonly string[] {
+  armFlagRefresh(); // first use installs the flag subscription — see ./lazy-flag-refresh
   return cachedEnabled ? cached.protectedAdditions ?? [] : [];
 }
 
@@ -57,11 +60,14 @@ export async function refreshCapabilityEnvelopeOverrides(): Promise<void> {
   }
 }
 // D-010 (a): event-driven refresh — fires on the owner's enable-flip + on a key===null reload (boot).
-// NO import-time getFlag here: keeping the import pure means importing this on the dispatch hot path
-// (projected-tool-deps) never does IO; the getters are plain cache reads.
-onFlagChange((key) => {
-  if (key === null || key === FLAGS.CAPABILITY_ENVELOPE_OVERRIDES) void refreshCapabilityEnvelopeOverrides();
-});
+// Armed on FIRST USE, not at import (EI-19416650993725684). Keeping the import free of BOTH IO and
+// any flag-binding read means importing this on the dispatch hot path (projected-tool-deps) never
+// does IO, the getters stay plain cache reads, AND a test that partially mocks
+// `@papercusp/flags/server` can still collect. See ./lazy-flag-refresh for the mechanism + guards.
+const armFlagRefresh = lazyFlagRefresh(
+  refreshCapabilityEnvelopeOverrides,
+  FLAGS.CAPABILITY_ENVELOPE_OVERRIDES,
+);
 // D-010 (c): bounded cross-process + restart freshness. .unref() so it never holds the process (or a test) open.
 // P-008: visible in schedule:inventory as a 'cache' timer (per-process config memo refresh).
 managedSetInterval('config-refresh:capability-envelope', 60_000, () => refreshCapabilityEnvelopeOverrides(), {

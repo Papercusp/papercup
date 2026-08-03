@@ -475,6 +475,12 @@ export async function openSourceStoreForCut(inp: {
     sourceWritable = false;
   }
 
+  // P-014 (D-012): only the writable branch below can append the fresh head snapshot a
+  // --sparse cut REQUIRES. Track which branch ran so a sparse cut that never got one is
+  // refused rather than silently degraded (see the guard after this chain).
+  let headSnapshotAppended = false;
+  let sparseBlockedReason = '--sparse was requested but no pre-cut refresh ran';
+
   if (wantRefresh && sourceWritable) {
     // Quiesced box: we own the store, so refresh in-process exactly as before.
     await (inp.refreshImpl ?? refreshCorestoreStateForSeed)({
@@ -483,6 +489,9 @@ export async function openSourceStoreForCut(inp: {
       store: store!,
       sparse: inp.sparse,
     });
+    // refreshCorestoreStateForSeed appends the head snapshot iff `sparse` (see its
+    // `if (inp.sparse)` block) — so this branch, and only this branch, satisfies --sparse.
+    headSnapshotAppended = inp.sparse;
   } else if (wantRefresh) {
     // Live-operator box: split the refresh along the write boundary. backfill is a
     // PG-only INSERT into substrate_outbox (it never appends to the log — the drain owns
