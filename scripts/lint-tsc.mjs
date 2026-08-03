@@ -82,6 +82,7 @@ import {
   suggestTypecheckGate,
   formatUncoveredFilesBanner,
   coalesceWatermarkFor,
+  mergeRatchetIntoBaseline,
   runTscBaselineGate,
   lintTscScopeFromArgv,
   formatLintTscResultMarker,
@@ -111,6 +112,7 @@ export {
   suggestTypecheckGate,
   formatUncoveredFilesBanner,
   coalesceWatermarkFor,
+  mergeRatchetIntoBaseline,
   lintTscScopeFromArgv,
   formatLintTscResultMarker,
 };

@@ -1042,6 +1042,20 @@ export VERIFY_TAURI_PID="$BRIDGE_PID"
 export VERIFY_TAURI_PORT="$DEV_PORT"
 export VERIFY_TAURI_DISPLAY=":$DISPLAY_NUM"
 export VERIFY_TAURI_LOG="$LOG"
+# EI-19444780917356384: these two were exported ONLY on the --boot-only path, so
+# in assertion (`--`) mode the freshness guard this script documents at boot
+# ("run: bash $VERIFY_TAURI_FRESHNESS_CHECK") was literally unreachable — an
+# assertion command referencing it died with `VERIFY_TAURI_FRESHNESS_CHECK:
+# unbound variable`. That is exactly the mode used for one-shot CI-style
+# verification, i.e. the guard was missing precisely where a stale snapshot is
+# most expensive. Exported here (the path BOTH modes flow through) so the
+# documented recipe works in either. write_freshness_check_script() runs
+# unconditionally above, so this path always exists and is always runnable.
+export VERIFY_TAURI_FRESHNESS_CHECK="$WORK/check-freshness.sh"
+# The FROZEN, immutable bundle this run actually serves — grep IT (never the
+# shared apps/operator-vite/dist) to prove your change is in the code under
+# test. Empty when operator-vite was not built at boot, so no snapshot exists.
+export VERIFY_TAURI_SPA_DIST="$SPA_DIST"
 
 # A route change can finish before its sync-backed data has reached the DOM.
 # Fixed sleeps make those checks depend on machine/DB timing, so expose a

@@ -53,6 +53,7 @@ let cached: Record<string, CapabilityTier> = {};
 
 /** The tier override for a capability, or null (fall through to the baked table). SYNC, zero-await. */
 export function capabilityTierOverrideFor(capability: string): CapabilityTier | null {
+  armFlagRefresh(); // first use installs the flag subscription — see ./lazy-flag-refresh
   if (!enabled) return null;
   return cached[capability] ?? null;
 }

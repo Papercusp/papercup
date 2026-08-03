@@ -2791,6 +2791,70 @@ async function runIntegratorLeg(slug: string, workspaceId: string): Promise<void
       }
     }
 
+    // ── Progress-based candidacy (EI-19442274898324113) ──────────────────────
+    // `requiresRoutine` (below) proves the holder's routine is ARMED. It does
+    // NOT prove the holder is ADVANCING this pot's canonical ref — and twice in
+    // two days a device published `git-sync` legitimately, won the lease with a
+    // fresh heartbeat, then integrated nothing for ~5h while origin/staging fell
+    // 70 and 28 commits behind with every health surface reporting green.
+    // Liveness plus claimed capability is not evidence of PROGRESS.
+    //
+    // So measure progress, REMEMBER it across ticks, and drop a holder stuck
+    // past the budget. The measured pair is deliberately the same one the
+    // detector uses — canonical `refs/hive/staging` vs THIS device's published
+    // namespace head — because an integrator stall pins canonical and origin
+    // TOGETHER, which zeroes the ahead-count every other signal keys on.
+    //
+    // Best-effort throughout: ANY failure here leaves `preemptStalled` false,
+    // i.e. exactly the pre-existing behaviour. A takeover must never be
+    // triggered by our own inability to measure.
+    const nowMs = Date.now();
+    let canonicalSha: string | null = null;
+    let integratorBacklogCommits: number | null = null;
+    let preemptStalled = false;
+    let stalledForMs = 0;
+    try {
+      const canonicalRead = await defaultRunGit(
+        ['rev-parse', '--verify', '-q', `${BRIDGE_CANONICAL_REF}^{object}`],
+        repoPath,
+      );
+      canonicalSha = canonicalRead.code === 0 ? canonicalRead.stdout.trim() || null : null;
+      if (canonicalSha) {
+        const selfNamespaceSha = await readNamespaceRef(repoPath, actor.devicePubkey, STAGING_REF);
+        if (selfNamespaceSha === canonicalSha) {
+          integratorBacklogCommits = 0;
+        } else if (selfNamespaceSha) {
+          const counted = await defaultRunGit(['rev-list', '--count', `${canonicalSha}..${selfNamespaceSha}`], repoPath);
+          if (counted.code === 0) {
+            const n = Number.parseInt(counted.stdout.trim(), 10);
+            integratorBacklogCommits = Number.isFinite(n) ? n : null;
+          }
+        }
+      }
+
+      const { sql: progressSql } = getOrgPg();
+      const progressRows = await progressSql<{ integrator_progress: PriorIntegratorProgressState | null }[]>`
+        SELECT metadata->'integrator_progress' AS integrator_progress
+          FROM harness_shared.routines
+         WHERE install_slug = ${slug} AND workspace_id = ${workspaceId} AND target_role = 'system:git-sync'
+         LIMIT 1
+      `;
+      const progress = nextIntegratorProgressState(progressRows[0]?.integrator_progress ?? null, {
+        canonicalSha,
+        backlogCommits: integratorBacklogCommits,
+        nowMs,
+      });
+      await patchRoutineMetadata(slug, workspaceId, { integrator_progress: progress });
+      preemptStalled = shouldPreemptStalledIntegrator({
+        state: progress,
+        backlogCommits: integratorBacklogCommits,
+        nowMs,
+      });
+      stalledForMs = progress.stalledSinceMs == null ? 0 : nowMs - progress.stalledSinceMs;
+    } catch {
+      /* best-effort: never block the tick, never preempt on a measurement failure */
+    }
+
     // P-505: gate on the lease ONCE here (the tick's own default gate would
     // re-query presence) — only the current authority derives a grant; grant
     // derivation on a non-authority could wrongly seed its staging ref.
@@ -2839,6 +2903,46 @@ async function runIntegratorLeg(slug: string, workspaceId: string): Promise<void
       await decline('presence_unreadable');
       return;
     }
+
+    // The takeover. Only a NON-self holder can be preempted, and only past the
+    // budget: dropping it re-runs the election without it, and lock-authority
+    // adds SELF unconditionally AFTER the exclusion filter, so the degenerate
+    // case is "self wins ⇒ this node integrates its own repo" — which this leg
+    // already documents (above) as strictly better than freezing. Two nodes
+    // briefly both integrating is the accepted risk here (FF-only + CAS + epoch
+    // fence, proven P-308), so the worst case of a WRONG preemption is a
+    // redundant integration, never corruption. That asymmetry is what makes
+    // acting on a local, best-effort measurement sound.
+    if (preemptStalled && !authority.isSelf && authority.peer?.devicePubkey) {
+      const stalledHolder = authority.peer.devicePubkey;
+      if (eligibleDevices.delete(stalledHolder)) {
+        console.warn(
+          `[git-sync] ${slug}: PREEMPTING stalled integrator ${stalledHolder.slice(0, 12)} — canonical ${canonicalSha?.slice(0, 8) ?? '?'} frozen ${Math.round(stalledForMs / 60_000)}min with ${integratorBacklogCommits ?? '?'} commit(s) unintegrated`,
+        );
+        try {
+          authority = await lockAuthorityForHive(potHomeSlug, { eligibleDevices, requiresRoutine: 'git-sync' });
+        } catch {
+          /* keep the pre-preemption verdict — the decline below records it */
+        }
+        // Recorded so "why did the lease move" is a one-query answer, exactly as
+        // `integrator_status` made "why is canonical stuck" one.
+        try {
+          await patchRoutineMetadata(slug, workspaceId, {
+            integrator_preempt: {
+              at: nowMs,
+              stalledHolder,
+              stalledForMs,
+              canonicalSha,
+              backlogCommits: integratorBacklogCommits,
+              wonLease: authority.isSelf,
+            },
+          });
+        } catch {
+          /* diagnostics must never break the tick */
+        }
+      }
+    }
+
     if (!authority.isSelf) {
       // The COMMON, healthy case (someone else holds the lease) — named so a
       // stuck canonical is a one-query diagnosis: the holder shown here is

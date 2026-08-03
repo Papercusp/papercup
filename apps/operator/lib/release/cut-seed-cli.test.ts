@@ -534,4 +534,71 @@ describe('openSourceStoreForCut (WI-4487 — readOnly is a point-in-time snapsho
     const openStore = () => ({ ready: async () => { throw boom; }, close: async () => {} }) as never;
     await expect(openSourceStoreForCut({ ...base, openStore })).rejects.toThrow(/corrupt manifest/);
   });
+
+  // ── P-014 (D-012): --sparse REQUIRES a fresh head snapshot ────────────────────────
+  // findLatestCompleteSnapshot scans back only SNAPSHOT_SCAN_LOOKBACK (4,000) ops, so a
+  // sparse cut without a fresh tail snapshot resolves coreSparseFrom → 0 and silently
+  // ships the FULL core. Only the writable/quiesced branch can append one. The 2026-07-21
+  // release shipped 461,475 blocks / 1.9 GB labelled "sparse" exactly this way.
+  describe('--sparse precondition (P-014 / D-012)', () => {
+    const live = {
+      backfillImpl: (async () => ({ enqueued: 0, dropped: 0 })) as never,
+      waitImpl: (async () => ({ undrained: 0, waitedMs: 1 })) as never,
+    };
+
+    it('REFUSES a sparse cut on a LIVE-operator box — the read-only path cannot append the head snapshot', async () => {
+      const { openStore } = harness({ locked: true });
+      await expect(
+        openSourceStoreForCut({ ...base, sparse: true, openStore, ...live }),
+      ).rejects.toThrow(/--sparse requires a fresh head snapshot/);
+    });
+
+    it('names the live operator as the cause and offers both remedies (quiesce / drop --sparse)', async () => {
+      const { openStore } = harness({ locked: true });
+      const err = await openSourceStoreForCut({
+        ...base,
+        sparse: true,
+        openStore,
+        ...live,
+      }).catch((e: unknown) => e as Error);
+      expect(err.message).toMatch(/live operator holds the store/);
+      expect(err.message).toMatch(/quiesce the operator/);
+      expect(err.message).toMatch(/PAPERCUSP_SEED_SPARSE=0/);
+    });
+
+    it('REFUSES a sparse cut when --skip-corestore-refresh suppressed the snapshot', async () => {
+      const { openStore } = harness({ locked: false });
+      await expect(
+        openSourceStoreForCut({ ...base, sparse: true, wantRefresh: false, openStore }),
+      ).rejects.toThrow(/skip-corestore-refresh/);
+    });
+
+    it('REFUSES a sparse cut with no --workspace-id (no refresh scope ⇒ no snapshot)', async () => {
+      const { openStore } = harness({ locked: false });
+      await expect(
+        openSourceStoreForCut({ ...base, sparse: true, workspaceId: undefined, openStore }),
+      ).rejects.toThrow(/no --workspace-id/);
+    });
+
+    it('ALLOWS a sparse cut on a quiesced box, and passes sparse through so the snapshot is appended', async () => {
+      const { openStore } = harness({ locked: false });
+      let sawSparse: boolean | undefined;
+      const res = await openSourceStoreForCut({
+        ...base,
+        sparse: true,
+        openStore,
+        refreshImpl: (async (a: { sparse?: boolean }) => {
+          sawSparse = a.sparse;
+        }) as never,
+      });
+      expect(sawSparse).toBe(true);
+      expect(res.sourceWritable).toBe(true);
+    });
+
+    it('does NOT disturb the non-sparse live-operator path (WI-4487 no-outage cut still works)', async () => {
+      const { openStore } = harness({ locked: true });
+      const res = await openSourceStoreForCut({ ...base, sparse: false, openStore, ...live });
+      expect(res.sourceWritable).toBe(false);
+    });
+  });
 });

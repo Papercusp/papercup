@@ -79,7 +79,13 @@
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../../workspace-registry';
-import { getLoopStatuses, turnsStalledFloorMs, rearmFireStarvedLoop, type LoopStatus } from './loop';
+import {
+  getLoopStatuses,
+  turnsStalledFloorMs,
+  rearmFireStarvedLoop,
+  computeLifecycleBackoff,
+  type LoopStatus,
+} from './loop';
 import { autoPauseLoopRoutine } from './loop-cost-cap';
 import { probeWakeReachability } from '../../events/await/wake-reachability';
 import { broadcastSevereEvent } from '../../severe-event-broadcast';
@@ -121,6 +127,19 @@ export interface StalledLoopsSweepResult {
    * worth chasing even though no agent is at fault.
    */
   reArmedFireStarved: string[];
+  /**
+   * EI-19441932615368003: owners whose verdict was `turnsStalled:true` but which this module
+   * refused to disarm because their last fire died on a PROVIDER WALL and the lifecycle-death
+   * backoff has them parked on a still-future `next_fire_at`. They are waiting out a transient
+   * capacity condition, not wedged.
+   *
+   * A persistently NON-EMPTY list here is normal under load and is NOT a fault — it is the
+   * measure of how much silent halting this exemption is preventing. A sustained ZERO on a
+   * workspace that is hitting usage walls means the exemption has stopped matching (a changed
+   * outcome prefix, a backoff that no longer sets next_fire_at) and walled loops are being
+   * disarmed again.
+   */
+  vetoedByProviderWall: string[];
   dryRun: boolean;
 }
 
@@ -157,7 +176,15 @@ export async function sweepStalledLoops(
        AND active = true
   `;
   if (rows.length === 0)
-    return { checked: 0, paused: 0, sample: [], vetoedByRecentTurn: [], reArmedFireStarved: [], dryRun };
+    return {
+      checked: 0,
+      paused: 0,
+      sample: [],
+      vetoedByRecentTurn: [],
+      reArmedFireStarved: [],
+      vetoedByProviderWall: [],
+      dryRun,
+    };
 
   // Latest routine id per owner (an owner should carry exactly one active loop row,
   // but guard against a duplicate the same way materializeLoop's own overwrite logic
@@ -170,6 +197,7 @@ export async function sweepStalledLoops(
   const stalledOwners: string[] = [];
   const vetoedByRecentTurn: string[] = [];
   const reArmedFireStarved: string[] = [];
+  const vetoedByProviderWall: string[] = [];
   const nowMs = Date.now();
   for (const [ownerId, routineId] of routineIdByOwner) {
     const status = statuses.get(ownerId);
@@ -198,6 +226,58 @@ export async function sweepStalledLoops(
           `${Math.round((nowMs - realTurnMs) / 1000)}s ago (lastTurnAt=${status.lastTurnAt ?? 'never'}, ` +
           `lastRealTurnAt=${status.lastRealTurnAt}) — refusing to disarm. ` +
           `A non-zero veto count means last_turn_at is under-reporting (EI-19362678179163398).`,
+      );
+      continue;
+    }
+
+    // EI-19441932615368003 — WALLED, NOT STALLED. The third population, and the one this
+    // guard was silently converting into permanent halts.
+    //
+    // When a provider usage/rate wall kills a loop's wake turn, the lifecycle-death backoff
+    // (loop-turn-outcome.ts P1a / reconcile-loop-routines.ts) does the RIGHT thing: it pushes
+    // `next_fire_at` out by the provider's own retry-after — up to LIFECYCLE_DEATH_REARM_CAP_MS
+    // (6h) — and leaves the loop ARMED so it resumes when the wall lifts. Self-healing by design.
+    //
+    // But that healthy state is, by construction, byte-identical to the corpse signature this
+    // guard hunts: a fire landed, no turn came back (the provider killed it), and no turn CAN
+    // come back until the wall lifts, so presence goes stale too. Both exemptions above then
+    // correctly decline — `lastRealTurnAt` is older than the floor (nothing has run), and the
+    // loop did NOT answer its last fire, so it is not fire-starved either. It falls straight
+    // through to the disarm.
+    //
+    // Measured 2026-08-03 on this workspace: THREE sweeps (11:07Z, 13:07Z, 14:07Z) disarmed
+    // 7 + 2 + 6 = 15 loops. At least two are confirmed walled-not-dead — su-b9269a31 (~4h
+    // silent) and su-3a5df0ae (~2h50m silent, ended only when a human typed "continue"). Each
+    // was waiting out a transient capacity condition that would have cleared on its own.
+    //
+    // loop.ts:682 (EI-19325288514307343) already documented this ambiguity — "PIXEL-IDENTICAL
+    // to a genuinely dead loop for up to 6h" — but framed it as a REPORTING problem for owners
+    // reading loop:status. This module is also one of those surfaces, and it does not merely
+    // display the ambiguity, it ACTS irreversibly on it.
+    //
+    // SKIP rather than re-arm: the backoff already computed a provider-informed `next_fire_at`.
+    // Re-arming would overwrite it with a plain interval and fire straight back into the wall —
+    // the exact blind retry loop-turn-outcome's P1a exists to prevent. Leave it alone.
+    //
+    // `computeLifecycleBackoff` is the SAME pure derivation loop:status renders (it matches BOTH
+    // observer prefixes, `loop-lifecycle-death:` and `resume-turn-death:` — recognizing only one
+    // was itself a past bug, EI-19381528967421062). `resumesInMs > 0` is what makes this narrow:
+    // once the backoff has ELAPSED and still no turn followed, the loop is genuinely stuck and
+    // falls through to the disarm below, exactly as before.
+    const wall = computeLifecycleBackoff({
+      active: true, // by construction here — the sweep only selects active loops
+      lastDeliveryOutcome: status.lastDeliveryOutcome,
+      nextFireAtIso: status.nextFireAt,
+      nowMs,
+    });
+    if (wall && wall.resumesInMs != null && wall.resumesInMs > 0) {
+      vetoedByProviderWall.push(ownerId);
+      console.warn(
+        `[stalled-loops-guard] WALLED ${ownerId}: turnsStalled:true but the last fire died on a ` +
+          `provider wall (${wall.reason}) and the loop is backed off until ${wall.until} ` +
+          `(~${Math.round(wall.resumesInMs / 1000)}s away) — refusing to disarm. It is waiting out a ` +
+          `TRANSIENT capacity condition, not wedged; disarming would make a self-healing backoff ` +
+          `permanent (EI-19441932615368003).`,
       );
       continue;
     }
@@ -317,6 +397,7 @@ export async function sweepStalledLoops(
     sample: stalledOwners.slice(0, 5),
     vetoedByRecentTurn,
     reArmedFireStarved,
+    vetoedByProviderWall,
     dryRun,
   };
 }

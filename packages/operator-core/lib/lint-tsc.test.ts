@@ -789,6 +789,17 @@ describe('scoped --update composes with the caller’s own file set (EI-19444246
     expect(before['mine.ts']).toBe(3); // input not mutated
   });
 
+  it('the marker names BOTH facts — a scoped update no longer reports as whole-project', () => {
+    // The label was the more visible of the two disagreeing facts, which is what made the silent
+    // no-op read as a successful ratchet.
+    expect(lintTscScopeFromArgv(['--files=a.ts', '--update'])).toBe('update:files');
+    expect(lintTscScopeFromArgv(['--mine', '--update'])).toBe('update:mine');
+    expect(lintTscScopeFromArgv(['--update'])).toBe('update'); // bare is genuinely whole-project
+    expect(lintTscScopeFromArgv(['--files=a.ts'])).toBe('files');
+    expect(lintTscScopeFromArgv(['--mine'])).toBe('mine');
+    expect(lintTscScopeFromArgv([])).toBe('all');
+  });
+
   it('the merge ADDS a file the baseline has never recorded rather than dropping it', () => {
     const after = mergeRatchetIntoBaseline({
       baselineFiles: { 'peer.ts': 2 },

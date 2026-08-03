@@ -484,6 +484,20 @@ export function decidePerFile({
 
   const base = { regressions, improvements, total, baselineTotal, unattributedBrokenFiles: unattributedBroken };
 
+  // EI-19444246913245434 — the caller's OWN improved files: the only ones a SCOPED `--update` may
+  // lower. Computed HERE, before any verdict is chosen, so every non-failing verdict can carry it.
+  //
+  // The bug this fixes: the ratchet used to BE a verdict (`ok-ratchet`), and `decidePerFile`
+  // resolves exactly one. So the `regressions.length > 0` branch below returned first and the
+  // caller's ratchet was dropped — even when that branch had just classified every regression as
+  // explicitly NOT the caller's problem (`ok-peer-drift`, exit 0, a leading ✓). Peer drift is
+  // near-permanent on this shared tree, so `--files=X --update` had no working form at all while
+  // still reporting `scope=update exit=0 status=clean`. A ratchet is an EFFECT, not a
+  // classification; carrying it as a payload lets the write survive whatever the verdict is.
+  const scopedRatchetFiles =
+    updateFlag && changedFiles ? improvements.filter((r) => changedFiles.has(r.file)) : [];
+  const ratchetPayload = scopedRatchetFiles.length > 0 ? { ratchetFiles: scopedRatchetFiles } : {};
+
   if (regressions.length > 0) {
     if (changedFiles) {
       // EI-18756182128903253 — cause-aware widening: a regression outside `changedFiles` is STILL
@@ -552,14 +566,25 @@ export function decidePerFile({
       if (newFiles.length > 0 && !attributionDeclared) {
         return { verdict: 'fail-new-file', ...base, attributed: [], peerDrift, newFiles };
       }
-      return { verdict: 'ok-peer-drift', ...base, attributed: [], peerDrift, newFiles };
+      // ...ratchetPayload: drift the gate just declared NOT the caller's problem must not also
+      // silently discard the caller's own ratchet (EI-19444246913245434). Reporting unchanged.
+      return { verdict: 'ok-peer-drift', ...base, attributed: [], peerDrift, newFiles, ...ratchetPayload };
     }
     return { verdict: 'fail-regressed', ...base };
   }
 
   if (improvements.length > 0) {
-    return updateFlag
-      ? { verdict: 'ok-ratchet', ...base, newBaselineByFile: { ...currentByFile } }
+    if (!updateFlag) return { verdict: 'ok-below', ...base };
+    // A BARE `--update` re-baselines the whole project (full map). A SCOPED one lowers ONLY the
+    // caller's own files (payload) — writing the whole map there would bake every peer's
+    // uncommitted count into a shared baseline, which is a false red the moment they revert, and
+    // is exactly why the bug report ruled out bare `--update` as a workaround. Never both.
+    if (!changedFiles) return { verdict: 'ok-ratchet', ...base, newBaselineByFile: { ...currentByFile } };
+    // Scoped, but every improvement belongs to a peer: there is nothing of the caller's to lock
+    // in, so this is honestly `ok-below` ("below baseline — NOT locked in"), not a silent no-op
+    // dressed as a successful update.
+    return scopedRatchetFiles.length > 0
+      ? { verdict: 'ok-ratchet', ...base, ...ratchetPayload }
       : { verdict: 'ok-below', ...base };
   }
   return { verdict: 'ok', ...base };
@@ -1115,15 +1140,21 @@ export function coalesceWatermarkFor({ root, files, updateFlag }) {
 /**
  * Which scope the caller asked this gate to judge — reported on the completion marker so a
  * reader can tell a whole-project verdict from one scoped to a handful of files. `--update`
- * wins over the others because it MUTATES the baseline rather than judging against it.
+ * leads because it MUTATES the baseline rather than judging against it.
+ *
+ * EI-19444246913245434 — `--update` used to be reported ALONE, swallowing any scope flag beside
+ * it, so `--files=X --update` announced a whole-project `scope=update` for a run that judged (and,
+ * before the same fix, wrote) only X. The label was the more visible of the two disagreeing
+ * facts, which is what made the silent no-op read as a successful ratchet. A composite label
+ * cannot drift from the run's actual scope because both halves are read from the same argv.
+ *
  * @param {string[]} argv
- * @returns {'update'|'files'|'mine'|'all'}
+ * @returns {'update'|'update:files'|'update:mine'|'files'|'mine'|'all'}
  */
 export function lintTscScopeFromArgv(argv) {
-  if (argv.includes('--update')) return 'update';
-  if (parseExplicitFiles(argv) !== null) return 'files';
-  if (argv.includes('--mine')) return 'mine';
-  return 'all';
+  const scoped = parseExplicitFiles(argv) !== null ? 'files' : argv.includes('--mine') ? 'mine' : null;
+  if (argv.includes('--update')) return scoped ? `update:${scoped}` : 'update';
+  return scoped ?? 'all';
 }
 
 /**
@@ -1472,6 +1503,18 @@ export function runTscBaselineGate({
     console.log(`✓ ${why}: baseline → ${sumValues(byFile)} errors across ${Object.keys(byFile).length} file(s)`);
   };
 
+  // EI-19444246913245434 — a SCOPED `--update` lowers ONLY the files the caller named, merged onto
+  // the gate's OWN on-disk baseline. Deliberately NOT `baselineByFile`: that is the EFFECTIVE map,
+  // which folds in entries inherited from foreign package baselines (effectiveBaselineByFile), and
+  // persisting those would durably copy another package's rows into this one.
+  const ratchetScoped = (entries, why) => {
+    writeBaseline(
+      mergeRatchetIntoBaseline({ baselineFiles: baseline.files ?? {}, ratchetFiles: entries }),
+      why,
+    );
+    for (const r of entries) console.log(formatRow(r));
+  };
+
   // EI-19321179234197157: a TS1xxx-broken file OUTSIDE the caller's own --mine/--files set never
   // gates the verdict (see decidePerFile), but it is still surfaced here — unconditionally, ahead
   // of the verdict switch, so it is never lost whichever branch below returns. tsc's diagnostics
@@ -1662,13 +1705,26 @@ export function runTscBaselineGate({
         // exit code must not depend on it. `standing` excludes dirty paths by construction.
         recordStandingReds({ entries: standing, project: label ?? '' });
       }
+      // EI-19444246913245434 — THE DROPPED WRITE. Everything above is a report ABOUT PEERS; the
+      // caller's own `--update` still has to happen. Before this, it silently did not: the run
+      // exited 0 with a leading ✓ and a `scope=update` marker having written nothing, so the next
+      // agent measured against a stale baseline and inherited slack that absorbs a real
+      // regression. Placed last so the ratchet line reads after the drift it is unrelated to.
+      if (result.ratchetFiles) {
+        ratchetScoped(result.ratchetFiles, 'Ratcheted YOUR improved file(s) down (--update, scoped)');
+      }
       process.exit(0);
       break;
     }
     case 'ok-ratchet':
       // Reached ONLY on an explicit `--update` with at least one improved file (decidePerFile gates it).
-      writeBaseline(result.newBaselineByFile, 'Ratcheted improved file(s) down (--update)');
-      for (const r of result.improvements) console.log(formatRow(r));
+      if (result.ratchetFiles) {
+        // Scoped run: lower the caller's own files only (EI-19444246913245434).
+        ratchetScoped(result.ratchetFiles, 'Ratcheted YOUR improved file(s) down (--update, scoped)');
+      } else {
+        writeBaseline(result.newBaselineByFile, 'Ratcheted improved file(s) down (--update)');
+        for (const r of result.improvements) console.log(formatRow(r));
+      }
       process.exit(0);
       break;
     case 'ok-below':

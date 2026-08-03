@@ -514,10 +514,40 @@ export async function openSourceStoreForCut(inp: {
       `[cut-seed] refreshed via the live operator for ${inp.workspaceId}::${inp.hive}: ` +
         `backfill enqueued=${backfill.enqueued} dropped=${backfill.dropped}; operator drained to zero in ${waitedMs}ms.`,
     );
+    sparseBlockedReason =
+      'the live operator holds the store, so this cut took the WI-4487 read-only path and ' +
+      'cannot append to the own log';
   } else if (!inp.workspaceId) {
     warn('[cut-seed] no --workspace-id: skipping pre-cut corestore refresh (no DB scope to backfill/drain).');
+    sparseBlockedReason = 'no --workspace-id, so no pre-cut refresh (and no head snapshot) ran';
   } else {
     warn('[cut-seed] --skip-corestore-refresh: snapshotting corestore without refreshing local PG state first.');
+    sparseBlockedReason = '--skip-corestore-refresh suppressed the refresh that appends the head snapshot';
+  }
+
+  // P-014 (D-012) — FAIL FAST rather than ship a 50× miss behind a console.warn.
+  //
+  // --sparse ships only `[coreSparseFrom, len)`, and coreSparseFrom is resolved by
+  // computeSparseFrom → findLatestCompleteSnapshot, which scans back only
+  // SNAPSHOT_SCAN_LOOKBACK (= SNAPSHOT_COMPACT_EVERY_OPS × 4 = 4,000) ops from the tail.
+  // A fresh head snapshot at the tail is therefore a PRECONDITION of a sparse cut, not an
+  // optimisation. Only the writable/quiesced branch above appends one; the live-operator
+  // branch holds no write lock, and the periodic producer that would otherwise keep one in
+  // window (SUBSTRATE_LOG_SNAPSHOT) is dark pending the P-008 proof.
+  //
+  // Without this guard the cut proceeds, computeSparseFrom returns 0, seed-provider-corestore
+  // emits a console.warn, and the "sparse" seed ships the FULL core. That is exactly how the
+  // 2026-07-21 release shipped 461,475 blocks / 1.9 GB labelled sparse, unnoticed for three
+  // weeks. A silent 50× regression is worth a hard failure.
+  if (inp.sparse && !headSnapshotAppended) {
+    if (store) await store.close().catch(() => {});
+    throw new Error(
+      `[cut-seed] --sparse requires a fresh head snapshot at the own-log tail, and none was ` +
+        `appended: ${sparseBlockedReason}. Proceeding would silently ship the FULL core ` +
+        `(computeSparseFrom → 0). Remedies: (a) quiesce the operator on this box and re-run, so ` +
+        `the cut opens the store WRITABLE and appends the snapshot itself; or (b) drop --sparse ` +
+        `(PAPERCUSP_SEED_SPARSE=0) to ship a full seed deliberately.`,
+    );
   }
 
   if (!sourceWritable) {

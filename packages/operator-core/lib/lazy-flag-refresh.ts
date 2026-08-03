@@ -52,6 +52,23 @@
  * Do not also arm from the refresh function itself: it makes the first timer tick re-enter this
  * helper and kick a redundant concurrent refresh, for a guarantee that buys nothing (see above).
  *
+ * ## The one behaviour this DOES change — know it before migrating a caller
+ *
+ * A module-scope subscription got its first population from the boot flag-reload, on the bus's
+ * schedule and independent of readers. Lazy arming moves that to the FIRST READER CALL — and because
+ * the refresh is async while the reader is sync, THAT FIRST CALL STILL SEES THE PRE-REFRESH VALUE.
+ * Where the boot reload had already fired before the first read, this widens that window by one
+ * refresh round-trip.
+ *
+ * Why it is acceptable for the callers migrated so far, and the question to ask before adding one:
+ * the pre-refresh value is each module's own fail-safe default — the same one its `catch` falls back
+ * to, i.e. the baked, pre-feature behaviour — so the window degrades to "the override has not taken
+ * effect yet", never to a wrong or unsafe value. It is also not a new window: every one of these
+ * modules already served that default between import and the boot reload. If you are migrating a
+ * cache whose unpopulated state is NOT a safe default (it opens something up rather than leaving it
+ * baked), do not rely on lazy arming alone — give that module an explicit warm call on a boot path,
+ * the way task-manager/enabled.ts does with `warmTaskManagerFlag()`.
+ *
  * ## Guards
  *
  * - `scripts/check-no-module-scope-flag-subscribe.mjs` — shrink-only source lint; fails on a NEW
