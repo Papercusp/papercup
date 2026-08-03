@@ -451,6 +451,8 @@ describe('resolveDesktopApiPort (WI-7355: told-us vs guessed)', () => {
 // can. The first test below pins exactly that contrast in one place.
 describe('realApiRoundTrip (WI-7355: connectable ≠ serving)', () => {
   let servers: Array<net.Server | http.Server> = [];
+  /** Sockets held open by the deliberately-stalling server (see below). */
+  let heldSockets: net.Socket[] = [];
 
   beforeEach(async () => {
     h.home = await mkdtemp(join(tmpdir(), 'desktop-health-api-'));
@@ -460,6 +462,19 @@ describe('realApiRoundTrip (WI-7355: connectable ≠ serving)', () => {
     const home = h.home;
     h.home = '';
     await rm(home, { recursive: true, force: true });
+    // `close()` does not fire its callback until every accepted connection is
+    // gone — and the whole point of the stalling server below is that it holds
+    // one forever. Tear connections down FIRST or this hook hangs to the 60s
+    // vitest hook timeout (which is how it failed the first time).
+    for (const s of heldSockets) {
+      try {
+        s.destroy();
+      } catch {
+        /* already gone */
+      }
+    }
+    heldSockets = [];
+    for (const s of servers) (s as http.Server).closeAllConnections?.();
     await Promise.all(servers.map((s) => new Promise((r) => s.close(() => r(undefined)))));
     servers = [];
   });
@@ -503,8 +518,10 @@ describe('realApiRoundTrip (WI-7355: connectable ≠ serving)', () => {
   it('THE POINT: a listener that ACCEPTS but never answers is `unreachable` here — while a bare connect() calls it up', async () => {
     // Accepts the connection and then does nothing with it, ever: the exact
     // observable a wedged operator presents (EI-19406226890070872).
-    const srv = net.createServer(() => {
-      /* accept and stall — never respond */
+    const srv = net.createServer((sock) => {
+      // Accept and stall — never respond. Hold the socket so the stall is real;
+      // afterEach destroys it.
+      heldSockets.push(sock);
     });
     servers.push(srv);
     const port = await listenEphemeral(srv);

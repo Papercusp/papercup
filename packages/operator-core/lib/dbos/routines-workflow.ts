@@ -458,6 +458,38 @@ async function routinesTickImpl(): Promise<void> {
     { name: 'loop-rebase-sweep' },
   );
 
+  // EI-19408412473830336: auto-resolve leg for the loop-death / loop-lifecycle-death
+  // watchdog escalations opened above (via reconcileLoopRoutines's terminateDeadLoop /
+  // classifyLoopLifecycleTurn paths) — see reconcile-loop-routines.ts's module-header
+  // note on both reconcile*Escalations functions for why these were previously
+  // structurally immortal (48 open rows, nothing could ever close them). Its own
+  // step, riding right after the rebase sweep it complements; fail-soft (never blocks
+  // the watchdog sweeps below).
+  await DBOS.runStep(
+    async () => {
+      try {
+        const { reconcileDeadLoopEscalations, reconcileLoopLifecycleDeathEscalations } = await import(
+          '../harness/routines/reconcile-loop-routines'
+        );
+        const [deadLoop, lifecycleDeath] = await Promise.all([
+          reconcileDeadLoopEscalations({ sql }),
+          reconcileLoopLifecycleDeathEscalations({ sql }),
+        ]);
+        if (deadLoop.resolved > 0 || lifecycleDeath.resolved > 0) {
+          console.warn(
+            `[loop-watchdog-escalation-reconcile] auto-resolved ${deadLoop.resolved} loop-death + ` +
+              `${lifecycleDeath.resolved} loop-lifecycle-death escalation(s) this pass`,
+          );
+        }
+      } catch (e) {
+        console.warn(
+          `[loop-watchdog-escalation-reconcile] pass failed: ${e instanceof Error ? e.message : e}`,
+        );
+      }
+    },
+    { name: 'loop-watchdog-escalation-reconcile' },
+  );
+
   // start-hive-wake-orchestration P-011 / D-003: the hive liveness sweep — a
   // deterministic, zero-token dead-man's-switch check riding this existing 30s
   // tick (NOT a cadence: the wake it may arm is the exception path). Started +
