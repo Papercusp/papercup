@@ -2342,6 +2342,79 @@ try:
 except Exception:
     pass  # guard must never wedge a command
 
+# ── cd + EXIT-trap/restore path-drift advisory (EI-19409854431997137) ──────
+# The standard "mutate a file to confirm a guard/test actually goes red, then
+# restore it" idiom captures its restore path ONCE, before any `cd`:
+#
+#     cp "$F" /tmp/restore.ts
+#     trap 'cp /tmp/restore.ts '"$F"'' EXIT
+#     <mutate $F>
+#     cd apps/operator && npx vitest run ...      # changes cwd mid-command
+#     cp /tmp/restore.ts "$F"
+#
+# When $F is relative (or a variable holding a relative path), the `cd` in the
+# middle silently breaks BOTH the explicit restore line and the EXIT trap:
+# each resolves $F against the NEW cwd, not the one it was relative to when
+# set. Caught live 2026-08-03: the restore failed with `cp: cannot create
+# regular file …: No such file or directory`, and the mutated (deliberately
+# failing) test file was left in the shared tree — one git-sync tick from
+# being committed and red-pinning the fleet gate. The failure is silent in
+# the direction that matters: `cp`'s error is buried under a long,
+# intentionally-failing test run's own noisy output, at exactly the moment
+# the reader is expecting a failure (that IS the experiment), so a red exit
+# reads as "the mutation worked", not "the restore didn't". An EXIT trap
+# gives false confidence here — it was armed correctly and still failed, for
+# a reason trap syntax cannot express: it captured the PATH TEXT, not the cwd
+# it should resolve against.
+#
+# SOFT/ADVISORY (never blocks) — unlike the shell-write guard above, this
+# never tries to resolve where a target actually lands: the hazard fires even
+# when the target is a bare `$VAR`, which the shell-write guard's
+# LITERAL-PATHS-ONLY policy always fails open on, so it would never catch the
+# incident above (`$F` is a variable, not a literal path).
+#
+# Deliberately inert whenever the command contains ANY paren, same convention
+# as `_effective_cwd_before` above: a subshell can scope a `cd` so it never
+# leaks past the closing `)`, and this advisory does no paren-depth tracking
+# to tell a scoped `cd` from a real one — exactly the "Correct forms" fix the
+# advisory text below recommends (`( cd apps/operator && npx vitest … )`).
+try:
+    if not ADVISORY and '(' not in command and ')' not in command:
+        _cdtrap_clean = _strip_shell_quotes(_strip_heredoc_bodies(command))
+        _cd_m = _CD_RE.search(_cdtrap_clean)
+        if _cd_m:
+            _has_exit_trap = bool(
+                re.search(r'\btrap\b[^\n]*\b(?:EXIT|0)\b', _cdtrap_clean))
+            _cprestore_after_cd = None
+            for _m in re.finditer(r'\b(cp|mv)\b([^;&|\n]*)', _cdtrap_clean):
+                if _m.start() <= _cd_m.end():
+                    continue  # precedes (or is) the cd — e.g. the initial backup, not at risk
+                if _segment_has_unsplittable_expansion(_m.group(2)):
+                    continue
+                _toks = [t for t in _strip_redirect_tokens(_m.group(2).split())
+                         if not t.startswith('-')]
+                if len(_toks) >= 2:
+                    _cprestore_after_cd = _m.group(1)
+                    break
+            if _has_exit_trap or _cprestore_after_cd:
+                _why = ('an EXIT trap' if _has_exit_trap
+                        else ('a `%s` after the cd' % _cprestore_after_cd))
+                ADVISORY = (
+                    'cd + restore-path drift advisory (EI-19409854431997137): this command '
+                    'contains a `cd` AND ' + _why + ' — a restore/trap path captured before '
+                    'the cd (a relative path, or a variable holding one) resolves against the '
+                    'WRONG cwd once the cd runs, so the restore can fail SILENTLY (buried '
+                    'under a long run\'s own output) while a mutated file stays in the shared '
+                    'tree, one git-sync tick from being committed. Fixes: use an ABSOLUTE '
+                    'restore path (`F=$(git rev-parse --show-toplevel)/path/to/file`), or keep '
+                    'the `cd` scoped to a subshell that never touches the restore '
+                    '(`( cd apps/operator && npx vitest … )`), or restore via `git checkout -- '
+                    '<that one file>` instead of a /tmp copy. Advisory only; this command is '
+                    'proceeding as issued.'
+                )
+except Exception:
+    pass  # advisory must never wedge a command
+
 # ── Interpreter inline-code write guard (EI-18691482279179647) ─────────────
 # The shell-write guard above only knows SHELL write constructs (>, >>, tee,
 # sed/perl/ruby -i, cp). An interpreter invoked with inline code — `python3

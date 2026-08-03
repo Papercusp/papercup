@@ -1,0 +1,19 @@
+[Unit]
+Description=Papercusp stale-testvm reaper — reaps orphaned papercusp-testvm-* QEMU VMs left running past their age threshold (EI-18792610532592319)
+# Deliberately a systemd timer, NOT a DBOS scheduled workflow and NOT an
+# in-process operator tick (dbos-scheduler-consolidation-2026-06-03 D-004 /
+# EI-1622): this is a dev-box host-level process leak (infra hygiene, not
+# product), the same reasoning as papercup-vitest-orphan-reaper.service and
+# papercup-webkit-reaper.service.
+
+[Service]
+Type=oneshot
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+# A sweep walks /proc once and, at most, calls `vmctl down` on a handful of
+# candidates (each internally bounded — see TESTVM_REAPER_VMCTL_TIMEOUT,
+# default 90s). 300s bounds a pathological run without cutting a legitimate
+# graceful-shutdown attempt short.
+TimeoutStartSec=300
+ExecStart=%h/papercupai-workspace/papercusp/bin/reap-stale-testvms.sh

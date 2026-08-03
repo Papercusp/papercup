@@ -10,16 +10,23 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { PresenceTier1Joins } from '../agent-tools/coordination/presence-tier1';
 import type { WakeabilitySignals } from '../agent-tools/coordination/presence-wakeability';
+import type { SelfWakeSignals } from '../agent-tools/coordination/presence-selfwake';
 import type { FleetAssignmentRow } from './assignments';
 import type { FleetFoldPresence } from './fleet-roster';
 
-const { fetchPresenceTier1Mock, fetchWakeabilityMock, listFleetAssignmentsMock, recordedLiveOwnerIdsMock } =
-  vi.hoisted(() => ({
-    fetchPresenceTier1Mock: vi.fn(),
-    fetchWakeabilityMock: vi.fn(),
-    listFleetAssignmentsMock: vi.fn(),
-    recordedLiveOwnerIdsMock: vi.fn(),
-  }));
+const {
+  fetchPresenceTier1Mock,
+  fetchWakeabilityMock,
+  listFleetAssignmentsMock,
+  recordedLiveOwnerIdsMock,
+  fetchSelfWakeMock,
+} = vi.hoisted(() => ({
+  fetchPresenceTier1Mock: vi.fn(),
+  fetchWakeabilityMock: vi.fn(),
+  listFleetAssignmentsMock: vi.fn(),
+  recordedLiveOwnerIdsMock: vi.fn(),
+  fetchSelfWakeMock: vi.fn(),
+}));
 
 vi.mock('../agent-tools/coordination/presence-tier1', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../agent-tools/coordination/presence-tier1')>();
@@ -38,6 +45,12 @@ vi.mock('./assignments', async (importOriginal) => {
 vi.mock('../adv-sessions', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../adv-sessions')>();
   return { ...actual, recordedLiveOwnerIds: recordedLiveOwnerIdsMock };
+});
+// EI-19407725333778711: the forward-looking self-wake leg also hits PG — mock it
+// like every other non-injectable leg so this file stays PG-free.
+vi.mock('../agent-tools/coordination/presence-selfwake', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../agent-tools/coordination/presence-selfwake')>();
+  return { ...actual, fetchSelfWake: fetchSelfWakeMock };
 });
 
 // Imported AFTER the mocks so the mocked bindings are the ones wired in.
@@ -73,9 +86,14 @@ describe('listFleetRosterDiagnosed (WI-3818 bounded fan-out)', () => {
     fetchWakeabilityMock.mockReset();
     listFleetAssignmentsMock.mockReset();
     recordedLiveOwnerIdsMock.mockReset();
+    fetchSelfWakeMock.mockReset();
     // Default: the recorded leg answers promptly with "nobody recorded-live" —
     // the pre-existing tests' degradedLegs expectations stay exact.
     recordedLiveOwnerIdsMock.mockResolvedValue(new Set<string>());
+    // Same treatment for the self-wake leg (EI-19407725333778711): answer
+    // promptly by default so every pre-existing degradedLegs expectation in
+    // this file keeps asserting EXACTLY the leg it was written to assert.
+    fetchSelfWakeMock.mockResolvedValue(new Map<string, SelfWakeSignals>());
   });
   afterEach(() => {
     vi.useRealTimers();
@@ -172,6 +190,58 @@ describe('listFleetRosterDiagnosed (WI-3818 bounded fan-out)', () => {
     // still fold from presence + assignments, just without the recorded rescue.
     expect(result.entries).toHaveLength(1);
     warnSpy.mockRestore();
+  });
+
+  it('degrades the self-wake leg independently, reporting UNKNOWN rather than a false alarm', async () => {
+    // EI-19407725333778711. The failure direction that matters: a slow query
+    // must not make every healthy member look stranded. `selfWake:'none'` is an
+    // escalation-worthy claim ("nothing will ever wake this agent"), so a
+    // degraded leg has to yield `null` (UNKNOWN) instead.
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    fetchPresenceTier1Mock.mockResolvedValue(new Map<string, PresenceTier1Joins>());
+    fetchWakeabilityMock.mockResolvedValue(
+      new Map<string, WakeabilitySignals>([['su-1', { wakeable: true, liveTurn: false }]]),
+    );
+    listFleetAssignmentsMock.mockResolvedValue([] as FleetAssignmentRow[]);
+    fetchSelfWakeMock.mockReturnValue(neverSettles<Map<string, SelfWakeSignals>>());
+
+    const resultPromise = listFleetRosterDiagnosed({
+      fleetSlug: 'p2p-parity-lanes',
+      readPresence: async () => [pres('su-1')],
+    });
+    await vi.advanceTimersByTimeAsync(FLEET_ROSTER_SUBREAD_TIMEOUT_MS);
+    const result = await resultPromise;
+    expect(result.degradedLegs).toEqual(['selfwake']);
+    // The roster survives, and the rest of the liveness verdict is unaffected —
+    // self-wake is an ENRICHMENT leg, not a gate on the read.
+    expect(result.entries).toHaveLength(1);
+    expect(result.entries[0].sessionState).toBe('parked');
+    expect(result.entries[0].selfWake).toBeNull();
+    warnSpy.mockRestore();
+  });
+
+  it('carries selfWake through to the entry when the leg answers', async () => {
+    fetchPresenceTier1Mock.mockResolvedValue(new Map<string, PresenceTier1Joins>());
+    fetchWakeabilityMock.mockResolvedValue(
+      new Map<string, WakeabilitySignals>([['su-1', { wakeable: true, liveTurn: false }]]),
+    );
+    listFleetAssignmentsMock.mockResolvedValue([] as FleetAssignmentRow[]);
+    // The incident shape: push-wakeable and parked, but nothing will wake it.
+    fetchSelfWakeMock.mockResolvedValue(
+      new Map<string, SelfWakeSignals>([
+        ['su-1', { loopArmed: false, standingEventAwait: false, selfWake: 'none' }],
+      ]),
+    );
+
+    const resultPromise = listFleetRosterDiagnosed({
+      fleetSlug: 'p2p-parity-lanes',
+      readPresence: async () => [pres('su-1')],
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    const result = await resultPromise;
+    expect(result.degradedLegs).toEqual([]);
+    expect(result.entries[0].sessionState).toBe('parked');
+    expect(result.entries[0].selfWake).toBe('none');
   });
 
   it('listFleetRoster (back-compat wrapper) still resolves promptly with just the entries array', async () => {

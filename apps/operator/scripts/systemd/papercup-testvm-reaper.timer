@@ -1,0 +1,18 @@
+[Unit]
+Description=Run the Papercusp stale-testvm reaper every 15 minutes (EI-18792610532592319)
+
+[Timer]
+# 15 min: frequent enough that a leaked VM never runs unnoticed for more than
+# ~6h15m total (the reaper's own 6h default age threshold + one tick), rare
+# enough to be a negligible fixed cost (one /proc walk + at most a handful of
+# `vmctl down` calls, most ticks finding nothing to do).
+OnBootSec=5min
+OnUnitActiveSec=15min
+AccuracySec=1min
+# No catch-up on missed runs — a fresh sweep is what matters, not auditing how
+# many ticks were missed while the box was asleep.
+Persistent=false
+Unit=papercup-testvm-reaper.service
+
+[Install]
+WantedBy=timers.target

@@ -46,7 +46,15 @@ vi.mock('../credentials', () => ({
   readCredentials: async () => ({ openai_api_key: 'test-key' }),
 }));
 
-import { runBackfillSweep, getLastBackfillResult, backfillTable, TARGETS } from './embed-backfill';
+import {
+  runBackfillSweep,
+  getLastBackfillResult,
+  backfillTable,
+  TARGETS,
+  logMemoryVecOutcome,
+  resetMemoryVecIdleLogState,
+  MEMORY_VEC_IDLE_LOG_INTERVAL_MS,
+} from './embed-backfill';
 // Import the width — the sweep writes into the prose columns, so a width change
 // must move this fixture automatically rather than stranding it (384→768).
 import { PROSE_VECTOR_DIMS } from './prose-vector-dims';
@@ -472,5 +480,163 @@ describe('every TARGETS bodySql caps its free-text input (EI-12967)', () => {
         expect(Number(m[1]), `${target.table}.bodySql cap exceeds 2000: ${target.bodySql}`).toBeLessThanOrEqual(2000);
       }
     }
+  });
+});
+
+/**
+ * EI-19409840792445272 — the memory-vec leg used to log ONLY when
+ * `embedded > 0 || failed > 0`, which made three states byte-identical and silent:
+ * healthy-idle, a predicate matching nothing, and a disabled embedder. Two of those
+ * are total outages of semantic recall.
+ *
+ * The property under test is NOT the message wording — it is that the states are
+ * DISTINGUISHABLE from outside, and that a healthy system stays quiet enough that
+ * the loud cases still read as loud.
+ */
+describe('logMemoryVecOutcome — silent-failure discrimination', () => {
+  function capture() {
+    const lines: Array<{ level: 'log' | 'warn'; text: string }> = [];
+    return {
+      lines,
+      sink: {
+        log: (...a: unknown[]) => lines.push({ level: 'log', text: a.join(' ') }),
+        warn: (...a: unknown[]) => lines.push({ level: 'warn', text: a.join(' ') }),
+      } as Pick<Console, 'log' | 'warn'>,
+    };
+  }
+
+  beforeEach(() => resetMemoryVecIdleLogState());
+
+  it('a disabled embedder is LOUD — the most dangerous state must never be silent', () => {
+    const { lines, sink } = capture();
+    logMemoryVecOutcome({ scanned: 0, embedded: 0, failed: 0, skipped: 'embedder-disabled' }, 0, sink);
+    expect(lines).toHaveLength(1);
+    expect(lines[0].level).toBe('warn');
+    expect(lines[0].text).toMatch(/DISABLED/);
+  });
+
+  it('an empty vector space WITH recallable rows is LOUD, and repeats every tick (it cannot self-heal)', () => {
+    const { lines, sink } = capture();
+    const totalFailure = {
+      scanned: 0,
+      embedded: 0,
+      failed: 0,
+      mode: 'gemma',
+      table: 'memory_vec_gemma',
+      zeroYield: { vectorSpaceEmpty: true, canonicalHasRows: true },
+    };
+    logMemoryVecOutcome(totalFailure, 0, sink);
+    logMemoryVecOutcome(totalFailure, 1000, sink);
+    expect(lines).toHaveLength(2);
+    expect(lines.every((l) => l.level === 'warn')).toBe(true);
+    expect(lines[0].text).toMatch(/TOTAL FAILURE/);
+    // It must name the table — the whole point is answering "which space is empty?"
+    expect(lines[0].text).toContain('memory_vec_gemma');
+  });
+
+  it('a HEALTHY idle sweep is quiet after its first line — and is NOT confusable with the failure above', () => {
+    const { lines, sink } = capture();
+    const healthy = {
+      scanned: 0,
+      embedded: 0,
+      failed: 0,
+      mode: 'harrier',
+      table: 'memory_vec_harrier',
+      zeroYield: { vectorSpaceEmpty: false, canonicalHasRows: true },
+    };
+    logMemoryVecOutcome(healthy, 0, sink);
+    logMemoryVecOutcome(healthy, 60_000, sink);
+    logMemoryVecOutcome(healthy, 120_000, sink);
+    expect(lines).toHaveLength(1);
+    expect(lines[0].level).toBe('log');
+    expect(lines[0].text).not.toMatch(/TOTAL FAILURE|DISABLED/);
+  });
+
+  it('names the ACTIVE table on the idle line — the line that would have prevented the misdiagnosis', () => {
+    const { lines, sink } = capture();
+    logMemoryVecOutcome(
+      {
+        scanned: 0,
+        embedded: 0,
+        failed: 0,
+        mode: 'harrier',
+        table: 'memory_vec_harrier',
+        zeroYield: { vectorSpaceEmpty: false, canonicalHasRows: true },
+      },
+      0,
+      sink,
+    );
+    expect(lines[0].text).toContain('memory_vec_harrier');
+    expect(lines[0].text).toContain('harrier');
+  });
+
+  it('re-logs IMMEDIATELY when the active target changes, without waiting for the interval', () => {
+    const { lines, sink } = capture();
+    const at = (table: string, mode: string) => ({
+      scanned: 0,
+      embedded: 0,
+      failed: 0,
+      mode,
+      table,
+      zeroYield: { vectorSpaceEmpty: false, canonicalHasRows: true },
+    });
+    logMemoryVecOutcome(at('memory_vec_harrier', 'harrier'), 0, sink);
+    logMemoryVecOutcome(at('memory_vec_gemma', 'gemma'), 1000, sink);
+    expect(lines).toHaveLength(2);
+    expect(lines[1].text).toContain('memory_vec_gemma');
+  });
+
+  it('restates the live target once the interval elapses, so the signal never goes permanently dark', () => {
+    const { lines, sink } = capture();
+    const healthy = {
+      scanned: 0,
+      embedded: 0,
+      failed: 0,
+      mode: 'harrier',
+      table: 'memory_vec_harrier',
+      zeroYield: { vectorSpaceEmpty: false, canonicalHasRows: true },
+    };
+    logMemoryVecOutcome(healthy, 0, sink);
+    logMemoryVecOutcome(healthy, MEMORY_VEC_IDLE_LOG_INTERVAL_MS, sink);
+    expect(lines).toHaveLength(2);
+  });
+
+  it('a productive pass names the target too (counts alone never identified the table)', () => {
+    const { lines, sink } = capture();
+    logMemoryVecOutcome(
+      { scanned: 5, embedded: 4, failed: 1, mode: 'harrier', table: 'memory_vec_harrier' },
+      0,
+      sink,
+    );
+    expect(lines).toHaveLength(1);
+    expect(lines[0].text).toContain('memory_vec_harrier');
+    expect(lines[0].text).toMatch(/embedded=4/);
+  });
+
+  it('the three zero-count states are mutually DISTINGUISHABLE — the core regression guard', () => {
+    const render = (r: Parameters<typeof logMemoryVecOutcome>[0]) => {
+      resetMemoryVecIdleLogState();
+      const { lines, sink } = capture();
+      logMemoryVecOutcome(r, 0, sink);
+      return lines.map((l) => `${l.level}:${l.text}`).join('|');
+    };
+    const disabled = render({ scanned: 0, embedded: 0, failed: 0, skipped: 'embedder-disabled' });
+    const dead = render({
+      scanned: 0,
+      embedded: 0,
+      failed: 0,
+      mode: 'harrier',
+      table: 'memory_vec_harrier',
+      zeroYield: { vectorSpaceEmpty: true, canonicalHasRows: true },
+    });
+    const healthy = render({
+      scanned: 0,
+      embedded: 0,
+      failed: 0,
+      mode: 'harrier',
+      table: 'memory_vec_harrier',
+      zeroYield: { vectorSpaceEmpty: false, canonicalHasRows: true },
+    });
+    expect(new Set([disabled, dead, healthy]).size).toBe(3);
   });
 });

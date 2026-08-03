@@ -1021,11 +1021,35 @@ export function OperatorConversationProvider({
   const [hasMoreEarlier, setHasMoreEarlier] = useState(false);
   const [loadingEarlier, setLoadingEarlier] = useState(false);
 
-  // Desktop-tuned: PG fetch is loopback, so the bottleneck is React
-  // reconciliation on prepend, not bandwidth. 200/page keeps the
-  // sidebar feeling close to "all in memory" while still bounding the
-  // worst-case render burst on initial mount.
-  const INITIAL_PAGE = 200;
+  // WINDOWING (no-http-anywhere-2026-07-28 P-008 / D-027: "per-row slimming is
+  // exhausted, the next cut is windowing"). These two are deliberately
+  // DIFFERENT sizes — they pay for different things:
+  //
+  //   INITIAL_PAGE — the MOUNT cost, paid on EVERY route. `ChromeShell` mounts
+  //   the chat sidebar on every non-chromeless route, so this read is chrome:
+  //   it is fetched whether or not the user ever looks at the chat.
+  //   PAGE_SIZE   — the SCROLLBACK cost, paid only when the user actually
+  //   scrolls up (loadEarlier → beforeSeq). Kept at 200 so one scroll still
+  //   restores the "all in memory" feel the 200/page tuning below was after.
+  //
+  // ⚠ This used to read "PG fetch is loopback, so the bottleneck is React
+  // reconciliation on prepend, not bandwidth" — and used that to justify
+  // INITIAL_PAGE = 200. MEASURED 2026-08-03 on :3055 (`window.__sync_metrics__`,
+  // git tab, live 19,128-turn conversation): that mount cost **448 KB and
+  // 605 ms**, on a route that renders no chat scrollback at all. Loopback makes
+  // bandwidth cheap, not free, and it says nothing about the 448 KB of JSON the
+  // client still parses. The window is what was never re-measured.
+  //
+  // 200 was itself a vestige: it was chosen to MATCH the old
+  // `operatorTurns.byConversation` { limit: 200 } so the two would collapse to
+  // one react-query key (see the live-tail note below). That query was deleted
+  // by EI-19372323793235963, so nothing has required this to be 200 since —
+  // the live tail reads `initialPage` off THIS hook and follows whatever it is.
+  //
+  // 60 keeps ~3-4 sidebar viewports instantly available (so the common
+  // read-recent-history case still never hits the network) at ~1/3 the mount
+  // cost. Re-measure with /tmp/qsettle.sh before changing it; quote the number.
+  const INITIAL_PAGE = 60;
   const PAGE_SIZE = 200;
 
   type TurnPage = { turns: OperatorTurnRow[]; hasMoreEarlier: boolean };

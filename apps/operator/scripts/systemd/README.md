@@ -277,6 +277,88 @@ VITEST_REAPER_ORPHAN_THRESHOLD=60 ./bin/reap-orphaned-vitest-workers.sh
 
 ---
 
+# Stale-testvm reaper — installation (EI-18792610532592319)
+
+`papercup-testvm-reaper.{service,timer}` reaps orphaned `papercusp-testvm-*`
+QEMU VMs (the `linux-test-vm` rig's `clean`/`fed-a`/`fed-b`/`updater`/ad-hoc
+instances — `scripts/linux-test-vm/boot-vm.sh`) left running past an age
+threshold. Each VM is launched `-daemonize`'d, detaching from its own launcher
+immediately on boot; `vm-federation.sh`/`fed.sh` already `trap cleanup EXIT`,
+but a trap can't fire if the launching process is SIGKILLed (a harness
+timeout, an admission-guard abort, an agent session ending mid-run), leaving
+the VM orphaned and burning real CPU/RAM indefinitely. Measured 2026-07-27:
+two `fed-{a,b}` frames alive 13.6h/16.6h, ~1300% combined CPU, contributing to
+a sustained load1 ~85-90 that made `test:affected` auto-degrade into
+flake-absorbing retry fleet-wide (EI-9103) — a correctness cost to the whole
+fleet's verification, not just a speed cost.
+
+**Safety:** a VM is a reap candidate only if its cmdline carries
+`-name papercusp-testvm-<X>` — the exact marker `boot-vm.sh` stamps on every
+VM it boots. This can **never** match the persistent mac (:2222) / Windows
+(:2223) build-and-test VMs (`papercup-vm-mac.service` / the Windows VM
+service): they're launched by a different script with no `-name` flag at all,
+and are explicitly owner-sanctioned to stay running indefinitely (memory
+648ac99a — do not delete their images, do not uninstall their services). The
+reaper's selftest reproduces both VMs' real cmdline shapes to guard this.
+Before reaping anything it also scans for a LIVE orchestrator process
+(`vm-federation.sh`, `fed.sh`, `live-federation-gate.sh`,
+`two-instance-federation-smoke.sh`) — if one is running, the whole sweep is
+skipped that tick, erring toward never touching another agent's in-flight
+infrastructure. Only a candidate older than the age threshold (default 6h —
+well past the live-federation-gate's own 4h `TimeoutStartSec` bound) is
+reaped, via `vmctl down <name>` (graceful in-guest poweroff, then SIGTERM,
+then SIGKILL — the same escalation `vmctl down` already uses), with a hard
+per-attempt timeout and a direct-kill fallback if `vmctl` itself can't run.
+
+**Detection + reaping only** — this does not (and cannot) make a SIGKILLed
+launcher's `trap cleanup EXIT` fire; a sweeper is the durable second line of
+defense for exactly that case, mirroring `papercup-vitest-orphan-reaper`'s own
+precedent for the same underlying class of problem (a process-spawning
+workflow with no teardown guarantee against an abrupt parent death).
+
+## Install (one-time)
+
+```bash
+cd /home/dev/papercupai-workspace/papercusp/apps/operator/scripts/systemd
+ln -sf "$(pwd)/papercup-testvm-reaper.service" ~/.config/systemd/user/
+ln -sf "$(pwd)/papercup-testvm-reaper.timer"   ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now papercup-testvm-reaper.timer
+```
+
+## Verify
+
+```bash
+systemctl --user list-timers papercup-testvm-reaper.timer
+systemctl --user status papercup-testvm-reaper.service
+```
+
+## Manual run / dry-run
+
+```bash
+# Dry run (logs what it would reap without touching anything):
+TESTVM_REAPER_DRY_RUN=1 /home/dev/papercupai-workspace/papercusp/bin/reap-stale-testvms.sh
+
+# Live run:
+systemctl --user start papercup-testvm-reaper.service
+journalctl --user -u papercup-testvm-reaper.service --since "5 min ago"
+```
+
+## Tune thresholds
+
+```bash
+# Reap VMs older than 1h (default 21600s = 6h):
+TESTVM_REAPER_MAX_AGE_SECS=3600 ./bin/reap-stale-testvms.sh
+```
+
+## Self-test
+
+```bash
+bash bin/reap-stale-testvms.selftest.sh
+```
+
+---
+
 # Isolated-DHT liveness probe — installation (EI-8892)
 
 `papercup-isolated-dht-liveness.{service,timer}` runs a REAL 2-swarm hyperswarm

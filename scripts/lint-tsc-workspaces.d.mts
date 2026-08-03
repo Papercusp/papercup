@@ -4,10 +4,31 @@
 // scripts/lint-tsc-workspaces.mjs and regenerate.
 /** Group the invisible set by top-level root, so the report stays readable at ~60 entries. */
 export function groupByRoot(entries: any): Map<any, any>;
-export function main({ repoRoot, roots, exempt, listOnly, listInvisible, spawn, log, warn, error, }?: {
+export function main({ repoRoot, roots, exempt, untypecheckable, listOnly, listInvisible, spawn, log, warn, error, }?: {
     repoRoot?: any;
     roots?: string[] | undefined;
-    exempt?: Record<string, Exemption> | undefined;
+    exempt?: {
+        'packages/operator-core': {
+            reason: string;
+            detail: string;
+            filedAs: string;
+        };
+        'apps/operator-vite': {
+            reason: string;
+            detail: string;
+            filedAs: string;
+        };
+        'apps/papercusp-publish': {
+            reason: string;
+            detail: string;
+            filedAs: string;
+        };
+    } | undefined;
+    untypecheckable?: Record<string, {
+        detail: string;
+        errors: number;
+        filedAs: string;
+    }> | undefined;
     listOnly?: any;
     listInvisible?: any;
     spawn?: typeof realSpawn | undefined;
@@ -21,6 +42,20 @@ export function main({ repoRoot, roots, exempt, listOnly, listInvisible, spawn, 
  * double every compile and report one regression as two.
  */
 export const DEFAULT_ROOTS: string[];
+/**
+ * Roots where a bare `tsconfig.json` is enough to be GATED, with no `typecheck` script
+ * (EI-19409185011887864).
+ *
+ * Deliberately NOT all of DEFAULT_ROOTS. Promotion makes a directory BLOCKING, so a root
+ * earns a place here only once every package under it has actually been RUN and the ones
+ * that fail are enumerated in UNTYPECHECKABLE. Adding a root on the assumption that it is
+ * probably clean is how a gate goes red for a condition no commit caused: measured
+ * 2026-08-03, `apps/` promoted unmeasured would have red-pinned the fleet gate on
+ * apps/operator alone (hundreds of pre-existing errors, incl. an entire implicit-any test
+ * file). Report-only is the correct state for an unmeasured root — it is visible, and it
+ * is honest about what has been verified.
+ */
+export const PROMOTE_ROOTS: string[];
 /**
  * One deliberate exclusion from this leg.
  *
@@ -40,7 +75,44 @@ export const DEFAULT_ROOTS: string[];
  *
  * @type {Record<string, Exemption>}
  */
-export const EXEMPT: Record<string, Exemption>;
+/**
+ * Directories with a tsconfig.json that do NOT currently typecheck clean, so gating them on
+ * that tsconfig (see `promoted` below) would red the fleet gate on a pre-existing condition
+ * no commit caused.
+ *
+ * Held back BY NAME, never by a silent predicate. Every entry carries its MEASURED error count
+ * and a filed id, is printed on every run, and disappears the moment the package is clean —
+ * removing an entry is the entire fix. This is the same discipline as EXEMPT above: it decides
+ * who is EXCLUDED, so a package that stops being listed becomes gated automatically rather than
+ * silently staying dark.
+ *
+ * Measured 2026-08-03 via `npx tsc --noEmit -p tsconfig.json` in each of the 50 previously
+ * un-gated libs/generic packages: 46 clean (now gated), these 4 not.
+ *
+ * @type {Record<string, { detail: string, errors: number, filedAs: string }>}
+ */
+export const UNTYPECHECKABLE: Record<string, {
+    detail: string;
+    errors: number;
+    filedAs: string;
+}>;
+export const EXEMPT: {
+    'packages/operator-core': {
+        reason: string;
+        detail: string;
+        filedAs: string;
+    };
+    'apps/operator-vite': {
+        reason: string;
+        detail: string;
+        filedAs: string;
+    };
+    'apps/papercusp-publish': {
+        reason: string;
+        detail: string;
+        filedAs: string;
+    };
+};
 /**
  * One deliberate exclusion from this leg.
  */
