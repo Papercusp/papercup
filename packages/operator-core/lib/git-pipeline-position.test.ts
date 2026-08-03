@@ -68,6 +68,7 @@ const HEALTHY_SERVING: ServingTruth = {
   startedSinceCodeChange: true,
   behindMin: null,
   restartLever: 'PAPERCUSP_ALLOW_DEV_RESTART=1 npx tsx apps/operator/lib/release/deploy-cli.ts --execute',
+  restartSupersededBy: null,
   unknownReason: null,
 };
 
@@ -2002,6 +2003,116 @@ describe('evaluateServing: process truth, never a git inference', () => {
     expect(sv.behindMin).toBe(45);
     // and it must name the lever, not merely report the gap
     expect(sv.restartLever).toContain('deploy-cli.ts --execute');
+    // no deploy was probed, so nothing is known to supersede the lever
+    expect(sv.restartSupersededBy).toBeNull();
+  });
+
+  /**
+   * EI-19447523039740352. The stale-serving verdict above is the NORMAL mid-deploy
+   * state — a deploy lands files first and restarts the process late — so the window
+   * where these tests' `startedSinceCodeChange:false` holds is exactly the window a
+   * deploy is usually already fixing. Offering the restart lever there tells the
+   * caller to fire a SECOND deploy against the shared release checkout, which
+   * `release:deploy` refuses by design.
+   */
+  describe('restartSupersededBy: a running deploy withholds the restart lever', () => {
+    const STALE = { pid: 99, startedAtMs: 1_000_000 };
+    const CODE_AT = 1_000_000 + 45 * 60_000;
+    const activeDeploy = {
+      active: true,
+      unit: 'papercup-auto-deploy',
+      activeState: 'active',
+      startedAtMs: 1_700_000,
+      source: 'systemd' as const,
+    };
+
+    it('marks the lever superseded when a deploy is genuinely in flight', () => {
+      const sv = evaluateServing({
+        runtime: releaseRuntime,
+        process: STALE,
+        codeAsOfMs: CODE_AT,
+        codeAsOfSource: 'deploy',
+        deployInFlight: activeDeploy,
+      });
+      // the staleness verdict itself is unchanged — this is about the ADVICE
+      expect(sv.startedSinceCodeChange).toBe(false);
+      expect(sv.restartSupersededBy).toEqual({
+        kind: 'deploy-in-flight',
+        unit: 'papercup-auto-deploy',
+        startedAtMs: 1_700_000,
+        activeState: 'active',
+      });
+      // restartLever stays FACTUAL (it is still the lever); suppression happens at the
+      // stage's `lever`, so callers reading either one get a consistent story.
+      expect(sv.restartLever).toContain('deploy-cli.ts --execute');
+    });
+
+    it('counts a DEACTIVATING deploy as still in flight — the :3070 restart happens late', () => {
+      const sv = evaluateServing({
+        runtime: releaseRuntime,
+        process: STALE,
+        codeAsOfMs: CODE_AT,
+        codeAsOfSource: 'deploy',
+        deployInFlight: { ...activeDeploy, activeState: 'deactivating' },
+      });
+      expect(sv.restartSupersededBy?.activeState).toBe('deactivating');
+    });
+
+    /**
+     * The MIRROR-IMAGE bug, and the reason this is scoped by host rather than applied
+     * globally: a deploy restarts the release operator, and nothing else. A stale
+     * bg-host is fixed by `dev:restart`, which no deploy performs — so suppressing its
+     * lever would tell the caller to wait for something that is never coming.
+     */
+    it('does NOT suppress a non-release host, whose lever no deploy performs', () => {
+      const sv = evaluateServing({
+        runtime: bgHostRuntime,
+        process: STALE,
+        codeAsOfMs: CODE_AT,
+        codeAsOfSource: 'file-mtime',
+        deployInFlight: activeDeploy,
+      });
+      expect(sv.startedSinceCodeChange).toBe(false);
+      expect(sv.restartSupersededBy).toBeNull();
+      expect(sv.restartLever).toContain('bg-host');
+    });
+
+    /**
+     * `active:false` from an unreadable systemd means UNKNOWN, not idle
+     * (readDeployInFlight's own contract). Only an AFFIRMATIVE reading may withhold a
+     * lever: guessing "a deploy must be running" would strand a caller whose process
+     * really is stale with nothing coming to fix it.
+     */
+    it('treats an unreadable systemd as UNKNOWN and keeps the lever', () => {
+      const sv = evaluateServing({
+        runtime: releaseRuntime,
+        process: STALE,
+        codeAsOfMs: CODE_AT,
+        codeAsOfSource: 'deploy',
+        deployInFlight: { ...activeDeploy, active: false, source: 'systemd-unavailable' },
+      });
+      expect(sv.restartSupersededBy).toBeNull();
+    });
+
+    it('is null when no deploy is running, and when the probe was never run', () => {
+      const idle = evaluateServing({
+        runtime: releaseRuntime,
+        process: STALE,
+        codeAsOfMs: CODE_AT,
+        codeAsOfSource: 'deploy',
+        deployInFlight: { ...activeDeploy, active: false, activeState: 'inactive' },
+      });
+      expect(idle.restartSupersededBy).toBeNull();
+
+      // omitted entirely — every pre-existing caller keeps today's behaviour
+      const unprobed = evaluateServing({
+        runtime: releaseRuntime,
+        process: STALE,
+        codeAsOfMs: CODE_AT,
+        codeAsOfSource: 'deploy',
+      });
+      expect(unprobed.restartSupersededBy).toBeNull();
+    });
   });
 
   it('a process that started AFTER the deploy has genuinely loaded it', () => {
@@ -3364,6 +3475,31 @@ describe('stage levers (P-005)', () => {
       serving: STALE,
     });
     expect(deployed).toBe('RESTART_ME');
+  });
+
+  /**
+   * EI-19447523039740352 — the regression guard for the reported footgun: while a
+   * deploy is mid-flight the serving lever must be WITHHELD, because firing it is a
+   * second concurrent deploy against the shared release checkout. A null lever is
+   * already rendered as "WAITING AT SERVING (nothing to do — this leg is advancing on
+   * its own)", which is the literally correct advice: the running deploy does the
+   * restart. Reported live, one call short of firing it.
+   */
+  it('withholds the serving lever while a deploy is ALREADY in flight', () => {
+    const STALE = { ...HEALTHY_SERVING, startedSinceCodeChange: false, behindMin: 30, restartLever: 'RESTART_ME' };
+    const superseded = lever('serving', {
+      positions: { committedLocal: true, onStaging: true, inMain: true, deployed: true },
+      serving: {
+        ...STALE,
+        restartSupersededBy: {
+          kind: 'deploy-in-flight' as const,
+          unit: 'papercup-auto-deploy',
+          startedAtMs: 1_700_000,
+          activeState: 'active',
+        },
+      },
+    });
+    expect(superseded).toBeNull();
   });
 });
 

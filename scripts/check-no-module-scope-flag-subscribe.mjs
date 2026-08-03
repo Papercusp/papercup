@@ -114,7 +114,12 @@ const LAZY_SELF_REFERENTIAL = new Set([
   'scripts/check-no-module-scope-flag-subscribe.mjs',
 ]);
 
-const VALID_KINDS = new Set(['gates-an-override-store', 'not-flag-gated', 'selects-behaviour']);
+const VALID_KINDS = new Set([
+  'gates-an-override-store',
+  'seeded-from-flag-default',
+  'not-flag-gated',
+  'selects-behaviour',
+]);
 
 /** Floor on a `safeBecause`, so the required field cannot be satisfied with a token. */
 const MIN_JUSTIFICATION_CHARS = 60;
@@ -173,6 +178,14 @@ export function checkUnpopulatedDeclaration(callText) {
   }
   if (kind !== 'not-flag-gated' && !hasKeys) {
     return `kind '${kind}' requires at least one flag key (got none)`;
+  }
+
+  // A claim to be seeded is checkable: the same call has to actually pass a `seed`.
+  if (kind === 'seeded-from-flag-default' && !/\bseed\s*:/.test(callText)) {
+    return "kind 'seeded-from-flag-default' but the call passes no `seed`";
+  }
+  if (kind !== 'seeded-from-flag-default' && /\bseed\s*:/.test(callText)) {
+    return `kind '${kind}' passes a \`seed\` — declare 'seeded-from-flag-default' instead`;
   }
 
   if (kind === 'selects-behaviour') {

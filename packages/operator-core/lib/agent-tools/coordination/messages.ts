@@ -874,6 +874,14 @@ export async function repliedMsgIdsBatch(subscriberId: string, msgIds: readonly 
        WHERE workspace_id = ${coordWorkspaceId()}
          AND surface = 'messages'
          AND body->>'from' = ${subscriberId}
+         -- WI-8806: REQUIRED for the planner to use coord_event_log_related_msg_id_idx,
+         -- which is PARTIAL on the key-presence test. It reads as redundant beside the
+         -- equality below (a missing key makes body->>... NULL, and NULL matches no
+         -- = ANY) and that is exactly why it keeps getting deleted as noise -- but it is
+         -- load-bearing for the PLAN: without it this becomes a Parallel Seq Scan of the
+         -- whole table. Measured 40,717 -> 113 buffers, 111.6ms -> 2.4ms, on a query this
+         -- file's own header notes runs on every wake-pump tick.
+         AND body ? 'related_msg_id'
          AND body->>'related_msg_id' = ANY(${ids})
     `;
     for (const row of rows) {

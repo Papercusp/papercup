@@ -665,13 +665,13 @@ export const STASH_RECENT_WINDOW_MS = 24 * 60 * 60 * 1000;
  * treated as RECENT — fail toward surfacing, never toward silently swallowing a real
  * stash, since a missed genuine stash is the expensive direction (EI-7685).
  */
-export function partitionStashEntriesByAge(
-  entries: readonly StashEntry[],
+export function partitionStashEntriesByAge<T extends StashEntry>(
+  entries: readonly T[],
   nowMs: number,
   recentWindowMs: number = STASH_RECENT_WINDOW_MS,
-): { recent: StashEntry[]; preExisting: StashEntry[] } {
-  const recent: StashEntry[] = [];
-  const preExisting: StashEntry[] = [];
+): { recent: T[]; preExisting: T[] } {
+  const recent: T[] = [];
+  const preExisting: T[] = [];
   for (const e of entries) {
     const t = e.createdAt ? Date.parse(e.createdAt) : Number.NaN;
     if (Number.isNaN(t) || nowMs - t <= recentWindowMs) recent.push(e);

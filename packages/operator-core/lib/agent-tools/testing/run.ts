@@ -150,7 +150,7 @@ export default defineTool({
     files: z.array(z.string().min(1)).min(1).max(50)
       .describe('Test file paths (repo-root-relative or absolute). Each is routed to its owning workspace + Vitest config; a path matching zero tests fails the call rather than passing vacuously.'),
     testNamePattern: z.string().min(1).max(200).optional()
-      .describe("Run only tests whose full name matches (Vitest `-t`). Use to re-run ONE failing test from a previous result's `failures[].test`."),
+      .describe("Run only tests whose full name matches (Vitest `-t`). Use to re-run ONE failing test from a previous result's `failures[].test`. A pattern matching ZERO tests is REFUSED (`name_filter_no_match`), never reported as a pass — vitest merely skips them all and exits 0."),
     timeoutMs: z.number().int().min(1000).max(MAX_TIMEOUT_MS).optional()
       .describe(
         `Hard budget for the whole run. Default ${DEFAULT_TIMEOUT_MS}ms, but a FOREGROUND run is clamped to ${FOREGROUND_TIMEOUT_CEILING_MS}ms — below the ~55s MCP transport cap — so a slow suite returns an actionable timeout instead of an opaque transport error. For a longer suite run it detached via capability:inspect { run_in_background: true }.`,

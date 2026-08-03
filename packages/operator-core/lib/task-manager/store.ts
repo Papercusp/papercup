@@ -353,6 +353,12 @@ export async function getTaskByBashJobId(
     SELECT * FROM harness_shared.task_ledger
      WHERE workspace_id = ${ws}
        AND class = 'bash-job'
+       -- WI-8806: REQUIRED for the planner to use task_ledger_bash_job_id_idx, which is
+       -- PARTIAL on (class = 'bash-job' AND detail ? 'bashJobId'). Stating only the class
+       -- half is not enough. Logically redundant beside the equality below, and load-bearing
+       -- for the PLAN: measured 197 -> 1 buffer, 4.93ms -> 0.042ms. Before this clause the
+       -- index had an idx_scan of exactly 0 -- it had never been used once since creation.
+       AND detail ? 'bashJobId'
        AND detail ->> 'bashJobId' = ${bashJobId}
      ORDER BY started_at DESC
      LIMIT 1

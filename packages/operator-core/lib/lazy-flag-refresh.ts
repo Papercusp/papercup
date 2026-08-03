@@ -136,6 +136,15 @@ export type UnpopulatedState =
    * construction, whether or not the flag is default-ON.
    */
   | { kind: 'gates-an-override-store'; serves: string }
+  /**
+   * The call passes a `seed` that populates the cache SYNCHRONOUSLY on arm from
+   * `FLAG_DEFAULTS[<key>]`, so the pre-refresh window serves the flag's own declared default rather
+   * than a hardcoded constant. This is the STRONGEST kind and the one to prefer when the cached
+   * value is a simple flag mirror: it collapses the divergence window to "a runtime OVERRIDE that
+   * differs from the default has not taken effect yet" — which is what this helper's header always
+   * CLAIMED the window was, and what it only actually becomes once seeded.
+   */
+  | { kind: 'seeded-from-flag-default'; serves: string }
   /** The cache is not flag-gated at all; the `key === null` bus reload is used purely as a "refresh now" signal. */
   | { kind: 'not-flag-gated'; serves: string }
   /**
@@ -154,6 +163,22 @@ export interface LazyFlagRefreshOptions {
   keys?: readonly string[];
   /** REQUIRED — see {@link UnpopulatedState}. This argument exists to force the judgement. */
   unpopulated: UnpopulatedState;
+  /**
+   * Optional SYNCHRONOUS seed, run once on the arming call BEFORE the async refresh is kicked — the
+   * fix for a cache whose unpopulated value would otherwise be a hardcoded constant that contradicts
+   * its own flag's default.
+   *
+   * Seed from `FLAG_DEFAULTS[<key>]`, not a literal, so the seed cannot drift from the registry when
+   * a flag graduates. Doing that deref HERE is safe and is explicitly permitted by
+   * `check-no-module-scope-flag-subscribe.mjs` — only a MODULE-SCOPE `FLAG_DEFAULTS[...]` deref makes
+   * a module unimportable under a partial mock; inside this callback it runs on the arming call.
+   *
+   * Live case (EI-19448574704459898): `work-item-redundancy.ts` cached `false` while its flag is
+   * DEFAULT ON, so after migration the first synchronous read in every process answered "redundancy
+   * off" — caught by its own default-ON test, which had passed for six weeks because the pre-migration
+   * module-scope refresh started at IMPORT and resolved before anything read it.
+   */
+  seed?: () => void;
 }
 
 /**
@@ -183,6 +208,13 @@ export function lazyFlagRefresh(
   return function armFlagRefresh(): void {
     if (armed) return;
     armed = true; // set FIRST — a refresh that reaches a reader cannot re-enter this arming path
+    if (options.seed) {
+      try {
+        options.seed(); // SYNCHRONOUS, before the kick — the reader that armed us sees this value
+      } catch {
+        /* a seed must never reach a hot-path reader; the async refresh still corrects the cache */
+      }
+    }
     onFlagChange((key) => {
       if (key === null || keys.includes(key)) kick();
     });

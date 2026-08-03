@@ -141,8 +141,14 @@ describe('markSpawned detail merge (D-014)', () => {
 
     // `detail ->> 'bashJobId'` is how findByBashJobId resolves a background job. A
     // replace-instead-of-merge, or a merge that produced an array, returns nothing here.
+    //
+    // WI-8806: the `detail ? 'bashJobId'` clause mirrors the production query exactly --
+    // it is what lets the planner use the PARTIAL task_ledger_bash_job_id_idx. Kept here
+    // so this test exercises the same predicate set production does; without it the test
+    // would still pass while silently diverging from the shape it claims to pin.
     const [row] = await db.sql`
-      SELECT task_id FROM harness_shared.task_ledger WHERE detail ->> 'bashJobId' = 'bash-99'
+      SELECT task_id FROM harness_shared.task_ledger
+       WHERE detail ? 'bashJobId' AND detail ->> 'bashJobId' = 'bash-99'
     `;
     expect(row?.task_id).toBe('t-lookup');
   });

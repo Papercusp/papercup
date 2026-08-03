@@ -1565,6 +1565,23 @@ are cwd-relative, and the same-looking command can silently select zero files.
 Pass additional Vitest flags after a second `--`, e.g.
 `npm run test:file -- path/to/file.test.ts -- --reporter=verbose`.
 
+⚠ **A `-t <pattern>` that matches ZERO tests is a run that measured NOTHING — and it used
+to report `status=passed`.** Vitest merely SKIPS every test and exits 0, so
+`Tests 625 skipped (625)` sat one line above `TEST_FILE_RESULT … status=passed`
+(EI-19425177453558152). Same shape as the two zero-work false-greens documented above
+(`tsc -p .`, `test:affected`), and it fires in the most expensive direction: the canonical
+reason to pass `-t` is to confirm a **pre-fix RED**, and a false green there reads as "the
+defect isn't real", so the natural next move is to stop — having verified nothing. The
+router now refuses it (`TEST_FILE_NAME_FILTER_NO_MATCH`, exit 1, and deliberately NO
+`TEST_FILE_RESULT` line, since its presence is what callers grep to mean "tests ran"), and
+`testing:run` refuses the same via `error: 'name_filter_no_match'`.
+
+⚠ **npm eats one level of quoting, so `-t 'a b c'` reaches vitest as `-t a` plus stray
+POSITIONALS** (which vitest reads as extra FILE filters, narrowing the run further) — the
+original false green. The refusal now prints the pattern **as vitest received it** plus any
+strays, so the quote-eating is self-diagnosing. Quote for the inner command, or use a
+space-free pattern.
+
 **`npm install`/`npm ci` on this shared tree is a mutation every OTHER concurrent
 agent can see mid-flight — serialize it, never run it bare.** `node_modules` is
 unsynchronized global mutable state: one agent's install rewrites `node_modules/.bin`

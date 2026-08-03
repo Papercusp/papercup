@@ -471,17 +471,36 @@ export const TARGETS: BackfillTarget[] = [
     // No write-time column on this table at all — recent-coverage reads NULL (absent, not zero).
   },
   // session-search-scope-2026-07-05: the episodic transcript index. Embed
-  // SELECTIVELY — only turns >= 80 chars (short acks are noise for semantic
-  // recall; they stay BM25-searchable via text_tsv), truncated to 2k chars for
-  // the embed call. The CASE returns '' for skipped rows, which the
-  // `length(bodySql) > 0` guard in backfillTable excludes from the sweep
-  // entirely, so skipped turns are never re-scanned. Volume is governed by the
-  // shared embed-admission bench lane — a big backlog fills progressively
-  // across 5-min ticks, never in one burst.
+  // SELECTIVELY — short acks are noise for semantic recall. The CASE returns ''
+  // for skipped rows, which the `length(bodySql) > 0` guard in backfillTable
+  // excludes from the sweep entirely, so skipped turns are never re-scanned.
+  // Volume is governed by the shared embed-admission bench lane — a big backlog
+  // fills progressively across 5-min ticks, never in one burst.
+  //
+  // P-028 (semantic-search-fingerprint-coverage-2026-08-03): the floor used to
+  // be a flat `length(text) >= 80`, which dropped 71,026 rows (17.4%) — and the
+  // justification for that ("short acks are noise; they stay BM25-searchable via
+  // text_tsv") over-applied in one specific, owner-facing way: a short turn is
+  // not necessarily an ACK. It is very often a terse OWNER QUESTION, which is
+  // precisely what someone later searches for. Measured 2026-08-03, the dropped
+  // set contained the literal turn "which one was about the theory of mind
+  // work?" (44 chars) — the exact query class this plan was opened to fix.
+  //
+  // `speaker` is the discriminator, not length alone: among turns 20-79 chars,
+  // 5.4% of USER turns are questions vs 0.19% of assistant turns — a 28x
+  // difference, so admitting short user turns buys the questions without
+  // re-admitting the assistant acks the floor was written for. Cost is +15,110
+  // rows (+4.5% of the eligible corpus). The <20-char band stays excluded for
+  // both speakers ("ok", "yes", "continue" are acks in either voice).
+  //
+  // The fallback the original rationale leaned on is also weaker than it looks:
+  // the lexical leg ANDs every term (plainto_tsquery), so it decays to ZERO
+  // hits on longer natural-language queries (EI-19447237774252790) — "it stays
+  // BM25-searchable" is not the safety net it reads as.
   {
     table: 'harness_shared.session_turns',
     embedCol: 'text_embedding',
-    bodySql: `CASE WHEN length(text) >= 80 THEN left(text, 2000) ELSE '' END`,
+    bodySql: `CASE WHEN length(text) >= 80 OR (speaker = 'user' AND length(text) >= 20) THEN left(text, 2000) ELSE '' END`,
     keyCols: ['workspace_id', 'source_kind', 'session_id', 'turn_idx'],
     // Backed by session_turns_ingested_idx — a backward index scan, NOT a sort.
     // `ingested_at` rather than `ts`: `ts` is indexed only as (owner, ts), which a

@@ -68,7 +68,22 @@ describe('PROJECTED_DEPS.checkCapabilityEnvelope — enforce/observe wiring (gap
       args: {},
     });
     expect(v).toBeNull();
-    expect(getFlag).not.toHaveBeenCalled();
+    // D-002 is "an exempt caller gets no verdict", and the mechanism this pins is that such a caller
+    // never reaches the ENFORCE/observe decision — `await getFlag(FLAGS.CAPABILITY_ENVELOPE, …)`,
+    // which sits after the `if (!decision.applied) return null` early-out. Assert THAT flag, not
+    // "no getFlag call whatsoever".
+    //
+    // The broad form was written when the enforce flag was the only getFlag reachable on this path,
+    // and it went red on 2026-08-03 (EI-19448574704459898) for an unrelated reason: migrating
+    // capability-envelope-overrides.ts onto lazyFlagRefresh moved its cache population from import to
+    // the first reader call, so the `envelopeRoleOverrides()` / `envelopeProtectedAdditions()` reads
+    // at the TOP of checkCapabilityEnvelopeImpl now kick a one-time system config warm —
+    // getFlag(CAPABILITY_ENVELOPE_OVERRIDES, systemDistinctId()). That is a DIFFERENT flag, read
+    // under the SYSTEM distinctId rather than the caller's, producing no verdict and no gating, so
+    // the exemption invariant is intact. Narrowing keeps this failing for the regression it exists
+    // to catch (an exempt caller reaching the enforce read) without reporting a module-warm as a
+    // D-002 violation.
+    expect(getFlag).not.toHaveBeenCalledWith(FLAGS.CAPABILITY_ENVELOPE, expect.anything());
   });
 
   it('returns null for a non-fleet / roleless caller', async () => {

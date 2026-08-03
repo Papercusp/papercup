@@ -35,7 +35,7 @@ import { isWorkItemAutoPickable } from './work-items-admission';
 import { getWorkItemReplicaAuthority } from './work-item-replica-authority';
 import { potHomeSlugForHarness } from './hive-federation';
 import { getFlag } from '@papercusp/flags/server';
-import { FLAGS } from '@papercusp/flags';
+import { FLAGS, FLAG_DEFAULTS } from '@papercusp/flags';
 import { lazyFlagRefresh } from './lazy-flag-refresh';
 import { systemDistinctId } from './flag-distinct-id';
 import {
@@ -141,15 +141,24 @@ async function refreshRedundancyFlag(): Promise<void> {
  */
 const armFlagRefresh = lazyFlagRefresh(refreshRedundancyFlag, {
   keys: [FLAGS.WORKITEM_REDUNDANCY],
+  // Seed SYNCHRONOUSLY from the flag registry, so the reader that arms us sees the flag's DECLARED
+  // default instead of the `false` this module initialises to. Without this the first synchronous
+  // read in every process answered "redundancy off" for a DEFAULT-ON flag — a real regression from
+  // 663fa6dd43, caught by the default-ON test below, which had passed for six weeks only because the
+  // pre-migration module-scope refresh started at IMPORT and resolved before anything read it.
+  // The deref is LAZY (inside this callback), which is exactly the form
+  // check-no-module-scope-flag-subscribe.mjs documents as correct and does not flag.
+  seed: () => {
+    redundancyOn = FLAG_DEFAULTS[FLAGS.WORKITEM_REDUNDANCY];
+  },
   unpopulated: {
-    kind: 'selects-behaviour',
-    serves: 'false → the first claim in a process is admitted without the redundancy master switch',
-    safeBecause:
-      'a claim that misses the switch runs SINGLE-REPLICA — the pre-feature behaviour, and already ' +
-      'the outcome for every item that has not opted in via work_items:set_redundancy. So the ' +
-      'window costs at most one lost N-way comparison per process and self-heals within one refresh ' +
-      'round-trip; it never routes a read at wrong or dead data. Note the DEGRADATION here is toward ' +
-      'LESS model spend, so the window cannot surprise on cost either.',
+    kind: 'seeded-from-flag-default',
+    serves:
+      "FLAG_DEFAULTS[WORKITEM_REDUNDANCY] — currently true. The window now diverges from production " +
+      'only if a runtime OVERRIDE differs from the registry default, and it self-heals within one ' +
+      'refresh round-trip. Were it ever to diverge, the degradation is toward a single-replica claim ' +
+      '(the pre-feature behaviour, and already the outcome for any item that has not opted in via ' +
+      'work_items:set_redundancy) — i.e. toward LESS model spend, never a wrong or dead-data read.',
   },
 });
 

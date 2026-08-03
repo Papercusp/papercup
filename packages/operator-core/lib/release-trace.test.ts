@@ -99,6 +99,7 @@ function position(over: Partial<PipelinePosition> = {}): PipelinePosition {
       startedSinceCodeChange: null,
       behindMin: null,
       restartLever: null,
+      restartSupersededBy: null,
       unknownReason: { code: 'not-measured', detail: 'fixture: no serving probe (lineage-only test)' },
     },
     // P-004 made `changeInCandidate` REQUIRED. All-null is the correct value here for the
