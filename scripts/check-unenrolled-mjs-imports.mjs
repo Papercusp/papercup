@@ -121,6 +121,22 @@ export function enrolledModules(root = ROOT) {
  * by the break on the first line of real CODE below — never by the line budget —
  * so removing the budget does not weaken it.
  *
+ * THE RULE, as a measured truth table (tsc, 2026-08-03, two agents independently).
+ * It is neither "adjacency" nor "no comments": THE MODULE SPECIFIER MUST LAND ON
+ * THE LINE THE DIRECTIVE COVERS. tsc skips comment/blank trivia and applies the
+ * directive to the next line of CODE; a multi-line import moves the specifier past
+ * it.
+ *
+ *   @ts-ignore immediately before a ONE-LINE import    -> clean
+ *   @ts-ignore + N comment lines, then ONE-LINE import -> clean   (this bug)
+ *   no directive at all                                -> TS7016  (the control)
+ *   @ts-ignore immediately before a MULTI-LINE import  -> TS7016  (WI-8887)
+ *   comments between AND a multi-line import           -> TS7016
+ *
+ * The control line matters: without a case that DOES error, a clean result proves
+ * only that the probe is inert. Both wrong readings of this rule were published
+ * from measurements that lacked one (EI-19457275636306147).
+ *
  * @param {string[]} lines
  * @param {number} anchor 0-based index of the line the directive must precede
  * @returns {boolean}

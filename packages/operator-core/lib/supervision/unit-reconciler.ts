@@ -595,11 +595,14 @@ export async function reconcileTick(deps: ReconcilerDeps): Promise<ReconcileTick
     // page above already attaches `Last exit:` via the same helper — this closes that
     // inconsistency rather than adding a second mechanism. Best-effort by construction: a
     // failure to gather diagnostics must never suppress the page itself.
+    // `entry.unit` is narrowed to string by the `if (!entry.unit) continue` guard above, but TS
+    // discards that narrowing inside a closure (the capture could be invoked later), so bind it.
+    const unitName = entry.unit;
     const failureCauseSuffix = async (): Promise<string> => {
-      const fallback = ` Cause unavailable; inspect \`systemctl --user status ${entry.unit}\` + its journal.`;
+      const fallback = ` Cause unavailable; inspect \`systemctl --user status ${unitName}\` + its journal.`;
       try {
         const cause = summarizeSystemctlStatusCause(
-          await deps.execUser(['status', entry.unit, '--no-pager', '--lines=50']),
+          await deps.execUser(['status', unitName, '--no-pager', '--lines=50']),
         );
         return cause ? ` Cause: ${cause}` : fallback;
       } catch {

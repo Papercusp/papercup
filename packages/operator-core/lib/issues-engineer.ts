@@ -209,8 +209,25 @@ export interface EngineerIssueDetail extends EngineerIssue {
 //
 // EI-<n> ids stay GLOBALLY allocated (nextIssueId is unchanged), so the global ObjectRef
 // contract that lets metadata key by issue id across workspaces holds. ──────────────────
-let issuesPerWorkspaceOn = false;
-let issuesFlagReadAtMs = 0;
+// EI-19452830964505931: keyed BY WORKSPACE, not one process-global boolean.
+//
+// The subtlety that makes a global wrong here: the distinctId is `systemDistinctId()`, which is
+// machine-stable (`papercusp-host-<hostname>`), so the getFlag call LOOKS workspace-independent.
+// It is not — the PG override store underneath is installed with `cacheKey: () => activeWorkspaceId()`
+// (flag-override-store.ts) and loads `WHERE workspace_id = activeWorkspaceId()`, so getFlag's ANSWER
+// is workspace-dependent even though its arguments are not. A single global therefore lets whichever
+// workspace refreshed last serve its value to every other one for the TTL window — re-creating one
+// layer up the exact cross-workspace bleed that store's cacheKey exists to prevent.
+//
+// Live divergence confirmed 2026-08-03: `papercusp-issues-per-workspace` is overridden false in
+// 'generic-test' and true in 'shared-hive-test-aviynw', while 'default'/'papercusp-workspace' take
+// FLAG_DEFAULTS (true). Impact today is LATENT rather than active — 'generic-test' is the only
+// workspace whose value differs from the default and it has taken no issue-family write since
+// 2026-06-18 — so this is correctness-by-construction, not an incident fix.
+//
+// Bounded by the workspace registry (4 rows today), so no eviction policy; revisit if workspace ids
+// ever become caller-supplied rather than registry-derived.
+const issuesPerWorkspaceCache = new Map<string, { on: boolean; readAtMs: number }>();
 // Self-heal cadence for the cached flag (EI-1460). Short enough that a flip is
 // honoured within a few seconds anywhere; long enough that the PG-backed getFlag
 // (itself 5s-TTL-cached) is hit at most ~once per window per process.
@@ -225,10 +242,18 @@ const ISSUES_FLAG_TTL_MS = 3_000;
 let _lastIssuesPerWorkspaceErrorLoggedAtMs = 0;
 const ISSUES_PER_WORKSPACE_FLAG_ERROR_LOG_THROTTLE_MS = 5 * 60_000; // 5 min
 async function refreshIssuesPerWorkspace(): Promise<void> {
+  // Resolve the key BEFORE the await: activeWorkspaceId() is ambient, and awaiting getFlag can
+  // interleave with another workspace's request. Capturing it up front is what keeps the write
+  // landing on the workspace this refresh actually read for.
+  const ws = activeWorkspaceId();
   try {
-    issuesPerWorkspaceOn = await getFlag(FLAGS.ISSUES_PER_WORKSPACE, systemDistinctId());
+    const on = await getFlag(FLAGS.ISSUES_PER_WORKSPACE, systemDistinctId());
+    issuesPerWorkspaceCache.set(ws, { on, readAtMs: Date.now() });
   } catch (err) {
-    issuesPerWorkspaceOn = false;
+    // Fail-CLOSED to the legacy shared partition, and unlike workspace-brain-scope's latch this
+    // error value is deliberately allowed to cache: the TTL bounds it to ISSUES_FLAG_TTL_MS, so it
+    // self-heals in ~3s rather than pinning the process (cf. EI-19455760069884279).
+    issuesPerWorkspaceCache.set(ws, { on: false, readAtMs: Date.now() });
     const now = Date.now();
     if (now - _lastIssuesPerWorkspaceErrorLoggedAtMs >= ISSUES_PER_WORKSPACE_FLAG_ERROR_LOG_THROTTLE_MS) {
       _lastIssuesPerWorkspaceErrorLoggedAtMs = now;
@@ -238,8 +263,6 @@ async function refreshIssuesPerWorkspace(): Promise<void> {
           `'default' coord workspace this call (fail-closed): ${message}`,
       );
     }
-  } finally {
-    issuesFlagReadAtMs = Date.now();
   }
 }
 /**
@@ -294,8 +317,15 @@ const armIssuesFlagRefresh = lazyFlagRefresh(refreshIssuesPerWorkspace, {
   // Seed from the flag REGISTRY, not a literal, so a graduation of the flag's default carries here
   // automatically. The deref is LAZY (inside this callback), the form
   // check-no-module-scope-flag-subscribe.mjs documents as correct and does not flag.
+  // Seeds the ARMING workspace's entry. `readAtMs: 0` leaves it immediately stale so the first read
+  // still kicks a real refresh (the pre-EI-19452830964505931 behaviour: seed, then refresh). Any
+  // OTHER workspace gets the same default via the reader's `?? FLAG_DEFAULTS[...]` fallback, so an
+  // unseeded workspace never serves a hardcoded literal either.
   seed: () => {
-    issuesPerWorkspaceOn = FLAG_DEFAULTS[FLAGS.ISSUES_PER_WORKSPACE];
+    issuesPerWorkspaceCache.set(activeWorkspaceId(), {
+      on: FLAG_DEFAULTS[FLAGS.ISSUES_PER_WORKSPACE],
+      readAtMs: 0,
+    });
   },
   unpopulated: {
     kind: 'seeded-from-flag-default',
@@ -303,10 +333,15 @@ const armIssuesFlagRefresh = lazyFlagRefresh(refreshIssuesPerWorkspace, {
       'FLAG_DEFAULTS[ISSUES_PER_WORKSPACE] — currently true, i.e. the ACTIVE workspace, which is ' +
       'what every live-writing process resolves (387 issue rows into papercusp-workspace in one ' +
       "hour vs 0 into 'default', measured 2026-08-03). The window diverges only where a runtime " +
-      'OVERRIDE holds the flag OFF, self-heals within one getFlag round-trip, and the one ' +
-      "workspace that does hold it OFF ('generic-test') has taken no write since 2026-06-18. " +
-      'Note this does NOT cover a getFlag FAILURE: that path still fails CLOSED to the legacy ' +
-      "'default' partition (see refreshIssuesPerWorkspace above) — unchanged by this migration.",
+      'OVERRIDE holds the flag OFF, and self-heals within one getFlag round-trip. Since ' +
+      'EI-19452830964505931 that divergence is also correctly SCOPED: the cache is keyed by ' +
+      'activeWorkspaceId() (the same key the PG override store uses), so an OFF override in one ' +
+      "workspace can no longer be served to another — 'generic-test' holds it OFF and " +
+      "'shared-hive-test-aviynw' holds it ON in the very same database. An unseeded workspace " +
+      'falls back to FLAG_DEFAULTS in the reader, so it serves the registry default rather than a ' +
+      'hardcoded literal. Note this does NOT cover a getFlag FAILURE: that path still fails CLOSED ' +
+      "to the legacy 'default' partition (see refreshIssuesPerWorkspace above), bounded by the 3s " +
+      'TTL — unchanged by either change.',
   },
 });
 /** The engineer-issues workspace scope NOW (F): active workspace when the flag is ON,
@@ -344,8 +379,14 @@ export function issuesScopeWorkspace(): string {
  */
 export function resolveIssuesScopeWorkspace(explicitActiveWorkspaceId?: string): string {
   armIssuesFlagRefresh(); // first use seeds the cache + installs the subscription (WI-8887)
-  if (Date.now() - issuesFlagReadAtMs > ISSUES_FLAG_TTL_MS) void refreshIssuesPerWorkspace();
-  if (!issuesPerWorkspaceOn) return DEFAULT_COORD_WORKSPACE;
+  // Read the AMBIENT workspace, never `explicitActiveWorkspaceId`: the override store resolves
+  // getFlag against activeWorkspaceId(), so that — not the caller's substitution — is the workspace
+  // whose flag value this cache entry represents. `explicit` only substitutes for the ON-branch
+  // return below (see this function's doc), never for the gate.
+  const flagWorkspace = activeWorkspaceId();
+  const entry = issuesPerWorkspaceCache.get(flagWorkspace);
+  if (!entry || Date.now() - entry.readAtMs > ISSUES_FLAG_TTL_MS) void refreshIssuesPerWorkspace();
+  if (!(entry?.on ?? FLAG_DEFAULTS[FLAGS.ISSUES_PER_WORKSPACE])) return DEFAULT_COORD_WORKSPACE;
   return explicitActiveWorkspaceId ?? activeWorkspaceId();
 }
 

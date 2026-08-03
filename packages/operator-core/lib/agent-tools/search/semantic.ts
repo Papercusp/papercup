@@ -9,8 +9,15 @@
  * P-013/P-020); this file is just the `defineTool` projection.
  *
  * If pgvector isn't installed OR backfill hasn't populated embeddings,
- * mode='embeddings' returns empty and mode='hybrid' falls back to
- * BM25-only (silently — logged via ctx.log inside the engine).
+ * mode='embeddings' returns empty and mode='hybrid' falls back to BM25-only.
+ *
+ * P-009 (semantic-search-fingerprint-coverage-2026-08-03): that fallback used
+ * to be SILENT — logged via ctx.log inside the engine and nowhere else — so a
+ * caller could not distinguish "no good match exists" from "the index is only
+ * 72% populated and the good match was never embedded". The response now
+ * carries a `coverage` block derived from the same samples the coverage alarm
+ * persists; see ../../search/coverage-gate. Absence of a sample reports as
+ * `unknown`, never as healthy.
  */
 
 import { z } from 'zod';
@@ -19,6 +26,10 @@ import { runHybridSearch } from '@papercusp/search';
 import { SEARCH_SOURCES } from './sources';
 import { buildQueryEmbedderResolved, interactiveEmbedAcquireBudgetMs } from './embedder';
 import { proseMinScoreFloors } from '../../search/prose-min-score';
+import {
+  loadCoverageSnapshotCached,
+  assessSearchCoverage,
+} from '../../search/coverage-gate';
 import { rerankCandidateCount, rerankProseHits } from './rerank';
 import { searchFilterArgs, resolveSearchFilters } from './filters';
 import { resolveAgentIdentity } from '../coordination/identity';
@@ -98,6 +109,16 @@ export default defineTool({
       acquireBudgetMs: interactiveEmbedAcquireBudgetMs(),
     });
     const embedder = resolvedEmbedder?.embed ?? null;
+
+    // P-009 runtime honesty: start the coverage read NOW so it overlaps the
+    // search instead of adding serial latency. It is a single indexed
+    // DISTINCT ON over already-persisted samples (never a live COUNT scan),
+    // TTL-memoised, and fail-open — a read error resolves to `unknown`, which
+    // is reported as unknown and never as healthy.
+    const coveragePromise = loadCoverageSnapshotCached(
+      ctx.tx as never,
+      ctx.workspaceId ?? '',
+    );
     // WI-3929 (same class as EI-9312): bound the ACTUAL per-query embed call
     // inside runHybridSearch, not just the embedder ACQUISITION above — a
     // resolved-but-slow embedder (warm local ONNX under load, or the OpenAI
@@ -127,6 +148,16 @@ export default defineTool({
     // key → the RRF order unchanged (see ./rerank).
     const reranked = await rerankProseHits(args.query, results, limit);
 
+    // P-009: report WHAT THE INDEX ACTUALLY CONTAINS alongside the hits. Only
+    // non-healthy sources are itemised, so a healthy search stays compact.
+    const coverage = assessSearchCoverage(scope, await coveragePromise);
+    const notable = coverage.perSource.filter(
+      (a) => a.verdict === 'degraded' || a.verdict === 'unknown',
+    );
+    // A degraded index matters more in pure-embeddings mode: with no lexical
+    // leg, an unembedded row is not merely ranked lower, it is UNREACHABLE.
+    const modeAggravated = mode === 'embeddings' && notable.length > 0;
+
     return {
       content: [{
         type: 'text',
@@ -136,6 +167,23 @@ export default defineTool({
           embedder_available: embedderAvailable,
           scope,
           total_hits: totalHits,
+          coverage: {
+            degraded: coverage.degraded,
+            warning: coverage.warning
+              ? modeAggravated
+                ? `${coverage.warning}. mode='embeddings' has no lexical fallback, so rows ` +
+                  `missing from the index are UNREACHABLE here — re-run with mode='hybrid' ` +
+                  `to recover them via BM25.`
+                : coverage.warning
+              : null,
+            sources: notable.map((a) => ({
+              source: a.source,
+              verdict: a.verdict,
+              coverage: a.coverage === null ? null : Number(a.coverage.toFixed(4)),
+              recent_coverage: a.recentCoverage === null ? null : Number(a.recentCoverage.toFixed(4)),
+              note: a.note,
+            })),
+          },
           // Map @papercusp/search's generic `scope` hit field back to the
           // operator's domain `harness_slug` for the agent-facing output.
           results: reranked.map(({ scope: hitScope, ...rest }) =>

@@ -12,25 +12,31 @@
  * fired twice (log.ts — WI-6449 then WI-6588) and was root-fixed.
  */
 import { describe, it, expect } from 'vitest';
-// ⚠ NOTHING MAY SIT BETWEEN THE `@ts-ignore` BELOW AND THE `import` — not even a comment.
-// `@ts-ignore` suppresses the NEXT LINE ONLY, and the TS7016 "no declaration file" error is
-// reported at the MODULE SPECIFIER. There are two ways to move the specifier out from under the
-// directive, and BOTH have now been measured in this exact file:
-//   1. wrapping the import into a multi-line named-import list (2026-08-03, WI-8887);
-//   2. inserting any line between the directive and the import — including an explanation of
-//      rule 1. That is how this file red-pinned the fleet gate: the note lived here, six lines
-//      of it, so `@ts-ignore` applied to a comment and the import was unguarded
-//      (2026-08-03, EI-19457275636306147).
-// Hence: explanation ABOVE, directive pair welded to the import, import on ONE line. This matches
-// no-bespoke-state-read-guard.test.ts, plane-adoption-probe.test.ts and no-bespoke-state-read-live.ts,
-// which carry longer imports the same way.
+// ⚠ KEEP THIS IMPORT ON ONE LINE. The rule is NOT "the directive must be physically adjacent" —
+// it is that the MODULE SPECIFIER must land on the line `@ts-ignore` covers, because TS7016
+// ("no declaration file") is reported at the specifier. Measured 2026-08-03 with a non-vacuous
+// control (a bare import does raise TS7016):
+//   • directive, then N comment lines, then a ONE-LINE import  → SUPPRESSED. TS skips comments
+//     and applies the directive to the next CODE line, so comments in between are harmless.
+//   • directive immediately before a MULTI-LINE import         → TS7016. The specifier sits on a
+//     later line than the one the directive covers (WI-8887).
+// So the only thing that actually breaks this is REFLOWING the import, which is why
+// `prettier-ignore` below is load-bearing: prettier wants to split this into a 4-line named-import
+// list, and that is the shape that unguards the specifier.
 //
 // `prettier-ignore` sits ABOVE the pair rather than adjacent to the import, because `@ts-ignore`
-// has to be the last line before it and only one comment can hold that slot. That is safe, and it
-// is MEASURED, not assumed (2026-08-03): prettier-ignore still applies across the two intervening
-// directive comments, while the same import WITHOUT it reflows to a 4-line named-import list — the
-// exact shape that unguards the specifier. Do not drop it on the grounds that the three files above
-// omit it; they are simply one `prettier --write` away from this bug.
+// must own the slot nearest the import and only one comment can. Measured: prettier-ignore still
+// applies across the two intervening directive comments.
+// ⚠ no-bespoke-state-read-guard.test.ts, plane-adoption-probe.test.ts and no-bespoke-state-read-live.ts
+// carry this same import shape WITHOUT prettier-ignore and are prettier-DIRTY today — prettier
+// already wants to reflow them, so they are a live TS7016 waiting to be triggered, not a safe pattern
+// to copy.
+//
+// HISTORICAL NOTE (EI-19457275636306147): this file once red-pinned the fleet gate with the
+// explanation sitting BETWEEN the directive and the import. That was a FALSE POSITIVE in
+// check-unenrolled-mjs-imports' guard, which tested physical adjacency rather than specifier
+// placement — tsc was always clean on it. The guard has since been fixed. The ordering below is
+// kept because it is the clearest form, NOT because comments in between would break tsc.
 // prettier-ignore
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore — pure JS guard script, no .d.ts; imported for its predicate only.

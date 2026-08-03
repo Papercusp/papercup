@@ -36,6 +36,12 @@ import { execSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, it, expect, beforeAll } from 'vitest';
+// prettier-ignore — ENFORCES the "ONE line" rule below, which was previously only DOCUMENTED:
+// prettier wants to reflow this import into a multi-line list, which is exactly what unguards the
+// specifier (measured 2026-08-03 — this file was prettier-dirty and one `--write` from TS7016).
+// It sits above the pair because @ts-ignore must own the slot nearest the import; verified that
+// prettier-ignore still applies across the two intervening directive comments.
+// prettier-ignore
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore — pure JS guard script, no .d.ts; imported for its real scan + predicates. Kept on ONE line: @ts-ignore suppresses only the line that follows it, so a multi-line import leaves the module specifier unguarded and TS7016 reds the build.
 import { findOffenders, isStateReadCandidate, SCAN_DIRS, BASELINE } from '../../../scripts/check-no-bespoke-state-read.mjs';

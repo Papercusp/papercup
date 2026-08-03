@@ -26,6 +26,10 @@
  * - ✅ The exception is stated ONCE, here, with a reason — instead of 25 silent copies.
  * - ✅ If `getOrgPg`'s return type is ever replaced outright, this one site breaks loudly
  *   rather than 25 sites continuing to compile against a type that no longer applies.
+ * - ❌ It does NOT type-check the `sql` stand-in you pass. That parameter is `unknown` on
+ *   purpose — see the comment on it. Two narrower signatures were tried and both rejected
+ *   real, correct fixtures, and since the object is asserted to `OrgPg` on the very next
+ *   line, a narrower parameter would have bought the APPEARANCE of checking, not checking.
  * - ❌ It does NOT make those 25 fixtures fully type-safe. The stand-in is still PARTIAL —
  *   `{ sql }` is not a complete client — and that remains asserted by hand, here.
  *   Consolidation reduces `check-mock-cast-escape.mjs`'s count by 24, but only one of the
@@ -63,7 +67,20 @@ type OrgPg = ReturnType<typeof getOrgPg>;
  * @param mockedGetOrgPg the mock, e.g. `vi.mocked(getOrgPg)`
  * @param sql            the stand-in tagged-template fn, e.g. `vi.fn().mockResolvedValue(rows)`
  */
-export function mockOrgPgSql(mockedGetOrgPg: Mock, sql: OrgPg['sql'] | Mock): void {
+export function mockOrgPgSql(
+  mockedGetOrgPg: Mock,
+  // `unknown`, deliberately, after two narrower attempts FAILED against real fixtures:
+  //   `Mock`                            -> TS2345, arg was 'Mock<Constructable | Procedure>'
+  //   `(...args: never[]) => unknown`   -> TS2345, same arg
+  // The callers declare their stand-in as `ReturnType<typeof vi.fn>`, i.e. an
+  // UNPARAMETERISED `Mock<Constructable | Procedure>`. Because that type argument is a
+  // union carrying a CONSTRUCT signature, TypeScript cannot reduce it to one call
+  // signature, so it satisfies no callable type — including the permissive one above.
+  // Widening here is honest rather than lazy: the object is asserted to `OrgPg` on the
+  // next line regardless, so a narrower parameter would buy no real checking, only the
+  // appearance of it. See the "does NOT buy you" list in the module doc.
+  sql: unknown,
+): void {
   // The single, deliberate partial-stand-in assertion — see the module doc above.
   mockedGetOrgPg.mockReturnValue({ sql } as unknown as OrgPg);
 }

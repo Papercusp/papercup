@@ -33,6 +33,12 @@
  * Each is locked below, because the tree cannot lock them.
  */
 import { describe, it, expect } from 'vitest';
+// prettier-ignore — ENFORCES the "ONE line" rule below, which was previously only DOCUMENTED:
+// prettier wants to reflow this import into a multi-line list, which is exactly what unguards the
+// specifier (measured 2026-08-03 — this file was prettier-dirty and one `--write` from TS7016).
+// It sits above the pair because @ts-ignore must own the slot nearest the import; verified that
+// prettier-ignore still applies across the two intervening directive comments.
+// prettier-ignore
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore — pure JS gate script, no .d.ts; imported for its predicates only. Kept on ONE line: @ts-ignore suppresses only the line that follows it, so a multi-line import leaves the module specifier unguarded and TS7016 reds the build.
 import { judgeAdoption, isPastReview, rollupAdoption, ADOPTION_VERDICTS, PLANE_ADOPTION_SURFACES } from '../../../scripts/check-plane-adoption.mjs';

@@ -290,10 +290,19 @@ async function selfTest() {
 
   // The measured 2026-08-03 outage shape: a backtick inside a SQL comment that
   // lives inside a tagged template literal closes the template.
+  //
+  // The backticks are written as \x60 ON PURPOSE — do not "tidy" them back into
+  // literal characters. This fixture reproduces a SQL comment carrying a
+  // markdown-quoted identifier, which is exactly what `sqlCommentBacktickDetector`
+  // (packages/operator-core/lib/content-lint/registry.ts) exists to catch. Spelled
+  // literally, the git-sync content-guard quarantines THIS FILE — the guard for the
+  // class gets blocked by the guard for the class. Verified 2026-08-03: literal
+  // backticks here produce a real hit at this line with backticks:3. Escaping them
+  // keeps the runtime string byte-identical while leaving no backtick in the source.
   const broken = await nudgeFor('/repo/packages/x/watchdog.ts', {
     ...base,
     readFile: () =>
-      'const rows = await sql`\n  SELECT 1\n  -- crowded out; `name` is a tiebreak\n  ORDER BY 1`;\n',
+      'const rows = await sql\x60\n  SELECT 1\n  -- crowded out; \x60name\x60 is a tiebreak\n  ORDER BY 1\x60;\n',
   });
   check('reports the template-literal break', typeof broken === 'string' && /does NOT PARSE/.test(broken));
   check('names the file', typeof broken === 'string' && /watchdog\.ts/.test(broken));

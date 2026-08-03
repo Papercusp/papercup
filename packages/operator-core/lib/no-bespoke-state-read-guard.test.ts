@@ -19,6 +19,12 @@ import { describe, it, expect } from 'vitest';
 
 /** Repo root — vitest's cwd is `packages/operator-core`, which is NOT it (see below). */
 const REPO_ROOT = new URL('../../../', import.meta.url).pathname;
+// prettier-ignore — ENFORCES the "ONE line" rule below, which was previously only DOCUMENTED:
+// prettier wants to reflow this import into a multi-line list, which is exactly what unguards the
+// specifier (measured 2026-08-03 — this file was prettier-dirty and one `--write` from TS7016).
+// It sits above the pair because @ts-ignore must own the slot nearest the import; verified that
+// prettier-ignore still applies across the two intervening directive comments.
+// prettier-ignore
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore — pure JS guard script, no .d.ts; imported for its predicates only. Kept on ONE line: @ts-ignore suppresses only the line that follows it, so a multi-line import leaves the module specifier unguarded and TS7016 reds the build.
 import { isStateReadCandidate, isMutatingVerb, parseToolDefs, judgeToolDef, BASELINE, MIN_EXEMPTION_REASON, STATE_NOUNS, BASELINE_REVIEW_BY, baselineExpired, VERDICTS, VERDICT_KINDS, verdictGaps, verdictRollup, capabilityEffect, SCAN_DIRS, WRITE_CAPABILITIES as GUARD_WRITE_CAPABILITIES, WRITE_CAPABILITY_SUFFIXES as GUARD_WRITE_CAPABILITY_SUFFIXES } from '../../../scripts/check-no-bespoke-state-read.mjs';

@@ -50,9 +50,108 @@ interface Args {
   harness: string;
   workspace: string;
   verbose: boolean;
-  mode: 'both' | 'independent' | 'sequential';
+  /** 'none' runs the in-process probes only — no live endpoint, no staging restart needed. */
+  mode: 'both' | 'independent' | 'sequential' | 'none';
   explainSelection: boolean;
   arms: boolean;
+  oracle: boolean;
+  oracleMaxTerms: number;
+}
+
+/**
+ * THE ORACLE — which INDIVIDUAL candidate terms retrieve an answer-bearing
+ * record at all, and would any selector have been able to pick them?
+ *
+ * This is a CEILING measurement, run BEFORE designing a replacement selector
+ * (WI-9273), because that ordering is exactly what P-018 got wrong: a mechanism
+ * was built on a plausible story about which terms are good, and the story was
+ * false. Here nothing is designed — every candidate term is simply tried, and
+ * the corpus says which ones work.
+ *
+ * It answers three questions no selector-vs-selector comparison can:
+ *   1. Is 2/7 near the ceiling, or is 7/7 reachable? If a batch has NO winning
+ *      term, no choice of two terms can save it and the fix is not selection at
+ *      all (it is reach, or the 2-term cap, or the corpus).
+ *   2. What do the winners have in common? If nothing learnable — not rarity,
+ *      not length, not position — then ranked single-term selection is a dead
+ *      end and the honest answer is to stop trying to pick.
+ *   3. Did either shipped selector actually have the winner in reach? A selector
+ *      that never had the right term as a candidate is failing earlier than its
+ *      ranking rule.
+ */
+async function runOracle(args: Args): Promise<void> {
+  const [{ corpusQueryText, corpusTerms }, { corpusTermDfLookup }, { recallCorpusContext }, { getOrgPg }] =
+    await Promise.all([
+      import('../corpus-recall'),
+      import('../corpus-term-df'),
+      import('../corpus-recall-io'),
+      import('@papercusp/db-org'),
+    ]);
+  const { sql } = getOrgPg();
+  const df = await corpusTermDfLookup(sql, 'papercusp-workspace');
+
+  console.log('\n## ORACLE — which SINGLE candidate terms retrieve an answer-bearing record?');
+  console.log(`   (ceiling measurement for WI-9273; ${args.oracleMaxTerms} candidates max per batch)\n`);
+
+  let batchesWithAnyWinner = 0;
+  const winnerProfile: Array<{ term: string; df: number; len: number; pos: number; batch: number }> = [];
+
+  for (const batch of REPLAY) {
+    const raw = deriveBatchQuery(batch.calls);
+    const terms = corpusTerms(raw).slice(0, args.oracleMaxTerms);
+    const picks = {
+      length: corpusQueryText(raw).split(' '),
+      banded: df ? corpusQueryText(raw, undefined, { df }).split(' ') : [],
+    };
+
+    // Bounded concurrency: each probe is an embed + hybrid search (~1-2s), and a
+    // serial sweep over ~10 terms x 7 batches is long enough that people skip it.
+    const results: Array<{ term: string; win: boolean }> = [];
+    const queue = [...terms];
+    const worker = async (): Promise<void> => {
+      for (;;) {
+        const term = queue.shift();
+        if (term === undefined) return;
+        const res = await recallCorpusContext({
+          queryText: term,
+          workspaceId: 'papercusp-workspace',
+          harnessSlugs: ['papercusp'],
+        });
+        const rendered = res.lines.map((l) => l.line).join('\n');
+        results.push({ term, win: carriesAnswer(rendered) !== undefined });
+      }
+    };
+    await Promise.all([worker(), worker(), worker(), worker()]);
+
+    const winners = terms.filter((t) => results.find((r) => r.term === t)?.win);
+    if (winners.length > 0) batchesWithAnyWinner++;
+    for (const w of winners) {
+      winnerProfile.push({ term: w, df: df ? df(w) : -1, len: w.length, pos: terms.indexOf(w), batch: batch.turn });
+    }
+
+    const mark = (t: string): string =>
+      `${t}${picks.length.includes(t) ? '[L]' : ''}${picks.banded.includes(t) ? '[B]' : ''}`;
+    console.log(`   turn ${batch.turn}`);
+    console.log(`     winners: ${winners.length > 0 ? winners.map(mark).join(' ') : '(NONE — unreachable at 1 term)'}`);
+    console.log(`     losers : ${terms.filter((t) => !winners.includes(t)).map(mark).join(' ')}`);
+  }
+
+  console.log(`\n   Batches with >=1 winning single term: ${batchesWithAnyWinner}/${REPLAY.length}`);
+  console.log(`   [L] = the LENGTH proxy picked it   [B] = BANDED picked it`);
+  if (winnerProfile.length > 0) {
+    const dfs = winnerProfile.map((w) => w.df).filter((d) => d >= 0);
+    const lens = winnerProfile.map((w) => w.len);
+    console.log(`\n   Winner profile (what a selector would have to prefer):`);
+    console.log(`     df   min ${Math.min(...dfs)}  max ${Math.max(...dfs)}  (banded prefers the MINIMUM)`);
+    console.log(`     len  min ${Math.min(...lens)}  max ${Math.max(...lens)}  (length prefers the MAXIMUM)`);
+    for (const w of winnerProfile) {
+      console.log(`     turn ${w.batch}: "${w.term}" df=${w.df} len=${w.len} candidatePos=${w.pos}`);
+    }
+  }
+  console.log(
+    `\n   ⚠ A batch with NO winning single term cannot be fixed by choosing different terms —` +
+      ` that is a reach/cap problem, not a selection problem.`,
+  );
 }
 
 /**
@@ -170,8 +269,8 @@ function parseArgs(argv: readonly string[]): Args {
     return i >= 0 ? argv[i + 1] : undefined;
   };
   const modeRaw = get('--mode') ?? 'both';
-  if (modeRaw !== 'both' && modeRaw !== 'independent' && modeRaw !== 'sequential') {
-    throw new Error(`--mode must be both|independent|sequential, got ${modeRaw}`);
+  if (modeRaw !== 'both' && modeRaw !== 'independent' && modeRaw !== 'sequential' && modeRaw !== 'none') {
+    throw new Error(`--mode must be both|independent|sequential|none, got ${modeRaw}`);
   }
   return {
     base: (get('--base') ?? 'http://127.0.0.1:3170').replace(/\/$/, ''),
@@ -182,6 +281,8 @@ function parseArgs(argv: readonly string[]): Args {
     mode: modeRaw,
     explainSelection: argv.includes('--explain-selection'),
     arms: argv.includes('--arms'),
+    oracle: argv.includes('--oracle'),
+    oracleMaxTerms: Number(get('--oracle-max-terms') ?? 10),
   };
 }
 
@@ -312,6 +413,7 @@ async function main(): Promise<void> {
 
   if (args.explainSelection) await explainSelection();
   if (args.arms) await compareArms();
+  if (args.oracle) await runOracle(args);
 
   let independent: ModeSummary | undefined;
   let sequential: ModeSummary | undefined;

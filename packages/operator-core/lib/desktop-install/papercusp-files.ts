@@ -641,6 +641,20 @@ const CC_HOOK_FILES = [
   // EMPTY once git-sync sweeps the tree (minutes), so it false-greens — measured in its own
   // formatNoFindings docstring. Only an edit-time hook sees the true pre-edit HEAD.
   'posttooluse-required-field-strand-nudge.mjs',
+  // EI-19457231269012320 / EI-19457320059999661: PostToolUse (matcher
+  // "Edit|Write|MultiEdit") ADVISORY nudge when the file just written does not PARSE.
+  // A parse-class guard already exists and is correct (tsParseDetector in
+  // content-lint/registry.ts) but it runs on the COMMIT path, and the damage does not
+  // need a commit: apps/operator/bin/bundle-host.sh esbuild-bundles operator-core as
+  // ExecStartPre for papercup-staging-api, papercup-bg-host and the release host, and it
+  // bundles the WORKING TREE. Measured 2026-08-03: backticks written as prose inside a
+  // sql tagged template closed the literal at watchdog.ts:1836; :3170 crash-looped 6x into
+  // systemd's start-limit and was down fleet-wide for 17 minutes — and `git log` on that
+  // file shows exactly ONE commit that day, the FIX. The break was never committed, so no
+  // commit-path guard could have seen it. The sibling PreToolUse content-lint hook cannot
+  // cover it either: PreToolUse sees `new_string`, a FRAGMENT, and a fragment does not
+  // parse standalone. PostToolUse reads the actual resulting file from disk.
+  'posttooluse-ts-parse-nudge.mjs',
   // EI-19359711978838614: PostToolUse (matcher "Edit|Write|MultiEdit") ADVISORY nudge
   // when a new/edited migration (libs/papercusp/libs/db/sql/*.sql) introduces a column
   // that some OTHER *.integration.test.ts already relies on via an inline CREATE TABLE
@@ -1531,6 +1545,18 @@ export function mergeClaudeHookSettings(
     hooks.PostToolUse = replaceOurHookEntries(ev('PostToolUse'), ours('posttooluse-required-field-strand-nudge.mjs'), {
       matcher: 'Edit|Write|MultiEdit',
       hooks: cmd('posttooluse-required-field-strand-nudge.mjs'),
+    });
+  // merge_ts_parse_nudge_hook — PostToolUse, matcher 'Edit|Write|MultiEdit'
+  // (EI-19457231269012320 / EI-19457320059999661). Advisory only, and this one MUST stay
+  // advisory: a multi-step refactor legitimately passes through unparseable intermediate
+  // states, so a blocking verdict here would be wrong as often as it was right. It reports
+  // the parser's own first diagnostic to the author milliseconds after the write — before
+  // git-sync can sweep the file into a commit, and before any host bundles the working tree
+  // and crash-loops on it.
+  if (has('posttooluse-ts-parse-nudge.mjs'))
+    hooks.PostToolUse = replaceOurHookEntries(ev('PostToolUse'), ours('posttooluse-ts-parse-nudge.mjs'), {
+      matcher: 'Edit|Write|MultiEdit',
+      hooks: cmd('posttooluse-ts-parse-nudge.mjs'),
     });
   // merge_migration_fixture_drift_nudge_hook — PostToolUse, matcher 'Edit|Write|MultiEdit'
   // (EI-19359711978838614). Advisory only: it can never deny — adding a migration column

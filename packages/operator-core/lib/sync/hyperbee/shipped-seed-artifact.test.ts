@@ -105,6 +105,11 @@ describe.skipIf(!seedPresent)('shipped seed artifact (integrity of the real bund
 
   it('every declared payload exists on disk at its declared size (catches a truncated/partial ship)', () => {
     for (const store of manifest!.stores) {
+      // A shipped seed's payloads must be BUNDLED resources. A 'url' or 'swarm'
+      // source would make first boot fetch over the network — which is precisely
+      // the offline promise this seed exists to keep. (Also narrows the union.)
+      expect(store.source.type, `${store.kind}: payload is not a bundled resource`).toBe('resource');
+      if (store.source.type !== 'resource') continue;
       const payloadDir = join(SEED_DIR, store.source.path);
       expect(existsSync(payloadDir), `${store.kind}: payload dir missing at ${payloadDir}`).toBe(true);
       const actual = measure(payloadDir);
