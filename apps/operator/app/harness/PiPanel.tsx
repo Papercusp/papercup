@@ -49,6 +49,26 @@ export function ptyWsUrlForId(id: string): string | null {
   };
   const w = window as WindowWithPtyWs;
   // E. Tauri native pty present? PiPanel detects this and avoids WS entirely.
+  //
+  // ⚠ This is a TRANSPORT selector, NOT a "terminals are disabled in the
+  // desktop" switch — returning null here means "don't use a WebSocket", and
+  // the caller then takes the strictly MORE capable native path (see
+  // `useNative` below: openNativeSession → Tauri IPC → pty.rs, which is fully
+  // wired end-to-end). Misread as a feature-disable it produced WI-7546
+  // ("PTY is disabled in the Tauri shell"), which is refuted; don't re-file it.
+  //
+  // Why the desktop has no xterm terminal PANE at all is a separate and
+  // deliberate matter: owner plan `native-terminal-desktop-2026-06-06` P-009
+  // (done) retired the xterm.js desktop-terminal path — the desktop terminal
+  // is a glued NATIVE sibling window (`pui chat`), never a dockview pane.
+  // A guard test enforces it: dock-layouts.test.ts "GUARD: seeds NO terminal
+  // pane". Do not reintroduce xterm.js as the desktop terminal.
+  //
+  // NOTE this branch is belt-and-braces, not the load-bearing one: measured
+  // live in the desktop webview 2026-08-03, `__PAPERCUSP_TAURI__` was absent
+  // (the main.rs init-script inject had not landed / been re-applied), so the
+  // null actually came from the `:3055` port check below. `isTauriNative()`
+  // was still true, so the native path was selected regardless.
   if (w.__PAPERCUSP_TAURI__?.kind === 'native') return null;
   const override = w.__PAPERCUSP_PTY_WS__;
   if (override === null) return null; // explicit opt-out
