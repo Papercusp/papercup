@@ -12,8 +12,17 @@
  * cannot be produced. The filing item was one step from escalating a fabricated
  * owner-gated blocker on exactly this.
  *
- * MEASURED on the live corpus (2026-08-03, papercusp-workspace): of 25 distinct
- * key-shaped citations in non-terminal work-items, **22 had no live fact.**
+ * MEASURED on the live corpus (2026-08-03, papercusp-workspace, non-terminal
+ * items, this file's exact pattern): 229 of 18,232 items carry at least one
+ * citation, spanning **152 distinct keys — of which only 15 still resolve
+ * live.** 129 have decayed but are still RECOVERABLE (a row survives, carrying
+ * the body); 8 are gone entirely.
+ *
+ * ⚠ An earlier note on the filing item put this at "22 of 25 dangling". That is
+ * SUPERSEDED and was wrong in the direction that matters: it measured a much
+ * narrower slice, and it framed the population as mostly UNRECOVERABLE when in
+ * fact ~94% of dead citations can still be produced on demand. The corrected
+ * shape is what this module is built around — see "WHY IT REPORTS RECOVERY".
  *
  * ── WHY THE DECAY IS NOT (MAINLY) THE TTL ───────────────────────────────────
  *
@@ -27,9 +36,10 @@
  *
  * ── WHY IT REPORTS RECOVERY, NOT JUST ABSENCE ───────────────────────────────
  *
- * The filing's own case (both keys gone without trace) is the MINORITY. Of the
- * 25 measured keys only one had no row at all; the other danglers still had
- * retracted/expired rows carrying their BODY. `foldFacts` filters those out, so
+ * The filing's own case (both keys gone without trace) is the MINORITY, and by a
+ * wide margin: of the 137 cited keys that no longer resolve live, only **8** have
+ * no row at all — the other **129** still hold retracted/expired/superseded rows
+ * carrying their BODY. `foldFacts` filters those out, so
  * they are invisible to every ordinary surface — but they are perfectly readable
  * by key. So this lens hands the decayed authority's excerpt back inline rather
  * than merely warning that it is gone: the reader gets what they were about to
@@ -69,13 +79,24 @@ import type { AssumptionCondition } from './assumptions';
  * permanent false-alarm generator, which is worse than no detector.
  *
  * Requiring **>= 3 hyphen-separated segments** — the shape of every real
- * `facts:assert` slug — measured **100% precision** on the same corpus: 25 of 25
- * matches were genuine fact keys, with no English-word noise at all.
+ * `facts:assert` slug — measured **100% precision at full corpus scale**: all
+ * 152 matches were genuine fact keys, with no English-word noise. That was
+ * checked where it can actually fail, on the 8 keys that resolve to NOTHING
+ * (`429-hard-proof`, `loop-wake-walls`, `stale-verdict-is-not-a-verdict`, …) —
+ * a noise word would land in exactly that bucket and inflate the one count this
+ * lens reports as unrecoverable. Every one of the 8 is a real slug.
  *
  * The leading `\b` additionally prevents "artifact: foo-bar-baz" from matching
  * (there is no word boundary inside "artifact", so `\bfact` cannot match its
- * tail). PURE, and deliberately conservative: this lens must under-report rather
- * than cry wolf.
+ * tail) — measured, that guard removes exactly one live false positive
+ * (`end-to-end`, from "artifact end-to-end") and drops no genuine citation.
+ *
+ * The `i` flag is safe despite `[a-z0-9]` then also matching uppercase: run
+ * case-sensitively against the same corpus the key set is identical (152 both
+ * ways), so it is not absorbing camelCase tails into bogus keys.
+ *
+ * PURE, and deliberately conservative: this lens must under-report rather than
+ * cry wolf.
  */
 export const CITED_FACT_KEY_RE = /\bfact[: ]+([a-z0-9]+(?:-[a-z0-9]+){2,})/gi;
 
@@ -84,9 +105,10 @@ const MAX_KEY_CHARS = 120;
 
 /**
  * How many distinct citations one item's lens will resolve. Bounded because the
- * resolve is a DB read on a read path: measured corpus-wide there are ~25 such
- * keys across ALL non-terminal items, so a single item exceeding this is prose
- * that defeated the pattern, not a real citation list.
+ * resolve is a DB read on a read path. Measured on the live corpus: the busiest
+ * single item cites **2** keys, the mean is 1.07, and **no** item exceeds this
+ * cap — so 10 is a ~5x safety valve, and an item that trips it is prose which
+ * defeated the pattern rather than a real citation list.
  */
 export const MAX_CITED_FACT_KEYS = 10;
 

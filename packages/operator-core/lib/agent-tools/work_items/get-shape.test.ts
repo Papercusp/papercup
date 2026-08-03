@@ -198,3 +198,56 @@ describe("shapeWorkItemsGet — tier differences and defensive behaviour", () =>
     expect(out._shapeNote).toBeUndefined();
   });
 });
+
+describe("citedFacts survives the shaper (EI-19465127338264010)", () => {
+  const citedFacts = {
+    dangling: 1,
+    decayed: 2,
+    note: "This item's prose cites 3 fact key(s) as its authority; 3 no longer resolve live.",
+    cited: Array.from({ length: 8 }, (_, i) => ({
+      key: `some-cited-key-${i}`,
+      condition: i === 0 ? "dangling" : "retracted",
+      ref: i === 0 ? null : `fact:workspace:some-cited-key-${i}@v${i}`,
+      scope: i === 0 ? null : "workspace",
+      scopeRef: null,
+      versionId: i === 0 ? null : i,
+      ...(i === 0 ? {} : { excerpt: "E".repeat(400) }),
+    })),
+  };
+
+  // THE DEFECT THIS PINS: projectRow rebuilds each row from a WHITELIST, so a new
+  // conditional field added to get.ts is dropped SILENTLY unless it is added here
+  // too — the exact class of loss this whole file was filed for, one field over.
+  for (const tier of ["trimmed", "standard"] as const) {
+    it(`keeps the finding and its note at the '${tier}' tier`, () => {
+      const out = shapeWorkItemsGet(
+        { ok: true, results: [row({ citedFacts })], counts: { ok: 1, failed: 0 } },
+        tier,
+      ) as Envelope;
+      const cf = out.results[0].citedFacts as Record<string, unknown>;
+      expect(cf).toBeDefined();
+      // The counts and the note ARE the finding — never degraded.
+      expect(cf.dangling).toBe(1);
+      expect(cf.decayed).toBe(2);
+      expect(cf.note).toBe(citedFacts.note);
+      // The bulk (per-key excerpts) is capped, and never silently.
+      const kept = cf.cited as Array<Record<string, unknown>>;
+      expect(kept.length).toBeLessThan(citedFacts.cited.length);
+      expect(cf.citedTruncated).toEqual({ shown: kept.length, total: 8 });
+      expect(out._shapeNote?.dropped).toContain("citedFacts.cited");
+      // A clipped excerpt carries the loud in-band marker, not a bare ellipsis.
+      const withExcerpt = kept.find((k) => typeof k.excerpt === "string");
+      expect(withExcerpt?.excerpt).toContain("TRUNCATED");
+      // Identity survives clipping — the key is what a reader looks up.
+      expect(kept[0].key).toBe("some-cited-key-0");
+    });
+  }
+
+  it("is absent when the handler emitted no finding", () => {
+    const out = shapeWorkItemsGet(
+      { ok: true, results: [row()], counts: { ok: 1, failed: 0 } },
+      "trimmed",
+    ) as Envelope;
+    expect(out.results[0].citedFacts).toBeUndefined();
+  });
+});

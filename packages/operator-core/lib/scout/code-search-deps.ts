@@ -25,6 +25,7 @@
 
 import { execFile } from 'node:child_process';
 import type { CodeSearchDeps, SemanticPriorArtMatch } from './code-existence-probe';
+import type { PlanRecord } from './plan-slug-leg';
 
 /** Result of one process run. `code` is the exit status. */
 export interface ExecOutcome {
@@ -54,6 +55,8 @@ export interface GitGrepOptions {
   exec?: ExecRunner;
   /** Optional semantic leg, passed straight through to the probe. */
   searchSemantic?: (text: string) => Promise<SemanticPriorArtMatch[]>;
+  /** Optional plan-slug leg, passed straight through to the probe. */
+  searchPlans?: (text: string) => Promise<PlanRecord[]>;
 }
 
 const DEFAULTS = {
@@ -231,5 +234,6 @@ export function createGitGrepDeps(opts: GitGrepOptions): CodeSearchDeps {
   };
 
   if (opts.searchSemantic) deps.searchSemantic = opts.searchSemantic;
+  if (opts.searchPlans) deps.searchPlans = opts.searchPlans;
   return deps;
 }
