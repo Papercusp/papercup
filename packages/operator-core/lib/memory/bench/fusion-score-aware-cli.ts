@@ -41,7 +41,29 @@ import { getHarnessAdminUrl } from '../../embedded-pg-discovery';
 import { EMBEDDING_FLOOR_GEMMA } from '../../search/prose-min-score';
 import { loadProseGoldSetFixture } from './prose-gold-set';
 
-const CACHE = process.env.FUSION_CACHE_PATH ?? '/tmp/p031-gemma768-prose-vectors.json';
+const argOf = (flag: string): string | undefined => {
+  const i = process.argv.indexOf(flag);
+  return i !== -1 ? process.argv[i + 1] : undefined;
+};
+const MODEL = argOf('--model') ?? 'gemma768';
+
+/**
+ * The embeddings floor to apply, per model.
+ *
+ * gemma768 uses the SHIPPED constant (`EMBEDDING_FLOOR_GEMMA`, P-001) — never a
+ * re-typed literal, so this instrument cannot drift from the path it measures.
+ *
+ * qwen3768 is NOT shipped and has no measured floor. Applying gemma's 0.45 to
+ * it would be precisely the error `search/prose-min-score.ts` documents (cosine
+ * offsets are a property of the MODEL), so the value here is derived by P-001's
+ * OWN method — ~0.03 below the worst answerable top-1 observed for that model on
+ * this gold set (qwen3@768: worst answerable top-1 .3885 → .36) — and is used
+ * ONLY to give the qwen3 arm a comparable operating point. It is a bench
+ * parameter, not a proposed production constant.
+ */
+const FLOORS: Record<string, number> = { gemma768: EMBEDDING_FLOOR_GEMMA, qwen3768: 0.36 };
+const FLOOR = Number.parseFloat(argOf('--floor') ?? String(FLOORS[MODEL] ?? EMBEDDING_FLOOR_GEMMA));
+const CACHE = process.env.FUSION_CACHE_PATH ?? `/tmp/p031-${MODEL}-prose-vectors.json`;
 const SCHEMA = `bench_fusion_${process.pid}`;
 /** Production over-fetch: SearchContext uses `limit * 3`. */
 const LIMIT = 10;
@@ -112,8 +134,10 @@ function weightedRrf(
  * bm25: `ts_rank_cd` is unbounded, so an absolute ramp has no defensible
  * constant. Normalise within the query's own list instead (max-relative).
  */
-const EMB_LO = EMBEDDING_FLOOR_GEMMA;
-const EMB_HI = 0.75;
+const EMB_LO = FLOOR;
+/** Top of the ramp: just above the highest top-1 cosine observed for the model
+ *  across the whole gold set (gemma@768 .7553, qwen3@768 .7810). */
+const EMB_HI = Number.parseFloat(argOf('--rampHi') ?? (MODEL === 'qwen3768' ? '0.78' : '0.75'));
 
 const ARMS: Arm[] = [
   {
@@ -255,7 +279,7 @@ try {
       .map((dv, di) => ({ key: cache.corpusKeys[di]!, score: dot(qv, dv) }))
       .sort((a, b) => b.score - a.score)
       .slice(0, CANDIDATES)
-      .filter((c) => c.score >= EMBEDDING_FLOOR_GEMMA);
+      .filter((c) => c.score >= FLOOR);
     const embeddings: Array<RankedItem<string>> = sims.map((c) => ({
       key: c.key,
       score: c.score,
@@ -309,7 +333,9 @@ try {
   const md =
     `# P-031 score-aware fusion vs rank-only RRF — ${new Date().toISOString()}\n\n` +
     `corpus ${cache.corpusKeys.length} docs · ${answerableN} answerable gold queries · ` +
-    `gemma@768 · embeddings floor ${EMBEDDING_FLOOR_GEMMA} (P-001, shipped) · k=${RRF_K_DEFAULT}\n\n` +
+    `${cache.model} · embeddings floor ${FLOOR}` +
+    `${MODEL === 'gemma768' ? ' (P-001, SHIPPED)' : ' (derived by P-001 method, bench-only)'} · ` +
+    `ramp [${EMB_LO}, ${EMB_HI}] · k=${RRF_K_DEFAULT}\n\n` +
     rows.join('\n') +
     '\n';
   console.log('\n' + md);
@@ -318,13 +344,17 @@ try {
   const dir = path.join(repoRoot, '.papercusp', 'bench-reports');
   fs.mkdirSync(dir, { recursive: true });
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-  fs.writeFileSync(path.join(dir, `fusion-score-aware-${stamp}.md`), md, 'utf8');
+  fs.writeFileSync(path.join(dir, `fusion-score-aware-${MODEL}-${stamp}.md`), md, 'utf8');
   fs.writeFileSync(
-    path.join(dir, `fusion-score-aware-${stamp}.json`),
-    JSON.stringify({ answerableN, perArm: Object.fromEntries(rrByArm) }, null, 2),
+    path.join(dir, `fusion-score-aware-${MODEL}-${stamp}.json`),
+    JSON.stringify(
+      { model: cache.model, floor: FLOOR, rampHi: EMB_HI, answerableN, perArm: Object.fromEntries(rrByArm) },
+      null,
+      2,
+    ),
     'utf8',
   );
-  log(`wrote .papercusp/bench-reports/fusion-score-aware-${stamp}.{md,json}`);
+  log(`wrote .papercusp/bench-reports/fusion-score-aware-${MODEL}-${stamp}.{md,json}`);
 } finally {
   await client.query(`DROP SCHEMA IF EXISTS ${SCHEMA} CASCADE`);
   await client.end();

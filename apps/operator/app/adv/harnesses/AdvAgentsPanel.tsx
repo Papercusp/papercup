@@ -87,7 +87,18 @@ export interface WorkingAgent {
   load: number;
   agentPaneKind: string;
   driveMode: string;
+  /** WI-1495: which MACHINE this agent runs on — a federated peer's announced
+   *  `shared_session_presence.machine_label`, or this host's fingerprint for a
+   *  local agent. Served by `hiveRoster.byHarness`. Optional so a row from an
+   *  older/partial projection degrades to the UNKNOWN_MACHINE bucket instead of
+   *  vanishing from the grid. */
+  machineLabel?: string | null;
 }
+
+/** Bucket label for a row whose machine could not be resolved (a federated peer
+ *  that announced no label). Kept a named constant so the grouping, the Select
+ *  and the tests all agree on one spelling. */
+export const UNKNOWN_MACHINE = 'unknown';
 
 // Grid-cell truncation (native title= is the approved pattern for dynamic
 // per-row truncation tooltips — see design/gotchas).
@@ -104,6 +115,8 @@ const SELECTED_ROW_BG = 'color-mix(in oklab, var(--accent), transparent 80%)';
 // Radix Select reserves '' for "no selection" — translate at the boundary
 // (the documented sentinel pattern from design/gotchas).
 const ALL_KINDS = '_all';
+/** WI-1495: the "across every machine" sentinel for the machine tabs. */
+const ALL_MACHINES = '_allm';
 
 function fmtAge(ms: number | undefined): string {
   if (!ms) return '—';
@@ -178,6 +191,10 @@ function WorkingView({
   // user-meaningful filters → URL (nuqs); `a`-prefixed so they don't collide
   // with the Work-items panel's (wkind/wq) in the same dock.
   const [kind, setKind] = useQueryState('akind', parseAsString.withDefault(''));
+  // WI-1495: the per-machine tab selection ('' = across ALL machines). nuqs, not
+  // useState — a machine selection is user-meaningful state the agent control
+  // surface must be able to read/drive (repo rule: almost all state in nuqs).
+  const [machine, setMachine] = useQueryState('amach', parseAsString.withDefault(''));
   const [search, setSearch] = useQueryState('aq', parseAsString.withDefault(''));
   // Row click selects the AGENT in the Detail pane via the global `?sel` —
   // the same contract Work items has, namespaced `agent:<agentId>` so the
@@ -188,8 +205,13 @@ function WorkingView({
   // Dragged widths survive panel remounts (localStorage — render-only pref).
   const [colWidths, setColWidths] = usePersistedColumnWidths('pc-colw:adv:agents-working');
 
+  // WI-1495: repointed off the DEPRECATED `fleetAssignments.byHarness` onto the
+  // unified `hiveRoster.byHarness` projection (presence-v2 P-007 — the same
+  // repoint MemberWorkPanel already made). Structurally a SUPERSET: HiveRosterEntry
+  // extends AgentAssignment, so every WorkingAgent field is preserved, and it adds
+  // the `machineLabel` this panel needs to federate across shared-hive machines.
   const query = useSyncQuery<WorkingAgent>({
-    queryName: 'fleetAssignments.byHarness',
+    queryName: 'hiveRoster.byHarness',
     args: { harnessSlug: slug },
     enabled: Boolean(slug),
   });
@@ -198,12 +220,29 @@ function WorkingView({
   const error = query.error ? query.error.message : null;
 
   useEffect(() => {
-    if (agents) api.setTitle(`Agents · ${slug} (${agents.length})`);
-  }, [agents, slug, api]);
+    if (!agents) return;
+    // WI-1495: surface the federation only when there IS one — a single-machine
+    // hive (the common case) keeps the exact prior title, so the cross-machine
+    // wording never becomes decorative noise on a one-box setup.
+    api.setTitle(
+      machines.length > 1
+        ? `Agents · ${slug} (${agents.length} across ${machines.length} machines)`
+        : `Agents · ${slug} (${agents.length})`,
+    );
+  }, [agents, machines, slug, api]);
 
   const kinds = useMemo(() => {
     const set = new Set<string>();
     for (const a of agents ?? []) set.add(a.agentPaneKind);
+    return Array.from(set).sort();
+  }, [agents]);
+
+  // WI-1495: the machines this harness's agents are spread across, for the
+  // per-machine tabs + the "across N machines" count. Derived from the SAME rows
+  // the grid renders, so the count can never disagree with what is on screen.
+  const machines = useMemo(() => {
+    const set = new Set<string>();
+    for (const a of agents ?? []) set.add(a.machineLabel || UNKNOWN_MACHINE);
     return Array.from(set).sort();
   }, [agents]);
 
@@ -342,6 +381,8 @@ function WorkingView({
     const q = search.trim().toLowerCase();
     const xs = cf.rows.filter((a) => {
       if (kind && a.agentPaneKind !== kind) return false;
+      // WI-1495: '' = across all machines.
+      if (machine && (a.machineLabel || UNKNOWN_MACHINE) !== machine) return false;
       if (q) {
         const hay = `${a.agentId} ${a.name ?? ''} ${a.label ?? ''} ${a.intent} ${a.doing?.id ?? ''} ${a.doing?.title ?? ''}`.toLowerCase();
         if (!hay.includes(q)) return false;
@@ -350,7 +391,7 @@ function WorkingView({
     });
     // Live agents first, loaded first within liveness.
     return [...xs].sort((a, b) => Number(b.alive) - Number(a.alive) || b.load - a.load);
-  }, [cf.rows, kind, search]);
+  }, [cf.rows, kind, machine, search]);
 
   return (
     <>
@@ -380,6 +421,21 @@ function WorkingView({
             ...kinds.map((k) => ({ value: k, label: `${AGENT_KIND_GLYPH[k] ?? '·'} ${kindLabelById.get(k) ?? k}` })),
           ]}
         />
+        {/* WI-1495: per-machine tabs. Rendered ONLY for a genuinely federated
+            hive — on a single-machine setup the control would have exactly one
+            real option, so it would be pure chrome. */}
+        {machines.length > 1 ? (
+          <Select
+            value={machine || ALL_MACHINES}
+            onChange={(v) => void setMachine(v === ALL_MACHINES ? '' : v)}
+            ariaLabel="Filter by machine"
+            triggerClassName="pc-advpanel__select"
+            options={[
+              { value: ALL_MACHINES, label: `all ${machines.length} machines` },
+              ...machines.map((m) => ({ value: m, label: `🖥 ${m}` })),
+            ]}
+          />
+        ) : null}
         <Tooltip label="Refresh agents">
           <button
             type="button"

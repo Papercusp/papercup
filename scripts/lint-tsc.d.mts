@@ -42,6 +42,7 @@ import { partitionFilesByCoverage } from './lib/tsc-baseline-gate.mjs';
 import { suggestTypecheckGate } from './lib/tsc-baseline-gate.mjs';
 import { formatUncoveredFilesBanner } from './lib/tsc-baseline-gate.mjs';
 import { coalesceWatermarkFor } from './lib/tsc-baseline-gate.mjs';
+import { mergeRatchetIntoBaseline } from './lib/tsc-baseline-gate.mjs';
 import { lintTscScopeFromArgv } from './lib/tsc-baseline-gate.mjs';
 import { formatLintTscResultMarker } from './lib/tsc-baseline-gate.mjs';
-export { parseTscErrors, syntaxBrokenFiles, countByFile, gitChangedFiles, parseExplicitFiles, decidePerFile, effectiveBaselineByFile, exportedTypeNames, filesReferencingTypeNames, formatAttributionHeadline, formatNewFileGuidance, formatStandingRedFooter, partitionNewFilesByLiveEdit, partitionBrokenFilesByLiveEdit, diagnosticLinesForFiles, partitionStandingByCommitRecency, formatLandingRaceCaveat, LANDING_RACE_WINDOW_SEC, projectPrefixFromTscCommand, partitionFilesByCoverage, suggestTypecheckGate, formatUncoveredFilesBanner, coalesceWatermarkFor, lintTscScopeFromArgv, formatLintTscResultMarker };
+export { parseTscErrors, syntaxBrokenFiles, countByFile, gitChangedFiles, parseExplicitFiles, decidePerFile, effectiveBaselineByFile, exportedTypeNames, filesReferencingTypeNames, formatAttributionHeadline, formatNewFileGuidance, formatStandingRedFooter, partitionNewFilesByLiveEdit, partitionBrokenFilesByLiveEdit, diagnosticLinesForFiles, partitionStandingByCommitRecency, formatLandingRaceCaveat, LANDING_RACE_WINDOW_SEC, projectPrefixFromTscCommand, partitionFilesByCoverage, suggestTypecheckGate, formatUncoveredFilesBanner, coalesceWatermarkFor, mergeRatchetIntoBaseline, lintTscScopeFromArgv, formatLintTscResultMarker };

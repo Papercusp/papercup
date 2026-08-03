@@ -177,16 +177,235 @@ export function effectiveBaselineByFile({ baselineByFile, currentByFile, foreign
  * }} args
  * @returns {PerFileGateResult}
  */
+/**
+ * EI-19444246913245434 — lower ONLY the named files in an existing baseline map.
+ *
+ * A SCOPED `--update` must never write a whole-project map: on this shared checkout every other
+ * file's current count may include a peer's uncommitted edit, and baking that in creates a false
+ * red the moment they revert. (That racy write is why the bug report ruled out bare `--update` as
+ * a workaround — so the scoped ratchet had no working form at all.)
+ *
+ * Merges against the gate's OWN on-disk baseline, never the EFFECTIVE map `decidePerFile` judges
+ * with: the effective map folds in entries INHERITED from foreign package baselines
+ * (effectiveBaselineByFile), and persisting those would durably copy another package's rows into
+ * this one. Pure + total so the "the VALUE changed" property is unit-testable without running tsc.
+ *
+ * @param {{ baselineFiles: Record<string, number>, ratchetFiles: PerFileGateEntry[] }} input
+ * @returns {Record<string, number>}
+ */
+export function mergeRatchetIntoBaseline({ baselineFiles, ratchetFiles }: {
+    baselineFiles: Record<string, number>;
+    ratchetFiles: PerFileGateEntry[];
+}): Record<string, number>;
 export function decidePerFile({ currentByFile, baselineByFile, brokenFiles, updateFlag, changedFiles, typeReferencedFiles, dirtyFiles, attributionDeclared, }: {
-    currentByFile: Record<string, number>;
-    baselineByFile: Record<string, number>;
-    brokenFiles: string[];
-    updateFlag?: boolean;
-    changedFiles?: Set<string> | null;
-    typeReferencedFiles?: Set<string> | null;
-    dirtyFiles?: Set<string> | null;
-    attributionDeclared?: boolean;
-}): PerFileGateResult;
+    currentByFile: any;
+    baselineByFile: any;
+    brokenFiles: any;
+    updateFlag?: boolean | undefined;
+    changedFiles?: null | undefined;
+    typeReferencedFiles?: null | undefined;
+    dirtyFiles?: null | undefined;
+    attributionDeclared?: boolean | undefined;
+}): {
+    verdict: string;
+    brokenFiles: any;
+    unattributedBrokenFiles: any;
+    regressions: never[];
+    improvements: never[];
+    total: number;
+    baselineTotal: number;
+} | {
+    attributed: {
+        file: string;
+        baseline: any;
+        current: any;
+        delta: number;
+    }[];
+    typeAttributed: {
+        file: string;
+        baseline: any;
+        current: any;
+        delta: number;
+    }[];
+    peerDrift: {
+        file: string;
+        baseline: any;
+        current: any;
+        delta: number;
+    }[];
+    newFiles: ({
+        file: string;
+        baseline: any;
+        current: any;
+        delta: number;
+    } | {
+        dirty: any;
+        file: string;
+        baseline: any;
+        current: any;
+        delta: number;
+    })[];
+    regressions: {
+        file: string;
+        baseline: any;
+        current: any;
+        delta: number;
+    }[];
+    improvements: {
+        file: string;
+        baseline: any;
+        current: any;
+        delta: number;
+    }[];
+    total: number;
+    baselineTotal: number;
+    unattributedBrokenFiles: any;
+    verdict: string;
+    brokenFiles?: undefined;
+} | {
+    ratchetFiles: {
+        file: string;
+        baseline: any;
+        current: any;
+        delta: number;
+    }[];
+    attributed: never[];
+    peerDrift: {
+        file: string;
+        baseline: any;
+        current: any;
+        delta: number;
+    }[];
+    newFiles: ({
+        file: string;
+        baseline: any;
+        current: any;
+        delta: number;
+    } | {
+        dirty: any;
+        file: string;
+        baseline: any;
+        current: any;
+        delta: number;
+    })[];
+    regressions: {
+        file: string;
+        baseline: any;
+        current: any;
+        delta: number;
+    }[];
+    improvements: {
+        file: string;
+        baseline: any;
+        current: any;
+        delta: number;
+    }[];
+    total: number;
+    baselineTotal: number;
+    unattributedBrokenFiles: any;
+    verdict: string;
+    brokenFiles?: undefined;
+} | {
+    ratchetFiles?: undefined;
+    attributed: never[];
+    peerDrift: {
+        file: string;
+        baseline: any;
+        current: any;
+        delta: number;
+    }[];
+    newFiles: ({
+        file: string;
+        baseline: any;
+        current: any;
+        delta: number;
+    } | {
+        dirty: any;
+        file: string;
+        baseline: any;
+        current: any;
+        delta: number;
+    })[];
+    regressions: {
+        file: string;
+        baseline: any;
+        current: any;
+        delta: number;
+    }[];
+    improvements: {
+        file: string;
+        baseline: any;
+        current: any;
+        delta: number;
+    }[];
+    total: number;
+    baselineTotal: number;
+    unattributedBrokenFiles: any;
+    verdict: string;
+    brokenFiles?: undefined;
+} | {
+    newBaselineByFile: any;
+    regressions: {
+        file: string;
+        baseline: any;
+        current: any;
+        delta: number;
+    }[];
+    improvements: {
+        file: string;
+        baseline: any;
+        current: any;
+        delta: number;
+    }[];
+    total: number;
+    baselineTotal: number;
+    unattributedBrokenFiles: any;
+    verdict: string;
+    brokenFiles?: undefined;
+} | {
+    ratchetFiles: {
+        file: string;
+        baseline: any;
+        current: any;
+        delta: number;
+    }[];
+    regressions: {
+        file: string;
+        baseline: any;
+        current: any;
+        delta: number;
+    }[];
+    improvements: {
+        file: string;
+        baseline: any;
+        current: any;
+        delta: number;
+    }[];
+    total: number;
+    baselineTotal: number;
+    unattributedBrokenFiles: any;
+    verdict: string;
+    brokenFiles?: undefined;
+} | {
+    ratchetFiles?: undefined;
+    regressions: {
+        file: string;
+        baseline: any;
+        current: any;
+        delta: number;
+    }[];
+    improvements: {
+        file: string;
+        baseline: any;
+        current: any;
+        delta: number;
+    }[];
+    total: number;
+    baselineTotal: number;
+    unattributedBrokenFiles: any;
+    verdict: string;
+    brokenFiles?: undefined;
+};
 /**
  * The headline for an ATTRIBUTED failure, worded per how the changed-set was derived.
  *
@@ -530,11 +749,18 @@ export function coalesceWatermarkFor({ root, files, updateFlag }: {
 /**
  * Which scope the caller asked this gate to judge — reported on the completion marker so a
  * reader can tell a whole-project verdict from one scoped to a handful of files. `--update`
- * wins over the others because it MUTATES the baseline rather than judging against it.
+ * leads because it MUTATES the baseline rather than judging against it.
+ *
+ * EI-19444246913245434 — `--update` used to be reported ALONE, swallowing any scope flag beside
+ * it, so `--files=X --update` announced a whole-project `scope=update` for a run that judged (and,
+ * before the same fix, wrote) only X. The label was the more visible of the two disagreeing
+ * facts, which is what made the silent no-op read as a successful ratchet. A composite label
+ * cannot drift from the run's actual scope because both halves are read from the same argv.
+ *
  * @param {string[]} argv
- * @returns {'update'|'files'|'mine'|'all'}
+ * @returns {'update'|'update:files'|'update:mine'|'files'|'mine'|'all'}
  */
-export function lintTscScopeFromArgv(argv: string[]): "update" | "files" | "mine" | "all";
+export function lintTscScopeFromArgv(argv: string[]): "update" | "update:files" | "update:mine" | "files" | "mine" | "all";
 /**
  * The terminal completion marker (EI-19395061642732083). Pure so it is unit-testable —
  * the `process.on('exit')` hook that prints it is not.
@@ -704,7 +930,19 @@ export type PerFileGateResult = {
     newFiles?: PerFileGateEntry[] | undefined;
     total: number;
     baselineTotal: number;
+    /**
+     * - FULL replacement map, written only by
+     * a BARE `--update` (no `--mine`/`--files`). Never set on a scoped run — see `ratchetFiles`.
+     */
     newBaselineByFile?: Record<string, number> | undefined;
+    /**
+     * - EI-19444246913245434. The caller's OWN improved
+     * files on a SCOPED `--update`, to be lowered individually via `mergeRatchetIntoBaseline`.
+     * Deliberately a payload rather than a verdict: a ratchet is an EFFECT, and modelling it as a
+     * mutually-exclusive verdict is what let `ok-peer-drift` silently swallow it. Carried on any
+     * non-failing verdict, so restoring the write costs the existing reporting nothing.
+     */
+    ratchetFiles?: PerFileGateEntry[] | undefined;
     brokenFiles?: string[] | undefined;
     /**
      * - TS1xxx-broken files OUTSIDE the caller's
