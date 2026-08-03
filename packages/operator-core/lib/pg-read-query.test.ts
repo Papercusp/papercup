@@ -602,6 +602,119 @@ describe('buildTenantScopeAdvisory — test_runs gate-triage trap (EI-1932463348
   });
 });
 
+// EI-19324633485547042: harness_shared.test_runs does NOT fit the generic "mentions
+// workspace_id/harness_slug ⇒ correctly scoped" heuristic — those columns are NULL-by-design for
+// every CI/dogfood-reporter row (env-derived, stamped only by the per-hive ingestion route,
+// migration 413), so following the generic advisory's own suggested predicate silently excludes
+// every gate row and reads as a clean "no failures". test_runs gets its own advisory instead,
+// which fires even when workspace_id/harness_slug ARE mentioned and clears only on source/commit_sha.
+describe('buildTenantScopeAdvisory — test_runs CI-row null trap (EI-19324633485547042)', () => {
+  beforeEach(() => clearTenantScopeSchemaCache());
+
+  it('fires for an unscoped test_runs query, warning about the CI-row null trap (not the generic predicate)', async () => {
+    const { sql, calls } = stubClient([]);
+    const advisory = await buildTenantScopeAdvisory(
+      "SELECT * FROM harness_shared.test_runs WHERE status <> 'passed'",
+      { client: sql, workspaceId: 'papercusp-workspace', harnessSlug: 'papercusp' },
+    );
+    expect(advisory).toContain('test_runs');
+    expect(advisory).toContain('NULL-by-design');
+    expect(advisory).toContain('source/commit_sha');
+    // never the generic (wrong-for-this-table) predicate suggestion:
+    expect(advisory).not.toContain("workspace_id = 'papercusp-workspace'");
+    expect(calls).toHaveLength(0); // no schema read needed — test_runs never enters the generic path
+  });
+
+  it('STILL fires when the query already filters by workspace_id/harness_slug — that predicate is the trap, not the fix', async () => {
+    const { sql } = stubClient([]);
+    const advisory = await buildTenantScopeAdvisory(
+      "SELECT * FROM harness_shared.test_runs WHERE workspace_id = 'papercusp-workspace' AND harness_slug = 'papercusp'",
+      { client: sql },
+    );
+    expect(advisory).toContain('test_runs');
+    expect(advisory).toContain('NULL-by-design');
+  });
+
+  it('is silent once the query scopes by source', async () => {
+    const { sql } = stubClient([]);
+    expect(
+      await buildTenantScopeAdvisory(
+        "SELECT * FROM harness_shared.test_runs WHERE source = 'ci' AND status = 'fail'",
+        { client: sql },
+      ),
+    ).toBeNull();
+  });
+
+  it('is silent once the query scopes by commit_sha', async () => {
+    const { sql } = stubClient([]);
+    expect(
+      await buildTenantScopeAdvisory("SELECT * FROM harness_shared.test_runs WHERE commit_sha = 'abc123'", {
+        client: sql,
+      }),
+    ).toBeNull();
+  });
+
+  it('still fires generically for a real tenant table joined alongside test_runs, while test_runs gets its own caveat', async () => {
+    const { sql } = stubClient([
+      { table_schema: 'harness_shared', table_name: 'harness_plans', column_name: 'workspace_id' },
+      { table_schema: 'harness_shared', table_name: 'harness_plans', column_name: 'harness_slug' },
+    ]);
+    const advisory = await buildTenantScopeAdvisory(
+      'SELECT * FROM harness_shared.test_runs t JOIN harness_shared.harness_plans p ' +
+        "ON true WHERE t.status = 'fail'",
+      { client: sql, workspaceId: 'papercusp-workspace', harnessSlug: 'papercusp' },
+    );
+    expect(advisory).toContain('test_runs');
+    expect(advisory).toContain('harness_plans');
+  });
+});
+
+// EI-19324633485547042 point 3: ctx.harnessSlug/workspaceId can be the '*' wildcard sentinel
+// (every su/operator-scope call sets it — agent-tools/_harness-scope.ts) which is NOT a valid SQL
+// wildcard for `=`. The advisory must never suggest a literal `= '*'` predicate — that "fix" matches
+// nothing and reads as a clean, confidence-inspiring empty result.
+describe("buildTenantScopeAdvisory — the '*' wildcard sentinel must never be suggested as a literal (EI-19324633485547042 pt.3)", () => {
+  const TENANT_ROWS = [
+    { table_schema: 'harness_shared', table_name: 'harness_plans', column_name: 'workspace_id' },
+    { table_schema: 'harness_shared', table_name: 'harness_plans', column_name: 'harness_slug' },
+    { table_schema: 'harness_shared', table_name: 'harness_plans', column_name: 'plan_slug' },
+  ];
+
+  beforeEach(() => clearTenantScopeSchemaCache());
+
+  it("never suggests harness_slug = '*' when ctx.harnessSlug is the wildcard sentinel", async () => {
+    const { sql } = stubClient(TENANT_ROWS);
+    const advisory = await buildTenantScopeAdvisory(
+      "SELECT * FROM harness_shared.harness_plans WHERE plan_slug = 'my-plan'",
+      { client: sql, workspaceId: 'papercusp-workspace', harnessSlug: '*' },
+    );
+    expect(advisory).not.toContain("= '*'");
+    // workspaceId is real, so it's still suggested; harnessSlug is the unresolved '*' sentinel, so
+    // it's silently DROPPED from the suggestion clause (never rendered as a bogus literal).
+    expect(advisory).toContain("Add: workspace_id = 'papercusp-workspace'.");
+    expect(advisory).not.toContain('harness_slug = ');
+  });
+
+  it("never suggests workspace_id = '*' when ctx.workspaceId is the wildcard sentinel", async () => {
+    const { sql } = stubClient(TENANT_ROWS);
+    const advisory = await buildTenantScopeAdvisory(
+      "SELECT * FROM harness_shared.harness_plans WHERE plan_slug = 'my-plan'",
+      { client: sql, workspaceId: '*', harnessSlug: 'papercusp' },
+    );
+    expect(advisory).not.toContain("= '*'");
+    expect(advisory).toContain("harness_slug = 'papercusp'");
+  });
+
+  it("the agent_facts override also never suggests a '*' harness_slug literal", async () => {
+    const { sql } = stubClient([]);
+    const advisory = await buildTenantScopeAdvisory(
+      'SELECT * FROM harness_shared.agent_facts WHERE expires_at < now()',
+      { client: sql, harnessSlug: '*' },
+    );
+    expect(advisory).not.toContain("= '*'");
+  });
+});
+
 describe('buildDerivedColumnRedirect (EI-18801042715296007 — the derived-verdict dead end)', () => {
   const NOT_EXIST = (col: string): string => `column "${col}" does not exist`;
   const PRESENCE_SQL = 'SELECT session_state FROM harness_shared.coord_presence';

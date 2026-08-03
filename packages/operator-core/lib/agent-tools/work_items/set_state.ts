@@ -16,6 +16,9 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { setWorkItemStateWithAliasInfo } from '../../work-items';
+// From the LEAF module, not '../../work-items': unit tests here mock that module
+// wholesale, which would make the guard `undefined` at exactly this call site.
+import { harnessScopeMismatch } from '../../work-items-harness-scope';
 import { planWorkItemArm, commitWorkItemArm } from './arm-reversible-work-item';
 import { runBulk, bulkContent } from '../_bulk';
 import {

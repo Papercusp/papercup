@@ -94,6 +94,23 @@ export interface AdvSessionRow {
    * is of arbitrary length. See {@link advSessionEndedAtCaveat}.
    */
   endedAt: string | null;
+  /**
+   * NULL here does NOT mean "clean exit" — it means "no code was ever observed", and that
+   * happens for two unrelated reasons that are indistinguishable from this column alone:
+   *
+   *  - a genuine self-report with no code (`harness/spawn.ts` passes `r.exitCode ?? null`
+   *    unconditionally, so a real self-reported end can still leave this NULL); or
+   *  - we never reaped the process at all — it is not our child, so no status was ever
+   *    read (see the `reconcileDeadTerminalLaunches` comment above, which documents this
+   *    for the terminal-launch case specifically).
+   *
+   * Whoever writes it inherits the SAME provenance gap {@link endedAt} has (P-015,
+   * WI-7126/EI-19375527037368001): when {@link isObserverEndedSession} is true for this row,
+   * this NULL is an observer's absence-of-evidence, not evidence of a clean exit — do not
+   * render it as "exited cleanly" or "code unknown but healthy". No live tool surface exposes
+   * `exitCode` today; if you add one, caveat it the same way {@link advSessionEndedAtCaveat}
+   * caveats `endedAt` before returning it as an observation.
+   */
   exitCode: number | null;
   /**
    * Who wrote {@link endedAt}. `null` = legacy row (migration 735) — provenance UNKNOWN,

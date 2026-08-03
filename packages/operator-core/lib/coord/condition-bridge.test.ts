@@ -10,7 +10,9 @@ import { describe, it, expect } from 'vitest';
 import {
   isActionableConditionKey,
   isTerminalStatus,
+  resolveConditionHarness,
   ACTIONABLE_CONDITION_PREFIXES,
+  ACTIONABLE_CONDITIONS,
 } from './condition-bridge';
 import { ANY_FAMILY_TERMINAL_STATES } from '../work-item-dispatch-states';
 
@@ -94,5 +96,50 @@ describe('isTerminalStatus derives from the shared SSOT', () => {
     expect(code).not.toMatch(/'resolved'\s*,\s*'closed'/);
     // ...and openness must never be re-derived from closed_ts (D-010).
     expect(code).not.toMatch(/closed_ts/);
+  });
+
+  // REGRESSION GUARD for the work-item leak. `releaseConditionOwner` defaults
+  // settle:false so a caller can keep an item open for a post-mortem. For the
+  // RECONCILER those are not separable: release-without-settle leaves one
+  // permanently-open work-item per condition EPISODE, which is the duplicate
+  // filing this plan exists to eliminate, reintroduced through the exit path.
+  // Measured flapper in the actionable set: main-behind-staging:papercusp
+  // resolved 15:45Z and re-opened 18:30Z on 2026-08-02 alone.
+  it('reconcileConditions SETTLES the owning item on resolve, not just releases the key', async () => {
+    const { readFile } = await import('node:fs/promises');
+    const src = await readFile(new URL('./condition-bridge.ts', import.meta.url), 'utf8');
+    const body = src.slice(src.indexOf('export async function reconcileConditions'));
+    const release = body.slice(body.indexOf('releaseConditionOwner('));
+    expect(release.slice(0, 400)).toMatch(/settle:\s*true/);
+  });
+});
+
+describe('resolveConditionHarness', () => {
+  it('reads the harness from the suffix for slug-suffixed families', () => {
+    expect(resolveConditionHarness('green-stall:oddsmith', 'papercusp')).toBe('oddsmith');
+    expect(resolveConditionHarness('main-behind-staging:papercusp', 'x')).toBe('papercusp');
+  });
+
+  // REGRESSION GUARD: `single-primary:${verdict.key}` is a VERDICT suffix.
+  // Parsing it as a slug files the item into harness 'no-primary', which
+  // createWorkItem accepts without validation and nothing ever surfaces.
+  it('does NOT treat a verdict suffix as a harness', () => {
+    expect(resolveConditionHarness('single-primary:no-primary', 'papercusp')).toBe('papercusp');
+  });
+
+  it('fails CLOSED — null when no harness can be established', () => {
+    expect(resolveConditionHarness('single-primary:no-primary', null)).toBeNull();
+    expect(resolveConditionHarness('single-primary:no-primary', '  ')).toBeNull();
+  });
+
+  it('returns null for a key that is not opted in at all', () => {
+    expect(resolveConditionHarness('infra-liveness:panel:bees', 'papercusp')).toBeNull();
+  });
+
+  it('every catalog entry declares how its harness is derived', () => {
+    for (const c of ACTIONABLE_CONDITIONS) {
+      expect(c.prefix.endsWith(':')).toBe(true);
+      expect(['suffix', 'ambient']).toContain(c.harnessFrom);
+    }
   });
 });

@@ -8,6 +8,7 @@ import {
   beesIdleByDesign,
   beesLivenessFromHealth,
   _resetLivenessAlarmDebounce,
+  INFRA_LIVENESS_IDENTITY,
   type BeesLivenessContext,
   type FlapState,
   type FlapMutationResult,
@@ -668,6 +669,88 @@ describe('runLivenessAlarmTick (debounced, transition-only)', () => {
     };
     const r = await runLivenessAlarmTick('ws', deps); // must not throw
     expect(r.fired.map((s) => s.key)).not.toContain('autoloop-fire-stale:kettle');
+  });
+});
+
+describe('runLivenessAlarmTick — EI-19375157952766991: fresh re-verify before dead-routines fires', () => {
+  beforeEach(() => _resetLivenessAlarmDebounce());
+
+  const fresh = mkHealth({
+    evaluatedAt: 100 * 60_000,
+    panels: { workFeed: { data: { deadRoutines: 1, deadRoutineNames: ['git-sync'] } } },
+  });
+  const baseDeps = {
+    readLast: () => fresh,
+    computeHealth: async () => fresh,
+    listOpen: async () => [],
+    now: () => 100 * 60_000 + 60_000, // 1m old → under the 6m stale window (uses cache as-is)
+    snapshotStaleMs: 6 * 60_000,
+  };
+
+  it('a confirmed-empty fresh re-read suppresses the fire — no escalate, no page (the measured incident)', async () => {
+    const escalateCalls: unknown[] = [];
+    const pageCalls: string[] = [];
+    const r = await runLivenessAlarmTick('ws', {
+      ...baseDeps,
+      escalate: async (input) => { escalateCalls.push(input); },
+      page: async (s) => { pageCalls.push(s.key); },
+      reverifyDeadRoutines: async () => [], // fresh direct read: already cleared
+    });
+    expect(r.fired).toEqual([]);
+    expect(escalateCalls).toEqual([]);
+    expect(pageCalls).toEqual([]);
+  });
+
+  it('a fresh re-read that still shows dead routines fires normally (a genuine incident is unaffected)', async () => {
+    const escalateCalls: unknown[] = [];
+    const pageCalls: string[] = [];
+    const r = await runLivenessAlarmTick('ws', {
+      ...baseDeps,
+      escalate: async (input) => { escalateCalls.push(input); },
+      page: async (s) => { pageCalls.push(s.key); },
+      reverifyDeadRoutines: async () => ['git-sync'], // still overdue on the fresh read
+    });
+    expect(r.fired.map((s) => s.key)).toEqual(['dead-routines']);
+    expect(escalateCalls.length).toBe(1);
+    expect(pageCalls).toEqual(['dead-routines']);
+  });
+
+  it('a re-verify FAILURE (null / unknown) is fail-open — it fires as if no re-verify were wired', async () => {
+    const r1 = await runLivenessAlarmTick('ws', {
+      ...baseDeps,
+      escalate: async () => {},
+      reverifyDeadRoutines: async () => null,
+    });
+    expect(r1.fired.map((s) => s.key)).toEqual(['dead-routines']);
+
+    _resetLivenessAlarmDebounce();
+    const r2 = await runLivenessAlarmTick('ws', {
+      ...baseDeps,
+      escalate: async () => {},
+      reverifyDeadRoutines: async () => { throw new Error('simulated PG failure'); },
+    });
+    expect(r2.fired.map((s) => s.key)).toEqual(['dead-routines']);
+  });
+
+  it('no reverifyDeadRoutines dep injected (deps.readLast set, as every other hermetic test does) → behaves byte-identically to before this fix', async () => {
+    // Production gating: reverifyDeadRoutines defaults to null whenever `readLast`
+    // is injected (the test/hermetic seam), so every PRE-EXISTING test in this file
+    // (which all inject readLast) is provably unaffected by this change.
+    const r = await runLivenessAlarmTick('ws', { ...baseDeps, escalate: async () => {} });
+    expect(r.fired.map((s) => s.key)).toEqual(['dead-routines']);
+  });
+
+  it('does not re-verify a signal that already has an open escalation (dedup short-circuits first)', async () => {
+    let reverifyCalls = 0;
+    const openRec = { msg_id: 'm1', severity: 'blocker', summary: '[infra-liveness] dead', from: INFRA_LIVENESS_IDENTITY.ownerId, livenessSignature: 'dead-routines' } as unknown as EscalationRecord;
+    const r = await runLivenessAlarmTick('ws', {
+      ...baseDeps,
+      listOpen: async () => [openRec],
+      escalate: async () => {},
+      reverifyDeadRoutines: async () => { reverifyCalls++; return []; },
+    });
+    expect(reverifyCalls).toBe(0); // openBySig short-circuits before reverify is ever consulted
+    expect(r.fired).toEqual([]);
   });
 });
 

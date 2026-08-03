@@ -148,11 +148,21 @@ export interface SpawnedFacts {
   scopeUnit?: string | null;
   cgroupPath?: string | null;
   confined?: boolean;
+  /** D-014: WHY this task is unconfined — 'flag-off' | 'caller-veto' |
+   *  'no-scope-support' | 'probe-pending'. Stamped into `detail` (jsonb, so no
+   *  migration) rather than a column, because it is diagnostic reporting and not
+   *  something anything joins or filters on in the hot path. Omitted/null when
+   *  confined, and the merge below then leaves `detail` untouched. */
+  unconfinedReason?: string | null;
 }
 
 /** Fill in the kernel identity once the child exists and flip `pending` -> `running`. */
 export async function markSpawned(taskId: string, facts: SpawnedFacts, inject?: Sql): Promise<void> {
   const sql = sqlOf(inject);
+  // Merge rather than replace: `detail` already carries other stampers' keys
+  // (e.g. `bashJobId` from startBackground), and clobbering it here would break
+  // the bashJobId lookup that reads `detail ->> 'bashJobId'`.
+  const detailPatch = facts.unconfinedReason ? { unconfinedReason: facts.unconfinedReason } : null;
   await sql`
     UPDATE harness_shared.task_ledger
        SET pid = ${facts.pid ?? null},
@@ -160,6 +170,7 @@ export async function markSpawned(taskId: string, facts: SpawnedFacts, inject?: 
            scope_unit = COALESCE(${facts.scopeUnit ?? null}, scope_unit),
            cgroup_path = COALESCE(${facts.cgroupPath ?? null}, cgroup_path),
            confined = ${facts.confined ?? false},
+           detail = COALESCE(detail, '{}'::jsonb) || ${JSON.stringify(detailPatch ?? {})}::jsonb,
            state = 'running',
            last_seen_at = now(),
            updated_at = now()

@@ -42,6 +42,14 @@ import {
 } from '../agent-tools/coordination/escalations';
 import type { AgentIdentity } from '../agent-tools/coordination/identity';
 import { broadcastSevereEventResolvedMany } from '../severe-event-broadcast';
+import {
+  actionableConditionFor,
+  reconcileConditions,
+  resolveConditionHarness,
+  type ConditionState as BridgeConditionState,
+  type ReconcileSummary,
+} from '../coord/condition-bridge';
+import { operatorHomeHarnessSlug } from '../harness/operator-home-harness';
 
 export const CONDITION_STALENESS_IDENTITY: AgentIdentity = {
   ownerId: 'system:condition-staleness-alarm',
@@ -276,6 +284,55 @@ function staleConditionSignatureOf(rec: EscalationRecord): string | null {
 const lastAlertedAt = new Map<string, number>();
 const OPEN_SCAN_WINDOW = 500;
 
+/** Longest condition summary we will carry into a work-item title. */
+const BRIDGE_TITLE_MAX = 160;
+
+/**
+ * PURE (P-003): project folded condition states onto the bridge's input shape,
+ * keeping only the OPTED-IN keys whose owning harness can actually be established.
+ *
+ * Two independent filters, both fail-closed:
+ *   1. `actionableConditionFor` — the opt-in catalog. A transient condition that
+ *      opens and clears within a tick would otherwise mint and immediately close a
+ *      work-item on every flap.
+ *   2. `resolveConditionHarness` — `ConditionState` carries NO harness field, and
+ *      the harness is NOT reliably recoverable from the key (`single-primary:` is
+ *      suffixed with a verdict, not a slug). An unresolvable harness SKIPS the
+ *      condition rather than guessing, because `createWorkItem` does not validate
+ *      the harness and would happily file an unreachable row.
+ *
+ * Exported so "which conditions would this tick actually act on" is unit-testable
+ * without writing a single row.
+ */
+export function toBridgeConditionStates(
+  states: readonly ConditionState[],
+  homeHarness: string,
+): BridgeConditionState[] {
+  const out: BridgeConditionState[] = [];
+  for (const s of states) {
+    const entry = actionableConditionFor(s.condition_key);
+    if (!entry) continue;
+    const harness = resolveConditionHarness(s.condition_key, homeHarness);
+    if (!harness) continue;
+    const latest = (s.latest_summary ?? '').trim();
+    out.push({
+      conditionKey: s.condition_key,
+      open: s.open,
+      title: `[${s.condition_key}] ${latest || 'condition open'}`.slice(0, BRIDGE_TITLE_MAX),
+      summary:
+        `Owning work-item for condition '${s.condition_key}', minted by the condition bridge ` +
+        `(P-003, gate-ownership-condition-singleton-2026-08-03). This item is the SINGLETON for ` +
+        `this condition — the partial unique index on work_items.condition_key guarantees at most ` +
+        `one open owner, so claim THIS rather than filing another.\n\n` +
+        `Latest alarm: ${latest || '(no summary)'}\n` +
+        `First seen: ${s.first_seen} · open since: ${s.open_since ?? '(unknown)'} · alarms: ${s.alarm_count}`,
+      harness,
+      severity: entry.severity,
+    });
+  }
+  return out;
+}
+
 export interface ConditionStalenessDeps {
   readStates?: () => Promise<ConditionState[]>;
   escalate?: (input: {
@@ -305,6 +362,25 @@ export interface ConditionStalenessDeps {
    *  not just this tick's local view. Default = the real
    *  `broadcastSevereEventResolvedMany`. */
   broadcastResolvedMany?: (input: { conditionKeys: string[]; summary: string }) => Promise<boolean>;
+  /**
+   * P-003: the condition→work-item bridge.
+   *
+   * ⚠ Defaults to a NO-OP, unlike every other dep here — and deliberately so.
+   * This is the one dep that WRITES (it mints and settles work-items); the others
+   * read or broadcast. A write-by-default would mean any bare
+   * `runConditionStalenessTick()` mints real rows, and the existing unit tests
+   * already use actionable keys (`single-primary:*`) against a box with a live
+   * Postgres. The production entrypoint `startConditionStalenessAlarm()` passes
+   * the real `reconcileConditions`, so the shipped behavior is ON — inert here
+   * only for callers that never asked to write.
+   */
+  bridgeConditions?: (
+    states: readonly BridgeConditionState[],
+    opts: { workspaceId?: string },
+  ) => Promise<ReconcileSummary>;
+  /** P-003: ambient harness for condition keys that carry none (`single-primary:*`).
+   *  Default = `operatorHomeHarnessSlug()`. */
+  homeHarness?: () => string;
 }
 
 /**
@@ -328,6 +404,8 @@ export async function runConditionStalenessTick(
   signals: StaleConditionSignal[];
   resolved: string[];
   reconciled: string[];
+  /** P-003: what the condition→work-item bridge did this tick. */
+  bridged: ReconcileSummary;
 }> {
   const now = (deps.now ?? Date.now)();
   const readStates =
@@ -354,7 +432,10 @@ export async function runConditionStalenessTick(
     states = await readStates();
   } catch {
     // A read failure must never crash the request worker nor look like "all clear".
-    return { fired: [], signals: [], resolved: [], reconciled: [] };
+    // The bridge is deliberately NOT run: with no trustworthy states, an "absent"
+    // condition is indistinguishable from a resolved one, and bridging on that
+    // reading would SETTLE every owning work-item on a transient DB blip.
+    return { fired: [], signals: [], resolved: [], reconciled: [], bridged: { acquired: [], released: [], skipped: 0 } };
   }
 
   // Reconcile BEFORE staleness evaluation, so a condition we just healed this
@@ -456,6 +537,27 @@ export async function runConditionStalenessTick(
     lastAlertedAt.delete(sig);
   }
 
+  // ── P-003: bridge conditions to owning work-items ──
+  // Deliberately placed AFTER the guards above, so it reads the FINAL `states`:
+  // a condition healed by guard #2/#3 this tick is already open:false here and so
+  // closes its owning item in the same pass rather than a tick later.
+  //
+  // Reuses this tick rather than adding a third scheduler mechanism — it already
+  // computes condition states on a 5-min cadence and is already the registered
+  // acting consumer for `coord-conditions`.
+  //
+  // Fully fail-soft: bridging is additive bookkeeping, and no failure here may
+  // affect the escalation verdict computed above.
+  let bridged: ReconcileSummary = { acquired: [], released: [], skipped: 0 };
+  if (deps.bridgeConditions) {
+    try {
+      const homeHarness = (deps.homeHarness ?? operatorHomeHarnessSlug)();
+      bridged = await deps.bridgeConditions(toBridgeConditionStates(states, homeHarness), {});
+    } catch {
+      /* a bridge failure must never crash the request worker */
+    }
+  }
+
   // Fire each NEW stale signature — durably deduped, then in-memory cooldown-debounced.
   const fired: StaleConditionSignal[] = [];
   for (const s of signals) {
@@ -494,7 +596,7 @@ export async function runConditionStalenessTick(
       /* an alarm-send failure must never crash the request worker */
     }
   }
-  return { fired, signals, resolved, reconciled };
+  return { fired, signals, resolved, reconciled, bridged };
 }
 
 /**
@@ -509,7 +611,14 @@ export function startConditionStalenessAlarm(opts: { intervalMs?: number } = {})
   const timer = managedSetInterval(
     'condition-staleness-alarm',
     intervalMs,
-    () => runConditionStalenessTick().then(() => undefined, () => undefined),
+    () =>
+      // P-003: THIS is what turns the condition→work-item bridge on. The tick
+      // defaults it off (it is the one write-side dep — see ConditionStalenessDeps);
+      // the production loop opts in, so the shipped behavior is ON.
+      runConditionStalenessTick({ bridgeConditions: reconcileConditions }).then(
+        () => undefined,
+        () => undefined,
+      ),
     { category: 'watchdog' },
   );
   return {

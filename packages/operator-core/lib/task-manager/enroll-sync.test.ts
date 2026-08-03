@@ -72,6 +72,15 @@ describe('with the task manager OFF', () => {
     finishSyncEnrolment(e, { state: 'exited', exitCode: 0 });
     expect(closeTask).not.toHaveBeenCalled();
   });
+
+  it('D-014: reports flag-off as the reason, ahead of the probe', () => {
+    // The flag short-circuits first, so this must say 'flag-off' even though the
+    // probe would independently have produced an unconfined spawn too.
+    scopeSupportKnown.mockReturnValue(null);
+    const e = beginSyncEnrolment({ class: 'bash-job' });
+    expect(e.confined).toBe(false);
+    expect(e.unconfinedReason).toBe('flag-off');
+  });
 });
 
 describe('with the task manager ON', () => {
@@ -97,6 +106,54 @@ describe('with the task manager ON', () => {
     const e = beginSyncEnrolment({ class: 'bash-job' });
     expect(e.enrolled).toBe(true);
     expect(e.confined).toBe(false);
+  });
+
+  /**
+   * D-014 (process-lifecycle-no-orphans-2026-08-02). `confined:false` collapses four
+   * causes into one boolean. Three are permanent and expected; ONE — 'probe-pending',
+   * the first job after boot — is a transient race whose symptom was until now
+   * indistinguishable from 'no-scope-support' on a host that can never confine.
+   *
+   * The pair below is the whole point, and it is the assertion that fails if anyone
+   * "simplifies" the reason back to `probe?.ok === true`: a null probe (not landed)
+   * and `{ok:false}` (host cannot do scopes) produce the SAME `confined:false` and
+   * MUST produce different reasons.
+   *
+   * This is reporting only. D-014 records that the behaviour is correct and must not
+   * be made symmetric — so every case here still asserts `enrolled:true`, i.e. the
+   * task is in the ledger and remains reapable.
+   */
+  describe('D-014: an unconfined task reports WHICH of the four causes produced it', () => {
+    it('distinguishes a not-yet-landed probe from a host that cannot make scopes', () => {
+      scopeSupportKnown.mockReturnValue(null);
+      const pending = beginSyncEnrolment({ class: 'bash-job' });
+
+      scopeSupportKnown.mockReturnValue({ ok: false, reason: 'no systemd' });
+      const unsupported = beginSyncEnrolment({ class: 'bash-job' });
+
+      // Identical on the boolean — which is exactly why the reason has to exist.
+      expect(pending.confined).toBe(false);
+      expect(unsupported.confined).toBe(false);
+
+      expect(pending.unconfinedReason).toBe('probe-pending');
+      expect(unsupported.unconfinedReason).toBe('no-scope-support');
+      expect(pending.unconfinedReason).not.toBe(unsupported.unconfinedReason);
+    });
+
+    it('reports caller-veto ahead of the probe, matching the short-circuit order', () => {
+      scopeSupportKnown.mockReturnValue(null);
+      const e = beginSyncEnrolment({ class: 'bash-job' }, { confine: false });
+      // The probe is ALSO unknown here; the reason must name the condition that
+      // actually decided it, not the first true one.
+      expect(e.unconfinedReason).toBe('caller-veto');
+      expect(e.enrolled).toBe(true);
+    });
+
+    it('is null when the task is confined', () => {
+      const e = beginSyncEnrolment({ class: 'bash-job' });
+      expect(e.confined).toBe(true);
+      expect(e.unconfinedReason).toBeNull();
+    });
   });
 
   it('honours a caller-side confine:false veto without skipping the ledger', () => {

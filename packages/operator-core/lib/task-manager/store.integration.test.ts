@@ -94,3 +94,63 @@ describe('clearVanishedUnaccounted (EI-18824358724907941)', () => {
     await expect(store.clearVanishedUnaccounted([], { workspaceId: WS })).resolves.toBe(0);
   });
 });
+
+/**
+ * D-014 (process-lifecycle-no-orphans-2026-08-02). `markSpawned` stamps the
+ * unconfined REASON into `detail`, which is shared jsonb other writers already use —
+ * `startBackground` puts `bashJobId` there, and `findByBashJobId` reads it back via
+ * `detail ->> 'bashJobId'`.
+ *
+ * So the merge has to be a merge. A plain `detail = '{...}'::jsonb` assignment would
+ * pass every unit test (they mock the sql tag) and silently destroy the bashJobId
+ * lookup in production — a background job that becomes unfindable the moment it is
+ * marked running. These run against real Postgres precisely because that class of
+ * mistake is invisible to a mocked query.
+ */
+describe('markSpawned detail merge (D-014)', () => {
+  async function insertPending(taskId: string, detail: object) {
+    await db.sql`
+      INSERT INTO harness_shared.task_ledger (
+        task_id, workspace_id, root_task_id, class, title, argv,
+        launched_by, pid, confined, state, detail
+      ) VALUES (
+        ${taskId}, ${WS}, ${taskId}, 'other', 'sample', '[]'::jsonb,
+        'unknown', null, false, 'pending', ${JSON.stringify(detail)}::jsonb
+      )
+    `;
+  }
+
+  it('stamps unconfinedReason WITHOUT clobbering an existing bashJobId', async () => {
+    await insertPending('t-merge', { bashJobId: 'bash-42' });
+
+    await store.markSpawned('t-merge', { pid: 123, confined: false, unconfinedReason: 'probe-pending' });
+
+    const [row] = await db.sql`SELECT detail, confined, state FROM harness_shared.task_ledger WHERE task_id = 't-merge'`;
+    expect(row!.detail).toEqual({ bashJobId: 'bash-42', unconfinedReason: 'probe-pending' });
+    expect(row!.confined).toBe(false);
+    expect(row!.state).toBe('running');
+  });
+
+  it('leaves detail untouched when the task is confined (no reason to record)', async () => {
+    await insertPending('t-confined', { bashJobId: 'bash-7' });
+
+    await store.markSpawned('t-confined', { pid: 124, confined: true, unconfinedReason: null });
+
+    const [row] = await db.sql`SELECT detail, confined FROM harness_shared.task_ledger WHERE task_id = 't-confined'`;
+    expect(row!.detail).toEqual({ bashJobId: 'bash-7' });
+    expect(row!.confined).toBe(true);
+  });
+
+  it('handles a NULL detail column without wiping the stamp', async () => {
+    await db.sql`
+      INSERT INTO harness_shared.task_ledger (
+        task_id, workspace_id, root_task_id, class, title, argv, launched_by, pid, confined, state, detail
+      ) VALUES ('t-null', ${WS}, 't-null', 'other', 'sample', '[]'::jsonb, 'unknown', null, false, 'pending', null)
+    `;
+
+    await store.markSpawned('t-null', { pid: 125, confined: false, unconfinedReason: 'no-scope-support' });
+
+    const [row] = await db.sql`SELECT detail FROM harness_shared.task_ledger WHERE task_id = 't-null'`;
+    expect(row!.detail).toEqual({ unconfinedReason: 'no-scope-support' });
+  });
+});

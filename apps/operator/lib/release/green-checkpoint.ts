@@ -880,6 +880,60 @@ export const GREEN_CHECKPOINT_RESULT_MARKER = '__GREEN_CHECKPOINT_RESULT__';
 /** What a captured fixture marker is rewritten to before the suite log is persisted. */
 export const CAPTURED_RESULT_MARKER_PLACEHOLDER = '__CAPTURED_TEST_FIXTURE_RESULT__';
 
+/** The tag every orchestrator narration line carries on stdout. */
+export const ORCHESTRATOR_STDOUT_TAG = '[green-checkpoint]';
+
+/** WI-7274: the same tag, emitted instead when the narrating process is itself under a test
+ *  runner — i.e. the line is a FIXTURE, not this run's account of itself.
+ *
+ *  THE TRAP. The gate's suite includes `green-checkpoint-real-deps.test.ts`, which drives the
+ *  real `runGreen` on purpose. Driving production code means EMITTING production log lines, and
+ *  the suite's stdout is captured verbatim into the persisted log — so the log carries lines
+ *  byte-identical to a genuine verdict, with the only provenance (vitest's `stdout | <file>`
+ *  header) on a SEPARATE line that no line-oriented grep returns.
+ *
+ *  Measured on the 01:36:17Z verdict for candidate 060ea000f206:
+ *      grep "holding the gate" <log>   -> 4 hits, ALL FOUR test fixtures.
+ *  The run's real verdict was in the tail, in a different shape entirely. Four of five agents
+ *  triaging that red re-derived the same breakdown from this log within six minutes
+ *  (EI-19394685308718346); a log whose lines cannot be trusted is why triage is not shareable.
+ *
+ *  This is the SECOND instance of one class. EI-18832272104497819 fixed it for
+ *  GREEN_CHECKPOINT_RESULT_MARKER by defanging that one token at the write site — correct, and
+ *  still in force above. But the class is "any production line emitted while under test", not
+ *  "that one token", so it recurred through ordinary narration. Tagging at the single emit
+ *  funnel closes the class rather than the next token: a line is marked by the process that
+ *  KNOWS it is a fixture, instead of being guessed at afterwards by a reader or a regex.
+ *
+ *  Two properties worth keeping when editing this:
+ *   - A real run is NEVER under vitest. Verified on the live orchestrator (pid 1490611,
+ *     2026-08-03): `VITEST` absent, `NODE_ENV` unset. `buildGreenCheckpointEnv` sets
+ *     `VITEST_MAX_FORKS/THREADS/UNIT_TIMEOUT_MS` but never `VITEST`, so the gate cannot mark
+ *     its own genuine verdict as a fixture. That inversion would be far worse than the bug.
+ *   - The fixture tag deliberately does NOT contain `ORCHESTRATOR_STDOUT_TAG` as a substring
+ *     (`:` where `]` would be). So the habit every reader already has — grepping
+ *     `[green-checkpoint]` — silently STOPS matching fixtures, with no change on their side.
+ *
+ *  ⚠ STATED LIMIT — this tags the LINE; it does not fix a reader that discards the line.
+ *  `parseCandidates` (release-checkpoint-launch.ts) matches `/checkpointing candidate (\S+)/`
+ *  with no anchor, so it still harvests a sha out of a tagged fixture line. That gap is pinned
+ *  as a test below, deliberately, so this fix cannot read as more complete than it is. It
+ *  cannot be closed by anchoring POSITIVELY on this tag: the persisted log's orchestrator
+ *  transcript carries the same line UNPREFIXED (`recordOrchestratorLine` receives the raw
+ *  message; only `console.log` adds a tag), so requiring the tag would break candidate
+ *  extraction from every persisted log. The sound anchor is negative — exclude this tag. */
+export const ORCHESTRATOR_STDOUT_TAG_UNDER_TEST = '[green-checkpoint:TEST-FIXTURE]';
+
+/** Which tag {@link ORCHESTRATOR_STDOUT_TAG} the orchestrator should narrate under.
+ *  `env` is injectable because the guard that matters most — that a REAL run is tagged
+ *  `[green-checkpoint]` — has to be asserted from inside a test, which is always under vitest
+ *  and would otherwise only ever be able to observe the fixture branch. */
+export function orchestratorStdoutTag(env: NodeJS.ProcessEnv = process.env): string {
+  return env.VITEST || env.NODE_ENV === 'test'
+    ? ORCHESTRATOR_STDOUT_TAG_UNDER_TEST
+    : ORCHESTRATOR_STDOUT_TAG;
+}
+
 /** EI-18832272104497819: the persisted suite log is NOT the verdict channel. This run's
  *  verdict goes to the CLI's own stdout (behind GREEN_CHECKPOINT_RESULT_MARKER) only
  *  AFTER the log file is written, so any marker appearing inside captured suite output is
@@ -4871,7 +4925,10 @@ export function realCheckpointDeps(
   // same lines into the persisted log for a scheduler-fired one.
   const log = (s: string) => {
     recordOrchestratorLine(s);
-    console.log(`[green-checkpoint] ${s}`);
+    // WI-7274: tag resolved per-call, not hoisted — the whole point is that it reflects the
+    // EMITTING process. See ORCHESTRATOR_STDOUT_TAG_UNDER_TEST for why this is the one place
+    // it can be decided correctly.
+    console.log(`${orchestratorStdoutTag()} ${s}`);
   };
   // load-flake-isolation-2026-06-23: re-run ONE originally-failing file in isolation —
   // a fresh `vitest run <file>` scoped to its workspace, at SINGLE concurrency

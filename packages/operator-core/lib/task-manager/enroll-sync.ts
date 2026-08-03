@@ -29,9 +29,43 @@ import { scopeSupportKnown } from './managed-spawn';
 import { closeTask, markSpawned, registerTask } from './store';
 import { newTaskId, scopeUnitForTask, sliceForClass, type TaskSpec } from './types';
 
+/**
+ * WHY a task ended up unconfined. `null` when it is confined.
+ *
+ * D-014 (process-lifecycle-no-orphans-2026-08-02): `confined:false` on its own
+ * collapses four causes into one boolean, and they are not the same event —
+ * three are permanent and expected, one is a transient race that nothing could
+ * previously see:
+ *
+ *  - `flag-off`         the task manager flag is off. Deliberate (WI-6499):
+ *                       byte-identical-to-pre-feature, unledgered spawn.
+ *  - `caller-veto`      an explicit caller-side `confine:false` platform check.
+ *  - `no-scope-support` this host genuinely cannot make user scopes (a
+ *                       container, macOS). Permanent, and correct to report.
+ *  - `probe-pending`    the scope probe has not landed yet — the first job
+ *                       after boot. TRANSIENT: the same host will confine
+ *                       normally seconds later.
+ *
+ * `probe-pending` is the one worth counting. Its symptom is identical to
+ * `no-scope-support`, so a spawn that lost confinement to a boot-window race
+ * has until now been indistinguishable from one on a host that never supported
+ * confinement at all. A rising `probe-pending` rate means spawns are routinely
+ * racing the probe, which is a real ordering problem and previously produced no
+ * signal whatsoever.
+ *
+ * This is REPORTING ONLY — D-014 establishes that the behaviour itself is
+ * correct and must not be "made symmetric". Both unknowns already fail in the
+ * direction that preserves function: an unknown flag fails OPEN so the task is
+ * still ledgered, and an unknown probe fails to unconfined so the spawn
+ * degrades instead of dying on a `systemd-run` that cannot work.
+ */
+export type UnconfinedReason = 'flag-off' | 'caller-veto' | 'no-scope-support' | 'probe-pending';
+
 export interface SyncEnrolment {
   taskId: string;
   confined: boolean;
+  /** Why `confined` is false; null when confined. See {@link UnconfinedReason}. */
+  unconfinedReason: UnconfinedReason | null;
   scopeUnit: string | null;
   /** False when the task manager is flag-OFF: no ledger row will be written and
    *  `wrap` is the identity. Carried on the enrolment rather than re-read later so
@@ -67,9 +101,26 @@ export function beginSyncEnrolment(
   const confined = enrolled && opts.confine !== false && probe?.ok === true;
   const scopeUnit = confined ? scopeUnitForTask(taskId) : null;
 
+  // D-014: report WHICH of the four causes produced an unconfined spawn. Ordered
+  // to match the short-circuit above, so the reason names the condition that
+  // actually decided it rather than the first one that happens to be true.
+  // `probe === null` (not landed) is deliberately distinguished from
+  // `probe.ok === false` (host cannot do scopes) — that distinction is the whole
+  // point, and `probe?.ok === true` erases it.
+  const unconfinedReason: UnconfinedReason | null = confined
+    ? null
+    : !enrolled
+      ? 'flag-off'
+      : opts.confine === false
+        ? 'caller-veto'
+        : probe === null
+          ? 'probe-pending'
+          : 'no-scope-support';
+
   return {
     taskId,
     confined,
+    unconfinedReason,
     scopeUnit,
     enrolled,
     wrap: (binary, argv) =>
@@ -113,6 +164,7 @@ export function completeSyncEnrolment(
       scopeUnit: enrolment.scopeUnit,
       cgroupPath: pid ? readProcessCgroupPath(pid, fs) : null,
       confined: enrolment.confined,
+      unconfinedReason: enrolment.unconfinedReason,
     });
   })().catch(() => {
     // Swallowed on purpose — see the header. A lost enrolment degrades to an

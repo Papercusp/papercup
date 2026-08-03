@@ -47,6 +47,22 @@ import { listAllProjectedTools, type ProjectedTool } from '@papercusp/tooldef';
 export const BUDGET = 1500;
 export const HARD_CAP = 1600;
 
+/**
+ * Floor for a genuinely-registered live catalog (EI-19377066316560032). ~655
+ * tools are live today; a barrel that only partially registered yields ~40 —
+ * this sits well above that and well below the real count, mirroring the
+ * `named.length > 500` floor the vitest gate suite already asserts
+ * (tool-guidance-budget.shared.ts). `listAllProjectedTools()` returns `[]`
+ * when called before the agent-tools barrel has side-effect-imported (e.g. a
+ * standalone `npx tsx -e "...listAllProjectedTools()..."` probe run outside
+ * the vitest bootstrap) — with NO error, so `budgetViolations()` over an empty
+ * catalog silently reports "0 violations", indistinguishable from a genuinely
+ * clean 655-tool catalog. This floor turns that vacuous green into a loud
+ * throw at the one production call site (`namedToolWeights()` reading the
+ * live registry) instead of leaving the gate suite's floor as the only guard.
+ */
+export const MIN_PLAUSIBLE_CATALOG_SIZE = 500;
+
 /** Grandfathered over-budget tools. Shrink-only: an entry here still must stay
  *  ≤ HARD_CAP and may be removed the moment the tool fits the budget. Currently
  *  EMPTY — a clean ratchet worth defending. */
@@ -76,10 +92,32 @@ export interface NamedToolWeight {
   weight: number;
 }
 
+/**
+ * Guards the LIVE-registry read only (never an explicitly-passed fixture
+ * catalog — a unit test legitimately hands in a handful of synthetic tools).
+ * Throws instead of letting a caller silently measure zero tools and read
+ * "over-budget: NONE" as a real, clean verdict.
+ */
+function assertLiveCatalogSane(tools: readonly ProjectedTool[]): void {
+  if (tools.length >= MIN_PLAUSIBLE_CATALOG_SIZE) return;
+  throw new Error(
+    `tool-guidance-budget: listAllProjectedTools() returned only ${tools.length} tool(s) — ` +
+      `far below the ${MIN_PLAUSIBLE_CATALOG_SIZE}-tool floor for a genuinely-registered live catalog. ` +
+      `This means the agent-tools barrel never registered (most likely: this ran standalone — e.g. a bare ` +
+      `\`npx tsx -e "...listAllProjectedTools()..."\` script — outside the vitest bootstrap, which side-effect-` +
+      `imports '../agent-tools/index' first), NOT that the catalog is genuinely empty. Run the vitest suite ` +
+      `(tool-guidance-budget.test.ts / tools-md-sync.test.ts) instead of measuring standalone, or ` +
+      `side-effect-import '../agent-tools/index' before calling this. (EI-19377066316560032)`,
+  );
+}
+
 /** The real projected catalog, one { name, weight } per MCP-exposed tool. Pass a
- *  catalog to measure (tests); omit to read the live registry. */
+ *  catalog to measure (tests); omit to read the live registry — reading the
+ *  live registry asserts it looks genuinely registered (see
+ *  assertLiveCatalogSane) rather than silently measuring an empty/partial one. */
 export function namedToolWeights(catalog?: readonly ProjectedTool[]): NamedToolWeight[] {
   const tools = catalog ?? listAllProjectedTools();
+  if (catalog === undefined) assertLiveCatalogSane(tools);
   return tools
     .map((t) => ({ name: t.expose?.mcp?.name ?? '(unexposed)', weight: promptWeight(t) }))
     .filter((t) => t.name !== '(unexposed)');

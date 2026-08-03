@@ -39,7 +39,24 @@ jobs:
   affected:
     name: Affected tests
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # WI-7151: this used to be 15, which guarantees the "Run affected unit +
+    # integration suites" step is killed by job timeout on nearly every run that
+    # touches operator-core (~682 *.integration.test.ts files; the dev-box
+    # green-checkpoint's UNIT-ONLY equivalent — no --integration — already
+    # measures ~55min locally per the root CLAUDE.md, and CI's 2-core hosted
+    # runners are typically slower than a dev box for CPU-bound work, plus
+    # --integration adds real testcontainers overhead on top). Every run in the
+    # job's history is `cancelled`/`failure` at ~10-20min — this suite has
+    # LITERALLY NEVER completed in CI, so there is no real-run duration to read
+    # yet (see the step reorder below for the OTHER half of this fix: the ~50
+    # gating lints were being silently skipped by the same timeout because they
+    # ran AFTER this step, not just cancelled with it).
+    # 180 is a deliberately conservative, bounded estimate (well under GH's
+    # 360min hosted-runner ceiling) chosen to give the suite room to actually
+    # finish at least once — NOT a measured number. Once a run completes,
+    # tighten this to (measured duration + ~25% headroom) using the real
+    # wall-clock time from that run instead of carrying this guess forward.
+    timeout-minutes: 180
     services:
       # Dev-box-parity PG (WI-123): ~30 "unit"-tier suites transitively open a
       # pool against the default localhost:5432/papercusp (connection.ts
@@ -110,58 +127,6 @@ jobs:
         env:
           CI_PG_SUPERUSER_URL: postgresql://postgres:postgres@localhost:5432/postgres
         run: node scripts/ci-provision-pg.mjs
-
-      - name: Cache testcontainers Docker layer
-        if: ${{ !cancelled() }}
-        uses: actions/cache@v4
-        with:
-          path: ~/.testcontainers
-          key: testcontainers-${{ runner.os }}-postgres-16-alpine
-
-      - name: Run affected unit + integration suites
-        if: ${{ !cancelled() }}
-        env:
-          # WI-7013: on a pull_request run, github.event.inputs.base is unset (that
-          # event carries no `inputs`), so this falls through to the unchanged
-          # origin/${{ github.base_ref }} diff. On a workflow_dispatch run — the ONLY
-          # way this workflow ever actually fires on `main`, see the trigger comment
-          # above — github.event.inputs.base carries the pre-FF main sha
-          # green-checkpoint passed, so the diff is against what this promotion
-          # actually changed instead of origin/main == HEAD (an always-empty diff
-          # that reported `tasks=0 status=passed` having verified nothing).
-          AFFECTED_BASE: ${{ github.event.inputs.base || format('origin/{0}', github.base_ref || 'main') }}
-          CI: 'true'
-        run: node scripts/affected-tests.mjs --integration
-
-      # papercusp-desktop tests (WI-6074). This submodule is NOT a member of the
-      # root package.json `workspaces` array, so `affected-tests.mjs` above can
-      # never select any of its tests — before this step, NOTHING in CI or the
-      # green-checkpoint gate ran a single papercusp-desktop test, and the whole
-      # workspace (the live-federation rig + release-leg scripts) was untested.
-      # It is present here because `actions/checkout` uses submodules: recursive.
-      #
-      # Both suites below are verified GREEN and verified HERMETIC by re-running
-      # them with docker/ssh/scp/rsync shadowed by exit-127 stubs on PATH: zero
-      # egress attempts, 7/7 selftests + 27/27 build-script guards still passing.
-      # They need no node_modules of their own (node: builtins + bash only),
-      # which matters because the root install does not cover this submodule.
-      #
-      # test:config is included as of WI-6075: it was RED (the 2GB hive seed was
-      # being packaged into the GUI/base bundle, which that test exists to forbid),
-      # so wiring it earlier would have redded the gate for the whole fleet. WI-6075
-      # removed seed/**/* from the base config and gave the gate its own explicit
-      # tauri.gate.conf.json overlay, and the test now also pins that overlay — so
-      # it guards both halves of the split. Verified green (2/2) before wiring.
-      #
-      # Deliberately NOT wired here:
-      #   test:rust   — needs a Rust toolchain this job does not install.
-      - name: Desktop tests (papercusp-desktop selftests + build-script guards)
-        if: ${{ !cancelled() }}
-        working-directory: papercusp-desktop
-        run: |
-          npm run test:selftests
-          npm run test:shell
-          npm run test:config
 
       # Plan-doc lint — fast read-only check against apps/operator/docs/plans/.
       # Fails the build on any error; warnings (e.g. missing ## Now)
@@ -845,6 +810,71 @@ jobs:
         if: always()
         continue-on-error: true
         run: npx knip --no-config-hints --reporter compact
+
+      # WI-7151: moved here (was right after "Cache testcontainers", before the ~50
+      # "Lint …" / "Check …" steps above). This step is the slow one — the dev-box
+      # green-checkpoint's UNIT-ONLY equivalent already measures ~55min, and
+      # --integration adds ~682 real-testcontainers *.integration.test.ts files on
+      # top — so on the OLD ordering, the job's timeout (formerly 15min) reliably
+      # killed the job WHILE this step was still running, and every step below it
+      # (all ~50 gating lints) never even started: GitHub reports a cancelled step
+      # as neither pass nor fail, so those lints silently got ZERO evaluations for
+      # weeks. Running the fast fs-only lints FIRST means they get a real verdict
+      # recorded even on a run where this step (or the timeout) still doesn't leave
+      # enough time to finish — only this step and Desktop tests are exposed to a
+      # timeout now, not the whole gating suite. Paired with the raised
+      # `timeout-minutes` on this job (see the job-level comment above).
+      - name: Cache testcontainers Docker layer
+        if: ${{ !cancelled() }}
+        uses: actions/cache@v4
+        with:
+          path: ~/.testcontainers
+          key: testcontainers-${{ runner.os }}-postgres-16-alpine
+
+      - name: Run affected unit + integration suites
+        if: ${{ !cancelled() }}
+        env:
+          # WI-7013: on a pull_request run, github.event.inputs.base is unset (that
+          # event carries no `inputs`), so this falls through to the unchanged
+          # origin/${{ github.base_ref }} diff. On a workflow_dispatch run — the ONLY
+          # way this workflow ever actually fires on `main`, see the trigger comment
+          # above — github.event.inputs.base carries the pre-FF main sha
+          # green-checkpoint passed, so the diff is against what this promotion
+          # actually changed instead of origin/main == HEAD (an always-empty diff
+          # that reported `tasks=0 status=passed` having verified nothing).
+          AFFECTED_BASE: ${{ github.event.inputs.base || format('origin/{0}', github.base_ref || 'main') }}
+          CI: 'true'
+        run: node scripts/affected-tests.mjs --integration
+
+      # papercusp-desktop tests (WI-6074). This submodule is NOT a member of the
+      # root package.json `workspaces` array, so `affected-tests.mjs` above can
+      # never select any of its tests — before this step, NOTHING in CI or the
+      # green-checkpoint gate ran a single papercusp-desktop test, and the whole
+      # workspace (the live-federation rig + release-leg scripts) was untested.
+      # It is present here because `actions/checkout` uses submodules: recursive.
+      #
+      # Both suites below are verified GREEN and verified HERMETIC by re-running
+      # them with docker/ssh/scp/rsync shadowed by exit-127 stubs on PATH: zero
+      # egress attempts, 7/7 selftests + 27/27 build-script guards still passing.
+      # They need no node_modules of their own (node: builtins + bash only),
+      # which matters because the root install does not cover this submodule.
+      #
+      # test:config is included as of WI-6075: it was RED (the 2GB hive seed was
+      # being packaged into the GUI/base bundle, which that test exists to forbid),
+      # so wiring it earlier would have redded the gate for the whole fleet. WI-6075
+      # removed seed/**/* from the base config and gave the gate its own explicit
+      # tauri.gate.conf.json overlay, and the test now also pins that overlay — so
+      # it guards both halves of the split. Verified green (2/2) before wiring.
+      #
+      # Deliberately NOT wired here:
+      #   test:rust   — needs a Rust toolchain this job does not install.
+      - name: Desktop tests (papercusp-desktop selftests + build-script guards)
+        if: ${{ !cancelled() }}
+        working-directory: papercusp-desktop
+        run: |
+          npm run test:selftests
+          npm run test:shell
+          npm run test:config
 
       - name: Publish JUnit reports
         if: always()

@@ -160,6 +160,10 @@ export type AgentSignalKey =
  *  that plan says the work stands. See adv-agent-detail.ts for field meaning. */
 export interface AgentLane {
   planSlug: string;
+  /** Which leg answered: `declared` = the agent said so itself (presence);
+   *  `launch` = nobody declared, this is the plan the session was SPAWNED on
+   *  (fixed at spawn, so possibly stale — the UI labels it). See D-006. */
+  source: 'declared' | 'launch';
   nowState: string | null;
   nowNext: string | null;
   nextActionable: { id: string; title: string; phase: string | null } | null;

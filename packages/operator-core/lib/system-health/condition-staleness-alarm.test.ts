@@ -4,6 +4,7 @@ import {
   runConditionStalenessTick,
   selectReconcilableConditions,
   selectAbsentConditions,
+  toBridgeConditionStates,
   _resetConditionStalenessDebounce,
 } from './condition-staleness-alarm';
 import type { ConditionState } from '../agent-tools/coordination/tools/conditions';
@@ -367,6 +368,7 @@ describe('runConditionStalenessTick — durable dedup + auto-resolve (mirrors li
       signals: [],
       resolved: [],
       reconciled: [],
+      bridged: { acquired: [], released: [], skipped: 0 },
     });
   });
 
@@ -674,5 +676,108 @@ describe('WI-7254 — the dedup key must not contain the condition age', () => {
     expect(capA.metas[0].subjectSignature).toBe(capB.metas[0].subjectSignature);
     // ...and it must not carry a minute count, which is what made it unique.
     expect(String(capA.metas[0].subjectSignature)).not.toMatch(/\d+m/);
+  });
+});
+
+// ── P-003: the condition→work-item bridge wiring ──
+describe('toBridgeConditionStates (pure)', () => {
+  it('keeps only opted-in condition keys', () => {
+    const states = [
+      mkState({ condition_key: 'green-stall:papercusp' }),
+      mkState({ condition_key: 'infra-liveness:panel:bees' }), // not actionable
+      mkState({ condition_key: 'git-sync-stall:papercusp' }), // not actionable
+    ];
+    expect(toBridgeConditionStates(states, 'papercusp').map((s) => s.conditionKey)).toEqual([
+      'green-stall:papercusp',
+    ]);
+  });
+
+  it('takes the harness from the key SUFFIX for slug-suffixed families', () => {
+    const out = toBridgeConditionStates([mkState({ condition_key: 'green-stall:oddsmith' })], 'papercusp');
+    expect(out[0].harness).toBe('oddsmith');
+  });
+
+  // REGRESSION GUARD. `single-primary:${verdict.key}` suffixes a VERDICT, not a
+  // harness slug. A `split(':')[1]` derivation files the work-item under harness
+  // 'no-primary', and createWorkItem does NOT validate the harness — the row is
+  // created, scoped to a harness nobody queries, and is invisible forever.
+  it('NEVER derives a harness from a verdict-suffixed key — uses the ambient harness', () => {
+    const out = toBridgeConditionStates([mkState({ condition_key: 'single-primary:no-primary' })], 'papercusp');
+    expect(out).toHaveLength(1);
+    expect(out[0].harness).toBe('papercusp');
+    expect(out[0].harness).not.toBe('no-primary');
+  });
+
+  it('SKIPS a condition whose harness cannot be established, rather than guessing', () => {
+    expect(toBridgeConditionStates([mkState({ condition_key: 'single-primary:no-primary' })], '')).toEqual([]);
+  });
+
+  it('carries the open/closed state through, so a resolved condition can close its item', () => {
+    const out = toBridgeConditionStates(
+      [mkState({ condition_key: 'green-stall:papercusp', open: false })],
+      'papercusp',
+    );
+    expect(out[0].open).toBe(false);
+  });
+});
+
+describe('runConditionStalenessTick — bridge wiring', () => {
+  beforeEach(() => _resetConditionStalenessDebounce());
+
+  it('does NOT write when no bridge is injected (the write-side dep is opt-in)', async () => {
+    const res = await runConditionStalenessTick({
+      readStates: async () => [mkState({ condition_key: 'green-stall:papercusp' })],
+      listOpen: async () => [],
+      escalate: async () => undefined,
+    });
+    expect(res.bridged).toEqual({ acquired: [], released: [], skipped: 0 });
+  });
+
+  it('passes the FINAL states to the bridge, so a condition healed this tick closes its item', async () => {
+    const seen: { key: string; open: boolean }[] = [];
+    await runConditionStalenessTick({
+      readStates: async () => [mkState({ condition_key: 'green-stall:papercusp', open: true })],
+      listOpen: async () => [],
+      // guard #3 resolves it this tick (last_seen far older than absenceMs)
+      absenceMs: 1,
+      now: () => Date.parse('2026-07-06T00:00:00.000Z'),
+      broadcastResolvedMany: async () => true,
+      homeHarness: () => 'papercusp',
+      bridgeConditions: async (states) => {
+        for (const s of states) seen.push({ key: s.conditionKey, open: s.open });
+        return { acquired: [], released: [], skipped: 0 };
+      },
+    });
+    expect(seen).toEqual([{ key: 'green-stall:papercusp', open: false }]);
+  });
+
+  it('a bridge failure never crashes the tick', async () => {
+    const res = await runConditionStalenessTick({
+      readStates: async () => [mkState({ condition_key: 'green-stall:papercusp' })],
+      listOpen: async () => [],
+      escalate: async () => undefined,
+      homeHarness: () => 'papercusp',
+      bridgeConditions: async () => {
+        throw new Error('bridge exploded');
+      },
+    });
+    expect(res.bridged).toEqual({ acquired: [], released: [], skipped: 0 });
+  });
+
+  // REGRESSION GUARD: a read failure must not look like "every condition resolved",
+  // which would SETTLE every owning work-item on a transient DB blip.
+  it('does NOT bridge at all when the state read fails', async () => {
+    let bridgeCalls = 0;
+    const res = await runConditionStalenessTick({
+      readStates: async () => {
+        throw new Error('db unavailable');
+      },
+      bridgeConditions: async () => {
+        bridgeCalls += 1;
+        return { acquired: [], released: [], skipped: 0 };
+      },
+    });
+    expect(bridgeCalls).toBe(0);
+    expect(res.bridged).toEqual({ acquired: [], released: [], skipped: 0 });
   });
 });

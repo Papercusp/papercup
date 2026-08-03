@@ -719,6 +719,31 @@ filename timestamp is the WRITE time, not the run's start. Observed 2026-08-02: 
 already re-fired onto a newer tip. Reading it as the in-flight candidate is a guaranteed
 one-pass-stale answer.
 
+⚠ **`AFFECTED_TESTS_RESULT failed=N` counts TASKS (workspaces), not FILES — never derive your work
+list from it.** It names how many workspace test-tasks went red (`@papercusp/operator-core :: test`),
+so ONE task routinely hides a dozen files. Measured three times in one night: `failed=2` vs 3 distinct
+files, `failed=3` vs 4, and `failed=2` vs **11**. Derive the real set:
+
+```bash
+sed 's/\x1b\[[0-9;]*m//g' <log> | grep -oE 'FAIL +[^ ]+\.test\.ts' | sort -u
+```
+
+⚠⚠ **The verdict's `📍 lineage: … none of the failing files were modified in that range
+(presumptively a real red)` line is UNRELIABLE — never let it talk you out of re-checking at HEAD.**
+It asks whether the failing TEST file moved. For every test that polices OTHER files — the
+prompt-weight budget, the NUL/source-integrity lints, the claim-door census, `tools-md-sync` — the
+fix lands in the policed SOURCE file and the test itself is never touched, so the answer is
+structurally always "no" and the line always reads "real red". It therefore prints its highest
+confidence exactly where the red is most likely already dead, and the reflex it induces (go fix the
+named thing) is the one that collides with peers' locks and burns a ~55min suite.
+
+Measured 2026-08-03 on candidate `060ea000f2`: it printed that phrase while `loop:checkpoint`'s prompt
+weight had already been trimmed 1589 → 1495 by `eb872e9ea8`, and `git log 060ea000f2..HEAD` on both
+budget test files was **empty**. All 11 of that red's files were already green at HEAD — 7 verified by
+running them. **That is the base rate, not a fluke:** on this fleet the tree outruns the gate, so treat
+every red as STALE until you have RUN each failing file at HEAD (`npm run test:file -- <paths>`). A
+status derived from the log — yours or a peer's — is not a status at HEAD. (EI-19394456914198611)
+
 ⚠ **Do not glob `/tmp/papercup-green-checkpoint-manual-*.log` and take the newest.** Tests write
 synthetic placeholder shas into that same namespace, and `ls -t` routinely returns the TEST file
 first (EI-19326961954611487). Observed 2026-08-02: the newest match was `…-manual-ryte5.log`,
