@@ -1121,7 +1121,19 @@ export async function getAgentSignals(owner: string): Promise<AgentSignals> {
     // independently best-effort on the SAME contract as phase one — a throw is
     // reported through `unavailableSignals`, never rendered as a clean empty.
     const fleetSlug = fleetByOwner.get(owner)?.fleetSlug ?? null;
-    const planSlug = presence?.currentPlanSlug ?? null;
+    // Same fallback chain the ROSTER uses for the identical agent one pane away
+    // (adv-roster.ts: `p.currentPlanSlug ?? adv?.planSlug`). Reading only the
+    // DECLARED plan made the dossier strictly narrower than the roster: an agent
+    // launched via fleet:launch-on-plan that never re-declared had a plan the
+    // roster showed and the popup did not — 3 of 11 live plan-launched sessions
+    // when measured (plan session-popup-compaction-and-contrast-2026-08-02
+    // D-006). Declared still WINS: it is the agent's own current statement of
+    // what it is on, and it is what changes when an agent moves between plans
+    // mid-session, whereas the launch record is fixed at spawn.
+    const declaredPlanSlug = presence?.currentPlanSlug ?? null;
+    const planSlug =
+      declaredPlanSlug ??
+      (await launchPlanSlugForOwner(owner).catch(onFailure('lane')(null)));
     const harnessSlug = top?.harness ?? null;
     const [lane, announcedGates, fleetControl] = await Promise.all([
       readAgentLane(planSlug, harnessSlug, workspaceId).catch(onFailure('lane')(null)),

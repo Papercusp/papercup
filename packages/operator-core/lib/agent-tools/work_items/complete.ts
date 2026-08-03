@@ -409,6 +409,38 @@ async function completeOne(
         `re-check before this lands on someone else's active work.`
       : undefined;
 
+  // EI-19393623437103599: the SIBLING of the assignee warning above, for the case that
+  // slips past it. `getWorkItem` does NOT apply `harness` to the issue-family branch, so
+  // naming a harness does not scope the lookup — a caller can ask for an item in one pot
+  // and be handed a DIFFERENT pot's row of the same id, silently. `WI-<n>` ids make that
+  // reachable in practice rather than theoretically: D-008 (migration 142) mints them from
+  // a PER-DATABASE sequence starting at 1, so WI-1/WI-2/WI-3 exist in every long-lived
+  // store and a fresh or recovered one mints exactly those first.
+  //
+  // Why the assignee warning above does not already cover it: that one keys on the item
+  // being held by SOMEONE ELSE. The row this lands on is typically UNASSIGNED (a stale
+  // plan-item task nobody holds), so it fires on neither leg. Observed 2026-08-03: an id
+  // reported by `work_items:create` against a recovered store resolved to an unrelated
+  // 2026-07-18 plan item here, and a terminal completion with `authority: committed` was
+  // recorded onto it — forging evidence in a live two-machine federation experiment. The
+  // ONLY thing that surfaced it was the echoed `title` happening to look unfamiliar.
+  //
+  // WARN rather than refuse, deliberately, on this tool's record-and-warn contract (EI-24,
+  // as the assignee warning above): a cross-harness complete is not always wrong, and the
+  // failure here was the ABSENCE of any signal, not the absence of a block. Naming both
+  // harnesses plus the row's title and age is what makes a wrong-id grab self-evident.
+  const harnessMismatch = harnessScopeMismatch(existing, it.harness);
+  const harnessMismatchWarning = harnessMismatch
+    ? `completing '${it.id}' under harness '${harnessMismatch.requested}', but the row that ` +
+      `resolved belongs to harness '${harnessMismatch.resolved}' — titled "${existing.title}"` +
+      (existing.createdAt ? `, created ${new Date(existing.createdAt).toISOString()}` : '') +
+      (existing.createdBy ? ` by '${existing.createdBy}'` : '') +
+      `. A bare WI-<n> id is NOT globally unique (it comes from a per-database sequence that ` +
+      `starts at 1), so an id minted in one store can resolve to a completely different item ` +
+      `in another. If that title is not the work you meant to complete, STOP — you are about ` +
+      `to record a completion on someone else's item.`
+    : undefined;
+
   // TEST-COMPLETION GATE (enforce-system-on-generic-work-2026-06-29 P-006). A feature
   // work-item being moved to a TERMINAL state must have every plan-derived test-requiring
   // VAL passing. Flag-gated (FLAGS.TEST_COMPLETION_GATE, default OFF → inert) and FAIL-OPEN
@@ -936,6 +968,7 @@ async function completeOne(
     ...(authorityWarning ? { authorityWarning } : {}),
     ...(verificationWarning ? { verificationWarning } : {}),
     ...(assigneeMismatchWarning ? { assigneeMismatchWarning } : {}),
+    ...(harnessMismatchWarning ? { harnessMismatchWarning } : {}),
     // Reported unconditionally on a real close (including `committed`) so the caller can
     // see the judgement rather than infer it from the absence of a warning.
     ...(stampedAuthority

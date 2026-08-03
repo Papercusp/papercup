@@ -1239,8 +1239,26 @@ export async function getIssue(id: string): Promise<EngineerIssue | null> {
  * NEVER flagged, and the SAME item kept re-dispatching every ~30min for 11+ hours,
  * which is exactly what blew the dispatch-orphan-rate SLO past its budget.
  *
- * Issue ids are globally unique (see releaseIssue's EI-6480 comment), so resolving
- * by id alone — no workspace needed up front — is safe: look the row up directly,
+ * ⚠ CAVEAT (EI-19393623437103599) — this function's id-uniqueness premise is only
+ * HALF true, and the half that fails is the one you are most likely to hit. It used
+ * to read simply "issue ids are globally unique (see releaseIssue's EI-6480 comment)".
+ * That holds for `EI-<snowflake>` ids. It does NOT hold for `WI-<n>` ids: D-008
+ * (migration 142-work-items-unify.sql) began minting them into THIS table from
+ * `harness_shared.work_item_seq`, a PER-DATABASE sequence that STARTs at 1 — so
+ * `WI-1`/`WI-2`/`WI-3` exist in every long-lived store, and a fresh or recovered store
+ * mints exactly those ids first. Resolving such an id "by id alone" can therefore land
+ * on a DIFFERENT row than the caller meant, across a workspace OR a harness boundary,
+ * and this function will return it without complaint (the `ORDER BY` below just picks
+ * one). That is not hypothetical: it silently retargeted ~3h of writes — including a
+ * terminal completion — onto a stranger's work-item on 2026-08-03.
+ *
+ * Kept as-is deliberately rather than filtered: 56 of `getWorkItem`'s 77 non-test call
+ * sites pass a harness, many of them loosely, so tightening the lookup here would turn
+ * a rare wrong-row into a broad silent `null` ("does not exist"), which is worse. The
+ * contradiction is caught one level up instead — see `harnessScopeMismatch()` in
+ * work-items.ts, which destructive writes refuse on.
+ *
+ * So: resolving by id alone — no workspace needed up front — look the row up directly,
  * preferring a match under the ambient/ACTIVE workspace when the id exists in more
  * than one (a legacy federated dupe), else use whichever workspace actually holds
  * the row. Falls back to the ambient workspace when no row is found at all (a
