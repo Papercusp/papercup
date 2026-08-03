@@ -19,6 +19,34 @@ import {
 } from '../../work-items';
 import { ANY_FAMILY_TERMINAL_STATES } from '../../work-item-dispatch-states';
 import { countsTowardBurnDown } from '../../work-item-completion-authority';
+import { classifyTerminalOwner } from '../../completion-audit';
+import { resolveSelfRef } from '../coordination/self-marker';
+
+/** How the fleet behind `terminal.deltaBy.fleet` was determined. Reported verbatim so a
+ *  reader never has to guess whether they are looking at their OWN fleet's output or a
+ *  fleet named in the call — the ambiguity fix B exists to remove. */
+export type FleetAttributionSource = 'arg' | 'caller-membership';
+
+/** The attribution split of `terminal.delta`. The four counts PARTITION `delta`. */
+export interface BurnDownDeltaBy {
+  /** Closes by an EVER-member of the fleet in scope. `null` ⇒ no fleet was resolved
+   *  (never 0, which would assert the fleet closed nothing). */
+  fleet: number | null;
+  /** Closes by a named agent that is not an ever-member of that fleet. With no fleet in
+   *  scope this holds ALL agent closes in the harness. */
+  otherAgents: number;
+  /** Closes by automation (`system:*` / `watchdog-*` / the known bypass identities). */
+  system: number;
+  /** Closes with no `terminal_owner` recorded — deliberately NOT folded into `system`. */
+  unattributed: number;
+  basis: {
+    fleet: string | null;
+    fleetSource: FleetAttributionSource | null;
+    membership: 'ever-members' | null;
+    memberCount: number | null;
+    note: string;
+  };
+}
 
 // EI-18653071581558556 — derived from the canonical cross-family union rather
 // than re-listed. This copy happened to be correct, but it was the third
@@ -325,9 +353,21 @@ export function liveOwnersFromPresence(
 export function buildBurnDownResult(
   items: WorkItem[],
   liveOwners: Set<string>,
-  opts: { harness: string; generatedAt?: string; since?: string | null } ,
+  opts: {
+    harness: string;
+    generatedAt?: string;
+    since?: string | null;
+    /** EI-19313376980892266 fix B: the fleet whose closes count as `deltaBy.fleet`, and
+     *  its EVER-members (fleet-membership-store `fleetEverMembers` — never live presence).
+     *  Null/absent ⇒ no fleet in scope; `deltaBy.fleet` is then reported as null rather
+     *  than 0, because "this fleet closed nothing" and "no fleet was resolved" are
+     *  different facts and 0 asserts the first one. */
+    fleet?: { slug: string; members: Set<string>; source: FleetAttributionSource } | null;
+  },
 ): BurnDownResult {
   const generatedAt = opts.generatedAt ?? new Date().toISOString();
+  const fleetMembers = opts.fleet?.members ?? null;
+  const deltaBy = { fleet: 0, otherAgents: 0, system: 0, unattributed: 0 };
   const sinceMs = opts.since ? Date.parse(opts.since) : NaN;
   const hasSince = Number.isFinite(sinceMs);
   const terminal = {
@@ -346,6 +386,10 @@ export function buildBurnDownResult(
      *  tell "nothing closed in this window" apart from "this window predates the
      *  close stamp"; a nonzero value here means `delta` is a floor, not a total. */
     deltaClosedUndated: 0,
+    /** EI-19313376980892266 fix B: who produced `delta`. Only present with `since`. */
+    deltaBy: undefined as BurnDownDeltaBy | undefined,
+    /** True whenever `deltaBy` is present: its four counts sum to `delta` exactly. */
+    deltaByPartitions: undefined as boolean | undefined,
     authority: { counted: 0, committed: 0, validated: 0, proposed: 0, pendingHuman: 0, invalid: 0, legacy: 0 },
   };
   const inFlight: BurnDownRow[] = [];
@@ -466,6 +510,44 @@ export function buildBurnDownResult(
   };
 
   terminal.deltaClosedUndated = deltaClosedUndated;
+  if (hasSince) {
+    // EI-19313376980892266 fix B — PROVENANCE ON A DERIVED NUMBER. `delta` is
+    // harness-WIDE; read as one fleet's output it over-reports by however much the
+    // rest of the harness closed (measured: 269 harness-wide vs 63 by the reporting
+    // fleet — a leader told the owner ~30 closes/hour against a real ~6.6).
+    //
+    // The buckets PARTITION `delta`: every counted close lands in exactly one, so
+    // fleet + otherAgents + system + unattributed === delta, always. (Contrast the
+    // claim `excluded` buckets, which overlap by construction.) `deltaByPartitions`
+    // states that invariant on the wire rather than leaving a reader to test it.
+    terminal.deltaBy = {
+      // null (not 0) when no fleet was in scope — 0 would assert the fleet closed
+      // nothing, which is a different claim from "no fleet was resolved".
+      fleet: opts.fleet ? deltaBy.fleet : null,
+      otherAgents: deltaBy.otherAgents,
+      system: deltaBy.system,
+      unattributed: deltaBy.unattributed,
+      basis: {
+        fleet: opts.fleet?.slug ?? null,
+        fleetSource: opts.fleet?.source ?? null,
+        // Ever-members, NOT live presence: a window-scoped question must count members
+        // that have since died. session-search-scope-2026-07-05 D-002; measured 55%
+        // under-report from a live-presence basis (see fleetEverMembers' doc).
+        membership: opts.fleet ? ('ever-members' as const) : null,
+        memberCount: opts.fleet ? opts.fleet.members.size : null,
+        note: opts.fleet
+          ? `fleet = closes whose terminal_owner is an EVER-member of '${opts.fleet.slug}' ` +
+            `(${opts.fleet.members.size} member(s), from the append-only membership ledger — ` +
+            `includes members that have since died); otherAgents = every other named agent ` +
+            `in this harness; system = automation (system:*/watchdog-*); unattributed = no ` +
+            `terminal_owner recorded. The four sum to delta.`
+          : `no fleet in scope, so 'fleet' is null rather than 0 — pass { fleet } or call as ` +
+            `a fleet member to split this harness-wide delta. otherAgents currently holds ALL ` +
+            `agent closes in the harness, not just other fleets'.`,
+      },
+    };
+    terminal.deltaByPartitions = true;
+  }
 
   return {
     ok: true,
@@ -547,6 +629,14 @@ export default defineTool({
       .max(200)
       .optional()
       .describe('Exact fixed-cohort IDs. Narrows the census and adds cohortAudit with one row per requested ID, including missing IDs.'),
+    fleet: z
+      .string()
+      .min(1)
+      .max(80)
+      .optional()
+      .describe(
+        "Attribute terminal.delta to this fleet's EVER-members (terminal.deltaBy.fleet). Defaults to YOUR own fleet when you are in one; omit and pass no fleet to get an unattributed harness-wide delta.",
+      ),
   }),
   result: z.object({
     ok: z.literal(true),
@@ -563,6 +653,22 @@ export default defineTool({
       deltaSince: z.string().nullable(),
       delta: z.number(),
       deltaClosedUndated: z.number(),
+      deltaBy: z
+        .object({
+          fleet: z.number().nullable(),
+          otherAgents: z.number(),
+          system: z.number(),
+          unattributed: z.number(),
+          basis: z.object({
+            fleet: z.string().nullable(),
+            fleetSource: z.enum(['arg', 'caller-membership']).nullable(),
+            membership: z.literal('ever-members').nullable(),
+            memberCount: z.number().nullable(),
+            note: z.string(),
+          }),
+        })
+        .optional(),
+      deltaByPartitions: z.boolean().optional(),
     }),
     inFlight: z.array(rowSchema),
     parked: z.array(rowSchema.extend({
@@ -646,9 +752,43 @@ export default defineTool({
           }),
       listPresence({ workspaceId: (ctx as { workspaceId?: string | null }).workspaceId ?? undefined }).catch(() => []),
     ]);
+    // EI-19313376980892266 fix B: resolve the fleet whose closes count as "ours".
+    // Only worth a round-trip when `since` was passed (no `since` ⇒ no delta to split).
+    // Best-effort throughout: an attribution read must never cost a leader the census.
+    const workspaceId = (ctx as { workspaceId?: string | null }).workspaceId ?? undefined;
+    const fleetScope = await (async () => {
+      if (!args.since) return null;
+      try {
+        const { fleetEverMembers, latestFleetMembership } = await import(
+          '../../fleet-membership-store'
+        );
+        let slug = args.fleet ?? null;
+        let source: FleetAttributionSource = 'arg';
+        if (!slug) {
+          // Fall back to the CALLER's own fleet — read from the append-only ledger, not
+          // their presence row, so a leader whose own presence has been reaped still
+          // attributes correctly.
+          const self = resolveSelfRef(ctx);
+          if (!self?.ownerId) return null;
+          const mine = await latestFleetMembership(workspaceId ?? '', self.ownerId);
+          if (!mine?.fleetSlug) return null;
+          slug = mine.fleetSlug;
+          source = 'caller-membership';
+        }
+        const members = await fleetEverMembers(slug, { workspaceId });
+        // An unknown fleet resolves to NO members. Reporting fleet:0 off that would be a
+        // fabricated verdict ("your fleet closed nothing") from a failed lookup, so treat
+        // it as no-fleet-in-scope instead and let the null + note say so.
+        if (members.size === 0) return null;
+        return { slug, members, source };
+      } catch {
+        return null;
+      }
+    })();
     const result = buildBurnDownResult(items, liveOwnersFromPresence(presence), {
       harness: args.harness,
       since: args.since ?? null,
+      fleet: fleetScope,
     });
     if (requestedIds) result.cohortAudit = buildCohortAudit(requestedIds, items);
     return {

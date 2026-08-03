@@ -38,6 +38,7 @@
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
+import { formatSpecRef } from '../../scheduler/claim-spec';
 import { resolveConcreteWorkspaceId } from '../../workspace-registry';
 import { resolveAgentIdentity, deriveFleetMembership } from '../coordination/identity';
 import { resolvePresenceFleet } from '../coordination/presence-fleet';
@@ -741,6 +742,20 @@ export interface FleetLaneHealth {
   matchedByFilter: number;
   /** Per-floor counts of why matched rows are not claimable. Buckets OVERLAP (not a partition). */
   excluded: Record<string, number>;
+  /** EI-19313376980892266 fix B: the scoping that PRODUCED `claimable`/`matchedByFilter`.
+   *  Without it the count is not comparable to any other claimable count. */
+  spec: {
+    /** Human-legible `<specId> (spec rev N)` — never the bare `@` form (see formatSpecRef). */
+    ref: string;
+    specId: string;
+    revision: number | null;
+    /** How the fleet's spec row was found ('fleet-slug' | 'spec-id' | …). */
+    matchedBy: string;
+    /** The harness the exclusion aggregate was scoped to. */
+    harness: string;
+    /** The assignee the floors were evaluated for (own-claims are not self-excluded). */
+    assigneeScoped: string | null;
+  };
 }
 
 async function readFleetLaneHealth(args: {
@@ -771,6 +786,23 @@ async function readFleetLaneHealth(args: {
       claimable: breakdown.claimable,
       matchedByFilter: breakdown.matchedByFilter,
       excluded: breakdown.excluded as unknown as Record<string, number>,
+      // EI-19313376980892266 fix B — PROVENANCE ON A DERIVED NUMBER. `claimable` is
+      // produced under THIS spec, THIS harness and THIS assignee scoping; the same
+      // question asked under the default spec legitimately returns a different number
+      // (observed: 348 here beside work_items:claimable's 1698, which reads as an oracle
+      // contradiction and nearly got the claim oracle reported as broken). Naming the
+      // scoping makes the two comparable instead of apparently conflicting.
+      spec: {
+        ref: formatSpecRef(
+          resolved.record.spec.specId,
+          resolved.record.spec.revision ?? resolved.record.revision,
+        ),
+        specId: resolved.record.spec.specId,
+        revision: resolved.record.spec.revision ?? resolved.record.revision,
+        matchedBy: resolved.matchedBy,
+        harness,
+        assigneeScoped: args.assignee ?? null,
+      },
     };
   } catch {
     return null;
@@ -1339,6 +1371,22 @@ export default defineTool({
       // number work_items:claimable reports). null ⇒ could not be read on this brief —
       // NOT zero, and never to be read as a drained lane.
       claimable_now: fleetClaimableCount,
+      // EI-19313376980892266 fix B: WHICH scoping produced the number above. A bare
+      // count is not comparable to another surface's count — beside
+      // work_items:claimable's default-spec total this one reads as a contradiction
+      // when the two are simply different questions. null when the lane read failed
+      // (i.e. claimable_now is null too), never a fabricated scoping.
+      claimable_now_spec: fleetLaneHealth
+        ? {
+            ...fleetLaneHealth.spec,
+            note:
+              `claimable_now (${fleetLaneHealth.claimable}) counts rows admitted by ` +
+              `${fleetLaneHealth.spec.ref} within harness '${fleetLaneHealth.spec.harness}'. ` +
+              `work_items:claimable{harness} asks a DIFFERENT question (the default spec, ` +
+              `harness-wide) and a larger number there is expected, not a contradiction — ` +
+              `compare only against the same spec+harness.`,
+          }
+        : null,
       // WI-3818: make any incomplete canonical roster read explicit to callers
       // instead of silently presenting a partial membership list.
       degraded_roster_legs: rosterResult.degradedLegs,

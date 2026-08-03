@@ -1082,6 +1082,42 @@ result, no subprocess, and no output to re-parse. When a row's caveat applies (a
 `tail -f` follow, a non-operator database, a `\du`), the bash form is the right
 answer — the gate will not fight you on those.
 
+## `cd` outside the repo tree does NOT persist across Bash calls — a failed one silently falls back to the repo ROOT
+
+**The Bash tool's own description says "the working directory persists between
+commands" — that is only true while you stay INSIDE this repo tree.** Verified
+live (EI-19409936180303618, 2026-08-03): `cd /tmp/some-scratch-dir` succeeds and
+holds for the REST of that one call, but the *next* Bash call starts back at
+this repo's root, with a post-hoc `Shell cwd was reset to <repo root>` note on
+the PRIOR call's result — no warning before it runs, just after. `cd` to a path
+still *inside* the tree (e.g. a package subdir) genuinely persists across calls
+with no reset. So the boundary is exactly "inside vs. outside this tree", not
+"cd never persists".
+
+**Why this is dangerous, not just surprising:** a multi-line script with no
+`set -e` does NOT abort on a failed `cd` — it keeps executing every later line
+in whatever directory it's actually sitting in. Combine the two: call 1's
+`mkdir -p /tmp/x && cd /tmp/x` succeeds; call 2 opens with `cd /tmp/x` again
+(cwd already reset to repo root) — if `/tmp/x` was never actually created (e.g.
+call 1 was itself blocked by a `PreToolUse` gate before the `mkdir` ran), the
+`cd` fails, prints "No such file or directory", and the REST of call 2's script
+executes directly in **this shared monorepo root** instead of the intended
+scratch dir. This is exactly how a `npm install <pkg>` meant for an isolated
+scratch dir landed in the live tree and mutated shared `node_modules` while
+other agents were working in it (repaired via `npm run install:safe`, no
+lasting damage — but the near-miss is the point).
+
+**The defensive pattern, every time a script leaves the repo tree:**
+```bash
+mkdir -p /tmp/my-scratch-dir && cd /tmp/my-scratch-dir || exit 1
+# ...rest of the script — now guaranteed to abort instead of silently
+# continuing in the wrong (repo-root) directory...
+```
+`cd ... || exit 1` (or `set -e` at the top of the script) is the whole fix — a
+failed `cd` then kills the script instead of falling through. And when in
+doubt whether a PRIOR call's `cd` actually landed you where you think, `pwd` as
+the first line of the next call is free insurance — never assume.
+
 ## Long jobs: background them at the LAUNCH, don't poll for them afterwards
 
 **"Is my job done?" is 12% of every bash call on this box** — ~2,950 calls in 7

@@ -3433,3 +3433,107 @@ describe('say-once advisory dedup (context-injection-audit P-020, D-030+D-031) â
     expect(fired(run('s-failopen'))).toBe(true); // still emits, every time
   });
 });
+
+describe('cd + EXIT-trap/restore path-drift advisory (EI-19409854431997137)', () => {
+  // Each test uses its own session id so the say-once dedup (tested above)
+  // never suppresses a case this suite still expects to fire.
+  let seq = 0;
+  const nextTrapSid = () => `cdtrap-${process.pid}-${++seq}`;
+  const cdtrapCmd = (command: string) => ({
+    tool_name: 'Bash',
+    tool_input: { command },
+    session_id: 's-cdtrap',
+  });
+  const run = (command: string) =>
+    runGate(cdtrapCmd(command), { PAPERCUSP_SID: nextTrapSid() });
+
+  function expectAdvisory(out: { stdout: string; status: number | null }) {
+    expect(out.status).toBe(0);
+    const decision = parseDecision(out);
+    expect(decision.hookSpecificOutput.permissionDecision).toBe('allow'); // soft â€” never blocks
+    expect(decision.hookSpecificOutput.permissionDecisionReason).toContain('advisory');
+    return (decision.hookSpecificOutput as { additionalContext?: string }).additionalContext ?? '';
+  }
+
+  it('fires for the full repro shape: cd + an EXIT trap capturing a pre-cd relative path', () => {
+    const ctx = expectAdvisory(
+      run(
+        'cp "$F" /tmp/restore.ts\n' +
+          `trap 'cp /tmp/restore.ts '"$F"'' EXIT\n` +
+          'sed -i "s/x/y/" "$F"\n' +
+          'cd apps/operator && npx vitest run app/adv/hud/hud-board-model.test.ts\n' +
+          'cp /tmp/restore.ts "$F"',
+      ),
+    );
+    expect(ctx).toContain('cd + restore-path drift advisory (EI-19409854431997137)');
+    expect(ctx).toContain('an EXIT trap');
+  });
+
+  it('fires for a plain end-of-script restore (`cp` after the `cd`, no trap at all)', () => {
+    const ctx = expectAdvisory(
+      run(
+        'F=path/to/file.ts\n' +
+          'cp "$F" /tmp/restore.ts\n' +
+          'cd apps/operator && npx vitest run x\n' +
+          'cp /tmp/restore.ts "$F"',
+      ),
+    );
+    expect(ctx).toContain('cd + restore-path drift advisory');
+    expect(ctx).toContain('a `cp` after the cd');
+  });
+
+  it('fires for `mv` too, not only `cp`', () => {
+    const ctx = expectAdvisory(
+      run('cd apps/operator && npx vitest run x\nmv /tmp/restore.ts "$F"'),
+    );
+    expect(ctx).toContain('a `mv` after the cd');
+  });
+
+  it('does NOT fire for a bare `cd` with no trap or restore at all', () => {
+    expectAllow(run('cd apps/operator && npx vitest run x'));
+  });
+
+  it('does NOT fire for the initial backup `cp` BEFORE the cd (nothing follows it)', () => {
+    expectAllow(run('cp "$F" /tmp/restore.ts\ncd apps/operator && npx vitest run x'));
+  });
+
+  it('does NOT fire when the whole thing is scoped inside a subshell (the recommended fix)', () => {
+    expectAllow(
+      run(
+        'cp "$F" /tmp/restore.ts\n' +
+          `trap 'cp /tmp/restore.ts '"$F"'' EXIT\n` +
+          '( cd apps/operator && npx vitest run x )\n' +
+          'cp /tmp/restore.ts "$F"',
+      ),
+    );
+  });
+
+  it('does NOT fire when the restore variable is anchored absolutely (the OTHER recommended fix)', () => {
+    expectAllow(
+      run(
+        'F=$(git rev-parse --show-toplevel)/path/to/file.ts\n' +
+          'cd apps/operator && npx vitest run x\n' +
+          'cp /tmp/restore.ts "$F"',
+      ),
+    );
+  });
+
+  it('does NOT fire when the cp/mv destination is already a literal absolute path', () => {
+    expectAllow(
+      run(
+        'cd apps/operator && npx vitest run x\n' +
+          'cp /tmp/restore.ts /home/marsh-office/papercupai-workspace/papercup/apps/operator/app/adv/hud/hud-board-model.test.ts',
+      ),
+    );
+  });
+
+  it('does NOT fire on an ordinary unrelated command', () => {
+    expectAllow(run('ls -la apps/operator'));
+  });
+
+  it('does NOT fire for a `cd` followed only by `git checkout --` (cp/mv-only scan, by design)', () => {
+    expectAllow(
+      run('cd apps/operator && npx vitest run x\ngit checkout -- app/adv/hud/hud-board-model.test.ts'),
+    );
+  });
+});

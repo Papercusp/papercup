@@ -1802,6 +1802,10 @@ describe('WI-5343 — feature-family admissibleOnly mirrors claimFloorsWhereSql 
   });
 
   it('a plan-lane-reserved feature whose PLAN is not active drains normally (no over-exclusion)', async () => {
+    // NB: 'paused' here is written to the LIFECYCLE `status` column, where it is not a real
+    // value — the operational paused state is `op_status` (covered by the EI-19409397800537963
+    // block below). What this asserts is the anti-starvation property: a plan row that is
+    // neither lifecycle-active nor operationally started/paused reserves nothing.
     await db.sql`INSERT INTO harness_shared.harness_plans (workspace_id, harness_slug, plan_slug, status)
                  VALUES ('default', 'papercup', 'wi-5343-paused-plan', 'paused')`;
     const item = await wi.createWorkItem({
@@ -1811,6 +1815,74 @@ describe('WI-5343 — feature-family admissibleOnly mirrors claimFloorsWhereSql 
     const list = await wi.listWorkItems({ harness: 'papercup', kind: 'feature', admissibleOnly: true });
     expect(list.some((w) => w.id === item.id)).toBe(true);
     expect((await wi.claimNextWorkItem({ harness: 'papercup', assignee: 'bee-z' }))?.id).toBe(item.id);
+  });
+});
+
+// EI-19409397800537963 — the reserved-plan-lane floor read the LIFECYCLE `status` column
+// ('active') while `plans:start`/`plans:pause` write the OPERATIONAL `op_status`
+// ('started'/'paused') and leave `status` alone. On live papercusp that made the floor miss 14
+// of 16 running plans and 31 of 31 open items bound to them, which is the claim→refuse→re-serve
+// churn WI-2118 created the floor to prevent (WI-6292 went to two agents in one hour).
+//
+// Each test below pins ONE property that was broken. A regression to the old predicate fails the
+// first two; dropping the retained lifecycle leg fails the third; losing the tenant scope fails
+// the fourth.
+describe('EI-19409397800537963 — the reserved-plan-lane floor keys on op_status, not lifecycle status', () => {
+  it('RESERVES an item on a STARTED plan whose lifecycle status is still ready (the 87% leak)', async () => {
+    await db.sql`INSERT INTO harness_shared.harness_plans (workspace_id, harness_slug, plan_slug, status, op_status)
+                 VALUES ('default', 'papercup', 'ei-19409397-started', 'ready', 'started')`;
+    const reserved = await wi.createWorkItem({
+      kind: 'feature', title: 'started-lane feature', harness: 'papercup', createdBy: 'agA',
+      payload: { plan_item: { plan_slug: 'ei-19409397-started', item_id: 'P-1' } },
+    });
+
+    // The only unclaimed feature is on a running plan's lane — self-select must find nothing.
+    expect(await wi.claimNextWorkItem({ harness: 'papercup', assignee: 'bee-started' })).toBeNull();
+    const list = await wi.listWorkItems({ harness: 'papercup', kind: 'feature', admissibleOnly: true });
+    expect(list.some((w) => w.id === reserved.id)).toBe(false);
+    // Still claimable BY ID — a leader driving the lane deliberately is never blocked.
+    expect((await wi.claimWorkItem(reserved.id, 'bee-started', { harness: 'papercup' }))?.id).toBe(reserved.id);
+  });
+
+  it('RESERVES an item on a PAUSED plan — plans:pause means "no new features are picked"', async () => {
+    await db.sql`INSERT INTO harness_shared.harness_plans (workspace_id, harness_slug, plan_slug, status, op_status)
+                 VALUES ('default', 'papercup', 'ei-19409397-paused', 'ready', 'paused')`;
+    const paused = await wi.createWorkItem({
+      kind: 'feature', title: 'owner-paused lane feature', harness: 'papercup', createdBy: 'agA',
+      payload: { plan_item: { plan_slug: 'ei-19409397-paused', item_id: 'P-1' } },
+    });
+
+    expect(await wi.claimNextWorkItem({ harness: 'papercup', assignee: 'bee-paused' })).toBeNull();
+    const list = await wi.listWorkItems({ harness: 'papercup', kind: 'feature', admissibleOnly: true });
+    expect(list.some((w) => w.id === paused.id)).toBe(false);
+  });
+
+  it('KEEPS reserving a lifecycle-active plan with NULL op_status (the retained leg — 199 live plans)', async () => {
+    await db.sql`INSERT INTO harness_shared.harness_plans (workspace_id, harness_slug, plan_slug, status)
+                 VALUES ('default', 'papercup', 'ei-19409397-active-null-op', 'active')`;
+    const reserved = await wi.createWorkItem({
+      kind: 'feature', title: 'lifecycle-active lane feature', harness: 'papercup', createdBy: 'agA',
+      payload: { plan_item: { plan_slug: 'ei-19409397-active-null-op', item_id: 'P-1' } },
+    });
+
+    expect(await wi.claimNextWorkItem({ harness: 'papercup', assignee: 'bee-active' })).toBeNull();
+    const list = await wi.listWorkItems({ harness: 'papercup', kind: 'feature', admissibleOnly: true });
+    expect(list.some((w) => w.id === reserved.id)).toBe(false);
+  });
+
+  it('does NOT reserve an item whose plan slug is only running in ANOTHER workspace (tenant scope)', async () => {
+    // Same slug, two tenants: running elsewhere, absent here. Before the workspace predicate the
+    // unscoped EXISTS matched the foreign row and starved a lane that has no local plan at all.
+    await db.sql`INSERT INTO harness_shared.harness_plans (workspace_id, harness_slug, plan_slug, status, op_status)
+                 VALUES ('other-ws', 'papercup', 'ei-19409397-cross-tenant', 'ready', 'started')`;
+    const local = await wi.createWorkItem({
+      kind: 'feature', title: 'cross-tenant lane feature', harness: 'papercup', createdBy: 'agA',
+      payload: { plan_item: { plan_slug: 'ei-19409397-cross-tenant', item_id: 'P-1' } },
+    });
+
+    const list = await wi.listWorkItems({ harness: 'papercup', kind: 'feature', admissibleOnly: true });
+    expect(list.some((w) => w.id === local.id)).toBe(true);
+    expect((await wi.claimNextWorkItem({ harness: 'papercup', assignee: 'bee-tenant' }))?.id).toBe(local.id);
   });
 });
 

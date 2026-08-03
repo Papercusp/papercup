@@ -3417,12 +3417,21 @@ export function lastIssuesClaimableFlagReadError(): string | null {
  * claim→refuse→re-serve CHURN the owner flagged (WI-2118 was served to 3 different members in
  * minutes). The floor is the durable fix: a reserved-lane item is never offered to self-select at all.
  *
- * SOUND + narrow: it fires ONLY when (a) the linked plan's status is `active` (a plan under execution
- * reserves its items), or (b) a non-lapsed `plan_item_claims` lease is held by a DIFFERENT owner. A
- * plan that is draft/ready/shipped/superseded, or a lane whose lease has lapsed with no active plan,
- * is NOT excluded — those items drain normally (no starvation of genuinely-free backlog). A member
- * can still claim a reserved item DIRECTLY by id (the named-claim floor bypass) when it legitimately
- * owns the lane.
+ * SOUND + narrow: it fires ONLY when (a) the linked plan is UNDER EXECUTION — operationally
+ * `op_status IN ('started','paused')`, or lifecycle `status='active'` — or (b) a non-lapsed
+ * `plan_item_claims` lease is held by a DIFFERENT owner. A plan that was never started and is not
+ * lifecycle-active, or a lane whose lease has lapsed with no such plan, is NOT excluded — those
+ * items drain normally (no starvation of genuinely-free backlog). A member can still claim a
+ * reserved item DIRECTLY by id (the named-claim floor bypass) when it legitimately owns the lane.
+ *
+ * ⚠ "Under execution" is the OPERATIONAL axis (`op_status`) FIRST — see the inline comment on the
+ * predicate. This floor read the lifecycle `status` alone until EI-19409397800537963, which made it
+ * miss ~87% of genuinely-running plans (`plans:start` writes op_status and leaves `status` at
+ * 'ready'), miss `paused` entirely (breaking plans:pause's own "no new features are picked"
+ * contract on the scheduler path), and match plan rows in OTHER workspaces. If you are adding a
+ * third execution signal, add it HERE — the orchestrator frontier
+ * (`dbos/orchestrator-loop.ts`) and this floor are the two dispatchers that must agree on what
+ * "running" means, and they silently disagreed for as long as this read the wrong column.
  *
  * WI-5343: `payloadCol` selects aliased (`wi.payload`, issue-family, the default — every
  * pre-existing call site runs in a `FROM … work_items wi` context) vs unaliased (`payload`,
@@ -3449,16 +3458,65 @@ export function reservedPlanLaneExclusionSql(
   // `'{}'::jsonb ? 'plan_item'` = FALSE ⇒ NOT(FALSE AND …) = TRUE ⇒ the row is INCLUDED
   // (never excluded). A bare `NULL ? 'plan_item'` would yield NULL and wrongly drop the row.
   const col = sql.unsafe(payloadCol);
+  // EI-19409397800537963: the tenant scope for the two subqueries below. Both
+  // `harness_plans` and `plan_item_claims` are keyed on (workspace_id, harness_slug,
+  // plan_slug[, item_id]) and BOTH subqueries used to match on `plan_slug` ALONE — so a
+  // slug that exists in another workspace could satisfy (or fail) the predicate for an
+  // item that has nothing to do with it. Measured 2026-08-03: 7 plan slugs each exist in
+  // 3 different workspaces. `(workspace_id, plan_slug)` IS unique (0 dupes over the whole
+  // table), so scoping on the workspace alone is exact — and it deliberately does NOT
+  // also key on harness_slug, because the `plan_item` back-pointer's OWN harness_slug has
+  // drifted from the plan row's (migration 656 canonicalized plan harness slugs without
+  // rewriting the back-pointers; e.g. WI-5751 carries 'oddsmith' for a plan row now at
+  // 'oddsmith-hive'), so keying on it would silently un-reserve real lanes.
+  //
+  // The column is correlated, not a parameter, so every caller is scoped without a
+  // signature change: `payloadCol` already encodes which relation this fragment is
+  // composed into — 'wi.payload' ⇒ `FROM harness_shared.work_items wi`, 'payload' ⇒
+  // `FROM harness_shared.harness_features_consolidated` (verified at all 8 call sites) —
+  // the same correlated-reference shape claimFloorsWhereSql's readiness anti-join uses.
+  const wsCol = sql.unsafe(
+    payloadCol === 'wi.payload' ? 'wi.workspace_id' : 'harness_shared.harness_features_consolidated.workspace_id',
+  );
   return sql`NOT (
     COALESCE(${col}, '{}'::jsonb) ? 'plan_item' AND (
       EXISTS (
         SELECT 1 FROM harness_shared.harness_plans p
-         WHERE p.plan_slug = ${col}->'plan_item'->>'plan_slug'
-           AND p.status = 'active'
+         WHERE p.workspace_id = ${wsCol}
+           AND p.plan_slug = ${col}->'plan_item'->>'plan_slug'
+           -- EI-19409397800537963: "is this plan under execution" is the OPERATIONAL axis
+           -- (op_status, written by plans:start / plans:pause), NOT the lifecycle
+           -- frontmatter status this floor used to read alone. plans:start sets
+           -- op_status='started' and deliberately leaves status untouched (it only READS
+           -- it, to refuse a terminal plan), so a started plan normally sits at
+           -- status='ready' — which this predicate scored as unreserved.
+           --
+           -- Measured on live papercusp 2026-08-03, and the leak was the common case, not
+           -- an edge: of 16 op_status='started' plans only 2 were also status='active', and
+           -- of 83 open plan-bound work-items just 19 were reserved where 51 should be. The
+           -- 31 feature-family items on 12 genuinely-running plans were fully self-selectable
+           -- — exactly the claim→refuse→re-serve churn WI-2118 created this floor to stop
+           -- (WI-6292 was handed to two different agents inside one hour, ~20 min lost each).
+           --
+           -- 'paused' is reserved for the same reason plans:pause exists: its documented
+           -- contract is "no new features are picked until plans:start", and the orchestrator
+           -- frontier (dbos/orchestrator-loop.ts) already honors op_status. Only the SCHEDULER
+           -- self-select path did not, so pausing a plan stopped one dispatcher and left the
+           -- other handing the same work out — owner-stopped work reaching an AUTO agent that
+           -- has every reason to read a scheduler hand-off as in-scope.
+           --
+           -- The status = 'active' leg is RETAINED, not replaced: 199 plans sit at
+           -- status='active' with op_status NULL, and dropping it would newly un-reserve their
+           -- lanes. Union semantics strictly widen reservation, so no lane reserved before this
+           -- change becomes claimable after it. op_status is nullable, but a NULL only makes the
+           -- IN NULL and the row unmatched by EXISTS — i.e. not reserved — which is the intended
+           -- reading for a plan that was never started, not a NULL-poisoned exclusion.
+           AND (p.op_status IN ('started', 'paused') OR p.status = 'active')
       )
       OR EXISTS (
         SELECT 1 FROM harness_shared.plan_item_claims c
-         WHERE c.plan_slug = ${col}->'plan_item'->>'plan_slug'
+         WHERE c.workspace_id = ${wsCol}
+           AND c.plan_slug = ${col}->'plan_item'->>'plan_slug'
            AND c.item_id  = ${col}->'plan_item'->>'item_id'
            AND c.expires_ts > now()
            AND c.owner <> ${assignee}
