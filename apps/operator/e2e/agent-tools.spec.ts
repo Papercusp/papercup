@@ -127,12 +127,25 @@ test.describe('agent-tools catch-all routing', () => {
     expect([401, 500]).toContain(res.status());
   });
 
-  test('harness:list_features (auth-required) returns 401 without bearer', async ({ request }) => {
+  test('harness:list_features (no auth required) succeeds without bearer', async ({ request }) => {
+    // This tool declares `requirePrincipal: false` (a public read, like
+    // docs:outline / flags:list above) — it was never auth-gated, so it
+    // belongs in the unauthenticated-reads category, not "returns 401
+    // without bearer". The prior version of this test sent an undeclared
+    // `harnessSlug` field (the real arg is `slug`); EI-334 made the dispatch
+    // stack correctly reject an undeclared/missing arg with 400 invalid_input
+    // BEFORE reaching the handler, which happened to still satisfy the old
+    // [401, 500] assertion and masked that this test's premise was wrong
+    // (EI-19373923898562595). Exercise the tool for real instead.
     const res = await request.post(`${baseURL}/api/agent-tools/harness/list_features`, {
-      data: { harnessSlug: 'main' },
+      data: { slug: 'papercusp' },
       headers: { 'Content-Type': 'application/json' },
     });
-    expect([401, 500]).toContain(res.status());
+    expect(res.status()).toBe(200);
+    const body = await res.json();
+    const parsed = JSON.parse(body.content?.[0]?.text ?? '{}');
+    expect(parsed).toHaveProperty('features');
+    expect(Array.isArray(parsed.features)).toBe(true);
   });
 
   test('docs:get accepts slug arg', async ({ request }) => {

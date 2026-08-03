@@ -181,10 +181,23 @@ export async function loadCoordPlans(): Promise<Array<Record<string, unknown>>> 
   return (await readAllPlans({}))
     .filter((p) => !p.parsed.isLegacy)
     .map((p) => ({
-      slug: p.parsed.frontmatter.slug ?? p.parsed.slug,
-      title: p.parsed.frontmatter.title ?? p.parsed.slug,
-      status: p.parsed.frontmatter.status ?? 'unknown',
-      updated: p.parsed.frontmatter.updated ?? null,
+      // IDENTITY AND LIFECYCLE COME FROM THE ROW, NEVER THE MARKDOWN (WI-7246).
+      // A scheduled-run snapshot (`<slug>@run-<epochms>`) copies its parent
+      // plan's body verbatim — frontmatter included — so the self-declared
+      // `slug`/`status` of all 50 papercusp snapshots read as the PARENT's.
+      // Trusting them collapsed 51 distinct plans into ONE identity: 51
+      // duplicate React keys, every row fetching the parent's markdown, one
+      // click expanding all 51 at once, and `superseded` rows rendering as
+      // `draft`. `plan_slug` is also the only value that round-trips —
+      // /coord/plans/:slug resolves via readPlanBySlug -> getPlanRow.
+      slug: p.row.planSlug,
+      title: p.parsed.frontmatter.title ?? p.row.planSlug,
+      status: p.row.status ?? p.parsed.frontmatter.status ?? 'unknown',
+      // Same 50 rows diverge here too — a snapshot's frontmatter carries the
+      // PARENT's `updated` date. (`title` deliberately still leads with the
+      // frontmatter: it is display text rather than identity, and its 20
+      // row-vs-markdown divergences are a separate, undiagnosed cause.)
+      updated: p.row.updated ?? p.parsed.frontmatter.updated ?? null,
       now_state: p.parsed.now?.state ?? null,
       now_next: p.parsed.now?.next ?? null,
       item_count: p.parsed.items.length,

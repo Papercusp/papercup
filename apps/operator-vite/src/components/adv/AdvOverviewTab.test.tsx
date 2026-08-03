@@ -54,6 +54,21 @@ let attentionResult: Record<string, unknown> = { data: { groups: [] }, loading: 
 vi.mock('@/app/admin/plans/plans-api', () => ({
   usePlanList: () => planListResult,
   usePlanAttention: () => attentionResult,
+  // Same dedupe-by-id semantics as the real export (plans-api.ts) — mocked
+  // inline rather than importActual so this file stays free of the real
+  // module's other side effects.
+  flattenAttentionItems: (groups: Array<{ items: Array<{ id: string }> }>) => {
+    const seen = new Set<string>();
+    const out: Array<{ id: string }> = [];
+    for (const g of groups) {
+      for (const it of g.items) {
+        if (seen.has(it.id)) continue;
+        seen.add(it.id);
+        out.push(it);
+      }
+    }
+    return out;
+  },
 }));
 
 // Per-query sync mock — the tab subscribes to two distinct LIVE queries
@@ -319,6 +334,31 @@ describe('AdvOverviewTab component', () => {
     const alerts = screen.getByRole('button', { name: 'Open alerts' });
     expect(alerts.textContent).toContain('2');
     expect(alerts.getAttribute('data-has-alerts')).toBe('true');
+  });
+
+  it('dedupes a non-plan-scoped attention item repeated across groups (WI-5337 / EI-19373923898562595)', () => {
+    // A cross-plan item (owner-wall, loop-carry-note) is present in every
+    // group server-side — same shape the live suite reproduced (6 duplicate
+    // React-key console errors). A bare flatMap would render it once per
+    // group; flattenAttentionItems must collapse it to exactly one.
+    const dup = attn({ id: 'owner-wall:loop-carry-note:su-x', tier: 'decision', title: 'Carry note pending' });
+    attentionResult = {
+      data: {
+        groups: [
+          { items: [dup] },
+          { items: [dup] },
+          { items: [dup, attn({ id: 'a1', tier: 'alert', title: 'smoke failed' })] },
+        ],
+      },
+      loading: false,
+      error: null,
+      refresh: vi.fn(),
+    };
+    render(<AdvOverviewTab />);
+    expect(screen.getAllByText('Carry note pending')).toHaveLength(1);
+    // The alert count also reads off the same deduped list — 1 alert, not 3.
+    const alerts = screen.getByRole('button', { name: 'Open alerts' });
+    expect(alerts.textContent).toContain('1');
   });
 
   it('renders running roster agents (advRoster.list, server liveness) and coord-stream activity', async () => {

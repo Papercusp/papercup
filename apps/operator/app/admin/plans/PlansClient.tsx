@@ -60,6 +60,7 @@ import {
   usePlanItems,
   usePlanAttention,
   usePlanSearch,
+  flattenAttentionItems,
   bucketOf,
   PLAN_BUCKETS,
   ATTENTION_TIERS,
@@ -412,8 +413,11 @@ export default function PlansClient() {
     return dedup;
   }, [itemsNeedsHuman.data, itemsActionable.data, itemsBlocked.data]);
 
+  // flattenAttentionItems dedupes by id first (WI-5337 / EI-19373923898562595):
+  // a non-plan-scoped item appears in multiple groups server-side, so a bare
+  // flatMap would render it once per group.
   const otherItems = useMemo(
-    () => (attention.data?.groups ?? []).flatMap((g) => g.items).filter((i) => i.kind !== 'plan-item'),
+    () => flattenAttentionItems(attention.data?.groups ?? []).filter((i) => i.kind !== 'plan-item'),
     [attention.data],
   );
 

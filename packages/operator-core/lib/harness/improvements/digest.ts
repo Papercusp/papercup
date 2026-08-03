@@ -21,6 +21,7 @@ import {
   DEFAULT_RISK_TIER_POLICY,
 } from './policy';
 import { classifyIdeaType, type IdeaType } from './triage';
+import { clusterByDiagnosis, type DiagnosisClusterReport } from './diagnosis-clusters';
 
 const SEVERITY_WEIGHT: Record<ImprovementSeverity, number> = {
   critical: 40,
@@ -193,6 +194,18 @@ export interface ImprovementDigest {
    * stable signature, so re-worded re-encounters collide. Sorted recurrence desc.
    */
   recurringSignatures: SignatureRecurrence[];
+  /**
+   * Recurring DIAGNOSES (P-005) — distinct filings that share a LESSON rather
+   * than a topic, ranked by independent convergence (distinct authors).
+   *
+   * Deliberately a SEPARATE lane from {@link recurringSignatures}: that one keys
+   * on the title signature, so it can only collide re-encounters worded the same
+   * way. The most-filed agent-confusion class is topically diverse by
+   * construction and is invisible to every topical key the lane owns — measured,
+   * see diagnosis-clusters.ts. These members are NOT duplicates and must never be
+   * merged; the "N different agents hit this" count is the signal.
+   */
+  diagnosisClusters: DiagnosisClusterReport;
   /** One-line summary for a coord broadcast / notification. */
   headline: string;
 }
@@ -611,6 +624,11 @@ export function buildDigest(
       ? null
       : { consideredCount: returned, corpusTotal: total, windowed };
 
+  // P-005: a LINEAR pass, so unlike the O(n²) dedup leg it never degrades and is
+  // always run over everything the caller loaded.
+  const diagnosisClusters = clusterByDiagnosis(candidates);
+
+  const topDiagnosis = diagnosisClusters.clusters[0];
   const headline =
     `papercusp-improvement digest: ${returned} of ${total} loaded${windowed ? ' (windowed)' : ''} (${open} open) — ` +
     `${autoEligible.length} auto-eligible, ${humanQueue.length} need a human` +
@@ -618,7 +636,13 @@ export function buildDigest(
     (windowed && likelyDuplicates && likelyDuplicates.length === 0
       ? ` (dedup scoped to the ${returned}-item window — pass a higher \`limit\` to check the rest of the ${total}-item corpus)`
       : '') +
-    (recurringSignatures.length ? `, ${recurringSignatures.length} recurring signature(s)` : '');
+    (recurringSignatures.length ? `, ${recurringSignatures.length} recurring signature(s)` : '') +
+    // Surfaced in the headline on purpose: this class went unaddressed while
+    // narrower ones shipped, and a lane nobody reads is why. Lead with the axis
+    // that makes it rankable — how many DIFFERENT agents hit it.
+    (topDiagnosis
+      ? `, top diagnosis "${topDiagnosis.shape}" filed ${topDiagnosis.rows}× by ${topDiagnosis.distinctAuthors} different agents`
+      : '');
 
   return {
     generatedAt,
@@ -634,6 +658,7 @@ export function buildDigest(
     likelyDuplicates,
     likelyDuplicatesScope,
     recurringSignatures,
+    diagnosisClusters,
     headline,
   };
 }
