@@ -519,9 +519,11 @@ describe('parseTransformFailure (EI-19462803905923939)', () => {
     const coloured =
       '\x1b[31mError: Transform failed with 1 error:\x1b[39m\n' +
       '\x1b[2m/tmp/x/dep.ts\x1b[22m:4:1: ERROR: Unexpected "*"\n';
-    // Fixture-integrity guard: the escape codes above are literal, invisible bytes that do NOT
-    // survive a careless copy-paste — without this, a future edit could leave the test passing for
-    // nothing (the bracket text alone still parses fine).
+    // Fixture-integrity guard: the escapes above must EVALUATE to real ESC bytes. Written as
+    // '\x1b' rather than raw bytes so the source stays greppable/diffable (lint:no-control-bytes),
+    // but that makes the fixture one stray backslash away from being inert text — '\\x1b' still
+    // reads fine and still parses fine, leaving the test passing for nothing. This assertion is
+    // what catches that; it has already caught it once.
     expect(coloured).toContain(`${String.fromCharCode(27)}[`);
     const locations = parseTransformFailure(coloured);
     expect(locations).toHaveLength(1);
