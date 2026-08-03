@@ -434,7 +434,24 @@ describe('AgentOrders', () => {
       // one 40-row section still pushes every other section off the screen, and
       // the original complaint survives the toggle.
       const css = readFileSync(join(__dirname, '..', 'AgentOrders.css'), 'utf8');
-      const rule = css.split('}').find((b) => b.includes('.pc-orders__sec {'));
+      /* Match the rule whose SELECTOR LIST contains exactly this selector, not
+         the first chunk that happens to contain the string.
+         `.includes('.pc-orders__h {')` is satisfied by
+         `.pc-orders__sec--mission > .pc-orders__h {` — which appears EARLIER in
+         the file, so `find` returned the mission override and the assertions
+         then ran against a rule that legitimately has no `position: sticky`.
+         The test failed while the thing it guards was perfectly intact.
+         (Same defect class as the descendant-selector bug in §⑦'s control-height
+         check, which measured a Combobox's invisible inner input and reported a
+         0.0 spread it had never actually looked at. A loose selector does not
+         fail loudly; it silently answers about something else.) */
+      const ruleFor = (selector: string) =>
+        css
+          .split('}')
+          .find((b) =>
+            (b.split('{')[0] ?? '').split(',').some((s) => s.trim().split('\n').pop()?.trim() === selector),
+          );
+      const rule = ruleFor('.pc-orders__sec');
       expect(rule).toMatch(/max-height:\s*\d/);
       expect(rule).toMatch(/overflow-y:\s*auto/);
       // `flex: none` is PART OF the bound, not a tidy-up: the rail is a flex
@@ -446,8 +463,14 @@ describe('AgentOrders', () => {
       expect(rule).toMatch(/flex:\s*none/);
       // The cap stays put while the body scrolls under it — a section you have
       // scrolled into is otherwise a list with no title.
-      const cap = css.split('}').find((b) => b.includes('.pc-orders__h {'));
+      const cap = ruleFor('.pc-orders__h');
       expect(cap).toMatch(/position:\s*sticky/);
+      /* The cap's hairline (P-005): once the card took C3's lighter fill, the
+         plate's separation from it fell 1.99:1 -> 1.62:1. It is repaid by a
+         border rather than by brightening the plate, because "less bright" is
+         an owner ask (P-007/D-003) — so dropping this line would silently push
+         the repair back onto luminance, which is the one place it may not go. */
+      expect(cap).toMatch(/border-bottom:\s*1px solid var\(--pc-orders-edge\)/);
     });
   });
 
