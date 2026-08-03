@@ -517,8 +517,8 @@ describe('parseTransformFailure (EI-19462803905923939)', () => {
     // A sibling detector in this same file matched only clean text and so never fired once on real
     // vitest output. This is the calibration case: without the ANSI strip it returns [].
     const coloured =
-      '[31mError: Transform failed with 1 error:[39m\n' +
-      '[2m/tmp/x/dep.ts[22m:4:1: ERROR: Unexpected "*"\n';
+      '\x1b[31mError: Transform failed with 1 error:\x1b[39m\n' +
+      '\x1b[2m/tmp/x/dep.ts\x1b[22m:4:1: ERROR: Unexpected "*"\n';
     // Fixture-integrity guard: the escape codes above are literal, invisible bytes that do NOT
     // survive a careless copy-paste — without this, a future edit could leave the test passing for
     // nothing (the bracket text alone still parses fine).
