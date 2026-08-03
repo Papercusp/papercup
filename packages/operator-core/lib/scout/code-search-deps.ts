@@ -48,6 +48,8 @@ export interface GitGrepOptions {
   timeoutMs?: number;
   /** Max stdout bytes before the runner aborts (default 8 MiB). */
   maxBuffer?: number;
+  /** Extra non-evidence path patterns, on top of `NON_EVIDENCE_PATTERNS`. */
+  extraNonEvidencePatterns?: RegExp[];
   /** Override the process runner (tests). */
   exec?: ExecRunner;
   /** Optional semantic leg, passed straight through to the probe. */
@@ -62,6 +64,47 @@ const DEFAULTS = {
 
 /** Exit codes above this are real failures; 1 is an honest "no matches". */
 const GIT_GREP_NO_MATCH = 1;
+
+/**
+ * Paths whose contents are NOT evidence that a capability was implemented.
+ *
+ * Every entry was earned by a false positive on the real backlog, not guessed:
+ *
+ *  - **the screening module's own files** — the worst one, and self-inflicted.
+ *    Documenting an idea id as an EXAMPLE inside this module makes the module
+ *    report that idea as already-implemented. Measured: EI-7650 and EI-7652 were
+ *    recommended DROP when the only two files citing them were
+ *    `idea-cluster-screen.ts` and its test, written minutes earlier to document
+ *    those very ids. A screen that manufactures its own evidence is worse than
+ *    no screen, because the false positives look exactly like the true ones.
+ *  - **agent memory dumps** (`.papercusp/memory/raw.md`) — WI-2497's only hit.
+ *  - **scratchpad reports** — WI-2890's only hit was a month-old audit writeup.
+ *  - **generated docs** (`public/internal/docs/**`, `llms-full.txt`) — one source
+ *    doc fans out into several rendered copies, inflating file counts too.
+ *  - **prose generally** (.md/.mdx/.html/.txt) — an idea DISCUSSED in a doc is
+ *    not an idea BUILT. This is the distinction the whole leg turns on.
+ */
+export const NON_EVIDENCE_PATTERNS: RegExp[] = [
+  /(^|\/)scratchpad\//,
+  /(^|\/)\.papercusp\//,
+  /(^|\/)node_modules\//,
+  /(^|\/)docs?\//,
+  /\/public\/internal\//,
+  /\.(md|mdx|html|txt|json|lock|snap)$/i,
+  // This module screens ideas; its own citations of an idea id are examples,
+  // never implementations.
+  /(^|\/)packages\/operator-core\/lib\/scout\/(code-existence-probe|idea-cluster-screen|code-search-deps)\.(test\.)?ts$/,
+];
+
+/**
+ * Is this path admissible as evidence that something was BUILT?
+ *
+ * Exported and pure so the exclusion set is testable and arguable on its own,
+ * rather than buried in a grep pipeline.
+ */
+export function isEvidencePath(path: string, extra: RegExp[] = []): boolean {
+  return ![...NON_EVIDENCE_PATTERNS, ...extra].some((re) => re.test(path));
+}
 
 const defaultExec: ExecRunner = (file, args, opts) =>
   new Promise((resolve, reject) => {
@@ -116,6 +159,7 @@ export async function gitGrepFiles(term: string, opts: GitGrepOptions): Promise<
     .split('\n')
     .map((l) => l.trim())
     .filter((l) => l.length > 0)
+    .filter((p) => isEvidencePath(p, opts.extraNonEvidencePatterns))
     .slice(0, maxFiles);
 }
 

@@ -118,20 +118,32 @@ function isTransportError(r: unknown): r is { __transportError: string } {
   return !!r && typeof r === 'object' && '__transportError' in r;
 }
 
+export interface HiveHolderFound {
+  readonly kind: 'holder';
+  readonly sibling: SiblingOperator;
+}
+export type FindHiveHolderOutcome = HiveHolderFound | LiveHeadSnapshotNoHolder;
+
 /**
- * Find the operator process holding `(workspaceId, hive)` and have it append a fresh
- * head snapshot. NEVER throws: every failure is a typed outcome, because the caller
- * (a release cut) must be able to degrade deliberately rather than die mid-cut.
+ * Which operator-shaped process on this box has `(workspaceId, hive)` BOOTED?
+ *
+ * Cheap and side-effect-free by construction (`probeOnly`), which is what lets the
+ * release cut ask this question BEFORE it mutates anything. That ordering is not a
+ * micro-optimisation: `backfillLocalState` INSERTs into `substrate_outbox`, and P-014
+ * established that a cut which cannot possibly produce a sparse seed must refuse
+ * BEFORE leaving rows enqueued for it. Rolling discovery into the expensive request
+ * would have quietly given that invariant back.
+ *
+ * NEVER throws — an unreachable or broken sibling is simply not a holder.
  */
-export async function requestLiveOperatorHeadSnapshot(inp: {
+export async function findLiveOperatorHoldingHive(inp: {
   readonly workspaceId: string;
   readonly hive: string;
   readonly probeTimeoutMs?: number;
-  readonly timeoutMs?: number;
   readonly fetchImpl?: FetchLike;
   readonly listSiblingsImpl?: typeof listSiblingOperators;
   readonly warn?: (msg: string) => void;
-}): Promise<LiveHeadSnapshotOutcome> {
+}): Promise<FindHiveHolderOutcome> {
   const warn = inp.warn ?? ((m: string) => console.warn(m));
   const fetchImpl = (inp.fetchImpl ?? (globalThis.fetch as unknown as FetchLike)) as FetchLike;
   const listSiblings = inp.listSiblingsImpl ?? listSiblingOperators;
@@ -174,7 +186,33 @@ export async function requestLiveOperatorHeadSnapshot(inp: {
         'write lock. Using the lowest port; investigate.',
     );
   }
-  const holder = holders[0]!.sibling;
+  return { kind: 'holder', sibling: holders[0]!.sibling };
+}
+
+/**
+ * Find the operator process holding `(workspaceId, hive)` and have it append a fresh
+ * head snapshot. NEVER throws: every failure is a typed outcome, because the caller
+ * (a release cut) must be able to degrade deliberately rather than die mid-cut.
+ *
+ * Re-runs discovery rather than taking a holder the caller found earlier — on purpose.
+ * The cut probes once up-front (before mutating) and calls this AFTER a drain that can
+ * legitimately run for minutes, and the operator is recycled every ~12 min by the
+ * watchdog. The holder at the end of the drain is the only one whose answer means
+ * anything.
+ */
+export async function requestLiveOperatorHeadSnapshot(inp: {
+  readonly workspaceId: string;
+  readonly hive: string;
+  readonly probeTimeoutMs?: number;
+  readonly timeoutMs?: number;
+  readonly fetchImpl?: FetchLike;
+  readonly listSiblingsImpl?: typeof listSiblingOperators;
+  readonly warn?: (msg: string) => void;
+}): Promise<LiveHeadSnapshotOutcome> {
+  const fetchImpl = (inp.fetchImpl ?? (globalThis.fetch as unknown as FetchLike)) as FetchLike;
+  const found = await findLiveOperatorHoldingHive(inp);
+  if (found.kind !== 'holder') return found;
+  const holder = found.sibling;
 
   const reply = await post(
     fetchImpl,

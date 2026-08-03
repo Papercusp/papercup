@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
-import { createGitGrepDeps, gitGrepFiles, type ExecRunner } from './code-search-deps';
+import {
+  createGitGrepDeps,
+  gitGrepFiles,
+  isEvidencePath,
+  type ExecRunner,
+} from './code-search-deps';
 import { probeCodeExistence } from './code-existence-probe';
 
 function runner(outcome: { stdout?: string; code: number }): ExecRunner {
@@ -54,6 +59,61 @@ describe('gitGrepFiles exit-code semantics', () => {
       exec: runner({ stdout: many, code: 0 }),
     });
     expect(files).toHaveLength(5);
+  });
+});
+
+describe('isEvidencePath — every exclusion is a measured false positive', () => {
+  it('rejects the screening module\'s OWN files (self-contamination)', () => {
+    // The worst mode: documenting an idea id as an example inside this module
+    // made the module report that idea as already-implemented. EI-7650 and
+    // EI-7652 were recommended DROP when these were the only two files citing
+    // them. A screen must not be able to manufacture its own evidence.
+    expect(isEvidencePath('packages/operator-core/lib/scout/idea-cluster-screen.ts')).toBe(false);
+    expect(isEvidencePath('packages/operator-core/lib/scout/idea-cluster-screen.test.ts')).toBe(false);
+    expect(isEvidencePath('packages/operator-core/lib/scout/code-existence-probe.ts')).toBe(false);
+  });
+
+  it('keeps OTHER scout files admissible — the exclusion is surgical, not a blanket', () => {
+    // Blanket-excluding lib/scout would hide genuine Scout implementations.
+    expect(isEvidencePath('packages/operator-core/lib/scout/novelty-precheck.ts')).toBe(true);
+    expect(isEvidencePath('packages/operator-core/lib/scout/success-metrics.ts')).toBe(true);
+  });
+
+  it('rejects agent memory dumps, scratchpads and generated docs', () => {
+    expect(isEvidencePath('.papercusp/memory/raw.md')).toBe(false); // WI-2497's only hit
+    expect(isEvidencePath('scratchpad/lexicon-audit-2026-07-09/REPORT.md')).toBe(false); // WI-2890's
+    expect(isEvidencePath('apps/operator/public/internal/docs/llms-full.txt')).toBe(false);
+  });
+
+  it('rejects prose but keeps real source', () => {
+    // An idea DISCUSSED in a doc is not an idea BUILT — the distinction the
+    // whole self-id leg turns on.
+    expect(isEvidencePath('docs/plans/some-plan.md')).toBe(false);
+    expect(isEvidencePath('packages/operator-core/lib/plan-items/assignments.ts')).toBe(true);
+    expect(isEvidencePath('apps/operator-vite/src/components/adv/Thing.tsx')).toBe(true);
+  });
+
+  it('filters non-evidence paths out of a real search result', async () => {
+    const files = await gitGrepFiles('EI-7650', {
+      cwd: CWD,
+      exec: runner({
+        stdout: [
+          'packages/operator-core/lib/scout/idea-cluster-screen.ts',
+          '.papercusp/memory/raw.md',
+          'packages/operator-core/lib/plan-items/assignments.ts',
+        ].join('\n'),
+        code: 0,
+      }),
+    });
+    expect(files).toEqual(['packages/operator-core/lib/plan-items/assignments.ts']);
+  });
+
+  it('a result that is ENTIRELY non-evidence becomes an empty hit, not a false positive', async () => {
+    const files = await gitGrepFiles('WI-2497', {
+      cwd: CWD,
+      exec: runner({ stdout: '.papercusp/memory/raw.md\n', code: 0 }),
+    });
+    expect(files).toEqual([]);
   });
 });
 

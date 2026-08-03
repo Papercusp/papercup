@@ -209,38 +209,89 @@ describe('emitAwaitedEvent — EI-13705: unconditional per-key fire latch', () =
 });
 
 describe('emitAwaitedEvent — EI-12457: sibling-await cancellation on fire', () => {
-  it('cancelSiblingKeysFor: cancels the just-woken subscribers\' pending awaits on the named opposite-outcome keys', async () => {
-    h.store.fireAwaitsForKey.mockResolvedValueOnce([
-      awaitRow({ id: 1, subscriberId: 'su-a', policy: 'wake' }),
-      awaitRow({ id: 2, subscriberId: 'su-b', policy: 'wake' }),
-    ]);
+  beforeEach(() => {
+    h.store.listActiveAwaitsForKey.mockReset().mockResolvedValue([]);
+    h.store.cancelAwaitsByIds.mockReset().mockResolvedValue(0);
+  });
+
+  it('cancels a woken subscriber\'s sibling await that is BOUND to the candidate that just resolved', async () => {
+    h.store.fireAwaitsForKey.mockResolvedValueOnce([awaitRow({ id: 1, subscriberId: 'su-a', policy: 'wake' })]);
+    h.store.listActiveAwaitsForKey.mockImplementation(async (key: string) =>
+      key === 'green-checkpoint:red:papercusp'
+        ? [awaitRow({ id: 77, subscriberId: 'su-a', payloadFilter: { sha: { startsWith: 'deadbe' } } })]
+        : [],
+    );
     await emitAwaitedEvent({
       key: 'release:green:papercusp',
       payload: { sha: 'deadbeef', pipeline: 'papercusp' },
       cancelSiblingKeysFor: ['green-checkpoint:red', 'green-checkpoint:red:papercusp'],
     });
-    expect(h.store.cancelAwaitsForSubscribersOnKeys).toHaveBeenCalledTimes(1);
-    const [subscribers, keys] = h.store.cancelAwaitsForSubscribersOnKeys.mock.calls[0] as unknown as [string[], string[]];
-    expect(subscribers.sort()).toEqual(['su-a', 'su-b']);
-    expect(keys).toEqual(['green-checkpoint:red', 'green-checkpoint:red:papercusp']);
+    expect(h.store.cancelAwaitsByIds).toHaveBeenCalledWith([77]);
   });
 
-  it('no cancelSiblingKeysFor passed → sibling cancellation is never invoked (today\'s behaviour unchanged)', async () => {
+  // EI-19463163337467894 — THE regression guard. An unbound await means "wake me on the
+  // NEXT verdict, any candidate"; this candidate resolving does not make it unfireable,
+  // because green-checkpoint auto-refires onto tip and can resolve the opposite way
+  // minutes later. Cancelling it silently removes the agent's only push-wake.
+  it('LEAVES ARMED an unbound (payload_filter NULL) sibling await — a standing subscription is not a dead registration', async () => {
+    h.store.fireAwaitsForKey.mockResolvedValueOnce([awaitRow({ id: 1, subscriberId: 'su-a', policy: 'wake' })]);
+    h.store.listActiveAwaitsForKey.mockResolvedValue([
+      awaitRow({ id: 44252, subscriberId: 'su-a', payloadFilter: null }),
+    ]);
+    await emitAwaitedEvent({
+      key: 'green-checkpoint:red:papercusp',
+      payload: { sha: 'deadbeef', pipeline: 'papercusp' },
+      cancelSiblingKeysFor: ['release:green', 'release:green:papercusp'],
+    });
+    expect(h.store.cancelAwaitsByIds).not.toHaveBeenCalled();
+  });
+
+  it('leaves a sibling await bound to a DIFFERENT candidate armed', async () => {
+    h.store.fireAwaitsForKey.mockResolvedValueOnce([awaitRow({ id: 1, subscriberId: 'su-a', policy: 'wake' })]);
+    h.store.listActiveAwaitsForKey.mockResolvedValue([
+      awaitRow({ id: 9, subscriberId: 'su-a', payloadFilter: { sha: { startsWith: 'cafe00' } } }),
+    ]);
+    await emitAwaitedEvent({
+      key: 'green-checkpoint:red:papercusp',
+      payload: { sha: 'deadbeef', pipeline: 'papercusp' },
+      cancelSiblingKeysFor: ['release:green:papercusp'],
+    });
+    expect(h.store.cancelAwaitsByIds).not.toHaveBeenCalled();
+  });
+
+  it('never touches a PEER\'s sibling await (only subscribers this emit actually woke)', async () => {
+    h.store.fireAwaitsForKey.mockResolvedValueOnce([awaitRow({ id: 1, subscriberId: 'su-a', policy: 'wake' })]);
+    h.store.listActiveAwaitsForKey.mockResolvedValue([
+      awaitRow({ id: 8, subscriberId: 'su-PEER', payloadFilter: { sha: { startsWith: 'deadbe' } } }),
+    ]);
+    await emitAwaitedEvent({
+      key: 'green-checkpoint:red:papercusp',
+      payload: { sha: 'deadbeef', pipeline: 'papercusp' },
+      cancelSiblingKeysFor: ['release:green:papercusp'],
+    });
+    expect(h.store.cancelAwaitsByIds).not.toHaveBeenCalled();
+  });
+
+  it('no cancelSiblingKeysFor passed → sibling cancellation is never invoked', async () => {
     h.store.fireAwaitsForKey.mockResolvedValueOnce([awaitRow({ id: 1, subscriberId: 'su-a', policy: 'wake' })]);
     await emitAwaitedEvent({ key: 'k' });
-    expect(h.store.cancelAwaitsForSubscribersOnKeys).not.toHaveBeenCalled();
+    expect(h.store.listActiveAwaitsForKey).not.toHaveBeenCalled();
+    expect(h.store.cancelAwaitsByIds).not.toHaveBeenCalled();
   });
 
-  it('cancelSiblingKeysFor passed but nobody was woken → no cancellation call (nothing to retire)', async () => {
+  it('cancelSiblingKeysFor passed but nobody was woken → nothing to retire', async () => {
     h.store.fireAwaitsForKey.mockResolvedValueOnce([]);
     await emitAwaitedEvent({ key: 'green-checkpoint:red:papercusp', cancelSiblingKeysFor: ['release:green'] });
-    expect(h.store.cancelAwaitsForSubscribersOnKeys).not.toHaveBeenCalled();
+    expect(h.store.cancelAwaitsByIds).not.toHaveBeenCalled();
   });
 
   it('a sibling-cancellation failure never breaks the emit (fail-soft)', async () => {
     h.store.fireAwaitsForKey.mockResolvedValueOnce([awaitRow({ id: 1, subscriberId: 'su-a', policy: 'wake' })]);
-    h.store.cancelAwaitsForSubscribersOnKeys.mockRejectedValueOnce(new Error('db down'));
-    const r = await emitAwaitedEvent({ key: 'k', cancelSiblingKeysFor: ['k-red'] });
+    h.store.listActiveAwaitsForKey.mockResolvedValue([
+      awaitRow({ id: 3, subscriberId: 'su-a', payloadFilter: { sha: { startsWith: 'dead' } } }),
+    ]);
+    h.store.cancelAwaitsByIds.mockRejectedValueOnce(new Error('db down'));
+    const r = await emitAwaitedEvent({ key: 'k', payload: { sha: 'deadbeef' }, cancelSiblingKeysFor: ['k-red'] });
     expect(r.ok).toBe(true);
     expect(r.woken).toBe(1);
   });

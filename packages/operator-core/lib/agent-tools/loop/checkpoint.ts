@@ -191,8 +191,8 @@ export default defineTool({
         .optional()
         .describe(
           'Open WALLS (owner-gated commitments) as rows — rendered into EVERY wake + carry brief until cleared. ' +
-            'OMITTED ⇒ existing walls CARRY FORWARD (a rewrite or note-clear never drops them); pass the full ' +
-            'current set to change it; [] clears.',
+            'OMITTED ⇒ existing walls CARRY FORWARD (a rewrite or note-clear never drops them); a supplied list ' +
+            'REPLACES, so pass the full current set (dropped ones come back as `wallsDropped`); [] clears.',
         ),
       checks: z
         .preprocess(
@@ -254,7 +254,8 @@ export default defineTool({
             'of walls; renders a ## Checks section every wake). `verified` is a STRING (evidence, ≤300 chars), never ' +
             'a boolean — a claim OMITTING `verified` renders PREDICTED, a successor must run its recheck before ' +
             'relying on it. Put hash/id/timestamp expectations HERE, never in Left prose. Same carry-forward ' +
-            'semantics as walls: OMITTED ⇒ carried; [] clears.',
+            'semantics as walls: OMITTED ⇒ carried; a supplied list REPLACES, so re-send the FULL set you want ' +
+            'kept (dropped claims come back as `checksDropped`); [] clears.',
         ),
       ownerId: z
         .string()
@@ -457,7 +458,7 @@ export default defineTool({
 
     // Unreachable today (this tool passes no `guard`, and only a blocked guard skips
     // the transform) — but a missing capture must never silently read as "no rows".
-    const { walls, checks, narrativeBody } =
+    const { walls, checks, narrativeBody, droppedWalls, droppedChecks } =
       captured.merged ??
       mergeCarryRows({
         priorNote: null,
@@ -675,6 +676,39 @@ export default defineTool({
             contentHash,
             walls: walls.length,
             checks: checks.length,
+            /**
+             * EI-19463731740128181: a supplied list REPLACES, so carried rows the caller
+             * left out are GONE. The reply used to carry only these post-merge COUNTS —
+             * which reveal a loss ONLY to a caller who recorded the prior count first, so
+             * in practice the loss was silent behind `ok: true`. Adding one row to a
+             * carried set is the most natural use of the parameter (and exactly what the
+             * `checksLint` advisory below tells you to do), which is what made this bite.
+             * Absent entirely when nothing was lost, so the common result shape is
+             * unchanged. Claims are truncated: they identify WHICH row went, they are not
+             * a restore payload. Mirrors work_items:checkpoint's `checksDropped`.
+             */
+            ...(droppedChecks.length
+              ? {
+                  checksDropped: droppedChecks.map((c) => (c.length > 300 ? `${c.slice(0, 300)}…` : c)),
+                  checksDroppedNote:
+                    `a supplied \`checks\` list REPLACES the carried set — ${droppedChecks.length} carried ` +
+                    `claim(s) were not in this write and are now gone. Re-send the FULL set you want carried ` +
+                    `(a re-sent claim inherits its prior recheck/verified), or pass no \`checks\` at all to leave ` +
+                    `the carried rows untouched.`,
+                }
+              : {}),
+            /** Same contract for WALLS — and a dropped wall is worse than a dropped check:
+             *  it is an owner-gated commitment, so losing one silently un-blocks work the
+             *  owner never released. */
+            ...(droppedWalls.length
+              ? {
+                  wallsDropped: droppedWalls.map((c) => (c.length > 300 ? `${c.slice(0, 300)}…` : c)),
+                  wallsDroppedNote:
+                    `a supplied \`walls\` list REPLACES the carried set — ${droppedWalls.length} carried ` +
+                    `owner-gated commitment(s) were not in this write and are now gone. Re-send the FULL set, ` +
+                    `or pass no \`walls\` at all to leave the carried rows untouched.`,
+                }
+              : {}),
             /** WI-7264: fields trimmed to their soft cap so the write could SUCCEED instead
              *  of the whole note being rejected over one long field. Omitted when nothing
              *  was trimmed. Same never-silently-degrade contract as `rescued` below: the

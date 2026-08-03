@@ -76,6 +76,7 @@
     "scripts/next-migration.mjs",
     "scripts/check-typeless-reexport-trap.mjs",
     "scripts/check-full-replacement-mocks.mjs",
-    "packages/operator-core/lib/inference-gateway/watchdog.mjs"
+    "packages/operator-core/lib/inference-gateway/watchdog.mjs",
+    "apps/operator/scripts/hooks/cc/posttooluse-migration-forward-compat-nudge.mjs"
   ]
 }

@@ -277,7 +277,7 @@ describe('recallCorpusContext — degradation (never throws, never blocks a turn
    * leg stalls until its bound and hands back a null block, failing here.
    */
   it('never awaits embedder acquisition — a never-resolving acquire costs the leg nothing', async () => {
-    buildQueryEmbedder.mockReturnValue(new Promise(() => {}) as unknown); // never settles
+    buildQueryEmbedder.mockReturnValue(new Promise<unknown>(() => {})); // never settles
     runHybridSearch.mockResolvedValue({ ...ok(), embedderAvailable: false });
     const t0 = Date.now();
     const res = await recallCorpusContext(base);

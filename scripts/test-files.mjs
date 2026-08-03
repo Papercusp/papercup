@@ -330,6 +330,95 @@ export function warnIfInstallInFlight(label) {
 }
 
 /**
+ * EI-19462803905923939 — a transform/parse failure ANYWHERE in a workspace's import graph makes
+ * `vitest list` collect zero test files and exit non-zero, so the zero-match guard below fires and
+ * the terminal line reads `TEST_FILE_ROUTE_ERROR ... requested=1 matched=0`. That is a statement
+ * about ROUTING and about the file the caller named — and both halves are wrong: the router worked
+ * perfectly and the named file was fine.
+ *
+ * Measured 2026-08-03: a peer mid-edit on this shared tree left `libs/generic/search/src/hybrid.ts`
+ * in a broken intermediate state (a `*​/` closed a JSDoc block and the next line continued with
+ * `*`). `npm run lint:tool-prompts` reported `unmatched lib/__tests__/tools-md-sync.test.ts` and
+ * refused; the real cause sat ~20 lines earlier, above the `| tail -N` cut that CLAUDE.md's own
+ * idioms prescribe throughout. The wrong conclusions that misattribution invites are both
+ * expensive: "the router is broken / my file moved" (go debug this script) or "my change broke the
+ * import graph" (go revert or bisect your own correct work).
+ *
+ * This changes ONLY the attribution: the zero-match refusal keeps its semantics (non-zero exit, no
+ * false green, `TEST_FILE_RESULT` still absent). Reproduced against the real vitest+esbuild for
+ * BOTH shapes — a broken file the caller NAMED and a broken file only reachable through the import
+ * graph — whose output is byte-identical apart from the path. That is precisely why the culprit is
+ * compared against the requested set instead of being assumed external: telling a caller whose own
+ * file has a syntax error that "your file is fine" would just swap one confident false statement
+ * for another.
+ *
+ * @param {string} output combined stdout+stderr of a `vitest list` invocation
+ * @returns {{ file: string, line: number, col: number, message: string }[]} empty when none
+ */
+export function parseTransformFailure(output) {
+  // Strip ANSI FIRST — same lesson as EI-18819483316574031, where a sibling detector matched only
+  // on clean text and therefore never fired once on real (coloured) vitest output.
+  const plain = stripVitestAnsi(output ?? '');
+  if (!/Transform failed with \d+ error/.test(plain)) return [];
+  const locations = [];
+  const seen = new Set();
+  // esbuild prints `<path>:<line>:<col>: ERROR: <message>`. Its sibling `File: <path>:<line>:<col>`
+  // line carries no `ERROR:` and is deliberately NOT matched — it would double-count every entry.
+  const re = /^\s*(\S[^\n]*?):(\d+):(\d+):\s*ERROR:\s*(.+?)\s*$/gm;
+  let match;
+  while ((match = re.exec(plain)) !== null) {
+    const key = `${match[1]}:${match[2]}:${match[3]}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    locations.push({
+      file: match[1],
+      line: Number(match[2]),
+      col: Number(match[3]),
+      message: match[4],
+    });
+  }
+  return locations;
+}
+
+/**
+ * Build the honest terminal marker for a zero-match run whose real cause was a transform failure.
+ *
+ * Isolated from I/O so the ATTRIBUTION — the part that can be wrong in a costly way — is unit
+ * testable. esbuild prints the culprit path relative to the vite root when it is inside it and
+ * absolute when it is not, so both forms are resolved against the group cwd before comparison.
+ *
+ * @returns {string | null} null when no transform failure is present (caller keeps today's output)
+ */
+export function transformFailureMarker({ locations, routes, cwd, requested, matched }) {
+  if (!locations || locations.length === 0) return null;
+  const requestedAbs = new Set((routes ?? []).map((route) => route.absolute));
+  const named = [];
+  const external = [];
+  for (const loc of locations) {
+    const abs = isAbsolute(loc.file) ? loc.file : resolve(cwd, loc.file);
+    (requestedAbs.has(abs) ? named : external).push({ ...loc, abs });
+  }
+  const fmt = (loc) => `${relative(REPO_ROOT, loc.abs) || loc.abs}:${loc.line}:${loc.col}`;
+  const head =
+    `TEST_FILE_TRANSFORM_ERROR requested=${requested} matched=${matched} cause=transform ` +
+    `culprit=${[...named, ...external].map(fmt).join(',')}`;
+  if (named.length > 0) {
+    return (
+      `${head}\n  A file you NAMED failed to PARSE (${named.map(fmt).join(', ')}) — vitest could ` +
+      'not collect it, which is why matched=0 above. That is a real syntax error in your own ' +
+      'file: NOT a routing problem, and NOT a peer mid-edit. Fix the parse error printed above.'
+    );
+  }
+  return (
+    `${head}\n  The file(s) you named are FINE — a module in their import graph failed to PARSE, ` +
+    'so vitest collected zero test files and the zero-match guard fired. This is NOT a routing ' +
+    'problem and NOT a fault in the file you named.\n  On this shared tree that is usually a PEER ' +
+    'mid-edit (EI-19462803905923939): re-run in a minute before investigating, and check ' +
+    '`git status` on the module named above.'
+  );
+}
+
+/**
  * EI-19425177453558152 — `-t <pattern>` matching ZERO tests used to report `status=passed`.
  *
  * `executed` in this router counts FILES, not tests, so a run where vitest collected 625 tests
@@ -550,6 +639,9 @@ export function main(argv = process.argv.slice(2)) {
   // doc for the full incident). Each iteration always records its outcome and moves on; the final
   // verdict is decided only after every group has had its chance to run.
   const groupResults = [];
+  // EI-19462803905923939: collected per-group so the attribution can be RESTATED after the
+  // aggregate refusal below — see the comment there for why the group-level print is not enough.
+  const transformMarkers = [];
   for (const [groupIndex, group] of groups.entries()) {
     const cwdLabel = relative(REPO_ROOT, group.cwd) || '.';
     // EI-18822211427354845: each group writes its OWN report file when the run spans
@@ -595,6 +687,20 @@ export function main(argv = process.argv.slice(2)) {
       );
       if (looksLikeMidInstallCorruption(listedOutput)) {
         console.error(MID_INSTALL_HINT);
+      }
+      // EI-19462803905923939: a transform failure anywhere in the import graph produces exactly
+      // this zero match, so name the real culprit instead of leaving `matched=0` to be read as a
+      // routing fault or as a defect in the file the caller named.
+      const transformMarker = transformFailureMarker({
+        locations: parseTransformFailure(listedOutput),
+        routes: group.routes,
+        cwd: group.cwd,
+        requested: verdict.requested,
+        matched: verdict.matched,
+      });
+      if (transformMarker) {
+        console.error(transformMarker);
+        transformMarkers.push(transformMarker);
       }
       groupResults.push({
         requested: verdict.requested,
@@ -701,6 +807,11 @@ export function main(argv = process.argv.slice(2)) {
     console.error(
       `TEST_FILE_ROUTE_ERROR requested=${summary.requested} matched=${summary.matched}; refusing a false-green zero/partial-match run`,
     );
+    // EI-19462803905923939: this aggregate line is the LAST thing a `| tail -N` reads — the very
+    // idiom CLAUDE.md prescribes throughout — so the attribution has to be restated HERE. Printing
+    // it only at the group level (where it also belongs, next to the evidence) still leaves the
+    // misleading routing claim as the terminal line, which is the entire defect.
+    for (const marker of transformMarkers) console.error(marker);
     return 1;
   }
 

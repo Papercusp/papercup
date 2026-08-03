@@ -100,6 +100,10 @@ import { resolveHiveEpochCrypto } from '@papercusp/operator-core/lib/sync/hyperb
 import { drainOutboxOnce, DRAIN_PASS_TIMEOUT_MS } from '@papercusp/operator-core/lib/sync/hyperbee/outbox-drain';
 import { openOwnLog, type OwnLog } from '@papercusp/operator-core/lib/sync/hyperbee/peer-log';
 import { produceLogSnapshot } from '@papercusp/operator-core/lib/sync/hyperbee/log-snapshot';
+import {
+  findLiveOperatorHoldingHive,
+  requestLiveOperatorHeadSnapshot,
+} from '@papercusp/operator-core/lib/sync/hyperbee/live-head-snapshot-client';
 import { CURRENT_SCHEMA_VERSION } from '@papercusp/operator-core/lib/sync/hyperbee/schema-version';
 import { loadHiveKeyStatus, type HiveKeyStatus } from '@papercusp/operator-core/lib/identity/hive-keypair';
 import { papercuspPathForWorkspace } from '@papercusp/operator-core/lib/papercusp-root';
@@ -453,6 +457,10 @@ export async function openSourceStoreForCut(inp: {
   readonly refreshImpl?: typeof refreshCorestoreStateForSeed;
   readonly backfillImpl?: typeof backfillLocalState;
   readonly waitImpl?: typeof waitForOperatorDrain;
+  /** P-019 seam — ask the live operator for the head snapshot a no-outage sparse cut needs. */
+  readonly headSnapshotImpl?: typeof requestLiveOperatorHeadSnapshot;
+  /** P-019 seam — the cheap, side-effect-free "who holds this hive?" discovery. */
+  readonly findHolderImpl?: typeof findLiveOperatorHoldingHive;
   readonly warn?: (msg: string) => void;
 }): Promise<{ store: Corestore; sourceWritable: boolean }> {
   const warn = inp.warn ?? ((m: string) => console.warn(m));
@@ -481,34 +489,53 @@ export async function openSourceStoreForCut(inp: {
   // computeSparseFrom → findLatestCompleteSnapshot, which scans back only
   // SNAPSHOT_SCAN_LOOKBACK (= SNAPSHOT_COMPACT_EVERY_OPS × 4 = 4,000) ops from the tail. A
   // fresh head snapshot at the tail is therefore a PRECONDITION of a sparse cut, not an
-  // optimisation. Only the writable/quiesced branch below appends one (via
-  // refreshCorestoreStateForSeed → produceLogSnapshot); the WI-4487 live-operator branch
-  // holds no write lock, and the periodic producer that would otherwise keep a snapshot in
-  // window (SUBSTRATE_LOG_SNAPSHOT) is dark pending the P-008 proof.
+  // optimisation.
   //
   // Unguarded, the cut proceeds, computeSparseFrom returns 0, seed-provider-corestore emits
   // a console.warn, and the "sparse" seed ships the FULL core — how the 2026-07-21 release
   // shipped 461,475 blocks / 1.9 GB labelled sparse, unnoticed for three weeks.
   //
-  // Both disqualifying conditions are knowable from the cheap writability probe above, so
-  // this throws BEFORE backfillLocalState — which INSERTs into substrate_outbox and would
+  // P-019 SOFTENED the `!sourceWritable` leg of this guard. It used to refuse outright on
+  // the WI-4487 read-only path, which made "no outage" and "sparse" mutually exclusive.
+  // That branch now asks the LIVE OPERATOR to append the snapshot on its behalf (below,
+  // after the drain) — so holding the store is no longer disqualifying. What IS
+  // disqualifying is having nobody to ask, and that is settled HERE, by a side-effect-free
+  // `probeOnly` discovery, precisely so the refusal still lands before any mutation.
+  //
+  // Every condition below is therefore knowable without writing anything, and this still
+  // throws BEFORE backfillLocalState — which INSERTs into substrate_outbox and would
   // otherwise leave rows enqueued for a cut that was never going to be usable.
   if (inp.sparse) {
-    const blocked = !sourceWritable
-      ? 'the live operator holds the store, so this cut takes the WI-4487 read-only path and cannot append to the own log'
-      : !inp.workspaceId
-        ? 'no --workspace-id, so no pre-cut refresh (and no head snapshot) can run'
-        : !inp.wantRefresh
-          ? '--skip-corestore-refresh suppressed the refresh that appends the head snapshot'
-          : undefined;
+    let blocked = !inp.workspaceId
+      ? 'no --workspace-id, so no pre-cut refresh (and no head snapshot) can run'
+      : !inp.wantRefresh
+        ? '--skip-corestore-refresh suppressed the refresh that appends the head snapshot'
+        : undefined;
+    if (!blocked && !sourceWritable) {
+      const found = await (inp.findHolderImpl ?? findLiveOperatorHoldingHive)({
+        workspaceId: inp.workspaceId!,
+        hive: inp.hive,
+        warn,
+      });
+      if (found.kind !== 'holder') {
+        blocked =
+          `this box's operator holds the corestore, so only IT can append the snapshot — but no ` +
+          `operator process here reports having booted ${inp.workspaceId}::${inp.hive} (probed ports ` +
+          `${found.probed.length ? found.probed.join(', ') : 'none found'}; answered ` +
+          `${found.answered.length ? found.answered.join(', ') : 'none'})`;
+      }
+    }
     if (blocked) {
       if (store) await store.close().catch(() => {});
       throw new Error(
         `[cut-seed] --sparse requires a fresh head snapshot at the own-log tail, and none can ` +
           `be appended: ${blocked}. Proceeding would silently ship the FULL core ` +
-          `(computeSparseFrom → 0). Remedies: (a) quiesce the operator on this box and re-run, ` +
-          `so the cut opens the store WRITABLE and appends the snapshot itself; or (b) drop ` +
-          `--sparse (PAPERCUSP_SEED_SPARSE=0) to ship a full seed deliberately.`,
+          `(computeSparseFrom → 0). Remedies: (a) re-run without the suppressing flag, or make ` +
+          `sure the operator holding this hive is healthy and serving ` +
+          `/api/internal/substrate/head-snapshot, then retry; (b) quiesce the operator on this box ` +
+          `and re-run, so the cut opens the store WRITABLE and appends the snapshot itself (an ` +
+          `OUTAGE); or (c) drop --sparse (PAPERCUSP_SEED_SPARSE=0) to ship a full seed ` +
+          `deliberately.`,
       );
     }
   }
@@ -549,6 +576,55 @@ export async function openSourceStoreForCut(inp: {
     warn('[cut-seed] --skip-corestore-refresh: snapshotting corestore without refreshing local PG state first.');
   }
 
+  // ── P-019 (D-012): the NO-OUTAGE sparse cut ──────────────────────────────────────
+  // We are on the read-only path and the caller asked for --sparse, so the head
+  // snapshot that sparse REQUIRES cannot be appended by us: the operator holds the
+  // write lock. Ask the operator to append it on our behalf.
+  //
+  // The position of this block is load-bearing in BOTH directions, and neither is
+  // obvious from the code alone:
+  //   • AFTER the refresh/drain above — so the snapshot summarises the state the
+  //     operator just drained. A snapshot taken before the drain covers less than the
+  //     seed ships, which defeats the point of refreshing at all.
+  //   • BEFORE the read-only open below — a `readOnly` Corestore handle is a
+  //     point-in-time view (see the note on that open: a HELD read-only handle sat
+  //     frozen at own-log length 83311 for 45s while a FRESH read-only open of the same
+  //     store read the current length). Requesting the snapshot after opening would
+  //     produce it into a log this cut can no longer see.
+  if (!sourceWritable && inp.sparse) {
+    const outcome = await (inp.headSnapshotImpl ?? requestLiveOperatorHeadSnapshot)({
+      workspaceId: inp.workspaceId!,
+      hive: inp.hive,
+      warn,
+    });
+    if (outcome.kind !== 'produced') {
+      // Refuse rather than degrade. P-014 established this direction and D-012 explains
+      // why: a silently-full "sparse" cut is indistinguishable from a working one until
+      // someone measures the shipped installer, which took three weeks last time.
+      const why =
+        outcome.kind === 'no-holder'
+          ? `no operator process on this box reports having booted it (probed ports ${
+              outcome.probed.length ? outcome.probed.join(', ') : 'none found'
+            }; answered ${outcome.answered.length ? outcome.answered.join(', ') : 'none'})`
+          : `the operator on port ${outcome.port} could not produce it: ${outcome.error}`;
+      throw new Error(
+        `[cut-seed] --sparse needs a fresh head snapshot at the own-log tail. This box's operator ` +
+          `holds the corestore, so only IT can append one — and ${why}. Proceeding would silently ` +
+          `ship the FULL core (computeSparseFrom → 0). Remedies: (a) confirm the operator holding ` +
+          `${inp.workspaceId}::${inp.hive} is healthy and serving /api/internal/substrate/head-snapshot, ` +
+          `then retry; (b) quiesce the operator and re-run, so this cut opens the store WRITABLE and ` +
+          `appends the snapshot itself (an OUTAGE); or (c) drop --sparse (PAPERCUSP_SEED_SPARSE=0) to ` +
+          `ship a full seed deliberately.`,
+      );
+    }
+    warn(
+      `[cut-seed] sparse (no outage): the live operator on port ${outcome.port} (pid ${outcome.pid}` +
+        `${outcome.process ? `, ${outcome.process}` : ''}) appended a fresh head snapshot — ` +
+        `appended=${outcome.appended} coversUpTo=${outcome.coversUpTo} chunks=${outcome.chunkCount} ` +
+        `rows=${outcome.rowCount} in ${outcome.elapsedMs}ms. See WI-4487 + P-019.`,
+    );
+  }
+
   if (!sourceWritable) {
     // NOW open read-only — strictly after any refresh above, so this snapshot CONTAINS
     // the ops the operator just drained. `readOnly` skips the CORESTORE device-file lock
@@ -580,21 +656,6 @@ export async function openSourceStoreForCut(inp: {
           '  • PAPERCUSP_SKIP_SEED_CUT=1 (release-local.sh)  → reuse the existing src-tauri/seed as-is\n' +
           '  • or stop the operator, then re-run (an OUTAGE — not for the shared dev box).\n' +
           `See WI-4487. (underlying error: ${msg})`,
-      );
-    }
-    // --sparse trims the cut to the head-snapshot span, but appending that fresh head
-    // snapshot needs the write lock the operator holds. Without it computeSparseFrom finds
-    // no in-window snapshot and ships FULL history for the core — the seed is still
-    // COMPLETE and CORRECT, just larger. Sparse is a size optimisation, not a correctness
-    // feature, so degrade rather than fail the release; but say so loudly, because
-    // silently shipping a much bigger installer than asked for is its own trap.
-    if (inp.sparse) {
-      warn(
-        '[cut-seed] --sparse cannot trim this cut: appending the fresh head snapshot it needs requires the ' +
-          'write lock the running operator holds. The cut will ship FULL history (correct, just larger). ' +
-          'For a trimmed cut, quiesce the operator — or, once the owner enables the (currently dark, ' +
-          'P-008-gated) SUBSTRATE_LOG_SNAPSHOT producer, the operator maintains head snapshots itself and a ' +
-          'live sparse cut trims with no quiesce. See WI-4487.',
       );
     }
     warn(

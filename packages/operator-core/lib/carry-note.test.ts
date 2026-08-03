@@ -23,6 +23,7 @@ import {
   normalizeCheckEntries,
   lintUncheckedExternalClaims,
   rescueTaggedCarryNoteBlob,
+  mergeCarryRows,
   appendCarryJournal,
   CARRY_JOURNAL_MAX_ENTRIES,
   CARRY_JOURNAL_NOTE_MAX_CHARS,
@@ -463,5 +464,116 @@ describe('rescueTaggedCarryNoteBlob — recovering a tag-serialized structured w
     expect(rendered).toContain('## Next action'); // NB: tag name `next` ≠ heading 'Next action'
     expect(rendered).toContain('- ✓ main is green — re-check: git rev-parse main');
     expect(rendered).not.toContain('</did>');
+  });
+});
+
+/**
+ * EI-19463731740128181 — an explicit `checks`/`walls` list REPLACES the carried set,
+ * and that loss used to be SILENT: the reply carried only a post-merge COUNT, which
+ * reveals a drop only to a caller who recorded the prior count first.
+ *
+ * These cases are a DISCRIMINATING PAIR by construction: the carry-forward path must
+ * report NOTHING dropped while the replace path must name exactly the missing claims.
+ * An implementation that ignores its inputs — returning [] always, or the prior set
+ * always — fails one direction or the other, so neither can pass by accident. The
+ * assertions are on claim CONTENT, not just length, so a constant cannot satisfy them.
+ */
+describe('mergeCarryRows — dropped rows are reported, never silent (EI-19463731740128181)', () => {
+  const check = (n: number) => ({ claim: `claim ${n}`, recheck: `probe ${n}`, verified: `ok ${n}` });
+  const wall = (n: number) => ({ claim: `wall ${n}`, recheck: `probe ${n}` });
+
+  /** A prior note carrying the given rows, built through the same renderer the store uses. */
+  const priorNoteWith = (checks: ReturnType<typeof check>[], walls: ReturnType<typeof wall>[] = []) =>
+    mergeCarryRows({ priorNote: null, baseNote: 'body', checks, walls, hasNoteWrite: true }).note;
+
+  it('names every carried check a supplied list leaves out (the measured 6 -> 1 shape)', () => {
+    const priorNote = priorNoteWith([1, 2, 3, 4, 5, 6].map(check));
+    const merged = mergeCarryRows({
+      priorNote,
+      baseNote: 'body',
+      checks: [{ claim: 'a brand new claim' }],
+      hasNoteWrite: true,
+    });
+    expect(merged.checks).toHaveLength(1);
+    // The whole defect: six verified rows vanished behind an ok:true.
+    expect(merged.droppedChecks).toEqual(['claim 1', 'claim 2', 'claim 3', 'claim 4', 'claim 5', 'claim 6']);
+  });
+
+  it('reports NOTHING dropped on the carry-forward path (omitted preserves every row)', () => {
+    const priorNote = priorNoteWith([1, 2, 3].map(check), [1].map(wall));
+    const merged = mergeCarryRows({ priorNote, baseNote: 'new body', hasNoteWrite: true });
+    expect(merged.checks.map((c) => c.claim)).toEqual(['claim 1', 'claim 2', 'claim 3']);
+    expect(merged.droppedChecks).toEqual([]);
+    expect(merged.droppedWalls).toEqual([]);
+  });
+
+  it('does not report a re-sent claim as dropped, and reports only its omitted siblings', () => {
+    const prior = mergeCarryRows({
+      priorNote: null,
+      baseNote: 'body',
+      checks: [1, 2, 3].map(check),
+      hasNoteWrite: true,
+    });
+    const merged = mergeCarryRows({
+      priorNote: prior.note,
+      baseNote: 'body',
+      // claim 2 is re-sent with NO evidence — it must inherit, not read as dropped.
+      checks: [{ claim: 'claim 2' }],
+      hasNoteWrite: true,
+    });
+    expect(merged.droppedChecks).toEqual(['claim 1', 'claim 3']);
+    expect(merged.checks).toHaveLength(1);
+    // Inherited evidence keeps its ORIGINAL verification stamp — a ✓ observed long ago
+    // must not be re-dated to now just because its row was re-sent (review fold #5).
+    const priorVerified = prior.checks.find((c) => c.claim === 'claim 2')?.verified;
+    expect(priorVerified).toMatch(/^ok 2 @\d{4}-\d{2}-\d{2}T/);
+    expect(merged.checks[0]?.verified).toBe(priorVerified);
+  });
+
+  it('compares on the trimmed key, so whitespace drift is not a phantom drop', () => {
+    const priorNote = priorNoteWith([1].map(check));
+    const merged = mergeCarryRows({
+      priorNote,
+      baseNote: 'body',
+      checks: [{ claim: '  claim 1  ' }],
+      hasNoteWrite: true,
+    });
+    expect(merged.droppedChecks).toEqual([]);
+  });
+
+  it('reports an explicit [] clear too — deliberate, but still visible', () => {
+    const priorNote = priorNoteWith([1, 2].map(check));
+    const merged = mergeCarryRows({ priorNote, baseNote: 'body', checks: [], hasNoteWrite: true });
+    expect(merged.checks).toEqual([]);
+    expect(merged.droppedChecks).toEqual(['claim 1', 'claim 2']);
+  });
+
+  it('reports dropped WALLS — an owner-gated commitment lost silently un-blocks work', () => {
+    const priorNote = priorNoteWith([], [1, 2].map(wall));
+    const merged = mergeCarryRows({
+      priorNote,
+      baseNote: 'body',
+      walls: [wall(2)],
+      hasNoteWrite: true,
+    });
+    expect(merged.walls.map((w) => w.claim)).toEqual(['wall 2']);
+    expect(merged.droppedWalls).toEqual(['wall 1']);
+    // walls and checks are independent axes — one must not report the other's rows.
+    expect(merged.droppedChecks).toEqual([]);
+  });
+
+  it('reports rows lost to the row cap rather than letting the cap drop them silently', () => {
+    const prior = Array.from({ length: CARRY_NOTE_MAX_CHECKS }, (_, i) => check(i + 1));
+    const priorNote = priorNoteWith(prior);
+    // Re-send every carried row PLUS one more: the cap keeps the first N, so the
+    // last carried row falls off the end — and that must not read as a preserved set.
+    const merged = mergeCarryRows({
+      priorNote,
+      baseNote: 'body',
+      checks: [{ claim: 'one row past the cap' }, ...prior],
+      hasNoteWrite: true,
+    });
+    expect(merged.checks).toHaveLength(CARRY_NOTE_MAX_CHECKS);
+    expect(merged.droppedChecks).toEqual([`claim ${CARRY_NOTE_MAX_CHECKS}`]);
   });
 });

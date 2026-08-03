@@ -31,5 +31,6 @@ export function buildAllocationResult({ next, filename, reservedBy, dryRun, cano
     arm_path: string;
     arm_command: string;
     reserved_by: string;
+    forward_compat: string;
     note: string;
 };
