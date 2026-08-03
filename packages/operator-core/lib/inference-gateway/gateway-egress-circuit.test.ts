@@ -128,37 +128,164 @@ test('N consecutive transport failures OPEN the egress circuit (account paused +
   assert.equal(s.egressFailRateByAccount.DEAD, 1, 'egressFailRateByAccount = fails/attempts = 3/3 = 1.0 (dead proxy)');
 });
 
-test('EXTENDED ABSORB (requestAbsorbMs) — keeps retrying past the slot-hold deadline and SUCCEEDS instead of 429ing the caller (2026-06-22)', async () => {
+/**
+ * A per-ACCOUNT caching governor factory — the faithful test double for the gateway's default
+ * `governorForBackend('claude-code', model, undefined, accountId)`, which is likewise keyed by account.
+ *
+ * EI-2648. This exists because `governorFor: () => new RateLimitGovernor(...)` — a factory returning a
+ * NEW instance on every `governorForAccount()` call — silently destroys the property most absorb tests
+ * think they are asserting: an account penalty (`pausedUntil`) written by attempt N is thrown away
+ * before attempt N+1, so no account is ever actually paused, every re-acquire succeeds instantly, and
+ * "waits out a penalty" degrades into "retries and happens to succeed". Prefer this helper for any test
+ * whose subject is pacing, penalties, pauses, or the absorb.
+ *
+ * It also instruments `acquire()` so a test can PROVE the slot was handed back mid-wait rather than held
+ * across it — the actual contract of the extended absorb.
+ */
+function perAccountGovernors(limits: { maxConcurrent: number } = { maxConcurrent: 20 }) {
+  const byAccount = new Map<string, RateLimitGovernor>();
+  const counts = { acquires: 0, releases: 0 };
+  const governorFor = (_model: string, accountId: string): RateLimitGovernor => {
+    let g = byAccount.get(accountId);
+    if (!g) {
+      g = new RateLimitGovernor({ ...limits });
+      const inner = g.acquire.bind(g);
+      g.acquire = async (...args: Parameters<RateLimitGovernor['acquire']>) => {
+        const release = await inner(...args);
+        if (!release) return null;
+        counts.acquires += 1;
+        return () => {
+          counts.releases += 1;
+          release();
+        };
+      };
+      byAccount.set(accountId, g);
+    }
+    return g;
+  };
+  return { governorFor, byAccount, counts };
+}
+
+test('EXTENDED ABSORB (requestAbsorbMs) — RELEASES the slot, WAITS OUT a still-in-force account penalty, re-acquires and SUCCEEDS (EI-2648)', async () => {
+  // EI-2648 — what this test is FOR, and what it used to (not) prove.
+  //
+  // It previously passed `governorFor: () => new RateLimitGovernor(...)`, so every governorForAccount()
+  // call handed back a fresh, un-penalized governor. The retry-after penalty therefore never survived to
+  // the next iteration: the absorb's re-acquire always met a clean governor and returned immediately. The
+  // test asserted only status 200 + calls>=3, both of which a plain recover-on-retry satisfies — so it
+  // passed identically whether or not the absorb's real behaviour (release the slot, WAIT OUT a penalty
+  // that is STILL IN FORCE, re-acquire, retry) worked at all.
+  //
+  // Two changes make it faithful:
+  //  1. a per-ACCOUNT governor cache (see perAccountGovernors), matching the production keying, so a
+  //     penalty PERSISTS for the account that earned it;
+  //  2. BOTH pool accounts get penalized, so there is no healthy sibling to rotate to and the absorb has
+  //     no option but to wait. With the old fresh-per-call factory neither account is ever paused, so
+  //     the elapsed-time and slot-release assertions below are unsatisfiable — they are what pins the fix.
+  //
+  // Timing robustness (the second half of EI-2648: this test flaked once on a cold isolated run). Every
+  // timing assertion here is a LOWER bound on elapsed time, which a slow or loaded process can only make
+  // MORE true — the old flake was the opposite shape (finishing too fast because the absorb never
+  // engaged). The absorb budget is sized 8× the penalty so a cold start cannot exhaust it.
+  const PENALTY_MS = 1000; // retry-after:1 ⇒ a ~1s account pause (retry-after is seconds; 1 is its floor)
+  const ABSORB_MS = 8000; // 8× headroom over PENALTY_MS so a loaded box still comfortably out-waits it
   let calls = 0;
-  // A SHORT transient rate-429 (retry-after:1 ⇒ a ~1s account pause) on the first attempts, then a 200 — i.e.
-  // the account recovers. retry-after:1 matters: the absorb only HOLDS the caller when the throttle pause fits
-  // inside the remaining absorb budget (the re-acquire returns null otherwise). A header-less bare 429 paces the
-  // account BARE_429_FAILOVER_BACKOFF_MS (15s) — which would NOT fit the 5s budget below, so it would (correctly)
-  // shed. So the test sizes the throttle (1s) < the absorb budget (5s) to exercise the absorb-WAITS-then-succeeds
-  // path; production sizes requestAbsorbMs (~minutes) ≫ the throttle for the same reason.
+  const penalizedAccounts: string[] = [];
+  // Observed at fetch time: was the OTHER account still paused when this attempt went out? This is the
+  // direct evidence that a penalty persisted across iterations rather than evaporating with the governor.
+  let sawPersistingPenalty = false;
+  const { governorFor, byAccount, counts } = perAccountGovernors();
+  const fetchImpl = (async (_url: RequestInfo | URL, init?: RequestInit) => {
+    calls++;
+    const id = ((init?.headers as Record<string, string> | undefined)?.authorization ?? '').replace(/^Bearer\s+/i, '');
+    if ([...byAccount.values()].some((g) => g.state.pausedUntil > Date.now())) sawPersistingPenalty = true;
+    // The first attempt on EACH account 429s with a short retry-after, penalizing that account for
+    // ~PENALTY_MS. Once both are penalized there is nowhere left to rotate, so the next attempt can only
+    // proceed after a real wait. Everything after that succeeds.
+    if (calls <= 2) {
+      penalizedAccounts.push(id);
+      return new Response(JSON.stringify({ type: 'error', error: { type: 'rate_limit_error', message: 'slow down' } }), {
+        status: 429,
+        headers: { 'content-type': 'application/json', 'x-should-retry': 'true', 'retry-after': '1' },
+      });
+    }
+    return new Response(JSON.stringify({ ok: true, servedBy: id }), { status: 200, headers: { 'content-type': 'application/json' } });
+  }) as typeof fetch;
+  gw = createInferenceGateway({
+    pool: createFailoverPool([acct('A'), acct('B')]), // 2 accounts → the first 429 ROTATES, the second leaves none healthy
+    fetchImpl,
+    governorFor,
+    selfHeal: { enabled: false },
+    maxQueueWaitMs: 50,
+    internalRetryDeadlineMs: 0, // hit the slot-hold deadline IMMEDIATELY so each 429 triggers the absorb path
+    requestAbsorbMs: ABSORB_MS, // ENABLE extended absorption (off by default)
+  });
+  port = await gw.listen(0);
+  const startedMs = Date.now();
+  const res = await post();
+  const elapsedMs = Date.now() - startedMs;
+
+  assert.equal(res.status, 200, 'absorb-retry held the caller through the transient 429s + returned the eventual 200 — never a shed 429');
+  assert.ok(calls >= 3, `it kept re-acquiring + retrying through the 429s until the 200 (calls=${calls})`);
+
+  // THE ASSERTIONS THE OLD FRESH-GOVERNOR VERSION COULD NOT MAKE:
+  assert.equal(byAccount.size, 2, 'both pool accounts got their own persistent governor (per-account keying, as in production)');
+  assert.deepEqual([...new Set(penalizedAccounts)].sort(), ['A', 'B'], 'the 429s landed on DIFFERENT accounts (the request rotated), so both were penalized');
+  assert.ok(sawPersistingPenalty, 'a penalty written by an earlier attempt was STILL IN FORCE on a later one — i.e. it persisted across the retry instead of dying with a throwaway governor');
+  assert.ok(
+    elapsedMs >= PENALTY_MS * 0.9,
+    `the caller was held for at least the penalty (~${PENALTY_MS}ms) — proof the absorb WAITED the pause out rather than re-acquiring instantly (elapsed=${elapsedMs}ms)`,
+  );
+  assert.ok(
+    counts.releases >= 2,
+    `the slot was RELEASED before each re-acquire rather than held across the wait — the absorb's actual contract (acquires=${counts.acquires}, releases=${counts.releases})`,
+  );
+  assert.ok(counts.acquires >= 3, `and re-acquired each time it retried (acquires=${counts.acquires})`);
+});
+
+test('EXTENDED ABSORB — a FRESH-per-call governor factory cannot hold a penalty (the anti-pattern EI-2648 fixed; pins why the test above uses a per-account cache)', async () => {
+  // Guard against silently drifting back to `governorFor: () => new RateLimitGovernor(...)` in tests whose
+  // subject is penalties/pacing. This asserts the DIFFERENCE directly: with a throwaway governor per call,
+  // no account is ever observed paused, so a test written this way cannot distinguish "the absorb waited a
+  // real penalty out" from "the upstream simply recovered". Documenting it as an executable fact is safer
+  // than a comment — and safer than proving it by temporarily editing source, which on this shared tree
+  // git-sync would commit (EI-19447067535467975).
+  let calls = 0;
+  let everObservedPaused = false;
+  const issued: RateLimitGovernor[] = [];
   const fetchImpl = (async () => {
     calls++;
+    if (issued.some((g) => g.state.pausedUntil > Date.now())) everObservedPaused = true;
     if (calls <= 2) {
       return new Response(JSON.stringify({ type: 'error', error: { type: 'rate_limit_error', message: 'slow down' } }), {
         status: 429,
         headers: { 'content-type': 'application/json', 'x-should-retry': 'true', 'retry-after': '1' },
       });
     }
-    return new Response(JSON.stringify({ ok: true, servedBy: 'OK' }), { status: 200, headers: { 'content-type': 'application/json' } });
+    return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { 'content-type': 'application/json' } });
   }) as typeof fetch;
   gw = createInferenceGateway({
-    pool: createFailoverPool([acct('A'), acct('B')]), // 2 accounts → a 429 ROTATES (proceed=true), then the deadline triggers the absorb
+    pool: createFailoverPool([acct('A'), acct('B')]),
     fetchImpl,
-    governorFor: () => new RateLimitGovernor({ maxConcurrent: 20 }),
+    governorFor: () => {
+      const g = new RateLimitGovernor({ maxConcurrent: 20 }); // the anti-pattern: a NEW governor every call
+      issued.push(g);
+      return g;
+    },
     selfHeal: { enabled: false },
     maxQueueWaitMs: 50,
-    internalRetryDeadlineMs: 0, // hit the slot-hold deadline IMMEDIATELY so each 429 triggers the absorb path
-    requestAbsorbMs: 5000, // ENABLE extended absorption (off by default)
+    internalRetryDeadlineMs: 0,
+    requestAbsorbMs: 8000,
   });
   port = await gw.listen(0);
   const res = await post();
-  assert.equal(res.status, 200, 'absorb-retry held the caller through the transient 429s + returned the eventual 200 — never a shed 429');
-  assert.ok(calls >= 3, `it kept re-acquiring + retrying through the 429s until the 200 (calls=${calls})`);
+  assert.equal(res.status, 200, 'it still succeeds — which is exactly the problem: success here proves nothing about the absorb');
+  assert.ok(issued.length > 1, `the factory was called repeatedly and handed back a different governor each time (issued=${issued.length})`);
+  assert.equal(
+    everObservedPaused,
+    false,
+    'no governor was EVER seen paused: each penalty died with the throwaway instance that recorded it, so the wait-out path is unreachable and untestable through this seam',
+  );
 });
 
 test('EXTENDED ABSORB — also holds the caller through a 529 SERVER-OVERLOAD (not just rate-429s) until it clears (2026-06-22)', async () => {

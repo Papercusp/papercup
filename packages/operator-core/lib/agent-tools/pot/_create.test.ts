@@ -149,7 +149,7 @@ beforeEach(() => {
   vi.doMock('../../knowledge-packs/load-packs', () => ({
     loadKnowledgePack: async () => ({
       pack: {
-        manifest: { id: 'papercusp-default', title: 'T', description: 'd', version: '1.0.0' },
+        manifest: { id: 'coding', title: 'T', description: 'd', version: '1.0.0' },
         items: [{ id: 'a', title: 'A', kind: 'feedback', appliesTo: ['any'], text: 'a' }],
       },
       source: 'builtin',
@@ -160,7 +160,7 @@ beforeEach(() => {
     shapesFromDetection: () => undefined,
     seedPackIntoHive: async () => ({
       ok: true,
-      packId: 'papercusp-default',
+      packId: 'coding',
       packVersion: '1.0.0',
       seeded: 1,
       ids: ['mem-1'],
@@ -296,7 +296,7 @@ describe('createPotHarness', () => {
     // part of create (shared-pot-federation P-002).
     expect(ensureCalls).toEqual([['default', 'test-pot']]);
     // knowledge-packs P-005: the default pack seeded into the new pot's pool.
-    expect(res.seededLearnings).toEqual({ packId: 'papercusp-default', packVersion: '1.0.0', count: 1 });
+    expect(res.seededLearnings).toEqual({ packId: 'coding', packVersion: '1.0.0', count: 1 });
     // per-pot-learning-loops P-020: the per-pot loop is provisioned, keyed to the
     // pot's OWN slug, and reported in the result.
     expect(provisionCalls).toEqual([{ workspaceId: 'default', potSlug: 'test-pot' }]);

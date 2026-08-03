@@ -378,3 +378,158 @@ describe('schedule-inventory ⇄ host-timer guard reconcile (P-009 / WI-919)', (
     for (const s of emitted) expect(SCHEDULE_SOURCES).toContain(s);
   });
 });
+
+/*
+ * EI-19445595198254637 — cross-process federation.
+ *
+ * The bug: `source: 'managed'` reads the registry of whichever process SERVES the
+ * call. Most sweeps run in bg-host, a different process, so they were absent from
+ * the one surface built to inventory timers — and an inventory that answers "not
+ * here" reads exactly like "does not exist". That is how a reaper failing 100% of
+ * its passes ran 6+ days undetected.
+ */
+describe('collectScheduleInventory — sibling-process federation', () => {
+  const federated = (over: Record<string, unknown> = {}) => ({
+    port: 3271,
+    pid: 4242,
+    label: 'bg-host:3271',
+    process: 'bg-host',
+    ok: true,
+    elapsedMs: 4,
+    timers: [
+      {
+        name: 'attention-reconcile-unanswerable',
+        category: 'global-sweep',
+        intervalMs: 3_600_000,
+        armedAt: 1,
+        lastFireAt: 1_785_770_413_000,
+        lastError: 'invalid input syntax for type bigint',
+        running: false,
+        instanced: false,
+        instances: 1,
+        fires: 7,
+        shed: false,
+        classification: null,
+      },
+    ],
+    ...over,
+  });
+
+  const emptySources = {
+    getDbosSchedules: async () => [],
+    getRoutines: async () => [],
+    getManaged: () => [],
+    getInProcessChecks: () => ({ checks: [], armed: false }),
+    getExternalProcess: () => [],
+    getSyncTriggered: () => [],
+  };
+
+  it('surfaces a sibling process\'s LIVE timers with real armed/lastFire/lastError', async () => {
+    const rows = await collectScheduleInventory({
+      ...emptySources,
+      getSiblingManaged: async () => [federated()] as never,
+    });
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      source: 'external-process',
+      name: 'attention-reconcile-unanswerable',
+      cadence: 'every 1h',
+      armed: true,
+      // The whole point: fire-state and the error are REAL, not the nulls a static
+      // manifest row carries.
+      lastError: 'invalid input syntax for type bigint',
+    });
+    expect(rows[0].lastFire).toBe(new Date(1_785_770_413_000).toISOString());
+    expect(rows[0].detail).toMatchObject({ process: 'bg-host:3271', federated: true, reachable: true });
+  });
+
+  it('emits an explicit UNKNOWN row for a sibling that did not answer', async () => {
+    const rows = await collectScheduleInventory({
+      ...emptySources,
+      getSiblingManaged: async () =>
+        [
+          {
+            port: 3271,
+            pid: 4242,
+            label: 'operator:3271',
+            process: null,
+            ok: false,
+            error: 'probe budget 1200ms exceeded',
+            elapsedMs: 1200,
+            timers: [],
+          },
+        ] as never,
+    });
+
+    // Exactly one row, and it must SAY the timers are unknown. Dropping the row
+    // would restore the invisibility this change exists to remove — silence has to
+    // be visible.
+    expect(rows).toHaveLength(1);
+    expect(rows[0].name).toContain('unknown');
+    expect(rows[0].armed).toBeNull();
+    expect(rows[0].lastError).toBe('probe budget 1200ms exceeded');
+    expect(rows[0].detail).toMatchObject({ federated: false, reachable: false, port: 3271 });
+  });
+
+  it('is fail-soft: a throwing federation seam yields no rows, never a thrown inventory', async () => {
+    const rows = await collectScheduleInventory({
+      ...emptySources,
+      getManaged: () => [
+        {
+          name: 'local-sweep',
+          category: 'global-sweep',
+          intervalMs: 30_000,
+          armedAt: 1,
+          lastFireAt: null,
+          lastError: null,
+          running: false,
+          instanced: false,
+          instances: 1,
+          fires: 0,
+          shed: false,
+          classification: null,
+        },
+      ],
+      getSiblingManaged: async () => {
+        throw new Error('discovery dir unreadable');
+      },
+    });
+
+    expect(rows.map((r) => r.name)).toEqual(['local-sweep']);
+  });
+
+  it('keeps federated rows OUT of the in-process dedup set', async () => {
+    // `managed` means "armed in THIS process" and the static in-process fallback
+    // dedups against it. A sibling arming the same name must not suppress the local
+    // static row, or one process's timer would mask another's.
+    const rows = await collectScheduleInventory({
+      ...emptySources,
+      getInProcessChecks: () => ({ checks: [{ name: 'service-health', intervalMs: 60_000 }], armed: false }),
+      getSiblingManaged: async () =>
+        [
+          federated({
+            timers: [
+              {
+                name: 'service-health',
+                category: 'global-sweep',
+                intervalMs: 60_000,
+                armedAt: 1,
+                lastFireAt: null,
+                lastError: null,
+                running: false,
+                instanced: false,
+                instances: 1,
+                fires: 3,
+                shed: false,
+                classification: null,
+              },
+            ],
+          }),
+        ] as never,
+    });
+
+    const bySource = rows.filter((r) => r.name === 'service-health').map((r) => r.source).sort();
+    expect(bySource).toEqual(['external-process', 'in-process']);
+  });
+});

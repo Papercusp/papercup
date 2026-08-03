@@ -71,7 +71,7 @@ export default defineTool({
       .max(120)
       .optional()
       .describe(
-        "Knowledge pack to seed into the pot's shared memory (knowledge-packs P-005). Omit ⇒ the default pack (papercusp-default); 'none' ⇒ seed nothing. knowledge_packs:list enumerates the available packs.",
+        "Knowledge pack to seed into the pot's shared memory (knowledge-packs P-005). Omit ⇒ the blueprint's declared pack, else the generic `coding` pack; 'none' ⇒ seed nothing. knowledge_packs:list enumerates the available packs.",
       ),
     repoRemote: z
       .enum(['auto', 'local-only'])

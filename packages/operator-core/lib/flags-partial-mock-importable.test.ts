@@ -57,13 +57,14 @@ import { taskManagerEnabledSync } from './task-manager/enabled';
 import { envelopeRoleOverrides } from './capability-envelope-overrides';
 import { telemetryBufferConfig } from './telemetry-buffer-config';
 import { capabilityTierOverrideFor } from './capability-tier-overrides';
-// Added 2026-08-03 once work-item-claim-lease-wiring was migrated (all FOUR readers of its cached
-// boolean arm, not just the exported getter). work-item-redundancy was BLOCKED on it, and not by
-// anything it owns: this file asserts a property of the whole transitive import GRAPH, and
-// work-item-redundancy → work-items.ts → work-item-claim-lease-wiring, whose module-scope accesses
-// killed COLLECTION here while it was still listed. That graph-level reach is a FEATURE of this
-// guard — it is exactly what the per-file source lint cannot see — so when adding a module here
-// kills collection, the fix is to migrate the module named in the error, NEVER to drop the import.
+// Added 2026-08-03. work-item-redundancy was blocked here by nothing it owns: this file asserts a
+// property of the whole transitive import GRAPH, and work-item-redundancy → work-items.ts reaches
+// BOTH work-item-claim-lease-wiring and issues-engineer. Adding it named one blocker at a time —
+// claim-lease-wiring first, then (once migrated) issues-engineer at the next hop — so all three
+// had to land together. That graph-level reach is a FEATURE of this guard, being exactly what the
+// per-file source lint cannot see. So when adding a module here kills COLLECTION, the fix is to
+// migrate the module the error NAMES; never drop the import to make it pass — that would trade a
+// loud, accurate failure for a silent standing exemption.
 import { workItemClaimLeaseEnabled } from './work-item-claim-lease-wiring';
 import { issuesScopeWorkspace } from './issues-engineer';
 import { workItemRedundancyEnabled } from './work-item-redundancy';

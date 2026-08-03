@@ -37,7 +37,7 @@ const makeBackend = (opts: { available?: boolean; failOn?: string[] } = {}) => {
 };
 
 const pack: KnowledgePack = {
-  manifest: { id: 'papercusp-default', title: 'T', description: 'd', version: '1.0.0' },
+  manifest: { id: 'coding', title: 'T', description: 'd', version: '1.0.0' },
   items: [
     { id: 'a', title: 'A', kind: 'feedback', appliesTo: ['any'], text: 'body a' },
     { id: 'b', title: 'B', kind: 'reference', appliesTo: ['ui'], text: 'body b' },
@@ -68,7 +68,7 @@ describe('seedPackIntoHive', () => {
     expect(res.ok).toBe(true);
     expect(res.seeded).toBe(2); // 'a' (any) + 'b' (ui); 'c' (cli) filtered
     expect(res.skippedByShape).toBe(1);
-    expect(res.packId).toBe('papercusp-default');
+    expect(res.packId).toBe('coding');
     expect(res.packVersion).toBe('1.0.0');
 
     const calls = backend.remember.mock.calls as unknown as RememberCall[];
@@ -84,7 +84,7 @@ describe('seedPackIntoHive', () => {
         workspace_id: 'ws-1',
         created_by: 'system',
         source: 'pack',
-        pack_id: 'papercusp-default',
+        pack_id: 'coding',
         pack_version: '1.0.0',
         pack_item_id: 'a',
         applies_to: ['any'],
@@ -126,7 +126,7 @@ describe('seedPackIntoHive', () => {
       expect(res.seeded).toBe(2); // b + c landed despite a failing
       expect(res.ok).toBe(false);
       expect(res.error).toMatch(/1 write/);
-      expect(warn).toHaveBeenCalledWith(expect.stringContaining('papercusp-default/a'));
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('coding/a'));
     } finally {
       warn.mockRestore();
     }

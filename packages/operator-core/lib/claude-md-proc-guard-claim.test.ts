@@ -52,10 +52,15 @@ describe('EI-19444215495255056 — CLAUDE.md process-liveness advice stays true'
     expect(claudeMd).toMatch(/pgrep -cf|pgrep -x/);
   });
 
-  it('does NOT claim pc-heavy gates pgrep (the filed-but-false root cause)', () => {
-    // Kept as a negative invariant so the incorrect diagnosis cannot be
-    // re-introduced into the doc by a future reader of the original item.
-    const pcHeavy = readRepoFile(__dirname, 'scripts/pc-heavy.sh');
-    expect(pcHeavy).not.toContain('pgrep');
-  });
 });
+
+/*
+ * DELIBERATELY NOT ASSERTED: that `scripts/pc-heavy.sh` contains no "pgrep".
+ * That was true when EI-19444215495255056 was investigated (and is the evidence
+ * that its filed root cause was wrong), but it pins an UNRELATED file's
+ * implementation: a future maintainer adding a perfectly benign pgrep to
+ * pc-heavy would trip a test whose name talks about a documentation claim, and
+ * the confusing red would be indistinguishable from a real regression. A test
+ * should pin a live invariant, not a past investigation — that finding belongs
+ * in the work-item's thread, where it is recorded in full.
+ */

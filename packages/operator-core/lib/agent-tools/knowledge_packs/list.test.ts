@@ -34,7 +34,7 @@ describe('knowledge_packs:list tool', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockFlag.mockResolvedValue(true);
-    mockListPacks.mockResolvedValue([{ id: 'papercusp-default', version: '2.0.0' }] as unknown as Awaited<
+    mockListPacks.mockResolvedValue([{ id: 'coding', version: '2.0.0' }] as unknown as Awaited<
       ReturnType<typeof listKnowledgePacks>
     >);
   });
@@ -48,21 +48,21 @@ describe('knowledge_packs:list tool', () => {
 
   it('returns just the catalog when no hive is given', async () => {
     const res = body(await callTool({}));
-    expect(res).toEqual({ ok: true, packs: [{ id: 'papercusp-default', version: '2.0.0' }] });
+    expect(res).toEqual({ ok: true, packs: [{ id: 'coding', version: '2.0.0' }] });
     expect(mockReadHive).not.toHaveBeenCalled();
   });
 
   it('projects installed state for a pot: enabled (from disabled set) + updateAvailable vs the catalog', async () => {
     mockReadHive.mockResolvedValue({
-      packs: [{ packId: 'papercusp-default', packVersion: '1.0.0' }],
+      packs: [{ packId: 'coding', packVersion: '1.0.0' }],
       organicCount: 4,
     } as unknown as Awaited<ReturnType<typeof readHiveLearnings>>);
-    mockDisabled.mockResolvedValue(['papercusp-default']);
+    mockDisabled.mockResolvedValue(['coding']);
     const res = body(await callTool({ pot: 'my-hive' }));
     expect(res.pot).toBe('my-hive');
     expect(res.organicCount).toBe(4);
     expect(res.installed[0]).toMatchObject({
-      packId: 'papercusp-default',
+      packId: 'coding',
       enabled: false, // it's in the disabled set
       updateAvailable: true, // installed 1.0.0 vs catalog 2.0.0
       availableVersion: '2.0.0',
@@ -73,24 +73,24 @@ describe('knowledge_packs:list tool', () => {
     // Catalog ships 1.0.0; the hive already carries 2.0.0. The old string
     // inequality (`avail.version !== p.packVersion`) flagged this downgrade as
     // updateAvailable:true. semverGt(1.0.0, 2.0.0) === false fixes it.
-    mockListPacks.mockResolvedValue([{ id: 'papercusp-default', version: '1.0.0' }] as never);
+    mockListPacks.mockResolvedValue([{ id: 'coding', version: '1.0.0' }] as never);
     mockReadHive.mockResolvedValue({
-      packs: [{ packId: 'papercusp-default', packVersion: '2.0.0' }],
+      packs: [{ packId: 'coding', packVersion: '2.0.0' }],
       organicCount: 0,
     } as unknown as Awaited<ReturnType<typeof readHiveLearnings>>);
     mockDisabled.mockResolvedValue([]);
     const res = body(await callTool({ pot: 'my-hive' }));
     expect(res.installed[0]).toMatchObject({
-      packId: 'papercusp-default',
+      packId: 'coding',
       updateAvailable: false, // 1.0.0 is NOT newer than installed 2.0.0
       availableVersion: '1.0.0',
     });
   });
 
   it('LP-1: 1.10.0 IS recognized as newer than installed 1.9.0', async () => {
-    mockListPacks.mockResolvedValue([{ id: 'papercusp-default', version: '1.10.0' }] as never);
+    mockListPacks.mockResolvedValue([{ id: 'coding', version: '1.10.0' }] as never);
     mockReadHive.mockResolvedValue({
-      packs: [{ packId: 'papercusp-default', packVersion: '1.9.0' }],
+      packs: [{ packId: 'coding', packVersion: '1.9.0' }],
       organicCount: 0,
     } as unknown as Awaited<ReturnType<typeof readHiveLearnings>>);
     mockDisabled.mockResolvedValue([]);
@@ -99,9 +99,9 @@ describe('knowledge_packs:list tool', () => {
   });
 
   it('LP-1: equal versions are NOT an update', async () => {
-    mockListPacks.mockResolvedValue([{ id: 'papercusp-default', version: '2.0.0' }] as never);
+    mockListPacks.mockResolvedValue([{ id: 'coding', version: '2.0.0' }] as never);
     mockReadHive.mockResolvedValue({
-      packs: [{ packId: 'papercusp-default', packVersion: '2.0.0' }],
+      packs: [{ packId: 'coding', packVersion: '2.0.0' }],
       organicCount: 0,
     } as unknown as Awaited<ReturnType<typeof readHiveLearnings>>);
     mockDisabled.mockResolvedValue([]);

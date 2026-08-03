@@ -842,7 +842,7 @@ describe('buildMemoryContextBlock', () => {
         id: 'pk-1',
         text: 'Tests ship with the feature — a long seeded learning body that will not fit the tiny budget'.repeat(2),
         kind: 'feedback',
-        metadata: { source: 'pack', pack_id: 'papercusp-default' },
+        metadata: { source: 'pack', pack_id: 'coding' },
       };
       useBackend(mockBackend([organic, packed]));
       const block = await buildMemoryContextBlock({

@@ -103,7 +103,7 @@ export function usesModuleScopeFlagSubscribe(text) {
   return false;
 }
 
-// BASELINE seeded 2026-07-28 (WI-6650) with 14 files; now 6. Do NOT add new
+// BASELINE seeded 2026-07-28 (WI-6650) with 14 files; now 5. Do NOT add new
 // entries; each removal (lazy-init the site, per coordination/log.ts's
 // ensureCoordFlagInit) shrinks this set.
 //
@@ -139,6 +139,11 @@ export function usesModuleScopeFlagSubscribe(text) {
 // onto the same helper. It had FOUR readers of its cached boolean (the exported
 // getter plus three internal `if (!claimLeaseOn)` guards) and no periodic refresh
 // timer to bound a missed arm, so every one of the four arms.
+// And issues-engineer.ts, same helper — ONE reader (resolveIssuesScopeWorkspace;
+// issuesScopeWorkspace delegates to it) and an existing 3s self-heal TTL that bounds
+// a missed arm independently. Migrating it was what finally let work-item-redundancy
+// be listed in flags-partial-mock-importable.test.ts: redundancy → work-items.ts
+// reaches BOTH of these, so the graph guard surfaced them one hop at a time.
 export const BASELINE = new Set([
   // ⚠ EXAMINED AND DEFERRED, NOT MISSED — do NOT pattern-match this one onto its
   // siblings above. It looks identical (same config-override family, same timer,

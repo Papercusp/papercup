@@ -11,7 +11,7 @@ import type { KnowledgePack } from '../knowledge-packs/pack-format';
 vi.mock('../memory/backend', () => ({ getMemoryBackend: vi.fn() }));
 
 const pack: KnowledgePack = {
-  manifest: { id: 'papercusp-default', title: 'T', description: 'd', version: '1.0.0' },
+  manifest: { id: 'coding', title: 'T', description: 'd', version: '1.0.0' },
   items: [
     { id: 'a', title: 'A', kind: 'feedback', appliesTo: ['any'], text: 'body a' },
     { id: 'b', title: 'B', kind: 'feedback', appliesTo: ['any'], text: 'body b' },
@@ -21,7 +21,7 @@ const pack: KnowledgePack = {
 
 const packMeta = (itemId: string) => ({
   source: 'pack',
-  pack_id: 'papercusp-default',
+  pack_id: 'coding',
   pack_version: '1.0.0',
   pack_item_id: itemId,
   applies_to: ['any'],
@@ -30,7 +30,7 @@ const packMeta = (itemId: string) => ({
 const deps = (entries: Array<{ id: string; text: string; kind?: string; metadata?: Record<string, unknown> }>) => ({
   listPool: async (scope: string | readonly string[]) =>
     entries.map((e) => ({ ...e, scope: Array.isArray(scope) ? scope.join(",") : (scope as string) })),
-  loadPack: async (id: string) => (id === 'papercusp-default' ? { pack } : null),
+  loadPack: async (id: string) => (id === 'coding' ? { pack } : null),
 });
 
 describe('readHiveLearnings', () => {
@@ -42,13 +42,13 @@ describe('readHiveLearnings', () => {
     ]));
     expect(snap.hive).toBe('my-hive');
     expect(snap.organicCount).toBe(1);
-    expect(snap.rows.find((r) => r.id === 'm1')).toMatchObject({ packId: 'papercusp-default', packState: 'pristine' });
+    expect(snap.rows.find((r) => r.id === 'm1')).toMatchObject({ packId: 'coding', packState: 'pristine' });
     expect(snap.rows.find((r) => r.id === 'm2')).toMatchObject({ packState: 'modified' });
     expect(snap.rows.find((r) => r.id === 'm3')).toMatchObject({ createdBy: 'mug' });
     expect(snap.rows.find((r) => r.id === 'm3')?.packId).toBeUndefined();
     expect(snap.packs).toEqual([
       {
-        packId: 'papercusp-default',
+        packId: 'coding',
         packVersion: '1.0.0',
         present: 2,
         modified: 1,
@@ -161,13 +161,13 @@ describe('readHiveLearnings', () => {
     // upgrade). The rollup's packVersion is `mine.find(r => r.packVersion)` —
     // first by pool order. This pins that contract so a reordering regression
     // is caught; planPackUpgrade (below) is the source of truth for the FULL set.
-    const v1 = { source: 'pack', pack_id: 'papercusp-default', pack_version: '1.0.0', pack_item_id: 'a' };
-    const v2 = { source: 'pack', pack_id: 'papercusp-default', pack_version: '2.0.0', pack_item_id: 'b' };
+    const v1 = { source: 'pack', pack_id: 'coding', pack_version: '1.0.0', pack_item_id: 'a' };
+    const v2 = { source: 'pack', pack_id: 'coding', pack_version: '2.0.0', pack_item_id: 'b' };
     const snap = await readHiveLearnings('h', deps([
       { id: 'm1', text: 'A — body a', metadata: v1 }, // first → 1.0.0
       { id: 'm2', text: 'B — body b', metadata: v2 },
     ]));
-    expect(snap.packs[0]).toMatchObject({ packId: 'papercusp-default', packVersion: '1.0.0', present: 2 });
+    expect(snap.packs[0]).toMatchObject({ packId: 'coding', packVersion: '1.0.0', present: 2 });
 
     // Reversed pool order → first-seen flips to 2.0.0 (documents the dependence).
     const snapRev = await readHiveLearnings('h', deps([
@@ -184,8 +184,8 @@ describe('LP-6: cross-check — planPackUpgrade captures the FULL version set th
 
   it('installedVersions lists EVERY distinct pack_version in the pool (not just first-seen)', async () => {
     const pool = [
-      { id: 'm1', text: 'A — body a', scope: 'hive:h', metadata: { source: 'pack', pack_id: 'papercusp-default', pack_version: '1.0.0', pack_item_id: 'a' } },
-      { id: 'm2', text: 'B — body b', scope: 'hive:h', metadata: { source: 'pack', pack_id: 'papercusp-default', pack_version: '2.0.0', pack_item_id: 'b' } },
+      { id: 'm1', text: 'A — body a', scope: 'hive:h', metadata: { source: 'pack', pack_id: 'coding', pack_version: '1.0.0', pack_item_id: 'a' } },
+      { id: 'm2', text: 'B — body b', scope: 'hive:h', metadata: { source: 'pack', pack_id: 'coding', pack_version: '2.0.0', pack_item_id: 'b' } },
     ];
     const backend = {
       name: 'fake',

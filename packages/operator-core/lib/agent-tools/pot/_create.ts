@@ -486,7 +486,11 @@ export async function createPotHarness(opts: CreatePotOpts): Promise<CreatePotRe
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         console.warn(`[pot:create] knowledge-pack seed failed (${opts.slug}): ${msg}`);
-        seededLearnings = { packId: opts.knowledgePack ?? 'papercusp-default', error: msg.slice(0, 200) };
+        // EI-1539: the resolved `packId` is block-scoped inside the try, so the
+        // error path re-derives the tail of the same chain. It must use the
+        // CONSTANT, never a literal — a hardcoded pack name here reports a pack
+        // that no longer exists the moment the default is repointed.
+        seededLearnings = { packId: opts.knowledgePack ?? DEFAULT_KNOWLEDGE_PACK_ID, error: msg.slice(0, 200) };
       }
     }
 
