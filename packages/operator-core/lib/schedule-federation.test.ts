@@ -81,16 +81,29 @@ describe('listSiblingOperators', () => {
 });
 
 describe('probeSibling', () => {
-  it('returns the sibling timers and a self-identified label', async () => {
+  it('returns BOTH per-process registries and a self-identified label', async () => {
     const got = await probeSibling(sibling(), {
       fetchImpl: okFetch({
         process: 'bg-host',
-        timers: [{ name: 'attention-reconcile-unanswerable', intervalMs: 3_600_000 }],
+        timers: [{ name: 'memory-watchdog', intervalMs: 30_000 }],
+        dbosSchedules: [
+          { name: 'PeriodicWorkflows.attentionReconcileUnanswerable', crontab: '0 20 * * * *', mode: 'x', queueName: null },
+        ],
       }),
     });
     expect(got.ok).toBe(true);
     expect(got.label).toBe('bg-host:3271');
     expect(got.timers).toHaveLength(1);
+    // The durable slice is the one that carries the sweeps this whole change exists
+    // for — a federation that returned only `timers` would miss its own case.
+    expect(got.dbosSchedules).toHaveLength(1);
+  });
+
+  it('tolerates a sibling on an older build that omits the dbosSchedules slice', async () => {
+    const got = await probeSibling(sibling(), {
+      fetchImpl: okFetch({ process: 'bg-host', timers: [] }),
+    });
+    expect(got).toMatchObject({ ok: true, dbosSchedules: [] });
   });
 
   it('NEVER rejects — a throwing/refusing/non-2xx probe degrades to ok:false', async () => {
@@ -108,7 +121,7 @@ describe('probeSibling', () => {
     const http500 = await probeSibling(sibling(), {
       fetchImpl: async () => ({ ok: false, status: 500, json: async () => ({}) }),
     });
-    expect(http500).toMatchObject({ ok: false, error: 'HTTP 500', timers: [] });
+    expect(http500).toMatchObject({ ok: false, error: 'HTTP 500', timers: [], dbosSchedules: [] });
 
     const garbage = await probeSibling(sibling(), {
       fetchImpl: async () => ({ ok: true, status: 200, json: async () => 'not-an-object' }),

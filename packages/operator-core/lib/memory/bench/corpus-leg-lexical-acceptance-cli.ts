@@ -96,6 +96,8 @@ interface ArmRun {
   candidates: string[];
   /** Keys of the lines the leg would actually ADMIT, in order. */
   admitted: string[];
+  /** Why the leg refused each non-admitted hit — the mechanism behind any loss. */
+  drops: Record<string, number>;
   ms: number;
 }
 
@@ -144,7 +146,7 @@ async function runArm(
     rankers: r.rankers,
   }));
 
-  const { lines } = selectCorpusLines({
+  const { lines, dropped } = selectCorpusLines({
     hits,
     queryText: query,
     excludeSessionId: null,
@@ -153,9 +155,13 @@ async function runArm(
     budgetChars: CORPUS_BUDGET_CHARS,
   });
 
+  const drops: Record<string, number> = {};
+  for (const d of dropped) drops[d.reason] = (drops[d.reason] ?? 0) + 1;
+
   return {
     candidates: hits.map((h) => `${h.source}:${h.sourceId}`),
     admitted: lines.map((l) => JSON.stringify(l.handle)),
+    drops,
     ms,
   };
 }
@@ -188,6 +194,8 @@ interface ShapeReport {
   top1Comparable: number;
   controlMs: number[];
   treatMs: number[];
+  controlDrops: Record<string, number>;
+  treatDrops: Record<string, number>;
 }
 
 async function measureShape(
@@ -215,6 +223,8 @@ async function measureShape(
     top1Comparable: 0,
     controlMs: [],
     treatMs: [],
+    controlDrops: {},
+    treatDrops: {},
   };
 
   for (const text of texts) {
@@ -265,6 +275,8 @@ async function measureShape(
 
     r.controlMs.push(controlA.ms);
     r.treatMs.push(treat.ms);
+    for (const [k, v] of Object.entries(controlA.drops)) r.controlDrops[k] = (r.controlDrops[k] ?? 0) + v;
+    for (const [k, v] of Object.entries(treat.drops)) r.treatDrops[k] = (r.treatDrops[k] ?? 0) + v;
   }
 
   return r;
@@ -307,6 +319,13 @@ function renderShape(r: ShapeReport, boundMs: number): string {
   L.push(
     `- top-1 changed on **${r.top1Changed}/${r.top1Comparable}** comparable queries (${pct(r.top1Changed, r.top1Comparable)}) — the intra-tier reordering channel`,
   );
+  const fmtDrops = (d: Record<string, number>): string =>
+    Object.entries(d)
+      .sort((a, b) => b[1] - a[1])
+      .map(([k, v]) => `${k}=${v}`)
+      .join(' ') || 'none';
+  L.push(`- drop reasons — control: ${fmtDrops(r.controlDrops)}`);
+  L.push(`- drop reasons — treatment: ${fmtDrops(r.treatDrops)}`);
   const worst = Math.max(...r.treatMs, 0);
   L.push(
     `- treatment worst-case ${worst}ms against the ${boundMs}ms whole-leg bound → ${worst < boundMs ? '✓ inside' : '✗ OVER BUDGET'}`,

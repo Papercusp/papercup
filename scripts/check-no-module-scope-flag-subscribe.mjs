@@ -103,7 +103,7 @@ export function usesModuleScopeFlagSubscribe(text) {
   return false;
 }
 
-// BASELINE seeded 2026-07-28 (WI-6650) with 14 files; now 6. Do NOT add new
+// BASELINE seeded 2026-07-28 (WI-6650) with 14 files; now 5. Do NOT add new
 // entries; each removal (lazy-init the site, per coordination/log.ts's
 // ensureCoordFlagInit) shrinks this set.
 //
@@ -139,6 +139,14 @@ export function usesModuleScopeFlagSubscribe(text) {
 // onto the same helper. It had FOUR readers of its cached boolean (the exported
 // getter plus three internal `if (!claimLeaseOn)` guards) and no periodic refresh
 // timer to bound a missed arm, so every one of the four arms.
+// And events/cache-eca-rule.ts, same helper — ONE reader (cacheTagEcaEnabled, the rules
+// engine's sync `when` predicate). Note the arm is on the READER, deliberately NOT in
+// registerCacheTagEcaRule(): rules.ts calls that registrar at MODULE SCOPE, so arming
+// there would touch the flag binding during rules.ts's import and just move the
+// unimportability one file over. Safe to lazy-arm because the unpopulated `false` is the
+// module's OWN documented fail-CLOSED state (no tag bump), costing at most one skipped
+// invalidation per process — a briefly stale cache entry, never a wrong value.
+//
 // issues-engineer.ts was migrated the same way in that session and REVERTED — see the
 // inline note at its BASELINE entry below. It is the reason work-item-redundancy.ts is
 // still not listable in flags-partial-mock-importable.test.ts: redundancy →

@@ -62,9 +62,21 @@ const WIDTHS = (argOf('--widths') ?? '2000,3000,4000,6000,8000')
   .map((s) => Number(s.trim()))
   .filter((n) => Number.isFinite(n) && n > 0);
 
-/** Where the probe is cut from — well past the 2000 cut, so it is invisible to the status quo. */
-const PROBE_START = 3000;
+/**
+ * Where the probe is cut from — well past the 2000 cut, so it is invisible to
+ * the status quo.
+ *
+ * CONFIGURABLE ON PURPOSE. With a fixed probe offset, "width W scored best" is
+ * partly an artifact of W being the first width that CONTAINS the probe, so a
+ * single run cannot separate "wider is better" from "the probe just arrived".
+ * Re-running at a different offset is the control that separates them.
+ */
+const PROBE_START = Number(argOf('--probe-at') ?? 3000);
 const PROBE_LEN = 240;
+
+/** Chunk width for the chunked arm — see the arm's comment in main(). */
+const CHUNK = Number(argOf('--chunk') ?? 1500);
+const CHUNK_OVERLAP = Number(argOf('--chunk-overlap') ?? 250);
 
 interface Turn {
   key: string;
@@ -97,6 +109,44 @@ async function embedChunked(
     out.push(...res.vectors);
   }
   return out;
+}
+
+/**
+ * Score one arm and print its row.
+ *
+ * `sim(probeIdx, turnIdx)` is the arm's whole identity — a single vector per
+ * turn for the width arms, a max over the turn's chunk vectors for the chunked
+ * arm — so every arm is ranked by identical logic and the only thing that
+ * varies is the similarity it exposes.
+ *
+ * RANK-based on purpose (plan D-010): cosine under gemma carries a large
+ * positive offset, so absolute similarity is uninterpretable and only the
+ * position of the true parent turn among distractors means anything.
+ */
+function report(
+  label: string,
+  n: number,
+  sim: (probeIdx: number, turnIdx: number) => number,
+  note: string,
+): void {
+  let rr = 0;
+  let r1 = 0;
+  let r5 = 0;
+  let rankSum = 0;
+  for (let i = 0; i < n; i++) {
+    const scored = Array.from({ length: n }, (_, j) => ({ j, s: sim(i, j) })).sort(
+      (a, b) => b.s - a.s,
+    );
+    const rank = scored.findIndex((x) => x.j === i) + 1;
+    rr += 1 / rank;
+    rankSum += rank;
+    if (rank === 1) r1++;
+    if (rank <= 5) r5++;
+  }
+  console.log(
+    `${label.padEnd(10)} ${(rr / n).toFixed(4)} ${((r1 / n) * 100).toFixed(1).padStart(7)}% ` +
+      `${((r5 / n) * 100).toFixed(1).padStart(8)}% ${(rankSum / n).toFixed(2).padStart(9)}  ${note}`,
+  );
 }
 
 function cosine(a: number[], b: number[]): number {
@@ -184,33 +234,50 @@ async function main(): Promise<void> {
       baseline.vecs = dvecs;
     }
 
-    let rr = 0;
-    let r1 = 0;
-    let r5 = 0;
-    let rankSum = 0;
-    for (let i = 0; i < probes.length; i++) {
-      const scored = dvecs
-        .map((dv, j) => ({ j, s: cosine(qvecs[i], dv) }))
-        .sort((a, b) => b.s - a.s);
-      const rank = scored.findIndex((x) => x.j === i) + 1;
-      rr += 1 / rank;
-      rankSum += rank;
-      if (rank === 1) r1++;
-      if (rank <= 5) r5++;
-    }
-    const n = probes.length;
-
     // Does widening change the VECTOR at all? If the model already truncated
     // internally, a wider cut is a no-op and this is how that shows up — a
     // flat MRR alone could not distinguish "no gain" from "no change applied".
     const identical = dvecs.filter((v, j) => cosine(v, baseline.vecs[j]) > 0.9999).length;
 
-    console.log(
-      `${String(w).padEnd(7)} ${(rr / n).toFixed(4)} ${((r1 / n) * 100).toFixed(1).padStart(7)}% ` +
-        `${((r5 / n) * 100).toFixed(1).padStart(8)}% ${(rankSum / n).toFixed(2).padStart(9)} ` +
-        `${String(identical).padStart(12)}/${n}`,
-    );
+    report(String(w), probes.length, (i, j) => cosine(qvecs[i], dvecs[j]), `${identical}/${probes.length}`);
   }
+
+  // ─── THE CHUNKED ARM — what P-028 actually proposes ──────────────────────
+  // Every width arm above embeds the turn as ONE vector, so a longer cut spends
+  // the same 768 dimensions on more text and the probe's signal is averaged
+  // away. That dilution is why the width sweep peaks and then DECLINES, and no
+  // choice of single width escapes it.
+  //
+  // Chunking removes the trade entirely: each chunk gets its own vector, so a
+  // turn is scored by its BEST-matching chunk (max, not mean — a turn is
+  // relevant if ANY part of it is, which is exactly how a chunked index is
+  // queried). Overlap keeps a probe that straddles a boundary from being split
+  // across two chunks and diluted in both.
+  const chunksPerTurn: string[][] = turns.map((t) => {
+    const out: string[] = [];
+    const step = Math.max(1, CHUNK - CHUNK_OVERLAP);
+    for (let s = 0; s < t.text.length; s += step) {
+      out.push(t.text.slice(s, s + CHUNK));
+      if (s + CHUNK >= t.text.length) break;
+    }
+    return out;
+  });
+  const flat = chunksPerTurn.flat();
+  const flatVecs = await embedChunked(url, 'document', flat);
+  const chunkVecs: number[][][] = [];
+  let off = 0;
+  for (const cs of chunksPerTurn) {
+    chunkVecs.push(flatVecs.slice(off, off + cs.length));
+    off += cs.length;
+  }
+  const avgChunks = (flat.length / turns.length).toFixed(1);
+
+  report(
+    `chunk${CHUNK}`,
+    probes.length,
+    (i, j) => Math.max(...chunkVecs[j].map((cv) => cosine(qvecs[i], cv))),
+    `${avgChunks} ch/turn`,
+  );
 
   console.log(
     '\nReading it: the probe text lives at chars ' +

@@ -27,28 +27,51 @@
  */
 import { defineTool } from '@papercusp/agent-mcp';
 import { listManaged } from '@papercusp/scheduled-registry';
+import { defaultGetRegisteredSchedules } from '../../../dbos/dbos-schedule-introspect';
 import { describeProcessRole, ownHonoPort } from '../../../schedule-federation';
 
 export default defineTool({
   method: 'GET',
   path: '/internal/managed-timers',
   auth: 'loopback',
-  handler() {
+  async handler() {
     const identity = {
       process: describeProcessRole(),
       pid: process.pid,
       port: ownHonoPort(),
       uptimeSec: Math.round(process.uptime()),
     };
+    // BOTH per-process registries, because both are per-process and the caller
+    // cannot see either one from outside:
+    //  - `timers`         = the managedSetInterval registry (ephemeral tier)
+    //  - `dbosSchedules`  = the DBOS scheduled-workflow REGISTRY (durable tier),
+    //    which DBOS populates only when the workflow modules are imported. The
+    //    modules behind PAPERCUSP_BACKGROUND_WORKERS are imported ONLY in bg-host,
+    //    which is exactly where `dbos-executor-reaper` and
+    //    `attention-reconcile-unanswerable` live — so omitting this slice would ship
+    //    a federation that misses the very outage that motivated it.
+    // Names + crontabs only: fire-state lives in shared Postgres and is enriched by
+    // the CALLER, keeping this handler a pure in-memory read.
+    let timers: ReturnType<typeof listManaged> = [];
+    let timersError: string | null = null;
     try {
-      return Response.json({ ok: true, ...identity, timers: listManaged() });
+      timers = listManaged();
     } catch (e) {
-      return Response.json({
-        ok: false,
-        ...identity,
-        timers: [],
-        error: e instanceof Error ? e.message : String(e),
-      });
+      timersError = e instanceof Error ? e.message : String(e);
     }
+    let dbosSchedules: Awaited<ReturnType<typeof defaultGetRegisteredSchedules>> = [];
+    try {
+      dbosSchedules = await defaultGetRegisteredSchedules();
+    } catch {
+      // defaultGetRegisteredSchedules already swallows its own errors and returns
+      // []; this is belt-and-braces so one registry can never take out the other.
+    }
+    return Response.json({
+      ok: timersError === null,
+      ...identity,
+      timers,
+      dbosSchedules,
+      ...(timersError ? { error: timersError } : {}),
+    });
   },
 });

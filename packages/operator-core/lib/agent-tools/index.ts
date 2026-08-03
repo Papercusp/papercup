@@ -390,6 +390,9 @@ import './dev/pg_health';
 import './dev/pg_active_queries';
 import './dev/pg_table_sizes';
 import './dev/pg_query';
+// no-http-anywhere-2026-07-28 D-074 — publish the read-cache hit/miss counters,
+// which cachedRead has always recorded and nothing ever read.
+import './dev/cache_stats';
 import './dev/build_status';
 // git-sync-dx-hardening-2026-06-17 P-002 — "where is my change / is it live?" probe
 import './dev/pipeline_position';

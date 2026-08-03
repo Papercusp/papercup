@@ -329,6 +329,85 @@ export function warnIfInstallInFlight(label) {
   );
 }
 
+/**
+ * EI-19425177453558152 — `-t <pattern>` matching ZERO tests used to report `status=passed`.
+ *
+ * `executed` in this router counts FILES, not tests, so a run where vitest collected 625 tests
+ * and executed none of them still reported `executed=1 status=passed` and exit 0. The router
+ * already hard-fails a zero-or-partial FILE match before executing — and CLAUDE.md advertises
+ * exactly that, which is precisely what teaches callers to trust its verdict. Closing the first
+ * door and leaving the second open is worse than closing neither.
+ *
+ * Report the pattern AS VITEST RECEIVED IT. The reported invocation was `-t 'cd + EXIT-trap'`;
+ * npm's arg chain ate the quotes, so vitest got `-t cd` plus two stray POSITIONALS (which vitest
+ * reads as extra FILE filters, narrowing the run further). Echoing the received form makes the
+ * quote-eating self-diagnosing instead of a mystery.
+ *
+ * @param {string[]} vitestArgs args forwarded after the `--` separator
+ * @returns {{ flag: string, pattern: string, strays: string[] } | null}
+ */
+export function nameFilterFrom(vitestArgs) {
+  const args = vitestArgs ?? [];
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
+    const joined = /^(-t|--testNamePattern)=([\s\S]*)$/.exec(arg);
+    if (joined) {
+      return { flag: joined[1], pattern: joined[2], strays: positionalsAfter(args, i + 1) };
+    }
+    if (arg === '-t' || arg === '--testNamePattern') {
+      const next = args[i + 1];
+      // A trailing flag with no value: vitest never received a pattern, so there is no
+      // name-filter run to police. Never invent one.
+      if (next === undefined) return null;
+      return { flag: arg, pattern: next, strays: positionalsAfter(args, i + 2) };
+    }
+  }
+  return null;
+}
+
+/** Bare (non-flag) args left after the pattern — the fingerprint of shell/npm quote-eating. */
+function positionalsAfter(args, from) {
+  const strays = [];
+  for (let i = from; i < args.length; i += 1) {
+    if (args[i].startsWith('-')) break;
+    strays.push(args[i]);
+  }
+  return strays;
+}
+
+/**
+ * How many tests actually EXECUTED, read from vitest's `Tests` summary row. Skipped is not
+ * executed — that distinction IS the bug: `Tests  20 skipped (20)` is a run that measured nothing.
+ *
+ * Returns null when there is no readable summary row (e.g. `--reporter=json`), which the caller
+ * must treat as UNVERIFIED rather than as a measured zero: fabricating a red on an unreadable
+ * count is the opposite, equally expensive mistake.
+ *
+ * ANSI is stripped FIRST. vitest colourises this row, and EI-18819483316574031 is the same file's
+ * previous instance of exactly this trap — a matcher that skipped the strip passed every
+ * hand-written test and never once fired on real coloured output.
+ *
+ * @param {string} output combined stdout+stderr of a `vitest run` invocation
+ * @returns {number | null} tests executed, or null when unreadable
+ */
+export function testsExecutedFrom(output) {
+  const plain = stripVitestAnsi(output ?? '');
+  // `Test Files` cannot match: it is `Test` + space, never `Tests` + whitespace. Take the LAST
+  // row so appended output can never leave us reading a superseded summary.
+  const rows = [...plain.matchAll(/^[ \t]*Tests[ \t]+(.*)$/gm)];
+  if (rows.length === 0) return null;
+  const body = rows[rows.length - 1][1];
+  if (/^\s*no tests\b/i.test(body)) return 0;
+  let ran = null;
+  for (const seg of body.matchAll(/(\d+)\s+(passed|failed)\b/g)) {
+    ran = (ran ?? 0) + Number(seg[1]);
+  }
+  if (ran !== null) return ran;
+  // Only skipped/todo segments — collected, deliberately not run.
+  if (/\d+\s+(skipped|todo)\b/.test(body)) return 0;
+  return null;
+}
+
 export function aggregateGroupResults(groupResults) {
   const requested = groupResults.reduce((sum, g) => sum + g.requested, 0);
   const matched = groupResults.reduce((sum, g) => sum + g.matched, 0);
@@ -336,10 +415,26 @@ export function aggregateGroupResults(groupResults) {
   const launchError = groupResults.some((g) => g.launchError);
   const anyUnmatched = groupResults.some((g) => g.unmatchedCount > 0);
   const anyFailed = groupResults.some((g) => g.failed);
+  // Tests-executed is measured ONLY under a name filter, so three states are distinct and must
+  // stay so: `undefined` = not applicable (no filter), `null` = filter present but the count was
+  // unreadable, a number = measured. Collapsing unreadable into zero would fabricate reds.
+  const measured = groupResults.filter((g) => typeof g.testsExecuted === 'number');
+  const testsExecuted = measured.length > 0 ? measured.reduce((sum, g) => sum + g.testsExecuted, 0) : null;
+  const testsUnmeasuredGroups = groupResults.filter((g) => g.testsExecuted === null).length;
   // Only a clean, fully-matched, fully-launchable run is `ok` — a launch error or ANY group's
   // partial/zero match still refuses the false-green, exactly as the single-group path always did.
   const ok = !launchError && !anyUnmatched;
-  return { ok, requested, matched, executed, anyUnmatched, anyFailed, launchError };
+  return {
+    ok,
+    requested,
+    matched,
+    executed,
+    testsExecuted,
+    testsUnmeasuredGroups,
+    anyUnmatched,
+    anyFailed,
+    launchError,
+  };
 }
 
 function parseCli(argv) {
@@ -371,6 +466,7 @@ export function main(argv = process.argv.slice(2)) {
   }
 
   const groups = groupRoutes(routes);
+  const nameFilter = nameFilterFrom(vitestArgs);
   console.log(`TEST_FILE_ROUTE requested=${routes.length} groups=${groups.length}`);
   // EI-13535: every group runs UNCONDITIONALLY — a mismatch or failure in one workspace's group
   // must never abandon the OTHER groups a multi-workspace request spans (see aggregateGroupResults
@@ -502,6 +598,10 @@ export function main(argv = process.argv.slice(2)) {
       requested: verdict.requested,
       matched: verdict.matched,
       executed: exact.length,
+      // EI-19425177453558152: `executed` counts FILES. Under a name filter that is not enough to
+      // know anything ran, so measure TESTS too — `undefined` when no filter is in play keeps the
+      // three states (n/a · unreadable · measured) distinct in aggregateGroupResults.
+      testsExecuted: nameFilter ? testsExecutedFrom(`${result.stdout ?? ''}\n${result.stderr ?? ''}`) : undefined,
       unmatchedCount: 0,
       failed: groupFailed,
       launchError: false,
@@ -542,6 +642,42 @@ export function main(argv = process.argv.slice(2)) {
         `refusing to report a verdict for a run that executed no tests`,
     );
     return 1;
+  }
+
+  // EI-19425177453558152 — a name filter that matched ZERO tests measured NOTHING.
+  //
+  // This deliberately does NOT print `TEST_FILE_RESULT ... status=failed`, which is what the
+  // filing suggested: EI-19376339983058011 (directly above) established that the marker's
+  // PRESENCE is the verdict callers grep for (`if ! grep -q 'TEST_FILE_RESULT'; then UNMEASURED`).
+  // Zero tests ran, so the honest report is UNMEASURED — the marker must be absent, and the
+  // failure carried by the exit code plus its own distinct marker.
+  if (nameFilter) {
+    const receivedAs = [nameFilter.flag, nameFilter.pattern, ...nameFilter.strays].join(' ');
+    const strayNote =
+      nameFilter.strays.length > 0
+        ? ` — vitest received \`${receivedAs}\`, i.e. the pattern "${nameFilter.pattern}" PLUS ` +
+          `${nameFilter.strays.length} stray positional(s) [${nameFilter.strays.join(', ')}] it reads as extra FILE ` +
+          'filters. That is the signature of a quoted pattern being eaten by the shell/npm arg chain: quote it ' +
+          'for the inner command (npm eats one level) or use a space-free pattern.'
+        : '';
+    if (summary.testsExecuted === 0 && summary.testsUnmeasuredGroups === 0) {
+      console.error(
+        `TEST_FILE_NAME_FILTER_NO_MATCH requested=${summary.requested} matched=${summary.matched} ` +
+          `executedFiles=${summary.executed} testsExecuted=0 status=failed reason=name-filter-matched-no-tests ` +
+          `pattern=${JSON.stringify(nameFilter.pattern)}; refusing to report a verdict for a run that ` +
+          `executed no tests${strayNote}`,
+      );
+      return 1;
+    }
+    if (summary.testsExecuted === null || summary.testsUnmeasuredGroups > 0) {
+      // Fail OPEN — never fabricate a red from an unreadable count (a JSON reporter writes no
+      // summary row). Say so out loud so the hole cannot silently reopen.
+      console.error(
+        `TEST_FILE_NAME_FILTER_UNVERIFIED pattern=${JSON.stringify(nameFilter.pattern)}; could not read vitest's ` +
+          "`Tests` summary row, so whether the name filter executed any tests is UNVERIFIED — the status below " +
+          `does not rule out a zero-match run${strayNote}`,
+      );
+    }
   }
 
   const status = summary.anyFailed ? 'failed' : 'passed';

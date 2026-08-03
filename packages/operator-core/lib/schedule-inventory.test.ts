@@ -396,6 +396,7 @@ describe('collectScheduleInventory — sibling-process federation', () => {
     process: 'bg-host',
     ok: true,
     elapsedMs: 4,
+    dbosSchedules: [],
     timers: [
       {
         name: 'attention-reconcile-unanswerable',
@@ -422,6 +423,16 @@ describe('collectScheduleInventory — sibling-process federation', () => {
     getInProcessChecks: () => ({ checks: [], armed: false }),
     getExternalProcess: () => [],
     getSyncTriggered: () => [],
+    // The default enrichment reads shared Postgres; stub it so these stay hermetic.
+    enrichSiblingDbos: async (schedules: { name: string; crontab: string }[]) =>
+      schedules.map((s) => ({
+        name: s.name,
+        crontab: s.crontab,
+        mode: 'ExactlyOncePerIntervalWhenActive',
+        queueName: null,
+        lastFireMs: 1_785_773_000_000,
+        lastStatus: 'SUCCESS',
+      })),
   };
 
   it('surfaces a sibling process\'s LIVE timers with real armed/lastFire/lastError', async () => {
@@ -458,6 +469,7 @@ describe('collectScheduleInventory — sibling-process federation', () => {
             error: 'probe budget 1200ms exceeded',
             elapsedMs: 1200,
             timers: [],
+            dbosSchedules: [],
           },
         ] as never,
     });
@@ -531,5 +543,70 @@ describe('collectScheduleInventory — sibling-process federation', () => {
 
     const bySource = rows.filter((r) => r.name === 'service-health').map((r) => r.source).sort();
     expect(bySource).toEqual(['external-process', 'in-process']);
+  });
+
+  /*
+   * The case the bug was actually FILED for. Both sweeps that failed silently for
+   * 6+ days — dbos-executor-reaper and attention-reconcile-unanswerable — are DBOS
+   * periodic workflows, not managedSetInterval timers, and DBOS keeps its schedule
+   * registry in-process. Federating only the ephemeral timers would have shipped a
+   * fix that missed its own motivating outage.
+   */
+  it('surfaces a sibling\'s DURABLE schedules under source:dbos with real fire-state', async () => {
+    const rows = await collectScheduleInventory({
+      ...emptySources,
+      getSiblingManaged: async () =>
+        [
+          federated({
+            timers: [],
+            dbosSchedules: [
+              { name: 'PeriodicWorkflows.attentionReconcileUnanswerable', crontab: '0 20 * * * *', mode: 'x', queueName: null },
+            ],
+          }),
+        ] as never,
+    });
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      // source:'dbos', NOT 'external-process' — an operator auditing the periodic
+      // workflows filters on this, and that is the audience that missed the reaper.
+      source: 'dbos',
+      tier: 'durable',
+      name: 'PeriodicWorkflows.attentionReconcileUnanswerable',
+      cadence: '0 20 * * * *',
+      armed: true,
+    });
+    // Fire-state resolves from shared Postgres, so a federated durable row is as
+    // informative as a local one — the sibling only handed over name + crontab.
+    expect(rows[0].lastFire).toBe(new Date(1_785_773_000_000).toISOString());
+    expect(rows[0].detail).toMatchObject({ process: 'bg-host:3271', federated: true, lastStatus: 'SUCCESS' });
+  });
+
+  it('does not double-report a schedule registered in BOTH processes', async () => {
+    // DBOS coordinates a schedule through shared Postgres, so both copies carry
+    // identical fire-state; a second row would read as duplication, not information.
+    const rows = await collectScheduleInventory({
+      ...emptySources,
+      getDbosSchedules: async () => [
+        { name: 'Shared.telemetryFlush', crontab: '0 0 * * * *', mode: 'x', queueName: null, lastFireMs: null, lastStatus: null },
+      ],
+      getSiblingManaged: async () =>
+        [
+          federated({
+            timers: [],
+            dbosSchedules: [
+              { name: 'Shared.telemetryFlush', crontab: '0 0 * * * *', mode: 'x', queueName: null },
+              { name: 'BgOnly.executorReaper', crontab: '*/2 * * * *', mode: 'x', queueName: null },
+            ],
+          }),
+        ] as never,
+    });
+
+    const dbosRows = rows.filter((r) => r.source === 'dbos');
+    expect(dbosRows.map((r) => r.name).sort()).toEqual(['BgOnly.executorReaper', 'Shared.telemetryFlush']);
+    // The surviving shared row is the LOCAL one (not federated); only the
+    // bg-host-only schedule is added by federation.
+    expect(dbosRows.find((r) => r.name === 'Shared.telemetryFlush')!.detail.federated).toBeUndefined();
+    expect(dbosRows.find((r) => r.name === 'BgOnly.executorReaper')!.detail.federated).toBe(true);
   });
 });

@@ -17,7 +17,11 @@
  */
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from './workspace-registry';
-import { listDbosScheduledWorkflows, type DbosScheduledEntry } from './dbos/dbos-schedule-introspect';
+import {
+  listDbosScheduledWorkflows,
+  type DbosScheduledEntry,
+  type RegisteredSchedule,
+} from './dbos/dbos-schedule-introspect';
 import { buildDefaultChecks, inProcessPeriodicChecksArmed } from './dbos/in-process-periodic';
 import { listManaged, type ManagedEntry, type TimerClassification } from '@papercusp/scheduled-registry';
 import { collectSiblingManagedTimers, type SiblingManagedTimers } from './schedule-federation';
@@ -223,6 +227,14 @@ export interface ScheduleInventoryDeps {
    * psu-launcher). Fail-soft AND time-bounded — see schedule-federation.ts.
    */
   getSiblingManaged: () => Promise<SiblingManagedTimers[]>;
+  /**
+   * Enrich a sibling's REGISTERED DBOS schedules (names + crontabs) with fire-state.
+   * Default reuses the existing `listDbosScheduledWorkflows` seam with the sibling's
+   * registry injected, so a federated durable row resolves lastFire/lastStatus from
+   * the SAME shared-Postgres read a local row does. Injectable so unit tests stay
+   * hermetic (the default touches PG).
+   */
+  enrichSiblingDbos: (schedules: RegisteredSchedule[]) => Promise<DbosScheduledEntry[]>;
   /** STATIC manifest of sync-triggered sweeps (emitted as source 'in-process', category 'sync-triggered'). */
   getSyncTriggered: () => SyncTriggeredSweep[];
 }
@@ -292,6 +304,10 @@ export async function collectScheduleInventory(
   const getExternal = deps.getExternalProcess ?? (() => EXTERNAL_PROCESS_TIMERS);
   const getSyncTriggered = deps.getSyncTriggered ?? (() => SYNC_TRIGGERED_SWEEPS);
   const getSiblingManaged = deps.getSiblingManaged ?? (() => collectSiblingManagedTimers());
+  const enrichSiblingDbos =
+    deps.enrichSiblingDbos ??
+    ((schedules: RegisteredSchedule[]) =>
+      listDbosScheduledWorkflows({ getRegisteredSchedules: () => schedules }));
 
   const [dbos, routines, siblings] = await Promise.all([
     getDbos().catch(() => [] as DbosScheduledEntry[]),
@@ -327,6 +343,13 @@ export async function collectScheduleInventory(
   }
 
   const rows: ScheduleInventoryRow[] = [];
+
+  /* Federated DBOS rows dedupe against these. A schedule registered in BOTH this
+   * process and a sibling is ONE logical schedule — DBOS coordinates it through
+   * shared Postgres, so both copies would carry identical fire-state and the second
+   * row would read as a duplicate rather than as information. Federation exists to
+   * add what was MISSING, not to double-report what was already visible. */
+  const localDbosNames = new Set(dbos.map((d) => d.name));
 
   for (const d of dbos) {
     rows.push({
@@ -519,6 +542,58 @@ export async function collectScheduleInventory(
           classification: m.classification ?? null,
         },
       });
+    }
+
+    /*
+     * The sibling's DURABLE tier — its registered DBOS scheduled workflows.
+     *
+     * Emitted as `source: 'dbos'`, NOT 'external-process', and the asymmetry with
+     * the ephemeral rows above is deliberate on two counts:
+     *   (a) truthfulness — these ARE DBOS scheduled workflows, so an operator
+     *       auditing `source: 'dbos'` (the audience that missed the reaper for 6+
+     *       days) must find them under that filter;
+     *   (b) the poll-suspect timer-registration audit consumes exactly
+     *       'in-process' | 'managed' | 'external-process' and deliberately EXCLUDES
+     *       the durable tier (WI-6094). Tagging these 'external-process' would drag
+     *       them into an audit that was explicitly scoped to exclude them.
+     *
+     * Fire-state comes from shared Postgres via the existing enrichment seam, so a
+     * federated row carries the SAME lastFire/lastStatus a local one would — the
+     * sibling only had to hand over names + crontabs.
+     */
+    if (s.dbosSchedules?.length) {
+      let federatedDbos: DbosScheduledEntry[] = [];
+      try {
+        federatedDbos = await enrichSiblingDbos(s.dbosSchedules);
+      } catch {
+        federatedDbos = [];
+      }
+      for (const d of federatedDbos) {
+        if (localDbosNames.has(d.name)) continue;
+        rows.push({
+          source: 'dbos',
+          scope: 'operator',
+          tier: 'durable',
+          category: 'dbos-scheduled',
+          name: d.name,
+          installSlug: null,
+          cadence: d.crontab,
+          armed: true, // registered in that process == live there
+          lastFire: isoFromMs(d.lastFireMs),
+          nextFire: null,
+          lastError: null,
+          groupSlug: null,
+          detail: {
+            mode: d.mode,
+            queueName: d.queueName,
+            lastStatus: d.lastStatus,
+            process: s.label,
+            federated: true,
+            pid: s.pid,
+            port: s.port,
+          },
+        });
+      }
     }
   }
 

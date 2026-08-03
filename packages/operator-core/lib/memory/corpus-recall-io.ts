@@ -28,7 +28,7 @@
  */
 
 import { getOrgPg } from '@papercusp/db-org';
-import { runHybridSearch } from '@papercusp/search';
+import { runHybridSearch, type SearchHit } from '@papercusp/search';
 import { SEARCH_SOURCES } from '../agent-tools/search/sources';
 import { buildQueryEmbedder } from '../agent-tools/search/embedder';
 import {
@@ -141,6 +141,20 @@ async function corpusRecallEnabled(): Promise<boolean> {
   }
 }
 
+/** Engine rows → the pure core's hit shape. */
+function toCorpusHits(fused: { results: readonly SearchHit[] }): CorpusHit[] {
+  return fused.results.map((r) => ({
+    source: r.source,
+    sourceId: r.source_id,
+    scope: r.scope ?? null,
+    excerpt: r.excerpt ?? '',
+    highlight: r.highlight ?? null,
+    score: r.score,
+    ts: r.ts ?? null,
+    rankers: r.rankers,
+  }));
+}
+
 /**
  * Run the corpus leg and return its rendered pointer section.
  *
@@ -166,63 +180,114 @@ export async function recallCorpusContext(
   );
   if (sources.length === 0) return EMPTY;
 
+  const budgetChars = input.budgetChars ?? CORPUS_BUDGET_CHARS;
+
   try {
     const { sql } = getOrgPg();
     const embedBudget = corpusEmbedBudgetMs();
     const run = (async () => {
-      const embedder = await buildQueryEmbedder({ acquireBudgetMs: embedBudget });
-      return await runHybridSearch(sources, {
-        sql,
-        query: queryText,
-        workspaceId: input.workspaceId,
-        // MUST stay null: 99.993% of session turns carry harness_slug IS NULL,
-        // so a slug scopeFilter would make this leg structurally empty while
-        // looking healthy. Work-item scoping happens in the pure core instead.
-        scopeFilter: null,
-        // Over-fetch: the pure core drops self-session echoes, out-of-scope
-        // work-items, no-overlap hits and duplicate refs before the cap.
-        limit: Math.max(maxItems * 4, 8),
-        mode: 'hybrid',
-        embedder,
-        embedTimeoutMs: embedBudget,
-        // Highlights ARE used — the teaser and the relevance guard both read the
-        // match fragment rather than the body lead. Deferring means the engine
-        // hydrates them for the final top-N only, instead of paying ts_headline
-        // across the whole limit*3 over-fetch pool.
-        deferHighlight: true,
+      const built = await buildQueryEmbedder({ acquireBudgetMs: embedBudget });
+      // The cascade can run the engine TWICE on the same query text, and the
+      // query vector depends only on that text — memoise so the second stage
+      // reuses the first stage's embedding instead of paying for it again.
+      let embedP: Promise<number[]> | null = null;
+      const embedder = built
+        ? (t: string) => (embedP ??= built(t))
+        : built;
+
+      const search = (lexicalMode: 'and' | 'coverage-graded') =>
+        runHybridSearch(sources, {
+          sql,
+          query: queryText,
+          workspaceId: input.workspaceId,
+          // MUST stay null: 99.993% of session turns carry harness_slug IS NULL,
+          // so a slug scopeFilter would make this leg structurally empty while
+          // looking healthy. Work-item scoping happens in the pure core instead.
+          scopeFilter: null,
+          // Over-fetch: the pure core drops self-session echoes, out-of-scope
+          // work-items, no-overlap hits and duplicate refs before the cap.
+          limit: Math.max(maxItems * 4, 8),
+          mode: 'hybrid',
+          embedder,
+          embedTimeoutMs: embedBudget,
+          // Highlights ARE used — the teaser and the relevance guard both read the
+          // match fragment rather than the body lead. Deferring means the engine
+          // hydrates them for the final top-N only, instead of paying ts_headline
+          // across the whole limit*3 over-fetch pool.
+          deferHighlight: true,
+          lexicalMode,
+        });
+
+      const select = (
+        hits: CorpusHit[],
+        opts: { maxItems: number; budgetChars: number; knownRefs: ReadonlySet<string> },
+      ) =>
+        selectCorpusLines({
+          hits,
+          queryText,
+          excludeSessionId: input.excludeSessionId ?? null,
+          harnessSlugs: input.harnessSlugs ?? [],
+          knownRefs: opts.knownRefs,
+          maxItems: opts.maxItems,
+          budgetChars: opts.budgetChars,
+        });
+
+      // ── Stage 1: today's AND query, unchanged. ──
+      const andFused = await search('and');
+      const andHits = toCorpusHits(andFused);
+      const known = input.knownRefs ?? new Set<string>();
+      const stage1 = select(andHits, { maxItems, budgetChars, knownRefs: known });
+
+      // ── Stage 2 (P-017 / D-062 R2): relax ONLY when stage 1 under-fills. ──
+      //
+      // ⚠ THE TWO-STAGE SHAPE IS LOAD-BEARING — a single coverage-graded query
+      // is NOT a no-op-or-better substitute for it, and the obvious "it is a
+      // strict superset, so one query suffices" argument is FALSE at this level.
+      // `graded ⊇ and` holds per-source in SQL, but this leg merges two sources
+      // and then applies an overlap guard, a 6-item cap and an 1800-char budget
+      // over a REORDERED walk — so grading alone evicts lines the AND query used
+      // to admit. Measured live over 120 real turns: 180 admitted lines lost
+      // across 79/120 queries, 18 of them the control's top-1, while the mean
+      // admitted count stayed FLAT at 4.33. It was a swap, not an addition.
+      //
+      // Running stage 2 against the REMAINING cap and budget, with stage 1's
+      // refs already marked known, makes the result additive by construction:
+      // stage 1's lines are computed first and never revisited, so the admitted
+      // set can only grow. `bench/corpus-leg-lexical-acceptance-cli.ts` asserts
+      // exactly that (admitted-containment violations must be 0).
+      if (stage1.lines.length >= maxItems) {
+        return { lines: stage1.lines, dropped: stage1.dropped, fused: andFused, count: andHits.length };
+      }
+
+      const spent = stage1.lines.reduce((n, l) => n + l.line.length, 0);
+      const gradedFused = await search('coverage-graded');
+      const seen = new Set(andHits.map((h) => `${h.source}:${h.sourceId}`));
+      const gradedOnly = toCorpusHits(gradedFused).filter(
+        (h) => !seen.has(`${h.source}:${h.sourceId}`),
+      );
+      const stage2 = select(gradedOnly, {
+        maxItems: maxItems - stage1.lines.length,
+        budgetChars: budgetChars - spent,
+        knownRefs: new Set([...known, ...stage1.lines.map((l) => l.handle.ref)]),
       });
+
+      return {
+        lines: [...stage1.lines, ...stage2.lines],
+        dropped: [...stage1.dropped, ...stage2.dropped],
+        fused: gradedFused,
+        count: andHits.length + gradedOnly.length,
+      };
     })();
 
-    const fused = await withBound(run, corpusRecallTimeoutMs(), null);
-    if (!fused) return EMPTY;
-
-    const hits: CorpusHit[] = fused.results.map((r) => ({
-      source: r.source,
-      sourceId: r.source_id,
-      scope: r.scope ?? null,
-      excerpt: r.excerpt ?? '',
-      highlight: r.highlight ?? null,
-      score: r.score,
-      ts: r.ts ?? null,
-      rankers: r.rankers,
-    }));
-
-    const { lines, dropped } = selectCorpusLines({
-      hits,
-      queryText,
-      excludeSessionId: input.excludeSessionId ?? null,
-      harnessSlugs: input.harnessSlugs ?? [],
-      knownRefs: input.knownRefs,
-      maxItems,
-      budgetChars: input.budgetChars ?? CORPUS_BUDGET_CHARS,
-    });
+    const out = await withBound(run, corpusRecallTimeoutMs(), null);
+    if (!out) return EMPTY;
 
     return {
-      block: renderCorpusBlock(lines),
-      lines,
-      dropped,
-      embedderAvailable: fused.embedderAvailable,
-      candidateCount: hits.length,
+      block: renderCorpusBlock(out.lines),
+      lines: out.lines,
+      dropped: out.dropped,
+      embedderAvailable: out.fused.embedderAvailable,
+      candidateCount: out.count,
     };
   } catch (err) {
     if (process.env.NODE_ENV !== 'test') {

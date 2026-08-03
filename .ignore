@@ -1,0 +1,42 @@
+# ripgrep / fd ignore — GENERATED BUNDLES ONLY (EI-19448801536482587)
+#
+# This file is read by ripgrep and fd, NOT by git. It exists solely to keep
+# multi-megabyte GENERATED build artifacts out of interactive search results.
+# Nothing here is source, and nothing here is excluded from git by this file.
+#
+# WHY THIS FILE EXISTS — measured 2026-08-03:
+#
+#   papercusp-desktop/src-tauri/sidecar/serve.mjs             44,718,412 B
+#   papercusp-desktop/src-tauri/env-sidecars/staging/serve.mjs 44,549,123 B
+#   longest single line in each:                                3,965,335 B
+#
+# These are esbuild bundles that inline the whole of `operator-core`, minified
+# onto a handful of ~4MB lines. `grep -n` prints the MATCHING LINE, so one hit
+# inside a 4MB line dumps ~4MB into the caller's output. Because they inline
+# operator-core, nearly any symbol an agent searches for is present in them, so
+# this fires on ordinary searches rather than exotic ones.
+#
+# The concrete cost: a routine `grep -rn 'DEFAULT_CONTENT_DETECTORS'` (already
+# scoped with --include and already excluding node_modules) returned ~15,000
+# tokens of minified JS — roughly 4% of an agent's context window — to answer a
+# question whose real answer was 9 short lines. The loss is silent and
+# unrecoverable, and can push an agent into a compaction mid-task.
+#
+# Searching these is never what anyone wants: the source they were built from is
+# in packages/operator-core/lib/** and matches the same query. The repo already
+# treats them this way — ~12 lint guards (check-no-raw-setinterval,
+# check-timer-classification, check-no-control-bytes, scan-retirement-surface, …)
+# each hand-roll an `f.includes('/env-sidecars/')` skip. This file extends the
+# same established exclusion to interactive search, which had no equivalent.
+#
+# NOTE ON COVERAGE — this fixes ripgrep/fd (and therefore agent Grep tooling),
+# which is the common path. A raw `grep -rn` does NOT read .ignore files and is
+# still exposed; prefer rg, or bound the damage with `-I` / --max-columns.
+
+# Generated Tauri sidecar trees (esbuild bundles, vendored binaries, wasm blobs)
+papercusp-desktop/src-tauri/sidecar/
+papercusp-desktop/src-tauri/env-sidecars/
+
+# Composed rig-VM sidecar — build OUTPUT (already gitignored; listed so a local
+# build that predates that entry cannot leak into search either).
+.rig-sidecar-current/

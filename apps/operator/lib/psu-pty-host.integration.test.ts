@@ -33,6 +33,7 @@ import {
 // pty-force, reused by e8630's turn:interrupt tool). Importing the published
 // subpath keeps this an integration test of the actual chain, not a re-impl.
 import { interruptViaPty, findLiveHost } from '@papercusp/operator-core/lib/events/await/psu-pty-discovery';
+import { createTextCollector } from '@papercusp/operator-core/lib/child-output';
 
 /** A fake stdout that accumulates the pty's output; a non-TTY fake stdin. */
 function fakeIo() {
@@ -1462,14 +1463,18 @@ describe('SHUTDOWN — a finished agent session exits and closes its own window 
     envelope: Record<string, unknown>,
   ): Promise<Record<string, unknown> | null> {
     return new Promise((resolve) => {
-      let buf = '';
       let acked: Record<string, unknown> | null = null;
       const c = net.connect(sock, () => {
         c.write(JSON.stringify({ v: 1, ...envelope }));
         c.end();
       });
-      c.on('data', (d) => {
-        buf += d.toString('utf8');
+      // Boundary-safe accumulation: a multi-byte character split across two
+      // 'data' events must not decode to replacement chars (WI-6728 guard).
+      // Attached before our own listener, so `collected.text()` below already
+      // includes the chunk that triggered this callback.
+      const collected = createTextCollector(c);
+      c.on('data', () => {
+        const buf = collected.text();
         const nl = buf.indexOf('\n');
         if (nl === -1 || acked) return;
         try {
