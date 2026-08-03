@@ -652,7 +652,22 @@ done
 # frees first is grabbed by whichever waiter next polls it — no single slot
 # becomes a convoy point while siblings sit unused.
 if [ -z "$_held" ]; then
+  # EI-19343041616234869 — the ONLY output pc-heavy printed before this fell
+  # out entirely if a caller hit the fallback wait with the release gate NOT
+  # active (the "release gate is JUDGING..." line above is gated on that, so
+  # ordinary peer-slot contention alone produced it too, but never fired for
+  # this branch). A caller backgrounding this whole run (the documented
+  # ~150s+ idiom) then sees a genuinely empty log for the ENTIRE queued
+  # duration — a 0-byte log is indistinguishable from "not started",
+  # "died silently", and "queued for minutes", which is exactly the
+  # inference this line + the heartbeat below restore. Fires once, the
+  # instant queueing actually begins (never on the common uncontended
+  # fast-path above, which never reaches this branch at all).
+  echo "[pc-heavy] queued for a heavy slot (all $_slots slot(s) busy) —" \
+       "pid $$, waiting up to ${_timeout}s" >&2
   _fallback_deadline=$(( $(date +%s) + _timeout ))
+  _heartbeat_every=15
+  _last_heartbeat=$(date +%s)
   while :; do
     # Re-resolve each sweep so a waiter's admitted count tracks the box: load
     # dropping widens the probe set mid-wait, rising load narrows it back
@@ -668,7 +683,17 @@ if [ -z "$_held" ]; then
         eval "exec ${_fd}>&-" 2>/dev/null || true   # not ours — close it
       fi
     done
-    [ "$(date +%s)" -ge "$_fallback_deadline" ] && break
+    _now=$(date +%s)
+    # Periodic "still alive, still queued" heartbeat so a long wait (the
+    # normal case under a hard gate clamp) never goes silent for minutes at a
+    # stretch — same rationale as the enqueue line above, just amortized
+    # across the wait instead of a single point-in-time print.
+    if [ $(( _now - _last_heartbeat )) -ge "$_heartbeat_every" ]; then
+      echo "[pc-heavy] still queued ($(( _now - ( _fallback_deadline - _timeout ) ))s" \
+           "elapsed, pid $$, slots=$_slots)" >&2
+      _last_heartbeat="$_now"
+    fi
+    [ "$_now" -ge "$_fallback_deadline" ] && break
     sleep 0.5
   done
 fi

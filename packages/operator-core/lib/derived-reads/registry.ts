@@ -210,7 +210,15 @@ export async function readDerivedSnapshot<T>(
     // awaits the compute. The invariant is "a read never WAITS on the expensive
     // work", not "a miss is never noticed" — a read that blocked here would be
     // exactly the cold-load stall precompute exists to remove.
-    void warmMissedSnapshot(producer.key, workspaceId, harnessSlug);
+    //
+    // WI-7226: but do NOT warm when the stored version is NEWER than ours —
+    // this process is the superseded one, its write would be refused by the
+    // downgrade guard, and warming on every read turns a rolling deploy into a
+    // compute storm. Return the miss and let the newer process serve.
+    const storedVersion = row ? Number(row.producer_version ?? 1) : null;
+    if (storedVersion == null || storedVersion <= producer.producerVersion) {
+      void warmMissedSnapshot(producer.key, workspaceId, harnessSlug);
+    }
     return { payload: null, meta: MISSING_META };
   }
 
@@ -309,6 +317,25 @@ export async function refreshDerivedReads(ctx: {
        LIMIT 1
     `) as Array<{ computed_at: string | number | null; producer_version: number | null; payload_md5: string | null }>;
     const row = existing[0];
+
+    // WI-7226: a NEWER producerVersion already owns this key, so this process
+    // is running superseded code. Recomputing would burn the producer's full
+    // cost (13.8s plans.lint / 20s storage.usage / 27s soakReport) on EVERY
+    // tick — the freshness check below counts a version mismatch as stale, so
+    // it never backs off — and the write would be refused anyway by the
+    // downgrade guard. Skip outright and let the newer process own it. Honored
+    // even under `force`: force means "ignore the ttl", not "downgrade the row".
+    if (row && Number(row.producer_version ?? 1) > producer.producerVersion) {
+      outcomes.push({
+        key: producer.key,
+        harnessSlug,
+        refreshed: false,
+        skippedFresh: true,
+        computeMs: null,
+        error: null,
+      });
+      continue;
+    }
 
     if (!ctx.force) {
       const fresh =

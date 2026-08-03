@@ -256,6 +256,76 @@ function readDeclaredPremises(payload: unknown): CheckEntry[] {
   return out;
 }
 
+/**
+ * Does this evidence/probe text NAME THE SCOPE it searched?
+ * (false-premise-in-prescriptive-artifacts-2026-08-02 P-002.)
+ *
+ * ── WHY ABSENCE CLAIMS GET A STRICTER BAR THAN EVERY OTHER PREMISE ──────────
+ *
+ * For a normal premise, "I checked" is adequate evidence. For an ABSENCE claim
+ * it is not, and WI-7042 is the proof: that premise WAS checked. A real search
+ * ran and returned nothing. It searched `projections/work-offers.ts` — the
+ * receive/apply leg — and the helper lived in `offer-store.ts`. The method was
+ * sound; the SCOPE was wrong, and a scope-less "verified: I grepped for it"
+ * would have silenced exactly the warning that catches this.
+ *
+ * So an absence premise is only VERIFIED when its evidence says WHERE it looked.
+ * A negative result is a statement about a search boundary, never about the
+ * world — which is what makes "I checked" and "it does not exist" different
+ * claims, and why only this premise kind takes the stricter test.
+ *
+ * Fails OPEN in the safe direction (D-001 b): unrecognized phrasing reads as
+ * "no scope named", which merely keeps a warning the claimant can dismiss in
+ * one read. The opposite default would silence a warning on evidence that never
+ * established the absence — a silent false negative, and the expensive one.
+ *
+ * PURE and exported for tests.
+ */
+export function evidenceNamesScope(text: string): boolean {
+  const t = (text ?? '').toLowerCase();
+  if (!t.trim()) return false;
+  return [
+    /\b(whole|entire|full)\s+(repo|repository|tree|codebase|monorepo)\b/,
+    /\brepo[- ]wide\b/,
+    /\bacross\s+(the\s+)?(repo|repository|tree|codebase|monorepo|packages|libs|apps)\b/,
+    /\bevery\s+(file|module|package|workspace|call ?site)\b/,
+    /\ball\s+(call ?sites|packages|workspaces|of\s+(packages|libs|apps))\b/,
+    /\b(grep|rg|ripgrep|gitnexus)\b[^.\n]{0,60}\b(packages|libs|apps|-r|--include|repo|tree)\b/,
+    /\bsearched\b[^.\n]{0,60}\b(repo|tree|codebase|packages|libs|apps|everywhere)\b/,
+  ].some((re) => re.test(t));
+}
+
+/** Is a declared claim itself absence-shaped? Reuses the ONE detector so the
+ *  declared and derived paths cannot drift on what counts as an absence claim. */
+function isAbsenceClaim(claim: string): boolean {
+  return detectAbsencePremises(claim, 'work-item').length > 0;
+}
+
+/**
+ * P-002: downgrade a DECLARED ABSENCE premise whose evidence names no scope.
+ *
+ * D-001 (a) — REPLACE, don't annotate. A `✓ VERIFIED` badge sitting next to a
+ * footnote saying the evidence is inadequate would be read as a ✓; so the badge
+ * is REMOVED (the row renders `? PREDICTED`) and the recheck states what is
+ * actually missing. The original evidence is preserved inside the recheck text
+ * rather than deleted — it is a real observation, just not a sufficient one.
+ */
+function enforceAbsenceScope(rows: CheckEntry[]): CheckEntry[] {
+  return rows.map((row) => {
+    const verified = (row.verified ?? '').trim();
+    if (!verified || !isAbsenceClaim(row.claim)) return row;
+    if (evidenceNamesScope(`${verified} ${row.recheck ?? ''}`)) return row;
+    const { verified: _dropped, ...rest } = row;
+    return {
+      ...rest,
+      recheck:
+        `SCOPE NOT NAMED — this absence claim reports evidence ("${verified.slice(0, 90)}") that does not say WHERE it ` +
+        `looked, so it does not establish an absence. Re-state it naming the scope searched (whole repo, not one module): ` +
+        `a negative result describes a search boundary, not the world. WI-7042's premise WAS checked — over the wrong leg.`,
+    };
+  });
+}
+
 /** Loose overlap test between a declared claim and a derived one. Deliberately
  *  cheap: this only decides whether a declared row REPLACES a derived row, and
  *  the fail-open direction (keeping both) is merely redundant, not wrong. */
@@ -285,9 +355,14 @@ function overlaps(a: string, b: string): boolean {
  * PURE and exported for tests.
  */
 export function buildPremisesBrief(
-  declared: CheckEntry[],
+  declaredRaw: CheckEntry[],
   derived: DerivedPremise[],
 ): ClaimTimePremisesBrief | null {
+  // P-002 runs FIRST: a declared absence premise whose evidence names no scope is
+  // downgraded to PREDICTED here, so it can neither render a ✓ nor silence the
+  // derived row below. Ordering is the whole point — enforcing after the replace
+  // would let scope-less evidence delete the warning on its way past.
+  const declared = enforceAbsenceScope(declaredRaw);
   const verifiedDeclared = declared.filter((d) => (d.verified ?? '').trim().length > 0);
   const keptDerived = derived.filter((row) => !verifiedDeclared.some((d) => overlaps(d.claim, row.claim)));
   const premises: CheckEntry[] = [...declared, ...keptDerived.map(({ claim, recheck }) => ({ claim, recheck }))].slice(

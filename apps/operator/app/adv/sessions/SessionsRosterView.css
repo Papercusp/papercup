@@ -736,7 +736,12 @@
   z-index: 2;
   margin: 0 -8px;
   padding: 3px 8px;
-  font-size: 9px;
+  /* 9px -> 10.5px with the P-008 type lift (owner: rail text is hard to read).
+     Measured, the rails' CONTRAST was never the problem — body text already
+     ran 15.1:1 and even the muted tier 7.7:1 on this ground. The defect was
+     SIZE alone, so this raises the scale and leaves the tonal ladder intact
+     (lifting contrast too would have flattened mute into body text). */
+  font-size: 10.5px;
   background: var(--pc-dossier-cap-fill);
   color: var(--pc-dossier-cap-label);
 }
@@ -749,7 +754,7 @@
 .pc-zone--activity .pc-dossier__h .pc-dossier__badge-count {
   background: var(--pc-dossier-cap-veil);
   color: var(--pc-dossier-cap-label);
-  font-size: 8.5px;
+  font-size: 10px;
 }
 .pc-zone--activity .pc-dossier__h .pc-dossier__h-note,
 .pc-zone--activity .pc-dossier__h .pc-dossier__h-note--err {

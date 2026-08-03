@@ -61,6 +61,11 @@ const CONTENT_STYLE: CSSProperties = {
   border: '1px solid color-mix(in oklab, var(--accent), transparent 62%)',
   borderRadius: 10,
   padding: 6,
+  /* Orders this Content WITHIN the popper wrapper only — it cannot lift the
+     menu above the app shell, because the wrapper (`position: fixed`) makes
+     its own stacking context. The rule that actually decides whether this menu
+     is reachable is `[data-radix-popper-content-wrapper] { z-index: 90 }` in
+     harness.css; do not "fix" a layering bug by raising the number here. */
   zIndex: 70,
   boxShadow: '0 18px 54px rgba(0,0,0,0.62), inset 0 1px 0 rgba(255,255,255,0.06)',
   fontSize: 12,

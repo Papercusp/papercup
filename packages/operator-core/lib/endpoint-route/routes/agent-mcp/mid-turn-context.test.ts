@@ -308,8 +308,40 @@ describe('splitLegQueries — de-diluting the cosine query (P-044 / F-L, motivat
     const derived =
       'session history slow apps/operator-vite/src · apps/operator-vite/src/components/HistoryDropdown.tsx';
     const { cosine, lexical } = splitLegQueries(derived);
-    expect(cosine).toBe('session history slow ·');
+    // No trailing `·`: the second segment was nothing BUT a path, so its
+    // separator is debris once the path is gone (WI-6857).
+    expect(cosine).toBe('session history slow');
     expect(lexical).toBe(derived);
+  });
+
+  it('sweeps the separator + "(no result)" debris the strip leaves behind (WI-6857)', () => {
+    // The WI-6512 replay's batch 63, verbatim: a barren Grep, a Read that is
+    // pure path, and a Grep carrying its own path. Before the sweep the cosine
+    // query was `session history (no result) · · agents running` — 46 chars of
+    // which ~28% was residue this function had already judged non-prose.
+    const derived = deriveBatchQuery([
+      {
+        tool: 'Grep',
+        toolInput: { pattern: 'agents running', path: 'apps/operator-vite/src' },
+        toolResponse: 'apps/operator-vite/src/components/adv/AgentsRunningPill.tsx',
+      },
+      {
+        tool: 'Read',
+        toolInput: { file_path: 'apps/operator-vite/src/components/adv/AgentsRunningPill.tsx' },
+        toolResponse: 'export function AgentsRunningPill() { … }',
+      },
+      {
+        tool: 'Grep',
+        toolInput: { pattern: 'session history', path: 'apps/operator-vite/src' },
+        toolResponse: 'No matches found',
+      },
+    ]);
+    const { cosine, lexical } = splitLegQueries(derived);
+    expect(cosine).toBe('session history · agents running');
+    // The LEXICAL leg is byte-identical to the derived text — it keeps the
+    // paths AND the barren marker, both of which it can actually use.
+    expect(lexical).toBe(derived);
+    expect(lexical).toContain('(no result)');
   });
 
   it('strips an absolute path and a single-slash path that carries an extension', () => {

@@ -311,6 +311,132 @@ describe('refreshDerivedReads', () => {
   });
 });
 
+// ── WI-7226: producerVersion is a RATCHET, on the write side too ─────────────
+//
+// One row per (workspace, harness, key), but three long-running writers on this
+// box (:3170 staging, :3070 release, papercup-bg-host), none hot-reloading. So
+// after a producerVersion bump they disagree until each restarts. Measured live
+// on plans.lint: v4 written 03:57:01Z, clobbered back to v2 at 03:58:12Z, ten
+// consecutive reads returning 0 rows while both sides re-warmed at ~14-22s a go.
+describe('producerVersion downgrade guard (WI-7226)', () => {
+  it('does NOT recompute when a NEWER producerVersion already owns the key', async () => {
+    const compute = vi.fn();
+    registerDerivedRead({
+      key: 'test.slow',
+      ttlMs: 1_000,
+      producerVersion: 2,
+      scope: 'workspace',
+      compute,
+    });
+    // Stored v3 > our v2, and long past the ttl — without the guard this is the
+    // exact shape that recomputes on EVERY tick (a mismatch reads as stale).
+    sqlResults = [[{ computed_at: Date.now() - 60_000, producer_version: 3 }]];
+
+    const [outcome] = await refreshDerivedReads({ workspaceId: 'ws-test', harnessSlug: 'h' });
+
+    expect(compute).not.toHaveBeenCalled();
+    expect(outcome.skippedFresh).toBe(true);
+    expect(outcome.refreshed).toBe(false);
+  });
+
+  it('holds even under force — force means "ignore the ttl", not "downgrade the row"', async () => {
+    const compute = vi.fn();
+    registerDerivedRead({
+      key: 'test.slow',
+      ttlMs: 60_000,
+      producerVersion: 1,
+      scope: 'workspace',
+      compute,
+    });
+    sqlResults = [[{ computed_at: Date.now() - 60_000, producer_version: 5 }]];
+
+    await refreshDerivedReads({ workspaceId: 'ws-test', harnessSlug: 'h', force: true });
+
+    expect(compute).not.toHaveBeenCalled();
+  });
+
+  it('still recomputes when the stored version is OLDER — an UPGRADE must not be blocked', async () => {
+    const compute = vi.fn().mockResolvedValue(['new-shape']);
+    registerDerivedRead({
+      key: 'test.slow',
+      ttlMs: 1_000,
+      producerVersion: 4,
+      scope: 'workspace',
+      compute,
+    });
+    sqlResults = [[{ computed_at: Date.now() - 60_000, producer_version: 2 }], []];
+
+    const [outcome] = await refreshDerivedReads({ workspaceId: 'ws-test', harnessSlug: 'h' });
+
+    expect(compute).toHaveBeenCalledOnce();
+    expect(outcome.refreshed).toBe(true);
+  });
+
+  it('the upsert carries a WHERE that refuses a downgrade', async () => {
+    registerDerivedRead({
+      key: 'test.slow',
+      ttlMs: 1_000,
+      producerVersion: 3,
+      scope: 'workspace',
+      compute: vi.fn().mockResolvedValue(['x']),
+    });
+    sqlResults = [[{ computed_at: Date.now() - 60_000, producer_version: 3 }], []];
+
+    await refreshDerivedReads({ workspaceId: 'ws-test', harnessSlug: 'h' });
+
+    const upsert = sqlMock.mock.calls.at(-1)?.[0] as string[] | undefined;
+    const text = Array.isArray(upsert) ? upsert.join('') : String(upsert ?? '');
+    expect(text).toContain('payload = EXCLUDED.payload');
+    // The ratchet itself. Without this the newest write is racy, not durable.
+    expect(text).toContain('producer_version <= EXCLUDED.producer_version');
+  });
+
+  it('a read whose stored version is NEWER does not warm — the superseded process must not storm', async () => {
+    const compute = vi.fn().mockResolvedValue([]);
+    registerDerivedRead({
+      key: 'test.slow',
+      ttlMs: 60_000,
+      producerVersion: 1,
+      scope: 'workspace',
+      compute,
+    });
+    sqlResults = [
+      [{ payload: [{ newer: true }], computed_at: Date.now(), compute_ms: 1, producer_version: 9, error: null }],
+    ];
+
+    const { payload, meta } = await readDerivedSnapshot('test.slow');
+
+    // Still absent to THIS reader — it cannot parse a shape from the future.
+    expect(payload).toBeNull();
+    expect(meta.missing).toBe(true);
+    // But it must not try to "heal" it: the write would be refused anyway, and
+    // warming on every read is what turns a rolling deploy into a compute storm.
+    expect(compute).not.toHaveBeenCalled();
+  });
+
+  it('a read whose stored version is OLDER still warms — that is a legitimate upgrade', async () => {
+    const compute = vi.fn().mockResolvedValue([]);
+    registerDerivedRead({
+      key: 'test.slow',
+      ttlMs: 60_000,
+      producerVersion: 5,
+      scope: 'workspace',
+      compute,
+    });
+    sqlResults = [
+      [{ payload: [{ old: true }], computed_at: Date.now(), compute_ms: 1, producer_version: 2, error: null }],
+      [{ computed_at: Date.now() - 60_000, producer_version: 2 }],
+      [],
+    ];
+
+    const { payload, meta } = await readDerivedSnapshot('test.slow');
+
+    expect(payload).toBeNull();
+    expect(meta.missing).toBe(true);
+    await vi.waitFor(() => expect(compute).toHaveBeenCalled());
+  });
+});
+
 describe('refreshDerivedReads producer ordering (WI-5471)', () => {
   it('runs producers shortest-ttl-FIRST so a heavy long-walk never head-of-line-blocks the liveness ones', async () => {
     // Registration order is deliberately the WORST case (heaviest/longest-ttl first),

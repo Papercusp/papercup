@@ -4887,6 +4887,41 @@
 body:has(.h-top-collapse-inline) main {
   z-index: 70;
 }
+
+/* ── every body-portaled Radix popper must clear the promoted shell ──────────
+ * MEASURED root cause of "none of the option selector dropdowns are working in
+ * the bottom panel" (session-popup-compaction-and-contrast-2026-08-02 P-006).
+ *
+ * Radix wraps popper Content in `[data-radix-popper-content-wrapper]`, which is
+ * `position: fixed`. A fixed element ALWAYS creates its own stacking context —
+ * so a `z-index` set on the Content (harness/Select.tsx CONTENT_STYLE used 70)
+ * only orders things INSIDE that wrapper. The wrapper itself joins the ROOT
+ * stacking context at `z-index: auto`, i.e. effectively 0.
+ *
+ * The rule immediately above promotes `<main>` to 70, and `.oracle-fab` /
+ * `.oracle-dock` to 80. So every portaled menu painted BEHIND the whole app
+ * shell: mounted, positioned correctly, `opacity: 1`, `pointer-events: auto`,
+ * and completely unreachable. Measured live in a Tauri webview — the menu
+ * opened at 379,358 (350x168, fully inside the modal and the viewport) while
+ * `document.elementFromPoint()` at both its top-left AND its centre returned
+ * `.oracle-empty-state`, the chat placeholder BEHIND it in the DOM but ABOVE it
+ * in paint order. That is why the symptom is "nothing happens" rather than a
+ * visibly broken menu, and why no unit test caught it: jsdom does not paint,
+ * so hit-testing and stacking contexts simply do not exist there.
+ *
+ * Fixed at the WRAPPER, which is the only element that can win, and applied to
+ * every popper rather than just Select — DropdownMenu, Popover and Tooltip
+ * portal through the same wrapper and had the identical latent defect. */
+[data-radix-popper-content-wrapper] {
+  /* Above EVERY shell layer, not just the obvious ones. `<main>` is 70 and the
+     floating Oracle controls are 80 — but `.oracle-dock--maximal-hud` reaches
+     1450, so a menu opened in maximal-HUD mode stayed buried at any value near
+     90. That case was found by `_lints/popper-stacking.test.ts`, which asserts
+     this invariant against the whole stylesheet rather than against the two or
+     three layers a reader happens to remember. Raise this if the lint fails —
+     do not lower a shell layer to meet it. */
+  z-index: 1500;
+}
 .h-root {
   position: relative;
 }

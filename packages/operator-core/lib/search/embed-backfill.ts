@@ -133,9 +133,14 @@ export async function resolveBackfillEmbedder(): Promise<ResolvedEmbedder> {
     // Prose backfill is STORAGE, so EmbeddingGemma gets the document prompt.
     buildGemma: () => buildSidecarAwareEmbedder('gemma', 'document'),
     // Required by the cascade seam since P-014 made harrier selectable; the
-    // sweep itself never STORES harrier vectors (native 1024 ≠ the vector(384)
-    // columns — the dims guard in runBackfillSweep skips the whole sweep), but
-    // an unresolvable preference must not throw and kill the periodic tick.
+    // sweep itself never STORES harrier vectors (native 1024 ≠ PROSE_VECTOR_DIMS
+    // — the dims guard in runBackfillSweep skips the whole sweep), but an
+    // unresolvable preference must not throw and kill the periodic tick.
+    // Stated as the CONSTANT, not a literal width: migration 727 moves the prose
+    // columns 384 → 768 and this comment used to name 384, which would have read
+    // as "harrier is excluded because it is not 384" — true of the old width and
+    // wrong about the reason. Harrier is excluded because 1024 ≠ the prose width,
+    // whatever that width currently is.
     buildHarrier: () => buildSidecarAwareEmbedder('harrier', 'document'),
   });
 }

@@ -133,6 +133,28 @@ export interface DevDeployState {
 
   /** `staging` HEAD — the churning integration branch (NOT main). */
   stagingHead: CommitRef | null;
+  /**
+   * EI-19341938682536275 — the LOCAL remote-tracking ref `origin/<integrationBranch>`, i.e.
+   * what git-sync last SUCCEEDED in pushing. A plain `git push` updates this ref as a side
+   * effect of a successful push (no network call needed here to read it), so it stays current
+   * for free on every tick that actually reaches origin — and stays FROZEN the instant pushing
+   * stops working, which is exactly the signal `stagingAheadOfOrigin` below needs. null when the
+   * repo has no `origin` remote (e.g. a packaged/repo-less install, or a fresh test checkout) or
+   * the ref hasn't been fetched/pushed yet — treated as "unmeasured", never as caught-up.
+   */
+  originHead: CommitRef | null;
+  /**
+   * THE SAFETY-CRITICAL LEG (EI-19341938682536275, split out of WI-6996's origin-freeze
+   * incident): commits `staging` has that `origin/<integrationBranch>` doesn't — i.e. NOT YET
+   * BACKED UP OFF THIS BOX. Unlike `greenPinBehindStaging` below (which is essentially ALWAYS
+   * > 0 by design, since the gate runs hourly while commits happen continuously — EI-11012),
+   * git-sync commits AND pushes in the same tick, so in healthy operation this sits at 0 between
+   * ticks and only climbs when pushing itself is stuck. A nonzero value here is NEVER "normal
+   * buffer" the way `greenPinBehindStaging` is, however small — during the 2026-08-02 outage this
+   * fleet's own `dev:why` reported "99 commits … normal" while ~82 of them had reached nowhere
+   * off-box for 6h. null when `originHead` is null (unmeasured, never treated as caught-up).
+   */
+  stagingAheadOfOrigin: number | null;
   /** The green pin = `main` HEAD — the last commit the full-suite gate passed, i.e. what a
    *  deploy WOULD ship. null if unset. */
   greenPin: CommitRef | null;
@@ -351,8 +373,9 @@ function lastDeployMtime(releaseRoot: string): number | null {
  * with `errors[]` populated rather than throwing, so the panel always renders.
  *
  * NOT exported — every caller goes through the cached `devDeployState()` wrapper
- * below. One call here fans out ~6 `git` subprocess fork/execs (3×commitRef, each
- * a single `git log -1`, + 3×aheadCount `rev-list`). git spawning on the request-
+ * below. One call here fans out ~8 `git` subprocess fork/execs (4×commitRef, each
+ * a single `git log -1`, + 4×aheadCount `rev-list` — EI-19341938682536275 added the
+ * `origin/<branch>` resolve + its ahead-count, both LOCAL, no network). git spawning on the request-
  * worker loop has been pinned by cpuprofile attribution as the single largest
  * application-attributable event-loop cost TWICE — round-4 P-015
  * (infra-perf-reliability-audit-round4, ~26% of real on-CPU work) and again
@@ -368,16 +391,21 @@ async function computeDevDeployState(): Promise<DevDeployState> {
 
   // cfg.integrationBranch === 'staging' (the churning firehose); cfg.releaseRef === 'main'
   // (the green pin). The bindings are named for what they HOLD — see the naming note above.
-  const [stagingHeadR, greenPinR, deployedR] = await Promise.all([
+  // EI-19341938682536275: `origin/<integrationBranch>` is resolved LOCALLY (the remote-tracking
+  // ref a successful `git push` already updates as a side effect) — no network call, same cost
+  // class as the other 3 resolves below.
+  const [stagingHeadR, greenPinR, deployedR, originHeadR] = await Promise.all([
     commitRef(cfg.integrationRoot, cfg.integrationBranch),
     commitRef(cfg.integrationRoot, cfg.releaseRef),
     commitRef(cfg.releaseRoot, 'HEAD'),
+    commitRef(cfg.integrationRoot, `origin/${cfg.integrationBranch}`),
   ]);
   // Every downstream reader keeps the plain `CommitRef | null` shape it always
   // had — only `errors[]` (below) additionally consumes the `unknown` reason.
   const stagingHead = stagingHeadR.ref;
   const greenPin = greenPinR.ref;
   const deployed = deployedR.ref;
+  const originHead = originHeadR.ref;
 
   // EI-18788901632987174: report WHY, not just THAT — `unknown` distinguishes
   // "this ref does not exist" (final) from "the git call itself failed"
@@ -386,22 +414,34 @@ async function computeDevDeployState(): Promise<DevDeployState> {
   if (stagingHeadR.unknown) errors.push(formatCellUnknown(stagingHeadR.unknown));
   if (greenPinR.unknown) errors.push(formatCellUnknown(greenPinR.unknown));
   if (deployedR.unknown) errors.push(formatCellUnknown(deployedR.unknown));
+  // EI-19341938682536275: an absent `origin/<branch>` ref is a NORMAL state (no `origin`
+  // remote configured at all — a packaged install, a fresh local-only checkout) and must
+  // NOT degrade the snapshot the way the required refs above do. Only a genuine git-
+  // invocation failure (`resolver-failed`) is worth surfacing here; "the ref doesn't exist"
+  // (`not-applicable`) just means `originHead`/`stagingAheadOfOrigin` stay null.
+  if (originHeadR.unknown && originHeadR.unknown.code === 'resolver-failed') {
+    errors.push(formatCellUnknown(originHeadR.unknown));
+  }
 
   // All counts are measured in the integration tree (it has every object — the
   // release worktree shares its object store). deployed must be reachable there.
   // aheadCount(from, to) = `rev-list --count from..to` = commits `to` has that `from` lacks.
-  const [deployedBehindStaging, greenPinBehindStaging, deployedBehindGreenPin] = await Promise.all([
+  const [deployedBehindStaging, greenPinBehindStaging, deployedBehindGreenPin, stagingAheadOfOrigin] = await Promise.all([
     // live :3070 → staging tip (spans the un-checkpointed buffer; not a fault on its own)
     deployed && stagingHead ? aheadCount(cfg.integrationRoot, deployed.sha, stagingHead.sha) : Promise.resolve(null),
     // green pin (main) → staging tip = THE STAGING BUFFER (normal; not a deploy fault)
     greenPin && stagingHead ? aheadCount(cfg.integrationRoot, greenPin.sha, stagingHead.sha) : Promise.resolve(null),
     // live :3070 → green pin (main) = THE REAL DEPLOY GAP (green but not shipped)
     deployed && greenPin ? aheadCount(cfg.integrationRoot, deployed.sha, greenPin.sha) : Promise.resolve(null),
+    // origin/<branch> → staging tip = THE SAFETY-CRITICAL UNPUSHED LEG (never "normal")
+    originHead && stagingHead ? aheadCount(cfg.integrationRoot, originHead.sha, stagingHead.sha) : Promise.resolve(null),
   ]);
 
   return {
     ...cfg,
     stagingHead,
+    originHead,
+    stagingAheadOfOrigin,
     greenPin,
     deployed,
     deployedAtMs: lastDeployMtime(cfg.releaseRoot),

@@ -1595,14 +1595,78 @@ describe('computeStages: position x health', () => {
       expect(stage(s, 'pushed').lever).toBeNull();
     });
 
-    it('names the design AND the real lever instead of "pushed NOTHING"', () => {
+    it('names the design AND the real (p2p publish) lever instead of "pushed NOTHING"', () => {
       const s = computeStages(input({ positions: unpushed, gitSync: commitOnly }));
       const detail = stage(s, 'pushed').detail ?? '';
       expect(detail).toMatch(/COMMIT-ONLY/);
       expect(detail).toMatch(/bridged/);
-      expect(detail).toMatch(/GREENING THE GATE/);
+      expect(detail).toMatch(/p2p publish/);
       // Must NOT reuse the push-fault wording that caused the misdiagnosis.
       expect(detail).not.toMatch(/does NOT mean pushed/);
+    });
+
+    describe('EI-19341723994516667: "greening the gate" was DISPROVED as the blanket lever', () => {
+      // WI-6996 measured staging 29 commits AHEAD of the green pin while origin sat
+      // frozen for ~6h — publish admission (publish-guard.ts) is a CONTENT check
+      // (oversized blobs / secrets), never a release-gate check, so a message that
+      // defaults to "green the gate" sends the reader to a lever that cannot move
+      // this leg. The default (no own_head_publish signal) message must not claim
+      // greening the gate is THE lever, and a real publish-leg fault must be named
+      // instead of buried behind it.
+
+      it('with no own_head_publish signal, never claims greening the gate is the lever', () => {
+        const s = computeStages(input({ positions: unpushed, gitSync: commitOnly }));
+        const detail = stage(s, 'pushed').detail ?? '';
+        expect(detail).not.toMatch(/GREENING THE GATE/);
+        expect(detail).toMatch(/NOT gated by the release\/green-checkpoint gate/);
+        expect(stage(s, 'pushed').lever).toBeNull();
+      });
+
+      it('a REFUSED p2p publish leg is `broken`, names the refusal, and points at own_head_publish — not the gate', () => {
+        const refused = {
+          ...commitOnly,
+          ownHeadPublish: { refused: 'secrets', backlogRemains: null, publishedSha: null, sha: null },
+        };
+        const s = computeStages(input({ positions: unpushed, gitSync: refused }));
+        expect(stage(s, 'pushed').health).toBe('broken');
+        const detail = stage(s, 'pushed').detail ?? '';
+        expect(detail).toMatch(/REFUSING to publish \(secrets\)/);
+        expect(detail).toMatch(/NOT the green gate/);
+        expect(detail).not.toMatch(/GREENING THE GATE/);
+        expect(stage(s, 'pushed').lever).toMatch(/own_head_publish/);
+        expect(stage(s, 'pushed').lever).toMatch(/NOT the green gate/);
+      });
+
+      it('an admitted-but-UNDRAINED backlog is `stalled`, names the backlog, and points at own_head_publish — not the gate', () => {
+        const backlogged = {
+          ...commitOnly,
+          ownHeadPublish: {
+            refused: null,
+            backlogRemains: true,
+            publishedSha: 'abcdef1234567890',
+            sha: 'fedcba0987654321',
+          },
+        };
+        const s = computeStages(input({ positions: unpushed, gitSync: backlogged }));
+        expect(stage(s, 'pushed').health).toBe('stalled');
+        const detail = stage(s, 'pushed').detail ?? '';
+        expect(detail).toMatch(/UNDRAINED BACKLOG/);
+        expect(detail).toMatch(/abcdef12/);
+        expect(detail).toMatch(/fedcba09/);
+        expect(detail).not.toMatch(/GREENING THE GATE/);
+        expect(stage(s, 'pushed').lever).toMatch(/own_head_publish/);
+        expect(stage(s, 'pushed').lever).toMatch(/NOT the green gate/);
+      });
+
+      it('a fully-drained publish leg (backlogRemains: false) stays `disabled` with no fault framing', () => {
+        const drained = {
+          ...commitOnly,
+          ownHeadPublish: { refused: null, backlogRemains: false, publishedSha: 'a', sha: 'a' },
+        };
+        const s = computeStages(input({ positions: unpushed, gitSync: drained }));
+        expect(stage(s, 'pushed').health).toBe('disabled');
+        expect(stage(s, 'pushed').lever).toBeNull();
+      });
     });
 
     it('a REAL fault still outranks commit-only — conflicts/errors stay loud', () => {

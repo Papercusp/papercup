@@ -436,6 +436,21 @@ function gateStage(snap: GitPipelineSnapshot, failingFiles: string[]): WhyChainS
  */
 function deployStage(snap: GitPipelineSnapshot): WhyChainStage {
   const d = snap.deploy;
+  // EI-19341938682536275: the UNPUSHED leg is checked FIRST and independently of the local
+  // gate/deploy pipeline below (which never touches origin at all) — a "DEPLOY: ok" verdict
+  // about what's live on :3070 says nothing about whether the work is backed up off this box.
+  // Unlike `greenPinBehindStaging` (checked further down), git-sync commits AND pushes in the
+  // SAME tick, so this sits at 0 in healthy operation; nonzero here is NEVER "normal buffer" —
+  // it means pushing itself is stuck. This is the exact "DEPLOY: ok … 99 commits … normal" gloss
+  // that read green through a 6h origin-freeze while ~82 commits existed only on one box's disk.
+  if (d.stagingAheadOfOrigin != null && d.stagingAheadOfOrigin > 0) {
+    return {
+      stage: 'deploy',
+      status: 'degraded',
+      reason: `${d.stagingAheadOfOrigin} commit(s) on \`${d.integrationBranch}\` have NOT reached \`origin\` — NOT backed up off this box (this is never "normal", however small the count; git-sync pushes on every commit tick, so a stuck push is the only way this stays nonzero)`,
+      nextVerb: 'dev:pipeline_position',
+    };
+  }
   if (d.deployedBehindGreenPin != null && d.deployedBehindGreenPin > 0) {
     return {
       stage: 'deploy',

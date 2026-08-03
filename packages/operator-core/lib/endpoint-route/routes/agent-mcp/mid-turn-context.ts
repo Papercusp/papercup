@@ -281,9 +281,26 @@ const COSINE_PATH_TOKEN_RE =
 export function splitLegQueries(derived: string): { cosine: string; lexical: string } {
   const lexical = derived;
   const stripped = derived.replace(COSINE_PATH_TOKEN_RE, ' ').replace(/\s+/g, ' ').trim();
-  // Punctuation-only residue ("· ·", "(no result)") is not prose worth keeping.
-  const hasWords = /[A-Za-z0-9]/.test(stripped.replace(/\(no result\)/g, ''));
-  return { cosine: hasWords ? stripped : lexical, lexical };
+  // Then sweep the DEBRIS the strip leaves behind, per segment (WI-6857).
+  //
+  // The strip is per-token, so a call whose whole query was a path collapses to
+  // nothing — but `deriveBatchQuery`'s ` · ` separators stay, and so does the
+  // `(no result)` marker it appends to a barren call. Measured on the WI-6512
+  // replay's batch 63: the emitted cosine query was
+  // `session history (no result) · · agents running`, ~28% of it residue. This
+  // function ALREADY judged both to be non-prose — `hasWords` discounted them
+  // when deciding whether to fall back — and then embedded them anyway.
+  //
+  // The lexical leg keeps both: `(no result)` is real signal (D-027) and that
+  // leg token-matches, so a marker costs it nothing. It is only in the COSINE
+  // leg, where the whole query becomes ONE vector, that a bare separator and
+  // the generic tokens "no"/"result" are pull without meaning.
+  const cosine = stripped
+    .split('·')
+    .map((seg) => seg.replace(/\(no result\)/g, ' ').replace(/\s+/g, ' ').trim())
+    .filter((seg) => /[A-Za-z0-9]/.test(seg))
+    .join(' · ');
+  return { cosine: cosine || lexical, lexical };
 }
 
 const midTurnContext = defineTool({

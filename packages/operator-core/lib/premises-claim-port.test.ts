@@ -14,6 +14,7 @@ import {
   stripNonProse,
   detectAbsencePremises,
   buildPremisesBrief,
+  evidenceNamesScope,
   type DerivedPremise,
 } from './premises-claim-port';
 
@@ -87,6 +88,26 @@ describe('detectAbsencePremises', () => {
   });
 });
 
+describe('evidenceNamesScope (P-002)', () => {
+  it('accepts evidence that names where it looked', () => {
+    for (const s of [
+      'grepped the whole repo 2026-08-02',
+      'searched across packages/ and libs/',
+      'repo-wide ripgrep, zero hits',
+      'checked every call site',
+      'rg over packages, libs, apps — nothing',
+    ]) {
+      expect(evidenceNamesScope(s), s).toBe(true);
+    }
+  });
+
+  it('rejects evidence that only asserts a search happened', () => {
+    for (const s of ['I checked', 'grepped for it and found nothing', 'verified, none found', '']) {
+      expect(evidenceNamesScope(s), s).toBe(false);
+    }
+  });
+});
+
 describe('buildPremisesBrief', () => {
   it('returns null when there is nothing to warn about', () => {
     expect(buildPremisesBrief([], [])).toBeNull();
@@ -116,6 +137,31 @@ describe('buildPremisesBrief', () => {
     const declared = [{ claim: 'There is no exported read helper for harness_shared.p2p_work_offers' }];
     const brief = buildPremisesBrief(declared, derive(WI_7042))!;
     expect(brief.unverified).toBeGreaterThan(0);
+  });
+
+  it('a SCOPE-LESS declared absence premise does NOT silence the derived row (P-002)', () => {
+    // WI-7042's premise WAS checked — a real grep, over the wrong leg. So "I
+    // checked" is not evidence of an absence; only "I checked HERE" is.
+    const declared = [
+      {
+        claim: 'There is no exported read helper for harness_shared.p2p_work_offers',
+        verified: 'I grepped for it and found nothing',
+      },
+    ];
+    const brief = buildPremisesBrief(declared, derive(WI_7042))!;
+    expect(brief).not.toBeNull();
+    expect(brief.unverified).toBeGreaterThan(0);
+    // Replaced, not annotated: no ✓ badge survives on that row.
+    expect(brief.rendered.some((r) => r.startsWith('- ✓'))).toBe(false);
+    expect(brief.rendered.join('\n')).toMatch(/SCOPE NOT NAMED/);
+    // The original observation is preserved, not deleted.
+    expect(brief.rendered.join('\n')).toContain('I grepped for it and found nothing');
+  });
+
+  it('a NON-absence premise keeps its ✓ on plain evidence (the stricter bar is absence-only)', () => {
+    const declared = [{ claim: 'The gate was green at cut time', verified: 'checked at 23:00Z' }];
+    const brief = buildPremisesBrief(declared, derive(WI_7042))!;
+    expect(brief.rendered.some((r) => r.startsWith('- ✓'))).toBe(true);
   });
 
   it('keeps an unrelated derived row even when another premise is verified', () => {

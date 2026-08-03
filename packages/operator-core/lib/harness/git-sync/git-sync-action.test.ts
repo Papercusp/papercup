@@ -190,7 +190,8 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
 // importing the action module registers `git-sync` into the system-action registry,
 // exactly as production's register-system-actions side-effect import does.
 import './git-sync-action';
-import { isResolverInFlight, acquireWithContentionRetry } from './git-sync-action';
+import { isResolverInFlight, acquireWithContentionRetry, formatOwnHeadPublishedLine } from './git-sync-action';
+import type { OwnHeadPublishTickOutcome } from '../../sync/pot-git/own-head-publish';
 import { getSystemAction, getSystemActionEntry, type SystemActionCtx } from '../routines/system-actions';
 
 // --- helpers over the captured PG writes ------------------------------------------
@@ -1208,5 +1209,67 @@ describe('acquireWithContentionRetry (EI-1720 — transient pg 57014/55P03 is re
     const r = await acquireWithContentionRetry(run, { backoffsMs: [1], sleep: async () => {} });
     expect(r).toEqual({ ok: false, reason: 'held' });
     expect(run).toHaveBeenCalledTimes(2);
+  });
+});
+
+// EI-19341838904344665 recurrence guard: the own-head "published" log line used to
+// name `outcome.headSha` (the worktree head JUDGED this tick, current by
+// construction) rather than `outcome.publishedSha` (what actually became
+// servable) — a false, authoritative-looking line that produced two OPPOSITE
+// wrong diagnoses from two separate agents during the 2026-08-02 freeze.
+describe('formatOwnHeadPublishedLine (EI-19341838904344665)', () => {
+  const baseOutcome: OwnHeadPublishTickOutcome = {
+    ran: true,
+    changed: true,
+    branch: 'staging',
+    headSha: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    priorSha: null,
+    refused: null,
+    exemptedFindings: [],
+    errors: [],
+  };
+
+  it('names publishedSha, never headSha, as what was published', () => {
+    const line = formatOwnHeadPublishedLine('papercusp', {
+      ...baseOutcome,
+      publishedSha: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+      backlogRemains: false,
+    });
+    expect(line).toContain('published staging@bbbbbbbbbbbb');
+    expect(line).not.toContain('aaaaaaaaaaaa'); // the worktree head must NOT appear as "published"
+  });
+
+  // The exact live-incident shape: the namespace ref had advanced only to a sha
+  // five days older than the worktree head — publishedSha trails headSha by a lot.
+  it('says BACKLOG REMAINS and names the worktree head separately when backlogRemains is true', () => {
+    const line = formatOwnHeadPublishedLine('papercusp', {
+      ...baseOutcome,
+      publishedSha: '31a771a131a771a131a771a131a771a131a771a1',
+      headSha: '66908db5bf66908db5bf66908db5bf66908db5bf',
+      backlogRemains: true,
+    });
+    expect(line).toBe(
+      '[git-sync] papercusp: own-head published staging@31a771a131a7 into own namespace ' +
+        '(BACKLOG REMAINS; worktree head 66908db5bf66)',
+    );
+  });
+
+  it('says "published nothing" rather than a stale sha when publishedSha is absent', () => {
+    const line = formatOwnHeadPublishedLine('papercusp', {
+      ...baseOutcome,
+      publishedSha: null,
+      backlogRemains: false,
+    });
+    expect(line).toBe('[git-sync] papercusp: own-head published staging@nothing into own namespace');
+  });
+
+  it('omits the backlog note entirely when caught up (no dangling parenthetical)', () => {
+    const line = formatOwnHeadPublishedLine('papercusp', {
+      ...baseOutcome,
+      publishedSha: 'cccccccccccccccccccccccccccccccccccccccc',
+      backlogRemains: false,
+    });
+    expect(line).not.toContain('BACKLOG REMAINS');
+    expect(line).not.toContain('(');
   });
 });

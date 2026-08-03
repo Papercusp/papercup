@@ -165,6 +165,34 @@ interface TscOutcome {
   output: string;
 }
 
+/**
+ * Kill a spawned command's ENTIRE process group, not just the direct child.
+ * Mirrors the already-vetted fix in capability/bash-jobs.ts
+ * (capability-bash-orphan-kill-2026-06-21): `spawn(..., { detached: true })`
+ * makes the child its own process-group leader (pgid === child.pid on Linux),
+ * so signalling the NEGATIVE pid reaches it AND every descendant it spawned.
+ * Falls back to a direct child kill if the group signal fails, or if `pid` is
+ * unavailable (spawn never actually started the process — nothing to reach by
+ * pgid, but a direct `.kill()` is still the right no-op-or-signal call rather
+ * than silently doing nothing). Never throws.
+ */
+function killProcessTree(child: ChildProcess, sig: NodeJS.Signals): void {
+  const pid = child.pid;
+  if (pid !== undefined) {
+    try {
+      process.kill(-pid, sig); // negative pid → the whole process group
+      return;
+    } catch {
+      /* fall through to a direct kill below */
+    }
+  }
+  try {
+    child.kill(sig);
+  } catch {
+    /* already exited */
+  }
+}
+
 export function runTsc(args: string[], cwd: string, timeoutMs: number): Promise<TscOutcome> {
   return new Promise((resolvePromise) => {
     let output = '';
@@ -190,10 +218,24 @@ export function runTsc(args: string[], cwd: string, timeoutMs: number): Promise<
       clearTimeout(timer);
       resolvePromise(outcome);
     };
-    const child = spawn('npx', ['tsc', ...args], { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+    // EI-19342308665972321: `npx tsc` is TWO processes — npx forks a separate
+    // `node .../.bin/tsc` grandchild rather than exec-replacing itself. Killing
+    // only `child` (the npx wrapper, via `child.kill`) leaves that grandchild
+    // ORPHANED and running at full CPU — measured live: the "timed out" compile
+    // was still running ~4 minutes after this tool returned `error:'timeout'`,
+    // invisible to the task ledger and unattributable except by reading argv out
+    // of `pgrep`. `detached: true` makes `child` the process-group leader, so
+    // `killProcessTree` (negative-pid kill) reaches npx AND the tsc grandchild —
+    // the same fix bash-jobs.ts already applies to `capability:bash`'s spawned
+    // shells. Never `unref()`d, so the operator still tracks + reaps it normally.
+    const child = spawn('npx', ['tsc', ...args], {
+      cwd,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      detached: true,
+    });
     const timer = setTimeout(() => {
-      try { child.kill('SIGTERM'); } catch { /* already gone */ }
-      setTimeout(() => { try { child.kill('SIGKILL'); } catch { /* already gone */ } }, 5000).unref();
+      killProcessTree(child, 'SIGTERM');
+      setTimeout(() => killProcessTree(child, 'SIGKILL'), 5000).unref();
       settle({ code: null, timedOut: true, output });
     }, timeoutMs);
     // Diagnostics are the payload here (unlike testing:run, where the router's

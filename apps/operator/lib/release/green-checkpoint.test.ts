@@ -18,6 +18,9 @@ import {
   ISOLATION_MAX_NAMED_CASES,
   stripAnsi,
   classifyRedAgainstTip,
+  describeRealRedAtTip,
+  splitTipFailuresPerFile,
+  TIP_SPLIT_MAX_FILES,
   nonTestGateIdsFrom,
   NON_TEST_GATE_SCRIPTS,
   autoRefireCapFromEnv,
@@ -1914,6 +1917,135 @@ describe('classifyRedAgainstTip (stale-candidate re-triage)', () => {
     expect(v.detail).toMatch(/did not ALL pass|not "they all still fail"/i);
     expect(v.detail).toContain('INDIVIDUALLY');
     expect(v.detail).toContain('3'); // the count is named so the reader knows the group size
+  });
+
+  // WI-7217 — the follow-up the EI-19324146335802876 fix left open. Better WORDING still made
+  // every reader do the per-file re-run themselves (4 agents on candidate 1a9e8a1f, 1 more on
+  // ab4babba). With a split available the verdict must ANSWER instead of assigning homework.
+  it('a real-red detail NAMES which files still fail and which are already green, when the split ran', () => {
+    const v = classifyRedAgainstTip({
+      ...base,
+      failingTests: ['a.test.ts', 'b.test.ts', 'c.test.ts'],
+      tipRetest: {
+        ran: true,
+        pass: false,
+        perFile: [
+          { workspace: '@p/core', file: 'a.test.ts', pass: true },
+          { workspace: '@p/core', file: 'b.test.ts', pass: false },
+          { workspace: '@p/core', file: 'c.test.ts', pass: true },
+        ],
+      },
+    });
+    expect(v.classification).toBe('real-red');
+    expect(v.detail).toContain('STILL FAILING');
+    expect(v.detail).toContain('b.test.ts');
+    expect(v.detail).toMatch(/ALREADY GREEN AT TIP/);
+    expect(v.detail).toContain('a.test.ts');
+    expect(v.detail).toContain('c.test.ts');
+    // The whole point: it must NOT tell the reader to go do the re-run it already did.
+    expect(v.detail).not.toContain('INDIVIDUALLY');
+  });
+
+  // The safety invariant. `perFile` refines the PROSE only — if it could move the verdict, a
+  // split that ran individually (and so cannot see cross-file pollution) would refire the gate
+  // onto a genuinely broken tip.
+  it('perFile never changes the classification — only the detail', () => {
+    const withSplit = classifyRedAgainstTip({
+      ...base,
+      tipRetest: {
+        ran: true,
+        pass: false,
+        perFile: [{ workspace: '@p/core', file: 'a.test.ts', pass: true }],
+      },
+    });
+    const without = classifyRedAgainstTip({ ...base, tipRetest: { ran: true, pass: false } });
+    expect(withSplit.classification).toBe(without.classification);
+    expect(withSplit.autoRefire).toBe(false);
+    expect(withSplit.detail).not.toBe(without.detail); // ...but it DID say something different
+  });
+
+  // Group failed, every file passes alone ⇒ the breakage is the INTERACTION. Saying "0 files
+  // still fail" without naming that reads as "nothing is broken" and sends the next reader to
+  // re-run them individually, reproducing nothing and looking like a flaky gate.
+  it('calls out ORDER-DEPENDENCE when the group failed but every file passes alone', () => {
+    const v = classifyRedAgainstTip({
+      ...base,
+      failingTests: ['a.test.ts', 'b.test.ts'],
+      tipRetest: {
+        ran: true,
+        pass: false,
+        perFile: [
+          { workspace: '@p/core', file: 'a.test.ts', pass: true },
+          { workspace: '@p/core', file: 'b.test.ts', pass: true },
+        ],
+      },
+    });
+    expect(v.classification).toBe('real-red'); // still holds the gate
+    expect(v.detail).toMatch(/ORDER-DEPENDENT|cross-file pollution/i);
+    expect(v.detail).toMatch(/bisect/i);
+    expect(v.detail).not.toContain('STILL FAILING');
+  });
+
+  it('describeRealRedAtTip falls back to the honest hedge with no split', () => {
+    expect(describeRealRedAtTip('bbbbbbbb2222', ['a.test.ts'])).toContain('INDIVIDUALLY');
+    expect(describeRealRedAtTip('bbbbbbbb2222', ['a.test.ts'], [])).toContain('INDIVIDUALLY');
+  });
+
+  describe('splitTipFailuresPerFile (diagnostic per-file split — WI-7217)', () => {
+  const files = [
+    { workspace: '@p/core', file: 'a.test.ts' },
+    { workspace: '@p/core', file: 'b.test.ts' },
+  ];
+
+  it('reports each file\'s solo verdict when every run is decidable', async () => {
+    const out = await splitTipFailuresPerFile(files, async (_ws, f) => f === 'a.test.ts');
+    expect(out).toEqual([
+      { workspace: '@p/core', file: 'a.test.ts', pass: true },
+      { workspace: '@p/core', file: 'b.test.ts', pass: false },
+    ]);
+  });
+
+  // ALL-OR-NOTHING. A partial split reads as the whole answer — this is the same class of bug
+  // the split exists to fix, just one level up.
+  it('ABANDONS the split (undefined, never partial) when any single run is INDETERMINATE', async () => {
+    const out = await splitTipFailuresPerFile(files, async (_ws, f) => (f === 'a.test.ts' ? true : null));
+    expect(out).toBeUndefined();
+  });
+
+  it('abandons rather than naming a file that could not be run — the crashed run is not a failure', async () => {
+    // Guards the specific wrong-direction failure: reporting an indeterminate run as pass:false
+    // would list a HEALTHY file under "STILL FAILING (fix these)".
+    const out = await splitTipFailuresPerFile(files, async () => null);
+    expect(out).toBeUndefined();
+    expect(out).not.toEqual(expect.arrayContaining([expect.objectContaining({ pass: false })]));
+  });
+
+  it('skips the split entirely above the file cap', async () => {
+    const many = Array.from({ length: TIP_SPLIT_MAX_FILES + 1 }, (_, i) => ({
+      workspace: '@p/core',
+      file: `f${i}.test.ts`,
+    }));
+    const ran: string[] = [];
+    const out = await splitTipFailuresPerFile(many, async (_ws, f) => {
+      ran.push(f);
+      return true;
+    });
+    expect(out).toBeUndefined();
+    expect(ran).toEqual([]); // and costs nothing — not even one run
+  });
+
+  it('abandons when the wall-clock budget lapses mid-split', async () => {
+    let t = 0;
+    const out = await splitTipFailuresPerFile(files, async () => true, {
+      now: () => (t += 1000),
+      budgetMs: 1500, // deadline set at 1000+1500=2500; the 2nd file's check reads 3000
+    });
+    expect(out).toBeUndefined();
+  });
+
+  it('returns undefined for an empty file list', async () => {
+    expect(await splitTipFailuresPerFile([], async () => true)).toBeUndefined();
+  });
   });
 
   it('calls a red STALE and auto-refires when the failing files pass at tip', () => {

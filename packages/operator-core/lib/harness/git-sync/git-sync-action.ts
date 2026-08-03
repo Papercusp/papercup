@@ -94,7 +94,7 @@ import {
   noSuchRepoBackoffKey,
   noSuchRepoBackoffSecondsLeft,
 } from './no-such-repo-backoff';
-import { runOwnHeadPublishTick } from '../../sync/pot-git/own-head-publish';
+import { runOwnHeadPublishTick, type OwnHeadPublishTickOutcome } from '../../sync/pot-git/own-head-publish';
 import { describePublishRefusal } from '../../sync/pot-git/publish-guard';
 import { bootstrapFromPeer, hasPendingQuarantine } from '../../sync/pot-git/bootstrap';
 import { fetchCoalescerKey, withFetchCoalescing } from '../../sync/pot-git/fetch-coalescer';
@@ -1547,6 +1547,29 @@ export async function runGithubBridgeLeg(slug: string, workspaceId: string): Pro
  * testable over the injected git seam (importing THIS module needs the action
  * suite's full mock harness). Both G-10 consumers below call it unchanged. */
 
+/**
+ * EI-19341838904344665: `outcome.headSha` is the worktree head JUDGED this tick —
+ * current by construction, every tick — NOT what became servable. WI-5738 made
+ * this publish INCREMENTAL: it CAS-writes `outcome.publishedSha`, which can trail
+ * the head by hundreds of commits. Logging `headSha` beside "published" asserted a
+ * sha was published when it was not — the false, authoritative-looking line that
+ * produced two OPPOSITE wrong diagnoses from two separate agents during the
+ * 2026-08-02 freeze (one read it as "the ref is stuck", the other as "the producer
+ * is healthy"). Reports what actually became servable, and says plainly when
+ * backlog remains (see EI-19341709637436070 for why the field is named
+ * `backlogRemains`, not `drained`).
+ *
+ * Extracted as a pure function (rather than inlined at the `console.log` call
+ * site) so the exact wording is unit-testable without running a real git tick.
+ */
+export function formatOwnHeadPublishedLine(slug: string, outcome: OwnHeadPublishTickOutcome): string {
+  const published = outcome.publishedSha?.slice(0, 12) ?? 'nothing';
+  const backlogNote = outcome.backlogRemains
+    ? ` (BACKLOG REMAINS; worktree head ${outcome.headSha?.slice(0, 12)})`
+    : '';
+  return `[git-sync] ${slug}: own-head published ${outcome.branch}@${published} into own namespace${backlogNote}`;
+}
+
 async function runOwnHeadPublishLeg(slug: string, workspaceId: string, branch: string | undefined): Promise<void> {
   try {
     let entry: ProjectEntry | undefined;
@@ -1599,23 +1622,7 @@ async function runOwnHeadPublishLeg(slug: string, workspaceId: string, branch: s
       console.warn(`[git-sync] ${slug}: own-head publish reported errors: ${outcome.errors.join('; ').slice(0, 500)}`);
     }
     if (outcome.changed) {
-      // EI-19341838904344665: `outcome.headSha` is the worktree head JUDGED this
-      // tick — current by construction, every tick — NOT what became servable.
-      // WI-5738 made this publish INCREMENTAL: it CAS-writes `outcome.publishedSha`,
-      // which can trail the head by hundreds of commits. Logging headSha here
-      // asserted a sha was published when it was not — the false, authoritative-
-      // looking line that produced two OPPOSITE wrong diagnoses from two separate
-      // agents during the 2026-08-02 freeze (one read it as "the ref is stuck", the
-      // other as "the producer is healthy"). Report what actually became servable,
-      // and say plainly when backlog remains (see EI-19341709637436070 for why the
-      // field is named `backlogRemains`, not `drained`).
-      const published = outcome.publishedSha?.slice(0, 12) ?? 'nothing';
-      console.log(
-        `[git-sync] ${slug}: own-head published ${outcome.branch}@${published} into own namespace` +
-          (outcome.backlogRemains
-            ? ` (BACKLOG REMAINS; worktree head ${outcome.headSha?.slice(0, 12)})`
-            : ''),
-      );
+      console.log(formatOwnHeadPublishedLine(slug, outcome));
     }
     await patchRoutineMetadata(slug, workspaceId, {
       own_head_publish: {

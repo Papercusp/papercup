@@ -135,7 +135,17 @@ export interface CheckpointDeps {
   resolveTip?(): Promise<string | null>;
   /** Re-run EXACTLY these failing files at `ref`, for the stale-candidate re-triage.
    *  Optional: absent ⇒ every red is treated as real (today's behaviour). */
-  runTestsAtRef?(ref: string, files: FailingFile[]): Promise<{ pass: boolean; summary: string }>;
+  runTestsAtRef?(
+    ref: string,
+    files: FailingFile[],
+  ): Promise<{
+    pass: boolean;
+    summary: string;
+    /** DIAGNOSTIC per-file breakdown, present only when the group run FAILED and the split
+     *  completed for EVERY file (see {@link splitTipFailuresPerFile}). Never consulted for the
+     *  pass/fail verdict — `pass` above remains the sole verdict input. */
+    perFile?: TipPerFileResult[];
+  }>;
   /** EI-18759362119598634: the LINT/TYPECHECK sibling of `runTestsAtRef` — re-run
    *  EXACTLY these non-test GATE signatures (see {@link NON_TEST_GATE_SCRIPTS}) at
    *  `ref`, for a red whose `failingTests` are entirely gate ids and therefore never
@@ -1409,7 +1419,14 @@ export function classifyRedAgainstTip(input: {
   candidate: string;
   tip: string | null;
   failingTests: string[];
-  tipRetest: { ran: boolean; pass: boolean } | null;
+  tipRetest: {
+    ran: boolean;
+    pass: boolean;
+    /** DIAGNOSTIC per-file split of a FAILED group re-run — reporting only. It refines what the
+     *  `real-red` verdict SAYS, never whether the verdict IS `real-red`: that still turns solely
+     *  on `pass`, so a stale/incomplete split can never flip a gate decision. */
+    perFile?: TipPerFileResult[];
+  } | null;
   /** Count of CHARGED refires so far — i.e. how many rescues have FAILED, not how many have run. */
   refireAttempts: number;
   maxRefires: number;
@@ -1530,12 +1547,96 @@ export function classifyRedAgainstTip(input: {
     // tip, and four agents each independently re-triaged all five. Say it in the DETAIL, not
     // just the log: `detail` is what lands in the stored verdict a reader acts on, whereas
     // tipRun.summary's per-workspace breakdown only ever reaches the log line below.
-    detail:
-      `failures REPRODUCE at tip ${tip.slice(0, 8)} — genuine red, holding the gate. ` +
-      `NOTE: the ${failingTests.length} failing file(s) were re-run as a GROUP, so this means ` +
-      `"they did not ALL pass" — NOT "they all still fail". Some may already be fixed; re-run ` +
-      `them INDIVIDUALLY at tip before re-diagnosing all ${failingTests.length}`,
+    detail: describeRealRedAtTip(tip, failingTests, tipRetest.perFile),
   };
+}
+
+/**
+ * The `real-red` verdict's prose — and, when the diagnostic split ran, the ANSWER instead of
+ * the homework.
+ *
+ * Without a split this can only say "some of these may already be fixed, go re-run them
+ * INDIVIDUALLY" — which offloads the tool's own work onto every reader. Measured cost of exactly
+ * that: on candidate 1a9e8a1f four agents each independently re-triaged all five named files
+ * (4 of the 5 were already green), and on candidate ab4babba the same wording sent another agent
+ * through all five by hand (4 of 5 already green there too — EI-19324146335802876 / WI-7217).
+ * A guard that tells you to go measure something it could have measured itself will be paid for
+ * once per reader, forever.
+ *
+ * `perFile` present ⇒ name the two sets explicitly, so a reader is dispatched at the ONE file
+ * that is genuinely broken instead of re-deriving the partition. Absent ⇒ the old honest hedge.
+ */
+/**
+ * DIAGNOSTIC per-file split of a tip re-run that FAILED as a group.
+ *
+ * Runs each named failing file ALONE at tip and reports which still fail. Deliberately NOT part
+ * of the verdict: the group run stays the sole pass/fail input, both because it is the cheaper
+ * signal and because running files individually cannot see the cross-file pollution a group run
+ * catches — demoting the group to per-file would turn an order-dependent red into a false "all
+ * green at tip" and refire the gate onto a tip that is genuinely broken.
+ *
+ * ALL-OR-NOTHING BY DESIGN — returns `undefined` rather than a partial split when there are too
+ * many files, the budget lapses, or ANY single run is INDETERMINATE (`null` from `runOne`, e.g.
+ * the runner threw). A split that names 3 of 5 files reads as the whole answer, and a file listed
+ * under "STILL FAILING (fix these)" because its runner crashed sends someone to fix code that is
+ * fine. Absence falls back to the honest hedge in {@link describeRealRedAtTip}; the verdict is
+ * identical either way, so nothing is at stake but the prose.
+ */
+export async function splitTipFailuresPerFile(
+  files: readonly FailingFile[],
+  runOne: (workspace: string, file: string) => Promise<boolean | null>,
+  opts: { now?: () => number; maxFiles?: number; budgetMs?: number } = {},
+): Promise<TipPerFileResult[] | undefined> {
+  const now = opts.now ?? Date.now;
+  const maxFiles = opts.maxFiles ?? TIP_SPLIT_MAX_FILES;
+  const budgetMs = opts.budgetMs ?? TIP_SPLIT_BUDGET_MS;
+  if (files.length === 0 || files.length > maxFiles) return undefined;
+  const deadline = now() + budgetMs;
+  const out: TipPerFileResult[] = [];
+  for (const f of files) {
+    if (now() >= deadline) return undefined;
+    const pass = await runOne(f.workspace, f.file);
+    if (pass === null) return undefined;
+    out.push({ workspace: f.workspace, file: f.file, pass });
+  }
+  return out;
+}
+
+export function describeRealRedAtTip(
+  tip: string,
+  failingTests: readonly string[],
+  perFile?: readonly TipPerFileResult[],
+): string {
+  const head = `failures REPRODUCE at tip ${tip.slice(0, 8)} — genuine red, holding the gate.`;
+  if (!perFile?.length) {
+    return (
+      `${head} NOTE: the ${failingTests.length} failing file(s) were re-run as a GROUP, so this means ` +
+      `"they did not ALL pass" — NOT "they all still fail". Some may already be fixed; re-run ` +
+      `them INDIVIDUALLY at tip before re-diagnosing all ${failingTests.length}`
+    );
+  }
+  const stillFailing = perFile.filter((p) => !p.pass);
+  const alreadyGreen = perFile.filter((p) => p.pass);
+  const names = (rows: readonly TipPerFileResult[]) => rows.map((p) => p.file).join(', ');
+  // Every file passes ALONE but the group failed ⇒ the breakage is in the INTERACTION, not in any
+  // one file. Naming that explicitly matters: the per-file evidence otherwise reads as "nothing is
+  // broken", and the next reader's instinct — re-run them individually — reproduces nothing and
+  // looks like a flaky gate rather than the order-dependence it actually is.
+  if (stillFailing.length === 0) {
+    return (
+      `${head} But EVERY one of the ${perFile.length} named file(s) PASSES when re-run ALONE at tip, ` +
+      `while the GROUP re-run failed — so this is ORDER-DEPENDENT (cross-file pollution), not a ` +
+      `per-file break. Do NOT hunt for a broken file: bisect the group for the polluting pair ` +
+      `(${names(perFile)}).`
+    );
+  }
+  return (
+    `${head} Re-ran each file ALONE at tip: ${stillFailing.length} of ${perFile.length} STILL FAIL. ` +
+    `STILL FAILING (fix these): ${names(stillFailing)}.` +
+    (alreadyGreen.length
+      ? ` ALREADY GREEN AT TIP — do NOT re-diagnose (${alreadyGreen.length}): ${names(alreadyGreen)}.`
+      : '')
+  );
 }
 
 /* ── non-test GATE re-triage (EI-18759362119598634) ──────────────────────────
@@ -1742,6 +1843,23 @@ export interface FailingFile {
   /** The test file path as vitest reports it (workspace-relative, e.g. `lib/foo.test.ts`). */
   file: string;
 }
+
+/** One file's verdict from the DIAGNOSTIC per-file split of a failed tip re-run.
+ *  See {@link splitTipFailuresPerFile} for why this exists and why it is diagnostic-only. */
+export interface TipPerFileResult extends FailingFile {
+  /** Did this file pass when re-run ALONE at tip? */
+  pass: boolean;
+}
+
+/** Cap on the DIAGNOSTIC per-file split (see {@link splitTipFailuresPerFile}). Above this the
+ *  split is skipped entirely rather than run partially — a split that names only some of the
+ *  failing files is worse than none, because a reader takes the named set for the whole set. */
+export const TIP_SPLIT_MAX_FILES = 12;
+
+/** Wall-clock budget for the whole diagnostic split. Exceeding it ABANDONS the split (reported
+ *  as absent, never as a partial result) — the run is already classifying `real-red` at this
+ *  point, so the only thing at risk is delaying a verdict that is not going to change. */
+export const TIP_SPLIT_BUDGET_MS = 4 * 60_000;
 
 /**
  * load-flake-isolation-2026-06-23: parse the FULL affected-runner output into the
@@ -3411,7 +3529,7 @@ export async function runGreenCheckpoint(
         candidate,
         tip,
         failingTests: failingTests ?? [],
-        tipRetest: tipRun ? { ran: true, pass: tipRun.pass } : null,
+        tipRetest: tipRun ? { ran: true, pass: tipRun.pass, perFile: tipRun.perFile } : null,
         refireAttempts: opts.refireAttempts ?? 0,
         maxRefires: autoRefireCapFromEnv(),
         ...refireBudgetInputs(opts, failingFiles, runStartedAtMs, passStartedAtMs),
@@ -5178,7 +5296,40 @@ export function realCheckpointDeps(
           { cwd: cfg.checkpointRoot, env, allowNonZero: true, timeoutMs: ISOLATION_RUN_TIMEOUT_MS },
         ).catch((e: unknown) => ({ code: 1, stdout: '', stderr: String(e) }));
         summaries.push(`${workspace}: ${r.code === 0 ? 'pass' : 'FAIL'}`);
-        if (r.code !== 0) return { pass: false, summary: summaries.join('; ') };
+        if (r.code !== 0) {
+          // The group verdict is FINAL here (`pass:false`, unchanged). Everything below is
+          // DIAGNOSTIC — re-run each named file ALONE so the held-gate verdict can name which
+          // files are genuinely broken at tip and which are already green, instead of telling
+          // every reader to go work that out themselves (WI-7217 / EI-19324146335802876).
+          //
+          // Timing is safe by construction: a FAILED group run always classifies `real-red`, so
+          // no auto-refire is pending and these extra minutes cannot starve a rescue. The only
+          // cost is delaying a verdict that is not going to change.
+          const perFile = await splitTipFailuresPerFile(files, async (wsName, file) => {
+            const one = await exec(
+              'npm',
+              [
+                'run',
+                'test',
+                '--workspace',
+                wsName,
+                '--',
+                '--no-file-parallelism',
+                `--testTimeout=${RESCUE_TEST_TIMEOUT_MS}`,
+                file,
+              ],
+              { cwd: cfg.checkpointRoot, env, allowNonZero: true, timeoutMs: ISOLATION_RUN_TIMEOUT_MS },
+            ).catch(() => null);
+            // A throw is INDETERMINATE, not a failure — returning false here would name a
+            // healthy file under "STILL FAILING (fix these)". null abandons the whole split.
+            return one === null ? null : one.code === 0;
+          }).catch(() => undefined);
+          if (perFile) {
+            const still = perFile.filter((p) => !p.pass).length;
+            summaries.push(`per-file split: ${still}/${perFile.length} still fail alone at tip`);
+          }
+          return { pass: false, summary: summaries.join('; '), perFile };
+        }
       }
       return { pass: true, summary: summaries.join('; ') };
     },

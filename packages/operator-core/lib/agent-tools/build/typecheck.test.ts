@@ -44,6 +44,25 @@ import {
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
+/**
+ * A fake child_process that never emits 'close'/'error' on its own — used to
+ * pin runTsc's timeout/kill behaviour without a real wedged subprocess.
+ * Module-scoped (not just local to one describe block) so the
+ * EI-19342308665972321 process-group-kill tests below can reuse it.
+ */
+function fakeChild() {
+  const emitter = new EventEmitter();
+  const killCalls: string[] = [];
+  const stdout = new EventEmitter();
+  const stderr = new EventEmitter();
+  Object.assign(emitter, {
+    stdout,
+    stderr,
+    kill: (signal?: string) => { killCalls.push(signal ?? 'SIGTERM'); return true; },
+  });
+  return { child: emitter as unknown as childProcess.ChildProcess, killCalls };
+}
+
 describe('registration', () => {
   it('is reachable through the projection registry (the index import is not optional)', () => {
     // A tool file that exists but is never imported from agent-tools/index.ts is
@@ -317,19 +336,6 @@ describe('EI-19331889744736428: the capability:inspect timeout hint passes a DIR
  * settle at its OWN timer, not whenever (or whether) the child actually dies.
  */
 describe('EI-18793290418757939 — runTsc settles at its own timer even when the child never closes', () => {
-  function fakeChild() {
-    const emitter = new EventEmitter();
-    const killCalls: string[] = [];
-    const stdout = new EventEmitter();
-    const stderr = new EventEmitter();
-    Object.assign(emitter, {
-      stdout,
-      stderr,
-      kill: (signal?: string) => { killCalls.push(signal ?? 'SIGTERM'); return true; },
-    });
-    return { child: emitter as unknown as childProcess.ChildProcess, killCalls };
-  }
-
   it('resolves promptly with timedOut:true instead of hanging on a child that never emits close', async () => {
     const { child, killCalls } = fakeChild();
     const spawnMock = vi.mocked(childProcess.spawn);
@@ -379,6 +385,77 @@ describe('EI-18793290418757939 — runTsc settles at its own timer even when the
       expect(outcome.timedOut).toBe(false);
       expect(outcome.code).toBe(0);
     } finally {
+      spawnMock.mockReset();
+    }
+  });
+});
+
+/**
+ * EI-19342308665972321 — `npx tsc` is TWO processes (npx forks a separate
+ * `node .../.bin/tsc` grandchild rather than exec-replacing itself). Killing
+ * only the npx wrapper on timeout ORPHANS that grandchild — measured live: a
+ * "timed out" compile was still running ~4 minutes after this tool returned
+ * `error:'timeout'`. The fix mirrors capability/bash-jobs.ts's already-vetted
+ * `detached:true` + negative-pid process-group kill.
+ */
+describe('EI-19342308665972321 — runTsc kills the WHOLE process group on timeout, not just npx', () => {
+  it('spawns tsc as its own process-group leader (detached: true)', async () => {
+    const { child } = fakeChild();
+    const spawnMock = vi.mocked(childProcess.spawn);
+    spawnMock.mockReturnValue(child);
+    try {
+      await runTsc(['--noEmit'], process.cwd(), 20);
+      const opts = spawnMock.mock.calls.at(-1)?.[2] as { detached?: boolean } | undefined;
+      expect(opts?.detached).toBe(true);
+    } finally {
+      spawnMock.mockReset();
+    }
+  });
+
+  it('on timeout, signals the NEGATIVE pid — the whole process group, not just the npx wrapper', async () => {
+    const { child } = fakeChild();
+    Object.assign(child, { pid: 424242 });
+    const spawnMock = vi.mocked(childProcess.spawn);
+    spawnMock.mockReturnValue(child);
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true);
+    try {
+      await runTsc(['--noEmit'], process.cwd(), 20);
+      expect(killSpy).toHaveBeenCalledWith(-424242, 'SIGTERM');
+    } finally {
+      killSpy.mockRestore();
+      spawnMock.mockReset();
+    }
+  });
+
+  it('falls back to a direct child.kill when the process-group signal fails (pid gone/reused)', async () => {
+    const { child, killCalls } = fakeChild();
+    Object.assign(child, { pid: 424243 });
+    const spawnMock = vi.mocked(childProcess.spawn);
+    spawnMock.mockReturnValue(child);
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => {
+      throw Object.assign(new Error('ESRCH'), { code: 'ESRCH' });
+    });
+    try {
+      await runTsc(['--noEmit'], process.cwd(), 20);
+      expect(killCalls).toContain('SIGTERM');
+    } finally {
+      killSpy.mockRestore();
+      spawnMock.mockReset();
+    }
+  });
+
+  it('still calls child.kill directly when pid is unavailable — never a silent no-op', async () => {
+    // The fake child never sets `pid` (mirrors a spawn that never got a real pid).
+    const { child, killCalls } = fakeChild();
+    const spawnMock = vi.mocked(childProcess.spawn);
+    spawnMock.mockReturnValue(child);
+    const killSpy = vi.spyOn(process, 'kill');
+    try {
+      await runTsc(['--noEmit'], process.cwd(), 20);
+      expect(killSpy).not.toHaveBeenCalled();
+      expect(killCalls).toContain('SIGTERM');
+    } finally {
+      killSpy.mockRestore();
       spawnMock.mockReset();
     }
   });
