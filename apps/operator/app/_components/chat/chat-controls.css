@@ -828,6 +828,85 @@
   text-overflow: ellipsis;
 }
 
+/* ═══ ⑦ ONE control height for the whole bottom panel (P-009) ═══════════════
+ *
+ * [owner 2026-08-02] "the bottom panel buttons are all misaligned."
+ *
+ * MEASURED before anything changed, in a live Tauri webview at the popup's REAL
+ * width — window 1500 so the modal reaches its designed `min(1320px, 97vw)` and
+ * the centre column is 748px (D-002's measured figure). Stating the width is
+ * part of the measurement: at a 1280px window the modal is capped at 1224px and
+ * the same panel reports a different row count entirely.
+ *
+ *   centreSpread  0.0px on every row   <- `align-items: center` was never broken
+ *   heightSpread  6.0 / 0.0 / 4.2px    <- the controls are different SIZES
+ *   bottomSpread  3.0 / 0.0 / 2.1px
+ *
+ * That rules out the obvious suspect and names the real one. FOUR control
+ * heights coexisted in one panel — 18px mode pills, 24px action buttons, 29.8px
+ * fleet wells, 34px Launch. Centred items of unequal height scatter their BOTTOM
+ * edges, and a row of boxes is read on its bottoms, not its centres. So this is
+ * not a centring bug and not four per-element nudges; it is one missing shared
+ * metric.
+ *
+ * 26px because the design system already answers this: globals.css calls the
+ * `sm` button size "the 26px chrome" scale and `.pc-btn`'s own min-height is
+ * 26px. Aligning TO that beats inventing a value — the popup's controls now
+ * match chrome everywhere else in the app.
+ *
+ * This does NOT flatten the control vocabulary at the top of this file. Shape,
+ * radius, border and case still carry mode-vs-action-vs-field; height was never
+ * one of the distinguishing signals, it was merely uncontrolled.
+ *
+ * ⚠ Height goes on the BUTTON, layout stays on its `__inner` span — never
+ * `display:flex` on a <button> selector (rail 2 in this file's header:
+ * WebKitGTK, the only shipping target, ignores it and stacks the contents).
+ * Both button shapes here already have that inner span.
+ *
+ * VERIFIED by injecting exactly these declarations into the live webview and
+ * re-measuring: heightSpread and bottomSpread went to 0.0 on all three rows and
+ * the row count did not grow. */
+
+.pc-ctl-band,
+.pc-fleet-launch-row {
+  --pc-ctl-h: 26px;
+}
+
+.chat-action-bar .pc-ctl-mode,
+.chat-action-bar .pc-ctl-act,
+.pc-fleet-launch-row .pc-ctl-field__well,
+.pc-fleet-launch-row .pc-ctl-field select,
+.pc-fleet-launch-row .pc-ctl-field input,
+.pc-fleet-launch-row .pc-fleet-strip__submit {
+  box-sizing: border-box;
+  height: var(--pc-ctl-h);
+  /* The height IS the metric now; vertical padding would only fight it.
+     Horizontal padding stays with each shape's own rule. */
+  padding-top: 0;
+  padding-bottom: 0;
+}
+
+/* The inner span does the centring, for the WebKitGTK reason above. */
+.chat-action-bar .pc-ctl-mode__inner,
+.chat-action-bar .pc-ctl-act__inner {
+  height: 100%;
+}
+
+/* The filled cap must still reach both edges of the pill it sits in. */
+.chat-action-bar .pc-ctl-mode__cap,
+.chat-action-bar .pc-ctl-mode__value {
+  padding-top: 0;
+  padding-bottom: 0;
+}
+
+/* Launch is the one control here with no `__inner` span — it is the shared
+   design-system <Button> — so it cannot use the flex centring above. A
+   line-height equal to its content box centres the label whether the webview
+   honours `.pc-btn`'s inline-flex or falls back to block. */
+.pc-fleet-launch-row .pc-fleet-strip__submit {
+  line-height: calc(var(--pc-ctl-h) - 2px);
+}
+
 /* ═══ shared focus treatment ════════════════════════════════════════════════ */
 
 .pc-ctl-mode:focus-visible,

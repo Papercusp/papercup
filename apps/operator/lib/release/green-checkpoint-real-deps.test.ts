@@ -18,10 +18,10 @@
  * real-git temp-repo path; here we never touch a real branch.
  */
 import { describe, it, expect, afterAll, vi } from 'vitest';
-import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import {
   checkNpmScript,
   hasNpmScript,
@@ -83,6 +83,28 @@ afterAll(() => rmSync(tmpLogDir, { recursive: true, force: true }));
 // tree with a package.json so the full pipeline runs.
 const cpTree = mkdtempSync(join(tmpdir(), 'green-cp-tree-'));
 writeFileSync(join(cpTree, 'package.json'), JSON.stringify({ name: 'cp-fixture' }));
+
+// EI-19340004308033958 (same class as EI-8744 above — a REAL fs probe needs a REAL tree):
+// `validateFailingTestPaths` filesystem-validates every FILE-shaped `failingTests` entry
+// against the JUDGED TREE and DROPS the ones that do not resolve, so a mangled path parsed
+// out of wrapped suite output can never send a triager to a file that does not exist. That
+// makes an on-disk fixture load-bearing for any case asserting `failingTests` CONTENT: with
+// an empty cpTree the entries are (correctly) dropped and the assertion sees [].
+//
+// So these must stay in sync with the paths the suite-output fixtures NAME — `FAIL
+// lib/foo.test.ts` in the short-circuit case, and both files in RED_OUTPUT. A fixture whose
+// path is not listed here does not fail loudly; it silently empties `failingTests`, which is
+// exactly how this file went red at the fleet gate on 2026-08-03 (WI-7244) while reading as
+// untouched. Presence is all that is checked — the contents are never executed.
+const CP_TREE_FAILING_TEST_FIXTURES = [
+  'lib/foo.test.ts',
+  'lib/llm-testing/__tests__/runner-aggregate.test.ts',
+  'lib/scout/scheduler-workspace-scope.test.ts',
+];
+for (const rel of CP_TREE_FAILING_TEST_FIXTURES) {
+  mkdirSync(dirname(join(cpTree, rel)), { recursive: true });
+  writeFileSync(join(cpTree, rel), '// presence-only fixture — validateFailingTestPaths stats it, nothing runs it\n');
+}
 afterAll(() => rmSync(cpTree, { recursive: true, force: true }));
 
 const typecheckTree = mkdtempSync(join(tmpdir(), 'green-cp-typecheck-tree-'));

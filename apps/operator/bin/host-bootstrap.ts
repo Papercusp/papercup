@@ -331,6 +331,24 @@ export function runBootstrap(): void {
     }
   })();
 
+  // [EI-19389225060317498 startup visibility] The repoint (734) and readiness-resync (379)
+  // triggers on work_items/work_item_deps must move TOGETHER — 734's own header only warns
+  // about `repoint_qualified_refs_trg`, but readiness silently strands at the old
+  // harness_slug if `wir_deps_sync_trg` alone is disabled during a bulk backfill (measured
+  // in rename-drift-effectiveness.integration.test.ts). Purely observational — never gates
+  // boot, never touches trigger state — so a disabled/missing coupled trigger is DETECTED
+  // and logged loudly instead of silently trusted. Fail-soft like its startup/ siblings.
+  void (async () => {
+    try {
+      const { checkRepointTriggersEnabled } = await import(
+        '@papercusp/operator-core/lib/startup/validate-repoint-triggers'
+      );
+      await checkRepointTriggersEnabled();
+    } catch (e) {
+      console.warn('[repoint-trigger-guard] startup check skipped (non-fatal):', (e as Error)?.message ?? e);
+    }
+  })();
+
   // [cupboard-public-release-2026-07-12 P-001] Move the installed-packs root
   // `~/.papercusp/learning-packs/` → `~/.papercusp/knowledge-packs/`.
   //
