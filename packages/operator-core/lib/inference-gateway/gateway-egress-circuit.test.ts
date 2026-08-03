@@ -251,11 +251,9 @@ test('EXTENDED ABSORB — a FRESH-per-call governor factory cannot hold a penalt
   // than a comment — and safer than proving it by temporarily editing source, which on this shared tree
   // git-sync would commit (EI-19447067535467975).
   let calls = 0;
-  let everObservedPaused = false;
-  const issued: RateLimitGovernor[] = [];
+  const issuedByAccount = new Map<string, RateLimitGovernor[]>();
   const fetchImpl = (async () => {
     calls++;
-    if (issued.some((g) => g.state.pausedUntil > Date.now())) everObservedPaused = true;
     if (calls <= 2) {
       return new Response(JSON.stringify({ type: 'error', error: { type: 'rate_limit_error', message: 'slow down' } }), {
         status: 429,
@@ -267,9 +265,11 @@ test('EXTENDED ABSORB — a FRESH-per-call governor factory cannot hold a penalt
   gw = createInferenceGateway({
     pool: createFailoverPool([acct('A'), acct('B')]),
     fetchImpl,
-    governorFor: () => {
+    governorFor: (_model: string, accountId: string) => {
       const g = new RateLimitGovernor({ maxConcurrent: 20 }); // the anti-pattern: a NEW governor every call
-      issued.push(g);
+      const seen = issuedByAccount.get(accountId) ?? [];
+      seen.push(g);
+      issuedByAccount.set(accountId, seen);
       return g;
     },
     selfHeal: { enabled: false },
@@ -280,11 +280,24 @@ test('EXTENDED ABSORB — a FRESH-per-call governor factory cannot hold a penalt
   port = await gw.listen(0);
   const res = await post();
   assert.equal(res.status, 200, 'it still succeeds — which is exactly the problem: success here proves nothing about the absorb');
-  assert.ok(issued.length > 1, `the factory was called repeatedly and handed back a different governor each time (issued=${issued.length})`);
-  assert.equal(
-    everObservedPaused,
-    false,
-    'no governor was EVER seen paused: each penalty died with the throwaway instance that recorded it, so the wait-out path is unreachable and untestable through this seam',
+
+  // The defect, stated deterministically: the SAME account is handed multiple DISTINCT governors, so a
+  // penalty recorded on one instance is invisible to the instance the next acquire consults. No timing is
+  // involved, so this cannot flake under load.
+  const reused = [...issuedByAccount.entries()].filter(([, gs]) => gs.length > 1);
+  assert.ok(
+    reused.length > 0,
+    `at least one account was issued MULTIPLE distinct governors (per-account counts: ${JSON.stringify(
+      Object.fromEntries([...issuedByAccount].map(([k, v]) => [k, v.length])),
+    )}) — a faithful per-account factory would issue exactly one each`,
+  );
+  // And the abandonment is load-bearing: an instance that actually recorded a penalty was then discarded
+  // in favour of a fresh, un-penalized one for the same account. That is precisely why the wait-out path
+  // was unreachable through this seam.
+  const abandonedPenalty = reused.some(([, gs]) => gs.slice(0, -1).some((g) => g.state.pausedUntil > 0) && gs[gs.length - 1]!.state.pausedUntil === 0);
+  assert.ok(
+    abandonedPenalty,
+    'a governor that had recorded a real penalty was replaced, for the same account, by a fresh un-penalized one — the penalty died with the throwaway instance, so no pause was ever in force when the absorb re-acquired',
   );
 });
 

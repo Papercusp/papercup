@@ -3,8 +3,11 @@
  * their canonical source (EI-18121649240446176).
  *
  * `knowledge-packs/sync-map.json` (colocated with the packs) declares what is
- * shared: papercusp-default mirrors ALL of coding; work mirrors six named
- * discipline items. Hand-editing a mirror copy silently strands the other
+ * shared: `work` mirrors eleven named discipline items from the canonical
+ * `coding` pack. (EI-1539 retired the `papercusp-default` mirror, which had
+ * mirrored ALL of coding — a mirror listed here whose directory is missing
+ * fails the readdir below, so the map and the pack dirs must move together.)
+ * Hand-editing a mirror copy silently strands the other
  * side — this test turns that drift into a red. To fix a red: edit the
  * CANONICAL file (coding/) and run `npm run gen:knowledge-packs`; to
  * deliberately diverge a synced work item, remove it from sync-map.json and

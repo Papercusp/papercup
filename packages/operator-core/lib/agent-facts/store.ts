@@ -1188,6 +1188,32 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
     // Only attach when non-empty — `evicted: []` would make `if (r.evicted)`
     // truthy on the common path where nothing was displaced.
     fact.evicted = evicted;
+
+    // EI-19442566203468589: WI-7298 made eviction loud to the WRITER (the receipt
+    // above). That is the wrong audience — the writer already knows they wrote.
+    // The fact's AUTHOR is the one who needs telling, and was told nothing: their
+    // fact is documented as folded into every orient UNTIL RETRACTED, so after an
+    // eviction it just stops appearing, with nothing anywhere saying why. A
+    // missing fact does not error; it quietly stops informing decisions.
+    //
+    // AWAITED, not fire-and-forget: a floating promise can be dropped when the
+    // caller's context ends, which would make delivery non-deterministic — and a
+    // notification that usually arrives is worse than one that always does,
+    // because you stop checking. `notifyEvictedFactOwners` never throws and never
+    // rejects, so a coord-plane failure cannot turn a successful assert into an
+    // error; the cost is one coord_event_log insert on an already-at-cap write.
+    //
+    // Placed HERE (the store) rather than in `facts:assert` because the tool is
+    // only 1 of 6 assertFact callers — the routines/gates/bootstrap writers evict
+    // exactly like anyone else, and a tool-layer notify would leave every
+    // routine-caused eviction silent.
+    const { notifyEvictedFactOwners } = await import('./notify-evicted');
+    await notifyEvictedFactOwners({
+      evicted,
+      writerOwnerId: input.createdBy,
+      scope: input.scope,
+      scopeRef: ref,
+    });
   }
   return fact;
 }

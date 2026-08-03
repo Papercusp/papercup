@@ -26,7 +26,7 @@ import InstalledPacksSection from './InstalledPacksSection';
 
 const listings = [
   { id: 'listing-coding', listing_ref: 'coding', title: 'Generic Coding Learnings' },
-  { id: 'listing-default', listing_ref: 'papercusp-default', title: 'Papercusp Default Learnings' },
+  { id: 'listing-default', listing_ref: 'coding', title: 'Generic Coding Learnings' },
 ] as unknown as HarnessListing[];
 
 beforeEach(() => {
@@ -55,7 +55,7 @@ describe('<InstalledPacksSection /> (P-016)', () => {
         hive: 'coding',
         packs: [
           { packId: 'coding', present: 3, packTotal: 4, modified: 0, notPresent: 1, enabled: true, updateAvailable: true, availableVersion: '2.0.0' },
-          { packId: 'papercusp-default', present: 5, packTotal: 5, modified: 0, notPresent: 0, enabled: false },
+          { packId: 'coding', present: 5, packTotal: 5, modified: 0, notPresent: 0, enabled: false },
         ],
       },
     ];
@@ -65,7 +65,7 @@ describe('<InstalledPacksSection /> (P-016)', () => {
     expect(rows).toHaveLength(2);
     // Titles resolve from the matched listings; the muted + update badges show.
     expect(screen.getByText('Generic Coding Learnings')).toBeTruthy();
-    expect(screen.getByText('Papercusp Default Learnings')).toBeTruthy();
+    expect(screen.getByText('Generic Coding Learnings')).toBeTruthy();
     expect(screen.getByText(/muted/i)).toBeTruthy();
     expect(screen.getByText(/update v2\.0\.0/i)).toBeTruthy();
     // Clicking the coding row navigates to its listing detail id.

@@ -103,7 +103,7 @@ export function usesModuleScopeFlagSubscribe(text) {
   return false;
 }
 
-// BASELINE seeded 2026-07-28 (WI-6650) with 14 files; now 5. Do NOT add new
+// BASELINE seeded 2026-07-28 (WI-6650) with 14 files; now 6. Do NOT add new
 // entries; each removal (lazy-init the site, per coordination/log.ts's
 // ensureCoordFlagInit) shrinks this set.
 //
@@ -139,11 +139,11 @@ export function usesModuleScopeFlagSubscribe(text) {
 // onto the same helper. It had FOUR readers of its cached boolean (the exported
 // getter plus three internal `if (!claimLeaseOn)` guards) and no periodic refresh
 // timer to bound a missed arm, so every one of the four arms.
-// And issues-engineer.ts, same helper — ONE reader (resolveIssuesScopeWorkspace;
-// issuesScopeWorkspace delegates to it) and an existing 3s self-heal TTL that bounds
-// a missed arm independently. Migrating it was what finally let work-item-redundancy
-// be listed in flags-partial-mock-importable.test.ts: redundancy → work-items.ts
-// reaches BOTH of these, so the graph guard surfaced them one hop at a time.
+// issues-engineer.ts was migrated the same way in that session and REVERTED — see the
+// inline note at its BASELINE entry below. It is the reason work-item-redundancy.ts is
+// still not listable in flags-partial-mock-importable.test.ts: redundancy →
+// work-items.ts reaches BOTH claim-lease-wiring (now migrated) and issues-engineer
+// (not), so the graph guard surfaces the blockers one hop at a time.
 export const BASELINE = new Set([
   // ⚠ EXAMINED AND DEFERRED, NOT MISSED — do NOT pattern-match this one onto its
   // siblings above. It looks identical (same config-override family, same timer,
@@ -159,6 +159,15 @@ export const BASELINE = new Set([
   'packages/operator-core/lib/auth-config-overrides.ts',
   'packages/operator-core/lib/events/cache-eca-rule.ts',
   'packages/operator-core/lib/harness/routines/configure-per-workspace.ts',
+  // ⚠ EXAMINED AND REVERTED, NOT MISSED — a migration onto lazy-flag-refresh was written,
+  // measured and BACKED OUT 2026-08-03. It is mechanically easy (ONE reader,
+  // resolveIssuesScopeWorkspace, and an existing 3s self-heal TTL) and semantically unsafe:
+  // ISSUES_PER_WORKSPACE is deliberately held ON, and the unpopulated `false` resolves issue
+  // scope to the legacy 'default' coord workspace — a DEAD partition (last write 2026-06-22)
+  // while every live EI/WI is in the workspace partition. Lazy arming would put that value in
+  // front of the FIRST reader call in every process. Needs a boot-path WARM first (see the
+  // long note at the reverted site in issues-engineer.ts). Same posture as auth-config-overrides.
+  'packages/operator-core/lib/issues-engineer.ts',
   'packages/operator-core/lib/lexicon/configure.ts',
   'packages/operator-core/lib/workspace-brain-scope.ts',
 ]);

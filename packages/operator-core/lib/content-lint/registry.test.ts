@@ -121,7 +121,7 @@ describe('conflictMarkersDetector', () => {
 });
 
 describe('DEFAULT_CONTENT_DETECTORS', () => {
-  it('ships all seven seeded detectors, keyed for the guard + escalation', () => {
+  it('ships all eight seeded detectors, keyed for the guard + escalation', () => {
     expect(DEFAULT_CONTENT_DETECTORS.map((d) => d.key)).toEqual([
       'mdx',
       'smart-quotes',
@@ -137,6 +137,12 @@ describe('DEFAULT_CONTENT_DETECTORS', () => {
       // cannot be meaningfully inspected for a constant-forced branch, and the
       // detector reports clean on one so a single break is never quarantined twice.
       'constant-conditional',
+      // EI-19447067535467975: constant-conditional's sibling from the same
+      // incident — that one catches a disabled BRANCH, this one a disabled FILE.
+      // Ordered adjacent to it (same class: an unfinished edit the sweep
+      // committed) and scoped to test/spec files, so it never overlaps the
+      // detectors above on ordinary source.
+      'focused-test',
     ]);
   });
 });

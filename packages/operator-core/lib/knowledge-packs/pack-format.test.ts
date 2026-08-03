@@ -22,12 +22,12 @@ import { listKnowledgePacks, loadKnowledgePack } from './load-packs';
 describe('parseManifest', () => {
   it('parses a valid manifest', () => {
     const { manifest, error } = parseManifest(
-      ['id: papercusp-default', 'title: Papercusp default', 'description: Core working wisdom.', 'version: 1.0.0', 'author: Papercusp'].join('\n'),
+      ['id: coding', 'title: Generic coding', 'description: Core working wisdom.', 'version: 1.0.0', 'author: Papercusp'].join('\n'),
     );
     expect(error).toBeUndefined();
     expect(manifest).toEqual({
-      id: 'papercusp-default',
-      title: 'Papercusp default',
+      id: 'coding',
+      title: 'Generic coding',
       description: 'Core working wisdom.',
       version: '1.0.0',
       author: 'Papercusp',
@@ -131,10 +131,10 @@ describe('load-packs (tmp fixture roots)', () => {
     }
   };
 
-  writePack(builtin, 'papercusp-default', '1.0.0', { 'tests-ship': 'Tests ship with the feature' });
+  writePack(builtin, 'coding', '1.0.0', { 'tests-ship': 'Tests ship with the feature' });
   writePack(installed, 'rails-pack', '2.1.0', { 'rails-a': 'A', 'rails-b': 'B' });
   // id clash: builtin must win
-  writePack(installed, 'papercusp-default', '9.9.9', { shadow: 'Shadowed' });
+  writePack(installed, 'coding', '9.9.9', { shadow: 'Shadowed' });
   // malformed pack (no items) must be skipped, not crash the listing
   mkdirSync(join(installed, 'broken'), { recursive: true });
   writeFileSync(join(installed, 'broken', 'manifest.yaml'), 'id: broken\ntitle: t\ndescription: d\nversion: 1.0.0\n');
@@ -151,8 +151,8 @@ describe('load-packs (tmp fixture roots)', () => {
   it('lists across roots, builtin wins on clash, broken pack skipped', async () => {
     const packs = await listKnowledgePacks(roots);
     const ids = packs.map((p) => p.id).sort();
-    expect(ids).toEqual(['papercusp-default', 'rails-pack']);
-    const def = packs.find((p) => p.id === 'papercusp-default')!;
+    expect(ids).toEqual(['coding', 'rails-pack']);
+    const def = packs.find((p) => p.id === 'coding')!;
     expect(def.version).toBe('1.0.0');
     expect(def.source).toBe('builtin');
     expect(packs.find((p) => p.id === 'rails-pack')!.itemCount).toBe(2);

@@ -18,6 +18,7 @@ import { findConflictMarker } from './conflict-markers';
 import { findTsParseError } from './ts-parse';
 import { findNulBytes, autoFixNulBytes, nulByteScopeMatches } from './nul-bytes';
 import { findConstantConditional } from './constant-conditional';
+import { findFocusedTest } from './focused-test';
 
 /** A registered content check. */
 export interface ContentDetector {
@@ -289,6 +290,60 @@ export const constantConditionalDetector: ContentDetector = {
 };
 
 /**
+ * The focused-test (`.only`) detector — tracked test/spec files (EI-19447067535467975).
+ *
+ * `constant-conditional`'s sibling, from the same incident and the same root
+ * cause: on an auto-committing tree there is no safe temporary source mutation.
+ * That one catches a disabled BRANCH; this one catches a disabled FILE.
+ *
+ * It is the more dangerous of the two despite being the smaller edit, because a
+ * committed `.only` fails nothing: vitest runs the focused test, skips every
+ * other test in the file, and exits 0. The suite reports PASSED. So this defect
+ * forges the exact signal an agent uses to decide the work is done, which is
+ * why it belongs on the commit path — by the time a later check runs, the false
+ * green has already been believed and acted on. Measured before writing it:
+ * `allowOnly` is configured nowhere in the repo (so vitest narrows silently
+ * rather than failing), and ZERO tracked test files contain `.only`, so the
+ * baseline is empty and nothing needs allowlisting.
+ *
+ * `.skip` is deliberately NOT flagged — a measured decision, not an oversight.
+ * 50 tracked test files use it as this repo's quarantine idiom, and a skipped
+ * test announces itself as skipped in every run's output, so it is visible
+ * rather than silent. The two patterns were filed together in the originating
+ * item and are not the same shape: only `.only` has the silent-green property.
+ *
+ * Precision comes from requiring BOTH a test/spec filename AND a `.only` that
+ * resolves back through any call/property chain to a known test global, so
+ * `describe.each([…]).only` and `test.describe.only` match while `options.only`
+ * never does. AST-based, so `.only` in a comment or string cannot false-fire.
+ *
+ * No `autoFix`: stripping `.only` is one character but not a safe automatic
+ * edit — the focused test may be the only one currently passing, and silently
+ * re-enabling its siblings mid-sweep hands back a red with no explanation.
+ */
+export const focusedTestDetector: ContentDetector = {
+  key: 'focused-test',
+  glob: '**/*.{test,spec}.{ts,tsx}',
+  matches: (f) => /\.(test|spec)\.(ts|tsx)$/.test(f) && !isExcludedPath(f),
+  detect: (file, text) => {
+    const hit = findFocusedTest(file, text);
+    if (!hit) return null;
+    const at = hit.line != null ? `line ${hit.line}${hit.col != null ? `:${hit.col}` : ''}` : 'unknown position';
+    return (
+      `focused test at ${at}: \`${hit.text}\` — every OTHER test in this file is silently skipped. ` +
+      'Vitest still exits 0, so the suite reports PASSED: this turns a green run into no evidence at all. ' +
+      'This is almost always a local debug focus, and git-sync commits the whole tree every few minutes, ' +
+      'so it reaches `staging` mid-experiment and the next agent trusts the green. ' +
+      `Remove the \`.only\` (\`${hit.root}.only\` → \`${hit.root}\`). ` +
+      'To run ONE test without editing tracked source, pass the file and a name filter on the command ' +
+      'line instead: `npm run test:file -- <path> -- -t "<test name>"`. On an auto-committing tree that ' +
+      'is the only version of the experiment that cannot be committed half-finished.'
+    );
+  },
+  fixerRole: CONTENT_FIXER_ROLE,
+};
+
+/**
  * The default registry the git-sync content guard runs with. Extend by adding an
  * entry (a new `{ key, glob, matches, detect, fixerRole }`); the guard + escalation
  * + fixer dispatch pick it up with no further change.
@@ -308,4 +363,9 @@ export const DEFAULT_CONTENT_DETECTORS: ContentDetector[] = [
   // be meaningfully inspected for a forced branch, and findConstantConditional
   // deliberately reports clean on one so the same break is never quarantined twice.
   constantConditionalDetector,
+  // Ordered AFTER ts-parse for the same reason as constant-conditional, and
+  // adjacent to it because they are the same class: an UNFINISHED edit the
+  // sweep committed, not an INVALID file. Scoped to test/spec files only, so it
+  // never overlaps the detectors above on ordinary source.
+  focusedTestDetector,
 ];

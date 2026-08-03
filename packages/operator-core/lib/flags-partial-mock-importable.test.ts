@@ -66,8 +66,16 @@ import { capabilityTierOverrideFor } from './capability-tier-overrides';
 // migrate the module the error NAMES; never drop the import to make it pass — that would trade a
 // loud, accurate failure for a silent standing exemption.
 import { workItemClaimLeaseEnabled } from './work-item-claim-lease-wiring';
-import { issuesScopeWorkspace } from './issues-engineer';
-import { workItemRedundancyEnabled } from './work-item-redundancy';
+// ⚠ STILL NOT LISTABLE: './work-item-redundancy'. It IS migrated and de-listed from the source
+// lint's BASELINE — nothing it owns is wrong. This file asserts a property of the whole transitive
+// import GRAPH, and work-item-redundancy → work-items.ts reaches issues-engineer.ts, which still
+// subscribes at module scope. Adding it kills COLLECTION on a module it does not own.
+// Do NOT "fix" that by deleting the import: a loud, accurate collection failure is the guard
+// working, and dropping the import would convert it into a silent standing exemption.
+// The unblock condition is issues-engineer's, not redundancy's — and it is NOT simply "migrate
+// issues-engineer": that migration was written, measured and REVERTED (its unpopulated flag state
+// resolves to a dead partition — see the long note in issues-engineer.ts). It needs a boot-path
+// WARM first. Add BOTH imports once that lands.
 
 describe('modules stay importable under a partial @papercusp/flags/server mock', () => {
   it('collected this file at all (a module-scope binding read would have failed it here)', () => {
@@ -95,7 +103,5 @@ describe('the fix is IMPORTABILITY, not reader-callability (do not widen this cl
     expect(() => telemetryBufferConfig()).toThrow(/onFlagChange/);
     expect(() => capabilityTierOverrideFor('capability:bash')).toThrow(/onFlagChange/);
     expect(() => workItemClaimLeaseEnabled()).toThrow(/onFlagChange/);
-    expect(() => issuesScopeWorkspace()).toThrow(/onFlagChange/);
-    expect(() => workItemRedundancyEnabled()).toThrow(/onFlagChange/);
   });
 });

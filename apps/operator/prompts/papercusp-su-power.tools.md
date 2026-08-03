@@ -877,6 +877,17 @@ engine is verified.)* This is the su/interactive replacement for `/loop` only �
 NOT the autonomous mug/cup/blender loop (`pot:declare-wake` /
 `kettle:declare-wake`).
 
+**Then CLOSE YOURSELF — `session:end { reason }` (WI-6638).** Ending the loop does
+not end the session: the CLI returns to its prompt and holds a real process + an open
+terminal tab **forever**. Measured 2026-08-03: 52 agent trees from fleets finished
+days ago (oldest 14) holding 14.4 GB while the box thrashed at PSI memory-full 12.5
+vs a threshold of 5. No reaper can clear them — an agent's tab is indistinguishable
+from the owner's, so every layer correctly refuses. **Only you can end you.** Call it
+as your last act when nothing will wake you again (loop ended, claims completed,
+checkpoint flushed, not parked on an `events:await`). Safe to try: the host REFUSES
+unless the session was agent-launched (`PAPERCUSP_LAUNCHED_BY`) and no human ever
+typed into it — a refusal is a correct answer, not an error to retry around.
+
 The boundary runs **both ways**: the pot's mug-loop controls (`pauseNewWork` /
 `maxBees` / pot-steering, and a `fleet:drain` "release your slot" cue) govern that
 autonomous loop, **not** your owner-directed session — don't stop your task on a
