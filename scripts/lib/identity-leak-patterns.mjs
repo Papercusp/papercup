@@ -318,6 +318,38 @@ export const BOX_IDENTITY_FIX_HINT =
  * papercusp-desktop/bin/audit-release-bundle.py — memory ef6e21c4 / WI-4419: "the two MUST agree
  * or it's a false-green." Keep them in lockstep if either changes.
  *
+ * ⛔ THE MIRROR IS `identity_literals()` ONLY — it deliberately does NOT include the python's
+ * `KNOWN_SENSITIVE_IDENTITIES`, and widening it to do so would FREEZE `main`. Read this before
+ * "fixing" the asymmetry (EI-19462813694036210 was filed proposing exactly that):
+ *
+ *   WHAT LOOKS WRONG. `--identity-literals` prints 7 literals; `resolveIdentityLiterals()` resolves
+ *   4 keys. That reads as a narrower detector shipping a false-green. It is not. The python's
+ *   `identity_literals()` is itself build-box-only ("resolved from the box doing the build") and
+ *   THIS PORT MIRRORS IT EXACTLY. The extra 3 come from the CALL SITES, which each do
+ *   `lits.update(KNOWN_SENSITIVE_IDENTITIES)` — a cross-box set (the mac-VM aliases) that is a
+ *   different mechanism, not a wider version of this one.
+ *
+ *   WHY IT IS NOT PORTED. All four of those call sites operate on SHIPPED BYTES, never the working
+ *   tree: scan the assembled sidecar (`scan_dir`), audit the built bundle, and emit the list so
+ *   `bin/stage-source-tree.sh` (see its L315) can `--transform` a REDACTED COPY of each leaking
+ *   file at tar time. The remedy for that set is redaction-at-package-time; the tree is left
+ *   un-scrubbed ON PURPOSE. The KNOWN_SENSITIVE_IDENTITIES block comment says so: those files
+ *   "cannot be pruned (they ship / run), and a per-file source edit is a treadmill that reds the
+ *   next cut the moment a new tag lands."
+ *
+ *   WHAT ARMING IT WOULD COST. This module backs THREE blocking gate lints, so adding that set
+ *   arms them all at once against the working tree. Measured 2026-08-03 over `git ls-files`:
+ *   `known-sensitive:mac-vm-user` occurs in 31 tracked files and `mac-vm-login` in 8 — nearly all
+ *   mac-VM runbooks under apps/operator-docs plus their GENERATED html/md projections. That is 31
+ *   instant findings red-pinning `main`, to re-create the exact per-file-source-edit treadmill the
+ *   design above rejected.
+ *
+ *   SO: this class hunts THIS BOX's identity at edit time. Cross-box known-sensitive literals are
+ *   handled by stage-time redaction + the assembled-bytes backstop. Both directions of drift are
+ *   pinned by `identity-literals-python-parity.test.ts` — if you add a build-* key to the python,
+ *   that test fails until this port catches up; if you add a KNOWN_SENSITIVE_IDENTITIES entry, it
+ *   fails until you consciously re-affirm that it stays unported.
+ *
  * WHY THIS CLASS IS BOX-SPECIFIC (deliberately unlike class 2): it has to know what "this box's
  * identity" actually IS in order to search for it, exactly as the release audit does — both
  * resolve git config / hostname / OS account AT RUN TIME, and neither hardcodes a value. On a CI

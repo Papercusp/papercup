@@ -100,7 +100,8 @@ describe('coord:send {wake:true} → real engine → real pump → real socket (
       parse(coordSend, {
         to: [idleB],
         summary: `wake-rung ping for ${idleB}`,
-        body: 'P-009: directed deliver-and-wake — please read your inbox.',
+        body: [{ text: 'P-009: directed deliver-and-wake — please read your inbox.' }],
+        expects: 'none',
         wake: true,
       }),
       { uiClientId: sender, isSuperuser: true, workspaceId: h.ws } as never,
@@ -152,7 +153,7 @@ describe('coord:send {wake:true} → real engine → real pump → real socket (
 
     const send = async (n: number) =>
       out(await coordSend.handler(
-        parse(coordSend, { to: [idleB], summary: `wake #${n} for ${idleB}`, body: `ping ${n}`, wake: true }),
+        parse(coordSend, { to: [idleB], summary: `wake #${n} for ${idleB}`, body: [{ text: `ping ${n}` }], expects: 'none', wake: true }),
         { uiClientId: sender, isSuperuser: true, workspaceId: h.ws } as never,
       ));
 
@@ -185,6 +186,7 @@ describe('coord:send {wake:true} → real engine → real pump → real socket (
       parse(coordSend, {
         to: [idleB],
         summary: 'ambient note — no wake',
+        expects: 'none',
         wake: false,
       }),
       { uiClientId: sender, isSuperuser: true, workspaceId: h.ws } as never,

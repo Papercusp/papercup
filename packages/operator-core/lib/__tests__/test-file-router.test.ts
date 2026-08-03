@@ -12,6 +12,8 @@ import {
   main,
   looksLikeMidInstallCorruption,
   looksLikeSilentCollectionFailure,
+  parseTransformFailure,
+  transformFailureMarker,
   perGroupVitestArgs,
   warnIfInstallInFlight,
   withoutOutputFileArg,
@@ -468,5 +470,127 @@ describe('TEST_FILE_RESULT presence is a verdict, so a run that executed nothing
     const out = linesFrom(logSpy);
     expect(out).toMatch(/TEST_FILE_DRYRUN requested=1 .*matched=1/);
     expect(out).toContain('matched lib/__tests__/test-file-router.test.ts');
+  });
+});
+
+describe('parseTransformFailure (EI-19462803905923939)', () => {
+  // Captured VERBATIM from a real `vitest list` run against vitest 4 + esbuild (2026-08-03),
+  // reproduced outside the shared tree so nothing had to be mutated to obtain it.
+  const REAL_ESBUILD_OUTPUT = [
+    'Error: Transform failed with 1 error:',
+    '/tmp/pc-transform-probe/case2/dep.ts:4:1: ERROR: Unexpected "*"',
+    '  Plugin: vite:esbuild',
+    '  File: /tmp/pc-transform-probe/case2/dep.ts:4:1',
+    '  ',
+    '  Unexpected "*"',
+    '  2  |   * a doc block',
+    '  4  |   * stray continuation',
+    '     |   ^',
+  ].join('\n');
+
+  it('extracts the culprit file, line and column from real esbuild output', () => {
+    const locations = parseTransformFailure(REAL_ESBUILD_OUTPUT);
+    expect(locations).toHaveLength(1);
+    expect(locations[0]).toMatchObject({
+      file: '/tmp/pc-transform-probe/case2/dep.ts',
+      line: 4,
+      col: 1,
+      message: 'Unexpected "*"',
+    });
+  });
+
+  it('does not double-count the sibling `File:` line (which carries no ERROR:)', () => {
+    // REAL_ESBUILD_OUTPUT names the same path twice; only the `: ERROR:` form is a real entry.
+    expect(parseTransformFailure(REAL_ESBUILD_OUTPUT)).toHaveLength(1);
+  });
+
+  it('handles the RELATIVE culprit path esbuild prints when the file is inside the vite root', () => {
+    // The originally-reported incident's exact shape — esbuild prints relative here, absolute above.
+    const locations = parseTransformFailure(
+      'Error: Transform failed with 1 error:\nlibs/generic/search/src/hybrid.ts:55:3: ERROR: Unexpected "*"\n',
+    );
+    expect(locations).toHaveLength(1);
+    expect(locations[0]).toMatchObject({ file: 'libs/generic/search/src/hybrid.ts', line: 55, col: 3 });
+  });
+
+  it('fires on COLOURED output — the EI-18819483316574031 lesson, or it never fires for real', () => {
+    // A sibling detector in this same file matched only clean text and so never fired once on real
+    // vitest output. This is the calibration case: without the ANSI strip it returns [].
+    const coloured =
+      '[31mError: Transform failed with 1 error:[39m\n' +
+      '[2m/tmp/x/dep.ts[22m:4:1: ERROR: Unexpected "*"\n';
+    // Fixture-integrity guard: the escape codes above are literal, invisible bytes that do NOT
+    // survive a careless copy-paste — without this, a future edit could leave the test passing for
+    // nothing (the bracket text alone still parses fine).
+    expect(coloured).toContain(`${String.fromCharCode(27)}[`);
+    const locations = parseTransformFailure(coloured);
+    expect(locations).toHaveLength(1);
+    // The path must come back CLEAN. A culprit still carrying escape codes would never compare
+    // equal to a requested route, silently degrading EVERY attribution to "external" — i.e.
+    // cheerfully telling a caller their genuinely-broken file is fine.
+    expect(locations[0].file).toBe('/tmp/x/dep.ts');
+  });
+
+  it('stays silent on a clean run (control)', () => {
+    expect(parseTransformFailure(' Test Files  2 passed (2)\n      Tests  5 passed (5)\n')).toEqual([]);
+  });
+
+  it('stays silent on an ORDINARY assertion failure (control — must not hijack normal reds)', () => {
+    const normalRed = [
+      ' FAIL  lib/thing.test.ts > adds',
+      'AssertionError: expected 1 to be 2',
+      ' Test Files  1 failed (1)',
+      '      Tests  1 failed (1)',
+    ].join('\n');
+    expect(parseTransformFailure(normalRed)).toEqual([]);
+  });
+});
+
+describe('transformFailureMarker — the attribution (EI-19462803905923939)', () => {
+  const cwd = join(REPO_ROOT, 'packages/operator-core');
+  const namedFile = join(cwd, 'lib/__tests__/tools-md-sync.test.ts');
+  const routes = [{ absolute: namedFile }];
+  const args = { routes, cwd, requested: 1, matched: 0 };
+
+  it('returns null with no transform failure, so the caller keeps today’s output', () => {
+    expect(transformFailureMarker({ ...args, locations: [] })).toBeNull();
+  });
+
+  it('an EXTERNAL culprit clears the named file and points at a peer mid-edit', () => {
+    const marker = transformFailureMarker({
+      ...args,
+      locations: [
+        { file: join(REPO_ROOT, 'libs/generic/search/src/hybrid.ts'), line: 55, col: 3, message: 'Unexpected "*"' },
+      ],
+    });
+    expect(marker).toContain('TEST_FILE_TRANSFORM_ERROR');
+    expect(marker).toContain('cause=transform');
+    expect(marker).toContain('libs/generic/search/src/hybrid.ts:55:3');
+    expect(marker).toContain('are FINE');
+    expect(marker).toContain('PEER');
+  });
+
+  // THE control this whole function exists for. Case 1 and case 2 of the live reproduction produce
+  // byte-identical esbuild output apart from the path, so an attribution that assumed "external"
+  // would tell a caller whose OWN file has a syntax error that their file is fine — swapping one
+  // confident false statement for another.
+  it('a culprit the caller NAMED is never described as fine', () => {
+    const marker = transformFailureMarker({
+      ...args,
+      locations: [{ file: namedFile, line: 4, col: 1, message: 'Unexpected "*"' }],
+    });
+    expect(marker).toContain('you NAMED');
+    expect(marker).not.toContain('are FINE');
+    expect(marker).not.toContain('PEER');
+  });
+
+  it('resolves a RELATIVE culprit path against the group cwd before deciding', () => {
+    // Same file as `namedFile`, expressed the way esbuild prints it from inside the vite root.
+    const marker = transformFailureMarker({
+      ...args,
+      locations: [{ file: 'lib/__tests__/tools-md-sync.test.ts', line: 4, col: 1, message: 'Unexpected "*"' }],
+    });
+    expect(marker).toContain('you NAMED');
+    expect(marker).not.toContain('are FINE');
   });
 });
