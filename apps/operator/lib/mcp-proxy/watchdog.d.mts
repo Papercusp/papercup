@@ -75,3 +75,28 @@ export function decideHandshakeAction(
   proxyKind: ProbeKind | string,
   upstreamKind: ProbeKind | string,
 ): HandshakeAction;
+
+/**
+ * The JSON-RPC `coord:escalate` call body a CRITICAL verdict sends (EI-19415174699106397).
+ * Pure — builds the request shape only; the network POST + credential read stay unexported and
+ * untested directly (same convention as the probe/restart side effects above).
+ */
+export function buildEscalationCall(
+  conditionKey: string,
+  summary: string,
+  body?: string,
+): {
+  jsonrpc: '2.0';
+  id: number;
+  method: 'tools/call';
+  params: {
+    name: 'coord:escalate';
+    arguments: {
+      severity: 'blocker';
+      summary: string;
+      body?: string;
+      conditionKey: string;
+      evidence: { band: 'observed'; reportedBy: string };
+    };
+  };
+};

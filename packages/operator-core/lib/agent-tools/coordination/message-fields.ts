@@ -754,6 +754,15 @@ export function renderAuthoredFieldsSuffix(env: Record<string, unknown>): string
  * agent result cap. The compact marker says WHAT a message carries; `coord:read <msg_id>`
  * (or coord:thread) is the surface that shows it in full.
  */
+/**
+ * Character budget for spelled-out `youMayNotKnow` refs on the `[coord+N]` line.
+ * Sized to match the existing `couldNotDetermine` allowance (120) so the two
+ * in-band payloads are symmetric and the worst-case suffix stays bounded — the
+ * marker is deliberately compact, and the fix for a starved read path is to
+ * deliver the ACTIONABLE part, not to lift the cap.
+ */
+export const YMNK_MARKER_BUDGET_CHARS = 120;
+
 export function authoredFieldParts(env: Record<string, unknown>): string[] {
   const raw = env.sections;
   if (!Array.isArray(raw) || raw.length === 0) return [];
@@ -778,8 +787,50 @@ export function authoredFieldParts(env: Record<string, unknown>): string[] {
     if (fyb) parts.push(`∵ ${fyb.relation}${fyb.ref ? ` ${fyb.ref}` : ''}`);
   }
 
+  // SPELLED OUT, not counted — the same reasoning `couldNotDetermine` already
+  // gets below, applied to the field that needed it just as much.
+  //
+  // WHY THIS CHANGED (coordination-spec-adoption-2026-08-03, Phase 5). A COUNT of
+  // things you do not know is not information: `⚠ 3 you-may-not-know` tells a
+  // reader that three refs exist and nothing about whether any of them matters,
+  // so the only way to act on it was a second `coord:read` call — which fired 15
+  // times in a week against 1,611 sends. The refs ARE the payload and they are
+  // short, so withholding them bought a few characters and cost the field its
+  // entire read path. Measured: senders fill this field (274 entries in 7d) and
+  // readers essentially never open it.
+  //
+  // AUTHORED FIRST, deliberately. An `authored` entry is the sender's MODEL of
+  // what the recipient lacks — the theory-of-mind half, valuable precisely
+  // because it can be wrong and be corrected (D-024/D-040). A `computed` entry is
+  // the mechanical evidence-minus-watermark diff, which the reader can re-derive.
+  // When the budget forces a choice, deliver the one they cannot reconstruct.
   const ymnk = sections.flatMap((s) => s.youMayNotKnow ?? []);
-  if (ymnk.length && !derived.youMayNotKnow) parts.push(`⚠ ${ymnk.length} you-may-not-know`);
+  if (ymnk.length && !derived.youMayNotKnow) {
+    const ordered = [
+      ...ymnk.filter((e) => e.provenance === 'authored'),
+      ...ymnk.filter((e) => e.provenance !== 'authored'),
+    ];
+    const shown: string[] = [];
+    let budget = YMNK_MARKER_BUDGET_CHARS;
+    for (const e of ordered) {
+      const ref = String(e.ref ?? '').trim();
+      // A ref long enough to blow the whole budget on its own is truncated
+      // rather than dropped: a truncated pointer is still a pointer, and
+      // dropping it silently is how the count-only version failed.
+      if (!ref) continue;
+      const piece = ref.length > budget ? `${ref.slice(0, Math.max(0, budget - 1))}…` : ref;
+      if (piece.length === 0) break;
+      shown.push(piece);
+      budget -= piece.length + 2; // + '; '
+      if (budget <= 0) break;
+    }
+    const rest = ymnk.length - shown.length;
+    parts.push(
+      shown.length > 0
+        ? `⚠ you may not know: ${shown.join('; ')}${rest > 0 ? ` (+${rest})` : ''}`
+        : `⚠ ${ymnk.length} you-may-not-know`,
+    );
+  }
 
   // Spelled out, not counted: this is the one that tells the receiver a question
   // is OPEN rather than answered, which is a different action.

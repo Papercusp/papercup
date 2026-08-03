@@ -26,6 +26,7 @@ import {
   listRelations,
   PG_READ_QUERY_DEFAULT_MAX_ROWS,
   PG_READ_QUERY_HARD_MAX_ROWS,
+  PgReadQueryTimeoutError,
 } from '../../pg-read-query';
 
 /** A successful JSON payload in the MCP content shape. */
@@ -45,7 +46,7 @@ export default defineTool({
   name: 'dev:pg_query',
   profile: 'engineer',
   description:
-    'Run a read-only SELECT / WITH…SELECT against the operator Postgres (canonical store behind plans, work-items, issues, tool_invocations, scorecards, recipes, …), or pass `describe` to inspect a relation\'s columns/indexes/constraints (psql `\\d` equivalent). Read-only enforced; 5s statement_timeout; rows capped. bigint/int8 columns (e.g. queryid) come back as exact-precision STRINGS, never a rounded number.',
+    'Run a read-only SELECT / WITH…SELECT against the operator Postgres (canonical store behind plans, work-items, issues, tool_invocations, scorecards, recipes, …), or pass `describe` to inspect a relation\'s columns/indexes/constraints (psql `\\d` equivalent). Read-only enforced; 5s statement_timeout; rows capped. `timeoutMs` bounds the WHOLE call (connect + acquire + execute, not just server-side execution) — a hung connection acquire (pool exhaustion, or the operator restarting mid-call) now fails fast with reason "call_timeout" instead of hanging for minutes. bigint/int8 columns (e.g. queryid) come back as exact-precision STRINGS, never a rounded number.',
   capability: 'intel:read',
   guidance: {
     when:
@@ -91,7 +92,9 @@ export default defineTool({
       .positive()
       .max(30000)
       .optional()
-      .describe('statement_timeout in ms (default 5000, max 30000).'),
+      .describe(
+        'Bounds the WHOLE call — connect/acquire + statement_timeout + execute (default 5000, max 30000). A hung connection acquire (e.g. the operator restarting mid-call) now fails fast around this bound instead of hanging past it.',
+      ),
   }),
   async handler(args, ctx) {
     // `describe` is the `\d` path (P-011): a psql CLIENT meta-command has no
@@ -172,6 +175,19 @@ export default defineTool({
         ],
       };
     } catch (err) {
+      // EI-19415142351884573: a whole-call timeout (connect/acquire, or PG
+      // itself never finishing) is a DIFFERENT failure from a real PG error —
+      // "we asked and got told no" vs "we never found out". Naming it fixes
+      // the misdiagnosis this bug reported: three consecutive hangs (one with
+      // an explicit 25s timeoutMs) were each silently absorbed by the
+      // client's 300s idle-abort, with Postgres itself completely idle the
+      // whole time, because the operator was restarting mid-call and
+      // acquiring a connection never returned. `timeoutMs` now bounds THIS —
+      // the whole call, not just server-side execution — so this branch is
+      // reachable at a caller-chosen deadline instead of only at 300s.
+      if (err instanceof PgReadQueryTimeoutError) {
+        return jsonError('call_timeout', err.message);
+      }
       // Surface Postgres' own HINT/DETAIL/code/position (dropped if we only
       // pass err.message) — PG emits e.g. `HINT: Perhaps you meant to reference
       // the column "w.feature_id"` on a column error, which saves agents from

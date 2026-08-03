@@ -95,6 +95,65 @@ describe('renderAuthoredFieldsSuffix — making the fields visible', () => {
     expect(out).not.toMatch(/1 clarif/);
   });
 
+  // ── youMayNotKnow is SPELLED OUT, not counted ──────────────────────────────
+  // coordination-spec-adoption-2026-08-03 Phase 5. The refs are the actionable
+  // payload; a bare count forced a second coord:read, which fired 15 times in a
+  // week against 1,611 sends. These pin the delivery, not the formatting.
+
+  it('DELIVERS the youMayNotKnow refs in-band rather than a bare count', () => {
+    const out = renderAuthoredFieldsSuffix({
+      sections: [
+        {
+          text: 'a',
+          youMayNotKnow: [
+            { ref: 'WI-7423', provenance: 'authored' },
+            { ref: 'EI-19300252001829260', provenance: 'computed' },
+          ],
+        },
+      ],
+    });
+    expect(out).toContain('WI-7423');
+    expect(out).toContain('EI-19300252001829260');
+    // The old shape leaked no ref at all — a reader could not act without a
+    // second call. Guard against a silent regression to counting.
+    expect(out).not.toMatch(/⚠ 2 you-may-not-know/);
+  });
+
+  it('puts AUTHORED refs before COMPUTED ones — the reader cannot re-derive the sender\'s model', () => {
+    const out = renderAuthoredFieldsSuffix({
+      sections: [
+        {
+          text: 'a',
+          youMayNotKnow: [
+            { ref: 'COMPUTED-REF', provenance: 'computed' },
+            { ref: 'AUTHORED-REF', provenance: 'authored' },
+          ],
+        },
+      ],
+    });
+    expect(out.indexOf('AUTHORED-REF')).toBeLessThan(out.indexOf('COMPUTED-REF'));
+  });
+
+  it('stays BOUNDED under many refs, and says how many it withheld', () => {
+    const many = Array.from({ length: 30 }, (_, i) => ({
+      ref: `WI-${1000 + i}`,
+      provenance: 'authored' as const,
+    }));
+    const out = renderAuthoredFieldsSuffix({ sections: [{ text: 'a', youMayNotKnow: many }] });
+    // The [coord+N] line is compact by design: the fix for a starved read path
+    // is delivering the actionable part, never lifting the cap.
+    expect(out.length).toBeLessThan(200);
+    expect(out).toMatch(/\(\+\d+\)/);
+  });
+
+  it('still SUPPRESSES youMayNotKnow when the field was DERIVED, not authored (D-072)', () => {
+    const out = renderAuthoredFieldsSuffix({
+      sections: [{ text: 'a', youMayNotKnow: [{ ref: 'WI-1', provenance: 'computed' }] }],
+      fieldProvenance: { youMayNotKnow: 'owner-gui-derived' },
+    });
+    expect(out).toBe('');
+  });
+
   it('surfaces blocking and the coupling relation', () => {
     const out = renderAuthoredFieldsSuffix({
       blocking: true,

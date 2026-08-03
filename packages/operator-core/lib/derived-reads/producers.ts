@@ -538,6 +538,57 @@ registerDerivedRead({
   },
 });
 
+// ── learning.improvements.hive (WI-7432) — the PER-POT variant of the above ──
+//
+// WHY THIS EXISTS, and why the sibling above was not enough. The workspace-wide
+// producer serves only `hive === undefined`, but the Learning tab INHERITS the pot
+// lens from the top-bar selector (owner directive 2026-07-26; LearningTab's
+// HIVE_AWARE_VIEWS includes "improvements"), so a user with any pot selected sends
+// `{hive}` and misses the snapshot on EVERY mount. The precomputed fast path
+// therefore served only the All-Pots case — the case nobody is in.
+//
+// Measured on the owner's own desktop sidecar 2026-08-03, which is what makes this
+// a defect rather than a tuning nit: `{hive:'papercusp'}` cost 0.35-0.52s warm and
+// 1.56-3.19s cold against a ~10ms plain SELECT for the default variant. That is the
+// whole of the owner's "switching to the learning tab takes several seconds" report
+// (WI-7432) — NOT transport: 16 concurrent IPC requests finish in 63ms on that box,
+// and learning.health (394 B) is 6ms over the same path.
+//
+// `scope: 'harness'` is the load-bearing choice: the substrate already keys
+// snapshots on (workspace_id, harness_slug, key) and `system:precompute-derived-reads`
+// already fires PER HARNESS, so the pot dimension the resolver needs is the harness
+// dimension the table has had all along. No schema change, no new arg dimension —
+// this is the reuse the header of this file asks for.
+//
+// The advScope lens resolves a member harness to its HIVE HOME slug, so the value
+// the resolver passes as `harnessSlug` is always a real harness slug and the fan-out
+// is bounded by the registry (8 harnesses here), at ~0.7s each against the 20s
+// storage.usage and 27s soakReport already in this routine's pass.
+//
+// A MISS still falls through to the live compute in the resolver (never an empty
+// panel), and `warmMissedSnapshot` fills the cold key in the background, so a pot
+// the routine has not reached yet is exactly as fast as today and instant after.
+//
+// producerVersion tracks the sibling: both call the SAME
+// computeLearningImprovementsSnapshot, so a wire-shape change lands on both at once
+// and a stale row here must be invalidated for the same reason (WI-7275/WI-7279 —
+// an unbumped version keeps serving the old fat shape and ships the fix INERT).
+registerDerivedRead({
+  key: 'learning.improvements.hive',
+  ttlMs: 90_000,
+  producerVersion: 3,
+  scope: 'harness',
+  compute: async ({ harnessSlug }) => {
+    const { computeLearningImprovementsSnapshot } = await import(
+      '../harness/improvements/learning-digest-snapshot'
+    );
+    // Only the hive lens varies from the default variant — state/limit/scope stay
+    // at their defaults so this snapshot answers exactly the question the tab's
+    // pot-scoped mount asks, and nothing broader.
+    return computeLearningImprovementsSnapshot({ hive: harnessSlug });
+  },
+});
+
 // ── coord.history (phase2 P-004) — measured 0.1-0.8s (variable) / 160KB on the
 // legacy /coord history viewer (WI-5460 follow-up). loadCoordHistory reads the
 // ENTIRE coord corpus (all plan-events + messages + escalations + handoffs) then

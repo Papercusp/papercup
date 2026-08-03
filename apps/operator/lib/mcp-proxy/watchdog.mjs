@@ -176,7 +176,7 @@ const SUPERUSER_TOKEN_FILE = join(homedir(), '.papercusp', 'superuser-token');
  * flapping between FAILING and recovered during a real incident, so a retried escalation has a
  * real chance of landing in one of those windows even when the very first attempt does not.
  */
-function buildEscalationCall(conditionKey, summary, body) {
+export function buildEscalationCall(conditionKey, summary, body) {
   return {
     jsonrpc: '2.0',
     id: 1,
@@ -520,13 +520,16 @@ async function poll() {
       stallOnsets = rate.kept;
       if (rate.escalate && now - lastRateEscalationAt >= RATE_WINDOW_MS) {
         lastRateEscalationAt = now;
+        const summary = `${rate.count} proxy stalls in the last ${Math.round(rate.windowMs / 60_000)}min (threshold ${rate.threshold}) — each self-recovered, but a repeatedly-stalling proxy can kill a mid-handshake agent session (WI-6740)`;
         log(
-          `CRITICAL: ${rate.count} proxy stalls in the last ${Math.round(rate.windowMs / 60_000)}min ` +
-            `(threshold ${rate.threshold}) — each one self-recovered, so nothing has been restarted, but a ` +
-            `repeatedly-stalling proxy can kill whichever agent session is mid-handshake (WI-6740). ` +
-            `Since WI-6924 the liveness probe is proxy-local, so these are NOT :3070 deploys: the proxy ` +
+          `CRITICAL: ${summary}. Since WI-6924 the liveness probe is proxy-local, so these are NOT :3070 deploys: the proxy ` +
             `is failing to answer its own route. Investigate ${UNIT}; do not just wait for a longer outage.`,
         );
+        void escalateToHuman(
+          'mcp-proxy-stall-rate',
+          summary,
+          `Investigate ${UNIT} — the proxy is failing to answer its own local liveness route, not upstream. See ${LOG_FILE} for the full stall history.`,
+        ).catch(() => {});
       }
     } else if (shouldRestart(unreachableSince, now, UNREACHABLE_MS)) {
       restart(`unreachable for ${Math.round((now - unreachableSince) / 1000)}s (${e.message})`);
@@ -583,12 +586,16 @@ async function pollDataPlane() {
 
   if (now - lastDataLog > LOG_THROTTLE_MS) {
     lastDataLog = now;
-    const secs = Math.round((now - dataFailingSince) / 1000);
+    const summary = `MCP DATA plane dead ${secs}s while the session plane and /api/health stay GREEN (${detail}) — the WI-6739 signature`;
+    const remediation = `check :${UPSTREAM_PORT}'s journal for repeated "connect ECONNREFUSED" to its DB port, then restart the operator host. Restarting ${UNIT} would NOT fix this.`;
     log(
-      `CRITICAL: MCP DATA plane dead ${secs}s while the session plane and /api/health stay GREEN (${detail}). ` +
-        `This is the 2026-08-01 signature (WI-6739): the operator on :${UPSTREAM_PORT} is serving its tool catalog from memory while every DB-backed call times out — most likely a dead/stale Postgres endpoint it will retry forever. ` +
-        `Restarting ${UNIT} would NOT fix this and is being withheld. Remediation: check :${UPSTREAM_PORT}'s journal for repeated "connect ECONNREFUSED" to its DB port, then restart the operator host.`,
+      `CRITICAL: ${summary}. This is the 2026-08-01 signature (WI-6739): the operator on :${UPSTREAM_PORT} is serving its tool catalog from memory while every DB-backed call times out — most likely a dead/stale Postgres endpoint it will retry forever. ` +
+        `Restarting ${UNIT} would NOT fix this and is being withheld. Remediation: ${remediation}`,
     );
+    // Best-effort — this call itself needs the DB the condition is ABOUT, so it can fail for the
+    // same reason; see escalateToHuman's doc comment. It retries every throttle window, so a
+    // brief recovery blip (observed live) is enough for one attempt to land.
+    void escalateToHuman('mcp-data-plane-dead', summary, remediation).catch(() => {});
   }
 }
 
@@ -655,11 +662,13 @@ async function pollHandshake() {
   // circuit-breaker slot while the log blamed the wrong service — so we do not.
   if (now - lastUpstreamLog > LOG_THROTTLE_MS) {
     lastUpstreamLog = now;
+    const summary = `MCP session plane dead ${secs}s and the UPSTREAM operator :${UPSTREAM_PORT} is the culprit (proxy: ${detail}; upstream: ${upstream.detail})`;
+    const remediation = `restart the operator host serving :${UPSTREAM_PORT}. Restarting ${UNIT} would NOT fix this.`;
     log(
-      `CRITICAL: MCP session plane dead ${secs}s and the UPSTREAM operator :${UPSTREAM_PORT} is the culprit (proxy: ${detail}; upstream: ${upstream.detail}). ` +
-        `Restarting ${UNIT} would NOT fix this and is being withheld. This is the 2026-08-01 signature (WI-6739): /api/health stays 200/2ms while every client is dark. ` +
-        `Remediation: restart the operator host serving :${UPSTREAM_PORT}.`,
+      `CRITICAL: ${summary}. Restarting ${UNIT} would NOT fix this and is being withheld. This is the 2026-08-01 signature (WI-6739): /api/health stays 200/2ms while every client is dark. ` +
+        `Remediation: ${remediation}`,
     );
+    void escalateToHuman('mcp-session-plane-dead-upstream', summary, remediation).catch(() => {});
   }
 }
 
@@ -677,6 +686,11 @@ function start() {
   log(
     `pgbouncer pool sampler (EI-19384024494946006) — SHOW POOLS/SHOW STATS captured on every ` +
       `reachability/data-plane FAILING onset (debounced ${POOL_SAMPLE_MIN_INTERVAL_MS}ms), logged to ${POOL_SAMPLE_LOG_FILE}`,
+  );
+  log(
+    `human escalation (EI-19415174699106397) — every CRITICAL verdict also fires coord:escalate ` +
+      `(conditionKey-coalesced, best-effort, retried each throttle window) so a sustained outage ` +
+      `pages a human instead of only appending to this log file`,
   );
   if (probeArgs.invalid) {
     // Loud at startup rather than once per 10min throttle window: every poll from here on is a

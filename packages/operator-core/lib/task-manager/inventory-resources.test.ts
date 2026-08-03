@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
+  RESOURCE_TOTALS_FILTER,
+  RESOURCE_TOTALS_LIMIT,
+  computeResourceTotals,
   cpuBusyPercent,
   emptyResourceTotals,
   foldResourceTotals,
@@ -47,6 +50,64 @@ describe('foldResourceTotals (WI-7371)', () => {
 
   it('emptyResourceTotals marks never-sampled with sampledAtMs 0', () => {
     expect(emptyResourceTotals().sampledAtMs).toBe(0);
+  });
+
+  it('a bare fold never claims truncation — only the fetcher can know', () => {
+    expect(foldResourceTotals([row(1, 1)], NOW).truncated).toBe(false);
+  });
+});
+
+/**
+ * The acceptance criterion this work-item turns on: "totals reflect the FULL tracked set,
+ * provably independent of the active filter". Moving the fold server-side does NOT deliver
+ * that on its own — `getTaskInventory` filters its own `listTasks` — so these assert the
+ * property directly instead of trusting the layer it lives in.
+ */
+describe('computeResourceTotals filter-independence (WI-7371)', () => {
+  const storeRow = (lastMemoryBytes: number | null, cpuUsec: number | null) => ({
+    lastMemoryBytes,
+    cpuUsec,
+  });
+
+  it('hands the store NO state/class filter — the pane cannot narrow the totals', async () => {
+    const seen: unknown[] = [];
+    await computeResourceTotals(NOW, async (f) => {
+      seen.push(f);
+      return [];
+    });
+    expect(seen).toHaveLength(1);
+    const f = seen[0] as Record<string, unknown>;
+    // Assert on KEY ABSENCE, not on values: threading `states: undefined` through would
+    // pass a value check while leaving the door open for a later `states: opts.state`.
+    expect(Object.keys(f).sort()).toEqual(['includeEnded', 'limit']);
+    expect(f.includeEnded).toBe(false);
+  });
+
+  it('excludes ended tasks, whose rssBytes is memory the kernel already reclaimed', () => {
+    // Measured 2026-08-03: 13 live rows = 15 GB, all 971 ledger rows = 131 GB on a 257 GB
+    // box. `includeEnded` is a ROW-LIST toggle; letting it reach the totals would let the
+    // header report more memory than the machine physically has.
+    expect(RESOURCE_TOTALS_FILTER.includeEnded).toBe(false);
+  });
+
+  it('is frozen, so a caller cannot mutate the shared filter into a narrower one', () => {
+    expect(Object.isFrozen(RESOURCE_TOTALS_FILTER)).toBe(true);
+  });
+
+  it('maps lastMemoryBytes -> rssBytes rather than folding a silent zero', async () => {
+    // The store row and the wire row name this field differently. Fold the store shape
+    // through the wire shape and every row reads `undefined`, producing a confident 0.
+    const t = await computeResourceTotals(NOW, async () => [storeRow(100, 10), storeRow(200, null)]);
+    expect(t.rssBytesTotal).toBe(300);
+    expect(t.cpuUsecTotal).toBe(10);
+    expect(t.rowsConsidered).toBe(2);
+    expect(t.cpuUsecKnown).toBe(1);
+  });
+
+  it('flags truncation when the fetch hits its cap, so the total reads as a lower bound', async () => {
+    const capped = Array.from({ length: RESOURCE_TOTALS_LIMIT }, () => storeRow(1, 1));
+    expect((await computeResourceTotals(NOW, async () => capped)).truncated).toBe(true);
+    expect((await computeResourceTotals(NOW, async () => capped.slice(1))).truncated).toBe(false);
   });
 });
 

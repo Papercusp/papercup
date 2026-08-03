@@ -82,7 +82,8 @@ export type LiveProcessRow = {
 };
 
 /**
- * Fleet-wide resource totals, folded over the SAME row set as `total`/`byState`.
+ * Fleet-wide resource totals over the LIVE tracked set — deliberately NOT the row set
+ * `total`/`byState` describe.
  *
  * WHY THIS IS COMPUTED HERE AND NOT IN THE VIEW (WI-7371): the panes filter by
  * state/class, so their `rows` is a PROJECTION. A `rows.reduce()` in a component
@@ -91,6 +92,21 @@ export type LiveProcessRow = {
  * it next to `byState` also means the header pill and the panel it opens read one
  * field and cannot disagree, which is the WI-6844 bug this file already carries a
  * warning about.
+ *
+ * ⚠ MOVING THE FOLD SERVER-SIDE IS NOT BY ITSELF THE FIX, and the first cut of this
+ * change got it wrong. `getTaskInventory` applies the pane's `state`/`cls`/`includeEnded`
+ * to `listTasks`, so a fold over its `rows` reproduces the exact same narrower-than-its-
+ * label number one layer down, where it is harder to see. The totals therefore run over
+ * their OWN fetch (`computeResourceTotals`), which takes no caller filter at all — the
+ * independence is structural rather than a property someone has to remember to preserve.
+ *
+ * ⚠ THE SET IS THE LIVE ONE (`ended_at IS NULL`), never `includeEnded`. An ended task's
+ * `rssBytes` is the last reading before it exited — memory the kernel has since reclaimed.
+ * Measured 2026-08-03: the 13 live rows summed to ~5 GB while all 971 ledger rows summed
+ * to 131 GB on a 257 GB machine. Only the RATIO is stable — the live figure moved 15 GB →
+ * 5 GB across the same 13 rows within twenty minutes, which is the reconciler doing its
+ * job. The 131 GB is not a bigger truth; it is an arithmetic artifact of summing the dead,
+ * and it exceeds the machine's physical memory, which is how you can tell at a glance.
  *
  * ⚠ `rssBytes` is a GAUGE (sum is meaningful) but double-counts pages SHARED between
  * processes — a naive RSS sum over postgres backends on this box reads ~403 GB on a
@@ -113,6 +129,13 @@ export type TaskResourceTotals = {
   cpuUsecKnown: number;
   /** Row count the fold ran over, so a view can say "M of N reported". */
   rowsConsidered: number;
+  /**
+   * The fetch feeding this fold hit its row cap, so the totals are a LOWER BOUND.
+   * A silently-capped total is the same defect as a filtered one — authoritative-looking
+   * and answering a narrower question — so the cap is reported rather than assumed
+   * unreachable. The pure fold cannot know this; the FETCHER sets it.
+   */
+  truncated: boolean;
 };
 
 export type TaskInventory = {
@@ -155,8 +178,23 @@ export function emptyResourceTotals(): TaskResourceTotals {
     rssBytesKnown: 0,
     cpuUsecKnown: 0,
     rowsConsidered: 0,
+    truncated: false,
   };
 }
+
+/**
+ * The row filter the resource totals are folded over.
+ *
+ * Exported so the guard test can assert what it does NOT contain: no `states`, no
+ * `classes`, and `includeEnded: false`. That is the whole filter-independence claim
+ * expressed as a value, which is checkable, rather than as a convention someone has to
+ * keep in mind while editing `getTaskInventory`.
+ */
+export const RESOURCE_TOTALS_LIMIT = 2000;
+export const RESOURCE_TOTALS_FILTER = Object.freeze({
+  includeEnded: false,
+  limit: RESOURCE_TOTALS_LIMIT,
+});
 
 /**
  * Fold resource totals over rows. PURE — no clock, no I/O — so the aggregation is
@@ -165,6 +203,9 @@ export function emptyResourceTotals(): TaskResourceTotals {
  * Nulls are SKIPPED, not coerced to 0, and counted separately: `rssBytes`/`cpuUsec`
  * are `number | null`, and treating "did not report" as zero would silently understate
  * the total while looking like a complete answer.
+ *
+ * Always reports `truncated: false` — a fold covers exactly the rows handed to it, and
+ * whether that set was cut short is knowledge only the fetcher has.
  */
 export function foldResourceTotals(
   rows: ReadonlyArray<Pick<TaskInventoryRow, 'rssBytes' | 'cpuUsec'>>,
@@ -182,6 +223,34 @@ export function foldResourceTotals(
     }
   }
   return out;
+}
+
+/** Just enough of a store row to fold; keeps the seam below narrow and injectable. */
+type ResourceSourceRow = { lastMemoryBytes?: number | null; cpuUsec?: number | null };
+type ResourceLister = (filter: typeof RESOURCE_TOTALS_FILTER) => Promise<ResourceSourceRow[]>;
+
+/**
+ * Fetch the live tracked set and fold it — the ONE path that produces `summary.resources`.
+ *
+ * `lister` is injected so the filter-independence claim is testable without a database:
+ * a fake lister records the filter it was handed, and the guard test asserts no caller
+ * filter ever reaches it.
+ *
+ * ⚠ The mapping `lastMemoryBytes -> rssBytes` is load-bearing. The store row names the
+ * field differently from the wire row, so folding a store row through the wire row's
+ * `Pick<..., 'rssBytes'>` shape reads `undefined` on every row and yields a confident `0`
+ * total that is indistinguishable from "nothing reported".
+ */
+export async function computeResourceTotals(
+  nowMs: number,
+  lister: ResourceLister = listTasks as unknown as ResourceLister,
+): Promise<TaskResourceTotals> {
+  const rows = await lister(RESOURCE_TOTALS_FILTER);
+  const folded = foldResourceTotals(
+    rows.map((r) => ({ rssBytes: r.lastMemoryBytes ?? null, cpuUsec: r.cpuUsec ?? null })),
+    nowMs,
+  );
+  return { ...folded, truncated: rows.length >= RESOURCE_TOTALS_LIMIT };
 }
 
 /**
@@ -358,12 +427,6 @@ export async function getTaskInventory(opts: TaskInventoryOptions = {}): Promise
   // client could not distinguish "not attributed" from "field missing" — and the
   // sync layer's row-delta negotiation diffs on key presence. Normalising here is
   // what makes the wire shape total.
-  //
-  // WI-7371: hoisted out of the return so the resource fold runs over the MAPPED rows.
-  // The raw store row names these `lastMemoryBytes` / `cpuUsec`; folding the raw rows
-  // reads `rssBytes: undefined` on every one and yields a silent `0` total that looks
-  // exactly like "nothing reported". Folding the shipped shape makes the totals and the
-  // rows structurally incapable of describing different data.
   const mappedRows: TaskInventoryRow[] = rows.map((r) => ({
       taskId: r.taskId,
       parentTaskId: r.parentTaskId ?? null,
@@ -389,13 +452,20 @@ export async function getTaskInventory(opts: TaskInventoryOptions = {}): Promise
       logPath: r.logPath ?? null,
     }));
 
+  // WI-7371: the totals run over their OWN unfiltered fetch, NOT `mappedRows`. `rows`
+  // above already has the caller's state/class/includeEnded applied, so folding it would
+  // put the pane's filter inside a figure labelled as a system total — the same defect as
+  // a client-side `rows.reduce()`, just relocated to the server where it reads as
+  // authoritative. See RESOURCE_TOTALS_FILTER and its guard test.
+  const resources = await computeResourceTotals(Date.now());
+
   return {
     enabled: true,
     summary: {
       total: rows.length,
       byState,
       byClass,
-      resources: foldResourceTotals(mappedRows, Date.now()),
+      resources,
     },
     live,
     liveProcesses,

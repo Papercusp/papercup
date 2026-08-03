@@ -15,6 +15,7 @@ let decideHandshakeAction: Watchdog['decideHandshakeAction'];
 let LIVENESS_PROBE_PATH: Watchdog['LIVENESS_PROBE_PATH'];
 let livenessProbeUrl: Watchdog['livenessProbeUrl'];
 let evaluateStallRate: Watchdog['evaluateStallRate'];
+let buildEscalationCall: Watchdog['buildEscalationCall'];
 beforeAll(async () => {
   ({
     shouldRestart,
@@ -25,6 +26,7 @@ beforeAll(async () => {
     LIVENESS_PROBE_PATH,
     livenessProbeUrl,
     evaluateStallRate,
+    buildEscalationCall,
   } = await import('./watchdog.mjs'));
 });
 
@@ -388,5 +390,42 @@ describe('mcp-proxy watchdog — decideHandshakeAction (proxy vs upstream)', () 
 
   it('does nothing while the proxy is healthy', () => {
     expect(decideHandshakeAction('ok', 'dead')).toBe('none');
+  });
+});
+
+/**
+ * buildEscalationCall (EI-19415174699106397) — a CRITICAL verdict used to reach only a durable
+ * log file nobody tails in real time. Measured live 2026-08-03: this watchdog correctly
+ * diagnosed a dead data plane and repeated the same CRITICAL line for 25 minutes while nobody
+ * acted, because it had no channel to reach a human. These pin the request shape sent to
+ * coord:escalate; the network POST itself is untested here (same convention as restart()/the
+ * probe functions above — side effects are exercised live, not mocked).
+ */
+describe('mcp-proxy watchdog — buildEscalationCall (human escalation, EI-19415174699106397)', () => {
+  it('targets coord:escalate as a blocker with the given conditionKey', () => {
+    const call = buildEscalationCall('mcp-data-plane-dead', 'summary text', 'body text');
+    expect(call.method).toBe('tools/call');
+    expect(call.params.name).toBe('coord:escalate');
+    expect(call.params.arguments.severity).toBe('blocker');
+    expect(call.params.arguments.conditionKey).toBe('mcp-data-plane-dead');
+    expect(call.params.arguments.summary).toBe('summary text');
+    expect(call.params.arguments.body).toBe('body text');
+  });
+
+  it('THE POINT: the conditionKey is stable across repeated calls with a changing summary — coalesces onto one open row instead of leaking a new escalation per throttle window (the WI-... flood class)', () => {
+    const first = buildEscalationCall('mcp-data-plane-dead', 'dead 120s', 'remediate');
+    const second = buildEscalationCall('mcp-data-plane-dead', 'dead 720s', 'remediate');
+    expect(first.params.arguments.conditionKey).toBe(second.params.arguments.conditionKey);
+    expect(first.params.arguments.summary).not.toBe(second.params.arguments.summary);
+  });
+
+  it('marks the evidence as observed by the watchdog itself, never a bare unattributed claim', () => {
+    const call = buildEscalationCall('mcp-proxy-stall-rate', 's', 'b');
+    expect(call.params.arguments.evidence).toEqual({ band: 'observed', reportedBy: 'mcp-proxy-watchdog' });
+  });
+
+  it('body is optional', () => {
+    const call = buildEscalationCall('k', 's', undefined);
+    expect(call.params.arguments.body).toBeUndefined();
   });
 });

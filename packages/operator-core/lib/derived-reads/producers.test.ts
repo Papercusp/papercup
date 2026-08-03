@@ -272,6 +272,95 @@ describe('derived-reads producers: learning.improvements', () => {
   });
 });
 
+// learning.improvements.hive (WI-7432) — the PER-POT sibling. The workspace-wide
+// producer above serves only `hive === undefined`, but the Learning tab inherits the
+// pot lens from the top-bar selector, so a user with any pot selected missed the
+// snapshot on every mount and paid a live compute (0.35-0.52s warm, 1.56-3.19s cold,
+// measured on the owner's desktop 2026-08-03). These tests pin the three properties
+// that make the fix work at all: it is HARNESS-scoped (that is the pot dimension —
+// the substrate already keys on harness_slug), it lenses the compute by the harness
+// it is computed for, and it stays version-locked to its sibling.
+async function loadLearningImprovementsHiveProducer() {
+  vi.resetModules();
+  const registry = await import('./registry');
+  registry.__clearDerivedReadRegistryForTest();
+  await import('./producers');
+  const producer = registry
+    .listDerivedReadProducers()
+    .find((p) => p.key === 'learning.improvements.hive');
+  if (!producer) throw new Error('learning.improvements.hive producer not registered');
+  return producer;
+}
+
+describe('derived-reads producers: learning.improvements.hive (WI-7432)', () => {
+  beforeEach(() => vi.resetModules());
+  afterEach(() => {
+    vi.doUnmock('../harness/improvements/learning-digest-snapshot');
+    vi.resetModules();
+  });
+
+  it('is HARNESS-scoped and lenses the shared compute by the harness it runs for', async () => {
+    const snapshotRow = { humanQueue: [{ id: 'EI-9' }], flow: {}, recurringSignatures: [] };
+    const computeLearningImprovementsSnapshot = vi.fn(async (_a: Record<string, unknown>) => [
+      snapshotRow,
+    ]);
+    vi.doMock('../harness/improvements/learning-digest-snapshot', () => ({
+      computeLearningImprovementsSnapshot,
+    }));
+
+    const producer = await loadLearningImprovementsHiveProducer();
+    // 'harness' is the load-bearing bit: a 'workspace' scope here would collapse
+    // every pot onto one snapshot row and serve one pot's feed to all of them.
+    expect(producer.scope).toBe('harness');
+    expect(producer.ttlMs).toBe(90_000); // same liveness tier as the sibling
+
+    const out = (await producer.compute({
+      workspaceId: 'ws-test',
+      harnessSlug: 'papercusp',
+    })) as unknown[];
+
+    expect(out).toEqual([snapshotRow]);
+    // ONLY the hive lens varies from the default variant — a stray state/limit/scope
+    // here would make the snapshot answer a different question than the tab asks.
+    expect(computeLearningImprovementsSnapshot).toHaveBeenCalledTimes(1);
+    expect(computeLearningImprovementsSnapshot).toHaveBeenCalledWith({ hive: 'papercusp' });
+  });
+
+  it('two different pots get two different lensed computes (the fan-out is real)', async () => {
+    const computeLearningImprovementsSnapshot = vi.fn(async (a: Record<string, unknown>) => [
+      { lensedFor: a.hive },
+    ]);
+    vi.doMock('../harness/improvements/learning-digest-snapshot', () => ({
+      computeLearningImprovementsSnapshot,
+    }));
+
+    const producer = await loadLearningImprovementsHiveProducer();
+    const a = (await producer.compute({ workspaceId: 'ws', harnessSlug: 'pot-a' })) as Array<{
+      lensedFor: string;
+    }>;
+    const b = (await producer.compute({ workspaceId: 'ws', harnessSlug: 'pot-b' })) as Array<{
+      lensedFor: string;
+    }>;
+
+    expect(a[0]!.lensedFor).toBe('pot-a');
+    expect(b[0]!.lensedFor).toBe('pot-b');
+  });
+
+  it('tracks the sibling producerVersion — both call the SAME compute, so a wire-shape change must invalidate BOTH (WI-7275/WI-7279)', async () => {
+    // The WI-7275 lesson: a shape change without a version bump keeps serving the
+    // old fat rows and ships the fix INERT. Two producers over one compute means
+    // that trap now has two doors; pinning them equal is what keeps them shut.
+    vi.resetModules();
+    const registry = await import('./registry');
+    registry.__clearDerivedReadRegistryForTest();
+    await import('./producers');
+    const all = registry.listDerivedReadProducers();
+    const base = all.find((p) => p.key === 'learning.improvements');
+    const hive = all.find((p) => p.key === 'learning.improvements.hive');
+    expect(hive?.producerVersion).toBe(base?.producerVersion);
+  });
+});
+
 // coord.history producer (phase2 P-004). Precomputes ONLY the DEFAULT view —
 // loadCoordHistory({}) (all sources, no filters, default limit) — and returns its
 // `.items` array (the shape the sync feed carries).

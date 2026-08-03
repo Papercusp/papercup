@@ -31,6 +31,8 @@ export type ResourceHeader = {
   rssBytesKnown: number;
   cpuUsecKnown: number;
   rowsConsidered: number;
+  /** The server's fetch hit its cap — these totals are a lower bound, not the total. */
+  truncated: boolean;
 };
 
 /**
@@ -71,6 +73,7 @@ export function useResourceTotals(res: TaskResourceTotals | null | undefined): R
     rssBytesKnown: res.rssBytesKnown,
     cpuUsecKnown: res.cpuUsecKnown,
     rowsConsidered: res.rowsConsidered,
+    truncated: res.truncated,
   };
 }
 
@@ -85,10 +88,21 @@ export function fmtCpuPct(pct: number | null): string {
  * over-read: RSS double-counts shared pages, and CPU can legitimately exceed 100%.
  */
 export function resourceTitle(h: ResourceHeader): { mem: string; cpu: string } {
+  // Both strings name the SET, not just the metric. The filters sitting directly below
+  // these numbers make "total" ambiguous by proximity, and a reader who assumes the
+  // header follows the filter would read a system total as a filtered one.
+  const scope = 'RUNNING tasks only, and unaffected by the filters below';
+  const cut = h.truncated
+    ? ` ⚠ The server hit its ${h.rowsConsidered}-row cap, so this is a LOWER BOUND.`
+    : '';
   return {
-    mem: `Σ RSS over ${h.rssBytesKnown} of ${h.rowsConsidered} tracked task(s). Upper bound — pages shared between processes are counted once per process.`,
+    mem:
+      `Σ RSS over ${h.rssBytesKnown} of ${h.rowsConsidered} tracked task(s) — ${scope}. ` +
+      `Upper bound: pages shared between processes are counted once per process. ` +
+      `Ended tasks are excluded — their last reading is memory the kernel has already reclaimed.${cut}`,
     cpu: h.hasRate
-      ? `Cores busy across ${h.cpuUsecKnown} of ${h.rowsConsidered} tracked task(s), since the previous sample. 100% = one core saturated.`
+      ? `Cores busy across ${h.cpuUsecKnown} of ${h.rowsConsidered} tracked task(s) — ${scope} — ` +
+        `since the previous sample. 100% = one core saturated.${cut}`
       : 'Needs two samples to compute a rate — waiting for the next refresh.',
   };
 }

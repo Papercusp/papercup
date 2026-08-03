@@ -60,6 +60,17 @@ describe('readMemoryHealth', () => {
   // readRecallHealthBySurface), then the query-shape slice (P-041,
   // readRecallQueryHealth). Respond per call; the last response is reused for
   // any further call, so an added read inherits it rather than running dry.
+  //
+  // ⚠ SINCE WI-7369 THOSE FOUR RUN CONCURRENTLY (Promise.all), so this mock's
+  // per-call sequencing now rests on the ISSUE order rather than on completion
+  // order. That still holds — Promise.all evaluates its array eagerly and each
+  // helper issues its sql call synchronously on entry — but it is no longer
+  // self-evident from reading readMemoryHealth, and a helper that ever awaits
+  // something BEFORE its sql call would silently re-shuffle which canned
+  // response each read receives. The failure would surface here as a confusing
+  // wrong-value assertion, not as an ordering error, so: if you add a read or
+  // make a helper await first, give this mock explicit per-query matching
+  // instead of a positional sequence.
   const sqlSequence = (responses: Array<Array<Record<string, unknown>> | Error>): Sql => {
     let call = 0;
     return ((_s: TemplateStringsArray, ..._v: unknown[]) => {

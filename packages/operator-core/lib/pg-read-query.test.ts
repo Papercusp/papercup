@@ -5,7 +5,7 @@
  * point-of-use guards (table extraction, 42703 column hint, tenant-scope
  * advisory) through an injected client stub.
  */
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   assertSingleReadStatement,
   extractPgErrorInfo,
@@ -18,7 +18,10 @@ import {
   clearTenantScopeSchemaCache,
   classifyTenantPrescription,
   refutedTenantAdvisory,
+  pgReadQuery,
   PgReadQueryError,
+  PgReadQueryTimeoutError,
+  PG_READ_QUERY_CALL_OVERHEAD_MS,
 } from './pg-read-query';
 
 describe('assertSingleReadStatement', () => {
@@ -171,6 +174,54 @@ describe('extractPgErrorInfo (EI-8301 — surface PG HINT/DETAIL/code/position)'
   it('omits empty-string PG fields rather than surfacing blanks', () => {
     const pgErr = Object.assign(new Error('x'), { hint: '', detail: '', code: '' });
     expect(extractPgErrorInfo(pgErr)).toEqual({ message: 'x' });
+  });
+});
+
+describe('pgReadQuery — whole-call deadline (EI-19415142351884573)', () => {
+  it('rejects with PgReadQueryTimeoutError instead of hanging when connect/acquire never settles', async () => {
+    vi.useFakeTimers();
+    try {
+      // Simulates a hung `sql.begin()` — the exact shape of the reported bug:
+      // the operator restarting mid-call, so acquiring a connection never
+      // returns and Postgres itself never even sees the query.
+      const hangingClient = { begin: () => new Promise(() => {}) } as never;
+
+      const timeoutMs = 100;
+      const promise = pgReadQuery('SELECT 1', { client: hangingClient, timeoutMs });
+      const assertion = expect(promise).rejects.toBeInstanceOf(PgReadQueryTimeoutError);
+      // Advance past timeoutMs + the call-deadline overhead — statement_timeout
+      // alone (the pre-fix behavior) would never have rejected this at all.
+      await vi.advanceTimersByTimeAsync(timeoutMs + PG_READ_QUERY_CALL_OVERHEAD_MS + 1);
+      await assertion;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('still resolves normally well within the deadline (the fix does not slow the happy path)', async () => {
+    const rows = [{ n: 1 }];
+    const fastClient = {
+      begin: async (fn: (tx: { unsafe: (sql: string) => Promise<unknown> }) => Promise<void>) => {
+        const tx = { unsafe: async (sql: string) => (sql.includes('SELECT * FROM') ? rows : []) };
+        await fn(tx);
+      },
+    } as never;
+
+    const result = await pgReadQuery('SELECT 1 AS n', { client: fastClient, timeoutMs: 5000 });
+    expect(result.rows).toEqual(rows);
+    expect(result.rowCount).toBe(1);
+  });
+
+  it('propagates a real connection error immediately, without waiting for the deadline', async () => {
+    const failingClient = {
+      begin: async () => {
+        throw new Error('connection refused');
+      },
+    } as never;
+
+    await expect(
+      pgReadQuery('SELECT 1', { client: failingClient, timeoutMs: 5000 }),
+    ).rejects.toThrow('connection refused');
   });
 });
 

@@ -46,6 +46,21 @@ export class PgReadQueryError extends Error {
   }
 }
 
+/**
+ * Distinct from {@link PgReadQueryError}: thrown when the WHOLE call (connect +
+ * acquire + execute) failed to settle within its deadline, as opposed to a real
+ * PG-side error. See {@link withCallDeadline} for why this must be its own
+ * class rather than reusing a generic timeout message — a caller (dev:pg_query)
+ * needs to tell "the query ran and PG said no" apart from "we never found out"
+ * (EI-19415142351884573).
+ */
+export class PgReadQueryTimeoutError extends PgReadQueryError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'PgReadQueryTimeoutError';
+  }
+}
+
 /** The diagnostic fields worth surfacing from a failed query. */
 export interface PgErrorInfo {
   /** `err.message` (always present). */
@@ -1148,6 +1163,72 @@ export const PG_READ_QUERY_DEFAULT_TIMEOUT_MS = 5000;
 export const PG_READ_QUERY_HARD_TIMEOUT_MS = 30000;
 
 /**
+ * Headroom added on top of `timeoutMs` for the WHOLE-call deadline
+ * ({@link withCallDeadline}) — connect/acquire + the 3 `SET` statements +
+ * commit round-trip, none of which are bounded by `statement_timeout` (that
+ * only governs the query once a connection is already open and the
+ * transaction has started). Deliberately generous rather than tight: this
+ * exists to catch a HUNG acquire (pool exhaustion, or the DB/operator going
+ * down mid-call — EI-19415142351884573), not to shave a few ms off a healthy
+ * call, so a false-positive timeout on a merely-busy pool is worse than a few
+ * extra seconds of real slack.
+ */
+export const PG_READ_QUERY_CALL_OVERHEAD_MS = 3000;
+
+/**
+ * Bound the WHOLE call — not just server-side statement execution — with a
+ * timer THIS function owns, rather than trusting the driver/pool/transport to
+ * cooperate with a signal or a server-side setting.
+ *
+ * WHY NOT JUST `statement_timeout` (what pgReadQuery relied on before this):
+ * `SET LOCAL statement_timeout` is set INSIDE the transaction, so it does
+ * nothing for the phase before the transaction starts — acquiring a
+ * connection from the pool. A caller-supplied `timeoutMs: 25000` therefore
+ * did not bound the failure mode agents actually hit: three consecutive
+ * hangs (one with that explicit 25s timeout) each ran the full 300s client
+ * idle-abort while Postgres itself sat completely idle, because the
+ * operator was restarting and the connection/acquire phase never returned at
+ * all (EI-19415142351884573).
+ *
+ * WHY NOT AN ABORT SIGNAL: an abort is a request the transport MAY ignore —
+ * it only works if whoever holds the promise honours it, which is circular
+ * when the whole point is that the transport has stopped behaving normally
+ * (EI-18861599591681504). A `Promise.race`-style deadline against a timer
+ * this function owns is guaranteed to settle regardless of what `work` (the
+ * connect, acquire, or execute) is actually doing.
+ *
+ * `work`'s eventual settlement is still awaited via `.then(...)` even after
+ * the timer wins, so a late resolution/rejection is a no-op (resolve/reject
+ * only takes effect once) rather than an unhandled rejection.
+ */
+function withCallDeadline<T>(work: Promise<T>, deadlineMs: number, timeoutMessage: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new PgReadQueryTimeoutError(timeoutMessage)), deadlineMs);
+    work.then(
+      (v) => {
+        clearTimeout(timer);
+        resolve(v);
+      },
+      (e) => {
+        clearTimeout(timer);
+        reject(e);
+      },
+    );
+  });
+}
+
+/** The message `withCallDeadline` raises for `pgReadQuery`/`explainReadQuery` — one string so the two call sites can't drift. */
+function callTimeoutMessage(timeoutMs: number, callDeadlineMs: number): string {
+  return (
+    `Query call did not complete within ${callDeadlineMs}ms of the WHOLE call (connect + acquire + ` +
+    `execute) — statement_timeout=${timeoutMs}ms only bounds server-side execution once a connection ` +
+    'is already open, so on its own it could not catch a hung connection acquire (pool exhaustion, or ' +
+    'the database/operator going down mid-call). If this keeps recurring, check dev:service_health — ' +
+    'the operator may be restarting (EI-19415142351884573).'
+  );
+}
+
+/**
  * Pin the transaction's TimeZone to UTC (EI-19397658288924647).
  *
  * `date_trunc('day', <timestamptz>)` buckets on SESSION-timezone boundaries. On
@@ -1312,7 +1393,8 @@ export async function pgReadQuery(
   const sql = opts.client ?? getOrgPgLosslessBigint().sql;
   const startedAt = Date.now();
   let rows: Record<string, unknown>[] = [];
-  await sql.begin(async (tx) => {
+  const callDeadlineMs = timeoutMs + PG_READ_QUERY_CALL_OVERHEAD_MS;
+  const work = sql.begin(async (tx) => {
     // READ ONLY must be set before the first data statement in the txn.
     await tx.unsafe('SET TRANSACTION READ ONLY');
     await tx.unsafe(`SET LOCAL statement_timeout = ${timeoutMs}`);
@@ -1321,6 +1403,8 @@ export async function pgReadQuery(
       `SELECT * FROM (${query}) AS _pgq LIMIT ${maxRows + 1}`,
     )) as unknown as Record<string, unknown>[];
   });
+  // Bound the WHOLE call (not just server-side execution) — see withCallDeadline's doc.
+  await withCallDeadline(work, callDeadlineMs, callTimeoutMessage(timeoutMs, callDeadlineMs));
   const elapsedMs = Date.now() - startedAt;
 
   const truncated = rows.length > maxRows;
@@ -1357,14 +1441,17 @@ export async function explainReadQuery(
     Math.min(PG_READ_QUERY_HARD_TIMEOUT_MS, Math.trunc(opts.timeoutMs ?? PG_READ_QUERY_DEFAULT_TIMEOUT_MS)),
   );
   const sql = opts.client ?? getOrgPg().sql;
+  const callDeadlineMs = timeoutMs + PG_READ_QUERY_CALL_OVERHEAD_MS;
   try {
-    await sql.begin(async (tx) => {
+    const work = sql.begin(async (tx) => {
       await tx.unsafe('SET TRANSACTION READ ONLY');
       await tx.unsafe(`SET LOCAL statement_timeout = ${timeoutMs}`);
       // Same TZ pin as pgReadQuery so a query VALIDATES under the session it will RUN under.
       await tx.unsafe(SET_LOCAL_UTC);
       await tx.unsafe(`EXPLAIN (COSTS OFF) ${query}`);
     });
+    // Bound the WHOLE call the same way pgReadQuery does — see withCallDeadline's doc.
+    await withCallDeadline(work, callDeadlineMs, callTimeoutMessage(timeoutMs, callDeadlineMs));
     return { ok: true };
   } catch (err) {
     return { ok: false, error: extractPgErrorInfo(err) };

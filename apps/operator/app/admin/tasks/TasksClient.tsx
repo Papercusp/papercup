@@ -81,7 +81,12 @@ type Payload = {
     total: number;
     byState: Record<string, number>;
     byClass: Record<string, number>;
-    /** WI-7371 — server-side fold over the FULL tracked set, not the filtered rows. */
+    /**
+     * WI-7371 — folded over the server's OWN unfiltered fetch of the running set, so it
+     * is independent of the `state`/`cls`/`includeEnded` args this component sends.
+     * Optional because an older operator on `:3070` can still be serving a payload
+     * without it; the header renders nothing rather than a zero in that window.
+     */
     resources?: TaskResourceTotals;
   };
   live: (Live & { unaccounted?: number | { cgroupPath: string; pids: number[]; sample: string }[] }) | null;
@@ -315,10 +320,12 @@ export default function TasksClient(): ReactElement {
         <code>processes:*</code> tools.
       </p>
 
-      {/* WI-7371 — live totals across the FULL tracked set. Deliberately above the
-          filters: these do NOT narrow with the class/state selectors below, because they
-          are folded server-side over every tracked task. A client-side sum over `rows`
-          would silently report the filtered subset under a whole-system label. */}
+      {/* WI-7371 — live totals across the RUNNING tracked set. Deliberately above the
+          filters: they do NOT narrow with the class/state selectors below, because the
+          server folds them over its own unfiltered fetch rather than over the rows this
+          pane asked for. Both halves of that matter — a client-side sum over `rows`
+          reports the filtered subset under a whole-system label, and so does a
+          server-side fold over the same filtered query. */}
       {resources && (
         <div style={resourceBar} data-testid="tasks-resource-totals">
           <span title={resourceTitle(resources).mem}>
@@ -332,8 +339,13 @@ export default function TasksClient(): ReactElement {
             </strong>
           </span>
           <span style={{ opacity: 0.55 }}>
-            {resources.rssBytesKnown}/{resources.rowsConsidered} reporting
+            {resources.rssBytesKnown}/{resources.rowsConsidered} running tasks reporting
           </span>
+          {resources.truncated && (
+            <span style={{ color: 'var(--warn, #d08700)' }} data-testid="tasks-total-truncated">
+              ⚠ capped — lower bound
+            </span>
+          )}
         </div>
       )}
 

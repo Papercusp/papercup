@@ -4343,15 +4343,30 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   'learning.knowledge': {
     resolve: async () => {
       const { readInsightsSnapshot, readMemoryHealth } = await import('../memory/knowledge-read');
+      // WI-7369: the insights snapshot and the memory-health read are INDEPENDENT —
+      // neither consumes the other — so they are issued concurrently. Each keeps its
+      // own degrade path (a Promise.all that rejected as a unit would let one failed
+      // read blank the other, which is exactly what the separate catches prevent).
+      //
+      // MEASURED, 10 passes with the arm order alternated and a warm-up discarded:
+      // legs were insights 155ms / health 510ms / precision 2ms, and running them
+      // concurrently took the read 670 -> 520ms. The bigger half of the win is inside
+      // readMemoryHealth, whose own four reads were serial too and are now likewise
+      // parallel (510 -> 329ms); together the concurrent path lands ~347ms.
+      //
+      // ⚠ STILL OVER the 150ms sync-read budget, and deliberately not "fixed" further:
+      // a cache is the obvious next lever and it is NOT free here the way it was for
+      // dev.telemetry (WI-7367). That read is a 24h rollup where 30s of staleness is
+      // imperceptible; this one's payload changes between consecutive calls (measured
+      // 10,288 -> 10,286 B), so a TTL has to be argued for on freshness, not assumed.
       let insights: Awaited<ReturnType<typeof readInsightsSnapshot>> = { count: 0, recent: [] };
-      try {
-        insights = await readInsightsSnapshot();
-      } catch (err) {
+      const { getOrgPg } = await import('@papercusp/db-org');
+      const insightsPromise = readInsightsSnapshot().catch((err: unknown) => {
         console.warn('[learning.knowledge] insights read failed:', err instanceof Error ? err.message : err);
-      }
+        return null;
+      });
       let memory: Awaited<ReturnType<typeof readMemoryHealth>> | null = null;
       try {
-        const { getOrgPg } = await import('@papercusp/db-org');
         memory = await readMemoryHealth(getOrgPg().sql);
         // Attach the memory-precision trend (relight P-033) — best-effort, and a
         // not-yet-applied migration 312 (42P01) degrades to the empty snapshot so
@@ -4373,6 +4388,11 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       } catch (err) {
         console.warn('[learning.knowledge] memory health read failed:', err instanceof Error ? err.message : err);
       }
+      // Joined last so the insights read overlapped the whole memory-health leg.
+      // Its own catch already logged and returned null, so a failure here leaves the
+      // zero-valued default in place exactly as the original sequential code did.
+      const insightsResult = await insightsPromise;
+      if (insightsResult !== null) insights = insightsResult;
       return [{ insights, memory }];
     },
   },

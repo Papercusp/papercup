@@ -62,9 +62,11 @@ describe('LocalCardHost', () => {
 
     const trigger = await waitFor(() => screen.getByTestId('local-card-select'));
     // THE OWNER'S COMPLAINT, ASSERTED STRUCTURALLY: a 12-option picker must not
-    // put 12 rows on screen. Rendered as `radio` — which is what GradeAction
-    // used to declare — this same card produced one full-width button per
-    // option and filled the chat popup. This loop fails in that world.
+    // put 12 rows on screen. Rendered as `radio` — which is what the former
+    // 'Grade session…' rubric picker used to declare (that action was removed
+    // 2026-08-03 as a duplicate of the GRADE mode pill) — this same card
+    // produced one full-width button per option and filled the chat popup.
+    // This loop fails in that world.
     for (const o of many) {
       expect(screen.queryByRole('button', { name: new RegExp(`^${o.label}$`) })).toBeNull();
     }

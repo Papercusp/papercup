@@ -167,6 +167,50 @@ export interface CoordClarifyAdoption {
   entries: number;
 }
 
+/**
+ * THE THREE LEVELS OF "ADOPTION" (plan coordination-spec-adoption-2026-08-03,
+ * D-091 there — not to be confused with agent-protocol D-091 cited above).
+ *
+ * WHY THIS SHAPE. "Adoption" was doing three different jobs, and conflating them
+ * produced a headline that was wrong by two orders of magnitude
+ * (EI-19300252001829260: "0.58% adopted", measured on a denominator that mixed
+ * system writers and machine lifecycle emissions in with agent prose — its
+ * NUMERATOR was exactly right). So this type refuses to collapse them:
+ *
+ *   L1 PRESENCE    the field is there. A PRECONDITION, never a headline — a
+ *                  schema that refuses the old shape can compel presence, so
+ *                  L1 alone cannot tell real use from wrapper compliance.
+ *   L2 SUBSTANCE   the content is non-degenerate (several sections, authored
+ *                  fields actually filled).
+ *   L3 CONSEQUENCE a reader received it and its next action differed. The only
+ *                  level that means the spec is working, and the one nothing in
+ *                  this system measured before this type existed.
+ *
+ * EVERY COUNT CARRIES ITS OWN DENOMINATOR as a sibling field, because the one
+ * failure this is built to prevent is a ratio quoted without one (D-003).
+ *
+ * ⚠ NO SENDER DIMENSION — the same constraint as {@link CoordPremiseResolve} and
+ * {@link CoordClarifyAdoption}, and it binds here too: a per-agent adoption
+ * breakdown turns a coordination field into a compliance scoreboard, and writing
+ * `forYouBecause` to avoid looking bad is not a theory of mind (D-090/D-091 R3).
+ */
+export interface CoordAuthoredAdoption {
+  /** L1 denominator: hand-authored agent prose in the window (machine senders and `auto:true` lifecycle emissions excluded — they CANNOT carry sections, so including them is the EI-19300252001829260 bug). */
+  handAuthored: number;
+  /** L1 numerator: of those, how many carry a `sections` array. */
+  withSections: number;
+  /** L2: of the sectioned ones, how many carry MORE than one section (a 1-element array is what a wrapper looks like). */
+  multiSection: number;
+  /** L2: of the sectioned ones, how many fill ≥1 authored field (forYouBecause / premises / youMayNotKnow / couldNotDetermine). */
+  withAuthoredField: number;
+  /** L3 denominator: messages carrying `couldNotDetermine` — an OPEN question, the field that most demands a reader do something. */
+  openQuestions: number;
+  /** L3 numerator: of those, how many drew a reply from a recipient. The closest thing to "a reader acted" that this corpus can currently evidence. */
+  openQuestionsAnswered: number;
+  /** L3 context: `coord:read` calls in the window — the only surface that shows authored structure IN FULL. The in-band marker carries the forYouBecause RELATION and mere COUNTS; the note, the youMayNotKnow items and premises past the first live behind this call. */
+  structureReads: number;
+}
+
 /** The pure builder's input — the coordination-breakdown aggregate over the window. */
 export interface CoordHealthInput {
   /** re-mounting escalation signatures (open events grouped by signature). */
@@ -181,6 +225,8 @@ export interface CoordHealthInput {
   premiseResolve?: CoordPremiseResolve;
   /** `clarify` adoption (P-012 / D-106). Absent ⇒ the signal is simply not emitted. */
   clarifyAdoption?: CoordClarifyAdoption;
+  /** L1/L2/L3 authored-structure adoption (coordination-spec-adoption-2026-08-03 P-001). Absent ⇒ the signal is simply not emitted. */
+  authoredAdoption?: CoordAuthoredAdoption;
 }
 
 /**
@@ -204,6 +250,8 @@ export interface CoordHealthOpts {
   minPremiseChecked?: number;
   /** min `clarify` asks before the answer-rate is worth reporting at all. */
   minClarifyAsks?: number;
+  /** min hand-authored messages in the window before the L1/L2/L3 adoption reading is worth reporting — below it the ratios are noise, and a 0/0 "adoption %" is exactly the kind of number this signal exists to stop publishing. */
+  minAuthoredAdoptionMessages?: number;
   /** cap on emitted patterns. */
   limit?: number;
 }
@@ -250,6 +298,7 @@ export function buildCoordHealthPatterns(
   const minClaim = opts.minClaimConflicts ?? 3;
   const minPremiseChecked = opts.minPremiseChecked ?? 5;
   const minClarifyAsks = opts.minClarifyAsks ?? 5;
+  const minAuthoredAdoptionMessages = opts.minAuthoredAdoptionMessages ?? 20;
   const limit = opts.limit ?? 10;
 
   const out: MetaPattern[] = [];
@@ -383,6 +432,47 @@ export function buildCoordHealthPatterns(
       // Ranks by SHORTFALL against the baseline: a rate that beats the incumbent
       // is good news and should not crowd out live coordination breakdowns.
       weight: Math.min(0.7, 0.25 + Math.max(0, base - rate)),
+    });
+  }
+
+  // 4b. AUTHORED-STRUCTURE ADOPTION, reported as THREE levels and never as one
+  //     number (coordination-spec-adoption-2026-08-03 D-091). The summary leads
+  //     with L3 because L3 is the only level that says the spec is working: L1
+  //     was ~80% and L2 healthy at a moment when the full structure was opened
+  //     15 times in a week, and a single blended "adoption %" would have hidden
+  //     exactly that.
+  const aa = input.authoredAdoption;
+  if (aa && aa.handAuthored >= minAuthoredAdoptionMessages) {
+    const pct = (n: number, d: number) => (d > 0 ? `${Math.round((n / d) * 100)}%` : 'n/a');
+    const l1 = pct(aa.withSections, aa.handAuthored);
+    const l2 = pct(aa.withAuthoredField, Math.max(aa.withSections, 1));
+    const l3 =
+      aa.openQuestions > 0 ? pct(aa.openQuestionsAnswered, aa.openQuestions) : 'no open questions';
+
+    // The gap that matters: structure written vs structure ever opened in full.
+    const writtenWithStructure = aa.withAuthoredField;
+    const readStarved = writtenWithStructure > 0 && aa.structureReads * 10 < writtenWithStructure;
+
+    out.push({
+      category: 'coord-health',
+      ref: 'coord:authored-adoption',
+      summary:
+        `authored structure — L1 present ${l1} (${aa.withSections}/${aa.handAuthored} hand-authored), ` +
+        `L2 substantive ${l2} (${aa.withAuthoredField}/${aa.withSections} sectioned), ` +
+        `L3 open-questions answered ${l3}` +
+        (readStarved ? ` — READ-STARVED: ${writtenWithStructure} written vs ${aa.structureReads} coord:read` : ''),
+      detail:
+        `Three levels, deliberately NOT collapsed into one number. ` +
+        `L1 PRESENCE ${aa.withSections}/${aa.handAuthored} hand-authored messages carry sections — a PRECONDITION, not a result: the schema refuses a plain string, so this level can be satisfied by wrapping one and measures compliance, not use. ` +
+        `L2 SUBSTANCE ${aa.withAuthoredField}/${aa.withSections} sectioned messages fill an authored field and ${aa.multiSection} carry more than one section — this is what separates real structure from a one-element wrapper. ` +
+        `L3 CONSEQUENCE ${aa.openQuestionsAnswered}/${aa.openQuestions} messages carrying an OPEN question (couldNotDetermine) drew a reply, and coord:read — the only surface showing authored structure IN FULL — was called ${aa.structureReads} time(s) in 24h. ` +
+        `The in-band [coord+N] marker carries the forYouBecause RELATION and mere COUNTS; the note, the youMayNotKnow items and premises past the first are only visible through coord:read. ` +
+        `A LOW L3 against a HIGH L1 is the diagnostic this signal exists to make visible: it means the write half of "agents write their intent and other agents read it" shipped and the read half did not. ` +
+        `Denominators are stated inline on purpose — a ratio quoted without one is how "0.58% adopted" was published from a numerator that was exactly right (EI-19300252001829260). ` +
+        `Aggregate-only, and no per-sender breakdown exists or may be added: attaching a consequence to being seen authoring these fields is what kills them (D-090/D-091 R3).`,
+      // Ranks by the READ gap, not by L1. A high L1 with a starved read path is
+      // the alarming state and must outrank a low L1 that is merely early.
+      weight: readStarved ? 0.65 : Math.min(0.5, 0.2 + (1 - aa.withSections / Math.max(aa.handAuthored, 1)) * 0.3),
     });
   }
 
@@ -633,6 +723,133 @@ export async function loadCoordClarifyAdoption(
 }
 
 /**
+ * L1/L2/L3 authored-structure adoption over the 24h window
+ * (coordination-spec-adoption-2026-08-03 P-001). See {@link CoordAuthoredAdoption}
+ * for why the three levels may not be collapsed into one number.
+ *
+ * THE DENOMINATOR IS THE WHOLE POINT. `handAuthored` excludes machine senders
+ * (MACHINE_SENDER_PATTERN — the SAME shared constant sendMessage stamps with) AND
+ * `auto:true` lifecycle emissions. Both look agent-authored (`from` is an su-… id
+ * on the lifecycle ones) and NEITHER can carry sections, so counting them is how
+ * a correct numerator produced a headline off by two orders of magnitude.
+ *
+ * REPLIES ARE MATERIALISED ONCE, for the reason recorded verbatim in
+ * loadCoordClarifyAdoption above: the correlated-EXISTS form was measured against
+ * a POPULATED field of this exact shape and hit the statement timeout. This query
+ * reads a populated field from day one, so the cheap-while-empty trap is not
+ * hypothetical here — it would fire immediately.
+ */
+export async function loadCoordAuthoredAdoption(
+  ws: string,
+): Promise<CoordAuthoredAdoption | undefined> {
+  try {
+    const { sql } = getOrgPg();
+    const { MACHINE_SENDER_PATTERN } = await import(
+      '../agent-tools/coordination/machine-authored'
+    );
+
+    // `sections` is absent on most rows and jsonb_array_elements THROWS on a
+    // non-array, so every lateral coalesces to '[]' rather than relying on a
+    // WHERE guard — the L1 DENOMINATOR must include section-less messages, so
+    // filtering them out (as the clarify query legitimately does) is not open
+    // to us here.
+    const rows = await sql<
+      Array<{
+        hand_authored: number;
+        with_sections: number;
+        multi_section: number;
+        with_authored_field: number;
+        open_questions: number;
+        open_questions_answered: number;
+      }>
+    >`
+      WITH hand AS (
+        SELECT e.body->>'msg_id' AS msg_id,
+               e.body->'to'      AS recipients,
+               (jsonb_typeof(e.body->'sections') = 'array')                    AS has_sections,
+               coalesce(jsonb_array_length(
+                 CASE WHEN jsonb_typeof(e.body->'sections') = 'array'
+                      THEN e.body->'sections' ELSE '[]'::jsonb END), 0)        AS n_sections,
+               EXISTS (
+                 SELECT 1 FROM jsonb_array_elements(
+                   CASE WHEN jsonb_typeof(e.body->'sections') = 'array'
+                        THEN e.body->'sections' ELSE '[]'::jsonb END) s
+                  WHERE s ?| array['forYouBecause','premises','youMayNotKnow','couldNotDetermine']
+               ) AS has_authored,
+               EXISTS (
+                 SELECT 1 FROM jsonb_array_elements(
+                   CASE WHEN jsonb_typeof(e.body->'sections') = 'array'
+                        THEN e.body->'sections' ELSE '[]'::jsonb END) s
+                  WHERE jsonb_typeof(s->'couldNotDetermine') = 'array'
+                    AND jsonb_array_length(s->'couldNotDetermine') > 0
+               ) AS has_open_question
+          FROM harness_shared.coord_event_log e
+         WHERE e.workspace_id = ${ws}
+           AND e.surface = 'messages'
+           AND e.ts > now() - interval '24 hours'
+           AND e.body->>'kind' = 'message'
+           AND e.body->>'msg_id' IS NOT NULL
+           AND NOT (coalesce(e.body->>'from', '') ~ ${MACHINE_SENDER_PATTERN})
+           AND coalesce(e.body->>'auto', 'false') <> 'true'
+      ),
+      replies AS (
+        SELECT DISTINCT r.body->>'related_msg_id' AS to_msg_id,
+                        r.body->>'from'           AS responder
+          FROM harness_shared.coord_event_log r
+         WHERE r.workspace_id = ${ws}
+           AND r.surface = 'messages'
+           AND r.ts > now() - interval '24 hours'
+           AND r.body ? 'related_msg_id'
+      )
+      SELECT count(*)::int                                              AS hand_authored,
+             count(*) FILTER (WHERE h.has_sections)::int                AS with_sections,
+             count(*) FILTER (WHERE h.n_sections > 1)::int              AS multi_section,
+             count(*) FILTER (WHERE h.has_authored)::int                AS with_authored_field,
+             count(*) FILTER (WHERE h.has_open_question)::int           AS open_questions,
+             count(*) FILTER (
+               WHERE h.has_open_question
+                 AND EXISTS (
+                   SELECT 1 FROM replies rp
+                    WHERE rp.to_msg_id = h.msg_id
+                      AND h.recipients @> to_jsonb(ARRAY[rp.responder])
+                 )
+             )::int                                                     AS open_questions_answered
+        FROM hand h`;
+
+    const r = rows[0];
+    if (!r || Number(r.hand_authored) === 0) return undefined;
+
+    // L3's depth-read signal. Its own query and its own failure domain: a
+    // tool_invocations outage must degrade this ONE number to 0, never take the
+    // whole reading down with it.
+    let structureReads = 0;
+    try {
+      const reads = await sql<Array<{ n: number }>>`
+        SELECT count(*)::int AS n
+          FROM harness_shared.tool_invocations
+         WHERE workspace_id = ${ws}
+           AND invoked_at > now() - interval '24 hours'
+           AND tool_name = 'coord:read'`;
+      structureReads = Number(reads[0]?.n) || 0;
+    } catch {
+      structureReads = 0;
+    }
+
+    return {
+      handAuthored: Number(r.hand_authored) || 0,
+      withSections: Number(r.with_sections) || 0,
+      multiSection: Number(r.multi_section) || 0,
+      withAuthoredField: Number(r.with_authored_field) || 0,
+      openQuestions: Number(r.open_questions) || 0,
+      openQuestionsAnswered: Number(r.open_questions_answered) || 0,
+      structureReads,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * The PG edge: the 24h coordination-breakdown aggregate over coord_event_log for
  * the active workspace + the fleet-wide unanswered-directed read (REUSING the
  * hardened fetchUnansweredDirected). Returns [] on any failure (fail-soft lane).
@@ -746,9 +963,19 @@ export async function buildCoordHealthLane(
       /* best-effort — the clarify signal is optional decoration */
     }
 
+    // L1/L2/L3 authored-structure adoption (coordination-spec-adoption P-001) —
+    // independently fail-soft for the same reason as its two siblings above.
+    let authoredAdoption: CoordAuthoredAdoption | undefined;
+    try {
+      authoredAdoption = await loadCoordAuthoredAdoption(ws);
+    } catch {
+      /* best-effort — the adoption signal is optional decoration */
+    }
+
     return buildCoordHealthPatterns({
       premiseResolve,
       clarifyAdoption,
+      authoredAdoption,
       escalationStorms: escRows.map((r) => ({
         signature: r.sig || 'unknown',
         count: Number(r.n) || 0,

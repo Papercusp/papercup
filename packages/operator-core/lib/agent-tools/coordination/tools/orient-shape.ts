@@ -143,12 +143,85 @@ function trimMe(me: unknown, chars: number): unknown {
   return `${me.slice(0, cut)}\n… (trimmed — full assignments+coverage via fleet:assignments, or payloadTier:'full')`;
 }
 
-/** Tier-project an OrientResult-shaped payload. Unknown fields pass through. */
-export function shapeOrient(data: unknown, tier: TierName): unknown {
-  if (!data || typeof data !== 'object') return data;
-  const d = data as Record<string, unknown>;
-  const c = CAPS[tier];
+/** A mutable cap set — same keys as a CAPS tier, so a rung can tighten any leg. */
+type Caps = { -readonly [K in keyof (typeof CAPS)['trimmed']]: number };
 
+/**
+ * EI-19408488769901676 — THE BUDGET THE SHAPER MUST HIT ITSELF.
+ *
+ * The framework's contract (tooldef/payload-tier.ts) is a two-stage fallback: a result
+ * over `PAYLOAD_TIER_HARD_CEILING_CHARS` (30_000) force-applies the smallest declared
+ * shaper, and **if that shaped result is STILL over, it falls through to the GENERIC
+ * bounded projection** — `projectBoundedPayload`, which knows nothing about orientation
+ * and drops whole fields blind, in declaration order, with no notion of what a
+ * just-respawned agent needs.
+ *
+ * That second stage is catastrophic here and the margin is brutal: measured live
+ * 2026-08-03 on a post-compaction orient, the trimmed shaper produced **30,812 chars —
+ * 812 over the ceiling (2.7%)** — and for missing it by that much the result was cut to
+ * 6,360 chars with **44 fields dropped**, including the whole `inbox.entries` array and a
+ * `cursor` that was truncated mid-string (so even the re-fetch instruction was unusable).
+ * `leaderBrief` was lost the same way before it got a shaper (EI-19314271768708528): the
+ * recurring lesson is that REACHING the generic budget pass is the failure, not the tier.
+ *
+ * Worse, the overshoot was SELF-INFLICTED and aimed at exactly the wrong case. The
+ * post-compaction fold below deliberately BEEFS the inbox (cap 5 → 20, summaries 140 →
+ * 700) because a just-compacted agent lost its message context — so `afterCompaction`,
+ * the one call that most needs a complete picture, is also the one most likely to overshoot,
+ * and the blind fallback then discards the very inbox the fold added. The fold defeated
+ * itself in precisely the situation it was written for.
+ *
+ * So the shaper now owns its own budget and NEVER hands work to the generic projector:
+ * `shapeOrient` walks a ladder of progressively tighter cap sets until it fits.
+ *
+ * ⚠ Set just UNDER the framework ceiling (30_000), not comfortably under it, and that margin
+ * is a deliberate trade rather than a rounding choice. The ladder is a LAST-RESORT rescue for
+ * a payload that would otherwise be blind-projected — it is not an opinion about the right
+ * size of an orientation. Every char of margin below the ceiling is a band in which a payload
+ * that would have been served intact gets tightened for no benefit, so a too-eager budget
+ * trades a rare catastrophic loss for a frequent small one. Measured while building this:
+ * a budget of 27_000 re-shaped two existing test fixtures that had always fit, dropping
+ * `claimable` from 15 rows to 7 — a real regression on the common path. 1_000 chars is enough
+ * for the response envelope the framework wraps around `data` while keeping that dead band
+ * narrow. Do not widen it without measuring what starts getting tightened.
+ */
+export const SHAPER_BUDGET_CHARS = 29_000;
+
+/** The tightest rung: what orientation still means when almost nothing fits. Also the
+ *  per-key clamp for intermediate rungs, so tightening can never drive a cap to 0 and
+ *  silently empty a list (an empty list reads as "nothing there", the exact silent-drop
+ *  this whole shaper exists to prevent — every rung still leaves the D-004 pointers). */
+const FLOOR_CAPS: Caps = {
+  claimable: 4, title: 60, inbox: 3, inboxSummary: 100, memory: 1, memoryText: 120,
+  events: 2, eventText: 120, catchUp: 2, meChars: 1_200, facts: 4, factsBody: 100,
+  paneContext: 800, briefMembers: 4, briefLists: 3, briefReason: 120,
+};
+
+/** Scale every cap toward FLOOR_CAPS, clamped so no leg drops below the floor. */
+function tightenCaps(c: Caps, factor: number): Caps {
+  const out = { ...c };
+  for (const k of Object.keys(out) as (keyof Caps)[]) {
+    out[k] = Math.max(FLOOR_CAPS[k], Math.floor(out[k] * factor));
+  }
+  return out;
+}
+
+const jsonLen = (v: unknown): number => {
+  try {
+    return JSON.stringify(v)?.length ?? 0;
+  } catch {
+    // A shaper must never break a call (D-004). An unserializable payload cannot be
+    // measured, so treat it as over-budget and let the ladder tighten rather than throw.
+    return Number.POSITIVE_INFINITY;
+  }
+};
+
+/** Project an OrientResult at EXACTLY the given caps. Unknown fields pass through
+ *  untouched — that passthrough is what makes the ladder safe: a tighter rung can only
+ *  SHRINK the capped lists, never drop a whole field. So `recovery`, `control`, `self`
+ *  and any future top-level key survive every rung, which is precisely the guarantee the
+ *  generic projector could not make. */
+function projectOrient(d: Record<string, unknown>, c: Caps, tier: TierName): Record<string, unknown> {
   const out: Record<string, unknown> = { ...d };
   out.payloadTier = tier;
 
@@ -180,12 +253,17 @@ export function shapeOrient(data: unknown, tier: TierName): unknown {
   if (inbox && typeof inbox === 'object') {
     // fold #2 (compaction-fold-audit-2026-07-06): a post-compaction orient (recovery
     // block present ⇒ afterCompaction) carries a deliberately BEEFED inbox — a
-    // just-compacted agent lost its message context. Relax the inbox re-cap so the
-    // shaper doesn't re-truncate away the very entries/bodies the fold added; every
-    // other leg keeps its per-tier cap.
-    const afterCompaction = d.recovery != null;
-    const inboxCap = afterCompaction ? Math.max(c.inbox, 20) : c.inbox;
-    const inboxSummaryCap = afterCompaction ? Math.max(c.inboxSummary, 700) : c.inboxSummary;
+    // just-compacted agent lost its message context, so the inbox re-cap is relaxed
+    // rather than re-truncating away the very entries/bodies the fold added.
+    //
+    // EI-19408488769901676: that beef now lives in the CAP SET (`shapeOrient`'s first
+    // ladder rung) instead of being hardcoded here, so when it overshoots the budget the
+    // ladder can walk it back one rung at a time. Previously it was unconditional, which
+    // pushed the payload past the hard ceiling and handed the whole result to the generic
+    // projector — which then dropped the entire inbox, i.e. strictly WORSE than the
+    // un-beefed shape the fold was improving on.
+    const inboxCap = c.inbox;
+    const inboxSummaryCap = c.inboxSummary;
     const recent = Array.isArray(inbox.recent) ? inbox.recent : [];
     const projectedRecent = recent.slice(-inboxCap).map((e) => projectInboxEntry(e, inboxSummaryCap));
     out.inbox = {
@@ -290,4 +368,78 @@ export function shapeOrient(data: unknown, tier: TierName): unknown {
   }
 
   return out;
+}
+
+/**
+ * Tier-project an OrientResult-shaped payload, guaranteeing the result fits
+ * `SHAPER_BUDGET_CHARS` so it never reaches the framework's generic bounded projection.
+ *
+ * Walks a ladder of progressively tighter cap sets and returns the FIRST rung that fits:
+ *
+ *   0. post-compaction beef (only when `recovery` is present) — the most generous shape,
+ *      and the current behaviour, so a payload that already fit is byte-identical.
+ *   1. the plain per-tier caps — walks back the beef rather than the whole payload.
+ *   2. half the per-tier caps, floor-clamped.
+ *   3. FLOOR_CAPS — the tightest orientation that is still orientation.
+ *
+ * Rung 0 fitting is the common case, so this costs one `JSON.stringify` on the happy path.
+ *
+ * Why a ladder and not simply "exempt afterCompaction from trimming" (the obvious fix, and
+ * the one the report proposed): the hard ceiling is a TRANSPORT limit, not a preference —
+ * an over-cap result is rejected or file-dumped by the client, which is worse than any
+ * downgrade. The payload genuinely has to shrink. The bug was never that it shrank; it was
+ * that the shrinking was done by a projector with no idea which fields carry the
+ * orientation. Shrinking HERE keeps that judgement in the one place that has it, and every
+ * rung still emits the D-004 counts + fetch-pointers, so nothing is silently dropped.
+ */
+export function shapeOrient(data: unknown, tier: TierName): unknown {
+  if (!data || typeof data !== 'object') return data;
+  const d = data as Record<string, unknown>;
+  const base: Caps = { ...CAPS[tier] };
+  const afterCompaction = d.recovery != null;
+
+  const ladder: { caps: Caps; rung: string }[] = [
+    ...(afterCompaction
+      ? [{ caps: { ...base, inbox: Math.max(base.inbox, 20), inboxSummary: Math.max(base.inboxSummary, 700) }, rung: 'post-compaction' }]
+      : []),
+    { caps: base, rung: tier },
+    { caps: tightenCaps(base, 0.5), rung: `${tier}-half` },
+    { caps: FLOOR_CAPS, rung: 'floor' },
+  ];
+
+  let projected: Record<string, unknown> | undefined;
+  for (let i = 0; i < ladder.length; i++) {
+    const { caps, rung } = ladder[i];
+    projected = projectOrient(d, caps, tier);
+    const size = jsonLen(projected);
+    if (process.env.ORIENT_LADDER_DEBUG) console.log(`LADDER ${tier} rung=${rung} size=${size}`);
+    if (size <= SHAPER_BUDGET_CHARS) {
+      // Only annotate when we actually stepped down, so the common case stays clean.
+      if (i > 0) {
+        projected.shaperTightened = {
+          rung,
+          budgetChars: SHAPER_BUDGET_CHARS,
+          reason: `orientation exceeded the shaper budget at '${ladder[0].rung}' caps; tightened in-shaper rather than falling through to the generic bounded projection (EI-19408488769901676)`,
+          more: "payloadTier:'full' for the unshaped result",
+        };
+      }
+      return projected;
+    }
+  }
+
+  // Even FLOOR_CAPS overflowed — the residue is in the passthrough fields, not the capped
+  // lists, so no further tightening HERE can help. Return the floor anyway: it is strictly
+  // smaller than any other rung, which gives the framework's generic projection the least
+  // possible left to drop. Say so loudly rather than letting it look like a normal result.
+  if (projected) {
+    projected.shaperTightened = {
+      rung: 'floor',
+      budgetChars: SHAPER_BUDGET_CHARS,
+      overBudget: true,
+      reason:
+        'orientation exceeds the shaper budget even at floor caps — the excess is in uncapped passthrough fields, so the generic bounded projection may still drop whole fields',
+      more: "payloadTier:'full' for the unshaped result",
+    };
+  }
+  return projected;
 }

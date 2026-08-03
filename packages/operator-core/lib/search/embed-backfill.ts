@@ -226,6 +226,31 @@ export interface BackfillTarget {
    * phase) · harness_decisions(harness_slug,line_hash).
    */
   keyCols: string[];
+  /**
+   * P-005 — FRESHEST-FIRST drain order (`ORDER BY` body, without the keyword).
+   *
+   * Omitted ⇒ unordered, which is what every target used to be, and which is the
+   * mechanism behind the plan's most misread measurement. An unordered
+   * `WHERE embedding IS NULL LIMIT n` samples the backlog ARBITRARILY, so while a
+   * table is mostly unembedded a newly-written row's chance of being picked is
+   * ~its share of the backlog — i.e. new rows are covered at roughly the table's
+   * OVERALL coverage, not at 100%. That is why 24h-new-row coverage read 7% while
+   * the sweep was in fact draining faster than the table was being written: the
+   * low figure measured the ORDERING, not the drain rate.
+   *
+   * Ordering newest-first inverts it: fresh rows are embedded within one sweep of
+   * being written (searchable in minutes), and the historical backlog drains
+   * underneath them. This is the difference between "semantic search works for
+   * what I did this morning" and "semantic search works once a 13-day backlog
+   * clears".
+   *
+   * ⚠ Name a column the table has an INDEX on where one exists — this drives a
+   * backward index scan. Measured 2026-08-03 on the live 421k-row session_turns:
+   * `ingested_at DESC` plans as `Index Scan Backward using session_turns_ingested_idx`,
+   * 36ms for a 64-row batch. Without an index this becomes a full sort of the
+   * whole backlog on EVERY batch.
+   */
+  orderBySql?: string;
 }
 
 /** The column (migration 530) recording which embedder produced a row's vector. */
@@ -288,6 +313,10 @@ export const TARGETS: BackfillTarget[] = [
     embedCol: 'text_embedding',
     bodySql: `CASE WHEN length(text) >= 80 THEN left(text, 2000) ELSE '' END`,
     keyCols: ['workspace_id', 'source_kind', 'session_id', 'turn_idx'],
+    // Backed by session_turns_ingested_idx — a backward index scan, NOT a sort.
+    // `ingested_at` rather than `ts`: `ts` is indexed only as (owner, ts), which a
+    // global ordering cannot use.
+    orderBySql: 'ingested_at DESC',
   },
   // P-008 (shared-embedding-sidecar-and-enrichment-2026-07-10): the work-item
   // ledger — ONE base table (migration 374 unified issue + feature families
@@ -303,6 +332,8 @@ export const TARGETS: BackfillTarget[] = [
     embedCol: 'embedding',
     bodySql: `COALESCE(title, '') || E'\\n' || left(COALESCE(summary, ''), 2000)`,
     keyCols: ['harness_slug', 'feature_id'],
+    // Backed by hfc_updated_idx (updated_ts DESC). bigint epoch-ms, not a timestamp.
+    orderBySql: 'updated_ts DESC',
   },
   // P-009 (shared-embedding-sidecar-and-enrichment-2026-07-10): documentation
   // sections. docs:search is filesystem-backed, so doc-embed-sync.ts mirrors
@@ -316,6 +347,8 @@ export const TARGETS: BackfillTarget[] = [
     embedCol: 'embedding',
     bodySql: `COALESCE(title, '') || E'\\n' || left(COALESCE(content, ''), 2000)`,
     keyCols: ['source_key', 'slug', 'anchor'],
+    // No index on updated_at, but the table is ~6.4k rows — the sort is trivial.
+    orderBySql: 'updated_at DESC',
   },
   // P-010 (shared-embedding-sidecar-and-enrichment-2026-07-10): the plan
   // store (migration 553). plans:search gains a semantic leg and plans:new's
@@ -349,6 +382,8 @@ export const TARGETS: BackfillTarget[] = [
     embedCol: 'embedding',
     bodySql: `COALESCE(title, '') || E'\\n' || left(COALESCE(description, ''), 2000)`,
     keyCols: ['id'],
+    // No index on created_at, but the table is ~9.1k rows — the sort is trivial.
+    orderBySql: 'created_at DESC',
   },
   {
     table: 'harness_shared.datatype_registry',

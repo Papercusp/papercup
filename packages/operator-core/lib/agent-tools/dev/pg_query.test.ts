@@ -21,6 +21,7 @@ vi.mock('../../pg-read-query', async (importOriginal) => ({
 }));
 
 import pgQueryTool from './pg_query';
+import { PgReadQueryTimeoutError } from '../../pg-read-query';
 
 const OK_RESULT = { rowCount: 1, truncated: false, fields: ['x'], elapsedMs: 3, rows: [{ x: 1 }] };
 
@@ -118,5 +119,21 @@ describe('dev:pg_query — P-005 guard wiring', () => {
     const p2 = payloadOf(res2 as never);
     expect(p2).toMatchObject({ code: '42703' });
     expect(p2).not.toHaveProperty('knownColumns');
+  });
+
+  // EI-19415142351884573: a whole-call timeout is a distinct failure from a
+  // real PG error ("we never found out" vs "PG said no") and must be reported
+  // as such, not fall into the generic HINT/DETAIL/42703 error path below it.
+  it('a PgReadQueryTimeoutError is reported as reason "call_timeout", not a generic PG error', async () => {
+    pgReadQueryMock.mockRejectedValue(
+      new PgReadQueryTimeoutError('Query call did not complete within 3100ms of the WHOLE call…'),
+    );
+    const res = await pgQueryTool.handler({ sql: 'SELECT 1' } as never, {} as never);
+    expect((res as { isError?: boolean }).isError).toBe(true);
+    const payload = payloadOf(res as never);
+    expect(payload.reason).toBe('call_timeout');
+    expect(String(payload.error)).toContain('WHOLE call');
+    expect(payload).not.toHaveProperty('knownColumns');
+    expect(describeColumnsMock).not.toHaveBeenCalled();
   });
 });

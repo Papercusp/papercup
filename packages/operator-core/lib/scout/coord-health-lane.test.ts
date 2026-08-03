@@ -3,6 +3,7 @@ import {
   buildCoordHealthPatterns,
   aggregatePremiseStamps,
   type CoordHealthInput,
+  type CoordAuthoredAdoption,
 } from './coord-health-lane';
 import type { PremiseRefKind } from '../agent-tools/coordination/message-fields';
 import type { PremiseStatus } from '../agent-tools/coordination/premise-resolve';
@@ -407,6 +408,92 @@ describe('premise-resolve-rate — the P-011 measurement (D-091)', () => {
     // Ranks by SHORTFALL: beating the incumbent is good news and must not crowd
     // out live coordination breakdowns.
     expect(losing.weight!).toBeGreaterThan(beating.weight!);
+  });
+
+  // ── L1/L2/L3 authored-structure adoption (coordination-spec-adoption D-091) ──
+  //
+  // The whole point of this signal is that it REFUSES to publish one blended
+  // number. Every test below is a guard on a way the old single-number reading
+  // went wrong in production, not a restatement of the implementation.
+
+  const adoption = (over: Partial<CoordAuthoredAdoption> = {}): CoordAuthoredAdoption => ({
+    handAuthored: 100,
+    withSections: 80,
+    multiSection: 66,
+    withAuthoredField: 64,
+    openQuestions: 10,
+    openQuestionsAnswered: 4,
+    structureReads: 20,
+    ...over,
+  });
+
+  it('reports L1, L2 and L3 SEPARATELY, each with its own denominator inline', () => {
+    const p = buildCoordHealthPatterns(base({ authoredAdoption: adoption() })).find(
+      (x) => x.ref === 'coord:authored-adoption',
+    );
+    expect(p).toBeDefined();
+    // All three levels present and labelled — never collapsed into one figure.
+    expect(p!.summary).toMatch(/L1 present 80%/);
+    expect(p!.summary).toMatch(/L2 substantive 80%/);
+    expect(p!.summary).toMatch(/L3 open-questions answered 40%/);
+    // The denominator travels WITH the ratio. "0.58% adopted" was published from
+    // a numerator that was exactly right and a denominator nobody stated.
+    expect(p!.summary).toContain('80/100');
+    expect(p!.summary).toContain('64/80');
+  });
+
+  it('flags READ-STARVED when structure is written far more than it is ever opened', () => {
+    // The production state that motivated this plan: ~80% written, opened 15
+    // times in a week. A blended "adoption %" scored that as a success.
+    const starved = buildCoordHealthPatterns(
+      base({ authoredAdoption: adoption({ withAuthoredField: 64, structureReads: 2 }) }),
+    ).find((x) => x.ref === 'coord:authored-adoption')!;
+    expect(starved.summary).toMatch(/READ-STARVED/);
+
+    const healthy = buildCoordHealthPatterns(
+      base({ authoredAdoption: adoption({ withAuthoredField: 64, structureReads: 40 }) }),
+    ).find((x) => x.ref === 'coord:authored-adoption')!;
+    expect(healthy.summary).not.toMatch(/READ-STARVED/);
+  });
+
+  it('ranks a HIGH-L1 read-starved corpus ABOVE a merely-low-L1 one', () => {
+    // The inversion this signal exists to produce. Optimising L1 is what the
+    // original plan would have done; a high L1 whose output nobody reads is the
+    // WORSE state and must not be outranked by an early-but-healthy low L1.
+    const highL1Starved = buildCoordHealthPatterns(
+      base({ authoredAdoption: adoption({ withSections: 95, withAuthoredField: 90, structureReads: 1 }) }),
+    ).find((x) => x.ref === 'coord:authored-adoption')!;
+    const lowL1Read = buildCoordHealthPatterns(
+      base({ authoredAdoption: adoption({ withSections: 30, withAuthoredField: 25, structureReads: 25 }) }),
+    ).find((x) => x.ref === 'coord:authored-adoption')!;
+    expect(highL1Starved.weight!).toBeGreaterThan(lowL1Read.weight!);
+  });
+
+  it('stays SILENT below the message floor rather than publishing a 0/0 ratio', () => {
+    expect(
+      buildCoordHealthPatterns(base({ authoredAdoption: adoption({ handAuthored: 3 }) })).find(
+        (x) => x.ref === 'coord:authored-adoption',
+      ),
+    ).toBeUndefined();
+  });
+
+  it('never carries a per-sender dimension (D-090/D-091 R3)', () => {
+    // A per-agent adoption breakdown turns a coordination field into a
+    // compliance scoreboard; writing forYouBecause to avoid looking bad is not
+    // a theory of mind. Structural guard, same as the clarify metric's.
+    const p = buildCoordHealthPatterns(base({ authoredAdoption: adoption() })).find(
+      (x) => x.ref === 'coord:authored-adoption',
+    )!;
+    expect(p.ref).toBe('coord:authored-adoption');
+    expect(JSON.stringify(p)).not.toMatch(/su-[0-9a-f]/);
+  });
+
+  it('does not divide by zero when there are no open questions', () => {
+    const p = buildCoordHealthPatterns(
+      base({ authoredAdoption: adoption({ openQuestions: 0, openQuestionsAnswered: 0 }) }),
+    ).find((x) => x.ref === 'coord:authored-adoption')!;
+    expect(p.summary).toContain('no open questions');
+    expect(p.summary).not.toMatch(/NaN|Infinity/);
   });
 
   it('stays SILENT below the ask floor — the field ships with zero traffic by construction', () => {

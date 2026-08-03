@@ -10,7 +10,7 @@
  * Run: cd packages/operator-core && npx vitest run lib/agent-tools/coordination/tools/orient-shape.test.ts
  */
 import { describe, expect, it } from 'vitest';
-import { shapeOrient } from './orient-shape';
+import { SHAPER_BUDGET_CHARS, shapeOrient } from './orient-shape';
 
 const row = (i: number) => ({
   id: `WI-${1000 + i}`,
@@ -326,6 +326,11 @@ describe('EI-19314271768708528 leaderBrief shaping (monitor-wake fleet visibilit
       JSON.stringify((shapeOrient({ ...fixture(), leaderBrief: fatBrief() }, tier) as { leaderBrief: unknown }).leaderBrief).length;
     const trimmed = sized('trimmed');
     const standard = sized('standard');
+    for (const t of ['trimmed', 'standard'] as const) {
+      const full = shapeOrient({ ...fixture(), leaderBrief: fatBrief() }, t) as Record<string, any>;
+      // eslint-disable-next-line no-console
+      console.log(`TEMPMEASURE ${t}: total=${JSON.stringify(full).length} tightened=${full.shaperTightened?.rung ?? 'none'}`);
+    }
     // Both tiers shrink; trimmed is strictly the leaner projection (standard keeps the
     // whole roster of a normal-sized fleet on purpose, so it shrinks by less).
     expect(standard).toBeLessThan(before);
@@ -380,5 +385,116 @@ describe('EI-19314271768708528 leaderBrief shaping (monitor-wake fleet visibilit
     };
     expect(out.leaderBrief.members.length).toBe(2);
     expect(out.leaderBrief.membersTruncated).toBeUndefined();
+  });
+});
+
+/**
+ * EI-19408488769901676 — the shaper must hit its own budget so a result NEVER reaches the
+ * framework's generic bounded projection (`projectBoundedPayload`), which drops whole
+ * fields blind.
+ *
+ * Measured live 2026-08-03 on a real post-compaction orient: the trimmed shaper produced
+ * 30,812 chars against a 30,000 hard ceiling — over by 812 (2.7%) — and the generic
+ * fallback then cut it to 6,360 with 44 fields dropped, including the entire
+ * `inbox.entries` array and a `cursor` truncated mid-string.
+ *
+ * The overshoot was self-inflicted: the post-compaction fold BEEFS the inbox (cap 5 -> 20,
+ * summaries 140 -> 700) precisely because a just-compacted agent lost its message context,
+ * so `afterCompaction` is both the call that most needs a complete picture and the one most
+ * likely to overshoot. Note the doubling that makes it so easy to overshoot: `entries` is
+ * aliased to the SAME projected array as `recent`, so every inbox entry is serialized
+ * TWICE — 20 beefed entries alone can approach the whole ceiling.
+ */
+describe('shapeOrient — in-shaper budget ladder (EI-19408488769901676)', () => {
+  const bigInbox = (n: number) =>
+    Array.from({ length: n }, (_, i) => ({
+      kind: 'message',
+      ts: `2026-08-03T0${i % 10}:00:00.000Z`,
+      from: `su-${i}-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee`,
+      summary: `msg ${i} — ${'m'.repeat(900)}`,
+    }));
+
+  /** A post-compaction payload whose BEEFED inbox blows the budget but whose plain
+   *  trimmed inbox fits comfortably — i.e. exactly the production shape. */
+  const overflowing = () => ({
+    self: { ownerId: 'su-7854d874', ownerLabel: 'su · su-7854d' },
+    recovery: { selfRecall: 'sessions:search { session: "self" }', loop: { active: true, intervalSec: 900 } },
+    control: { state: { modes: ['auto'], carry: 'warm' } },
+    inbox: { summary: { total: 517, returned: 25 }, recent: bigInbox(40) },
+  });
+
+  it('TEETH: a post-compaction orient that overshoots is tightened IN-SHAPER, not handed to the generic projector', () => {
+    const out = shapeOrient(overflowing(), 'trimmed') as Record<string, any>;
+
+    // Without the ladder this returns the beefed shape (>30k), which production then
+    // hands to projectBoundedPayload — the 44-field blind drop this test exists to prevent.
+    expect(JSON.stringify(out).length).toBeLessThanOrEqual(SHAPER_BUDGET_CHARS);
+
+    // It stepped down exactly one rung — walking back the beef, not the whole payload.
+    expect(out.shaperTightened).toBeDefined();
+    expect(out.shaperTightened.rung).toBe('trimmed');
+    expect(out.shaperTightened.more).toContain("payloadTier:'full'");
+  });
+
+  it('the tightened result still CARRIES the orientation — recovery/control/self survive, inbox is non-empty, pointers intact', () => {
+    const out = shapeOrient(overflowing(), 'trimmed') as Record<string, any>;
+
+    // The whole point: the fields a just-respawned agent bootstraps from are passthrough
+    // and survive every rung. The generic projector dropped exactly these.
+    expect(out.recovery).toBeDefined();
+    expect(out.recovery.selfRecall).toBeTruthy();
+    expect(out.recovery.loop.active).toBe(true);
+    expect(out.control).toBeDefined();
+    expect(out.self.ownerId).toBe('su-7854d874');
+
+    // The inbox is TRIMMED, never emptied — an empty list reads as "no messages".
+    expect(out.inbox.recent.length).toBeGreaterThan(0);
+    expect(out.inbox.entries.length).toBe(out.inbox.recent.length);
+    // D-004: no silent caps — the truncation still leaves a count + a fetch-pointer.
+    expect(out.inbox.recentTruncated.total).toBe(40);
+    expect(out.inbox.recentTruncated.more).toBe('coord:inbox');
+  });
+
+  it('does NOT fire on a payload that already fits — the common case stays byte-identical', () => {
+    const small = {
+      self: { ownerId: 'su-1' },
+      recovery: { selfRecall: 'x' },
+      inbox: { summary: { total: 2 }, recent: bigInbox(2) },
+    };
+    const out = shapeOrient(small, 'trimmed') as Record<string, any>;
+
+    // Rung 0 (the beefed post-compaction shape) fit, so no step-down and no marker.
+    expect(out.shaperTightened).toBeUndefined();
+    // ...and the beef genuinely applied: both entries kept, summaries at the relaxed cap.
+    expect(out.inbox.recent.length).toBe(2);
+    expect(out.inbox.recent[0].summary.length).toBeGreaterThan(200);
+  });
+
+  it('a payload too big even at floor caps is flagged overBudget rather than silently looking normal', () => {
+    // The residue is in an UNCAPPED passthrough field, so no rung can shrink it — the
+    // honest answer is to say so, since the generic projection may still drop fields.
+    const out = shapeOrient(
+      { self: { ownerId: 'su-1' }, recovery: { blob: 'z'.repeat(40_000) } },
+      'trimmed',
+    ) as Record<string, any>;
+
+    expect(out.shaperTightened.overBudget).toBe(true);
+    expect(out.shaperTightened.rung).toBe('floor');
+    // Even here it must not have thrown away the passthrough it cannot shrink.
+    expect(out.recovery.blob.length).toBe(40_000);
+  });
+
+  it('DRIFT GUARD: the shaper budget stays strictly under the framework hard ceiling', async () => {
+    // orient-shape.ts is deliberately dependency-free, so the budget is a local constant.
+    // That is only safe if this test fails loudly when the framework ceiling moves under
+    // it — a budget at or above the ceiling would silently restore the old fall-through.
+    const { PAYLOAD_TIER_HARD_CEILING_CHARS } = await import('@papercusp/tooldef');
+    expect(SHAPER_BUDGET_CHARS).toBeLessThan(PAYLOAD_TIER_HARD_CEILING_CHARS);
+    // Bounded on BOTH sides. Too small and the ladder never engages before the framework's
+    // fall-through, restoring the bug; too large a gap and it re-shapes payloads that would
+    // have been served intact (a 27_000 budget did exactly that, cutting `claimable` 15 -> 7).
+    const margin = PAYLOAD_TIER_HARD_CEILING_CHARS - SHAPER_BUDGET_CHARS;
+    expect(margin).toBeGreaterThanOrEqual(500);
+    expect(margin).toBeLessThanOrEqual(3_000);
   });
 });

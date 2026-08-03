@@ -286,14 +286,20 @@ export default function TasksRosterPanel({ active }: { active: boolean }) {
       {/* Summary before detail. `scan.processes` is the honest process total —
           strictly larger than the ledger count until every seam enrols. */}
       {/* WI-7371 — live resource totals, first, because "how much is this costing"
-          is the question the pane is usually opened to answer. Both figures come from
-          the server-side fold over the FULL tracked set, so they do not change when the
-          class filter below narrows the rows. */}
+          is the question the pane is usually opened to answer. Both figures are folded
+          over the server's OWN unfiltered fetch of the RUNNING set, so they do not change
+          when the class filter below narrows the rows — and a server-side fold over the
+          filtered query would have been the same bug one layer down. */}
       <dl className="pc-tasks-roster__pressure" data-testid="tasks-resource-totals">
         <div>
           <dt>Memory</dt>
           <dd title={resources ? resourceTitle(resources).mem : undefined} data-testid="tasks-total-mem">
             {resources ? fmtBytes(resources.rssBytesTotal) : '—'}
+            {resources?.truncated ? (
+              <span title="The server hit its row cap — this is a lower bound." data-testid="tasks-total-truncated">
+                {' '}⚠
+              </span>
+            ) : null}
           </dd>
         </div>
         <div>
