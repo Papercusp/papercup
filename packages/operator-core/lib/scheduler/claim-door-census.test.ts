@@ -189,6 +189,27 @@ const CLAIM_DOORS: ReadonlyMap<string, DoorEntry> = new Map([
     'work-item-redundancy.ts#claimReplicaSlotLocal',
     { klass: 'not-a-work-item-door', note: 'The local-only variant of claimReplicaSlot; same reasoning.' },
   ],
+  [
+    'coord/condition-bridge.ts#claimConditionKey',
+    {
+      klass: 'not-a-work-item-door',
+      note:
+        'Claims a CONDITION KEY onto a work-item row that ALREADY exists — the dedup identity that ' +
+        'lets a recurring condition update one row instead of minting a new one per observation. It ' +
+        'takes a key, not an item, and selects nothing to serve, so readiness floors are not its ' +
+        'concern. The scan sees it because it writes work_items and matches the name shape.',
+    },
+  ],
+  [
+    'coord/condition-object.ts#claimStateOf',
+    {
+      klass: 'not-a-work-item-door',
+      note:
+        'PURE derivation, not a door at all: it REPORTS the claim state of one already-linked row ' +
+        '(its own docstring says "PURE"). It takes nothing, writes nothing, and serves nothing — the ' +
+        'scan matches it on the claim* name shape alone.',
+    },
+  ],
 ]);
 
 const SCAN_SKIP_DIRS = new Set(['__tests__', 'node_modules', 'dist']);

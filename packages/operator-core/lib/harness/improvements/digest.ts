@@ -328,7 +328,7 @@ export function extractQuotedSignatures(text: string | undefined): string[] {
  *  — and it keeps findLikelyDuplicates off the operator event loop's critical path
  *  (round-4 P-001: the near-dup pass recomputed tokenSet() ~n²/2 times → a
  *  regex+sort+alloc storm + GC churn that saturated the loop at a 775+ backlog). */
-const NEAR_DUP_MAX_CANDIDATES = 4000;
+export const NEAR_DUP_MAX_CANDIDATES = 4000;
 
 /**
  * What {@link findLikelyDuplicatesDetailed} actually managed to do

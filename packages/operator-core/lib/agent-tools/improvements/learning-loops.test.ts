@@ -68,9 +68,14 @@ describe('improvements:learning_loops handler', () => {
     });
     // the row→routine mapping fed to the composer
     const routines = computeM.mock.calls[0]![1] as unknown as Array<Record<string, unknown>>;
+    // Exact (not toMatchObject) on purpose: this pins the WHOLE mapped shape, so a
+    // field added to the mapper has to be acknowledged here rather than sliding in
+    // unnoticed. `pauseReviewBy` is such a field (EI-19370236916382521) — the fixture
+    // row carries no `pause_review_by`, so the mapper's `?? null` yields null.
     expect(routines[0]).toEqual({
       installSlug: '@singleton', name: 'sg:calibration', active: true,
       lastFiredAt: '2026-01-01T00:00:00.000Z', nextFireAt: null,
+      pauseReviewBy: null,
     });
     expect(computeM.mock.calls[0]![2]).toMatchObject({ homeSlug: 'acme-home' });
   });

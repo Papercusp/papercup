@@ -3,6 +3,8 @@ import {
   buildDigest,
   dedupSignature,
   findLikelyDuplicates,
+  findLikelyDuplicatesDetailed,
+  NEAR_DUP_MAX_CANDIDATES,
   signatureRecurrence,
   recallAlreadyDecided,
   titleSimilarity,
@@ -496,9 +498,18 @@ describe('buildDigest', () => {
    * defect.
    */
   describe('near-dup cost-gate degradation is REPORTED, not silent (EI-19393516222436864)', () => {
-    /** Distinct titles, so nothing is claimed by the exact/quote passes first. */
+    /**
+     * Distinct titles, so nothing is claimed by the exact/quote passes first and
+     * the near-dup leg really is the one under test.
+     *
+     * NOTE the discriminator must be >2 chars: dedupSignature drops shorter
+     * tokens, so a bare `${i}` disappears and every title collapses to ONE
+     * signature — which the exact pass then claims wholesale, leaving nothing for
+     * the near-dup leg and reporting 'ran' at any size. That is how the first
+     * draft of this fixture quietly failed to exercise the cap.
+     */
     const distinct = (n: number): ImprovementCandidate[] =>
-      Array.from({ length: n }, (_, i) => cand({ id: `n${i}`, title: `unique subject ${i} alpha bravo` }));
+      Array.from({ length: n }, (_, i) => cand({ id: `n${i}`, title: `subject${String(i).padStart(6, '0')} alpha bravo` }));
 
     it('reports nearDupPass:"ran" below the bound', () => {
       const r = findLikelyDuplicatesDetailed(distinct(10));

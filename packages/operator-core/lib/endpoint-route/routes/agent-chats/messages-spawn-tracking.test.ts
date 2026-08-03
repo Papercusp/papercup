@@ -37,23 +37,6 @@ vi.mock('@papercusp/agent-mcp', () => ({
   dispatchProjectedToolStream: h.dispatchMock,
   lookupByMcpName: () => ({ mcpToolName: 'agent_chats:chat' }),
 }));
-// WI-7139: the messages route now takes a PG-BACKED per-chat streaming lock
-// (agent-chat-lock.ts) before it spawns. That module fails CLOSED by design — any
-// PG error is treated as "already locked" and the route returns 409 — so a test
-// that does not satisfy it gets 409 on every assertion instead of the behaviour
-// under test. These files exercise the ROUTE, not the lock (agent-chat-lock has
-// its own coverage), so grant the lock outright rather than reaching through it
-// into a db-org mock: mocking the lock keeps these tests independent of
-// @papercusp/db-org's export surface, which is exactly what broke them (a new
-// `getOrgPg` import stranded every db-org mock that did not list it).
-vi.mock('../../../agent-chat-lock', () => ({
-  AGENT_CHAT_LOCK_TTL_MS: 10 * 60_000,
-  acquireAgentChatLock: async (chatId: string) => ({ chatId, token: 'test-lock-token' }),
-  releaseAgentChatLock: async () => {},
-  isAgentChatLocked: async () => false,
-  __resetAgentChatLocks: async () => {},
-}));
-
 vi.mock('@papercusp/db-org', () => ({
   // The route acquires a PG-backed per-chat lock (agent-chat-lock.ts, WI-7139)
   // before assembling, and that lock calls `getOrgPg().sql` when no sql is

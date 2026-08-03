@@ -18,6 +18,7 @@ import {
   supervisedProcesses,
   applyDownConfirmDebounce,
   DOWN_CONFIRM_TICKS,
+  PORTLESS_PROBE_NAME_SET,
   STAGING_API_DOWN_CONFIRM_TICKS,
   DESKTOP_DOWN_CONFIRM_TICKS,
   type ProbeResult,
@@ -193,9 +194,21 @@ describe('applyDownConfirmDebounce (EI-18144960689849695 — flap damping)', () 
   });
 
   it('every DOWN_CONFIRM_TICKS name is a real probe target (no damping a name nothing emits)', () => {
-    const probeNames = new Set([...HEALTH_ENDPOINTS.map((e) => e.name), 'desktop']);
+    // The real probe-name universe is the fixed-URL specs PLUS the portless
+    // probes. This used to read `[...HEALTH_ENDPOINTS, 'desktop']` — a bare
+    // literal that silently claimed `desktop` was the only portless probe, so
+    // damping any OTHER portless probe failed this guard even though the name
+    // was emitted on every tick. That is what happened when `bg-host-ticker`
+    // was damped (EI-19375157952766991): a correct source change reddened the
+    // fleet gate. Deriving from PORTLESS_PROBE_NAMES — which the emitters
+    // themselves name from — keeps the guard honest about typo'd/dead names
+    // while it can no longer reject a genuinely-emitted one.
+    const probeNames = new Set([
+      ...HEALTH_ENDPOINTS.map((e) => e.name),
+      ...PORTLESS_PROBE_NAME_SET,
+    ]);
     for (const name of Object.keys(DOWN_CONFIRM_TICKS)) {
-      expect(probeNames.has(name)).toBe(true);
+      expect(probeNames.has(name), `${name} is damped but is not a probe target`).toBe(true);
     }
   });
 });

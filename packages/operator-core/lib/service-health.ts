@@ -338,6 +338,41 @@ export async function probeEndpoint(spec: EndpointSpec, timeoutMs = spec.timeout
  */
 export const BG_HOST_STALE_MS = 15 * 60_000;
 
+/**
+ * The probe names emitted WITHOUT an `EndpointSpec` — the "portless" probes.
+ * `HEALTH_ENDPOINTS` enumerates every fixed-URL probe, so it is the natural
+ * answer to "is this a real probe target?"; these names are the rest of that
+ * answer, and nothing else enumerated them.
+ *
+ * LOAD-BEARING, not a doc list: the emitters below name themselves FROM this
+ * constant, so it cannot drift from what is actually emitted. That is the whole
+ * point — `DOWN_CONFIRM_TICKS`'s "no damping a name nothing emits" guard needs
+ * `HEALTH_ENDPOINTS ∪ PORTLESS_PROBE_NAMES` to be the true set of probe names,
+ * and a hand-maintained second list would rot exactly the way the bare
+ * `'desktop'` literal it replaces did (EI-19375157952766991: damping
+ * `bg-host-ticker` — a real, long-standing portless probe — reddened the fleet
+ * gate, because the guard's model of "real probe" was HEALTH_ENDPOINTS plus one
+ * hardcoded portless name).
+ *
+ * `desktop` is the one entry no emitter here can own: it is produced by the
+ * Tauri desktop probe outside this module. It is listed because the guard needs
+ * the complete set, and is the reason this is a name TABLE rather than a set
+ * derived from the emitters themselves.
+ */
+export const PORTLESS_PROBE_NAMES = {
+  /** Emitted by the desktop-shell probe, outside this module. */
+  desktop: 'desktop',
+  bgHostTicker: 'bg-host-ticker',
+  bgHostCode: 'bg-host-code',
+  substrateSidecar: 'substrate-sidecar',
+  embedSidecar: 'embed-sidecar',
+} as const;
+
+/** Flat lookup for "is this name a portless probe target?" */
+export const PORTLESS_PROBE_NAME_SET: ReadonlySet<string> = new Set<string>(
+  Object.values(PORTLESS_PROBE_NAMES),
+);
+
 function toMs(v: Date | string | number | null | undefined): number | null {
   if (v == null) return null;
   if (v instanceof Date) return v.getTime();
@@ -357,7 +392,7 @@ export function evaluateBgHostTicker(
   now: number,
   staleAfterMs: number = BG_HOST_STALE_MS,
 ): ProbeResult {
-  const name = 'bg-host-ticker';
+  const name = PORTLESS_PROBE_NAMES.bgHostTicker;
   if (lastFiredMs == null) {
     return { name, up: true, status: null, latencyMs: 0, present: false, note: 'no routine has fired — ticker liveness unknown' };
   }
@@ -409,7 +444,7 @@ export function evaluateBgHostCodeDrift(
   hotChangeMs: number | null,
   newestFile?: string | null,
 ): ProbeResult {
-  const name = 'bg-host-code';
+  const name = PORTLESS_PROBE_NAMES.bgHostCode;
   if (bootMs == null || hotChangeMs == null) {
     return { name, up: true, status: null, latencyMs: 0, present: false, note: 'bg-host code-drift unknown (boot time or hot-path change time unreadable)' };
   }
@@ -448,7 +483,7 @@ export async function probeBgHostCodeDrift(now: number = Date.now()): Promise<Pr
   // short-circuited here — the inner try/catch stays the backstop for WSL-without-systemd.
   if (process.platform !== 'linux') {
     return {
-      name: 'bg-host-code',
+      name: PORTLESS_PROBE_NAMES.bgHostCode,
       up: true,
       status: null,
       latencyMs: Date.now() - start,
@@ -496,7 +531,7 @@ export async function probeBgHostCodeDrift(now: number = Date.now()): Promise<Pr
     }
     return { ...evaluateBgHostCodeDrift(bootMs, hotChangeMs, newestFile), latencyMs: Date.now() - start };
   } catch {
-    return { name: 'bg-host-code', up: true, status: null, latencyMs: Date.now() - start, present: false, note: 'bg-host code-drift unknown (probe failed)' };
+    return { name: PORTLESS_PROBE_NAMES.bgHostCode, up: true, status: null, latencyMs: Date.now() - start, present: false, note: 'bg-host code-drift unknown (probe failed)' };
   }
 }
 
@@ -516,7 +551,7 @@ export async function probeBgHostTicker(now: number = Date.now()): Promise<Probe
        WHERE active = true AND last_fired_at IS NOT NULL`;
     return { ...evaluateBgHostTicker(toMs(rows[0]?.last), now), latencyMs: Date.now() - start };
   } catch {
-    return { name: 'bg-host-ticker', up: true, status: null, latencyMs: Date.now() - start, present: false, note: 'ticker liveness unknown (routines read failed)' };
+    return { name: PORTLESS_PROBE_NAMES.bgHostTicker, up: true, status: null, latencyMs: Date.now() - start, present: false, note: 'ticker liveness unknown (routines read failed)' };
   }
 }
 
@@ -537,7 +572,7 @@ export async function probeBgHostTicker(now: number = Date.now()): Promise<Probe
  * guards against).
  */
 export async function probeSubstrateSidecar(timeoutMs = 5000): Promise<ProbeResult> {
-  const name = 'substrate-sidecar';
+  const name = PORTLESS_PROBE_NAMES.substrateSidecar;
   const start = Date.now();
   let sidecarOn = false;
   try {
@@ -626,7 +661,7 @@ export async function probeSubstrateSidecar(timeoutMs = 5000): Promise<ProbeResu
  * (desktop app, tests, bench) — see `embed-sidecar-wiring.ts`.
  */
 export async function probeEmbedSidecar(timeoutMs = 5000): Promise<ProbeResult> {
-  const name = 'embed-sidecar';
+  const name = PORTLESS_PROBE_NAMES.embedSidecar;
   const start = Date.now();
   let url: string;
   try {
@@ -985,9 +1020,9 @@ export const ODDSMITH_SIDECAR_DOWN_CONFIRM_TICKS = 2;
 export const BG_HOST_TICKER_DOWN_CONFIRM_TICKS = 2;
 
 export const DOWN_CONFIRM_TICKS: Readonly<Record<string, number>> = {
-  desktop: DESKTOP_DOWN_CONFIRM_TICKS,
+  [PORTLESS_PROBE_NAMES.desktop]: DESKTOP_DOWN_CONFIRM_TICKS,
   'staging-api': STAGING_API_DOWN_CONFIRM_TICKS,
-  'bg-host-ticker': BG_HOST_TICKER_DOWN_CONFIRM_TICKS,
+  [PORTLESS_PROBE_NAMES.bgHostTicker]: BG_HOST_TICKER_DOWN_CONFIRM_TICKS,
   'oddsmith-sidecar': ODDSMITH_SIDECAR_DOWN_CONFIRM_TICKS,
 };
 
