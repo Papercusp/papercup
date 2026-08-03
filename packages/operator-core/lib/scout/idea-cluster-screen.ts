@@ -353,6 +353,13 @@ export function aggregateReports(
   reports: CodeExistenceReport[],
   memberIds: string[],
   maxSemantic = 5,
+  /**
+   * Separate cap for the plan-slug leg, deliberately NOT shared with
+   * `maxSemantic`. Measured: the worked case's true-positive plan ranks #6 of 210,
+   * so reusing the semantic cap of 5 would silently truncate the one hit the leg
+   * exists to surface. See `plan-slug-leg.ts`.
+   */
+  maxPlanSlugs = 10,
 ): Omit<
   Pick<
     ClusterScreenRow,
@@ -452,7 +459,7 @@ export function aggregateReports(
           b.score - a.score ||
           a.slug.localeCompare(b.slug),
       )
-      .slice(0, maxSemantic),
+      .slice(0, maxPlanSlugs),
     retrievalRan,
   };
 }

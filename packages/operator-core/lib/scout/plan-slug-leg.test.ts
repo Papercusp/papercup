@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   GENERIC_SLUG_TOKENS,
+  MIN_CORPUS_FOR_RARITY,
   classifyPlanStatus,
   ideaTextStems,
   lightStem,
@@ -215,6 +216,60 @@ describe('matchPlans — scoring and ranking', () => {
       { slug: 'green-checkpoint-gate-hardening', title: 'signals fire with no acting consumer' },
     ]);
     expect(hits).toEqual([]);
+  });
+});
+
+describe('rarity — the discriminator the coverage score is not', () => {
+  // A corpus where "agent" is ubiquitous and "consume" is rare.
+  const corpus: PlanRecord[] = [
+    ...Array.from({ length: 20 }, (_, i) => ({ slug: `agent-thing${i}-alpha${i}` })),
+    { slug: 'consume-edges' },
+  ];
+
+  it('ranks a rare shared stem above a ubiquitous one', () => {
+    const hits = matchPlans('agent consumer edges', corpus, { minRarity: 0 });
+    expect(hits[0].slug).toBe('consume-edges');
+    expect(hits[0].rarity).toBeGreaterThan(hits[hits.length - 1].rarity);
+  });
+
+  it('gates out a match that shares only ubiquitous vocabulary', () => {
+    const gated = matchPlans('agent consumer edges', corpus).map((h) => h.slug);
+    expect(gated).toContain('consume-edges');
+    expect(gated.some((s) => s.startsWith('agent-thing'))).toBe(false);
+  });
+
+  it('does NOT estimate rarity below MIN_CORPUS_FOR_RARITY — it declines visibly', () => {
+    // A handful of plans is not a corpus. Guessing would silently drop real
+    // matches on a statistic that cannot be computed; reporting rarity: 1
+    // (documented as "not estimated") declines in the open instead.
+    const tiny = [{ slug: 'agent-thing0-alpha0' }, { slug: 'consume-edges' }];
+    expect(tiny.length).toBeLessThan(MIN_CORPUS_FOR_RARITY);
+    const hits = matchPlans('agent consumer edges', tiny);
+    expect(hits.every((h) => h.rarity === 1)).toBe(true);
+    // ...and nothing is filtered out on the strength of it.
+    expect(hits).toHaveLength(2);
+  });
+});
+
+describe('CALIBRATION — defaults measured against the real corpus, not chosen', () => {
+  it('keeps maxMatches high enough for the worked case, which ranks #6', () => {
+    // Measured on the live 978-plan corpus: EI-7406's true-positive plan
+    // (self-improvement-consume-edges-2026-06-12) ranks #6 of 210 matches. A cap
+    // of 5 — the obvious default — excludes the single case this leg exists for,
+    // and every aggregate statistic still looks healthy when it does.
+    const WORKED_CASE_RANK = 6;
+    const plans: PlanRecord[] = Array.from({ length: 30 }, (_, i) => ({
+      slug: `alpha${i}-beta${i}-consume`,
+    }));
+    const hits = matchPlans('consumer', plans, { minRarity: 0 });
+    expect(hits.length).toBeGreaterThanOrEqual(WORKED_CASE_RANK);
+  });
+
+  it('does not share the semantic leg\'s cap of 5', () => {
+    const plans: PlanRecord[] = Array.from({ length: 12 }, (_, i) => ({
+      slug: `alpha${i}-beta${i}-consume`,
+    }));
+    expect(matchPlans('consumer', plans, { minRarity: 0 }).length).toBeGreaterThan(5);
   });
 });
 

@@ -23,6 +23,30 @@
  * vocabulary the idea and the code do not. That is the bridge — and the finding
  * worth carrying is that the bridge turned out to be **plan slugs, not embeddings**.
  *
+ * ## ⚠ MEASURED: this leg RANKS, it does not FILTER. Read before using it.
+ *
+ * Run against the real corpus (978 plans, 40 ideas from the 07-04→07-15 cohort),
+ * every tuning of this leg fires on **40 of 40 ideas (100%)**, matching 210–236
+ * plans per idea. Raising `minScore` to 0.67 left it at 95%; adding the rarity
+ * gate left it at 100%. A leg that fires on everything cannot filter anything,
+ * however correct each individual hit is.
+ *
+ * What it CAN do is rank. On the peer's worked case (EI-7406, whose prior art is
+ * `orphaned-dispatch.ts`), the correct plan ranks **#6 of 210** — the top 3%. So
+ * the supported use is a bounded top-N shortlist a reader OPENS, and nothing else:
+ *
+ *   - ✅ "these ~10 plans are worth reading before you build this"
+ *   - ❌ "no plan matched, therefore this is novel"  (it always matches)
+ *   - ❌ any input to a verdict                      (see the posture below)
+ *
+ * That #6 is also why `maxMatches` defaults to 10 rather than the obvious 5: a cap
+ * of 5 excludes the one case this leg was built for, and no aggregate statistic
+ * would have revealed that — only ranking the known true positive did.
+ *
+ * ⚠ n=1 for the rank measurement. Treat "#6" as evidence the signal is real and
+ * roughly where it sits, NOT as a precision figure. Ranking more known-good pairs
+ * is the cheapest next improvement.
+ *
  * ## Precision posture — CONTEXT ONLY, never a verdict
  *
  * This leg MUST NOT drive a DROP. The screen's standing rule (WI-9476 checkpoint)
@@ -84,6 +108,27 @@ export interface PlanSlugMatch {
    * count, which this screen already records as a known weakness.)
    */
   score: number;
+  /**
+   * Rarity of the MOST distinctive shared stem, in [0,1] — the discriminator.
+   *
+   * `score` alone is not one, and this was MEASURED, not anticipated: against the
+   * real 978-plan corpus the leg fired on 40 of 40 ideas (100%) with a median
+   * score of 0.75, and raising the score threshold to 0.67 still left it at 95%.
+   * The reason is structural — a Scout idea body is long, so its stem set trivially
+   * covers a short plan name built from common words, and `score` then reports 1.0
+   * for a plan that shares nothing distinctive. It answers "is this plan's name
+   * made of words the idea happens to use", which is a narrower question than the
+   * one being asked.
+   *
+   * Rarity is computed from the CANDIDATE PLAN CORPUS itself — the independent
+   * signal the coverage ratio does not already contain — as
+   * `log(N / (1 + df)) / log(N)`, where `df` is how many plan slugs contain the
+   * stem. A stem in a handful of plans scores near 1; one in half of them near 0.
+   *
+   * ⚠ `1` also means NOT ESTIMATED (corpus too small — see `MIN_CORPUS_FOR_RARITY`),
+   * so a `1` is "unknown, not filtered", never "verified distinctive".
+   */
+  rarity: number;
 }
 
 /** Injectable plan-search backend, so tests never touch Postgres. */
@@ -105,8 +150,17 @@ export interface PlanSlugOptions {
   minOverlap?: number;
   /** Minimum `score` for a plan to be reported (default 0.2). */
   minScore?: number;
-  /** Max matches retained, highest score first (default 5). */
+  /** Max matches retained, most distinctive first (default 5). */
   maxMatches?: number;
+  /**
+   * Minimum `rarity` for a match to be reported (default 0.5 — the shared stem
+   * must appear in roughly `sqrt(N)` plans or fewer).
+   *
+   * This is the leg's real discriminator; `minScore` alone does not discriminate
+   * at corpus scale (see `PlanSlugMatch.rarity`). Set to 0 to disable the gate and
+   * recover the pure-coverage behaviour.
+   */
+  minRarity?: number;
   /** Extra slug tokens to treat as generic, on top of `GENERIC_SLUG_TOKENS`. */
   extraGenericTokens?: string[];
 }
@@ -114,10 +168,27 @@ export interface PlanSlugOptions {
 const DEFAULTS = {
   minOverlap: 1,
   minScore: 0.2,
-  maxMatches: 5,
+  minRarity: 0.5,
+  // CALIBRATED, not chosen: against the real 978-plan corpus the worked case's
+  // true-positive plan ranks #6. A cap of 5 — the obvious default, and what this
+  // module shipped with for one revision — would have excluded the single case
+  // the leg exists for, while every measurement above it still looked healthy.
+  maxMatches: 10,
   minStemLength: 4,
   minTokenLength: 3,
 } as const;
+
+/**
+ * Below this many candidate plans, rarity is NOT estimated and the gate is
+ * disabled (every match reports `rarity: 1`).
+ *
+ * Rarity is a property of a corpus, and a handful of plans is not one — a stem
+ * appearing in 1 of 3 plans tells you nothing about whether it is distinctive.
+ * Guessing from too few would be worse than declining: it would silently drop
+ * real matches on the strength of a statistic that cannot be computed. Declining
+ * is visible in the reported `rarity: 1`, which is documented as "not estimated".
+ */
+export const MIN_CORPUS_FOR_RARITY = 8;
 
 /** Plan statuses that mean the work SHIPPED. */
 const IMPLEMENTED_PLAN_STATUSES = new Set(['shipped']);
@@ -295,20 +366,48 @@ export function matchPlans(
   const maxMatches = opts.maxMatches ?? DEFAULTS.maxMatches;
   const extraGeneric = opts.extraGenericTokens ?? [];
 
+  const minRarity = opts.minRarity ?? DEFAULTS.minRarity;
   const textStems = ideaTextStems(ideaText, extraGeneric);
   if (textStems.size === 0) return [];
 
-  const out: PlanSlugMatch[] = [];
-  for (const plan of plans ?? []) {
+  const list = plans ?? [];
+
+  // Stem sets, computed once — they are needed twice (document frequency, then
+  // scoring), and recomputing them per plan inside the df loop is what turns a
+  // linear pass into a quadratic one on a ~1k-plan corpus.
+  const stemsBySlug: { plan: PlanRecord; stems: Set<string> }[] = [];
+  const df = new Map<string, number>();
+  for (const plan of list) {
     const tokens = planSlugTokens(plan.slug ?? '', extraGeneric);
     if (tokens.length === 0) continue;
+    const stems = new Set(tokens.map((t) => lightStem(t)));
+    stemsBySlug.push({ plan, stems });
+    for (const s of stems) df.set(s, (df.get(s) ?? 0) + 1);
+  }
 
-    const planStems = new Set(tokens.map((t) => lightStem(t)));
+  // Rarity needs a corpus; a handful of plans is not one. See MIN_CORPUS_FOR_RARITY.
+  const n = stemsBySlug.length;
+  const rarityEstimable = n >= MIN_CORPUS_FOR_RARITY;
+  const logN = Math.log(n);
+  const rarityOf = (stem: string): number => {
+    if (!rarityEstimable || logN <= 0) return 1;
+    const idf = Math.log(n / (1 + (df.get(stem) ?? 0)));
+    return Math.max(0, Math.min(1, idf / logN));
+  };
+
+  const out: PlanSlugMatch[] = [];
+  for (const { plan, stems: planStems } of stemsBySlug) {
     const overlap = [...planStems].filter((s) => textStems.has(s)).sort();
     if (overlap.length < minOverlap) continue;
 
     const score = overlap.length / planStems.size;
     if (score < minScore) continue;
+
+    // The rarity of the MOST distinctive shared stem — "the least common word
+    // this plan and this idea have in common". A plan sharing only ubiquitous
+    // vocabulary is what the coverage ratio alone cannot reject.
+    const rarity = Math.max(...overlap.map(rarityOf));
+    if (rarity < minRarity) continue;
 
     out.push({
       slug: plan.slug,
@@ -317,11 +416,14 @@ export function matchPlans(
       statusClass: classifyPlanStatus(plan.status),
       overlap,
       score,
+      rarity,
     });
   }
 
-  // Highest coverage first; on a tie, more overlapping stems, then stable by slug.
+  // Most DISTINCTIVE first — rarity leads, because it is the discriminator and
+  // coverage is not. Then coverage, then overlap size, then stable by slug.
   out.sort((a, b) => {
+    if (b.rarity !== a.rarity) return b.rarity - a.rarity;
     if (b.score !== a.score) return b.score - a.score;
     if (b.overlap.length !== a.overlap.length) return b.overlap.length - a.overlap.length;
     return a.slug.localeCompare(b.slug);

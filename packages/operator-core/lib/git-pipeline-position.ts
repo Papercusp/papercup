@@ -937,6 +937,22 @@ export interface PipelinePosition {
    */
   serving: ServingTruth;
   /**
+   * EVERY long-lived host's generation for this path, not just the one the
+   * ownership map happens to name.
+   *
+   * `serving` answers for `runtimes[0]` alone. That is the right answer for a
+   * single-owner path and a silently INCOMPLETE one otherwise — and "otherwise"
+   * includes every operator-core module a bg-host routine imports transitively,
+   * because the ownership map keys on path patterns and cannot see the import
+   * graph. This leg probes all hosts unconditionally, so a host that is running
+   * (or not running) your code can never go unreported.
+   *
+   * Read it in BOTH directions. `runningYourCode: false` ⇒ that host needs a
+   * restart. `true` while another host is `false` ⇒ your change is ALREADY
+   * executing somewhere, and a deploy is not a precondition for observing it.
+   */
+  runtimeGenerations: RuntimeGeneration[];
+  /**
    * P-004: does the commit the GATE is judging actually contain this path's current
    * content? Every other field here answers "where is my change in the pipeline";
    * this one answers the question that comes first and was unanswerable —
@@ -1288,6 +1304,177 @@ export function evaluateServing(args: {
     startedSinceCodeChange,
     behindMin: startedSinceCodeChange ? null : Math.max(1, Math.round((codeMs - startedAtMs) / 60_000)),
   };
+}
+
+/**
+ * One long-lived host's CODE GENERATION for the queried path: did this process
+ * start AFTER the code it would run last changed?
+ *
+ * Deliberately NOT derived from `RUNTIME_OWNERS`. That map is a hand-maintained
+ * list of path patterns, i.e. an approximation of the IMPORT GRAPH, and it fails
+ * in the confident direction: an unlisted path silently falls to `DEFAULT_OWNER`
+ * (`operator-release` only) and is reported with authoritative prose rather than
+ * as unknown. Every operator-core module a bg-host routine reaches TRANSITIVELY
+ * is misclassified that way unless somebody hand-added it — `lib/dbos/` is
+ * listed, but the modules it imports are not.
+ *
+ * So this leg probes every long-lived host UNCONDITIONALLY and reports each one's
+ * own verdict. It cannot inherit the ownership map's blind spot because it does
+ * not consult it.
+ */
+export interface RuntimeGeneration {
+  /** systemd --user unit. */
+  unit: string;
+  /** Human label for the process ("bg-host (routines/sweeps)"). */
+  label: string;
+  pid: number | null;
+  startedAtMs: number | null;
+  /** When the code THIS host would run last changed. */
+  codeAsOfMs: number | null;
+  /**
+   * Which clock `codeAsOfMs` came from — they are not interchangeable.
+   * `deploy` for the release checkout (:3070 receives code at deploy time);
+   * `file-mtime` for a staging-tree tsx host (it imports the file itself, so
+   * the file's own mtime is what a restart would pick up).
+   */
+  codeAsOfSource: 'deploy' | 'file-mtime' | null;
+  /**
+   * TRUE  — this process started after the code last changed ⇒ it IS running it.
+   * FALSE — it started before ⇒ it is running an older generation.
+   * NULL  — undecidable; never fabricated (see evaluateServing's note).
+   */
+  runningYourCode: boolean | null;
+  /** Minutes the process start precedes the code change, when it is behind. */
+  behindMin: number | null;
+  /** How this host's code becomes current. */
+  activationLever: string;
+  unknownReason: CellUnknown | null;
+}
+
+/**
+ * The long-lived hosts that execute repo code, and how each RECEIVES it.
+ *
+ * `papercup-staging-api` is here even though it is not a `RuntimeHost` — it is a
+ * real process running the staging working tree, and it is one of the two hosts
+ * that can be running a fix while `:3070` still is not.
+ */
+const GENERATION_HOSTS: ReadonlyArray<{
+  unit: string;
+  label: string;
+  releasePipelineApplies: boolean;
+  activationLever: string;
+}> = [
+  {
+    unit: RESTART_TARGET_UNITS.dev,
+    label: ':3070 release operator',
+    releasePipelineApplies: true,
+    activationLever:
+      'the green pipeline (git-sync → green main → deploy), or PAPERCUSP_ALLOW_DEV_RESTART=1 npx tsx apps/operator/lib/release/deploy-cli.ts --execute to force it now',
+  },
+  {
+    unit: RESTART_TARGET_UNITS.staging,
+    label: ':3170 staging operator',
+    releasePipelineApplies: false,
+    activationLever: 'dev:restart { target: "staging", confirm: true } — a deploy is a no-op for this host',
+  },
+  {
+    unit: RESTART_TARGET_UNITS['bg-host'],
+    label: 'bg-host (routines, sweeps, watchdogs)',
+    releasePipelineApplies: false,
+    activationLever: 'dev:restart { target: "bg-host", confirm: true } — a deploy is a no-op for this host',
+  },
+];
+
+/**
+ * PURE verdict for the runtime-generation leg — no probing, so it is directly
+ * testable. Same contract as `evaluateServing`: an undecidable input yields
+ * `runningYourCode: null` WITH a reason, never a fabricated boolean.
+ */
+export function evaluateRuntimeGenerations(
+  probes: ReadonlyArray<{
+    unit: string;
+    label: string;
+    releasePipelineApplies: boolean;
+    activationLever: string;
+    process: { pid: number | null; startedAtMs: number | null } | null;
+    codeAsOfMs: number | null;
+  }>,
+): RuntimeGeneration[] {
+  return probes.map((p) => {
+    const codeAsOfSource: 'deploy' | 'file-mtime' | null =
+      p.codeAsOfMs === null ? null : p.releasePipelineApplies ? 'deploy' : 'file-mtime';
+    const base: RuntimeGeneration = {
+      unit: p.unit,
+      label: p.label,
+      pid: p.process?.pid ?? null,
+      startedAtMs: p.process?.startedAtMs ?? null,
+      codeAsOfMs: p.codeAsOfMs,
+      codeAsOfSource,
+      runningYourCode: null,
+      behindMin: null,
+      activationLever: p.activationLever,
+      unknownReason: null,
+    };
+    if (base.startedAtMs === null) {
+      return {
+        ...base,
+        unknownReason: cellUnknown(
+          'insufficient-data',
+          `Could not read ${p.unit}'s start time (not running, no systemd, or a non-Linux host) — this host's generation is UNKNOWN, which is NOT the same as "stale" or as "current".`,
+        ),
+      };
+    }
+    if (base.codeAsOfMs === null) {
+      return {
+        ...base,
+        unknownReason: cellUnknown(
+          'insufficient-data',
+          `Read ${p.unit} (pid ${base.pid}) but not when the code it runs last changed, so the two cannot be compared — UNKNOWN, not "current".`,
+        ),
+      };
+    }
+    const runningYourCode = base.startedAtMs > base.codeAsOfMs;
+    return {
+      ...base,
+      runningYourCode,
+      behindMin: runningYourCode ? null : Math.max(1, Math.round((base.codeAsOfMs - base.startedAtMs) / 60_000)),
+    };
+  });
+}
+
+/**
+ * The note this whole leg exists to emit: hosts DISAGREE about which generation
+ * of your code they run.
+ *
+ * The recurring, expensive misreading is one-directional. `deploy.3070.sha` has
+ * not moved ⇒ "my change is not live anywhere" ⇒ wait for a deploy. But the
+ * staging-tree hosts restart on their own schedule, well ahead of the release
+ * deploy, so a fix is routinely ALREADY EXECUTING in bg-host/staging while
+ * `:3070` still runs the old generation. An agent that only needs to OBSERVE the
+ * code running (measure it, reproduce a bug, confirm a watchdog stopped firing)
+ * is not blocked at all — and that is invisible from every git-shaped check.
+ *
+ * Returns null when the hosts agree (nothing to say) or when too few of them
+ * could be decided to claim a disagreement.
+ */
+export function runtimeGenerationDivergenceNote(
+  gens: ReadonlyArray<RuntimeGeneration>,
+  relPath: string | null,
+): string | null {
+  const decided = gens.filter((g) => g.runningYourCode !== null);
+  if (decided.length < 2) return null;
+  const current = decided.filter((g) => g.runningYourCode === true);
+  const behind = decided.filter((g) => g.runningYourCode === false);
+  if (current.length === 0 || behind.length === 0) return null;
+  const where = relPath ? ` for ${relPath}` : '';
+  return (
+    `RUNTIME GENERATIONS DIVERGE${where}: ` +
+    `${current.map((g) => `${g.unit} (${g.label})`).join(' + ')} ALREADY run this code as it stands — each started after it last changed. ` +
+    `${behind.map((g) => `${g.unit} (${g.label}, ~${g.behindMin}m behind)`).join(' + ')} do NOT. ` +
+    `If you only need to OBSERVE this code running — measure it, reproduce against it, confirm a routine's behaviour changed — it is ALREADY LIVE on the hosts listed first and you are NOT blocked on a deploy. ` +
+    `A deploy is required only to activate it on the release checkout. ` +
+    `Do not read an unmoved deploy sha as "my change is not running anywhere".`
+  );
 }
 
 /**
@@ -3531,6 +3718,33 @@ export async function gitPipelinePosition(
   const deployInFlight =
     runtime?.host === 'operator-release' ? await (deps.readDeployInFlight ?? realReadDeployInFlight)() : null;
   const serving = evaluateServing({ runtime, process: servingProcess, codeAsOfMs, codeAsOfSource, deployInFlight });
+
+  // Every long-lived host's own generation for this path — independent of the
+  // ownership map, which cannot see the import graph (see RuntimeGeneration).
+  // Probed in parallel; each host fails soft to UNKNOWN on its own.
+  let runtimeGenerations: RuntimeGeneration[] = [];
+  if (inp.path) {
+    const probeUnit = deps.probeUnitStart ?? realProbeUnitStart;
+    const mtimeOf = deps.fileMtimeMs ?? realFileMtimeMs;
+    const workingTreeMtimeMs = await mtimeOf(path.join(root, inp.path.replace(/^\.?\//, '')));
+    const probed = await Promise.all(
+      GENERATION_HOSTS.map(async (h) => ({
+        unit: h.unit,
+        label: h.label,
+        releasePipelineApplies: h.releasePipelineApplies,
+        activationLever: h.activationLever,
+        process: await probeUnit(h.unit),
+        // A release-checkout host receives code at DEPLOY time; a staging-tree
+        // tsx host imports the file itself, so the file's own mtime is what a
+        // restart would load (committed or not).
+        codeAsOfMs: h.releasePipelineApplies ? (deploy.deployedAtMs ?? null) : workingTreeMtimeMs,
+      })),
+    );
+    runtimeGenerations = evaluateRuntimeGenerations(probed);
+    const divergence = runtimeGenerationDivergenceNote(runtimeGenerations, inp.path);
+    if (divergence) notes.push(divergence);
+  }
+
   if (serving.startedSinceCodeChange === false) {
     notes.push(
       serving.restartSupersededBy
@@ -3749,6 +3963,7 @@ export async function gitPipelinePosition(
     runtime,
     runtimes,
     serving,
+    runtimeGenerations,
     changeInCandidate,
     sweepExposure,
     notes,

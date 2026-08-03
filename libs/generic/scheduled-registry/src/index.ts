@@ -21,6 +21,11 @@
  * one in-process mechanism, not three).
  */
 
+import {
+  moduleEvaluationCount as pinnedEvaluationCount,
+  pinModuleState,
+} from '@papercusp/module-singleton';
+
 /** Why a timer exists — drives the inventory's scope/tier and whether it's centrally driven. */
 export type ManagedCategory =
   | 'lifecycle' // per-connection/stream/spawn — bespoke, cannot be central
@@ -177,45 +182,35 @@ interface RegistryState {
   registry: Map<string, InternalRecord>;
   instanceCounter: number;
   resolved: ResolvedConfig;
-  /**
-   * How many times THIS module's body has been evaluated in this realm.
-   *
-   * The pin above fixes the split — but it also HIDES it: once both module
-   * records share one state object, nothing distinguishes one record from two,
-   * so the packaging fault survives forever and the next split is discovered the
-   * same expensive way. Counting evaluations is what turns the fix into a
-   * standing recurrence guard: > 1 means the duplication is BACK, reported by
-   * the very surface it used to blind.
-   *
-   * Cannot itself split — it lives in the pinned state, not module scope.
-   */
-  moduleEvaluations: number;
 }
-
-const STATE_KEY = Symbol.for('@papercusp/scheduled-registry.state');
-
-const globalStore = globalThis as unknown as Record<symbol, RegistryState | undefined>;
-let sharedState = globalStore[STATE_KEY];
-if (!sharedState) {
-  sharedState = {
-    registry: new Map<string, InternalRecord>(),
-    instanceCounter: 0,
-    resolved: defaults(),
-    moduleEvaluations: 0,
-  };
-  globalStore[STATE_KEY] = sharedState;
-}
-
-const state: RegistryState = sharedState;
 
 /**
- * Runs on EVERY evaluation of this module body — the first sets it to 1, a
- * duplicate record takes it to 2. Deliberately placed at module scope: it is a
- * count of module RECORDS, so it must not be reachable from any function.
- *
- * `?? 0` guards a state object pinned by an older build that predates this field.
+ * The pin key. Also the id this module reports under in
+ * `listModuleDuplications()`, so a split here is visible in the REALM-WIDE
+ * duplication report rather than only through this module's own accessor.
  */
-state.moduleEvaluations = (state.moduleEvaluations ?? 0) + 1;
+const STATE_KEY = '@papercusp/scheduled-registry.state';
+
+/**
+ * Pinned + counted by `@papercusp/module-singleton` rather than hand-rolled here.
+ *
+ * This module was the FIRST subject of the split (EI-19451658870832332) and its
+ * fix was written inline, before the primitive existed. Keeping that copy would
+ * have been the more expensive kind of duplication: `listModuleDuplications()`
+ * only knows about keys pinned THROUGH the primitive, so the one module known to
+ * split in production would have been the one module missing from the central
+ * report — the same "the detector cannot see its subject" shape as the original
+ * bug (EI-19463700807328229).
+ *
+ * Calling `pinModuleState` at module scope is what makes the count a count of
+ * module RECORDS: it must run exactly once per evaluation of this body, so it
+ * must never be moved inside a function.
+ */
+const state: RegistryState = pinModuleState<RegistryState>(STATE_KEY, () => ({
+  registry: new Map<string, InternalRecord>(),
+  instanceCounter: 0,
+  resolved: defaults(),
+}));
 
 /**
  * The one shared inventory. Safe to alias into module scope because the Map IDENTITY never
@@ -392,7 +387,7 @@ export function managedCount(): number {
  * here later. `0` is impossible from a caller that imported this module.
  */
 export function moduleEvaluationCount(): number {
-  return state.moduleEvaluations;
+  return pinnedEvaluationCount(STATE_KEY);
 }
 
 /**
@@ -407,7 +402,7 @@ export function moduleEvaluationCount(): number {
  * separate health check, because a separate check is exactly what nobody ran.
  */
 export function moduleDuplicationWarning(): string | null {
-  const n = state.moduleEvaluations;
+  const n = pinnedEvaluationCount(STATE_KEY);
   if (n <= 1) return null;
   return (
     `SPLIT MODULE SINGLETON: @papercusp/scheduled-registry was evaluated ${n}x in this process. ` +

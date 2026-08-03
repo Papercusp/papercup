@@ -38,6 +38,7 @@ function row(
     retracted: false,
     superseded: false,
     expired: false,
+    evicted: false,
     ...over,
   } as Parameters<typeof selectCitedFacts>[1][number];
 }
@@ -195,6 +196,29 @@ describe('citedFactsWarning — warn-only, and never a false alarm', () => {
     expect(w?.note).toContain('plans:add-decision');
     // The specific escalation this item was filed to prevent.
     expect(w?.note).toMatch(/contested directive/i);
+  });
+
+  it('does NOT report a cap-eviction as a deliberate withdrawal', () => {
+    // Eviction sets retracted_at too (store.ts), so without the `evicted` flag
+    // these two are indistinguishable and the note would assert an intent nobody
+    // had. Both rows are `retracted` by condition; only one was a judgement.
+    const [withdrawn] = selectCitedFacts(['a-b-c'], [row({ retracted: true })]);
+    const [dropped] = selectCitedFacts(['a-b-c'], [row({ retracted: true, evicted: true })]);
+    expect(withdrawn.condition).toBe('retracted');
+    expect(withdrawn.evicted).toBeUndefined();
+    expect(dropped.condition).toBe('retracted');
+    expect(dropped.evicted).toBe(true);
+
+    expect(citedFactsWarning([withdrawn])?.note).toMatch(/deliberately withdrawn/);
+    expect(citedFactsWarning([withdrawn])?.note).not.toMatch(/CAP-EVICTED/);
+    expect(citedFactsWarning([dropped])?.note).toMatch(/CAP-EVICTED/);
+    expect(citedFactsWarning([dropped])?.note).toMatch(/NOT withdrawn/);
+    expect(citedFactsWarning([dropped])?.note).not.toMatch(/deliberately withdrawn/);
+  });
+
+  it('names supersession as "go read the newer one", not as staleness', () => {
+    const cited = selectCitedFacts(['a-b-c'], [row({ superseded: true })]);
+    expect(citedFactsWarning(cited)?.note).toMatch(/NEWER version of this key exists/);
   });
 
   it('propagates the extractor’s truncation flag', () => {

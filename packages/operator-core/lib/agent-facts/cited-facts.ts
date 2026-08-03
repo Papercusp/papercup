@@ -148,6 +148,17 @@ export interface CitedFact {
   excerpt?: string;
   /** The key resolved in more than one scope; `ref` names the one chosen. */
   otherScopes?: number;
+  /**
+   * The row was CAP-EVICTED (50-per-scope), not withdrawn by its author.
+   *
+   * Load-bearing, because eviction sets `retracted_at` alongside `evicted_at`
+   * (store.ts) — so without this flag an evicted fact is indistinguishable from a
+   * deliberate retraction, and the lens would report an INTENT that nobody had.
+   * Telling a reader an authority "was withdrawn" when a cap quietly dropped it
+   * is the same species of confident-but-wrong claim this whole module exists to
+   * stop, so the two are kept apart.
+   */
+  evicted?: true;
 }
 
 interface CitedRow {
@@ -159,6 +170,7 @@ interface CitedRow {
   retracted: boolean;
   superseded: boolean;
   expired: boolean;
+  evicted: boolean;
 }
 
 function excerptOf(body: string): string {
@@ -206,6 +218,7 @@ export function selectCitedFacts(keys: readonly string[], rows: readonly CitedRo
       versionId: Number(chosen.id),
       excerpt: excerptOf(chosen.body),
       ...(scopes.size > 1 ? { otherScopes: scopes.size - 1 } : {}),
+      ...(chosen.evicted ? { evicted: true as const } : {}),
     };
   });
 }
@@ -233,7 +246,8 @@ export async function resolveCitedFacts(
       SELECT id, scope, scope_ref, key, body,
              (retracted_at IS NOT NULL) AS retracted,
              (superseded_at IS NOT NULL) AS superseded,
-             (expires_at <= now()) AS expired
+             (expires_at <= now()) AS expired,
+             (evicted_at IS NOT NULL) AS evicted
         FROM harness_shared.agent_facts
        WHERE workspace_id = ${ws}
          AND source_hive IS NULL
@@ -288,8 +302,19 @@ export function citedFactsWarning(
     `This item's prose cites ${cited.length} fact key(s) as its authority; ${dangling + decayed} no longer resolve live.`,
   ];
   if (decayed > 0) {
+    // The three decay paths mean DIFFERENT things for trust, and flattening them
+    // into one "stale" would hand the reader a false intent — see CitedFact.evicted.
+    const withdrawn = cited.filter((c) => c.condition === 'retracted' && !c.evicted).length;
+    const evicted = cited.filter((c) => c.evicted).length;
+    const lapsed = cited.filter((c) => c.condition === 'lapsed').length;
+    const superseded = cited.filter((c) => c.condition === 'superseded').length;
+    const how: string[] = [];
+    if (withdrawn > 0) how.push(`${withdrawn} RETRACTED (deliberately withdrawn — the body is quoted, but its author judged it wrong; do not act on it without re-establishing the claim)`);
+    if (evicted > 0) how.push(`${evicted} CAP-EVICTED (dropped by the 50-per-scope cap, NOT withdrawn — no one judged it wrong, it simply aged out of the scope)`);
+    if (lapsed > 0) how.push(`${lapsed} EXPIRED (TTL lapsed; nobody disputed it)`);
+    if (superseded > 0) how.push(`${superseded} SUPERSEDED (a NEWER version of this key exists — read that one)`);
     parts.push(
-      `${decayed} DECAYED (retracted/expired/superseded) — filtered out of every fact fold, so they read as missing, but the body survives and is quoted in \`excerpt\` here.`,
+      `${decayed} DECAYED — filtered out of every fact fold, so they read as missing everywhere else, but the body SURVIVES and is quoted in \`excerpt\` here: ${how.join('; ')}.`,
     );
   }
   if (dangling > 0) {

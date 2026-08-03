@@ -23,6 +23,8 @@ import {
   classifyRuntimeOwners,
   computeStages,
   evaluateServing,
+  evaluateRuntimeGenerations,
+  runtimeGenerationDivergenceNote,
   evaluateChangeInCandidate,
   evaluateReleaseContentDrift,
   evaluateSweepExposure,
@@ -4383,5 +4385,113 @@ describe('gitPipelinePosition wires checkpointRunInFlight into gate + notes (EI-
     const cacheOnly = gateDetail(await run(null));
     expect(cacheOnly).toMatch(/according to the run-liveness CACHE/);
     expect(cacheOnly).not.toMatch(/measured/);
+  });
+});
+
+/**
+ * WI-9974 — the runtime-generation leg.
+ *
+ * Why this exists at all: the same root cause ("deployed" is not "loaded by the
+ * process that runs it") has been independently rediscovered and written down at
+ * least EIGHT times on this fleet, and EI-18642482762875484 concluded that
+ * documentation is SATURATED — only a detector can close the loop. These tests
+ * pin BOTH directions, because only one of them was ever documented and the
+ * undocumented one (a fix already live on a staging-tree host while :3070 lags)
+ * is what cost WI-9137 several wakes of waiting on a deploy it did not need.
+ */
+describe('runtime generations (WI-9974) — every host, both directions', () => {
+  type Probe = Parameters<typeof evaluateRuntimeGenerations>[0][number];
+  const host = (over: Partial<Probe> = {}): Probe => ({
+    unit: 'papercup-bg-host.service',
+    label: 'bg-host',
+    releasePipelineApplies: false,
+    activationLever: 'dev:restart { target: "bg-host" }',
+    process: { pid: 1, startedAtMs: 2_000 },
+    codeAsOfMs: 1_000,
+    ...over,
+  });
+
+  it('reports a host that started AFTER the code changed as running it', () => {
+    const [g] = evaluateRuntimeGenerations([host({ process: { pid: 7, startedAtMs: 5_000 }, codeAsOfMs: 1_000 })]);
+    expect(g.runningYourCode).toBe(true);
+    expect(g.behindMin).toBeNull();
+  });
+
+  it('reports a host that started BEFORE the code changed as behind, with the lag', () => {
+    const [g] = evaluateRuntimeGenerations([host({ process: { pid: 7, startedAtMs: 0 }, codeAsOfMs: 600_000 })]);
+    expect(g.runningYourCode).toBe(false);
+    expect(g.behindMin).toBe(10);
+  });
+
+  // The contract evaluateServing already states: never fabricate a boolean.
+  it('yields NULL with a reason when the process start is unreadable — not false', () => {
+    const [g] = evaluateRuntimeGenerations([host({ process: null })]);
+    expect(g.runningYourCode).toBeNull();
+    expect(g.unknownReason?.code).toBe('insufficient-data');
+  });
+
+  it('yields NULL with a reason when the code time is unreadable — not true', () => {
+    const [g] = evaluateRuntimeGenerations([host({ codeAsOfMs: null })]);
+    expect(g.runningYourCode).toBeNull();
+    expect(g.unknownReason?.code).toBe('insufficient-data');
+  });
+
+  it('labels the clock per host: deploy for the release checkout, file-mtime for a staging-tree host', () => {
+    const [release, staging] = evaluateRuntimeGenerations([
+      host({ unit: 'papercup-dev-api.service', releasePipelineApplies: true }),
+      host({ unit: 'papercup-staging-api.service', releasePipelineApplies: false }),
+    ]);
+    expect(release.codeAsOfSource).toBe('deploy');
+    expect(staging.codeAsOfSource).toBe('file-mtime');
+  });
+
+  describe('the divergence note — the sentence this leg exists to emit', () => {
+    const diverging = () =>
+      evaluateRuntimeGenerations([
+        host({
+          unit: 'papercup-dev-api.service',
+          label: ':3070 release operator',
+          releasePipelineApplies: true,
+          process: { pid: 1, startedAtMs: 0 },
+          codeAsOfMs: 600_000,
+        }),
+        host({ unit: 'papercup-bg-host.service', process: { pid: 2, startedAtMs: 900_000 }, codeAsOfMs: 600_000 }),
+      ]);
+
+    it('fires when some hosts run the code and others do not, naming both sides', () => {
+      const note = runtimeGenerationDivergenceNote(diverging(), 'packages/operator-core/lib/memory/knowledge-read.ts');
+      expect(note).toContain('RUNTIME GENERATIONS DIVERGE');
+      expect(note).toContain('papercup-bg-host.service');
+      expect(note).toContain('papercup-dev-api.service');
+      // The load-bearing correction: not blocked on a deploy merely to OBSERVE it.
+      expect(note).toContain('ALREADY LIVE');
+      expect(note).toMatch(/NOT blocked on a deploy/i);
+    });
+
+    // Falsifiability controls. A note that fires on everything says nothing, so
+    // pin the cases where it must STAY SILENT.
+    it('stays silent when every host agrees it is current', () => {
+      const gens = evaluateRuntimeGenerations([
+        host({ unit: 'a.service', process: { pid: 1, startedAtMs: 9_000 }, codeAsOfMs: 1_000 }),
+        host({ unit: 'b.service', process: { pid: 2, startedAtMs: 9_000 }, codeAsOfMs: 1_000 }),
+      ]);
+      expect(runtimeGenerationDivergenceNote(gens, 'x.ts')).toBeNull();
+    });
+
+    it('stays silent when every host agrees it is behind (a real all-stale case)', () => {
+      const gens = evaluateRuntimeGenerations([
+        host({ unit: 'a.service', process: { pid: 1, startedAtMs: 0 }, codeAsOfMs: 600_000 }),
+        host({ unit: 'b.service', process: { pid: 2, startedAtMs: 0 }, codeAsOfMs: 600_000 }),
+      ]);
+      expect(runtimeGenerationDivergenceNote(gens, 'x.ts')).toBeNull();
+    });
+
+    it('stays silent rather than inferring divergence from a single decidable host', () => {
+      const gens = evaluateRuntimeGenerations([
+        host({ unit: 'a.service', process: { pid: 1, startedAtMs: 9_000 }, codeAsOfMs: 1_000 }),
+        host({ unit: 'b.service', process: null }),
+      ]);
+      expect(runtimeGenerationDivergenceNote(gens, 'x.ts')).toBeNull();
+    });
   });
 });

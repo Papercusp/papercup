@@ -250,4 +250,22 @@ describe("citedFacts survives the shaper (EI-19465127338264010)", () => {
     ) as Envelope;
     expect(out.results[0].citedFacts).toBeUndefined();
   });
+
+  it("CONTROL: an unlisted field really is dropped, so the test above is not vacuous", () => {
+    // Without this, `citedFacts` surviving could look like a property of the
+    // shaper rather than of the whitelist entry that was added for it — and the
+    // test would still pass if the shaper stopped projecting rows at all.
+    // A sibling field of identical shape, deliberately NOT whitelisted, must
+    // vanish; the same call keeps citedFacts.
+    const out = shapeWorkItemsGet(
+      {
+        ok: true,
+        results: [row({ citedFacts, notAWhitelistedField: { dangling: 1, note: "should vanish" } })],
+        counts: { ok: 1, failed: 0 },
+      },
+      "trimmed",
+    ) as Envelope;
+    expect(out.results[0].notAWhitelistedField).toBeUndefined();
+    expect(out.results[0].citedFacts).toBeDefined();
+  });
 });

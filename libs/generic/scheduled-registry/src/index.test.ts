@@ -1,5 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  listModuleDuplications,
+  resetPinnedModuleStateForTest,
+} from '@papercusp/module-singleton';
+import {
   configureScheduledRegistry,
   getManaged,
   listManaged,
@@ -395,12 +399,30 @@ describe('dual module instance shares ONE inventory (EI-19451658870832332)', () 
   // now reports its own duplication, so a re-split is caught by the inventory
   // instead of costing another multi-session investigation.
 
+  /**
+   * Start these assertions from a realm with NO pinned state.
+   *
+   * Earlier tests in this file re-evaluate the module on purpose, and the
+   * evaluation count is cumulative across the whole suite by design — so each
+   * count assertion below has to establish its own baseline or it measures the
+   * suite's history instead of its own case.
+   *
+   * `resetPinnedModuleStateForTest` is the primitive's own test seam. Reaching
+   * past it to `delete globalThis[Symbol.for(...)]` (as this file did while the
+   * pin was hand-rolled here) would silently stop resetting anything the day the
+   * key moved — which is exactly what happened when this module adopted
+   * `@papercusp/module-singleton`: the deletes kept succeeding, cleared nothing,
+   * and the counts read cumulative.
+   */
+  const freshRealm = () => {
+    vi.resetModules();
+    resetPinnedModuleStateForTest();
+  };
+
   it('reports exactly one module evaluation, and no warning, when healthy', async () => {
     // Fresh realm for this assertion: earlier tests in this file deliberately
     // re-evaluate the module, so the count is cumulative across the suite.
-    vi.resetModules();
-    const g = globalThis as unknown as Record<symbol, unknown>;
-    delete g[Symbol.for('@papercusp/scheduled-registry.state')];
+    freshRealm();
 
     const fresh = await import('./index');
 
@@ -409,9 +431,7 @@ describe('dual module instance shares ONE inventory (EI-19451658870832332)', () 
   });
 
   it('counts a SECOND module record and warns — the recurrence signal', async () => {
-    vi.resetModules();
-    const g = globalThis as unknown as Record<symbol, unknown>;
-    delete g[Symbol.for('@papercusp/scheduled-registry.state')];
+    freshRealm();
 
     const first = await import('./index');
     expect(first.moduleEvaluationCount()).toBe(1);
@@ -433,9 +453,7 @@ describe('dual module instance shares ONE inventory (EI-19451658870832332)', () 
   });
 
   it('keeps the counter in the pinned state, so it cannot itself split', async () => {
-    vi.resetModules();
-    const g = globalThis as unknown as Record<symbol, unknown>;
-    delete g[Symbol.for('@papercusp/scheduled-registry.state')];
+    freshRealm();
 
     await import('./index');
     vi.resetModules();
@@ -445,5 +463,34 @@ describe('dual module instance shares ONE inventory (EI-19451658870832332)', () 
 
     // A module-scoped counter would read 1 here (fresh record); the pinned one reads 3.
     expect(third.moduleEvaluationCount()).toBe(3);
+  });
+
+  it('surfaces a split in the REALM-WIDE duplication report, not only its own accessor', async () => {
+    // The point of pinning through @papercusp/module-singleton rather than
+    // hand-rolling it here (EI-19463700807328229).
+    //
+    // While the pin was local, `moduleEvaluationCount()` on THIS module was the
+    // only way to learn it had split: `listModuleDuplications()` — the central
+    // report a host health check reads — knew nothing about it. That is the
+    // original bug's own shape recreated one level up: the surface responsible
+    // for reporting duplication would have been blind to the single module known
+    // to duplicate in production, and would have answered a confident, empty
+    // "no duplications".
+    freshRealm();
+    await import('./index');
+
+    // Baseline: one evaluation is not a duplication, so the report stays empty.
+    expect(listModuleDuplications().map((d) => d.key)).not.toContain(
+      '@papercusp/scheduled-registry.state',
+    );
+
+    vi.resetModules();
+    await import('./index');
+
+    const reported = listModuleDuplications().find(
+      (d) => d.key === '@papercusp/scheduled-registry.state',
+    );
+    expect(reported).toBeDefined();
+    expect(reported?.evaluations).toBe(2);
   });
 });
