@@ -49,6 +49,7 @@ import { runBulk, bulkContent, type BulkItemResult } from '../../_bulk';
 import { cellTranscriptionHint } from '../../../cell-transcription-detector';
 import {
   messageBodyArg,
+  BODY_MUST_BE_ARRAY_MESSAGE,
   blockingArg,
   whyArg,
   assertEnvelopeSectionSplit,
@@ -1370,6 +1371,33 @@ export default defineTool({
     const toPresent = Array.isArray(a?.to) && a.to.length > 0;
     const summaryPresent = Boolean(a?.summary);
     const hasSingle = toPresent && summaryPresent;
+    // EI-19407756530556168: `messageBodyArg`'s own superRefine (message-fields.ts) refuses a
+    // plain-string `body` — but it lives on the WRAPPED object schema, one pipe stage AFTER
+    // this preprocess. zod v4's `z.preprocess` is implemented as a two-stage PIPE
+    // (transform -> object schema) that ABORTS the second stage entirely the instant this
+    // transform calls `ctx.addIssue` (handlePipeResult: "prevent further checks") — so
+    // whenever THIS function ALSO reports some other issue below (missing `expects`, missing
+    // `summary`, a structured-body/forYouBecause gate), messageBodyArg's own check never runs
+    // and its issue is silently dropped, not merely deprioritized. A caller who submitted a
+    // malformed body alongside any other violation would only discover the shape problem on a
+    // LATER round-trip, after fixing the other one first — the exact one-issue-at-a-time
+    // sequencing this whole preprocess exists to avoid for `to`/`summary`/`expects`. Duplicate
+    // the same check (same message — see BODY_MUST_BE_ARRAY_MESSAGE) here, unconditionally, so
+    // it always survives alongside whatever else this preprocess reports. When nothing else
+    // fires, this function adds no issues and the pipe proceeds to messageBodyArg's own check
+    // as before — so the two never both fire for the same body.
+    const flagMalformedBody = (body: unknown, path: (string | number)[]) => {
+      if (typeof body === 'string') {
+        pctx.addIssue({ code: 'custom', path: [...path, 'body'], message: BODY_MUST_BE_ARRAY_MESSAGE });
+      }
+    };
+    if (hasItems) {
+      (a?.items ?? []).forEach((it, i) => {
+        if (it && typeof it === 'object') flagMalformedBody((it as { body?: unknown }).body, ['items', i]);
+      });
+    } else {
+      flagMalformedBody(a?.body, []);
+    }
     if (!hasItems && !hasSingle) {
       // WI-6522 — this used to emit ONE generic bulk-vs-single menu for every
       // distinct single-send mistake: 334 refusals across 135 DISTINCT senders in

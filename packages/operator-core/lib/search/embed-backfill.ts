@@ -46,7 +46,12 @@ import { buildSidecarAwareEmbedder } from '../memory/embed-sidecar-wiring';
 // The prose column width contract — ONE source, not a restated `384`
 // (D-005 §5). `fitsProseColumns` is the dims guard; `modeTargetDims` is what a
 // mode declares it emits. A test asserts the two agree.
-import { PROSE_VECTOR_DIMS, fitsProseColumns, modeTargetDims } from './prose-vector-dims';
+import {
+  PROSE_VECTOR_DIMS,
+  computeProseColumnWidthSkew,
+  fitsProseColumns,
+  modeTargetDims,
+} from './prose-vector-dims';
 
 const OPENAI_EMBEDDER_MODEL = 'text-embedding-3-small';
 // F-E5 (app-wide-load-traps § E): hardware-adaptive embed batch — a big host
@@ -633,6 +638,58 @@ export async function runBackfillSweep(
       return __sweepState.lastResult;
     }
 
+    // WI-7327: the LIVE-SCHEMA half of the width contract, run ONCE per sweep.
+    //
+    // `fitsProseColumns(resolved.dims)` above compares the EMBEDDER against the
+    // CONSTANT, so it is structurally blind to the one skew that matters:
+    // constant moved, migration didn't. Both sides then read the SAME new width,
+    // the guard passes, and every UPDATE is rejected by pgvector and swallowed by
+    // the per-row catch — which is precisely how 9.5 hours of zero-yield sweeps
+    // produced no log line at all. A guard that agrees with itself is the failure
+    // this file's own docblock warned about; one catalog query per sweep closes
+    // it, and per-sweep is cheap enough to be unconditional.
+    //
+    // Judged PER TARGET, not globally: a partially-applied width migration leaves
+    // some columns correct, and halting those too would turn a partial outage into
+    // a total one.
+    const widthRows = await sql.unsafe<Array<{ tbl: string; col: string; dims: number }>>(
+      `SELECT n.nspname || '.' || c.relname AS tbl, a.attname AS col, a.atttypmod AS dims
+         FROM pg_attribute a
+         JOIN pg_class c ON c.oid = a.attrelid
+         JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE c.relkind = 'r'
+          AND a.attnum > 0
+          AND NOT a.attisdropped
+          AND format_type(a.atttypid, NULL) = 'vector'`,
+    );
+    const liveWidth = new Map<string, number>(
+      widthRows.map((r) => [`${r.tbl}|${r.col}`, Number(r.dims)]),
+    );
+    const widthSkew = computeProseColumnWidthSkew(
+      TARGETS.flatMap((t) => {
+        const dims = liveWidth.get(`${t.table}|${t.embedCol}`);
+        // Absent => unjudgeable (the per-target existence probe below reports it).
+        return dims === undefined ? [] : [{ table: t.table, column: t.embedCol, dims }];
+      }),
+    );
+    const skewedTables = new Set(widthSkew.map((s) => s.table));
+    if (widthSkew.length) {
+      console.error(
+        `[embed-backfill] SCHEMA WIDTH SKEW — refusing ${widthSkew.length} target(s): ` +
+          widthSkew
+            .map(
+              (s) =>
+                `${s.table}.${s.column} is vector(${s.liveDims}) but this code emits ${s.declaredDims}`,
+            )
+            .join('; ') +
+          `. Every write to those columns would be rejected by pgvector and counted as a per-row ` +
+          `error, yielding a sweep that reports zero work and logs nothing — the silent total-failure ` +
+          `shape of WI-7327. Cause is almost always a width migration that has not run (or ran ` +
+          `partially) against THIS database; db:check_drift lists unapplied ones. Fix the schema — ` +
+          `do NOT lower PROSE_VECTOR_DIMS to match, that re-embeds the corpus into a weaker space.`,
+      );
+    }
+
     // WI-2905 fairness: ROTATE which target leads each sweep. Combined with the
     // per-target row cap, no single backlogged table can monopolize the shared
     // daily embed budget: if the budget exhausts mid-sweep, the table that paid
@@ -645,6 +702,19 @@ export async function runBackfillSweep(
     const byTable = new Map<string, BackfillStats>();
     for (const target of rotated) {
       try {
+        // WI-7327: this target's column is the wrong width. Embedding into it
+        // cannot succeed, so spending the budget to find that out row-by-row is
+        // pure waste — the skew was already reported LOUDLY once above.
+        if (skewedTables.has(target.table)) {
+          byTable.set(target.table, {
+            table: target.table,
+            scanned: 0,
+            embedded: 0,
+            errors: 0,
+            durationMs: 0,
+          });
+          continue;
+        }
         // Column existence probe; skip if migration 061 hasn't run. The same probe
         // reports whether migration 530's `<embedCol>_mode` discriminator exists —
         // without it the sweep must fall back to the legacy NULL-only predicate

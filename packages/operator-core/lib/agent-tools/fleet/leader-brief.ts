@@ -1002,6 +1002,10 @@ export function projectMember(
   /** EI-18703234178947959: the fleet's own control_state is winding-down (owner-paused),
    *  so an idle member is compliant and carries no bench suggestion. Absent = not paused. */
   fleetPaused?: boolean | null,
+  /** EI-19313376980892266: this member's authoritative concurrency verdict from the shared
+   *  oracle (work_items.taken_by), NOT the presence layer's `load`. Absent = not read on
+   *  this call, which suppresses nothing. */
+  concurrency?: { blocked: boolean; activeClaims: number; heldIds: string[] } | null,
 ): LeaderBriefMember {
   const lastMs = a.lastToolCallAt ? Date.parse(a.lastToolCallAt) : NaN;
   const prodMs = a.productiveToolCallAt ? Date.parse(a.productiveToolCallAt) : NaN;
@@ -1039,7 +1043,13 @@ export function projectMember(
       return parked && parked.length > 0 ? { parkedOn: parked } : {};
     })(),
     ...(() => {
-      const suggestion = computeBenchSuggestion(a, claimableCount, laneGating, fleetPaused);
+      const suggestion = computeBenchSuggestion(
+        a,
+        claimableCount,
+        laneGating,
+        fleetPaused,
+        concurrency,
+      );
       return suggestion ? { benchSuggestion: suggestion } : {};
     })(),
     ...(computeDormantAlert(a, fleetPaused) ? { dormant: true } : {}),
@@ -1230,9 +1240,47 @@ export default defineTool({
         return { paused: false, reason: null };
       }
     })();
+    // EI-19313376980892266: the AUTHORITATIVE per-member concurrency verdict — read from
+    // `work_items.taken_by` in ONE batched query and decided by the same
+    // `evaluateClaimConcurrency` the scheduler refuses on. Without it the bench suggestion
+    // branches on the presence layer's `load`, which omits parked-but-held rows and so
+    // reports AT-CAPACITY members as `idle-with-claimable`.
+    //
+    // The fleet's OWN spec limit is resolved first, deliberately: defaulting to 1 when a
+    // leader authored concurrency > 1 would mark a legitimately-free member blocked and
+    // SUPPRESS a real starvation signal — a false negative on the exact alert this brief
+    // exists to raise. Fails soft to an EMPTY map (which suppresses nothing anywhere),
+    // never to a fabricated verdict.
+    const concurrencyByOwner = await (async (): Promise<
+      Map<string, { blocked: boolean; activeClaims: number; heldIds: string[] }>
+    > => {
+      try {
+        const { readClaimConcurrencyBatch, getClaimSpecRecord, fleetSpecBeeKey } = await import(
+          '../../scheduler/claim-spec-store'
+        );
+        const rec = await getClaimSpecRecord({
+          cupId: fleetSpecBeeKey(fleet),
+          workspaceId,
+        }).catch(() => null);
+        return await readClaimConcurrencyBatch({
+          cupIds: grouped.map((a) => a.agentId),
+          workspaceId: actorWorkspace,
+          maxConcurrentClaims: rec?.spec.limits?.maxConcurrentClaims,
+        });
+      } catch {
+        return new Map();
+      }
+    })();
     const nowMs = Date.now();
     const members = grouped.map((a) =>
-      projectMember(a, nowMs, fleetClaimableCount, fleetLaneHealth, fleetPause.paused),
+      projectMember(
+        a,
+        nowMs,
+        fleetClaimableCount,
+        fleetLaneHealth,
+        fleetPause.paused,
+        concurrencyByOwner.get(a.agentId) ?? null,
+      ),
     );
     const self = resolveSelfRef(ctx);
     const markedMembers = markSelfRows(members, self, 'agentId');

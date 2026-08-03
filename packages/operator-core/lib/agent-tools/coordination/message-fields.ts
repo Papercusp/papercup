@@ -619,27 +619,38 @@ export const messageSectionSchema = z
  * which tells an agent what it did wrong but not what to do instead. The refusal is the
  * tier-2 GATE this behaviour never had; per D-016 the prompt was never going to be one.
  */
+// EI-19407756530556168: hoisted out of the superRefine below so send.ts's cross-field
+// preprocess can raise the IDENTICAL message. zod v4's `z.preprocess` is a two-stage
+// PIPE (transform -> object schema) that ABORTS the second stage entirely the moment the
+// first stage (the preprocess transform) calls `ctx.addIssue` — see handlePipeResult in
+// zod/v4/core/schemas.js ("prevent further checks"). So whenever send.ts's preprocess
+// ALSO needs to report a cross-field issue (missing `expects`, missing `summary`, the
+// structured-body gate, forYouBecause), this field's own superRefine below NEVER RUNS —
+// its issue is silently dropped, not merely deprioritized. A caller who submits a
+// malformed (string) body alongside any OTHER violation only ever discovered the shape
+// problem on a LATER round-trip, after fixing the other one first. send.ts duplicates
+// this exact check inside its preprocess (same message, so no visible difference) so the
+// two issues always surface together.
+export const BODY_MUST_BE_ARRAY_MESSAGE =
+  '`body` must be an ARRAY of sections — a plain string is no longer accepted. Wrap what you ' +
+  'wrote: body: [{ text: "<your text>" }]. That minimum is always valid, and it puts the five ' +
+  'authored fields one keystroke away, which is the point: `premises` (the claims this part ' +
+  'rests on, so a reader can re-check your footing), `forYouBecause` (why THIS recipient is ' +
+  'getting it), `youMayNotKnow` (something you hold that they likely lack), `couldNotDetermine` ' +
+  '(what you could NOT establish — silence there reads as confidence you do not have), ' +
+  '`clarify` (a question PAIRED with the assumption you are proceeding on meanwhile — you ' +
+  'never wait, the answer corrects you). Split ' +
+  'into SEVERAL sections when parts of your message have different dispositions, so a firm ' +
+  'finding and an unverified guess are not delivered as if they were the same thing. The ' +
+  'ENVELOPE fields (expects, blocking, why, basedOn) stay on the message and are refused on a ' +
+  'section.';
+
 export const messageBodyArg = z
   .union([z.string(), z.array(messageSectionSchema).min(1).max(20)])
   .optional()
   .superRefine((value, ctx) => {
     if (typeof value !== 'string') return;
-    ctx.addIssue({
-      code: 'custom',
-      message:
-        '`body` must be an ARRAY of sections — a plain string is no longer accepted. Wrap what you ' +
-        'wrote: body: [{ text: "<your text>" }]. That minimum is always valid, and it puts the five ' +
-        'authored fields one keystroke away, which is the point: `premises` (the claims this part ' +
-        'rests on, so a reader can re-check your footing), `forYouBecause` (why THIS recipient is ' +
-        'getting it), `youMayNotKnow` (something you hold that they likely lack), `couldNotDetermine` ' +
-        '(what you could NOT establish — silence there reads as confidence you do not have), ' +
-        '`clarify` (a question PAIRED with the assumption you are proceeding on meanwhile — you ' +
-        'never wait, the answer corrects you). Split ' +
-        'into SEVERAL sections when parts of your message have different dispositions, so a firm ' +
-        'finding and an unverified guess are not delivered as if they were the same thing. The ' +
-        'ENVELOPE fields (expects, blocking, why, basedOn) stay on the message and are refused on a ' +
-        'section.',
-    });
+    ctx.addIssue({ code: 'custom', message: BODY_MUST_BE_ARRAY_MESSAGE });
   })
   .describe(
     'The message body: an ARRAY of sections. A plain string is REFUSED — the minimum is ' +

@@ -30,6 +30,7 @@ import {
   PROSE_MEMORY_VEC_COLUMNS,
   WIDTH_MIGRATION_WIPE_SET,
   fitsProseColumns,
+  computeProseColumnWidthSkew,
   modeTargetDims,
 } from './prose-vector-dims';
 // The sweep that has to REFILL whatever a width migration wipes — asserted
@@ -106,6 +107,97 @@ describe('the prose column width contract', () => {
     expect(fitsProseColumns(384)).toBe(false); // the old untrained cut
     expect(fitsProseColumns(512)).toBe(false); // the trained dim D-005 rejected
     expect(fitsProseColumns(1024)).toBe(false); // harrier / qwen3 native
+  });
+
+  /**
+   * WI-7327. THE regression guard for the 9.5h silent outage, and the reason
+   * `computeProseColumnWidthSkew` exists at all.
+   *
+   * The outage shape: `PROSE_VECTOR_DIMS` was raised to 768 and shipped while
+   * the columns were still vector(384). The embedder then emitted 768, the
+   * constant said 768, and `fitsProseColumns` — which only ever compares those
+   * two — returned TRUE. The sweep proceeded and every single UPDATE was
+   * rejected by pgvector, swallowed by a per-row catch, producing zero rows
+   * written and zero log output for nine and a half hours.
+   *
+   * This test asserts the trap explicitly: the old guard PASSES on the outage
+   * input (that is not a bug in it, it is its scope), and the new one CATCHES
+   * it. If someone ever "simplifies" the width check back into
+   * `fitsProseColumns`, this fails.
+   */
+  it('catches the constant-moved-but-migration-did-not skew that fitsProseColumns cannot see', () => {
+    const liveColumnsStillAtOldWidth = PROSE_VECTOR_COLUMNS.map((c) => ({
+      table: c.table,
+      column: c.column,
+      dims: 384,
+    }));
+
+    // The emitter agrees with the constant, so the cheap guard sees nothing wrong.
+    expect(
+      fitsProseColumns(PROSE_VECTOR_DIMS),
+      'fitsProseColumns compares the embedder to the CONSTANT, so it passes here by construction',
+    ).toBe(true);
+
+    // The live-schema guard is the one that can see it.
+    const skew = computeProseColumnWidthSkew(liveColumnsStillAtOldWidth);
+    expect(
+      skew.length,
+      'every prose column is at the old width while the code emits the new one — ' +
+        'this is the exact WI-7327 total-failure state and it must not be silent',
+    ).toBe(PROSE_VECTOR_COLUMNS.length);
+    for (const s of skew) {
+      expect(s.liveDims).toBe(384);
+      expect(s.declaredDims).toBe(PROSE_VECTOR_DIMS);
+    }
+  });
+
+  it('reports NO skew when the live schema matches the declared width', () => {
+    const healthy = PROSE_VECTOR_COLUMNS.map((c) => ({
+      table: c.table,
+      column: c.column,
+      dims: PROSE_VECTOR_DIMS,
+    }));
+    expect(computeProseColumnWidthSkew(healthy)).toEqual([]);
+  });
+
+  it('treats an UNMEASURED column as unjudgeable, never as skew', () => {
+    // A table that does not exist yet (an older DB, or a surface added later) is
+    // simply absent from the catalog probe. Reporting absence as skew would turn
+    // "this DB predates the surface" into a false total-failure alarm.
+    expect(computeProseColumnWidthSkew([])).toEqual([]);
+    // A non-positive/garbage width is likewise unjudgeable rather than skewed:
+    // an unconstrained `vector` column reports atttypmod -1.
+    expect(
+      computeProseColumnWidthSkew([
+        { table: 'harness_shared.work_items', column: 'embedding', dims: -1 },
+      ]),
+    ).toEqual([]);
+  });
+
+  /**
+   * Units guard. For pgvector, `pg_attribute.atttypmod` holds the dimension
+   * DIRECTLY — unlike varchar, where typmod is length + 4. Verified against the
+   * live catalog 2026-08-03 (atttypmod 768 <-> `vector(768)`).
+   *
+   * This pins it because the `+4` convention is the thing a reader is most
+   * likely to "remember" and helpfully add — and doing so would make every
+   * healthy column report as skewed, i.e. refuse the entire sweep forever. That
+   * is a worse outage than the one this guard was built to catch, so it is worth
+   * a test of its own.
+   */
+  it('reads atttypmod as the dimension itself, with no varchar-style +4 offset', () => {
+    const asIfPlusFour = computeProseColumnWidthSkew([
+      {
+        table: 'harness_shared.work_items',
+        column: 'embedding',
+        dims: PROSE_VECTOR_DIMS + 4,
+      },
+    ]);
+    expect(
+      asIfPlusFour,
+      'a +4-adjusted width must register as SKEW — if this passes as healthy, ' +
+        'the classifier has absorbed a varchar-style offset that pgvector does not use',
+    ).toHaveLength(1);
   });
 
   it('lists every column the width contract covers', () => {

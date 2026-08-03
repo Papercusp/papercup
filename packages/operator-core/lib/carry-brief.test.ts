@@ -19,6 +19,7 @@ import {
   renderCarryQueryHandlesBlock,
   parseCitedRefStateTag,
   detectTerminalCitedRefs,
+  detectRetractionShapedLines,
   CARRY_BRIEF_FOCUS_MAX,
   CARRY_BRIEF_MAX_FACTS,
   CARRY_BRIEF_MAX_AWAITS,
@@ -333,6 +334,68 @@ describe('stale-note contradiction detector (EI-18726068732447732)', () => {
     expect(text).not.toContain('STALE-NOTE CONTRADICTION');
     expect(text).not.toContain('⚠ TERMINAL');
     expect(text).toContain('↪ WI-5391 [bug/open');
+  });
+});
+
+describe('retraction-shaped post-note messages (EI-19408487308624743)', () => {
+  it('detectRetractionShapedLines flags only lines that read as a correction/retraction', () => {
+    const lines = detectRetractionShapedLines([
+      '- su-707029c (2026-08-03T04:46:53Z): RETRACTION: the 727-freeze framing was wrong, gate went green at 02:18Z',
+      '- su-abc1234 (2026-08-03T04:47:00Z): heads-up, staging restarted for an unrelated reason',
+      '- su-def5678 (2026-08-03T04:48:00Z): correction — that migration already applied, disregard my prior message',
+    ]);
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toContain('RETRACTION');
+    expect(lines[1]).toContain('correction');
+  });
+
+  it('renderCarryBriefText surfaces a loud POSSIBLE RETRACTION banner ahead of the generic post-note list', async () => {
+    const brief = await buildCarryBrief(
+      'su-abc',
+      fullOpts({
+        getLoopCarryNoteWithMetaFn: async () => ({
+          note: '## Next action\nRESUME HERE: db:migrate 727, it is the single thing blocking main for the whole fleet',
+          updatedAtMs: Date.now() - 60_000,
+        }),
+        readPostNoteInboxFn: async () => ({
+          count: 2,
+          lines: [
+            '- su-707029c (…): I was wrong about 727 being the freeze — retracting that, gate is green',
+            '- su-abc1234 (…): unrelated staging restart FYI',
+          ],
+        }),
+      }),
+    );
+    const text = renderCarryBriefText(brief);
+    expect(text).toContain('POSSIBLE RETRACTION AFTER THIS NOTE');
+    expect(text).toContain('WITHDRAWN');
+    expect(text).toContain('I was wrong about 727');
+    // The loud banner must appear BEFORE the generic "N directed message(s)" list.
+    expect(text.indexOf('POSSIBLE RETRACTION')).toBeLessThan(
+      text.indexOf('directed message(s) landed AFTER'),
+    );
+  });
+
+  it('stays quiet (no banner) when post-note messages carry no retraction language', async () => {
+    const brief = await buildCarryBrief(
+      'su-abc',
+      fullOpts({
+        readPostNoteInboxFn: async () => ({
+          count: 1,
+          lines: ['- su-abc1234 (…): heads-up, unrelated staging restart'],
+        }),
+      }),
+    );
+    const text = renderCarryBriefText(brief);
+    expect(text).not.toContain('POSSIBLE RETRACTION');
+    expect(text).toContain('directed message(s) landed AFTER');
+  });
+
+  it('no post-note messages at all ⇒ neither banner renders', async () => {
+    const brief = await buildCarryBrief('su-abc', fullOpts());
+    const text = renderCarryBriefText(brief);
+    expect(text).not.toContain('POSSIBLE RETRACTION');
+    expect(text).not.toContain('landed AFTER this carry-note');
   });
 });
 

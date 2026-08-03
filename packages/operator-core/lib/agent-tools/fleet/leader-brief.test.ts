@@ -1152,3 +1152,60 @@ describe('decorateComposedParkedOn (EI-18732218464905145)', () => {
     expect(m.parkedOn).toEqual(['p2p-git:phase3-open']);
   });
 });
+
+describe('EI-19313376980892266 — the brief must not call an AT-CAPACITY member idle-with-claimable', () => {
+  // The live failure: a PARKED item retains `taken_by`, so it counts against the
+  // scheduler's maxConcurrentClaims while contributing nothing to the presence layer's
+  // `load`. `load === 0 && activeClaims >= 1` is therefore reachable, and in it the brief
+  // reported five members `idle_with_claimable` — the leader broadcast twice and woke all
+  // five (woken:1 verified) demanding work the scheduler was structurally refusing.
+  const idleShape = {
+    stalled: false,
+    verdict: 'monitoring' as const,
+    parkedOn: [],
+    doing: null,
+    load: 0,
+    queued: [],
+  };
+
+  it('suppresses idle-with-claimable when the shared oracle says the member is concurrency-blocked', () => {
+    const s = computeBenchSuggestion(idleShape, 5, null, false, {
+      blocked: true,
+      activeClaims: 1,
+      heldIds: ['WI-1'],
+    });
+    expect(s).toBeUndefined();
+  });
+
+  it('STILL flags idle-with-claimable when the member is genuinely free (the alert must not be neutered)', () => {
+    const s = computeBenchSuggestion(idleShape, 5, null, false, {
+      blocked: false,
+      activeClaims: 0,
+      heldIds: [],
+    });
+    expect(s?.kind).toBe('idle-with-claimable');
+  });
+
+  it('fails OPEN when no verdict was read — an unread oracle must not silence a real starvation signal', () => {
+    // Absent/null both read as "not read on this call", never as "not blocked".
+    expect(computeBenchSuggestion(idleShape, 5, null, false, null)?.kind).toBe('idle-with-claimable');
+    expect(computeBenchSuggestion(idleShape, 5, null, false)?.kind).toBe('idle-with-claimable');
+  });
+
+  it('does not count a suppressed member in idle_with_claimable, which is what the leader acts on', () => {
+    // summary.idle_with_claimable filters on benchSuggestion?.kind === 'idle-with-claimable',
+    // so suppression at the source is what removes it from the count the leader reads.
+    const blocked = computeBenchSuggestion(idleShape, 5, null, false, {
+      blocked: true,
+      activeClaims: 2,
+      heldIds: ['WI-1', 'WI-2'],
+    });
+    const free = computeBenchSuggestion(idleShape, 5, null, false, {
+      blocked: false,
+      activeClaims: 0,
+      heldIds: [],
+    });
+    const idleWithClaimable = [blocked, free].filter((s) => s?.kind === 'idle-with-claimable');
+    expect(idleWithClaimable).toHaveLength(1);
+  });
+});

@@ -370,6 +370,22 @@ export function detectTerminalCitedRefs(citedRefs: readonly string[]): string[] 
   return out;
 }
 
+/** Retraction-shaped language in a post-note message — "retract", "I was wrong",
+ *  "supersede", etc. A post-note message merely EXISTING is already flagged (the
+ *  generic P-003 list below); this distinguishes the subset that specifically
+ *  WITHDRAWS a prior claim, so the render can surface it loudly right next to
+ *  the note's imperative instead of leaving it to be discovered only inside a
+ *  list the reader may not fully read (EI-19408487308624743: a carry-note's own
+ *  imperative kept marching orders on a premise a peer had retracted 55s before
+ *  the note was built — the retraction was present, but only as one bullet
+ *  inside the generic "N messages landed after" list below the imperative). */
+const RETRACTION_LANGUAGE_RE =
+  /\b(retract(?:ed|ing|ion)?|correction|corrected|superse(?:de[sd]?|ded|ding)|i was wrong|no longer (?:true|valid|applies)|disregard|withdraw(?:n|al|ing)?|scratch that)\b/i;
+
+export function detectRetractionShapedLines(lines: readonly string[]): string[] {
+  return lines.filter((l) => RETRACTION_LANGUAGE_RE.test(l));
+}
+
 /** Default P-003 reader: directed non-own mail strictly after `sinceIso`, bounded.
  *  Review fold #7: filtered through the continuation gate's isPendingInterrupt —
  *  categorized system broadcasts / auto lifecycle chatter / intent declares are
@@ -898,6 +914,20 @@ export function renderCarryBriefText(
         // P-003: the note PREDATES this mail — a cold successor must reconcile
         // before executing the note's imperatives.
         if (brief.postNoteInbox && brief.postNoteInbox.count > 0) {
+          // EI-19408487308624743: surface a RETRACTION-shaped post-note message
+          // loudly, right next to the note's imperative — never let a withdrawn
+          // premise sit as just one bullet in the generic list below, where a
+          // reader following the note's own marching orders may never reach it.
+          const retractionLines = detectRetractionShapedLines(brief.postNoteInbox.lines);
+          if (retractionLines.length > 0) {
+            sections.push(
+              `⚠⚠ POSSIBLE RETRACTION AFTER THIS NOTE: ${retractionLines.length} of the message(s) below ` +
+                `read as a correction/retraction of a prior claim. The note's imperative above (including any ` +
+                `"resume"/"next action" instruction) may rest on a premise that was WITHDRAWN after the note ` +
+                `was written — reconcile against these BEFORE executing anything the note instructs:\n` +
+                retractionLines.join('\n'),
+            );
+          }
           sections.push(
             `⚠ ${brief.postNoteInbox.count} directed message(s) landed AFTER this carry-note was written — ` +
               `the note PREDATES them; read before acting on its imperatives:\n` +
