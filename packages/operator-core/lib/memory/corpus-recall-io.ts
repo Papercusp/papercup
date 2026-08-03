@@ -41,7 +41,10 @@ import {
   type CorpusHit,
   type CorpusLine,
 } from './corpus-recall';
-import { corpusTermDfLookup } from './corpus-term-df';
+// NOTE: `corpusTermDfLookup` is deliberately NOT imported here any more — see the
+// D-066 revert note at the `effectiveQuery` assignment below. The DF table and its
+// refresh routine stay live and populated; only this leg's use of DF as a pure
+// rarity SELECTOR was unwired.
 
 /** The two registered sources this leg reads. Anything else in SEARCH_SOURCES
  *  (escalations, brainstorm, decisions, coord_message, operator turns) is out
@@ -192,13 +195,31 @@ export async function recallCorpusContext(
     const { sql } = getOrgPg();
     const embedBudget = corpusEmbedBudgetMs();
     const run = (async () => {
-      // BANDED term selection (P-018 / D-064): pick the RAREST terms the corpus
-      // actually attests, instead of the two longest. `null` when no DF table
-      // has been built for this workspace yet — a real answer, not a failure:
-      // `corpusQueryText` then keeps its original length ordering, so an
-      // un-refreshed workspace behaves exactly as it did before.
-      const df = await corpusTermDfLookup(sql, input.workspaceId);
-      const effectiveQuery = df ? corpusQueryText(rawText, undefined, { df }) : queryText;
+      // ⛔ BANDED term selection (P-018 / D-064) IS UNWIRED — it was MEASURED WORSE
+      // and reverted the same day (D-066). Do not re-wire it without reading that
+      // decision; the shape of the mistake is subtle and it looked like a win.
+      //
+      // WHAT WAS SHIPPED: pick the RAREST terms the corpus actually attests
+      // (df >= 2), instead of the two longest. It raised admitted lines/query
+      // 4.28 -> 4.73 (+0.46), which is why it read as a win.
+      //
+      // WHAT THE ACCEPTANCE CASE SAID: on the WI-6512 known-item replay, run
+      // through THIS leg with both arms back-to-back against the same live
+      // corpus, answer-bearing batches went 2/7 (length) -> 0/7 (banded).
+      // More lines, and none of them the answer. The two metrics moved in
+      // OPPOSITE directions, so the line count alone could never have caught it.
+      //
+      // WHY: the band fixed UNRETRIEVABLE (df<2 hapaxes match nothing) and left
+      // IRRELEVANT untouched. Inside the attested band, "rarest" still means
+      // "most incidental" — it chose `pretty` out of pg_size_pretty, `buffers`
+      // out of EXPLAIN BUFFERS, `speaker` out of a column list, `components` out
+      // of a path. Those DO match documents, which is exactly why the line count
+      // rose; they just match the wrong ones. Rarity is a WEIGHT for documents
+      // that already matched, never a SELECTOR for the query.
+      //
+      // The DF signal, its table and its refresh routine are all kept: the
+      // redesign needs the signal, just not as a pure rarity ranker.
+      const effectiveQuery = queryText;
       const built = await buildQueryEmbedder({ acquireBudgetMs: embedBudget });
       // The cascade can run the engine TWICE on the same query text, and the
       // query vector depends only on that text — memoise so the second stage

@@ -100,22 +100,41 @@ export function enrolledModules(root = ROOT) {
 
 /**
  * Scan upwards from `anchor` for a `@ts-ignore` / `@ts-expect-error` directive,
- * skipping blank lines and the `eslint-disable-next-line
+ * skipping blank lines, comment lines, and the `eslint-disable-next-line
  * @typescript-eslint/ban-ts-comment` pragma the local convention pairs with it.
+ *
+ * ⚠ COMMENT LINES ARE TRIVIA AND DO NOT BREAK SUPPRESSION — a directive keeps
+ * suppressing across ANY number of intervening comment lines. This is tsc's real
+ * behaviour (it walks back over blank/comment-only lines looking for a preceding
+ * comment directive), not an approximation of it.
+ *
+ * This function previously scanned with a budget of 3 non-blank lines and counted
+ * comment lines AGAINST that budget, so an import whose directive carried more
+ * than three lines of explanation was reported as unsuppressed — a pure false
+ * positive on code tsc compiles clean. It red-pinned the fleet gate on
+ * `no-module-scope-flag-subscribe-guard.test.ts` (6 explanatory comment lines
+ * between the directive and the import) while `tsc` reported no TS7016 for it at
+ * all. Measured with an isolated tsc run over that exact shape plus a
+ * no-directive control: control → TS7016, offender shape → clean.
+ *
+ * The "don't borrow a directive from an unrelated statement" property is enforced
+ * by the break on the first line of real CODE below — never by the line budget —
+ * so removing the budget does not weaken it.
  *
  * @param {string[]} lines
  * @param {number} anchor 0-based index of the line the directive must precede
  * @returns {boolean}
  */
 function directiveAbove(lines, anchor) {
-  let checked = 0;
-  for (let i = anchor - 1; i >= 0 && checked < 3; i -= 1) {
+  for (let i = anchor - 1; i >= 0; i -= 1) {
     const text = (lines[i] ?? '').trim();
     if (text === '') continue;
     if (/@ts-(?:ignore|expect-error)/.test(text)) return true;
     if (text.startsWith('// eslint-disable')) continue;
-    checked += 1;
-    if (!text.startsWith('//') && !text.startsWith('*') && !text.startsWith('/*')) break;
+    // Comment-only line: trivia to tsc, so keep scanning without consuming budget.
+    if (text.startsWith('//') || text.startsWith('*') || text.startsWith('/*')) continue;
+    // First line of real code — any directive above THIS one belongs to it, not to us.
+    break;
   }
   return false;
 }
@@ -124,9 +143,11 @@ function directiveAbove(lines, anchor) {
  * True when the import carrying the specifier on `lineIdx` is type-suppressed.
  *
  * There is exactly ONE valid anchor: tsc reports TS7016 at the line carrying the
- * module specifier, and a `@ts-ignore`/`@ts-expect-error` suppresses only the
- * line immediately following it — so the directive must sit immediately above
- * `lineIdx` itself. For a single-line `import { x } from './y.mjs'`, `lineIdx`
+ * module specifier, and a `@ts-ignore`/`@ts-expect-error` suppresses the next
+ * line of real CODE (blank and comment-only lines in between are trivia and are
+ * skipped — see `directiveAbove`) — so the directive must sit above `lineIdx`
+ * with nothing but comments/blanks between them. For a single-line
+ * `import { x } from './y.mjs'`, `lineIdx`
  * IS the statement's own line, so this is also "directive above the statement".
  * For a MULTI-LINE `import {\n  x,\n} from './y.mjs'`, `lineIdx` is the `from`
  * line, so the directive must sit immediately above THAT — i.e. inside the

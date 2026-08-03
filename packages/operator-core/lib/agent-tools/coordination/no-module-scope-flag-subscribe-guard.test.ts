@@ -12,14 +12,21 @@
  * fired twice (log.ts — WI-6449 then WI-6588) and was root-fixed.
  */
 import { describe, it, expect } from 'vitest';
+// ⚠ NOTHING MAY SIT BETWEEN THE `@ts-ignore` BELOW AND THE `import` — not even a comment.
+// `@ts-ignore` suppresses the NEXT LINE ONLY, and the TS7016 "no declaration file" error is
+// reported at the MODULE SPECIFIER. There are two ways to move the specifier out from under the
+// directive, and BOTH have now been measured in this exact file:
+//   1. wrapping the import into a multi-line named-import list (2026-08-03, WI-8887);
+//   2. inserting any line between the directive and the import — including an explanation of
+//      rule 1. That is how this file red-pinned the fleet gate: the note lived here, six lines
+//      of it, so `@ts-ignore` applied to a comment and the import was unguarded
+//      (2026-08-03, EI-19457275636306147).
+// Hence: explanation ABOVE, directive pair welded to the import, import on ONE line. This matches
+// no-bespoke-state-read-guard.test.ts, plane-adoption-probe.test.ts and no-bespoke-state-read-live.ts,
+// which carry longer imports the same way. If it ever grows past the print width, move the
+// directive rather than reflowing the import.
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore — pure JS guard script, no .d.ts; imported for its predicate only.
-// ⚠ Keep this import on ONE line. `@ts-ignore` suppresses the next LINE only, and the TS7016
-// "no declaration file" error is reported at the MODULE SPECIFIER — so wrapping this into a
-// multi-line named-import list moves the specifier out from under the directive and the file
-// regresses by exactly one type error (measured 2026-08-03, WI-8887). Prettier leaves it alone at
-// this width; if it ever grows past the print width, move the directive rather than reflowing.
-// prettier-ignore
 import { usesModuleScopeFlagSubscribe, checkUnpopulatedDeclaration } from '../../../../../scripts/check-no-module-scope-flag-subscribe.mjs';
 
 describe('no-module-scope-flag-subscribe guard predicate (WI-6650)', () => {

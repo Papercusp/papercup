@@ -78,6 +78,11 @@ describe('candidateItemId', () => {
 
 describe('renderCandidateLearningFile', () => {
   it('round-trips through the real pack-format parser, provenance included', () => {
+    // P-006 / D-017: the footer keeps the recurrence COUNT (the evidential
+    // weight a stranger can use) and drops every internal reference — ledger
+    // ids, `harness:<slug>` scope literals and the signature hash are dangling
+    // on a fresh install. Traceability lives in knowledge_pack_candidates
+    // (pack_item_id -> source_item_ids/signature/scopes), not in the artifact.
     const raw = renderCandidateLearningFile({
       itemId: 'lock-before-edit',
       title: 'Always check locks: the "hook" serializes edits',
@@ -99,8 +104,27 @@ describe('renderCandidateLearningFile', () => {
       appliesTo: ['any'],
     });
     expect(item!.text).toContain('Find how this project serializes concurrent edits');
-    expect(item!.text).toContain('recurred 4× across operator, harness:sheets');
-    expect(item!.text).toContain('EI-1, EI-2');
+    expect(item!.text).toContain('recurred 4× across the fleet');
+  });
+
+  it('renders NO internal ledger ids, scope literals or signature into the shipped artifact', () => {
+    const raw = renderCandidateLearningFile({
+      itemId: 'lock-before-edit',
+      title: 'Always check locks',
+      text: 'Find how this project serializes concurrent edits before writing.',
+      kind: 'feedback',
+      appliesTo: ['any'],
+      signature: '183 5741efa1c7dd class connected harness hive',
+      scopes: ['operator', 'harness:sheets'],
+      recurrenceCount: 4,
+      sourceItemIds: ['EI-1', 'EI-8288', 'WI-42'],
+    });
+    // The three residue classes, asserted individually so a failure names which
+    // one regressed rather than just "the footer changed".
+    expect(raw).not.toMatch(/\b(?:EI|WI)-\d+/); // dangling ledger ids
+    expect(raw).not.toContain('harness:sheets'); // box/scope identity
+    expect(raw).not.toContain('5741efa1c7dd'); // recurrence signature hash
+    expect(raw).not.toContain('signature');
   });
 });
 

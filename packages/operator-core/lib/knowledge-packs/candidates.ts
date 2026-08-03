@@ -363,7 +363,24 @@ function fmValue(s: string): string {
 /**
  * Render the `<item-id>.md` learning file for an adopted candidate. The body
  * is the (possibly owner-edited) draft text plus a provenance footer — packs
- * are curated artifacts; the footer says where this lesson was earned.
+ * are curated artifacts; the footer says how strongly this lesson was earned.
+ *
+ * The footer is deliberately NON-IDENTIFYING (P-006 / D-017). A pack item is a
+ * SHIPPED artifact: it reaches fresh installs that share none of our ledger, so
+ * internal work-item ids, `harness:<slug>` scope literals and the recurrence
+ * signature hash are all dangling references on the other end — noise at best,
+ * and residue the release-bundle audit does NOT catch (its identity rule scans
+ * for BUILD-BOX identity — unix user, hostname, git identity — not for internal
+ * ledger references). Only the recurrence COUNT survives, because that is the
+ * part a stranger can actually use: it says how much evidence stands behind the
+ * lesson.
+ *
+ * Nothing is lost. Full traceability lives in the ledger, which is where it
+ * belongs: `knowledge_pack_candidates.pack_item_id` links the shipped item back
+ * to its candidate row, which retains `source_item_ids`, `signature`, `scopes`
+ * and `recurrence_count`. `signature`/`scopes`/`sourceItemIds` stay in this
+ * signature (rather than being dropped from the type) because callers pass a
+ * whole candidate row through — they are simply not rendered into the artifact.
  */
 export function renderCandidateLearningFile(opts: {
   itemId: string;
@@ -378,10 +395,8 @@ export function renderCandidateLearningFile(opts: {
 }): string {
   const appliesTo = opts.appliesTo.length > 0 ? opts.appliesTo : ['any'];
   const provenance =
-    `Provenance: recurred ${opts.recurrenceCount}× across ${opts.scopes.join(', ')} ` +
-    `(signature \`${opts.signature}\`` +
-    (opts.sourceItemIds.length > 0 ? `; items ${opts.sourceItemIds.join(', ')}` : '') +
-    ') — adopted from the fleet candidate queue.';
+    `Provenance: recurred ${opts.recurrenceCount}× across the fleet ` +
+    '— adopted from the fleet candidate queue.';
   return [
     '---',
     `id: ${opts.itemId}`,
