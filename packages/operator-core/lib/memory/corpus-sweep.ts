@@ -6,9 +6,12 @@
  * WHY THIS EXISTS. `knowledge_packs:sweep` re-judges a HIVE's pool, and the
  * knowledge-hygiene routine only ever enumerated hives — so the two pools that
  * actually hold this fleet's working knowledge, `harness:<slug>` and the user
- * pool, were never swept by anything. Measured 2026-08-03 on the live store:
- * 1,300 active rows in `harness:papercusp` carrying 96 exact-duplicate rows,
- * and nothing had ever looked.
+ * pool, were never swept by anything. Measured 2026-08-03 by this module
+ * against the live store: `harness:papercusp` held 1,583 recallable rows
+ * carrying 94 exact-duplicate groups / 98 redundant rows, and nothing had ever
+ * looked. (Recallable, not `state='active'`: canonical-store filters recall on
+ * `state <> 'archived'` alone, so `forgotten`/`broken_anchor` rows are still
+ * served and are therefore still in scope for a hygiene sweep.)
  *
  * THREE LAYERS, CHEAPEST FIRST. The judge is an LLM call per row, so it is the
  * last resort, not the first:

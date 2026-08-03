@@ -14,7 +14,10 @@
 import { describe, it, expect } from 'vitest';
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore — pure JS guard script, no .d.ts; imported for its predicate only.
-import { usesModuleScopeFlagSubscribe } from '../../../../../scripts/check-no-module-scope-flag-subscribe.mjs';
+import {
+  usesModuleScopeFlagSubscribe,
+  checkUnpopulatedDeclaration,
+} from '../../../../../scripts/check-no-module-scope-flag-subscribe.mjs';
 
 describe('no-module-scope-flag-subscribe guard predicate (WI-6650)', () => {
   it('FLAGS a module-scope onFlagChange subscription', () => {
@@ -63,5 +66,89 @@ describe('no-module-scope-flag-subscribe guard predicate (WI-6650)', () => {
       'function ok() { return null; }',
     ].join('\n');
     expect(usesModuleScopeFlagSubscribe(codeWithComment)).toBe(false);
+  });
+});
+
+/**
+ * The `unpopulated` declaration cross-check (WI-8887).
+ *
+ * `checkUnpopulatedDeclaration` had NO test coverage until this block — it was falsified once by
+ * hand, in a session, which is falsification that dies with the transcript. These cases are the
+ * permanent CONTROLS: each BAD input is a declaration that is internally inconsistent in a way the
+ * cross-check exists to catch, so if the predicate ever weakens, a control stops failing and this
+ * block goes red.
+ *
+ * The third case is the load-bearing one, and it is why the FLAG_DEFAULTS check is scoped to the
+ * seed BODY rather than the whole call: `serves` prose routinely names `FLAG_DEFAULTS[...]` when
+ * explaining what the window serves, so a whole-call substring test is satisfied by the COMMENT
+ * while the seed itself assigns a literal — i.e. the naive check passes on precisely the shape it
+ * was written to reject.
+ */
+describe('unpopulated declaration cross-check (WI-8887)', () => {
+  it('ACCEPTS a seed that reads the flag registry (block body)', () => {
+    const src = [
+      'lazyFlagRefresh(refresh, {',
+      '  keys: [FLAGS.X],',
+      '  seed: () => { on = FLAG_DEFAULTS[FLAGS.X]; },',
+      "  unpopulated: { kind: 'seeded-from-flag-default', serves: 'FLAG_DEFAULTS[X] — currently true.' },",
+      '})',
+    ].join('\n');
+    expect(checkUnpopulatedDeclaration(src)).toBeNull();
+  });
+
+  it('ACCEPTS the concise-arrow seed form', () => {
+    const src =
+      "lazyFlagRefresh(refresh, { keys: [FLAGS.X], seed: () => (on = FLAG_DEFAULTS[FLAGS.X]), unpopulated: { kind: 'seeded-from-flag-default', serves: 'the registry default' } })";
+    expect(checkUnpopulatedDeclaration(src)).toBeNull();
+  });
+
+  it('REJECTS a LITERAL seed even when `serves` prose names FLAG_DEFAULTS (the whole-call defeat)', () => {
+    const src = [
+      'lazyFlagRefresh(refresh, {',
+      '  keys: [FLAGS.X],',
+      '  seed: () => { on = true; },',
+      "  unpopulated: { kind: 'seeded-from-flag-default', serves: 'FLAG_DEFAULTS[X] — currently true, so the window matches production.' },",
+      '})',
+    ].join('\n');
+    expect(checkUnpopulatedDeclaration(src)).toMatch(/does not read FLAG_DEFAULTS/);
+  });
+
+  it('REJECTS a seeded kind that passes no seed at all', () => {
+    const src =
+      "lazyFlagRefresh(refresh, { keys: [FLAGS.X], unpopulated: { kind: 'seeded-from-flag-default', serves: 'FLAG_DEFAULTS[X]' } })";
+    expect(checkUnpopulatedDeclaration(src)).toMatch(/passes no `seed`/);
+  });
+
+  it('REJECTS a seed passed under a non-seeded kind', () => {
+    const src =
+      "lazyFlagRefresh(refresh, { keys: [FLAGS.X], seed: () => { on = FLAG_DEFAULTS[FLAGS.X]; }, unpopulated: { kind: 'gates-an-override-store', serves: 'the baked constants' } })";
+    expect(checkUnpopulatedDeclaration(src)).toMatch(/declare 'seeded-from-flag-default' instead/);
+  });
+
+  it("REJECTS 'not-flag-gated' contradicting its own keys", () => {
+    const src =
+      "lazyFlagRefresh(refresh, { keys: [FLAGS.X], unpopulated: { kind: 'not-flag-gated', serves: 'the baked constants' } })";
+    expect(checkUnpopulatedDeclaration(src)).toMatch(/contradicts the flag keys/);
+  });
+
+  it('REJECTS a flag-gated kind with no keys', () => {
+    const src =
+      "lazyFlagRefresh(refresh, { unpopulated: { kind: 'gates-an-override-store', serves: 'the baked constants' } })";
+    expect(checkUnpopulatedDeclaration(src)).toMatch(/requires at least one flag key/);
+  });
+
+  it('REJECTS a missing or unknown kind', () => {
+    expect(checkUnpopulatedDeclaration('lazyFlagRefresh(refresh, { keys: [FLAGS.X] })')).toMatch(
+      /no `unpopulated.kind` declared/,
+    );
+    const unknown =
+      "lazyFlagRefresh(refresh, { keys: [FLAGS.X], unpopulated: { kind: 'probably-fine', serves: 'x' } })";
+    expect(checkUnpopulatedDeclaration(unknown)).toMatch(/unknown `unpopulated.kind`/);
+  });
+
+  it("REJECTS a 'selects-behaviour' whose safeBecause is too thin to be a judgement", () => {
+    const src =
+      "lazyFlagRefresh(refresh, { keys: [FLAGS.X], unpopulated: { kind: 'selects-behaviour', serves: 'the off branch', safeBecause: 'it is fine' } })";
+    expect(checkUnpopulatedDeclaration(src)).toMatch(/substantive `safeBecause`/);
   });
 });

@@ -112,7 +112,15 @@ test('readPath is null-safe — a missing/null/primitive intermediate yields und
   assert.equal(readPath({ a: null }, ['a', 'b']), undefined); // through null
   assert.equal(readPath({}, ['x', 'y']), undefined); // missing
   assert.equal(readPath({ a: 5 }, ['a', 'b']), undefined); // through a non-object
+  // @ts-expect-error DELIBERATE bad input (EI-19409888189789017). `readPath` is
+  // typed to take a Scope (an object), and this assertion exists precisely to pin
+  // the RUNTIME behaviour when a primitive arrives anyway: it must yield undefined
+  // rather than leak `String.prototype.length`. Widening `Scope` to make this
+  // compile would delete the very safety property under test, so the suppression
+  // is the correct fix. `@ts-expect-error` (not `@ts-ignore`) so that if `readPath`
+  // is ever legitimately widened, THIS LINE fails and gets re-decided deliberately.
   assert.equal(readPath('str', ['length']), undefined); // primitives never leak props (safety)
+  // @ts-expect-error DELIBERATE bad input — same contract for a null scope at runtime.
   assert.equal(readPath(null, ['a']), undefined);
 });
 

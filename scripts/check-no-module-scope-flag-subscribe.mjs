@@ -165,6 +165,31 @@ export function extractLazyFlagRefreshCalls(text) {
  *
  * @returns a problem string, or null when the declaration is self-consistent.
  */
+/**
+ * Return the source text of a `seed:` property's VALUE, or null when there is no readable one.
+ *
+ * Handles both shapes a seed is written in — a block body (`seed: () => { on = X; }`) and a concise
+ * expression (`seed: () => (on = X)`) — by consuming from just after the colon with bracket-depth
+ * tracking and stopping at the first depth-0 comma or the end of the object. That is why this is a
+ * scanner rather than a regex: the terminator of a property value is positional, and a regex that
+ * stops at the next `,` or `}` cuts a block body in half at its first internal one.
+ */
+function extractSeedValue(callText) {
+  const m = /\bseed\s*:/.exec(callText);
+  if (!m) return null;
+  let depth = 0;
+  const start = m.index + m[0].length;
+  for (let i = start; i < callText.length; i++) {
+    const c = callText[i];
+    if (c === '{' || c === '(' || c === '[') depth++;
+    else if (c === '}' || c === ')' || c === ']') {
+      if (depth === 0) return callText.slice(start, i); // closed the enclosing options object
+      depth--;
+    } else if (c === ',' && depth === 0) return callText.slice(start, i);
+  }
+  return callText.slice(start) || null;
+}
+
 export function checkUnpopulatedDeclaration(callText) {
   const kindM = /kind\s*:\s*['"]([a-z-]+)['"]/.exec(callText);
   if (!kindM) return 'no `unpopulated.kind` declared';
@@ -186,6 +211,25 @@ export function checkUnpopulatedDeclaration(callText) {
   }
   if (kind !== 'seeded-from-flag-default' && /\bseed\s*:/.test(callText)) {
     return `kind '${kind}' passes a \`seed\` — declare 'seeded-from-flag-default' instead`;
+  }
+  // ...and the seed has to seed from the flag REGISTRY, which is the whole content of the claim.
+  // A seed that assigns a LITERAL (`seed: () => { on = true; }`) satisfies every other check here
+  // while quietly meaning something different: the kind promises the window serves the flag's
+  // DECLARED default, and a literal serves whatever was true on the day it was typed. The two
+  // agree exactly until the flag graduates — i.e. it fails silently, later, in a file nobody is
+  // looking at, which is the same shape as the stale "DEFAULT OFF" comments that made a
+  // default-ON flag read as dark for six weeks. lazy-flag-refresh.ts already tells authors to
+  // deref FLAG_DEFAULTS rather than a literal; this is what makes that instruction enforceable.
+  //
+  // Scoped to the SEED BODY on purpose: a whole-call substring test would be satisfied by the
+  // prose in `serves`, which routinely names FLAG_DEFAULTS[...] when explaining what the window
+  // serves — so the naive form passes a literal seed sitting beside an honest-sounding comment.
+  if (kind === 'seeded-from-flag-default') {
+    const seedBody = extractSeedValue(callText);
+    if (seedBody === null) return 'kind `seeded-from-flag-default` but the `seed` value is unreadable';
+    if (!/\bFLAG_DEFAULTS\s*\[/.test(seedBody)) {
+      return "kind 'seeded-from-flag-default' but the `seed` does not read FLAG_DEFAULTS[...] — seed from the registry, not a literal, or the seed drifts when the flag graduates";
+    }
   }
 
   if (kind === 'selects-behaviour') {
