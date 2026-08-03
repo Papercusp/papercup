@@ -66,6 +66,17 @@ export async function liveCorpusSweepDeps(
   const client = await connect();
   if (!client) return null;
 
+  // Probed ONCE here (the factory is already async, so the sweep's own
+  // predicate can stay synchronous). Fails OPEN: a probe that cannot answer
+  // must never be the reason the contradiction layer is silently skipped.
+  let judgeWired = true;
+  try {
+    const { conflictJudgeAvailable } = await import('./anthropic-judge');
+    judgeWired = conflictJudgeAvailable();
+  } catch {
+    judgeWired = true;
+  }
+
   const deps: CorpusSweepDeps = {
     listPools: async () => {
       const { rows } = await client.query(
@@ -108,6 +119,12 @@ export async function liveCorpusSweepDeps(
       const result = await sweepPoolConflicts({ scope: pool });
       return result.pairs;
     },
+
+    // Measured 2026-08-03: run from a CLI, no ANTHROPIC key resolves, so the
+    // judge classified 1,583 rows "clean" in a process that never called it —
+    // reported as `conflictPairs: 0`, indistinguishable from a real result.
+    // The sweep skips the layer outright when this is false.
+    judgeAvailable: () => judgeWired,
 
     ...(fileConflict ? { fileConflict } : {}),
   };

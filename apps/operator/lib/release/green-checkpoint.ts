@@ -1882,6 +1882,10 @@ export const NON_TEST_GATE_SCRIPTS: Record<string, string[]> = {
   'lint:identity-leak': ['lint:no-owner-name-tags', 'lint:no-box-identity', 'lint:no-identity-literals'],
   'lint:design-primitives': ['lint:design-primitives'],
   'lint:no-control-bytes': ['lint:no-control-bytes'],
+  // EI-19452618085391226: qualifies on this header's own terms — one fast (~3.5s),
+  // deterministic, repo-wide script, so a red that a peer has since fixed by wiring or
+  // retiring the guard is cheap to re-verify at tip instead of red-pinning the fleet.
+  'lint:guard-reachability': ['lint:guard-reachability'],
   // P-020: the agent-state plane's standing probes. Deterministic and repo-wide like the
   // rest, so the same auto-refire applies. NOTE the census + ratchet legs are PG-backed, so
   // a re-verify at tip re-reads live state — which is correct here: if the producer resumed
@@ -4536,6 +4540,7 @@ interface PostSuiteLegs {
   lintIdentity: LegOutcome;
   lintDesignPrimitives: LegOutcome;
   lintNoControlBytes: LegOutcome;
+  lintGuardReachability: LegOutcome;
   lintPlane: LegOutcome;
   build: LegOutcome;
   /** Concatenated failure detail, appended verbatim to the suite output. */
@@ -4560,6 +4565,7 @@ function legsNotRun(skipReason: string): PostSuiteLegs {
     lintIdentity: skipped,
     lintDesignPrimitives: skipped,
     lintNoControlBytes: skipped,
+    lintGuardReachability: skipped,
     lintPlane: skipped,
     build: skipped,
     output: '',
@@ -4998,6 +5004,45 @@ export async function runPostSuiteLegs(
     }
   }
 
+  // EI-19452618085391226: the META-guard — fails when a declared `lint:*` script is run by no
+  // blocking path. WI-6683 ruled that "a guard on no blocking path is not a guard"; the measured
+  // and more urgent form is that an unwired guard ROTS — accruing false positives and baseline
+  // drift invisibly — so it fails CLOSED on innocent files the moment someone finally wires it,
+  // which makes the obvious remediation ("just wire it up") the fleet-reddening one. Two
+  // instances were silently red on 2026-08-03: `lint:no-sql-comment-backtick` at 7 hits / 7
+  // FALSE positives, and `lint:mock-cast-escape` drifted +45 past its baseline in ~27h.
+  //
+  // Gated HERE specifically because `test:affected` cannot cover it: editing package.json —
+  // the very act that orphans a guard — selects ZERO test files (measured 2026-08-03 via
+  // `affected-tests.mjs --changed-paths package.json`, empty against a control that correctly
+  // returned operator-core). A test-tier guard would therefore have been exactly the illusory
+  // coverage this script exists to detect. Deterministic, whole-tree, ~3.5s.
+  const lintGuardReachabilityCheck = haltedBy ? null : checkNpmScript(treeDir, 'lint:guard-reachability');
+  if (haltedBy) {
+    legs.lintGuardReachability = { status: 'skipped', skipReason: haltedBy };
+  } else if (lintGuardReachabilityCheck === 'unreadable') {
+    legs.lintGuardReachability = { status: 'failed' };
+    haltedBy = 'package.json unreadable (checking for lint:guard-reachability)';
+    failingSignatures.push('package.json-unreadable');
+    outputs.push(
+      `\n\n=== PACKAGE.JSON UNREADABLE (WI-6056) — could not read/parse package.json in ${treeDir} while checking for lint:guard-reachability ===\n`,
+    );
+  } else if (lintGuardReachabilityCheck === 'absent') {
+    legs.lintGuardReachability = { status: 'skipped', skipReason: 'candidate provides no lint:guard-reachability script' };
+  } else {
+    const guardReach = await exec('npm', ['run', 'lint:guard-reachability'], { cwd: treeDir, env, allowNonZero: true });
+    legs.lintGuardReachability = { status: guardReach.code === 0 ? 'passed' : 'failed' };
+    if (guardReach.code !== 0) {
+      haltedBy = 'lint:guard-reachability failed';
+      failingSignatures.push('lint:guard-reachability');
+      outputs.push(
+        '\n\n=== LINT GUARD RUNS ON NO BLOCKING PATH (npm run lint:guard-reachability) — a guard that is neither wired nor retired rots silently and its green gets quoted as evidence ===\n' +
+          guardReach.stdout +
+          guardReach.stderr,
+      );
+    }
+  }
+
   // agent-state-plane-verification P-020: the agent-state plane's five STANDING probes. The
   // predecessor plan shipped 8 defects past a fully green unit gate, every one the same shape
   // — the derivation was correct and the DISCLOSURE was dropped between derivation and reader
@@ -5162,6 +5207,7 @@ export async function runPostSuiteLegs(
     legs.lintIdentity,
     legs.lintDesignPrimitives,
     legs.lintNoControlBytes,
+    legs.lintGuardReachability,
     legs.lintPlane,
     legs.build,
   ].some((l) => l.status === 'failed');

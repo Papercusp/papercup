@@ -230,6 +230,59 @@ export function skippedTestsMentionedInEvidence(
   return undefined;
 }
 
+/** Source files whose correctness a test run says nothing about. */
+const TYPECHECKED_SOURCE_RE = /\.(?:[cm]?ts|tsx)$/i;
+/** Any mention of a real type check, in the caller's OWN evidence prose. */
+const TYPECHECK_MENTION_RE = /\b(?:tsc|typecheck|type-check|lint:tsc|build:typecheck)\b/i;
+
+/**
+ * EI-19454554361062529 — a green suite is not weak evidence about types; it is
+ * SILENT about them, and that is exactly why it misleads.
+ *
+ * Vitest transforms via esbuild/swc and never typechecks, so a file can be fully
+ * green and fully broken at the same instant. CLAUDE.md already warns about this
+ * for the EDIT loop ("a green run does NOT mean your CHANGE compiles"), and that
+ * warning fires because an edit prompts you to check. This is the OTHER entrance,
+ * which nothing warns about: you did not edit anything — you RAN a suite, it
+ * passed, and you CLOSED a work-item on that evidence. There is no edit, so
+ * nothing prompts a typecheck.
+ *
+ * Measured 2026-08-03: a peer closed a bug citing `testing:run → 8 passed / 0
+ * failed`. The fix was correct and the evidence was honest, but the same file
+ * carried 11 COMMITTED TS2345 errors that `lint:tsc` classified as "a standing red
+ * that WILL red the fleet". Nothing in their run could have surfaced it; it was
+ * found only as unrelated collateral by a third agent typechecking something else.
+ *
+ * Narrow on purpose — it fires ONLY when all three hold, so a close that already
+ * mentions a typecheck, or that changed no TypeScript, stays silent:
+ *   1. the verification claim rests on a TEST RUN (`unit` / `integration` /
+ *      `already-passing`) — `manual` and `live-drove-ui` make no such claim;
+ *   2. `filesChanged` names at least one TypeScript source; and
+ *   3. the caller's own evidence prose mentions no typecheck at all.
+ *
+ * WARN-ONLY (EI-24 record-and-warn discipline, like every other check here). A
+ * hard gate on a ~150s check would simply be routed around, and plenty of closes
+ * are legitimately type-irrelevant. The entire failure mode is NOT KNOWING TO
+ * LOOK, so a nudge at the moment of the claim is the whole fix. PURE — unit-tested
+ * without PG.
+ */
+export function typeEvidenceGapInCompletion(
+  evidence: CompletionVerificationEvidence | undefined,
+): { tsFiles: string[] } | undefined {
+  if (!evidence) return undefined;
+  const how = evidence.verifiedHow;
+  if (how !== 'unit' && how !== 'integration' && how !== 'already-passing') return undefined;
+  const tsFiles = (evidence.filesChanged ?? []).filter((f) => TYPECHECKED_SOURCE_RE.test(f.trim()));
+  if (tsFiles.length === 0) return undefined;
+  // The caller's OWN words settle it: if they mention a typecheck anywhere in the
+  // evidence, they already looked, and a nudge would be noise. Deliberately checks
+  // testsRun AND testResult — the command tends to live in one and the verdict in
+  // the other, and a caller who ran `lint:tsc` may record it in either.
+  const prose = `${evidence.testsRun ?? ''}\n${evidence.testResult ?? ''}`;
+  if (TYPECHECK_MENTION_RE.test(prose)) return undefined;
+  return { tsFiles };
+}
+
 function completionEvidenceFromRecord(
   rec: Omit<CompletionRecord, 'workItem'> & { workItem?: string },
 ): CompletionVerificationEvidence | undefined {
@@ -790,6 +843,21 @@ async function completeOne(
     ? `completion for ${it.id} reports ${skippedTestsMention.count} test(s) SKIPPED in \`${skippedTestsMention.source}\` — a skip reads as part of a green summary ("N passed | M skipped") but the skipped assertion(s) never actually ran (EI-19380332459719944: this exact shape — "8 passed | 1 skipped" — read as a clean pass and nearly shipped a false verification on a critical item). If the skip PRE-DATES this change and is unrelated to what this completion verifies, no action needed. If it's a skip left over from unblocking the gate (yours or a peer's), un-skip it and re-run before trusting this as evidence that the skipped assertion(s) pass.`
     : undefined;
 
+  // EI-19454554361062529: a test result is evidence about BEHAVIOUR and silent about
+  // TYPES. Same evidence extraction as every other check above, so it can never
+  // disagree with what the caller actually supplied.
+  const typeEvidenceGap = typeEvidenceGapInCompletion(completionEvidenceForGate);
+  const typeEvidenceWarning = typeEvidenceGap
+    ? `completion for ${it.id} rests on a TEST RUN (\`verifiedHow: '${completionEvidenceForGate?.verifiedHow}'\`) and ` +
+      `changed ${typeEvidenceGap.tsFiles.length} TypeScript file(s), but cites no typecheck. Vitest transforms via ` +
+      `esbuild and NEVER typechecks — a green suite is not weak evidence about types, it is SILENT about them, so a ` +
+      `file can be fully green and fully broken at once. Measured 2026-08-03: a bug was correctly fixed and closed on ` +
+      `"8 passed / 0 failed" while that same file carried 11 COMMITTED type errors that lint:tsc called "a standing red ` +
+      `that WILL red the fleet" — nothing in the run could have shown it. If this close asserts the code COMPILES, run: ` +
+      `npm run lint:tsc -- --files=${typeEvidenceGap.tsFiles.join(',')}  (files outside packages/operator-core need ` +
+      `their own project: npx tsc --noEmit -p <workspace>/tsconfig.json). If it only asserts BEHAVIOUR, ignore this.`
+    : undefined;
+
   // P-004: the authority actually STAMPED on the row, or null when this call stamped
   // none (no terminal `state`, or the state write was rejected). Reporting the computed
   // judgement in either of those cases would tell the caller their close was graded when
@@ -1018,6 +1086,7 @@ async function completeOne(
     ...(authorityWarning ? { authorityWarning } : {}),
     ...(verificationWarning ? { verificationWarning } : {}),
     ...(skippedTestsWarning ? { skippedTestsWarning } : {}),
+    ...(typeEvidenceWarning ? { typeEvidenceWarning } : {}),
     ...(assigneeMismatchWarning ? { assigneeMismatchWarning } : {}),
     ...(harnessMismatchWarning ? { harnessMismatchWarning } : {}),
     // Reported unconditionally on a real close (including `committed`) so the caller can

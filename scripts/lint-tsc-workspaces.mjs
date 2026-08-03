@@ -213,12 +213,15 @@ export function main({
   // "unreachable by construction" forever, and every NEW package started out uncovered too.
   // Gating on the tsconfig makes coverage automatic and permanent — the property this fan-out
   // was built for. Measured before flipping it on: 46 of the 50 were already clean, so this
-  // enrolls them at zero gate risk. The 4 that were not are held back BY NAME below.
+  // enrolled them at zero gate risk. The 6 that were not (two papergrid packages surfaced once
+  // a TS5101 baseUrl error stopped masking their compile) were held back BY NAME below and have
+  // since ALL been fixed — 20 errors to 0 — so UNTYPECHECKABLE is now empty and every
+  // libs/generic package with a tsconfig is blocking.
   //
   // ⚠ SCOPED TO MEASURED ROOTS, and that scope is the whole safety property. Promotion turns a
   // report-only directory into a BLOCKING one, so it may only cover roots where every package
   // has actually been run and the dirty ones enumerated. libs/generic was measured on
-  // 2026-08-03 (50 packages: 46 clean, 4 held back). apps/* and packages/* were NOT — flipping
+  // 2026-08-03 (50 packages: 46 clean, 6 later-fixed). apps/* and packages/* were NOT — flipping
   // them on unmeasured immediately reds the gate (apps/operator alone carries hundreds of
   // errors, incl. a whole implicit-any test file). They stay report-only below until someone
   // measures them the same way and adds their root here.

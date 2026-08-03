@@ -33,6 +33,8 @@ import type { SearchSource, SearchSourceParams } from '@papercusp/search';
 
 const WS_A = 'ws-A';
 const WS_B = 'ws-B'; // the decoy workspace — its rows must NEVER appear in an A-scoped search
+/** P-034 chunk-union fixture session (see seedChunks + its describe block). */
+const CH_SESSION = 'sess-chunk';
 
 const byName = (n: string): SearchSource => {
   const s = SEARCH_SOURCES.find((x) => x.name === n);
@@ -198,7 +200,32 @@ async function setupSchema(s: postgres.Sql): Promise<void> {
       text          TEXT        NOT NULL,
       text_tsv      tsvector GENERATED ALWAYS AS (to_tsvector('english', left(text, 20000))) STORED,
       ingested_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+      text_embedding public.vector(384),
+      text_embedding_mode TEXT,
       PRIMARY KEY (workspace_id, source_kind, session_id, turn_idx)
+    );
+  `);
+
+  // ── session_turn_chunks (749-session-turn-chunks.sql) ──
+  // P-034 / D-016: per-chunk vectors for turns longer than the parent's
+  // `left(text, 2000)` embed cut. The `session_turn` embedding leg unions these
+  // back to their parent turn by MAX score, which is what the suite below pins.
+  await s.unsafe(`
+    CREATE TABLE harness_shared.session_turn_chunks (
+      workspace_id TEXT    NOT NULL DEFAULT 'default',
+      source_kind  TEXT    NOT NULL,
+      session_id   TEXT    NOT NULL,
+      turn_idx     INTEGER NOT NULL,
+      chunk_idx    INTEGER NOT NULL,
+      content      TEXT    NOT NULL,
+      turn_sha     TEXT    NOT NULL,
+      updated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+      embedding      public.vector(384),
+      embedding_mode TEXT,
+      PRIMARY KEY (workspace_id, source_kind, session_id, turn_idx, chunk_idx),
+      FOREIGN KEY (workspace_id, source_kind, session_id, turn_idx)
+        REFERENCES harness_shared.session_turns (workspace_id, source_kind, session_id, turn_idx)
+        ON DELETE CASCADE
     );
   `);
 }
@@ -333,6 +360,40 @@ async function seedP17(s: postgres.Sql): Promise<void> {
   await issue(WS_B, 'EI-D9', 'corpus recall pointer', 'section clamp in another workspace');
 }
 
+/**
+ * P-034 fixture: one turn whose relevant content is PAST the parent embed cut
+ * (far parent vector, near chunk), one ordinary short turn, and a workspace-B
+ * decoy whose chunk sits exactly on the query. See the describe block for why
+ * these specific angles make the suite self-falsifying.
+ */
+async function seedChunks(s: postgres.Sql): Promise<void> {
+  const turn = async (ws: string, idx: number, speaker: string, theta: number): Promise<void> => {
+    await s`INSERT INTO harness_shared.session_turns
+              (workspace_id, source_kind, session_id, turn_idx, speaker, text, text_embedding)
+            VALUES (${ws}, 'claude', ${CH_SESSION}, ${idx}, ${speaker},
+                    ${'buried kubernetes detail '.repeat(20)}, ${vecLit(theta)}::vector)`;
+  };
+  const chunk = async (ws: string, idx: number, cIdx: number, theta: number): Promise<void> => {
+    await s`INSERT INTO harness_shared.session_turn_chunks
+              (workspace_id, source_kind, session_id, turn_idx, chunk_idx, content, turn_sha, embedding)
+            VALUES (${ws}, 'claude', ${CH_SESSION}, ${idx}, ${cIdx}, 'buried chunk body',
+                    'sha-fixture', ${vecLit(theta)}::vector)`;
+  };
+
+  // turn 1 — the CHUNKED case: parent far (θ=1.2), best chunk dead-on (θ=0.05).
+  await turn(WS_A, 1, 'assistant', 1.2);
+  await chunk(WS_A, 1, 0, 1.1);
+  await chunk(WS_A, 1, 1, 0.9);
+  await chunk(WS_A, 1, 2, 0.05);
+  // turn 2 — the SHORT case: ordinary, no chunks, moderately near (θ=0.2).
+  await turn(WS_A, 2, 'assistant', 0.2);
+  // turn 3 — workspace B decoy with a chunk exactly ON the query.
+  await turn(WS_B, 3, 'assistant', 1.4);
+  await chunk(WS_B, 3, 0, 0);
+  await s`UPDATE harness_shared.session_turns SET owner = 'decoy'
+           WHERE workspace_id = ${WS_B} AND session_id = ${CH_SESSION}`;
+}
+
 const params = (over: Partial<SearchSourceParams> = {}): SearchSourceParams => ({
   sql,
   query: 'kubernetes',
@@ -348,10 +409,87 @@ beforeAll(async () => {
   await setupSchema(sql);
   await seed(sql);
   await seedP17(sql);
+  await seedChunks(sql);
 }, 60_000);
 
 afterAll(async () => {
   await db?.cleanup();
+});
+
+/**
+ * P-034 / D-016 — the chunk union on `session_turn.embedding`.
+ *
+ * THE DEFECT MODELLED HERE. A turn's own vector is built from `left(text,
+ * 2000)`, so a turn whose relevant content sits PAST that cut has a parent
+ * vector pointing nowhere near the query. `CHUNKED` below is exactly that
+ * shape: parent at θ=1.2 (sim .362 — far), one chunk at θ=0.05 (sim .999 —
+ * dead on). `SHORT` is a wholly ordinary turn at θ=0.2 (sim .980).
+ *
+ * That gives the suite a built-in falsifiable control: ranked by PARENT vectors
+ * alone, SHORT (.980) beats CHUNKED (.362) and the buried content is
+ * unretrievable — the status quo. If the union leg regresses to parent-only,
+ * the ordering assertion below flips and fails. The test cannot pass for the
+ * wrong reason.
+ */
+describe('P-034 — session_turn.embedding unions chunk vectors, deduped by MAX', () => {
+  const chunkParams = (over: Partial<SearchSourceParams> = {}): SearchSourceParams =>
+    params({ query: 'buried', filters: { sessionId: CH_SESSION }, ...over });
+  const idsOf = (out: Awaited<ReturnType<EmbeddingFn>>): string[] =>
+    out.map((r) => r.row.source_id);
+
+  it('scores a turn by its BEST chunk, not by its own vector', async () => {
+    const out = await embeddingOf('session_turn')({ ...chunkParams(), qVec: QVEC });
+    const hit = out.find((r) => r.row.source_id === `claude:${CH_SESSION}:1`);
+    expect(hit, 'the chunked turn must be retrievable at all').toBeDefined();
+    // MAX over {parent cos(1.2)=.362, chunks cos(0.9)=.622, cos(0.05)=.9988}
+    expect(hit!.score).toBeCloseTo(Math.cos(0.05), 3);
+    // and emphatically NOT the parent's own score, which is what the
+    // pre-P-034 leg would have returned.
+    expect(hit!.score).not.toBeCloseTo(Math.cos(1.2), 3);
+  });
+
+  it('the buried turn now OUTRANKS an ordinary turn it used to lose to', async () => {
+    const out = await embeddingOf('session_turn')({ ...chunkParams(), qVec: QVEC });
+    const ids = idsOf(out);
+    // Parent-only ordering would be [SHORT(.980), CHUNKED(.362)]. The union
+    // inverts it — this assertion IS the regression guard for the whole change.
+    expect(ids.indexOf(`claude:${CH_SESSION}:1`)).toBeLessThan(
+      ids.indexOf(`claude:${CH_SESSION}:2`),
+    );
+  });
+
+  it('emits each parent turn exactly ONCE however many chunks matched', async () => {
+    const out = await embeddingOf('session_turn')({ ...chunkParams(), qVec: QVEC });
+    const ids = idsOf(out);
+    // turn 1 has three chunks, two of which score highly.
+    expect(ids.filter((i) => i === `claude:${CH_SESSION}:1`)).toHaveLength(1);
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  it('a turn with no chunks is unaffected — still scored by its own vector', async () => {
+    const out = await embeddingOf('session_turn')({ ...chunkParams(), qVec: QVEC });
+    const hit = out.find((r) => r.row.source_id === `claude:${CH_SESSION}:2`);
+    expect(hit!.score).toBeCloseTo(Math.cos(0.2), 3);
+  });
+
+  it('does NOT leak workspace B through the new chunk leg', async () => {
+    // The decoy's CHUNK sits exactly on the query (θ=0), so it would top the
+    // result set if the chunk leg's scope filter were missing or applied only
+    // to the parent leg. This is the leak tripwire for the added SQL.
+    const out = await embeddingOf('session_turn')({ ...chunkParams(), qVec: QVEC });
+    expect(idsOf(out)).not.toContain(`claude:${CH_SESSION}:3`);
+    expect(out.every((r) => r.row.excerpt.includes('decoy') === false)).toBe(true);
+  });
+
+  it('honours the filter bag on the chunk leg too (speaker)', async () => {
+    // Filters live on the parent row, so the chunk leg must JOIN to apply them.
+    // Without that join this returns the chunked turn anyway.
+    const out = await embeddingOf('session_turn')({
+      ...chunkParams({ filters: { sessionId: CH_SESSION, speaker: 'user' } }),
+      qVec: QVEC,
+    });
+    expect(idsOf(out)).not.toContain(`claude:${CH_SESSION}:1`);
+  });
 });
 
 describe('GAP 10 — per-source bm25 SQL: scope isolation + row mapping', () => {

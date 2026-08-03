@@ -6,9 +6,15 @@ import { describe, it, expect } from 'vitest';
 import {
   decideStructuralAutoResolve,
   runStructuralErrorVerifierOnce,
+  STRUCTURAL_WATCHDOG_KEY_PATTERN,
   type OpenStructuralItem,
   type StructuralVerifierDeps,
 } from './structural-error-verifier';
+import {
+  REPEATED_TOOL_ERROR_PREFIX,
+  parseRepeatedToolErrorKey,
+} from './improvements/watchdog-key-migration';
+import { toolErrorSignalKey, type ToolErrorClass } from './improvements/tool-error-classifier';
 
 const HOUR = 60 * 60 * 1000;
 const WINDOW = 6 * HOUR;
@@ -102,5 +108,90 @@ describe('runStructuralErrorVerifierOnce (orchestration)', () => {
     const deps = makeFakeDeps([], {});
     const r = await runStructuralErrorVerifierOnce(deps, { windowMs: WINDOW });
     expect(r).toEqual({ checked: 0, resolved: 0, kept: 0, errored: 0 });
+  });
+});
+
+/**
+ * EI-19453017656411107 — recurrence guard on the SQL PRE-FILTER, the leg the
+ * injected-deps tests above cannot reach (they start from an already-selected item
+ * list, so a selector that silently returns nothing still passes every one of them).
+ *
+ * The defect: `LIKE 'repeated-tool-error:%:structural'` anchors the class token to the
+ * END of the key, so it admitted ONLY keys with no fingerprint. `structural` is a
+ * FINGERPRINTED class, so the fingerprinted form is the common one — measured on live
+ * rows, 90 of 133 (67.7%) carried a fingerprint and were invisible to the daemon.
+ *
+ * Keys are minted through the REAL `toolErrorSignalKey` rather than written by hand, so
+ * this guard cannot drift away from the minting logic it is protecting: if minting ever
+ * changes shape, these fail instead of quietly agreeing with a stale literal.
+ */
+describe('STRUCTURAL_WATCHDOG_KEY_PATTERN (the exact pre-filter handed to Postgres)', () => {
+  const re = new RegExp(STRUCTURAL_WATCHDOG_KEY_PATTERN);
+  const mint = (tool: string, klass: ToolErrorClass, fp: string | null) =>
+    `${REPEATED_TOOL_ERROR_PREFIX}${toolErrorSignalKey(tool, klass, fp)}`;
+
+  it('admits a FINGERPRINTED structural key — the common minted form', () => {
+    const key = mint('dev:cache_stats', 'structural', 'unsupported-unicode-escape');
+    expect(key).toBe('repeated-tool-error:dev:cache_stats:structural:unsupported-unicode-escape');
+    expect(re.test(key)).toBe(true);
+    // Precisely why the old filter missed it: the key does NOT end at the class token.
+    expect(key.endsWith(':structural')).toBe(false);
+  });
+
+  it('still admits a BARE structural key (no fingerprint was derivable)', () => {
+    const key = mint('activity:recent', 'structural', null);
+    expect(key).toBe('repeated-tool-error:activity:recent:structural');
+    expect(re.test(key)).toBe(true);
+  });
+
+  it('rejects every OTHER tool-error class, fingerprinted or not', () => {
+    for (const klass of ['transient', 'caller', 'rate-limit'] as const) {
+      expect(re.test(mint('activity:report', klass, 'some-fingerprint'))).toBe(false);
+      expect(re.test(mint('activity:report', klass, null))).toBe(false);
+    }
+  });
+
+  it('rejects watchdog keys that are not tool-error signals at all', () => {
+    expect(re.test('bug-drain-200k:claim-race-loss')).toBe(false);
+    expect(re.test('repeated-tool-error-lookalike:x:structural')).toBe(false);
+  });
+
+  /**
+   * FALSIFIABILITY CONTROL (tier 1 — a deliberately-wrong implementation kept
+   * permanently beside the real one). Without this, every assertion above would still
+   * pass against a pattern that had silently reverted to the buggy form, because they
+   * only ever assert what the CORRECT pattern does. This one pins the discrimination
+   * itself: the old filter and the new one must disagree on exactly the shape that was
+   * being dropped. No tree mutation needed — the subject is an imported module.
+   */
+  it('CONTROL: the old suffix-anchored filter provably misses the common form', () => {
+    // Regex equivalent of the removed `LIKE 'repeated-tool-error:%:structural'`.
+    const OLD_SUFFIX_ANCHORED = /^repeated-tool-error:.*:structural$/;
+    const fingerprinted = mint('dev:cache_stats', 'structural', 'unsupported-unicode-escape');
+    const bare = mint('activity:recent', 'structural', null);
+
+    // The defect: the old filter drops the fingerprinted (common) form entirely...
+    expect(OLD_SUFFIX_ANCHORED.test(fingerprinted)).toBe(false);
+    // ...while still admitting the bare form, which is why it looked healthy.
+    expect(OLD_SUFFIX_ANCHORED.test(bare)).toBe(true);
+
+    // The fix admits both — so the two patterns genuinely disagree, and this suite
+    // fails if the pattern is ever reverted.
+    expect(re.test(fingerprinted)).toBe(true);
+    expect(re.test(bare)).toBe(true);
+  });
+
+  it('agrees with the parser (the stated authority) on everything it admits', () => {
+    const admitted = [
+      mint('dev:cache_stats', 'structural', 'unsupported-unicode-escape'),
+      mint('activity:recent', 'structural', null),
+      mint('a:b:c:deeply:nested', 'structural', 'fp-x'),
+    ];
+    for (const key of admitted) {
+      expect(re.test(key)).toBe(true);
+      const parsed = parseRepeatedToolErrorKey(key);
+      expect(parsed?.klass).toBe('structural');
+      expect(parsed?.tool).toBeTruthy();
+    }
   });
 });

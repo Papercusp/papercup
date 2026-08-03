@@ -41,6 +41,13 @@ function parseArgs(argv: string[]) {
 
 function render(result: CorpusSweepResult, verbose: boolean): void {
   console.log(`\nmode: ${result.mode}`);
+  if (result.judgeUnavailable) {
+    console.log(
+      '\n⚠ CONTRADICTION LAYER NOT RUN — no conflict judge is wired in this process\n' +
+        '  (no ANTHROPIC_API_KEY resolves here). conflictPairs below means NOT MEASURED,\n' +
+        '  not "clean". Run it through the memory:sweep tool on a keyed operator instead.',
+    );
+  }
   console.log(
     `totals: rows=${result.totals.rows} duplicateGroups=${result.totals.duplicateGroups} ` +
       `redundant=${result.totals.redundant} blocked=${result.totals.blocked} ` +
@@ -96,4 +103,15 @@ async function main(): Promise<void> {
   }
 }
 
-void main();
+// The memory backend keeps handles (pool / embedder sidecar) that outlive our
+// own client, so the event loop does NOT drain after main() resolves — the
+// process hangs after printing a complete report and eventually dies to the
+// caller's `timeout`, which reads as a FAILED run of a run that fully
+// succeeded. Exit explicitly on the reported outcome instead.
+void main().then(
+  () => process.exit(process.exitCode ?? 0),
+  (err) => {
+    console.error(err);
+    process.exit(1);
+  },
+);

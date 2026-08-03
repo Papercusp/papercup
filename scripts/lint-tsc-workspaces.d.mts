@@ -59,8 +59,17 @@ export const PROMOTE_ROOTS: string[];
  * who is EXCLUDED, so a package that stops being listed becomes gated automatically rather than
  * silently staying dark.
  *
- * Measured 2026-08-03 via `npx tsc --noEmit -p tsconfig.json` in each of the 50 previously
- * un-gated libs/generic packages: 46 clean (now gated), these 4 not.
+ * EMPTY IS THE GOAL STATE, AND IT IS THE CURRENT ONE — do not read the empty object as an
+ * unused mechanism and delete it. Measured 2026-08-03 via `npx tsc --noEmit -p tsconfig.json`
+ * in each of the 50 previously un-gated libs/generic packages: 46 were clean and were gated
+ * that day; the remaining 6 (two papergrid packages surfaced later, once a TS5101 baseUrl
+ * error stopped masking their compile) were held back here and are now ALL FIXED and gated —
+ * 20 measured errors driven to 0 under EI-19409888189789017.
+ *
+ * So every libs/generic package with a tsconfig is now BLOCKING. The next package that fails
+ * belongs here, with its measured count and a filed id, for exactly as long as it takes to
+ * fix — that is what this map is for. Adding an entry is how a red package stays VISIBLE
+ * instead of silently ungated; removing it is the entire fix.
  *
  * @type {Record<string, { detail: string, errors: number, filedAs: string }>}
  */

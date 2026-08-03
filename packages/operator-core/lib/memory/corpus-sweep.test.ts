@@ -270,6 +270,33 @@ describe('sweepCorpus', () => {
     expect(res.pools.filter((p) => p.judged)).toHaveLength(1);
   });
 
+  it('refuses to run the judge — and SAYS SO — when no judge is wired', async () => {
+    // The failure this guards: an unkeyed judge classifies everything clean,
+    // so the layer returns conflictPairs:0 for a pool full of contradictions
+    // and reads exactly like a clean bill of health. Measured live 2026-08-03.
+    const sweepConflicts = vi.fn(async () => []);
+    const res = await sweepCorpus(
+      {},
+      fakeDeps({ sweepConflicts, judgeAvailable: () => false }),
+    );
+    expect(res.judgeUnavailable).toBe(true);
+    expect(sweepConflicts).not.toHaveBeenCalled();
+    expect(res.pools.every((p) => !p.judged)).toBe(true);
+  });
+
+  it('runs the judge and reports it as measured when one IS wired', async () => {
+    const res = await sweepCorpus({}, fakeDeps({ judgeAvailable: () => true }));
+    expect(res.judgeUnavailable).toBe(false);
+    expect(res.pools.some((p) => p.judged)).toBe(true);
+  });
+
+  it('does not mark the judge unavailable merely because the caller opted out', async () => {
+    // judgeConflicts:false is a CHOICE; judgeUnavailable is a CAPABILITY gap.
+    // Conflating them would make an opt-out look like a broken deployment.
+    const res = await sweepCorpus({ judgeConflicts: false }, fakeDeps());
+    expect(res.judgeUnavailable).toBe(false);
+  });
+
   it('skips the LLM layer entirely when judgeConflicts is false', async () => {
     const sweepConflicts = vi.fn(async () => []);
     await sweepCorpus({ judgeConflicts: false }, fakeDeps({ sweepConflicts }));

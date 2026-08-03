@@ -85,6 +85,8 @@ export default defineTool({
             text: JSON.stringify({
               ok: true,
               mode: result.mode,
+              // When true, every conflictPairs:0 below means NOT MEASURED.
+              judgeUnavailable: result.judgeUnavailable,
               totals: result.totals,
               pools: result.pools,
               skippedPools: result.skippedPools,

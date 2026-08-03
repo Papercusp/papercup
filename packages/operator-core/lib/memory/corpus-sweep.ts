@@ -235,6 +235,17 @@ export interface CorpusSweepDeps {
   sweepConflicts: (pool: string) => Promise<CorpusConflictPair[]>;
   /** File a contradiction for review. Never deletes. */
   fileConflict?: (pool: string, pair: CorpusConflictPair) => Promise<void>;
+  /**
+   * Is the LLM judge actually wired? Defaults to "assume yes".
+   *
+   * An UNKEYED judge does not fail — it classifies everything clean, so the
+   * sweep would report `conflictPairs: 0` for a pool full of contradictions
+   * and read exactly like a clean bill of health. That trap is already known
+   * one layer down (EI-18746586784230719) but is only a console warning
+   * there, which no structured caller ever sees. We refuse to run the layer
+   * at all rather than emit a zero we cannot stand behind.
+   */
+  judgeAvailable?: () => boolean;
 }
 
 export interface CorpusSweepOpts {
@@ -269,6 +280,12 @@ export interface CorpusPoolReport {
 
 export interface CorpusSweepResult {
   mode: 'report' | 'apply';
+  /**
+   * True when the contradiction layer was SKIPPED because no judge is wired.
+   * When true, every `conflictPairs: 0` means "not measured", NOT "clean" —
+   * do not read it as a result.
+   */
+  judgeUnavailable: boolean;
   pools: CorpusPoolReport[];
   skippedPools: Array<{ pool: string; reason: 'not-a-real-pool' }>;
   duplicates: DuplicateGroup[];
@@ -294,7 +311,11 @@ export async function sweepCorpus(
   deps: CorpusSweepDeps,
 ): Promise<CorpusSweepResult> {
   const mode = opts.mode ?? 'report';
-  const judgeConflicts = opts.judgeConflicts ?? true;
+  const wantJudge = opts.judgeConflicts ?? true;
+  // An unkeyed judge reports "clean" for everything. Skipping the layer and
+  // saying so beats emitting a zero that cannot be told apart from a result.
+  const judgeUnavailable = wantJudge && (deps.judgeAvailable?.() ?? true) === false;
+  const judgeConflicts = wantJudge && !judgeUnavailable;
   const maxPoolsJudged = Math.max(0, opts.maxPoolsJudged ?? 4);
 
   const skippedPools: CorpusSweepResult['skippedPools'] = [];
@@ -387,6 +408,7 @@ export async function sweepCorpus(
 
   return {
     mode,
+    judgeUnavailable,
     pools,
     skippedPools,
     duplicates,

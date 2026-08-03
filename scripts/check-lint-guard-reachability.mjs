@@ -57,6 +57,22 @@
  * repository files (`ENFORCING_TEST_RE`) — spawning it, or driving its scan over a
  * repo-root path — not merely whether a test mentions it.
  *
+ * ── KNOWN LIMITATION: the `ci` tier is credited GENEROUSLY ───────────────────
+ * `ci` counts as blocking here, and on this box that is arguably too kind.
+ * `green-checkpoint.ts`'s own `lint:no-control-bytes` comment records the precedent:
+ * that guard "was already wired into .github/workflows/test.yml, but that workflow
+ * does not gate this box's main-advance, and it had been failing for other reasons,
+ * so the guard's own three-day red went unread" — i.e. a CI-tier guard rotted exactly
+ * like an unwired one, and the fix was to gate it in green-checkpoint instead.
+ *
+ * It is left as blocking DELIBERATELY, not by oversight. Demoting it would move ~38
+ * guards into the unenforced set in one step, and an allowlist that large is the
+ * parking lot this script exists to prevent — the same shape as raising a watermark
+ * to absorb debt rather than paying it. Tightening it is real work with a real
+ * measurement behind it (does THIS box's main-advance consult CI?), so it is tracked
+ * separately rather than smuggled in here. Read a `ci` classification as "a red would
+ * be visible somewhere", not as "a red stops the release."
+ *
  * ── THE UNDER-CLAIM THIS AVOIDS ──────────────────────────────────────────────
  * The filing that prompted this deliberately under-claimed its own headline number:
  * "not referenced by npm-script NAME" is NOT the same as "runs nowhere", because
@@ -158,6 +174,28 @@ export const ENFORCING_TEST_RE = /execFileSync|spawnSync|execSync|listTrackedFil
  * sibling enforced too, and a base guard that is not shows up once, not twice.
  */
 const COMPANION_SUFFIX_RE = /:(fix|report|strict|all|fail|update)$/;
+
+/**
+ * Blank out COMMENTS before matching. A runner file that merely *discusses* a guard in
+ * prose must not count as running it.
+ *
+ * This is not hypothetical tidiness — it fired on this very script. The
+ * `green-checkpoint.ts` leg added for THIS check carries a comment naming
+ * `lint:mock-cast-escape` as the motivating example; that one sentence reclassified the
+ * rotting guard from `logic-test` to `gate`, i.e. the checker declared its own
+ * motivating case fully enforced. It is also precisely the failure that produced
+ * instance 1 in the filing, where a doc comment *about* a SQL bug pulled a file
+ * containing no SQL into a SQL linter's scope: prose describing a rule reads exactly
+ * like the rule being applied.
+ *
+ * String literals are deliberately KEPT — `exec('npm', ['run', 'lint:x'])` is a real
+ * invocation living in a string, so masking those would blind the gate tier entirely.
+ */
+export function stripComments(text, { yaml = false } = {}) {
+  let out = String(text);
+  if (yaml) return out.replace(/(^|\s)#[^\n]*/g, '$1');
+  return out.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/(^|[^:])\/\/[^\n]*/g, '$1');
+}
 
 /** `lint:foo` guards, minus the companion invocations described above. */
 export function selectGuardScripts(scripts) {
@@ -263,13 +301,13 @@ function readIfExists(path) {
 function buildCorpora() {
   const { files } = listTrackedFiles(ROOT);
 
-  const gate = readIfExists(resolve(ROOT, 'apps/operator/lib/release/green-checkpoint.ts'));
+  const gate = stripComments(readIfExists(resolve(ROOT, 'apps/operator/lib/release/green-checkpoint.ts')));
 
   const wfDir = resolve(ROOT, '.github/workflows');
   const ci = existsSync(wfDir)
     ? readdirSync(wfDir)
         .filter((f) => f.endsWith('.yml') || f.endsWith('.yaml'))
-        .map((f) => readIfExists(resolve(wfDir, f)))
+        .map((f) => stripComments(readIfExists(resolve(wfDir, f)), { yaml: true }))
         .join('\n')
     : '';
 
@@ -279,7 +317,7 @@ function buildCorpora() {
   // whole point of this check.
   const testTexts = files
     .filter((f) => f.endsWith('.test.ts') || f.endsWith('.test.tsx'))
-    .map((f) => readIfExists(resolve(ROOT, f)));
+    .map((f) => stripComments(readIfExists(resolve(ROOT, f))));
   const test = testTexts.filter((t) => ENFORCING_TEST_RE.test(t)).join('\n');
   const logicTest = testTexts.filter((t) => !ENFORCING_TEST_RE.test(t)).join('\n');
 
@@ -287,7 +325,7 @@ function buildCorpora() {
     ...files.filter((f) => f.includes('/hooks/') && !f.endsWith('.test.ts')),
     '.claude/settings.json',
   ]
-    .map((f) => readIfExists(resolve(ROOT, f)))
+    .map((f) => stripComments(stripComments(readIfExists(resolve(ROOT, f))), { yaml: true }))
     .join('\n');
 
   // Key order matters: `classifyGuard` reports the first matching tier for a guard

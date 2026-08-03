@@ -1231,6 +1231,68 @@ describe('work_items:complete (keyed-array)', () => {
     });
   });
 
+  // ── typeEvidenceWarning: a test result is silent about TYPES (EI-19454554361062529) ──────
+  // The helper itself is unit-tested in complete.type-evidence-gap.test.ts; THIS block
+  // covers the wiring, which is the part a pure-function test cannot reach — the field
+  // has to actually reach the caller's result or the guard may as well not exist.
+  describe('typeEvidenceWarning — a passing suite says nothing about types', () => {
+    beforeEach(() => {
+      setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...item, state: 'passed' }));
+    });
+
+    it('surfaces the warning on a unit-verified close that changed .ts and cited no typecheck', async () => {
+      getWorkItem.mockResolvedValue(item);
+      const r = await one({
+        id: 'F-12',
+        state: 'passed',
+        completion: {
+          summary: 'fixed the undefined-args crash',
+          verifiedHow: 'unit',
+          testsRun: 'testing:run cache_stats.test.ts',
+          testResult: '8 passed / 0 failed',
+          filesChanged: ['lib/agent-tools/dev/cache_stats.ts'],
+        },
+      });
+      expect(r.ok).toBe(true); // warn-only: the completion is still recorded
+      expect(r.typeEvidenceWarning).toMatch(/NEVER typechecks/);
+      expect(r.typeEvidenceWarning).toContain('F-12');
+      // It names the runnable command with the caller's OWN files substituted in.
+      expect(r.typeEvidenceWarning).toContain('--files=lib/agent-tools/dev/cache_stats.ts');
+    });
+
+    it('stays silent when the caller already cited a typecheck', async () => {
+      getWorkItem.mockResolvedValue(item);
+      const r = await one({
+        id: 'F-12',
+        state: 'passed',
+        completion: {
+          summary: 's',
+          verifiedHow: 'unit',
+          testsRun: 'npm run lint:tsc -- --files=lib/a.ts ; vitest',
+          testResult: 'tsc clean, 8 passed',
+          filesChanged: ['lib/a.ts'],
+        },
+      });
+      expect(r.typeEvidenceWarning).toBeUndefined();
+    });
+
+    it('stays silent when nothing TypeScript changed', async () => {
+      getWorkItem.mockResolvedValue(item);
+      const r = await one({
+        id: 'F-12',
+        state: 'passed',
+        completion: {
+          summary: 's',
+          verifiedHow: 'unit',
+          testsRun: 'vitest',
+          testResult: '3 passed',
+          filesChanged: ['docs/readme.md'],
+        },
+      });
+      expect(r.typeEvidenceWarning).toBeUndefined();
+    });
+  });
+
   // ── verificationWarning: settled-but-unverified lint (flush-to-proceed P-006) ────────────
   // A settled unit is VERIFIED (`tests`) or CONSCIOUSLY DEFERRED (`deferred`) — never silent.
   // SOFT warning, not a hard reject (D-005 / EI-24: a finished completion is never lost).
