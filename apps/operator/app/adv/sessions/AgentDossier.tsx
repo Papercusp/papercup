@@ -811,11 +811,33 @@ export default function AgentDossier({
                 <span className="pc-dossier__dir" title={s.once ? 'one-shot await' : 'standing watch'}>
                   {s.once ? '◉' : '↻'}
                 </span>
+                {/* WI-7310: the event KEY is machine text and the note is human
+                    text; they were rendered in the same face, so the line read as
+                    one undifferentiated string. `__id` / `__note` are the rail's
+                    two text roles — see the TEXT ROLES block in
+                    SessionsRosterView.css. `__h-note` is deliberately NOT reused
+                    here: it styles notes riding on a HEADING, and borrowing it
+                    for body prose is what left prose with no role of its own. */}
                 <span className="pc-dossier__coord-text">
-                  {s.eventKey}
-                  {s.note ? <span className="pc-dossier__h-note"> · {s.note}</span> : null}
-                  {!s.wakes ? <span className="pc-dossier__h-note"> · no wake</span> : null}
-                  {s.urgent ? <span className="pc-dossier__h-note"> · urgent</span> : null}
+                  <span className="pc-dossier__id">{s.eventKey}</span>
+                  {s.note ? (
+                    <>
+                      <span className="pc-dossier__sep" aria-hidden="true"> · </span>
+                      <span className="pc-dossier__note">{s.note}</span>
+                    </>
+                  ) : null}
+                  {!s.wakes ? (
+                    <>
+                      <span className="pc-dossier__sep" aria-hidden="true"> · </span>
+                      <span className="pc-dossier__note">no wake</span>
+                    </>
+                  ) : null}
+                  {s.urgent ? (
+                    <>
+                      <span className="pc-dossier__sep" aria-hidden="true"> · </span>
+                      <span className="pc-dossier__note">urgent</span>
+                    </>
+                  ) : null}
                 </span>
                 <span className="pc-dossier__coord-ts">{formatRelativeUpdated(s.createdAt)}</span>
               </div>

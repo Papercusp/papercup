@@ -603,10 +603,28 @@ describe('AgentDossier', () => {
       expect(events.getByText('2 subscribed')).toBeTruthy();
       expect(events.getByText('deploy:release-cut')).toBeTruthy();
       expect(events.getByText('coord:human-message')).toBeTruthy();
-      expect(events.getByText('· waiting on the release')).toBeTruthy();
+      expect(events.getByText('waiting on the release')).toBeTruthy();
       // A watch that records but does not wake, and an urgent one, are called out.
-      expect(events.getByText('· no wake')).toBeTruthy();
-      expect(events.getByText('· urgent')).toBeTruthy();
+      expect(events.getByText('no wake')).toBeTruthy();
+      expect(events.getByText('urgent')).toBeTruthy();
+
+      // WI-7310 [owner 2026-08-03]: the event KEY and its NOTE must be visually
+      // distinguishable, not one undifferentiated string. Asserted structurally
+      // (the two text ROLES) rather than by computed style, because jsdom does
+      // not apply the stylesheet — the roles are what the CSS hangs off, so if
+      // they collapse back into one node the distinction is gone whatever the
+      // CSS says. This is the assertion the previous version of this test was
+      // quietly preventing: it expected '· waiting on the release' as a SINGLE
+      // text node, i.e. it encoded the conflation as the contract.
+      const keyEl = events.getByText('deploy:release-cut');
+      const noteEl = events.getByText('waiting on the release');
+      expect(keyEl.className).toContain('pc-dossier__id');
+      expect(noteEl.className).toContain('pc-dossier__note');
+      expect(keyEl).not.toBe(noteEl);
+      // The separator is punctuation between the roles, not part of either, and
+      // is hidden from assistive tech so the id is not read out with a stray '·'.
+      const sep = events.getByText('·', { selector: '.pc-dossier__sep' });
+      expect(sep.getAttribute('aria-hidden')).toBe('true');
       expect(container.querySelectorAll('[data-testid="dossier-events-row"]').length).toBe(2);
       // One-shot vs standing watch is rendered, not merely implied.
       expect(events.getByTitle('one-shot await')).toBeTruthy();

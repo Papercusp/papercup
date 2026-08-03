@@ -198,6 +198,27 @@ export interface GitPipelineSnapshot {
     /** Human-readable detail for `retriageStaleTip` (from the re-triage classifier), for a
      *  reader who wants the "why" without re-deriving it. Null alongside `retriageStaleTip`. */
     retriageDetail: string | null;
+    /**
+     * EI-19399662484764592 (read side of WI-7290): the gate's own re-triage verdict for the
+     * CURRENT verdict's candidate — "did the gate already re-run these failing files at tip,
+     * and what did it find?", which is the first question anyone triaging a red actually has.
+     *
+     * Distinct from `retriageStaleTip`/`retriageDetail` above ON PURPOSE. Those come from
+     * `gate_health`, which records the re-triage ONLY when it classified `stale-candidate`
+     * (release-actions.ts nulls them otherwise). That pairing is correct there — it exists so a
+     * stale note cannot outlive the verdict that produced it — but it means the OTHER two
+     * classifications, including `real-red`-at-tip (the gate's strongest statement that a red is
+     * genuinely current), were readable nowhere. Sourced instead from the append-only pipeline
+     * event, which since WI-7290 carries the verdict for every classification.
+     *
+     * ⚠ NULL MEANS NOT AVAILABLE — never "no re-triage happened". It is null when no matching
+     * `green_checkpoint` event is inside the recent-events window, and for any verdict recorded
+     * before WI-7290 landed. Reading a null as evidence about the gate's behaviour is precisely
+     * the mistake this field exists to end (it cost three filings and one retracted MAJOR on the
+     * night of 2026-08-02). When present, `candidate` is guaranteed to match `observedCandidate`
+     * — a verdict from a DIFFERENT run is dropped rather than mis-attributed to this one.
+     */
+    retriageVerdict: RetriageVerdict | null;
     /** EI-18669342433807110: a stale-candidate auto-refire for THIS red is running RIGHT NOW
      *  (`gate_health.inFlightRetriage`, already freshness-checked by `parseInFlightRetriage`).
      *  Feeds Rule 4 of gate-verdict-freshness.ts. Null when no refire is in flight, or its
@@ -276,6 +297,64 @@ export interface GitPipelineSnapshot {
 }
 
 /** The configured merge-resolver model spec (`AGENT_MODELS` → committed floor). */
+/**
+ * EI-19399662484764592: the gate's own re-triage verdict, as recorded on the append-only
+ * pipeline event by WI-7290. See `GitPipelineSnapshot.gate.retriageVerdict` for what null means
+ * (NOT AVAILABLE — never "no re-triage happened").
+ */
+export interface RetriageVerdict {
+  /** `stale-candidate` = the named failing files PASS at tip, so this red is not current.
+   *  `real-red` = they were re-run at tip and still fail — the gate's strongest statement that
+   *  the red is genuine. `unknown` = it could not be measured; `detail` then names WHY. */
+  classification: 'real-red' | 'stale-candidate' | 'unknown';
+  /** The tip the failing files were re-run at (short sha), when there was one. */
+  tip: string | null;
+  /** The classifier's own sentence — for `unknown`, the "tip re-run SKIPPED: <why>" reason. */
+  detail: string;
+  /** The candidate this verdict pertains to. Always equal to the snapshot's `observedCandidate`
+   *  (a non-matching event is dropped, never re-attributed). */
+  candidate: string | null;
+}
+
+/**
+ * Pick the re-triage verdict belonging to `observedCandidate` out of the recent pipeline events.
+ *
+ * Pure + total, and deliberately CONSERVATIVE in one direction: it returns null rather than a
+ * verdict it cannot tie to the candidate under report. Mis-attributing an older run's re-triage
+ * to the current red would be worse than saying nothing — that is the exact failure mode (a
+ * plausible, well-formed, wrong answer) that this whole line of work exists to remove.
+ *
+ * Reads from `recent`, which the snapshot already fetched, so this adds no query to a hot path.
+ */
+export function pickRetriageVerdict(
+  recent: readonly PipelineEventRow[],
+  observedCandidate: string | null,
+): RetriageVerdict | null {
+  if (!observedCandidate) return null;
+  for (const ev of recent) {
+    if (ev.kind !== 'green_checkpoint') continue;
+    const detail = ev.detail as Record<string, unknown> | null | undefined;
+    if (!detail || typeof detail !== 'object') continue;
+    const cand = typeof detail.candidate === 'string' ? detail.candidate : null;
+    // Both sides are stored short (12), but compare by prefix either way so a full-length sha on
+    // one side cannot silently defeat the match and downgrade a real verdict to "unavailable".
+    if (!cand || !(cand.startsWith(observedCandidate) || observedCandidate.startsWith(cand))) continue;
+    const r = detail.retriage as Record<string, unknown> | null | undefined;
+    if (!r || typeof r !== 'object') continue;
+    const classification = r.classification;
+    if (classification !== 'real-red' && classification !== 'stale-candidate' && classification !== 'unknown') {
+      continue;
+    }
+    return {
+      classification,
+      tip: typeof r.tip === 'string' ? r.tip : null,
+      detail: typeof r.detail === 'string' ? r.detail : '',
+      candidate: cand,
+    };
+  }
+  return null;
+}
+
 export function resolverModel(): string {
   try {
     const raw = process.env.AGENT_MODELS;
@@ -485,6 +564,7 @@ export async function gitPipelineSnapshot(
     openConflict = null;
   }
 
+  // EI-19399662484764592: derived from `recent` BELOW — no extra query. See pickRetriageVerdict.
   const [day, week, recent, deploy] = await Promise.all([
     summarizePipelineWindow(slug, 24 * 60 * 60),
     summarizePipelineWindow(slug, 7 * 24 * 60 * 60),
@@ -691,6 +771,14 @@ export async function gitPipelineSnapshot(
       observedCandidate: typeof gateHealth.observedCandidate === 'string' ? gateHealth.observedCandidate : null,
       retriageStaleTip,
       retriageDetail,
+      // EI-19399662484764592: the re-triage verdict for EVERY classification, from the
+      // append-only event rather than the stale-candidate-only gate_health pair above.
+      // Candidate-matched against the verdict we are reporting, so it can never attribute a
+      // different run's re-triage to this red.
+      retriageVerdict: pickRetriageVerdict(
+        recent,
+        typeof gateHealth.observedCandidate === 'string' ? gateHealth.observedCandidate : null,
+      ),
       inFlightRetriage,
       candidateAgeMs: gcCandidateAgeMs ?? null,
       commitsBehindTip: rawCommitsBehindTip,

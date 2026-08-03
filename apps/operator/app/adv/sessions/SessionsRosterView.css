@@ -626,7 +626,16 @@
   font-size: 11px;
   font-weight: 700;
   text-transform: uppercase;
-  color: var(--pc-dossier-dim);
+  /* WI-7310 [owner 2026-08-03]: "very little distinction between the different
+     kinds of text, heading vs. regular". This sat at `--pc-dossier-dim`, i.e. a
+     section heading rendered DIMMER than the body it labels — an inverted
+     hierarchy, where the eye is pulled to the content and has to hunt for the
+     structure. Headings take the brightest ink; the heading now reads as a
+     heading by weight + case + ink together rather than fighting two of them.
+     The popup's filled cap sets its own `--pc-dossier-cap-label` further down
+     and is unaffected — this governs the /adv two-pane, where there is no cap
+     plate to carry the hierarchy. */
+  color: var(--pc-dossier-text);
   display: flex;
   align-items: center;
   gap: 6px;
@@ -932,6 +941,52 @@
   color: var(--pc-dossier-text);
   min-width: 0;
   flex: 1 1 60%;
+}
+
+/* ── TEXT ROLES (WI-7310) ───────────────────────────────────────────────────
+   [owner 2026-08-03] "the difference between `coord:inbox-wake:su-1c1faa38-…`
+   and the other text should be more clear … lots of other places in this pane
+   where there is very little distinction between the different kinds of text".
+
+   The rail mixes two fundamentally different kinds of string on ONE line — an
+   opaque machine identifier and a human sentence — and was setting both in the
+   same face at nearly the same colour, so the only thing separating them was a
+   `·`. The pane already had the right idea and had not generalised it:
+   `.pc-dossier__meta-val` puts machine values in the mono face. These two
+   classes make that implicit convention an explicit, reusable ROLE:
+
+     __id    machine text  -> MONO, brightest ink   (event keys, ids, slugs, paths)
+     __note  human text    -> SANS, muted           (notes, intents, reasons)
+
+   Family is the load-bearing signal, not colour: it survives both themes, both
+   rail contexts, and low-contrast displays, and it degrades gracefully for a
+   reader who cannot separate the two greys. Colour and weight only reinforce it.
+
+   ⚠ letter-spacing MUST stay 0 here. The design system mandates it app-wide and
+   `blocks nonzero letter spacing` lints it with NO allowlist (same note as
+   `.pc-dossier__subhead`), so tracking is NOT available as a differentiator —
+   family + colour + weight + size carry the whole distinction. */
+.pc-dossier__id {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  color: var(--pc-dossier-text);
+  font-weight: 500;
+  /* Long ids must break rather than force the row to scroll sideways. */
+  word-break: break-word;
+}
+.pc-dossier__note {
+  /* Explicit sans: these often sit INSIDE a mono run (an id, then its note), so
+     the face has to be re-asserted rather than inherited. */
+  font-family: var(--font-sans, system-ui, sans-serif);
+  color: var(--pc-dossier-mute);
+  font-weight: 400;
+}
+/* The separator is punctuation between two roles — it should read as neither.
+   Dropping it below both is what stops "id · note" scanning as one string. */
+.pc-dossier__sep {
+  color: var(--pc-dossier-dim);
+  /* Not a semantic character; keep it out of the accessibility tree via the
+     markup's aria-hidden, and keep it from being selected with the id. */
+  user-select: none;
 }
 .pc-dossier__coord-ts {
   margin-left: auto;

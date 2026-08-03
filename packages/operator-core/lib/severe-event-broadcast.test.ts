@@ -2,9 +2,12 @@
  * severe-event-broadcast — the fleet "tell every running agent" rail + the
  * WI-1444 condition lifecycle (conditionKey stamping + resolution supersede).
  * sendMessage mocked. Pins:
- *   • broadcastSevereEvent → to:['*'], default category 'severe-event', no
- *     condition stamp unless conditionKey is passed;
+ *   • broadcastSevereEvent → to:['*'], default category 'severe-event';
  *   • conditionKey stamps extra.condition_key (the inbox-annotation join key);
+ *   • WI-7309: extra.emitter (pid / startedAt / uptimeSec / cwd) is stamped
+ *     UNCONDITIONALLY, and the body carries a rendered trailer — so "which
+ *     process fired this alarm" is a field read rather than an hour of streak
+ *     arithmetic cross-referenced against `ps`;
  *   • broadcastSevereEventResolved → category 'severe-event-resolved' +
  *     extra.resolves_condition + extra.condition_key (same key, so a
  *     resolution row is itself queryable by condition);
@@ -44,15 +47,74 @@ describe('broadcastSevereEvent', () => {
       Record<string, unknown>,
     ];
     expect(identity.ownerId).toBe('system-watchdog');
-    expect(opts).toMatchObject({ to: ['*'], summary: 's', body: 'b', category: 'severe-event' });
-    // No condition stamp unless the caller opts into the lifecycle.
-    expect(opts.extra).toBeUndefined();
+    expect(opts).toMatchObject({ to: ['*'], summary: 's', category: 'severe-event' });
+    // The caller's body is preserved verbatim as the PREFIX; WI-7309 appends the
+    // emitter trailer after it.
+    expect(String(opts.body)).toMatch(/^b/);
+    // No condition stamp unless the caller opts into the lifecycle — but the WI-7309
+    // emitter stamp is unconditional, so `extra` itself is always present now.
+    expect((opts.extra as Record<string, unknown>).condition_key).toBeUndefined();
   });
 
   it('stamps extra.condition_key when conditionKey is passed (WI-1444)', async () => {
     await broadcastSevereEvent({ summary: 's', conditionKey: 'git-sync-stall:papercusp' });
     const [, opts] = M.sendMessage.mock.calls[0] as [unknown, Record<string, unknown>];
-    expect(opts.extra).toEqual({ condition_key: 'git-sync-stall:papercusp' });
+    expect(opts.extra).toMatchObject({ condition_key: 'git-sync-stall:papercusp' });
+  });
+
+  // WI-7309 — the recurrence guard. Without emitter identity, a false alarm from a
+  // long-lived host running frozen pre-fix code is INDISTINGUISHABLE from a real one,
+  // and attribution costs hours. These pin the field so it cannot be silently dropped.
+  describe('emitter identity (WI-7309)', () => {
+    it('stamps extra.emitter unconditionally — no conditionKey, no route, nothing opted in', async () => {
+      await broadcastSevereEvent({ summary: 's' });
+      const [, opts] = M.sendMessage.mock.calls[0] as [unknown, Record<string, unknown>];
+      const emitter = (opts.extra as Record<string, unknown>).emitter as Record<string, unknown>;
+      expect(emitter).toBeDefined();
+      expect(emitter.pid).toBe(process.pid);
+      expect(typeof emitter.cwd).toBe('string');
+      expect(typeof emitter.uptimeSec).toBe('number');
+      expect(emitter.uptimeSec as number).toBeGreaterThanOrEqual(0);
+      // startedAt must be a real ISO instant, not in the future — it is THE discriminator
+      // for "did this process start before the fix landed", so a malformed value is useless.
+      const startedAt = Date.parse(String(emitter.startedAt));
+      expect(Number.isNaN(startedAt)).toBe(false);
+      expect(startedAt).toBeLessThanOrEqual(Date.now() + 1000);
+    });
+
+    it('appends a body trailer naming the pid AND the interpretation rule', async () => {
+      await broadcastSevereEvent({ summary: 's', body: 'original body' });
+      const [, opts] = M.sendMessage.mock.calls[0] as [unknown, Record<string, unknown>];
+      const body = String(opts.body);
+      expect(body).toContain('original body');
+      expect(body).toContain(`pid ${process.pid}`);
+      // The rule is the load-bearing half: raw numbers alone did not prevent the
+      // 2026-08-03 misattribution — a reader has to know what an old start time MEANS.
+      expect(body).toMatch(/PREDATES/);
+      expect(body).toMatch(/no hot-reload/);
+    });
+
+    it('stamps the emitter even when the caller passes no body at all', async () => {
+      await broadcastSevereEvent({ summary: 's' });
+      const [, opts] = M.sendMessage.mock.calls[0] as [unknown, Record<string, unknown>];
+      expect(String(opts.body)).toContain(`pid ${process.pid}`);
+      expect(String(opts.body)).not.toContain('undefined');
+    });
+
+    it('carries the same trailer onto the directed route, not just the broadcast', async () => {
+      M.sendMessage.mockImplementation(
+        async (..._args: unknown[]) => ({ to: ['owner-1'] }) as unknown,
+      );
+      await broadcastSevereEvent({
+        summary: 's',
+        body: 'b',
+        route: { ownerSelector: 'owner-1', reason: 'owns it' },
+      });
+      // call 0 = the '*' broadcast, call 1 = the directed route.
+      expect(M.sendMessage).toHaveBeenCalledTimes(2);
+      const [, routed] = M.sendMessage.mock.calls[1] as [unknown, Record<string, unknown>];
+      expect(String(routed.body)).toContain(`pid ${process.pid}`);
+    });
   });
 
   it('fail-soft: a sendMessage rejection returns false, never throws', async () => {

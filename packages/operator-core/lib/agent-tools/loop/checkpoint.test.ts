@@ -520,3 +520,92 @@ describe('EI-18833865002636933: rescue-by-parse of a tag-serialized structured w
     expect(written).not.toContain('RENDERED:');
   });
 });
+
+// WI-7264 — a carry-note write must not be DISCARDED over one oversized or
+// wrong-shaped sub-field.
+//
+// Measured over 6 days of real transcripts: 80 of 1,152 loop:checkpoint calls were
+// rejected (541,043 argument chars, 7.7% of this tool's total), and the bytes are
+// spent TWICE because the agent rewrites and re-sends the whole note. 53 of those
+// were a sub-field a few chars over its cap; ~97 were the `{status, evidence}` row
+// shape. Both discard a ~6KB note the caller had already paid to transmit.
+//
+// The contract these tests pin: repair what is unambiguously repairable, REPORT any
+// repair that lost bytes, and keep rejecting what is genuinely undeclared (EI-10883).
+describe("WI-7264: repair-don't-refuse — an oversized or wrong-shaped sub-field must not discard the note", () => {
+  describe('row SHAPE coercion (the {status, evidence} confusion)', () => {
+    it('maps {status, evidence} to `verified`, PRESERVING the evidence rather than dropping it', () => {
+      const out = parse({
+        checks: [{ claim: 'gate is green', recheck: 'state:read', status: 'verified', evidence: 'saw 30/30 pass' }],
+      }) as { checks: { claim: string; recheck?: string; verified?: string }[] };
+      // The evidence survives, so the row still renders VERIFIED. This is the exact
+      // data EI-18723223344390510 used to destroy silently.
+      expect(out.checks[0]).toEqual({ claim: 'gate is green', recheck: 'state:read', verified: 'saw 30/30 pass' });
+    });
+
+    it('does NOT invent a verification: a not-yet-verified status maps to no `verified` at all (stays PREDICTED)', () => {
+      const out = parse({ checks: [{ claim: 'deploy landed', status: 'predicted' }] }) as {
+        checks: { claim: string; verified?: string }[];
+      };
+      expect(out.checks[0]).toEqual({ claim: 'deploy landed' });
+      expect(out.checks[0]).not.toHaveProperty('verified');
+    });
+
+    it('accepts the boolean `verified` the schema used to reject, without upgrading false to verified', () => {
+      const t = parse({ checks: [{ claim: 'a', verified: true, evidence: 'observed at 03:00Z' }] }) as {
+        checks: { verified?: string }[];
+      };
+      expect(t.checks[0]!.verified).toBe('observed at 03:00Z');
+      const f = parse({ checks: [{ claim: 'a', verified: false }] }) as { checks: { verified?: string }[] };
+      expect(f.checks[0]).not.toHaveProperty('verified');
+    });
+
+    it('does NOT coerce that shape onto walls — a wall has no `verified`, so the only mapping would DROP data', () => {
+      // Deliberate asymmetry with checks. Coercing here would have to discard the
+      // caller's `evidence` (there is nowhere lossless to put it), which is precisely
+      // the silent-loss failure EI-18723223344390510 was fixed to stop. Failing loudly
+      // is the correct outcome, and walls see ~2 such calls per 6 days vs 97 for checks.
+      expect(() => parse({ walls: [{ claim: 'needs owner key', status: 'verified', evidence: 'asked 02:00Z' }] })).toThrow();
+    });
+
+    it('walls still get the cap RELAXATION even though they get no shape coercion', async () => {
+      const b = body(await call({ did: 'p', walls: [{ claim: 'W'.repeat(700) }] }));
+      expect(b.ok).toBe(true);
+      expect(b.repairs[0]).toMatchObject({ field: 'walls[0].claim', kind: 'truncated' });
+    });
+
+    it('still REJECTS a genuinely undeclared key — EI-10883 is preserved, not weakened', () => {
+      expect(() => parse({ did: 'x', totallyMadeUpKey: 'y' })).toThrow();
+      expect(() => parse({ checks: [{ claim: 'a', nonsenseField: 'b' }] })).toThrow();
+    });
+  });
+
+  describe('soft caps are enforced by TRUNCATION, and every trim is reported', () => {
+    it('writes the note instead of rejecting it when a check row overruns, and reports the trim', async () => {
+      const b = body(await call({ did: 'progress', checks: [{ claim: 'c', recheck: 'x'.repeat(360) }] }));
+      expect(b.ok).toBe(true); // the whole note used to be discarded over this
+      expect(b.repairs).toHaveLength(1);
+      expect(b.repairs[0]).toMatchObject({ field: 'checks[0].recheck', kind: 'truncated' });
+      expect(b.repairs[0].detail).toContain('360');
+    });
+
+    it('truncates an overlong narrative field to the soft cap rather than rejecting the call', async () => {
+      const b = body(await call({ did: 'D'.repeat(9000) }));
+      expect(b.ok).toBe(true);
+      expect(b.repairs[0]).toMatchObject({ field: 'did', kind: 'truncated' });
+      const [, written] = setLoopCarryNote.mock.calls[0] as [unknown, string];
+      // The cap's real job — bounding what re-injects into every future wake — still holds.
+      expect(written.length).toBeLessThan(9000);
+    });
+
+    it('reports NOTHING when everything is within cap (no false positives on the normal path)', async () => {
+      const b = body(await call({ did: 'short', checks: [{ claim: 'c', recheck: 'probe', verified: 'seen' }] }));
+      expect(b.ok).toBe(true);
+      expect(b.repairs).toBeUndefined();
+    });
+
+    it('still rejects a payload past the hard backstop — repair is for overruns, not for absurdity', () => {
+      expect(() => parse({ did: 'D'.repeat(8000 * 4 + 1) })).toThrow();
+    });
+  });
+});

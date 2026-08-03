@@ -279,7 +279,15 @@ export async function buildPlanContextBundle(
   // copies its parent plan's body verbatim, frontmatter included, so
   // `parsed.frontmatter.status` reads the PARENT's lifecycle for every
   // snapshot. `title` stays frontmatter-first (display text, not identity).
-  const status = row.status ?? parsed.frontmatter.status ?? null;
+  // `row.status` is an untyped DB column (`string | null`) — narrow it to the
+  // parser's PlanStatus union before trusting it over the (already-narrow)
+  // frontmatter value; an unrecognized column value falls through instead of
+  // widening PlanBundleInput.status's type.
+  const rowStatus =
+    typeof row.status === 'string' && (PLAN_STATUSES as readonly string[]).includes(row.status)
+      ? (row.status as PlanStatus)
+      : null;
+  const status = rowStatus ?? parsed.frontmatter.status ?? null;
   const text = assemblePlanContextBundleText({
     title,
     slug,

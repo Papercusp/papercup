@@ -680,15 +680,30 @@ export interface PipelinePosition {
      * combined load into a false "still failing" verdict on files that passed
      * cleanly moments later, unloaded.
      *
-     * Sourced from the `dev.gitPipeline` background derived-read cache (recomputed
-     * on roughly every routine tick, ttl 90s — see derived-reads/producers.ts),
-     * NEVER a live systemd probe on THIS call — reading it costs one cheap Postgres
-     * SELECT, not a fork, so it is safe to check on every `dev:pipeline_position`
-     * call, including the no-arg / orient-fold form this field exists for.
+     * TWO sources, combined — see `activeSource` for which one answered:
      *
-     * `null`/`undefined` means NO CACHED SNAPSHOT YET (cold DB, first routine
-     * tick, or the read itself failed) — treat as UNKNOWN, never as "not
-     * active". `{ active: false }` is the genuine "gate is idle" reading.
+     *  1. The green-checkpoint RUN LOCK, read LIVE on this call
+     *     (`isCheckpointRunLockHeldCheap`). Fork-free (one `owner.json` read plus a
+     *     `kill(pid,0)` liveness check), and it sees BOTH origins — every run, manual
+     *     or cron, holds that same lock for its whole duration. This is the
+     *     authoritative liveness answer.
+     *  2. The `dev.gitPipeline` background derived-read cache (recomputed on roughly
+     *     every routine tick, ttl 90s — see derived-reads/producers.ts), which
+     *     supplies the run DETAIL the lock cannot know (candidate, refire provenance).
+     *
+     * EI-19395922387569240 — why the lock read had to be wired in. This leg used to be
+     * cache-ONLY, and `{ active: false }` was documented (and consumed, at the gate
+     * lever) as "MEASURED idle". It was not measured: it was a reading of a snapshot of
+     * unbounded age. Measured 2026-08-03 on the live box, both directions were already
+     * wrong in the DB — the `papercusp-workspace` row was 90.9s old against its own 90s
+     * ttl, and a second row sat 7.03 HOURS stale still asserting `active: true,
+     * candidate f990615f, elapsedSec 314`. A stale `false` is the expensive one: it
+     * routes the gate lever to "wait out the quiet-cut window, then
+     * release:checkpoint-run" — i.e. it recommends firing a manual run into a live one,
+     * the exact 🚨 action CLAUDE.md forbids because it discards an in-flight rescue.
+     *
+     * `null`/`undefined` still means UNKNOWN (no cached snapshot AND no lock reading —
+     * both reads failed) — never "not active".
      *
      * OPTIONAL rather than required (unlike most legs on this interface) so
      * this addition does not force every existing `PipelinePosition` fixture
@@ -698,6 +713,20 @@ export interface PipelinePosition {
      */
     checkpointRunInFlight?: {
       active: boolean;
+      /**
+       * EI-19395922387569240: WHERE `active` came from, because the two sources have very
+       * different trust — the same reasoning as `candidateSource` below.
+       *
+       *  - `'run-lock'` — read LIVE on this call from the run lock, liveness-verified via
+       *    `kill(pid,0)`. `active` is true AS OF NOW, for both origins (manual and cron).
+       *    This is the only reading that earns the word "measured".
+       *  - absent — the cached derived-read answered. `active` is only as good as
+       *    `asOfAgeMs`, which can be arbitrarily large (measured: 7h). Treat an old
+       *    cache-backed reading as a HINT, not a measurement, in EITHER direction.
+       *
+       * Emitted only when the lock answered, so the cache-only reply shape is unchanged.
+       */
+      activeSource?: 'run-lock';
       /** Best-effort candidate sha the live run is judging.
        *
        * EI-19327704778173646 — this used to say "from its log head", which was the bug: a

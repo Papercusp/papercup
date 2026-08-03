@@ -164,27 +164,30 @@ export default defineTool({
         .max(CARRY_TEXT_SOFT_CAP * CARRY_CAP_HARD_MULTIPLE)
         .optional()
         .describe('The single concrete next action for the next wake.'),
+      // WI-7264: walls deliberately get the cap RELAXATION but NOT the `{status,
+      // evidence}` shape coercion that `checks` gets. A wall has no `verified` field,
+      // so there is no lossless place to put an `evidence` string — coercing it would
+      // have to DROP the caller's data, which is the silent-loss failure
+      // (EI-18723223344390510) this whole change exists to avoid re-creating. An
+      // unmappable wall shape keeps failing loudly, and the data says that is fine:
+      // the `{status, evidence}` volume is a checks-row phenomenon (97 calls in 6 days
+      // vs 2 for walls).
       walls: z
-        .preprocess(
-          // Same repair-don't-refuse contract as `checks` below (WI-7264).
-          (v) => (Array.isArray(v) ? v.map((row, i) => coerceCarryRowShape(row, `walls[${i}]`, [])) : v),
-          z
-            .array(
-              z.object({
-                claim: z
-                  .string()
-                  .min(1)
-                  .max(CARRY_ROW_SOFT_CAPS.claim * CARRY_CAP_HARD_MULTIPLE)
-                  .describe('The pending owner-gated action/decision, stated concretely.'),
-                recheck: z
-                  .string()
-                  .max(CARRY_ROW_SOFT_CAPS.recheck * CARRY_CAP_HARD_MULTIPLE)
-                  .optional()
-                  .describe('A concrete command a successor runs to re-check it.'),
-              }),
-            )
-            .max(CARRY_NOTE_MAX_WALLS),
+        .array(
+          z.object({
+            claim: z
+              .string()
+              .min(1)
+              .max(CARRY_ROW_SOFT_CAPS.claim * CARRY_CAP_HARD_MULTIPLE)
+              .describe('The pending owner-gated action/decision, stated concretely.'),
+            recheck: z
+              .string()
+              .max(CARRY_ROW_SOFT_CAPS.recheck * CARRY_CAP_HARD_MULTIPLE)
+              .optional()
+              .describe('A concrete command a successor runs to re-check it.'),
+          }),
         )
+        .max(CARRY_NOTE_MAX_WALLS)
         .optional()
         .describe(
           'Open WALLS (owner-gated commitments) as rows — rendered into EVERY wake + carry brief until cleared. ' +

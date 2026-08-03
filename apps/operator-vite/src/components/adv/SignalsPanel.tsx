@@ -35,6 +35,8 @@ import {
   LearningVisualEmpty,
   LearningVisualError,
 } from "./LearningVisuals";
+import { PERF_INTERACTIONS } from "@/app/_components/perf/perf-marks";
+import { useInteractionSettle } from "@/app/_components/perf/use-interaction-settle";
 
 /** One-line description per TRIGGER (accumulator) lane — mirrors the
  *  signal-accumulator module docs; counts are "new since the last cycle". */
@@ -186,8 +188,13 @@ function formatTime(iso: string | null): string {
 
 export function SignalsPanel({
   onStatus,
+  active = true,
 }: {
   onStatus?: (status: "neutral" | "good" | "warn" | "bad") => void;
+  /** True when this pane is the SELECTED Learning-tab view — see
+   *  useInteractionSettle (WI-7263: this view previously had no settle point
+   *  at all, so a switch to it emitted a begin nothing ever ended). */
+  active?: boolean;
 } = {}) {
   // WI-5417: the browseable digest-history selection — which fired cycle's
   // full digest entries to show. null = newest (the server's default).
@@ -230,6 +237,19 @@ export function SignalsPanel({
   useEffect(() => {
     onStatus?.(status);
   }, [onStatus, status]);
+  // Perf settle point for PERF_INTERACTIONS.learningViewSwitch (WI-7263) —
+  // same contract as the pre-existing sibling settle points (pipeline /
+  // observations / improvements / learnings): gated on the PRIMARY read only,
+  // settles on a fault as well as success, gated on `active` so a warm-but-
+  // inactive pane (kept mounted per LearningTab's warmViews) doesn't emit on
+  // a revisit that never remounts (EI-19383745196363732).
+  const signalsSettled =
+    !sync.loading && (sync.data !== undefined || Boolean(sync.error));
+  useInteractionSettle(
+    PERF_INTERACTIONS.learningViewSwitch,
+    signalsSettled,
+    active,
+  );
 
   const renderSourceChip = (ref: string) => {
     const sep = ref.indexOf(":");

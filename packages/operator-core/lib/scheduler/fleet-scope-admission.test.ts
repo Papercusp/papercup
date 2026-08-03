@@ -782,6 +782,11 @@ describe('fleet scope assignment admission (P-016)', () => {
   // could actually observe (windDown:true, a bare message) is the SAME shape a genuine drain
   // produces. These tests assert the zero-match case gets its own loud, escalate-worthy shape.
   describe('EI-18663622382734446: a spec matching ZERO rows is named loudly, never folded into a bare drain', () => {
+    // EI-19393442073558754: deliberately an ID-ALLOWLIST filter, NOT a plan-scoped one —
+    // a plan/plan-item predicate now gets the softer `nonIssueSpecEmpty` framing (see
+    // that describe block below), since a plan-scoped spec can correctly, structurally
+    // admit ONLY feature-family rows for long stretches (D-009). A stale id allowlist has
+    // no such family correlation, so it stays a genuine, loudly-named spec-authoring bug.
     const issueScope = {
       ownerId: 'su-member',
       fleetSlug: 'p2p-release',
@@ -793,7 +798,7 @@ describe('fleet scope assignment admission (P-016)', () => {
           specVersion: '1.0',
           specId: 'p2p-release-lane',
           revision: 8,
-          view: { filter: { field: 'plan', op: '=' as const, value: 'p2p-release' } },
+          view: { filter: { field: 'id', op: 'in' as const, value: ['WI-9001', 'WI-9002'] } },
           rank: { mode: 'lexicographic' as const, terms: [{ expr: 'age', dir: 'asc' as const }] },
           states: ['open'],
         },
@@ -934,15 +939,38 @@ describe('fleet scope assignment admission (P-016)', () => {
       expect(miss.excludedBreakdownSummary).toMatch(/8 FEATURE-family row/);
     });
 
-    it('falls back to the pre-existing specEmpty/spec_matches_nothing verdict when featureFamilyMatched is null/0/undefined (no behavior change)', () => {
-      for (const fam of [null, 0, undefined] as const) {
+    // EI-19393442073558754: this used to fall back to `spec_matches_nothing` (asserted as
+    // "no behavior change") — that was itself the false-alarm class this ticket fixes.
+    // `planScope`'s filter references `plan` and carries no kind restriction, so a
+    // non-positive featureFamilyMatched must NOT be reported as a spec-authoring bug —
+    // it is an ordinary drain (still windDown:true — correct to stop pulling — just not
+    // framed as "your spec is broken, escalate now").
+    it('reports `ordinary_drain` (never spec_matches_nothing) when featureFamilyMatched confirms the tier-1 pool is ALSO empty (0)', () => {
+      const miss = fleetScopedMiss(planScope, [], {
+        issueBreakdown: zeroIssueFamilyBreakdown,
+        featureFamilyMatched: 0,
+      });
+      expect(miss.reason).toBe('ordinary_drain');
+      expect(miss.reason).not.toBe('spec_matches_nothing');
+      expect(miss.windDown).toBe(true);
+      expect(miss.error).toMatch(/ORDINARY DRAIN/);
+      expect(miss.error).not.toMatch(/SPEC MATCHES NOTHING/);
+      expect(miss.error).toMatch(/genuinely empty right now/);
+      expect((miss as { featureFamilyMatched?: number | null }).featureFamilyMatched).toBe(0);
+      expect(miss.advice).not.toMatch(/ESCALATE to your fleet leader NOW/);
+    });
+
+    it('reports `ordinary_drain` (never spec_matches_nothing) when featureFamilyMatched is unavailable (null/undefined)', () => {
+      for (const fam of [null, undefined] as const) {
         const miss = fleetScopedMiss(planScope, [], {
           issueBreakdown: zeroIssueFamilyBreakdown,
           featureFamilyMatched: fam,
         });
-        expect(miss.reason).toBe('spec_matches_nothing');
+        expect(miss.reason).toBe('ordinary_drain');
         expect(miss.windDown).toBe(true);
-        expect(miss.error).toMatch(/SPEC MATCHES NOTHING/);
+        expect(miss.error).toMatch(/ORDINARY DRAIN/);
+        expect(miss.error).toMatch(/could not be confirmed/);
+        expect((miss as { featureFamilyMatched?: number | null }).featureFamilyMatched).toBeNull();
       }
     });
 
@@ -951,6 +979,16 @@ describe('fleet scope assignment admission (P-016)', () => {
         pausedReason: 'owner pause',
         issueBreakdown: zeroIssueFamilyBreakdown,
         featureFamilyMatched: 8,
+      });
+      expect(miss.paused).toBe(true);
+      expect(miss.reason).toBeUndefined();
+    });
+
+    it('a paused miss suppresses `ordinary_drain` too, same as every other breakdown-derived signal', () => {
+      const miss = fleetScopedMiss(planScope, [], {
+        pausedReason: 'owner pause',
+        issueBreakdown: zeroIssueFamilyBreakdown,
+        featureFamilyMatched: 0,
       });
       expect(miss.paused).toBe(true);
       expect(miss.reason).toBeUndefined();
@@ -967,6 +1005,106 @@ describe('fleet scope assignment admission (P-016)', () => {
       });
       expect(miss.reason).toBe('all_matches_gated');
       expect(miss.reason).not.toBe('issue_family_diagnosis_blind_spot');
+    });
+  });
+
+  // EI-19393442073558754: the narrower scoping of `nonIssueSpecEmpty`/`ordinary_drain` —
+  // gated specifically on a `plan`/`plan_item` predicate (D-009's documented family
+  // correlation), NOT on "any filter lacking a kind restriction". Pins the two edge cases
+  // the plan-predicate heuristic must get right: a NESTED plan predicate is still detected,
+  // and an explicit issue-family kind restriction on a plan-scoped spec overrides it back to
+  // the loud `spec_matches_nothing` (that spec really can only ever match the issue family,
+  // so a genuine 0 there really is a spec-authoring signal).
+  describe('EI-19393442073558754: plan-predicate scoping edge cases', () => {
+    const zeroIssueFamilyBreakdown = {
+      matchedByFilter: 0,
+      claimable: 0,
+      excluded: {
+        taken: 0,
+        claimHold: 0,
+        needsHuman: 0,
+        observationLane: 0,
+        externalBlocker: 0,
+        planLaneReserved: 0,
+        federationDetector: 0,
+        loopNoise: 0,
+        alreadyCompleted: 0,
+        crossMachineRig: 0,
+        blockedDep: 0,
+        cooldown: 0,
+        remoteOrigin: 0,
+      },
+    };
+
+    function scopeWithFilter(filter: FilterNode) {
+      return {
+        ownerId: 'su-member',
+        fleetSlug: 'test-fleet',
+        fleetRole: 'member' as const,
+        workspaceId: 'papercusp-workspace',
+        record: {
+          source: 'fleet' as const,
+          spec: {
+            specVersion: '1.0',
+            specId: 'test-spec',
+            revision: 1,
+            view: { filter },
+            rank: { mode: 'lexicographic' as const, terms: [{ expr: 'age', dir: 'asc' as const }] },
+          },
+          revision: 1,
+          updatedBy: 'su-leader',
+          updatedAt: 'now',
+        },
+      };
+    }
+
+    it('detects a plan predicate NESTED inside an `all` (not just a bare top-level leaf)', () => {
+      const nestedScope = scopeWithFilter({
+        all: [
+          { field: 'harness', op: '=' as const, value: 'papercusp' },
+          { field: 'plan', op: '=' as const, value: 'some-plan' },
+        ],
+      });
+      const miss = fleetScopedMiss(nestedScope, [], {
+        issueBreakdown: zeroIssueFamilyBreakdown,
+        featureFamilyMatched: 0,
+      });
+      expect(miss.reason).toBe('ordinary_drain');
+    });
+
+    it('detects `plan_item` (not just `plan`) as the family-correlated field', () => {
+      const planItemScope = scopeWithFilter({ field: 'plan_item', op: '=' as const, value: 'P-001' });
+      const miss = fleetScopedMiss(planItemScope, [], {
+        issueBreakdown: zeroIssueFamilyBreakdown,
+        featureFamilyMatched: 0,
+      });
+      expect(miss.reason).toBe('ordinary_drain');
+    });
+
+    it('an explicit issue-family kind restriction on a plan-scoped spec overrides back to spec_matches_nothing', () => {
+      const kindRestrictedPlanScope = scopeWithFilter({
+        all: [
+          { field: 'plan', op: '=' as const, value: 'some-plan' },
+          { field: 'kind', op: 'in' as const, value: ['bug', 'change', 'task'] },
+        ],
+      });
+      const miss = fleetScopedMiss(kindRestrictedPlanScope, [], {
+        issueBreakdown: zeroIssueFamilyBreakdown,
+        featureFamilyMatched: 0,
+      });
+      // This spec can ONLY ever match the issue family (its own kind leaf says so), so a
+      // confirmed-empty tier-1 count doesn't matter — the issue-family zero really is the
+      // whole story, and really is a genuine spec-authoring signal.
+      expect(miss.reason).toBe('spec_matches_nothing');
+      expect(miss.reason).not.toBe('ordinary_drain');
+      expect(miss.windDown).toBe(true);
+    });
+
+    it('a filter with NO plan/plan_item predicate anywhere (id-only) keeps the loud spec_matches_nothing verdict', () => {
+      const idOnlyScope = scopeWithFilter({ field: 'id', op: 'in' as const, value: ['WI-1', 'WI-2'] });
+      const miss = fleetScopedMiss(idOnlyScope, [], { issueBreakdown: zeroIssueFamilyBreakdown });
+      expect(miss.reason).toBe('spec_matches_nothing');
+      expect(miss.reason).not.toBe('ordinary_drain');
     });
   });
 

@@ -431,6 +431,39 @@ describe('P-006 reopen clears terminal stamps into payload.reopenHistory', () =>
     expect(row?.terminal_owner).toBe('agC');
     expect(row?.payload?.reopenHistory).toBeUndefined();
   });
+
+  // EI-19393880133572803: the reopen block above clears terminal_owner/ref/authority
+  // but used to leave payload._completionEvidence (and payload._assumptions) live —
+  // so a REOPENED, non-terminal item kept reading as fully verified by a completion
+  // that was just retracted. The evidence must move into the archived reopenHistory
+  // entry, never stay live on a non-terminal row.
+  it('reopen ALSO clears terminalCompletionEvidence (and payload._assumptions), archiving both into reopenHistory', async () => {
+    const bug = await wi.createWorkItem({ kind: 'bug', title: 'b', harness: 'papercup', createdBy: 'agA' });
+    await wi.setWorkItemState(bug.id, 'resolved', {
+      by: 'agC',
+      completionRef: 'agC finished it',
+      completionEvidence: { verifiedHow: 'unit', testsRun: 'vitest run x.test.ts', testResult: 'PASS 3/3' },
+      assumptions: { declared: 'none', resolvedAt: new Date().toISOString() },
+    });
+    const closed = await stampsOf(bug.id);
+    expect((closed?.payload as Record<string, unknown> | null)?._completionEvidence).toMatchObject({
+      verifiedHow: 'unit',
+    });
+
+    const reopened = await wi.setWorkItemState(bug.id, 'open', { by: 'agC' });
+    // The returned row reflects the clear THIS turn, not just the next read.
+    expect(reopened?.terminalCompletionEvidence).toBeNull();
+
+    const row = await stampsOf(bug.id);
+    const payload = row?.payload as Record<string, unknown> | null;
+    expect(payload?._completionEvidence).toBeUndefined();
+    expect(payload?._assumptions).toBeUndefined();
+
+    const history = payload?.reopenHistory as Array<Record<string, unknown>>;
+    expect(history).toHaveLength(1);
+    expect(history[0].terminalCompletionEvidence).toMatchObject({ verifiedHow: 'unit', testResult: 'PASS 3/3' });
+    expect(history[0].assumptions).toMatchObject({ declared: 'none' });
+  });
 });
 
 describe('comment (Threadable) path — work_item[kind=bug] commentIssue', () => {

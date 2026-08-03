@@ -21,6 +21,8 @@ import { useSyncQuery } from "@papercusp/sync";
 import { Radar, RefreshCw } from "lucide-react";
 import type { FrontierSnapshot } from "@papercusp/operator-core/lib/sync-resolver/learning-frontier-read";
 import { snapshotFault } from "./snapshot-fault";
+import { PERF_INTERACTIONS } from "@/app/_components/perf/perf-marks";
+import { useInteractionSettle } from "@/app/_components/perf/use-interaction-settle";
 import {
   LearningPageHeader,
   LearningVisualEmpty,
@@ -82,6 +84,7 @@ export function FrontierPanel({
   hive = "",
   hiveReady = true,
   onStatus,
+  active = true,
 }: {
   /** Pot lens (pot-scope-all-learnings P-005): lanes belonging to another pot
    *  are filtered server-side; empty = workspace-wide (no lens). */
@@ -89,6 +92,9 @@ export function FrontierPanel({
   /** WI-5412 gate: don't fetch until the tab's hive lens is resolved. */
   hiveReady?: boolean;
   onStatus?: (status: "neutral" | "good" | "warn" | "bad") => void;
+  /** True when this pane is the SELECTED Learning-tab view — see
+   *  useInteractionSettle (WI-7263). */
+  active?: boolean;
 } = {}) {
   const sync = useSyncQuery<FrontierSnapshot>({
     queryName: "learning.frontier",
@@ -126,6 +132,19 @@ export function FrontierPanel({
   useEffect(() => {
     onStatus?.(status);
   }, [onStatus, status]);
+  // Perf settle point for PERF_INTERACTIONS.learningViewSwitch (WI-7263) —
+  // same contract as the pre-existing sibling settle points: gated on the
+  // PRIMARY read only, settles on a fault as well as success, gated on
+  // `active` so a warm-but-inactive pane doesn't emit on a revisit that never
+  // remounts (EI-19383745196363732). `enabled: hiveReady` above means settled
+  // correctly stays false while the lens is unresolved.
+  const frontierSettled =
+    !sync.loading && (sync.data !== undefined || Boolean(sync.error));
+  useInteractionSettle(
+    PERF_INTERACTIONS.learningViewSwitch,
+    frontierSettled,
+    active,
+  );
 
   return (
     <section className="pc-learning__section pc-frontier" aria-label="Frontier learning lanes">

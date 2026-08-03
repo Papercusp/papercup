@@ -21,6 +21,8 @@ import { useSyncQuery } from "@papercusp/sync";
 import { HeartPulse, RefreshCw } from "lucide-react";
 import type { MttshVitals } from "@papercusp/operator-core/lib/red-queen/mttsh";
 import { snapshotFault } from "./snapshot-fault";
+import { PERF_INTERACTIONS } from "@/app/_components/perf/perf-marks";
+import { useInteractionSettle } from "@/app/_components/perf/use-interaction-settle";
 import {
   LearningEvidenceRail,
   LearningHeroMetric,
@@ -46,8 +48,12 @@ function dateShort(iso: string | null): string {
 
 export function RedQueenPanel({
   onStatus,
+  active = true,
 }: {
   onStatus?: (status: "neutral" | "good" | "warn" | "bad") => void;
+  /** True when this pane is the SELECTED Learning-tab view — see
+   *  useInteractionSettle (WI-7263). */
+  active?: boolean;
 } = {}) {
   const sync = useSyncQuery<MttshVitals>({
     queryName: "learning.redQueen",
@@ -89,6 +95,18 @@ export function RedQueenPanel({
               : "good",
     );
   }, [classes.length, onStatus, snap, fault.failed, unresolved]);
+  // Perf settle point for PERF_INTERACTIONS.learningViewSwitch (WI-7263) —
+  // same contract as the pre-existing sibling settle points: gated on the
+  // PRIMARY read only, settles on a fault as well as success, gated on
+  // `active` so a warm-but-inactive pane doesn't emit on a revisit that never
+  // remounts (EI-19383745196363732).
+  const redQueenSettled =
+    !sync.loading && (sync.data !== undefined || Boolean(sync.error));
+  useInteractionSettle(
+    PERF_INTERACTIONS.learningViewSwitch,
+    redQueenSettled,
+    active,
+  );
 
   return (
     <section

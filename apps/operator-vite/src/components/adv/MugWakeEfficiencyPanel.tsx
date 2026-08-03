@@ -21,6 +21,8 @@ import { Coffee, RefreshCw } from "lucide-react";
 import { useLexicon } from "@/lib/useLexicon";
 import type { MugWakeEfficiency } from "@papercusp/operator-core/lib/pot/mug-wake-efficiency";
 import { snapshotFault } from "./snapshot-fault";
+import { PERF_INTERACTIONS } from "@/app/_components/perf/perf-marks";
+import { useInteractionSettle } from "@/app/_components/perf/use-interaction-settle";
 import {
   LearningComparisonBars,
   LearningDisclosure,
@@ -45,8 +47,12 @@ function compact(n: number): string {
 
 export function MugWakeEfficiencyPanel({
   onStatus,
+  active = true,
 }: {
   onStatus?: (status: "neutral" | "good" | "warn" | "bad") => void;
+  /** True when this pane is the SELECTED Learning-tab view — see
+   *  useInteractionSettle (WI-7263). */
+  active?: boolean;
 } = {}) {
   const t = useLexicon();
   const sync = useSyncQuery<MugWakeEfficiency>({
@@ -74,6 +80,18 @@ export function MugWakeEfficiencyPanel({
             : "warn",
     );
   }, [onStatus, snap, fault.failed, wakes]);
+  // Perf settle point for PERF_INTERACTIONS.learningViewSwitch (WI-7263) —
+  // same contract as the pre-existing sibling settle points: gated on the
+  // PRIMARY read only, settles on a fault as well as success, gated on
+  // `active` so a warm-but-inactive pane doesn't emit on a revisit that never
+  // remounts (EI-19383745196363732).
+  const mugWakeEfficiencySettled =
+    !sync.loading && (sync.data !== undefined || Boolean(sync.error));
+  useInteractionSettle(
+    PERF_INTERACTIONS.learningViewSwitch,
+    mugWakeEfficiencySettled,
+    active,
+  );
 
   const renderWake = (s: (typeof recent)[number], i: number) => {
     const prompt = s.cacheReadTokens + s.cacheCreationTokens + s.inputTokens;

@@ -88,6 +88,72 @@ export interface SevereEventBroadcast {
 }
 
 /**
+ * WI-7309: identity of the PROCESS that emitted an alarm.
+ *
+ * Stamped on every severe-event broadcast because on this box the emitter's AGE is the
+ * decisive forensic fact and nothing else in the envelope carries it. Long-lived
+ * `tsx bin/hono-host.ts` hosts run from the STAGING tree with no hot-reload, so each
+ * executes a frozen snapshot of the code from whenever it started (measured 2026-08-03:
+ * one at 8.4h, one at 7.8 DAYS). A fix can therefore be committed, green-gated, deployed
+ * and verified live by every available check — `--is-ancestor`, blob identity, served sha
+ * — while one of those hosts keeps paging the PRE-FIX text forever. No deploy reaches it.
+ *
+ * Without these fields attribution has to be reconstructed indirectly, from in-memory
+ * streak arithmetic cross-referenced against `ps` by hand. That cost two agents ~1h on
+ * 2026-08-03 and still ended UNDETERMINED. With them it is a field read.
+ */
+export interface SevereEventEmitter {
+  pid: number;
+  /**
+   * ISO time this PROCESS started — THE discriminator. A process that started before
+   * your fix landed has not loaded it, whatever the deployed sha reports.
+   */
+  startedAt: string;
+  uptimeSec: number;
+  /** cwd of the emitting process: WHICH CHECKOUT it executes from (staging vs release). */
+  cwd: string;
+}
+
+/** Snapshot the current process's identity. Never throws — an alarm must still fire. */
+export function severeEventEmitter(): SevereEventEmitter {
+  let uptimeSec = 0;
+  let cwd = '(unknown)';
+  let pid = -1;
+  try {
+    uptimeSec = Math.max(0, Math.round(process.uptime()));
+  } catch {
+    /* best-effort: an unusable clock must never suppress the alarm */
+  }
+  try {
+    cwd = process.cwd();
+  } catch {
+    /* best-effort */
+  }
+  try {
+    if (typeof process.pid === 'number') pid = process.pid;
+  } catch {
+    /* best-effort */
+  }
+  return { pid, startedAt: new Date(Date.now() - uptimeSec * 1000).toISOString(), uptimeSec, cwd };
+}
+
+/**
+ * One-line trailer appended to the alarm BODY. The structured `extra.emitter` is what SQL
+ * queries; this is what an agent reading coord:inbox actually sees, so it carries the
+ * INTERPRETATION RULE and not only the raw numbers — the rule is the part that was missing.
+ */
+export function renderSevereEventEmitter(e: SevereEventEmitter): string {
+  const h = Math.floor(e.uptimeSec / 3600);
+  const m = Math.floor((e.uptimeSec % 3600) / 60);
+  const age = h > 0 ? `${h}h${String(m).padStart(2, '0')}m` : `${m}m`;
+  return (
+    `\n\n— emitted by pid ${e.pid}, process started ${e.startedAt} (up ${age}), cwd ${e.cwd}. ` +
+    `If that start time PREDATES the fix you are checking, this process never loaded it ` +
+    `(no hot-reload) and no deploy will reach it — restart that host instead of re-investigating the alarm.`
+  );
+}
+
+/**
  * Best-effort directed route: a durable message to `route.ownerSelector` + a
  * best-effort wake of whoever that selector resolves to LIVE right now (mirrors
  * `wakeMug`'s two-halves pattern in pot/placement-watchdog.ts — a direct wake for
@@ -119,23 +185,28 @@ export async function broadcastSevereEvent(ev: SevereEventBroadcast): Promise<bo
   try {
     // No `wake` option ⇒ plain inject (the owner-requested wake=false): lands in every agent's
     // inbox for their next turn, no forced re-invoke storm.
+    // WI-7309: emitter identity is stamped UNCONDITIONALLY — an alarm whose emitter is
+    // unknown is an alarm nobody can attribute, and attribution is the expensive part.
+    const emitter = severeEventEmitter();
+    const body = `${ev.body ?? ''}${renderSevereEventEmitter(emitter)}`;
     await sendMessage(SEVERE_EVENT_IDENTITY, {
       to: ['*'],
       summary: ev.summary,
-      body: ev.body,
+      body,
       category: ev.category ?? 'severe-event',
-      ...(ev.conditionKey
-        ? {
-            extra: {
+      extra: {
+        emitter,
+        ...(ev.conditionKey
+          ? {
               condition_key: ev.conditionKey,
               // WI-6228: carried on the envelope so the condition fold can mark the
               // state one_shot without any per-family knowledge.
               ...(ev.oneShot ? { one_shot: true } : {}),
-            },
-          }
-        : {}),
+            }
+          : {}),
+      },
     });
-    if (ev.route) await deliverRoute(ev.route, ev.summary, ev.body);
+    if (ev.route) await deliverRoute(ev.route, ev.summary, body);
     return true;
   } catch (e) {
 

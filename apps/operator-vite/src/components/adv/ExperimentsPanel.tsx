@@ -26,6 +26,8 @@ import {
   LearningVisualError,
 } from "./LearningVisuals";
 import { snapshotFault } from "./snapshot-fault";
+import { PERF_INTERACTIONS } from "@/app/_components/perf/perf-marks";
+import { useInteractionSettle } from "@/app/_components/perf/use-interaction-settle";
 
 const TIER_TONE: Record<string, string> = {
   offline: "var(--accent-strong, var(--accent))",
@@ -53,8 +55,12 @@ function scoreLabel(n: number | null): string {
 
 export function ExperimentsPanel({
   onStatus,
+  active = true,
 }: {
   onStatus?: (status: "neutral" | "good" | "warn" | "bad") => void;
+  /** True when this pane is the SELECTED Learning-tab view — see
+   *  useInteractionSettle (WI-7263). */
+  active?: boolean;
 } = {}) {
   // WI-6395: the read is now enveloped (`[{ items, unavailable? }]`) so a failed
   // or pre-migration read can say so instead of arriving as an empty list. The
@@ -91,6 +97,18 @@ export function ExperimentsPanel({
   useEffect(() => {
     onStatus?.(status);
   }, [onStatus, status]);
+  // Perf settle point for PERF_INTERACTIONS.learningViewSwitch (WI-7263) —
+  // same contract as the pre-existing sibling settle points: gated on the
+  // PRIMARY read only, settles on a fault as well as success, gated on
+  // `active` so a warm-but-inactive pane doesn't emit on a revisit that never
+  // remounts (EI-19383745196363732).
+  const experimentsSettled =
+    !sync.loading && (sync.data !== undefined || Boolean(sync.error));
+  useInteractionSettle(
+    PERF_INTERACTIONS.learningViewSwitch,
+    experimentsSettled,
+    active,
+  );
 
   const renderRun = (r: (typeof runs)[number]) => {
     const arms = Array.isArray(r.arms) ? r.arms : [];

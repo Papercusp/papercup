@@ -341,7 +341,7 @@ export const GATE_OWNERSHIP_CELL: CellSpec = {
     measurement:
       "the presence oracle's per-owner liveness verdict (resolveSessionStates — heartbeat freshness, wakeability, a pid probe and recorded-session authority), which shares no input with the work-item lease columns `taken_by`/`expires_at` the headline is computed from",
     kills:
-      '"someone is on it", read off a claim row. A lease lapses on a CLOCK, so a claim with a long or absent expiry reads `held` forever — including one taken by an agent that died minutes later. Reporting a dead holder as live ownership is worse than reporting none, because it actively suppresses the next agent from picking the work up.',
+      '"someone is on it", read off a claim row. A lease lapses on a CLOCK, so a claim with a long or absent expiry reads `held` forever — including one taken by an agent that died minutes later. Reporting a dead holder as live ownership is worse than reporting none, because it actively suppresses the next agent from picking the work up. ⚠ CORRECTION 2026-08-03 (D-018): the VERDICT HELPER over this field, ownershipContradicted(), shipped in P-005 counting `recorded` as a dead holder. It is the opposite — `recorded` is authoritatively ALIVE per the session log, merely not inbox-wake-dispatchable, and the oracle classifies it before the heartbeat/pid path precisely so it is never force-ended. So the helper reported LIVE holders as abandoned claims: this falsifier`s own failure mode, sign-flipped. Only `ended` is a confirmed contradiction; `draining`/`suspect` are ambiguous and route to ownershipNeedsLivenessConfirmation(). The field itself was always right — the interpretation of it was not.',
   },
 
   /**

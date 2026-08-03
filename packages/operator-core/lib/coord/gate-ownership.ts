@@ -41,7 +41,10 @@ import {
   type CellThread,
 } from './cell-thread';
 import { resolveSessionStates } from '../agent-tools/coordination/liveness-oracle';
-import type { SessionState } from '../agent-tools/coordination/presence-wakeability';
+import {
+  needsLivenessConfirmation,
+  type SessionState,
+} from '../agent-tools/coordination/presence-wakeability';
 
 /**
  * The condition whose lifetime IS a green-checkpoint stall.
@@ -211,12 +214,53 @@ export function unmeasuredCell(eventKey: string, detail: string): CellOwnership 
  * PURE. Does the lease-derived claim CONTRADICT the presence oracle?
  *
  * The falsifier's verdict in one call, so a consumer never has to re-derive the
- * comparison (and get it subtly wrong by treating `parked` as dead — a parked
- * agent is alive and will wake).
+ * comparison — which is worth a helper precisely because re-deriving it is easy
+ * to get subtly, expensively wrong. Two states look dead and are not:
+ *
+ *   - `parked`   — alive and inbox-wakeable, just idle. The IDEAL dispatch target.
+ *   - `recorded` — ⚠ ALIVE. Authoritatively live per the session log
+ *                  (`adv_sessions.ended_at IS NULL`), merely not yet
+ *                  coord-wake-dispatchable. The oracle classifies it BEFORE the
+ *                  heartbeat/pid path expressly "so it is never force-ended"
+ *                  (liveness-oracle.ts). It covers EVERY console/autonomous agent
+ *                  and any interactive session inside its launch→first-await
+ *                  window — a large, ordinary population, not an exotic case.
+ *
+ * This function shipped in P-005 counting `recorded` as a contradiction. That was
+ * backwards, and backwards in the costly direction: the falsifier exists to stop a
+ * DEAD holder being reported as live ownership, and instead it reported a LIVE
+ * holder as an abandoned claim — an invitation to take work off an agent that is
+ * actively doing it. Fixed 2026-08-03 (P-007), untested until then because the
+ * P-005 suite exercised only `ended` and `parked`.
+ *
+ * ONLY `ended` is a confirmed contradiction: not wakeable AND no authoritative
+ * liveness signal. `draining` and `suspect` are deliberately NOT contradictions —
+ * they are AMBIGUOUS, and the shared oracle says so itself; route them through
+ * {@link ownershipNeedsLivenessConfirmation} and confirm with a required wake
+ * before treating the claim as abandoned.
  */
 export function ownershipContradicted(own: CellOwnership): boolean {
   if (own.claimState !== 'held') return false;
-  return own.holderSessionState === 'ended' || own.holderSessionState === 'recorded';
+  return own.holderSessionState === 'ended';
+}
+
+/**
+ * PURE. Is the holder's liveness too AMBIGUOUS to act on without confirming?
+ *
+ * `true` for `draining` / `suspect` — a stale heartbeat with a wake still armed,
+ * or a process confirmed gone while claims may still need reconciliation. Both
+ * need a fresh required wake before a coordinator concludes anything. `null` when
+ * there is no verdict to judge (no holder, or the oracle could not answer).
+ *
+ * DELEGATES to the presence module's own `needsLivenessConfirmation` rather than
+ * re-listing the states here. That delegation is the actual fix for the bug above:
+ * the defect was not a typo, it was this file inventing its own liveness taxonomy
+ * beside the module that owns one. A future state added to `SessionState` now
+ * reaches this verdict automatically instead of silently defaulting to "alive".
+ */
+export function ownershipNeedsLivenessConfirmation(own: CellOwnership): boolean | null {
+  if (own.claimState !== 'held' || own.holderSessionState === null) return null;
+  return needsLivenessConfirmation(own.holderSessionState);
 }
 
 /**

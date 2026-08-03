@@ -13,8 +13,10 @@ import {
   unownedCell,
   unmeasuredCell,
   ownershipContradicted,
+  ownershipNeedsLivenessConfirmation,
   readGateOwnership,
 } from './gate-ownership';
+import type { SessionState } from '../agent-tools/coordination/presence-wakeability';
 import { noSubjectThread, silentThread, unmeasuredThread } from './cell-thread';
 import type { ConditionObject } from './condition-object';
 
@@ -127,6 +129,55 @@ describe('ownershipContradicted (the P-005 falsifier verdict)', () => {
   it('does NOT fire for a parked holder — parked is alive and will wake', () => {
     const own = { ...toCellOwnership(mkObj({ claimState: 'held', takenBy: 'su-x' }), 'parked') };
     expect(ownershipContradicted(own)).toBe(false);
+  });
+
+  /**
+   * REGRESSION GUARD (P-007). `ownershipContradicted` shipped in P-005 counting
+   * `recorded` as a dead holder. It is the opposite: the oracle classifies
+   * `recorded` BEFORE the heartbeat/pid path expressly so it is never
+   * force-ended — it means authoritatively ALIVE per the session log, merely not
+   * inbox-wake-dispatchable, and it covers every console/autonomous agent plus
+   * any session in its launch→first-await window.
+   *
+   * The bug direction is what makes it worth pinning: the falsifier exists to stop
+   * a dead holder reading as live ownership, and it did the reverse — reported a
+   * LIVE holder as an abandoned claim, which invites taking work off an agent
+   * actively doing it. The P-005 suite tested only `ended` and `parked`, so
+   * nothing caught it. This enumerates ALL SIX states so a future addition to
+   * `SessionState` cannot slip through the same gap.
+   */
+  it('does NOT fire for a `recorded` holder — recorded means ALIVE, not dead', () => {
+    const own = { ...toCellOwnership(mkObj({ claimState: 'held', takenBy: 'su-x' }), 'recorded') };
+    expect(ownershipContradicted(own)).toBe(false);
+  });
+
+  it('classifies every SessionState exactly once, with `ended` the only contradiction', () => {
+    const verdicts = (['live', 'parked', 'draining', 'suspect', 'ended', 'recorded'] as const).map(
+      (s) => [s, ownershipContradicted({ ...toCellOwnership(mkObj({ claimState: 'held', takenBy: 'su-x' }), s) })] as const,
+    );
+    expect(Object.fromEntries(verdicts)).toEqual({
+      live: false,
+      parked: false,
+      draining: false, // ambiguous — confirm, do not conclude
+      suspect: false, // ambiguous — confirm, do not conclude
+      recorded: false, // ALIVE (session-log authority)
+      ended: true, // the ONLY confirmed dead-holder verdict
+    });
+  });
+
+  it('routes the two AMBIGUOUS states to a confirmation verdict instead of a conclusion', () => {
+    const at = (s: SessionState) =>
+      ownershipNeedsLivenessConfirmation({ ...toCellOwnership(mkObj({ claimState: 'held', takenBy: 'su-x' }), s) });
+    expect(at('draining')).toBe(true);
+    expect(at('suspect')).toBe(true);
+    expect(at('live')).toBe(false);
+    expect(at('recorded')).toBe(false);
+    expect(at('ended')).toBe(false);
+    // No verdict to judge ⇒ null, never a boolean guess.
+    expect(ownershipNeedsLivenessConfirmation(unownedCell('green-stall:x'))).toBeNull();
+    expect(
+      ownershipNeedsLivenessConfirmation({ ...toCellOwnership(mkObj({ claimState: 'held', takenBy: 'su-x' }), null) }),
+    ).toBeNull();
   });
 
   it('does NOT fire when the oracle could not answer (null is no contradiction)', () => {
