@@ -57,6 +57,7 @@ interface Args {
   arms: boolean;
   oracle: boolean;
   oracleMaxTerms: number;
+  oracleTurns: number[];
   ceiling: boolean;
   arity: boolean;
   /** Restrict --arity to these replay turns (empty = all). */
@@ -132,7 +133,17 @@ async function runOracle(args: Args): Promise<void> {
 
   console.log('\n## ORACLE — which 2-TERM PAIRS retrieve an answer-bearing record?');
   console.log(
-    `   (ceiling for WI-9273: every pair over ${args.oracleMaxTerms > 0 ? `the first ${args.oracleMaxTerms}` : 'ALL'} candidates)\n`,
+    `   (ceiling for WI-9273: every pair over ${args.oracleMaxTerms > 0 ? `the first ${args.oracleMaxTerms}` : 'ALL'} candidates)`,
+  );
+  // ⚠ A turn-filtered run's tallies are over the SELECTED batches, never over
+  // all 7. Say so in the header: an "N of 7" read off a filtered sweep is the
+  // same false-ceiling shape as counting iterated-instead-of-returned probes —
+  // a number that did not measure what its denominator claims.
+  const oracleWanted = args.oracleTurns.length > 0 ? new Set(args.oracleTurns) : null;
+  console.log(
+    oracleWanted
+      ? `   ⚠ TURN-FILTERED to ${[...oracleWanted].join(',')} — tallies below are over these ${oracleWanted.size} batch(es), NOT all ${REPLAY.length}.\n`
+      : '',
   );
 
   let batchesWithAnyWinner = 0;
@@ -142,6 +153,7 @@ async function runOracle(args: Args): Promise<void> {
   const winnerProfile: Array<{ term: string; df: number; len: number; pos: number; batch: number }> = [];
 
   for (const batch of REPLAY) {
+    if (oracleWanted && !oracleWanted.has(batch.turn)) continue;
     const raw = deriveBatchQuery(batch.calls);
     const allTerms = corpusTerms(raw);
     const picks = {
@@ -283,14 +295,20 @@ async function runOracle(args: Args): Promise<void> {
     }
   }
 
+  // The denominator is the number of batches actually PROBED, not REPLAY.length
+  // — under --oracle-turns those differ, and quoting the full-corpus denominator
+  // over a partial sweep would understate the ratio while looking authoritative.
+  const probedBatches =
+    batchesWithAnyWinner + batchesProvenUnreachable + batchesUndetermined;
   console.log(
     `\n   CEILING (STRICT — the ONLY figure comparable to the shipped bar):` +
-      ` ${batchesWithAnyWinner}/${REPLAY.length} batches have >=1 winning 2-TERM PAIR` +
-      ` (proven unreachable ${batchesProvenUnreachable}, undetermined ${batchesUndetermined})`,
+      ` ${batchesWithAnyWinner}/${probedBatches} batches have >=1 winning 2-TERM PAIR` +
+      ` (proven unreachable ${batchesProvenUnreachable}, undetermined ${batchesUndetermined})` +
+      `${probedBatches === REPLAY.length ? '' : `  [PARTIAL SWEEP — ${probedBatches} of ${REPLAY.length} batches probed]`}`,
   );
   console.log(
     `   SUBSTRING measure (CONTAMINATED — retrieves this investigation's own notes):` +
-      ` ${batchesWithLenientWinner}/${REPLAY.length}. Never act on it; shown only so the gap is visible.`,
+      ` ${batchesWithLenientWinner}/${probedBatches}. Never act on it; shown only so the gap is visible.`,
   );
   console.log(
     `   Read it as a FLOOR when any batch is undetermined: the reachable count can only go UP with more probing.`,
@@ -782,6 +800,14 @@ function parseArgs(argv: readonly string[]): Args {
     // ceiling rather than a floor. A positive cap trades completeness for time
     // and the run labels every batch it truncated as UNDETERMINED.
     oracleMaxTerms: Number(get('--oracle-max-terms') ?? 0),
+    // Restrict the pair sweep to specific turns. The full sweep is ~C(n,2) per
+    // batch across all 7; when the question is about a NAMED batch (t64/t67 are
+    // the only ones term selection can address at all), probing the other five
+    // costs a lot of DB work to re-derive what is already recorded.
+    oracleTurns: (get('--oracle-turns') ?? '')
+      .split(',')
+      .map((s) => Number(s.trim()))
+      .filter((n) => Number.isFinite(n) && n > 0),
     ceiling: argv.includes('--ceiling'),
     arity: argv.includes('--arity'),
     arityTurns: (get('--arity-turns') ?? '')

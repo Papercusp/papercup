@@ -1423,18 +1423,39 @@ export async function searchWorkItems(
   let embedder: ((t: string) => Promise<number[]>) | null = null;
   let embeddingMode: string | null = null;
   if (opts.semantic ?? !process.env.VITEST) {
+    /**
+     * The semantic leg was WANTED. If it cannot run, hand the engine an
+     * embedder that rejects with the reason rather than `null`.
+     *
+     * This is not a trick — it is the only way to say the true thing with the
+     * engine's own vocabulary. `embedder: null` means "no semantic leg was
+     * ever wanted" and reports `status: 'not-run'`, which `summariseLegs`
+     * deliberately does NOT flag as degraded (an intentionally lexical-only
+     * search is healthy). A dead embedder reported that way would therefore
+     * be indistinguishable from `semantic: false` — the precise silent
+     * degradation this plan exists to remove. A rejecting embedder instead
+     * sets `legs.semantic.blocked = 'query embed failed: <reason>'`, which
+     * IS flagged, and carries the reason to the caller.
+     */
+    const unavailable = (why: string) => async (): Promise<number[]> => {
+      throw new Error(why);
+    };
     try {
       const resolve =
         opts.embedderResolver ?? (await import('./agent-tools/search/embedder')).buildQueryEmbedderResolved;
       const resolved = await resolve();
-      // The embedding columns have a fixed width; a query vector in another
-      // (harrier@1024) can't rank against them — skip rather than SQL-error.
-      if (resolved && fitsProseColumns(resolved.dims)) {
+      if (!resolved) {
+        embedder = unavailable('no query embedder resolved (unavailable or disabled)');
+      } else if (!fitsProseColumns(resolved.dims)) {
+        // The embedding columns have a fixed width; a query vector in another
+        // (harrier@1024) can't rank against them — say so rather than SQL-error.
+        embedder = unavailable(`query embedder dims ${resolved.dims} do not fit the prose embedding columns`);
+      } else {
         embedder = resolved.embed;
         embeddingMode = resolved.mode;
       }
-    } catch {
-      // Fail-open: embedder down / model missing ⇒ lexical-only, reported in `legs`.
+    } catch (err) {
+      embedder = unavailable(`query embedder resolution threw: ${(err as Error).message}`);
     }
   }
 

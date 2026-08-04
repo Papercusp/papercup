@@ -1675,15 +1675,80 @@ describe('unified work_items surface (real PG)', () => {
     await wi.createWorkItem({ kind: 'feature', title: 'unrelated thing', harness: 'papercup', createdBy: 'agA' });
 
     const freeze = await wi.searchWorkItems('firefox');
-    expect(freeze.some((w) => w.family === 'issue' && w.title === 'firefox freeze')).toBe(true);
+    expect(freeze.items.some((w) => w.family === 'issue' && w.title === 'firefox freeze')).toBe(true);
 
     const csv = await wi.searchWorkItems('csv download');
-    expect(csv.some((w) => w.family === 'feature' && w.title === 'export to csv')).toBe(true);
+    expect(csv.items.some((w) => w.family === 'feature' && w.title === 'export to csv')).toBe(true);
 
     // kind filter scopes the search to one family
     const onlyFeatures = await wi.searchWorkItems('export', { kind: 'feature' });
-    expect(onlyFeatures.length).toBeGreaterThan(0);
-    expect(onlyFeatures.every((w) => w.family === 'feature')).toBe(true);
+    expect(onlyFeatures.items.length).toBeGreaterThan(0);
+    expect(onlyFeatures.items.every((w) => w.family === 'feature')).toBe(true);
+  });
+
+  // P-016: the point of running on @papercusp/search is that the result can
+  // SAY what ranked it. These pin the reported shape, because a leg report
+  // that quietly reports nothing is exactly as useless as no leg report —
+  // that is the EI-19447237774252790 class the field exists to expose.
+  it('search reports its LEGS: lexical ran; a semantic leg nobody asked for is NOT-RUN, not degraded', async () => {
+    await wi.createWorkItem({ kind: 'bug', title: 'quilzar leg report', harness: 'papercup', createdBy: 'agA' });
+
+    const res = await wi.searchWorkItems('quilzar');
+    expect(res.items.some((w) => w.title === 'quilzar leg report')).toBe(true);
+
+    // The lexical leg genuinely ran AND contributed — not merely "attempted".
+    expect(res.legs.lexical.status).toBe('ran');
+    expect(res.legs.lexical.candidates).toBeGreaterThan(0);
+    // Semantic defaults OFF under vitest, so it was never WANTED. That is
+    // `not-run`, and a deliberately lexical-only search is healthy — the
+    // opposite assertion would train readers to ignore `degraded`.
+    expect(res.legs.semantic.status).toBe('not-run');
+    expect(res.legs.semantic.blocked).toBeNull();
+    expect(res.legs.degraded).toBe(false);
+  });
+
+  it('a WANTED semantic leg that cannot run reports BLOCKED + degraded — not a healthy lexical-only search', async () => {
+    await wi.createWorkItem({ kind: 'bug', title: 'quilzar blocked leg', harness: 'papercup', createdBy: 'agA' });
+
+    // The embedder outage case: semantic asked for, resolver yields nothing.
+    const res = await wi.searchWorkItems('quilzar', { semantic: true, embedderResolver: async () => null });
+
+    // Lexical still answers — fail-open is preserved, the hits are real.
+    expect(res.items.some((w) => w.title === 'quilzar blocked leg')).toBe(true);
+    expect(res.legs.lexical.status).toBe('ran');
+    // ...but the result SAYS the semantic half never happened. This is the
+    // whole point: without it this response is byte-indistinguishable from
+    // the healthy lexical-only one above.
+    expect(res.legs.semantic.status).not.toBe('not-run');
+    expect(res.legs.semantic.blocked).toMatch(/no query embedder resolved/);
+    expect(res.legs.degraded).toBe(true);
+    expect(res.legs.warning).toContain('semantic leg blocked');
+  });
+
+  it('a query matching NOTHING reports a ran-but-empty lexical leg, not a failure', async () => {
+    const res = await wi.searchWorkItems('vorpalthwomp-nonexistent-token');
+    expect(res.items).toEqual([]);
+    expect(res.legs.lexical.status).toBe('ran');
+    expect(res.legs.lexical.candidates).toBe(0);
+    expect(res.legs.lexical.failures).toEqual([]);
+    // Both legs contributing nothing is a no-match query, not a degradation.
+    expect(res.legs.degraded).toBe(false);
+  });
+
+  it('the harness filter runs in SQL, so a scoped search is not starved by out-of-scope matches', async () => {
+    // The pre-P-016 shape fetched a GLOBAL top-N and dropped out-of-harness
+    // rows in JS, so enough foreign matches could push the in-scope one off
+    // the page entirely. Seed exactly that: many foreign, one local.
+    for (let i = 0; i < 12; i++) {
+      await wi.createWorkItem({
+        kind: 'bug', title: `krellon overflow ${i}`, harness: 'other-pot', createdBy: 'agA',
+      });
+    }
+    await wi.createWorkItem({ kind: 'bug', title: 'krellon overflow local', harness: 'papercup', createdBy: 'agA' });
+
+    const res = await wi.searchWorkItems('krellon', { harness: 'papercup', limit: 3, semantic: false });
+    expect(res.items.map((w) => w.title)).toContain('krellon overflow local');
+    expect(res.items.every((w) => w.harness === 'papercup')).toBe(true);
   });
 });
 

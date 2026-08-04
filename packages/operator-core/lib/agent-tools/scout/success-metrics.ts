@@ -28,6 +28,7 @@ import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 
 import { buildProgramSuccessReport, type ProgramSuccessReport } from '../../scout/success-metrics';
+import { resolveConcreteWorkspaceId } from '../../workspace-registry';
 import {
   BG_HOST_RESTART_WATERMARK,
   readRunningGeneration,
@@ -142,6 +143,7 @@ export async function resolveRubricDefaultWindow(): Promise<ResolvedSuccessWindo
 
 export async function runSuccessMetrics(
   args: SuccessMetricsArgs,
+  ctx?: unknown,
 ): Promise<
   | {
       ok: true;
@@ -180,7 +182,25 @@ export async function runSuccessMetrics(
       // undefined) when the rubric itself can't be read.
       resolvedWindow = await resolveRubricDefaultWindow();
     }
+    // EI-19480382468465942: pass the CONCRETE workspace id, or the whole report reads the
+    // wrong ledger. buildProgramSuccessReport resolves the scout tick install_slug via
+    // resolveScoutTickInstallSlug(opts.workspaceId), which SHORT-CIRCUITS to the legacy
+    // '@singleton' constant the moment workspaceId is falsy — so omitting it here silently
+    // pointed the cadence read at a stream that stopped on 2026-08-02T02:04:47Z while the
+    // live writer had moved to install_slug='papercusp-workspace'. The bar then reported
+    // `unknown` ("denominator too small: n=2") forever and could not see a real 17.4%
+    // error day. EI-19329929546171597 fixed the resolver correctly; it was inert because
+    // this caller never fed it. Same shape as the omitted-optional-arg class in
+    // EI-19479875196687941: a fix gated on an optional arg is unfinished until the callers
+    // pass it. resolveConcreteWorkspaceId also falls back to activeWorkspaceId(), so a ctx
+    // without a workspace still lands on a REAL workspace rather than the sentinel — and
+    // it additionally re-arms the `opts.workspaceId ? AND workspace_id = ... : (nothing)`
+    // guards downstream, which were degrading the other legs to unscoped cross-tenant reads.
+    const workspaceId = resolveConcreteWorkspaceId(
+      (ctx as { workspaceId?: string | null } | undefined)?.workspaceId,
+    );
     const report = await buildProgramSuccessReport({
+      workspaceId,
       ...(args.harnessSlug ? { harnessSlug: args.harnessSlug } : {}),
       ...(args.limit != null ? { limit: args.limit } : {}),
       ...(args.tickLimit != null ? { tickLimit: args.tickLimit } : {}),
@@ -229,8 +249,8 @@ export default defineTool({
   requirePrincipal: false,
   agentRoles: [...SU_ROLES],
   args: successMetricsArgs,
-  async handler(args) {
-    const out = await runSuccessMetrics(args);
+  async handler(args, ctx) {
+    const out = await runSuccessMetrics(args, ctx);
     return {
       content: [{ type: 'text', text: JSON.stringify(out, null, 2) }],
       ...(out.ok ? {} : { isError: true }),

@@ -132,8 +132,38 @@ export interface DerivedSnapshotResult<T> {
  */
 const warmingKeys = new Set<string>();
 
+/**
+ * Keys whose warm-on-miss was DECLINED because their own routine owns the fill.
+ * Logged once per key per process: a missing panel is worth explaining, but the
+ * read that finds it missing runs on every 3s sync poll.
+ */
+const declinedWarmKeys = new Set<string>();
+
 /** Fire-and-forget fill for a missed snapshot. Never awaited by a read. */
 function warmMissedSnapshot(key: string, workspaceId: string, harnessSlug: string): void {
+  // EI-19480218051289304: NEVER warm an `excludeFromDefaultSweep` producer from a
+  // read. That flag means "this compute is minutes-scale, too long for the shared
+  // tick" — and the warm path names the key explicitly (`only: [key]`), which by
+  // design OVERRIDES the exclusion (that override is how the producer's own
+  // dedicated routine drives it). So without this guard the flag holds the cost off
+  // the 2-min sweep while leaving it reachable from ANY ordinary viewer of a cold
+  // panel — the same cost on a worse trigger, since a read-path compute is
+  // unscheduled, unbounded in number of distinct callers, and invisible to the
+  // routine bookkeeping. A miss here is filled by that producer's own routine on
+  // its own cadence; until then the panel renders empty, which is the intended
+  // trade and is exactly what the exclusion was chosen for.
+  const excludedProducer = REGISTRY.get(key);
+  if (excludedProducer?.excludeFromDefaultSweep) {
+    if (!declinedWarmKeys.has(key)) {
+      declinedWarmKeys.add(key);
+      console.warn(
+        `[derived-reads] snapshot "${key}" is missing; NOT warming from a read — ` +
+          `excludeFromDefaultSweep producers are filled only by their own dedicated routine.`,
+      );
+    }
+    return;
+  }
+
   const guard = `${workspaceId}::${harnessSlug}::${key}`;
   if (warmingKeys.has(guard)) return;
   warmingKeys.add(guard);
@@ -149,6 +179,7 @@ function warmMissedSnapshot(key: string, workspaceId: string, harnessSlug: strin
 /** Test seam — drop in-flight warm-up guards between cases. */
 export function __clearWarmingKeysForTest(): void {
   warmingKeys.clear();
+  declinedWarmKeys.clear();
 }
 
 const MISSING_META: DerivedSnapshotMeta = {

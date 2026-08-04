@@ -499,6 +499,61 @@ describe('producerVersion downgrade guard (WI-7226)', () => {
     expect(meta.missing).toBe(true);
     await vi.waitFor(() => expect(compute).toHaveBeenCalled());
   });
+
+  // EI-19480218051289304. The warm path names its key explicitly (`only: [key]`),
+  // and `only` OVERRIDES the exclusion by design — that override is how the
+  // producer's own routine drives it. So the flag that keeps a minutes-scale
+  // compute off the shared 2-min tick left it reachable from any ordinary reader
+  // of a cold panel: same cost, worse trigger (unscheduled, once per distinct
+  // caller, invisible to the routine bookkeeping).
+  it('a MISS on an excludeFromDefaultSweep producer does NOT warm — only its own routine fills it', async () => {
+    const compute = vi.fn().mockResolvedValue(['expensive']);
+    registerDerivedRead({
+      key: 'test.slow',
+      ttlMs: 12 * 60 * 60_000,
+      producerVersion: 1,
+      scope: 'workspace',
+      excludeFromDefaultSweep: true,
+      compute,
+    });
+    sqlResults = [[], []];
+
+    const { payload, meta } = await readDerivedSnapshot('test.slow');
+
+    // The read behaves exactly as before: an immediate, honest miss.
+    expect(payload).toBeNull();
+    expect(meta.missing).toBe(true);
+    // What must NOT happen is the background fill. Asserted twice: not synchronously,
+    // and not on a later tick either (the warm is fire-and-forget, so a bare
+    // `not.toHaveBeenCalled()` here would also pass while the compute was merely
+    // pending — the very shape this guard exists to prevent).
+    expect(compute).not.toHaveBeenCalled();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(compute).not.toHaveBeenCalled();
+    // Falsifiability control: the SAME miss on a non-excluded producer DOES warm —
+    // proven by 'kicks a BACKGROUND warm-up on a miss without awaiting it' above,
+    // which is identical but for `excludeFromDefaultSweep`. Without that pairing
+    // this test would still pass if warming broke outright.
+  });
+
+  it('still warms a producer that merely has a LONG ttl — duration is the criterion, not cadence', async () => {
+    // The guard keys off the explicit opt-out, never off ttl. A 12h-ttl producer
+    // that never asked to leave the sweep must keep healing a cold DB on its own.
+    const compute = vi.fn().mockResolvedValue(['x']);
+    registerDerivedRead({
+      key: 'test.slow',
+      ttlMs: 12 * 60 * 60_000,
+      producerVersion: 1,
+      scope: 'workspace',
+      compute,
+    });
+    sqlResults = [[], [], []];
+
+    const { meta } = await readDerivedSnapshot('test.slow');
+
+    expect(meta.missing).toBe(true);
+    await vi.waitFor(() => expect(compute).toHaveBeenCalled());
+  });
 });
 
 describe('refreshDerivedReads producer ordering (WI-5471)', () => {

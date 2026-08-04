@@ -14,6 +14,7 @@ const mocks = vi.hoisted(() => ({
   readRunningGeneration: vi.fn(),
   resolveWatermarkRef: vi.fn(),
   getRubric: vi.fn(),
+  resolveConcreteWorkspaceId: vi.fn(),
 }));
 
 vi.mock('../../scout/success-metrics', () => ({
@@ -31,6 +32,13 @@ vi.mock('../../scout/generation-watermark', async (importOriginal) => {
 });
 
 vi.mock('../../rubrics', () => ({ getRubric: mocks.getRubric }));
+
+// EI-19480382468465942: stubbed so the workspace-id guard below never reads real workspace
+// config (keeping this file's "no real IO" property), and so the ctx→resolver→report thread
+// is observable at both ends. The stub returns a value distinguishable from every real slug.
+vi.mock('../../workspace-registry', () => ({
+  resolveConcreteWorkspaceId: mocks.resolveConcreteWorkspaceId,
+}));
 
 import {
   runSuccessMetrics,
@@ -56,6 +64,51 @@ describe('blender:success-metrics window-floor args (EI-12148) + rubric-derived 
     // Default: no rubric found — every test exercises the EI-12146 rubric-derived
     // default path explicitly instead, via its own mockResolvedValueOnce.
     mocks.getRubric.mockReset().mockResolvedValue(null);
+    mocks.resolveConcreteWorkspaceId.mockReset().mockReturnValue('ws-resolved');
+  });
+
+  // EI-19480382468465942 — the report must never be built without a concrete workspaceId.
+  // buildProgramSuccessReport resolves the scout tick install_slug through
+  // resolveScoutTickInstallSlug(opts.workspaceId), which short-circuits to the legacy
+  // '@singleton' constant when that is falsy. Omitting it therefore pointed the cadence
+  // read at a DEAD ledger stream (last tick 2026-08-02T02:04:47Z) while the live writer
+  // had moved to install_slug='papercusp-workspace' — and the failure was silent: the bar
+  // reported status:'unknown' ("denominator too small") forever instead of saying the
+  // stream it watched had stopped. Assert the WIRING, because the symptom is invisible.
+  describe('workspace scoping (EI-19480382468465942)', () => {
+    it('threads the ctx workspaceId through the resolver into the report options', async () => {
+      const out = await runSuccessMetrics({}, { workspaceId: 'ws-from-ctx' });
+      expect(out.ok).toBe(true);
+      // Leg 1: ctx's value actually reaches the resolver (not silently dropped).
+      expect(mocks.resolveConcreteWorkspaceId).toHaveBeenCalledWith('ws-from-ctx');
+      // Leg 2: the RESOLVED value — not the raw ctx value — is what the report is built on.
+      expect(mocks.buildProgramSuccessReport).toHaveBeenCalledWith(
+        expect.objectContaining({ workspaceId: 'ws-resolved' }),
+      );
+    });
+
+    it('still supplies a concrete workspaceId when ctx carries none (the fallback must not be undefined)', async () => {
+      // The regression this guards is not "ctx was missing" — it is "workspaceId reached
+      // buildProgramSuccessReport as undefined", which is what arms the '@singleton'
+      // short-circuit. A ctx-less call must still resolve to a real workspace.
+      const out = await runSuccessMetrics({}, undefined);
+      expect(out.ok).toBe(true);
+      expect(mocks.resolveConcreteWorkspaceId).toHaveBeenCalledWith(undefined);
+      const opts = mocks.buildProgramSuccessReport.mock.calls[0]?.[0] as { workspaceId?: unknown };
+      expect(opts.workspaceId).toBe('ws-resolved');
+      expect(opts.workspaceId).toBeTruthy();
+    });
+
+    it('CONTROL: a falsy resolved workspaceId is exactly the shape that armed the bug', async () => {
+      // Deliberately wrong resolver, proving the assertions above are falsifiable rather
+      // than trivially true — if the production code stopped passing workspaceId, the
+      // options object would look like THIS, and the two tests above would fail.
+      mocks.resolveConcreteWorkspaceId.mockReturnValue('');
+      await runSuccessMetrics({}, { workspaceId: '*' });
+      const opts = mocks.buildProgramSuccessReport.mock.calls[0]?.[0] as { workspaceId?: unknown };
+      expect(opts.workspaceId).toBe('');
+      expect(opts.workspaceId).toBeFalsy();
+    });
   });
 
   it('schema accepts sinceMs and watermarkRef', () => {
