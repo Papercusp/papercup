@@ -35,18 +35,14 @@ vi.mock('./loopback-fetch', () => ({
   readJsonBody: async () => ({ projects: h.slugs.map((slug) => ({ slug })) }),
 }));
 
-import { listAgentsAcrossWorkspace } from './agents-list';
+import { listAgentsAcrossWorkspace, resetAgentsListCacheForTest } from './agents-list';
 
-const CACHE_KEY = Symbol.for('papercusp.agentsAcrossWorkspaceCache');
-function resetCache() {
-  const g = globalThis as unknown as Record<symbol, { expires: number; inflight: unknown; value: unknown } | undefined>;
-  const c = g[CACHE_KEY];
-  if (c) {
-    c.expires = 0;
-    c.inflight = null;
-    c.value = null;
-  }
-}
+// Reset THROUGH the module's exported seam, never by poking
+// `globalThis[Symbol.for('papercusp.agentsAcrossWorkspaceCache')]`. The old form
+// targeted the storage LOCATION, so once the cache moved behind pinModuleState
+// its `if (c)` guard matched nothing and reset NOTHING — the suite kept
+// compiling while cached state leaked between tests (EI-19479108855357092).
+const resetCache = resetAgentsListCacheForTest;
 
 beforeEach(() => {
   h.inFlight = 0;

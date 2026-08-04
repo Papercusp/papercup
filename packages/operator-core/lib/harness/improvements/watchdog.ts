@@ -1498,17 +1498,39 @@ export function collectServiceDownSignals(
 ): WatchdogSignal[] {
   return results
     .filter((r) => !r.up && r.present !== false)
-    .map((r) => ({
-      source: 'service-down' as const,
-      key: r.name,
-      title: `Service ${r.name} is down`,
-      body:
-        `Watchdog signal (service-down): the service-health monitor reports "${r.name}" DOWN` +
-        (r.status ? ` (HTTP ${r.status})` : ' (no response)') +
-        (r.note ? ` — ${r.note}` : '') +
-        '.',
-      severity: 'major' as const,
-    }));
+    .map((r) =>
+      // EI-19465075959589134: a WEDGE gets its OWN key, so it files and dedupes
+      // as a distinct condition instead of merging into whatever long-standing
+      // "Service X is down" noise already exists — the two need opposite
+      // responses, and the wedge is the one nothing else on the box can see.
+      // This detection runs in a DIFFERENT process from the wedged one (the
+      // :3070 probe observing :3170), which is the point: an in-process guard
+      // rides the same blocked loop it is meant to police.
+      r.wedged
+        ? {
+            source: 'service-down' as const,
+            key: `${r.name}:wedged`,
+            title: `Service ${r.name} is WEDGED (listening, not accepting)`,
+            body:
+              `Watchdog signal (service-down): "${r.name}" is still LISTENING but is not accepting connections` +
+              (r.acceptQueue ? ` — ${r.acceptQueue.pending} queued unaccepted of a ${r.acceptQueue.backlog} backlog` : '') +
+              '. Its event loop is blocked, so every other liveness signal still reads healthy: the unit is active, the pid is alive, and a TCP connect succeeds (the kernel completes the handshake without the process). ' +
+              'A restart RECOVERS it but destroys the evidence — capture logs and RSS FIRST, or the cause survives the restart.' +
+              (r.note ? ` Probe note: ${r.note}` : ''),
+            severity: 'major' as const,
+          }
+        : {
+            source: 'service-down' as const,
+            key: r.name,
+            title: `Service ${r.name} is down`,
+            body:
+              `Watchdog signal (service-down): the service-health monitor reports "${r.name}" DOWN` +
+              (r.status ? ` (HTTP ${r.status})` : ' (no response)') +
+              (r.note ? ` — ${r.note}` : '') +
+              '.',
+            severity: 'major' as const,
+          },
+    );
 }
 
 /**

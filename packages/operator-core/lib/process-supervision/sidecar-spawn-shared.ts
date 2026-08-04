@@ -5,8 +5,9 @@
  * Extracted from the THIRD near-identical clone of the sidecar spawn +
  * respawn-with-backoff + graceful-stop shape:
  *   - sync/hyperbee/substrate-sidecar-spawn.ts   (scope-isolated, IPC handle transfer)
- *   - fleet/spawner-sidecar-spawn.ts             (simplest — no respawn/circuit-breaker)
+ *   - fleet/spawner-sidecar-spawn.ts             (simplest — but it DOES respawn)
  *   - inference-gateway/gateway-sidecar-spawn.ts (port-probe adoption, no scope isolation)
+ *   - memory/embed-sidecar-spawn.ts              (also consumes these primitives)
  *
  * WHY these live here rather than being fully merged into one "ManagedSidecar"
  * orchestrator class: the three spawners genuinely differ in ways that are not
@@ -14,7 +15,12 @@
  * IPC handle-transfer channel + a self-recursive scope-failure fallback; gateway
  * needs a TCP-listening ADOPTION probe (don't double-bind an externally-owned
  * port) + a continuous exit-driven respawn loop with re-probe-before-respawn;
- * spawner has no respawn/circuit-breaker at all. Forcing all of that into one
+ * spawner is the simplest orchestration of the set — but it DOES respawn
+ * (MAX_RESPAWN_ATTEMPTS=5 over a 5-min sliding window with a give-up circuit
+ * breaker, spawner-sidecar-spawn.ts:53-87). This line claimed "no
+ * respawn/circuit-breaker at all" until 2026-08-04; it was false, and it was
+ * read and believed, producing a wrong risk assessment of the bg-host cgroup
+ * work (EI-19479764372783341). Forcing all of that into one
  * mega-config would trade three readable, independently-testable modules for one
  * harder-to-verify one, for a subsystem where a regression means a fleet-wide
  * agent-spawn / sync / inference outage. So this module extracts exactly the
@@ -184,8 +190,17 @@ export function isSidecarEnabledFromEnv(
 // ── respawn backoff + sliding-window circuit breaker ────────────────────────
 
 /** Backoff before respawn attempt N (1-based) within the window: 1s·2^(N−1),
- *  capped at `capMs` (default 30s). Identical formula across all three
- *  respawn-capable spawners (spawner-sidecar-spawn.ts has no respawn at all). */
+ *  capped at `capMs` (default 30s). Identical formula across all FOUR
+ *  respawn-capable spawners: embed-sidecar-spawn, substrate-sidecar-spawn,
+ *  gateway-sidecar-spawn AND fleet/spawner-sidecar-spawn.
+ *
+ *  ⚠ This said "all three … (spawner-sidecar-spawn.ts has no respawn at all)"
+ *  until 2026-08-04, which was false and self-contradicting: that file calls
+ *  THIS function at :78 and has MAX_RESPAWN_ATTEMPTS=5 over a 5-min sliding
+ *  window with a give-up circuit breaker (:53-87). Corrected by counting the
+ *  callers rather than trusting the sentence — it had already been used to
+ *  justify a wrong risk assessment of the bg-host cgroup fix
+ *  (EI-19479764372783341). Re-count before editing this line. */
 export function respawnBackoffMs(attemptInWindow: number, capMs = 30_000): number {
   return Math.min(1000 * 2 ** Math.max(0, attemptInWindow - 1), capMs);
 }

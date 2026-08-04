@@ -74,6 +74,35 @@ Split the terminal states:
 The abandoned signal is still worth surfacing — a re-filing of abandoned work deserves
 attention, in either direction — but it must never drive a retire recommendation.
 
+#### ⚠ CORRECTION (2026-08-04): `dropped` is AMBIGUOUS, not uniformly "not built"
+
+The rule above is stated too absolutely, and I wrote it that way. A measured
+counterexample: `EI-7992 / 8032 / 8182 / 8187 / 8195 / 8309 / 8337 / 8368` are all
+`dropped` — and every one was dropped **because the mechanism was already fully
+shipped**, which is the *strongest* possible prior art. Under the rule as written the
+screen discards its own best evidence.
+
+The original example survives: `EI-6805` really was dropped for want of an
+implementer. So `dropped` genuinely carries **both** meanings, and the state column
+alone cannot tell them apart. Treat a bare `dropped` as **undecidable**, never as a
+negative.
+
+**The disambiguator is `terminal_completion_ref`.** The eight above carry a full
+verdict in it — *"DROPPED — premise DEAD, mechanism SHIPPED"* plus the symbols that
+prove it. An abandoned-for-want-of-effort item has nothing there.
+
+```
+dropped + substantive terminal_completion_ref asserting the mechanism exists ⇒ prior art
+dropped + empty/absent                                                        ⇒ presumptively abandoned
+```
+
+⚠ **Field trap, and it fails silently.** On all eight, `terminal_reason` is **NULL**
+while `terminal_completion_ref` holds the entire verdict. A query that reads
+`terminal_reason` gets a well-formed "no reason recorded" for an item whose reason is
+sitting in the adjacent column — the same shape as the `payload._ei` severity trap:
+the wrong accessor returns NULL for every row without erroring, so the answer looks
+clean and is wrong.
+
 ### 3. An OPEN sibling cited as "existing" is duplication, not prior art
 
 An `existing EI-XXXX` citation means nothing until you resolve **that item's state**.
@@ -95,6 +124,81 @@ the idea merely mentions.** They exist in the tree by definition. Their presence
 nothing about whether the proposed mechanism exists.
 
 Lexical hits are context for a reader. They must not drive a verdict.
+
+## A fifth class, and it is a FALSE NEGATIVE — the screen blind to its own motivating case
+
+> The title of this page undercounts. The four above are false **positives** (the screen
+> claims prior art that is not there). This one is the mirror, and it is more dangerous,
+> because a false positive gets argued with and a false negative gets believed.
+
+`codeExistenceCheck` + `extractDistinctiveVocabulary`
+(`packages/operator-core/lib/harness/improvements/triage-core.ts:186-247`) was built
+on 2026-07-27 to catch Scout ideas proposing already-shipped mechanisms. Its own
+header comment cites the incident it was built from, naming `EI-8337` and `EI-8167`
+and the symbols `edgeThrottled`, `egressPool`, `edgeThrottleBare429Streak`.
+
+Measured against that exact incident — the 8-item cluster hand-adjudicated DROP, prior
+art proven by those very symbols:
+
+```
+cluster (known prior art):   0/8 ideas fire =  0.0%    tokens extracted: 0
+control (40 ordinary ideas): 18/40 fire     = 45.0%    tokens/idea: 1.3
+```
+
+**Zero tokens, not zero matches.** No query was ever formed. Verified against the
+bodies rather than inferred: 0 backticks and 0 camelCase identifiers in \~2.4KB each.
+Retrieval was never the problem — `edgeThrottled` is in 17 files, `egressPool` in 12.
+
+**The guard cannot detect the incident it was written for.**
+
+### Why it happens, and why it generalises
+
+The extractor requires the **author** to have written the identifier. Scout
+analogical-lens ideas are generated from a friction digest in prose — "header
+classification", "blunt binary global pause". The target class, by construction, never
+contains the vocabulary that would falsify it. The peer who killed the cluster by hand
+said exactly why his grep worked and the machine's could not:
+
+> *"I found it by grepping the DOMAIN word (`429`, `edgeThrottle`), not the proposal's
+> own vocabulary."*
+
+That domain knowledge is human-supplied. It is the whole difference, and it is not
+mechanisable by extracting from the text.
+
+### The transferable rule: a retrieval screen has TWO failure surfaces, and only one gets measured
+
+Everyone measures the **precision of the hits**. Almost nobody measures whether a query
+was ever formed. Extraction failure is invisible to every precision metric, because a
+leg that extracts nothing produces no hits to be wrong about — it produces a clean
+`{ tokens: [], matches: [] }`, **shape-identical to "I checked and found no prior
+art."** That is the
+[a-check-that-never-ran-must-not-read-as-passed](/internal/docs/agent-insights/a-check-that-never-ran-must-not-read-as-passed)
+class one turn worse: not a check that ran at low recall, but one that ran at **zero**
+recall and reports the shape of success.
+
+**The diagnostic is cheap and it is not optional: measure firing rate on a LABELLED
+POSITIVE set and on a control.**
+
+* fires on known-positives **≫** control ⇒ the leg discriminates
+* fires **equally** on both ⇒ it filters nothing (the plan-slug failure — see
+  [Before tuning a retrieval leg](#before-tuning-a-retrieval-leg-measure-whether-it-filters-or-merely-ranks))
+* fires **less** on known-positives than on controls ⇒ **inverted**, and worse than
+  absent: here it would have greenlit the entire cluster while flagging `main`,
+  `score`, `staging`, `ToolSearch` as evidence
+
+A single number on one population cannot distinguish these three. The control is the
+whole measurement.
+
+### Dead code is what let it survive
+
+The three functions had **zero callers and zero tests** anywhere in the tracked repo.
+Nothing ever ran them, so nobody ever saw the zero. A guard that is written, exported,
+carefully documented and never wired reads to the next person as *coverage* — the class
+looks handled, so nobody re-checks it. Filed as `EI-19480829864185465`.
+
+**If you take one thing from this section:** before trusting any screen, run it against
+a case you already know the answer to. Prefer the case that motivated it — that is the
+one everyone assumes is covered.
 
 ## The methodological lesson, which outlived the numbers
 

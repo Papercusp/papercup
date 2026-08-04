@@ -8,6 +8,7 @@
  * schema changes without re-implementing them here.
  */
 
+import { pinModuleState } from '@papercusp/module-singleton';
 import { loopbackFetch, readJsonBody } from './loopback-fetch';
 
 interface AgentRow {
@@ -39,13 +40,27 @@ interface AgentsCacheEntry {
   inflight: Promise<AgentRow[]> | null;
   value: AgentRow[] | null;
 }
-const __agentsCacheKey = Symbol.for('papercusp.agentsAcrossWorkspaceCache');
-type AgentsCacheGlobals = typeof globalThis & { [__agentsCacheKey]?: AgentsCacheEntry };
-const __agentsCache: AgentsCacheEntry = (() => {
-  const g = globalThis as AgentsCacheGlobals;
-  if (!g[__agentsCacheKey]) g[__agentsCacheKey] = { expires: 0, inflight: null, value: null };
-  return g[__agentsCacheKey]!;
-})();
+// Pinned through @papercusp/module-singleton rather than a hand-rolled
+// `globalThis[Symbol.for(...)]` pair: hand-rolling still fixes correctness, but
+// the key is invisible to listModuleDuplications(), which then reports a
+// confident `[]` while this module is split (EI-19479108855357092).
+const __agentsCache = pinModuleState<AgentsCacheEntry>(
+  '@papercusp/operator-core.agentsAcrossWorkspaceCache',
+  () => ({ expires: 0, inflight: null, value: null }),
+);
+
+/**
+ * Reset the cache between tests THROUGH the module's own seam.
+ *
+ * Do not reach for `globalThis[Symbol.for(...)]` in a test: that targets the
+ * storage LOCATION rather than this module's state, so it keeps compiling and
+ * silently resets NOTHING once the state moves (EI-19479108855357092).
+ */
+export function resetAgentsListCacheForTest(): void {
+  __agentsCache.expires = 0;
+  __agentsCache.inflight = null;
+  __agentsCache.value = null;
+}
 
 /**
  * Bounded-concurrency map — caps in-flight work at `limit`, preserving input

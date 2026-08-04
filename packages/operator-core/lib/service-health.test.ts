@@ -916,6 +916,36 @@ describe('wedged-vs-down detection', () => {
     }
   });
 
+  it('escalates a wedge under its OWN watchdog key, not merged into the generic down signal', () => {
+    // Detection here happens in a DIFFERENT process from the wedged one (:3070
+    // probing :3170) — which is the whole point, since an in-process guard rides
+    // the same blocked loop it is meant to police.
+    const [signal] = collectServiceDownSignals([
+      {
+        name: 'staging-api',
+        up: false,
+        status: null,
+        latencyMs: 3000,
+        wedged: true,
+        acceptQueue: { pending: 97, backlog: 511 },
+      },
+    ]);
+    // A distinct key is what stops it deduping into whatever long-standing
+    // "Service staging-api is down" row already exists.
+    expect(signal.key).toBe('staging-api:wedged');
+    expect(signal.title).toContain('WEDGED');
+    expect(signal.body).toContain('97 queued unaccepted');
+    expect(signal.body).toMatch(/capture logs .*FIRST|FIRST/i);
+  });
+
+  it('leaves a plain down service on the ORIGINAL key — the wedge branch must not relabel outages', () => {
+    const [signal] = collectServiceDownSignals([
+      { name: 'scout', up: false, status: 503, latencyMs: 4 },
+    ]);
+    expect(signal.key).toBe('scout');
+    expect(signal.title).toBe('Service scout is down');
+  });
+
   it('probeEndpoint leaves an ordinary DOWN probe unlabelled — no wedge, no wedge note', async () => {
     const listener = await silentListener();
     try {

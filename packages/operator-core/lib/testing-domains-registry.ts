@@ -1616,6 +1616,7 @@ defineTestDomain({
         { kind: 'shell', cmd: 'bash', args: ['papercusp-desktop/bin/lib/rig-wait-converged.selftest.sh'], label: 'rig wait-converged: non-numeric psql is not a false PASS (WI-6181)' },
         { kind: 'shell', cmd: 'bash', args: ['papercusp-desktop/bin/lib/roster-scope.selftest.sh'], label: 'roster-gate workspace + pot scoping (WI-6181)' },
         { kind: 'shell', cmd: 'bash', args: ['papercusp-desktop/bin/lib/deployed-state-guards.selftest.sh'], label: 'rig deployed-state: uniform sidecar + build provenance + DHT isolation (WI-6212)' },
+        { kind: 'shell', cmd: 'bash', args: ['papercusp-desktop/bin/lib/inno-legacy-reaper.selftest.sh'], label: 'Windows installer legacy-uninstall reaper: ghosts reaped, LIVE entries spared (WI-4490)' },
       ],
     },
   ],

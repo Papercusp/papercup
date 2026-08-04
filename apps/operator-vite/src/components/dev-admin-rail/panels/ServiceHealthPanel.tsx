@@ -17,6 +17,14 @@ interface ProbeResult {
   present?: boolean;
   note?: string;
   recentErrors?: number;
+  /**
+   * EI-19465075959589134 — listening, but not accepting: a live process whose
+   * event loop is blocked. Rendered distinctly from "down" because the two want
+   * opposite responses (down ⇒ start it; wedged ⇒ something is blocking the
+   * loop, and a restart only buys time while destroying the evidence).
+   */
+  wedged?: boolean;
+  acceptQueue?: { pending: number; backlog: number };
 }
 
 export default function ServiceHealthPanel({ active }: { active: boolean }) {
@@ -41,7 +49,9 @@ export default function ServiceHealthPanel({ active }: { active: boolean }) {
         const dotClass = absent ? 'is-absent' : s.up ? 'is-up' : 'is-down';
         const sub = absent
           ? (s.note ?? 'not running')
-          : `${s.status ?? '—'} · ${s.latencyMs}ms${s.recentErrors ? ` · ${s.recentErrors} err` : ''}`;
+          : s.wedged && s.acceptQueue
+            ? `${s.acceptQueue.pending}/${s.acceptQueue.backlog} queued unaccepted · ${s.latencyMs}ms`
+            : `${s.status ?? '—'} · ${s.latencyMs}ms${s.recentErrors ? ` · ${s.recentErrors} err` : ''}`;
         return (
           <div key={s.name} className="pcdar-row">
             <span className={`pcdar-dot ${dotClass}`} aria-hidden="true" />
@@ -52,7 +62,7 @@ export default function ServiceHealthPanel({ active }: { active: boolean }) {
               </div>
             </div>
             <span className={`pcdar-pill ${absent ? '' : s.up ? 'is-good' : 'is-bad'}`}>
-              {absent ? 'absent' : s.up ? 'up' : 'down'}
+              {absent ? 'absent' : s.up ? 'up' : s.wedged ? 'wedged' : 'down'}
             </span>
           </div>
         );

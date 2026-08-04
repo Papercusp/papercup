@@ -45,6 +45,7 @@ vi.mock('../../harness-core', async (importActual) => ({
   harnessDir: (p: { path: string }) => `${p.path}/.papercusp`,
 }));
 
+import { bustProjectsLiteCache } from '../../harness/projects-lite';
 import type { RouteContext } from '../define-route';
 
 const CTX: RouteContext = {
@@ -81,8 +82,11 @@ function resetProjectsCache(): void {
     entry.inflight = null;
     entry.value = null;
   }
-  const liteKey = Symbol.for('papercusp.harnessProjectsLiteCache');
-  delete (globalThis as Record<symbol, unknown>)[liteKey];
+  // Bust THROUGH the module's own seam. This used to `delete` the
+  // globalThis slot directly — i.e. target the storage LOCATION rather than the
+  // module's state — which keeps compiling and silently busts NOTHING once that
+  // state moves behind pinModuleState (EI-19479108855357092).
+  bustProjectsLiteCache();
 }
 
 beforeEach(() => {

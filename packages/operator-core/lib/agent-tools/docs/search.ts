@@ -13,12 +13,31 @@ import {
   harnessFsAdapter,
   type DocSource,
   type SearchHit,
+  type SearchResult as DocsSearchResult,
 } from '@papercusp/docs-engine';
-import { rrfCombine, RRF_K_DEFAULT, type RankedItem } from '@papercusp/rrf';
+import { getOrgPg } from '@papercusp/db-org';
+import { runHybridSearch, isVectorOnly, type SearchSource, type Listing } from '@papercusp/search';
 import { loadHarnessRegistry, resolveHarnessContentPath } from '../../harness-registry';
 import { engineeringAdapter } from './_engineering-adapter';
 import { HARNESS_REQUIRED_DETAIL, isEngineeringDocsSentinel, resolveHarnessScope, type HarnessScope } from '../_harness-scope';
-import { semanticDocHits } from './semantic-leg';
+import { resolveDocsEmbedder, docSectionsRanker, type DocSemanticHit } from './semantic-leg';
+// Installs papercusp's engine-level ranking policy (P-017) on import — the
+// same side-effect import every other engine caller uses. Without it this
+// surface would call the engine and inherit NO floor, which is the exact
+// hand-propagation failure P-016 removes.
+import '../../search/configure-search-defaults';
+
+/**
+ * WI-5690: over-fetch the LEXICAL leg past `limit` so RRF fusion has real
+ * headroom to promote a semantic-only hit above the cut. The engine already
+ * over-fetches `limit*3` per source; this floor preserves the prior
+ * `Math.max(limit*3, 30)` depth for small limits (the default 8 would
+ * otherwise drop from 30 candidates to 24). searchDocs's internal
+ * `hitCount`/full `scored` list is unaffected by the limit param — only how
+ * much of it gets sliced into `hits` — so this is purely more fusion
+ * candidates, never a change to the underlying ranker.
+ */
+const MIN_CANDIDATES = 30;
 
 export async function resolveAdapter(
   harnessSlug: string | undefined,
@@ -153,15 +172,26 @@ export default defineTool({
       };
     }
     const limit = args.limit;
-    // WI-5690 (sibling of WI-5683's plans:search fix): over-fetch the LEXICAL
-    // leg past `limit` so RRF fusion below has real headroom to promote a
-    // semantic-only hit above the cut — mirrors the semantic leg's own
-    // OVERFETCH pattern (semantic-leg.ts) and plans/search.ts's `limit*3`
-    // over-fetch. searchDocs's internal `hitCount`/full `scored` list is
-    // unaffected by the limit param; only how much of it gets sliced into
-    // `hits` changes, so this is purely more fusion candidates, not a
-    // behavior change to the underlying ranker.
-    const overFetchLimit = Math.max(limit * 3, 30);
+    const sourceKey = resolved.adapter.name;
+
+    // P-016: docs:search runs on `@papercusp/search`'s `runHybridSearch`
+    // instead of hand-rolling RRF over two legs it ran itself. What changes,
+    // beyond deleting the duplicate fusion: the search now inherits the P-017
+    // similarity FLOOR (the vector leg used to hand fusion its k nearest rows
+    // whether or not any was a match) and reports P-020 `legs` — so a
+    // lexical-only result caused by a dead embedder is legible as degraded
+    // rather than looking like a healthy search that found less.
+    //
+    // ⚠ Unlike every other registered source, the lexical leg here is NOT SQL:
+    // it wraps `searchDocs(adapter, …)` over a filesystem adapter and ignores
+    // the `sql` handle the engine passes. That is deliberate and supported —
+    // `SearchSource` requires a ranked list, not a query.
+    //
+    // The floor needs NO new calibration on this corpus: `EMBEDDING_FLOOR_GEMMA`
+    // (0.45) was measured ON doc_sections (in-domain top-1 min .5536 vs
+    // off-domain max .5224 — see search/prose-min-score.ts). This is the
+    // corpus it was calibrated against, not a corpus inheriting a threshold
+    // measured somewhere else.
 
     // searchDocs's own ctx.metadata call reports non_searchable_excluded
     // (not part of its return value) — capture it via a local sink instead of
@@ -169,69 +199,114 @@ export default defineTool({
     // metadata() call below that reflects the POST-fusion counts rather than
     // the over-fetched intermediate ones.
     let innerMeta: Record<string, unknown> = {};
-    const response = await searchDocs(resolved.adapter, { ...args, limit: overFetchLimit }, {
-      ...(ctxAny.signal && { signal: ctxAny.signal }),
-      ...(ctxAny.progress && { progress: ctxAny.progress }),
-      metadata: (d) => { innerMeta = d; },
+    // The lexical leg's own envelope (query/tokenCount/hitCount), captured for
+    // the payload. Undefined only if the leg FAILED — the engine catches a
+    // source throw and degrades, so that now yields a semantic-only result
+    // with `legs.lexical` carrying the failure, where it used to throw.
+    let lexicalResponse: DocsSearchResult | undefined;
+    // Both legs feed this: the engine's `SearchHit` is domain-free and carries
+    // no url/title/description/anchor, so the rows are captured on the way
+    // through and re-joined after fusion (no second read).
+    const hydration = new Map<string, { hit: SearchHit; anchor?: string }>();
+
+    const semanticOn = args.semantic ?? !process.env.VITEST;
+    // `embedder: null` is reserved for "no semantic leg was ever wanted" —
+    // the ONE case the engine's `not-run` correctly describes. When the leg IS
+    // wanted, resolveDocsEmbedder returns a REJECTING embedder on every
+    // degraded path, so a dead embedder reports `blocked` (D-023).
+    const { embedder, embeddingMode } = semanticOn
+      ? await resolveDocsEmbedder()
+      : { embedder: null, embeddingMode: null };
+
+    const source: SearchSource = {
+      name: sourceKey,
+      async bm25({ limit: candidateLimit }): Promise<Listing> {
+        const response = await searchDocs(
+          resolved.adapter,
+          { ...args, limit: Math.max(candidateLimit, MIN_CANDIDATES) },
+          {
+            ...(ctxAny.signal && { signal: ctxAny.signal }),
+            ...(ctxAny.progress && { progress: ctxAny.progress }),
+            metadata: (d) => { innerMeta = d; },
+          },
+        );
+        lexicalResponse = response;
+        return response.hits.map((h) => {
+          // The lexical row is authoritative for the display fields (it has
+          // the real keyword excerpt + description); a page also found
+          // semantically only gains an anchor.
+          const prior = hydration.get(h.slug);
+          hydration.set(h.slug, { hit: h, ...(prior?.anchor ? { anchor: prior.anchor } : {}) });
+          return {
+            key: h.slug,
+            score: h.score,
+            row: {
+              source: sourceKey,
+              source_id: h.slug,
+              excerpt: h.excerpt,
+              highlight: h.title,
+              score: h.score,
+              rankers: ['bm25'],
+            },
+          };
+        });
+      },
+      // No resolved embedding space ⇒ no `embedding` method, so the engine
+      // never issues a vector query it has no space for. The rejecting
+      // embedder above is what still makes that state report as `blocked`:
+      // the engine sets it when the query embed throws, before any source's
+      // embedding method would have been consulted.
+      ...(embeddingMode
+        ? {
+            embedding: docSectionsRanker(sourceKey, embeddingMode, (h: DocSemanticHit) => {
+              const prior = hydration.get(h.slug);
+              hydration.set(h.slug, {
+                hit: prior?.hit ?? { slug: h.slug, url: h.url, title: h.title, score: 0, excerpt: h.excerpt },
+                anchor: h.anchor,
+              });
+            }),
+          }
+        : {}),
+    };
+
+    const { sql } = getOrgPg();
+    const { results, legs, applied } = await runHybridSearch([source], {
+      sql,
+      query: args.query,
+      // The docs source resolves its own corpus from the adapter; neither of
+      // the engine's scoping keys applies to a filesystem surface.
+      workspaceId: '',
+      scopeFilter: null,
+      limit,
+      mode: 'hybrid',
+      embedder,
+      ...(ctxAny.signal ? { signal: ctxAny.signal } : {}),
     });
 
-    // WI-5690: fuse the lexical ranking with the migration-552 doc-section
-    // semantic ranking via Reciprocal Rank Fusion (@papercusp/rrf, same
-    // pattern plans:search / search:semantic already use) instead of scoring
-    // lexical-only and APPENDING up to 3 semantic extras after the cut. RRF
-    // combines by RANK POSITION, not raw score, so a page that ranks #1
-    // semantically (a rephrased query whose words never appear verbatim in
-    // the answer doc) can't be buried behind — or dropped entirely by the
-    // `limit`-capped slice ahead of — pages that only win on raw lexical
-    // score. Strictly fail-open: an embedder outage/timeout/disable degrades
-    // to lexical-only (matches the prior default-on behavior); inert under
-    // vitest unless semantic:true is forced (WI-3792 load-scar class).
     let semanticHitCount = 0;
-    let finalHits: Array<SearchHit & { semantic?: true; similarity?: number; anchor?: string }>;
-    const semanticOn = args.semantic ?? !process.env.VITEST;
-    let sem: Awaited<ReturnType<typeof semanticDocHits>> = null;
-    if (semanticOn) {
-      try {
-        sem = await semanticDocHits(args.query, resolved.adapter.name, overFetchLimit);
-      } catch {
-        // fail-open: the lexical result stands.
-        sem = null;
-      }
-    }
-
-    if (sem?.length) {
-      const lexicalSlugs = new Set(response.hits.map((h) => h.slug));
-      const lexicalRanked: RankedItem<SearchHit>[] = response.hits.map((h) => ({ key: h.slug, score: h.score, row: h }));
-      const semanticRanked: RankedItem<SearchHit>[] = sem.map((h) => ({
-        key: h.slug,
-        score: h.similarity,
-        row: { slug: h.slug, url: h.url, title: h.title, score: 0, excerpt: h.excerpt },
-      }));
-      const simBySlug = new Map(sem.map((h) => [h.slug, Math.round(h.similarity * 1000) / 1000]));
-      const anchorBySlug = new Map(sem.map((h) => [h.slug, h.anchor]));
-      const fused = rrfCombine<SearchHit>(
-        [
-          { name: 'lexical', list: lexicalRanked },
-          { name: 'semantic', list: semanticRanked },
-        ],
-        RRF_K_DEFAULT,
-      );
-      finalHits = fused.slice(0, limit).map(({ row, rankers }) => {
-        const similarity = simBySlug.get(row.slug);
-        const anchor = anchorBySlug.get(row.slug);
+    const finalHits: Array<SearchHit & { semantic?: true; similarity?: number; anchor?: string }> = results.map(
+      (r) => {
+        const entry = hydration.get(r.source_id);
+        const base: SearchHit = entry?.hit ?? {
+          slug: r.source_id,
+          url: `/docs/${r.source_id}`,
+          title: r.source_id,
+          score: r.score,
+          excerpt: r.excerpt,
+        };
+        const raw = r.rankerScores?.embeddings;
+        const similarity = raw === undefined ? undefined : Math.round(raw * 1000) / 1000;
         // Only mark semantic:true (the "this wasn't a lexical match" signal
         // downstream callers key on) when the page has NO lexical hit of its
         // own — a page found by both legs keeps its real lexical excerpt and
         // just also carries the similarity that helped rank it.
-        if (!lexicalSlugs.has(row.slug) && rankers.includes('semantic')) {
+        if (isVectorOnly(r)) {
           semanticHitCount += 1;
-          return { ...row, semantic: true as const, similarity, ...(anchor ? { anchor } : {}) };
+          return { ...base, semantic: true as const, similarity, ...(entry?.anchor ? { anchor: entry.anchor } : {}) };
         }
-        return similarity !== undefined ? { ...row, similarity } : row;
-      });
-    } else {
-      finalHits = response.hits.slice(0, limit);
-    }
+        return similarity !== undefined ? { ...base, similarity } : base;
+      },
+    );
 
     // EI-18804433041289369: `surface` alone is easy to skim past — a caller who names their OWN
     // harness (the natural, seemingly-correct thing to pass) gets a scoped project-docs/harness-docs
@@ -245,12 +320,20 @@ export default defineTool({
         : `This '${resolved.surface}' surface (${resolved.adapter.name}) does NOT include agent-insights/ or the Papercusp framework reference — those live on the separate 'engineering' surface. A weak or zero-looking result here does not mean no such page exists; retry with harness:'engineering' before concluding that (harness:'all' reaches the same corpus but is REJECTED with harness_forbidden on a workspace-scoped session — EI-18894866320087268).`;
 
     const payload: Record<string, unknown> = {
-      ...response,
+      ...(lexicalResponse ?? { query: args.query, tokenCount: 0, hitCount: 0 }),
       hits: finalHits,
-      hitCount: response.hitCount,
+      hitCount: lexicalResponse?.hitCount ?? 0,
       surface: resolved.surface,
       ...(scope.kind === 'harness' ? { harness_slug: scope.slug } : {}),
       ...(semanticHitCount > 0 ? { semanticHitCount } : {}),
+      // P-020 / EI-19478862482607876: inheriting the engine's leg report and
+      // then DISCARDING it is half the migration. `legs.degraded` +
+      // `legs.warning` are the ready-made verdict for "was this really a
+      // hybrid search"; `applied` says which floors actually ran. Without
+      // them a lexical-only result caused by a dead embedder is
+      // indistinguishable from a healthy search that found less.
+      legs,
+      applied,
       ...(scopeNote ? { scopeNote } : {}),
     };
     ctxAny.metadata?.({
@@ -259,6 +342,7 @@ export default defineTool({
       ...(scope.kind === 'harness' ? { harness_slug: scope.slug } : {}),
       returned: finalHits.length - semanticHitCount,
       ...(semanticHitCount > 0 ? { semanticHitCount } : {}),
+      ...(legs.degraded ? { legsDegraded: true, legsWarning: legs.warning } : {}),
     });
     return { content: [{ type: 'text' as const, text: JSON.stringify(payload) }] };
   },

@@ -1829,28 +1829,36 @@ describe('makeCarryRearmController (EI-12754 — one-shot re-arm for busy-gate-r
       systemPromptAddendum: '## Identity\nownerId: su-p (T1)',
     };
 
+    type RearmEvent = { kind: string; [k: string]: unknown };
+    type RecycleCall = { data: unknown; opts: { systemPromptAddendum?: unknown; [k: string]: unknown } };
+    type RearmMsg = { mode: string; data: string; systemPromptAddendum: string; drillId?: string };
+
+    const drain = async (): Promise<void> => {
+      for (let i = 0; i < 8; i += 1) await new Promise<void>((r) => setImmediate(r));
+    };
+
     it('schedule() returns superseded, keeps ONE pending entry, and emits no terminal drop', () => {
-      const events = [];
-      const never = new Promise(() => {});
+      const events: RearmEvent[] = [];
+      const never = new Promise<{ deferred: boolean }>(() => {});
       const controller = makeCarryRearmController({
         acquireInject: async () => () => {},
         waitAtPrompt: () => never,
         recycle: async () => {},
-        emitEvent: (kind, extra) => events.push({ kind, ...extra }),
+        emitEvent: (kind: string, extra: Record<string, unknown>) => events.push({ kind, ...extra }),
         capMs: 1234,
       });
       expect(controller.schedule(PROD_A)).toBe('queued');
       expect(controller.schedule(PROD_B)).toBe('superseded');
       // One pending re-poll, not two — and nothing was terminally dropped.
       expect(controller.pendingCount()).toBe(1);
-      expect(events.filter((e) => e.kind === 'respawn-rearm-queued')).toHaveLength(1);
-      expect(events.filter((e) => e.kind === 'respawn-carry-dropped')).toEqual([]);
+      expect(events.filter((e: RearmEvent) => e.kind === 'respawn-rearm-queued')).toHaveLength(1);
+      expect(events.filter((e: RearmEvent) => e.kind === 'respawn-carry-dropped')).toEqual([]);
     });
 
     it('the in-flight re-poll delivers the FRESHER carry, not the one it was scheduled with', async () => {
-      const events = [];
-      const recycles = [];
-      let ctl = null;
+      const events: RearmEvent[] = [];
+      const recycles: RecycleCall[] = [];
+      let ctl: ReturnType<typeof makeCarryRearmController> | null = null;
       let promptCalls = 0;
       ctl = makeCarryRearmController({
         acquireInject: async () => () => {},
@@ -1859,34 +1867,36 @@ describe('makeCarryRearmController (EI-12754 — one-shot re-arm for busy-gate-r
           if (promptCalls === 1) {
             // The agent is still mid-turn on the first window. In that exact
             // gap the agent calls session:request-compaction AGAIN.
-            expect(ctl.schedule(PROD_B)).toBe('superseded');
+            expect(ctl?.schedule(PROD_B)).toBe('superseded');
             return { deferred: true };
           }
           return { deferred: false };
         },
-        recycle: async (data, opts) => recycles.push({ data, opts }),
-        emitEvent: (kind, extra) => events.push({ kind, ...extra }),
+        recycle: async (data: unknown, opts: Record<string, unknown>) => {
+          recycles.push({ data, opts });
+        },
+        emitEvent: (kind: string, extra: Record<string, unknown>) => events.push({ kind, ...extra }),
         capMs: 1234,
       });
       expect(ctl.schedule(PROD_A)).toBe('queued');
-      for (let i = 0; i < 8; i += 1) await new Promise((r) => setImmediate(r));
+      await drain();
       expect(recycles).toHaveLength(1);
       // THE ASSERTION THAT MATTERS: the newer carry document is what got cut in,
       // and the stale one was never delivered.
       expect(recycles[0].data).toBe(PROD_B.data);
       expect(recycles[0].opts.systemPromptAddendum).toBe(PROD_B.systemPromptAddendum);
-      expect(events.filter((e) => e.kind === 'respawn-carry-dropped')).toEqual([]);
+      expect(events.filter((e: RearmEvent) => e.kind === 'respawn-carry-dropped')).toEqual([]);
       expect(ctl.pendingCount()).toBe(0);
     });
 
     it('CONTROL — a DRILL still dedupes terminally (its whole point is the one scheduled shot)', () => {
-      const events = [];
-      const never = new Promise(() => {});
+      const events: RearmEvent[] = [];
+      const never = new Promise<{ deferred: boolean }>(() => {});
       const controller = makeCarryRearmController({
         acquireInject: async () => () => {},
         waitAtPrompt: () => never,
         recycle: async () => {},
-        emitEvent: (kind, extra) => events.push({ kind, ...extra }),
+        emitEvent: (kind: string, extra: Record<string, unknown>) => events.push({ kind, ...extra }),
         capMs: 1234,
       });
       expect(controller.schedule(DRILL_MSG)).toBe('queued');
@@ -1894,9 +1904,9 @@ describe('makeCarryRearmController (EI-12754 — one-shot re-arm for busy-gate-r
     });
 
     it('staleness is re-checked against the SUPERSEDING message, so a fresh retry is not killed by the old one', async () => {
-      const events = [];
-      const recycles = [];
-      let ctl = null;
+      const events: RearmEvent[] = [];
+      const recycles: RecycleCall[] = [];
+      let ctl: ReturnType<typeof makeCarryRearmController> | null = null;
       let promptCalls = 0;
       // isStale reports TRUE for the original carry and FALSE for the fresher
       // one — the whole reason superseding is worth doing.
@@ -1905,21 +1915,23 @@ describe('makeCarryRearmController (EI-12754 — one-shot re-arm for busy-gate-r
         waitAtPrompt: async () => {
           promptCalls += 1;
           if (promptCalls === 1) {
-            ctl.schedule(PROD_B);
+            ctl?.schedule(PROD_B);
             return { deferred: true };
           }
           return { deferred: false };
         },
-        recycle: async (data, opts) => recycles.push({ data, opts }),
-        emitEvent: (kind, extra) => events.push({ kind, ...extra }),
+        recycle: async (data: unknown, opts: Record<string, unknown>) => {
+          recycles.push({ data, opts });
+        },
+        emitEvent: (kind: string, extra: Record<string, unknown>) => events.push({ kind, ...extra }),
         capMs: 1234,
-        isStale: (msg) => msg.data === PROD_A.data,
+        isStale: (msg: RearmMsg) => msg.data === PROD_A.data,
       });
       expect(ctl.schedule(PROD_A)).toBe('queued');
-      for (let i = 0; i < 8; i += 1) await new Promise((r) => setImmediate(r));
+      await drain();
       expect(recycles).toHaveLength(1);
       expect(recycles[0].data).toBe(PROD_B.data);
-      expect(events.filter((e) => e.kind === 'respawn-carry-dropped')).toEqual([]);
+      expect(events.filter((e: RearmEvent) => e.kind === 'respawn-carry-dropped')).toEqual([]);
     });
   });
 

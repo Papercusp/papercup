@@ -118,16 +118,22 @@ describe('parseSsOutput', () => {
   });
 
   it('reads a WEDGED listener as a non-zero pending count, not as a missing row', () => {
-    // Shape captured from the real :3170 wedge (2026-08-04): the port stayed
-    // bound and the pid alive while the queue climbed 70 → 97 against a 511
-    // backlog, because the event loop never called accept(). Nothing else in the
-    // listen table changes during a wedge — this number is the whole signal.
+    // VERBATIM `ss -tlnpH` output from a REAL wedge produced on this host
+    // (2026-08-04), not a hand-shaped row. Reproduce it: have a node process
+    // listen and then block its event loop (`while (Date.now() < end);`), open a
+    // few connections, and read the listen table. Measured, in order:
+    //   blocked, no clients  → LISTEN 0  511 …   (indistinguishable from healthy)
+    //   blocked, 5 clients   → LISTEN 5  511 …   (the row below)
+    // Every OTHER signal was reassuring throughout: the port stayed bound, the
+    // pid stayed alive, and all five TCP connects SUCCEEDED — the kernel
+    // completes handshakes on a blocked process's behalf. Recv-Q was the only
+    // thing that moved. That is the whole case for parsing it.
     const wedged = parseSsOutput(
-      'LISTEN 97     511                        0.0.0.0:3170       0.0.0.0:*    users:(("node-MainThread",pid=47585,fd=26))',
+      'LISTEN 5      511    127.0.0.1:39111 0.0.0.0:* users:(("node-MainThread",pid=58355,fd=21))',
     );
     expect(wedged).toHaveLength(1);
-    expect(wedged[0]).toMatchObject({ port: 3170, pid: 47585, ownerVisible: true });
-    expect(wedged[0].acceptQueue).toEqual({ pending: 97, backlog: 511 });
+    expect(wedged[0]).toMatchObject({ port: 39111, pid: 58355, ownerVisible: true });
+    expect(wedged[0].acceptQueue).toEqual({ pending: 5, backlog: 511 });
   });
 
   it('SUMS pending across a SO_REUSEPORT group and keeps the backlog as the per-socket limit', () => {

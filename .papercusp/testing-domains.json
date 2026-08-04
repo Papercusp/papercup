@@ -1675,6 +1675,14 @@
                 "papercusp-desktop/bin/lib/deployed-state-guards.selftest.sh"
               ],
               "label": "rig deployed-state: uniform sidecar + build provenance + DHT isolation (WI-6212)"
+            },
+            {
+              "kind": "shell",
+              "cmd": "bash",
+              "args": [
+                "papercusp-desktop/bin/lib/inno-legacy-reaper.selftest.sh"
+              ],
+              "label": "Windows installer legacy-uninstall reaper: ghosts reaped, LIVE entries spared (WI-4490)"
             }
           ]
         }

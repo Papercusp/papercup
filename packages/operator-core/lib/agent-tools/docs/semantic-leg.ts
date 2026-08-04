@@ -1,24 +1,32 @@
 /**
- * semantic-leg — the P-009 docs:search embedding leg
- * (shared-embedding-sidecar-and-enrichment-2026-07-10).
+ * semantic-leg — the docs:search embedding leg, as `@papercusp/search`
+ * SearchSource parts (P-016 of semantic-search-fingerprint-coverage-2026-08-03;
+ * originally P-009 of shared-embedding-sidecar-and-enrichment-2026-07-10).
  *
  * Ranks the query vector against migration-552 doc_sections (text synced by
  * search/doc-embed-sync.ts, vectors filled by the embed-backfill sweep) in the
  * ACTIVE embedding space only (`embedding_mode = <active>` — cosine across
- * spaces is noise), dedupes to the best section per page, and returns
- * page-level hits the handler appends AFTER the lexical results.
+ * spaces is noise), and dedupes to the best section per page so the leg ranks
+ * PAGES, which is the unit docs:search returns.
  *
- * FAIL-OPEN is the prime directive: no embedder, migration 552 absent, dims
- * mismatch (harrier@1024 vs vector(384)), or any throw returns null and
- * docs:search stays lexical-only. Under vitest the leg is inert unless deps
- * are injected (the real resolver lazy-loads an ONNX model — the WI-3792
- * load-scar class).
+ * ⚠ FAIL-OPEN, BUT NEVER FAIL-SILENT (plan decision D-023). This module used
+ * to return `null` for every degraded path — no embedder, dims mismatch, any
+ * throw — and docs:search quietly went lexical-only. Under the engine that
+ * shape is actively harmful: `embedder: null` makes the engine report
+ * `status:'not-run'`, which `summariseLegs` deliberately does NOT flag as
+ * degraded (an intentionally lexical-only search is healthy), so a DEAD
+ * embedder would be indistinguishable from `semantic:false`. The search still
+ * degrades to lexical-only — that part was always right — but it now SAYS SO:
+ * `resolveDocsEmbedder` hands back an embedder that REJECTS with the reason,
+ * which the engine records as `legs.semantic.blocked`.
  */
 
 import { getOrgPg } from '@papercusp/db-org';
+import type { Embedder, Listing, SearchSourceParams } from '@papercusp/search';
 
 // The prose column width contract — ONE source, not a restated `384` (D-005 §5).
 import { fitsProseColumns } from '../../search/prose-vector-dims';
+
 /** Over-fetch factor: several sections of one page can crowd the top-k; fetch
  *  extra rows so page-level dedupe still fills `limit` distinct pages. */
 const OVERFETCH = 3;
@@ -57,7 +65,7 @@ async function querySectionsReal(vec: number[], mode: string, sourceKey: string,
   return rows.map((r) => ({ ...r, similarity: Number(r.similarity) }));
 }
 
-const realDeps: DocSemanticDeps = {
+export const realDocSemanticDeps: DocSemanticDeps = {
   // QUERY-side resolver (gemma query prompt) — its vectors are trained to
   // match the document-prompt vectors the backfill sweep stores.
   resolveEmbedder: async () => (await import('../search/embedder')).buildQueryEmbedderResolved(),
@@ -65,29 +73,115 @@ const realDeps: DocSemanticDeps = {
 };
 
 /**
- * Top semantic page hits for a query against one docs surface (`sourceKey` =
- * the resolved adapter's name). Returns null for "no verdict" (disabled,
- * unavailable, errored) — the caller MUST treat null as "lexical-only".
+ * An embedder that rejects with `why` — D-023's vocabulary for "the semantic
+ * leg was WANTED and cannot run". The engine turns the rejection into
+ * `legs.semantic.blocked = 'query embed failed: <why>'`, which `summariseLegs`
+ * flags as degraded. Passing `null` instead would report `not-run`, which is
+ * NOT flagged, and is the silent degradation this plan exists to remove.
  */
-export async function semanticDocHits(
-  query: string,
-  sourceKey: string,
-  limit: number,
-  deps?: DocSemanticDeps,
-): Promise<DocSemanticHit[] | null> {
-  if (process.env.VITEST && !deps) return null;
+const unavailable = (why: string): Embedder => async (): Promise<number[]> => {
+  throw new Error(why);
+};
+
+export interface ResolvedDocsEmbedder {
+  /** Never null: either the real embedder or one that rejects with the reason. */
+  embedder: Embedder;
+  /** The active embedding space, or null when the leg cannot run — a null mode
+   *  is what makes the caller omit the source's `embedding()` method, so the
+   *  engine never issues a vector query it has no space for. */
+  embeddingMode: string | null;
+}
+
+/**
+ * Resolve the query-side embedder for the docs semantic leg, applying D-023.
+ *
+ * Call this ONLY when the semantic leg is wanted — when it is not, the caller
+ * passes `embedder: null` to the engine, which is the one case `not-run`
+ * correctly describes.
+ */
+export async function resolveDocsEmbedder(deps?: DocSemanticDeps): Promise<ResolvedDocsEmbedder> {
+  // WI-3792 load-scar class: the real resolver lazy-loads an ONNX model, so it
+  // must never be reached from a unit test that merely forgot to inject deps.
+  // Reported as BLOCKED rather than not-run — the leg WAS wanted here, and a
+  // test asserting "semantic ran" should fail loudly instead of reading a
+  // suppressed embedder as a healthy lexical-only search.
+  if (process.env.VITEST && !deps) {
+    return { embedder: unavailable('vitest: real embedder resolution suppressed (inject DocSemanticDeps to exercise this leg)'), embeddingMode: null };
+  }
+  const d = deps ?? realDocSemanticDeps;
   try {
-    const d = deps ?? realDeps;
     const resolved = await d.resolveEmbedder();
-    if (!resolved || !fitsProseColumns(resolved.dims)) return null;
-    const vec = await resolved.embed(query);
-    if (!fitsProseColumns(vec.length)) return null;
-    const rows = await d.querySections(vec, resolved.mode, sourceKey, limit * OVERFETCH);
+    if (!resolved) {
+      return { embedder: unavailable('no query embedder resolved (unavailable or disabled)'), embeddingMode: null };
+    }
+    if (!fitsProseColumns(resolved.dims)) {
+      // The embedding columns have a fixed width; a query vector in another
+      // space (harrier@1024) cannot rank against them — say so rather than
+      // letting pgvector raise a dimension error mid-search.
+      return {
+        embedder: unavailable(`query embedder dims ${resolved.dims} do not fit the prose embedding columns`),
+        embeddingMode: null,
+      };
+    }
+    return {
+      // Guard the OUTPUT width too: `dims` is what the embedder DECLARES, and a
+      // resolver that declares correctly but returns a short vector would
+      // otherwise reach pgvector as a raw dimension error.
+      embedder: async (text: string): Promise<number[]> => {
+        const vec = await resolved.embed(text);
+        if (!fitsProseColumns(vec.length)) {
+          throw new Error(`query embedder returned ${vec.length} dims, which do not fit the prose embedding columns`);
+        }
+        return vec;
+      },
+      embeddingMode: resolved.mode,
+    };
+  } catch (err) {
+    return { embedder: unavailable(`query embedder resolution threw: ${(err as Error).message}`), embeddingMode: null };
+  }
+}
+
+/**
+ * Build the `SearchSource.embedding` ranker for one docs surface.
+ *
+ * `sourceKey` is the resolved adapter's name; `sink` receives every page-level
+ * hit so the caller can hydrate `anchor`/`url`/`title` onto the engine's
+ * domain-free `SearchHit` after fusion (the engine carries none of them).
+ *
+ * Throws are NOT swallowed here — the engine catches a source failure, records
+ * it in `legs.semantic.failures`, and degrades. Swallowing it locally would
+ * make a broken doc_sections read look like a leg that simply found nothing.
+ */
+export function docSectionsRanker(
+  sourceKey: string,
+  embeddingMode: string,
+  sink: (hit: DocSemanticHit) => void,
+  deps?: DocSemanticDeps,
+): (p: SearchSourceParams & { qVec: string }) => Promise<Listing> {
+  const querySections = (deps ?? realDocSemanticDeps).querySections;
+  return async ({ query: _query, limit, qVec }): Promise<Listing> => {
+    // The engine hands over the qVec it already embedded; parse it back to the
+    // number[] this store's query helper takes. (One embed per search, shared
+    // across every source — which is exactly why the engine owns it.)
+    const vec = qVec.slice(1, -1).split(',').map(Number);
+    const rows = await querySections(vec, embeddingMode, sourceKey, limit * OVERFETCH);
     // Rows arrive distance-ordered; keep each page's best section.
     const bySlug = new Map<string, DocSemanticHit>();
     for (const r of rows) if (!bySlug.has(r.slug)) bySlug.set(r.slug, r);
-    return [...bySlug.values()].slice(0, limit);
-  } catch {
-    return null;
-  }
+    return [...bySlug.values()].slice(0, limit).map((h) => {
+      sink(h);
+      return {
+        key: h.slug,
+        score: h.similarity,
+        row: {
+          source: sourceKey,
+          source_id: h.slug,
+          excerpt: h.excerpt,
+          highlight: h.title,
+          score: h.similarity,
+          rankers: ['embeddings'],
+        },
+      };
+    });
+  };
 }

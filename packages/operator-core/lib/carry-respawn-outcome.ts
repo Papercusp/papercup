@@ -101,8 +101,11 @@ export async function readPriorRespawnOutcome(
 
 function humanAge(ageMs: number | null | undefined): string {
   if (ageMs == null || !Number.isFinite(ageMs)) return 'unknown age';
+  // Sub-minute is decided on the raw value, not a rounded one: Math.round would
+  // render 30s as "1m ago", which is a small lie in the direction of making a
+  // just-now failure look older than it is.
+  if (ageMs < 60_000) return 'just now';
   const min = Math.round(ageMs / 60_000);
-  if (min < 1) return 'just now';
   if (min < 90) return `${min}m ago`;
   return `${Math.round(min / 60)}h ago`;
 }

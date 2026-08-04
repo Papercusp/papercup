@@ -770,12 +770,23 @@ export function makeAgentBusyGate({
     async waitAtPrompt(overrideCapMs) {
       const effectiveCapMs = overrideCapMs ?? capMs;
       const deadline = now() + effectiveCapMs;
+      // EI-19480099650947832: track the LONGEST quiet window actually observed,
+      // and report it on a defer. Without it, "the busy-gate expired" is an
+      // unfalsifiable verdict — a carry-respawn can re-poll for 14 minutes and
+      // the log says only `busy-gate-expired`, leaving no way to tell a genuinely
+      // busy agent (gaps ≈ 0ms, a TUI spinner redrawing) from a near-miss
+      // (gaps ≈ quietMs, i.e. the threshold is simply too tight). Those two have
+      // OPPOSITE fixes, and reconstructing which one happened after the fact is
+      // impossible — measured live on 2026-08-04, where a respawn died with no
+      // evidence either way.
+      let maxQuietForMs = 0;
       // Re-check in case the agent keeps emitting during the wait.
       // eslint-disable-next-line no-constant-condition
       while (true) {
         const quietFor = this.quietForMs();
+        if (quietFor > maxQuietForMs) maxQuietForMs = quietFor;
         if (quietFor >= quietMs) return { deferred: false };
-        if (now() >= deadline) return { deferred: true, reason: 'agent-busy' };
+        if (now() >= deadline) return { deferred: true, reason: 'agent-busy', maxQuietForMs, quietMs };
         const need = quietMs - quietFor;
         const wait = Math.min(need, Math.max(0, deadline - now()));
         await new Promise((r) => setTimeout(r, Math.max(10, wait)));
@@ -957,8 +968,13 @@ export function makeCarryRearmController({
         // (deliver), the carry goes stale (CARRY_RESPAWN_MAX_AGE_MS — the real
         // bound, reached first in the live host), or the anti-spin cap is hit.
         const maxAttempts = isDrill ? 1 : PRODUCTION_REARM_MAX_ATTEMPTS;
+        // EI-19480099650947832: carried onto every terminal row so a drop says
+        // WHY it could never fire — see waitAtPrompt's maxQuietForMs comment.
+        let observedMaxQuietMs = 0;
+        let attemptsMade = 0;
         try {
           for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+            attemptsMade = attempt + 1;
             const release = await acquireInject();
             // EI-19480099650947832: re-read the payload EVERY attempt — a later
             // request-compaction may have superseded it since the last one, and
@@ -969,12 +985,21 @@ export function makeCarryRearmController({
               if (waitIdle) await waitIdle();
               const atPrompt = await waitAtPrompt(capMs);
               deferred = !!atPrompt.deferred;
+              if (Number.isFinite(atPrompt?.maxQuietForMs) && atPrompt.maxQuietForMs > observedMaxQuietMs) {
+                observedMaxQuietMs = atPrompt.maxQuietForMs;
+              }
               if (!deferred) {
                 // EI-18109211232286833: re-check staleness right before the cut —
                 // a lot of wall-clock may have passed across these waits, so a
                 // message fresh at schedule() time can cross the threshold.
                 if (isStale(current)) {
-                  emitEvent(droppedKind, { ...extra, rearmed: true, reason: 'carry-stale' });
+                  emitEvent(droppedKind, {
+                    ...extra,
+                    rearmed: true,
+                    reason: 'carry-stale',
+                    observedMaxQuietMs,
+                    attempts: attemptsMade,
+                  });
                   return;
                 }
                 await recycle(current.data, {
@@ -998,13 +1023,19 @@ export function makeCarryRearmController({
             // message this attempt happened to start with. That is the whole
             // point of superseding: the fresher carry resets the clock.
             if (isStale(latest.get(key) ?? current)) {
-              emitEvent(droppedKind, { ...extra, rearmed: true, reason: 'carry-stale' });
+              emitEvent(droppedKind, {
+                ...extra,
+                rearmed: true,
+                reason: 'carry-stale',
+                observedMaxQuietMs,
+                attempts: attemptsMade,
+              });
               return;
             }
           }
           // A drill's single shot deferred, or a production respawn exhausted the
           // anti-spin cap without ever idling — terminal, loud.
-          emitEvent(droppedKind, { ...extra, rearmed: true });
+          emitEvent(droppedKind, { ...extra, rearmed: true, observedMaxQuietMs, attempts: attemptsMade });
         } catch (error) {
           emitEvent(droppedKind, {
             ...extra,
