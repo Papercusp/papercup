@@ -1810,6 +1810,119 @@ describe('makeCarryRearmController (EI-12754 — one-shot re-arm for busy-gate-r
     expect(h.events.filter((e) => e.kind === 'carry-drill-rearm-queued')).toHaveLength(1);
   });
 
+  // EI-19480099650947832: a PRODUCTION (non-drill) respawn arriving while an
+  // earlier one is still re-polling used to be terminally DROPPED as a
+  // duplicate — keeping the OLDER carry (already failing, and destined to age
+  // out at CARRY_RESPAWN_MAX_AGE_MS) and discarding the FRESHER one the agent
+  // had just built. Measured live on 2026-08-04: `respawn-carry-dropped
+  // {reason:'busy-gate-expired', capMs:180000, rearmed:true}` at 00:38:29 while
+  // the re-poll queued at 00:28:00 ran on fruitlessly for another 14 minutes.
+  describe('a production respawn SUPERSEDES a pending re-poll (never dropped as a duplicate)', () => {
+    const PROD_A = {
+      mode: 'carry-respawn',
+      data: 'FIRST carry — built at T0',
+      systemPromptAddendum: '## Identity\nownerId: su-p (T0)',
+    };
+    const PROD_B = {
+      mode: 'carry-respawn',
+      data: 'SECOND carry — built at T1, strictly fresher',
+      systemPromptAddendum: '## Identity\nownerId: su-p (T1)',
+    };
+
+    it('schedule() returns superseded, keeps ONE pending entry, and emits no terminal drop', () => {
+      const events = [];
+      const never = new Promise(() => {});
+      const controller = makeCarryRearmController({
+        acquireInject: async () => () => {},
+        waitAtPrompt: () => never,
+        recycle: async () => {},
+        emitEvent: (kind, extra) => events.push({ kind, ...extra }),
+        capMs: 1234,
+      });
+      expect(controller.schedule(PROD_A)).toBe('queued');
+      expect(controller.schedule(PROD_B)).toBe('superseded');
+      // One pending re-poll, not two — and nothing was terminally dropped.
+      expect(controller.pendingCount()).toBe(1);
+      expect(events.filter((e) => e.kind === 'respawn-rearm-queued')).toHaveLength(1);
+      expect(events.filter((e) => e.kind === 'respawn-carry-dropped')).toEqual([]);
+    });
+
+    it('the in-flight re-poll delivers the FRESHER carry, not the one it was scheduled with', async () => {
+      const events = [];
+      const recycles = [];
+      let ctl = null;
+      let promptCalls = 0;
+      ctl = makeCarryRearmController({
+        acquireInject: async () => () => {},
+        waitAtPrompt: async () => {
+          promptCalls += 1;
+          if (promptCalls === 1) {
+            // The agent is still mid-turn on the first window. In that exact
+            // gap the agent calls session:request-compaction AGAIN.
+            expect(ctl.schedule(PROD_B)).toBe('superseded');
+            return { deferred: true };
+          }
+          return { deferred: false };
+        },
+        recycle: async (data, opts) => recycles.push({ data, opts }),
+        emitEvent: (kind, extra) => events.push({ kind, ...extra }),
+        capMs: 1234,
+      });
+      expect(ctl.schedule(PROD_A)).toBe('queued');
+      for (let i = 0; i < 8; i += 1) await new Promise((r) => setImmediate(r));
+      expect(recycles).toHaveLength(1);
+      // THE ASSERTION THAT MATTERS: the newer carry document is what got cut in,
+      // and the stale one was never delivered.
+      expect(recycles[0].data).toBe(PROD_B.data);
+      expect(recycles[0].opts.systemPromptAddendum).toBe(PROD_B.systemPromptAddendum);
+      expect(events.filter((e) => e.kind === 'respawn-carry-dropped')).toEqual([]);
+      expect(ctl.pendingCount()).toBe(0);
+    });
+
+    it('CONTROL — a DRILL still dedupes terminally (its whole point is the one scheduled shot)', () => {
+      const events = [];
+      const never = new Promise(() => {});
+      const controller = makeCarryRearmController({
+        acquireInject: async () => () => {},
+        waitAtPrompt: () => never,
+        recycle: async () => {},
+        emitEvent: (kind, extra) => events.push({ kind, ...extra }),
+        capMs: 1234,
+      });
+      expect(controller.schedule(DRILL_MSG)).toBe('queued');
+      expect(controller.schedule(DRILL_MSG)).toBe('duplicate');
+    });
+
+    it('staleness is re-checked against the SUPERSEDING message, so a fresh retry is not killed by the old one', async () => {
+      const events = [];
+      const recycles = [];
+      let ctl = null;
+      let promptCalls = 0;
+      // isStale reports TRUE for the original carry and FALSE for the fresher
+      // one — the whole reason superseding is worth doing.
+      ctl = makeCarryRearmController({
+        acquireInject: async () => () => {},
+        waitAtPrompt: async () => {
+          promptCalls += 1;
+          if (promptCalls === 1) {
+            ctl.schedule(PROD_B);
+            return { deferred: true };
+          }
+          return { deferred: false };
+        },
+        recycle: async (data, opts) => recycles.push({ data, opts }),
+        emitEvent: (kind, extra) => events.push({ kind, ...extra }),
+        capMs: 1234,
+        isStale: (msg) => msg.data === PROD_A.data,
+      });
+      expect(ctl.schedule(PROD_A)).toBe('queued');
+      for (let i = 0; i < 8; i += 1) await new Promise((r) => setImmediate(r));
+      expect(recycles).toHaveLength(1);
+      expect(recycles[0].data).toBe(PROD_B.data);
+      expect(events.filter((e) => e.kind === 'respawn-carry-dropped')).toEqual([]);
+    });
+  });
+
   it('a recycle error drops terminally with reason rearm-error and still releases the mutex', async () => {
     const h = makeHarness({ recycleError: new Error('argv exploded') });
     expect(h.controller.schedule(DRILL_MSG)).toBe('queued');
@@ -1920,7 +2033,14 @@ describe('makeCarryRearmController (EI-12754 — one-shot re-arm for busy-gate-r
     expect(d.events.at(-1)).toMatchObject({ kind: 'carry-drill-carry-dropped', rearmed: true });
   });
 
-  it('a second non-drill schedule while one is pending returns duplicate (shared non-drill key)', () => {
+  // EI-19480099650947832 — THIS TEST USED TO ASSERT `'duplicate'` HERE, i.e. it
+  // PINNED the defect: a second production respawn arriving while the first was
+  // still re-polling was terminally dropped by the caller, keeping the older,
+  // already-failing carry and discarding the fresher one the agent had just
+  // built. The shared non-drill key is still correct (two production respawns
+  // collapse to ONE pending re-poll — that part never changed); what changed is
+  // that the collapse now keeps the NEWER payload instead of the older one.
+  it('a second non-drill schedule while one is pending SUPERSEDES it (one pending entry, newer carry kept)', () => {
     const h = makeHarness({ promptResults: [] });
     const controller = makeCarryRearmController({
       acquireInject: async () => () => {},
@@ -1930,9 +2050,11 @@ describe('makeCarryRearmController (EI-12754 — one-shot re-arm for busy-gate-r
       capMs: 1234,
     });
     expect(controller.schedule(NON_DRILL_MSG)).toBe('queued');
-    expect(controller.schedule(NON_DRILL_MSG)).toBe('duplicate');
+    expect(controller.schedule(NON_DRILL_MSG)).toBe('superseded');
     expect(controller.pendingCount()).toBe(1);
     expect(h.events.filter((e) => e.kind === 'respawn-rearm-queued')).toHaveLength(1);
+    // Never terminal — nothing is dropped on a supersede.
+    expect(h.events.filter((e) => e.kind === 'respawn-carry-dropped')).toEqual([]);
   });
 
   it('a drill and a non-drill retry can be pending at the same time (independent keys)', () => {

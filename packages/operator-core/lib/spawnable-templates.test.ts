@@ -11,17 +11,14 @@ vi.mock('node:fs', async (importOriginal) => {
 });
 
 import { existsSync, promises as fs } from 'node:fs';
-import { getSpawnableTemplates } from './spawnable-templates';
+import { getSpawnableTemplates, resetSpawnableCacheForTest } from './spawnable-templates';
 
-const CACHE_KEY = Symbol.for('papercusp.spawnableCache');
-function resetCache(): void {
-  const c = (globalThis as Record<symbol, { value: unknown; expires: number; inflight: unknown } | undefined>)[CACHE_KEY];
-  if (c) {
-    c.value = null;
-    c.expires = 0;
-    c.inflight = null;
-  }
-}
+// Reset THROUGH the module's exported seam, never by poking
+// `globalThis[Symbol.for('papercusp.spawnableCache')]`. The old form targeted
+// the storage LOCATION, so when the cache moved behind pinModuleState its
+// `if (c)` guard silently matched nothing and reset NOTHING — the suite kept
+// compiling while cached state leaked between tests (EI-19479108855357092).
+const resetCache = resetSpawnableCacheForTest;
 
 const manifest = (name: string, extra: Record<string, unknown> = {}): string =>
   JSON.stringify({ name, version: '1.0.0', spawnable: { kind: 'x' }, ...extra });

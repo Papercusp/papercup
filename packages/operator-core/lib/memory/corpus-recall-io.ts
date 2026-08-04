@@ -417,15 +417,23 @@ export async function recallCorpusContext(
 
       const select = async (
         hits: CorpusHit[],
+        // MUST be the query that RETRIEVED these hits — per stage, not per leg.
+        // `selectCorpusLines` applies a term-overlap guard, so judging hits
+        // against a query that was never issued drops rows the issuing query
+        // legitimately retrieved, as `no-term-overlap`.
+        //
+        // This was a leg-wide constant until WI-9273 and it silently neutralised
+        // the whole stage-2 widening: the graded stage retrieved on its own
+        // (wider) query, then had its hits judged against stage 1's two terms,
+        // so every row the widening found was discarded before it could be
+        // admitted. The arms came back byte-identical — a FALSE NULL that reads
+        // exactly like "widening is not the lever".
+        queryUsed: string,
         opts: { maxItems: number; budgetChars: number; knownRefs: ReadonlySet<string> },
       ) =>
         selectCorpusLines({
           hits,
-          // MUST be the query the engine actually ran. `selectCorpusLines`
-          // applies a term-overlap guard, so judging hits against a query that
-          // was never issued would drop rows the banded query legitimately
-          // retrieved as `no-term-overlap`.
-          queryText: effectiveQuery,
+          queryText: queryUsed,
           excludeSessionIds: await ownSessionIdsAmong(hits),
           harnessSlugs: input.harnessSlugs ?? [],
           knownRefs: opts.knownRefs,
@@ -437,7 +445,7 @@ export async function recallCorpusContext(
       const andFused = await search('and', effectiveQuery);
       const andHits = toCorpusHits(andFused);
       const known = input.knownRefs ?? new Set<string>();
-      const stage1 = await select(andHits, { maxItems, budgetChars, knownRefs: known });
+      const stage1 = await select(andHits, effectiveQuery, { maxItems, budgetChars, knownRefs: known });
 
       // ── Stage 2 (P-017 / D-062 R2): relax ONLY when stage 1 under-fills. ──
       //
@@ -466,7 +474,7 @@ export async function recallCorpusContext(
       const gradedOnly = toCorpusHits(gradedFused).filter(
         (h) => !seen.has(`${h.source}:${h.sourceId}`),
       );
-      const stage2 = await select(gradedOnly, {
+      const stage2 = await select(gradedOnly, gradedQuery, {
         maxItems: maxItems - stage1.lines.length,
         budgetChars: budgetChars - spent,
         knownRefs: new Set([...known, ...stage1.lines.map((l) => l.handle.ref)]),

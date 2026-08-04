@@ -183,6 +183,48 @@ describe("buildServiceHealthDiagnostic", () => {
     expect(out.rootCause).toBeNull();
     expect(out.nextVerb).toBeNull();
   });
+
+  // EI-19465075959589134 — a WEDGED service (listening, not accepting) and a DOWN
+  // one need opposite responses, and until now they rendered identically here.
+  it("promotes a WEDGE over an ordinary down probe, and counts it separately", () => {
+    const out = buildServiceHealthDiagnostic(
+      [
+        { name: "scout", up: false, status: null, latencyMs: 3, note: "connection refused" },
+        {
+          name: "staging-api",
+          up: false,
+          status: null,
+          latencyMs: 3000,
+          wedged: true,
+          acceptQueue: { pending: 97, backlog: 511 },
+          note: "WEDGED, not down: 97 connection(s) queued unaccepted",
+        },
+      ],
+      [],
+    );
+    // Ordering: `scout` failed first, but the wedge is the finding that no other
+    // signal on the box will report, so it leads.
+    expect(out.rootCause?.component).toBe("staging-api");
+    // `down` stays the whole failure count so an existing reader keeps its
+    // meaning; `wedged` is the sharper subset.
+    expect(out.effective).toMatchObject({ down: 2, wedged: 1 });
+    // The restart is still offered — it does recover the service — but it must
+    // not read as the fix, because it also destroys the evidence.
+    expect(out.nextVerb).toContain('dev:restart { target:"staging" }');
+    expect(out.nextVerb).toContain("WEDGE");
+    expect(out.nextVerb).toMatch(/logs:read/);
+  });
+
+  it("leaves the plain-down verb EXACTLY as it was when nothing is wedged", () => {
+    // The wedge branch must not leak prose into the ordinary path — an agent
+    // pattern-matching the verb string still gets a clean, runnable verb.
+    const out = buildServiceHealthDiagnostic(
+      [{ name: "staging-api", up: false, status: null, latencyMs: 2, note: "connection refused" }],
+      [],
+    );
+    expect(out.nextVerb).toBe('dev:restart { target:"staging" }');
+    expect(out.effective).toMatchObject({ down: 1, wedged: 0 });
+  });
 });
 
 describe("overlayNodeChildSupervision (P-006, pure)", () => {

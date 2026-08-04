@@ -874,6 +874,11 @@ export function makeCarryRearmController({
   // beginFirstAttempt/endFirstAttempt call sites for the exact mechanics).
   // `inFlight` closes that gap; `pendingCount()` below reports the union.
   const inFlight = new Set();
+  // EI-19480099650947832: the FRESHEST carry message per key. A production
+  // respawn's re-poll loop re-reads this at the top of every attempt, so a
+  // second request-compaction arriving mid-re-poll SUPERSEDES the payload
+  // instead of being terminally dropped (see schedule() below).
+  const latest = new Map();
   return {
     /** Live count of carry-respawns either awaiting their first delivery
      *  attempt's outcome OR a re-armed retry (diagnostics/tests, and the input
@@ -901,7 +906,9 @@ export function makeCarryRearmController({
     /**
      * Schedule the one-shot retry for a busy-gate-refused carry-respawn drill.
      * Returns 'queued' when scheduled, 'duplicate' when a retry for this drillId
-     * is already pending (the caller should terminally drop instead).
+     * is already pending (the caller should terminally drop instead), or
+     * 'superseded' when a PRODUCTION respawn replaced the payload of an
+     * already-pending re-poll (EI-19480099650947832 — nothing is dropped).
      */
     schedule(msg) {
       const drillId = String(msg?.drillId || '');
@@ -910,8 +917,25 @@ export function makeCarryRearmController({
       // under the shared sentinel — so a drill and a production respawn can be
       // pending independently, but two production respawns collapse to one.
       const key = isDrill ? drillId : NON_DRILL_REARM_KEY;
-      if (pending.has(key)) return 'duplicate';
+      if (pending.has(key)) {
+        // EI-19480099650947832: a SECOND production respawn arriving while the
+        // first is still re-polling used to be terminally DROPPED as a
+        // duplicate — which KEPT the older carry (already failing, and destined
+        // to age out at CARRY_RESPAWN_MAX_AGE_MS) and DISCARDED the fresher one
+        // the agent had just built. Measured 2026-08-04 on session
+        // su-4a6e2255-…: `respawn-carry-dropped {reason:'busy-gate-expired',
+        // capMs:180000, rearmed:true}` at 00:38:29, while the re-poll queued at
+        // 00:28:00 ran on fruitlessly for another 14 minutes. The newest
+        // request is strictly the better one to deliver (newer carry document,
+        // newer receivedAtMs, so it also survives the staleness guard longer),
+        // so the in-flight re-poll ADOPTS it. A DRILL still dedupes terminally:
+        // a drill is a one-shot test whose whole point is that single shot.
+        if (isDrill) return 'duplicate';
+        latest.set(key, msg);
+        return 'superseded';
+      }
       pending.add(key);
+      latest.set(key, msg);
       const queuedKind = isDrill ? 'carry-drill-rearm-queued' : 'respawn-rearm-queued';
       const droppedKind = isDrill ? 'carry-drill-carry-dropped' : 'respawn-carry-dropped';
       // Drill rows carry drillId + sessionClass (P-020 correlation); a production
@@ -936,6 +960,10 @@ export function makeCarryRearmController({
         try {
           for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
             const release = await acquireInject();
+            // EI-19480099650947832: re-read the payload EVERY attempt — a later
+            // request-compaction may have superseded it since the last one, and
+            // the freshest carry document is always the right one to deliver.
+            const current = latest.get(key) ?? msg;
             let deferred = false;
             try {
               if (waitIdle) await waitIdle();
@@ -945,14 +973,14 @@ export function makeCarryRearmController({
                 // EI-18109211232286833: re-check staleness right before the cut —
                 // a lot of wall-clock may have passed across these waits, so a
                 // message fresh at schedule() time can cross the threshold.
-                if (isStale(msg)) {
+                if (isStale(current)) {
                   emitEvent(droppedKind, { ...extra, rearmed: true, reason: 'carry-stale' });
                   return;
                 }
-                await recycle(msg.data, {
-                  systemPromptAddendum: msg.systemPromptAddendum ?? '',
+                await recycle(current.data, {
+                  systemPromptAddendum: current.systemPromptAddendum ?? '',
                   drillId,
-                  sessionClass: msg.sessionClass ?? '',
+                  sessionClass: current.sessionClass ?? '',
                 });
                 return;
               }
@@ -965,7 +993,11 @@ export function makeCarryRearmController({
             // Deferred: the agent stayed mid-turn past the cap. A now-stale carry
             // is not worth delivering; otherwise a production respawn loops to the
             // next window, a drill falls out after its one shot.
-            if (isStale(msg)) {
+            // EI-19480099650947832: re-read AGAIN here — a supersede that landed
+            // DURING this attempt must not be killed off by the staleness of the
+            // message this attempt happened to start with. That is the whole
+            // point of superseding: the fresher carry resets the clock.
+            if (isStale(latest.get(key) ?? current)) {
               emitEvent(droppedKind, { ...extra, rearmed: true, reason: 'carry-stale' });
               return;
             }
@@ -982,6 +1014,7 @@ export function makeCarryRearmController({
           });
         } finally {
           pending.delete(key);
+          latest.delete(key);
         }
       })();
       return 'queued';
@@ -2881,7 +2914,23 @@ export function hostThroughPty(o) {
             // its respawn to one long turn. A duplicate schedule (a retry already
             // pending for this key) drops terminally here.
             if (msg.mode === 'carry-respawn') {
-              if (carryRearm.schedule(msg) === 'duplicate') {
+              const rearmVerdict = carryRearm.schedule(msg);
+              // EI-19480099650947832: a PRODUCTION respawn arriving while an
+              // earlier one is still re-polling now SUPERSEDES it (the fresher
+              // carry document wins) instead of being terminally dropped. This
+              // row is deliberately NON-terminal: nothing was lost, the pending
+              // re-poll simply adopted this payload, so op:'report'/'verify'
+              // must keep waiting for that loop's own delivered/dropped row.
+              if (rearmVerdict === 'superseded') {
+                const supExtra = {
+                  mode: 'carry-respawn',
+                  reason: 'superseded-pending-rearm',
+                  capMs: turnInjectBusyCapMs,
+                };
+                appendHostEvent(ownerId, 'respawn-rearm-superseded', supExtra);
+                appendSharedDrillLedgerEvent(ownerId, 'respawn-rearm-superseded', supExtra);
+              }
+              if (rearmVerdict === 'duplicate') {
                 const isDrill = !!msg.drillId;
                 const dropKind = isDrill ? 'carry-drill-carry-dropped' : 'respawn-carry-dropped';
                 const dropExtra = isDrill

@@ -17,8 +17,14 @@
  * Scoping (owner amendment D-001: harness/work_item OPTIONAL):
  *   workspace (ref NULL) | role | owner | harness | work_item.
  * Upsert identity: (workspace, scope, coalesce(ref,''), key). Soft-retract.
- * Hygiene: mandatory TTL (default 7d), per-scope cap (LRU-ish: oldest-updated
- * evicted on overflow), expiry sweep on the routines tick.
+ * Hygiene: mandatory TTL (default 7d), per-scope cap, expiry sweep on the
+ * routines tick. The cap evicts by the ranking at the ORDER BY around L1221 —
+ * confidence, then `expires_at DESC`, with `updated_at DESC` only as a
+ * tiebreak — so the SOONEST-EXPIRING incumbent is the victim. It is NOT
+ * "LRU-ish / oldest-updated", which is what this line said until 2026-08-04
+ * and which stopped being true at WI-7292; two agents chased that stale
+ * sentence to opposite wrong conclusions about a live eviction. Read the
+ * ORDER BY, not this summary.
  */
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
@@ -183,7 +189,10 @@ export const FACT_PROVISIONAL_DEFAULT_TTL_SEC = 24 * 3600;
  *  still; it should be gone from the fold well before anyone could mistake it
  *  for settled fact. */
 export const FACT_SUSPECTED_DEFAULT_TTL_SEC = 6 * 3600;
-/** Per-(scope,ref) live-fact cap — oldest-updated evicted past this. */
+/** Per-(scope,ref) live-fact cap. Past this the SOONEST-EXPIRING incumbent is
+ *  evicted (ranking: confidence, then `expires_at DESC`, `updated_at DESC` only
+ *  as tiebreak — see the ORDER BY around L1221). NOT oldest-updated: that was
+ *  the pre-WI-7292 policy and this line still claimed it until 2026-08-04. */
 export const FACTS_PER_SCOPE_CAP = 50;
 /** Fold budget: max facts per scope-selector in one fold read. */
 export const FACTS_FOLD_LIMIT = 12;
@@ -971,7 +980,9 @@ export function clampFactBody(raw: string): string {
 }
 
 /** Upsert a fact by identity; refreshes body/TTL/source on re-assert. Enforces
- *  the per-scope cap by evicting the oldest-updated live facts past the cap. */
+ *  the per-scope cap by evicting the LOWEST-RANKED live incumbents past the cap
+ *  — confidence, then `expires_at DESC` (see the ORDER BY below), so the
+ *  soonest-expiring loses. Not oldest-updated; that ended at WI-7292. */
 export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<AssertFactResult> {
   // EI-7463: these are CALLER-input mistakes (a bad scope/ref pairing, an
   // empty key/body after trim), not server faults — throw InvalidInputError
@@ -1109,8 +1120,9 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
     RETURNING id, superseded_at::text, supersedes_id,
               scope, scope_ref, key, body, source_ref, audience_scope, source_provenance,
               confidence, kind, depends_on, claim, enforcement, settled_by, created_by, updated_at::text, expires_at::text`;
-  // Cap enforcement — evict oldest-updated live facts past the cap for this
-  // (scope, ref). LOCAL partition only (H6): the local writer's cap must never
+  // Cap enforcement — evict the LOWEST-RANKED live incumbents past the cap for
+  // this (scope, ref); the ranking is the ORDER BY below, NOT oldest-updated.
+  // LOCAL partition only (H6): the local writer's cap must never
   // evict foreign-source observations (those are bounded per-source by the
   // substrate rate caps + each sender's own cap).
   // P-008 (a): the cap counts CURRENT versions only. Counting the superseded

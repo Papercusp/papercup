@@ -67,7 +67,6 @@ const ALLOW = new Set([
   'packages/operator-core/lib/endpoint-route/routes/harness/projects.ts',
   'packages/operator-core/lib/harness-agent-runs.ts',
   'packages/operator-core/lib/harness-core.ts',
-  'packages/operator-core/lib/harness/projects-lite.ts',
   'packages/operator-core/lib/operator-state-pg.ts',
   'packages/operator-core/lib/posthog-config.ts',
   'packages/operator-core/lib/scratch-gc.ts',
@@ -75,7 +74,6 @@ const ALLOW = new Set([
   'packages/operator-core/lib/search/embed-backfill.ts',
   'packages/operator-core/lib/search/session-ingest.ts',
   'packages/operator-core/lib/search/turn-chunk-sync.ts',
-  'packages/operator-core/lib/spawnable-templates.ts',
 ]);
 
 function* walk(dir) {

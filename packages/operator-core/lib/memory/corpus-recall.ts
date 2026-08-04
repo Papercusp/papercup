@@ -269,10 +269,29 @@ export const CORPUS_QUERY_MAX_TERMS = 2;
  * complete pair sweep shows 9 and 4 winning pairs exist that no scalar over
  * terms can pick (df/len/position all OVERLAP between winners and losers).
  *
- * So the fix is not to pick two terms better — it is to stop capping the stage
- * that never needed the cap.
+ * ⚠ WIDENING THIS WAS MEASURED AND DOES NOT WORK — it is 2 on evidence, not by
+ * oversight, and raising it again without changing the ANCHOR will reproduce a
+ * null. Paired arms in one process over the WI-6512 replay (control 2 terms vs
+ * treatment 24): 1/7 vs 1/7, delta 0, with per-batch candidate counts identical
+ * (3/3, 10/10, 24/24).
+ *
+ * WHY, and it is structural rather than a tuning miss: the graded SQL is not a
+ * disjunction. `search/sources.ts` lexicalSql() matches
+ * `tsv @@ anchor.a AND tsv @@ q.orq`, where `anchor` is
+ * `ORDER BY n ASC LIMIT 1` over per-lexeme document frequency — i.e. EVERY
+ * candidate must contain the query's RAREST term, and coverage only ranks what
+ * that anchor already admitted. Adding terms can only LOWER the minimum df, so
+ * a wider query moves the anchor to a rarer, more incidental token and the
+ * admitted set does not grow.
+ *
+ * That anchor is rarity-as-selector — the same mechanism D-066 measured as
+ * WORSE (known-item 2/7 → 0/7) and reverted at the query-construction level. It
+ * was never reverted here, so the corpus leg still selects by rarity, one layer
+ * down, where the revert did not reach.
+ *
+ * So the lever for WI-9273 is the ANCHOR, not the term count.
  */
-export const CORPUS_GRADED_QUERY_MAX_TERMS = 24;
+export const CORPUS_GRADED_QUERY_MAX_TERMS = 2;
 
 /**
  * Minimum corpus document frequency for a term to be worth one of the

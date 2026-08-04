@@ -12,6 +12,7 @@
 import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { pinModuleState } from '@papercusp/module-singleton';
 import { loadHarnessRegistry, isEphemeralForeignProject } from '../harness-registry';
 import { harnessDir } from '../harness-core';
 import { groupByHive, isRepoLessHiveHome, type HiveGroup, type HiveGroupProject } from './hive-groups';
@@ -75,26 +76,37 @@ interface LiteCacheEntry {
   ts: number;
   payload: ProjectsLitePayload;
 }
-const __liteKey = Symbol.for('papercusp.harnessProjectsLiteCache');
-type LiteGlobals = typeof globalThis & { [__liteKey]?: Map<string, LiteCacheEntry> };
+// Pinned through @papercusp/module-singleton rather than a hand-rolled
+// `globalThis[Symbol.for(...)]` pair: hand-rolling still fixes correctness, but
+// the key is invisible to listModuleDuplications(), which then reports a
+// confident `[]` while this module is split (EI-19479108855357092).
+const __liteState = pinModuleState<{ cache: Map<string, LiteCacheEntry> }>(
+  '@papercusp/operator-core.harnessProjectsLiteCache',
+  () => ({ cache: new Map() }),
+);
 const LITE_TTL_MS = 1000;
 
-/** Drop every workspace's cached lite payload (call after a registry write). */
+/**
+ * Drop every workspace's cached lite payload (call after a registry write).
+ *
+ * Clears the pinned map in place. The previous form deleted the globalThis slot
+ * outright — reaching past the module into its storage location, which keeps
+ * compiling and silently stops busting anything once the state moves.
+ */
 export function bustProjectsLiteCache(): void {
-  delete (globalThis as LiteGlobals)[__liteKey];
+  __liteState.cache.clear();
 }
 
 export async function buildProjectsLitePayload(
   opts: { bypassCache?: boolean; includeHiveHomes?: boolean } = {},
 ): Promise<ProjectsLitePayload> {
-  const g = globalThis as LiteGlobals;
   const now = Date.now();
   // The selectable `projects` list varies by includeHiveHomes, so the variant is
   // part of the cache key (the default — repo-less Hive homes hidden — is what the
   // psu/GUI selectors read).
   const cacheKey = `${activeWorkspaceId()}|${opts.includeHiveHomes ? 'h' : ''}`;
   if (!opts.bypassCache) {
-    const hit = g[__liteKey]?.get(cacheKey);
+    const hit = __liteState.cache.get(cacheKey);
     if (hit && now - hit.ts < LITE_TTL_MS) return hit.payload;
   }
   const reg = await loadHarnessRegistry();
@@ -155,6 +167,6 @@ export async function buildProjectsLitePayload(
     ? allProjects
     : allProjects.filter((p) => !isRepoLessHiveHome(p));
   const payload: ProjectsLitePayload = { projects, hives };
-  (g[__liteKey] ??= new Map()).set(cacheKey, { ts: Date.now(), payload });
+  __liteState.cache.set(cacheKey, { ts: Date.now(), payload });
   return payload;
 }

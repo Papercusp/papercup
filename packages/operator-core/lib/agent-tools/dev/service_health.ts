@@ -314,7 +314,8 @@ export default defineTool({
     when: 'Confirm which dev services are up before testing against one; VERIFY A STAGING EDIT — after `dev:restart { target:\'staging\' }`, "staging-api" IS "then probe :3170"; find the canonical local URL/port for the operator or vite instead of guessing; diagnose a "connection refused" / stale-server symptom; OR diagnose a git-sync / routine-engine stall — the "bg-host-ticker" entry tells you whether the SEPARATE bg-host routine engine is frozen (so you do not misattribute it to :3070).',
     notWhen:
       "File/lock contention — that is locks:queue. Migration drift — db:check_drift.",
-    returns: "{ configured, effective, evidence, rootCause, nextVerb, services, telemetry, supervision }",
+    returns:
+      "{ configured, effective, evidence, rootCause, nextVerb, services, telemetry, supervision }\n\nWEDGED vs DOWN (EI-19465075959589134). A failing service carries `wedged` + `acceptQueue:{pending,backlog}`, and `effective.wedged` counts them. `wedged:true` = something IS listening on the port but has connections queued unaccepted — a live process with a BLOCKED EVENT LOOP. That state defeats every other liveness signal at once: `systemctl is-active` says active, the pid is alive, `dev:listening_ports` shows the port bound, and even a TCP connect succeeds (the kernel completes the handshake without the process). So never conclude 'the service is fine' from any of those while a probe is failing — the accept queue is the only signal that separates the two. `wedged` ABSENT means undetermined (unreadable listen table, or a non-local URL), never 'not wedged'. Act differently on each: down ⇒ start it; wedged ⇒ a restart recovers but destroys the evidence, so capture logs first (:3170 wedged twice in four hours because each incident was closed by restarting it).",
     seeAlso: [
       "dev:restart (restart a down service)",
       "dev:pg_health (Postgres health specifically)",

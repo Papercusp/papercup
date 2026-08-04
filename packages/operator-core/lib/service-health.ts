@@ -341,7 +341,12 @@ export async function detectWedgedListener(
   }
 }
 
-export async function probeEndpoint(spec: EndpointSpec, timeoutMs = spec.timeoutMs ?? 3000): Promise<ProbeResult> {
+export async function probeEndpoint(
+  spec: EndpointSpec,
+  timeoutMs = spec.timeoutMs ?? 3000,
+  /** Injectable ONLY so the wedge verdict is testable without wedging a real server. */
+  readListenTable: ListenTableReader = listListeningSockets,
+): Promise<ProbeResult> {
   const start = Date.now();
   // EI-2339: an onDemand endpoint (no systemd unit, spawned ad hoc) being down
   // is the expected/normal state, not an outage — mark it present:false so
@@ -388,7 +393,7 @@ export async function probeEndpoint(spec: EndpointSpec, timeoutMs = spec.timeout
     // with connections it never accepted? That separates WEDGED (a live process
     // with a blocked event loop) from DOWN, which every other signal here
     // reports identically. Undetermined stays undetermined.
-    const wedge = await detectWedgedListener(spec.url);
+    const wedge = await detectWedgedListener(spec.url, readListenTable);
     const preflightNote = preflight === 'indeterminate'
       ? `TCP preflight was indeterminate (timer expired under load, not a refused connection) and the follow-up HTTP fetch then also failed — likely a genuinely down/wedged listener, not event-loop lag`
       : undefined;

@@ -1687,6 +1687,26 @@ describe('EI-19462267124852221 — an auto-resolve must carry its OBSERVATION, n
       .toBe('observed workFeed status=unknown stalePausedRoutines=unreadable');
   });
 
+  // The `panel:<key>` catch-all family. Measured 2026-08-04 (24h, papercusp-workspace):
+  // panel:infra 148 fire/resolve cycles, panel:bees 83, rubric-emission-dark 41, while the
+  // two workFeed signatures above sat quiet — so these ARE the live occurrences, and the
+  // helper used to record 'no per-signature evidence recorded' for every one of them.
+  it('records the observed panel status for a panel:<key> signature (the family that actually flaps)', () => {
+    const h = mkHealth({ panels: { infra: { status: 'warn', summary: 'pg slow' } } });
+    expect(resolveEvidenceFor('panel:infra', h)).toBe('observed panel infra status=warn');
+  });
+
+  it('an ERRORED panel is marked as such, so a resolve cannot read as observed-clear', () => {
+    const h = mkHealth({ panels: { infra: { status: 'unknown', data: null, error: 'boom' } } });
+    expect(resolveEvidenceFor('panel:infra', h)).toBe('observed panel infra status=unknown (panel ERRORED)');
+  });
+
+  it('a panel MISSING from the snapshot says panel-absent — absence is not evidence of recovery', () => {
+    // The same load-bearing distinction as the unmapped-signature case: we did not look,
+    // which must never render as "we looked and it was clear".
+    expect(resolveEvidenceFor('panel:no-such-panel', mkHealth())).toBe('observed panel no-such-panel status=panel-absent');
+  });
+
   it('THE CALL SITE: the note actually written on a genuine recovery carries the evidence', async () => {
     // Testing the helper alone would prove nothing about whether anything CALLS it —
     // so assert on the string the resolve() dep really receives.

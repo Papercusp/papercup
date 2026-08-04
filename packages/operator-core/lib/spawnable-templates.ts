@@ -15,6 +15,7 @@
  */
 import { promises as fs, existsSync } from 'node:fs';
 import { join } from 'node:path';
+import { pinModuleState } from '@papercusp/module-singleton';
 import { papercuspPath } from './papercusp-root';
 import { operatorApiBase } from './operator-api-base';
 
@@ -25,13 +26,29 @@ interface SpawnableCacheEntry {
   inflight: Promise<{ spawnable: any[] }> | null;
   value: { spawnable: any[] } | null;
 }
-const __spawnableCacheKey = Symbol.for('papercusp.spawnableCache');
-type SpawnableCacheGlobals = typeof globalThis & { [__spawnableCacheKey]?: SpawnableCacheEntry };
-const __spawnableCache: SpawnableCacheEntry = (() => {
-  const g = globalThis as SpawnableCacheGlobals;
-  if (!g[__spawnableCacheKey]) g[__spawnableCacheKey] = { expires: 0, inflight: null, value: null };
-  return g[__spawnableCacheKey]!;
-})();
+// Pinned through @papercusp/module-singleton rather than a hand-rolled
+// `globalThis[Symbol.for(...)]` pair: hand-rolling still fixes correctness, but
+// the key is invisible to listModuleDuplications(), which then reports a
+// confident `[]` while this module is split (EI-19479108855357092).
+const __spawnableCache = pinModuleState<SpawnableCacheEntry>(
+  '@papercusp/operator-core.spawnableCache',
+  () => ({ expires: 0, inflight: null, value: null }),
+);
+
+/**
+ * Reset the cache between tests THROUGH the module's own seam.
+ *
+ * Do not reach for `globalThis[Symbol.for(...)]` in a test: that targets the
+ * storage LOCATION rather than this module's state, so it keeps compiling and
+ * silently resets NOTHING the moment the state moves (which is exactly what
+ * happened when this module was migrated to pinModuleState —
+ * EI-19479108855357092).
+ */
+export function resetSpawnableCacheForTest(): void {
+  __spawnableCache.value = null;
+  __spawnableCache.expires = 0;
+  __spawnableCache.inflight = null;
+}
 
 async function computeSpawnableTemplates(): Promise<{ spawnable: any[] }> {
   const operatorBase = operatorApiBase();

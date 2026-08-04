@@ -105,6 +105,46 @@ describe('parseSsOutput', () => {
     expect(grouped[0].pids).toEqual([530811, 530751, 530819]);
   });
 
+  it('carries the accept queue — Recv-Q/Send-Q, which on a LISTEN socket are not bytes', () => {
+    // EI-19465075959589134. These two columns were parsed and DISCARDED, and they
+    // are the only signal that separates a wedged listener from a healthy one.
+    // On LISTEN: Recv-Q = connections established and waiting for accept(),
+    // Send-Q = the listen(2) backlog. Every fixture row here is healthy (0), so
+    // this pins the healthy reading too — a parser that always reported 0 would
+    // look identical on a wedge, which is the failure being prevented.
+    expect(rows.find((r) => r.port === 3170)?.acceptQueue).toEqual({ pending: 0, backlog: 511 });
+    expect(rows.find((r) => r.port === 2022)?.acceptQueue).toEqual({ pending: 0, backlog: 5 });
+    expect(rows.find((r) => r.port === 587)?.acceptQueue).toEqual({ pending: 0, backlog: 4096 });
+  });
+
+  it('reads a WEDGED listener as a non-zero pending count, not as a missing row', () => {
+    // Shape captured from the real :3170 wedge (2026-08-04): the port stayed
+    // bound and the pid alive while the queue climbed 70 → 97 against a 511
+    // backlog, because the event loop never called accept(). Nothing else in the
+    // listen table changes during a wedge — this number is the whole signal.
+    const wedged = parseSsOutput(
+      'LISTEN 97     511                        0.0.0.0:3170       0.0.0.0:*    users:(("node-MainThread",pid=47585,fd=26))',
+    );
+    expect(wedged).toHaveLength(1);
+    expect(wedged[0]).toMatchObject({ port: 3170, pid: 47585, ownerVisible: true });
+    expect(wedged[0].acceptQueue).toEqual({ pending: 97, backlog: 511 });
+  });
+
+  it('SUMS pending across a SO_REUSEPORT group and keeps the backlog as the per-socket limit', () => {
+    // The question is "how many connections are waiting on this port", so a
+    // single wedged worker in a healthy cluster must not be averaged away. The
+    // backlog is per-socket and identical across the group, so summing THAT
+    // would invent a limit the kernel never enforces.
+    const cluster = [
+      'LISTEN 0      511                      127.0.0.1:3070       0.0.0.0:*    users:(("node-MainThread",pid=1,fd=23))',
+      'LISTEN 12     511                      127.0.0.1:3070       0.0.0.0:*    users:(("node-MainThread",pid=2,fd=23))',
+      'LISTEN 3      511                      127.0.0.1:3070       0.0.0.0:*    users:(("node-MainThread",pid=3,fd=23))',
+    ].join('\n');
+    const grouped = parseSsOutput(cluster);
+    expect(grouped).toHaveLength(1);
+    expect(grouped[0].acceptQueue).toEqual({ pending: 15, backlog: 511 });
+  });
+
   it('does NOT merge two different programs sharing a port', () => {
     // A real port-conflict finding must survive grouping.
     const conflict = [

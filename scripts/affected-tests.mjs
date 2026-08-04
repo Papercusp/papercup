@@ -410,6 +410,11 @@ const PARTIAL_INDEX_SCHEMA_FILE = 'libs/papercusp/libs/db/src/schema/generated.t
 // guard silently stops firing (the same "green because it stopped checking" shape).
 const MIGRATION_SQL_DIR = 'libs/papercusp/libs/db/sql';
 
+// EI-7667. Mirrors ROOTS in scripts/check-no-unthreaded-apply.mjs — that guard walks
+// exactly these roots, so if its scan widens, this must follow or the guard silently
+// stops firing on the new root.
+const UNTHREADED_APPLY_SOURCE_ROOTS = ['packages', 'libs', 'apps'];
+
 const REPO_WIDE_INVARIANT_GUARDS = [
   {
     workspace: '@papercusp/operator-core',
@@ -474,6 +479,34 @@ const REPO_WIDE_INVARIANT_GUARDS = [
     // currently talk to postgres" would re-create the blind spot one level down, and
     // the bug being guarded IS a NEW file hand-rolling its own teardown.
     appliesTo: (f) => /\.[cm]?tsx?$/.test(f),
+  },
+  {
+    // EI-7667 — the D-034 shape again, and the reason this guard exists at all.
+    // lint:no-unthreaded-apply SCANS packages/ libs/ apps/ for production call sites of
+    // the hyperbee op-apply seam that fail to thread `ownLogKeyHex`, but its enforcement
+    // point is a vitest file in operator-core. `applyOpVia` is DEFINED in operator-core,
+    // so a new un-threaded call site there is caught by workspace selection alone — while
+    // one in apps/ or libs/ importing that seam can leave operator-core unaffected and
+    // escape entirely. Registering closes exactly that leg.
+    //
+    // Why the escape matters more here than the usual "a red lands later": an un-threaded
+    // apply is invisible in BOTH the logs and the database (it restamps a remote row as a
+    // local write with a newer-than-wire clock, so the genuine op then loses every LWW
+    // compare and the record stays permanently shadowed). It survived four gate runs and
+    // three wrong diagnoses on the p2p rig for that reason — this is a defect class the
+    // fleet gate would NOT reliably surface, so local enforcement is the real backstop.
+    workspace: '@papercusp/operator-core',
+    // The standalone script (0.62-0.65s measured, 3 runs — between lint:partial-index-
+    // alignment's 0.57-0.60s and lint:drop-database-force's ~1.0s, both accepted here).
+    // Not the vitest file: the narrow task only needs the tree ratchet, and the controls
+    // proving the detector can still fail already run inside operator-core's own suite.
+    script: 'lint:no-unthreaded-apply',
+    // Mirrors ROOTS in scripts/check-no-unthreaded-apply.mjs — if that scan ever widens,
+    // this must follow or the guard silently stops firing on the new root (the same
+    // "green because it stopped checking" shape MIGRATION_SQL_DIR is annotated for).
+    appliesTo: (f) =>
+      /\.[cm]?tsx?$/.test(f) &&
+      UNTHREADED_APPLY_SOURCE_ROOTS.some((r) => f.startsWith(`${r}/`)),
   },
 ];
 

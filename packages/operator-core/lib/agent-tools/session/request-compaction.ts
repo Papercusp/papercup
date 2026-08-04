@@ -40,6 +40,7 @@ import {
 } from '../../enforcement-gate';
 import { runFlushGate } from '../../enforcement-gate-io';
 import { markRespawnExpected } from '../../carry-respawn-marker';
+import { readPriorRespawnOutcome, priorRespawnNote } from '../../carry-respawn-outcome';
 
 // Re-exported for back-compat: the flush-integrity detector + its shape now live
 // in enforcement-gate.ts (the single source shared with the P-016 enforcement
@@ -332,6 +333,15 @@ export default defineTool({
           return note; // provenance must never break a boundary
         }
       })();
+    // EI-19480099650947832: read what happened to this session's PREVIOUS
+    // carry-respawn BEFORE injecting this one, so the verdict describes prior
+    // history rather than the request we are about to make. `respawn: true` only
+    // ever meant "the socket write was accepted" — the host still has to win a
+    // busy-gate and can terminally drop the carry, and until now every one of
+    // those drops was invisible to the caller (they land in a per-owner JSONL
+    // the tool layer never read). Fail-soft by construction: an unreadable log
+    // reports `none` and changes nothing.
+    const priorRespawn = await readPriorRespawnOutcome(identity.ownerId);
     const ok = await injectIntoHost(
       host.sock,
       {
@@ -409,6 +419,7 @@ export default defineTool({
             firstPromptSource: spec.firstPrompt ? 'open-owner-message' : 'continuation-note',
             staleCheckpoints,
             openOwnerQuestion,
+            priorRespawn,
             ...(gate.verdict === 'mechanical-fallback' && gate.fallback
               ? { mechanicalFallback: gate.fallback }
               : {}),
@@ -428,7 +439,10 @@ export default defineTool({
                   'relaunching to pick up a current one.'
                 : 'Carry-respawn queued — when this turn ends the host cuts this process at the clean boundary and respawns your successor with the deterministic carry document as launch context; it resumes automatically. Wrap up now and stop.') +
               staleNote +
-              openQuestionNote,
+              openQuestionNote +
+              // EI-19480099650947832: only ever emitted on evidence from the
+              // host's own event log — silent when the last respawn delivered.
+              (ok ? priorRespawnNote(priorRespawn) : ''),
           }),
         },
       ],

@@ -21,8 +21,12 @@ import {
   PORTLESS_PROBE_NAME_SET,
   STAGING_API_DOWN_CONFIRM_TICKS,
   DESKTOP_DOWN_CONFIRM_TICKS,
+  classifyListenerWedge,
+  localProbePort,
+  detectWedgedListener,
   type ProbeResult,
 } from './service-health';
+import type { ListeningSocket } from './listening-sockets';
 import { collectServiceDownSignals } from './harness/improvements/watchdog';
 
 const r = (name: string, up: boolean): ProbeResult => ({
@@ -793,5 +797,140 @@ describe('probeSubstrateSidecar (WI-895 — not-spawned vs truly-dead discrimina
     expect(res.note).toMatch(/ECONNREFUSED|ENOTSOCK|Connection/);
     expect(res.note).toContain(sockPath);
     expect(Date.now() - started).toBeLessThan(4000); // no masked 5s connect timer
+  });
+});
+
+/**
+ * EI-19465075959589134 — WEDGED is not DOWN.
+ *
+ * :3170 grew to 2.3x its RSS limit and stopped answering while `systemctl
+ * is-active` said active, the pid was alive, the port was bound and a TCP
+ * connect still succeeded — because the KERNEL completes the handshake without
+ * the process. Every liveness signal the box had was defeated by the same
+ * blocked event loop, simultaneously. The accept queue is the one signal that
+ * is not, since only the process can drain it.
+ */
+describe('wedged-vs-down detection', () => {
+  const socket = (over: Partial<ListeningSocket> = {}): ListeningSocket => ({
+    port: 3170,
+    address: '127.0.0.1',
+    family: 'ipv4',
+    pid: 47585,
+    pids: [47585],
+    listeners: 1,
+    command: 'node-MainThread',
+    ownerVisible: true,
+    reserved: true,
+    acceptQueue: { pending: 0, backlog: 511 },
+    ...over,
+  });
+
+  it('classifies a listener holding unaccepted connections as WEDGED', () => {
+    const v = classifyListenerWedge([socket({ acceptQueue: { pending: 97, backlog: 511 } })]);
+    expect(v).toEqual({ wedged: true, pending: 97, backlog: 511 });
+  });
+
+  it('classifies a listener with a DRAINED queue as not wedged — the control', () => {
+    // Without this pair the verdict could be "wedged whenever a probe fails",
+    // which would relabel every ordinary outage and destroy the distinction.
+    expect(classifyListenerWedge([socket()])).toEqual({ wedged: false, pending: 0, backlog: 511 });
+  });
+
+  it('sums pending across a SO_REUSEPORT cluster — one wedged worker still starves clients', () => {
+    const v = classifyListenerWedge([
+      socket({ pid: 1, acceptQueue: { pending: 0, backlog: 511 } }),
+      socket({ pid: 2, acceptQueue: { pending: 40, backlog: 511 } }),
+    ]);
+    expect(v).toEqual({ wedged: true, pending: 40, backlog: 511 });
+  });
+
+  it('returns UNDETERMINED (null) when nothing is listening or the table is unreadable', () => {
+    // Both must stay null rather than `{wedged:false}`: no listener means the
+    // service is genuinely down (a different finding), and an unreadable table
+    // means we do not know. Collapsing either into "not wedged" would recreate
+    // the original bug — two different states rendering identically.
+    expect(classifyListenerWedge([])).toBeNull();
+    expect(classifyListenerWedge(null)).toBeNull();
+  });
+
+  it('only asks about LOCAL loopback ports', () => {
+    expect(localProbePort('http://127.0.0.1:3170/api/health')).toBe(3170);
+    expect(localProbePort('http://localhost:3055/')).toBe(3055);
+    expect(localProbePort('http://example.com:3170/')).toBeNull(); // remote: our listen table says nothing about it
+    expect(localProbePort('http://127.0.0.1/')).toBeNull(); // no explicit port
+    expect(localProbePort('not a url')).toBeNull();
+  });
+
+  it('is FAIL-SOFT: a throwing listen table yields null, never a fabricated verdict', async () => {
+    // This runs INSIDE the health probe. A diagnostic that can break the probe
+    // it rides on is the same class of defect as the bug it diagnoses.
+    const boom = async () => {
+      throw new Error('ss: command not found');
+    };
+    await expect(detectWedgedListener('http://127.0.0.1:3170/api/health', boom)).resolves.toBeNull();
+  });
+
+  /**
+   * A REAL listener that completes the TCP handshake and then never answers —
+   * the wedge shape end to end. It matters that this is a live socket rather
+   * than a closed port: a closed port is REFUSED at preflight and short-circuits
+   * before the fetch, so it can never exercise this path, and asserting against
+   * one would have produced a test that passes while proving nothing.
+   */
+  async function silentListener(): Promise<{ port: number; close: () => Promise<void> }> {
+    const open = new Set<net.Socket>();
+    const srv = net.createServer((s) => {
+      open.add(s);
+      s.on('close', () => open.delete(s));
+    });
+    await new Promise<void>((resolve) => srv.listen(0, '127.0.0.1', () => resolve()));
+    const port = (srv.address() as net.AddressInfo).port;
+    return {
+      port,
+      close: async () => {
+        for (const s of open) s.destroy();
+        await new Promise<void>((resolve) => srv.close(() => resolve()));
+      },
+    };
+  }
+
+  it('probeEndpoint reports a failed probe on a QUEUE-BACKED port as wedged, with the evidence', async () => {
+    const listener = await silentListener();
+    try {
+      const res = await probeEndpoint(
+        { name: 'staging-api', url: `http://127.0.0.1:${listener.port}/api/health`, timeoutMs: 300 },
+        300,
+        async () => ({ sockets: [socket({ port: listener.port, acceptQueue: { pending: 97, backlog: 511 } })] }),
+      );
+
+      expect(res.up).toBe(false);
+      expect(res.wedged).toBe(true);
+      expect(res.acceptQueue).toEqual({ pending: 97, backlog: 511 });
+      expect(res.note).toContain('WEDGED');
+      // The note must say what a restart does and does NOT buy, because
+      // restarting is what closed the first two :3170 incidents in four hours
+      // without anyone learning why it wedged.
+      expect(res.note).toMatch(/restart/i);
+    } finally {
+      await listener.close();
+    }
+  });
+
+  it('probeEndpoint leaves an ordinary DOWN probe unlabelled — no wedge, no wedge note', async () => {
+    const listener = await silentListener();
+    try {
+      const res = await probeEndpoint(
+        { name: 'staging-api', url: `http://127.0.0.1:${listener.port}/api/health`, timeoutMs: 300 },
+        300,
+        async () => ({ sockets: [] }),
+      );
+
+      expect(res.up).toBe(false);
+      expect(res.wedged).toBeUndefined(); // undetermined-or-absent, never a false "not wedged"
+      expect(res.acceptQueue).toBeUndefined();
+      expect(res.note ?? '').not.toContain('WEDGED');
+    } finally {
+      await listener.close();
+    }
   });
 });

@@ -7,7 +7,7 @@
  * (every fn TAKES the `sql` handle), so we pass the org-fixture's admin (RLS-bypass)
  * client directly and scope by the explicit workspaceId arg. This ALSO verifies that
  * migration 421 applies cleanly on the real baseline (the generated title_tsv column,
- * the VECTOR(384) column, the JSONB payload/self_improvement columns, the partial
+ * the VECTOR (prose-width) column, the JSONB payload/self_improvement columns, the partial
  * unique index on work_item_kind) — the thing a unit test can't cover.
  *
  * Validates: upsert insert→update-in-place by (workspace,id); tier routing fields;
@@ -26,11 +26,24 @@ import {
   hasGenericKind,
   listRegisteredDatatypeNames,
 } from './datatype-registry-store';
+import { PROSE_VECTOR_DIMS } from './search/prose-vector-dims';
 
 const { createOrgTestDb } = await import('../test/_org-test-db');
 
-/** A throwaway 384-dim embedding (only presence/cosine is exercised, not a real vector). */
-const fakeEmbedding = (seed = 0.1): number[] => Array.from({ length: 384 }, () => seed);
+/**
+ * A throwaway embedding (only presence/cosine is exercised, not a real vector).
+ *
+ * DERIVED from `PROSE_VECTOR_DIMS`, never restated. `datatype_registry.embedding`
+ * is one of the columns that constant governs (it is listed in
+ * `PROSE_VECTOR_COLUMNS`), so a hardcoded width here goes stale the moment a
+ * width migration lands — which is exactly what happened: migration 727 moved
+ * every prose column 384 → 768 and this fixture stayed at 384, so both upsert
+ * tests failed with `expected 768 dimensions, not 384`. That is the precise
+ * failure mode prose-vector-dims.ts exists to prevent ("a declaration that can
+ * drift from the code it describes is just a second docblock") — it just could
+ * not see this copy, because the copy lived in a test.
+ */
+const fakeEmbedding = (seed = 0.1): number[] => Array.from({ length: PROSE_VECTOR_DIMS }, () => seed);
 
 describe('datatype_registry store (real PG)', () => {
   let db: OrgTestDb;
