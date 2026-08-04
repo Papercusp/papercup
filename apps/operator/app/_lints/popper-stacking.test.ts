@@ -66,6 +66,73 @@ function zIndexRules(css: string): Array<{ selector: string; z: number }> {
   return out
 }
 
+/**
+ * Extract the VALUE EXPRESSION of every `zIndex:` property — everything from
+ * just after the colon to the end of that property (the next `,` or closing
+ * brace at nesting depth 0, or end of line).
+ *
+ * WHY NOT `/zIndex:\s*(\d+)/` — the regex this replaced (EI-19470132622399873):
+ * it required a DIGIT immediately after the colon, so it silently skipped every
+ * non-literal value. `harness/Popover.tsx` shipped `zIndex: zIndex ?? 90` — the
+ * 90 default that re-created the whole bug this file exists to prevent — and the
+ * lint matched nothing in it, so the file read as fully compliant. A scanner
+ * that cannot see the defective shape is the same failure this file's own header
+ * warns about ("a test that cannot fail on the defect is worse than no test").
+ *
+ * Scanning the whole expression rather than a literal is also what keeps the
+ * check honest for `?? N`, `|| N` and ternaries, which are the natural ways a
+ * shared primitive grows a default.
+ */
+function zIndexExpressions(src: string): Array<{ expr: string; index: number }> {
+  const out: Array<{ expr: string; index: number }> = []
+  for (const m of src.matchAll(/\bzIndex:/g)) {
+    const start = (m.index ?? 0) + m[0].length
+    let depth = 0
+    let end = start
+    while (end < src.length) {
+      const ch = src[end]
+      if (ch === '(' || ch === '[' || ch === '{') depth++
+      else if (ch === ')' || ch === ']' || ch === '}') {
+        if (depth === 0) break
+        depth--
+      } else if ((ch === ',' && depth === 0) || ch === '\n') break
+      end++
+    }
+    out.push({ expr: src.slice(start, end).trim(), index: m.index ?? 0 })
+  }
+  return out
+}
+
+/**
+ * Symbols that ARE the floor. An expression built from these is safe by
+ * construction and needs no numeric literal to prove it.
+ */
+const FLOOR_SYMBOLS = /\b(POPPER_WRAPPER_FLOOR_Z|clampPopperZ)\b/
+
+/**
+ * A `zIndex: number` inside an interface is a TYPE, not a value. `zIndex?:` is
+ * already excluded by the `zIndex:` match (the `?` breaks it), but the
+ * non-optional form is not.
+ */
+const TYPE_ANNOTATION = /^(number|string|any|unknown)(\s*\|\s*(number|undefined|null))*$/
+
+/**
+ * The verdict for one `zIndex:` expression. Deliberately THREE outcomes, not a
+ * boolean: "I cannot evaluate this" is a distinct answer from "this is fine",
+ * and collapsing the two is what the old literal-only regex effectively did.
+ */
+function verdictFor(
+  expr: string,
+  floor: number,
+): { kind: 'skip' } | { kind: 'ok' } | { kind: 'below-floor'; tooLow: number[] } | { kind: 'undecidable' } {
+  if (!expr || TYPE_ANNOTATION.test(expr)) return { kind: 'skip' }
+  const literals = [...expr.matchAll(/\b(\d+)\b/g)].map((n) => Number(n[1]))
+  const tooLow = literals.filter((z) => z < floor)
+  if (tooLow.length) return { kind: 'below-floor', tooLow }
+  if (literals.length === 0 && !FLOOR_SYMBOLS.test(expr)) return { kind: 'undecidable' }
+  return { kind: 'ok' }
+}
+
 describe('popper stacking', () => {
   const all = cssFiles(APP_DIR).map((f) => ({ file: f, css: readFileSync(f, 'utf8') }))
   const rules = all.flatMap(({ file, css }) => zIndexRules(css).map((r) => ({ ...r, file })))
@@ -144,14 +211,21 @@ describe('popper stacking', () => {
       /@radix-ui\/react-(select|popover|tooltip|dropdown-menu|context-menu|hover-card|menubar|navigation-menu)/
 
     const bad: string[] = []
+    const undecidable: string[] = []
     for (const f of tsFiles) {
       const src = readFileSync(f, 'utf8')
       if (!POPPER_PACKAGES.test(src) || !/\.Content\b/.test(src)) continue
-      for (const m of src.matchAll(/zIndex:\s*(\d+)/g)) {
-        const z = Number(m[1])
-        if (z < wrapperZ) {
-          const line = src.slice(0, m.index).split('\n').length
-          bad.push(`  ${f}:${line}  zIndex: ${z}  (wrapper floor is ${wrapperZ})`)
+      for (const { expr, index } of zIndexExpressions(src)) {
+        const v = verdictFor(expr, wrapperZ)
+        if (v.kind === 'skip' || v.kind === 'ok') continue
+        const line = src.slice(0, index).split('\n').length
+        if (v.kind === 'below-floor') {
+          bad.push(`  ${f}:${line}  zIndex: ${expr}   -> ${v.tooLow.join(', ')} < floor ${wrapperZ}`)
+        } else {
+          // Not a pass. The value is decided somewhere this scanner cannot see,
+          // and silently skipping it is exactly the blind spot that let
+          // `zIndex ?? 90` ship. Make the author state the floor explicitly.
+          undecidable.push(`  ${f}:${line}  zIndex: ${expr}`)
         }
       }
     }
@@ -164,5 +238,75 @@ describe('popper stacking', () => {
         'unclickable:\n' +
         bad.join('\n'),
     ).toEqual([])
+
+    expect(
+      undecidable,
+      'A Radix popper Content sets a z-index this lint cannot evaluate, so it cannot ' +
+        'prove the menu clears the app shell. Build the value from the shared floor ' +
+        '(`clampPopperZ(...)` or `POPPER_WRAPPER_FLOOR_Z` from harness/popper-z.ts) ' +
+        'so it is correct by construction:\n' +
+        undecidable.join('\n'),
+    ).toEqual([])
+  })
+
+  /**
+   * FALSIFIABILITY CONTROL — the scanner run against inputs whose correct
+   * verdict is known, kept permanently rather than proven once by mutating the
+   * tree (the shared checkout is swept into commits every few minutes, so an
+   * in-tree mutation probe can be committed by the sweep).
+   *
+   * The first case is the LITERAL shape that shipped undetected. Without it,
+   * "the lint passes" is equally consistent with "the lint sees nothing", which
+   * is precisely the state this file was in before EI-19470132622399873.
+   */
+  it('CONTROL: flags the defect shapes and clears the correct ones', () => {
+    const floor = 1500
+
+    // The exact expression that shipped in harness/Popover.tsx and was invisible
+    // to the previous `/zIndex:\s*(\d+)/` scan.
+    const shipped = zIndexExpressions('const s = { zIndex: zIndex ?? 90, top: 4 }')
+    expect(shipped.map((e) => e.expr)).toEqual(['zIndex ?? 90'])
+    expect(verdictFor(shipped[0].expr, floor)).toEqual({ kind: 'below-floor', tooLow: [90] })
+
+    // Other natural ways a default grows.
+    expect(verdictFor('zIndex || 70', floor).kind).toBe('below-floor')
+    expect(verdictFor('big ? 1600 : 200', floor).kind).toBe('below-floor')
+
+    // Correct by construction — must NOT be flagged, or the lint cries wolf and
+    // gets suppressed, and then it is not there for the real case.
+    expect(verdictFor('POPPER_WRAPPER_FLOOR_Z', floor).kind).toBe('ok')
+    expect(verdictFor('clampPopperZ(zIndex)', floor).kind).toBe('ok')
+    expect(verdictFor('1500', floor).kind).toBe('ok')
+    expect(verdictFor('1600', floor).kind).toBe('ok')
+
+    // A type annotation is not a value.
+    expect(verdictFor('number', floor).kind).toBe('skip')
+
+    // Undecidable is its own answer, never a silent pass.
+    expect(verdictFor('someImportedValue', floor).kind).toBe('undecidable')
+
+    // The extractor must stop at the property boundary: a sibling property's
+    // small number is NOT this property's z-index.
+    const sibling = zIndexExpressions('{ zIndex: 1500, marginTop: 4 }')
+    expect(sibling.map((e) => e.expr)).toEqual(['1500'])
+    expect(verdictFor(sibling[0].expr, floor).kind).toBe('ok')
+  })
+
+  /**
+   * The floor exists in two places that CANNOT see each other: the CSS rule and
+   * the TS constant components build their inline value from. Radix copies the
+   * inline one over the CSS one, so if they drift the stylesheet silently stops
+   * being the floor it claims to be.
+   */
+  it('keeps the TS floor constant in sync with the CSS floor', () => {
+    const wrapperZ = Math.max(...wrapperRules.map((r) => r.z))
+    const src = readFileSync(join(APP_DIR, 'harness', 'popper-z.ts'), 'utf8')
+    const m = src.match(/POPPER_WRAPPER_FLOOR_Z\s*=\s*(\d+)/)
+    expect(m, 'harness/popper-z.ts must export a numeric POPPER_WRAPPER_FLOOR_Z').toBeTruthy()
+    expect(
+      Number(m![1]),
+      `harness/popper-z.ts sets the floor to ${m?.[1]} but the CSS rule on ` +
+        `[data-radix-popper-content-wrapper] is ${wrapperZ}. Change BOTH.`,
+    ).toBe(wrapperZ)
   })
 })

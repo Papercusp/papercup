@@ -282,11 +282,13 @@ export interface WorkFeedHealth {
   /** EI-19462267124852221: the stale-paused read FAILED this tick (its fail-soft catch
    *  fired), so `stalePausedRoutines: 0` above means "NOT OBSERVED", not "observed zero".
    *  Without this flag the two are indistinguishable, and the liveness alarm's
-   *  auto-resolve-on-recovery reads an unreadable tick as "condition recovered" — which
-   *  is what fired + auto-resolved this signature 5,304/5,311 times in 30 days with a
-   *  BYTE-IDENTICAL summary naming the same 105 routines. A condition that genuinely
-   *  cleared and recurred cannot do that; the CONDITION was constant and the DETECTION
-   *  oscillated. Optional; absent ⇒ the read succeeded (prior fixtures unaffected). */
+   *  auto-resolve-on-recovery reads an unreadable tick as "condition recovered".
+   *  ⚠ That conflation is real, but it is NOT established as the cause of the measured
+   *  flap (5,303 strictly-alternating fire/resolve pairs in 30d, byte-identical summary,
+   *  105 routines) — see the SCOPE note on `unobservableLivenessSignatures`. This flag
+   *  exists chiefly because that sub-read's catch is otherwise INVISIBLE: it logs nothing
+   *  and leaves no trace, so the hypothesis could not be tested at all.
+   *  Optional; absent ⇒ the read succeeded (prior fixtures unaffected). */
   stalePausedRoutinesUnreadable?: boolean;
 }
 

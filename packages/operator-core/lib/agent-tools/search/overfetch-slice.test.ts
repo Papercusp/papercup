@@ -50,12 +50,18 @@ const runFullTextSearch = vi.fn(async (_sources: unknown, ctx: Record<string, un
 });
 const runHybridSearch = vi.fn(async (_sources: unknown, ctx: Record<string, unknown>) => {
   hybridCalls.push({ ctx });
-  return { results: pool, totalHits: pool.length, embedderAvailable: true };
+  // P-020: `legs` is REQUIRED on the engine result — a stub that omits it makes
+  // the handler look broken when it is the stub that is incomplete. Resolved
+  // lazily (never a top-level import of the mocked module: that runs the
+  // hoisted factory before these consts initialise).
+  const { emptyLegs } = await import('@papercusp/search');
+  return { results: pool, totalHits: pool.length, embedderAvailable: true, legs: emptyLegs() };
 });
 // configureSearchDefaults is inert here, but REQUIRED: an inline factory
 // replaces the module wholesale, and lib/search/configure-search-defaults.ts
 // calls it at module load (P-017), so omitting it fails COLLECTION.
-vi.mock('@papercusp/search', () => ({
+vi.mock('@papercusp/search', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/search')>()),
   runFullTextSearch,
   runHybridSearch,
   configureSearchDefaults: vi.fn(),

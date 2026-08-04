@@ -8,6 +8,7 @@ import {
   beesIdleByDesign,
   beesLivenessFromHealth,
   unobservableLivenessSignatures,
+  resolveEvidenceFor,
   _resetLivenessAlarmDebounce,
   INFRA_LIVENESS_IDENTITY,
   type BeesLivenessContext,
@@ -1623,8 +1624,11 @@ describe('EI-19462267124852221 — an UNREADABLE input must not auto-resolve as 
     const t = tickWith(health, [openRec('stale-paused-routines', 'esc-sp')]);
     const r = await t.run();
     // Pre-fix this resolved 'esc-sp' as "condition recovered", dropping the open row
-    // the next fire would have coalesced onto → fire/false-resolve/fire forever
-    // (measured: 5,304 fires / 5,311 auto-resolves in 30d, byte-identical summary).
+    // the next fire would have coalesced onto → fire/false-resolve/fire forever.
+    // ⚠ That IS the shape of the measured flap (5,303 strictly-alternating fire/resolve
+    // pairs in 30d, byte-identical summary) but this guard is NOT established as its
+    // cause — see the SCOPE note on `unobservableLivenessSignatures`. This test pins the
+    // conflation, not the incident.
     expect(t.resolvedIds).toEqual([]);
     expect(r.resolved).toEqual([]);
   });
@@ -1649,5 +1653,60 @@ describe('EI-19462267124852221 — an UNREADABLE input must not auto-resolve as 
     const t = tickWith(health, [openRec('stale-paused-routines', 'esc-sp')]);
     await t.run();
     expect(t.resolvedIds).toEqual(['esc-sp']);
+  });
+});
+
+describe('EI-19462267124852221 — an auto-resolve must carry its OBSERVATION, not just its conclusion', () => {
+  beforeEach(() => _resetLivenessAlarmDebounce());
+
+  function openRec(sig: string, msg_id: string): EscalationRecord {
+    return {
+      msg_id, severity: 'advisory', summary: `[infra-liveness] ${sig}`,
+      from: INFRA_LIVENESS_IDENTITY.ownerId, livenessSignature: sig, resolved: null,
+    } as unknown as EscalationRecord;
+  }
+
+  it('stamps the observed panel status + count for a mapped signature', () => {
+    const h = mkHealth({
+      panels: { workFeed: { status: 'warn', data: { deadRoutines: 0, deadRoutineNames: [], stalePausedRoutines: 0 } } },
+    });
+    expect(resolveEvidenceFor('stale-paused-routines', h))
+      .toBe('observed workFeed status=warn stalePausedRoutines=0');
+  });
+
+  it('an UNMAPPED signature says so explicitly rather than implying it was observed clear', () => {
+    // The load-bearing distinction: silence must not read as evidence. A future query
+    // over the durable log can then separate "observed clear" from "we did not record".
+    expect(resolveEvidenceFor('some-other-signal', mkHealth()))
+      .toBe('no per-signature evidence recorded');
+  });
+
+  it('a caught panel reports unreadable, not a fabricated zero', () => {
+    const h = mkHealth({ panels: { workFeed: { status: 'unknown', data: null, error: 'boom' } } });
+    expect(resolveEvidenceFor('stale-paused-routines', h))
+      .toBe('observed workFeed status=unknown stalePausedRoutines=unreadable');
+  });
+
+  it('THE CALL SITE: the note actually written on a genuine recovery carries the evidence', async () => {
+    // Testing the helper alone would prove nothing about whether anything CALLS it —
+    // so assert on the string the resolve() dep really receives.
+    const notes: string[] = [];
+    const health = mkHealth({
+      evaluatedAt: 100 * 60_000,
+      panels: { workFeed: { status: 'warn', data: { deadRoutines: 0, deadRoutineNames: [], stalePausedRoutines: 0 } } },
+    });
+    await runLivenessAlarmTick('ws', {
+      readLast: () => health,
+      computeHealth: async () => health,
+      listOpen: async () => [openRec('stale-paused-routines', 'esc-sp')],
+      resolve: async (_id: string, _choice: string, note: string) => { notes.push(note); },
+      escalate: async () => {},
+      page: async () => {},
+      now: () => 100 * 60_000 + 60_000,
+      snapshotStaleMs: 6 * 60_000,
+    });
+    expect(notes).toHaveLength(1);
+    expect(notes[0]).toContain("infra-liveness signal 'stale-paused-routines' cleared (condition recovered)");
+    expect(notes[0]).toContain('observed workFeed status=warn stalePausedRoutines=0');
   });
 });

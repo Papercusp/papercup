@@ -47,13 +47,31 @@ const runFullTextSearch = vi.fn(async (sources: Array<{ name: string }>, ctx: Re
 });
 const runHybridSearch = vi.fn(async (sources: Array<{ name: string }>, ctx: Record<string, unknown>) => {
   hybridCalls.push({ sourceNames: sources.map((s) => s.name), ctx });
-  return hybridResult;
+  // P-020: `legs` is a REQUIRED field of the engine's result, so the default
+  // stub supplies a real (all `not-run`) report rather than omitting it. A
+  // mock that returns less than the contract makes the handler look broken
+  // when it is the mock that is lying — and the alternative "fix", making the
+  // handler tolerate a missing report, would permanently hide exactly the
+  // silent-degradation class this field exists to expose.
+  //
+  // Resolved LAZILY, not via a top-level import: importing the mocked module
+  // at file scope makes vitest run the (hoisted) factory before these consts
+  // initialise, which fails collection with "Cannot access 'runFullTextSearch'
+  // before initialization" — a message that points nowhere near the cause.
+  // Spread FIRST so a test can script its own legs via `hybridResult.legs`.
+  const { emptyLegs } = await import('@papercusp/search');
+  return { legs: emptyLegs(), ...hybridResult };
 });
 
 // configureSearchDefaults is inert here, but REQUIRED: an inline factory
 // replaces the module wholesale, and lib/search/configure-search-defaults.ts
 // calls it at module load (P-017), so omitting it fails COLLECTION.
-vi.mock('@papercusp/search', () => ({
+// importOriginal, NOT a wholesale replacement: the module owns real helpers
+// the handler and these tests both need (`emptyLegs`), and an inline factory
+// that drops them fails at COLLECTION with an undefined-export error that
+// looks nothing like its cause (WI-7262 class).
+vi.mock('@papercusp/search', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/search')>()),
   runFullTextSearch,
   runHybridSearch,
   configureSearchDefaults: vi.fn(),

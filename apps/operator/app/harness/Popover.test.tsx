@@ -17,6 +17,7 @@ import { Provider as TooltipProvider } from '@radix-ui/react-tooltip';
 import type { ReactElement } from 'react';
 
 import { Popover } from './Popover';
+import { POPPER_WRAPPER_FLOOR_Z } from './popper-z';
 
 afterEach(cleanup);
 
@@ -52,7 +53,7 @@ describe('Popover (harness Radix-Popover wrapper)', () => {
     expect(dialog.getAttribute('aria-label')).toBe('Notification history');
   });
 
-  it('applies contentClassName and the zIndex style to the content', () => {
+  it('applies contentClassName and passes an above-floor zIndex through', () => {
     render(
       <Popover
         open
@@ -60,23 +61,50 @@ describe('Popover (harness Radix-Popover wrapper)', () => {
         ariaLabel="x"
         trigger={<button>t</button>}
         contentClassName="my-panel"
-        zIndex={123}
+        zIndex={POPPER_WRAPPER_FLOOR_Z + 100}
       >
         <div>body</div>
       </Popover>,
     );
     const dialog = screen.getByRole('dialog');
     expect(dialog.className).toContain('my-panel');
-    expect(dialog.style.zIndex).toBe('123');
+    expect(dialog.style.zIndex).toBe(String(POPPER_WRAPPER_FLOOR_Z + 100));
   });
 
-  it('defaults zIndex to 90 when none is given', () => {
+  /**
+   * These two used to assert `123` and `90` respectively — i.e. they PINNED the
+   * defect (EI-19470132622399873) as intended behaviour, which is why nothing
+   * caught it: a lint blind to `?? 90` plus a unit test asserting 90 is correct.
+   *
+   * Radix copies a popper Content's z-index onto the position:fixed wrapper as
+   * an INLINE style, overriding the harness.css floor. So any value below the
+   * floor is not "lower ordering" — it is burial behind the app shell
+   * (`.oracle-dock--maximal-hud` is 1450). jsdom does not paint, so only the
+   * clamped NUMBER is checkable here; the ordering invariant itself is
+   * `_lints/popper-stacking.test.ts`.
+   */
+  it('clamps a below-floor zIndex up to the popper wrapper floor', () => {
+    render(
+      <Popover
+        open
+        onOpenChange={vi.fn()}
+        ariaLabel="x"
+        trigger={<button>t</button>}
+        zIndex={90}
+      >
+        <div>body</div>
+      </Popover>,
+    );
+    expect(screen.getByRole('dialog').style.zIndex).toBe(String(POPPER_WRAPPER_FLOOR_Z));
+  });
+
+  it('defaults zIndex to the popper wrapper floor when none is given', () => {
     render(
       <Popover open onOpenChange={vi.fn()} ariaLabel="x" trigger={<button>t</button>}>
         <div>body</div>
       </Popover>,
     );
-    expect(screen.getByRole('dialog').style.zIndex).toBe('90');
+    expect(screen.getByRole('dialog').style.zIndex).toBe(String(POPPER_WRAPPER_FLOOR_Z));
   });
 
   it('stamps the data-anim="pop" hook on the content', () => {

@@ -456,6 +456,25 @@ const REPO_WIDE_INVARIANT_GUARDS = [
     script: 'lint:migration-forward-compat',
     appliesTo: (f) => f.startsWith(`${MIGRATION_SQL_DIR}/`) && f.endsWith('.sql'),
   },
+  {
+    // WI-4311 — the D-034 shape again, with the most delayed discovery of the set.
+    // The canonical fix (WITH (FORCE) in makeDrop(), libs/test-config/src/pg-migrate.ts)
+    // landed 2026-07-12, but four hand-rolled teardown sites kept the old
+    // terminate-then-plain-drop shape and were found 22 DAYS later. Nothing local
+    // flagged them, and nothing could: the offending file's own suite passes — the
+    // damage is ~88 backends parked in DROP DATABASE state on the SHARED test
+    // container, which surfaces as OTHER agents' CONNECT_TIMEOUTs. A violation whose
+    // cost lands entirely on somebody else's test run is the exact profile this
+    // registry exists for.
+    workspace: '@papercusp/operator-core',
+    // The standalone script (~1.0s measured, 3 runs — the same order as lint:chunk-safe
+    // above, which this list already accepts at that price).
+    script: 'lint:drop-database-force',
+    // Every TS-family file, for chunk-safe's stated reason: narrowing to "files that
+    // currently talk to postgres" would re-create the blind spot one level down, and
+    // the bug being guarded IS a NEW file hand-rolling its own teardown.
+    appliesTo: (f) => /\.[cm]?tsx?$/.test(f),
+  },
 ];
 
 const workspaces = [

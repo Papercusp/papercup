@@ -43,6 +43,7 @@
  */
 import { ANSWER_RECORDS, KNOWN_ITEM, REPLAY, carriesAnswer, type ReplayBatch } from './wi-6512-replay';
 import { deriveBatchQuery, splitLegQueries } from '../../endpoint-route/routes/agent-mcp/mid-turn-context';
+import type { CorpusDropReason } from '../corpus-recall';
 
 interface Args {
   base: string;
@@ -415,6 +416,142 @@ async function explainSelection(): Promise<void> {
   }
 }
 
+/**
+ * THE SELECTION CEILING — of the batches where the known item is reachable at
+ * all, how many could ANY line-selection policy admit?
+ *
+ * WI-9592 proposes changing how `selectCorpusLines` ORDERS its candidates
+ * (reserved work-item slots, a kind-aware tiebreak, restatement dedup). This
+ * measures the most such a change could ever buy, BEFORE one is designed —
+ * D-066, the ordering P-018 got wrong twice.
+ *
+ * ⚠ THIS IS A DIFFERENT CEILING FROM D-067's ORACLE, and conflating them is the
+ * live trap. D-067 measured the ceiling over QUERY selection (which 2-term pair
+ * to ask) and put it at 4/7 with 3 batches unreachable by any pair. This one
+ * holds the query fixed at what production actually derives and measures the
+ * ceiling over LINE selection — the layer WI-9592 would change. A batch can be
+ * unreachable in D-067's sense and rescuable here, or the reverse.
+ *
+ * WHY NO SEARCH IS NEEDED, AND WHY THAT MATTERS: the ceiling here is EXACT, not
+ * estimated. `selectCorpusLines` filters (stages 1-5), then orders, then cuts at
+ * six. An oracle selector free to choose any ordering can admit any candidate
+ * that REACHED the ordering stage — there are six slots and it needs one. So
+ * "best achievable" is not a search over 6-of-N subsets; it is exactly the set
+ * of batches whose known item survived the filters. Every drop therefore sorts
+ * into two classes that call for OPPOSITE next steps:
+ *
+ *   ORDER-BLOCKED  → it survived and lost on rank. Selection can fix this.
+ *   FILTER-BLOCKED → it was excluded before ordering. Selection CANNOT fix it;
+ *                    the filter (or the query) is the subject.
+ *   NOT-RETRIEVED  → retrieval never returned it. Nothing after retrieval can
+ *                    fix it. This is the re-scope-to-reach outcome.
+ *
+ * A "best 6 of N" search would have produced the same headline number while
+ * hiding that partition — and the partition IS the finding.
+ *
+ * Both arms run per batch, back-to-back against the same live corpus, because
+ * D-068 established that the arm changes WHICH lines compete. Arm integrity is
+ * ASSERTED per call (`embedderAvailable`), never assumed: the background warmup
+ * this file's own cold-start fix introduced can flip a BM25 arm to hybrid
+ * mid-run, and a silently-flipped arm is an instrument reporting someone else's
+ * experiment.
+ */
+async function runCeiling(args: Args): Promise<void> {
+  const { recallCorpusContext, resetCorpusEmbedderWarmup, warmCorpusEmbedder } = await import(
+    '../corpus-recall-io'
+  );
+
+  console.log('\n## SELECTION CEILING — could ANY line-selection policy admit the known item?');
+  console.log(`   known item: ${KNOWN_ITEM}   slots: ${'6 (CORPUS_MAX_ITEMS)'}`);
+  console.log('   verdicts: ADMITTED · ORDER-blocked (rescuable) · FILTER-blocked · NOT-RETRIEVED');
+
+  const probe = async (
+    queryText: string,
+    arm: 'bm25' | 'hybrid',
+  ): Promise<{ verdict: CeilingVerdict; detail: string; candidates: number }> => {
+    // Re-establish the arm immediately before the call: after a reset the leg
+    // kicks off a BACKGROUND warmup, so an arm set once at the top of the run
+    // does not survive seven batches.
+    if (arm === 'bm25') resetCorpusEmbedderWarmup();
+    else await warmCorpusEmbedder();
+
+    const res = await recallCorpusContext({
+      queryText,
+      workspaceId: args.workspace,
+      harnessSlugs: [args.harness],
+      skipFlagCheck: true,
+    });
+
+    const armHeld = arm === 'bm25' ? !res.embedderAvailable : res.embedderAvailable;
+    if (!armHeld || res.outcome !== 'ok') {
+      return {
+        verdict: 'void',
+        detail: `arm=${arm} embedderAvailable=${res.embedderAvailable} outcome=${res.outcome}`,
+        candidates: res.candidateCount,
+      };
+    }
+
+    if (res.lines.some((l) => l.handle.ref === KNOWN_ITEM)) {
+      return { verdict: 'admitted', detail: '', candidates: res.candidateCount };
+    }
+
+    const reasons = res.dropped.filter((d) => d.ref === KNOWN_ITEM).map((d) => d.reason);
+    if (reasons.length === 0) {
+      return { verdict: 'not-retrieved', detail: '', candidates: res.candidateCount };
+    }
+    // Precedence, not first-match: a ref can appear twice (a collapsed duplicate
+    // PLUS the winner's own drop). `duplicate-ref` alone never means excluded.
+    if (reasons.some((r) => ORDER_DROPS.has(r))) {
+      return { verdict: 'order-blocked', detail: reasons.join(','), candidates: res.candidateCount };
+    }
+    if (reasons.some((r) => FILTER_DROPS.has(r))) {
+      return { verdict: 'filter-blocked', detail: reasons.join(','), candidates: res.candidateCount };
+    }
+    return { verdict: 'anomaly', detail: reasons.join(','), candidates: res.candidateCount };
+  };
+
+  const tally: Record<'bm25' | 'hybrid', Record<CeilingVerdict, number>> = {
+    bm25: { admitted: 0, 'order-blocked': 0, 'filter-blocked': 0, 'not-retrieved': 0, anomaly: 0, void: 0 },
+    hybrid: { admitted: 0, 'order-blocked': 0, 'filter-blocked': 0, 'not-retrieved': 0, anomaly: 0, void: 0 },
+  };
+
+  for (const batch of REPLAY) {
+    const queryText = deriveBatchQuery(batch.calls);
+    // Sequential, not Promise.all: the arms share one process-wide embedder
+    // warm flag, so running them concurrently would race each other's arm.
+    const bm25 = await probe(queryText, 'bm25');
+    const hybrid = await probe(queryText, 'hybrid');
+    tally.bm25[bm25.verdict]++;
+    tally.hybrid[hybrid.verdict]++;
+    const fmt = (r: { verdict: CeilingVerdict; detail: string; candidates: number }): string =>
+      `${r.verdict.toUpperCase().padEnd(14)} (${r.candidates} cand)${r.detail ? ` [${r.detail}]` : ''}`;
+    console.log(`\n   turn ${batch.turn}`);
+    console.log(`     BM25   ${fmt(bm25)}`);
+    console.log(`     HYBRID ${fmt(hybrid)}`);
+  }
+
+  const n = REPLAY.length;
+  console.log('\n   ── ceiling ──');
+  for (const arm of ['bm25', 'hybrid'] as const) {
+    const t = tally[arm];
+    const reachable = t.admitted + t['order-blocked'];
+    console.log(
+      `   ${arm.toUpperCase().padEnd(6)} actual ${t.admitted}/${n}   CEILING ${reachable}/${n}` +
+        `   (order-blocked ${t['order-blocked']}, filter-blocked ${t['filter-blocked']},` +
+        ` not-retrieved ${t['not-retrieved']}, anomaly ${t.anomaly}, void ${t.void})`,
+    );
+    if (t.void > 0) {
+      console.log(`     ⚠ ${t.void} batch(es) VOID — the arm did not hold. The ${arm} row is NOT a result.`);
+    }
+    if (t['order-blocked'] === 0 && t.void === 0) {
+      console.log(
+        `     → NO batch is order-blocked: a line-selection change buys ${arm.toUpperCase()} NOTHING.` +
+          ` The constraint is upstream (filter/retrieval), not selection.`,
+      );
+    }
+  }
+}
+
 function parseArgs(argv: readonly string[]): Args {
   const get = (flag: string): string | undefined => {
     const i = argv.indexOf(flag);
@@ -438,6 +575,7 @@ function parseArgs(argv: readonly string[]): Args {
     // ceiling rather than a floor. A positive cap trades completeness for time
     // and the run labels every batch it truncated as UNDETERMINED.
     oracleMaxTerms: Number(get('--oracle-max-terms') ?? 0),
+    ceiling: argv.includes('--ceiling'),
   };
 }
 
@@ -569,6 +707,7 @@ async function main(): Promise<void> {
   if (args.explainSelection) await explainSelection();
   if (args.arms) await compareArms();
   if (args.oracle) await runOracle(args);
+  if (args.ceiling) await runCeiling(args);
 
   let independent: ModeSummary | undefined;
   let sequential: ModeSummary | undefined;

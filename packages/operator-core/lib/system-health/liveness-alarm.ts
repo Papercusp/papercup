@@ -594,7 +594,7 @@ export function evaluateLivenessAlarm(
  * THE DEFECT THIS CLOSES. Auto-resolve-on-recovery (below) resolves every open
  * escalation whose signal is no longer firing. But a signal stops firing for two
  * completely different reasons — the condition cleared, or we could not observe it —
- * and every read path here degrades the second into the first:
+ * and both read paths below degrade the second into the first:
  *
  *   - `panelSafe` catches a panel-level throw and returns `data: null` +
  *     `status:'unknown'` + `error`. The consumer then reads `wf?.stalePausedRoutines ?? 0`
@@ -604,18 +604,31 @@ export function evaluateLivenessAlarm(
  *     succeeds, so panel status looks fine while the count is a fabricated zero. That
  *     one needs the explicit `stalePausedRoutinesUnreadable` flag (compute.ts).
  *
- * Measured cost of the conflation on ONE signature (30d, papercusp-workspace):
- * 5,304 fires / 5,311 auto-resolves, ~1:1 interleaved, with a BYTE-IDENTICAL summary
- * naming the same 105 routines throughout. A condition that genuinely cleared and
- * recurred 5,311 times cannot emit identical text every time — the condition was
- * CONSTANT and the detection oscillated. WI-4878's guard (recompute fresh health
- * before resolving) does not help: the recompute takes the SAME degrading read paths,
- * so it re-derives the same fabricated zero. Freshness was never the problem;
- * OBSERVABILITY was.
+ * ⚠ SCOPE — READ THIS BEFORE CITING THIS GUARD AS A ROOT-CAUSE FIX.
+ * This closes a real conflation, but it is NOT established as the cause of the flap
+ * that motivated it, and an earlier revision of this very comment asserted that it was.
  *
- * Deliberately PARTIAL: it maps only the signatures whose degradation is proven above.
- * A signature absent from this map keeps the prior behavior (absence ⇒ resolvable), so
- * adding one is a safe, additive change — map it to the panel it reads from.
+ *   PROVEN (measured 30d, papercusp-workspace, `coord_event_log`): `stale-paused-routines`
+ *   produced 5,303 fire→resolve and 5,303 resolve→fire transitions and ZERO fire→fire —
+ *   a perfect square wave, median half-period 57s/63s — with a BYTE-IDENTICAL summary
+ *   naming the same 105 routines throughout. A condition that genuinely cleared and
+ *   recurred cannot emit identical text 5,303 times. The condition was CONSTANT and the
+ *   DETECTION oscillated. WI-4878's guard (recompute fresh health before resolving) was
+ *   already in place throughout. Freshness was not the problem.
+ *
+ *   FALSIFIED: the panel-level branch below did NOT cause it. `system_health_ticks` over
+ *   the same 30d records 37,319 ticks — 35,119 warn / 1,587 ok / 613 crit — and NOT ONE
+ *   `workFeed` tick with `status:'unknown'`. panelSafe's catch never fired for this panel.
+ *
+ *   UNRESOLVED: which path actually alternated. The sub-read's fail-soft catch (the second
+ *   bullet) remains possible and is invisible by construction — it logs nothing and, before
+ *   the flag added here, left no trace — which is exactly why the flag exists. A strict
+ *   alternation at the tick rate is also consistent with a per-worker/per-snapshot state
+ *   flipping, which this guard would NOT fix. Do not close that question by citing this code.
+ *
+ * Deliberately PARTIAL: it maps only the signatures whose read paths are shown above to
+ * degrade. A signature absent from this map keeps the prior behavior (absence ⇒
+ * resolvable), so adding one is a safe, additive change — map it to the panel it reads from.
  */
 export function unobservableLivenessSignatures(health: SystemHealth): Set<string> {
   const out = new Set<string>();
@@ -635,6 +648,39 @@ export function unobservableLivenessSignatures(health: SystemHealth): Set<string
     out.add('stale-paused-routines');
   }
   return out;
+}
+
+/**
+ * EI-19462267124852221 — the EVIDENCE stamped onto an auto-resolve's note.
+ *
+ * WHY THIS EXISTS, AND WHY IT IS THE MORE IMPORTANT HALF OF THIS FIX. Every one of the
+ * 5,303 false resolves wrote the SAME constant string, "condition recovered". That
+ * sentence is a CONCLUSION with its evidence discarded, and it is unfalsifiable by
+ * construction: a resolve that observed a genuine zero and a resolve that observed
+ * nothing at all are byte-identical in the durable log. So the log could prove the
+ * detector oscillated (identical fire text, 5,303 strict alternations) but could not say
+ * WHY — six investigation passes, four of them spent re-reading code, because the one
+ * artifact that knew the answer had thrown it away.
+ *
+ * Stamping the observation makes the next occurrence a single query instead of a
+ * multi-pass code hunt, and it is what lets the guard above be CHECKED rather than
+ * believed: `no per-signature evidence recorded` on a resolve is itself a finding.
+ *
+ * Deliberately narrow + fail-soft: it never throws, never blocks a resolve, and returns
+ * an explicit "not recorded" for signatures it does not map, so an unmapped signature
+ * reads as unknown rather than as observed-clear.
+ */
+export function resolveEvidenceFor(sig: string, health: SystemHealth): string {
+  const wf = health.panels.workFeed;
+  const field =
+    sig === 'stale-paused-routines' ? 'stalePausedRoutines'
+    : sig === 'dead-routines' ? 'deadRoutines'
+    : null;
+  if (!field) return 'no per-signature evidence recorded';
+  const status = wf?.status ?? 'panel-absent';
+  const n = wf?.data == null ? null : (wf.data as Record<string, unknown>)[field];
+  const unreadable = wf?.data?.stalePausedRoutinesUnreadable === true && field === 'stalePausedRoutines';
+  return `observed workFeed status=${status} ${field}=${typeof n === 'number' ? n : 'unreadable'}${unreadable ? ' (sub-read FAILED)' : ''}`;
 }
 
 // ── durable per-signal signature (dedup + auto-resolve key) ────────────────────
@@ -1385,7 +1431,14 @@ export async function runLivenessAlarmTick(
     let transitioned = false;
     for (const rec of recs) {
       try {
-        const outcome = await resolve(rec.msg_id, 'auto-resolved', `infra-liveness signal '${sig}' cleared (condition recovered)`);
+        // EI-19462267124852221: carry the OBSERVATION, not just the conclusion. A bare
+        // "condition recovered" is identical whether we saw a real zero or saw nothing,
+        // which is why 5,303 false resolves were undiagnosable from the durable log.
+        const outcome = await resolve(
+          rec.msg_id,
+          'auto-resolved',
+          `infra-liveness signal '${sig}' cleared (condition recovered) — ${resolveEvidenceFor(sig, healthForSignals)}`,
+        );
         if (outcome === 'not_found' || outcome === 'already_resolved' || outcome === 'requires_spawn_approve') continue;
         resolved.push(rec.msg_id);
         transitioned = true;
