@@ -58,6 +58,11 @@ interface Args {
   oracle: boolean;
   oracleMaxTerms: number;
   ceiling: boolean;
+  arity: boolean;
+  /** Restrict --arity to these replay turns (empty = all). */
+  arityTurns: number[];
+  /** 0 = probe EVERY candidate term, which is what makes "unreachable" a ceiling. */
+  arityMaxTerms: number;
 }
 
 /** Drop reasons that are purely a consequence of ORDER: the hit survived every
@@ -592,6 +597,125 @@ async function runCeiling(args: Args): Promise<void> {
   }
 }
 
+/**
+ * THE ARITY / LEXICAL-REACH CEILING — can the lexical leg reach the known item
+ * at ANY number of terms, or is D-067's exhaustive 2-term miss final?
+ *
+ * D-067 enumerated all 845 PAIRS and proved turns 65, 66, 68 unreachable at k=2.
+ * D-069 then found 65 and 68 sitting at rank 66/81 in a deep pool — so the record
+ * IS in the index for them, and "no pair wins" cannot mean "not retrievable".
+ * The open question is whether some OTHER arity reaches them, and enumerating
+ * k>=3 is combinatorially out of reach (turn 68 alone has ~29 candidate terms:
+ * 406 pairs, but 3654 triples).
+ *
+ * IT DOES NOT NEED ENUMERATING. The leg ANDs its terms, so for MATCHING:
+ *
+ *     matched({A,B,...}) is a SUBSET of matched({A})
+ *
+ * Therefore if NO SINGLE TERM matches the record, no conjunction containing that
+ * term can either — and since every conjunction is built from these candidates,
+ * no query at ANY arity can. n probes settle a question that would otherwise
+ * take C(n,k) summed over k.
+ *
+ * ⚠⚠ THIS IS THE EXACT INVERSE OF A TRAP THIS FILE ALREADY FELL INTO, and the
+ * distinction is the whole reason the argument is sound. An earlier version of
+ * the oracle probed single terms and reported "6 of 7 unreachable"; that was
+ * WITHDRAWN because turn 69 retrieves WI-6512 on `sessions explain` while
+ * `sessions` and `explain` each miss ALONE. Both facts are true at once:
+ *
+ *   ADMISSION (does it reach the top 6?) — single terms are NOT a ceiling.
+ *     Adding a term SHRINKS the match set, which LIFTS a buried record's rank.
+ *     That is precisely how turn 69's pair wins where its singles lose.
+ *   MATCHING (is it in the pool at all?) — single terms ARE an exact ceiling,
+ *     by the subset relation above. Narrowing can never ADD a document.
+ *
+ * So this probe asks only the matching question, at depth (maxItems 200), and
+ * says nothing about admission. Reporting a rank here as if it were an
+ * admission result would re-create the withdrawn finding with better manners.
+ *
+ * BM25 arm only: the subset argument is a property of the LEXICAL conjunction.
+ * A warm embedder would fold in vector hits that obey no such relation and the
+ * ceiling would no longer be a ceiling.
+ */
+async function runArity(args: Args): Promise<void> {
+  const { recallCorpusContext, resetCorpusEmbedderWarmup } = await import('../corpus-recall-io');
+  const { corpusTerms } = await import('../corpus-recall');
+
+  // The 2s default bound protects a LIVE TURN; it is not a property of the
+  // corpus. At maxItems 200 (pool 800) it expires routinely, and a timed-out
+  // probe that is merely skipped silently converts "we did not look" into
+  // "nothing is there" — see the VOID accounting below, which caught exactly
+  // that. `<= 0` disables the bound (corpusRecallTimeoutMs).
+  const priorTimeout = process.env.PAPERCUSP_MEMORY_CORPUS_TIMEOUT_MS;
+  process.env.PAPERCUSP_MEMORY_CORPUS_TIMEOUT_MS = '0';
+
+  console.log('\n## LEXICAL REACH CEILING — can ANY arity reach the known item?');
+  console.log('   Single-term probes bound EVERY arity for MATCHING (the leg ANDs: narrowing');
+  console.log('   never adds a document). This says NOTHING about admission/rank — see header.');
+  console.log('   Leg timeout DISABLED for these probes (depth 200 routinely exceeds the 2s turn bound).');
+
+  const wanted = args.arityTurns.length > 0 ? new Set(args.arityTurns) : null;
+
+  try {
+  for (const batch of REPLAY) {
+    if (wanted && !wanted.has(batch.turn)) continue;
+    const terms = corpusTerms(deriveBatchQuery(batch.calls));
+    const probed = args.arityMaxTerms > 0 ? terms.slice(0, args.arityMaxTerms) : terms;
+
+    const reaching: { term: string; rank: number; of: number }[] = [];
+    const voided: string[] = [];
+    for (const term of probed) {
+      resetCorpusEmbedderWarmup();
+      const res = await recallCorpusContext({
+        queryText: term,
+        workspaceId: args.workspace,
+        harnessSlugs: [args.harness],
+        skipFlagCheck: true,
+        maxItems: 200,
+        budgetChars: 5_000_000,
+      });
+      // A hybrid result here would break the subset argument outright.
+      if (res.embedderAvailable || res.outcome !== 'ok') {
+        voided.push(`${term}(${res.embedderAvailable ? 'hybrid' : res.outcome})`);
+        continue;
+      }
+      const at = res.lines.findIndex((l) => l.handle.ref === KNOWN_ITEM);
+      if (at >= 0) reaching.push({ term, rank: at + 1, of: res.lines.length });
+    }
+
+    // ⚠ COVERAGE MUST COUNT VOIDS. Comparing probed.length to terms.length only
+    // asks whether we ITERATED every term, not whether every probe RETURNED —
+    // and a skipped timeout is indistinguishable from a genuine miss in the
+    // `reaching` list. An earlier version got this wrong and printed a hard
+    // "no query at any arity can reach it" for a batch where 4 of 7 probes had
+    // timed out, two of which are terms independently PROVEN to reach the item.
+    // A ceiling is only a ceiling at complete, non-void coverage.
+    const complete = probed.length === terms.length && voided.length === 0;
+    console.log(`\n   turn ${batch.turn} — ${probed.length}/${terms.length} terms probed,` +
+      ` ${voided.length} VOID [${complete ? 'COMPLETE' : 'INCOMPLETE'}]`);
+    if (voided.length > 0) console.log(`       VOID: ${voided.join(' ')}`);
+    if (reaching.length === 0) {
+      console.log(
+        complete
+          ? `     ✗ NO single term matches ${KNOWN_ITEM} ⇒ NO QUERY AT ANY ARITY CAN.` +
+            `   The lexical leg cannot reach it — this is a real ceiling, not a ranking problem.`
+          : `     · no reaching term AMONG THOSE THAT RETURNED — coverage INCOMPLETE, so this is` +
+            ` NOT a ceiling claim and must not be reported as one. Re-run the VOID terms.`,
+      );
+    } else {
+      const best = reaching.reduce((a, b) => (a.rank <= b.rank ? a : b));
+      console.log(`     ✓ REACHABLE by ${reaching.length}/${probed.length} term(s).` +
+        `   best: "${best.term}" at rank ${best.rank}/${best.of}`);
+      console.log(`       reaching terms: ${reaching.map((r) => `${r.term}(${r.rank})`).join(' ')}`);
+      console.log(`       ⇒ matching is NOT the barrier here; admission/rank is.`);
+    }
+  }
+  } finally {
+    if (priorTimeout === undefined) delete process.env.PAPERCUSP_MEMORY_CORPUS_TIMEOUT_MS;
+    else process.env.PAPERCUSP_MEMORY_CORPUS_TIMEOUT_MS = priorTimeout;
+  }
+}
+
 function parseArgs(argv: readonly string[]): Args {
   const get = (flag: string): string | undefined => {
     const i = argv.indexOf(flag);
@@ -616,6 +740,14 @@ function parseArgs(argv: readonly string[]): Args {
     // and the run labels every batch it truncated as UNDETERMINED.
     oracleMaxTerms: Number(get('--oracle-max-terms') ?? 0),
     ceiling: argv.includes('--ceiling'),
+    arity: argv.includes('--arity'),
+    arityTurns: (get('--arity-turns') ?? '')
+      .split(',')
+      .map((s) => Number(s.trim()))
+      .filter((n) => Number.isFinite(n) && n > 0),
+    // 0 = every candidate term. A cap makes coverage PARTIAL and the run then
+    // refuses to state a ceiling — same discipline as --oracle.
+    arityMaxTerms: Number(get('--arity-max-terms') ?? 0),
   };
 }
 
@@ -748,6 +880,7 @@ async function main(): Promise<void> {
   if (args.arms) await compareArms();
   if (args.oracle) await runOracle(args);
   if (args.ceiling) await runCeiling(args);
+  if (args.arity) await runArity(args);
 
   let independent: ModeSummary | undefined;
   let sequential: ModeSummary | undefined;

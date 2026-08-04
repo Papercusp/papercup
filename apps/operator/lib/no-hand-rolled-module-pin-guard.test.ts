@@ -25,22 +25,33 @@
  * entirely: no in-tree mutation means no git-sync sweep race and no restore
  * needed (see CLAUDE.md § "Proving a guard is falsifiable").
  *
- * ## Coverage limit — stated, not hidden
+ * ## Why this lives in apps/operator (@papercusp/web) and not operator-core
  *
- * The scan spans libs/ + packages/ + apps/, but this test lives in
- * @papercusp/operator-core, and `test:affected` selects suites by WORKSPACE.
- * Measured 2026-08-03:
+ * The scan spans libs/ + packages/ + apps/, but `test:affected` selects suites
+ * by WORKSPACE — so a whole-tree guard is only enforced for the workspaces that
+ * select it (the guard-enforcement trap, WI-9434 / D-034). The enforcement point
+ * was therefore chosen by MEASUREMENT, not by convention. Measured 2026-08-03,
+ * for each area that actually holds a hand-rolled pin:
  *
- *   libs/flags/src/server.ts                     -> flags, web, operator-core  ✓ selected
- *   apps/operator/lib/chat-cards/ask-user-local.ts -> web                      ✗ NOT selected
+ *   apps/operator/lib/chat-cards/ask-user-local.ts -> web                        ✓
+ *   libs/generic/tooldef/src/state-channel.ts      -> tooldef, …, web            ✓
+ *   libs/flags/src/server.ts                       -> flags, web, operator-core  ✓
+ *   packages/operator-core/lib/agents-list.ts      -> operator-core, web, …      ✓
  *
- * So a NEW hand-rolled pin added under apps/operator does NOT trip this test on
- * the routine path (the known guard-enforcement trap, WI-9434 / D-034). Closing
- * that needs a `lint:` gate leg, which is deliberately NOT added here — it was
- * written while `main` was frozen on an unrelated red, and a new gate leg is a
- * fleet-wide risk to take when the gate is green. Tracked on
- * EI-19469900474673886. Run `npm run lint:no-hand-rolled-module-pin` for the
- * whole-tree answer in the meantime.
+ * @papercusp/web is selected by ALL FOUR; @papercusp/operator-core is selected
+ * by only two of them (an apps/operator or tooldef pin would have escaped it
+ * silently). This file started in operator-core for convention's sake and was
+ * moved here once measured — the same mistake it guards against, since
+ * "operator-core is where lint guards live" is a proxy for coverage, not
+ * coverage.
+ *
+ * ⚠ Residual gap: @papercusp/operator-vite is its own island and selects
+ * neither. Nothing there holds a pin today, and the whole-tree answer is always
+ * one command away (`npm run lint:no-hand-rolled-module-pin`), but the complete
+ * fix is a `lint:` gate leg, which runs regardless of workspace selection. That
+ * was deliberately not added while `main` was frozen ~8h on an unrelated red
+ * (WI-10510) with peers mid-incident in green-checkpoint.ts. Tracked on
+ * EI-19479108855357092.
  */
 import { describe, it, expect } from 'vitest';
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment

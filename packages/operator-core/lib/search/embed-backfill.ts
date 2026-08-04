@@ -42,7 +42,7 @@ import {
   isOpenAiEmbedInCooldown,
 } from '../memory/configure';
 import type { EmbedFn, ResolvedEmbedder } from '@papercusp/memory';
-import { sidecarEmbedBatch } from '@papercusp/memory';
+import { sidecarEmbedBatch, sidecarBatchTimeoutMs } from '@papercusp/memory';
 import { buildSidecarAwareEmbedder, resolveProcessSidecarUrl } from '../memory/embed-sidecar-wiring';
 import { EMBED_SIDECAR_CAP_EMBED } from '../memory/embed-sidecar-server';
 // The prose column width contract — ONE source, not a restated `384`
@@ -69,6 +69,11 @@ const BATCH_SIZE = getResourceProfile().embedBatchSize;
  * latch and silently disables ALL future backfill.
  */
 const EMBED_ROW_TIMEOUT_MS = 90_000;
+
+/** Slack added to the sidecar's own batch budget for the OUTER race, so the
+ *  client's specific abort surfaces instead of being pre-empted by this
+ *  process-side timeout (EI-19464574865993243). */
+const EMBED_BATCH_OUTER_MARGIN_MS = 5_000;
 
 /**
  * WI-7348: embedder-RESOLUTION deadline.
@@ -156,7 +161,17 @@ async function resolveBatchEmbed(mode: ResolvedMode): Promise<EmbedManyFn | null
       // above resolve to. Asymmetric models embed a document differently from a
       // query, so this MUST match or the batch path would write vectors from a
       // different space than the per-row fallback (WI-3616's whole failure mode).
-      const res = await sidecarEmbedBatch(url, { model: mode, kind: 'document', texts });
+      // EXPLICIT, batch-scaled budget. Omitting it inherited the SINGLE-embed
+      // default (15s) for the whole batch, which aborted every sweep on a
+      // server-tier box (BATCH_SIZE 128 × ~0.22s/text ≈ 28s) — see
+      // EI-19464574865993243. Derived from the shared helper so the outer
+      // withEmbedTimeout race below cannot pick a different number.
+      const res = await sidecarEmbedBatch(url, {
+        model: mode,
+        kind: 'document',
+        texts,
+        timeoutMs: sidecarBatchTimeoutMs(texts.length),
+      });
       return res.vectors;
     };
   } catch {
@@ -750,9 +765,15 @@ export async function backfillTable(
     let batchVectors: Array<number[] | null> | null = null;
     if (embedMany && batch.length > 1) {
       try {
+        // The outer bound must never be TIGHTER than the sidecar client's own,
+        // or it pre-empts the inner deadline and the specific error is lost.
+        // That inversion is what hid EI-19464574865993243: this race was set to
+        // a deliberate 90s and could never fire, because the client aborted at
+        // its single-embed default of 15s first. Both now derive from
+        // sidecarBatchTimeoutMs; the margin keeps the inner one firing first.
         const vecs = await withEmbedTimeout(
           embedMany(batch.map((r) => r.body)),
-          EMBED_ROW_TIMEOUT_MS,
+          sidecarBatchTimeoutMs(batch.length) + EMBED_BATCH_OUTER_MARGIN_MS,
           'embed_batch',
         );
         if (vecs.length === batch.length) batchVectors = vecs;

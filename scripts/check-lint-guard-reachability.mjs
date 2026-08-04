@@ -223,8 +223,22 @@ export const BLOCKING_TIERS = new Set(['gate', 'ci', 'test', 'chained']);
  * deliberately generous: over-crediting a test yields a missed report, while
  * under-crediting sends someone to wire an already-enforced guard — and of those two
  * wrong answers, only the second wastes a fleet-wide gate run.
+ *
+ * `scanTree` was added 2026-08-04 (WI-10589) after the second wrong answer happened
+ * exactly as this comment predicts. A guard test that imports the guard's OWN exported
+ * tree-scanner and calls it with no arguments drives a scan rooted at the repository —
+ * it just never shells out, so it matched none of the process-spawn markers and none of
+ * the ROOT-name markers either. Measured on lint:no-hand-rolled-module-pin: its test
+ * asserts scanTree().violations is empty REPO-WIDE, yet this regex scored the file 0 and
+ * the leg reported the guard as running "over nothing", which would have red-pinned the
+ * fleet minutes after an 8h26m gate freeze had just cleared.
+ *
+ * Note the direction of the bias this preserves: delegating the walk to the guard's own
+ * export is the REUSE-THE-DETECTOR pattern this repo mandates everywhere (a re-derived
+ * copy drifts), so the old regex penalised precisely the tests written correctly. Prefer
+ * adding the scanner name a guard actually exports over inventing speculative ones.
  */
-export const ENFORCING_TEST_RE = /execFileSync|spawnSync|execSync|listTrackedFiles|REPO_ROOT|repoRoot|process\.cwd\(\)/;
+export const ENFORCING_TEST_RE = /execFileSync|spawnSync|execSync|listTrackedFiles|REPO_ROOT|repoRoot|process\.cwd\(\)|scanTree/;
 
 /**
  * Companion INVOCATIONS of a guard rather than guards in their own right: a different

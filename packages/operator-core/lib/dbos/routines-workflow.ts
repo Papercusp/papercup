@@ -752,6 +752,30 @@ async function routinesTickImpl(): Promise<void> {
     { name: 'stale-routine-executor-sweep' },
   );
 
+  // EI-19457924854150358: the SYNC-READ PAYLOAD BUDGET watchdog — reads the
+  // `syncReads.audit` snapshot the daily audit routine writes and pages on either
+  // (a) a read over its byte ceiling, or (b) the audit having stopped producing at
+  // all. Leg (b) is why this exists as a watchdog rather than a line in the audit:
+  // an instrument that only reports when it CAN see goes quiet exactly when it
+  // dies. One indexed SELECT per tick; reads the table directly rather than via
+  // readDerivedSnapshot, which would kick a background 12-minute audit on a miss.
+  // WARNS only, never blocks a deploy. Fail-soft; kill switch
+  // PAPERCUSP_SYNC_READ_BUDGET_BLIND_AFTER_SEC<=0.
+  await DBOS.runStep(
+    async () => {
+      try {
+        const { syncReadBudgetSweep } = await import('../harness/routines/sync-read-budget-watchdog');
+        const result = await syncReadBudgetSweep({});
+        if (result.outcome === 'alerted' || result.outcome === 'error') {
+          console.warn(`[sync-read-budget] ${result.outcome}: ${result.reason}`);
+        }
+      } catch (e) {
+        console.warn(`[sync-read-budget] sweep failed: ${e instanceof Error ? e.message : e}`);
+      }
+    },
+    { name: 'sync-read-budget-sweep' },
+  );
+
   // rubric-system-hardening-2026-07-14 P-004 (EI-12149): the RUBRIC-STALENESS
   // watchdog — an ACTIVE releaseGating rubric with no COMPLETE scorecard within
   // the threshold window (default 6h) fires one debounced pot_watchdog_fires row

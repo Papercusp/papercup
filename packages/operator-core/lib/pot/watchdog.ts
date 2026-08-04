@@ -337,7 +337,20 @@ export type WatchdogSource =
   // checkout's tree HEAD has since moved. Debounced per executor identity
   // (`port-<n>` / `pid-<n>`, stale-routine-executor-watchdog.ts's
   // `executorIdentity()`), keyed `stale-routine-executor:<identity>`.
-  | 'stale-routine-executor';
+  | 'stale-routine-executor'
+  // EI-19457924854150358: the sync-read payload BUDGET watchdog — reads the
+  // `syncReads.audit` snapshot the daily audit routine writes and pages on either
+  // of its two failure modes, which need different remedies and so are debounced
+  // under different scope keys:
+  //   `sync-read-budget:breach:<harness>` — a read is over its ceiling. The
+  //     `ratchetRegressions` bucket is the loud one: someone already measured that
+  //     read, wrote a number down, and it has since rotted.
+  //   `sync-read-budget:blind:<harness>`  — the audit itself stopped producing.
+  //     Without this leg the watchdog would be blind exactly when the instrument
+  //     dies, which is the ORIGINAL defect (an unrun audit) wearing a new costume.
+  // WARNS only — never blocks a deploy (no-http-anywhere-2026-07-28 #D-009/#D-011:
+  // a budget warns, an invariant blocks).
+  | 'sync-read-budget';
 
 export interface FallbackArmResult {
   /** 'armed' = time wake declared; 'staged' = routed to the manual-mode review
