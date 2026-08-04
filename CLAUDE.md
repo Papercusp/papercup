@@ -216,6 +216,9 @@ reported by `listModuleDuplications()` instead of being rediscovered the expensi
 ⚠ **Do not hand-roll the `Symbol.for` + `globalThis` pair.** Hand-rolling still fixes
 correctness, but the key is invisible to the central report, which then answers a
 confident `[]` while your module is split — the failure below, one level up.
+**`npm run lint:no-hand-rolled-module-pin` fails on a new one** (and
+`-- --list` prints the full measured population, which is how its allowlist is
+re-seeded — never from a hand-run grep).
 
 Measured (EI-19451658870832332): `@papercusp/scheduled-registry` was evaluated twice in
 bg-host, so `dbos-executor-reaper` reaped every 2 minutes while ABSENT from
@@ -223,6 +226,23 @@ bg-host, so `dbos-executor-reaper` reaped every 2 minutes while ABSENT from
 sessions because **the surface responsible for reporting the problem was the surface the
 bug blinded** — absence from an inventory is evidence only when there is exactly one
 inventory. Duplications now ride on that route beside the timer list.
+
+⚠⚠ **`listModuleDuplications()` is still STRUCTURALLY PARTIAL — an empty `[]` is not a
+clean bill of health yet.** Six modules pin through the primitive and are reported
+(`scheduled-registry`, `lexicon`, `kokoro-tts`, `memory` ×2, `deployment-driver` —
+migrated on EI-19469900474673886). **21 more still hand-roll their pins** and are
+invisible to it: `libs/flags`, the three `libs/generic/tooldef` registries,
+`apps/operator/lib/chat-cards/ask-user-local.ts`, and ~16 caches / sync-state slots
+across `packages/operator-core`. Run the lint's `--list` for the current set — the
+count moves as they migrate, so trust the command, not this sentence.
+
+⚠ That "21" is itself a correction worth noting: the work item that commissioned the
+migration said **five**, because its audit grepped `Symbol.for('@papercusp` and the
+larger population uses the dot form `Symbol.for('papercusp.…')`. A second, narrower
+miss followed — the first allowlist was seeded from an `rg … | head -30` and was two
+sites short. Both are the same error the guard exists to prevent, one level up: **a
+proxy measurement's negative covers only the conditions it reproduced.** Measure the
+population with the detector, not with a grep you wrote to look for it.
 
 ## Deployment model: desktop is the product; the standalone webapp is RETIRED
 

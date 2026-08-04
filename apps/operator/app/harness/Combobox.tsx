@@ -426,6 +426,31 @@ export function ComboboxMenu({
     Object.entries(triggerData ?? {}).filter(([, v]) => v !== undefined),
   );
 
+  /**
+   * Put the caret in the search box when the panel opens, so "open it and
+   * start typing" works — the whole point of the filter.
+   *
+   * React's `autoFocus` is NOT enough here, and this is a MEASURED correction
+   * rather than a precaution. `autoFocus` fires during React's commit, but the
+   * panel opens inside surfaces that run their own focus management afterwards
+   * and win. Measured live in the isolated headless instance on 2026-08-03:
+   * with `autoFocus` alone the menu opened correctly and filtered correctly,
+   * but `document.activeElement` was the chat popup's own
+   * `session-chat-conversation` container — the reader had to click the box
+   * before typing.
+   *
+   * A jsdom test CANNOT catch this: in isolation nothing competes for focus, so
+   * `autoFocus` "works" there and the assertion passes green while the real app
+   * disagrees. Hence the rAF — it runs after the popover's mount-focus and any
+   * ancestor focus manager have settled, instead of racing them.
+   */
+  const inputRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (!open) return undefined;
+    const raf = requestAnimationFrame(() => inputRef.current?.focus());
+    return () => cancelAnimationFrame(raf);
+  }, [open]);
+
   return (
     <Popover
       open={open && !disabled}
@@ -466,6 +491,7 @@ export function ComboboxMenu({
         <div className="h-combobox-menu__search">
           <Search size={11} aria-hidden="true" className="h-combobox-menu__search-icon" />
           <CmdK.Input
+            ref={inputRef}
             autoFocus
             value={query}
             onValueChange={setQuery}

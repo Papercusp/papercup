@@ -331,6 +331,19 @@ describe('ComboboxMenu', () => {
     expect(screen.queryByTestId('popover-panel')).toBeNull();
   });
 
+  /**
+   * ⚠ READ BEFORE TRUSTING THIS ONE. It is a NECESSARY but NOT SUFFICIENT check,
+   * and it has already been observed passing while the real app did the opposite.
+   *
+   * In jsdom nothing competes for focus, so React's `autoFocus` alone satisfies
+   * this assertion. Measured live in an isolated headless Tauri instance on
+   * 2026-08-03, the SAME code left `document.activeElement` on the chat popup's
+   * `session-chat-conversation` container — an ancestor focus manager ran after
+   * commit and took it back, so the reader had to click the box before typing.
+   * That is why the component focuses via a rAF as well; this test cannot tell
+   * the two implementations apart. A focus regression here must be re-checked in
+   * a real webview, never signed off from this green.
+   */
   it('opens on click and puts focus in the search box, so the reader can just type', () => {
     renderMenu();
     openMenu();
