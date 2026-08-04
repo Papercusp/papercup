@@ -35,6 +35,7 @@ import {
   CORPUS_BUDGET_CHARS,
   CORPUS_MAX_ITEMS,
   corpusQueryText,
+  CORPUS_GRADED_QUERY_MAX_TERMS,
   renderCorpusBlock,
   selectCorpusLines,
   sessionIdOfHit,
@@ -100,6 +101,14 @@ export interface CorpusRecallInput {
   budgetChars?: number;
   /** Test seam: skip the flag read (the caller already gated). */
   skipFlagCheck?: boolean;
+  /**
+   * Terms handed to the COVERAGE-GRADED cascade stage. Defaults to
+   * {@link CORPUS_GRADED_QUERY_MAX_TERMS}. Exposed so a bench can measure both
+   * arms in ONE process against the SAME corpus instant — the corpus is written
+   * continuously by the fleet, so two runs minutes apart are not a paired
+   * comparison, which is how P-018 shipped on a real-but-unrelated gain.
+   */
+  gradedMaxTerms?: number;
 }
 
 /**
@@ -282,6 +291,7 @@ export async function recallCorpusContext(
   if (!input.skipFlagCheck && !(await corpusRecallEnabled())) return empty('disabled');
 
   const maxItems = input.maxItems ?? CORPUS_MAX_ITEMS;
+  const gradedMaxTerms = input.gradedMaxTerms ?? CORPUS_GRADED_QUERY_MAX_TERMS;
   const sources = SEARCH_SOURCES.filter((s) =>
     (CORPUS_SOURCE_NAMES as readonly string[]).includes(s.name),
   );
@@ -424,7 +434,7 @@ export async function recallCorpusContext(
         });
 
       // ── Stage 1: today's AND query, unchanged. ──
-      const andFused = await search('and');
+      const andFused = await search('and', effectiveQuery);
       const andHits = toCorpusHits(andFused);
       const known = input.knownRefs ?? new Set<string>();
       const stage1 = await select(andHits, { maxItems, budgetChars, knownRefs: known });
@@ -451,7 +461,7 @@ export async function recallCorpusContext(
       }
 
       const spent = stage1.lines.reduce((n, l) => n + l.line.length, 0);
-      const gradedFused = await search('coverage-graded');
+      const gradedFused = await search('coverage-graded', gradedQuery);
       const seen = new Set(andHits.map((h) => `${h.source}:${h.sourceId}`));
       const gradedOnly = toCorpusHits(gradedFused).filter(
         (h) => !seen.has(`${h.source}:${h.sourceId}`),

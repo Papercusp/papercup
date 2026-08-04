@@ -12,6 +12,7 @@ import { connect as netConnect } from 'node:net';
 import { sendMessage } from './agent-tools/coordination/messages';
 import type { AgentIdentity } from './agent-tools/coordination/identity';
 import { probeDesktop } from './desktop-health';
+import { listListeningSockets, type ListeningSocket } from './listening-sockets';
 import { emitServiceHealthTransitionEvent } from './service-health-events';
 
 export interface EndpointSpec {
@@ -283,6 +284,63 @@ export function tcpPreflight(url: string, timeoutMs = CONNECT_PREFLIGHT_MS, conn
   });
 }
 
+/**
+ * EI-19465075959589134. Decide, from the listen table, whether a FAILED HTTP
+ * probe is a wedge rather than an outage. Pure — the reader is injected — so the
+ * verdict is unit-testable without an `ss` on the box.
+ *
+ * `null` means UNDETERMINED (no listener rows, unreadable table, non-local URL),
+ * which callers must not collapse into "healthy" or "not wedged": the whole
+ * defect being fixed is two different states rendering identically.
+ */
+export function classifyListenerWedge(
+  sockets: ListeningSocket[] | null,
+): { wedged: boolean; pending: number; backlog: number } | null {
+  if (!sockets || sockets.length === 0) return null;
+  const pending = sockets.reduce((n, s) => n + (s.acceptQueue?.pending ?? 0), 0);
+  const backlog = sockets.reduce((n, s) => Math.max(n, s.acceptQueue?.backlog ?? 0), 0);
+  // A listener exists (so this is NOT "nothing is bound") and the kernel is
+  // holding connections it never accepted. Threshold is >0 rather than a rate:
+  // this only runs on the FAILURE path, where a request that should have been
+  // served is provably sitting unaccepted. A healthy server drains to 0 between
+  // probes; one that cannot is exactly the condition worth naming.
+  return { wedged: pending > 0, pending, backlog };
+}
+
+/** Local-loopback port for a probe URL, or null when the URL is not one. */
+export function localProbePort(url: string): number | null {
+  try {
+    const parsed = new URL(url);
+    if (!['127.0.0.1', 'localhost', '::1', '[::1]'].includes(parsed.hostname)) return null;
+    const port = Number(parsed.port);
+    return Number.isInteger(port) && port > 0 ? port : null;
+  } catch {
+    return null;
+  }
+}
+
+type ListenTableReader = (opts: { port: number }) => Promise<{ sockets: ListeningSocket[] }>;
+
+/**
+ * Read the accept queue for a failed probe's port. FAIL-SOFT by construction: an
+ * absent/erroring `ss` returns null (undetermined), never a false verdict — a
+ * diagnostic that can itself break the health probe it rides on would be the
+ * same class of bug this whole item is about.
+ */
+export async function detectWedgedListener(
+  url: string,
+  read: ListenTableReader = listListeningSockets,
+): Promise<{ wedged: boolean; pending: number; backlog: number } | null> {
+  const port = localProbePort(url);
+  if (port === null) return null;
+  try {
+    const { sockets } = await read({ port });
+    return classifyListenerWedge(sockets);
+  } catch {
+    return null;
+  }
+}
+
 export async function probeEndpoint(spec: EndpointSpec, timeoutMs = spec.timeoutMs ?? 3000): Promise<ProbeResult> {
   const start = Date.now();
   // EI-2339: an onDemand endpoint (no systemd unit, spawned ad hoc) being down
@@ -326,20 +384,31 @@ export async function probeEndpoint(spec: EndpointSpec, timeoutMs = spec.timeout
     // < 500 = "up" (a 401/404 still means the server is answering); 5xx = down.
     return markIfOnDemand({ name: spec.name, up: res.status < 500, status: res.status, latencyMs: Date.now() - start, url: spec.url });
   } catch {
+    // EI-19465075959589134: the fetch failed — but is anything still LISTENING
+    // with connections it never accepted? That separates WEDGED (a live process
+    // with a blocked event loop) from DOWN, which every other signal here
+    // reports identically. Undetermined stays undetermined.
+    const wedge = await detectWedgedListener(spec.url);
+    const preflightNote = preflight === 'indeterminate'
+      ? `TCP preflight was indeterminate (timer expired under load, not a refused connection) and the follow-up HTTP fetch then also failed — likely a genuinely down/wedged listener, not event-loop lag`
+      : undefined;
+    const wedgeNote = wedge?.wedged
+      ? `WEDGED, not down: a process is still listening on this port but has ${wedge.pending} connection(s) queued unaccepted (backlog ${wedge.backlog}) — its event loop is blocked, so systemd/is-active, a live pid and a TCP connect all still look healthy. A restart clears the symptom only; find what is blocking the loop.`
+      : undefined;
     return markIfOnDemand({
       name: spec.name,
       up: false,
       status: null,
       latencyMs: Date.now() - start,
       url: spec.url,
+      wedged: wedge?.wedged,
+      acceptQueue: wedge ? { pending: wedge.pending, backlog: wedge.backlog } : undefined,
       // Surface WHY the preflight didn't fast-fail this result, for the
       // diagnostic signature the bug report names: "TCP preflight timed out,
       // then the real fetch also failed" is a genuinely down/wedged listener;
       // an omitted note here (preflight === 'connected') is the plain fetch-
       // failed case unchanged from before.
-      note: preflight === 'indeterminate'
-        ? `TCP preflight was indeterminate (timer expired under load, not a refused connection) and the follow-up HTTP fetch then also failed — likely a genuinely down/wedged listener, not event-loop lag`
-        : undefined,
+      note: [wedgeNote, preflightNote].filter(Boolean).join(' ') || undefined,
     });
   } finally {
     clearTimeout(timer);

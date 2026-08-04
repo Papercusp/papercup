@@ -58,6 +58,7 @@ interface Args {
   oracle: boolean;
   oracleMaxTerms: number;
   oracleTurns: number[];
+  gradedArms: boolean;
   ceiling: boolean;
   arity: boolean;
   /** Restrict --arity to these replay turns (empty = all). */
@@ -535,6 +536,7 @@ async function runCeiling(args: Args): Promise<void> {
   const probe = async (
     queryText: string,
     arm: 'bm25' | 'hybrid',
+    gradedMaxTerms?: number,
   ): Promise<{ verdict: CeilingVerdict; detail: string; candidates: number; admitted: number }> => {
     // Re-establish the arm immediately before the call: after a reset the leg
     // kicks off a BACKGROUND warmup, so an arm set once at the top of the run
@@ -547,6 +549,7 @@ async function runCeiling(args: Args): Promise<void> {
       workspaceId: args.workspace,
       harnessSlugs: [args.harness],
       skipFlagCheck: true,
+      ...(gradedMaxTerms === undefined ? {} : { gradedMaxTerms }),
     });
 
     // How many of the 6 slots the leg actually filled. This is the ONLY
@@ -636,8 +639,33 @@ async function runCeiling(args: Args): Promise<void> {
     hybrid: { admitted: 0, 'order-blocked': 0, 'filter-blocked': 0, 'not-retrieved': 0, anomaly: 0, void: 0 },
   };
 
+  // PAIRED graded-stage arms (WI-9273). Both run inside ONE process, back to
+  // back on the SAME batch, so the only thing that differs is the term cap
+  // handed to the coverage-graded stage. The corpus is written continuously by
+  // the fleet, so two separate runs minutes apart are NOT a paired comparison —
+  // that gap is exactly where P-018's real-but-unrelated gain hid.
+  //   CONTROL   gradedMaxTerms 2  = today's shipped behaviour, bit for bit
+  //   TREATMENT gradedMaxTerms 24 = CORPUS_GRADED_QUERY_MAX_TERMS
+  const gradedArms = args.gradedArms;
+  const tallyGraded: Record<'control' | 'treatment', number> = { control: 0, treatment: 0 };
+
   for (const batch of REPLAY) {
     const queryText = deriveBatchQuery(batch.calls);
+    if (gradedArms) {
+      // BM25 arm only: it is deterministic, so a verdict difference is
+      // attributable to the term cap rather than to embedder warm-state.
+      const ctl = await probe(queryText, 'bm25', 2);
+      const tr = await probe(queryText, 'bm25', 24);
+      if (ctl.verdict === 'admitted') tallyGraded.control++;
+      if (tr.verdict === 'admitted') tallyGraded.treatment++;
+      const mark = ctl.verdict === tr.verdict ? '  ' : tr.verdict === 'admitted' ? '✅' : '🔻';
+      console.log(
+        `\n   turn ${batch.turn} ${mark}` +
+          `\n     CONTROL   (graded 2 terms)  ${ctl.verdict.toUpperCase().padEnd(14)} (${ctl.candidates} cand, ${ctl.admitted}/6)` +
+          `\n     TREATMENT (graded 24 terms) ${tr.verdict.toUpperCase().padEnd(14)} (${tr.candidates} cand, ${tr.admitted}/6)`,
+      );
+      continue;
+    }
     // Sequential, not Promise.all: the arms share one process-wide embedder
     // warm flag, so running them concurrently would race each other's arm.
     const bm25 = await probe(queryText, 'bm25');
@@ -664,6 +692,25 @@ async function runCeiling(args: Args): Promise<void> {
   }
 
   const n = REPLAY.length;
+  if (gradedArms) {
+    const d = tallyGraded.treatment - tallyGraded.control;
+    console.log('\n   ── graded-stage term cap, PAIRED arms (BM25, IDENTITY) ──');
+    console.log(`   CONTROL   (graded  2 terms, = shipped today): ${tallyGraded.control}/${REPLAY.length}`);
+    console.log(`   TREATMENT (graded 24 terms)                 : ${tallyGraded.treatment}/${REPLAY.length}`);
+    console.log(
+      `   delta ${d > 0 ? `+${d}` : d}` +
+        (d > 0
+          ? '  — the cap was the barrier for at least one batch.'
+          : d === 0
+            ? '  — NO effect. Widening the graded stage is not the lever; do not ship it on a story.'
+            : '  — WORSE. Widening the graded stage costs retrieval; do not ship it.'),
+    );
+    console.log(
+      '   ⚠ The bar is the CONTROL measured in THIS process, not a figure carried from an earlier run.',
+    );
+    return;
+  }
+
   console.log('\n   ── ceiling ──');
   for (const arm of ['bm25', 'hybrid'] as const) {
     const t = tally[arm];
@@ -854,6 +901,9 @@ function parseArgs(argv: readonly string[]): Args {
       .filter((n) => Number.isFinite(n) && n > 0),
     ceiling: argv.includes('--ceiling'),
     arity: argv.includes('--arity'),
+    // Paired control/treatment over the coverage-graded stage's term cap.
+    // Implies --ceiling's machinery; run it as: --mode none --ceiling --graded-arms
+    gradedArms: argv.includes('--graded-arms'),
     arityTurns: (get('--arity-turns') ?? '')
       .split(',')
       .map((s) => Number(s.trim()))

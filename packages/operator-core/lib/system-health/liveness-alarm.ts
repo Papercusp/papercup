@@ -609,12 +609,23 @@ export function evaluateLivenessAlarm(
  * that motivated it, and an earlier revision of this very comment asserted that it was.
  *
  *   PROVEN (measured 30d, papercusp-workspace, `coord_event_log`): `stale-paused-routines`
- *   produced 5,303 fire→resolve and 5,303 resolve→fire transitions and ZERO fire→fire —
- *   a perfect square wave, median half-period 57s/63s — with a BYTE-IDENTICAL summary
- *   naming the same 105 routines throughout. A condition that genuinely cleared and
- *   recurred cannot emit identical text 5,303 times. The condition was CONSTANT and the
- *   DETECTION oscillated. WI-4878's guard (recompute fresh health before resolving) was
- *   already in place throughout. Freshness was not the problem.
+ *   produced 5,303 fire→resolve and 5,303 resolve→fire transitions, median half-period
+ *   57s/63s, with a BYTE-IDENTICAL summary naming the same 105 routines throughout. A
+ *   condition that genuinely cleared and recurred cannot emit identical text 5,303 times.
+ *   The condition was CONSTANT and the DETECTION oscillated. WI-4878's guard (recompute
+ *   fresh health before resolving) was already in place throughout. Freshness was not the
+ *   problem.
+ *
+ *   ⚠ CORRECTION (2026-08-04) — an earlier revision of this comment ALSO cited "and ZERO
+ *   fire→fire transitions — a perfect square wave" as part of that proof. That observation
+ *   is real but carries NO information: the fire loop skips any signature that already has
+ *   an open row (`if (openBySig.has(s.key)) continue`), so a second fire coalesces onto the
+ *   open row instead of writing an event. fire→fire is therefore IMPOSSIBLE BY CONSTRUCTION
+ *   in `coord_event_log`, for every signature, flapping or not — measured the same day on
+ *   three unrelated live signatures, all with zero fire→fire. The BYTE-IDENTICAL summary is
+ *   the load-bearing evidence here; the alternation is not. Citing a structurally-forced
+ *   observation as though it discriminated between hypotheses is how a sound-looking proof
+ *   launders a schema artifact into a conclusion.
  *
  *   FALSIFIED: the panel-level branch below did NOT cause it. `system_health_ticks` over
  *   the same 30d records 37,319 ticks — 35,119 warn / 1,587 ok / 613 crit — and NOT ONE
@@ -671,6 +682,30 @@ export function unobservableLivenessSignatures(health: SystemHealth): Set<string
  * reads as unknown rather than as observed-clear.
  */
 export function resolveEvidenceFor(sig: string, health: SystemHealth): string {
+  // `panel:<key>` — the catch-all family (evaluateLivenessAlarm §6) fires while a panel
+  // self-reports `crit`, so that panel's OWN status at resolve time IS the observation.
+  //
+  // WHY THIS BRANCH EXISTS (measured 2026-08-04, papercusp-workspace, 24h): these are the
+  // signatures that actually flap in production — panel:infra 148 fire/resolve cycles,
+  // panel:bees 83, rubric-emission-dark 41 — while the two workFeed signatures mapped
+  // below sat completely quiet (stale-paused-routines has held one open row since
+  // 2026-08-02T18:14Z). So the version of this helper that mapped only those recorded
+  // `no per-signature evidence recorded` for every LIVE occurrence: the instrumentation
+  // was blind in exactly the place the phenomenon was still happening. An evidence helper
+  // is only worth its weight where the events are.
+  //
+  // Matched by ITERATING `panels` rather than indexing it with the dynamic key: the
+  // string-index form needs a cast, and a cast inside the helper whose job is keeping an
+  // observation honest is the same defect one level down.
+  if (sig.startsWith('panel:')) {
+    const key = sig.slice('panel:'.length);
+    for (const p of Object.values(health.panels)) {
+      if (!p || p.key !== key) continue;
+      return `observed panel ${key} status=${p.status}${p.error != null ? ' (panel ERRORED)' : ''}`;
+    }
+    // Absent ≠ clear — the panel we would have judged was not in the snapshot at all.
+    return `observed panel ${key} status=panel-absent`;
+  }
   const wf = health.panels.workFeed;
   const d = wf?.data ?? null;
   // Read the field DIRECTLY per signature rather than indexing by a string key: the

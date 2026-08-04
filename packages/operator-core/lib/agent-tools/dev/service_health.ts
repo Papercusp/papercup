@@ -183,13 +183,27 @@ export async function overlaySystemdRestartRecency(
 
 type ServiceRootCause = { component: string; reason: string };
 
-function nextVerbForService(name: string): string {
+function restartVerbForService(name: string): string {
   if (name.includes("bg-host")) return 'dev:restart { target:"bg-host" }';
   if (name === "operator") return 'dev:restart { target:"dev" }';
   if (name === "staging-api") return 'dev:restart { target:"staging" }';
   if (name.includes("gateway")) return 'dev:restart { target:"gateway" }';
   if (name.includes("embed")) return 'dev:restart { target:"embed-sidecar" }';
   return "dev:processes";
+}
+
+/**
+ * EI-19465075959589134: a WEDGED service and a DOWN one want different next
+ * moves, and the restart verb is only correct for one of them. Down = the
+ * process is gone, so starting it IS the fix. Wedged = a live process with a
+ * blocked event loop, so the restart is a MITIGATION that also destroys the
+ * evidence — and :3170 wedged twice in four hours precisely because each
+ * incident was closed by restarting it.
+ */
+function nextVerbForService(name: string, wedged?: boolean): string {
+  const restart = restartVerbForService(name);
+  if (!wedged) return restart;
+  return `${restart} RECOVERS it — but this is a WEDGE (listening, not accepting), so capture evidence FIRST or the cause survives the restart: logs:read { unit, since:"-10m" } + dev:pg_active_queries`;
 }
 
 /**
@@ -252,14 +266,18 @@ export function buildServiceHealthDiagnostic(
   supervision: SupervisionStatusEntry[],
 ): RuntimeDiagnostic<
   { services: string[]; supervised: string[] },
-  { up: number; down: number; absent: number; supervisionUnhealthy: number },
+  { up: number; down: number; wedged: number; absent: number; supervisionUnhealthy: number },
   { checked: number; failures: ProbeResult[]; unhealthySupervision: SupervisionStatusEntry[] },
   ServiceRootCause
 > {
   const absent = services.filter((s) => s.present === false);
   const failures = services.filter((s) => s.present !== false && !s.up);
   const unhealthySupervision = supervision.filter((s) => s.flapState !== "ok");
-  const first = failures[0];
+  // EI-19465075959589134: a wedge is the more actionable finding of the two, so
+  // it leads the root cause even when an ordinary down probe sorted first — the
+  // whole point is that a wedge never announces itself in the other signals.
+  const wedgedFailures = failures.filter((s) => s.wedged === true);
+  const first = wedgedFailures[0] ?? failures[0];
   const supervisor = unhealthySupervision[0];
   const rootCause: ServiceRootCause | null = first
     ? { component: first.name, reason: first.note ?? `probe failed (status ${first.status ?? "none"})` }
@@ -273,13 +291,18 @@ export function buildServiceHealthDiagnostic(
     },
     effective: {
       up: services.length - absent.length - failures.length,
+      // `down` stays the whole failure count (nothing is answering, whatever the
+      // cause); `wedged` is the SUBSET that is still listening. Reported side by
+      // side rather than partitioned, so an existing reader of `down` keeps its
+      // meaning and a new one can ask the sharper question.
       down: failures.length,
+      wedged: wedgedFailures.length,
       absent: absent.length,
       supervisionUnhealthy: unhealthySupervision.length,
     },
     evidence: { checked: services.length, failures, unhealthySupervision },
     rootCause,
-    nextVerb: rootCause ? nextVerbForService(rootCause.component) : null,
+    nextVerb: rootCause ? nextVerbForService(rootCause.component, first?.wedged) : null,
   });
 }
 
