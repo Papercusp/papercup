@@ -163,3 +163,81 @@ describe('Popover (harness Radix-Popover wrapper)', () => {
     expect(anchor.getAttribute('href')).toBe('/n');
   });
 });
+
+/**
+ * Focus-trap containment (WI-10013).
+ *
+ * A modal dialog traps focus to its own DOM subtree. Radix's default portal
+ * target is `document.body`, so a popover opened from inside a modal mounts
+ * OUTSIDE the trap — and the trap then reverts any focus landing in the panel
+ * back to the trigger. The panel renders, positions, reports `opacity: 1`, and
+ * is completely un-typeable.
+ *
+ * ⚠ THE OBVIOUS TEST FOR THIS DOES NOT WORK. Asserting `document.activeElement`
+ * is the panel's input passes in jsdom whether or not the bug is present,
+ * because nothing here competes for focus — no real modal focus trap is
+ * running. A jsdom focus assertion is necessary-but-not-sufficient and it
+ * green-lit a broken fix for this exact component once already.
+ *
+ * What jsdom CAN decide is CONTAINMENT, which is the actual invariant: the
+ * panel must be a descendant of the trapping dialog. Assert that instead.
+ */
+describe('Popover portal containment inside a modal focus trap', () => {
+  function ModalHost({ children }: { children: ReactElement }) {
+    return (
+      <div role="dialog" aria-modal="true" data-testid="modal-host">
+        {children}
+      </div>
+    );
+  }
+
+  it('hosts the panel INSIDE the nearest aria-modal dialog, not on document.body', () => {
+    render(
+      <ModalHost>
+        <Popover open onOpenChange={vi.fn()} ariaLabel="Rubrics" trigger={<button>pill</button>}>
+          <input data-testid="panel-input" />
+        </Popover>
+      </ModalHost>,
+    );
+    const modal = screen.getByTestId('modal-host');
+    const input = screen.getByTestId('panel-input');
+    // The invariant: focus can only survive if the panel lives inside the trap.
+    expect(modal.contains(input)).toBe(true);
+  });
+
+  it('still portals to document.body when there is NO modal ancestor', () => {
+    render(
+      <Popover open onOpenChange={vi.fn()} ariaLabel="Rubrics" trigger={<button>pill</button>}>
+        <input data-testid="free-input" />
+      </Popover>,
+    );
+    const input = screen.getByTestId('free-input');
+    const modal = document.querySelector('[role="dialog"][aria-modal="true"]');
+    // No trapping ancestor -> unchanged Radix default (body-hosted).
+    expect(modal).toBeNull();
+    expect(document.body.contains(input)).toBe(true);
+  });
+
+  it('honours an explicit portalContainer override over auto-detection', () => {
+    const target = document.createElement('div');
+    target.setAttribute('data-testid', 'explicit-host');
+    document.body.appendChild(target);
+    render(
+      <ModalHost>
+        <Popover
+          open
+          onOpenChange={vi.fn()}
+          ariaLabel="Rubrics"
+          portalContainer={target}
+          trigger={<button>pill</button>}
+        >
+          <input data-testid="override-input" />
+        </Popover>
+      </ModalHost>,
+    );
+    const input = screen.getByTestId('override-input');
+    expect(target.contains(input)).toBe(true);
+    expect(screen.getByTestId('modal-host').contains(input)).toBe(false);
+    target.remove();
+  });
+});

@@ -32,6 +32,9 @@
       "default": "./src/test.ts"
     }
   },
+  "dependencies": {
+    "@papercusp/module-singleton": "*"
+  },
   "devDependencies": {
     "vitest": "^4.1.7"
   },

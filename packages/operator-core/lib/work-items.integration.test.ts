@@ -1806,11 +1806,11 @@ describe('WI-4405 — includeObservations / admissibleOnly parity on the read pa
     await wi.createWorkItem({ kind: 'bug', title: 'zephyrion real bug', harness: 'papercup', createdBy: 'agA' });
 
     const excluded = await wi.searchWorkItems('zephyrion', { semantic: false });
-    expect(excluded.some((w) => w.title === 'zephyrion scorecard note')).toBe(false);
-    expect(excluded.some((w) => w.title === 'zephyrion real bug')).toBe(true);
+    expect(excluded.items.some((w) => w.title === 'zephyrion scorecard note')).toBe(false);
+    expect(excluded.items.some((w) => w.title === 'zephyrion real bug')).toBe(true);
 
     const included = await wi.searchWorkItems('zephyrion', { semantic: false, includeObservations: true });
-    expect(included.some((w) => w.title === 'zephyrion scorecard note')).toBe(true);
+    expect(included.items.some((w) => w.title === 'zephyrion scorecard note')).toBe(true);
   });
 });
 

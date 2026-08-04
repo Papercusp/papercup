@@ -23,6 +23,8 @@
  *      tested while nothing ever called it.
  */
 import { execFileSync } from 'node:child_process';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
@@ -32,12 +34,16 @@ import { findUnthreadedApplies, maskCommentsAndStrings, splitArgs } from '../../
 const REPO_ROOT = join(__dirname, '..', '..', '..', '..');
 const GUARD = join(REPO_ROOT, 'scripts', 'check-no-unthreaded-apply.mjs');
 
-function runGuard(args: string[] = []): { status: number; stdout: string; stderr: string } {
+function runGuard(
+  args: string[] = [],
+  env: Record<string, string> = {},
+): { status: number; stdout: string; stderr: string } {
   try {
     const stdout = execFileSync('node', [GUARD, ...args], {
       cwd: REPO_ROOT,
       encoding: 'utf8',
       timeout: 120_000,
+      env: { ...process.env, ...env },
     });
     return { status: 0, stdout, stderr: '' };
   } catch (err) {
@@ -64,6 +70,38 @@ describe('lint:no-unthreaded-apply — enforcement over the real tree', () => {
     expect(stdout).toContain('packages/operator-core/lib/sync/hyperbee/projection.ts');
     expect(stdout).toMatch(/allowlisted: 1\b/);
     expect(stdout).toMatch(/total files: 1\b/);
+  });
+});
+
+describe('enforcement path is FALSIFIABLE (mutant caught end-to-end)', () => {
+  /**
+   * The controls below prove the DETECTOR flags bad input. They do not prove the
+   * ENFORCEMENT path — walk → detect → exit(1) — can fail, and a guard whose runner
+   * always exits 0 is indistinguishable from a clean tree.
+   *
+   * Mutating a tracked file to prove this would be unsafe here: git-sync sweeps the whole
+   * tree every few minutes, so a probe that legitimately holds a file mutated for the
+   * duration of a run can have the mutant COMMITTED with nothing going wrong and no trap
+   * firing. So the subject is a fixture outside the tree, via the guard's read-only
+   * PC_UNTHREADED_APPLY_SCAN_ROOT seam — zero window, no lock, no trap needed.
+   */
+  it('exits 1 on a violating fixture and 0 once it is removed', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'pc-unthreaded-apply-'));
+    try {
+      const file = join(dir, 'violator.ts');
+      writeFileSync(file, 'export const bad = (l: unknown, o: unknown) => applyOpVia(l, o);\n');
+
+      const mutant = runGuard([], { PC_UNTHREADED_APPLY_SCAN_ROOT: dir });
+      expect(mutant.status).toBe(1);
+      expect(mutant.stderr).toMatch(/un-threaded production apply call site/);
+      expect(mutant.stderr).toMatch(/violator\.ts:1/);
+
+      rmSync(file);
+      const clean = runGuard([], { PC_UNTHREADED_APPLY_SCAN_ROOT: dir });
+      expect(clean.status).toBe(0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

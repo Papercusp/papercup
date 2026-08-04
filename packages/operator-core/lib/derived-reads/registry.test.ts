@@ -507,6 +507,7 @@ describe('producerVersion downgrade guard (WI-7226)', () => {
   // of a cold panel: same cost, worse trigger (unscheduled, once per distinct
   // caller, invisible to the routine bookkeeping).
   it('a MISS on an excludeFromDefaultSweep producer does NOT warm — only its own routine fills it', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const compute = vi.fn().mockResolvedValue(['expensive']);
     registerDerivedRead({
       key: 'test.slow',
@@ -516,7 +517,7 @@ describe('producerVersion downgrade guard (WI-7226)', () => {
       excludeFromDefaultSweep: true,
       compute,
     });
-    sqlResults = [[], []];
+    sqlResults = [[], [], [], []];
 
     const { payload, meta } = await readDerivedSnapshot('test.slow');
 
@@ -530,6 +531,15 @@ describe('producerVersion downgrade guard (WI-7226)', () => {
     expect(compute).not.toHaveBeenCalled();
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(compute).not.toHaveBeenCalled();
+
+    // The decline is explained ONCE per key, not once per read: this read runs on
+    // every ~3s sync poll of a cold panel, so a per-read line would be a log flood
+    // and would train everyone to filter out the one message that explains the
+    // empty panel.
+    await readDerivedSnapshot('test.slow');
+    expect(warn.mock.calls.filter((c) => String(c[0]).includes('NOT warming from a read'))).toHaveLength(1);
+    warn.mockRestore();
+
     // Falsifiability control: the SAME miss on a non-excluded producer DOES warm —
     // proven by 'kicks a BACKGROUND warm-up on a miss without awaiting it' above,
     // which is identical but for `excludeFromDefaultSweep`. Without that pairing

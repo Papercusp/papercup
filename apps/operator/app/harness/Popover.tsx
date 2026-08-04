@@ -3,7 +3,21 @@
 import * as RP from '@radix-ui/react-popover';
 import * as RT from '@radix-ui/react-tooltip';
 import type { CSSProperties, ReactNode, RefObject } from 'react';
+import { useCallback, useState } from 'react';
 import { POPPER_WRAPPER_FLOOR_Z, clampPopperZ } from './popper-z';
+
+/**
+ * A modal dialog traps focus to its own subtree. Radix's default portal target
+ * is `document.body`, which puts popover content OUTSIDE that subtree — so the
+ * trap reverts any focus landing in the panel straight back to the trigger, and
+ * nothing inside the panel can be focused or typed into at all.
+ *
+ * This is NOT a timing race, so no rAF/retry can win it: a synchronous
+ * `input.focus()` on a fully-settled open panel fails just as hard (measured
+ * live 2026-08-04 on the chat GRADE rubric picker, WI-10013). The only fix is
+ * containment — render the panel INSIDE the trapping dialog.
+ */
+const MODAL_HOST_SELECTOR = '[role="dialog"][aria-modal="true"]';
 
 /**
  * Popover — the canonical replacement for hand-rolled "anchored dropdown"
@@ -58,6 +72,7 @@ export function Popover({
   contentClassName,
   contentStyle,
   zIndex,
+  portalContainer,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -100,7 +115,30 @@ export function Popover({
   contentClassName?: string;
   contentStyle?: CSSProperties;
   zIndex?: number;
+  /**
+   * Explicit portal target. Leave unset: the panel AUTO-HOSTS inside the
+   * nearest `[role=dialog][aria-modal=true]` ancestor when there is one (so it
+   * lands inside that dialog's focus trap) and falls back to Radix's default
+   * `document.body` otherwise. Pass an element only to override that, or `null`
+   * to force `document.body`.
+   */
+  portalContainer?: HTMLElement | null;
 }) {
+  /*
+   * Resolved from the trigger/anchor via a CALLBACK ref, not an effect: the
+   * anchoring element mounts long before the panel first opens, so the host is
+   * already known at the first open. An effect would portal to `body` for one
+   * commit and then re-parent, which remounts the panel's whole subtree — the
+   * exact churn that makes focus-on-open flaky.
+   */
+  const [detectedHost, setDetectedHost] = useState<HTMLElement | null>(null);
+  const anchorRef = useCallback((node: HTMLElement | null) => {
+    if (!node) return;
+    const host = node.closest(MODAL_HOST_SELECTOR);
+    setDetectedHost(host instanceof HTMLElement ? host : null);
+  }, []);
+  const host = portalContainer !== undefined ? portalContainer : detectedHost;
+
   const baseStyle: CSSProperties = {
     /* CLAMPED, not defaulted. Radix copies this onto
        `[data-radix-popper-content-wrapper]` as an inline style, which overrides
@@ -118,7 +156,7 @@ export function Popover({
   };
 
   const popoverContent = (
-    <RP.Portal>
+    <RP.Portal container={host ?? undefined}>
       <RP.Content
         side={side}
         align={align}
@@ -141,9 +179,9 @@ export function Popover({
   );
 
   const anchorNode = trigger ? (
-    <RP.Trigger asChild>{trigger}</RP.Trigger>
+    <RP.Trigger asChild ref={anchorRef}>{trigger}</RP.Trigger>
   ) : anchor ? (
-    <RP.Anchor asChild>{anchor}</RP.Anchor>
+    <RP.Anchor asChild ref={anchorRef}>{anchor}</RP.Anchor>
   ) : null;
 
   if (tooltipLabel) {
@@ -157,7 +195,7 @@ export function Popover({
         <RT.Provider delayDuration={250} skipDelayDuration={150}>
         <RT.Root>
           <RT.Trigger asChild>
-            <RP.Trigger asChild>{trigger}</RP.Trigger>
+            <RP.Trigger asChild ref={anchorRef}>{trigger}</RP.Trigger>
           </RT.Trigger>
           <RT.Portal>
             <RT.Content

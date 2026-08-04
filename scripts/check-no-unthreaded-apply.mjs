@@ -89,6 +89,21 @@ const ROOT = new URL('..', import.meta.url).pathname.replace(/\/$/, '');
  */
 const ROOTS = ['packages', 'libs', 'apps'];
 
+/**
+ * Falsifiability seam. When set, scan THIS directory instead of the repo roots.
+ *
+ * Proving a guard can fail is mandatory discipline, and on this repo the obvious way to
+ * prove it is unsafe: mutating a tracked file races git-sync's whole-tree sweep, which
+ * commits the mutant even when nothing goes wrong and no trap fires (measured —
+ * db6d7b02b1 committed an inert mutant of a shell script that way). This one line makes
+ * the safe form available: point the guard at a fixture OUTSIDE the tree, mutate that,
+ * and the shared checkout is never dirtied for even a moment.
+ *
+ * Read-only and test-only — it narrows what is scanned, so it can never cause a MISS in
+ * the real run, only in a run that deliberately asked for a different subject.
+ */
+const SCAN_ROOT = process.env.PC_UNTHREADED_APPLY_SCAN_ROOT ?? null;
+
 /** Directories never worth walking. */
 const SKIP_DIR = new Set([
   'node_modules', 'dist', 'dist-sidecar', 'dist-host', 'build', '.next', 'target',
@@ -244,8 +259,11 @@ function main() {
   const listMode = process.argv.includes('--list');
   const found = new Map();
 
-  for (const root of ROOTS) {
-    for (const file of walk(join(ROOT, root))) {
+  const base = SCAN_ROOT ?? ROOT;
+  const scanDirs = SCAN_ROOT ? [SCAN_ROOT] : ROOTS.map((r) => join(ROOT, r));
+
+  for (const dir of scanDirs) {
+    for (const file of walk(dir)) {
       let src;
       try {
         src = readFileSync(file, 'utf8');
@@ -254,7 +272,7 @@ function main() {
       }
       if (!src.includes('applyOpVia')) continue;
       const hits = findUnthreadedApplies(src);
-      if (hits.length) found.set(relative(ROOT, file), hits);
+      if (hits.length) found.set(relative(base, file), hits);
     }
   }
 
@@ -273,7 +291,11 @@ function main() {
 
   // A stale allowlist entry is itself drift: the guard would keep excusing a site that no
   // longer violates, and the next real one there would be silently forgiven.
-  const stale = [...ALLOW.keys()].filter((f) => !found.has(f));
+  //
+  // Meaningless under a fixture scan (the real allowlisted paths are not in scope), and
+  // reporting it there would make a falsifiability probe exit 1 for the WRONG reason —
+  // which would look exactly like a caught mutant while proving nothing.
+  const stale = SCAN_ROOT ? [] : [...ALLOW.keys()].filter((f) => !found.has(f));
 
   if (violations.length === 0 && stale.length === 0) {
     console.log(

@@ -5,6 +5,7 @@
 // If PostHog is unreachable, evaluations fall back to FLAG_DEFAULTS
 // (fail-safe-closed — V1 ship state is "everything off").
 
+import { pinModuleState } from "@papercusp/module-singleton";
 import { PostHog } from "posthog-node";
 import { resolveTestOverrides } from "./test";
 import {
@@ -65,18 +66,38 @@ export type FlagOverrideStore = {
 // `flags:set` was silently invisible ("No override store installed" on a process
 // that HAD installed one). Keying the slot on globalThis makes every instance of
 // this module share the one store, whatever the resolver did.
-const OVERRIDE_STORE_SLOT = Symbol.for('papercusp.flags.overrideStore');
-type StoreSlot = { store: FlagOverrideStore | null };
-function storeSlot(): StoreSlot {
-  const g = globalThis as unknown as Record<symbol, StoreSlot | undefined>;
-  return (g[OVERRIDE_STORE_SLOT] ??= { store: null });
+// Pinned through @papercusp/module-singleton rather than a hand-rolled
+// `globalThis[Symbol.for(...)]` pair: hand-rolling still fixes correctness, but
+// the key is invisible to listModuleDuplications(), which then reports a
+// confident `[]` while this module is split (EI-19479108855357092).
+//
+// The STORE and the CACHE are pinned together, under one key, on purpose. The
+// original WI-4275 fix pinned only the store and left `overrideCache`
+// module-local — which half-closed the bug: on a split, an
+// invalidateFlagOverrideCache() reaching record A clears A's map while record B
+// keeps serving the stale override map for the rest of its TTL. Same failure
+// shape as the one the store pin exists to prevent, one level down. One
+// pinModuleState call per module body also keeps `evaluations` an honest count
+// of module RECORDS.
+const STATE_KEY = '@papercusp/flags.server';
+interface FlagsServerState {
+  /** The installed override store (null until installOverrideStore runs). */
+  store: FlagOverrideStore | null;
+  /**
+   * Keyed by the store's cacheKey() (e.g. workspace id) so one process serving
+   * many workspaces never bleeds one workspace's overrides into another's reads.
+   */
+  overrideCache: Map<string, { flags: Partial<Record<FlagKey, boolean>>; ts: number }>;
 }
-// Keyed by the store's cacheKey() (e.g. workspace id) so one process serving
-// many workspaces never bleeds one workspace's overrides into another's reads.
-const overrideCache = new Map<
-  string,
-  { flags: Partial<Record<FlagKey, boolean>>; ts: number }
->();
+const state = pinModuleState<FlagsServerState>(STATE_KEY, () => ({
+  store: null,
+  overrideCache: new Map(),
+}));
+type StoreSlot = Pick<FlagsServerState, 'store'>;
+function storeSlot(): StoreSlot {
+  return state;
+}
+const overrideCache = state.overrideCache;
 const DEFAULT_OVERRIDE_CACHE_TTL_MS = 5_000;
 const DEFAULT_FLAG_BACKEND_TIMEOUT_MS = 2_000;
 

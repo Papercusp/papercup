@@ -186,6 +186,7 @@
     "lint:no-unenrolled-mjs-imports": "node scripts/check-unenrolled-mjs-imports.mjs",
     "lint:no-raw-setinterval": "node scripts/check-no-raw-setinterval.mjs",
     "lint:no-hand-rolled-module-pin": "node scripts/check-no-hand-rolled-module-pin.mjs",
+    "lint:no-unthreaded-apply": "node scripts/check-no-unthreaded-apply.mjs",
     "lint:partial-index-alignment": "node scripts/check-partial-index-alignment.mjs",
     "lint:typeless-reexport": "node scripts/check-typeless-reexport-trap.mjs",
     "lint:full-replacement-mocks": "node scripts/check-full-replacement-mocks.mjs",

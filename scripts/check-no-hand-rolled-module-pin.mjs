@@ -60,7 +60,6 @@ const SKIP_DIR = new Set([
  */
 const ALLOW = new Set([
   'apps/operator/lib/chat-cards/ask-user-local.ts',
-  'libs/flags/src/server.ts',
   'packages/operator-core/lib/agent-tools/coordination/agent-question-gate.ts',
   'packages/operator-core/lib/agents-list.ts',
   'packages/operator-core/lib/card-response-rate-limit.ts',
