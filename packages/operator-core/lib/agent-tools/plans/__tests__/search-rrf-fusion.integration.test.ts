@@ -52,13 +52,20 @@ vi.mock('../semantic-leg', async (importOriginal) => {
   return {
     ...actual,
     resolvePlansEmbedder: resolveEmbedderMock,
+    // The forwarded params are DERIVED from the real signature, never restated.
+    // This wrapper only passes them through, so a hand-written type here is a
+    // second source of truth that drifts silently: `sink: (h: never) => void`
+    // was exactly that — a function taking `never` cannot accept a
+    // PlanSemanticHit, so it stopped being assignable (TS2345) and left this
+    // file red. Deriving also retires the `opts as never` cast, which was
+    // disabling checking on that argument rather than satisfying it.
     planEmbeddingRanker: (
       sourceKey: string,
       mode: string,
-      opts: Record<string, unknown>,
-      sink: (h: never) => void,
+      opts: Parameters<typeof actual.planEmbeddingRanker>[2],
+      sink: Parameters<typeof actual.planEmbeddingRanker>[3],
     ) =>
-      actual.planEmbeddingRanker(sourceKey, mode, opts as never, sink, {
+      actual.planEmbeddingRanker(sourceKey, mode, opts, sink, {
         resolveEmbedder: async () => null, // unused by the ranker itself
         queryTopPlans: queryTopPlans as never,
       }),
