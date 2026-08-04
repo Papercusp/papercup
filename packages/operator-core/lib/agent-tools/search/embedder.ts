@@ -210,6 +210,7 @@ function cachedQueryEmbed(mode: string, dims: number, embed: Embedder): Embedder
  * (and the WeakMap) live in the leaf registry.
  */
 export { embedderModeOf } from '../../search/embedder-mode-registry';
+import { stampEmbedderMode } from '../../search/embedder-mode-registry';
 
 export async function buildQueryEmbedderResolved(
   opts?: QueryEmbedderAcquireOpts,
@@ -242,7 +243,7 @@ export async function buildQueryEmbedderResolved(
     const embed = cachedQueryEmbed(resolved.mode, resolved.dims, resolved.embed);
     // P-017: stamp the space onto the instance every caller will actually hold,
     // so the floor policy can recognise it without any caller passing a mode.
-    embedderModes.set(embed, resolved.mode);
+    stampEmbedderMode(embed, resolved.mode);
     return { mode: resolved.mode, dims: resolved.dims, embed };
   } catch {
     // Mirrors the prior local-mode behavior: a pipeline load failure (package missing,
