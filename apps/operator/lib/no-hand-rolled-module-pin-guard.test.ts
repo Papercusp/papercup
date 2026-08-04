@@ -275,6 +275,12 @@ describe('no-hand-rolled-module-pin — the tree', () => {
       'packages/operator-core/lib/agents-list.ts',
       'packages/operator-core/lib/card-response-rate-limit.ts',
       'packages/operator-core/lib/harness-agent-runs.ts',
+      // All FOUR of its pins (3 string keys + 1 Symbol.for) folded into ONE
+      // pinModuleState call — the mixed-form file that proved the detector
+      // had been form-blind. Its pre-migration shape survives as the two
+      // predicate fixtures above; those are synthetic source strings, not
+      // readers, so they stay unchanged on purpose.
+      'packages/operator-core/lib/harness-core.ts',
     ]) {
       expect(paths.has(migrated)).toBe(false);
     }

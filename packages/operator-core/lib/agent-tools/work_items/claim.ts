@@ -329,7 +329,7 @@ async function claimOne(
       // the exact scheduler:set_claim_spec call shape, so a member acting on an explicit
       // leader directive had to file the work unclaimed and wait, blind, for their leader
       // to notice the notification.
-      hint: `${admission.reason}. The claim was refused before mutation. ${fleetScopeLeaderRemedy(admission, liveRouteTarget)}`,
+      hint: `${admission.reason}. The claim was refused before mutation. ${fleetScopeLeaderRemedy(admission, liveRouteTarget, classRefusal)}`,
     };
   }
   // WI-5946: the by-id claim path never checked `payload._claimHold` — an owner-gated hold

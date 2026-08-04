@@ -317,3 +317,220 @@ describe('bghost-watchdog — journald-independent freeze signal (EI-2434)', () 
     });
   });
 });
+
+/**
+ * EI-19485006080051257 — the watchdog alerted on restart STORMS but never on COLLATERAL.
+ *
+ * A restart tears down the unit's whole cgroup (KillMode=control-group), which also holds the agent
+ * spawner and the owner's LIVE desktop-app sidecars. The storm alert needs ALERT_AFTER_RESTARTS (2)
+ * consecutive strikes and the counter resets on the first healthy poll, so the ORDINARY case — one
+ * freeze, one restart, clean recovery — could never alert. The better the watchdog worked, the more
+ * certainly the damage went unreported.
+ *
+ * The invariant these tests pin: "is a storm developing?" (debounced, correctly) and "did we just
+ * destroy something that was not ours?" (irreversible, first occurrence) must never share a threshold.
+ */
+describe('bghost-watchdog — collateral reporting (EI-19485006080051257)', () => {
+  // The real cgroup shape, measured 2026-08-04T01:35Z on the live box.
+  const MEASURED: CollateralEntry[] = [
+    { pid: 35422, cmdline: 'npm exec tsx bin/hono-host.ts' },
+    { pid: 35685, cmdline: 'node /w/papercusp/node_modules/.bin/tsx bin/hono-host.ts' },
+    { pid: 37652, cmdline: '/w/papercusp/node_modules/@esbuild/linux-x64/bin/esbuild --service=0.27.3' },
+    { pid: 45576, cmdline: 'npm exec tsx /w/papercusp/apps/operator/bin/spawner-sidecar.ts' },
+    { pid: 45951, cmdline: 'node /w/papercusp/node_modules/.bin/tsx /w/.../spawner-sidecar.ts' },
+    { pid: 271234, cmdline: '/mnt/data/.../Papercusp GUI_0.0.13_amd64/data/usr/lib/Papercusp GUI/serve.mjs' },
+    { pid: 274143, cmdline: '/mnt/data/.../Papercusp GUI_0.0.13_amd64/data/usr/lib/Papercusp GUI/serve.mjs' },
+    { pid: 2808712, cmdline: 'pg_dump papercusp' },
+  ];
+
+  describe('parseCgroupProcs', () => {
+    it('parses one pid per line', () => expect(parseCgroupProcs('35422\n45576\n271234\n')).toEqual([35422, 45576, 271234]));
+    it('an empty cgroup.procs yields no pids', () => expect(parseCgroupProcs('')).toEqual([]));
+    it('drops junk/blank lines rather than throwing — this runs on the restart path', () => {
+      expect(parseCgroupProcs('35422\n\nnot-a-pid\n0\n-5\n45576\n')).toEqual([35422, 45576]);
+    });
+    it('null/undefined input is empty, never a throw', () => {
+      expect(parseCgroupProcs(null)).toEqual([]);
+      expect(parseCgroupProcs(undefined)).toEqual([]);
+    });
+  });
+
+  describe('classifyCollateral', () => {
+    it('separates the unit OWN processes from what a restart destroys', () => {
+      const s = classifyCollateral(MEASURED)!;
+      expect(s.own).toBe(3); // 2x hono-host + esbuild
+      expect(s.spawner).toBe(2);
+      expect(s.desktop).toBe(2);
+      expect(s.other).toBe(1); // pg_dump
+      expect(s.collateral).toBe(5);
+      expect(s.total).toBe(8);
+    });
+
+    it('an unrecognised process counts as COLLATERAL, never assumed benign', () => {
+      // Assuming-benign is the direction that would re-create the original silence.
+      const s = classifyCollateral([{ pid: 1, cmdline: '/usr/bin/something-nobody-anticipated --flag' }])!;
+      expect(s.other).toBe(1);
+      expect(s.collateral).toBe(1);
+      expect(s.own).toBe(0);
+    });
+
+    it('a cgroup holding ONLY the unit itself has no collateral (a benign restart)', () => {
+      const s = classifyCollateral([
+        { pid: 1, cmdline: 'npm exec tsx bin/hono-host.ts' },
+        { pid: 2, cmdline: 'esbuild --service=0.27.3' },
+      ])!;
+      expect(s.collateral).toBe(0);
+      expect(s.own).toBe(2);
+    });
+
+    it('empty/null input is UNKNOWN(null) — never a zeroed summary that reads as "nothing died"', () => {
+      expect(classifyCollateral([])).toBeNull();
+      expect(classifyCollateral(null)).toBeNull();
+      expect(classifyCollateral(undefined)).toBeNull();
+    });
+
+    it('bounds the other-process sample so the alert cannot grow unbounded', () => {
+      const many = Array.from({ length: 20 }, (_, i) => ({ pid: 1000 + i, cmdline: `/usr/bin/job-${i}` }));
+      const s = classifyCollateral(many)!;
+      expect(s.other).toBe(20);
+      expect(s.otherSample).toHaveLength(3);
+    });
+  });
+
+  describe('collateralAlertMessage', () => {
+    it('names the agent spawner and the desktop sidecars explicitly', () => {
+      const msg = collateralAlertMessage('papercup-bg-host', classifyCollateral(MEASURED), 'ticker frozen')!;
+      expect(msg).toContain('AGENT SPAWNER');
+      expect(msg).toContain('2 LIVE desktop-app sidecars');
+      expect(msg).toContain('KILLED 5 process(es)');
+      expect(msg).toContain('ticker frozen');
+      // Must not read as a misfire — the restart itself was correct; the collateral is the news.
+      expect(msg).toContain('NOT a restart-storm alert');
+    });
+
+    it('says NOTHING when the restart destroys only the unit itself', () => {
+      const benign = classifyCollateral([{ pid: 1, cmdline: 'npm exec tsx bin/hono-host.ts' }]);
+      expect(collateralAlertMessage('papercup-bg-host', benign, 'frozen')).toBeNull();
+    });
+
+    it('says NOTHING on an UNKNOWN snapshot — never infer destruction from a missing signal', () => {
+      expect(collateralAlertMessage('papercup-bg-host', null, 'frozen')).toBeNull();
+    });
+  });
+
+  describe('THE REGRESSION GUARD: collateral must not share the storm threshold', () => {
+    it('a FIRST restart reports collateral even though shouldAlert() is still false', () => {
+      // This is the exact defect. consecutiveRestarts === 1 after the first restart, and
+      // ALERT_AFTER_RESTARTS is 2, so the storm alert stays silent — as designed.
+      expect(shouldAlert(1)).toBe(false);
+      // ...but the collateral notice must fire regardless, or a lone restart kills the owner's
+      // desktop with no signal anywhere. Before this fix, nothing was emitted here at all.
+      expect(collateralAlertMessage('papercup-bg-host', classifyCollateral(MEASURED), 'frozen')).not.toBeNull();
+    });
+
+    it('CONTROL: a threshold-gated collateral signal would be silent here — proving the guard bites', () => {
+      // Deliberately-wrong implementation kept as a control: if collateral reporting were ever
+      // re-coupled to the storm counter, this is what the first restart would produce.
+      const wrong = (strikes: number) => (shouldAlert(strikes) ? collateralAlertMessage('u', classifyCollateral(MEASURED), 'r') : null);
+      expect(wrong(1)).toBeNull(); // the bug: silent on the case that actually happens
+      expect(wrong(2)).not.toBeNull();
+      // The shipped implementation is independent of the strike count entirely.
+      expect(collateralAlertMessage('u', classifyCollateral(MEASURED), 'r')).not.toBeNull();
+    });
+  });
+
+  /**
+   * The tests above exercise the pure functions. They would ALL still pass if someone deleted the call
+   * from `restart()` — so on their own they do not protect the behaviour, only the helpers. `restart()`
+   * cannot be imported (it is module-private and really shells out to `systemctl restart`), so this
+   * asserts the wiring at the source level, the same chokepoint approach as
+   * papercusp-desktop/test/tauri-dev-slot-chokepoint.test.js.
+   */
+  describe('WIRING: the restart path must actually emit collateral, ungated', () => {
+    let src: string;
+    let restartBody: string;
+    beforeAll(async () => {
+      const { readFileSync } = await import('node:fs');
+      const { fileURLToPath } = await import('node:url');
+      const { dirname, resolve } = await import('node:path');
+      // PROBE_SCRIPT lets scripts/mutation-probe.sh point this at a MUTATED COPY outside the tree, so
+      // falsifiability can be proven without ever mutating the shared working tree (git-sync would
+      // commit the mutant mid-probe).
+      const subject = process.env.PROBE_SCRIPT || resolve(dirname(fileURLToPath(import.meta.url)), '../bghost-watchdog.mjs');
+      src = readFileSync(subject, 'utf8');
+      // The restart() function body: from its declaration to the next top-level `async function`.
+      const start = src.indexOf('function restart(');
+      expect(start).toBeGreaterThan(-1);
+      restartBody = src.slice(start, src.indexOf('\nasync function poll(', start));
+      expect(restartBody.length).toBeGreaterThan(0);
+    });
+
+    it('restart() emits a collateral message', () => {
+      expect(restartBody).toContain('collateralAlertMessage(');
+    });
+
+    it('the collateral emit is NOT nested inside the shouldAlert() storm branch', () => {
+      // The whole defect was one signal gating the other. If a future edit moves the collateral emit
+      // inside `if (shouldAlert(...)) { ... }`, the ordinary one-restart case goes silent again.
+      const stormIdx = restartBody.indexOf('if (shouldAlert(');
+      const collateralIdx = restartBody.indexOf('collateralAlertMessage(');
+      expect(stormIdx).toBeGreaterThan(-1);
+      expect(collateralIdx).toBeGreaterThan(stormIdx); // after the storm block, not within it
+      const between = restartBody.slice(stormIdx, collateralIdx);
+      // The storm branch must be closed before the collateral emit begins.
+      expect(between).toMatch(/\n {2}}\n/);
+    });
+
+    it('the freeze path snapshots collateral BEFORE issuing the restart', () => {
+      // Reading the cgroup after `systemctl restart` returns nothing — the snapshot must precede it.
+      const pollBody = src.slice(src.indexOf('async function poll('));
+      const readIdx = pollBody.indexOf('await readCollateral(');
+      const restartCallIdx = pollBody.indexOf('restart(\n');
+      expect(readIdx).toBeGreaterThan(-1);
+      expect(restartCallIdx).toBeGreaterThan(readIdx);
+    });
+  });
+
+  describe('readCollateral — fail-soft on every fault (never breaks the restart path)', () => {
+    const okShow = async () => ({ err: null, stdout: '/user.slice/app.slice/papercup-bg-host.service\n' });
+
+    it('returns UNKNOWN(null) when systemctl cannot report the cgroup', async () => {
+      expect(await readCollateral({ sh: async () => ({ err: new Error('boom'), stdout: '' }) })).toBeNull();
+    });
+
+    it('returns UNKNOWN(null) when the ControlGroup value is empty/nonsense', async () => {
+      expect(await readCollateral({ sh: async () => ({ err: null, stdout: '\n' }) })).toBeNull();
+    });
+
+    it('returns UNKNOWN(null) when cgroup.procs is unreadable — never throws', async () => {
+      const res = await readCollateral({
+        sh: okShow,
+        readFile: () => {
+          throw new Error('EACCES');
+        },
+      });
+      expect(res).toBeNull();
+    });
+
+    it('skips a pid that exits mid-scan instead of failing the whole snapshot', async () => {
+      const res = await readCollateral({
+        sh: okShow,
+        readFile: (p: string) => {
+          if (p.endsWith('cgroup.procs')) return '100\n200\n';
+          if (p === '/proc/100/cmdline') return 'npm exec tsx /w/apps/operator/bin/spawner-sidecar.ts';
+          throw new Error('ESRCH'); // 200 vanished between the two reads
+        },
+      });
+      expect(res!.spawner).toBe(1);
+      expect(res!.total).toBe(1);
+    });
+
+    it('converts NUL-separated /proc cmdline into readable text', async () => {
+      const res = await readCollateral({
+        sh: okShow,
+        readFile: (p: string) => (p.endsWith('cgroup.procs') ? '100\n' : 'node\0/usr/lib/Papercusp GUI/serve.mjs\0'),
+      });
+      expect(res!.desktop).toBe(1);
+    });
+  });
+});

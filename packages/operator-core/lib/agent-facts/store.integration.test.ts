@@ -581,7 +581,27 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
       );
     }
 
-    // Age ONE incumbent: 29 days into a 34-day life ⇒ ~0.15 of its life left,
+    // Age the whole cohort to EIGHT HOURS old, keeping the declared TTL at 30
+    // days (both timestamps shift together). Without this the incumbents are
+    // SECONDS old and the test is genuinely flaky, for a reason worth stating:
+    // a 48-hour fact burns its declared share ~15× faster per wall-clock second
+    // than a 30-day one, so against seconds-old incumbents the sub-second delay
+    // between the write and the ranking query decides the verdict, and the same
+    // code returns rank 41 on one run and LAST on the next. Both were observed.
+    //
+    // Eight hours is the regime actually measured in production, and it gives
+    // the urgent write ~34 minutes of clear headroom — ample against a delay of
+    // milliseconds, so the assertions below are decided by the RANKING and not
+    // by how loaded the box was.
+    await db.sql`
+      UPDATE harness_shared.agent_facts
+         SET created_at = now() - interval '8 hours',
+             expires_at = now() + interval '30 days' - interval '8 hours'
+       WHERE workspace_id = ${WS} AND scope = 'owner'
+         AND scope_ref = ${scopeRef} AND key LIKE 'incumbent-%'
+         AND superseded_at IS NULL AND retracted_at IS NULL`;
+
+    // Age ONE incumbent much harder: 29 days into a 34-day life ⇒ ~0.15 left,
     // the worst in the scope. BOTH timestamps move, because backdating
     // created_at alone would LENGTHEN the declared TTL rather than consume it —
     // the fraction's denominator is (expires_at - created_at).
@@ -619,17 +639,18 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
     // in line, and the next assert by anyone destroyed it.
     expect(urgent.survival?.nextVictim).toBe(false);
 
-    // Deliberately NOT `rank === 1`, and the reason is a real property of the
-    // new key rather than a near-miss. A 48-hour fact consumes its declared
-    // life ~15× faster in wall-clock terms than a 30-day one, so the few
-    // seconds this fixture spends creating 50 incumbents already cost it more
-    // SHARE than they cost them; it lands mid-pack (measured 41/50). That is
-    // the mechanism by which a short-lived fact eventually yields its slot.
-    //
-    // The fixture exaggerates it: here the incumbents are SECONDS old. In the
-    // regime this models they are days old — the real 7-day fact sat against
-    // ~8h-old 30-day incumbents (~0.989 of their life left) holding ~0.99998 of
-    // its own, and outranked them outright.
+    // Against 8h-old incumbents (~0.989 of their life left) a freshly-written
+    // 48h fact holds ~0.99999, so it is the SAFEST row in the scope.
+    expect(urgent.survival?.rank).toBe(1);
+
+    // ⚠ Not a claim that a short-TTL fact now lives its full life. It does not:
+    // both rows age, and this one loses ground 15× faster, so it falls to last
+    // after ~34 minutes (solve t/172800 > (28800+t)/2592000). That is the fix
+    // working as designed rather than a residual bug — at that crossover both
+    // facts have spent ~1.19% of the life their authors declared, so they are
+    // genuinely comparable losses. The change is 15 SECONDS → ~34 minutes, and
+    // the removal of the TTL floor that made the scope structurally closed to
+    // short-lived facts; it is not immortality, and should not be sold as it.
     expect(urgent.survival!.rank).toBeLessThan(urgent.survival!.liveCount);
 
     // …and it survives the NEXT writer, which is what actually killed the real

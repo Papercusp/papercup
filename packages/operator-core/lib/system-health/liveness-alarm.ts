@@ -261,11 +261,66 @@ export interface BeesLivenessContext {
  * disabled must still be able to sit idle; the other-agents-alive proof carries it.
  */
 export function beesIdleByDesign(ctx: BeesLivenessContext): boolean {
-  if (ctx.cupPlaceableFrontier > 0) return false; // real cup work unplaced → starvation, not idle
-  if (ctx.restartRecovering) return false; // gateway restarting → capacity unproven
-  if (!ctx.otherAgentsAlive) return false; // spawner/engine not provably live
-  if (ctx.dispatchBudget !== null && ctx.dispatchBudget <= 0) return false; // cup tier KNOWN-full while 0 bees run → anomaly
-  return true; // 0 bees, no cup work, engine alive, capacity not known-exhausted → correct idle
+  return beesIdleDecision(ctx).leg === 'idle-by-design';
+}
+
+/** Which leg of {@link beesIdleDecision} decided the verdict. */
+export type BeesIdleLeg =
+  | 'cup-work-waiting'
+  | 'gateway-restart-recovering'
+  | 'no-other-agent-alive'
+  | 'dispatch-budget-exhausted'
+  | 'idle-by-design';
+
+/**
+ * EI-19474857043229377 — {@link beesIdleByDesign}'s verdict PLUS the leg that decided it.
+ *
+ * The boolean alone made every occurrence of this gate flipping undiagnosable after the
+ * fact. Diagnosing ONE burst window cost four wakes of elimination — each leg had to be
+ * re-measured live, and by then the window had closed and every leg read constant
+ * (measured 2026-08-04T01:5xZ: cupPlaceableFrontier 0 across 12 surveyPot samples with 0
+ * throws, gateway 60/60 reachable at p50 2ms with dispatchBudget pinned at 15/15,
+ * restartRecovering false on 47.6h uptime, otherAgentsAlive true on suLive 65 —
+ * `idleByDesign: true` in 6/6 fresh snapshots, ~1h45m AFTER the flap stopped at 00:14:32Z).
+ * Every leg is a transient runtime value that NOTHING persists, so a post-hoc reader has
+ * no way back to the moment: `system_health_ticks` stores panel STATUSES only, and
+ * `workFeedStatus` does not read `frontier`/`frontierStuck` at all, so the frontier can
+ * swing 0↔N with every panel status pinned — which is why "all panels constant across the
+ * burst" was NOT the exculpatory evidence it appeared to be.
+ *
+ * So the leg travels with the verdict, and {@link describeBeesLiveness} puts the raw
+ * numbers in the durable resolve note. The next occurrence names its own cause.
+ */
+export function beesIdleDecision(ctx: BeesLivenessContext): { idle: boolean; leg: BeesIdleLeg } {
+  // real cup work unplaced → starvation, not idle
+  if (ctx.cupPlaceableFrontier > 0) return { idle: false, leg: 'cup-work-waiting' };
+  // gateway restarting → capacity unproven
+  if (ctx.restartRecovering) return { idle: false, leg: 'gateway-restart-recovering' };
+  // spawner/engine not provably live
+  if (!ctx.otherAgentsAlive) return { idle: false, leg: 'no-other-agent-alive' };
+  // cup tier KNOWN-full while 0 bees run → anomaly
+  if (ctx.dispatchBudget !== null && ctx.dispatchBudget <= 0) {
+    return { idle: false, leg: 'dispatch-budget-exhausted' };
+  }
+  // 0 bees, no cup work, engine alive, capacity not known-exhausted → correct idle
+  return { idle: true, leg: 'idle-by-design' };
+}
+
+/**
+ * The gate's INPUTS as a durable one-liner — every leg, raw, plus the deciding leg.
+ *
+ * Written into the resolve note so a future reader can diff the values at fire time
+ * against the values at resolve time and read off which number moved, instead of
+ * re-deriving it by live elimination after the window has closed.
+ */
+export function describeBeesLiveness(ctx: BeesLivenessContext): string {
+  const { leg } = beesIdleDecision(ctx);
+  return (
+    `cupPlaceableFrontier=${ctx.cupPlaceableFrontier} ` +
+    `dispatchBudget=${ctx.dispatchBudget ?? 'unknown'} ` +
+    `restartRecovering=${ctx.restartRecovering} ` +
+    `otherAgentsAlive=${ctx.otherAgentsAlive} ⇒ ${leg}`
+  );
 }
 
 /**
@@ -755,12 +810,19 @@ export function resolveEvidenceFor(sig: string, health: SystemHealth): string {
   // observation honest is the same defect one level down.
   if (sig.startsWith('panel:')) {
     const key = sig.slice('panel:'.length);
+    // EI-19474857043229377: for `panel:bees` the panel status alone is NOT the whole
+    // observation. That signal is withheld by the `beesIdleByDesign` gate, so a resolve
+    // can be announcing the GATE flipping while the panel sits crit either side — which
+    // is exactly what 83 cycles in 24h were doing. Carry the gate's INPUTS too, so the
+    // deciding leg is readable from the durable log instead of by live re-measurement
+    // after the window has closed.
+    const gate = key === 'bees' && beesLiveness ? ` · gate: ${describeBeesLiveness(beesLiveness)}` : '';
     for (const p of Object.values(health.panels)) {
       if (!p || p.key !== key) continue;
-      return `observed panel ${key} status=${p.status}${p.error != null ? ' (panel ERRORED)' : ''}`;
+      return `observed panel ${key} status=${p.status}${p.error != null ? ' (panel ERRORED)' : ''}${gate}`;
     }
     // Absent ≠ clear — the panel we would have judged was not in the snapshot at all.
-    return `observed panel ${key} status=panel-absent`;
+    return `observed panel ${key} status=panel-absent${gate}`;
   }
   const wf = health.panels.workFeed;
   const d = wf?.data ?? null;

@@ -1,9 +1,45 @@
 import { describe, it, expect } from 'vitest';
+import { execFileSync } from 'node:child_process';
+import { existsSync, mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 import {
   resolveSentinelConfig,
   startEventLoopSentinel,
   SENTINEL_DEFAULTS,
 } from './event-loop-sentinel-host';
+
+/**
+ * esbuild the real worker to a standalone `.mjs` — the SAME artifact
+ * `bundle-host.sh` ships to the bundled host. Returns null (test skips) if the
+ * local esbuild binary is absent, so this never fails for an environment
+ * reason. ~20ms in practice.
+ */
+function buildWorkerMjs(footer?: string): string | null {
+  const repoRoot = resolve(__dirname, '../../..');
+  const esbuild = join(repoRoot, 'node_modules/.bin/esbuild');
+  const src = resolve(__dirname, 'event-loop-sentinel.worker.ts');
+  if (!existsSync(esbuild) || !existsSync(src)) return null;
+  const out = join(mkdtempSync(join(tmpdir(), 'sentinel-worker-')), 'w.mjs');
+  try {
+    execFileSync(
+      esbuild,
+      [
+        src,
+        '--bundle',
+        '--platform=node',
+        '--format=esm',
+        '--target=node22',
+        `--outfile=${out}`,
+        ...(footer ? [`--footer:js=${footer}`] : []),
+      ],
+      { stdio: 'pipe' },
+    );
+  } catch {
+    return null;
+  }
+  return existsSync(out) ? out : null;
+}
 
 describe('resolveSentinelConfig', () => {
   it('is ARMED by default — a detector that ships disabled is never turned on', () => {
@@ -118,6 +154,33 @@ describe('startEventLoopSentinel', () => {
       expect(h.active()).toBe(true);
       await new Promise((r) => setTimeout(r, 1_500));
       expect(h.workerAlive()).toBe(true);
+    } finally {
+      await h.stop();
+    }
+  }, 30_000);
+
+  it('CONTROL: re-introducing the unref bug DOES trip the regression test above', async () => {
+    // A guard that has never failed is a guard nobody has tested. Rebuild the
+    // worker with the exact defect restored — `timer.unref()` at module scope,
+    // injected via esbuild's --footer — and assert workerAlive() goes false.
+    // Without this, the test above would still pass if workerAlive() were
+    // hard-wired to true, or if the worker never spawned at all.
+    //
+    // The mutation is applied to a BUILT COPY in a temp dir, never to the tree:
+    // git-sync sweeps the whole working tree every few minutes, so a source
+    // file held mutated for the duration of a test can be committed by a sweep
+    // that lands mid-run (CLAUDE.md, "Proving a guard is falsifiable").
+    const mutant = buildWorkerMjs('timer.unref?.();');
+    if (!mutant) return;
+
+    const h = startEventLoopSentinel({
+      env: { PAPERCUSP_EVENT_LOOP_SENTINEL: 'observe' },
+      log: () => {},
+      workerPath: mutant,
+    });
+    try {
+      await new Promise((r) => setTimeout(r, 1_500));
+      expect(h.workerAlive()).toBe(false);
     } finally {
       await h.stop();
     }

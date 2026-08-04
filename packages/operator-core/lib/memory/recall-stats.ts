@@ -20,6 +20,9 @@
 import type { Sql } from 'postgres';
 import { parseEnvelope, payloadSha256 } from '../turn-provenance/turn-provenance';
 import type { MemoryEntry, ScoreScale, SearchLegStats } from './backend';
+// The funnel's leg-attribution shape lives with the GATES (recall-admission),
+// not with the telemetry writer — see `admittedByLeg` there for why.
+import type { AdmittedByLeg } from './recall-admission';
 
 /**
  * Upper bound of an RRF score at the PRODUCTION fusion defaults
@@ -193,21 +196,6 @@ export const ADMISSION_STAGES: readonly AdmissionStage[] = [
 ];
 
 /**
- * Which LEG produced the lines that were actually DELIVERED.
- *
- * Counted over admitted entries only — that is the whole point. A leg's
- * candidate count says what it offered; this says what survived. A leg that
- * keeps offering candidates and never lands one is contributing nothing, and no
- * pre-filter count can show that (measured live: the lexical leg conferring an
- * RRF bonus on 108 hits, none of which was a real match).
- */
-export interface AdmittedByLeg {
-  cosineOnly: number;
-  lexicalOnly: number;
-  both: number;
-}
-
-/**
  * The admission funnel for one push-path recall — what the index returned
  * against what actually reached the agent, and where the rest went.
  */
@@ -225,28 +213,6 @@ export interface RecallAdmissionStats {
    */
   dropped: Record<AdmissionStage, number>;
   byLeg: AdmittedByLeg;
-}
-
-/**
- * Attribute ADMITTED entries to the leg(s) that produced them.
- *
- * Reads `MemoryEntry.retrieval`, stamped by `fuse()`. An entry with no
- * provenance (a single-leg backend, a hand-built test double) counts in no
- * bucket rather than being guessed into one — the buckets are then honestly
- * short of `admitted`, which is recoverable, whereas a wrong attribution is not.
- */
-export function admittedByLeg(entries: readonly MemoryEntry[]): AdmittedByLeg {
-  const out: AdmittedByLeg = { cosineOnly: 0, lexicalOnly: 0, both: 0 };
-  for (const e of entries) {
-    const r = e.retrieval;
-    if (!r) continue;
-    const cos = typeof r.cosineRank === 'number';
-    const lex = typeof r.lexicalRank === 'number';
-    if (cos && lex) out.both += 1;
-    else if (cos) out.cosineOnly += 1;
-    else if (lex) out.lexicalOnly += 1;
-  }
-  return out;
 }
 
 interface RecallStatsCommon {

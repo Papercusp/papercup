@@ -69,7 +69,16 @@ Starlight default is `format: 'directory'` which emits `dist/<slug>/index.html`.
 
 ### 3. Postbuild copy is in `apps/operator-docs/package.json`
 
-The build script is `"build": "npm run clean:preview && astro build && tsx scripts/emit-md-twins.ts && bash scripts/postbuild-copy.sh"`. If you run `astro build` directly (or just `npx astro build`), the preview-dir cleanup, the `.md`-twin emit, and the static copy steps are all skipped and the host will serve stale content (and lose the `Accept: text/markdown` twins). Always run `npm run build` from `apps/operator-docs/`.
+The four-step chain is now `build:inner`, and `build` wraps it in a **singleflight lock**:
+
+```jsonc
+"build":       "bash scripts/docs-build-singleflight",
+"build:inner": "npm run clean:preview && astro build && tsx scripts/emit-md-twins.ts && bash scripts/postbuild-copy.sh",
+```
+
+If you run `astro build` directly (or just `npx astro build`), the preview-dir cleanup, the `.md`-twin emit, and the static copy steps are all skipped and the host will serve stale content (and lose the `Accept: text/markdown` twins). **Always run `npm run build` from `apps/operator-docs/`** — never `build:inner` directly.
+
+The wrapper exists because `astro build` writes `dist/` + `dist/.prerender` **in the shared checkout**, so two concurrent builds clobber each other (WI-1998). It coalesces: a build requested while another is running does not start a second one, because `postbuild-copy.sh` publishes atomically and the queued caller's content is already published by the in-flight run. This makes the "always run `npm run build`" rule *more* load-bearing than when this page was written — the lock only protects the path that goes through it.
 
 ### 4. Both fumadocs setups were removed
 
@@ -90,7 +99,13 @@ Import path: `import { Aside } from '@astrojs/starlight/components';`
 
 ## Performance
 
-A full `astro build` of the 129-page site completes in ~21s, with
+⚠ **The build-time figures below are from 2026-05-20 and are stale — do not quote
+them as current.** The site was 129 pages then; as of 2026-08-04 the source tree
+holds **842** (829 `.mdx` + 13 `.md`), a ~6.5× growth, so the wall-clock numbers
+have certainly moved. They are kept only as the migration-era baseline. (No
+re-measurement was taken with this update — measure it yourself before citing one.)
+
+A full `astro build` of the 129-page site completed in ~21s, with
 Pagefind search indexing adding ~0.5s. The output is plain static HTML:
 the operator serves it straight from `public/internal/docs/`, so there
 is **no runtime docs cost** — no second Node process, and no per-request

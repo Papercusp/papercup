@@ -30,7 +30,7 @@ import { getMemoryBackend, type MemoryEntry, type SearchLegStats } from './backe
 // Type-only: erased at build, so `recall-stats` stays a dynamic import on the
 // telemetry path (see the writer below) rather than being pulled in eagerly.
 import type { RecallAdmissionStats } from './recall-stats';
-import { collapseNearDuplicates } from './recall-admission';
+import { admittedByLeg, collapseNearDuplicates } from './recall-admission';
 import { isMemoryWorkspaceScopedRecallOn, keepUserPoolHitForWorkspace } from './workspace-scope-recall';
 import { bumpLastSurfacedSql, recentlySurfacedIds } from './bump-last-surfaced';
 import {
@@ -965,12 +965,7 @@ async function buildBlockInner(
     void (async () => {
       try {
         const { sql } = getOrgPg();
-        const { recordRecallStats, admittedByLeg } = await import('./recall-stats');
-        // Attributed HERE rather than in the main flow so `recall-stats` stays
-        // dynamically imported — it is pulled in on the telemetry path only, and
-        // a static import for one helper would load it (and turn-provenance) on
-        // every injection whether or not a row is ever written.
-        funnel.byLeg = admittedByLeg(admittedEntries);
+        const { recordRecallStats } = await import('./recall-stats');
         // P-005: tag the recall with its injection PORT so per-entry-point
         // recall quality is measurable separately. session.port carries the
         // port for every launch/injection surface (initialize / compact /
@@ -1278,6 +1273,9 @@ async function buildBlockInner(
   // report a block that delivered nothing as having delivered one.
   funnel.admitted = admittedEntries.length;
   funnel.truncated = truncated;
+  // Attributed on the STATIC path, deliberately — never inside the deferred
+  // writer, whose failures are swallowed (see `admittedByLeg`'s note).
+  funnel.byLeg = admittedByLeg(admittedEntries);
   if (lines.length === 0) return null;
   if (truncated) {
     lines.push('- (more learnings withheld this turn — the memory budget is full; memory:search pulls the rest on demand)');

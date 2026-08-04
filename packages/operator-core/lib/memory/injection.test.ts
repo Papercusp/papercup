@@ -532,6 +532,167 @@ describe('push-path recall telemetry is recorded PER POOL (P-026)', () => {
       potSlug: 'papercusp',
     });
   });
+
+  /**
+   * P-002 / migration 758 — the ADMISSION FUNNEL.
+   *
+   * The row is assembled from what the INDEX returned, and six filter stages sit
+   * between that and what the agent receives. Before this, nothing recorded the
+   * delivered end at all, so "12 hits" and "delivered 2 lines" were the same row.
+   */
+  describe('records the admission funnel, not just what the index returned', () => {
+    it('separates what came back from what was DELIVERED, and says where the rest went', async () => {
+      // Three distinct entries, a budget that fits roughly one line.
+      useBackend(
+        mockBackend([
+          { id: 'm1', text: 'alpha alpha alpha alpha alpha alpha alpha alpha' },
+          { id: 'm2', text: 'bravo bravo bravo bravo bravo bravo bravo bravo' },
+          { id: 'm3', text: 'charlie charlie charlie charlie charlie charlie' },
+        ]),
+      );
+      await buildMemoryContextBlock({
+        userId: 'u1',
+        workspaceId: 'ws',
+        queryContext: 'why is the recall empty',
+        harnessSlugs: ['papercusp'],
+        hiveSlugs: [],
+        budgetChars: 60,
+      });
+      await flush();
+
+      const { admission } = recordRecallStatsMock.mock.calls[0]![1] as {
+        admission: { returned: number; admitted: number; truncated: boolean; dropped: Record<string, number> };
+      };
+      // The whole point: returned and admitted DIVERGE...
+      expect(admission.returned).toBeGreaterThan(0);
+      expect(admission.admitted).toBeLessThan(admission.returned);
+      expect(admission.truncated).toBe(true);
+      expect(admission.dropped.budget).toBeGreaterThan(0);
+      // ...and the funnel ACCOUNTS FOR THE GAP — every returned row is either
+      // admitted or attributed to the stage that dropped it. This is the
+      // invariant, not any particular count: a stage added later that forgets to
+      // record its drops breaks this sum, which is exactly when we want to know.
+      const totalDropped = Object.values(admission.dropped).reduce((a, b) => a + b, 0);
+      expect(admission.admitted + totalDropped).toBe(admission.returned);
+    });
+
+    it('records EVERY stage even at zero — a filter that ran and removed nothing is not a filter that never ran', async () => {
+      useBackend(mockBackend([{ id: 'm1', text: 'alpha' }]));
+      await buildMemoryContextBlock({
+        userId: 'u1',
+        workspaceId: 'ws',
+        queryContext: 'why is the recall empty',
+        harnessSlugs: ['papercusp'],
+        hiveSlugs: [],
+      });
+      await flush();
+      const { admission } = recordRecallStatsMock.mock.calls[0]![1] as {
+        admission: { dropped: Record<string, number>; admitted: number };
+      };
+      expect(Object.keys(admission.dropped).sort()).toEqual([
+        'budget',
+        'dedup',
+        'feedback',
+        'nearDuplicate',
+        'pack',
+        'workspace',
+      ]);
+      expect(admission.admitted).toBe(1);
+    });
+
+    it('attributes ADMITTED lines to the leg that produced them', async () => {
+      // Provenance rides on the entry (stamped by fuse()); the funnel counts it
+      // over the DELIVERED set, which is the only set that says a leg is earning
+      // its place rather than merely offering candidates.
+      useBackend(
+        mockBackend([
+          { id: 'm1', text: 'alpha', retrieval: { cosineRank: 1 } },
+          { id: 'm2', text: 'bravo', retrieval: { cosineRank: 2, lexicalRank: 1 } },
+          { id: 'm3', text: 'charlie', retrieval: { lexicalRank: 2 } },
+        ] as never),
+      );
+      await buildMemoryContextBlock({
+        userId: 'u1',
+        workspaceId: 'ws',
+        queryContext: 'why is the recall empty',
+        harnessSlugs: ['papercusp'],
+        hiveSlugs: [],
+      });
+      await flush();
+      const { admission } = recordRecallStatsMock.mock.calls[0]![1] as {
+        admission: { byLeg: Record<string, number> };
+      };
+      expect(admission.byLeg).toEqual({ cosineOnly: 1, lexicalOnly: 1, both: 1 });
+    });
+
+    it('still writes a row when the block is EMPTY — the zero-hit rate is the signal', async () => {
+      // The write moved into a `finally` precisely so the several early-return
+      // paths keep recording. A recall that delivers nothing is the single most
+      // important row in this table; dropping it would make the index look
+      // healthiest exactly when it is worst.
+      useBackend(mockBackend([]));
+      const block = await buildMemoryContextBlock({
+        userId: 'u1',
+        workspaceId: 'ws',
+        queryContext: 'why is the recall empty',
+        harnessSlugs: ['papercusp'],
+        hiveSlugs: [],
+      });
+      await flush();
+      expect(block).toBeNull();
+      expect(recordRecallStatsMock).toHaveBeenCalledTimes(1);
+      expect(recordRecallStatsMock.mock.calls[0]![1]).toMatchObject({
+        admission: { returned: 0, admitted: 0 },
+      });
+    });
+
+    it('writes EXACTLY ONE row per recall', async () => {
+      useBackend(mockBackend([{ id: 'm1', text: 'alpha' }]));
+      await buildMemoryContextBlock({
+        userId: 'u1',
+        workspaceId: 'ws',
+        queryContext: 'why is the recall empty',
+        harnessSlugs: ['papercusp'],
+        hiveSlugs: [],
+      });
+      await flush();
+      expect(recordRecallStatsMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps hit_count/pools meaning WHAT THE INDEX RETURNED, not what survived', async () => {
+      // Recurrence guard for the trap the deferred write created: the three pool
+      // variables are REASSIGNED by the filters, so reading them live at write
+      // time would silently redefine three existing columns — changing every
+      // historical comparison without touching a query. Budget-drop two of three
+      // and assert the pools still report all three.
+      useBackend(
+        mockBackend([
+          { id: 'm1', text: 'alpha alpha alpha alpha alpha alpha alpha alpha' },
+          { id: 'm2', text: 'bravo bravo bravo bravo bravo bravo bravo bravo' },
+          { id: 'm3', text: 'charlie charlie charlie charlie charlie charlie' },
+        ]),
+      );
+      await buildMemoryContextBlock({
+        userId: 'u1',
+        workspaceId: 'ws',
+        queryContext: 'why is the recall empty',
+        harnessSlugs: ['papercusp'],
+        hiveSlugs: [],
+        budgetChars: 60,
+      });
+      await flush();
+      const input = recordRecallStatsMock.mock.calls[0]![1] as {
+        pools: Record<string, { entries: unknown[] }>;
+        admission: { admitted: number };
+      };
+      const pooled =
+        input.pools.user!.entries.length +
+        input.pools.harness!.entries.length +
+        input.pools.hive!.entries.length;
+      expect(pooled).toBe(3); // pre-filter, unchanged meaning
+      expect(input.admission.admitted).toBeLessThan(pooled); // post-filter, the new measurement
+    });
+  });
 });
 
 /**
@@ -759,6 +920,11 @@ describe('buildMemoryContextBlock', () => {
           minLexScore: MEMORY_INJECTION_LEX_FLOOR,
           fusionMode: 'cosine-gated',
           diversify: { lambda: 0.7 },
+          // P-002: the leg-provenance reporting seam. Asserted as a FUNCTION
+          // rather than dropped from the shape — this stays an exact-shape
+          // assertion, so an option added here in future still has to be
+          // declared deliberately instead of slipping in unnoticed.
+          onLegStats: expect.any(Function),
         },
       ],
     ]);
@@ -837,6 +1003,11 @@ describe('buildMemoryContextBlock', () => {
           minLexScore: MEMORY_INJECTION_LEX_FLOOR,
           fusionMode: 'cosine-gated',
           diversify: { lambda: 0.7 },
+          // P-002: the leg-provenance reporting seam. Asserted as a FUNCTION
+          // rather than dropped from the shape — this stays an exact-shape
+          // assertion, so an option added here in future still has to be
+          // declared deliberately instead of slipping in unnoticed.
+          onLegStats: expect.any(Function),
         },
       ],
     ]);

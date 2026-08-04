@@ -33,6 +33,56 @@ import type { GateDecision } from '../gates/decision';
  * neither is guaranteed. The gates below typeof-CHECK before they compare — a hit with a
  * non-numeric score must FAIL OPEN (admitted), never be silently floored on a bad cast.
  */
+/**
+ * Which LEG produced the lines that were actually ADMITTED — P-002.
+ *
+ * Lives in THIS module, beside the gates, for the reason the header states: a
+ * gate's decision is not an event, so "what the leg offered" and "what the leg
+ * landed" are different measurements and only the second is about delivery. A
+ * leg can supply candidates on every call and never land one — measured live on
+ * the lexical leg (108 hits conferring an RRF bonus, not one a real match), and
+ * invisible to any count taken before the gates.
+ */
+export interface AdmittedByLeg {
+  cosineOnly: number;
+  lexicalOnly: number;
+  both: number;
+}
+
+/**
+ * Attribute ADMITTED entries to the leg(s) that produced them, reading the
+ * `retrieval` provenance `fuse()` stamps on each entry.
+ *
+ * ⚠ Deliberately kept OUT of `recall-stats.ts`. The telemetry writer is reached
+ * by a dynamic `import()` on a fire-and-forget path whose failures are swallowed
+ * — so a helper living there and coming back undefined (a partial module mock, a
+ * bad refactor) throws INSIDE that swallow and silently disables the whole
+ * telemetry write, with no error anywhere. That is not hypothetical: it is
+ * exactly what happened while building P-002, and it presented as seven
+ * assertion failures rather than as the missing-telemetry bug it was. A pure
+ * helper on the statically-imported path cannot fail that way.
+ *
+ * An entry with no provenance (a single-leg backend, a hand-built test double)
+ * counts in NO bucket rather than being guessed into one — the buckets are then
+ * honestly short of `admitted`, which a reader can detect and act on, whereas a
+ * wrong attribution is indistinguishable from a real one.
+ */
+export function admittedByLeg(
+  entries: readonly { retrieval?: { cosineRank?: number; lexicalRank?: number } }[],
+): AdmittedByLeg {
+  const out: AdmittedByLeg = { cosineOnly: 0, lexicalOnly: 0, both: 0 };
+  for (const e of entries) {
+    const r = e.retrieval;
+    if (!r) continue;
+    const cos = typeof r.cosineRank === 'number';
+    const lex = typeof r.lexicalRank === 'number';
+    if (cos && lex) out.both += 1;
+    else if (cos) out.cosineOnly += 1;
+    else if (lex) out.lexicalOnly += 1;
+  }
+  return out;
+}
+
 export interface AdmissibleHit {
   id?: unknown;
   memory?: string;

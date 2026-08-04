@@ -1511,9 +1511,14 @@ describe('fleet scope assignment admission (P-016)', () => {
         violation,
         'work_items:claim WI-5700 → su-member',
       );
-      expect(result).toEqual({ liveRouteTarget: false });
+      // EI-19484346966003625 (R1): `classRefusal` is null because no `harness` was passed —
+      // the class reading is opt-in per call site, so a caller that cannot name a harness
+      // gets exactly the pre-change behaviour rather than a partial or guessed diagnosis.
+      // Kept as an EXACT shape assertion on purpose: it is what caught this field's arrival.
+      expect(result).toEqual({ liveRouteTarget: false, classRefusal: null });
       const payload = admissionMocks.sendMessage.mock.calls[0]?.[1] as { body: string };
       expect(payload.body).toMatch(/Do NOT rely on "route the work elsewhere"/);
+      expect(payload.body).not.toContain('CLASS REFUSAL');
     });
 
     it('notifyFleetScopeRefusal skips the liveness lookup entirely for a fleet_winding_down refusal', async () => {
@@ -1523,7 +1528,10 @@ describe('fleet scope assignment admission (P-016)', () => {
         reason: 'fleet \'p2p-release-verify\' is winding-down (paused)',
       };
       const result = await notifyFleetScopeRefusal({ ownerId: 'su-member' } as never, paused, 'work_items:claim WI-5700 → su-member');
-      expect(result).toEqual({ liveRouteTarget: null });
+      // EI-19484346966003625 (R1): a PAUSED fleet skips the class reading too, and for the
+      // same reason it skips the liveness lookup — its remedy is "stand down", so a class
+      // diagnosis could only ever argue for a spec widen the member must not act on.
+      expect(result).toEqual({ liveRouteTarget: null, classRefusal: null });
       expect(admissionMocks.listFleetAssignments).not.toHaveBeenCalled();
     });
   });
