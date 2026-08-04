@@ -498,9 +498,16 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
     const scopeRef = 'su-survival-prediction';
     const base = { scope: 'owner' as const, scopeRef, createdBy: 'su-int', workspaceId: WS };
 
-    // Same live shape as WI-7292 above: saturated, every incumbent verified and
-    // long-lived, so confidence is inert and `expires_at DESC` decides alone —
-    // which is the ONLY configuration measured in production.
+    // Saturated with long-lived `verified` incumbents.
+    //
+    // ⚠ This fixture changed with EI-19483432832662150. It used to make the
+    // doomed row a SHORT-TTL write, because key 2 was `expires_at DESC`. Key 2
+    // is now the remaining SHARE of declared TTL, and a fresh write always
+    // scores ~1.0 — the maximum — so a new row can no longer be pushed last by
+    // its TTL at all. The determinate last-place write is now one whose
+    // CONFIDENCE ranks below the incumbents, which is what this pin needs: a
+    // predictable victim, so "the row we named must be the row that dies" stays
+    // a real assertion rather than a coin flip.
     for (let i = 0; i < FACTS_PER_SCOPE_CAP; i++) {
       await assertFact(
         { ...base, key: `incumbent-${i}`, body: `n ${i}`, confidence: 'verified', ttlSec: 30 * 86400 },
@@ -508,10 +515,9 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
       );
     }
 
-    // The doomed write: 48h into a scope of 30-day incumbents. WI-7292 lets it
-    // IN — and until now nothing told its author it was already last in line.
+    // The doomed write: a 'suspected' hedge in a scope of 'verified' findings.
     const doomed = await assertFact(
-      { ...base, key: 'doomed', body: 'urgent + short-lived', confidence: 'verified', ttlSec: 48 * 3600 },
+      { ...base, key: 'doomed', body: 'a hedge among findings', confidence: 'suspected', ttlSec: 30 * 86400 },
       db.sql,
     );
 
@@ -524,12 +530,12 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
     expect(doomed.survival?.nextVictim).toBe(true);
     expect(doomed.survival?.rank).toBe(FACTS_PER_SCOPE_CAP);
     expect(doomed.survival?.liveCount).toBe(FACTS_PER_SCOPE_CAP);
-    // It names the BAR this TTL failed to clear, not a general aphorism about
-    // short TTLs — the caller can act on a timestamp, not on advice.
-    expect(doomed.survival?.survivingTtlFloor).toBeTruthy();
-    expect(new Date(doomed.survival!.survivingTtlFloor!).getTime()).toBeGreaterThan(
-      new Date(doomed.expiresAt).getTime(),
-    );
+    // It names the BAR this write failed to clear, in key 2's own units — a
+    // share of declared life, not an absolute expiry. A fresh incumbent has
+    // spent almost none of its TTL, so the bar sits just under 1.
+    expect(doomed.survival?.survivingFractionFloor).not.toBeNull();
+    expect(doomed.survival!.survivingFractionFloor!).toBeGreaterThan(0);
+    expect(doomed.survival!.survivingFractionFloor!).toBeLessThanOrEqual(1);
 
     // ── THE PIN ────────────────────────────────────────────────────────────
     // A prediction is only worth printing if it comes true, and the JS ordering
@@ -559,6 +565,96 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
     expect(live.map((f) => f.key)).not.toContain('doomed');
   });
 
+  it('EI-19483432832662150: an urgent SHORT-TTL fact is no longer doomed on arrival — the most-ELAPSED incumbent dies instead', async () => {
+    const scopeRef = 'su-short-ttl-survives';
+    const base = { scope: 'owner' as const, scopeRef, createdBy: 'su-int', workspaceId: WS };
+
+    // Measured on the live scope 2026-08-04T01:19Z: an urgent 7-day operational
+    // fact (a dev:restart blast-radius hazard) was evicted FIFTEEN SECONDS after
+    // it was written, by the next agent's unrelated assert, because the pool was
+    // full of incumbents holding later ABSOLUTE expiries. The scope's survival
+    // floor had ratcheted to ~30 days, so nothing shorter could live in it.
+    for (let i = 0; i < FACTS_PER_SCOPE_CAP; i++) {
+      await assertFact(
+        { ...base, key: `incumbent-${i}`, body: `n ${i}`, confidence: 'verified', ttlSec: 30 * 86400 },
+        db.sql,
+      );
+    }
+
+    // Age ONE incumbent: 29 days into a 34-day life ⇒ ~0.15 of its life left,
+    // the worst in the scope. BOTH timestamps move, because backdating
+    // created_at alone would LENGTHEN the declared TTL rather than consume it —
+    // the fraction's denominator is (expires_at - created_at).
+    //
+    // Its absolute expiry (5 days out) is deliberately LATER than the urgent
+    // write below (2 days). That is what makes this fixture DISCRIMINATE:
+    //   • under the old `expires_at DESC`, the urgent write is last and dies;
+    //   • under the fraction, it ranks top and this aged row dies instead.
+    // Without that inversion the test would pass against the very bug it guards.
+    await db.sql`
+      UPDATE harness_shared.agent_facts
+         SET created_at = now() - interval '29 days',
+             expires_at = now() + interval '5 days'
+       WHERE workspace_id = ${WS} AND scope = 'owner'
+         AND scope_ref = ${scopeRef} AND key = 'incumbent-0'
+         AND superseded_at IS NULL AND retracted_at IS NULL`;
+
+    const urgent = await assertFact(
+      {
+        ...base,
+        key: 'urgent-48h',
+        body: 'a live hazard, true for about two days',
+        confidence: 'verified',
+        ttlSec: 48 * 3600,
+      },
+      db.sql,
+    );
+
+    // Non-vacuity: the cap BIT, so every verdict below came from a ranking that
+    // actually ran — and it took the most-elapsed row, not the shortest-lived.
+    expect(urgent.evicted?.map((e) => e.key)).toEqual(['incumbent-0']);
+
+    // ── THE REGRESSION ASSERTION ───────────────────────────────────────────
+    // This was `true` under `expires_at DESC`: the write arrived already last
+    // in line, and the next assert by anyone destroyed it.
+    expect(urgent.survival?.nextVictim).toBe(false);
+
+    // Deliberately NOT `rank === 1`, and the reason is a real property of the
+    // new key rather than a near-miss. A 48-hour fact consumes its declared
+    // life ~15× faster in wall-clock terms than a 30-day one, so the few
+    // seconds this fixture spends creating 50 incumbents already cost it more
+    // SHARE than they cost them; it lands mid-pack (measured 41/50). That is
+    // the mechanism by which a short-lived fact eventually yields its slot.
+    //
+    // The fixture exaggerates it: here the incumbents are SECONDS old. In the
+    // regime this models they are days old — the real 7-day fact sat against
+    // ~8h-old 30-day incumbents (~0.989 of their life left) holding ~0.99998 of
+    // its own, and outranked them outright.
+    expect(urgent.survival!.rank).toBeLessThan(urgent.survival!.liveCount);
+
+    // …and it survives the NEXT writer, which is what actually killed the real
+    // one. WI-7292 only ever exempted a row from its OWN assert.
+    const later = await assertFact(
+      {
+        ...base,
+        createdBy: 'su-other-writer',
+        key: 'a-later-write',
+        body: 'by someone else entirely',
+        confidence: 'verified',
+        ttlSec: 30 * 86400,
+      },
+      db.sql,
+    );
+    expect(later.evicted?.map((e) => e.key)).not.toContain('urgent-48h');
+
+    const stillLive = await foldFacts(
+      [{ scope: 'owner', scopeRef }],
+      { workspaceId: WS, audiences: 'all', limitPerSelector: 500 },
+      db.sql,
+    );
+    expect(stillLive.map((f) => f.key)).toContain('urgent-48h');
+  });
+
   it('EI-19451909636567773: a write that lands mid-ranking is NOT alarmed — a warning that always fires is one nobody reads', async () => {
     const scopeRef = 'su-survival-quiet';
     const base = { scope: 'owner' as const, scopeRef, createdBy: 'su-int', workspaceId: WS };
@@ -583,9 +679,9 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
     expect(safe.survival).toBeDefined();
     expect(safe.survival?.nextVictim).toBe(false);
     expect(safe.survival?.rank).toBe(1);
-    // Nothing ranks above it, so there is no TTL bar to report — and reporting
-    // one anyway would imply a threat that does not exist.
-    expect(safe.survival?.survivingTtlFloor).toBeNull();
+    // Nothing ranks above it, so there is no bar to report — and reporting one
+    // anyway would imply a threat that does not exist.
+    expect(safe.survival?.survivingFractionFloor).toBeNull();
   });
 
   it('WI-6935 (b): a cap eviction is distinguishable from a deliberate retract via evicted_at', async () => {

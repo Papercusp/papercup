@@ -427,7 +427,21 @@ describe('pool budgets are a single shared ceiling, not per-pool quotas (P-033 /
  */
 describe('push-path recall telemetry is recorded PER POOL (P-026)', () => {
   /** Flush the fire-and-forget telemetry task (dynamic import + insert). */
-  const flush = async (): Promise<void> => { for (let i = 0; i < 5; i++) await Promise.resolve(); };
+  // Let the FIRE-AND-FORGET telemetry write land. It is `void`-ed on purpose, so
+  // there is nothing to await — the test has to yield until it completes.
+  //
+  // ⚠ MACROTASK turns, not `Promise.resolve()` microtasks. The writer does
+  // `await import('./recall-stats')`, and a dynamic import does not settle by
+  // spinning the microtask queue however many times you spin it. The old
+  // 5-microtask version passed only because the write was START­ED early in
+  // buildMemoryContextBlock and had the whole filter chain's awaits to resolve
+  // in — i.e. it was coupled to WHERE the call sat in the function, not to the
+  // work it does. P-002 moved that write into a `finally` (so every exit path
+  // records exactly one row) and the coupling surfaced as 7 failures that look
+  // like assertion breaks and are really a hidden timing dependency.
+  const flush = async (): Promise<void> => {
+    for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
+  };
 
   it('passes a per-pool breakdown, never a flat entries list', async () => {
     useBackend(mockBackend([{ id: 'm1', text: 'alpha' }]));
@@ -533,7 +547,21 @@ describe('push-path recall telemetry is recorded PER POOL (P-026)', () => {
  * and silently stringifies an object into "[object Object]" in others.
  */
 describe('the injection seam accepts a structured recall query (P-042 / F-J)', () => {
-  const flush = async (): Promise<void> => { for (let i = 0; i < 5; i++) await Promise.resolve(); };
+  // Let the FIRE-AND-FORGET telemetry write land. It is `void`-ed on purpose, so
+  // there is nothing to await — the test has to yield until it completes.
+  //
+  // ⚠ MACROTASK turns, not `Promise.resolve()` microtasks. The writer does
+  // `await import('./recall-stats')`, and a dynamic import does not settle by
+  // spinning the microtask queue however many times you spin it. The old
+  // 5-microtask version passed only because the write was START­ED early in
+  // buildMemoryContextBlock and had the whole filter chain's awaits to resolve
+  // in — i.e. it was coupled to WHERE the call sat in the function, not to the
+  // work it does. P-002 moved that write into a `finally` (so every exit path
+  // records exactly one row) and the coupling surfaced as 7 failures that look
+  // like assertion breaks and are really a hidden timing dependency.
+  const flush = async (): Promise<void> => {
+    for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
+  };
 
   it('issues the SAME index query for a string and its structured equivalent', async () => {
     const asString = mockBackend([{ id: 'm1', text: 'alpha' }]);

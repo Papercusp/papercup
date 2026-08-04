@@ -512,12 +512,16 @@ export default defineTool({
                       ? `⚠ THIS FACT IS NEXT. It ranked LAST (${survival.rank} of ` +
                         `${survival.liveCount}) in this scope, so the next assert here by ANY ` +
                         `agent evicts it — regardless of the future expiresAt above. ` +
-                        (survival.survivingTtlFloor
-                          ? `Your TTL is what put it last: the fact ranked just above yours runs ` +
-                            `to ${survival.survivingTtlFloor}. Re-assert with a TTL beyond that ` +
-                            `to survive, `
-                          : `Re-assert with a longer TTL to survive, `) +
-                        `or write it somewhere durable instead (a work-item checkpoint / an ` +
+                        `A LONGER TTL WILL NOT SAVE IT (EI-19483432832662150): ranking is by the ` +
+                        `remaining SHARE of the TTL you declared, and a fresh write already scores ` +
+                        `~1.0, the maximum that key can produce` +
+                        (survival.survivingFractionFloor !== null
+                          ? `, against ${survival.survivingFractionFloor.toFixed(2)} for the fact ` +
+                            `just above yours. So something other than TTL put you last — most ` +
+                            `likely a lower \`confidence\` tier than the incumbents. `
+                          : `. So something other than TTL put you last — most likely a lower ` +
+                            `\`confidence\` tier than the incumbents. `) +
+                        `Write it somewhere durable instead (a work-item checkpoint / an ` +
                         `agent-insights doc) — a fact you assume is standing but that was evicted ` +
                         `fails SILENTLY: it just stops appearing in folds.`
                       : `This fact ranks ${survival.rank} of ${survival.liveCount} in this ` +

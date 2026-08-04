@@ -26,7 +26,10 @@
  */
 
 import { getOrgPg } from '@papercusp/db-org';
-import { getMemoryBackend, type MemoryEntry } from './backend';
+import { getMemoryBackend, type MemoryEntry, type SearchLegStats } from './backend';
+// Type-only: erased at build, so `recall-stats` stays a dynamic import on the
+// telemetry path (see the writer below) rather than being pulled in eagerly.
+import type { RecallAdmissionStats } from './recall-stats';
 import { collapseNearDuplicates } from './recall-admission';
 import { isMemoryWorkspaceScopedRecallOn, keepUserPoolHitForWorkspace } from './workspace-scope-recall';
 import { bumpLastSurfacedSql, recentlySurfacedIds } from './bump-last-surfaced';
@@ -778,6 +781,10 @@ async function buildBlockInner(
   let userResults: MemoryEntry[] = [];
   let harnessHits: Array<{ hit: MemoryEntry; slug: string }> = [];
   let hiveHits: Array<{ hit: MemoryEntry; slug: string }> = [];
+  // P-002 / migration 758: what each retrieval LEG did on this call. Stays null
+  // when the backend has no legs to report (a single-leg store), which is a
+  // shape statement rather than a missing measurement — see RecallStatsInput.legs.
+  let legStats: SearchLegStats | null = null;
   try {
     // P-002: read the admission contract from the ONE exported constructor the
     // recurrence guard also calls, so the guard cannot drift from this path.
@@ -836,6 +843,13 @@ async function buildBlockInner(
             minScore,
             minLexScore,
             fusionMode,
+            // P-002 / migration 758: capture what each LEG did. Assigning to the
+            // outer `legStats` is safe against the fan-out concern the option's
+            // doc raises — this is ONE search call, not a per-scope loop, so
+            // there is exactly one invocation to receive.
+            onLegStats: (s) => {
+              legStats = s;
+            },
             // P-044 (F-L): the identifier-bearing text goes to the LEXICAL leg
             // only. Omitted when there are no agent signals, so the two legs
             // then share one query exactly as before.
@@ -897,14 +911,66 @@ async function buildBlockInner(
   // constants — but a pool at `limit` no longer means "it hit its private
   // quota"; it means THIS POOL ALONE FILLED THE ENTIRE BLOCK. Any saturation
   // measurement (P-038) must read it that way.
-  {
+  //
+  // ⚠ P-002 / migration 758 CHANGED WHEN THIS ROW IS WRITTEN, and the reason is
+  // the whole point of the item. The write used to happen HERE, inline, before a
+  // single filter had run — so the row could only ever say what the INDEX
+  // returned. Six stages sit between that and what the agent actually receives
+  // (packs, feedback, workspace scope, dedup, near-duplicate collapse, budget),
+  // and NOTHING recorded the other end: a recall logged as 12 hits that
+  // delivered 2 lines was indistinguishable from one that delivered 12.
+  //
+  // So the row is now assembled here and WRITTEN IN A `finally` at the end of
+  // the function. Two properties are preserved exactly, and both are load-bearing:
+  //   * EXACTLY ONE row per recall, on EVERY exit path including the several
+  //     `return null`s below — a `finally` plus the `written` latch, not a call
+  //     at each return, because a new early return added later would silently
+  //     stop recording rather than fail.
+  //   * ZERO HITS ARE STILL RECORDED. The zero-hit rate is the signal this table
+  //     was built for (EI-366); dropping empty recalls would make the index look
+  //     healthiest exactly when it is worst.
+  // Fire-and-forget as before — telemetry never blocks or fails a turn.
+  const funnel: RecallAdmissionStats = {
+    returned: userResults.length + harnessHits.length + hiveHits.length,
+    admitted: 0,
+    truncated: false,
+    dropped: { pack: 0, feedback: 0, workspace: 0, dedup: 0, nearDuplicate: 0, budget: 0 },
+    byLeg: { cosineOnly: 0, lexicalOnly: 0, both: 0 },
+  };
+  /** Live count across the three pools — the funnel's per-stage deltas read off this. */
+  const surviving = (): number => userResults.length + harnessHits.length + hiveHits.length;
+  // ⚠ SNAPSHOT THE PRE-FILTER POOLS. The three pool variables are REASSIGNED by
+  // the filters below, so a deferred write that read them live would silently
+  // redefine `hit_count`, `scores` and `pools` from "what the index returned" to
+  // "what survived" — changing the meaning of three columns under every
+  // historical comparison without touching a single query. The funnel is the NEW
+  // measurement; the old columns must keep the meaning they were built with.
+  // Cheap: these hold existing references, nothing is cloned.
+  const preFilterUser = [...userResults];
+  const preFilterHarness = harnessHits.map(({ hit }) => hit);
+  const preFilterHive = hiveHits.map(({ hit }) => hit);
+  /**
+   * Entries whose line actually reached the block — the `byLeg` input. Declared
+   * out here so the deferred writer closes over it; it stays empty on every
+   * early-return path, which is the honest reading (nothing was delivered).
+   */
+  const admittedEntries: MemoryEntry[] = [];
+  let statsWritten = false;
+  const writeRecallStats = (): void => {
+    if (statsWritten) return; // exactly one row per recall
+    statsWritten = true;
     const userScopes = input.userId ? [input.userId] : [];
     const harnessScopes = harnessSlugs.map((slug) => `harness:${slug}`);
     const hiveScopes = hiveSlugs.map(hiveScopeKey);
     void (async () => {
       try {
         const { sql } = getOrgPg();
-        const { recordRecallStats } = await import('./recall-stats');
+        const { recordRecallStats, admittedByLeg } = await import('./recall-stats');
+        // Attributed HERE rather than in the main flow so `recall-stats` stays
+        // dynamically imported — it is pulled in on the telemetry path only, and
+        // a static import for one helper would load it (and turn-provenance) on
+        // every injection whether or not a row is ever written.
+        funnel.byLeg = admittedByLeg(admittedEntries);
         // P-005: tag the recall with its injection PORT so per-entry-point
         // recall quality is measurable separately. session.port carries the
         // port for every launch/injection surface (initialize / compact /
@@ -939,25 +1005,24 @@ async function buildBlockInner(
           // signals, and P-045 measures the legs separately on the bench.
           query: queryText,
           sessionId: input.session?.sessionId ?? null,
+          // The PRE-FILTER snapshots — see the warning above. These columns mean
+          // "what the index returned" and must keep meaning that.
           pools: {
-            user: { entries: userResults, limit: totalLimit, scopes: userScopes },
-            harness: {
-              entries: harnessHits.map(({ hit }) => hit),
-              limit: totalLimit,
-              scopes: harnessScopes,
-            },
-            hive: {
-              entries: hiveHits.map(({ hit }) => hit),
-              limit: totalLimit,
-              scopes: hiveScopes,
-            },
+            user: { entries: preFilterUser, limit: totalLimit, scopes: userScopes },
+            harness: { entries: preFilterHarness, limit: totalLimit, scopes: harnessScopes },
+            hive: { entries: preFilterHive, limit: totalLimit, scopes: hiveScopes },
           },
+          // P-002 / migration 758: what each LEG did, and what actually landed.
+          legs: legStats,
+          admission: funnel,
         });
       } catch {
         /* swallow — telemetry never blocks a turn */
       }
     })();
-  }
+  };
+
+  try {
 
   if (userResults.length + harnessHits.length + hiveHits.length === 0) return null;
 
@@ -965,6 +1030,7 @@ async function buildBlockInner(
   // recalled. One settings read per hive in scope (usually 1); best-effort —
   // a settings hiccup means no filtering, never a blocked turn.
   if (hiveHits.length > 0) {
+    const before = surviving();
     try {
       const { disabledPacksFor } = await import('../knowledge-packs/manage');
       const slugs = [...new Set(hiveHits.map(({ slug }) => slug))];
@@ -981,6 +1047,7 @@ async function buildBlockInner(
     } catch {
       /* best-effort — never load-bearing */
     }
+    funnel.dropped.pack = before - surviving();
   }
   if (userResults.length + harnessHits.length + hiveHits.length === 0) return null;
 
@@ -990,17 +1057,21 @@ async function buildBlockInner(
   // that leg) and re-extractions of deleted content. Injecting content the
   // user deleted is worse than a missed recall; memory:search still finds it
   // on demand (demoted, not hidden). Best-effort like the dedup below.
-  try {
-    const { sql } = getOrgPg();
-    const { loadFeedbackSignals, isFeedbackSuppressed } = await import('./feedback-rerank');
-    const signals = await loadFeedbackSignals(sql);
-    if (signals.deletedIds.size > 0 || signals.deletedTexts.size > 0) {
-      userResults = userResults.filter((h) => !isFeedbackSuppressed(h, signals));
-      harnessHits = harnessHits.filter(({ hit }) => !isFeedbackSuppressed(hit, signals));
-      hiveHits = hiveHits.filter(({ hit }) => !isFeedbackSuppressed(hit, signals));
+  {
+    const before = surviving();
+    try {
+      const { sql } = getOrgPg();
+      const { loadFeedbackSignals, isFeedbackSuppressed } = await import('./feedback-rerank');
+      const signals = await loadFeedbackSignals(sql);
+      if (signals.deletedIds.size > 0 || signals.deletedTexts.size > 0) {
+        userResults = userResults.filter((h) => !isFeedbackSuppressed(h, signals));
+        harnessHits = harnessHits.filter(({ hit }) => !isFeedbackSuppressed(hit, signals));
+        hiveHits = hiveHits.filter(({ hit }) => !isFeedbackSuppressed(hit, signals));
+      }
+    } catch {
+      /* hygiene, never load-bearing */
     }
-  } catch {
-    /* hygiene, never load-bearing */
+    funnel.dropped.feedback = before - surviving();
   }
 
   // data-scoping-audit P-006 / D-004 / D-012 (dark cutover): workspace-scope the per-owner
@@ -1008,7 +1079,9 @@ async function buildBlockInner(
   // owner-tier (user/feedback/reference) + legacy NULL-workspace rows. The harness/hive
   // pools are already correctly scoped. Conservative + NULL-safe; OFF = today's behavior.
   if (userResults.length > 0 && (await isMemoryWorkspaceScopedRecallOn())) {
+    const before = surviving();
     userResults = userResults.filter((h) => keepUserPoolHitForWorkspace(h, input.workspaceId));
+    funnel.dropped.workspace = before - surviving();
   }
   if (userResults.length + harnessHits.length + hiveHits.length === 0) return null;
 
@@ -1043,9 +1116,11 @@ async function buildBlockInner(
         suppressed = await recentlySurfacedIds(sql, candidateIds, reinjectWindowMs());
       }
       if (suppressed.size > 0) {
+        const before = surviving();
         userResults = userResults.filter((h) => !(h.id && suppressed.has(h.id)));
         harnessHits = harnessHits.filter(({ hit }) => !(hit.id && suppressed.has(hit.id)));
         hiveHits = hiveHits.filter(({ hit }) => !(hit.id && suppressed.has(hit.id)));
+        funnel.dropped.dedup = before - surviving();
       }
     } catch {
       /* swallow — dedup is hygiene, never load-bearing */
@@ -1140,10 +1215,16 @@ async function buildBlockInner(
   const survivingHive = new Map(hiveHits.map(({ hit, slug }) => [hit, slug]));
   const survivingHarness = new Map(harnessHits.map(({ hit, slug }) => [hit, slug]));
   const survivingUser = new Set(userResults);
-  const mainRows: Array<{ line: string; id?: string; text: string }> = [];
-  const packRows: Array<{ line: string; id?: string; text: string }> = [];
+  // P-002: each row carries its ENTRY so an ADMITTED line can be attributed back
+  // to the leg that produced it (`MemoryEntry.retrieval`). Attribution has to
+  // happen over the admitted set, not the candidate set — a leg that offers
+  // candidates and never lands one is contributing nothing, and that is exactly
+  // what a pre-filter count cannot show.
+  type RenderRow = { line: string; id?: string; text: string; entry: MemoryEntry };
+  const mainRows: RenderRow[] = [];
+  const packRows: RenderRow[] = [];
   for (const hit of ranked) {
-    const row = (label?: string): { line: string; id?: string; text: string } => {
+    const row = (label?: string): RenderRow => {
       const fullText = hit.text ?? '';
       // WI-6870: clamp the RENDERED text to MAX_ENTRY_CHARS so a single oversized memory
       // can't blow the whole budget by itself. Dedup below still compares the FULL text
@@ -1157,6 +1238,7 @@ async function buildBlockInner(
         line: `- ${fmtScope(hit, label)}${fmtId(hit)} ${displayText}`,
         id: hit.id,
         text: fullText,
+        entry: hit,
       };
     };
     if (survivingHive.has(hit)) {
@@ -1174,8 +1256,9 @@ async function buildBlockInner(
   // slot a distinct fact needed. Order is preserved, so post-F-C the highest-RELEVANCE copy of
   // each cluster survives (it was the highest-priority-POOL copy before D-011).
   const { kept: dedupedRendered } = collapseNearDuplicates(rendered, (r) => r.text);
+  funnel.dropped.nearDuplicate = rendered.length - dedupedRendered.length;
   let truncated = false;
-  for (const { line, id } of dedupedRendered) {
+  for (const { line, id, entry } of dedupedRendered) {
     // WI-6870: skip-and-continue instead of a hard break. A `break` here discarded every
     // remaining (lower-ranked but possibly SMALLER) entry once ONE entry didn't fit —
     // measured mean 849 chars (21%) of the budget left on the table per turn, worst case
@@ -1184,9 +1267,17 @@ async function buildBlockInner(
     // single earlier oversized one would otherwise have wasted.
     if (!admit(line, id)) {
       truncated = true;
+      funnel.dropped.budget += 1;
       continue;
     }
+    admittedEntries.push(entry);
   }
+  // P-002: the delivered end of the funnel. `admitted` counts CONTENT lines, so
+  // it is taken from admittedEntries rather than `lines` — the withheld-notice
+  // row appended below is a marker, not a recalled memory, and counting it would
+  // report a block that delivered nothing as having delivered one.
+  funnel.admitted = admittedEntries.length;
+  funnel.truncated = truncated;
   if (lines.length === 0) return null;
   if (truncated) {
     lines.push('- (more learnings withheld this turn — the memory budget is full; memory:search pulls the rest on demand)');
@@ -1225,6 +1316,13 @@ async function buildBlockInner(
 
   const heading = input.heading ?? 'Operator memory (relevant entries)';
   return `## ${heading}\n\n${lines.join('\n')}`;
+  } finally {
+    // ONE row per recall, on EVERY exit path — the several `return null`s above,
+    // the delivered-block return, and any throw. A `finally` rather than a call
+    // at each return so that an early return added later cannot silently stop
+    // recording; the `statsWritten` latch keeps it to exactly one.
+    writeRecallStats();
+  }
 }
 
 /**

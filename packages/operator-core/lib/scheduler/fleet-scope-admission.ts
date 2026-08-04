@@ -395,9 +395,104 @@ export async function hasLiveFleetRouteTarget(
  * original wording — an unknown result must never manufacture a false "no target"
  * claim.
  */
+/**
+ * EI-19484346966003625 (R1): is this spec refusing a CLASS, or just this one row?
+ *
+ * The refusal notice's only advice used to be "WIDEN the fleet lane … whose view.filter
+ * admits THIS work", which trains a per-ROW patch. Measured cost of that framing, live on
+ * fleet `opencode-omp-research`: the leader bumped its spec rev 1→6 over 42h, blocking one
+ * member 12 times, and rev 6 still refused 4 of the 6 rows — because the dominant shape it
+ * kept missing (`severity: minor`) was never what any single row's widen touched. Each
+ * patch was a correct fix for the row in front of it and a non-fix for the class behind it.
+ *
+ * The pool-vs-spec reading that settles it already exists — `aggregateIssueClaimExclusions`
+ * powers the MISS path (see {@link diagnoseFleetScopeIssueFloorMiss} / `fleetScopedMiss`).
+ * The REFUSAL path simply never asked it, so the two seams answered the same question with
+ * very different rigour. This runs the spec's OWN `view.filter` over the pool, and the same
+ * aggregate again UNFILTERED (`filter: undefined`) for the denominator, so the notice can
+ * state a ratio instead of implying the refusal is a one-off.
+ *
+ * ISSUE-FAMILY ONLY — that is what the aggregate covers. A spec scoping the feature family
+ * reads as a low ratio here, which is why {@link fleetScopeClassRefusalNote} reports the two
+ * counts and never certifies "your spec is wrong" on its own.
+ *
+ * FAIL-SOFT: any error, or an unresolvable workspace, returns null and the notice degrades
+ * to exactly its previous wording. A diagnosis is an enrichment of a refusal that has
+ * already been decided — it must never be able to change or block that refusal.
+ */
+export interface FleetScopeClassRefusal {
+  /** Pool rows the spec's own `view.filter` MATCHES (before taken/floors). */
+  matchedByFilter: number;
+  /** Pool rows at all — the same aggregate with no spec filter. The denominator. */
+  poolTotal: number;
+  /** `matchedByFilter === 0`: the spec admits NOTHING, so no per-row widen can help. */
+  specEmpty: boolean;
+}
+
+export async function diagnoseFleetScopeClassRefusal(args: {
+  scope: FleetScopeContext;
+  harness: string;
+}): Promise<FleetScopeClassRefusal | null> {
+  try {
+    const spec = args.scope.record?.spec;
+    if (!spec) return null;
+    const { aggregateIssueClaimExclusions } = await import('./get-next');
+    const opts = { harness: args.harness, states: spec.states, assignee: args.scope.ownerId };
+    const [scoped, pool] = await Promise.all([
+      aggregateIssueClaimExclusions(spec.view.filter, opts),
+      aggregateIssueClaimExclusions(undefined, opts),
+    ]);
+    if (!scoped || !pool) return null;
+    return {
+      matchedByFilter: scoped.matchedByFilter,
+      poolTotal: pool.matchedByFilter,
+      specEmpty: scoped.matchedByFilter === 0,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The CLASS sentence prepended to the leader remedy, or '' when the reading does not
+ * support one. Deliberately conservative — it reports the two measured counts and lets the
+ * leader judge, rather than asserting the spec is wrong:
+ *
+ *  - `specEmpty` (matches 0) is the one unambiguous case: a per-row widen provably cannot
+ *    help, because the filter admits nothing at all.
+ *  - a LOW ratio is stated as a ratio, with the class question posed, not answered.
+ *  - a HIGH ratio, or a pool too small for the ratio to mean anything, yields '' — the
+ *    refusal really may be a one-off, and a class warning there is noise that would teach
+ *    leaders to ignore this line.
+ */
+export function fleetScopeClassRefusalNote(reading: FleetScopeClassRefusal | null | undefined): string {
+  if (!reading) return '';
+  const { matchedByFilter, poolTotal, specEmpty } = reading;
+  if (specEmpty) {
+    return (
+      `⚠ CLASS REFUSAL — this spec's view.filter currently matches ZERO of the ${poolTotal} open issue-family ` +
+      `row(s) in this harness, not merely this one. A revision bump shaped around THIS item cannot fix that: ` +
+      `the filter admits nothing, so the next row will be refused too. Fix the filter's shape (kind / severity / ` +
+      `plan / tag scoping), then re-check with scheduler:preview_spec_delta before bumping. `
+    );
+  }
+  // Below ~half the pool, with enough rows for the ratio to carry information.
+  if (poolTotal >= 10 && matchedByFilter * 2 < poolTotal) {
+    return (
+      `⚠ POSSIBLE CLASS REFUSAL — this spec's view.filter matches ${matchedByFilter} of ${poolTotal} open ` +
+      `issue-family row(s), so it is refusing far more than the row in front of you. Before bumping a revision ` +
+      `for THIS item, check whether the ${poolTotal - matchedByFilter} it excludes share a shape (a severity ` +
+      `floor and a kind list are the two that recur) — widening per-row against a class costs a revision per ` +
+      `row and still leaves the member blocked. scheduler:preview_spec_delta shows the delta before you commit it. `
+    );
+  }
+  return '';
+}
+
 export function fleetScopeLeaderRemedy(
   admission: Extract<FleetScopeAdmission, { allowed: false }>,
   liveRouteTarget?: boolean | null,
+  classRefusal?: FleetScopeClassRefusal | null,
 ): string {
   const fleetSlug = admission.scope.fleetSlug;
   if (admission.code === 'fleet_winding_down') {
@@ -415,6 +510,10 @@ export function fleetScopeLeaderRemedy(
         `surface to whichever lane/agent next admits it — or complete it yourself.`
       : `(Or route the work elsewhere / complete it yourself.)`;
   return (
+    // EI-19484346966003625 (R1): the class reading LEADS, because it can invalidate the
+    // per-row advice that follows it — a leader who reads only the first sentence must not
+    // walk away with "bump a revision for this row" when the spec matches nothing.
+    `${fleetScopeClassRefusalNote(classRefusal)}` +
     `To let this member self-claim it, WIDEN the fleet lane in ONE call: ` +
     `scheduler:set_claim_spec { fleet: "${fleetSlug}", spec: { … a revision bump of ${specRef} ` +
     `whose view.filter admits this work } } — the member picks it up on its next scheduler:get_next, ` +
@@ -426,21 +525,32 @@ export async function notifyFleetScopeRefusal(
   identity: AgentIdentity,
   admission: Extract<FleetScopeAdmission, { allowed: false }>,
   action: string,
-): Promise<{ liveRouteTarget: boolean | null }> {
+  // EI-19484346966003625 (R1): the harness the refused subject belongs to, so the class
+  // reading can be taken. OPTIONAL and additive — a caller that does not pass it gets
+  // exactly the previous behaviour (classRefusal: null ⇒ empty note), never an error.
+  opts?: { harness?: string | null },
+): Promise<{ liveRouteTarget: boolean | null; classRefusal: FleetScopeClassRefusal | null }> {
   // WI-6326: irrelevant while winding-down (that remedy branch never mentions
   // "route elsewhere" at all) — skip the extra lookup.
-  const liveRouteTarget =
-    admission.code === 'fleet_winding_down'
-      ? null
-      : await hasLiveFleetRouteTarget(admission.scope.fleetSlug, admission.scope.workspaceId, admission.scope.ownerId);
+  const windingDown = admission.code === 'fleet_winding_down';
+  const [liveRouteTarget, classRefusal] = await Promise.all([
+    windingDown
+      ? Promise.resolve(null)
+      : hasLiveFleetRouteTarget(admission.scope.fleetSlug, admission.scope.workspaceId, admission.scope.ownerId),
+    // A paused fleet's remedy is "stand down", never "widen" — a class reading there would
+    // be measured, correct and actively misleading, so it is not taken at all.
+    windingDown || !opts?.harness
+      ? Promise.resolve(null)
+      : diagnoseFleetScopeClassRefusal({ scope: admission.scope, harness: opts.harness }),
+  ]);
   const { sendMessage } = await import('../agent-tools/coordination/messages');
   await sendMessage(identity, {
     to: [`@fleet-leader:${admission.scope.fleetSlug}`],
     summary: `fleet-scope admission blocked ${action}`,
-    body: `${admission.reason}. The assignment was not mutated. ${fleetScopeLeaderRemedy(admission, liveRouteTarget)}`,
+    body: `${admission.reason}. The assignment was not mutated. ${fleetScopeLeaderRemedy(admission, liveRouteTarget, classRefusal)}`,
     category: 'fleet-scope-admission',
   }).catch(() => undefined);
-  return { liveRouteTarget };
+  return { liveRouteTarget, classRefusal };
 }
 
 export interface FleetScopeReconciliation {

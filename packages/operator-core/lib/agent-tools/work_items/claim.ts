@@ -312,7 +312,12 @@ async function claimOne(
     // WI-6326: reuse the SAME liveness read notifyFleetScopeRefusal just performed for
     // the leader notification — never a second lookup — so the caller-facing hint's
     // "route elsewhere" advice is code-conditional too, not just the leader's copy.
-    const { liveRouteTarget } = (await notifyFleetScopeRefusal(identity, admission, `work_items:claim ${it.id} → ${claimer}`)) ?? {};
+    // EI-19484346966003625 (R1): pass the item's harness so the notice can report whether
+    // the spec is refusing a CLASS. This is the seam that produced the original evidence —
+    // WI-7264 was refused here twice under one spec revision, and the advice both times was
+    // to widen for that row.
+    const { liveRouteTarget, classRefusal } =
+      (await notifyFleetScopeRefusal(identity, admission, `work_items:claim ${it.id} → ${claimer}`, { harness: it.harness })) ?? {};
     return {
       ok: false,
       id: it.id,

@@ -89,4 +89,31 @@ describe('DogfoodBootstrapBanner (public-release)', () => {
     expect(banner.style.top).not.toBe('0px');
     expect(banner.style.top).not.toBe('0');
   });
+
+  // WI-4729 is EI-9921 on the OTHER axis. EI-9921 stopped this bar eclipsing the
+  // EnvSwitcherBar vertically; it still spanned the full viewport width at that
+  // same top, so with its ~2.1e9 z-index (vs `.op-chat-sidebar`'s 1300) it
+  // covered the chat sidebar's top ~30px — the header row — cutting off the
+  // Papercup cup mark, which is exactly the symptom WI-4729 reported. The bar
+  // must dock AFTER the chat sidebar via `--op-chat-w`, the same offset every
+  // other viewport-anchored surface already uses (LeftSidebar, the dev-admin
+  // rail, quick-panel, globals.css's `.operator-panel`).
+  //
+  // Asserted as a substring on the custom-property reference for the same
+  // cssstyle-serialization reason documented on the EI-9921 case above. This
+  // fails on the pre-fix `left: 0` (serialized '0px'), so it is falsifiable.
+  it('WI-4729: docks after the chat sidebar via --op-chat-w, never covering its header at left:0', () => {
+    progress = errorProgress({
+      hasError: false,
+      inProgress: true,
+      clone: { step: 'clone', status: 'running', ts: 1, detail: 'Sign in to GitHub to begin the download' },
+      activeStep: 'clone',
+      activeDetail: 'Sign in to GitHub to begin the download',
+    });
+    render(<DogfoodBootstrapBanner />);
+    const banner = screen.getByTestId('dogfood-bootstrap-banner');
+    expect(banner.style.left).toContain('--op-chat-w');
+    expect(banner.style.left).not.toBe('0px');
+    expect(banner.style.left).not.toBe('0');
+  });
 });

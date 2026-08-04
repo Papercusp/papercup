@@ -1,21 +1,24 @@
 /**
- * semantic-dedup — P-010 plan-store embedding legs
- * (shared-embedding-sidecar-and-enrichment-2026-07-10).
+ * semantic-dedup — plans:new's similar_exists CONFIRMATION check
+ * (P-010 shared-embedding-sidecar-and-enrichment-2026-07-10).
  *
  * Everything through injected deps (the real resolver lazy-loads an ONNX
  * model — WI-3792 load-scar class); the no-deps cases assert VITEST inertness.
  * The confirmation contract under test: only a POSITIVE cosine verdict may
  * shrink the token refusal — every degraded path returns the candidates
  * unchanged (verdict:false), never a throw.
+ *
+ * D-025: the SEARCH leg that used to live in this module (`semanticPlanHits`)
+ * moved to ../semantic-leg.ts and now runs inside `runHybridSearch`; its tests
+ * moved with it. What is left here is a threshold classifier in the doc↔doc
+ * pairing, which is deliberately NOT on the engine — see that module's header.
  */
 
 import { describe, it, expect, afterEach } from 'vitest';
 import {
   confirmSimilarPlans,
-  semanticPlanHits,
   planDupeConfirmThreshold,
-  type PlanSemanticDeps,
-  type PlanSemanticHit,
+  type PlanConfirmDeps,
 } from '../semantic-dedup';
 // Import the width — these fixtures are ABOUT the prose column contract, so a
 // width change moves them automatically instead of stranding them here (the
@@ -24,11 +27,10 @@ import { PROSE_VECTOR_DIMS } from '../../../search/prose-vector-dims';
 
 const VEC = Array.from({ length: PROSE_VECTOR_DIMS }, () => 0.1);
 
-function deps(over: Partial<PlanSemanticDeps> = {}): PlanSemanticDeps {
+function deps(over: Partial<PlanConfirmDeps> = {}): PlanConfirmDeps {
   return {
     resolveEmbedder: async () => ({ mode: 'gemma', dims: PROSE_VECTOR_DIMS, embed: async () => VEC }),
     querySimilarities: async () => new Map(),
-    queryTopPlans: async () => [],
     ...over,
   };
 }
@@ -93,29 +95,5 @@ describe('confirmSimilarPlans', () => {
   it('rejects garbage threshold overrides back to the default', () => {
     process.env.PAPERCUSP_PLAN_DUPE_CONFIRM = 'nonsense';
     expect(planDupeConfirmThreshold()).toBe(0.6);
-  });
-});
-
-describe('semanticPlanHits', () => {
-  it('is inert under vitest without injected deps', async () => {
-    expect(await semanticPlanHits('q', { limit: 5 })).toBeNull();
-  });
-
-  it('returns the query hits with the resolved mode passed through', async () => {
-    const hit: PlanSemanticHit = { slug: 'p', harness: 'h', title: 'T', status: 'wip', archived: false, similarity: 0.7 };
-    let gotMode = '';
-    const d = deps({
-      queryTopPlans: async (_v, mode) => {
-        gotMode = mode;
-        return [hit];
-      },
-    });
-    expect(await semanticPlanHits('q', { limit: 5 }, d)).toEqual([hit]);
-    expect(gotMode).toBe('gemma');
-  });
-
-  it('returns null on failure (never throws)', async () => {
-    const d = deps({ queryTopPlans: async () => { throw new Error('boom'); } });
-    expect(await semanticPlanHits('q', { limit: 5 }, d)).toBeNull();
   });
 });

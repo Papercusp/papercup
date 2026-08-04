@@ -237,3 +237,40 @@ if [[ -f "$EMBED_WORKER_SRC" ]]; then
 else
   echo "WARNING: embed-worker script not found at $EMBED_WORKER_SRC — embeds will run inline (slow; WI-4196)"
 fi
+
+# SAME CLASS AS WI-4196 ABOVE, missed for this worker: cpu-task-worker.ts resolves
+# `cpu-task-worker.script.mjs` next to the executing module, which inside the bundle
+# is $OUTDIR. Without this copy `serializeJsonResponse` catches the spawn failure,
+# sets _workerDisabled, and every large batch falls back to INLINE synchronous
+# JSON.stringify ON THE MAIN EVENT LOOP — precisely what that worker exists to
+# prevent. It fails silently and looks like nothing is wrong. Measured 2026-08-04:
+# :3170 (bundled) had no such file, and its loop profile at p95 1920ms was 87.5% GC
+# with node:buffer/JSON frames on top (EI-19465075959589134). Plain ESM already, so
+# a copy suffices — no esbuild pass needed.
+CPU_WORKER_SRC="../../packages/operator-core/lib/cpu-task-worker.script.mjs"
+if [[ -f "$CPU_WORKER_SRC" ]]; then
+  cp "$CPU_WORKER_SRC" "$OUTDIR/cpu-task-worker.script.mjs"
+  echo "    ✓ bundled cpu-task-worker script beside the entry"
+else
+  echo "WARNING: cpu-task-worker script not found at $CPU_WORKER_SRC — large batches will JSON.stringify inline on the event loop"
+fi
+
+# Blocked-event-loop sentinel worker (EI-19465075959589134). Unlike the two above
+# this one is TypeScript and imports the shared decider, so a plain copy cannot work:
+# the bundled host runs `node dist-host/hono-host.mjs` with NO tsx loader, so a .ts
+# worker would fail to load. esbuild it to a self-contained .mjs beside the entry;
+# the host's workerPath() prefers the .mjs and falls back to the .ts for tsx runtimes
+# (dev/desktop). Keeping ONE decider — bundled here, imported directly under tsx —
+# is deliberate: a hand-maintained .mjs copy of this logic could drift, and this is
+# the logic that SIGKILLs the host.
+SENTINEL_WORKER_SRC="../../packages/operator-core/lib/event-loop-sentinel.worker.ts"
+if [[ -f "$SENTINEL_WORKER_SRC" ]]; then
+  npx --yes esbuild@0.25.0 "$SENTINEL_WORKER_SRC" \
+    --bundle --platform=node --format=esm --target=node22 \
+    --outfile="$OUTDIR/event-loop-sentinel.worker.mjs" \
+    --log-limit=5 \
+    && echo "    ✓ bundled event-loop sentinel worker beside the entry" \
+    || echo "WARNING: sentinel worker bundle FAILED — the host will run with NO blocked-loop detection"
+else
+  echo "WARNING: sentinel worker not found at $SENTINEL_WORKER_SRC — the host will run with NO blocked-loop detection"
+fi

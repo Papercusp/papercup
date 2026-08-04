@@ -8,15 +8,18 @@
  * carve-out lets `lib/*` callers stop importing from `app/api/_hono/*`,
  * breaking the layering violation.
  *
- * Caches in this module are pinned to `globalThis` so Next dev module
- * re-evaluation doesn't reset them per request — same pattern as the
- * original harness.ts. See /docs/performance #A5.
+ * Caches in this module are realm-pinned so Next dev module re-evaluation
+ * doesn't reset them per request — same intent as the original harness.ts,
+ * but through `pinModuleState` rather than hand-rolled `globalThis[key]`
+ * pairs, so the pin is visible to listModuleDuplications(). See
+ * /docs/performance #A5.
  */
 import {
   readFileSync, readlinkSync, existsSync, readdirSync, statSync,
   openSync, readSync, closeSync,
 } from 'node:fs';
 import { join } from 'node:path';
+import { pinModuleState } from '@papercusp/module-singleton';
 import { getLegacyClient } from '@papercusp/db-org';
 import {
   HARNESS_SHARED_CONFIG_REL_PATH,
@@ -73,13 +76,37 @@ function tailLastResultLine(filePath: string, lookbackBytes = 8 * 1024): { obj: 
  * ───────────────────────────────────────────────────────────────────── */
 
 type PulseCacheEntry = { mtimeMs: number; size: number; count: number };
-const __pulseCacheKey = '__papercuspPulseCache';
-type PulseGlobals = { [__pulseCacheKey]?: Map<string, PulseCacheEntry> };
-const __pulseCache: Map<string, PulseCacheEntry> = (() => {
-  const g = globalThis as PulseGlobals;
-  if (!g[__pulseCacheKey]) g[__pulseCacheKey] = new Map();
-  return g[__pulseCacheKey]!;
-})();
+
+/* ─────────────────────────────────────────────────────────────────────
+ * This module's ENTIRE realm-pinned cache set, pinned ONCE.
+ *
+ * Previously four hand-rolled `globalThis[key]` pairs (three plain-string
+ * keys plus one Symbol.for). Hand-rolling shares the state correctly, but
+ * the keys are invisible to listModuleDuplications(), which then answers a
+ * confident `[]` while this module is split (EI-19479108855357092).
+ *
+ * ONE `pinModuleState` call per module body is deliberate: it keeps the
+ * primitive's `evaluations` an honest count of module RECORDS, and it
+ * forecloses the half-migrated shape where one cache is pinned and its
+ * siblings are left module-local — on a split, a bust of the pinned one
+ * leaves a sibling serving stale entries for its whole TTL.
+ *
+ * The entry types are declared further down beside their own functions;
+ * type aliases hoist (values do not), so this block holds only the pin.
+ * ───────────────────────────────────────────────────────────────────── */
+const __caches = pinModuleState<{
+  pulse: Map<string, PulseCacheEntry>;
+  cost: Map<string, CostCacheEntry>;
+  costPerFile: Map<string, CostPerFileEntry>;
+  alive: Map<string, AliveCacheEntry>;
+}>('@papercusp/operator-core.harnessCoreCaches', () => ({
+  pulse: new Map(),
+  cost: new Map(),
+  costPerFile: new Map(),
+  alive: new Map(),
+}));
+
+const __pulseCache = __caches.pulse;
 const PULSE_RE = /── iteration \d+ ──/g;
 
 export function countPulsesFromRunLog(path: string): number {
@@ -135,22 +162,10 @@ export function countPulsesFromRunLog(path: string): number {
 export interface CostAggregate { cost: number; inputTokens: number; outputTokens: number }
 
 type CostCacheEntry = { sig: string; expires: number; value: CostAggregate };
-const __costCacheKey = '__papercuspCostCache';
-type CostCacheGlobals = { [__costCacheKey]?: Map<string, CostCacheEntry> };
-const __costCache: Map<string, CostCacheEntry> = (() => {
-  const g = globalThis as CostCacheGlobals;
-  if (!g[__costCacheKey]) g[__costCacheKey] = new Map();
-  return g[__costCacheKey]!;
-})();
+const __costCache = __caches.cost;
 
 type CostPerFileEntry = { mtimeMs: number; size: number; cost: number; inputTokens: number; outputTokens: number };
-const __costPerFileCacheKey = '__papercuspCostPerFileCache';
-type CostGlobals = { [__costPerFileCacheKey]?: Map<string, CostPerFileEntry> };
-const __costPerFileCache: Map<string, CostPerFileEntry> = (() => {
-  const g = globalThis as CostGlobals;
-  if (!g[__costPerFileCacheKey]) g[__costPerFileCacheKey] = new Map();
-  return g[__costPerFileCacheKey]!;
-})();
+const __costPerFileCache = __caches.costPerFile;
 
 export function aggregateCostFromLogDir(logDir: string, ttlMs = 5000): CostAggregate {
   const now = Date.now();
@@ -489,15 +504,8 @@ function scanForRunShCwd(projectPath: string): boolean {
   return false;
 }
 
-const __aliveCacheKey = Symbol.for('papercusp.harnessAliveCache');
-type AliveCacheGlobals = typeof globalThis & {
-  [__aliveCacheKey]?: Map<string, { value: boolean; expires: number; pending: Promise<boolean> | null }>;
-};
-const __aliveCache: Map<string, { value: boolean; expires: number; pending: Promise<boolean> | null }> = (() => {
-  const g = globalThis as AliveCacheGlobals;
-  if (!g[__aliveCacheKey]) g[__aliveCacheKey] = new Map();
-  return g[__aliveCacheKey]!;
-})();
+type AliveCacheEntry = { value: boolean; expires: number; pending: Promise<boolean> | null };
+const __aliveCache = __caches.alive;
 
 export function isProjectAlive(projectPath: string, ttlMs = 2000): boolean {
   const now = Date.now();

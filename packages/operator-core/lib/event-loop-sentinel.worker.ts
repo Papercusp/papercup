@@ -86,6 +86,8 @@ let state: LoopSentinelState = initialLoopSentinelState(
 );
 /** Warn at most once per contiguous stall, so a long wedge is not a log flood. */
 let warnedThisStall = false;
+/** Observe-mode: report a WEDGE at most once per contiguous stall (same reason). */
+let reportedThisStall = false;
 let acted = false;
 
 const timer = setInterval(() => {
@@ -113,7 +115,10 @@ const timer = setInterval(() => {
   switch (action.kind) {
     case 'ok':
     case 'grace':
+      // The loop is turning again — re-arm both one-per-stall latches so the
+      // NEXT stall is reported as a fresh event rather than suppressed.
       warnedThisStall = false;
+      reportedThisStall = false;
       return;
 
     case 'warn':
@@ -146,8 +151,19 @@ const timer = setInterval(() => {
       return;
 
     case 'kill': {
-      acted = true;
-      clearInterval(timer);
+      // KILL mode is one-shot (the process is about to die). OBSERVE mode must
+      // KEEP WATCHING — it exists to soak a suspect host, and a one-shot
+      // observer reports exactly one wedge per host lifetime, which is useless
+      // for "does this recur, and how often". Guard the flood instead: report
+      // once per contiguous stall, and re-arm only after the loop RECOVERS
+      // (the 'ok'/'grace' branches clear `reportedThisStall`).
+      if (mode === 'kill') {
+        acted = true;
+        clearInterval(timer);
+      } else {
+        if (reportedThisStall) return;
+        reportedThisStall = true;
+      }
       emit(
         mode === 'kill'
           ? 'main event loop WEDGED — SIGKILLing the host (systemd will restart it)'
@@ -176,7 +192,16 @@ const timer = setInterval(() => {
   }
 }, observeIntervalMs);
 
-// Never hold the process open on the sentinel's account.
-timer.unref?.();
-
+// ⚠ DO NOT `timer.unref()` HERE. This interval is the worker's ONLY handle, so
+// unref-ing it leaves the worker's event loop with nothing to wait on and the
+// THREAD EXITS — cleanly, with code 0, immediately after the `ready` message
+// below. Measured 2026-08-04: the worker reported ready, exited 0, and detected
+// nothing; the host still logged "armed" and reported active, because from the
+// parent's side a spawned-then-exited worker looks identical to a running one
+// until you listen for 'exit'. That is a silent total failure of the sentinel.
+//
+// "Don't hold the process open" is a real requirement, but it belongs on the
+// PARENT side: `worker.unref()` in event-loop-sentinel-host.ts tells the main
+// thread not to count this worker as a reason to stay alive, while leaving the
+// worker itself internally alive. Keep the two straight.
 parentPort?.postMessage({ kind: 'ready' });

@@ -86,6 +86,43 @@ describe('startEventLoopSentinel', () => {
     await h!.stop();
   });
 
+  it('REGRESSION: the worker thread stays ALIVE — it must not exit on its own', async () => {
+    // The bug this guards (measured 2026-08-04): a `timer.unref()` inside the
+    // worker left its event loop with no handle, so the thread exited cleanly
+    // with code 0 immediately after reporting ready. The host still logged
+    // "armed", active() still returned true, and the sentinel was silently
+    // absent.
+    //
+    // Two reasons the ORIGINAL tests could not catch it, both worth knowing:
+    //  - `beats()` is incremented by the MAIN thread, so it keeps ticking
+    //    happily whether or not anything is watching it.
+    //  - `new Worker(...)` does NOT throw on an unloadable path; the failure
+    //    arrives asynchronously on 'error'. So `active()` only ever meant "the
+    //    constructor returned", never "a watcher is running".
+    //
+    // This is the work-item's own class turned on the sentinel itself: a guard
+    // that reports healthy while not running.
+    //
+    // Must run the REAL worker, and the `.ts` form only loads under tsx — a
+    // plain-node Worker (vitest's pool) cannot resolve its extensionless
+    // import. So build the same artifact the bundled host ships and use that.
+    const built = buildWorkerMjs();
+    if (!built) return; // esbuild unavailable — covered by the never-throws test
+
+    const h = startEventLoopSentinel({
+      env: { PAPERCUSP_EVENT_LOOP_SENTINEL: 'observe' },
+      log: () => {},
+      workerPath: built,
+    });
+    try {
+      expect(h.active()).toBe(true);
+      await new Promise((r) => setTimeout(r, 1_500));
+      expect(h.workerAlive()).toBe(true);
+    } finally {
+      await h.stop();
+    }
+  }, 30_000);
+
   it('when active, the heartbeat actually advances the shared counter', async () => {
     const h = startEventLoopSentinel({
       env: { PAPERCUSP_EVENT_LOOP_SENTINEL: 'observe' },

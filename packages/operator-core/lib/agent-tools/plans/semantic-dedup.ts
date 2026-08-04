@@ -80,80 +80,17 @@ async function querySimilaritiesReal(
   return new Map(rows.map((r) => [r.plan_slug, Number(r.similarity)]));
 }
 
-async function queryTopPlansReal(
-  vec: number[],
-  mode: string,
-  opts: PlanSourceOpts & { includeArchived?: boolean; limit: number },
-): Promise<PlanSemanticHit[]> {
-  const { workspaceId, harnessSlug } = await resolvePlanScope(opts);
-  const vecLit = `[${vec.join(',')}]`;
-  const rows = await withWorkspace(workspaceId, async (tx) => {
-    const archivedFilter = opts.includeArchived ? tx`` : tx`AND archived = false`;
-    return tx<Array<{ plan_slug: string; harness_slug: string; title: string | null; status: string | null; archived: boolean; similarity: number }>>`
-      SELECT plan_slug, harness_slug, title, status, archived,
-             1 - (embedding <=> ${vecLit}::vector) AS similarity
-        FROM harness_shared.harness_plans
-       WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
-         AND embedding IS NOT NULL
-         AND embedding_mode = ${mode}
-         AND template_slug IS NULL
-         ${archivedFilter}
-       ORDER BY embedding <=> ${vecLit}::vector
-       LIMIT ${opts.limit}`;
-  });
-  return rows.map((r) => ({
-    slug: r.plan_slug,
-    harness: r.harness_slug,
-    title: r.title,
-    status: r.status,
-    archived: r.archived,
-    similarity: Number(r.similarity),
-  }));
-}
-
-// SEARCH pairing: a query ranks against stored documents, so the QUERY-side
-// resolver (gemma query prompt) — its vectors are trained to match the
-// backfill sweep's document-prompt vectors.
-const searchDeps: PlanSemanticDeps = {
-  resolveEmbedder: async () => (await import('../search/embedder')).buildQueryEmbedderResolved(),
-  querySimilarities: querySimilaritiesReal,
-  queryTopPlans: queryTopPlansReal,
-};
-
 // CONFIRM pairing: the proposed plan will itself be STORED, so doc↔doc cosine
 // (the backfill sweep's document-side resolver) — same choice P-008's
 // work-item dupe guard made, and the pairing the threshold is calibrated in.
-const confirmDeps: PlanSemanticDeps = {
+// (plans:search's QUERY-side pairing lives in ./semantic-leg.ts — D-025.)
+const confirmDeps: PlanConfirmDeps = {
   resolveEmbedder: async () => {
     const r = await (await import('../../search/embed-backfill')).resolveBackfillEmbedder();
     return r.mode === 'disabled' || !('embed' in r) ? null : r;
   },
   querySimilarities: querySimilaritiesReal,
-  queryTopPlans: queryTopPlansReal,
 };
-
-/**
- * Top semantic plan hits for a query. Returns null for "no verdict"
- * (disabled, unavailable, errored) — the caller MUST treat null as
- * "lexical-only".
- */
-export async function semanticPlanHits(
-  query: string,
-  opts: PlanSourceOpts & { includeArchived?: boolean; limit: number },
-  deps?: PlanSemanticDeps,
-): Promise<PlanSemanticHit[] | null> {
-  if (process.env.VITEST && !deps) return null;
-  try {
-    const d = deps ?? searchDeps;
-    const resolved = await d.resolveEmbedder();
-    if (!resolved || !fitsProseColumns(resolved.dims)) return null;
-    const vec = await resolved.embed(query);
-    if (!fitsProseColumns(vec.length)) return null;
-    return await d.queryTopPlans(vec, resolved.mode, opts);
-  } catch {
-    return null;
-  }
-}
 
 export interface ConfirmResult<T> {
   /** false = no cosine verdict was possible — `kept` is `candidates` unchanged. */
@@ -174,7 +111,7 @@ export async function confirmSimilarPlans<T extends { slug: string }>(
   proposed: { title: string; body?: string | null },
   candidates: T[],
   opts: PlanSourceOpts = {},
-  deps?: PlanSemanticDeps,
+  deps?: PlanConfirmDeps,
 ): Promise<ConfirmResult<T>> {
   const noVerdict: ConfirmResult<T> = { verdict: false, kept: candidates, dropped: [] };
   if (candidates.length === 0) return { verdict: false, kept: [], dropped: [] };

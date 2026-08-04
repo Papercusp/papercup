@@ -51,6 +51,18 @@
  * independent of THIS watchdog's own log file — the EI-2434 precedent showed a durable log nobody tails
  * is invisible for 44h; a running fleet that could actually intervene should see it).
  *
+ * COLLATERAL REPORTING (EI-19485006080051257, 2026-08-04). The alert above is threshold-gated on
+ * ALERT_AFTER_RESTARTS consecutive strikes, and the strike counter resets on the first healthy poll — so
+ * the ORDINARY case (one freeze, one restart, clean recovery) could never alert at all. That was silent
+ * data loss, because a restart tears down the unit's whole cgroup (KillMode=control-group) and that
+ * cgroup also holds the agent spawner and the owner's LIVE desktop-app sidecars (they are spawned
+ * cgroup-inheriting rather than via managedSpawn/systemd-run --scope — root cause + fix owned separately
+ * on EI-19479764372783341). The more cleanly the watchdog worked, the more certainly the damage went
+ * unreported. Collateral is therefore reported on the FIRST restart, on its own signal: "is a storm
+ * developing?" is a noise question and stays debounced; "did we just destroy something that was not
+ * ours?" is an irreversible side effect and never shares that threshold. An unreadable cgroup is UNKNOWN
+ * and stays silent (same never-infer-from-a-missing-signal asymmetry as `isFrozen`/`withinBootGrace`).
+ *
  * Env (all optional): PAPERCUSP_BGHOST_WATCHDOG_{UNIT,POLL_MS,SILENCE_S,DEBOUNCE_MS,MAX_RESTARTS_HR,DB_URL,LOG,
  *   BOOT_GRACE_MS,BACKOFF_MULTIPLIER,MAX_DEBOUNCE_MS,ALERT_AFTER_RESTARTS}, PAPERCUSP_INTEGRATION_ROOT, DATABASE_URL.
  */
@@ -216,9 +228,131 @@ export function nextDebounceMs(baseMs, consecutiveRestartsArg, multiplier = BACK
 }
 
 /** Pure alert-threshold verdict (WI-3630): true once consecutive restarts reach `alertAfter` — fired well
- *  before the hard MAX_RESTARTS_PER_HR circuit breaker so a developing storm is visible early. */
+ *  before the hard MAX_RESTARTS_PER_HR circuit breaker so a developing storm is visible early.
+ *  ⚠ This answers "is a STORM developing?", NOT "did this restart destroy anything?" — see
+ *  `classifyCollateral` below for why those must never share a threshold (EI-19485006080051257). */
 export function shouldAlert(consecutiveRestartsArg, alertAfter = ALERT_AFTER_RESTARTS) {
   return (consecutiveRestartsArg || 0) >= alertAfter;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * COLLATERAL REPORTING (EI-19485006080051257, 2026-08-04)
+ *
+ * `systemctl restart papercup-bg-host` tears down the unit's WHOLE cgroup (KillMode=control-group,
+ * the systemd default). That cgroup does not hold only bg-host: measured 2026-08-04, it also held the
+ * agent spawner (spawner-sidecar.ts) and 5 of the owner's LIVE desktop-app sidecars, because
+ * fleet/spawner-sidecar-spawn.ts spawns them with a raw `spawn(..., { detached: false })` that inherits
+ * the cgroup instead of routing through managedSpawn/systemd-run --scope (root cause + fix: e15fb on
+ * EI-19479764372783341 — this file is deliberately NOT that fix).
+ *
+ * Until that lands, every restart this watchdog issues is destructive — and it was SILENT. The storm
+ * alert above needs ALERT_AFTER_RESTARTS (2) consecutive strikes, and `consecutiveRestarts` resets to 0
+ * on the first healthy poll (see poll()), so the ordinary case — one freeze, one restart, clean recovery
+ * — could never reach the threshold. The better the watchdog worked, the more certainly the damage went
+ * unreported: the owner's desktop app dies, bg-host comes back healthy, and nothing anywhere records it.
+ *
+ * The defect is NOT that the storm alert debounces. Debouncing "is this freeze noteworthy?" is correct,
+ * and is exactly what the 06-30 100s→240s tolerance raise was chasing. The defect is that a debounced
+ * counter was also made to gate the reporting of an IRREVERSIBLE SIDE EFFECT. Those are two different
+ * questions and only one of them is about noise, so they get two different signals: the storm alert stays
+ * threshold-gated, and collateral is reported on the FIRST occurrence, always.
+ *
+ * Asymmetry, matching `isFrozen`/`withinBootGrace` in this file: an UNREADABLE cgroup yields null and we
+ * say nothing. We never infer collateral from a missing signal, and we never let a reporting fault touch
+ * the restart decision it accompanies.
+ * ──────────────────────────────────────────────────────────────────────────── */
+
+/** Pure: parse a cgroup.procs file (one decimal pid per line) into pids. Junk lines are dropped rather
+ *  than throwing — this runs on the restart path and must never be the thing that breaks it. */
+export function parseCgroupProcs(text) {
+  return String(text ?? '')
+    .split('\n')
+    .map((l) => Number(l.trim()))
+    .filter((n) => Number.isFinite(n) && n > 0);
+}
+
+/**
+ * Pure: classify cgroup occupants into "the unit's own processes" vs. COLLATERAL that a restart destroys.
+ *
+ * `entries` is [{ pid, cmdline }]. Returns null for a null/empty input (UNKNOWN — say nothing).
+ *
+ * Categories are deliberately conservative: only processes we can positively identify are named, and
+ * everything unrecognised counts as `other` collateral rather than being assumed benign. Getting this
+ * wrong in the "assume benign" direction would re-create the exact silence this function exists to end.
+ */
+export function classifyCollateral(entries) {
+  if (!Array.isArray(entries) || entries.length === 0) return null;
+  const own = [];
+  const spawner = [];
+  const desktop = [];
+  const other = [];
+  for (const e of entries) {
+    const cmd = String(e?.cmdline ?? '');
+    if (!cmd) continue;
+    // The unit's own server + its build helper — expected to die with the unit, not collateral.
+    if (cmd.includes('bin/hono-host.ts') || cmd.includes('esbuild --service')) own.push(e);
+    else if (cmd.includes('spawner-sidecar')) spawner.push(e);
+    else if (cmd.includes('Papercusp GUI') || cmd.includes('serve.mjs')) desktop.push(e);
+    else other.push(e);
+  }
+  const collateral = spawner.length + desktop.length + other.length;
+  return {
+    total: own.length + collateral,
+    own: own.length,
+    spawner: spawner.length,
+    desktop: desktop.length,
+    other: other.length,
+    collateral,
+    // A bounded sample so the alert can name what died without unbounded growth.
+    otherSample: other.slice(0, 3).map((e) => `${e.pid}:${String(e.cmdline).slice(0, 60)}`),
+  };
+}
+
+/** Pure: the fleet-facing collateral notice. Returns null when there is nothing to report — an UNKNOWN
+ *  snapshot (null) or a restart that genuinely destroys nothing but the unit itself. */
+export function collateralAlertMessage(unit, summary, reason) {
+  if (!summary || summary.collateral <= 0) return null;
+  const parts = [];
+  if (summary.spawner > 0) parts.push(`the AGENT SPAWNER (${summary.spawner} proc${summary.spawner === 1 ? '' : 's'})`);
+  if (summary.desktop > 0) parts.push(`${summary.desktop} LIVE desktop-app sidecar${summary.desktop === 1 ? '' : 's'}`);
+  if (summary.other > 0) {
+    const sample = summary.otherSample.length ? ` [e.g. ${summary.otherSample.join(', ')}]` : '';
+    parts.push(`${summary.other} other process${summary.other === 1 ? '' : 'es'}${sample}`);
+  }
+  return (
+    `⚠ ${unit} was RESTARTED by its freeze watchdog and this KILLED ${summary.collateral} process(es) ` +
+    `sharing its cgroup: ${parts.join(', ')}. ` +
+    `Agent spawns and any in-flight work in those processes died with it. Trigger: ${reason}. ` +
+    `This is COLLATERAL, reported on the FIRST restart — it is NOT a restart-storm alert and does not ` +
+    `mean the watchdog misfired. Root cause (cgroup-inherited spawns) is EI-19479764372783341.`
+  );
+}
+
+/** Enumerate the unit's cgroup members. Fail-soft: null (UNKNOWN) on ANY fault — no cgroup path, an
+ *  unreadable cgroup.procs, or a vanished /proc entry. Never throws; callers must treat null as "say
+ *  nothing", never as "nothing was killed". */
+export async function readCollateral(deps = {}) {
+  const { sh: shImpl = sh, readFile = readFileSync, unit = UNIT } = deps;
+  try {
+    const r = await shImpl('systemctl', ['--user', 'show', unit, '-p', 'ControlGroup', '--value']);
+    if (r.err) return null;
+    const cg = String(r.stdout || '').trim();
+    if (!cg || !cg.startsWith('/')) return null;
+    const pids = parseCgroupProcs(readFile(`/sys/fs/cgroup${cg}/cgroup.procs`, 'utf8'));
+    if (pids.length === 0) return null;
+    const entries = [];
+    for (const pid of pids) {
+      try {
+        // A pid that exits between the two reads is simply skipped — it is no longer collateral.
+        entries.push({ pid, cmdline: String(readFile(`/proc/${pid}/cmdline`, 'utf8')).replace(/\0/g, ' ').trim() });
+      } catch {
+        /* process gone mid-scan */
+      }
+    }
+    return classifyCollateral(entries);
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -347,7 +481,9 @@ async function schedulerIdleSec(dbUrl) {
   return parseIdleSec(r.stdout);
 }
 
-function restart(reason) {
+/** @param collateral snapshot from `readCollateral()` taken BEFORE the restart is issued (the cgroup is
+ *  torn down by the restart, so it cannot be read afterwards); null = UNKNOWN, report nothing. */
+function restart(reason, collateral = null) {
   const now = Date.now();
   // WI-3630: the debounce before the NEXT restart backs off exponentially with each consecutive strike
   // (never killed on the same fixed 5min clock through a slower-than-anticipated boot).
@@ -373,6 +509,16 @@ function restart(reason) {
       `⚠ ${UNIT} restarted ${consecutiveRestarts}x in a row (possible restart-storm) — ${reason}. ` +
         `Next restart backed off ${nextBackoffS}s; hard circuit breaker at ${MAX_RESTARTS_PER_HR}/hr. Investigate before it trips.`,
     );
+  }
+  // EI-19485006080051257: report COLLATERAL on the FIRST restart, independent of the storm threshold
+  // above. `shouldAlert` answers "is a storm developing?"; this answers "did we just destroy something
+  // that was not ours?" — the ordinary one-restart-and-recover case can never reach the storm threshold
+  // (consecutiveRestarts resets on the next healthy poll), which is exactly why this must not share it.
+  // A null snapshot is UNKNOWN and stays silent — never infer destruction from a missing signal.
+  const collateralMsg = collateralAlertMessage(UNIT, collateral, reason);
+  if (collateralMsg) {
+    log(collateralMsg);
+    void alertFleet(collateralMsg);
   }
   execFile('systemctl', ['--user', 'restart', UNIT], (err) => log(err ? `restart FAILED: ${err.message}` : 'restart issued OK'));
 }
@@ -419,7 +565,15 @@ async function poll() {
       }
       return;
     }
-    restart(`${UNIT} routine fires ${idleSec}s stale AND scheduler (routinesTick) ${schedSec == null ? 'UNKNOWN' : `${schedSec}s`} ago (> ${FREEZE_SILENCE_S}s) while active — ticker genuinely frozen (PG-confirmed, journald-independent)`);
+    // Snapshot the cgroup BEFORE restarting — the restart tears it down, so this is unreadable after.
+    // Fail-soft (null ⇒ report nothing) and deliberately off the decision path: `restart()` is called
+    // with whatever this returns, including null, so a collateral-read fault can never suppress a
+    // genuine freeze recovery.
+    const collateral = await readCollateral();
+    restart(
+      `${UNIT} routine fires ${idleSec}s stale AND scheduler (routinesTick) ${schedSec == null ? 'UNKNOWN' : `${schedSec}s`} ago (> ${FREEZE_SILENCE_S}s) while active — ticker genuinely frozen (PG-confirmed, journald-independent)`,
+      collateral,
+    );
     return;
   }
   // Healthy. WI-3630: a genuinely fresh fire means any prior storm is OVER — reset the consecutive-strike

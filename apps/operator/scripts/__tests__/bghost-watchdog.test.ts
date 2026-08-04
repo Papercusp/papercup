@@ -24,9 +24,40 @@ let circuitOpenMessage: (
   cap: number,
   snapshot?: { cores: number; load1: number; loadPerCore: number; availableRatio: number; hasHeadroom: boolean } | null,
 ) => string;
+type CollateralEntry = { pid: number; cmdline: string };
+type CollateralSummary = {
+  total: number;
+  own: number;
+  spawner: number;
+  desktop: number;
+  other: number;
+  collateral: number;
+  otherSample: string[];
+};
+let parseCgroupProcs: (text: unknown) => number[];
+let classifyCollateral: (entries: CollateralEntry[] | null | undefined) => CollateralSummary | null;
+let collateralAlertMessage: (unit: string, summary: CollateralSummary | null, reason: string) => string | null;
+let readCollateral: (deps?: {
+  sh?: (cmd: string, args: string[]) => Promise<{ err: Error | null; stdout: string; stderr?: string }>;
+  readFile?: (p: string, enc: string) => string;
+  unit?: string;
+}) => Promise<CollateralSummary | null>;
 beforeAll(async () => {
-  ({ parseIdleSec, isFrozen, resolveDbUrl, shouldRestart, withinBootGrace, nextDebounceMs, shouldAlert, alertFleet, circuitOpenMessage } =
-    await import('../bghost-watchdog.mjs'));
+  ({
+    parseIdleSec,
+    isFrozen,
+    resolveDbUrl,
+    shouldRestart,
+    withinBootGrace,
+    nextDebounceMs,
+    shouldAlert,
+    alertFleet,
+    circuitOpenMessage,
+    parseCgroupProcs,
+    classifyCollateral,
+    collateralAlertMessage,
+    readCollateral,
+  } = await import('../bghost-watchdog.mjs'));
 });
 
 /**

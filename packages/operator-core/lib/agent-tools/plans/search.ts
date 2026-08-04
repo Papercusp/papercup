@@ -13,23 +13,50 @@
  * lift this to a proper index.
  *
  * WI-5683: the lexical TF ranking above is fused with the migration-553
- * plan-embedding semantic ranking via Reciprocal Rank Fusion (@papercusp/rrf)
- * before the top-N cut — see the fusion block in the handler below. Prior to
- * this fix, semantic hits were only ever appended (capped at 3) AFTER the
- * lexical results, so a topically-exact plan whose lexical score was low —
- * e.g. buried behind long plans that merely repeat common tokens, or dropped
- * entirely by the CANDIDATE_LIMIT ILIKE prefilter below — ranked dead last or
- * vanished from a `limit`-capped page.
+ * plan-embedding semantic ranking by Reciprocal Rank Fusion before the top-N
+ * cut. Prior to that fix, semantic hits were only ever appended (capped at 3)
+ * AFTER the lexical results, so a topically-exact plan whose lexical score was
+ * low — e.g. buried behind long plans that merely repeat common tokens, or
+ * dropped entirely by the CANDIDATE_LIMIT ILIKE prefilter below — ranked dead
+ * last or vanished from a `limit`-capped page.
+ *
+ * P-016 / D-025: that fusion is no longer hand-rolled here. Both legs are now
+ * `@papercusp/search` `SearchSource` parts and `runHybridSearch` owns the
+ * fusion, so this surface inherits the P-017 similarity FLOOR (the vector leg
+ * used to hand fusion its k nearest rows whether or not any was a match) and
+ * reports P-020 `legs` — a lexical-only result caused by a dead embedder is now
+ * legible as degraded instead of looking like a healthy search that found less.
+ * Ranking is unchanged by the move: the local fusion called
+ * `rrfCombine(…, RRF_K_DEFAULT)` and the engine calls the same function with
+ * the same constant, so deleting it de-duplicates rather than re-ranks.
+ *
+ * The 0.45 gemma floor was MEASURED on this corpus before being inherited
+ * (D-025): worst in-domain top-10 0.5370 vs best off-domain top-1 0.5404, so
+ * it cannot silently zero the leg. `harness_plans` is neither of the corpora
+ * the floor was originally calibrated on, so that check was not optional.
+ *
+ * ⚠ The lexical leg here is NOT a tsvector rank, deliberately (D-025): it wraps
+ * the in-JS scorer above and ignores the `sql` handle the engine passes. A
+ * `ts_rank_cd` leg cannot produce the scope-attributed `matches[]` this tool
+ * returns, cannot express six distinct scope weights (setweight has four
+ * classes), and cannot honour the per-call `scope` arg. `SearchSource` requires
+ * a ranked LIST, not a query, so wrapping the scorer is supported and exact.
  */
 
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
-import { rrfCombine, RRF_K_DEFAULT, type RankedItem } from '@papercusp/rrf';
+import { runHybridSearch, isVectorOnly, type SearchSource, type Listing } from '@papercusp/search';
 import { listPlanRowsMatchingAnyToken, syntheticPlanPath, VALID_PLAN_SLUG } from './source';
 import { parsePlan } from './parser';
 import { ctxToPlanSourceOpts } from './_ctx-opts';
-import { semanticPlanHits } from './semantic-dedup';
+import { resolvePlansEmbedder, planEmbeddingRanker, type PlanSemanticHit } from './semantic-leg';
+import { lazyOrgSql } from '../../search/lazy-org-sql';
 import { harnessArg, harnessScopedCtx, HARNESS_ALL, isAllHarnessSentinel } from '../_harness-scope';
+// Installs papercusp's engine-level ranking policy (P-017) on import — the
+// same side-effect import every other engine caller uses. Without it this
+// surface would call the engine and inherit NO floor, which is the exact
+// hand-propagation failure P-016 removes.
+import '../../search/configure-search-defaults';
 
 /**
  * SQL candidate cap (audit P-042). Scoring needs ≥1 exact-token hit and
@@ -38,6 +65,9 @@ import { harnessArg, harnessScopedCtx, HARNESS_ALL, isAllHarnessSentinel } from 
  * When the cap bites, the response says so (`truncatedCandidates`).
  */
 const CANDIDATE_LIMIT = 200;
+
+/** Ranker/source label reported in the engine's `legs` and per-hit `rankers`. */
+const SOURCE_KEY = 'plans';
 
 const SCOPES = ['slug', 'title', 'now', 'items', 'decisions', 'prose'] as const;
 type Scope = (typeof SCOPES)[number];
@@ -58,7 +88,9 @@ const argsSchema = z.object({
     .describe(
       'Fuse embedding-cosine hits with the lexical ranking via Reciprocal Rank Fusion (RRF) instead of ' +
         'scoring lexical alone — a topically-exact plan whose lexical score is low/zero can still rank near ' +
-        'the top on the strength of its semantic rank. Default on (off under vitest); false = lexical-only.',
+        'the top on the strength of its semantic rank. Default on (off under vitest); false = lexical-only. ' +
+        'Read `legs` on the response for whether it actually ran: legs.degraded=true means the ranking is ' +
+        'NOT the one this promises.',
     ),
 });
 
@@ -153,7 +185,7 @@ export default defineTool({
   modality: ['text'],
   args: argsSchema,
   async handler(args, ctx) {
-    const ctxAny = ctx as { metadata?: (d: Record<string, unknown>) => void };
+    const ctxAny = ctx as { metadata?: (d: Record<string, unknown>) => void; signal?: AbortSignal };
     const scopes: Scope[] = (args.scope as Scope[] | undefined) ?? [...SCOPES];
     const limit = args.limit ?? 20;
     const includeArchived = args.includeArchived !== false;
@@ -171,40 +203,58 @@ export default defineTool({
 
     const sctx = harnessScopedCtx(args.harness, ctx);
     const opts = await ctxToPlanSourceOpts(sctx);
-    // SQL candidate prefilter (audit P-042 — EI-98/EI-174/EI-175): only
-    // plans containing ≥1 query token leave PG; everything else used to be
-    // fetched + parsed per request just to score 0.
-    const { rows: candidates, truncated } = await listPlanRowsMatchingAnyToken(queryTokens, {
-      includeArchived,
-      ...opts,
-      limit: CANDIDATE_LIMIT,
-    });
 
-    // EI-397: If query looks like an exact slug and we got zero hits in the
-    // scoped harness, retry across all harnesses to avoid the "plan exists but
-    // hidden by harness scope" problem (harness-scoped agents searching for
-    // Papercusp plans would get zero hits).
-    let finalCandidates = candidates;
+    // Captured by the LEXICAL leg on its way through, and read after fusion:
+    // the engine's `SearchHit` is domain-free and carries none of `matches[]`,
+    // `score`, or `matches_omitted`, which are this tool's actual product.
+    const hydration = new Map<string, Hit>();
+    let truncated = false;
     let crossHarnessHit = false;
-    if (queryIsSlugLike && candidates.length === 0 && !isExplicitAllScope && opts.harnessSlug !== HARNESS_ALL) {
-      const crossOpts = await ctxToPlanSourceOpts({ harnessSlug: HARNESS_ALL });
-      const { rows: crossCandidates } = await listPlanRowsMatchingAnyToken(queryTokens, {
+
+    /**
+     * The lexical leg: the in-JS TF scorer above, wrapped as a ranked list.
+     *
+     * Returns the FULL scored list rather than slicing to the engine's
+     * over-fetch `limit` — exactly what the hand-rolled fusion fed to
+     * `rrfCombine` before, so fused ranking is bit-for-bit the same. The
+     * candidate ceiling that actually bounds this leg is the SQL prefilter's
+     * CANDIDATE_LIMIT, which is independent of the caller's `limit`.
+     */
+    const runLexical = async (): Promise<Hit[]> => {
+      // SQL candidate prefilter (audit P-042 — EI-98/EI-174/EI-175): only
+      // plans containing ≥1 query token leave PG; everything else used to be
+      // fetched + parsed per request just to score 0.
+      const { rows: candidates, truncated: wasTruncated } = await listPlanRowsMatchingAnyToken(queryTokens, {
         includeArchived,
-        ...crossOpts,
+        ...opts,
         limit: CANDIDATE_LIMIT,
       });
-      if (crossCandidates.length > 0) {
-        finalCandidates = crossCandidates;
-        crossHarnessHit = true;
+      truncated = wasTruncated;
+
+      // EI-397: If query looks like an exact slug and we got zero hits in the
+      // scoped harness, retry across all harnesses to avoid the "plan exists but
+      // hidden by harness scope" problem (harness-scoped agents searching for
+      // Papercusp plans would get zero hits).
+      let finalCandidates = candidates;
+      if (queryIsSlugLike && candidates.length === 0 && !isExplicitAllScope && opts.harnessSlug !== HARNESS_ALL) {
+        const crossOpts = await ctxToPlanSourceOpts({ harnessSlug: HARNESS_ALL });
+        const { rows: crossCandidates } = await listPlanRowsMatchingAnyToken(queryTokens, {
+          includeArchived,
+          ...crossOpts,
+          limit: CANDIDATE_LIMIT,
+        });
+        if (crossCandidates.length > 0) {
+          finalCandidates = crossCandidates;
+          crossHarnessHit = true;
+        }
       }
-    }
-    const parsedPlans = finalCandidates.map((row) => ({
-      parsed: parsePlan(row.content, {
-        filePath: syntheticPlanPath(row.harnessSlug, row.planSlug),
-      }),
-      slug: row.planSlug,
-    }));
-    const hits: Hit[] = [];
+      const parsedPlans = finalCandidates.map((row) => ({
+        parsed: parsePlan(row.content, {
+          filePath: syntheticPlanPath(row.harnessSlug, row.planSlug),
+        }),
+        slug: row.planSlug,
+      }));
+      const hits: Hit[] = [];
 
     for (const { parsed, slug } of parsedPlans) {
       if (parsed.isLegacy && !includeLegacy) continue;
@@ -280,9 +330,9 @@ export default defineTool({
         const omitted = Math.max(0, matches.length - MAX_MATCHES_PER_PLAN);
         hits.push({
           // WI-7259 (sibling of WI-7246): `slug` here is already the canonical
-          // `row.planSlug` destructured above (line 205/209) — a snapshot's
-          // frontmatter.slug reads its PARENT's slug, so falling back to it
-          // would silently misattribute every snapshot hit to its parent.
+          // `row.planSlug` destructured above — a snapshot's frontmatter.slug
+          // reads its PARENT's slug, so falling back to it would silently
+          // misattribute every snapshot hit to its parent.
           plan: slug,
           score,
           matches: omitted > 0 ? matches.slice(0, MAX_MATCHES_PER_PLAN) : matches,
@@ -291,75 +341,96 @@ export default defineTool({
       }
     }
 
-    hits.sort((a, b) => b.score - a.score);
+      hits.sort((a, b) => b.score - a.score);
+      return hits;
+    };
 
-    // WI-5683 fix (was P-010 shared-embedding-sidecar-and-enrichment-2026-07-10's
-    // recall-additive leg): fuse the lexical ranking with the migration-553
-    // plan-embedding semantic ranking via Reciprocal Rank Fusion — the same
-    // pattern search:semantic already uses (@papercusp/rrf) — instead of
-    // scoring lexical alone and APPENDING up to 3 semantic extras after the
-    // cut. RRF combines by RANK POSITION, not raw score, so a plan whose
-    // lexical score is 0/weak (a long, unrelated plan that merely repeats
-    // common tokens can outscore a topically-exact plan on raw term
-    // frequency — see WI-5683) — or one the CANDIDATE_LIMIT ILIKE prefilter
-    // dropped before scoring (semanticPlanHits queries harness_plans by
-    // pgvector directly, over the FULL corpus, so it is NOT subject to that
-    // prefilter) — but that ranks highly semantically now lands near the top
-    // of the fused list instead of buried behind (or entirely absent from)
-    // every plan that merely shares common words. Strictly fail-open: an
-    // embedder outage/timeout/disable degrades to lexical-only (matches the
-    // prior default-on behavior); inert under vitest unless semantic:true is
-    // forced (WI-3792 load-scar class).
-    let semanticHitCount = 0;
-    let merged: Array<Hit & { semantic?: true; similarity?: number }>;
+    // `embedder: null` is reserved for "no semantic leg was ever wanted" — the
+    // ONE case the engine's `not-run` correctly describes. When the leg IS
+    // wanted, resolvePlansEmbedder returns a REJECTING embedder on every
+    // degraded path, so a dead embedder reports `blocked` (D-023) instead of
+    // being indistinguishable from `semantic:false`.
     const semanticOn = args.semantic ?? !process.env.VITEST;
-    let sem: Awaited<ReturnType<typeof semanticPlanHits>> = null;
-    if (semanticOn) {
-      try {
-        // Over-fetch for RRF fusion headroom (mirrors runHybridSearch's
-        // limit*3 candidate pool) rather than the old fixed "+3 extras" cap.
-        sem = await semanticPlanHits(args.query, { ...opts, includeArchived, limit: Math.max(limit * 3, 30) });
-      } catch {
-        // fail-open: the lexical result stands.
-        sem = null;
-      }
-    }
+    const { embedder, embeddingMode } = semanticOn
+      ? await resolvePlansEmbedder()
+      : { embedder: null, embeddingMode: null };
 
-    if (sem?.length) {
-      const lexicalSlugs = new Set(hits.map((h) => h.plan));
-      const lexicalRanked: RankedItem<Hit>[] = hits.map((h) => ({ key: h.plan, score: h.score, row: h }));
-      const semanticRanked: RankedItem<Hit>[] = sem.map((h) => ({
-        key: h.slug,
-        score: h.similarity,
-        row: {
-          plan: h.slug,
-          score: 0,
-          matches: [{ scope: 'title', snippet: h.title ?? h.slug }],
-        },
-      }));
-      const simBySlug = new Map(sem.map((h) => [h.slug, Math.round(h.similarity * 1000) / 1000]));
-      const fused = rrfCombine<Hit>(
-        [
-          { name: 'lexical', list: lexicalRanked },
-          { name: 'semantic', list: semanticRanked },
-        ],
-        RRF_K_DEFAULT,
-      );
-      merged = fused.slice(0, limit).map(({ row, rankers }) => {
-        const similarity = simBySlug.get(row.plan);
-        // Only mark semantic:true (the "this wasn't a lexical match" signal
-        // downstream callers key on) when the plan has NO lexical score of
-        // its own — a plan found by both legs keeps its real lexical matches
-        // and just also carries the similarity that helped rank it.
-        if (!lexicalSlugs.has(row.plan) && rankers.includes('semantic')) {
-          semanticHitCount += 1;
-          return { ...row, semantic: true as const, similarity };
-        }
-        return similarity !== undefined ? { ...row, similarity } : row;
-      });
-    } else {
-      merged = hits.slice(0, limit);
-    }
+    const source: SearchSource = {
+      name: SOURCE_KEY,
+      async bm25(): Promise<Listing> {
+        const hits = await runLexical();
+        return hits.map((h) => {
+          hydration.set(h.plan, h);
+          return {
+            key: h.plan,
+            score: h.score,
+            row: {
+              source: SOURCE_KEY,
+              source_id: h.plan,
+              excerpt: h.matches[0]?.snippet ?? h.plan,
+              highlight: h.plan,
+              score: h.score,
+              rankers: ['bm25'],
+            },
+          };
+        });
+      },
+      // No resolved embedding space ⇒ no `embedding` method, so the engine
+      // never issues a vector query it has no space for. The rejecting embedder
+      // above is what still makes that state report as `blocked`: the engine
+      // sets it when the query embed throws, before any source's embedding
+      // method would have been consulted.
+      ...(embeddingMode
+        ? {
+            embedding: planEmbeddingRanker(
+              SOURCE_KEY,
+              embeddingMode,
+              { ...opts, includeArchived },
+              (h: PlanSemanticHit) => {
+                // A plan the lexical leg never scored still needs a row to
+                // return; the title match mirrors what the old fusion
+                // synthesized for a semantic-only hit.
+                if (!hydration.has(h.slug)) {
+                  hydration.set(h.slug, {
+                    plan: h.slug,
+                    score: 0,
+                    matches: [{ scope: 'title', snippet: h.title ?? h.slug }],
+                  });
+                }
+              },
+            ),
+          }
+        : {}),
+    };
+
+    const { results, legs, applied } = await runHybridSearch([source], {
+      sql: lazyOrgSql,
+      query: args.query,
+      // Both legs resolve their own workspace/harness scope from `opts` (the
+      // plan store is scoped by `resolvePlanScope`, not by the engine's keys).
+      workspaceId: '',
+      scopeFilter: null,
+      limit,
+      mode: 'hybrid',
+      embedder,
+      ...(ctxAny.signal ? { signal: ctxAny.signal } : {}),
+    });
+
+    let semanticHitCount = 0;
+    const merged: Array<Hit & { semantic?: true; similarity?: number }> = results.map((r) => {
+      const base: Hit = hydration.get(r.source_id) ?? { plan: r.source_id, score: 0, matches: [] };
+      const raw = r.rankerScores?.embeddings;
+      const similarity = raw === undefined ? undefined : Math.round(raw * 1000) / 1000;
+      // Only mark semantic:true (the "this wasn't a lexical match" signal
+      // downstream callers key on) when the plan has NO lexical score of its
+      // own — a plan found by both legs keeps its real lexical matches and just
+      // also carries the similarity that helped rank it.
+      if (isVectorOnly(r)) {
+        semanticHitCount += 1;
+        return { ...base, semantic: true as const, similarity };
+      }
+      return similarity !== undefined ? { ...base, similarity } : base;
+    });
 
     ctxAny.metadata?.({
       query: args.query,
@@ -368,6 +439,7 @@ export default defineTool({
       ...(semanticHitCount > 0 ? { semanticHitCount } : {}),
       ...(truncated ? { truncatedCandidates: true } : {}),
       ...(crossHarnessHit ? { crossHarnessHit: true } : {}),
+      ...(legs.degraded ? { legsDegraded: true, legsWarning: legs.warning } : {}),
     });
 
     return {
@@ -376,6 +448,14 @@ export default defineTool({
         text: JSON.stringify({
           hits: merged,
           ...(semanticHitCount > 0 ? { semanticHitCount } : {}),
+          // P-020 + D-023's corollary: inheriting the engine's leg report and
+          // then DISCARDING it is half the migration. `legs.degraded` +
+          // `legs.warning` are the ready-made verdict for "was this really a
+          // hybrid ranking?", and `applied` says which floors actually ran —
+          // without them a lexical-only result caused by a dead embedder is
+          // indistinguishable from a healthy search that found less.
+          legs,
+          applied,
           // No silent caps: the candidate prefilter hit its ceiling — ranking
           // covered the first CANDIDATE_LIMIT matching plans only. Narrow the
           // query (or scope by harness) for exhaustive coverage.

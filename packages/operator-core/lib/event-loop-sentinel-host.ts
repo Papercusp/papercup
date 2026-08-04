@@ -53,6 +53,7 @@
 
 import { Worker } from 'node:worker_threads';
 import { fileURLToPath } from 'node:url';
+import { existsSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { managedSetInterval } from '@papercusp/scheduled-registry';
 import type { LoopSentinelThresholds } from './event-loop-sentinel';
@@ -131,8 +132,19 @@ export function resolveSentinelConfig(
 export interface EventLoopSentinelHandle {
   /** Stop the heartbeat and terminate the watcher. */
   stop(): Promise<void>;
-  /** Whether the watcher is actually running (false when off or spawn failed). */
+  /** Whether the watcher was started (false when off or spawn failed). */
   active(): boolean;
+  /**
+   * Whether the watcher thread is STILL ALIVE.
+   *
+   * Distinct from `active()` on purpose. `active()` says "we spawned one";
+   * this says "it did not die on us". A worker that spawns and then exits
+   * cleanly is indistinguishable from a healthy one unless you watch 'exit' —
+   * measured 2026-08-04, when an `unref()` inside the worker let the thread
+   * exit with code 0 straight after reporting ready. The host logged "armed",
+   * `active()` returned true, and the sentinel detected nothing.
+   */
+  workerAlive(): boolean;
   /** Current heartbeat counter — diagnostics for /api/health. */
   beats(): number;
 }
@@ -140,13 +152,35 @@ export interface EventLoopSentinelHandle {
 const INACTIVE: EventLoopSentinelHandle = {
   stop: async () => {},
   active: () => false,
+  workerAlive: () => false,
   beats: () => 0,
 };
 
+/**
+ * Resolve the worker body for the runtime we are actually in.
+ *
+ * Two runtimes, two artifacts, and getting this wrong makes the sentinel
+ * silently absent rather than visibly broken:
+ *
+ * - **tsx** (`npx tsx bin/hono-host.ts` — dev, desktop sidecar): the `.ts` sits
+ *   beside this module and loads directly (measured: a Worker spawned from a
+ *   tsx-run parent resolves repo `.ts` fine, under vitest too).
+ * - **bundled** (`node dist-host/hono-host.mjs` — :3170 staging, and the
+ *   bg-host): plain node, NO tsx loader, so a `.ts` worker cannot load at all.
+ *   `bundle-host.sh` esbuilds it to `event-loop-sentinel.worker.mjs` beside the
+ *   entry, which is what `dirname(here)` resolves to inside a bundle.
+ *
+ * Prefer the `.mjs` and fall back to the `.ts`. This is the same sibling-asset
+ * trap that silently disabled the embed worker (WI-4196) and the cpu-task
+ * worker: esbuild emits only JS, never sibling assets, so anything resolved
+ * relative to the executing module has to be placed there by the build.
+ */
 function workerPath(): string {
   const here =
     typeof __filename !== 'undefined' ? __filename : fileURLToPath(import.meta.url);
-  return resolve(dirname(here), 'event-loop-sentinel.worker.ts');
+  const dir = dirname(here);
+  const bundled = resolve(dir, 'event-loop-sentinel.worker.mjs');
+  return existsSync(bundled) ? bundled : resolve(dir, 'event-loop-sentinel.worker.ts');
 }
 
 /**
@@ -160,6 +194,14 @@ export function startEventLoopSentinel(
   opts: {
     env?: NodeJS.ProcessEnv;
     log?: (line: string, detail: Record<string, unknown>) => void;
+    /**
+     * Override the worker artifact. Tests point this at an esbuilt `.mjs`,
+     * because the `.ts` form is loadable only under tsx — a plain-node Worker
+     * (which is what vitest's pool gives you) cannot resolve its extensionless
+     * import and fails ASYNCHRONOUSLY, via the 'error' event, long after the
+     * constructor has already returned successfully.
+     */
+    workerPath?: string;
   } = {},
 ): EventLoopSentinelHandle {
   const env = opts.env ?? process.env;
@@ -192,7 +234,7 @@ export function startEventLoopSentinel(
       mode: cfg.mode,
       pid: process.pid,
     };
-    worker = new Worker(workerPath(), { workerData: data });
+    worker = new Worker(opts.workerPath ?? workerPath(), { workerData: data });
   } catch (err) {
     // Fail-soft: no sentinel is strictly better than a crashed host.
     log('[event-loop-sentinel] worker spawn FAILED — sentinel disabled, host unaffected', {
@@ -201,12 +243,31 @@ export function startEventLoopSentinel(
     return INACTIVE;
   }
 
+  let workerAlive = true;
+  let stopping = false;
+
   worker.on('error', (err) => {
+    workerAlive = false;
     log('[event-loop-sentinel] worker error — sentinel disabled, host unaffected', {
       error: String(err).slice(0, 300),
     });
   });
 
+  // A watcher that dies silently is worse than none, because the "armed" line
+  // above already told the operator it was watching. Report it loudly — an exit
+  // that is NOT part of stop() means the host is now unguarded.
+  worker.on('exit', (code) => {
+    workerAlive = false;
+    if (stopping) return;
+    log(
+      '[event-loop-sentinel] worker EXITED on its own — the host is NO LONGER guarded against a blocked event loop',
+      { code },
+    );
+  });
+
+  // Parent-side unref: the worker must not keep the process alive. This is the
+  // ONLY correct place for it — an unref inside the worker kills the watcher
+  // thread instead (see the comment in event-loop-sentinel.worker.ts).
   worker.unref();
 
   // The heartbeat. `managedSetInterval` (never a bare setInterval) so it is
@@ -232,6 +293,7 @@ export function startEventLoopSentinel(
 
   return {
     async stop() {
+      stopping = true;
       heartbeat.stop();
       try {
         await worker.terminate();
@@ -240,6 +302,7 @@ export function startEventLoopSentinel(
       }
     },
     active: () => true,
+    workerAlive: () => workerAlive,
     beats: () => Atomics.load(view, 0),
   };
 }

@@ -343,10 +343,15 @@ export default defineTool({
             // WI-6326: reuse the SAME liveness read the leader notification just performed
             // (never a second lookup) so the caller-facing downgrade note's "route
             // elsewhere" advice is code-conditional too.
-            const { liveRouteTarget } = (await notifyFleetScopeRefusal(
+            const { liveRouteTarget, classRefusal } = (await notifyFleetScopeRefusal(
               ident,
               admission,
               `work_items:create+assign '${spec.title}' → ${spec.assign_to}`,
+              // EI-19484346966003625 (R1): hand the refused subject's harness over so the
+              // notice can say whether this spec is refusing a CLASS rather than only this
+              // row — the per-row widen it otherwise recommends is what drove one leader
+              // through 6 spec revisions in 42h without unblocking its member.
+              { harness: spec.harness ?? createCtx.harnessSlug },
             )) ?? {};
             const requestedAssignee = spec.assign_to;
             spec.payload = {
@@ -369,7 +374,7 @@ export default defineTool({
                 `FILED UNASSIGNED — the item exists on the ledger, but you do NOT hold it: ` +
                 `${admission.reason}. No out-of-scope claim was created. You are recorded as the ` +
                 `reporter, so the finding is durable and attributable while it waits for an owner. ` +
-                `${fleetScopeLeaderRemedy(admission, liveRouteTarget)}`,
+                `${fleetScopeLeaderRemedy(admission, liveRouteTarget, classRefusal)}`,
             };
           }
         }

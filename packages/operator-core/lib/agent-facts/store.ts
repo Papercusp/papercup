@@ -501,14 +501,20 @@ export interface FactSurvival {
    */
   nextVictim: boolean;
   /**
-   * The `expires_at` of the fact ranked immediately ABOVE this one — i.e. the
-   * bar this TTL failed to clear. Null when this fact is not last (nothing to
-   * beat) or the neighbour could not be determined.
+   * The remaining-life FRACTION of the fact ranked immediately ABOVE this one —
+   * the bar this write failed to clear on key 2. Null when this fact is not last
+   * (nothing to beat) or the neighbour could not be determined.
    *
-   * Reported as a TIMESTAMP rather than a duration because that is what the
-   * ranking actually compares; the tool layer renders the delta for a human.
+   * A fraction of DECLARED TTL (1 = just written, 0 = expiring now), because
+   * that is what the ranking compares since EI-19483432832662150. This was
+   * `survivingTtlFloor`, an absolute `expires_at`, back when key 2 was
+   * `expires_at DESC`. The rename is deliberate and not cosmetic: the old field
+   * existed to tell an author "re-assert with a TTL beyond this", and that is
+   * now the one lever that provably CANNOT help — a fresh write already scores
+   * ~1.0, the maximum the key can produce, so a longer TTL buys nothing. Keeping
+   * the old name would have kept emitting advice the ranking no longer honours.
    */
-  survivingTtlFloor: string | null;
+  survivingFractionFloor: number | null;
 };
 
 export interface AssertFactInput {
@@ -1382,8 +1388,13 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
       // the sweep then contradicts, which is worse than reporting nothing.
       // `survival-ranking-matches-sweep` in the integration suite runs BOTH and
       // fails if they disagree.
-      const { orderAsSweepWould, rankOfId } = await import('./sweep-ranking');
-      const ordered = orderAsSweepWould(survivors);
+      const { orderAsSweepWould, rankOfId, sweepRemainingFraction } = await import('./sweep-ranking');
+      // ONE instant for both the ordering and the bar derived from it. Key 2 is
+      // time-dependent since EI-19483432832662150, so evaluating them at two
+      // different `now`s could report a floor that disagrees with the very
+      // ordering it was read out of.
+      const nowMs = Date.now();
+      const ordered = orderAsSweepWould(survivors, nowMs);
       const rank = rankOfId(ordered, writtenId);
       if (rank > 0) {
         const isLast = rank === ordered.length;
@@ -1396,7 +1407,9 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
           // is reported as next-victim too: it is one of the two candidates,
           // and warning is the conservative side of an ambiguity.
           nextVictim: isLast,
-          survivingTtlFloor: neighbourAbove ? new Date(neighbourAbove.expires_at).toISOString() : null,
+          survivingFractionFloor: neighbourAbove
+            ? sweepRemainingFraction(neighbourAbove, nowMs)
+            : null,
         };
       }
     } catch {
