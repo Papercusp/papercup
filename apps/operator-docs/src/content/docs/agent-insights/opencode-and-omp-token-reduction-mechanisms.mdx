@@ -1,6 +1,6 @@
 ---
 title: "What opencode and OMP actually do for token reduction — cited to file:line"
-description: "A read of two other agent codebases installed on this box, opencode 1.4.0 and OMP (@oh-my-pi/pi-coding-agent) 17.0.7, enumerating every token-reduction and context-management mechanism with a file:line citation for each. Commissioned to replace a recalled, uncited comparison table. Four of that table's cells are struck: opencode's output cap is 2000 lines / 50 KB, not 1 MB; opencode DOES spill full output to disk and reference it by id; opencode's `code-mode.ts` does not exist at v1.4.0; and opencode's CRITICAL Task mandate is Anthropic-prompt-only, not universal. Adds four mechanisms the table missed entirely, including OMP's context 'shake' and its bitmap-image compaction. Contains no papercusp measurements and no adoption recommendation — deliberately."
+description: "A read of two other agent codebases installed on this box, opencode 1.4.0 and OMP (@oh-my-pi/pi-coding-agent) 17.0.7, enumerating every token-reduction and context-management mechanism with a file:line citation for each. Commissioned to replace a recalled, uncited comparison table. Four of that table's cells are struck: opencode's output cap is 2000 lines / 50 KB, not 1 MB; opencode DOES spill full output to disk and reference it by id; opencode's `code-mode.ts` does not exist at v1.4.0; and opencode's CRITICAL Task mandate is Anthropic-prompt-only, not universal. Adds six mechanisms the table missed entirely, including OMP's context 'shake', its bitmap-image compaction, and opencode's skill-deferral and model-settable codesearch budget. Eight of nine open gaps are now closed: opencode does NOT roll child-session cost into the parent's displayed total, and its 'Code Mode' cell turns out to be Cloudflare's feature attributed to opencode. Contains no papercusp measurements and no adoption recommendation — deliberately."
 discovered: 2026-08-02
 tags: [research, token-reduction, context-management, opencode, omp, subagents, truncation, compaction, external-codebase]
 status: active
@@ -78,7 +78,7 @@ Every cell of the hypothesis table, with a verdict:
 
 | recalled claim | verdict | what is actually there |
 |---|---|---|
-| opencode: batch tool calls in a script — `code-mode.ts`, "confined orchestration script with access to connected MCP tools" | **STRUCK** | No file matching `*code-mode*` exists anywhere in the v1.4.0 tree, and the phrase "confined orchestration script" appears in no `.ts`/`.txt`/`.md` file. |
+| opencode: batch tool calls in a script — `code-mode.ts`, "confined orchestration script with access to connected MCP tools" | **STRUCK — and its origin identified** | No file matching `*code-mode*` exists anywhere in the v1.4.0 tree, and the phrase "confined orchestration script" appears in no `.ts`/`.txt`/`.md` file. The tree's only "Code Mode" is **Cloudflare's**, in a test fixture (`test/fixture/skills/agents-sdk/SKILL.md:152`). See **O11** — the cell appears to be another vendor's feature attributed to opencode. |
 | opencode: output caps 1 MB + explicit `truncated` / `timeout` flags | **PARTLY STRUCK** | The cap is **2000 lines AND 50 KB** (`tool/truncate.ts:17-18`). No 1 MB constant exists on the tool-output path. The `truncated` flag is real (`tool/tool.ts:92`). A `timeout` *flag* is not — bash emits a timeout *message* (`tool/bash.ts:410`). |
 | opencode: spill full output, reference by id — **"—" (absent)** | **STRUCK — the opposite is true** | opencode writes the full untruncated output to `~/.local/share/opencode/tool-output/<ToolID>` and hands the model that id-named path (`tool/truncate.ts:104-107`), with a 7-day retention sweep. |
 | opencode: subagent as context firewall — `Task`, mandated in the system prompt | **CONFIRMED, over-stated** | The `Task` firewall is real and precise (see M6). The *mandate* is **Anthropic-prompt-only** — see P-003 below. |
@@ -86,10 +86,11 @@ Every cell of the hypothesis table, with a verdict:
 | OMP: `output-meta.ts` (~825 lines), `formatFullOutput…` | **CONFIRMED** | `tools/output-meta.ts` is **825 lines**; `formatFullOutputReference(artifactId)` is at `:391`. It is the metadata *builder*, not the cap definition. |
 | OMP: `task.ts` + `vibe-spawn`/`send`/`wait`/`kill`/`list`, async task contracts + summary prompts | **CONFIRMED, two corrections** | The tool names use **underscores**: `VIBE_TOOL_NAMES = ["vibe_spawn","vibe_send","vibe_wait","vibe_kill","vibe_list"]` (`tools/vibe.ts:50`). And **vibe is not the context firewall** — it drives *external CLI worker sessions* (`tools/vibe.ts:4-5`). The firewall is the `task` subsystem (`src/task/`, 25 files). There is no single `task.ts` under `src/`. |
 
-**Four mechanisms the table missed entirely** are documented below: opencode's
+**Six mechanisms the table missed entirely** are documented below: opencode's
 tool-result *pruning* (M5, distinct from compaction), opencode's overflow arithmetic
-(M3), OMP's context **shake** (O4), and OMP's **snapcompact** bitmap-image compaction
-(O5).
+(M3), OMP's context **shake** (O4), OMP's **snapcompact** bitmap-image compaction
+(O5), and — added 2026-08-04 — opencode's **skill deferral** (M8) and its
+model-settable **codesearch budget** (M9).
 
 ---
 
@@ -343,6 +344,44 @@ together so the reader is disposable.
 - Applied to `unique([...system, ...final])` (`:214`) — **at most 4 cache breakpoints**.
 
 Cost lever only; per M3 the cached tokens still occupy the window.
+
+### M8 · Skills — deferring instruction bodies out of the system prompt
+
+Added 2026-08-04. Missed by the original read, which enumerated the truncation and
+compaction paths but not the tool *registration* surface — the same layer-boundary error
+this doc names for OMP's O9, now found on the opencode side too.
+
+An unused skill costs **one markdown bullet**, not its instruction body:
+
+- The tool description is built at `tool/skill.ts:14-33`. The only per-skill payload in it
+  is `Skill.fmt(list, { verbose: false })` (`:32`), which emits
+  `- **<name>**: <description>` per skill and nothing else (`skill/index.ts:258-263`).
+  The verbose form — which adds `<location>` and XML framing — is used elsewhere, not here
+  (`skill/index.ts:242-256`).
+- The full `SKILL.md` body enters context **only on invocation**: `execute` returns
+  `skill.content.trim()` wrapped in `<skill_content name="…">` … `</skill_content>`
+  (`tool/skill.ts:79-91`).
+- The bundled-resource file list is **sampled, not exhaustive** — the walk breaks at
+  `limit = 10` (`:56`, `:69-70`) and the output tells the model so verbatim:
+  `"Note: file list is sampled."` (`:86`).
+
+This is a *deferral* mechanism, not a truncation one: it decides what never enters context
+in the first place, which is precisely what P-002 asked to be enumerated.
+
+### M9 · codesearch — the one cap the model sets itself
+
+`tool/codesearch.ts:44-51` exposes `tokensNum` to the model:
+`.min(1000).max(50000).default(5000)`, described as *"Adjust this value based on how much
+context you need - use lower values for focused queries and higher values for comprehensive
+documentation."* The tool text repeats the guidance (`tool/codesearch.txt`).
+
+Worth separating from M1/M2: **every other opencode cap is a fixed constant the model
+cannot influence.** This one is a budget the model chooses per call.
+
+⚠ Scope caveat, so this is not over-read: `codesearch` queries an **external** retrieval
+service (Exa Code API, `tool/codesearch.txt`), so `tokensNum` bounds what *retrieval
+injects*, not what a local tool emits. It belongs to P-002's "retrieval/search strategy"
+line, not to the output-cap family.
 
 ---
 
@@ -782,14 +821,71 @@ No "us" column, by design.
 
 Recording these explicitly, because an honest gap is worth more than a plausible cell.
 
-- **Wall-clock cost of an opencode subagent spawn.** Not measurable by reading; would need a run.
-- **Whether opencode rolls child-session cost into the parent's displayed totals.** Cost is computed per assistant message (`session/index.ts:296-302`) and children are separate session rows; no aggregation path was located, but the search was not exhaustive.
-- **`code-mode.ts` in opencode's other 18 packages.** Absent from `packages/opencode/src` and no file in the tree matches `*code-mode*`; a full-repo content search for the concept under another name was not run.
+- **Wall-clock cost of an opencode subagent spawn.** Not measurable by reading; would need a run. **This is now the only open gap.**
 
-All three survivors need a **run** or a full-repo content search — none is answerable by reading
-the packages already cited. Every gap that a read could close has been closed.
+The other two closed on 2026-08-04 — both were the searches this section admitted had not been
+run. Neither needed a run after all; both needed a *wider* search, which is the same lesson the
+package-boundary section below draws.
 
-### ✓ Six of the original nine closed after publication — five of them to one cause
+### ✓ O10 · Child-session cost is **not** rolled into the parent's displayed total
+
+Previously *"no aggregation path was located, but the search was not exhaustive."* The search is
+now exhaustive across `packages/opencode/src`, `packages/app/src` and the SDK client, and the
+answer is a clean **no**:
+
+- The displayed total is built by `build(messages: Message[])` and reduces over **one session's
+  own** messages: `messages.reduce((sum, msg) => sum + (msg.role === "assistant" ? msg.cost : 0), 0)`
+  (`app/src/components/session/session-context-metrics.ts:51`), surfaced as `context.stats.totalCost`
+  (`session-context-tab.tsx:216`).
+- Children are separate rows keyed by `parentID` (`tool/task.ts:65-66`), serialized as `n` in the
+  app store, and the app **deliberately excludes them** from root-level views and counters:
+  `const roots = all.filter((s) => !s.n)` (`app/src/context/global-sync/session-trim.ts`) and
+  `if (!info.n) input.setStore("sessionTotal", (value) => value + 1)`
+  (`app/src/context/global-sync/event-reducer.ts`).
+- `tool/task.ts` contains **no** reference to `cost`, `tokens` or `usage` at all — the only
+  parent linkage it establishes is `parentID` (`:65-66`). Nothing flows back up.
+
+**Why this matters for P-004's economics, not just as trivia:** the subagent firewall's whole
+value is that the child's tokens never reach the parent's *context*. The corollary found here is
+that they never reach the parent's *cost display* either. So the firewall's price is real but is
+not visible where an operator would naturally look for it — a per-session cost readout
+systematically under-reports the true cost of a task that delegated. Anyone costing this pattern
+must aggregate child sessions themselves; opencode will not do it for them.
+
+### ✓ O11 · "Code Mode" is **Cloudflare's**, not opencode's — the recalled cell's origin, identified
+
+Previously *"a full-repo content search for the concept under another name was not run."* It has
+now been run across all 19 packages, and it closes the cell far more strongly than a bare absence:
+
+- The **only** occurrence of the term in the entire v1.4.0 tree is a **test fixture** documenting
+  the **Cloudflare Agents SDK** — `packages/opencode/test/fixture/skills/agents-sdk/SKILL.md:152`,
+  a doc-index bullet reading `**[references/codemode.md](references/codemode.md)** - Code Mode
+  (experimental)`. Its own frontmatter names it: *"Build AI agents on Cloudflare Workers using the
+  Agents SDK"* (`:2-3`).
+- That referenced file **does not even exist** in the fixture — the `references/` directory
+  contains only `callable.md`. It is a dangling link in third-party documentation used as test
+  data.
+- No tool in the registry executes a script that calls other tools. The registered set is
+  `plan-exit · question · bash · edit · glob · grep · read · task · todo · webfetch · write ·
+  invalid · skill · websearch · codesearch · lsp · apply_patch` (`tool/registry.ts:1-26`), and
+  `packages/opencode/src/tool/` contains no script/exec/code-mode module.
+
+So the recalled table did not merely over-state an opencode feature — it appears to have
+**imported a different vendor's feature into opencode's column**. Cloudflare's Code Mode converts
+MCP tools into a TypeScript API an LLM writes code against, which matches the recalled phrasing
+*"confined orchestration script with access to connected MCP tools"* almost exactly. The likeliest
+mechanism is that the fixture (or Cloudflare's docs) and opencode were read in one sitting and
+fused in recall.
+
+That is worth more than the strike itself: it shows the recalled table's errors were not random
+drift but **attribution collapse between adjacent sources** — the failure mode a citation
+requirement exists to catch, and an argument for citing even when you are confident.
+
+### ✓ Eight of the original nine closed after publication — five of them to one cause
+
+Six closed in the first post-publication pass (below); **O10** and **O11** closed on 2026-08-04,
+both by running a search a previous pass had recorded as not-run. Only the subagent spawn's
+wall-clock cost survives, and it is the one gap that genuinely needs a run rather than a read.
 
 The five that closed were all OMP gaps, and every one of them read as *"OMP does not appear to
 do this"* for the same wrong reason: **OMP is not one package.** The original read searched
@@ -807,6 +903,14 @@ in a single grep. **An absence proved by one grep in one package is not an absen
 the transferable lesson here, and it applies to this doc's *remaining* gaps too: the two OMP
 cells still marked *"not located"* above were established the same way and deserve the same
 scepticism.
+
+**That prediction was then borne out twice.** Both 2026-08-04 closures (O10, O11) were gaps this
+doc had written off as needing a run; both fell to a wider search of material already on disk.
+Note the asymmetry in what the wider search returned: O10 confirmed the suspected absence (no
+cost rollup exists) while O11 overturned the framing entirely (the feature exists — for a
+different vendor). **A gap recorded as "not searched" is not evidence of absence in either
+direction**, and the cheapest way to find out remains running the search rather than reasoning
+about whether it is worth running.
 
 What closed, and where it actually lived:
 
