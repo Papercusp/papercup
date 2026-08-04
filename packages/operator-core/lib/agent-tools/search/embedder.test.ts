@@ -21,7 +21,7 @@
  * stubbed so this isolates the resolution logic with zero network / model.
  */
 
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, type MockInstance } from 'vitest';
 
 // Both deps are pulled in via dynamic import() inside buildQueryEmbedder, so the
 // mocks below intercept those too (same shape rerank.test.ts uses).
@@ -146,6 +146,30 @@ describe('buildQueryEmbedder — local / null fallback', () => {
   // to build (sidecar down, model fetch failed, package genuinely missing, …). That is
   // exactly the (b)/(d)/(f) contract: when local is selected but unavailable,
   // buildQueryEmbedder yields null and the engine degrades to BM25-only.
+  //
+  // ⚠ THE DEGRADE IS LOGGED, AND THAT LOG IS COVERED BEHAVIOR — NOT NOISE.
+  // embedder.ts's acquisition catch console.warn()s the degrade (added
+  // 2026-08-04, after a swallowed ReferenceError disabled semantic search for a
+  // whole process while every caller reported a normal "no embedder" degrade —
+  // it surfaced only as red gate tests hours later). This repo runs
+  // vitest-fail-on-console, so an unasserted warn fails the test; these three
+  // cases therefore OWN the warn instead of being broken by it.
+  //
+  // Asserting it beats silencing it twice over: the warn becomes covered (delete
+  // it and a test reds, so the observability cannot be quietly lost again), and
+  // it is the ONLY thing separating (b) from (d)/(f)/unset. All four return
+  // null, but (b) never selects local at all — it falls off the end of the
+  // cascade — whereas the others select local and fail to build it. Without the
+  // warn assertion those two very different paths are indistinguishable here,
+  // which is precisely the confusion the log was added to end.
+  let warnSpy: MockInstance;
+  const DEGRADE_WARN = /\[query-embedder\] embedder acquisition failed — degrading to BM25-only/;
+
+  beforeEach(() => {
+    // Installed AFTER the file-level beforeEach's clearAllMocks(); removed by
+    // the file-level afterEach's restoreAllMocks().
+    warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
 
   it('(b) openai mode but NO key → does not pick openai; falls to local → null (import unavailable)', async () => {
     vi.mocked(readCredentials).mockResolvedValue({}); // no key
@@ -159,6 +183,11 @@ describe('buildQueryEmbedder — local / null fallback', () => {
     const embedder = await buildQueryEmbedder();
     expect(embedder).toBeNull();
     expect(fetchMock).not.toHaveBeenCalled();
+    // THE CONTROL for (d)/(f)/unset below: this null comes from falling off the
+    // end of the cascade, not from a failed acquisition — so nothing degraded
+    // and nothing was logged. If this ever warns, the cascade started attempting
+    // a local build it is not supposed to attempt.
+    expect(warnSpy).not.toHaveBeenCalled();
   });
 
   it('(d) auto mode + NO key → local selected → null (local import unavailable) + no OpenAI call', async () => {
@@ -171,6 +200,8 @@ describe('buildQueryEmbedder — local / null fallback', () => {
     // local was selected but the transformers import fails → null (BM25 fallback).
     expect(embedder).toBeNull();
     expect(fetchMock).not.toHaveBeenCalled();
+    // …and unlike (b), the failure was ANNOUNCED rather than swallowed.
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringMatching(DEGRADE_WARN));
   });
 
   it('(f) explicit local mode (even with a key) → local import fails → null', async () => {
@@ -183,6 +214,7 @@ describe('buildQueryEmbedder — local / null fallback', () => {
     expect(embedder).toBeNull();
     // mode pinned local → OpenAI never used despite the key.
     expect(fetchMock).not.toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringMatching(DEGRADE_WARN));
   });
 
   it('unset mode + NO key → local → null (no mode resolved to a usable embedder)', async () => {
@@ -192,6 +224,9 @@ describe('buildQueryEmbedder — local / null fallback', () => {
 
     const embedder = await buildQueryEmbedder();
     expect(embedder).toBeNull();
+    // unset + no key resolves to local (per the cascade), so this is a FAILED
+    // acquisition like (d)/(f) — announced, not a fall-off-the-end like (b).
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringMatching(DEGRADE_WARN));
   });
 
   it('readCredentials throwing falls back to the env key (try/catch around creds read)', async () => {
