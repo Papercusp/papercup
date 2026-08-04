@@ -214,3 +214,68 @@ export function findSqlCommentBacktick(fileName: string, text: string): SqlComme
   }
   return null;
 }
+
+/** Bound on repair passes (one per offending line). A file needing more than this is not
+ *  a stray typo — let the LLM fixer look at it rather than spinning. */
+const MAX_AUTOFIX_PASSES = 200;
+
+/**
+ * Deterministic repair for this class: swap the offending backticks for straight double
+ * quotes, which is exactly the remedy `detect` already prescribes to the author.
+ *
+ * WHY THIS EXISTS, given the entry in registry.ts long said "No autoFix" (EI-19493869861442174).
+ * That note gave two reasons and both have since been answered:
+ *
+ *   1. "rephrasing is an authoring choice" — but `detect`'s own message already MAKES that
+ *      choice ("use straight quotes"), and when this class actually fired on 2026-08-04 the
+ *      LLM fixer independently produced precisely this transformation. The freedom was
+ *      notional; the cost of deferring it was ~76min of a fleet-wide :3170 outage plus a
+ *      peer's work stranded in quarantine.
+ *   2. "the file may be mid-edit" — handled STRUCTURALLY one layer up: the git-sync guard's
+ *      write is CAS-guarded (content-guard.ts), re-reading immediately before writing and
+ *      writing only when the file still equals the baseline it detected on.
+ *
+ * SAFE BY CONSTRUCTION, so this can only shorten an outage, never cause one: the guard runs
+ * this ONLY on a file that already FAILED `detect`, re-runs `detect` on the result, and keeps
+ * the repair only if it fully clears the error — otherwise the file quarantines to the LLM
+ * fixer exactly as before.
+ *
+ * The HEURISTIC is not reimplemented here (D-003): each offending line is located by calling
+ * `findSqlCommentBacktick` itself and rewriting from the `col` it reports, which is documented
+ * as the first unescaped backtick INSIDE the comment — so everything from there to end of line
+ * is comment text and safe to requote. An ESCAPED backtick is left alone: it never terminated
+ * the template, so touching it would be an edit the defect does not justify.
+ *
+ * Pure + idempotent, per the autoFix contract.
+ */
+export function autoFixSqlCommentBacktick(text: string): { fixed: string; changed: boolean } {
+  const lines = text.split('\n');
+  let changed = false;
+
+  for (let pass = 0; pass < MAX_AUTOFIX_PASSES; pass++) {
+    // fileName is unused by the predicate (it gates scope at the detector level), so the
+    // empty string here is deliberate rather than a placeholder for something missing.
+    const hit = findSqlCommentBacktick('', lines.join('\n'));
+    if (!hit) break;
+
+    const idx = hit.line - 1;
+    const line = lines[idx];
+    if (line === undefined) break;
+
+    const from = hit.col - 1;
+    let rebuilt = line.slice(0, from);
+    for (let j = from; j < line.length; j++) {
+      const ch = line[j];
+      rebuilt += ch === '`' && line[j - 1] !== '\\' ? '"' : ch;
+    }
+
+    // No progress ⇒ this line is not something we can mechanically resolve. Bail out
+    // WITHOUT partial edits so the whole file reaches the LLM fixer in its original state.
+    if (rebuilt === line) return { fixed: text, changed: false };
+
+    lines[idx] = rebuilt;
+    changed = true;
+  }
+
+  return changed ? { fixed: lines.join('\n'), changed: true } : { fixed: text, changed: false };
+}

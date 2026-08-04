@@ -3,6 +3,7 @@ import ts from 'typescript';
 import {
   findSqlCommentBacktick,
   sqlCommentBacktickScopeMatches,
+  autoFixSqlCommentBacktick,
 } from './sql-comment-backtick';
 
 /**
@@ -313,5 +314,88 @@ describe('sqlCommentBacktickScopeMatches', () => {
   it('excludes non-source extensions', () => {
     expect(sqlCommentBacktickScopeMatches('a/b/x.md')).toBe(false);
     expect(sqlCommentBacktickScopeMatches('a/b/x.sql')).toBe(false);
+  });
+});
+
+/**
+ * The deterministic repair (EI-19493869861442174). Before this existed, every occurrence of
+ * this class quarantined the file and waited on the LLM content-fixer — measured at ~76min on
+ * 2026-08-04 with :3170 down fleet-wide and a peer's fix stranded, for a two-character change.
+ *
+ * The contract the git-sync guard relies on is narrow and is what the first test pins: run on
+ * a file that FAILED `detect`, the repair must make `detect` return null. If it does not, the
+ * guard discards it and quarantines exactly as before — so these tests are the difference
+ * between a repair that lands and one that silently never applies.
+ */
+describe('autoFixSqlCommentBacktick — the deterministic repair', () => {
+  const INCIDENT = src(
+    'const rows = await sql`',
+    '    SELECT id FROM harness_shared.work_items',
+    "     WHERE state <> 'done'",
+    "     -- ⚠ NOT `<> 'done'`: 209 live plan-items sit at 'dropped', and counting",
+    '     LIMIT 200`;',
+  );
+
+  it('CLEARS the detector — the contract the git-sync guard checks before keeping a repair', () => {
+    expect(findSqlCommentBacktick('a/b/x.ts', INCIDENT)).not.toBeNull();
+    const { fixed, changed } = autoFixSqlCommentBacktick(INCIDENT);
+    expect(changed).toBe(true);
+    expect(findSqlCommentBacktick('a/b/x.ts', fixed)).toBeNull();
+  });
+
+  it('produces exactly the remedy detect() prescribes: straight double quotes', () => {
+    const { fixed } = autoFixSqlCommentBacktick(INCIDENT);
+    expect(fixed).toContain('NOT "<> \'done\'"');
+  });
+
+  it('leaves the enclosing template intact — opener and closing backtick both survive', () => {
+    const { fixed } = autoFixSqlCommentBacktick(INCIDENT);
+    expect(fixed).toContain('await sql`');
+    expect(fixed).toContain('LIMIT 200`;');
+    // Only the comment line moved; every other line is byte-identical.
+    const before = INCIDENT.split('\n');
+    const after = fixed.split('\n');
+    expect(after.filter((l, i) => l !== before[i])).toHaveLength(1);
+  });
+
+  it('repairs EVERY offending line, not just the first — a partial repair would be discarded', () => {
+    const many = src(
+      'const rows = await sql`',
+      '     -- first offender: `alpha` here',
+      "     WHERE state <> 'done'",
+      '     -- second offender: `beta` here',
+      '     LIMIT 1`;',
+    );
+    const { fixed, changed } = autoFixSqlCommentBacktick(many);
+    expect(changed).toBe(true);
+    expect(findSqlCommentBacktick('a/b/x.ts', fixed)).toBeNull();
+    expect(fixed).toContain('"alpha"');
+    expect(fixed).toContain('"beta"');
+  });
+
+  it('is idempotent and pure, per the autoFix contract', () => {
+    const once = autoFixSqlCommentBacktick(INCIDENT);
+    const twice = autoFixSqlCommentBacktick(once.fixed);
+    expect(twice.changed).toBe(false);
+    expect(twice.fixed).toBe(once.fixed);
+    // the input string itself is untouched
+    expect(INCIDENT).toContain('`<>');
+  });
+
+  it('is a no-op on a clean file', () => {
+    const clean = src('const rows = await sql`', "     -- the 'name' column", '     SELECT 1`;');
+    expect(autoFixSqlCommentBacktick(clean)).toEqual({ fixed: clean, changed: false });
+  });
+
+  it('leaves an ESCAPED backtick alone — it never terminated the template', () => {
+    const withEscape = src(
+      'const rows = await sql`',
+      '     -- `alpha` and an escaped \\` tick',
+      '     SELECT 1`;',
+    );
+    const { fixed, changed } = autoFixSqlCommentBacktick(withEscape);
+    expect(changed).toBe(true);
+    expect(fixed).toContain('"alpha"');
+    expect(fixed).toContain('\\`'); // the escaped one survives untouched
   });
 });

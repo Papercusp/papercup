@@ -19,7 +19,11 @@ import { findTsParseError } from './ts-parse';
 import { findNulBytes, autoFixNulBytes, nulByteScopeMatches } from './nul-bytes';
 import { findConstantConditional } from './constant-conditional';
 import { findFocusedTest } from './focused-test';
-import { findSqlCommentBacktick, sqlCommentBacktickScopeMatches } from './sql-comment-backtick';
+import {
+  findSqlCommentBacktick,
+  sqlCommentBacktickScopeMatches,
+  autoFixSqlCommentBacktick,
+} from './sql-comment-backtick';
 
 /** A registered content check. */
 export interface ContentDetector {
@@ -165,9 +169,14 @@ export const tsParseDetector: ContentDetector = {
  * longer mistakes prose ABOUT SQL for SQL); the script now imports that same
  * predicate, so the two cannot drift.
  *
- * No `autoFix` — like ts-parse/shell-syntax, rephrasing a comment without its
- * backticks is an authoring choice (quotes? drop them? reword?) that belongs to
- * the author, and the file may also be mid-edit.
+ * CARRIES an `autoFix` (EI-19493869861442174). This entry long read "No autoFix —
+ * rephrasing a comment without its backticks is an authoring choice ... and the file
+ * may also be mid-edit". Both halves were answered by the 2026-08-04 incident:
+ * `detect` itself already MAKES the authoring choice it deferred ("use straight
+ * quotes"), and the LLM fixer, when it finally ran, produced exactly that — after
+ * ~76min with :3170 down fleet-wide and a peer's fix stranded in quarantine. The
+ * mid-edit worry is handled a layer up, by the guard's CAS-guarded write. Keeping
+ * the repair manual bought no safety and cost an outage.
  */
 export const sqlCommentBacktickDetector: ContentDetector = {
   key: 'sql-comment-backtick',
@@ -187,6 +196,7 @@ export const sqlCommentBacktickDetector: ContentDetector = {
       'a comment reading "the \'closed_ts\' column" rather than backtick-quoting the name.'
     );
   },
+  autoFix: autoFixSqlCommentBacktick,
   fixerRole: CONTENT_FIXER_ROLE,
 };
 
