@@ -1166,10 +1166,47 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
   //      An UNSET confidence ranks with 'provisional', deliberately mid: most
   //      existing rows predate the field, and ranking them worst would mass-evict
   //      the entire legacy corpus on the next assert.
-  //   2. expires_at DESC — the TTL is the author's OWN declaration of how long
-  //      this should live. A fact expiring in an hour is a cheaper loss than one
-  //      deliberately given 90 days. This is the signal `updated_at` should have
-  //      been all along: it is about the fact's intended life, not its edit time.
+  //   2. remaining FRACTION of declared TTL, DESC — how much of the life its
+  //      author gave it this fact still has, as a proportion:
+  //      (expires_at - now()) / (expires_at - created_at). A fact 10% into a
+  //      6-hour life is fresher, and a cheaper thing to keep, than one 90%
+  //      through 90 days.
+  //
+  //      This key was `expires_at DESC` until EI-19483432832662150. Absolute
+  //      expiry LOOKS like a value proxy but encodes only how long the
+  //      CONDITION lasts, not how much the fact MATTERS — so it priced a long
+  //      TTL as a purchase of durability, and those two are unrelated. Measured
+  //      2026-08-04T01:19Z on harness:papercusp: the pool sat saturated 50/50,
+  //      every row `verified` (so key 1 was inert and this key decided alone),
+  //      with a survival floor of ~29.7 DAYS. An urgent 7-day operational fact
+  //      (`dev-restart-bg-host-cgroup-blast-radius`, a dev:restart blast-radius
+  //      hazard) was asserted 01:19:39 and evicted 01:19:54 — FIFTEEN SECONDS —
+  //      by the next agent's unrelated assert, while two 90-day facts written in
+  //      the same window were untouched. WI-7292 stopped a fact evicting
+  //      ITSELF; the residue was that the next writer did it instead.
+  //
+  //      It was also a RATCHET: every long-TTL assert raised the floor, which
+  //      made short-TTL facts less viable still, converging the scope on
+  //      long-TTL facts. A fraction is TTL-NEUTRAL, so there is no floor to
+  //      ratchet — a fact competes on how much of its OWN declared life is
+  //      left, and a 7-day fact written seconds ago (~100%) outranks a 30-day
+  //      fact written eight hours ago (~99%).
+  //
+  //      ⚠ KNOWN, BOUNDED RISK [self-imposed]: this makes a very short TTL a
+  //      cheap way to take a slot — a flood of minute-long facts would churn the
+  //      corpus, where before they were self-limiting because they died on
+  //      arrival. The lever for that is rate-limiting asserts, NOT this
+  //      ordering; if it shows up, fix it there rather than restoring an
+  //      ordering known to destroy operational facts. The damage is also
+  //      self-healing in a way the old behaviour's was not: short facts expire
+  //      and hand their slots back.
+  //
+  //      ⚠ This key is TIME-DEPENDENT, which `expires_at DESC` was not: the
+  //      order between two rows can now swap as they age, with no write at all.
+  //      That is the point — it is how a short-lived fact serves its purpose and
+  //      then yields — but it means the TS mirror must be evaluated against a
+  //      comparable `now`. Exact ties become rarer, not commoner (a continuous
+  //      value), so the tied-tail ambiguity below is if anything less likely.
   //   3. updated_at DESC — retained only as the final tiebreak, so behavior is
   //      unchanged among rows the first two keys cannot separate.
   //
@@ -1236,7 +1273,8 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
                    WHEN 'suspected'   THEN 2
                    ELSE 1
                  END ASC,
-                 expires_at DESC,
+                 (EXTRACT(epoch FROM (expires_at - now()))
+                    / GREATEST(EXTRACT(epoch FROM (expires_at - created_at)), 1)) DESC,
                  updated_at DESC
        OFFSET ${Math.max(0, FACTS_PER_SCOPE_CAP - 1)})
     RETURNING key, confidence, expires_at, created_by`;
@@ -1310,10 +1348,11 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
           id: string | number | null;
           confidence: string | null;
           expires_at: string | Date;
+          created_at: string | Date;
           updated_at: string | Date;
         }[]
       >`
-        SELECT id, confidence, expires_at, updated_at
+        SELECT id, confidence, expires_at, created_at, updated_at
           FROM harness_shared.agent_facts
          WHERE workspace_id = ${ws} AND scope = ${input.scope}
            AND coalesce(scope_ref,'') = ${ref ?? ''}

@@ -260,12 +260,33 @@ describe('no-hand-rolled-module-pin — the tree', () => {
       'libs/generic/memory/src/config.ts',
       'libs/generic/memory/src/backend-registry.ts',
       'libs/generic/deployment-driver/src/registry.ts',
-      // EI-19479108855357092 — the tooldef registries
+      // EI-19479108855357092 — the tooldef registries.
+      // ⚠ NOT all of tooldef: `src/tool-projection.ts` pins a FOURTH registry
+      // with a plain STRING key, so the detector could not see it while it
+      // matched `Symbol.for` only, and this tranche read as "tooldef done"
+      // when it was not. It is still in ALLOW.
       'libs/generic/tooldef/src/state-channel.ts',
       'libs/generic/tooldef/src/replay-buffer.ts',
       'libs/generic/tooldef/src/card-correlator.ts',
+      // EI-19479108855357092 — flags + the operator-core caches
+      'libs/flags/src/server.ts',
+      'packages/operator-core/lib/spawnable-templates.ts',
+      'packages/operator-core/lib/harness/projects-lite.ts',
+      'packages/operator-core/lib/agents-list.ts',
+      'packages/operator-core/lib/card-response-rate-limit.ts',
     ]) {
       expect(paths.has(migrated)).toBe(false);
     }
+  });
+
+  it('the population is measured in BOTH key forms, not just Symbol.for', () => {
+    // A tree-level companion to the string-key predicate controls above. If the
+    // scanner ever narrows back to one spelling this drops to zero and fails,
+    // rather than quietly reporting a smaller, cleaner-looking population —
+    // which is exactly how 18 files stayed invisible (EI-19479108855357092).
+    const { everyPin } = scanTree();
+    const forms = new Set(everyPin.map((p: { form: string }) => p.form));
+    expect(forms.has('string')).toBe(true);
+    expect(forms.has('symbol')).toBe(true);
   });
 });

@@ -40,6 +40,11 @@ export interface SweepRankableRow {
   id: string | number | null;
   confidence: ConfidenceLike;
   expires_at: string | Date;
+  /**
+   * Required since EI-19483432832662150: key 2 is a fraction of the DECLARED
+   * TTL, and the declared TTL is only recoverable as `expires_at - created_at`.
+   */
+  created_at: string | Date;
   updated_at: string | Date;
 }
 
