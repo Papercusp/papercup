@@ -666,3 +666,88 @@ registerDerivedRead({
     return computeLearningObservations({});
   },
 });
+
+// ── syncReads.audit (EI-19457924854150358) — the sync-read payload audit ──────
+//
+// ⚠ THIS PRODUCER IS NOT A READ OPTIMISATION. Every other entry in this file moves
+// an expensive computation off a user-facing read path. This one has no read path at
+// all: it exists because the registry + `refreshDerivedReads({ only })` is already a
+// solved "run an expensive thing on a schedule and keep the last result" mechanism,
+// and building a second one would be the reuse-first smell. It is the INSTRUMENT that
+// decides whether a sync read has outgrown its byte ceiling.
+//
+// The gap it closes: `sync-read-audit.ts` is a fine instrument that NOTHING RAN. Its
+// own source says "run on demand" — which in practice meant "run when an agent happens
+// to look". `plans.list` drifted past its allowlisted ceiling and sat there ~12h until
+// an unrelated investigation tripped over it. A ratchet nobody re-measures is a comment,
+// not a guard.
+//
+// ── Why `excludeFromDefaultSweep` (do NOT remove it) ────────────────────────────
+// Producers run SEQUENTIALLY and the shared routine is `concurrency: 'skip'`, so this
+// audit's cost is charged to the whole sweep on every pass where it is due — a
+// minutes-scale producer starves the 90s-ttl `serviceHealth` for several ticks. The
+// ttl-ascending ordering (WI-5471) bounds head-of-line blocking only while the heaviest
+// producer is seconds-scale. That is WHY the flag exists; this is its first user, and
+// the flag is INERT without it. Its own routine drives it via `only: ['syncReads.audit']`.
+//
+// ── Why in-process rather than over REST ───────────────────────────────────────
+// `measureSyncReadPayloadsViaRest` stays the manual on-demand harness and the
+// calibration ORACLE, but a producer must not loop HTTP back into its own process:
+// that needs the superuser token, a baseUrl/port guess, and an auth posture to keep in
+// sync — and it is exactly the self-HTTP `no-http-anywhere-2026-07-28` exists to remove.
+// `LATENCY_BUDGET_MS` is also documented as "compute time on the operator", which the
+// in-process `ms` measures and the REST round-trip does not.
+//
+// CALIBRATED, not assumed (2026-08-03, 175 of 218 names): in-process is byte-identical
+// to REST on 169/175 including `plans.list` (~700KB). The 6 that differed
+// (network.hiveDirectory, automation.catalog, designRegressions.list, dev.fleetGovernor,
+// hive.steering, advRoster.list) ALL read process-local/host state, and the calibration
+// probe runs its in-process leg in a standalone driver while REST is served by the
+// operator — two processes legitimately holding different live state (network.hiveDirectory
+// returned a different ROW COUNT, which serialization cannot cause). Zero PG-backed reads
+// diverged. Running INSIDE the operator, as this producer does, is precisely the condition
+// that removes that confound.
+//
+// ttl is deliberately BELOW its routine's cadence so a daily fire always finds it due;
+// the ttl is not the schedule (the routine is), it is the "don't recompute twice" guard.
+registerDerivedRead({
+  key: 'syncReads.audit',
+  ttlMs: 12 * 60 * 60_000,
+  producerVersion: 1,
+  scope: 'workspace',
+  excludeFromDefaultSweep: true,
+  compute: async () => {
+    const { buildLiveFixtureMap, measureSyncReadPayloadsInProcess } = await import(
+      '../sync-resolver/sync-read-audit'
+    );
+    const { knownQueryNamesV2, getRegistryEntryV2 } = await import('../sync-resolver/index');
+
+    const fixtures = buildLiveFixtureMap(knownQueryNamesV2(), getRegistryEntryV2);
+    const report = await measureSyncReadPayloadsInProcess({ fixtures });
+
+    // The two buckets are kept in FULL and DISJOINT — they answer different questions
+    // and collapsing them is the WI-7084 defect this audit exists to surface:
+    //   violations         = newly fat and unallowlisted
+    //   ratchetRegressions = allowlisted but busting its OWN recorded ceiling (worse:
+    //                        someone already measured this and the number rotted)
+    // `measured` is truncated because the full 218-row table is a browse artifact, not
+    // a signal; the heaviest few are what a reader acts on.
+    return {
+      measuredAt: new Date().toISOString(),
+      counts: {
+        measured: report.measured.length,
+        skipped: report.skipped.length,
+        violations: report.violations.length,
+        ratchetRegressions: report.ratchetRegressions.length,
+      },
+      violations: report.violations,
+      ratchetRegressions: report.ratchetRegressions,
+      heaviest: report.measured.slice(0, 25),
+      budgetBytes: report.budgetBytes,
+      budgetMs: report.budgetMs,
+      // Carried verbatim: without it the `ms` column is uninterpretable, and silently
+      // so — treat latency as advisory whenever loadPerCore is above ~1.
+      host: report.host,
+    };
+  },
+});

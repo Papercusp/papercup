@@ -39,7 +39,14 @@ const ftCalls: EngineCall[] = [];
 const hybridCalls: EngineCall[] = [];
 
 let ftResult = { results: [] as unknown[], totalHits: 0 };
-let hybridResult = { results: [] as unknown[], totalHits: 0, embedderAvailable: true };
+let hybridResult: {
+  results: unknown[];
+  totalHits: number;
+  embedderAvailable: boolean;
+  // P-020: scriptable so a test can drive a genuinely DEGRADED search. Left
+  // absent by default; the stub fills in an all-`not-run` report.
+  legs?: unknown;
+} = { results: [], totalHits: 0, embedderAvailable: true };
 
 const runFullTextSearch = vi.fn(async (sources: Array<{ name: string }>, ctx: Record<string, unknown>) => {
   ftCalls.push({ sourceNames: sources.map((s) => s.name), ctx });
@@ -333,6 +340,101 @@ describe('search:semantic — mode + scope defaulting', () => {
     const p = payloadOf(res as never);
     expect(p.results).toEqual([]);
     expect(p.total_hits).toBe(0);
+  });
+});
+
+// P-020 — the handler must SURFACE a silently single-legged search.
+//
+// ⚠ Without these, every other test in this file passes with an all-`not-run`
+// leg report, i.e. green while proving nothing about the contract. The legs
+// here are built by the ENGINE'S OWN `summariseLegs`, not hand-written
+// literals, so this asserts the real predicate end-to-end rather than a copy
+// of it that can drift.
+describe('search:semantic — leg honesty (P-020)', () => {
+  /** Build a real SearchLegs from per-leg facts, via the engine's own rule. */
+  const realLegs = async (
+    lex: Partial<{ attempted: boolean; candidates: number; floored: number; callsRun: number }>,
+    sem: Partial<{ attempted: boolean; candidates: number; floored: number; callsRun: number }>,
+  ) => {
+    const { newLegAccumulator, finaliseLeg, summariseLegs } = await import('@papercusp/search');
+    const mk = (o: typeof lex) => Object.assign(newLegAccumulator(), o);
+    return summariseLegs(finaliseLeg(mk(lex)), finaliseLeg(mk(sem)));
+  };
+
+  it('reports degraded + names the leg when the LEXICAL leg contributes nothing (EI-19447237774252790)', async () => {
+    // The measured case: the lexical leg runs perfectly and returns zero rows
+    // (plainto_tsquery ANDs every term), so the search is silently
+    // semantic-only while embedder_available stays true.
+    hybridResult = {
+      results: [],
+      totalHits: 12,
+      embedderAvailable: true,
+      legs: await realLegs(
+        { attempted: true, callsRun: 4, candidates: 0 },
+        { attempted: true, callsRun: 4, candidates: 12 },
+      ),
+    };
+    const tool = (await import('./semantic')).default;
+    const p = payloadOf((await tool.handler({ query: 'x' } as never, CTX() as never)) as never);
+    expect(p.legs.degraded).toBe(true);
+    expect(p.legs.warning).toMatch(/lexical leg contributed 0 candidates/);
+    expect(p.legs.warning).toMatch(/semantic-only/);
+    expect(p.legs.lexical).toMatchObject({ status: 'ran', candidates: 0 });
+    expect(p.legs.semantic).toMatchObject({ status: 'ran', candidates: 12 });
+    // The degradation must be visible EVEN THOUGH the old signal reads healthy.
+    expect(p.embedder_available).toBe(true);
+  });
+
+  it('distinguishes "the floor ate it" from "the query found nothing"', async () => {
+    hybridResult = {
+      results: [],
+      totalHits: 9,
+      embedderAvailable: true,
+      legs: await realLegs(
+        { attempted: true, callsRun: 4, candidates: 9 },
+        { attempted: true, callsRun: 4, candidates: 0, floored: 40 },
+      ),
+    };
+    const tool = (await import('./semantic')).default;
+    const p = payloadOf((await tool.handler({ query: 'x' } as never, CTX() as never)) as never);
+    expect(p.legs.degraded).toBe(true);
+    expect(p.legs.warning).toMatch(/score floor removed all 40/);
+    expect(p.legs.semantic).toMatchObject({ candidates: 0, floored: 40 });
+  });
+
+  // CALIBRATION: the controls above must not fire on a healthy search, or the
+  // warning becomes noise readers learn to ignore. Both-legs-empty is a query
+  // with no matches, NOT a degradation — the asymmetry is deliberate.
+  it('does NOT report degraded when both legs contribute', async () => {
+    hybridResult = {
+      results: [],
+      totalHits: 5,
+      embedderAvailable: true,
+      legs: await realLegs(
+        { attempted: true, callsRun: 4, candidates: 7 },
+        { attempted: true, callsRun: 4, candidates: 5 },
+      ),
+    };
+    const tool = (await import('./semantic')).default;
+    const p = payloadOf((await tool.handler({ query: 'x' } as never, CTX() as never)) as never);
+    expect(p.legs.degraded).toBe(false);
+    expect(p.legs.warning).toBeNull();
+  });
+
+  it('does NOT report degraded when BOTH legs ran and found nothing (no matches ≠ degraded)', async () => {
+    hybridResult = {
+      results: [],
+      totalHits: 0,
+      embedderAvailable: true,
+      legs: await realLegs(
+        { attempted: true, callsRun: 4, candidates: 0 },
+        { attempted: true, callsRun: 4, candidates: 0 },
+      ),
+    };
+    const tool = (await import('./semantic')).default;
+    const p = payloadOf((await tool.handler({ query: 'x' } as never, CTX() as never)) as never);
+    expect(p.legs.degraded).toBe(false);
+    expect(p.legs.warning).toBeNull();
   });
 });
 

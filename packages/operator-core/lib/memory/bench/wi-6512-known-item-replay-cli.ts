@@ -510,6 +510,41 @@ async function runCeiling(args: Args): Promise<void> {
     return { verdict: 'anomaly', detail: reasons.join(','), candidates: res.candidateCount };
   };
 
+  /**
+   * DEPTH PROBE — where does the known item actually sit in fused order?
+   *
+   * `NOT-RETRIEVED` above means "absent from the candidate pool", and the pool is
+   * `Math.max(maxItems * 4, 8)` = 24 rows by construction — an ENGINE OVER-FETCH
+   * CAP, not the corpus's natural answer. So that verdict silently spans two
+   * states needing OPPOSITE fixes: the record is genuinely unreachable for this
+   * query, or it is reachable at rank 25+ and the pool simply stops short.
+   * Reading the first as the second sends the next agent to rebuild retrieval;
+   * reading the second as the first sends them to widen a pool that would not
+   * help. Raising maxItems raises the pool with it, so the rank the known item
+   * lands at IS the discriminator — and `absent` here, at 200 slots and an
+   * effectively unbounded char budget, is a real absence rather than a cut.
+   */
+  const depth = async (queryText: string, arm: 'bm25' | 'hybrid'): Promise<string> => {
+    if (arm === 'bm25') resetCorpusEmbedderWarmup();
+    else await warmCorpusEmbedder();
+    const res = await recallCorpusContext({
+      queryText,
+      workspaceId: args.workspace,
+      harnessSlugs: [args.harness],
+      skipFlagCheck: true,
+      maxItems: 200,
+      budgetChars: 5_000_000,
+    });
+    const armHeld = arm === 'bm25' ? !res.embedderAvailable : res.embedderAvailable;
+    if (!armHeld || res.outcome !== 'ok') return 'void';
+    const at = res.lines.findIndex((l) => l.handle.ref === KNOWN_ITEM);
+    if (at >= 0) return `rank ${at + 1}/${res.lines.length} (pool ${res.candidateCount})`;
+    const why = res.dropped.filter((d) => d.ref === KNOWN_ITEM).map((d) => d.reason);
+    return why.length > 0
+      ? `filtered [${why.join(',')}] (pool ${res.candidateCount})`
+      : `ABSENT at depth (pool ${res.candidateCount})`;
+  };
+
   const tally: Record<'bm25' | 'hybrid', Record<CeilingVerdict, number>> = {
     bm25: { admitted: 0, 'order-blocked': 0, 'filter-blocked': 0, 'not-retrieved': 0, anomaly: 0, void: 0 },
     hybrid: { admitted: 0, 'order-blocked': 0, 'filter-blocked': 0, 'not-retrieved': 0, anomaly: 0, void: 0 },
@@ -528,6 +563,11 @@ async function runCeiling(args: Args): Promise<void> {
     console.log(`\n   turn ${batch.turn}`);
     console.log(`     BM25   ${fmt(bm25)}`);
     console.log(`     HYBRID ${fmt(hybrid)}`);
+    // Only meaningful where the 6-slot run could not see it at all.
+    if (bm25.verdict === 'not-retrieved' || hybrid.verdict === 'not-retrieved') {
+      console.log(`       depth BM25   : ${await depth(queryText, 'bm25')}`);
+      console.log(`       depth HYBRID : ${await depth(queryText, 'hybrid')}`);
+    }
   }
 
   const n = REPLAY.length;

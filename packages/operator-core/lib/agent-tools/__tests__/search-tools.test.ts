@@ -10,6 +10,11 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+// Safe as a TOP-LEVEL import here (unlike the sibling prose-handlers/
+// overfetch-slice tests): this file uses `vi.doMock`, which is NOT hoisted, so
+// importing the real module at file scope cannot run a factory early.
+// `emptyLegs` is pure, so the real one is the right one regardless of mocking.
+import { emptyLegs } from '@papercusp/search';
 
 const MAKE_CTX = (tx?: unknown) =>
   ({
@@ -65,7 +70,16 @@ type FullTextMock = (
 type HybridMock = (
   sources: Array<{ name: string }>,
   opts: Record<string, unknown>,
-) => Promise<{ results: unknown[]; totalHits: number; embedderAvailable?: boolean }>;
+) => Promise<{
+  results: unknown[];
+  totalHits: number;
+  embedderAvailable?: boolean;
+  // P-020: REQUIRED, mirroring the engine — a stub allowed to omit the leg
+  // report would let this suite go green against a shape the engine never
+  // returns, which is how a mock starts certifying a contract it has drifted
+  // from.
+  legs: ReturnType<typeof emptyLegs>;
+}>;
 
 describe('search:fulltext', () => {
   it('calls runFullTextSearch with query + workspaceId + the over-fetched (rerankCandidateCount) limit', async () => {
@@ -213,7 +227,7 @@ describe('search:fulltext', () => {
 
 describe('search:semantic', () => {
   it('calls runHybridSearch with query + mode + workspaceId', async () => {
-    const runHybridSearch = vi.fn<HybridMock>(async () => ({ results: [], totalHits: 0, embedderAvailable: true }));
+    const runHybridSearch = vi.fn<HybridMock>(async () => ({ results: [], totalHits: 0, embedderAvailable: true, legs: emptyLegs() }));
     vi.doMock('@papercusp/search', async (importOriginal) => ({
       ...(await importOriginal<typeof import('@papercusp/search')>()),
       runHybridSearch,
@@ -249,7 +263,7 @@ describe('search:semantic', () => {
   });
 
   it('defaults to hybrid mode', async () => {
-    const runHybridSearch = vi.fn<HybridMock>(async () => ({ results: [], totalHits: 0, embedderAvailable: false }));
+    const runHybridSearch = vi.fn<HybridMock>(async () => ({ results: [], totalHits: 0, embedderAvailable: false, legs: emptyLegs() }));
     vi.doMock('@papercusp/search', async (importOriginal) => ({
       ...(await importOriginal<typeof import('@papercusp/search')>()),
       runHybridSearch,
@@ -282,7 +296,7 @@ describe('search:semantic', () => {
   it('returns results and embedderAvailable flag', async () => {
     vi.doMock('@papercusp/search', async (importOriginal) => ({
       ...(await importOriginal<typeof import('@papercusp/search')>()),
-      runHybridSearch: vi.fn(async () => ({ results: [MOCK_HIT], totalHits: 1, embedderAvailable: true })),
+      runHybridSearch: vi.fn(async () => ({ results: [MOCK_HIT], totalHits: 1, embedderAvailable: true, legs: emptyLegs() })),
     }));
     vi.doMock('../search/embedder', async (importOriginal) => ({
       // importOriginal keeps the rest of the module real — notably

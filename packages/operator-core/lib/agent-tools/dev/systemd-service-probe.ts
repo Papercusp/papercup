@@ -37,6 +37,31 @@ export interface ServiceStartInfo {
    *  main process to measure (mainPid 0 or absent). */
   secondsSinceStart?: number;
   /**
+   * WI-10550: EXACT epoch-ms at which the current MainPID started, read straight
+   * from `/proc/<MainPID>` mtime. Undefined when there is no live main process,
+   * or the read failed (never a fabricated value — the caller falls back).
+   *
+   * PREFER THIS over deriving `Date.now() - secondsSinceStart * 1000`. That
+   * derivation carries two errors which bias the SAME way, so they add rather
+   * than cancel: `ps -o etimes=` truncates elapsed to whole seconds (understating
+   * elapsed, so the start looks LATER), and the caller's `Date.now()` is sampled
+   * after this function's subprocesses return (later still — measured at 0.6-0.76s
+   * on this host under memory pressure). For the comparison this feeds — "did the
+   * process start AFTER the code changed?" — a start that looks later biases the
+   * answer toward a false confident YES, which is worse than no answer.
+   *
+   * WHY `/proc` mtime is genuinely process-START and not access-time (the obvious
+   * worry, which "the value is stable across two reads" does NOT rule out, since a
+   * latched first-access is also stable): mtime minus the kernel's own field-22
+   * start is CONSTANT at +0.2518 / +0.2570 / +0.2556s across three units aged
+   * 0.11h, 3.99h and 8.22h. An access-derived mtime would drift with age; a
+   * constant to sub-millisecond places the discrepancy in `btime` — an
+   * integer-second field in /proc/stat — not in mtime. That also makes mtime the
+   * BETTER of the two: field-22 arithmetic inherits btime's truncation, needs
+   * USER_HZ, and costs a second file parse.
+   */
+  startedAtMs?: number;
+  /**
    * EI-18700974567040702: raw systemd `ActiveState`
    * (active/inactive/failed/activating/deactivating/reloading) — the UNIVERSAL
    * liveness signal, unlike `MainPID`: every systemd unit TYPE reports it,
@@ -261,6 +286,29 @@ export async function probeUnitStates(
   return { states, unitsUnknown, scopesUnavailable };
 }
 
+/**
+ * WI-10550: EXACT process start as epoch ms, from `/proc/<pid>` directory mtime.
+ *
+ * One stat syscall — no subprocess, so no fork/exec latency to be anchored
+ * against; no locale parsing, unlike systemd's `ExecMainStartTimestamp` (the
+ * documented reason this module reaches for `ps -o etimes=` in the first place,
+ * see the file header); no USER_HZ and no `btime` truncation, unlike
+ * `/proc/<pid>/stat` field 22.
+ *
+ * Returns null — never a guess — on any failure, including a non-Linux host and
+ * the benign race where the pid exits between the systemctl read and this call.
+ * Callers keep their existing fallback.
+ */
+async function readProcStartMs(pid: number): Promise<number | null> {
+  try {
+    const { stat } = await import('node:fs/promises');
+    const st = await stat(`/proc/${pid}`);
+    return Number.isFinite(st.mtimeMs) && st.mtimeMs > 0 ? st.mtimeMs : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function probeServiceStart(unit: string): Promise<ServiceStartInfo> {
   // Linux/systemd-only (a Windows desktop runs this sidecar under WSL, still
   // process.platform === 'linux', so it is NOT short-circuited — the try/catch
@@ -292,8 +340,15 @@ export async function probeServiceStart(unit: string): Promise<ServiceStartInfo>
       { timeout: 3000 },
     );
     const etimes = Number(etimesOut.trim());
-    if (!Number.isFinite(etimes) || etimes < 0) return { ok: true, mainPid, activeState };
-    return { ok: true, mainPid, secondsSinceStart: etimes, activeState };
+    // WI-10550: read the EXACT start alongside etimes. Independent of etimes'
+    // whole-second truncation and of the caller's Date.now() anchor, so a caller
+    // comparing "started after the code changed?" is not biased toward YES.
+    // Fail-soft: null (⇒ field omitted) whenever /proc cannot answer, so the
+    // caller's existing etimes fallback still applies.
+    const startedAtMs = await readProcStartMs(mainPid);
+    const exact = startedAtMs === null ? {} : { startedAtMs };
+    if (!Number.isFinite(etimes) || etimes < 0) return { ok: true, mainPid, activeState, ...exact };
+    return { ok: true, mainPid, secondsSinceStart: etimes, activeState, ...exact };
   } catch {
     return { ok: false };
   }
