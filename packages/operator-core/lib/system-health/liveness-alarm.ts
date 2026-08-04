@@ -672,14 +672,17 @@ export function unobservableLivenessSignatures(health: SystemHealth): Set<string
  */
 export function resolveEvidenceFor(sig: string, health: SystemHealth): string {
   const wf = health.panels.workFeed;
-  const field =
-    sig === 'stale-paused-routines' ? 'stalePausedRoutines'
-    : sig === 'dead-routines' ? 'deadRoutines'
-    : null;
-  if (!field) return 'no per-signature evidence recorded';
+  const d = wf?.data ?? null;
+  // Read the field DIRECTLY per signature rather than indexing by a string key: the
+  // string-index form needs a cast that defeats the type check, which is precisely the
+  // kind of silent drift this helper exists to make visible.
+  let field: string;
+  let n: number | undefined;
+  if (sig === 'stale-paused-routines') { field = 'stalePausedRoutines'; n = d?.stalePausedRoutines; }
+  else if (sig === 'dead-routines') { field = 'deadRoutines'; n = d?.deadRoutines; }
+  else return 'no per-signature evidence recorded';
   const status = wf?.status ?? 'panel-absent';
-  const n = wf?.data == null ? null : (wf.data as Record<string, unknown>)[field];
-  const unreadable = wf?.data?.stalePausedRoutinesUnreadable === true && field === 'stalePausedRoutines';
+  const unreadable = sig === 'stale-paused-routines' && d?.stalePausedRoutinesUnreadable === true;
   return `observed workFeed status=${status} ${field}=${typeof n === 'number' ? n : 'unreadable'}${unreadable ? ' (sub-read FAILED)' : ''}`;
 }
 

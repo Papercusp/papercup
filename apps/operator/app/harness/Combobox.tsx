@@ -310,29 +310,6 @@ export function Combobox({
   );
 }
 
-/**
- * The wrapper floor from `harness.css`'s `[data-radix-popper-content-wrapper]`
- * rule. It is a DEFAULT here, not a suggestion, and it is the reason this
- * component exists as its own export rather than a flag on `Combobox`.
- *
- * `harness/Popover` defaults its Content to `zIndex: 90`, and Radix copies a
- * popper Content's computed z-index onto the position:fixed wrapper as an
- * INLINE style — which beats the stylesheet floor. 90 clears `<main>` (70), so
- * every Combobox on an ordinary page works; it does NOT clear
- * `.oracle-dock--maximal-hud` (1450), which is exactly where the chat popup's
- * control band lives. A menu at 90 there mounts, positions, reports
- * `opacity: 1` and is completely unclickable — the P-006 defect the owner
- * reported as "None of the option selector dropdowns are working in the bottom
- * panel", and one that jsdom cannot catch because it does not paint.
- *
- * FIXED AT THE PRIMITIVE (EI-19470132622399873, 2026-08-03): `harness/Popover`
- * now CLAMPS its Content z-index up to the floor rather than defaulting to 90,
- * so this default is no longer load-bearing for correctness — a Combobox that
- * passed nothing, or passed a low value, would be clamped anyway. It is kept
- * because it documents the intent at the point of use, and re-exported from the
- * one shared definition so the value cannot drift.
- */
-
 export interface ComboboxMenuProps {
   /** Selected option value, or null when nothing is chosen. */
   value: string | null;
@@ -361,7 +338,13 @@ export interface ComboboxMenuProps {
   maxListHeight?: number;
   side?: 'top' | 'right' | 'bottom' | 'left';
   align?: 'start' | 'center' | 'end';
-  /** Only lower this if you know the surface — see POPPER_WRAPPER_FLOOR_Z. */
+  /**
+   * Popper z-index. Raising it orders this menu above other poppers; LOWERING
+   * it below the floor has no effect — `harness/Popover` clamps up to
+   * `POPPER_WRAPPER_FLOOR_Z`, because Radix copies the Content's z-index onto
+   * the position:fixed wrapper inline and anything under the floor is painted
+   * behind the app shell rather than merely "lower" (see harness/popper-z.ts).
+   */
   zIndex?: number;
   /** Fired on open (`true`) and close (`false`) — the moment to lazily fetch
    *  an option set that is not a constant. */

@@ -14,9 +14,11 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
+  type ServiceStartInfo,
   parseMultiUnitShowOutput,
   parseSystemctlShowOutput,
   probeUnitStates,
+  resolveServiceStartMs,
   resolveUnitName,
   unitStateFromProps,
 } from './systemd-service-probe';
@@ -250,5 +252,56 @@ describe('probeUnitStates', () => {
     expect(r.states).toHaveLength(1);
     // Still found in the manager that DID answer, so not unknown.
     expect(r.unitsUnknown).toEqual([]);
+  });
+});
+
+describe('resolveServiceStartMs (WI-10550: measured start beats a late-biased derivation)', () => {
+  const NOW = 1_785_801_699_270;
+
+  it('prefers the MEASURED /proc start over the etimes derivation when both are present', () => {
+    const info: ServiceStartInfo = { ok: true, mainPid: 42, activeState: 'active', secondsSinceStart: 60, startedAtMs: 1_700_000_000_000 };
+    expect(resolveServiceStartMs(info, NOW)).toEqual({ pid: 42, startedAtMs: 1_700_000_000_000 });
+  });
+
+  it('falls back to the etimes derivation when /proc could not answer', () => {
+    const info: ServiceStartInfo = { ok: true, mainPid: 42, activeState: 'active', secondsSinceStart: 60 };
+    expect(resolveServiceStartMs(info, NOW)).toEqual({ pid: 42, startedAtMs: NOW - 60_000 });
+  });
+
+  /**
+   * THE POINT OF THE CHANGE, not merely a branch: the fallback's error has a
+   * DIRECTION. Both of its error sources understate elapsed — `ps -o etimes=`
+   * truncates to whole seconds, and `nowMs` is read after the probe's
+   * subprocesses return — so the derived start lands LATER than the truth, and
+   * they add rather than cancel.
+   *
+   * Modelled with real measurements from this host: a process that truly started
+   * 60.8s ago reports etimes=60 (truncated), and nowMs is sampled 0.7s after the
+   * sample instant. The derived start is then ~1.5s LATER than the truth. Where
+   * that feeds `startedAtMs > codeAsOfMs`, a code change landing in that window
+   * is wrongly reported as ALREADY RUNNING.
+   */
+  it('the derivation lands LATE, and the measured value is what removes the false-YES window', () => {
+    const trueStart = NOW - 60_800; // truly 60.8s ago
+    const codeChangedAt = trueStart + 700; // code changed 0.7s AFTER the process started
+
+    const derivedOnly: ServiceStartInfo = { ok: true, mainPid: 42, activeState: 'active', secondsSinceStart: 60 };
+    const derived = resolveServiceStartMs(derivedOnly, NOW + 700)!.startedAtMs!;
+    expect(derived).toBeGreaterThan(trueStart); // biased LATE, never early
+    // ...and late enough to answer the detector's question WRONGLY:
+    expect(derived > codeChangedAt).toBe(true); // "already running your code" — FALSE
+
+    const measured = resolveServiceStartMs({ ...derivedOnly, startedAtMs: trueStart }, NOW + 700)!.startedAtMs!;
+    expect(measured).toBe(trueStart);
+    expect(measured > codeChangedAt).toBe(false); // correct: the code is NEWER than the process
+  });
+
+  it('degrades to UNKNOWN rather than a fabricated timestamp when neither source is available', () => {
+    // a .timer: no MainPID concept at all, so nothing to measure
+    expect(resolveServiceStartMs({ ok: true, activeState: 'active' }, NOW)).toBeNull();
+    // MainPID 0: down, determinate, but no start to report
+    expect(resolveServiceStartMs({ ok: true, mainPid: 0, activeState: 'inactive' }, NOW)).toBeNull();
+    // probe failed outright
+    expect(resolveServiceStartMs({ ok: false }, NOW)).toBeNull();
   });
 });

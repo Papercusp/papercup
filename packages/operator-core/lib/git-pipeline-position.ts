@@ -28,7 +28,7 @@ import { gitPipelineSnapshot, type GitPipelineSnapshot } from './git-pipeline-st
 // EI-19447523039740352. Safe direction: release-deploy-launch imports git-pipeline-STATS,
 // never git-pipeline-POSITION, so this does not close an import cycle.
 import { readDeployInFlight, type DeployInFlight } from './release-deploy-launch';
-import { probeServiceStart } from './agent-tools/dev/systemd-service-probe';
+import { probeServiceStart, resolveServiceStartMs } from './agent-tools/dev/systemd-service-probe';
 import { RESTART_TARGET_UNITS } from './agent-tools/dev/restart-target-units';
 import {
   classifyPathsAgainstCandidate,
@@ -2858,11 +2858,15 @@ const realResolveGateCandidates = async (root: string): Promise<GateCandidates> 
  *  `source:'systemd-unavailable'`, which evaluateServing reads as UNKNOWN (keeps the lever). */
 const realReadDeployInFlight = (): Promise<DeployInFlight> => readDeployInFlight();
 
-const realProbeUnitStart = async (unit: string): Promise<{ pid: number | null; startedAtMs: number | null } | null> => {
-  const info = await probeServiceStart(unit);
-  if (!info.ok || info.secondsSinceStart === undefined) return null;
-  return { pid: info.mainPid ?? null, startedAtMs: Date.now() - info.secondsSinceStart * 1000 };
-};
+// WI-10550: `resolveServiceStartMs` prefers the probe's MEASURED /proc start over
+// the `etimes`-derived one. That derivation is biased LATE (whole-second truncation
+// + a Date.now() read after the probe's subprocesses return — 0.6-0.76s under load
+// on this host), and a late-looking start makes `runningYourCode = startedAtMs >
+// codeAsOfMs` more likely TRUE. This detector exists to refuse exactly that
+// unearned YES, so the derivation is a fallback for hosts without /proc, never a
+// preference. Preference order + rationale live on the helper.
+const realProbeUnitStart = async (unit: string): Promise<{ pid: number | null; startedAtMs: number | null } | null> =>
+  resolveServiceStartMs(await probeServiceStart(unit), Date.now());
 
 /** Default file-mtime reader. Fail-soft: an unreadable path is UNKNOWN, never 0. */
 const realFileMtimeMs = async (absPath: string): Promise<number | null> => {

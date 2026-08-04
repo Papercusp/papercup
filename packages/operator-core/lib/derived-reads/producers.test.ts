@@ -597,3 +597,46 @@ describe('summarizePlanLintReport (plans.lint list projection)', () => {
     });
   });
 });
+
+// ── syncReads.audit must stay OUT of the shared sweep (EI-19457924854150358) ───
+//
+// registry.test.ts already proves the `excludeFromDefaultSweep` MECHANISM works,
+// but it does so with a synthetic producer — so nothing failed if the flag were
+// dropped from the REAL one. That regression is silent and expensive: producers run
+// sequentially under a `concurrency: 'skip'` routine, so a minutes-scale audit back
+// in the 2-minute sweep holds the loop long enough to starve the 90s-ttl
+// serviceHealth producer for several ticks. Tests would stay green and the only
+// symptom would be liveness data going stale.
+describe('derived-reads producers: syncReads.audit (EI-19457924854150358)', () => {
+  async function loadProducers() {
+    vi.resetModules();
+    const registry = await import('./registry');
+    registry.__clearDerivedReadRegistryForTest();
+    await import('./producers');
+    return registry.listDerivedReadProducers();
+  }
+
+  it('is registered and is EXCLUDED from the default precompute sweep', async () => {
+    const all = await loadProducers();
+    const audit = all.find((p) => p.key === 'syncReads.audit');
+
+    expect(audit, 'syncReads.audit producer must be registered').toBeDefined();
+    // The load-bearing assertion: without this the audit rejoins the shared tick.
+    expect(audit!.excludeFromDefaultSweep).toBe(true);
+  });
+
+  it('CONTROL: ordinary producers do NOT carry the flag, so the assertion above cannot pass vacuously', async () => {
+    const all = await loadProducers();
+
+    // If `excludeFromDefaultSweep` ever became truthy by default (or the field were
+    // renamed and read as undefined-but-asserted-elsewhere), the test above could
+    // pass while meaning nothing. Pin the contrast against a real sibling.
+    const storage = all.find((p) => p.key === 'storage.usage');
+    expect(storage, 'storage.usage is the control producer').toBeDefined();
+    expect(storage!.excludeFromDefaultSweep).toBeFalsy();
+
+    // And the exclusion must remain the rare exception, not the norm.
+    const excluded = all.filter((p) => p.excludeFromDefaultSweep);
+    expect(excluded.map((p) => p.key)).toEqual(['syncReads.audit']);
+  });
+});

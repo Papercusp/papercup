@@ -63,12 +63,22 @@ async function main(): Promise<void> {
   // without it this row would re-run the entire default sweep on a second cadence.
   const triggerConfig = { cron: CRON, only: [PRODUCER_KEY] };
 
+  // Next scheduled 04:30 UTC, NOT now(). The sibling precompute routine seeds
+  // `now()`, which is harmless at a 2-minute cadence — but this producer is a
+  // minutes-scale audit on a DAILY cron, so `now()` would make the act of SEEDING
+  // (or of any re-seed, e.g. a deploy) silently kick off a heavy compute
+  // immediately. Seeding should install a schedule, not trigger a run.
+  // `--backfill` remains the explicit way to ask for one now.
+  const nextFire = new Date();
+  nextFire.setUTCHours(4, 30, 0, 0);
+  if (nextFire.getTime() <= Date.now()) nextFire.setUTCDate(nextFire.getUTCDate() + 1);
+
   await sql`
     INSERT INTO harness_shared.routines
       (id, install_slug, workspace_id, name, trigger_kind, trigger_config, target_role,
        concurrency, catchup, active, next_fire_at)
     VALUES (${id}, ${SLUG}, ${ws}, ${name}, 'cron', ${JSON.stringify(triggerConfig)}::text::jsonb,
-            'system:precompute-derived-reads', 'skip', 'skip-old', ${active}, now())
+            'system:precompute-derived-reads', 'skip', 'skip-old', ${active}, ${nextFire.toISOString()})
     ON CONFLICT (install_slug, name) DO UPDATE SET
       target_role = EXCLUDED.target_role,
       trigger_config = EXCLUDED.trigger_config,

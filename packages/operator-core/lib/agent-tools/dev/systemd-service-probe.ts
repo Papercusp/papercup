@@ -287,6 +287,36 @@ export async function probeUnitStates(
 }
 
 /**
+ * PURE — pick the best available start-time source from a `ServiceStartInfo`,
+ * exported (per this file's convention) so the PREFERENCE ORDER is directly
+ * testable without mocking `child_process`. WI-10550.
+ *
+ * Order, and why it is not arbitrary:
+ *   1. `startedAtMs` — measured, exact.
+ *   2. `nowMs - secondsSinceStart * 1000` — DERIVED, and wrong in a specific
+ *      direction. `etimes` truncates elapsed to whole seconds, and `nowMs` is
+ *      read by the caller only after this module's subprocesses have returned.
+ *      Both understate elapsed, so both make the start look LATER, and being
+ *      biased the same way they add rather than cancel.
+ *   3. `null` — UNKNOWN. Never a fabricated timestamp.
+ *
+ * That direction matters to the caller that motivated this: a start that looks
+ * later makes "did this process start AFTER the code changed?" more likely to
+ * answer YES, so the derivation's error pushes toward falsely asserting a
+ * process runs code it does not. Prefer measured; degrade to UNKNOWN, not to a
+ * confident wrong answer.
+ */
+export function resolveServiceStartMs(
+  info: ServiceStartInfo,
+  nowMs: number,
+): { pid: number | null; startedAtMs: number | null } | null {
+  if (!info.ok) return null;
+  if (info.startedAtMs !== undefined) return { pid: info.mainPid ?? null, startedAtMs: info.startedAtMs };
+  if (info.secondsSinceStart === undefined) return null;
+  return { pid: info.mainPid ?? null, startedAtMs: nowMs - info.secondsSinceStart * 1000 };
+}
+
+/**
  * WI-10550: EXACT process start as epoch ms, from `/proc/<pid>` directory mtime.
  *
  * One stat syscall — no subprocess, so no fork/exec latency to be anchored

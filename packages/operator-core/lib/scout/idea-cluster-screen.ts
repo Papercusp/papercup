@@ -691,3 +691,130 @@ export function summariseClusterRow(row: ClusterScreenRow): string {
   bits.push(`age ${row.premiseAgeDays.oldest}d`);
   return `${head} — ${bits.join(' · ')}`;
 }
+
+/**
+ * MEASURED REACH of each leg, over the 186-item 07-04→07-17 cohort (2026-08-04).
+ *
+ * These are RECALL figures — what fraction of items a leg can say anything about
+ * at all. They are not precision, and they are the reason `GREENLIGHT` is treated
+ * as a weak claim below.
+ *
+ * ⚠ A SNAPSHOT of a MOVING population: 6 items left the cohort inside 12 minutes
+ * during a live peer drain, and the densely ref-linked clusters are drained FIRST
+ * because they are the cheapest to find. The residual backlog therefore gets
+ * monotonically harder for the ref legs, so treat these as an upper bound that
+ * decays. Re-measure before quoting (method is on WI-9476's checkpoint).
+ */
+export const MEASURED_LEG_REACH = {
+  /** Source files citing the item's own id, evidence-path filtered. 17/186. */
+  selfId: 0.091,
+  /** Cites ≥1 work-item id anywhere — the prior-art question. 125/186. */
+  assertedRefAnywhere: 0.67,
+  /** Cites/cited-by a COHORT SIBLING — the collapse question. 61/186. */
+  assertedRefIntraCohort: 0.33,
+  /** Fires on essentially every item, so it filters nothing. 40/40. */
+  planSlug: 1.0,
+} as const;
+
+/** Whole-run coverage: what the screen can speak to, and with what KIND of claim. */
+export interface ScreenCoverage {
+  clusters: number;
+  items: number;
+  /** Item counts (not cluster counts) per verdict. */
+  byVerdict: Record<ClusterVerdict, number>;
+  /**
+   * Items whose verdict rests on POSITIVE evidence — a leg FOUND something
+   * (DROP: implemented prior art or a self-id hit; COLLAPSE: an open sibling or
+   * co-clustering). These are the claims the screen can defend.
+   */
+  adjudicatedItems: number;
+  /** Items where retrieval never ran. The screen is SILENT about these. */
+  silentItems: number;
+  /**
+   * Items cleared ONLY by an absence of evidence (GREENLIGHT).
+   *
+   * ⚠ NOT the same kind of claim as `adjudicatedItems`. A GREENLIGHT says "these
+   * legs found nothing", and its trustworthiness is bounded by each leg's RECALL,
+   * not its precision — see `MEASURED_LEG_REACH`, where the strongest leg reaches
+   * ~9% of items. This is the sibling of "a check that never ran must not read as
+   * passed": a check that DID run, at 9% recall, must not read as CLEAR either.
+   */
+  absenceOnlyItems: number;
+  /** adjudicatedItems / items. 0 when there are no items. */
+  adjudicatedFraction: number;
+}
+
+/**
+ * Compute whole-run coverage from the screen's own rows.
+ *
+ * Exists because verdict COUNTS alone are systematically misread. A run reporting
+ * "DROP=18 of 40" invites "45% of the backlog is already built", which is a claim
+ * about the world; the run only supports a claim about what four legs of bounded
+ * recall managed to find. Reporting the denominator alongside the counts is what
+ * makes that misreading hard, so it is computed here rather than left to a note a
+ * reader has to remember.
+ */
+export function screenCoverage(rows: ClusterScreenRow[]): ScreenCoverage {
+  const byVerdict: Record<ClusterVerdict, number> = {
+    DROP: 0,
+    'COLLAPSE-AND-RESCOPE': 0,
+    GREENLIGHT: 0,
+    INCONCLUSIVE: 0,
+  };
+  let items = 0;
+  let adjudicatedItems = 0;
+  let silentItems = 0;
+  let absenceOnlyItems = 0;
+
+  for (const row of rows) {
+    // `size` is the authored member count; fall back to memberIds so a row built
+    // by hand in a test cannot silently contribute zero items to the denominator.
+    const n = row.size > 0 ? row.size : row.memberIds.length;
+    items += n;
+    byVerdict[row.verdict] += n;
+
+    if (row.verdict === 'DROP' || row.verdict === 'COLLAPSE-AND-RESCOPE') {
+      adjudicatedItems += n;
+    } else if (row.verdict === 'INCONCLUSIVE') {
+      silentItems += n;
+    } else {
+      absenceOnlyItems += n;
+    }
+  }
+
+  return {
+    clusters: rows.length,
+    items,
+    byVerdict,
+    adjudicatedItems,
+    silentItems,
+    absenceOnlyItems,
+    adjudicatedFraction: items === 0 ? 0 : adjudicatedItems / items,
+  };
+}
+
+/** Header for a screening report — the denominator, stated before the counts. */
+export function renderScreenCoverage(coverage: ScreenCoverage): string {
+  const pct = (n: number) =>
+    coverage.items === 0 ? '0%' : `${Math.round((n / coverage.items) * 100)}%`;
+  const lines = [
+    `SCREEN COVERAGE — ${coverage.items} item(s) in ${coverage.clusters} cluster(s)`,
+    `  positive evidence (DROP/COLLAPSE): ${coverage.adjudicatedItems} (${pct(
+      coverage.adjudicatedItems,
+    )}) — the claims this screen can defend`,
+    `  absence-only (GREENLIGHT):         ${coverage.absenceOnlyItems} (${pct(
+      coverage.absenceOnlyItems,
+    )}) — "these legs found nothing", NOT "nothing exists"`,
+    `  silent (INCONCLUSIVE):             ${coverage.silentItems} (${pct(
+      coverage.silentItems,
+    )}) — retrieval did not run`,
+    `  ⚠ leg RECALL bounds every absence claim: self-id reaches ~${Math.round(
+      MEASURED_LEG_REACH.selfId * 100,
+    )}% of items, asserted-ref ~${Math.round(
+      MEASURED_LEG_REACH.assertedRefAnywhere * 100,
+    )}%, plan-slug fires on ~all and so filters none.`,
+    `  ⚠ DO NOT read a DROP count as "N% of the backlog is already built" — it is a`,
+    `    ranked shortlist FOR REVIEW. Nothing here closes anything.`,
+  ];
+  return lines.join('\n');
+}

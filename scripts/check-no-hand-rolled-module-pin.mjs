@@ -41,8 +41,9 @@
  *
  * Exit 0 clean / 1 on a new violation.
  */
-import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { readFileSync, readdirSync, statSync, realpathSync } from 'node:fs';
 import { join, relative } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 const ROOT = new URL('..', import.meta.url).pathname.replace(/\/$/, '');
 const ROOTS = ['libs', 'packages', 'apps'];
@@ -112,7 +113,7 @@ function* walk(dir) {
  * (`Symbol.for('drizzle:Name')`, no globalThis) and a globalThis access with a
  * string key out of the results.
  */
-function findPins(src) {
+export function findPins(src) {
   const hits = [];
   // Bind each Symbol.for key to the const name it is assigned to.
   const keyByName = new Map();
@@ -148,36 +149,69 @@ function findPins(src) {
  */
 const LIST_ONLY = process.argv.includes('--list');
 
-const violations = [];
-const allowedSeen = new Set();
-const everyPin = [];
+/**
+ * Scan the tree. Exported so a unit test can assert the CURRENT population
+ * without shelling out or duplicating the walk.
+ */
+export function scanTree() {
+  const violations = [];
+  const allowedSeen = new Set();
+  const everyPin = [];
 
-for (const root of ROOTS) {
-  for (const file of walk(join(ROOT, root))) {
-    const rel = relative(ROOT, file);
-    // The mechanism itself is exempt — it IS the sanctioned pin.
-    if (rel.startsWith('libs/generic/module-singleton/')) continue;
+  for (const root of ROOTS) {
+    for (const file of walk(join(ROOT, root))) {
+      const rel = relative(ROOT, file);
+      // The mechanism itself is exempt — it IS the sanctioned pin.
+      if (rel.startsWith('libs/generic/module-singleton/')) continue;
 
-    let src;
-    try {
-      src = readFileSync(file, 'utf8');
-    } catch {
-      continue;
+      let src;
+      try {
+        src = readFileSync(file, 'utf8');
+      } catch {
+        continue;
+      }
+      if (!src.includes('Symbol.for')) continue;
+
+      const pins = findPins(src);
+      if (pins.length === 0) continue;
+
+      for (const p of pins) everyPin.push({ rel, ...p });
+
+      if (ALLOW.has(rel)) {
+        allowedSeen.add(rel);
+        continue;
+      }
+      for (const p of pins) violations.push({ rel, ...p });
     }
-    if (!src.includes('Symbol.for')) continue;
-
-    const pins = findPins(src);
-    if (pins.length === 0) continue;
-
-    for (const p of pins) everyPin.push({ rel, ...p });
-
-    if (ALLOW.has(rel)) {
-      allowedSeen.add(rel);
-      continue;
-    }
-    for (const p of pins) violations.push({ rel, ...p });
   }
+  const stale = [...ALLOW].filter((f) => !allowedSeen.has(f)).sort();
+  return { violations, allowedSeen, everyPin, stale };
 }
+
+/**
+ * Run the scan only when invoked as a CLI — importing this module (for the unit
+ * test) must NOT exit the process. Symlink-robust (WI-1443): node realpaths
+ * import.meta.url while argv[1] keeps the invoked path, so compare both.
+ */
+const isMain = (() => {
+  const argv1 = process.argv[1];
+  if (!argv1) return false;
+  if (import.meta.url === pathToFileURL(argv1).href) return true;
+  try {
+    return import.meta.url === pathToFileURL(realpathSync(argv1)).href;
+  } catch {
+    return false;
+  }
+})();
+
+if (!isMain) {
+  // Imported for its predicate — nothing else to do.
+} else {
+  main();
+}
+
+function main() {
+const { violations, allowedSeen, everyPin, stale } = scanTree();
 
 if (LIST_ONLY) {
   everyPin.sort((a, b) => a.rel.localeCompare(b.rel) || a.line - b.line);
@@ -188,8 +222,6 @@ if (LIST_ONLY) {
   for (const f of [...files].sort()) console.log(`  '${f}',`);
   process.exit(0);
 }
-
-const stale = [...ALLOW].filter((f) => !allowedSeen.has(f)).sort();
 
 if (violations.length > 0) {
   console.error('\n✖ lint:no-hand-rolled-module-pin — new hand-rolled realm pin(s):\n');
@@ -228,3 +260,4 @@ console.log(
   `✔ lint:no-hand-rolled-module-pin — no new hand-rolled pins ` +
     `(${allowedSeen.size} known site${allowedSeen.size === 1 ? '' : 's'} still awaiting migration, EI-19469900474673886).`,
 );
+}
