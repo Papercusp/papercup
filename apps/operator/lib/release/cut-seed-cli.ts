@@ -103,6 +103,7 @@ import { produceLogSnapshot } from '@papercusp/operator-core/lib/sync/hyperbee/l
 import {
   findLiveOperatorHoldingHive,
   requestLiveOperatorHeadSnapshot,
+  HEAD_SNAPSHOT_PATH,
 } from '@papercusp/operator-core/lib/sync/hyperbee/live-head-snapshot-client';
 import { CURRENT_SCHEMA_VERSION } from '@papercusp/operator-core/lib/sync/hyperbee/schema-version';
 import { loadHiveKeyStatus, type HiveKeyStatus } from '@papercusp/operator-core/lib/identity/hive-keypair';
@@ -523,6 +524,19 @@ export async function openSourceStoreForCut(inp: {
           `operator process here reports having booted ${inp.workspaceId}::${inp.hive} (probed ports ` +
           `${found.probed.length ? found.probed.join(', ') : 'none found'}; answered ` +
           `${found.answered.length ? found.answered.join(', ') : 'none'})`;
+        // A sibling that is SERVING but 404s this one path is running a build older than
+        // the route (the Hono host has no file-watch, so a long-lived holder keeps 404ing
+        // until it restarts). Say so explicitly: without this the holder is reported as a
+        // port that merely "did not answer", indistinguishable from a dead socket, and
+        // every remedy below is the wrong one. See LiveHeadSnapshotNoHolder.staleBuild
+        // for the measured incident (P-014 / WI-10773).
+        if (found.staleBuild.length) {
+          blocked +=
+            `. ⚠ port(s) ${found.staleBuild.join(', ')} ARE alive and serving but returned 404 for ` +
+            `${HEAD_SNAPSHOT_PATH} — that build PREDATES this route, so such a process cannot answer ` +
+            `the probe even while it holds the hive. If one of them is the holder, RESTART it onto ` +
+            `current code and re-run; nothing else here will help`;
+        }
       }
     }
     if (blocked) {

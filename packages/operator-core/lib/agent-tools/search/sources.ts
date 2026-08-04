@@ -56,14 +56,35 @@ const DF_PROBE_CAP = 2000;
  * (147ms vs 141ms — the df probe dominates and the GIN bitmap-OR is nearly free).
  * Still 6.6× under the 23,464-row unanchored disjunction that cost 745ms.
  *
- * The added candidates land overwhelmingly at LOW coverage (1-of-5: 1,405 →
- * 2,934), where coverage-first ordering sorts them below everything that matters
- * — so this buys reach at the top of the ranking and pays for it at the bottom.
+ * ⛔ AND YET THE DEFAULT IS 0 — THE WIDENING IS MEASURED, BUILT, AND NOT SHIPPED.
+ * The reachability defect above is real and reproducible. It is NOT evidence the
+ * widening helps, and the WI-6512 known-item replay (paired arms, ONE process,
+ * `--ceiling --anchor-arms`) says it does not:
  *
- * `0` selects the pre-WI-9273 behaviour exactly (argmin only), which is what the
- * bench's paired control arm passes.
+ *   CONTROL (budget 0)  reachable 2/7  not-retrieved 5/7  admitted 1/7  133 cand
+ *   TREATMENT (4000)    reachable 2/7  not-retrieved 5/7  admitted 1/7  168 cand
+ *
+ * The treatment provably reached the engine — pools moved (t64 3→24, t67 10→24)
+ * and slot-fill rose (t64 2/6→3/6, t67 4/6→6/6) — so this is a real null, not a
+ * plumbing null. More context arrived; none of it was the answer. That is P-018's
+ * shape exactly (+0.46 admitted lines while known-item retrieval fell to zero),
+ * and the lesson there was that a volume/reach metric cannot validate a change
+ * the relevance metric does not move.
+ *
+ * At DEPTH (maxItems 200 — diagnostic only, never production) it is worse than
+ * neutral: the known item is DEMOTED rank 66 → 140 in t65 and t68, because the
+ * newly-reachable documents outrank it. The one genuine advance is t67, where the
+ * barrier MOVED FORWARD — `ABSENT (pool 10)` → `filtered [no-term-overlap] (pool
+ * 800)`, i.e. retrieval now finds it and `selectCorpusLines`' overlap guard drops
+ * it. That is a different, addressable barrier, and it is the reason to keep this
+ * seam rather than delete it.
+ *
+ * So: `0` is the shipped default and reproduces the pre-WI-9273 anchor exactly.
+ * Raise it only behind a known-item measurement that MOVES, never on the
+ * reachability table above — that table is a story about candidates, not a
+ * finding about answers.
  */
-const ANCHOR_DF_BUDGET = 4000;
+const ANCHOR_DF_BUDGET = 0;
 
 /**
  * P-017 / D-062 — the lexical leg's term-combination mode, as SQL fragments.

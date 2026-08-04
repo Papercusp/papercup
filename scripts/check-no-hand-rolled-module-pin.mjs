@@ -5,10 +5,21 @@
  *
  * ## What it detects
  *
- * The shape `globalThis[Symbol.for('...')] = state` — a module storing its
- * mutable state on the realm so a duplicated module record cannot split it in
- * half. That is a CORRECT fix for the split; the problem is that it is an
- * INVISIBLE one.
+ * The shape `globalThis[<key>] = state` — a module storing its mutable state on
+ * the realm so a duplicated module record cannot split it in half. That is a
+ * CORRECT fix for the split; the problem is that it is an INVISIBLE one.
+ *
+ * ⚠ BOTH key forms count, and missing the second one cost this guard its own
+ * credibility once. The original detector matched `Symbol.for('...')` ONLY, so
+ * it reported 14 remaining sites while ~20 more pinned with a plain STRING key
+ * (`const K = '__papercuspPulseCache'; (globalThis as G)[K]`) and were invisible
+ * to it — including THREE in `harness-core.ts` sitting beside a fourth it did
+ * flag. That is the same defect this guard exists to catch, one level up: a
+ * proxy measurement's negative covers only the conditions it reproduced, so a
+ * detector written to look for one form answers a confident "that's all of
+ * them" about a population it never scanned (EI-19479108855357092). Measure the
+ * population with `--list`, and keep `--list` honest by matching on the PIN
+ * (the globalThis index), never on the key's spelling.
  *
  * `listModuleDuplications()` only knows about keys pinned through
  * `pinModuleState()`. A hand-rolled pin is therefore absent from the realm-wide
@@ -101,33 +112,78 @@ function* walk(dir) {
 /**
  * Find hand-rolled pins in one file's source.
  *
- * A pin needs BOTH halves: a `Symbol.for(...)` key AND that key used to index
- * `globalThis`. Requiring both is what keeps a third-party symbol read
- * (`Symbol.for('drizzle:Name')`, no globalThis) and a globalThis access with a
- * string key out of the results.
+ * A pin needs BOTH halves: a key const (`Symbol.for('...')` OR a plain string)
+ * AND that key used to index `globalThis`. The second half is what carries the
+ * precision — it is the half that says "this is a REALM PIN" — so it is matched
+ * against a globalThis ACCESSOR (`globalThis` itself, or a local bound to it),
+ * never against the key's spelling.
+ *
+ * That accessor requirement is load-bearing for the string form, which is
+ * otherwise far too common to match on shape alone: `process.env[ENV_NAME]`,
+ * `localStorage[K]` and every other string-keyed index look identical to a pin
+ * until you ask WHAT is being indexed. Measured on this tree, requiring the
+ * accessor is exactly what separates the 20 real string-key pins from
+ * `FORCE_HTTP_ENV_NAME` (a `process.env` read in transport-adapters/configure.ts).
+ *
+ * Still deliberately NOT flagged: a third-party symbol read with no globalThis
+ * (`Symbol.for('drizzle:Name')`), and tagging a non-globalThis shared object
+ * (`console[Symbol.for(...)]`).
  */
 export function findPins(src) {
   const hits = [];
-  // Bind each Symbol.for key to the const name it is assigned to.
+  if (!/globalThis/.test(src)) return hits;
+
+  // Bind each key const to the name it is assigned to. Symbol form first, so a
+  // name declared both ways keeps its (more specific) symbol classification.
   const keyByName = new Map();
   for (const m of src.matchAll(/(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*Symbol\.for\(\s*['"]([^'"]+)['"]\s*\)/g)) {
-    keyByName.set(m[1], m[2]);
+    keyByName.set(m[1], { key: m[2], form: 'symbol' });
+  }
+  for (const m of src.matchAll(/(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*['"]([^'"]{2,})['"]\s*(?:as\s+const\s*)?;/g)) {
+    if (!keyByName.has(m[1])) keyByName.set(m[1], { key: m[2], form: 'string' });
   }
   if (keyByName.size === 0) return hits;
 
-  const lines = src.split('\n');
-  for (const [name, key] of keyByName) {
-    // The pin half: `globalThis` reached with this symbol as the index — either
-    // as a direct index (`g[NAME]`) or via a mapped type on a globalThis cast
-    // (`typeof globalThis & { [NAME]?: T }`). Both appear in this repo.
-    const indexed = new RegExp(`\\[\\s*${name}\\s*\\]`);
-    if (!indexed.test(src)) continue;
-    if (!/globalThis/.test(src)) continue;
+  // Every identifier that IS globalThis: the builtin, plus any local bound to
+  // it (`const g = globalThis as PulseGlobals`) — the dominant shape here.
+  const accessors = new Set(['globalThis']);
+  for (const m of src.matchAll(/(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*globalThis\b/g)) {
+    accessors.add(m[1]);
+  }
+  const accessorAlt = [...accessors].join('|');
 
-    const declLine = lines.findIndex((l) =>
-      new RegExp(`(?:const|let|var)\\s+${name}\\s*=\\s*Symbol\\.for`).test(l),
+  const lines = src.split('\n');
+  for (const [name, info] of keyByName) {
+    // The pin half, in the two shapes this repo actually writes. Both are
+    // ANCHORED to globalThis — never "the key appears somewhere" — because the
+    // string form is otherwise indistinguishable from `process.env[K]`.
+    //
+    //  (a) INDEXED through an accessor: `g[K]`, `(globalThis as R)[K]`, where
+    //      `g` is any local bound to globalThis.
+    //  (b) DECLARED in a globalThis intersection type, which wraps across lines:
+    //          type G = typeof globalThis & {
+    //            [K]?: T;
+    //          };
+    //      scratch-gc.ts is (b)-only — its indexing call site was deleted when
+    //      DBOS took over the schedule, leaving the pin type behind. A
+    //      line-local rule silently DROPPED it, i.e. the widening would have
+    //      lost a site it was meant to keep. The stale-ALLOW check is what
+    //      surfaced that; keep both shapes covered.
+    const indexed = new RegExp(
+      `\\b(?:${accessorAlt})\\b\\s*(?:as\\s+[^\\[\\]\\n]*?)?\\)?\\s*\\[\\s*${name}\\s*\\]`,
     );
-    hits.push({ line: declLine + 1, key, name });
+    const declaredInGlobalType = new RegExp(
+      `typeof\\s+globalThis\\s*&\\s*\\{[^}]*?\\[\\s*${name}\\s*\\]`,
+      's',
+    );
+    if (!indexed.test(src) && !declaredInGlobalType.test(src)) continue;
+
+    const declRe =
+      info.form === 'symbol'
+        ? new RegExp(`(?:const|let|var)\\s+${name}\\s*=\\s*Symbol\\.for`)
+        : new RegExp(`(?:const|let|var)\\s+${name}\\s*=\\s*['"]`);
+    const declLine = lines.findIndex((l) => declRe.test(l));
+    hits.push({ line: declLine + 1, key: info.key, name, form: info.form });
   }
   return hits;
 }
@@ -163,7 +219,10 @@ export function scanTree() {
       } catch {
         continue;
       }
-      if (!src.includes('Symbol.for')) continue;
+      // Cheap prefilter — must admit BOTH key forms, so it keys on the pin half
+      // (globalThis) rather than on `Symbol.for`. Narrowing this back to the
+      // symbol spelling is precisely what hid ~20 string-key pins.
+      if (!src.includes('globalThis')) continue;
 
       const pins = findPins(src);
       if (pins.length === 0) continue;
@@ -203,6 +262,15 @@ if (!isMain) {
   main();
 }
 
+/**
+ * Render a pin's key AS IT IS WRITTEN. Printing every hit as `Symbol.for('...')`
+ * would restate the very blind spot this guard was widened to remove — a report
+ * asserting a form it did not check.
+ */
+function renderKey(p) {
+  return p.form === 'string' ? `globalThis['${p.key}']` : `Symbol.for('${p.key}')`;
+}
+
 function main() {
 const { violations, allowedSeen, everyPin, stale } = scanTree();
 
@@ -210,7 +278,12 @@ if (LIST_ONLY) {
   everyPin.sort((a, b) => a.rel.localeCompare(b.rel) || a.line - b.line);
   const files = new Set(everyPin.map((p) => p.rel));
   console.log(`${everyPin.length} hand-rolled pin(s) across ${files.size} file(s):\n`);
-  for (const p of everyPin) console.log(`  ${p.rel}:${p.line}  Symbol.for('${p.key}')`);
+  const bySymbol = everyPin.filter((p) => p.form === 'symbol').length;
+  for (const p of everyPin) console.log(`  ${p.rel}:${p.line}  ${renderKey(p)}`);
+  console.log(
+    `\n  (${bySymbol} Symbol.for key(s), ${everyPin.length - bySymbol} plain-string key(s) — ` +
+      `both are realm pins and both are invisible to listModuleDuplications())`,
+  );
   console.log('\nALLOW seed (paste into this script):\n');
   for (const f of [...files].sort()) console.log(`  '${f}',`);
   process.exit(0);
@@ -219,7 +292,7 @@ if (LIST_ONLY) {
 if (violations.length > 0) {
   console.error('\n✖ lint:no-hand-rolled-module-pin — new hand-rolled realm pin(s):\n');
   for (const v of violations) {
-    console.error(`  ${v.rel}:${v.line}  Symbol.for('${v.key}')  (via ${v.name})`);
+    console.error(`  ${v.rel}:${v.line}  ${renderKey(v)}  (via ${v.name})`);
   }
   console.error(`
 Pin module state THROUGH the primitive instead:

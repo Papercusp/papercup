@@ -1938,6 +1938,33 @@ describe('makeCarryRearmController (EI-12754 — one-shot re-arm for busy-gate-r
       expect(ctl.pendingCount()).toBe(0);
     });
 
+    it('a supersede landing DURING the wait that then succeeds is still the one delivered', async () => {
+      // The narrow race: `latest` is read once before waitAtPrompt, but a
+      // supersede can land at ANY await — including the one about to resolve
+      // NOT-deferred. Reading the pre-wait value at the delivery point would cut
+      // in the older carry with a fresher one already in hand.
+      const events: RearmEvent[] = [];
+      const recycles: RecycleCall[] = [];
+      let ctl: ReturnType<typeof makeCarryRearmController> | null = null;
+      ctl = makeCarryRearmController({
+        acquireInject: async () => () => {},
+        waitAtPrompt: async () => {
+          ctl?.schedule(PROD_B); // arrives DURING this wait
+          return { deferred: false }; // ...which then succeeds on the SAME attempt
+        },
+        recycle: async (data: unknown, opts: Record<string, unknown>) => {
+          recycles.push({ data, opts });
+        },
+        emitEvent: (kind: string, extra: Record<string, unknown>) => events.push({ kind, ...extra }),
+        capMs: 1234,
+      });
+      expect(ctl.schedule(PROD_A)).toBe('queued');
+      await drain();
+      expect(recycles).toHaveLength(1);
+      expect(recycles[0].data).toBe(PROD_B.data);
+      expect(recycles[0].opts.systemPromptAddendum).toBe(PROD_B.systemPromptAddendum);
+    });
+
     it('CONTROL — a DRILL still dedupes terminally (its whole point is the one scheduled shot)', () => {
       const events: RearmEvent[] = [];
       const never = new Promise<{ deferred: boolean }>(() => {});

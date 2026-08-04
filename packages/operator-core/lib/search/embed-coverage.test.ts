@@ -33,6 +33,9 @@ import {
   buildCoverageQuery,
   computeDrain,
   consecutiveBacklogGrowth,
+  consecutiveBacklogStuck,
+  BACKLOG_STUCK_SAMPLES,
+  MIN_BACKLOG_FOR_STUCK_ALARM,
   detectCoverageBreaches,
   formatCoverageToast,
   runEmbedCoverageAlarmOnce,
@@ -404,7 +407,126 @@ describe('backlog-growing (P-006 violated)', () => {
   });
 });
 
+describe('backlog-stuck (EI-19478208736094798)', () => {
+  const t = (mins: number) => new Date(new Date('2026-08-03T00:00:00Z').getTime() + mins * 60_000);
+
+  /** n samples, newest-first, where NOTHING was ever embedded — the stranded residue. */
+  const stranded = (n: number, eligible: number, embedded: number): CoverageSample[] =>
+    Array.from({ length: n }, (_, i) =>
+      sample({ observedAt: t((n - 1 - i) * 30), eligibleRows: eligible, embeddedRows: embedded }),
+    );
+
+  // The MEASURED incident, replayed with its real numbers (2026-08-03 23:53Z):
+  // 359,665 eligible on session_turns, 3,441 stranded ⇒ 99.043% coverage.
+  const ELIGIBLE = 359_665;
+  const STRANDED = 3_441;
+  const incidentCoverage = toSurfaceCoverage(sessionTurns, {
+    totalRows: 416_429,
+    eligibleRows: ELIGIBLE,
+    embeddedRows: ELIGIBLE - STRANDED,
+    // bg-host ran fresh code the whole time, so the settled window was perfectly healthy.
+    recentEligible: 500, recentEmbedded: 500, settledEligible: 500, settledEmbedded: 500,
+  });
+
+  it('CATCHES the measured incident that all three prior legs missed', () => {
+    const history = stranded(BACKLOG_STUCK_SAMPLES + 1, ELIGIBLE, ELIGIBLE - STRANDED);
+    const b = detectCoverageBreaches([{ coverage: incidentCoverage, history }]);
+    expect(b.some((x) => x.kind === 'backlog-stuck')).toBe(true);
+  });
+
+  it('CALIBRATION: the three prior legs are genuinely blind to it', () => {
+    // If any of these ever start firing, the new leg is redundant rather than load-bearing
+    // — and this expectation, not a comment, is what would tell us.
+    const history = stranded(BACKLOG_STUCK_SAMPLES + 1, ELIGIBLE, ELIGIBLE - STRANDED);
+    const kinds = detectCoverageBreaches([{ coverage: incidentCoverage, history }]).map((x) => x.kind);
+    expect(kinds).not.toContain('total-coverage'); // 99.043% clears the 95% floor
+    expect(kinds).not.toContain('recent-coverage'); // settled window was 100%
+    expect(kinds).not.toContain('backlog-growing'); // frozen backlog has delta 0
+    // …and the coverage really is above the floor, so the first assertion is not vacuous.
+    expect(incidentCoverage.eligibleCoverage).toBeGreaterThan(TOTAL_COVERAGE_FLOOR);
+    expect(incidentCoverage.eligibleCoverage).toBeCloseTo(0.99043, 5);
+  });
+
+  it('stays SILENT during a legitimate multi-hour backfill that is draining', () => {
+    // The false alarm that would get this muted: a real refill has a huge, old backlog
+    // too — the only thing separating it from a wedge is that rows keep clearing.
+    const draining = Array.from({ length: BACKLOG_STUCK_SAMPLES + 1 }, (_, i) =>
+      sample({
+        observedAt: t((BACKLOG_STUCK_SAMPLES - i) * 30),
+        eligibleRows: ELIGIBLE,
+        embeddedRows: 200_000 + (BACKLOG_STUCK_SAMPLES - i) * 20_000, // newest-first ⇒ climbing
+      }),
+    );
+    const c = toSurfaceCoverage(sessionTurns, {
+      totalRows: 416_429, eligibleRows: ELIGIBLE, embeddedRows: 260_000,
+      recentEligible: null, recentEmbedded: null,
+    });
+    expect(detectCoverageBreaches([{ coverage: c, history: draining }])
+      .some((x) => x.kind === 'backlog-stuck')).toBe(false);
+  });
+
+  it('counts rows CLEARED, not backlog delta — healthy churn is not stuck', () => {
+    // The subtle control. Each interval embeds 500 rows while 500 new eligible rows
+    // arrive: backlogDelta is 0 at every step, but the index is being written the whole
+    // time. A delta-based rule would call this stuck; a drained-based one must not.
+    const churn = Array.from({ length: BACKLOG_STUCK_SAMPLES + 1 }, (_, i) => {
+      const step = BACKLOG_STUCK_SAMPLES - i; // newest-first
+      return sample({
+        observedAt: t(step * 30),
+        eligibleRows: ELIGIBLE + step * 500,
+        embeddedRows: ELIGIBLE - STRANDED + step * 500,
+      });
+    });
+    expect(consecutiveBacklogStuck(churn)).toBe(0);
+    expect(detectCoverageBreaches([{ coverage: incidentCoverage, history: churn }])
+      .some((x) => x.kind === 'backlog-stuck')).toBe(false);
+  });
+
+  it('needs sustained stuckness, not one starved interval', () => {
+    // One interval clearing nothing is ordinary per-target fairness-cap starvation.
+    const short = stranded(BACKLOG_STUCK_SAMPLES, ELIGIBLE, ELIGIBLE - STRANDED);
+    expect(detectCoverageBreaches([{ coverage: incidentCoverage, history: short }])
+      .some((x) => x.kind === 'backlog-stuck')).toBe(false);
+
+    const enough = stranded(BACKLOG_STUCK_SAMPLES + 1, ELIGIBLE, ELIGIBLE - STRANDED);
+    expect(detectCoverageBreaches([{ coverage: incidentCoverage, history: enough }])
+      .some((x) => x.kind === 'backlog-stuck')).toBe(true);
+  });
+
+  it('ignores a residue below the floor', () => {
+    const tiny = MIN_BACKLOG_FOR_STUCK_ALARM - 1;
+    const c = toSurfaceCoverage(sessionTurns, {
+      totalRows: 10_000, eligibleRows: 10_000, embeddedRows: 10_000 - tiny,
+      recentEligible: null, recentEmbedded: null,
+    });
+    const history = stranded(BACKLOG_STUCK_SAMPLES + 1, 10_000, 10_000 - tiny);
+    expect(detectCoverageBreaches([{ coverage: c, history }])
+      .some((x) => x.kind === 'backlog-stuck')).toBe(false);
+  });
+
+  it('says nothing when the backlog is fully drained', () => {
+    const c = toSurfaceCoverage(sessionTurns, {
+      totalRows: 10_000, eligibleRows: 10_000, embeddedRows: 10_000,
+      recentEligible: null, recentEmbedded: null,
+    });
+    const history = stranded(BACKLOG_STUCK_SAMPLES + 1, 10_000, 10_000);
+    expect(consecutiveBacklogStuck(history)).toBe(0);
+    expect(detectCoverageBreaches([{ coverage: c, history }])).toEqual([]);
+  });
+});
+
 describe('toast', () => {
+  it('renders a stuck breach as rows, not as a percentage', () => {
+    // Regression: the formatter branched on 'backlog-growing' alone, so a row-count
+    // breach of any other kind rendered 3441 as "344100.0%".
+    const t = formatCoverageToast([
+      { surface: 's.a.emb', kind: 'backlog-stuck', observed: 3441, floor: 50, detail: 'd' },
+    ]);
+    expect(t.description).toContain('3441 rows');
+    expect(t.description).not.toContain('%,');
+    expect(t.description).not.toContain('344100.0%');
+  });
+
   it('renders a rate breach as rows and a coverage breach as a percentage', () => {
     const t = formatCoverageToast([
       { surface: 's.a.emb', kind: 'recent-coverage', observed: 0.5, floor: 0.99, detail: 'd1' },

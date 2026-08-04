@@ -219,11 +219,11 @@ async function writeRestartAudit(
 export default defineTool({
   name: 'dev:restart',
   description:
-    'Restart a SHARED long-running host, coordinated (drain + coalesce + audit) — the sanctioned alternative to a raw `systemctl restart`. Targets: "dev" (:3070 operator, default) · "staging" (:3170) · "gateway" (:8788 — every agent\'s LLM egress) · "bg-host" (routines/git-sync) · "embed-sidecar" (:3384 embeddings). DRY RUN unless confirm:true; a real restart also needs PAPERCUSP_ALLOW_DEV_RESTART=1 or `authorize:true` (audited). All but "dev" DEBOUNCE (~2min; bg-host ~13min).',
+    'Restart a SHARED long-running host, coordinated (drain + coalesce + audit). Targets: "dev" (:3070 operator, default) · "staging" (:3170) · "gateway" (:8788 — every agent\'s LLM egress) · "bg-host" (routines/git-sync) · "embed-sidecar" (:3384 embeddings). DRY RUN unless confirm:true; a real one needs PAPERCUSP_ALLOW_DEV_RESTART=1 or `authorize:true` (audited). All but "dev" DEBOUNCE (~2min; bg-host ~13min).',
   guidance: {
-    when: 'To LOAD a code edit into a long-running host. gateway/bg-host/embed-sidecar run tsx STRAIGHT FROM THE STAGING TREE (no build/deploy) — a RESTART loads your edit, never wait on a deploy. Pick by what you edited: inference-gateway/** → "gateway"; routines/git-sync → "bg-host"; embeddings → "embed-sidecar"; operator server-side → "staging" (then probe :3170). Dry first, then confirm; pass `authorize:true` + `reason`.',
-    notWhen: 'Just probing. A gateway restart drops in-flight LLM requests fleet-wide (read gateway:status first). NEVER raw `systemctl --user restart` these units, even w/ the env gate withheld — bypasses drain + debounce (WI-4221). gateway/bg-host/embed-sidecar are REFUSED while a green-checkpoint run is live/imminent (false-red risk) — wait, or override_gate_collision:true.',
-    chaining: 'dev:restart (dry — also previews gate_collision) → review holders → dev:restart { confirm:true, target } → drops + returns (or coalesced:true — a peer just restarted; probe directly). Gateway: gateway:status → restart → gateway:status.',
+    when: 'To LOAD a code edit into a long-running host. gateway/bg-host/embed-sidecar run tsx STRAIGHT FROM THE STAGING TREE (no build/deploy) — a RESTART loads your edit, never wait on a deploy. Pick by what you edited: inference-gateway/** → "gateway"; routines/git-sync → "bg-host"; embeddings → "embed-sidecar"; operator server-side → "staging" (then probe :3170).',
+    notWhen: 'Just probing. A gateway restart drops in-flight LLM requests fleet-wide (read gateway:status first). ⚠ "bg-host" kills its WHOLE cgroup — agent spawner, desktop sidecars, in-flight pg_dump (~208 tasks); its drain is a LOCK drain, not a child drain, so blast radius = a raw systemctl (EI-19479764372783341). NEVER raw `systemctl --user restart` these units — bypasses drain + debounce (WI-4221). gateway/bg-host/embed-sidecar are REFUSED while a green-checkpoint run is live/imminent — wait, or override_gate_collision:true.',
+    chaining: 'dry (also previews gate_collision) → review holders → { confirm:true, target } → drops + returns (or coalesced:true — a peer just restarted; probe directly). Gateway: gateway:status → restart → gateway:status.',
     seeAlso: [
       'dev:service_health (check what is down first)',
       'gateway:status (in-flight/admission state — read BEFORE and AFTER a gateway restart)',
@@ -275,6 +275,19 @@ export default defineTool({
   async handler(args, ctx) {
     const target: RestartTarget = args.target ?? 'dev';
     const cfg = RESTART_TARGETS[target];
+    // ⚠ This IS a raw `systemctl --user restart` — the coordination this tool adds
+    // (drain + coalesce + audit + cooldown) is real, but it is ALL lock-shaped: the
+    // drain acquires exclusive(<target>-server), i.e. it drains AGENTS USING the
+    // resource. It has no notion of the unit's CGROUP CHILDREN, and KillMode is
+    // control-group, so the blast radius here is IDENTICAL to the raw command the
+    // docs tell agents to use this instead of. Measured 2026-08-04 on bg-host
+    // (EI-19479764372783341): TasksCurrent=208 — 5x desktop sidecar/serve.mjs,
+    // 4x spawner-sidecar.ts, any in-flight pg_dump, all killed with the unit.
+    // Root cause is on the SPAWN side, not here: managedSpawn confines via
+    // `systemd-run --user --scope` (a SIBLING transient unit, survives a restart),
+    // but fleet/spawner-sidecar-spawn.ts:194 uses a raw spawn(…,{detached:false})
+    // and inherits this cgroup. Do NOT "fix" this by widening the drain — a lock
+    // drain cannot reach a child process. Fix the spawn site.
     const restartCmd = `systemctl --user restart ${cfg.unit}`;
     // EI-13307: per-target, not global — computed up front so both the
     // dry-run note and the real debounce path below quote the SAME window.

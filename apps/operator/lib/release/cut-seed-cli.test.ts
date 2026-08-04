@@ -561,6 +561,7 @@ describe('openSourceStoreForCut (WI-4487 — readOnly is a point-in-time snapsho
       kind: 'no-holder' as const,
       answered: [3070],
       probed: [3070, 3170],
+      staleBuild: [],
     })) as never;
     const snapshotProduced = (async () => ({
       kind: 'produced' as const,
@@ -714,7 +715,7 @@ describe('openSourceStoreForCut (WI-4487 — readOnly is a point-in-time snapsho
         refreshImpl: (async () => {}) as never,
         findHolderImpl: (async () => {
           asked = true;
-          return { kind: 'no-holder' as const, answered: [], probed: [] };
+          return { kind: 'no-holder' as const, answered: [], probed: [], staleBuild: [] };
         }) as never,
       });
       expect(asked).toBe(false);

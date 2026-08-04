@@ -133,11 +133,62 @@ const INBOX_TIER_DEFAULTS = {
   full: { limit: DEFAULT_INBOX_LIMIT, bodyChars: 600 },
 } as const;
 
+/** Bound the COMBINED `text` across one entry's `sections[]` to a single shared
+ *  `maxChars` budget, preserving every other section key. Returns null when there
+ *  is nothing to do (not an array, or already within budget) so the caller can
+ *  leave the entry object untouched.
+ *
+ *  The budget is shared across the whole entry rather than applied per section on
+ *  purpose: a per-section cap still scales with section count, and section count
+ *  is precisely what overflowed the read this fixes. Pure. */
+function boundSectionsText(
+  raw: unknown,
+  maxChars: number,
+): { sections: unknown[]; fullChars: number } | null {
+  if (!Array.isArray(raw)) return null;
+  let fullChars = 0;
+  for (const s of raw) {
+    const t = (s as Record<string, unknown> | null | undefined)?.["text"];
+    if (typeof t === "string") fullChars += t.length;
+  }
+  if (fullChars <= maxChars) return null;
+  let remaining = maxChars;
+  const sections = raw.map((s) => {
+    if (!s || typeof s !== "object") return s;
+    const rec = s as Record<string, unknown>;
+    const t = rec["text"];
+    if (typeof t !== "string") return s;
+    if (t.length <= remaining) {
+      remaining -= t.length;
+      return s;
+    }
+    const kept = t.slice(0, remaining);
+    remaining = 0;
+    return { ...rec, text: kept };
+  });
+  return { sections, fullChars };
+}
+
 /** EI-1752: truncate an inbox entry's content-bearing string fields (`summary`,
  *  `body`) to `maxChars` so a default read can't overflow the agent result cap (a
  *  few long summaries/bodies = 80KB+ in one line). Truncated fields carry a
  *  `<field>_truncated` flag; the full text stays reachable via coord:thread.
- *  `maxChars <= 0` ⇒ no truncation. Pure. */
+ *  `maxChars <= 0` ⇒ no truncation. Pure.
+ *
+ *  EI-19423034419710126: `sections[].text` is bounded too. This is not cosmetic —
+ *  a multi-section body is the NORMAL shape for a substantive coord message
+ *  (coord:send REFUSES a plain-string `body`), and `sections[].text` carries the
+ *  SAME prose as `body`. Bounding one copy and leaving the other whole made
+ *  `max_body_chars` approximately a no-op on exactly the messages that make a read
+ *  expensive: a measured `max_body_chars: 1` read returned 1-char bodies beside
+ *  ~3.8KB of untouched sections and blew a ~1500-token door by 35x. Because the
+ *  arg is the documented lever for "read many entries cheaply", it failed in the
+ *  worst direction — you reach for it when you already know the read is large.
+ *
+ *  Structural keys (premises / forYouBecause / youMayNotKnow / couldNotDetermine /
+ *  clarify) are PRESERVED rather than stripped: authoredFieldsMarker runs AFTER
+ *  bounding and derives its marker from them, so dropping `sections` outright —
+ *  the cheaper fix — would silently drop that marker instead. */
 export function boundInboxEntries<T extends Record<string, unknown>>(
   entries: readonly T[],
   maxChars: number,
@@ -156,6 +207,15 @@ export function boundInboxEntries<T extends Record<string, unknown>>(
           [`${field}_full_chars`]: v.length,
         };
       }
+    }
+    const bounded = boundSectionsText(e["sections"], maxChars);
+    if (bounded) {
+      out = {
+        ...out,
+        sections: bounded.sections,
+        sections_truncated: true,
+        sections_full_chars: bounded.fullChars,
+      };
     }
     return out;
   });
@@ -827,9 +887,12 @@ export default defineTool({
     const boundEntries = boundInboxEntries(annotatedEntries, effectiveCap).map((entry) => {
       // P-033 (e): mark which entries carry AUTHORED structure (premises /
       // forYouBecause / youMayNotKnow / couldNotDetermine / clarify). Derived AFTER
-      // bounding on purpose: bounding truncates only `summary`/`body` and preserves
-      // every other field, so the marker sees the same `sections` either way — while
-      // deriving here guarantees it survives to the returned row.
+      // bounding on purpose: bounding truncates the TEXT of `summary`/`body`/
+      // `sections[].text` but preserves every structural key, so the marker sees the
+      // same authored fields either way — while deriving here guarantees it survives
+      // to the returned row. (EI-19423034419710126 added the `sections[].text` bound;
+      // that key preservation is exactly why it truncates sections instead of
+      // dropping them, which would silently cost this marker.)
       //
       // The compact marker, not the full projection: this surface budgets its entries
       // to ~15KB total and scales the per-entry cap DOWN as `limit` rises, so a full

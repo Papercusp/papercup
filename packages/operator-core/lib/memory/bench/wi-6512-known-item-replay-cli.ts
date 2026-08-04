@@ -616,7 +616,11 @@ async function runCeiling(args: Args): Promise<void> {
    * lands at IS the discriminator — and `absent` here, at 200 slots and an
    * effectively unbounded char budget, is a real absence rather than a cut.
    */
-  const depth = async (queryText: string, arm: 'bm25' | 'hybrid'): Promise<string> => {
+  const depth = async (
+    queryText: string,
+    arm: 'bm25' | 'hybrid',
+    anchorDfBudget?: number,
+  ): Promise<string> => {
     if (arm === 'bm25') resetCorpusEmbedderWarmup();
     else await warmCorpusEmbedder();
     const res = await recallCorpusContext({
@@ -624,6 +628,7 @@ async function runCeiling(args: Args): Promise<void> {
       workspaceId: args.workspace,
       harnessSlugs: [args.harness],
       skipFlagCheck: true,
+      ...(anchorDfBudget === undefined ? {} : { anchorDfBudget }),
       maxItems: 200,
       budgetChars: 5_000_000,
     });
@@ -655,8 +660,14 @@ async function runCeiling(args: Args): Promise<void> {
   // PAIRED anchor arms (WI-9273). Same one-process discipline as the graded
   // arms above; the ONLY difference between the arms is the graded stage's
   // anchor budget.
-  //   CONTROL   anchorDfBudget 0 = the single rarest lexeme (pre-WI-9273)
-  //   TREATMENT the shipped default budget
+  //   CONTROL   anchorDfBudget 0    = the single rarest lexeme (pre-WI-9273)
+  //   TREATMENT anchorDfBudget 4000 = the budgeted anchor set
+  //
+  // ⚠ BOTH ARMS PASS AN EXPLICIT BUDGET, and the treatment's must NOT be
+  // `undefined`. ANCHOR_DF_BUDGET ships at 0 (the widening measured neutral —
+  // see its doc comment), so an `undefined` treatment would silently become a
+  // second control and this arm would report a guaranteed delta of 0 while
+  // looking like it measured something.
   //
   // ⚠ READ REACH, NOT ADMISSIONS. The anchor is a RETRIEVAL lever, and D-069
   // measured the LINE-SELECTION ceiling at 2/7 — downstream of it. So a real
@@ -667,6 +678,7 @@ async function runCeiling(args: Args): Promise<void> {
   // this) → ORDER-blocked/ADMITTED (retrieval found it; the rest is WI-9592's
   // layer).
   const anchorArms = args.anchorArms;
+  const ANCHOR_ARM_BUDGET = 4000;
   const tallyAnchor = {
     control: { admitted: 0, reachable: 0, notRetrieved: 0, cand: 0 },
     treatment: { admitted: 0, reachable: 0, notRetrieved: 0, cand: 0 },
@@ -679,7 +691,7 @@ async function runCeiling(args: Args): Promise<void> {
       // deterministic, so a verdict difference is attributable to the anchor
       // rather than to embedder warm-state.
       const ctl = await probe(queryText, 'bm25', undefined, 0);
-      const tr = await probe(queryText, 'bm25', undefined, undefined);
+      const tr = await probe(queryText, 'bm25', undefined, ANCHOR_ARM_BUDGET);
       for (const [side, r] of [['control', ctl], ['treatment', tr]] as const) {
         const t = tallyAnchor[side];
         if (r.verdict === 'admitted') t.admitted++;
@@ -700,6 +712,15 @@ async function runCeiling(args: Args): Promise<void> {
           `\n     CONTROL   (anchor = rarest lexeme) ${ctl.verdict.toUpperCase().padEnd(14)} (${ctl.candidates} cand, ${ctl.admitted}/6)` +
           `\n     TREATMENT (anchor = df budget)     ${tr.verdict.toUpperCase().padEnd(14)} (${tr.candidates} cand, ${tr.admitted}/6)`,
       );
+      // NOT-RETRIEVED at 6 slots is CENSORED by the 24-row over-fetch cap, so
+      // it cannot tell "the anchor never matched it" from "the anchor matched
+      // it and it ranked below the cut". Those need OPPOSITE fixes, and only
+      // the second is evidence the anchor moved the barrier — so re-probe both
+      // arms at depth whenever either says NOT-RETRIEVED.
+      if (ctl.verdict === 'not-retrieved' || tr.verdict === 'not-retrieved') {
+        console.log(`       depth CONTROL   : ${await depth(queryText, 'bm25', 0)}`);
+        console.log(`       depth TREATMENT : ${await depth(queryText, 'bm25', ANCHOR_ARM_BUDGET)}`);
+      }
       continue;
     }
     if (gradedArms) {

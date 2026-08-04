@@ -22,12 +22,14 @@ interface Call {
 
 /**
  * A fake sibling fleet. `holderPort` answers `booted:true`; every other port answers
- * `booted:false`; a port in `dead` refuses the connection.
+ * `booted:false`; a port in `dead` refuses the connection; a port in `staleBuild` is
+ * ALIVE but 404s this route (its build predates it — the P-014/WI-10773 case).
  */
 function fleet(opts: {
   ports: number[];
   holderPort?: number;
   dead?: number[];
+  staleBuild?: number[];
   snapshotReply?: Record<string, unknown>;
   onCall?: (c: Call) => void;
 }) {
@@ -46,6 +48,9 @@ function fleet(opts: {
     opts.onCall?.(call);
     const port = Number(/:(\d+)\//.exec(url)?.[1]);
     if (opts.dead?.includes(port)) throw new Error('ECONNREFUSED');
+    // Serving fine, but this ROUTE does not exist in that build.
+    if (opts.staleBuild?.includes(port))
+      return { ok: false, status: 404, json: async () => ({ error: 'not_found' }) };
     const booted = port === opts.holderPort;
     if (!booted) return { ok: true, status: 200, json: async () => ({ ok: true, booted: false }) };
     if (body.probeOnly === true) {
@@ -112,6 +117,31 @@ describe('findLiveOperatorHoldingHive', () => {
     expect(out.kind === 'no-holder' && out.answered).toEqual([3070]);
   });
 
+  it('distinguishes a STALE-BUILD sibling (alive, 404s this route) from a dead port', async () => {
+    // The measured P-014/WI-10773 case: papercup-bg-host HELD the corestore write lock
+    // and served every other internal route, but had started 9 minutes before the
+    // head-snapshot route file existed, so it 404'd this one path. Both a 404 and a
+    // refused connection are the same `__transportError` on the wire, and reporting them
+    // identically hid the holder inside a list of ports that "did not answer" — while
+    // the message said no process on the box held the hive, the opposite of the truth.
+    const f = fleet({ ports: [3070, 3170, 3271], staleBuild: [3271], dead: [3170] });
+    const out = await findLiveOperatorHoldingHive({ ...base, ...f });
+    expect(out.kind).toBe('no-holder');
+    if (out.kind !== 'no-holder') return;
+    expect(out.staleBuild).toEqual([3271]);
+    // A refused connection is NOT a stale build — the remedies differ, so the two must
+    // not collapse back together.
+    expect(out.staleBuild).not.toContain(3170);
+    // Neither one answered, so the pre-existing field is unchanged for both.
+    expect(out.answered).toEqual([3070]);
+  });
+
+  it('a fleet with no 404s reports an EMPTY staleBuild (the field never fires spuriously)', async () => {
+    const f = fleet({ ports: [3070, 3170], dead: [3170] });
+    const out = await findLiveOperatorHoldingHive({ ...base, ...f });
+    expect(out.kind === 'no-holder' && out.staleBuild).toEqual([]);
+  });
+
   it('finds the holder even when a SIBLING is unreachable (one bad process must not blind the search)', async () => {
     const f = fleet({ ports: [3070, 3170, 3271], holderPort: 3271, dead: [3170] });
     const out = await findLiveOperatorHoldingHive({ ...base, ...f });
@@ -121,7 +151,7 @@ describe('findLiveOperatorHoldingHive', () => {
   it('no siblings on the box at all ⇒ no-holder with an empty probe list', async () => {
     const f = fleet({ ports: [] });
     const out = await findLiveOperatorHoldingHive({ ...base, ...f });
-    expect(out).toEqual({ kind: 'no-holder', answered: [], probed: [] });
+    expect(out).toEqual({ kind: 'no-holder', answered: [], probed: [], staleBuild: [] });
   });
 });
 
