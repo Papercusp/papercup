@@ -179,6 +179,62 @@ function findSection(
   );
 }
 
+/**
+ * Fields the `heading` narrowing drops from the meta envelope, because a caller
+ * asking for ONE section demonstrably did not ask for them.
+ *
+ * EI-19478970139996135: `heading` used to spread the whole meta `base`, so a
+ * heading read shipped the entire `## Now`, the parsed+raw frontmatter, the
+ * promote policy and the full sectionIndex wrapped around the one section
+ * requested. Measured on semantic-search-fingerprint-coverage-2026-08-03
+ * (heading:'Now'): 7538 chars, of which the requested body was 2041 — a 73%
+ * envelope shipping the same content THREE times (now.state + now.next ≈
+ * now.raw ≈ section.body). Three of three heading reads blew the ~1500-token
+ * result door and spilled to scratch.
+ *
+ * The perverse part, and the reason this is a real bug rather than a diet: the
+ * `heading` form exists to AVOID a big read, so it is reached for exactly when a
+ * plan is large — and a large plan has a large `## Now`, so the fixed envelope
+ * was heaviest precisely in the case the feature exists to serve.
+ */
+const HEADING_DROPPED_FIELDS = new Set(["now", "promotePolicy"]);
+
+/**
+ * Build the `heading`-narrowed payload from the meta base. Shared by the legacy
+ * and non-legacy branches so the two cannot drift (the legacy base simply
+ * carries none of the dropped fields, making those rules no-ops there).
+ *
+ * `sectionIndex` is kept ONLY on a MISS: it is how a caller finds the heading
+ * they actually meant, so it earns its ~750 chars when the lookup failed and is
+ * dead weight when it succeeded.
+ */
+export function narrowHeadingPayload(
+  base: Record<string, unknown>,
+  heading: string,
+  sec: (PlanSection & { body: string }) | null,
+): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(base)) {
+    if (HEADING_DROPPED_FIELDS.has(key)) continue;
+    if (key === "sectionIndex" && sec) continue;
+    if (key === "frontmatter" && value && typeof value === "object") {
+      // `raw` duplicates the parsed fields sitting beside it (measured 250 chars
+      // of pure duplication). Filtered by key rather than destructured so this
+      // holds whatever the parser adds later.
+      out[key] = Object.fromEntries(
+        Object.entries(value as Record<string, unknown>).filter(([k]) => k !== "raw"),
+      );
+      continue;
+    }
+    out[key] = value;
+  }
+  out.heading = heading;
+  out.section = sec
+    ? { heading: sec.heading, level: sec.level, body: sec.body }
+    : null;
+  return out;
+}
+
 export default defineTool({
   name: "plans:get",
   description:
@@ -274,14 +330,11 @@ export default defineTool({
               };
               let payload: Record<string, unknown> = legacyBase;
               if (args.heading) {
-                const sec = findSection(sections, args.heading);
-                payload = {
-                  ...legacyBase,
-                  heading: args.heading,
-                  section: sec
-                    ? { heading: sec.heading, level: sec.level, body: sec.body }
-                    : null,
-                };
+                payload = narrowHeadingPayload(
+                  legacyBase,
+                  args.heading,
+                  findSection(sections, args.heading),
+                );
               } else if ((args.mode ?? "sections") === "full") {
                 // Legacy plans are prose-only — full includes the body; meta/sections omit it.
                 // (Raw is byte-identical to prose for a legacy plan; only surfaced when the
@@ -436,16 +489,17 @@ export default defineTool({
               },
             };
 
-            // `heading`: meta + just the requested section's body (overrides mode).
+            // `heading`: the requested section plus IDENTITY/CAS fields only —
+            // deliberately NOT the full `base` meta envelope (overrides mode).
+            // Rationale + the measurement live on narrowHeadingPayload above.
             if (args.heading) {
-              const sec = findSection(sections, args.heading);
               return {
                 ok: true as const,
-                ...base,
-                heading: args.heading,
-                section: sec
-                  ? { heading: sec.heading, level: sec.level, body: sec.body }
-                  : null,
+                ...narrowHeadingPayload(
+                  base,
+                  args.heading,
+                  findSection(sections, args.heading),
+                ),
               };
             }
 

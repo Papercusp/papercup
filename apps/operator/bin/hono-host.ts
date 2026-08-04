@@ -40,6 +40,7 @@ import {
   startMemoryWatchdog,
   resolveMemoryWatchdogLimitMb,
 } from '@papercusp/operator-core/lib/memory-watchdog';
+import { startEventLoopSentinel } from '@papercusp/operator-core/lib/event-loop-sentinel-host';
 import {
   gracefulHostRecycle,
   installGracefulShutdown,
@@ -449,6 +450,25 @@ function startRequestServers(): void {
       },
     });
   }
+
+  // Blocked-event-loop sentinel (EI-19465075959589134). The watchdog above bounds
+  // RSS; this bounds LIVENESS, and neither covers the other. :3170 blocked its loop
+  // at 2026-08-03 16:14:17Z and stayed wedged 30+ min while every signal read
+  // healthy — port bound, pid alive, systemd active, TCP connects SUCCEEDING (the
+  // kernel completes the handshake without the process). Its RSS at the sample
+  // before the block was 2013MB against a 3200MB limit, and FALLING, so the memory
+  // watchdog had nothing to act on and was right not to act.
+  //
+  // Why it cannot live on this thread: every existing guard samples from a timer on
+  // the very loop whose blockage is the failure, so all of them go silent exactly
+  // when it happens. The sentinel therefore runs on a worker_threads Worker (its own
+  // loop, unaffected by a main-thread block — measured), reads a heartbeat counter
+  // the main thread bumps into a SharedArrayBuffer, and SIGKILLs on sustained
+  // staleness. SIGKILL specifically: a SIGTERM handler would be queued on the
+  // blocked loop and never run. Fail-soft throughout — a spawn failure disables the
+  // sentinel and leaves the host running. Kill-switch:
+  // PAPERCUSP_EVENT_LOOP_SENTINEL=0 (or =observe to detect + log without killing).
+  startEventLoopSentinel();
 
   // D4 (infra-fail-fast-build-integrity P-017): graceful HTTP connection-drain on
   // SIGTERM/SIGINT for the HTTP-SERVING process — the single-process host AND each

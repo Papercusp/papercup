@@ -19,12 +19,29 @@
  * | failure | detector |
  * |---|---|
  * | heap grows without bound | `memory-watchdog.ts` (RSS high-water mark) |
- * | loop stops turning at ANY heap size | this |
+ * | loop DEGRADED but still turning | `event-loop-lag-monitor.ts` (libuv histogram) |
+ * | loop STOPPED turning, at any heap size | this |
  * | never alive since boot | `dev:service_health` accept-queue probe, out of process |
  *
- * The third row is deliberately NOT this file's job — see the `sawHeartbeat`
+ * The last row is deliberately NOT this file's job — see the `sawHeartbeat`
  * guard in the pure module for why a never-started host must not be killed
  * from in-process.
+ *
+ * ## Why `event-loop-lag-monitor.ts` does not already cover this
+ *
+ * It looks like it should: it owns a `monitorEventLoopDelay()` libuv histogram
+ * and even captures a cpuprofile when p95 lag crosses its threshold. But it
+ * READS that histogram from a `managedSetInterval` on the MAIN loop
+ * (`event-loop-lag-monitor.ts:364`). The histogram keeps accumulating in C
+ * while the loop is blocked; the reader that would report it never runs. So it
+ * reports lag right up to the moment of a wedge and then goes silent — the
+ * detector goes quiet exactly when the thing it watches dies.
+ *
+ * That is the same fate-sharing defect as the memory watchdog's sampler, and it
+ * is why this sentinel had to be a separate off-thread module rather than an
+ * option on the lag monitor. The two are complements: the lag monitor answers
+ * "how degraded, and by what" while the loop still turns; this answers "has it
+ * stopped" when it does not.
  *
  * ## Fail-soft is a hard requirement
  *

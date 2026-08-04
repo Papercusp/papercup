@@ -62,26 +62,54 @@ export function sweepConfidenceRank(confidence: ConfidenceLike): number {
 const epochMs = (v: string | Date): number => new Date(v).getTime();
 
 /**
+ * Remaining share of the TTL its author declared, mirroring the SQL expression:
+ *   (expires_at - now()) / GREATEST(expires_at - created_at, 1 second)
+ *
+ * ~1.0 = just written; ~0.0 = about to expire. The GREATEST guard mirrors the
+ * SQL's and covers only a degenerate zero-length TTL — `created_at` and
+ * `expires_at` are both NOT NULL in the schema, so there is no null case.
+ */
+export function sweepRemainingFraction(row: SweepRankableRow, nowMs: number): number {
+  const expires = epochMs(row.expires_at);
+  const ttlMs = Math.max(expires - epochMs(row.created_at), 1000);
+  return (expires - nowMs) / ttlMs;
+}
+
+/**
  * Order rows MOST-valuable-first — the same order the sweep ranks victims in,
  * where the tail past the cap is what gets evicted.
  *
  * Mirrors, key for key:
- *   ORDER BY CASE confidence ... END ASC, expires_at DESC, updated_at DESC
+ *   ORDER BY CASE confidence ... END ASC,
+ *            (EXTRACT(epoch FROM (expires_at - now()))
+ *               / GREATEST(EXTRACT(epoch FROM (expires_at - created_at)), 1)) DESC,
+ *            updated_at DESC
  *
  * Returns a new array; the input is not mutated.
  *
- * ⚠ Exact three-key ties are ORDER-AMBIGUOUS in SQL (no total order is
- * specified), so this function does not invent a tiebreak to look more precise
- * than the thing it mirrors. Callers must treat a tied tail as "one of these
- * goes next", not "this exact one goes next".
+ * ⚠ `nowMs` is a REAL input, not a convenience default. Key 2 became a fraction
+ * of elapsed life in EI-19483432832662150, so this ordering is TIME-DEPENDENT:
+ * the same rows can order differently at two instants with no write in between
+ * (that is the point — it is how a short-lived fact serves its purpose and then
+ * yields). A caller checking against a specific SQL result should pass that
+ * statement's instant; the default is right only for "as of right now".
+ *
+ * ⚠ Exact ties are ORDER-AMBIGUOUS in SQL (no total order is specified), so
+ * this function does not invent a tiebreak to look more precise than the thing
+ * it mirrors. Callers must treat a tied tail as "one of these goes next", not
+ * "this exact one goes next". Ties are rarer under a continuous fraction than
+ * under a timestamp, but not impossible.
  */
-export function orderAsSweepWould<T extends SweepRankableRow>(rows: readonly T[]): T[] {
+export function orderAsSweepWould<T extends SweepRankableRow>(
+  rows: readonly T[],
+  nowMs: number = Date.now(),
+): T[] {
   return [...rows].sort((a, b) => {
     const byConfidence = sweepConfidenceRank(a.confidence) - sweepConfidenceRank(b.confidence);
     if (byConfidence !== 0) return byConfidence;
-    // DESC on both remaining keys: the later timestamp ranks first (survives).
-    const byExpiry = epochMs(b.expires_at) - epochMs(a.expires_at);
-    if (byExpiry !== 0) return byExpiry;
+    // DESC: the LARGER remaining fraction ranks first (survives).
+    const byFraction = sweepRemainingFraction(b, nowMs) - sweepRemainingFraction(a, nowMs);
+    if (byFraction !== 0) return byFraction;
     return epochMs(b.updated_at) - epochMs(a.updated_at);
   });
 }
