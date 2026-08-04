@@ -6,12 +6,15 @@ import {
   deriveSignatureFromSummary,
   livenessSignatureOf,
   beesIdleByDesign,
+  beesIdleDecision,
+  describeBeesLiveness,
   beesLivenessFromHealth,
   unobservableLivenessSignatures,
   policySuppressedLivenessSignatures,
   resolveEvidenceFor,
   _resetLivenessAlarmDebounce,
   INFRA_LIVENESS_IDENTITY,
+  type BeesIdleLeg,
   type BeesLivenessContext,
   type FlapState,
   type FlapMutationResult,
@@ -387,6 +390,74 @@ describe('EI-15006: panel:bees idle-by-design gate', () => {
     });
     it('fail-safe: unknown capacity (dispatchBudget null) does NOT force a page — other-agents-alive carries it', () => {
       expect(beesIdleByDesign({ ...healthy, dispatchBudget: null })).toBe(true);
+    });
+  });
+
+  // EI-19474857043229377 — the boolean alone made a flapping gate undiagnosable after the
+  // fact: every leg is a transient nothing persists, so diagnosing ONE burst cost four
+  // wakes of live elimination and still ran out of window. The leg must travel with the
+  // verdict.
+  describe('beesIdleDecision — leg attribution', () => {
+    const cases: ReadonlyArray<[string, Partial<typeof healthy>, boolean, BeesIdleLeg]> = [
+      ['healthy idle', {}, true, 'idle-by-design'],
+      ['cup work waiting', { cupPlaceableFrontier: 3 }, false, 'cup-work-waiting'],
+      ['gateway restarting', { restartRecovering: true }, false, 'gateway-restart-recovering'],
+      ['no other agent alive', { otherAgentsAlive: false }, false, 'no-other-agent-alive'],
+      ['cup tier known-full', { dispatchBudget: 0 }, false, 'dispatch-budget-exhausted'],
+      ['unknown capacity is not exhaustion', { dispatchBudget: null }, true, 'idle-by-design'],
+    ];
+
+    for (const [name, over, idle, leg] of cases) {
+      it(`${name} → idle=${idle}, leg=${leg}`, () => {
+        expect(beesIdleDecision({ ...healthy, ...over })).toEqual({ idle, leg });
+      });
+    }
+
+    it('COMPLETENESS: every declared leg is reachable — a new leg cannot ship untested', () => {
+      const reached = new Set(cases.map(([, over]) => beesIdleDecision({ ...healthy, ...over }).leg));
+      // Mirrors the BeesIdleLeg union. Adding a leg without a case above fails here.
+      const declared: BeesIdleLeg[] = [
+        'cup-work-waiting',
+        'gateway-restart-recovering',
+        'no-other-agent-alive',
+        'dispatch-budget-exhausted',
+        'idle-by-design',
+      ];
+      expect([...reached].sort()).toEqual([...declared].sort());
+    });
+
+    it('DRIFT GUARD: beesIdleByDesign is exactly `leg === idle-by-design` across the matrix', () => {
+      for (const cupPlaceableFrontier of [0, 3]) {
+        for (const restartRecovering of [false, true]) {
+          for (const otherAgentsAlive of [true, false]) {
+            for (const dispatchBudget of [15, 0, null]) {
+              const ctx = { cupPlaceableFrontier, restartRecovering, otherAgentsAlive, dispatchBudget };
+              const d = beesIdleDecision(ctx);
+              expect(beesIdleByDesign(ctx)).toBe(d.idle);
+              expect(d.idle).toBe(d.leg === 'idle-by-design');
+            }
+          }
+        }
+      }
+    });
+
+    it('reports the FIRST failing leg when several fail (precedence is stable)', () => {
+      expect(
+        beesIdleDecision({ ...healthy, cupPlaceableFrontier: 3, restartRecovering: true, otherAgentsAlive: false }).leg,
+      ).toBe('cup-work-waiting');
+    });
+
+    it('describeBeesLiveness carries every raw leg value plus the verdict', () => {
+      const s = describeBeesLiveness({ ...healthy, dispatchBudget: 0 });
+      expect(s).toContain('cupPlaceableFrontier=0');
+      expect(s).toContain('dispatchBudget=0');
+      expect(s).toContain('restartRecovering=false');
+      expect(s).toContain('otherAgentsAlive=true');
+      expect(s).toContain('dispatch-budget-exhausted');
+    });
+
+    it('renders an UNKNOWN dispatchBudget as unknown, never as 0 (opposite sides of the gate)', () => {
+      expect(describeBeesLiveness({ ...healthy, dispatchBudget: null })).toContain('dispatchBudget=unknown');
     });
   });
 
@@ -1849,6 +1920,41 @@ describe('EI-19462267124852221 — an auto-resolve must carry its OBSERVATION, n
     // The same load-bearing distinction as the unmapped-signature case: we did not look,
     // which must never render as "we looked and it was clear".
     expect(resolveEvidenceFor('panel:no-such-panel', mkHealth())).toBe('observed panel no-such-panel status=panel-absent');
+  });
+
+  // EI-19474857043229377 — `panel:bees` is withheld by the beesIdleByDesign gate, so a
+  // resolve can be announcing the GATE flipping while the panel reads crit on both sides
+  // (measured: 83 such cycles in 24h). The panel status alone therefore cannot name the
+  // cause; the gate's inputs must ride along or the occurrence is undiagnosable once the
+  // window closes — which is exactly what cost four wakes of live elimination.
+  it('panel:bees carries the GATE INPUTS alongside the panel status', () => {
+    const h = mkHealth({ panels: { bees: { status: 'crit', summary: 'no bees running', data: { running: 0 } } } });
+    const ctx: BeesLivenessContext = {
+      cupPlaceableFrontier: 0,
+      dispatchBudget: 0,
+      restartRecovering: false,
+      otherAgentsAlive: true,
+    };
+    const s = resolveEvidenceFor('panel:bees', h, ctx);
+    expect(s).toContain('observed panel bees status=crit');
+    expect(s).toContain('gate: cupPlaceableFrontier=0');
+    expect(s).toContain('dispatch-budget-exhausted');
+  });
+
+  it('panel:bees WITHOUT a threaded context degrades to the status alone — never a fabricated gate reading', () => {
+    const h = mkHealth({ panels: { bees: { status: 'crit', summary: 'no bees running', data: { running: 0 } } } });
+    expect(resolveEvidenceFor('panel:bees', h)).toBe('observed panel bees status=crit');
+  });
+
+  it('the gate suffix is scoped to panel:bees — another panel is unchanged even when a context is passed', () => {
+    const h = mkHealth({ panels: { infra: { status: 'warn', summary: 'pg slow' } } });
+    const ctx: BeesLivenessContext = {
+      cupPlaceableFrontier: 0,
+      dispatchBudget: 15,
+      restartRecovering: false,
+      otherAgentsAlive: true,
+    };
+    expect(resolveEvidenceFor('panel:infra', h, ctx)).toBe('observed panel infra status=warn');
   });
 
   it('THE CALL SITE: the note actually written on a genuine recovery carries the evidence', async () => {

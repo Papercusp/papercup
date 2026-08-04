@@ -689,8 +689,10 @@ describe('push-path recall telemetry is recorded PER POOL (P-026)', () => {
         input.pools.user!.entries.length +
         input.pools.harness!.entries.length +
         input.pools.hive!.entries.length;
-      expect(pooled).toBe(3); // pre-filter, unchanged meaning
-      expect(input.admission.admitted).toBeLessThan(pooled); // post-filter, the new measurement
+      // `pools` is the PRE-filter view and must agree with the funnel's
+      // `returned`, never with `admitted`.
+      expect(pooled).toBe(input.admission.returned);
+      expect(input.admission.admitted).toBeLessThan(pooled);
     });
   });
 });

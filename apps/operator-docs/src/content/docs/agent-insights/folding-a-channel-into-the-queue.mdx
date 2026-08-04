@@ -50,9 +50,32 @@ If a channel has **no pending-decision store** (e.g. `gym:judge` is a pure scori
 
 **Source fetches run concurrently, not sequentially** (infra-perf-robustness-audit-2026-06-18
 P-005, `attention.ts`): source 1 (plan items) still runs first to populate the `planHarness` map,
-then sources 2–10 — including every folded disposition channel above — fire together via
+then sources **2–16** — including every folded disposition channel above — fire together via
 `Promise.all`, each still in its own best-effort `try/catch`. This is a latency fix only (the
 handler was p50 ~2s sequential); output order is irrelevant because `buildAttentionGroups`
 re-groups and deterministically re-sorts by importance, so it changes nothing about *what* to
 surface — a new channel's adapter/predicate still slots into that `Promise.all` array the same
 way, just wrapped in its own `(async () => { try { … } catch { /* best-effort */ } })()`.
+
+Numbering note: the sequence skips **5** on purpose — the plan-review source was retired by
+B-14/P-101 (needs-human plan items, a plan-governance Decision, are the review gate now;
+`harness_plan_review` had no live writer once the bash orchestrator was archived). The numbers
+are stable labels, not a dense index; don't renumber to close the gap.
+
+## Still current (verified 2026-08-04)
+
+This page is `normative`, so the useful check is whether the code still *obeys* it — it does,
+and the growth is the evidence. The fan-out went from 10 sources to 16 by exactly the slot-in
+this page prescribes, and every added channel surfaces an awaiting-human slice rather than a
+backlog dump: needs-human work-items (11), registered owner-walls (12), pending dark-flag
+ratifications (13), watcher blocked-session/mirrored-ask (14), blocked work-items (15), and
+possibly-unrecorded owner decisions (16).
+
+One addition worth folding back into "pick the right per-channel predicate" above: alongside a
+`needsHuman` flag, a bounded candidate set, and a rollup, the code now also uses **a bounded
+lifecycle STATE** — `blocked` (source 15, curated-signal-cards P-001) — as the awaiting-human
+predicate. That is consistent with the rule, not an exception to it: `blocked` is bounded and
+genuinely awaits a human unblock, whereas plain `open` would be the backlog flood D-013 forbids.
+
+The `lib/autonomy/categories.ts` count cited above is also still exact: **14** ids
+(`CATEGORIES` → `AUTONOMY_CATEGORY_IDS`).

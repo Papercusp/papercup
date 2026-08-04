@@ -792,7 +792,11 @@ export function policySuppressedLivenessSignatures(
  * an explicit "not recorded" for signatures it does not map, so an unmapped signature
  * reads as unknown rather than as observed-clear.
  */
-export function resolveEvidenceFor(sig: string, health: SystemHealth): string {
+export function resolveEvidenceFor(
+  sig: string,
+  health: SystemHealth,
+  beesLiveness?: BeesLivenessContext,
+): string {
   // `panel:<key>` — the catch-all family (evaluateLivenessAlarm §6) fires while a panel
   // self-reports `crit`, so that panel's OWN status at resolve time IS the observation.
   //
@@ -1618,7 +1622,7 @@ export async function runLivenessAlarmTick(
         const outcome = await resolve(
           rec.msg_id,
           'auto-resolved',
-          `infra-liveness signal '${sig}' cleared (${reason}) — ${resolveEvidenceFor(sig, healthForSignals)}`,
+          `infra-liveness signal '${sig}' cleared (${reason}) — ${resolveEvidenceFor(sig, healthForSignals, beesLivenessForSignals)}`,
         );
         if (outcome === 'not_found' || outcome === 'already_resolved' || outcome === 'requires_spawn_approve') continue;
         resolved.push(rec.msg_id);

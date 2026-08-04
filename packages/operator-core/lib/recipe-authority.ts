@@ -29,10 +29,36 @@ export interface RecipeAuthorityContext {
   resources?: string[] | null;
 }
 
+/**
+ * WI-4946: WHICH construct made a script unprovable — the discriminator behind
+ * `authority_unresolved`. Four structurally different conditions used to
+ * collapse into one boolean and one message that listed every candidate cause
+ * without saying which fired, so a caller could not tell an inherently opaque
+ * script from an analyzer limitation, nor find the offending line. The reporter
+ * of WI-4946 read the generic text and concluded their failure was a
+ * harness-authority mismatch (it was an opaque `dev:pg_query`) — that
+ * misdiagnosis is the cost this type exists to prevent.
+ */
+export type RecipeUnresolvedCause =
+  /** The script calls a tool whose effects are inherently unprovable (raw SQL, shell, nested code:run). */
+  | { kind: 'opaque-tool'; tool: string }
+  /** `tools:invoke` with a dynamically-computed `name` — the dispatched tool is unknowable statically. */
+  | { kind: 'dynamic-dispatch-target'; tool: string }
+  /** A scoped-namespace call whose args are computed at runtime — the entities touched are unknowable. */
+  | { kind: 'dynamic-scope-args'; tool: string }
+  /** Tools were referenced but NO call could be statically resolved (dynamic/unsupported access form). */
+  | { kind: 'unparsable-call-form'; tool: null };
+
 export interface RecipeAuthorityDescriptor {
   refs: RecipeAuthorityRefs;
   /** Opaque dispatch/SQL/shell or dynamically scoped args cannot be proven safe. */
   unresolved: boolean;
+  /**
+   * WI-4946: which construct set `unresolved` (the FIRST one found), or null
+   * when the script is resolvable. Optional so existing descriptor literals do
+   * not strand; `deriveRecipeAuthority` always populates it.
+   */
+  unresolvedCause?: RecipeUnresolvedCause | null;
   bound: boolean;
 }
 
@@ -136,10 +162,15 @@ function collectArgs(
   }
 }
 
+/**
+ * Collect a call's authority refs into `out` and report WHY it is unprovable,
+ * or null when it is fine. WI-4946: this used to return a bare boolean, which
+ * is what erased the discriminator all the way out to the caller's error.
+ */
 function inspectCall(
   call: StaticToolCall,
   out: Record<keyof RecipeAuthorityRefs, Set<string>>,
-): boolean {
+): RecipeUnresolvedCause | null {
   const normalizedTool = call.tool.includes(':')
     ? `${normPart(call.tool.split(':', 1)[0])}:${normPart(call.tool.slice(call.tool.indexOf(':') + 1))}`
     : `${splitTool(call.tool).ns}:${splitTool(call.tool).verb}`;
@@ -150,7 +181,9 @@ function inspectCall(
   if (ns === 'tools' && splitTool(call.tool).verb === 'invoke') {
     const wrapper = asRecord(call.args);
     const innerName = wrapper?.name;
-    if (typeof innerName !== 'string') return true;
+    if (typeof innerName !== 'string') {
+      return { kind: 'dynamic-dispatch-target', tool: call.tool };
+    }
     const inner: StaticToolCall = {
       tool: innerName,
       args: wrapper?.args ?? null,
@@ -160,8 +193,13 @@ function inspectCall(
   }
 
   collectArgs(call.tool, call.args, out);
-  if (OPAQUE_TOOLS.has(normalizedTool)) return true;
-  return call.dynamicArgs && SCOPE_NAMESPACES.has(ns);
+  if (OPAQUE_TOOLS.has(normalizedTool)) {
+    return { kind: 'opaque-tool', tool: call.tool };
+  }
+  if (call.dynamicArgs && SCOPE_NAMESPACES.has(ns)) {
+    return { kind: 'dynamic-scope-args', tool: call.tool };
+  }
+  return null;
 }
 
 export async function deriveRecipeAuthority(script: string): Promise<RecipeAuthorityDescriptor> {
@@ -177,19 +215,27 @@ export async function deriveRecipeAuthority(script: string): Promise<RecipeAutho
     items: new Set(),
     resources: new Set(),
   };
-  let unresolved = false;
-  for (const call of analysis.calls) unresolved = inspectCall(call, sets) || unresolved;
+  // Every call is still inspected (inspectCall collects refs as a side effect,
+  // so short-circuiting on the first cause would silently narrow `refs`); we
+  // just remember WHICH one first made the script unprovable.
+  let unresolvedCause: RecipeUnresolvedCause | null = null;
+  for (const call of analysis.calls) {
+    const cause = inspectCall(call, sets);
+    if (cause && !unresolvedCause) unresolvedCause = cause;
+  }
 
   // A script that statically referenced tools but yielded no inspectable calls
   // used a dynamic/unsupported access form; do not recommend it as generic.
-  if (analysis.refs.length > 0 && analysis.calls.length === 0) unresolved = true;
+  if (!unresolvedCause && analysis.refs.length > 0 && analysis.calls.length === 0) {
+    unresolvedCause = { kind: 'unparsable-call-form', tool: null };
+  }
 
   const refs = emptyRefs();
   for (const key of Object.keys(refs) as Array<keyof RecipeAuthorityRefs>) {
     refs[key] = [...sets[key]].sort();
   }
   const bound = Object.values(refs).some((values) => values.length > 0);
-  return { refs, unresolved, bound };
+  return { refs, unresolved: unresolvedCause !== null, bound, unresolvedCause };
 }
 
 const hasAll = (required: readonly string[], actual: readonly string[]): boolean => {
@@ -298,14 +344,7 @@ export async function buildRecipeAuthorityRecommendation(input: {
  * supply matching `authority.context`), which a fresh proof CAN fix.
  */
 const AUTHORITY_ERROR_REASONS: Record<string, string> = {
-  authority_unresolved:
-    'the recipe script itself contains an opaque/unprovable tool call (raw SQL via dev:pg_query, a shell via ' +
-    'capability:bash/capability:script, a nested code:run, or a dynamically-computed plan/item/fleet/harness/' +
-    'resource argument) — its bound identities cannot be statically verified, so NO authority proof (including ' +
-    'from a NESTED tools.recipes.run(...) call inside another recipe) can ever authorize running it via ' +
-    'recipes:run. This is a permanent, by-design limitation, not a transient failure: run the script directly ' +
-    'via code:run instead (inline it, or code:run { script: "return await tools.recipes.get({ id }).then(r => ' +
-    '/* run r.script yourself */)" }).',
+  authority_unresolved: unresolvedReason(null),
   authority_required:
     'the recipe references specific bound entities (a plan/item/fleet/harness/resource) and no `authority` proof ' +
     'was supplied — this includes a NESTED tools.recipes.run(...) call from inside another recipe\'s script, which ' +
