@@ -253,6 +253,50 @@ async function runOracle(args: Args): Promise<void> {
       });
     }
 
+    // ── SEPARABILITY: could ANY monotone rule over a per-term scalar find these? ──
+    //
+    // This is the question P-018 answered with a story instead of a measurement.
+    // Both shipped selectors score each term IN ISOLATION and take the top two:
+    // LENGTH prefers the longest, BANDED the rarest attested (df >= 2). Knowing
+    // that each picked a LOSER says only that its direction/cutoff was wrong.
+    // The stronger question is whether the signal is in the scalar AT ALL.
+    //
+    // If the winning pairs and the losing pairs OVERLAP on a scalar, then no
+    // monotone threshold over it separates them — so no top-2 rule, in EITHER
+    // direction and at ANY cutoff, can be made to prefer winners. Retuning is
+    // then not a smaller version of the fix; it is not a fix.
+    //
+    // Ranges are printed alongside the verdict so it is checkable, not asserted.
+    const profileOf = (pair: string) => {
+      const [a, b] = pair.split(' ') as [string, string];
+      return {
+        df: df ? Math.min(df(a), df(b)) : -1,
+        len: Math.max(a.length, b.length),
+        pos: Math.max(terms.indexOf(a), terms.indexOf(b)),
+      };
+    };
+    const losers = results.filter((r) => !r.strict).map((r) => r.term);
+    if (winners.length > 0 && losers.length > 0 && df) {
+      const span = (xs: number[]): { lo: number; hi: number } => ({
+        lo: Math.min(...xs),
+        hi: Math.max(...xs),
+      });
+      const w = winners.map(profileOf);
+      const l = losers.map(profileOf);
+      console.log(`     separability — winners ${winners.length} vs losers ${losers.length}:`);
+      for (const s of ['df', 'len', 'pos'] as const) {
+        const ws = span(w.map((p) => p[s]));
+        const ls = span(l.map((p) => p[s]));
+        const disjoint = ws.hi < ls.lo || ls.hi < ws.lo;
+        console.log(
+          `       ${s.padEnd(3)} winners [${ws.lo}..${ws.hi}]  losers [${ls.lo}..${ls.hi}]  → ` +
+            (disjoint
+              ? 'DISJOINT — a threshold COULD separate'
+              : 'OVERLAP — no monotone threshold on this scalar separates'),
+        );
+      }
+    }
+
     const same = (pair: string, picked: string[]): boolean => {
       const p = pair.split(' ');
       return picked.length === 2 && p.every((t) => picked.includes(t));

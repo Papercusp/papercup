@@ -106,6 +106,26 @@ export interface ListeningSocket {
   ownerVisible: boolean;
   /** A port in RESERVED_SERVICE_PORTS — a long-lived core service owns it. */
   reserved: boolean;
+  /**
+   * The kernel's ACCEPT QUEUE for this listener, read from `ss`'s Recv-Q/Send-Q
+   * columns. On a LISTEN socket those columns do NOT mean bytes (EI-19465075959589134):
+   *   • `pending` (Recv-Q) — connections the kernel has fully established and
+   *     queued, waiting for the process to call `accept()`.
+   *   • `backlog` (Send-Q) — the accept-queue limit from `listen(2)` (511 here).
+   *
+   * A healthy server drains `pending` to 0 continuously, so a SUSTAINED non-zero
+   * `pending` is the signature of a process that is listening but not accepting —
+   * a blocked event loop. That state is invisible to every other liveness signal
+   * at once: the port is open, `systemctl is-active` says active, the pid is
+   * alive, and a TCP connect SUCCEEDS (the kernel completes the handshake on the
+   * process's behalf). Only this queue distinguishes WEDGED from UP, and its
+   * ceiling — `pending` pinned at `backlog` — is where new clients start being
+   * refused outright.
+   *
+   * Summed across a SO_REUSEPORT group (`pending`) since the question is "how
+   * many connections are waiting on this port"; `backlog` is the group max.
+   */
+  acceptQueue: { pending: number; backlog: number };
 }
 
 export interface ListeningSocketsResult {
@@ -137,7 +157,7 @@ const PROCESS_ENTRY = /\("([^"]*)",pid=(\d+)/;
  * Kept deliberately loose about the trailing process column, which is absent
  * entirely for sockets this uid cannot resolve.
  */
-const SS_ROW = /^(\S+)\s+\d+\s+\d+\s+(\S+)\s+(\S+)(?:\s+(.*))?$/;
+const SS_ROW = /^(\S+)\s+(\d+)\s+(\d+)\s+(\S+)\s+(\S+)(?:\s+(.*))?$/;
 
 /** Split `127.0.0.1:3070` / `[::1]:3070` / `*:80` into address + port. */
 export function splitHostPort(local: string): { address: string; port: number } | null {
@@ -158,7 +178,7 @@ export function parseSsOutput(stdout: string): ListeningSocket[] {
     if (!trimmed) continue;
     const m = SS_ROW.exec(trimmed);
     if (!m) continue;
-    const [, state, local, , processCol] = m;
+    const [, state, recvQ, sendQ, local, , processCol] = m;
     // `-l` should already restrict this, but a stray non-LISTEN row must never
     // be reported as a listener.
     if (state.toUpperCase() !== 'LISTEN') continue;
@@ -177,6 +197,7 @@ export function parseSsOutput(stdout: string): ListeningSocket[] {
       command: owner ? owner[1] : null,
       ownerVisible: Boolean(owner),
       reserved: isReservedServicePort(hostPort.port),
+      acceptQueue: { pending: Number(recvQ), backlog: Number(sendQ) },
     });
   }
   return groupReusePort(rows);
@@ -205,11 +226,16 @@ function groupReusePort(rows: ListeningSocket[]): ListeningSocket[] {
     const key = `${row.port}\x00${row.address}\x00${row.command ?? ''}`;
     const existing = byKey.get(key);
     if (!existing) {
-      byKey.set(key, { ...row, pids: [...row.pids] });
+      byKey.set(key, { ...row, pids: [...row.pids], acceptQueue: { ...row.acceptQueue } });
       continue;
     }
     existing.listeners += 1;
     for (const pid of row.pids) if (!existing.pids.includes(pid)) existing.pids.push(pid);
+    // "How many connections are waiting on this port" sums across the cluster —
+    // a single wedged worker still leaves clients unserved. The backlog limit is
+    // per-socket and identical across the group; max is the honest single number.
+    existing.acceptQueue.pending += row.acceptQueue.pending;
+    existing.acceptQueue.backlog = Math.max(existing.acceptQueue.backlog, row.acceptQueue.backlog);
   }
   return [...byKey.values()];
 }

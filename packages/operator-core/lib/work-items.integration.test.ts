@@ -1707,6 +1707,12 @@ describe('unified work_items surface (real PG)', () => {
     expect(res.legs.degraded).toBe(false);
   });
 
+  // ⚠ CALIBRATION PAIR — this test and the one above it are each other's
+  // control, so do not "simplify" either away. They differ in ONE input
+  // (whether the semantic leg was wanted) and assert OPPOSITE values for
+  // status / blocked / degraded. Collapse `searchWorkItems` to always pass
+  // `embedder: null` and THIS test fails; make it always report blocked and
+  // the one above fails. Neither direction can go green by accident.
   it('a WANTED semantic leg that cannot run reports BLOCKED + degraded — not a healthy lexical-only search', async () => {
     await wi.createWorkItem({ kind: 'bug', title: 'quilzar blocked leg', harness: 'papercup', createdBy: 'agA' });
 

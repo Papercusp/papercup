@@ -177,6 +177,29 @@ export interface ProbeResult {
    * canonical address straight off the probe result.
    */
   url?: string;
+  /**
+   * EI-19465075959589134 — WEDGED, which is NOT down. True when the HTTP probe
+   * failed while the port still has a LISTENER whose accept queue is holding
+   * connections the process never accepted. A blocked event loop defeats every
+   * OTHER liveness signal simultaneously: the port is open, `systemctl
+   * is-active` says active, the pid is alive, and even a TCP connect succeeds
+   * (the kernel completes the handshake without the process). So a wedge used
+   * to render BYTE-IDENTICALLY to "the service is down", and the two want
+   * opposite responses — down means start it, wedged means something is
+   * blocking the loop and a restart only buys time.
+   *
+   * Undefined = not determined (the listen table was unreadable, or the URL is
+   * not a local port). Never read an absent `wedged` as "not wedged".
+   */
+  wedged?: boolean;
+  /**
+   * The listener's accept queue at probe time, when it could be read:
+   * `pending` connections established-but-not-accepted, out of the `backlog`
+   * limit. Carried on the result so a reader sees the EVIDENCE for `wedged`
+   * rather than a bare verdict — and so a climbing queue across two probes is
+   * visible without re-deriving it.
+   */
+  acceptQueue?: { pending: number; backlog: number };
 }
 
 /**

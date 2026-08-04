@@ -333,10 +333,17 @@ export async function recallCorpusContext(
         ? (t: string) => (embedP ??= built(t))
         : built;
 
-      const search = (lexicalMode: 'and' | 'coverage-graded') =>
+      // Stage 2's query is derived SEPARATELY from stage 1's — see
+      // CORPUS_GRADED_QUERY_MAX_TERMS. Stage 1 ANDs, so two terms is a
+      // selectivity floor it cannot exceed; stage 2 grades by coverage, so the
+      // same cap leaves it nearly nothing to rank with. Falls back to the
+      // stage-1 text if the wider derivation yields nothing.
+      const gradedQuery = corpusQueryText(rawText, gradedMaxTerms) || effectiveQuery;
+
+      const search = (lexicalMode: 'and' | 'coverage-graded', queryFor: string) =>
         runHybridSearch(sources, {
           sql,
-          query: effectiveQuery,
+          query: queryFor,
           workspaceId: input.workspaceId,
           // MUST stay null: 99.993% of session turns carry harness_slug IS NULL,
           // so a slug scopeFilter would make this leg structurally empty while

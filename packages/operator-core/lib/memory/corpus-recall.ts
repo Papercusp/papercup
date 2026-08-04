@@ -253,6 +253,28 @@ export function corpusTerms(text: string): string[] {
 export const CORPUS_QUERY_MAX_TERMS = 2;
 
 /**
+ * Content terms handed to the COVERAGE-GRADED cascade stage, which is a
+ * different question from {@link CORPUS_QUERY_MAX_TERMS} and must not inherit
+ * its answer.
+ *
+ * Stage 1 issues an AND, so its term count is a hard selectivity knob: every
+ * added term can only shrink the match set, and at ~20 candidates an AND
+ * matches nothing. TWO is forced there.
+ *
+ * Stage 2 GRADES BY COVERAGE — it prefers documents matching more of the query
+ * and degrades gracefully rather than intersecting — so the same cap actively
+ * defeats it: coverage over two terms is nearly binary, leaving the mechanism
+ * almost nothing to rank with. Measured on the WI-6512 replay (WI-9273): the
+ * graded stage demonstrably RUNS in turns 64 and 67 and still fails, while a
+ * complete pair sweep shows 9 and 4 winning pairs exist that no scalar over
+ * terms can pick (df/len/position all OVERLAP between winners and losers).
+ *
+ * So the fix is not to pick two terms better — it is to stop capping the stage
+ * that never needed the cap.
+ */
+export const CORPUS_GRADED_QUERY_MAX_TERMS = 24;
+
+/**
  * Minimum corpus document frequency for a term to be worth one of the
  * {@link CORPUS_QUERY_MAX_TERMS} slots. A term attested fewer than twice cannot
  * retrieve anything but itself, so spending a slot on it is strictly wasted —

@@ -43,13 +43,18 @@
  *    design call is genuinely unresolved. Ship the payload bucket; leave latency
  *    non-failing until someone decides what it should mean.
  *
- *  • READS THE TABLE DIRECTLY, never `readDerivedSnapshot`. That helper kicks a
- *    fire-and-forget `warmMissedSnapshot` on a miss (registry.ts:241) which calls
+ *  • READS THE TABLE DIRECTLY, never `readDerivedSnapshot`. Originally because that
+ *    helper kicked a fire-and-forget `warmMissedSnapshot` on a miss, which calls
  *    `refreshDerivedReads({ only, force })` — and `only` intentionally OVERRIDES
- *    `excludeFromDefaultSweep`. So reading this particular snapshot through the
- *    normal helper would launch the ~12-minute audit as a SIDE EFFECT OF A HEALTH
- *    CHECK, on a routinesTick cadence, defeating the very flag that keeps it off
- *    the shared sweep. A watchdog must observe, never cause.
+ *    `excludeFromDefaultSweep`. So reading this snapshot through the normal helper
+ *    would have launched the ~12-minute audit as a SIDE EFFECT OF A HEALTH CHECK,
+ *    on a routinesTick cadence, defeating the very flag that keeps it off the
+ *    shared sweep. ⚠ That hazard is now FIXED at the source (EI-19480218051289304:
+ *    `warmMissedSnapshot` declines an `excludeFromDefaultSweep` producer outright),
+ *    so the helper is safe here today — this stays a direct read only because the
+ *    watchdog wants the raw `computed_at`/`error` columns, not because it must dodge
+ *    a warm. The principle it was reasoning from still stands: a watchdog must
+ *    observe, never cause.
  *
  * Kill switch: PAPERCUSP_SYNC_READ_BUDGET_BLIND_AFTER_SEC <= 0 disables the sweep.
  * Fail-soft throughout — a watchdog must never be able to break the tick it rides.

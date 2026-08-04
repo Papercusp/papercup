@@ -63,7 +63,9 @@ export interface DerivedReadProducer<T = unknown> {
   /**
    * Opt OUT of the default `precompute-derived-reads` sweep (EI-19457924854150358).
    * Such a producer runs ONLY when named explicitly in `refreshDerivedReads({ only })`,
-   * i.e. from its own dedicated routine.
+   * i.e. from its own dedicated routine — a READ that misses the snapshot does not
+   * warm it either (EI-19480218051289304, see `warmMissedSnapshot`), so the fill is
+   * owned entirely by that routine and a cold panel stays empty until it fires.
    *
    * ⚠ This exists because `ttlMs` alone CANNOT express "too expensive for the shared
    * tick". Producers run SEQUENTIALLY (see refreshDerivedReads below) and the routine

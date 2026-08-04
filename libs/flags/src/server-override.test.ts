@@ -5,9 +5,11 @@
  * PostHog/defaults. The store is injected (Papercusp wires a PG-backed one
  * in operator-core's flag-bus); here a fake in-memory store stands in.
  */
+import { listPinnedModuleKeys, pinModuleState } from '@papercusp/module-singleton';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  bustOverrideReadCache,
   clearAllFlagOverrides,
   getAllFlags,
   getFlag,
@@ -290,5 +292,88 @@ describe('EI-8867: missing override store is announced, once', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     await getFlag(KEY, 'u');
     expect(warn).not.toHaveBeenCalled();
+  });
+});
+
+describe('fork-safety — store AND override cache are pinned to the realm', () => {
+  // WI-4275 pinned the STORE to globalThis because a second module record (tsx's
+  // CJS preflight, a symlinked workspace path, a bundled copy) held its own
+  // `store` and every runtime flags:set went silently invisible. That fix left
+  // `overrideCache` module-local, which half-closed the bug one level down: on a
+  // split, an invalidation reaching record A clears A's map while record B keeps
+  // serving the stale override map for the rest of its TTL. Both now live in ONE
+  // pinned state object (EI-19479108855357092).
+  const STATE_KEY = '@papercusp/flags.server';
+  type PinnedState = {
+    store: FlagOverrideStore | null;
+    overrideCache: Map<string, { flags: Partial<Record<FlagKey, boolean>>; ts: number }>;
+  };
+
+  // What a duplicate module record does on evaluation: pin the SAME key. The
+  // primitive hands back the state the first record built.
+  const asSecondRecord = (): PinnedState =>
+    pinModuleState<PinnedState>(STATE_KEY, () => ({
+      store: null,
+      overrideCache: new Map(),
+    }));
+
+  it('CONTROL: a module-LOCAL cache is invisible through the pin (the pre-fix shape)', async () => {
+    // Permanent known-positive control. Without it the two assertions below can
+    // pass vacuously — `asSecondRecord().overrideCache` would read `size: 1` for
+    // any reason at all, and a guard that can only pass is not a guard.
+    // This is what `const overrideCache = new Map()` at module scope did: the
+    // second record's view stays EMPTY however much the first record cached.
+    const moduleLocal = new Map<string, { flags: Partial<Record<FlagKey, boolean>>; ts: number }>();
+    moduleLocal.set('scope', { flags: { [KEY]: true }, ts: Date.now() });
+
+    expect(moduleLocal.size).toBe(1);
+    expect(asSecondRecord().overrideCache).not.toBe(moduleLocal);
+    expect(asSecondRecord().overrideCache.size).toBe(0); // the split, verbatim
+  });
+
+  it('registers its key with @papercusp/module-singleton', () => {
+    // Pinning THROUGH the primitive rather than hand-rolling a Symbol.for slot is
+    // the point: listModuleDuplications() only knows about keys pinned this way,
+    // so a hand-rolled pin leaves the realm-wide report answering a clean `[]`
+    // while this module is split.
+    expect(listPinnedModuleKeys()).toContain(STATE_KEY);
+  });
+
+  it('a second module record sees the store installed by the first', async () => {
+    const { store } = makeFakeStore({ [KEY]: true });
+    initFlagOverrideStore(store);
+    expect(asSecondRecord().store).toBe(store);
+  });
+
+  it('a second module record shares the override read cache', async () => {
+    const { store, loads } = makeFakeStore({ [KEY]: true });
+    initFlagOverrideStore(store);
+
+    await getFlag(KEY, 'u'); // primes the cache
+    expect(loads()).toBe(1);
+
+    // A split record reading within the TTL must HIT the same cache, not build
+    // its own. Before the cache was pinned this map was per-record, so the
+    // second record re-loaded (loads() === 2) and — worse — kept serving that
+    // copy after the first record's invalidation.
+    expect(asSecondRecord().overrideCache.size).toBe(1);
+    await getFlag(KEY, 'u');
+    expect(loads()).toBe(1);
+  });
+
+  it('an invalidation through one record is visible to the other', async () => {
+    const { store, map, loads } = makeFakeStore({ [KEY]: true });
+    initFlagOverrideStore(store);
+
+    expect(await getFlag(KEY, 'u')).toBe(true);
+    expect(loads()).toBe(1);
+
+    // Mutate underneath, then invalidate. A split cache would keep serving the
+    // stale `true` from the second record for the rest of the TTL.
+    map[KEY] = false;
+    bustOverrideReadCache();
+    expect(asSecondRecord().overrideCache.size).toBe(0);
+    expect(await getFlag(KEY, 'u')).toBe(false);
+    expect(loads()).toBe(2);
   });
 });
