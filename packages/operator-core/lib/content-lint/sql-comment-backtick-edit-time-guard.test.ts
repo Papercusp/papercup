@@ -23,9 +23,11 @@
  * in sync in spirit", which is exactly the drift this prevents. If you change the
  * heuristic, change the `.mjs` — never re-implement it in a consumer (D-003).
  */
-import { describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 import { findSqlCommentBacktick, sqlCommentBacktickScopeMatches } from './sql-comment-backtick';
@@ -35,7 +37,12 @@ import {
 } from '../../../../scripts/lib/sql-comment-backtick-scan.mjs';
 
 const REPO_ROOT = fileURLToPath(new URL('../../../../', import.meta.url));
-const HOOK = path.join(REPO_ROOT, 'apps/operator/scripts/hooks/cc/pretooluse-content-lint.mjs');
+// Overridable so `scripts/mutation-probe.sh` can point the suite at a MUTATED COPY outside
+// the tree and prove these cases are falsifiable — without ever mutating the shared tree
+// (git-sync sweeps it every few minutes and would commit the mutant). Defaults to the real hook.
+const HOOK =
+  process.env.PROBE_CONTENT_LINT_HOOK ||
+  path.join(REPO_ROOT, 'apps/operator/scripts/hooks/cc/pretooluse-content-lint.mjs');
 
 // Built by char code so this test file never itself carries the pattern, and so the
 // fixture is unambiguous to a human reader.
@@ -134,5 +141,117 @@ describe('the PreToolUse hook BLOCKS the edit (the guard that was missing)', () 
     expect(runHook(abs('packages/operator-core/lib/content-lint/ts-parse.test.ts'), DEFECTIVE).decision).toBe(
       'allow',
     );
+  });
+});
+
+/**
+ * RECURRENCE GUARD for EI-19492748262630855 — the hole that let this class recur on
+ * 2026-08-04T02:03:50Z, 7.4h AFTER the guard above shipped, taking papercup-staging-api
+ * down until systemd gave up (NRestarts=6) and quarantining a peer's fix for ~98min.
+ *
+ * WHY THE SUITE ABOVE STAYED GREEN THROUGH THAT. Every case above uses `Write`, whose
+ * `tool_input.content` is the WHOLE FILE — the one tool shape that incidentally satisfies
+ * the scanner's opening gate (`USES_SQL_TAG || HAS_RAW_DDL`). Real edits are `Edit`, whose
+ * `new_string` is a FRAGMENT: inserting a comment into an existing sql`...` template sends
+ * the scanner text with no sql tag in it (the opener was 65 lines away in the real
+ * incident), so it returned null and the hook allowed the edit. The rule was inert for the
+ * single most common way this defect is written, and no test could see it.
+ *
+ * These cases therefore assert on the `Edit`/`MultiEdit` shapes specifically, and pin the
+ * property that makes them meaningful: THE FRAGMENT MUST NOT CONTAIN THE SQL TAG. Without
+ * that assertion a later refactor could quietly turn these back into whole-content tests
+ * and restore the blind spot with the suite still green.
+ *
+ * Hermetic by construction: a fake repo root under the OS temp dir, never the shared tree.
+ * The tree-mutation shape (mutate a real file, restore afterwards) is banned here — git-sync
+ * sweeps the whole tree every few minutes and would commit the mutant.
+ */
+describe('the hook scans the RESULTING FILE, not the edit fragment (EI-19492748262630855)', () => {
+  const CLEAN_SQL_FILE = [
+    'export async function q(sql: Sql) {',
+    '  const rows = await sql' + BT,
+    '    SELECT name, last_error FROM harness_shared.routines',
+    '     WHERE active = true',
+    '     ORDER BY name ASC',
+    '     LIMIT 200' + BT + ';',
+    '  return rows;',
+    '}',
+  ].join('\n');
+
+  const ANCHOR = '     WHERE active = true';
+  /** The fragment an agent actually writes: a comment line, and NOTHING else. */
+  const FRAGMENT = ANCHOR + '\n     -- only the live ones; ' + BT + 'active' + BT + ' is the flag';
+
+  let root: string;
+  let subject: string;
+
+  beforeAll(() => {
+    root = mkdtempSync(path.join(tmpdir(), 'backtick-frag-guard-'));
+    mkdirSync(path.join(root, 'scripts', 'lib'), { recursive: true });
+    copyFileSync(
+      path.join(REPO_ROOT, 'scripts/lib/sql-comment-backtick-scan.mjs'),
+      path.join(root, 'scripts', 'lib', 'sql-comment-backtick-scan.mjs'),
+    );
+    const dir = path.join(root, 'packages', 'operator-core', 'lib', 'harness');
+    mkdirSync(dir, { recursive: true });
+    subject = path.join(dir, 'routines-read.ts');
+    writeFileSync(subject, CLEAN_SQL_FILE, 'utf8');
+  });
+
+  afterAll(() => rmSync(root, { recursive: true, force: true }));
+
+  const runEdit = (input: Record<string, unknown>, tool = 'Edit') => {
+    const r = spawnSync('node', [HOOK], {
+      input: JSON.stringify({ tool_name: tool, tool_input: { file_path: subject, ...input } }),
+      encoding: 'utf8',
+      timeout: 20_000,
+    });
+    try {
+      return JSON.parse(r.stdout.trim() || '{}')?.hookSpecificOutput?.permissionDecision ?? 'allow';
+    } catch {
+      return 'allow';
+    }
+  };
+
+  // CALIBRATION. If this ever fails, the cases below prove nothing: they would be passing
+  // because the fragment carries the tag, not because the hook reconstructed the file.
+  it('the fragment alone carries NO sql tag — the property under test', () => {
+    expect(FRAGMENT).not.toContain('sql' + BT);
+    expect(FRAGMENT).toContain(BT);
+    // ...and the predicate is genuinely blind to it in isolation, which is the whole bug.
+    expect(findSqlCommentBacktick('packages/operator-core/lib/harness/routines-read.ts', FRAGMENT)).toBeNull();
+  });
+
+  it('DENIES an Edit whose new_string alone would not trip the scanner', () => {
+    expect(runEdit({ old_string: ANCHOR, new_string: FRAGMENT })).toBe('deny');
+  });
+
+  it('DENIES the same defect arriving via MultiEdit', () => {
+    expect(runEdit({ edits: [{ old_string: ANCHOR, new_string: FRAGMENT }] }, 'MultiEdit')).toBe('deny');
+  });
+
+  it('ALLOWS an Edit that leaves the resulting file clean (no false positive)', () => {
+    const ok = ANCHOR + "\n     -- only the live ones; the 'active' flag";
+    expect(runEdit({ old_string: ANCHOR, new_string: ok })).toBe('allow');
+  });
+
+  it('ALLOWS an unrelated edit to a file that is ALREADY broken — never blame the wrong author', () => {
+    const broken = path.join(root, 'packages', 'operator-core', 'lib', 'harness', 'already-broken.ts');
+    writeFileSync(broken, CLEAN_SQL_FILE.replace(ANCHOR, FRAGMENT), 'utf8');
+    const r = spawnSync('node', [HOOK], {
+      input: JSON.stringify({
+        tool_name: 'Edit',
+        tool_input: { file_path: broken, old_string: '  return rows;', new_string: '  return rows; // touch' },
+      }),
+      encoding: 'utf8',
+      timeout: 20_000,
+    });
+    let decision = 'allow';
+    try {
+      decision = JSON.parse(r.stdout.trim() || '{}')?.hookSpecificOutput?.permissionDecision ?? 'allow';
+    } catch {
+      /* allow */
+    }
+    expect(decision).toBe('allow');
   });
 });
