@@ -23,7 +23,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 // eslint-disable-next-line import/no-relative-packages
-import { discover, looksOom, main } from '../../../scripts/lint-tsc-papercusp-libs.mjs';
+import {
+  discover,
+  GATE_COVERAGE,
+  looksOom,
+  main,
+  selectGatedPackages,
+} from '../../../scripts/lint-tsc-papercusp-libs.mjs';
 
 const trees: string[] = [];
 afterEach(() => {
@@ -254,5 +260,60 @@ describe('OOM under fleet load is an infrastructure condition, not a verdict', (
     expect(code).toBe(0);
     expect(sink.warns.join('\n')).toContain('NOT verified this run');
     expect(sink.stdout()).toContain('1 skipped (OOM)');
+  });
+});
+
+/** The `  · <rel>` lines main() prints for the GATED set. */
+function gatedRelsFromReport(stdout: string): string[] {
+  return stdout
+    .split('\n')
+    .filter((l) => /^ {2}· /.test(l))
+    .map((l) => l.replace(/^ {2}· /, '').trim());
+}
+
+// EI-19462776655300160. GATE_COVERAGE is what the sibling-gate resolver in
+// scripts/lib/tsc-baseline-gate.mjs reads to route an agent to this leg. A second derivation of
+// the gated set would drift, and it would drift in the DANGEROUS direction: an over-claimed prefix
+// routes someone to a gate that does not in fact check their file. One shared
+// selectGatedPackages() is what makes the declaration and the run one fact.
+describe('GATE_COVERAGE cannot drift from what the leg runs (EI-19462776655300160)', () => {
+  it('main() reports EXACTLY the set selectGatedPackages() returns — no second derivation', () => {
+    const root = makeLibsRoot({
+      'packages/locks': { typecheck: true },
+      'packages/no-typecheck': {},
+      'libs/db': { typecheck: true },
+    });
+    const sink = makeSink();
+
+    main({ libsRoot: root, relativeTo: root, listOnly: true, spawn: () => PASS, ...sink.io });
+    const selected = selectGatedPackages({ libsRoot: root, relativeTo: root });
+
+    expect(gatedRelsFromReport(sink.stdout())).toEqual(selected.packages.map((p) => p.rel));
+    expect(selected.packages.map((p) => p.rel)).toEqual(['libs/db', 'packages/locks']);
+    // A package that declares no typecheck script is in NEITHER — never routed here.
+    expect(gatedRelsFromReport(sink.stdout())).not.toContain('packages/no-typecheck');
+  });
+
+  it('an ABSENT submodule declares NO coverage rather than claiming a set it cannot check', () => {
+    // The legitimate opt-out (a subject hive, an uninitialised checkout). Claiming coverage here
+    // would route an agent to a leg that runs nothing at all.
+    const empty = mkdtempSync(join(tmpdir(), 'libs-papercusp-absent-'));
+    trees.push(empty);
+    const selected = selectGatedPackages({ libsRoot: join(empty, 'nope'), relativeTo: empty });
+    expect(selected.present).toBe(false);
+    expect(selected.packages).toEqual([]);
+  });
+
+  it('GATE_COVERAGE() on the REAL tree equals the gated set --list reports', () => {
+    const repoRoot = join(__dirname, '..', '..', '..');
+    if (!existsSync(join(repoRoot, 'libs', 'papercusp', 'package.json'))) return;
+
+    const sink = makeSink();
+    main({ listOnly: true, spawn: () => PASS, ...sink.io });
+
+    const reported = gatedRelsFromReport(sink.stdout());
+    expect(reported.length).toBeGreaterThan(1);
+    expect(GATE_COVERAGE()).toEqual(reported.map((rel) => `${rel}/`));
+    for (const p of GATE_COVERAGE()) expect(p.endsWith('/')).toBe(true);
   });
 });

@@ -59,6 +59,7 @@ interface Args {
   oracleMaxTerms: number;
   oracleTurns: number[];
   gradedArms: boolean;
+  anchorArms: boolean;
   ceiling: boolean;
   arity: boolean;
   /** Restrict --arity to these replay turns (empty = all). */
@@ -537,6 +538,7 @@ async function runCeiling(args: Args): Promise<void> {
     queryText: string,
     arm: 'bm25' | 'hybrid',
     gradedMaxTerms?: number,
+    anchorDfBudget?: number,
   ): Promise<{ verdict: CeilingVerdict; detail: string; candidates: number; admitted: number }> => {
     // Re-establish the arm immediately before the call: after a reset the leg
     // kicks off a BACKGROUND warmup, so an arm set once at the top of the run
@@ -550,6 +552,7 @@ async function runCeiling(args: Args): Promise<void> {
       harnessSlugs: [args.harness],
       skipFlagCheck: true,
       ...(gradedMaxTerms === undefined ? {} : { gradedMaxTerms }),
+      ...(anchorDfBudget === undefined ? {} : { anchorDfBudget }),
     });
 
     // How many of the 6 slots the leg actually filled. This is the ONLY
@@ -649,8 +652,56 @@ async function runCeiling(args: Args): Promise<void> {
   const gradedArms = args.gradedArms;
   const tallyGraded: Record<'control' | 'treatment', number> = { control: 0, treatment: 0 };
 
+  // PAIRED anchor arms (WI-9273). Same one-process discipline as the graded
+  // arms above; the ONLY difference between the arms is the graded stage's
+  // anchor budget.
+  //   CONTROL   anchorDfBudget 0 = the single rarest lexeme (pre-WI-9273)
+  //   TREATMENT the shipped default budget
+  //
+  // ⚠ READ REACH, NOT ADMISSIONS. The anchor is a RETRIEVAL lever, and D-069
+  // measured the LINE-SELECTION ceiling at 2/7 — downstream of it. So a real
+  // reach gain can leave the admitted count flat, and scoring this arm on
+  // admissions alone would manufacture a false null against a cap that has
+  // nothing to do with the anchor. The headline is therefore the verdict
+  // MIGRATION: NOT-RETRIEVED (retrieval never saw it — only the anchor can fix
+  // this) → ORDER-blocked/ADMITTED (retrieval found it; the rest is WI-9592's
+  // layer).
+  const anchorArms = args.anchorArms;
+  const tallyAnchor = {
+    control: { admitted: 0, reachable: 0, notRetrieved: 0, cand: 0 },
+    treatment: { admitted: 0, reachable: 0, notRetrieved: 0, cand: 0 },
+  };
+
   for (const batch of REPLAY) {
     const queryText = deriveBatchQuery(batch.calls);
+    if (anchorArms) {
+      // BM25 arm only, for the same reason the graded arms use it: it is
+      // deterministic, so a verdict difference is attributable to the anchor
+      // rather than to embedder warm-state.
+      const ctl = await probe(queryText, 'bm25', undefined, 0);
+      const tr = await probe(queryText, 'bm25', undefined, undefined);
+      for (const [side, r] of [['control', ctl], ['treatment', tr]] as const) {
+        const t = tallyAnchor[side];
+        if (r.verdict === 'admitted') t.admitted++;
+        if (r.verdict === 'admitted' || r.verdict === 'order-blocked') t.reachable++;
+        if (r.verdict === 'not-retrieved') t.notRetrieved++;
+        t.cand += r.candidates;
+      }
+      const gained =
+        ctl.verdict === 'not-retrieved' && tr.verdict !== 'not-retrieved'
+          ? '✅ REACHED'
+          : tr.verdict === 'not-retrieved' && ctl.verdict !== 'not-retrieved'
+            ? '🔻 LOST'
+            : ctl.verdict === tr.verdict
+              ? '  '
+              : '~ ';
+      console.log(
+        `\n   turn ${batch.turn} ${gained}` +
+          `\n     CONTROL   (anchor = rarest lexeme) ${ctl.verdict.toUpperCase().padEnd(14)} (${ctl.candidates} cand, ${ctl.admitted}/6)` +
+          `\n     TREATMENT (anchor = df budget)     ${tr.verdict.toUpperCase().padEnd(14)} (${tr.candidates} cand, ${tr.admitted}/6)`,
+      );
+      continue;
+    }
     if (gradedArms) {
       // BM25 arm only: it is deterministic, so a verdict difference is
       // attributable to the term cap rather than to embedder warm-state.
@@ -692,6 +743,38 @@ async function runCeiling(args: Args): Promise<void> {
   }
 
   const n = REPLAY.length;
+  if (anchorArms) {
+    const c = tallyAnchor.control;
+    const t = tallyAnchor.treatment;
+    const dReach = t.reachable - c.reachable;
+    const dNr = t.notRetrieved - c.notRetrieved;
+    console.log('\n   ── graded-stage ANCHOR, PAIRED arms (BM25, IDENTITY) ──');
+    console.log(
+      `   CONTROL   (anchor = single rarest lexeme, = pre-WI-9273):` +
+        ` reachable ${c.reachable}/${n}  not-retrieved ${c.notRetrieved}/${n}  admitted ${c.admitted}/${n}  ${c.cand} cand`,
+    );
+    console.log(
+      `   TREATMENT (anchor = df budget)                          :` +
+        ` reachable ${t.reachable}/${n}  not-retrieved ${t.notRetrieved}/${n}  admitted ${t.admitted}/${n}  ${t.cand} cand`,
+    );
+    console.log(
+      `   REACH delta ${dReach > 0 ? `+${dReach}` : dReach}` +
+        ` (not-retrieved ${dNr > 0 ? `+${dNr}` : dNr})` +
+        (dReach > 0
+          ? '  — the anchor WAS the barrier for at least one batch.'
+          : dReach === 0
+            ? '  — NO reach effect. The anchor is not the barrier for these batches; do not ship it on the theory alone.'
+            : '  — WORSE. The budget costs reach; do not ship it.'),
+    );
+    console.log(
+      `   admitted delta ${t.admitted - c.admitted} — EXPECTED to lag reach: D-069 caps line selection at 2/7,` +
+        ` downstream of the anchor. Do NOT read a flat admitted count as "the anchor did nothing".`,
+    );
+    console.log(
+      '   ⚠ The bar is the CONTROL measured in THIS process, not a figure carried from an earlier run.',
+    );
+    return;
+  }
   if (gradedArms) {
     const d = tallyGraded.treatment - tallyGraded.control;
     console.log('\n   ── graded-stage term cap, PAIRED arms (BM25, IDENTITY) ──');
@@ -904,6 +987,7 @@ function parseArgs(argv: readonly string[]): Args {
     // Paired control/treatment over the coverage-graded stage's term cap.
     // Implies --ceiling's machinery; run it as: --mode none --ceiling --graded-arms
     gradedArms: argv.includes('--graded-arms'),
+    anchorArms: argv.includes('--anchor-arms'),
     arityTurns: (get('--arity-turns') ?? '')
       .split(',')
       .map((s) => Number(s.trim()))

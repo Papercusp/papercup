@@ -53,6 +53,55 @@ const LIBS_ROOT = join(REPO_ROOT, 'libs', 'papercusp');
 // what keeps this fan-out and lint-tsc-workspaces.mjs from drifting apart.
 export { discover, looksOom, runOne };
 
+/**
+ * THE gated-set selection — the single source of truth for "what does this leg compile?".
+ *
+ * ⚠ EXTRACTED SO IT HAS EXACTLY ONE IMPLEMENTATION (EI-19462776655300160). Both `main()` (which
+ * RUNS the set) and `GATE_COVERAGE` (which DECLARES it to the sibling-gate resolver) read it from
+ * here, so the resolver's view of this leg and what the leg actually does are the same fact rather
+ * than two facts that agree until someone edits one. Drift would fail in the DANGEROUS direction:
+ * over-claimed coverage routes an agent to a gate that silently skips their file.
+ *
+ * Pure: it decides, it never prints. `present: false` is the legitimate submodule-absent opt-out
+ * (a subject hive, an uninitialised checkout) and is DISTINCT from "present but gating nothing",
+ * which `main()` treats very differently — see its `packages.length === 0` branch.
+ *
+ * @param {{libsRoot?: string, relativeTo?: string}} [opts]
+ * @returns {{present: boolean, packages: any[], unreadable: any[]}}
+ */
+export function selectGatedPackages({ libsRoot = LIBS_ROOT, relativeTo = REPO_ROOT } = {}) {
+  if (!existsSync(join(libsRoot, 'package.json'))) {
+    return { present: false, packages: [], unreadable: [] };
+  }
+
+  const discovered = discover(libsRoot, 0, relativeTo);
+  return {
+    present: true,
+    packages: discovered.filter((p) => !p.unreadable).sort((a, b) => a.rel.localeCompare(b.rel)),
+    unreadable: discovered.filter((p) => p.unreadable),
+  };
+}
+
+/**
+ * The repo-relative prefixes this leg really compiles, for the sibling-gate resolver in
+ * scripts/lib/tsc-baseline-gate.mjs (EI-19462776655300160).
+ *
+ * A THUNK, not a constant: this leg's coverage is DISCOVERED, so it cannot be written down. It
+ * delegates to `selectGatedPackages` rather than restating the selection.
+ *
+ * An ABSENT submodule correctly yields `[]` — this leg then covers nothing, which is true. The
+ * resolver reads an empty list as "declares nothing parseable" and files this gate under
+ * `unresolved`, so a stale/uninitialised pin degrades to "none FOUND" rather than to a false
+ * claim in either direction.
+ *
+ * ⚠ Walks the filesystem, so it is not free and it CAN throw on a broken tree. Its consumer
+ * (`coveragePrefixesFromGateModule`) treats a throw as "this gate is unresolved", never as
+ * "this gate covers nothing".
+ *
+ * @returns {string[]} Repo-relative directory prefixes, trailing slash.
+ */
+export const GATE_COVERAGE = () => selectGatedPackages().packages.map((p) => `${p.rel}/`);
+
 export function main({
   libsRoot = LIBS_ROOT,
   relativeTo = REPO_ROOT,
@@ -62,16 +111,14 @@ export function main({
   warn = console.warn,
   error = console.error,
 } = {}) {
+  const { present, packages, unreadable } = selectGatedPackages({ libsRoot, relativeTo });
+
   // The submodule genuinely absent (a subject hive, an uninitialised checkout) is a legitimate
   // opt-out — there is nothing to gate. Distinct from "present but gating nothing" below.
-  if (!existsSync(join(libsRoot, 'package.json'))) {
+  if (!present) {
     log('libs/papercusp not present in this tree — nothing to typecheck.');
     return 0;
   }
-
-  const discovered = discover(libsRoot, 0, relativeTo);
-  const unreadable = discovered.filter((p) => p.unreadable);
-  const packages = discovered.filter((p) => !p.unreadable).sort((a, b) => a.rel.localeCompare(b.rel));
 
   for (const p of unreadable) {
     error(`✗ ${p.rel}: package.json exists but could not be parsed — ${p.unreadable}`);

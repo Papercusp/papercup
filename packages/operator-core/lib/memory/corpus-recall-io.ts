@@ -109,6 +109,10 @@ export interface CorpusRecallInput {
    * comparison, which is how P-018 shipped on a real-but-unrelated gain.
    */
   gradedMaxTerms?: number;
+  /** WI-9273: the graded stage's anchor cost budget (summed lexeme df). `0`
+   *  selects the pre-WI-9273 single-rarest-lexeme anchor — the bench's control
+   *  arm. Absent ⇒ the search source's default. */
+  anchorDfBudget?: number;
 }
 
 /**
@@ -371,6 +375,11 @@ export async function recallCorpusContext(
           // across the whole limit*3 over-fetch pool.
           deferHighlight: true,
           lexicalMode,
+          // Only when the caller set it — 0 is meaningful (argmin-only), so the
+          // test is against undefined, not truthiness.
+          ...(input.anchorDfBudget === undefined
+            ? {}
+            : { lexicalAnchorDfBudget: input.anchorDfBudget }),
         });
 
       // Which of these hits' sessions belong to the CALLER (EI-19460887729945170)?

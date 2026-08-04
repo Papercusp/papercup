@@ -37,6 +37,35 @@ const trunc = (s: string): string => s.slice(0, 200) + (s.length > 200 ? '…' :
 const DF_PROBE_CAP = 2000;
 
 /**
+ * WI-9273 — how many candidate rows the anchor may admit, as a budget over the
+ * summed document-frequency of the lexemes it anchors on.
+ *
+ * ⚠ THE ANCHOR USED TO BE A SINGLE `ORDER BY df ASC LIMIT 1`, AND THAT WAS A
+ * RARITY SELECTOR WEARING A COST OPTIMISATION'S CLOTHES. Measured 2026-08-04 on
+ * `session_turns` for `corpus recall pointer section clamp`: the single-argmin
+ * anchor reached only **48 of the 95 four-of-five-coverage documents** — half of
+ * the exact population coverage grading exists to rescue — because a document is
+ * admitted ONLY if it contains the query's rarest term, however incidental that
+ * term is. This is the same mechanism D-066 reverted at query construction
+ * (BANDED, known-item 2/7 → 0/7), surviving one layer down in the search source.
+ *
+ * A budget over summed df bounds the COST DIRECTLY — which is the constraint the
+ * anchor actually exists for — instead of using "the single rarest lexeme" as an
+ * uncontrolled proxy for it. Same query, same corpus, budget 4000: **95 of 95**
+ * four-of-five documents reachable, 3,567 candidates vs 1,696, and latency FLAT
+ * (147ms vs 141ms — the df probe dominates and the GIN bitmap-OR is nearly free).
+ * Still 6.6× under the 23,464-row unanchored disjunction that cost 745ms.
+ *
+ * The added candidates land overwhelmingly at LOW coverage (1-of-5: 1,405 →
+ * 2,934), where coverage-first ordering sorts them below everything that matters
+ * — so this buys reach at the top of the ranking and pays for it at the bottom.
+ *
+ * `0` selects the pre-WI-9273 behaviour exactly (argmin only), which is what the
+ * bench's paired control arm passes.
+ */
+const ANCHOR_DF_BUDGET = 4000;
+
+/**
  * P-017 / D-062 — the lexical leg's term-combination mode, as SQL fragments.
  *
  * Both modes share ONE query shape (`ORDER BY coverage DESC, rank DESC`), which
@@ -75,6 +104,9 @@ function lexicalSql(
   table: ReturnType<SearchSourceParams['sql']>,
 ) {
   const sql = p.sql;
+  // `?? ` and not `||`: a caller passing 0 is asking for the argmin-only
+  // control arm, not for the default.
+  const anchorDfBudget = p.lexicalAnchorDfBudget ?? ANCHOR_DF_BUDGET;
   const orText = sql`replace(plainto_tsquery('english', ${p.query})::text, ' & ', ' | ')`;
 
   if (p.lexicalMode !== 'coverage-graded') {
@@ -100,13 +132,36 @@ function lexicalSql(
                       LIMIT ${DF_PROBE_CAP}
                    ) capped) AS n
           FROM q, unnest(q.lexemes) AS l
+      ), ranked AS (
+        SELECT l, n,
+               row_number() OVER (ORDER BY n ASC, l ASC) AS rn,
+               COALESCE(sum(n) OVER (ORDER BY n ASC, l ASC
+                                     ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING), 0) AS prior
+          FROM df
       ), anchor AS (
-        SELECT l::tsquery AS a FROM df ORDER BY n ASC, l ASC LIMIT 1
+        -- The rarest lexeme ALWAYS anchors (rn = 1), so this can never admit
+        -- fewer rows than the pre-WI-9273 argmin; every additional lexeme is
+        -- taken in ascending-df order while the cumulative df stays inside the
+        -- budget. A SATURATED lexeme (n = DF_PROBE_CAP) is excluded unless it is
+        -- the argmin: its true df is unknown and may be 10× the cap, so
+        -- anchoring on it would make the budget a fiction.
+        SELECT string_agg(l, ' | ' ORDER BY n ASC, l ASC)::tsquery AS a
+          FROM ranked
+         WHERE rn = 1
+            OR (n < ${DF_PROBE_CAP} AND prior + n <= ${anchorDfBudget})
       )`,
     join: sql`, q, anchor`,
     coverage: sql`(SELECT count(*) FROM unnest(q.lexemes) AS cl WHERE ${tsv} @@ cl::tsquery)`,
     rank: sql`ts_rank_cd(${tsv}, q.orq)`,
-    match: sql`${tsv} @@ anchor.a AND ${tsv} @@ q.orq`,
+    // ⚠ NO `AND ${tsv} @@ q.orq` HERE, AND ITS ABSENCE IS NOT AN OVERSIGHT.
+    // The anchor is a disjunction of a SUBSET of `q.lexemes`, so matching it
+    // ALREADY implies matching `q.orq` — the clause was provably dead. Measured
+    // 2026-08-04 against the shipped argmin form: `anchor` alone and
+    // `anchor AND orq` both returned exactly 1,696 rows. Keeping it cost
+    // nothing at runtime but read as though the stage retrieved the whole
+    // disjunction (23,464 rows), which is how "coverage-graded" came to be
+    // reasoned about as a disjunctive leg when it never was one.
+    match: sql`${tsv} @@ anchor.a`,
     // Highlight against the DISJUNCTIVE query on purpose: a four-of-five
     // document has no fragment matching all five terms, and highlighting it
     // with the AND query would return the document's lead instead of the part

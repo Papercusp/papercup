@@ -1677,6 +1677,42 @@ describe('EI-19341572300046923 — refusing a verdict about uncompiled files', (
         expect(coveragePrefixesFromGateModule({})).toBeNull();
         expect(coveragePrefixesFromGateModule({ TSC_COMMAND: 'npx tsc --noEmit' })).toBeNull();
       });
+
+      // EI-19462776655300160 — the fan-out gates compute coverage by WALKING THE FILESYSTEM, so
+      // a broken tree / permission error raises INSIDE the thunk. This runs on the uncovered-files
+      // ERROR path, where an unhandled throw would take down a gate run that was already busy
+      // reporting something else.
+      it('a THROWING thunk degrades to unknown instead of taking the gate run down', () => {
+        const exploding = {
+          GATE_COVERAGE: () => {
+            throw new Error('EACCES: permission denied');
+          },
+        };
+        expect(() => coveragePrefixesFromGateModule(exploding)).not.toThrow();
+        expect(coveragePrefixesFromGateModule(exploding)).toBeNull();
+      });
+
+      it('tells the caller a thunk THREW, so the reason cannot misattribute the cause', () => {
+        // Both are null, but only one is "the module declares nothing". Reporting a throw as
+        // "exports neither GATE_COVERAGE nor a parseable TSC_COMMAND" would be false — it DOES
+        // export one — and sends the reader to the wrong file.
+        const seen: unknown[] = [];
+        coveragePrefixesFromGateModule(
+          {
+            GATE_COVERAGE: () => {
+              throw new Error('boom');
+            },
+          },
+          { onCoverageError: (err: unknown) => seen.push(err) },
+        );
+        expect(seen).toHaveLength(1);
+        expect((seen[0] as Error).message).toBe('boom');
+
+        // The control: a module that genuinely declares nothing must NOT report a coverage error.
+        const quiet: unknown[] = [];
+        coveragePrefixesFromGateModule({}, { onCoverageError: (err: unknown) => quiet.push(err) });
+        expect(quiet).toHaveLength(0);
+      });
     });
 
     describe('gateCoveringFile', () => {
@@ -1735,6 +1771,49 @@ describe('EI-19341572300046923 — refusing a verdict about uncompiled files', (
           }
           // Every discovered gate carries at least one usable prefix.
           for (const g of res.gates) expect(g.prefixes.length).toBeGreaterThan(0);
+        });
+      });
+
+      // EI-19462776655300160 — the ratchet. Every `lint:tsc*` gate now declares its coverage, so
+      // the banner never has to append its "the search was INCOMPLETE" caveat for real repo paths.
+      // A NEW gate that declares neither re-arms that caveat on every ungated message repo-wide,
+      // which is why this is asserted rather than left to drift back.
+      it('resolves EVERY lint:tsc* gate in the real repo — no gate lacks a coverage declaration', () => {
+        return discoverSiblingTypecheckGates(REPO_ROOT).then((res) => {
+          expect(res.rosterReadable).toBe(true);
+          expect(
+            res.unresolved,
+            'A lint:tsc* gate declares neither GATE_COVERAGE nor a parseable TSC_COMMAND, so the ' +
+              'uncovered-files banner must now caveat EVERY "no gate found" message repo-wide. Fix ' +
+              'by exporting one from the gate module named below: a single-project gate exports ' +
+              '`TSC_COMMAND`; a FAN-OUT gate exports `GATE_COVERAGE` as a thunk delegating to its ' +
+              'own selectGatedPackages() (see scripts/lint-tsc-workspaces.mjs).',
+          ).toEqual([]);
+        });
+      });
+
+      // The fan-outs are the two this item added, and they are the ones whose coverage is
+      // DISCOVERED rather than written down — so they are the ones that can silently go to zero.
+      it('the two FAN-OUT gates each resolve to a non-trivial discovered set', () => {
+        return discoverSiblingTypecheckGates(REPO_ROOT).then((res) => {
+          for (const npmScript of ['lint:tsc:workspaces', 'lint:tsc:papercusp-libs']) {
+            const gate = res.gates.find((g) => g.npmScript === npmScript);
+            expect(gate, `${npmScript} did not resolve`).toBeDefined();
+            // A fan-out that discovers nothing has silently stopped covering anything — the exact
+            // vacuous-green shape both scripts refuse at run time.
+            expect(gate!.prefixes.length).toBeGreaterThan(1);
+            for (const p of gate!.prefixes) expect(p.endsWith('/')).toBe(true);
+          }
+        });
+      });
+
+      it('routes a libs/generic file to the workspaces fan-out — the routing this item restored', () => {
+        // Before EI-19462776655300160 this file got "no gate FOUND" plus an incompleteness
+        // caveat, despite lint:tsc:workspaces gating it.
+        return discoverSiblingTypecheckGates(REPO_ROOT).then((res) => {
+          const covering = gateCoveringFile(res.gates, 'libs/generic/rerank/src/index.ts');
+          expect(covering).not.toBeNull();
+          expect(covering!.npmScript).toBe('lint:tsc:workspaces');
         });
       });
 

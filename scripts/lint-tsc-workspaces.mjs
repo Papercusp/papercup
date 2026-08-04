@@ -175,23 +175,30 @@ export function groupByRoot(entries) {
   return groups;
 }
 
-export function main({
+/**
+ * THE gated-set selection — the single source of truth for "what does this leg compile?".
+ *
+ * ⚠ EXTRACTED SO IT HAS EXACTLY ONE IMPLEMENTATION (EI-19462776655300160). Both `main()` (which
+ * RUNS the set) and `GATE_COVERAGE` (which DECLARES it to the sibling-gate resolver) read it from
+ * here. A second, hand-maintained mirror of this selection is the drift-prone shape this whole
+ * subsystem keeps getting bitten by, and drift would fail in the DANGEROUS direction: over-claimed
+ * coverage routes an agent to a gate that silently skips their file — the mirror image of the very
+ * bug EI-19461218392796337 fixed. Never re-derive this set anywhere; call this.
+ *
+ * Pure: it decides, it never prints. Reporting the populations it returns is `main()`'s job, which
+ * is what lets `GATE_COVERAGE` reuse it without emitting a word.
+ *
+ * @param {{repoRoot?: string, roots?: string[], exempt?: Record<string, Exemption>, untypecheckable?: Record<string, {detail: string, errors: number, filedAs: string}>}} [opts]
+ * @returns {{presentRoots: string[], absentRoots: string[], packages: any[], promoted: any[], exempted: any[], heldBack: any[], stillInvisible: any[], unreadable: any[]}}
+ */
+export function selectGatedPackages({
   repoRoot = REPO_ROOT,
   roots = DEFAULT_ROOTS,
   exempt = EXEMPT,
   untypecheckable = UNTYPECHECKABLE,
-  listOnly = process.argv.includes('--list'),
-  listInvisible = process.argv.includes('--list-invisible'),
-  spawn = realSpawn,
-  log = console.log,
-  warn = console.warn,
-  error = console.error,
 } = {}) {
   const presentRoots = roots.filter((r) => existsSync(join(repoRoot, r)));
   const absentRoots = roots.filter((r) => !existsSync(join(repoRoot, r)));
-  for (const r of absentRoots) {
-    warn(`⚠ root ${r} does not exist in this tree — skipping (nothing to gate there).`);
-  }
 
   const discovered = [];
   const invisible = [];
@@ -202,10 +209,6 @@ export function main({
   }
 
   const unreadable = discovered.filter((p) => p.unreadable);
-  for (const p of unreadable) {
-    error(`✗ ${p.rel}: package.json exists but could not be parsed — ${p.unreadable}`);
-  }
-
   const all = discovered.filter((p) => !p.unreadable).sort((a, b) => a.rel.localeCompare(b.rel));
 
   // A tsconfig IS the opt-in (EI-19409185011887864). Requiring a `typecheck` SCRIPT made this
@@ -243,6 +246,53 @@ export function main({
 
   const packages = [...all.filter((p) => !exempt[p.rel]), ...promoted].sort((a, b) => a.rel.localeCompare(b.rel));
   const exempted = all.filter((p) => exempt[p.rel]);
+
+  return { presentRoots, absentRoots, packages, promoted, exempted, heldBack, stillInvisible, unreadable };
+}
+
+/**
+ * The repo-relative prefixes this leg really compiles, for the sibling-gate resolver in
+ * scripts/lib/tsc-baseline-gate.mjs (EI-19462776655300160).
+ *
+ * A THUNK, not a constant: this leg's coverage is DISCOVERED, so it cannot be written down. It
+ * delegates to `selectGatedPackages` rather than restating the selection, which is what makes
+ * "the resolver's view" and "what actually runs" the same fact instead of two facts that agree
+ * until someone edits one of them.
+ *
+ * Exporting this is what lets the uncovered-files banner route a `libs/generic/**` file to
+ * `npm run lint:tsc:workspaces` instead of degrading to "no gate FOUND … and the search was
+ * INCOMPLETE".
+ *
+ * ⚠ Walks the filesystem, so it is not free and it CAN throw on a broken tree. Its consumer
+ * (`coveragePrefixesFromGateModule`) treats a throw as "this gate is unresolved", never as
+ * "this gate covers nothing" — the distinction the banner's honesty property rests on.
+ *
+ * @returns {string[]} Repo-relative directory prefixes, trailing slash.
+ */
+export const GATE_COVERAGE = () => selectGatedPackages().packages.map((p) => `${p.rel}/`);
+
+export function main({
+  repoRoot = REPO_ROOT,
+  roots = DEFAULT_ROOTS,
+  exempt = EXEMPT,
+  untypecheckable = UNTYPECHECKABLE,
+  listOnly = process.argv.includes('--list'),
+  listInvisible = process.argv.includes('--list-invisible'),
+  spawn = realSpawn,
+  log = console.log,
+  warn = console.warn,
+  error = console.error,
+} = {}) {
+  const { presentRoots, absentRoots, packages, promoted, exempted, heldBack, stillInvisible, unreadable } =
+    selectGatedPackages({ repoRoot, roots, exempt, untypecheckable });
+
+  for (const r of absentRoots) {
+    warn(`⚠ root ${r} does not exist in this tree — skipping (nothing to gate there).`);
+  }
+
+  for (const p of unreadable) {
+    error(`✗ ${p.rel}: package.json exists but could not be parsed — ${p.unreadable}`);
+  }
 
   log(
     `workspace typecheck fan-out over ${presentRoots.join(', ')} — ` +

@@ -762,6 +762,34 @@ jobs:
         if: ${{ !cancelled() }}
         run: npm run lint:tsc:orchestrator
 
+      # EI-19391297380137349: the SAME dark-gate defect, one sibling later.
+      # `lint:tsc:operator` (scripts/lint-tsc-operator.mjs + apps/operator/.tsc-baseline.json)
+      # was created 2026-08-02 to ratchet apps/operator's ~580 standing errors — the same day
+      # the block above wired its two siblings on — and it landed invoked by NOTHING: no CI
+      # step, no green-checkpoint leg, no aggregate. Measured exhaustively 2026-08-04, every
+      # reference to it was documentation, its own usage header, or tests of its ROUTING
+      # BANNER; zero callers.
+      #
+      # This one matters more than its siblings: apps/operator holds the release gate itself
+      # (lib/release/green-checkpoint.ts), so the workspace whose type-correctness protects
+      # every other gate was the one with an unenforced ratchet. It has already cost real
+      # work — an agent shipped 5 fresh type errors into green-checkpoint.test.ts believing
+      # they were pre-existing, and this gate flagged them instantly once finally run BY HAND.
+      #
+      # CI rather than a fifth green-checkpoint leg, deliberately, following the precedent
+      # green-checkpoint.ts:4828 states for operator-vite ("deliberately NOT a leg: ~151
+      # baseline entries"): apps/operator's baseline is several hundred entries, and putting
+      # that in front of every fleet release buys nothing CI does not already catch.
+      #
+      # Measured green before wiring on, per the note above: `npm run lint:tsc:operator`
+      # returned `LINT_TSC_RESULT label=operator scope=all exit=0 status=clean` (574 errors
+      # vs baseline 584, 6 files BELOW baseline, none above). That run was on the dirty
+      # shared tree, which carries every peer's half-written file, so a clean result there is
+      # strictly stronger evidence than the clean single-sha checkout CI actually runs.
+      - name: Lint TSC type errors — apps/operator (per-file baseline ratchet)
+        if: ${{ !cancelled() }}
+        run: npm run lint:tsc:operator
+
       # Vite externalized-module guard (EI-7275): a `vite build` warning "Module
       # node:* has been externalized for browser compatibility" means a Node-only
       # module reached the SPA's entry graph — the externalized stub THROWS on

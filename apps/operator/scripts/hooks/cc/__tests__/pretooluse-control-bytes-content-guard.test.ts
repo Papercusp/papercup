@@ -26,6 +26,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { execFileSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 // __dirname = <repo>/apps/operator/scripts/hooks/cc/__tests__ — six levels down.
@@ -70,6 +71,30 @@ describe('the policy it depends on', () => {
     expect(isScannedPath('packages/operator-core/lib/__tests__/test-file-router.test.ts')).toBe(true);
     // ALLOW_PREFIXES escape hatch must keep working through the same list.
     expect(isScannedPath('papercusp-desktop/src-tauri/env-sidecars/serve.mjs')).toBe(false);
+  });
+});
+
+describe('it is worktree-portable (WI-10811)', () => {
+  // WHY THIS EXISTS, AND WHY NOTHING ELSE HERE COVERS IT: the hook used to pin
+  // REPO_ROOT to an absolute path to the staging checkout. green-checkpoint runs
+  // this suite from a DIFFERENT worktree (papercusp-checkpoint), so every path
+  // below failed `startsWith(REPO_ROOT)`, toRepoRelative() returned null, and the
+  // hook FAILED OPEN on genuine hits — red-pinning the fleet gate on 7 deny-cases
+  // per run while the guard was silently inert in every non-staging worktree.
+  //
+  // The rest of this file structurally CANNOT catch that: fail-open IS allow, so
+  // all 10 negative cases stay green against a completely inert hook, and the
+  // positive cases only pass in the one tree where the literal happened to match.
+  // So the assertion has to be on the RESOLUTION MECHANISM itself.
+  it('derives REPO_ROOT from its own location, never a hardcoded absolute path', () => {
+    const rootLine = readFileSync(HOOK, 'utf8')
+      .split('\n')
+      .find((l) => l.includes('const REPO_ROOT'));
+    expect(rootLine, 'const REPO_ROOT = ... must exist').toBeDefined();
+    expect(rootLine, 'root must be derived from this file (import.meta.url)').toContain('import.meta.url');
+    // A quoted absolute path here is the exact regression: it makes the guard
+    // correct in one worktree and inert in every other.
+    expect(rootLine, 'root must not be a hardcoded path literal').not.toMatch(/['"`]\s*\//);
   });
 });
 

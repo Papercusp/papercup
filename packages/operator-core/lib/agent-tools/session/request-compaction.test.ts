@@ -83,6 +83,19 @@ vi.mock('../../compaction-usage', async () => {
 const tool = (await import('./request-compaction')).default;
 
 type Out = { content: { text: string }[]; isError?: boolean };
+// EI-19480099650947832: the tool reads the host's own event log to report what
+// happened to the PREVIOUS carry-respawn. The DERIVATION is unit-tested in
+// carry-respawn-outcome.test.ts; what these mocks cover is the WIRING — that the
+// tool actually calls it and that the verdict reaches the caller. The note
+// builder is deliberately NOT mocked, so the text asserted below is the real one.
+const readPriorRespawnOutcome = vi.fn();
+vi.mock('../../carry-respawn-outcome', async () => {
+  const actual = await vi.importActual<typeof import('../../carry-respawn-outcome')>(
+    '../../carry-respawn-outcome',
+  );
+  return { ...actual, readPriorRespawnOutcome: (...a: unknown[]) => readPriorRespawnOutcome(...a) };
+});
+
 type Envelope = { mode: string; data: string; systemPromptAddendum?: string };
 const parse = (x: unknown) => (tool.args as { parse: (x: unknown) => unknown }).parse(x);
 const call = (args: Record<string, unknown>, ctx: unknown = {}) =>
@@ -115,6 +128,7 @@ beforeEach(() => {
   __resetRefusalMarkers(); // P-016 gate marker is module-level — isolate each test
   void __resetRespawnExpectedMarkers(); // EI-18676518990229124 — same module-level isolation
   injectIntoHost.mockResolvedValue(true);
+  readPriorRespawnOutcome.mockResolvedValue({ outcome: 'none' });
   buildCarryBrief.mockResolvedValue(emptyBrief);
   buildOwnerRespawnLaunchSpec.mockResolvedValue(closedSpec);
   provDir = mkdtempSync(join(tmpdir(), 'reqcomp-prov-'));
@@ -123,6 +137,70 @@ beforeEach(() => {
 afterEach(() => {
   delete process.env.PAPERCUSP_TURN_PROVENANCE_DIR;
   rmSync(provDir, { recursive: true, force: true });
+});
+
+// EI-19480099650947832: `respawn: true` only ever meant "the socket write was
+// accepted". The host still has to win a busy-gate and can terminally DROP the
+// carry — and every such drop was invisible to the caller, who had just been
+// told "wrap up now and stop" and therefore stopped managing its own context.
+describe('session:request-compaction — reports what happened to the PREVIOUS respawn', () => {
+  it('surfaces a prior DROP, with the host’s own reason, in both the field and the note', async () => {
+    findLiveHost.mockReturnValue(carryHost);
+    readPriorRespawnOutcome.mockResolvedValue({
+      outcome: 'dropped',
+      reason: 'busy-gate-expired',
+      ts: '2026-08-04T00:38:29.702Z',
+      ageMs: 9 * 60_000,
+    });
+    const b = body(await call({ focus: 'anything' }));
+    expect(readPriorRespawnOutcome).toHaveBeenCalledTimes(1);
+    expect(b.priorRespawn).toMatchObject({ outcome: 'dropped', reason: 'busy-gate-expired' });
+    expect(b.note).toContain('prior-respawn-DROPPED');
+    expect(b.note).toContain('busy-gate-expired');
+    // The operative correction the caller has to act on.
+    expect(b.note).toContain('An acknowledged request is NOT a landed cut');
+  });
+
+  it('says a still-pending re-poll is SUPERSEDED by this request rather than racing it', async () => {
+    findLiveHost.mockReturnValue(carryHost);
+    readPriorRespawnOutcome.mockResolvedValue({ outcome: 'pending', ageMs: 19 * 60_000 });
+    const b = body(await call({ focus: 'anything' }));
+    expect(b.priorRespawn.outcome).toBe('pending');
+    expect(b.note).toContain('prior-respawn-STILL-PENDING');
+  });
+
+  // A warning that fires when nothing is wrong trains agents to ignore it.
+  it('is SILENT when the last respawn delivered, and when there is no history at all', async () => {
+    findLiveHost.mockReturnValue(carryHost);
+    readPriorRespawnOutcome.mockResolvedValue({ outcome: 'delivered', ageMs: 1000 });
+    expect(body(await call({ focus: 'x' })).note).not.toContain('prior-respawn');
+    vi.clearAllMocks();
+    injectIntoHost.mockResolvedValue(true);
+    buildCarryBrief.mockResolvedValue(emptyBrief);
+    buildOwnerRespawnLaunchSpec.mockResolvedValue(closedSpec);
+    findLiveHost.mockReturnValue(carryHost);
+    readPriorRespawnOutcome.mockResolvedValue({ outcome: 'none' });
+    const b = body(await call({ focus: 'x' }));
+    expect(b.priorRespawn).toEqual({ outcome: 'none' });
+    expect(b.note).not.toContain('prior-respawn');
+  });
+
+  // The read must describe HISTORY, not the request being made — so it happens
+  // before the inject, never after.
+  it('reads the prior verdict BEFORE injecting this request', async () => {
+    findLiveHost.mockReturnValue(carryHost);
+    const order: string[] = [];
+    readPriorRespawnOutcome.mockImplementation(async () => {
+      order.push('read');
+      return { outcome: 'none' };
+    });
+    injectIntoHost.mockImplementation(async () => {
+      order.push('inject');
+      return true;
+    });
+    await call({ focus: 'x' });
+    expect(order).toEqual(['read', 'inject']);
+  });
 });
 
 describe('session:request-compaction — P-018/P-022 carry-respawn actuation', () => {

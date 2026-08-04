@@ -30,7 +30,13 @@ import { afterEach, describe, expect, it } from 'vitest';
 // eslint-disable-next-line import/no-relative-packages
 import { discover, discoverInvisible } from '../../../scripts/lib/typecheck-fanout.mjs';
 // eslint-disable-next-line import/no-relative-packages
-import { DEFAULT_ROOTS, EXEMPT, main } from '../../../scripts/lint-tsc-workspaces.mjs';
+import {
+  DEFAULT_ROOTS,
+  EXEMPT,
+  GATE_COVERAGE,
+  main,
+  selectGatedPackages,
+} from '../../../scripts/lint-tsc-workspaces.mjs';
 
 const trees: string[] = [];
 afterEach(() => {
@@ -384,5 +390,83 @@ describe('the REAL tree', () => {
     // Covering a package twice doubles its compile and reports one regression as two.
     expect(DEFAULT_ROOTS).not.toContain('libs/papercusp');
     expect(DEFAULT_ROOTS.some((r: string) => r.startsWith('libs/papercusp'))).toBe(false);
+  });
+});
+
+/** The `  · <rel>` lines main() prints for the GATED set (2-space indent is only ever that list). */
+function gatedRelsFromReport(stdout: string): string[] {
+  return stdout
+    .split('\n')
+    .filter((l) => /^ {2}· /.test(l))
+    .map((l) => l.replace(/^ {2}· /, '').trim());
+}
+
+// EI-19462776655300160. GATE_COVERAGE is what the sibling-gate resolver in
+// scripts/lib/tsc-baseline-gate.mjs reads to route an agent to this leg. If it ever disagrees with
+// what main() actually RUNS, the failure is silent and points the WRONG WAY: an over-claimed
+// prefix routes someone to a gate that does not in fact check their file — the mirror image of the
+// bug EI-19461218392796337 fixed. One shared selectGatedPackages() is what makes them one fact;
+// these tests are what keep it that way.
+describe('GATE_COVERAGE cannot drift from what the leg runs (EI-19462776655300160)', () => {
+  it('main() reports EXACTLY the set selectGatedPackages() returns — no second derivation', () => {
+    const root = makeTree({
+      'apps/gated': { typecheck: true },
+      'apps/plain': {},
+      'apps/exempt-me': { typecheck: true },
+      'libs/generic/promoted': { tsconfig: true },
+      'packages/report-only': { tsconfig: true },
+    });
+    const sink = makeSink();
+    const exempt = {
+      'apps/exempt-me': { reason: 'test', detail: 'excluded by this test', filedAs: 'n/a' },
+    };
+
+    main({
+      repoRoot: root,
+      roots: DEFAULT_ROOTS,
+      exempt,
+      untypecheckable: {},
+      listOnly: true,
+      listInvisible: false,
+      spawn: () => PASS,
+      ...sink.io,
+    });
+
+    const selected = selectGatedPackages({
+      repoRoot: root,
+      roots: DEFAULT_ROOTS,
+      exempt,
+      untypecheckable: {},
+    });
+
+    expect(gatedRelsFromReport(sink.stdout())).toEqual(selected.packages.map((p) => p.rel));
+    // The selection is real, not vacuously empty on both sides.
+    expect(selected.packages.map((p) => p.rel)).toEqual([
+      'apps/gated',
+      'libs/generic/promoted',
+    ]);
+    // And an exempt / report-only package is in NEITHER — so an agent is never routed here for one.
+    expect(gatedRelsFromReport(sink.stdout())).not.toContain('apps/exempt-me');
+    expect(gatedRelsFromReport(sink.stdout())).not.toContain('packages/report-only');
+  });
+
+  it('GATE_COVERAGE() on the REAL tree equals the gated set --list reports', () => {
+    const repoRoot = join(__dirname, '..', '..', '..');
+    if (!existsSync(join(repoRoot, 'apps'))) return;
+
+    const sink = makeSink();
+    main({ repoRoot, listOnly: true, listInvisible: false, spawn: () => PASS, ...sink.io });
+
+    const reported = gatedRelsFromReport(sink.stdout());
+    expect(reported.length).toBeGreaterThan(1);
+    // The declaration the resolver reads, against the report an operator reads. Same fact.
+    expect(GATE_COVERAGE()).toEqual(reported.map((rel) => `${rel}/`));
+  });
+
+  it('declares a trailing slash on every prefix, so a sibling name cannot match as a prefix', () => {
+    // Without it, 'libs/generic/rerank' would also claim to cover 'libs/generic/rerank-legacy/x.ts'.
+    const prefixes = GATE_COVERAGE();
+    expect(prefixes.length).toBeGreaterThan(1);
+    for (const p of prefixes) expect(p.endsWith('/')).toBe(true);
   });
 });

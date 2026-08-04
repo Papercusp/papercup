@@ -989,10 +989,17 @@ export function makeCarryRearmController({
                 observedMaxQuietMs = atPrompt.maxQuietForMs;
               }
               if (!deferred) {
+                // EI-19480099650947832: re-read ONCE MORE at the delivery point.
+                // `current` was read before the wait, and a supersede can land at
+                // ANY await — including the one we just returned from. This is
+                // the branch where the carry document is actually consumed, so
+                // reading a stale `current` here would cut in the older carry
+                // even though a fresher one had already arrived.
+                const deliver = latest.get(key) ?? current;
                 // EI-18109211232286833: re-check staleness right before the cut —
                 // a lot of wall-clock may have passed across these waits, so a
                 // message fresh at schedule() time can cross the threshold.
-                if (isStale(current)) {
+                if (isStale(deliver)) {
                   emitEvent(droppedKind, {
                     ...extra,
                     rearmed: true,
@@ -1002,10 +1009,10 @@ export function makeCarryRearmController({
                   });
                   return;
                 }
-                await recycle(current.data, {
-                  systemPromptAddendum: current.systemPromptAddendum ?? '',
+                await recycle(deliver.data, {
+                  systemPromptAddendum: deliver.systemPromptAddendum ?? '',
                   drillId,
-                  sessionClass: current.sessionClass ?? '',
+                  sessionClass: deliver.sessionClass ?? '',
                 });
                 return;
               }
@@ -2945,6 +2952,19 @@ export function hostThroughPty(o) {
             // its respawn to one long turn. A duplicate schedule (a retry already
             // pending for this key) drops terminally here.
             if (msg.mode === 'carry-respawn') {
+              // EI-19480099650947832: record WHY the first attempt could not
+              // fire, not just that it didn't. `busy-gate-expired` alone cannot
+              // distinguish a genuinely-busy agent (longest quiet gap ≈ 0ms —
+              // something is redrawing the pty continuously) from a near-miss
+              // (gap ≈ quietMs — the threshold is simply too tight), and those
+              // have opposite fixes. Diagnostic only; the rearm-queued row
+              // emitted immediately below still carries the lifecycle verdict.
+              appendHostEvent(ownerId, 'carry-respawn-busy-gate-expired', {
+                mode: 'carry-respawn',
+                capMs: turnInjectBusyCapMs,
+                observedMaxQuietMs: Number.isFinite(atPrompt?.maxQuietForMs) ? atPrompt.maxQuietForMs : null,
+                quietMs: Number.isFinite(atPrompt?.quietMs) ? atPrompt.quietMs : null,
+              });
               const rearmVerdict = carryRearm.schedule(msg);
               // EI-19480099650947832: a PRODUCTION respawn arriving while an
               // earlier one is still re-polling now SUPERSEDES it (the fresher

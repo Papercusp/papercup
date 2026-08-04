@@ -121,6 +121,13 @@ export const SCREEN_OWN_MODULES = [
   'idea-cluster-screen',
   'code-search-deps',
   'plan-slug-leg',
+  // The screen's own entrypoint. It documents WI-9476 and EI-19480829864185465
+  // in its header, so without this exclusion the self-id leg greps those ids,
+  // hits the screen's own source, and reports the screen as prior art for the
+  // very ideas it is screening — defect #3 again. Caught by the guard below on
+  // the day it was added, which is the second time that guard has paid for
+  // itself (`plan-slug-leg` was the first).
+  'screen-backlog',
 ] as const;
 
 export const NON_EVIDENCE_PATTERNS: RegExp[] = [

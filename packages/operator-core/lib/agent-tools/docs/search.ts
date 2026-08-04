@@ -16,7 +16,7 @@ import {
   type SearchResult as DocsSearchResult,
 } from '@papercusp/docs-engine';
 import { getOrgPg } from '@papercusp/db-org';
-import { runHybridSearch, isVectorOnly, type SearchSource, type Listing } from '@papercusp/search';
+import { runHybridSearch, isVectorOnly, type SearchSource, type Listing, type PgHandle } from '@papercusp/search';
 import { loadHarnessRegistry, resolveHarnessContentPath } from '../../harness-registry';
 import { engineeringAdapter } from './_engineering-adapter';
 import { HARNESS_REQUIRED_DETAIL, isEngineeringDocsSentinel, resolveHarnessScope, type HarnessScope } from '../_harness-scope';
@@ -38,6 +38,23 @@ import '../../search/configure-search-defaults';
  * candidates, never a change to the underlying ranker.
  */
 const MIN_CANDIDATES = 30;
+
+/**
+ * The engine takes a PG handle and threads it to every source — but NEITHER of
+ * this surface's legs consumes it: the lexical leg reads a filesystem adapter,
+ * and the semantic leg resolves its own handle inside `querySections` (the
+ * doc_sections read, where its injectable seam lives).
+ *
+ * So resolve it LAZILY. `getOrgPg()` calls `adminUrl()` unconditionally, and
+ * calling it up front would newly couple a lexical-only docs search — which
+ * has never needed a database — to PG discovery being healthy. A future source
+ * that genuinely wants the handle still gets the real one on first touch.
+ */
+const lazyOrgSql = new Proxy((() => {}) as unknown as PgHandle, {
+  apply: (_t, _self, argv: unknown[]) =>
+    (getOrgPg().sql as unknown as (...a: unknown[]) => unknown)(...argv),
+  get: (_t, prop) => (getOrgPg().sql as unknown as Record<string | symbol, unknown>)[prop],
+});
 
 export async function resolveAdapter(
   harnessSlug: string | undefined,
@@ -269,9 +286,8 @@ export default defineTool({
         : {}),
     };
 
-    const { sql } = getOrgPg();
     const { results, legs, applied } = await runHybridSearch([source], {
-      sql,
+      sql: lazyOrgSql,
       query: args.query,
       // The docs source resolves its own corpus from the adapter; neither of
       // the engine's scoping keys applies to a filesystem surface.

@@ -56,6 +56,28 @@ export interface LiveHeadSnapshotNoHolder {
   readonly answered: readonly number[];
   /** Every operator-shaped sibling we found on the box, answering or not. */
   readonly probed: readonly number[];
+  /**
+   * Ports that are ALIVE and serving, but 404'd this route — i.e. their build PREDATES
+   * P-019. Distinguished from a dead port on purpose: those two are the same
+   * `__transportError` on the wire and used to be reported identically, as a port that
+   * merely "did not answer".
+   *
+   * That collapse hid the single most likely real-world cause of a `no-holder` on a
+   * healthy box, and it hid it in the most expensive direction. Measured 2026-08-04
+   * (P-014, WI-10773): `papercup-bg-host` HELD the papercusp corestore write lock and
+   * served every other internal route (`/api/internal/managed-timers` → 200), but had
+   * started 9 minutes BEFORE the head-snapshot route file existed, so it 404'd this one
+   * path. The refusal reported `probed 3070, 3170, 3270, 3271; answered 3070, 3270` and
+   * said "no operator process here reports having booted" — which reads as "nothing on
+   * this box holds the hive", the opposite of the truth. The holder was right there in
+   * the probed list, indistinguishable from a dead socket, and the stated remedies
+   * ("make sure the operator is healthy", "quiesce and re-run") were both wrong: the
+   * operator WAS healthy, and the actual fix is to restart it onto post-P-019 code.
+   *
+   * The Hono host has no file-watch, so a long-lived holder keeps 404ing this route
+   * until it restarts — this is a NORMAL post-deploy state, not an exotic one.
+   */
+  readonly staleBuild: readonly number[];
 }
 
 export interface LiveHeadSnapshotFailed {
@@ -96,7 +118,7 @@ async function post(
   sibling: SiblingOperator,
   body: Record<string, unknown>,
   timeoutMs: number,
-): Promise<HeadSnapshotReply | { __transportError: string }> {
+): Promise<HeadSnapshotReply | { __transportError: string; __status?: number }> {
   try {
     // The route declares `path: '/internal/substrate/head-snapshot'`; the host mounts
     // every route under `/api`, exactly as SIBLING_PROBE_PATH spells out for
@@ -107,7 +129,9 @@ async function post(
       headers: { 'content-type': 'application/json', accept: 'application/json' },
       body: JSON.stringify(body),
     });
-    if (!res.ok) return { __transportError: `HTTP ${res.status}` };
+    // Keep the STATUS, not just a rendered string: a 404 here means "alive, but this
+    // build predates the route" and is actionable in a way a dead socket is not.
+    if (!res.ok) return { __transportError: `HTTP ${res.status}`, __status: res.status };
     return ((await res.json()) as HeadSnapshotReply) ?? {};
   } catch (e) {
     return { __transportError: e instanceof Error ? e.message : String(e) };
@@ -155,7 +179,7 @@ export async function findLiveOperatorHoldingHive(inp: {
   const siblings = await listSiblings({ selfPort: -1 });
   const probed = siblings.map((s) => s.port);
   if (siblings.length === 0) {
-    return { kind: 'no-holder', answered: [], probed };
+    return { kind: 'no-holder', answered: [], probed, staleBuild: [] };
   }
 
   const probeTimeoutMs = inp.probeTimeoutMs ?? DEFAULT_HEAD_SNAPSHOT_PROBE_TIMEOUT_MS;
@@ -172,9 +196,15 @@ export async function findLiveOperatorHoldingHive(inp: {
   );
 
   const answered = probes.filter((p) => !isTransportError(p.reply)).map((p) => p.sibling.port);
+  // A 404 on THIS path from a process that is otherwise serving = a build predating the
+  // route. Reported separately because the remedy is specific (restart that process) and
+  // is NOT any of the remedies a plain "did not answer" suggests.
+  const staleBuild = probes
+    .filter((p) => isTransportError(p.reply) && p.reply.__status === 404)
+    .map((p) => p.sibling.port);
   const holders = probes.filter((p) => !isTransportError(p.reply) && p.reply.booted === true);
   if (holders.length === 0) {
-    return { kind: 'no-holder', answered, probed };
+    return { kind: 'no-holder', answered, probed, staleBuild };
   }
   if (holders.length > 1) {
     // Only one process can hold the corestore write lock, so this should be

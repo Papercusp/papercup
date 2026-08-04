@@ -941,6 +941,55 @@ describe('makeAgentBusyGate (mid-turn inject safety)', () => {
     expect(r.reason).toBe('agent-busy');
   });
 
+  // EI-19480099650947832: `busy-gate-expired` on its own is an unfalsifiable
+  // verdict. A carry-respawn re-polled for 14 minutes on 2026-08-04 and every
+  // durable row said only that it expired — leaving no way to tell a genuinely
+  // busy agent (longest quiet gap ≈ 0ms, something redrawing the pty
+  // continuously) from a near-miss (gap just under the threshold, i.e. quietMs
+  // is too tight). Those two have OPPOSITE fixes and the distinction cannot be
+  // reconstructed after the fact, so the gate now reports what it measured.
+  describe('a defer carries the evidence for WHY it expired', () => {
+    it('reports the LONGEST quiet window observed, and the threshold it was judged against', async () => {
+      // The agent is quiet for exactly 40ms at every poll — far short of the
+      // 500ms threshold, so it correctly defers, but 40ms is diagnostic gold:
+      // it says "genuinely busy", not "we missed it by a hair".
+      let t = 0;
+      const g = makeAgentBusyGate({
+        lastOutputAt: () => t - 40,
+        quietMs: 500,
+        capMs: 200,
+        now: () => (t += 25),
+      });
+      const r = await g.waitAtPrompt();
+      expect(r.deferred).toBe(true);
+      expect(r.maxQuietForMs).toBe(40);
+      expect(r.quietMs).toBe(500);
+    });
+
+    it('CONTROL — a NEAR-MISS is distinguishable from genuinely busy by that same field', async () => {
+      // Same shape, but the agent goes quiet for 490ms of a 500ms threshold.
+      // Identical `deferred:true` / `reason:'agent-busy'` verdict; the ONLY
+      // thing separating it from the case above is maxQuietForMs.
+      let t = 0;
+      const g = makeAgentBusyGate({
+        lastOutputAt: () => t - 490,
+        quietMs: 500,
+        capMs: 200,
+        now: () => (t += 25),
+      });
+      const r = await g.waitAtPrompt();
+      expect(r.deferred).toBe(true);
+      expect(r.maxQuietForMs).toBe(490);
+    });
+
+    it('a NON-deferred (at-prompt) resolution is unchanged — no evidence fields, no behavior change', async () => {
+      const g = makeAgentBusyGate({ lastOutputAt: () => 0, now: () => 5000, quietMs: 100, capMs: 1000 });
+      const r = await g.waitAtPrompt();
+      expect(r.deferred).toBe(false);
+      expect(r.reason).toBeUndefined();
+    });
+  });
+
   // WI-1872 (1): the compaction completion-wait needs a DIFFERENT (generous)
   // cap than the gate's own construction-time capMs (sized for a wake turn) —
   // waitAtPrompt(overrideCapMs) lets one gate instance serve both budgets.

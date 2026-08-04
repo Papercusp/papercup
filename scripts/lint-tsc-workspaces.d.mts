@@ -4,6 +4,41 @@
 // scripts/lint-tsc-workspaces.mjs and regenerate.
 /** Group the invisible set by top-level root, so the report stays readable at ~60 entries. */
 export function groupByRoot(entries: any): Map<any, any>;
+/**
+ * THE gated-set selection — the single source of truth for "what does this leg compile?".
+ *
+ * ⚠ EXTRACTED SO IT HAS EXACTLY ONE IMPLEMENTATION (EI-19462776655300160). Both `main()` (which
+ * RUNS the set) and `GATE_COVERAGE` (which DECLARES it to the sibling-gate resolver) read it from
+ * here. A second, hand-maintained mirror of this selection is the drift-prone shape this whole
+ * subsystem keeps getting bitten by, and drift would fail in the DANGEROUS direction: over-claimed
+ * coverage routes an agent to a gate that silently skips their file — the mirror image of the very
+ * bug EI-19461218392796337 fixed. Never re-derive this set anywhere; call this.
+ *
+ * Pure: it decides, it never prints. Reporting the populations it returns is `main()`'s job, which
+ * is what lets `GATE_COVERAGE` reuse it without emitting a word.
+ *
+ * @param {{repoRoot?: string, roots?: string[], exempt?: Record<string, Exemption>, untypecheckable?: Record<string, {detail: string, errors: number, filedAs: string}>}} [opts]
+ * @returns {{presentRoots: string[], absentRoots: string[], packages: any[], promoted: any[], exempted: any[], heldBack: any[], stillInvisible: any[], unreadable: any[]}}
+ */
+export function selectGatedPackages({ repoRoot, roots, exempt, untypecheckable, }?: {
+    repoRoot?: string;
+    roots?: string[];
+    exempt?: Record<string, Exemption>;
+    untypecheckable?: Record<string, {
+        detail: string;
+        errors: number;
+        filedAs: string;
+    }>;
+}): {
+    presentRoots: string[];
+    absentRoots: string[];
+    packages: any[];
+    promoted: any[];
+    exempted: any[];
+    heldBack: any[];
+    stillInvisible: any[];
+    unreadable: any[];
+};
 export function main({ repoRoot, roots, exempt, untypecheckable, listOnly, listInvisible, spawn, log, warn, error, }?: {
     repoRoot?: any;
     roots?: string[] | undefined;
@@ -102,6 +137,7 @@ export const UNTYPECHECKABLE: Record<string, {
  * @type {Record<string, Exemption>}
  */
 export const EXEMPT: Record<string, Exemption>;
+export function GATE_COVERAGE(): string[];
 /**
  * One deliberate exclusion from this leg.
  */

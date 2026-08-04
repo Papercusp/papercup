@@ -112,6 +112,26 @@ export const BACKLOG_GROWTH_SAMPLES = 3;
 /** …and only once the backlog is big enough to matter (a 0 -> 5 blip on a tiny table is not news). */
 export const MIN_BACKLOG_FOR_ALARM = 500;
 
+/**
+ * EI-19478208736094798 tuning — the STUCK-backlog leg.
+ *
+ * Same shape as BACKLOG_GROWTH_SAMPLES and for the same reason: the sweep applies a
+ * per-target fairness cap and rotates target ORDER, so ONE interval in which a surface
+ * cleared nothing is ordinary starvation, not a wedge. Three consecutive intervals is
+ * longer than a full rotation, so it can only mean the sweep is not moving this surface
+ * at all.
+ */
+export const BACKLOG_STUCK_SAMPLES = 3;
+/**
+ * …and only once the residue is big enough to matter. Deliberately far below
+ * MIN_BACKLOG_FOR_ALARM (500): that floor guards a GROWING backlog, where the count is
+ * on its way up anyway, whereas this leg's whole subject is a residue that is PERMANENT
+ * and therefore never grows into a bigger floor. The measured incident stranded 3,441
+ * rows, but a frozen predicate that admits a narrower band strands proportionally fewer,
+ * and 50 stranded-forever rows is still a real hole in the index.
+ */
+export const MIN_BACKLOG_FOR_STUCK_ALARM = 50;
+
 /** How many samples back the drain/growth analysis reads. */
 export const HISTORY_DEPTH = BACKLOG_GROWTH_SAMPLES + 1;
 
@@ -169,7 +189,11 @@ export interface DrainObservation {
   holds: boolean;
 }
 
-export type CoverageBreachKind = 'total-coverage' | 'recent-coverage' | 'backlog-growing';
+export type CoverageBreachKind =
+  | 'total-coverage'
+  | 'recent-coverage'
+  | 'backlog-growing'
+  | 'backlog-stuck';
 
 export interface CoverageBreach {
   surface: string;
@@ -354,6 +378,29 @@ export function computeDrain(samples: CoverageSample[]): DrainObservation | null
   };
 }
 
+/**
+ * How many consecutive most-recent intervals the surface cleared ZERO rows while a
+ * backlog existed — the STUCK signature (EI-19478208736094798).
+ *
+ * Counts `drainedRows === 0`, NOT `backlogDelta === 0`. The two differ exactly where it
+ * matters: a surface that embedded 100 rows while 100 new eligible rows arrived has
+ * delta 0 and is perfectly healthy churn, whereas drained 0 means the sweep put nothing
+ * into the index at all. Only the second is "work existed and the worker produced
+ * nothing", which is the same unambiguous question the parts-writer guard asks.
+ */
+export function consecutiveBacklogStuck(samples: CoverageSample[]): number {
+  let n = 0;
+  for (let i = 0; i + 1 < samples.length; i += 1) {
+    const newer = samples[i]!;
+    const older = samples[i + 1]!;
+    const backlogNewer = newer.eligibleRows - newer.embeddedRows;
+    const drained = newer.embeddedRows - older.embeddedRows;
+    if (backlogNewer > 0 && drained === 0) n += 1;
+    else break;
+  }
+  return n;
+}
+
 /** How many consecutive most-recent intervals the backlog GREW across. */
 export function consecutiveBacklogGrowth(samples: CoverageSample[]): number {
   let n = 0;
@@ -438,6 +485,45 @@ export function detectCoverageBreaches(inputs: BreachInput[]): CoverageBreach[] 
       }
     }
 
+    // 4. EI-19478208736094798: the backlog that is STUCK rather than growing.
+    //
+    // WHY THIS LEG EXISTS — the other three are each structurally blind to it, so the
+    // measured incident passed all of them. A 16h-lived refill driver imported
+    // embed-backfill ONCE at boot; the P-028 predicate widening landed in that file
+    // mid-run; the process kept sweeping under its module-cached OLD bodySql, correctly
+    // found nothing left under THAT definition, and logged "DONE". 3,441 rows newly
+    // eligible under current code were stranded — and:
+    //   • leg 1 judges the SETTLED 15min-3h window, and those rows were OLD (bg-host,
+    //     running fresh code, embedded new writes correctly the whole time);
+    //   • leg 2 needs coverage < 95% and it measured 99.043% (3,441 / 359,665 eligible);
+    //   • leg 3 needs STRICT growth and a frozen backlog has delta 0.
+    // Raising leg 2's floor past 99.04% is NOT the fix: it would fire on ordinary
+    // ingestion lag and after every planned re-embed, i.e. the alert fatigue D-006
+    // exists to prevent. The discriminator a ratio cannot supply is whether the residue
+    // is MOVING — 99% draining and 99% stranded-forever are the same number.
+    //
+    // Cannot false-alarm on a legitimate multi-hour backfill: that state drains rows
+    // every interval, so `drainedRows` is non-zero and this never arms.
+    const stuck = consecutiveBacklogStuck(history);
+    if (stuck >= BACKLOG_STUCK_SAMPLES && c.backlog >= MIN_BACKLOG_FOR_STUCK_ALARM) {
+      breaches.push({
+        surface: c.surface,
+        kind: 'backlog-stuck',
+        observed: c.backlog,
+        floor: MIN_BACKLOG_FOR_STUCK_ALARM,
+        detail:
+          `${c.backlog} eligible rows have gone unembedded across ${stuck} consecutive ` +
+          `intervals with ZERO rows cleared — the backlog is not growing and not draining, ` +
+          `it is STRANDED, so no coverage-ratio floor will ever catch it. Most likely a ` +
+          `long-lived process running a module-cached copy of embed-backfill older than the ` +
+          `tree: it sweeps to exhaustion under its OWN frozen bodySql and reports "DONE" ` +
+          `truthfully, while rows newly eligible under current code are invisible to it. ` +
+          `A DEPLOY DOES NOT FIX THAT — check the age of any refill driver and of ` +
+          `papercup-bg-host against the commit time of embed-backfill.ts, and restart the ` +
+          `stale one.`,
+      });
+    }
+
     // 3. P-006: the invariant, violated across consecutive intervals.
     const growth = consecutiveBacklogGrowth(history);
     if (growth >= BACKLOG_GROWTH_SAMPLES && c.backlog >= MIN_BACKLOG_FOR_ALARM) {
@@ -467,8 +553,12 @@ export function formatCoverageToast(breaches: CoverageBreach[]): {
 } {
   const lines = breaches
     .map((b) => {
+      // Both backlog legs report a ROW COUNT; the coverage legs report a ratio. Getting
+      // this wrong renders a 3,441-row breach as "344100.0%".
       const obs =
-        b.kind === 'backlog-growing' ? `${b.observed} rows` : `${(b.observed * 100).toFixed(1)}%`;
+        b.kind === 'backlog-growing' || b.kind === 'backlog-stuck'
+          ? `${b.observed} rows`
+          : `${(b.observed * 100).toFixed(1)}%`;
       return `• [${b.kind}] ${b.surface}: ${obs} — ${b.detail}`;
     })
     .join('\n');

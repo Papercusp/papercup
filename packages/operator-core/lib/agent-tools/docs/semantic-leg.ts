@@ -123,19 +123,25 @@ export async function resolveDocsEmbedder(deps?: DocSemanticDeps): Promise<Resol
         embeddingMode: null,
       };
     }
-    return {
-      // Guard the OUTPUT width too: `dims` is what the embedder DECLARES, and a
-      // resolver that declares correctly but returns a short vector would
-      // otherwise reach pgvector as a raw dimension error.
-      embedder: async (text: string): Promise<number[]> => {
-        const vec = await resolved.embed(text);
-        if (!fitsProseColumns(vec.length)) {
-          throw new Error(`query embedder returned ${vec.length} dims, which do not fit the prose embedding columns`);
-        }
-        return vec;
-      },
-      embeddingMode: resolved.mode,
-    };
+    // 🚨 PASS `resolved.embed` THROUGH UNWRAPPED — never a closure around it.
+    //
+    // The P-017 floor is resolved from the embedder INSTANCE: `embedder.ts`
+    // stamps each embedder it builds into a `WeakMap<Embedder, mode>` and
+    // `embedderModeOf` is a lookup on that exact function object. Any wrapper —
+    // however thin — is a DIFFERENT object, so the lookup MISSES, the policy
+    // reads "unknown space", and the surface silently inherits NO FLOOR while
+    // every leg still appears to run. That is the exact hand-propagation
+    // failure P-016 exists to delete, re-created by a helpful-looking guard.
+    //
+    // This cost the width check the old code did on the embed OUTPUT (`dims`
+    // is only what the embedder DECLARES). That is the right trade and it is
+    // not a silent loss: a wrong-width vector now fails INSIDE the source's
+    // embedding query, which the engine records in `legs.semantic.failures`
+    // and reports as degraded — strictly louder than the old `return null`,
+    // which degraded to lexical-only and said nothing at all.
+    //
+    // `docs-search-embedder-identity.test.ts` fails if this is ever re-wrapped.
+    return { embedder: resolved.embed, embeddingMode: resolved.mode };
   } catch (err) {
     return { embedder: unavailable(`query embedder resolution threw: ${(err as Error).message}`), embeddingMode: null };
   }

@@ -516,12 +516,28 @@ export function suggestTypecheckGate(root: string, file: string): {
  *    whose coverage is a discovered set rather than a single `-p` project.
  *  - `TSC_COMMAND` — the per-project constant the four single-project CLIs already export.
  *
+ * ⚠ A `GATE_COVERAGE` THUNK MAY THROW, and that must degrade rather than crash. The fan-out gates
+ * compute their coverage by WALKING THE FILESYSTEM (EI-19462776655300160), so a broken tree, a
+ * permission error or an unreadable package.json raises here — on the uncovered-files ERROR path,
+ * i.e. exactly when the gate is already reporting something and least able to afford an
+ * unhandled throw. A throw is caught and reported as `null`, so the gate lands in `unresolved`
+ * with its reason and the banner says "none FOUND": the same honest degradation as a module that
+ * declares nothing. Never let it read as "this gate covers nothing", which would be a confident
+ * claim derived from a failure to look.
+ *
  * @param {Record<string, unknown>} mod An imported gate module.
+ * @param {{onCoverageError?: (err: unknown) => void}} [opts] Notified when a `GATE_COVERAGE` thunk
+ *   THREW, so the caller can say so instead of reporting the generic "exports neither" reason —
+ *   which would be false here (it does export one; it failed). Both are `null`, but only one of
+ *   them is the module's fault, and a reason that misattributes the cause sends the reader to the
+ *   wrong file.
  * @returns {string[] | null} Prefixes (trailing slash, `''` = whole repo), or `null` when this
  *   module declares nothing parseable — which callers MUST treat as "unknown", never "covers
  *   nothing" (see `discoverSiblingTypecheckGates`).
  */
-export function coveragePrefixesFromGateModule(mod: Record<string, unknown>): string[] | null;
+export function coveragePrefixesFromGateModule(mod: Record<string, unknown>, { onCoverageError }?: {
+    onCoverageError?: (err: unknown) => void;
+}): string[] | null;
 /**
  * EI-19461218392796337 — every `lint:tsc*` gate declared in the root package.json, with the
  * prefixes each one really covers.

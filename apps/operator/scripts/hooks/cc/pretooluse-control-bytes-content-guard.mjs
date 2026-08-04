@@ -52,9 +52,24 @@
 // while the cost of allowing is a fleet-wide red.
 //
 import process from 'node:process';
-import { pathToFileURL } from 'node:url';
+import { pathToFileURL, fileURLToPath } from 'node:url';
+import { dirname, resolve } from 'node:path';
 
-const REPO_ROOT = '/home/marsh-office/papercupai-workspace/papercusp';
+// REPO_ROOT is derived from THIS FILE's own location — never a hardcoded literal.
+// This file lives at <root>/apps/operator/scripts/hooks/cc/, so the root is five
+// levels up. That matches how the test resolves it (__dirname-relative), so the
+// two agree in EVERY worktree rather than only in one.
+//
+// WI-10811: it used to be a hardcoded absolute path to the staging checkout.
+// green-checkpoint runs the suite from a DIFFERENT worktree (papercusp-checkpoint),
+// where every incoming path failed `startsWith(REPO_ROOT)`, so toRepoRelative()
+// returned null, the hook treated real hits as "outside the repo" and FAILED OPEN.
+// Two costs, and the second is the worse one: it red-pinned the fleet gate on 7
+// deny-tests every run, AND the guard was silently inert in every non-staging
+// worktree — the exact "fails open and nothing reports it" mode this file's own
+// CONTRACT warns about, reached by a vector nobody was watching (the root path,
+// not the policy import). The allow-tests cannot catch it, because fail-open IS allow.
+const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../../..');
 const POLICY_MODULE = `${REPO_ROOT}/scripts/check-no-control-bytes.mjs`;
 
 main();
