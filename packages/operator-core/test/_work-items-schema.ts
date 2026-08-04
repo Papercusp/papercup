@@ -365,6 +365,7 @@ export const HARNESS_FEATURES_CONSOLIDATED_DDL = `
     op_status text,
     op_started_at timestamptz,
     op_updated_at timestamptz,
+    items jsonb,
     PRIMARY KEY (workspace_id, harness_slug, plan_slug)
   );
   -- Pre-existing fixture rows predate op_status; ALTER keeps an older fixture application
@@ -373,6 +374,13 @@ export const HARNESS_FEATURES_CONSOLIDATED_DDL = `
   ALTER TABLE harness_shared.harness_plans ADD COLUMN IF NOT EXISTS op_status text;
   ALTER TABLE harness_shared.harness_plans ADD COLUMN IF NOT EXISTS op_started_at timestamptz;
   ALTER TABLE harness_shared.harness_plans ADD COLUMN IF NOT EXISTS op_updated_at timestamptz;
+  -- EI-13738: "items" is load-bearing for the SAME reason op_status is (see above), one floor
+  -- later. Claim floor #13 (plan-item-blocked, migration 759) reads the PLAN dependency graph
+  -- out of harness_plans.items[].blockedBy[], and it is a LANGUAGE sql function whose body is
+  -- validated at CREATE time — so omitting this column does not merely skip coverage, it makes
+  -- the migration itself fail to apply with 'column "items" does not exist', which reads like a
+  -- broken migration rather than a stale fixture.
+  ALTER TABLE harness_shared.harness_plans ADD COLUMN IF NOT EXISTS items jsonb;
   -- Mirrors libs/papercusp/libs/db/sql/141-plan-item-claims.sql column-for-column (checks/COMMENT/
   -- GRANTs intentionally omitted — superset-only, no-enforcement fixture stance).
   CREATE TABLE IF NOT EXISTS harness_shared.plan_item_claims (

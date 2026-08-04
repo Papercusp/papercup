@@ -154,6 +154,27 @@ const seedLease = (slug: string, itemId: string, owner: string, expiresMinFromNo
 const seedPlanLinkedIssue = (id: string, planSlug: string, itemId: string) =>
   seed(id, { kind: 'task', payload: { plan_item: { plan_slug: planSlug, item_id: itemId, harness_slug: H } } });
 
+/**
+ * EI-13738: a plan carrying an ITEM GRAPH — `harness_plans.items[]` with `blockedBy[]` edges,
+ * the store floor #13 reads. `seedPlan` above leaves `items` NULL (the shape every pre-#13 case
+ * needs), so this is the sibling that populates it.
+ *
+ * The plan is seeded at lifecycle 'draft' with op_status NULL on purpose: that makes floor #11
+ * (reserved-plan-lane) SATISFIED, so any exclusion observed in these cases is attributable to
+ * floor #13 alone. Without that, a 'started' plan would exclude the row for the OTHER reason and
+ * the case would pass while proving nothing about the floor under test.
+ */
+const seedPlanWithItems = (slug: string, items: { id: string; status?: string; blockedBy?: string[] }[]) =>
+  db.sql`INSERT INTO harness_shared.harness_plans (plan_slug, status, op_status, items)
+          VALUES (${slug}, 'draft', NULL, ${db.sql.json(
+            items.map((it) => ({
+              id: it.id,
+              text: it.id,
+              status: it.status ?? 'todo',
+              blockedBy: it.blockedBy ?? [],
+            })) as unknown as Parameters<typeof db.sql.json>[0],
+          )})`;
+
 /** REPRESENTATION 1 — the SSOT: the issue-family rows the queryable view admits, scoped the
  *  SAME way the inline claim path scopes (this issue workspace + harness-or-operator slug). */
 async function viewClaimableIds(): Promise<string[]> {
@@ -198,6 +219,13 @@ beforeAll(async () => {
   // Applied AFTER 654 for the same reason 654 itself is applied here rather than re-typed —
   // the migration chain, in order, is what this test binds the TS claim path to.
   await db.sql.unsafe(readMigration('744-plan-lane-floor-op-status.sql')).simple();
+  // EI-13738: adds floor #13 (plan-item-blocked) — the PLAN dependency graph
+  // (harness_plans.items[].blockedBy[]), which NOTHING read until now. Same reason as above for
+  // applying the real file in chain order: this test is the binding between the migration's SQL
+  // and the TS fragment (reservedPlanLaneExclusionSql), and landing only one half is exactly the
+  // drift it exists to catch. Omitting this line does not merely skip the new coverage — the TS
+  // path would then carry a floor the view does not, and the set-equality assertion below reds.
+  await db.sql.unsafe(readMigration('759-plan-blockedby-claim-floor.sql')).simple();
 }, 180_000);
 afterAll(async () => {
   await db.cleanup();
@@ -265,6 +293,11 @@ describe('work_items_claimable (SSOT view) admits EXACTLY the rows claimNextIssu
     await seed('F-OPEN', { kind: 'feature', status: 'open' }); // 12. blocked-dep (non-terminal blocker)
     await seed('WI-DEP-BLOCKED');
     await blockEdge('WI-DEP-BLOCKED', `${H}#F-OPEN`, 'issue', 'feature');
+    // 13. plan-item-blocked (EI-13738) — the PLAN dependency graph. Every plan below is 'draft'
+    // with op_status NULL, so floor #11 is SATISFIED and floor #13 is the ONLY thing that can
+    // move these rows; that is what makes each verdict attributable.
+    await seedPlanWithItems('blocked-graph', [{ id: 'P-09' }, { id: 'P-10', blockedBy: ['P-09'] }]);
+    await seedPlanLinkedIssue('WI-PLAN-BLOCKED', 'blocked-graph', 'P-10'); // blocker is 'todo' ⇒ EXCLUDED
 
     const expected = [
       'WI-CHANGE', 'WI-DEP-OK', 'WI-DONE-PLAN-FREE', 'WI-DRAFT-FREE', 'WI-OP', 'WI-PLAIN', 'WI-TASK',

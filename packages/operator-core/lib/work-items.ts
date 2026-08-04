@@ -3695,6 +3695,16 @@ export function lastIssuesClaimableFlagReadError(): string | null {
  * ONE source of truth, shared by {@link claimNextIssueWorkItem} + {@link claimFloorsWhereSql}
  * (the claims) and {@link diagnoseClaimNextMiss} (the READY count), so the "why did I miss"
  * diagnosis can never disagree with what the claim actually serves.
+ *
+ * ⚠ EI-13738: this fragment now carries THREE exclusion legs, not two — the plan is under
+ * execution, OR a live lease is held by another owner, OR (new) the plan-ITEM is blocked-by an
+ * unfinished sibling in `harness_plans.items[].blockedBy[]`. The third is a genuinely different
+ * concept from the "reserved lane" the name describes: the first two ask *is someone else
+ * driving this lane*, the third asks *is this work even ready*. It lives here anyway, and
+ * deliberately so — this is the one predicate every issue-family AND feature-family claim path
+ * composes, so adding the floor here reaches all 8+ call sites at once and structurally avoids
+ * EI-14806 ("a floor added to only one claim path silently leaks in the other"). Do NOT hand-add
+ * it per call site, and do NOT split it back out without keeping every caller covered.
  */
 export function reservedPlanLaneExclusionSql(
   sql: OrgSql,
@@ -3772,6 +3782,68 @@ export function reservedPlanLaneExclusionSql(
            AND c.item_id  = ${col}->'plan_item'->>'item_id'
            AND c.expires_ts > now()
            AND c.owner <> ${assignee}
+      )
+      -- EI-13738: the PLAN dependency graph — the third exclusion leg, and the one nothing
+      -- read until now. Readiness lives in TWO stores and only one of them gated the claim:
+      -- the WORK-ITEM store (state + work_item_deps 'blocks' edges) is enforced by
+      -- claimFloorsWhereSql's readiness anti-join, while the PLAN store
+      -- (harness_plans.items[].blockedBy[], what plans:get-item reports as
+      -- effectiveStatus:'blocked') was enforced NOWHERE. So a work-item bound to a
+      -- plan-item that is blocked-by an unfinished sibling passed every floor and was
+      -- served to self-select. Two independent agents hit this within one hour from
+      -- opposite directions; the filing near-miss was a 10-agent dispatch.
+      --
+      -- The legs above do NOT already cover it: they fire only when the plan is under
+      -- execution (op_status started/paused, or lifecycle 'active') or under a live lease.
+      -- A plan that was never started reserves nothing, so its blocked lanes stayed fully
+      -- claimable — floor #11 is a mitigation for this bug, not the fix.
+      --
+      -- ONE LEVEL IS ENOUGH — deliberately NOT a recursive CTE. An item is blocked iff some
+      -- blockedBy sibling is unsatisfied, and transitivity is automatic: a blocker that is
+      -- itself blocked is by definition not yet done. Verified on real PG (P-003→P-002→P-001:
+      -- P-003 excluded, P-001 admitted).
+      --
+      -- SATISFIED = 'done' OR 'dropped', mirroring the canonical TS predicate verbatim
+      -- (plan-parser effective-status.ts L178) and floor #12's own terminal sets.
+      -- ⚠ NOT "<> 'done'": measured 2026-08-04 there are 209 live plan-items at 'dropped',
+      -- and counting those as blockers would PERMANENTLY STARVE every item behind them.
+      -- 'needs-human' and 'blocked' are correctly NOT satisfied and keep blocking.
+      --
+      -- The item's OWN status must also be non-terminal (EI-19412899868617052: a terminal
+      -- stored token wins over the blocked-by graph — the graph gates work that has NOT
+      -- happened, it must never re-open work that has).
+      --
+      -- A DANGLING ref fails OPEN (the sibling join finds nothing ⇒ not excluded). That is a
+      -- deliberate divergence from plan-parser, which counts a missing ref as unresolved: it
+      -- matches the established claim-floor convention ("an ABSENT / dangling blocker ref does
+      -- NOT block (no deadlock)" — claim-respects-blocking.integration.test.ts case 4), because
+      -- the alternative failure mode is an item nobody can claim and nobody can diagnose.
+      -- Measured: exactly 1 dangling ref exists across all plans.
+      --
+      -- Both element scans are jsonb_typeof-guarded because jsonb_array_elements RAISES on a
+      -- non-array input, and this fragment gates EVERY claim on the fleet — one malformed plan
+      -- row would take out claiming entirely, not just its own lane. (items is 'array' on 982
+      -- plans and NULL on 52 today; NULL is already safe via strict-SRF, the guard makes the
+      -- property structural rather than incidental.)
+      --
+      -- MUST stay in step with floor #13 of the SQL SSOT (migration 759); the pair is bound by
+      -- claim-ssot-agreement.integration.test.ts.
+      OR EXISTS (
+        SELECT 1
+          FROM harness_shared.harness_plans bp,
+               LATERAL jsonb_array_elements(
+                 CASE WHEN jsonb_typeof(bp.items) = 'array' THEN bp.items ELSE '[]'::jsonb END) self_it,
+               LATERAL jsonb_array_elements_text(
+                 CASE WHEN jsonb_typeof(self_it->'blockedBy') = 'array'
+                      THEN self_it->'blockedBy' ELSE '[]'::jsonb END) dep_id,
+               LATERAL jsonb_array_elements(
+                 CASE WHEN jsonb_typeof(bp.items) = 'array' THEN bp.items ELSE '[]'::jsonb END) dep_it
+         WHERE bp.workspace_id = ${wsCol}
+           AND bp.plan_slug = ${col}->'plan_item'->>'plan_slug'
+           AND self_it->>'id' = ${col}->'plan_item'->>'item_id'
+           AND COALESCE(self_it->>'status', '') NOT IN ('done', 'dropped')
+           AND dep_it->>'id' = dep_id
+           AND COALESCE(dep_it->>'status', '') NOT IN ('done', 'dropped')
       )
     )
   )`;
