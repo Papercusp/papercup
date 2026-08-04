@@ -608,25 +608,82 @@ export async function composeOrient(
       fleetDelta = undefined; /* fail-open: full roster */
     }
   }
-  // EI-8300: a monitor tick doesn't self-select work — skip the claimable read
-  // entirely (no round-trip), not just cap its output.
-  const list = monitor
-    ? []
-    : await call('work_items:list', {
-        ...(args.harness ? { harness: args.harness } : {}),
-        // work-item-status-full-unify P-007: the unified claimable token is 'open' (feature
-        // `todo`→`open`; issue claimable was already `open`). work_items:list filters
-        // `status = <state>` EXACTLY (no alias-expand), so defaulting to the legacy 'todo'
-        // matched ~nothing post-backfill — every agent's orient claimable backlog read empty.
-        state: args.claimableState ?? 'open',
-        limit: args.claimableLimit ?? 20,
-        // EI-7841: orient's claimable backlog feeds self-select loop agents — exclude
-        // feature-family items the G2 admission/trust gate would refuse a claim on, so
-        // "claimable" here matches what work_items:claim / claim_next will actually do
-        // (previously a remote un-admitted item looked pickable here and bounced with
-        // not_claimable on the real claim, burning a wake cycle).
-        admissibleOnly: true,
-      });
+  // EI-19452326548245557: this fold must BE the claim oracle, not a cheaper
+  // lookalike. It used to be `work_items:list({ admissibleOnly: true })` — which by
+  // that flag's OWN contract is "a cheap STRUCTURAL pre-filter ... NOT the full
+  // claim-floor verdict", applying remote-origin + observation-lane only. So the ~12
+  // floors `work_items:claim` / `claim_next` / `scheduler:get_next` really enforce
+  // were never applied here and this list advertised work the real claim path
+  // refuses. Measured 2026-08-04 on `papercusp`: 16 of the 20 rows it returned were
+  // `[replication-liveness]` EIs held out by the `federationDetector` floor (113
+  // rows) — p2p conditions harness/improvements/policy.ts states a generic worker
+  // structurally CANNOT resolve (WI-2633/EI-8455). needsHuman (201), crossMachineRig
+  // (18), planLaneReserved (16), loopNoise (14), externalBlocker and blockedDep were
+  // invisible here too. That is precisely the failure the EI-7841 note below was
+  // written to fix, recurring through a different floor.
+  //
+  // FILTERING the old list through the oracle would be UNSOUND: the oracle returns a
+  // spec-ordered WINDOW (claimableCount was 1677 here), so a row that is genuinely
+  // claimable but ranks outside that window would be dropped as "not claimable" —
+  // trading false-positives for false-negatives. The issue-family lane is therefore
+  // SOURCED from the oracle, which also inherits get_next's spec ordering.
+  //
+  // `work_items:claimable` is issue-family (bug/change/task) ONLY and REQUIRES a
+  // harness, so the feature-family lane keeps the list path (its G2 admission gate is
+  // what `admissibleOnly` was added for — EI-7841), and a caller with no `harness`
+  // keeps the old behaviour wholesale. Both legs are best-effort: an oracle failure
+  // degrades to the previous list rather than emptying an agent's backlog.
+  const claimableLimit = args.claimableLimit ?? 20;
+  // work-item-status-full-unify P-007: the unified claimable token is 'open' (feature
+  // `todo`→`open`; issue claimable was already `open`). work_items:list filters
+  // `status = <state>` EXACTLY (no alias-expand), so defaulting to the legacy 'todo'
+  // matched ~nothing post-backfill — every agent's orient claimable backlog read empty.
+  const claimableStateArg = args.claimableState ?? 'open';
+  const unwrapRows = (v: unknown): unknown[] => {
+    if (Array.isArray(v)) return v;
+    const o = v as { claimable?: unknown[]; data?: unknown[]; items?: unknown[] } | null;
+    return o?.claimable ?? o?.data ?? o?.items ?? [];
+  };
+  const listLane = (extra: Record<string, unknown>) =>
+    call('work_items:list', {
+      ...(args.harness ? { harness: args.harness } : {}),
+      state: claimableStateArg,
+      limit: claimableLimit,
+      admissibleOnly: true,
+      ...extra,
+    });
+  let list: unknown;
+  if (monitor) {
+    // EI-8300: a monitor tick doesn't self-select work — skip the claimable read
+    // entirely (no round-trip), not just cap its output.
+    list = [];
+  } else if (!args.harness) {
+    list = await listLane({});
+  } else {
+    const [issueRows, featureRows] = await Promise.all([
+      call('work_items:claimable', {
+        harness: args.harness,
+        limit: claimableLimit,
+        // Only override the oracle's state floor when the caller asked for one —
+        // otherwise the resolved claim-spec's own states win, as get_next uses them.
+        ...(args.claimableState ? { states: [args.claimableState] } : {}),
+      })
+        .then(unwrapRows)
+        .catch(() => null),
+      listLane({ kind: 'feature' })
+        .then(unwrapRows)
+        .catch(() => null),
+    ]);
+    if (issueRows === null) {
+      // Oracle unavailable ⇒ previous behaviour, never an empty backlog.
+      list = await listLane({});
+    } else {
+      // Reserve room for the feature lane first: features are few and would
+      // otherwise be truncated away by a full issue window.
+      const feat = featureRows ?? [];
+      list = [...issueRows.slice(0, Math.max(0, claimableLimit - feat.length)), ...feat];
+    }
+  }
   // afterCompaction (fold #2, compaction-fold-audit-2026-07-06): a just-compacted
   // agent lost its message context and 79% immediately re-read coord:inbox, so fold
   // MORE entries + fuller bodies (the shaper relaxes its inbox re-cap when a recovery
