@@ -183,7 +183,15 @@ export interface OrientResult {
   ok: boolean;
   /** fleet:assignments scoped to me (assignments, lane, load, orphans). */
   me: unknown;
-  /** The claimable backlog (work_items:list, default state=todo). EI-6468: this list
+  /** The claimable backlog. EI-19452326548245557: the issue-family lane (bug/change/
+   *  task) is SOURCED from `work_items:claimable` — the same all-floors oracle
+   *  `scheduler:get_next` runs — and the feature-family lane from `work_items:list`
+   *  ({ kind:'feature', admissibleOnly }); a caller passing no `harness` keeps the
+   *  older list-only read, since the oracle requires one. It used to be a single
+   *  `work_items:list({ admissibleOnly:true })`, which applies remote-origin +
+   *  observation-lane ONLY, so floor-excluded rows (federationDetector, needsHuman,
+   *  crossMachineRig, planLaneReserved, loopNoise, externalBlocker, blockedDep) were
+   *  advertised here and bounced on the real claim. EI-6468: this list
    *  rides work_items:list's cachedRead (≤20s soft TTL, tag-invalidated on write) —
    *  advisory, NOT a live claim guarantee. A row can lag a just-completed/claimed
    *  state for a few seconds under normal cache-ECA propagation. Treat an id here as
