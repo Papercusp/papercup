@@ -57,7 +57,7 @@
 //   - FAST: a file with no curly-quote byte never loads `typescript`; the identity matcher
 //     applies its own cheap whole-text pre-filter before scanning.
 //
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
 import { pathToFileURL } from 'node:url';
@@ -88,7 +88,7 @@ async function main() {
     // the file is saved. Fail-open like the others — a guard that cannot load must never
     // wedge every edit on the box.
     try {
-      const denyReason = await checkSqlCommentBacktick(filePath, content);
+      const denyReason = await checkSqlCommentBacktick(filePath, content, tool, input);
       if (denyReason) denyEdit(denyReason);
     } catch {
       /* fail-open */
@@ -370,10 +370,55 @@ async function loadSqlBacktickScanner(filePath) {
 }
 
 /**
+ * The text the FILE WILL HOLD once this edit lands — NOT the fragment in isolation.
+ *
+ * WHY THIS EXISTS (EI-19492748262630855). The shared scanner opens with
+ * `if (!USES_SQL_TAG.test(text) && !HAS_RAW_DDL.test(text)) return null;`. An Edit that
+ * inserts a comment into an ALREADY-EXISTING sql`...` template carries neither marker in
+ * its `new_string` — the opener sits elsewhere in the file (65 lines above the offending
+ * line in the founding incident). So scanning the fragment returned null for EVERY such
+ * edit, and this rule was inert against the single most common way the defect is written.
+ * That is not hypothetical: the guard shipped 2026-08-03T14:34-04:00 and the class still
+ * took papercup-staging-api down at 2026-08-04T02:03:50Z, 7.4h later.
+ *
+ * Reconstructing the resulting file gives the predicate the context its gate requires, and
+ * makes the reported line/col REAL file coordinates instead of fragment-relative ones.
+ *
+ * Best-effort by construction — this runs in a fail-open guard, so it must never throw and
+ * never wedge an edit: an unreadable file (a NEW file) degrades to the fragment, and an
+ * `old_string` that does not appear (a stale edit the tool itself will reject) degrades to
+ * base+fragment, which still carries the file's sql-tag context. Both degrade toward
+ * CATCHING rather than missing.
+ */
+function resultingFileText(tool, input, filePath, fragment) {
+  if (tool === 'Write') return input.content || ''; // already the whole file
+  let base;
+  try {
+    base = readFileSync(filePath, 'utf8');
+  } catch {
+    return fragment; // new file — the fragment IS the file
+  }
+  const applyOne = (text, e) => {
+    const oldS = e && typeof e.old_string === 'string' ? e.old_string : '';
+    const newS = e && typeof e.new_string === 'string' ? e.new_string : '';
+    if (!oldS) return text;
+    const at = text.indexOf(oldS);
+    // Not found ⇒ keep the file's context AND the incoming bytes, so a violation the tool
+    // is about to write is still seen. Missing it is the expensive direction.
+    return at === -1 ? `${text}\n${newS}` : text.slice(0, at) + newS + text.slice(at + oldS.length);
+  };
+  if (tool === 'Edit') return applyOne(base, input);
+  if (tool === 'MultiEdit' && Array.isArray(input.edits)) return input.edits.reduce(applyOne, base);
+  return fragment;
+}
+
+/**
  * @returns {Promise<string|null>} a deny reason, or null to allow.
  */
-async function checkSqlCommentBacktick(filePath, content) {
-  // Cheap byte pre-filter: the overwhelming majority of edits never load the module.
+async function checkSqlCommentBacktick(filePath, content, tool, input) {
+  // Cheap byte pre-filter, deliberately still on the FRAGMENT: only an edit that itself
+  // introduces a backtick beside a `--` marker can introduce this defect, so unrelated
+  // edits stay free AND are never blamed for a pre-existing violation elsewhere in the file.
   if (!content.includes('`') || !/(?:^|\s)--\s/.test(content)) return null;
 
   const loaded = await loadSqlBacktickScanner(filePath);
@@ -386,7 +431,9 @@ async function checkSqlCommentBacktick(filePath, content) {
     return null;
   }
 
-  const hit = mod.findSqlCommentBacktick(rel, content);
+  // Scan the RESULTING FILE, not the fragment — see resultingFileText above.
+  const scanned = resultingFileText(tool, input, filePath, content);
+  const hit = mod.findSqlCommentBacktick(rel, scanned);
   if (!hit) return null;
 
   return (
