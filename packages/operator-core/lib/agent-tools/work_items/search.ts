@@ -47,13 +47,22 @@ export default defineTool({
       ),
   }),
   async handler(args) {
-    const items = await searchWorkItems(args.query, {
+    const { items, legs } = await searchWorkItems(args.query, {
       harness: args.harness,
       kind: args.kind as WorkItemKind | undefined,
       limit: args.limit,
       semantic: args.semantic,
       includeObservations: args.includeObservations,
     });
-    return { content: [{ type: 'text' as const, text: JSON.stringify({ ok: true, count: items.length, items }) }] };
+    // P-016/P-020: report which ranking legs actually ran and contributed.
+    // A dedup search that silently fell back to lexical-only (embedder down,
+    // embeddings not backfilled) returns a plausible SHORT list and reads as
+    // "no duplicate exists" — the one reading that makes this tool actively
+    // harmful. `degraded` says so; the per-leg counts say why.
+    return {
+      content: [
+        { type: 'text' as const, text: JSON.stringify({ ok: true, count: items.length, items, legs }) },
+      ],
+    };
   },
 });

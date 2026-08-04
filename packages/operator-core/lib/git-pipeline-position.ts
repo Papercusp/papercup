@@ -198,6 +198,38 @@ interface RuntimeOwnerEntry {
   own: RuntimeOwnership | RuntimeOwnership[];
 }
 
+/* -------------------------------------------------------------------------
+ * ⛔ DO NOT "just derive this from the import graph". It was measured (WI-10671)
+ * and it does not work — the answer is wrong in the DANGEROUS direction.
+ *
+ * This map is hand-maintained and its dual-owner entries were each found one at
+ * a time at real cost (WI-5440, WI-6961 x2, WI-6659). `routines-dispatch-
+ * derivation.ts` then removed the hand-edit for ONE class and argues the general
+ * case persuasively ("the only fix robust to a skipped suite is one that needs
+ * no human action at all"). That reads as a mandate to derive the whole map.
+ * It is not, and the reason is not density — it is that THE EDGES WHICH DECIDE
+ * RUNTIME OWNERSHIP ARE MOSTLY NOT STATIC IMPORT EDGES:
+ *
+ *   - `session-port/service.ts` is reachable only via `import()` INSIDE AN HTTP
+ *     ROUTE (endpoint-route/routes/adv/sessions.ts:118) — operator-served, yet
+ *     a static-graph walk calls it worker-only.
+ *   - `sync/hyperbee/perf/runner.ts` is never imported; it is spawned as a `tsx`
+ *     CLI (testing-domains-registry.ts:821). NEITHER host owns it.
+ *   - `pr-host/poll-daemon.ts` arrives by a bare SIDE-EFFECT registration
+ *     (register-system-actions.ts:259) that BOTH hosts load.
+ *   - the worker boundary itself is dynamic: `dbos/bootstrap.ts:289`
+ *     `await import('./routines-workflow')`, gated on BACKGROUND_WORKERS=1.
+ *
+ * So a derived map mis-classifies operator-served code as bg-host-only — the
+ * WI-6961 "opposite lie", strictly worse than today's conservative
+ * DEFAULT_OWNER. `sharedHostCaveat`'s "we cannot know from the path alone which
+ * host the caller cares about" is the CORRECT position, not a TODO. This map
+ * being hand-maintained is the honest encoding of something that is not
+ * statically decidable — extend it per incident, deliberately.
+ *
+ * Full measurement + the four false-positive classes:
+ * /internal/docs/agent-insights/runtime-ownership-is-not-statically-decidable
+ * ------------------------------------------------------------------------- */
 const RUNTIME_OWNERS: RuntimeOwnerEntry[] = [
   // WI-5440: success-metrics.ts has TWO real consumers on DIFFERENT activation
   // routes — the scout ideation cycle (bg-host, routinesTick) AND

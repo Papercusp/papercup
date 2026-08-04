@@ -118,8 +118,7 @@ import {
   untagIssue,
   commentIssue,
   updateIssue,
-  searchIssues,
-  semanticSearchIssues,
+  issuesByIds,
   promoteIssue,
   issuesScopeWorkspace,
   resolveIssuesScopeWorkspace,
@@ -130,6 +129,22 @@ import {
 } from './issues-engineer';
 // The prose column width contract — ONE source, not a restated `384` (D-005 §5).
 import { fitsProseColumns } from './search/prose-vector-dims';
+import {
+  runHybridSearch,
+  type SearchSource,
+  type SearchSourceParams,
+  type Listing,
+  type SearchLegs,
+  type AppliedDefaults,
+} from '@papercusp/search';
+// Installs papercusp's engine-level ranking policy (P-017) on import — the
+// same side-effect import every other engine caller uses. Without it this
+// surface would call the engine and inherit NO floor, which is the exact
+// hand-propagation failure P-016 removes.
+import './search/configure-search-defaults';
+
+/** Per-query embed budget for a work-item search (see `searchWorkItems`). */
+const WORK_ITEM_EMBED_TIMEOUT_MS = 4000;
 
 export { markIssueProgress };
 
@@ -1145,16 +1160,230 @@ export type QueryEmbedderResolver = () => Promise<{
   embed: (t: string) => Promise<number[]>;
 } | null>;
 
-/** Cross-kind full-text search over both kind-tables (parity with issues:search).
+/** Domain filters both work-item search sources honour — applied IN SQL, so the
+ *  per-source `limit` is spent on rows that can actually be returned. */
+interface WorkItemSearchFilters {
+  harness?: string;
+  /** Already narrowed to the source's own family by the caller (see `searchWorkItems`). */
+  kind?: WorkItemKind;
+  includeObservations?: boolean;
+}
+
+/** Ranker/source labels. Stable — they appear in `legs.failures[].source`. */
+const SOURCE_ISSUES = 'work_items_issues';
+const SOURCE_FEATURES = 'work_items_features';
+
+const searchExcerpt = (title: string, body: string | null): string =>
+  `${title}${body ? ` — ${body}` : ''}`.slice(0, 200);
+
+/**
+ * `harness` is DERIVED on the issue family, not stored: the `engineer_issues`
+ * view computes `scope` as `'harness:'||harness_slug` — except a blank or
+ * `operator:%` slug, which becomes the literal `'operator'` — and
+ * `harnessOfScope` reads the slug back out, returning null for `'operator'`.
+ * So `WorkItem.harness === h` holds iff the base row's `harness_slug` is `h`
+ * AND does not fall into that operator bucket. Stated in SQL here so the
+ * filter runs BEFORE the row cap instead of on an already-truncated page.
+ */
+function issueHarnessClause(sql: OrgSql, harness: string) {
+  return sql`(harness_slug = ${harness} AND harness_slug <> '' AND harness_slug NOT LIKE 'operator:%')`;
+}
+
+/**
+ * The issue-family `SearchSource` — ranked over the BASE table
+ * `harness_shared.work_items`, not the `engineer_issues` view: the view is a
+ * straight projection of that table (verified against `pg_get_viewdef`) and
+ * the embedding columns live only on the base table, so ranking there lets
+ * BOTH legs share one set of predicates. `feature_id` is the view's
+ * `issue_id`, so `source_id` joins straight back through it at hydration.
  *
- * P-008 (shared-embedding-sidecar-and-enrichment-2026-07-10): also runs a
- * SEMANTIC leg — cosine top-k over the migration-551 embedding columns, space
- * filtered to the active embedder mode — and merges the hits AFTER the lexical
- * ones, deduped by id. Recall-additive only: a rephrased query ("agents keep
- * filing the same bug") now finds items whose words never matched. The leg is
- * strictly fail-open (no embedder / 551 absent / dims mismatch ⇒ lexical-only)
- * and defaults OFF under vitest (an implicit model load in unrelated tests is
- * the WI-3792 load-scar class) — pass `semantic: true` to force it there.
+ * Ignores the engine's `workspaceId`/`scopeFilter` deliberately: the issue
+ * family resolves its own workspace (`issuesScopeWorkspace()`), which is not
+ * always `activeWorkspaceId()`, and harness scoping is a derived expression
+ * rather than a column (see `issueHarnessClause`).
+ */
+function issueSearchSource(f: WorkItemSearchFilters, embeddingMode: string | null): SearchSource {
+  const ws = issuesScopeWorkspace();
+  const scoped = (sql: OrgSql) => sql`
+          workspace_id = ${ws}
+      AND item_kind IN ('bug', 'change', 'task')
+      AND ${f.kind ? sql`item_kind = ${f.kind}` : sql`TRUE`}
+      AND ${f.harness ? issueHarnessClause(sql, f.harness) : sql`TRUE`}
+      AND ${f.includeObservations ? sql`TRUE` : sql`lane IS DISTINCT FROM 'observation'`}`;
+  const toListing = (
+    rows: Array<{ id: string; title: string; body: string | null; score: number }>,
+    ranker: string,
+  ): Listing =>
+    rows.map((r) => ({
+      key: `${SOURCE_ISSUES}:${r.id}`,
+      score: Number(r.score),
+      row: {
+        source: SOURCE_ISSUES,
+        source_id: r.id,
+        excerpt: searchExcerpt(r.title, r.body),
+        highlight: r.title,
+        score: Number(r.score),
+        rankers: [ranker],
+      },
+    }));
+  return {
+    name: SOURCE_ISSUES,
+    async bm25({ sql: pg, query, limit }: SearchSourceParams): Promise<Listing> {
+      const sql = pg as OrgSql;
+      // `ts_rank` (not `ts_rank_cd`) preserves the pre-migration ordering
+      // exactly; no lexical floor is registered, so nothing downstream depends
+      // on which of the two this is (see search/prose-min-score.ts).
+      const rows = await sql<Array<{ id: string; title: string; body: string | null; score: number }>>`
+        SELECT feature_id AS id, title, summary AS body,
+               ts_rank(_search, websearch_to_tsquery('english', ${query})) AS score
+          FROM harness_shared.work_items
+         WHERE ${scoped(sql)}
+           AND _search @@ websearch_to_tsquery('english', ${query})
+      ORDER BY score DESC
+         LIMIT ${limit}`;
+      return toListing(rows, 'bm25');
+    },
+    ...(embeddingMode
+      ? {
+          async embedding({ sql: pg, limit, qVec }): Promise<Listing> {
+            const sql = pg as OrgSql;
+            const rows = await sql<Array<{ id: string; title: string; body: string | null; score: number }>>`
+              SELECT feature_id AS id, title, summary AS body,
+                     1 - (embedding <=> ${qVec}::vector) AS score
+                FROM harness_shared.work_items
+               WHERE ${scoped(sql)}
+                 AND embedding IS NOT NULL
+                 AND embedding_mode = ${embeddingMode}
+            ORDER BY embedding <=> ${qVec}::vector
+               LIMIT ${limit}`;
+            return toListing(rows, 'embeddings');
+          },
+        }
+      : {}),
+  };
+}
+
+/**
+ * The feature-family `SearchSource` over `harness_features_consolidated`.
+ * `featureFamilyKindClause` keeps registered generic-kind datatypes visible
+ * here exactly as it does for list/count.
+ */
+function featureSearchSource(f: WorkItemSearchFilters, embeddingMode: string | null): SearchSource {
+  const ws = activeWorkspaceId();
+  const scoped = (sql: OrgSql) => sql`
+          ${featureFamilyKindClause(sql, ws)}
+      AND workspace_id = ${ws}
+      AND ${f.kind ? sql`item_kind = ${f.kind}` : sql`TRUE`}
+      AND ${f.harness ? sql`harness_slug = ${f.harness}` : sql`TRUE`}`;
+  const toListing = (
+    rows: Array<{ id: string; title: string; body: string | null; score: number }>,
+    ranker: string,
+  ): Listing =>
+    rows.map((r) => ({
+      key: `${SOURCE_FEATURES}:${r.id}`,
+      score: Number(r.score),
+      row: {
+        source: SOURCE_FEATURES,
+        source_id: r.id,
+        excerpt: searchExcerpt(r.title, r.body),
+        highlight: r.title,
+        score: Number(r.score),
+        rankers: [ranker],
+      },
+    }));
+  return {
+    name: SOURCE_FEATURES,
+    async bm25({ sql: pg, query, limit }: SearchSourceParams): Promise<Listing> {
+      const sql = pg as OrgSql;
+      const rows = await sql<Array<{ id: string; title: string; body: string | null; score: number }>>`
+        SELECT feature_id AS id, title, summary AS body,
+               ts_rank(_search, websearch_to_tsquery('english', ${query})) AS score
+          FROM harness_shared.harness_features_consolidated
+         WHERE ${scoped(sql)}
+           AND _search @@ websearch_to_tsquery('english', ${query})
+      ORDER BY score DESC
+         LIMIT ${limit}`;
+      return toListing(rows, 'bm25');
+    },
+    ...(embeddingMode
+      ? {
+          async embedding({ sql: pg, limit, qVec }): Promise<Listing> {
+            const sql = pg as OrgSql;
+            const rows = await sql<Array<{ id: string; title: string; body: string | null; score: number }>>`
+              SELECT feature_id AS id, title, summary AS body,
+                     1 - (embedding <=> ${qVec}::vector) AS score
+                FROM harness_shared.harness_features_consolidated
+               WHERE ${scoped(sql)}
+                 AND embedding IS NOT NULL
+                 AND embedding_mode = ${embeddingMode}
+            ORDER BY embedding <=> ${qVec}::vector
+               LIMIT ${limit}`;
+            return toListing(rows, 'embeddings');
+          },
+        }
+      : {}),
+  };
+}
+
+/** Batch-hydrate feature-family rows by id (order is restored by the caller). */
+async function featuresByIds(ids: string[]): Promise<WorkItem[]> {
+  if (ids.length === 0) return [];
+  const { sql } = getOrgPg();
+  const rows = await sql<FeatureRowDb[]>`
+    SELECT ${sql.unsafe(FEATURE_COLS)}
+      FROM harness_shared.harness_features_consolidated
+     WHERE workspace_id = ${activeWorkspaceId()}
+       AND feature_id = ANY(${ids}::text[])`;
+  return rows.map(featureRowToWorkItem);
+}
+
+/** What a work-item search reports — the matches AND how they were ranked. */
+export interface WorkItemSearchResult {
+  items: WorkItem[];
+  /**
+   * P-020: which ranking legs actually ran and what each contributed to
+   * fusion. Surfaced rather than discarded on purpose — a `work_items:search`
+   * that silently degraded to lexical-only (embedder down, embeddings not
+   * backfilled, a floor calibrated for another space) is otherwise
+   * indistinguishable from a healthy one, which is the failure this whole
+   * plan exists to remove. Read `legs.degraded`, never `embedderAvailable`.
+   */
+  legs: SearchLegs;
+  /** P-017: which engine-level ranking defaults were in force for this search. */
+  applied: AppliedDefaults;
+}
+
+/** Cross-kind hybrid search over both kind-tables (parity with issues:search).
+ *
+ * P-016: runs on `@papercusp/search`'s `runHybridSearch` rather than the
+ * hand-rolled legs this used to carry, so it inherits every engine-level
+ * guarantee by EXISTING instead of by hand-propagation — the P-017 minScore
+ * floor, the P-020 per-leg execution report, and whatever lands next.
+ *
+ * Three things measurably change, all of them fixes:
+ *
+ *  1. **The legs are FUSED (RRF), not concatenated.** The old shape ran the
+ *     lexical legs, then appended de-duplicated semantic hits to the END of
+ *     the list — so a rank-1 semantic match (the rephrased query this leg
+ *     exists to serve) landed below every weak lexical match, and was cut
+ *     entirely whenever the lexical legs already filled `limit`.
+ *  2. **The filters run in SQL.** The issue leg used to call
+ *     `searchIssues(query, limit)`, which takes no filters, and then drop
+ *     rows in JS for harness / kind / observation-lane. Those rows had
+ *     already consumed the row cap, so a harness-scoped search could return
+ *     far fewer than `limit` — or nothing — while matches existed. The
+ *     observation lane alone is ~44% of issue-family rows.
+ *  3. **The embedding leg is floored.** Measured on this corpus
+ *     (gemma@768, real query→doc direction, 2026-08-04): in-domain top-10
+ *     similarity ran 0.5808–0.7359 against off-domain 0.4265–0.5423, so the
+ *     registered 0.45 floor sits below every in-domain hit observed and
+ *     removes part of the off-domain tail. It is a noise reducer here, not a
+ *     classifier — see search/prose-min-score.ts.
+ *
+ * Still strictly fail-open: no embedder / no embedding column / a throwing
+ * leg degrades to what the other legs found, and now SAYS SO in `legs`. The
+ * semantic leg still defaults OFF under vitest (an implicit ONNX load in an
+ * unrelated test is the WI-3792 load-scar class) — pass `semantic: true`.
  */
 export async function searchWorkItems(
   query: string,
@@ -1167,98 +1396,83 @@ export async function searchWorkItems(
     /** Test seam — see QueryEmbedderResolver. */
     embedderResolver?: QueryEmbedderResolver;
     /**
-     * EI-10422/WI-4405: by default a `payload.lane === 'observation'` row is EXCLUDED
+     * EI-10422/WI-4405: by default a `lane === 'observation'` row is EXCLUDED
      * from matches (D-005 — it never enters the work queue/triage). Pass true to
      * include raw observations in search results.
      */
     includeObservations?: boolean;
   } = {},
-): Promise<WorkItem[]> {
+): Promise<WorkItemSearchResult> {
   const limit = Math.min(opts.limit ?? 50, 200);
   const wantFeature = !opts.kind || familyOf(opts.kind) === 'feature';
   const wantIssue = !opts.kind || familyOf(opts.kind) === 'issue';
-  const out: WorkItem[] = [];
+  const filters: WorkItemSearchFilters = {
+    ...(opts.harness ? { harness: opts.harness } : {}),
+    // The caller picks the sources by family, so a `kind` reaching a source is
+    // always one that source can match.
+    ...(opts.kind ? { kind: opts.kind } : {}),
+    ...(opts.includeObservations ? { includeObservations: true } : {}),
+  };
 
-  if (wantIssue) {
-    let issues = (await searchIssues(query, limit)).map(issueToWorkItem);
-    if (opts.harness) issues = issues.filter((w) => w.harness === opts.harness);
-    if (opts.kind && familyOf(opts.kind) === 'issue') issues = issues.filter((w) => w.kind === opts.kind);
-    if (!opts.includeObservations) {
-      issues = issues.filter((w) => (w.payload as { lane?: string } | null | undefined)?.lane !== 'observation');
-    }
-    out.push(...issues);
-  }
-
-  if (wantFeature) {
-    const { sql } = getOrgPg();
-    const rows = await sql<FeatureRowDb[]>`
-      SELECT ${sql.unsafe(FEATURE_COLS)}
-        FROM harness_shared.harness_features_consolidated
-       WHERE ${featureFamilyKindClause(sql, activeWorkspaceId())}
-         AND _search @@ websearch_to_tsquery('english', ${query})
-         AND workspace_id = ${activeWorkspaceId()}
-         AND ${opts.harness ? sql`harness_slug = ${opts.harness}` : sql`TRUE`}
-         AND ${opts.kind && familyOf(opts.kind) === 'feature' ? sql`item_kind = ${opts.kind}` : sql`TRUE`}
-       ORDER BY ts_rank(_search, websearch_to_tsquery('english', ${query})) DESC
-       LIMIT ${limit}`;
-    out.push(...rows.map(featureRowToWorkItem));
-  }
-
-  const semanticOn = opts.semantic ?? !process.env.VITEST;
-  if (semanticOn) {
+  // Resolve the query embedder BEFORE building the sources: its mode is the
+  // embedding SPACE each vector leg must restrict to (cosine across spaces is
+  // noise, not a weaker match), and a resolver that yields nothing simply
+  // leaves the sources without an `embedding` method — which the engine then
+  // reports as a semantic leg that never ran, rather than one that found
+  // nothing. Failing to resolve is never an error (fail-open).
+  let embedder: ((t: string) => Promise<number[]>) | null = null;
+  let embeddingMode: string | null = null;
+  if (opts.semantic ?? !process.env.VITEST) {
     try {
       const resolve =
         opts.embedderResolver ?? (await import('./agent-tools/search/embedder')).buildQueryEmbedderResolved;
       const resolved = await resolve();
-      // The embedding columns are vector(384); a query vector in another width
+      // The embedding columns have a fixed width; a query vector in another
       // (harrier@1024) can't rank against them — skip rather than SQL-error.
       if (resolved && fitsProseColumns(resolved.dims)) {
-        const vec = await resolved.embed(query);
-        if (fitsProseColumns(vec.length)) {
-          const seen = new Set(out.map((w) => w.id));
-          const semLimit = Math.min(limit, 20);
-          if (wantIssue) {
-            let hits = (await semanticSearchIssues(vec, resolved.mode, semLimit)).map(issueToWorkItem);
-            if (opts.harness) hits = hits.filter((w) => w.harness === opts.harness);
-            if (opts.kind && familyOf(opts.kind) === 'issue') hits = hits.filter((w) => w.kind === opts.kind);
-            if (!opts.includeObservations) {
-              hits = hits.filter((w) => (w.payload as { lane?: string } | null | undefined)?.lane !== 'observation');
-            }
-            for (const w of hits)
-              if (!seen.has(w.id)) {
-                seen.add(w.id);
-                out.push(w);
-              }
-          }
-          if (wantFeature) {
-            const { sql } = getOrgPg();
-            const vecLit = `[${vec.join(',')}]`;
-            const rows = await sql<FeatureRowDb[]>`
-              SELECT ${sql.unsafe(FEATURE_COLS)}
-                FROM harness_shared.harness_features_consolidated
-               WHERE ${featureFamilyKindClause(sql, activeWorkspaceId())}
-                 AND workspace_id = ${activeWorkspaceId()}
-                 AND embedding IS NOT NULL
-                 AND embedding_mode = ${resolved.mode}
-                 AND ${opts.harness ? sql`harness_slug = ${opts.harness}` : sql`TRUE`}
-                 AND ${opts.kind && familyOf(opts.kind) === 'feature' ? sql`item_kind = ${opts.kind}` : sql`TRUE`}
-               ORDER BY embedding <=> ${vecLit}::vector
-               LIMIT ${semLimit}`;
-            for (const w of rows.map(featureRowToWorkItem))
-              if (!seen.has(w.id)) {
-                seen.add(w.id);
-                out.push(w);
-              }
-          }
-        }
+        embedder = resolved.embed;
+        embeddingMode = resolved.mode;
       }
     } catch {
-      // Fail-open (D-003 discipline): embedder down / migration 551 not applied /
-      // pgvector absent all degrade to the lexical result, never to an error.
+      // Fail-open: embedder down / model missing ⇒ lexical-only, reported in `legs`.
     }
   }
 
-  return out.slice(0, limit);
+  const sources: SearchSource[] = [
+    ...(wantIssue ? [issueSearchSource(filters, embeddingMode)] : []),
+    ...(wantFeature ? [featureSearchSource(filters, embeddingMode)] : []),
+  ];
+  const { sql } = getOrgPg();
+  const { results, legs, applied } = await runHybridSearch(sources, {
+    sql,
+    query,
+    // Each source resolves its own workspace + harness scoping (the two
+    // families do not share one), so the engine's are non-filtering here.
+    workspaceId: '',
+    scopeFilter: null,
+    limit,
+    mode: 'hybrid',
+    embedder,
+    // Bound the per-query embed the way every other interactive surface does:
+    // a dedup-before-filing search must not be able to turn a ~20ms lexical
+    // read into a multi-second wait on a cold or degraded embedder.
+    embedTimeoutMs: WORK_ITEM_EMBED_TIMEOUT_MS,
+  });
+
+  // Hydrate the fused ids back to full rows in ONE read per family, then
+  // restore the fused order (the engine's neutral SearchHit deliberately does
+  // not carry a domain row).
+  const issueIds = results.filter((r) => r.source === SOURCE_ISSUES).map((r) => r.source_id);
+  const featureIds = results.filter((r) => r.source === SOURCE_FEATURES).map((r) => r.source_id);
+  const [issueRows, featureRows] = await Promise.all([
+    issueIds.length ? issuesByIds(issueIds).then((rows) => rows.map(issueToWorkItem)) : Promise.resolve([]),
+    featuresByIds(featureIds),
+  ]);
+  const byId = new Map<string, WorkItem>();
+  for (const w of [...issueRows, ...featureRows]) byId.set(w.id, w);
+  const items = results.map((r) => byId.get(r.source_id)).filter((w): w is WorkItem => w !== undefined);
+
+  return { items, legs, applied };
 }
 
 // ── Writes ─────────────────────────────────────────────────────────────────────────

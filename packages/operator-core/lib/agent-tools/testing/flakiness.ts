@@ -53,7 +53,9 @@ export default defineTool({
     if (args.autoFile && candidates.length > 0) {
       filed = await Promise.all(
         candidates.map(async (c) => {
-          const existing = await searchWorkItems(c.filePath, { kind: 'change', limit: 5 }).catch(() => []);
+          const existing = await searchWorkItems(c.filePath, { kind: 'change', limit: 5 })
+            .then((r) => r.items)
+            .catch(() => []);
           const openDup = existing.find((w) => w.state === 'open' && w.title.includes(c.filePath));
           if (openDup) return { filePath: c.filePath, id: openDup.id, skipped: 'already_open' };
           const res = await createOneWorkItem(

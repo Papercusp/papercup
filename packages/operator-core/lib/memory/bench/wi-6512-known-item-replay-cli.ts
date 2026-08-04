@@ -473,7 +473,7 @@ async function runCeiling(args: Args): Promise<void> {
   const probe = async (
     queryText: string,
     arm: 'bm25' | 'hybrid',
-  ): Promise<{ verdict: CeilingVerdict; detail: string; candidates: number }> => {
+  ): Promise<{ verdict: CeilingVerdict; detail: string; candidates: number; admitted: number }> => {
     // Re-establish the arm immediately before the call: after a reset the leg
     // kicks off a BACKGROUND warmup, so an arm set once at the top of the run
     // does not survive seven batches.
@@ -487,32 +487,51 @@ async function runCeiling(args: Args): Promise<void> {
       skipFlagCheck: true,
     });
 
+    // How many of the 6 slots the leg actually filled. This is the ONLY
+    // stage-2 tell available without changing the leg: `corpus-recall-io.ts`
+    // returns EARLY when stage 1 already fills `maxItems`, so a run that
+    // admitted FEWER than 6 lines provably ran the coverage-graded stage and
+    // still finished short. `admitted === 6` stays ambiguous (stage 1 filled,
+    // or stage 2 topped it up) — read the implication in one direction only.
+    const admitted = res.lines.length;
+
     const armHeld = arm === 'bm25' ? !res.embedderAvailable : res.embedderAvailable;
     if (!armHeld || res.outcome !== 'ok') {
       return {
         verdict: 'void',
         detail: `arm=${arm} embedderAvailable=${res.embedderAvailable} outcome=${res.outcome}`,
         candidates: res.candidateCount,
+        admitted,
       };
     }
 
     if (res.lines.some((l) => l.handle.ref === KNOWN_ITEM)) {
-      return { verdict: 'admitted', detail: '', candidates: res.candidateCount };
+      return { verdict: 'admitted', detail: '', candidates: res.candidateCount, admitted };
     }
 
     const reasons = res.dropped.filter((d) => d.ref === KNOWN_ITEM).map((d) => d.reason);
     if (reasons.length === 0) {
-      return { verdict: 'not-retrieved', detail: '', candidates: res.candidateCount };
+      return { verdict: 'not-retrieved', detail: '', candidates: res.candidateCount, admitted };
     }
     // Precedence, not first-match: a ref can appear twice (a collapsed duplicate
     // PLUS the winner's own drop). `duplicate-ref` alone never means excluded.
     if (reasons.some((r) => ORDER_DROPS.has(r))) {
-      return { verdict: 'order-blocked', detail: reasons.join(','), candidates: res.candidateCount };
+      return {
+        verdict: 'order-blocked',
+        detail: reasons.join(','),
+        candidates: res.candidateCount,
+        admitted,
+      };
     }
     if (reasons.some((r) => FILTER_DROPS.has(r))) {
-      return { verdict: 'filter-blocked', detail: reasons.join(','), candidates: res.candidateCount };
+      return {
+        verdict: 'filter-blocked',
+        detail: reasons.join(','),
+        candidates: res.candidateCount,
+        admitted,
+      };
     }
-    return { verdict: 'anomaly', detail: reasons.join(','), candidates: res.candidateCount };
+    return { verdict: 'anomaly', detail: reasons.join(','), candidates: res.candidateCount, admitted };
   };
 
   /**
@@ -563,8 +582,15 @@ async function runCeiling(args: Args): Promise<void> {
     const hybrid = await probe(queryText, 'hybrid');
     tally.bm25[bm25.verdict]++;
     tally.hybrid[hybrid.verdict]++;
-    const fmt = (r: { verdict: CeilingVerdict; detail: string; candidates: number }): string =>
-      `${r.verdict.toUpperCase().padEnd(14)} (${r.candidates} cand)${r.detail ? ` [${r.detail}]` : ''}`;
+    const fmt = (r: {
+      verdict: CeilingVerdict;
+      detail: string;
+      candidates: number;
+      admitted: number;
+    }): string =>
+      `${r.verdict.toUpperCase().padEnd(14)} (${r.candidates} cand, ${r.admitted}/6 slots${
+        r.admitted < 6 ? ' → STAGE-2 RAN' : ''
+      })${r.detail ? ` [${r.detail}]` : ''}`;
     console.log(`\n   turn ${batch.turn}`);
     console.log(`     BM25   ${fmt(bm25)}`);
     console.log(`     HYBRID ${fmt(hybrid)}`);
