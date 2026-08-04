@@ -87,11 +87,24 @@ export interface SyncReadBudgetInput {
   blindAfterMs: number;
   /** The producer's own last compute error, when the most recent refresh failed. */
   producerError?: string | null;
+  /**
+   * Epoch ms the audit routine is NEXT due, when it exists and has NEVER fired —
+   * i.e. a legitimate cold start. Null when the routine has already fired at least
+   * once, is absent, or could not be read.
+   *
+   * Without this, a COLD START is indistinguishable from a DEAD AUDIT: both show
+   * "no snapshot". The first deploy after this ships would page a BLIND alarm for
+   * a routine that is simply not due yet — a false alarm on day one, which is the
+   * fastest way to teach everyone to ignore this watchdog (the fatigue trap D-006
+   * forbids). A routine that is scheduled and not yet due is PENDING, not blind.
+   */
+  firstFireDueAtMs?: number | null;
   violations: SyncReadBudgetRow[];
   ratchetRegressions: SyncReadBudgetRow[];
 }
 
 export type SyncReadBudgetVerdict =
+  | { state: 'pending'; scope: null; reason: string }
   | { state: 'blind'; scope: 'blind'; reason: string; ageMs: number | null }
   | {
       state: 'breach';
@@ -110,6 +123,18 @@ export function evaluateSyncReadBudget(input: SyncReadBudgetInput): SyncReadBudg
   const { computedAtMs, nowMs, blindAfterMs, producerError } = input;
 
   if (computedAtMs == null) {
+    // COLD START, not a failure: the routine exists, has never fired, and is not
+    // due yet. Alarming here would fire on every fresh install / first deploy.
+    const dueAt = input.firstFireDueAtMs;
+    if (dueAt != null && dueAt > nowMs) {
+      return {
+        state: 'pending',
+        scope: null,
+        reason:
+          `${SNAPSHOT_KEY} not yet computed — audit routine scheduled and first due in ` +
+          `${Math.round((dueAt - nowMs) / 60_000)}m (cold start, not a failure)`,
+      };
+    }
     return {
       state: 'blind',
       scope: 'blind',
@@ -229,16 +254,46 @@ export async function syncReadBudgetSweep(opts: {
 
     const row = rows[0];
     const payload = (row?.payload ?? null) as Record<string, unknown> | null;
+    const computedAtMs = row ? Number(row.computed_at ?? 0) || null : null;
+
+    // Only when there is NO snapshot do we need to tell a cold start from a dead
+    // audit — so this second read is skipped on the overwhelmingly common path.
+    let firstFireDueAtMs: number | null = null;
+    if (computedAtMs == null) {
+      try {
+        const r = (await sql`
+          SELECT next_fire_at, last_fired_at
+            FROM harness_shared.routines
+           WHERE name = 'sync-read-audit'
+             AND install_slug = ${installSlug}
+             AND workspace_id = ${workspaceId}
+             AND active
+           LIMIT 1
+        `) as Array<{ next_fire_at: string | Date | null; last_fired_at: string | Date | null }>;
+        const rr = r[0];
+        if (rr && rr.last_fired_at == null && rr.next_fire_at != null) {
+          const t = new Date(rr.next_fire_at).getTime();
+          firstFireDueAtMs = Number.isFinite(t) ? t : null;
+        }
+      } catch {
+        // Unreadable ⇒ leave null ⇒ fall through to BLIND. Failing toward the
+        // alarm is right here: a routines table we cannot read is itself a reason
+        // to doubt the audit is running.
+        firstFireDueAtMs = null;
+      }
+    }
+
     const verdict = evaluateSyncReadBudget({
-      computedAtMs: row ? Number(row.computed_at ?? 0) || null : null,
+      computedAtMs,
       nowMs: now,
       blindAfterMs: blindAfterSec * 1000,
       producerError: row?.error ?? null,
+      firstFireDueAtMs,
       violations: asRows(payload?.violations),
       ratchetRegressions: asRows(payload?.ratchetRegressions),
     });
 
-    if (verdict.state === 'healthy') {
+    if (verdict.state === 'healthy' || verdict.state === 'pending') {
       return { outcome: 'healthy', verdict, reason: verdict.reason };
     }
 

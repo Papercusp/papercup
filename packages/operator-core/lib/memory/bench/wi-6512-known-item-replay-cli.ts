@@ -662,7 +662,7 @@ async function runArity(args: Args): Promise<void> {
     const terms = corpusTerms(deriveBatchQuery(batch.calls));
     const probed = args.arityMaxTerms > 0 ? terms.slice(0, args.arityMaxTerms) : terms;
 
-    const reaching: { term: string; rank: number; of: number }[] = [];
+    const reaching: { term: string; rank: number; of: number; admitted: boolean }[] = [];
     const voided: string[] = [];
     for (const term of probed) {
       resetCorpusEmbedderWarmup();
@@ -679,8 +679,21 @@ async function runArity(args: Args): Promise<void> {
         voided.push(`${term}(${res.embedderAvailable ? 'hybrid' : res.outcome})`);
         continue;
       }
+      // ⚠ MATCHED means IN THE POOL — `lines` alone is an ADMISSION test, and
+      // using it here silently re-asks the very question this probe is not
+      // entitled to answer. A record can match a broad single term and still
+      // rank past the 200-line cut; it is then recorded as `cap-exhausted` in
+      // `dropped`, NOT absent. Reading that as "no match" produces a false
+      // ceiling — caught by contradiction against the --ceiling depth probe,
+      // which had turn 68's item at rank 66 under the 2-term production query
+      // while this probe claimed no single term matched it at all. Both cannot
+      // hold: matched({A,B}) is a SUBSET of matched({A}).
       const at = res.lines.findIndex((l) => l.handle.ref === KNOWN_ITEM);
-      if (at >= 0) reaching.push({ term, rank: at + 1, of: res.lines.length });
+      if (at >= 0) {
+        reaching.push({ term, rank: at + 1, of: res.lines.length, admitted: true });
+      } else if (res.dropped.some((d) => d.ref === KNOWN_ITEM)) {
+        reaching.push({ term, rank: Number.POSITIVE_INFINITY, of: res.candidateCount, admitted: false });
+      }
     }
 
     // ⚠ COVERAGE MUST COUNT VOIDS. Comparing probed.length to terms.length only
@@ -704,9 +717,13 @@ async function runArity(args: Args): Promise<void> {
       );
     } else {
       const best = reaching.reduce((a, b) => (a.rank <= b.rank ? a : b));
-      console.log(`     ✓ REACHABLE by ${reaching.length}/${probed.length} term(s).` +
-        `   best: "${best.term}" at rank ${best.rank}/${best.of}`);
-      console.log(`       reaching terms: ${reaching.map((r) => `${r.term}(${r.rank})`).join(' ')}`);
+      const bestRank = Number.isFinite(best.rank) ? `rank ${best.rank}/${best.of}` : 'pool-only (past the cut)';
+      console.log(`     ✓ MATCHED by ${reaching.length}/${probed.length} term(s).   best: "${best.term}" ${bestRank}`);
+      console.log(
+        `       matching terms: ${reaching
+          .map((r) => `${r.term}(${Number.isFinite(r.rank) ? r.rank : 'pool'})`)
+          .join(' ')}`,
+      );
       console.log(`       ⇒ matching is NOT the barrier here; admission/rank is.`);
     }
   }

@@ -14,6 +14,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import type { Sql } from 'postgres';
 import { createOrgTestDb, type OrgTestDb } from '../../../test/_org-test-db';
 import { checkLoopCostCap, autoPauseLoopRoutine } from './loop-cost-cap';
+import { readStalePausedRoutines } from '../../system-health/compute';
 
 let org: OrgTestDb;
 let sql: Sql;
@@ -133,5 +134,40 @@ describe('checkLoopCostCap — real-DB auto-pause (B-LOOP-3)', () => {
     expect(row.active).toBe(false);
     expect(row.metadata?.keep).toBe('me'); // pre-existing metadata preserved
     expect(row.metadata?.loop_paused_reason).toBe('manual test reason');
+  });
+});
+
+describe('EI-19479519679704136 — the pause WRITER and the stale-paused READER must agree on the key', () => {
+  // The guard is deliberately END-TO-END: the real writer, a real PG row, and the real
+  // reader (readStalePausedRoutines, imported from the detector — NOT a re-statement of
+  // its extraction here). Mirroring the reader's key handling in the test would let the
+  // two drift apart again and still pass, which is the exact failure being fixed.
+  it('a loop paused by autoPauseLoopRoutine is NOT reported as an unexplained stale pause', async () => {
+    const id = await seedLoopRoutine();
+    await autoPauseLoopRoutine(sql, id, 'stalled-loops-guard: turns-stalled');
+
+    const flagged = await readStalePausedRoutines(sql, HARNESS, WS);
+    const mine = flagged.find((r) => r.name === 'loop-' + OWNER);
+    // Pre-fix this row came back with reasonMissing:true and was flagged REGARDLESS of age
+    // ("an unattributed pause is exactly the bug class"), because the writer stamped
+    // `loop_paused_reason` while the reader only ever reads `metadata.pause.reason`.
+    // Measured 2026-08-04: 50 of 63 flagged routines were explained pauses, invisible this way.
+    expect(mine?.reasonMissing ?? false).toBe(false);
+    // A freshly-paused row WITH a reason is below the general age threshold, so the
+    // detector should not surface it at all.
+    expect(mine).toBeUndefined();
+  });
+
+  it('CALIBRATION: a pause written WITHOUT the helper is still flagged as unattributed', async () => {
+    // The load-bearing control. Without it the assertion above would also pass if the
+    // detector had simply stopped flagging anything — which would silently destroy the
+    // true-positive path (a release routine silently paused for days: the WI-5839 incident).
+    const id = await seedLoopRoutine();
+    await sql`UPDATE harness_shared.routines SET active = FALSE WHERE id = ${id}`;
+
+    const flagged = await readStalePausedRoutines(sql, HARNESS, WS);
+    const mine = flagged.find((r) => r.name === 'loop-' + OWNER);
+    expect(mine).toBeDefined();
+    expect(mine?.reasonMissing).toBe(true);
   });
 });

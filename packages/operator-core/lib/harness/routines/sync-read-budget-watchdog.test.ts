@@ -59,6 +59,27 @@ describe('evaluateSyncReadBudget: the BLIND leg (the instrument itself died)', (
     const v = base({ computedAtMs: NOW - (BLIND_AFTER - 60_000) });
     expect(v.state).toBe('healthy');
   });
+
+  // A COLD START looks identical to a DEAD AUDIT — both have no snapshot. Without
+  // this distinction the FIRST DEPLOY of this watchdog pages a false alarm for a
+  // routine that simply is not due yet, which is the fastest possible way to train
+  // everyone to ignore it.
+  it('reports PENDING, not blind, when the routine has never fired and is not due yet', () => {
+    const v = base({ computedAtMs: null, firstFireDueAtMs: NOW + 3 * 3_600_000 });
+    expect(v.state).toBe('pending');
+    expect(v.reason).toMatch(/cold start/i);
+  });
+
+  it('reports BLIND once that first fire is OVERDUE — pending must not become a permanent excuse', () => {
+    const v = base({ computedAtMs: null, firstFireDueAtMs: NOW - 60_000 });
+    expect(v.state).toBe('blind');
+  });
+
+  it('reports BLIND when the routine could not be read at all (fails toward the alarm)', () => {
+    // An unreadable routines table is itself a reason to doubt the audit is running.
+    const v = base({ computedAtMs: null, firstFireDueAtMs: null });
+    expect(v.state).toBe('blind');
+  });
 });
 
 describe('evaluateSyncReadBudget: the BREACH leg', () => {

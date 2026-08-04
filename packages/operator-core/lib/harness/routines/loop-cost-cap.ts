@@ -112,6 +112,29 @@ export async function autoPauseLoopRoutine(sql: Sql, routineId: string, reason: 
                     || jsonb_build_object(
                          'loop_paused_reason', ${reason}::text,
                          'loop_paused_at', now()::text,
+                         -- EI-19479519679704136: ALSO write the CANONICAL pause shape the
+                         -- stale-paused detector actually reads. readStalePausedRoutines
+                         -- (system-health/compute.ts) consumes metadata.pause.reason +
+                         -- metadata.pause.pausedAtMs and nothing else, so every loop paused
+                         -- here — with a full, timestamped reason sitting right beside it
+                         -- under loop_paused_* — was classified reasonMissing:true and
+                         -- reported as "a stale/unexplained pause". That verdict ignores the
+                         -- age threshold by design ("an unattributed pause is exactly the bug
+                         -- class"), so the row stayed flagged until the 7d decommissioned
+                         -- cutoff. Measured 2026-08-04: 50 of the 63 flagged routines were
+                         -- explained pauses the reader could not see — ~79% of the
+                         -- stale-paused-routines alarm population was this mismatch.
+                         -- pausedAtMs is epoch MILLISECONDS as a JSON number: the reader
+                         -- gates on typeof pausedAtMs === 'number', so a string here would
+                         -- read as missing and reintroduce the same false positive silently.
+                         -- The legacy loop_paused_* keys stay — carry-note-pause-declaration
+                         -- reads them, and this is an ADD, not a rename.
+                         -- (NB: no backticks in this comment — it lives inside a tagged
+                         --  template literal, where a backtick would terminate the string.)
+                         'pause', jsonb_build_object(
+                           'reason', ${reason}::text,
+                           'pausedAtMs', (extract(epoch from now()) * 1000)::bigint
+                         ),
                          -- OLD value: in an UPDATE, a column read in the SET expression is
                          -- the pre-update one, so this captures what we are about to null.
                          'loop_paused_next_fire_at', to_jsonb(next_fire_at::text)

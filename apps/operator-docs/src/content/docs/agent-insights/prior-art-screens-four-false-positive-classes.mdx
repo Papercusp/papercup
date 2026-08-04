@@ -8,6 +8,7 @@ documents:
   - packages/operator-core/lib/scout/idea-cluster-screen.ts
   - packages/operator-core/lib/scout/code-search-deps.ts
   - packages/operator-core/lib/scout/code-existence-probe.ts
+  - packages/operator-core/lib/scout/plan-slug-leg.ts
 normative: true
 governs:
   - deciding whether a capability already exists
@@ -219,6 +220,71 @@ known-good pair**, never chosen for looking reasonable.
 
 Steps 1 and 3 are cheap and neither is a substitute for 2.
 
+## On a dense corpus, similarity cannot discriminate — only asserted links can
+
+The section above measured one leg. Running the same check on every leg turned a
+one-off result into the design conclusion of the whole screen. Measured over the
+186-item cohort (`EI-%`, open, `lane IS NULL`, filed 07-04 to 07-17):
+
+| leg | what it rests on | reach | can it carry a verdict? |
+|---|---|---|---|
+| self-id (evidence-path filtered) | a source file CITES the item's id | **17 = 9.1%** | yes — strongest |
+| asserted-ref, prior-art sense | the author CITES another item | **125 = 67%** | yes — weaker |
+| asserted-ref, intra-cohort sense | the author cites a SIBLING | **61 = 33%** | collapse only |
+| plan-slug | slug/idea token overlap | **≈100%** | no — ranks only |
+| plan items to file paths | a plan item names a path | 73% of plans, ≈7.8 paths each | no — ranks only |
+
+Two things fall out, and the second is the load-bearing one.
+
+**Reach and trustworthiness are inversely related.** The most trustworthy leg reaches
+about 9% of items; the leg that reaches everything carries no authority at all. No
+combination adjudicates the majority of a backlog — that is structural, not a tuning
+failure. For most items the only correct output is INCONCLUSIVE.
+
+**The two legs that can carry a verdict are exactly the two resting on an explicit,
+human-authored link** — someone deliberately wrote `EI-1234` into a filing, or into a
+source file. Every leg resting on *similarity* (lexical overlap, plan-slug overlap,
+embedding distance, path extraction) fires on nearly everything, because a corpus this
+dense returns plausible hits for any query. The hits are not wrong; they are
+undiscriminating, which is worse, because each one reads like evidence.
+
+So the practical rule for a screen on a corpus like this: **adding another retrieval leg
+does not buy discrimination.** The remaining upside is in sharpening the assertion legs
+and in making the ranking legs cheap to *read*, rather than trying to make them decide.
+
+### Therefore: absence is not evidence, and a report must say so in its own output
+
+If your best leg sees 9% of the space, then "the legs found nothing" is close to
+uninformative about whether the thing exists. This is the sibling of
+[a check that never ran must not read as PASSED](/internal/docs/agent-insights/a-check-that-never-ran-must-not-read-as-passed),
+one step on: **a check that DID run, at 9% recall, must not read as CLEAR either.**
+
+A verdict count alone invites exactly the wrong reading. "DROP=18 of 40" gets restated
+as "45% of the backlog is already built" — a claim about the world, when the run only
+supports a claim about what a few bounded-recall legs happened to find. The fix is to
+make the denominator part of the output rather than a caveat a reader has to remember:
+`screenCoverage()` / `renderScreenCoverage()` emit a per-run header splitting items into
+**positive-evidence** verdicts (a leg FOUND something — defensible), **absence-only**
+(cleared by finding nothing — bounded by recall, never counted as adjudicated), and
+**silent** (retrieval did not run). An all-absence run must report that it adjudicated
+exactly zero; a control test pins that, so absence can never be quietly promoted to
+evidence inside the counting.
+
+### Two traps when measuring reach
+
+**Bound the population before you bound the leg.** The first run of this measurement
+returned 3,757 items against an expected ~184, because `lane='observation'` holds 3,571
+open rows in the same window — a separate population that never enters the work queue.
+Nothing in the result looked wrong; only its magnitude disagreeing with a number already
+in hand caught it.
+
+**Name which question a reach figure answers.** The asserted-ref leg reaches 67% for
+"does the author cite prior art" and 33% for "does the author cite a sibling" — one leg,
+two questions, differing by 2x in opposite directions. Reporting either without saying
+which produces a figure that is precisely wrong for the other. And because densely
+ref-linked clusters are the cheapest to find, they get drained FIRST, so these ceilings
+**decay** as a backlog is worked: any reach figure is a snapshot of a moving population.
+
 ## What to do with a screen's output
 
 Report-only. The measured precision does not support bulk-closing anything, and the
@@ -226,7 +292,9 @@ parent constraint for this work said so before any of it was measured: *do not
 bulk-CLOSE on a shared premise.*
 
 Treat the drop bucket as a **ranked shortlist for review**. Co-clustering proves a set
-of filings are about one condition; it never proves the condition is dead.
+of filings are about one condition; it never proves the condition is dead. Publish the
+coverage header alongside the counts, so the fraction the screen could not speak to is
+visible in the same breath as the fraction it could.
 
 ## See also
 

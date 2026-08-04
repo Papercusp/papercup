@@ -150,16 +150,25 @@ describe('no-hand-rolled-module-pin — the tree', () => {
     expect(stale).toEqual([]);
   });
 
-  it('the five migrated libs are GONE from the population (the fix, asserted)', () => {
+  it('every migrated module is GONE from the population (the fix, asserted)', () => {
+    // Asserted by PATH rather than by count: a count would drift every time a
+    // peer migrates one more, and would pass for the wrong reason if a site
+    // moved instead of being fixed.
     const { everyPin } = scanTree();
     const paths = new Set(everyPin.map((p: { rel: string }) => p.rel));
     for (const migrated of [
+      // EI-19463700807328229 — the first subject
+      'libs/generic/scheduled-registry/src/index.ts',
+      // EI-19469900474673886 — the five @papercusp/* libs
       'libs/generic/lexicon/src/config.ts',
       'libs/generic/kokoro-tts/src/config.ts',
       'libs/generic/memory/src/config.ts',
       'libs/generic/memory/src/backend-registry.ts',
       'libs/generic/deployment-driver/src/registry.ts',
-      'libs/generic/scheduled-registry/src/index.ts',
+      // EI-19479108855357092 — the tooldef registries
+      'libs/generic/tooldef/src/state-channel.ts',
+      'libs/generic/tooldef/src/replay-buffer.ts',
+      'libs/generic/tooldef/src/card-correlator.ts',
     ]) {
       expect(paths.has(migrated)).toBe(false);
     }
