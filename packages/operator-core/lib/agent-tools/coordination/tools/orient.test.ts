@@ -68,6 +68,13 @@ function fakeCall(handlers: Record<string, (args: Record<string, unknown>) => un
  *  sub-call" — override it locally when a test asserts on glance behavior. */
 const CORE = {
   'fleet:assignments': () => ({ ok: true, summary: { agents: 1 }, agents: [{ ownerId: 'me' }] }),
+  // EI-19452326548245557: orient now SOURCES its issue-family lane from the claim
+  // oracle (work_items:claimable) and uses work_items:list only for the
+  // feature-family lane. This shared stub returns an EMPTY oracle deliberately, so
+  // every pre-existing test that drives the backlog through `work_items:list` keeps
+  // describing exactly what it always did; the oracle-sourcing behaviour itself is
+  // owned by the dedicated tests below, which stub it explicitly.
+  'work_items:claimable': () => ({ claimable: [] }),
   'work_items:list': () => [{ id: 'WI-1', state: 'todo' }, { id: 'WI-2', state: 'todo' }],
   // WI-5343: orient batch-observes its fetched claimable rows through the same
   // floors work_items:observe applies (claim-hold / plan-item block / live-claim)
@@ -102,8 +109,12 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
     // needs the caller's fleet), so it now precedes coord:plan-events.
     // WI-5343: work_items:observe (the claimable floor-parity batch check) runs
     // right after coord:inbox, before coord:whoami.
+    // EI-19452326548245557: the issue-family lane is sourced from the claim ORACLE
+    // (work_items:claimable) and the feature-family lane from work_items:list; the
+    // two are fetched together, so the oracle precedes the list.
     expect(calls.map((c) => c.name)).toEqual([
       'fleet:assignments',
+      'work_items:claimable',
       'work_items:list',
       'coord:inbox',
       'work_items:observe',
@@ -111,17 +122,89 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
       'coord:plan-events',
     ]);
     expect(calls[0].args).toMatchObject({ agent: 'me', harness: 'h' });
-    // EI-7841: claimable is self-select context — must ask work_items:list to
-    // exclude G2-admission-gated items so "claimable" matches what claim will do.
+    // The oracle is asked for the harness lane at the same limit as the fold.
+    expect(calls[1].args).toMatchObject({ harness: 'h', limit: 20 });
+    // EI-7841: the feature lane must still ask work_items:list to exclude
+    // G2-admission-gated items so "claimable" matches what claim will do.
     // D-002/EI-11300: 'open' is the unified claimable token (feature 'todo' retired) —
     // composeOrient's own default (orient.ts line ~518) moved to 'open'; this assertion
     // was stale (last updated for the old default), not a regression in production code.
-    expect(calls[1].args).toMatchObject({ harness: 'h', state: 'open', limit: 20, admissibleOnly: true });
-    expect(calls[2].args).toMatchObject({ limit: 10, max_body_chars: 300 });
-    // WI-5343: calls[3] batch-observes every fetched row for the real claim floors.
-    expect(calls[3].args).toMatchObject({ ids: ['WI-1', 'WI-2'], harness: 'h' });
-    // calls[4] is the hoisted coord:whoami (P-007); plan-events follows it.
-    expect(calls[5].args).toMatchObject({ limit: 10 });
+    expect(calls[2].args).toMatchObject({
+      harness: 'h',
+      state: 'open',
+      limit: 20,
+      admissibleOnly: true,
+      kind: 'feature',
+    });
+    expect(calls[3].args).toMatchObject({ limit: 10, max_body_chars: 300 });
+    // WI-5343: calls[4] batch-observes every fetched row for the real claim floors.
+    expect(calls[4].args).toMatchObject({ ids: ['WI-1', 'WI-2'], harness: 'h' });
+    // calls[5] is the hoisted coord:whoami (P-007); plan-events follows it.
+    expect(calls[6].args).toMatchObject({ limit: 10 });
+  });
+
+  // ── EI-19452326548245557: the claimable fold must BE the claim oracle ──────────
+  // Regression context: orient sourced its whole backlog from
+  // `work_items:list({ admissibleOnly: true })`, a STRUCTURAL pre-filter that applies
+  // remote-origin + observation-lane only. The ~12 real claim floors were never
+  // applied, so the fold advertised work `work_items:claim` refuses. Measured
+  // 2026-08-04 on `papercusp`: 16 of 20 rows were `[replication-liveness]` EIs held
+  // out by the `federationDetector` floor. These four tests are mutually
+  // non-vacuous: each fails on a different branch of the fix.
+
+  it('sources the ISSUE lane from the claim oracle, never from work_items:list', async () => {
+    const { call, calls } = fakeCall({
+      ...CORE,
+      'work_items:claimable': () => ({ claimable: [{ id: 'EI-ORACLE', state: 'open' }] }),
+      'work_items:list': () => [{ id: 'F-1', state: 'open' }],
+    });
+    const r = await composeOrient({ harness: 'h' }, call, 'me');
+    // The oracle's row is what surfaces, alongside the feature lane.
+    expect((r.claimable as Array<{ id: string }>).map((x) => x.id)).toEqual(['EI-ORACLE', 'F-1']);
+    // The decisive property: orient never asks work_items:list for issue-family rows
+    // at all, so a floor-excluded issue row has no path into the backlog.
+    const listCalls = calls.filter((c) => c.name === 'work_items:list');
+    expect(listCalls).toHaveLength(1);
+    expect(listCalls[0].args).toMatchObject({ kind: 'feature' });
+  });
+
+  it('falls back to the unfiltered list when the oracle fails — never an empty backlog', async () => {
+    const { call, calls } = fakeCall({
+      ...CORE,
+      'work_items:claimable': () => {
+        throw new Error('oracle unavailable');
+      },
+    });
+    const r = await composeOrient({ harness: 'h' }, call, 'me');
+    // Degrades to the previous behaviour rather than starving self-select agents.
+    expect((r.claimable as Array<{ id: string }>).map((x) => x.id)).toEqual(['WI-1', 'WI-2']);
+    const listCalls = calls.filter((c) => c.name === 'work_items:list');
+    expect(listCalls).toHaveLength(2);
+    // The fallback leg is family-agnostic (no `kind` filter) — the old whole-lane read.
+    expect(listCalls[1].args.kind).toBeUndefined();
+  });
+
+  it('omits the oracle entirely when no harness is resolvable (it requires one)', async () => {
+    const { call, calls } = fakeCall({ ...CORE });
+    await composeOrient({}, call, 'me');
+    expect(calls.some((c) => c.name === 'work_items:claimable')).toBe(false);
+    const listCalls = calls.filter((c) => c.name === 'work_items:list');
+    expect(listCalls).toHaveLength(1);
+    expect(listCalls[0].args.kind).toBeUndefined();
+  });
+
+  it('reserves room for the feature lane so a full issue window cannot truncate it away', async () => {
+    const { call } = fakeCall({
+      ...CORE,
+      'work_items:claimable': () => ({
+        claimable: [1, 2, 3, 4, 5].map((n) => ({ id: `EI-${n}`, state: 'open' })),
+      }),
+      'work_items:list': () => [{ id: 'F-KEEP', state: 'open' }],
+    });
+    const r = await composeOrient({ harness: 'h', claimableLimit: 3 }, call, 'me');
+    const ids = (r.claimable as Array<{ id: string }>).map((x) => x.id);
+    expect(ids).toHaveLength(3);
+    expect(ids).toEqual(['EI-1', 'EI-2', 'F-KEEP']);
   });
 
   // EI-18667514339699744: coord:orient folds coord:inbox's `entries` under `recent`;
@@ -262,6 +345,8 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
     // (WI-5228: planSlug was passed) → recipes → declare
     expect(calls.map((c) => c.name)).toEqual([
       'fleet:assignments',
+      // EI-19452326548245557: issue lane from the claim oracle, feature lane from the list.
+      'work_items:claimable',
       'work_items:list',
       'coord:inbox',
       'work_items:observe',
