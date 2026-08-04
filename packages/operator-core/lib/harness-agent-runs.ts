@@ -39,6 +39,7 @@ import { harnessQuery } from "@papercusp/db-org";
 import { activeWorkspaceId } from "./workspace-registry";
 import { harnessDir } from "./harness-core";
 import { type ProjectEntry } from "./harness-registry";
+import { pinModuleState } from "@papercusp/module-singleton";
 
 // A run is "live" when its jsonl has no terminal marker AND its mtime is
 // recent. The mtime guard prevents orphaned runs (harness SIGKILLed
@@ -223,21 +224,18 @@ export function scanAgentRuns(project: ProjectEntry): AgentRunFull[] {
 // mtime/size signature; appending to an existing jsonl does NOT bump
 // mtime (we tolerate a 2 s lag on liveness/cost in exchange for
 // throughput).
-const __agentScanCacheKey = Symbol.for("papercusp.harnessAgentScanCache");
-type AgentScanCacheGlobals = typeof globalThis & {
-  [__agentScanCacheKey]?: Map<
-    string,
-    { sig: string; expires: number; value: AgentRunFull[] }
-  >;
-};
-const __agentScanCache: Map<
-  string,
-  { sig: string; expires: number; value: AgentRunFull[] }
-> = (() => {
-  const g = globalThis as AgentScanCacheGlobals;
-  if (!g[__agentScanCacheKey]) g[__agentScanCacheKey] = new Map();
-  return g[__agentScanCacheKey]!;
-})();
+// Pinned through @papercusp/module-singleton rather than a hand-rolled
+// `globalThis[Symbol.for(...)]` pair. Hand-rolling shares the map correctly,
+// but the key is invisible to listModuleDuplications(), which then answers a
+// confident `[]` while this module is split (EI-19479108855357092). The key
+// string is unchanged, so a record loaded through a different seam still lands
+// on the same cache.
+type AgentScanCacheEntry = { sig: string; expires: number; value: AgentRunFull[] };
+const __agentScanState = pinModuleState<{ cache: Map<string, AgentScanCacheEntry> }>(
+  "papercusp.harnessAgentScanCache",
+  () => ({ cache: new Map() }),
+);
+const __agentScanCache = __agentScanState.cache;
 
 export function scanAgentRunsCached(
   project: ProjectEntry,

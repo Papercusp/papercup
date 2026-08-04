@@ -95,7 +95,6 @@ const ALLOW = new Set([
   'packages/operator-core/lib/endpoint-route/routes/harness/phases.ts',
   'packages/operator-core/lib/endpoint-route/routes/harness/projects.ts',
   'packages/operator-core/lib/events/registry.ts',
-  'packages/operator-core/lib/harness-agent-runs.ts',
   'packages/operator-core/lib/harness-core.ts',
   'packages/operator-core/lib/operator-state-pg.ts',
   'packages/operator-core/lib/plugin-api-mount.ts',

@@ -60,6 +60,17 @@ export const ALLOWLIST = new Set([
   // "setInterval(" (the thing it bans), exactly as check-no-raw-agent-spawn allowlists
   // its own definition site.
   'scripts/check-no-raw-setinterval.mjs',
+  // worker_threads BODY — runs on the worker's own event loop, so registering there
+  // buys nothing this guard is asking for. MEASURED 2026-08-04: the registry's state
+  // is pinned per-isolate, so a managedSetInterval call inside a Worker succeeds but
+  // lands in a SEPARATE per-thread registry — the worker sees ["probe-worker"] while
+  // the main thread sees only ["probe-main"]. `schedule:inventory` is served by the
+  // main process, so the timer would still be invisible there; the guard's stated
+  // purpose ("NAMED + visible in schedule:inventory") is structurally unreachable
+  // from a worker. Importing the registry here would also add a main-thread-shaped
+  // dependency to the one component whose whole job is to keep running when the main
+  // thread cannot. Same rationale as the ALLOWLIST_DIRS "separate procs" entries.
+  'packages/operator-core/lib/event-loop-sentinel.worker.ts',
   // Browser/client .ts — run in the webview, not the host; cannot reach the server-side
   // registry (verified client-side: window./document./useEffect/MediaRecorder).
   'apps/operator/app/_components/SetupWizard/useWizardStatuses.ts',

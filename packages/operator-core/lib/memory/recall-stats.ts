@@ -162,6 +162,93 @@ export interface RecallPoolStats {
   scopes: readonly string[];
 }
 
+/**
+ * The filter stages between "what the index returned" and "what the agent got",
+ * in pipeline order — migration 758 / P-002.
+ *
+ * Named rather than positional so a stage inserted later cannot silently shift
+ * every historical row's meaning.
+ */
+export type AdmissionStage =
+  /** knowledge-pack rows whose pack is disabled for the hive. */
+  | 'pack'
+  /** memory_feedback: the user deleted this fact (or a re-extraction of it). */
+  | 'feedback'
+  /** the user pool's workspace scoping — a `project` hit from another workspace. */
+  | 'workspace'
+  /** already surfaced this session-epoch (or inside the wall-clock window). */
+  | 'dedup'
+  /** near-duplicate collapse — the same fact stored under several ids. */
+  | 'nearDuplicate'
+  /** did not fit the char budget. */
+  | 'budget';
+
+export const ADMISSION_STAGES: readonly AdmissionStage[] = [
+  'pack',
+  'feedback',
+  'workspace',
+  'dedup',
+  'nearDuplicate',
+  'budget',
+];
+
+/**
+ * Which LEG produced the lines that were actually DELIVERED.
+ *
+ * Counted over admitted entries only — that is the whole point. A leg's
+ * candidate count says what it offered; this says what survived. A leg that
+ * keeps offering candidates and never lands one is contributing nothing, and no
+ * pre-filter count can show that (measured live: the lexical leg conferring an
+ * RRF bonus on 108 hits, none of which was a real match).
+ */
+export interface AdmittedByLeg {
+  cosineOnly: number;
+  lexicalOnly: number;
+  both: number;
+}
+
+/**
+ * The admission funnel for one push-path recall — what the index returned
+ * against what actually reached the agent, and where the rest went.
+ */
+export interface RecallAdmissionStats {
+  /** What the index gave back (mirrors hit_count, carried so the funnel reads standalone). */
+  returned: number;
+  /** Lines that actually reached the agent. */
+  admitted: number;
+  /** The char budget cut the block. */
+  truncated: boolean;
+  /**
+   * Per stage. EVERY stage is recorded even at zero: "this filter ran and
+   * removed nothing" and "this filter never ran" are different facts and only
+   * the first is a healthy zero — the same reason `LegRunStats.ran` exists.
+   */
+  dropped: Record<AdmissionStage, number>;
+  byLeg: AdmittedByLeg;
+}
+
+/**
+ * Attribute ADMITTED entries to the leg(s) that produced them.
+ *
+ * Reads `MemoryEntry.retrieval`, stamped by `fuse()`. An entry with no
+ * provenance (a single-leg backend, a hand-built test double) counts in no
+ * bucket rather than being guessed into one — the buckets are then honestly
+ * short of `admitted`, which is recoverable, whereas a wrong attribution is not.
+ */
+export function admittedByLeg(entries: readonly MemoryEntry[]): AdmittedByLeg {
+  const out: AdmittedByLeg = { cosineOnly: 0, lexicalOnly: 0, both: 0 };
+  for (const e of entries) {
+    const r = e.retrieval;
+    if (!r) continue;
+    const cos = typeof r.cosineRank === 'number';
+    const lex = typeof r.lexicalRank === 'number';
+    if (cos && lex) out.both += 1;
+    else if (cos) out.cosineOnly += 1;
+    else if (lex) out.lexicalOnly += 1;
+  }
+  return out;
+}
+
 interface RecallStatsCommon {
   /** The documented set (RecallSurface) OR any port string — free-text column. */
   surface: RecallSurface | (string & {});
@@ -202,6 +289,25 @@ interface RecallStatsCommon {
    * nothing while looking like a rate.
    */
   sessionId?: string | null;
+  /**
+   * Per-LEG provenance (migration 758 / P-002) — what each retrieval leg did on
+   * this call, as reported by the backend's `onLegStats` seam.
+   *
+   * Omitting it records NULL, which reads as "this path has no legs to report"
+   * (the pull path, a single-leg backend). That is deliberately the same posture
+   * as `pools`: a NULL is a shape statement, not a missing measurement.
+   */
+  legs?: SearchLegStats | null;
+  /**
+   * The ADMISSION FUNNEL (migration 758 / P-002) — what reached the agent.
+   *
+   * ⚠ This row is written BEFORE the filter chain runs, so `hit_count` here can
+   * only ever mean "what the index returned". Without this field nothing in the
+   * system records what was actually DELIVERED, and the two diverge by design —
+   * six filter stages sit between them. Supply it wherever the delivered block
+   * is known.
+   */
+  admission?: RecallAdmissionStats | null;
 }
 
 /**
