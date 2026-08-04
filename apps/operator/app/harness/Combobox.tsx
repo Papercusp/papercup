@@ -58,7 +58,7 @@
  */
 import { Command as CmdK } from 'cmdk';
 import { Check, ChevronDown, Search } from 'lucide-react';
-import { useCallback, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Popover } from './Popover';
 import { POPPER_WRAPPER_FLOOR_Z } from './popper-z';
 

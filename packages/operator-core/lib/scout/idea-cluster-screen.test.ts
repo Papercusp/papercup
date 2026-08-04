@@ -2,10 +2,13 @@ import { describe, expect, it } from 'vitest';
 import {
   CLUSTER_DISTANCE_THRESHOLD,
   MANUAL_SPLIT_MIN_SIZE,
+  MEASURED_LEG_REACH,
   aggregateReports,
   clusterIdeas,
   cosineDistance,
   decideVerdict,
+  renderScreenCoverage,
+  screenCoverage,
   screenIdeaClusters,
   summariseClusterRow,
   type ClusterScreenRow,
@@ -651,5 +654,126 @@ describe('summariseClusterRow', () => {
     };
     expect(summariseClusterRow(row)).toMatch(/\+6/);
     expect(summariseClusterRow(row)).toMatch(/DONE prior art: EI-7347/);
+  });
+});
+
+function screenRow(over: Partial<ClusterScreenRow> = {}): ClusterScreenRow {
+  return {
+    memberIds: ['EI-1'],
+    size: 1,
+    confidence: 'high',
+    verdict: 'GREENLIGHT',
+    assertedPriorArtIds: [],
+    assertedOpenSiblingIds: [],
+    assertedAbandonedIds: [],
+    assertedUnresolvedIds: [],
+    assertedPhrases: [],
+    selfIdHits: [],
+    lexicalHits: [],
+    semanticHits: [],
+    planSlugHits: [],
+    premiseAgeDays: { oldest: 30, newest: 30 },
+    retrievalRan: true,
+    notes: [],
+    ...over,
+  };
+}
+
+describe('screenCoverage', () => {
+  it('counts ITEMS, not clusters — a 10-member cluster is 10 items', () => {
+    const c = screenCoverage([
+      screenRow({
+        verdict: 'COLLAPSE-AND-RESCOPE',
+        size: 10,
+        memberIds: Array.from({ length: 10 }, (_, i) => `EI-${i}`),
+      }),
+      screenRow({ verdict: 'DROP', size: 1 }),
+    ]);
+    expect(c.clusters).toBe(2);
+    expect(c.items).toBe(11);
+    expect(c.byVerdict['COLLAPSE-AND-RESCOPE']).toBe(10);
+    expect(c.byVerdict.DROP).toBe(1);
+  });
+
+  it('does NOT count GREENLIGHT as adjudicated — an absence is not a finding', () => {
+    // The load-bearing distinction. A GREENLIGHT says "these legs found nothing",
+    // and leg recall is as low as ~9%, so it cannot be evidence the item is novel.
+    const c = screenCoverage([
+      screenRow({ verdict: 'GREENLIGHT' }),
+      screenRow({ verdict: 'GREENLIGHT' }),
+      screenRow({ verdict: 'DROP' }),
+    ]);
+    expect(c.adjudicatedItems).toBe(1);
+    expect(c.absenceOnlyItems).toBe(2);
+    expect(c.adjudicatedFraction).toBeCloseTo(1 / 3, 10);
+  });
+
+  it('CONTROL: an all-GREENLIGHT run adjudicates NOTHING', () => {
+    // If this ever reports a nonzero fraction, absence has been silently promoted
+    // to evidence somewhere in the counting.
+    const c = screenCoverage([
+      screenRow({ verdict: 'GREENLIGHT' }),
+      screenRow({ verdict: 'GREENLIGHT', size: 5, memberIds: ['a', 'b', 'c', 'd', 'e'] }),
+    ]);
+    expect(c.items).toBe(6);
+    expect(c.adjudicatedItems).toBe(0);
+    expect(c.adjudicatedFraction).toBe(0);
+  });
+
+  it('treats INCONCLUSIVE as silent, distinct from an absence claim', () => {
+    const c = screenCoverage([
+      screenRow({ verdict: 'INCONCLUSIVE', retrievalRan: false }),
+      screenRow({ verdict: 'GREENLIGHT' }),
+    ]);
+    expect(c.silentItems).toBe(1);
+    expect(c.absenceOnlyItems).toBe(1);
+    expect(c.adjudicatedItems).toBe(0);
+  });
+
+  it('returns zeros rather than NaN for an empty run', () => {
+    const c = screenCoverage([]);
+    expect(c.items).toBe(0);
+    expect(c.adjudicatedFraction).toBe(0);
+    expect(Number.isNaN(c.adjudicatedFraction)).toBe(false);
+  });
+
+  it('falls back to memberIds.length when size is 0, so no row vanishes', () => {
+    const c = screenCoverage([
+      screenRow({ verdict: 'DROP', size: 0, memberIds: ['EI-1', 'EI-2', 'EI-3'] }),
+    ]);
+    expect(c.items).toBe(3);
+    expect(c.adjudicatedItems).toBe(3);
+  });
+});
+
+describe('renderScreenCoverage', () => {
+  it('states the denominator and both caveats', () => {
+    const text = renderScreenCoverage(
+      screenCoverage([screenRow({ verdict: 'DROP' }), screenRow({ verdict: 'GREENLIGHT' })]),
+    );
+    expect(text).toMatch(/2 item\(s\) in 2 cluster\(s\)/);
+    expect(text).toMatch(/positive evidence/);
+    // The two misreadings this header exists to make hard.
+    expect(text).toMatch(/NOT "nothing exists"/);
+    expect(text).toMatch(/DO NOT read a DROP count as/);
+  });
+
+  it('names the measured leg recall, so an absence claim carries its own bound', () => {
+    const text = renderScreenCoverage(screenCoverage([screenRow({ verdict: 'GREENLIGHT' })]));
+    expect(text).toMatch(/self-id reaches ~9%/);
+    expect(text).toMatch(/asserted-ref ~67%/);
+    expect(text).toMatch(/filters none/);
+  });
+
+  it('REGRESSION: the recall constants stay in the range their measurement supports', () => {
+    // These are measured over a MOVING population that gets harder as the
+    // ref-reachable items drain first. A silent edit toward optimism (say, self-id
+    // "reaching" most of the backlog) would quietly restore the exact misreading
+    // the coverage header was added to prevent.
+    expect(MEASURED_LEG_REACH.selfId).toBeLessThan(0.2);
+    expect(MEASURED_LEG_REACH.assertedRefIntraCohort).toBeLessThan(
+      MEASURED_LEG_REACH.assertedRefAnywhere,
+    );
+    expect(MEASURED_LEG_REACH.planSlug).toBe(1.0);
   });
 });

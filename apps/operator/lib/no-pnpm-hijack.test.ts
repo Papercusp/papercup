@@ -18,6 +18,7 @@
  * backstop. If it fires, run the repair recipe in the failure message.
  */
 import { describe, expect, it } from 'vitest';
+import { execFileSync } from 'node:child_process';
 import { existsSync, lstatSync, readFileSync, readdirSync, readlinkSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -81,5 +82,42 @@ describe('node_modules is npm-managed (no pnpm/bun hijack)', () => {
     expect(hijacked, `top-level packages symlinked into .pnpm: ${hijacked.join(', ')}\n${REPAIR}`).toEqual(
       [],
     );
+  });
+
+  /**
+   * WI-4427. The two assertions above detect a hijack that has ALREADY happened —
+   * they are symptom checks. This one closes the documented RE-ENTRY vector.
+   *
+   * Per this file's own header: the 2026-07-03 incident added the .gitignore
+   * guard, "but a still-TRACKED pnpm-lock.yaml overrode it" — and the class bit
+   * the fleet again the next day. A tracked lockfile beats .gitignore (git keeps
+   * tracking a file already in the index), so the repo can sit one `pnpm install`
+   * away from re-hijack while both symptom checks above are perfectly green.
+   *
+   * An UNTRACKED pnpm-lock.yaml is deliberately allowed: .gitignore:138 covers it,
+   * so it is local residue that cannot reach a peer. Measured 2026-08-03 — a 0-byte
+   * untracked one from Jul 20 was sitting in the tree with no store and no symlinks,
+   * i.e. genuinely inert. Asserting on mere EXISTENCE would red the tree for that
+   * benign file and train people to ignore this guard; TRACKEDNESS is the property
+   * that actually causes recurrence.
+   */
+  it('tracks no pnpm/bun/yarn lockfile (a tracked one overrides .gitignore)', () => {
+    let tracked: string[];
+    try {
+      const out = execFileSync('git', ['ls-files', '--', '*pnpm-lock.yaml', '*bun.lockb', '*yarn.lock'], {
+        cwd: REPO,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+      });
+      tracked = out.split('\n').filter(Boolean);
+    } catch {
+      return; // no git available (tarball/vendored checkout) — nothing to assert
+    }
+    expect(
+      tracked,
+      `non-npm lockfile(s) TRACKED by git: ${tracked.join(', ')}\n` +
+        'A tracked lockfile survives .gitignore and re-enables the hijack for every clone.\n' +
+        `Remove it: git rm --cached <file> && rm -f <file>\n${REPAIR}`,
+    ).toEqual([]);
   });
 });
