@@ -10,7 +10,12 @@ import { z } from "zod";
 import { defineTool } from "@papercusp/agent-mcp";
 import { resolveAgentIdentity } from "../identity";
 import { resolveActorIdentity, actorMailboxKeys } from "../actor-identity";
-import { readInbox, drainAndDeliverUserMailbox, getSupersededMap } from "../messages";
+import {
+  readInbox,
+  drainAndDeliverUserMailbox,
+  getSupersededMap,
+  getRemoteOriginMsgIds,
+} from "../messages";
 import { heartbeatPresence, getPresence } from "../presence";
 import { createPresenceBeatThrottle } from "../presence-beat-throttle";
 import { readWatermark, writeWatermark } from "../watermarks";
@@ -219,6 +224,57 @@ export function boundInboxEntries<T extends Record<string, unknown>>(
     }
     return out;
   });
+}
+
+/** The warning attached to a REMOTE-ORIGIN entry that asserts infrastructure
+ *  state. Deliberately names the misreading it prevents AND the destructive act
+ *  such alarms prescribe, because both were observed (EI-19493603840800478). */
+export const REMOTE_ORIGIN_NOTE =
+  "⚠ REMOTE-ORIGIN — raised on a DIFFERENT node about ITS OWN install of this slug " +
+  "(slugs are identical across federated nodes). This is NOT necessarily about the tree " +
+  "you are in: verify local state before acting, and never run the rescue-commit such " +
+  "alarms suggest against this shared tree on the strength of another machine's fault.";
+
+/** Does this entry ASSERT INFRASTRUCTURE STATE (a watchdog/severe-event alarm),
+ *  as opposed to being ordinary peer chatter? Only these get the full warning —
+ *  a remote-authored plain message is correctly just `origin:'remote'`, and
+ *  warning on all of them would train the reader to skip the marker. */
+function assertsInfraState(e: Record<string, unknown>): boolean {
+  if (typeof e["condition_key"] === "string" && e["condition_key"]) return true;
+  const category = e["category"];
+  return (
+    typeof category === "string" &&
+    (category === "severe-event" ||
+      category === "severe-event-resolved" ||
+      category === "supervision")
+  );
+}
+
+/** EI-19493603840800478: mark entries authored on ANOTHER NODE.
+ *
+ *  A federated severe-event names only a harness slug, and slugs are identical on
+ *  every node — so a peer's alarm about ITS OWN install reads as a claim about the
+ *  local tree, and is locally unfalsifiable (healthy local state cannot distinguish
+ *  "already recovered" from "never was about this machine"). Two agents in a row
+ *  mis-attributed one such alarm to a local cause.
+ *
+ *  Annotating on READ rather than at the emitter is deliberate: WI-7309's `emitter`
+ *  stamp can only describe the node that RAISED the alarm, and the stale peers are
+ *  exactly the nodes that lack it — so `emitter:null` is ambiguous between "old
+ *  code" and "remote", forever. The receiving node always knows `origin`. Pure. */
+export function annotateRemoteOrigin<T extends Record<string, unknown>>(
+  entries: readonly T[],
+  remoteMsgIds: ReadonlySet<string>,
+): Array<Record<string, unknown>> {
+  if (remoteMsgIds.size === 0)
+    return entries as unknown as Array<Record<string, unknown>>;
+  return entries.map((e) => {
+    const id = e["msg_id"];
+    if (typeof id !== "string" || !remoteMsgIds.has(id)) return e;
+    const marked: Record<string, unknown> = { ...e, origin: "remote" };
+    if (assertsInfraState(e)) marked["remote_origin_note"] = REMOTE_ORIGIN_NOTE;
+    return marked;
+  }) as Array<Record<string, unknown>>;
 }
 
 /** WI-1444 severe-event condition lifecycle: annotate every entry whose
@@ -913,6 +969,22 @@ export default defineTool({
         .map((e) => e["msg_id"])
         .filter((id): id is string => typeof id === "string");
       if (ids.length > 0) entriesOut = annotateSuperseded(entriesOut, await getSupersededMap(ids));
+    } catch {
+      // Unmarked, but complete.
+    }
+
+    // EI-19493603840800478: mark entries authored on ANOTHER NODE. Same shape and
+    // rationale as the supersession marker above — one keyed query over the bounded
+    // page, fail-soft, non-mutating. Without it a peer's "git-sync FAULTING on
+    // <slug>" reads as a statement about THIS tree (slugs are identical across
+    // nodes) and is locally unfalsifiable; it also prescribes a rescue-commit
+    // against a shared tree. Cannot be fixed emitter-side: see annotateRemoteOrigin.
+    try {
+      const ids = entriesOut
+        .map((e) => e["msg_id"])
+        .filter((id): id is string => typeof id === "string");
+      if (ids.length > 0)
+        entriesOut = annotateRemoteOrigin(entriesOut, await getRemoteOriginMsgIds(ids));
     } catch {
       // Unmarked, but complete.
     }
