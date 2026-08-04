@@ -1702,14 +1702,19 @@ describe('EI-19462267124852221 — a POLICY-SUPPRESSED signal must not auto-reso
 
   function tickWith(health: SystemHealth, opens: EscalationRecord[]) {
     const resolvedIds: string[] = [];
+    const notes: string[] = [];
     return {
       resolvedIds,
+      notes,
       run: () =>
         runLivenessAlarmTick('ws', {
           readLast: () => health,
           computeHealth: async () => health,
           listOpen: async () => opens,
-          resolve: async (msg_id: string) => { resolvedIds.push(msg_id); },
+          resolve: async (msg_id: string, _choice?: unknown, note?: string) => {
+            resolvedIds.push(msg_id);
+            if (note) notes.push(note);
+          },
           escalate: async () => {},
           page: async () => {},
           now: () => 100 * 60_000 + 60_000,
@@ -1767,23 +1772,31 @@ describe('EI-19462267124852221 — a POLICY-SUPPRESSED signal must not auto-reso
     expect(policySuppressedLivenessSignatures(h).has('panel:bees')).toBe(true);
   });
 
-  // ── the defect: auto-resolve ───────────────────────────────────────────────
-  it('THE DEFECT: an open panel:bees escalation is NOT resolved while the gate withholds the signal', async () => {
-    // Pre-fix this resolved 'esc-bees' as "condition recovered" with the panel still
-    // crit, dropping the open row the next fire would have coalesced onto — so an
-    // unstable GATE (not a changing condition) drove fire/false-resolve/fire.
+  // ── the defect: the note, not the close ────────────────────────────────────
+  //
+  // The close itself is CORRECT and must stay: an idle-by-design fleet needs no human
+  // attention, so an open "no bees running" blocker is a false positive that has to
+  // drain (the one-time backlog sweep depends on it). Holding the row open instead was
+  // tried and rejected — it strands a benign escalation forever. The defect is that the
+  // close was ANNOUNCED as a recovery, making the durable log unable to distinguish a
+  // condition that cleared from one that was reclassified.
+  it('THE DEFECT: a policy-suppressed close does NOT claim the condition recovered', async () => {
     const t = tickWith(noBeesCrit(), [openRec('panel:bees', 'esc-bees')]);
-    const r = await t.run();
-    expect(t.resolvedIds).toEqual([]);
-    expect(r.resolved).toEqual([]);
+    await t.run();
+    expect(t.resolvedIds).toEqual(['esc-bees']); // still drains — a benign row must not linger
+    const note = t.notes.join('\n');
+    expect(note).not.toContain('condition recovered');
+    expect(note).toContain('STILL TRUE');
   });
 
-  it('CALIBRATION: a genuine bees recovery still auto-resolves (the fix is not a blanket freeze on panel:bees)', async () => {
-    // The load-bearing control: without it the test above would pass if the fix simply
-    // stopped resolving panel:bees at all, which would strand the row forever.
+  it('CALIBRATION: a genuine recovery still says "condition recovered"', async () => {
+    // The load-bearing control. Without it the test above would pass if the fix simply
+    // stamped "STILL TRUE" on every close, which would destroy the distinction it exists
+    // to create — the same conflation, sign-flipped.
     const t = tickWith(mkHealth({ evaluatedAt: 100 * 60_000 }), [openRec('panel:bees', 'esc-bees')]);
     await t.run();
     expect(t.resolvedIds).toEqual(['esc-bees']);
+    expect(t.notes.join('\n')).toContain('condition recovered');
   });
 });
 

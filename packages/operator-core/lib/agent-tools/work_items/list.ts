@@ -302,7 +302,9 @@ export default defineTool({
   // parent/includeChildren/limit) into the view fingerprint; `scope` adds the workspace.
   // NOTE: row summaries are budget-EXCERPTED by list size, so a row's content-hash can shift
   // when the list size changes — that just re-sends the row as `updated` (still checksum-correct,
-  // never wrong). Dormant until a delta-aware client sends `_meta.delta` (the WI-514 follow-up).
+  // never wrong). NOT dormant (WI-3153, corrected 2026-08-04): the MCP transport's delta proxy
+  // sends `_meta.delta` and reconstructs full rows before the model sees them; in-process callers
+  // send no cursor, so `negotiateDelta` returns full (reason:'no_request'). The model never merges.
   delta: {
     rows: (data) => (Array.isArray(data) ? data : null),
     itemKey: (row) => (row as { id: string }).id,

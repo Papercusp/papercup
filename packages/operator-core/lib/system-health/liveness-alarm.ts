@@ -1522,7 +1522,12 @@ export async function runLivenessAlarmTick(
   for (const [sig, recs] of openBySig) {
     if (currentSigs.has(sig)) continue; // still firing — keep the single open row
     if (unobservableSigs.has(sig)) continue; // NOT OBSERVED this tick ≠ recovered
-    if (suppressedSigs.has(sig)) continue; // SUPPRESSED on purpose ≠ recovered
+    // NOTE: a POLICY-SUPPRESSED signature is deliberately NOT skipped here. Closing its
+    // row is correct — an idle-by-design fleet needs no human attention, so the open
+    // "no bees running" blocker is a false positive that must drain (the one-time
+    // backlog sweep depends on exactly this). What must NOT happen is announcing it as
+    // a RECOVERY, which is what made the durable log unreadable; see `reason` below.
+    const policySuppressed = suppressedSigs.has(sig);
     // WI-4181: only a resolve that actually TRANSITIONED the row (wrote the
     // sibling escalation_resolved event) counts. resolveEscalation is idempotent
     // and returns the sentinel strings 'not_found' / 'already_resolved' /
@@ -1540,10 +1545,18 @@ export async function runLivenessAlarmTick(
         // EI-19462267124852221: carry the OBSERVATION, not just the conclusion. A bare
         // "condition recovered" is identical whether we saw a real zero or saw nothing,
         // which is why 5,303 false resolves were undiagnosable from the durable log.
+        // EI-19462267124852221: say WHICH of the two closes this is. "cleared (condition
+        // recovered)" on a policy-suppressed signal is simply false — measured 2026-08-04,
+        // every panel:bees auto-resolve carried it while the panel read crit in the ticks
+        // either side. A reader cannot tell a recovery from a reclassification if both
+        // write the same sentence, and that is why six passes could not diagnose this.
+        const reason = policySuppressed
+          ? 'withheld by a policy gate — the condition is STILL TRUE, reclassified as benign (NOT recovered)'
+          : 'condition recovered';
         const outcome = await resolve(
           rec.msg_id,
           'auto-resolved',
-          `infra-liveness signal '${sig}' cleared (condition recovered) — ${resolveEvidenceFor(sig, healthForSignals)}`,
+          `infra-liveness signal '${sig}' cleared (${reason}) — ${resolveEvidenceFor(sig, healthForSignals)}`,
         );
         if (outcome === 'not_found' || outcome === 'already_resolved' || outcome === 'requires_spawn_approve') continue;
         resolved.push(rec.msg_id);

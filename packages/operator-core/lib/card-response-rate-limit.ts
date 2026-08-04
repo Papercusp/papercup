@@ -9,6 +9,7 @@
  * methods + the `dynamic`/`runtime` config exports — Next warns on
  * extra exports from route files.
  */
+import { pinModuleState } from '@papercusp/module-singleton';
 
 const RATE_WINDOW_MS = 1000;
 const RATE_LIMIT = 30;
@@ -18,15 +19,19 @@ interface RateBucket {
   ts: number[];
 }
 
-const __SYM = Symbol.for('papercusp.cardResponseRateLimiter');
-type RateGlobals = typeof globalThis & {
-  [__SYM]?: Map<string /* userId */, RateBucket>;
-};
+// Pinned through @papercusp/module-singleton rather than a hand-rolled
+// `globalThis[Symbol.for(...)]` pair. Hand-rolling still shares the state
+// correctly, but the key is invisible to listModuleDuplications(), which then
+// answers a confident `[]` while this module is split (EI-19479108855357092).
+// The key string is unchanged, so a duplicate record loaded through a different
+// seam still lands on the same bucket map.
+const __rateState = pinModuleState<{ buckets: Map<string /* userId */, RateBucket> }>(
+  'papercusp.cardResponseRateLimiter',
+  () => ({ buckets: new Map() }),
+);
 
 function buckets(): Map<string, RateBucket> {
-  const g = globalThis as RateGlobals;
-  if (!g[__SYM]) g[__SYM] = new Map();
-  return g[__SYM]!;
+  return __rateState.buckets;
 }
 
 /** Returns true when the request should proceed; false when 429. */

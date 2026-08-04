@@ -10,9 +10,23 @@
  * operator side, and imported as a side-effect at startup (see
  * `agent-tools/index.ts`) — same shape as `pre-prompt-registry-config`.
  *
- * The flag is DEFAULT ON (owner-directed flip 2026-06-22) but INERT until a
- * delta-aware CLIENT exists (WI-514 — nothing sends `_meta.delta` yet), so the
- * server capability is live ahead of the client. OFF reverts every tool to the
+ * The flag is DEFAULT ON (owner-directed flip 2026-06-22).
+ *
+ * ⚠ NO LONGER INERT — and THIS COMMENT'S PREDECESSOR IS WHY THAT WENT UNNOTICED
+ * FOR A MONTH (WI-3153, measured 2026-08-04). It used to read "INERT until a
+ * delta-aware CLIENT exists (WI-514 — nothing sends `_meta.delta` yet)". The MCP
+ * transport's delta proxy (`_mcp-handler.ts` `maybeRunWithDeltaProxy`) was defined
+ * AND on the dispatch path from 2026-07-05 — one day BEFORE EI-7923 cited THIS LINE
+ * as its evidence that no client sends `_meta.delta`, and that false premise then
+ * propagated into WI-3153 and survived 29 days. Verify against the dispatch path,
+ * never against this comment.
+ *
+ * What actually happens: the proxy holds a per-session `DeltaToolClient`, sends
+ * `_meta.delta` on the model's behalf, applies + checksum-verifies the delta, and
+ * returns RECONSTRUCTED full rows (mode:'full', reason:'proxy_reconstructed'); on
+ * any checksum/parse failure it forgets the view and refetches full. The MODEL
+ * never merges. In-process callers set no cursor at all, so `negotiateDelta`
+ * returns full (reason:'no_request'). OFF reverts every tool to the
  * unconditionally-safe Lane-B behaviour (full | not_modified) — a real,
  * runtime-flippable kill-switch (`/admin/features`), not a no-op.
  *

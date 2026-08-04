@@ -201,7 +201,9 @@ export default defineTool({
   // which would silently miss the non-collection fields). The framework's content-hash
   // revision suppresses the body when the plan for these args is byte-identical to the last
   // read — an 18KB unchanged plan re-read returns `not_modified` instead of replaying it.
-  // Dormant until a delta-aware client sends `_meta.delta` (WI-514 / Phase 2-3).
+  // NOT dormant (WI-3153, corrected 2026-08-04): the MCP transport's delta proxy
+  // sends `_meta.delta` and reconstructs before the model sees anything. In-process
+  // callers set no cursor, so `negotiateDelta` returns full (reason:'no_request').
   delta: {
     scope: (_args, ctx) => (ctx as { workspaceId?: string }).workspaceId ?? "",
     schemaVersion: "plans-get-v1",

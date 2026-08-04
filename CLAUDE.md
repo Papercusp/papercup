@@ -228,21 +228,41 @@ bug blinded** — absence from an inventory is evidence only when there is exact
 inventory. Duplications now ride on that route beside the timer list.
 
 ⚠⚠ **`listModuleDuplications()` is still STRUCTURALLY PARTIAL — an empty `[]` is not a
-clean bill of health yet.** Six modules pin through the primitive and are reported
-(`scheduled-registry`, `lexicon`, `kokoro-tts`, `memory` ×2, `deployment-driver` —
-migrated on EI-19469900474673886). **21 more still hand-roll their pins** and are
-invisible to it: `libs/flags`, the three `libs/generic/tooldef` registries,
-`apps/operator/lib/chat-cards/ask-user-local.ts`, and ~16 caches / sync-state slots
-across `packages/operator-core`. Run the lint's `--list` for the current set — the
-count moves as they migrate, so trust the command, not this sentence.
+clean bill of health yet.** Thirteen modules pin through the primitive and are reported
+(`scheduled-registry`, `lexicon`, `kokoro-tts`, `memory` ×2, `deployment-driver`,
+`flags`, three `tooldef` registries, and three `operator-core` caches) — measure that
+set with `grep -rl pinModuleState`, not `pinModuleState(`, which misses the
+generic-parameter call form `pinModuleState<T>(`. **36 pins across 32 files still
+hand-roll theirs** and are invisible to it, spread over
+`packages/operator-core`, `apps/operator`, `apps/operator-vite`, `libs/generic/sse` and
+`libs/generic/tooldef`. Run the lint's `--list` for the current set — the count moves as
+they migrate, so trust the command, not this sentence.
 
-⚠ That "21" is itself a correction worth noting: the work item that commissioned the
-migration said **five**, because its audit grepped `Symbol.for('@papercusp` and the
-larger population uses the dot form `Symbol.for('papercusp.…')`. A second, narrower
-miss followed — the first allowlist was seeded from an `rg … | head -30` and was two
-sites short. Both are the same error the guard exists to prevent, one level up: **a
-proxy measurement's negative covers only the conditions it reproduced.** Measure the
-population with the detector, not with a grep you wrote to look for it.
+⚠ **That population has now been corrected THREE times, each time UPWARD, and each time
+because the measurement matched a spelling instead of the thing.** The sequence is worth
+knowing, because every step looked rigorous from the inside:
+
+1. The commissioning work item said **five** — its audit grepped `Symbol.for('@papercusp`,
+   while the larger population uses the dot form `Symbol.for('papercusp.…')`.
+2. The first allowlist, seeded from an `rg … | head -30`, was two sites short.
+3. The **detector built to replace those greps was itself form-blind** (2026-08-04,
+   EI-19479108855357092): it matched `Symbol.for(...)` keys only, so it reported **14**
+   remaining while **18 more files** pinned with a plain STRING key
+   (`const K = '__papercuspPulseCache'; (globalThis as G)[K]`) — a form it never scanned.
+   Three of those sat in `harness-core.ts` beside a fourth pin it *did* flag, and one was
+   a fourth `tooldef` registry a prior tranche believed it had finished migrating.
+
+**A proxy measurement's negative covers only the conditions it reproduced** — and step 3
+shows that "use the detector, not a grep" is not by itself protection: a detector is only
+as wide as the shape it matches, and a *tool* asserting "that's all of them" is far more
+persuasive than a grep saying it. When a guard's job is to make a population trustworthy,
+anchor its match to the PROPERTY that defines membership (here: indexing `globalThis`),
+never to how the key happens to be spelled — and pair every widening with a control that
+fails against the narrower rule, or the next narrowing is silent.
+
+⚠ Note the ALLOW list legitimately GREW 14 → 32 at step 3. That is a **baseline
+correction**, not a breach of its shrink-only rule: no pin was added, 18 were finally
+seen. Shrink-only governs new debt; it is never a reason to keep a measurement wrong.
 
 ## Deployment model: desktop is the product; the standalone webapp is RETIRED
 

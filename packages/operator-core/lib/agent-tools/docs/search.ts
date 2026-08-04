@@ -127,8 +127,10 @@ const argsSchema = z.object({
     .boolean()
     .optional()
     .describe(
-      'Merge embedding-cosine hits after the lexical results (up to 3 extras, marked semantic:true). ' +
-        'Default on (off under vitest); false = lexical-only.',
+      'Fuse an embedding-cosine leg with the keyword leg (RRF), so a topically-exact page whose words ' +
+        "never appear verbatim still ranks. Hits found ONLY that way are marked semantic:true. " +
+        'Default on (off under vitest); false = lexical-only. Read `legs` on the response for whether ' +
+        'it actually ran: legs.degraded=true means the ranking is NOT the one this promises.',
     ),
 });
 

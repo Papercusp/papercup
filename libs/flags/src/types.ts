@@ -1659,9 +1659,14 @@ export const FLAGS = {
   // agent-tool-delta-protocol-2026-06-22 P-016 (D-007/D-008): gates the LLM-facing
   // SEMANTIC-delta opt-in (mode:delta merge responses) — the silent-wrong-merge
   // hazard the owner BUILD decision agreed to retire BY TEST. DEFAULT ON
-  // (owner-directed flip 2026-06-22): enables the server capability ahead of the
-  // delta-aware client (WI-514 — nothing sends _meta.delta yet, so it's INERT),
-  // and the delta-gate (apps/operator/lib/release/delta-gate.ts) stays
+  // (owner-directed flip 2026-06-22): enabled the server capability ahead of the
+  // delta-aware client. ⚠ NO LONGER INERT (WI-3153, measured 2026-08-04): the MCP
+  // transport's delta proxy (_mcp-handler.ts `maybeRunWithDeltaProxy` — defined AND
+  // called since 2026-07-05) IS that client. It sends _meta.delta on the model's
+  // behalf, merges + checksum-verifies the reply, and hands the model RECONSTRUCTED
+  // full rows (mode:'full', reason:'proxy_reconstructed'), so the model itself never
+  // merges. Do not re-derive "inert" from this comment's history — grep the dispatch
+  // path. The delta-gate (apps/operator/lib/release/delta-gate.ts) stays
   // warn-only/un-armed so it never blocks deploys. OFF ⇒ tools degrade to the
   // unconditionally-safe Lane-B behaviour (full | not_modified), never a semantic
   // delta — a reversible runtime kill-switch (host wiring: operator-core's

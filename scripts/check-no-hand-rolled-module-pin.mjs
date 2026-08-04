@@ -88,7 +88,6 @@ const ALLOW = new Set([
   'packages/operator-core/lib/agent-tools/coordination/agent-question-gate.ts',
   'packages/operator-core/lib/cache/debounced-invalidate.ts',
   'packages/operator-core/lib/cache/instance.ts',
-  'packages/operator-core/lib/card-response-rate-limit.ts',
   'packages/operator-core/lib/claude-credential-sync.ts',
   'packages/operator-core/lib/commands/leader-bridge.ts',
   'packages/operator-core/lib/endpoint-route/routes/agent-mcp/operator-trigger-state.ts',

@@ -4,7 +4,8 @@
  * owner-ratified D-002 design; mig 537 `harness_shared.coord_read_cursors`).
  *
  * The problem this solves: every delta protocol in this system so far failed on
- * the CALLER leg — clients never carry cursors (`_meta.delta` inert per WI-514;
+ * the CALLER leg — AGENT clients never carry cursors (the `_meta.delta` cursor is
+ * carried by the MCP TRANSPORT's delta proxy, not by any agent — WI-3153;
  * `since_ts` seeded wrong loses messages forever, WI-1600). So the cursor lives
  * SERVER-side, keyed (workspace, owner, surface), and the caller passes nothing.
  *
