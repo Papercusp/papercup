@@ -25,9 +25,33 @@
 import { createCache, type Cache, type CacheConfig } from '@papercusp/cache';
 import { FLAGS } from '@papercusp/flags';
 import { getFlag, onFlagChange } from '@papercusp/flags/server';
+import { pinModuleState } from '@papercusp/module-singleton';
 import { systemDistinctId } from '../flag-distinct-id';
 
-const GLOBAL_KEY = '__papercuspOperatorCache__';
+/*
+ * This module's ENTIRE realm-pinned state, pinned ONCE through
+ * @papercusp/module-singleton rather than a hand-rolled `globalThis[key]`
+ * pair. Hand-rolling shares the instance correctly but is invisible to
+ * listModuleDuplications(), which then answers a confident `[]` while this
+ * module is split (EI-19479108855357092).
+ *
+ * `cacheLayerOn` / `flagWiringInit` are pinned ALONGSIDE the instance on
+ * purpose. They were module-local while the Cache they govern was shared —
+ * the half-migrated shape: on a split each record wires its OWN
+ * `onFlagChange` subscription (a listener leak) and keeps its own
+ * `cacheLayerOn`, while the shared cache's `bypass: () => !cacheLayerOn`
+ * closure answers to whichever record won the construction race. Pinning
+ * them together makes it one subscription and one kill-switch.
+ */
+const __state = pinModuleState<{
+  cache: Cache | null;
+  cacheLayerOn: boolean;
+  flagWiringInit: boolean;
+}>('@papercusp/operator-core.operatorCache', () => ({
+  cache: null,
+  cacheLayerOn: true,
+  flagWiringInit: false,
+}));
 
 /**
  * L1 bound (P-018 operational hardening). The lib default is 10_000; the operator
@@ -52,21 +76,18 @@ const MAX_L1_ENTRIES = 50_000;
 // sync-sse importer's module graph to evaluate `@papercusp/flags/server` — breaking
 // the many unit tests that mock that module with only `getFlag`. Lazy init means
 // only code that actually USES the cache touches the flag subscription.
-let cacheLayerOn = true;
-let flagWiringInit = false;
-
 async function refreshCacheLayer(): Promise<void> {
   try {
-    cacheLayerOn = await getFlag(FLAGS.CACHE_LAYER, systemDistinctId());
+    __state.cacheLayerOn = await getFlag(FLAGS.CACHE_LAYER, systemDistinctId());
   } catch {
-    cacheLayerOn = true; // fail-safe ⇒ cache stays on (default behavior)
+    __state.cacheLayerOn = true; // fail-safe ⇒ cache stays on (default behavior)
   }
 }
 
 /** Idempotently install the flag subscription + prime the sync-cached value. */
 function ensureFlagWiring(): void {
-  if (flagWiringInit) return;
-  flagWiringInit = true;
+  if (__state.flagWiringInit) return;
+  __state.flagWiringInit = true;
   void refreshCacheLayer();
   onFlagChange((key) => {
     if (key === null || key === FLAGS.CACHE_LAYER) void refreshCacheLayer();
@@ -75,7 +96,7 @@ function ensureFlagWiring(): void {
 
 /** Whether the operator L1 cache layer is live (SYNC-cached CACHE_LAYER flag). */
 export function cacheLayerEnabled(): boolean {
-  return cacheLayerOn;
+  return __state.cacheLayerOn;
 }
 
 /** Test-only: re-read CACHE_LAYER synchronously-awaitably (the lazy `void` read may not have settled). */
@@ -85,7 +106,7 @@ export async function _refreshCacheLayerForTests(): Promise<void> {
 
 /** The default operator-cache config: an explicit L1 bound + the kill-switch bypass seam. */
 function operatorCacheConfig(extra: CacheConfig = {}): CacheConfig {
-  return { maxL1Entries: MAX_L1_ENTRIES, bypass: () => !cacheLayerOn, ...extra };
+  return { maxL1Entries: MAX_L1_ENTRIES, bypass: () => !__state.cacheLayerOn, ...extra };
 }
 
 /**
@@ -94,13 +115,8 @@ function operatorCacheConfig(extra: CacheConfig = {}): CacheConfig {
  */
 export function getOperatorCache(): Cache {
   ensureFlagWiring();
-  const g = globalThis as Record<string, unknown>;
-  let c = g[GLOBAL_KEY] as Cache | undefined;
-  if (!c) {
-    c = createCache(operatorCacheConfig());
-    g[GLOBAL_KEY] = c;
-  }
-  return c;
+  if (!__state.cache) __state.cache = createCache(operatorCacheConfig());
+  return __state.cache;
 }
 
 /**
@@ -115,17 +131,17 @@ export function setOperatorCache(config: CacheConfig = {}): Cache {
   // bypass), so an override still honors the CACHE_LAYER kill-switch unless the
   // test deliberately passes its own `bypass`.
   const c = createCache(operatorCacheConfig(config));
-  (globalThis as Record<string, unknown>)[GLOBAL_KEY] = c;
+  __state.cache = c;
   return c;
 }
 
 /** Test seam: install a specific Cache instance as the process-wide singleton. */
 export function installOperatorCache(cache: Cache): Cache {
-  (globalThis as Record<string, unknown>)[GLOBAL_KEY] = cache;
+  __state.cache = cache;
   return cache;
 }
 
 /** Test-only: drop the singleton so the next `getOperatorCache()` rebuilds it. */
 export function resetOperatorCacheForTests(): void {
-  delete (globalThis as Record<string, unknown>)[GLOBAL_KEY];
+  __state.cache = null;
 }

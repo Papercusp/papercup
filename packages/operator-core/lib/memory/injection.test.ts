@@ -683,7 +683,7 @@ describe('push-path recall telemetry is recorded PER POOL (P-026)', () => {
       await flush();
       const input = recordRecallStatsMock.mock.calls[0]![1] as {
         pools: Record<string, { entries: unknown[] }>;
-        admission: { admitted: number };
+        admission: { admitted: number; returned: number };
       };
       const pooled =
         input.pools.user!.entries.length +

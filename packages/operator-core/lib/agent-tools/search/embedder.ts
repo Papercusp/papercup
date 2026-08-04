@@ -196,20 +196,20 @@ function cachedQueryEmbed(mode: string, dims: number, embed: Embedder): Embedder
  * (a caller's own, from another space) simply misses — yielding no floor
  * rather than a threshold imported from a foreign space.
  *
- * A WeakMap so a discarded embedder is still collectable.
+ * ⚠ The registry itself lives in `search/embedder-mode-registry.ts`, NOT here.
+ * The ranking policy has to READ it, and if it read it from this module it
+ * would statically pull this whole resolution stack — which reaches
+ * `memory/configure.ts` and its module-scope PG I/O — into every
+ * `runHybridSearch` caller at import time. See that module's header for the
+ * measurement. This module remains the only WRITER.
  */
-const embedderModes = new WeakMap<Embedder, ResolvedQueryEmbedder['mode']>();
 
 /**
  * The mode of an embedder built by this module, or `undefined` for one it did
- * not build. `undefined` means "unknown space" and callers MUST treat it as
- * "apply nothing space-specific" — never as a default space.
+ * not build. Re-exported so existing importers keep working; the definition
+ * (and the WeakMap) live in the leaf registry.
  */
-export function embedderModeOf(
-  embedder: Embedder | null | undefined,
-): ResolvedQueryEmbedder['mode'] | undefined {
-  return embedder ? embedderModes.get(embedder) : undefined;
-}
+export { embedderModeOf } from '../../search/embedder-mode-registry';
 
 export async function buildQueryEmbedderResolved(
   opts?: QueryEmbedderAcquireOpts,

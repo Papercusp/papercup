@@ -25,6 +25,7 @@
  */
 
 import type { Cache } from "@papercusp/cache";
+import { pinModuleState } from "@papercusp/module-singleton";
 
 /**
  * The append-heavy log tables whose per-event `.changed` bump must be debounced
@@ -139,26 +140,26 @@ export class TagBumpDebouncer {
   }
 }
 
-// Process-wide singleton (the cache-ECA bump path uses it). Anchored on globalThis
-// so the tsx runtime and a vitest module graph share one debouncer, matching the
-// operator-cache singleton's own anchoring.
-const GLOBAL_KEY = "__papercuspTagBumpDebouncer__";
+// Process-wide singleton (the cache-ECA bump path uses it), realm-pinned so the
+// tsx runtime and a vitest module graph share one debouncer — matching the
+// operator-cache singleton's own pinning. Pinned through
+// @papercusp/module-singleton rather than a hand-rolled `globalThis[key]` pair:
+// hand-rolling shares correctly but is invisible to listModuleDuplications(),
+// which then answers a confident `[]` while this module is split
+// (EI-19479108855357092).
+const __state = pinModuleState<{ debouncer: TagBumpDebouncer | null }>(
+  '@papercusp/operator-core.tagBumpDebouncer',
+  () => ({ debouncer: null }),
+);
 
 export function getTagBumpDebouncer(): TagBumpDebouncer {
-  const g = globalThis as Record<string, unknown>;
-  let d = g[GLOBAL_KEY] as TagBumpDebouncer | undefined;
-  if (!d) {
-    d = new TagBumpDebouncer();
-    g[GLOBAL_KEY] = d;
-  }
-  return d;
+  if (!__state.debouncer) __state.debouncer = new TagBumpDebouncer();
+  return __state.debouncer;
 }
 
 /** Test seam: install a debouncer (e.g. with a fake scheduler / short window). */
 export function setTagBumpDebouncerForTests(d: TagBumpDebouncer | null): void {
-  const g = globalThis as Record<string, unknown>;
-  if (d) g[GLOBAL_KEY] = d;
-  else delete g[GLOBAL_KEY];
+  __state.debouncer = d;
 }
 
 /**

@@ -281,6 +281,14 @@ describe('no-hand-rolled-module-pin — the tree', () => {
       // predicate fixtures above; those are synthetic source strings, not
       // readers, so they stay unchanged on purpose.
       'packages/operator-core/lib/harness-core.ts',
+      // The two coalescer singletons + the operator Cache. instance.ts also
+      // folded in `cacheLayerOn`/`flagWiringInit`, which were module-local
+      // while the Cache they govern was shared — a split wired one
+      // onFlagChange subscription per record and left the kill-switch to
+      // whichever record won the construction race (METHOD RULE 1).
+      'packages/operator-core/lib/cache/instance.ts',
+      'packages/operator-core/lib/cache/debounced-invalidate.ts',
+      'packages/operator-core/lib/system-health/refresh-coalescer.ts',
     ]) {
       expect(paths.has(migrated)).toBe(false);
     }

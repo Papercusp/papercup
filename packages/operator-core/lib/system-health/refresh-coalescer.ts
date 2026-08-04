@@ -39,6 +39,8 @@
  * extract the common core then rather than generalising on spec.
  */
 
+import { pinModuleState } from '@papercusp/module-singleton';
+
 /** Injectable scheduler seam (tests use a manual driver / fake timers). */
 export interface RefreshScheduler {
   setTimer(fn: () => void, ms: number): unknown;
@@ -168,24 +170,22 @@ export class PanelRefreshCoalescer {
   }
 }
 
-// Process-wide singleton, anchored on globalThis so the tsx runtime and a
-// vitest module graph share one coalescer — same rationale (and same hazard)
-// as the tag-bump debouncer's anchoring.
-const GLOBAL_KEY = "__papercuspPanelRefreshCoalescer__";
+// Process-wide singleton, realm-pinned so the tsx runtime and a vitest module
+// graph share one coalescer — same rationale (and same hazard) as the tag-bump
+// debouncer's pinning, and pinned the same way: through
+// @papercusp/module-singleton rather than a hand-rolled `globalThis[key]` pair,
+// so the pin stays visible to listModuleDuplications() (EI-19479108855357092).
+const __state = pinModuleState<{ coalescer: PanelRefreshCoalescer | null }>(
+  '@papercusp/operator-core.panelRefreshCoalescer',
+  () => ({ coalescer: null }),
+);
 
 export function getPanelRefreshCoalescer(): PanelRefreshCoalescer {
-  const g = globalThis as Record<string, unknown>;
-  let c = g[GLOBAL_KEY] as PanelRefreshCoalescer | undefined;
-  if (!c) {
-    c = new PanelRefreshCoalescer();
-    g[GLOBAL_KEY] = c;
-  }
-  return c;
+  if (!__state.coalescer) __state.coalescer = new PanelRefreshCoalescer();
+  return __state.coalescer;
 }
 
 /** Test seam: install a coalescer (e.g. with a fake scheduler / short window). */
 export function setPanelRefreshCoalescerForTests(c: PanelRefreshCoalescer | null): void {
-  const g = globalThis as Record<string, unknown>;
-  if (c) g[GLOBAL_KEY] = c;
-  else delete g[GLOBAL_KEY];
+  __state.coalescer = c;
 }

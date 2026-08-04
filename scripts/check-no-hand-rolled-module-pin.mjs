@@ -86,8 +86,6 @@ const ALLOW = new Set([
   'libs/generic/sse/src/server/channel.ts',
   'libs/generic/tooldef/src/tool-projection.ts',
   'packages/operator-core/lib/agent-tools/coordination/agent-question-gate.ts',
-  'packages/operator-core/lib/cache/debounced-invalidate.ts',
-  'packages/operator-core/lib/cache/instance.ts',
   'packages/operator-core/lib/claude-credential-sync.ts',
   'packages/operator-core/lib/commands/leader-bridge.ts',
   'packages/operator-core/lib/endpoint-route/routes/agent-mcp/operator-trigger-state.ts',
@@ -107,7 +105,6 @@ const ALLOW = new Set([
   'packages/operator-core/lib/search/session-ingest.ts',
   'packages/operator-core/lib/search/turn-chunk-sync.ts',
   'packages/operator-core/lib/sync-sse.ts',
-  'packages/operator-core/lib/system-health/refresh-coalescer.ts',
 ]);
 
 function* walk(dir) {

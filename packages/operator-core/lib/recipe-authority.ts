@@ -343,6 +343,65 @@ export async function buildRecipeAuthorityRecommendation(input: {
  * (`authority_required` — obtain one via recipes:search's recommendation, or
  * supply matching `authority.context`), which a fresh proof CAN fix.
  */
+/**
+ * WI-4946: build the `authority_unresolved` reason, LEADING with the specific
+ * construct that fired rather than listing all four and leaving the caller to
+ * guess. Passing `null` yields the generic form (the pre-WI-4946 text), which
+ * is what a caller sees only if no cause was recorded.
+ *
+ * Note the deliberate asymmetry in the tail: three of the causes are inherent
+ * properties of the script and genuinely permanent, but `unparsable-call-form`
+ * means the ANALYZER could not read the call — that is a tooling limitation,
+ * and claiming it is "by design" would be a confidently wrong answer of exactly
+ * the kind this discriminator exists to stop.
+ */
+function unresolvedReason(cause: RecipeUnresolvedCause | null | undefined): string {
+  const workaround =
+    'run the script directly via code:run instead (inline it, or code:run { script: "return await ' +
+    'tools.recipes.get({ id }).then(r => /* run r.script yourself */)" }).';
+  const permanent =
+    'so NO authority proof (including from a NESTED tools.recipes.run(...) call inside another recipe) can ever ' +
+    'authorize running it via recipes:run. This is a permanent, by-design limitation, not a transient failure: ';
+
+  switch (cause?.kind) {
+    case 'opaque-tool':
+      return (
+        `the recipe script calls \`${cause.tool}\`, an opaque/unprovable tool call whose effects cannot be ` +
+        `statically verified ` +
+        `(raw SQL via dev:pg_query, a shell via capability:bash/capability:script, or a nested code:run) — ` +
+        `${permanent}${workaround} NOTE: this is a property of the SCRIPT, not of your session — it is not a ` +
+        `harness/workspace authority mismatch, and re-running it from a different harness will fail identically.`
+      );
+    case 'dynamic-dispatch-target':
+      return (
+        'the recipe script calls `tools:invoke` with a dynamically-computed `name`, so the tool actually ' +
+        `dispatched cannot be known before the script runs — ${permanent}${workaround} If the target IS static, ` +
+        'spell it as a string literal (tools:invoke { name: "server:verb" }) and the call becomes provable.'
+      );
+    case 'dynamic-scope-args':
+      return (
+        `the recipe script calls \`${cause.tool}\` with dynamically-computed arguments in a scoped namespace ` +
+        '(plan/item/fleet/harness/lock/resource), so the exact entities it would touch cannot be known before ' +
+        `it runs — ${permanent}${workaround} If the arguments ARE fixed, spell them as literals and the call ` +
+        'becomes provable.'
+      );
+    case 'unparsable-call-form':
+      return (
+        'the recipe script references tools but the analyzer could not statically resolve ANY call in it — a ' +
+        'dynamic or unsupported access form (a computed member, an aliased dispatch handle, or a call built at ' +
+        'runtime). Unlike the other authority_unresolved causes this is an ANALYZER limitation rather than a ' +
+        'proven property of the script, so it may become provable if the script is rewritten to call tools by ' +
+        `literal name. Until then no proof can be derived: ${workaround}`
+      );
+    default:
+      return (
+        'the recipe script itself contains an opaque/unprovable tool call (raw SQL via dev:pg_query, a shell via ' +
+        'capability:bash/capability:script, a nested code:run, or a dynamically-computed plan/item/fleet/harness/' +
+        `resource argument) — its bound identities cannot be statically verified, ${permanent}${workaround}`
+      );
+  }
+}
+
 const AUTHORITY_ERROR_REASONS: Record<string, string> = {
   authority_unresolved: unresolvedReason(null),
   authority_required:
@@ -366,13 +425,21 @@ export async function validateRecipeAuthorityProof(input: {
   proof?: RecipeAuthorityProof | null;
   liveContext?: RecipeAuthorityContext;
 }): Promise<{ ok: true; descriptor: RecipeAuthorityDescriptor } | { ok: false; error: string; reason: string }> {
-  const fail = (error: string): { ok: false; error: string; reason: string } => ({
+  // WI-4946: `authority_unresolved` reports WHICH construct fired; every other
+  // code keeps its static text.
+  const fail = (
+    error: string,
+    cause?: RecipeUnresolvedCause | null,
+  ): { ok: false; error: string; reason: string } => ({
     ok: false,
     error,
-    reason: AUTHORITY_ERROR_REASONS[error] ?? error,
+    reason:
+      error === 'authority_unresolved'
+        ? unresolvedReason(cause)
+        : (AUTHORITY_ERROR_REASONS[error] ?? error),
   });
   const descriptor = await deriveRecipeAuthority(input.script);
-  if (descriptor.unresolved) return fail('authority_unresolved');
+  if (descriptor.unresolved) return fail('authority_unresolved', descriptor.unresolvedCause);
   if (!input.proof) {
     return descriptor.bound ? fail('authority_required') : { ok: true, descriptor };
   }
