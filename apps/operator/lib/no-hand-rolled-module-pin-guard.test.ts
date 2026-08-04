@@ -129,9 +129,104 @@ describe('no-hand-rolled-module-pin — predicate (known-negative controls)', ()
     expect(findPins(src)).toEqual([]);
   });
 
-  it('does NOT flag a globalThis access that uses no Symbol.for key', () => {
+  it('does NOT flag a globalThis access that uses no key const at all', () => {
+    // A plain property write, not a keyed pin. (Named for "no key const"
+    // rather than "no Symbol.for": the predicate now accepts string keys too,
+    // so the old wording described a rule that no longer exists.)
     const src = `const g = globalThis as Record<string, unknown>; g.someFlag = true;`;
     expect(findPins(src)).toEqual([]);
+  });
+
+  it('does NOT flag a string key indexed into something OTHER than globalThis', () => {
+    // THE precision anchor for the string form. A string-keyed index is far too
+    // common to match on shape — this is `process.env[K]` in
+    // transport-adapters/configure.ts, which a globalThis-anchored rule must
+    // leave alone. If this ever starts failing, the predicate has gone loose
+    // and every env/localStorage read in the tree is about to be reported as a
+    // realm pin.
+    const src = `
+      const FORCE_HTTP_ENV_NAME = 'PAPERCUSP_FORCE_HTTP_TRANSPORT';
+      const g = globalThis as Record<string, unknown>;
+      export function read(): string | undefined {
+        return process.env[FORCE_HTTP_ENV_NAME];
+      }
+    `;
+    expect(findPins(src)).toEqual([]);
+  });
+});
+
+describe('no-hand-rolled-module-pin — the STRING-key form (the 2026-08-04 blind spot)', () => {
+  // The predicate originally matched `Symbol.for(...)` ONLY, so it reported 14
+  // remaining sites while 18 more files pinned with a plain string key and were
+  // invisible to it — including three in harness-core.ts sitting beside a
+  // fourth it did flag, and a fourth tooldef registry that a prior tranche
+  // believed it had finished. These controls exist so the guard can never
+  // silently narrow back to one spelling (EI-19479108855357092).
+
+  it('FLAGS a plain-STRING key pinned through a globalThis alias', () => {
+    const src = `
+      const __pulseCacheKey = '__papercuspPulseCache';
+      type PulseGlobals = { [__pulseCacheKey]?: Map<string, number> };
+      const __pulseCache = (() => {
+        const g = globalThis as PulseGlobals;
+        if (!g[__pulseCacheKey]) g[__pulseCacheKey] = new Map();
+        return g[__pulseCacheKey]!;
+      })();
+    `;
+    const hits = findPins(src);
+    expect(hits).toHaveLength(1);
+    expect(hits[0].key).toBe('__papercuspPulseCache');
+    expect(hits[0].form).toBe('string');
+  });
+
+  it('FLAGS a string key indexed directly off a globalThis cast', () => {
+    const src = `
+      const ADV_INSIGHTS_CACHE_KEY = '__advInsightsCache';
+      const cache =
+        ((globalThis as Record<string, unknown>)[ADV_INSIGHTS_CACHE_KEY] as Map<string, number> | undefined) ??
+        ((globalThis as Record<string, unknown>)[ADV_INSIGHTS_CACHE_KEY] = new Map());
+    `;
+    expect(findPins(src).map((h: { key: string }) => h.key)).toEqual(['__advInsightsCache']);
+  });
+
+  it('FLAGS a pin DECLARED only in a multi-line globalThis intersection type', () => {
+    // scratch-gc.ts's shape: the indexing call site was deleted when DBOS took
+    // over the schedule, leaving the pin type behind across two lines. A
+    // line-local rule dropped it — i.e. widening the predicate silently LOST a
+    // site it already had. Regression control for that specific mistake.
+    const src = `
+      const __SYM = Symbol.for('papercusp.scratchGcScheduler');
+      type SchedulerGlobals = typeof globalThis & {
+        [__SYM]?: { timer: ReturnType<typeof setInterval> | null };
+      };
+    `;
+    expect(findPins(src).map((h: { key: string }) => h.key)).toEqual([
+      'papercusp.scratchGcScheduler',
+    ]);
+  });
+
+  it('reports BOTH key forms present in one file, each labelled by its form', () => {
+    // harness-core.ts really is mixed: three string keys beside one symbol key.
+    const src = `
+      const __costCacheKey = '__papercuspCostCache';
+      type CostGlobals = { [__costCacheKey]?: Map<string, number> };
+      const __costCache = (() => {
+        const g = globalThis as CostGlobals;
+        if (!g[__costCacheKey]) g[__costCacheKey] = new Map();
+        return g[__costCacheKey]!;
+      })();
+      const __aliveCacheKey = Symbol.for('papercusp.harnessAliveCache');
+      type AliveGlobals = typeof globalThis & { [__aliveCacheKey]?: Map<string, boolean> };
+      const __aliveCache = (() => {
+        const g2 = globalThis as AliveGlobals;
+        if (!g2[__aliveCacheKey]) g2[__aliveCacheKey] = new Map();
+        return g2[__aliveCacheKey]!;
+      })();
+    `;
+    const hits = findPins(src);
+    expect(
+      hits.map((h: { key: string; form: string }) => `${h.form}:${h.key}`).sort(),
+    ).toEqual(['string:__papercuspCostCache', 'symbol:papercusp.harnessAliveCache']);
   });
 });
 

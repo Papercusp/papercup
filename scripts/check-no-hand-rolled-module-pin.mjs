@@ -68,22 +68,49 @@ const SKIP_DIR = new Set([
 /**
  * Known hand-rolled pins that predate this guard. SHRINK-ONLY — see the header.
  * Each entry is a repo-relative path; a file may hold more than one pin.
+ *
+ * ⚠ This list GREW once, from 14 files to 32, and that was a BASELINE
+ * CORRECTION rather than a shrink-only violation. Not one hand-rolled pin was
+ * added: the detector was widened to see plain-string keys alongside
+ * `Symbol.for` ones, and 18 files that had pinned to the realm all along became
+ * visible for the first time (EI-19479108855357092). The distinction is the
+ * whole point of the rule — "the list may only shrink" governs NEW debt, and is
+ * not a reason to keep a measurement wrong. Growing it for any OTHER reason
+ * re-opens the hole this guard closes.
  */
 const ALLOW = new Set([
+  'apps/operator-vite/src/components/adv/AdvHarnessPanelPage.tsx',
+  'apps/operator/app/adv/harnesses/AdvDocsTab.tsx',
+  'apps/operator/bin/host-bootstrap.ts',
   'apps/operator/lib/chat-cards/ask-user-local.ts',
+  'libs/generic/sse/src/server/channel.ts',
+  'libs/generic/tooldef/src/tool-projection.ts',
   'packages/operator-core/lib/agent-tools/coordination/agent-question-gate.ts',
+  'packages/operator-core/lib/cache/debounced-invalidate.ts',
+  'packages/operator-core/lib/cache/instance.ts',
   'packages/operator-core/lib/card-response-rate-limit.ts',
+  'packages/operator-core/lib/claude-credential-sync.ts',
+  'packages/operator-core/lib/commands/leader-bridge.ts',
+  'packages/operator-core/lib/endpoint-route/routes/agent-mcp/operator-trigger-state.ts',
   'packages/operator-core/lib/endpoint-route/routes/harness/discord.ts',
+  'packages/operator-core/lib/endpoint-route/routes/harness/phases.ts',
   'packages/operator-core/lib/endpoint-route/routes/harness/projects.ts',
+  'packages/operator-core/lib/events/registry.ts',
   'packages/operator-core/lib/harness-agent-runs.ts',
   'packages/operator-core/lib/harness-core.ts',
   'packages/operator-core/lib/operator-state-pg.ts',
+  'packages/operator-core/lib/plugin-api-mount.ts',
+  'packages/operator-core/lib/plugin-host-runtime.ts',
   'packages/operator-core/lib/posthog-config.ts',
+  'packages/operator-core/lib/pot/wake.ts',
+  'packages/operator-core/lib/rationale/service.ts',
   'packages/operator-core/lib/scratch-gc.ts',
   'packages/operator-core/lib/search/doc-embed-sync.ts',
   'packages/operator-core/lib/search/embed-backfill.ts',
   'packages/operator-core/lib/search/session-ingest.ts',
   'packages/operator-core/lib/search/turn-chunk-sync.ts',
+  'packages/operator-core/lib/sync-sse.ts',
+  'packages/operator-core/lib/system-health/refresh-coalescer.ts',
 ]);
 
 function* walk(dir) {

@@ -565,21 +565,17 @@ export function evaluateLivenessAlarm(
     // healthy (spawner/engine provably live) — so it is an idle fleet, not an
     // infra fault. Only the specific no-bees case is gated; a bees-crit for any
     // OTHER reason (a cursed placement while bees run: running > 0) still surfaces.
-    if (panel.key === 'bees' && health.panels.bees?.data?.running === 0) {
-      // EI-15006: with the threaded cup-placeable + capacity context, suppress
-      // ONLY the idle-by-design case (no cup work + spawner provably live +
-      // capacity not known-exhausted). A genuine spawner-down / cup-work-waiting
-      // / cup-tier-full shape still fires — the two false-directions the raw
-      // `frontier === 0` gate got wrong (false page during idle; false SILENCE of
-      // a real spawner-down when the frontier read empty).
-      if (opts.beesLiveness) {
-        if (beesIdleByDesign(opts.beesLiveness)) continue;
-      } else if (health.panels.workFeed?.data?.frontier === 0) {
-        // LEGACY EI-2146 gate for a caller that did not thread the context (an
-        // old/pure evaluator) — byte-identical to the pre-EI-15006 behavior.
-        continue;
-      }
-    }
+    // EI-15006: with the threaded cup-placeable + capacity context, suppress ONLY
+    // the idle-by-design case (no cup work + spawner provably live + capacity not
+    // known-exhausted). A genuine spawner-down / cup-work-waiting / cup-tier-full
+    // shape still fires — the two false-directions the raw `frontier === 0` gate
+    // got wrong (false page during idle; false SILENCE of a real spawner-down when
+    // the frontier read empty).
+    //
+    // EI-19462267124852221: the gate itself now lives in ONE predicate, shared with
+    // `policySuppressedLivenessSignatures` below, so "we did not fire this" and
+    // "we must not auto-resolve this" cannot drift apart.
+    if (panel.key === 'bees' && beesSignalSuppressed(health, opts.beesLiveness)) continue;
     signals.push({ key: `panel:${panel.key}`, severity: 'blocker', summary: `${panel.label}: ${panel.summary}` });
   }
 
@@ -658,6 +654,66 @@ export function unobservableLivenessSignatures(health: SystemHealth): Set<string
     // Panel succeeded, but this one sub-read's fail-soft catch fired.
     out.add('stale-paused-routines');
   }
+  return out;
+}
+
+/**
+ * EI-19462267124852221 — the ONE place the `panel:bees` no-bees-while-idle policy gate
+ * is decided. Called by BOTH the fire path (`evaluateLivenessAlarm` §6) and the
+ * auto-resolve guard (`policySuppressedLivenessSignatures`), so a change to the policy
+ * cannot silently desynchronise "we did not fire this" from "we must not resolve this".
+ */
+function beesSignalSuppressed(health: SystemHealth, beesLiveness?: BeesLivenessContext): boolean {
+  const bees = health.panels.bees;
+  // Not crit ⇒ this signal is not firing for any reason, so there is nothing to suppress.
+  if (bees?.status !== 'crit') return false;
+  // A bees-crit for any OTHER reason (a cursed placement while bees run) still fires.
+  if (bees?.data?.running !== 0) return false;
+  if (beesLiveness) return beesIdleByDesign(beesLiveness);
+  // LEGACY EI-2146 gate for a caller that did not thread the context (an old/pure
+  // evaluator) — byte-identical to the pre-EI-15006 behavior.
+  return health.panels.workFeed?.data?.frontier === 0;
+}
+
+/**
+ * EI-19462267124852221 — the signatures that ARE still firing this tick but were
+ * deliberately WITHHELD by a policy gate, so their absence from `evaluateLivenessAlarm`'s
+ * output means "suppressed on purpose", not "the condition cleared".
+ *
+ * THE THIRD ABSENCE REASON. A signature is missing from `currentSigs` for three
+ * completely different reasons, and auto-resolve-on-recovery may only fire on the first:
+ *
+ *   1. the condition genuinely cleared            → resolve is correct
+ *   2. its input could not be READ this tick      → `unobservableLivenessSignatures`
+ *   3. the condition is STILL TRUE and we chose not to raise it  → THIS function
+ *
+ * (2) was closed first and (3) was left open, which is why the fix looked complete while
+ * the phenomenon carried on: the two signatures (2) covers had gone quiet, and every
+ * occurrence still happening was (3).
+ *
+ * MEASURED (2026-08-04, papercusp-workspace). Every `panel:bees` auto-resolve in the
+ * sampled window announced "condition recovered" while the bees panel read `crit` in the
+ * health tick immediately BEFORE *and* immediately AFTER the resolve — 00:14:41.818,
+ * 00:12:45.328, 00:12:45.284, 00:10:44.497, all crit/crit. There was no recovery window
+ * for the resolve to be describing. `panel:bees` is absent from `coveredKeys`, so while
+ * that panel is crit the ONLY path that withholds it is the `beesIdleByDesign` gate
+ * above — the resolve was announcing the GATE flipping, not the condition changing.
+ *
+ * Because auto-resolve drops the open row the next fire would have coalesced onto, an
+ * unstable gate becomes fire → false-resolve → fire at the tick rate. That is the
+ * mechanism behind the observed burst/quiet pattern: bursts are the windows where the
+ * gate oscillates, and quiet windows are where it holds steady and the open row
+ * correctly suppresses everything.
+ *
+ * Deliberately PARTIAL, exactly like its sibling above: a signature absent from here
+ * keeps the prior behavior (absence ⇒ resolvable), so adding a gate is additive.
+ */
+export function policySuppressedLivenessSignatures(
+  health: SystemHealth,
+  beesLiveness?: BeesLivenessContext,
+): Set<string> {
+  const out = new Set<string>();
+  if (beesSignalSuppressed(health, beesLiveness)) out.add('panel:bees');
   return out;
 }
 
@@ -1370,11 +1426,14 @@ export async function runLivenessAlarmTick(
       : async () => ({ dispatchBudget: null as number | null, restartRecovering: false }));
   const beeCapacity = await readBeeCapacity().catch(() => ({ dispatchBudget: null, restartRecovering: false }));
 
+  // EI-19462267124852221: keep the EXACT beesLiveness that produced `signals`, so the
+  // policy-suppression guard below judges the same evidence the fire decision used.
+  let beesLivenessForSignals = beesLivenessFromHealth(health, beeCapacity);
   let signals = evaluateLivenessAlarm(health, snapshotAgeMs, {
     snapshotStaleMs: staleMs,
     prevPostmasterStartMs,
     autoloopFireRows,
-    beesLiveness: beesLivenessFromHealth(health, beeCapacity),
+    beesLiveness: beesLivenessForSignals,
     ...(snapshotAgeMs !== null && snapshotAgeMs > staleMs
       ? { stallDiagnosis: diagnoseHealthTickStall(health, snapshotAgeMs, now, lastSuccessfulTickMs) }
       : {}),
@@ -1428,11 +1487,12 @@ export async function runLivenessAlarmTick(
       // (or verify the fresh snapshot we computed on line 762).
       const freshHealth = localSnapshotStale ? health : await compute(ws);
       healthForSignals = freshHealth;
+      beesLivenessForSignals = beesLivenessFromHealth(freshHealth, beeCapacity);
       signals = evaluateLivenessAlarm(freshHealth, null, {
         snapshotStaleMs: staleMs,
         prevPostmasterStartMs,
         autoloopFireRows,
-        beesLiveness: beesLivenessFromHealth(freshHealth, beeCapacity),
+        beesLiveness: beesLivenessForSignals,
       });
       currentSigs = new Set(signals.map((s) => s.key));
     }
@@ -1450,11 +1510,19 @@ export async function runLivenessAlarmTick(
   //    readable tick re-fires a fresh escalation: fire → false-resolve → fire, at the
   //    tick rate, forever. Skip those signatures and leave the open row standing.
   const unobservableSigs = unobservableLivenessSignatures(healthForSignals);
+  // EI-19462267124852221: the THIRD absence reason. A signal withheld by a policy gate
+  // (`beesIdleByDesign`) is still TRUE — measured 2026-08-04, every `panel:bees`
+  // auto-resolve announced "condition recovered" with the panel reading crit in the
+  // ticks either side of it. Resolving it drops the open row the next fire would have
+  // coalesced onto, so an unstable GATE — not a changing condition — drives
+  // fire → false-resolve → fire at the tick rate.
+  const suppressedSigs = policySuppressedLivenessSignatures(healthForSignals, beesLivenessForSignals);
   const resolved: string[] = [];
   const transitionedBlockerSigs: string[] = [];
   for (const [sig, recs] of openBySig) {
     if (currentSigs.has(sig)) continue; // still firing — keep the single open row
     if (unobservableSigs.has(sig)) continue; // NOT OBSERVED this tick ≠ recovered
+    if (suppressedSigs.has(sig)) continue; // SUPPRESSED on purpose ≠ recovered
     // WI-4181: only a resolve that actually TRANSITIONED the row (wrote the
     // sibling escalation_resolved event) counts. resolveEscalation is idempotent
     // and returns the sentinel strings 'not_found' / 'already_resolved' /

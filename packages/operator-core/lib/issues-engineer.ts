@@ -791,6 +791,23 @@ export interface ListIssuesFilter {
   kinds?: readonly IssueStoreKind[];
   topic?: string; // issues tagged with this topic
   /**
+   * WI-4532: restrict to WATCHDOG-KEYED rows (`payload.watchdogKey` present) in SQL.
+   *
+   * ⚠ This is a CORRECTNESS filter, not an optimization. This read is
+   * `ORDER BY created_at DESC LIMIT n`, so a caller that wants "all watchdog items" and
+   * post-filters in JS silently gets "watchdog items among the n NEWEST issues" — a
+   * RECENCY WINDOW, not a set. Measured 2026-08-04 on the live box: 17,154 open
+   * bug|change issues, so the auto-close sweep's `limit: 500` saw only the newest ~7.5
+   * HOURS. Every watchdog item older than that was structurally invisible to the sweep
+   * FOREVER — the alarm could be raised but never lowered, which is the exact defect
+   * WI-4532 filed (a red-test EI sat open 9 days with 46 recorded passing runs).
+   *
+   * Raising the cap CANNOT fix it: ISSUES_MAX_LIMIT is 2000 against 17,154 open rows,
+   * and the backlog grows. Only filtering in SQL turns the window back into a set
+   * (measured: 59 rows, so the limit stops binding at all).
+   */
+  watchdogKeyed?: boolean;
+  /**
    * P-008 (db-performance-remediation-2026-07-26): omit `body` from the read for a
    * caller that never reads it. Default TRUE (unchanged behavior) — a reader opts OUT
    * explicitly, so a new caller can never silently lose a field it depends on.
@@ -1088,6 +1105,10 @@ export async function listIssues(filter: ListIssuesFilter = {}): Promise<Enginee
        -- floor into the general list read when the caller opts in (listWorkItems does,
        -- by default, via includeObservations).
        AND ${filter.excludeObservationLane ? sql`lane IS DISTINCT FROM 'observation'` : sql`TRUE`}
+       -- WI-4532: watchdog-keyed restriction (see ListIssuesFilter.watchdogKeyed). Must be
+       -- applied HERE, not in JS after the read: the ORDER BY/LIMIT below makes a JS
+       -- post-filter a recency window rather than a set.
+       AND ${filter.watchdogKeyed ? sql`payload->>'watchdogKey' IS NOT NULL` : sql`TRUE`}
      ORDER BY created_at DESC
      LIMIT ${Math.min(filter.limit ?? 100, ISSUES_MAX_LIMIT)}`;
   return rows.map(toIssue);

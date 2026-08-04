@@ -8,6 +8,7 @@ import {
   beesIdleByDesign,
   beesLivenessFromHealth,
   unobservableLivenessSignatures,
+  policySuppressedLivenessSignatures,
   resolveEvidenceFor,
   _resetLivenessAlarmDebounce,
   INFRA_LIVENESS_IDENTITY,
@@ -1653,6 +1654,136 @@ describe('EI-19462267124852221 — an UNREADABLE input must not auto-resolve as 
     const t = tickWith(health, [openRec('stale-paused-routines', 'esc-sp')]);
     await t.run();
     expect(t.resolvedIds).toEqual(['esc-sp']);
+  });
+});
+
+// EI-19462267124852221 — THE THIRD ABSENCE REASON, and the one that was still firing.
+//
+// A signature is missing from `currentSigs` for three different reasons: the condition
+// cleared, its input was unreadable (the describe above), or it is STILL TRUE and a
+// policy gate deliberately withheld it. Only the first may auto-resolve. The second was
+// closed first and the third left open — which is why the fix read as complete while the
+// phenomenon continued: the two signatures the second covers had gone quiet, and every
+// occurrence still happening was the third.
+//
+// MEASURED 2026-08-04 (papercusp-workspace): every `panel:bees` auto-resolve in the
+// sampled window announced "condition recovered" while the bees panel read crit in the
+// health tick immediately before AND after it — 00:14:41.818, 00:12:45.328, 00:12:45.284,
+// 00:10:44.497, all crit/crit. No recovery window existed for the resolve to describe.
+describe('EI-19462267124852221 — a POLICY-SUPPRESSED signal must not auto-resolve as "recovered"', () => {
+  beforeEach(() => _resetLivenessAlarmDebounce());
+
+  const idle: BeesLivenessContext = {
+    cupPlaceableFrontier: 0,
+    dispatchBudget: 20,
+    restartRecovering: false,
+    otherAgentsAlive: true,
+  };
+  /** bees crit with zero running — the ONLY shape the idle-by-design gate withholds. */
+  const noBeesCrit = (over: Record<string, unknown> = {}) =>
+    mkHealth({
+      evaluatedAt: 100 * 60_000,
+      panels: {
+        bees: { status: 'crit', summary: 'no bees running', data: { running: 0, alive: 0 } },
+        ...over,
+      },
+    });
+
+  function openRec(sig: string, msg_id: string): EscalationRecord {
+    return {
+      msg_id,
+      severity: 'advisory',
+      summary: `[infra-liveness] ${sig}`,
+      from: INFRA_LIVENESS_IDENTITY.ownerId,
+      livenessSignature: sig,
+      resolved: null,
+    } as unknown as EscalationRecord;
+  }
+
+  function tickWith(health: SystemHealth, opens: EscalationRecord[]) {
+    const resolvedIds: string[] = [];
+    return {
+      resolvedIds,
+      run: () =>
+        runLivenessAlarmTick('ws', {
+          readLast: () => health,
+          computeHealth: async () => health,
+          listOpen: async () => opens,
+          resolve: async (msg_id: string) => { resolvedIds.push(msg_id); },
+          escalate: async () => {},
+          page: async () => {},
+          now: () => 100 * 60_000 + 60_000,
+          snapshotStaleMs: 6 * 60_000,
+        }),
+    };
+  }
+
+  // ── the pure helper ────────────────────────────────────────────────────────
+  it('reports panel:bees suppressed when the idle-by-design gate withholds it', () => {
+    expect(policySuppressedLivenessSignatures(noBeesCrit(), idle).has('panel:bees')).toBe(true);
+  });
+
+  it('a GENUINE no-bees crit (cup work waiting) is fired, so it is NOT suppressed', () => {
+    const live = { ...idle, cupPlaceableFrontier: 3 };
+    expect(policySuppressedLivenessSignatures(noBeesCrit(), live).has('panel:bees')).toBe(false);
+  });
+
+  it('a bees crit for another reason (bees still running) is NOT suppressed', () => {
+    const h = noBeesCrit({ bees: { status: 'crit', summary: '2 bee(s), 1 cursed', data: { running: 2, alive: 2 } } });
+    expect(policySuppressedLivenessSignatures(h, idle).has('panel:bees')).toBe(false);
+  });
+
+  it('CALIBRATION: a healthy bees panel marks nothing suppressed', () => {
+    // Without this the assertions above would also pass if the helper returned
+    // 'panel:bees' unconditionally.
+    expect([...policySuppressedLivenessSignatures(mkHealth(), idle)]).toEqual([]);
+  });
+
+  // ── the anti-drift guard ───────────────────────────────────────────────────
+  it('THE DRIFT GUARD: withheld-by-the-gate and reported-suppressed are exact complements', () => {
+    // The fire path and the resolve guard read the SAME predicate. If a future edit
+    // changes one gate leg without the other, "we did not fire this" and "we must not
+    // resolve this" desynchronise — and the false resolve comes straight back. Every
+    // case below is bees-crit + running 0, so `fired` and `suppressed` must be opposites.
+    const cases: Array<[string, BeesLivenessContext]> = [
+      ['idle by design', idle],
+      ['cup work waiting', { ...idle, cupPlaceableFrontier: 3 }],
+      ['gateway restart-recovering', { ...idle, restartRecovering: true }],
+      ['no other agents alive', { ...idle, otherAgentsAlive: false }],
+      ['cup tier known-full', { ...idle, dispatchBudget: 0 }],
+      ['capacity unknown (fail-safe)', { ...idle, dispatchBudget: null }],
+    ];
+    for (const [label, ctx] of cases) {
+      const h = noBeesCrit();
+      const fired = evaluateLivenessAlarm(h, null, { beesLiveness: ctx }).some((s) => s.key === 'panel:bees');
+      const suppressed = policySuppressedLivenessSignatures(h, ctx).has('panel:bees');
+      expect(suppressed, `${label}: fired=${fired} suppressed=${suppressed}`).toBe(!fired);
+    }
+  });
+
+  it('the LEGACY caller (no beesLiveness threaded) is guarded by the same frontier gate it fires on', () => {
+    const h = noBeesCrit({ workFeed: { data: { frontier: 0, frontierStuck: 0, deadRoutines: 0 } } });
+    expect(evaluateLivenessAlarm(h, null).map((s) => s.key)).not.toContain('panel:bees');
+    expect(policySuppressedLivenessSignatures(h).has('panel:bees')).toBe(true);
+  });
+
+  // ── the defect: auto-resolve ───────────────────────────────────────────────
+  it('THE DEFECT: an open panel:bees escalation is NOT resolved while the gate withholds the signal', async () => {
+    // Pre-fix this resolved 'esc-bees' as "condition recovered" with the panel still
+    // crit, dropping the open row the next fire would have coalesced onto — so an
+    // unstable GATE (not a changing condition) drove fire/false-resolve/fire.
+    const t = tickWith(noBeesCrit(), [openRec('panel:bees', 'esc-bees')]);
+    const r = await t.run();
+    expect(t.resolvedIds).toEqual([]);
+    expect(r.resolved).toEqual([]);
+  });
+
+  it('CALIBRATION: a genuine bees recovery still auto-resolves (the fix is not a blanket freeze on panel:bees)', async () => {
+    // The load-bearing control: without it the test above would pass if the fix simply
+    // stopped resolving panel:bees at all, which would strand the row forever.
+    const t = tickWith(mkHealth({ evaluatedAt: 100 * 60_000 }), [openRec('panel:bees', 'esc-bees')]);
+    await t.run();
+    expect(t.resolvedIds).toEqual(['esc-bees']);
   });
 });
 

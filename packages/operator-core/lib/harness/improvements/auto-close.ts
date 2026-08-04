@@ -292,7 +292,17 @@ function selectCanonicalOpenIssues(open: EngineerIssue[]): {
 export function defaultAutoCloseDeps(workspaceId: string): AutoCloseDeps {
   const { sql }: { sql: Sql } = getOrgPg();
   return {
-    listOpen: () => listIssues({ state: 'open', limit: 500 }),
+    // WI-4532: `watchdogKeyed: true` filters in SQL. It is load-bearing for CORRECTNESS,
+    // not speed — this read is ORDER BY created_at DESC LIMIT 500, and the JS
+    // `open.filter(watchdogKeyOfIssue)` below it therefore used to see only the watchdog
+    // items among the 500 NEWEST open issues. Measured 2026-08-04: 17,154 open bug|change
+    // issues => a ~7.5 HOUR visibility horizon. A watchdog item that went green after
+    // falling out of that window could never be auto-resolved, so the sweep could raise an
+    // alarm but not lower it (EI-18691336095110558 sat open 9 days with 46 passing runs on
+    // its named test). With the filter the read returns the ~59 watchdog-keyed rows and the
+    // limit stops binding. Do NOT "fix" a recurrence by raising the limit: ISSUES_MAX_LIMIT
+    // is 2000 < 17,154, so the cap cannot cover the backlog and the horizon returns.
+    listOpen: () => listIssues({ state: 'open', watchdogKeyed: true, limit: 500 }),
     recentRanTickKeys: async (n: number) => {
       const rows = await sql<{ known_open_keys: string[] }[]>`
         SELECT known_open_keys
