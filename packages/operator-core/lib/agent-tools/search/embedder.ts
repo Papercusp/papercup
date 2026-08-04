@@ -245,9 +245,23 @@ export async function buildQueryEmbedderResolved(
     // so the floor policy can recognise it without any caller passing a mode.
     stampEmbedderMode(embed, resolved.mode);
     return { mode: resolved.mode, dims: resolved.dims, embed };
-  } catch {
+  } catch (err) {
     // Mirrors the prior local-mode behavior: a pipeline load failure (package missing,
     // model fetch failed, …) degrades to BM25-only rather than throwing.
+    //
+    // ⚠ This catch is deliberately broad, so it also swallows PROGRAMMING errors —
+    // and a swallowed one disables semantic search for the whole process while every
+    // caller reports a normal "no embedder available" degrade. That is exactly what
+    // happened on 2026-08-04: a refactor moved the embedder-mode WeakMap out to
+    // `search/embedder-mode-registry.ts` and deleted the local binding while leaving
+    // the `embedderModes.set(...)` call behind, so EVERY build threw ReferenceError
+    // here and `search:semantic` silently fell back to BM25-only with no signal at
+    // all (it surfaced only as 8 red tests on the green gate, hours later).
+    // Log it so the next such swallow is visible in the operator log at the moment
+    // it happens. Control flow is unchanged — the degrade is still the behavior.
+    console.warn(
+      `[query-embedder] embedder acquisition failed — degrading to BM25-only: ${(err as Error)?.message ?? String(err)}`,
+    );
     return null;
   }
 }
