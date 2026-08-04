@@ -5170,6 +5170,34 @@ export async function claimNextIssueWorkItem(
      *  the EI-15019 / EI-14837 spurious-wake incidents). The post-claim re-check stays as
      *  defense-in-depth. Undefined ⇒ unrestricted, exactly the previous behavior. */
     specFilterSql?: unknown;
+    /** The caller's compiled `spec.rank` ORDER BY, passed DOWN pre-compiled for the SAME
+     *  cycle-avoidance reason as `specFilterSql` above (get-next → work-items is the one
+     *  permitted direction; see claim-spec.ts:4649).
+     *
+     *  Why this exists (EI-19497592871345016 / EI-19485419686452678): this query's ORDER BY
+     *  was HARDCODED, so the issue family — every bug/change/task, i.e. the entire claimable
+     *  pool — silently ignored `spec.rank` while still HONORING `spec.view.filter`. A spec
+     *  could therefore NARROW but never REORDER, contradicting scheduler:get_next's own
+     *  contract ("ordered by spec.rank") and the provenance it stamps on every claim.
+     *
+     *  The visible cost: `feature_order` is NULL across the issue pool, so the hardcoded
+     *  `feature_order ASC NULLS LAST, created_ts ASC` collapsed to plain OLDEST-FIRST.
+     *  Measured 2026-08-04: scheduler:get_next served EI-8600 (minor, created 2026-07-07)
+     *  while work_items:claimable — the same floor oracle — reported 1,675 claimable with
+     *  SEVEN criticals at the head, none claim-held. It also made the `severity_rank` term
+     *  added to DEFAULT_CLAIM_SPEC by EI-19286355119013384 INERT for the very family its own
+     *  comment says it was added to fix ("Net effect is scoped to issue-family rows").
+     *
+     *  Undefined ⇒ the previous hardcoded ordering, byte-identical — so the legacy
+     *  `claimNextWorkItem` tier-3 caller (which has no spec) is unchanged. Note that when a
+     *  spec IS supplied its rank is AUTHORITATIVE: it replaces the feature_order/created_ts
+     *  legs rather than composing with them. DEFAULT_CLAIM_SPEC reproduces both exactly
+     *  (`priority desc` compiles to `feature_order ASC NULLS LAST` via FIELD_MAP's inversion,
+     *  `age asc` to `created_ts ASC`), so the default path gains ONLY the severity leg. A
+     *  hand-authored spec that omits `priority` does forgo EI-7407's Mug `set_priority`
+     *  steering for that lane — that is the spec author's explicit choice, which is what
+     *  authoring a rank means. */
+    specOrderSql?: unknown;
   } = {},
 ): Promise<WorkItem | null> {
   const { sql } = getOrgPg();
@@ -5239,6 +5267,13 @@ export async function claimNextIssueWorkItem(
   // the inner SELECT's scope — so the fragment drops in as one more AND leg alongside the
   // id/kind narrowings. Undefined ⇒ TRUE ⇒ unrestricted, the pre-existing behavior.
   const specFilterSql = (opts.specFilterSql ?? undefined) as
+    | ReturnType<OrgSql>
+    | undefined;
+  // The caller's compiled spec.rank (see `specOrderSql` on opts). Like the filter above,
+  // `compileRank` emits UNQUALIFIED column references (payload->'_ei'->>'severity',
+  // feature_order, created_ts, …) which resolve against `wi` — the only table in the inner
+  // SELECT's scope. Undefined ⇒ the pre-existing hardcoded ordering.
+  const specOrderSql = (opts.specOrderSql ?? undefined) as
     | ReturnType<OrgSql>
     | undefined;
   // Mig 499: the SAME release-cooldown floor claimFloorsWhereSql applies for the
@@ -5360,7 +5395,11 @@ export async function claimNextIssueWorkItem(
         -- it); the fix moves feature_order OUT of that ternary so a plain, lease-less
         -- work_items:set_priority actually changes this query's pull order instead of
         -- silently no-op'ing on ordering while still reporting written:true.
-        ORDER BY ${filter.swarmId ? tx`(wi.swarm_affinity = ${filter.swarmId}) DESC NULLS LAST,` : tx``} wi.feature_order ASC NULLS LAST, wi.created_ts ASC
+        -- EI-19497592871345016: when the caller compiled a claim spec, its rank is
+        -- AUTHORITATIVE here (see opts.specOrderSql) — this ORDER BY used to be hardcoded, so
+        -- the whole issue family honored a spec's FILTER while silently discarding its RANK.
+        -- Undefined ⇒ the legacy ordering below, byte-identical for the no-spec caller.
+        ORDER BY ${filter.swarmId ? tx`(wi.swarm_affinity = ${filter.swarmId}) DESC NULLS LAST,` : tx``} ${specOrderSql ?? tx`wi.feature_order ASC NULLS LAST, wi.created_ts ASC`}
         LIMIT 1
         FOR UPDATE SKIP LOCKED
      )

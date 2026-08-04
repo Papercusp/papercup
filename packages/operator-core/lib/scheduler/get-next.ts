@@ -2107,6 +2107,14 @@ export async function getNextWorkItem(
       throw new OrgTxnTimeoutError('57014', new Error('claim ladder budget exhausted before tier 3'));
     }
     const specFilterSql = compileFilter(sql, stripFeatureOnlyKindLeaves(spec.view.filter));
+    // EI-19497592871345016: thread the spec's compiled RANK down too, not just its filter.
+    // Tier 3 is the ONLY tier the issue family ever reaches (tiers 1/2 query the
+    // feature-family table), so without this every bug/change/task claim ignored spec.rank
+    // and fell back to a hardcoded oldest-first — while get_next still stamped the spec as
+    // the selecting provenance. Compiled against the outer `sql` for consistency with
+    // `specFilterSql` directly above, which has always been compiled here and used inside
+    // claimNextIssueWorkItem's own bounded txn.
+    const specOrderSql = compileRank(sql, spec, bee);
     claimed = await claimNextIssueWorkItem(
       {
         harness: opts.harness,
@@ -2122,6 +2130,7 @@ export async function getNextWorkItem(
         ids: idValues,
         excludeIds: excludeIds.length ? excludeIds : undefined,
         specFilterSql,
+        specOrderSql,
       },
     );
   }
