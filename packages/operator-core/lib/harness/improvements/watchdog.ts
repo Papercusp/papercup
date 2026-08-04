@@ -272,6 +272,13 @@ export interface WatchdogSignal {
     lastPassSha?: string;
     /** Newest passing run's timestamp (ISO), if any. */
     lastPassAt?: string;
+    /**
+     * (WI-10929) Did ONE sha both pass and fail in the window? If so the commit
+     * does not determine this test's verdict, so the redness is not attributable
+     * to code and bisecting it is wasted work. Computed by
+     * `hasSameShaVerdictFlip` — see it for why this is kept rather than dropped.
+     */
+    sameShaFlip?: boolean;
   };
   /**
    * Resolution cooldown (ms). When set, a signal whose key matches only RESOLVED
@@ -748,6 +755,8 @@ export function redTestSignalsFromRows(rows: RedTestRow[], windowHours: number):
     const failShaCounts = countFailShas(r.fail_shas);
     const lastPassSha = r.last_pass_sha ?? undefined;
     const lastPassAt = toIsoOrUndefined(r.last_pass_at);
+    const failShas = failShaCounts.map(([sha]) => sha);
+    const sameShaFlip = hasSameShaVerdictFlip(failShas, lastPassSha);
     return {
       source: 'red-test' as const,
       key: r.file_path,
@@ -755,16 +764,17 @@ export function redTestSignalsFromRows(rows: RedTestRow[], windowHours: number):
       body:
         `Watchdog signal (red-test): ${r.file_path} (${r.framework}) failed ${r.fails}× in the last ` +
         `${windowHours}h and its latest run is still red.\n` +
-        renderRedTestCommitContext(failShaCounts, lastPassSha, lastPassAt) +
+        renderRedTestCommitContext(failShaCounts, lastPassSha, lastPassAt, sameShaFlip) +
         `\nLast failure tail:\n${(r.sample ?? '').slice(-1500) || '(no output captured)'}`,
       severity: 'major' as const,
       paths: [r.file_path],
       latestAt: toIsoOrUndefined(r.latest_fail_at),
       earliestAt: toIsoOrUndefined(r.earliest_fail_at),
       redTest: {
-        failShas: failShaCounts.map(([sha]) => sha),
+        failShas,
         ...(lastPassSha ? { lastPassSha } : {}),
         ...(lastPassAt ? { lastPassAt } : {}),
+        ...(sameShaFlip ? { sameShaFlip } : {}),
       },
     };
   });
@@ -786,6 +796,33 @@ function countFailShas(shas: (string | null)[] | null | undefined): Array<[strin
 }
 
 /**
+ * (WI-10929) Pure: did ONE sha both PASS and FAIL inside the window?
+ *
+ * This is the strongest disattribution signal the aggregate carries, and it is
+ * decidable from data the collector already fetched — no git, no fs, unlike
+ * every other debounce leg. If the same commit produced both verdicts then the
+ * commit does not determine the verdict, so the redness is caused by something
+ * OUTSIDE the sha: on this tree, overwhelmingly a test that reads the WORKING
+ * TREE (git-sync commits on a schedule, so tree ≠ HEAD is the normal state, and
+ * a peer's uncommitted edit flips such a test at an unchanged HEAD), otherwise a
+ * genuine flake (ordering, timing, shared state).
+ *
+ * It deliberately does NOT suppress the signal — non-determinism is real and
+ * worth filing (see `isSupersededByPassingDescendant`). It changes what the
+ * filing SAYS, so a triager stops bisecting a sha that cannot be the cause.
+ *
+ * ONE home for the fact: both the renderer and the supersession check call this
+ * rather than re-deriving `failShas.includes(passSha)` locally.
+ */
+export function hasSameShaVerdictFlip(
+  failShas: readonly string[],
+  lastPassSha: string | undefined,
+): boolean {
+  if (!lastPassSha) return false;
+  return failShas.includes(lastPassSha);
+}
+
+/**
  * Pure: the two lines that turn "failed 5× in 6h" from a claim about TIME into a
  * claim about CODE. Both are single-column reads the aggregate already has; both
  * were absent, and their absence cost real investigation time twice in one day
@@ -794,11 +831,18 @@ function countFailShas(shas: (string | null)[] | null | undefined): Array<[strin
  * Rendered as `''` when the aggregate carried no sha data (a framework that
  * doesn't record `commit_sha`, or older rows), so the body degrades to exactly
  * its previous form rather than growing empty scaffolding.
+ *
+ * (WI-10929) When ONE sha both passed and failed, the ancestry advice below is
+ * not merely unhelpful but MISDIRECTING — it asks the reader to compare the pass
+ * sha against the fail shas when the answer is "they are the same sha", which
+ * reads as inconclusive rather than as the decisive fact it is. That case gets
+ * its own line instead.
  */
 function renderRedTestCommitContext(
   failShaCounts: Array<[string, number]>,
   lastPassSha: string | undefined,
   lastPassAt: string | undefined,
+  sameShaFlip: boolean,
 ): string {
   const lines: string[] = [];
   if (failShaCounts.length > 0) {
@@ -810,13 +854,27 @@ function renderRedTestCommitContext(
           ` — these may be DIFFERENT causes, or runs against an already-superseded tree.`,
     );
   }
-  lines.push(
-    lastPassSha || lastPassAt
-      ? `Last PASS in window: ${lastPassAt ?? 'unknown time'}` +
-        `${lastPassSha ? ` (${lastPassSha.slice(0, 10)})` : ''}` +
-        ` — check it against the failing shas before bisecting; a pass on a DESCENDANT sha means the failures judged superseded code.`
-      : `Last PASS in window: none — this test has not passed once in the window.`,
-  );
+  if (sameShaFlip && lastPassSha) {
+    lines.push(
+      `Last PASS in window: ${lastPassAt ?? 'unknown time'} (${lastPassSha.slice(0, 10)})` +
+        ` — SAME SHA as a failing run.`,
+      `⚠ SAME-SHA VERDICT FLIP: ${lastPassSha.slice(0, 10)} both PASSED and FAILED here, so this commit` +
+        ` does NOT determine the verdict and the redness is not attributable to code at that sha.` +
+        ` DO NOT BISECT. Triage the two causes that survive: (1) the test reads state outside the` +
+        ` commit — most often the WORKING TREE (a readdir/glob/file-scan census), which flips on a` +
+        ` peer's uncommitted edit at an unchanged HEAD because git-sync commits on a schedule; or` +
+        ` (2) a genuine flake (ordering, timing, shared fixture state). Re-run it at HEAD first:` +
+        ` a pass there tells you which, and costs seconds.`,
+    );
+  } else {
+    lines.push(
+      lastPassSha || lastPassAt
+        ? `Last PASS in window: ${lastPassAt ?? 'unknown time'}` +
+          `${lastPassSha ? ` (${lastPassSha.slice(0, 10)})` : ''}` +
+          ` — check it against the failing shas before bisecting; a pass on a DESCENDANT sha means the failures judged superseded code.`
+        : `Last PASS in window: none — this test has not passed once in the window.`,
+    );
+  }
   return `\n${lines.join('\n')}\n`;
 }
 
@@ -1108,8 +1166,11 @@ export async function isSupersededByPassingDescendant(
   const passSha = meta?.lastPassSha;
   if (!meta || !passSha || meta.failShas.length === 0) return false;
   // A pass on a sha that itself failed is not supersession — it is flakiness on
-  // one commit, which is a real signal and must survive.
-  if (meta.failShas.includes(passSha)) return false;
+  // one commit, which is a real signal and must survive. (WI-10929: the SAME
+  // predicate, via the shared helper so the fact has one home — the body's
+  // SAME-SHA VERDICT FLIP line is rendered off it too, instead of this branch
+  // silently discarding the strongest disattribution evidence in the row.)
+  if (hasSameShaVerdictFlip(meta.failShas, passSha)) return false;
   for (const failSha of meta.failShas) {
     let superseded = false;
     try {

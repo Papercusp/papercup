@@ -189,14 +189,23 @@ describe('orderAsSweepWould — the mirror of the cap sweep ORDER BY', () => {
     expect(orderAsSweepWould(tied, NOW).map((r) => r.id)).toEqual(['newer', 'older']);
   });
 
-  it('is TIME-DEPENDENT: the same rows reorder as the short-TTL row ages', () => {
+  it('is TIME-DEPENDENT: the short-TTL row yields its slot only at the END of its life', () => {
     // Not a curiosity — it is the mechanism by which a short-lived fact serves
-    // its purpose and then yields its slot, and it is why `nowMs` is a real
-    // input rather than a convenience. At NOW the fresh 7d row wins; six days
-    // later it has spent its life and the long row outranks it.
-    const sixDaysLater = new Date(at(6)).getTime();
+    // its purpose and then yields, and it is why `nowMs` is a real input rather
+    // than a convenience.
+    //
+    // Both rows age together, so the crossover is later than it looks. Solving
+    // (7-t)/7 < (10-t)/90  gives  t > 6.75 days: the fresh 7-day row outranks
+    // the aging 90-day one for ~96% of its life, then hands the slot over.
+    // At six days it is still ahead (0.143 vs 0.044) — an earlier draft of this
+    // test asserted the opposite and was wrong.
     expect(orderAsSweepWould([AGING_LONG, FRESH_SHORT], NOW)[0].id).toBe('fresh-7d');
-    expect(orderAsSweepWould([AGING_LONG, FRESH_SHORT], sixDaysLater)[0].id).toBe('aging-90d');
+    expect(orderAsSweepWould([AGING_LONG, FRESH_SHORT], new Date(at(6)).getTime())[0].id).toBe(
+      'fresh-7d',
+    );
+    expect(orderAsSweepWould([AGING_LONG, FRESH_SHORT], new Date(at(6.9)).getTime())[0].id).toBe(
+      'aging-90d',
+    );
   });
 
   it('does not mutate its input — the caller still holds the DB row order', () => {

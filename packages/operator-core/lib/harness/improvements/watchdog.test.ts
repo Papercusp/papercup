@@ -23,6 +23,7 @@ import {
   isResolvedFirePath,
   normalizeRedTestPath,
   redTestSignalsFromRows,
+  hasSameShaVerdictFlip,
   debounceRedTestSignals,
   isLikelyTransientTransformFailure,
   isServiceHealthStale,
@@ -2696,6 +2697,94 @@ describe('red-test commit context (EI-19363804802198172)', () => {
     expect(s).toHaveLength(1);
     expect(s[0].redTest?.failShas).toEqual(['sha1', 'sha2']);
     expect(s[0].redTest?.lastPassSha).toBe('newer'); // newest pass across trees wins
+  });
+});
+
+// ── WI-10929: the SAME-SHA verdict flip the collector computed and threw away ──
+describe('red-test SAME-SHA verdict flip (WI-10929)', () => {
+  const rows = (extra: Partial<Parameters<typeof redTestSignalsFromRows>[0][number]> = {}) => [
+    {
+      file_path: 'a.test.ts',
+      framework: 'vitest',
+      fails: 5,
+      sample: 'boom',
+      earliest_fail_at: '2026-08-04T01:09:54Z',
+      latest_fail_at: '2026-08-04T01:33:43Z',
+      ...extra,
+    },
+  ];
+
+  // The predicate, isolated. Both false cases matter: they are what stops the
+  // flip line firing on an ordinary red, which is the only way this can do harm.
+  it('the predicate is true only when the passing sha is itself one of the failing shas', () => {
+    expect(hasSameShaVerdictFlip(['abc123', 'def456'], 'abc123')).toBe(true);
+    expect(hasSameShaVerdictFlip(['abc123', 'def456'], 'zzz999')).toBe(false);
+    expect(hasSameShaVerdictFlip(['abc123'], undefined)).toBe(false);
+    expect(hasSameShaVerdictFlip([], 'abc123')).toBe(false);
+  });
+
+  it('THE POINT: a sha that both passed and failed is reported as disattributing, not as a regression', () => {
+    // The measured shape behind this ticket: code-search-deps.test.ts recorded
+    // fail·PASS·fail·fail·fail·fail inside 24 minutes, every run on ed37db59c8.
+    // A commit that yields both verdicts cannot be the cause, so the one thing
+    // the body must not do is send the reader to bisect it.
+    const s = redTestSignalsFromRows(
+      rows({
+        fail_shas: ['ed37db59c8', 'ed37db59c8', 'ed37db59c8', 'ed37db59c8', 'ed37db59c8'],
+        last_pass_sha: 'ed37db59c8',
+        last_pass_at: '2026-08-04T01:10:41Z',
+      }),
+      6,
+    )[0];
+    expect(s.body).toContain('SAME-SHA VERDICT FLIP');
+    expect(s.body).toContain('DO NOT BISECT');
+    expect(s.body).toContain('WORKING TREE');
+    expect(s.redTest?.sameShaFlip).toBe(true);
+  });
+
+  it('REPLACES the ancestry advice rather than appending to it — that advice is the misdirection', () => {
+    // "check it against the failing shas ... a pass on a DESCENDANT sha means
+    // the failures judged superseded code" asks a question whose answer here is
+    // "same sha", which reads as inconclusive instead of decisive. Leaving both
+    // lines in would preserve the exact wrong next action this fixes.
+    const s = redTestSignalsFromRows(
+      rows({ fail_shas: ['ed37db59c8'], last_pass_sha: 'ed37db59c8', last_pass_at: '2026-08-04T01:10:41Z' }),
+      6,
+    )[0];
+    expect(s.body).not.toContain('DESCENDANT');
+    expect(s.body).not.toContain('before bisecting');
+    // The pass is still reported — suppressing it would lose the evidence.
+    expect(s.body).toContain('Last PASS in window: 2026-08-04T01:10:41.000Z (ed37db59c8)');
+  });
+
+  it('CONTROL — a pass on a DIFFERENT sha keeps the ancestry line and is NOT flagged as a flip', () => {
+    const s = redTestSignalsFromRows(
+      rows({ fail_shas: ['ed37db59c8'], last_pass_sha: 'd384a993f3', last_pass_at: '2026-08-04T01:10:41Z' }),
+      6,
+    )[0];
+    expect(s.body).not.toContain('SAME-SHA VERDICT FLIP');
+    expect(s.body).toContain('a pass on a DESCENDANT sha means the failures judged superseded code');
+    expect(s.redTest?.sameShaFlip).toBeUndefined();
+  });
+
+  it('CONTROL — a test that never passed in the window is NOT flagged as a flip', () => {
+    const s = redTestSignalsFromRows(rows({ fail_shas: ['ed37db59c8', 'ed37db59c8'] }), 6)[0];
+    expect(s.body).not.toContain('SAME-SHA VERDICT FLIP');
+    expect(s.body).toContain('Last PASS in window: none');
+    expect(s.redTest?.sameShaFlip).toBeUndefined();
+  });
+
+  it('does NOT suppress the signal — non-determinism is real and must still be filed', () => {
+    // The flip changes what the filing SAYS, never whether it happens. A test
+    // flipping verdicts on one commit is a genuine defect; dropping it here
+    // would trade a misdirecting signal for a silent one.
+    const s = redTestSignalsFromRows(
+      rows({ fail_shas: ['ed37db59c8'], last_pass_sha: 'ed37db59c8', last_pass_at: '2026-08-04T01:10:41Z' }),
+      6,
+    );
+    expect(s).toHaveLength(1);
+    expect(s[0].severity).toBe('major');
+    expect(s[0].body).toContain('failed 5× in the last 6h');
   });
 });
 

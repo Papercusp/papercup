@@ -19,7 +19,7 @@
  */
 import type { Sql } from 'postgres';
 import { parseEnvelope, payloadSha256 } from '../turn-provenance/turn-provenance';
-import type { MemoryEntry, ScoreScale } from './backend';
+import type { MemoryEntry, ScoreScale, SearchLegStats } from './backend';
 
 /**
  * Upper bound of an RRF score at the PRODUCTION fusion defaults
@@ -389,6 +389,11 @@ export async function recordRecallStats(sql: Sql, input: RecallStatsInput): Prom
     const scores = finiteScores(entries);
     const topScore = scores.length > 0 ? Math.max(...scores) : null;
     const pools = input.pools ? JSON.stringify(poolsPayload(input.pools)) : null;
+    // Migration 758 / P-002. Both stay NULL when the caller has nothing to say,
+    // so a pull-path row is distinguishable from a push-path row that lost its
+    // breakdown — the same nullability contract `pools` carries.
+    const legs = input.legs ? JSON.stringify(input.legs) : null;
+    const admission = input.admission ? JSON.stringify(input.admission) : null;
     // P-041 / migration 706: the query's SHAPE. A caller that passes no query
     // records NULLs and is excluded from query-quality reads, rather than
     // contributing a zero-length row that would read as a real empty query.
@@ -396,7 +401,7 @@ export async function recordRecallStats(sql: Sql, input: RecallStatsInput): Prom
     await sql`
       INSERT INTO harness_shared.memory_recall_stats
         (surface, hit_count, top_score, scores, fragment_count, pools, workspace_id, pot_slug, score_scale,
-         query_chars, query_sha256, query_origin, session_id)
+         query_chars, query_sha256, query_origin, session_id, legs, admission)
       VALUES (
         ${input.surface},
         ${entries.length},
@@ -410,7 +415,9 @@ export async function recordRecallStats(sql: Sql, input: RecallStatsInput): Prom
         ${q ? q.chars : null},
         ${q ? q.sha256 : null},
         ${q ? q.origin : null},
-        ${input.sessionId ?? null}
+        ${input.sessionId ?? null},
+        ${legs}::text::jsonb,
+        ${admission}::text::jsonb
       )
     `;
   } catch (err) {

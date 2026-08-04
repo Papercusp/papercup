@@ -72,6 +72,34 @@ remapped). For any child process spawned with a per-workspace HOME (P-051), the
 hyperbee stores. A bare `join(homedir(), '.papercusp-workspaces', …)` is the
 smell.
 
+### The rule currently has live violations (measured 2026-08-04)
+
+Stating the rule is not the same as the tree obeying it. A grep for the bare form
+finds it still live in **`packages/plugin-loader/src/index.ts`** — three sites:
+the registry read (`:38`), the active-workspace `.papercusp` probe (`:62`), and
+the `default` fallback (`:83`). One more sits in
+`apps/operator/scripts/voice-stack-check.mjs:42`.
+
+That package is the *exact* residual case reason 2 above describes: a plugin
+loader runs inside spawned children, and P-051 gives those children a
+per-workspace `HOME`. So these are not stylistic nits — under a remapped-HOME
+child they resolve to the nested
+`~/.papercusp-workspaces/<current>/.papercusp-workspaces/registry.json` this
+page opens by describing, and the symptom is the same nested-junk-registry /
+`switch failed` class. They are invisible in dev for the reason given above:
+`npm run dev` never remaps `HOME`, so `homedir()` happens to be right.
+
+Two categories of hit are NOT violations and should stay as they are:
+`_retired/snapshot-system/**` (retired, per the retired-surfaces convention) and
+`packages/operator-core/lib/workspace-registry.test.ts:230,235`, which assert the
+`homedir()` **fallback** on purpose — that fallback is part of the contract, not
+a breach of it.
+
+⚠ Verify before citing this list: it is a point-in-time measurement, and the
+whole reason this page exists is that the smell reappears. Re-run
+`rg "homedir\(\), *['\"]\.papercusp-workspaces"` (excluding `node_modules`,
+`dist`, `_retired`) rather than trusting the line numbers above.
+
 ## Related invariant
 
 A registry entry and its on-disk directory are **two halves of one invariant**:

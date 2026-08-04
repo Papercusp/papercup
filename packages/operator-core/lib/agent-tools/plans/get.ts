@@ -85,7 +85,7 @@ const argsSchema = z
       .string()
       .optional()
       .describe(
-        "Return only the body of the section whose heading matches (case-insensitive), plus meta — read one part of a long plan without pulling the whole body (like docs:get's heading-narrowing). Overrides mode.",
+        "Return only the body of the section whose heading matches (case-insensitive), plus identity + the CAS baseline (contentHash/version) so you can edit what you just read — read one part of a long plan without pulling the whole body (like docs:get's heading-narrowing). Deliberately NOT the ## Now block, promotePolicy, or frontmatter.raw: EI-19478970139996135 measured those at 73% of a heading read, shipping the same prose three times over. `sectionIndex` comes back ONLY when the heading MISSES, which is when you need it to find the one you meant. Overrides mode.",
       ),
     includeRaw: z
       .boolean()

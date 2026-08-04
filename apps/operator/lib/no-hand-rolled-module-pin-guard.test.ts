@@ -274,6 +274,7 @@ describe('no-hand-rolled-module-pin — the tree', () => {
       'packages/operator-core/lib/harness/projects-lite.ts',
       'packages/operator-core/lib/agents-list.ts',
       'packages/operator-core/lib/card-response-rate-limit.ts',
+      'packages/operator-core/lib/harness-agent-runs.ts',
     ]) {
       expect(paths.has(migrated)).toBe(false);
     }

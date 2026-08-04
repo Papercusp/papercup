@@ -1,24 +1,32 @@
 /**
- * semantic-dedup — the P-010 plan-store embedding legs
- * (shared-embedding-sidecar-and-enrichment-2026-07-10).
+ * semantic-dedup — plans:new's `similar_exists` CONFIRMATION check
+ * (P-010 shared-embedding-sidecar-and-enrichment-2026-07-10).
  *
- * Two consumers of the migration-553 harness_plans embedding columns (vectors
- * filled by the embed-backfill sweep from title + left(content, 2000)):
+ * The token matcher scores slug+title token overlap only, so topically-adjacent
+ * but distinct efforts false-positive (it flagged this very plan's creation). A
+ * token-flagged candidate whose stored vector is semantically DISTANT from the
+ * proposed plan is dropped from the refusal; a candidate with NO stored vector
+ * (or no verdict at all) is KEPT — both failure directions preserve today's
+ * token-verdict behavior.
  *
- *  - `semanticPlanHits` — plans:search's recall-additive leg: cosine top-k in
- *    the ACTIVE space, appended AFTER the lexical hits by the handler.
- *  - `confirmSimilarPlans` — plans:new's similar_exists CONFIRMATION: the
- *    token matcher scores slug+title token overlap only, so topically-adjacent
- *    but distinct efforts false-positive (it flagged this very plan's
- *    creation). A token-flagged candidate whose stored vector is semantically
- *    DISTANT from the proposed plan is dropped from the refusal; a candidate
- *    with NO stored vector (or no verdict at all) is KEPT — both failure
- *    directions preserve today's token-verdict behavior.
+ * ─── THIS IS A THRESHOLD CLASSIFIER, NOT A SEARCH (D-025) ──────────────────
+ * It used to sit beside `semanticPlanHits`, plans:search's semantic leg. That
+ * leg has MOVED to ./semantic-leg.ts and now runs inside `runHybridSearch`;
+ * this one deliberately did NOT move, and P-016 does not cover it:
  *
- * FAIL-OPEN throughout: no embedder, migration 553 absent, dims mismatch
- * (harrier@1024), or any throw degrades to lexical-only / token-only.
- * VITEST-inert unless deps are injected (the real resolver lazy-loads an ONNX
- * model — the WI-3792 load-scar class).
+ *   - a SEARCH ranks a whole corpus and hands a list to fusion, in the
+ *     query→doc pairing, where the P-017 floor applies;
+ *   - THIS scores a FIXED candidate list and partitions it at a threshold, in
+ *     the doc↔doc pairing.
+ *
+ * `runHybridSearch` cannot express that shape, and gemma is a dual-encoder — so
+ * the 0.6 below and the 0.45 search floor live in different pairings and
+ * neither licenses the other. The split keeps that structural rather than a
+ * comment someone has to notice.
+ *
+ * FAIL-OPEN: no embedder, migration 553 absent, dims mismatch (harrier@1024),
+ * or any throw degrades to token-only. VITEST-inert unless deps are injected
+ * (the real resolver lazy-loads an ONNX model — the WI-3792 load-scar class).
  */
 
 import { withWorkspace } from '@papercusp/db-org';
@@ -45,26 +53,11 @@ export function planDupeConfirmThreshold(): number {
   return Number.isFinite(n) && n > 0 && n <= 1 ? n : DEFAULT_CONFIRM;
 }
 
-export interface PlanSemanticHit {
-  slug: string;
-  harness: string;
-  title: string | null;
-  status: string | null;
-  archived: boolean;
-  /** Cosine similarity (1 − pgvector `<=>` distance) in the active space. */
-  similarity: number;
-}
-
 /** Injectable seams (tests + any future non-553 store). */
-export interface PlanSemanticDeps {
+export interface PlanConfirmDeps {
   resolveEmbedder: () => Promise<{ mode: string; dims: number; embed: (t: string) => Promise<number[]> } | null>;
   /** slug → similarity for the given slugs that HAVE a vector in `mode`'s space. */
   querySimilarities: (vec: number[], mode: string, slugs: string[], opts: PlanSourceOpts) => Promise<Map<string, number>>;
-  queryTopPlans: (
-    vec: number[],
-    mode: string,
-    opts: PlanSourceOpts & { includeArchived?: boolean; limit: number },
-  ) => Promise<PlanSemanticHit[]>;
 }
 
 async function querySimilaritiesReal(
