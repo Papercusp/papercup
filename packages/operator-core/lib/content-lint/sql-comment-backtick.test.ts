@@ -387,6 +387,45 @@ describe('autoFixSqlCommentBacktick — the deterministic repair', () => {
     expect(autoFixSqlCommentBacktick(clean)).toEqual({ fixed: clean, changed: false });
   });
 
+  // CONTROL (the repo's tier-1 falsifiability pattern for an imported module: keep a
+  // deliberately-WRONG repair beside the real one), so "detect returns null after the fix"
+  // cannot pass for a weak reason. Repairing only ONE of two offending lines must not satisfy it.
+  it('CONTROL: repairing only one offending line does NOT clear the detector', () => {
+    const twoOffenders = src(
+      'const rows = await sql`',
+      '     -- first offender: `alpha` here',
+      '     -- second offender: `beta` here',
+      '     SELECT 1`;',
+    );
+    const halfRepaired = twoOffenders.replace('`alpha`', '"alpha"');
+    expect(halfRepaired).not.toBe(twoOffenders); // the control really did mutate something
+    expect(findSqlCommentBacktick('a/b/x.ts', halfRepaired)).not.toBeNull();
+  });
+
+  /**
+   * HAZARD PIN. This detector fires only at >=2 unescaped backticks, because exactly one is
+   * how a legitimate ONE-LINE template closes. The documented consequence is a residual blind
+   * spot: a lone unescaped backtick in a comment inside a MULTI-line template still truncates
+   * that template, and this rule stays silent about it (ts-parse catches it instead — and
+   * ts-parse has NO autoFix, so it costs a full quarantine + LLM-fixer round).
+   *
+   * That makes "leave exactly one backtick behind" the single worst thing a repair here could
+   * do: it would silence this detector while leaving the file broken, converting a fast
+   * deterministic fix into the slow path it exists to avoid. So the repair must clear the
+   * WHOLE comment, and this pins both halves of that.
+   */
+  it('never leaves a LONE backtick behind — the >=2 rule would go silent while the file stays broken', () => {
+    const oneLeft = INCIDENT.replace('`<>', '"<>'); // a naive first-backtick-only repair
+    expect(findSqlCommentBacktick('a/b/x.ts', oneLeft)).toBeNull(); // silent: the blind spot
+    expect(oneLeft).toContain('`'); // ...yet a template-terminating backtick remains
+
+    // The real repair must not produce that state: no backtick survives on the comment line.
+    const { fixed } = autoFixSqlCommentBacktick(INCIDENT);
+    const commentLine = fixed.split('\n').find((l) => l.includes('209 live plan-items'));
+    expect(commentLine).toBeDefined();
+    expect(commentLine).not.toContain('`');
+  });
+
   it('leaves an ESCAPED backtick alone — it never terminated the template', () => {
     const withEscape = src(
       'const rows = await sql`',
