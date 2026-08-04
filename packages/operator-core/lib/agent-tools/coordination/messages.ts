@@ -1245,6 +1245,58 @@ export interface SupersessionMark {
 }
 
 /**
+ * The subset of `msgIds` whose `coord_event_log` row was authored on a DIFFERENT
+ * NODE (`origin = 'remote'` — "authored on a different node", the same column
+ * `fleet:leader-brief` reads to explain why a federated work-item is not locally
+ * claimable).
+ *
+ * Why the READ side needs this (EI-19493603840800478): a federated severe-event
+ * names only a HARNESS SLUG — "git-sync FAULTING on papercusp" — and slugs are
+ * IDENTICAL on every node. So a peer's alarm about ITS OWN install renders locally
+ * as a claim about the tree the reader is standing in, and is locally
+ * UNFALSIFIABLE: you check local state, find it healthy, and cannot distinguish
+ * "already recovered" from "never was about this machine". Measured 2026-08-04:
+ * every "git-sync FAULTING on papercusp" row back to 2026-07-17 is origin='remote'
+ * while the local routine read last_error=NULL / wd_error_sweeps=0 — two agents in
+ * a row mis-attributed it to a local cause, and the first attribution became a
+ * filed (wrong) diagnosis.
+ *
+ * This cannot be fixed at the EMITTER. WI-7309's `emitter{pid,cwd,startedAt}` stamp
+ * is the natural home for provenance, but a remote alarm carries whatever its own
+ * node's code produced — and the peers are precisely the nodes running older code,
+ * so `emitter` stays null on exactly the alarms that most need attributing. The
+ * receiving node, by contrast, always knows `origin`. Hence: annotate on READ.
+ *
+ * Batched by msg_id over the already-bounded page, and fail-soft, for the same
+ * reasons as {@link getSupersededMap}: losing the marker must never cost the caller
+ * their inbox. Degrades to "nothing marked remote" — which is the pre-existing
+ * behaviour, not a new wrong answer.
+ */
+export async function getRemoteOriginMsgIds(
+  msgIds: readonly string[],
+): Promise<Set<string>> {
+  const out = new Set<string>();
+  if (msgIds.length === 0 || !coordHasPgFastPath()) return out;
+  const ids = [...new Set(msgIds.filter((id) => typeof id === 'string' && id !== ''))];
+  if (ids.length === 0) return out;
+  try {
+    const sql = coordSql();
+    const rows = await sql<{ msg_id: string | null }[]>`
+      SELECT msg_id
+        FROM harness_shared.coord_event_log
+       WHERE workspace_id = ${coordWorkspaceId()}
+         AND surface = 'messages'
+         AND origin = 'remote'
+         AND msg_id = ANY(${ids})
+    `;
+    for (const row of rows) if (typeof row.msg_id === 'string') out.add(row.msg_id);
+  } catch {
+    // Degrade to unmarked — see the fail-soft note above.
+  }
+  return out;
+}
+
+/**
  * Batch form of {@link getSupersededBy} for a page of messages (P-004 follow-up).
  *
  * Exists because the READ side of supersession was missing: migration 732 records
