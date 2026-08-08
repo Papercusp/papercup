@@ -234,6 +234,14 @@ export function toPublishable(figure: LedgerFigure): PublishableFigure {
 export interface StatBlockInput {
   measuredAt: Date;
   firstCommit: Date;
+  /**
+   * How to DISPLAY the first-commit date. Supply the date as it reads in the
+   * commit's own timezone (the `%aI` prefix), because a UTC render silently shifts
+   * it: the root commit here is 2026-04-06T21:58-04:00, which `toISOString()`
+   * prints as 2026-04-07 — contradicting every deck and bio that says 6 April over
+   * a four-minute timezone difference. Arithmetic still uses `firstCommit`.
+   */
+  firstCommitLabel?: string;
   repo: {
     totalLines: number;
     totalFiles: number;
@@ -279,7 +287,8 @@ export function renderStatBlock(input: StatBlockInput): StatBlockOutput {
   lines.push('='.repeat(72));
   lines.push('');
   lines.push(
-    `Built since ${describeDate(firstCommit)} — ${weeks} weeks (${days} days) as of ${describeDate(measuredAt)}.`,
+    `Built since ${input.firstCommitLabel ?? describeDate(firstCommit)} — ${weeks} weeks ` +
+      `(${days} days) as of ${describeDate(measuredAt)}.`,
   );
   lines.push('');
   lines.push('REPOSITORY');

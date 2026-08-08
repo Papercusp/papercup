@@ -217,11 +217,32 @@ export async function managedSpawn(
   }
 
   const argvSpec: TaskSpec = { ...spec, argv: [command, ...args] };
-  const row = await registerTask(argvSpec, {
-    taskId,
-    workspaceId: opts.workspaceId,
-    reserveScope: scopeOk,
-  });
+
+  // FAILS SOFT, ALWAYS (see the header) — and that has to cover the LEDGER leg,
+  // not just the systemd one. `registerTask` is an unguarded INSERT, so before
+  // this a PG blip threw straight out of the chokepoint and REFUSED THE SPAWN:
+  // exactly the "observability feature into an outage" the contract disclaims.
+  // It matters most for the callers that can least afford it — the spawner
+  // sidecar (EI-19479764372783341) is the fleet's agent-spawn path, and it must
+  // not be gated on a database write.
+  //
+  // Degrade the same way the scope leg does: spawn anyway, unledgered, and SAY
+  // SO via `confinementSkippedReason` rather than pretending it was accounted.
+  let row: TaskRow;
+  let ledgered = true;
+  try {
+    row = await registerTask(argvSpec, {
+      taskId,
+      workspaceId: opts.workspaceId,
+      reserveScope: scopeOk,
+    });
+  } catch (e) {
+    ledgered = false;
+    const why = `ledger register failed: ${(e as Error).message}`;
+    skippedReason = skippedReason ? `${skippedReason}; ${why}` : why;
+    console.warn(`[managed-spawn] ${why} — spawning UNLEDGERED (task ${taskId})`);
+    row = unledgeredRow(taskId, argvSpec, opts.workspaceId, null);
+  }
 
   const scopeUnit = scopeOk ? scopeUnitForTask(taskId) : null;
   const launchArgv = scopeOk
@@ -240,23 +261,42 @@ export async function managedSpawn(
     child = spawnFn(launchArgv[0]!, launchArgv.slice(1), opts.spawnOptions ?? {});
   } catch (e) {
     // The row already exists; close it honestly rather than leaving a pending
-    // row the reconciler will later strand with a vaguer reason.
-    await closeTask(taskId, {
-      state: 'exited',
-      exitCode: null,
-      exitReason: `spawn threw: ${(e as Error).message}`,
-    });
+    // row the reconciler will later strand with a vaguer reason. A failure to
+    // close must not MASK the spawn error the caller actually needs to see.
+    if (ledgered) {
+      try {
+        await closeTask(taskId, {
+          state: 'exited',
+          exitCode: null,
+          exitReason: `spawn threw: ${(e as Error).message}`,
+        });
+      } catch (closeErr) {
+        console.warn(`[managed-spawn] closeTask after a failed spawn also failed: ${(closeErr as Error).message}`);
+      }
+    }
     throw e;
   }
 
   const pid = child.pid ?? null;
-  await markSpawned(taskId, {
-    pid,
-    processIdentity: pid ? readProcessIdentity(pid) : null,
-    scopeUnit,
-    cgroupPath: pid ? readProcessCgroupPath(pid, fs) : null,
-    confined: scopeOk,
-  });
+  // The child is ALREADY RUNNING by here, so a throw out of `markSpawned` would
+  // be the worst of both worlds: the caller sees a failed spawn and abandons a
+  // live process nobody is holding. Record what we can, degrade to unaccounted.
+  if (ledgered) {
+    try {
+      await markSpawned(taskId, {
+        pid,
+        processIdentity: pid ? readProcessIdentity(pid) : null,
+        scopeUnit,
+        cgroupPath: pid ? readProcessCgroupPath(pid, fs) : null,
+        confined: scopeOk,
+      });
+    } catch (e) {
+      console.warn(
+        `[managed-spawn] ledger markSpawned failed for task ${taskId} (pid ${pid ?? '?'}): ${(e as Error).message} — ` +
+          'the process IS running; its row stays `pending` for the reconciler.',
+      );
+    }
+  }
 
   wireExit(child, taskId, scopeOk);
 

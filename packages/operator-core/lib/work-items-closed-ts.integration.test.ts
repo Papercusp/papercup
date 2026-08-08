@@ -87,9 +87,20 @@ describe('work_items.closed_ts (migration 698)', () => {
     db = await createFreshPgDb('closedts');
     sql = db.sql;
     await sql.unsafe(BASE_DDL);
-    await applyMigrationsForTest(sql, ['698-work-items-closed-ts.sql'], {
-      label: 'work-items-closed-ts',
-    });
+    // EI-18808675015292160: this list is HARDCODED, so every later migration touching
+    // harness_shared.work_items has to be added here or the fixture silently falls behind the
+    // real schema. `applyMigrationsForTest` audits it and fails loudly with the exact additions
+    // rather than letting the drift ride — the three below are what it named.
+    await applyMigrationsForTest(
+      sql,
+      [
+        '698-work-items-closed-ts.sql',
+        '721-work-items-lane-generated-column.sql',
+        '725-payload-object-shape-guard-and-plan-item-stamp-index.sql',
+        '741-work-items-condition-key-singleton.sql',
+      ],
+      { label: 'work-items-closed-ts' },
+    );
   }, 120_000);
 
   afterAll(async () => {

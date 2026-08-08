@@ -79,6 +79,10 @@ export default defineTool({
       .sort((a, b) => b.total - a.total);
 
     const clusterSize = Number(process.env.PAPERCUSP_CLUSTER ?? 1) || 1;
+    // NOTE: this reduce enumerates fields explicitly, so a counter added to
+    // CachedReadToolStats is NOT picked up here automatically the way the per-row
+    // `...s` spread above picks it up — add it in BOTH places or the totals silently
+    // under-report a counter the rows already show.
     const totals = rows.reduce(
       (acc, r) => ({
         hits: acc.hits + r.hits,
@@ -86,8 +90,14 @@ export default defineTool({
         stale: acc.stale + r.stale,
         bypass: acc.bypass + r.bypass,
         deadline: acc.deadline + r.deadline,
+        // P-007/D-082: the durable L2 tier. `l2Hits` is the number that says whether
+        // L2 is doing its job — each one is a cold cross-worker build AVOIDED.
+        // A persistently nonzero `l2Errors` means the tier is silently inert.
+        l2Hits: acc.l2Hits + r.l2Hits,
+        l2Misses: acc.l2Misses + r.l2Misses,
+        l2Errors: acc.l2Errors + r.l2Errors,
       }),
-      { hits: 0, misses: 0, stale: 0, bypass: 0, deadline: 0 },
+      { hits: 0, misses: 0, stale: 0, bypass: 0, deadline: 0, l2Hits: 0, l2Misses: 0, l2Errors: 0 },
     );
 
     return {

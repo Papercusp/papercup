@@ -305,13 +305,15 @@ describe('coord:send endTurn — liveness cross-check (EI-19412221266350408)', (
   /** Order-independent: keyed on the owners actually passed, not on call ordering —
    *  reportIdleRecipients is also used by the default no-wake idle-report path. */
   const idleFor = (...dead: string[]) =>
-    idleM.mockImplementation(async (owners: string[]) => ({ idle: owners.filter((o) => dead.includes(o)) }) as never);
+    idleM.mockImplementation((async (owners: readonly string[]) => ({
+      idle: owners.filter((o) => dead.includes(o)),
+    })) as never);
 
   // These cases install PERSISTENT implementations (the keying above is what makes them
   // order-independent), so restore the suite default or they leak into every later test —
   // the throwing one below took out 27 of them before this was added.
   afterEach(() => {
-    idleM.mockImplementation(async () => ({ idle: [] }) as never);
+    idleM.mockImplementation((async () => ({ idle: [] })) as never);
   });
 
   it('reclassifies a confirmed-dead target from `ended` to `missed` despite the ESC reporting ok', async () => {
@@ -344,9 +346,9 @@ describe('coord:send endTurn — liveness cross-check (EI-19412221266350408)', (
   it('FAIL-SOFT: a probe failure keeps the raw ESC verdict instead of failing the send', async () => {
     // The cross-check is an ENRICHMENT. If it could fail the endTurn leg, a flaky liveness
     // probe would break a remediation path whose whole purpose is unsticking a wedged agent.
-    idleM.mockImplementation(async () => {
+    idleM.mockImplementation((async () => {
       throw new Error('probe exploded');
-    });
+    }) as never);
     // wake:'required' on purpose: it takes the endTurn cross-check path while SKIPPING the
     // default no-wake idle-report, which calls the same helper OUTSIDE the cross-check's
     // try/catch. Without this the test would prove the wrong thing — that an unrelated

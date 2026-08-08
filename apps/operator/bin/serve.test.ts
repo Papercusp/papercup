@@ -144,7 +144,7 @@ describe("parent-death watch cannot go blind (EI-19486216732882752)", () => {
     it("prefers the pid the launcher DECLARED over any ppid observation", () => {
       expect(
         serve.resolveExpectedParentPid(
-          { PAPERCUSP_DESKTOP_PARENT_PID: "4321" } as NodeJS.ProcessEnv,
+          { PAPERCUSP_DESKTOP_PARENT_PID: "4321" },
           99,
         ),
       ).toEqual({ pid: 4321, declaredByLauncher: true });
@@ -152,7 +152,7 @@ describe("parent-death watch cannot go blind (EI-19486216732882752)", () => {
 
     it("falls back to the module-load ppid when the launcher declared nothing (older packaged app, newer sidecar)", () => {
       expect(
-        serve.resolveExpectedParentPid({} as NodeJS.ProcessEnv, 99),
+        serve.resolveExpectedParentPid({}, 99),
       ).toEqual({ pid: 99, declaredByLauncher: false });
     });
 
@@ -164,7 +164,7 @@ describe("parent-death watch cannot go blind (EI-19486216732882752)", () => {
       (raw) => {
         expect(
           serve.resolveExpectedParentPid(
-            { PAPERCUSP_DESKTOP_PARENT_PID: raw } as NodeJS.ProcessEnv,
+            { PAPERCUSP_DESKTOP_PARENT_PID: raw },
             77,
           ),
         ).toEqual({ pid: 77, declaredByLauncher: false });

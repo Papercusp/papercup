@@ -111,7 +111,25 @@ export function repoKeyLadder(entry: RepoIdentityEntry): string[] {
       rungs.push(`gh-${safeSegment(parsed.owner)}--${safeSegment(parsed.repo)}`);
     }
   }
-  rungs.push(entry.slug);
+  // Rung 3, the bare local slug, was the ONE rung not passed through a safety
+  // transform — so it was the only rung able to emit a repoKey that is not a
+  // legal path component. A submodule entry (slug 'papercusp/libs/generic/cache',
+  // no upstream coords) therefore derived a SLASHED key, and every pot-git
+  // bootstrap-tick for it died in storage.ts's assertSafeComponent: 5569 failures
+  // in 24h on the tower, i.e. total federation failure for every submodule.
+  //
+  // Note this module already OWNED the predicate that catches it (isValidRepoKey,
+  // used as `validPin`) — canonicalRepoKey rejects a slashed value as a PIN and
+  // then falls through to this ladder, which handed the same value straight back.
+  // The key was refused at one door and re-admitted through the other.
+  //
+  // isValidRepoKey is tested FIRST so every slug that is already a legal key is
+  // pushed BYTE-IDENTICAL. A repoKey names both a cross-device rendezvous and an
+  // on-disk store, so silently re-spelling a WORKING key would strand its store
+  // and orphan its peers (EI-18788176839043286) — the exact failure pinning was
+  // introduced to prevent. Only a slug that could never have worked is rewritten,
+  // and the rewrite is deterministic, so two devices flatten it identically.
+  rungs.push(isValidRepoKey(entry.slug) ? entry.slug : safeSegment(entry.slug));
   return [...new Set(rungs)];
 }
 

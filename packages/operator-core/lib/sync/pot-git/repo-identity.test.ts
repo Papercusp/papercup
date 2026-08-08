@@ -10,6 +10,7 @@ import {
   canonicalRepoKey,
   deriveRepoKey,
   findSupersededRepoKey,
+  isValidRepoKey,
   parseSupersededRepoKeyRefusal,
   pinRepoKey,
   repoKeyLadder,
@@ -180,6 +181,42 @@ describe('repoKeyLadder', () => {
 
   it('never returns an empty list — the local slug is always the last rung', () => {
     expect(repoKeyLadder({ slug: 'purely-local' })).toEqual(['purely-local']);
+  });
+
+  it('THE LIVE REPRO: a submodule slug yields a LEGAL path component, not a slashed key', () => {
+    // Tower, 2026-08-08: every papercusp submodule is registered with a PATH as
+    // its slug and no upstream coords, so it fell to the bare-slug rung and
+    // derived a slashed repoKey. storage.ts's assertSafeComponent then threw on
+    // every pot-git bootstrap-tick — 5569 times in 24h, i.e. every submodule's
+    // federation was dead, and none of it was filed.
+    expect(repoKeyLadder({ slug: 'papercusp/libs/generic/cache' })).toEqual([
+      'papercusp-libs-generic-cache',
+    ]);
+    // The property that actually matters, asserted against the SAME predicate
+    // storage.ts guards with: whatever the ladder emits must be a legal key.
+    for (const slug of [
+      'papercusp/libs/generic/cache',
+      'papercusp/libs/papercusp',
+      'a/../../etc/passwd',
+      'weird\\backslash',
+      'nul\0byte',
+      '',
+    ]) {
+      for (const rung of repoKeyLadder({ slug })) {
+        expect(isValidRepoKey(rung)).toBe(true);
+      }
+    }
+  });
+
+  it('CONTROL: a slug that is ALREADY a legal key is passed through byte-identical', () => {
+    // The regression this fix must not cause. A repoKey names a cross-device
+    // rendezvous AND an on-disk store path, so re-spelling a working key strands
+    // the store and orphans peers (EI-18788176839043286). Sanitizing
+    // unconditionally would silently re-key every one of these.
+    for (const slug of ['papercusp', 'purely-local', 'gh-1223568103', 'Mixed.Case_ok', 'a-b.c_d']) {
+      expect(repoKeyLadder({ slug })).toEqual([slug]);
+      expect(deriveRepoKey({ slug })).toBe(slug);
+    }
   });
 
   it('de-duplicates when two rungs coincide', () => {

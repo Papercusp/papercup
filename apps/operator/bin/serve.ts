@@ -272,7 +272,11 @@ export function isOrphanedFromParent(
  * reparent-only semantics exactly.
  */
 export function resolveExpectedParentPid(
-  env: NodeJS.ProcessEnv = process.env,
+  // Deliberately the NARROWEST shape this reads, not NodeJS.ProcessEnv: the repo's
+  // ProcessEnv declares required members (NODE_ENV, …), so demanding it here would
+  // force every caller — tests especially — into an `as` cast that typechecks
+  // nothing. `process.env` satisfies this structurally.
+  env: { PAPERCUSP_DESKTOP_PARENT_PID?: string | undefined } = process.env,
   fallbackPpid: number = PROCESS_START_PPID,
 ): { pid: number; declaredByLauncher: boolean } {
   const raw = env.PAPERCUSP_DESKTOP_PARENT_PID;
