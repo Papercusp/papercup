@@ -250,8 +250,54 @@ export interface HarvestResult {
 }
 
 /**
+ * Strip leading markdown decoration off a harvested title (PURE).
+ *
+ * EI-19409691124442012: an observation row never enters the work queue, so its TITLE is the
+ * entire index into it for the only consumers that exist (the corpus digest and the
+ * Observations pane). Checkpoint `insight` text is written as prose for a human reader, and
+ * its first line routinely opens with markdown furniture — `**1. THE THING**`, `## Heading`,
+ * `- point` — which spends the visible budget on punctuation instead of content.
+ *
+ * Iterates because the decoration nests in either order (`**1. ` is emphasis-then-ordinal,
+ * `1. **` the reverse), then drops any residual emphasis spans: a title is indexed as plain
+ * text, so a stray `**` in the middle is noise a reader has to parse around.
+ */
+export function stripTitleDecoration(s: string): string {
+  let out = s;
+  // Bounded: each pass must strictly shrink the string or we stop, so this cannot spin.
+  for (let i = 0; i < 6; i += 1) {
+    const before = out;
+    out = out
+      .replace(/^[#>\s]+/, '') // heading / blockquote markers
+      .replace(/^[-*+]\s+/, '') // list bullet (requires the space, so `**bold` is not eaten)
+      .replace(/^\d+[.)]\s*/, '') // ordinal, "1." or "1)"
+      .replace(/^(?:\*\*|__|\*|_)\s*/, ''); // emphasis opener
+    if (out === before) break;
+  }
+  return out.replace(/\*\*|__/g, '').trim();
+}
+
+/**
+ * Truncate to `max` on a WORD boundary (PURE), never mid-word.
+ *
+ * Backs off to the last space only when that keeps most of the budget — a single
+ * pathologically long token (a URL, a hash, a rule of dashes) would otherwise collapse the
+ * title to almost nothing, which is worse than a mid-word cut. Trailing punctuation is
+ * dropped so the ellipsis reads as continuation rather than as "…" glued onto a comma.
+ */
+export function truncateOnWordBoundary(s: string, max: number): string {
+  if (s.length <= max) return s;
+  const hard = s.slice(0, max - 1);
+  const lastSpace = hard.lastIndexOf(' ');
+  const kept = lastSpace >= Math.floor(max * 0.6) ? hard.slice(0, lastSpace) : hard;
+  const trimmed = kept.replace(/[\s,;:.\-–—]+$/, '');
+  return `${trimmed || kept.trimEnd()}…`;
+}
+
+/**
  * Bound a raw insight into an observation's { title, body } (PURE). The title is
- * the collapsed first line, truncated to MAX_TITLE_CHARS; the body is the whole
+ * the collapsed first line — stripped of markdown decoration and cut on a word
+ * boundary at MAX_TITLE_CHARS; the body is the whole
  * insight bounded to MAX_INSIGHT_CHARS, and is dropped when it carries nothing
  * beyond the title (a short single-line insight lives entirely in the title).
  * Returns null for a blank insight (nothing to harvest).
@@ -260,8 +306,11 @@ export function boundInsight(raw: string): { title: string; body?: string } | nu
   const full = (raw ?? '').trim();
   if (!full) return null;
   const firstLine = (full.split(/\r?\n/, 1)[0] ?? '').replace(/\s+/g, ' ').trim();
-  const base = firstLine || full.replace(/\s+/g, ' ').trim();
-  const title = base.length > MAX_TITLE_CHARS ? `${base.slice(0, MAX_TITLE_CHARS - 1).trimEnd()}…` : base;
+  const rawBase = firstLine || full.replace(/\s+/g, ' ').trim();
+  // Fall back to the undecorated line if stripping consumed everything (a first line that is
+  // ONLY furniture, e.g. a `---` rule) — an empty title indexes nothing at all.
+  const base = stripTitleDecoration(rawBase) || rawBase;
+  const title = truncateOnWordBoundary(base, MAX_TITLE_CHARS);
   const boundedBody = full.length > MAX_INSIGHT_CHARS ? `${full.slice(0, MAX_INSIGHT_CHARS - 1).trimEnd()}…` : full;
   const body = boundedBody !== title ? boundedBody : undefined;
   return { title, ...(body ? { body } : {}) };

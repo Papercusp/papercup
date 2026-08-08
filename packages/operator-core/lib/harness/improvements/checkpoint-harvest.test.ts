@@ -102,6 +102,57 @@ describe('boundInsight — pure title/body split + bounds', () => {
     expect((out?.body ?? '').length).toBeLessThanOrEqual(MAX_INSIGHT_CHARS);
     expect(out?.body?.endsWith('…')).toBe(true);
   });
+
+  // ── EI-19409691124442012: the title IS the index ────────────────────────────────
+  // An observation row never enters the work queue, so nothing but its title is ever
+  // scanned by the digest or the Observations pane. Both inputs below are the verbatim
+  // first lines of REAL harvested rows (EI-19899502834295034 and EI-19900192443908121,
+  // minted from loop:checkpoint on 2026-08-08) — regression cases, not invented ones.
+
+  it('strips the markdown furniture a checkpoint first line opens with', () => {
+    const out = boundInsight(
+      "**1. THE PREAMBLE'S OWN STALENESS WARNING WAS THE LOAD-BEARING PART.** The cold-wake text said ~15m.",
+    );
+    expect(out?.title.startsWith('*')).toBe(false);
+    expect(out?.title.startsWith('1.')).toBe(false);
+    expect(out?.title).not.toContain('**');
+    expect(out?.title.startsWith("THE PREAMBLE'S OWN STALENESS")).toBe(true);
+  });
+
+  it('handles the other decoration orders (ordinal-then-emphasis, heading, bullet)', () => {
+    expect(boundInsight('1. **the writer writes one key, the reader reads another**')?.title).toBe(
+      'the writer writes one key, the reader reads another',
+    );
+    expect(boundInsight('## a heading-shaped insight')?.title).toBe('a heading-shaped insight');
+    expect(boundInsight('- a bulleted insight')?.title).toBe('a bulleted insight');
+  });
+
+  it('a first line that is ONLY decoration still yields a title (never empty)', () => {
+    // Stripping consumes everything here; an empty title would index nothing at all.
+    const out = boundInsight('***\nthe real insight is on the second line');
+    expect(out?.title.length).toBeGreaterThan(0);
+  });
+
+  it('cuts an over-long title on a WORD boundary, never mid-word', () => {
+    const words = Array.from({ length: 40 }, (_, i) => `word${i}`);
+    const out = boundInsight(words.join(' '));
+    expect(out!.title.length).toBeLessThanOrEqual(MAX_TITLE_CHARS);
+    expect(out!.title.endsWith('…')).toBe(true);
+    // THE CONTROL: every retained token must be a WHOLE word from the input. A hard
+    // character slice ends on a fragment ("word1" → "wor"), which is not in the list,
+    // so this fails the moment the word-boundary logic is reverted.
+    for (const tok of out!.title.replace(/…$/, '').trim().split(' ')) {
+      expect(words).toContain(tok);
+    }
+  });
+
+  it('still hard-cuts when backing off to a word boundary would gut the title', () => {
+    // One pathological token (a hash, a URL, a rule of dashes) must not collapse the
+    // title to its first two words — a mid-token cut is the lesser evil here.
+    const out = boundInsight(`short lead ${'x'.repeat(300)}`);
+    expect(out!.title.length).toBeGreaterThan(MAX_TITLE_CHARS / 2);
+    expect(out!.title.length).toBeLessThanOrEqual(MAX_TITLE_CHARS);
+  });
 });
 
 describe('pickLexicalCoalesce — pure verbatim-repeat detection', () => {
