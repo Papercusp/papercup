@@ -2234,6 +2234,52 @@ const post = defineTool({
  * a same-UID loopback caller naming another ownerId is inside the existing
  * console trust boundary (same model as the cc/ hook chain).
  */
+/**
+ * EI-19412221266350408 — tell a beating launcher that its own session is FINISHED.
+ *
+ * The zombie: a psu-launcher whose agent session reached a terminal state while the
+ * node process lived on, holding a fleet slot, a pid and a cgroup with nothing running
+ * inside it. It is invisible to every cheap check and answers the WRONG way on the
+ * intuitive one — `kill -0` succeeds, `ps` shows a healthy long-lived process — so a
+ * leader doing process-level triage concludes "alive, therefore merely wedged".
+ *
+ * The launcher's own supervisor beat is what MADE it look healthy: it kept warming the
+ * presence row after the session died, which is exactly why the corpse read
+ * heartbeatFresh:true. So the verdict belongs on the beat's reply — the beat is both the
+ * symptom's source and an existing round-trip, meaning the launcher learns it is dead
+ * with no new call and no new timer.
+ *
+ * ⛔ WHY 'recorded' ONLY, and why absence is never actionable.
+ * `deriveSessionState` maps `!wakeable ⇒ 'ended'`, and a perfectly healthy session that
+ * has not yet armed a wake reads exactly that way — a launcher exiting on 'ended' would
+ * SUICIDE ON STARTUP, turning a leaked slot into a fleet that cannot boot. Worse, the
+ * oracle signals UNKNOWN BY OMISSION (EI-18771777750306094): it returns no entry for a
+ * degraded fetch AND for an unknown owner, so "absent" cannot be told apart from "dead".
+ * EI-19412643206608611 measured that exact trap and states the rule this follows:
+ * an explicit verdict is authoritative, a no-verdict is UNKNOWN, and unknown must never
+ * collapse into the actionable branch.
+ *
+ * Hence: emit the field ONLY on an explicit 'recorded' (something authoritatively
+ * recorded this session as finished — the state the real zombie showed). No entry, any
+ * other state, or a throw ⇒ emit NOTHING, and the launcher keeps running. The failure
+ * mode of this function is a zombie that lingers, never a live agent that is killed.
+ */
+async function terminalSessionVerdict(ownerId: string): Promise<{ sessionTerminal?: true; sessionState?: string }> {
+  try {
+    const { resolveSessionStates } = await import('../../../agent-tools/coordination/liveness-oracle');
+    const verdicts = await resolveSessionStates([{ ownerId }], { hydratePerId: true });
+    // `.get` returning undefined is the UNKNOWN case — deliberately indistinguishable
+    // here from "healthy", because both mean "do not act".
+    return verdicts.get(ownerId)?.sessionState === 'recorded'
+      ? { sessionTerminal: true, sessionState: 'recorded' }
+      : {};
+  } catch {
+    // Never let the verdict leg fail the beat: a missed beat is a presence-warmth
+    // problem, but a failed beat would break the liveness signal for a LIVE agent.
+    return {};
+  }
+}
+
 const heartbeat = defineTool({
   method: 'POST',
   path: '/agent-mcp/console/bootstrap-su/heartbeat',
@@ -2262,7 +2308,7 @@ const heartbeat = defineTool({
     try {
       const { touchHeartbeat } = await import('../../../agent-tools/coordination/presence');
       await touchHeartbeat(ownerId, pid != null || host != null ? { pid, host } : undefined);
-      return jsonRes({ ok: true });
+      return jsonRes({ ok: true, ...(await terminalSessionVerdict(ownerId)) });
     } catch (err) {
       // Best-effort contract: the launcher treats any failure as a missed
       // beat, never an error loop.

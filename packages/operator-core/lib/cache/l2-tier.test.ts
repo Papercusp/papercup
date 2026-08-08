@@ -24,6 +24,8 @@ import {
   l2TierEnabled,
   installL2StoreForTests,
   _refreshL2FlagForTests,
+  resetL2ErrorLogForTests,
+  __resetL2StateForTests,
   l2RowTtlMs,
   type L2Outcome,
 } from "./l2-tier";
@@ -69,6 +71,10 @@ async function enable(l2: boolean, cacheLayer = true): Promise<void> {
 
 beforeEach(async () => {
   installL2StoreForTests(null);
+  // The error log is rate-limited PER OPERATION with a 60s window, and that window is
+  // module state — without this reset one test's logged 'get' error suppresses the
+  // next test's, so a rate-limit assertion sees 0 instead of 1.
+  resetL2ErrorLogForTests();
   await enable(true);
 });
 
@@ -152,7 +158,7 @@ describe("withL2 — the read-through seam", () => {
     expect(withL2("ws", "k", factory, { tags: [], softTtlMs: Infinity })).toBe(factory);
   });
 
-  it("degrades to a real build when the store THROWS — a cache tier never fails a read", async () => {
+  it("degrades to a real build when the store THROWS — a cache tier never fails a read, but it LOGS", async () => {
     installL2StoreForTests({
       get: async () => {
         throw new Error("pg down");
@@ -160,6 +166,7 @@ describe("withL2 — the read-through seam", () => {
       set: async () => undefined,
     } as unknown as PgL2Store);
     const outcomes: L2Outcome[] = [];
+    const errs = vi.spyOn(console, "error").mockImplementation(() => {});
 
     const wrapped = withL2("ws", "k", async () => "built-anyway", {
       tags: [],
@@ -169,6 +176,33 @@ describe("withL2 — the read-through seam", () => {
 
     await expect(wrapped()).resolves.toBe("built-anyway");
     expect(outcomes).toEqual(["error"]);
+    // The LOG is load-bearing, not noise: a silently-swallowed error is how this tier
+    // ran 100% inert on :3170 while every counter and test looked plausible. The
+    // message is what turned that into a one-line diagnosis.
+    expect(errs).toHaveBeenCalledTimes(1);
+    expect(errs.mock.calls[0]?.[0]).toContain("[cache-l2] get FAILED");
+    expect(errs.mock.calls[0]?.[0]).toContain("pg down");
+    errs.mockRestore();
+  });
+
+  it("rate-limits the error log so a cold herd cannot storm the journal", async () => {
+    installL2StoreForTests({
+      get: async () => {
+        throw new Error("pg down");
+      },
+      set: async () => undefined,
+    } as unknown as PgL2Store);
+    const errs = vi.spyOn(console, "error").mockImplementation(() => {});
+    const wrapped = withL2("ws", "k", async () => "v", { tags: [], softTtlMs: 1_000 });
+
+    await wrapped();
+    await wrapped();
+    await wrapped();
+
+    // First one always logs (that is the one that says the tier never worked); the
+    // rest are suppressed inside the window.
+    expect(errs).toHaveBeenCalledTimes(1);
+    errs.mockRestore();
   });
 
   it("does not write through a null/undefined build result", async () => {
@@ -240,6 +274,42 @@ describe("l2RowTtlMs — falsifiability of the soft-over-hard invariant", () => 
   });
 });
 
+/**
+ * COLD-START WINDOW (regression guard, found live on :3170 2026-08-08).
+ * `ensureFlagWiring` starts the flag read with `void` — it is ASYNC — so the seeded
+ * value governs every read during a process's first moments. Seeded `false`, L2 was
+ * disabled for exactly the cold-start window it exists to serve: measured on :3170, a
+ * 5s-old process moved NONE of the three L2 counters while a warm one reported a miss.
+ * On a real deploy all 16 workers boot at once, so the tier would have been inert at
+ * precisely the moment D-078 measured the 10s deadline hits.
+ */
+describe("cold-start window", () => {
+  it("is ENABLED before any flag read has settled (the as-constructed seed)", () => {
+    __resetL2StateForTests();
+    // No flag read has happened yet — this is a worker in its first moments.
+    expect(l2TierEnabled()).toBe(true);
+  });
+
+  it("wraps the factory during that window, rather than silently skipping L2", () => {
+    __resetL2StateForTests();
+    const factory = async (): Promise<string> => "v";
+    // The live symptom of the bug was `withL2` returning the factory UNCHANGED, which
+    // moves no counters at all — indistinguishable from "L2 was consulted and missed".
+    expect(withL2("ws", "k", factory, { tags: [], softTtlMs: 20_000 })).not.toBe(factory);
+  });
+
+  it("KEEPS the current value when the flag read throws (one hiccup must not disable the tier for the process lifetime)", async () => {
+    __resetL2StateForTests();
+    setFlagOverridesForTest({
+      get [CACHE_L2]() {
+        throw new Error("flag store down");
+      },
+    } as unknown as Record<string, boolean>);
+    await _refreshL2FlagForTests();
+    expect(l2TierEnabled()).toBe(true);
+  });
+});
+
 describe("invalidateL2ByTags", () => {
   it("deletes matching rows so a tag bust reaches the durable tier", async () => {
     const { store, calls } = fakeStore({ value: "stale" });
@@ -269,7 +339,10 @@ describe("invalidateL2ByTags", () => {
         throw new Error("pg down");
       },
     } as unknown as PgL2Store);
+    const errs = vi.spyOn(console, "error").mockImplementation(() => {});
     expect(() => invalidateL2ByTags("ws", ["harness_plans"])).not.toThrow();
     await settle();
+    expect(errs.mock.calls[0]?.[0]).toContain("[cache-l2] invalidateByTags FAILED");
+    errs.mockRestore();
   });
 });

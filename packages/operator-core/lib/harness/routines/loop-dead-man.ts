@@ -42,6 +42,9 @@
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { autoPauseLoopRoutine } from './loop-cost-cap';
+import type { AttentionNotifyInput } from '../../attention-notify';
+import { getModes } from '../../modes/store';
+import { modeById } from '../../modes/registry';
 
 /**
  * Pure dead-man decision. Duration is checked first (a forgotten loop is the headline case).
@@ -68,8 +71,38 @@ export function evaluateDeadManGuard(input: {
   return { breach: false };
 }
 
+/**
+ * Does this owner hold an AUTONOMY posture (EI-19899671638499010)?
+ *
+ * Anchored to the registry's `axis` PROPERTY, never to a list of mode-id spellings — a new
+ * autonomy mode must be covered the day it is added, not the day someone remembers to extend
+ * a string list here. (`drain` and the other overlays are not autonomy themselves; the registry
+ * documents that a drain also sets the autonomy axis, so such a session still matches.)
+ *
+ * An UNKNOWN mode id counts as autonomous. That is deliberate and it is the whole cost
+ * asymmetry of this bug: a spurious page costs one notification, while a missed one costs DAYS
+ * of a silently-halted agent (measured: 4 days, plan advanced zero items). An unrecognized
+ * posture is not evidence of "not autonomous", so it must not buy silence.
+ */
+export function hasAutonomyPosture(modes: ReadonlyArray<{ mode: string }>): boolean {
+  return modes.some((m) => {
+    const def = modeById(m.mode);
+    return def == null || def.axis === 'autonomy';
+  });
+}
+
 export interface LoopDeadManDeps {
   autoPause?: typeof autoPauseLoopRoutine;
+  /** Injectable for tests; defaults to the real standing-modes read (harness_shared.agent_modes). */
+  getModes?: typeof getModes;
+  /**
+   * Injectable for tests; defaults to the real OWNER page (EI-19899671638499010).
+   *
+   * Imported dynamically at call time, matching `stalled-loops-guard.ts`: `attention-notify`
+   * pulls in the push/SSE transports, and this gate is consulted on the loop-fire path, so it
+   * must not carry them just to page on the rare dead-man breach.
+   */
+  notify?: (input: AttentionNotifyInput) => Promise<void>;
 }
 
 /**
@@ -80,7 +113,10 @@ export interface LoopDeadManDeps {
 export async function checkLoopDeadMan(
   input: { sql?: Sql; routineId: string; maxFires?: number | null; maxDurationSec?: number | null; nowMs?: number },
   deps: LoopDeadManDeps = {},
-): Promise<{ breach: boolean; reason?: string }> {
+  // `escalated` is OPTIONAL on purpose: every existing caller reads only `breach`/`reason`, and a
+  // required field here would strand every fixture that constructs this shape (the trap CLAUDE.md
+  // documents under lint:required-field-strands).
+): Promise<{ breach: boolean; reason?: string; escalated?: boolean }> {
   const hasFires = input.maxFires != null && input.maxFires > 0;
   const hasDuration = input.maxDurationSec != null && input.maxDurationSec > 0;
   if (!hasFires && !hasDuration) return { breach: false };
@@ -90,11 +126,19 @@ export async function checkLoopDeadMan(
   const nowMs = input.nowMs ?? Date.now();
 
   const rows = await db<
-    Array<{ armed_ms: string | number | null; fire_count: string | number | null; fire_count_at_arm: string | number | null }>
+    Array<{
+      armed_ms: string | number | null;
+      fire_count: string | number | null;
+      fire_count_at_arm: string | number | null;
+      target_owner_id: string | null;
+      workspace_id: string | null;
+    }>
   >`
     SELECT (EXTRACT(EPOCH FROM COALESCE((metadata->>'armed_at')::timestamptz, created_at)) * 1000)::bigint AS armed_ms,
            COALESCE((metadata->>'fire_count')::int, 0)         AS fire_count,
-           COALESCE((metadata->>'fire_count_at_arm')::int, 0)  AS fire_count_at_arm
+           COALESCE((metadata->>'fire_count_at_arm')::int, 0)  AS fire_count_at_arm,
+           target_owner_id,
+           workspace_id
       FROM harness_shared.routines
      WHERE id = ${input.routineId}`;
   const armedAtMs = Number(rows[0]?.armed_ms ?? nowMs);
@@ -113,10 +157,71 @@ export async function checkLoopDeadMan(
     maxFires: input.maxFires,
     maxDurationSec: input.maxDurationSec,
   });
-  if (verdict.breach) {
-    await autoPause(db, input.routineId, `dead-man guard: ${verdict.reason}`);
+  if (!verdict.breach) return verdict;
+
+  await autoPause(db, input.routineId, `dead-man guard: ${verdict.reason}`);
+
+  // EI-19899671638499010: page the OWNER when the session we just silenced was running under a
+  // registered AUTONOMY posture.
+  //
+  // This is the only instant where the fix is cheap. The system is still executing, and it holds
+  // BOTH facts at once — that this loop is being stopped, and who owned it. A moment later the
+  // session is inert and every downstream detector is unreachable, because the one warning built
+  // for this state (`coord:orient`'s wakeSourceLostWarning) is delivered on a wake, and a wake is
+  // exactly what no longer happens. A detector whose trigger requires the liveness whose absence
+  // it reports can only ever reach an agent that does not need it.
+  //
+  // Measured (su-1f7ee244, 2026-08-08): registered mode auto/ownerDirected, bound to an
+  // owner-directed plan, ZERO turns for 4 days after `dead-man max-fires 12 >= 12`. The plan
+  // advanced not one item; it restarted only because the owner typed into the session. Note the
+  // asymmetry that makes this worth a page: the cap exists to bound a RUNAWAY loop, which wastes
+  // tokens and is noticed in minutes — the failure it actually produced here was the exact
+  // opposite, and cost days precisely because nothing was noisy.
+  //
+  // Non-autonomous loops stay silent: an interactive session that hits its own bound has a human
+  // in front of it who will see the next turn, so paging would be noise.
+  const ownerId = rows[0]?.target_owner_id ?? null;
+  const workspaceId = rows[0]?.workspace_id ?? null;
+  if (!ownerId || !workspaceId) return { ...verdict, escalated: false };
+
+  // Wrapped whole: the pause above is the load-bearing write and has already committed. Neither
+  // the modes read nor a downed push transport may turn a successful pause into a thrown fire.
+  try {
+    const readModes = deps.getModes ?? getModes;
+    const modes = await readModes(workspaceId, ownerId, db);
+    if (!hasAutonomyPosture(modes)) return { ...verdict, escalated: false };
+
+    const notify =
+      deps.notify ??
+      (async (payload: AttentionNotifyInput) => {
+        const { notifyAttention } = await import('../../attention-notify');
+        await notifyAttention(payload);
+      });
+    await notify({
+      kind: 'intervention',
+      title: `Autonomous session ${ownerId} was just stopped by its dead-man bound — it cannot restart itself`,
+      body:
+        `Loop routine ${input.routineId} hit ${verdict.reason} and has been paused.\n\n` +
+        `This session holds a registered autonomy posture (${modes.map((m) => m.mode).join(', ')}), so ` +
+        `nothing else is going to wake it: a paused loop does not fire, and the warning designed to ` +
+        `catch this state (coord:orient's wakeSourceLostWarning) is only ever delivered ON a wake. ` +
+        `Until a human acts, this agent takes no further turns and any plan it was advancing stops ` +
+        `where it is.\n\n` +
+        `To bring it back: resume the session and re-arm its loop (loop:arm). If it should not have ` +
+        `been bounded at all, re-arm without maxFires/maxDurationSec — those bounds exist to stop a ` +
+        `RUNAWAY loop, and a silently halted one is the opposite failure.`,
+      importance: 'urgent',
+      workspaceId,
+      data: { ownerId, routineId: input.routineId, reason: verdict.reason ?? '', modes: modes.map((m) => m.mode).join(',') },
+    });
+    return { ...verdict, escalated: true };
+  } catch (e) {
+    console.warn(
+      `[loop-dead-man] owner page failed for ${ownerId} after ${verdict.reason}: ` +
+        `${e instanceof Error ? e.message : e}`,
+    );
+    return { ...verdict, escalated: false };
   }
-  return verdict;
 }
 
 /**

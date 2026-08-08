@@ -24,7 +24,7 @@ import {
   DEFAULT_BUCKET_OPTIONS,
   DEFAULT_CORPUS_NOVELTY_OPTIONS,
   type BucketOptions,
-  type CorpusNoveltyOptions,
+  type CorpusNoveltyTuning,
 } from './critique-core';
 import { DEFAULT_ROUTING_RAIL, WHOLE_SYSTEM_MARKERS } from './router';
 import { DEFAULT_IDEATOR_MISSION } from './lenses';
@@ -83,7 +83,7 @@ export interface ScoutConfig {
   /** Forced-diversity ideator roster (D-004). Each lens is a distinct generative stance. */
   lenses: readonly CreativeLens[];
   /** Search-first novelty knobs (`corpusNovelty`). */
-  novelty: Required<CorpusNoveltyOptions>;
+  novelty: CorpusNoveltyTuning;
   /** Verdict-bucket thresholds (`verdictFor`/`bucketByCritique`). */
   buckets: Required<BucketOptions>;
   /** Routing defaults + the whole-system marker vocabulary. */
@@ -129,7 +129,7 @@ export const DEFAULT_SCOUT_CONFIG: ScoutConfig = {
 /** A partial override a blueprint supplies — every field optional; missing → default. */
 export interface ScoutConfigOverride {
   lenses?: readonly CreativeLens[];
-  novelty?: Partial<CorpusNoveltyOptions>;
+  novelty?: Partial<CorpusNoveltyTuning>;
   buckets?: Partial<BucketOptions>;
   routing?: Partial<ScoutRoutingConfig>;
   framing?: Partial<ScoutFramingConfig>;
@@ -161,7 +161,7 @@ export function resolveScoutConfig(override?: ScoutConfigOverride | null): Scout
       override.lenses && override.lenses.length > 0
         ? [...override.lenses]
         : DEFAULT_SCOUT_CONFIG.lenses,
-    novelty: mergeDefined<Required<CorpusNoveltyOptions>>(DEFAULT_SCOUT_CONFIG.novelty, override.novelty),
+    novelty: mergeDefined<CorpusNoveltyTuning>(DEFAULT_SCOUT_CONFIG.novelty, override.novelty),
     buckets: mergeDefined<Required<BucketOptions>>(DEFAULT_SCOUT_CONFIG.buckets, override.buckets),
     routing: mergeDefined<ScoutRoutingConfig>(DEFAULT_SCOUT_CONFIG.routing, override.routing),
     // A blank/whitespace mission falls back to the default (never silence the framing,
@@ -209,10 +209,13 @@ export function parseScoutConfigBlock(raw: unknown): ScoutConfigOverride {
 
   if (r.novelty && typeof r.novelty === 'object') {
     const n = r.novelty as Record<string, unknown>;
-    const nov: Partial<CorpusNoveltyOptions> = {};
+    const nov: Partial<CorpusNoveltyTuning> = {};
     if (isFiniteNumber(n.matchFloor)) nov.matchFloor = n.matchFloor;
     if (isFiniteNumber(n.maxMatches)) nov.maxMatches = n.maxMatches;
     if (isFiniteNumber(n.decidedPenalty)) nov.decidedPenalty = n.decidedPenalty;
+    if (isFiniteNumber(n.semanticBaselineQuantile)) {
+      nov.semanticBaselineQuantile = n.semanticBaselineQuantile;
+    }
     const ds = asStringArray(n.decidedStates);
     if (ds) nov.decidedStates = ds;
     if (Object.keys(nov).length > 0) out.novelty = nov;

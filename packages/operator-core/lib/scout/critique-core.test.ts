@@ -171,3 +171,68 @@ describe('corpusNovelty — clamp, cap, and custom decided-states', () => {
     expect(corpusNovelty(idea, [prior], { decidedStates: ['archived'] }).alreadyTried).toBe(true);
   });
 });
+
+/**
+ * EI-19899846879024832 — the semantic leg must not reject every in-domain idea.
+ *
+ * Embedding cosine does not share lexical similarity's origin: measured on the live
+ * corpus, two UNRELATED same-domain entries sit around 0.62 and reach 0.77, while
+ * genuine Scout ideas score 0.73-0.82. Blending that raw via `max(lexical, cosine)`
+ * put EVERY in-domain idea above the reject line — 520 ideas generated, 0 routed,
+ * for six days. These pin the calibration that fixes it.
+ */
+describe('corpusNovelty — semantic leg calibration (EI-19899846879024832)', () => {
+  const NOVELTY_FLOOR = 0.34; // bucketByCritique rejects below this
+
+  // A corpus of same-domain neighbours sharing no vocabulary with the probe idea,
+  // so the LEXICAL leg is ~0 and the semantic leg alone decides the verdict.
+  const corpus: CorpusEntry[] = [
+    { ref: 'far:0', kind: 'plan', text: 'Persimmon vinegar fermentation in buried amphorae' },
+    ...Array.from({ length: 59 }, (_, i) => ({
+      ref: `nb:${i}`,
+      kind: 'plan' as const,
+      text: `Distinct neighbouring concern number ${i} about unrelated subsystem wiring`,
+    })),
+  ];
+  const idea = 'Escalation storms remount known-benign conditions hundreds of times per day';
+
+  /** Realistic cosines: one far entry, a same-domain bulk ~0.62, one nearest at 0.78. */
+  const sims = new Map<string, number>([
+    ['far:0', 0.0],
+    ...corpus.slice(1).map((e, i) => [e.ref, i === 58 ? 0.78 : 0.6 + (i % 7) * 0.01] as const),
+  ]);
+
+  it('the lexical leg alone considers this idea novel (guards the setup)', () => {
+    // If this ever fails the fixture has drifted and the tests below prove nothing.
+    expect(corpusNovelty(idea, corpus).novelty).toBeGreaterThanOrEqual(NOVELTY_FLOOR);
+  });
+
+  it('does NOT reject a novel idea merely for being in the corpus domain', () => {
+    const n = corpusNovelty(idea, corpus, { semanticSimByRef: sims });
+    expect(n.novelty).toBeGreaterThanOrEqual(NOVELTY_FLOOR);
+  });
+
+  it('UNCALIBRATED, the same inputs reject — this is what the fix changes', () => {
+    // Falsifiability control. `semanticBaselineQuantile: 0` picks the minimum cosine
+    // (0.0, the far entry) as the baseline, which makes the calibration an identity
+    // and reproduces the old raw `max(lexical, cosine)` blend exactly. Same corpus,
+    // same cosines, opposite verdict — so the passing test above is attributable to
+    // the calibration and not to a fixture that would pass either way.
+    const raw = corpusNovelty(idea, corpus, { semanticSimByRef: sims, semanticBaselineQuantile: 0 });
+    expect(raw.novelty).toBeLessThan(NOVELTY_FLOOR);
+  });
+
+  it('still flags a near-verbatim restatement as unnovel', () => {
+    // Calibration must not blind the leg to the case it exists for: a re-worded
+    // re-encounter with near-identical meaning still has to collide.
+    const dupeSims = new Map(sims);
+    dupeSims.set('nb:0', 0.98);
+    const n = corpusNovelty(idea, corpus, { semanticSimByRef: dupeSims });
+    expect(n.novelty).toBeLessThan(NOVELTY_FLOOR);
+  });
+
+  it('leaves scoring untouched when no cosine map is supplied', () => {
+    const withMap = corpusNovelty(idea, corpus, { semanticSimByRef: new Map() });
+    expect(withMap.novelty).toBe(corpusNovelty(idea, corpus).novelty);
+  });
+});

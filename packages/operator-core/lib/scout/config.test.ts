@@ -133,6 +133,11 @@ describe('parseScoutConfigBlock — defensive', () => {
     });
     expect(override.lenses).toEqual(['analogical', 'first-principles']);
     expect(override.novelty).toEqual({ matchFloor: 0.6, decidedPenalty: 0.2, decidedStates: ['dropped'] });
+    // EI-19899846879024832: the semantic calibration knob is blueprint-tunable like
+    // its siblings — pinned so it cannot be silently dropped from the parse.
+    expect(
+      parseScoutConfigBlock({ novelty: { semanticBaselineQuantile: 0.75 } }).novelty,
+    ).toEqual({ semanticBaselineQuantile: 0.75 });
     expect(override.buckets).toEqual({ noveltyFloor: 0.4, maxMoonshots: 3 });
     expect(override.routing?.defaultRail).toBe('plan');
     expect(override.federatedPriming).toEqual({ foreignElites: 0, crowded: 8, empty: 13 });

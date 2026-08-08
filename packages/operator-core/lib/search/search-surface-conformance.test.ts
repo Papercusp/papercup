@@ -39,16 +39,46 @@ import {
   SEARCH_SURFACES,
   FLOOR_GAP_CEILING,
   RESULTS_DISCARDED_CEILING,
+  CENSUS_EXCLUSIONS,
   type SearchSurface,
 } from './surface-registry';
 
 const HERE = dirname(new URL(import.meta.url).pathname);
 const LIB = resolve(HERE, '..');
 const AGENT_TOOLS = join(LIB, 'agent-tools');
+const ROUTES = join(LIB, 'endpoint-route');
 const POLICY_SEAM = join(LIB, 'search/configure-search-defaults.ts');
 
 const abs = (s: SearchSurface) => join(LIB, s.entry);
 const rel = (f: string) => relative(LIB, f);
+
+/**
+ * Every source file under `root` whose (comment-stripped) text satisfies
+ * `match`. The census leans on this rather than on a candidate list, because
+ * a list is only as complete as whoever wrote it — the `/api/harness/search`
+ * miss that prompted this.
+ *
+ * Comments are stripped for the same reason the import walk strips them: a
+ * doc-comment naming `runHybridSearch` would otherwise enrol a module that
+ * never calls it, and a false POSITIVE here is the expensive direction — it
+ * pushes someone to register or exclude a surface that does not exist.
+ */
+function walkLib(match: (src: string) => boolean, root: string = LIB): string[] {
+  const out: string[] = [];
+  const walk = (dir: string) => {
+    for (const ent of readdirSync(dir)) {
+      const p = join(dir, ent);
+      if (statSync(p).isDirectory()) {
+        if (ent !== '__tests__' && ent !== 'node_modules') walk(p);
+        continue;
+      }
+      if (!p.endsWith('.ts') || p.endsWith('.test.ts') || p.endsWith('.d.ts')) continue;
+      if (match(stripComments(readFileSync(p, 'utf8')))) out.push(p);
+    }
+  };
+  walk(root);
+  return out.sort();
+}
 
 /** Tool files declaring a name in the search NAMING CLASS. */
 function discoverSearchTools(): Array<{ id: string; file: string }> {
@@ -205,6 +235,84 @@ describe('search surface conformance (P-021)', () => {
         expect(derive(abs(surface)).hasFloor).toBe(false);
       },
     );
+  });
+
+  describe('the CENSUS — completeness is derived, not claimed', () => {
+    // Every module reachable from something we registered. An engine caller
+    // does not need its OWN entry: `code-recipes-search.ts` is how
+    // `recipes:search` reaches the engine, and covering it is exactly what
+    // that entry means. What must not happen is an engine caller no entry can
+    // reach at all.
+    const covered = (): Set<string> => {
+      const seen = new Set<string>();
+      for (const s of SEARCH_SURFACES) {
+        const e = abs(s);
+        seen.add(e);
+        for (const m of importGraph(e).modules) seen.add(m);
+      }
+      return seen;
+    };
+
+    const unregistered = (found: string[], reached: Set<string>) =>
+      found.filter((f) => !reached.has(f) && !(rel(f) in CENSUS_EXCLUSIONS)).map(rel);
+
+    it('every module that calls the engine is registered or excluded WITH A REASON', () => {
+      const reached = covered();
+      const callers = walkLib((src) => /run(?:Hybrid|FullText)Search\s*\(/.test(src));
+      expect(
+        unregistered(callers, reached),
+        'A module calls the search engine and no registry entry reaches it. Add it to ' +
+          'SEARCH_SURFACES, or to CENSUS_EXCLUSIONS with the reason it is not a product surface.',
+      ).toEqual([]);
+    });
+
+    it('every route whose path contains "search" is registered or excluded WITH A REASON', () => {
+      // The leg that would have caught `/api/harness/search`: it reaches no
+      // engine, so the caller census above cannot see it. A surface that is
+      // unranked BY OMISSION is invisible to a check that looks for engine
+      // calls — which is precisely the surface most worth finding.
+      const reached = covered();
+      const routes = walkLib((src) => /path:\s*'[^']*search[^']*'/.test(src), ROUTES);
+      expect(
+        unregistered(routes, reached),
+        'A route serves something search-shaped and no registry entry reaches it. Add it to ' +
+          'SEARCH_SURFACES, or to CENSUS_EXCLUSIONS with the reason it is not one.',
+      ).toEqual([]);
+    });
+
+    it('CONTROL: the census can SEE, and can say NO', () => {
+      // Two ways this guard could pass while measuring nothing, both cheap to
+      // rule out and neither visible from a green run.
+      //
+      // 1. The walk returns [] (a moved directory, a regex that stopped
+      //    matching) and every assertion above passes over an empty set.
+      const callers = walkLib((s) => /run(?:Hybrid|FullText)Search\s*\(/.test(s)).map(rel);
+      expect(callers).toContain('code-recipes-search.ts');
+      expect(callers.length).toBeGreaterThanOrEqual(8);
+
+      const routes = walkLib((s) => /path:\s*'[^']*search[^']*'/.test(s), ROUTES).map(rel);
+      // The surface that motivated the census. It reaches no engine at all, so
+      // only the ROUTE leg can see it — if this drops out, the leg has stopped
+      // covering the very case it was added for.
+      expect(routes).toContain('endpoint-route/routes/harness/search.ts');
+      expect(routes.length).toBeGreaterThanOrEqual(4);
+
+      // 2. `unregistered` returns [] unconditionally. Drive it with a module
+      //    that is neither reachable nor excluded and require it to complain.
+      expect(unregistered([join(LIB, 'no-such-search-surface.ts')], covered())).toEqual([
+        'no-such-search-surface.ts',
+      ]);
+      // ...and stay quiet for one that IS excluded, so it discriminates.
+      const excluded = join(LIB, Object.keys(CENSUS_EXCLUSIONS)[0]);
+      expect(unregistered([excluded], covered())).toEqual([]);
+    });
+
+    it('no exclusion is stale, and each states a reason', () => {
+      for (const [path, reason] of Object.entries(CENSUS_EXCLUSIONS)) {
+        expect(existsSync(join(LIB, path)), `excluded file is gone: ${path}`).toBe(true);
+        expect(reason.trim().length, `${path} needs a real reason`).toBeGreaterThan(40);
+      }
+    });
   });
 
   describe('the results-discarded exemption is earned, not asserted', () => {

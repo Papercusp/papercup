@@ -307,6 +307,10 @@ describe('no-hand-rolled-module-pin — the tree', () => {
       'packages/operator-core/lib/search/doc-embed-sync.ts',
       'packages/operator-core/lib/search/session-ingest.ts',
       'packages/operator-core/lib/search/turn-chunk-sync.ts',
+      // Tranche 12 — BOTH of its pins (the discovery cache and the dev
+      // file-watcher handle ~1250 lines apart) folded into ONE, so a split
+      // can't pin the cache while leaving a second fs.watch per record.
+      'packages/operator-core/lib/plugin-host-runtime.ts',
     ]) {
       expect(paths.has(migrated)).toBe(false);
     }

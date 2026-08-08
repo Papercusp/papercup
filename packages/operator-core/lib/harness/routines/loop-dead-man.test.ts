@@ -1,5 +1,11 @@
 import { describe, it, expect, vi } from 'vitest';
-import { evaluateDeadManGuard, checkLoopDeadMan, stampLoopArmedAt } from './loop-dead-man';
+import {
+  evaluateDeadManGuard,
+  checkLoopDeadMan,
+  stampLoopArmedAt,
+  hasAutonomyPosture,
+  type LoopDeadManDeps,
+} from './loop-dead-man';
 
 describe('evaluateDeadManGuard (P2a — pure dead-man decision)', () => {
   const base = { armedAtMs: 1_000_000, nowMs: 1_000_000, fireCount: 0 };
@@ -233,5 +239,177 @@ describe('EI-19339729634604096 regression — maxFires is counted SINCE THE MOST
     const res = await checkLoopDeadMan({ sql, routineId: 'rt_x', maxFires: 4, nowMs: Date.now() }, { autoPause });
     expect(res.breach).toBe(false);
     expect(autoPause).not.toHaveBeenCalled();
+  });
+});
+
+// ── EI-19899671638499010: stopping an AUTONOMOUS loop must page the owner ──────────
+//
+// The measured failure (su-1f7ee244, 2026-08-08): a session registered in auto mode, bound to
+// an owner-directed plan, hit `dead-man max-fires 12 >= 12` and then took ZERO turns for four
+// days. Nothing was broken — the pause was correct. What was missing is that a pause of an
+// autonomous session is PERMANENT from that session's side: a paused loop does not fire, and
+// the detector built for this state (coord:orient's wakeSourceLostWarning) is only ever
+// delivered ON a wake. So the state flip has to be loud at the instant it happens.
+
+// Bind the mocks to the REAL dep signatures — the sibling convention. A bare `vi.fn(async () =>
+// [])` records a zero-arg call tuple, so reading `notify.mock.calls[0][0].kind` below is a type
+// error that vitest cannot see and only `lint:tsc` catches, i.e. at the fleet gate.
+type GetModesFn = NonNullable<LoopDeadManDeps['getModes']>;
+type NotifyFn = NonNullable<LoopDeadManDeps['notify']>;
+
+/** A complete `agent_modes` row — only `mode` drives the verdict, the rest is shape. */
+const modeRow = (mode: string) => ({
+  workspaceId: 'ws',
+  ownerId: 'su-halted',
+  axisKey: 'autonomy',
+  mode,
+  reason: 'test',
+  setBy: 'owner',
+  ownerDirected: true,
+  setAt: '2026-08-08T00:00:00.000Z',
+});
+
+/** A routines row that carries the owner/workspace the page needs. */
+function fakeSqlWithOwner(over: { target_owner_id?: string | null; workspace_id?: string | null } = {}) {
+  return ((strings: TemplateStringsArray) => {
+    if (/UPDATE/i.test(strings.join('?'))) return Promise.resolve([]);
+    return Promise.resolve([
+      {
+        armed_ms: 1_000_000,
+        fire_count: 12,
+        fire_count_at_arm: 0,
+        target_owner_id: 'su-halted',
+        workspace_id: 'ws',
+        ...over,
+      },
+    ]);
+  }) as never;
+}
+
+const breaching = { routineId: 'rt_auto', maxFires: 12, nowMs: 1_000_000 };
+
+describe('hasAutonomyPosture (pure) — anchored to the registry axis, not to id spellings', () => {
+  it('an autonomy-axis mode counts', () => {
+    expect(hasAutonomyPosture([modeRow('auto')])).toBe(true);
+    expect(hasAutonomyPosture([modeRow('cold-auto')])).toBe(true);
+  });
+  it('an overlay-only posture does NOT count', () => {
+    expect(hasAutonomyPosture([modeRow('grade')])).toBe(false);
+    expect(hasAutonomyPosture([])).toBe(false);
+  });
+  it('an UNKNOWN mode id counts as autonomous (fails toward paging)', () => {
+    // The cost asymmetry: a spurious page costs one notification, a missed one cost 4 days.
+    // An unrecognized posture is not evidence of "not autonomous", so it must not buy silence.
+    expect(hasAutonomyPosture([modeRow('some-future-mode')])).toBe(true);
+  });
+  it('mixed: one autonomy row among overlays is enough', () => {
+    expect(hasAutonomyPosture([modeRow('grade'), modeRow('auto')])).toBe(true);
+  });
+});
+
+describe('checkLoopDeadMan — owner page on an autonomous halt (EI-19899671638499010)', () => {
+  it('THE GUARD: a breach on an AUTO session pauses AND pages the owner', async () => {
+    const autoPause = vi.fn(async () => {});
+    const getModes = vi.fn<GetModesFn>(async () => [modeRow('auto')]);
+    const notify = vi.fn<NotifyFn>(async () => {});
+
+    const res = await checkLoopDeadMan(
+      { sql: fakeSqlWithOwner(), ...breaching },
+      { autoPause, getModes, notify },
+    );
+
+    expect(res.breach).toBe(true);
+    expect(res.escalated).toBe(true);
+    // the pause still happens — the page is an ADDITION, never a replacement
+    expect(autoPause).toHaveBeenCalledTimes(1);
+
+    expect(notify).toHaveBeenCalledTimes(1);
+    const page = notify.mock.calls[0][0];
+    expect(page.kind).toBe('intervention');
+    expect(page.importance).toBe('urgent');
+    expect(page.title).toContain('su-halted');
+    expect(page.workspaceId).toBe('ws');
+    expect(page.body).toContain('max-fires');
+  });
+
+  it('a breach on a NON-autonomous session pauses SILENTLY', async () => {
+    // Byte-identical to the case above but for the registered mode: an interactive session has
+    // a human in front of it who sees the next turn, so a page would be noise. This pair is what
+    // makes the gate falsifiable — paging unconditionally fails here, never paging fails above.
+    const autoPause = vi.fn(async () => {});
+    const getModes = vi.fn<GetModesFn>(async () => [modeRow('grade')]);
+    const notify = vi.fn<NotifyFn>(async () => {});
+
+    const res = await checkLoopDeadMan(
+      { sql: fakeSqlWithOwner(), ...breaching },
+      { autoPause, getModes, notify },
+    );
+
+    expect(res.breach).toBe(true);
+    expect(res.escalated).toBe(false);
+    expect(autoPause).toHaveBeenCalledTimes(1);
+    expect(notify).not.toHaveBeenCalled();
+  });
+
+  it('a session with NO registered mode pauses silently', async () => {
+    const autoPause = vi.fn(async () => {});
+    const getModes = vi.fn<GetModesFn>(async () => []);
+    const notify = vi.fn<NotifyFn>(async () => {});
+
+    const res = await checkLoopDeadMan({ sql: fakeSqlWithOwner(), ...breaching }, { autoPause, getModes, notify });
+
+    expect(res.escalated).toBe(false);
+    expect(notify).not.toHaveBeenCalled();
+  });
+
+  it('NO breach → no pause, no page, and the modes read never happens', async () => {
+    const autoPause = vi.fn(async () => {});
+    const getModes = vi.fn<GetModesFn>(async () => [modeRow('auto')]);
+    const notify = vi.fn<NotifyFn>(async () => {});
+
+    const res = await checkLoopDeadMan(
+      { sql: fakeSqlWithOwner(), routineId: 'rt_auto', maxFires: 99, nowMs: 1_000_000 },
+      { autoPause, getModes, notify },
+    );
+
+    expect(res.breach).toBe(false);
+    expect(autoPause).not.toHaveBeenCalled();
+    expect(notify).not.toHaveBeenCalled();
+    // the gate must stay cheap on the fire path — no extra read on the healthy path
+    expect(getModes).not.toHaveBeenCalled();
+  });
+
+  it('a FAILING page never costs the pause, and never throws out of the fire path', async () => {
+    const autoPause = vi.fn(async () => {});
+    const getModes = vi.fn<GetModesFn>(async () => [modeRow('auto')]);
+    const notify = vi.fn<NotifyFn>(async () => {
+      throw new Error('push transport down');
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const res = await checkLoopDeadMan({ sql: fakeSqlWithOwner(), ...breaching }, { autoPause, getModes, notify });
+
+    expect(res.breach).toBe(true);
+    expect(res.escalated).toBe(false);
+    expect(autoPause).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls.some((c) => String(c[0]).includes('owner page failed'))).toBe(true);
+    warn.mockRestore();
+  });
+
+  it('a routine row with no owner pauses silently instead of throwing', async () => {
+    const autoPause = vi.fn(async () => {});
+    const getModes = vi.fn<GetModesFn>(async () => [modeRow('auto')]);
+    const notify = vi.fn<NotifyFn>(async () => {});
+
+    const res = await checkLoopDeadMan(
+      { sql: fakeSqlWithOwner({ target_owner_id: null }), ...breaching },
+      { autoPause, getModes, notify },
+    );
+
+    expect(res.breach).toBe(true);
+    expect(res.escalated).toBe(false);
+    expect(autoPause).toHaveBeenCalledTimes(1);
+    expect(getModes).not.toHaveBeenCalled();
+    expect(notify).not.toHaveBeenCalled();
   });
 });

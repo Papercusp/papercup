@@ -54,6 +54,7 @@ import { getGrantsForPluginInHarness } from './plugin-grants';
 import { PgAuditWriter } from './plugin-audit-writer';
 import { InMemoryAuditWriter as _InMemoryAuditWriter } from '@papercusp/plugin-loader';
 import { cooperativeYield } from './event-loop-lag-monitor';
+import { pinModuleState } from '@papercusp/module-singleton';
 
 // operator-core is an ESM package (`type: module`); under the host's ESM
 // runtime (tsx) the CommonJS globals `require` and `__dirname` are UNDEFINED.
@@ -150,11 +151,27 @@ interface HostState {
   wasmHandles: Map<string, any>;
 }
 
-const __key = '__papercuspPluginHostRuntime';
-type Globals = { [__key]?: { promise: Promise<HostState> | null; state: HostState | null; rootAtCache: string | null } };
-const __globals = globalThis as Globals;
-if (!__globals[__key]) __globals[__key] = { promise: null, state: null, rootAtCache: null };
-const __cache = __globals[__key]!;
+// This module's ENTIRE realm-pinned state, pinned ONCE. It previously used TWO
+// hand-rolled `globalThis[key]` pairs — the discovery cache here and the dev
+// file-watcher handle ~1250 lines below. Hand-rolling shares them correctly but
+// leaves both invisible to listModuleDuplications(), which then answers a
+// confident `[]` while this module is split (EI-19479108855357092).
+//
+// Folded into one pin rather than two: one `pinModuleState` call per module body
+// keeps the primitive's `evaluations` an honest count of module RECORDS, and it
+// forecloses the half-migrated shape where the cache is pinned and the watcher
+// handle is not (which on a split installs one fs.watch per record).
+const __cache = pinModuleState<{
+  promise: Promise<HostState> | null;
+  state: HostState | null;
+  rootAtCache: string | null;
+  watcher: { dispose: () => void } | null;
+}>('@papercusp/operator-core.pluginHostRuntime', () => ({
+  promise: null,
+  state: null,
+  rootAtCache: null,
+  watcher: null,
+}));
 
 function discoverHarnessSlugs(): string[] {
   const dir = join(papercuspRoot(), 'harnesses');
@@ -1408,17 +1425,15 @@ export function _injectPluginHostForTests(loaded: LoadedPlugin[]): void {
  * this env on startup). Avoid in production where filesystem-watch overhead
  * compounds on shared hosts.
  */
-const __watchKey = '__papercuspPluginHostWatcher';
-type WatchGlobals = { [__watchKey]?: { dispose: () => void } | null };
-const __watchGlobals = globalThis as WatchGlobals;
-
+// The watcher handle lives on the module's single pin (`__cache.watcher`, declared
+// at the top of this file) rather than a second hand-rolled globalThis key.
 export function watchPluginsForReload(opts: { dir?: string } = {}): { dispose: () => void } {
-  if (__watchGlobals[__watchKey]) return __watchGlobals[__watchKey]!;
+  if (__cache.watcher) return __cache.watcher;
   const dir = opts.dir ?? join(papercuspRoot(), 'global-plugins');
   const fs = require('node:fs') as typeof import('node:fs');
   if (!existsSync(dir)) {
     const noop = { dispose: () => {} };
-    __watchGlobals[__watchKey] = noop;
+    __cache.watcher = noop;
     return noop;
   }
   let pending: NodeJS.Timeout | null = null;
@@ -1448,10 +1463,10 @@ export function watchPluginsForReload(opts: { dir?: string } = {}): { dispose: (
     dispose: () => {
       if (pending) clearTimeout(pending);
       try { watcher.close(); } catch { /* ignore */ }
-      __watchGlobals[__watchKey] = null;
+      __cache.watcher = null;
     },
   };
-  __watchGlobals[__watchKey] = handle;
+  __cache.watcher = handle;
   console.log(`[plugin-host] hot-reload watcher armed on ${dir}`);
   return handle;
 }

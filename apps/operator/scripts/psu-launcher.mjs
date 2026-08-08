@@ -4715,15 +4715,69 @@ export function shouldSilenceClaudeTitle({
  * Exported with injectables for tests (scripts/__tests__).
  */
 export const SUPERVISOR_BEAT_MS = 60_000;
+
+/**
+ * EI-19412221266350408 — consecutive `sessionTerminal` beats required before psu exits.
+ *
+ * >1 on purpose. A single reply is one sample of a distributed verdict; two consecutive
+ * ones cost at most one extra beat (~60s) against a zombie that otherwise lingers for
+ * HOURS (the observed one held its slot ~10h, idle 20h), and it means no single anomalous
+ * response can terminate a live agent.
+ */
+export const TERMINAL_BEATS_TO_EXIT = 2;
+
+/**
+ * Minimum psu uptime before a terminal verdict may act. Startup is exactly when a session
+ * is least established — it has declared no intent and armed no wake yet — so it is the
+ * window where a spurious terminal verdict would be most damaging AND most likely. A
+ * genuine zombie is hours old, so waiting costs nothing it can measure.
+ */
+export const MIN_UPTIME_BEFORE_SELF_EXIT_MS = 5 * 60_000;
+
+/**
+ * EI-19412221266350408 — exit when this session is authoritatively FINISHED.
+ *
+ * The zombie this closes: psu outlived its agent session by ~9h, holding a fleet slot, a
+ * pid and a cgroup with nothing running inside it — and THIS beat is what made it look
+ * healthy, by warming the presence row long after the session died (the corpse read
+ * heartbeatFresh:true + sessionState:'recorded'). So the beat is the right place to ask
+ * "am I beating for a corpse?": it already runs every 60s, already talks to the operator,
+ * and already dies with this process.
+ *
+ * The server answers ONLY on an explicit 'recorded' verdict (see terminalSessionVerdict in
+ * bootstrap-su.ts for why 'ended' and absence are both unsafe: `!wakeable ⇒ 'ended'` makes
+ * a healthy fresh session look dead, and the oracle signals UNKNOWN by omission). This side
+ * adds two more conservative gates — consecutive confirmations and a minimum uptime — and
+ * RESETS the streak on any non-terminal or failed beat. Every degraded path keeps psu
+ * alive: the failure mode is a zombie that lingers, never a live agent that is killed.
+ */
 export function startSupervisorBeat(
   ownerId,
-  { fetchImpl = fetch, intervalMs = SUPERVISOR_BEAT_MS, operatorUrl = OPERATOR_URL, token = null, setIntervalImpl = setInterval } = {},
+  {
+    fetchImpl = fetch,
+    intervalMs = SUPERVISOR_BEAT_MS,
+    operatorUrl = OPERATOR_URL,
+    token = null,
+    setIntervalImpl = setInterval,
+    // Injectables for tests; defaults are the real process behaviour.
+    beatsToExit = TERMINAL_BEATS_TO_EXIT,
+    minUptimeMs = MIN_UPTIME_BEFORE_SELF_EXIT_MS,
+    uptimeMsFn = () => process.uptime() * 1000,
+    onTerminalSession = () => {
+      console.error(
+        `psu: this session is recorded as ENDED but psu is still running — exiting so the slot, pid and ` +
+          `cgroup are reclaimed (EI-19412221266350408).`,
+      );
+      process.exit(0);
+    },
+  } = {},
 ) {
   if (!ownerId) return null;
+  let terminalStreak = 0;
   const beat = async () => {
     try {
       const tok = token ?? readToken();
-      await fetchImpl(operatorUrl + '/api/agent-mcp/console/bootstrap-su/heartbeat', {
+      const res = await fetchImpl(operatorUrl + '/api/agent-mcp/console/bootstrap-su/heartbeat', {
         method: 'POST',
         signal: AbortSignal.timeout(5_000),
         headers: {
@@ -4732,8 +4786,24 @@ export function startSupervisorBeat(
         },
         body: JSON.stringify({ ownerId, pid: process.pid, host: hostname() }),
       });
+      // Any unreadable/absent body is NOT a terminal verdict — it resets the streak, like
+      // any other beat that failed to produce an explicit answer.
+      let terminal = false;
+      try {
+        terminal = Boolean((await res?.json?.())?.sessionTerminal);
+      } catch {
+        terminal = false;
+      }
+      if (!terminal) {
+        terminalStreak = 0;
+        return;
+      }
+      terminalStreak += 1;
+      if (terminalStreak >= beatsToExit && uptimeMsFn() >= minUptimeMs) onTerminalSession();
     } catch {
-      /* missed beat — the next tick retries; never surface */
+      /* missed beat — the next tick retries; never surface. A beat that did not complete
+       * proves nothing about the session, so it must not count toward the streak. */
+      terminalStreak = 0;
     }
   };
   const timer = setIntervalImpl(() => { void beat(); }, intervalMs);

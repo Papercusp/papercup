@@ -15,6 +15,7 @@ import { managedSetInterval } from '@papercusp/scheduled-registry';
 import { mkdir, writeFile, rm } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { gitFilePath, serializeRow } from './serialize';
+import { loadDerivedColumns, stripDerivedCols } from './derived-cols';
 
 export interface DrainGitExportOpts {
   sql: postgres.Sql;
@@ -53,6 +54,18 @@ export async function drainGitExportOnce(opts: DrainGitExportOpts): Promise<GitE
   let exported = 0;
   let deleted = 0;
   const changedPaths: string[] = [];
+  // EI-19900345996596896: never write a derived (vector) column into a git file — its
+  // width tracks the embedding model, so a committed one breaks hydrate on every peer
+  // the moment PROSE_VECTOR_DIMS moves. Memoised per drain pass, per table.
+  const derivedByTable = new Map<string, Set<string>>();
+  const derivedFor = async (table: string): Promise<Set<string>> => {
+    let d = derivedByTable.get(table);
+    if (!d) {
+      d = await loadDerivedColumns(sql, table);
+      derivedByTable.set(table, d);
+    }
+    return d;
+  };
 
   for (const r of rows) {
     const rel = gitFilePath(r.table_name, r.key);
@@ -62,7 +75,8 @@ export async function drainGitExportOnce(opts: DrainGitExportOpts): Promise<GitE
       deleted += 1;
     } else {
       await mkdir(dirname(abs), { recursive: true });
-      await writeFile(abs, serializeRow(r.table_name, r.row ?? {}), 'utf8');
+      const row = stripDerivedCols(r.row ?? {}, await derivedFor(r.table_name));
+      await writeFile(abs, serializeRow(r.table_name, row), 'utf8');
       exported += 1;
     }
     changedPaths.push(rel);

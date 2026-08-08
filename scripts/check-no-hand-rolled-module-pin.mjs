@@ -92,7 +92,6 @@ const ALLOW = new Set([
   'packages/operator-core/lib/endpoint-route/routes/harness/discord.ts',
   'packages/operator-core/lib/endpoint-route/routes/harness/phases.ts',
   'packages/operator-core/lib/endpoint-route/routes/harness/projects.ts',
-  'packages/operator-core/lib/plugin-host-runtime.ts',
   'packages/operator-core/lib/pot/wake.ts',
   'packages/operator-core/lib/scratch-gc.ts',
   'packages/operator-core/lib/search/embed-backfill.ts',

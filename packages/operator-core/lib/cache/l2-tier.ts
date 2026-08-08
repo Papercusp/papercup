@@ -76,21 +76,39 @@ const __state = pinModuleState<{
   flagWiringInit: boolean;
 }>('@papercusp/operator-core.cacheL2Tier', () => ({
   store: null,
-  l2On: false,
+  // SEEDED TO THE DECLARED DEFAULT (ON — CACHE_L2 is not in DARK_FLAGS), exactly as
+  // `instance.ts` seeds `cacheLayerOn: true`.
+  //
+  // ⚠ This seed is NOT cosmetic, and seeding `false` here was a real bug found by
+  // live-verifying on :3170 (2026-08-08). `ensureFlagWiring()` starts the flag read
+  // with `void` — it is ASYNC — so every getOrSet during a process's first moments
+  // reads whatever this seed says. Seeded `false`, L2 was DISABLED for the whole
+  // cold-start window: measured on :3170, a 5s-old process moved NONE of the three L2
+  // counters (the factory was never even wrapped), while the same call on a warm
+  // process reported `l2Misses: 1`.
+  //
+  // That is the worst possible window to be off. L2 exists to stop 16 workers each
+  // paying their own cold build, and on a real deploy all 16 boot SIMULTANEOUSLY — so
+  // the false seed disabled the tier at precisely the moment D-078 measured the 10s
+  // deadline hits. The feature would have looked wired, passed every unit test, and
+  // done nothing for the case it was built for.
+  l2On: true,
   flagWiringInit: false,
 }));
 
 /**
- * Fail SAFE — but note the safe direction here is the OPPOSITE of CACHE_LAYER's.
- * CACHE_LAYER defaults ON on a read error because losing the cache is a performance
- * cliff; L2 defaults OFF because a flag hiccup must not silently start serving values
- * from a durable cross-process store. Degrading to L1-only is always correct.
+ * Refresh the sync-cached kill-switch. On a read ERROR the previous value is KEPT
+ * rather than forced either way: the seed above is the flag's declared default, so
+ * holding it is "behave as declared until the store tells us otherwise" — whereas
+ * forcing `false` would let one transient flag-store hiccup silently disable the tier
+ * for the life of the process, which is the failure this whole file exists to prevent.
+ * An explicit OFF still takes effect the moment the read succeeds.
  */
 async function refreshL2Flag(): Promise<void> {
   try {
     __state.l2On = await getFlag(FLAGS.CACHE_L2, systemDistinctId());
   } catch {
-    __state.l2On = false;
+    /* keep the current value — see above */
   }
 }
 
@@ -128,6 +146,19 @@ export function installL2StoreForTests(store: PgL2Store | null): void {
 export function setL2EnabledForTests(on: boolean): void {
   __state.flagWiringInit = true;
   __state.l2On = on;
+}
+
+/**
+ * Test-only: restore the module to its as-constructed state — the COLD-START state a
+ * freshly-booted worker is in before any flag read has settled. Exists so the seed
+ * above is directly assertable; that seed being wrong disabled the tier for every
+ * process's cold window and no test could see it.
+ */
+export function __resetL2StateForTests(): void {
+  __state.store = null;
+  __state.l2On = true;
+  __state.flagWiringInit = false;
+  lastLoggedAt.clear();
 }
 
 /**

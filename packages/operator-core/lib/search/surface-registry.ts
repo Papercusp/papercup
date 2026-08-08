@@ -241,6 +241,21 @@ export const SEARCH_SURFACES: readonly SearchSurface[] = [
       '`sessions:search` / `search:fulltext` to ask a corpus-wide question.',
   },
   {
+    id: 'GET /harness/search',
+    entry: 'endpoint-route/routes/harness/search.ts',
+    engine: 'none',
+    whyNotEngine:
+      'NOT a considered choice — the one surface here that is simply UNMIGRATED, and it is ' +
+      'owner-facing. A raw cross-harness `ILIKE` substring scan over messages + the consolidated ' +
+      'features view, `ORDER BY created_at DESC LIMIT n`: no ranking of any kind, so results are ' +
+      'ordered by recency and truncated, and a query matching more rows than the limit silently ' +
+      'drops the best ones. Migrating it to the shared engine is tracked as P-018 of ' +
+      'semantic-search-fingerprint-coverage-2026-08-03.\n\n' +
+      'It is registered as `engine: none` rather than as a `floorGap` because a floor gap means ' +
+      '"reaches the engine but skips the policy seam"; this reaches no engine at all. Recording it ' +
+      'as a gap would understate it AND consume a ceiling that measures a different defect.',
+  },
+  {
     id: 'transcript-search-warmup',
     entry: 'transcript-search-warmup.ts',
     engine: 'hybrid',
@@ -283,3 +298,36 @@ export const FLOOR_GAP_CEILING = 1;
  * results away.
  */
 export const RESULTS_DISCARDED_CEILING = 1;
+
+/**
+ * Modules the CENSUS finds and the registry deliberately does not carry.
+ *
+ * ─── WHY THIS EXISTS ───────────────────────────────────────────────────────
+ * P-030's first pass audited a hand-collected LIST of candidates rather than
+ * ENUMERATING the population, and missed `/api/harness/search` — a live,
+ * owner-facing, entirely unranked `ILIKE` scan. The audit was careful and the
+ * result was still a confident "complete" that was not. That is the same
+ * defect this repo has now recorded three times about the module-pin detector:
+ * anchor the search to the PROPERTY that defines membership, never to the
+ * handful of instances you happened to have in hand.
+ *
+ * So completeness is no longer a claim in a comment. The conformance test
+ * enumerates the population directly — every module that calls the engine,
+ * and every route whose path contains "search" — and requires each one to be
+ * either REGISTERED above or listed here WITH A REASON. A new search surface
+ * is a build failure whatever it is named and wherever it lives; the only way
+ * to not carry one is to say, in writing, why.
+ *
+ * Keyed by path relative to `packages/operator-core/lib`.
+ */
+export const CENSUS_EXCLUSIONS: Readonly<Record<string, string>> = {
+  'endpoint-route/routes/github/search-repos.ts':
+    'Proxies the GitHub Search API server-side (so the browser never holds the token). It searches ' +
+    "GitHub's corpus, not ours — there is no local index to rank and no floor to inherit.",
+  'endpoint-route/routes/credentials/search-providers.ts':
+    'Named for what it configures, not what it does: CRUD over the API keys of search PROVIDERS ' +
+    '(masked read, env-var write). It runs no query. Caught by the path census purely on the word.',
+  'memory/bench/corpus-leg-lexical-acceptance-cli.ts':
+    'A benchmark CLI, not a product surface — it calls the engine to MEASURE retrieval quality, so ' +
+    'its results are the experiment rather than something a user sees. Never runs in the operator.',
+};

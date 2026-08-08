@@ -99,3 +99,117 @@ describe('startSupervisorBeat', () => {
     expect(SUPERVISOR_BEAT_MS).toBeLessThanOrEqual(120_000);
   });
 });
+
+/**
+ * EI-19412221266350408 — psu exits when its session is authoritatively FINISHED.
+ *
+ * The zombie: psu outlived its agent session by ~9h holding a fleet slot, a pid and a
+ * cgroup with nothing inside it — and THIS beat is what made it look healthy, warming the
+ * presence row long after the session died.
+ *
+ * Every test below is really about ONE property: the ONLY thing that may terminate psu is
+ * a REPEATED, EXPLICIT terminal verdict on an established session. The asymmetry is the
+ * whole design — a lingering zombie costs a slot, a wrongly-killed launcher costs a live
+ * agent (and, on a fresh launch, a fleet that cannot boot). So the negative cases here
+ * matter more than the positive one.
+ */
+describe('startSupervisorBeat — terminal-session self-exit (EI-19412221266350408)', () => {
+  const reply = (body: string) => vi.fn(async () => new Response(body));
+  const TERMINAL = '{"ok":true,"sessionTerminal":true,"sessionState":"recorded"}';
+  const HEALTHY = '{"ok":true}';
+
+  /** Arm the beat with an established session (uptime well past the floor). */
+  function arm(fetchImpl: ReturnType<typeof reply>, over: Record<string, unknown> = {}) {
+    const onTerminalSession = vi.fn();
+    const { setIntervalImpl, fire } = makeTimerCapture();
+    startSupervisorBeat('su-zombie', {
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      operatorUrl: 'http://127.0.0.1:9999',
+      token: 't',
+      setIntervalImpl,
+      uptimeMsFn: () => 60 * 60_000, // an hour up — established
+      onTerminalSession,
+      ...over,
+    });
+    return { onTerminalSession, fire };
+  }
+
+  test('exits after TWO consecutive terminal verdicts on an established session', async () => {
+    const { onTerminalSession, fire } = arm(reply(TERMINAL));
+    await flush();
+    expect(onTerminalSession, 'one verdict must not be enough').not.toHaveBeenCalled();
+    fire();
+    await flush();
+    expect(onTerminalSession).toHaveBeenCalledTimes(1);
+  });
+
+  test('a SINGLE terminal verdict never exits — one sample is not a verdict', async () => {
+    const fetchImpl = vi.fn();
+    fetchImpl.mockResolvedValueOnce(new Response(TERMINAL));
+    fetchImpl.mockResolvedValue(new Response(HEALTHY));
+    const { onTerminalSession, fire } = arm(fetchImpl as never);
+    await flush();
+    fire();
+    await flush();
+    expect(onTerminalSession).not.toHaveBeenCalled();
+  });
+
+  test('a healthy beat RESETS the streak — terminal/healthy/terminal is not two in a row', async () => {
+    const fetchImpl = vi.fn();
+    fetchImpl.mockResolvedValueOnce(new Response(TERMINAL));
+    fetchImpl.mockResolvedValueOnce(new Response(HEALTHY));
+    fetchImpl.mockResolvedValue(new Response(TERMINAL));
+    const { onTerminalSession, fire } = arm(fetchImpl as never);
+    await flush();
+    fire();
+    await flush();
+    fire();
+    await flush();
+    expect(onTerminalSession).not.toHaveBeenCalled();
+  });
+
+  test('NEVER exits during startup, however many terminal verdicts arrive', async () => {
+    // The suicide-on-startup guard. A fresh session has declared no intent and armed no
+    // wake, so it is the most likely to be misjudged AND the most costly to kill: the
+    // failure would be a fleet that cannot boot, not one leaked slot.
+    const { onTerminalSession, fire } = arm(reply(TERMINAL), { uptimeMsFn: () => 5_000 });
+    await flush();
+    fire();
+    await flush();
+    fire();
+    await flush();
+    expect(onTerminalSession).not.toHaveBeenCalled();
+  });
+
+  test('a FAILED beat proves nothing — it resets the streak instead of counting toward it', async () => {
+    const fetchImpl = vi.fn();
+    fetchImpl.mockResolvedValueOnce(new Response(TERMINAL));
+    fetchImpl.mockRejectedValueOnce(new Error('operator down'));
+    fetchImpl.mockResolvedValue(new Response(TERMINAL));
+    const { onTerminalSession, fire } = arm(fetchImpl as never);
+    await flush();
+    fire(); // the throw — streak back to 0
+    await flush();
+    fire(); // terminal again, but only #1 since the reset
+    await flush();
+    expect(onTerminalSession).not.toHaveBeenCalled();
+  });
+
+  test('an unreadable body is not a terminal verdict', async () => {
+    const { onTerminalSession, fire } = arm(reply('not json at all'));
+    await flush();
+    fire();
+    await flush();
+    expect(onTerminalSession).not.toHaveBeenCalled();
+  });
+
+  test('a normal {ok:true} beat never exits — the pre-existing contract is untouched', async () => {
+    const { onTerminalSession, fire } = arm(reply(HEALTHY));
+    await flush();
+    fire();
+    await flush();
+    fire();
+    await flush();
+    expect(onTerminalSession).not.toHaveBeenCalled();
+  });
+});

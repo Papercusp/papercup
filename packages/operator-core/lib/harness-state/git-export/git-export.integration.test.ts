@@ -5,9 +5,9 @@
  * the echo-loop guard (remote-origin writes skipped), and DELETE → file removal.
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { mkdtemp, readFile, stat } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
 import {
   ensureGitExportOutbox,
@@ -17,7 +17,7 @@ import {
 import { drainGitExportOnce } from './drainer';
 import { hydrateGitTable } from './hydrate';
 import { gcOrphanOutboxRows } from './gc';
-import { parseFile, gitFilePath } from './serialize';
+import { parseFile, gitFilePath, serializeRow } from './serialize';
 
 const WS = 'ws_git';
 const SLUG = 'githarness';
@@ -132,6 +132,54 @@ describe('git-export integration (P-003b): trigger → outbox → drainer → fi
       id: 'D-rt', title: 'RT', content: 'body text\n\nx',
       workspace_id: WS, harness_slug: SLUG, origin: 'remote',
     });
+  });
+
+  // EI-19900345996596896: 17/17 hives failed `[git-export]` boot with
+  // "expected 768 dimensions, not 384" — committed files carried a MiniLM-era
+  // `body_embedding` against a vector(768) column, and one throw aborted the whole
+  // table hydrate, so the hive never reached startGitExportDrain (1,166 outbox rows
+  // undrained). Derived (vector) columns are now excluded from git export in both
+  // directions, which fixes it with NO data migration.
+  it('EI-19900345996596896: a legacy file with a STALE-WIDTH vector hydrates instead of aborting the table', async () => {
+    await db.sql.unsafe(`CREATE EXTENSION IF NOT EXISTS vector`);
+    await db.sql.unsafe(
+      `ALTER TABLE harness_shared.harness_decisions ADD COLUMN IF NOT EXISTS body_embedding vector(768)`,
+    );
+    const stale384 = `[${Array.from({ length: 384 }, () => '0.1').join(',')}]`;
+
+    // CALIBRATION — prove this fixture genuinely reproduces the live hazard. Without it
+    // the assertions below could pass vacuously against a column that accepts anything.
+    await expect(
+      db.sql`INSERT INTO harness_shared.harness_decisions (id, body_embedding)
+             VALUES ('D-vec-probe', ${stale384})`,
+    ).rejects.toThrow(/expected 768 dimensions, not 384/);
+
+    // a file committed under the old embedder: real content + a stale-width vector.
+    const abs = join(root, gitFilePath('harness_decisions', 'D-legacy'));
+    await mkdir(dirname(abs), { recursive: true });
+    await writeFile(
+      abs,
+      serializeRow('harness_decisions', {
+        id: 'D-legacy', title: 'Legacy', content: 'legacy body', ts: 9, body_embedding: stale384,
+      }),
+      'utf8',
+    );
+
+    const n = await hydrateGitTable({
+      sql: db.sql, harnessRoot: root, table: 'harness_decisions', conflictCols: ['id'],
+      workspaceId: WS, harnessSlug: SLUG,
+    });
+    expect(n).toBeGreaterThanOrEqual(1);
+
+    const after = await db.sql<{ title: string; content: string; body_embedding: string | null }[]>`
+      SELECT title, content, body_embedding
+        FROM harness_shared.harness_decisions WHERE id = 'D-legacy'`;
+    expect(after.length).toBe(1);
+    // document content survives…
+    expect(after[0]).toMatchObject({ title: 'Legacy', content: 'legacy body' });
+    // …and the derived column was DROPPED rather than applied — embed-backfill
+    // regenerates it in PG at the current width.
+    expect(after[0].body_embedding).toBeNull();
   });
 
   it('no-op guard: an UPDATE that changes nothing produces no new outbox row (re-upsert amplification)', async () => {

@@ -123,7 +123,15 @@ const DEFAULT_DECIDED_STATES = ['dropped', 'shipped', 'resolved', 'closed', 'don
  * tuning flows in via the resolved ScoutConfig; absent a blueprint override, behavior is
  * byte-identical to the previous inline constants.
  */
-export const DEFAULT_CORPUS_NOVELTY_OPTIONS: Omit<Required<CorpusNoveltyOptions>, 'semanticSimByRef'> = {
+/**
+ * The CONFIGURABLE novelty knobs — every `CorpusNoveltyOptions` field except
+ * `semanticSimByRef`, which is per-call runtime data (the resolved cosine map for one
+ * idea), never a tuning value. Blueprint config carries this shape; a caller passes
+ * the cosine map separately.
+ */
+export type CorpusNoveltyTuning = Omit<Required<CorpusNoveltyOptions>, 'semanticSimByRef'>;
+
+export const DEFAULT_CORPUS_NOVELTY_OPTIONS: CorpusNoveltyTuning = {
   matchFloor: 0.5,
   maxMatches: 5,
   decidedStates: DEFAULT_DECIDED_STATES,
@@ -167,6 +175,8 @@ export function corpusNovelty(
   const decidedStates = opts.decidedStates ?? DEFAULT_CORPUS_NOVELTY_OPTIONS.decidedStates;
   const decidedPenalty = opts.decidedPenalty ?? DEFAULT_CORPUS_NOVELTY_OPTIONS.decidedPenalty;
   const semanticSimByRef = opts.semanticSimByRef;
+  const semanticBaselineQuantile =
+    opts.semanticBaselineQuantile ?? DEFAULT_CORPUS_NOVELTY_OPTIONS.semanticBaselineQuantile;
 
   // No comparable tokens (e.g. empty / punctuation-only) — maximally novel, but
   // we surface nothing (there is nothing to compare).
@@ -174,15 +184,39 @@ export function corpusNovelty(
     return { novelty: 1, matches: [], alreadyTried: false };
   }
 
+  // P-017 hybrid leg, calibration pass (EI-19899846879024832). Cosine does not share
+  // lexical similarity's origin — unrelated same-domain text sits around 0.62, not 0 —
+  // so the raw value cannot be compared against a lexical-tuned floor. Establish THIS
+  // text's own same-domain baseline from the resolved cosines and subtract it below.
+  let semanticBaseline = 0;
+  if (semanticSimByRef && semanticSimByRef.size >= MIN_SEMANTIC_SAMPLES_TO_CALIBRATE) {
+    const cosines: number[] = [];
+    for (const e of corpus) {
+      const c = semanticSimByRef.get(e.ref);
+      if (typeof c === 'number' && Number.isFinite(c)) cosines.push(c);
+    }
+    if (cosines.length >= MIN_SEMANTIC_SAMPLES_TO_CALIBRATE) {
+      cosines.sort((a, b) => a - b);
+      semanticBaseline = quantile(cosines, semanticBaselineQuantile);
+    }
+  }
+  const semanticSpan = Math.max(1e-6, 1 - semanticBaseline);
+
   const scored: CorpusMatch[] = [];
   for (const e of corpus) {
     const lexical = round2(titleSimilarity(text, e.text));
-    // P-017 hybrid leg: blend the caller-resolved cosine as max(lexical, cosine).
+    // P-017 hybrid leg: blend the caller-resolved cosine as max(lexical, calibrated).
     // Computed BEFORE the <=0 skip on purpose — a re-worded re-encounter with zero
     // lexical overlap (the 2026-07-10 dupe-storm class) is only caught this way.
     const cos = semanticSimByRef?.get(e.ref);
-    const useSemantic = typeof cos === 'number' && cos > lexical;
-    const similarity = useSemantic ? round2(cos as number) : lexical;
+    // Rescale so "typical unrelated entry" maps to 0, matching the lexical scale.
+    // Below the baseline there is no evidence of similarity at all, hence the clamp.
+    const calibrated =
+      typeof cos === 'number' && Number.isFinite(cos)
+        ? Math.max(0, (cos - semanticBaseline) / semanticSpan)
+        : undefined;
+    const useSemantic = typeof calibrated === 'number' && calibrated > lexical;
+    const similarity = useSemantic ? round2(calibrated) : lexical;
     if (similarity <= 0) continue;
     scored.push({
       ref: e.ref,
