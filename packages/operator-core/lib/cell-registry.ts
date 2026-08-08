@@ -190,6 +190,26 @@ export interface CellMateriality {
   why: string;
 }
 
+/**
+ * WI-36259 — the per-read provenance of a cell's headline. See `CellSpec.headlineSource`.
+ */
+export interface CellHeadlineSource {
+  /**
+   * Dot-path into the SAME resolver result holding this read's source label.
+   * Must differ from `changeSignal.path`: a "source" that IS the value carries no
+   * information, the same emptiness axis 1 rejects for a falsifier.
+   */
+  path: string;
+  /**
+   * The source values that count as a DIRECT OBSERVATION. Anything else — and ABSENCE —
+   * is treated as an inference, so this fails SAFE: an unrecognised or missing label can
+   * only ever downgrade trust, never manufacture it.
+   */
+  authoritative: string[];
+  /** What the untrusted reading actually degrades to, in one line, for the caller. */
+  why: string;
+}
+
 /** A caller, for the audience check. Deliberately small: everything here is
  *  already known at dispatch, so the check costs no lookup. */
 export interface CellReader {
@@ -238,6 +258,29 @@ export interface CellSpec {
   changeSignal: { kind: 'poll'; tool: string; path: string } | { kind: 'event'; key: string };
   /** P-021 — OPTIONAL. Omitted ⇒ every change is material (today's behaviour). */
   materiality?: CellMateriality;
+  /**
+   * WI-36259 — OPTIONAL. THE RUNTIME COMPANION TO AXIS 4.
+   *
+   * `provenance` above is STATIC: how the cell was BUILT and evidenced, fixed at
+   * registration. This is PER-READ: where THIS read's headline came from, when a resolver
+   * can reach the same value by paths of different trust. Both are needed and neither
+   * substitutes for the other — a cell can be impeccably evidenced at registration and
+   * still hand you an inference on any given call.
+   *
+   * Declared as a path off the SAME payload, exactly like `unknownHoist` and
+   * `materiality` — never a second dispatch (axis 5).
+   *
+   * `authoritative` lists the values that count as a DIRECT OBSERVATION; anything else,
+   * including absence, is an inference. That list is what makes the read BRANCHABLE: the
+   * consumer gets a boolean instead of having to know each resolver's private enum, which
+   * is the whole complaint cell-contract.ts was written about (a reason reported as prose
+   * a human can read and a program cannot branch on).
+   *
+   * Justified by TWO shipped instances, not speculative generality:
+   * `checkpointRunInFlight.candidateSource` ('retriage-marker' authoritative vs 'run-probe'
+   * inferred) and `checkpointRunInFlight.activeSource` ('run-lock' authoritative vs absent).
+   */
+  headlineSource?: CellHeadlineSource;
   /** Human-readable result shape. */
   shape: string;
   /**
@@ -254,7 +297,7 @@ export interface CellRejection {
   /** A D-038 axis number, or a P-019 dimension. The two are labelled differently on
    *  purpose: `visibility`/`federation` are NOT contract axes, they are the access
    *  model P-019 added, and blurring them would misrepresent D-038 as having eight. */
-  axis: 1 | 2 | 3 | 4 | 5 | 'visibility' | 'federation' | 'materiality';
+  axis: 1 | 2 | 3 | 4 | 5 | 'visibility' | 'federation' | 'materiality' | 'headlineSource';
   rule: string;
   detail: string;
 }
@@ -360,6 +403,41 @@ export function validateCellSpec(spec: CellSpec): CellRejection[] {
         'materiality',
         'materiality-is-changesignal-path',
         `materiality.path "${mat.path}" IS changeSignal.path — that declares "every change is material", which is already the default. Omit the field, or name the COARSER answer the cell actually exists to give.`,
+      );
+    }
+  }
+
+  // ── WI-36259 — HEADLINE SOURCE. Optional, but a declared one must be able to do work.
+  const src = spec.headlineSource;
+  if (src !== undefined) {
+    if (!src.path?.trim()) {
+      reject('headlineSource', 'headline-source-path-missing', 'headlineSource must name a `path` — the field in the SAME resolver result carrying this read\'s source label. Omit the whole field to mean "this cell reaches its headline exactly one way".');
+    }
+    if (!Array.isArray(src.authoritative) || src.authoritative.length === 0) {
+      reject(
+        'headlineSource',
+        'headline-source-no-authoritative-values',
+        'headlineSource must list at least one `authoritative` value. An empty list makes EVERY reading an inference, so the field can only ever downgrade and never distinguishes anything — declaring it then costs a payload field and tells the caller nothing.',
+      );
+    }
+    if (!src.why?.trim()) {
+      reject(
+        'headlineSource',
+        'headline-source-unjustified',
+        'headlineSource must state `why` — what the untrusted reading DEGRADES TO. "This value is less trustworthy" is unactionable; "on a cron run the probe falls back to the checkout\'s live HEAD" tells the caller what to do instead.',
+      );
+    }
+    if (spec.changeSignal?.kind !== 'poll') {
+      reject(
+        'headlineSource',
+        'headline-source-on-event-cell',
+        'headlineSource names a path into a RESOLVER RESULT, and an event-signalled cell has no resolver to produce one. Carry the provenance in the event payload instead.',
+      );
+    } else if (src.path?.trim() && norm(src.path) === norm(spec.changeSignal.path)) {
+      reject(
+        'headlineSource',
+        'headline-source-is-changesignal-path',
+        `headlineSource.path "${src.path}" IS changeSignal.path — a value cannot be its own provenance. This is axis 1's falsifier-is-headline emptiness in a second field: it looks like corroboration and carries no information.`,
       );
     }
   }

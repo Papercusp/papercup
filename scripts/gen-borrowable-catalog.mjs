@@ -107,6 +107,7 @@ export const BORROWABLE = [
   ['libs/generic/control-mutation',           'Pure utilities & infra'],
   ['libs/generic/embedded-pg-discovery',      'Pure utilities & infra'],
   ['libs/generic/linkable-edges',             'Pure utilities & infra'],
+  ['libs/generic/dependency-order',           'Pure utilities & infra'],
   ['libs/generic/plan-parser',                'Pure utilities & infra'],
   ['libs/generic/seed-bundle',                'Pure utilities & infra'],
   ['libs/generic/pot-app-seam',              'Pure utilities & infra'],

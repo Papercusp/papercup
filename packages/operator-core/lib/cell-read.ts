@@ -98,6 +98,18 @@ export type CellRead =
        */
       material?: { path: string; value: unknown };
       /**
+       * WI-36259 — WHERE THIS READ'S HEADLINE CAME FROM, present only when the spec
+       * declares `headlineSource`. The runtime companion to the spec's STATIC
+       * `provenance`: that one says how the cell was evidenced at registration, this one
+       * says whether the value in YOUR HAND is an observation or an inference.
+       *
+       * Read `authoritative`, not `value` — it is the branchable form, so a consumer does
+       * not have to learn each resolver's private source enum. It is false whenever the
+       * label is missing, unrecognised, or non-authoritative, so this can only ever
+       * downgrade trust and never manufacture it.
+       */
+      source?: CellSourceRead;
+      /**
        * WI-6506 — the field whose ENTIRE PURPOSE is to stop a caller misreading the
        * headline, actually delivered instead of declared-and-discarded. Before this,
        * `falsifier` had exactly one runtime consumer (`validateCellSpec`'s STRING
@@ -154,6 +166,21 @@ export type CellRead =
  *     field (the hoist was declared on six cells, enforced at registration, and
  *     emitted by nothing), so it is reported LOUDLY rather than omitted.
  */
+/**
+ * WI-36259 — the projected per-read provenance of a cell's headline.
+ * See `CellSpec.headlineSource` for the declaration side.
+ */
+export interface CellSourceRead {
+  /** The declared path this label was read from. */
+  path: string;
+  /** The label the resolver attached, or null when it attached none / a non-string. */
+  value: string | null;
+  /** THE BRANCHABLE ANSWER: was this headline a direct observation? Fails safe to false. */
+  authoritative: boolean;
+  /** What the non-authoritative reading degrades to — carried from the spec, for the caller. */
+  why: string;
+}
+
 export interface CellHoist {
   key: string;
   value: unknown;
@@ -505,6 +532,7 @@ export async function readCell(
       ...(materialPath !== undefined && materialValue !== undefined
         ? { material: { path: materialPath, value: materialValue } }
         : {}),
+      ...(spec.headlineSource === undefined ? {} : { source: sourceFrom(payload, spec.headlineSource) }),
     };
   } catch (err) {
     return {
@@ -538,6 +566,30 @@ export async function readCell(
 function hoistFrom(payload: unknown, key: string): CellHoist {
   const hoisted = valueAtPath(payload, key);
   return hoisted === undefined ? { key, value: null, drifted: true } : { key, value: hoisted };
+}
+
+/**
+ * WI-36259 — project the per-read provenance of the headline, off the SAME payload (axis 5:
+ * never a second dispatch), exactly as `material` and the hoist are.
+ *
+ * ⚠ NOTE WHICH WAY THE MISSING-PATH CASE FALLS, because the two neighbours above resolve it
+ * OPPOSITELY and both are right for their own field. `material` OMITS on drift (the caller
+ * falls back to the LOUD reading — safe). `hoistFrom` REPORTS the drift (omitting would
+ * restore the silent-null defect it exists to kill). Here the safe direction is a THIRD
+ * one: report the read, with `authoritative: false`. Absence must never be able to
+ * manufacture trust, so an unrecognised label, a drifted path and a resolver that simply
+ * did not attribute this value all converge on "treat it as an inference" — the same answer
+ * the caller would reach if the field had never been declared.
+ */
+function sourceFrom(payload: unknown, spec: CellHeadlineSource): CellSourceRead {
+  const raw = valueAtPath(payload, spec.path);
+  const value = typeof raw === 'string' ? raw : null;
+  return {
+    path: spec.path,
+    value,
+    authoritative: value !== null && spec.authoritative.includes(value),
+    why: spec.why,
+  };
 }
 
 /**

@@ -52,6 +52,30 @@ export const DEFAULT_FAST_WINDOW_MS = 30_000;
 /** Steady-state keepalive cadence — re-announces + re-looks-up each topic so a
  *  late-arriving peer still finds us, without hammering the public DHT forever. */
 export const DEFAULT_SLOW_REFRESH_MS = 60_000;
+/**
+ * EI-18808621019872598: how long a paired channel must stay open before its
+ * eventual close counts as "a healthy link broke" rather than "this link is
+ * flapping". Below this, the close is a FLAP and the fast-window re-arm decays
+ * (see the `onclose` ladder) instead of granting another full window.
+ *
+ * Forensics — the re-arm was an unbounded amplifier. `onclose` re-armed
+ * `fastWindowStartMs` to NOW on every last-channel close, unconditionally.
+ * Escaping the fast cadence back to the slow keepalive requires
+ * `fastWindowMs` (30s) of CONTINUOUSLY-open channel; a link whose channel dies
+ * ~2.5s after pairing therefore re-armed long before the window could ever
+ * lapse, so the refresh loop re-ran a full DHT round every `refreshMs` (2.5s)
+ * FOREVER, with zero backoff. Measured live 2026-08-08: 5,494 connection
+ * resets in 188 minutes, 100% of them on ONE topic (`papercusp/hive-presence`),
+ * gaps strictly alternating ~0.45s/~2.0s = one 2.5s cycle emitting two resets =
+ * 48/min predicted against 46-48/min observed. Because every topic muxes over
+ * ONE socket per peer key, that presence storm also tore down in-flight bulk
+ * transfers riding the same socket (10 of 11 pot-git channel closes follow a
+ * reset by 1-2ms).
+ *
+ * Chosen at 2× DEFAULT_REFRESH_MS: comfortably above the 0.45-2.0s lifetime of
+ * a storm-cycle channel, far below the minutes-to-hours a real link holds.
+ */
+export const DEFAULT_MIN_USEFUL_CHANNEL_MS = 5_000;
 
 type FrameMessage<Frame> = { send(value: Frame): void };
 

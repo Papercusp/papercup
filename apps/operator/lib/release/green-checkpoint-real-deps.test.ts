@@ -33,6 +33,11 @@ import {
   type CheckpointExec,
 } from './green-checkpoint';
 import { releaseConfig, type ReleaseConfig } from './release-config';
+import {
+  selectStaleEscalations,
+  SELF_RECONCILING_META_KEY,
+  type StaleEscalationInput,
+} from '@papercusp/operator-core/lib/attention/reconcile-escalations';
 
 // EI-18661485259809120: push() also fires a workflow_dispatch of test.yml (since the
 // pushed commit's `[skip ci]` message means the plain `git push` above never actually
@@ -53,6 +58,22 @@ vi.mock('@papercusp/operator-core/lib/cupboard/resolve-repo-coords', () => ({
 }));
 vi.mock('@papercusp/operator-core/lib/identity/octokit-client', () => ({
   getOctokit: () => mockGetOctokit(),
+}));
+
+// WI-36238: `escalate` dynamic-imports these two seams. Mocking them lets the
+// REAL dep run without a database, so the coupling test at the bottom of this
+// file asserts against the record the gate actually emits.
+const openEscalationCalls: { identity: Record<string, unknown>; input: Record<string, unknown> }[] = [];
+vi.mock('@papercusp/operator-core/lib/agent-tools/coordination/escalations', () => ({
+  openEscalation: async (identity: Record<string, unknown>, input: Record<string, unknown>) => {
+    openEscalationCalls.push({ identity, input });
+  },
+  listEscalations: async () => [],
+  resolveEscalation: async () => {},
+  resolveEscalationsBatch: async () => ({ resolved: 0 }),
+}));
+vi.mock('@papercusp/operator-core/lib/attention-notify', () => ({
+  notifyAttention: async () => {},
 }));
 
 interface ExecResp { code: number; stdout?: string; stderr?: string }
@@ -1168,5 +1189,67 @@ describe('EI-19332206710686203: rescue re-runs carry an explicit per-test timeou
     expect(testRun!.args).toContain(TIMEOUT_FLAG);
     expect(testRun!.args.indexOf(TIMEOUT_FLAG)).toBeGreaterThan(testRun!.args.indexOf('--'));
     expect(testRun!.args).toContain('lib/a.test.ts');
+  });
+});
+
+// ── WI-36238: the `release-not-green` row must SURVIVE the attention TTL sweep ──
+//
+// COUPLING test, not a unit test: it drives the REAL `escalate` dep and feeds
+// the record it emits to the REAL selector. The two halves live in different
+// packages, so a unit test on either side alone would stay green if the marker
+// were renamed, dropped from the meta bag, or no longer honoured.
+//
+// WHY IT MATTERS: `escalate` is transition-only — it returns early while one of
+// its rows is open — and `clearEscalation` resolves that row itself when the
+// gate recovers. So a sweep that GC's the row does not tidy a duplicate, it
+// RE-ARMS a human-facing alarm on a still-red gate. Measured before the fix: an
+// idle-2d GC at 2026-08-06T08:20:03.146Z was followed 46s later by a fresh
+// escalation for the same still-red gate on a newer candidate.
+describe('realCheckpointDeps.escalate — release-not-green survives the idle-TTL sweep (WI-36238)', () => {
+  const TTL_MS = 2 * 24 * 60 * 60 * 1000;
+
+  /** Mirrors buildOpenEscalationRecord (escalations.ts:170-190) — in particular
+   *  `Object.assign(env, input.meta)`, which FLATTENS the meta bag onto the
+   *  stored record, which is how the sweep sees the marker at all. */
+  function openRecordFor(call: { identity: Record<string, unknown>; input: Record<string, unknown> }): StaleEscalationInput {
+    return {
+      ts: '2026-08-06T08:20:48.996Z',
+      msg_id: 'esc-green-checkpoint-1',
+      from: String(call.identity.ownerId),
+      to: ['human'],
+      kind: 'escalation',
+      severity: call.input.severity,
+      summary: call.input.summary,
+      resolved: null,
+      ...((call.input.meta as Record<string, unknown> | undefined) ?? {}),
+    } as unknown as StaleEscalationInput;
+  }
+
+  it('emits a row the idle-TTL sweep will NOT garbage-collect', async () => {
+    openEscalationCalls.length = 0;
+    const { exec } = makeExec([]);
+    await realCheckpointDeps(cfg, exec).escalate?.(
+      'green-checkpoint held: 65e99488 not green',
+      'the gate is red',
+    );
+    expect(openEscalationCalls).toHaveLength(1);
+
+    const emitted = openRecordFor(openEscalationCalls[0]!);
+    // Age it well past the sweep's TTL and run the REAL selector.
+    const nowMs = Date.parse(emitted.ts) + 30 * 24 * 60 * 60 * 1000;
+    expect(selectStaleEscalations([emitted], { nowMs, ttlMs: TTL_MS })).toEqual([]);
+
+    // CALIBRATION: the same row WITHOUT the marker IS swept — proving the
+    // assertion above turns on the marker, not on some other property of the
+    // row (its sender, its lack of options, its age). Without this, a selector
+    // that never selected this row for an unrelated reason would look like a
+    // passing exemption.
+    const { [SELF_RECONCILING_META_KEY]: _marker, ...unmarked } = emitted as unknown as Record<
+      string,
+      unknown
+    >;
+    expect(
+      selectStaleEscalations([unmarked as unknown as StaleEscalationInput], { nowMs, ttlMs: TTL_MS }),
+    ).toHaveLength(1);
   });
 });

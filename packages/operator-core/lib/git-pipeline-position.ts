@@ -1587,6 +1587,28 @@ export interface ChangeInCandidate {
    * UNKNOWN state.
    */
   judgingSha: string | null;
+  /**
+   * WI-36259 — WHERE `judgingSha` came from, because the two sources have very different
+   * trust. Mirrors `checkpointRunInFlight.candidateSource`, whose doc comment explains the
+   * distinction at length; this is the SAME provenance, carried onto the field the
+   * `gate.greenCheckpoint.candidate` cell actually serves.
+   *
+   *  - `'retriage-marker'` — the run's OWN published `inFlightRetriage` marker. An
+   *    authoritative observation of what this run is judging.
+   *  - `'run-probe'` — derived by probing the run (`checkActiveCheckpointRun`). On a MANUAL
+   *    run that is its `/tmp` unit log (an observation); on a CRON run the probe falls back
+   *    to the checkpoint checkout's live HEAD, which is an INFERENCE.
+   *  - absent — there is no judged sha to attribute (`judgingSha` is null).
+   *
+   * ⚠ Until WI-36259 this field did not exist AND `judgingSha` was marker-BLIND: it took
+   * `checkActiveCheckpointRun`'s probe value unconditionally, while the marker sat loaded
+   * one field away and was passed only to `checkpointRunInFlight`. So during a re-triage
+   * window — exactly when the candidate matters most — this field and
+   * `checkpointRunInFlight.candidate` named DIFFERENT shas for the same subject, and this
+   * one named the ABANDONED candidate. CLAUDE.md meanwhile told agents the cell's sha was
+   * "already marker-preferred per WI-7035"; WI-7035 only ever fixed `checkpointRunInFlight`.
+   */
+  judgingShaSource?: 'retriage-marker' | 'run-probe';
   /** Does that candidate carry this path's WORKING-TREE content? null = not comparable. */
   judgingContainsPath: boolean | null;
   /** The commit a checkpoint fired right now would judge (post quiet-cut). */
@@ -1654,6 +1676,58 @@ export interface GateCandidates {
   judgingSha: string | null;
   /** Candidate a fresh launch would pick (quiet-cut applied). */
   nextCandidateSha: string | null;
+  /**
+   * WI-36259 — provenance of `judgingSha`, see `ChangeInCandidate.judgingShaSource`.
+   * OPTIONAL so the many existing `GateCandidates` fixtures (and the injectable
+   * `deps.resolveGateCandidates`) do not strand on a required field they have no opinion
+   * about — the trap CLAUDE.md's `lint:required-field-strands` exists for. A probe-only
+   * resolver that omits it is read as `'run-probe'` by `reconcileGateCandidates`.
+   */
+  judgingShaSource?: 'retriage-marker' | 'run-probe';
+}
+
+/**
+ * WI-36259 — RECONCILE the probe-derived gate candidate with the run's OWN published
+ * re-triage marker, and say which one answered.
+ *
+ * ⚠ This exists because the resolver produced TWO shas for ONE subject and they could
+ * disagree. `mapCheckpointRunInFlight` already prefers the marker for
+ * `checkpointRunInFlight.candidate` (WI-7035); `changeInCandidate.judgingSha` — the
+ * headline of the `gate.greenCheckpoint.candidate` cell, and the value CLAUDE.md points
+ * triagers at — took the marker-blind probe instead. During a re-triage window that is the
+ * ABANDONED candidate, so a containment check ran against a commit the gate had already
+ * stopped judging.
+ *
+ * It takes the ALREADY-COMPUTED `checkpointRunInFlight` rather than re-reading the marker,
+ * deliberately: the cell contract's axis 5 is "ONE derivation, many lenses — surfaces may
+ * PROJECT or subset it and may NEVER re-derive it". A second marker read here would be a
+ * second derivation of the same fact, i.e. the very thing that produced this bug.
+ *
+ * Pure, so the precedence is unit-testable without a repo or a live gate run.
+ */
+export function reconcileGateCandidates(
+  candidates: GateCandidates,
+  inFlight: { candidate: string | null; candidateSource?: 'retriage-marker' | 'run-probe' } | null | undefined,
+): GateCandidates {
+  /**
+   * `candidateSource: 'retriage-marker'` is only ever set when the marker was present AND
+   * the run was active (`mapCheckpointRunInFlight`: `const marker = active && retriage ? …`),
+   * so this single check already carries the liveness guard — no separate `active` test,
+   * which would couple this to a second liveness derivation.
+   */
+  const markerSha = inFlight?.candidateSource === 'retriage-marker' ? inFlight.candidate : null;
+  if (markerSha) {
+    return { ...candidates, judgingSha: markerSha, judgingShaSource: 'retriage-marker' };
+  }
+  /**
+   * No marker. The probe's answer stands — but it is only ATTRIBUTED when it actually named
+   * a sha: labelling a `null` judgingSha `'run-probe'` would assert provenance for a value
+   * that does not exist, and a consumer branching on "is this attributed" would read it as
+   * a real, merely-untrusted candidate.
+   */
+  return candidates.judgingSha
+    ? { ...candidates, judgingShaSource: candidates.judgingShaSource ?? 'run-probe' }
+    : candidates;
 }
 
 /**
@@ -1675,6 +1749,10 @@ export function evaluateChangeInCandidate(args: {
   const markerNext = args.markerNext ?? null;
   const base: ChangeInCandidate = {
     judgingSha: candidates.judgingSha,
+    // WI-36259: carried through so the cell can say WHERE its headline came from. Spread
+    // conditionally — an absent source must stay absent rather than becoming an explicit
+    // `undefined` key, which serialises differently and would read as a declared unknown.
+    ...(candidates.judgingShaSource ? { judgingShaSource: candidates.judgingShaSource } : {}),
     judgingContainsPath: judging ? judging.inCandidate : null,
     nextCandidateSha: candidates.nextCandidateSha,
     nextContainsPath: next ? next.inCandidate : null,
@@ -3873,7 +3951,18 @@ export async function gitPipelinePosition(
   // "unknown" there is the honest answer; a false `true` would be the dangerous one.
   let changeInCandidate: ChangeInCandidate = NO_CHANGE_IN_CANDIDATE;
   if (relPath && !submodule) {
-    const candidates = await (deps.resolveGateCandidates ?? realResolveGateCandidates)(root);
+    /**
+     * WI-36259 — reconcile the probe against the marker BEFORE anything downstream reads
+     * `judgingSha`. Placement is load-bearing: `shas` on the very next line drives the blob
+     * containment classification, so reconciling here is what makes the falsifier
+     * (`judgingContainsPath`) answer about the sha the gate is ACTUALLY judging. Doing it
+     * after would leave the headline correct and its own falsifier measuring the abandoned
+     * candidate — a worse state than before, because the two would look corroborating.
+     */
+    const candidates = reconcileGateCandidates(
+      await (deps.resolveGateCandidates ?? realResolveGateCandidates)(root),
+      checkpointRunInFlight,
+    );
     const shas = [candidates.judgingSha, candidates.nextCandidateSha].filter((s): s is string => !!s);
     const gitRead = gitReadForRepo(git, root);
     const byShaEntries = await Promise.all(

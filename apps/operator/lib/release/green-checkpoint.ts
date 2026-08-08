@@ -6037,11 +6037,35 @@ export function realCheckpointDeps(
       const { openEscalation, listEscalations } = await import(
         '@papercusp/operator-core/lib/agent-tools/coordination/escalations'
       );
+      // WI-36238: opt this row OUT of the attention TTL sweep. Imported here
+      // rather than statically because reconcile-escalations pulls in the
+      // escalations/presence/liveness-oracle DB modules, and this CLI's static
+      // module graph deliberately does not carry them (same reason as the
+      // dynamic import above).
+      const { SELF_RECONCILING_META_KEY } = await import(
+        '@papercusp/operator-core/lib/attention/reconcile-escalations'
+      );
       const open = await listEscalations({ status: 'open' });
       if (open.some((e) => (e as Record<string, unknown>).source === 'green-checkpoint')) return;
       await openEscalation(
         { ownerId: 'green-checkpoint', ownerLabel: 'green-checkpoint', source: 'static-client', workspaceId: null, userId: null },
-        { severity: 'blocker', summary, body, meta: { source: 'green-checkpoint' } },
+        {
+          severity: 'blocker',
+          summary,
+          body,
+          // WI-36238: BOTH legs of the self-reconciling class hold here, so the
+          // idle-2d sweep must not touch this row:
+          //   1. the `open.some(... source === 'green-checkpoint')` guard above
+          //      skips re-firing while one is open — so GC'ing the row does not
+          //      remove a duplicate, it RE-ARMS the alarm on a still-red gate;
+          //   2. `clearEscalation()` below resolves the row itself once the gate
+          //      recovers — so the TTL is not needed as a backstop.
+          // MEASURED before the fix: an idle-2d GC at 2026-08-06T08:20:03.146Z
+          // ("held: 65e99488 not green") was followed 46s later by a fresh
+          // human-facing escalation for the same still-red gate on a newer
+          // candidate ("held: 2aaed43d not green").
+          meta: { source: 'green-checkpoint', [SELF_RECONCILING_META_KEY]: true },
+        },
       );
       // platform-ops-batch-2026-07-09 P-002: a LIVE push (desktop-native + mobile) the
       // moment the gate FIRST goes red — the durable escalation above already surfaces
