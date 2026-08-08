@@ -186,6 +186,21 @@ export function buildProjectionHint(
   );
 }
 
+/** Approximate context cost of a NON-text content item (WI-36613). Cheap by
+ *  design — an MCP image/audio block carries its payload as a base64 `data`
+ *  string, so its length IS the cost; anything else falls back to a fail-soft
+ *  stringify. Called only for items that are already known not to be text, which
+ *  in this corpus is a near-empty population. */
+function nonTextSize(it: unknown): number {
+  const data = (it as { data?: unknown } | undefined)?.data;
+  if (typeof data === 'string') return data.length;
+  try {
+    return JSON.stringify(it)?.length ?? 0;
+  } catch {
+    return 0;
+  }
+}
+
 function isTextItem(it: unknown): it is { type: 'text'; text: string } {
   return (
     !!it &&
@@ -245,7 +260,31 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
       } } | undefined
     )?.payloadProjection;
     let totalChars = 0;
-    for (const it of items) if (isTextItem(it)) totalChars += it.text.length;
+    // WI-36613 (borrow item 10). The door measures TEXT ONLY — `totalChars` sums
+    // text items and the rebuild below passes every non-text item through intact.
+    // That means a result of 2MB of base64 PNG plus 100 chars of text has
+    // totalChars=100, takes the identity fast-path directly below, and reaches
+    // the model uncapped, unspilled, and UNMENTIONED.
+    //
+    // OMP has the same shape (its universal cap measures only block.type==='text'),
+    // and the transferable point is that NOTHING IN THE CODE LOOKS WRONG when a
+    // byte cap written against text silently exempts every other content type.
+    //
+    // Measured exposure here is currently ZERO — the only image-emitting path is
+    // computer:* (computer.ts:161) and tool_invocations has never recorded one
+    // (0 rows ever, against 1,116,788 rows / 302 distinct tools in 14 days). So
+    // this deliberately does NOT cap: no data justifies a number, and a
+    // speculative cap on a path nobody uses is churn. It only makes the exemption
+    // VISIBLE the day it activates, which is the part that was actually missing.
+    let nonTextChars = 0;
+    for (const it of items) {
+      if (isTextItem(it)) totalChars += it.text.length;
+      else nonTextChars += nonTextSize(it);
+    }
+    // Only worth saying when the non-text payload is itself over the door budget:
+    // below that it is noise, and the fast path must stay byte-identical for the
+    // overwhelmingly common ordinary result.
+    const nonTextOverBudget = nonTextChars > budgetChars;
     if (totalChars <= budgetChars) {
       // EI-19361771982678588: FITTING THE DOOR IS NOT BEING COMPLETE. This
       // early return is the fast path for an ordinary small result — but a
@@ -260,23 +299,32 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
       // Nothing to spill (the omitted rows were never serialized), so this
       // discloses in-band and returns; the identity fast-path is preserved for
       // the overwhelmingly common untruncated case.
-      if (!upstreamProjection?.truncated) return result;
-      return {
-        ...result,
-        content: [
-          ...items,
-          {
-            type: 'text' as const,
-            text:
-              `\n[⚠ PARTIAL RESULT — this fit the per-result door, but it is NOT the tool's full ` +
+      if (!upstreamProjection?.truncated && !nonTextOverBudget) return result;
+      const fastPathNotices: string[] = [];
+      if (nonTextOverBudget) {
+        fastPathNotices.push(
+          `\n[⚠ UNCAPPED NON-TEXT PAYLOAD — the text in this result fit the per-result door, so ` +
+            `nothing was truncated, but it also carries ~${nonTextChars} chars of NON-TEXT content ` +
+            `(image/binary blocks). The door measures TEXT ONLY and passes non-text through intact, ` +
+            `so that payload entered your context in full — ~${Math.round(nonTextChars / budgetChars)}× ` +
+            `the ~${doorTokens}-token text budget. Nothing is wrong; it is simply not bounded by this ` +
+            `door. If you did not need the capture, re-call without the argument that produced it.]`,
+        );
+      }
+      if (upstreamProjection?.truncated) {
+        fastPathNotices.push(
+          `\n[⚠ PARTIAL RESULT — this fit the per-result door, but it is NOT the tool's full ` +
               `output: it was tier-projected upstream (payloadProjection: tier=${upstreamProjection.tier} ` +
               `forced=${upstreamProjection.forced} omittedCount=${upstreamProjection.omittedCount}, ` +
               `${upstreamProjection.returnedChars} of ${upstreamProjection.originalChars} chars). Those ` +
               `${upstreamProjection.omittedCount} field(s)/row(s) were never serialized, so nothing ` +
               `downstream can recover them and their ABSENCE HERE IS NOT EVIDENCE THEY DO NOT EXIST. ` +
               `Re-call ${opts.toolName} with payloadTier:'full' (or narrower args) for the missing detail.]`,
-          },
-        ],
+        );
+      }
+      return {
+        ...result,
+        content: [...items, ...fastPathNotices.map((text) => ({ type: 'text' as const, text }))],
       } as T;
     }
 
@@ -480,6 +528,11 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
       spillError,
       spillErrorCode,
       originalChars: totalChars,
+      /** Approximate chars of NON-text content (images/binary) this result
+       *  carried. The door does NOT cap these — it measures text only — so this
+       *  field is the only place that number is stated (WI-36613). 0 for the
+       *  overwhelming majority of results. */
+      nonTextChars,
       doorTokens,
       /** True when `data` was ALREADY a lossy upstream projection before this
        *  door saw it — i.e. paging the spill cannot recover what was omitted. */
