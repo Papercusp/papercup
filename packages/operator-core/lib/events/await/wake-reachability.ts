@@ -80,6 +80,33 @@ export interface WakeReachabilityVerdict {
   summary: string;
   /** Loud one-liner when reachability is absent or degraded — surface it in the tool result. */
   warning?: string;
+  /**
+   * WI-36685 — TRUE when the standing-await gate is the ONLY thing making this owner
+   * unreachable: the session is otherwise live/injectable/resumable, so `armInboxWake`
+   * alone restores delivery.
+   *
+   * WHY THIS EXISTS. Gate 1 below returns BEFORE consulting any liveness signal, so
+   * `reachable:false, channel:'none'` is emitted identically for two states with opposite
+   * remedies — "this session is gone" (channel 4, nothing live, nothing resumable) and
+   * "this session is alive and injectable but nobody wired its doorbell". Every caller
+   * therefore saw a repairable transport fault as a dead session. Measured on su-4a6e2255
+   * (2026-08-08): a live psu-host socket the whole time — the eventual re-arm delivered via
+   * `psu-socket-inject` 75s later — yet `wakeable:false` made every surface report it dead,
+   * and `stalled-loops-guard` permanently disarmed it on that reading.
+   *
+   * `reachable` and `channel` are deliberately UNCHANGED: a wake right now genuinely would
+   * not land, and the WI-655 contract ("no standing await ⇒ none, regardless of a live
+   * resumable session") is asserted on purpose. This adds the distinction the verdict could
+   * not previously express; it does not soften the verdict.
+   *
+   * Always `false` when `wakeable` was true — the gate was never the blocker.
+   */
+  awaitRepairable: boolean;
+  /**
+   * The channel a wake WOULD take once the missing await is re-armed. Null unless
+   * `awaitRepairable` — an unreachable owner with no repair available has no such channel.
+   */
+  wouldBeChannel: WakeReachabilityChannel | null;
 }
 
 /**
@@ -93,13 +120,36 @@ export function deriveWakeReachability(i: WakeReachabilityInput): WakeReachabili
   // the loop fire records `no-session-now` — the exact black-hole WI-655 found. Even a live,
   // injectable session is unreachable-by-wake if no inbox-wake await is registered for it.
   if (!i.wakeable) {
+    // WI-36685 — ask what the ladder WOULD have said had the await been armed, by re-running
+    // it once with the gate satisfied. Recursion rather than a duplicated ladder on purpose:
+    // a second copy of the channel order is exactly the kind of thing that drifts from the
+    // original, and this verdict's whole value is that it mirrors executeWake exactly.
+    // Terminates trivially — the recursive call passes `wakeable: true`, so it can never
+    // re-enter this branch.
+    const asIfArmed = deriveWakeReachability({ ...i, wakeable: true });
+    const repairable = asIfArmed.reachable;
     return {
       reachable: false,
       channel: 'none',
       durableWhileAlive: false,
-      summary: 'no standing coord:inbox-wake await — a wake emit matches nothing (woken:0 → no-session-now)',
-      warning:
-        'NOT wake-reachable: no inbox-wake watch is armed for this session, so loop fires black-hole as no-session-now. (loop:arm now arms it directly; if you see this from loop:status, re-arm the loop.)',
+      awaitRepairable: repairable,
+      // Only a channel that delivers a FRESH TURN counts as a repair. `inbox-only` is
+      // reachable:false for a reason — arming the await there would create a standing
+      // subscription that still never produces a loop turn, while making the session read as
+      // `wakeable` to every surface that checks (and pinning it against the idle-session
+      // reaper, which counts a standing await as alive). A repair that only changes how the
+      // problem LOOKS is worse than none.
+      wouldBeChannel: repairable ? asIfArmed.channel : null,
+      summary: repairable
+        ? `no standing coord:inbox-wake await — a wake emit matches nothing (woken:0 → no-session-now), ` +
+          `but the session is otherwise live and would be reachable via ${asIfArmed.channel} once re-armed`
+        : 'no standing coord:inbox-wake await — a wake emit matches nothing (woken:0 → no-session-now)',
+      warning: repairable
+        ? `NOT wake-reachable right now, but REPAIRABLE: this session is alive and injectable ` +
+          `(would take the ${asIfArmed.channel} channel) — only its inbox-wake watch is missing, so ` +
+          `every fire black-holes as no-session-now. armInboxWake/loop:arm restores delivery. Do NOT ` +
+          `read this as a dead session (WI-36685).`
+        : 'NOT wake-reachable: no inbox-wake watch is armed for this session, so loop fires black-hole as no-session-now. (loop:arm now arms it directly; if you see this from loop:status, re-arm the loop.)',
     };
   }
 
@@ -109,6 +159,8 @@ export function deriveWakeReachability(i: WakeReachabilityInput): WakeReachabili
       reachable: true,
       channel: 'psu-socket',
       durableWhileAlive: true,
+      awaitRepairable: false,
+      wouldBeChannel: null,
       summary: 'live psu-host control socket — wakes inject in place as a fresh turn',
     };
   }
@@ -122,6 +174,8 @@ export function deriveWakeReachability(i: WakeReachabilityInput): WakeReachabili
       reachable: true,
       channel: 'managed-pty',
       durableWhileAlive: true,
+      awaitRepairable: false,
+      wouldBeChannel: null,
       summary: 'live operator-owned managed pty — wakes inject as a fresh turn',
     };
   }
@@ -137,6 +191,8 @@ export function deriveWakeReachability(i: WakeReachabilityInput): WakeReachabili
       reachable: true,
       channel: 'resume',
       durableWhileAlive: false,
+      awaitRepairable: false,
+      wouldBeChannel: null,
       summary:
         'resumable session — wakes resume it as a fresh one-turn after the current process exits',
       warning: persistentRisk
@@ -151,6 +207,8 @@ export function deriveWakeReachability(i: WakeReachabilityInput): WakeReachabili
       reachable: false,
       channel: 'inbox-only',
       durableWhileAlive: false,
+      awaitRepairable: false,
+      wouldBeChannel: null,
       summary:
         'alive but not injectable and not resumable — wakes PARK in your inbox (seen on your next natural turn), not delivered as a fresh loop turn',
       warning:
@@ -163,6 +221,8 @@ export function deriveWakeReachability(i: WakeReachabilityInput): WakeReachabili
     reachable: false,
     channel: 'none',
     durableWhileAlive: false,
+    awaitRepairable: false,
+    wouldBeChannel: null,
     summary: 'no live session and not resumable — wakes drop; relaunch required',
     warning: 'NOT wake-reachable: dead session, not resumable. Loop fires drop until you relaunch.',
   };

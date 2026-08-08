@@ -12,7 +12,7 @@ import {
   pushInjectionDoorTokens,
   reportVolumeViolations,
 } from './ambient-push-delivery';
-import { makePush, type DropReason } from './ambient-push';
+import { makePush, DEFAULT_PUSH_POLICIES, TEASER_MAX_CHARS, type DropReason } from './ambient-push';
 import type { PushDeliveryRow } from './push-delivery-store';
 import type { VolumeReport } from './push-volume-guard';
 
@@ -79,6 +79,82 @@ describe('applyPushInjectionDoor', () => {
 
   it('no-ops on empty text', () => {
     expect(applyPushInjectionDoor('', 'su-recv')).toBe('');
+  });
+});
+
+/**
+ * WI-36683 — the `ambient-push-door` entry in the truncation-honesty registry
+ * (truncation-honesty-guard.test.ts DOORS) is the ONLY door registered
+ * `lossless`, i.e. exempt from stamping any truncation marker. That exemption is
+ * only sound while a real push block CANNOT REACH the door: this door records
+ * every selected push as DELIVERED (ambient-push-delivery.ts:236) BEFORE it
+ * renders (:240) and cuts (:286), and `deliveredRefs` feeds the novelty set, so
+ * anything the door actually cut would be marked delivered, never shown, and
+ * suppressed as 'not-novel' on every later pass — a silent, permanent drop with
+ * no spill file and no marker.
+ *
+ * So the registration rests on a BOUND, not on a recovery path. These two tests
+ * pin that bound to the REAL constants (the push budgets, the teaser cap, the
+ * injections door). Raise a budget, raise TEASER_MAX_CHARS, or shrink the
+ * injections door far enough and the first test reds — which is the signal that
+ * the `lossless` registration has stopped being true and the door now needs a
+ * marker (or the teaser-fitting rewrite), NOT that the test needs relaxing.
+ */
+describe('ambient-push door — the `lossless` registration is EARNED by a bound, not asserted', () => {
+  /** Handle `ref`/`query` are unbounded in the type, so the worst case has to
+   *  state its own generous assumptions rather than derive them. These are far
+   *  above anything the live matchers emit (a session id is ~40 chars;
+   *  collisionToPush slices to 5 terms). */
+  const WORST_HANDLE_REF_CHARS = 80;
+  const WORST_HANDLE_TERMS = 8;
+  const WORST_TERM_CHARS = 40;
+
+  const worstCaseBlock = (slots: number) =>
+    renderPushBlock(
+      Array.from({ length: slots }, (_, i) =>
+        makePush({
+          matcherKind: 'collision',
+          handle: {
+            kind: 'session',
+            // ref at the assumed worst case, still unique per slot
+            ref: `su-${'p'.repeat(WORST_HANDLE_REF_CHARS)}${i}`,
+            query: Array.from({ length: WORST_HANDLE_TERMS }, () => 't'.repeat(WORST_TERM_CHARS)),
+          },
+          // makePush clamps to TEASER_MAX_CHARS, so this lands exactly at the cap
+          teaser: 'T'.repeat(TEASER_MAX_CHARS * 2),
+          score: 0.9,
+        }),
+      ),
+    );
+
+  it('a worst-case block at the largest real push budget is NOT cut by the door', () => {
+    const maxBudget = Math.max(...Object.values(DEFAULT_PUSH_POLICIES).map((p) => p.budget));
+    const block = worstCaseBlock(maxBudget);
+    const budgetChars = pushInjectionDoorTokens('su-recv') * 4;
+    // MEASURED 2026-08-08: budget 4000, worst-case block 3932 — a margin of 68
+    // chars, i.e. 1.7%. That is TIGHT, and it is deliberately recorded here
+    // rather than left implicit: the `lossless` registration currently survives
+    // its own worst case by less than one rendered line.
+    expect(
+      block.length,
+      `The worst-case ambient push block (${block.length} chars) no longer fits the injections ` +
+        `door (${budgetChars} chars). The ambient-push-door is registered LOSSLESS in ` +
+        'truncation-honesty-guard.test.ts on exactly this bound, and the door records pushes as ' +
+        'DELIVERED before it cuts — so a cut here is a SILENT PERMANENT DROP, not a truncation. ' +
+        'Do not relax this test: either restore the bound, or change the registration and give ' +
+        'the door a marker / make it fit whole teasers (WI-36688).',
+    ).toBeLessThan(budgetChars);
+    expect(applyPushInjectionDoor(block, 'su-recv')).toBe(block);
+  });
+
+  it('CONTROL: the same shape DOES get cut once it exceeds the door (the bound is real, not infinite)', () => {
+    // Proves the test above is measuring a genuine margin rather than passing
+    // vacuously because this door never cuts anything.
+    const budgetChars = pushInjectionDoorTokens('su-recv') * 4; // CHARS_PER_TOKEN_ESTIMATE
+    const perLine = worstCaseBlock(1).length;
+    const overflowing = worstCaseBlock(Math.ceil(budgetChars / perLine) + 2);
+    expect(overflowing.length).toBeGreaterThan(budgetChars);
+    expect(applyPushInjectionDoor(overflowing, 'su-recv')).not.toBe(overflowing);
   });
 });
 

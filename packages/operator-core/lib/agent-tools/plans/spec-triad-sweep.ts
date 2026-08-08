@@ -38,17 +38,14 @@ import { getOrgPg } from '@papercusp/db-org';
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { describeSpecTriadGap } from '@papercusp/plan-parser';
-import { createWorkItem } from '../../work-items';
 import { specTriadGate, specTriadEpoch, planInSpecTriadScope } from './spec-triad-policy';
+import { ensureSpecTriadFiling, SPEC_TRIAD_NON_TERMINAL_STATUSES } from './spec-triad-filing';
 
 /** Upper bound on work items filed in a single run. See the rails note above. */
 export const SPEC_TRIAD_MAX_FILINGS_PER_RUN = 25;
 
 /** Plan statuses that still have work ahead of them. */
 const LIVE_PLAN_STATUSES = ['draft', 'ready', 'active'];
-
-/** Work-item statuses that mean "this filing is still outstanding". */
-const NON_TERMINAL_STATUSES = ['open', 'todo', 'wip', 'in_progress', 'blocked', 'needs-human', 'validating', 'failing'];
 
 export interface SpecTriadSweepResult {
   skipped: boolean;
@@ -77,7 +74,7 @@ interface PlanMetaRow {
   has_declaration: boolean;
 }
 
-interface PlanContentRow {
+export interface PlanContentRow {
   workspace_id: string;
   harness_slug: string;
   plan_slug: string;
@@ -86,12 +83,79 @@ interface PlanContentRow {
   items: unknown;
 }
 
-function planRef(r: { workspace_id: string; harness_slug: string; plan_slug: string }): string {
+export function planRef(r: { workspace_id: string; harness_slug: string; plan_slug: string }): string {
   return `${r.workspace_id}/${r.harness_slug}/${r.plan_slug}`;
 }
 
 function itemCountOf(items: unknown): number | undefined {
   return Array.isArray(items) ? items.length : undefined;
+}
+
+export interface SpecTriadOwing {
+  row: PlanContentRow;
+  missing: string[];
+  gap: string;
+}
+
+export interface SpecTriadSelection {
+  inScope: number;
+  owing: SpecTriadOwing[];
+  /** Owing AND not already filed — the filing candidates, pre-cap. */
+  toFile: SpecTriadOwing[];
+  /** The ≤`maxFilings` prefix of `toFile` this run will actually file. */
+  batch: SpecTriadOwing[];
+  deferred: number;
+  alreadyFiled: number;
+}
+
+/**
+ * The sweep's whole DECISION, as a pure function over rows it was handed.
+ *
+ * Extracted so the parts that can silently go wrong — the scope test, the
+ * dedupe, and the per-run cap — are testable without a database. The I/O around
+ * it (two SELECTs and N inserts) has no branching left to get wrong.
+ */
+export function selectSpecTriadFilings(input: {
+  rows: PlanContentRow[];
+  /** Plan refs with a non-terminal filing already open. */
+  alreadyOpen: ReadonlySet<string>;
+  /** Refs that passed the metadata-only candidate filter, when phase 1 ran. */
+  candidateKeys?: ReadonlySet<string>;
+  epoch: Date;
+  maxFilings: number;
+}): SpecTriadSelection {
+  const { rows, alreadyOpen, candidateKeys, epoch, maxFilings } = input;
+  const owing: SpecTriadOwing[] = [];
+  let inScope = 0;
+
+  for (const row of rows) {
+    // The phase-2 `plan_slug = ANY(...)` can widen across tenants (the key is
+    // workspace+harness+slug, the IN-list is slugs alone), so re-narrow here.
+    if (candidateKeys && !candidateKeys.has(planRef(row))) continue;
+    const verdict = specTriadGate(
+      {
+        planSlug: row.plan_slug,
+        content: row.content,
+        created: row.created,
+        itemCount: itemCountOf(row.items),
+      },
+      { flagEnabled: true, epoch },
+    );
+    if (verdict.scope.inScope) inScope++;
+    if (!verdict.gated || !verdict.triad) continue;
+    owing.push({ row, missing: verdict.missing, gap: describeSpecTriadGap(verdict.triad) });
+  }
+
+  const toFile = owing.filter((o) => !alreadyOpen.has(planRef(o.row)));
+  const batch = toFile.slice(0, Math.max(0, maxFilings));
+  return {
+    inScope,
+    owing,
+    toFile,
+    batch,
+    deferred: toFile.length - batch.length,
+    alreadyFiled: owing.length - toFile.length,
+  };
 }
 
 export interface SpecTriadSweepOptions {
@@ -195,33 +259,15 @@ export async function runSpecTriadSweepOnce(
   }
 
   const candidateKeys = new Set(candidates.map(planRef));
-  const owing: Array<{ row: PlanContentRow; missing: string[]; gap: string }> = [];
-  let inScope = 0;
 
-  for (const row of rows) {
-    if (!candidateKeys.has(planRef(row))) continue; // the ANY(slugs) can widen across tenants
-    const verdict = specTriadGate(
-      {
-        planSlug: row.plan_slug,
-        content: row.content,
-        created: row.created,
-        itemCount: itemCountOf(row.items),
-      },
-      { flagEnabled: true, epoch },
-    );
-    if (verdict.scope.inScope) inScope++;
-    if (!verdict.gated || !verdict.triad) continue;
-    owing.push({ row, missing: verdict.missing, gap: describeSpecTriadGap(verdict.triad) });
-  }
-
-  // Which owing plans already have an outstanding filing?
+  // Which plans already have an outstanding filing?
   let alreadyOpen = new Set<string>();
   try {
     const existing = (await sql`
       SELECT DISTINCT payload->>'specTriadPlan' AS ref
         FROM harness_shared.work_items
        WHERE payload->>'specTriadPlan' IS NOT NULL
-         AND status = ANY(${NON_TERMINAL_STATUSES})
+         AND status = ANY(${SPEC_TRIAD_NON_TERMINAL_STATUSES})
     `) as unknown as Array<{ ref: string | null }>;
     alreadyOpen = new Set(existing.map((e) => e.ref).filter((r): r is string => !!r));
   } catch (err) {
@@ -230,46 +276,36 @@ export async function runSpecTriadSweepOnce(
     return empty(`dedupe read failed: ${(err as Error).message}`);
   }
 
-  const toFile = owing.filter((o) => !alreadyOpen.has(planRef(o.row)));
-  const batch = toFile.slice(0, maxFilings);
-  const deferred = toFile.length - batch.length;
+  const { inScope, owing, batch, deferred, alreadyFiled } = selectSpecTriadFilings({
+    rows,
+    alreadyOpen,
+    candidateKeys,
+    epoch,
+    maxFilings,
+  });
 
   const filedIds: string[] = [];
   for (const { row, missing, gap } of batch) {
-    const ref = planRef(row);
-    try {
-      const item = await createWorkItem({
-        kind: 'task',
-        harness: row.harness_slug,
-        workspaceId: row.workspace_id,
-        createdBy: 'system:spec-triad-sweep',
-        title: `Write the spec triad for plan '${row.plan_slug}' — missing ${missing.join(' + ')}`,
-        summary:
-          `Plan \`${row.plan_slug}\` is in scope for the SPEC TRIAD (okf-frontmatter-adoption H(b)) ` +
-          `and is missing: ${gap}\n\n` +
-          `Its items are held back from \`plans:items { actionable: true }\` until the sections are ` +
-          `written — so this is not paperwork, it is what unblocks that plan's lane.\n\n` +
-          `**To resolve**, add to the plan (\`plans:set-content\` / \`plans:edit\`):\n` +
-          `- \`## Requirements\` — what the change must be true of when it is done. Not a task list.\n` +
-          `- \`## Design\` — how it will be built, and the trade-off you settled.\n` +
-          `- \`P-NNN\` items — the tasks themselves (\`plans:add-item\`).\n\n` +
-          `A heading with nothing under it does NOT satisfy the check, and neither does \`TBD\` — ` +
-          `the detector requires real body content (\`evaluateSpecTriad\`, @papercusp/plan-parser).\n\n` +
-          `**If the triad genuinely does not apply to this plan**, that is a legitimate answer: add ` +
-          `\`specTriad: exempt\` to its frontmatter and close this item with that as the completion ` +
-          `evidence. The requirement is not meant to be a wall.`,
-        payload: { specTriadPlan: ref, planSlug: row.plan_slug, missing },
-      });
-      const id = (item as { feature_id?: string; id?: string }).feature_id ?? (item as { id?: string }).id;
-      if (id) filedIds.push(id);
-    } catch (err) {
-      console.warn(`[spec-triad-sweep] filing for ${ref} failed (non-fatal): ${(err as Error).message}`);
+    // Routed through the SHARED filer, not a local createWorkItem, so this and
+    // the promotion-time gate cannot drift in body text or in dedupe semantics.
+    // Its own single-row dedupe also closes the race against a promotion that
+    // files between this run's bulk read and this insert.
+    const r = await ensureSpecTriadFiling({
+      workspaceId: row.workspace_id,
+      harnessSlug: row.harness_slug,
+      planSlug: row.plan_slug,
+      missing,
+      gap,
+    });
+    if (r.outcome === 'created' && r.id) filedIds.push(r.id);
+    else if (r.outcome === 'error') {
+      console.warn(`[spec-triad-sweep] filing for ${r.ref} failed (non-fatal): ${r.error}`);
     }
   }
 
   const summary =
     `${metas.length} live plan(s) scanned · ${inScope} in scope · ${owing.length} owing the triad · ` +
-    `${filedIds.length} filed · ${owing.length - toFile.length} already filed` +
+    `${filedIds.length} filed · ${alreadyFiled} already filed` +
     (deferred > 0 ? ` · ${deferred} DEFERRED past the ${maxFilings}/run cap` : '');
 
   return {
@@ -278,7 +314,7 @@ export async function runSpecTriadSweepOnce(
     inScope,
     owing: owing.length,
     filed: filedIds.length,
-    alreadyFiled: owing.length - toFile.length,
+    alreadyFiled,
     deferred,
     filedIds,
     summary,

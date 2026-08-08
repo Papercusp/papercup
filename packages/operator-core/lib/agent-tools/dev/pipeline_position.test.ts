@@ -2,6 +2,13 @@ import { describe, it, expect, vi } from 'vitest';
 import tool from './pipeline_position';
 import { gitPipelinePosition, type PipelinePosition } from '../../git-pipeline-position';
 import { resolveSeeAlso } from '@papercusp/agent-mcp';
+/**
+ * P-010: the handler reads the LIVE cell registry, which the tool barrel populates via
+ * this wiring module (agent-tools/index.ts). A test importing only the tool would see an
+ * EMPTY registry — and an empty registry stamps nothing, silently, which would make the
+ * P-010 assertions below pass-by-vacuity in the one direction that matters.
+ */
+import '../cell-registrations-wiring';
 
 vi.mock('../../git-pipeline-position', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../git-pipeline-position')>();
@@ -255,5 +262,151 @@ describe('dev:pipeline_position routes to the state plane (P-002)', () => {
     for (const name of ['dev:restart', 'dev:build_status', 'release:deploy']) {
       expect(tools.some((t) => t.startsWith(name))).toBe(true);
     }
+  });
+});
+
+/**
+ * state-plane-adoption-2026-08-02 P-010 — the door EMITS the plane.
+ *
+ * P-002 above points at the plane and names one cell; that is promotion, and promotion
+ * asymptotes (ACT/QUOTE 1.7%, D-030). This block asserts the door hands back every
+ * volatile value already stamped with the cell that re-answers it.
+ *
+ * The stamping logic itself is unit-tested hermetically in state-plane-stamp.test.ts.
+ * What can ONLY be caught here is the wiring: which exits carry the block, and whether
+ * the caller's own subject reaches the handle.
+ */
+describe('dev:pipeline_position EMITS the state plane (P-010)', () => {
+  type Out = { data: Record<string, unknown> };
+  type Plane = { note: string; cells: Array<{ path: string; cell: string; reread?: { args: { cell: string; as?: string } }; unreadable?: { needs: string } }> };
+
+  const PATH = 'apps/operator/app/x.ts';
+  const full = {
+    input: { path: PATH, sha: null },
+    repoRoot: '/repo',
+    submodule: null,
+    targetSha: 'sha0000001',
+    targetShortSha: 'sha000000',
+    targetSubject: 'subj',
+    dirtyUncommitted: false,
+    positions: { committedLocal: true, onStaging: true, inMain: true, deployed: true },
+    deployedSha: 'sha0000001',
+    gate: {
+      stalled: false,
+      consecutiveReds: 0,
+      lastGreenAtMs: 1,
+      fireStale: false,
+      fireStaleReason: null,
+      ownership: { claimState: 'unheld' },
+    },
+    changeInCandidate: { judgingSha: 'cand0001' },
+    verdictProvenance: {
+      lastGreenSha: 'sha0000001',
+      lastGreenShortSha: 'sha000000',
+      lastGreenAgeMs: 1000,
+      mainFastForwarded: true,
+      deployedBehindGreenPin: 0,
+      deployOrigin: 'gate-green',
+    },
+    gitSyncLastStatus: 'synced',
+    summary: 'stub summary',
+    notes: [],
+  };
+
+  const single = { host: 'operator-release', releasePipelineApplies: true, restartTarget: 'dev', activation: 'deploy' };
+  const bgHost = { host: 'bg-host', releasePipelineApplies: false, restartTarget: 'bg-host', activation: 'restart bg-host' };
+
+  const planeOf = (out: Out) => out.data.plane as Plane | undefined;
+
+  /**
+   * THE WIRING REGRESSION. The handler has THREE exits — multi-consumer, non-release
+   * runtime, and the default — and stamping only the default would drop the plane for
+   * exactly the paths with unusual activation routes, whose readers are the most likely
+   * to be reasoning about what is and is not live.
+   */
+  const exits = [
+    ['default (release-carried, single consumer)', { ...full, runtime: single, runtimes: [single] }],
+    ['non-release runtime (bg-host — activation, not deploy)', { ...full, runtime: bgHost, runtimes: [bgHost] }],
+    ['multi-consumer (activations, plural)', { ...full, runtime: bgHost, runtimes: [bgHost, single] }],
+  ] as const;
+
+  for (const [label, result] of exits) {
+    it(`stamps the plane on the "${label}" exit`, async () => {
+      vi.mocked(gitPipelinePosition).mockResolvedValue(result as unknown as PipelinePosition);
+      const out = (await tool.handler({ path: PATH } as never, {} as never)) as Out;
+      const plane = planeOf(out);
+      expect(plane, 'this exit must carry the plane block').toBeDefined();
+      expect(plane!.cells.length).toBeGreaterThan(0);
+      expect(plane!.note).toMatch(/re-read|transcribe/i);
+    });
+  }
+
+  it('names the cell for each volatile value, addressed to the CALLER\'S path', async () => {
+    vi.mocked(gitPipelinePosition).mockResolvedValue({ ...full, runtime: single, runtimes: [single] } as unknown as PipelinePosition);
+    const plane = planeOf((await tool.handler({ path: PATH } as never, {} as never)) as Out)!;
+    const byCell = new Map(plane.cells.map((c) => [c.cell, c]));
+
+    // The global cells: a complete handle, no subject needed.
+    expect(byCell.get('deploy.3070.sha')?.reread?.args).toEqual({ cell: 'deploy.3070.sha' });
+    expect(byCell.get('gate.greenCheckpoint.verdict')?.reread?.args).toEqual({ cell: 'gate.greenCheckpoint.verdict' });
+
+    // The caller-relative ones MUST carry the caller's own path, or they re-read a
+    // different subject than the value sitting in this very payload.
+    expect(byCell.get('gate.greenCheckpoint.candidate')?.reread?.args).toEqual({
+      cell: 'gate.greenCheckpoint.candidate',
+      as: PATH,
+    });
+    expect(byCell.get('git.pipelinePosition')?.reread?.args).toEqual({ cell: 'git.pipelinePosition', as: PATH });
+
+    // Each stamp points at where the value actually sits in THIS payload.
+    expect(byCell.get('deploy.3070.sha')?.path).toBe('deployedSha');
+    expect(byCell.get('gate.greenCheckpoint.candidate')?.path).toBe('changeInCandidate.judgingSha');
+  });
+
+  /**
+   * A no-arg call is legal (P-007/D-067: the three global cells resolve through it). The
+   * per-path legs are then unmeasured, so their stamps must not hand back an unqualified
+   * handle that would answer about a different subject.
+   */
+  it('on a no-arg call, stamps the globals and refuses to fake a caller-relative handle', async () => {
+    vi.mocked(gitPipelinePosition).mockResolvedValue({
+      ...full,
+      input: { path: null, sha: null },
+      runtime: undefined,
+      runtimes: undefined,
+    } as unknown as PipelinePosition);
+
+    const plane = planeOf((await tool.handler({} as never, {} as never)) as Out)!;
+    const byCell = new Map(plane.cells.map((c) => [c.cell, c]));
+
+    expect(byCell.get('deploy.3070.sha')?.reread?.args).toEqual({ cell: 'deploy.3070.sha' });
+
+    const relative = byCell.get('gate.greenCheckpoint.candidate');
+    expect(relative?.reread, 'must NOT emit an unqualified handle for a per-path cell').toBeUndefined();
+    expect(relative?.unreadable?.needs).toBe('path');
+  });
+
+  /** A null reading is the one a caller must least transcribe — the stamp must survive it. */
+  it('still stamps a value that is present-and-NULL', async () => {
+    vi.mocked(gitPipelinePosition).mockResolvedValue({
+      ...full,
+      deployedSha: null,
+      runtime: single,
+      runtimes: [single],
+    } as unknown as PipelinePosition);
+    const plane = planeOf((await tool.handler({ path: PATH } as never, {} as never)) as Out)!;
+    expect(plane.cells.some((c) => c.cell === 'deploy.3070.sha')).toBe(true);
+  });
+
+  /** The enrichment must never break the door it decorates. */
+  it('degrades to no block rather than throwing when the payload carries nothing stampable', async () => {
+    vi.mocked(gitPipelinePosition).mockResolvedValue({
+      input: { path: null, sha: null },
+      summary: 'nothing measured',
+      notes: [],
+    } as unknown as PipelinePosition);
+    const out = (await tool.handler({} as never, {} as never)) as Out;
+    expect(out.data.plane).toBeUndefined();
+    expect(out.data.summary).toBe('nothing measured');
   });
 });

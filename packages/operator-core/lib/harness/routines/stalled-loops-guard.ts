@@ -101,6 +101,20 @@ export interface StalledLoopsSweepDeps {
   /** Injectable for tests; defaults to the real wake-reachability probe — the SAME oracle
    *  reconcileLoopRoutines uses to refuse terminating a live owner (EI-19406534159939583). */
   probeReachability?: typeof probeWakeReachability;
+  /**
+   * Injectable for tests; defaults to the real standing-await (re-)arm (WI-36685).
+   *
+   * The REPAIR half of the wake-starved branch, and it has to be a separate write from
+   * `rearm`: `rearmFireStarvedLoop` only nudges `next_fire_at`, so on a loop whose fires are
+   * black-holing for want of a standing await it would fire straight back into the same hole.
+   * Arming the watch is what actually restores delivery — the same call `loop:arm` makes
+   * (agent-tools/loop/arm.ts:732).
+   *
+   * Dynamically imported at call time for the same reason `notify` is: this sweep runs on
+   * every routine tick and must not carry the await/handle-capture machinery just to repair
+   * the rare wake-starved loop.
+   */
+  armWake?: (input: { ownerId: string; note?: string | null }) => Promise<unknown>;
   /** Injectable for tests; defaults to the real fleet-wide broadcast. */
   broadcast?: typeof broadcastSevereEvent;
   /**

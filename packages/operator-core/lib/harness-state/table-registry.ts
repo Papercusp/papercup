@@ -355,6 +355,10 @@ const WORKSPACE_OWNED_EXPLICIT = [
   // only the fleet-scoped remainder projection metering-ledger.ts builds).
   'p2p_metering_spend',
   'p2p_metering_contribution',
+  // WI-36644 (migration 761): per-call delivery-attempt audit log for notifyAttention() —
+  // operator-instance telemetry about THIS box's own owner-notification attempts, never
+  // federated (a peer must never learn / influence another machine's delivery record).
+  'attention_notifications',
 ];
 
 /**

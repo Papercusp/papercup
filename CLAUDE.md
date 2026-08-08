@@ -568,10 +568,30 @@ do not invent a lever when the honest move is to wait. Full field-by-field guide
 work-item? RE-READ it, don't copy it: `state:read { cell }`.** These same values are
 registered CELLS off the *same* resolver (`gitPipelinePosition()`), so this is a
 re-read, never a second source of truth: `gate.greenCheckpoint.candidate` ·
-`gate.greenCheckpoint.verdict` · `git.mainBehindStaging` · `git.pipelinePosition` ·
-`deploy.3070.sha` (omit `cell` to list them). Every one is a value that changes under
+`gate.greenCheckpoint.verdict` · `gate.greenCheckpoint.ownership` ·
+`git.mainBehindStaging` · `git.pipelinePosition` · `deploy.3070.sha` (omit `cell` to
+list them). Every one is a value that changes under
 you mid-turn, and a transcribed copy of one is how a correct observation becomes a
 confidently wrong report an hour later.
+
+✅ **You do not have to look any of that up — `dev:pipeline_position` HANDS YOU THE
+HANDLE.** Its result carries a `plane` block: one entry per volatile value, naming the
+`path` it sits at in that very payload, the `cell` that re-answers it, and a ready
+`reread` call. Copy the handle, not the number. Two things to actually read there:
+
+- **The handle is already addressed to YOUR subject.** `git.pipelinePosition` and
+  `gate.greenCheckpoint.candidate` are per-path cells, so their entries carry
+  `as: '<the path you asked about>'`. Re-reading either WITHOUT that `as` answers about
+  a different subject — which is why a no-arg call emits `unreadable: { needs: 'path' }`
+  for those two and no handle at all, rather than one that looks authoritative and
+  resolves elsewhere.
+- **An entry appears even when the value is `null`.** That is deliberate: a null
+  deployed-sha or candidate is the reading you are *least* entitled to transcribe, so
+  it is the one that most needs a handle.
+
+The block is derived from each cell's own `changeSignal` declaration, so it cannot drift
+from the registry — a cell added, renamed or re-pathed shows up (or stops showing up) on
+its own (`state-plane-stamp.ts`, state-plane-adoption-2026-08-02 P-010).
 
 Two specifics worth knowing:
 

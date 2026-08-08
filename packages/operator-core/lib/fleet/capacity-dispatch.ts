@@ -640,8 +640,8 @@ export function buildCapacityReport(
     ? `⚠ BLIND READING: ${acct!.blindCount}/${acct!.total} ${acct!.provider ?? 'claude'} account(s) have an ` +
       `UNRELIABLE reading (an unresolved accounts:probe-capacity 'no-reading' failure, and/or a usage-window ` +
       `observation that has simply gone stale from lack of a recent refresh) — their available/usageWalled ` +
-      `verdict rests on OLD OR MISSING data, not a live measurement. Do NOT treat a quota-exhaustion or ` +
-      `owner-escalation reading below as confirmed, and do NOT wait on resetInSec, until you have RE-RUN ` +
+      `verdict rests on OLD OR MISSING data, not a live measurement. Do NOT wait on resetInSec or treat a ` +
+      `quota-exhaustion or owner-escalation reading below as confirmed until you have RE-RUN ` +
       `accounts:probe-capacity to refresh these accounts — a merely-stale-but-fine reading looks identical to ` +
       `a real wall until you re-measure it (EI-19928050541357086: one probe call flipped poolExhausted from ` +
       `true to false here with no other change). accounts:test-egress on the affected accounts checks for a ` +

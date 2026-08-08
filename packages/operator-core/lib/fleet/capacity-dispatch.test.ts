@@ -657,6 +657,42 @@ test('EI-19281217347369076 — gateway unreachable ⇒ blind:false, resetInSecAc
   assert.equal(r.resetInSecActionable, true);
 });
 
+test('EI-19928050541357086 — a majority of MERELY-STALE (never-probe-failed) readings caveats poolExhausted the same as a probe failure', () => {
+  // Pins the real incident: fleet:capacity { headroom: 10 } returned poolExhausted:true, usableAccounts:0,
+  // "DOMINANT CAUSE: 3/3 edge-throttled ... OWNER-GATED infra issue ... escalate" while 2 of 3 claude
+  // accounts had readingStatus:'stale' (readingAgeMs 34min / 99min) — NOT an unresolved probe failure
+  // (lastProbeFailedAt was never set on either). ONE accounts:probe-capacity call, with no other change,
+  // flipped the verdict to poolExhausted:false, usableAccounts:1, degraded:true. capacity.ts now folds
+  // readingStatus !== 'fresh' into blindCount (alongside actual probe failures) so this exact shape — a
+  // majority-stale pool that was simply never re-probed recently — trips the same BLIND READING caveat a
+  // majority of outright probe failures already did, instead of rendering a confident quota-shaped
+  // exhaustion + owner-escalation verdict off data nobody has looked at in over half an hour.
+  const hr = {
+    reachable: true, utilization: 0.9, utilizationPct: 90, paused: false, rejected: false, queueDepth: 1, inFlight: 1,
+    priorityTiers: { healthyAccounts: 3, tier1Reserve: 1, tiers: [{ tier: 3, cap: 10, inFlight: 1, queued: 1 }] },
+  };
+  // 2/3 accounts merely stale (no probe ever failed on them) — this is what capacity.ts's
+  // `rows.filter((r) => r.lastProbeFailedAt != null || r.readingStatus !== 'fresh').length` would compute.
+  const accountAvailability = {
+    provider: 'claude', total: 3, available: 0, usable: 0,
+    edgeThrottledCount: 3, usageWalledCount: 0,
+    blindCount: 2, // 2 stale, 0 probe-failed — folded together by capacity.ts
+  };
+  const r = buildCapacityReport(hr, { clampArmed: true, headroom: 10, accountAvailability });
+  assert.equal(r.poolExhausted, true, 'usable<=0 with spare gateway slots still trips the technical flag');
+  assert.equal(r.blind, true, '2/3 (67% >= 50%) counts as majority-blind even though none is an outright probe failure');
+  assert.equal(r.blindAccounts, 2);
+  assert.equal(r.resetInSecActionable, false, 'a stale-but-unrefreshed reading is not an actionable quota window either');
+  assert.match(r.advice, /BLIND READING/);
+  assert.match(r.advice, /2\/3 claude account/);
+  assert.match(r.advice, /gone stale from lack of a recent refresh/);
+  assert.match(r.advice, /Do NOT wait on resetInSec/);
+  assert.match(r.advice, /RE-RUN.*accounts:probe-capacity/);
+  // The blind caveat still leads before the (still-technically-true) EXHAUSTED verdict + egress escalation —
+  // composes, doesn't replace, same contract as the outright-probe-failure case.
+  assert.match(r.advice, /BLIND READING[\s\S]*EXHAUSTED[\s\S]*OWNER-GATED/);
+});
+
 test('the floor never manufactures slots — a 0-slot pool stays 0 even when paused', () => {
   const d = computeCapacityHeadroom(0, { reachable: true, paused: true });
   assert.equal(d.headroom, 0, 'no raw headroom → no spawns; the floor lets work flow, it does not invent slots');

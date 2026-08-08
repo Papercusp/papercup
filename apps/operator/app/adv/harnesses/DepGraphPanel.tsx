@@ -45,7 +45,7 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { parseAsString, parseAsStringEnum, useQueryState } from 'nuqs';
 import { useSyncQuery } from '@papercusp/sync';
-import { readListTotal } from '@papercusp/operator-core/lib/sync-resolver/list-meta';
+import { readListMeta } from '@papercusp/operator-core/lib/sync-resolver/list-meta';
 import type { PanelComponentProps } from '../../harness/dock/panel-registry';
 import { Button } from '../../harness/Button';
 import { useColumnFilters, ColumnFilterBar } from '../../harness/filters';
@@ -275,6 +275,60 @@ export default function DepGraphPanel({ params }: PanelComponentProps) {
     };
   }, [graph]);
 
+  /**
+   * The ONE way selection is cleared. The button and the Esc key both call this, so the
+   * two can never drift apart — which is the whole reason it is a callback rather than
+   * two `setSelectedId('')` call sites (P-007/P-008).
+   */
+  const clearSelection = useCallback(() => {
+    void setSelectedId('');
+  }, [setSelectedId]);
+
+  // P-008 — Esc deselects. [owner 2026-08-08 verbatim] "pressing esc should also
+  // automatically deselect".
+  //
+  // Document-level, because selection is a PANE-WIDE mode: the user may have clicked an
+  // SVG node (not focusable), so a handler bound to the pane's DOM subtree would only fire
+  // for the a11y list. The guards are what make a document listener acceptable rather than
+  // a key-stealer, and each one is a case Esc already means something else:
+  //   • nothing selected      → do nothing AND do not preventDefault, so Esc still reaches
+  //                             whatever else would have handled it (the item's own test).
+  //   • already handled       → a dialog/menu that called preventDefault wins.
+  //   • a Radix layer is open → its popper wrapper is in the DOM; Esc closes THAT first.
+  //   • focus is in a field   → Esc is the editor's own cancel.
+  useEffect(() => {
+    if (!selectedId) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape' || e.defaultPrevented) return;
+      // ⚠ `e.target` is NOT always an Element — a keydown with nothing focused targets the
+      // Document, which has no `closest`/`tagName`. Reading it as an HTMLElement throws
+      // INSIDE a document-level listener, i.e. an unhandled exception on a keypress. The
+      // instanceof narrowing is the guard, not decoration.
+      const t = e.target;
+      if (t instanceof Element) {
+        const tag = t.tagName;
+        if (
+          tag === 'INPUT' ||
+          tag === 'TEXTAREA' ||
+          tag === 'SELECT' ||
+          (t instanceof HTMLElement && t.isContentEditable) ||
+          t.closest('[role="dialog"], [role="menu"], [role="listbox"]')
+        ) {
+          return;
+        }
+      }
+      if (document.querySelector('[data-radix-popper-content-wrapper], [role="dialog"]')) return;
+      e.preventDefault();
+      clearSelection();
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, [selectedId, clearSelection]);
+
+  /** Unique per mounted pane — two panes in one dock must not share arrowhead marker ids. */
+  const rawUid = useId();
+  const uid = rawUid.replace(/[^a-zA-Z0-9_-]/g, '');
+
   if (!slug) return <div className="pc-advpanel__empty">No harness selected.</div>;
   if (error) return <div className="pc-advpanel__empty">Could not load the dependency graph: {error}</div>;
   if (!graph) return <div className="pc-advpanel__empty">Loading dependency graph…</div>;
@@ -283,12 +337,55 @@ export default function DepGraphPanel({ params }: PanelComponentProps) {
   // rather than tidy: filtering is now the primary navigation, so a filter that happens to
   // match nothing must NOT take its own "Clear" affordance off screen with it. Hiding the
   // bar on empty strands the user in a graph they cannot un-filter without editing the URL.
+  // P-001 — ANSWER "why 18,647 items but only 122 nodes?" IN THE PANE.
+  //
+  // The count is only sayable when the graph is UNSCOPED. `totalInScope` means "nodes before
+  // the budget", which equals "items that participate in an edge" ONLY when no selection, no
+  // health mode and no column filter have narrowed the edge set first; under any of those it
+  // is a scoped subset and the sentence "N of TOTAL items have dependencies" becomes false.
+  // So the claim is gated on the scoping being absent rather than reworded to survive it — a
+  // number that is right in the common case and quietly wrong in the others is worse than no
+  // number, and this pane has already paid for one of those (WI-36045).
+  //
+  // `readListMeta(...)?.total`, NOT `readListTotal(...)`: the latter FALLS BACK to the
+  // downloaded array length when the resolver attached no total, which here would silently
+  // turn the sentence into "122 of 500 items have dependencies" — the page size dressed up
+  // as the corpus. An absent total must read as "I don't know the denominator", so the
+  // claim is withheld rather than made from a fallback.
+  const corpusTotal = readListMeta(items ?? [])?.total ?? 0;
+  const unscoped = !selectedId && !healthOnly && !cf.hasActive;
+  const canStateCorpus = unscoped && corpusTotal > 0 && graph.totalInScope > 0;
+
   const bar = (
-    <div className="pc-advpanel__bar">
+    <div className="pc-advpanel__bar pc-advpanel__bar--wrap">
+      {selectedId && (
+        // P-007 — the exit from a filtered state, given real emphasis and placed FIRST.
+        // [owner 2026-08-08 verbatim] "when you have a ndoe selected the clear selection
+        // button should be more visible". It used to be a .pc-advpanel__iconbtn — a fixed
+        // 28×28 icon box — sitting last in a crowded row, so it read as chrome AND had its
+        // text label wrapped by the 28px width. Accent variant, first position: when
+        // something IS selected, the way out is the first thing the eye reaches, and with
+        // the bar now wrapping it can never be pushed off screen.
+        <Button
+          variant="accent"
+          className="pc-depgraph__clearsel"
+          onClick={clearSelection}
+          aria-label={`Clear selection (${selectedId}) and show the whole dependency graph. Escape also clears it.`}
+        >
+          Clear selection
+        </Button>
+      )}
       <span className="pc-advpanel__chip">
-        {graph.nodes.length} node{graph.nodes.length === 1 ? '' : 's'} · {graph.edges.length} edge
-        {graph.edges.length === 1 ? '' : 's'}
+        {canStateCorpus
+          ? `${graph.totalInScope.toLocaleString()} of ${corpusTotal.toLocaleString()} items have dependencies`
+          : `${graph.nodes.length} node${graph.nodes.length === 1 ? '' : 's'}`}{' '}
+        · {graph.edges.length} edge{graph.edges.length === 1 ? '' : 's'}
       </span>
+      {canStateCorpus && (
+        // The RULE, not just the number — a reader who wonders "where are the other 18,525?"
+        // gets the answer without leaving the pane, which is the item's acceptance test.
+        <span className="pc-depgraph__note">Items with no dependency are not drawn</span>
+      )}
       {graph.truncated && (
         // Absence is reported, never silent (D-003 / the budget contract).
         <span className="pc-advpanel__chip pc-depgraph__chip--warn" role="status">
@@ -312,10 +409,24 @@ export default function DepGraphPanel({ params }: PanelComponentProps) {
           {graph.hydratedNodeCount} outside the list&rsquo;s current page
         </span>
       )}
-      {/* P-008: the integrity view, as a MODE on this pane rather than a second surface. */}
+      {/*
+        The integrity view, as a MODE on this pane rather than a second surface
+        (dependency-health-pane-2026-08-02 P-008).
+
+        ⚠ THE CLASS IS THE FIX (this pass's P-002). This was `.pc-advpanel__iconbtn`, which
+        is a fixed `width:28px; height:28px; flex-shrink:0` ICON box — so a TEXT label inside
+        it had 28px to lay out in and wrapped into three fragments: a detached state glyph on
+        one line, then "Issues", then "only". That is precisely the artefact in the owner's
+        screenshot, and no amount of `nowrap` on a 28px box would have fixed it. `.pc-advpanel__chip`
+        is the house toggle recipe (/internal/docs/design#buttons: native button + aria-pressed,
+        tinted fill when pressed), it sizes to its label, and it carries the pressed state as a
+        FILL rather than as a wrappable text node — so the state can no longer come apart from
+        the word it describes. The glyph is gone for the same reason. (design-phase:search_registry
+        has no toggle primitive to reuse — checked, empty.)
+      */}
       <button
         type="button"
-        className="pc-advpanel__iconbtn"
+        className="pc-advpanel__chip"
         aria-pressed={healthOnly}
         /* aria-label, not title: `lint:design-primitives` blocks title-only
            tooltips on buttons because a title is invisible to keyboard and
@@ -330,7 +441,7 @@ export default function DepGraphPanel({ params }: PanelComponentProps) {
         }
         onClick={() => void setHealth(healthOnly ? 'all' : 'issues')}
       >
-        {healthOnly ? '● Issues only' : '○ Issues only'}
+        Issues only
       </button>
       {/* Same control, same `wif` param, same columns as the list pane (P-010). */}
       <ColumnFilterBar
@@ -339,11 +450,6 @@ export default function DepGraphPanel({ params }: PanelComponentProps) {
         hasActive={cf.hasActive}
         clearAll={cf.clearAll}
       />
-      {selectedId && (
-        <button type="button" className="pc-advpanel__iconbtn" onClick={() => void setSelectedId('')}>
-          Clear selection
-        </button>
-      )}
     </div>
   );
 
@@ -357,7 +463,14 @@ export default function DepGraphPanel({ params }: PanelComponentProps) {
     const why = healthOnly
       ? 'No broken or already-satisfied edges — nothing here gates nothing.'
       : cf.hasActive
-        ? 'No work items match the active filters.'
+        ? // WI-36234: "No work items match the active filters" was a FALSE statement whenever
+          // the filters matched plenty — the grid beside it said "432 of 18601 match" — and
+          // it is the EDGE set that came up empty. Name the empty thing, because the two
+          // cases need different next actions: widen the filter vs. there is no dependency
+          // story here to tell.
+          visibleItems && visibleItems.length > 0
+          ? `None of the ${visibleItems.length.toLocaleString()} items matching the active filters have dependencies.`
+          : 'No work items match the active filters.'
         : items && items.length === 0
           ? 'No work items for this harness.'
           : selectedId
@@ -412,10 +525,39 @@ export default function DepGraphPanel({ params }: PanelComponentProps) {
             aria-label={`Dependency graph: ${positioned.nodes.length} items`}
           >
             {/*
-              EDGES ARE THE SECONDARY MARK (D-003 req 1 — the owner's "the edges are much too
-              big"). Thin, subdued, drawn UNDER the nodes; the layering and the nodes carry the
-              signal. Stroke colours come from CSS custom properties so light/dark and the
-              design tokens govern, rather than hardcoded hexes.
+              ARROWHEADS (P-004). One marker per edge class, rather than one marker inheriting
+              the stroke: `context-stroke` is SVG2 and its support is uneven across the engines
+              this ships on, and an arrowhead that silently renders black on a dark panel is
+              worse than none. Three explicit markers cost three <defs> children and cannot
+              degrade. Marker ids are pane-scoped (`uid`) so two panes in one dock do not
+              collide — a duplicate id would make one pane's arrows adopt the other's colour.
+            */}
+            <defs>
+              {(['default', 'satisfied', 'dangling'] as const).map((variant) => (
+                <marker
+                  key={variant}
+                  id={`pc-dg-arrow-${variant}-${uid}`}
+                  viewBox="0 0 8 8"
+                  refX="7"
+                  refY="4"
+                  markerWidth="5"
+                  markerHeight="5"
+                  orient="auto"
+                >
+                  <path
+                    d="M 0.5 1 L 7 4 L 0.5 7 z"
+                    className={`pc-depgraph__arrowhead pc-depgraph__arrowhead--${variant}`}
+                  />
+                </marker>
+              ))}
+            </defs>
+            {/*
+              EDGES ARE STILL THE SECONDARY MARK (D-003 req 1 — the owner's "the edges are much
+              too big"). This pass raises CONTRAST and adds DIRECTION; it does NOT raise weight.
+              Those are different complaints and both owner-sourced: the stroke stays hairline,
+              the opacity comes up off the floor, and an arrowhead says which end blocks which —
+              the one thing a dependency graph exists to convey, and the thing 79 undirected
+              hairlines could not. Colours stay in CSS custom properties so the tokens govern.
             */}
             <g className="pc-depgraph__edges" fill="none">
               {positioned.edges.map((e) => {
@@ -424,19 +566,21 @@ export default function DepGraphPanel({ params }: PanelComponentProps) {
                 if (!a || !b) return null;
                 const x1 = a.x + NODE_W;
                 const y1 = a.y + NODE_H / 2;
-                const x2 = b.x;
+                // Stop 2px short of the target so the arrowhead sits BESIDE the node border
+                // rather than under it — an arrow drawn onto the card reads as a fleck.
+                const x2 = b.x - 2;
                 const y2 = b.y + NODE_H / 2;
                 const mid = (x1 + x2) / 2;
+                const variant = e.dangling ? 'dangling' : e.satisfied ? 'satisfied' : 'default';
                 return (
                   <path
                     key={e.id}
                     d={`M ${x1} ${y1} C ${mid} ${y1}, ${mid} ${y2}, ${x2} ${y2}`}
+                    markerEnd={`url(#pc-dg-arrow-${variant}-${uid})`}
                     className={
-                      e.dangling
-                        ? 'pc-depgraph__edge pc-depgraph__edge--dangling'
-                        : e.satisfied
-                          ? 'pc-depgraph__edge pc-depgraph__edge--satisfied'
-                          : 'pc-depgraph__edge'
+                      variant === 'default'
+                        ? 'pc-depgraph__edge'
+                        : `pc-depgraph__edge pc-depgraph__edge--${variant}`
                     }
                   />
                 );
@@ -452,6 +596,15 @@ export default function DepGraphPanel({ params }: PanelComponentProps) {
                   }${n.id === selectedId ? ' pc-depgraph__node--selected' : ''}`}
                   onClick={() => void setSelectedId(n.id)}
                 >
+                  {/* The full title, unabridged, for the truncated card below. An SVG <title>
+                      CHILD is not the `title=` ATTRIBUTE the design-primitives lint blocks on
+                      action elements — it is the standard accessible name for an SVG group,
+                      and the planmark already uses it the same way. */}
+                  <title>
+                    {n.dangling
+                      ? `${n.id} — unresolved blocker`
+                      : `${n.id} — ${n.title} (${n.state}, depth ${n.depth})`}
+                  </title>
                   <rect width={NODE_W} height={NODE_H} rx={6} />
                   {/* P-012: plan provenance as a left edge-marker rather than a fill or
                       border change. Fill is already spoken for by state and the border by
@@ -468,11 +621,30 @@ export default function DepGraphPanel({ params }: PanelComponentProps) {
                       <title>{`from plan: ${n.planSlug}`}</title>
                     </rect>
                   )}
-                  <text x={10} y={18} className="pc-depgraph__node-id">
+                  {/* P-006 — STATE ON THE NODE, as a dot rather than a fill or a border.
+                      Both of those are already load-bearing here (fill = dangling, border =
+                      selection), so colouring either by state would overwrite a signal that
+                      is already carrying meaning. A dot composes with all of them and stays
+                      legible at this size. Dangling nodes get none: a placeholder for a row
+                      that does not exist has no state to report, and inventing one would be
+                      asserting data we do not have. */}
+                  {!n.dangling && (
+                    <circle
+                      className={`pc-depgraph__node-state pc-depgraph__node-state--${stateBucket(n.state)}`}
+                      cx={NODE_W - 11}
+                      cy={13}
+                      r={3.5}
+                    />
+                  )}
+                  {/* HIERARCHY (P-006): the TITLE is what a reader recognises, so it is the
+                      prominent line; the id is the reference you look up, so it is the small
+                      muted label above it. It was the other way round, which is part of why
+                      the pane read as a grid of ids. */}
+                  <text x={10} y={17} className="pc-depgraph__node-id">
                     {n.id}
                   </text>
                   <text x={10} y={34} className="pc-depgraph__node-title">
-                    {n.title.length > 28 ? `${n.title.slice(0, 27)}…` : n.title}
+                    {n.title.length > TITLE_CHARS ? `${n.title.slice(0, TITLE_CHARS - 1)}…` : n.title}
                   </text>
                 </g>
               ))}

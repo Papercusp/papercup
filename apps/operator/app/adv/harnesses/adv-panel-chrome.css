@@ -36,6 +36,18 @@
   border-bottom: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 85%));
 }
 
+/* A bar that carries STATUS CHIPS rather than a fixed toolbar wraps to a second
+ * line instead of fragmenting its contents (dep-graph-design-pass-2026-08-08
+ * P-003). Chips are atomic and self-describing, so a second row costs nothing and
+ * reads fine; a squeezed nowrap row instead crushes each control, and the horizontal
+ * -scroll alternative hides controls behind a scrollbar the user has no reason to
+ * suspect is there. Opt-in, because a real toolbar (fixed icon actions) should NOT
+ * wrap — it should stay one row and let its content shrink. */
+.pc-advpanel__bar--wrap {
+  flex-wrap: wrap;
+  row-gap: 6px;
+}
+
 /* Frost text input — sky-tinted border, accent focus ring. */
 .pc-advpanel__input {
   flex: 1;
@@ -116,6 +128,10 @@
   align-items: center;
   gap: 6px;
   padding: 3px 10px;
+  /* A chip is ATOMIC — it is a single labelled pill, and a pill broken across two
+   * lines stops reading as one control (P-003). The dep-graph "Issues only" toggle
+   * fragmented into three pieces for exactly this reason. */
+  white-space: nowrap;
   font-size: 11px;
   font-family: inherit;
   color: var(--fg-mute, #7f9bb4);
@@ -226,19 +242,49 @@
   padding: 12px;
 }
 
-/* Hairline and subdued — 1px at ~45% opacity reads as a connection without
- * competing with the nodes. Heavy strokes are what drew the complaint. */
+/* Hairline and subdued — the WEIGHT stays 1px because heavy strokes are what drew
+ * the original complaint ("the edges are much too big", D-003 req 1).
+ *
+ * ⚠ WEIGHT AND CONTRAST ARE DIFFERENT KNOBS, and conflating them is how this pane
+ * ended up with 79 edges nobody could see. The 2026-08-08 report was the opposite
+ * complaint — the pane "looks like a grid of cards" — and the resolution is not to
+ * relitigate either: hold the hairline, raise the opacity off the floor (0.45 → 0.7),
+ * and spend the new legibility budget on DIRECTION (the arrowheads below) rather than
+ * on thickness. A 1px stroke at 0.7 is still unmistakably the secondary mark. */
 .pc-depgraph__edge {
   stroke: var(--fg-mute, #7f9bb4);
-  stroke-opacity: 0.45;
+  stroke-opacity: 0.7;
   stroke-width: 1;
 }
 
 /* A terminal blocker no longer gates. Fainter + dashed: still visible, because
- * the lineage explains WHY the dependent became free, but clearly not live. */
+ * the lineage explains WHY the dependent became free, but clearly not live.
+ * Raised in step with the base so the RATIO that encodes "inert" survives — the
+ * distinction has to stay legible, which at 0.2 it was not. */
 .pc-depgraph__edge--satisfied {
-  stroke-opacity: 0.2;
+  stroke-opacity: 0.34;
   stroke-dasharray: 3 3;
+}
+
+/* DIRECTION (dep-graph-design-pass-2026-08-08 P-004). An undirected dependency graph
+ * cannot say which end blocks which — the single fact the pane exists to convey. One
+ * arrowhead class per edge class, mirroring the stroke colours above, because SVG2
+ * `context-stroke` is unevenly supported and an arrowhead that silently falls back to
+ * black on a dark panel is worse than no arrowhead at all. */
+.pc-depgraph__arrowhead {
+  stroke: none;
+}
+.pc-depgraph__arrowhead--default {
+  fill: var(--fg-mute, #7f9bb4);
+  fill-opacity: 0.8;
+}
+.pc-depgraph__arrowhead--satisfied {
+  fill: var(--fg-mute, #7f9bb4);
+  fill-opacity: 0.4;
+}
+.pc-depgraph__arrowhead--dangling {
+  fill: var(--bad, #f87171);
+  fill-opacity: 0.85;
 }
 
 /* An unresolvable blocker is a DEFECT, not decoration — the one edge class that
@@ -290,14 +336,61 @@
   pointer-events: none;
 }
 
+/* TYPOGRAPHIC HIERARCHY (dep-graph-design-pass-2026-08-08 P-006). Inverted from the
+ * original: the TITLE is what a reader recognises a node BY, so it gets the weight and
+ * the full-contrast fill; the id is the reference you look something up with, so it is
+ * the small muted label above it. With id bright/bold and title muted/smaller — the way
+ * round it was — a screen of cards reads as a wall of identifiers, which is a large part
+ * of why the pane did not read as a graph of work. */
 .pc-depgraph__node-id {
+  fill: var(--fg-mute, #7f9bb4);
+  font-size: 9.5px;
+  font-weight: 500;
+  letter-spacing: 0; /* design-primitives lint: no nonzero letter-spacing in app UI */
+}
+.pc-depgraph__node-title {
   fill: var(--fg, #e7f7ff);
   font-size: 11px;
   font-weight: 600;
 }
-.pc-depgraph__node-title {
+
+/* STATE, as a dot. Fill and border on the node are already spoken for (dangling and
+ * selection), so state gets its own mark rather than overwriting a live signal. Four
+ * coarse buckets — see stateBucket() in DepGraphPanel.tsx, which deliberately is NOT
+ * the gating oracle. */
+.pc-depgraph__node-state {
+  stroke: none;
+}
+.pc-depgraph__node-state--done {
+  fill: var(--good, #4ade80);
+  fill-opacity: 0.75;
+}
+.pc-depgraph__node-state--bad {
+  fill: var(--bad, #f87171);
+  fill-opacity: 0.85;
+}
+.pc-depgraph__node-state--active {
+  fill: var(--accent, #38bdf8);
+  fill-opacity: 0.85;
+}
+.pc-depgraph__node-state--open {
   fill: var(--fg-mute, #7f9bb4);
+  fill-opacity: 0.5;
+}
+
+/* The corpus-scoping explainer (P-001) — plain prose beside the chips, not a chip
+ * itself: it is a standing statement of the pane's rule, not a piece of state, and
+ * dressing a rule up as a chip invites a reader to try clicking it. */
+.pc-depgraph__note {
   font-size: 10.5px;
+  color: var(--fg-mute, #7f9bb4);
+  white-space: nowrap;
+}
+
+/* "Clear selection" (P-007) — the Button primitive's accent variant carries the
+ * emphasis; this only stops the label wrapping in the now-wrapping bar. */
+.pc-depgraph__clearsel {
+  white-space: nowrap;
 }
 
 /* The truncation notice. Warn-coloured because a clipped graph mistaken for a

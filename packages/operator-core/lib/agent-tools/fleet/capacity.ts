@@ -100,7 +100,17 @@ async function readBeeProviderAvailability(): Promise<AccountPoolAvailability | 
       // on this account got no answer", not "unmeasured in general". A majority of the pool carrying
       // this flag is the network-shaped signal buildCapacityReport degrades `poolExhausted`'s confidence
       // on (see its `blind` computation) instead of reporting a quota-shaped verdict off a stale store.
-      blindCount: rows.filter((r) => r.lastProbeFailedAt != null).length,
+      //
+      // EI-19928050541357086: fold a merely-STALE (never-refreshed) usage-window reading into this same
+      // "unreliable" bucket, alongside an outright probe failure — `readingStatus` (accountReadingStatus,
+      // account-pool-store.ts) already tracks exactly this ('never-observed'|'stale'|'fresh'), but nothing
+      // here consulted it: only an actual probe FAILURE counted toward `blindCount`, so a pool that simply
+      // hadn't been re-probed in 30-99 minutes (readingStatus:'stale', lastProbeFailedAt never set) reported
+      // blind:false and a confident poolExhausted:true + owner-gated-egress-escalation verdict — which one
+      // accounts:probe-capacity call then flatly contradicted (poolExhausted:false, usableAccounts:1) with
+      // no other change. Both conditions mean the same thing to a caller: this row's available/usageWalled
+      // verdict rests on data that is not a live measurement, so both belong in the one caveat.
+      blindCount: rows.filter((r) => r.lastProbeFailedAt != null || r.readingStatus !== 'fresh').length,
     };
   } catch {
     return undefined;

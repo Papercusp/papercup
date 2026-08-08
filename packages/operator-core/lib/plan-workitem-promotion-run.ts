@@ -32,7 +32,7 @@ import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { resolveEffectiveStatusForItems, type ItemStatus, type PlanItem } from '@papercusp/plan-parser';
 import { systemDistinctId } from './flag-distinct-id';
-import { readPlanBySlug } from './agent-tools/plans/source';
+import { readPlanBySlug, type PlanRow } from './agent-tools/plans/source';
 import { createWorkItem, linkWorkItem } from './work-items';
 import { PLAN_ITEM_KIND, planItemRef } from './issue-blocks-merge';
 import {
@@ -71,6 +71,22 @@ export interface PromotePlanResult {
    * to `blocked`, so pass 1's lane gate parks them; what is withheld is only the edge.
    */
   edgesRejectedCyclic: number;
+  /**
+   * okf-frontmatter-adoption H(b): promotion was REFUSED because the plan is in
+   * scope for the SPEC TRIAD and owes a leg. Present only when it fired.
+   *
+   * This is the refusal with teeth — `plans:items { actionable }` is a read, but
+   * THIS is where plan items become claimable work. It is paired with an
+   * automatic filing (`specTriadWorkItem`), so the refusal always ships its own
+   * exit: an agent claims that item, writes the sections, and re-running
+   * promotion succeeds. Nothing waits on a human, and no EXISTING plan can hit
+   * it (the scope test is creation-epoch based — see spec-triad-policy.ts).
+   */
+  specTriadBlocked?: true;
+  /** The legs the plan owes, when `specTriadBlocked`. */
+  specTriadMissing?: string[];
+  /** The work item filed to resolve it — null if the filing itself failed. */
+  specTriadWorkItem?: string | null;
   /**
    * P-008: `blockedBy` refs naming a plan item that DOES NOT EXIST in the plan — an authoring
    * error `plans:lint` already reports, split out from `blockersUnresolved` because the two
@@ -145,6 +161,46 @@ function readRawPlanItems(read: PlanRead): RawPlanItem[] {
 }
 
 /**
+ * The SPEC TRIAD verdict for a plan about to be promoted (okf-frontmatter-adoption
+ * H(b)), or `null` when the requirement does not apply here.
+ *
+ * FAILS OPEN at every step — an unreadable flag store, a policy throw, anything
+ * unexpected returns `null` and promotion proceeds. The failure this must never
+ * produce is "an outage in an unrelated subsystem silently stops plan-driven
+ * work from entering the queue", which is indistinguishable from the fleet
+ * freeze the whole design was corrected to avoid.
+ */
+async function evaluateSpecTriadForPromotion(
+  row: PlanRow,
+): Promise<{ gated: boolean; missing: string[]; gap: string } | null> {
+  try {
+    const flagEnabled = await getFlag(FLAGS.SPEC_TRIAD_REQUIRED, systemDistinctId());
+    if (!flagEnabled) return null;
+    const [{ specTriadGate, specTriadEpoch }, { describeSpecTriadGap }] = await Promise.all([
+      import('./agent-tools/plans/spec-triad-policy'),
+      import('@papercusp/plan-parser'),
+    ]);
+    const verdict = specTriadGate(
+      {
+        planSlug: row.planSlug,
+        content: row.content,
+        created: row.created,
+        itemCount: Array.isArray(row.items) ? row.items.length : undefined,
+      },
+      { flagEnabled: true, epoch: specTriadEpoch() },
+    );
+    if (!verdict.gated || !verdict.triad) return null;
+    return {
+      gated: true,
+      missing: verdict.missing,
+      gap: describeSpecTriadGap(verdict.triad),
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Promote a plan's open items to placeable, unclaimed work-items. Idempotent
  * (re-running mints only newly-open items, never duplicates). Throws on a genuine
  * error so a direct caller/test sees it; plans:start wraps the call in .catch().
@@ -169,6 +225,45 @@ export async function promotePlanItems(opts: {
     .filter((i) => isOpenStatus(i.status))
     .map((i) => ({ id: i.id, text: i.text }));
   if (openItems.length === 0) return { promoted: 0, skipped: 0, ...NO_EDGES };
+
+  // okf-frontmatter-adoption H(b): the SPEC TRIAD gate, at the point where plan
+  // items actually become claimable work. `plans:items { actionable }` is a
+  // read; this is the write, so the requirement means nothing unless it is also
+  // checked here.
+  //
+  // Refusing here would ordinarily be the start of a wedge, which is why the
+  // refusal FILES ITS OWN EXIT in the same breath rather than deferring to the
+  // daily sweep: an agent claims that item, writes the sections, and the next
+  // promotion succeeds. No human is in the loop, and nothing is silently
+  // dropped — the caller gets `specTriadBlocked` plus the work-item id.
+  //
+  // No plan that predates the epoch can reach this branch: `specTriadGate`
+  // short-circuits out-of-scope plans before evaluating anything. That is the
+  // measured freeze guard, not an intention — 330 live plans would otherwise
+  // stop promoting the moment the flag went on.
+  const specTriad = await evaluateSpecTriadForPromotion(read.row);
+  if (specTriad?.gated) {
+    const { ensureSpecTriadFiling } = await import('./agent-tools/plans/spec-triad-filing');
+    const filed = await ensureSpecTriadFiling({
+      workspaceId: opts.workspaceId,
+      harnessSlug: opts.harnessSlug,
+      planSlug: opts.planSlug,
+      missing: specTriad.missing,
+      gap: specTriad.gap,
+    });
+    console.log(
+      `[plan-promotion] '${opts.planSlug}' held by the spec triad (${specTriad.missing.join(', ')}) — ` +
+        `filing ${filed.outcome}${filed.id ? ` (${filed.id})` : ''}`,
+    );
+    return {
+      promoted: 0,
+      skipped: openItems.length,
+      ...NO_EDGES,
+      specTriadBlocked: true,
+      specTriadMissing: specTriad.missing,
+      specTriadWorkItem: filed.id,
+    };
+  }
 
   // EI-14024: resolve each item's EFFECTIVE status (blocked-by graph aware, same
   // algorithm scheduler/plan-item-lane-guard.ts checks post-claim) over the FULL
