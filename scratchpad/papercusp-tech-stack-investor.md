@@ -24,22 +24,24 @@ commodity input we route into that substrate; the substrate is the product.
 
 | Layer | Technology |
 | --- | --- |
-| **Languages** | TypeScript (~2.1M LOC), Rust (~46k LOC), SQL |
+| **Languages** | TypeScript (2.66M LOC), Rust (71k LOC), SQL |
 | **Desktop shell** | Tauri 2 (Rust + native webview), typed IPC via specta |
 | **Frontend** | React 19, Vite 8, TanStack Router, Radix UI, Tailwind 4, nuqs |
 | **Backend** | Hono 4 on Node 25; DBOS for durable workflows |
-| **Database** | PostgreSQL 18 — *embedded in the app*; Drizzle ORM; 572 migrations |
+| **Database** | PostgreSQL 18 — *embedded in the app*; Drizzle ORM; 630 migrations |
 | **Realtime** | In-house sync layer: SSE over Postgres `LISTEN/NOTIFY` |
 | **Agent interface** | Model Context Protocol (MCP) — 691 tools across 139 groups |
 | **Model access** | In-house multi-provider inference gateway with failover |
 | **Retrieval / memory** | Hybrid Postgres FTS + vector, RRF fusion, reranking, mem0 |
 | **Extensibility** | WebAssembly Component Model (WIT + wasmtime / jco) |
-| **Testing** | Vitest 4, Playwright, Cargo, LLM eval batteries (~5,300 test files) |
+| **Distribution** | First-party peer-to-peer git + coordination plane (Holepunch) |
+| **Testing** | Vitest 4, Playwright, Cargo, LLM eval batteries (6,170 test files) |
 | **Delivery** | Automated green-gate pipeline, auto-rollback, Tauri auto-updater |
 | **Analytics** | PostHog (product analytics + feature flags) |
 
 **Repository shape:** npm-workspaces monorepo, ~80 workspace packages, 39 git
-submodules, ~10,800 TypeScript source files.
+submodules, 12,731 TypeScript source files. All figures measured 8 August 2026 and
+regenerable on demand via `npm run stats:proof`.
 
 ---
 
@@ -107,7 +109,7 @@ transactional, queryable store: work items, plans and decisions, file locks, age
 presence, inter-agent messages, memories, feature flags, and a full telemetry table of
 every tool invocation.
 
-Schema is **migrations-only** — 572 of them to date, allocated through an atomic
+Schema is **migrations-only** — 630 of them to date, allocated through an atomic
 number reservation service so that dozens of agents editing concurrently cannot
 collide. There is no runtime DDL anywhere in the product.
 
@@ -199,7 +201,31 @@ plugin author can write Rust, Go, or TypeScript, and the host enforces what it c
 reach. It is a materially stronger security posture than "run this npm package in our
 process," which matters for enterprise distribution.
 
-### 3.10 Quality engineering
+### 3.10 Peer-to-peer git and a decentralised coordination plane
+
+A first-party peer-to-peer implementation of git, built on the Holepunch stack
+(hypercore append-only logs, hyperbee, hyperswarm DHT). Machines replicate code
+**directly to each other** over encrypted connections with no forge in the middle — one
+repository per project, each device authoring its own signed lane.
+
+It is not a prototype. The layer carries repository identity and key pinning, an
+authority-epoch model, ref announcement and fetch coalescing, convergence and
+federation probes, foreign-merge admission with mirror quarantine, a secrets guard on
+publish, integration requests, release promotion, and a bidirectional GitHub bridge
+(ingress, egress, forks) for interoperating with existing infrastructure without
+depending on it.
+
+Crucially the **coordination plane is peer-to-peer too**, not just the code: messages,
+events, presence and work state replicate machine to machine with signed receipts.
+There is no central coordinator to go down, and no outside service ever holds customer
+source, work history, or anything the agents produce.
+
+Commercially this is the strongest single differentiator in the stack. Every competitor
+in agent tooling is a hosted service holding the customer's code. This architecture
+makes "your source never leaves your machines" a structural property rather than a
+policy promise — which is the objection that otherwise ends enterprise conversations.
+
+### 3.11 Quality engineering
 
 Four canonical test frameworks, enforced by lint so the suite can't fragment:
 
@@ -210,12 +236,14 @@ Four canonical test frameworks, enforced by lint so the suite can't fragment:
 - **LLM scenario/eval batteries** — a scored regression suite for agent *behaviour*,
   which is how we keep prompt and policy changes from silently degrading quality.
 
-Roughly **5,300 test files / ~1.0M lines of test code** against ~1.1M lines of product
-code. Also in the loop: property-based testing, a mutation/fuzz harness for the UI, a
+**6,170 test files / 1.23M lines of test code** against 1.43M lines of product code — a
+0.86:1 ratio, and rising: on the narrower basis tracked longest it has gone from 0.72:1 to
+0.90:1 in under two weeks. Test code growing faster than product code under autonomous
+development is the opposite of the usual assumption about AI-generated software. Also in the loop: property-based testing, a mutation/fuzz harness for the UI, a
 test quarantine mechanism, dependency-integrity doctors, and generated-artifact drift
 checks that fail the build if documentation and code disagree.
 
-### 3.11 Delivery pipeline
+### 3.12 Delivery pipeline
 
 Fully automated, and notable because **the agents ship the product**:
 
@@ -254,12 +282,16 @@ model providers themselves.
    enforced file locking, and message passing, all transactional in Postgres. This is
    what makes many agents on one codebase safe rather than chaotic, and it is the part
    competitors most consistently under-build.
-3. **The inference gateway** — multi-account pooling, governance, failover, and local
+3. **The peer-to-peer git and federation layer** — a first-party decentralised git plus
+   a decentralised coordination plane, so customer source never leaves customer machines
+   as a structural property rather than a policy. Arguably the strongest single
+   differentiator here: every competitor is a hosted service holding the code.
+4. **The inference gateway** — multi-account pooling, governance, failover, and local
    backends behind one interface.
-4. **The blueprint/harness engine** — declarative pipelines (48 blueprints today:
+5. **The blueprint/harness engine** — declarative pipelines (48 blueprints today:
    coding, research, review, migration, deliberation, evaluation, and more) that shape
    how a queue of work routes through specialist agent roles and human approval gates.
-5. **~30 domain-free internal libraries** (`libs/generic/*`) — sync, search, locks,
+6. **~30 domain-free internal libraries** (`libs/generic/*`) — sync, search, locks,
    rate limiting, scheduling, plugin loading, structured concurrency, IPC framing,
    deployment driving. Each is written behind a configuration seam specifically so it
    can be reused or spun out; we maintain a generated catalogue of them.
@@ -287,8 +319,8 @@ model providers themselves.
 
 ## 6. The one-line summary
 
-**TypeScript and Rust, Postgres for everything durable, Tauri for a local-first
-desktop, MCP as the agent interface, and a first-party gateway that makes model
-providers interchangeable — with the genuinely proprietary work sitting in the
-coordination substrate that lets many AI agents work one codebase without stepping on
-each other.**
+**TypeScript and Rust, Postgres for everything durable, Tauri for a local-first desktop,
+MCP as the agent interface, a first-party gateway that makes model providers
+interchangeable, and our own peer-to-peer git so customer code never leaves customer
+machines — with the genuinely proprietary work sitting in the coordination substrate that
+lets many AI agents work one codebase without stepping on each other.**

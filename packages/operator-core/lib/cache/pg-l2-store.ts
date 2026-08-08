@@ -51,8 +51,35 @@ type L2Row = {
   value: unknown;
   tags: string[] | null;
   generation: string | number;
-  expires_at: Date | null;
+  /**
+   * ⚠ `timestamptz` does NOT always arrive as a `Date` here. On the `getOrgPg` pool it
+   * comes back as a STRING, so the obvious `row.expires_at.getTime()` throws
+   * `row.expires_at.getTime is not a function` — see {@link toEpochMs}.
+   */
+  expires_at: Date | string | number | null;
 };
+
+/**
+ * Coerce a `timestamptz` column to epoch ms regardless of how the driver typed it.
+ *
+ * This is not defensive padding — it is a fix for a bug that made the whole L2 tier
+ * silently INERT (P-007, found 2026-08-08 by live-verifying on :3170). `get` threw on
+ * EVERY row it actually found, so the tier degraded to a real build 100% of the time
+ * and never served one hit. It read as intermittent because the throw needs a LIVE row:
+ * once a row expired the query returned nothing, `get` returned undefined cleanly, and
+ * the failure vanished — so the error correlated with process uptime and looked exactly
+ * like a boot-time race.
+ *
+ * Nothing caught it earlier because the store's integration test drives a DIFFERENT
+ * pg client than `getOrgPg`, and the seam's unit tests use a fake store. Only an
+ * end-to-end call on a real pool surfaces it.
+ */
+function toEpochMs(v: Date | string | number | null): number | null {
+  if (v === null || v === undefined) return null;
+  if (v instanceof Date) return v.getTime();
+  const ms = new Date(v).getTime();
+  return Number.isNaN(ms) ? null : ms;
+}
 
 function requireWorkspace(workspaceId: string): void {
   if (!workspaceId) throw new Error('PgL2Store: workspaceId is required (workspace-scoped keys — D-010)');
@@ -91,7 +118,7 @@ export class PgL2Store {
       value: row.value as V,
       tags: row.tags ?? [],
       generation: Number(row.generation),
-      expiresAt: row.expires_at ? row.expires_at.getTime() : null,
+      expiresAt: toEpochMs(row.expires_at),
     };
   }
 

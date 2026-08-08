@@ -88,6 +88,7 @@ import {
 } from './loop';
 import { autoPauseLoopRoutine } from './loop-cost-cap';
 import { probeWakeReachability } from '../../events/await/wake-reachability';
+import type { AttentionNotifyInput } from '../../attention-notify';
 import { broadcastSevereEvent } from '../../severe-event-broadcast';
 
 export interface StalledLoopsSweepDeps {
@@ -102,6 +103,15 @@ export interface StalledLoopsSweepDeps {
   probeReachability?: typeof probeWakeReachability;
   /** Injectable for tests; defaults to the real fleet-wide broadcast. */
   broadcast?: typeof broadcastSevereEvent;
+  /**
+   * Injectable for tests; defaults to the real OWNER page (EI-19899301656065801).
+   *
+   * Imported dynamically at call time rather than statically, matching
+   * `stale-routine-executor-watchdog.ts`: `attention-notify` pulls in the push/SSE
+   * transports, and this sweep must not carry them on every routine tick just to
+   * page on the rare disarm. The type-only import above is erased at runtime.
+   */
+  notify?: (input: AttentionNotifyInput) => Promise<void>;
 }
 
 export interface StalledLoopsSweepResult {
@@ -140,6 +150,17 @@ export interface StalledLoopsSweepResult {
    * disarmed again.
    */
   vetoedByProviderWall: string[];
+  /**
+   * EI-19899301656065801: the subset of `stalledOwners` that was still answering a reachability
+   * probe at the moment it was disarmed — i.e. present sessions made permanently unwakeable, as
+   * opposed to the corpses WI-6639 was built to reap. This is the population the owner is paged
+   * about, and the only one for which the disarm destroys something recoverable.
+   *
+   * Expected to be EMPTY on a healthy workspace: a reachable session that stops taking turns is
+   * itself a fault (a died carry-respawn, a wedged CLI child). A persistently non-empty list is
+   * a signal about session liveness upstream, not about this sweep.
+   */
+  disarmedWhileReachable: string[];
   dryRun: boolean;
 }
 
@@ -165,6 +186,12 @@ export async function sweepStalledLoops(
   const autoPause = deps.autoPause ?? autoPauseLoopRoutine;
   const rearm = deps.rearm ?? rearmFireStarvedLoop;
   const probeReachability = deps.probeReachability ?? probeWakeReachability;
+  const notify =
+    deps.notify ??
+    (async (input: AttentionNotifyInput) => {
+      const { notifyAttention } = await import('../../attention-notify');
+      await notifyAttention(input);
+    });
   const broadcast = deps.broadcast ?? broadcastSevereEvent;
 
   const rows = await sql<Array<{ id: string; target_owner_id: string }>>`
@@ -183,6 +210,7 @@ export async function sweepStalledLoops(
       vetoedByRecentTurn: [],
       reArmedFireStarved: [],
       vetoedByProviderWall: [],
+      disarmedWhileReachable: [],
       dryRun,
     };
 
@@ -198,6 +226,8 @@ export async function sweepStalledLoops(
   const vetoedByRecentTurn: string[] = [];
   const reArmedFireStarved: string[] = [];
   const vetoedByProviderWall: string[] = [];
+  /** EI-19899301656065801: disarmed owners the reachability probe still finds PRESENT. */
+  const disarmedWhileReachable: string[] = [];
   const nowMs = Date.now();
   for (const [ownerId, routineId] of routineIdByOwner) {
     const status = statuses.get(ownerId);
@@ -345,6 +375,40 @@ export async function sweepStalledLoops(
       `turns-stalled: ${status.fireCount} fire(s), last fired ${status.lastFiredAt ?? 'never'}, ` +
       `last turn ${status.lastTurnAt ?? 'never'}`;
     await autoPause(sql, routineId, `stalled-loops-guard (WI-6639): ${reason}`);
+
+    // EI-19899301656065801: ask whether the owner we just permanently disarmed is STILL THERE.
+    //
+    // Note where this probe sits. The fire-starved branch above consults reachability only
+    // behind `answeredItsLastFire`, so on THIS path — the turn-stalled one — reachability was
+    // never measured at all. That is the gap: a session whose last turn PRECEDES its last fire
+    // is indistinguishable here from a 156h corpse, and both take the irreversible disarm. But
+    // the two are not the same animal. A corpse is gone and disarming it is pure hygiene
+    // (WI-6639's original population: 15 loops whose sessions had already ENDED). A session that
+    // is still REACHABLE and simply stopped turning — a carry-respawn that died mid-flight, a
+    // wedged CLI child — is recoverable, and after this write nothing will ever recover it: it
+    // cannot re-arm itself (see the asymmetry argument above), `reconcileLoopRoutines` gates its
+    // rescue sweep on `active = TRUE`, and its next `coord:orient` — whose `wakeSourceLostWarning`
+    // is the designed catch for exactly this state — will never run, because running it requires
+    // the turn it can no longer take.
+    //
+    // Disarming is still CORRECT for this shape: fires were landing and no turn followed, so
+    // re-arming would only feed an agent that is not answering. What is missing is telling a
+    // human, and the module's existing broadcast cannot do it — `broadcastSevereEvent` addresses
+    // the FLEET, and no peer has a mandate to revive someone else's session. `notifyAttention` is
+    // the OWNER rail (desktop SSE + APNs/FCM), and pairing the two is the established idiom for
+    // "a human must act" (stale-routine-executor-watchdog.ts, EI-19388269294151851).
+    //
+    // Measured instance: su-4a6e2255 disarmed 2026-08-04T09:07:15Z, then dark for 4d6h until the
+    // owner happened to resume that session BY HAND — which it did warm, with its context intact,
+    // i.e. it had been sitting there recoverable the whole time.
+    //
+    // Fail-soft to `true` (page on an uncertain probe), matching the sibling branch's direction:
+    // this only gates a NOTIFICATION, and one spurious page is far cheaper than the miss it
+    // guards against. Reaching this line at all is rare, so it cannot become a flood.
+    const stillReachable = await probeReachability(ownerId)
+      .then((v) => v.reachable)
+      .catch(() => true);
+    if (stillReachable) disarmedWhileReachable.push(ownerId);
   }
 
   if (stalledOwners.length > 0 && !dryRun) {
@@ -368,6 +432,51 @@ export async function sweepStalledLoops(
           : ''),
       category: 'severe-event',
     });
+  }
+
+  // EI-19899301656065801: page the OWNER for the subset that was still REACHABLE when disarmed.
+  //
+  // Deliberately separate from the broadcast above rather than folded into it, because the two
+  // have different audiences and different jobs. The broadcast tells the FLEET that a batch went
+  // dark, which is a systemic-pattern signal ("a cluster is usually ONE event"). This tells the
+  // ONE person who can do anything about it that a specific, still-present session has been made
+  // permanently unwakeable and needs a manual `loop:arm` to come back.
+  //
+  // Guarded on a non-empty reachable subset, so the corpse-reaping case WI-6639 was built for —
+  // sessions that ended long ago — stays as silent as it is today.
+  //
+  // The notify is wrapped in its own try/catch: paging is strictly an addition to this sweep's
+  // job, and a push transport being down must never cost us the disarm bookkeeping or the
+  // broadcast that already succeeded.
+  if (disarmedWhileReachable.length > 0 && !dryRun) {
+    try {
+      await notify({
+        kind: 'intervention',
+        title:
+          disarmedWhileReachable.length === 1
+            ? `Agent ${disarmedWhileReachable[0]} was disarmed while still reachable — it cannot wake itself`
+            : `${disarmedWhileReachable.length} reachable agents were disarmed — they cannot wake themselves`,
+        body:
+          `${disarmedWhileReachable.join(', ')}\n\n` +
+          `Each was still answering a reachability probe when stalled-loops-guard disarmed its ` +
+          `engine loop for producing no turns despite repeated fires. The disarm is correct — an ` +
+          `agent that is not answering its fires will not be helped by more of them — but it is ` +
+          `also PERMANENT: a disarmed loop cannot re-arm itself, reconcileLoopRoutines only ` +
+          `re-arms loops that are still active, and the agent's own "nothing will wake you" ` +
+          `warning needs a turn it can no longer take.\n\n` +
+          `Nothing else will recover these. To bring one back: resume the session and re-arm its ` +
+          `loop (loop:arm). If this keeps happening, the upstream question is why the sessions ` +
+          `stop turning — a died carry-respawn and a wedged CLI child both present this way.`,
+        importance: 'urgent',
+        workspaceId: ws,
+        data: { owners: disarmedWhileReachable.join(','), count: disarmedWhileReachable.length },
+      });
+    } catch (e) {
+      console.warn(
+        `[stalled-loops-guard] owner page failed for ${disarmedWhileReachable.length} reachable ` +
+          `disarm(s) (${disarmedWhileReachable.join(', ')}): ${e instanceof Error ? e.message : e}`,
+      );
+    }
   }
 
   // EI-19406534159939583: a fire-starved batch with NO turn-stalled disarms alongside it still
@@ -398,6 +507,7 @@ export async function sweepStalledLoops(
     vetoedByRecentTurn,
     reArmedFireStarved,
     vetoedByProviderWall,
+    disarmedWhileReachable,
     dryRun,
   };
 }

@@ -324,7 +324,7 @@ two-port model running staging and green production side by side. The full path 
 agent's edit to live software has no human step in it.
 
 **7.4 · Verification-weighted engineering**
-A 0.72:1 test-to-source ratio — 993K lines of tests across 5,349 test files — spanning
+A 0.86:1 test-to-source ratio — 1.23M lines of tests across 6,170 test files — spanning
 unit, integration against real containerised Postgres, browser end-to-end with
 accessibility checks, Rust, and scored LLM behaviour batteries that catch prompt and
 policy regressions. Mechanical verification is what makes autonomy safe to grant.
@@ -345,7 +345,7 @@ Every durable thing lives in one transactional store: work items, plans, decisio
 locks, presence, messages, memories, flags, and a full telemetry record of every tool
 call. Multi-agent systems usually keep coordination state in process memory and then
 can't answer "what happened and why" afterwards. Here provenance, audit and cost
-attribution are queries. 572 migrations, no runtime DDL.
+attribution are queries. 630 migrations, no runtime DDL.
 
 **8.3 · A real Postgres embedded in a desktop app**
 The product ships PostgreSQL 18 embedded, with logical replication — not SQLite, and not
