@@ -669,10 +669,21 @@ describe('EI-19294517824914302: cheap repeating beats fail fast instead of ampli
   it('classifies the liveness beats, and only those (pure)', () => {
     expect(isCheapRepeatingBeat('/api/agent-mcp/console/bootstrap-su/heartbeat')).toBe(true);
     expect(isCheapRepeatingBeat('/api/admin/owner-presence/touch')).toBe(true);
+    // WI-35737 — the per-turn memory-injection pair joined the set. This assertion USED to
+    // pin `turn-start-memory` as false; that was not a deliberate exclusion, it was simply
+    // the roster as first seeded, and encoding it as "and only those" made a membership
+    // GAP look like a settled decision. See the classifier's doc comment: membership is the
+    // PROPERTY (high-frequency + soft failure + replacement already scheduled), not a fixed
+    // list, and mid-turn-context met it while sitting outside the roster for weeks.
+    expect(isCheapRepeatingBeat('/api/agent-mcp/mid-turn-context')).toBe(true);
+    expect(isCheapRepeatingBeat('/api/agent-mcp/turn-start-memory')).toBe(true);
     // The MCP control plane keeps the long window — a client fetches the catalog ONCE per
     // session, so losing that single request is session-fatal (WI-6740). Opposite tradeoff.
+    // This is the load-bearing NEGATIVE control: it must stay false, or the cheap-beat cap
+    // has silently swallowed the one path whose replay is genuinely worth a restart-sized
+    // window, and every test above would still pass.
     expect(isCheapRepeatingBeat('/api/mcp')).toBe(false);
-    expect(isCheapRepeatingBeat('/api/agent-mcp/turn-start-memory')).toBe(false);
+    expect(isCheapRepeatingBeat('/api/agent-mcp/console/bootstrap-su/options')).toBe(false);
   });
 
   it('tolerates a query string and a trailing slash (pure)', () => {
@@ -717,6 +728,128 @@ describe('EI-19294517824914302: cheap repeating beats fail fast instead of ampli
     // The whole point: it must abandon the beat rather than retry across the full window.
     expect(elapsed).toBeLessThan(8_000);
     expect(JSON.parse(r.body).windowMs).toBe(CHEAP_REPEATING_BEAT_RETRY_WINDOW_MS);
+  }, 20_000);
+
+  /**
+   * WI-35737 — the SAME storm, on a path the original fix's roster never covered.
+   * `mid-turn-context` is the per-tool-batch memory-injection search: the most expensive
+   * endpoint on the box AND one of the highest-frequency. Measured 2026-08-08 16:00-18:12Z
+   * while :3070's data plane was stalling, it was 385 of 540 handshake-timeout retries (71%)
+   * and 175 of 245 post-connect retries (71%) — i.e. the proxy was spending its scarcest
+   * capacity replaying the single most expensive call against the dependency that was failing.
+   */
+  it('WI-35737: mid-turn-context takes the beat window, not the restart-sized one', async () => {
+    const dead = track(http.createServer(() => {}));
+    await listen(dead);
+    const deadPort = port(dead);
+    await new Promise<void>((r) => dead.close(() => r()));
+
+    const proxy = track(
+      createMcpProxy({
+        listenPort: 0,
+        targetHost: '127.0.0.1',
+        targetPort: deadPort,
+        retryWindowMs: 30_000,
+        retryBackoffMs: 20,
+        log: () => {},
+      }),
+    );
+    await listen(proxy);
+
+    const started = Date.now();
+    const r = await request(port(proxy), '{"owner":"su-test"}', '/api/agent-mcp/mid-turn-context');
+    const elapsed = Date.now() - started;
+
+    expect(r.status).toBe(503);
+    expect(elapsed).toBeLessThan(8_000);
+    expect(JSON.parse(r.body).windowMs).toBe(CHEAP_REPEATING_BEAT_RETRY_WINDOW_MS);
+  }, 20_000);
+});
+
+/**
+ * WI-35737 — CLIENT-DISCONNECT. The proxy had no client-side liveness signal at all, so once a
+ * client gave up (its own timeout, a dead agent session, a watchdog restart) the retry loop kept
+ * replaying upstream for a response with nowhere to go — spending capacity on the dead during
+ * exactly the upstream-stall windows when capacity is scarcest.
+ *
+ * ⚠ This is NOT a slot leak; an earlier diagnosis on this item said so and was withdrawn
+ * (comment 56302). The in-flight slot is already released at response-header time. What these
+ * tests pin is the AMPLIFICATION cut, which is why the CONTROL below is load-bearing: without
+ * it, "no replays happened" is equally consistent with "this upstream never replays at all",
+ * and the subject test would pass against a proxy that had no disconnect handling whatsoever.
+ */
+describe('WI-35737: a departed client stops the retry loop', () => {
+  /** A silent upstream — accepts the connection, never answers. The measured shape
+   *  (`upstream silent for 8000ms (no response headers)`), which is what drives the replays. */
+  function silentUpstream(onHit: () => void): http.Server {
+    return track(http.createServer(() => onHit()));
+  }
+
+  function fireAndForget(p: number, path: string, body: string): http.ClientRequest {
+    const r = http.request({ host: '127.0.0.1', port: p, method: 'POST', path });
+    r.on('error', () => {}); // a deliberate destroy() surfaces here; not a failure
+    r.end(body);
+    return r;
+  }
+
+  it('CONTROL: while the client stays connected, a silent upstream IS replayed', async () => {
+    let hits = 0;
+    const upstream = silentUpstream(() => {
+      hits++;
+    });
+    await listen(upstream);
+    const proxy = track(
+      createMcpProxy({
+        listenPort: 0,
+        targetHost: '127.0.0.1',
+        targetPort: port(upstream),
+        retryWindowMs: 30_000,
+        retryBackoffMs: 10,
+        handshakeTimeoutMs: 120, // drive the replay loop fast instead of sleeping 8s
+        log: () => {},
+      }),
+    );
+    await listen(proxy);
+
+    // tools/list — no tools/call, so klass 'idempotent': the class that replays on silence.
+    const req = fireAndForget(port(proxy), '/api/mcp', '{"jsonrpc":"2.0","method":"tools/list"}');
+    await new Promise((r) => setTimeout(r, 900));
+    req.destroy();
+
+    // The replay machinery is real and observable — this is what the subject test suppresses.
+    expect(hits).toBeGreaterThanOrEqual(3);
+  }, 20_000);
+
+  it('SUBJECT: once the client hangs up, no further upstream attempt is started', async () => {
+    let hits = 0;
+    const upstream = silentUpstream(() => {
+      hits++;
+    });
+    await listen(upstream);
+    const proxy = track(
+      createMcpProxy({
+        listenPort: 0,
+        targetHost: '127.0.0.1',
+        targetPort: port(upstream),
+        retryWindowMs: 30_000,
+        retryBackoffMs: 10,
+        handshakeTimeoutMs: 120,
+        log: () => {},
+      }),
+    );
+    await listen(proxy);
+
+    const req = fireAndForget(port(proxy), '/api/mcp', '{"jsonrpc":"2.0","method":"tools/list"}');
+    await new Promise((r) => setTimeout(r, 300)); // let 1-2 attempts start
+    const hitsAtHangup = hits;
+    req.destroy(); // the client gives up — exactly what an agent's MCP client timeout does
+
+    // Well past several more handshake windows: under the old behaviour the loop would have
+    // kept replaying for the rest of the 30s window.
+    await new Promise((r) => setTimeout(r, 900));
+    // +1 tolerance for an attempt already in flight at the instant of the hangup; the point is
+    // that the loop STOPS, not that it stops with sub-millisecond precision.
+    expect(hits).toBeLessThanOrEqual(hitsAtHangup + 1);
   }, 20_000);
 });
 

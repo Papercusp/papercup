@@ -35,6 +35,18 @@ describe('createSyncDeltaCodec', () => {
     expect(missing, `server delta-negotiates these but the client never sends a cursor: ${missing.join(', ')}`).toEqual([]);
   });
 
+  /**
+   * CONTROL for the parity check above — a guard that has never failed is a guard nobody has
+   * tested. This pins the DRIFTED client set as it actually stood on 2026-08-08 (the two names
+   * it shipped with on 2026-06-23) and asserts the same computation reports both misses. Without
+   * it, the assertion above would still pass if `enabled()` ever degenerated to `() => true`.
+   */
+  it('CONTROL: the parity check reports a client set that has drifted behind the server', () => {
+    const drifted = new Set(['plans.attention', 'plans.list']);
+    const missing = RESOURCE_DELTA_NAMES.filter((name) => !drifted.has(name));
+    expect(missing.sort()).toEqual(['codeRecipes', 'plans.byHive']);
+  });
+
   it('decodes a full, then merges a delta back to the exact view (learns itemKeyField)', () => {
     const codec = createSyncDeltaCodec();
     const vk = codec.viewKey('plans.attention', {});

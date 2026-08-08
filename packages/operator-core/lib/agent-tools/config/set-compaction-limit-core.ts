@@ -17,7 +17,7 @@ import { getFleet } from '../../agent-fleets-store';
 import { setCompactionLimit, getPresence } from '../coordination/presence';
 import { fetchPresenceFleet } from '../coordination/presence-fleet';
 import { resolveModelSpecForOwner } from '../../compaction-usage';
-import { clampCompactionLimit, defaultCompactionLimitForSpec } from '../../agent-config-constants';
+import { clampCompactionLimit, selfSetCeilingForSpec } from '../../agent-config-constants';
 import { classifyFleetControlInvoker } from '../fleet_registry/fleet-auth';
 import { resolveFleetCaller } from '../fleet_registry/_shared';
 import type { ResolveIdentityCtx } from '../coordination/identity';
@@ -99,8 +99,12 @@ export async function setCompactionLimitForOwner(
   //    the target is a non-leader fleet member), then persist.
   const spec = await resolveModelSpecForOwner(targetOwnerId).catch(() => null);
   const fleetMember = targetRole != null && targetRole !== 'leader';
-  const cap = defaultCompactionLimitForSpec(spec, { fleetMember });
-  const applied = clampCompactionLimit(limit, spec, { fleetMember });
+  // This verb IS the deliberate self-set path, so it clamps to the self-set ceiling
+  // (825k on a [1m] window) rather than the SEEDED default (400k) — the two were one
+  // number until 2026-08-08, which made "raise it for wide-context work" impossible to
+  // actually do. Seeding is untouched; a fleet member still gets its role cap.
+  const cap = selfSetCeilingForSpec(spec, { fleetMember });
+  const applied = clampCompactionLimit(limit, spec, { fleetMember, selfSet: true });
   await setCompactionLimit(targetOwnerId, applied);
   const after = await getPresence(targetOwnerId).catch(() => null);
   const persisted = after?.compactionLimit ?? null;

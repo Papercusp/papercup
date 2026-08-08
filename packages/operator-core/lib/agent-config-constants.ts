@@ -590,19 +590,70 @@ export function defaultCompactionLimitForSpec(
 }
 
 /**
- * Clamp a requested compaction limit into [MIN, defaultCompactionLimitForSpec(spec, opts)].
+ * The ceiling a DELIBERATE self-set (`config:set-compaction-limit`) may reach —
+ * as opposed to `defaultCompactionLimitForSpec`, which is what a session is
+ * SEEDED with.
  *
- * `opts.fleetMember` applies the leaner fleet-member ceiling (300k vs a leader's
+ * Those two were one number until 2026-08-08, and conflating them was a real
+ * defect: `COMPACTION_LIMIT_DEFAULT_1M_CAP` served as both the seeded default
+ * AND the hard ceiling, so a `[1m]` session that deliberately asked for more
+ * runway was silently clamped back to the default and had no way to say "this
+ * task genuinely needs a wider window" — the exact request the tool exists to
+ * serve ("Tune how large a session's context grows before it self-compacts —
+ * raise it for wide-context work"). Owner directive [owner 2026-08-08] — "set
+ * your own token limit to 1m … I want to do a lot of research in this session"
+ * — is what surfaced it.
+ *
+ * The DEFAULT is deliberately unchanged: every session still SEEDS at 400k, so
+ * the fleet-wide cost profile behind the 2026-07-03 directive is untouched. Only
+ * an explicit, per-session, audited self-set can now exceed it, and only up to
+ * the real window-derived maximum (1M window ⇒ 825,000) — the same
+ * `floor((window − margin) / overshoot)` derivation every non-`[1m]` spec
+ * already used, rather than a second hand-picked magic number.
+ *
+ * ⚠ Cost note, stated where the knob lives: raising this is NOT free. A session
+ * parked near 825k pays that whole window as a cache read on EVERY turn, which
+ * is precisely the spend the 400k default was tuned to bound. It is the right
+ * trade for a long single-threaded research/audit session; it is the wrong
+ * trade for a drain loop.
+ *
+ * FLEET MEMBERS ARE UNCHANGED and keep the 200k ceiling: a member's limit is
+ * governed by its leader by design (see
+ * COMPACTION_LIMIT_DEFAULT_1M_FLEET_MEMBER_CAP), so a member self-raising past
+ * its role cap would route around that.
+ */
+export function selfSetCeilingForSpec(
+  spec?: string | null,
+  opts?: { fleetMember?: boolean },
+): number {
+  if (opts?.fleetMember) return defaultCompactionLimitForSpec(spec, opts);
+  if (spec == null || spec.trim() === '' || spec.includes('[1m]')) {
+    const raw = (MODEL_WINDOW_1M - COMPACTION_WINDOW_MARGIN_TOKENS) / COMPACTION_OVERSHOOT_FACTOR;
+    return Math.floor(raw / 1000) * 1000;
+  }
+  return defaultCompactionLimitForSpec(spec, opts);
+}
+
+/**
+ * Clamp a requested compaction limit into [MIN, ceiling], where the ceiling is
+ * `defaultCompactionLimitForSpec(spec, opts)` for a SEEDED limit and
+ * `selfSetCeilingForSpec(spec, opts)` when `opts.selfSet` marks a deliberate
+ * per-session request (see that function for why the two differ).
+ *
+ * `opts.fleetMember` applies the leaner fleet-member ceiling (200k vs a leader's
  * 400k) — pass it wherever the requester's fleet role is known, so an explicit
  * request cannot exceed the cap its role is governed by
  * (per-member-declarative-launch-specs P-005). Omitted ⇒ the leader/solo ceiling,
  * which is the pre-existing behavior for every caller that has no role context.
+ * `fleetMember` still wins over `selfSet`.
  */
 export function clampCompactionLimit(
   limit: number,
   spec?: string | null,
-  opts?: { fleetMember?: boolean },
+  opts?: { fleetMember?: boolean; selfSet?: boolean },
 ): number {
-  const cap = defaultCompactionLimitForSpec(spec, opts);
+  const cap = opts?.selfSet
+    ? selfSetCeilingForSpec(spec, opts)
+    : defaultCompactionLimitForSpec(spec, opts);
   return Math.min(Math.max(Math.floor(limit), MIN_COMPACTION_LIMIT_TOKENS), cap);
 }
