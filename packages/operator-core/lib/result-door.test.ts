@@ -13,6 +13,7 @@ import { BAKED_DOOR_CONSTANTS, CHARS_PER_TOKEN_ESTIMATE } from './context-doors'
 const { doorConstantsMock } = vi.hoisted(() => ({ doorConstantsMock: vi.fn() }));
 vi.mock('./context-doors-config', () => ({ getDoorConstantsSync: doorConstantsMock }));
 
+import type { DoorableResult } from './result-door';
 import { applyResultDoor, buildProjectionHint, RESULT_DOOR_TOKENS } from './result-door';
 
 const BUDGET_CHARS = RESULT_DOOR_TOKENS * CHARS_PER_TOKEN_ESTIMATE;
@@ -236,10 +237,17 @@ describe('applyResultDoor', () => {
 
     it('stamps the failure structurally so a machine reader is not left parsing prose', () => {
       breakScratchRoot();
-      const doored = applyResultDoor(
-        { content: [{ type: 'text' as const, text: longText(BUDGET_CHARS * 2) }] },
-        { toolName: 'plans:get', workspaceId: 'ws-1', runId: RUN_ID },
-      );
+      // Typed as DoorableResult, not left to inference: `applyResultDoor` returns
+      // the INPUT type `T`, so a bare object literal narrows T to `{ content: … }`
+      // and `doored._meta` — the very field the door stamps — is not on the type.
+      const input: DoorableResult = {
+        content: [{ type: 'text' as const, text: longText(BUDGET_CHARS * 2) }],
+      };
+      const doored = applyResultDoor(input, {
+        toolName: 'plans:get',
+        workspaceId: 'ws-1',
+        runId: RUN_ID,
+      });
       const meta = (doored._meta as { resultDoor?: Record<string, unknown> } | undefined)?.resultDoor;
 
       expect(meta?.truncated).toBe(true);
@@ -255,10 +263,14 @@ describe('applyResultDoor', () => {
       // Calibration for the three tests above — without this, they would all pass
       // against a door that had simply stopped spilling entirely, which is a
       // different bug wearing this fix's clothes.
-      const doored = applyResultDoor(
-        { content: [{ type: 'text' as const, text: longText(BUDGET_CHARS * 2) }] },
-        { toolName: 'plans:get', workspaceId: 'ws-1', runId: RUN_ID },
-      );
+      const input: DoorableResult = {
+        content: [{ type: 'text' as const, text: longText(BUDGET_CHARS * 2) }],
+      };
+      const doored = applyResultDoor(input, {
+        toolName: 'plans:get',
+        workspaceId: 'ws-1',
+        runId: RUN_ID,
+      });
       const footer = (doored.content[doored.content.length - 1] as { text: string }).text;
       const meta = (doored._meta as { resultDoor?: Record<string, unknown> } | undefined)?.resultDoor;
 

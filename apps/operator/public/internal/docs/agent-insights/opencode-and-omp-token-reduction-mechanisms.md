@@ -1025,6 +1025,11 @@ this"*. That clause is why three of the six are closed NEGATIVE: the comparison 
 the measurements killed them. **Tier 3 and Tier 4 were never approved**; they are unasked,
 not outstanding.
 
+**Reading the citations:** a bare `D-0NN` below belongs to
+**`agent-context-firewall-and-output-spill-2026-08-02`** (the plan that ran the
+measurements); decisions on the reconciling plan are written out in full. `D-0NN` ids are
+only meaningful with their plan — two plans both have a `D-005`.
+
 | #  | Verdict                                                           | Authority                                                                                                                                                                                                                                                                                                                               |
 | -- | ----------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 1  | **DONE** 2026-08-08                                               | `payload-tier.ts` omission markers now carry size + the `payloadTier:'full'` recovery pointer (WI-36048)                                                                                                                                                                                                                                |

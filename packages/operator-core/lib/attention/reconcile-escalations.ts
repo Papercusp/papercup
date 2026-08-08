@@ -91,8 +91,9 @@ export interface StaleEscalation {
 
 /**
  * PURE: which OPEN escalations are stale (auto-resolvable) — operational
- * (system sender, no options) AND opened older than `ttlMs`. Sorted oldest
- * first so a batch-limited sweep drains the longest-stale first.
+ * (system sender, no options), NOT an infra-liveness suppressor (WI-36154),
+ * AND opened older than `ttlMs`. Sorted oldest first so a batch-limited sweep
+ * drains the longest-stale first.
  */
 export function selectStaleEscalations(
   opens: readonly StaleEscalationInput[],

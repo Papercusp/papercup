@@ -80,6 +80,45 @@ describe('selectStaleEscalations (P-003/P-005)', () => {
     );
     expect(r.map((x) => x.msg_id)).toEqual(['b', 'c', 'a']);
   });
+
+  // ── WI-36154: the row IS the suppressor ────────────────────────────────────
+  // liveness-alarm.ts:1552 skips firing a signal that already has an open
+  // escalation, so GC'ing that row does not tidy a duplicate — it re-arms the
+  // alarm on a still-true condition. Measured 14d: 5 of 5 such auto-resolves
+  // re-fired within 120s.
+  it('NEVER selects a row carrying a livenessSignature — resolving it re-arms the alarm (WI-36154)', () => {
+    const r = selectStaleEscalations(
+      [
+        row({
+          msg_id: 'oscillator',
+          from: 'system:infra-liveness-alarm',
+          ts: iso(3 * DAY),
+          livenessSignature: 'stale-paused-routines',
+        }),
+        // CALIBRATION CONTROL: same sender, same age, NO signature. The sweep
+        // must still clear this one — otherwise the assertion above would pass
+        // just as well with the whole sweep disabled, and prove nothing.
+        row({ msg_id: 'control', from: 'system:infra-liveness-alarm', ts: iso(3 * DAY) }),
+      ],
+      { nowMs: NOW, ttlMs: ttl },
+    );
+    expect(r.map((x) => x.msg_id)).toEqual(['control']);
+  });
+
+  it('exempts ONLY a non-empty string signature — a junk jsonb value must not widen the exemption', () => {
+    // The field arrives from jsonb, so the guard is typed `unknown`. If any
+    // truthy-ish value exempted a row, the narrow exemption would become a
+    // silent opt-out for anything that happened to carry the key.
+    const r = selectStaleEscalations(
+      [
+        row({ msg_id: 'empty', livenessSignature: '' }),
+        row({ msg_id: 'nonstring', livenessSignature: 1 }),
+        row({ msg_id: 'nullish', livenessSignature: null }),
+      ],
+      { nowMs: NOW, ttlMs: ttl },
+    );
+    expect(r.map((x) => x.msg_id).sort()).toEqual(['empty', 'nonstring', 'nullish']);
+  });
 });
 
 describe('reconcileStaleEscalationsOnce (P-003)', () => {
@@ -121,6 +160,29 @@ describe('reconcileStaleEscalationsOnce (P-003)', () => {
     // ONE batch call carrying exactly the limit-bounded slice.
     expect(batchMock).toHaveBeenCalledTimes(1);
     expect((batchMock.mock.calls[0][0] as unknown[]).length).toBe(2);
+  });
+
+  it('does not hand a livenessSignature row to the batch resolver (WI-36154, end-to-end)', async () => {
+    // Pins the PLUMBING, not just the selector: `listEscalations` returns the
+    // stored envelope whole (the projection selects `body`; the event-fold
+    // spreads `{ ...open, resolved }`), and liveness-alarm's `meta` is FLATTENED
+    // onto that envelope (escalations.ts:190), so the signature really does
+    // arrive top-level. The call site casts through `unknown`, which would
+    // happily drop a field the interface never declared — this test fails if
+    // that plumbing is ever narrowed.
+    listMock.mockResolvedValue([
+      row({
+        msg_id: 'live-suppressor',
+        from: 'system:infra-liveness-alarm',
+        ts: iso(30 * DAY),
+        livenessSignature: 'stale-paused-routines',
+      }),
+      row({ msg_id: 'ordinary', ts: iso(10 * DAY) }),
+    ]);
+    const r = await reconcileStaleEscalationsOnce({ nowMs: NOW, ttlMs: ttl });
+    expect(r).toMatchObject({ scanned: 2, stale: 1, resolved: 1 });
+    const items = batchMock.mock.calls[0][0] as { msg_id: string }[];
+    expect(items.map((i) => i.msg_id)).toEqual(['ordinary']);
   });
 
   it('is idempotent: an already-resolved escalation is not counted as resolved', async () => {

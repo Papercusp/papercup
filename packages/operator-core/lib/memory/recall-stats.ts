@@ -196,6 +196,46 @@ export const ADMISSION_STAGES: readonly AdmissionStage[] = [
 ];
 
 /**
+ * WHY each stage drops what it drops — the DESIGNED loss, next to the metric.
+ *
+ * This exists because the funnel reports WHAT was lost and never WHY, and a bare
+ * large number reads as a defect. Three work-items in the context-injection lane
+ * filed a deliberate design behaviour as a bug off these counters
+ * (context-injection-retrieval-reach-and-visibility-2026-08-03 D-063, D-073,
+ * D-074). The failure is systematic, not careless: the stages tuned MOST
+ * aggressively produce the MOST alarming numbers, so the funnel indicts exactly
+ * the stages someone already thought hardest about.
+ *
+ * ⚠ TWO RULES BEFORE YOU FILE A LOSS AS A DEFECT (D-076):
+ *
+ * 1. SPLIT BY SURFACE FIRST. Never aggregate `dropped` across ports. `mid-turn`
+ *    is ~91% of recalls and ~89% of returned rows, so it sets any workspace-wide
+ *    aggregate by itself — and its budget is an order of magnitude smaller than
+ *    every other port's ON PURPOSE. An aggregate over sub-populations with
+ *    deliberately different targets will always indict whichever one was designed
+ *    to be most aggressive. That is arithmetic, not evidence.
+ * 2. READ THE INTENT BELOW (and the writer it names). A loss is a defect only if
+ *    it CONTRADICTS its own design intent.
+ *
+ * Corollary worth stating plainly: an acceptance criterion phrased "make metric X
+ * move off zero" is suspect on its face. Zero may be the specification — see
+ * `AdmittedByLeg.lexicalOnly`, whose zero is structural.
+ */
+export const ADMISSION_STAGE_DESIGN_INTENT: Record<AdmissionStage, string> = {
+  pack: 'Configuration, not relevance: the row belongs to a knowledge pack disabled for this hive. Nonzero is expected wherever packs are off; it says nothing about retrieval quality.',
+  feedback:
+    'CORRECT BY CONSTRUCTION — the user deleted this fact. This loss must never be "fixed"; a zero here where deletions exist would mean deletions are not being honoured. Higher is not worse.',
+  workspace:
+    'A correctness boundary, not a filter to relax: a `project` hit leaking from another workspace. Reducing this loss means leaking cross-workspace memory.',
+  dedup:
+    'Already surfaced in this session-epoch. THE ONE STAGE WHERE A HIGH VALUE IS GENUINELY DIAGNOSTIC — but of the EPOCH, not of the filter. Sustained ~60% means the epoch is not advancing (the P-022 cutover orphaned the bump for 6 days; D-072), not that dedup is too aggressive. Residual loss on a live epoch is genuine within-epoch repeats and is correct. Check `memory_session_epochs` for organic bumps before touching anything here.',
+  nearDuplicate:
+    'The same fact stored under several ids, collapsed after ranking. Correct dedup; the loss is the feature.',
+  budget:
+    'Deliberately aggressive, and PER-PORT — this is the stage that has caused the most false defect reports. `mid-turn` runs ~350 chars against a 16,000-char global default because that port is a per-tool-call interruption that "must be cheap enough to ignore" (mid-turn-context.ts); its low admit rate is the design working (D-073). DO NOT raise MID_TURN_BUDGET_CHARS off an aggregate — it taxes every agent on ~89% of all retrieval volume. Only a port whose budget was NOT deliberately tightened (e.g. turn-start) is a legitimate tuning candidate, and only measured alone.',
+};
+
+/**
  * The admission funnel for one push-path recall — what the index returned
  * against what actually reached the agent, and where the rest went.
  */
@@ -210,8 +250,17 @@ export interface RecallAdmissionStats {
    * Per stage. EVERY stage is recorded even at zero: "this filter ran and
    * removed nothing" and "this filter never ran" are different facts and only
    * the first is a healthy zero — the same reason `LegRunStats.ran` exists.
+   *
+   * ⚠ A LARGE VALUE HERE IS NOT EVIDENCE OF A DEFECT. Several of these stages are
+   * deliberately lossy and one (`feedback`) is loss-CORRECT by construction. Read
+   * `ADMISSION_STAGE_DESIGN_INTENT` before acting on any of these counters, and
+   * split by surface first — an aggregate across ports is dominated by `mid-turn`
+   * (~91% of recalls), whose budget is intentionally an order of magnitude
+   * smaller than every other port's. Three work-items have already been filed
+   * against designed behaviour off these numbers (D-063, D-073, D-074).
    */
   dropped: Record<AdmissionStage, number>;
+  /** See `AdmittedByLeg.lexicalOnly` — its zero on the push path is structural. */
   byLeg: AdmittedByLeg;
 }
 

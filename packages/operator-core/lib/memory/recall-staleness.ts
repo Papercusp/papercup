@@ -83,7 +83,14 @@ export interface MemoryStaleness {
 export const STALENESS_ANCHOR_ROW_CAP = 500;
 
 /**
- * Per-entry cap for one named anchor (`kind:value`) in the banner.
+ * Total character budget for the NAMED-ANCHOR LIST in the banner, shared out among
+ * however many anchors get named.
+ *
+ * A total rather than a per-entry cap because the distribution is lopsided in
+ * practice: measured against the live corpus, 4 of 5 stale memories have exactly ONE
+ * dead anchor, and a fixed per-entry cap spends the single-anchor case's budget on a
+ * second entry that does not exist. Sharing the budget gives the common case a value
+ * long enough to be recognisable and still bounds the worst case.
  *
  * Sized so the WORST case — two maximal entries plus an overflow count — keeps the
  * whole banner under half of `MEMORY_TEXT_CAP`. That bound is enforced by a
@@ -92,7 +99,7 @@ export const STALENESS_ANCHOR_ROW_CAP = 500;
  * characters of the memory it was warning about. A warning that crowds out its own
  * subject is not an improvement on no warning.
  */
-const BANNER_ENTRY_CHARS = 23;
+const BANNER_LIST_CHARS = 48;
 /**
  * How many dead anchors to NAME before collapsing the rest to `+N`.
  *
@@ -124,18 +131,32 @@ export function memoryStalenessIsNotable(s: MemoryStaleness | undefined): boolea
  * the full anchor list for callers that keep it.
  */
 export function memoryStaleBanner(s: MemoryStaleness): string {
-  const named = s.brokenAnchors.slice(0, BANNER_NAMED_ANCHORS).map((a) => {
-    const budget = Math.max(4, BANNER_ENTRY_CHARS - a.kind.length - 1);
-    // Truncate from the LEFT: these values are paths and dated slugs, where the TAIL
-    // (`…/module.ts`, `…-2026-08-08`) is what a reader recognizes. Head-truncation
-    // spends the budget on the shared `packages/operator-core/lib/` prefix that every
-    // anchor has and nothing on the part that identifies which one broke.
-    const v = a.value.length > budget ? `…${a.value.slice(-(budget - 1))}` : a.value;
-    return `${a.kind}:${v}`;
-  });
+  const picked = s.brokenAnchors.slice(0, BANNER_NAMED_ANCHORS);
+  // Share the list budget out, charging the ", " between entries to the budget too.
+  const perEntry = Math.floor((BANNER_LIST_CHARS - (picked.length - 1) * 2) / picked.length);
+  const named = picked.map((a) => `${a.kind}:${ellipsizeMiddle(a.value, Math.max(4, perEntry - a.kind.length - 1))}`);
   const rest = s.brokenAnchors.length - named.length;
   const list = rest > 0 ? `${named.join(', ')} +${rest}` : named.join(', ');
   return `⚠ STALE — dead anchors: ${list}. Verify, don't rely. `;
+}
+
+/**
+ * Truncate keeping BOTH ends — the banner's job is to say WHICH referent rotted, and
+ * either end alone routinely fails to.
+ *
+ * Measured against the live corpus, which is what settled this: dropping the head
+ * rendered `experiment-registry-invocation-api-2026-06-14` as `…on-api-2026-06-14`
+ * (a plan slug identified by its least distinctive part, the date) and
+ * `libs/zero-harness/src/schema.ts` as `…ess/src/schema.ts` (a basename dozens of
+ * packages share). Dropping the tail is just as bad the other way — every anchor here
+ * starts with the same handful of repo prefixes. Keeping both ends is the only form
+ * that stays unambiguous across paths AND dated slugs.
+ */
+function ellipsizeMiddle(v: string, budget: number): string {
+  if (v.length <= budget) return v;
+  if (budget <= 4) return v.slice(0, budget);
+  const tail = Math.floor((budget - 1) / 2);
+  return `${v.slice(0, budget - 1 - tail)}…${v.slice(-tail)}`;
 }
 
 /**
@@ -221,6 +242,16 @@ function isoOrUndefined(v: unknown): string | undefined {
 type StaleableRow = { id?: unknown; memory?: unknown } & Record<string, unknown>;
 
 /**
+ * The verdict as it appears ON THE WIRE — snake_case, matching every other field in
+ * this tool's response contract (`memory_truncated`, `payload_tier`, `degraded_reason`).
+ */
+export interface MemoryStalenessWire {
+  stale: true;
+  broken_anchors: MemoryBrokenAnchor[];
+  last_checked_at?: string;
+}
+
+/**
  * Attach the verdict to the rows a recall is about to return: the structured
  * `staleness` field AND the banner on the body.
  *
@@ -236,7 +267,7 @@ type StaleableRow = { id?: unknown; memory?: unknown } & Record<string, unknown>
 export function applyMemoryStaleness<T extends StaleableRow>(
   rows: T[],
   verdicts: Map<string, MemoryStaleness>,
-): T[] {
+): Array<T & { staleness?: MemoryStalenessWire }> {
   if (verdicts.size === 0) return rows;
   return rows.map((row) => {
     const id = typeof row.id === 'string' ? row.id : undefined;

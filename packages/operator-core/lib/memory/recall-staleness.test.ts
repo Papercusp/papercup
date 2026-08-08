@@ -81,12 +81,34 @@ describe('memoryStaleBanner', () => {
     expect(b.length).toBeLessThan(long.length);
   });
 
-  it('truncates from the LEFT, keeping the identifying tail rather than a shared prefix', () => {
-    const a = 'packages/operator-core/lib/memory/alpha.ts';
-    const z = 'packages/operator-core/lib/memory/omega.ts';
-    // Head-truncation would render these two DIFFERENT dead anchors identically.
-    expect(memoryStaleBanner(stale([{ kind: 'file', value: a }]))).toContain('alpha.ts');
-    expect(memoryStaleBanner(stale([{ kind: 'file', value: z }]))).toContain('omega.ts');
+  /**
+   * These four values are VERBATIM from the live corpus (the 2026-08-08 sweep), and
+   * they are here because a synthetic fixture did not catch this: an earlier
+   * tail-only truncation looked fine on invented paths and, on the real data,
+   * rendered a plan slug as its DATE (`…on-api-2026-06-14`) and a module as a
+   * basename dozens of packages share (`…ess/src/schema.ts`). Keeping both ends is
+   * the property; these are the cases that falsify a one-ended rule.
+   */
+  it.each([
+    ['plan', 'experiment-registry-invocation-api-2026-06-14', 'experiment', '2026-06-14'],
+    ['plan', 'impartial-benchmark-suite-2026-06-15', 'impartial', '2026-06-15'],
+    ['file', 'libs/zero-harness/src/schema.ts', 'libs/zero', 'schema.ts'],
+    ['file', 'libs/papercusp/packages/harness/blueprints/base/prompts/queen.base.md', 'libs/pape', 'queen.base.md'],
+  ])('keeps BOTH ends identifying for the real anchor %s:%s', (kind, value, head, tail) => {
+    const b = memoryStaleBanner(stale([{ kind, value }]));
+    expect(b).toContain(head);
+    expect(b).toContain(tail);
+  });
+
+  it('two anchors that share a long prefix stay distinguishable', () => {
+    const b = memoryStaleBanner(
+      stale([
+        { kind: 'file', value: 'packages/operator-core/lib/memory/alpha.ts' },
+        { kind: 'file', value: 'packages/operator-core/lib/memory/omega.ts' },
+      ]),
+    );
+    expect(b).toContain('alpha.ts');
+    expect(b).toContain('omega.ts');
   });
 
   /**
@@ -139,7 +161,7 @@ describe('applyMemoryStaleness', () => {
   });
 
   it('does not throw on a row whose memory was shaped away (tier clipping, odd backends)', () => {
-    const odd = [{ id: 'm1', score: 0.5 }];
+    const odd: Array<{ id: string; score: number; memory?: string }> = [{ id: 'm1', score: 0.5 }];
     const out = applyMemoryStaleness(odd, new Map([['m1', stale([{ kind: 'file', value: 'a.ts' }])]]));
     expect(out[0].staleness).toBeDefined();
     expect(out[0].memory).toBeUndefined();

@@ -45,6 +45,29 @@ import type { GateDecision } from '../gates/decision';
  */
 export interface AdmittedByLeg {
   cosineOnly: number;
+  /**
+   * ⚠ STRUCTURALLY ZERO ON THE PUSH PATH — this is the specification, not a
+   * defect, and it has already been filed as one once
+   * (context-injection-retrieval-reach-and-visibility-2026-08-03 D-074).
+   *
+   * The push path runs fusion mode `cosine-gated` (injection.ts
+   * `injectFusionMode`), which seeds the candidate set ONLY from cosine hits and
+   * skips lexical-only admission entirely. Moving this off zero means reverting
+   * to `floored-union` — which is precisely the bug D-010 fixed, where the block
+   * was refilled by lexical token-overlap and came back FULL regardless of
+   * relevance (97% of turn-start recalls returned exactly the pool-limit sums;
+   * the limit was acting as a TARGET, not a ceiling).
+   *
+   * A near-zero `legs.lexical.qualifying` beside it is likewise intended: the
+   * lexical score is normalized by query-token count, so a prose query cannot
+   * reach the 0.40 bar (WI-7154). The leg exists for EXACT-IDENTIFIER recall and
+   * on a generic prose query "should contribute nothing rather than decide the
+   * outcome". Lowering `minLexScore` restores a measured scale-INVERTED defect in
+   * which a LARGER memory pool got WORSE recall.
+   *
+   * So: do not tune this toward nonzero, and do not delete the lexical arm.
+   * `both` is where a healthy lexical contribution shows up.
+   */
   lexicalOnly: number;
   both: number;
 }

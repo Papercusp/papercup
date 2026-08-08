@@ -493,3 +493,34 @@ describe('classifyLegacyScoreScale (P-036 — pre-migration-705 rows only)', () 
     expect(classifyLegacyScoreScale(Number.NaN)).toBe('unknown');
   });
 });
+
+describe('ADMISSION_STAGE_DESIGN_INTENT — every drop stage declares WHY it drops (D-076)', () => {
+  // This guard exists because three work-items in the context-injection lane filed a
+  // DELIBERATE design behaviour as a defect off a bare `dropped` counter (D-063,
+  // D-073, D-074). `Record<AdmissionStage, string>` already makes a MISSING stage a
+  // compile error; these assertions cover what the type cannot — an entry added as an
+  // empty/placeholder string, or the two lists silently drifting apart.
+  it('covers exactly ADMISSION_STAGES — no missing stage, no orphan key', async () => {
+    const { ADMISSION_STAGES, ADMISSION_STAGE_DESIGN_INTENT } = await import('./recall-stats');
+    expect(Object.keys(ADMISSION_STAGE_DESIGN_INTENT).sort()).toEqual([...ADMISSION_STAGES].sort());
+  });
+
+  it('states a real intent for every stage, not a placeholder', async () => {
+    const { ADMISSION_STAGES, ADMISSION_STAGE_DESIGN_INTENT } = await import('./recall-stats');
+    for (const stage of ADMISSION_STAGES) {
+      const intent = ADMISSION_STAGE_DESIGN_INTENT[stage];
+      // A one-word "expected" would satisfy a non-empty check while teaching nothing;
+      // the point is that a reader can decide defect-vs-design from this string alone.
+      expect(intent.length, `${stage} intent is too short to be useful`).toBeGreaterThan(40);
+      expect(intent, `${stage} intent looks like a placeholder`).not.toMatch(/^(TODO|TBD|n\/a)/i);
+    }
+  });
+
+  it('keeps the two warnings that cost the most to rediscover', async () => {
+    const { ADMISSION_STAGE_DESIGN_INTENT } = await import('./recall-stats');
+    // budget: the port-mix artifact (D-073) — the single most-misread counter here.
+    expect(ADMISSION_STAGE_DESIGN_INTENT.budget).toMatch(/mid-turn/i);
+    // dedup: a high value indicts the EPOCH, not the filter (D-072).
+    expect(ADMISSION_STAGE_DESIGN_INTENT.dedup).toMatch(/epoch/i);
+  });
+});

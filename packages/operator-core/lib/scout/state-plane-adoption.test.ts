@@ -9,8 +9,9 @@ import {
 
 const T0 = 1_700_000_000_000;
 
-function row(spawnId: string, toolName: string, offsetMs: number, ownerId = 'su-a'): PlaneCallRow {
-  return { ownerId, spawnId, toolName, atMs: T0 + offsetMs };
+/** The grouping key is the AGENT — deliberately not a spawn. See the module header. */
+function row(ownerId: string, toolName: string, offsetMs: number): PlaneCallRow {
+  return { ownerId, toolName, atMs: T0 + offsetMs };
 }
 
 describe('state-plane-adoption — D-003: an empty denominator is null, never 0', () => {
@@ -26,7 +27,7 @@ describe('state-plane-adoption — D-003: an empty denominator is null, never 0'
     // The live case this guards: measured 2026-08-08 the fleet fell to 12 calls/day, and
     // an idle window reported as "0% adoption" reads as a regression that never happened.
     const out = computeStatePlaneAdoption(
-      [row('s1', 'dev:pipeline_position', 0), row('s1', 'coord:send', 1_000)],
+      [row('su-a', 'dev:pipeline_position', 0), row('su-a', 'coord:send', 1_000)],
       7,
     );
     expect(out.unmeasurable).toBe(false);
@@ -34,10 +35,34 @@ describe('state-plane-adoption — D-003: an empty denominator is null, never 0'
   });
 });
 
+describe('state-plane-adoption — grouping is by AGENT, not by spawn (regression)', () => {
+  it('joins a door read to a later write by the SAME agent', () => {
+    // REGRESSION CONTROL. The first cut of this module partitioned by `spawn_id`, which on
+    // harness_shared.tool_invocations is per-CALL: measured 2026-08-08, 543,974 of 550,683
+    // spawn groups (98.8%) were singletons at mean 1.1 calls. Under that grouping these two
+    // rows land in different partitions and this metric reports 0 opportunities forever —
+    // a well-formed, confident, entirely wrong number. If this test ever fails with
+    // `opportunities: 0`, someone has re-introduced a session-shaped grouping key.
+    const out = computeStatePlaneAdoption(
+      [row('su-a', 'dev:pipeline_position', 0), row('su-a', 'coord:send', 5_000)],
+      7,
+    );
+    expect(out.actQuote.opportunities).toBe(1);
+  });
+
+  it('does NOT join a door read by one agent to a write by another', () => {
+    const out = computeStatePlaneAdoption(
+      [row('su-a', 'dev:pipeline_position', 0), row('su-b', 'coord:send', 1_000)],
+      7,
+    );
+    expect(out.actQuote.opportunities).toBe(0);
+  });
+});
+
 describe('state-plane-adoption — METRIC A (act/quote)', () => {
   it('counts a door-then-write as an unadopted opportunity', () => {
     const out = computeStatePlaneAdoption(
-      [row('s1', 'dev:pipeline_position', 0), row('s1', 'coord:send', 5_000)],
+      [row('su-a', 'dev:pipeline_position', 0), row('su-a', 'coord:send', 5_000)],
       7,
     );
     expect(out.actQuote.opportunities).toBe(1);
@@ -48,9 +73,9 @@ describe('state-plane-adoption — METRIC A (act/quote)', () => {
   it('counts a door-then-state:read-then-write as ADOPTED', () => {
     const out = computeStatePlaneAdoption(
       [
-        row('s1', 'dev:pipeline_position', 0),
-        row('s1', 'state:read', 3_000),
-        row('s1', 'coord:send', 5_000),
+        row('su-a', 'dev:pipeline_position', 0),
+        row('su-a', 'state:read', 3_000),
+        row('su-a', 'coord:send', 5_000),
       ],
       7,
     );
@@ -60,13 +85,14 @@ describe('state-plane-adoption — METRIC A (act/quote)', () => {
   });
 
   it('does NOT credit a state:read that precedes the door read (ordering is the point)', () => {
-    // A re-read before the value exists re-reads nothing. Without this the metric could be
-    // satisfied by reading in the wrong order, which is not the behaviour being measured.
+    // Control for the pair above: identical tools, different ORDER, opposite verdict. A
+    // re-read before the value exists re-reads nothing, and without this check the metric
+    // could be satisfied by reading in the wrong order.
     const out = computeStatePlaneAdoption(
       [
-        row('s1', 'state:read', 0),
-        row('s1', 'dev:pipeline_position', 3_000),
-        row('s1', 'coord:send', 5_000),
+        row('su-a', 'state:read', 0),
+        row('su-a', 'dev:pipeline_position', 3_000),
+        row('su-a', 'coord:send', 5_000),
       ],
       7,
     );
@@ -75,21 +101,16 @@ describe('state-plane-adoption — METRIC A (act/quote)', () => {
   });
 
   it('does not count a write with no door value in hand as an opportunity', () => {
-    const out = computeStatePlaneAdoption([row('s1', 'coord:send', 0)], 7);
+    const out = computeStatePlaneAdoption([row('su-a', 'coord:send', 0)], 7);
     expect(out.actQuote.opportunities).toBe(0);
   });
 
   it('does not count a write once the door value has gone stale', () => {
     const out = computeStatePlaneAdoption(
-      [row('s1', 'dev:pipeline_position', 0), row('s1', 'coord:send', ACT_WINDOW_MS + 1_000)],
-      7,
-    );
-    expect(out.actQuote.opportunities).toBe(0);
-  });
-
-  it('does not join a door read in one spawn to a write in another', () => {
-    const out = computeStatePlaneAdoption(
-      [row('s1', 'dev:pipeline_position', 0), row('s2', 'coord:send', 1_000)],
+      [
+        row('su-a', 'dev:pipeline_position', 0),
+        row('su-a', 'coord:send', ACT_WINDOW_MS + 1_000),
+      ],
       7,
     );
     expect(out.actQuote.opportunities).toBe(0);
@@ -97,21 +118,21 @@ describe('state-plane-adoption — METRIC A (act/quote)', () => {
 });
 
 describe('state-plane-adoption — METRIC B (wait/poll)', () => {
-  const pollRows = (spawn: string) => [
-    row(spawn, 'dev:pipeline_position', 0),
-    row(spawn, 'dev:pipeline_position', 60_000),
-    row(spawn, 'dev:pipeline_position', 120_000),
+  const pollRows = (owner: string) => [
+    row(owner, 'dev:pipeline_position', 0),
+    row(owner, 'dev:pipeline_position', 60_000),
+    row(owner, 'dev:pipeline_position', 120_000),
   ];
 
   it('counts a multi-turn door poll as an unadopted opportunity', () => {
-    const out = computeStatePlaneAdoption(pollRows('s1'), 7);
+    const out = computeStatePlaneAdoption(pollRows('su-a'), 7);
     expect(out.wait.opportunities).toBe(1);
     expect(out.wait.adopted).toBe(0);
   });
 
   it('counts a poll that also used state:subscribe as ADOPTED', () => {
     const out = computeStatePlaneAdoption(
-      [...pollRows('s1'), row('s1', 'state:subscribe', 130_000)],
+      [...pollRows('su-a'), row('su-a', 'state:subscribe', 130_000)],
       7,
     );
     expect(out.wait.opportunities).toBe(1);
@@ -125,26 +146,35 @@ describe('state-plane-adoption — METRIC B (wait/poll)', () => {
     // would inflate the denominator with sessions that were already optimal.
     const out = computeStatePlaneAdoption(
       [
-        row('s1', 'dev:pipeline_position', 0),
-        row('s1', 'dev:pipeline_position', 50),
-        row('s1', 'dev:pipeline_position', 100),
+        row('su-a', 'dev:pipeline_position', 0),
+        row('su-a', 'dev:pipeline_position', 50),
+        row('su-a', 'dev:pipeline_position', 100),
       ],
       7,
     );
     expect(out.wait.opportunities).toBe(0);
   });
 
-  it('counts ONE opportunity per spawn however many times it polled', () => {
-    const many = Array.from({ length: 40 }, (_, i) =>
-      row('s1', 'dev:pipeline_position', i * 30_000),
+  it('counts ONE opportunity per poll loop, however many calls it made', () => {
+    const many = Array.from({ length: 12 }, (_, i) =>
+      row('su-a', 'dev:pipeline_position', i * 60_000),
     );
     const out = computeStatePlaneAdoption(many, 7);
+    // 12 calls spanning 11min — one loop inside the 30min window, so exactly one charge.
     expect(out.wait.opportunities).toBe(1);
+  });
+
+  it('charges an agent twice for two genuinely separate waits', () => {
+    const out = computeStatePlaneAdoption(
+      [...pollRows('su-a'), ...pollRows('su-a').map((r) => ({ ...r, atMs: r.atMs + 86_400_000 }))],
+      7,
+    );
+    expect(out.wait.opportunities).toBe(2);
   });
 
   it('needs at least POLL_TURN_THRESHOLD turns before it is a poll loop', () => {
     const out = computeStatePlaneAdoption(
-      [row('s1', 'dev:pipeline_position', 0), row('s1', 'dev:pipeline_position', 60_000)],
+      [row('su-a', 'dev:pipeline_position', 0), row('su-a', 'dev:pipeline_position', 60_000)],
       7,
     );
     expect(POLL_TURN_THRESHOLD).toBe(3);
@@ -157,16 +187,16 @@ describe('state-plane-adoption — P-006: the ratio can actually reach 100%', ()
     // This is the whole reason P-006 exists. The Phase-1 metric ("plane share of pipeline
     // reads") could not reach 1.0 by construction, because CLAUDE.md prescribes the DOOR
     // as the first read — so perfect behaviour still emitted door calls and scored as a
-    // miss. Perfect behaviour here scores 1.0, DESPITE the door calls being present.
+    // miss. Perfect behaviour here scores 1.0 DESPITE those door calls being present.
     const rows: PlaneCallRow[] = [
-      row('s1', 'dev:pipeline_position', 0),
-      row('s1', 'state:read', 1_000),
-      row('s1', 'coord:send', 2_000),
+      row('su-a', 'dev:pipeline_position', 0),
+      row('su-a', 'state:read', 1_000),
+      row('su-a', 'coord:send', 2_000),
 
-      row('s2', 'dev:pipeline_position', 0),
-      row('s2', 'dev:pipeline_position', 60_000),
-      row('s2', 'dev:pipeline_position', 120_000),
-      row('s2', 'state:subscribe', 130_000),
+      row('su-b', 'dev:pipeline_position', 0),
+      row('su-b', 'dev:pipeline_position', 60_000),
+      row('su-b', 'dev:pipeline_position', 120_000),
+      row('su-b', 'state:subscribe', 130_000),
     ];
     const out = computeStatePlaneAdoption(rows, 7);
     expect(out.actQuote.rate).toBe(1);
@@ -177,15 +207,15 @@ describe('state-plane-adoption — P-006: the ratio can actually reach 100%', ()
   it('tracks BREADTH separately from depth (Phase 1 found breadth the weak axis)', () => {
     const rows: PlaneCallRow[] = [
       // su-a adopts, repeatedly.
-      row('s1', 'dev:pipeline_position', 0, 'su-a'),
-      row('s1', 'state:read', 1_000, 'su-a'),
-      row('s1', 'coord:send', 2_000, 'su-a'),
-      row('s1', 'dev:pipeline_position', 3_000, 'su-a'),
-      row('s1', 'state:read', 4_000, 'su-a'),
-      row('s1', 'coord:send', 5_000, 'su-a'),
+      row('su-a', 'dev:pipeline_position', 0),
+      row('su-a', 'state:read', 1_000),
+      row('su-a', 'coord:send', 2_000),
+      row('su-a', 'dev:pipeline_position', 3_000),
+      row('su-a', 'state:read', 4_000),
+      row('su-a', 'coord:send', 5_000),
       // su-b never does.
-      row('s2', 'dev:pipeline_position', 0, 'su-b'),
-      row('s2', 'coord:send', 2_000, 'su-b'),
+      row('su-b', 'dev:pipeline_position', 0),
+      row('su-b', 'coord:send', 2_000),
     ];
     const out = computeStatePlaneAdoption(rows, 7);
     expect(out.actQuote.agentsWithOpportunity).toBe(2);
