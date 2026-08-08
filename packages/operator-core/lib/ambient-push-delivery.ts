@@ -42,7 +42,7 @@ import {
   deliveredCount,
   type PushDeliveryRow,
 } from './push-delivery-store';
-import { capInjectionText, computeTurnDoors } from './context-doors';
+import { capInjectionText, computeTurnDoors, CHARS_PER_TOKEN_ESTIMATE } from './context-doors';
 import { getDoorConstantsSync } from './context-doors-config';
 import { checkPushVolume, type VolumeReport } from './push-volume-guard';
 import { ambientCursorEnabled } from './session-cursor-io';
@@ -296,7 +296,6 @@ export async function prepareAmbientPushBlock(input: PrepareAmbientPushBlockInpu
 
     if (fitting.length === 0) return '';
     let block = renderPushBlock(fitting);
-    void overflow; // door-fit only; nothing further to do with the overflow set here
 
     // P-012 auto-inject: a selected CONFIRMED collision (critical severity —
     // briefDeliveryMode('critical') === 'auto-inject'; weaker signals stay
@@ -322,7 +321,7 @@ export async function prepareAmbientPushBlock(input: PrepareAmbientPushBlockInpu
     // for the whole fleet (harness_shared.pipeline_events runs 89880/89723).
     try {
       const briefTargets = ambientCursorEnabled()
-        ? result.selected
+        ? fitting
             .filter((p) => p.severity === 'critical' && p.matcherKind === 'collision' && p.handle.kind === 'session')
             .sort((a, b) => b.score - a.score)
             .slice(0, MAX_AUTO_INJECT_BRIEFS)

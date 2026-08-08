@@ -678,6 +678,24 @@ function runChild(
       code !== 0 &&
       Date.now() - launchedAt < 5_000 &&
       SCOPE_LAUNCH_FAILURE_RE.test(stderr);
+    // WI-5601: a fast, silent, non-zero exit — no stderr AND no stdout at all —
+    // does not fit the scope-launch-failure shape above (that one requires a
+    // real stderr message matching SCOPE_LAUNCH_FAILURE_RE) but is equally
+    // "before any real agent turn could plausibly have run". Measured: 40/344
+    // (11.6%) of spawns hit exactly this (exit 127 in ~21ms, both streams
+    // empty), clustered around a host-resource-pressure window, with zero
+    // recurrences since. One bounded retry (gated by execFailureRetried so it
+    // can only fire once) turns a permanent spawn loss into, at worst, one
+    // extra ~20ms attempt.
+    const isExecShapedTransientFailure = (code: number | null): boolean =>
+      !execFailureRetried &&
+      !aborted &&
+      !timedOut &&
+      code !== null &&
+      code !== 0 &&
+      Date.now() - launchedAt < 5_000 &&
+      stdout.length === 0 &&
+      stderr.length === 0;
     child.on('close', (code) => {
       cleanup();
       if (settled) return;
@@ -691,7 +709,21 @@ function runChild(
           exitCode: code,
           exitReason: 'scope launch failed — retried unconfined',
         });
-        resolve(runChild(command, args, projectDir, env, role, signal, timeoutMs, onChildPid, onOutputActivity, false));
+        resolve(runChild(command, args, projectDir, env, role, signal, timeoutMs, onChildPid, onOutputActivity, false, execFailureRetried));
+        return;
+      }
+      if (isExecShapedTransientFailure(code)) {
+        settled = true;
+        finishSyncEnrolment(enrolment, {
+          state: 'exited',
+          exitCode: code,
+          exitReason: `exec-shaped failure (empty stdio, ${Date.now() - launchedAt}ms) — retried once`,
+        });
+        console.error(
+          `[dbos-invoke] role=${role} exited ${code} in ${Date.now() - launchedAt}ms with BOTH streams empty — ` +
+            `treating as a transient exec failure, retrying once (WI-5601)`,
+        );
+        resolve(runChild(command, args, projectDir, env, role, signal, timeoutMs, onChildPid, onOutputActivity, useScope, true));
         return;
       }
       settled = true;
@@ -717,11 +749,16 @@ function runChild(
       if (failLog) console.error(failLog);
       // A non-zero exit with EMPTY stderr is otherwise completely silent (the
       // upstream "exit=1 empty=true" hides whether the agent even produced output).
+      // WI-5601: this used to gate the stdout tail entirely behind
+      // PAPERCUSP_DBOS_INVOKE_DEBUG=1 — unset in normal operation — so a
+      // genuinely-informative stdout (the WI-5601 example was 469 chars total)
+      // was captured nowhere and the failure was unrecoverable after the fact.
+      // Always log a bounded tail; DEBUG only widens it.
       else if (exitCode !== 0) {
-        const dbg =
-          process.env.PAPERCUSP_DBOS_INVOKE_DEBUG === '1'
-            ? `\n--- stdout tail (${role}) ---\n${stdout.length > 2000 ? stdout.slice(-2000) : stdout}`
-            : '';
+        const tailLen = process.env.PAPERCUSP_DBOS_INVOKE_DEBUG === '1' ? 2000 : 500;
+        const dbg = stdout.length
+          ? `\n--- stdout tail (${role}) ---\n${stdout.length > tailLen ? stdout.slice(-tailLen) : stdout}`
+          : '';
         console.error(`[dbos-invoke] role=${role} exited ${exitCode} with empty stderr (stdout ${stdout.length} chars)${dbg}`);
       } else if (stderr.trim()) {
         // Exit 0 with non-empty stderr: surface it so the operator log shows why

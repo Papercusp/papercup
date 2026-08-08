@@ -512,6 +512,15 @@ export default defineTool({
 
       ticketId = inserted.ticket_id;
       const waitUntilMs = inserted.wait_until.getTime();
+      // EI-19921385348146413: readWaiterStatus's status union has FIVE arms
+      // ('waiting' | 'granted' | 'expired' | 'cancelled' | 'missing'), but only
+      // 'cancelled'/'expired' were treated as terminal below — 'missing' (the
+      // waiter row itself vanished: janitor sweep, external DELETE, workspace
+      // teardown) fell into the same bucket as 'waiting' and spun to the full
+      // wait.max_sec deadline polling a row that no longer exists. Track WHY we
+      // bail so the final response can name the real cause instead of folding
+      // every non-grant outcome into an undifferentiated timeout/busy snapshot.
+      let terminalReason: 'cancelled' | 'expired' | 'waiter_vanished' | undefined;
 
       // Phase 2 polish: 10s progress heartbeat with elapsed +
       // ahead_count + busy snapshot. Independent of the wake mechanism
@@ -649,8 +658,15 @@ export default defineTool({
               Math.floor((Date.now() - startedAt) / 1000),
             );
           }
-          if (status.status === 'cancelled' || status.status === 'expired') {
-            // External cancel or DB-side expiry; bail.
+          if (
+            status.status === 'cancelled' ||
+            status.status === 'expired' ||
+            status.status === 'missing'
+          ) {
+            // External cancel, DB-side expiry, or the waiter row itself vanished
+            // (EI-19921385348146413) — all three are TERMINAL, not transient, so
+            // bail immediately instead of polling to the full deadline.
+            terminalReason = status.status === 'missing' ? 'waiter_vanished' : status.status;
             break;
           }
           // status === 'waiting' → loop back, await again.
@@ -721,6 +737,20 @@ export default defineTool({
               ok: false,
               busy: await enrichBusy(finalBusy.busy),
               ticket_id: ticketId,
+              // EI-19921385348146413: name the real terminal cause instead of an
+              // undifferentiated busy/timeout snapshot. Absent ⇒ genuine wait.max_sec
+              // timeout (the loop condition ran out, not a status-driven break).
+              ...(terminalReason
+                ? {
+                    reason: terminalReason,
+                    ...(terminalReason === 'waiter_vanished'
+                      ? {
+                          reason_detail:
+                            'the waiter row disappeared mid-wait (janitor sweep, external DELETE, or workspace teardown) — nothing could ever have granted this ticket; retry acquire from scratch',
+                        }
+                      : {}),
+                  }
+                : { reason: 'timeout' }),
               ...(waitClamped
                 ? {
                     wait_clamped: {

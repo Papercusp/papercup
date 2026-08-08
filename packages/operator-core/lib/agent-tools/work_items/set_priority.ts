@@ -53,7 +53,7 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { COORD_ROLES } from '../coordination/roles';
-import { setWorkItemPriority, getWorkItemPriority, bumpWorkItemPriority } from '../../work-items';
+import { setWorkItemPriority, getWorkItemPriority, bumpWorkItemPriority, explainIssueClaimFloors } from '../../work-items';
 import { planWorkItemArm, commitWorkItemArm } from './arm-reversible-work-item';
 import { runBulk, bulkContent, type BulkItemResult } from '../_bulk';
 
@@ -80,6 +80,35 @@ const itemSpec = z.object({
 });
 
 type Spec = z.infer<typeof itemSpec>;
+
+/**
+ * EI-19919820196426791: an explicit priority write is a silent no-op on claimability when
+ * the item sits in a lane the claim path structurally never serves (payload.lane=
+ * 'observation') or is routed to a human (payload.needsHuman=true) — the write reports
+ * ok:true/written:true exactly like a real steer, with nothing flagging the conflict.
+ * Best-effort only: uses the SAME floor oracle the real claim path reads (so it can't drift),
+ * and a lookup failure (or a feature-family id, which the oracle doesn't cover) silently
+ * yields no warning rather than failing the priority write itself.
+ */
+async function structuralClaimabilityWarning(harness: string | null, id: string): Promise<string | undefined> {
+  if (!harness) return undefined;
+  try {
+    const [floor] = await explainIssueClaimFloors(harness, [id]);
+    if (floor && (floor.refusedBy === 'observation-lane' || floor.refusedBy === 'needs-human')) {
+      return (
+        `⚠ backlog priority was set, but this item is structurally UNCLAIMABLE and will stay ` +
+        `invisible to scheduler:get_next / claim_next regardless: ${floor.detail}. Reordering the ` +
+        `backlog does not change this. If it should actually be worked, clear the blocking flag first ` +
+        `— work_items:update { id, needsHuman:false } for a needs-human routing, or re-file/relocate it ` +
+        `out of the observation lane (it was captured via improvements:capture { lane:'observation' }, ` +
+        `which by design never enters the work queue).`
+      );
+    }
+  } catch {
+    // best-effort signal only
+  }
+  return undefined;
+}
 
 export default defineTool({
   name: 'work_items:set_priority',
@@ -176,6 +205,8 @@ export default defineTool({
           if (!set) return { ok: false, workItem: it.workItem, error: `work-item ${it.workItem} not found` };
           const written = wroteResult(set);
           if (armPlan && written) await commitWorkItemArm(armPlan).catch(() => {});
+          const claimabilityWarning =
+            written && it.priority !== null ? await structuralClaimabilityWarning(set.harness, set.id) : undefined;
           return {
             ok: true,
             workItem: set.id,
@@ -188,6 +219,7 @@ export default defineTool({
             // lease holder — the write was NOT committed; a proposal was recorded
             // for the holding Queen (steeringHolder) to dispose.
             ...(set.proposed ? { proposed: true, steeringHolder: set.steeringHolder } : {}),
+            ...(claimabilityWarning ? { claimabilityWarning } : {}),
           };
         }
 
@@ -196,6 +228,7 @@ export default defineTool({
         if (!set) return { ok: false, workItem: it.workItem, error: `work-item ${it.workItem} not found` };
         const written = wroteResult(set);
         if (armPlan && written) await commitWorkItemArm(armPlan).catch(() => {});
+        const claimabilityWarning = written ? await structuralClaimabilityWarning(set.harness, set.id) : undefined;
         return {
           ok: true,
           workItem: set.id,
@@ -205,6 +238,7 @@ export default defineTool({
           written,
           action: it.position,
           ...(set.proposed ? { proposed: true, steeringHolder: set.steeringHolder } : {}),
+          ...(claimabilityWarning ? { claimabilityWarning } : {}),
         };
       },
       { keyOf: (it) => ({ workItem: it.workItem }) },

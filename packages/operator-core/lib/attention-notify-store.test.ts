@@ -11,8 +11,11 @@ function fakeTx(strings: TemplateStringsArray, ...values: unknown[]): Promise<un
   return Promise.resolve([]);
 }
 
+// `fakeTx` is a hoisted function DECLARATION (unlike `calls`, a `const`), so the reference
+// inside this factory resolves fine even though vi.hoisted's callback runs above it in the
+// emitted module — it is only ever invoked later, at test time, once `calls` is initialized.
 const { withWorkspace } = vi.hoisted(() => ({
-  withWorkspace: vi.fn(async (_ws: string, fn: (tx: unknown) => unknown) => fn(undefined)),
+  withWorkspace: vi.fn(async (_ws: string, fn: (tx: unknown) => unknown) => fn(fakeTx)),
 }));
 vi.mock('@papercusp/db-org', () => ({ withWorkspace }));
 

@@ -87,8 +87,33 @@ export interface OverlapScanConfig {
   crossGroupOnly: boolean;
   /** Hard cap on reported pairs, so a degenerate corpus cannot exhaust memory. Default 5000. */
   maxPairs: number;
+  /**
+   * Minimum `census.coverage` for the run to count as evidence about the whole
+   * corpus. Default 1.0 — deliberately the STRICT value, so a caller that
+   * forgets to set it gets an inconclusive verdict rather than a silently
+   * permissive one. Relax it only with a reason: a shortfall can only cause
+   * false NEGATIVES, so the pairs a partial run DID find remain valid; what it
+   * cannot support is the claim that the corpus is clean.
+   */
+  minCoverage: number;
   /** Where candidate neighbours come from. */
   neighbours: NeighbourProvider;
+}
+
+/**
+ * Per-run measurements the caller knows and the scan cannot observe. Kept out
+ * of the config on purpose: config is policy, this is evidence about one run.
+ */
+export interface OverlapScanInput {
+  /**
+   * How many units the caller knows the corpus holds but could not supply.
+   * Supply this whenever your unit query filters on a condition that can be
+   * temporarily false (a vector still being written, a row mid-migration) —
+   * otherwise the shortfall is invisible to every consumer of the census.
+   */
+  unitsUnavailable?: number;
+  /** Why they were unavailable, quoted verbatim into the inconclusive verdict. */
+  unitsUnavailableReason?: string;
 }
 
 export interface OverlapPair {
@@ -118,6 +143,23 @@ export interface OverlapCensus {
   unitsIn: number;
   /** Units that survived validation and were actually queried. */
   unitsComparable: number;
+  /**
+   * Units the caller KNOWS exist in the corpus but could not supply — e.g. a
+   * row whose vector has not been written yet. Zero when the caller says
+   * nothing, which is why `unitsIn` alone is NOT a corpus denominator: a host
+   * that filters unusable rows out of its own query reports a numerator and a
+   * denominator drawn from the same filtered population, so the ratio is
+   * structurally 1.0 and can never reveal the shortfall.
+   */
+  unitsUnavailable: number;
+  /** `unitsIn + unitsUnavailable` — the population the corpus actually holds. */
+  unitsKnown: number;
+  /**
+   * `unitsComparable / unitsKnown`. The one ratio in this census whose
+   * numerator and denominator come from DIFFERENT sources, so it can fall
+   * below 1. Anything less than 1 means findings may be missing.
+   */
+  coverage: number;
   skipped: {
     duplicateId: number;
     blankId: number;
@@ -158,6 +200,7 @@ const DEFAULTS = {
   neighbourLimit: 10,
   crossGroupOnly: true,
   maxPairs: 5000,
+  minCoverage: 1,
 } as const;
 
 /**
@@ -261,10 +304,15 @@ function pairKey(a: string, b: string): string {
 export async function scanOverlap(
   units: readonly OverlapUnit[],
   config: OverlapScanConfig,
+  input: OverlapScanInput = {},
 ): Promise<OverlapScanReport> {
+  const unitsUnavailable = Math.max(0, Math.trunc(input.unitsUnavailable ?? 0));
   const census: OverlapCensus = {
     unitsIn: units.length,
     unitsComparable: 0,
+    unitsUnavailable,
+    unitsKnown: units.length + unitsUnavailable,
+    coverage: 0,
     skipped: { duplicateId: 0, blankId: 0, noVector: 0 },
     groupsSeen: 0,
     neighbourLookups: 0,
@@ -290,6 +338,7 @@ export async function scanOverlap(
   }
   const comparable = [...byId.values()];
   census.unitsComparable = comparable.length;
+  census.coverage = census.unitsKnown === 0 ? 1 : comparable.length / census.unitsKnown;
   census.groupsSeen = new Set(comparable.map((u) => u.group)).size;
 
   const best = new Map<string, OverlapPair>();
@@ -341,7 +390,7 @@ export async function scanOverlap(
     pairs: kept,
     clusters: clusterPairs(kept),
     census,
-    inconclusive: judgeInconclusive(census, config),
+    inconclusive: judgeInconclusive(census, config, input),
   };
 }
 
@@ -407,7 +456,11 @@ export function clusterPairs(pairs: readonly OverlapPair[]): OverlapCluster[] {
  *
  * Every branch here is a way a scan can return zero while measuring nothing.
  */
-export function judgeInconclusive(census: OverlapCensus, config: OverlapScanConfig): string | null {
+export function judgeInconclusive(
+  census: OverlapCensus,
+  config: OverlapScanConfig,
+  input: OverlapScanInput = {},
+): string | null {
   if (census.unitsComparable < 2) {
     return `only ${census.unitsComparable} comparable unit(s) of ${census.unitsIn} supplied — a pair needs two, so this run could not have found anything`;
   }
@@ -425,6 +478,16 @@ export function judgeInconclusive(census: OverlapCensus, config: OverlapScanConf
   }
   if (census.dimensionMismatches > 0 && census.pairsAboveThreshold === 0) {
     return `${census.dimensionMismatches} comparison(s) were refused for mismatched vector dimensions and nothing cleared the threshold — the corpus embeddings are inconsistent, so a zero result reflects the vectors, not the text`;
+  }
+  if (census.coverage < config.minCoverage) {
+    const pct = (census.coverage * 100).toFixed(1);
+    const why = input.unitsUnavailableReason ? ` (${input.unitsUnavailableReason})` : '';
+    return (
+      `only ${census.unitsComparable} of ${census.unitsKnown} known unit(s) were comparable — ${pct}% coverage, ` +
+      `below the ${(config.minCoverage * 100).toFixed(1)}% required${why}. ` +
+      `The ${census.unitsKnown - census.unitsComparable} missing unit(s) were never compared, so this run cannot ` +
+      `support the claim that the corpus is clean; the pairs it DID find remain valid`
+    );
   }
   return null;
 }

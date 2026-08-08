@@ -40,6 +40,31 @@ const ROOT = new URL('..', import.meta.url).pathname;
  * justification in review.
  */
 export const ALLOWLIST = new Map([
+  // ── detached ONLY for process-group kill of an AWAITED child ─────────────
+  //
+  // A third category the original guard did not anticipate, and its false-positive
+  // class. `detached: true` has TWO distinct uses, and this guard's premise —
+  // "detached means the process outlives the call" — only covers one of them:
+  //
+  //   (1) outlive the caller           -> must be enrolled (the guard's real target)
+  //   (2) become a process-group LEADER so a timeout can `kill(-pid)` the whole
+  //       tree instead of orphaning grandchildren -> the child is AWAITED and dies
+  //       with the call. Nothing outlives anything; there is no subtree to keep
+  //       addressable after the call returns, so a ledger row would be born and
+  //       closed inside one tool invocation.
+  //
+  // bash-jobs.ts documents (2) explicitly (capability-bash-orphan-kill-2026-06-21)
+  // and it is now the idiom for any tool that shells out with a timeout. Both
+  // entries below are that shape: added after this guard landed, both awaited, both
+  // group-killed on timeout. Enrolling them would add ledger churn with no
+  // addressability gain.
+  //
+  // If a static way to separate (1) from (2) appears — an awaited `child` whose
+  // promise resolves in the same function — the predicate should prefer it and
+  // these two should come off the list.
+  ['packages/operator-core/lib/agent-tools/testing/run.ts', 'detached ONLY to lead a process group so a timeout group-kills vitest; the child is awaited and dies with the call'],
+  ['packages/operator-core/lib/agent-tools/build/typecheck.ts', 'detached ONLY to lead a process group so a timeout group-kills tsc; the child is awaited and dies with the call'],
+
   // ── one-shot host/dev plumbing, not fleet work ───────────────────────────
   // NOTE: this file serves TWO shapes and only ONE of them is exempt. The HEADLESS
   // path (spawnHeadless) IS enrolled — it has no window, it is the largest agent

@@ -19,7 +19,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { clampText, hardText, softText, LIMITS } from '../limits';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
-import { updateWorkItem, mergeWorkItemPayload } from '../../work-items';
+import { updateWorkItem, mergeWorkItemPayload, explainIssueClaimFloors } from '../../work-items';
 import { runBulk, bulkContent } from '../_bulk';
 import { rejectBodySummaryConflict, resolveBodyAlias } from './_body-alias';
 
@@ -290,7 +290,35 @@ export default defineTool({
             const merged = await mergeWorkItemPayload(it.id, { needsHuman: it.needsHuman }, { harness: it.harness });
             if (merged) item = merged;
           }
-          return { ok: true as const, id: it.id, item };
+          // EI-19919820196426791: raising severity to critical/major is a silent no-op on
+          // claimability when the item sits in a lane the claim path structurally never
+          // serves (payload.lane='observation') or is routed to a human
+          // (payload.needsHuman=true) — the write reports ok:true/written:1 exactly like a
+          // real steer, with nothing anywhere flagging that the two facts conflict. Surface
+          // it at the write, using the SAME floor oracle the real claim path (and its own
+          // miss-diagnosis) reads, so this can't drift from what scheduler:get_next actually
+          // enforces.
+          let claimabilityWarning: string | undefined;
+          if (it.severity === 'critical' || it.severity === 'major') {
+            const harnessForCheck = item.harness ?? it.harness ?? undefined;
+            if (harnessForCheck) {
+              try {
+                const [floor] = await explainIssueClaimFloors(harnessForCheck, [it.id]);
+                if (floor && (floor.refusedBy === 'observation-lane' || floor.refusedBy === 'needs-human')) {
+                  claimabilityWarning =
+                    `⚠ severity set to '${it.severity}', but this item is structurally UNCLAIMABLE and will stay ` +
+                    `invisible to scheduler:get_next / claim_next regardless: ${floor.detail}. Raising severity ` +
+                    `(or work_items:set_priority) does not change this. If it should actually be worked, clear the ` +
+                    `blocking flag first — work_items:update { id, needsHuman:false } for a needs-human routing, or ` +
+                    `re-file/relocate it out of the observation lane (it was captured via improvements:capture ` +
+                    `{ lane:'observation' }, which by design never enters the work queue).`;
+                }
+              } catch {
+                // Best-effort signal only — never fail the field-edit itself over it.
+              }
+            }
+          }
+          return { ok: true as const, id: it.id, item, ...(claimabilityWarning ? { claimabilityWarning } : {}) };
         }
         if (res.reason === 'body_shrink_guard') {
           return {
