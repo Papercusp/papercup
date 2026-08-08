@@ -32,6 +32,7 @@ import { createHash } from 'node:crypto';
 import type { Sql } from 'postgres';
 import type { DocSource } from '@papercusp/docs-engine';
 import { getOrgPg } from '@papercusp/db-org';
+import { pinModuleState } from '@papercusp/module-singleton';
 
 /** Stored section text cap — mirrors the 2k-char embed-input convention
  *  (session_turns / work_items bodySql `left(…, 2000)`). */
@@ -192,12 +193,14 @@ interface DocSyncState {
   fails: number;
   harness: Map<string, { running: boolean; pending: boolean }>;
 }
-const __docSyncStateKey = Symbol.for('papercusp.docSectionsSyncState');
-const __docSyncState: DocSyncState = (() => {
-  const g = globalThis as typeof globalThis & { [__docSyncStateKey]?: DocSyncState };
-  if (!g[__docSyncStateKey]) g[__docSyncStateKey] = { done: false, running: false, fails: 0, harness: new Map() };
-  return g[__docSyncStateKey]!;
-})();
+// Pinned through @papercusp/module-singleton rather than a hand-rolled
+// `globalThis[Symbol.for(...)]` pair — same sharing, but the pin stays visible
+// to listModuleDuplications(), which otherwise answers a confident `[]` while
+// this module is split (EI-19479108855357092).
+const __docSyncState = pinModuleState<DocSyncState>(
+  '@papercusp/operator-core.docSectionsSyncState',
+  () => ({ done: false, running: false, fails: 0, harness: new Map() }),
+);
 /** Persistent-failure bound: after this many failed attempts the periodic tick
  *  stops re-paying a full corpus render every 5 minutes. */
 const MAX_SYNC_FAILURES = 5;

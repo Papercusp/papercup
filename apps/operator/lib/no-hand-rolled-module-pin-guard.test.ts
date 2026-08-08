@@ -289,6 +289,24 @@ describe('no-hand-rolled-module-pin — the tree', () => {
       'packages/operator-core/lib/cache/instance.ts',
       'packages/operator-core/lib/cache/debounced-invalidate.ts',
       'packages/operator-core/lib/system-health/refresh-coalescer.ts',
+      // Tranche 9 — all three verified free of external key readers by the
+      // tree-wide map on the work item, so no reset seam was needed.
+      'packages/operator-core/lib/events/registry.ts',
+      'packages/operator-core/lib/rationale/service.ts',
+      'packages/operator-core/lib/plugin-api-mount.ts',
+      // Tranche 10. posthog-config pins ONLY its watcher state on purpose —
+      // `cached`/`onConfigChange` stay per-record to feed the shared
+      // invalidator list, so folding them in would be a behavior change, not
+      // a completion of the migration. See the note in that file.
+      'packages/operator-core/lib/operator-state-pg.ts',
+      'packages/operator-core/lib/posthog-config.ts',
+      // Tranche 11 — three sibling search sync-states, identical IIFE shape.
+      // Their 4th sibling, search/embed-backfill.ts, is NOT here: its test
+      // pokes the key directly in 4 places, so it needs a reset seam in the
+      // same tranche that migrates it.
+      'packages/operator-core/lib/search/doc-embed-sync.ts',
+      'packages/operator-core/lib/search/session-ingest.ts',
+      'packages/operator-core/lib/search/turn-chunk-sync.ts',
     ]) {
       expect(paths.has(migrated)).toBe(false);
     }

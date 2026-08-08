@@ -290,6 +290,21 @@ export interface WorkFeedHealth {
    *  and leaves no trace, so the hypothesis could not be tested at all.
    *  Optional; absent ⇒ the read succeeded (prior fixtures unaffected). */
   stalePausedRoutinesUnreadable?: boolean;
+  /** The pot/workspace SURVEY failed this tick (collectWorkFeed's `catch` at the
+   *  frontier read fired), so `frontier`/`frontierStuck`/`frontierBlocked`/
+   *  `startedPlans` above are FABRICATED ZEROS meaning "NOT OBSERVED", not
+   *  "observed zero". Same `unreadable ≠ clear` conflation as
+   *  `stalePausedRoutinesUnreadable` — but on a load-bearing input, which is why
+   *  it is not merely cosmetic: `cupPlaceableFrontier` (= frontier − frontierStuck)
+   *  is the leg that DECIDES `beesIdleDecision`, measured over 08-04..08-07
+   *  (workspace fact `panel-bees-deciding-leg-is-cup-placeable-frontier`: every
+   *  suppressed panel:bees resolve read placeable=0 ⇒ `idle-by-design`, the one
+   *  unsuppressed clear read placeable=1 ⇒ `cup-work-waiting`). So an unreadable
+   *  survey fabricates a 0, which reads as "no cup work waiting", which SUPPRESSES
+   *  the "bees are dead" alarm — the survey being broken silently buys silence
+   *  about the thing the alarm exists to report.
+   *  Optional; absent ⇒ the survey read succeeded (prior fixtures unaffected). */
+  frontierUnreadable?: boolean;
 }
 
 /**

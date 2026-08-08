@@ -13,6 +13,15 @@
  * embedder (a live model, or none at all in CI), which would make the
  * gemma-floors-apply case untestable in exactly the environment that most
  * needs to catch a regression.
+ *
+ * ⚠ The mock targets the LEAF `./embedder-mode-registry`, which is where the
+ * policy reads it from and where the symbol is DEFINED. It used to target
+ * `../agent-tools/search/embedder`, which merely re-exports it — and that is
+ * not interchangeable in either direction. A mock only intercepts the module
+ * the subject actually imports, and mocking the heavy re-export is also what
+ * concealed the import-time PG connection that module drags in (it is never
+ * really loaded here, so this suite could not feel it). See
+ * `configure-search-defaults-import-purity.test.ts`.
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
@@ -20,10 +29,10 @@ import type { Embedder, SearchDefaultsContext } from '@papercusp/search';
 
 const modeOf = vi.fn<(e: Embedder | null | undefined) => string | undefined>();
 
-vi.mock('../agent-tools/search/embedder', async (importOriginal) => ({
+vi.mock('./embedder-mode-registry', async (importOriginal) => ({
   // importOriginal keeps the module's real surface — stubbing it wholesale is
   // how a suite ends up green while exercising none of the real logic.
-  ...(await importOriginal<typeof import('../agent-tools/search/embedder')>()),
+  ...(await importOriginal<typeof import('./embedder-mode-registry')>()),
   embedderModeOf: (e: Embedder | null | undefined) => modeOf(e),
 }));
 

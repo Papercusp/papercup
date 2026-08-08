@@ -14,7 +14,21 @@
 
 import { getOrgPg } from '@papercusp/db-org';
 
-export async function gcOldNotifies(retentionDays = 3): Promise<number> {
+/**
+ * Retention horizon for `notify` rows, in days.
+ *
+ * Exported (rather than left as a bare default parameter) because callers OUTSIDE
+ * the GC need to reason about it: any cumulative count over coord_event_log is
+ * only honest within the SHORTEST horizon sweeping the table, and this is it.
+ * `scripts/stats-proof.ts` imports this alongside MESSAGE_GC_RETENTION_DAYS /
+ * FEDERATED_MESSAGE_GC_RETENTION_DAYS / ESCALATION_GC_RETENTION_DAYS so its
+ * published figures follow a retention retune automatically instead of going
+ * quietly stale — the failure that put a wrong "ALL TIME" tile on a pitch slide
+ * (WI-35490). Retune here, not at the call site.
+ */
+export const NOTIFY_GC_RETENTION_DAYS = 3;
+
+export async function gcOldNotifies(retentionDays = NOTIFY_GC_RETENTION_DAYS): Promise<number> {
   const { sql } = getOrgPg();
   const rows = await sql<Array<{ n: number }>>`
     WITH d AS (

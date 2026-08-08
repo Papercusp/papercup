@@ -532,6 +532,10 @@ export default defineTool({
         key: cacheKey,
         tags: ["harness_plans", "plan_revisions", "plan_runs"],
         softTtlMs: PLANS_LIST_SOFT_TTL_MS,
+        // P-007/D-082: D-073 measured this read hitting the ~10s cachedRead deadline
+        // under a 16-way herd (6 of 16 calls at 10037-10186ms) — the per-worker cold
+        // build the durable tier exists to share. Value is plain JSON.
+        l2: true,
       },
       async () => {
         // Per-build collector for the not-registered slugs the batch loop swallows

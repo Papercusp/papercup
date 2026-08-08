@@ -115,6 +115,20 @@ installTimestampedConsole();
 // This backstop exists purely for the detached fire-and-forget class: log
 // loudly (so the fault stays debuggable) and keep booting, instead of the
 // whole app dying silently mid-boot with nothing but a raw V8 stack dump.
+// (EI-19486216732882752) Capture our parent pid at MODULE LOAD — the earliest
+// point our JS runs — rather than when the parent-death watch is finally armed.
+// startParentDeathWatch() used to read `process.ppid` at ARM time, which happens
+// deep inside main(), AFTER `reconcileEnsure()`, `resolveStickyPort()` and (the
+// window that actually bites) the cold-start-lock contention loop, which sleeps
+// in 500ms slices for as long as a concurrent instance holds the lock. A desktop
+// parent that dies inside that multi-second window leaves the watch recording the
+// ALREADY-REPARENTED ppid as its "original", so isOrphanedFromParent() compares
+// that value against itself and returns false FOREVER — the sidecar never
+// self-terminates, survives as an orphan, and busy-spins on its closed-peer stdio.
+// Measured on this box 2026-08-08: 8 such orphans, 3 cores and 18.4GB held, all
+// spawned in one 8-minute window of concurrent packaged-desktop e2e runs.
+const PROCESS_START_PPID = process.ppid;
+
 process.on('unhandledRejection', (reason) => {
   console.error(
     '[serve] non-fatal unhandledRejection in a detached boot/background task (continuing boot):',
@@ -242,7 +256,62 @@ export function isOrphanedFromParent(
  * marker `resolveStickyPort` already gates on): a plain dev/CLI `serve` has
  * no such parent contract and legitimately outlives its launching shell.
  */
-export function startParentDeathWatch(onOrphaned: () => void): void {
+/**
+ * (EI-19486216732882752) The pid the LAUNCHER declared as our parent, when it
+ * told us (`PAPERCUSP_DESKTOP_PARENT_PID`, set by main.rs's `spawn_serve`).
+ *
+ * Why an env handoff rather than just reading `process.ppid`: a ppid read is an
+ * OBSERVATION whose correctness depends on when it happens, and every window in
+ * which it can be wrong is a window in which the watch goes permanently blind.
+ * A declared pid is an IDENTITY — it stays correct no matter how late we read it,
+ * which is what lets us also answer "is that parent still alive?" rather than only
+ * "has my ppid changed since I looked?".
+ *
+ * Falls back to the module-load ppid when the launcher did not declare one (an
+ * older packaged app against a newer sidecar), which preserves the pre-existing
+ * reparent-only semantics exactly.
+ */
+export function resolveExpectedParentPid(
+  env: NodeJS.ProcessEnv = process.env,
+  fallbackPpid: number = PROCESS_START_PPID,
+): { pid: number; declaredByLauncher: boolean } {
+  const raw = env.PAPERCUSP_DESKTOP_PARENT_PID;
+  const n = raw === undefined || raw === "" ? Number.NaN : Number(raw);
+  if (Number.isInteger(n) && n > 0) return { pid: n, declaredByLauncher: true };
+  return { pid: fallbackPpid, declaredByLauncher: false };
+}
+
+/**
+ * (EI-8894) Start a low-frequency watch that self-terminates this process
+ * (via `onOrphaned`, expected to be the same graceful `shutdown()` the
+ * SIGTERM handler uses) the moment our desktop parent dies WITHOUT signaling
+ * us first. Desktop-managed only (`PAPERCUSP_DESKTOP === '1'` — the same
+ * marker `resolveStickyPort` already gates on): a plain dev/CLI `serve` has
+ * no such parent contract and legitimately outlives its launching shell.
+ *
+ * (EI-19486216732882752) Two changes that turn this from "usually works" into
+ * "cannot go blind":
+ *  1. The reference ppid is captured at MODULE LOAD (or declared outright by the
+ *     launcher), never at arm time — see PROCESS_START_PPID for the race.
+ *  2. It checks ONCE IMMEDIATELY as well as on the interval, so a parent that
+ *     died during boot is caught before we finish booting (and before we pay for
+ *     embedded Postgres) instead of up to 5s later — or, in the blind case that
+ *     produced the 3-core/18.4GB fire, never.
+ *
+ * ⚠ Do NOT "simplify" the orphan test to `process.ppid === 1`. On this box an
+ * orphan reparents to `systemd --user` (pid 2026497), not to pid 1, so that test
+ * silently matches nothing — and main.rs:8243 documents the converse hazard on
+ * macOS, where a launchd-launched app has PPID==1 while perfectly healthy.
+ */
+export function startParentDeathWatch(
+  onOrphaned: () => void,
+  opts: {
+    expectedPpid?: number;
+    declaredByLauncher?: boolean;
+    parentAlive?: (pid: number) => boolean;
+    currentPpid?: () => number;
+  } = {},
+): void {
   if (process.env.PAPERCUSP_DESKTOP !== "1") return;
   // Headless rig frames (deb-hetzner-matrix / local-matrix) run the packaged
   // sidecar with PAPERCUSP_DESKTOP=1 for production parity but launch it from a
@@ -251,17 +320,51 @@ export function startParentDeathWatch(onOrphaned: () => void): void {
   // gate RED: frame A self-terminated mid-initdb on the launcher bash exiting).
   // Those launchers opt out explicitly; a real desktop never sets this.
   if (process.env.PAPERCUSP_PARENT_DEATH_WATCH === "0") return;
-  const originalPpid = process.ppid;
+
+  const resolved = resolveExpectedParentPid();
+  const originalPpid = opts.expectedPpid ?? resolved.pid;
+  const declaredByLauncher = opts.declaredByLauncher ?? resolved.declaredByLauncher;
+  const isAlive = opts.parentAlive ?? pidAlive;
+  const readPpid = opts.currentPpid ?? (() => process.ppid);
+  if (!(originalPpid > 0)) return;
+
+  const orphanReason = (): string | null => {
+    const currentPpid = readPpid();
+    if (isOrphanedFromParent(originalPpid, currentPpid)) {
+      return `now reparented to ${currentPpid}`;
+    }
+    // Only sound when the launcher DECLARED its pid: then it is an identity we
+    // can outlive-check. Against a bare ppid read this would be self-referential
+    // — the value may ALREADY be the reparent target, which is alive by
+    // definition — so the fallback path deliberately keeps reparent-only
+    // semantics rather than guessing.
+    if (declaredByLauncher && !isAlive(originalPpid)) {
+      return `declared parent pid is no longer alive (ppid now ${currentPpid})`;
+    }
+    return null;
+  };
+
+  const fire = (why: string): void => {
+    log(
+      `desktop parent pid ${originalPpid} is gone (${why}) — self-terminating instead of running orphaned`,
+    );
+    onOrphaned();
+  };
+
+  // Check once before arming: if the parent died during boot we are ALREADY
+  // orphaned, and waiting a full interval to notice is the cheap half of the bug.
+  const immediate = orphanReason();
+  if (immediate) {
+    fire(`${immediate}, detected before the watch armed`);
+    return;
+  }
+
   managedSetInterval(
     "serve-desktop-parent-death-watch",
     5000,
     () => {
-      if (isOrphanedFromParent(originalPpid, process.ppid)) {
-        log(
-          `desktop parent pid ${originalPpid} is gone (now reparented to ${process.ppid}) — self-terminating instead of running orphaned`,
-        );
-        onOrphaned();
-      }
+      const why = orphanReason();
+      if (why) fire(why);
     },
     { category: "watchdog" },
   );

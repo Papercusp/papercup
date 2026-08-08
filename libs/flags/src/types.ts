@@ -1566,6 +1566,18 @@ export const FLAGS = {
   // panic switch if a cache consumer ever serves wrong/stale data in prod. Read
   // SYNC-cached (the getOrSet hot path can't await), refreshed on boot + flag change.
   CACHE_LAYER: "papercusp-cache-layer",
+  // no-http-anywhere-2026-07-28 P-007 / D-082: the durable L2 tier (PgL2Store over
+  // harness_shared.cache_l2, migration 369) wired read-through/write-through inside
+  // `cachedRead`. DEFAULT ON: D-078 measured the actual cost as the 16-worker
+  // cold-start spread against per-process L1s — one worker's build could not serve
+  // the other fifteen, producing user-facing 10s deadline hits clustered right after
+  // every deploy/restart (when all 16 are cold at once). L2 makes a build durable and
+  // cross-process, so a cold worker reads a peer's result instead of rebuilding.
+  // OFF ⇒ cachedRead is byte-identical to the L1-only behaviour that shipped before.
+  // Read SYNC-cached alongside CACHE_LAYER (same reason: the read path can't await a
+  // flag), and STRICTLY SUBORDINATE to it — CACHE_LAYER off disables L2 too, because
+  // that kill-switch means "no cache", not "no L1".
+  CACHE_L2: "papercusp-cache-l2",
   // data-sync-push-completion P-005/D-012: the DEBOUNCED live-invalidation detector for the
   // six APPEND_HEAVY_TABLES (audit_log, agent_runs_consolidated, user_actions, harness_hook_logs,
   // toast_log, feature_audit_consolidated) — which intentionally carry NO per-row change-notify

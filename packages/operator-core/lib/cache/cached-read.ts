@@ -28,6 +28,7 @@
 
 import { getOrSetBounded, type CacheOutcome } from "@papercusp/cache";
 import { getOperatorCache } from "./instance";
+import { withL2, type L2Outcome } from "./l2-tier";
 import { activeWorkspaceId } from "../workspace-registry";
 
 /** The slice of a tool ctx cachedRead needs — workspace resolution only. */
@@ -104,6 +105,20 @@ export interface CachedReadOptions<V = unknown> {
    * partial result), not an error — a deadline is a graceful degrade, not a failure.
    */
   onDeadline?: () => V | Promise<V>;
+  /**
+   * Opt this read into the durable L2 tier (P-007 / D-082) — a cross-process
+   * Postgres-backed store consulted on an L1 miss, so ONE worker's build serves the
+   * whole 16-worker cluster instead of each paying its own cold build (D-078).
+   *
+   * OPT-IN, not default, for one concrete reason: an L2 value crosses a jsonb
+   * round-trip, so a `Date`/`Map`/`Set` inside it would come back reshaped. Only
+   * opt in a read whose value is plain JSON. Gated globally by `FLAGS.CACHE_L2`
+   * (and subordinate to `CACHE_LAYER`); off ⇒ byte-identical to L1-only.
+   *
+   * Requires a `softTtlMs` (or `hardTtlMs`) — it bounds the L2 row's life so L2 can
+   * never serve a value that would already have gone stale in L1. See l2-tier.ts.
+   */
+  l2?: boolean;
 }
 
 /**
@@ -172,14 +187,44 @@ export interface CachedReadToolStats {
   /** `deadlineMs` was set AND the wait hit it — the factory kept building in the
    *  background; this caller got `onDeadline()`'s degraded value instead (EI-184). */
   deadline: number;
+  /** L1 missed AND the durable L2 tier served the value — a cold build AVOIDED,
+   *  which is the whole point of L2 (D-082). Only ever nonzero for an `l2: true`
+   *  read while `FLAGS.CACHE_L2` is on. */
+  l2Hits: number;
+  /** L1 missed, L2 missed too ⇒ this call paid a real build. */
+  l2Misses: number;
+  /** The L2 store errored and the read degraded to a real build. Persistent
+   *  nonzero here means the tier is silently doing nothing — worth alerting on. */
+  l2Errors: number;
 }
 
 const TOOL_STATS = new Map<string, CachedReadToolStats>();
 
+function emptyStats(): CachedReadToolStats {
+  return {
+    hits: 0, misses: 0, stale: 0, bypass: 0, deadline: 0,
+    l2Hits: 0, l2Misses: 0, l2Errors: 0,
+  };
+}
+
+/** Per-tool L2 telemetry. Separate from {@link recordOutcome} because an L2
+ *  consultation happens INSIDE a miss — it refines a miss, it never replaces one. */
+function recordL2(tool: string, outcome: L2Outcome): void {
+  if (outcome === "off") return;
+  let s = TOOL_STATS.get(tool);
+  if (!s) {
+    s = emptyStats();
+    TOOL_STATS.set(tool, s);
+  }
+  if (outcome === "hit") s.l2Hits++;
+  else if (outcome === "miss") s.l2Misses++;
+  else s.l2Errors++;
+}
+
 function recordOutcome(tool: string, outcome: CacheOutcome): void {
   let s = TOOL_STATS.get(tool);
   if (!s) {
-    s = { hits: 0, misses: 0, stale: 0, bypass: 0, deadline: 0 };
+    s = emptyStats();
     TOOL_STATS.set(tool, s);
   }
   if (outcome === "hit") s.hits++;
@@ -191,7 +236,7 @@ function recordOutcome(tool: string, outcome: CacheOutcome): void {
 function recordDeadline(tool: string): void {
   let s = TOOL_STATS.get(tool);
   if (!s) {
-    s = { hits: 0, misses: 0, stale: 0, bypass: 0, deadline: 0 };
+    s = emptyStats();
     TOOL_STATS.set(tool, s);
   }
   s.deadline++;
@@ -226,20 +271,34 @@ export async function cachedRead<V>(
   const workspaceId = resolveCacheWorkspaceId(ctx);
   const keyPart = typeof opts.key === "string" ? opts.key : stableKey(opts.key);
   const fullKey = `${opts.tool}|${keyPart}`;
+  const hardTtl = opts.hardTtlMs !== undefined ? opts.hardTtlMs : defaultHardTtlMs();
+
+  // L2 read-through/write-through (D-082). Wrapping the FACTORY — rather than the
+  // cache — is what makes this need no change to the generic lib: `getOrSet` runs the
+  // factory on exactly an L1 miss/dead entry, which is exactly when L2 should be
+  // consulted. A fresh L1 hit never reaches this and never touches Postgres.
+  // `withL2` returns `factory` UNCHANGED when the tier is off, so a disabled L2 is
+  // byte-identical to the L1-only path.
+  const effectiveFactory = opts.l2
+    ? withL2(workspaceId, fullKey, factory, {
+        tags: opts.tags,
+        ...(opts.softTtlMs !== undefined ? { softTtlMs: opts.softTtlMs } : {}),
+        ...(hardTtl !== undefined ? { hardTtlMs: hardTtl } : {}),
+        onL2Outcome: (o: L2Outcome) => recordL2(opts.tool, o),
+      })
+    : factory;
+
   const getOrSetOpts = {
     tags: opts.tags,
     ...(opts.softTtlMs !== undefined ? { softTtlMs: opts.softTtlMs } : {}),
     // WI-1547: no explicit hardTtl ⇒ the bounded-staleness default (see above).
-    ...(() => {
-      const hard = opts.hardTtlMs !== undefined ? opts.hardTtlMs : defaultHardTtlMs();
-      return hard !== undefined ? { hardTtlMs: hard } : {};
-    })(),
+    ...(hardTtl !== undefined ? { hardTtlMs: hardTtl } : {}),
     ...(opts.cacheEmpty !== undefined ? { cacheEmpty: opts.cacheEmpty } : {}),
     onOutcome: (outcome: CacheOutcome) => recordOutcome(opts.tool, outcome),
   };
 
   if (opts.deadlineMs === undefined) {
-    return getOperatorCache().getOrSet(workspaceId, fullKey, factory, getOrSetOpts);
+    return getOperatorCache().getOrSet(workspaceId, fullKey, effectiveFactory, getOrSetOpts);
   }
 
   // EI-184: bound the wait via getOrSetBounded — the underlying build keeps
@@ -252,7 +311,7 @@ export async function cachedRead<V>(
       `cachedRead(${opts.tool}): deadlineMs requires onDeadline (the degrade-on-timeout value)`,
     );
   }
-  const outcome = await getOrSetBounded(getOperatorCache(), workspaceId, fullKey, factory, {
+  const outcome = await getOrSetBounded(getOperatorCache(), workspaceId, fullKey, effectiveFactory, {
     ...getOrSetOpts,
     deadlineMs: opts.deadlineMs,
   });

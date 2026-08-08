@@ -63,6 +63,7 @@ import {
 import { getSubstitutionRows } from '../bash-substitution/registry';
 import type { SubstitutionRow } from '../bash-substitution/match';
 import { activeWorkspaceId } from '../workspace-registry';
+import { pinModuleState } from '@papercusp/module-singleton';
 
 /** How far back a source file's mtime may be and still get ingested. */
 const INGEST_WINDOW_DAYS = 45;
@@ -1653,15 +1654,16 @@ export async function pruneSessionTurnsOnce(): Promise<{ deleted: number; partsD
 /* The periodic tick                                                    */
 /* ------------------------------------------------------------------ */
 
-// Single-flight pinned to globalThis (perf rule A18): tsx/dual-path imports can
+// Single-flight realm-pinned (perf rule A18): tsx/dual-path imports can
 // instantiate this module twice; a module-scoped flag would not dedupe.
-const __stateKey = Symbol.for('papercusp.sessionIngestState');
+// Pinned through @papercusp/module-singleton rather than a hand-rolled
+// `globalThis[Symbol.for(...)]` pair, so the pin stays visible to
+// listModuleDuplications() (EI-19479108855357092).
 interface SweepState { running: boolean; last: IngestStats | null }
-const __sweep: SweepState = (() => {
-  const g = globalThis as typeof globalThis & { [__stateKey]?: SweepState };
-  if (!g[__stateKey]) g[__stateKey] = { running: false, last: null };
-  return g[__stateKey]!;
-})();
+const __sweep = pinModuleState<SweepState>(
+  '@papercusp/operator-core.sessionIngestState',
+  () => ({ running: false, last: null }),
+);
 
 export function getLastSessionIngestStats(): IngestStats | null {
   return __sweep.last;

@@ -15,6 +15,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 
 import type { PostHogConfig } from '@papercusp/flags/server';
+import { pinModuleState } from '@papercusp/module-singleton';
 
 type Resolved = { config: PostHogConfig | null; source: string; testingFeatures: boolean };
 
@@ -54,12 +55,22 @@ interface PosthogWatcherState {
   installed: boolean;
   invalidators: Array<() => void>;
 }
-const __watcherKey = Symbol.for('papercusp.posthogConfigWatcher');
-const __watcherState: PosthogWatcherState = (() => {
-  const g = globalThis as typeof globalThis & { [__watcherKey]?: PosthogWatcherState };
-  if (!g[__watcherKey]) g[__watcherKey] = { installed: false, invalidators: [] };
-  return g[__watcherKey]!;
-})();
+// Pinned through @papercusp/module-singleton rather than a hand-rolled
+// `globalThis[Symbol.for(...)]` pair, so the pin stays visible to
+// listModuleDuplications() (EI-19479108855357092).
+//
+// ⚠ ONLY the watcher state is pinned — `cached` and `onConfigChange` below stay
+// module-local BY DESIGN, and that is not a half-finished migration. This module
+// deliberately ACCOMMODATES the split instead of collapsing it: one shared
+// fs.watch handle fires every record's own invalidator (registered into the
+// shared `invalidators` list at module init), which is what lets each record
+// keep its own `cached` + `onConfigChange`. Folding those two into the pin would
+// make `setOnConfigChange` last-writer-wins ACROSS records and render the
+// invalidator list pointless — a behavior change, not a cleanup. Leave them.
+const __watcherState = pinModuleState<PosthogWatcherState>(
+  '@papercusp/operator-core.posthogConfigWatcher',
+  () => ({ installed: false, invalidators: [] }),
+);
 let onConfigChange: (() => void) | null = null;
 // THIS module instance's invalidator — registered once at module init.
 __watcherState.invalidators.push(() => {

@@ -17,10 +17,13 @@ investors. They reward different bullets:
 **If you only pick eight,** these carry the most weight per line and don't overlap:
 `1.1` · `1.2` · `2.1` · `3.1` · `4.1` · `5.2` · `6.1` · `9.1`
 
-**One consistency note:** the deck's figures (2.37M lines, 12,099 files, 5,349 test
-files) count more broadly than my repo measurement (2.14M tracked lines excluding
-retired code). Use the deck's numbers everywhere — they're the published set, and
-having two versions in circulation is worse than either one.
+**Numbers updated 8 August 2026.** §9 has been re-measured and now differs from the
+deck. The two earlier figures (2.37M vs 2.14M) turned out to be measuring different sets
+rather than disagreeing — see `papercusp-stat-block-refresh-2026-08-08.md` for the
+reconciliation, the corrected basis, and one deck figure that is mislabelled and will
+reproduce *lower* than published (the "113,527 coordination events all time" tile —
+the table is retention-pruned). Fix that before anyone checks it. Everything else grew,
+and the test-to-source ratio improved from 0.72:1 to 0.90:1.
 
 ---
 
@@ -34,9 +37,9 @@ what exists predates the current generation of models. That gap is the product.
 
 **1.2 · Built Papercusp with Papercusp**
 The system wrote itself. I designed all of it and directed the work, but the agent fleet
-produced the code — running on the coordination substrate it was building, sixteen weeks
-from first commit, one person. The strongest evidence that the coordination layer works
-is the artifact it produced.
+produced the code — running on the coordination substrate it was building, from a standing
+start on 6 April 2026, one person. The strongest evidence that the coordination layer
+works is the artifact it produced.
 
 **1.3 · An open ecosystem, not a workflow harness**
 Traditional agent frameworks have humans pre-configure how agents interact. Papercusp
@@ -398,23 +401,41 @@ behind a flag nobody flips.
 
 ## §9 — Scale and proof
 
-**9.1 · 2.37M lines in sixteen weeks, solo**
-First commit 6 April 2026. 2.37M lines of TypeScript across 12,099 files, plus a Rust
-desktop shell, built by one person directing an agent fleet — not a line hand-written,
-but all of it designed. Every figure measured directly from the repository and the live
+*Re-measured 8 August 2026. Lines are git-tracked, excluding retired code — the strictest
+defensible basis, reproducible with `git ls-files`.*
+
+**9.1 · 2.4M lines in eighteen weeks, solo**
+First commit 6 April 2026. 2.41M lines of TypeScript across 11,495 files, plus a Rust
+desktop shell, built by one person directing an agent fleet — not a line hand-written, but
+all of it designed. Every figure measured directly from the repository and the live
 database, and reproducible on request.
 
-**9.2 · Half a million agent tool calls a week**
-482,645 tool calls in a single seven-day window. That is not a demo — it is sustained
-multi-agent load, the regime where coordination either holds or falls apart.
+**9.2 · 228 agents, 594,000 tool calls, one codebase, one week**
+593,991 agent tool calls from 228 distinct agent identities in a single seven-day window —
+roughly 85,000 operations a day, sustained. Volume alone could be one agent in a loop;
+228 concurrent identities on one codebase is the thing that's actually hard, and it is the
+regime where coordination either holds or falls apart.
 
-**9.3 · 113,527 coordination events, 29,005 work items**
-The coordination plane and the work ledger at production volume, from a system that has
-been supervising its own construction since week one.
+**9.3 · A test-to-source ratio that is rising, not falling**
+1.14M lines of tests across 5,692 test files against 1.27M lines of product code — a
+0.90:1 ratio, up from 0.72:1 twelve days earlier. Test code is growing faster than product
+code under autonomous development, which is the opposite of the default assumption about
+AI-generated software.
 
-**9.4 · 691 tools across 139 functional groups**
+**9.4 · 33,769 work items, 16,172 driven to done**
+The work ledger at production volume, with roughly half of everything ever filed carried
+to a terminal state — throughput, not just accumulation. Alongside it: 25,711 coordination
+events in the last seven days across 200 distinct work contexts.
+
+**9.5 · 691 tools across 139 functional groups**
 The agent-facing surface area, all of it auth-gated, quota-governed and telemetered
-through one shared dispatcher.
+through one shared dispatcher — generated from typed function definitions rather than
+hand-written per endpoint.
+
+**9.6 · 630 schema migrations, 58 of them in twelve days**
+Schema evolution under autonomous development, applied through a runner with atomic
+migration-number allocation so concurrent agents cannot collide. Sustained structural
+change is the risky kind, and it's the kind this has been doing continuously.
 
 ---
 
@@ -423,7 +444,7 @@ through one shared dispatcher.
 **Engineering-forward**
 Built a coordination substrate for AI agent fleets — durable work-item DAG, push-based
 messaging and events, enforced file locking, four-layer memory with dynamic context
-injection, peer-to-peer git, and mechanically-gated delivery. 2.37M lines in sixteen
+injection, peer-to-peer git, and mechanically-gated delivery. 2.4M lines in eighteen
 weeks, written by the agent fleet it was built to coordinate.
 
 **Product-forward**

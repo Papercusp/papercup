@@ -20,6 +20,7 @@
 import type { FireReactionResult } from "./dispatch-reaction";
 import { getOperatorCache } from "../cache/instance";
 import { coalescedInvalidateByTags } from "../cache/debounced-invalidate";
+import { invalidateL2ByTags } from "../cache/l2-tier";
 import {
   reconcileLinkedWorkItemsForCompletedPlanItems,
   resyncPlanItemLaneNow,
@@ -160,6 +161,11 @@ export async function fireBuiltinReactionAction(
       }
       try {
         coalescedInvalidateByTags(getOperatorCache(), workspaceId, tags);
+        // D-082: the same bust must reach the DURABLE tier, or an L2 row would keep
+        // serving a value every worker's L1 has already discarded — turning L2 from a
+        // cold-start sharer into a staleness source. Fire-and-forget + never throws
+        // (see invalidateL2ByTags); a no-op when the tier is off.
+        invalidateL2ByTags(workspaceId, tags);
         return { ok: true };
       } catch (err) {
         return {

@@ -30,6 +30,7 @@
 import { createHash } from 'node:crypto';
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
+import { pinModuleState } from '@papercusp/module-singleton';
 
 /**
  * Chunk width, in characters. 1500 is the measured arm from D-016 — not a
@@ -274,14 +275,13 @@ interface TurnChunkSyncState {
   available: boolean;
   availableCheckedAt: number;
 }
-const __turnChunkStateKey = Symbol.for('papercusp.turnChunkSyncState');
-const __turnChunkState: TurnChunkSyncState = (() => {
-  const g = globalThis as typeof globalThis & { [__turnChunkStateKey]?: TurnChunkSyncState };
-  if (!g[__turnChunkStateKey]) {
-    g[__turnChunkStateKey] = { running: false, fails: 0, available: false, availableCheckedAt: 0 };
-  }
-  return g[__turnChunkStateKey]!;
-})();
+// Pinned through @papercusp/module-singleton rather than a hand-rolled
+// `globalThis[Symbol.for(...)]` pair — same sharing, but the pin stays visible
+// to listModuleDuplications() (EI-19479108855357092).
+const __turnChunkState = pinModuleState<TurnChunkSyncState>(
+  '@papercusp/operator-core.turnChunkSyncState',
+  () => ({ running: false, fails: 0, available: false, availableCheckedAt: 0 }),
+);
 
 /** How long a NEGATIVE availability probe is cached. */
 const AVAILABILITY_TTL_MS = 60_000;

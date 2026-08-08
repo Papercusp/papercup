@@ -15,11 +15,19 @@
 
 import type { MatchedAction } from '@papercusp/rules';
 import { ReactionRegistry } from '@papercusp/event-reaction';
+import { pinModuleState } from '@papercusp/module-singleton';
 import type { ReactionRule, ToolInvocationEvent } from './types';
 
 type ReactionEngine = ReactionRegistry<ToolInvocationEvent, string>;
 
-const GLOBAL_KEY = '__papercuspReactionEngine__';
+// Realm-pinned through @papercusp/module-singleton rather than a hand-rolled
+// `globalThis[key]` pair: hand-rolling shares the registry correctly but is
+// invisible to listModuleDuplications(), which then answers a confident `[]`
+// while this module is split (EI-19479108855357092).
+const __state = pinModuleState<{ engine: ReactionEngine | null }>(
+  '@papercusp/operator-core.reactionEngine',
+  () => ({ engine: null }),
+);
 
 /** The wildcard trigger key every `<schema>.<table>.changed` event also matches. */
 export const TABLE_CHANGED_KEY = '*.changed';
@@ -40,21 +48,18 @@ function keyOf(event: ToolInvocationEvent): string | string[] {
 }
 
 function engine(): ReactionEngine {
-  const g = globalThis as Record<string, unknown>;
-  let e = g[GLOBAL_KEY] as ReactionEngine | undefined;
-  if (!e) {
-    e = new ReactionRegistry<ToolInvocationEvent, string>({
+  if (!__state.engine) {
+    __state.engine = new ReactionRegistry<ToolInvocationEvent, string>({
       keyOf,
       onError: (err, rule) => {
-         
+
         console.warn(
           `[events] rule "${rule.id}" condition threw: ${err instanceof Error ? err.message : String(err)}`,
         );
       },
     });
-    g[GLOBAL_KEY] = e;
   }
-  return e;
+  return __state.engine;
 }
 
 /**

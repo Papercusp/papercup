@@ -23,6 +23,7 @@
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from './workspace-registry';
 import { ENCRYPTED_TABLES, getDbEncryptionKey } from './db-encryption';
+import { pinModuleState } from '@papercusp/module-singleton';
 
 // (operator_last_scan / operator_idle_snapshot / operator_scanner_session were
 // removed with the scanner teardown — unify-agent-launches D-005, migration 167.)
@@ -189,12 +190,18 @@ interface OpStateCacheEntry {
 // space either side loaded through. Genuine CROSS-process staleness (a
 // different OS process entirely, e.g. WI-1378's substrate-sidecar case) is
 // unaffected — that still needs `{ fresh: true }`, unchanged by this fix.
-const __opStateCacheKey = Symbol.for('papercusp.opStateCache');
-type OpStateCacheGlobals = typeof globalThis & { [__opStateCacheKey]?: Map<string, OpStateCacheEntry> };
+// Pinned through @papercusp/module-singleton rather than a hand-rolled
+// `globalThis[Symbol.for(...)]` pair. The sharing semantics above are exactly
+// what the primitive provides; hand-rolling achieved them but left the pin
+// invisible to listModuleDuplications(), which then answers a confident `[]`
+// while this module — dependency-of-everything, and so a prime split
+// candidate — is duplicated (EI-19479108855357092).
+const __state = pinModuleState<{ cache: Map<string, OpStateCacheEntry> }>(
+  '@papercusp/operator-core.opStateCache',
+  () => ({ cache: new Map<string, OpStateCacheEntry>() }),
+);
 function opStateCacheMap(): Map<string, OpStateCacheEntry> {
-  const g = globalThis as OpStateCacheGlobals;
-  if (!g[__opStateCacheKey]) g[__opStateCacheKey] = new Map<string, OpStateCacheEntry>();
-  return g[__opStateCacheKey]!;
+  return __state.cache;
 }
 const opStateCacheKey = (table: StateTable, ws: string): string => `${table}\x00${ws}`;
 

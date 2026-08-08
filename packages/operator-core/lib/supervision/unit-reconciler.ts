@@ -285,7 +285,15 @@ export function checkSilentCrashLoop(
 export type ReconcileAction =
   | { kind: 'healthy'; unit: string }
   | { kind: 'recovered'; unit: string } // transition down -> healthy, damping reset
-  | { kind: 'report-only'; unit: string; reason: 'down-report-only' | 'unit-not-found' | 'paused'; notify: boolean }
+  | {
+      kind: 'report-only';
+      unit: string;
+      reason: 'down-report-only' | 'unit-not-found' | 'paused';
+      /** WI-9871: only set on `unit-not-found` — true when `LoadState=not-found` positively
+       *  confirmed the unit is absent, false/undefined when we simply could not tell. */
+      confirmedAbsent?: boolean;
+      notify: boolean;
+    }
   | { kind: 'waiting-backoff'; unit: string }
   | { kind: 'already-escalated'; unit: string }
   | { kind: 'restart'; unit: string; backoffSec: number }
@@ -297,7 +305,7 @@ export interface DecideInput {
   status: SystemctlUnitStatus | undefined;
   /** `systemctl --user show <unit> -p Result,NRestarts` — only fetched/needed when we're
    *  actually about to consider restarting (the caller may omit it otherwise). */
-  show: { result?: string; unitFileState?: string } | undefined;
+  show: { result?: string; unitFileState?: string; loadState?: string } | undefined;
   state: UnitFlapState;
   autoRestartFlagOn: boolean;
   now: number;
@@ -332,8 +340,34 @@ export function decideReconcile(input: DecideInput): { action: ReconcileAction; 
   state.consecutiveDownTicks += 1;
 
   if (!status) {
+    // WI-9871: absence from `list-units` does NOT mean the unit is gone. systemd only lists units
+    // it has LOADED into runtime, and `disable --now` on a unit that is then never started drops it
+    // out of `list-units --all` entirely — which is precisely the state the documented pause
+    // procedure leaves behind (`systemctl --user disable --now papercup-live-federation-gate.timer`,
+    // see the SUPERVISED_PROCESSES comment on that entry). `systemctl show` still resolves it on
+    // demand, so consult the show-probe before concluding "removed/never installed": otherwise the
+    // WI-5378 pause check below is STRUCTURALLY UNREACHABLE for a paused-and-unloaded unit, and the
+    // operator is told a unit file is missing when it is sitting on disk, deliberately disabled.
+    if (isAdministrativelyPaused(show?.unitFileState)) {
+      state.gaveUp = false;
+      state.restarts = [];
+      state.backoffIndex = 0;
+      state.lastRestartAt = null;
+      return {
+        action: { kind: 'report-only', unit: entry.name, reason: 'paused', notify: justWentDown },
+        nextState: state,
+      };
+    }
     return {
-      action: { kind: 'report-only', unit: entry.name, reason: 'unit-not-found', notify: justWentDown },
+      action: {
+        kind: 'report-only',
+        unit: entry.name,
+        reason: 'unit-not-found',
+        // Only `LoadState=not-found` positively CONFIRMS absence. Anything else (including a failed
+        // or skipped show-probe) means we could not tell, and the notification must not claim we did.
+        confirmedAbsent: show?.loadState === 'not-found',
+        notify: justWentDown,
+      },
       nextState: state,
     };
   }
@@ -510,10 +544,21 @@ export async function reconcileTick(deps: ReconcilerDeps): Promise<ReconcileTick
     // healthy or not — a unit can be UP the whole time yet have drifted Restart= policy). A
     // report-only entry (autoRestart:false) or a flag-off tick skips the call entirely (neither
     // check applies to it).
-    let show: { result?: string; restart?: string; nRestarts?: number; unitFileState?: string } | undefined;
-    if (entry.autoRestart) {
+    let show:
+      | { result?: string; restart?: string; nRestarts?: number; unitFileState?: string; loadState?: string }
+      | undefined;
+    // WI-9871: ALSO probe when the unit is absent from `list-units` (`!status`), regardless of
+    // `autoRestart`. A disabled-and-unloaded unit never appears in the list, so without this the
+    // down-path can only ever report "removed/never installed?" for it — `systemctl show` is the
+    // only surface that can tell an administrative pause from a genuinely missing unit file.
+    if (entry.autoRestart || !status) {
       try {
-        const raw = await deps.execUser(['show', entry.unit, '-p', 'Result,NRestarts,Restart,UnitFileState']);
+        const raw = await deps.execUser([
+          'show',
+          entry.unit,
+          '-p',
+          'Result,NRestarts,Restart,UnitFileState,LoadState',
+        ]);
         const props = parseSystemctlShowProperties(raw);
         const nRestarts = props.NRestarts != null ? Number(props.NRestarts) : undefined;
         show = {
@@ -521,6 +566,7 @@ export async function reconcileTick(deps: ReconcilerDeps): Promise<ReconcileTick
           restart: props.Restart,
           nRestarts: Number.isFinite(nRestarts) ? nRestarts : undefined,
           unitFileState: props.UnitFileState,
+          loadState: props.LoadState,
         };
       } catch {
         /* best-effort — decideReconcile treats a missing `show` as "no start-limit-hit signal";
@@ -654,7 +700,9 @@ export async function reconcileTick(deps: ReconcilerDeps): Promise<ReconcileTick
             .notify({
               summary:
                 action.reason === 'unit-not-found'
-                  ? `⚠ supervision: \`${entry.unit}\` not found by systemctl --user (removed/never installed?) — report-only`
+                  ? action.confirmedAbsent
+                    ? `⚠ supervision: \`${entry.unit}\` not found by systemctl --user (LoadState=not-found — removed/never installed) — report-only`
+                    : `⚠ supervision: \`${entry.unit}\` is not loaded by systemctl --user and its state could not be read — report-only (NOT confirmed missing; check \`systemctl --user status ${entry.unit}\`)`
                   : action.reason === 'paused'
                     ? `⏸ supervision: \`${entry.unit}\` is down but administratively disabled/masked — respecting the pause, NOT auto-restarting (\`systemctl --user enable --now ${entry.unit}\` to resume)`
                     : `⚠ supervision: \`${entry.unit}\` is down (report-only: ${entry.autoRestart ? 'FLAGS.supervisorAutoRestart is off' : 'entry.autoRestart:false'})`,

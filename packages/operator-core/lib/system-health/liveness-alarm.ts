@@ -232,6 +232,15 @@ export interface BeesLivenessContext {
    *  the same "placeable" definition reconcilePausedQueen/queenPlacementStalled
    *  use). >0 means real cup work is waiting while 0 bees run ⇒ genuine starvation. */
   cupPlaceableFrontier: number;
+  /** The survey backing `cupPlaceableFrontier` FAILED to read this tick, so that
+   *  number is a fabricated 0, not a measurement (`WorkFeedHealth.frontierUnreadable`).
+   *  REQUIRED, deliberately: `cupPlaceableFrontier` is the leg that decides this gate
+   *  (measured 08-04..08-07 — workspace fact
+   *  `panel-bees-deciding-leg-is-cup-placeable-frontier`), and a fabricated 0 reads as
+   *  "no cup work waiting" ⇒ `idle-by-design` ⇒ the bees-dead alarm is SUPPRESSED. An
+   *  optional field would default that unsafe direction on every construction site that
+   *  forgot it, which is the under-reporting the flag exists to prevent. */
+  frontierUnreadable: boolean;
   /** Live bee-tier dispatch budget (spare cup-tier admission slots) from the
    *  gateway capacity oracle. null = unknown (gateway off/unreachable) — treated
    *  fail-safe (never forces a page on its own; see `beesIdleByDesign`). */
@@ -266,6 +275,7 @@ export function beesIdleByDesign(ctx: BeesLivenessContext): boolean {
 
 /** Which leg of {@link beesIdleDecision} decided the verdict. */
 export type BeesIdleLeg =
+  | 'frontier-unreadable'
   | 'cup-work-waiting'
   | 'gateway-restart-recovering'
   | 'no-other-agent-alive'
@@ -292,6 +302,12 @@ export type BeesIdleLeg =
  * numbers in the durable resolve note. The next occurrence names its own cause.
  */
 export function beesIdleDecision(ctx: BeesLivenessContext): { idle: boolean; leg: BeesIdleLeg } {
+  // The survey failed ⇒ cupPlaceableFrontier is a fabricated 0, not a measurement, and
+  // this gate CANNOT prove idle from it. Checked FIRST — not because the outcome would
+  // otherwise differ (a fabricated 0 falls through the next branch anyway) but because
+  // the ATTRIBUTION would: the note must say "that number is not an observation" rather
+  // than blame whichever downstream leg happened to catch it. Fail-safe: never suppress.
+  if (ctx.frontierUnreadable) return { idle: false, leg: 'frontier-unreadable' };
   // real cup work unplaced → starvation, not idle
   if (ctx.cupPlaceableFrontier > 0) return { idle: false, leg: 'cup-work-waiting' };
   // gateway restarting → capacity unproven
@@ -316,7 +332,9 @@ export function beesIdleDecision(ctx: BeesLivenessContext): { idle: boolean; leg
 export function describeBeesLiveness(ctx: BeesLivenessContext): string {
   const { leg } = beesIdleDecision(ctx);
   return (
-    `cupPlaceableFrontier=${ctx.cupPlaceableFrontier} ` +
+    // An unreadable survey renders as `unreadable` rather than the fabricated 0 —
+    // printing the 0 is what made this indistinguishable from an observed zero.
+    `cupPlaceableFrontier=${ctx.frontierUnreadable ? 'unreadable' : ctx.cupPlaceableFrontier} ` +
     `dispatchBudget=${ctx.dispatchBudget ?? 'unknown'} ` +
     `restartRecovering=${ctx.restartRecovering} ` +
     `otherAgentsAlive=${ctx.otherAgentsAlive} ⇒ ${leg}`
@@ -336,11 +354,24 @@ export function beesLivenessFromHealth(
   const frontier = wf?.frontier ?? 0;
   const frontierStuck = wf?.frontierStuck ?? 0;
   const cupPlaceableFrontier = Math.max(0, frontier - frontierStuck);
+  // SCOPED DELIBERATELY to the flag the survey's catch sets — the MEASURED defect.
+  //
+  // A missing/null-data workFeed panel fabricates the same 0 and is arguably "unobserved"
+  // too, and treating it as unreadable here is what the `unreadable ≠ clear` principle
+  // suggests. It is NOT done, on purpose: no such snapshot has been OBSERVED in production
+  // (collectWorkFeed is panelSafe-wrapped, so the panel is present even when the survey
+  // fails — which is precisely why the flag was needed), while the change would un-suppress
+  // panel:bees for every caller whose snapshot lacks the panel. Widening a fail-safe to
+  // cover an unmeasured state, in an alarm that was firing 76×/day, buys a plausible
+  // principle with real page volume. If that snapshot shape is ever observed, flag it at
+  // its source the way the survey does; do not infer it here.
+  const frontierUnreadable = wf?.frontierUnreadable === true;
   const suLive = health.panels.suFleet?.data?.live ?? 0;
   const beesAlive = health.panels.bees?.data?.alive ?? 0;
   const queenAlive = health.crossMonitor?.queenAlive === true;
   return {
     cupPlaceableFrontier,
+    frontierUnreadable,
     dispatchBudget: capacity.dispatchBudget,
     restartRecovering: capacity.restartRecovering,
     otherAgentsAlive: suLive > 0 || beesAlive > 0 || queenAlive,

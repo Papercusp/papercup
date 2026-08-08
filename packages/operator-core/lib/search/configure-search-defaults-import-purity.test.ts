@@ -33,64 +33,16 @@
  * walk actually finds what it claims to look for.
  */
 import { describe, expect, it } from 'vitest';
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { dirname, resolve, relative } from 'node:path';
+import { importGraph } from './import-graph';
 
 const HERE = dirname(new URL(import.meta.url).pathname);
 const POLICY = resolve(HERE, 'configure-search-defaults.ts');
 const HEAVY_EMBEDDER = resolve(HERE, '../agent-tools/search/embedder.ts');
 const MEMORY_CONFIGURE = resolve(HERE, '../memory/configure.ts');
 
-/**
- * Relative, RUNTIME import specifiers of one TS module.
- *
- * `import type` / `export type` statements are elided by the compiler and pull
- * nothing at runtime, so counting them would report a coupling that does not
- * exist. An inline `{ type X, y }` still emits (it has a value import), so only
- * the statement-leading `type` keyword disqualifies a statement.
- */
-function runtimeRelativeSpecifiers(file: string): string[] {
-  const src = readFileSync(file, 'utf8');
-  const out: string[] = [];
-  const stmt = /(?:^|\n)\s*(import|export)\s+(type\s+)?([\s\S]*?)from\s*['"](\.[^'"]+)['"]/g;
-  for (const m of src.matchAll(stmt)) {
-    if (m[2]) continue; // `import type … from` / `export type … from`
-    out.push(m[4]);
-  }
-  // Side-effect imports: `import './x';` — no `from` clause, always runtime.
-  const bare = /(?:^|\n)\s*import\s*['"](\.[^'"]+)['"]/g;
-  for (const m of src.matchAll(bare)) out.push(m[1]);
-  return out;
-}
-
-function resolveTs(fromFile: string, spec: string): string | null {
-  const base = resolve(dirname(fromFile), spec);
-  for (const cand of [base, `${base}.ts`, `${base}.tsx`, `${base}/index.ts`]) {
-    if (existsSync(cand) && !cand.endsWith('/')) {
-      // A bare directory match is not a module; require a file extension.
-      if (/\.(ts|tsx)$/.test(cand)) return cand;
-    }
-  }
-  return null;
-}
-
-/** Every .ts file reachable from `entry` through runtime relative imports. */
-function reachable(entry: string): Set<string> {
-  const seen = new Set<string>();
-  const queue = [entry];
-  while (queue.length) {
-    const file = queue.pop()!;
-    if (seen.has(file)) continue;
-    seen.add(file);
-    for (const spec of runtimeRelativeSpecifiers(file)) {
-      const next = resolveTs(file, spec);
-      if (next && !seen.has(next)) queue.push(next);
-    }
-  }
-  seen.delete(entry);
-  return seen;
-}
-
+const reachable = (entry: string) => importGraph(entry).modules;
 const rel = (f: string) => relative(resolve(HERE, '../..'), f);
 
 describe('configure-search-defaults import purity (P-016/P-017)', () => {

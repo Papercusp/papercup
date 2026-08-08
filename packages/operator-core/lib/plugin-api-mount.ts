@@ -23,6 +23,7 @@
 import { loadPlugins, type LoadedPlugin } from '@papercusp/plugin-loader';
 import { existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
+import { pinModuleState } from '@papercusp/module-singleton';
 
 import { papercuspPath } from './papercusp-root';
 interface ApiRouteHandle {
@@ -45,17 +46,18 @@ function discoverHarnessSlugs(): string[] {
   }
 }
 
-// Pin the registry on globalThis so HMR module reloads don't lose mounts.
-const __mountKey = '__papercuspPluginApiMount';
+// Realm-pinned so HMR module reloads don't lose mounts. Pinned through
+// @papercusp/module-singleton rather than a hand-rolled `globalThis[key]` pair:
+// hand-rolling shares correctly but is invisible to listModuleDuplications(),
+// which then answers a confident `[]` while this module is split
+// (EI-19479108855357092).
 type Result = { mounted: number; skipped: number; errors: string[] };
 type Registry = Map<string, ApiRouteHandle>;
 type CacheShape = { promise: Promise<Result> | null; counts: Result | null; registry: Registry };
-type Globals = { [__mountKey]?: CacheShape };
-const __globals = globalThis as Globals;
-if (!__globals[__mountKey]) {
-  __globals[__mountKey] = { promise: null, counts: null, registry: new Map() };
-}
-const __cache = __globals[__mountKey]!;
+const __cache = pinModuleState<CacheShape>(
+  '@papercusp/operator-core.pluginApiMount',
+  () => ({ promise: null, counts: null, registry: new Map() }),
+);
 
 export interface MountPluginApiRoutesOptions {
   /** Override the global-plugins discovery directory (tests). */

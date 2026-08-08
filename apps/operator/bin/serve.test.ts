@@ -128,6 +128,192 @@ describe("startParentDeathWatch (EI-8894)", () => {
   });
 });
 
+describe("parent-death watch cannot go blind (EI-19486216732882752)", () => {
+  const origDesktop = process.env.PAPERCUSP_DESKTOP;
+  const origDeclared = process.env.PAPERCUSP_DESKTOP_PARENT_PID;
+  afterEach(() => {
+    if (origDesktop === undefined) delete process.env.PAPERCUSP_DESKTOP;
+    else process.env.PAPERCUSP_DESKTOP = origDesktop;
+    if (origDeclared === undefined)
+      delete process.env.PAPERCUSP_DESKTOP_PARENT_PID;
+    else process.env.PAPERCUSP_DESKTOP_PARENT_PID = origDeclared;
+    vi.useRealTimers();
+  });
+
+  describe("resolveExpectedParentPid", () => {
+    it("prefers the pid the launcher DECLARED over any ppid observation", () => {
+      expect(
+        serve.resolveExpectedParentPid(
+          { PAPERCUSP_DESKTOP_PARENT_PID: "4321" } as NodeJS.ProcessEnv,
+          99,
+        ),
+      ).toEqual({ pid: 4321, declaredByLauncher: true });
+    });
+
+    it("falls back to the module-load ppid when the launcher declared nothing (older packaged app, newer sidecar)", () => {
+      expect(
+        serve.resolveExpectedParentPid({} as NodeJS.ProcessEnv, 99),
+      ).toEqual({ pid: 99, declaredByLauncher: false });
+    });
+
+    // A malformed handoff must degrade to the old reparent-only semantics, never
+    // to a bogus pid we would then liveness-check against (pid 0 / negatives are
+    // process-GROUP selectors to kill(2) — treating one as a parent is dangerous).
+    it.each(["", "0", "-1", "not-a-pid", "12.5"])(
+      "ignores a malformed declared pid %j and falls back undeclared",
+      (raw) => {
+        expect(
+          serve.resolveExpectedParentPid(
+            { PAPERCUSP_DESKTOP_PARENT_PID: raw } as NodeJS.ProcessEnv,
+            77,
+          ),
+        ).toEqual({ pid: 77, declaredByLauncher: false });
+      },
+    );
+  });
+
+  describe("startParentDeathWatch", () => {
+    it("REGRESSION (the 3-core/18.4GB fire): fires IMMEDIATELY when the parent died before the watch armed", () => {
+      // The exact shape measured 2026-08-08: the real Tauri parent (2238351) died
+      // while the sidecar sat in the cold-start-lock contention loop, so by arm
+      // time it had already been reparented to systemd --user (2026497). The old
+      // code read process.ppid HERE, recorded 2026497 as "original", compared it
+      // against itself forever, and never self-terminated.
+      process.env.PAPERCUSP_DESKTOP = "1";
+      let fired = 0;
+      serve.startParentDeathWatch(() => void fired++, {
+        expectedPpid: 2238351,
+        declaredByLauncher: true,
+        currentPpid: () => 2026497,
+        parentAlive: () => false,
+      });
+      expect(fired).toBe(1);
+    });
+
+    it("with a DECLARED parent pid, catches a dead parent even when ppid NEVER changes", () => {
+      // This is the case a ppid watch structurally cannot see, and the whole
+      // reason the launcher handoff exists: same ppid at every read, parent gone.
+      process.env.PAPERCUSP_DESKTOP = "1";
+      let fired = 0;
+      serve.startParentDeathWatch(() => void fired++, {
+        expectedPpid: 2026497,
+        declaredByLauncher: true,
+        currentPpid: () => 2026497,
+        parentAlive: () => false,
+      });
+      expect(fired).toBe(1);
+    });
+
+    it("WITHOUT a declared pid, keeps reparent-only semantics (documents why the handoff is required)", () => {
+      // Deliberate control: on the fallback path the liveness check would be
+      // self-referential — the recorded value may already BE the reparent target,
+      // which is alive by definition — so it must NOT fire here. This asserts the
+      // limitation rather than hiding it: it is what main.rs's env handoff buys.
+      vi.useFakeTimers();
+      process.env.PAPERCUSP_DESKTOP = "1";
+      let fired = 0;
+      serve.startParentDeathWatch(() => void fired++, {
+        expectedPpid: 2026497,
+        declaredByLauncher: false,
+        currentPpid: () => 2026497,
+        parentAlive: () => false,
+      });
+      expect(fired).toBe(0);
+    });
+
+    it("does not fire while the parent is alive and we have not been reparented", () => {
+      vi.useFakeTimers();
+      process.env.PAPERCUSP_DESKTOP = "1";
+      let fired = 0;
+      serve.startParentDeathWatch(() => void fired++, {
+        expectedPpid: 1234,
+        declaredByLauncher: true,
+        currentPpid: () => 1234,
+        parentAlive: () => true,
+      });
+      expect(fired).toBe(0);
+      vi.advanceTimersByTime(30_000);
+      expect(fired).toBe(0);
+    });
+
+    it("still fires on the INTERVAL when the parent dies after a healthy arm (EI-8894 behaviour preserved)", () => {
+      vi.useFakeTimers();
+      process.env.PAPERCUSP_DESKTOP = "1";
+      let fired = 0;
+      let ppid = 1234;
+      serve.startParentDeathWatch(() => void fired++, {
+        expectedPpid: 1234,
+        declaredByLauncher: true,
+        currentPpid: () => ppid,
+        parentAlive: () => true,
+      });
+      expect(fired).toBe(0);
+      ppid = 2026497; // parent hard-killed → reparented mid-run
+      vi.advanceTimersByTime(5_000);
+      expect(fired).toBe(1);
+    });
+
+    // ---- FALSIFIABILITY CONTROLS -------------------------------------------
+    // CLAUDE.md "Proving a guard is falsifiable": the subject here is a MODULE we
+    // import, so the correct tier is a deliberately-wrong implementation kept
+    // PERMANENTLY in the test file — never an in-tree mutation. (`git-sync`
+    // sweeps the whole working tree every few minutes and has already committed
+    // one probe mutant, EI-19450431506682666; the `locks:acquire_resource`
+    // mitigation does NOT actually pause the sweep, verified 2026-07-26.)
+    //
+    // The two tests below are a CALIBRATION PAIR: identical input, opposite
+    // outcomes. Without the pair, a control that "fails to detect" proves
+    // nothing — it would also fail to detect if the property itself were broken.
+
+    /** The pre-fix semantics, reproduced exactly: reference ppid read AT ARM TIME. */
+    function blindParentDeathWatchPreFix(
+      onOrphaned: () => void,
+      o: { currentPpid: () => number },
+    ): void {
+      const originalPpid = o.currentPpid(); // ← the bug, in one line
+      if (originalPpid !== o.currentPpid()) onOrphaned();
+    }
+
+    it("CONTROL (wrong impl): the pre-fix watch is BLIND to the measured orphan — this is the fire", () => {
+      let fired = 0;
+      blindParentDeathWatchPreFix(() => void fired++, {
+        currentPpid: () => 2026497, // already reparented; compares against itself
+      });
+      expect(fired).toBe(0);
+    });
+
+    it("CALIBRATION (real impl): the SAME input fires under the shipped watch", () => {
+      process.env.PAPERCUSP_DESKTOP = "1";
+      let fired = 0;
+      serve.startParentDeathWatch(() => void fired++, {
+        expectedPpid: 2026497,
+        declaredByLauncher: true,
+        currentPpid: () => 2026497,
+        parentAlive: () => false,
+      });
+      expect(fired).toBe(1);
+    });
+    // ------------------------------------------------------------------------
+
+    it("stays opted out for headless rigs even when the parent is provably dead", () => {
+      process.env.PAPERCUSP_DESKTOP = "1";
+      process.env.PAPERCUSP_PARENT_DEATH_WATCH = "0";
+      try {
+        let fired = 0;
+        serve.startParentDeathWatch(() => void fired++, {
+          expectedPpid: 2238351,
+          declaredByLauncher: true,
+          currentPpid: () => 2026497,
+          parentAlive: () => false,
+        });
+        expect(fired).toBe(0);
+      } finally {
+        delete process.env.PAPERCUSP_PARENT_DEATH_WATCH;
+      }
+    });
+  });
+});
+
 describe("writeJsonAtomic + readOperatorDiscovery", () => {
   afterEach(() => {
     rmSync(operatorJson(), { force: true });

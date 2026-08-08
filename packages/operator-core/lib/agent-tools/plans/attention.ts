@@ -241,6 +241,14 @@ export default defineTool({
         },
         tags: ["harness_plans", "plan_revisions", "plan_runs"],
         softTtlMs: PLANS_ATTENTION_SOFT_TTL_MS,
+        // P-007/D-082: the read D-078 measured. :3070 runs 16 workers against
+        // per-process L1s, so each paid its OWN cold build of this ~10-source
+        // aggregate — the 10s deadline hits below clustered on cold workers right
+        // after a deploy. L2 makes one worker's build serve the other fifteen.
+        // The value is plain JSON (groups/tierCounts/itemCount), so the jsonb
+        // round-trip is shape-preserving; L2 rows expire at the 20s softTtl above,
+        // so this can never serve anything staler than L1 would have.
+        l2: true,
         // EI-184: bound a genuinely-blocking build (cold L1 / forced rebuild) so this
         // tool call can't exceed its 60s ceiling; degrade to an empty feed on deadline
         // (the build keeps running in the background and lands in cache regardless).

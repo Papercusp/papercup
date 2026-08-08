@@ -12,7 +12,7 @@
  * spawns, so this module is byte-irrelevant there.
  */
 
-import { spawn, ChildProcess } from 'node:child_process';
+import { ChildProcess } from 'node:child_process';
 import * as path from 'node:path';
 import * as fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -27,6 +27,7 @@ import {
   registerSidecarShutdownHooks as registerSharedSidecarShutdownHooks,
 } from '../process-supervision/sidecar-spawn-shared';
 import { isBenignHostError } from '../host-benign-errors';
+import { managedSpawn } from '../task-manager/managed-spawn';
 
 // This package is ESM (type:module), where `__dirname` is undefined. Derive the
 // module dir from import.meta (the substrate EI-1612 fix) so the sidecar script
@@ -37,6 +38,14 @@ const moduleDir = path.dirname(fileURLToPath(import.meta.url));
 let sidecarProcess: ChildProcess | null = null;
 let sidecarReady = false;
 const readyWaiters: (() => void)[] = [];
+
+// EI-19479764372783341: `managedSpawn` is ASYNC (it probes systemd scope support
+// and writes the ledger row before exec), where the raw `spawn()` it replaced was
+// synchronous. That opens a re-entrancy window the old code did not have — the
+// `sidecarProcess` check below and the assignment that follows it are no longer in
+// the same tick, so two concurrent callers could BOTH spawn a sidecar and race for
+// the pid-keyed socket. This holds the in-flight attempt so they share one.
+let spawnInFlight: Promise<void> | null = null;
 
 // ── P-006 (critical-process-supervisor-2026-07-04): auto-respawn-on-crash ───
 //
@@ -118,6 +127,19 @@ export async function spawnSpawnerSidecar(socketPath?: string): Promise<void> {
     });
   }
 
+  // See `spawnInFlight` — a spawn that has passed the check above but not yet
+  // assigned `sidecarProcess`. Join it rather than starting a second one.
+  if (spawnInFlight) return spawnInFlight;
+
+  spawnInFlight = spawnSpawnerSidecarInner(socketPath).finally(() => {
+    spawnInFlight = null;
+  });
+  return spawnInFlight;
+}
+
+/** The actual spawn. Split out of `spawnSpawnerSidecar` only so the in-flight
+ *  guard above can wrap exactly one attempt. */
+async function spawnSpawnerSidecarInner(socketPath?: string): Promise<void> {
   // A fresh spawn attempt — clear any pending backoff timer and the deliberate-stop
   // flag so the crash-respawn machinery is armed for this (re)spawn (mirrors
   // substrate-sidecar-spawn.ts's reset at the top of spawnSubstrateSidecar).
@@ -160,43 +182,102 @@ export async function spawnSpawnerSidecar(socketPath?: string): Promise<void> {
     execPath: process.execPath,
   });
 
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    ...plan.env,
+    [SPAWNER_SOCKET_ENV]: resolvedSocket,
+    // EI-8810 belt: the sidecar serves over the Unix socket ONLY — never hand
+    // the child the parent's HTTP port or the background-worker role. A
+    // mode-divert miss in the re-exec'd entry (the exact hono-host.mjs bug)
+    // otherwise boots a full host on the PARENT's own port (EADDRINUSE
+    // crash-respawn loop) and could double-run the single-writer background
+    // machinery (EI-126). Port 0 = ephemeral bind if some entry ever listens.
+    PAPERCUSP_HONO_PORT: '0',
+    PORT: '0',
+    PAPERCUSP_BACKGROUND_WORKERS: '0',
+    // WI-6132 (P-016, db-performance-remediation): cap the sidecar's org pools.
+    // The sidecar's PG traffic is a handful of spawn-RPC lookups, but without a
+    // cap it opens its OWN admin+app pool at full resource-profile size — and
+    // sidecars dominate the census (measured 2026-08-02: 28 of 39 per-process
+    // org-admin pools on this box were sidecars; 198 connections, 169 idle).
+    // Pinned unconditionally — the parent's own PAPERCUSP_DB_POOL_MAX is sized
+    // for the OPERATOR's concurrency and must not leak into the child;
+    // PAPERCUSP_SIDECAR_DB_POOL_MAX is the deliberate escape hatch.
+    PAPERCUSP_DB_POOL_MAX: process.env.PAPERCUSP_SIDECAR_DB_POOL_MAX ?? '2',
+  };
+
+  const cmd = plan.cmd;
+  const args = plan.args;
+
+  // ── EI-19479764372783341: CGROUP LIFETIME COUPLING ────────────────────────
+  //
+  // This used to be a raw `spawn(cmd, args, { detached: false })`, which inherits
+  // the CALLER's cgroup. That put the spawner sidecar — and the desktop-app
+  // `serve.mjs` sidecars it goes on to parent — inside
+  // `papercup-bg-host.service`, so restarting bg-host to pick up ANY routines
+  // code change killed the lot. Measured 2026-08-04: ~208 tasks in that cgroup,
+  // including 4x spawner-sidecar, 5x desktop serve.mjs, and an in-flight
+  // `pg_dump` mid-write. All three restart triggers hit it — a raw `systemctl
+  // restart`, `dev:restart { target:'bg-host' }` (whose "drain" is a LOCK drain
+  // with no notion of cgroup children), and bghost-watchdog.mjs firing
+  // UNATTENDED on a detected stall, which has a documented history of FALSE
+  // positives and alerts nobody on a SINGLE successful restart.
+  //
+  // `managedSpawn` confines into a transient `pc-<taskId>.scope` under
+  // `papercusp-sidecar.slice` via `systemd-run --user --scope`. That scope is a
+  // SIBLING of papercup-bg-host.service rather than a child, so a bg-host
+  // restart now bounces only bg-host. It also enrols the process in the task
+  // ledger, which is what makes it killable via `processes:kill { taskId }`
+  // instead of a `pkill -f` that has twice taken out the owner's live desktop.
+  //
+  // Note this site never tripped `lint:no-unenrolled-spawn`: that guard keys on
+  // `detached: true`, and this is `detached: false`, so it was invisible to it BY
+  // CONSTRUCTION. Detachment is the wrong property — the hazard is cgroup
+  // lifetime coupling, which a long-lived `detached: false` child has in full.
+  // Filed as EI-19483245448673321.
+  //
+  // Two properties this depends on, both verified in isolation before the change
+  // (same ['ignore','pipe','pipe','ipc'] stdio shape as below): `--scope` (not
+  // `--unit`) execs in the caller's context and KEEPS piped stdio, so the
+  // PAPERCUSP_SPAWNER_READY handshake still arrives on the child's stdout —
+  // measured 150ms scoped vs 111ms unscoped against a 10s budget, with the IPC
+  // channel intact and the child landing in a sibling scope. And `managedSpawn`
+  // FAILS SOFT: if systemd cannot give it a scope, `probeScopeSupport` returns
+  // `{ok:false}` and it degrades to a plain spawn with `confinementSkippedReason`
+  // set, so a box without working user scopes still gets a sidecar — unconfined,
+  // exactly as before. It cannot hard-fail the agent-spawn path.
+  //
+  // 'ipc' as the 4th stdio slot opens the Node child_process IPC channel,
+  // mirroring the substrate sidecar's spawn shape (harmless here — the spawner
+  // sidecar talks over the Unix socket, not the handle channel).
+  const managed = await managedSpawn(
+    cmd,
+    args,
+    {
+      class: 'sidecar',
+      title: 'fleet spawner sidecar',
+      argv: [cmd, ...args],
+      launchedBy: 'system:spawner-sidecar',
+      detail: { socketPath: resolvedSocket },
+    },
+    {
+      spawnOptions: {
+        env,
+        stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
+        detached: false,
+      },
+    },
+  );
+  sidecarProcess = managed.child;
+  if (!managed.confined) {
+    console.warn(
+      `[spawner-sidecar] UNCONFINED (${managed.confinementSkippedReason ?? 'unknown reason'}) — ` +
+        'it shares bg-host\'s cgroup, so a bg-host restart will kill it and the desktop sidecars it parents (EI-19479764372783341).',
+    );
+  }
+
+  const child = sidecarProcess;
   return new Promise<void>((resolve, reject) => {
-    const env: NodeJS.ProcessEnv = {
-      ...process.env,
-      ...plan.env,
-      [SPAWNER_SOCKET_ENV]: resolvedSocket,
-      // EI-8810 belt: the sidecar serves over the Unix socket ONLY — never hand
-      // the child the parent's HTTP port or the background-worker role. A
-      // mode-divert miss in the re-exec'd entry (the exact hono-host.mjs bug)
-      // otherwise boots a full host on the PARENT's own port (EADDRINUSE
-      // crash-respawn loop) and could double-run the single-writer background
-      // machinery (EI-126). Port 0 = ephemeral bind if some entry ever listens.
-      PAPERCUSP_HONO_PORT: '0',
-      PORT: '0',
-      PAPERCUSP_BACKGROUND_WORKERS: '0',
-      // WI-6132 (P-016, db-performance-remediation): cap the sidecar's org pools.
-      // The sidecar's PG traffic is a handful of spawn-RPC lookups, but without a
-      // cap it opens its OWN admin+app pool at full resource-profile size — and
-      // sidecars dominate the census (measured 2026-08-02: 28 of 39 per-process
-      // org-admin pools on this box were sidecars; 198 connections, 169 idle).
-      // Pinned unconditionally — the parent's own PAPERCUSP_DB_POOL_MAX is sized
-      // for the OPERATOR's concurrency and must not leak into the child;
-      // PAPERCUSP_SIDECAR_DB_POOL_MAX is the deliberate escape hatch.
-      PAPERCUSP_DB_POOL_MAX: process.env.PAPERCUSP_SIDECAR_DB_POOL_MAX ?? '2',
-    };
-
-    const cmd = plan.cmd;
-    const args = plan.args;
-
-    // 'ipc' as the 4th stdio slot opens the Node child_process IPC channel,
-    // mirroring the substrate sidecar's spawn shape (harmless here — the spawner
-    // sidecar talks over the Unix socket, not the handle channel).
-    sidecarProcess = spawn(cmd, args, {
-      env,
-      stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
-      detached: false,
-    });
-
     const timeout = setTimeout(() => {
       if (!sidecarReady && sidecarProcess) {
         sidecarProcess.kill();
@@ -209,7 +290,7 @@ export async function spawnSpawnerSidecar(socketPath?: string): Promise<void> {
     // handshake line carries a socket PATH, which can contain non-ASCII.
     const readyDecoder = new StringDecoder('utf8');
     let stdoutBuffer = '';
-    sidecarProcess.stdout?.on('data', (chunk: Buffer) => {
+    child.stdout?.on('data', (chunk: Buffer) => {
       stdoutBuffer += readyDecoder.write(chunk);
       const lines = stdoutBuffer.split('\n');
 
@@ -233,17 +314,17 @@ export async function spawnSpawnerSidecar(socketPath?: string): Promise<void> {
       }
     });
 
-    sidecarProcess.stderr?.on('data', (chunk: Buffer) => {
+    child.stderr?.on('data', (chunk: Buffer) => {
       console.warn('[spawner-sidecar-err]', chunk.toString().trim());
     });
 
-    sidecarProcess.on('error', (err) => {
+    child.on('error', (err) => {
       sidecarProcess = null;
       sidecarReady = false;
       reject(err);
     });
 
-    sidecarProcess.on('exit', (code) => {
+    child.on('exit', (code) => {
       const msg = code !== null ? `exit code ${code}` : 'killed';
       // A deliberate stopSpawnerSidecar() is a graceful shutdown, not a crash —
       // "died" here would be misleading noise (mirrors substrate's same guard).

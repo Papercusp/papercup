@@ -10,7 +10,7 @@
  *
  * Run: cd packages/operator-core && npx vitest run lib/agent-tools/coordination/tools/send.test.ts
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../identity', () => ({ resolveAgentIdentity: vi.fn(() => ({ ownerId: 'me', workspaceId: 'ws1' })) }));
 vi.mock('../messages', () => ({ sendMessage: vi.fn(), getMessageById: vi.fn(async () => null) }));
@@ -283,6 +283,77 @@ describe('coord:send handler (bulk keyed-array)', () => {
     const b = await body({ to: ['live-bee'], summary: 'fyi', wake: 'optimistic' });
     expect(b.results[0].wake).toMatchObject({ mode: 'optimistic', woken: 1 });
     expect(b.results[0].wake.note).toBeUndefined();
+  });
+});
+
+/**
+ * EI-19412221266350408 — endTurn must share the WAKE leg's liveness verdict.
+ *
+ * The fix exists in send.ts but had NO test. The defect it guards against is not a
+ * crash, it is a CONFIDENTLY WRONG report: a pty-force ESC reports ok:true against a
+ * control socket whose agent SESSION has already reached a terminal state (a zombie
+ * launcher — the process is alive, nothing is listening inside it). The keystroke
+ * channel genuinely worked, so `ended` looks like success, while the wake leg for the
+ * SAME owner in the SAME call says recipient_dead.
+ *
+ * Why that specific shape is expensive: it does not read as an error, it reads as
+ * CORROBORATION for the wedged-turn theory it has just disproved ("I ESC'd it, it
+ * should recover now"). Observed live 2026-08-03 — it sent a fleet leader chasing a
+ * wedged turn that did not exist.
+ */
+describe('coord:send endTurn — liveness cross-check (EI-19412221266350408)', () => {
+  /** Order-independent: keyed on the owners actually passed, not on call ordering —
+   *  reportIdleRecipients is also used by the default no-wake idle-report path. */
+  const idleFor = (...dead: string[]) =>
+    idleM.mockImplementation(async (owners: string[]) => ({ idle: owners.filter((o) => dead.includes(o)) }) as never);
+
+  // These cases install PERSISTENT implementations (the keying above is what makes them
+  // order-independent), so restore the suite default or they leak into every later test —
+  // the throwing one below took out 27 of them before this was added.
+  afterEach(() => {
+    idleM.mockImplementation(async () => ({ idle: [] }) as never);
+  });
+
+  it('reclassifies a confirmed-dead target from `ended` to `missed` despite the ESC reporting ok', async () => {
+    idleFor('zombie-bee');
+    const b = await body({ to: ['zombie-bee'], summary: 'esc please', expects: 'none', endTurn: true });
+    // The ESC channel said ok:true — the raw verdict alone would have put it in `ended`.
+    expect(b.results[0].endTurn.ended).not.toContain('zombie-bee');
+    expect(b.results[0].endTurn.missed).toContain('zombie-bee');
+  });
+
+  it('leaves a genuinely LIVE target in `ended` — the check narrows the report, it does not empty it', async () => {
+    idleFor(); // nobody dead
+    const b = await body({ to: ['live-bee'], summary: 'esc please', expects: 'none', endTurn: true });
+    expect(b.results[0].endTurn.ended).toContain('live-bee');
+    expect(b.results[0].endTurn.missed).not.toContain('live-bee');
+  });
+
+  it('splits a MIXED batch correctly rather than condemning or passing the whole set', async () => {
+    idleFor('zombie-bee');
+    const b = await body({
+      to: ['live-bee', 'zombie-bee'],
+      summary: 'esc both',
+      expects: 'none',
+      endTurn: true,
+    });
+    expect(b.results[0].endTurn.ended).toEqual(['live-bee']);
+    expect(b.results[0].endTurn.missed).toEqual(['zombie-bee']);
+  });
+
+  it('FAIL-SOFT: a probe failure keeps the raw ESC verdict instead of failing the send', async () => {
+    // The cross-check is an ENRICHMENT. If it could fail the endTurn leg, a flaky liveness
+    // probe would break a remediation path whose whole purpose is unsticking a wedged agent.
+    idleM.mockImplementation(async () => {
+      throw new Error('probe exploded');
+    });
+    // wake:'required' on purpose: it takes the endTurn cross-check path while SKIPPING the
+    // default no-wake idle-report, which calls the same helper OUTSIDE the cross-check's
+    // try/catch. Without this the test would prove the wrong thing — that an unrelated
+    // caller is not fail-soft — rather than that the cross-check is.
+    const b = await body({ to: ['some-bee'], summary: 'esc please', expects: 'none', endTurn: true, wake: 'required' });
+    expect(b.ok).toBe(true);
+    expect(b.results[0].endTurn.ended).toContain('some-bee');
   });
 });
 

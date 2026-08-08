@@ -219,7 +219,7 @@ describe('decideReconcile', () => {
     expect(action).toEqual({ kind: 'report-only', unit: 'live-federation-gate', reason: 'down-report-only', notify: true });
   });
 
-  it('unit not found by systemctl at all -> report-only "unit-not-found"', () => {
+  it('unit not found by systemctl at all -> report-only "unit-not-found" (absence UNCONFIRMED without a show-probe)', () => {
     const { action } = decideReconcile({
       entry: AUTORESTART_ENTRY,
       status: undefined,
@@ -228,7 +228,93 @@ describe('decideReconcile', () => {
       autoRestartFlagOn: true,
       now: 1000,
     });
-    expect(action).toEqual({ kind: 'report-only', unit: 'mcp-proxy', reason: 'unit-not-found', notify: true });
+    // WI-9871: no show-probe ⇒ we cannot claim the unit is really gone.
+    expect(action).toEqual({
+      kind: 'report-only',
+      unit: 'mcp-proxy',
+      reason: 'unit-not-found',
+      confirmedAbsent: false,
+      notify: true,
+    });
+  });
+
+  it('WI-9871: LoadState=not-found CONFIRMS absence -> unit-not-found with confirmedAbsent:true', () => {
+    const { action } = decideReconcile({
+      entry: AUTORESTART_ENTRY,
+      status: undefined,
+      show: { loadState: 'not-found' },
+      state: initialFlapState('papercup-mcp-proxy.service'),
+      autoRestartFlagOn: true,
+      now: 1000,
+    });
+    expect(action).toEqual({
+      kind: 'report-only',
+      unit: 'mcp-proxy',
+      reason: 'unit-not-found',
+      confirmedAbsent: true,
+      notify: true,
+    });
+  });
+
+  // ── WI-9871: the pause check must be reachable for a unit ABSENT from `list-units` ──
+  //
+  // `systemctl --user disable --now <unit>` — the DOCUMENTED way to pause the federation gate —
+  // leaves the unit unloaded, so it vanishes from `list-units --all` and `status` is undefined.
+  // Before this fix the `!status` branch returned `unit-not-found` and the WI-5378 pause check
+  // was structurally unreachable, so a deliberate pause was reported as a missing unit file.
+  it('WI-9871: a DISABLED unit absent from list-units is reported as paused, not "unit-not-found"', () => {
+    const { action, nextState } = decideReconcile({
+      entry: TIMER_ENTRY,
+      status: undefined, // disabled + never started ⇒ absent from `list-units --all`
+      show: { unitFileState: 'disabled', loadState: 'loaded' },
+      state: initialFlapState('papercup-live-federation-gate.timer'),
+      autoRestartFlagOn: true,
+      now: 1000,
+    });
+    expect(action).toEqual({
+      kind: 'report-only',
+      unit: 'live-federation-gate-timer',
+      reason: 'paused',
+      notify: true,
+    });
+    // A pause is not a crash-loop: flap state resets, exactly as in the `status`-present path.
+    expect(nextState.gaveUp).toBe(false);
+    expect(nextState.restarts).toEqual([]);
+  });
+
+  it('WI-9871: a MASKED unit absent from list-units is likewise paused, not "unit-not-found"', () => {
+    const { action } = decideReconcile({
+      entry: TIMER_ENTRY,
+      status: undefined,
+      show: { unitFileState: 'masked', loadState: 'masked' },
+      state: initialFlapState('papercup-live-federation-gate.timer'),
+      autoRestartFlagOn: true,
+      now: 1000,
+    });
+    expect(action).toEqual({
+      kind: 'report-only',
+      unit: 'live-federation-gate-timer',
+      reason: 'paused',
+      notify: true,
+    });
+  });
+
+  it('WI-9871: an ENABLED unit absent from list-units is still unit-not-found (the pause branch must not over-claim)', () => {
+    const { action } = decideReconcile({
+      entry: TIMER_ENTRY,
+      status: undefined,
+      show: { unitFileState: 'enabled', loadState: 'not-found' },
+      state: initialFlapState('papercup-live-federation-gate.timer'),
+      autoRestartFlagOn: true,
+      now: 1000,
+    });
+    expect(action).toEqual({
+      kind: 'report-only',
+      unit: 'live-federation-gate-timer',
+      reason: 'unit-not-found',
+      confirmedAbsent: true,
+      notify: true,
+    });
   });
 
   it('down + flag on + autoRestart:true -> restart with the FIRST backoff rung', () => {
@@ -628,6 +714,48 @@ describe('reconcileTick (orchestrator, mocked deps)', () => {
     // Still paged — the escalation is the load-bearing part, the cause is a bonus.
     expect(page).toBeDefined();
     expect(page).toContain('Cause unavailable');
+  });
+
+  // ── WI-9871 WIRING ────────────────────────────────────────────────────────
+  //
+  // The pure decideReconcile cases above all still pass if the tick never asks systemctl for
+  // LoadState/UnitFileState, or never probes a unit missing from `list-units` — the fix would be
+  // inert. These two assert the SEAM.
+
+  it('WI-9871 WIRING: the show-probe requests LoadState, without which absence can never be confirmed', async () => {
+    const deps = makeDeps();
+    await reconcileTick(deps);
+    const showCalls = deps.execUser.mock.calls.map((c) => c[0] as string[]).filter((a) => a[0] === 'show');
+    expect(showCalls.length).toBeGreaterThan(0);
+    for (const call of showCalls) {
+      const props = call[call.indexOf('-p') + 1];
+      expect(props).toContain('LoadState');
+      expect(props).toContain('UnitFileState');
+    }
+  });
+
+  it('WI-9871 WIRING: a registry unit ABSENT from list-units is show-probed and reported as PAUSED, not "removed/never installed"', async () => {
+    // The live case: `disable --now` on the gate timer leaves it out of `list-units --all`
+    // entirely, while `systemctl show` still resolves it as loaded-but-disabled.
+    const deps = makeDeps({
+      registry: () => [TIMER_ENTRY],
+      execUser: vi.fn(async (args: string[]) => {
+        if (args[0] === 'list-units') return LIST_UNITS_FIXTURE; // contains NO .timer row
+        if (args[0] === 'show') return 'Result=success\nNRestarts=0\nUnitFileState=disabled\nLoadState=loaded\n';
+        return '';
+      }),
+    });
+    await reconcileTick(deps);
+
+    // It must have been probed despite being absent from the listing.
+    expect(deps.execUser.mock.calls.some((c) => (c[0] as string[])[0] === 'show')).toBe(true);
+    // Never restarted — a pause is deliberate.
+    expect(deps.execUser.mock.calls.some((c) => (c[0] as string[])[0] === 'restart')).toBe(false);
+
+    const summaries = deps.notify.mock.calls.map((c) => c[0].summary as string);
+    expect(summaries.some((s) => s.includes('administratively disabled/masked'))).toBe(true);
+    // The regression this closes: a deliberate pause reported as a missing unit file.
+    expect(summaries.some((s) => s.includes('removed/never installed'))).toBe(false);
   });
 
   it('does not restart when FLAGS.supervisorAutoRestart resolves false (report-only everywhere)', async () => {

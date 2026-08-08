@@ -13,6 +13,18 @@
 export { PgL2Store } from "./pg-l2-store";
 export type { L2Entry, L2SetOptions } from "./pg-l2-store";
 
+// The L2 read-through/write-through seam wired INSIDE cachedRead (P-007 / D-082) —
+// what actually makes the durable tier above reachable from a cached read.
+export {
+  withL2,
+  invalidateL2ByTags,
+  l2TierEnabled,
+  getL2Store,
+  installL2StoreForTests,
+  setL2EnabledForTests,
+} from "./l2-tier";
+export type { L2Outcome, L2WrapOptions } from "./l2-tier";
+
 export { PgProjectionStore } from "./pg-projection-store";
 export type { PgProjectionStoreConfig } from "./pg-projection-store";
 

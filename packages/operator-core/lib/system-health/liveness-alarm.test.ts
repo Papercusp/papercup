@@ -359,6 +359,7 @@ describe('evaluateLivenessAlarm (pure)', () => {
 describe('EI-15006: panel:bees idle-by-design gate', () => {
   const healthy: BeesLivenessContext = {
     cupPlaceableFrontier: 0,
+    frontierUnreadable: false,
     dispatchBudget: 20,
     restartRecovering: false,
     otherAgentsAlive: true,
@@ -405,6 +406,7 @@ describe('EI-15006: panel:bees idle-by-design gate', () => {
       ['no other agent alive', { otherAgentsAlive: false }, false, 'no-other-agent-alive'],
       ['cup tier known-full', { dispatchBudget: 0 }, false, 'dispatch-budget-exhausted'],
       ['unknown capacity is not exhaustion', { dispatchBudget: null }, true, 'idle-by-design'],
+      ['survey unreadable', { frontierUnreadable: true }, false, 'frontier-unreadable'],
     ];
 
     for (const [name, over, idle, leg] of cases) {
@@ -417,6 +419,7 @@ describe('EI-15006: panel:bees idle-by-design gate', () => {
       const reached = new Set(cases.map(([, over]) => beesIdleDecision({ ...healthy, ...over }).leg));
       // Mirrors the BeesIdleLeg union. Adding a leg without a case above fails here.
       const declared: BeesIdleLeg[] = [
+        'frontier-unreadable',
         'cup-work-waiting',
         'gateway-restart-recovering',
         'no-other-agent-alive',
@@ -428,13 +431,21 @@ describe('EI-15006: panel:bees idle-by-design gate', () => {
 
     it('DRIFT GUARD: beesIdleByDesign is exactly `leg === idle-by-design` across the matrix', () => {
       for (const cupPlaceableFrontier of [0, 3]) {
-        for (const restartRecovering of [false, true]) {
-          for (const otherAgentsAlive of [true, false]) {
-            for (const dispatchBudget of [15, 0, null]) {
-              const ctx = { cupPlaceableFrontier, restartRecovering, otherAgentsAlive, dispatchBudget };
-              const d = beesIdleDecision(ctx);
-              expect(beesIdleByDesign(ctx)).toBe(d.idle);
-              expect(d.idle).toBe(d.leg === 'idle-by-design');
+        for (const frontierUnreadable of [false, true]) {
+          for (const restartRecovering of [false, true]) {
+            for (const otherAgentsAlive of [true, false]) {
+              for (const dispatchBudget of [15, 0, null]) {
+                const ctx = {
+                  cupPlaceableFrontier, frontierUnreadable, restartRecovering, otherAgentsAlive, dispatchBudget,
+                };
+                const d = beesIdleDecision(ctx);
+                expect(beesIdleByDesign(ctx)).toBe(d.idle);
+                expect(d.idle).toBe(d.leg === 'idle-by-design');
+                // FAIL-SAFE INVARIANT: an unreadable survey can never yield idle, under ANY
+                // combination of the other legs. This is the whole point of the flag —
+                // "unreadable" must never buy silence about zero running bees.
+                if (frontierUnreadable) expect(d.idle).toBe(false);
+              }
             }
           }
         }
@@ -445,6 +456,25 @@ describe('EI-15006: panel:bees idle-by-design gate', () => {
       expect(
         beesIdleDecision({ ...healthy, cupPlaceableFrontier: 3, restartRecovering: true, otherAgentsAlive: false }).leg,
       ).toBe('cup-work-waiting');
+    });
+
+    // The attribution point, not a behaviour point: a fabricated 0 falls through the
+    // cup-work-waiting branch anyway, so only the LEG NAME distinguishes "no cup work
+    // waiting" from "we could not read whether cup work is waiting".
+    it('an unreadable survey outranks every other leg — the note must not blame a downstream one', () => {
+      expect(
+        beesIdleDecision({
+          ...healthy, frontierUnreadable: true, cupPlaceableFrontier: 3,
+          restartRecovering: true, otherAgentsAlive: false, dispatchBudget: 0,
+        }).leg,
+      ).toBe('frontier-unreadable');
+    });
+
+    it('renders an unreadable frontier as `unreadable`, never as the fabricated 0', () => {
+      const s = describeBeesLiveness({ ...healthy, frontierUnreadable: true });
+      expect(s).toContain('cupPlaceableFrontier=unreadable');
+      expect(s).not.toContain('cupPlaceableFrontier=0');
+      expect(s).toContain('frontier-unreadable');
     });
 
     it('describeBeesLiveness carries every raw leg value plus the verdict', () => {
@@ -458,6 +488,45 @@ describe('EI-15006: panel:bees idle-by-design gate', () => {
 
     it('renders an UNKNOWN dispatchBudget as unknown, never as 0 (opposite sides of the gate)', () => {
       expect(describeBeesLiveness({ ...healthy, dispatchBudget: null })).toContain('dispatchBudget=unknown');
+    });
+  });
+
+  describe('beesLivenessFromHealth — unreadable survey (unreadable ≠ clear, on the DECIDING leg)', () => {
+    const cap = { dispatchBudget: 15, restartRecovering: false };
+
+    it('propagates WorkFeedHealth.frontierUnreadable', () => {
+      const h = mkHealth({
+        panels: {
+          workFeed: { data: { frontier: 0, frontierStuck: 0, deadRoutines: 0, frontierUnreadable: true } },
+          suFleet: { data: { live: 9 } },
+        },
+      });
+      expect(beesLivenessFromHealth(h, cap).frontierUnreadable).toBe(true);
+      expect(beesIdleDecision(beesLivenessFromHealth(h, cap))).toEqual({ idle: false, leg: 'frontier-unreadable' });
+    });
+
+    it('an OBSERVED empty frontier still suppresses — the flag must not blanket-disarm the gate', () => {
+      const h = mkHealth({
+        panels: {
+          workFeed: { data: { frontier: 0, frontierStuck: 0, deadRoutines: 0 } },
+          suFleet: { data: { live: 9 } },
+        },
+      });
+      expect(beesLivenessFromHealth(h, cap).frontierUnreadable).toBe(false);
+      expect(beesIdleDecision(beesLivenessFromHealth(h, cap))).toEqual({ idle: true, leg: 'idle-by-design' });
+    });
+
+    // THE DELIBERATE BOUNDARY, pinned so a later reader does not "complete" the fix by
+    // widening it. A missing workFeed panel fabricates the same 0, but is NOT treated as
+    // unreadable: no such snapshot has been observed in production (collectWorkFeed is
+    // panelSafe-wrapped), and treating it so un-suppresses panel:bees for every caller
+    // whose snapshot lacks the panel — measurably, the policy-suppressed benign row at
+    // "THE DEFECT: a policy-suppressed close does NOT claim the condition recovered"
+    // stops draining. The flag covers the case that actually happens.
+    it('a MISSING workFeed panel is NOT inferred as unreadable (scoped to the flag, on purpose)', () => {
+      const h = mkHealth({ panels: { suFleet: { data: { live: 9 } } } });
+      expect(beesLivenessFromHealth(h, cap).frontierUnreadable).toBe(false);
+      expect(beesIdleByDesign(beesLivenessFromHealth(h, cap))).toBe(true);
     });
   });
 
@@ -1746,6 +1815,7 @@ describe('EI-19462267124852221 — a POLICY-SUPPRESSED signal must not auto-reso
 
   const idle: BeesLivenessContext = {
     cupPlaceableFrontier: 0,
+    frontierUnreadable: false,
     dispatchBudget: 20,
     restartRecovering: false,
     otherAgentsAlive: true,
@@ -1931,6 +2001,7 @@ describe('EI-19462267124852221 — an auto-resolve must carry its OBSERVATION, n
     const h = mkHealth({ panels: { bees: { status: 'crit', summary: 'no bees running', data: { running: 0 } } } });
     const ctx: BeesLivenessContext = {
       cupPlaceableFrontier: 0,
+      frontierUnreadable: false,
       dispatchBudget: 0,
       restartRecovering: false,
       otherAgentsAlive: true,
@@ -1950,6 +2021,7 @@ describe('EI-19462267124852221 — an auto-resolve must carry its OBSERVATION, n
     const h = mkHealth({ panels: { infra: { status: 'warn', summary: 'pg slow' } } });
     const ctx: BeesLivenessContext = {
       cupPlaceableFrontier: 0,
+      frontierUnreadable: false,
       dispatchBudget: 15,
       restartRecovering: false,
       otherAgentsAlive: true,

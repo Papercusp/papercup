@@ -23,6 +23,7 @@ import {
   type QueryOptions,
 } from '@papercusp/projection-index';
 import { rationaleProjector } from './projector';
+import { pinModuleState } from '@papercusp/module-singleton';
 import { PgRationaleStore } from './pg-store';
 import {
   gatherPlanSource,
@@ -35,27 +36,29 @@ import { sourceIdOf, type RationaleEntry, type RationaleSource } from './types';
 
 export type RationaleIndex = ProjectionIndex<RationaleSource, RationaleEntry>;
 
-const GLOBAL_KEY = '__papercuspRationaleIndex__';
+// Realm-pinned through @papercusp/module-singleton rather than a hand-rolled
+// `globalThis[key]` pair: hand-rolling shares the index correctly but is
+// invisible to listModuleDuplications(), which then answers a confident `[]`
+// while this module is split (EI-19479108855357092).
+const __state = pinModuleState<{ index: RationaleIndex | null }>(
+  '@papercusp/operator-core.rationaleIndex',
+  () => ({ index: null }),
+);
 
-/** The process-wide projection index (PG-backed). Lazily built, globally anchored. */
+/** The process-wide projection index (PG-backed). Lazily built, realm-pinned. */
 export function getRationaleIndex(): RationaleIndex {
-  const g = globalThis as Record<string, unknown>;
-  let idx = g[GLOBAL_KEY] as RationaleIndex | undefined;
-  if (!idx) {
-    idx = new ProjectionIndex<RationaleSource, RationaleEntry>({
+  if (!__state.index) {
+    __state.index = new ProjectionIndex<RationaleSource, RationaleEntry>({
       projector: rationaleProjector,
       store: new PgRationaleStore(),
     });
-    g[GLOBAL_KEY] = idx;
   }
-  return idx;
+  return __state.index;
 }
 
 /** Test seam: inject an in-memory-backed index (set null to reset to PG). */
 export function __setRationaleIndexForTests(idx: RationaleIndex | null): void {
-  const g = globalThis as Record<string, unknown>;
-  if (idx) g[GLOBAL_KEY] = idx;
-  else delete g[GLOBAL_KEY];
+  __state.index = idx;
 }
 
 // --- incremental maintenance (fired by event rules) ---

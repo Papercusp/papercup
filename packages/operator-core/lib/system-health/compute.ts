@@ -890,6 +890,13 @@ async function collectWorkFeed(ctx: HealthCtx): Promise<HealthPanel<WorkFeedHeal
   return panelSafe<WorkFeedHealth>('workFeed', async () => {
     const { ws, potSlug } = ctx;
     let frontier = 0, frontierStuck = 0, frontierBlocked = 0, startedPlans = 0;
+    // The catch below must RECORD that it fired — same rule the stale-paused read
+    // 20-odd lines down states ("unreadable ≠ clear"), which this read violated.
+    // Here it is load-bearing rather than cosmetic: `cupPlaceableFrontier`
+    // (frontier − frontierStuck) is the leg that DECIDES beesIdleDecision, so a
+    // fabricated 0 reads as "no cup work waiting" and SUPPRESSES the bees-dead
+    // alarm. A broken survey would silently buy silence about zero running bees.
+    let frontierUnreadable = false;
     if (potSlug) {
       try {
         // K1 (workspace-scoped-coordination P-003 / D-002): the ONE central-dispatcher
@@ -913,7 +920,11 @@ async function collectWorkFeed(ctx: HealthCtx): Promise<HealthPanel<WorkFeedHeal
           frontierBlocked = survey.frontierBlocked;
           startedPlans = survey.plans.length;
         }
-      } catch { /* survey unreadable — leave zeros, dead-routine signal still computes */ }
+      } catch {
+        /* survey unreadable — leave zeros, dead-routine signal still computes — but
+           FLAG it, so downstream can tell a fabricated 0 from an observed 0. */
+        frontierUnreadable = true;
+      }
     }
     // Dead routines (EI-584): active CRON/rrule routines whose next_fire_at is long
     // overdue — the routinesTick that should claim+fire them isn't, so the feed
@@ -967,6 +978,7 @@ async function collectWorkFeed(ctx: HealthCtx): Promise<HealthPanel<WorkFeedHeal
       keylessHumanReviewBacklog, deadRoutines: deadRoutineNames.length, deadRoutineNames,
       stalePausedRoutines: stalePaused.length, stalePausedRoutineNames, stalePausedCriticalRoutines,
       ...(stalePausedUnreadable ? { stalePausedRoutinesUnreadable: true } : {}),
+      ...(frontierUnreadable ? { frontierUnreadable: true } : {}),
     };
     const status = workFeedStatus(data);
     return {
